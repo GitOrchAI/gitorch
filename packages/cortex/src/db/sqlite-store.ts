@@ -230,7 +230,10 @@ export class SqliteStore {
       )
     `
       )
-      .run(triple)
+      .run({
+        ...triple,
+        validTo: triple.validTo ?? null,
+      })
   }
 
   queryTriples(query: TripleQuery): StoredTriple[] {

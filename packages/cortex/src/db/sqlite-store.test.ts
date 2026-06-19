@@ -50,6 +50,29 @@ describe('SqliteStore', () => {
     ).not.toContain(triple)
   })
 
+  it('stores open-ended temporal triples without validTo', () => {
+    const triple = {
+      wingId: 'loureng/gitorch',
+      subject: 'F2',
+      predicate: 'USES',
+      object: 'ChromaDB',
+      validFrom: '2026-06-19T00:00:00.000Z',
+      confidence: 0.98,
+    }
+
+    store.insertTriple(triple)
+
+    expect(
+      store.queryTriples({
+        wingId: 'loureng/gitorch',
+        at: '2027-01-01T00:00:00.000Z',
+      })
+    ).toContainEqual({
+      ...triple,
+      validTo: null,
+    })
+  })
+
   it('stores drawers and returns top priority drawers', () => {
     const low = {
       id: 'low',
