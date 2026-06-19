@@ -1,0 +1,33 @@
+{
+  "name": "gitorch",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "runtime/*",
+    "db"
+  ],
+  "packageManager": "pnpm@9.4.0",
+  "scripts": {
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "dev": "turbo run dev --parallel"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^6.21.0",
+    "@typescript-eslint/parser": "^6.21.0",
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.6",
+    "prettier": "^3.8.4",
+    "turbo": "^2.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.9"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "supermemory": "^4.24.12"
+  }
+}
