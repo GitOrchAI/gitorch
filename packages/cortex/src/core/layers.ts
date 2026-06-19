@@ -11,8 +11,31 @@ export interface StoreLike {
   ): CortexDrawer[]
 }
 
+export interface LayerSelectorOptions {
+  l1BudgetBase?: number
+  l1DrawerBudget?: number
+  l1BudgetMax?: number
+  l1Limit?: number
+  l2Limit?: number
+}
+
 export class LayerSelector {
-  constructor(private readonly store: StoreLike) {}
+  private readonly l1BudgetBase: number
+  private readonly l1DrawerBudget: number
+  private readonly l1BudgetMax: number
+  private readonly l1Limit: number
+  private readonly l2Limit: number
+
+  constructor(
+    private readonly store: StoreLike,
+    options: LayerSelectorOptions = {}
+  ) {
+    this.l1BudgetBase = options.l1BudgetBase ?? 170
+    this.l1DrawerBudget = options.l1DrawerBudget ?? 20
+    this.l1BudgetMax = options.l1BudgetMax ?? 500
+    this.l1Limit = options.l1Limit ?? 15
+    this.l2Limit = options.l2Limit ?? 20
+  }
 
   wakeUp(wingId: string): CortexWakeUpResult {
     const identity = this.store.getIdentity(wingId)
@@ -20,19 +43,21 @@ export class LayerSelector {
       throw new Error(`Identity not found for wing ${wingId}`)
     }
 
+    const drawers = this.loadL1(wingId)
+
     return {
       identity,
-      drawers: this.loadL1(wingId),
-      tokenBudget: 500,
+      drawers,
+      tokenBudget: this.calculateL1Budget(drawers.length),
     }
   }
 
   loadL1(wingId: string): CortexDrawer[] {
-    return this.store.getTopDrawers(wingId, 15)
+    return this.store.getTopDrawers(wingId, this.l1Limit)
   }
 
-  loadL2(wingId: string, roomId?: string, hallId?: string): CortexDrawer[] {
-    return this.store.getDrawersByScope(wingId, roomId, hallId, 20)
+  loadL2(wingId: string, roomId?: string, hallId?: string, limit = this.l2Limit): CortexDrawer[] {
+    return this.store.getDrawersByScope(wingId, roomId, hallId, limit)
   }
 
   selectLayer(intent: 'identity' | 'wake-up' | 'local' | 'semantic'): 'L0' | 'L1' | 'L2' | 'L3' {
@@ -48,5 +73,9 @@ export class LayerSelector {
       default:
         return 'L2'
     }
+  }
+
+  private calculateL1Budget(drawerCount: number): number {
+    return Math.min(this.l1BudgetBase + drawerCount * this.l1DrawerBudget, this.l1BudgetMax)
   }
 }
