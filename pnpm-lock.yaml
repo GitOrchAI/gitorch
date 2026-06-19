@@ -84,6 +84,25 @@ importers:
         specifier: ^4.1.9
         version: 4.1.9(@types/node@20.19.43)(vite@8.0.16(@types/node@20.19.43))
 
+  packages/graph-rag:
+    dependencies:
+      '@gitorch/cgc':
+        specifier: workspace:*
+        version: link:../cgc
+      '@gitorch/cortex':
+        specifier: workspace:*
+        version: link:../cortex
+    devDependencies:
+      '@types/node':
+        specifier: ^20.10.0
+        version: 20.19.43
+      typescript:
+        specifier: ^5.4.0
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.9
+        version: 4.1.9(@types/node@20.19.43)(vite@8.0.16(@types/node@20.19.43))
+
 packages:
 
   '@emnapi/core@1.10.0':
