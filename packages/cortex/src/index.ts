@@ -9,3 +9,4 @@ export type {
 export { CortexClient } from './core/cortex-client'
 export { AakCodec } from './core/aak-codec'
 export { LayerSelector } from './core/layers'
+export { SqliteStore } from './db/sqlite-store'
