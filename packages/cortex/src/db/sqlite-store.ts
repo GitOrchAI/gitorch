@@ -9,7 +9,11 @@ export interface TripleQuery {
   object?: string
 }
 
-type StoredTriple = CortexTriple & { wingId: string }
+export interface SqliteStoreOptions {
+  path: string
+}
+
+export type StoredTriple = CortexTriple & { wingId: string }
 type SqliteRow = {
   id: unknown
   wing_id: unknown
