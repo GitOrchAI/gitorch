@@ -1,3 +1,4 @@
+export { QueryRewriter } from './rewriter/rewriter'
 export type {
   Anchor,
   ExpandedSubgraph,
