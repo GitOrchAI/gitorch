@@ -40,3 +40,31 @@ test('turns dotted namespaces into slash paths and keeps namespace keywords', ()
   expect(plan.extractor.keywords).toContain('nested')
   expect(plan.extractor.keywords).toContain('recursion')
 })
+
+test('keeps relative file path context without partial path entities', () => {
+  const issue = 'Open ./bar.ts before continuing.'
+  const plan = rewriter.rewrite(issue)
+
+  expect(plan.extractor.entities).toContain('./bar.ts')
+  expect(plan.extractor.entities).not.toContain('bar.ts')
+})
+
+test('keeps file extensions out of dotted namespace extraction', () => {
+  const issue = 'pathHelpers.ts should stay a file path.'
+  const plan = rewriter.rewrite(issue)
+
+  expect(plan.extractor.entities).toContain('pathHelpers.ts')
+  expect(plan.extractor.entities).not.toContain('pathHelpers/ts')
+  expect(plan.extractor.keywords).not.toContain('pathHelpers/ts')
+})
+
+test('reuses quoted extraction without global regex state leakage', () => {
+  const issue = '"snake_case_value" and "pkg.module.Class.method" and "CamelValue"'
+  const firstPlan = rewriter.rewrite(issue)
+  const secondPlan = rewriter.rewrite(issue)
+
+  expect(firstPlan.extractor.entities).toContain('snake_case_value')
+  expect(firstPlan.extractor.entities).toContain('pkg/module/Class/method')
+  expect(firstPlan.extractor.entities).toContain('CamelValue')
+  expect(secondPlan.extractor.entities).toEqual(firstPlan.extractor.entities)
+})
