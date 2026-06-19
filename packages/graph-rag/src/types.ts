@@ -52,6 +52,8 @@ export interface ExpandedSubgraph {
 export interface RankedFile {
   filePath: string
   score: number
+  fileNameScore: number
+  skeletonScore: number
   reasons: string[]
   tokenCount: number
   skeleton?: string

@@ -70,6 +70,8 @@ const expandedSubgraph: ExpandedSubgraph = {
 const rankedFile: RankedFile = {
   filePath: 'src/index.ts',
   score: 0.8,
+  fileNameScore: 0.8,
+  skeletonScore: 0.7,
   reasons: ['contains public exports'],
   tokenCount: 42,
   skeleton: 'export type {...} from "./types"',
