@@ -1,18 +1,21 @@
-# 🐙 GitOrch — Multi-Agent Orchestration Control Plane
+# GitOrch - Multi-Agent Orchestration Control Plane
 
-[![License: AGPL v3](https://img.shields.5io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 
-[Português (PT-BR)](README.pt-br.md) | [Español (ES)](README.es.md)
+[Portuguese (PT-BR)](README.pt-br.md) | [Spanish (ES)](README.es.md)
 
-**GitOrch** is a high-performance multi-agent orchestration control plane designed to govern collaborative AI agent swarms (Product Owner, Scrum Master, Requirements Analyst, Quality Assurance) operating directly on GitHub repositories.
+**GitOrch** is a multi-agent orchestration control plane for engineering workflows on GitHub repositories.
 
-It integrates **CodeSight** for structural code intelligence and **Cortex** for long-term semantic and spatial memory retention.
+It currently ships two core building blocks:
+
+- **CodeSight** for structural code intelligence, indexing, impact analysis, and SCIP export
+- **Cortex** for layered memory retrieval backed by SQLite and ChromaDB
 
 ---
 
-## 🚀 Quick Start (CodeSight Core)
+## Quick Start (CodeSight Core)
 
-The `@gitorch/codesight` (CGC) package provides the syntactic intelligence and graph persistence engine.
+The `@gitorch/cgc` package provides the graph indexing engine.
 
 ### Installation
 
@@ -20,85 +23,80 @@ The `@gitorch/codesight` (CGC) package provides the syntactic intelligence and g
 pnpm install
 ```
 
-### Initializing and Indexing Code
+### Initialize and Index Code
 
 ```javascript
-const { KuzuClient, TreeSitterManager, CodeGraphIndexer } = require('@gitorch/codesight');
+const { KuzuClient, TreeSitterManager, CodeGraphIndexer } = require('@gitorch/cgc')
 
 async function run() {
-  // Initialize KuzuDB in-memory or on disk
-  const client = new KuzuClient(':memory:');
-  const manager = new TreeSitterManager();
-  const indexer = new CodeGraphIndexer(client, manager);
+  const client = new KuzuClient(':memory:')
+  await client.init()
 
-  // Initialize tables and edges
-  await indexer.initializeSchema();
+  const manager = new TreeSitterManager()
+  const indexer = new CodeGraphIndexer(client, manager)
 
-  // Index a code snippet
+  await indexer.initializeSchema()
+
   const code = `
     export function helloWorld() {
-      return "Hello, World!";
+      return 'Hello, World!'
     }
-  `;
-  await indexer.indexFile('src/hello.ts', code, 'typescript');
-  console.log("Indexing completed!");
-  
-  await client.close();
+  `
+
+  await indexer.indexFile('src/hello.ts', code, 'typescript')
+  console.log('Indexing completed!')
+
+  await client.close()
 }
 
-run().catch(console.error);
+run().catch(console.error)
 ```
 
 ---
 
-## 🏗️ MVP Roadmap
+## Roadmap
 
-The project follows a Risk-First development cycle divided into 12 phases:
+The project follows a risk-first roadmap:
 
-- [x] **Phase F0: Foundation** — Monorepo setup, Vitest, linting, and CI.
-- [x] **Phase F1: CodeSight Core** — Tree-sitter WASM, SCIP export, and impact analysis.
-- [ ] **Phase F2: Cortex 4-Layer** — Spatial memory layer based on SQLite + ChromaDB. *(Next step)*
-- [ ] **Phase F3: Graph RAG Pipeline** — Semantic query processing sequence.
-- [ ] **Phase F4: Synapse + Pheromones** — Stigmergic coordination of agents.
-- [ ] **Phase F5: GitHub Sync & Projects V2** — Backlog synchronization and integration.
-- [ ] **Phase F6: Agents** — Integrated agent runtimes (PO, SM, RA, QA).
-- [ ] **Phase F7: Workspace Engine** — Isolated test execution and build environments.
-- [ ] **Phase F8: Control Plane API** — Fastify API Gateway.
-- [ ] **Phase F9: Mission Control Frontend** — Visual React dashboard.
-- [ ] **Phase F10: Secrets Vault & Auth** — Client-side encryption of keys.
-- [ ] **Phase F11: Observability & Hardening** — Compliance auditing and telemetry.
-
----
-
-## 📚 Official Documentation
-
-All user and community-facing technical documentation is hosted in the **GitHub Wiki** of this repository. Please click the **Wiki** tab at the top of the repository page to access guides such as:
-
-* **Quickstart Guide:** Getting started with CodeSight indexing.
-* **Architecture Overview:** How CodeSight and Cortex work together.
-* **How-To Guides:** Querying the code graph and setting up agents.
-* **Backlog and Roadmap:** Detailed tracking of upcoming features.
+- [x] **F0: Foundation** - Monorepo setup, Vitest, linting, and CI
+- [x] **F1: CodeSight Core** - Tree-sitter WASM, SCIP export, and impact analysis
+- [x] **F2: Cortex 4-Layer** - Layered memory retrieval with SQLite and ChromaDB
+- [ ] **F3: Graph RAG Pipeline** - Semantic query processing
+- [ ] **F4: Synapse + Pheromones** - Multi-agent coordination primitives
+- [ ] **F5: GitHub Sync & Projects V2** - Backlog synchronization and integration
+- [ ] **F6: Agents** - Integrated orchestration runtimes
+- [ ] **F7: Workspace Engine** - Isolated test and build environments
+- [ ] **F8: Control Plane API** - Fastify API gateway
+- [ ] **F9: Mission Control Frontend** - Visual React dashboard
+- [ ] **F10: Secrets Vault & Auth** - Client-side secret protection
+- [ ] **F11: Observability & Hardening** - Auditability and telemetry
 
 ---
 
-## 🛠️ Development Commands
+## Public Documentation
+
+The public documentation set prepared for the GitHub Wiki lives in [`wiki/`](wiki/Home.md):
+
+- [Home](wiki/Home.md)
+- [Getting Started](wiki/Getting-Started.md)
+- [Architecture Overview](wiki/Architecture-Overview.md)
+- [CodeSight API](wiki/CodeSight-API.md)
+- [Cortex API](wiki/Cortex-API.md)
+- [Roadmap](wiki/Roadmap.md)
+
+---
+
+## Development Commands
 
 ```bash
-# Run in development mode
 pnpm dev
-
-# Run linter
-pnpm run lint
-
-# Run unit tests
-pnpm run test
-
-# Compile projects
-pnpm run build
+pnpm lint
+pnpm test
+pnpm build
 ```
 
 ---
 
-## 📄 License
+## License
 
-This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**. See the [LICENSE](LICENSE) file for the full text.
+This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**. See [LICENSE](LICENSE).
