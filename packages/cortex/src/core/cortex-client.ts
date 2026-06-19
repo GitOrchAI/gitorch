@@ -13,17 +13,36 @@ export type EmbeddingFn = (text: string) => number[] | Promise<number[]>
 
 export interface CortexClientOptions {
   sqlitePath?: string
-  sqliteStore?: SqliteStore
-  chromaStore?: ChromaSemanticStore
+  sqliteStore?: SqliteStoreLike
+  chromaStore?: ChromaSemanticStoreLike
   chromaOptions?: ChromaSemanticStoreOptions
   embeddingFn?: EmbeddingFn
   selector?: LayerSelector
 }
 
+export interface SqliteStoreLike extends StoreLike {
+  upsertIdentity(identity: CortexIdentity): void
+  upsertDrawer(drawer: CortexDrawer): void
+  insertTriple(triple: CortexTriple & { wingId: string }): void
+  init?: () => void
+  close?: () => void
+}
+
+export interface ChromaSemanticStoreLike {
+  upsertDrawer(drawer: CortexDrawer, embeddings: number[]): Promise<void>
+  search(
+    wingId: string,
+    roomId: string | undefined,
+    hallId: string | undefined,
+    queryEmbedding: number[],
+    limit: number
+  ): Promise<CortexSearchResult[]>
+}
+
 export class CortexClient {
   private initialized = false
-  private sqliteStore: SqliteStore | null = null
-  private chromaStore: ChromaSemanticStore | null = null
+  private sqliteStore: SqliteStoreLike | null = null
+  private chromaStore: ChromaSemanticStoreLike | null = null
   private readonly embeddingFn: EmbeddingFn
   private readonly selector: LayerSelector
 
@@ -74,7 +93,7 @@ export class CortexClient {
 
   close(): void {
     this.initialized = false
-    this.sqliteStore?.close()
+    this.sqliteStore?.close?.()
     this.sqliteStore = null
     this.chromaStore = null
   }
@@ -83,15 +102,19 @@ export class CortexClient {
     return this.options.sqlitePath ?? '.cortex.sqlite'
   }
 
-  private getSqliteStore(): SqliteStore {
+  private getSqliteStore(): SqliteStoreLike {
     if (!this.sqliteStore) {
       this.sqliteStore = this.options.sqliteStore ?? new SqliteStore(this.sqlitePath)
+    }
+
+    if ('init' in this.sqliteStore && typeof this.sqliteStore.init === 'function') {
+      this.sqliteStore.init()
     }
 
     return this.sqliteStore
   }
 
-  private getChromaStore(): ChromaSemanticStore {
+  private getChromaStore(): ChromaSemanticStoreLike {
     if (!this.chromaStore) {
       this.chromaStore =
         this.options.chromaStore ??

@@ -1,6 +1,9 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CortexDrawer, CortexIdentity, CortexTriple } from '../types'
-import { CortexClient } from './cortex-client'
+import { CortexClient, type ChromaSemanticStoreLike, type SqliteStoreLike } from './cortex-client'
 
 function drawer(id: string, roomId = 'auth', hallId = 'hall_facts'): CortexDrawer {
   return {
@@ -33,18 +36,8 @@ describe('CortexClient', () => {
     confidence: 0.95,
   }
 
-  let sqliteStore: {
-    upsertIdentity: ReturnType<typeof vi.fn>
-    upsertDrawer: ReturnType<typeof vi.fn>
-    insertTriple: ReturnType<typeof vi.fn>
-    getIdentity: ReturnType<typeof vi.fn>
-    getTopDrawers: ReturnType<typeof vi.fn>
-    getDrawersByScope: ReturnType<typeof vi.fn>
-  }
-  let chromaStore: {
-    upsertDrawer: ReturnType<typeof vi.fn>
-    search: ReturnType<typeof vi.fn>
-  }
+  let sqliteStore: SqliteStoreLike
+  let chromaStore: ChromaSemanticStoreLike
 
   beforeEach(() => {
     sqliteStore = {
@@ -54,7 +47,7 @@ describe('CortexClient', () => {
       getIdentity: vi.fn().mockReturnValue(identity),
       getTopDrawers: vi.fn().mockReturnValue([drawer('drawer-1')]),
       getDrawersByScope: vi.fn().mockReturnValue([drawer('drawer-1')]),
-    }
+    } as unknown as SqliteStoreLike
     chromaStore = {
       upsertDrawer: vi.fn(),
       search: vi.fn().mockResolvedValue([
@@ -66,7 +59,7 @@ describe('CortexClient', () => {
           metadata: drawer('drawer-1'),
         },
       ]),
-    }
+    } as unknown as ChromaSemanticStoreLike
   })
 
   it('writes identity, drawer and triple through the SQLite store', () => {
@@ -80,6 +73,26 @@ describe('CortexClient', () => {
     expect(sqliteStore.upsertIdentity).toHaveBeenCalledWith(identity)
     expect(sqliteStore.upsertDrawer).toHaveBeenCalledWith(drawer('drawer-1'))
     expect(sqliteStore.insertTriple).toHaveBeenCalledWith(triple)
+  })
+
+  it('initializes the real SQLite schema before writes', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cortex-client-'))
+    const sqlitePath = join(directory, 'cortex.sqlite')
+    const client = new CortexClient({ sqlitePath })
+
+    try {
+      client.init()
+      client.writeIdentity(identity)
+
+      expect(client.wakeUp('loureng/gitorch')).toEqual({
+        identity,
+        drawers: [],
+        tokenBudget: 170,
+      })
+    } finally {
+      client.close()
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 
   it('wakes up through the layer selector', () => {
