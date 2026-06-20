@@ -34,11 +34,11 @@ export class InMemoryGraphRepository implements GraphRepository {
   private readonly edgesBySource = new Map<string, GraphEdge[]>()
   private readonly edgesByTarget = new Map<string, GraphEdge[]>()
 
-  constructor(input: GraphRepositoryInput)
-  constructor(nodes: GraphNode[], edges?: GraphEdge[])
-  constructor(nodesOrInput: GraphNode[] | GraphRepositoryInput, edges: GraphEdge[] = []) {
-    const nodes = Array.isArray(nodesOrInput) ? nodesOrInput : nodesOrInput.nodes
-    const graphEdges = Array.isArray(nodesOrInput) ? edges : (nodesOrInput.edges ?? [])
+  constructor(input?: GraphRepositoryInput)
+  constructor(nodes?: GraphNode[], edges?: GraphEdge[])
+  constructor(nodesOrInput?: GraphNode[] | GraphRepositoryInput, edges: GraphEdge[] = []) {
+    const nodes = Array.isArray(nodesOrInput) ? nodesOrInput : (nodesOrInput?.nodes ?? [])
+    const graphEdges = Array.isArray(nodesOrInput) ? edges : (nodesOrInput?.edges ?? [])
 
     for (const node of nodes) {
       this.nodesById.set(node.id, node)

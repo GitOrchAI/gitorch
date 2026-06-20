@@ -97,6 +97,21 @@ function createMemoryRepository(): InMemoryGraphRepository {
 }
 
 describe('InMemoryGraphRepository', () => {
+  test('supports empty repository construction for runtime smoke tests', async () => {
+    const repository = new InMemoryGraphRepository()
+
+    await expect(repository.findNodesByNames(['alpha'])).resolves.toEqual([])
+  })
+
+  test('supports array constructor overload', async () => {
+    const repository = new InMemoryGraphRepository(
+      [repoNode, srcDirNode],
+      [{ source: 'repo', target: 'src-dir', type: 'CONTAINS' }]
+    )
+
+    await expect(repository.findAncestorsToRoot('src-dir')).resolves.toEqual([repoNode])
+  })
+
   test('finds 1-hop CALLS neighbors', async () => {
     const repository = createMemoryRepository()
 
