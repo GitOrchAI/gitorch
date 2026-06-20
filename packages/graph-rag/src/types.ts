@@ -1,3 +1,5 @@
+import type { CortexPlanContext } from './cortex/cortex-integration'
+
 export interface ExtractorOutput {
   entities: string[]
   keywords: string[]
@@ -69,4 +71,5 @@ export interface ReaderPayload {
 export interface GraphRAGPipelineResult {
   plan: GraphRAGPlan
   payload: ReaderPayload
+  context?: CortexPlanContext
 }
