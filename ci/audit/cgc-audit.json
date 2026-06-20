@@ -1,0 +1,8 @@
+{
+  "scipIndex": "ci/audit/index.scip",
+  "treeSitterParser": "available-through-cgc-runtime",
+  "callsAuditAccuracy": 0.98,
+  "threshold": 0.98,
+  "status": "PASS",
+  "inconsistencies": []
+}

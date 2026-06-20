@@ -6,20 +6,68 @@ on:
   pull_request:
     branches: [main, develop]
 
+permissions:
+  contents: read
+
 jobs:
-  build-test-lint:
-    runs-on: self-hosted  # Usando nosso runner ARM64
-    strategy:
-      matrix:
-        node-version: [20.x]
+  zero-tolerance:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: gitorch_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'pnpm'
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm run build
-      - run: pnpm run test
-      - run: pnpm run lint
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Verify CI baseline
+        run: pnpm exec tsx scripts/ci/verify-ci-baseline.ts
+      - name: Strict TypeScript check
+        run: pnpm run typecheck:strict
+      - name: Restrictive lint
+        run: pnpm run lint:ci
+      - name: SCIP and CGC graph audit
+        run: pnpm run audit:cgc
+      - name: README-to-Code parity
+        run: pnpm run audit:readme-parity
+      - name: Graph-aware impact radius
+        id: impact
+        run: |
+          base="${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}"
+          changed=$(git diff --name-only "origin/$base"...HEAD)
+          pnpm exec tsx scripts/ci/impact-radius.ts "$changed"
+      - name: Impacted tests
+        run: |
+          filters=$(cat ci/audit/impact-radius.json | jq -r '.packages[]' | sed 's/^/--filter /')
+          if [ -z "$filters" ]; then
+            pnpm run test
+          else
+            pnpm exec turbo run test $filters
+          fi
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: false
+      - name: Write pheromone secret-scan marker
+        run: pnpm run audit:secrets
+      - name: Headless Playwright E2E
+        run: pnpm run e2e
+      - name: Audit summary gate
+        run: pnpm exec tsx scripts/ci/audit-summary.ts
+      - name: Upload CI audit
+        if: always()
+        uses: ./.github/actions/upload-ci-audit

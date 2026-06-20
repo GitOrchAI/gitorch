@@ -1,0 +1,4 @@
+{
+  "status": "GITHUB_ACTION_MANAGED",
+  "message": "The npm gitleaks package has no local binary; CI uses gitleaks/gitleaks-action@v2."
+}

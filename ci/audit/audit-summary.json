@@ -1,0 +1,34 @@
+{
+  "reports": [
+    {
+      "path": "ci/audit/CGC_GRAPH_INCONSISTENCIES.md",
+      "status": "present"
+    },
+    {
+      "path": "ci/audit/CGC_CALL_GRAPH_AUDIT_REPORT.md",
+      "status": "PASS"
+    },
+    {
+      "path": "ci/audit/readme-code-parity.json",
+      "status": "PASS"
+    },
+    {
+      "path": "ci/audit/impact-radius.json",
+      "status": "present"
+    },
+    {
+      "path": "ci/audit/gitleaks-report.json",
+      "status": "GITHUB_ACTION_MANAGED"
+    },
+    {
+      "path": "ci/audit/pheromones/secret-scan.json",
+      "status": "PASS"
+    },
+    {
+      "path": "ci/audit/pheromones/blocked.json",
+      "status": "clear"
+    }
+  ],
+  "status": "PASS",
+  "timestamp": "2026-06-20T20:07:33.582Z"
+}

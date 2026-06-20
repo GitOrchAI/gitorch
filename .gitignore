@@ -6,4 +6,6 @@ dist/
 .env
 *.log
 .DS_Store
+playwright-report/
+test-results/
 docs/

@@ -1,0 +1,9 @@
+{
+  "changedFiles": [
+    "packages/cgc/src/core/indexer.ts"
+  ],
+  "packages": [
+    "@gitorch/cgc"
+  ],
+  "timestamp": "2026-06-20T20:07:32.788Z"
+}
