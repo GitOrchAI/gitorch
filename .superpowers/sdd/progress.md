@@ -5,4 +5,5 @@ Branch: codex-f4-synapse-pheromones
 
 Task 1: complete (commit 60374ac, review clean)
 Task 2: complete (commit f269842, review clean)
-Task 3: complete (pending commit, review clean)
+Task 3: complete (commit de063e8, review clean)
+Task 4: complete (pending commit, review clean)
