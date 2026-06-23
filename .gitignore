@@ -5,6 +5,7 @@ dist/
 .turbo/
 .env
 *.log
+*.tsbuildinfo
 .DS_Store
 playwright-report/
 test-results/
