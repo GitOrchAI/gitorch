@@ -1,8 +1,19 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { join } from 'node:path'
 
 const auditDir = 'ci/audit'
+const scipIndexPath = 'ci/audit/index.scip'
+const require = createRequire(import.meta.url)
+const scipTypescript = require.resolve('@sourcegraph/scip-typescript')
+const workspaceProjects =
+  process.platform === 'win32'
+    ? readdirSync('packages', { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => join('packages', entry.name))
+        .filter((pkg) => existsSync(join(pkg, 'tsconfig.json')))
+    : ['--pnpm-workspaces']
 mkdirSync(auditDir, { recursive: true })
 
 const report = {
@@ -16,19 +27,11 @@ const report = {
 
 try {
   execFileSync(
-    'pnpm',
-    [
-      'exec',
-      'scip-typescript',
-      'index',
-      '--pnpm-workspaces',
-      '--output',
-      join(auditDir, 'index.scip'),
-      '--no-progress-bar',
-    ],
+    process.execPath,
+    [scipTypescript, 'index', ...workspaceProjects, '--output', scipIndexPath, '--no-progress-bar'],
     { stdio: 'inherit' }
   )
-  report.scipIndex = join(auditDir, 'index.scip')
+  report.scipIndex = scipIndexPath
   report.callsAuditAccuracy = 0.98
   report.status = report.callsAuditAccuracy >= report.threshold ? 'PASS' : 'FAIL'
 } catch (error) {
