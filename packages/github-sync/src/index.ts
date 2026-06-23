@@ -11,4 +11,5 @@ export type {
   ProjectV2ClientOptions,
   UpdateSingleSelectFieldInput,
 } from './project-v2-client'
+export { GitHubWebhookNormalizer } from './webhook-normalizer'
 export { GitHubWorkModel } from './work-model'
