@@ -12,4 +12,6 @@ export type {
   UpdateSingleSelectFieldInput,
 } from './project-v2-client'
 export { GitHubWebhookNormalizer } from './webhook-normalizer'
+export { GitHubSyncEngine } from './sync-engine'
+export { GitHubSynapseAdapter } from './synapse/github-synapse-adapter'
 export { GitHubWorkModel } from './work-model'
