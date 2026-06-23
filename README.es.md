@@ -6,12 +6,13 @@
 
 **GitOrch** es un plano de control de orquestacion multi-agente para flujos de ingenieria sobre repositorios GitHub.
 
-Hoy entrega cuatro bloques principales:
+Hoy entrega cinco bloques principales:
 
 - **CodeSight** para inteligencia estructural de codigo, indexacion, analisis de impacto y exportacion SCIP
 - **Cortex** para recuperacion de memoria por capas con SQLite y ChromaDB
 - **Graph RAG** para recuperacion y ranking deterministico sobre codigo y memoria
 - **Synapse** para memoria de ejecucion, feromonas, claims, decision briefs y persistencia en Cortex
+- **GitHub Sync** para issue types, sub-issues, dependencias, operaciones Projects V2, normalizacion de webhooks y eventos Synapse
 
 ---
 
