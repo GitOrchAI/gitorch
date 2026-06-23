@@ -1,6 +1,6 @@
-import { SynapseClient } from '@gitorch/synapse'
 import { expect, test } from 'vitest'
 
+import { SynapseClient } from '../../../synapse/src'
 import type { GitHubSyncEvent } from '../types'
 import { GitHubSynapseAdapter } from './github-synapse-adapter'
 
