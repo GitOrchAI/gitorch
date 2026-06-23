@@ -56,6 +56,22 @@ export class InMemoryPheromoneStore {
       .map((mark) => cloneMark(mark))
   }
 
+  expireByMetadata(key: string, value: string, now: string): number {
+    let expired = 0
+
+    for (const mark of this.marks) {
+      if (mark.metadata[key] !== value) {
+        continue
+      }
+
+      mark.expiresAt = now
+      mark.updatedAt = now
+      expired += 1
+    }
+
+    return expired
+  }
+
   history(): PheromoneMark[] {
     return this.marks.map((mark) => cloneMark(mark))
   }
