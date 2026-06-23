@@ -1,6 +1,7 @@
 import { test, expect } from 'vitest'
 
 import { SynapseClient } from './synapse-client'
+import type { SynapseEventType, SynapseScopeType } from './types'
 
 test('observes issue, chooses next execution action, and acquires claim', () => {
   const synapse = new SynapseClient()
@@ -92,4 +93,28 @@ test('requests decisions and marks blocked work through the facade', () => {
     'decision.requested',
     'pheromone.created',
   ])
+})
+
+test('records GitHub sync events through the public facade', () => {
+  const scopeType: SynapseScopeType = 'github-project-item'
+  const eventType: SynapseEventType = 'github.project_item.synced'
+  const synapse = new SynapseClient()
+
+  const event = synapse.recordExternalEvent({
+    type: eventType,
+    scope: { type: scopeType, wingId: 'loureng/gitorch', targetId: 'PVTI_123' },
+    actor: { id: 'github-app', role: 'system' },
+    payload: {
+      deliveryId: 'delivery-1',
+      projectItemId: 'PVTI_123',
+      status: 'Ready',
+    },
+    now: '2026-06-23T12:00:00.000Z',
+    correlationId: 'delivery-1',
+  })
+
+  expect(event.type).toBe('github.project_item.synced')
+  expect(event.scope.type).toBe('github-project-item')
+  expect(event.correlationId).toBe('delivery-1')
+  expect(synapse.events()).toEqual([event])
 })

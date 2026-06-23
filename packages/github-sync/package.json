@@ -1,5 +1,5 @@
 {
-  "name": "@gitorch/cortex",
+  "name": "@gitorch/github-sync",
   "version": "0.1.0",
   "private": true,
   "main": "dist/index.js",
@@ -17,11 +17,9 @@
     "lint": "eslint src"
   },
   "dependencies": {
-    "better-sqlite3": "^12.11.1",
-    "chromadb": "^3.4.3"
+    "@gitorch/synapse": "workspace:*"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20.10.0",
     "typescript": "^5.4.0",
     "vitest": "^4.1.9"
