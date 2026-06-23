@@ -65,7 +65,7 @@ The project follows a risk-first roadmap:
 - [x] **F2: Cortex 4-Layer** - Layered memory retrieval with SQLite and ChromaDB
 - [x] **F3: Graph RAG Pipeline** - Semantic query processing
 - [x] **F4: Synapse + Pheromones** - Multi-agent coordination primitives
-- [ ] **F5: GitHub Sync & Projects V2** - Backlog synchronization and integration
+- [x] **F5: GitHub Sync & Projects V2** - GitHub-native backlog synchronization, webhooks, hierarchy, dependencies, and Projects V2 operations
 - [ ] **F6: Agents** - Integrated orchestration runtimes
 - [ ] **F7: Workspace Engine** - Isolated test and build environments
 - [ ] **F8: Control Plane API** - Fastify API gateway
