@@ -6,10 +6,12 @@
 
 **GitOrch** e um plano de controle de orquestracao multi-agente para fluxos de engenharia em repositorios GitHub.
 
-Hoje ele entrega dois blocos principais:
+Hoje ele entrega quatro blocos principais:
 
 - **CodeSight** para inteligencia estrutural de codigo, indexacao, analise de impacto e exportacao SCIP
 - **Cortex** para recuperacao de memoria em camadas com SQLite e ChromaDB
+- **Graph RAG** para recuperacao e ranqueamento deterministico sobre codigo e memoria
+- **Synapse** para memoria de execucao, feromonios, claims, decision briefs e persistencia no Cortex
 
 ---
 
@@ -61,8 +63,8 @@ O projeto segue um roadmap orientado a risco:
 - [x] **F0: Fundacoes** - Setup do monorepo, Vitest, linting e CI
 - [x] **F1: CodeSight Core** - Tree-sitter WASM, exportacao SCIP e analise de impacto
 - [x] **F2: Cortex 4-Layer** - Recuperacao de memoria em camadas com SQLite e ChromaDB
-- [ ] **F3: Graph RAG Pipeline** - Processamento de consultas semanticas
-- [ ] **F4: Synapse + Feromonios** - Primitivas de coordenacao multi-agente
+- [x] **F3: Graph RAG Pipeline** - Processamento de consultas semanticas
+- [x] **F4: Synapse + Feromonios** - Primitivas de coordenacao multi-agente
 - [ ] **F5: GitHub Sync & Projects V2** - Sincronizacao de backlog e integracoes
 - [ ] **F6: Agentes** - Runtimes integrados
 - [ ] **F7: Workspace Engine** - Ambientes isolados de teste e build
