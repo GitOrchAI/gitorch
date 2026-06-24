@@ -19,8 +19,8 @@ const FILE_PATH_REGEX = new RegExp(
     '(?=[\\s"\'`.,;:)]|$)',
   ].join('')
 )
-const CAMEL_CASE_REGEX = /\b[a-z_][a-z0-9_]*[A-Z][A-Za-z0-9_]*\b|\b[A-Z][A-Za-z0-9_]*\b/
-const SNAKE_CASE_REGEX = /\b[a-z][a-z0-9]*(?:_+[a-z0-9]+)*_+(?:[a-z0-9]+(?:_+[a-z0-9]+)*)*\b/
+const CAMEL_CASE_REGEX = /\b[A-Za-z_][a-z0-9_]*[A-Z][A-Za-z0-9_]*\b/
+const SNAKE_CASE_REGEX = /\b[a-z][a-z0-9]*_[a-z0-9_]*\b/
 const QUOTED_TERM_REGEX = /['"`]([^'"`]{1,160})['"`]/
 const DOTTED_NAMESPACE_REGEX = new RegExp(
   `(?<![\\w.-])(?:[A-Za-z_][A-Za-z0-9_]*\\.)+(?!${FILE_EXTENSION_BOUNDARY_PATTERN})[A-Za-z_][A-Za-z0-9_]*(?![\\w-])`

@@ -26,17 +26,17 @@ test('CAMEL_CASE_REGEX should not suffer from ReDoS', () => {
 })
 
 test('SNAKE_CASE_REGEX still matches valid snake_case', () => {
-    const issue = 'Fix my_variable and my__variable and trailing_'
-    const plan = rewriter.rewrite(issue)
-    expect(plan.extractor.entities).toContain('my_variable')
-    expect(plan.extractor.entities).toContain('my__variable')
-    expect(plan.extractor.entities).toContain('trailing_')
+  const issue = 'Fix my_variable and my__variable and trailing_'
+  const plan = rewriter.rewrite(issue)
+  expect(plan.extractor.entities).toContain('my_variable')
+  expect(plan.extractor.entities).toContain('my__variable')
+  expect(plan.extractor.entities).toContain('trailing_')
 })
 
 test('CAMEL_CASE_REGEX still matches valid camelCase and PascalCase', () => {
-    const issue = 'Fix myVariable and MyVariable and ALLCAPS'
-    const plan = rewriter.rewrite(issue)
-    expect(plan.extractor.entities).toContain('myVariable')
-    expect(plan.extractor.entities).toContain('MyVariable')
-    expect(plan.extractor.entities).toContain('ALLCAPS')
+  const issue = 'Fix myVariable and MyVariable and ALLCAPS'
+  const plan = rewriter.rewrite(issue)
+  expect(plan.extractor.entities).toContain('myVariable')
+  expect(plan.extractor.entities).toContain('MyVariable')
+  expect(plan.extractor.entities).toContain('ALLCAPS')
 })
