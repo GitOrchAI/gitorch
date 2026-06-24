@@ -92,18 +92,30 @@ jobs:
                 }
               }
 
-              // 2. Habilitar auto-merge usando a CLI gh
-              try {
-                const { execSync } = require('child_process');
-                execSync(`gh pr merge ${prNumber} --auto --squash --repo ${owner}/${repo}`, {
-                  env: {
-                    ...process.env,
-                    GH_TOKEN: process.env.GITHUB_TOKEN
+              // 2. Habilitar auto-merge usando a CLI gh (com retentativas para contornar status instável)
+              const { execSync } = require('child_process');
+              let merged = false;
+              for (let i = 0; i < 3; i++) {
+                try {
+                  execSync(`gh pr merge ${prNumber} --auto --squash --repo ${owner}/${repo}`, {
+                    env: {
+                      ...process.env,
+                      GH_TOKEN: process.env.GITHUB_TOKEN
+                    }
+                  });
+                  console.log(`Auto-merge ativado para o PR #${prNumber}.`);
+                  merged = true;
+                  break;
+                } catch (err) {
+                  console.warn(`Tentativa ${i + 1} de habilitar auto-merge falhou: ${err.message}`);
+                  if (i < 2) {
+                    console.log("Aguardando 5 segundos antes de tentar novamente...");
+                    await new Promise(resolve => setTimeout(resolve, 5000));
                   }
-                });
-                console.log(`Auto-merge ativado para o PR #${prNumber}.`);
-              } catch (err) {
-                console.error("Falha ao habilitar auto-merge:", err.message);
+                }
+              }
+              if (!merged) {
+                console.error("Falha persistente ao habilitar auto-merge após todas as retentativas.");
               }
             } else {
               console.log("Este PR não atende aos critérios de auto-merge de segurança.");
