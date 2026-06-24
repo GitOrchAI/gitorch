@@ -1,0 +1,243 @@
+name: Security Alerts to Issues
+
+on:
+  schedule:
+    - cron: '0 6 * * *' # Roda às 06:00 UTC diariamente (03:00 Horário de Brasília)
+  workflow_dispatch: # Permite disparo manual imediato
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      security-events: read
+    steps:
+      - name: Fetch Alerts and Create Issues
+        uses: actions/github-script@v7
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        with:
+          github-token: ${{ secrets.SECURITY_PAT }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            // 1. Obter todas as issues existentes (abertas e fechadas) do repo para evitar duplicados
+            let existingIssues = [];
+            let page = 1;
+            while (true) {
+              const response = await github.rest.issues.listForRepo({
+                owner,
+                repo,
+                state: 'all',
+                per_page: 100,
+                page: page
+              });
+              if (response.data.length === 0) break;
+              existingIssues = existingIssues.concat(response.data);
+              page++;
+            }
+
+            const issueKeys = new Set();
+            for (const issue of existingIssues) {
+              const match = issue.body ? issue.body.match(/<!-- security-alert-id:\s*([a-zA-Z0-9_-]+)\s*-->/) : null;
+              if (match) {
+                issueKeys.add(match[1]);
+              }
+            }
+
+            console.log(`Encontradas ${issueKeys.size} issues com marcadores de alertas de segurança existentes.`);
+
+            // 2. Coletar alertas do Dependabot
+            let dependabotAlerts = [];
+            try {
+              const res = await github.rest.dependabot.listAlertsForRepo({
+                owner,
+                repo,
+                state: 'open'
+              });
+              dependabotAlerts = res.data;
+              console.log(`Alertas do Dependabot abertos: ${dependabotAlerts.length}`);
+            } catch (err) {
+              console.error("Erro ao buscar alertas do Dependabot:", err.message);
+            }
+
+            // 3. Coletar alertas do Code Scanning
+            let codeScanningAlerts = [];
+            try {
+              const res = await github.rest.codeScanning.listAlertsForRepo({
+                owner,
+                repo,
+                state: 'open'
+              });
+              codeScanningAlerts = res.data;
+              console.log(`Alertas de Code Scanning abertos: ${codeScanningAlerts.length}`);
+            } catch (err) {
+              console.error("Erro ao buscar alertas de Code Scanning:", err.message);
+            }
+
+            // 4. Coletar alertas do Secret Scanning
+            let secretScanningAlerts = [];
+            try {
+              const res = await github.rest.secretScanning.listAlertsForRepo({
+                owner,
+                repo,
+                state: 'open'
+              });
+              secretScanningAlerts = res.data;
+              console.log(`Alertas de Secret Scanning abertos: ${secretScanningAlerts.length}`);
+            } catch (err) {
+              console.error("Erro ao buscar alertas de Secret Scanning:", err.message);
+            }
+
+            // Função para enriquecer a descrição da issue usando o OpenRouter
+            async function enrichWithOpenRouter(alertType, alertDetails) {
+              const openRouterKey = process.env.OPENROUTER_API_KEY;
+              if (!openRouterKey) {
+                console.log("OPENROUTER_API_KEY não configurada. Usando descrição padrão.");
+                return `Alerta de segurança detectado: ${JSON.stringify(alertDetails, null, 2)}`;
+              }
+
+              const prompt = `Você é um engenheiro de segurança sênior. Crie uma issue rica e detalhada em Português (PT-BR) para corrigir o seguinte alerta de segurança do tipo "${alertType}".
+            O formato da issue deve conter:
+            1. Uma explicação curta e direta do problema em linguagem de negócios (explicando brevemente termos complexos se necessário).
+            2. O impacto potencial de segurança (usando ameaças baseadas em OWASP ou STRIDE se relevante).
+            3. Instruções passo a passo de como mitigar/resolver a vulnerabilidade no código.
+            4. Exemplos de código ou comandos para a solução.
+
+            Detalhes do alerta:
+            ${JSON.stringify(alertDetails, null, 2)}
+
+            Por favor, responda APENAS com o corpo da issue em formato Markdown, sem introduções ou observações fora do Markdown da issue.`;
+
+              try {
+                const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+                  method: 'POST',
+                  headers: {
+                    'Authorization': `Bearer ${openRouterKey}`,
+                    'Content-Type': 'application/json',
+                    'HTTP-Referer': 'https://github.com/loureng/gitorch',
+                  },
+                  body: JSON.stringify({
+                    model: 'openrouter/free',
+                    messages: [{ role: 'user', content: prompt }]
+                  })
+                });
+
+                if (!response.ok) {
+                  const errText = await response.text();
+                  throw new Error(`OpenRouter API error: ${response.status} - ${errText}`);
+                }
+
+                const data = await response.json();
+                return data.choices[0].message.content;
+              } catch (err) {
+                console.error("Falha ao chamar OpenRouter:", err.message);
+                return `Falha ao gerar descrição detalhada com IA. Detalhes originais do alerta:\n\n\`\`\`json\n${JSON.stringify(alertDetails, null, 2)}\n\`\`\``;
+              }
+            }
+
+            // Processar Dependabot Alerts
+            for (const alert of dependabotAlerts) {
+              const alertId = `dependabot-${alert.number}`;
+              if (issueKeys.has(alertId)) {
+                console.log(`Issue para Dependabot alerta #${alert.number} já existe. Pulando.`);
+                continue;
+              }
+
+              console.log(`Processando Dependabot alerta #${alert.number}...`);
+              const alertDetails = {
+                number: alert.number,
+                package: alert.dependency.package.name,
+                manifest: alert.dependency.manifest_path,
+                severity: alert.security_advisory.severity,
+                summary: alert.security_advisory.summary,
+                description: alert.security_advisory.description,
+                cve: alert.security_advisory.cve_id,
+                cvss: alert.security_advisory.cvss
+              };
+
+              const richDescription = await enrichWithOpenRouter('Dependabot Alert', alertDetails);
+              
+              const issueBody = `${richDescription}\n\n<!-- security-alert-id: ${alertId} -->`;
+              const issueTitle = `[Segurança] Dependabot: Vulnerabilidade em ${alert.dependency.package.name} (${alert.security_advisory.severity})`;
+
+              await github.rest.issues.create({
+                owner,
+                repo,
+                title: issueTitle,
+                body: issueBody,
+                labels: ['jules', 'dependabot']
+              });
+              console.log(`Issue criada para Dependabot alerta #${alert.number}`);
+              // Pequena pausa para evitar rate limit do OpenRouter
+              await new Promise(r => setTimeout(r, 1000));
+            }
+
+            // Processar Code Scanning Alerts
+            for (const alert of codeScanningAlerts) {
+              const alertId = `codescanning-${alert.number}`;
+              if (issueKeys.has(alertId)) {
+                console.log(`Issue para Code Scanning alerta #${alert.number} já existe. Pulando.`);
+                continue;
+              }
+
+              console.log(`Processando Code Scanning alerta #${alert.number}...`);
+              const alertDetails = {
+                number: alert.number,
+                rule_id: alert.rule.id,
+                severity: alert.rule.security_severity_level,
+                description: alert.rule.description,
+                tool: alert.tool.name,
+                file_path: alert.most_recent_instance?.location?.path,
+                start_line: alert.most_recent_instance?.location?.start_line,
+                message: alert.most_recent_instance?.message?.text
+              };
+
+              const richDescription = await enrichWithOpenRouter('Code Scanning Alert', alertDetails);
+              
+              const issueBody = `${richDescription}\n\n<!-- security-alert-id: ${alertId} -->`;
+              const issueTitle = `[Segurança] CodeQL: ${alert.rule.description || alert.rule.id} (${alert.rule.security_severity_level})`;
+
+              await github.rest.issues.create({
+                owner,
+                repo,
+                title: issueTitle,
+                body: issueBody,
+                labels: ['jules', 'dependabot']
+              });
+              console.log(`Issue criada para Code Scanning alerta #${alert.number}`);
+              await new Promise(r => setTimeout(r, 1000));
+            }
+
+            // Processar Secret Scanning Alerts
+            for (const alert of secretScanningAlerts) {
+              const alertId = `secretscanning-${alert.number}`;
+              if (issueKeys.has(alertId)) {
+                console.log(`Issue para Secret Scanning alerta #${alert.number} já existe. Pulando.`);
+                continue;
+              }
+
+              console.log(`Processando Secret Scanning alerta #${alert.number}...`);
+              const alertDetails = {
+                number: alert.number,
+                secret_type: alert.secret_type,
+                secret_type_display_name: alert.secret_type_display_name,
+                created_at: alert.created_at
+              };
+
+              const richDescription = await enrichWithOpenRouter('Secret Scanning Alert', alertDetails);
+              
+              const issueBody = `${richDescription}\n\n<!-- security-alert-id: ${alertId} -->`;
+              const issueTitle = `[Segurança] Secret Leak: ${alert.secret_type_display_name} detectado`;
+
+              await github.rest.issues.create({
+                owner,
+                repo,
+                title: issueTitle,
+                body: issueBody,
+                labels: ['jules', 'dependabot']
+              });
+              console.log(`Issue criada para Secret Scanning alerta #${alert.number}`);
+              await new Promise(r => setTimeout(r, 1000));
+            }

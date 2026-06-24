@@ -1,0 +1,107 @@
+name: Auto-Merge PRs (Dependabot & Jules)
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: read
+
+jobs:
+  auto-merge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verificar e Habilitar Auto-Merge
+        uses: actions/github-script@v7
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const prNumber = context.payload.pull_request.number;
+            const prUser = context.payload.pull_request.user.login;
+            const prBody = context.payload.pull_request.body || '';
+
+            console.log(`Analisando PR #${prNumber} de ${prUser}...`);
+
+            let shouldAutoMerge = false;
+
+            // Caso 1: PR aberto pelo Dependabot
+            if (prUser === 'dependabot[bot]') {
+              console.log("PR aberto pelo Dependabot. Habilitando auto-merge.");
+              shouldAutoMerge = true;
+            } else {
+              // Caso 2: Verificar se o PR fecha/vincula alguma issue que tem a label 'dependabot'
+              // Regex para achar padrões de fechamento de issue (ex: Closes #123, Fixes #12, Resolve #45)
+              const regex = /(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\s+#(\d+)/gi;
+              let match;
+              const linkedIssues = [];
+              while ((match = regex.exec(prBody)) !== null) {
+                linkedIssues.push(parseInt(match[1], 10));
+              }
+
+              // Também verificar URLs completas de issues no corpo
+              const urlRegex = /https:\/\/github\.com\/[^\/]+\/[^\/]+\/issues\/(\d+)/gi;
+              while ((match = urlRegex.exec(prBody)) !== null) {
+                linkedIssues.push(parseInt(match[1], 10));
+              }
+
+              console.log(`Issues vinculadas encontradas na descrição do PR: ${linkedIssues}`);
+
+              for (const issueNum of linkedIssues) {
+                try {
+                  const issue = await github.rest.issues.get({
+                    owner,
+                    repo,
+                    issue_number: issueNum
+                  });
+                  
+                  const labels = issue.data.labels.map(l => l.name);
+                  console.log(`Issue #${issueNum} tem as labels: ${labels}`);
+                  if (labels.includes('dependabot')) {
+                    console.log(`PR #${prNumber} está resolvendo a issue #${issueNum} que tem a label 'dependabot'. Habilitando auto-merge.`);
+                    shouldAutoMerge = true;
+                    break;
+                  }
+                } catch (err) {
+                  console.error(`Erro ao buscar detalhes da issue #${issueNum}:`, err.message);
+                }
+              }
+            }
+
+            if (shouldAutoMerge) {
+              try {
+                // 1. Aprovar o PR
+                await github.rest.pulls.createReview({
+                  owner,
+                  repo,
+                  pull_number: prNumber,
+                  event: 'APPROVE',
+                  body: 'Aprovado automaticamente pelo pipeline de segurança.'
+                });
+                console.log(`PR #${prNumber} aprovado com sucesso.`);
+
+                // 2. Habilitar auto-merge usando a CLI gh
+                const exec = require('@actions/exec');
+                await exec.exec('gh', [
+                  'pr', 'merge',
+                  prNumber.toString(),
+                  '--auto',
+                  '--squash',
+                  '--repo', `${owner}/${repo}`
+                ], {
+                  env: {
+                    ...process.env,
+                    GH_TOKEN: process.env.GITHUB_TOKEN
+                  }
+                });
+                console.log(`Auto-merge ativado para o PR #${prNumber}.`);
+              } catch (err) {
+                console.error("Falha ao aprovar ou habilitar auto-merge:", err.message);
+              }
+            } else {
+              console.log("Este PR não atende aos critérios de auto-merge de segurança.");
+            }
