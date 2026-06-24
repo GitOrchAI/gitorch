@@ -1,0 +1,15 @@
+{
+  "publicPaths": [
+    "README.md",
+    "README.pt-br.md",
+    "README.es.md",
+    "docs/product",
+    "docs/setup",
+    "docs/reference"
+  ],
+  "renameMap": {
+    "README.md": "Home.md",
+    "README.pt-br.md": "Home-PT-BR.md",
+    "README.es.md": "Home-ES.md"
+  }
+}

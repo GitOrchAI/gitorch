@@ -57,7 +57,7 @@ function discoverPackages(): PackageRef[] {
       try {
         const manifest = JSON.parse(readFileSync(packageJsonPath, 'utf8')) as { name?: string }
         if (manifest.name) {
-          packages.push({ name: manifest.name, path: join(dir, entry.name) })
+          packages.push({ name: manifest.name, path: join(dir, entry.name).replace(/\\/g, '/') })
         }
       } catch {
         // Ignore directories that are not npm packages.
