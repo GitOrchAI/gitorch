@@ -28,3 +28,11 @@ updates:
     labels:
       - "dependabot"
       - "github-actions"
+
+  # Configuração de atualizações de segurança prioritárias
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 10
+    versioning-strategy: increase
