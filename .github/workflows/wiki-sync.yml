@@ -18,15 +18,8 @@ jobs:
         with:
           fetch-depth: 10
 
-      - name: Configurar Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: 20
-
-      - name: Configurar pnpm
-        uses: pnpm/action-setup@v6
-        with:
-          version: 9
+      - name: Configurar pnpm e Node.js
+        uses: ./.github/actions/setup-pnpm
 
       - name: Instalar Dependências
         run: pnpm install --no-frozen-lockfile
