@@ -38,6 +38,16 @@ export interface ObserveIssueInput {
   now: string
 }
 
+export interface RecordExternalEventInput<TPayload extends Record<string, unknown>> {
+  type: SynapseEvent<TPayload>['type']
+  scope: SynapseScope
+  actor: SynapseActor
+  payload: TPayload
+  now: string
+  causationId?: string
+  correlationId?: string
+}
+
 export class SynapseClient {
   private readonly eventBus: SynapseEventBus
   private readonly executionLedger: ExecutionLedger
@@ -139,6 +149,15 @@ export class SynapseClient {
     return brief
   }
 
+  recordExternalEvent<TPayload extends Record<string, unknown>>(
+    input: RecordExternalEventInput<TPayload>
+  ): SynapseEvent<TPayload> {
+    return this.publishEvent(input.type, input.scope, input.actor, input.now, input.payload, {
+      causationId: input.causationId,
+      correlationId: input.correlationId,
+    })
+  }
+
   activePheromones(scope: SynapseScope, now: string): PheromoneMark[] {
     return this.pheromoneStore.activeForScope(scope, now)
   }
@@ -152,7 +171,8 @@ export class SynapseClient {
     scope: SynapseScope,
     actor: SynapseActor,
     createdAt: string,
-    payload: TPayload
+    payload: TPayload,
+    ids: Pick<SynapseEvent, 'causationId' | 'correlationId'> = {}
   ): SynapseEvent<TPayload> {
     const event: SynapseEvent<TPayload> = {
       id: `event-${this.nextEventId++}`,
@@ -161,6 +181,7 @@ export class SynapseClient {
       actor: { ...actor },
       payload,
       createdAt,
+      ...ids,
     }
 
     this.eventBus.publish(event)

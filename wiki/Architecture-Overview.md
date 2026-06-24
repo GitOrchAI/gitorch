@@ -1,6 +1,6 @@
 # Architecture Overview
 
-GitOrch currently exposes two shipped subsystems: CodeSight and Cortex.
+GitOrch currently exposes five shipped subsystems: CodeSight, Cortex, Graph RAG, Synapse, and GitHub Sync.
 
 ## High-Level Layout
 
@@ -11,12 +11,28 @@ GitOrch
 |  |- CodeGraphIndexer
 |  |- ImpactAnalyzer
 |  `- ScipExporter
-`- Cortex (@gitorch/cortex)
-   |- LayerSelector
-   |- CortexClient
-   |- SqliteStore
-   |- ChromaSemanticStore
-   `- AakCodec
+|- Cortex (@gitorch/cortex)
+|  |- LayerSelector
+|  |- CortexClient
+|  |- SqliteStore
+|  |- ChromaSemanticStore
+|  `- AakCodec
+|- Graph RAG (@gitorch/graph-rag)
+|  |- QueryRewriter
+|  |- Retriever
+|  |- Reranker
+|  `- Reader
+|- Synapse (@gitorch/synapse)
+|  |- ExecutionLedger
+|  |- ClaimManager
+|  |- PheromonePolicy
+|  `- DecisionBriefService
+`- GitHub Sync (@gitorch/github-sync)
+   |- GitHubWebhookVerifier
+   |- GitHubWebhookNormalizer
+   |- GitHubWorkModel
+   |- ProjectV2Client
+   `- GitHubSynapseAdapter
 ```
 
 ## CodeSight
@@ -71,6 +87,41 @@ ChromaDB stores:
 
 AAAK is a deterministic lossy codec used to compress drawer content into a compact transport format.
 
+## Graph RAG
+
+Graph RAG is the deterministic retrieval pipeline delivered in F3.
+
+Its main responsibilities are:
+
+- rewrite user intent into retrieval plans
+- retrieve code and memory context from graph-backed repositories
+- rerank candidate context for relevance
+- produce reader-ready answers from selected context
+
+## Synapse
+
+Synapse is the coordination memory subsystem delivered in F4.
+
+Its main responsibilities are:
+
+- record execution events in an append-only ledger
+- manage claims so agents can coordinate work ownership
+- evaluate pheromone signals for coordination and risk
+- persist coordination memory through Cortex
+
+## GitHub Sync
+
+GitHub Sync is the GitHub-native synchronization substrate delivered in F5.
+
+Its main responsibilities are:
+
+- verify GitHub webhook deliveries
+- normalize GitHub issues, pull requests, sub-issues, dependencies, and Projects V2 item events
+- model Epic, Feature, Task, Bug, Security, and Improvement issue types
+- derive ready or blocked work from issue dependencies
+- publish GitHub work events into Synapse
+- prepare Projects V2 GraphQL mutations for GitHub-native workflow state
+
 ## Current Scope
 
 Shipped now:
@@ -82,10 +133,12 @@ Shipped now:
 - SQLite temporal store
 - ChromaDB semantic store
 - deterministic embedding fallback
+- Graph RAG retrieval pipeline
+- Synapse execution memory and coordination primitives
+- GitHub Sync webhook, dependency, hierarchy, and Projects V2 sync substrate
 
 Planned later:
 
-- Graph RAG orchestration pipeline
 - agent coordination runtime
 - control plane API
 - mission control frontend

@@ -8,7 +8,15 @@ export type PheromoneType =
   | 'warning'
   | 'blocked'
 
-export type SynapseScopeType = 'wing' | 'issue' | 'pull-request' | 'file' | 'graph-node'
+export type SynapseScopeType =
+  | 'wing'
+  | 'issue'
+  | 'pull-request'
+  | 'file'
+  | 'graph-node'
+  | 'github-project'
+  | 'github-project-item'
+  | 'github-delivery'
 
 export type SynapseEventType =
   | 'issue.observed'
@@ -23,6 +31,12 @@ export type SynapseEventType =
   | 'claim.released'
   | 'decision.requested'
   | 'decision.answered'
+  | 'github.webhook.received'
+  | 'github.issue.synced'
+  | 'github.pull_request.synced'
+  | 'github.project_item.synced'
+  | 'github.dependency.changed'
+  | 'github.sub_issue.changed'
 
 export interface SynapseScope {
   type: SynapseScopeType

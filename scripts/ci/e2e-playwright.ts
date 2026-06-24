@@ -1,3 +1,7 @@
 import { execFileSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 
-execFileSync('pnpm', ['exec', 'playwright', 'test'], { stdio: 'inherit' })
+const require = createRequire(import.meta.url)
+const playwright = require.resolve('@playwright/test/cli')
+
+execFileSync(process.execPath, [playwright, 'test'], { stdio: 'inherit' })
