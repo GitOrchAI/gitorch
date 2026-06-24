@@ -4,18 +4,22 @@ import { join } from 'node:path'
 import {
   classifyChangesHeuristically,
   calculateNextVersion,
-  updateChangelogFile
+  updateChangelogFile,
 } from './generate-patch-notes'
 
 describe('Conversão e Classificação de Mudanças (Heurística)', () => {
   test('deve classificar commits com prefixos convencionais', () => {
     expect(classifyChangesHeuristically('feat: novo módulo de login', [])).toBe('feature')
     expect(classifyChangesHeuristically('feature: suporte a webhook', [])).toBe('feature')
-    
-    expect(classifyChangesHeuristically('refactor: limpeza de código morto', [])).toBe('improvement')
-    expect(classifyChangesHeuristically('perf: otimização de consultas sql', [])).toBe('improvement')
+
+    expect(classifyChangesHeuristically('refactor: limpeza de código morto', [])).toBe(
+      'improvement'
+    )
+    expect(classifyChangesHeuristically('perf: otimização de consultas sql', [])).toBe(
+      'improvement'
+    )
     expect(classifyChangesHeuristically('style: formatação com prettier', [])).toBe('improvement')
-    
+
     expect(classifyChangesHeuristically('fix: bug no cálculo de juros', [])).toBe('patch')
     expect(classifyChangesHeuristically('chore: atualiza dependências', [])).toBe('patch')
     expect(classifyChangesHeuristically('docs: atualiza readme do projeto', [])).toBe('patch')
@@ -24,33 +28,36 @@ describe('Conversão e Classificação de Mudanças (Heurística)', () => {
 
   test('deve classificar baseado em arquivos se não houver prefixo convencional', () => {
     // Nova feature: arquivos adicionados (status 'A') em apps/ ou packages/
-    const changedFilesFeature = [
-      'A\tapps/web/src/pages/dashboard.tsx',
-      'M\tpackage.json'
-    ]
-    expect(classifyChangesHeuristically('cria painel de controle', changedFilesFeature)).toBe('feature')
+    const changedFilesFeature = ['A\tapps/web/src/pages/dashboard.tsx', 'M\tpackage.json']
+    expect(classifyChangesHeuristically('cria painel de controle', changedFilesFeature)).toBe(
+      'feature'
+    )
 
     // Melhoria: apenas arquivos modificados (status 'M') em apps/ ou packages/
-    const changedFilesImprovement = [
-      'M\tpackages/core/src/index.ts',
-      'M\ttsconfig.json'
-    ]
-    expect(classifyChangesHeuristically('ajusta lógica interna do core', changedFilesImprovement)).toBe('improvement')
+    const changedFilesImprovement = ['M\tpackages/core/src/index.ts', 'M\ttsconfig.json']
+    expect(
+      classifyChangesHeuristically('ajusta lógica interna do core', changedFilesImprovement)
+    ).toBe('improvement')
 
     // Patch: mudanças apenas em configs, testes ou documentação
     const changedFilesPatch = [
       'M\tREADME.md',
       'M\tscripts/ci/audit-summary.ts',
-      'A\tapps/web/src/dashboard.test.tsx'
+      'A\tapps/web/src/dashboard.test.tsx',
     ]
-    expect(classifyChangesHeuristically('atualiza readme e adiciona teste do dashboard', changedFilesPatch)).toBe('patch')
+    expect(
+      classifyChangesHeuristically(
+        'atualiza readme e adiciona teste do dashboard',
+        changedFilesPatch
+      )
+    ).toBe('patch')
   })
 })
 
 describe('Cálculo do Próximo SemVer Customizado', () => {
   test('deve incrementar a versão corretamente', () => {
     const base = '1.0.0.0'
-    
+
     // Major bump
     expect(calculateNextVersion(base, 'major')).toBe('2.0.0.0')
     // Feature bump
@@ -63,7 +70,7 @@ describe('Cálculo do Próximo SemVer Customizado', () => {
 
   test('deve resetar sub-versões ao incrementar níveis maiores', () => {
     const base = '2.3.4.5'
-    
+
     expect(calculateNextVersion(base, 'major')).toBe('3.0.0.0')
     expect(calculateNextVersion(base, 'feature')).toBe('2.4.0.0')
     expect(calculateNextVersion(base, 'improvement')).toBe('2.3.5.0')
@@ -78,7 +85,7 @@ describe('Cálculo do Próximo SemVer Customizado', () => {
 describe('Escrita e Limitação de Histórico de Changelog', () => {
   const tempTestDir = join(process.cwd(), 'wiki_temp_test')
   const testFile = join(tempTestDir, 'Test-Changelog.md')
-  
+
   const testLang = {
     code: 'pt-br',
     name: 'Português',
@@ -88,12 +95,12 @@ describe('Escrita e Limitação de Histórico de Changelog', () => {
     typeLabel: {
       feature: 'Funcionalidade',
       improvement: 'Melhoria',
-      patch: 'Correção'
+      patch: 'Correção',
     },
     authorLabel: 'Autor',
     typeLabelText: 'Tipo',
     changeLabelText: 'Alteração',
-    historyHeader: '### Histórico de Atualizações Recentes'
+    historyHeader: '### Histórico de Atualizações Recentes',
   }
 
   beforeAll(() => {
@@ -113,7 +120,7 @@ describe('Escrita e Limitação de Histórico de Changelog', () => {
     if (existsSync(testFile)) {
       rmSync(testFile)
     }
-    
+
     updateChangelogFile(
       testFile,
       testLang,
@@ -155,19 +162,19 @@ describe('Escrita e Limitação de Histórico de Changelog', () => {
     }
 
     const content = readFileSync(testFile, 'utf8')
-    
+
     // Deve conter a última entrada (35)
     expect(content).toContain('## Versão 1.0.0.35')
-    
+
     // Deve conter no máximo 30 entradas totais. Cada entrada tem "## Versão ".
     // Contamos as ocorrências de "## Versão "
     const occurrences = (content.match(/## Versão /g) || []).length
     expect(occurrences).toBeLessThanOrEqual(30)
-    
+
     // A primeira entrada inserida (versão 1.0.0.1) deve ter sido podada
     expect(content).not.toContain('## Versão 1.0.0.1 ')
     expect(content).not.toContain('Commit: `c1`')
-    
+
     // A versão 1.0.0.6 deve ser a mais antiga mantida (35 - 30 + 1 = 6)
     expect(content).toContain('## Versão 1.0.0.6')
   })

@@ -30,12 +30,12 @@ const LANGUAGES: LanguageConfig[] = [
     typeLabel: {
       feature: 'Funcionalidade',
       improvement: 'Melhoria',
-      patch: 'Correção / Ajuste'
+      patch: 'Correção / Ajuste',
     },
     authorLabel: 'Autor',
     typeLabelText: 'Tipo',
     changeLabelText: 'Alteração',
-    historyHeader: '### Histórico de Atualizações Recentes'
+    historyHeader: '### Histórico de Atualizações Recentes',
   },
   {
     code: 'en',
@@ -46,12 +46,12 @@ const LANGUAGES: LanguageConfig[] = [
     typeLabel: {
       feature: 'Feature',
       improvement: 'Improvement',
-      patch: 'Patch / Fix'
+      patch: 'Patch / Fix',
     },
     authorLabel: 'Author',
     typeLabelText: 'Type',
     changeLabelText: 'Change',
-    historyHeader: '### Recent Updates History'
+    historyHeader: '### Recent Updates History',
   },
   {
     code: 'es',
@@ -62,20 +62,20 @@ const LANGUAGES: LanguageConfig[] = [
     typeLabel: {
       feature: 'Funcionalidad',
       improvement: 'Mejora',
-      patch: 'Corrección / Ajuste'
+      patch: 'Corrección / Ajuste',
     },
     authorLabel: 'Autor',
     typeLabelText: 'Tipo',
     changeLabelText: 'Cambio',
-    historyHeader: '### Historial de Actualizaciones Recientes'
-  }
+    historyHeader: '### Historial de Actualizaciones Recientes',
+  },
 ]
 
 // Modelos gratuitos recomendados no OpenRouter
 const FREE_MODELS = [
   'openrouter/free',
   'meta-llama/llama-3.3-70b-instruct:free',
-  'google/gemma-2-9b-it:free'
+  'google/gemma-2-9b-it:free',
 ]
 
 interface VersionInfo {
@@ -115,7 +115,7 @@ export function classifyChangesHeuristically(
   changedFiles: string[]
 ): 'feature' | 'improvement' | 'patch' {
   const msgLower = commitMsg.toLowerCase()
-  
+
   if (msgLower.startsWith('feat:') || msgLower.startsWith('feature:')) {
     return 'feature'
   }
@@ -157,7 +157,11 @@ export function classifyChangesHeuristically(
       continue
     }
 
-    if (filePath.startsWith('apps/') || filePath.startsWith('packages/') || filePath.startsWith('runtime/')) {
+    if (
+      filePath.startsWith('apps/') ||
+      filePath.startsWith('packages/') ||
+      filePath.startsWith('runtime/')
+    ) {
       if (status.includes('A')) {
         hasCodeAdditions = true
       } else if (status.includes('M')) {
@@ -206,31 +210,34 @@ function generateDeterministicFallback(
   // Pega a primeira linha da mensagem de commit como título
   const rawTitle = commitMsg.split('\n')[0].trim()
   // Remove prefixos convencionais para exibição limpa
-  const cleanTitle = rawTitle.replace(/^(feat|feature|fix|refactor|perf|style|chore|test|docs|ci)(\(.+\))?:\s*/i, '')
+  const cleanTitle = rawTitle.replace(
+    /^(feat|feature|fix|refactor|perf|style|chore|test|docs|ci)(\(.+\))?:\s*/i,
+    ''
+  )
 
   // Cria uma descrição básica listando arquivos
   const fileSummaries = changedFiles
-    .map(line => line.trim())
+    .map((line) => line.trim())
     .filter(Boolean)
     .slice(0, 5)
     .join(', ')
-  
+
   const fileDetails = fileSummaries ? ` (Arquivos afetados: ${fileSummaries})` : ''
 
   return {
     classification,
     pt: {
       title: cleanTitle || 'Atualização de código',
-      description: `Alterações realizadas no repositório com foco em melhorias gerais do sistema.${fileDetails}`
+      description: `Alterações realizadas no repositório com foco em melhorias gerais do sistema.${fileDetails}`,
     },
     en: {
       title: cleanTitle || 'Code update',
-      description: `Changes implemented in the repository focusing on general system improvements.${fileDetails}`
+      description: `Changes implemented in the repository focusing on general system improvements.${fileDetails}`,
     },
     es: {
       title: cleanTitle || 'Actualización de código',
-      description: `Cambios realizados en el repositorio con enfoque en mejoras generales del sistema.${fileDetails}`
-    }
+      description: `Cambios realizados en el repositorio con enfoque en mejoras generales del sistema.${fileDetails}`,
+    },
   }
 }
 
@@ -282,30 +289,34 @@ Você deve responder APENAS com um objeto JSON válido no seguinte formato, sem 
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
+          Authorization: `Bearer ${apiKey}`,
           'HTTP-Referer': 'https://github.com/loureng/gitorch',
-          'X-Title': 'GitOrch Auto Patch Notes'
+          'X-Title': 'GitOrch Auto Patch Notes',
         },
         body: JSON.stringify({
           model: model,
           messages: [
             {
               role: 'user',
-              content: prompt
-            }
+              content: prompt,
+            },
           ],
           response_format: { type: 'json_object' },
-          temperature: 0.1
+          temperature: 0.1,
         }),
-        signal: AbortSignal.timeout(20000) // Timeout de 20 segundos por modelo
+        signal: AbortSignal.timeout(20000), // Timeout de 20 segundos por modelo
       })
 
       if (!response.ok) {
-        console.warn(`Modelo ${model} retornou status HTTP ${response.status}. Tentando próximo modelo...`)
+        console.warn(
+          `Modelo ${model} retornou status HTTP ${response.status}. Tentando próximo modelo...`
+        )
         continue
       }
 
-      const data = (await response.json()) as any
+      const data = (await response.json()) as {
+        choices?: Array<{ message?: { content?: string } }>
+      }
       const contentText = data.choices?.[0]?.message?.content?.trim()
       if (!contentText) {
         console.warn(`Modelo ${model} retornou conteúdo vazio. Tentando próximo modelo...`)
@@ -315,7 +326,10 @@ Você deve responder APENAS com um objeto JSON válido no seguinte formato, sem 
       // Limpar blocos de markdown se a IA colocar de qualquer forma
       let jsonString = contentText
       if (jsonString.startsWith('```json')) {
-        jsonString = jsonString.replace(/^```json/, '').replace(/```$/, '').trim()
+        jsonString = jsonString
+          .replace(/^```json/, '')
+          .replace(/```$/, '')
+          .trim()
       } else if (jsonString.startsWith('```')) {
         jsonString = jsonString.replace(/^```/, '').replace(/```$/, '').trim()
       }
@@ -333,10 +347,13 @@ Você deve responder APENAS com um objeto JSON válido no seguinte formato, sem 
         console.log(`Sucesso na geração dos patch notes com o modelo ${model}!`)
         return parsed
       } else {
-        console.warn(`JSON retornado pelo modelo ${model} está incompleto. Tentando próximo modelo...`)
+        console.warn(
+          `JSON retornado pelo modelo ${model} está incompleto. Tentando próximo modelo...`
+        )
       }
-    } catch (err: any) {
-      console.warn(`Erro na chamada com o modelo ${model}: ${err.message || err}. Tentando próximo modelo...`)
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err)
+      console.warn(`Erro na chamada com o modelo ${model}: ${errMsg}. Tentando próximo modelo...`)
     }
   }
 
@@ -356,7 +373,7 @@ export function updateChangelogFile(
   description: string
 ): void {
   let fileContent = ''
-  
+
   if (existsSync(filePath)) {
     fileContent = readFileSync(filePath, 'utf8')
   }
@@ -386,7 +403,13 @@ ${description}
     }
   } else if (fileContent.trim() && !fileContent.startsWith(lang.header)) {
     // Se o arquivo contiver dados legados estruturados de outro jeito, mantém como entrada isolada
-    entries.push(fileContent.replace(lang.header, '').replace(lang.desc, '').replace(lang.historyHeader, '').trim() + '\n\n')
+    entries.push(
+      fileContent
+        .replace(lang.header, '')
+        .replace(lang.desc, '')
+        .replace(lang.historyHeader, '')
+        .trim() + '\n\n'
+    )
   }
 
   // Limita a 29 entradas antigas para que o total com a nova seja no máximo 30
@@ -433,7 +456,7 @@ async function main() {
 
   const changedFiles = changedFilesRaw.split('\n').filter(Boolean)
   console.log(`Arquivos alterados no commit (${changedFiles.length}):`)
-  changedFiles.forEach(f => console.log(`  ${f}`))
+  changedFiles.forEach((f) => console.log(`  ${f}`))
 
   // 3. Determinar versão atual
   let currentVersion = '1.0.0.0'
@@ -473,7 +496,9 @@ async function main() {
   if (userManuallyChangedMajor) {
     currentVersion = localVersion
     versionSource = 'local manual change'
-    console.log(`Mudança manual de versão Major detectada no repositório de código fonte: ${currentVersion}`)
+    console.log(
+      `Mudança manual de versão Major detectada no repositório de código fonte: ${currentVersion}`
+    )
   } else if (existsSync(wikiVersionPath)) {
     // Caso contrário, lemos a versão consolidada na Wiki
     try {
@@ -509,7 +534,9 @@ async function main() {
   if (apiKey) {
     aiData = await fetchAIChangelog(apiKey, commitMsg, changedFiles, gitDiff)
   } else {
-    console.warn('OPENROUTER_API_KEY não configurada no ambiente. Usando fallback determinístico local.')
+    console.warn(
+      'OPENROUTER_API_KEY não configurada no ambiente. Usando fallback determinístico local.'
+    )
   }
 
   // 6. Tratar dados e definir classificação final
@@ -536,7 +563,7 @@ async function main() {
   // E também no local version.json para que fiquem sintonizados
   const newVersionData: VersionInfo = {
     version: nextVersion,
-    lastUpdated: new Date().toISOString()
+    lastUpdated: new Date().toISOString(),
   }
 
   mkdirSync(wikiTempDir, { recursive: true })
@@ -548,9 +575,10 @@ async function main() {
   for (const lang of LANGUAGES) {
     const changelogPath = join(wikiTempDir, lang.file)
     const typeLabel = lang.typeLabel[finalClassification] || finalClassification
-    
+
     // Obter dados específicos do idioma
-    const langData = lang.code === 'pt-br' ? patchNotes.pt : lang.code === 'en' ? patchNotes.en : patchNotes.es
+    const langData =
+      lang.code === 'pt-br' ? patchNotes.pt : lang.code === 'en' ? patchNotes.en : patchNotes.es
 
     updateChangelogFile(
       changelogPath,
@@ -569,8 +597,12 @@ async function main() {
 }
 
 // Apenas executa main se for rodado diretamente (não importado em testes)
-if (process.argv[1] && (process.argv[1].endsWith('generate-patch-notes.ts') || process.argv[1].endsWith('generate-patch-notes'))) {
-  main().catch(err => {
+if (
+  process.argv[1] &&
+  (process.argv[1].endsWith('generate-patch-notes.ts') ||
+    process.argv[1].endsWith('generate-patch-notes'))
+) {
+  main().catch((err) => {
     console.error('Erro crítico na execução principal:', err)
     process.exit(1)
   })
