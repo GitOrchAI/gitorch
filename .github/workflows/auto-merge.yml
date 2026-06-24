@@ -74,8 +74,8 @@ jobs:
             }
 
             if (shouldAutoMerge) {
+              // 1. Tentar aprovar o PR (pode falhar se for do mesmo usuário do token, o que é seguro ignorar)
               try {
-                // 1. Aprovar o PR
                 await github.rest.pulls.createReview({
                   owner,
                   repo,
@@ -84,8 +84,16 @@ jobs:
                   body: 'Aprovado automaticamente pelo pipeline de segurança.'
                 });
                 console.log(`PR #${prNumber} aprovado com sucesso.`);
+              } catch (reviewErr) {
+                if (reviewErr.message.includes("Can not approve your own pull request") || reviewErr.status === 422) {
+                  console.log(`Aprovação pulada: O PR foi criado pelo mesmo usuário da PAT.`);
+                } else {
+                  console.error("Falha ao aprovar PR:", reviewErr.message);
+                }
+              }
 
-                // 2. Habilitar auto-merge usando a CLI gh
+              // 2. Habilitar auto-merge usando a CLI gh
+              try {
                 const { execSync } = require('child_process');
                 execSync(`gh pr merge ${prNumber} --auto --squash --repo ${owner}/${repo}`, {
                   env: {
@@ -95,7 +103,7 @@ jobs:
                 });
                 console.log(`Auto-merge ativado para o PR #${prNumber}.`);
               } catch (err) {
-                console.error("Falha ao aprovar ou habilitar auto-merge:", err.message);
+                console.error("Falha ao habilitar auto-merge:", err.message);
               }
             } else {
               console.log("Este PR não atende aos critérios de auto-merge de segurança.");
