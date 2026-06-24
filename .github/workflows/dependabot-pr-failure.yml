@@ -1,0 +1,120 @@
+name: Dependabot PR Failure Fallback
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types:
+      - completed
+
+permissions:
+  pull-requests: write
+  issues: write
+  actions: read
+
+jobs:
+  on-failure:
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'failure'
+    steps:
+      - name: Process Failed PR
+        uses: actions/github-script@v7
+        env:
+          SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
+        with:
+          github-token: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const run = context.payload.workflow_run;
+
+            console.log(`Workflow Run #${run.id} concluído com falha. Analisando PRs associados...`);
+
+            let prs = run.pull_requests;
+            if (!prs || prs.length === 0) {
+              console.log(`Nenhum PR listado no payload do workflow_run. Buscando por head SHA: ${run.head_sha}`);
+              const prList = await github.rest.pulls.list({
+                owner,
+                repo,
+                state: 'open'
+              });
+              prs = prList.data.filter(pr => pr.head.sha === run.head_sha);
+            }
+
+            if (!prs || prs.length === 0) {
+              console.log("Nenhum PR aberto associado a esta execução.");
+              return;
+            }
+
+            for (const prRef of prs) {
+              console.log(`Buscando detalhes do PR #${prRef.number}...`);
+              const prResponse = await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number: prRef.number
+              });
+              const pr = prResponse.data;
+
+              const prUser = pr.user.login;
+              const hasDependabotLabel = pr.labels.some(l => l.name.toLowerCase() === 'dependabot');
+
+              console.log(`PR #${pr.number} criado por '${prUser}' com labels: ${pr.labels.map(l => l.name).join(', ')}`);
+
+              if (prUser === 'dependabot[bot]' || hasDependabotLabel) {
+                console.log(`Tratando PR falho do Dependabot: #${pr.number}`);
+
+                // 1. Extrair nome do pacote e versão alvo do título do PR
+                const title = pr.title;
+                const regex = /bump(?:s)?\s+\[?([a-zA-Z0-9_\-\/@\.]+)(?:\]\([^\)]*\))?\s+from\s+(\S+)\s+to\s+(\S+)/i;
+                const match = title.match(regex);
+                const packageName = match ? match[1] : 'uma dependência';
+                const targetVersion = match ? match[3] : 'nova versão';
+
+                console.log(`Pacote: ${packageName}, Versão alvo: ${targetVersion}`);
+
+                // 2. Criar a Issue de Fallback para o Jules
+                const issueTitle = `[Fix] Quebra de CI no PR do Dependabot #${pr.number} (${packageName})`;
+                const issueBody = `O PR do Dependabot #${pr.number} que tentou atualizar a dependência \`${packageName}\` para a versão \`${targetVersion}\` falhou no fluxo de CI.
+
+            Como essa atualização quebrou o build ou os testes, o PR original foi fechado automaticamente e esta issue foi aberta para que o **Jules** analise o erro, corrija o código do projeto para torná-lo compatível com a nova versão da dependência, e abra um novo PR consolidando a atualização e a correção.
+
+            ### Detalhes do PR Original:
+            - **PR Fechado:** #${pr.number}
+            - **Dependência:** \`${packageName}\`
+            - **Versão Solicitada:** \`${targetVersion}\`
+            - **Branch do PR Original:** \`${pr.head.ref}\`
+            - **Workflow Run do CI Falho:** https://github.com/${owner}/${repo}/actions/runs/${run.id}
+
+            Por favor, resolva os conflitos ou quebras causados por essa atualização e envie as correções.`;
+
+                console.log(`Criando nova issue para o Jules...`);
+                const newIssueResponse = await github.rest.issues.create({
+                  owner,
+                  repo,
+                  title: issueTitle,
+                  body: issueBody,
+                  labels: ['jules', 'dependabot']
+                });
+                const newIssueNumber = newIssueResponse.data.number;
+                console.log(`Issue #${newIssueNumber} criada com sucesso.`);
+
+                // 3. Comentar e fechar o PR original
+                console.log(`Comentando no PR original #${pr.number}...`);
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: pr.number,
+                  body: `PR fechado automaticamente devido à falha no CI. Uma nova issue foi aberta para o Jules corrigir a incompatibilidade e realizar a atualização: #${newIssueNumber}`
+                });
+
+                console.log(`Fechando PR #${pr.number}...`);
+                await github.rest.pulls.update({
+                  owner,
+                  repo,
+                  pull_number: pr.number,
+                  state: 'closed'
+                });
+                console.log(`PR #${pr.number} fechado com sucesso.`);
+              } else {
+                console.log(`PR #${pr.number} não é do Dependabot e não possui a label 'dependabot'. Ignorando.`);
+              }
+            }

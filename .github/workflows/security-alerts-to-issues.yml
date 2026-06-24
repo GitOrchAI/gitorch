@@ -99,16 +99,65 @@ jobs:
               }
 
               const prompt = `Você é um engenheiro de segurança sênior. Crie uma issue rica e detalhada em Português (PT-BR) para corrigir o seguinte alerta de segurança do tipo "${alertType}".
-            O formato da issue deve conter:
-            1. Uma explicação curta e direta do problema em linguagem de negócios (explicando brevemente termos complexos se necessário).
-            2. O impacto potencial de segurança (usando ameaças baseadas em OWASP ou STRIDE se relevante).
-            3. Instruções passo a passo de como mitigar/resolver a vulnerabilidade no código.
-            4. Exemplos de código ou comandos para a solução.
+            Você DEVE OBRIGATORIAMENTE seguir o template Markdown abaixo, preenchendo as seções de forma muito detalhada e profissional. NÃO adicione nenhum texto de introdução ou conclusão fora do Markdown.
 
-            Detalhes do alerta:
-            ${JSON.stringify(alertDetails, null, 2)}
+            Use estes dados para preencher o cabeçalho:
+            - Nome da vulnerabilidade: ${alertDetails.summary || 'Vulnerabilidade em ' + alertDetails.package}
+            - Pacote Afetado: \`${alertDetails.package || ''}\`
+            - Arquivo de Manifesto: \`${alertDetails.manifest || ''}\`
+            - Alerta Dependabot: #${alertDetails.number || ''}
+            - CVE ID: ${alertDetails.cve || 'N/A'}
+            - Severidade: ${alertDetails.severity || 'Desconhecida'}
 
-            Por favor, responda APENAS com o corpo da issue em formato Markdown, sem introduções ou observações fora do Markdown da issue.`;
+            Template do Corpo da Issue:
+            ---
+            ## 🐞 Issue de Segurança: ${alertDetails.summary || 'Vulnerabilidade em ' + alertDetails.package} no pacote \`${alertDetails.package || ''}\` (${alertDetails.cve || 'N/A'})
+
+            **Severidade:** ${alertDetails.severity === 'high' ? '🔴 Alta (High)' : alertDetails.severity === 'critical' ? '🚨 Crítica (Critical)' : alertDetails.severity === 'medium' ? '🟡 Média (Medium)' : '🟢 Baixa (Low)'}
+            **Pacote Afetado:** \`${alertDetails.package || ''}\`
+            **Arquivo de Manifesto:** \`${alertDetails.manifest || ''}\`
+            **Alerta Dependabot:** #${alertDetails.number || ''}
+            **CVE:** [${alertDetails.cve || 'N/A'}](https://cve.mitre.org/cgi-bin/cvename.cgi?name=${alertDetails.cve || ''})
+
+            ---
+
+            ### 1. Resumo do Problema (Visão de Negócio)
+            [Explicação curta e clara do problema em linguagem de negócios, explicando brevemente termos complexos de forma didática]
+
+            ### 2. Impacto Potencial de Segurança
+            | Categoria | Classificação | Detalhamento |
+            | :--- | :--- | :--- |
+            | **STRIDE** | [Categorias STRIDE afetadas, ex: T (Tampering) & E (Elevation of Privilege)] | [Detalhamento do risco com base em STRIDE] |
+            | **OWASP Top 10** | [Categoria OWASP, ex: A01:2021 – Broken Access Control] | [Detalhamento do risco com base em OWASP] |
+
+            **Cenários de Ataque Realistas:**
+            1. [Cenário de ataque realista 1, ex: exploração via fluxo de upload ou pipeline de CI/CD]
+            2. [Cenário de ataque realista 2]
+
+            ---
+
+            ### 3. Plano de Mitigação e Resolução (Passo a Passo)
+            #### Opção A: Atualização Direta (Recomendada)
+            [Passo a passo detalhado incluindo comandos de pnpm/npm e validação da árvore de dependências no lockfile]
+
+            #### Opção B: Mitigação Temporária (Workaround)
+            [Passos alternativos como isolamento, restrição de permissão ou sanitização se atualização imediata for impossível]
+
+            ---
+
+            ### 4. Exemplos de Código e Comandos para Solução
+            [Comandos pnpm/npm de atualização, overrides no package.json se relevante, e script/código de exemplo em JS/TS para validação local da vulnerabilidade]
+
+            ---
+
+            ### 5. Referências
+            * [Link para Advisory do GitHub se disponível ou genérico]
+            * [Link para CVE Details]
+            * [Link para Changelog do pacote ou repositório]
+            ---
+
+            Detalhes adicionais do alerta para guiar o preenchimento:
+            ${JSON.stringify(alertDetails, null, 2)}`;
 
               try {
                 const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
