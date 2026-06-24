@@ -52,6 +52,25 @@ importers:
         specifier: ^4.1.9
         version: 4.1.9(@types/node@20.19.43)(vite@8.0.16(@types/node@20.19.43)(esbuild@0.28.1)(tsx@4.22.4))
 
+  packages/agents:
+    dependencies:
+      '@gitorch/github-sync':
+        specifier: workspace:*
+        version: link:../github-sync
+      '@gitorch/synapse':
+        specifier: workspace:*
+        version: link:../synapse
+    devDependencies:
+      '@types/node':
+        specifier: ^20.10.0
+        version: 20.19.43
+      typescript:
+        specifier: ^5.4.0
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.9
+        version: 4.1.9(@types/node@20.19.43)(vite@8.0.16(@types/node@20.19.43)(esbuild@0.28.1)(tsx@4.22.4))
+
   packages/cgc:
     dependencies:
       '@kreuzberg/tree-sitter-language-pack-wasm':
