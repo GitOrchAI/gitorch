@@ -37,12 +37,13 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "minimatch": "^10.2.5",
     "supermemory": "^4.24.12"
   },
   "pnpm": {
     "overrides": {
       "tar": "^7.5.16",
-      "minimatch": "^9.0.9"
+      "minimatch": "^10.2.5"
     }
   }
 }
