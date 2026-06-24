@@ -11,6 +11,11 @@ interface WikiConfig {
   }
 }
 
+interface MemoryItem {
+  content: string
+  isStatic?: boolean
+}
+
 // Reutilizar a detecção de segredos do sync-wiki.ts
 const SECRET_PATTERNS = [
   /ghp_[a-zA-Z0-9]{36}/,
@@ -28,12 +33,17 @@ export function sanitizeForSupermemory(content: string): string {
       throw new Error(`CRITICAL: Potential secret detected during Supermemory sync`)
     }
   }
-  let sanitized = content.replace(/<!--\s*INTERNAL START\s*-->[\s\S]*?<!--\s*INTERNAL END\s*-->/g, '')
+  let sanitized = content.replace(
+    /<!--\s*INTERNAL START\s*-->[\s\S]*?<!--\s*INTERNAL END\s*-->/g,
+    ''
+  )
   sanitized = sanitized.replace(/<!--\s*INTERNAL[\s\S]*?-->/g, '')
   return sanitized
 }
 
-export function extractLatestPatchNote(changelogContent: string): { title: string; description: string; classification: string } | null {
+export function extractLatestPatchNote(
+  changelogContent: string
+): { title: string; description: string; classification: string } | null {
   // O changelog tem entradas no formato:
   // ## Versão 1.2.3.4 - YYYY-MM-DD HH:MM:SS
   // * **Author:** ...
@@ -41,18 +51,17 @@ export function extractLatestPatchNote(changelogContent: string): { title: strin
   // * **Change:** Título curto
   //
   // Descrição detalhada...
-  
+
   const entries = changelogContent.split('## Versão ')
   if (entries.length < 2) return null
-  
+
   const latestEntry = entries[1] // índice 1 porque 0 é o cabeçalho
   const lines = latestEntry.split('\n')
-  
+
   let classification = 'patch'
   let title = 'Code update'
   const descriptionLines: string[] = []
-  
-  let inDescription = false
+
   for (const line of lines) {
     if (line.includes('**Type:**')) {
       const typeVal = line.split('**Type:**')[1].trim().toLowerCase()
@@ -65,7 +74,6 @@ export function extractLatestPatchNote(changelogContent: string): { title: strin
     } else if (line.trim() === '---') {
       break
     } else if (line.trim() !== '') {
-      inDescription = true
       descriptionLines.push(line.trim())
     }
   }
@@ -77,31 +85,36 @@ export function extractLatestPatchNote(changelogContent: string): { title: strin
   }
 }
 
-async function sendMemoriesToSupermemory(apiUrl: string, apiKey: string, tag: string, memories: any[]) {
+async function sendMemoriesToSupermemory(
+  apiUrl: string,
+  apiKey: string,
+  tag: string,
+  memories: MemoryItem[]
+) {
   const body = {
     containerTag: tag,
-    memories: memories.map(m => ({
+    memories: memories.map((m) => ({
       content: sanitizeForSupermemory(m.content),
-      isStatic: m.isStatic || false
-    }))
+      isStatic: m.isStatic || false,
+    })),
   }
 
   const response = await fetch(apiUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`
+      Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify(body),
     // Timeout para não travar a esteira por muito tempo
-    signal: AbortSignal.timeout(10000)
+    signal: AbortSignal.timeout(10000),
   })
 
   if (!response.ok) {
     const errText = await response.text()
     throw new Error(`HTTP ${response.status}: ${errText}`)
   }
-  
+
   return await response.json()
 }
 
@@ -150,16 +163,18 @@ export async function runSupermemorySync() {
       const today = new Date().toISOString().split('T')[0]
       patchNoteMemory = {
         content: `[${smConfig.containerTag}] Version ${currentVersion} released on ${today}. Classification: ${extracted.classification}. Summary: "${extracted.title}". Details: ${extracted.description}`,
-        isStatic: false
+        isStatic: false,
       }
     }
   }
 
   // 3. Montar resumo de wiki
-  const filesList = fs.readdirSync(WIKI_TEMP_DIR).filter(f => f.endsWith('.md') || !f.includes('.'))
+  const filesList = fs
+    .readdirSync(WIKI_TEMP_DIR)
+    .filter((f) => f.endsWith('.md') || !f.includes('.'))
   const wikiMemory = {
     content: `[${smConfig.containerTag}] Wiki documentation was synced. Tracking ${filesList.length} documentation assets at version ${currentVersion}.`,
-    isStatic: false
+    isStatic: false,
   }
 
   const memoriesToSend = [wikiMemory]
@@ -168,7 +183,9 @@ export async function runSupermemorySync() {
   // 4. Enviar para a API
   try {
     await sendMemoriesToSupermemory(smConfig.apiUrl, apiKey, smConfig.containerTag, memoriesToSend)
-    console.log(`Enviadas ${memoriesToSend.length} memórias para o Supermemory (tag: ${smConfig.containerTag}).`)
+    console.log(
+      `Enviadas ${memoriesToSend.length} memórias para o Supermemory (tag: ${smConfig.containerTag}).`
+    )
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
     console.warn(`Aviso: Falha ao sincronizar com Supermemory (não fatal): ${errMsg}`)
@@ -176,7 +193,7 @@ export async function runSupermemorySync() {
 }
 
 if (require.main === module) {
-  runSupermemorySync().catch(err => {
+  runSupermemorySync().catch((err) => {
     console.error('Supermemory Sync Falhou (Não Fatal):', err)
   })
 }

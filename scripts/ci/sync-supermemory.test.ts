@@ -1,11 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { extractLatestPatchNote, sanitizeForSupermemory } from './sync-supermemory'
 
 describe('Supermemory Sync Tests', () => {
   describe('DLP Sanitization', () => {
     it('throws error when identifying secrets', () => {
       const fakeTokenKey = 'sk-or-v1-' + '0'.repeat(64)
-      expect(() => sanitizeForSupermemory(`Aqui está meu token: ${fakeTokenKey}`)).toThrow(/CRITICAL: Potential secret detected/)
+      expect(() => sanitizeForSupermemory(`Aqui está meu token: ${fakeTokenKey}`)).toThrow(
+        /CRITICAL: Potential secret detected/
+      )
     })
 
     it('removes internal markdown comments', () => {
