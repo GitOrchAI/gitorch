@@ -1,7 +1,7 @@
 version: 2
 updates:
-  # Configuração de atualizações do ecossistema NPM (monorepo pnpm)
-  - package-ecosystem: "npm"
+  # Configuração de atualizações do ecossistema PNPM (monorepo)
+  - package-ecosystem: "pnpm"
     directory: "/"
     schedule:
       interval: "daily"
@@ -30,7 +30,7 @@ updates:
       - "github-actions"
 
   # Configuração de atualizações de segurança prioritárias
-  - package-ecosystem: "npm"
+  - package-ecosystem: "pnpm"
     directory: "/"
     schedule:
       interval: "daily"
