@@ -18,61 +18,41 @@ jobs:
         with:
           fetch-depth: 10
 
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Configurar pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Instalar Dependências
+        run: pnpm install --no-frozen-lockfile
+
       - name: Sincronizar Logs e Atualizações na Wiki
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
-          # 1. Obter informações do último commit
-          COMMIT_HASH=$(git log -1 --format="%h")
-          COMMIT_MSG=$(git log -1 --format="%s")
-          COMMIT_DATE=$(git log -1 --format="%ad" --date=format:'%Y-%m-%d %H:%M:%S')
-          COMMIT_AUTHOR=$(git log -1 --format="%an")
-          
-          echo "Processando commit: $COMMIT_HASH - $COMMIT_MSG"
-          
-          # 2. Clonar a Wiki do repositório
-          # O GITHUB_TOKEN padrão é usado para autenticar a URL da Wiki
+          # 1. Clonar a Wiki do repositório
           git clone "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git" wiki_temp
           
+          # 2. Executar o gerador de patch notes em TypeScript
+          pnpm exec tsx scripts/ci/generate-patch-notes.ts
+          
+          # 3. Copiar os READMEs traduzidos para a Wiki
           cd wiki_temp
           
-          # Configurar Git
+          # Configurar Git na pasta temporária da Wiki
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           
-          # 3. Atualizar ou Criar o log de atualizações recentes (Changelog)
-          CHANGELOG_FILE="Ultimas-Atualizacoes.md"
-          
-          # Cria cabeçalho caso o arquivo não exista
-          if [ ! -f "$CHANGELOG_FILE" ]; then
-            echo "# 📋 Últimas Atualizações do GitOrch" > "$CHANGELOG_FILE"
-            echo "Esta página é atualizada automaticamente a cada alteração no repositório de código fonte principal. Ela permite que a comunidade acompanhe o progresso e desenvolvimento em tempo real." >> "$CHANGELOG_FILE"
-            echo "" >> "$CHANGELOG_FILE"
-            echo "### Histórico de Commits Recentes" >> "$CHANGELOG_FILE"
-            echo "" >> "$CHANGELOG_FILE"
-          fi
-          
-          # Inserir o novo commit no topo do histórico
-          echo "# 📋 Últimas Atualizações do GitOrch" > temp.md
-          echo "Esta página é atualizada automaticamente a cada alteração no repositório de código fonte principal. Ela permite que a comunidade acompanhe o progresso e desenvolvimento em tempo real." >> temp.md
-          echo "" >> temp.md
-          echo "### Histórico de Commits Recentes" >> temp.md
-          echo "" >> temp.md
-          echo "* **$COMMIT_DATE** (Commit: \`$COMMIT_HASH\`) por **$COMMIT_AUTHOR**:" >> temp.md
-          echo "  > $COMMIT_MSG" >> temp.md
-          echo "" >> temp.md
-          
-          # Concatenar commits anteriores (pulando o cabeçalho de 5 linhas do changelog antigo)
-          if [ -f "$CHANGELOG_FILE" ]; then
-            tail -n +6 "$CHANGELOG_FILE" >> temp.md
-          fi
-          
-          mv temp.md "$CHANGELOG_FILE"
-          
-          # 4. Copiar os READMEs traduzidos para a Wiki
           cp ../README.md Home.md
           cp ../README.pt-br.md Home-PT-BR.md
           cp ../README.es.md Home-ES.md
           
-          # 5. Ajustar os links de arquivos para navegação de páginas da Wiki
+          # 4. Ajustar os links de arquivos para navegação de páginas da Wiki
           # Home (English)
           sed -i 's/README.pt-br.md/Home-PT-BR/g' Home.md
           sed -i 's/README.es.md/Home-ES/g' Home.md
@@ -85,13 +65,23 @@ jobs:
           sed -i 's/README.md/Home/g' Home-ES.md
           sed -i 's/README.pt-br.md/Home-PT-BR/g' Home-ES.md
           
-          # 6. Adicionar link para a página de atualizações recentes no rodapé de todas as páginas da Wiki
-          for f in Home.md Home-PT-BR.md Home-ES.md; do
-            echo "" >> "$f"
-            echo "---" >> "$f"
-            echo "📢 _[Latest Updates / Últimas Atualizações / Últimas Actualizaciones](Ultimas-Atualizacoes)_" >> "$f"
-          done
+          # 5. Adicionar link para a respectiva página de atualizações recentes no rodapé
+          # English
+          echo "" >> Home.md
+          echo "---" >> Home.md
+          echo "📢 _[Latest Updates](Latest-Updates)_" >> Home.md
           
-          # 7. Commit e push de volta na Wiki
+          # Português
+          echo "" >> Home-PT-BR.md
+          echo "---" >> Home-PT-BR.md
+          echo "📢 _[Últimas Atualizações](Ultimas-Atualizacoes)_" >> Home-PT-BR.md
+          
+          # Español
+          echo "" >> Home-ES.md
+          echo "---" >> Home-ES.md
+          echo "📢 _[Últimas Actualizaciones](Ultimas-Actualizaciones)_" >> Home-ES.md
+          
+          # 6. Commit e push de volta na Wiki
           git add .
-          git diff --quiet && git diff --staged --quiet || (git commit -m "docs: auto-update wiki for commit $COMMIT_HASH" && git push origin)
+          git diff --quiet && git diff --staged --quiet || (git commit -m "docs: auto-update wiki patch notes and homepages" && git push origin)
+

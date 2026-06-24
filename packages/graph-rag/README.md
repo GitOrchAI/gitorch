@@ -116,13 +116,14 @@ export interface ExpandedSubgraph {
 export interface RankedFile {
   filePath: string
   score: number
+  fileNameScore: number
+  skeletonScore: number
   reasons: string[]
   tokenCount: number
   skeleton?: string
 }
 
 export interface ReaderPayload {
-  wingId?: string
   graphSummary: string
   rankedFiles: RankedFile[]
   nodeTokens: string[]
@@ -132,6 +133,7 @@ export interface ReaderPayload {
 export interface GraphRAGPipelineResult {
   plan: GraphRAGPlan
   payload: ReaderPayload
+  context?: CortexPlanContext
 }
 ```
 

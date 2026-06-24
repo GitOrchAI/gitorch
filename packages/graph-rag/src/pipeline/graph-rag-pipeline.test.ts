@@ -7,7 +7,10 @@ import type {
 import { type Mock, describe, expect, test, vi } from 'vitest'
 import { CortexGraphRAGAdapter } from '../cortex/cortex-integration'
 import { DynamicBudgetReranker } from '../reranker/reranker'
-import { GraphRAGPipeline } from '../index'
+import {
+  GraphRAGPipeline,
+  InMemoryGraphRepository as ExportedInMemoryGraphRepository,
+} from '../index'
 import type { GraphEdge, GraphNode } from '../types'
 import { InMemoryGraphRepository } from '../retriever/kuzu-graph-repository'
 
@@ -75,10 +78,48 @@ describe('GraphRAGPipeline', () => {
     expect(fakeCortex.wakeUp).toHaveBeenCalledWith(WING_ID)
     expect(fakeCortex.recallLocal).toHaveBeenCalledWith(WING_ID, ROOM_ID, HALL_ID)
     expect(fakeCortex.search).toHaveBeenCalledWith(WING_ID, RAW_ISSUE, 10)
+    expect(result.plan.extractor.keywords).toContain('semantic')
+    expect(result.plan.extractor.keywords).toContain('anchor')
+    expect(
+      result.payload.rankedFiles.some((file) => file.filePath === 'src/modeling/separable.py')
+    ).toBe(true)
+  })
+
+  test('uses Cortex semantic anchors to enrich retrieval and ranking', async () => {
+    const fakeCortex = createFakeCortexClient()
+    fakeCortex.search.mockResolvedValue([
+      {
+        drawerId: 'semantic-graph-rag',
+        layer: 'L3',
+        score: 0.97,
+        content: 'Focus semantic search on recursionGuard and semantic_anchor.py',
+        metadata: createDrawer('semantic-graph-rag', ['graph-rag', 'recursionGuard']),
+      },
+    ])
+
+    const pipeline = new GraphRAGPipeline({
+      repository: new InMemoryGraphRepository({
+        nodes: createFixtureNodes(),
+        edges: createFixtureEdges(),
+      }),
+      reranker: new DynamicBudgetReranker({ totalWindowTokens: 2000 }),
+      cortex: new CortexGraphRAGAdapter(fakeCortex),
+    })
+
+    const result = await pipeline.run('Fix nested model regression', {
+      wingId: WING_ID,
+    })
+
+    expect(result.plan.extractor.entities).toContain('semantic_anchor.py')
+    expect(result.plan.extractor.keywords).toContain('recursion')
+    expect(result.payload.rankedFiles.map((file) => file.filePath)).toContain(
+      'src/semantic_anchor.py'
+    )
   })
 
   test('exports GraphRAGPipeline from src/index.ts', () => {
     expect(GraphRAGPipeline).toBeDefined()
+    expect(ExportedInMemoryGraphRepository).toBe(InMemoryGraphRepository)
   })
 })
 
@@ -124,6 +165,23 @@ function createFixtureNodes(): GraphNode[] {
       'leafAtomic(node)',
       'Leaf nodes must be atomic.'
     ),
+    graphNode(
+      'semantic-anchor-file',
+      'File',
+      'file',
+      'src/semantic_anchor.py',
+      'semantic_anchor.py',
+      'module semantic_anchor.py'
+    ),
+    graphNode(
+      'recursion-guard',
+      'Symbol',
+      'function',
+      'src/semantic_anchor.py',
+      'recursionGuard',
+      'recursionGuard(node)',
+      'semantic anchor for recursive traversal guard'
+    ),
   ]
 }
 
@@ -136,8 +194,11 @@ function createFixtureEdges(): GraphEdge[] {
     { source: 'separable-file', target: 'separability-function', type: 'CONTAINS' },
     { source: 'separable-file', target: 'recursive-traversal', type: 'CONTAINS' },
     { source: 'separable-file', target: 'leaf-atomic', type: 'CONTAINS' },
+    { source: 'src-dir', target: 'semantic-anchor-file', type: 'CONTAINS' },
+    { source: 'semantic-anchor-file', target: 'recursion-guard', type: 'CONTAINS' },
     { source: 'compound-class', target: 'separability-function', type: 'CALLS' },
     { source: 'separability-function', target: 'recursive-traversal', type: 'CALLS' },
+    { source: 'recursive-traversal', target: 'recursion-guard', type: 'CALLS' },
   ]
 }
 
@@ -179,7 +240,7 @@ function createIdentity(): CortexIdentity {
   }
 }
 
-function createDrawer(id: string): CortexDrawer {
+function createDrawer(id: string, tags: string[] = ['graph-rag']): CortexDrawer {
   return {
     id,
     wingId: WING_ID,
@@ -191,7 +252,7 @@ function createDrawer(id: string): CortexDrawer {
     createdAt: '2026-06-19T00:00:00.000Z',
     validFrom: '2026-06-19T00:00:00.000Z',
     confidence: 0.9,
-    tags: ['graph-rag'],
+    tags,
   }
 }
 

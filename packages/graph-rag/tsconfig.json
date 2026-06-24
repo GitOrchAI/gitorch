@@ -9,7 +9,12 @@
     "forceConsistentCasingInFileNames": true,
     "rootDir": "src",
     "outDir": "dist",
-    "declaration": true
+    "declaration": true,
+    "composite": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  "references": [
+    { "path": "../cgc" },
+    { "path": "../cortex" }
+  ]
 }
