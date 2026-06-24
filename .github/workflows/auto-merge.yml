@@ -86,14 +86,8 @@ jobs:
                 console.log(`PR #${prNumber} aprovado com sucesso.`);
 
                 // 2. Habilitar auto-merge usando a CLI gh
-                const exec = require('@actions/exec');
-                await exec.exec('gh', [
-                  'pr', 'merge',
-                  prNumber.toString(),
-                  '--auto',
-                  '--squash',
-                  '--repo', `${owner}/${repo}`
-                ], {
+                const { execSync } = require('child_process');
+                execSync(`gh pr merge ${prNumber} --auto --squash --repo ${owner}/${repo}`, {
                   env: {
                     ...process.env,
                     GH_TOKEN: process.env.GITHUB_TOKEN
