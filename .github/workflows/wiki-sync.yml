@@ -34,6 +34,7 @@ jobs:
       - name: Sincronizar Logs e Atualizações na Wiki
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          SUPERMEMORY_API_KEY: ${{ secrets.SUPERMEMORY_API_KEY }}
         run: |
           # 1. Clonar a Wiki do repositório
           git clone "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git" wiki_temp
