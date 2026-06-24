@@ -10,6 +10,7 @@ export type {
   CortexPlanContext,
 } from './cortex/cortex-integration'
 export { AnchorResolver, GraphRetriever, SubgraphExpander } from './retriever/retriever'
+export { InMemoryGraphRepository, KuzuGraphRepository } from './retriever/kuzu-graph-repository'
 export { GraphRAGPipeline } from './pipeline/graph-rag-pipeline'
 export type {
   GraphRAGPipelineOptions,
