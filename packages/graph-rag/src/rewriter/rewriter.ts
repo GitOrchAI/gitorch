@@ -285,12 +285,13 @@ export class QueryRewriter {
   private normalizeFilePath(value: string): string {
     return value
       .replace(/\\/g, '/')
-      .replace(/^['"`\s]+|['"`\s]+$/g, '')
-      .replace(/[.,;:)]+$/g, '')
+      .replace(/^['"`\s]+/, '')
+      .replace(/['"`\s]+$/, '')
+      .replace(/[.,;:)]+$/, '')
   }
 
   private cleanToken(value: string): string {
-    return value.replace(/^[^\w]+|[^\w]+$/g, '')
+    return value.replace(/^[^\w\s]+/, '').replace(/[^\w\s]+$/, '').trim()
   }
 
   private namespaceToPath(namespace: string): string {

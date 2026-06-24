@@ -25,6 +25,22 @@ test('CAMEL_CASE_REGEX should not suffer from ReDoS', () => {
   expect(duration).toBeLessThan(100)
 })
 
+test('Excessive tabulations should not cause ReDoS', () => {
+  const payload = '\t'.repeat(10000) + '!'
+  const start = Date.now()
+  rewriter.rewrite(payload)
+  const duration = Date.now() - start
+  expect(duration).toBeLessThan(100)
+})
+
+test('Mixed symbols and anchored patterns should not cause ReDoS', () => {
+  const payload = ("'\" ".repeat(10) + '\t'.repeat(10) + '...;:)').repeat(100)
+  const start = Date.now()
+  rewriter.rewrite(payload)
+  const duration = Date.now() - start
+  expect(duration).toBeLessThan(100)
+})
+
 test('SNAKE_CASE_REGEX still matches valid snake_case', () => {
   const issue = 'Fix my_variable and my__variable and trailing_'
   const plan = rewriter.rewrite(issue)
