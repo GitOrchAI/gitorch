@@ -38,50 +38,18 @@ jobs:
           # 1. Clonar a Wiki do repositório
           git clone "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git" wiki_temp
           
-          # 2. Executar o gerador de patch notes em TypeScript
+          # 2. Executar o gerador de patch notes em TypeScript (escreve em wiki_temp)
           pnpm exec tsx scripts/ci/generate-patch-notes.ts
           
-          # 3. Copiar os READMEs traduzidos para a Wiki
-          cd wiki_temp
+          # 3. Executar a sincronização de documentação com DLP (escreve em wiki_temp)
+          pnpm exec tsx scripts/ci/sync-wiki.ts
           
-          # Configurar Git na pasta temporária da Wiki
+          # 4. Configurar Git na pasta temporária da Wiki e fazer push
+          cd wiki_temp
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           
-          cp ../README.md Home.md
-          cp ../README.pt-br.md Home-PT-BR.md
-          cp ../README.es.md Home-ES.md
-          
-          # 4. Ajustar os links de arquivos para navegação de páginas da Wiki
-          # Home (English)
-          sed -i 's/README.pt-br.md/Home-PT-BR/g' Home.md
-          sed -i 's/README.es.md/Home-ES/g' Home.md
-          
-          # Home PT-BR
-          sed -i 's/README.md/Home/g' Home-PT-BR.md
-          sed -i 's/README.es.md/Home-ES/g' Home-PT-BR.md
-          
-          # Home ES
-          sed -i 's/README.md/Home/g' Home-ES.md
-          sed -i 's/README.pt-br.md/Home-PT-BR/g' Home-ES.md
-          
-          # 5. Adicionar link para a respectiva página de atualizações recentes no rodapé
-          # English
-          echo "" >> Home.md
-          echo "---" >> Home.md
-          echo "📢 _[Latest Updates](Latest-Updates)_" >> Home.md
-          
-          # Português
-          echo "" >> Home-PT-BR.md
-          echo "---" >> Home-PT-BR.md
-          echo "📢 _[Últimas Atualizações](Ultimas-Atualizacoes)_" >> Home-PT-BR.md
-          
-          # Español
-          echo "" >> Home-ES.md
-          echo "---" >> Home-ES.md
-          echo "📢 _[Últimas Actualizaciones](Ultimas-Actualizaciones)_" >> Home-ES.md
-          
-          # 6. Commit e push de volta na Wiki
           git add .
-          git diff --quiet && git diff --staged --quiet || (git commit -m "docs: auto-update wiki patch notes and homepages" && git push origin)
+          git diff --quiet && git diff --staged --quiet || (git commit -m "docs: auto-update wiki docs & patch notes" && git push origin)
+
 
