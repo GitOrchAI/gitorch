@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Verificar e Habilitar Auto-Merge
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           GITHUB_TOKEN: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
         with:
