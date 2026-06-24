@@ -44,7 +44,10 @@ jobs:
           # 3. Executar a sincronização de documentação com DLP (escreve em wiki_temp)
           pnpm exec tsx scripts/ci/sync-wiki.ts
           
-          # 4. Configurar Git na pasta temporária da Wiki e fazer push
+          # 4. Enviar memórias geradas para o Supermemory via API REST
+          pnpm exec tsx scripts/ci/sync-supermemory.ts
+          
+          # 5. Configurar Git na pasta temporária da Wiki e fazer push
           cd wiki_temp
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
