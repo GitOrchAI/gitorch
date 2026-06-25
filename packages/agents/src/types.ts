@@ -32,3 +32,35 @@ export interface AgentMission {
   credentialRef: RuntimeCredentialRef
   evidenceRefs: string[]
 }
+
+export type OnboardingStepKind =
+  | 'map-code-graph'
+  | 'read-docs'
+  | 'prepare-docs'
+  | 'ensure-project-v2'
+  | 'classify-existing-issues'
+  | 'inspect-open-prs'
+  | 'capture-ci-state'
+  | 'ask-owner-question'
+  | 'persist-project-memory'
+  | 'write-repository-docs'
+
+export interface OnboardingStep {
+  kind: OnboardingStepKind
+  summary: string
+  evidenceRefs: string[]
+}
+
+export interface OwnerQuestion {
+  id: string
+  question: string
+  options: ['A', 'B', 'C', 'Free form']
+}
+
+export interface ProjectOnboardingPlan {
+  projectId: string
+  repository: string
+  createsProductWork: false
+  steps: OnboardingStep[]
+  ownerQuestions: OwnerQuestion[]
+}
