@@ -33,7 +33,7 @@ function callOpenRouter(prompt) {
     }
 
     const data = JSON.stringify({
-      model: "google/gemini-2.0-flash-lite-preview-02-05:free",
+      model: "openrouter/free",
       messages: [
         {
           role: "user",
