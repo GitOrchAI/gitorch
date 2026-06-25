@@ -37,6 +37,9 @@ jobs:
           GH_TOKEN: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
         run: |
           if [ "${{ github.event_name }}" = "pull_request_target" ]; then
+            if [ "${{ github.event.action }}" = "synchronize" ]; then
+              gh pr edit ${{ github.event.pull_request.number }} --remove-label "jules-conflict-notified" || true
+            fi
             node .github/scripts/analyze-unmergeable.js ${{ github.event.pull_request.number }}
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.pr_number }}" ]; then
             node .github/scripts/analyze-unmergeable.js ${{ github.event.inputs.pr_number }}
