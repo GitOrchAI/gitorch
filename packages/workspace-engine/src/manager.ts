@@ -1,9 +1,9 @@
-import { exec } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 
-const execAsync = promisify(exec)
+const execFileAsync = promisify(execFile)
 
 export interface WorkspaceInfo {
   id: string
@@ -18,27 +18,41 @@ export interface WorkspaceInfo {
 export class WorkspaceManager {
   private baseDir = '/var/lib/gitorch/workspaces'
 
+  private validateInput(value: string): void {
+    const regex = /^[a-zA-Z0-9_-]+$/
+    if (!regex.test(value)) {
+      throw new Error(
+        `Entrada inválida detectada: "${value}". Apenas letras, números, hifens e underscores são permitidos.`
+      )
+    }
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async allocateWorkspace(userId: string, projectId: string, config?: any): Promise<WorkspaceInfo> {
+    this.validateInput(userId)
+    this.validateInput(projectId)
+
     const workspaceId = `ws:${userId}:${projectId}`
     const workspacePath = path.posix.join(this.baseDir, userId, projectId)
 
-    try {
-      await fs.mkdir(workspacePath, { recursive: true })
-    } catch (err) {
-      // Ignorar erros em testes ou ambientes onde não há permissão
-    }
+    await fs.mkdir(workspacePath, { recursive: true })
 
     const jailerId = workspaceId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 64)
-    const jailerCmd = `jailer --id ${jailerId} --node 0 --exec-file /usr/local/bin/firecracker --uid 1000 --gid 1000 --chroot-base-dir ${workspacePath}`
 
-    try {
-      await execAsync(jailerCmd)
-    } catch (err) {
-      console.warn(
-        `[WorkspaceManager] Falha ao iniciar MicroVM via Jailer: ${(err as Error).message}. Prosseguindo em modo degradado/mock.`
-      )
-    }
+    await execFileAsync('jailer', [
+      '--id',
+      jailerId,
+      '--node',
+      '0',
+      '--exec-file',
+      '/usr/local/bin/firecracker',
+      '--uid',
+      '1000',
+      '--gid',
+      '1000',
+      '--chroot-base-dir',
+      workspacePath,
+    ])
 
     return {
       id: workspaceId,
@@ -51,6 +65,9 @@ export class WorkspaceManager {
   }
 
   async hibernateWorkspace(userId: string, projectId: string): Promise<void> {
+    this.validateInput(userId)
+    this.validateInput(projectId)
+
     const workspaceId = `ws:${userId}:${projectId}`
     const workspacePath = path.posix.join(this.baseDir, userId, projectId)
 
@@ -58,21 +75,26 @@ export class WorkspaceManager {
     const snapshotPath = path.posix.join(workspacePath, 'snapshot.bin')
     const memPath = path.posix.join(workspacePath, 'mem.bin')
 
-    const hibernateCmd = `curl --unix-socket ${socketPath} -X PUT http://localhost/snapshot/create -H "Content-Type: application/json" -d '{"snapshot_path": "${snapshotPath}", "mem_file_path": "${memPath}"}'`
-
     const jailerId = workspaceId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 64)
 
+    await execFileAsync('curl', [
+      '--unix-socket',
+      socketPath,
+      '-X',
+      'PUT',
+      'http://localhost/snapshot/create',
+      '-H',
+      'Content-Type: application/json',
+      '-d',
+      JSON.stringify({ snapshot_path: snapshotPath, mem_file_path: memPath }),
+    ])
+
     try {
-      await execAsync(hibernateCmd)
-      const killCmd = `pkill -f "firecracker.*${jailerId}" || true`
-      await execAsync(killCmd)
+      await execFileAsync('pkill', ['-f', `firecracker.*${jailerId}`])
     } catch (err) {
-      console.warn(
-        `[WorkspaceManager] Falha ao hibernar MicroVM via socket API: ${(err as Error).message}.`
-      )
-      try {
-        await execAsync(`pkill -f "firecracker.*${jailerId}" || true`)
-      } catch (e) {}
+      if ((err as { code?: unknown }).code !== 1) {
+        throw err
+      }
     }
   }
 
@@ -83,17 +105,14 @@ export class WorkspaceManager {
     }
     const userId = parts[1]!
     const projectId = parts.slice(2).join(':')
+
+    this.validateInput(userId)
+    this.validateInput(projectId)
+
     const workspacePath = path.posix.join(this.baseDir, userId, projectId)
 
     for (const repo of repos) {
-      const cloneCmd = `git clone ${repo} ${workspacePath}/src`
-      try {
-        await execAsync(cloneCmd)
-      } catch (err) {
-        console.warn(
-          `[WorkspaceManager] Falha ao clonar repositório ${repo}: ${(err as Error).message}`
-        )
-      }
+      await execFileAsync('git', ['clone', repo, path.posix.join(workspacePath, 'src')])
     }
   }
 
@@ -104,17 +123,14 @@ export class WorkspaceManager {
     }
     const userId = parts[1]!
     const projectId = parts.slice(2).join(':')
+
+    this.validateInput(userId)
+    this.validateInput(projectId)
+
     const workspacePath = path.posix.join(this.baseDir, userId, projectId)
 
     for (const runtime of runtimes) {
-      const installCmd = `chroot ${workspacePath} apt-get install -y ${runtime}`
-      try {
-        await execAsync(installCmd)
-      } catch (err) {
-        console.warn(
-          `[WorkspaceManager] Falha ao instalar runtime ${runtime} via chroot: ${(err as Error).message}`
-        )
-      }
+      await execFileAsync('chroot', [workspacePath, 'apt-get', 'install', '-y', runtime])
     }
   }
 }
