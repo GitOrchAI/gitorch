@@ -64,3 +64,22 @@ export interface ProjectOnboardingPlan {
   steps: OnboardingStep[]
   ownerQuestions: OwnerQuestion[]
 }
+
+export type CiConclusion = 'success' | 'failure' | 'pending' | 'missing'
+export type GateCheckResult = 'passed' | 'failed' | 'not-run'
+export type DeliveredScopeResult = 'complete' | 'incomplete' | 'unknown'
+
+export type JulesPrGateDecision =
+  | 'wait-for-ci'
+  | 'wait-for-jules-ci-fix'
+  | 'run-qa'
+  | 'request-jules-adjustments'
+  | 'merge-ready'
+  | 'blocked'
+
+export interface JulesPrGateResult {
+  decision: JulesPrGateDecision
+  mergeAllowed: boolean
+  comment?: string
+  requiredActions: string[]
+}
