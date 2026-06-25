@@ -262,7 +262,7 @@ async function main() {
       console.log(`Found ${julesPRs.length} open PRs created by Jules.`);
 
       for (const pr of julesPRs) {
-        await processPR(pr.number, pr);
+        await processPR(pr.number, null);
       }
     } catch (e) {
       console.error("Error listing and parsing PRs:", e);
