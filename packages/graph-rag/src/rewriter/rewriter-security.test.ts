@@ -26,19 +26,23 @@ test('CAMEL_CASE_REGEX should not suffer from ReDoS', () => {
 })
 
 test('DOTTED_NAMESPACE_REGEX should not suffer from ReDoS', () => {
-  const payload = 'A.'.repeat(5000) + '!'
-  const start = Date.now()
-  rewriter.rewrite(payload)
-  const duration = Date.now() - start
-  expect(duration).toBeLessThan(100)
+  const payloads = ['A.'.repeat(5000) + '!', '\t'.repeat(10000)]
+  for (const payload of payloads) {
+    const start = Date.now()
+    rewriter.rewrite(payload)
+    const duration = Date.now() - start
+    expect(duration).toBeLessThan(100)
+  }
 })
 
 test('FILE_PATH_REGEX should not suffer from ReDoS', () => {
-  const payload = 'a/'.repeat(5000) + '!'
-  const start = Date.now()
-  rewriter.rewrite(payload)
-  const duration = Date.now() - start
-  expect(duration).toBeLessThan(100)
+  const payloads = ['a/'.repeat(5000) + '!', '"\'` '.repeat(1000) + 'a.ts']
+  for (const payload of payloads) {
+    const start = Date.now()
+    rewriter.rewrite(payload)
+    const duration = Date.now() - start
+    expect(duration).toBeLessThan(100)
+  }
 })
 
 test('SNAKE_CASE_REGEX still matches valid snake_case', () => {
