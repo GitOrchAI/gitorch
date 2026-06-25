@@ -10,9 +10,9 @@ const FILE_PATH_REGEX = new RegExp(
   [
     '(?<![\\w./~\\\\])',
     '(?:',
-    `(?:[.]{1,2}|~)?[/\\\\](?:${PATH_SEGMENT_PATTERN}[/\\\\])*${FILE_NAME_PATTERN}`,
+    `(?:[.]{1,2}|~)?[/\\\\](?:${PATH_SEGMENT_PATTERN}[/\\\\]){0,20}${FILE_NAME_PATTERN}`,
     '|',
-    `(?:${PATH_SEGMENT_PATTERN}[/\\\\])+${FILE_NAME_PATTERN}`,
+    `(?:${PATH_SEGMENT_PATTERN}[/\\\\]){1,20}${FILE_NAME_PATTERN}`,
     '|',
     FILE_NAME_PATTERN,
     ')',
@@ -23,7 +23,7 @@ const CAMEL_CASE_REGEX = /\b[A-Za-z_][a-z0-9_]*[A-Z][A-Za-z0-9_]*\b/
 const SNAKE_CASE_REGEX = /\b[a-z][a-z0-9]*_[a-z0-9_]*\b/
 const QUOTED_TERM_REGEX = /['"`]([^'"`]{1,160})['"`]/
 const DOTTED_NAMESPACE_REGEX = new RegExp(
-  `(?<![\\w.-])(?:[A-Za-z_][A-Za-z0-9_]*\\.)+(?!${FILE_EXTENSION_BOUNDARY_PATTERN})[A-Za-z_][A-Za-z0-9_]*(?![\\w-])`
+  `(?<![\\w.-])(?:[A-Za-z_][A-Za-z0-9_]{0,64}\\.)+(?!${FILE_EXTENSION_BOUNDARY_PATTERN})[A-Za-z_][A-Za-z0-9_]{0,64}(?![\\w-])`
 )
 const WORD_REGEX = /\b[A-Za-z][A-Za-z0-9_]*\b/
 const MAX_INPUT_LENGTH = 2000
