@@ -1,0 +1,8 @@
+    [HARDLINK](entry, done) {
+        const linkpath = (0, normalize_windows_path_js_1.normalizeWindowsPath)(node_path_1.default.resolve(this.cwd, String(entry.linkpath)));
+        const parts = (0, normalize_windows_path_js_1.normalizeWindowsPath)(String(entry.linkpath)).split('/');
+        this[ENSURE_NO_SYMLINK](entry, this.cwd, parts, () => this[LINK](entry, linkpath, 'link', done), er => {
+            this[ONERROR](er, entry);
+            done();
+        });
+    }
