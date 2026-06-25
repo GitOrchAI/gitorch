@@ -10,6 +10,11 @@ overrides:
   tar-stream: ^3.2.0
   minimatch: ^10.2.5
 
+patchedDependencies:
+  tar@7.5.16:
+    hash: tszrlewprdfcdhd3g2rooiyfey
+    path: patches/tar@7.5.16.patch
+
 importers:
 
   .:
@@ -25,7 +30,7 @@ importers:
         version: 4.24.12
       tar:
         specifier: ^7.5.16
-        version: 7.5.16
+        version: 7.5.16(patch_hash=tszrlewprdfcdhd3g2rooiyfey)
     devDependencies:
       '@playwright/test':
         specifier: 1.61.0
@@ -2725,7 +2730,7 @@ snapshots:
       npmlog: 6.0.2
       rc: 1.2.8
       semver: 7.8.4
-      tar: 7.5.16
+      tar: 7.5.16(patch_hash=tszrlewprdfcdhd3g2rooiyfey)
       url-join: 4.0.1
       which: 2.0.2
       yargs: 17.7.2
@@ -3753,7 +3758,7 @@ snapshots:
       - bare-buffer
       - react-native-b4a
 
-  tar@7.5.16:
+  tar@7.5.16(patch_hash=tszrlewprdfcdhd3g2rooiyfey):
     dependencies:
       '@isaacs/fs-minipass': 4.0.1
       chownr: 3.0.0
