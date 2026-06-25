@@ -13,6 +13,7 @@ export interface CompleteExecutionInput {
   summary: string
   evidenceRefs: string[]
   nextCandidateActions: string[]
+  status?: 'completed' | 'blocked'
 }
 
 export class ExecutionLedger {
@@ -44,7 +45,7 @@ export class ExecutionLedger {
       throw new Error(`Execution record not found: ${recordId}`)
     }
 
-    record.status = 'completed'
+    record.status = input.status ?? 'completed'
     record.completedAt = input.completedAt
     record.summary = input.summary
     record.evidenceRefs = [...input.evidenceRefs]
