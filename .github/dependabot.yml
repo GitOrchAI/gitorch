@@ -1,38 +1,35 @@
 version: 2
 updates:
-  # Configuração de atualizações do ecossistema PNPM (monorepo)
-  - package-ecosystem: "pnpm"
+  - package-ecosystem: npm
     directory: "/"
     schedule:
-      interval: "daily"
+      interval: daily
     labels:
-      - "dependabot"
-      - "dependencies"
+      - dependabot
+      - dependencies
     groups:
       production-dependencies:
-        dependency-type: "production"
+        dependency-type: production
         update-types:
-          - "patch"
-          - "minor"
+          - patch
+          - minor
       development-dependencies:
-        dependency-type: "development"
+        dependency-type: development
         update-types:
-          - "patch"
-          - "minor"
+          - patch
+          - minor
 
-  # Configuração de atualizações do ecossistema GitHub Actions
-  - package-ecosystem: "github-actions"
+  - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: "daily"
+      interval: daily
     labels:
-      - "dependabot"
-      - "github-actions"
+      - dependabot
+      - github-actions
 
-  # Configuração de atualizações de segurança prioritárias
-  - package-ecosystem: "pnpm"
+  - package-ecosystem: npm
     directory: "/"
     schedule:
-      interval: "daily"
+      interval: daily
     open-pull-requests-limit: 10
     versioning-strategy: increase
