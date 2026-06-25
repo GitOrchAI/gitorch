@@ -47,6 +47,7 @@ export class AgentOrchestrator {
       summary: result.output,
       evidenceRefs: mission.evidenceRefs,
       nextCandidateActions: [],
+      status: result.exitCode === 0 ? 'completed' : 'blocked',
     })
 
     return result
