@@ -38,11 +38,14 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "minimatch": "^10.2.5",
-    "supermemory": "^4.24.12"
+    "supermemory": "^4.24.12",
+    "tar": "^7.5.16"
   },
   "pnpm": {
     "overrides": {
       "tar": "^7.5.16",
+      "tar-fs": "^3.1.2",
+      "tar-stream": "^3.2.0",
       "minimatch": "^10.2.5"
     }
   }
