@@ -1,0 +1,58 @@
+name: Jules Auto-Recovery
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    if: |
+      (contains(github.event.comment.user.login, 'jules') || github.event.comment.user.login == 'google-labs-jules[bot]') &&
+      contains(github.event.comment.body, 'Jules has failed to create a task')
+    steps:
+      - name: Auto-Retry Jules
+        uses: actions/github-script@v9
+        env:
+          SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
+        with:
+          github-token: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issueNumber = context.issue.number;
+
+            console.log(`Iniciando auto-recuperação do Jules para issue #${issueNumber}...`);
+
+            // 1. Remover label 'jules'
+            try {
+              await github.rest.issues.removeLabel({
+                owner,
+                repo,
+                issue_number: issueNumber,
+                name: 'jules'
+              });
+              console.log("Label 'jules' removida com sucesso.");
+            } catch (err) {
+              console.error("Erro ao remover label 'jules' (talvez já tenha sido removida):", err.message);
+            }
+
+            // 2. Aguardar 3 segundos para garantir a propagação dos webhooks
+            console.log("Aguardando 3 segundos...");
+            await new Promise(r => setTimeout(r, 3000));
+
+            // 3. Adicionar label 'jules' novamente
+            try {
+              await github.rest.issues.addLabels({
+                owner,
+                repo,
+                issue_number: issueNumber,
+                labels: ['jules']
+              });
+              console.log("Label 'jules' readicionada com sucesso. Jules foi re-engajado!");
+            } catch (err) {
+              console.error("Erro ao adicionar label 'jules':", err.message);
+            }

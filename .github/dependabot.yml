@@ -1,16 +1,12 @@
 version: 2
 updates:
-  # Configuração de atualizações do ecossistema NPM (monorepo pnpm)
-  - package-ecosystem: "npm"
+  # Configuração de atualizações do ecossistema PNPM (monorepo)
+  - package-ecosystem: "pnpm"
     directory: "/"
     schedule:
       interval: "daily"
-    assignees:
-      - "jules"
-    reviewers:
-      - "jules"
     labels:
-      - "jules"
+      - "dependabot"
       - "dependencies"
     groups:
       production-dependencies:
@@ -29,10 +25,14 @@ updates:
     directory: "/"
     schedule:
       interval: "daily"
-    assignees:
-      - "jules"
-    reviewers:
-      - "jules"
     labels:
-      - "jules"
+      - "dependabot"
       - "github-actions"
+
+  # Configuração de atualizações de segurança prioritárias
+  - package-ecosystem: "pnpm"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 10
+    versioning-strategy: increase

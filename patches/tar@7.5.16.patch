@@ -1,0 +1,50 @@
+diff --git a/dist/commonjs/unpack.js b/dist/commonjs/unpack.js
+index 3df1031d84cbe5574174a8b78502ce1f1cf3c86a..bd57669b6309885bd0fe38cc0a639f3bbd383c09 100644
+--- a/dist/commonjs/unpack.js
++++ b/dist/commonjs/unpack.js
+@@ -556,6 +556,20 @@ class Unpack extends parse_js_1.Parser {
+     }
+     [HARDLINK](entry, done) {
+         const linkpath = (0, normalize_windows_path_js_1.normalizeWindowsPath)(node_path_1.default.resolve(this.cwd, String(entry.linkpath)));
++        // Security check: ensure hardlink target is within CWD
++        const rel = node_path_1.default.relative(this.cwd, linkpath);
++        const isWithin = !rel.startsWith('..') && !node_path_1.default.isAbsolute(rel);
++        if (!isWithin) {
++            const er = Object.assign(new Error('TAR_ENTRY_ERROR: hardlink outside extraction directory'), {
++                entry,
++                linkpath: String(entry.linkpath),
++                resolvedPath: linkpath,
++                cwd: this.cwd,
++                code: 'TAR_ENTRY_ERROR',
++            });
++            this[ONERROR](er, entry);
++            return done();
++        }
+         const parts = (0, normalize_windows_path_js_1.normalizeWindowsPath)(String(entry.linkpath)).split('/');
+         this[ENSURE_NO_SYMLINK](entry, this.cwd, parts, () => this[LINK](entry, linkpath, 'link', done), er => {
+             this[ONERROR](er, entry);
+diff --git a/dist/esm/unpack.js b/dist/esm/unpack.js
+index 46c53db2ad57c69d1704613c1d49189ecf91b68a..e3b0d39821c138d07d695a03efd930c3bb2662ca 100644
+--- a/dist/esm/unpack.js
++++ b/dist/esm/unpack.js
+@@ -517,6 +517,20 @@ export class Unpack extends Parser {
+     }
+     [HARDLINK](entry, done) {
+         const linkpath = normalizeWindowsPath(path.resolve(this.cwd, String(entry.linkpath)));
++        // Security check: ensure hardlink target is within CWD
++        const rel = path.relative(this.cwd, linkpath);
++        const isWithin = !rel.startsWith('..') && !path.isAbsolute(rel);
++        if (!isWithin) {
++            const er = Object.assign(new Error('TAR_ENTRY_ERROR: hardlink outside extraction directory'), {
++                entry,
++                linkpath: String(entry.linkpath),
++                resolvedPath: linkpath,
++                cwd: this.cwd,
++                code: 'TAR_ENTRY_ERROR',
++            });
++            this[ONERROR](er, entry);
++            return done();
++        }
+         const parts = normalizeWindowsPath(String(entry.linkpath)).split('/');
+         this[ENSURE_NO_SYMLINK](entry, this.cwd, parts, () => this[LINK](entry, linkpath, 'link', done), er => {
+             this[ONERROR](er, entry);

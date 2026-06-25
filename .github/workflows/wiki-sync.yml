@@ -14,19 +14,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Código Fonte
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 10
 
-      - name: Configurar Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Configurar pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: 9
+      - name: Configurar pnpm e Node.js
+        uses: ./.github/actions/setup-pnpm
 
       - name: Instalar Dependências
         run: pnpm install --no-frozen-lockfile

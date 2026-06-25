@@ -10,22 +10,23 @@ const FILE_PATH_REGEX = new RegExp(
   [
     '(?<![\\w./~\\\\])',
     '(?:',
-    `(?:[.]{1,2}|~)?[/\\\\](?:${PATH_SEGMENT_PATTERN}[/\\\\])*${FILE_NAME_PATTERN}`,
+    `(?:[.]{1,2}|~)?[/\\\\](?:${PATH_SEGMENT_PATTERN}[/\\\\]){0,20}${FILE_NAME_PATTERN}`,
     '|',
-    `(?:${PATH_SEGMENT_PATTERN}[/\\\\])+${FILE_NAME_PATTERN}`,
+    `(?:${PATH_SEGMENT_PATTERN}[/\\\\]){1,20}${FILE_NAME_PATTERN}`,
     '|',
     FILE_NAME_PATTERN,
     ')',
     '(?=[\\s"\'`.,;:)]|$)',
   ].join('')
 )
-const CAMEL_CASE_REGEX = /\b[A-Za-z_][A-Za-z0-9_]*[A-Z][A-Za-z0-9_]*\b/
-const SNAKE_CASE_REGEX = /\b[a-z][a-z0-9_]*_[a-z0-9_]*\b/
+const CAMEL_CASE_REGEX = /\b[A-Za-z_][a-z0-9_]*[A-Z][A-Za-z0-9_]*\b/
+const SNAKE_CASE_REGEX = /\b[a-z][a-z0-9]*_[a-z0-9_]*\b/
 const QUOTED_TERM_REGEX = /['"`]([^'"`]{1,160})['"`]/
 const DOTTED_NAMESPACE_REGEX = new RegExp(
-  `(?<![\\w.-])(?:[A-Za-z_][A-Za-z0-9_]*\\.)+(?!${FILE_EXTENSION_BOUNDARY_PATTERN})[A-Za-z_][A-Za-z0-9_]*(?![\\w-])`
+  `(?<![\\w.-])(?:[A-Za-z_][A-Za-z0-9_]{0,64}\\.)+(?!${FILE_EXTENSION_BOUNDARY_PATTERN})[A-Za-z_][A-Za-z0-9_]{0,64}(?![\\w-])`
 )
 const WORD_REGEX = /\b[A-Za-z][A-Za-z0-9_]*\b/
+const MAX_INPUT_LENGTH = 2000
 const STOP_WORDS = new Set([
   'the',
   'and',
@@ -96,8 +97,9 @@ const findFirst = (regex: RegExp, value: string): RegExpMatchArray | null => {
 
 export class QueryRewriter {
   rewrite(rawIssue: string): GraphRAGPlan {
-    const extractor = this.extract(rawIssue)
-    const inferer = this.infer(rawIssue, extractor)
+    const truncatedIssue = rawIssue.slice(0, MAX_INPUT_LENGTH)
+    const extractor = this.extract(truncatedIssue)
+    const inferer = this.infer(truncatedIssue, extractor)
 
     return {
       rawIssue,
@@ -283,12 +285,13 @@ export class QueryRewriter {
   private normalizeFilePath(value: string): string {
     return value
       .replace(/\\/g, '/')
-      .replace(/^['"`\s]+|['"`\s]+$/g, '')
-      .replace(/[.,;:)]+$/g, '')
+      .replace(/^['"`\s]+/, '')
+      .replace(/['"`\s]+$/, '')
+      .replace(/[.,;:)]+$/, '')
   }
 
   private cleanToken(value: string): string {
-    return value.replace(/^[^\w]+|[^\w]+$/g, '')
+    return value.replace(/^[^\w\s]+/, '').replace(/[^\w\s]+$/, '').trim()
   }
 
   private namespaceToPath(namespace: string): string {
