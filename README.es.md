@@ -67,7 +67,7 @@ El proyecto sigue un roadmap orientado por riesgo:
 - [x] **F3: Graph RAG Pipeline** - Procesamiento de consultas semanticas
 - [x] **F4: Synapse + Feromonas** - Primitivas de coordinacion multi-agente
 - [x] **F5: GitHub Sync & Projects V2** - Sincronizacion GitHub-native de backlog, webhooks, jerarquia, dependencias y operaciones Projects V2
-- [ ] **F6: Agentes** - Runtimes integrados
+- [x] **F6: Agentes** - Orquestacion backend de runtimes para PO, RA, SM, QA, reconocimiento de proyecto, gates Jules y misiones independientes de runtime
 - [ ] **F7: Workspace Engine** - Entornos aislados de prueba y build
 - [ ] **F8: Control Plane API** - API gateway con Fastify
 - [ ] **F9: Mission Control Frontend** - Dashboard visual en React
