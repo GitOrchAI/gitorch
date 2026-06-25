@@ -70,6 +70,13 @@ export function rewriteLinks(
 
     // Resolve the absolute path of the target file
     const absoluteTarget = path.resolve(fileDir, decodeURIComponent(relativePath))
+
+    // Security: Ensure the target is within the project root
+    if (!absoluteTarget.startsWith(process.cwd())) {
+      console.warn(`Security Warning: Prevented out-of-bounds link resolution to ${absoluteTarget}`)
+      return match
+    }
+
     const relativeFromRoot = path.relative(process.cwd(), absoluteTarget).replace(/\\/g, '/')
 
     // Check if the target file is in the public whitelist
@@ -126,6 +133,13 @@ export function runSync() {
 
   for (const publicPath of config.publicPaths) {
     const absolutePath = path.resolve(process.cwd(), publicPath)
+
+    // Security: Ensure path is within the project root
+    if (!absolutePath.startsWith(process.cwd())) {
+      console.warn(`Security Warning: Skipping out-of-bounds whitelisted path: ${publicPath}`)
+      continue
+    }
+
     if (!fs.existsSync(absolutePath)) {
       console.warn(`Warning: Whitelisted path does not exist: ${publicPath}`)
       continue

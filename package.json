@@ -44,6 +44,8 @@
   "pnpm": {
     "overrides": {
       "tar": "^7.5.16",
+      "tar-fs": "^3.1.2",
+      "tar-stream": "^3.2.0",
       "minimatch": "^10.2.5"
     }
   }
