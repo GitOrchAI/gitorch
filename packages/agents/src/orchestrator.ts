@@ -1,5 +1,5 @@
 import { SynapseClient, type SynapseActor, type SynapseScope } from '@gitorch/synapse'
-import { buildAgentMission, type BuildAgentMissionInput } from './agent-mission'
+import { buildAgentMission, type BuildAgentMissionInput, workspaceManager } from './agent-mission'
 import type { RuntimeExecutionResult, RuntimeRegistry } from './runtime-adapter'
 
 export interface AgentOrchestratorOptions {
@@ -34,13 +34,21 @@ export class AgentOrchestrator {
       now,
     })
 
-    const adapter = this.registry.resolve(mission.runtime.runtime)
-    const result = await adapter.run({
-      missionId: mission.id,
-      prompt: mission.prompt,
-      runtime: mission.runtime,
-      credentialRef: mission.credentialRef,
-    })
+    const userId = mission.userId ?? 'user-default'
+    await workspaceManager.allocateWorkspace(userId, mission.projectId)
+
+    let result: RuntimeExecutionResult
+    try {
+      const adapter = this.registry.resolve(mission.runtime.runtime)
+      result = await adapter.run({
+        missionId: mission.id,
+        prompt: mission.prompt,
+        runtime: mission.runtime,
+        credentialRef: mission.credentialRef,
+      })
+    } finally {
+      await workspaceManager.hibernateWorkspace(userId, mission.projectId)
+    }
 
     this.synapse.completeExecution(record.id, {
       completedAt: new Date().toISOString(),

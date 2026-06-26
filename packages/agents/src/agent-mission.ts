@@ -1,3 +1,4 @@
+import { WorkspaceManager } from '@gitorch/workspace-engine'
 import { DEFAULT_AGENT_RUNTIME_ASSIGNMENTS } from './runtime-config'
 import type {
   AgentMission,
@@ -5,6 +6,8 @@ import type {
   F6AgentRole,
   RuntimeCredentialRef,
 } from './types'
+
+export const workspaceManager = new WorkspaceManager()
 
 export interface BuildAgentMissionInput {
   id: string
@@ -16,6 +19,7 @@ export interface BuildAgentMissionInput {
   credentialRef: RuntimeCredentialRef
   runtime?: AgentRuntimeSelection
   evidenceRefs?: string[]
+  userId?: string
 }
 
 export function buildAgentMission(input: BuildAgentMissionInput): AgentMission {
@@ -40,6 +44,7 @@ export function buildAgentMission(input: BuildAgentMissionInput): AgentMission {
       providedSecrets: [...input.credentialRef.providedSecrets],
     },
     evidenceRefs: [...(input.evidenceRefs ?? [])],
+    userId: input.userId,
   }
 }
 

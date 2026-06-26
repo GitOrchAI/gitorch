@@ -31,6 +31,7 @@ export interface AgentMission {
   runtime: AgentRuntimeSelection
   credentialRef: RuntimeCredentialRef
   evidenceRefs: string[]
+  userId?: string
 }
 
 export type OnboardingStepKind =

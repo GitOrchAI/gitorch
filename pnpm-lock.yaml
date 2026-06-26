@@ -77,6 +77,9 @@ importers:
       '@gitorch/synapse':
         specifier: workspace:*
         version: link:../synapse
+      '@gitorch/workspace-engine':
+        specifier: workspace:*
+        version: link:../workspace-engine
     devDependencies:
       '@types/node':
         specifier: ^20.10.0

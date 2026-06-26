@@ -93,3 +93,24 @@ test('keeps credential reference immutable from caller mutations after mission c
     providedSecrets: ['OPENAI_API_KEY'],
   })
 })
+
+test('propagates userId to buildAgentMission output if provided', () => {
+  const mission = buildAgentMission({
+    id: 'mission-po-3',
+    projectId: 'project-1',
+    repository: 'owner/repo',
+    role: 'po',
+    goal: 'Test user ID propagation',
+    context: [],
+    credentialRef: {
+      connectionId: 'conn-codex',
+      ownerScope: 'project',
+      runtime: 'codex',
+      providedSecrets: ['OPENAI_API_KEY'],
+    },
+    userId: 'user-123',
+  })
+
+  expect(mission.userId).toBe('user-123')
+})
+

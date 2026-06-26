@@ -18,7 +18,8 @@
   },
   "dependencies": {
     "@gitorch/github-sync": "workspace:*",
-    "@gitorch/synapse": "workspace:*"
+    "@gitorch/synapse": "workspace:*",
+    "@gitorch/workspace-engine": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
