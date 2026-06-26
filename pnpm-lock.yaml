@@ -9,6 +9,7 @@ overrides:
   tar-fs: ^3.1.2
   tar-stream: ^3.2.0
   minimatch: ^10.2.5
+  '@types/node': 20.10.0
 
 patchedDependencies:
   tar@7.5.16:
@@ -67,7 +68,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.1.9
-        version: 4.1.9(@types/node@20.19.43)(vite@8.0.16(@types/node@20.19.43)(esbuild@0.28.1)(tsx@4.22.4))
+        version: 4.1.9(@types/node@20.10.0)(vite@8.0.16(@types/node@20.10.0)(esbuild@0.28.1)(tsx@4.22.4))
 
   packages/agents:
     dependencies:
@@ -82,14 +83,14 @@ importers:
         version: link:../workspace-engine
     devDependencies:
       '@types/node':
-        specifier: ^20.10.0
-        version: 20.19.43
+        specifier: 20.10.0
+        version: 20.10.0
       typescript:
         specifier: ^5.4.0
         version: 5.9.3
       vitest:
         specifier: ^4.1.9
-        version: 4.1.9(@types/node@20.19.43)(vite@8.0.16(@types/node@20.19.43)(esbuild@0.28.1)(tsx@4.22.4))
+        version: 4.1.9(@types/node@20.10.0)(vite@8.0.16(@types/node@20.10.0)(esbuild@0.28.1)(tsx@4.22.4))
 
   packages/cgc:
     dependencies:
@@ -101,14 +102,14 @@ importers:
         version: 0.7.1
     devDependencies:
       '@types/node':
-        specifier: ^20.10.0
-        version: 20.19.43
+        specifier: 20.10.0
+        version: 20.10.0
       typescript:
         specifier: ^5.4.0
         version: 5.9.3
       vitest:
         specifier: ^4.1.9
-        version: 4.1.9(@types/node@20.19.43)(vite@8.0.16(@types/node@20.19.43)(esbuild@0.28.1)(tsx@4.22.4))
+        version: 4.1.9(@types/node@20.10.0)(vite@8.0.16(@types/node@20.10.0)(esbuild@0.28.1)(tsx@4.22.4))
 
   packages/cortex:
     dependencies:
@@ -123,14 +124,14 @@ importers:
         specifier: ^7.6.13
         version: 7.6.13
       '@types/node':
-        specifier: ^20.10.0
-        version: 20.19.43
+        specifier: 20.10.0
+        version: 20.10.0
       typescript:
         specifier: ^5.4.0
         version: 5.9.3
       vitest:
         specifier: ^4.1.9
-        version: 4.1.9(@types/node@20.19.43)(vite@8.0.16(@types/node@20.19.43)(esbuild@0.28.1)(tsx@4.22.4))
+        version: 4.1.9(@types/node@20.10.0)(vite@8.0.16(@types/node@20.10.0)(esbuild@0.28.1)(tsx@4.22.4))
 
   packages/github-sync:
     dependencies:
@@ -139,14 +140,14 @@ importers:
         version: link:../synapse
     devDependencies:
       '@types/node':
-        specifier: ^20.10.0
-        version: 20.19.43
+        specifier: 20.10.0
+        version: 20.10.0
       typescript:
         specifier: ^5.4.0
         version: 5.9.3
       vitest:
         specifier: ^4.1.9
-        version: 4.1.9(@types/node@20.19.43)(vite@8.0.16(@types/node@20.19.43)(esbuild@0.28.1)(tsx@4.22.4))
+        version: 4.1.9(@types/node@20.10.0)(vite@8.0.16(@types/node@20.10.0)(esbuild@0.28.1)(tsx@4.22.4))
 
   packages/graph-rag:
     dependencies:
@@ -158,8 +159,8 @@ importers:
         version: link:../cortex
     devDependencies:
       '@types/node':
-        specifier: ^20.10.0
-        version: 20.19.43
+        specifier: 20.10.0
+        version: 20.10.0
       tsx:
         specifier: 4.22.4
         version: 4.22.4
@@ -168,7 +169,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.1.9
-        version: 4.1.9(@types/node@20.19.43)(vite@8.0.16(@types/node@20.19.43)(esbuild@0.28.1)(tsx@4.22.4))
+        version: 4.1.9(@types/node@20.10.0)(vite@8.0.16(@types/node@20.10.0)(esbuild@0.28.1)(tsx@4.22.4))
 
   packages/synapse:
     dependencies:
@@ -180,26 +181,26 @@ importers:
         version: link:../graph-rag
     devDependencies:
       '@types/node':
-        specifier: ^20.10.0
-        version: 20.19.43
+        specifier: 20.10.0
+        version: 20.10.0
       typescript:
         specifier: ^5.4.0
         version: 5.9.3
       vitest:
         specifier: ^4.1.9
-        version: 4.1.9(@types/node@20.19.43)(vite@8.0.16(@types/node@20.19.43)(esbuild@0.28.1)(tsx@4.22.4))
+        version: 4.1.9(@types/node@20.10.0)(vite@8.0.16(@types/node@20.10.0)(esbuild@0.28.1)(tsx@4.22.4))
 
   packages/workspace-engine:
     devDependencies:
       '@types/node':
-        specifier: ^20.10.0
-        version: 20.19.43
+        specifier: 20.10.0
+        version: 20.10.0
       typescript:
         specifier: ^5.4.0
         version: 5.9.3
       vitest:
         specifier: ^4.1.9
-        version: 4.1.9(@types/node@20.19.43)(vite@8.0.16(@types/node@20.19.43)(esbuild@0.28.1)(tsx@4.22.4))
+        version: 4.1.9(@types/node@20.10.0)(vite@8.0.16(@types/node@20.10.0)(esbuild@0.28.1)(tsx@4.22.4))
 
 packages:
 
@@ -602,8 +603,8 @@ packages:
   '@types/json-schema@7.0.15':
     resolution: {integrity: sha512-5+fP8P8MFNC+AyZCDxrB2pkZFPGzqQWUzpSeuuVLvm8VMcorNYavBqoFcxK8bQz4Qsbn4oUEEem4wDLfcysGHA==}
 
-  '@types/node@20.19.43':
-    resolution: {integrity: sha512-6oYBAi5ikg4Pl+kGsoYtawUMBT2zZMCvPNF7pVLnHZfd1zf38DRiWn/gT01RYCdUqkv7Fhr+C9ot4/tb+2sVvA==}
+  '@types/node@20.10.0':
+    resolution: {integrity: sha512-D0WfRmU9TQ8I9PFx9Yc+EBHw+vSpIub4IDvQivcp26PtPrdMGAq5SDcpXEo/epqa/DXotVpekHiLNTg3iaKXBQ==}
 
   '@types/semver@7.7.1':
     resolution: {integrity: sha512-FmgJfu+MOcQ370SD0ev7EI8TlCAfKYU+B4m5T3yXc1CiRN94g/SZPtsCkk506aUDtlMnFZvasDwHHUcZUEaYuA==}
@@ -1977,8 +1978,8 @@ packages:
     engines: {node: '>=14.17'}
     hasBin: true
 
-  undici-types@6.21.0:
-    resolution: {integrity: sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==}
+  undici-types@5.26.5:
+    resolution: {integrity: sha512-JlCMO+ehdEIKqlFxk6IfVoAUVmgz7cU7zD/h9XZ0qzeosSHmUJVOzSQvvYSYWXkFXC+IfLKSIffhv0sVZup6pA==}
 
   universalify@2.0.1:
     resolution: {integrity: sha512-gptHNQghINnc/vTGIk0SOFGFNXw7JVrlRUtConJRlvaw6DuX0wO5Jeko9sWrMBhh+PsYAZ7oXAiOnf/UKogyiw==}
@@ -2006,7 +2007,7 @@ packages:
     engines: {node: ^20.19.0 || >=22.12.0}
     hasBin: true
     peerDependencies:
-      '@types/node': ^20.19.0 || >=22.12.0
+      '@types/node': 20.10.0
       '@vitejs/devtools': ^0.1.18
       esbuild: ^0.27.0 || ^0.28.0
       jiti: '>=1.21.0'
@@ -2051,7 +2052,7 @@ packages:
     peerDependencies:
       '@edge-runtime/vm': '*'
       '@opentelemetry/api': ^1.9.0
-      '@types/node': ^20.0.0 || ^22.0.0 || >=24.0.0
+      '@types/node': 20.10.0
       '@vitest/browser-playwright': 4.1.9
       '@vitest/browser-preview': 4.1.9
       '@vitest/browser-webdriverio': 4.1.9
@@ -2414,7 +2415,7 @@ snapshots:
 
   '@types/better-sqlite3@7.6.13':
     dependencies:
-      '@types/node': 20.19.43
+      '@types/node': 20.10.0
 
   '@types/chai@5.2.3':
     dependencies:
@@ -2427,9 +2428,9 @@ snapshots:
 
   '@types/json-schema@7.0.15': {}
 
-  '@types/node@20.19.43':
+  '@types/node@20.10.0':
     dependencies:
-      undici-types: 6.21.0
+      undici-types: 5.26.5
 
   '@types/semver@7.7.1': {}
 
@@ -2530,13 +2531,13 @@ snapshots:
       chai: 6.2.2
       tinyrainbow: 3.1.0
 
-  '@vitest/mocker@4.1.9(vite@8.0.16(@types/node@20.19.43)(esbuild@0.28.1)(tsx@4.22.4))':
+  '@vitest/mocker@4.1.9(vite@8.0.16(@types/node@20.10.0)(esbuild@0.28.1)(tsx@4.22.4))':
     dependencies:
       '@vitest/spy': 4.1.9
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
-      vite: 8.0.16(@types/node@20.19.43)(esbuild@0.28.1)(tsx@4.22.4)
+      vite: 8.0.16(@types/node@20.10.0)(esbuild@0.28.1)(tsx@4.22.4)
 
   '@vitest/pretty-format@4.1.9':
     dependencies:
@@ -3872,7 +3873,7 @@ snapshots:
 
   typescript@5.9.3: {}
 
-  undici-types@6.21.0: {}
+  undici-types@5.26.5: {}
 
   universalify@2.0.1: {}
 
@@ -3888,7 +3889,7 @@ snapshots:
 
   vary@1.1.2: {}
 
-  vite@8.0.16(@types/node@20.19.43)(esbuild@0.28.1)(tsx@4.22.4):
+  vite@8.0.16(@types/node@20.10.0)(esbuild@0.28.1)(tsx@4.22.4):
     dependencies:
       lightningcss: 1.32.0
       picomatch: 4.0.4
@@ -3896,15 +3897,15 @@ snapshots:
       rolldown: 1.0.3
       tinyglobby: 0.2.17
     optionalDependencies:
-      '@types/node': 20.19.43
+      '@types/node': 20.10.0
       esbuild: 0.28.1
       fsevents: 2.3.3
       tsx: 4.22.4
 
-  vitest@4.1.9(@types/node@20.19.43)(vite@8.0.16(@types/node@20.19.43)(esbuild@0.28.1)(tsx@4.22.4)):
+  vitest@4.1.9(@types/node@20.10.0)(vite@8.0.16(@types/node@20.10.0)(esbuild@0.28.1)(tsx@4.22.4)):
     dependencies:
       '@vitest/expect': 4.1.9
-      '@vitest/mocker': 4.1.9(vite@8.0.16(@types/node@20.19.43)(esbuild@0.28.1)(tsx@4.22.4))
+      '@vitest/mocker': 4.1.9(vite@8.0.16(@types/node@20.10.0)(esbuild@0.28.1)(tsx@4.22.4))
       '@vitest/pretty-format': 4.1.9
       '@vitest/runner': 4.1.9
       '@vitest/snapshot': 4.1.9
@@ -3921,10 +3922,10 @@ snapshots:
       tinyexec: 1.2.4
       tinyglobby: 0.2.17
       tinyrainbow: 3.1.0
-      vite: 8.0.16(@types/node@20.19.43)(esbuild@0.28.1)(tsx@4.22.4)
+      vite: 8.0.16(@types/node@20.10.0)(esbuild@0.28.1)(tsx@4.22.4)
       why-is-node-running: 2.3.0
     optionalDependencies:
-      '@types/node': 20.19.43
+      '@types/node': 20.10.0
     transitivePeerDependencies:
       - msw
 
