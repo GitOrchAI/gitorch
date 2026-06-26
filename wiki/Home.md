@@ -9,6 +9,8 @@ Today the public surface is centered on five packages:
 - `@gitorch/graph-rag` for deterministic retrieval and ranking over code and memory
 - `@gitorch/synapse` for execution memory, pheromones, claims, decision briefs, and Cortex persistence
 - `@gitorch/github-sync` for GitHub-native issue types, sub-issues, dependencies, Projects V2 operations, webhook normalization, and Synapse event publishing
+- `@gitorch/agents` for multi-agent role assignment, task definition, and runtime configuration
+- `@gitorch/workspace-engine` for KVM/Firecracker sandbox management, chroot bootstrap, and AuthProxy streams
 
 ## Start Here
 
@@ -76,6 +78,8 @@ The current public status is:
 - F3 complete
 - F4 complete
 - F5 complete
-- F6 and beyond planned, not yet shipped
+- F6 complete
+- F7 complete
+- F8 and beyond planned, not yet shipped
 
 Use the [Roadmap](Roadmap.md) page for the current phase list.
