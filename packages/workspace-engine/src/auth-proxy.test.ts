@@ -1,4 +1,4 @@
-﻿import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { PassThrough } from 'node:stream'
 import { AuthProxy } from './auth-proxy.js'
 
@@ -28,6 +28,7 @@ describe('AuthProxy', () => {
     respond('my-secret-password')
 
     expect(stdinData).toBe('my-secret-password\n')
+    proxy.destroy()
   })
 
   it('should allow responding via provideAnswer method', () => {
@@ -44,6 +45,7 @@ describe('AuthProxy', () => {
     proxy.provideAnswer('another-answer')
 
     expect(stdinData).toBe('another-answer\n')
+    proxy.destroy()
   })
 
   it('should detect various authentication keywords case-insensitively', () => {
@@ -60,6 +62,7 @@ describe('AuthProxy', () => {
 
       expect(promptHandler).toHaveBeenCalledTimes(1)
       expect(promptHandler.mock.calls[0][0]).toContain(keyword)
+      proxy.destroy()
     }
   })
 
@@ -73,6 +76,37 @@ describe('AuthProxy', () => {
     stdout.write('Clone completed successfully\n')
     stdout.write('Unrelated output logs...\n')
 
+    expect(promptHandler).not.toHaveBeenCalled()
+    proxy.destroy()
+  })
+
+  it('should handle fragmented stream outputs using sliding window buffer', () => {
+    const stdout = new PassThrough()
+    const stdin = new PassThrough()
+    const proxy = new AuthProxy({ stdout, stdin })
+    const promptHandler = vi.fn()
+    proxy.on('prompt', promptHandler)
+
+    // Write fragmented prompt
+    stdout.write('Pass')
+    expect(promptHandler).not.toHaveBeenCalled()
+
+    stdout.write('word: ')
+    expect(promptHandler).toHaveBeenCalledTimes(1)
+    expect(promptHandler.mock.calls[0][0]).toContain('Password')
+    proxy.destroy()
+  })
+
+  it('should not leak memory and correctly cleanup listeners on destroy', () => {
+    const stdout = new PassThrough()
+    const stdin = new PassThrough()
+    const proxy = new AuthProxy({ stdout, stdin })
+    const promptHandler = vi.fn()
+    proxy.on('prompt', promptHandler)
+
+    proxy.destroy()
+
+    stdout.write('Password: ')
     expect(promptHandler).not.toHaveBeenCalled()
   })
 })
