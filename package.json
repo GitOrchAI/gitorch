@@ -46,7 +46,8 @@
       "tar": "^7.5.16",
       "tar-fs": "^3.1.2",
       "tar-stream": "^3.2.0",
-      "minimatch": "^10.2.5"
+      "minimatch": "^10.2.5",
+      "@types/node": "20.10.0"
     },
     "patchedDependencies": {
       "tar@7.5.16": "patches/tar@7.5.16.patch"
