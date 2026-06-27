@@ -27,6 +27,30 @@ export class WorkspaceManager {
     }
   }
 
+  private validateRepo(repo: string): void {
+    if (repo.startsWith('-')) {
+      throw new Error(`URL de repositório inválida: "${repo}" não pode começar com hífen.`)
+    }
+    // Validação básica para evitar injeção em argumentos de comandos que não suportam --
+    // ou como medida de defesa em profundidade.
+    const forbiddenChars = [';', '&', '|', '$', '`', '(', ')', '<', '>', '\n', '\r']
+    if (forbiddenChars.some((char) => repo.includes(char))) {
+      throw new Error(`URL de repositório inválida: "${repo}" contém caracteres proibidos.`)
+    }
+  }
+
+  private validateRuntime(runtime: string): void {
+    const regex = /^[a-zA-Z0-9.-]+$/
+    if (!regex.test(runtime)) {
+      throw new Error(
+        `Runtime inválido: "${runtime}". Apenas letras, números, hifens e pontos são permitidos.`
+      )
+    }
+    if (runtime.startsWith('-')) {
+      throw new Error(`Runtime inválido: "${runtime}" não pode começar com hífen.`)
+    }
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async allocateWorkspace(userId: string, projectId: string, config?: any): Promise<WorkspaceInfo> {
     this.validateInput(userId)
@@ -112,7 +136,8 @@ export class WorkspaceManager {
     const workspacePath = path.posix.join(this.baseDir, userId, projectId)
 
     for (const repo of repos) {
-      await execFileAsync('git', ['clone', repo, path.posix.join(workspacePath, 'src')])
+      this.validateRepo(repo)
+      await execFileAsync('git', ['clone', '--', repo, path.posix.join(workspacePath, 'src')])
     }
   }
 
@@ -130,7 +155,8 @@ export class WorkspaceManager {
     const workspacePath = path.posix.join(this.baseDir, userId, projectId)
 
     for (const runtime of runtimes) {
-      await execFileAsync('chroot', [workspacePath, 'apt-get', 'install', '-y', runtime])
+      this.validateRuntime(runtime)
+      await execFileAsync('chroot', [workspacePath, 'apt-get', 'install', '-y', '--', runtime])
     }
   }
 }

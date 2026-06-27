@@ -93,7 +93,8 @@ describe('WorkspaceManager', () => {
       (call) =>
         call[0] === 'git' &&
         call[1]?.[0] === 'clone' &&
-        call[1]?.[2] === '/var/lib/gitorch/workspaces/user-123/project-abc/src'
+        call[1]?.[1] === '--' &&
+        call[1]?.[3] === '/var/lib/gitorch/workspaces/user-123/project-abc/src'
     )
     expect(cloneCall).toBeDefined()
   })
@@ -111,12 +112,14 @@ describe('WorkspaceManager', () => {
       (call) =>
         call[0] === 'chroot' &&
         call[1]?.[0] === '/var/lib/gitorch/workspaces/user-123/project-abc' &&
+        call[1]?.includes('--') &&
         call[1]?.includes('nodejs20')
     )
     const pythonCall = calls.find(
       (call) =>
         call[0] === 'chroot' &&
         call[1]?.[0] === '/var/lib/gitorch/workspaces/user-123/project-abc' &&
+        call[1]?.includes('--') &&
         call[1]?.includes('python3')
     )
 
@@ -177,6 +180,32 @@ describe('WorkspaceManager', () => {
         await expect(
           manager.installRuntimes(`ws:user-123:${invalid}`, ['runtime'])
         ).rejects.toThrow()
+      }
+    })
+
+    it('should throw an error for malicious repository URLs (argument injection)', async () => {
+      const workspaceId = 'ws:user-123:project-abc'
+      const maliciousRepos = [
+        '--upload-pack=touch /tmp/pwned',
+        '-u touch /tmp/pwned',
+        'http://example.com/repo.git; rm -rf /',
+      ]
+
+      for (const repo of maliciousRepos) {
+        await expect(manager.cloneRepositories(workspaceId, [repo])).rejects.toThrow()
+      }
+    })
+
+    it('should throw an error for malicious runtime names (argument injection)', async () => {
+      const workspaceId = 'ws:user-123:project-abc'
+      const maliciousRuntimes = [
+        '--o APT::Update::Pre-Invoke="touch /tmp/pwned"',
+        '-o APT::Update::Pre-Invoke="touch /tmp/pwned"',
+        'package; rm -rf /',
+      ]
+
+      for (const runtime of maliciousRuntimes) {
+        await expect(manager.installRuntimes(workspaceId, [runtime])).rejects.toThrow()
       }
     })
   })
