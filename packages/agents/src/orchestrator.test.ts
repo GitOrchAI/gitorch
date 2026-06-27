@@ -27,7 +27,7 @@ vi.mock('@gitorch/workspace-engine', () => {
       hibernateWorkspace = mockHibernateWorkspace
       cloneRepositories = vi.fn()
       installRuntimes = vi.fn()
-    }
+    },
   }
 })
 

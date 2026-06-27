@@ -34,7 +34,7 @@ test('Excessive tabulations should not cause ReDoS', () => {
 })
 
 test('Mixed symbols and anchored patterns should not cause ReDoS', () => {
-  const payload = ("'\" ".repeat(10) + '\t'.repeat(10) + '...;:)').repeat(100)
+  const payload = ('\'" '.repeat(10) + '\t'.repeat(10) + '...;:)').repeat(100)
   const start = Date.now()
   rewriter.rewrite(payload)
   const duration = Date.now() - start

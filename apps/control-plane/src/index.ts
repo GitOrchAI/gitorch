@@ -1,11 +1,10 @@
 import Fastify, { FastifyInstance } from 'fastify'
-import { getEnv } from './config/env.js'
+import { loadEnv } from './config/env.js'
 import { registerPlugins } from './plugins/index.js'
 import { registerRoutes } from './routes/index.js'
-import { HEALTH_CHECK_PATH, READINESS_PATH } from './config/constants.js'
 
 async function buildApp(): Promise<FastifyInstance> {
-  const env = getEnv()
+  const env = loadEnv()
 
   const app = Fastify({
     logger: env.LOG_PRETTY
@@ -25,15 +24,11 @@ async function buildApp(): Promise<FastifyInstance> {
   await registerPlugins(app, env)
   await registerRoutes(app)
 
-  app.get(HEALTH_CHECK_PATH, async () => ({ status: 'ok', timestamp: new Date().toISOString() }))
-
-  app.get(READINESS_PATH, async () => ({ status: 'ready', timestamp: new Date().toISOString() }))
-
   return app
 }
 
 async function start(): Promise<void> {
-  const env = getEnv()
+  const env = loadEnv()
   const app = await buildApp()
 
   try {

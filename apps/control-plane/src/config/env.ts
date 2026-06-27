@@ -48,3 +48,7 @@ export function getEnv(): Env {
 export function resetEnvCache(): void {
   cachedEnv = null
 }
+
+export function loadEnv(): Env {
+  return getEnv()
+}

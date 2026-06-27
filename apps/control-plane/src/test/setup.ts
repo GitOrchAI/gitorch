@@ -1,5 +1,6 @@
 import { vi } from 'vitest'
 
+// Mock pino
 vi.mock('pino', () => ({
   default: vi.fn(() => ({
     info: vi.fn(),
@@ -19,6 +20,97 @@ vi.mock('pino', () => ({
   })),
 }))
 
+// Mock ioredis with proper constructor
+class MockRedis {
+  constructor() {}
+  connect = vi.fn().mockResolvedValue(undefined)
+  quit = vi.fn().mockResolvedValue(undefined)
+  on = vi.fn()
+  ping = vi.fn().mockResolvedValue('PONG')
+}
+
+vi.mock('ioredis', () => ({
+  default: MockRedis,
+}))
+
+// Mock @prisma/client with proper constructor
+class MockPrismaClient {
+  $connect = vi.fn().mockResolvedValue(undefined)
+  $disconnect = vi.fn().mockResolvedValue(undefined)
+  $use = vi.fn()
+  apiKey = {
+    findUnique: vi.fn(),
+    update: vi.fn(),
+  }
+  project = {
+    findUnique: vi.fn(),
+  }
+}
+
+vi.mock('@prisma/client', () => ({
+  PrismaClient: MockPrismaClient,
+}))
+
+// Mock @gitorch/github-sync
+class MockGitHubWebhookVerifier {
+  verify = vi.fn((payload: string, signature: string) => {
+    const crypto = require('crypto')
+    const expected =
+      'sha256=' + crypto.createHmac('sha256', 'test-secret').update(payload).digest('hex')
+    return signature === expected
+  })
+}
+
+vi.mock('@gitorch/github-sync', () => ({
+  GitHubWebhookVerifier: MockGitHubWebhookVerifier,
+}))
+
+// Mock @opentelemetry/sdk-metrics
+class MockMeterProvider {
+  addMetricReader = vi.fn()
+}
+
+vi.mock('@opentelemetry/sdk-metrics', () => ({
+  MeterProvider: MockMeterProvider,
+}))
+
+// Mock @opentelemetry/exporter-prometheus
+class MockPrometheusExporter {
+  metrics = vi.fn().mockResolvedValue('')
+  constructor() {}
+}
+
+vi.mock('@opentelemetry/exporter-prometheus', () => ({
+  PrometheusExporter: MockPrometheusExporter,
+}))
+
+// Mock @opentelemetry/api
+vi.mock('@opentelemetry/api', () => ({
+  metrics: {
+    getMeter: vi.fn(() => ({
+      createCounter: vi.fn(() => ({ add: vi.fn() })),
+      createHistogram: vi.fn(() => ({ record: vi.fn() })),
+      createGauge: vi.fn(() => ({ add: vi.fn(), set: vi.fn() })),
+    })),
+    setGlobalMeterProvider: vi.fn(),
+  },
+  Counter: vi.fn(),
+  Histogram: vi.fn(),
+  Gauge: vi.fn(),
+}))
+
+// Mock @opentelemetry/resources
+vi.mock('@opentelemetry/resources', () => ({
+  Resource: vi.fn(() => ({})),
+}))
+
+// Mock @opentelemetry/semantic-conventions
+vi.mock('@opentelemetry/semantic-conventions', () => ({
+  SemanticResourceAttributes: {
+    SERVICE_NAME: 'service.name',
+  },
+}))
+
 const testEnv: Record<string, string> = {
   NODE_ENV: 'test',
   PORT: '4000',
@@ -35,6 +127,8 @@ const testEnv: Record<string, string> = {
   RATE_LIMIT_WINDOW_MS: '60000',
   OTEL_SERVICE_NAME: 'gitorch-control-plane-test',
   PROMETHEUS_PORT: '9464',
+  GITHUB_WEBHOOK_SECRET: 'test-secret',
+  SSE_HEARTBEAT_INTERVAL_MS: '30000',
 }
 
 Object.entries(testEnv).forEach(([key, value]) => {

@@ -1,6 +1,29 @@
 import { FastifyInstance } from 'fastify'
+import { healthRoutes } from './health.js'
+import { metricsRoutes } from './metrics.js'
+import { githubWebhookRoutes } from './github-webhook.js'
+import { projectRoutes } from './projects.js'
+import { missionRoutes, eventRoutes } from './missions.js'
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
+  // Health and readiness endpoints
+  await healthRoutes(app)
+
+  // Metrics endpoint (Prometheus)
+  await metricsRoutes(app)
+
+  // GitHub webhook endpoint
+  await githubWebhookRoutes(app)
+
+  // Projects CRUD endpoints
+  await projectRoutes(app)
+
+  // Missions trigger and status endpoints
+  await missionRoutes(app)
+
+  // Events SSE endpoint
+  await eventRoutes(app)
+
   app.get('/api/v1/status', async () => ({
     status: 'operational',
     version: '0.1.0',
