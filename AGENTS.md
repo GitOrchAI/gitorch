@@ -75,3 +75,18 @@ Todo trabalho de implementação deve seguir o pipeline completo. É estritament
 2. **NUNCA MASCARAR ERROS:** Proibido usar `|| true`, `continue-on-error`, skips artificiais ou desativar asserções para fazer builds ou deploys passarem. Trate a causa raiz do erro.
 3. **NUNCA AGIR SEM PESQUISA:** Proibido propor correções sem investigar a causa raiz antes (`superpowers:systematic-debugging` ou `/investigate`).
 4. **NUNCA USAR SUPERMEMORY SEM CONTEXTO CLARO:** Proibido adicionar memórias no Supermemory sem especificar a qual projeto ou escopo ("guilherme-global") a memória pertence.
+
+---
+
+## Regras Específicas para o Projeto gitorch
+Sempre que for agir sobre o projeto `gitorch`, o agente deve seguir obrigatoriamente esta ordem de operações:
+1. **Ler a Memória do Projeto:** Consultar as memórias sobre `gitorch` no Supermemory antes de qualquer ação.
+   * *Fallback:* Caso o MCP nativo `supermemory` não esteja disponível/carregado na sessão atual, execute a busca utilizando o script utilitário de fallback `supermemory_helper.js` via Node.js:
+     `node C:\Users\Admin\.gemini\antigravity\brain\45bd7286-5bc7-4e5b-8585-5dc8b805c313\scratch\supermemory_helper.js recall <termo_busca>`
+2. **Mapear Impacto e Função:** Investigar a função ou lógica que precisa ser ajustada utilizando o `gitnexus` (com `gitnexus:impact`, `gitnexus:query` ou `gitnexus:context`) para compreender completamente o blast radius antes de realizar qualquer alteração física no código.
+3. **Executar o Desenvolvimento:** Somente após a leitura da memória e compreensão do código via GitNexus iniciar o planejamento e a construção seguindo o ciclo metodológico.
+4. **Persistir Aprendizados no Encerramento:** Após finalizar as alterações, salvar o histórico de decisões, mudanças e aprendizados de volta na memória do Supermemory com a tag `gitorch` (ou via helper script se o MCP não estiver ativo):
+     `node C:\Users\Admin\.gemini\antigravity\brain\45bd7286-5bc7-4e5b-8585-5dc8b805c313\scratch\supermemory_helper.js save "Histórico estruturado da entrega do gitorch"`
+
+4 .   * * A U T O N O M I A   T � C N I C A   ( R e g r a   G u i l h e r m e ) : * *   N U N C A   p e r g u n t e   a o   C E O   s o b r e   t e r m o s   t � c n i c o s ,   f r a m e w o r k s ,   a r q u i t e t u r a   o u   p a d r � e s   d e   p r o j e t o .   U t i l i z e   M C P s   ( P e r p l e x i t y ,   c o n t e x t 7 )   o u   p e s q u i s a   w e b   p a r a   d e c i d i r   a   m e l h o r   a b o r d a g e m   t � c n i c a   d e   f o r m a   a u t � n o m a .  
+ 
