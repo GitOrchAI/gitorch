@@ -1,8 +1,9 @@
 import { test, expect, describe, vi, beforeEach } from 'vitest'
-import Fastify from 'fastify'
+import Fastify, { FastifyRequest } from 'fastify'
 import { loadEnv } from '../config/env.js'
 import { registerPlugins } from '../plugins/index.js'
 import { projectRoutes } from './projects.js'
+import { runtimeConfigRoutes } from './runtime-config.js'
 
 describe('Project Routes', () => {
   let app: ReturnType<typeof Fastify>
@@ -12,8 +13,10 @@ describe('Project Routes', () => {
     const env = loadEnv()
     await registerPlugins(app, env)
     await projectRoutes(app)
+    await runtimeConfigRoutes(app)
 
-    app.addHook('onRequest', async (req: any) => {
+    app.addHook('onRequest', async (req: FastifyRequest) => {
+      // @ts-expect-error - mock authentication
       req.user = { wingId: 'wing_123', projectId: 'proj_456' }
       req.wingId = 'wing_123'
     })

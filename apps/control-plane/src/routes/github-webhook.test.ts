@@ -1,5 +1,5 @@
 import { test, expect, describe, vi, beforeEach } from 'vitest'
-import Fastify from 'fastify'
+import Fastify, { FastifyRequest } from 'fastify'
 import { loadEnv } from '../config/env.js'
 import { registerPlugins } from '../plugins/index.js'
 import { githubWebhookRoutes } from './github-webhook.js'
@@ -14,7 +14,8 @@ describe('GitHub Webhook Routes', () => {
     await githubWebhookRoutes(app)
 
     // Mock the require auth plugin by manually decorating
-    app.addHook('onRequest', async (req: any) => {
+    app.addHook('onRequest', async (req: FastifyRequest) => {
+      // @ts-expect-error - mock authentication
       req.user = { wingId: 'wing_123', projectId: 'proj_456' }
       req.wingId = 'wing_123'
     })
