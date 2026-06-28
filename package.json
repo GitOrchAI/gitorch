@@ -19,7 +19,8 @@
     "audit:readme-parity": "pnpm exec tsx scripts/ci/readme-code-parity.ts",
     "audit:secrets": "pnpm exec tsx scripts/ci/secret-scan.ts",
     "e2e": "pnpm exec tsx scripts/ci/e2e-playwright.ts",
-    "dev": "turbo run dev --parallel"
+    "dev": "turbo run dev --parallel",
+    "prepare": "husky"
   },
   "devDependencies": {
     "@playwright/test": "1.61.0",
@@ -29,6 +30,8 @@
     "eslint": "^8.57.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-prettier": "^5.5.6",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.0.8",
     "prettier": "^3.8.4",
     "tsx": "4.22.4",
     "turbo": "^2.0.0",
@@ -56,5 +59,10 @@
     "patchedDependencies": {
       "tar@7.5.16": "patches/tar@7.5.16.patch"
     }
+  },
+  "lint-staged": {
+    "*.{js,ts,tsx,jsx,mjs}": [
+      "eslint --max-warnings 0"
+    ]
   }
 }

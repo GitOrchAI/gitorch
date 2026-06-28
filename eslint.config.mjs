@@ -28,7 +28,7 @@ export default [
       'prettier/prettier': 'error',
       '@typescript-eslint/no-explicit-any': 'error',
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
-      'no-warning-comments': 'warn',
+      'no-warning-comments': 'error',
     },
   },
 ]
