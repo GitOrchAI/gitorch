@@ -20,6 +20,7 @@ jobs:
         uses: actions/github-script@v9
         env:
           SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
         with:
           github-token: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
           script: |
@@ -71,49 +72,44 @@ jobs:
 
                 console.log(`Pacote: ${packageName}, Versão alvo: ${targetVersion}`);
 
-                // 2. Criar a Issue de Fallback para o Jules
-                const issueTitle = `[Fix] Quebra de CI no PR do Dependabot #${pr.number} (${packageName})`;
-                const issueBody = `O PR do Dependabot #${pr.number} que tentou atualizar a dependência \`${packageName}\` para a versão \`${targetVersion}\` falhou no fluxo de CI.
+                // 2. Acionar o Jules via API para corrigir a branch atual
+                const branchName = pr.head.ref;
+                console.log(`Chamando a API do Jules para corrigir a branch: ${branchName}`);
 
-            Como essa atualização quebrou o build ou os testes, o PR original foi fechado automaticamente e esta issue foi aberta para que o **Jules** analise o erro, corrija o código do projeto para torná-lo compatível com a nova versão da dependência, e abra um novo PR consolidando a atualização e a correção.
+                try {
+                  const julesResponse = await fetch('https://jules.googleapis.com/v1/tasks', {
+                    method: 'POST',
+                    headers: {
+                      'Content-Type': 'application/json',
+                      'Authorization': `Bearer ${process.env.JULES_API_KEY}`
+                    },
+                    body: JSON.stringify({
+                      task: `O PR do Dependabot #${pr.number} (branch: ${branchName}) que tentou atualizar a dependência ${packageName} para a versão ${targetVersion} falhou no CI. Corrija o código do projeto para torná-lo compatível com a nova versão da dependência e faça commit na mesma branch.`,
+                      repository: `${owner}/${repo}`,
+                      branch: branchName,
+                      pull_request_number: pr.number,
+                      failed_ci_run: `https://github.com/${owner}/${repo}/actions/runs/${run.id}`
+                    })
+                  });
 
-            ### Detalhes do PR Original:
-            - **PR Fechado:** #${pr.number}
-            - **Dependência:** \`${packageName}\`
-            - **Versão Solicitada:** \`${targetVersion}\`
-            - **Branch do PR Original:** \`${pr.head.ref}\`
-            - **Workflow Run do CI Falho:** https://github.com/${owner}/${repo}/actions/runs/${run.id}
+                  if (!julesResponse.ok) {
+                    const errText = await julesResponse.text();
+                    throw new Error(`Status ${julesResponse.status}: ${errText}`);
+                  }
+                  
+                  console.log(`Jules acionado com sucesso para a branch ${branchName}!`);
 
-            Por favor, resolva os conflitos ou quebras causados por essa atualização e envie as correções.`;
-
-                console.log(`Criando nova issue para o Jules...`);
-                const newIssueResponse = await github.rest.issues.create({
-                  owner,
-                  repo,
-                  title: issueTitle,
-                  body: issueBody,
-                  labels: ['jules', 'dependabot']
-                });
-                const newIssueNumber = newIssueResponse.data.number;
-                console.log(`Issue #${newIssueNumber} criada com sucesso.`);
-
-                // 3. Comentar e fechar o PR original
-                console.log(`Comentando no PR original #${pr.number}...`);
-                await github.rest.issues.createComment({
-                  owner,
-                  repo,
-                  issue_number: pr.number,
-                  body: `PR fechado automaticamente devido à falha no CI. Uma nova issue foi aberta para o Jules corrigir a incompatibilidade e realizar a atualização: #${newIssueNumber}`
-                });
-
-                console.log(`Fechando PR #${pr.number}...`);
-                await github.rest.pulls.update({
-                  owner,
-                  repo,
-                  pull_number: pr.number,
-                  state: 'closed'
-                });
-                console.log(`PR #${pr.number} fechado com sucesso.`);
+                  // 3. Comentar no PR original informando a ação
+                  console.log(`Comentando no PR original #${pr.number}...`);
+                  await github.rest.issues.createComment({
+                    owner,
+                    repo,
+                    issue_number: pr.number,
+                    body: `A CI falhou com esta atualização. O agente **Jules** foi acionado via API para corrigir as incompatibilidades diretamente na branch \`${branchName}\`.`
+                  });
+                } catch (error) {
+                  console.error('Falha ao acionar a API do Jules:', error);
+                }
               } else {
                 console.log(`PR #${pr.number} não é do Dependabot e não possui a label 'dependabot'. Ignorando.`);
               }
