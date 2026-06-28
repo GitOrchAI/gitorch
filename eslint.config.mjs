@@ -5,7 +5,7 @@ import { rules as eslintConfigPrettierRules } from 'eslint-config-prettier'
 
 export default [
   {
-    ignores: ['**/dist/**', '**/*.d.ts', 'node_modules/**', '.next/**', 'coverage/**', 'ci/audit/**'],
+    ignores: ['**/dist/**', '**/*.d.ts', '**/node_modules/**', '**/.next/**', '**/coverage/**', 'ci/audit/**'],
   },
   {
     rules: eslintConfigPrettierRules,
