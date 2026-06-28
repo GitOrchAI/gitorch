@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: gitorch-postgres
+    environment:
+      POSTGRES_USER: gitorch
+      POSTGRES_PASSWORD: gitorch
+      POSTGRES_DB: gitorch
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gitorch -d gitorch"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: gitorch-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  control-plane:
+    build:
+      context: ../..
+      dockerfile: apps/control-plane/Dockerfile
+    container_name: gitorch-control-plane
+    environment:
+      NODE_ENV: development
+      PORT: 4000
+      DATABASE_URL: postgresql://gitorch:gitorch@postgres:5432/gitorch
+      REDIS_URL: redis://redis:6379
+      LOG_LEVEL: debug
+      LOG_PRETTY: "true"
+      CORS_ORIGIN: "*"
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-dev-secret}
+      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret}
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../..:/opt/gitorch
+      - /opt/gitorch/apps/control-plane/node_modules
+    command: ["sh", "-c", "cd /opt/gitorch/apps/control-plane && npx prisma migrate deploy && npm run dev"]
+
+volumes:
+  postgres_data:
+  redis_data:

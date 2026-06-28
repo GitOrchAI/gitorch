@@ -291,7 +291,10 @@ export class QueryRewriter {
   }
 
   private cleanToken(value: string): string {
-    return value.replace(/^[^\w\s]+/, '').replace(/[^\w\s]+$/, '').trim()
+    return value
+      .replace(/^[^\w\s]+/, '')
+      .replace(/[^\w\s]+$/, '')
+      .trim()
   }
 
   private namespaceToPath(namespace: string): string {

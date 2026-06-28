@@ -1,0 +1,39 @@
+[Unit]
+Description=GitOrch Control Plane API (Fastify)
+Documentation=https://github.com/loureng/gitorch
+After=network.target postgresql.service redis.service
+Wants=postgresql.service redis.service
+
+[Service]
+Type=notify
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/gitorch/apps/control-plane
+Environment=NODE_ENV=production
+Environment=PORT=4000
+Environment=DATABASE_URL=postgresql://gitorch:${DB_PASSWORD}@localhost:5432/gitorch
+Environment=REDIS_URL=redis://localhost:6379
+Environment=LOG_LEVEL=info
+Environment=GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
+ExecStart=/usr/bin/node dist/index.js
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gitorch-control-plane
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/gitorch /var/log/gitorch
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target

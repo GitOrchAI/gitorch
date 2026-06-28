@@ -2,8 +2,8 @@ name: Security Alerts to Issues
 
 on:
   schedule:
-    - cron: '0 6 * * *' # Roda às 06:00 UTC diariamente (03:00 Horário de Brasília)
-  workflow_dispatch: # Permite disparo manual imediato
+    - cron: '0 6 * * *'
+  workflow_dispatch:
 
 jobs:
   sync:
@@ -22,16 +22,12 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
 
-            // 1. Obter todas as issues existentes (abertas e fechadas) do repo para evitar duplicados
+            // 1. Obter todas as issues existentes
             let existingIssues = [];
             let page = 1;
             while (true) {
               const response = await github.rest.issues.listForRepo({
-                owner,
-                repo,
-                state: 'all',
-                per_page: 100,
-                page: page
+                owner, repo, state: 'all', per_page: 100, page: page
               });
               if (response.data.length === 0) break;
               existingIssues = existingIssues.concat(response.data);
@@ -41,252 +37,176 @@ jobs:
             const issueKeys = new Set();
             for (const issue of existingIssues) {
               const match = issue.body ? issue.body.match(/<!-- security-alert-id:\s*([a-zA-Z0-9_-]+)\s*-->/) : null;
-              if (match) {
-                issueKeys.add(match[1]);
-              }
+              if (match) issueKeys.add(match[1]);
             }
-
             console.log(`Encontradas ${issueKeys.size} issues com marcadores de alertas de segurança existentes.`);
 
-            // 2. Coletar alertas do Dependabot
+            // 2. Coletar alertas do Dependabot (TODOS os estados)
             let dependabotAlerts = [];
             try {
-              const res = await github.rest.dependabot.listAlertsForRepo({
-                owner,
-                repo,
-                state: 'open'
-              });
+              const res = await github.rest.dependabot.listAlertsForRepo({ owner, repo, state: 'open' });
               dependabotAlerts = res.data;
               console.log(`Alertas do Dependabot abertos: ${dependabotAlerts.length}`);
-            } catch (err) {
-              console.error("Erro ao buscar alertas do Dependabot:", err.message);
-            }
+            } catch (err) { console.error("Erro ao buscar alertas do Dependabot open:", err.message); }
+            try {
+              const res = await github.rest.dependabot.listAlertsForRepo({ owner, repo, state: 'fixed' });
+              const fixedAlerts = res.data;
+              console.log(`Alertas do Dependabot fixed: ${fixedAlerts.length}`);
+              for (const alert of fixedAlerts) {
+                const alertId = 'dependabot-' + alert.number;
+                if (!issueKeys.has(alertId)) dependabotAlerts.push(alert);
+              }
+            } catch (err) { console.error("Erro ao buscar alertas do Dependabot fixed:", err.message); }
+            try {
+              const res = await github.rest.dependabot.listAlertsForRepo({ owner, repo, state: 'dismissed' });
+              const dismissedAlerts = res.data;
+              console.log(`Alertas do Dependabot dismissed: ${dismissedAlerts.length}`);
+              for (const alert of dismissedAlerts) {
+                const alertId = 'dependabot-' + alert.number;
+                if (!issueKeys.has(alertId)) dependabotAlerts.push(alert);
+              }
+            } catch (err) { console.error("Erro ao buscar alertas do Dependabot dismissed:", err.message); }
 
-            // 3. Coletar alertas do Code Scanning
+            // 3. Coletar alertas do Code Scanning (TODOS os estados)
             let codeScanningAlerts = [];
             try {
-              const res = await github.rest.codeScanning.listAlertsForRepo({
-                owner,
-                repo,
-                state: 'open'
-              });
+              const res = await github.rest.codeScanning.listAlertsForRepo({ owner, repo, state: 'open' });
               codeScanningAlerts = res.data;
               console.log(`Alertas de Code Scanning abertos: ${codeScanningAlerts.length}`);
-            } catch (err) {
-              console.error("Erro ao buscar alertas de Code Scanning:", err.message);
-            }
+            } catch (err) { console.error("Erro ao buscar Code Scanning open:", err.message); }
+            try {
+              const res = await github.rest.codeScanning.listAlertsForRepo({ owner, repo, state: 'fixed' });
+              const fixedAlerts = res.data;
+              console.log(`Alertas de Code Scanning fixed: ${fixedAlerts.length}`);
+              for (const alert of fixedAlerts) {
+                const alertId = 'codescanning-' + alert.number;
+                if (!issueKeys.has(alertId)) codeScanningAlerts.push(alert);
+              }
+            } catch (err) { console.error("Erro ao buscar Code Scanning fixed:", err.message); }
 
-            // 4. Coletar alertas do Secret Scanning
+            // 4. Coletar alertas do Secret Scanning (TODOS os estados)
             let secretScanningAlerts = [];
             try {
-              const res = await github.rest.secretScanning.listAlertsForRepo({
-                owner,
-                repo,
-                state: 'open'
-              });
+              const res = await github.rest.secretScanning.listAlertsForRepo({ owner, repo, state: 'open' });
               secretScanningAlerts = res.data;
               console.log(`Alertas de Secret Scanning abertos: ${secretScanningAlerts.length}`);
-            } catch (err) {
-              console.error("Erro ao buscar alertas de Secret Scanning:", err.message);
+            } catch (err) { console.error("Erro ao buscar Secret Scanning open:", err.message); }
+            try {
+              const res = await github.rest.secretScanning.listAlertsForRepo({ owner, repo, state: 'resolved' });
+              const resolvedAlerts = res.data;
+              console.log(`Alertas de Secret Scanning resolved: ${resolvedAlerts.length}`);
+              for (const alert of resolvedAlerts) {
+                const alertId = 'secretscanning-' + alert.number;
+                if (!issueKeys.has(alertId)) secretScanningAlerts.push(alert);
+              }
+            } catch (err) { console.error("Erro ao buscar Secret Scanning resolved:", err.message); }
+
+            // Helpers de formatação
+            function formatCVSS(cvss) { if (!cvss) return 'N/A'; const p = []; if (cvss.score !== undefined) p.push(`Score: ${cvss.score}`); if (cvss.vector_string) p.push(`Vector: \`${cvss.vector_string}\``); return p.join(' | '); }
+            function formatCVSSAll(cvssSeverities) { if (!cvssSeverities) return 'N/A'; const l = []; if (cvssSeverities.cvss_v3) l.push(`**CVSS v3.1:** ${formatCVSS(cvssSeverities.cvss_v3)}`); if (cvssSeverities.cvss_v4) l.push(`**CVSS v4.0:** ${formatCVSS(cvssSeverities.cvss_v4)}`); return l.length ? l.join('\n') : 'N/A'; }
+            function formatCWEs(cwes) { if (!cwes || !Array.isArray(cwes) || !cwes.length) return 'Nenhum CWE associado'; return cwes.map(c => `- **CWE-${c.cwe_id}**: ${c.name}`).join('\n'); }
+            function formatVulnVersions(vulns) { if (!vulns || !Array.isArray(vulns) || !vulns.length) return 'N/A'; return vulns.map(v => { const patched = v.first_patched_version?.identifier ? `→ Corrigido em **${v.first_patched_version.identifier}**` : ''; return `- **${v.package.name}** (${v.package.ecosystem}): \`${v.vulnerable_version_range}\` ${patched} [${v.severity}]`; }).join('\n'); }
+            function formatEPSS(epss) { if (!epss) return 'N/A'; return `**Prob. exploração:** ${(epss.percentage * 100).toFixed(4)}% (Percentil: ${(epss.percentile * 100).toFixed(2)}%)`; }
+            function formatReferences(refs) { if (!refs || !Array.isArray(refs) || !refs.length) return 'Nenhuma referência'; return refs.map(r => `- [${r.url}](${r.url})`).join('\n'); }
+
+            // Descrição rica SEM LLM (fallback completo)
+            function generateRichDescription(alertType, alertDetails) {
+              const adv = alertDetails.security_advisory || {};
+              const dep = alertDetails.dependency || {};
+              const pkg = dep.package || {};
+              let md = `## 🐞 Issue de Segurança: ${alertType}\n\n`;
+              md += `### Cabeçalho Técnico\n\n| Campo | Valor |\n|-------|-------|\n`;
+              md += `| **Pacote Afetado** | \`${pkg.name || 'Não informado'}\` |\n`;
+              md += `| **Ecosistema** | ${pkg.ecosystem || 'Não informado'} |\n`;
+              md += `| **Arquivo de Manifesto** | \`${dep.manifest_path || 'Não informado'}\` |\n`;
+              md += `| **Relacionamento** | ${dep.relationship || 'Não informado'} |\n`;
+              md += `| **Escopo** | ${dep.scope || 'Não informado'} |\n`;
+              md += `| **Alerta Dependabot** | #${alertDetails.number || 'N/A'} |\n`;
+              md += `| **CVE ID** | ${adv.cve_id || 'N/A'} |\n`;
+              md += `| **GHSA ID** | ${adv.ghsa_id || 'N/A'} |\n`;
+              md += `| **Severidade** | ${adv.severity || 'Desconhecida'} |\n`;
+              md += `| **Classificação** | ${adv.classification || 'Não informado'} |\n`;
+              md += `| **Estado** | ${alertDetails.state || 'open'} |\n`;
+              md += `| **Publicado em** | ${adv.published_at || 'Não informado'} |\n`;
+              md += `| **Atualizado em** | ${adv.updated_at || 'Não informado'} |\n\n`;
+              md += `### Métricas de Severidade\n\n${formatCVSSAll(adv.cvss_severities)}\n\n`;
+              md += `### CWEs Associados\n\n${formatCWEs(adv.cwes)}\n\n`;
+              md += `### EPSS\n\n${formatEPSS(adv.epss)}\n\n`;
+              md += `### Versões Vulneráveis e Correção\n\n${formatVulnVersions(adv.vulnerabilities)}\n\n`;
+              md += `### 1. Resumo (Negócio)\n\n${adv.summary || 'Não informado'}\n\n`;
+              md += `### 2. Descrição Técnica\n\n${adv.description ? adv.description.substring(0, 5000) : 'Não informada'}\n\n`;
+              md += `### 3. Impacto de Segurança\n\n| Categoria | Classificação | Detalhamento |\n| :--- | :--- | :--- |\n| **STRIDE** | Baseado na vulnerabilidade | Análise pendente |\n| **OWASP Top 10** | Baseado na vulnerabilidade | Análise pendente |\n\n**Cenários:**\n1. Análise pendente\n2. Análise pendente\n\n`;
+              md += `### 4. Plano de Mitigação\n\n#### Opção A: Atualização Direta\n\n`;
+              if (adv.vulnerabilities && adv.vulnerabilities.length > 0) {
+                const fv = adv.vulnerabilities[0];
+                if (fv.first_patched_version?.identifier) {
+                  md += `1. Atualize \`${pkg.name}\` para **${fv.first_patched_version.identifier}**+:\n\`\`\`bash\npnpm add ${pkg.name}@${fv.first_patched_version.identifier}\n\`\`\`\n\n`;
+                  md += `2. Valide:\n\`\`\`bash\npnpm install --frozen-lockfile\n\`\`\`\n\n`;
+                }
+              }
+              md += `#### Opção B: Workaround\n\nIsolamento do componente se atualização impossível.\n\n`;
+              md += `### 5. Comandos de Solução\n\n\`\`\`bash\npnpm list ${pkg.name}\npnpm add ${pkg.name}@latest\npnpm audit\n\`\`\`\n\n`;
+              md += `### 6. Referências\n\n${formatReferences(adv.references)}\n\n---\n<!-- security-alert-id: ${alertType.toLowerCase().replace(/\s+/g, '-')}-${alertDetails.number} -->`;
+              return md;
             }
 
-            // Função para enriquecer a descrição da issue usando o OpenRouter
+            // Enriquecimento via OpenRouter
             async function enrichWithOpenRouter(alertType, alertDetails) {
-              const openRouterKey = process.env.OPENROUTER_API_KEY;
-              if (!openRouterKey) {
-                console.log("OPENROUTER_API_KEY não configurada. Usando descrição padrão.");
-                return `Alerta de segurança detectado: ${JSON.stringify(alertDetails, null, 2)}`;
-              }
+              const key = process.env.OPENROUTER_API_KEY;
+              if (!key) return generateRichDescription(alertType, alertDetails);
 
-              const prompt = `Você é um engenheiro de segurança sênior. Crie uma issue rica e detalhada em Português (PT-BR) para corrigir o seguinte alerta de segurança do tipo "${alertType}".
-            Você DEVE OBRIGATORIAMENTE seguir o template Markdown abaixo, preenchendo as seções de forma muito detalhada e profissional. NÃO adicione nenhum texto de introdução ou conclusão fora do Markdown.
+              const adv = alertDetails.security_advisory || {};
+              const dep = alertDetails.dependency || {};
+              const pkg = dep.package || {};
 
-            Use estes dados para preencher o cabeçalho:
-            - Nome da vulnerabilidade: ${alertDetails.summary || 'Vulnerabilidade em ' + alertDetails.package}
-            - Pacote Afetado: \`${alertDetails.package || ''}\`
-            - Arquivo de Manifesto: \`${alertDetails.manifest || ''}\`
-            - Alerta Dependabot: #${alertDetails.number || ''}
-            - CVE ID: ${alertDetails.cve || 'N/A'}
-            - Severidade: ${alertDetails.severity || 'Desconhecida'}
-
-            Template do Corpo da Issue:
-            ---
-            ## 🐞 Issue de Segurança: ${alertDetails.summary || 'Vulnerabilidade em ' + alertDetails.package} no pacote \`${alertDetails.package || ''}\` (${alertDetails.cve || 'N/A'})
-
-            **Severidade:** ${alertDetails.severity === 'high' ? '🔴 Alta (High)' : alertDetails.severity === 'critical' ? '🚨 Crítica (Critical)' : alertDetails.severity === 'medium' ? '🟡 Média (Medium)' : '🟢 Baixa (Low)'}
-            **Pacote Afetado:** \`${alertDetails.package || ''}\`
-            **Arquivo de Manifesto:** \`${alertDetails.manifest || ''}\`
-            **Alerta Dependabot:** #${alertDetails.number || ''}
-            **CVE:** [${alertDetails.cve || 'N/A'}](https://cve.mitre.org/cgi-bin/cvename.cgi?name=${alertDetails.cve || ''})
-
-            ---
-
-            ### 1. Resumo do Problema (Visão de Negócio)
-            [Explicação curta e clara do problema em linguagem de negócios, explicando brevemente termos complexos de forma didática]
-
-            ### 2. Impacto Potencial de Segurança
-            | Categoria | Classificação | Detalhamento |
-            | :--- | :--- | :--- |
-            | **STRIDE** | [Categorias STRIDE afetadas, ex: T (Tampering) & E (Elevation of Privilege)] | [Detalhamento do risco com base em STRIDE] |
-            | **OWASP Top 10** | [Categoria OWASP, ex: A01:2021 – Broken Access Control] | [Detalhamento do risco com base em OWASP] |
-
-            **Cenários de Ataque Realistas:**
-            1. [Cenário de ataque realista 1, ex: exploração via fluxo de upload ou pipeline de CI/CD]
-            2. [Cenário de ataque realista 2]
-
-            ---
-
-            ### 3. Plano de Mitigação e Resolução (Passo a Passo)
-            #### Opção A: Atualização Direta (Recomendada)
-            [Passo a passo detalhado incluindo comandos de pnpm/npm e validação da árvore de dependências no lockfile]
-
-            #### Opção B: Mitigação Temporária (Workaround)
-            [Passos alternativos como isolamento, restrição de permissão ou sanitização se atualização imediata for impossível]
-
-            ---
-
-            ### 4. Exemplos de Código e Comandos para Solução
-            [Comandos pnpm/npm de atualização, overrides no package.json se relevante, e script/código de exemplo em JS/TS para validação local da vulnerabilidade]
-
-            ---
-
-            ### 5. Referências
-            * [Link para Advisory do GitHub se disponível ou genérico]
-            * [Link para CVE Details]
-            * [Link para Changelog do pacote ou repositório]
-            ---
-
-            Detalhes adicionais do alerta para guiar o preenchimento:
-            ${JSON.stringify(alertDetails, null, 2)}`;
+              const prompt = "Voce e engenheiro de seguranca senior. Crie issue EXTREMAMENTE DETALHADA em PT-BR para alerta " + alertType + ". Use TODOS estes dados reais: " + JSON.stringify(alertDetails, null, 2) + ". REGRAS: 1) Preencha TODAS secoes do template com dados REAIS. 2) NAO deixe campos vazios. 3) Use Markdown pro (tabelas, listas, codigo). 4) Seja especifico: versos exatas, CVEs, CWEs, CVSS. TEMPLATE OBRIGATORIO: --- ## 🐞 Issue: " + alertType + " ### Cabeçalho | Campo | Valor | |---|---| | Pacote | " + (pkg.name || 'N/A') + " | | Eco | " + (pkg.ecosystem || 'N/A') + " | | Manifest | " + (dep.manifest_path || 'N/A') + " | | Alert # | " + (alertDetails.number || 'N/A') + " | | CVE | " + (adv.cve_id || 'N/A') + " | | GHSA | " + (adv.ghsa_id || 'N/A') + " | | Severidade | " + (adv.severity || 'N/A') + " | | Estado | " + (alertDetails.state || 'open') + " | ### Metricas " + formatCVSSAll(adv.cvss_severities) + " ### CWEs " + formatCWEs(adv.cwes) + " ### EPSS " + formatEPSS(adv.epss) + " ### Versoes " + formatVulnVersions(adv.vulnerabilities) + " ### 1. Resumo " + (adv.summary || 'N/A') + " ### 2. Desc Tecn " + (adv.description ? adv.description.substring(0,3000) : 'N/A') + " ### 3. Impacto STRIDE/OWASP/Cenarios ### 4. Mitigacao (A: update direto com comandos pnpm exatos; B: workaround) ### 5. Codigos/Comandos ### 6. Refs " + formatReferences(adv.references) + " --- <!-- security-alert-id: " + alertType.toLowerCase().replace(/\s+/g, '-') + "-" + alertDetails.number + " -->";
 
               try {
-                const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-                  method: 'POST',
-                  headers: {
-                    'Authorization': `Bearer ${openRouterKey}`,
-                    'Content-Type': 'application/json',
-                    'HTTP-Referer': 'https://github.com/loureng/gitorch',
-                  },
-                  body: JSON.stringify({
-                    model: 'openrouter/free',
-                    messages: [{ role: 'user', content: prompt }]
-                  })
+                const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+                  method: 'POST', headers: { 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json', 'HTTP-Referer': 'https://github.com/loureng/gitorch' },
+                  body: JSON.stringify({ model: 'openrouter/free', messages: [{ role: 'user', content: prompt }], max_tokens: 8000, temperature: 0.1 })
                 });
-
-                if (!response.ok) {
-                  const errText = await response.text();
-                  throw new Error(`OpenRouter API error: ${response.status} - ${errText}`);
-                }
-
-                const data = await response.json();
+                if (!resp.ok) throw new Error('OpenRouter ' + resp.status);
+                const data = await resp.json();
                 return data.choices[0].message.content;
-              } catch (err) {
-                console.error("Falha ao chamar OpenRouter:", err.message);
-                return `Falha ao gerar descrição detalhada com IA. Detalhes originais do alerta:\n\n\`\`\`json\n${JSON.stringify(alertDetails, null, 2)}\n\`\`\``;
-              }
+              } catch (e) { console.error("Falha OpenRouter:", e.message); return generateRichDescription(alertType, alertDetails); }
             }
 
-            // Processar Dependabot Alerts
+            // Processar Dependabot
             for (const alert of dependabotAlerts) {
-              const alertId = `dependabot-${alert.number}`;
-              if (issueKeys.has(alertId)) {
-                console.log(`Issue para Dependabot alerta #${alert.number} já existe. Pulando.`);
-                continue;
-              }
-
-              console.log(`Processando Dependabot alerta #${alert.number}...`);
-              const alertDetails = {
-                number: alert.number,
-                package: alert.dependency.package.name,
-                manifest: alert.dependency.manifest_path,
-                severity: alert.security_advisory.severity,
-                summary: alert.security_advisory.summary,
-                description: alert.security_advisory.description,
-                cve: alert.security_advisory.cve_id,
-                cvss: alert.security_advisory.cvss
-              };
-
-              const richDescription = await enrichWithOpenRouter('Dependabot Alert', alertDetails);
-              
-              const issueBody = `${richDescription}\n\n<!-- security-alert-id: ${alertId} -->`;
-              const issueTitle = `[Segurança] Dependabot: Vulnerabilidade em ${alert.dependency.package.name} (${alert.security_advisory.severity})`;
-
-              await github.rest.issues.create({
-                owner,
-                repo,
-                title: issueTitle,
-                body: issueBody,
-                labels: ['jules', 'dependabot']
-              });
-              console.log(`Issue criada para Dependabot alerta #${alert.number}`);
-              // Pequena pausa para evitar rate limit do OpenRouter
+              const alertId = 'dependabot-' + alert.number;
+              if (issueKeys.has(alertId)) { console.log('Issue Dependabot #' + alert.number + ' existe. Pulando.'); continue; }
+              console.log('Processando Dependabot #' + alert.number + '...');
+              const details = { number: alert.number, state: alert.state, dependency: alert.dependency, security_advisory: alert.security_advisory };
+              const body = await enrichWithOpenRouter('Dependabot Alert', details);
+              const title = '[Segurança] Dependabot: Vulnerabilidade em ' + (alert.dependency?.package?.name || 'pkg') + ' (' + (alert.security_advisory?.severity || 'unknown') + ')';
+              await github.rest.issues.create({ owner, repo, title, body, labels: ['jules', 'dependabot', 'security', alert.security_advisory?.severity || 'unknown'] });
+              console.log('Issue criada Dependabot #' + alert.number);
               await new Promise(r => setTimeout(r, 1000));
             }
 
-            // Processar Code Scanning Alerts
+            // Processar Code Scanning
             for (const alert of codeScanningAlerts) {
-              const alertId = `codescanning-${alert.number}`;
-              if (issueKeys.has(alertId)) {
-                console.log(`Issue para Code Scanning alerta #${alert.number} já existe. Pulando.`);
-                continue;
-              }
-
-              console.log(`Processando Code Scanning alerta #${alert.number}...`);
-              const alertDetails = {
-                number: alert.number,
-                rule_id: alert.rule.id,
-                severity: alert.rule.security_severity_level,
-                description: alert.rule.description,
-                tool: alert.tool.name,
-                file_path: alert.most_recent_instance?.location?.path,
-                start_line: alert.most_recent_instance?.location?.start_line,
-                message: alert.most_recent_instance?.message?.text
-              };
-
-              const richDescription = await enrichWithOpenRouter('Code Scanning Alert', alertDetails);
-              
-              const issueBody = `${richDescription}\n\n<!-- security-alert-id: ${alertId} -->`;
-              const issueTitle = `[Segurança] CodeQL: ${alert.rule.description || alert.rule.id} (${alert.rule.security_severity_level})`;
-
-              await github.rest.issues.create({
-                owner,
-                repo,
-                title: issueTitle,
-                body: issueBody,
-                labels: ['jules', 'dependabot']
-              });
-              console.log(`Issue criada para Code Scanning alerta #${alert.number}`);
+              const alertId = 'codescanning-' + alert.number;
+              if (issueKeys.has(alertId)) { console.log('Issue CodeQL #' + alert.number + ' existe.'); continue; }
+              console.log('Processando CodeQL #' + alert.number + '...');
+              const details = { number: alert.number, rule_id: alert.rule.id, severity: alert.rule.security_severity_level, description: alert.rule.description, tool: alert.tool.name, file_path: alert.most_recent_instance?.location?.path, start_line: alert.most_recent_instance?.location?.start_line, end_line: alert.most_recent_instance?.location?.end_line, message: alert.most_recent_instance?.message?.text, full_description: alert.rule.full_description, tags: alert.rule.tags, html_url: alert.html_url };
+              const body = await enrichWithOpenRouter('Code Scanning Alert', details);
+              const title = '[Segurança] CodeQL: ' + (alert.rule.description || alert.rule.id) + ' (' + alert.rule.security_severity_level + ')';
+              await github.rest.issues.create({ owner, repo, title, body, labels: ['jules', 'codeql', 'security', alert.rule.security_severity_level] });
+              console.log('Issue CodeQL #' + alert.number);
               await new Promise(r => setTimeout(r, 1000));
             }
 
-            // Processar Secret Scanning Alerts
+            // Processar Secret Scanning
             for (const alert of secretScanningAlerts) {
-              const alertId = `secretscanning-${alert.number}`;
-              if (issueKeys.has(alertId)) {
-                console.log(`Issue para Secret Scanning alerta #${alert.number} já existe. Pulando.`);
-                continue;
-              }
-
-              console.log(`Processando Secret Scanning alerta #${alert.number}...`);
-              const alertDetails = {
-                number: alert.number,
-                secret_type: alert.secret_type,
-                secret_type_display_name: alert.secret_type_display_name,
-                created_at: alert.created_at
-              };
-
-              const richDescription = await enrichWithOpenRouter('Secret Scanning Alert', alertDetails);
-              
-              const issueBody = `${richDescription}\n\n<!-- security-alert-id: ${alertId} -->`;
-              const issueTitle = `[Segurança] Secret Leak: ${alert.secret_type_display_name} detectado`;
-
-              await github.rest.issues.create({
-                owner,
-                repo,
-                title: issueTitle,
-                body: issueBody,
-                labels: ['jules', 'dependabot']
-              });
-              console.log(`Issue criada para Secret Scanning alerta #${alert.number}`);
+              const alertId = 'secretscanning-' + alert.number;
+              if (issueKeys.has(alertId)) { console.log('Issue Secret #' + alert.number + ' existe.'); continue; }
+              console.log('Processando Secret #' + alert.number + '...');
+              const details = { number: alert.number, secret_type: alert.secret_type, secret_type_display_name: alert.secret_type_display_name, created_at: alert.created_at, resolved: alert.resolved, html_url: alert.html_url };
+              const body = await enrichWithOpenRouter('Secret Scanning Alert', details);
+              const title = '[Segurança] Secret Leak: ' + alert.secret_type_display_name + ' detectado';
+              await github.rest.issues.create({ owner, repo, title, body, labels: ['jules', 'secret-scanning', 'security', 'critical'] });
+              console.log('Issue Secret #' + alert.number);
               await new Promise(r => setTimeout(r, 1000));
             }

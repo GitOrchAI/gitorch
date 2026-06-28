@@ -1,0 +1,59 @@
+{
+  "name": "@gitorch/control-plane",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src",
+    "lint:fix": "eslint src --fix",
+    "typecheck": "tsc --noEmit",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:studio": "prisma studio"
+  },
+  "dependencies": {
+    "@fastify/cors": "^9.0.0",
+    "@fastify/helmet": "^11.0.0",
+    "@fastify/rate-limit": "^9.0.0",
+    "@fastify/swagger": "^8.0.0",
+    "@fastify/swagger-ui": "^3.0.0",
+    "@fastify/under-pressure": "^8.5.0",
+    "@gitorch/agents": "workspace:*",
+    "@gitorch/cortex": "workspace:*",
+    "@gitorch/github-sync": "workspace:*",
+    "@gitorch/synapse": "workspace:*",
+    "@gitorch/workspace-engine": "workspace:*",
+    "@opentelemetry/api": "^1.0.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.37.0",
+    "@opentelemetry/exporter-prometheus": "^0.40.0",
+    "@opentelemetry/sdk-metrics": "^2.8.0",
+    "@opentelemetry/sdk-node": "^0.40.0",
+    "@opentelemetry/semantic-conventions": "^1.41.1",
+    "@prisma/client": "^5.0.0",
+    "fastify": "^4.28.0",
+    "fastify-sse-v2": "^4.0.0",
+    "ioredis": "^5.0.0",
+    "pino": "^8.0.0",
+    "pino-pretty": "^10.0.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "eslint": "^8.0.0",
+    "prisma": "^5.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^4.1.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "packageManager": "pnpm@9.7.0"
+}
