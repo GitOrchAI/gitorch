@@ -33,12 +33,14 @@ export async function registerPlugins(app: FastifyInstance, env: Env): Promise<v
     keyGenerator: (request) => request.ip,
   })
 
-  await app.register(fastifyUnderPressure, {
-    maxEventLoopDelay: 1000,
-    maxHeapUsedBytes: 100 * 1024 * 1024,
-    maxRssBytes: 200 * 1024 * 1024,
-    maxEventLoopUtilization: 0.98,
-  })
+  if (env.NODE_ENV !== 'test') {
+    await app.register(fastifyUnderPressure, {
+      maxEventLoopDelay: 1000,
+      maxHeapUsedBytes: 100 * 1024 * 1024,
+      maxRssBytes: 200 * 1024 * 1024,
+      maxEventLoopUtilization: 0.98,
+    })
+  }
 
   await app.register(fastifySwagger, {
     openapi: {

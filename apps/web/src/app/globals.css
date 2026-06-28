@@ -1,0 +1,86 @@
+@import 'tailwindcss';
+
+:root {
+  /* Cosmic Dark Palette */
+  --bg-deep: #030303;
+  --bg-surface: #0a0a0f;
+  --bg-surface-elevated: #12121a;
+
+  --text-primary: #ffffff;
+  --text-secondary: rgba(255, 255, 255, 0.6);
+
+  --accent-neon-violet: #7c3aed;
+  --accent-neon-cyan: #06b6d4;
+  --accent-neon-pink: #f472b6;
+
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-bg: rgba(255, 255, 255, 0.03);
+
+  /* Font Variables will be injected by next/font */
+}
+
+@theme inline {
+  --color-background: var(--bg-deep);
+  --color-foreground: var(--text-primary);
+  --font-sans: var(--font-geist-sans), var(--font-outfit), sans-serif;
+  --font-mono: var(--font-geist-mono), var(--font-jetbrains), monospace;
+}
+
+body {
+  background-color: var(--bg-deep);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  margin: 0;
+  padding: 0;
+  overflow-x: hidden;
+  /* Subtle mesh gradient background */
+  background-image:
+    radial-gradient(circle at 15% 50%, rgba(124, 58, 237, 0.08), transparent 25%),
+    radial-gradient(circle at 85% 30%, rgba(6, 182, 212, 0.08), transparent 25%);
+}
+
+/* Glassmorphism Utilities */
+.glass-panel {
+  background: var(--glass-bg);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--glass-border);
+  border-radius: 24px;
+}
+
+.glow-text {
+  text-shadow: 0 0 20px rgba(124, 58, 237, 0.5);
+}
+
+.glow-border {
+  box-shadow: 0 0 30px rgba(6, 182, 212, 0.2);
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-deep);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--bg-surface-elevated);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent-neon-violet);
+}
+
+/* 3D Perspective Utils */
+.perspective-container {
+  perspective: 1200px;
+}
+
+.tilt-card {
+  transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  transform-style: preserve-3d;
+}
+
+.tilt-card:hover {
+  transform: rotateY(-5deg) rotateX(5deg) translateZ(10px);
+}
