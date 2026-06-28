@@ -156,4 +156,3 @@ global.console = {
   warn: vi.fn(),
   error: vi.fn(),
 }
-

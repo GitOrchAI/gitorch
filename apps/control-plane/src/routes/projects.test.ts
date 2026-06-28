@@ -12,12 +12,12 @@ describe('Project Routes', () => {
     const env = loadEnv()
     await registerPlugins(app, env)
     await projectRoutes(app)
-    
+
     app.addHook('onRequest', async (req: any) => {
       req.user = { wingId: 'wing_123', projectId: 'proj_456' }
       req.wingId = 'wing_123'
     })
-    
+
     await app.ready()
   })
 
@@ -36,13 +36,13 @@ describe('Project Routes', () => {
     app.prisma.project.update = vi.fn().mockResolvedValue({
       id: 'proj_456',
       name: 'Test',
-      runtimeConfig: { model: 'gpt-4' }
+      runtimeConfig: { model: 'gpt-4' },
     })
 
     const res = await app.inject({
       method: 'PATCH',
       url: '/api/projects/proj_456/runtime-config',
-      payload: { runtimeConfig: { model: 'gpt-4' } }
+      payload: { runtimeConfig: { model: 'gpt-4' } },
     })
 
     expect(res.statusCode).toBe(200)

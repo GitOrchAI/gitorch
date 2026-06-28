@@ -12,13 +12,13 @@ describe('GitHub Webhook Routes', () => {
     const env = loadEnv()
     await registerPlugins(app, env)
     await githubWebhookRoutes(app)
-    
+
     // Mock the require auth plugin by manually decorating
     app.addHook('onRequest', async (req: any) => {
       req.user = { wingId: 'wing_123', projectId: 'proj_456' }
       req.wingId = 'wing_123'
     })
-    
+
     await app.ready()
   })
 
@@ -37,11 +37,12 @@ describe('GitHub Webhook Routes', () => {
     app.prisma.webhookDelivery.create = vi.fn().mockResolvedValue({})
     app.prisma.webhookDelivery.updateMany = vi.fn().mockResolvedValue({})
     app.prisma.project.findFirst = vi.fn().mockResolvedValue({ id: 'proj_123', wingId: 'wing_123' })
-    
+
     // Test with matching signature based on mock secret 'test-secret'
     const crypto = require('crypto')
     const payloadStr = JSON.stringify({ action: 'opened', repository: { id: 123 } })
-    const signature = 'sha256=' + crypto.createHmac('sha256', 'test-secret').update(payloadStr).digest('hex')
+    const signature =
+      'sha256=' + crypto.createHmac('sha256', 'test-secret').update(payloadStr).digest('hex')
 
     const res = await app.inject({
       method: 'POST',

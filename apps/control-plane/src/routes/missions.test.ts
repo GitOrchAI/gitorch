@@ -13,12 +13,12 @@ describe('Mission and Event Routes', () => {
     await registerPlugins(app, env)
     await missionRoutes(app)
     await eventRoutes(app)
-    
+
     app.addHook('onRequest', async (req: any) => {
       req.user = { wingId: 'wing_123', projectId: 'proj_456' }
       req.wingId = 'wing_123'
     })
-    
+
     await app.ready()
   })
 
@@ -44,6 +44,4 @@ describe('Mission and Event Routes', () => {
     expect(res.json().id).toBe('mission_1')
     expect(app.broadcastEvent).toHaveBeenCalled()
   })
-  
-
 })
