@@ -38,6 +38,9 @@ class MockPrismaClient {
   $connect = vi.fn().mockResolvedValue(undefined)
   $disconnect = vi.fn().mockResolvedValue(undefined)
   $use = vi.fn()
+  $queryRaw = vi.fn().mockResolvedValue([1])
+  webhookDelivery = { create: vi.fn() }
+  mission = { create: vi.fn() }
   apiKey = {
     findUnique: vi.fn(),
     update: vi.fn(),
@@ -61,8 +64,18 @@ class MockGitHubWebhookVerifier {
   })
 }
 
+class MockGitHubWebhookNormalizer {
+  normalize = vi.fn().mockReturnValue({})
+}
+
+class MockGitHubSyncEngine {
+  ingest = vi.fn().mockReturnValue({ accepted: true })
+}
+
 vi.mock('@gitorch/github-sync', () => ({
   GitHubWebhookVerifier: MockGitHubWebhookVerifier,
+  GitHubWebhookNormalizer: MockGitHubWebhookNormalizer,
+  GitHubSyncEngine: MockGitHubSyncEngine,
 }))
 
 // Mock @opentelemetry/sdk-metrics
@@ -143,3 +156,4 @@ global.console = {
   warn: vi.fn(),
   error: vi.fn(),
 }
+

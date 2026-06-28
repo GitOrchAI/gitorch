@@ -94,7 +94,7 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
 
     // Set wingId context for Prisma RLS
     const { wingIdContext } = await import('../plugins/prisma.js')
-    await wingIdContext.run({ wingId: project.wingId }, async () => {
+    return await wingIdContext.run({ wingId: project.wingId }, async () => {
       // Persist webhook delivery for idempotency/retry tracking
       await app.prisma.webhookDelivery.create({
         data: {

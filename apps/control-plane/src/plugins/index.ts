@@ -8,6 +8,12 @@ import fastifyUnderPressure from '@fastify/under-pressure'
 import { Env } from '../config/env.js'
 import { API_PREFIX, CORS_MAX_AGE } from '../config/constants.js'
 
+import { prismaPlugin } from './prisma.js'
+import { redisPlugin } from './redis.js'
+import { authPlugin } from './auth.js'
+import { ssePlugin } from './sse.js'
+import { webhookVerifyPlugin } from './webhook-verify.js'
+
 export async function registerPlugins(app: FastifyInstance, env: Env): Promise<void> {
   await app.register(fastifyHelmet, {
     contentSecurityPolicy: false,
@@ -62,4 +68,11 @@ export async function registerPlugins(app: FastifyInstance, env: Env): Promise<v
     },
     staticCSP: true,
   })
+
+  // Register custom plugins
+  await app.register(prismaPlugin)
+  await app.register(redisPlugin)
+  await app.register(authPlugin)
+  await app.register(ssePlugin)
+  await app.register(webhookVerifyPlugin)
 }
