@@ -3,7 +3,9 @@ import { healthRoutes } from './health.js'
 import { metricsRoutes } from './metrics.js'
 import { githubWebhookRoutes } from './github-webhook.js'
 import { projectRoutes } from './projects.js'
-import { missionRoutes, eventRoutes } from './missions.js'
+import { missionRoutes } from './missions.js'
+import { eventRoutes } from './events.js'
+import { runtimeConfigRoutes } from './runtime-config.js'
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   // Health and readiness endpoints
@@ -20,6 +22,9 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
   // Missions trigger and status endpoints
   await missionRoutes(app)
+
+  // Runtime Config endpoint
+  await runtimeConfigRoutes(app)
 
   // Events SSE endpoint
   await eventRoutes(app)

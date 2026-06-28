@@ -23,10 +23,6 @@ interface MissionParams {
   id: string
 }
 
-interface SSEQuery {
-  lastEventId?: string
-}
-
 export const missionRoutes = async (app: FastifyInstance): Promise<void> => {
   // POST /api/missions/trigger - Trigger a new mission
   app.post<{ Body: TriggerMissionBody }>(
@@ -112,79 +108,4 @@ export const missionRoutes = async (app: FastifyInstance): Promise<void> => {
   )
 }
 
-export const eventRoutes = async (app: FastifyInstance): Promise<void> => {
-  // GET /api/events - SSE stream for real-time events
-  app.get<{ Querystring: SSEQuery }>(
-    '/api/events',
-    async (request: FastifyRequest<{ Querystring: SSEQuery }>, reply: FastifyReply) => {
-      const wingId = request.wingId!
-      const lastEventId = request.query.lastEventId
-
-      // Set SSE headers
-      reply.raw.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        Connection: 'keep-alive',
-        'X-Accel-Buffering': 'no',
-      })
-
-      const clientId = `${wingId}:${Date.now()}:${Math.random().toString(36).slice(2)}`
-
-      // Send replay events if Last-Event-ID provided
-      if (lastEventId) {
-        const missedEvents = await app.prisma.event.findMany({
-          where: {
-            project: { wingId },
-            id: { gt: lastEventId },
-          },
-          orderBy: { createdAt: 'asc' },
-          take: 100,
-        })
-
-        for (const event of missedEvents) {
-          reply.raw.write(
-            `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event.payload)}\n\n`
-          )
-        }
-      }
-
-      // Register SSE client
-      const client = {
-        id: clientId,
-        wingId,
-        reply,
-        lastHeartbeat: Date.now(),
-      }
-      app.sseClients.set(clientId, client)
-
-      // Send initial connection event
-      reply.raw.write(
-        `event: connected\ndata: ${JSON.stringify({ clientId, wingId, timestamp: new Date().toISOString() })}\n\n`
-      )
-
-      // Heartbeat interval
-      const heartbeatInterval = setInterval(() => {
-        reply.raw.write(`:heartbeat\n\n`)
-        client.lastHeartbeat = Date.now()
-      }, 30000)
-
-      // Cleanup on close
-      request.raw.on('close', () => {
-        clearInterval(heartbeatInterval)
-        app.sseClients.delete(clientId)
-        app.broadcastEvent(wingId, 'client.disconnected', {
-          clientId,
-          wingId,
-          timestamp: new Date().toISOString(),
-        })
-      })
-
-      request.raw.on('error', () => {
-        clearInterval(heartbeatInterval)
-        app.sseClients.delete(clientId)
-      })
-    }
-  )
-}
-
-export default { missionRoutes, eventRoutes }
+export default missionRoutes
