@@ -1,0 +1,16 @@
+title = "Gitleaks configuration for GitOrch"
+
+[allowlist]
+  description = "Allowlist for pre-existing Sourcegraph tokens in all_deps.txt from Jules commits, and ignore generated files"
+  files = [
+    'all_deps.txt',
+    'pnpm-lock.yaml',
+    'package-lock.json',
+    'yarn.lock',
+    '*.fixture.*',
+    '*.test.*',
+    '*_test.*',
+  ]
+  regexes = [
+    '''sourcegraph-access-token''',
+  ]
