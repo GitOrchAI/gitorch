@@ -59,7 +59,8 @@
       "@opentelemetry/sdk-node": "^0.219.0",
       "@opentelemetry/exporter-prometheus": "^0.219.0",
       "@opentelemetry/auto-instrumentations-node": "^0.77.0",
-      "fastify": "5.9.0"
+      "fastify": "5.9.0",
+      "postcss": "^8.5.10"
     },
     "patchedDependencies": {
       "tar@7.5.16": "patches/tar@7.5.16.patch"
