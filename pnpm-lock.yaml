@@ -11,9 +11,9 @@ overrides:
   minimatch: 10.2.5
   '@types/node': 20.10.0
   '@opentelemetry/core': ^2.8.0
-  '@opentelemetry/sdk-node': ^0.219.0
-  '@opentelemetry/exporter-prometheus': ^0.219.0
-  '@opentelemetry/auto-instrumentations-node': ^0.77.0
+  '@opentelemetry/sdk-node': 0.219.0
+  '@opentelemetry/exporter-prometheus': 0.219.0
+  '@opentelemetry/auto-instrumentations-node': 0.77.0
   fastify: 5.9.0
 
 patchedDependencies:
@@ -132,16 +132,16 @@ importers:
         specifier: ^1.0.0
         version: 1.9.1
       '@opentelemetry/auto-instrumentations-node':
-        specifier: ^0.77.0
+        specifier: 0.77.0
         version: 0.77.0(@opentelemetry/api@1.9.1)(@opentelemetry/core@2.8.0(@opentelemetry/api@1.9.1))
       '@opentelemetry/exporter-prometheus':
-        specifier: ^0.219.0
+        specifier: 0.219.0
         version: 0.219.0(@opentelemetry/api@1.9.1)
       '@opentelemetry/sdk-metrics':
         specifier: ^2.8.0
         version: 2.8.0(@opentelemetry/api@1.9.1)
       '@opentelemetry/sdk-node':
-        specifier: ^0.219.0
+        specifier: 0.219.0
         version: 0.219.0(@opentelemetry/api@1.9.1)
       '@opentelemetry/semantic-conventions':
         specifier: ^1.41.1
@@ -3947,6 +3947,7 @@ packages:
   node-domexception@1.0.0:
     resolution: {integrity: sha512-/jKZoMpw0F8GRwl4/eLROPA3cfcXtLApP0QzLmUT/HuPCZWyB7IY9ZrMeKw2O/nFIqPQB3PVM9aYm0F312AXDQ==}
     engines: {node: '>=10.5.0'}
+    deprecated: Use your platform's native DOMException instead
 
   node-exports-info@1.6.2:
     resolution: {integrity: sha512-kXs9Go0cah0qHVV2v389IXQLdLCeE1xfFtjOAF+iobu0OIoG1pje8At2vMHyaPMiPMnG/LWP50twML21eMcAag==}
@@ -4352,6 +4353,7 @@ packages:
 
   rimraf@3.0.2:
     resolution: {integrity: sha512-JZkJMZkAGFFPP2YqXZXPbMlMBgsxzE8ILs4lMIX/2o0L9UBw9O/Y3o6wFw/i9YLapcUJWwqbi3kdxIPdC62TIA==}
+    deprecated: Rimraf versions prior to v4 are no longer supported
     hasBin: true
 
   rimraf@5.0.10:
