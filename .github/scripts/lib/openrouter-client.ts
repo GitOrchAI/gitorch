@@ -101,11 +101,12 @@ export function sanitizeResponse(text: string): string {
 }
 
 /**
- * Validates that a model string uses the :free suffix
+ * Validates that a model string uses the :free suffix or is the openrouter/free router
  */
 export function validateFreeModel(model: string): void {
-  if (!model.endsWith(':free')) {
-    throw new Error(`Model must use :free suffix. Got: ${model}`)
+  const isFreeModel = model.endsWith(':free') || model === 'openrouter/free'
+  if (!isFreeModel) {
+    throw new Error(`Model must use :free suffix or be 'openrouter/free' router. Got: ${model}`)
   }
 }
 
@@ -273,14 +274,9 @@ export function createOpenRouterClientFromEnv(): OpenRouterClient {
     throw new Error('OPENROUTER_API_KEY environment variable is not set')
   }
 
-  const model = env['OPENROUTER_FREE_MODEL'] || 'openrouter/free'
-  console.log('[DEBUG] OPENROUTER_FREE_MODEL from env:', env['OPENROUTER_FREE_MODEL'])
-  console.log('[DEBUG] Using model:', model)
-  console.log('[DEBUG] Model ends with :free:', model.endsWith(':free'))
-
   return new OpenRouterClient({
     apiKey,
-    model,
+    model: env['OPENROUTER_FREE_MODEL'] || 'openrouter/free',
     referer: env['REPO_OWNER']
       ? `https://github.com/${env['REPO_OWNER']}/${env['REPO_NAME'] || 'gitorch'}`
       : undefined,
