@@ -44,4 +44,21 @@ describe('Minimatch Security (ReDoS)', () => {
     expect(result).toBe(false)
     expect(duration).toBeLessThan(100)
   })
+
+  it('should handle repeated wildcards with non-matching literal (CVE-2026-26996)', () => {
+    // Pattern with many consecutive * followed by a literal character that doesn't appear in the test string
+    const N = 34
+    const pattern = '*'.repeat(N) + 'X' + '*'.repeat(3)
+    const input = 'A'.repeat(50)
+
+    const start = performance.now()
+    const result = minimatch(input, pattern)
+    const end = performance.now()
+
+    const duration = end - start
+
+    expect(result).toBe(false)
+    // In vulnerable versions, this pattern would take effectively forever
+    expect(duration).toBeLessThan(100)
+  })
 })
