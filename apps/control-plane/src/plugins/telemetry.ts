@@ -1,6 +1,5 @@
 import { FastifyPluginAsync } from 'fastify'
 import client from 'prom-client'
-import { METRICS_PATH } from '../config/constants.js'
 
 // Create a Registry to register metrics
 export const metricsRegistry = new client.Registry()

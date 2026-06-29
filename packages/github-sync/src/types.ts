@@ -28,13 +28,7 @@ export type ProjectV2FieldName =
   | 'Reviewers'
 
 export type ProjectV2Status =
-  | 'Inbox'
-  | 'Ready'
-  | 'Blocked'
-  | 'In Progress'
-  | 'In Review'
-  | 'Done'
-  | 'Archived'
+  'Inbox' | 'Ready' | 'Blocked' | 'In Progress' | 'In Review' | 'Done' | 'Archived'
 
 export interface GitHubDeliveryHeaders {
   deliveryId: string

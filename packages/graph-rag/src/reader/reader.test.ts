@@ -138,27 +138,20 @@ function createSubgraph(
   const anchorCount = options.anchorCount ?? 0
 
   return {
-    anchors: Array.from(
-      { length: anchorCount },
-      (_value, index): Anchor => ({
-        id: `anchor-${index}`,
-        kind: 'blue',
-        score: 1,
-        reason: 'test anchor',
-      })
+    anchors: Array.from({ length: anchorCount }, (_value, index): Anchor => ({
+      id: `anchor-${index}`,
+      kind: 'blue',
+      score: 1,
+      reason: 'test anchor',
+    })),
+    nodes: Array.from({ length: nodeCount }, (_value, index): GraphNode =>
+      graphNode(`node-${index}`)
     ),
-    nodes: Array.from(
-      { length: nodeCount },
-      (_value, index): GraphNode => graphNode(`node-${index}`)
-    ),
-    edges: Array.from(
-      { length: edgeCount },
-      (_value, index): GraphEdge => ({
-        source: `node-${index}`,
-        target: `node-${index + 1}`,
-        type: 'CALLS',
-      })
-    ),
+    edges: Array.from({ length: edgeCount }, (_value, index): GraphEdge => ({
+      source: `node-${index}`,
+      target: `node-${index + 1}`,
+      type: 'CALLS',
+    })),
     isolatedNodes: [],
   }
 }

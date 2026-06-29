@@ -1,12 +1,7 @@
 export type AgentRole = 'owner' | 'ra' | 'po' | 'sm' | 'qa' | 'system'
 
 export type PheromoneType =
-  | 'exploring'
-  | 'claiming'
-  | 'modifying'
-  | 'completed'
-  | 'warning'
-  | 'blocked'
+  'exploring' | 'claiming' | 'modifying' | 'completed' | 'warning' | 'blocked'
 
 export type SynapseScopeType =
   | 'wing'
