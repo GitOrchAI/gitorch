@@ -1,12 +1,12 @@
-name: Dependabot Alert → Jules Issue
+name: Manual Dependabot Alert Processor
 
 on:
-  # Real-time trigger when Dependabot creates an alert
-  dependabot_alert:
-    types: [created]
-  # Hourly schedule fallback (catches missed webhook deliveries)
-  schedule:
-    - cron: '0 * * * *'  # Every hour at minute 0
+  workflow_dispatch:
+    inputs:
+      alert_numbers:
+        description: 'Comma-separated alert numbers to process (empty = all open)'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -14,9 +14,8 @@ permissions:
   issues: write
 
 jobs:
-  create-jules-issue:
+  process-alerts:
     runs-on: ubuntu-latest
-    if: github.event_name == 'dependabot_alert' || github.event_name == 'schedule'
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -33,30 +32,25 @@ jobs:
         working-directory: .github/scripts
         run: bun install
 
-      - name: Determine Alerts to Process
+      - name: Get Alert Numbers
         id: alerts
         env:
           GITHUB_TOKEN: ${{ secrets.SECURITY_PAT }}
         run: |
-          ALERTS_JSON='[]'
-
-          if [ "${{ github.event_name }}" = "dependabot_alert" ]; then
-            # Single alert from webhook
-            ALERT_NUM="${{ github.event.alert.number }}"
-            ALERTS_JSON="[$ALERT_NUM]"
+          if [ -n "${{ github.event.inputs.alert_numbers }}" ]; then
+            ALERTS_JSON="[${{ github.event.inputs.alert_numbers }}]"
           else
-            # Schedule: fetch all open alerts
-            echo "Fetching open Dependabot alerts..."
+            echo "Fetching all open Dependabot alerts..."
             ALERT_NUMS=$(gh api \
               -H "Accept: application/vnd.github+json" \
               "/repos/${{ github.repository }}/dependabot/alerts?state=open&per_page=100" \
               --jq '.[].number' | tr '\n' ',' | sed 's/,$//')
-
             if [ -n "$ALERT_NUMS" ]; then
               ALERTS_JSON="[$ALERT_NUMS]"
+            else
+              ALERTS_JSON="[]"
             fi
           fi
-
           echo "alerts=$ALERTS_JSON" >> $GITHUB_OUTPUT
           echo "Processing alerts: $ALERTS_JSON"
 
@@ -102,41 +96,57 @@ jobs:
                 continue
               fi
 
-              # Extract the prompt from output
-              PROMPT=$(echo "$PROMPT_OUTPUT" | sed -n '/=== GENERATED PROMPT ===/,/=== END PROMPT ===/p' | sed '1d;$d')
+              # Extract JSON from output (last line should be JSON)
+              PROMPT_JSON=$(echo "$PROMPT_OUTPUT" | tail -1)
 
-              if [ -z "$PROMPT" ]; then
-                echo "::error::No prompt extracted from output"
+              # Validate JSON
+              if ! echo "$PROMPT_JSON" | jq empty 2>/dev/null; then
+                echo "::error::Invalid JSON output from generate-jules-prompt"
+                echo "$PROMPT_JSON"
                 continue
               fi
 
-              # Create issue with the prompt
+              TITLE=$(echo "$PROMPT_JSON" | jq -r '.title')
+              BODY=$(echo "$PROMPT_JSON" | jq -r '.body')
+              LABELS=$(echo "$PROMPT_JSON" | jq -r '.labels | join(",")')
+
+              # Create issue
               echo "Creating issue..."
-              ISSUE=$(gh api \
-                -X POST \
+              ISSUE_OUTPUT=$(gh api \
+                --method POST \
                 -H "Accept: application/vnd.github+json" \
                 "/repos/${{ github.repository }}/issues" \
-                -f title="[Segurança] Dependabot: Alerta #$ALERT_NUM" \
-                -f body="$PROMPT" \
-                -f labels='["jules", "dependabot", "security"]' 2>&1)
+                -f title="$TITLE" \
+                -f body="$BODY" \
+                -f "labels=$LABELS" 2>&1)
 
-              ISSUE_NUM=$(echo "$ISSUE" | jq -r '.number // empty')
+              ISSUE_NUM=$(echo "$ISSUE_OUTPUT" | jq -r '.number // empty')
 
               if [ -n "$ISSUE_NUM" ]; then
-                echo "Created issue #$ISSUE_NUM for alert #$ALERT_NUM"
-                # Wait before adding jules label (per requirements: 10 seconds)
+                echo "Created issue #$ISSUE_NUM"
+
+                # Wait before adding jules label (10 seconds per requirements)
+                echo "Waiting ${LABEL_DELAY_MS}ms before adding 'jules' label..."
                 sleep $((LABEL_DELAY_MS / 1000))
-                gh issue edit "$ISSUE_NUM" --add-label "jules" --repo "${{ github.repository }}"
+
+                # Add 'jules' label to trigger Jules
+                gh api \
+                  --method POST \
+                  -H "Accept: application/vnd.github+json" \
+                  "/repos/${{ github.repository }}/issues/$ISSUE_NUM/labels" \
+                  -f "labels=[\"jules\"]" > /dev/null
+
                 echo "Added 'jules' label to issue #$ISSUE_NUM"
               else
                 echo "::error::Failed to create issue for alert #$ALERT_NUM"
-                echo "$ISSUE"
+                echo "$ISSUE_OUTPUT"
               fi
             fi
 
-            # Delay between issue creations (per requirements: 5 minutes)
+            # Wait 5 minutes between alerts (except for last one)
             if [ $i -lt $((COUNT - 1)) ]; then
               echo "Waiting ${ISSUE_CREATION_DELAY_MS}ms before next alert..."
               sleep $((ISSUE_CREATION_DELAY_MS / 1000))
             fi
           done
+        working-directory: .github/scripts
