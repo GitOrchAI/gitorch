@@ -1,0 +1,73 @@
+name: Jules PR Conflict Resolver
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR Number to analyze (optional)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: read
+
+jobs:
+  resolve-conflicts:
+    name: Analyze & Resolve Merge Conflicts
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request_target' && 
+       (github.event.action == 'labeled' || github.event.action == 'opened' || github.event.action == 'synchronize' || github.event.action == 'reopened') &&
+       contains(github.event.pull_request.labels.*.name, 'jules'))
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SECURITY_PAT }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install Dependencies
+        working-directory: .github/scripts
+        run: bun install
+
+      - name: Analyze Merge Conflicts
+        env:
+          SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_FREE_MODEL: ${{ env.OPENROUTER_FREE_MODEL || 'qwen/qwen-2.5-7b-instruct:free' }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.pr_number }}" ]; then
+            PR_NUM="${{ github.event.inputs.pr_number }}"
+          else
+            PR_NUM="${{ github.event.pull_request.number }}"
+          fi
+          
+          echo "Analyzing PR #$PR_NUM for merge conflicts..."
+          bun run analyze-conflicts.ts "$PR_NUM"
+        working-directory: .github/scripts
+
+      - name: Remove Conflict Label if Resolved
+        if: success() && github.event_name == 'pull_request_target' && github.event.action == 'synchronize'
+        env:
+          SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
+        run: |
+          PR_NUM="${{ github.event.pull_request.number }}"
+          # Check if PR is now mergeable (conflicts resolved)
+          MERGEABLE=$(gh pr view $PR_NUM --json mergeable --jq '.mergeable' --repo ${{ github.repository }})
+          if [ "$MERGEABLE" = "MERGEABLE" ]; then
+            echo "PR #$PR_NUM is now mergeable. Removing 'jules-conflict-notified' label..."
+            gh pr edit $PR_NUM --remove-label "jules-conflict-notified" --repo ${{ github.repository }} || true
+          fi
+        working-directory: .github/scripts

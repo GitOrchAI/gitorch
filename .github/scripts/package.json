@@ -1,0 +1,35 @@
+{
+  "name": "gitorch-dependabot-jules-automation",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "GitHub Actions automation for Dependabot alerts + Jules AI agent workflow",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --ext .ts",
+    "test": "vitest run",
+    "generate-jules-prompt": "tsx generate-jules-prompt.ts",
+    "analyze-conflicts": "tsx analyze-conflicts.ts",
+    "analyze-ci-failure": "tsx analyze-ci-failure.ts",
+    "sla-tracker": "tsx sla-tracker.ts"
+  },
+  "dependencies": {
+    "@octokit/rest": "^21.0.0",
+    "@octokit/webhooks-types": "^7.6.0",
+    "dotenv": "^16.4.5",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.0",
+    "@typescript-eslint/eslint-plugin": "^8.7.0",
+    "@typescript-eslint/parser": "^8.7.0",
+    "eslint": "^9.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

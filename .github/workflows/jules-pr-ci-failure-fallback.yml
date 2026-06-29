@@ -1,0 +1,72 @@
+name: Jules PR CI Failure Fallback
+
+on:
+  check_suite:
+    types: [completed]
+
+permissions:
+  pull-requests: write
+  issues: write
+  actions: read
+  contents: read
+
+jobs:
+  fallback-on-ci-failure:
+    name: Fallback CI Failure Analysis (1+ business day)
+    runs-on: ubuntu-latest
+    if: |
+      github.event.check_suite.conclusion == 'failure' &&
+      contains(github.event.check_suite.pull_requests[0].labels.*.name, 'jules')
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SECURITY_PAT }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install Dependencies
+        working-directory: .github/scripts
+        run: bun install
+
+      - name: Analyze CI Failure
+        env:
+          SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_FREE_MODEL: ${{ env.OPENROUTER_FREE_MODEL || 'qwen/qwen-2.5-7b-instruct:free' }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          SLA_BUSINESS_DAYS: ${{ env.SLA_BUSINESS_DAYS || '1' }}
+        run: |
+          PR_NUM="${{ github.event.check_suite.pull_requests[0].number }}"
+          
+          echo "Checking PR #$PR_NUM age..."
+          CREATED_AT=$(gh pr view $PR_NUM --json createdAt --jq '.createdAt' --repo ${{ github.repository }})
+          
+          # Check business days since creation using Node.js
+          BUSINESS_DAYS=$(node -e "
+            const created = new Date('$CREATED_AT');
+            const now = new Date();
+            let days = 0;
+            const check = new Date(created);
+            while (check < now) {
+              check.setDate(check.getDate() + 1);
+              if (check.getDay() !== 0 && check.getDay() !== 6) days++;
+            }
+            console.log(days);
+          ")
+          
+          echo "PR #$PR_NUM is $BUSINESS_DAYS business day(s) old"
+          
+          if [ "$BUSINESS_DAYS" -ge "${{ env.SLA_BUSINESS_DAYS }}" ]; then
+            echo "PR exceeds 1 business day. Running fallback analysis..."
+            bun run analyze-ci-failure.ts "$PR_NUM"
+          else
+            echo "PR is within SLA ($BUSINESS_DAYS < ${{ env.SLA_BUSINESS_DAYS }}). Jules built-in auto-fix should handle this."
+            echo "Skipping fallback analysis."
+          fi
+        working-directory: .github/scripts

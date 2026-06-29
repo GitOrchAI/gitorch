@@ -1,0 +1,105 @@
+name: CI/CD Backend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/control-plane/**'
+      - 'packages/**'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm --filter=@gitorch/control-plane run typecheck
+
+      - name: Lint
+        run: pnpm --filter=@gitorch/control-plane run lint
+
+      - name: Test
+        run: pnpm --filter=@gitorch/control-plane run test
+
+      - name: Build Docker image
+        run: |
+          docker build -t gitorch-control-plane:latest -f apps/control-plane/Dockerfile .
+
+      - name: Save Docker image
+        run: docker save gitorch-control-plane:latest | gzip > control-plane.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: control-plane-image
+          path: control-plane.tar.gz
+          retention-days: 1
+
+  deploy:
+    needs: test-and-build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: control-plane-image
+          path: .
+
+      - name: Load Docker image
+        run: docker load < control-plane.tar.gz
+
+      - name: Deploy to ARM VM
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.ARM_VM_HOST }}
+          username: ubuntu
+          key: ${{ secrets.ARM_VM_SSH_KEY }}
+          port: 22
+          script: |
+            set -e
+            cd /home/ubuntu/gitorch
+            
+            # Stop existing container
+            docker compose -f apps/control-plane/docker-compose.prod.yml down --remove-orphans || true
+            
+            # Load new image
+            docker load < control-plane.tar.gz
+            
+            # Start with new image
+            docker compose -f apps/control-plane/docker-compose.prod.yml up -d --no-build
+            
+            # Wait for health check
+            sleep 10
+            
+            # Verify deployment
+            curl -f http://localhost:4000/health || exit 1
+            
+            echo "✅ Backend deployed successfully"
+          env:
+            POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+            JWT_SECRET: ${{ secrets.JWT_SECRET }}
+            API_KEY_PREFIX: ${{ secrets.API_KEY_PREFIX }}
