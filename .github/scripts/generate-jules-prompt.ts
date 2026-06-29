@@ -36,17 +36,20 @@ const DependabotAlertSchema = z.object({
       .object({
         cvss_v3: z
           .object({
-            score: z.number().optional(),
-            vector_string: z.string().optional(),
+            score: z.number().nullable().optional(),
+            vector_string: z.string().nullable().optional(),
           })
+          .nullable()
           .optional(),
         cvss_v4: z
           .object({
-            score: z.number().optional(),
-            vector_string: z.string().optional(),
+            score: z.number().nullable().optional(),
+            vector_string: z.string().nullable().optional(),
           })
+          .nullable()
           .optional(),
       })
+      .nullable()
       .optional(),
     cwes: z
       .array(
@@ -82,7 +85,7 @@ const DependabotAlertSchema = z.object({
     references: z
       .array(
         z.object({
-          url: z.string(),
+          url: z.string().nullable(),
         })
       )
       .optional(),
@@ -125,29 +128,47 @@ export async function fetchDependabotAlert(
 /**
  * Formats CVSS information
  */
-type CVSSType = { score?: number | undefined; vector_string?: string | undefined } | undefined
+type CVSSType =
+  | { score?: number | null | undefined; vector_string?: string | null | undefined }
+  | null
+  | undefined
 
 function formatCVSS(cvss: CVSSType): string {
   if (!cvss) return 'N/A'
   const parts: string[] = []
-  if (cvss.score !== undefined) parts.push(`Score: ${cvss.score}`)
+  if (cvss.score !== undefined && cvss.score !== null) parts.push(`Score: ${cvss.score}`)
   if (cvss.vector_string) parts.push(`Vector: \`${cvss.vector_string}\``)
   return parts.length ? parts.join(' | ') : 'N/A'
 }
 
 type CVSSAllType =
   | {
-      cvss_v3?: { score?: number | undefined; vector_string?: string | undefined } | undefined
-      cvss_v4?: { score?: number | undefined; vector_string?: string | undefined } | undefined
+      cvss_v3?:
+        | { score?: number | null | undefined; vector_string?: string | null | undefined }
+        | null
+        | undefined
+      cvss_v4?:
+        | { score?: number | null | undefined; vector_string?: string | null | undefined }
+        | null
+        | undefined
     }
+  | null
   | undefined
 
 function formatCVSSAll(cvssSeverities: CVSSAllType): string {
   if (!cvssSeverities) return 'N/A'
   const lines: string[] = []
-  if (cvssSeverities.cvss_v3 && cvssSeverities.cvss_v3.score !== undefined)
+  if (
+    cvssSeverities.cvss_v3 &&
+    cvssSeverities.cvss_v3.score !== undefined &&
+    cvssSeverities.cvss_v3.score !== null
+  )
     lines.push(`**CVSS v3.1:** ${formatCVSS(cvssSeverities.cvss_v3)}`)
-  if (cvssSeverities.cvss_v4 && cvssSeverities.cvss_v4.score !== undefined)
+  if (
+    cvssSeverities.cvss_v4 &&
+    cvssSeverities.cvss_v4.score !== undefined &&
+    cvssSeverities.cvss_v4.score !== null
+  )
     lines.push(`**CVSS v4.0:** ${formatCVSS(cvssSeverities.cvss_v4)}`)
   return lines.length ? lines.join('\n') : 'N/A'
 }
@@ -160,9 +181,9 @@ function formatCWEs(cwes?: Array<{ cwe_id: string; name: string }>): string {
 type VulnType =
   | {
       package: { name: string; ecosystem: string }
-      vulnerable_version_range?: string | undefined
-      first_patched_version?: { identifier: string } | undefined
-      severity?: string | undefined
+      vulnerable_version_range?: string | null | undefined
+      first_patched_version?: { identifier: string } | null | undefined
+      severity?: string | null | undefined
     }
   | undefined
 
@@ -179,18 +200,27 @@ function formatVulnVersions(vulns?: Array<VulnType>): string {
     .join('\n')
 }
 
-type EPSType = { percentage?: number | undefined; percentile?: number | undefined } | undefined
+type EPSType =
+  | { percentage?: number | null | undefined; percentile?: number | null | undefined }
+  | null
+  | undefined
 
 function formatEPSS(epss: EPSType): string {
   if (!epss) return 'N/A'
-  const pct = epss.percentage !== undefined ? (epss.percentage * 100).toFixed(4) : 'N/A'
-  const pctl = epss.percentile !== undefined ? (epss.percentile * 100).toFixed(2) : 'N/A'
+  const pct =
+    epss.percentage !== undefined && epss.percentage !== null
+      ? (epss.percentage * 100).toFixed(4)
+      : 'N/A'
+  const pctl =
+    epss.percentile !== undefined && epss.percentile !== null
+      ? (epss.percentile * 100).toFixed(2)
+      : 'N/A'
   return `**Prob. exploração:** ${pct}% (Percentil: ${pctl}%)`
 }
 
-function formatReferences(refs?: Array<{ url: string }>): string {
+function formatReferences(refs?: Array<{ url: string | null }>): string {
   if (!refs || !refs.length) return 'Nenhuma referência'
-  return refs.map((r) => `- [${r.url}](${r.url})`).join('\n')
+  return refs.map((r) => `- [${r.url || 'N/A'}](${r.url || '#'})`).join('\n')
 }
 
 /**
@@ -257,7 +287,7 @@ pnpm test
 
 ### Métricas de Severidade
 
-${formatCVSSAll(adv.cvss_severities)}
+${formatCVSSAll(adv.cvss_severities as CVSSAllType)}
 
 ### CWEs Associados
 
