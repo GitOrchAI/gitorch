@@ -10,6 +10,7 @@ overrides:
   tar-stream: ^3.2.0
   minimatch: 10.2.5
   '@types/node': 20.10.0
+  '@opentelemetry/core': ^2.8.0
 
 patchedDependencies:
   tar@7.5.16:
@@ -1037,7 +1038,7 @@ packages:
     engines: {node: ^18.19.0 || >=20.6.0}
     peerDependencies:
       '@opentelemetry/api': ^1.4.1
-      '@opentelemetry/core': ^2.0.0
+      '@opentelemetry/core': ^2.8.0
 
   '@opentelemetry/configuration@0.219.0':
     resolution: {integrity: sha512-wXZUYv4ngu43nA4WEhuXNacm46LW+17LRM8nKyIhBzroRA24PBYjMnakwzR/w777nFUB5xlgsYTTeuXxumZM1Q==}
