@@ -73,12 +73,6 @@ export const telemetryPlugin: FastifyPluginAsync = async (app) => {
     )
   })
 
-  // Prometheus metrics endpoint
-  app.get(METRICS_PATH, async (_request, reply) => {
-    reply.type(metricsRegistry.contentType)
-    return metricsRegistry.metrics()
-  })
-
   app.addHook('onClose', async () => {
     if (defaultMetricsInterval) {
       clearInterval(defaultMetricsInterval)
