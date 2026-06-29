@@ -12,7 +12,15 @@ export const OpenRouterConfigSchema = z.object({
   model: z
     .string()
     .regex(/:free$/, 'Model must end with :free suffix')
-    .default('qwen/qwen-2.5-7b-instruct:free'),
+    .default('meta-llama/llama-3.1-8b-instruct:free'),
+  fallbackModels: z
+    .array(z.string().regex(/:free$/))
+    .default([
+      'meta-llama/llama-3.1-8b-instruct:free',
+      'qwen/qwen3-coder:free',
+      'google/gemma-2-9b-it:free',
+      'microsoft/phi-3-mini-128k-instruct:free',
+    ]),
   baseUrl: z.string().url().default('https://openrouter.ai/api/v1'),
   maxTokens: z.number().int().positive().default(8000),
   temperature: z.number().min(0).max(2).default(0.1),
@@ -128,16 +136,21 @@ export class OpenRouterClient {
 
   /**
    * Creates a chat completion with retry logic and safety filtering
+   * Tries primary model, then fallback models if they fail
    */
   async chatCompletion(
     messages: ChatMessage[],
     options?: { model?: string; maxTokens?: number; temperature?: number }
   ): Promise<string> {
-    const model = options?.model || this.config.model
-    validateFreeModel(model)
+    const primaryModel = options?.model || this.config.model
+    validateFreeModel(primaryModel)
 
-    const requestBody: ChatCompletionRequest = {
-      model,
+    // Build model list: primary + fallbacks (deduplicated)
+    const modelsToTry = [primaryModel, ...this.config.fallbackModels].filter(
+      (m, i, arr) => arr.indexOf(m) === i
+    )
+
+    const requestBodyBase = {
       messages,
       max_tokens: options?.maxTokens ?? this.config.maxTokens,
       temperature: options?.temperature ?? this.config.temperature,
@@ -145,60 +158,72 @@ export class OpenRouterClient {
 
     let lastError: Error | null = null
 
-    for (let attempt = 0; attempt <= this.config.maxRetries; attempt++) {
-      try {
-        const controller = new AbortController()
-        const timeoutId = setTimeout(() => controller.abort(), this.config.timeoutMs)
+    for (const model of modelsToTry) {
+      validateFreeModel(model)
 
-        const response = await fetch(`${this.config.baseUrl}/chat/completions`, {
-          method: 'POST',
-          headers: this.headers,
-          body: JSON.stringify(requestBody),
-          signal: controller.signal,
-        })
+      const requestBody: ChatCompletionRequest = {
+        model,
+        ...requestBodyBase,
+      }
 
-        clearTimeout(timeoutId)
+      for (let attempt = 0; attempt <= this.config.maxRetries; attempt++) {
+        try {
+          const controller = new AbortController()
+          const timeoutId = setTimeout(() => controller.abort(), this.config.timeoutMs)
 
-        if (!response.ok) {
-          const errorText = await response.text()
-          throw new Error(`OpenRouter API error (${response.status}): ${errorText}`)
-        }
+          const response = await fetch(`${this.config.baseUrl}/chat/completions`, {
+            method: 'POST',
+            headers: this.headers,
+            body: JSON.stringify(requestBody),
+            signal: controller.signal,
+          })
 
-        const data = await response.json()
-        const parsed = ChatCompletionResponseSchema.parse(data)
+          clearTimeout(timeoutId)
 
-        if (!parsed.choices || parsed.choices.length === 0) {
-          throw new Error('No choices in OpenRouter response')
-        }
+          if (!response.ok) {
+            const errorText = await response.text()
+            throw new Error(`OpenRouter API error (${response.status}): ${errorText}`)
+          }
 
-        const content = parsed.choices[0]?.message?.content ?? ''
-        return sanitizeResponse(content)
-      } catch (error) {
-        lastError = error instanceof Error ? error : new Error(String(error))
+          const data = await response.json()
+          const parsed = ChatCompletionResponseSchema.parse(data)
 
-        // Don't retry on certain errors
-        if (error instanceof Error) {
-          if (
-            error.name === 'AbortError' ||
-            error.message.includes('401') ||
-            error.message.includes('403')
-          ) {
-            throw error
+          if (!parsed.choices || parsed.choices.length === 0) {
+            throw new Error('No choices in OpenRouter response')
+          }
+
+          const content = parsed.choices[0]?.message?.content ?? ''
+          return sanitizeResponse(content)
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error(String(error))
+
+          // Don't retry on certain errors
+          if (error instanceof Error) {
+            if (
+              error.name === 'AbortError' ||
+              error.message.includes('401') ||
+              error.message.includes('403')
+            ) {
+              throw error
+            }
+          }
+
+          if (attempt < this.config.maxRetries) {
+            const delay = Math.min(1000 * Math.pow(2, attempt), 10000)
+            console.warn(
+              `OpenRouter request failed (model: ${model}, attempt ${attempt + 1}/${this.config.maxRetries + 1}), retrying in ${delay}ms:`,
+              lastError.message
+            )
+            await sleep(delay)
           }
         }
-
-        if (attempt < this.config.maxRetries) {
-          const delay = Math.min(1000 * Math.pow(2, attempt), 10000)
-          console.warn(
-            `OpenRouter request failed (attempt ${attempt + 1}/${this.config.maxRetries + 1}), retrying in ${delay}ms:`,
-            lastError.message
-          )
-          await sleep(delay)
-        }
       }
+
+      // If we exhausted retries for this model, try next fallback
+      console.warn(`Model ${model} exhausted retries, trying next fallback...`)
     }
 
-    throw lastError || new Error('OpenRouter request failed after retries')
+    throw lastError || new Error('OpenRouter request failed after all models and retries')
   }
 
   /**
