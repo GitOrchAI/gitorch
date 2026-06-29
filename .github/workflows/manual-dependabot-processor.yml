@@ -83,7 +83,7 @@ jobs:
         env:
           SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          OPENROUTER_FREE_MODEL: ${{ env.OPENROUTER_FREE_MODEL || 'hermes-3-llama-3.1-8b:free' }}
+          OPENROUTER_FREE_MODEL: ${{ env.OPENROUTER_FREE_MODEL || 'openrouter/free' }}
           REPO_OWNER: ${{ github.repository_owner }}
           REPO_NAME: ${{ github.event.repository.name }}
           LABEL_DELAY_MS: ${{ env.LABEL_DELAY_MS || '10000' }}

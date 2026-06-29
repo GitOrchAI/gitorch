@@ -12,14 +12,19 @@ export const OpenRouterConfigSchema = z.object({
   model: z
     .string()
     .regex(/:free$/, 'Model must end with :free suffix')
-    .default('meta-llama/llama-3.1-8b-instruct:free'),
+    .default('openrouter/free'),
   fallbackModels: z
     .array(z.string().regex(/:free$/))
     .default([
-      'meta-llama/llama-3.1-8b-instruct:free',
+      'openrouter/free',
       'qwen/qwen3-coder:free',
-      'google/gemma-2-9b-it:free',
-      'microsoft/phi-3-mini-128k-instruct:free',
+      'openai/gpt-oss-20b:free',
+      'meta-llama/llama-3.3-70b-instruct:free',
+      'nvidia/nemotron-3-ultra-550b-a55b:free',
+      'google/gemma-4-26b-a4b-it:free',
+      'poolside/laguna-m.1:free',
+      'cognitivecomputations/dolphin-mistral-24b-venice-edition:free',
+      'openai/gpt-oss-120b:free',
     ]),
   baseUrl: z.string().url().default('https://openrouter.ai/api/v1'),
   maxTokens: z.number().int().positive().default(8000),
