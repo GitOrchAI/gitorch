@@ -13,8 +13,11 @@ import { redisPlugin } from './redis.js'
 import { authPlugin } from './auth.js'
 import { ssePlugin } from './sse.js'
 import { webhookVerifyPlugin } from './webhook-verify.js'
+import { securityHookPlugin } from './security.js'
+import { telemetryPlugin } from './telemetry.js'
 
 export async function registerPlugins(app: FastifyInstance, env: Env): Promise<void> {
+  await app.register(securityHookPlugin)
   await app.register(fastifyHelmet, {
     contentSecurityPolicy: false,
     crossOriginEmbedderPolicy: false,
@@ -72,6 +75,7 @@ export async function registerPlugins(app: FastifyInstance, env: Env): Promise<v
   })
 
   // Register custom plugins
+  await app.register(telemetryPlugin)
   await app.register(prismaPlugin)
   await app.register(redisPlugin)
   await app.register(authPlugin)

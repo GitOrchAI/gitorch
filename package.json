@@ -23,7 +23,7 @@
     "prepare": "husky"
   },
   "devDependencies": {
-    "@playwright/test": "1.61.0",
+    "@playwright/test": "1.61.1",
     "@sourcegraph/scip-typescript": "0.4.0",
     "@typescript-eslint/eslint-plugin": "^6.21.0",
     "@typescript-eslint/parser": "^6.21.0",
@@ -32,15 +32,18 @@
     "eslint-plugin-prettier": "^5.5.6",
     "husky": "^9.1.7",
     "lint-staged": "^17.0.8",
-    "prettier": "^3.8.4",
+    "prettier": "^3.9.1",
     "tsx": "4.22.4",
-    "turbo": "^2.0.0",
+    "turbo": "^2.10.0",
     "typescript": "^5.4.0",
     "vitest": "^4.1.9"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@opentelemetry/auto-instrumentations-node": "0.77.0",
+    "@opentelemetry/exporter-prometheus": "0.219.0",
     "@opentelemetry/resources": "^2.8.0",
+    "@opentelemetry/sdk-node": "0.219.0",
     "@opentelemetry/semantic-conventions": "^1.41.1",
     "fastify-sse-v2": "^4.0.0",
     "minimatch": "10.2.5",
@@ -54,7 +57,15 @@
       "tar-fs": "^3.1.2",
       "tar-stream": "^3.2.0",
       "minimatch": "10.2.5",
-      "@types/node": "20.10.0"
+      "@types/node": "20.10.0",
+      "@opentelemetry/core": "^2.8.0",
+      "@opentelemetry/sdk-node": "0.219.0",
+      "@opentelemetry/exporter-prometheus": "0.219.0",
+      "@opentelemetry/auto-instrumentations-node": "0.77.0",
+      "@opentelemetry/instrumentation": "0.219.0",
+      "import-in-the-middle": "3.2.0",
+      "fastify": "5.9.0",
+      "postcss": "8.5.16"
     },
     "patchedDependencies": {
       "tar@7.5.16": "patches/tar@7.5.16.patch"

@@ -1,6 +1,5 @@
 import { FastifyPluginAsync } from 'fastify'
 import client from 'prom-client'
-import { METRICS_PATH } from '../config/constants.js'
 
 // Create a Registry to register metrics
 export const metricsRegistry = new client.Registry()
@@ -71,12 +70,6 @@ export const telemetryPlugin: FastifyPluginAsync = async (app) => {
       { method: request.method, route: request.routeOptions?.url || 'unknown', wing_id: wingId },
       duration
     )
-  })
-
-  // Prometheus metrics endpoint
-  app.get(METRICS_PATH, async (_request, reply) => {
-    reply.type(metricsRegistry.contentType)
-    return metricsRegistry.metrics()
   })
 
   app.addHook('onClose', async () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import Fastify from 'fastify'
 import { telemetryPlugin } from './telemetry.js'
+import { metricsRoutes } from '../routes/metrics.js'
 
 describe('Telemetry Plugin', () => {
   let app: ReturnType<typeof Fastify>
@@ -8,6 +9,7 @@ describe('Telemetry Plugin', () => {
   beforeEach(async () => {
     app = Fastify()
     await app.register(telemetryPlugin, { serviceName: 'test-service' })
+    await app.register(metricsRoutes)
     app.get('/api/test', async () => ({ ok: true }))
     await app.ready()
   })
