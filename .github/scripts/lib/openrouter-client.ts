@@ -14,7 +14,7 @@ export const OpenRouterConfigSchema = z.object({
     .regex(/:free$/, 'Model must end with :free suffix')
     .default('openrouter/free'),
   fallbackModels: z
-    .array(z.string().regex(/:free$/))
+    .array(z.string())
     .default([
       'qwen/qwen3-coder:free',
       'openai/gpt-oss-20b:free',
@@ -129,6 +129,11 @@ export class OpenRouterClient {
 
     // Validate model is free
     validateFreeModel(this.config.model)
+
+    // Validate all fallback models are free
+    for (const model of this.config.fallbackModels) {
+      validateFreeModel(model)
+    }
 
     this.headers = {
       'Content-Type': 'application/json',
