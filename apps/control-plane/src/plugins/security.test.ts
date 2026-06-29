@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import Fastify from 'fastify'
+import Fastify, { FastifyInstance } from 'fastify'
 import { securityHookPlugin } from './security.js'
 
 describe('Security Plugin', () => {
-  let app: any
+  let app: FastifyInstance
 
   beforeEach(async () => {
     app = Fastify()

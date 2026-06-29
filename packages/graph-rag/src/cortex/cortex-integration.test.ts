@@ -115,8 +115,8 @@ describe('CortexGraphRAGAdapter', () => {
 
 function createFakeCortexClient(): FakeCortexClient {
   return {
-    wakeUp: vi.fn<(wingId: string) => CortexWakeUpResult>(
-      (_wingId: string): CortexWakeUpResult => createWakeUpResult()
+    wakeUp: vi.fn<(wingId: string) => CortexWakeUpResult>((_wingId: string): CortexWakeUpResult =>
+      createWakeUpResult()
     ),
     recallLocal: vi.fn<(wingId: string, roomId?: string, hallId?: string) => CortexDrawer[]>(
       (_wingId: string, _roomId?: string, _hallId?: string): CortexDrawer[] => [
