@@ -526,6 +526,7 @@ async function main() {
     if (prompt) {
       console.log('=== GENERATED PROMPT ===')
       console.log(JSON.stringify(prompt, null, 2))
+      console.log('=== END PROMPT ===')
     } else {
       process.exit(1)
     }
