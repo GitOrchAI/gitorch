@@ -76,6 +76,7 @@ jobs:
           echo "Testing script directly..."
           bun run generate-jules-prompt.ts 32 2>&1
           echo "Exit code: $?"
+        working-directory: .github/scripts
 
       - name: Process Each Alert
         if: fromJson(steps.alerts.outputs.alerts) != '[]'
