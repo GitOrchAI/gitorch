@@ -16,7 +16,6 @@ export const OpenRouterConfigSchema = z.object({
   fallbackModels: z
     .array(z.string().regex(/:free$/))
     .default([
-      'openrouter/free',
       'qwen/qwen3-coder:free',
       'openai/gpt-oss-20b:free',
       'meta-llama/llama-3.3-70b-instruct:free',
