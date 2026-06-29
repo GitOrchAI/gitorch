@@ -1,5 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { PrismaClient } from '@prisma/client'
+import crypto from 'node:crypto'
 import {
   GitHubWebhookNormalizer,
   GitHubSyncEngine,

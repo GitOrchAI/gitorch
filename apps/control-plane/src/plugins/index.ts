@@ -13,8 +13,10 @@ import { redisPlugin } from './redis.js'
 import { authPlugin } from './auth.js'
 import { ssePlugin } from './sse.js'
 import { webhookVerifyPlugin } from './webhook-verify.js'
+import { securityHookPlugin } from './security.js'
 
 export async function registerPlugins(app: FastifyInstance, env: Env): Promise<void> {
+  await app.register(securityHookPlugin)
   await app.register(fastifyHelmet, {
     contentSecurityPolicy: false,
     crossOriginEmbedderPolicy: false,
