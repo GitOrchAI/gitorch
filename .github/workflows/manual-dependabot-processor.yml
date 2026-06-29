@@ -174,4 +174,3 @@ jobs:
               sleep $((ISSUE_CREATION_DELAY_MS / 1000))
             fi
           done
-        working-directory: .github/scripts
