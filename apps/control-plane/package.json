@@ -21,7 +21,7 @@
   "dependencies": {
       "@fastify/cors": "^9.0.0",
       "@fastify/helmet": "^11.0.0",
-      "@fastify/rate-limit": "^9.0.0",
+      "@fastify/rate-limit": "^11.1.0",
       "@fastify/swagger": "^8.0.0",
       "@fastify/swagger-ui": "^3.0.0",
       "@fastify/under-pressure": "^8.5.0",
