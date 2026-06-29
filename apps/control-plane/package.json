@@ -19,7 +19,7 @@
     "prisma:studio": "prisma studio"
   },
   "dependencies": {
-      "@fastify/cors": "^9.0.0",
+      "@fastify/cors": "^11.2.0",
       "@fastify/helmet": "^11.0.0",
       "@fastify/rate-limit": "^11.1.0",
       "@fastify/swagger": "^8.0.0",
