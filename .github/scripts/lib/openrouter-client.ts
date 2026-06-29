@@ -273,9 +273,14 @@ export function createOpenRouterClientFromEnv(): OpenRouterClient {
     throw new Error('OPENROUTER_API_KEY environment variable is not set')
   }
 
+  const model = env['OPENROUTER_FREE_MODEL'] || 'openrouter/free'
+  console.log('[DEBUG] OPENROUTER_FREE_MODEL from env:', env['OPENROUTER_FREE_MODEL'])
+  console.log('[DEBUG] Using model:', model)
+  console.log('[DEBUG] Model ends with :free:', model.endsWith(':free'))
+
   return new OpenRouterClient({
     apiKey,
-    model: env['OPENROUTER_FREE_MODEL'] || 'qwen/qwen-2.5-7b-instruct:free',
+    model,
     referer: env['REPO_OWNER']
       ? `https://github.com/${env['REPO_OWNER']}/${env['REPO_NAME'] || 'gitorch'}`
       : undefined,
