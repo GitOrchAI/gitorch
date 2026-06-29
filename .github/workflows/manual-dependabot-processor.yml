@@ -54,6 +54,17 @@ jobs:
           echo "alerts=$ALERTS_JSON" >> $GITHUB_OUTPUT
           echo "Processing alerts: $ALERTS_JSON"
 
+      - name: Debug Environment
+        if: fromJson(steps.alerts.outputs.alerts) != '[]'
+        env:
+          SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          echo "SECURITY_PAT length: ${#SECURITY_PAT}"
+          echo "OPENROUTER_API_KEY length: ${#OPENROUTER_API_KEY}"
+          echo "REPO_OWNER: ${{ github.repository_owner }}"
+          echo "REPO_NAME: ${{ github.event.repository.name }}"
+
       - name: Process Each Alert
         if: fromJson(steps.alerts.outputs.alerts) != '[]'
         env:
