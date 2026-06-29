@@ -19,12 +19,12 @@
     "prisma:studio": "prisma studio"
   },
   "dependencies": {
-      "@fastify/cors": "^11.2.0",
-      "@fastify/helmet": "^13.0.2",
-      "@fastify/rate-limit": "^11.1.0",
-      "@fastify/swagger": "^9.7.0",
-      "@fastify/swagger-ui": "^3.0.0",
-      "@fastify/under-pressure": "^8.5.0",
+    "@fastify/cors": "^11.2.0",
+    "@fastify/helmet": "^13.0.2",
+    "@fastify/rate-limit": "^11.1.0",
+    "@fastify/swagger": "^9.7.0",
+    "@fastify/swagger-ui": "^6.0.0",
+    "@fastify/under-pressure": "^9.0.0",
     "@gitorch/agents": "workspace:*",
     "@gitorch/cortex": "workspace:*",
     "@gitorch/github-sync": "workspace:*",
@@ -37,7 +37,8 @@
     "@opentelemetry/sdk-node": "^0.219.0",
     "@opentelemetry/semantic-conventions": "^1.41.1",
     "@prisma/client": "^5.0.0",
-    "fastify": "^5.8.5",
+    "fastify": "5.9.0",
+    "fastify-plugin": "^6.0.0",
     "fastify-sse-v2": "^4.0.0",
     "ioredis": "^5.0.0",
     "pino": "^10.3.1",
@@ -45,7 +46,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/node": "^26.0.1",
+    "@types/node": "20.10.0",
     "eslint": "^8.0.0",
     "prisma": "^5.0.0",
     "tsx": "^4.0.0",
