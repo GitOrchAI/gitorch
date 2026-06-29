@@ -65,6 +65,18 @@ jobs:
           echo "REPO_OWNER: ${{ github.repository_owner }}"
           echo "REPO_NAME: ${{ github.event.repository.name }}"
 
+      - name: Test Script Directly
+        if: fromJson(steps.alerts.outputs.alerts) != '[]'
+        env:
+          SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+        run: |
+          echo "Testing script directly..."
+          bun run generate-jules-prompt.ts 32 2>&1
+          echo "Exit code: $?"
+
       - name: Process Each Alert
         if: fromJson(steps.alerts.outputs.alerts) != '[]'
         env:
