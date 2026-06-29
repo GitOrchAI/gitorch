@@ -59,6 +59,8 @@
       "@opentelemetry/sdk-node": "0.219.0",
       "@opentelemetry/exporter-prometheus": "0.219.0",
       "@opentelemetry/auto-instrumentations-node": "0.77.0",
+      "@opentelemetry/instrumentation": "0.219.0",
+      "import-in-the-middle": "3.2.0",
       "fastify": "5.9.0",
       "postcss": "8.5.16"
     },
