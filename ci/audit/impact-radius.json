@@ -1,9 +1,15 @@
 {
-  "changedFiles": [
-    "packages/cgc/src/core/indexer.ts"
-  ],
+  "changedFiles": [],
   "packages": [
-    "@gitorch/cgc"
+    "@gitorch/agents",
+    "@gitorch/cgc",
+    "@gitorch/control-plane",
+    "@gitorch/cortex",
+    "@gitorch/github-sync",
+    "@gitorch/graph-rag",
+    "@gitorch/synapse",
+    "@gitorch/workspace-engine",
+    "web"
   ],
-  "timestamp": "2026-06-20T20:07:32.788Z"
+  "timestamp": "2026-06-28T21:50:08.105Z"
 }
