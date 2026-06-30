@@ -15,7 +15,7 @@ jobs:
       contains(github.event.comment.body, 'Jules has failed to create a task')
     steps:
       - name: Auto-Retry Jules
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
         with:

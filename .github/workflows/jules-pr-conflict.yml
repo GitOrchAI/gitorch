@@ -43,6 +43,7 @@ jobs:
       - name: Analyze Merge Conflicts
         env:
           SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
+          GH_TOKEN: ${{ secrets.SECURITY_PAT }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_FREE_MODEL: openrouter/free
           REPO_OWNER: ${{ github.repository_owner }}
@@ -62,6 +63,7 @@ jobs:
         if: success() && github.event_name == 'pull_request_target' && github.event.action == 'synchronize'
         env:
           SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
+          GH_TOKEN: ${{ secrets.SECURITY_PAT }}
         run: |
           PR_NUM="${{ github.event.pull_request.number }}"
           # Check if PR is now mergeable (conflicts resolved)
