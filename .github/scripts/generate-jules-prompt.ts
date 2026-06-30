@@ -24,14 +24,16 @@ const DependabotAlertSchema = z.object({
     scope: z.string().optional(),
   }),
   security_advisory: z.object({
-    ghsa_id: z.string().optional(),
-    cve_id: z.string().optional(),
-    summary: z.string().optional(),
-    description: z.string().optional(),
-    severity: z.enum(['critical', 'high', 'medium', 'low']).optional(),
-    classification: z.string().optional(),
-    published_at: z.string().optional(),
-    updated_at: z.string().optional(),
+    // .nullish() = aceita string, undefined OU null. Alertas sem CVE retornam cve_id: null
+    // (ex.: alertas de severidade média que só têm GHSA) — antes quebrava com ZodError.
+    ghsa_id: z.string().nullish(),
+    cve_id: z.string().nullish(),
+    summary: z.string().nullish(),
+    description: z.string().nullish(),
+    severity: z.enum(['critical', 'high', 'medium', 'low']).nullish(),
+    classification: z.string().nullish(),
+    published_at: z.string().nullish(),
+    updated_at: z.string().nullish(),
     cvss_severities: z
       .object({
         cvss_v3: z
