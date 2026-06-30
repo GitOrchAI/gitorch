@@ -14,9 +14,9 @@ jobs:
   fallback-on-ci-failure:
     name: Fallback CI Failure Analysis (1+ business day)
     runs-on: ubuntu-latest
-    if: |
-      github.event.check_suite.conclusion == 'failure' &&
-      contains(github.event.check_suite.pull_requests[0].labels.*.name, 'jules')
+    # Elegibilidade NÃO é gateada por label (PR do Jules não tem label 'jules'); o script
+    # analyze-ci-failure.ts confirma se o PR é da automação antes de comentar.
+    if: github.event.check_suite.conclusion == 'failure'
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -36,6 +36,7 @@ jobs:
       - name: Analyze CI Failure
         env:
           SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
+          GH_TOKEN: ${{ secrets.SECURITY_PAT }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_FREE_MODEL: openrouter/free
           REPO_OWNER: ${{ github.repository_owner }}
@@ -43,7 +44,11 @@ jobs:
           SLA_BUSINESS_DAYS: ${{ env.SLA_BUSINESS_DAYS || '1' }}
         run: |
           PR_NUM="${{ github.event.check_suite.pull_requests[0].number }}"
-          
+          if [ -z "$PR_NUM" ] || [ "$PR_NUM" = "null" ]; then
+            echo "Check suite sem PR associado. Nada a fazer."
+            exit 0
+          fi
+
           echo "Checking PR #$PR_NUM age..."
           CREATED_AT=$(gh pr view $PR_NUM --json createdAt --jq '.createdAt' --repo ${{ github.repository }})
           
