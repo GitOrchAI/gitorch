@@ -69,7 +69,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
           SECURITY_PAT: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
-          GH_TOKEN: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_FREE_MODEL: openrouter/free
           REPO_OWNER: ${{ github.repository_owner }}
