@@ -146,7 +146,9 @@ jobs:
                 -f title="$TITLE" \
                 -f body="$BODY" \
                 -f "labels=$LABELS" 2>&1)
-
+              ISSUE_EXIT_CODE=$?
+              echo "Issue creation exit code: $ISSUE_EXIT_CODE"
+              echo "Issue output: $ISSUE_OUTPUT"
               ISSUE_NUM=$(echo "$ISSUE_OUTPUT" | jq -r '.number // empty')
 
               if [ -n "$ISSUE_NUM" ]; then
