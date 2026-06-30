@@ -18,7 +18,6 @@ jobs:
         uses: actions/github-script@v7
         env:
           SECURITY_PAT: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
-          GH_TOKEN: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
         with:
           github-token: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
           script: |
