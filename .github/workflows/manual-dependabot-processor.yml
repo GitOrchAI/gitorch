@@ -145,13 +145,16 @@ jobs:
               echo "Body file size: $(wc -c < "$BODY_FILE") bytes"
               echo "Title: $TITLE"
               echo "Labels: $LABELS"
+              # Convert labels to JSON array
+              LABELS_JSON=$(echo "$LABELS" | sed 's/[^,]*/"&"/g' | sed 's/^/[/' | sed 's/$/]/')
+              echo "Labels JSON: $LABELS_JSON"
               ISSUE_OUTPUT=$(gh api \
                 --method POST \
                 -H "Accept: application/vnd.github+json" \
                 "/repos/${{ github.repository }}/issues" \
                 -f title="$TITLE" \
                 -F body=@"$BODY_FILE" \
-                -f "labels=$LABELS" 2>&1)
+                -F "labels=$LABELS_JSON" 2>&1)
               ISSUE_EXIT_CODE=$?
               echo "Issue creation exit code: $ISSUE_EXIT_CODE"
               echo "Issue output: $ISSUE_OUTPUT"
