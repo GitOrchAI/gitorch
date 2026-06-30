@@ -139,16 +139,20 @@ jobs:
 
               # Create issue
               echo "Creating issue..."
+              # Write body to temp file to avoid issues with special characters and size limits
+              BODY_FILE=$(mktemp)
+              echo "$BODY" > "$BODY_FILE"
               ISSUE_OUTPUT=$(gh api \
                 --method POST \
                 -H "Accept: application/vnd.github+json" \
                 "/repos/${{ github.repository }}/issues" \
                 -f title="$TITLE" \
-                -f body="$BODY" \
+                -F body=@"$BODY_FILE" \
                 -f "labels=$LABELS" 2>&1)
               ISSUE_EXIT_CODE=$?
               echo "Issue creation exit code: $ISSUE_EXIT_CODE"
               echo "Issue output: $ISSUE_OUTPUT"
+              rm -f "$BODY_FILE"
               ISSUE_NUM=$(echo "$ISSUE_OUTPUT" | jq -r '.number // empty')
 
               if [ -n "$ISSUE_NUM" ]; then
