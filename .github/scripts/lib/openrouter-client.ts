@@ -104,6 +104,11 @@ export function sanitizeResponse(text: string): string {
  * Validates that a model string uses the :free suffix or is the openrouter/free router
  */
 export function validateFreeModel(model: string): void {
+  console.log(
+    `[DEBUG validateFreeModel] model: "${model}", ` +
+      `endsWith :free: ${model.endsWith(':free')}, ` +
+      `is openrouter/free: ${model === 'openrouter/free'}`
+  )
   const isFreeModel = model.endsWith(':free') || model === 'openrouter/free'
   if (!isFreeModel) {
     throw new Error(`Model must use :free suffix or be 'openrouter/free' router. Got: ${model}`)
