@@ -113,8 +113,9 @@ jobs:
               # Generate Jules prompt
               echo "Generating Jules prompt..."
               echo "Running: bun run generate-jules-prompt.ts \"$ALERT_NUM\""
-              PROMPT_OUTPUT="$(bun run generate-jules-prompt.ts \"$ALERT_NUM\" 2>&1)" || EXIT_CODE=$?
-              echo "Prompt generation exit code: ${EXIT_CODE:-0}"
+              PROMPT_OUTPUT="$(bun run generate-jules-prompt.ts "$ALERT_NUM" 2>&1)"
+              EXIT_CODE=$?
+              echo "Prompt generation exit code: $EXIT_CODE"
               echo "Prompt output (first 500 chars): ${PROMPT_OUTPUT:0:500}"
               echo "Prompt output (last 500 chars): ${PROMPT_OUTPUT: -500}"
 
