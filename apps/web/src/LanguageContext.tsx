@@ -19,12 +19,10 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   useEffect(() => {
     const saved = localStorage.getItem('gitorch-lang') as Language
     if (saved && (saved === 'en' || saved === 'pt' || saved === 'es')) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       if (saved !== language) setLanguageState(saved)
     } else {
       const browserLang = navigator.language.slice(0, 2)
       const detected = browserLang === 'pt' ? 'pt' : browserLang === 'es' ? 'es' : 'en'
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       if (detected !== language) setLanguageState(detected)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -1,5 +1,11 @@
-const { execSync } = require('child_process')
-const https = require('https')
+import { execSync } from 'child_process'
+import https from 'https'
+import fs from 'fs'
+import path from 'path'
+import { fileURLToPath } from 'url'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
 
 // Helper to run shell commands and return output
 function runCmd(cmd) {
@@ -224,8 +230,6 @@ Conflitos:\n\`\`\`diff\n${conflictDiff}\n\`\`\``
     // Instead of raw shell execution with double quotes where bash might interpret characters,
     // we can use fs.writeFileSync and run a command to read from it, or pass via env, or write to a temp file and use gh pr comment -F.
     // That is MUCH safer and prevents bash escaping issues!
-    const fs = require('fs')
-    const path = require('path')
     const tempFilePath = path.join(__dirname, `pr_comment_${prNumber}.txt`)
     fs.writeFileSync(tempFilePath, response, 'utf8')
 

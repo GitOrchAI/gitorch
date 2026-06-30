@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-require-imports */
+/* eslint-disable */
 const puppeteer = require('puppeteer');
 
 (async () => {
