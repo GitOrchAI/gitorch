@@ -143,6 +143,8 @@ jobs:
               # Write body to temp file to avoid issues with special characters and size limits
               BODY_FILE=$(mktemp)
               echo "$BODY" > "$BODY_FILE"
+              # Convert labels to JSON array
+              LABELS_JSON=$(echo "$LABELS" | sed 's/[^,]*/"&"/g' | sed 's/^/[/' | sed 's/$/]/')
               ISSUE_OUTPUT=$(gh api \
                 --method POST \
                 -H "Accept: application/vnd.github+json" \
