@@ -126,7 +126,7 @@ jobs:
               fi
 
               # Extract JSON from output (between === GENERATED PROMPT === markers, or last valid JSON)
-              PROMPT_JSON=$(echo "$PROMPT_OUTPUT" | sed -n '/=== GENERATED PROMPT ===/,/=== END PROMPT ===/p' | sed '1d;$d' | head -1)
+              PROMPT_JSON=$(echo "$PROMPT_OUTPUT" | sed -n '/=== GENERATED PROMPT ===/,/=== END PROMPT ===/p' | sed '1d;$d')
               
               # If marker extraction failed, try to find last valid JSON line
               if [ -z "$PROMPT_JSON" ] || ! echo "$PROMPT_JSON" | jq empty 2>/dev/null; then
