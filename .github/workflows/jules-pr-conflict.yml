@@ -42,7 +42,7 @@ jobs:
 
       - name: Analyze Merge Conflicts
         env:
-          SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
+          GH_TOKEN: ${{ secrets.SECURITY_PAT }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_FREE_MODEL: openrouter/free
           REPO_OWNER: ${{ github.repository_owner }}
@@ -61,13 +61,13 @@ jobs:
       - name: Remove Conflict Label if Resolved
         if: success() && github.event_name == 'pull_request_target' && github.event.action == 'synchronize'
         env:
-          SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
+          GH_TOKEN: ${{ secrets.SECURITY_PAT }}
         run: |
           PR_NUM="${{ github.event.pull_request.number }}"
           # Check if PR is now mergeable (conflicts resolved)
-          MERGEABLE=$(gh pr view $PR_NUM --json mergeable --jq '.mergeable' --repo ${{ github.repository }})
+          MERGEABLE=$(gh pr view "$PR_NUM" --json mergeable --jq '.mergeable' --repo ${{ github.repository }})
           if [ "$MERGEABLE" = "MERGEABLE" ]; then
             echo "PR #$PR_NUM is now mergeable. Removing 'jules-conflict-notified' label..."
-            gh pr edit $PR_NUM --remove-label "jules-conflict-notified" --repo ${{ github.repository }} || true
+            gh pr edit "$PR_NUM" --remove-label "jules-conflict-notified" --repo ${{ github.repository }} || true
           fi
         working-directory: .github/scripts
