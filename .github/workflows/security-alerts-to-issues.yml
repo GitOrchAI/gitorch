@@ -16,11 +16,11 @@ jobs:
       security-events: read
     steps:
       - name: Fetch Alerts and Create Issues
-        uses: actions/github-script@v9
+        uses: actions/github-script@v7
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         with:
-          github-token: ${{ secrets.SECURITY_PAT }}
+          github-token: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
