@@ -33,8 +33,8 @@
     "rolldown": "^1.1.3",
     "tsx": "4.22.4",
     "typescript": "^5.6.0",
-    "vite": "8.1.1",
-    "vitest": "^4.1.0"
+    "vitest": "^4.1.0",
+    "@rolldown/binding-linux-x64-gnu": "1.1.3"
   },
   "engines": {
     "node": ">=20.0.0"
@@ -42,5 +42,8 @@
   "overrides": {
     "vite": "8.1.1",
     "launch-editor": "2.14.1"
+  },
+  "optionalDependencies": {
+    "@rolldown/binding-android-arm64": "1.1.3"
   }
 }
