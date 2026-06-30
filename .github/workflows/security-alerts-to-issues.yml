@@ -16,7 +16,7 @@ jobs:
       security-events: read
     steps:
       - name: Fetch Alerts and Create Issues
-        uses: actions/github-script@v9
+        uses: actions/github-script@v7
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         with:
