@@ -9,10 +9,7 @@ import { z } from 'zod'
 // Configuration schema
 export const OpenRouterConfigSchema = z.object({
   apiKey: z.string().min(1, 'OPENROUTER_API_KEY is required'),
-  model: z
-    .string()
-    .regex(/:free$/, 'Model must end with :free suffix')
-    .default('openrouter/free'),
+  model: z.string().default('openrouter/free'),
   fallbackModels: z
     .array(z.string())
     .default([
@@ -104,11 +101,6 @@ export function sanitizeResponse(text: string): string {
  * Validates that a model string uses the :free suffix or is the openrouter/free router
  */
 export function validateFreeModel(model: string): void {
-  console.log(
-    `[DEBUG validateFreeModel] model: "${model}", ` +
-      `endsWith :free: ${model.endsWith(':free')}, ` +
-      `is openrouter/free: ${model === 'openrouter/free'}`
-  )
   const isFreeModel = model.endsWith(':free') || model === 'openrouter/free'
   if (!isFreeModel) {
     throw new Error(`Model must use :free suffix or be 'openrouter/free' router. Got: ${model}`)
