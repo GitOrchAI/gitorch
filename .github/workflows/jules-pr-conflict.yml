@@ -19,6 +19,8 @@ jobs:
   resolve-conflicts:
     name: Analyze & Resolve Merge Conflicts
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request_target' && 
@@ -43,7 +45,6 @@ jobs:
       - name: Analyze Merge Conflicts
         env:
           SECURITY_PAT: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
-          GH_TOKEN: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_FREE_MODEL: openrouter/free
           REPO_OWNER: ${{ github.repository_owner }}
@@ -63,7 +64,6 @@ jobs:
         if: success() && github.event_name == 'pull_request_target' && github.event.action == 'synchronize'
         env:
           SECURITY_PAT: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
-          GH_TOKEN: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
         run: |
           PR_NUM="${{ github.event.pull_request.number }}"
           # Check if PR is now mergeable (conflicts resolved)

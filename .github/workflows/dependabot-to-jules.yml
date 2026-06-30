@@ -30,6 +30,8 @@ concurrency:
 jobs:
   create-jules-issues:
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
