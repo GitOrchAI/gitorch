@@ -47,7 +47,7 @@ jobs:
 
       - name: Analyze Merge Conflicts
         env:
-          GH_TOKEN: ${{ secrets.SECURITY_PAT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_FREE_MODEL: openrouter/free
           REPO_OWNER: ${{ github.repository_owner }}
@@ -73,7 +73,7 @@ jobs:
       - name: Remove Conflict Label if Resolved
         if: success() && github.event_name == 'pull_request_target' && github.event.action == 'synchronize'
         env:
-          GH_TOKEN: ${{ secrets.SECURITY_PAT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PR_NUM="${{ github.event.pull_request.number }}"
           # Check if PR is now mergeable (conflicts resolved)
