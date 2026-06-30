@@ -81,6 +81,7 @@ jobs:
       - name: Process Each Alert
         if: fromJson(steps.alerts.outputs.alerts) != '[]'
         env:
+          GITHUB_TOKEN: ${{ secrets.SECURITY_PAT }}
           SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_FREE_MODEL: ${{ env.OPENROUTER_FREE_MODEL || 'openrouter/free' }}
@@ -142,12 +143,6 @@ jobs:
               # Write body to temp file to avoid issues with special characters and size limits
               BODY_FILE=$(mktemp)
               echo "$BODY" > "$BODY_FILE"
-              echo "Body file size: $(wc -c < "$BODY_FILE") bytes"
-              echo "Title: $TITLE"
-              echo "Labels: $LABELS"
-              # Convert labels to JSON array
-              LABELS_JSON=$(echo "$LABELS" | sed 's/[^,]*/"&"/g' | sed 's/^/[/' | sed 's/$/]/')
-              echo "Labels JSON: $LABELS_JSON"
               ISSUE_OUTPUT=$(gh api \
                 --method POST \
                 -H "Accept: application/vnd.github+json" \
@@ -156,8 +151,6 @@ jobs:
                 -F body=@"$BODY_FILE" \
                 -F "labels=$LABELS_JSON" 2>&1)
               ISSUE_EXIT_CODE=$?
-              echo "Issue creation exit code: $ISSUE_EXIT_CODE"
-              echo "Issue output: $ISSUE_OUTPUT"
               rm -f "$BODY_FILE"
               ISSUE_NUM=$(echo "$ISSUE_OUTPUT" | jq -r '.number // empty')
 
