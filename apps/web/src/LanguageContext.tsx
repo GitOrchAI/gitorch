@@ -17,20 +17,17 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [language, setLanguageState] = useState<Language>('en')
 
   useEffect(() => {
-    // Detect browser language on first render
     const saved = localStorage.getItem('gitorch-lang') as Language
     if (saved && (saved === 'en' || saved === 'pt' || saved === 'es')) {
-      setLanguageState(saved)
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      if (saved !== language) setLanguageState(saved)
     } else {
       const browserLang = navigator.language.slice(0, 2)
-      if (browserLang === 'pt') {
-        setLanguageState('pt')
-      } else if (browserLang === 'es') {
-        setLanguageState('es')
-      } else {
-        setLanguageState('en')
-      }
+      const detected = browserLang === 'pt' ? 'pt' : browserLang === 'es' ? 'es' : 'en'
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      if (detected !== language) setLanguageState(detected)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const setLanguage = (lang: Language) => {
@@ -40,22 +37,22 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const t = (key: string): string => {
     const keys = key.split('.')
-    let current: any = locales[language]
+    let current: unknown = locales[language]
 
     for (const k of keys) {
-      if (current && current[k] !== undefined) {
-        current = current[k]
+      if (current && typeof current === 'object' && k in current) {
+        current = (current as Record<string, unknown>)[k]
       } else {
         // Fallback to English
-        let fallback: any = locales['en']
+        let fallback: unknown = locales['en']
         for (const fk of keys) {
-          if (fallback && fallback[fk] !== undefined) {
-            fallback = fallback[fk]
+          if (fallback && typeof fallback === 'object' && fk in fallback) {
+            fallback = (fallback as Record<string, unknown>)[fk]
           } else {
             return key // return key if not found anywhere
           }
         }
-        return fallback
+        return typeof fallback === 'string' ? fallback : key
       }
     }
 

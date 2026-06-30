@@ -5,7 +5,7 @@ import { useLanguage } from '../LanguageContext'
 import Header from '../components/Header'
 import Canvas3D from '../components/Canvas3D'
 import { motion } from 'framer-motion'
-import { PlayCircle, ShieldCheck, Zap, Server, Code2, GitBranch } from 'lucide-react'
+import { ShieldCheck, Zap, Server, Code2, GitBranch } from 'lucide-react'
 import Link from 'next/link'
 
 export default function Home() {

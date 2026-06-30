@@ -1,5 +1,5 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
 const puppeteer = require('puppeteer');
-const fs = require('fs');
 
 (async () => {
   console.log('Iniciando Chromium interno para QA...');
