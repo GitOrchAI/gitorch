@@ -145,14 +145,17 @@ jobs:
               echo "$BODY" > "$BODY_FILE"
               # Convert labels to JSON array
               LABELS_JSON=$(echo "$LABELS" | sed 's/[^,]*/"&"/g' | sed 's/^/[/' | sed 's/$/]/')
+              # Capture stderr separately to see the actual error
               ISSUE_OUTPUT=$(gh api \
                 --method POST \
                 -H "Accept: application/vnd.github+json" \
                 "/repos/${{ github.repository }}/issues" \
                 -f title="$TITLE" \
                 -F body=@"$BODY_FILE" \
-                -F "labels=$LABELS_JSON" 2>&1)
+                -F "labels=$LABELS_JSON" 2>&1) || true
               ISSUE_EXIT_CODE=$?
+              echo "Issue creation exit code: $ISSUE_EXIT_CODE"
+              echo "Issue output: $ISSUE_OUTPUT"
               rm -f "$BODY_FILE"
               ISSUE_NUM=$(echo "$ISSUE_OUTPUT" | jq -r '.number // empty')
 
