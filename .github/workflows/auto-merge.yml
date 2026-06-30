@@ -1,19 +1,30 @@
 name: Auto-Merge PRs (Dependabot & Jules)
 
-# PR qualificada (Dependabot ou Jules) com CI 100% verde → aprova e habilita auto-merge (squash).
-# Sempre — política de tolerância zero: o CI é o porteiro.
+# Auto-merge ESTRITO: só PR desta automação de segurança — PR do Dependabot, ou PR do Jules
+# que resolve uma issue com label 'dependabot'/'jules'. Qualquer outro PR NÃO entra.
+# Mescla (squash) assim que o CI fica 100% verde. O CI é o porteiro (tolerância zero).
 
 on:
   pull_request_target:
     types: [opened, reopened, synchronize, labeled, ready_for_review]
   check_suite:
     types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Número do PR para avaliar (manual)'
+        required: false
+        type: string
 
 permissions:
   contents: write
   pull-requests: write
   issues: read
   checks: read
+
+# Nome do próprio check deste workflow — para excluí-lo da espera (senão dá deadlock).
+env:
+  SELF_CHECK_NAME: 'Enable Auto-Merge for Qualifying PRs'
 
 jobs:
   auto-merge:
@@ -30,10 +41,11 @@ jobs:
             const repo = context.repo.repo;
             const prNumber =
               context.payload.pull_request?.number ||
-              context.payload.check_suite?.pull_requests?.[0]?.number;
+              context.payload.check_suite?.pull_requests?.[0]?.number ||
+              (context.payload.inputs?.pr_number ? parseInt(context.payload.inputs.pr_number, 10) : undefined);
 
             if (!prNumber) {
-              console.log("Nenhum PR no payload.");
+              console.log('Nenhum PR no payload.');
               core.setOutput('eligible', 'false');
               return;
             }
@@ -52,8 +64,10 @@ jobs:
             } else if (prUser === 'dependabot[bot]') {
               eligible = true; reason = 'PR do Dependabot';
             } else if (prLabels.includes('jules') || prBody.includes('PR created automatically by Jules')) {
-              eligible = true; reason = "PR do Jules (resolve issue 'jules')";
+              eligible = true; reason = 'PR do Jules (label/marcador)';
             } else {
+              // PR do Jules costuma sair como autor do usuário; qualificamos pela issue ligada
+              // que tenha label 'dependabot' ou 'jules' (esta automação de segurança).
               const linked = [];
               const re = /(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\s+#(\d+)/gi;
               let m;
@@ -73,65 +87,52 @@ jobs:
               }
             }
 
-            console.log(eligible ? `✓ ELEGÍVEL: ${reason}` : `✗ NÃO elegível: ${reason || 'não casa critérios'}`);
+            console.log(eligible ? `✓ ELEGÍVEL: ${reason}` : `✗ NÃO elegível: ${reason || 'fora da automação de segurança'}`);
             core.setOutput('eligible', eligible ? 'true' : 'false');
             core.setOutput('prNumber', String(prNumber));
 
-      - name: Wait for CI to Pass
-        if: steps.evaluate.outputs.eligible == 'true'
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.SECURITY_PAT }}
-          script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const prNumber = parseInt('${{ steps.evaluate.outputs.prNumber }}', 10);
-            console.log(`Aguardando CI 100% verde no PR #${prNumber}...`);
-
-            const maxWaitMs = 15 * 60 * 1000;
-            const start = Date.now();
-            const interval = 30000;
-
-            while (Date.now() - start < maxWaitMs) {
-              const pr = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
-              const suites = await github.rest.checks.listSuitesForRef({
-                owner, repo, ref: pr.data.head.sha, per_page: 20
-              });
-              const relevant = suites.data.check_suites.filter(s => s.workflow_id);
-
-              if (relevant.length > 0) {
-                const allCompleted = relevant.every(s => s.status === 'completed');
-                const allSuccess = relevant.every(s => s.conclusion === 'success');
-                if (allCompleted && allSuccess) { console.log('CI 100% verde.'); return; }
-                if (allCompleted && !allSuccess) {
-                  core.setFailed(`CI falhou no PR #${prNumber}. Auto-merge não habilitado.`);
-                  return;
-                }
-                console.log(`CI rodando... (${relevant.filter(s => s.status === 'completed').length}/${relevant.length} concluídos)`);
-              } else {
-                console.log('Nenhum check suite ainda...');
-              }
-              await new Promise(r => setTimeout(r, interval));
-            }
-            core.setFailed('Timeout aguardando CI. Auto-merge não habilitado.');
-
-      - name: Enable Auto-Merge
+      - name: Wait for CI and Merge
         if: steps.evaluate.outputs.eligible == 'true'
         env:
           GH_TOKEN: ${{ secrets.SECURITY_PAT }}
           PR_NUM: ${{ steps.evaluate.outputs.prNumber }}
+          REPO: ${{ github.repository }}
         run: |
-          echo "Habilitando auto-merge no PR #$PR_NUM..."
-          gh pr review "$PR_NUM" --approve \
-            --body "Aprovado automaticamente pelo pipeline de segurança (Dependabot/Jules)." \
-            --repo "${{ github.repository }}" || true
-          for i in 1 2 3; do
-            if gh pr merge "$PR_NUM" --auto --squash --repo "${{ github.repository }}"; then
-              echo "Auto-merge habilitado para o PR #$PR_NUM"
-              exit 0
+          echo "Avaliando checks do PR #$PR_NUM (exclui o próprio '$SELF_CHECK_NAME')..."
+          # Buckets do gh: pass | skipping | pending | fail | cancel
+          for i in $(seq 1 30); do
+            CHECKS=$(gh pr checks "$PR_NUM" --repo "$REPO" --json name,bucket 2>/dev/null || echo '[]')
+            OTHERS=$(echo "$CHECKS" | jq --arg self "$SELF_CHECK_NAME" '[.[] | select(.name != $self)]')
+
+            BLOCKING=$(echo "$OTHERS" | jq '[.[] | select(.bucket=="fail" or .bucket=="cancel")] | length')
+            PENDING=$(echo "$OTHERS" | jq '[.[] | select(.bucket=="pending")] | length')
+            TOTAL=$(echo "$OTHERS" | jq 'length')
+            echo "[$i] checks (fora o próprio): total=$TOTAL pendentes=$PENDING bloqueando=$BLOCKING"
+
+            if [ "$BLOCKING" -gt 0 ]; then
+              echo "::error::CI vermelho no PR #$PR_NUM — auto-merge NÃO habilitado."
+              echo "$OTHERS" | jq -r '.[] | select(.bucket=="fail" or .bucket=="cancel") | "  ✗ \(.name): \(.bucket)"'
+              exit 1
             fi
-            echo "Tentativa $i falhou, repetindo em 5s..."
-            sleep 5
+
+            if [ "$PENDING" -eq 0 ] && [ "$TOTAL" -gt 0 ]; then
+              echo "CI 100% verde no PR #$PR_NUM. Mesclando..."
+              gh pr review "$PR_NUM" --approve \
+                --body "Aprovado automaticamente pelo pipeline de segurança (Dependabot/Jules)." \
+                --repo "$REPO" || true
+              for t in 1 2 3; do
+                if gh pr merge "$PR_NUM" --squash --repo "$REPO"; then
+                  echo "PR #$PR_NUM mesclado."
+                  exit 0
+                fi
+                echo "Tentativa de merge $t falhou, repetindo em 10s..."
+                sleep 10
+              done
+              echo "::error::Falha ao mesclar o PR #$PR_NUM após 3 tentativas."
+              exit 1
+            fi
+
+            sleep 30
           done
-          echo "Falha ao habilitar auto-merge após 3 tentativas"
+          echo "::error::Timeout aguardando CI do PR #$PR_NUM."
           exit 1
