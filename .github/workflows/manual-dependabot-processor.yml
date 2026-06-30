@@ -170,11 +170,14 @@ jobs:
                 sleep $((LABEL_DELAY_MS / 1000))
 
                 # Add 'jules' label to trigger Jules
-                gh api \
-                  --method POST \
-                  -H "Accept: application/vnd.github+json" \
-                  "/repos/${{ github.repository }}/issues/$ISSUE_NUM/labels" \
-                  -f "labels=[\"jules\"]" > /dev/null
+                              LABEL_FILE=$(mktemp)
+                              jq -n '{labels: ["jules"]}' > "$LABEL_FILE"
+                              gh api \
+                                --method POST \
+                                -H "Accept: application/vnd.github+json" \
+                                "/repos/${{ github.repository }}/issues/$ISSUE_NUM/labels" \
+                                --input "$LABEL_FILE" > /dev/null
+                              rm -f "$LABEL_FILE"
 
                 echo "Added 'jules' label to issue #$ISSUE_NUM"
               else
