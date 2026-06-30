@@ -1,5 +1,6 @@
 import { test, expect, describe, vi, beforeEach } from 'vitest'
 import Fastify, { FastifyRequest } from 'fastify'
+import crypto from 'node:crypto'
 import { loadEnv } from '../config/env.js'
 import { registerPlugins } from '../plugins/index.js'
 import { githubWebhookRoutes } from './github-webhook.js'
@@ -40,7 +41,6 @@ describe('GitHub Webhook Routes', () => {
     app.prisma.project.findFirst = vi.fn().mockResolvedValue({ id: 'proj_123', wingId: 'wing_123' })
 
     // Test with matching signature based on mock secret 'test-secret'
-    const crypto = require('crypto')
     const payloadStr = JSON.stringify({ action: 'opened', repository: { id: 123 } })
     const signature =
       'sha256=' + crypto.createHmac('sha256', 'test-secret').update(payloadStr).digest('hex')
@@ -58,5 +58,45 @@ describe('GitHub Webhook Routes', () => {
 
     expect(res.statusCode).toBe(200)
     expect(res.payload).toContain('"received":true')
+  })
+
+  test('POST /api/webhooks/github is rate limited', async () => {
+    app.prisma.webhookDelivery.create = vi.fn().mockResolvedValue({})
+    app.prisma.webhookDelivery.updateMany = vi.fn().mockResolvedValue({})
+    app.prisma.project.findFirst = vi.fn().mockResolvedValue({ id: 'proj_123', wingId: 'wing_123' })
+
+    const payloadStr = JSON.stringify({ action: 'opened', repository: { id: 123 } })
+    const signature =
+      'sha256=' + crypto.createHmac('sha256', 'test-secret').update(payloadStr).digest('hex')
+
+    // Make 50 requests (the limit)
+    for (let i = 0; i < 50; i++) {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/webhooks/github',
+        headers: {
+          'x-hub-signature-256': signature,
+          'x-github-event': 'pull_request',
+          'x-github-delivery': `delivery_${i}`,
+        },
+        payload: { action: 'opened', repository: { id: 123 } },
+      })
+      expect(res.statusCode).toBe(200)
+    }
+
+    // The 51st request should be rate limited
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: {
+        'x-hub-signature-256': signature,
+        'x-github-event': 'pull_request',
+        'x-github-delivery': 'delivery_limit',
+      },
+      payload: { action: 'opened', repository: { id: 123 } },
+    })
+
+    expect(res.statusCode).toBe(429)
+    expect(res.json().message).toContain('Rate limit exceeded')
   })
 })
