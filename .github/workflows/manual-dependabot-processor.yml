@@ -143,20 +143,23 @@ jobs:
               # Write body to temp file to avoid issues with special characters and size limits
               BODY_FILE=$(mktemp)
               echo "$BODY" > "$BODY_FILE"
-              # Convert labels to JSON array
-              LABELS_JSON=$(echo "$LABELS" | sed 's/[^,]*/"&"/g' | sed 's/^/[/' | sed 's/$/]/')
+              # Create full request JSON
+              REQUEST_FILE=$(mktemp)
+              jq -n \
+                --arg title "$TITLE" \
+                --arg body "$(cat "$BODY_FILE")" \
+                --argjson labels "$(echo "$LABELS" | jq -R 'split(",")')" \
+                '{title: $title, body: $body, labels: $labels}' > "$REQUEST_FILE"
               # Capture stderr separately to see the actual error
               ISSUE_OUTPUT=$(gh api \
                 --method POST \
                 -H "Accept: application/vnd.github+json" \
                 "/repos/${{ github.repository }}/issues" \
-                -f title="$TITLE" \
-                -F body=@"$BODY_FILE" \
-                -F "labels=$LABELS_JSON" 2>&1) || true
+                --input "$REQUEST_FILE" 2>&1) || true
               ISSUE_EXIT_CODE=$?
               echo "Issue creation exit code: $ISSUE_EXIT_CODE"
               echo "Issue output: $ISSUE_OUTPUT"
-              rm -f "$BODY_FILE"
+              rm -f "$BODY_FILE" "$REQUEST_FILE"
               ISSUE_NUM=$(echo "$ISSUE_OUTPUT" | jq -r '.number // empty')
 
               if [ -n "$ISSUE_NUM" ]; then
