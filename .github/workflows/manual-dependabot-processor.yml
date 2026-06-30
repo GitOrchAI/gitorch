@@ -142,6 +142,9 @@ jobs:
               # Write body to temp file to avoid issues with special characters and size limits
               BODY_FILE=$(mktemp)
               echo "$BODY" > "$BODY_FILE"
+              echo "Body file size: $(wc -c < "$BODY_FILE") bytes"
+              echo "Title: $TITLE"
+              echo "Labels: $LABELS"
               ISSUE_OUTPUT=$(gh api \
                 --method POST \
                 -H "Accept: application/vnd.github+json" \
