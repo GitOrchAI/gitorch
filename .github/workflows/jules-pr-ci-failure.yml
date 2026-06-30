@@ -14,8 +14,6 @@ jobs:
   fallback-on-ci-failure:
     name: Fallback CI Failure Analysis (1+ business day)
     runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
     if: |
       github.event.check_suite.conclusion == 'failure' &&
       contains(github.event.check_suite.pull_requests[0].labels.*.name, 'jules')
@@ -24,7 +22,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.SECURITY_PAT }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -37,7 +35,7 @@ jobs:
 
       - name: Analyze CI Failure
         env:
-          SECURITY_PAT: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
+          SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_FREE_MODEL: openrouter/free
           REPO_OWNER: ${{ github.repository_owner }}

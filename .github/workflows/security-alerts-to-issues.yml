@@ -20,7 +20,7 @@ jobs:
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         with:
-          github-token: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.SECURITY_PAT }}
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
