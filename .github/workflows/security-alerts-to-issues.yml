@@ -7,6 +7,9 @@ on:
 
 jobs:
   sync:
+    # FASE 2: code scanning (CodeQL) e secret scanning ainda NÃO roteiam pro Jules.
+    # Desligado de propósito até o pipeline do Dependabot estar redondo. Não apagar.
+    if: false
     runs-on: ubuntu-latest
     permissions:
       issues: write

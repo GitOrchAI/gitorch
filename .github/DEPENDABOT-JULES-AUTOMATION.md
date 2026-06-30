@@ -74,21 +74,23 @@ A complete GitHub Actions automation pipeline for handling Dependabot security a
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPENROUTER_FREE_MODEL` | `qwen/qwen-2.5-7b-instruct:free` | Free model to use (must end with `:free`) |
+| `OPENROUTER_FREE_MODEL` | `openrouter/free` | SEMPRE a rota free (zero hardcode). Aceita `openrouter/free` ou um modelo `:free`. |
 | `SLA_BUSINESS_DAYS` | `1` | SLA threshold in business days |
 | `ISSUE_CREATION_DELAY_MS` | `300000` (5 min) | Delay between multiple alert issues |
 | `LABEL_DELAY_MS` | `10000` (10s) | Delay before adding `jules` label |
 | `REPO_OWNER` | Auto-detected | Repository owner |
 | `REPO_NAME` | Auto-detected | Repository name |
 
-## Recommended Free Models (OpenRouter)
+## Modelo de IA — SEMPRE a rota free
 
-| Model | Context | Strengths |
-|-------|---------|-----------|
-| `qwen/qwen-2.5-7b-instruct:free` | 32k | Good reasoning, code understanding |
-| `nousresearch/hermes-3-llama-3.1-8b:free` | 128k | Excellent instruction following |
-| `google/gemma-2-9b-it:free` | 8k | Strong technical tasks |
-| `microsoft/phi-3-mini-128k-instruct:free` | 128k | Long context, fast |
+Usamos a **rota free do OpenRouter** (`openrouter/free`), que sorteia um modelo grátis por
+chamada. **Nunca** hardcodamos um modelo: modelos free entram e saem, e a rota se adapta sozinha.
+
+Risco conhecido: a rota pode sortear um modelo de **moderação/safety** (ex.:
+`nvidia/nemotron-3.5-content-safety`) cuja única saída é um veredito tipo `User Safety: safe`.
+O `openrouter-client.ts` detecta isso pelo campo `model` da resposta (`safety|guard|moderation`)
+e por validação de conteúdo, e **re-chama a rota free** (re-sorteio) até obter resposta útil.
+Sem isso, issues nasciam com corpo `User Safety: safe` (bug histórico — ex.: issue #153).
 
 ## Setup Instructions
 
@@ -119,11 +121,12 @@ A complete GitHub Actions automation pipeline for handling Dependabot security a
 
 | File | Purpose |
 |------|---------|
-| `dependabot-alert-to-issue.yml` | Alert → Issue with Jules prompt |
-| `jules-pr-conflict-resolver.yml` | Detect & resolve merge conflicts |
-| `jules-pr-ci-failure-fallback.yml` | CI failure fallback (1+ day) |
-| `auto-merge.yml` | Auto-merge qualifying PRs |
-| `sla-tracker.yml` | SLA monitoring & breach alerts |
+| `dependabot-to-jules.yml` | Alerta → Issue com prompt Jules (webhook + schedule + manual) |
+| `jules-pr-conflict.yml` | Detecta e resolve conflitos de merge (comenta @jules) |
+| `jules-pr-ci-failure.yml` | Fallback de falha de CI (após 1 dia útil) |
+| `jules-auto-recovery.yml` | Recupera "failed to create a task" (retry em ciclos) |
+| `auto-merge.yml` | Auto-merge de PRs qualificadas (Dependabot/Jules) com CI verde |
+| `sla-tracker.yml` | Monitora SLA e abre alerta de breach |
 
 ## Scripts
 
@@ -220,15 +223,19 @@ bun run sla-tracker.ts 1
 - Free models only - no paid model costs
 - API keys stored as GitHub Secrets (encrypted)
 
-## Related Workflows (Existing)
+## Histórico de consolidação (2026-06-30)
 
-| Workflow | Purpose | Keep/Replace |
-|----------|---------|--------------|
-| `dependabot-alerts-to-issues.yml` | Basic alert → issue | **Replace** with new `dependabot-alert-to-issue.yml` |
-| `security-alerts-to-issues.yml` | Rich security alerts (all types) | **Keep** for CodeQL/Secret scanning |
-| `dependabot-pr-failure.yml` | Jules API on Dependabot PR failure | **Keep** for direct Jules API |
-| `jules-auto-recovery.yml` | Auto-retry Jules on rate limit | **Keep** |
-| `analyze-unmergeable-prs.yml` | Old conflict analyzer | **Replace** with `jules-pr-conflict-resolver.yml` |
+Reconstrução limpa: workflows duplicados foram removidos e consolidados num único conjunto.
+
+| Removido | Substituído por |
+|----------|-----------------|
+| `dependabot-alert-to-issue.yml` + `dependabot-alerts-to-issues.yml` + `manual-dependabot-processor.yml` | `dependabot-to-jules.yml` |
+| `analyze-unmergeable-prs.yml` | `jules-pr-conflict.yml` |
+| `dependabot-pr-failure.yml` (25KB, sobreposto) | `jules-pr-conflict.yml` + `jules-pr-ci-failure.yml` |
+
+`security-alerts-to-issues.yml` (CodeQL/secret scanning) está **desligado** (`if: false`) até a
+fase 2. O auto-PR de segurança do Dependabot foi **desligado** (repo setting
+`automated-security-fixes`): vulnerabilidade vira alerta → Jules conserta.
 
 ---
 

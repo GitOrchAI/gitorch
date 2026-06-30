@@ -1,4 +1,8 @@
 version: 2
+# Atualizações de SEGURANÇA (vulnerabilidades) NÃO são tratadas aqui: o auto-PR de
+# segurança do Dependabot está DESLIGADO (repo setting automated-security-fixes).
+# Vulnerabilidade vira alerta → pipeline dependabot-to-jules → Jules conserta.
+# Aqui ficam só as atualizações de versão de rotina (patch/minor).
 updates:
   # Configuração de atualizações do ecossistema PNPM (monorepo)
   - package-ecosystem: "pnpm"
@@ -28,11 +32,3 @@ updates:
     labels:
       - "dependabot"
       - "github-actions"
-
-  # Configuração de atualizações de segurança prioritárias
-  - package-ecosystem: "pnpm"
-    directory: "/"
-    schedule:
-      interval: "daily"
-    open-pull-requests-limit: 10
-    versioning-strategy: increase

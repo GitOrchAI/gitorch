@@ -1,9 +1,12 @@
 name: Auto-Merge PRs (Dependabot & Jules)
 
+# PR qualificada (Dependabot ou Jules) com CI 100% verde → aprova e habilita auto-merge (squash).
+# Sempre — política de tolerância zero: o CI é o porteiro.
+
 on:
   pull_request_target:
     types: [opened, reopened, synchronize, labeled, ready_for_review]
-  check_schedule:
+  check_suite:
     types: [completed]
 
 permissions:
@@ -17,185 +20,118 @@ jobs:
     name: Enable Auto-Merge for Qualifying PRs
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.SECURITY_PAT }}
-
       - name: Evaluate Auto-Merge Eligibility
         id: evaluate
         uses: actions/github-script@v7
-        env:
-          SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
         with:
           github-token: ${{ secrets.SECURITY_PAT }}
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const prNumber = context.payload.pull_request?.number || context.payload.check_suite?.pull_requests?.[0]?.number;
-            
+            const prNumber =
+              context.payload.pull_request?.number ||
+              context.payload.check_suite?.pull_requests?.[0]?.number;
+
             if (!prNumber) {
-              console.log("No PR number found in payload");
-              return { eligible: false };
+              console.log("Nenhum PR no payload.");
+              core.setOutput('eligible', 'false');
+              return;
             }
-            
-            console.log(`Evaluating PR #${prNumber} for auto-merge...`);
-            
-            // Get PR details
-            const prResponse = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
-            const pr = prResponse.data;
+
+            const pr = (await github.rest.pulls.get({ owner, repo, pull_number: prNumber })).data;
             const prUser = pr.user.login;
             const prBody = pr.body || '';
             const prLabels = pr.labels.map(l => l.name);
-            const prState = pr.state;
-            const mergeable = pr.mergeable;
-            const mergeableState = pr.mergeable_state;
-            
-            console.log(`PR #${prNumber}: user=${prUser}, state=${prState}, mergeable=${mergeable}, mergeable_state=${mergeableState}`);
-            console.log(`Labels: ${prLabels.join(', ')}`);
-            
-            let shouldAutoMerge = false;
-            let reason = "";
-            
-            // Check if PR is in a mergeable state
-            if (prState !== 'open' || mergeableState === 'blocked' || mergeableState === 'dirty') {
-              reason = `PR not mergeable (state: ${prState}, mergeable_state: ${mergeableState})`;
+            console.log(`PR #${prNumber}: user=${prUser}, state=${pr.state}, mergeable_state=${pr.mergeable_state}, labels=[${prLabels.join(', ')}]`);
+
+            let eligible = false;
+            let reason = '';
+
+            if (pr.state !== 'open' || pr.mergeable_state === 'dirty') {
+              reason = `PR não-mesclável (state=${pr.state}, mergeable_state=${pr.mergeable_state})`;
+            } else if (prUser === 'dependabot[bot]') {
+              eligible = true; reason = 'PR do Dependabot';
+            } else if (prLabels.includes('jules') || prBody.includes('PR created automatically by Jules')) {
+              eligible = true; reason = "PR do Jules (resolve issue 'jules')";
             } else {
-              // Case 1: PR opened by Dependabot
-              if (prUser === 'dependabot[bot]') {
-                shouldAutoMerge = true;
-                reason = "PR opened by Dependabot";
-              } 
-              // Case 2: PR opened by Jules (has 'jules' label or Jules body marker)
-              else if (prLabels.includes('jules') || prBody.includes("PR created automatically by Jules")) {
-                shouldAutoMerge = true;
-                reason = "PR created by Jules (resolves 'jules' issue)";
-              }
-              // Case 3: PR resolves an issue with 'dependabot' label
-              else {
-                const regex = /(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\s+#(\d+)/gi;
-                let match;
-                const linkedIssues = [];
-                while ((match = regex.exec(prBody)) !== null) {
-                  linkedIssues.push(parseInt(match[1], 10));
-                }
-                
-                const urlRegex = /https:\/\/github\.com\/[^\/]+\/[^\/]+\/issues\/(\d+)/gi;
-                while ((match = urlRegex.exec(prBody)) !== null) {
-                  linkedIssues.push(parseInt(match[1], 10));
-                }
-                
-                if (linkedIssues.length > 0) {
-                  console.log(`Checking linked issues: ${linkedIssues.join(', ')}`);
-                  for (const issueNum of linkedIssues) {
-                    try {
-                      const issue = await github.rest.issues.get({ owner, repo, issue_number: issueNum });
-                      const issueLabels = issue.data.labels.map(l => l.name);
-                      console.log(`Issue #${issueNum} labels: ${issueLabels.join(', ')}`);
-                      
-                      if (issueLabels.includes('dependabot') || issueLabels.includes('jules')) {
-                        shouldAutoMerge = true;
-                        reason = `PR resolves issue #${issueNum} with label 'dependabot' or 'jules'`;
-                        break;
-                      }
-                    } catch (err) {
-                      console.warn(`Could not check issue #${issueNum}:`, err.message);
-                    }
+              const linked = [];
+              const re = /(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\s+#(\d+)/gi;
+              let m;
+              while ((m = re.exec(prBody)) !== null) linked.push(parseInt(m[1], 10));
+              const urlRe = /https:\/\/github\.com\/[^/]+\/[^/]+\/issues\/(\d+)/gi;
+              while ((m = urlRe.exec(prBody)) !== null) linked.push(parseInt(m[1], 10));
+              for (const n of linked) {
+                try {
+                  const issue = await github.rest.issues.get({ owner, repo, issue_number: n });
+                  const labels = issue.data.labels.map(l => l.name);
+                  if (labels.includes('dependabot') || labels.includes('jules')) {
+                    eligible = true; reason = `PR resolve issue #${n} (label dependabot/jules)`; break;
                   }
+                } catch (err) {
+                  console.warn(`Não consegui checar issue #${n}: ${err.message}`);
                 }
               }
             }
-            
-            if (shouldAutoMerge) {
-              console.log(`✓ AUTO-MERGE ELIGIBLE: ${reason}`);
-            } else {
-              console.log(`✗ NOT ELIGIBLE: ${reason || 'Does not match auto-merge criteria'}`);
-            }
-            
-            return { 
-              eligible: shouldAutoMerge, 
-              prNumber,
-              reason 
-            };
-        output-file: /tmp/evaluation.json
+
+            console.log(eligible ? `✓ ELEGÍVEL: ${reason}` : `✗ NÃO elegível: ${reason || 'não casa critérios'}`);
+            core.setOutput('eligible', eligible ? 'true' : 'false');
+            core.setOutput('prNumber', String(prNumber));
 
       - name: Wait for CI to Pass
         if: steps.evaluate.outputs.eligible == 'true'
         uses: actions/github-script@v7
-        env:
-          SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
         with:
           github-token: ${{ secrets.SECURITY_PAT }}
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const prNumber = parseInt(require('fs').readFileSync('/tmp/evaluation.json', 'utf8'));
-            
-            console.log(`Waiting for CI to pass on PR #${prNumber}...`);
-            
-            // Wait up to 10 minutes for CI
-            const maxWaitMs = 10 * 60 * 1000;
-            const startTime = Date.now();
-            const checkInterval = 30000; // 30 seconds
-            
-            while (Date.now() - startTime < maxWaitMs) {
+            const prNumber = parseInt('${{ steps.evaluate.outputs.prNumber }}', 10);
+            console.log(`Aguardando CI 100% verde no PR #${prNumber}...`);
+
+            const maxWaitMs = 15 * 60 * 1000;
+            const start = Date.now();
+            const interval = 30000;
+
+            while (Date.now() - start < maxWaitMs) {
               const pr = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
-              
-              // Check check_suite conclusion
-              const checkSuites = await github.rest.checks.listSuitesForRef({
+              const suites = await github.rest.checks.listSuitesForRef({
                 owner, repo, ref: pr.data.head.sha, per_page: 20
               });
-              
-              const relevantSuites = checkSuites.data.check_suites.filter(s => 
-                s.app?.name?.toLowerCase().includes('github actions') || s.workflow_id
-              );
-              
-              if (relevantSuites.length > 0) {
-                const allCompleted = relevantSuites.every(s => s.status === 'completed');
-                const allSuccess = relevantSuites.every(s => s.conclusion === 'success');
-                
-                if (allCompleted && allSuccess) {
-                  console.log(`All CI checks passed for PR #${prNumber}`);
+              const relevant = suites.data.check_suites.filter(s => s.workflow_id);
+
+              if (relevant.length > 0) {
+                const allCompleted = relevant.every(s => s.status === 'completed');
+                const allSuccess = relevant.every(s => s.conclusion === 'success');
+                if (allCompleted && allSuccess) { console.log('CI 100% verde.'); return; }
+                if (allCompleted && !allSuccess) {
+                  core.setFailed(`CI falhou no PR #${prNumber}. Auto-merge não habilitado.`);
                   return;
                 }
-                
-                if (allCompleted && !allSuccess) {
-                  console.log(`CI failed for PR #${prNumber}. Not enabling auto-merge.`);
-                  process.exit(1);
-                }
-                
-                console.log(`CI still running... (${relevantSuites.filter(s => s.status === 'completed').length}/${relevantSuites.length} completed)`);
+                console.log(`CI rodando... (${relevant.filter(s => s.status === 'completed').length}/${relevant.length} concluídos)`);
               } else {
-                console.log("No CI check suites found yet...");
+                console.log('Nenhum check suite ainda...');
               }
-              
-              await new Promise(r => setTimeout(r, checkInterval));
+              await new Promise(r => setTimeout(r, interval));
             }
-            
-            console.log("Timed out waiting for CI. Not enabling auto-merge.");
-            process.exit(1);
+            core.setFailed('Timeout aguardando CI. Auto-merge não habilitado.');
 
       - name: Enable Auto-Merge
         if: steps.evaluate.outputs.eligible == 'true'
         env:
           GH_TOKEN: ${{ secrets.SECURITY_PAT }}
+          PR_NUM: ${{ steps.evaluate.outputs.prNumber }}
         run: |
-          PR_NUM="${{ fromJson(steps.evaluate.outputs.result).prNumber }}"
-          
-          echo "Enabling auto-merge for PR #$PR_NUM..."
-          
-          # Approve PR (may fail if same user, which is fine)
-          gh pr review $PR_NUM --approve --body "Aprovado automaticamente pelo pipeline de segurança (Dependabot/Jules)." --repo ${{ github.repository }} || true
-          
-          # Enable auto-merge with squash
+          echo "Habilitando auto-merge no PR #$PR_NUM..."
+          gh pr review "$PR_NUM" --approve \
+            --body "Aprovado automaticamente pelo pipeline de segurança (Dependabot/Jules)." \
+            --repo "${{ github.repository }}" || true
           for i in 1 2 3; do
-            if gh pr merge $PR_NUM --auto --squash --repo ${{ github.repository }}; then
-              echo "Auto-merge enabled successfully for PR #$PR_NUM"
+            if gh pr merge "$PR_NUM" --auto --squash --repo "${{ github.repository }}"; then
+              echo "Auto-merge habilitado para o PR #$PR_NUM"
               exit 0
             fi
-            echo "Attempt $i failed, retrying in 5s..."
+            echo "Tentativa $i falhou, repetindo em 5s..."
             sleep 5
           done
-          
-          echo "Failed to enable auto-merge after 3 attempts"
+          echo "Falha ao habilitar auto-merge após 3 tentativas"
           exit 1

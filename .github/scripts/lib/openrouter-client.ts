@@ -1,138 +1,120 @@
 /**
- * OpenRouter Client with Free Model Enforcement and Safety Filter
+ * OpenRouter Client — Free-Route-Only com retry anti-moderação.
  *
- * Only allows :free models and sanitizes "User Safety: safe" leakage from responses.
+ * Regra inegociável: SEMPRE usa a rota free (`openrouter/free`), NUNCA modelo pago
+ * e NUNCA modelo hardcoded. A rota free re-sorteia um modelo grátis por chamada.
+ *
+ * Problema que isto resolve: a rota free pode sortear um modelo de moderação
+ * (ex.: `nvidia/nemotron-3.5-content-safety`) cuja única saída é um veredito tipo
+ * "User Safety: safe". A resposta inclui o campo `model` dizendo qual modelo respondeu;
+ * usamos isso (+ validação de conteúdo) para detectar saída ruim e re-chamar a rota free,
+ * que re-sorteia outro modelo — até obter uma resposta utilizável.
  */
 
 import { z } from 'zod'
 
+export const FREE_ROUTE = 'openrouter/free'
+
 // Configuration schema
 export const OpenRouterConfigSchema = z.object({
   apiKey: z.string().min(1, 'OPENROUTER_API_KEY is required'),
-  model: z.string().default('openrouter/free'),
-  fallbackModels: z
-    .array(z.string())
-    .default([
-      'qwen/qwen3-coder:free',
-      'openai/gpt-oss-20b:free',
-      'meta-llama/llama-3.3-70b-instruct:free',
-      'nvidia/nemotron-3-ultra-550b-a55b:free',
-      'google/gemma-4-26b-a4b-it:free',
-      'poolside/laguna-m.1:free',
-      'cognitivecomputations/dolphin-mistral-24b-venice-edition:free',
-      'openai/gpt-oss-120b:free',
-    ]),
+  model: z.string().default(FREE_ROUTE),
   baseUrl: z.string().url().default('https://openrouter.ai/api/v1'),
   maxTokens: z.number().int().positive().default(8000),
   temperature: z.number().min(0).max(2).default(0.1),
   referer: z.string().url().optional(),
   title: z.string().optional(),
   timeoutMs: z.number().int().positive().default(60000),
-  maxRetries: z.number().int().nonnegative().default(3),
+  // Número de re-sorteios da rota free quando vem modelo de moderação / saída ruim.
+  maxRetries: z.number().int().nonnegative().default(6),
 })
 
 export type OpenRouterConfig = z.infer<typeof OpenRouterConfigSchema>
 
-// Request/Response schemas
 export const ChatMessageSchema = z.object({
   role: z.enum(['system', 'user', 'assistant']),
   content: z.string(),
 })
 
-export const ChatCompletionRequestSchema = z.object({
-  model: z.string(),
-  messages: z.array(ChatMessageSchema),
-  max_tokens: z.number().int().positive().optional(),
-  temperature: z.number().min(0).max(2).optional(),
-})
-
-export const ChatCompletionChoiceSchema = z.object({
-  index: z.number(),
-  message: ChatMessageSchema,
-  finish_reason: z.string().nullable(),
-})
-
 export const ChatCompletionResponseSchema = z.object({
-  id: z.string(),
-  object: z.string(),
-  created: z.number(),
-  model: z.string(),
-  choices: z.array(ChatCompletionChoiceSchema),
-  usage: z
-    .object({
-      prompt_tokens: z.number(),
-      completion_tokens: z.number(),
-      total_tokens: z.number(),
+  id: z.string().optional(),
+  object: z.string().optional(),
+  created: z.number().optional(),
+  // Modelo realmente usado pela rota free — chave para detectar moderação.
+  model: z.string().optional(),
+  choices: z.array(
+    z.object({
+      index: z.number().optional(),
+      message: ChatMessageSchema,
+      finish_reason: z.string().nullable().optional(),
     })
-    .optional(),
+  ),
 })
 
 export type ChatMessage = z.infer<typeof ChatMessageSchema>
-export type ChatCompletionRequest = z.infer<typeof ChatCompletionRequestSchema>
 export type ChatCompletionResponse = z.infer<typeof ChatCompletionResponseSchema>
 
-// Safety filter patterns to remove from free model outputs
-const SAFETY_FILTER_PATTERNS = [
-  /User Safety: safe/gi,
-  /Safety: safe/gi,
-  /Content Policy: safe/gi,
-  /SAFE/gi,
-  /\[User Safety: safe\]/gi,
-  /\*\*User Safety: safe\*\*/gi,
+/**
+ * Valida que o modelo é a rota free ou um modelo com sufixo :free. Caso contrário, throw.
+ */
+export function validateFreeRoute(model: string): void {
+  const isFree = model === FREE_ROUTE || model.endsWith(':free')
+  if (!isFree) {
+    throw new Error(
+      `Apenas a rota free ('${FREE_ROUTE}') ou modelos ':free' são permitidos. Recebido: '${model}'`
+    )
+  }
+}
+
+/**
+ * Detecta, pelo id do modelo retornado, se a rota free caiu num modelo de moderação/safety,
+ * cujo propósito é classificar conteúdo (não gerar texto útil).
+ */
+export function isModerationModel(modelId: string): boolean {
+  return /safety|guard|moderation/i.test(modelId)
+}
+
+/**
+ * Detecta saída inutilizável: vazia, curta demais, ou um veredito de moderação.
+ */
+export function isBadOutput(text: string): boolean {
+  const trimmed = text.trim()
+  if (trimmed.length < 20) return true
+  if (/^\s*(\*\*)?\s*(user\s+|content\s+)?(safety|policy|moderation)\s*:/i.test(trimmed))
+    return true
+  if (/^\s*safe\.?\s*$/i.test(trimmed)) return true
+  return false
+}
+
+// Apenas padrões ANCORADOS de veredito — nunca apaga a palavra "safe" de texto legítimo.
+const SAFETY_VERDICT_LINES = [
+  /^\s*(\*\*)?\s*User Safety:.*$/gim,
+  /^\s*(\*\*)?\s*Content Policy:\s*safe.*$/gim,
+  /^\s*(\*\*)?\s*Safety:\s*safe.*$/gim,
 ] as const
 
 /**
- * Sanitizes LLM response by removing safety filter leakage artifacts
+ * Limpa resíduos de veredito de moderação (rede de segurança). A defesa principal é o retry.
  */
 export function sanitizeResponse(text: string): string {
   let sanitized = text
-
-  for (const pattern of SAFETY_FILTER_PATTERNS) {
+  for (const pattern of SAFETY_VERDICT_LINES) {
     sanitized = sanitized.replace(pattern, '')
   }
-
-  // Clean up extra whitespace and empty lines
-  sanitized = sanitized.replace(/\n{3,}/g, '\n\n').trim()
-
-  return sanitized
+  return sanitized.replace(/\n{3,}/g, '\n\n').trim()
 }
 
-/**
- * Validates that a model string uses the :free suffix or is the openrouter/free router
- */
-export function validateFreeModel(model: string): void {
-  const isFreeModel = model.endsWith(':free') || model === 'openrouter/free'
-  if (!isFreeModel) {
-    throw new Error(`Model must use :free suffix or be 'openrouter/free' router. Got: ${model}`)
-  }
-}
-
-/**
- * Creates a delay with exponential backoff
- */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-/**
- * OpenRouter Client for free models with safety filtering
- */
 export class OpenRouterClient {
   private readonly config: OpenRouterConfig
   private readonly headers: Record<string, string>
 
   constructor(config: Partial<OpenRouterConfig> & { apiKey: string }) {
-    const parsed = OpenRouterConfigSchema.parse(config)
-    this.config = parsed
-
-    // Validate model is free
-    validateFreeModel(this.config.model)
-
-    // Validate all fallback models are free
-    for (const model of this.config.fallbackModels) {
-      validateFreeModel(model)
-    }
-
+    this.config = OpenRouterConfigSchema.parse(config)
+    validateFreeRoute(this.config.model)
     this.headers = {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${this.config.apiKey}`,
@@ -141,115 +123,93 @@ export class OpenRouterClient {
     }
   }
 
-  /**
-   * Creates a chat completion with retry logic and safety filtering
-   * Tries primary model, then fallback models if they fail
-   */
-  async chatCompletion(
+  private async postChat(
     messages: ChatMessage[],
-    options?: { model?: string; maxTokens?: number; temperature?: number }
-  ): Promise<string> {
-    const primaryModel = options?.model || this.config.model
-    validateFreeModel(primaryModel)
-
-    // Build model list: primary + fallbacks (deduplicated)
-    const modelsToTry = [primaryModel, ...this.config.fallbackModels].filter(
-      (m, i, arr) => arr.indexOf(m) === i
-    )
-
-    const requestBodyBase = {
-      messages,
-      max_tokens: options?.maxTokens ?? this.config.maxTokens,
-      temperature: options?.temperature ?? this.config.temperature,
-    }
-
-    let lastError: Error | null = null
-
-    for (const model of modelsToTry) {
-      validateFreeModel(model)
-
-      const requestBody: ChatCompletionRequest = {
-        model,
-        ...requestBodyBase,
+    maxTokens: number,
+    temperature: number
+  ): Promise<ChatCompletionResponse> {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), this.config.timeoutMs)
+    try {
+      const response = await fetch(`${this.config.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: this.headers,
+        body: JSON.stringify({
+          model: FREE_ROUTE,
+          messages,
+          max_tokens: maxTokens,
+          temperature,
+        }),
+        signal: controller.signal,
+      })
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`OpenRouter API error (${response.status}): ${errorText}`)
       }
-
-      for (let attempt = 0; attempt <= this.config.maxRetries; attempt++) {
-        try {
-          const controller = new AbortController()
-          const timeoutId = setTimeout(() => controller.abort(), this.config.timeoutMs)
-
-          const response = await fetch(`${this.config.baseUrl}/chat/completions`, {
-            method: 'POST',
-            headers: this.headers,
-            body: JSON.stringify(requestBody),
-            signal: controller.signal,
-          })
-
-          clearTimeout(timeoutId)
-
-          if (!response.ok) {
-            const errorText = await response.text()
-            throw new Error(`OpenRouter API error (${response.status}): ${errorText}`)
-          }
-
-          const data = await response.json()
-          const parsed = ChatCompletionResponseSchema.parse(data)
-
-          if (!parsed.choices || parsed.choices.length === 0) {
-            throw new Error('No choices in OpenRouter response')
-          }
-
-          const content = parsed.choices[0]?.message?.content ?? ''
-          return sanitizeResponse(content)
-        } catch (error) {
-          lastError = error instanceof Error ? error : new Error(String(error))
-
-          // Don't retry on certain errors
-          if (error instanceof Error) {
-            if (
-              error.name === 'AbortError' ||
-              error.message.includes('401') ||
-              error.message.includes('403')
-            ) {
-              throw error
-            }
-          }
-
-          if (attempt < this.config.maxRetries) {
-            const delay = Math.min(1000 * Math.pow(2, attempt), 10000)
-            console.warn(
-              `OpenRouter request failed (model: ${model}, attempt ${attempt + 1}/${this.config.maxRetries + 1}), retrying in ${delay}ms:`,
-              lastError.message
-            )
-            await sleep(delay)
-          }
-        }
-      }
-
-      // If we exhausted retries for this model, try next fallback
-      console.warn(`Model ${model} exhausted retries, trying next fallback...`)
+      const data = await response.json()
+      return ChatCompletionResponseSchema.parse(data)
+    } finally {
+      clearTimeout(timeoutId)
     }
-
-    throw lastError || new Error('OpenRouter request failed after all models and retries')
   }
 
   /**
-   * Creates a simple completion with a single user message
+   * Chama a rota free e re-sorteia até obter resposta utilizável (não-moderação, não-vazia).
    */
+  async chatCompletion(
+    messages: ChatMessage[],
+    options?: { maxTokens?: number; temperature?: number }
+  ): Promise<string> {
+    const maxTokens = options?.maxTokens ?? this.config.maxTokens
+    const temperature = options?.temperature ?? this.config.temperature
+
+    let lastError: Error | null = null
+
+    for (let attempt = 0; attempt <= this.config.maxRetries; attempt++) {
+      try {
+        const data = await this.postChat(messages, maxTokens, temperature)
+        const usedModel = data.model ?? 'desconhecido'
+        const content = sanitizeResponse(data.choices[0]?.message?.content ?? '')
+
+        if (isModerationModel(usedModel) || isBadOutput(content)) {
+          console.warn(
+            `Rota free sorteou modelo ruim (${usedModel}) ou saída inutilizável, re-sorteando [${attempt + 1}/${this.config.maxRetries + 1}]`
+          )
+          await sleep(Math.min(1000 * 2 ** attempt, 8000))
+          continue
+        }
+
+        console.log(`Resposta utilizável obtida do modelo: ${usedModel}`)
+        return content
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error))
+        // 401/403 = credencial inválida: não adianta repetir.
+        if (lastError.message.includes('401') || lastError.message.includes('403')) {
+          throw lastError
+        }
+        console.warn(
+          `Falha na chamada à rota free [${attempt + 1}/${this.config.maxRetries + 1}]: ${lastError.message}`
+        )
+        await sleep(Math.min(1000 * 2 ** attempt, 8000))
+      }
+    }
+
+    throw (
+      lastError || new Error('Rota free não retornou resposta utilizável após todas as tentativas')
+    )
+  }
+
   async complete(
     prompt: string,
-    options?: { model?: string; maxTokens?: number; temperature?: number }
+    options?: { maxTokens?: number; temperature?: number }
   ): Promise<string> {
     return this.chatCompletion([{ role: 'user', content: prompt }], options)
   }
 
-  /**
-   * Creates a completion with system + user messages
-   */
   async completeWithSystem(
     systemPrompt: string,
     userPrompt: string,
-    options?: { model?: string; maxTokens?: number; temperature?: number }
+    options?: { maxTokens?: number; temperature?: number }
   ): Promise<string> {
     return this.chatCompletion(
       [
@@ -262,7 +222,8 @@ export class OpenRouterClient {
 }
 
 /**
- * Creates an OpenRouterClient from environment variables
+ * Cria um OpenRouterClient a partir do ambiente. SEMPRE rota free.
+ * `OPENROUTER_FREE_MODEL`, se presente, deve ser a rota free ou um modelo ':free' — senão throw.
  */
 export function createOpenRouterClientFromEnv(): OpenRouterClient {
   const env = process.env as Record<string, string | undefined>
@@ -271,9 +232,12 @@ export function createOpenRouterClientFromEnv(): OpenRouterClient {
     throw new Error('OPENROUTER_API_KEY environment variable is not set')
   }
 
+  const model = env['OPENROUTER_FREE_MODEL'] || FREE_ROUTE
+  validateFreeRoute(model)
+
   return new OpenRouterClient({
     apiKey,
-    model: env['OPENROUTER_FREE_MODEL'] || 'openrouter/free',
+    model,
     referer: env['REPO_OWNER']
       ? `https://github.com/${env['REPO_OWNER']}/${env['REPO_NAME'] || 'gitorch'}`
       : undefined,
@@ -281,6 +245,6 @@ export function createOpenRouterClientFromEnv(): OpenRouterClient {
     maxTokens: 8000,
     temperature: 0.1,
     timeoutMs: 120000,
-    maxRetries: 3,
+    maxRetries: 6,
   })
 }

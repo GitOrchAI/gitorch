@@ -24,20 +24,20 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.SECURITY_PAT }}
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
-          bun-version: latest
+          node-version: '20'
 
       - name: Install Dependencies
         working-directory: .github/scripts
-        run: bun install
+        run: npm ci
 
       - name: Analyze CI Failure
         env:
           SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          OPENROUTER_FREE_MODEL: ${{ env.OPENROUTER_FREE_MODEL || 'qwen/qwen-2.5-7b-instruct:free' }}
+          OPENROUTER_FREE_MODEL: openrouter/free
           REPO_OWNER: ${{ github.repository_owner }}
           REPO_NAME: ${{ github.event.repository.name }}
           SLA_BUSINESS_DAYS: ${{ env.SLA_BUSINESS_DAYS || '1' }}
@@ -64,7 +64,7 @@ jobs:
           
           if [ "$BUSINESS_DAYS" -ge "${{ env.SLA_BUSINESS_DAYS }}" ]; then
             echo "PR exceeds 1 business day. Running fallback analysis..."
-            bun run analyze-ci-failure.ts "$PR_NUM"
+            npx tsx analyze-ci-failure.ts "$PR_NUM"
           else
             echo "PR is within SLA ($BUSINESS_DAYS < ${{ env.SLA_BUSINESS_DAYS }}). Jules built-in auto-fix should handle this."
             echo "Skipping fallback analysis."

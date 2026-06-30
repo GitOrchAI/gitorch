@@ -25,34 +25,43 @@ jobs:
             const repo = context.repo.repo;
             const issueNumber = context.issue.number;
 
-            console.log(`Iniciando auto-recuperação do Jules para issue #${issueNumber}...`);
+            // O erro "failed to create a task" vem de rajada / limite de tarefas simultâneas
+            // do Jules. Esperar 3s não adianta (a vaga não abre em 3s). Tentamos em ciclos
+            // de minutos: remove label → readiciona → espera → confirma se o Jules engajou.
+            const MAX_CYCLES = 5;
+            const WAIT_MS = 150000; // 2.5 min entre ciclos
 
-            // 1. Remover label 'jules'
-            try {
-              await github.rest.issues.removeLabel({
-                owner,
-                repo,
-                issue_number: issueNumber,
-                name: 'jules'
+            console.log(`Auto-recuperação do Jules para issue #${issueNumber} (até ${MAX_CYCLES} ciclos)...`);
+
+            for (let cycle = 1; cycle <= MAX_CYCLES; cycle++) {
+              try {
+                await github.rest.issues.removeLabel({ owner, repo, issue_number: issueNumber, name: 'jules' });
+              } catch (err) {
+                console.log(`Ciclo ${cycle}: label já estava removida (${err.message}).`);
+              }
+              await new Promise(r => setTimeout(r, 5000));
+
+              try {
+                await github.rest.issues.addLabels({ owner, repo, issue_number: issueNumber, labels: ['jules'] });
+                console.log(`Ciclo ${cycle}: label 'jules' readicionada. Aguardando ${WAIT_MS / 60000}min...`);
+              } catch (err) {
+                console.error(`Ciclo ${cycle}: erro ao adicionar label: ${err.message}`);
+              }
+
+              await new Promise(r => setTimeout(r, WAIT_MS));
+
+              // O Jules reclamou de novo nesta janela? Se não, consideramos engajado.
+              const since = new Date(Date.now() - WAIT_MS - 10000).toISOString();
+              const comments = await github.rest.issues.listComments({
+                owner, repo, issue_number: issueNumber, per_page: 10, sort: 'created', direction: 'desc'
               });
-              console.log("Label 'jules' removida com sucesso.");
-            } catch (err) {
-              console.error("Erro ao remover label 'jules' (talvez já tenha sido removida):", err.message);
-            }
+              const stillFailing = comments.data.some(
+                c => c.created_at > since && /failed to create a task/i.test(c.body || '')
+              );
 
-            // 2. Aguardar 3 segundos para garantir a propagação dos webhooks
-            console.log("Aguardando 3 segundos...");
-            await new Promise(r => setTimeout(r, 3000));
-
-            // 3. Adicionar label 'jules' novamente
-            try {
-              await github.rest.issues.addLabels({
-                owner,
-                repo,
-                issue_number: issueNumber,
-                labels: ['jules']
-              });
-              console.log("Label 'jules' readicionada com sucesso. Jules foi re-engajado!");
-            } catch (err) {
-              console.error("Erro ao adicionar label 'jules':", err.message);
+              if (!stillFailing) {
+                console.log(`Jules engajou (sem novo erro). Encerrando no ciclo ${cycle}.`);
+                break;
+              }
+              console.log(`Ciclo ${cycle}: Jules ainda falhando, novo ciclo...`);
             }
