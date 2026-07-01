@@ -3,10 +3,6 @@ name: Jules PR Conflict Resolver
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, labeled]
-  # Quando a main move, PRs abertos podem ficar conflitantes sem disparar evento de PR.
-  # Este push varre todos os PRs da automação em busca de novos conflitos.
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -23,12 +19,11 @@ jobs:
   resolve-conflicts:
     name: Analyze & Resolve Merge Conflicts
     runs-on: ubuntu-latest
-    # Elegibilidade NÃO é gateada por label (PR do Jules não tem label 'jules'); quem decide é o
-    # script (isSecurityAutomationPR). Aqui só filtramos os tipos de evento relevantes.
-    if: >-
+    if: |
       github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'push' ||
-      github.event_name == 'pull_request_target'
+      (github.event_name == 'pull_request_target' &&
+       (github.event.action == 'labeled' || github.event.action == 'opened' || github.event.action == 'synchronize' || github.event.action == 'reopened') &&
+       contains(github.event.pull_request.labels.*.name, 'jules'))
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -47,7 +42,6 @@ jobs:
 
       - name: Analyze Merge Conflicts
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_FREE_MODEL: openrouter/free
@@ -56,32 +50,24 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.pr_number }}" ]; then
             PR_NUM="${{ github.event.inputs.pr_number }}"
-          elif [ "${{ github.event_name }}" = "pull_request_target" ]; then
-            PR_NUM="${{ github.event.pull_request.number }}"
           else
-            PR_NUM=""  # push na main → varredura de todos os PRs da automação
+            PR_NUM="${{ github.event.pull_request.number }}"
           fi
 
-          if [ -n "$PR_NUM" ]; then
-            echo "Analisando PR #$PR_NUM (conflitos)..."
-            npx tsx analyze-conflicts.ts "$PR_NUM"
-          else
-            echo "Varrendo todos os PRs da automação (main moveu)..."
-            npx tsx analyze-conflicts.ts
-          fi
+          echo "Analyzing PR #$PR_NUM for merge conflicts..."
+          npx tsx analyze-conflicts.ts "$PR_NUM"
         working-directory: .github/scripts
 
       - name: Remove Conflict Label if Resolved
         if: success() && github.event_name == 'pull_request_target' && github.event.action == 'synchronize'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
         run: |
           PR_NUM="${{ github.event.pull_request.number }}"
           # Check if PR is now mergeable (conflicts resolved)
-          MERGEABLE=$(gh pr view "$PR_NUM" --json mergeable --jq '.mergeable' --repo ${{ github.repository }})
+          MERGEABLE=$(gh pr view $PR_NUM --json mergeable --jq '.mergeable' --repo ${{ github.repository }})
           if [ "$MERGEABLE" = "MERGEABLE" ]; then
             echo "PR #$PR_NUM is now mergeable. Removing 'jules-conflict-notified' label..."
-            gh pr edit "$PR_NUM" --remove-label "jules-conflict-notified" --repo ${{ github.repository }} || true
+            gh pr edit $PR_NUM --remove-label "jules-conflict-notified" --repo ${{ github.repository }} || true
           fi
         working-directory: .github/scripts
