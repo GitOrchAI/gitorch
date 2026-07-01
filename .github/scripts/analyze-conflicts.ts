@@ -7,6 +7,7 @@
 
 import { Octokit } from '@octokit/rest'
 import { OpenRouterClient, createOpenRouterClientFromEnv } from './lib/openrouter-client.js'
+import { isSecurityAutomationPR } from './lib/pr-eligibility.js'
 import { z } from 'zod'
 import { execSync } from 'child_process'
 import * as fs from 'fs'
@@ -573,6 +574,11 @@ async function main() {
   const llmClient = env['OPENROUTER_API_KEY'] ? createOpenRouterClientFromEnv() : null
 
   if (prNumber) {
+    // Só age em PR desta automação de segurança (Dependabot/Jules).
+    if (!(await isSecurityAutomationPR(octokit, owner, repo, prNumber))) {
+      console.log(`PR #${prNumber} fora da automação de segurança. Ignorando.`)
+      return
+    }
     const analysis = await analyzeConflicts(octokit, owner, repo, prNumber, llmClient)
     if (analysis.hasConflicts) {
       await postConflictResolutionComment(octokit, owner, repo, prNumber, analysis.comment)
@@ -581,7 +587,7 @@ async function main() {
       console.log('No conflicts detected.')
     }
   } else {
-    // Scan all open PRs from Jules
+    // Varredura: todos os PRs abertos desta automação (usado quando a main move).
     const prs = await octokit.rest.pulls.list({
       owner,
       repo,
@@ -589,13 +595,12 @@ async function main() {
       per_page: 100,
     })
 
-    const julesPRs = prs.data.filter(
-      (pr) =>
-        pr.body?.includes('PR created automatically by Jules') ||
-        pr.labels.some((l) => (typeof l === 'string' ? l : l.name) === 'jules')
-    )
+    const julesPRs: typeof prs.data = []
+    for (const pr of prs.data) {
+      if (await isSecurityAutomationPR(octokit, owner, repo, pr.number)) julesPRs.push(pr)
+    }
 
-    console.log(`Found ${julesPRs.length} Jules PRs to check`)
+    console.log(`Found ${julesPRs.length} PRs da automação para checar`)
 
     for (const pr of julesPRs) {
       try {
