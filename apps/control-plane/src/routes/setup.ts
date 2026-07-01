@@ -65,95 +65,96 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
       },
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = request.user
-    if (!user) {
-      return reply.code(401).send({ error: 'UNAUTHORIZED: User session required' })
-    }
+      const user = request.user
+      if (!user) {
+        return reply.code(401).send({ error: 'UNAUTHORIZED: User session required' })
+      }
 
-    const { repos, engines, telegram, plan, envConfig } = request.body as SetupSubmitBody
+      const { repos, engines, telegram, plan, envConfig } = request.body as SetupSubmitBody
 
-    if (!repos || repos.length === 0) {
-      return reply.code(400).send({ error: 'At least one repository must be selected' })
-    }
+      if (!repos || repos.length === 0) {
+        return reply.code(400).send({ error: 'At least one repository must be selected' })
+      }
 
-    // 1. Validate plan constraints (Free allows only 1 repo)
-    if (plan === 'free' && repos.length > 1) {
-      return reply.code(400).send({ error: 'Free plan only allows up to 1 repository' })
-    }
+      // 1. Validate plan constraints (Free allows only 1 repo)
+      if (plan === 'free' && repos.length > 1) {
+        return reply.code(400).send({ error: 'Free plan only allows up to 1 repository' })
+      }
 
-    const createdProjects = []
+      const createdProjects = []
 
-    // 2. Create Project records and API keys
-    for (const repoFullName of repos) {
-      const repoName = repoFullName.split('/')[1] || repoFullName
-      const wingId = repoFullName // owner/repo maps to wingId
+      // 2. Create Project records and API keys
+      for (const repoFullName of repos) {
+        const repoName = repoFullName.split('/')[1] || repoFullName
+        const wingId = repoFullName // owner/repo maps to wingId
 
-      // Check if project already exists
-      let project = await app.prisma.project.findFirst({
-        where: { wingId },
-      })
+        // Check if project already exists
+        let project = await app.prisma.project.findFirst({
+          where: { wingId },
+        })
 
-      if (!project) {
-        project = await app.prisma.project.create({
+        if (!project) {
+          project = await app.prisma.project.create({
+            data: {
+              wingId,
+              name: repoName,
+              description: `Project for ${repoFullName}`,
+              runtimeConfig: {
+                engines,
+                telegram: telegram ?? null,
+                plan,
+                envConfig: (envConfig ?? null) as Prisma.JsonObject | null,
+                userGithubToken: user.githubToken ?? null,
+              } as Prisma.JsonObject,
+            },
+          })
+        }
+
+        // Generate a default API Key for this project (assisted login for CLIs)
+        const rawApiKey = `gitorch_${Math.random().toString(36).substring(2)}${Math.random().toString(36).substring(2)}`
+        const keyHash = createHash('sha256').update(rawApiKey).digest('hex')
+        const prefix = rawApiKey.substring(0, 12)
+
+        await app.prisma.apiKey.create({
           data: {
-            wingId,
-            name: repoName,
-            description: `Project for ${repoFullName}`,
-            runtimeConfig: {
+            projectId: project.id,
+            name: 'Default Setup Key',
+            keyHash,
+            prefix,
+            scopes: ['read', 'write'],
+          },
+        })
+
+        // Add to created list
+        createdProjects.push({
+          id: project.id,
+          name: project.name,
+          wingId: project.wingId,
+          apiKey: rawApiKey,
+        })
+
+        // 3. Queue mission to clone repository & initialize multi-agent engines
+        await app.prisma.mission.create({
+          data: {
+            projectId: project.id,
+            type: 'clone_and_start_engines',
+            payload: {
+              repoUrl: `https://github.com/${repoFullName}`,
               engines,
               telegram: telegram ?? null,
-              plan,
               envConfig: (envConfig ?? null) as Prisma.JsonObject | null,
-              userGithubToken: user.githubToken ?? null,
             } as Prisma.JsonObject,
+            status: 'pending',
           },
         })
       }
 
-      // Generate a default API Key for this project (assisted login for CLIs)
-      const rawApiKey = `gitorch_${Math.random().toString(36).substring(2)}${Math.random().toString(36).substring(2)}`
-      const keyHash = createHash('sha256').update(rawApiKey).digest('hex')
-      const prefix = rawApiKey.substring(0, 12)
-
-      await app.prisma.apiKey.create({
-        data: {
-          projectId: project.id,
-          name: 'Default Setup Key',
-          keyHash,
-          prefix,
-          scopes: ['read', 'write'],
-        },
-      })
-
-      // Add to created list
-      createdProjects.push({
-        id: project.id,
-        name: project.name,
-        wingId: project.wingId,
-        apiKey: rawApiKey,
-      })
-
-      // 3. Queue mission to clone repository & initialize multi-agent engines
-      await app.prisma.mission.create({
-        data: {
-          projectId: project.id,
-          type: 'clone_and_start_engines',
-          payload: {
-            repoUrl: `https://github.com/${repoFullName}`,
-            engines,
-            telegram: telegram ?? null,
-            envConfig: (envConfig ?? null) as Prisma.JsonObject | null,
-          } as Prisma.JsonObject,
-          status: 'pending',
-        },
+      return reply.send({
+        success: true,
+        projects: createdProjects,
       })
     }
-
-    return reply.send({
-      success: true,
-      projects: createdProjects,
-    })
-  })
+  )
 }
 
 export default setupRoutes
