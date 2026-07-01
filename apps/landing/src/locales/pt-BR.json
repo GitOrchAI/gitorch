@@ -1,0 +1,136 @@
+{
+  "nav": {
+    "logo": "GitOrch",
+    "badge": "Open Core",
+    "stars": "{{count}} estrelas",
+    "languages": {
+      "en": "English",
+      "pt-BR": "Português",
+      "es": "Español"
+    },
+    "login": "Entrar",
+    "cta": "Iniciar Automação"
+  },
+  "hero": {
+    "headline": "Orquestre Agentes de IA Diretamente no Fluxo do seu GitHub",
+    "subheadline": "O GitOrch é o plano de controle definitivo para automação de engenharia de software. Conecte sua conta e coloque agentes autônomos para gerenciar, testar e documentar demandas direto nas suas Issues e Projetos V2. Sem mudar de plataforma, com fricção zero.",
+    "cta": "Conectar Repositório Gratuitamente",
+    "microcopy": "Instalação em 1 clique via GitHub App. Sem burocracia."
+  },
+  "solution": {
+    "title": "Anatomia da Solução",
+    "subtitle": "Tecnologia mapeada para valor de negócio",
+    "items": [
+      {
+        "tech": "GitHub Sync & Projects V2",
+        "title": "Sincronização Nativa e Invisível",
+        "benefit": "Seus agentes trabalham onde seu time já está. Eles gerenciam sub-issues, atualizam cronogramas e movem cards no Projects V2 automaticamente."
+      },
+      {
+        "tech": "CodeSight & Graph RAG",
+        "title": "Zero Alucinações de Código",
+        "benefit": "A engine mapeia toda a arquitetura, dependências e impacto do repositório antes de agir. Os agentes tomam decisões baseadas em fatos, não em palpites."
+      },
+      {
+        "tech": "Synapse & Cortex",
+        "title": "Coordenação e Memória de Longo Prazo",
+        "benefit": "Os agentes conversam entre si e lembram do contexto de entregas passadas. Menos retrabalho e mais autonomia para tarefas complexas de ponta a ponta."
+      },
+      {
+        "tech": "Control Plane (F8)",
+        "title": "Plano de Controle Unificado",
+        "benefit": "Dashboard tempo real (Mission Control) via SSE. Visibilidade total do que agentes estão fazendo, logs, métricas, health."
+      }
+    ]
+  },
+  "demo": {
+    "title": "Demonstração Visual",
+    "subtitle": "Mission Control em ação",
+    "steps": [
+      "Issue aberta pelo cliente",
+      "GitOrch aciona equipe de agentes (PM 🤖 → Dev 🤖 → QA 🤖)",
+      "Código testado e PR entregue sem intervenção manual"
+    ]
+  },
+  "pricing": {
+    "title": "Preços Simples e Transparentes",
+    "subtitle": "Escolha o plano ideal para seu time",
+    "tiers": [
+      {
+        "name": "Open Core",
+        "price": "Grátis",
+        "period": "",
+        "target": "Desenvolvedores individuais e entusiastas",
+        "features": [
+          "Auto-hospedado, código aberto",
+          "GitHub App básico",
+          "1 repositório",
+          "Suporte da comunidade"
+        ],
+        "cta": "Baixar e Rodar Local",
+        "variant": "ghost"
+      },
+      {
+        "name": "Cloud Pro",
+        "price": "R$ 249",
+        "period": "/repo/mês",
+        "target": "Times de engenharia em crescimento",
+        "features": [
+          "Infraestrutura em nuvem gerenciada",
+          "Dashboard visual Mission Control",
+          "Ambientes de teste isolados",
+          "Suporte prioritário",
+          "Repositórios ilimitados"
+        ],
+        "cta": "Conectar Repositório Gratuitamente",
+        "variant": "primary",
+        "popular": true
+      },
+      {
+        "name": "Enterprise",
+        "price": "Sob consulta",
+        "period": "",
+        "target": "Corporações com requisitos rigorosos",
+        "features": [
+          "Secrets Vault e logs de auditoria",
+          "SSO/SAML e compliance",
+          "Opção on-premise",
+          "SLA dedicado e suporte",
+          "Integrações customizadas"
+        ],
+        "cta": "Falar com Especialistas",
+        "variant": "outline"
+      }
+    ]
+  },
+  "footer": {
+    "product": "Produto",
+    "company": "Empresa",
+    "resources": "Recursos",
+    "legal": "Legal",
+    "github": "GitHub",
+    "discord": "Discord",
+    "twitter": "Twitter",
+    "docs": "Documentação",
+    "blog": "Blog",
+    "changelog": "Changelog",
+    "about": "Sobre",
+    "careers": "Carreiras",
+    "contact": "Contato",
+    "privacy": "Política de Privacidade",
+    "terms": "Termos de Serviço",
+    "cookie": "Política de Cookies",
+    "copyright": "© {{year}} GitOrch. Feito com ❤️ para engenheiros."
+  },
+  "auth": {
+    "modal": {
+      "title": "Conecte-se ao GitOrch",
+      "subtitle": "Escolha seu método preferido",
+      "github": "Continuar com GitHub",
+      "google": "Continuar com Google",
+      "email": "Continuar com Email",
+      "divider": "ou",
+      "description": "Ao continuar, você concorda com nossos Termos de Serviço e Política de Privacidade."
+    }
+  }
+}

@@ -1,0 +1,136 @@
+{
+  "nav": {
+    "logo": "GitOrch",
+    "badge": "Open Core",
+    "stars": "{{count}} stars",
+    "languages": {
+      "en": "English",
+      "pt-BR": "Português",
+      "es": "Español"
+    },
+    "login": "Sign In",
+    "cta": "Start Automation"
+  },
+  "hero": {
+    "headline": "Orchestrate AI Agents Directly Inside Your GitHub Workflow",
+    "subheadline": "GitOrch is the ultimate control plane for software engineering automation. Connect your account and put autonomous agents to manage, test, and document demands directly in your Issues and Projects V2. No platform switch, zero friction.",
+    "cta": "Connect Repository Free",
+    "microcopy": "1-click install via GitHub App. No bureaucracy."
+  },
+  "solution": {
+    "title": "Anatomy of the Solution",
+    "subtitle": "Technology mapped to business value",
+    "items": [
+      {
+        "tech": "GitHub Sync & Projects V2",
+        "title": "Native & Invisible Synchronization",
+        "benefit": "Your agents work where your team already is. They manage sub-issues, update timelines, and move cards in Projects V2 automatically."
+      },
+      {
+        "tech": "CodeSight & Graph RAG",
+        "title": "Zero Code Hallucinations",
+        "benefit": "The engine maps your entire architecture, dependencies, and repo impact before acting. Agents decide based on facts, not guesses."
+      },
+      {
+        "tech": "Synapse & Cortex",
+        "title": "Long-Term Coordination & Memory",
+        "benefit": "Agents talk to each other and remember context from past deliveries. Less rework, more autonomy for complex end-to-end tasks."
+      },
+      {
+        "tech": "Control Plane (F8)",
+        "title": "Unified Control Plane",
+        "benefit": "Real-time dashboard (Mission Control) via SSE. Full visibility into what agents are doing, logs, metrics, health."
+      }
+    ]
+  },
+  "demo": {
+    "title": "Visual Demo",
+    "subtitle": "Mission Control in action",
+    "steps": [
+      "Issue opened by customer",
+      "GitOrch triggers agent team (PM 🤖 → Dev 🤖 → QA 🤖)",
+      "Code tested & PR delivered without manual intervention"
+    ]
+  },
+  "pricing": {
+    "title": "Simple, Transparent Pricing",
+    "subtitle": "Choose the plan that fits your team",
+    "tiers": [
+      {
+        "name": "Open Core",
+        "price": "Free",
+        "period": "",
+        "target": "Individual developers & enthusiasts",
+        "features": [
+          "Self-hosted, open source",
+          "GitHub App basic",
+          "1 repository",
+          "Community support"
+        ],
+        "cta": "Download & Run Locally",
+        "variant": "ghost"
+      },
+      {
+        "name": "Cloud Pro",
+        "price": "$49",
+        "period": "/repo/month",
+        "target": "Growing engineering teams",
+        "features": [
+          "Managed cloud infrastructure",
+          "Mission Control visual dashboard",
+          "Isolated test environments",
+          "Priority support",
+          "Unlimited repositories"
+        ],
+        "cta": "Connect Repository Free",
+        "variant": "primary",
+        "popular": true
+      },
+      {
+        "name": "Enterprise",
+        "price": "Custom",
+        "period": "",
+        "target": "Corporations with strict requirements",
+        "features": [
+          "Secrets Vault & audit logs",
+          "SSO/SAML & compliance",
+          "On-premise option",
+          "Dedicated SLA & support",
+          "Custom integrations"
+        ],
+        "cta": "Talk to Specialists",
+        "variant": "outline"
+      }
+    ]
+  },
+  "footer": {
+    "product": "Product",
+    "company": "Company",
+    "resources": "Resources",
+    "legal": "Legal",
+    "github": "GitHub",
+    "discord": "Discord",
+    "twitter": "Twitter",
+    "docs": "Documentation",
+    "blog": "Blog",
+    "changelog": "Changelog",
+    "about": "About",
+    "careers": "Careers",
+    "contact": "Contact",
+    "privacy": "Privacy Policy",
+    "terms": "Terms of Service",
+    "cookie": "Cookie Policy",
+    "copyright": "© {{year}} GitOrch. Built with ❤️ for engineers."
+  },
+  "auth": {
+    "modal": {
+      "title": "Connect to GitOrch",
+      "subtitle": "Choose your preferred method",
+      "github": "Continue with GitHub",
+      "google": "Continue with Google",
+      "email": "Continue with Email",
+      "divider": "or",
+      "description": "By continuing, you agree to our Terms of Service and Privacy Policy."
+    }
+  }
+}

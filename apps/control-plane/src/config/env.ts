@@ -26,6 +26,9 @@ export const envSchema = z.object({
   GITHUB_APP_ID: z.string().optional(),
   GITHUB_APP_PRIVATE_KEY: z.string().optional(),
   GITHUB_WEBHOOK_SECRET: z.string().optional(),
+  GITHUB_CLIENT_ID: z.string().optional(),
+  GITHUB_CLIENT_SECRET: z.string().optional(),
+  FRONTEND_URL: z.string().url().default('http://localhost:3000'),
 })
 
 export type Env = z.infer<typeof envSchema>

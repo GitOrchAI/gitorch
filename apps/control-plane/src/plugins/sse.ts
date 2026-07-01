@@ -1,8 +1,9 @@
 import { FastifyPluginAsync } from 'fastify'
 import type { FastifyReply } from 'fastify'
 
-// Import the plugin value without TypeScript inferring module namespace
-const fastifySse = require('fastify-sse-v2').default
+import fastifySseModule from 'fastify-sse-v2'
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const fastifySse = (fastifySseModule as any).default ?? fastifySseModule
 
 // Type from fastify-sse-v2 module augmentation
 interface EventMessage {

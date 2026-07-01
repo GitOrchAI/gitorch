@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from 'react'
 import { useLanguage } from '../../LanguageContext'
 import Header from '../../components/Header'
-import { Terminal, Activity, Zap, PlayCircle, FolderGit2 } from 'lucide-react'
+import { Terminal, Activity, PlayCircle, FolderGit2 } from 'lucide-react'
 import { motion } from 'framer-motion'
 
 export default function Dashboard() {

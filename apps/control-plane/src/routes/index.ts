@@ -6,6 +6,8 @@ import { projectRoutes } from './projects.js'
 import { missionRoutes } from './missions.js'
 import { eventRoutes } from './events.js'
 import { runtimeConfigRoutes } from './runtime-config.js'
+import { authRoutes } from './auth.js'
+import { setupRoutes } from './setup.js'
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   // Health and readiness endpoints
@@ -16,6 +18,10 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
   // GitHub webhook endpoint
   await githubWebhookRoutes(app)
+
+  // Auth and Setup endpoints
+  await authRoutes(app)
+  await setupRoutes(app)
 
   // Projects CRUD endpoints
   await projectRoutes(app)
