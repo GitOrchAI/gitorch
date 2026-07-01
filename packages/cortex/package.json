@@ -18,7 +18,7 @@
   },
   "dependencies": {
     "better-sqlite3": "^12.11.1",
-    "chromadb": "^3.4.3"
+    "chromadb": "^3.5.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
