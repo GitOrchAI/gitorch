@@ -20,7 +20,7 @@ overrides:
   tar-fs: ^3.1.2
   tar-stream: ^3.2.0
   uuid: 11.1.1
-  esbuild: 0.28.1
+  launch-editor: 2.14.1
 
 patchedDependencies:
   tar@7.5.16:
@@ -49,6 +49,9 @@ importers:
       '@opentelemetry/semantic-conventions':
         specifier: ^1.41.1
         version: 1.41.1
+      fastify-plugin:
+        specifier: ^6.0.0
+        version: 6.0.0
       fastify-sse-v2:
         specifier: ^4.0.0
         version: 4.2.2(fastify@5.9.0)
@@ -4894,7 +4897,7 @@ packages:
     peerDependencies:
       '@types/node': 20.10.0
       '@vitejs/devtools': ^0.3.0
-      esbuild: 0.28.1
+      esbuild: ^0.27.0 || ^0.28.0
       jiti: '>=1.21.0'
       less: ^4.0.0
       sass: ^1.70.0
