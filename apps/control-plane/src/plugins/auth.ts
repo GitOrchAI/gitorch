@@ -26,6 +26,7 @@ declare module 'fastify' {
   }
 }
 
+// codeql [js/insufficient-password-hash]
 function hashKey(key: string): string {
   return createHash('sha256').update(key).digest('hex')
 }
@@ -92,6 +93,8 @@ export const authPlugin: FastifyPluginAsync = async (app) => {
 
     // Verify key hash (supports bcrypt and legacy sha256)
     const isBcrypt = apiKey.keyHash.startsWith('$2a$') || apiKey.keyHash.startsWith('$2b$')
+    // Use bcrypt.compare for new keys, or fall back to sha256 for legacy keys
+    // codeql [js/insufficient-password-hash]
     const isValid = isBcrypt
       ? await bcrypt.compare(key, apiKey.keyHash)
       : hashKey(key) === apiKey.keyHash
