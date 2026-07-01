@@ -21,7 +21,6 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "esbuild": "0.28.1",
     "@types/node": "^22.20.0",
     "@typescript-eslint/eslint-plugin": "^8.7.0",
     "@typescript-eslint/parser": "^8.7.0",
@@ -33,9 +32,6 @@
   "overrides": {
     "vite": "6.4.3",
     "launch-editor": "^2.14.1"
-  },
-  "overrides": {
-    "esbuild": "0.28.1"
   },
   "engines": {
     "node": ">=20.0.0"

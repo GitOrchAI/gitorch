@@ -3,6 +3,12 @@ name: Jules PR CI Failure Fallback
 on:
   check_suite:
     types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number para forçar a análise agora (ignora a espera de 1 dia útil)'
+        required: true
+        type: string
 
 permissions:
   pull-requests: write
@@ -16,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     # Elegibilidade NÃO é gateada por label (PR do Jules não tem label 'jules'); o script
     # analyze-ci-failure.ts confirma se o PR é da automação antes de comentar.
-    if: github.event.check_suite.conclusion == 'failure'
+    if: github.event_name == 'workflow_dispatch' || github.event.check_suite.conclusion == 'failure'
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -43,6 +49,13 @@ jobs:
           REPO_NAME: ${{ github.event.repository.name }}
           SLA_BUSINESS_DAYS: ${{ env.SLA_BUSINESS_DAYS || '1' }}
         run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            PR_NUM="${{ github.event.inputs.pr_number }}"
+            echo "Disparo manual para PR #$PR_NUM — ignorando espera de 1 dia útil."
+            SLA_BUSINESS_DAYS=0 npx tsx analyze-ci-failure.ts "$PR_NUM"
+            exit 0
+          fi
+
           PR_NUM="${{ github.event.check_suite.pull_requests[0].number }}"
           if [ -z "$PR_NUM" ] || [ "$PR_NUM" = "null" ]; then
             echo "Check suite sem PR associado. Nada a fazer."
@@ -51,7 +64,7 @@ jobs:
 
           echo "Checking PR #$PR_NUM age..."
           CREATED_AT=$(gh pr view $PR_NUM --json createdAt --jq '.createdAt' --repo ${{ github.repository }})
-          
+
           # Check business days since creation using Node.js
           BUSINESS_DAYS=$(node -e "
             const created = new Date('$CREATED_AT');
@@ -64,9 +77,9 @@ jobs:
             }
             console.log(days);
           ")
-          
+
           echo "PR #$PR_NUM is $BUSINESS_DAYS business day(s) old"
-          
+
           if [ "$BUSINESS_DAYS" -ge "${{ env.SLA_BUSINESS_DAYS }}" ]; then
             echo "PR exceeds 1 business day. Running fallback analysis..."
             npx tsx analyze-ci-failure.ts "$PR_NUM"

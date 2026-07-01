@@ -8,6 +8,7 @@
 import { Octokit } from '@octokit/rest'
 import { OpenRouterClient, createOpenRouterClientFromEnv } from './lib/openrouter-client.js'
 import { isSecurityAutomationPR } from './lib/pr-eligibility.js'
+import { extractRelevantLogSections } from './lib/log-extraction.js'
 import { z } from 'zod'
 
 // Types
@@ -86,37 +87,55 @@ export async function fetchPRAndIssueContext(
 }
 
 /**
- * Finds the check_suite for a PR
+ * Encontra o workflow run FALHO do workflow de CI principal (por nome, default 'CI' —
+ * corresponde ao `name:` do ci.yml) para o head sha do PR.
+ *
+ * Um PR tem VÁRIOS check suites do app "GitHub Actions" no mesmo commit — um por workflow
+ * (CI, auto-merge, jules-pr-conflict, e o ci-backend.yml que está cronicamente quebrado com
+ * startup_failure e 0 jobs). Pegar "o primeiro check suite do GitHub Actions" é ambíguo e pode
+ * pegar o workflow errado (ex.: ci-backend.yml, sem jobs, sem logs úteis) — a LLM então "chuta"
+ * a causa raiz a partir do contexto da issue, produzindo diagnóstico errado (visto no PR #189).
  */
-export async function findCheckSuiteForPR(
+export async function findFailedCIWorkflowRun(
   octokit: Octokit,
   owner: string,
   repo: string,
-  prNumber: number
-): Promise<Record<string, unknown> | null> {
+  prNumber: number,
+  ciWorkflowName = 'CI'
+): Promise<{ id: number; html_url: string; name: string } | null> {
   try {
     const prResponse = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber })
     const headSha = prResponse.data.head.sha
 
-    const response = await octokit.rest.checks.listSuitesForRef({
+    const response = await octokit.rest.actions.listWorkflowRunsForRepo({
       owner,
       repo,
-      ref: headSha,
-      per_page: 50,
+      head_sha: headSha,
+      per_page: 30,
     })
 
-    // Find the CI check suite (most recent)
-    return (
-      response.data.check_suites.find(
-        (s) =>
-          s.app?.name?.toLowerCase().includes('github actions') ||
-          (s as Record<string, unknown>)['workflow_id']
-      ) ||
-      response.data.check_suites[0] ||
-      null
+    const named = response.data.workflow_runs.find(
+      (r) => r.name === ciWorkflowName && r.conclusion === 'failure'
     )
+    if (named) return { id: named.id, html_url: named.html_url, name: named.name ?? ciWorkflowName }
+
+    // Fallback: nenhum run com esse nome exato falhou — pega qualquer run falho que tenha
+    // pelo menos 1 job (descarta runs com startup_failure/0 jobs, como o ci-backend.yml quebrado).
+    for (const run of response.data.workflow_runs.filter((r) => r.conclusion === 'failure')) {
+      const jobs = await octokit.rest.actions.listJobsForWorkflowRun({
+        owner,
+        repo,
+        run_id: run.id,
+        per_page: 1,
+      })
+      if (jobs.data.jobs.length > 0) {
+        return { id: run.id, html_url: run.html_url, name: run.name ?? 'desconhecido' }
+      }
+    }
+
+    return null
   } catch (error) {
-    console.warn('Could not find check suite:', error)
+    console.warn('Could not find failed CI workflow run:', error)
     return null
   }
 }
@@ -166,9 +185,13 @@ export async function fetchFailedJobLogs(
 
           if (logResponse.ok) {
             const logText = await logResponse.text()
-            logsOutput += `\n--- LOGS ---\n${logText.substring(0, 10000)}\n`
-            if (logText.length > 10000) {
-              logsOutput += '\n[Logs truncated to 10k chars...]'
+            // Extrai trechos com erro real (##[error] + contexto) + o final do log, em vez de
+            // cortar os primeiros N chars — logs longos (boot de serviços etc.) escondem o erro
+            // real bem depois do início, fazendo a LLM nunca vê-lo.
+            const relevant = extractRelevantLogSections(logText, 9000)
+            logsOutput += `\n--- LOGS (trechos relevantes: erros + final) ---\n${relevant}\n`
+            if (logText.length > relevant.length) {
+              logsOutput += `\n[Log completo tem ${logText.length} chars; mostrando trechos com erro + final]`
             }
           }
         } catch (logError) {
@@ -187,30 +210,6 @@ export async function fetchFailedJobLogs(
 }
 
 /**
- * Gets the workflow run ID from check_suite
- */
-export async function getWorkflowRunIdFromCheckSuite(
-  octokit: Octokit,
-  owner: string,
-  repo: string,
-  checkSuiteId: number
-): Promise<number | null> {
-  try {
-    // @ts-expect-error - Octokit types don't include check_suite_id but API supports it
-    const response = await octokit.rest.actions.listWorkflowRuns({
-      owner,
-      repo,
-      check_suite_id: checkSuiteId,
-      per_page: 1,
-    })
-    return response.data.workflow_runs[0]?.id || null
-  } catch (error) {
-    console.warn('Could not get workflow run ID from check suite:', error)
-    return null
-  }
-}
-
-/**
  * Analyzes CI failure with LLM
  */
 export async function analyzeCIFailure(
@@ -225,32 +224,20 @@ export async function analyzeCIFailure(
   // Get PR and issue context
   const { pr, issue } = await fetchPRAndIssueContext(octokit, owner, repo, prNumber)
 
-  // Find check suite
-  const checkSuite = await findCheckSuiteForPR(octokit, owner, repo, prNumber)
-  if (!checkSuite) {
+  // Encontra o run FALHO do workflow "CI" (o portão de qualidade real), não qualquer
+  // check suite do GitHub Actions (evita pegar o ci-backend.yml quebrado, sem jobs).
+  const ciWorkflowName = (process.env['CI_WORKFLOW_NAME'] as string | undefined) || 'CI'
+  const run = await findFailedCIWorkflowRun(octokit, owner, repo, prNumber, ciWorkflowName)
+  if (!run) {
     return {
-      rootCause: 'Could not find CI check suite for PR',
-      fixInstructions: 'Manual investigation required',
-      comment:
-        '@jules Não foi possível encontrar a execução do CI para este PR. Investigação manual necessária.',
-    }
-  }
-
-  // Get workflow run ID
-  const runId = await getWorkflowRunIdFromCheckSuite(
-    octokit,
-    owner,
-    repo,
-    (checkSuite as Record<string, unknown>)['id'] as number
-  )
-  if (!runId) {
-    return {
-      rootCause: 'Could not find workflow run for check suite',
+      rootCause: 'Could not find failed CI workflow run for PR',
       fixInstructions: 'Manual investigation required',
       comment:
         '@jules Não foi possível encontrar o workflow run do CI. Investigação manual necessária.',
     }
   }
+  const runId = run.id
+  const checkSuite = { html_url: run.html_url }
 
   // Fetch failed job logs
   const logs = await fetchFailedJobLogs(octokit, owner, repo, runId)
@@ -286,8 +273,8 @@ ${issue ? `${(issue as Record<string, unknown>)['title'] as string}\n${((issue a
 ${changedFiles.map((f) => `- \`${f['filename'] as string}\` (${f['status'] as string}): +${f['additions'] as number}/-${f['deletions'] as number}`).join('\n')}
 
 **Logs de Falha do CI:**
-${logs.substring(0, 8000)}
-${logs.length > 8000 ? '\n[Logs truncados...]' : ''}
+${logs.substring(0, 9500)}
+${logs.length > 9500 ? '\n[Logs truncados...]' : ''}
 
 **REGRAS OBRIGATÓRIAS:**
 1. O comentário DEVE começar com "@jules" (para acionar o bot)
