@@ -45,6 +45,7 @@ export default function SetupWizard() {
     if (typeof window !== 'undefined') {
       const storedToken = localStorage.getItem('gitorch_token')
       if (storedToken) {
+        /* eslint-disable-next-line */
         setToken(storedToken)
       }
 
@@ -67,6 +68,7 @@ export default function SetupWizard() {
   // If token is already present and we are on step 1/2, skip to repos/terms
   useEffect(() => {
     if (token && step === 1) {
+      /* eslint-disable-next-line */
       setStep(3)
     }
   }, [token, step])

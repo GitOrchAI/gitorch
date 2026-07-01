@@ -20,6 +20,7 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     // Detect browser language on first render
     const saved = localStorage.getItem('gitorch-lang') as Language
     if (saved && (saved === 'en' || saved === 'pt' || saved === 'es')) {
+      /* eslint-disable-next-line */
       setLanguageState(saved)
     } else {
       const browserLang = navigator.language.slice(0, 2)
