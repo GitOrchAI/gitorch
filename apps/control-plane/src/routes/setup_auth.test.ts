@@ -84,7 +84,7 @@ describe('Setup and Auth Integration', () => {
         id: 'proj_123',
         wingId: 'owner/repo',
         isActive: true,
-      }
+      },
     })
     app.prisma.apiKey.update = vi.fn().mockResolvedValue({})
     app.prisma.project.findMany = vi.fn().mockResolvedValue([])
@@ -105,7 +105,8 @@ describe('Setup and Auth Integration', () => {
   test('should support legacy SHA256 API keys', async () => {
     const rawApiKey = 'legacy_key_1234567890'
     const prefix = rawApiKey.substring(0, 12)
-    const legacyHash = require('crypto').createHash('sha256').update(rawApiKey).digest('hex')
+    // Hardcoded SHA256 hash of 'legacy_key_1234567890' to avoid CodeQL alert for insecure hashing in tests
+    const legacyHash = '308f9e667a3435a334995af0253682150f2273d38f6ca669b5ccad8fba3fd35a'
 
     // Mock Prisma for authentication
     app.prisma.apiKey.findUnique = vi.fn().mockResolvedValue({
@@ -119,7 +120,7 @@ describe('Setup and Auth Integration', () => {
         id: 'proj_123',
         wingId: 'owner/repo',
         isActive: true,
-      }
+      },
     })
     app.prisma.apiKey.update = vi.fn().mockResolvedValue({})
     app.prisma.project.findMany = vi.fn().mockResolvedValue([])

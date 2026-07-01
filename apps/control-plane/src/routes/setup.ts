@@ -1,5 +1,4 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
-import { createHash } from 'crypto'
 import { Prisma } from '@prisma/client'
 import bcrypt from 'bcryptjs'
 
