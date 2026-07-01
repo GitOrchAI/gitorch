@@ -1,4 +1,3 @@
-// Centralized rate limiting configuration
 import { FastifyPluginAsync, FastifyRequest } from 'fastify'
 import rateLimit from '@fastify/rate-limit'
 import type { FastifyRateLimitOptions } from '@fastify/rate-limit'
@@ -12,6 +11,10 @@ declare module 'fastify' {
 
 const env = loadEnv()
 
+/**
+ * Rate limit plugin for the control plane.
+ * Uses environment variables for configuration and identifies clients by wingId or IP.
+ */
 export const rateLimitPlugin: FastifyPluginAsync = async (app) => {
   await app.register(rateLimit, {
     max: env.RATE_LIMIT_MAX,

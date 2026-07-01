@@ -29,8 +29,6 @@ export async function registerPlugins(app: FastifyInstance, env: Env): Promise<v
     maxAge: CORS_MAX_AGE,
   })
 
-  await app.register(rateLimitPlugin)
-
   if (env.NODE_ENV !== 'test') {
     await app.register(fastifyUnderPressure, {
       maxEventLoopDelay: 1000,
@@ -74,6 +72,8 @@ export async function registerPlugins(app: FastifyInstance, env: Env): Promise<v
   await app.register(prismaPlugin)
   await app.register(redisPlugin)
   await app.register(authPlugin)
+  // Register rate limit after auth to ensure wingId is available in keyGenerator
+  await app.register(rateLimitPlugin)
   await app.register(ssePlugin)
   await app.register(webhookVerifyPlugin)
 }

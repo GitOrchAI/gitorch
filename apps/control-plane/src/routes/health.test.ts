@@ -26,4 +26,11 @@ describe('Health Routes', () => {
     expect(res.statusCode).toBe(200)
     expect(res.json().checks).toEqual({ database: true, redis: true })
   })
+
+  test('GET /ready has rate limit headers', async () => {
+    const res = await app.inject({ method: 'GET', url: '/ready' })
+    expect(res.headers).toHaveProperty('x-ratelimit-limit')
+    expect(res.headers).toHaveProperty('x-ratelimit-remaining')
+    expect(res.headers).toHaveProperty('x-ratelimit-reset')
+  })
 })
