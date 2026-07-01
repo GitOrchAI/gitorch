@@ -1,0 +1,27 @@
+name: DEBUG Jules Session (temporário)
+
+on:
+  workflow_dispatch:
+    inputs:
+      session_id:
+        description: 'Session ID do Jules para inspecionar (somente leitura)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - working-directory: .github/scripts
+        run: npm ci
+      - working-directory: .github/scripts
+        env:
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+        run: npx tsx debug-jules-session.ts "${{ github.event.inputs.session_id }}"
