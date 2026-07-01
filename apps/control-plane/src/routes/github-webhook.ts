@@ -44,8 +44,8 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
     {
       config: {
         rateLimit: {
-          max: 50,
-          timeWindow: '15 minutes',
+          max: 100,
+          timeWindow: '1 minute',
         },
       },
     },
@@ -163,5 +163,6 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
           return reply.code(500).send({ error: 'Webhook processing failed' })
         }
       })
-  })
+    }
+  )
 }
