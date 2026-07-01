@@ -1,7 +1,6 @@
 import { FastifyInstance } from 'fastify'
 import fastifyCors from '@fastify/cors'
 import fastifyHelmet from '@fastify/helmet'
-import fastifyRateLimit from '@fastify/rate-limit'
 import fastifySwagger from '@fastify/swagger'
 import fastifySwaggerUi from '@fastify/swagger-ui'
 import fastifyUnderPressure from '@fastify/under-pressure'
@@ -10,6 +9,7 @@ import { API_PREFIX, CORS_MAX_AGE } from '../config/constants.js'
 
 import { prismaPlugin } from './prisma.js'
 import { redisPlugin } from './redis.js'
+import { rateLimitPlugin } from './rate-limit.js'
 import { authPlugin } from './auth.js'
 import { ssePlugin } from './sse.js'
 import { webhookVerifyPlugin } from './webhook-verify.js'
@@ -27,13 +27,6 @@ export async function registerPlugins(app: FastifyInstance, env: Env): Promise<v
     origin: env.CORS_ORIGIN === '*' ? true : env.CORS_ORIGIN.split(',').map((o) => o.trim()),
     credentials: true,
     maxAge: CORS_MAX_AGE,
-  })
-
-  await app.register(fastifyRateLimit, {
-    max: env.RATE_LIMIT_MAX,
-    timeWindow: env.RATE_LIMIT_WINDOW_MS,
-    allowList: ['127.0.0.1', '::1'],
-    keyGenerator: (request) => request.ip,
   })
 
   if (env.NODE_ENV !== 'test') {
@@ -79,6 +72,8 @@ export async function registerPlugins(app: FastifyInstance, env: Env): Promise<v
   await app.register(prismaPlugin)
   await app.register(redisPlugin)
   await app.register(authPlugin)
+  // Register rate limit after auth to ensure wingId is available in keyGenerator
+  await app.register(rateLimitPlugin)
   await app.register(ssePlugin)
   await app.register(webhookVerifyPlugin)
 }
