@@ -46,6 +46,7 @@
     "@opentelemetry/resources": "^2.8.0",
     "@opentelemetry/sdk-node": "0.219.0",
     "@opentelemetry/semantic-conventions": "^1.41.1",
+    "fastify-plugin": "^6.0.0",
     "fastify-sse-v2": "^4.0.0",
     "minimatch": "10.2.5",
     "prom-client": "^15.1.3",

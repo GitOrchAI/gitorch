@@ -100,6 +100,6 @@ jobs:
             
             echo "✅ Backend deployed successfully"
           env:
-            POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-            JWT_SECRET: ${{ secrets.JWT_SECRET }}
-            API_KEY_PREFIX: ${{ secrets.API_KEY_PREFIX }}
+              POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+              JWT_SECRET: ${{ secrets.JWT_SECRET }}
+              API_KEY_PREFIX: ${{ secrets.API_KEY_PREFIX }}
