@@ -73,9 +73,8 @@ jobs:
       - name: Remove Conflict Label if Resolved
         if: success() && github.event_name == 'pull_request_target' && github.event.action == 'synchronize'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.SECURITY_PAT }}
           SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PR_NUM="${{ github.event.pull_request.number }}"
           # Check if PR is now mergeable (conflicts resolved)
