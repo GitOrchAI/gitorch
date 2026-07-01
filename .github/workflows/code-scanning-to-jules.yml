@@ -1,20 +1,15 @@
-name: Dependabot → Jules
+name: Code Scanning → Jules
 
-# Robô único (consolida os antigos dependabot-alert-to-issue + manual-dependabot-processor):
-#   alerta do Dependabot → IA (rota free) monta prompt rico → cria issue → espera 10s →
-#   adiciona label 'jules'. Três formas de disparar.
+# Fase 2: alertas do Code Scanning (CodeQL) → IA (rota free) monta prompt rico → cria issue →
+# espera 10s → adiciona label 'jules'. Mesmo motor do dependabot-to-jules, fonte diferente.
 
 on:
-  # IMPORTANTE: 'dependabot_alert' é um evento de WEBHOOK, mas NÃO dispara workflows
-  # (não é um trigger válido do Actions). O gatilho automático é o schedule de hora em hora,
-  # que varre os alertas abertos — suficiente para o SLA de 1 dia útil.
   schedule:
-    - cron: '0 * * * *'
-  # Manual: processa números específicos (ou todos os abertos se vazio).
+    - cron: '30 * * * *' # de hora em hora (defasado 30min do dependabot-to-jules)
   workflow_dispatch:
     inputs:
       alert_numbers:
-        description: 'Números de alerta separados por vírgula (vazio = todos os abertos)'
+        description: 'Números de alerta CodeQL separados por vírgula (vazio = todos os abertos)'
         required: false
         type: string
 
@@ -24,7 +19,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: dependabot-to-jules
+  group: code-scanning-to-jules
   cancel-in-progress: false
 
 jobs:
@@ -54,10 +49,10 @@ jobs:
           if [ -n "${{ github.event.inputs.alert_numbers }}" ]; then
             ALERTS_JSON="[${{ github.event.inputs.alert_numbers }}]"
           else
-            echo "Buscando todos os alertas abertos do Dependabot..."
+            echo "Buscando todos os alertas de code scanning abertos..."
             ALERT_NUMS=$(gh api \
               -H "Accept: application/vnd.github+json" \
-              "/repos/${{ github.repository }}/dependabot/alerts?state=open&per_page=100" \
+              "/repos/${{ github.repository }}/code-scanning/alerts?state=open&per_page=100" \
               --jq '.[].number' | tr '\n' ',' | sed 's/,$//')
             if [ -n "$ALERT_NUMS" ]; then ALERTS_JSON="[$ALERT_NUMS]"; else ALERTS_JSON="[]"; fi
           fi
@@ -83,20 +78,20 @@ jobs:
 
           for i in $(seq 0 $((COUNT - 1))); do
             ALERT_NUM=$(echo "$ALERTS" | jq -r ".[$i]")
-            echo "==== Alerta #$ALERT_NUM ($((i+1))/$COUNT) ===="
+            echo "==== CodeQL alerta #$ALERT_NUM ($((i+1))/$COUNT) ===="
 
-            # Dedup: já existe issue para este alerta?
+            # Dedup: já existe issue para este alerta CodeQL?
             EXISTING=$(gh api \
               -H "Accept: application/vnd.github+json" \
               "/repos/${{ github.repository }}/issues?state=all&per_page=100&labels=jules" \
-              --jq ".[] | select(.body | contains(\"dependabot-alert-number: $ALERT_NUM\")) | .number" 2>/dev/null || echo "")
+              --jq ".[] | select(.body | contains(\"codeql-alert-number: $ALERT_NUM\")) | .number" 2>/dev/null || echo "")
 
             if [ -n "$EXISTING" ]; then
-              echo "Já existe issue #$EXISTING para o alerta #$ALERT_NUM. Pulando."
+              echo "Já existe issue #$EXISTING para o alerta CodeQL #$ALERT_NUM. Pulando."
             else
               echo "Gerando prompt (rota free)..."
-              PROMPT_OUTPUT="$(npx tsx generate-jules-prompt.ts "$ALERT_NUM" 2>&1)" || {
-                echo "::error::Falha ao gerar prompt para o alerta #$ALERT_NUM"
+              PROMPT_OUTPUT="$(npx tsx generate-codeql-prompt.ts "$ALERT_NUM" 2>&1)" || {
+                echo "::error::Falha ao gerar prompt para o alerta CodeQL #$ALERT_NUM"
                 echo "$PROMPT_OUTPUT"
                 exit 1
               }
@@ -110,7 +105,6 @@ jobs:
               BODY=$(echo "$PROMPT_JSON" | jq -r '.body')
               LABELS=$(echo "$PROMPT_JSON" | jq -r '.labels | join(",")')
 
-              # Cria a issue (via arquivo JSON para suportar corpo grande/especial).
               REQUEST_FILE=$(mktemp)
               jq -n \
                 --arg title "$TITLE" \
@@ -125,13 +119,12 @@ jobs:
               ISSUE_NUM=$(echo "$ISSUE_OUTPUT" | jq -r '.number // empty')
 
               if [ -z "$ISSUE_NUM" ]; then
-                echo "::error::Falha ao criar issue para o alerta #$ALERT_NUM"
+                echo "::error::Falha ao criar issue para o alerta CodeQL #$ALERT_NUM"
                 echo "$ISSUE_OUTPUT"
                 exit 1
               fi
               echo "Criada issue #$ISSUE_NUM"
 
-              # Espera 10s e adiciona a label 'jules' (dispara o Jules).
               sleep $((LABEL_DELAY_MS / 1000))
               LABEL_FILE=$(mktemp)
               jq -n '{labels: ["jules"]}' > "$LABEL_FILE"
@@ -143,7 +136,6 @@ jobs:
               echo "Label 'jules' adicionada à issue #$ISSUE_NUM"
             fi
 
-            # Espaça 5 min entre alertas (evita rajada que dá 'failed to create a task' no Jules).
             if [ $i -lt $((COUNT - 1)) ]; then
               echo "Aguardando ${ISSUE_CREATION_DELAY_MS}ms antes do próximo alerta..."
               sleep $((ISSUE_CREATION_DELAY_MS / 1000))

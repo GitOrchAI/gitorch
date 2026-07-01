@@ -7,6 +7,7 @@
 
 import { Octokit } from '@octokit/rest'
 import { OpenRouterClient, createOpenRouterClientFromEnv } from './lib/openrouter-client.js'
+import { isSecurityAutomationPR } from './lib/pr-eligibility.js'
 import { z } from 'zod'
 
 // Types
@@ -195,8 +196,10 @@ export async function getWorkflowRunIdFromCheckSuite(
   checkSuiteId: number
 ): Promise<number | null> {
   try {
-    // @ts-expect-error - Octokit types don't include check_suite_id but API supports it
-    const response = await octokit.rest.actions.listWorkflowRuns({
+    // listWorkflowRunsForRepo = GET /repos/{owner}/{repo}/actions/runs (repo-wide, aceita
+    // check_suite_id). listWorkflowRuns exige workflow_id, que não temos aqui — usá-lo sem
+    // workflow_id gera URL malformada (.../workflows//runs) e sempre retorna 404.
+    const response = await octokit.rest.actions.listWorkflowRunsForRepo({
       owner,
       repo,
       check_suite_id: checkSuiteId,
@@ -441,6 +444,12 @@ async function main() {
 
   const octokit = new Octokit({ auth: githubToken })
   const llmClient = env['OPENROUTER_API_KEY'] ? createOpenRouterClientFromEnv() : null
+
+  // Só age em PR desta automação de segurança (Dependabot/Jules).
+  if (!(await isSecurityAutomationPR(octokit, owner, repo, prNumber))) {
+    console.log(`PR #${prNumber} fora da automação de segurança. Ignorando.`)
+    process.exit(0)
+  }
 
   // Check PR age (business days)
   const prResponse = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber })
