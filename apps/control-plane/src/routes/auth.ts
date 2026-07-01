@@ -6,7 +6,17 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
   const env = getEnv()
 
   // Redirect to GitHub OAuth
-  app.get('/api/v1/auth/github', async (request: FastifyRequest, reply: FastifyReply) => {
+  app.get(
+    '/api/v1/auth/github',
+    {
+      config: {
+        rateLimit: {
+          max: 20,
+          timeWindow: '1 minute',
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
     const clientId = env.GITHUB_CLIENT_ID
     if (!clientId) {
       return reply.code(500).send({ error: 'GITHUB_CLIENT_ID is not configured' })
@@ -19,7 +29,17 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
   })
 
   // Callback handler
-  app.get('/api/v1/auth/github/callback', async (request: FastifyRequest, reply: FastifyReply) => {
+  app.get(
+    '/api/v1/auth/github/callback',
+    {
+      config: {
+        rateLimit: {
+          max: 20,
+          timeWindow: '1 minute',
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
     const { code } = request.query as { code?: string }
     if (!code) {
       return reply.code(400).send({ error: 'Missing code query parameter' })

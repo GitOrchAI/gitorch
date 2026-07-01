@@ -54,7 +54,17 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
   })
 
   // POST /api/v1/setup/submit - Submit final setup wizard data
-  app.post('/api/v1/setup/submit', async (request: FastifyRequest, reply: FastifyReply) => {
+  app.post(
+    '/api/v1/setup/submit',
+    {
+      config: {
+        rateLimit: {
+          max: 10,
+          timeWindow: '1 minute',
+        },
+      },
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
     const user = request.user
     if (!user) {
       return reply.code(401).send({ error: 'UNAUTHORIZED: User session required' })
