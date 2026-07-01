@@ -196,8 +196,10 @@ export async function getWorkflowRunIdFromCheckSuite(
   checkSuiteId: number
 ): Promise<number | null> {
   try {
-    // @ts-expect-error - Octokit types don't include check_suite_id but API supports it
-    const response = await octokit.rest.actions.listWorkflowRuns({
+    // listWorkflowRunsForRepo = GET /repos/{owner}/{repo}/actions/runs (repo-wide, aceita
+    // check_suite_id). listWorkflowRuns exige workflow_id, que não temos aqui — usá-lo sem
+    // workflow_id gera URL malformada (.../workflows//runs) e sempre retorna 404.
+    const response = await octokit.rest.actions.listWorkflowRunsForRepo({
       owner,
       repo,
       check_suite_id: checkSuiteId,
