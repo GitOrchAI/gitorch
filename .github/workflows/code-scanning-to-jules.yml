@@ -44,7 +44,7 @@ jobs:
       - name: Determine Alerts to Process
         id: alerts
         env:
-          GH_TOKEN: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.SECURITY_PAT }}
         run: |
           if [ -n "${{ github.event.inputs.alert_numbers }}" ]; then
             ALERTS_JSON="[${{ github.event.inputs.alert_numbers }}]"
@@ -62,7 +62,7 @@ jobs:
       - name: Process Each Alert
         if: steps.alerts.outputs.alerts != '[]'
         env:
-          GH_TOKEN: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.SECURITY_PAT }}
           SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_FREE_MODEL: openrouter/free
