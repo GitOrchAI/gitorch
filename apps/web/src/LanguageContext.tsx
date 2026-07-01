@@ -55,7 +55,7 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             return key // return key if not found anywhere
           }
         }
-        return fallback
+        return typeof fallback === 'string' ? fallback : key
       }
     }
 
