@@ -36,6 +36,8 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Verify CI baseline
         run: pnpm exec tsx scripts/ci/verify-ci-baseline.ts
+      - name: Validate workflow YAML (sem chaves duplicadas)
+        run: pnpm exec tsx scripts/ci/validate-workflows.ts
       - name: Strict TypeScript check
         run: pnpm run typecheck:strict
       - name: Restrictive lint
