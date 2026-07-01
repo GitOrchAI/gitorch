@@ -3,6 +3,10 @@ name: Jules PR Conflict Resolver
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, labeled]
+  # Quando a main move, PRs abertos podem ficar conflitantes sem disparar evento de PR.
+  # Este push varre todos os PRs da automação em busca de novos conflitos.
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -19,11 +23,12 @@ jobs:
   resolve-conflicts:
     name: Analyze & Resolve Merge Conflicts
     runs-on: ubuntu-latest
-    if: |
+    # Elegibilidade NÃO é gateada por label (PR do Jules não tem label 'jules'); quem decide é o
+    # script (isSecurityAutomationPR). Aqui só filtramos os tipos de evento relevantes.
+    if: >-
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request_target' &&
-       (github.event.action == 'labeled' || github.event.action == 'opened' || github.event.action == 'synchronize' || github.event.action == 'reopened') &&
-       contains(github.event.pull_request.labels.*.name, 'jules'))
+      github.event_name == 'push' ||
+      github.event_name == 'pull_request_target'
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -50,12 +55,19 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.pr_number }}" ]; then
             PR_NUM="${{ github.event.inputs.pr_number }}"
-          else
+          elif [ "${{ github.event_name }}" = "pull_request_target" ]; then
             PR_NUM="${{ github.event.pull_request.number }}"
+          else
+            PR_NUM=""  # push na main → varredura de todos os PRs da automação
           fi
 
-          echo "Analyzing PR #$PR_NUM for merge conflicts..."
-          npx tsx analyze-conflicts.ts "$PR_NUM"
+          if [ -n "$PR_NUM" ]; then
+            echo "Analisando PR #$PR_NUM (conflitos)..."
+            npx tsx analyze-conflicts.ts "$PR_NUM"
+          else
+            echo "Varrendo todos os PRs da automação (main moveu)..."
+            npx tsx analyze-conflicts.ts
+          fi
         working-directory: .github/scripts
 
       - name: Remove Conflict Label if Resolved

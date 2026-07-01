@@ -7,6 +7,7 @@
 
 import { Octokit } from '@octokit/rest'
 import { OpenRouterClient, createOpenRouterClientFromEnv } from './lib/openrouter-client.js'
+import { isSecurityAutomationPR } from './lib/pr-eligibility.js'
 import { z } from 'zod'
 
 // Types
@@ -441,6 +442,12 @@ async function main() {
 
   const octokit = new Octokit({ auth: githubToken })
   const llmClient = env['OPENROUTER_API_KEY'] ? createOpenRouterClientFromEnv() : null
+
+  // Só age em PR desta automação de segurança (Dependabot/Jules).
+  if (!(await isSecurityAutomationPR(octokit, owner, repo, prNumber))) {
+    console.log(`PR #${prNumber} fora da automação de segurança. Ignorando.`)
+    process.exit(0)
+  }
 
   // Check PR age (business days)
   const prResponse = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber })
