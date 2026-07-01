@@ -8,6 +8,7 @@
 import { Octokit } from '@octokit/rest'
 import { OpenRouterClient, createOpenRouterClientFromEnv } from './lib/openrouter-client.js'
 import { isSecurityAutomationPR } from './lib/pr-eligibility.js'
+import { extractRelevantLogSections } from './lib/log-extraction.js'
 import { z } from 'zod'
 
 // Types
@@ -166,9 +167,13 @@ export async function fetchFailedJobLogs(
 
           if (logResponse.ok) {
             const logText = await logResponse.text()
-            logsOutput += `\n--- LOGS ---\n${logText.substring(0, 10000)}\n`
-            if (logText.length > 10000) {
-              logsOutput += '\n[Logs truncated to 10k chars...]'
+            // Extrai trechos com erro real (##[error] + contexto) + o final do log, em vez de
+            // cortar os primeiros N chars — logs longos (boot de serviços etc.) escondem o erro
+            // real bem depois do início, fazendo a LLM nunca vê-lo.
+            const relevant = extractRelevantLogSections(logText, 9000)
+            logsOutput += `\n--- LOGS (trechos relevantes: erros + final) ---\n${relevant}\n`
+            if (logText.length > relevant.length) {
+              logsOutput += `\n[Log completo tem ${logText.length} chars; mostrando trechos com erro + final]`
             }
           }
         } catch (logError) {
@@ -288,8 +293,8 @@ ${issue ? `${(issue as Record<string, unknown>)['title'] as string}\n${((issue a
 ${changedFiles.map((f) => `- \`${f['filename'] as string}\` (${f['status'] as string}): +${f['additions'] as number}/-${f['deletions'] as number}`).join('\n')}
 
 **Logs de Falha do CI:**
-${logs.substring(0, 8000)}
-${logs.length > 8000 ? '\n[Logs truncados...]' : ''}
+${logs.substring(0, 9500)}
+${logs.length > 9500 ? '\n[Logs truncados...]' : ''}
 
 **REGRAS OBRIGATÓRIAS:**
 1. O comentário DEVE começar com "@jules" (para acionar o bot)
