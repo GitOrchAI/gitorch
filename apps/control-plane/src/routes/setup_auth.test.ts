@@ -17,9 +17,8 @@ describe('Setup and Auth Integration', () => {
     await projectRoutes(app)
 
     // Mock authentication for setup/submit (which requires a user session)
-    app.addHook('onRequest', async (req) => {
+    app.addHook('onRequest', async (req: any) => {
       if (req.url === '/api/v1/setup/submit') {
-        // @ts-expect-error - mock user session
         req.user = { id: 'user_123', githubToken: 'gh_token' }
       }
     })
