@@ -84,7 +84,7 @@ describe('GitHub Webhook Routes', () => {
       expect(res.statusCode).toBe(200)
     }
 
-    // The 101st request should be rate limited
+    // The 101st request should be rate limited (max is 100)
     const res = await app.inject({
       method: 'POST',
       url: '/api/webhooks/github',

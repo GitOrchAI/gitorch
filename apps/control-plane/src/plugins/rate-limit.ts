@@ -1,3 +1,4 @@
+// Centralized rate limiting configuration
 import { FastifyPluginAsync, FastifyRequest } from 'fastify'
 import rateLimit from '@fastify/rate-limit'
 import type { FastifyRateLimitOptions } from '@fastify/rate-limit'
