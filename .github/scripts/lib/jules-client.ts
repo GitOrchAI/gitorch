@@ -95,6 +95,40 @@ export class JulesClient {
     const data = (await res.json()) as { sessions?: Record<string, unknown>[] }
     return data.sessions ?? []
   }
+
+  /**
+   * Cria uma sessão NOVA num branch existente (ex.: PR do Dependabot puro, sem sessão Jules
+   * ativa — comentar `@jules` nesse tipo de PR não faz nada, ninguém está escutando). Formato
+   * de `source` confirmado contra dado real (`sources/github/{owner}/{repo}`, com barras — o
+   * exemplo da doc usa hífen, mas essa é a forma observada funcionando de verdade nesta conta).
+   */
+  async createSession(params: {
+    owner: string
+    repo: string
+    startingBranch: string
+    prompt: string
+    title?: string
+  }): Promise<{ id: string; url: string }> {
+    const res = await fetch(`${JULES_BASE}/sessions`, {
+      method: 'POST',
+      headers: this.headers,
+      body: JSON.stringify({
+        prompt: params.prompt,
+        title: params.title,
+        sourceContext: {
+          source: `sources/github/${params.owner}/${params.repo}`,
+          githubRepoContext: { startingBranch: params.startingBranch },
+        },
+        automationMode: 'AUTO_CREATE_PR',
+      }),
+    })
+    if (!res.ok) {
+      throw new Error(`Jules createSession falhou (${res.status}): ${await res.text()}`)
+    }
+    const data = (await res.json()) as { name?: string; id?: string; url?: string }
+    const id = data.id ?? (data.name ? data.name.replace('sessions/', '') : '')
+    return { id, url: data.url ?? `https://jules.google.com/task/${id}` }
+  }
 }
 
 /** Detecta se um comentário é uma "apology" do Jules (não conseguiu completar). */

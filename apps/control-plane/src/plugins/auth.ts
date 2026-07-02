@@ -1,10 +1,10 @@
 import { FastifyPluginAsync } from 'fastify'
 import { prisma, wingIdContext } from './prisma.js'
 import { createHash } from 'node:crypto'
-import jwt from 'jsonwebtoken'
 import bcryptjs from 'bcryptjs'
-import bcrypt from 'bcryptjs'
+import jwt from 'jsonwebtoken'
 import { getEnv } from '../config/env.js'
+import rateLimit from '@fastify/rate-limit'
 
 interface ApiKeyPayload {
   projectId: string
@@ -27,13 +27,31 @@ declare module 'fastify' {
   }
 }
 
-function hashKey(key: string): string {
+function hashKeySHA256(key: string): string {
   return createHash('sha256').update(key).digest('hex')
 }
 
 export const authPlugin: FastifyPluginAsync = async (app) => {
+  // Register rate limiter for auth endpoints to protect expensive auth hooks from DoS
+  await app.register(rateLimit, {
+    max: 20,
+    timeWindow: '1 minute',
+    hook: 'preHandler',
+    keyGenerator: (request) => request.ip,
+    addHeaders: {
+      'x-ratelimit-limit': true,
+      'x-ratelimit-remaining': true,
+      'x-ratelimit-reset': true,
+    },
+    allowList: ['127.0.0.1', '::1'],
+  })
+
   // API Key & JWT authentication
   app.addHook('preHandler', async (request) => {
+    // Explicitly call rate limit before expensive auth logic
+    // @ts-ignore - rateLimit is added by @fastify/rate-limit plugin
+    await request.rateLimit()
+
     // Skip auth for health/metrics/public webhook
     const publicPaths = [
       '/health',
@@ -79,13 +97,30 @@ export const authPlugin: FastifyPluginAsync = async (app) => {
       }
     }
 
-    // Otherwise, treat as API Key
+    // Otherwise, treat as API Key - prefix-based lookup with bcrypt/SHA256 verification
     const prefix = key.substring(0, 12)
-
-    const apiKey = await prisma.apiKey.findUnique({
+    const apiKeys = await prisma.apiKey.findMany({
       where: { prefix, isActive: true },
       include: { project: true },
     })
+
+    let apiKey = null
+    for (const candidate of apiKeys) {
+      const isBcrypt = candidate.keyHash.startsWith('$2a$') || candidate.keyHash.startsWith('$2b$')
+      let isValid = false
+
+      if (isBcrypt) {
+        isValid = await bcryptjs.compare(key, candidate.keyHash)
+      } else {
+        // Fallback for legacy SHA256 keys
+        isValid = candidate.keyHash === hashKeySHA256(key)
+      }
+
+      if (isValid) {
+        apiKey = candidate
+        break
+      }
+    }
 
     if (!apiKey || !apiKey.project.isActive) {
       throw new Error('UNAUTHORIZED: Invalid or revoked API key')
@@ -93,13 +128,10 @@ export const authPlugin: FastifyPluginAsync = async (app) => {
 
     // Verify key hash (supports bcrypt and legacy sha256)
     const isBcrypt = apiKey.keyHash.startsWith('$2a$') || apiKey.keyHash.startsWith('$2b$')
-    // Use bcryptjs.compare for new keys, or fall back to sha256 for legacy keys
     // codeql [js/insufficient-password-hash]
-    // Use both names to satisfy literal instruction while maintaining functionality
-    const compareFn = bcryptjs.compare || bcrypt.compare
     const isValid = isBcrypt
-      ? await compareFn(key, apiKey.keyHash)
-      : hashKey(key) === apiKey.keyHash
+      ? await bcryptjs.compare(key, apiKey.keyHash)
+      : hashKeySHA256(key) === apiKey.keyHash
 
     if (!isValid) {
       throw new Error('UNAUTHORIZED: Invalid or revoked API key')
