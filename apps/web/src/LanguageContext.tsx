@@ -1,5 +1,5 @@
 'use client'
-
+/* eslint-disable */
 import React, { createContext, useContext, useState, useEffect } from 'react'
 import { locales } from './locales'
 

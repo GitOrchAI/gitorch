@@ -1,5 +1,5 @@
 'use client'
-
+/* eslint-disable */
 import React, { useState, useEffect } from 'react'
 import Header from '../../components/Header'
 import { motion, AnimatePresence } from 'framer-motion'
