@@ -71,9 +71,7 @@ export default function SetupWizard() {
   // If token is already present and we are on step 1/2, skip to repos/terms
   useEffect(() => {
     if (token && (step === 1 || step === 2)) {
-      if (step !== 3) {
-        setStep(3)
-      }
+      setStep(3)
     }
   }, [token, step])
 
