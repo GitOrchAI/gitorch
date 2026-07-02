@@ -1,7 +1,6 @@
 import { FastifyPluginAsync } from 'fastify'
 import { prisma, wingIdContext } from './prisma.js'
 import { createHash } from 'node:crypto'
-import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
 import { getEnv } from '../config/env.js'
 
@@ -83,22 +82,14 @@ export const authPlugin: FastifyPluginAsync = async (app) => {
     }
 
     // Otherwise, treat as API Key
-    const prefix = key.substring(0, 12)
+    const keyHash = hashKey(key)
 
     const apiKey = await prisma.apiKey.findUnique({
-      where: { prefix, isActive: true },
+      where: { keyHash, isActive: true },
       include: { project: true },
     })
 
     if (!apiKey || !apiKey.project.isActive) {
-      throw new Error('UNAUTHORIZED: Invalid or revoked API key')
-    }
-
-    // Verify key with bcrypt (or SHA256 for backward compatibility if needed)
-    const isValid =
-      bcrypt.compareSync(key, apiKey.keyHash) || apiKey.keyHash === hashKey(key)
-
-    if (!isValid) {
       throw new Error('UNAUTHORIZED: Invalid or revoked API key')
     }
 
