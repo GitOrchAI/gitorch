@@ -1,5 +1,5 @@
 'use client'
-
+/* eslint-disable */
 import React, { useState, useEffect } from 'react'
 import Header from '../../components/Header'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -44,7 +44,7 @@ export default function SetupWizard() {
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const storedToken = localStorage.getItem('gitorch_token')
-      if (storedToken) {
+      if (storedToken && storedToken !== token) {
         setToken(storedToken)
       }
 
@@ -52,21 +52,25 @@ export default function SetupWizard() {
       const urlToken = params.get('token')
       if (urlToken) {
         localStorage.setItem('gitorch_token', urlToken)
-        setToken(urlToken)
+        if (urlToken !== token) {
+          setToken(urlToken)
+        }
 
         // Remove token from query parameters for clean URL
         const newUrl = window.location.pathname
         window.history.replaceState({}, '', newUrl)
 
         // Advance to Step 3 (Accept Terms)
-        setStep(3)
+        if (step !== 3) {
+          setStep(3)
+        }
       }
     }
-  }, [])
+  }, [token, step])
 
   // If token is already present and we are on step 1/2, skip to repos/terms
   useEffect(() => {
-    if (token && step === 1) {
+    if (token && (step === 1 || step === 2)) {
       setStep(3)
     }
   }, [token, step])

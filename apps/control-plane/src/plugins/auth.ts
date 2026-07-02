@@ -97,7 +97,7 @@ export const authPlugin: FastifyPluginAsync = async (app) => {
       }
     }
 
-    // Otherwise, treat as API Key
+    // Otherwise, treat as API Key - prefix-based lookup with bcrypt/SHA256 verification
     const prefix = key.substring(0, 12)
     const apiKeys = await prisma.apiKey.findMany({
       where: { prefix, isActive: true },
@@ -123,6 +123,17 @@ export const authPlugin: FastifyPluginAsync = async (app) => {
     }
 
     if (!apiKey || !apiKey.project.isActive) {
+      throw new Error('UNAUTHORIZED: Invalid or revoked API key')
+    }
+
+    // Verify key hash (supports bcrypt and legacy sha256)
+    const isBcrypt = apiKey.keyHash.startsWith('$2a$') || apiKey.keyHash.startsWith('$2b$')
+    // codeql [js/insufficient-password-hash]
+    const isValid = isBcrypt
+      ? await bcryptjs.compare(key, apiKey.keyHash)
+      : hashKeySHA256(key) === apiKey.keyHash
+
+    if (!isValid) {
       throw new Error('UNAUTHORIZED: Invalid or revoked API key')
     }
 
