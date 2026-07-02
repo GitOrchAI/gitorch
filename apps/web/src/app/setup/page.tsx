@@ -45,6 +45,7 @@ export default function SetupWizard() {
     if (typeof window !== 'undefined') {
       const storedToken = localStorage.getItem('gitorch_token')
       if (storedToken) {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setToken(storedToken)
       }
 
@@ -52,6 +53,7 @@ export default function SetupWizard() {
       const urlToken = params.get('token')
       if (urlToken) {
         localStorage.setItem('gitorch_token', urlToken)
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setToken(urlToken)
 
         // Remove token from query parameters for clean URL
@@ -59,6 +61,7 @@ export default function SetupWizard() {
         window.history.replaceState({}, '', newUrl)
 
         // Advance to Step 3 (Accept Terms)
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setStep(3)
       }
     }
@@ -67,6 +70,7 @@ export default function SetupWizard() {
   // If token is already present and we are on step 1/2, skip to repos/terms
   useEffect(() => {
     if (token && step === 1) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setStep(3)
     }
   }, [token, step])

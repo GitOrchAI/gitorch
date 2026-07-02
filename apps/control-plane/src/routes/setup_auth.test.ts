@@ -1,5 +1,5 @@
 import { test, expect, describe, vi, beforeEach } from 'vitest'
-import Fastify from 'fastify'
+import Fastify, { FastifyRequest } from 'fastify'
 import { loadEnv } from '../config/env.js'
 import { registerPlugins } from '../plugins/index.js'
 import { setupRoutes } from './setup.js'
@@ -17,9 +17,13 @@ describe('Setup and Auth Integration', () => {
     await projectRoutes(app)
 
     // Mock authentication for setup/submit (which requires a user session)
-    app.addHook('onRequest', async (req: any) => {
+    app.addHook('onRequest', async (req: FastifyRequest) => {
       if (req.url === '/api/v1/setup/submit') {
-        req.user = { id: 'user_123', githubToken: 'gh_token' }
+        req.user = {
+          id: 'user_123',
+          wingId: 'owner/repo',
+          githubToken: 'gh_token',
+        } as any
       }
     })
 
