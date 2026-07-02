@@ -1,6 +1,7 @@
 import { FastifyPluginAsync } from 'fastify'
 import { prisma, wingIdContext } from './prisma.js'
-import { createHash } from 'crypto'
+import { createHash } from 'node:crypto'
+import bcryptjs from 'bcryptjs'
 import jwt from 'jsonwebtoken'
 import { getEnv } from '../config/env.js'
 import rateLimit from '@fastify/rate-limit'
@@ -26,7 +27,7 @@ declare module 'fastify' {
   }
 }
 
-function hashKey(key: string): string {
+function hashKeySHA256(key: string): string {
   return createHash('sha256').update(key).digest('hex')
 }
 
@@ -47,6 +48,10 @@ export const authPlugin: FastifyPluginAsync = async (app) => {
 
   // API Key & JWT authentication
   app.addHook('preHandler', async (request) => {
+    // Explicitly call rate limit before expensive auth logic
+    // @ts-ignore - rateLimit is added by @fastify/rate-limit plugin
+    await request.rateLimit()
+
     // Skip auth for health/metrics/public webhook
     const publicPaths = [
       '/health',
@@ -93,12 +98,29 @@ export const authPlugin: FastifyPluginAsync = async (app) => {
     }
 
     // Otherwise, treat as API Key
-    const keyHash = hashKey(key)
-
-    const apiKey = await prisma.apiKey.findUnique({
-      where: { keyHash, isActive: true },
+    const prefix = key.substring(0, 12)
+    const apiKeys = await prisma.apiKey.findMany({
+      where: { prefix, isActive: true },
       include: { project: true },
     })
+
+    let apiKey = null
+    for (const candidate of apiKeys) {
+      const isBcrypt = candidate.keyHash.startsWith('$2a$') || candidate.keyHash.startsWith('$2b$')
+      let isValid = false
+
+      if (isBcrypt) {
+        isValid = await bcryptjs.compare(key, candidate.keyHash)
+      } else {
+        // Fallback for legacy SHA256 keys
+        isValid = candidate.keyHash === hashKeySHA256(key)
+      }
+
+      if (isValid) {
+        apiKey = candidate
+        break
+      }
+    }
 
     if (!apiKey || !apiKey.project.isActive) {
       throw new Error('UNAUTHORIZED: Invalid or revoked API key')
