@@ -49,6 +49,7 @@ export const authPlugin: FastifyPluginAsync = async (app) => {
   // API Key & JWT authentication
   app.addHook('preHandler', async (request) => {
     // Explicitly call rate limit before expensive auth logic
+    // @ts-ignore - rateLimit is added by @fastify/rate-limit plugin
     await request.rateLimit()
 
     // Skip auth for health/metrics/public webhook
