@@ -145,7 +145,7 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
           apiKey: rawApiKey,
         })
 
-        // 4. Enfileire a missão de clonar o repositório e iniciar os engines
+        // 4. Enfileira missão de clonar o repositório e iniciar os engines
         await app.prisma.mission.create({
           data: {
             projectId: project.id,

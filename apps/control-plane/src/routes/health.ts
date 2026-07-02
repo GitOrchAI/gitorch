@@ -33,52 +33,41 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
 
   // GET /ready - Readiness probe (checks dependencies)
   // Returns 200 if ready, 503 if not ready
-  app.get(
-    READINESS_PATH,
-    {
-      config: {
-        rateLimit: {
-          max: 60,
-          timeWindow: '1 minute',
-        },
-      },
-    },
-    async (_request: FastifyRequest, reply: FastifyReply) => {
-      const checks = {
-        database: false,
-        redis: false,
-      }
-
-      // Check database connection
-      try {
-        await app.prisma.$queryRaw`SELECT 1`
-        checks.database = true
-      } catch {
-        checks.database = false
-      }
-
-      // Check Redis connection
-      try {
-        const redisPing = await app.redis.ping()
-        checks.redis = redisPing === 'PONG'
-      } catch {
-        checks.redis = false
-      }
-
-      const isReady = checks.database && checks.redis
-
-      const result: HealthCheckResult = {
-        status: isReady ? 'ok' : 'not_ready',
-        timestamp: new Date().toISOString(),
-        uptime: process.uptime(),
-        checks,
-      }
-
-      if (!isReady) {
-        return reply.code(503).send(result)
-      }
-
-      return result
+  app.get(READINESS_PATH, async (_request: FastifyRequest, reply: FastifyReply) => {
+    const checks = {
+      database: false,
+      redis: false,
     }
-  )
+
+    // Check database connection
+    try {
+      await app.prisma.$queryRaw`SELECT 1`
+      checks.database = true
+    } catch {
+      checks.database = false
+    }
+
+    // Check Redis connection
+    try {
+      const redisPing = await app.redis.ping()
+      checks.redis = redisPing === 'PONG'
+    } catch {
+      checks.redis = false
+    }
+
+    const isReady = checks.database && checks.redis
+
+    const result: HealthCheckResult = {
+      status: isReady ? 'ok' : 'not_ready',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      checks,
+    }
+
+    if (!isReady) {
+      return reply.code(503).send(result)
+    }
+
+    return result
+  })
 }
