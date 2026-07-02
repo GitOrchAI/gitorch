@@ -71,9 +71,10 @@ export async function registerPlugins(app: FastifyInstance, env: Env): Promise<v
   await app.register(telemetryPlugin)
   await app.register(prismaPlugin)
   await app.register(redisPlugin)
-  await app.register(authPlugin)
-  // Register rate limit after auth to ensure wingId is available in keyGenerator
+  // Register rate limit before auth to protect auth hooks from DoS
+  // Using preHandler hook ensures wingId context is established for multi-tenant limits
   await app.register(rateLimitPlugin)
+  await app.register(authPlugin)
   await app.register(ssePlugin)
   await app.register(webhookVerifyPlugin)
 }
