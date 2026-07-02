@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
-import { createHash, randomBytes } from 'node:crypto'
+import { randomBytes } from 'node:crypto'
 import { Prisma } from '@prisma/client'
+import bcrypt from 'bcryptjs'
 
 interface GitHubRepo {
   id: number
@@ -124,7 +125,8 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
 
         // 2. Gera a API key padrão para o projeto
         const rawApiKey = `gitorch_${randomBytes(24).toString('hex')}`
-        const keyHash = createHash('sha256').update(rawApiKey).digest('hex')
+        // Using bcrypt with 16 rounds as per security guidelines
+        const keyHash = bcrypt.hashSync(rawApiKey, 16)
         const prefix = rawApiKey.substring(0, 12)
 
         await app.prisma.apiKey.create({
