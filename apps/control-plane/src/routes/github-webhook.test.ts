@@ -96,7 +96,12 @@ describe('GitHub Webhook Routes', () => {
       payload: { action: 'opened', repository: { id: 123 } },
     })
 
-    expect(res.statusCode).toBe(429)
+    // Debug: if not 429, throw with full response info
+    if (res.statusCode !== 429) {
+      throw new Error(
+        `Expected 429 but got ${res.statusCode}\nHeaders: ${JSON.stringify(res.headers, null, 2)}\nBody: ${res.payload}`
+      )
+    }
     expect(res.json().message).toContain('Rate limit exceeded')
   })
 })
