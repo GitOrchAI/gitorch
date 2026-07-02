@@ -93,6 +93,7 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
           where: { wingId },
         })
 
+        // 1. Cria o projeto (já existente no fluxo)
         if (!project) {
           project = await app.prisma.project.create({
             data: {
@@ -110,10 +111,10 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
           })
         }
 
-        // Adiciona a API Key e JWT aqui
-        const apiKey = `gitorch_${randomBytes(24).toString('hex')}`
-        const keyHash = createHash('sha256').update(apiKey).digest('hex')
-        const prefix = apiKey.substring(0, 12)
+        // 2. Gere a API key padrão para o projeto
+        const rawApiKey = `gitorch_${randomBytes(24).toString('hex')}`
+        const keyHash = createHash('sha256').update(rawApiKey).digest('hex')
+        const prefix = rawApiKey.substring(0, 12)
 
         await app.prisma.apiKey.create({
           data: {
@@ -125,15 +126,15 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
           },
         })
 
-        // Add to created list
+        // 3. Adicione o projeto à lista retornada, incluindo a API key gerada
         createdProjects.push({
           id: project.id,
           name: project.name,
           wingId: project.wingId,
-          apiKey: apiKey,
+          apiKey: rawApiKey,
         })
 
-        // 3. Queue mission to clone repository & initialize multi-agent engines
+        // 4. Enfileire a missão de clonar o repositório e iniciar os engines
         await app.prisma.mission.create({
           data: {
             projectId: project.id,
@@ -149,6 +150,7 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
         })
       }
 
+      // 5. Responda ao cliente
       return reply.send({
         success: true,
         projects: createdProjects,
