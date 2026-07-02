@@ -45,7 +45,6 @@ export default function SetupWizard() {
     if (typeof window !== 'undefined') {
       const storedToken = localStorage.getItem('gitorch_token')
       if (storedToken && storedToken !== token) {
-        // eslint-disable-next-line react-hooks/set-state-in-effect
         setToken(storedToken)
       }
 
@@ -73,7 +72,6 @@ export default function SetupWizard() {
   useEffect(() => {
     if (token && (step === 1 || step === 2)) {
       if (step !== 3) {
-        // eslint-disable-next-line react-hooks/set-state-in-effect
         setStep(3)
       }
     }

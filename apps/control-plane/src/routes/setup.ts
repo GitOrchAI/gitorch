@@ -103,7 +103,7 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
 
       // Generate a default API Key for this project (assisted login for CLIs)
       const rawApiKey = `gitorch_${randomBytes(24).toString('hex')}`
-      const saltRounds = 12
+      const saltRounds = 16
       const keyHash = await bcrypt.hash(rawApiKey, saltRounds)
       const prefix = rawApiKey.substring(0, 12)
 

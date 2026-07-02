@@ -1,5 +1,5 @@
 'use client'
-/* eslint-disable react-hooks/set-state-in-effect */
+
 import React, { createContext, useContext, useState, useEffect } from 'react'
 import { locales } from './locales'
 
@@ -18,7 +18,8 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   useEffect(() => {
     // Detect browser language on first render
-    const saved = typeof window !== 'undefined' ? (localStorage.getItem('gitorch-lang') as Language) : null;
+    const saved =
+      typeof window !== 'undefined' ? (localStorage.getItem('gitorch-lang') as Language) : null
     if (saved && (saved === 'en' || saved === 'pt' || saved === 'es')) {
       if (saved !== language) {
         setLanguageState(saved)
