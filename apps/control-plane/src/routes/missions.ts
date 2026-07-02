@@ -27,6 +27,14 @@ export const missionRoutes = async (app: FastifyInstance): Promise<void> => {
   // POST /api/missions/trigger - Trigger a new mission
   app.post<{ Body: TriggerMissionBody }>(
     '/api/missions/trigger',
+    {
+      config: {
+        rateLimit: {
+          max: 30,
+          timeWindow: '1 minute',
+        },
+      },
+    },
     async (request: FastifyRequest<{ Body: TriggerMissionBody }>, reply: FastifyReply) => {
       const wingId = request.wingId!
       const { projectId, type, payload } = request.body
@@ -75,6 +83,14 @@ export const missionRoutes = async (app: FastifyInstance): Promise<void> => {
   // GET /api/missions/:id - Get mission status
   app.get<{ Params: MissionParams }>(
     '/api/missions/:id',
+    {
+      config: {
+        rateLimit: {
+          max: 60,
+          timeWindow: '1 minute',
+        },
+      },
+    },
     async (request: FastifyRequest<{ Params: MissionParams }>, reply: FastifyReply) => {
       const wingId = request.wingId!
       const { id } = request.params

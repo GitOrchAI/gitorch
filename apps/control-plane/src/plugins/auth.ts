@@ -1,6 +1,6 @@
 import { FastifyPluginAsync } from 'fastify'
 import { prisma, wingIdContext } from './prisma.js'
-import { createHash } from 'crypto'
+import { createHash } from 'node:crypto'
 import jwt from 'jsonwebtoken'
 import { getEnv } from '../config/env.js'
 

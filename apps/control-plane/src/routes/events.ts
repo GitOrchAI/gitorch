@@ -8,6 +8,14 @@ export const eventRoutes = async (app: FastifyInstance): Promise<void> => {
   // GET /api/events - SSE stream for real-time events
   app.get<{ Querystring: SSEQuery }>(
     '/api/events',
+    {
+      config: {
+        rateLimit: {
+          max: 10,
+          timeWindow: '1 minute',
+        },
+      },
+    },
     async (request: FastifyRequest<{ Querystring: SSEQuery }>, reply: FastifyReply) => {
       const wingId = request.wingId!
       const lastEventId = request.query.lastEventId
