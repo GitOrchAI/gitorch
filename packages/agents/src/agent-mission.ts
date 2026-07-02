@@ -6,6 +6,7 @@ import type {
   F6AgentRole,
   RuntimeCredentialRef,
 } from './types'
+import { AGENT_SYSTEM_PROMPTS } from './prompts/index.js'
 
 export const workspaceManager = new WorkspaceManager()
 
@@ -55,13 +56,19 @@ function buildPrompt(
   context: string[]
 ): string {
   const contextBlock = context.length > 0 ? context.map((line) => `- ${line}`).join('\n') : '- none'
+  const systemPrompt = AGENT_SYSTEM_PROMPTS[role] || ''
 
   return [
     `Role: ${role}`,
     `Repository: ${repository}`,
     `Goal: ${goal}`,
+    '',
+    'System Instructions:',
+    systemPrompt,
+    '',
     'Context:',
     contextBlock,
+    '',
     'Rules:',
     '- Use GitHub as the canonical work system.',
     '- Do not create product work unless the mission explicitly asks for it.',

@@ -1,4 +1,8 @@
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import type { AgentRuntimeSelection, F6AgentRuntime, RuntimeCredentialRef } from './types'
+
+const execFileAsync = promisify(execFile)
 
 export interface RuntimeExecutionRequest {
   missionId: string
@@ -32,6 +36,29 @@ export interface RuntimeCommandResult {
 export type RuntimeCommandRunner = (
   request: RuntimeCommandRequest
 ) => Promise<RuntimeCommandResult> | RuntimeCommandResult
+
+export const realRuntimeCommandRunner: RuntimeCommandRunner = async (request) => {
+  const start = Date.now()
+  try {
+    const { stdout, stderr } = await execFileAsync(request.binary, request.args, {
+      env: { ...process.env, ...request.env },
+    })
+    return {
+      exitCode: 0,
+      stdout,
+      stderr,
+      durationMs: Date.now() - start,
+    }
+  } catch (error: unknown) {
+    const err = error as { code?: number; stdout?: string; stderr?: string; message?: string }
+    return {
+      exitCode: err.code || 1,
+      stdout: err.stdout || '',
+      stderr: err.stderr || err.message || String(error),
+      durationMs: Date.now() - start,
+    }
+  }
+}
 
 export interface RuntimeAdapter {
   runtime: F6AgentRuntime
@@ -72,17 +99,14 @@ export interface CreateCliRuntimeAdapterOptions {
   runner?: RuntimeCommandRunner
 }
 
-const unsupportedRuntimeCommandRunner: RuntimeCommandRunner = () => {
-  throw new Error('Runtime adapter runner is not configured')
-}
-
 export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions): RuntimeAdapter {
-  const runner = options.runner ?? unsupportedRuntimeCommandRunner
+  const runner = options.runner ?? realRuntimeCommandRunner
+
   const baseArgs = [...(options.args ?? [])]
 
   return {
     runtime: options.runtime,
-    async run(request) {
+    async run(request: RuntimeExecutionRequest) {
       const env = buildRuntimeEnvironment(request.credentialRef)
 
       if (request.runtime.model) {
