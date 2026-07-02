@@ -105,6 +105,7 @@ describe('Setup and Auth Integration', () => {
   test('should support legacy SHA256 API keys', async () => {
     const rawApiKey = 'legacy_key_1234567890'
     const prefix = rawApiKey.substring(0, 12)
+    // codeql [js/insufficient-password-hash] - legacy hash for testing backward compatibility
     // Hardcoded SHA256 hash of 'legacy_key_1234567890' to avoid CodeQL alert for insecure hashing in tests
     const legacyHash = '308f9e667a3435a334995af0253682150f2273d38f6ca669b5ccad8fba3fd35a'
 
