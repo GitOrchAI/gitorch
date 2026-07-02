@@ -122,7 +122,7 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
           })
         }
 
-        // 2. Gere a API key padrão para o projeto
+        // 2. Gera a API key padrão para o projeto
         const rawApiKey = `gitorch_${randomBytes(24).toString('hex')}`
         const keyHash = createHash('sha256').update(rawApiKey).digest('hex')
         const prefix = rawApiKey.substring(0, 12)
