@@ -69,8 +69,8 @@ describe('GitHub Webhook Routes', () => {
     const signature =
       'sha256=' + crypto.createHmac('sha256', 'test-secret').update(payloadStr).digest('hex')
 
-    // Make 100 requests (the limit)
-    for (let i = 0; i < 100; i++) {
+    // Make 50 requests (the current limit for this route)
+    for (let i = 0; i < 50; i++) {
       const res = await app.inject({
         method: 'POST',
         url: '/api/webhooks/github',
@@ -84,7 +84,7 @@ describe('GitHub Webhook Routes', () => {
       expect(res.statusCode).toBe(200)
     }
 
-    // The 101st request should be rate limited (max is 100)
+    // The 51st request should be rate limited (max is 50)
     const res = await app.inject({
       method: 'POST',
       url: '/api/webhooks/github',

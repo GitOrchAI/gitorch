@@ -32,6 +32,10 @@ function hashKey(key: string): string {
 export const authPlugin: FastifyPluginAsync = async (app) => {
   // API Key & JWT authentication
   app.addHook('preHandler', async (request) => {
+    // Ensure rate limiting is applied to the authentication process itself
+    // to mitigate brute-force and DoS attacks on DB/JWT operations.
+    await request.rateLimit()
+
     // Skip auth for health/metrics/public webhook
     const publicPaths = [
       '/health',

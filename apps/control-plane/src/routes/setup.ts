@@ -21,37 +21,48 @@ interface SetupSubmitBody {
 
 export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
   // GET /api/v1/github/repos - List user repositories using OAuth session token
-  app.get('/api/v1/github/repos', async (request: FastifyRequest, reply: FastifyReply) => {
-    const githubToken = request.user?.githubToken
-    if (!githubToken) {
-      return reply.code(401).send({ error: 'UNAUTHORIZED: Missing GitHub Token in session' })
-    }
-
-    const response = await fetch('https://api.github.com/user/repos?per_page=100&sort=updated', {
-      headers: {
-        Authorization: `Bearer ${githubToken}`,
-        Accept: 'application/json',
-        'User-Agent': 'gitorch-control-plane',
+  app.get(
+    '/api/v1/github/repos',
+    {
+      config: {
+        rateLimit: {
+          max: 40,
+          timeWindow: '1 minute',
+        },
       },
-    })
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const githubToken = request.user?.githubToken
+      if (!githubToken) {
+        return reply.code(401).send({ error: 'UNAUTHORIZED: Missing GitHub Token in session' })
+      }
 
-    const repos = (await response.json()) as GitHubRepo[]
-    if (!Array.isArray(repos)) {
-      return reply.code(500).send({ error: 'Failed to fetch repositories from GitHub' })
+      const response = await fetch('https://api.github.com/user/repos?per_page=100&sort=updated', {
+        headers: {
+          Authorization: `Bearer ${githubToken}`,
+          Accept: 'application/json',
+          'User-Agent': 'gitorch-control-plane',
+        },
+      })
+
+      const repos = (await response.json()) as GitHubRepo[]
+      if (!Array.isArray(repos)) {
+        return reply.code(500).send({ error: 'Failed to fetch repositories from GitHub' })
+      }
+
+      // Map to simplified structure for the frontend setup list
+      const mappedRepos = repos.map((repo: GitHubRepo) => ({
+        id: repo.id,
+        name: repo.name,
+        fullName: repo.full_name,
+        description: repo.description,
+        private: repo.private,
+        url: repo.html_url,
+      }))
+
+      return reply.send(mappedRepos)
     }
-
-    // Map to simplified structure for the frontend setup list
-    const mappedRepos = repos.map((repo: GitHubRepo) => ({
-      id: repo.id,
-      name: repo.name,
-      fullName: repo.full_name,
-      description: repo.description,
-      private: repo.private,
-      url: repo.html_url,
-    }))
-
-    return reply.send(mappedRepos)
-  })
+  )
 
   // POST /api/v1/setup/submit - Submit final setup wizard data
   app.post(
