@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { randomBytes } from 'node:crypto'
-import { Prisma } from '@prisma/client'
 import bcrypt from 'bcryptjs'
+import { Prisma } from '@prisma/client'
 
 interface GitHubRepo {
   id: number
