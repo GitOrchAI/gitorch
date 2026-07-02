@@ -1,8 +1,8 @@
 import { FastifyPluginAsync } from 'fastify'
 import { prisma, wingIdContext } from './prisma.js'
 import { createHash } from 'node:crypto'
-import bcryptjs from 'bcryptjs'
 import jwt from 'jsonwebtoken'
+import bcryptjs from 'bcryptjs'
 import { getEnv } from '../config/env.js'
 import rateLimit from '@fastify/rate-limit'
 
