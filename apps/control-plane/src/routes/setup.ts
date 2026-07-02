@@ -1,5 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
-import { createHash, randomBytes } from 'node:crypto'
+import { randomBytes } from 'node:crypto'
+import bcryptjs from 'bcryptjs'
 import type { JsonObject } from '@prisma/client/runtime/library'
 
 interface GitHubRepo {
@@ -112,7 +113,7 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
 
         // Generate a default API Key for this project (assisted login for CLIs)
         const rawApiKey = `gitorch_${randomBytes(24).toString('hex')}`
-        const keyHash = createHash('sha256').update(rawApiKey).digest('hex')
+        const keyHash = await bcryptjs.hash(rawApiKey, 12)
         const prefix = rawApiKey.substring(0, 12)
 
         await app.prisma.apiKey.create({
