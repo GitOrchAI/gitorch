@@ -17,6 +17,7 @@ describe('Setup and Auth Integration', () => {
     await projectRoutes(app)
 
     // Mock authentication for setup/submit (which requires a user session)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     app.addHook('onRequest', async (req: any) => {
       if (req.url === '/api/v1/setup/submit') {
         req.user = { id: 'user_123', githubToken: 'gh_token' }
