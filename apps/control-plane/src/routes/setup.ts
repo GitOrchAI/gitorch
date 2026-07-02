@@ -160,7 +160,6 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
           },
         })
       }
-
       // 5. Responda ao cliente
       return reply.send({
         success: true,
