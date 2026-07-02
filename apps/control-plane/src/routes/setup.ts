@@ -110,10 +110,10 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
           })
         }
 
-        // Generate a default API Key for this project (assisted login for CLIs)
-        const rawApiKey = `gitorch_${randomBytes(24).toString('hex')}`
-        const keyHash = createHash('sha256').update(rawApiKey).digest('hex')
-        const prefix = rawApiKey.substring(0, 12)
+        // Adiciona a API Key e JWT aqui
+        const apiKey = `gitorch_${randomBytes(24).toString('hex')}`
+        const keyHash = createHash('sha256').update(apiKey).digest('hex')
+        const prefix = apiKey.substring(0, 12)
 
         await app.prisma.apiKey.create({
           data: {
@@ -130,7 +130,7 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
           id: project.id,
           name: project.name,
           wingId: project.wingId,
-          apiKey: rawApiKey,
+          apiKey: apiKey,
         })
 
         // 3. Queue mission to clone repository & initialize multi-agent engines
