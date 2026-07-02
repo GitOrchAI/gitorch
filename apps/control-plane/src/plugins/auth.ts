@@ -3,6 +3,7 @@ import { prisma, wingIdContext } from './prisma.js'
 import { createHash } from 'crypto'
 import jwt from 'jsonwebtoken'
 import { getEnv } from '../config/env.js'
+import rateLimit from '@fastify/rate-limit'
 
 interface ApiKeyPayload {
   projectId: string
@@ -30,6 +31,20 @@ function hashKey(key: string): string {
 }
 
 export const authPlugin: FastifyPluginAsync = async (app) => {
+  // Register rate limiter for auth endpoints to protect expensive auth hooks from DoS
+  await app.register(rateLimit, {
+    max: 20,
+    timeWindow: '1 minute',
+    hook: 'preHandler',
+    keyGenerator: (request) => request.ip,
+    addHeaders: {
+      'x-ratelimit-limit': true,
+      'x-ratelimit-remaining': true,
+      'x-ratelimit-reset': true,
+    },
+    allowList: ['127.0.0.1', '::1'],
+  })
+
   // API Key & JWT authentication
   app.addHook('preHandler', async (request) => {
     // Skip auth for health/metrics/public webhook
