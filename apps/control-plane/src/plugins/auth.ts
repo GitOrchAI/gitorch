@@ -30,6 +30,15 @@ function hashKey(key: string): string {
 }
 
 export const authPlugin: FastifyPluginAsync = async (app) => {
+  // Rate limiting for the auth process itself as requested in PR feedback
+  // to protect against brute-force attacks on database/JWT operations.
+  await app.register(import('@fastify/rate-limit'), {
+    max: 100,
+    timeWindow: '1 minute',
+    keyGenerator: (request) => request.ip,
+    skipUntracked: true,
+  })
+
   // API Key & JWT authentication
   app.addHook('preHandler', async (request) => {
     // Ensure rate limiting is applied to the authentication process itself
