@@ -9,14 +9,6 @@ export const runtimeConfigRoutes = async (app: FastifyInstance): Promise<void> =
   // PATCH /api/projects/:id/runtime-config - Update project runtime config (F8 ownership)
   app.patch<{ Params: ProjectParams; Body: { runtimeConfig: Prisma.InputJsonValue } }>(
     '/api/projects/:id/runtime-config',
-    {
-      config: {
-        rateLimit: {
-          max: 20,
-          timeWindow: '1 minute',
-        },
-      },
-    },
     async (
       request: FastifyRequest<{
         Params: ProjectParams

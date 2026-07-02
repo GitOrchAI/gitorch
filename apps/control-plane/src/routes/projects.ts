@@ -47,14 +47,6 @@ export const projectRoutes = async (app: FastifyInstance): Promise<void> => {
   // GET /api/projects - List projects for current wing
   app.get<{ Querystring: PaginationQuery }>(
     '/api/projects',
-    {
-      config: {
-        rateLimit: {
-          max: 40,
-          timeWindow: '1 minute',
-        },
-      },
-    },
     async (request: FastifyRequest<{ Querystring: PaginationQuery }>, reply: FastifyReply) => {
       const wingId = request.wingId!
       const page = Math.max(1, parseInt(request.query.page || '1', 10))
@@ -104,14 +96,6 @@ export const projectRoutes = async (app: FastifyInstance): Promise<void> => {
   // POST /api/projects - Create project
   app.post<{ Body: CreateProjectBody }>(
     '/api/projects',
-    {
-      config: {
-        rateLimit: {
-          max: 10,
-          timeWindow: '1 minute',
-        },
-      },
-    },
     async (request: FastifyRequest<{ Body: CreateProjectBody }>, reply: FastifyReply) => {
       const wingId = request.wingId!
       const { name, description, avatarUrl, defaultBranch, githubInstallationId, githubRepoId } =
@@ -157,14 +141,6 @@ export const projectRoutes = async (app: FastifyInstance): Promise<void> => {
   // GET /api/projects/:id - Get project by ID
   app.get<{ Params: ProjectParams }>(
     '/api/projects/:id',
-    {
-      config: {
-        rateLimit: {
-          max: 60,
-          timeWindow: '1 minute',
-        },
-      },
-    },
     async (request: FastifyRequest<{ Params: ProjectParams }>, reply: FastifyReply) => {
       const wingId = request.wingId!
       const { id } = request.params
@@ -200,14 +176,6 @@ export const projectRoutes = async (app: FastifyInstance): Promise<void> => {
   // PATCH /api/projects/:id - Update project
   app.patch<{ Params: ProjectParams; Body: UpdateProjectBody }>(
     '/api/projects/:id',
-    {
-      config: {
-        rateLimit: {
-          max: 20,
-          timeWindow: '1 minute',
-        },
-      },
-    },
     async (
       request: FastifyRequest<{ Params: ProjectParams; Body: UpdateProjectBody }>,
       reply: FastifyReply
@@ -279,14 +247,6 @@ export const projectRoutes = async (app: FastifyInstance): Promise<void> => {
   // DELETE /api/projects/:id - Delete project (cascades to missions, events, apiKeys)
   app.delete<{ Params: ProjectParams }>(
     '/api/projects/:id',
-    {
-      config: {
-        rateLimit: {
-          max: 5,
-          timeWindow: '1 minute',
-        },
-      },
-    },
     async (request: FastifyRequest<{ Params: ProjectParams }>, reply: FastifyReply) => {
       const wingId = request.wingId!
       const { id } = request.params
@@ -309,14 +269,6 @@ export const projectRoutes = async (app: FastifyInstance): Promise<void> => {
   // GET /api/projects/:id/status - Get project status (aggregated missions, events, health)
   app.get<{ Params: ProjectParams }>(
     '/api/projects/:id/status',
-    {
-      config: {
-        rateLimit: {
-          max: 60,
-          timeWindow: '1 minute',
-        },
-      },
-    },
     async (request: FastifyRequest<{ Params: ProjectParams }>, reply: FastifyReply) => {
       const wingId = request.wingId!
       const { id } = request.params

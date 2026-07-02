@@ -17,7 +17,6 @@ const env = loadEnv()
  */
 export const rateLimitPlugin: FastifyPluginAsync = async (app) => {
   await app.register(rateLimit, {
-    hook: 'preHandler',
     max: env.RATE_LIMIT_MAX,
     timeWindow: env.RATE_LIMIT_WINDOW_MS,
     keyGenerator: (request: FastifyRequest) => {

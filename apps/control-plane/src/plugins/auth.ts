@@ -1,6 +1,6 @@
 import { FastifyPluginAsync } from 'fastify'
 import { prisma, wingIdContext } from './prisma.js'
-import { createHash } from 'node:crypto'
+import { createHash } from 'crypto'
 import jwt from 'jsonwebtoken'
 import { getEnv } from '../config/env.js'
 
@@ -42,10 +42,6 @@ export const authPlugin: FastifyPluginAsync = async (app) => {
       '/api/v1/auth/github/callback',
     ]
     if (publicPaths.some((p) => request.url.startsWith(p))) return
-
-    // Ensure rate limiting is applied to the authentication process itself
-    // for non-public paths to mitigate brute-force and DoS attacks.
-    await request.rateLimit()
 
     const authHeader = request.headers.authorization
     if (!authHeader?.startsWith('Bearer ')) {

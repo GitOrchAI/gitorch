@@ -44,8 +44,8 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
     {
       config: {
         rateLimit: {
-          max: 50,
-          timeWindow: '15 minutes',
+          max: 100,
+          timeWindow: '1 minute',
         },
       },
     },

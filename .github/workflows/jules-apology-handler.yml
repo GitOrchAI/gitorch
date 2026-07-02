@@ -24,7 +24,7 @@ jobs:
     steps:
       - name: Triagem (apology? sessão? já tentou?)
         id: triage
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           github-token: ${{ secrets.SECURITY_PAT }}
           script: |
@@ -49,7 +49,7 @@ jobs:
 
       - name: Checkout
         if: steps.triage.outputs.act == 'true' && steps.triage.outputs.alreadyTried == 'false' && steps.triage.outputs.sessionId != ''
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           token: ${{ secrets.SECURITY_PAT }}
 
@@ -82,7 +82,7 @@ jobs:
 
       - name: Escalar para humano (2ª apology ou sem sessão)
         if: steps.triage.outputs.act == 'true' && (steps.triage.outputs.alreadyTried == 'true' || steps.triage.outputs.sessionId == '')
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           github-token: ${{ secrets.SECURITY_PAT }}
           script: |
