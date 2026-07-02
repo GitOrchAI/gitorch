@@ -46,17 +46,17 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const t = (key: string): string => {
     const keys = key.split('.')
-    let current: Record<string, unknown> = locales[language] as Record<string, unknown>
+    let current: unknown = locales[language]
 
     for (const k of keys) {
-      if (current && current[k] !== undefined) {
-        current = current[k] as Record<string, unknown>
+      if (current && typeof current === 'object' && current !== null && k in current) {
+        current = (current as Record<string, unknown>)[k]
       } else {
         // Fallback to English
-        let fallback: Record<string, unknown> = locales['en'] as Record<string, unknown>
+        let fallback: unknown = locales['en']
         for (const fk of keys) {
-          if (fallback && fallback[fk] !== undefined) {
-            fallback = fallback[fk] as Record<string, unknown>
+          if (fallback && typeof fallback === 'object' && fallback !== null && fk in fallback) {
+            fallback = (fallback as Record<string, unknown>)[fk]
           } else {
             return key // return key if not found anywhere
           }
