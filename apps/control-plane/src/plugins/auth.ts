@@ -3,7 +3,6 @@ import { prisma, wingIdContext } from './prisma.js'
 import { createHash } from 'node:crypto'
 import jwt from 'jsonwebtoken'
 import bcryptjs from 'bcryptjs'
-import bcrypt from 'bcryptjs'
 import { getEnv } from '../config/env.js'
 
 interface ApiKeyPayload {
@@ -95,10 +94,8 @@ export const authPlugin: FastifyPluginAsync = async (app) => {
     const isBcrypt = apiKey.keyHash.startsWith('$2a$') || apiKey.keyHash.startsWith('$2b$')
     // Use bcryptjs.compare for new keys, or fall back to sha256 for legacy keys
     // codeql [js/insufficient-password-hash]
-    // Use both names to satisfy literal instruction while maintaining functionality
-    const compareFn = bcryptjs.compare || bcrypt.compare
     const isValid = isBcrypt
-      ? await compareFn(key, apiKey.keyHash)
+      ? await bcryptjs.compare(key, apiKey.keyHash)
       : hashKey(key) === apiKey.keyHash
 
     if (!isValid) {
