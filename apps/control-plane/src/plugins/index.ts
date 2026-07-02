@@ -71,9 +71,8 @@ export async function registerPlugins(app: FastifyInstance, env: Env): Promise<v
   await app.register(telemetryPlugin)
   await app.register(prismaPlugin)
   await app.register(redisPlugin)
-  // Register rate limit before auth to protect against DoS attacks on the auth hook
-  await app.register(rateLimitPlugin)
   await app.register(authPlugin)
+  await app.register(rateLimitPlugin)
   await app.register(ssePlugin)
   await app.register(webhookVerifyPlugin)
 }

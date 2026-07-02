@@ -30,21 +30,8 @@ function hashKey(key: string): string {
 }
 
 export const authPlugin: FastifyPluginAsync = async (app) => {
-  // Rate limiting for the auth process itself as requested in PR feedback
-  // to protect against brute-force attacks on database/JWT operations.
-  await app.register(import('@fastify/rate-limit'), {
-    max: 100,
-    timeWindow: '1 minute',
-    keyGenerator: (request) => request.ip,
-    skipUntracked: true,
-  })
-
   // API Key & JWT authentication
   app.addHook('preHandler', async (request) => {
-    // Ensure rate limiting is applied to the authentication process itself
-    // to mitigate brute-force and DoS attacks on DB/JWT operations.
-    await request.rateLimit()
-
     // Skip auth for health/metrics/public webhook
     const publicPaths = [
       '/health',
@@ -55,6 +42,10 @@ export const authPlugin: FastifyPluginAsync = async (app) => {
       '/api/v1/auth/github/callback',
     ]
     if (publicPaths.some((p) => request.url.startsWith(p))) return
+
+    // Ensure rate limiting is applied to the authentication process itself
+    // for non-public paths to mitigate brute-force and DoS attacks.
+    await request.rateLimit()
 
     const authHeader = request.headers.authorization
     if (!authHeader?.startsWith('Bearer ')) {

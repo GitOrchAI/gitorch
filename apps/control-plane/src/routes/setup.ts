@@ -87,11 +87,6 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
         return reply.code(400).send({ error: 'At least one repository must be selected' })
       }
 
-      // 1. Validate plan constraints (Free allows only 1 repo)
-      if (plan === 'free' && repos.length > 1) {
-        return reply.code(400).send({ error: 'Free plan only allows up to 1 repository' })
-      }
-
       const createdProjects = []
 
       // 2. Create Project records and API keys
@@ -137,7 +132,7 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
           },
         })
 
-        // 3. Adicione o projeto à lista retornada, incluindo a API key gerada
+        // 3. Adiciona ao array de projetos criados
         createdProjects.push({
           id: project.id,
           name: project.name,
@@ -145,7 +140,7 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
           apiKey: rawApiKey,
         })
 
-        // 4. Enfileira missão de clonar o repositório e iniciar os engines
+        // 4. Enfileira missão para clonar repositório e iniciar engines
         await app.prisma.mission.create({
           data: {
             projectId: project.id,
