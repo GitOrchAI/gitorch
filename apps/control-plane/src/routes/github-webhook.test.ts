@@ -69,7 +69,7 @@ describe('GitHub Webhook Routes', () => {
     const signature =
       'sha256=' + crypto.createHmac('sha256', 'test-secret').update(payloadStr).digest('hex')
 
-    // Make 50 requests (the limit)
+    // Make 50 requests (the current limit for this route)
     for (let i = 0; i < 50; i++) {
       const res = await app.inject({
         method: 'POST',
