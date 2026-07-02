@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { randomBytes } from 'node:crypto'
-import bcryptjs from 'bcryptjs'
-import type { JsonObject } from '@prisma/client/runtime/library'
+import bcrypt from 'bcryptjs'
+import { Prisma } from '@prisma/client'
 
 interface GitHubRepo {
   id: number
@@ -55,107 +55,97 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
   })
 
   // POST /api/v1/setup/submit - Submit final setup wizard data
-  app.post(
-    '/api/v1/setup/submit',
-    {
-      config: {
-        rateLimit: {
-          max: 10,
-          timeWindow: '1 minute',
-        },
-      },
-    },
-    async (request: FastifyRequest, reply: FastifyReply) => {
-      const user = request.user
-      if (!user) {
-        return reply.code(401).send({ error: 'UNAUTHORIZED: User session required' })
-      }
+  app.post('/api/v1/setup/submit', async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user
+    if (!user) {
+      return reply.code(401).send({ error: 'UNAUTHORIZED: User session required' })
+    }
 
-      const { repos, engines, telegram, plan, envConfig } = request.body as SetupSubmitBody
+    const { repos, engines, telegram, plan, envConfig } = request.body as SetupSubmitBody
 
-      if (!repos || repos.length === 0) {
-        return reply.code(400).send({ error: 'At least one repository must be selected' })
-      }
+    if (!repos || repos.length === 0) {
+      return reply.code(400).send({ error: 'At least one repository must be selected' })
+    }
 
-      // 1. Validate plan constraints (Free allows only 1 repo)
-      if (plan === 'free' && repos.length > 1) {
-        return reply.code(400).send({ error: 'Free plan only allows up to 1 repository' })
-      }
+    // 1. Validate plan constraints (Free allows only 1 repo)
+    if (plan === 'free' && repos.length > 1) {
+      return reply.code(400).send({ error: 'Free plan only allows up to 1 repository' })
+    }
 
-      const createdProjects = []
+    const createdProjects = []
 
-      // 2. Create Project records and API keys
-      for (const repoFullName of repos) {
-        const repoName = repoFullName.split('/')[1] || repoFullName
-        const wingId = repoFullName // owner/repo maps to wingId
+    // 2. Create Project records and API keys
+    for (const repoFullName of repos) {
+      const repoName = repoFullName.split('/')[1] || repoFullName
+      const wingId = repoFullName // owner/repo maps to wingId
 
-        // Check if project already exists
-        let project = await app.prisma.project.findFirst({
-          where: { wingId },
-        })
+      // Check if project already exists
+      let project = await app.prisma.project.findFirst({
+        where: { wingId },
+      })
 
-        if (!project) {
-          project = await app.prisma.project.create({
-            data: {
-              wingId,
-              name: repoName,
-              description: `Project for ${repoFullName}`,
-              runtimeConfig: {
-                engines,
-                telegram: telegram ?? null,
-                plan,
-                envConfig: (envConfig ?? null) as JsonObject | null,
-                userGithubToken: user.githubToken ?? null,
-              } as JsonObject,
-            },
-          })
-        }
-
-        // Generate a default API Key for this project (assisted login for CLIs)
-        const rawApiKey = `gitorch_${randomBytes(24).toString('hex')}`
-        const keyHash = await bcryptjs.hash(rawApiKey, 12)
-        const prefix = rawApiKey.substring(0, 12)
-
-        await app.prisma.apiKey.create({
+      if (!project) {
+        project = await app.prisma.project.create({
           data: {
-            projectId: project.id,
-            name: 'Default Setup Key',
-            keyHash,
-            prefix,
-            scopes: ['read', 'write'],
-          },
-        })
-
-        // Add to created list
-        createdProjects.push({
-          id: project.id,
-          name: project.name,
-          wingId: project.wingId,
-          apiKey: rawApiKey,
-        })
-
-        // 3. Queue mission to clone repository & initialize multi-agent engines
-        await app.prisma.mission.create({
-          data: {
-            projectId: project.id,
-            type: 'clone_and_start_engines',
-            payload: {
-              repoUrl: `https://github.com/${repoFullName}`,
+            wingId,
+            name: repoName,
+            description: `Project for ${repoFullName}`,
+            runtimeConfig: {
               engines,
               telegram: telegram ?? null,
-              envConfig: (envConfig ?? null) as JsonObject | null,
-            } as JsonObject,
-            status: 'pending',
+              plan,
+              envConfig: (envConfig ?? null) as Prisma.JsonObject | null,
+              userGithubToken: user.githubToken ?? null,
+            } as Prisma.JsonObject,
           },
         })
       }
 
-      return reply.send({
-        success: true,
-        projects: createdProjects,
+      // Generate a default API Key for this project (assisted login for CLIs)
+      const rawApiKey = `gitorch_${randomBytes(24).toString('hex')}`
+      const saltRounds = 12
+      const keyHash = await bcrypt.hash(rawApiKey, saltRounds)
+      const prefix = rawApiKey.substring(0, 12)
+
+      await app.prisma.apiKey.create({
+        data: {
+          projectId: project.id,
+          name: 'Default Setup Key',
+          keyHash,
+          prefix,
+          scopes: ['read', 'write'],
+        },
+      })
+
+      // Add to created list
+      createdProjects.push({
+        id: project.id,
+        name: project.name,
+        wingId: project.wingId,
+        apiKey: rawApiKey,
+      })
+
+      // 3. Queue mission to clone repository & initialize multi-agent engines
+      await app.prisma.mission.create({
+        data: {
+          projectId: project.id,
+          type: 'clone_and_start_engines',
+          payload: {
+            repoUrl: `https://github.com/${repoFullName}`,
+            engines,
+            telegram: telegram ?? null,
+            envConfig: (envConfig ?? null) as Prisma.JsonObject | null,
+          } as Prisma.JsonObject,
+          status: 'pending',
+        },
       })
     }
-  )
+
+    return reply.send({
+      success: true,
+      projects: createdProjects,
+    })
+  })
 }
 
 export default setupRoutes

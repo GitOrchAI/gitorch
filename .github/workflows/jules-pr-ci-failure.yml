@@ -45,7 +45,6 @@ jobs:
           GH_TOKEN: ${{ secrets.SECURITY_PAT }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_FREE_MODEL: openrouter/free
-          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
           REPO_OWNER: ${{ github.repository_owner }}
           REPO_NAME: ${{ github.event.repository.name }}
           SLA_BUSINESS_DAYS: ${{ env.SLA_BUSINESS_DAYS || '1' }}

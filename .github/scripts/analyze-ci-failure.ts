@@ -7,9 +7,8 @@
 
 import { Octokit } from '@octokit/rest'
 import { OpenRouterClient, createOpenRouterClientFromEnv } from './lib/openrouter-client.js'
-import { isSecurityAutomationPR, hasActiveJulesSession } from './lib/pr-eligibility.js'
+import { isSecurityAutomationPR } from './lib/pr-eligibility.js'
 import { extractRelevantLogSections } from './lib/log-extraction.js'
-import { JulesClient } from './lib/jules-client.js'
 import { z } from 'zod'
 
 // Types
@@ -455,56 +454,9 @@ async function main() {
   )
 
   const analysis = await analyzeCIFailure(octokit, owner, repo, prNumber, llmClient)
+  await postCIFailureComment(octokit, owner, repo, prNumber, analysis.comment)
 
-  if (hasActiveJulesSession(prResponse.data)) {
-    // PR criado pelo Jules — ele tem uma sessão real escutando menções `@jules`.
-    await postCIFailureComment(octokit, owner, repo, prNumber, analysis.comment)
-    console.log('CI failure analysis complete. Comment posted.')
-    return
-  }
-
-  // PR do Dependabot puro (rotina, nunca passou pelo Jules) — NÃO existe sessão escutando
-  // `@jules` aqui; postar esse comentário seria falar sozinho. Em vez disso, cria uma sessão
-  // NOVA do Jules diretamente no branch do PR (visto ao vivo: PR #213, bump de @types/node,
-  // travado com CI vermelho por drift no pnpm-lock, sem ninguém pra corrigir).
-  const julesKey = env['JULES_API_KEY']
-  if (!julesKey) {
-    console.warn(
-      'JULES_API_KEY não configurado — não é possível criar sessão para PR sem Jules ativo. ' +
-        'Postando comentário informativo (ninguém vai reagir a ele automaticamente).'
-    )
-    await octokit.rest.issues.createComment({
-      owner,
-      repo,
-      issue_number: prNumber,
-      body: `⚠️ Este PR (do Dependabot, sem sessão Jules ativa) tem CI vermelho e precisa de correção manual — JULES_API_KEY não está configurado para criar uma sessão automaticamente.\n\n${analysis.comment.replace(/^@jules\s*/i, '')}`,
-    })
-    return
-  }
-
-  const jules = new JulesClient(julesKey)
-  const branch = prResponse.data.head.ref
-  const session = await jules.createSession({
-    owner,
-    repo,
-    startingBranch: branch,
-    title: `Corrigir CI: PR #${prNumber}`,
-    prompt: [
-      `O PR #${prNumber} ("${prResponse.data.title}") do Dependabot está com o CI vermelho.`,
-      'Corrija o problema diretamente neste branch, sem abrir um PR novo.',
-      '',
-      analysis.comment.replace(/^@jules\s*/i, ''),
-    ].join('\n'),
-  })
-
-  await octokit.rest.issues.createComment({
-    owner,
-    repo,
-    issue_number: prNumber,
-    body: `🤖 PR do Dependabot sem sessão Jules ativa — criei uma [sessão nova](${session.url}) no branch \`${branch}\` para corrigir o CI vermelho.`,
-  })
-
-  console.log(`Sessão Jules criada para PR #${prNumber} sem sessão ativa: ${session.url}`)
+  console.log('CI failure analysis complete. Comment posted.')
 }
 
 main().catch((err) => {

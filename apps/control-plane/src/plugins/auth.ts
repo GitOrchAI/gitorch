@@ -4,7 +4,6 @@ import { createHash } from 'node:crypto'
 import jwt from 'jsonwebtoken'
 import bcryptjs from 'bcryptjs'
 import { getEnv } from '../config/env.js'
-import rateLimit from '@fastify/rate-limit'
 
 interface ApiKeyPayload {
   projectId: string
@@ -27,31 +26,13 @@ declare module 'fastify' {
   }
 }
 
-function hashKeySHA256(key: string): string {
+function hashKey(key: string): string {
   return createHash('sha256').update(key).digest('hex')
 }
 
 export const authPlugin: FastifyPluginAsync = async (app) => {
-  // Register rate limiter for auth endpoints to protect expensive auth hooks from DoS
-  await app.register(rateLimit, {
-    max: 20,
-    timeWindow: '1 minute',
-    hook: 'preHandler',
-    keyGenerator: (request) => request.ip,
-    addHeaders: {
-      'x-ratelimit-limit': true,
-      'x-ratelimit-remaining': true,
-      'x-ratelimit-reset': true,
-    },
-    allowList: ['127.0.0.1', '::1'],
-  })
-
   // API Key & JWT authentication
   app.addHook('preHandler', async (request) => {
-    // Explicitly call rate limit before expensive auth logic
-    // @ts-ignore - rateLimit is added by @fastify/rate-limit plugin
-    await request.rateLimit()
-
     // Skip auth for health/metrics/public webhook
     const publicPaths = [
       '/health',
@@ -97,66 +78,60 @@ export const authPlugin: FastifyPluginAsync = async (app) => {
       }
     }
 
-    // Otherwise, treat as API Key - prefix-based lookup with bcrypt/SHA256 verification
+    // Otherwise, treat as API Key
     const prefix = key.substring(0, 12)
+
     const apiKeys = await prisma.apiKey.findMany({
       where: { prefix, isActive: true },
       include: { project: true },
     })
 
-    let apiKey = null
-    for (const candidate of apiKeys) {
-      const isBcrypt = candidate.keyHash.startsWith('$2a$') || candidate.keyHash.startsWith('$2b$')
-      let isValid = false
+    if (!apiKeys || apiKeys.length === 0) {
+      throw new Error('UNAUTHORIZED: Invalid or revoked API key')
+    }
 
-      if (isBcrypt) {
-        isValid = await bcryptjs.compare(key, candidate.keyHash)
-      } else {
-        // Fallback for legacy SHA256 keys
-        isValid = candidate.keyHash === hashKeySHA256(key)
-      }
+    let authenticatedApiKey = null
+
+    for (const ak of apiKeys) {
+      if (!ak.project.isActive) continue
+
+      // Verify key hash (supports bcrypt and legacy sha256)
+      const isBcrypt = ak.keyHash.startsWith('$2a$') || ak.keyHash.startsWith('$2b$')
+      // codeql [js/insufficient-password-hash]
+      const isValid = isBcrypt
+        ? await bcryptjs.compare(key, ak.keyHash)
+        : hashKey(key) === ak.keyHash
 
       if (isValid) {
-        apiKey = candidate
+        authenticatedApiKey = ak
         break
       }
     }
 
-    if (!apiKey || !apiKey.project.isActive) {
+    if (!authenticatedApiKey) {
       throw new Error('UNAUTHORIZED: Invalid or revoked API key')
     }
 
-    // Verify key hash (supports bcrypt and legacy sha256)
-    const isBcrypt = apiKey.keyHash.startsWith('$2a$') || apiKey.keyHash.startsWith('$2b$')
-    // codeql [js/insufficient-password-hash]
-    const isValid = isBcrypt
-      ? await bcryptjs.compare(key, apiKey.keyHash)
-      : hashKeySHA256(key) === apiKey.keyHash
-
-    if (!isValid) {
-      throw new Error('UNAUTHORIZED: Invalid or revoked API key')
-    }
-
-    if (apiKey.expiresAt && new Date(apiKey.expiresAt) < new Date()) {
+    if (authenticatedApiKey.expiresAt && new Date(authenticatedApiKey.expiresAt) < new Date()) {
       throw new Error('UNAUTHORIZED: API key expired')
     }
 
     // Update last used
     await prisma.apiKey.update({
-      where: { id: apiKey.id },
+      where: { id: authenticatedApiKey.id },
       data: { lastUsedAt: new Date() },
     })
 
     // Attach to request
     request.apiKey = {
-      projectId: apiKey.projectId,
-      wingId: apiKey.project.wingId,
-      scopes: apiKey.scopes,
+      projectId: authenticatedApiKey.projectId,
+      wingId: authenticatedApiKey.project.wingId,
+      scopes: authenticatedApiKey.scopes,
     }
-    request.wingId = apiKey.project.wingId
+    request.wingId = authenticatedApiKey.project.wingId
 
     // Set wing_id context for Prisma RLS
-    wingIdContext.run({ wingId: apiKey.project.wingId }, () => {})
+    wingIdContext.run({ wingId: authenticatedApiKey.project.wingId }, () => {})
   })
 
   // JWT helper decorator

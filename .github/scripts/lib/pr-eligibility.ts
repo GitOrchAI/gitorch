@@ -55,17 +55,3 @@ export async function isSecurityAutomationPR(
   }
   return false
 }
-
-/**
- * Retorna true se o PR foi criado pelo Jules (tem uma sessão real escutando comentários).
- *
- * Diferença crítica de `isSecurityAutomationPR`: um PR do Dependabot PURO (rotina, sem passar
- * pelo Jules — ex.: bump de versão de devDependency) É elegível pra automação de segurança
- * (auto-merge etc.), mas NÃO tem sessão do Jules ativa. Comentar `@jules` nesse PR não faz
- * nada — ninguém está escutando. Só um PR que o próprio Jules abriu tem sessão pra reagir a
- * menções. Visto ao vivo: PR #213 (bump de @types/node) travado com CI vermelho, `@jules` seria
- * um comentário no vazio.
- */
-export function hasActiveJulesSession(pr: { body?: string | null }): boolean {
-  return (pr.body ?? '').includes('PR created automatically by Jules')
-}
