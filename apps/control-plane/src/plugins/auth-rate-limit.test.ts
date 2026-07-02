@@ -23,8 +23,8 @@ describe('Auth & Rate Limit Interaction', () => {
     app = Fastify()
     // Register global rate limit
     await app.register(rateLimit, {
-        max: 100,
-        timeWindow: '1 minute'
+      max: 100,
+      timeWindow: '1 minute',
     })
     // Register auth plugin
     await app.register(authPlugin)
