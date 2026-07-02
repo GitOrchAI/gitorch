@@ -8,9 +8,14 @@
 import { Octokit } from '@octokit/rest'
 import { OpenRouterClient, createOpenRouterClientFromEnv } from './lib/openrouter-client.js'
 import { isSecurityAutomationPR } from './lib/pr-eligibility.js'
+import { isWithinCooldown } from './lib/notification-cooldown.js'
 import { z } from 'zod'
 import { execSync } from 'child_process'
 import * as fs from 'fs'
+
+// Marcador estável para identificar comentários de notificação de conflito (permite checar
+// cooldown sem depender de heurística de texto frágil como "autor == loureng e menciona @jules").
+export const CONFLICT_NOTIFICATION_MARKER = '<!-- jules-conflict-notification -->'
 
 // Types
 const ConflictFileSchema = z.object({
@@ -516,15 +521,35 @@ function generateFallbackComment(conflicts: ConflictFile[]): string {
 }
 
 /**
- * Posts comment to PR and adds label
+ * Posts comment to PR and adds label. Respeita um cooldown mínimo entre avisos — sem isso,
+ * cada trigger (push na main, commit do Jules) posta um comentário `@jules` NOVO e completo
+ * de imediato, bombardeando o Jules e impedindo que ele termine uma tentativa antes de ser
+ * interrompido de novo (visto ao vivo: 70 comentários no PR #202 em <24h).
+ *
+ * Retorna true se postou, false se pulou por estar em cooldown.
  */
 export async function postConflictResolutionComment(
   octokit: Octokit,
   owner: string,
   repo: string,
   prNumber: number,
-  comment: string
-): Promise<void> {
+  comment: string,
+  cooldownMinutes = 20
+): Promise<boolean> {
+  const existing = await octokit.rest.issues.listComments({
+    owner,
+    repo,
+    issue_number: prNumber,
+    per_page: 100,
+  })
+
+  if (isWithinCooldown(existing.data, CONFLICT_NOTIFICATION_MARKER, cooldownMinutes)) {
+    console.log(
+      `PR #${prNumber}: último aviso @jules foi há menos de ${cooldownMinutes}min. Pulando (evita bombardeio).`
+    )
+    return false
+  }
+
   // Ensure label exists
   await octokit.rest.issues
     .createLabel({
@@ -541,7 +566,7 @@ export async function postConflictResolutionComment(
     owner,
     repo,
     issue_number: prNumber,
-    body: comment,
+    body: `${CONFLICT_NOTIFICATION_MARKER}\n${comment}`,
   })
 
   // Add label
@@ -553,6 +578,7 @@ export async function postConflictResolutionComment(
   })
 
   console.log(`Posted conflict resolution comment on PR #${prNumber}`)
+  return true
 }
 
 // CLI entry point
@@ -572,6 +598,7 @@ async function main() {
 
   const octokit = new Octokit({ auth: githubToken })
   const llmClient = env['OPENROUTER_API_KEY'] ? createOpenRouterClientFromEnv() : null
+  const cooldownMinutes = parseInt(env['CONFLICT_NOTIFICATION_COOLDOWN_MIN'] || '20', 10)
 
   if (prNumber) {
     // Só age em PR desta automação de segurança (Dependabot/Jules).
@@ -581,8 +608,15 @@ async function main() {
     }
     const analysis = await analyzeConflicts(octokit, owner, repo, prNumber, llmClient)
     if (analysis.hasConflicts) {
-      await postConflictResolutionComment(octokit, owner, repo, prNumber, analysis.comment)
-      console.log('Conflict analysis complete. Comment posted.')
+      const posted = await postConflictResolutionComment(
+        octokit,
+        owner,
+        repo,
+        prNumber,
+        analysis.comment,
+        cooldownMinutes
+      )
+      console.log(posted ? 'Conflict analysis complete. Comment posted.' : 'Skipped (cooldown).')
     } else {
       console.log('No conflicts detected.')
     }
@@ -606,7 +640,14 @@ async function main() {
       try {
         const analysis = await analyzeConflicts(octokit, owner, repo, pr.number, llmClient)
         if (analysis.hasConflicts) {
-          await postConflictResolutionComment(octokit, owner, repo, pr.number, analysis.comment)
+          await postConflictResolutionComment(
+            octokit,
+            owner,
+            repo,
+            pr.number,
+            analysis.comment,
+            cooldownMinutes
+          )
         } else if (
           pr.labels.some((l) => (typeof l === 'string' ? l : l.name) === 'jules-conflict-notified')
         ) {
