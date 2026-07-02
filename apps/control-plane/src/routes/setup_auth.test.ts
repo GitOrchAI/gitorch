@@ -1,5 +1,5 @@
 import { test, expect, describe, vi, beforeEach } from 'vitest'
-import Fastify, { FastifyRequest } from 'fastify'
+import Fastify from 'fastify'
 import { loadEnv } from '../config/env.js'
 import { registerPlugins } from '../plugins/index.js'
 import { setupRoutes } from './setup.js'
@@ -17,13 +17,10 @@ describe('Setup and Auth Integration', () => {
     await projectRoutes(app)
 
     // Mock authentication for setup/submit (which requires a user session)
-    app.addHook('onRequest', async (req: FastifyRequest) => {
+    app.addHook('onRequest', async (req) => {
       if (req.url === '/api/v1/setup/submit') {
-        req.user = {
-          id: 'user_123',
-          wingId: 'owner/repo',
-          githubToken: 'gh_token',
-        } as any
+        // @ts-expect-error - mock user session
+        req.user = { id: 'user_123', githubToken: 'gh_token' }
       }
     })
 
@@ -106,10 +103,9 @@ describe('Setup and Auth Integration', () => {
   })
 
   test('should support legacy SHA256 API keys', async () => {
-    const legacyKey = 'legacy_key_1234567890'
-    const prefix = legacyKey.substring(0, 12)
+    const rawApiKey = 'legacy_key_1234567890'
+    const prefix = rawApiKey.substring(0, 12)
     // Hardcoded SHA256 hash of 'legacy_key_1234567890' to avoid CodeQL alert for insecure hashing in tests
-    // codeql [js/insufficient-password-hash]
     const legacyHash = '308f9e667a3435a334995af0253682150f2273d38f6ca669b5ccad8fba3fd35a'
 
     // Mock Prisma for authentication
@@ -134,7 +130,7 @@ describe('Setup and Auth Integration', () => {
       method: 'GET',
       url: '/api/projects',
       headers: {
-        Authorization: `Bearer ${legacyKey}`,
+        Authorization: `Bearer ${rawApiKey}`,
       },
     })
 

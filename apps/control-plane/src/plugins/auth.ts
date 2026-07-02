@@ -26,7 +26,6 @@ declare module 'fastify' {
   }
 }
 
-// codeql [js/insufficient-password-hash]
 function hashKey(key: string): string {
   return createHash('sha256').update(key).digest('hex')
 }

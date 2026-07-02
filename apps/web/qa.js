@@ -1,6 +1,5 @@
 /* eslint-disable */
 const puppeteer = require('puppeteer');
-
 (async () => {
   console.log('Iniciando Chromium interno para QA...');
   const browser = await puppeteer.launch({ 
