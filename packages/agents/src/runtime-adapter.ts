@@ -9,6 +9,8 @@ export interface RuntimeExecutionRequest {
   prompt: string
   runtime: AgentRuntimeSelection
   credentialRef: RuntimeCredentialRef
+  /** Diretório de trabalho da missão (workspace alocado). */
+  cwd?: string
 }
 
 export interface RuntimeExecutionResult {
@@ -24,6 +26,7 @@ export interface RuntimeCommandRequest {
   binary: string
   args: string[]
   env: Record<string, string>
+  cwd?: string
 }
 
 export interface RuntimeCommandResult {
@@ -42,6 +45,9 @@ export const realRuntimeCommandRunner: RuntimeCommandRunner = async (request) =>
   try {
     const { stdout, stderr } = await execFileAsync(request.binary, request.args, {
       env: { ...process.env, ...request.env },
+      cwd: request.cwd,
+      // Saída de CLIs agênticos pode passar do 1MB default do execFile.
+      maxBuffer: 16 * 1024 * 1024,
     })
     return {
       exitCode: 0,
@@ -97,6 +103,8 @@ export interface CreateCliRuntimeAdapterOptions {
   binary: string
   args?: string[]
   runner?: RuntimeCommandRunner
+  /** Nome da flag de modelo do CLI (ex.: '--model'); quando presente, o modelo da missão vira argumento. */
+  modelArgName?: string
 }
 
 export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions): RuntimeAdapter {
@@ -117,10 +125,16 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
         env['GITORCH_RUNTIME_REASONING'] = request.runtime.reasoning
       }
 
+      const modelArgs =
+        options.modelArgName && request.runtime.model
+          ? [options.modelArgName, request.runtime.model]
+          : []
+
       const result = await runner({
         binary: options.binary,
-        args: [...baseArgs, request.prompt],
+        args: [...baseArgs, ...modelArgs, request.prompt],
         env,
+        cwd: request.cwd,
       })
 
       return {

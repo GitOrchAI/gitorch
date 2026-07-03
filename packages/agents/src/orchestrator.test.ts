@@ -65,7 +65,9 @@ test('runs an agent mission through the selected runtime and records Synapse exe
   })
 
   expect(result.output).toBe('PO normalized issue')
-  expect(mockAllocateWorkspace).toHaveBeenCalledWith('user-default', 'project-1')
+  expect(mockAllocateWorkspace).toHaveBeenCalledWith('user-default', 'project-1', {
+    repository: 'owner/repo',
+  })
   expect(mockHibernateWorkspace).toHaveBeenCalledWith('user-default', 'project-1')
   expect(synapse.events().map((event) => event.type)).toEqual([
     'execution.started',
@@ -109,7 +111,9 @@ test('records Synapse execution as blocked when the mission fails (exitCode != 0
   })
 
   expect(result.output).toBe('')
-  expect(mockAllocateWorkspace).toHaveBeenCalledWith('user-default', 'project-1')
+  expect(mockAllocateWorkspace).toHaveBeenCalledWith('user-default', 'project-1', {
+    repository: 'owner/repo',
+  })
   expect(mockHibernateWorkspace).toHaveBeenCalledWith('user-default', 'project-1')
   const completedEvent = synapse.events().find((event) => event.type === 'execution.completed')
   expect(completedEvent).toBeDefined()
@@ -155,7 +159,9 @@ test('uses an injected workspace provider instead of the default Firecracker man
     userId: 'scheduler-user',
   })
 
-  expect(allocate).toHaveBeenCalledWith('scheduler-user', 'project-1')
+  expect(allocate).toHaveBeenCalledWith('scheduler-user', 'project-1', {
+    repository: 'owner/repo',
+  })
   expect(hibernate).toHaveBeenCalledWith('scheduler-user', 'project-1')
   expect(mockAllocateWorkspace).not.toHaveBeenCalled()
   expect(mockHibernateWorkspace).not.toHaveBeenCalled()

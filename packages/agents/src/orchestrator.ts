@@ -2,8 +2,16 @@ import { SynapseClient, type SynapseActor, type SynapseScope } from '@gitorch/sy
 import { buildAgentMission, type BuildAgentMissionInput, workspaceManager } from './agent-mission'
 import type { RuntimeExecutionResult, RuntimeRegistry } from './runtime-adapter'
 
+export interface WorkspaceAllocation {
+  path?: string
+}
+
 export interface WorkspaceProvider {
-  allocateWorkspace(userId: string, projectId: string): Promise<unknown>
+  allocateWorkspace(
+    userId: string,
+    projectId: string,
+    options?: { repository?: string }
+  ): Promise<WorkspaceAllocation | unknown>
   hibernateWorkspace(userId: string, projectId: string): Promise<unknown>
 }
 
@@ -43,7 +51,9 @@ export class AgentOrchestrator {
     })
 
     const userId = mission.userId ?? 'user-default'
-    await this.workspace.allocateWorkspace(userId, mission.projectId)
+    const allocation = (await this.workspace.allocateWorkspace(userId, mission.projectId, {
+      repository: mission.repository,
+    })) as WorkspaceAllocation | undefined
 
     let result: RuntimeExecutionResult
     try {
@@ -53,6 +63,7 @@ export class AgentOrchestrator {
         prompt: mission.prompt,
         runtime: mission.runtime,
         credentialRef: mission.credentialRef,
+        cwd: allocation?.path,
       })
     } finally {
       await this.workspace.hibernateWorkspace(userId, mission.projectId)

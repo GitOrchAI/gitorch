@@ -25,8 +25,9 @@ const MAX_MISSIONS_PER_DAY = Number(process.env['GITORCH_MAX_MISSIONS_PER_DAY'] 
 const STALE_RUNNING_MS = Number(
   process.env['GITORCH_STALE_RUNNING_MS'] ?? String(2 * 60 * 60 * 1000)
 )
-const MODEL_FLASH = process.env['GITORCH_MODEL_FLASH'] ?? 'gemini-2.5-flash'
-const MODEL_PRO = process.env['GITORCH_MODEL_PRO'] ?? 'gemini-3.1-pro-preview'
+// Nomes de modelo do Antigravity CLI (agy models) — plano de ignição 2026-07-02.
+const MODEL_FLASH = process.env['GITORCH_MODEL_FLASH'] ?? 'Gemini 3.5 Flash (Medium)'
+const MODEL_PRO = process.env['GITORCH_MODEL_PRO'] ?? 'Gemini 3.1 Pro (Low)'
 
 // PO decide (modelo forte); RA/SM/QA analisam (modelo rápido) — plano de ignição 2026-07-02.
 const MODEL_BY_ROLE: Record<F6AgentRole, string> = {
@@ -50,15 +51,32 @@ function buildWorkspaceProvider(app: FastifyInstance): WorkspaceProvider {
 const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   const registry = new RuntimeRegistry()
 
-  // Motor principal: Antigravity via API Gemini (o SDK/CLI não roda headless nesta VM).
-  registry.register(
-    createPythonSdkRuntimeAdapter({
-      runtime: 'antigravity',
-      scriptPath: runtimeScriptPath,
-    })
-  )
+  // Motor principal: Antigravity CLI autenticado por OAuth (diretriz do owner
+  // 2026-07-03: todos os motores logam por OAuth, nunca por chave de API).
+  // GITORCH_ANTIGRAVITY_MODE=api mantém a ponte REST apenas para diagnóstico.
+  if (process.env['GITORCH_ANTIGRAVITY_MODE'] === 'api') {
+    registry.register(
+      createPythonSdkRuntimeAdapter({
+        runtime: 'antigravity',
+        scriptPath: runtimeScriptPath,
+      })
+    )
+  } else {
+    // Sem flags que desliguem aprovações de ferramenta: o modo --print roda
+    // leitura/análise sem prompts. Flags extras (ex.: --sandbox) só entram por
+    // decisão explícita do owner via GITORCH_AGY_EXTRA_ARGS.
+    const agyExtraArgs = (process.env['GITORCH_AGY_EXTRA_ARGS'] ?? '').split(' ').filter(Boolean)
+    registry.register(
+      createCliRuntimeAdapter({
+        runtime: 'antigravity',
+        binary: process.env['GITORCH_AGY_BIN'] ?? '/home/ubuntu/.local/bin/agy',
+        args: ['--print', ...agyExtraArgs],
+        modelArgName: '--model',
+      })
+    )
+  }
 
-  // Fallback declarado: Codex CLI (exige `codex login` prévio na VM).
+  // Fallback declarado: Codex CLI via OAuth (exige `codex login` prévio na VM).
   registry.register(
     createCliRuntimeAdapter({
       runtime: 'codex',
