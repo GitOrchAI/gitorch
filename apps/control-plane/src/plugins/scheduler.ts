@@ -90,12 +90,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     )
   }
 
-  // Fallback declarado: Codex CLI via OAuth (exige `codex login` prévio na VM).
+  // Fallback declarado: Codex CLI via OAuth (login concluído na VM em 03/07).
+  // Flags validadas em QA real headless 2026-07-03: sandbox só-leitura
+  // (auto-executa ferramentas de leitura sem TTY) e sem exigir que o cwd seja
+  // repo git; o diretório da missão chega pelo cwd do runner (request.cwd).
   registry.register(
     createCliRuntimeAdapter({
       runtime: 'codex',
       binary: 'codex',
-      args: ['exec'],
+      args: ['exec', '-s', 'read-only', '--skip-git-repo-check'],
     })
   )
 

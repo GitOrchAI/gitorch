@@ -4,8 +4,11 @@
 #  (a) missão em "running" há mais de 2h  -> alerta
 #  (b) >3 reinicializações de serviço gitorch na última hora -> alerta
 #  (c) heartbeat diário "estou vivo" -> a ausência dele é, por si, sinal de problema
-# Alertas via Telegram quando TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID existem;
-# sempre registra no journal (stdout/stderr do serviço).
+# Alertas via Telegram pelo bot do GitOrch (@GitOrchAI_bot): usa
+# GITORCH_TELEGRAM_BOT_TOKEN + GITORCH_TELEGRAM_CHAT_ID (cai para os nomes sem
+# prefixo por compatibilidade). Sempre registra no journal (stdout/stderr).
+# Obs.: o destinatário precisa ter apertado "Iniciar" no bot uma vez, senão o
+# Telegram recusa com "chat not found".
 
 set -u
 
@@ -20,8 +23,12 @@ getenv() {
     | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/"
 }
 
-TELEGRAM_BOT_TOKEN="$(getenv TELEGRAM_BOT_TOKEN)"
-TELEGRAM_CHAT_ID="$(getenv TELEGRAM_CHAT_ID)"
+# Prefere as variáveis do GitOrch; o TELEGRAM_BOT_TOKEN sem prefixo pertence a
+# outro sistema (OpenClaw) e não deve ser usado para alertar o CEO.
+TELEGRAM_BOT_TOKEN="$(getenv GITORCH_TELEGRAM_BOT_TOKEN)"
+[ -z "$TELEGRAM_BOT_TOKEN" ] && TELEGRAM_BOT_TOKEN="$(getenv TELEGRAM_BOT_TOKEN)"
+TELEGRAM_CHAT_ID="$(getenv GITORCH_TELEGRAM_CHAT_ID)"
+[ -z "$TELEGRAM_CHAT_ID" ] && TELEGRAM_CHAT_ID="$(getenv TELEGRAM_CHAT_ID)"
 DATABASE_URL="$(getenv DATABASE_URL)"
 
 alert() {
