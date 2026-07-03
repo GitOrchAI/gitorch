@@ -3,8 +3,8 @@
 Antigravity runtime runner for headless use.
 
 Chama a API Gemini (generativelanguage.googleapis.com) diretamente via REST,
-sem dependências externas. Substitui o SDK google-antigravity, cujo binário
-localharness exige glibc 2.36+ (indisponível nesta VM Ubuntu 22.04 / glibc 2.35).
+sem dependências externas. Alternativa ao SDK google-antigravity para hosts
+cuja glibc é anterior à exigida pelo binário localharness do SDK (2.36+).
 
 Chamado pelo Node.js via createPythonSdkRuntimeAdapter em
 packages/agents/src/runtime-adapter.ts.

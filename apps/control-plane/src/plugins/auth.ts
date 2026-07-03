@@ -32,6 +32,14 @@ function hashKeySHA256(key: string): string {
   return createHash('sha256').update(key).digest('hex')
 }
 
+// Erro de autenticação deve responder 401, não 500: o statusCode é honrado
+// pelo error handler padrão do Fastify.
+function unauthorized(message: string): Error {
+  const error = new Error(message) as Error & { statusCode: number }
+  error.statusCode = 401
+  return error
+}
+
 const authPluginImpl: FastifyPluginAsync = async (app) => {
   // Register a dedicated rate limiter for auth endpoints to protect expensive auth logic from DoS.
   // This uses a stricter limit (20 req/min) than the global default.
@@ -61,13 +69,13 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
     ]
     if (publicPaths.some((p) => request.url.startsWith(p))) return
 
-    // Explicitly call rate limit before expensive auth logic
-    // @ts-ignore - rateLimit is added by @fastify/rate-limit plugin
-    await request.rateLimit()
+    // A limitação de taxa já é aplicada pelo @fastify/rate-limit registrado
+    // acima (hook preHandler, registrado antes deste): ela roda antes da
+    // lógica cara de bcrypt/JWT. `request.rateLimit()` não é API do plugin.
 
     const authHeader = request.headers.authorization
     if (!authHeader?.startsWith('Bearer ')) {
-      throw new Error('UNAUTHORIZED: Missing or invalid Authorization header')
+      throw unauthorized('UNAUTHORIZED: Missing or invalid Authorization header')
     }
 
     const key = authHeader.slice(7) // Remove "Bearer "
@@ -95,7 +103,7 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
         wingIdContext.run({ wingId: decoded.wingId }, () => {})
         return
       } catch (err) {
-        throw new Error('UNAUTHORIZED: Invalid or expired JWT session')
+        throw unauthorized('UNAUTHORIZED: Invalid or expired JWT session')
       }
     }
 
@@ -125,7 +133,7 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
     }
 
     if (!apiKey || !apiKey.project.isActive) {
-      throw new Error('UNAUTHORIZED: Invalid or revoked API key')
+      throw unauthorized('UNAUTHORIZED: Invalid or revoked API key')
     }
 
     // Verify key hash (supports bcrypt and legacy sha256)
@@ -136,11 +144,11 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
       : hashKeySHA256(key) === apiKey.keyHash
 
     if (!isValid) {
-      throw new Error('UNAUTHORIZED: Invalid or revoked API key')
+      throw unauthorized('UNAUTHORIZED: Invalid or revoked API key')
     }
 
     if (apiKey.expiresAt && new Date(apiKey.expiresAt) < new Date()) {
-      throw new Error('UNAUTHORIZED: API key expired')
+      throw unauthorized('UNAUTHORIZED: API key expired')
     }
 
     // Update last used

@@ -1,5 +1,6 @@
 import { test, expect, describe, vi, beforeEach } from 'vitest'
-import Fastify, { FastifyRequest } from 'fastify'
+import Fastify from 'fastify'
+import jwt from 'jsonwebtoken'
 import { loadEnv } from '../config/env.js'
 import { registerPlugins } from '../plugins/index.js'
 import { missionRoutes } from './missions.js'
@@ -7,6 +8,7 @@ import { eventRoutes } from './events.js'
 
 describe('Mission and Event Routes', () => {
   let app: ReturnType<typeof Fastify>
+  let authHeaders: { authorization: string }
 
   beforeEach(async () => {
     app = Fastify()
@@ -15,11 +17,10 @@ describe('Mission and Event Routes', () => {
     await missionRoutes(app)
     await eventRoutes(app)
 
-    app.addHook('onRequest', async (req: FastifyRequest) => {
-      // @ts-expect-error - mock authentication
-      req.user = { wingId: 'wing_123', projectId: 'proj_456' }
-      req.wingId = 'wing_123'
-    })
+    // Autentica pelo fluxo real (JWT assinado com o segredo do ambiente):
+    // o hook de auth é global e rejeita requisições sem Bearer válido.
+    const token = jwt.sign({ userId: 'user_123', wingId: 'wing_123' }, env.JWT_SECRET)
+    authHeaders = { authorization: `Bearer ${token}` }
 
     await app.ready()
   })
@@ -39,6 +40,7 @@ describe('Mission and Event Routes', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/missions/trigger',
+      headers: authHeaders,
       payload: { projectId: 'proj_456', type: 'sync', payload: {} },
     })
 
@@ -54,6 +56,7 @@ describe('Mission and Event Routes', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/missions/agent-run',
+      headers: authHeaders,
       payload: { role: 'ra' },
     })
 
@@ -69,6 +72,7 @@ describe('Mission and Event Routes', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/missions/agent-run',
+      headers: authHeaders,
       payload: { role: 'ra' },
     })
 
@@ -83,10 +87,21 @@ describe('Mission and Event Routes', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/missions/agent-run',
+      headers: authHeaders,
       payload: { role: 'hacker' },
     })
 
     expect(res.statusCode).toBe(400)
     expect(trigger).not.toHaveBeenCalled()
+  })
+
+  test('rejects requests without authentication with 401', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/missions/agent-run',
+      payload: { role: 'ra' },
+    })
+
+    expect(res.statusCode).toBe(401)
   })
 })

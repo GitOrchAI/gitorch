@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # GitOrch Watchdog — roda a cada 15 min via systemd timer.
-# Regras (design doc 2026-07-03):
+# Regras:
 #  (a) missão em "running" há mais de 2h  -> alerta
 #  (b) >3 reinicializações de serviço gitorch na última hora -> alerta
 #  (c) heartbeat diário "estou vivo" -> a ausência dele é, por si, sinal de problema
-# Alertas via Telegram pelo bot do GitOrch (@GitOrchAI_bot): usa
-# GITORCH_TELEGRAM_BOT_TOKEN + GITORCH_TELEGRAM_CHAT_ID (cai para os nomes sem
-# prefixo por compatibilidade). Sempre registra no journal (stdout/stderr).
-# Obs.: o destinatário precisa ter apertado "Iniciar" no bot uma vez, senão o
-# Telegram recusa com "chat not found".
+# Alertas via Telegram: usa GITORCH_TELEGRAM_BOT_TOKEN + GITORCH_TELEGRAM_CHAT_ID
+# (cai para os nomes sem prefixo por compatibilidade). Sempre registra no
+# journal (stdout/stderr). Obs.: o destinatário precisa ter iniciado conversa
+# com o bot uma vez, senão o Telegram recusa com "chat not found".
 
 set -u
 
-ENV_FILE="/home/ubuntu/projects/gitorch/.env"
+# Caminho do .env do control plane; sobrescrevível por ambiente na unit.
+ENV_FILE="${GITORCH_ENV_FILE:-/home/ubuntu/projects/gitorch/.env}"
 STATE_DIR="/var/lib/gitorch/logs"
 HEARTBEAT_FILE="$STATE_DIR/watchdog-heartbeat"
 mkdir -p "$STATE_DIR"
@@ -23,8 +23,8 @@ getenv() {
     | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/"
 }
 
-# Prefere as variáveis do GitOrch; o TELEGRAM_BOT_TOKEN sem prefixo pertence a
-# outro sistema (OpenClaw) e não deve ser usado para alertar o CEO.
+# Prefere as variáveis com prefixo GITORCH_; os nomes sem prefixo são aceitos
+# apenas como retrocompatibilidade.
 TELEGRAM_BOT_TOKEN="$(getenv GITORCH_TELEGRAM_BOT_TOKEN)"
 [ -z "$TELEGRAM_BOT_TOKEN" ] && TELEGRAM_BOT_TOKEN="$(getenv TELEGRAM_BOT_TOKEN)"
 TELEGRAM_CHAT_ID="$(getenv GITORCH_TELEGRAM_CHAT_ID)"

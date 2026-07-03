@@ -54,8 +54,8 @@ export function buildChildProcessEnv(extra: Record<string, string>): Record<stri
     'TMPDIR',
     'XDG_CONFIG_HOME',
     'XDG_CACHE_HOME',
-    // Sem XDG_RUNTIME_DIR o agy trava para sempre esperando o socket do seu
-    // language-server interno (QA real 2026-07-03: unix_stream_data_wait, 0% CPU).
+    // Necessário para CLIs que abrem socket de serviço interno (ex.: o
+    // language-server do Antigravity CLI bloqueia na ausência desta variável).
     'XDG_RUNTIME_DIR',
   ]
   const base: Record<string, string> = {}
@@ -91,13 +91,13 @@ export const realRuntimeCommandRunner: RuntimeCommandRunner = async (request) =>
       cwd: request.cwd,
       // Saída de CLIs agênticos pode passar do 1MB default do execFile.
       maxBuffer: 16 * 1024 * 1024,
-      // Processo pendurado é morto (SIGKILL) para não segurar RAM da VM.
+      // Processo pendurado é morto (SIGKILL) para não reter memória do host.
       timeout: request.timeoutMs,
       killSignal: 'SIGKILL',
     })
-    // O agy em --print lê o stdin antes de iniciar; com o pipe do Node aberto
-    // ele espera para sempre (QA real 2026-07-03: fd 0 preso em
-    // unix_stream_data_wait, log interno vazio). Fechar o stdin sinaliza EOF.
+    // CLIs agênticos em modo não-interativo leem o stdin até o EOF antes de
+    // iniciar; o execFile mantém o pipe aberto, o que bloquearia o processo
+    // indefinidamente. Fechar o stdin sinaliza o EOF imediatamente.
     pending.child.stdin?.end()
     const { stdout, stderr } = await pending
     return {
