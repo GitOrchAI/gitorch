@@ -20,7 +20,7 @@ export interface SchedulerOptions {
   // Empty options type
 }
 
-// Guardas operacionais (design doc 2026-07-03): orçamento de tokens e RAM da VM.
+// Guardas operacionais: orçamento diário de missões e proteção de memória do host.
 const MAX_MISSIONS_PER_DAY = Number(process.env['GITORCH_MAX_MISSIONS_PER_DAY'] ?? '4')
 const STALE_RUNNING_MS = Number(
   process.env['GITORCH_STALE_RUNNING_MS'] ?? String(2 * 60 * 60 * 1000)
@@ -35,11 +35,11 @@ interface TriggerResult {
   missionId?: string
   reason?: string
 }
-// Nomes de modelo do Antigravity CLI (agy models) — plano de ignição 2026-07-02.
+// Nomes de modelo aceitos pelo Antigravity CLI (ver `agy models`); configuráveis por ambiente.
 const MODEL_FLASH = process.env['GITORCH_MODEL_FLASH'] ?? 'Gemini 3.5 Flash (Medium)'
 const MODEL_PRO = process.env['GITORCH_MODEL_PRO'] ?? 'Gemini 3.1 Pro (Low)'
 
-// PO decide (modelo forte); RA/SM/QA analisam (modelo rápido) — plano de ignição 2026-07-02.
+// PO decide (modelo forte); RA/SM/QA analisam (modelo rápido).
 const MODEL_BY_ROLE: Record<F6AgentRole, string> = {
   po: MODEL_PRO,
   ra: MODEL_FLASH,
@@ -53,7 +53,7 @@ function buildWorkspaceProvider(app: FastifyInstance): WorkspaceProvider {
     app.log.info('[Scheduler] Executor: firecracker (MicroVM por tenant)')
     return new WorkspaceManager()
   }
-  // Default: esta VM não tem /dev/kvm, então Firecracker é inviável aqui.
+  // Default para hosts sem /dev/kvm, onde MicroVM (Firecracker) não é viável.
   app.log.info('[Scheduler] Executor: local-process (sem MicroVM; single-tenant)')
   return new LocalWorkspaceProvider()
 }
@@ -61,8 +61,8 @@ function buildWorkspaceProvider(app: FastifyInstance): WorkspaceProvider {
 const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   const registry = new RuntimeRegistry()
 
-  // Motor principal: Antigravity CLI autenticado por OAuth (diretriz do owner
-  // 2026-07-03: todos os motores logam por OAuth, nunca por chave de API).
+  // Motor principal: Antigravity CLI. Política do projeto: runtimes de agente
+  // autenticam por OAuth (nunca por chave de API embutida no ambiente).
   // GITORCH_ANTIGRAVITY_MODE=api mantém a ponte REST apenas para diagnóstico.
   if (process.env['GITORCH_ANTIGRAVITY_MODE'] === 'api') {
     registry.register(
@@ -75,14 +75,14 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // --print: não-interativo. --sandbox: ADICIONA restrições de terminal e
     // auto-aprova ferramentas DENTRO do sandbox (o oposto de
     // --dangerously-skip-permissions, que desliga aprovações). Sem --sandbox o
-    // modo --print trava no 1º uso de ferramenta esperando aprovação sem TTY
-    // (comprovado em QA 2026-07-03). --print-timeout limita a espera do modelo.
+    // modo --print bloqueia no primeiro uso de ferramenta esperando aprovação
+    // sem TTY. --print-timeout limita a espera pela resposta do modelo.
     const agyExtraArgs = (process.env['GITORCH_AGY_EXTRA_ARGS'] ?? '').split(' ').filter(Boolean)
     const printTimeout = process.env['GITORCH_AGY_PRINT_TIMEOUT'] ?? '20m'
     registry.register(
       createCliRuntimeAdapter({
         runtime: 'antigravity',
-        binary: process.env['GITORCH_AGY_BIN'] ?? '/home/ubuntu/.local/bin/agy',
+        binary: process.env['GITORCH_AGY_BIN'] ?? 'agy',
         args: ['--print', '--sandbox', '--print-timeout', printTimeout, ...agyExtraArgs],
         modelArgName: '--model',
         workspaceDirArgName: '--add-dir',
@@ -90,10 +90,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     )
   }
 
-  // Fallback declarado: Codex CLI via OAuth (login concluído na VM em 03/07).
-  // Flags validadas em QA real headless 2026-07-03: sandbox só-leitura
-  // (auto-executa ferramentas de leitura sem TTY) e sem exigir que o cwd seja
-  // repo git; o diretório da missão chega pelo cwd do runner (request.cwd).
+  // Motor secundário: Codex CLI (OAuth). Sandbox só-leitura auto-executa
+  // ferramentas de leitura sem TTY; --skip-git-repo-check dispensa a exigência
+  // de repo git no cwd. O diretório da missão chega pelo cwd do runner.
   registry.register(
     createCliRuntimeAdapter({
       runtime: 'codex',
@@ -189,7 +188,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       .runMission({
         id: mission.id,
         projectId: project.id,
-        repository: project.wingId, // e.g. loureng/patinhas-3d-crafts
+        repository: project.wingId, // formato owner/repo do GitHub
         role: role,
         goal: `Analyze and coordinate tasks for ${project.name}`,
         context: [],

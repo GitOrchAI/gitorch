@@ -101,8 +101,8 @@ export class LocalWorkspaceProvider {
     }
 
     // Sem clone: falha aqui É falha de missão (workspace vazio geraria análise inútil).
-    // Usa o helper de credencial do gh (git config credential.helper) quando
-    // configurado na VM; repos públicos clonam anonimamente.
+    // Usa o credential helper do git configurado no host quando presente;
+    // repositórios públicos clonam anonimamente.
     // `--` encerra as opções do git: mesmo que `repository` (validado) fluísse
     // como algo parecido com flag, nada depois de `--` é interpretado como
     // opção (defesa contra injeção de argumento de segunda ordem, ex.:
