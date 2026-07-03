@@ -1,12 +1,14 @@
 import { describe, expect, it, beforeEach } from 'vitest'
 import Fastify from 'fastify'
 import { authPlugin } from './auth.js'
+import rateLimit from '@fastify/rate-limit'
 
 describe('Auth Plugin', () => {
   let app: ReturnType<typeof Fastify>
 
   beforeEach(async () => {
     app = Fastify()
+    await app.register(rateLimit)
     await app.register(authPlugin)
     app.get('/api/projects', async () => ({ projects: [] }))
     app.get('/health', async () => ({ status: 'ok' }))
