@@ -21,6 +21,8 @@ export interface BuildAgentMissionInput {
   runtime?: AgentRuntimeSelection
   evidenceRefs?: string[]
   userId?: string
+  /** Mata o processo do agente após N ms (guarda contra missão pendurada). */
+  timeoutMs?: number
 }
 
 export function buildAgentMission(input: BuildAgentMissionInput): AgentMission {

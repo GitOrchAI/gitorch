@@ -15,7 +15,9 @@ HEARTBEAT_FILE="$STATE_DIR/watchdog-heartbeat"
 mkdir -p "$STATE_DIR"
 
 getenv() {
-  grep -E "^$1=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'"
+  # Remove só aspas que envolvem o valor inteiro (não as internas de senhas).
+  grep -E "^$1=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- \
+    | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/"
 }
 
 TELEGRAM_BOT_TOKEN="$(getenv TELEGRAM_BOT_TOKEN)"
@@ -66,9 +68,14 @@ for UNIT in gitorch-control-plane.service; do
     PROBLEMS=1
     continue
   fi
-  RESTARTS=$(journalctl -u "$UNIT" --since "1 hour ago" --no-pager 2>/dev/null | grep -c "Scheduled restart" || true)
-  if [ "${RESTARTS:-0}" -gt 3 ] 2>/dev/null; then
-    alert "serviço ${UNIT} reiniciou ${RESTARTS}x na última hora"
+  # Fonte confiável de restarts: NRestarts do próprio systemd (não depende de
+  # permissão de leitura do journal, que silenciaria o alarme se faltasse).
+  RESTARTS=$(systemctl show "$UNIT" -p NRestarts --value 2>/dev/null || echo "ERR")
+  if [ "$RESTARTS" = "ERR" ] || [ -z "$RESTARTS" ]; then
+    alert "não consegui ler NRestarts de ${UNIT}"
+    PROBLEMS=1
+  elif [ "$RESTARTS" -gt 3 ] 2>/dev/null; then
+    alert "serviço ${UNIT} acumulou ${RESTARTS} reinicializações (NRestarts)"
     PROBLEMS=1
   fi
 done

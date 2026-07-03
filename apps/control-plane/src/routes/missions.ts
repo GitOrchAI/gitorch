@@ -84,8 +84,13 @@ export const missionRoutes = async (app: FastifyInstance): Promise<void> => {
         return reply.code(400).send({ error: `Invalid agent role: ${role}` })
       }
 
-      await app.triggerAgentMission(role)
-      return reply.code(202).send({ triggered: role })
+      // Reflete o resultado real: 202 quando a missão iniciou, 409 quando o
+      // scheduler pulou (ocupado, orçamento, sem projeto). Nunca mascarar skip.
+      const result = await app.triggerAgentMission(role)
+      if (!result.triggered) {
+        return reply.code(409).send({ triggered: false, role, reason: result.reason })
+      }
+      return reply.code(202).send({ triggered: true, role, missionId: result.missionId })
     }
   )
 

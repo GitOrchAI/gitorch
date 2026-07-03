@@ -132,3 +132,37 @@ test('creates cli runtime adapter using realRuntimeCommandRunner by default', as
   expect(result.exitCode).toBe(0)
   expect(result.output.trim()).toBe('hello from adapter')
 })
+
+test('buildChildProcessEnv nunca vaza segredos do control plane para o agente', async () => {
+  const { buildChildProcessEnv } = await import('./runtime-adapter')
+  const prev = {
+    DATABASE_URL: process.env.DATABASE_URL,
+    JWT_SECRET: process.env.JWT_SECRET,
+    TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN,
+  }
+  process.env.DATABASE_URL = 'postgres://secret'
+  process.env.JWT_SECRET = 'super-secret'
+  process.env.TELEGRAM_BOT_TOKEN = 'tg-secret'
+  try {
+    const env = buildChildProcessEnv({ GITORCH_RUNTIME: 'antigravity' })
+    expect(env.DATABASE_URL).toBeUndefined()
+    expect(env.JWT_SECRET).toBeUndefined()
+    expect(env.TELEGRAM_BOT_TOKEN).toBeUndefined()
+    expect(env.GITORCH_RUNTIME).toBe('antigravity')
+    expect(env.PATH).toBe(process.env.PATH)
+  } finally {
+    process.env.DATABASE_URL = prev.DATABASE_URL
+    process.env.JWT_SECRET = prev.JWT_SECRET
+    process.env.TELEGRAM_BOT_TOKEN = prev.TELEGRAM_BOT_TOKEN
+  }
+})
+
+test('runner reporta timeout como exitCode 124, nunca sucesso', async () => {
+  const result = await realRuntimeCommandRunner({
+    binary: 'sleep',
+    args: ['5'],
+    env: {},
+    timeoutMs: 200,
+  })
+  expect(result.exitCode).toBe(124)
+})

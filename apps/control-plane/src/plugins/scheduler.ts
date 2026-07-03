@@ -25,6 +25,16 @@ const MAX_MISSIONS_PER_DAY = Number(process.env['GITORCH_MAX_MISSIONS_PER_DAY'] 
 const STALE_RUNNING_MS = Number(
   process.env['GITORCH_STALE_RUNNING_MS'] ?? String(2 * 60 * 60 * 1000)
 )
+// Missão que fica 'pending' além disso (processo morto antes de iniciar) vira failed.
+const PENDING_TIMEOUT_MS = Number(
+  process.env['GITORCH_PENDING_TIMEOUT_MS'] ?? String(10 * 60 * 1000)
+)
+
+interface TriggerResult {
+  triggered: boolean
+  missionId?: string
+  reason?: string
+}
 // Nomes de modelo do Antigravity CLI (agy models) — plano de ignição 2026-07-02.
 const MODEL_FLASH = process.env['GITORCH_MODEL_FLASH'] ?? 'Gemini 3.5 Flash (Medium)'
 const MODEL_PRO = process.env['GITORCH_MODEL_PRO'] ?? 'Gemini 3.1 Pro (Low)'
@@ -90,131 +100,157 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     workspace: buildWorkspaceProvider(app),
   })
 
-  const failStaleRunningMissions = async (): Promise<void> => {
+  // Missão presa vira failed: cobre 'running' passado de STALE_RUNNING_MS e
+  // 'pending' que nunca chegou a rodar (processo morto entre criar e iniciar).
+  const failStuckMissions = async (): Promise<void> => {
     const staleBefore = new Date(Date.now() - STALE_RUNNING_MS)
-    const stale = await app.prisma.mission.updateMany({
-      where: { status: 'running', startedAt: { lt: staleBefore } },
+    const pendingBefore = new Date(Date.now() - PENDING_TIMEOUT_MS)
+    const stuck = await app.prisma.mission.updateMany({
+      where: {
+        OR: [
+          { status: 'running', startedAt: { lt: staleBefore } },
+          { status: 'pending', createdAt: { lt: pendingBefore } },
+        ],
+      },
       data: {
         status: 'failed',
-        error: `Mission stale: em "running" por mais de ${Math.round(STALE_RUNNING_MS / 60000)} minutos sem concluir`,
+        error: `Mission stuck: presa em running/pending além do limite sem concluir`,
         completedAt: new Date(),
       },
     })
-    if (stale.count > 0) {
-      app.log.warn(`[Scheduler] ${stale.count} missão(ões) travadas marcadas como failed`)
+    if (stuck.count > 0) {
+      app.log.warn(`[Scheduler] ${stuck.count} missão(ões) travadas marcadas como failed`)
     }
   }
 
-  const triggerAgentMission = async (role: F6AgentRole) => {
-    app.log.info(`[Scheduler] Triggering agent mission for role: ${role}`)
-    try {
-      await failStaleRunningMissions()
+  // Serializa disparos no processo: elimina a corrida entre a checagem de
+  // concorrência e a criação da missão (dois POST simultâneos criariam duas).
+  let triggerChain: Promise<TriggerResult> = Promise.resolve({ triggered: false, reason: 'init' })
 
-      // Concorrência 1: a VM tem ~3,6 GB livres; uma missão por vez.
-      const running = await app.prisma.mission.count({ where: { status: 'running' } })
-      if (running > 0) {
-        app.log.warn(`[Scheduler] Missão em andamento; pulando janela de ${role}`)
-        return
-      }
+  const runTrigger = async (role: F6AgentRole): Promise<TriggerResult> => {
+    await failStuckMissions()
 
-      // Orçamento: no máximo N missões/dia por agente (tokens custam créditos).
-      const startOfDay = new Date()
-      startOfDay.setHours(0, 0, 0, 0)
-      const todayCount = await app.prisma.mission.count({
-        where: { type: `agent-run-${role}`, createdAt: { gte: startOfDay } },
-      })
-      if (todayCount >= MAX_MISSIONS_PER_DAY) {
-        app.log.warn(
-          `[Scheduler] Orçamento diário de ${role} atingido (${todayCount}/${MAX_MISSIONS_PER_DAY}); pulando`
-        )
-        return
-      }
+    // Concorrência 1: uma missão ativa (pending OU running) por vez.
+    const active = await app.prisma.mission.count({
+      where: { status: { in: ['pending', 'running'] } },
+    })
+    if (active > 0) {
+      app.log.warn(`[Scheduler] Missão em andamento; pulando janela de ${role}`)
+      return { triggered: false, reason: 'busy' }
+    }
 
-      const project = await app.prisma.project.findFirst({
-        where: { isActive: true },
-      })
+    // Orçamento: no máximo N missões/dia por agente (tokens custam créditos).
+    const startOfDay = new Date()
+    startOfDay.setHours(0, 0, 0, 0)
+    const todayCount = await app.prisma.mission.count({
+      where: { type: `agent-run-${role}`, createdAt: { gte: startOfDay } },
+    })
+    if (todayCount >= MAX_MISSIONS_PER_DAY) {
+      app.log.warn(
+        `[Scheduler] Orçamento diário de ${role} atingido (${todayCount}/${MAX_MISSIONS_PER_DAY}); pulando`
+      )
+      return { triggered: false, reason: 'budget' }
+    }
 
-      if (!project) {
-        app.log.warn('[Scheduler] No active project found to trigger mission')
-        return
-      }
+    const project = await app.prisma.project.findFirst({ where: { isActive: true } })
+    if (!project) {
+      app.log.warn('[Scheduler] No active project found to trigger mission')
+      return { triggered: false, reason: 'no-project' }
+    }
 
-      const mission = await app.prisma.mission.create({
-        data: {
-          projectId: project.id,
-          type: `agent-run-${role}`,
-          status: 'pending',
-          payload: {
-            role,
-            triggeredBy: 'scheduler',
-            runtime: 'antigravity',
-            model: MODEL_BY_ROLE[role],
-          },
+    // Criação atômica já em 'running': fecha a janela de corrida do guard e
+    // garante que a missão sempre tem startedAt (varredura de stale a alcança).
+    const mission = await app.prisma.mission.create({
+      data: {
+        projectId: project.id,
+        type: `agent-run-${role}`,
+        status: 'running',
+        startedAt: new Date(),
+        payload: {
+          role,
+          triggeredBy: 'scheduler',
+          runtime: 'antigravity',
+          model: MODEL_BY_ROLE[role],
         },
+      },
+    })
+
+    app.log.info(`[Scheduler] Mission created in DB: ${mission.id} for role ${role}`)
+
+    // Executa em background; o disparo retorna assim que a missão está registrada.
+    void orchestrator
+      .runMission({
+        id: mission.id,
+        projectId: project.id,
+        repository: project.wingId, // e.g. loureng/patinhas-3d-crafts
+        role: role,
+        goal: `Analyze and coordinate tasks for ${project.name}`,
+        context: [],
+        runtime: { runtime: 'antigravity', model: MODEL_BY_ROLE[role] },
+        credentialRef: {
+          connectionId: `conn-${role}-${Date.now()}`,
+          ownerScope: 'project',
+          runtime: 'antigravity',
+          providedSecrets: [],
+        },
+        userId: 'scheduler-user',
+        timeoutMs: STALE_RUNNING_MS,
       })
-
-      app.log.info(`[Scheduler] Mission created in DB: ${mission.id} for role ${role}`)
-
-      // Execute the mission asynchronously
-      // Since it takes time, we run it in background and catch errors
-      app.prisma.mission
-        .update({
-          where: { id: mission.id },
-          data: { status: 'running', startedAt: new Date() },
+      .then(async (result) => {
+        // Escrita condicional: só grava se a missão ainda está 'running'. Se a
+        // varredura de stale já a marcou 'failed', não sobrescrevemos com sucesso.
+        const updated = await app.prisma.mission.updateMany({
+          where: { id: mission.id, status: 'running' },
+          data: {
+            status: result.exitCode === 0 ? 'completed' : 'failed',
+            completedAt: new Date(),
+            error: result.exitCode === 0 ? null : result.stderr.slice(0, 4000),
+            result: { output: result.output, stderr: result.stderr },
+          },
         })
-        .then(async () => {
-          const result = await orchestrator.runMission({
-            id: mission.id,
-            projectId: project.id,
-            repository: project.wingId, // e.g. loureng/patinhas-3d-crafts
-            role: role,
-            goal: `Analyze and coordinate tasks for ${project.name}`,
-            context: [],
-            runtime: { runtime: 'antigravity', model: MODEL_BY_ROLE[role] },
-            credentialRef: {
-              connectionId: `conn-${role}-${Date.now()}`,
-              ownerScope: 'project',
-              runtime: 'antigravity',
-              providedSecrets: [],
-            },
-            userId: 'scheduler-user',
-          })
-
-          await app.prisma.mission.update({
-            where: { id: mission.id },
-            data: {
-              status: result.exitCode === 0 ? 'completed' : 'failed',
-              completedAt: new Date(),
-              error: result.exitCode === 0 ? null : result.stderr.slice(0, 4000),
-              result: {
-                output: result.output,
-                stderr: result.stderr,
-              },
-            },
-          })
-
+        if (updated.count === 0) {
+          app.log.warn(
+            `[Scheduler] Mission ${mission.id} já não estava 'running' ao concluir (exit ${result.exitCode}); resultado descartado`
+          )
+        } else {
           app.log.info(
             `[Scheduler] Mission completed: ${mission.id} with exitCode: ${result.exitCode}`
           )
-        })
-        .catch(async (err) => {
-          app.log.error(err, `[Scheduler] Failed to execute mission ${mission.id}`)
-          // Nunca mascarar: falha vira status failed com erro legível no banco.
-          try {
-            await app.prisma.mission.update({
-              where: { id: mission.id },
-              data: {
-                status: 'failed',
-                completedAt: new Date(),
-                error: String(err?.stack ?? err).slice(0, 4000),
-              },
-            })
-          } catch (persistErr) {
-            app.log.error(persistErr, `[Scheduler] Failed to persist failure for ${mission.id}`)
-          }
-        })
+        }
+      })
+      .catch(async (err) => {
+        app.log.error(err, `[Scheduler] Failed to execute mission ${mission.id}`)
+        // Nunca mascarar: falha vira status failed com erro legível no banco.
+        try {
+          await app.prisma.mission.updateMany({
+            where: { id: mission.id, status: 'running' },
+            data: {
+              status: 'failed',
+              completedAt: new Date(),
+              error: String(err?.stack ?? err).slice(0, 4000),
+            },
+          })
+        } catch (persistErr) {
+          app.log.error(persistErr, `[Scheduler] Failed to persist failure for ${mission.id}`)
+        }
+      })
+
+    return { triggered: true, missionId: mission.id }
+  }
+
+  const triggerAgentMission = async (role: F6AgentRole): Promise<TriggerResult> => {
+    app.log.info(`[Scheduler] Triggering agent mission for role: ${role}`)
+    // Encadeia os disparos para que nunca rodem concorrentes (guard sem corrida).
+    const result = triggerChain.then(
+      () => runTrigger(role),
+      () => runTrigger(role)
+    )
+    triggerChain = result.catch(() => ({ triggered: false, reason: 'error' }))
+    try {
+      return await result
     } catch (err) {
       app.log.error(err, `[Scheduler] Error triggering agent mission for role ${role}`)
+      return { triggered: false, reason: 'error' }
     }
   }
 
@@ -247,12 +283,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     }
   }
 
-  // Run check loop every minute
-  const intervalId = setInterval(tick, 60 * 1000)
+  // Loop de verificação a cada minuto. Não roda sob teste para não vazar timer
+  // nem disparar missão real contra o Prisma de teste (paridade com under-pressure).
+  const intervalId = process.env['NODE_ENV'] === 'test' ? undefined : setInterval(tick, 60 * 1000)
 
   // Clean up interval on app close
   app.addHook('onClose', async () => {
-    clearInterval(intervalId)
+    if (intervalId) {
+      clearInterval(intervalId)
+    }
   })
 
   // Exposto para rotas administrativas e QA real dispararem missões sob demanda.
@@ -261,7 +300,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
 
 declare module 'fastify' {
   interface FastifyInstance {
-    triggerAgentMission: (role: F6AgentRole) => Promise<void>
+    triggerAgentMission: (role: F6AgentRole) => Promise<TriggerResult>
   }
 }
 

@@ -11,6 +11,8 @@ export interface RuntimeExecutionRequest {
   credentialRef: RuntimeCredentialRef
   /** Diretório de trabalho da missão (workspace alocado). */
   cwd?: string
+  /** Mata o processo do agente após N ms (guarda contra missão pendurada). */
+  timeoutMs?: number
 }
 
 export interface RuntimeExecutionResult {
@@ -27,6 +29,44 @@ export interface RuntimeCommandRequest {
   args: string[]
   env: Record<string, string>
   cwd?: string
+  /** Mata o processo após N ms (evita missão pendurada segurando RAM). */
+  timeoutMs?: number
+}
+
+/**
+ * Ambiente mínimo repassado ao processo do agente.
+ *
+ * NUNCA herdar `process.env` inteiro: o control plane carrega DATABASE_URL,
+ * JWT_SECRET, tokens do GitHub/Telegram etc., e o agente é um CLI dirigido por
+ * modelo operando sobre conteúdo de repositório de terceiros (risco de prompt
+ * injection exfiltrar segredos). Só passamos o essencial para o CLI rodar e
+ * achar suas próprias credenciais OAuth (em ~/.gemini, ~/.codex, ~/.claude).
+ */
+export function buildChildProcessEnv(extra: Record<string, string>): Record<string, string> {
+  const allow = [
+    'PATH',
+    'HOME',
+    'USER',
+    'LOGNAME',
+    'LANG',
+    'LC_ALL',
+    'TERM',
+    'TMPDIR',
+    'XDG_CONFIG_HOME',
+    'XDG_CACHE_HOME',
+  ]
+  const base: Record<string, string> = {}
+  for (const key of allow) {
+    const value = process.env[key]
+    if (value !== undefined) {
+      base[key] = value
+    }
+  }
+  return { ...base, ...extra }
+}
+
+function normalizeExitCode(code: unknown): number {
+  return typeof code === 'number' ? code : 1
 }
 
 export interface RuntimeCommandResult {
@@ -44,10 +84,13 @@ export const realRuntimeCommandRunner: RuntimeCommandRunner = async (request) =>
   const start = Date.now()
   try {
     const { stdout, stderr } = await execFileAsync(request.binary, request.args, {
-      env: { ...process.env, ...request.env },
+      env: buildChildProcessEnv(request.env),
       cwd: request.cwd,
       // Saída de CLIs agênticos pode passar do 1MB default do execFile.
       maxBuffer: 16 * 1024 * 1024,
+      // Processo pendurado é morto (SIGKILL) para não segurar RAM da VM.
+      timeout: request.timeoutMs,
+      killSignal: 'SIGKILL',
     })
     return {
       exitCode: 0,
@@ -56,9 +99,18 @@ export const realRuntimeCommandRunner: RuntimeCommandRunner = async (request) =>
       durationMs: Date.now() - start,
     }
   } catch (error: unknown) {
-    const err = error as { code?: number; stdout?: string; stderr?: string; message?: string }
+    const err = error as {
+      code?: number | string
+      killed?: boolean
+      signal?: string
+      stdout?: string
+      stderr?: string
+      message?: string
+    }
+    // Timeout mata com SIGKILL: reporta como falha explícita, nunca sucesso.
+    const timedOut = err.killed === true || err.signal === 'SIGKILL'
     return {
-      exitCode: err.code || 1,
+      exitCode: timedOut ? 124 : normalizeExitCode(err.code),
       stdout: err.stdout || '',
       stderr: err.stderr || err.message || String(error),
       durationMs: Date.now() - start,
@@ -135,6 +187,7 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
         args: [...baseArgs, ...modelArgs, request.prompt],
         env,
         cwd: request.cwd,
+        timeoutMs: request.timeoutMs,
       })
 
       return {
@@ -186,11 +239,23 @@ export function createPythonSdkRuntimeAdapter(
         args.push('--system-instructions', systemInstructions)
       }
 
-      // API key is passed via environment (GEMINI_API_KEY)
+      // Modo diagnóstico: só as chaves Gemini são repassadas (allowlist), nunca
+      // process.env inteiro. cwd e timeout mantêm paridade com o runner CLI.
+      const geminiEnv: Record<string, string> = { ...env, ANTIGRAVITY_MODEL: model ?? '' }
+      for (const key of ['GEMINI_API_KEY', 'GOOGLE_API_KEY']) {
+        const value = process.env[key]
+        if (value !== undefined) {
+          geminiEnv[key] = value
+        }
+      }
       const start = Date.now()
       try {
         const { stdout, stderr } = await execFileAsync(pythonBinary, args, {
-          env: { ...process.env, ...env, ANTIGRAVITY_MODEL: model ?? '' },
+          env: buildChildProcessEnv(geminiEnv),
+          cwd: request.cwd,
+          maxBuffer: 16 * 1024 * 1024,
+          timeout: request.timeoutMs,
+          killSignal: 'SIGKILL',
         })
         return {
           missionId: request.missionId,
@@ -201,13 +266,21 @@ export function createPythonSdkRuntimeAdapter(
           durationMs: Date.now() - start,
         }
       } catch (error: unknown) {
-        const err = error as { code?: number; stdout?: string; stderr?: string; message?: string }
+        const err = error as {
+          code?: number | string
+          killed?: boolean
+          signal?: string
+          stdout?: string
+          stderr?: string
+          message?: string
+        }
+        const timedOut = err.killed === true || err.signal === 'SIGKILL'
         return {
           missionId: request.missionId,
           runtime: options.runtime,
           output: err.stdout || '',
           stderr: err.stderr || err.message || String(error),
-          exitCode: err.code || 1,
+          exitCode: timedOut ? 124 : normalizeExitCode(err.code),
           durationMs: Date.now() - start,
         }
       }

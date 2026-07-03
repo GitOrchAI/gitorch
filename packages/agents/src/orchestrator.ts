@@ -64,6 +64,7 @@ export class AgentOrchestrator {
         runtime: mission.runtime,
         credentialRef: mission.credentialRef,
         cwd: allocation?.path,
+        timeoutMs: input.timeoutMs,
       })
     } finally {
       await this.workspace.hibernateWorkspace(userId, mission.projectId)

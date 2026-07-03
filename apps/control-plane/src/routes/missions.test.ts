@@ -47,8 +47,8 @@ describe('Mission and Event Routes', () => {
     expect(app.broadcastEvent).toHaveBeenCalled()
   })
 
-  test('POST /api/missions/agent-run triggers the scheduler path for a valid role', async () => {
-    const trigger = vi.fn().mockResolvedValue(undefined)
+  test('POST /api/missions/agent-run returns 202 with missionId when triggered', async () => {
+    const trigger = vi.fn().mockResolvedValue({ triggered: true, missionId: 'mission_9' })
     app.triggerAgentMission = trigger
 
     const res = await app.inject({
@@ -58,12 +58,26 @@ describe('Mission and Event Routes', () => {
     })
 
     expect(res.statusCode).toBe(202)
-    expect(res.json()).toEqual({ triggered: 'ra' })
+    expect(res.json()).toEqual({ triggered: true, role: 'ra', missionId: 'mission_9' })
     expect(trigger).toHaveBeenCalledWith('ra')
   })
 
+  test('POST /api/missions/agent-run returns 409 when the scheduler skips (busy/budget)', async () => {
+    const trigger = vi.fn().mockResolvedValue({ triggered: false, reason: 'busy' })
+    app.triggerAgentMission = trigger
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/missions/agent-run',
+      payload: { role: 'ra' },
+    })
+
+    expect(res.statusCode).toBe(409)
+    expect(res.json()).toEqual({ triggered: false, role: 'ra', reason: 'busy' })
+  })
+
   test('POST /api/missions/agent-run rejects an unknown role', async () => {
-    const trigger = vi.fn().mockResolvedValue(undefined)
+    const trigger = vi.fn().mockResolvedValue({ triggered: false })
     app.triggerAgentMission = trigger
 
     const res = await app.inject({
