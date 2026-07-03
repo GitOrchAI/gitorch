@@ -36,6 +36,11 @@ Diretriz do owner (2026-07-03): **todos os motores autenticam por OAuth**
   é o oposto de `--dangerously-skip-permissions` (que desliga aprovações e não é usado).
 - **Por que `--add-dir <workspace>`**: sem isso o `agy` analisa o "projeto ativo"
   dele (o próprio GitOrch), não o repositório clonado da missão.
+- **Por que fechar o stdin (`child.stdin.end()`)** (comprovado em QA real 2026-07-03,
+  testes A/B/C/D): em `--print` o `agy` lê o stdin antes de começar e espera o EOF.
+  O `execFile` do Node mantém o pipe de stdin aberto, então o processo trava para
+  sempre (`fd 0` em `unix_stream_data_wait`, 0% CPU, log interno vazio). Fechar o
+  stdin manda o EOF e o motor arranca. O runner CLI e o runner Python fazem isso.
 - Prompts de agente são read-only e proibidos de rodar install/build/lint/test
   (lentos, estouram o timeout) — a análise sai da leitura direta do código.
 - Modelos (plano de ignição 2026-07-02): PO = `Gemini 3.1 Pro (Low)`;

@@ -86,7 +86,7 @@ export type RuntimeCommandRunner = (
 export const realRuntimeCommandRunner: RuntimeCommandRunner = async (request) => {
   const start = Date.now()
   try {
-    const { stdout, stderr } = await execFileAsync(request.binary, request.args, {
+    const pending = execFileAsync(request.binary, request.args, {
       env: buildChildProcessEnv(request.env),
       cwd: request.cwd,
       // Saída de CLIs agênticos pode passar do 1MB default do execFile.
@@ -95,6 +95,11 @@ export const realRuntimeCommandRunner: RuntimeCommandRunner = async (request) =>
       timeout: request.timeoutMs,
       killSignal: 'SIGKILL',
     })
+    // O agy em --print lê o stdin antes de iniciar; com o pipe do Node aberto
+    // ele espera para sempre (QA real 2026-07-03: fd 0 preso em
+    // unix_stream_data_wait, log interno vazio). Fechar o stdin sinaliza EOF.
+    pending.child.stdin?.end()
+    const { stdout, stderr } = await pending
     return {
       exitCode: 0,
       stdout,
@@ -262,13 +267,16 @@ export function createPythonSdkRuntimeAdapter(
       }
       const start = Date.now()
       try {
-        const { stdout, stderr } = await execFileAsync(pythonBinary, args, {
+        const pending = execFileAsync(pythonBinary, args, {
           env: buildChildProcessEnv(geminiEnv),
           cwd: request.cwd,
           maxBuffer: 16 * 1024 * 1024,
           timeout: request.timeoutMs,
           killSignal: 'SIGKILL',
         })
+        // Mesmo motivo do runner CLI: stdin aberto = processo esperando EOF.
+        pending.child.stdin?.end()
+        const { stdout, stderr } = await pending
         return {
           missionId: request.missionId,
           runtime: options.runtime,
