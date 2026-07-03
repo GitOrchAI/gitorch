@@ -1,0 +1,150 @@
+import { randomUUID } from 'node:crypto'
+import type {
+  RuntimeCommandRequest,
+  RuntimeCommandResult,
+  RuntimeCommandRunner,
+} from './runtime-adapter.js'
+import { realRuntimeCommandRunner } from './runtime-adapter.js'
+
+export interface PodmanMount {
+  /** Caminho no host. */
+  source: string
+  /** Caminho dentro do container. */
+  target: string
+  /** Somente-leitura. Default true: montagens de credencial nunca são graváveis. */
+  readOnly?: boolean
+}
+
+// Ponto de montagem do workspace e do HOME do agente DENTRO do container.
+// HOME fica FORA do workspace: caches/tokens que o CLI escreve no HOME não
+// podem cair no repositório clonado (e vazar em um git add posterior).
+const CONTAINER_WORKSPACE = '/workspace'
+const CONTAINER_HOME = '/home/agent'
+
+export interface CreatePodmanCommandRunnerOptions {
+  /** Imagem OCI usada para rodar a missão. */
+  image: string
+  /** Binário do motor de containers no host (podman ou docker). */
+  podmanBinary?: string
+  /**
+   * Mapeamento de usuário. 'keep-id' (default) é do podman rootless: arquivos
+   * do workspace ficam legíveis pelo host. Para docker, passar false.
+   */
+  userNamespace?: string | false
+  /**
+   * Montagens adicionais (ex.: credenciais OAuth). São somente-leitura a menos
+   * que readOnly=false explícito — conteúdo de repositório de terceiros dirige
+   * o CLI (prompt injection), então nada montado é gravável sem intenção.
+   */
+  mounts?: PodmanMount[]
+  /** Limite de memória do container (formato do podman, ex.: '2g'). */
+  memoryLimit?: string
+  /** Limite de processos dentro do container. */
+  pidsLimit?: number
+  /** Runner usado para executar o podman em si (injetável para teste). */
+  hostRunner?: RuntimeCommandRunner
+}
+
+/**
+ * Envolve a execução de um CLI de agente em um container descartável.
+ *
+ * Isolamento pretendido: o processo do agente enxerga SOMENTE o workspace da
+ * missão (montado em /workspace) e as montagens explícitas — nunca o sistema
+ * de arquivos do host, o .env do control plane ou credenciais de outros
+ * usuários. O ambiente é passado explicitamente; nada do host vaza por padrão.
+ */
+export function createPodmanCommandRunner(
+  options: CreatePodmanCommandRunnerOptions
+): RuntimeCommandRunner {
+  const podmanBinary = options.podmanBinary ?? 'podman'
+  const hostRunner = options.hostRunner ?? realRuntimeCommandRunner
+
+  return async (request: RuntimeCommandRequest): Promise<RuntimeCommandResult> => {
+    const userNamespace = options.userNamespace ?? 'keep-id'
+    // Nome fixo por execução: permite matar o container se o cliente podman for
+    // morto por timeout (senão o agente segue rodando órfão, segurando RAM).
+    const containerName = `gitorch-mission-${randomUUID()}`
+
+    const args: string[] = [
+      'run',
+      '--rm',
+      '--name',
+      containerName,
+      // Mapeia o usuário do host para o mesmo uid dentro do container: os
+      // arquivos criados no workspace continuam legíveis pelo host (rootless).
+      ...(userNamespace ? [`--userns=${userNamespace}`] : []),
+      '--memory',
+      options.memoryLimit ?? '2g',
+      '--pids-limit',
+      String(options.pidsLimit ?? 512),
+      // Diretório de runtime gravável para CLIs que abrem sockets locais.
+      '--tmpfs',
+      '/tmp:rw,exec',
+      // HOME gravável e efêmero, FORA do workspace.
+      '--tmpfs',
+      `${CONTAINER_HOME}:rw,exec`,
+      '-e',
+      `HOME=${CONTAINER_HOME}`,
+      '-e',
+      'XDG_RUNTIME_DIR=/tmp',
+      '-w',
+      CONTAINER_WORKSPACE,
+    ]
+
+    if (request.cwd) {
+      args.push('-v', `${request.cwd}:${CONTAINER_WORKSPACE}:rw`)
+    }
+
+    for (const mount of options.mounts ?? []) {
+      const mode = mount.readOnly === false ? 'rw' : 'ro'
+      args.push('-v', `${mount.source}:${mount.target}:${mode}`)
+    }
+
+    // Ambiente explícito da missão (identificadores GITORCH_*, modelo etc.).
+    for (const [key, value] of Object.entries(request.env)) {
+      args.push('-e', `${key}=${value}`)
+    }
+
+    // Argumentos que referenciam o caminho do workspace NO HOST (ex.: a flag
+    // de diretório do CLI) são traduzidos para o caminho DENTRO do container,
+    // cobrindo tanto a forma exata quanto subcaminhos (`${cwd}/x`).
+    const translatedArgs = request.cwd
+      ? request.args.map((arg) => translateWorkspacePath(arg, request.cwd as string))
+      : request.args
+
+    args.push(options.image, request.binary, ...translatedArgs)
+
+    const result = await hostRunner({
+      binary: podmanBinary,
+      args,
+      // O ambiente do processo `podman` no host segue o allowlist padrão;
+      // o ambiente DENTRO do container é somente o passado via -e acima.
+      env: {},
+      timeoutMs: request.timeoutMs,
+    })
+
+    // Timeout (exit 124) mata só o cliente podman no host; o container pode
+    // seguir vivo sob o conmon. Removê-lo à força libera RAM e o workspace.
+    if (result.exitCode === 124) {
+      try {
+        await hostRunner({ binary: podmanBinary, args: ['rm', '-f', containerName], env: {} })
+      } catch {
+        // cleanup best-effort: o container pode já ter saído
+      }
+    }
+
+    return result
+  }
+}
+
+/**
+ * Traduz um caminho do host para o caminho dentro do container quando ele é o
+ * workspace da missão ou um subcaminho dele.
+ */
+function translateWorkspacePath(arg: string, hostCwd: string): string {
+  if (arg === hostCwd) return CONTAINER_WORKSPACE
+  if (arg.startsWith(`${hostCwd}/`)) {
+    return `${CONTAINER_WORKSPACE}${arg.slice(hostCwd.length)}`
+  }
+  return arg
+}

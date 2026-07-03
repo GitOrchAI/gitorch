@@ -7,6 +7,65 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// Tenant: a pessoa/conta dona de N projetos. As credenciais de motor são do
+// usuário (EngineConnection) e herdadas por todos os projetos dele.
+model User {
+  id          String   @id @default(cuid())
+  email       String   @unique
+  name        String?
+  githubLogin String?  @unique @map("github_login")
+  isActive    Boolean  @default(true) @map("is_active")
+
+  planId      String   @default("free") @map("plan_id")
+  plan        Plan     @relation(fields: [planId], references: [id])
+
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  projects          Project[]
+  engineConnections EngineConnection[]
+
+  @@map("users")
+}
+
+// Plano é dado configurável (limites), não código. Valores/precificação são
+// definidos fora do schema; aqui vivem apenas os limites operacionais.
+model Plan {
+  id                String  @id
+  name              String
+  maxProjects       Int     @map("max_projects")
+  maxMissionsPerDay Int     @map("max_missions_per_day")
+  isActive          Boolean @default(true) @map("is_active")
+
+  users User[]
+
+  @@map("plans")
+}
+
+// Conexão OAuth de um motor (runtime) pertencente ao usuário. A credencial é
+// armazenada cifrada (nunca em texto puro) e montada apenas no ambiente
+// isolado das missões do próprio usuário.
+model EngineConnection {
+  id     String @id @default(cuid())
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  runtime String // ex.: antigravity | codex | claude
+  status  String @default("pending") // pending | connected | error | revoked
+
+  encryptedCredential String? @map("encrypted_credential")
+  models              Json? // catálogo de modelos descoberto no provider
+  modelsRefreshedAt   DateTime? @map("models_refreshed_at")
+  lastValidatedAt     DateTime? @map("last_validated_at")
+  lastError           String?   @map("last_error")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([userId, runtime])
+  @@map("engine_connections")
+}
+
 model Project {
   id          String   @id @default(cuid())
   wingId      String   @unique @map("wing_id")
@@ -15,6 +74,10 @@ model Project {
   avatarUrl   String?  @map("avatar_url")
   defaultBranch String @default("main") @map("default_branch")
   isActive    Boolean  @default(true) @map("is_active")
+
+  // Nulo apenas para registros legados; todo projeto novo nasce com dono.
+  userId      String?  @map("user_id")
+  user        User?    @relation(fields: [userId], references: [id])
 
   runtimeConfig Json?    @map("runtime_config")
 
@@ -28,9 +91,32 @@ model Project {
   events      Event[]
   apiKeys     ApiKey[]
   webhookDeliveries WebhookDelivery[]
+  schedules   ProjectSchedule[]
 
   @@index([wingId])
+  @@index([userId])
   @@map("projects")
+}
+
+// Agenda de execução por projeto e por agente (cron). Substitui a agenda
+// fixa em código: o scheduler lê daqui a cada ciclo.
+model ProjectSchedule {
+  id        String  @id @default(cuid())
+  projectId String  @map("project_id")
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  agentRole String  @map("agent_role") // po | ra | sm | qa
+  cron      String // expressão cron de 5 campos
+  isActive  Boolean @default(true) @map("is_active")
+
+  lastTriggeredAt DateTime? @map("last_triggered_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([projectId, agentRole])
+  @@index([isActive])
+  @@map("project_schedules")
 }
 
 model Mission {

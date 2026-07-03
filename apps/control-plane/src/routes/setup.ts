@@ -2,6 +2,7 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { randomBytes } from 'node:crypto'
 import bcryptjs from 'bcryptjs'
 import type { JsonObject } from '@prisma/client/runtime/library'
+import { ensureDefaultSchedules } from '../lib/project-defaults.js'
 
 interface GitHubRepo {
   id: number
@@ -77,8 +78,28 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
         return reply.code(400).send({ error: 'At least one repository must be selected' })
       }
 
-      // 1. Validate plan constraints (Free allows only 1 repo)
-      if (plan === 'free' && repos.length > 1) {
+      // Resolve o dono a partir da sessão (email do usuário autenticado) e o
+      // limite de projetos do plano dele. Em ausência de email na sessão,
+      // segue sem dono (comportamento legado single-tenant).
+      const owner = user.email
+        ? await app.prisma.user.findUnique({
+            where: { email: user.email },
+            include: { plan: true },
+          })
+        : null
+
+      // 1. Limite de projetos do plano (dado, não hardcode): projetos já
+      // existentes do dono + os solicitados não podem passar do teto.
+      const maxProjects =
+        owner?.plan?.maxProjects ?? (plan === 'free' ? 1 : Number.MAX_SAFE_INTEGER)
+      if (owner) {
+        const currentCount = await app.prisma.project.count({ where: { userId: owner.id } })
+        if (currentCount + repos.length > maxProjects) {
+          return reply.code(400).send({
+            error: `Plan limit reached: up to ${maxProjects} project(s) allowed (${currentCount} in use)`,
+          })
+        }
+      } else if (plan === 'free' && repos.length > 1) {
         return reply.code(400).send({ error: 'Free plan only allows up to 1 repository' })
       }
 
@@ -100,6 +121,7 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
               wingId,
               name: repoName,
               description: `Project for ${repoFullName}`,
+              ...(owner ? { userId: owner.id } : {}),
               runtimeConfig: {
                 engines,
                 telegram: telegram ?? null,
@@ -110,6 +132,9 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
             },
           })
         }
+
+        // Projeto novo nasce agendado (senão o scheduler nunca o aciona).
+        await ensureDefaultSchedules(app.prisma, project.id)
 
         // Generate a default API Key for this project (assisted login for CLIs)
         const rawApiKey = `gitorch_${randomBytes(24).toString('hex')}`

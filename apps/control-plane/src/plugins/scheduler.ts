@@ -1,13 +1,18 @@
 import fp from 'fastify-plugin'
 import { FastifyInstance } from 'fastify'
+import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { CronExpressionParser } from 'cron-parser'
 import {
   AgentOrchestrator,
   RuntimeRegistry,
   createCliRuntimeAdapter,
+  createPodmanCommandRunner,
   createPythonSdkRuntimeAdapter,
+  isF6AgentRole,
   type F6AgentRole,
+  type RuntimeCommandRunner,
   type WorkspaceProvider,
 } from '@gitorch/agents'
 import { LocalWorkspaceProvider, WorkspaceManager } from '@gitorch/workspace-engine'
@@ -47,19 +52,73 @@ const MODEL_BY_ROLE: Record<F6AgentRole, string> = {
   qa: MODEL_FLASH,
 }
 
+/**
+ * Uma agenda está "vencida" quando a última ocorrência do cron até `now` é
+ * posterior ao último disparo registrado. Puro e testável.
+ */
+export function isScheduleDue(cron: string, lastTriggeredAt: Date | null, now: Date): boolean {
+  const expression = CronExpressionParser.parse(cron, { currentDate: now })
+  const previousOccurrence = expression.prev().toDate()
+  if (previousOccurrence > now) return false
+  return lastTriggeredAt === null || previousOccurrence > lastTriggeredAt
+}
+
 function buildWorkspaceProvider(app: FastifyInstance): WorkspaceProvider {
   const executor = process.env['GITORCH_EXECUTOR'] ?? 'local-process'
   if (executor === 'firecracker') {
     app.log.info('[Scheduler] Executor: firecracker (MicroVM por tenant)')
     return new WorkspaceManager()
   }
+  if (executor === 'podman') {
+    app.log.info('[Scheduler] Executor: podman (container descartável por missão)')
+    return new LocalWorkspaceProvider()
+  }
   // Default para hosts sem /dev/kvm, onde MicroVM (Firecracker) não é viável.
   app.log.info('[Scheduler] Executor: local-process (sem MicroVM; single-tenant)')
   return new LocalWorkspaceProvider()
 }
 
+/**
+ * Runner das missões conforme o executor. No modo podman, cada missão roda em
+ * container descartável: enxerga só o workspace e as credenciais montadas —
+ * nunca o .env do control plane ou o sistema de arquivos do host.
+ */
+function buildMissionRunner(app: FastifyInstance): RuntimeCommandRunner | undefined {
+  const executor = process.env['GITORCH_EXECUTOR'] ?? 'local-process'
+  if (executor !== 'podman') return undefined
+
+  const image = process.env['GITORCH_AGENT_IMAGE'] ?? 'localhost/gitorch-agent:latest'
+  const home = process.env['HOME'] ?? '/root'
+  const engine = process.env['GITORCH_CONTAINER_ENGINE'] ?? 'podman'
+  app.log.info(`[Scheduler] Missões em container: engine=${engine} image=${image}`)
+
+  // Credenciais OAuth dos motores, montadas SOMENTE-LEITURA em um staging
+  // (/run/gitorch-credentials); o entrypoint da imagem as COPIA para o HOME
+  // gravável, então o original no host nunca é alterado e o CLI ainda pode
+  // escrever seus arquivos de apoio. Só monta o que existe no host (origem
+  // inexistente derrubaria o start do container). Fase 2: estas credenciais
+  // passam a ser resolvidas por EngineConnection do dono do projeto.
+  const credentialDirs = [
+    { source: `${home}/.gemini`, target: '/run/gitorch-credentials/.gemini' },
+    { source: `${home}/.codex`, target: '/run/gitorch-credentials/.codex' },
+  ]
+  const mounts = credentialDirs
+    .filter((dir) => existsSync(dir.source))
+    .map((dir) => ({ ...dir, readOnly: true }))
+
+  return createPodmanCommandRunner({
+    image,
+    podmanBinary: engine,
+    userNamespace: engine === 'docker' ? false : 'keep-id',
+    memoryLimit: process.env['GITORCH_MISSION_MEMORY'] ?? '2g',
+    mounts,
+  })
+}
+
 const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   const registry = new RuntimeRegistry()
+  const missionRunner = buildMissionRunner(app)
+  const containerized = missionRunner !== undefined
 
   // Motor principal: Antigravity CLI. Política do projeto: runtimes de agente
   // autenticam por OAuth (nunca por chave de API embutida no ambiente).
@@ -82,10 +141,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     registry.register(
       createCliRuntimeAdapter({
         runtime: 'antigravity',
-        binary: process.env['GITORCH_AGY_BIN'] ?? 'agy',
+        // Em container o binário vem da imagem; no host, do PATH/config.
+        binary: containerized ? 'agy' : (process.env['GITORCH_AGY_BIN'] ?? 'agy'),
         args: ['--print', '--sandbox', '--print-timeout', printTimeout, ...agyExtraArgs],
         modelArgName: '--model',
         workspaceDirArgName: '--add-dir',
+        ...(missionRunner ? { runner: missionRunner } : {}),
       })
     )
   }
@@ -98,6 +159,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       runtime: 'codex',
       binary: 'codex',
       args: ['exec', '-s', 'read-only', '--skip-git-repo-check'],
+      ...(missionRunner ? { runner: missionRunner } : {}),
     })
   )
 
@@ -133,7 +195,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // concorrência e a criação da missão (dois POST simultâneos criariam duas).
   let triggerChain: Promise<TriggerResult> = Promise.resolve({ triggered: false, reason: 'init' })
 
-  const runTrigger = async (role: F6AgentRole): Promise<TriggerResult> => {
+  const runTrigger = async (role: F6AgentRole, projectId?: string): Promise<TriggerResult> => {
     await failStuckMissions()
 
     // Concorrência 1: uma missão ativa (pending OU running) por vez.
@@ -145,23 +207,51 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       return { triggered: false, reason: 'busy' }
     }
 
-    // Orçamento: no máximo N missões/dia por agente (tokens custam créditos).
     const startOfDay = new Date()
     startOfDay.setHours(0, 0, 0, 0)
-    const todayCount = await app.prisma.mission.count({
-      where: { type: `agent-run-${role}`, createdAt: { gte: startOfDay } },
+
+    // Failsafe da instância (não por tenant): teto global de missões/dia para
+    // proteger a VM inteira. O limite por tenant é o do plano (abaixo).
+    const instanceToday = await app.prisma.mission.count({
+      where: { createdAt: { gte: startOfDay } },
     })
-    if (todayCount >= MAX_MISSIONS_PER_DAY) {
+    if (instanceToday >= MAX_MISSIONS_PER_DAY) {
       app.log.warn(
-        `[Scheduler] Orçamento diário de ${role} atingido (${todayCount}/${MAX_MISSIONS_PER_DAY}); pulando`
+        `[Scheduler] Failsafe da instância atingido (${instanceToday}/${MAX_MISSIONS_PER_DAY}); pulando ${role}`
       )
-      return { triggered: false, reason: 'budget' }
+      return { triggered: false, reason: 'instance-failsafe' }
     }
 
-    const project = await app.prisma.project.findFirst({ where: { isActive: true } })
+    const project = projectId
+      ? await app.prisma.project.findFirst({
+          where: { id: projectId, isActive: true },
+          include: { user: { include: { plan: true } } },
+        })
+      : await app.prisma.project.findFirst({
+          where: { isActive: true },
+          include: { user: { include: { plan: true } } },
+        })
     if (!project) {
       app.log.warn('[Scheduler] No active project found to trigger mission')
       return { triggered: false, reason: 'no-project' }
+    }
+
+    // Orçamento do plano: total de missões do dia somando TODOS os projetos do
+    // dono (o limite do plano é por usuário, não por projeto).
+    const plan = project.user?.plan
+    if (project.userId && plan) {
+      const ownerToday = await app.prisma.mission.count({
+        where: {
+          createdAt: { gte: startOfDay },
+          project: { userId: project.userId },
+        },
+      })
+      if (ownerToday >= plan.maxMissionsPerDay) {
+        app.log.warn(
+          `[Scheduler] Orçamento do plano ${plan.id} atingido para o usuário ${project.userId} (${ownerToday}/${plan.maxMissionsPerDay}); pulando`
+        )
+        return { triggered: false, reason: 'plan-budget' }
+      }
     }
 
     // Criação atômica já em 'running': fecha a janela de corrida do guard e
@@ -222,6 +312,20 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           app.log.info(
             `[Scheduler] Mission completed: ${mission.id} with exitCode: ${result.exitCode}`
           )
+          // Sucesso vira memória de longo prazo do PROJETO (isolada por wingId).
+          // Falha na gravação de memória não reverte a missão — mas nunca é silenciosa.
+          if (result.exitCode === 0 && result.output.trim().length > 0) {
+            try {
+              await app.saveMissionMemory({
+                wingId: project.wingId,
+                missionId: mission.id,
+                agentRole: role,
+                content: result.output,
+              })
+            } catch (memErr) {
+              app.log.error(memErr, `[Scheduler] Falha ao gravar memória da missão ${mission.id}`)
+            }
+          }
         }
       })
       .catch(async (err) => {
@@ -244,12 +348,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     return { triggered: true, missionId: mission.id }
   }
 
-  const triggerAgentMission = async (role: F6AgentRole): Promise<TriggerResult> => {
+  const triggerAgentMission = async (
+    role: F6AgentRole,
+    projectId?: string
+  ): Promise<TriggerResult> => {
     app.log.info(`[Scheduler] Triggering agent mission for role: ${role}`)
     // Encadeia os disparos para que nunca rodem concorrentes (guard sem corrida).
     const result = triggerChain.then(
-      () => runTrigger(role),
-      () => runTrigger(role)
+      () => runTrigger(role, projectId),
+      () => runTrigger(role, projectId)
     )
     triggerChain = result.catch(() => ({ triggered: false, reason: 'error' }))
     try {
@@ -260,38 +367,87 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     }
   }
 
-  // Simple cron-like scheduler running check loop
+  // Reasons de recusa que são temporárias: a janela deve ser reprocessada no
+  // próximo tick (o claim do lastTriggeredAt é revertido). 'no-project' e cron
+  // inválido não entram aqui — não adianta reprocessar.
+  const RETRYABLE_REASONS: ReadonlySet<string> = new Set([
+    'busy',
+    'plan-budget',
+    'instance-failsafe',
+    'error',
+    'init',
+  ])
+
+  // Agenda dirigida a dados: cada projeto define seu cron por agente em
+  // project_schedules. A cada minuto, dispara o que venceu desde o último
+  // disparo registrado. O claim condicional do lastTriggeredAt impede dois
+  // ticks de dispararem a mesma janela; quando o disparo é recusado por um
+  // motivo temporário (missão em andamento, orçamento), o claim é revertido
+  // para a janela não se perder.
   const tick = async () => {
     const now = new Date()
-    const localHours = now.getHours()
-    const localMinutes = now.getMinutes()
-
-    app.log.info(`[Scheduler] Tick at ${localHours}:${localMinutes}`)
-
-    // Only run on the hour (minutes === 0)
-    if (localMinutes !== 0) {
+    let schedules
+    try {
+      schedules = await app.prisma.projectSchedule.findMany({
+        where: { isActive: true, project: { isActive: true } },
+      })
+    } catch (err) {
+      // Nunca deixar o tick rejeitar: um erro de banco não pode derrubar o
+      // processo (setInterval não trata a promise).
+      app.log.error(err, '[Scheduler] tick falhou ao ler agendas; tentando no próximo minuto')
       return
     }
 
-    // RA: starts at 00:00 AM (0 hours)
-    if (localHours === 0) {
-      await triggerAgentMission('ra')
-    }
+    for (const schedule of schedules) {
+      if (!isF6AgentRole(schedule.agentRole)) {
+        app.log.warn(
+          `[Scheduler] Agenda ${schedule.id} com papel desconhecido '${schedule.agentRole}'; ignorando`
+        )
+        continue
+      }
 
-    // PO: starts at 03:00 AM (every 12 hours -> 3 and 15)
-    if (localHours === 3 || localHours === 15) {
-      await triggerAgentMission('po')
-    }
+      let due = false
+      try {
+        due = isScheduleDue(schedule.cron, schedule.lastTriggeredAt, now)
+      } catch (err) {
+        app.log.warn(
+          `[Scheduler] Agenda ${schedule.id} com cron inválido '${schedule.cron}': ${String(err)}`
+        )
+        continue
+      }
+      if (!due) continue
 
-    // SM: starts at 05:00 AM (every 6 hours -> 5, 11, 17, 23)
-    if (localHours === 5 || localHours === 11 || localHours === 17 || localHours === 23) {
-      await triggerAgentMission('sm')
+      try {
+        const claimed = await app.prisma.projectSchedule.updateMany({
+          where: { id: schedule.id, lastTriggeredAt: schedule.lastTriggeredAt },
+          data: { lastTriggeredAt: now },
+        })
+        if (claimed.count === 0) continue // outro tick já reivindicou esta janela
+
+        const result = await triggerAgentMission(schedule.agentRole, schedule.projectId)
+
+        // Recusa temporária: devolve a janela (reverte o claim) para reprocessar.
+        if (!result.triggered && result.reason && RETRYABLE_REASONS.has(result.reason)) {
+          await app.prisma.projectSchedule.updateMany({
+            where: { id: schedule.id, lastTriggeredAt: now },
+            data: { lastTriggeredAt: schedule.lastTriggeredAt },
+          })
+        }
+      } catch (err) {
+        app.log.error(err, `[Scheduler] falha ao processar agenda ${schedule.id}`)
+      }
     }
   }
 
   // Loop de verificação a cada minuto. Não roda sob teste para não vazar timer
   // nem disparar missão real contra o Prisma de teste (paridade com under-pressure).
-  const intervalId = process.env['NODE_ENV'] === 'test' ? undefined : setInterval(tick, 60 * 1000)
+  // A execução é envolvida para nunca propagar rejeição (o processo não cai).
+  const intervalId =
+    process.env['NODE_ENV'] === 'test'
+      ? undefined
+      : setInterval(() => {
+          void tick().catch((err) => app.log.error(err, '[Scheduler] tick rejeitou'))
+        }, 60 * 1000)
 
   // Clean up interval on app close
   app.addHook('onClose', async () => {
@@ -306,7 +462,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
 
 declare module 'fastify' {
   interface FastifyInstance {
-    triggerAgentMission: (role: F6AgentRole) => Promise<TriggerResult>
+    triggerAgentMission: (role: F6AgentRole, projectId?: string) => Promise<TriggerResult>
   }
 }
 

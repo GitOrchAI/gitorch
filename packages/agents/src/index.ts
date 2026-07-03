@@ -1,6 +1,7 @@
 export * from './types'
 export * from './runtime-config'
 export * from './runtime-adapter'
+export * from './podman-runner'
 export * from './agent-mission'
 export * from './project-onboarding'
 export * from './jules-gate'
