@@ -1,6 +1,7 @@
 import { FastifyRequest, FastifyReply, FastifyInstance } from 'fastify'
 import { PrismaClient } from '@prisma/client'
 import type { InputJsonValue } from '@prisma/client/runtime/library'
+import { isF6AgentRole } from '@gitorch/agents'
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -69,6 +70,22 @@ export const missionRoutes = async (app: FastifyInstance): Promise<void> => {
       })
 
       return reply.code(201).send(mission)
+    }
+  )
+
+  // POST /api/missions/agent-run - Dispara uma missão de agente agora (mesmo
+  // caminho do scheduler: guardas de orçamento/concorrência incluídas).
+  app.post<{ Body: { role: string } }>(
+    '/api/missions/agent-run',
+    async (request: FastifyRequest<{ Body: { role: string } }>, reply: FastifyReply) => {
+      const { role } = request.body ?? { role: '' }
+
+      if (!isF6AgentRole(role)) {
+        return reply.code(400).send({ error: `Invalid agent role: ${role}` })
+      }
+
+      await app.triggerAgentMission(role)
+      return reply.code(202).send({ triggered: role })
     }
   )
 

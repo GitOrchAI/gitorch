@@ -46,4 +46,33 @@ describe('Mission and Event Routes', () => {
     expect(res.json().id).toBe('mission_1')
     expect(app.broadcastEvent).toHaveBeenCalled()
   })
+
+  test('POST /api/missions/agent-run triggers the scheduler path for a valid role', async () => {
+    const trigger = vi.fn().mockResolvedValue(undefined)
+    app.triggerAgentMission = trigger
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/missions/agent-run',
+      payload: { role: 'ra' },
+    })
+
+    expect(res.statusCode).toBe(202)
+    expect(res.json()).toEqual({ triggered: 'ra' })
+    expect(trigger).toHaveBeenCalledWith('ra')
+  })
+
+  test('POST /api/missions/agent-run rejects an unknown role', async () => {
+    const trigger = vi.fn().mockResolvedValue(undefined)
+    app.triggerAgentMission = trigger
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/missions/agent-run',
+      payload: { role: 'hacker' },
+    })
+
+    expect(res.statusCode).toBe(400)
+    expect(trigger).not.toHaveBeenCalled()
+  })
 })
