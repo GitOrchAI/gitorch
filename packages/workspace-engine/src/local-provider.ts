@@ -30,7 +30,9 @@ export class LocalWorkspaceProvider {
   }
 
   private validateInput(value: string): void {
-    const regex = /^[a-zA-Z0-9_-]+$/
+    // Rejeita hífen inicial: um id como "-foo" viraria flag se algum dia
+    // fluir para uma linha de comando sem barreira `--`.
+    const regex = /^[a-zA-Z0-9_][a-zA-Z0-9_-]*$/
     if (!regex.test(value)) {
       throw new Error(
         `Entrada inválida detectada: "${value}". Apenas letras, números, hifens e underscores são permitidos.`
@@ -101,9 +103,13 @@ export class LocalWorkspaceProvider {
     // Sem clone: falha aqui É falha de missão (workspace vazio geraria análise inútil).
     // Usa o helper de credencial do gh (git config credential.helper) quando
     // configurado na VM; repos públicos clonam anonimamente.
+    // `--` encerra as opções do git: mesmo que `repository` (validado) fluísse
+    // como algo parecido com flag, nada depois de `--` é interpretado como
+    // opção (defesa contra injeção de argumento de segunda ordem, ex.:
+    // `--upload-pack`). A URL é prefixada e o repositório passou pela regex.
     await execFileAsync(
       'git',
-      ['clone', '--depth', '1', `https://github.com/${repository}.git`, workspacePath],
+      ['clone', '--depth', '1', '--', `https://github.com/${repository}.git`, workspacePath],
       { timeout: 300_000 }
     )
   }
