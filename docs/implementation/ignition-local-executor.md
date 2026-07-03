@@ -29,7 +29,15 @@ Duas semanas sem nenhuma missão executada. Diagnóstico (verificado em logs, n�
 Diretriz do owner (2026-07-03): **todos os motores autenticam por OAuth**
 (Antigravity CLI, Codex CLI, Claude Code CLI) — nunca por chave de API.
 
-- Adapter: `agy --print --model <modelo>` rodando com `cwd` no workspace do projeto.
+- Adapter: `agy --print --sandbox --print-timeout 20m --add-dir <workspace> --model <modelo>`.
+- **Por que `--sandbox`** (comprovado em QA real 2026-07-03): `--print` sozinho
+  **trava** no primeiro uso de ferramenta esperando aprovação sem TTY. `--sandbox`
+  ADICIONA restrições de terminal e auto-aprova ferramentas DENTRO do sandbox —
+  é o oposto de `--dangerously-skip-permissions` (que desliga aprovações e não é usado).
+- **Por que `--add-dir <workspace>`**: sem isso o `agy` analisa o "projeto ativo"
+  dele (o próprio GitOrch), não o repositório clonado da missão.
+- Prompts de agente são read-only e proibidos de rodar install/build/lint/test
+  (lentos, estouram o timeout) — a análise sai da leitura direta do código.
 - Modelos (plano de ignição 2026-07-02): PO = `Gemini 3.1 Pro (Low)`;
   RA/SM/QA = `Gemini 3.5 Flash (Medium)`. Overrides: `GITORCH_MODEL_PRO/FLASH`.
 - Login: OAuth Google concluído na VM em 2026-07-03 (fluxo de código via

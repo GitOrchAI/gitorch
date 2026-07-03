@@ -80,18 +80,27 @@ export class LocalWorkspaceProvider {
 
     if (hasClone) {
       // Atualização best-effort: um pull falho não pode derrubar a missão
-      // (o agente ainda trabalha com o clone existente).
+      // (o agente ainda trabalha com o clone existente), mas NÃO fica silencioso.
       try {
         await execFileAsync('git', ['-C', workspacePath, 'pull', '--ff-only'], {
           timeout: 120_000,
         })
-      } catch {
-        // Mantém o clone atual; a falha de rede/pull fica visível no git log da VM.
+      } catch (err) {
+        // Sinaliza staleness em stderr do serviço: sem isso, análises rodariam
+        // sobre código velho parecendo atuais.
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[workspace] git pull falhou em ${repository}; usando clone existente (possivelmente desatualizado): ${String(
+            (err as { message?: string })?.message ?? err
+          )}`
+        )
       }
       return
     }
 
     // Sem clone: falha aqui É falha de missão (workspace vazio geraria análise inútil).
+    // Usa o helper de credencial do gh (git config credential.helper) quando
+    // configurado na VM; repos públicos clonam anonimamente.
     await execFileAsync(
       'git',
       ['clone', '--depth', '1', `https://github.com/${repository}.git`, workspacePath],

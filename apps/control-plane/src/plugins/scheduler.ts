@@ -72,16 +72,20 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       })
     )
   } else {
-    // Sem flags que desliguem aprovações de ferramenta: o modo --print roda
-    // leitura/análise sem prompts. Flags extras (ex.: --sandbox) só entram por
-    // decisão explícita do owner via GITORCH_AGY_EXTRA_ARGS.
+    // --print: não-interativo. --sandbox: ADICIONA restrições de terminal e
+    // auto-aprova ferramentas DENTRO do sandbox (o oposto de
+    // --dangerously-skip-permissions, que desliga aprovações). Sem --sandbox o
+    // modo --print trava no 1º uso de ferramenta esperando aprovação sem TTY
+    // (comprovado em QA 2026-07-03). --print-timeout limita a espera do modelo.
     const agyExtraArgs = (process.env['GITORCH_AGY_EXTRA_ARGS'] ?? '').split(' ').filter(Boolean)
+    const printTimeout = process.env['GITORCH_AGY_PRINT_TIMEOUT'] ?? '20m'
     registry.register(
       createCliRuntimeAdapter({
         runtime: 'antigravity',
         binary: process.env['GITORCH_AGY_BIN'] ?? '/home/ubuntu/.local/bin/agy',
-        args: ['--print', ...agyExtraArgs],
+        args: ['--print', '--sandbox', '--print-timeout', printTimeout, ...agyExtraArgs],
         modelArgName: '--model',
+        workspaceDirArgName: '--add-dir',
       })
     )
   }

@@ -157,6 +157,12 @@ export interface CreateCliRuntimeAdapterOptions {
   runner?: RuntimeCommandRunner
   /** Nome da flag de modelo do CLI (ex.: '--model'); quando presente, o modelo da missão vira argumento. */
   modelArgName?: string
+  /**
+   * Nome da flag que escopa o CLI ao diretório da missão (ex.: '--add-dir').
+   * Sem isso o Antigravity CLI analisa o "projeto ativo" dele, não o workspace
+   * clonado da missão. Só é aplicada quando request.cwd está presente.
+   */
+  workspaceDirArgName?: string
 }
 
 export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions): RuntimeAdapter {
@@ -182,9 +188,12 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
           ? [options.modelArgName, request.runtime.model]
           : []
 
+      const workspaceArgs =
+        options.workspaceDirArgName && request.cwd ? [options.workspaceDirArgName, request.cwd] : []
+
       const result = await runner({
         binary: options.binary,
-        args: [...baseArgs, ...modelArgs, request.prompt],
+        args: [...baseArgs, ...modelArgs, ...workspaceArgs, request.prompt],
         env,
         cwd: request.cwd,
         timeoutMs: request.timeoutMs,
