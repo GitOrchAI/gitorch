@@ -1,4 +1,5 @@
 import { FastifyPluginAsync } from 'fastify'
+import fp from 'fastify-plugin'
 import { prisma, wingIdContext } from './prisma.js'
 import { createHash } from 'node:crypto'
 import jwt from 'jsonwebtoken'
@@ -31,8 +32,9 @@ function hashKeySHA256(key: string): string {
   return createHash('sha256').update(key).digest('hex')
 }
 
-export const authPlugin: FastifyPluginAsync = async (app) => {
-  // Register rate limiter for auth endpoints to protect expensive auth hooks from DoS
+const authPluginImpl: FastifyPluginAsync = async (app) => {
+  // Register a dedicated rate limiter for auth endpoints to protect expensive auth logic from DoS.
+  // This uses a stricter limit (20 req/min) than the global default.
   await app.register(rateLimit, {
     max: 20,
     timeWindow: '1 minute',
@@ -48,10 +50,6 @@ export const authPlugin: FastifyPluginAsync = async (app) => {
 
   // API Key & JWT authentication
   app.addHook('preHandler', async (request) => {
-    // Explicitly call rate limit before expensive auth logic
-    // @ts-ignore - rateLimit is added by @fastify/rate-limit plugin
-    await request.rateLimit()
-
     // Skip auth for health/metrics/public webhook
     const publicPaths = [
       '/health',
@@ -62,6 +60,10 @@ export const authPlugin: FastifyPluginAsync = async (app) => {
       '/api/v1/auth/github/callback',
     ]
     if (publicPaths.some((p) => request.url.startsWith(p))) return
+
+    // Explicitly call rate limit before expensive auth logic
+    // @ts-ignore - rateLimit is added by @fastify/rate-limit plugin
+    await request.rateLimit()
 
     const authHeader = request.headers.authorization
     if (!authHeader?.startsWith('Bearer ')) {
@@ -165,3 +167,5 @@ export const authPlugin: FastifyPluginAsync = async (app) => {
     return jwt.verify(token, env.JWT_SECRET) as UserPayload
   })
 }
+
+export const authPlugin = fp(authPluginImpl)
