@@ -1,45 +1,117 @@
 import fp from 'fastify-plugin'
 import { FastifyInstance } from 'fastify'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   AgentOrchestrator,
   RuntimeRegistry,
   createCliRuntimeAdapter,
+  createPythonSdkRuntimeAdapter,
   type F6AgentRole,
+  type WorkspaceProvider,
 } from '@gitorch/agents'
+import { LocalWorkspaceProvider, WorkspaceManager } from '@gitorch/workspace-engine'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+// dist/plugins -> raiz do repo -> runtime/
+const runtimeScriptPath = path.resolve(__dirname, '../../../../runtime/run_antigravity_sdk.py')
 
 export interface SchedulerOptions {
   // Empty options type
 }
 
+// Guardas operacionais (design doc 2026-07-03): orçamento de tokens e RAM da VM.
+const MAX_MISSIONS_PER_DAY = Number(process.env['GITORCH_MAX_MISSIONS_PER_DAY'] ?? '4')
+const STALE_RUNNING_MS = Number(
+  process.env['GITORCH_STALE_RUNNING_MS'] ?? String(2 * 60 * 60 * 1000)
+)
+const MODEL_FLASH = process.env['GITORCH_MODEL_FLASH'] ?? 'gemini-2.5-flash'
+const MODEL_PRO = process.env['GITORCH_MODEL_PRO'] ?? 'gemini-3.1-pro-preview'
+
+// PO decide (modelo forte); RA/SM/QA analisam (modelo rápido) — plano de ignição 2026-07-02.
+const MODEL_BY_ROLE: Record<F6AgentRole, string> = {
+  po: MODEL_PRO,
+  ra: MODEL_FLASH,
+  sm: MODEL_FLASH,
+  qa: MODEL_FLASH,
+}
+
+function buildWorkspaceProvider(app: FastifyInstance): WorkspaceProvider {
+  const executor = process.env['GITORCH_EXECUTOR'] ?? 'local-process'
+  if (executor === 'firecracker') {
+    app.log.info('[Scheduler] Executor: firecracker (MicroVM por tenant)')
+    return new WorkspaceManager()
+  }
+  // Default: esta VM não tem /dev/kvm, então Firecracker é inviável aqui.
+  app.log.info('[Scheduler] Executor: local-process (sem MicroVM; single-tenant)')
+  return new LocalWorkspaceProvider()
+}
+
 const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
-  // Initialize Orchestrator Registry
   const registry = new RuntimeRegistry()
 
-  // Register real CLI adapters running hermes binary
+  // Motor principal: Antigravity via API Gemini (o SDK/CLI não roda headless nesta VM).
   registry.register(
-    createCliRuntimeAdapter({
+    createPythonSdkRuntimeAdapter({
       runtime: 'antigravity',
-      binary: '/home/ubuntu/.local/bin/hermes',
-      args: ['--oneshot'],
+      scriptPath: runtimeScriptPath,
     })
   )
 
+  // Fallback declarado: Codex CLI (exige `codex login` prévio na VM).
   registry.register(
     createCliRuntimeAdapter({
       runtime: 'codex',
-      binary: '/home/ubuntu/.local/bin/hermes',
-      args: ['--oneshot', '--provider', 'openai'],
+      binary: 'codex',
+      args: ['exec'],
     })
   )
 
   const orchestrator = new AgentOrchestrator({
     registry,
+    workspace: buildWorkspaceProvider(app),
   })
+
+  const failStaleRunningMissions = async (): Promise<void> => {
+    const staleBefore = new Date(Date.now() - STALE_RUNNING_MS)
+    const stale = await app.prisma.mission.updateMany({
+      where: { status: 'running', startedAt: { lt: staleBefore } },
+      data: {
+        status: 'failed',
+        error: `Mission stale: em "running" por mais de ${Math.round(STALE_RUNNING_MS / 60000)} minutos sem concluir`,
+        completedAt: new Date(),
+      },
+    })
+    if (stale.count > 0) {
+      app.log.warn(`[Scheduler] ${stale.count} missão(ões) travadas marcadas como failed`)
+    }
+  }
 
   const triggerAgentMission = async (role: F6AgentRole) => {
     app.log.info(`[Scheduler] Triggering agent mission for role: ${role}`)
     try {
-      // Find the active project
+      await failStaleRunningMissions()
+
+      // Concorrência 1: a VM tem ~3,6 GB livres; uma missão por vez.
+      const running = await app.prisma.mission.count({ where: { status: 'running' } })
+      if (running > 0) {
+        app.log.warn(`[Scheduler] Missão em andamento; pulando janela de ${role}`)
+        return
+      }
+
+      // Orçamento: no máximo N missões/dia por agente (tokens custam créditos).
+      const startOfDay = new Date()
+      startOfDay.setHours(0, 0, 0, 0)
+      const todayCount = await app.prisma.mission.count({
+        where: { type: `agent-run-${role}`, createdAt: { gte: startOfDay } },
+      })
+      if (todayCount >= MAX_MISSIONS_PER_DAY) {
+        app.log.warn(
+          `[Scheduler] Orçamento diário de ${role} atingido (${todayCount}/${MAX_MISSIONS_PER_DAY}); pulando`
+        )
+        return
+      }
+
       const project = await app.prisma.project.findFirst({
         where: { isActive: true },
       })
@@ -49,7 +121,6 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         return
       }
 
-      // Create mission in DB
       const mission = await app.prisma.mission.create({
         data: {
           projectId: project.id,
@@ -58,6 +129,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           payload: {
             role,
             triggeredBy: 'scheduler',
+            runtime: 'antigravity',
+            model: MODEL_BY_ROLE[role],
           },
         },
       })
@@ -79,10 +152,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             role: role,
             goal: `Analyze and coordinate tasks for ${project.name}`,
             context: [],
+            runtime: { runtime: 'antigravity', model: MODEL_BY_ROLE[role] },
             credentialRef: {
               connectionId: `conn-${role}-${Date.now()}`,
               ownerScope: 'project',
-              runtime: role === 'po' ? 'codex' : 'antigravity',
+              runtime: 'antigravity',
               providedSecrets: [],
             },
             userId: 'scheduler-user',
@@ -91,8 +165,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           await app.prisma.mission.update({
             where: { id: mission.id },
             data: {
-              status: result.exitCode === 0 ? 'completed' : 'blocked',
+              status: result.exitCode === 0 ? 'completed' : 'failed',
               completedAt: new Date(),
+              error: result.exitCode === 0 ? null : result.stderr.slice(0, 4000),
               result: {
                 output: result.output,
                 stderr: result.stderr,
@@ -104,8 +179,21 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             `[Scheduler] Mission completed: ${mission.id} with exitCode: ${result.exitCode}`
           )
         })
-        .catch((err) => {
+        .catch(async (err) => {
           app.log.error(err, `[Scheduler] Failed to execute mission ${mission.id}`)
+          // Nunca mascarar: falha vira status failed com erro legível no banco.
+          try {
+            await app.prisma.mission.update({
+              where: { id: mission.id },
+              data: {
+                status: 'failed',
+                completedAt: new Date(),
+                error: String(err?.stack ?? err).slice(0, 4000),
+              },
+            })
+          } catch (persistErr) {
+            app.log.error(persistErr, `[Scheduler] Failed to persist failure for ${mission.id}`)
+          }
         })
     } catch (err) {
       app.log.error(err, `[Scheduler] Error triggering agent mission for role ${role}`)
@@ -148,7 +236,16 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   app.addHook('onClose', async () => {
     clearInterval(intervalId)
   })
+
+  // Exposto para rotas administrativas e QA real dispararem missões sob demanda.
+  app.decorate('triggerAgentMission', triggerAgentMission)
 })
+
+declare module 'fastify' {
+  interface FastifyInstance {
+    triggerAgentMission: (role: F6AgentRole) => Promise<void>
+  }
+}
 
 export default schedulerPlugin
 export { schedulerPlugin }

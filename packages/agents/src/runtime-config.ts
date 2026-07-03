@@ -11,9 +11,11 @@ type DefaultAgentRuntimeAssignments = Readonly<{
   [Role in F6AgentRole]: Readonly<AgentRuntimeSelection>
 }>
 
+// Decisão do owner (2026-07-03): Antigravity é o motor de todos os agentes;
+// Codex é fallback manual; Claude Code nunca atua como motor de agente.
 export const DEFAULT_AGENT_RUNTIME_ASSIGNMENTS: DefaultAgentRuntimeAssignments = Object.freeze({
-  po: Object.freeze({ runtime: 'codex' }),
-  ra: Object.freeze({ runtime: 'claude' }),
+  po: Object.freeze({ runtime: 'antigravity' }),
+  ra: Object.freeze({ runtime: 'antigravity' }),
   sm: Object.freeze({ runtime: 'antigravity' }),
   qa: Object.freeze({ runtime: 'antigravity' }),
 } satisfies AgentRuntimeAssignments)

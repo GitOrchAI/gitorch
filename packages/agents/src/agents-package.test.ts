@@ -21,8 +21,8 @@ test('exports F6 public contracts', () => {
     reasoning,
   }
   const runtimeAssignments: AgentRuntimeAssignments = {
-    po: { runtime: 'codex' },
-    ra: { runtime: 'claude' },
+    po: { runtime: 'antigravity' },
+    ra: { runtime: 'antigravity' },
     sm: { runtime: 'antigravity' },
     qa: runtimeSelection,
   }
@@ -53,8 +53,8 @@ test('exports F6 public contracts', () => {
     reasoning: 'high',
   })
   expect(runtimeAssignments).toEqual({
-    po: { runtime: 'codex' },
-    ra: { runtime: 'claude' },
+    po: { runtime: 'antigravity' },
+    ra: { runtime: 'antigravity' },
     sm: { runtime: 'antigravity' },
     qa: {
       runtime: 'antigravity',
@@ -91,8 +91,8 @@ test('exports F6 public contracts', () => {
   expect(F6_AGENT_ROLES).toEqual(['po', 'ra', 'sm', 'qa'])
   expect(F6_AGENT_RUNTIMES).toEqual(['codex', 'claude', 'antigravity'])
   expect(DEFAULT_AGENT_RUNTIME_ASSIGNMENTS).toEqual({
-    po: { runtime: 'codex' },
-    ra: { runtime: 'claude' },
+    po: { runtime: 'antigravity' },
+    ra: { runtime: 'antigravity' },
     sm: { runtime: 'antigravity' },
     qa: { runtime: 'antigravity' },
   })

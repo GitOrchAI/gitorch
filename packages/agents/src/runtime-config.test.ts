@@ -8,8 +8,8 @@ import {
 
 test('uses user-approved MVP default runtime assignments', () => {
   expect(DEFAULT_AGENT_RUNTIME_ASSIGNMENTS).toEqual({
-    po: { runtime: 'codex' },
-    ra: { runtime: 'claude' },
+    po: { runtime: 'antigravity' },
+    ra: { runtime: 'antigravity' },
     sm: { runtime: 'antigravity' },
     qa: { runtime: 'antigravity' },
   })
@@ -46,7 +46,7 @@ test('builds primary runtime plus fallback slots without mutating defaults', () 
 
   expect(primary).toEqual({ runtime: 'claude', model: 'claude-opus-4-7', reasoning: 'high' })
   expect(fallbacks[0]).toEqual({ runtime: 'codex', model: 'gpt-5.5', reasoning: 'medium' })
-  expect(DEFAULT_AGENT_RUNTIME_ASSIGNMENTS.ra).toEqual({ runtime: 'claude' })
+  expect(DEFAULT_AGENT_RUNTIME_ASSIGNMENTS.ra).toEqual({ runtime: 'antigravity' })
 })
 
 test('normalizes partial assignments over defaults', () => {
@@ -56,8 +56,8 @@ test('normalizes partial assignments over defaults', () => {
   })
 
   expect(assignments).toEqual({
-    po: { runtime: 'codex' },
-    ra: { runtime: 'claude' },
+    po: { runtime: 'antigravity' },
+    ra: { runtime: 'antigravity' },
     sm: { runtime: 'antigravity' },
     qa: { runtime: 'claude', model: 'claude-sonnet-4-6' },
   })
@@ -67,7 +67,7 @@ test('normalizes partial assignments over defaults', () => {
   assignments.po.model = 'mutated-default-clone'
   assignments.qa.model = 'mutated-override-clone'
 
-  expect(DEFAULT_AGENT_RUNTIME_ASSIGNMENTS.po).toEqual({ runtime: 'codex' })
+  expect(DEFAULT_AGENT_RUNTIME_ASSIGNMENTS.po).toEqual({ runtime: 'antigravity' })
   expect(qaOverride).toEqual({ runtime: 'claude', model: 'claude-sonnet-4-6' })
 })
 

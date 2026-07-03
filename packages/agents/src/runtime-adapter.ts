@@ -134,3 +134,69 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
     },
   }
 }
+
+export interface CreatePythonSdkRuntimeAdapterOptions {
+  runtime: F6AgentRuntime
+  scriptPath: string
+  pythonBinary?: string
+}
+
+export function createPythonSdkRuntimeAdapter(
+  options: CreatePythonSdkRuntimeAdapterOptions
+): RuntimeAdapter {
+  const pythonBinary = options.pythonBinary ?? 'python3'
+
+  return {
+    runtime: options.runtime,
+    async run(request: RuntimeExecutionRequest) {
+      const env = buildRuntimeEnvironment(request.credentialRef)
+
+      const model =
+        request.runtime.model ??
+        (request.runtime.runtime === 'antigravity' ? 'gemini-2.5-flash' : undefined)
+      const reasoning = request.runtime.reasoning
+
+      const args = [options.scriptPath, request.prompt]
+
+      if (model) {
+        args.push('--model', model)
+      }
+
+      // Pass reasoning as system instructions hint (optional)
+      let systemInstructions: string | undefined
+      if (reasoning) {
+        systemInstructions = `Reasoning effort: ${reasoning}`
+      }
+
+      if (systemInstructions) {
+        args.push('--system-instructions', systemInstructions)
+      }
+
+      // API key is passed via environment (GEMINI_API_KEY)
+      const start = Date.now()
+      try {
+        const { stdout, stderr } = await execFileAsync(pythonBinary, args, {
+          env: { ...process.env, ...env, ANTIGRAVITY_MODEL: model ?? '' },
+        })
+        return {
+          missionId: request.missionId,
+          runtime: options.runtime,
+          output: stdout,
+          stderr: stderr,
+          exitCode: 0,
+          durationMs: Date.now() - start,
+        }
+      } catch (error: unknown) {
+        const err = error as { code?: number; stdout?: string; stderr?: string; message?: string }
+        return {
+          missionId: request.missionId,
+          runtime: options.runtime,
+          output: err.stdout || '',
+          stderr: err.stderr || err.message || String(error),
+          exitCode: err.code || 1,
+          durationMs: Date.now() - start,
+        }
+      }
+    },
+  }
+}
