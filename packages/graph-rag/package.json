@@ -21,7 +21,7 @@
     "@gitorch/cortex": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "26.0.1",
+    "@types/node": "26.1.0",
     "tsx": "4.22.5",
     "typescript": "^5.4.0",
     "vitest": "^4.1.9"
