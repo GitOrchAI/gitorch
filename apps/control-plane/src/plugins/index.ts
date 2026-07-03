@@ -15,6 +15,7 @@ import { ssePlugin } from './sse.js'
 import { webhookVerifyPlugin } from './webhook-verify.js'
 import { securityHookPlugin } from './security.js'
 import { telemetryPlugin } from './telemetry.js'
+import { schedulerPlugin } from './scheduler.js'
 
 export async function registerPlugins(app: FastifyInstance, env: Env): Promise<void> {
   await app.register(securityHookPlugin)
@@ -77,4 +78,5 @@ export async function registerPlugins(app: FastifyInstance, env: Env): Promise<v
   await app.register(authPlugin)
   await app.register(ssePlugin)
   await app.register(webhookVerifyPlugin)
+  await app.register(schedulerPlugin)
 }

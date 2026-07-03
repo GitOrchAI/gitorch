@@ -2,6 +2,7 @@ import {
   RuntimeRegistry,
   buildRuntimeEnvironment,
   createCliRuntimeAdapter,
+  realRuntimeCommandRunner,
   type RuntimeAdapter,
   type RuntimeCommandRequest,
 } from './runtime-adapter'
@@ -98,23 +99,70 @@ test('creates cli runtime adapter that passes prompt and runtime environment to 
   })
 })
 
-test('throws when cli runtime adapter has no configured runner', async () => {
+test('realRuntimeCommandRunner runs a local command successfully', async () => {
+  const request: RuntimeCommandRequest = {
+    binary: 'echo',
+    args: ['hello world'],
+    env: { TEST_VAR: 'test_value' },
+  }
+  const result = await realRuntimeCommandRunner(request)
+  expect(result.exitCode).toBe(0)
+  expect(result.stdout.trim()).toBe('hello world')
+})
+
+test('creates cli runtime adapter using realRuntimeCommandRunner by default', async () => {
   const adapter = createCliRuntimeAdapter({
     runtime: 'codex',
-    binary: 'codex',
+    binary: 'echo',
+    args: ['hello from adapter'],
   })
 
-  await expect(
-    adapter.run({
-      missionId: 'mission-codex-1',
-      prompt: 'Map project docs',
-      runtime: { runtime: 'codex' },
-      credentialRef: {
-        connectionId: 'conn-codex-1',
-        ownerScope: 'organization',
-        runtime: 'codex',
-        providedSecrets: ['OPENAI_API_KEY'],
-      },
-    })
-  ).rejects.toThrow('Runtime adapter runner is not configured')
+  const result = await adapter.run({
+    missionId: 'mission-codex-1',
+    prompt: '',
+    runtime: { runtime: 'codex' },
+    credentialRef: {
+      connectionId: 'conn-codex-1',
+      ownerScope: 'organization',
+      runtime: 'codex',
+      providedSecrets: [],
+    },
+  })
+
+  expect(result.exitCode).toBe(0)
+  expect(result.output.trim()).toBe('hello from adapter')
+})
+
+test('buildChildProcessEnv nunca vaza segredos do control plane para o agente', async () => {
+  const { buildChildProcessEnv } = await import('./runtime-adapter')
+  const prev = {
+    DATABASE_URL: process.env.DATABASE_URL,
+    JWT_SECRET: process.env.JWT_SECRET,
+    TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN,
+  }
+  process.env.DATABASE_URL = 'postgres://secret'
+  process.env.JWT_SECRET = 'super-secret'
+  process.env.TELEGRAM_BOT_TOKEN = 'tg-secret'
+  try {
+    const env = buildChildProcessEnv({ GITORCH_RUNTIME: 'antigravity' })
+    expect(env.DATABASE_URL).toBeUndefined()
+    expect(env.JWT_SECRET).toBeUndefined()
+    expect(env.TELEGRAM_BOT_TOKEN).toBeUndefined()
+    expect(env.GITORCH_RUNTIME).toBe('antigravity')
+    expect(env.PATH).toBe(process.env.PATH)
+  } finally {
+    process.env.DATABASE_URL = prev.DATABASE_URL
+    process.env.JWT_SECRET = prev.JWT_SECRET
+    process.env.TELEGRAM_BOT_TOKEN = prev.TELEGRAM_BOT_TOKEN
+  }
+})
+
+test('runner reporta timeout como exitCode 124, nunca sucesso', async () => {
+  const result = await realRuntimeCommandRunner({
+    binary: 'sleep',
+    args: ['5'],
+    env: {},
+    timeoutMs: 200,
+  })
+  expect(result.exitCode).toBe(124)
 })

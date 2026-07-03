@@ -2,18 +2,34 @@ import { SynapseClient, type SynapseActor, type SynapseScope } from '@gitorch/sy
 import { buildAgentMission, type BuildAgentMissionInput, workspaceManager } from './agent-mission'
 import type { RuntimeExecutionResult, RuntimeRegistry } from './runtime-adapter'
 
+export interface WorkspaceAllocation {
+  path?: string
+}
+
+export interface WorkspaceProvider {
+  allocateWorkspace(
+    userId: string,
+    projectId: string,
+    options?: { repository?: string }
+  ): Promise<WorkspaceAllocation | unknown>
+  hibernateWorkspace(userId: string, projectId: string): Promise<unknown>
+}
+
 export interface AgentOrchestratorOptions {
   registry: RuntimeRegistry
   synapse?: SynapseClient
+  workspace?: WorkspaceProvider
 }
 
 export class AgentOrchestrator {
   private readonly registry: RuntimeRegistry
   private readonly synapse: SynapseClient
+  private readonly workspace: WorkspaceProvider
 
   constructor(options: AgentOrchestratorOptions) {
     this.registry = options.registry
     this.synapse = options.synapse ?? new SynapseClient()
+    this.workspace = options.workspace ?? workspaceManager
   }
 
   async runMission(input: BuildAgentMissionInput): Promise<RuntimeExecutionResult> {
@@ -35,7 +51,9 @@ export class AgentOrchestrator {
     })
 
     const userId = mission.userId ?? 'user-default'
-    await workspaceManager.allocateWorkspace(userId, mission.projectId)
+    const allocation = (await this.workspace.allocateWorkspace(userId, mission.projectId, {
+      repository: mission.repository,
+    })) as WorkspaceAllocation | undefined
 
     let result: RuntimeExecutionResult
     try {
@@ -45,9 +63,11 @@ export class AgentOrchestrator {
         prompt: mission.prompt,
         runtime: mission.runtime,
         credentialRef: mission.credentialRef,
+        cwd: allocation?.path,
+        timeoutMs: input.timeoutMs,
       })
     } finally {
-      await workspaceManager.hibernateWorkspace(userId, mission.projectId)
+      await this.workspace.hibernateWorkspace(userId, mission.projectId)
     }
 
     this.synapse.completeExecution(record.id, {

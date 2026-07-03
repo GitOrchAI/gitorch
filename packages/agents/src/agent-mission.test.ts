@@ -11,14 +11,14 @@ test('builds a PO mission with default runtime and credential reference', () => 
     goal: 'Normalize externally created issue #42',
     context: ['GitHub is the source of truth', 'Classify issue as Epic, Feature, or Task'],
     credentialRef: {
-      connectionId: 'conn-codex',
+      connectionId: 'conn-antigravity',
       ownerScope: 'organization',
-      runtime: 'codex',
-      providedSecrets: ['OPENAI_API_KEY'],
+      runtime: 'antigravity',
+      providedSecrets: [],
     },
   })
 
-  expect(mission.runtime).toEqual({ runtime: 'codex' })
+  expect(mission.runtime).toEqual({ runtime: 'antigravity' })
   expect(mission.prompt).toContain('Role: po')
   expect(mission.prompt).toContain('Repository: owner/repo')
   expect(mission.prompt).toContain('Normalize externally created issue #42')
@@ -41,7 +41,7 @@ test('rejects credential/runtime mismatch before execution', () => {
         providedSecrets: ['OPENAI_API_KEY'],
       },
     })
-  ).toThrow('Credential runtime codex does not match selected runtime claude')
+  ).toThrow('Credential runtime codex does not match selected runtime antigravity')
 })
 
 test('defaults evidence refs and supports matching explicit runtime override', () => {
@@ -67,10 +67,10 @@ test('defaults evidence refs and supports matching explicit runtime override', (
 
 test('keeps credential reference immutable from caller mutations after mission creation', () => {
   const credentialRef: RuntimeCredentialRef = {
-    connectionId: 'conn-codex',
+    connectionId: 'conn-antigravity',
     ownerScope: 'project',
-    runtime: 'codex',
-    providedSecrets: ['OPENAI_API_KEY'],
+    runtime: 'antigravity',
+    providedSecrets: [],
   }
 
   const mission = buildAgentMission({
@@ -87,10 +87,10 @@ test('keeps credential reference immutable from caller mutations after mission c
   credentialRef.runtime = 'claude'
 
   expect(mission.credentialRef).toEqual({
-    connectionId: 'conn-codex',
+    connectionId: 'conn-antigravity',
     ownerScope: 'project',
-    runtime: 'codex',
-    providedSecrets: ['OPENAI_API_KEY'],
+    runtime: 'antigravity',
+    providedSecrets: [],
   })
 })
 
@@ -103,10 +103,10 @@ test('propagates userId to buildAgentMission output if provided', () => {
     goal: 'Test user ID propagation',
     context: [],
     credentialRef: {
-      connectionId: 'conn-codex',
+      connectionId: 'conn-antigravity',
       ownerScope: 'project',
-      runtime: 'codex',
-      providedSecrets: ['OPENAI_API_KEY'],
+      runtime: 'antigravity',
+      providedSecrets: [],
     },
     userId: 'user-123',
   })

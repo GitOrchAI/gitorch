@@ -55,6 +55,7 @@ test('runs an agent mission through the selected runtime and records Synapse exe
     role: 'po',
     goal: 'Normalize issue #1',
     context: [],
+    runtime: { runtime: 'codex' },
     credentialRef: {
       connectionId: 'conn-codex',
       ownerScope: 'organization',
@@ -64,7 +65,9 @@ test('runs an agent mission through the selected runtime and records Synapse exe
   })
 
   expect(result.output).toBe('PO normalized issue')
-  expect(mockAllocateWorkspace).toHaveBeenCalledWith('user-default', 'project-1')
+  expect(mockAllocateWorkspace).toHaveBeenCalledWith('user-default', 'project-1', {
+    repository: 'owner/repo',
+  })
   expect(mockHibernateWorkspace).toHaveBeenCalledWith('user-default', 'project-1')
   expect(synapse.events().map((event) => event.type)).toEqual([
     'execution.started',
@@ -98,6 +101,7 @@ test('records Synapse execution as blocked when the mission fails (exitCode != 0
     role: 'po',
     goal: 'Normalize issue #2',
     context: [],
+    runtime: { runtime: 'codex' },
     credentialRef: {
       connectionId: 'conn-codex',
       ownerScope: 'organization',
@@ -107,9 +111,58 @@ test('records Synapse execution as blocked when the mission fails (exitCode != 0
   })
 
   expect(result.output).toBe('')
-  expect(mockAllocateWorkspace).toHaveBeenCalledWith('user-default', 'project-1')
+  expect(mockAllocateWorkspace).toHaveBeenCalledWith('user-default', 'project-1', {
+    repository: 'owner/repo',
+  })
   expect(mockHibernateWorkspace).toHaveBeenCalledWith('user-default', 'project-1')
   const completedEvent = synapse.events().find((event) => event.type === 'execution.completed')
   expect(completedEvent).toBeDefined()
   expect(completedEvent?.payload.status).toBe('blocked')
+})
+
+test('uses an injected workspace provider instead of the default Firecracker manager', async () => {
+  mockAllocateWorkspace.mockClear()
+  mockHibernateWorkspace.mockClear()
+
+  const allocate = vi.fn().mockResolvedValue({ path: '/tmp/ws' })
+  const hibernate = vi.fn().mockResolvedValue(undefined)
+
+  const runner: RuntimeCommandRunner = async () => ({
+    exitCode: 0,
+    stdout: 'ok',
+    stderr: '',
+    durationMs: 5,
+  })
+  const registry = new RuntimeRegistry()
+  registry.register(
+    createCliRuntimeAdapter({ runtime: 'antigravity', binary: 'agy', args: ['--print'], runner })
+  )
+  const orchestrator = new AgentOrchestrator({
+    registry,
+    synapse: new SynapseClient(),
+    workspace: { allocateWorkspace: allocate, hibernateWorkspace: hibernate },
+  })
+
+  await orchestrator.runMission({
+    id: 'mission-3',
+    projectId: 'project-1',
+    repository: 'owner/repo',
+    role: 'ra',
+    goal: 'Analyze repository',
+    context: [],
+    credentialRef: {
+      connectionId: 'conn-antigravity',
+      ownerScope: 'project',
+      runtime: 'antigravity',
+      providedSecrets: [],
+    },
+    userId: 'scheduler-user',
+  })
+
+  expect(allocate).toHaveBeenCalledWith('scheduler-user', 'project-1', {
+    repository: 'owner/repo',
+  })
+  expect(hibernate).toHaveBeenCalledWith('scheduler-user', 'project-1')
+  expect(mockAllocateWorkspace).not.toHaveBeenCalled()
+  expect(mockHibernateWorkspace).not.toHaveBeenCalled()
 })
