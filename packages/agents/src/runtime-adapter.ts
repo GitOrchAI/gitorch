@@ -54,6 +54,9 @@ export function buildChildProcessEnv(extra: Record<string, string>): Record<stri
     'TMPDIR',
     'XDG_CONFIG_HOME',
     'XDG_CACHE_HOME',
+    // Sem XDG_RUNTIME_DIR o agy trava para sempre esperando o socket do seu
+    // language-server interno (QA real 2026-07-03: unix_stream_data_wait, 0% CPU).
+    'XDG_RUNTIME_DIR',
   ]
   const base: Record<string, string> = {}
   for (const key of allow) {
