@@ -1,5 +1,6 @@
 import { test, expect, describe, vi, beforeEach } from 'vitest'
 import Fastify from 'fastify'
+import jwt from 'jsonwebtoken'
 import { loadEnv } from '../config/env.js'
 import { registerPlugins } from '../plugins/index.js'
 import { setupRoutes } from './setup.js'
@@ -8,6 +9,7 @@ import bcrypt from 'bcryptjs'
 
 describe('Setup and Auth Integration', () => {
   let app: ReturnType<typeof Fastify>
+  let sessionHeaders: { authorization: string }
 
   beforeEach(async () => {
     app = Fastify()
@@ -16,13 +18,13 @@ describe('Setup and Auth Integration', () => {
     await setupRoutes(app)
     await projectRoutes(app)
 
-    // Mock authentication for setup/submit (which requires a user session)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    app.addHook('onRequest', async (req: any) => {
-      if (req.url === '/api/v1/setup/submit') {
-        req.user = { id: 'user_123', githubToken: 'gh_token' }
-      }
-    })
+    // Sessão de usuário real (JWT com githubToken) para o setup/submit:
+    // o hook de auth é global e decodifica o user a partir do token.
+    const token = jwt.sign(
+      { userId: 'user_123', wingId: 'wing_123', githubToken: 'gh_token' },
+      env.JWT_SECRET
+    )
+    sessionHeaders = { authorization: `Bearer ${token}` }
 
     await app.ready()
   })
@@ -52,6 +54,7 @@ describe('Setup and Auth Integration', () => {
     const setupRes = await app.inject({
       method: 'POST',
       url: '/api/v1/setup/submit',
+      headers: sessionHeaders,
       payload: {
         repos: ['owner/repo'],
         engines: ['engine1'],
@@ -72,20 +75,22 @@ describe('Setup and Auth Integration', () => {
     const match = await bcrypt.compare(rawApiKey, savedKeyHash)
     expect(match).toBe(true)
 
-    // 4. Mock Prisma for authentication
-    app.prisma.apiKey.findUnique = vi.fn().mockResolvedValue({
-      id: 'key_123',
-      projectId: 'proj_123',
-      keyHash: savedKeyHash,
-      prefix: savedPrefix,
-      isActive: true,
-      scopes: ['read'],
-      project: {
-        id: 'proj_123',
-        wingId: 'owner/repo',
+    // 4. Mock Prisma for authentication (o hook de auth busca por prefixo via findMany)
+    app.prisma.apiKey.findMany = vi.fn().mockResolvedValue([
+      {
+        id: 'key_123',
+        projectId: 'proj_123',
+        keyHash: savedKeyHash,
+        prefix: savedPrefix,
         isActive: true,
+        scopes: ['read'],
+        project: {
+          id: 'proj_123',
+          wingId: 'owner/repo',
+          isActive: true,
+        },
       },
-    })
+    ])
     app.prisma.apiKey.update = vi.fn().mockResolvedValue({})
     app.prisma.project.findMany = vi.fn().mockResolvedValue([])
     app.prisma.project.count = vi.fn().mockResolvedValue(0)
@@ -109,20 +114,22 @@ describe('Setup and Auth Integration', () => {
     // Hardcoded SHA256 hash of 'legacy_key_1234567890' to avoid CodeQL alert for insecure hashing in tests
     const legacyHash = '308f9e667a3435a334995af0253682150f2273d38f6ca669b5ccad8fba3fd35a'
 
-    // Mock Prisma for authentication
-    app.prisma.apiKey.findUnique = vi.fn().mockResolvedValue({
-      id: 'key_legacy',
-      projectId: 'proj_123',
-      keyHash: legacyHash,
-      prefix: prefix,
-      isActive: true,
-      scopes: ['read'],
-      project: {
-        id: 'proj_123',
-        wingId: 'owner/repo',
+    // Mock Prisma for authentication (o hook de auth busca por prefixo via findMany)
+    app.prisma.apiKey.findMany = vi.fn().mockResolvedValue([
+      {
+        id: 'key_legacy',
+        projectId: 'proj_123',
+        keyHash: legacyHash,
+        prefix: prefix,
         isActive: true,
+        scopes: ['read'],
+        project: {
+          id: 'proj_123',
+          wingId: 'owner/repo',
+          isActive: true,
+        },
       },
-    })
+    ])
     app.prisma.apiKey.update = vi.fn().mockResolvedValue({})
     app.prisma.project.findMany = vi.fn().mockResolvedValue([])
     app.prisma.project.count = vi.fn().mockResolvedValue(0)

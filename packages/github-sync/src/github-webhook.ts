@@ -21,7 +21,6 @@ export class GitHubWebhookVerifier {
     const actualBuffer = Buffer.from(signature256, 'utf8')
 
     return (
-      // @ts-expect-error - TS mismatch between Node Buffer and DOM ArrayBufferView
       expectedBuffer.length === actualBuffer.length && timingSafeEqual(expectedBuffer, actualBuffer)
     )
   }
