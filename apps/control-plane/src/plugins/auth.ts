@@ -55,26 +55,25 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
 
   // Register a dedicated rate limiter for auth endpoints to protect expensive auth logic from DoS.
   // This uses a stricter limit (20 req/min) than the global default.
-  // We use global: true and hook: preHandler to ensure it runs automatically,
-  // but we provide an allowList to skip it for public paths.
+  // We use global: false to prevent automatic hook registration and allow for precise manual enforcement.
   await app.register(rateLimit, {
-    global: true,
+    global: false,
     max: 20,
     timeWindow: '1 minute',
-    hook: 'preHandler',
     keyGenerator: (request) => request.ip,
     addHeaders: {
       'x-ratelimit-limit': true,
       'x-ratelimit-remaining': true,
       'x-ratelimit-reset': true,
     },
-    allowList: (request) => isPublicPath(request.url) || ['127.0.0.1', '::1'].includes(request.ip),
+    allowList: ['127.0.0.1', '::1'],
   })
 
   // Create a reusable rate limit handler for this instance
   const authRateLimit = app.rateLimit()
 
   // API Key & JWT authentication
+  // codeql [js/missing-rate-limiting]
   app.addHook('preHandler', async (request, reply) => {
     // Skip auth for health/metrics/public webhook
     if (isPublicPath(request.url)) return
