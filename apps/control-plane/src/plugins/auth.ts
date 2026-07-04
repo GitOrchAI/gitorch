@@ -1,4 +1,4 @@
-import { FastifyPluginAsync } from 'fastify'
+import { FastifyPluginAsync, FastifyRequest } from 'fastify'
 import fp from 'fastify-plugin'
 import { prisma, wingIdContext } from './prisma.js'
 import { createHash } from 'node:crypto'
@@ -61,7 +61,7 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
     global: true,
     max: 20,
     timeWindow: '1 minute',
-    skip: (request) => isPublicPath(request.url),
+    allowList: (request: FastifyRequest) => isPublicPath(request.url),
   })
 
   app.addHook('preHandler', async (request) => {
