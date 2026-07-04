@@ -1,13 +1,13 @@
 import { readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 
 // Cadence: a fonte única do MÉTODO dos agentes GitOrch (playbooks SCRUM por
 // papel e por evento). Quem consome: o priming das missões (packages/agents),
 // o plugin do motor (imagem do agente) e o scheduler (cerimônias). Editar um
 // playbook aqui muda o comportamento dos 4 agentes em todos os motores.
+// Módulo CJS (padrão dos packages do monorepo): __dirname aponta para dist/ no
+// build e para src/ nos testes; playbooks/ fica um nível acima em ambos.
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
 const PLAYBOOKS_DIR = join(__dirname, '..', 'playbooks')
 
 export type CadenceRole = 'ra' | 'po' | 'sm' | 'qa'
