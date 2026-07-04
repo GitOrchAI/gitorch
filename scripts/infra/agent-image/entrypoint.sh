@@ -53,6 +53,34 @@ if [ "${GITORCH_AGY_PLUGIN:-1}" != "0" ] && command -v agy >/dev/null 2>&1 && [ 
       fs.writeFileSync(p, JSON.stringify(s, null, 2))
     ' "$AGY_CFG" 2>/dev/null || printf '{"autoExecutionPolicy":"always-proceed","allowAgentAccessNonWorkspaceFiles":false}\n' > "$AGY_CFG"
   fi
+
+  # Allowlist de MCP POR PAPEL: cada agente enxerga só os servidores do seu
+  # papel (RA pesquisa/codegraph; PO/SM/QA agem no GitHub). O plugin traz o
+  # mcp_config.json completo; aqui filtramos a cópia instalada pelo papel da
+  # missão (GITORCH_AGENT_ROLE). Sem papel definido (execução diagnóstica),
+  # mantém tudo. Override: GITORCH_AGENT_ROLE vazio.
+  MCP_CFG="$HOME/.gemini/config/plugins/gitorch/mcp_config.json"
+  if [ -n "${GITORCH_AGENT_ROLE:-}" ] && [ -f "$MCP_CFG" ]; then
+    GITORCH_AGENT_ROLE="$GITORCH_AGENT_ROLE" node -e '
+      const fs = require("fs"), p = process.argv[1]
+      const role = process.env.GITORCH_AGENT_ROLE
+      const ALLOW = {
+        ra: ["cgc", "context7", "perplexity"],
+        po: ["github", "perplexity"],
+        sm: ["github"],
+        qa: ["github"],
+      }
+      const allowed = ALLOW[role] || []
+      let cfg
+      try { cfg = JSON.parse(fs.readFileSync(p, "utf8")) } catch { process.exit(0) }
+      const servers = cfg.mcpServers || {}
+      for (const name of Object.keys(servers)) {
+        if (!allowed.includes(name)) delete servers[name]
+      }
+      cfg.mcpServers = servers
+      fs.writeFileSync(p, JSON.stringify(cfg, null, 2))
+    ' "$MCP_CFG" 2>/dev/null || true
+  fi
 fi
 
 exec "$@"

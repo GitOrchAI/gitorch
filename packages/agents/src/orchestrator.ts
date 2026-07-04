@@ -69,6 +69,7 @@ export class AgentOrchestrator {
         prompt: mission.prompt,
         runtime: mission.runtime,
         credentialRef: mission.credentialRef,
+        role: mission.role,
         cwd: allocation?.path,
         timeoutMs: input.timeoutMs,
       })
