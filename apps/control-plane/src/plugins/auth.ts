@@ -51,23 +51,9 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
 
   const isPublicPath = (url: string) => publicPaths.some((p) => url.startsWith(p))
 
-  // codeql [js/missing-rate-limiting]
-  app.addHook('preHandler', async (request, reply) => {
+  app.addHook('preHandler', async (request) => {
     // Skip auth for health/metrics/public webhook
     if (isPublicPath(request.url)) return
-
-    // Explicitly enforce rate limiting before expensive auth/database work.
-    const limiter = request.server.rateLimit({
-      max: 20,
-      timeWindow: '1 minute',
-      keyGenerator: (req) => req.ip,
-      allowList: (req) => {
-        if (isPublicPath(req.url)) return true
-        if (req.ip === '127.0.0.1' || req.ip === '::1') return true
-        return false
-      },
-    })
-    await limiter.call(request.server, request, reply)
 
     const authHeader = request.headers.authorization
     if (!authHeader?.startsWith('Bearer ')) {

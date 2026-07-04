@@ -9,7 +9,6 @@ import { API_PREFIX, CORS_MAX_AGE } from '../config/constants.js'
 
 import { prismaPlugin } from './prisma.js'
 import { redisPlugin } from './redis.js'
-import { rateLimitPlugin } from './rate-limit.js'
 import { authPlugin } from './auth.js'
 import { ssePlugin } from './sse.js'
 import { webhookVerifyPlugin } from './webhook-verify.js'
@@ -18,6 +17,8 @@ import { telemetryPlugin } from './telemetry.js'
 import { schedulerPlugin } from './scheduler.js'
 import { cortexPlugin } from './cortex.js'
 import { enginesPlugin } from './engines.js'
+
+import rateLimit from '@fastify/rate-limit'
 
 export async function registerPlugins(app: FastifyInstance, env: Env): Promise<void> {
   await app.register(securityHookPlugin)
@@ -74,9 +75,26 @@ export async function registerPlugins(app: FastifyInstance, env: Env): Promise<v
   await app.register(telemetryPlugin)
   await app.register(prismaPlugin)
   await app.register(redisPlugin)
+
   // Register rate limit before auth to protect auth hooks from DoS
   // Using preHandler hook ensures wingId context is established for multi-tenant limits
-  await app.register(rateLimitPlugin)
+  await app.register(rateLimit, {
+    max: env.RATE_LIMIT_MAX,
+    timeWindow: env.RATE_LIMIT_WINDOW_MS,
+    hook: 'preHandler',
+    keyGenerator: (request) => {
+      const ip = request.ip
+      const wingId = request.wingId
+      return wingId ? `wing:${wingId}` : `ip:${ip}`
+    },
+    addHeaders: {
+      'x-ratelimit-limit': true,
+      'x-ratelimit-remaining': true,
+      'x-ratelimit-reset': true,
+    },
+    allowList: ['127.0.0.1', '::1'],
+  })
+
   await app.register(authPlugin)
   await app.register(ssePlugin)
   await app.register(webhookVerifyPlugin)
