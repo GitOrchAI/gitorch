@@ -43,6 +43,41 @@ export interface CreateProjectStatusUpdateInput {
   status: 'ON_TRACK' | 'AT_RISK' | 'OFF_TRACK' | 'COMPLETE'
 }
 
+export interface GetProjectIdInput {
+  login: string
+  number: number
+  ownerType: 'user' | 'organization'
+}
+
+export interface Iteration {
+  id: string
+  title: string
+  startDate: string
+  duration: number
+}
+
+export interface IterationField {
+  fieldId: string
+  iterations: Iteration[]
+}
+
+export interface GetIterationFieldInput {
+  projectId: string
+  fieldName: string
+}
+
+export interface SetIterationFieldInput {
+  projectId: string
+  itemId: string
+  fieldId: string
+  iterationId: string
+}
+
+export interface AddSubIssueInput {
+  issueId: string
+  subIssueId: string
+}
+
 export class ProjectV2Client {
   private readonly token: string
   private readonly request: GraphQLTransport
@@ -156,6 +191,141 @@ export class ProjectV2Client {
     )
 
     return unwrap(response).createProjectV2StatusUpdate.statusUpdate.id
+  }
+
+  // Resolve o node id de um Project v2 a partir do login do dono + número. O PO
+  // precisa disto para operar o board; user e organization têm consultas
+  // distintas (a org é o destino final; a conta pessoal é a origem dos forks).
+  async getProjectId(input: GetProjectIdInput): Promise<string> {
+    const owner = input.ownerType === 'organization' ? 'organization' : 'user'
+    const response = await this.request<
+      Record<string, { projectV2: { id: string } | null } | null>
+    >(
+      {
+        query: `
+          query GetProjectId($login: String!, $number: Int!) {
+            ${owner}(login: $login) {
+              projectV2(number: $number) { id }
+            }
+          }
+        `,
+        variables: { login: input.login, number: input.number },
+      },
+      this.token
+    )
+
+    const data = unwrap(response)
+    const project = data[owner]?.projectV2
+    if (!project) {
+      throw new Error(`Project v2 #${input.number} not found for ${owner} "${input.login}".`)
+    }
+    return project.id
+  }
+
+  // Lê o campo de iteração (Sprint) pelo nome e devolve suas iterations. O SM usa
+  // para achar a sprint corrente ao planejar; o PO para setar a sprint do item.
+  async getIterationField(input: GetIterationFieldInput): Promise<IterationField> {
+    const response = await this.request<{
+      node: {
+        fields: {
+          nodes: Array<{
+            __typename?: string
+            id: string
+            name: string
+            configuration?: { iterations: Iteration[] }
+          }>
+        }
+      }
+    }>(
+      {
+        query: `
+          query GetIterationField($projectId: ID!) {
+            node(id: $projectId) {
+              ... on ProjectV2 {
+                fields(first: 50) {
+                  nodes {
+                    __typename
+                    ... on ProjectV2IterationField {
+                      id
+                      name
+                      configuration {
+                        iterations { id title startDate duration }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        `,
+        variables: { projectId: input.projectId },
+      },
+      this.token
+    )
+
+    const nodes = unwrap(response).node?.fields?.nodes ?? []
+    const field = nodes.find((node) => node.name === input.fieldName && node.configuration)
+    if (!field || !field.configuration) {
+      throw new Error(
+        `Iteration field "${input.fieldName}" not found on project ${input.projectId}.`
+      )
+    }
+    return { fieldId: field.id, iterations: field.configuration.iterations }
+  }
+
+  // Define a Sprint (iteração) de um item do board. Mesma mutation do single
+  // select, mas com o valor `iterationId` (confirmado no schema real).
+  async setIterationField(input: SetIterationFieldInput): Promise<string> {
+    const response = await this.request<{
+      updateProjectV2ItemFieldValue: { projectV2Item: { id: string } }
+    }>(
+      {
+        query: `
+          mutation SetProjectV2Iteration(
+            $projectId: ID!
+            $itemId: ID!
+            $fieldId: ID!
+            $iterationId: String!
+          ) {
+            updateProjectV2ItemFieldValue(
+              input: {
+                projectId: $projectId
+                itemId: $itemId
+                fieldId: $fieldId
+                value: { iterationId: $iterationId }
+              }
+            ) {
+              projectV2Item { id }
+            }
+          }
+        `,
+        variables: { ...input },
+      },
+      this.token
+    )
+
+    return unwrap(response).updateProjectV2ItemFieldValue.projectV2Item.id
+  }
+
+  // Liga uma issue-filha à issue-pai: é o mecanismo NATIVO do GitHub para a
+  // hierarquia Épico→Feature→Task (sub-issues). "Blocked by" (dependência) ainda
+  // não tem mutation no GraphQL — fica como convenção no corpo ("Blocked by #N").
+  async addSubIssue(input: AddSubIssueInput): Promise<string> {
+    const response = await this.request<{ addSubIssue: { issue: { id: string } } }>(
+      {
+        query: `
+          mutation AddSubIssue($issueId: ID!, $subIssueId: ID!) {
+            addSubIssue(input: { issueId: $issueId, subIssueId: $subIssueId }) {
+              issue { id }
+            }
+          }
+        `,
+        variables: { ...input },
+      },
+      this.token
+    )
+
+    return unwrap(response).addSubIssue.issue.id
   }
 }
 
