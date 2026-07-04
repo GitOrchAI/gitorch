@@ -43,6 +43,15 @@ export interface CreatePodmanCommandRunnerOptions {
   pidsLimit?: number
   /** Runner usado para executar o podman em si (injetável para teste). */
   hostRunner?: RuntimeCommandRunner
+  /**
+   * Gancho por missão: prepara montagens específicas da missão (ex.: materializa
+   * a credencial do dono do projeto num staging temporário) e devolve uma função
+   * de limpeza chamada ao fim. Roda ANTES do container e permite montar dados
+   * que só existem por missão, sem vazar entre tenants.
+   */
+  prepareMounts?: (
+    request: RuntimeCommandRequest
+  ) => Promise<{ mounts: PodmanMount[]; cleanup?: () => Promise<void> }>
 }
 
 /**
@@ -95,45 +104,60 @@ export function createPodmanCommandRunner(
       args.push('-v', `${request.cwd}:${CONTAINER_WORKSPACE}:rw`)
     }
 
-    for (const mount of options.mounts ?? []) {
-      const mode = mount.readOnly === false ? 'rw' : 'ro'
-      args.push('-v', `${mount.source}:${mount.target}:${mode}`)
-    }
+    // cleanup do staging por missão fica fora do try para o finally SEMPRE
+    // alcançá-lo, mesmo que prepareMounts falhe depois de alocar.
+    let cleanup: (() => Promise<void>) | undefined
 
-    // Ambiente explícito da missão (identificadores GITORCH_*, modelo etc.).
-    for (const [key, value] of Object.entries(request.env)) {
-      args.push('-e', `${key}=${value}`)
-    }
+    try {
+      // Montagens por missão (ex.: credencial do dono materializada agora).
+      const perMission = options.prepareMounts ? await options.prepareMounts(request) : undefined
+      cleanup = perMission?.cleanup
 
-    // Argumentos que referenciam o caminho do workspace NO HOST (ex.: a flag
-    // de diretório do CLI) são traduzidos para o caminho DENTRO do container,
-    // cobrindo tanto a forma exata quanto subcaminhos (`${cwd}/x`).
-    const translatedArgs = request.cwd
-      ? request.args.map((arg) => translateWorkspacePath(arg, request.cwd as string))
-      : request.args
+      for (const mount of [...(options.mounts ?? []), ...(perMission?.mounts ?? [])]) {
+        const mode = mount.readOnly === false ? 'rw' : 'ro'
+        args.push('-v', `${mount.source}:${mount.target}:${mode}`)
+      }
 
-    args.push(options.image, request.binary, ...translatedArgs)
+      // Ambiente explícito da missão (identificadores GITORCH_*, modelo etc.).
+      for (const [key, value] of Object.entries(request.env)) {
+        args.push('-e', `${key}=${value}`)
+      }
 
-    const result = await hostRunner({
-      binary: podmanBinary,
-      args,
-      // O ambiente do processo `podman` no host segue o allowlist padrão;
-      // o ambiente DENTRO do container é somente o passado via -e acima.
-      env: {},
-      timeoutMs: request.timeoutMs,
-    })
+      // Argumentos que referenciam o caminho do workspace NO HOST (ex.: a flag
+      // de diretório do CLI) são traduzidos para o caminho DENTRO do container,
+      // cobrindo tanto a forma exata quanto subcaminhos (`${cwd}/x`).
+      const translatedArgs = request.cwd
+        ? request.args.map((arg) => translateWorkspacePath(arg, request.cwd as string))
+        : request.args
 
-    // Timeout (exit 124) mata só o cliente podman no host; o container pode
-    // seguir vivo sob o conmon. Removê-lo à força libera RAM e o workspace.
-    if (result.exitCode === 124) {
-      try {
-        await hostRunner({ binary: podmanBinary, args: ['rm', '-f', containerName], env: {} })
-      } catch {
-        // cleanup best-effort: o container pode já ter saído
+      args.push(options.image, request.binary, ...translatedArgs)
+
+      const result = await hostRunner({
+        binary: podmanBinary,
+        args,
+        // O ambiente do processo `podman` no host segue o allowlist padrão;
+        // o ambiente DENTRO do container é somente o passado via -e acima.
+        env: {},
+        timeoutMs: request.timeoutMs,
+      })
+
+      // Timeout (exit 124) mata só o cliente podman no host; o container pode
+      // seguir vivo sob o conmon. Removê-lo à força libera RAM e o workspace.
+      if (result.exitCode === 124) {
+        try {
+          await hostRunner({ binary: podmanBinary, args: ['rm', '-f', containerName], env: {} })
+        } catch {
+          // cleanup best-effort: o container pode já ter saído
+        }
+      }
+
+      return result
+    } finally {
+      // Limpa o staging da credencial da missão, aconteça o que acontecer.
+      if (cleanup) {
+        await cleanup().catch(() => undefined)
       }
     }
-
-    return result
   }
 }
 

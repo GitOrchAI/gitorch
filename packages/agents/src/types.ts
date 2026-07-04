@@ -19,6 +19,9 @@ export interface RuntimeCredentialRef {
   ownerScope: 'user' | 'organization' | 'project'
   runtime: F6AgentRuntime
   providedSecrets: string[]
+  /** Dono da credencial: quem conectou o motor. Usado para materializar a
+   * credencial certa (por usuário) no ambiente isolado da missão. */
+  ownerUserId?: string
 }
 
 export interface AgentMission {

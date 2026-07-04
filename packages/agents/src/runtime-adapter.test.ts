@@ -166,3 +166,34 @@ test('runner reporta timeout como exitCode 124, nunca sucesso', async () => {
   })
   expect(result.exitCode).toBe(124)
 })
+
+describe('createCliRuntimeAdapter promptSeparator', () => {
+  test('insere o separador imediatamente antes do prompt (flags variádicas não o engolem)', async () => {
+    const runner = vi.fn().mockResolvedValue({ exitCode: 0, stdout: '', stderr: '', durationMs: 1 })
+    const adapter = createCliRuntimeAdapter({
+      runtime: 'claude',
+      binary: 'claude',
+      args: ['-p', '--allowedTools', 'Read,Glob,Grep'],
+      workspaceDirArgName: '--add-dir',
+      promptSeparator: '--',
+      runner,
+    })
+
+    await adapter.run({
+      missionId: 'm1',
+      prompt: 'analyze',
+      cwd: '/ws/p',
+      runtime: { runtime: 'claude' },
+      credentialRef: {
+        connectionId: 'c1',
+        ownerScope: 'project',
+        runtime: 'claude',
+        providedSecrets: [],
+      },
+    })
+
+    const args: string[] = runner.mock.calls[0][0].args
+    expect(args.slice(-2)).toEqual(['--', 'analyze'])
+    expect(args[args.indexOf('--add-dir') + 1]).toBe('/ws/p')
+  })
+})

@@ -8,8 +8,8 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends git ca-certificates curl ripgrep \
   && rm -rf /var/lib/apt/lists/*
 
-# Motor secundário (Codex CLI) — instalado da fonte oficial.
-RUN npm install -g @openai/codex && npm cache clean --force
+# Motores instalados da fonte oficial (npm): Codex e Claude Code CLIs.
+RUN npm install -g @openai/codex @anthropic-ai/claude-code && npm cache clean --force
 
 # Motor principal (Antigravity CLI) — binário copiado pelo script de build
 # (build-agent-image.sh) a partir da instalação do host, na arquitetura certa.

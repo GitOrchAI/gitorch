@@ -7,6 +7,7 @@ import type {
   RuntimeCredentialRef,
 } from './types'
 import { AGENT_SYSTEM_PROMPTS } from './prompts/index.js'
+import { buildPrimingPreamble } from './prompts/priming.js'
 
 export const workspaceManager = new WorkspaceManager()
 
@@ -61,6 +62,7 @@ function buildPrompt(
   const systemPrompt = AGENT_SYSTEM_PROMPTS[role] || ''
 
   return [
+    buildPrimingPreamble(role),
     `Role: ${role}`,
     `Repository: ${repository}`,
     `Goal: ${goal}`,

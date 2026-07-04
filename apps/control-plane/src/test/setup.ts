@@ -62,6 +62,12 @@ class MockPrismaClient {
     create: vi.fn(),
     updateMany: vi.fn(),
   }
+  engineConnection = {
+    findUnique: vi.fn(),
+    findMany: vi.fn().mockResolvedValue([]),
+    upsert: vi.fn(),
+    updateMany: vi.fn(),
+  }
 }
 
 vi.mock('@prisma/client', () => ({

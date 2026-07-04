@@ -1,0 +1,170 @@
+import * as fs from 'node:fs/promises'
+import * as os from 'node:os'
+import * as path from 'node:path'
+import { randomUUID } from 'node:crypto'
+import type { PrismaClient } from '@prisma/client'
+import { decryptCredential, encryptCredential } from '../lib/credential-crypto.js'
+import { archivePaths, restoreDirectory } from '../lib/credential-archive.js'
+import { MODEL_DISCOVERERS } from './model-catalog.js'
+
+// Runtimes suportados e os CAMINHOS de credencial de cada um, relativos ao HOME.
+// Apenas os arquivos de token/config — NÃO o diretório inteiro (históricos e
+// caches dos motores chegam a gigabytes). Configurável por ambiente
+// (GITORCH_ENGINE_CRED_PATHS, JSON runtime->string[]) para novos motores sem
+// mexer no código. Fonte única de verdade.
+const DEFAULT_CREDENTIAL_PATHS: Record<string, string[]> = {
+  antigravity: ['.gemini/antigravity-cli/antigravity-oauth-token'],
+  // models_cache.json é o catálogo de modelos do Codex (atualizado no login);
+  // vai junto para a descoberta de modelos funcionar. Ausência é tolerada.
+  codex: ['.codex/auth.json', '.codex/models_cache.json'],
+  claude: ['.claude/.credentials.json'],
+}
+
+export const ENGINE_CREDENTIAL_PATHS: Record<string, string[]> = (() => {
+  const raw = process.env['GITORCH_ENGINE_CRED_PATHS']
+  if (!raw) return DEFAULT_CREDENTIAL_PATHS
+  try {
+    return { ...DEFAULT_CREDENTIAL_PATHS, ...(JSON.parse(raw) as Record<string, string[]>) }
+  } catch {
+    return DEFAULT_CREDENTIAL_PATHS
+  }
+})()
+
+export function isSupportedRuntime(runtime: string): boolean {
+  return runtime in ENGINE_CREDENTIAL_PATHS
+}
+
+type PrismaLike = Pick<PrismaClient, 'engineConnection'>
+
+export interface ConnectionStatus {
+  runtime: string
+  status: string
+  modelsRefreshedAt: Date | null
+  lastValidatedAt: Date | null
+  lastError: string | null
+}
+
+export class EngineConnectionService {
+  constructor(private readonly prisma: PrismaLike) {}
+
+  /**
+   * Captura a credencial atual de um motor a partir de um HOME (onde o login do
+   * CLI foi concluído), cifra e guarda para o usuário. É o passo que transforma
+   * um login em uma conexão persistente e portável do cliente.
+   */
+  async captureFromHome(
+    userId: string,
+    runtime: string,
+    homeDir: string
+  ): Promise<ConnectionStatus> {
+    const relPaths = ENGINE_CREDENTIAL_PATHS[runtime]
+    if (!relPaths) throw new Error(`Runtime não suportado: ${runtime}`)
+
+    const blob = await archivePaths(homeDir, relPaths)
+    if (!blob) {
+      throw new Error(
+        `Credencial de ${runtime} não encontrada em ${homeDir} (${relPaths.join(', ')}); o login foi concluído?`
+      )
+    }
+
+    const encryptedCredential = encryptCredential(blob)
+    const now = new Date()
+    const record = await this.prisma.engineConnection.upsert({
+      where: { userId_runtime: { userId, runtime } },
+      update: { encryptedCredential, status: 'connected', lastValidatedAt: now, lastError: null },
+      create: {
+        userId,
+        runtime,
+        encryptedCredential,
+        status: 'connected',
+        lastValidatedAt: now,
+      },
+    })
+    return toStatus(record)
+  }
+
+  /**
+   * Restaura a credencial cifrada do usuário para dentro de `homeDir`, para uma
+   * missão usar o motor como aquele cliente. Retorna false se não há conexão.
+   */
+  async materializeToHome(userId: string, runtime: string, homeDir: string): Promise<boolean> {
+    const record = await this.prisma.engineConnection.findUnique({
+      where: { userId_runtime: { userId, runtime } },
+    })
+    if (!record?.encryptedCredential || record.status !== 'connected') return false
+    if (!ENGINE_CREDENTIAL_PATHS[runtime]) return false
+
+    // O blob guarda caminhos relativos ao HOME; restaura na raiz do HOME alvo.
+    const blob = decryptCredential(record.encryptedCredential)
+    await restoreDirectory(blob, homeDir)
+    return true
+  }
+
+  async list(userId: string): Promise<ConnectionStatus[]> {
+    const records = await this.prisma.engineConnection.findMany({ where: { userId } })
+    return records.map(toStatus)
+  }
+
+  /**
+   * Descobre o catálogo de modelos do provider usando a credencial do usuário e
+   * o guarda em EngineConnection.models. Roda num HOME temporário isolado.
+   * Retorna a lista descoberta (vazia se não há descoberta para o runtime).
+   */
+  async refreshModels(userId: string, runtime: string): Promise<string[]> {
+    const discover = MODEL_DISCOVERERS[runtime]
+    if (!discover) return []
+
+    const home = path.join(os.tmpdir(), `gitorch-models-${randomUUID()}`, randomUUID())
+    // 0700: o HOME temporário guarda a credencial descriptografada; ninguém mais
+    // no host pode entrar nele.
+    await fs.mkdir(home, { recursive: true, mode: 0o700 })
+    try {
+      const materialized = await this.materializeToHome(userId, runtime, home)
+      if (!materialized) return []
+      const models = await discover(home)
+      // Descoberta vazia NÃO sobrescreve um catálogo bom anterior nem finge que
+      // "atualizou": registra o sinal e preserva o catálogo existente.
+      if (models.length === 0) {
+        await this.prisma.engineConnection.updateMany({
+          where: { userId, runtime },
+          data: { lastError: 'catálogo de modelos veio vazio na última tentativa' },
+        })
+        return []
+      }
+      await this.prisma.engineConnection.updateMany({
+        where: { userId, runtime },
+        data: { models, modelsRefreshedAt: new Date(), lastError: null },
+      })
+      return models
+    } catch {
+      // Descoberta é best-effort: falha num provider não afeta os demais nem a
+      // conexão. O catálogo anterior (se houver) permanece.
+      return []
+    } finally {
+      await fs.rm(home, { recursive: true, force: true }).catch(() => undefined)
+    }
+  }
+
+  async revoke(userId: string, runtime: string): Promise<void> {
+    await this.prisma.engineConnection.updateMany({
+      where: { userId, runtime },
+      data: { status: 'revoked', encryptedCredential: null },
+    })
+  }
+}
+
+function toStatus(record: {
+  runtime: string
+  status: string
+  modelsRefreshedAt: Date | null
+  lastValidatedAt: Date | null
+  lastError: string | null
+}): ConnectionStatus {
+  return {
+    runtime: record.runtime,
+    status: record.status,
+    modelsRefreshedAt: record.modelsRefreshedAt,
+    lastValidatedAt: record.lastValidatedAt,
+    lastError: record.lastError,
+  }
+}

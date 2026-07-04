@@ -1,6 +1,7 @@
 import { SynapseClient, type SynapseActor, type SynapseScope } from '@gitorch/synapse'
 import { buildAgentMission, type BuildAgentMissionInput, workspaceManager } from './agent-mission'
 import type { RuntimeExecutionResult, RuntimeRegistry } from './runtime-adapter'
+import { primeWorkspace } from './workspace-priming'
 
 export interface WorkspaceAllocation {
   path?: string
@@ -54,6 +55,11 @@ export class AgentOrchestrator {
     const allocation = (await this.workspace.allocateWorkspace(userId, mission.projectId, {
       repository: mission.repository,
     })) as WorkspaceAllocation | undefined
+
+    // Faz o motor agir como agente GitOrch (não seguir o processo do repo).
+    if (allocation?.path) {
+      await primeWorkspace(allocation.path)
+    }
 
     let result: RuntimeExecutionResult
     try {

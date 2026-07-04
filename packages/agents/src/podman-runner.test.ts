@@ -107,4 +107,34 @@ describe('createPodmanCommandRunner', () => {
 
     expect(hostRunner).toHaveBeenCalledTimes(1)
   })
+
+  test('prepareMounts injeta montagens por missão e chama cleanup ao fim', async () => {
+    const hostRunner = vi.fn().mockResolvedValue(ok())
+    const cleanup = vi.fn().mockResolvedValue(undefined)
+    const prepareMounts = vi.fn().mockResolvedValue({
+      mounts: [{ source: '/tmp/mission-cred-abc', target: '/run/gitorch-credentials' }],
+      cleanup,
+    })
+    const runner = createPodmanCommandRunner({ image: 'img', hostRunner, prepareMounts })
+
+    await runner(buildRequest())
+
+    const args: string[] = hostRunner.mock.calls[0][0].args
+    expect(args).toContain('/tmp/mission-cred-abc:/run/gitorch-credentials:ro')
+    expect(prepareMounts).toHaveBeenCalledOnce()
+    expect(cleanup).toHaveBeenCalledOnce()
+  })
+
+  test('cleanup roda mesmo quando a execução falha', async () => {
+    const hostRunner = vi.fn().mockRejectedValue(new Error('boom'))
+    const cleanup = vi.fn().mockResolvedValue(undefined)
+    const runner = createPodmanCommandRunner({
+      image: 'img',
+      hostRunner,
+      prepareMounts: vi.fn().mockResolvedValue({ mounts: [], cleanup }),
+    })
+
+    await expect(runner(buildRequest())).rejects.toThrow('boom')
+    expect(cleanup).toHaveBeenCalledOnce()
+  })
 })

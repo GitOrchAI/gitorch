@@ -150,12 +150,16 @@ export class RuntimeRegistry {
 }
 
 export function buildRuntimeEnvironment(ref: RuntimeCredentialRef): Record<string, string> {
-  return {
+  const env: Record<string, string> = {
     GITORCH_RUNTIME_CONNECTION_ID: ref.connectionId,
     GITORCH_RUNTIME_OWNER_SCOPE: ref.ownerScope,
     GITORCH_RUNTIME: ref.runtime,
     GITORCH_PROVIDED_SECRETS: ref.providedSecrets.join(','),
   }
+  if (ref.ownerUserId) {
+    env['GITORCH_OWNER_USER_ID'] = ref.ownerUserId
+  }
+  return env
 }
 
 export interface CreateCliRuntimeAdapterOptions {
@@ -171,6 +175,11 @@ export interface CreateCliRuntimeAdapterOptions {
    * clonado da missão. Só é aplicada quando request.cwd está presente.
    */
   workspaceDirArgName?: string
+  /**
+   * Separador inserido antes do prompt (ex.: '--'). Necessário para CLIs cujas
+   * flags variádicas (listas de valores) engoliriam o prompt posicional.
+   */
+  promptSeparator?: string
 }
 
 export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions): RuntimeAdapter {
@@ -201,7 +210,13 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
 
       const result = await runner({
         binary: options.binary,
-        args: [...baseArgs, ...modelArgs, ...workspaceArgs, request.prompt],
+        args: [
+          ...baseArgs,
+          ...modelArgs,
+          ...workspaceArgs,
+          ...(options.promptSeparator ? [options.promptSeparator] : []),
+          request.prompt,
+        ],
         env,
         cwd: request.cwd,
         timeoutMs: request.timeoutMs,

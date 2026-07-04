@@ -1,9 +1,15 @@
 import fp from 'fastify-plugin'
 import { FastifyInstance } from 'fastify'
-import { existsSync } from 'node:fs'
+import * as fs from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { CronExpressionParser } from 'cron-parser'
+import {
+  resolveRuntimeChain,
+  isFailoverError,
+  type ResolverDefaults,
+} from '../lib/runtime-resolver.js'
 import {
   AgentOrchestrator,
   RuntimeRegistry,
@@ -11,7 +17,9 @@ import {
   createPodmanCommandRunner,
   createPythonSdkRuntimeAdapter,
   isF6AgentRole,
+  DEFAULT_AGENT_RUNTIME_ASSIGNMENTS,
   type F6AgentRole,
+  type F6AgentRuntime,
   type RuntimeCommandRunner,
   type WorkspaceProvider,
 } from '@gitorch/agents'
@@ -52,6 +60,19 @@ const MODEL_BY_ROLE: Record<F6AgentRole, string> = {
   qa: MODEL_FLASH,
 }
 
+// Padrões da instância para o resolvedor por projeto: motor por papel (config
+// do pacote de agentes) e modelo por papel. O projeto sobrescreve via
+// project.runtimeConfig.agents.
+const RESOLVER_DEFAULTS: ResolverDefaults = {
+  runtimeByRole: {
+    po: DEFAULT_AGENT_RUNTIME_ASSIGNMENTS.po.runtime,
+    ra: DEFAULT_AGENT_RUNTIME_ASSIGNMENTS.ra.runtime,
+    sm: DEFAULT_AGENT_RUNTIME_ASSIGNMENTS.sm.runtime,
+    qa: DEFAULT_AGENT_RUNTIME_ASSIGNMENTS.qa.runtime,
+  },
+  modelByRole: MODEL_BY_ROLE,
+}
+
 /**
  * Uma agenda está "vencida" quando a última ocorrência do cron até `now` é
  * posterior ao último disparo registrado. Puro e testável.
@@ -88,30 +109,71 @@ function buildMissionRunner(app: FastifyInstance): RuntimeCommandRunner | undefi
   if (executor !== 'podman') return undefined
 
   const image = process.env['GITORCH_AGENT_IMAGE'] ?? 'localhost/gitorch-agent:latest'
-  const home = process.env['HOME'] ?? '/root'
   const engine = process.env['GITORCH_CONTAINER_ENGINE'] ?? 'podman'
+  const stagingBase = process.env['GITORCH_MISSION_CRED_DIR'] ?? '/var/lib/gitorch/mission-creds'
   app.log.info(`[Scheduler] Missões em container: engine=${engine} image=${image}`)
 
-  // Credenciais OAuth dos motores, montadas SOMENTE-LEITURA em um staging
-  // (/run/gitorch-credentials); o entrypoint da imagem as COPIA para o HOME
-  // gravável, então o original no host nunca é alterado e o CLI ainda pode
-  // escrever seus arquivos de apoio. Só monta o que existe no host (origem
-  // inexistente derrubaria o start do container). Fase 2: estas credenciais
-  // passam a ser resolvidas por EngineConnection do dono do projeto.
-  const credentialDirs = [
-    { source: `${home}/.gemini`, target: '/run/gitorch-credentials/.gemini' },
-    { source: `${home}/.codex`, target: '/run/gitorch-credentials/.codex' },
-  ]
-  const mounts = credentialDirs
-    .filter((dir) => existsSync(dir.source))
-    .map((dir) => ({ ...dir, readOnly: true }))
+  // Varredura no boot: um crash entre materializar e limpar deixaria credencial
+  // descriptografada no disco. No boot não há missão ativa, então tudo em
+  // stagingBase é órfão e é removido. O diretório nasce 0700.
+  void fs
+    .rm(stagingBase, { recursive: true, force: true })
+    .then(() => fs.mkdir(stagingBase, { recursive: true, mode: 0o700 }))
+    .catch((err) => app.log.warn(err, '[Scheduler] falha ao limpar staging de credenciais no boot'))
+
+  // Credencial POR MISSÃO: materializa a credencial do dono do projeto (da sua
+  // EngineConnection cifrada) num staging temporário, monta SOMENTE-LEITURA em
+  // /run/gitorch-credentials, e o entrypoint da imagem a copia para o HOME
+  // gravável. O staging é apagado ao fim. Assim a missão de um cliente nunca vê
+  // a credencial de outro nem a do host.
+  const prepareMounts = async (request: {
+    env: Record<string, string>
+  }): Promise<{
+    mounts: Array<{ source: string; target: string; readOnly?: boolean }>
+    cleanup?: () => Promise<void>
+  }> => {
+    const runtime = request.env['GITORCH_RUNTIME']
+    const ownerUserId = request.env['GITORCH_OWNER_USER_ID']
+    if (!runtime || !ownerUserId) return { mounts: [] }
+
+    // 0700: staging guarda a credencial descriptografada em host compartilhado.
+    const dir = path.join(stagingBase, randomUUID())
+    await fs.mkdir(dir, { recursive: true, mode: 0o700 })
+    const cleanup = async () => {
+      await fs.rm(dir, { recursive: true, force: true })
+    }
+    try {
+      const ok = await app.engineConnections.materializeToHome(ownerUserId, runtime, dir)
+      if (!ok) {
+        await cleanup()
+        app.log.warn(
+          `[Scheduler] Sem credencial conectada de ${runtime} para o usuário ${ownerUserId}; missão sem credencial`
+        )
+        return { mounts: [] }
+      }
+      return {
+        mounts: [{ source: dir, target: '/run/gitorch-credentials', readOnly: true }],
+        cleanup,
+      }
+    } catch (err) {
+      await cleanup()
+      // Falha de DESCRIPTOGRAFIA é incidente (chave trocada/dado corrompido): NÃO
+      // mascarar rodando sem credencial — propaga para a missão falhar com causa
+      // clara. Outras falhas (fs) são best-effort e não derrubam a preparação.
+      if ((err as { name?: string })?.name === 'CredentialDecryptError') {
+        throw err
+      }
+      app.log.error(err, '[Scheduler] falha ao materializar credencial da missão')
+      return { mounts: [] }
+    }
+  }
 
   return createPodmanCommandRunner({
     image,
     podmanBinary: engine,
     userNamespace: engine === 'docker' ? false : 'keep-id',
     memoryLimit: process.env['GITORCH_MISSION_MEMORY'] ?? '2g',
-    mounts,
+    prepareMounts,
   })
 }
 
@@ -254,6 +316,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       }
     }
 
+    // Cadeia de motores escolhida pela config do projeto (por agente), com queda
+    // para o padrão da instância. Nada de motor hardcoded; a cadeia é a base do
+    // failover (tenta o próximo motor do cliente se o primeiro esgotar cota/errar).
+    const chain = resolveRuntimeChain(role, project.runtimeConfig, RESOLVER_DEFAULTS)
+    const primary = chain[0] as { runtime: string; model?: string }
+
     // Criação atômica já em 'running': fecha a janela de corrida do guard e
     // garante que a missão sempre tem startedAt (varredura de stale a alcança).
     const mission = await app.prisma.mission.create({
@@ -265,87 +333,133 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         payload: {
           role,
           triggeredBy: 'scheduler',
-          runtime: 'antigravity',
-          model: MODEL_BY_ROLE[role],
+          runtime: primary.runtime,
+          model: primary.model ?? MODEL_BY_ROLE[role],
         },
       },
     })
 
-    app.log.info(`[Scheduler] Mission created in DB: ${mission.id} for role ${role}`)
+    app.log.info(
+      `[Scheduler] Mission created in DB: ${mission.id} for role ${role} (chain=${chain
+        .map((c) => c.runtime)
+        .join('>')})`
+    )
 
-    // Executa em background; o disparo retorna assim que a missão está registrada.
-    void orchestrator
-      .runMission({
-        id: mission.id,
-        projectId: project.id,
-        repository: project.wingId, // formato owner/repo do GitHub
-        role: role,
-        goal: `Analyze and coordinate tasks for ${project.name}`,
-        context: [],
-        runtime: { runtime: 'antigravity', model: MODEL_BY_ROLE[role] },
-        credentialRef: {
-          connectionId: `conn-${role}-${Date.now()}`,
-          ownerScope: 'project',
-          runtime: 'antigravity',
-          providedSecrets: [],
-        },
-        userId: 'scheduler-user',
-        timeoutMs: STALE_RUNNING_MS,
-      })
-      .then(async (result) => {
-        // Escrita condicional: só grava se a missão ainda está 'running'. Se a
-        // varredura de stale já a marcou 'failed', não sobrescrevemos com sucesso.
-        const updated = await app.prisma.mission.updateMany({
-          where: { id: mission.id, status: 'running' },
-          data: {
-            status: result.exitCode === 0 ? 'completed' : 'failed',
-            completedAt: new Date(),
-            error: result.exitCode === 0 ? null : result.stderr.slice(0, 4000),
-            result: { output: result.output, stderr: result.stderr },
-          },
-        })
-        if (updated.count === 0) {
-          app.log.warn(
-            `[Scheduler] Mission ${mission.id} já não estava 'running' ao concluir (exit ${result.exitCode}); resultado descartado`
-          )
-        } else {
-          app.log.info(
-            `[Scheduler] Mission completed: ${mission.id} with exitCode: ${result.exitCode}`
-          )
-          // Sucesso vira memória de longo prazo do PROJETO (isolada por wingId).
-          // Falha na gravação de memória não reverte a missão — mas nunca é silenciosa.
-          if (result.exitCode === 0 && result.output.trim().length > 0) {
-            try {
-              await app.saveMissionMemory({
-                wingId: project.wingId,
-                missionId: mission.id,
-                agentRole: role,
-                content: result.output,
-              })
-            } catch (memErr) {
-              app.log.error(memErr, `[Scheduler] Falha ao gravar memória da missão ${mission.id}`)
-            }
-          }
-        }
-      })
-      .catch(async (err) => {
-        app.log.error(err, `[Scheduler] Failed to execute mission ${mission.id}`)
-        // Nunca mascarar: falha vira status failed com erro legível no banco.
-        try {
-          await app.prisma.mission.updateMany({
-            where: { id: mission.id, status: 'running' },
-            data: {
-              status: 'failed',
-              completedAt: new Date(),
-              error: String(err?.stack ?? err).slice(0, 4000),
-            },
-          })
-        } catch (persistErr) {
-          app.log.error(persistErr, `[Scheduler] Failed to persist failure for ${mission.id}`)
-        }
-      })
+    // Executa em background com failover; o disparo retorna assim que registrada.
+    void executeMissionWithFailover(mission.id, project, role, chain)
 
     return { triggered: true, missionId: mission.id }
+  }
+
+  type ChainProject = { id: string; wingId: string; name: string; userId: string | null }
+
+  // Tenta a cadeia de motores em ordem; sucesso encerra; erro de cota/auth cai
+  // para o próximo; erro real encerra em failed. Nunca mascara: o estado final
+  // é sempre gravado (completed com o motor que deu certo, ou failed com o erro).
+  const executeMissionWithFailover = async (
+    missionId: string,
+    project: ChainProject,
+    role: F6AgentRole,
+    chain: Array<{ runtime: string; model?: string }>
+  ): Promise<void> => {
+    let lastError = 'nenhum motor executou'
+    for (let i = 0; i < chain.length; i++) {
+      const sel = chain[i] as { runtime: string; model?: string }
+      const model = sel.model ?? MODEL_BY_ROLE[role]
+      const isLast = i === chain.length - 1
+
+      // Reinicia o relógio de "presa" a cada tentativa: o limite de stale é por
+      // tentativa (igual ao timeoutMs), não pela soma da cadeia. Sem isto, a
+      // varredura de stale marcaria a missão failed no meio do failover e um
+      // sucesso posterior seria descartado (write condicional em status running).
+      await app.prisma.mission
+        .updateMany({
+          where: { id: missionId, status: 'running' },
+          data: { startedAt: new Date() },
+        })
+        .catch(() => undefined)
+
+      try {
+        const result = await orchestrator.runMission({
+          id: missionId,
+          projectId: project.id,
+          repository: project.wingId,
+          role,
+          goal: `Analyze and coordinate tasks for ${project.name}`,
+          context: [],
+          runtime: { runtime: sel.runtime as F6AgentRuntime, model },
+          credentialRef: {
+            connectionId: `conn-${role}-${missionId}-${sel.runtime}`,
+            ownerScope: 'project',
+            runtime: sel.runtime as F6AgentRuntime,
+            providedSecrets: [],
+            ...(project.userId ? { ownerUserId: project.userId } : {}),
+          },
+          userId: project.userId ?? 'scheduler-user',
+          timeoutMs: STALE_RUNNING_MS,
+        })
+
+        if (result.exitCode === 0 && result.output.trim().length > 0) {
+          const updated = await app.prisma.mission.updateMany({
+            where: { id: missionId, status: 'running' },
+            data: {
+              status: 'completed',
+              completedAt: new Date(),
+              error: null,
+              result: { output: result.output, stderr: result.stderr, runtime: sel.runtime },
+            },
+          })
+          if (updated.count === 0) {
+            app.log.warn(`[Scheduler] Mission ${missionId} já não estava 'running'; descartado`)
+            return
+          }
+          app.log.info(`[Scheduler] Mission ${missionId} completed via ${sel.runtime}`)
+          try {
+            await app.saveMissionMemory({
+              wingId: project.wingId,
+              missionId,
+              agentRole: role,
+              content: result.output,
+            })
+          } catch (memErr) {
+            app.log.error(memErr, `[Scheduler] Falha ao gravar memória de ${missionId}`)
+          }
+          return
+        }
+
+        lastError = result.stderr || `exit ${result.exitCode}`
+        // exit 124 = timeout/hang do motor (o modo transitório mais comum);
+        // também justifica trocar para o próximo motor do cliente.
+        const worthy = isFailoverError(lastError) || result.exitCode === 124
+        if (!isLast && worthy) {
+          app.log.warn(
+            `[Scheduler] ${sel.runtime} falhou (${result.exitCode}); failover para ${chain[i + 1]?.runtime}`
+          )
+          continue
+        }
+        break
+      } catch (err) {
+        lastError = String((err as { stack?: string })?.stack ?? err)
+        // Simétrico com o caminho de exit != 0: só faz failover se o erro for do
+        // tipo cota/rate/auth. Erro sistêmico (ex.: disco cheio, mismatch) falha
+        // rápido em vez de repetir em todos os motores.
+        if (!isLast && isFailoverError(lastError)) {
+          app.log.warn(err, `[Scheduler] erro recuperável em ${sel.runtime}; próximo motor`)
+          continue
+        }
+        break
+      }
+    }
+
+    // Chegou aqui = nenhum motor concluiu. Grava falha honesta.
+    try {
+      await app.prisma.mission.updateMany({
+        where: { id: missionId, status: 'running' },
+        data: { status: 'failed', completedAt: new Date(), error: lastError.slice(0, 4000) },
+      })
+    } catch (persistErr) {
+      app.log.error(persistErr, `[Scheduler] Falha ao persistir falha de ${missionId}`)
+    }
   }
 
   const triggerAgentMission = async (

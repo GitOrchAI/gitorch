@@ -17,6 +17,7 @@ import { securityHookPlugin } from './security.js'
 import { telemetryPlugin } from './telemetry.js'
 import { schedulerPlugin } from './scheduler.js'
 import { cortexPlugin } from './cortex.js'
+import { enginesPlugin } from './engines.js'
 
 export async function registerPlugins(app: FastifyInstance, env: Env): Promise<void> {
   await app.register(securityHookPlugin)
@@ -80,5 +81,6 @@ export async function registerPlugins(app: FastifyInstance, env: Env): Promise<v
   await app.register(ssePlugin)
   await app.register(webhookVerifyPlugin)
   await app.register(cortexPlugin)
+  await app.register(enginesPlugin)
   await app.register(schedulerPlugin)
 }
