@@ -18,7 +18,9 @@ fi
 if [ -f "$HOME/.gitorch/gh-token" ]; then
   GH_TOKEN="$(cat "$HOME/.gitorch/gh-token")"
   GITHUB_TOKEN="$GH_TOKEN"
-  export GH_TOKEN GITHUB_TOKEN
+  # O github-mcp-server oficial lê o token desta variável específica.
+  GITHUB_PERSONAL_ACCESS_TOKEN="$GH_TOKEN"
+  export GH_TOKEN GITHUB_TOKEN GITHUB_PERSONAL_ACCESS_TOKEN
 fi
 
 # Instala o plugin nativo do GitOrch no HOME do agy. Ele carrega:
@@ -64,9 +66,12 @@ if [ "${GITORCH_AGY_PLUGIN:-1}" != "0" ] && command -v agy >/dev/null 2>&1 && [ 
     GITORCH_AGENT_ROLE="$GITORCH_AGENT_ROLE" node -e '
       const fs = require("fs"), p = process.argv[1]
       const role = process.env.GITORCH_AGENT_ROLE
+      // F3: RA pesquisa docs (context7); PO/SM/QA agem no GitHub (github-mcp).
+      // Perplexity (cookies+fragil) e CGC-vivo (kuzu no container) ficam para F5;
+      // na F3 o codegraph entra como contexto injetado no prepare (host).
       const ALLOW = {
-        ra: ["cgc", "context7", "perplexity"],
-        po: ["github", "perplexity"],
+        ra: ["context7"],
+        po: ["github"],
         sm: ["github"],
         qa: ["github"],
       }

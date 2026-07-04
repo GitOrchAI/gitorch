@@ -11,6 +11,24 @@ RUN apt-get update \
 # Motores instalados da fonte oficial (npm): Codex e Claude Code CLIs.
 RUN npm install -g @openai/codex @anthropic-ai/claude-code && npm cache clean --force
 
+# MCP servers POR PAPEL (pinados; baixados no build, ZERO download em runtime).
+# O entrypoint filtra por GITORCH_AGENT_ROLE quais ficam ativos por missão.
+#  - github-mcp-server (Go estatico, oficial): ferramentas do GitHub para PO/SM/QA.
+#  - context7 (npm, sem chave): docs de bibliotecas para o RA.
+# Perplexity e CGC-vivo ficam para F5 (cookies/kuzu-nativo). Versoes pinadas.
+RUN set -eux; \
+  case "$(uname -m)" in \
+    aarch64) GHMCP_ARCH=arm64 ;; \
+    x86_64)  GHMCP_ARCH=x86_64 ;; \
+    *) echo "arch nao suportada para github-mcp-server: $(uname -m)" >&2; exit 1 ;; \
+  esac; \
+  curl -fsSL -o /tmp/ghmcp.tar.gz \
+    "https://github.com/github/github-mcp-server/releases/download/v1.5.0/github-mcp-server_Linux_${GHMCP_ARCH}.tar.gz"; \
+  tar -xzf /tmp/ghmcp.tar.gz -C /usr/local/bin github-mcp-server; \
+  chmod +x /usr/local/bin/github-mcp-server; \
+  rm /tmp/ghmcp.tar.gz
+RUN npm install -g @upstash/context7-mcp@3.2.2 && npm cache clean --force
+
 # Motor principal (Antigravity CLI) — binário copiado pelo script de build
 # (build-agent-image.sh) a partir da instalação do host, na arquitetura certa.
 COPY agy /usr/local/bin/agy
