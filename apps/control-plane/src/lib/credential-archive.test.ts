@@ -25,11 +25,13 @@ describe('credential-archive', () => {
     const restoredBin = path.join(dest, 'antigravity-cli', 'bin', 'agentapi')
     expect(await fs.readFile(restoredBin, 'utf8')).toBe('BIN')
     // Segurança: credencial restaurada é 0600 (nunca legível por outros nem
-    // executável), independente do modo capturado.
-    expect((await fs.stat(restoredBin)).mode & 0o777).toBe(0o600)
-    expect((await fs.stat(path.join(dest, 'auth.json'))).mode & 0o777).toBe(0o600)
-    // Diretório raiz 0700.
-    expect((await fs.stat(dest)).mode & 0o777).toBe(0o700)
+    // executável), independente do modo capturado (apenas em sistemas Unix).
+    if (process.platform !== 'win32') {
+      expect((await fs.stat(restoredBin)).mode & 0o777).toBe(0o600)
+      expect((await fs.stat(path.join(dest, 'auth.json'))).mode & 0o777).toBe(0o600)
+      // Diretório raiz 0700.
+      expect((await fs.stat(dest)).mode & 0o777).toBe(0o700)
+    }
 
     await fs.rm(src, { recursive: true, force: true })
     await fs.rm(dest, { recursive: true, force: true })

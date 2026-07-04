@@ -5,7 +5,6 @@ import { createHash } from 'node:crypto'
 import jwt from 'jsonwebtoken'
 import bcryptjs from 'bcryptjs'
 import { getEnv } from '../config/env.js'
-import rateLimit from '@fastify/rate-limit'
 
 interface ApiKeyPayload {
   projectId: string
@@ -25,7 +24,6 @@ declare module 'fastify' {
     apiKey?: ApiKeyPayload
     wingId?: string
     user?: UserPayload
-    rateLimit: () => Promise<void>
   }
 }
 
@@ -53,33 +51,23 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
 
   const isPublicPath = (url: string) => publicPaths.some((p) => url.startsWith(p))
 
-  // Register a dedicated rate limiter for auth endpoints to protect expensive auth logic from DoS.
-  // This uses a stricter limit (20 req/min) than the global default.
-  // We use global: false to prevent automatic hook registration and allow for precise manual enforcement.
-  await app.register(rateLimit, {
-    global: true,
-    max: 20,
-    timeWindow: '1 minute',
-    keyGenerator: (request) => request.ip,
-    addHeaders: {
-      'x-ratelimit-limit': true,
-      'x-ratelimit-remaining': true,
-      'x-ratelimit-reset': true,
-    },
-    allowList: (request) => {
-      if (isPublicPath(request.url)) return true
-      if (request.ip === '127.0.0.1' || request.ip === '::1') return true
-      return false
-    },
-  })
-
   // API Key & JWT authentication
-  app.addHook('preHandler', async (request) => {
+  app.addHook('preHandler', async (request, reply) => {
     // Skip auth for health/metrics/public webhook
     if (isPublicPath(request.url)) return
 
     // Explicitly enforce rate limiting before expensive auth/database work.
-    await request.rateLimit()
+    const limiter = request.server.rateLimit({
+      max: 20,
+      timeWindow: '1 minute',
+      keyGenerator: (req) => req.ip,
+      allowList: (req) => {
+        if (isPublicPath(req.url)) return true
+        if (req.ip === '127.0.0.1' || req.ip === '::1') return true
+        return false
+      },
+    })
+    await limiter.call(request.server, request, reply)
 
     const authHeader = request.headers.authorization
     if (!authHeader?.startsWith('Bearer ')) {

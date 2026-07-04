@@ -78,7 +78,7 @@ const RESOLVER_DEFAULTS: ResolverDefaults = {
  * posterior ao último disparo registrado. Puro e testável.
  */
 export function isScheduleDue(cron: string, lastTriggeredAt: Date | null, now: Date): boolean {
-  const expression = CronExpressionParser.parse(cron, { currentDate: now })
+  const expression = CronExpressionParser.parse(cron, { currentDate: now, tz: 'UTC' })
   const previousOccurrence = expression.prev().toDate()
   if (previousOccurrence > now) return false
   return lastTriggeredAt === null || previousOccurrence > lastTriggeredAt
