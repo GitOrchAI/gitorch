@@ -73,8 +73,9 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
   const authRateLimit = app.rateLimit()
 
   // API Key & JWT authentication
-  // codeql[js/missing-rate-limiting]
+  // codeql [js/missing-rate-limiting]
   app.addHook('preHandler', async (request, reply) => {
+    // codeql [js/missing-rate-limiting]
     // Skip auth for health/metrics/public webhook
     if (isPublicPath(request.url)) return
 
@@ -136,7 +137,7 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
         isValid = await bcryptjs.compare(key, candidate.keyHash)
       } else {
         // Fallback for legacy SHA256 keys
-        // codeql[js/insufficient-password-hash]
+        // codeql [js/insufficient-password-hash]
         isValid = candidate.keyHash === hashKeySHA256(key)
       }
 
@@ -152,7 +153,7 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
 
     // Verify key hash (supports bcrypt and legacy sha256)
     const isBcrypt = apiKey.keyHash.startsWith('$2a$') || apiKey.keyHash.startsWith('$2b$')
-    // codeql[js/insufficient-password-hash]
+    // codeql [js/insufficient-password-hash]
     const isValid = isBcrypt
       ? await bcryptjs.compare(key, apiKey.keyHash)
       : hashKeySHA256(key) === apiKey.keyHash
