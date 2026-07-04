@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { buildMissionEnricher, persistMissionMemory, type MissionMemory } from './mission-context.js'
+import {
+  buildMissionEnricher,
+  persistMissionMemory,
+  type MissionMemory,
+} from './mission-context.js'
 
 function fakeCortex(initial: Array<{ content: string }> = []): MissionMemory & {
   written: Array<{ wingId: string; roomId: string; tags: string[]; content: string }>

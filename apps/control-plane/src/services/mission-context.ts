@@ -34,7 +34,9 @@ export interface MissionMemory {
 const MAX_MEMORIES = 5
 const MAX_MEMORY_CHARS = 800
 
-export function buildMissionEnricher(deps: { cortex?: MissionMemory } = {}): MissionContextEnricher {
+export function buildMissionEnricher(
+  deps: { cortex?: MissionMemory } = {}
+): MissionContextEnricher {
   return async ({ workspacePath, projectId }) => {
     const lines: string[] = []
 
@@ -53,7 +55,9 @@ export function buildMissionEnricher(deps: { cortex?: MissionMemory } = {}): Mis
         if (drawers.length > 0) {
           const memoryBlock = [
             'Project memory (deliverables from prior GitOrch missions on THIS project — build on them, do not repeat work):',
-            ...drawers.map((d) => `- ${d.content.slice(0, MAX_MEMORY_CHARS).replace(/\s+/g, ' ').trim()}`),
+            ...drawers.map(
+              (d) => `- ${d.content.slice(0, MAX_MEMORY_CHARS).replace(/\s+/g, ' ').trim()}`
+            ),
           ].join('\n')
           lines.push(memoryBlock)
         }
