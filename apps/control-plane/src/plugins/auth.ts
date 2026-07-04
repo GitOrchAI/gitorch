@@ -43,10 +43,11 @@ function unauthorized(message: string): Error {
 const authPluginImpl: FastifyPluginAsync = async (app) => {
   // Register a dedicated rate limiter for auth endpoints to protect expensive auth logic from DoS.
   // This uses a stricter limit (20 req/min) than the global default.
+  // We use global: false to prevent automatic hook registration on all routes in this scope.
   await app.register(rateLimit, {
+    global: false,
     max: 20,
     timeWindow: '1 minute',
-    hook: 'preHandler',
     keyGenerator: (request) => request.ip,
     addHeaders: {
       'x-ratelimit-limit': true,
@@ -56,8 +57,11 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
     allowList: ['127.0.0.1', '::1'],
   })
 
+  // Create a reusable rate limit handler for this instance
+  const authRateLimit = app.rateLimit()
+
   // API Key & JWT authentication
-  app.addHook('preHandler', async (request) => {
+  app.addHook('preHandler', async (request, reply) => {
     // Skip auth for health/metrics/public webhook
     const publicPaths = [
       '/health',
@@ -70,7 +74,7 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
     if (publicPaths.some((p) => request.url.startsWith(p))) return
 
     // Enforce rate limit before expensive auth operations
-    await request.rateLimit()
+    await authRateLimit.call(app, request, reply)
 
     const authHeader = request.headers.authorization
     if (!authHeader?.startsWith('Bearer ')) {
