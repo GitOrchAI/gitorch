@@ -79,7 +79,11 @@ function collectSourceFiles(root: string, maxFiles: number, maxFileBytes: number
         if (!language) continue
         if (st.size > maxFileBytes) continue
         try {
-          files.push({ relPath: relative(root, full), language, content: readFileSync(full, 'utf8') })
+          files.push({
+            relPath: relative(root, full),
+            language,
+            content: readFileSync(full, 'utf8'),
+          })
         } catch {
           /* arquivo ilegível: ignora */
         }
