@@ -69,9 +69,8 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
     ]
     if (publicPaths.some((p) => request.url.startsWith(p))) return
 
-    // A limitação de taxa já é aplicada pelo @fastify/rate-limit registrado
-    // acima (hook preHandler, registrado antes deste): ela roda antes da
-    // lógica cara de bcrypt/JWT. `request.rateLimit()` não é API do plugin.
+    // Enforce rate limiting explicitly in this auth hook before expensive JWT/DB/bcrypt work.
+    await request.rateLimit()
 
     const authHeader = request.headers.authorization
     if (!authHeader?.startsWith('Bearer ')) {
