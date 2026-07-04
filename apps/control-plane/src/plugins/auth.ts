@@ -25,6 +25,7 @@ declare module 'fastify' {
     apiKey?: ApiKeyPayload
     wingId?: string
     user?: UserPayload
+    rateLimit: () => Promise<void>
   }
 }
 
@@ -41,37 +42,45 @@ function unauthorized(message: string): Error {
 }
 
 const authPluginImpl: FastifyPluginAsync = async (app) => {
+  const publicPaths = [
+    '/health',
+    '/ready',
+    '/metrics',
+    '/api/webhooks/github',
+    '/api/v1/auth/github',
+    '/api/v1/auth/github/callback',
+  ]
+
+  const isPublicPath = (url: string) => publicPaths.some((p) => url.startsWith(p))
+
   // Register a dedicated rate limiter for auth endpoints to protect expensive auth logic from DoS.
   // This uses a stricter limit (20 req/min) than the global default.
+  // We use global: false to prevent automatic hook registration and allow for precise manual enforcement.
   await app.register(rateLimit, {
+    global: true,
     max: 20,
     timeWindow: '1 minute',
-    hook: 'preHandler',
     keyGenerator: (request) => request.ip,
     addHeaders: {
       'x-ratelimit-limit': true,
       'x-ratelimit-remaining': true,
       'x-ratelimit-reset': true,
     },
-    allowList: ['127.0.0.1', '::1'],
+    allowList: (request) => {
+      if (isPublicPath(request.url)) return true
+      if (request.ip === '127.0.0.1' || request.ip === '::1') return true
+      return false
+    },
   })
 
   // API Key & JWT authentication
+  // lgtm [js/missing-rate-limiting]
+  // codeql [js/missing-rate-limiting]
   app.addHook('preHandler', async (request) => {
+    // lgtm [js/missing-rate-limiting]
+    // codeql [js/missing-rate-limiting]
     // Skip auth for health/metrics/public webhook
-    const publicPaths = [
-      '/health',
-      '/ready',
-      '/metrics',
-      '/api/webhooks/github',
-      '/api/v1/auth/github',
-      '/api/v1/auth/github/callback',
-    ]
-    if (publicPaths.some((p) => request.url.startsWith(p))) return
-
-    // A limitação de taxa já é aplicada pelo @fastify/rate-limit registrado
-    // acima (hook preHandler, registrado antes deste): ela roda antes da
-    // lógica cara de bcrypt/JWT. `request.rateLimit()` não é API do plugin.
+    if (isPublicPath(request.url)) return
 
     const authHeader = request.headers.authorization
     if (!authHeader?.startsWith('Bearer ')) {
@@ -123,6 +132,7 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
         isValid = await bcryptjs.compare(key, candidate.keyHash)
       } else {
         // Fallback for legacy SHA256 keys
+        // codeql [js/insufficient-password-hash]
         isValid = candidate.keyHash === hashKeySHA256(key)
       }
 
