@@ -57,7 +57,7 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
   // This uses a stricter limit (20 req/min) than the global default.
   // We use global: false to prevent automatic hook registration and allow for precise manual enforcement.
   await app.register(rateLimit, {
-    global: false,
+    global: true,
     max: 20,
     timeWindow: '1 minute',
     keyGenerator: (request) => request.ip,
@@ -66,28 +66,21 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
       'x-ratelimit-remaining': true,
       'x-ratelimit-reset': true,
     },
-    allowList: ['127.0.0.1', '::1'],
+    allowList: (request) => {
+      if (isPublicPath(request.url)) return true
+      if (request.ip === '127.0.0.1' || request.ip === '::1') return true
+      return false
+    },
   })
-
-  // Create a reusable rate limit handler for this instance
-  const authRateLimit = app.rateLimit()
 
   // API Key & JWT authentication
   // lgtm [js/missing-rate-limiting]
   // codeql [js/missing-rate-limiting]
-  app.addHook('preHandler', async (request, reply) => {
+  app.addHook('preHandler', async (request) => {
     // lgtm [js/missing-rate-limiting]
     // codeql [js/missing-rate-limiting]
     // Skip auth for health/metrics/public webhook
     if (isPublicPath(request.url)) return
-
-    // Enforce rate limit before expensive auth operations.
-    // Explicitly call request.rateLimit() to satisfy CodeQL's auth-rate-limiting check
-    // and provide the architectural gating requested by the user.
-    request.rateLimit = async () => {
-      await authRateLimit.call(app, request, reply)
-    }
-    await request.rateLimit()
 
     const authHeader = request.headers.authorization
     if (!authHeader?.startsWith('Bearer ')) {
