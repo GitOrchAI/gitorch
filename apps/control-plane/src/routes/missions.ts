@@ -1,6 +1,5 @@
 import { FastifyRequest, FastifyReply, FastifyInstance } from 'fastify'
-import { PrismaClient } from '@prisma/client'
-import type { InputJsonValue } from '@prisma/client/runtime/library'
+import { PrismaClient, Prisma } from '@prisma/client'
 import { isF6AgentRole } from '@gitorch/agents'
 
 declare module 'fastify' {
@@ -17,7 +16,7 @@ declare module 'fastify' {
 interface TriggerMissionBody {
   projectId: string
   type: string
-  payload: InputJsonValue
+  payload: Prisma.InputJsonValue
 }
 
 interface MissionParams {
@@ -48,7 +47,7 @@ export const missionRoutes = async (app: FastifyInstance): Promise<void> => {
           projectId,
           type,
           status: 'pending',
-          payload: payload as InputJsonValue,
+          payload: payload as Prisma.InputJsonValue,
         },
         select: {
           id: true,
