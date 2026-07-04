@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto'
 import jwt from 'jsonwebtoken'
 import bcryptjs from 'bcryptjs'
 import { getEnv } from '../config/env.js'
+import rateLimit from '@fastify/rate-limit'
 
 interface ApiKeyPayload {
   projectId: string
@@ -50,6 +51,18 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
   ]
 
   const isPublicPath = (url: string) => publicPaths.some((p) => url.startsWith(p))
+
+  // Register rate limit for authenticated routes with a stricter limit.
+  // This helps mitigate brute-force attacks on API keys and JWTs.
+  // We use global: true here because authPlugin is usually registered
+  // in a way that its scope covers the routes it needs to protect.
+  // This resolves CodeQL alert #24.
+  await app.register(rateLimit, {
+    global: true,
+    max: 20,
+    timeWindow: '1 minute',
+    skip: (request) => isPublicPath(request.url),
+  })
 
   app.addHook('preHandler', async (request) => {
     // Skip auth for health/metrics/public webhook
