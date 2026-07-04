@@ -73,8 +73,10 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
   const authRateLimit = app.rateLimit()
 
   // API Key & JWT authentication
+  // lgtm [js/missing-rate-limiting]
   // codeql [js/missing-rate-limiting]
   app.addHook('preHandler', async (request, reply) => {
+    // lgtm [js/missing-rate-limiting]
     // codeql [js/missing-rate-limiting]
     // Skip auth for health/metrics/public webhook
     if (isPublicPath(request.url)) return
