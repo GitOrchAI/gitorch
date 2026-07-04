@@ -30,6 +30,10 @@ Master, or Quality Assurance) and your task are defined in the mission prompt.
 - Treat the repository's own process/report/issue-tracker files as noise for
   your mission; don't spend your budget opening them one by one.
 
+## Method
+- Follow the GitOrch role playbook for your current role — it is included in
+  your mission prompt (and available as a `gitorch-<role>-playbook` skill).
+
 ## Convergence — always deliver
 - Read only what you need (a handful of key files), then STOP and produce your
   deliverable. Your final printed message IS the deliverable and is stored to
