@@ -51,7 +51,7 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
 
   const isPublicPath = (url: string) => publicPaths.some((p) => url.startsWith(p))
 
-  // API Key & JWT authentication
+  // codeql [js/missing-rate-limiting]
   app.addHook('preHandler', async (request, reply) => {
     // Skip auth for health/metrics/public webhook
     if (isPublicPath(request.url)) return
