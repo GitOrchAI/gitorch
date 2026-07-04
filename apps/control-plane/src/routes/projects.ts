@@ -301,7 +301,7 @@ export const projectRoutes = async (app: FastifyInstance): Promise<void> => {
       ])
 
       const missionStatus = missions.reduce(
-        (acc: Record<string, number>, m) => {
+        (acc: Record<string, number>, m: { status: string; _count: number }) => {
           acc[m.status] = m._count
           return acc
         },

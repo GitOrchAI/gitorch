@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { randomBytes } from 'node:crypto'
 import bcryptjs from 'bcryptjs'
-import type { JsonObject } from '@prisma/client/runtime/library'
+import { Prisma } from '@prisma/client'
 import { ensureDefaultSchedules } from '../lib/project-defaults.js'
 
 interface GitHubRepo {
@@ -126,9 +126,9 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
                 engines,
                 telegram: telegram ?? null,
                 plan,
-                envConfig: (envConfig ?? null) as JsonObject | null,
+                envConfig: (envConfig ?? null) as Prisma.JsonObject | null,
                 userGithubToken: user.githubToken ?? null,
-              } as JsonObject,
+              } as Prisma.JsonObject,
             },
           })
         }
@@ -168,8 +168,8 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
               repoUrl: `https://github.com/${repoFullName}`,
               engines,
               telegram: telegram ?? null,
-              envConfig: (envConfig ?? null) as JsonObject | null,
-            } as JsonObject,
+              envConfig: (envConfig ?? null) as Prisma.JsonObject | null,
+            } as Prisma.JsonObject,
             status: 'pending',
           },
         })

@@ -25,7 +25,6 @@ declare module 'fastify' {
     apiKey?: ApiKeyPayload
     wingId?: string
     user?: UserPayload
-    rateLimit: () => Promise<void>
   }
 }
 
