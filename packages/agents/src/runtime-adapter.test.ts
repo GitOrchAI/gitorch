@@ -99,6 +99,51 @@ test('creates cli runtime adapter that passes prompt and runtime environment to 
   })
 })
 
+test('promptViaStdin delivers the prompt on stdin and keeps it out of argv', async () => {
+  const calls: RuntimeCommandRequest[] = []
+  const adapter = createCliRuntimeAdapter({
+    runtime: 'antigravity',
+    binary: 'agy',
+    args: ['--print', '--sandbox'],
+    workspaceDirArgName: '--add-dir',
+    promptViaStdin: true,
+    runner: async (request) => {
+      calls.push(request)
+      return { exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1 }
+    },
+  })
+
+  await adapter.run({
+    missionId: 'm-stdin',
+    prompt: 'Produce the Research Brief',
+    runtime: { runtime: 'antigravity' },
+    cwd: '/workspace',
+    credentialRef: {
+      connectionId: 'c1',
+      ownerScope: 'project',
+      runtime: 'antigravity',
+      providedSecrets: [],
+    },
+  })
+
+  // The prompt must NOT appear as a positional arg (the engine would fixate on
+  // its own CLI flags); it must arrive on stdin.
+  expect(calls[0].args).toEqual(['--print', '--sandbox', '--add-dir', '/workspace'])
+  expect(calls[0].args).not.toContain('Produce the Research Brief')
+  expect(calls[0].stdin).toBe('Produce the Research Brief')
+})
+
+test('realRuntimeCommandRunner writes request.stdin to the child stdin', async () => {
+  const result = await realRuntimeCommandRunner({
+    binary: 'cat',
+    args: [],
+    env: {},
+    stdin: 'piped-in-content',
+  })
+  expect(result.exitCode).toBe(0)
+  expect(result.stdout.trim()).toBe('piped-in-content')
+})
+
 test('realRuntimeCommandRunner runs a local command successfully', async () => {
   const request: RuntimeCommandRequest = {
     binary: 'echo',

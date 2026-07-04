@@ -193,11 +193,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       })
     )
   } else {
-    // --print: não-interativo. --sandbox: ADICIONA restrições de terminal e
-    // auto-aprova ferramentas DENTRO do sandbox (o oposto de
-    // --dangerously-skip-permissions, que desliga aprovações). Sem --sandbox o
-    // modo --print bloqueia no primeiro uso de ferramenta esperando aprovação
-    // sem TTY. --print-timeout limita a espera pela resposta do modelo.
+    // --print: não-interativo. --sandbox: ADICIONA restrições de terminal e faz
+    // os hooks do plugin GitOrch (gate de shell/leitura, convergência) rodarem.
+    // --print-timeout limita a espera pela resposta do modelo.
+    //
+    // CRÍTICO (QA real 2026-07-04): o agy lê a MISSÃO do STDIN. Entregar o prompt
+    // como argumento posicional com o stdin vazio faz o motor "fixar" nas
+    // próprias flags de CLI (--sandbox/--print-timeout) como se fossem a tarefa —
+    // ele escrevia "Relatório de Verificação de Sandbox" em vez do deliverable.
+    // Com o prompt via stdin (promptViaStdin) ele foca e entrega o brief correto.
     const agyExtraArgs = (process.env['GITORCH_AGY_EXTRA_ARGS'] ?? '').split(' ').filter(Boolean)
     const printTimeout = process.env['GITORCH_AGY_PRINT_TIMEOUT'] ?? '20m'
     registry.register(
@@ -208,6 +212,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         args: ['--print', '--sandbox', '--print-timeout', printTimeout, ...agyExtraArgs],
         modelArgName: '--model',
         workspaceDirArgName: '--add-dir',
+        promptViaStdin: true,
         ...(missionRunner ? { runner: missionRunner } : {}),
       })
     )

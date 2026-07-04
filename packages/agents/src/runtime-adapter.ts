@@ -31,6 +31,14 @@ export interface RuntimeCommandRequest {
   cwd?: string
   /** Mata o processo após N ms (evita missão pendurada segurando RAM). */
   timeoutMs?: number
+  /**
+   * Conteúdo escrito no stdin do processo (depois fechado com EOF). Usado para
+   * entregar o PROMPT ao Antigravity CLI: em modo --print o agy lê a tarefa do
+   * stdin; passar o prompt como argumento posicional com o stdin vazio faz o
+   * motor "fixar" nas próprias flags de CLI (--sandbox/--print-timeout) como se
+   * fossem a missão. Quando ausente, o stdin é fechado imediatamente (EOF).
+   */
+  stdin?: string
 }
 
 /**
@@ -97,7 +105,11 @@ export const realRuntimeCommandRunner: RuntimeCommandRunner = async (request) =>
     })
     // CLIs agênticos em modo não-interativo leem o stdin até o EOF antes de
     // iniciar; o execFile mantém o pipe aberto, o que bloquearia o processo
-    // indefinidamente. Fechar o stdin sinaliza o EOF imediatamente.
+    // indefinidamente. Escrevemos o prompt (quando entregue por stdin) e sempre
+    // fechamos o stdin para sinalizar o EOF imediatamente.
+    if (request.stdin !== undefined) {
+      pending.child.stdin?.write(request.stdin)
+    }
     pending.child.stdin?.end()
     const { stdout, stderr } = await pending
     return {
@@ -180,6 +192,12 @@ export interface CreateCliRuntimeAdapterOptions {
    * flags variádicas (listas de valores) engoliriam o prompt posicional.
    */
   promptSeparator?: string
+  /**
+   * Entrega o prompt pelo STDIN em vez de argumento posicional. Obrigatório para
+   * o Antigravity CLI (`agy --print`): ele lê a tarefa do stdin; com o stdin
+   * vazio ele trata as próprias flags como a missão. Ver RuntimeCommandRequest.stdin.
+   */
+  promptViaStdin?: boolean
 }
 
 export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions): RuntimeAdapter {
@@ -208,18 +226,17 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
       const workspaceArgs =
         options.workspaceDirArgName && request.cwd ? [options.workspaceDirArgName, request.cwd] : []
 
+      const promptArgs = options.promptViaStdin
+        ? []
+        : [...(options.promptSeparator ? [options.promptSeparator] : []), request.prompt]
+
       const result = await runner({
         binary: options.binary,
-        args: [
-          ...baseArgs,
-          ...modelArgs,
-          ...workspaceArgs,
-          ...(options.promptSeparator ? [options.promptSeparator] : []),
-          request.prompt,
-        ],
+        args: [...baseArgs, ...modelArgs, ...workspaceArgs, ...promptArgs],
         env,
         cwd: request.cwd,
         timeoutMs: request.timeoutMs,
+        ...(options.promptViaStdin ? { stdin: request.prompt } : {}),
       })
 
       return {

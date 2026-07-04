@@ -21,6 +21,10 @@ RUN chmod 755 /usr/local/bin/agy
 RUN mkdir -p /home/agent && chmod 777 /home/agent
 ENV HOME=/home/agent
 
+# Plugin nativo do GitOrch (identidade/segurança via rules + hooks de gate de
+# shell e convergência). O entrypoint o instala no HOME do agy em runtime.
+COPY plugin /opt/gitorch-plugin
+
 # Entrypoint copia as credenciais montadas (read-only) para o HOME gravável.
 COPY entrypoint.sh /usr/local/bin/gitorch-entrypoint.sh
 RUN chmod 755 /usr/local/bin/gitorch-entrypoint.sh

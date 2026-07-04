@@ -4,6 +4,7 @@ import type {
   AgentMission,
   AgentRuntimeSelection,
   F6AgentRole,
+  F6AgentRuntime,
   RuntimeCredentialRef,
 } from './types'
 import { AGENT_SYSTEM_PROMPTS } from './prompts/index.js'
@@ -41,7 +42,7 @@ export function buildAgentMission(input: BuildAgentMissionInput): AgentMission {
     repository: input.repository,
     role: input.role,
     goal: input.goal,
-    prompt: buildPrompt(input.role, input.repository, input.goal, input.context),
+    prompt: buildPrompt(input.role, input.repository, input.goal, input.context, runtime.runtime),
     runtime: { ...runtime },
     credentialRef: {
       ...input.credentialRef,
@@ -56,13 +57,14 @@ function buildPrompt(
   role: F6AgentRole,
   repository: string,
   goal: string,
-  context: string[]
+  context: string[],
+  runtime?: F6AgentRuntime
 ): string {
   const contextBlock = context.length > 0 ? context.map((line) => `- ${line}`).join('\n') : '- none'
   const systemPrompt = AGENT_SYSTEM_PROMPTS[role] || ''
 
   return [
-    buildPrimingPreamble(role),
+    buildPrimingPreamble(role, runtime),
     `Role: ${role}`,
     `Repository: ${repository}`,
     `Goal: ${goal}`,

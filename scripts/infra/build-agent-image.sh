@@ -21,6 +21,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cp "$SCRIPT_DIR/agent-image/Containerfile" "$CONTEXT_DIR/Containerfile"
 cp "$SCRIPT_DIR/agent-image/entrypoint.sh" "$CONTEXT_DIR/entrypoint.sh"
 cp "$AGY_BIN" "$CONTEXT_DIR/agy"
+# Plugin nativo do GitOrch (rules de identidade/segurança + hooks de gate de
+# shell e convergência) que o entrypoint instala no HOME do agy em runtime.
+cp -a "$SCRIPT_DIR/agent-image/plugin" "$CONTEXT_DIR/plugin"
 
 "$ENGINE" build -t "$TAG" -f "$CONTEXT_DIR/Containerfile" "$CONTEXT_DIR"
 echo "imagem construída: $TAG"

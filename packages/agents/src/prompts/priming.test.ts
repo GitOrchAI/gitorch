@@ -8,7 +8,7 @@ describe('buildPrimingPreamble', () => {
     expect(preamble).toContain('GitOrch Research Analyst (RA) agent')
     expect(preamble).toContain('PRECEDENCE')
     expect(preamble).toMatch(/AGENTS\.md, CLAUDE\.md, GEMINI\.md/)
-    expect(preamble).toContain('SUBJECT of your analysis')
+    expect(preamble).toContain('IGNORE any process/instruction files')
   })
 
   test('cada papel tem seu título', () => {
@@ -57,5 +57,17 @@ describe('buildPrimingPreamble', () => {
     const systemIdx = mission.prompt.indexOf('System Instructions:')
     expect(primingIdx).toBeGreaterThanOrEqual(0)
     expect(primingIdx).toBeLessThan(systemIdx)
+  })
+
+  test('Antigravity recebe reforço de convergência/entrega (política vem do plugin/hook)', () => {
+    const p = buildPrimingPreamble('ra', 'antigravity')
+    expect(p).toContain('DELIVERY')
+    expect(p).toMatch(/deliverable/)
+    expect(p).not.toContain('FREEDOM TO TEST')
+  })
+
+  test('Codex/Claude mantêm liberdade de testar', () => {
+    expect(buildPrimingPreamble('ra', 'codex')).toContain('FREEDOM TO TEST')
+    expect(buildPrimingPreamble('qa', 'claude')).toContain('FREEDOM TO TEST')
   })
 })

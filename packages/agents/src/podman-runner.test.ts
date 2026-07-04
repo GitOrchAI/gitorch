@@ -36,6 +36,28 @@ describe('createPodmanCommandRunner', () => {
     expect(call.args).toContain('HOME=/home/agent')
   })
 
+  test('com stdin, adiciona -i e encaminha o conteúdo ao hostRunner (prompt do agy)', async () => {
+    const hostRunner = vi.fn().mockResolvedValue(ok())
+    const runner = createPodmanCommandRunner({ image: 'img', hostRunner })
+
+    await runner(buildRequest({ stdin: 'Produce the Research Brief' }))
+
+    const call = hostRunner.mock.calls[0][0]
+    expect(call.args).toContain('-i')
+    expect(call.stdin).toBe('Produce the Research Brief')
+  })
+
+  test('sem stdin, não adiciona -i nem encaminha stdin', async () => {
+    const hostRunner = vi.fn().mockResolvedValue(ok())
+    const runner = createPodmanCommandRunner({ image: 'img', hostRunner })
+
+    await runner(buildRequest())
+
+    const call = hostRunner.mock.calls[0][0]
+    expect(call.args).not.toContain('-i')
+    expect(call.stdin).toBeUndefined()
+  })
+
   test('traduz o caminho do host (exato e subcaminho) para /workspace', async () => {
     const hostRunner = vi.fn().mockResolvedValue(ok())
     const runner = createPodmanCommandRunner({ image: 'img', hostRunner })

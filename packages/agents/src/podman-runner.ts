@@ -77,6 +77,10 @@ export function createPodmanCommandRunner(
     const args: string[] = [
       'run',
       '--rm',
+      // `-i` mantém o stdin aberto até o container: é assim que o prompt chega ao
+      // Antigravity CLI (que lê a missão do stdin). Sem isto o prompt via stdin
+      // se perderia na borda do podman.
+      ...(request.stdin !== undefined ? ['-i'] : []),
       '--name',
       containerName,
       // Mapeia o usuário do host para o mesmo uid dentro do container: os
@@ -139,6 +143,9 @@ export function createPodmanCommandRunner(
         // o ambiente DENTRO do container é somente o passado via -e acima.
         env: {},
         timeoutMs: request.timeoutMs,
+        // Encaminha o prompt (quando entregue por stdin) para o `podman run -i`,
+        // que o repassa ao stdin do processo do agente no container.
+        ...(request.stdin !== undefined ? { stdin: request.stdin } : {}),
       })
 
       // Timeout (exit 124) mata só o cliente podman no host; o container pode
