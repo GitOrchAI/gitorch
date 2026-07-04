@@ -1,4 +1,4 @@
-import { FastifyPluginAsync } from 'fastify'
+import { FastifyPluginAsync, FastifyRequest } from 'fastify'
 import fp from 'fastify-plugin'
 import { prisma, wingIdContext } from './prisma.js'
 import { createHash } from 'node:crypto'
@@ -54,8 +54,6 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
 
   // Register a dedicated rate limiter for auth endpoints to protect expensive auth logic from DoS.
   // This uses a stricter limit (20 req/min) than the global default.
-  // We use global: true within this plugin to automatically apply the limit to all routes
-  // defined or inherited here, ensuring that auth logic is always protected.
   await app.register(rateLimit, {
     global: true,
     max: 20,
@@ -66,11 +64,8 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
       'x-ratelimit-remaining': true,
       'x-ratelimit-reset': true,
     },
-    allowList: (request) => {
-      if (isPublicPath(request.url)) return true
-      if (request.ip === '127.0.0.1' || request.ip === '::1') return true
-      return false
-    },
+    allowList: (request: FastifyRequest) =>
+      isPublicPath(request.url) || request.ip === '127.0.0.1' || request.ip === '::1',
   })
 
   // API Key & JWT authentication
