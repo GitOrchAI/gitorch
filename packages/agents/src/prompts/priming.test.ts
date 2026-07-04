@@ -71,3 +71,46 @@ describe('buildPrimingPreamble', () => {
     expect(buildPrimingPreamble('qa', 'claude')).toContain('FREEDOM TO TEST')
   })
 })
+
+describe('prompt da missão carrega o playbook Cadence (fonte única do método)', () => {
+  const baseInput = {
+    id: 'm1',
+    projectId: 'p1',
+    repository: 'owner/repo',
+    goal: 'Goal',
+    context: [],
+    credentialRef: {
+      connectionId: 'c1',
+      ownerScope: 'project' as const,
+      runtime: 'antigravity' as const,
+      providedSecrets: [],
+    },
+    runtime: { runtime: 'antigravity' as const },
+  }
+
+  test('PO recebe DoD de 8 campos e Sprint Goal', () => {
+    const m = buildAgentMission({ ...baseInput, role: 'po' })
+    expect(m.prompt).toContain('Sprint Goal')
+    expect(m.prompt).toContain('Implementation Guide')
+    expect(m.prompt).toContain('Analysis Result')
+  })
+
+  test('RA recebe codegraph-first e cleanup findings', () => {
+    const m = buildAgentMission({ ...baseInput, role: 'ra' })
+    expect(m.prompt).toMatch(/code graph/i)
+    expect(m.prompt).toMatch(/cleanup finding/i)
+  })
+
+  test('QA recebe Verification Criteria e @jules', () => {
+    const m = buildAgentMission({ ...baseInput, role: 'qa' })
+    expect(m.prompt).toContain('Verification Criteria')
+    expect(m.prompt).toContain('@jules')
+  })
+
+  test('prompt não vira romance (gate de tamanho por papel)', () => {
+    for (const role of ['ra', 'po', 'sm', 'qa'] as const) {
+      const m = buildAgentMission({ ...baseInput, role })
+      expect(m.prompt.length).toBeLessThan(8000)
+    }
+  })
+})

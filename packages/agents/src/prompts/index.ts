@@ -1,11 +1,18 @@
-import { RA_PROMPT } from './ra.js'
-import { PO_PROMPT } from './po.js'
-import { SM_PROMPT } from './sm.js'
-import { QA_PROMPT } from './qa.js'
+import { loadPlaybook, type CadenceRole } from '@gitorch/cadence'
+import type { F6AgentRole } from '../types'
 
-export const AGENT_SYSTEM_PROMPTS = {
-  ra: RA_PROMPT,
-  po: PO_PROMPT,
-  sm: SM_PROMPT,
-  qa: QA_PROMPT,
+// System prompts por papel: gerados do Cadence (fonte única do método).
+// O playbook diz O QUE o papel faz e COMO; o preamble (priming.ts) cuida de
+// identidade, guardrails e convergência. Editar processo = editar o playbook
+// em packages/cadence/playbooks, nunca aqui.
+
+function buildSystemPrompt(role: CadenceRole): string {
+  return loadPlaybook(role)
+}
+
+export const AGENT_SYSTEM_PROMPTS: Record<F6AgentRole, string> = {
+  ra: buildSystemPrompt('ra'),
+  po: buildSystemPrompt('po'),
+  sm: buildSystemPrompt('sm'),
+  qa: buildSystemPrompt('qa'),
 }

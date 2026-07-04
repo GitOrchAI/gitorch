@@ -289,6 +289,9 @@ importers:
 
   packages/agents:
     dependencies:
+      '@gitorch/cadence':
+        specifier: workspace:*
+        version: link:../cadence
       '@gitorch/github-sync':
         specifier: workspace:*
         version: link:../github-sync
