@@ -151,6 +151,10 @@ function buildMissionRunner(app: FastifyInstance): RuntimeCommandRunner | undefi
         )
         return { mounts: [] }
       }
+      // As "mãos" no GitHub: se o dono conectou um token (runtime lógico
+      // `github`), ele entra no MESMO staging e vira GH_TOKEN no container
+      // (entrypoint). Ausência é normal — missão segue só-leitura de GitHub.
+      await app.engineConnections.materializeToHome(ownerUserId, 'github', dir)
       return {
         mounts: [{ source: dir, target: '/run/gitorch-credentials', readOnly: true }],
         cleanup,

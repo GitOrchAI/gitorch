@@ -15,6 +15,22 @@ const enginesPluginImpl: FastifyPluginAsync = async (app) => {
     return reply.send({ engines: await service.list(userId) })
   })
 
+  // Conecta o GitHub do usuário por token (fine-grained PAT). O valor nunca é
+  // logado; o token segue o mesmo cofre cifrado das credenciais de motor e vira
+  // GH_TOKEN dentro do sandbox das missões dos projetos deste usuário.
+  app.post('/api/v1/engines/github/token', async (request, reply) => {
+    const userId = await resolveUserId(app, request)
+    if (!userId) return reply.code(401).send({ error: 'UNAUTHORIZED: user session required' })
+    const { token } = (request.body ?? {}) as { token?: string }
+    if (!token) return reply.code(400).send({ error: 'token é obrigatório' })
+    try {
+      const status = await service.connectGitHubToken(userId, token)
+      return reply.send({ connected: true, status })
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message })
+    }
+  })
+
   // Revoga (desconecta) um motor do usuário.
   app.delete('/api/v1/engines/:runtime', async (request, reply) => {
     const userId = await resolveUserId(app, request)

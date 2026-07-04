@@ -12,6 +12,15 @@ if [ -d "$CRED_SRC" ]; then
   chmod -R u+rwX "$HOME" 2>/dev/null || true
 fi
 
+# As "mãos" no GitHub: quando o dono do projeto conectou um token, ele chega
+# como ~/.gitorch/gh-token e vira GH_TOKEN (gh CLI) e GITHUB_TOKEN (MCPs).
+# O valor nunca é impresso.
+if [ -f "$HOME/.gitorch/gh-token" ]; then
+  GH_TOKEN="$(cat "$HOME/.gitorch/gh-token")"
+  GITHUB_TOKEN="$GH_TOKEN"
+  export GH_TOKEN GITHUB_TOKEN
+fi
+
 # Instala o plugin nativo do GitOrch no HOME do agy. Ele carrega:
 #  - rules/: identidade "sou agente GitOrch, não do repo" + guardrail de segurança;
 #  - hooks.json: PreToolUse que LIBERA só `gh`/`git` + leitura e NEGA o resto
