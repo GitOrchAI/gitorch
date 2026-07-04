@@ -24,7 +24,7 @@ import {
   type WorkspaceProvider,
 } from '@gitorch/agents'
 import { LocalWorkspaceProvider, WorkspaceManager } from '@gitorch/workspace-engine'
-import { buildMissionEnricher } from '../services/mission-context.js'
+import { buildMissionEnricher, persistMissionMemory } from '../services/mission-context.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // dist/plugins -> raiz do repo -> runtime/
@@ -238,8 +238,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   const orchestrator = new AgentOrchestrator({
     registry,
     workspace: buildWorkspaceProvider(app),
-    // Injeta conhecimento do projeto (codegraph + memórias) no contexto da missão.
-    enrichContext: buildMissionEnricher(),
+    // Injeta conhecimento do projeto (codegraph + memórias do Cortex) no contexto.
+    enrichContext: buildMissionEnricher({ cortex: app.cortex }),
   })
 
   // Missão presa vira failed: cobre 'running' passado de STALE_RUNNING_MS e
@@ -412,6 +412,14 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         })
 
         if (result.exitCode === 0 && result.output.trim().length > 0) {
+          // O entregável vira memória tipada do projeto: o próximo agente herda.
+          await persistMissionMemory(app.cortex, {
+            projectId: project.id,
+            role,
+            content: result.output,
+            now: new Date().toISOString(),
+          })
+
           const updated = await app.prisma.mission.updateMany({
             where: { id: missionId, status: 'running' },
             data: {
