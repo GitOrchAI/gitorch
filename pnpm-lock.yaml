@@ -137,6 +137,9 @@ importers:
       '@gitorch/agents':
         specifier: workspace:*
         version: link:../../packages/agents
+      '@gitorch/cgc':
+        specifier: workspace:*
+        version: link:../../packages/cgc
       '@gitorch/cortex':
         specifier: workspace:*
         version: link:../../packages/cortex

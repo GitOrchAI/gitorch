@@ -1,7 +1,21 @@
 import { SynapseClient, type SynapseActor, type SynapseScope } from '@gitorch/synapse'
 import { buildAgentMission, type BuildAgentMissionInput, workspaceManager } from './agent-mission'
 import type { RuntimeExecutionResult, RuntimeRegistry } from './runtime-adapter'
+import type { F6AgentRole } from './types'
 import { primeWorkspace } from './workspace-priming'
+
+/**
+ * Enriquece o CONTEXTO da missão com CONHECIMENTO do projeto, depois que o
+ * workspace já está clonado/primado: resumo de codegraph (o que o código É de
+ * verdade) e memórias do projeto (o que já se aprendeu). Fica como hook para o
+ * pacote @gitorch/agents não depender de @gitorch/cgc/cortex — o control plane
+ * injeta a implementação. Cada linha retornada vira um item de contexto.
+ */
+export type MissionContextEnricher = (args: {
+  workspacePath?: string
+  projectId: string
+  role: F6AgentRole
+}) => Promise<string[]>
 
 export interface WorkspaceAllocation {
   path?: string
@@ -20,21 +34,24 @@ export interface AgentOrchestratorOptions {
   registry: RuntimeRegistry
   synapse?: SynapseClient
   workspace?: WorkspaceProvider
+  enrichContext?: MissionContextEnricher
 }
 
 export class AgentOrchestrator {
   private readonly registry: RuntimeRegistry
   private readonly synapse: SynapseClient
   private readonly workspace: WorkspaceProvider
+  private readonly enrichContext?: MissionContextEnricher
 
   constructor(options: AgentOrchestratorOptions) {
     this.registry = options.registry
     this.synapse = options.synapse ?? new SynapseClient()
     this.workspace = options.workspace ?? workspaceManager
+    this.enrichContext = options.enrichContext
   }
 
   async runMission(input: BuildAgentMissionInput): Promise<RuntimeExecutionResult> {
-    const mission = buildAgentMission(input)
+    let mission = buildAgentMission(input)
     const actor: SynapseActor = { id: `agent-${mission.role}`, role: mission.role }
     const scope: SynapseScope = {
       type: 'wing',
@@ -59,6 +76,24 @@ export class AgentOrchestrator {
     // Faz o motor agir como agente GitOrch (não seguir o processo do repo).
     if (allocation?.path) {
       await primeWorkspace(allocation.path)
+    }
+
+    // Injeta CONHECIMENTO (codegraph + memórias) no contexto e RECONSTRÓI o
+    // prompt — só depois do workspace existir. O id da missão é determinístico
+    // (input.id), então reconstruir não muda a identidade nem o registro Synapse.
+    if (this.enrichContext) {
+      try {
+        const extra = await this.enrichContext({
+          workspacePath: allocation?.path,
+          projectId: mission.projectId,
+          role: mission.role,
+        })
+        if (extra.length > 0) {
+          mission = buildAgentMission({ ...input, context: [...input.context, ...extra] })
+        }
+      } catch {
+        // Enriquecimento é best-effort: se falhar, a missão segue com o contexto base.
+      }
     }
 
     let result: RuntimeExecutionResult

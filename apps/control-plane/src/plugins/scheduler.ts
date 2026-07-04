@@ -24,6 +24,7 @@ import {
   type WorkspaceProvider,
 } from '@gitorch/agents'
 import { LocalWorkspaceProvider, WorkspaceManager } from '@gitorch/workspace-engine'
+import { buildMissionEnricher } from '../services/mission-context.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // dist/plugins -> raiz do repo -> runtime/
@@ -237,6 +238,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   const orchestrator = new AgentOrchestrator({
     registry,
     workspace: buildWorkspaceProvider(app),
+    // Injeta conhecimento do projeto (codegraph + memórias) no contexto da missão.
+    enrichContext: buildMissionEnricher(),
   })
 
   // Missão presa vira failed: cobre 'running' passado de STALE_RUNNING_MS e
