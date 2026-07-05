@@ -6,8 +6,8 @@ import {
 } from './mission-context.js'
 
 function fakeCortex(
-  initial: Array<{ content: string }> = [],
-  byRoom: Record<string, Array<{ content: string }>> = {}
+  initial: Array<{ content: string; createdAt?: string }> = [],
+  byRoom: Record<string, Array<{ content: string; createdAt?: string }>> = {}
 ): MissionMemory & {
   written: Array<{ wingId: string; roomId: string; tags: string[]; content: string }>
 } {
@@ -56,6 +56,19 @@ describe('buildMissionEnricher', () => {
     expect(lines[0]).toContain('\n')
     expect(lines[1]).toContain('outra memória')
     expect(lines[1]).not.toContain('### Journey')
+  })
+
+  it('com dois entregáveis do RA, o PO recebe o MAIS NOVO (recência desempata)', async () => {
+    const cortex = fakeCortex([], {
+      ra: [
+        { content: '### Journey 0: analise VELHA', createdAt: '2026-07-05T10:00:00Z' },
+        { content: '### Journey 0: analise NOVA', createdAt: '2026-07-05T18:00:00Z' },
+      ],
+    })
+    const enrich = buildMissionEnricher({ cortex })
+    const lines = await enrich({ projectId: 'p1', role: 'po' })
+    expect(lines[0]).toContain('analise NOVA')
+    expect(lines[0]).not.toContain('analise VELHA')
   })
 
   it('RA (e outros papéis) não recebem o bloco intacto — só o PO precisa', async () => {

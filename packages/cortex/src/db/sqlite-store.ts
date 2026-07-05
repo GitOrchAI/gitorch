@@ -168,7 +168,9 @@ export class SqliteStore {
       SELECT *
       FROM cortex_drawers
       WHERE wing_id = ?
-      ORDER BY importance DESC, emotional_weight DESC
+      -- created_at desempata: sem recencia, dois entregaveis de mesma
+      -- importancia voltam em ordem arbitraria (o agente leria o ANTIGO).
+      ORDER BY importance DESC, emotional_weight DESC, created_at DESC
       LIMIT ?
     `
         )
@@ -199,7 +201,7 @@ export class SqliteStore {
       SELECT *
       FROM cortex_drawers
       WHERE ${clauses.join(' AND ')}
-      ORDER BY importance DESC, emotional_weight DESC
+      ORDER BY importance DESC, emotional_weight DESC, created_at DESC
       LIMIT ?
     `
         )

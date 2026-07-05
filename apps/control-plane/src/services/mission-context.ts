@@ -68,7 +68,11 @@ export async function summarizeWorkspaceIsolated(
 
 /** Subconjunto do CortexClient que precisamos — estrutural, para testabilidade. */
 export interface MissionMemory {
-  recallLocal(wingId: string, roomId?: string, hallId?: string): Array<{ content: string }>
+  recallLocal(
+    wingId: string,
+    roomId?: string,
+    hallId?: string
+  ): Array<{ content: string; createdAt?: string }>
   writeDrawer(drawer: {
     id: string
     wingId: string
@@ -113,7 +117,12 @@ export function buildMissionEnricher(
         // quebras de linha + corte) destruiria o parse de cobertura.
         let raIntact: string | undefined
         if (role === 'po') {
-          raIntact = deps.cortex.recallLocal(projectId, 'ra')[0]?.content
+          // O MAIS NOVO explicitamente: o recall ordena por importância e dois
+          // entregáveis do RA empatam — sem isto o PO leria a análise antiga.
+          const raDrawers = [...deps.cortex.recallLocal(projectId, 'ra')].sort((a, b) =>
+            (b.createdAt ?? '').localeCompare(a.createdAt ?? '')
+          )
+          raIntact = raDrawers[0]?.content
           if (raIntact) lines.push(raIntact.slice(0, MAX_RA_DELIVERABLE_CHARS))
         }
 
