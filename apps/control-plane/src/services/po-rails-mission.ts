@@ -22,7 +22,20 @@ export interface PoRailsMissionOptions {
   delegateLabel?: string
   /** Colunas do board deste projeto (config; default nativo do Projects v2). */
   boardColumns?: BoardColumns
+  /** Duração da sprint em dias (config por projeto; padrão 7). */
+  sprintDays?: number
   fetchImpl?: typeof fetch
+}
+
+/**
+ * Conta as jornadas do RA presentes no contexto. O formato é NOSSO
+ * (formatRaDeliverable, "### Journey N:"), então o parse é estável — é o elo
+ * que permite ao executor rejeitar plano que ignora uma jornada.
+ */
+export function countJourneysInContext(contextBlocks: string[]): number {
+  const all = contextBlocks.join('\n')
+  const matches = all.match(/^### Journey \d+:/gm)
+  return matches ? matches.length : 0
 }
 
 export interface PoRailsMissionResult {
@@ -74,11 +87,12 @@ export async function runPoMissionViaRails(
     }
   }
 
-  // 2) Roteiro do PO (4 formulários; a LLM nunca toca no GitHub).
+  // 2) Roteiro do PO (5 formulários; a LLM nunca toca no GitHub).
   const plan = await runPoRails(options.execute, {
     wish: { number: wish.number, nodeId: wish.node_id },
     wishText: `${wish.title} — ${wish.body ?? ''}`,
     contextBlocks: options.contextBlocks,
+    journeysCount: countJourneysInContext(options.contextBlocks),
   })
 
   // 3) Executor determinístico aplica no GitHub.
@@ -98,6 +112,7 @@ export async function runPoMissionViaRails(
     repository: options.repository,
     projectId,
     ...(options.boardColumns ? { statusColumns: options.boardColumns } : {}),
+    ...(options.sprintDays ? { sprintDays: options.sprintDays } : {}),
     ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
   })
   const result = await applyBacklog({
@@ -109,8 +124,9 @@ export async function runPoMissionViaRails(
   // 4) Resumo textual: vira memória do projeto (e evidência humana).
   const lines = [
     `PO rails applied wish #${wish.number} ("${wish.title}").`,
-    `Sprint goal: ${plan.sprint?.sprintGoal ?? '(none)'}`,
-    `Tree: ${plan.phases.length} phase(s), ${plan.epics.length} epic(s), ${plan.items.length} item(s).`,
+    `Sprint goal: ${plan.roadmap.sprintGoal}`,
+    `Tree: ${plan.phases.length} phase(s), ${plan.epics.length} epic(s), ${plan.features.length} feature(s), ${plan.tasks.length} task(s).`,
+    `Roadmap: ${result.sprintsPlanned} sprint(s); journeys covered: ${plan.journeysCount}.`,
     `Executor: created=${result.createdCount} reused=${result.skippedCount}.`,
     ...result.issues.map(({ marker, ref }) => `${marker} -> #${ref.number}`),
   ]

@@ -3,12 +3,12 @@ import { runPoMissionViaRails } from './po-rails-mission.js'
 
 const PO_REPLIES: Record<string, string> = {
   phases: '{"phases":[{"title":"Fase 1","goal":"g","rationale":"r"}]}',
-  epics: '{"epics":[{"phaseIndex":0,"title":"Épico A","description":"d"}]}',
-  backlog: JSON.stringify({
-    items: [
+  epics: '{"epics":[{"phaseIndex":0,"title":"Épico A","description":"d","journeyIndexes":[]}]}',
+  features: '{"features":[{"epicIndex":0,"title":"[Feature] F","description":"d"}]}',
+  tasks: JSON.stringify({
+    tasks: [
       {
-        epicIndex: 0,
-        kind: 'task',
+        featureIndex: 0,
         fields: {
           titulo: '[Task] t',
           description: 'd',
@@ -22,7 +22,7 @@ const PO_REPLIES: Record<string, string> = {
       },
     ],
   }),
-  sprint: '{"sprintGoal":"G","selectedItemIndexes":[0]}',
+  roadmap: '{"sprintGoal":"G","assignments":[{"taskIndex":0,"sprint":1}]}',
 }
 
 // fetch fake: wish aberta + GraphQL de projeto/board + REST de issues.
@@ -90,7 +90,7 @@ describe('runPoMissionViaRails', () => {
     expect(r.output).toContain('no open wishlist')
   })
 
-  it('com wish: roda os 4 passos e aplica a árvore (resumo no output)', async () => {
+  it('com wish: roda os 5 passos e aplica a árvore (resumo no output)', async () => {
     const steps: string[] = []
     const r = await runPoMissionViaRails({
       repository: 'o/r',
@@ -104,9 +104,11 @@ describe('runPoMissionViaRails', () => {
         return PO_REPLIES[step] ?? '{}'
       },
     })
-    expect(steps).toEqual(['phases', 'epics', 'backlog', 'sprint'])
+    expect(steps).toEqual(['phases', 'epics', 'features', 'tasks', 'roadmap'])
     expect(r.exitCode).toBe(0)
     expect(r.output).toContain('wish #42')
-    expect(r.output).toContain('created=3')
+    // fase + épico + feature + task = 4 issues
+    expect(r.output).toContain('created=4')
+    expect(r.output).toContain('Roadmap: 1 sprint(s)')
   })
 })

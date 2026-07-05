@@ -42,13 +42,15 @@ const PO_REPLIES: Record<string, string> = {
     phases: [{ title: 'Fase 1 — Dados', goal: 'estruturar', rationale: 'base' }],
   }),
   epics: JSON.stringify({
-    epics: [{ phaseIndex: 0, title: 'Épico: material', description: 'd' }],
+    epics: [{ phaseIndex: 0, title: 'Épico: material', description: 'd', journeyIndexes: [0, 1] }],
   }),
-  backlog: JSON.stringify({
-    items: [
+  features: JSON.stringify({
+    features: [{ epicIndex: 0, title: '[Feature] filtro por material', description: 'd' }],
+  }),
+  tasks: JSON.stringify({
+    tasks: [
       {
-        epicIndex: 0,
-        kind: 'task',
+        featureIndex: 0,
         fields: {
           titulo: '[Task] coluna material',
           description: 'd',
@@ -62,7 +64,10 @@ const PO_REPLIES: Record<string, string> = {
       },
     ],
   }),
-  sprint: JSON.stringify({ sprintGoal: 'Filtrar por material', selectedItemIndexes: [0] }),
+  roadmap: JSON.stringify({
+    sprintGoal: 'Filtrar por material',
+    assignments: [{ taskIndex: 0, sprint: 1 }],
+  }),
 }
 
 describe('runRaRails', () => {
@@ -89,7 +94,7 @@ describe('runRaRails', () => {
 })
 
 describe('runPoRails', () => {
-  it('quatro passos encadeados: fases → épicos → backlog → sprint viram BacklogPlan', async () => {
+  it('cinco passos encadeados: fases → épicos → features → tasks → roadmap viram BacklogPlan', async () => {
     const stepsSeen: string[] = []
     const execute: StepExecutor = async (prompt) => {
       const step = prompt.match(/Step: po-(\w+)/)?.[1] ?? '?'
@@ -101,13 +106,16 @@ describe('runPoRails', () => {
       wish: { number: 100, nodeId: 'I_wish' },
       wishText: 'Filtro por material',
       contextBlocks: ['RA brief: material é regex hoje'],
+      journeysCount: 2,
     })
 
-    expect(stepsSeen).toEqual(['phases', 'epics', 'backlog', 'sprint'])
+    expect(stepsSeen).toEqual(['phases', 'epics', 'features', 'tasks', 'roadmap'])
     expect(plan.phases).toHaveLength(1)
-    expect(plan.epics).toHaveLength(1)
-    expect(plan.items).toHaveLength(1)
-    expect(plan.sprint?.sprintGoal).toBe('Filtrar por material')
+    expect(plan.epics[0]!.journeyIndexes).toEqual([0, 1])
+    expect(plan.features).toHaveLength(1)
+    expect(plan.tasks).toHaveLength(1)
+    expect(plan.roadmap.sprintGoal).toBe('Filtrar por material')
+    expect(plan.journeysCount).toBe(2)
     expect(plan.wish.number).toBe(100)
   })
 
@@ -122,15 +130,20 @@ describe('runPoRails', () => {
       wish: { number: 100, nodeId: 'I_wish' },
       wishText: 'Filtro por material',
       contextBlocks: [],
+      journeysCount: 2,
     })
-    // o passo de épicos vê as fases; o de backlog vê os épicos; o sprint vê o backlog
+    // épicos veem fases; features veem épicos; tasks veem features; roadmap vê tasks
     expect(prompts[1]).toContain('Fase 1 — Dados')
     expect(prompts[2]).toContain('Épico: material')
-    expect(prompts[3]).toContain('[Task] coluna material')
-    // o passo de backlog exige issue densa p/ dev assíncrono sem contexto:
-    // caminhos reais (verbatim do codegraph), reuse-first, uma mudança por task
-    expect(prompts[2]).toContain('copied verbatim from the codegraph')
-    expect(prompts[2]).toContain('REUSE FIRST')
-    expect(prompts[2]).toContain('ONE focused change per task')
+    expect(prompts[3]).toContain('[Feature] filtro por material')
+    expect(prompts[4]).toContain('[Task] coluna material')
+    // épicos recebem a ordem de cobertura de jornadas (rejeição por código)
+    expect(prompts[1]).toContain('EVERY journey must be covered')
+    // o passo de tasks exige issue densa p/ dev assíncrono sem contexto
+    expect(prompts[3]).toContain('copied verbatim from the codegraph')
+    expect(prompts[3]).toContain('REUSE FIRST')
+    expect(prompts[3]).toContain('ONE focused change per task')
+    // roadmap manda respeitar dependências entre sprints
+    expect(prompts[4]).toContain('never lands before its blockers')
   })
 })

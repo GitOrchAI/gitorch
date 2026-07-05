@@ -3,8 +3,9 @@ import { validateDoD, DOD_FIELD_MAP, type DoDFields } from '@gitorch/cadence'
 // Backlog-executor: as MÃOS determinísticas da Lei "LLM decide, sistema
 // executa". Recebe o plano que o PO preencheu (formulários já validados por
 // schema) e o aplica no GitHub como árvore de sub-issues
-// (wish→fase→épico→feature→task) + board + sprint + delegação. Idempotente por
-// marker no corpo da issue: re-executar o mesmo plano não duplica nada.
+// (wish→fase→épico→feature→task) + board + roadmap (milestones de sprint) +
+// delegação. Idempotente por marker no corpo da issue: re-executar o mesmo
+// plano não duplica nada.
 
 export interface IssueRef {
   number: number
@@ -19,28 +20,36 @@ export interface BacklogGitHub {
   addSubIssue(parentNodeId: string, childNodeId: string): Promise<void>
   /** Adiciona a issue ao board; devolve o id do item no Projects v2. */
   addToBoard(nodeId: string): Promise<string>
-  /** Seta a iteração (Sprint) corrente no item do board. */
-  setSprint(boardItemId: string): Promise<void>
+  /** Aponta o item do board para a iteração da sprint N (se o campo existir). */
+  setSprint(boardItemId: string, sprint: number): Promise<void>
   addLabels(nodeId: string, labels: string[]): Promise<void>
   /** Publica o Sprint Goal no board (status update) — visível ao cliente. */
   postSprintGoal?(goal: string): Promise<void>
   /** Seta a coluna de status do card (nome vem da config do projeto). */
   setStatus?(boardItemId: string, column: 'todo'): Promise<void>
+  /** Associa a issue ao milestone "Sprint N" (criado com data se faltar). */
+  setMilestone?(issueNumber: number, sprint: number): Promise<void>
 }
 
 export interface BacklogPlan {
   wish: IssueRef
+  /** Quantas jornadas o RA escreveu (0 = plano sem RA; cobertura não exigida). */
+  journeysCount: number
   phases: Array<{ title: string; goal: string; rationale: string }>
-  epics: Array<{ phaseIndex: number; title: string; description: string }>
-  items: Array<{
-    epicIndex: number
-    kind: 'feature' | 'task'
-    parentFeatureIndex?: number
-    fields: DoDFields
-    /** Índices (em items) de dependências "blocked by" declaradas pelo PO. */
-    blockedByItemIndexes?: number[]
+  epics: Array<{
+    phaseIndex: number
+    title: string
+    description: string
+    journeyIndexes: number[]
   }>
-  sprint?: { sprintGoal: string; selectedItemIndexes: number[] }
+  features: Array<{ epicIndex: number; title: string; description: string }>
+  tasks: Array<{
+    featureIndex: number
+    fields: DoDFields
+    /** Índices (em tasks) de dependências "blocked by" declaradas pelo PO. */
+    blockedByTaskIndexes?: number[]
+  }>
+  roadmap: { sprintGoal: string; assignments: Array<{ taskIndex: number; sprint: number }> }
 }
 
 export interface ApplyBacklogOptions {
@@ -53,6 +62,7 @@ export interface ApplyBacklogOptions {
 export interface ApplyBacklogResult {
   createdCount: number
   skippedCount: number
+  sprintsPlanned: number
   issues: Array<{ marker: string; ref: IssueRef }>
 }
 
@@ -64,50 +74,123 @@ export function renderIssueBody(fields: DoDFields, marker: string): string {
   return [`<!-- ${marker} -->`, ...sections].join('\n\n')
 }
 
-/** Corpo simples (fases/épicos não carregam DoD de execução). */
+/** Corpo simples (fases/épicos/features não carregam DoD de execução). */
 function renderNodeBody(lines: string[], marker: string): string {
   return [`<!-- ${marker} -->`, ...lines].join('\n\n')
+}
+
+/**
+ * Validação TOTAL do plano ANTES de criar qualquer issue (all-or-nothing).
+ * É aqui que o CÓDIGO rejeita plano raso ou incoerente: jornada ignorada,
+ * épico sem feature, feature sem task, dependência para frente, task fora do
+ * roadmap. Exportada para teste direto.
+ */
+export function validateBacklogPlan(plan: BacklogPlan): string[] {
+  const problems: string[] = []
+
+  plan.epics.forEach((epic, i) => {
+    if (epic.phaseIndex < 0 || epic.phaseIndex >= plan.phases.length) {
+      problems.push(`epics[${i}]: phaseIndex ${epic.phaseIndex} out of range`)
+    }
+    for (const j of epic.journeyIndexes) {
+      if (!Number.isInteger(j) || j < 0 || j >= plan.journeysCount) {
+        problems.push(`epics[${i}]: journeyIndex ${j} out of range (0..${plan.journeysCount - 1})`)
+      }
+    }
+  })
+
+  // Toda jornada do RA precisa estar coberta por >=1 épico — plano que ignora
+  // uma jornada é exatamente o "plano raso" que o dono do produto rejeitou.
+  if (plan.journeysCount > 0) {
+    const covered = new Set(plan.epics.flatMap((e) => e.journeyIndexes))
+    for (let j = 0; j < plan.journeysCount; j++) {
+      if (!covered.has(j)) problems.push(`journey ${j} is not covered by any epic`)
+    }
+  }
+
+  plan.features.forEach((feature, i) => {
+    if (feature.epicIndex < 0 || feature.epicIndex >= plan.epics.length) {
+      problems.push(`features[${i}]: epicIndex ${feature.epicIndex} out of range`)
+    }
+  })
+  plan.epics.forEach((_, e) => {
+    if (!plan.features.some((f) => f.epicIndex === e)) {
+      problems.push(`epics[${e}]: has no feature`)
+    }
+  })
+
+  plan.tasks.forEach((task, i) => {
+    const dod = validateDoD(task.fields)
+    if (!dod.ok) problems.push(`tasks[${i}]: ${dod.errors.join('; ')}`)
+    if (task.featureIndex < 0 || task.featureIndex >= plan.features.length) {
+      problems.push(`tasks[${i}]: featureIndex ${task.featureIndex} out of range`)
+    }
+    for (const b of task.blockedByTaskIndexes ?? []) {
+      if (!Number.isInteger(b) || b < 0 || b >= i) {
+        problems.push(`tasks[${i}]: blockedBy ${b} must reference an EARLIER task`)
+      }
+    }
+  })
+  plan.features.forEach((_, f) => {
+    if (!plan.tasks.some((t) => t.featureIndex === f)) {
+      problems.push(`features[${f}]: has no task`)
+    }
+  })
+
+  // Roadmap: TODA task tem sprint (>=1, inteiro), sem duplicata, e nenhuma
+  // task entra em sprint anterior à de um bloqueador.
+  const sprintByTask = new Map<number, number>()
+  for (const a of plan.roadmap.assignments) {
+    if (!Number.isInteger(a.taskIndex) || a.taskIndex < 0 || a.taskIndex >= plan.tasks.length) {
+      problems.push(`roadmap: taskIndex ${a.taskIndex} out of range`)
+      continue
+    }
+    if (!Number.isInteger(a.sprint) || a.sprint < 1) {
+      problems.push(`roadmap: task ${a.taskIndex} has invalid sprint ${a.sprint}`)
+      continue
+    }
+    if (sprintByTask.has(a.taskIndex)) {
+      problems.push(`roadmap: task ${a.taskIndex} assigned twice`)
+      continue
+    }
+    sprintByTask.set(a.taskIndex, a.sprint)
+  }
+  plan.tasks.forEach((task, i) => {
+    const sprint = sprintByTask.get(i)
+    if (sprint === undefined) {
+      problems.push(`roadmap: task ${i} has no sprint`)
+      return
+    }
+    for (const b of task.blockedByTaskIndexes ?? []) {
+      const blockerSprint = sprintByTask.get(b)
+      if (blockerSprint !== undefined && blockerSprint > sprint) {
+        problems.push(
+          `roadmap: task ${i} (sprint ${sprint}) depends on task ${b} (sprint ${blockerSprint})`
+        )
+      }
+    }
+  })
+
+  return problems
 }
 
 export async function applyBacklog(options: ApplyBacklogOptions): Promise<ApplyBacklogResult> {
   const { github, plan } = options
 
-  // 1) Validação TOTAL antes de qualquer criação (all-or-nothing): DoD por
-  //    código em todos os itens + integridade dos índices do plano.
-  const problems: string[] = []
-  plan.items.forEach((item, i) => {
-    const dod = validateDoD(item.fields)
-    if (!dod.ok) problems.push(`items[${i}]: ${dod.errors.join('; ')}`)
-    if (item.epicIndex < 0 || item.epicIndex >= plan.epics.length) {
-      problems.push(`items[${i}]: epicIndex ${item.epicIndex} out of range`)
-    }
-    // O plano vem da LLM: referências de pai/dependência precisam ser
-    // BACKWARD (apontar para item anterior) e do tipo certo — senão o loop de
-    // criação quebraria DEPOIS de já ter criado nós (fim do all-or-nothing).
-    if (item.parentFeatureIndex !== undefined) {
-      const p = item.parentFeatureIndex
-      if (!Number.isInteger(p) || p < 0 || p >= i) {
-        problems.push(`items[${i}]: parentFeatureIndex ${p} must reference an EARLIER item`)
-      } else if (plan.items[p]?.kind !== 'feature') {
-        problems.push(`items[${i}]: parentFeatureIndex ${p} does not point to a feature`)
-      }
-    }
-    for (const b of item.blockedByItemIndexes ?? []) {
-      if (!Number.isInteger(b) || b < 0 || b >= i) {
-        problems.push(`items[${i}]: blockedBy ${b} must reference an EARLIER item`)
-      }
-    }
-  })
-  plan.epics.forEach((epic, i) => {
-    if (epic.phaseIndex < 0 || epic.phaseIndex >= plan.phases.length) {
-      problems.push(`epics[${i}]: phaseIndex ${epic.phaseIndex} out of range`)
-    }
-  })
+  const problems = validateBacklogPlan(plan)
   if (problems.length > 0) {
     throw new Error(`Backlog rejected by DoD/integrity validation: ${problems.join(' | ')}`)
   }
 
-  const result: ApplyBacklogResult = { createdCount: 0, skippedCount: 0, issues: [] }
+  const sprintByTask = new Map(plan.roadmap.assignments.map((a) => [a.taskIndex, a.sprint]))
+  const sprintsPlanned = Math.max(...plan.roadmap.assignments.map((a) => a.sprint))
+
+  const result: ApplyBacklogResult = {
+    createdCount: 0,
+    skippedCount: 0,
+    sprintsPlanned,
+    issues: [],
+  }
 
   // Cada card criado nasce na coluna inicial ("todo" no mapa do projeto) — o
   // board é a interface do cliente; card sem status parece esquecido.
@@ -142,7 +225,6 @@ export async function applyBacklog(options: ApplyBacklogOptions): Promise<ApplyB
 
   // 2) Fases sob a wish.
   const phaseRefs: IssueRef[] = []
-  const boardItemByNode = new Map<string, string>()
   for (let i = 0; i < plan.phases.length; i++) {
     const phase = plan.phases[i]!
     const marker = `gitorch:node:${plan.wish.number}:phase:${i}`
@@ -153,73 +235,86 @@ export async function applyBacklog(options: ApplyBacklogOptions): Promise<ApplyB
       plan.wish.nodeId
     )
     phaseRefs.push(ref)
-    boardItemByNode.set(ref.nodeId, await addToBoardWithStatus(ref.nodeId))
+    await addToBoardWithStatus(ref.nodeId)
   }
 
-  // 3) Épicos sob suas fases.
+  // 3) Épicos sob suas fases (com as jornadas que cobrem, visíveis ao cliente).
   const epicRefs: IssueRef[] = []
   for (let i = 0; i < plan.epics.length; i++) {
     const epic = plan.epics[i]!
     const marker = `gitorch:node:${plan.wish.number}:epic:${i}`
+    const journeyLine =
+      epic.journeyIndexes.length > 0
+        ? [`**Covers journeys**: ${epic.journeyIndexes.map((j) => `#${j}`).join(', ')}`]
+        : []
     const ref = await ensureNode(
       marker,
       epic.title,
-      renderNodeBody([epic.description], marker),
+      renderNodeBody([epic.description, ...journeyLine], marker),
       phaseRefs[epic.phaseIndex]!.nodeId
     )
     epicRefs.push(ref)
-    boardItemByNode.set(ref.nodeId, await addToBoardWithStatus(ref.nodeId))
+    await addToBoardWithStatus(ref.nodeId)
   }
 
-  // 4) Features e tasks (tasks com parentFeatureIndex penduram na feature).
-  const itemRefs: IssueRef[] = []
-  for (let i = 0; i < plan.items.length; i++) {
-    const item = plan.items[i]!
-    const parent =
-      item.kind === 'task' && item.parentFeatureIndex !== undefined
-        ? itemRefs[item.parentFeatureIndex]!
-        : epicRefs[item.epicIndex]!
-    const marker = `gitorch:node:${plan.wish.number}:item:${i}`
-    const blocked = (item.blockedByItemIndexes ?? [])
-      .map((b) => itemRefs[b]?.number)
+  // 4) Features sob seus épicos.
+  const featureRefs: IssueRef[] = []
+  for (let i = 0; i < plan.features.length; i++) {
+    const feature = plan.features[i]!
+    const marker = `gitorch:node:${plan.wish.number}:feature:${i}`
+    const ref = await ensureNode(
+      marker,
+      feature.title,
+      renderNodeBody([feature.description], marker),
+      epicRefs[feature.epicIndex]!.nodeId
+    )
+    featureRefs.push(ref)
+    await addToBoardWithStatus(ref.nodeId)
+  }
+
+  // 5) Tasks sob suas features: DoD completo, dependências, sprint (milestone
+  //    datado + iteração do board) e delegação quando prontas na sprint 1.
+  const taskRefs: IssueRef[] = []
+  for (let i = 0; i < plan.tasks.length; i++) {
+    const task = plan.tasks[i]!
+    const marker = `gitorch:node:${plan.wish.number}:task:${i}`
+    const blocked = (task.blockedByTaskIndexes ?? [])
+      .map((b) => taskRefs[b]?.number)
       .filter((n): n is number => typeof n === 'number')
     const blockedLine =
       blocked.length > 0 ? `\n\nBlocked by ${blocked.map((n) => `#${n}`).join(', ')}` : ''
     const ref = await ensureNode(
       marker,
-      item.fields.titulo,
-      renderIssueBody(item.fields, marker) + blockedLine,
-      parent.nodeId,
-      // Só TASK é unidade delegável; a label deixa o SM achá-las (features/épicos
-      // agrupam, não são implementados diretamente pelo dev).
-      item.kind === 'task' ? ['gitorch:task'] : undefined
+      task.fields.titulo,
+      renderIssueBody(task.fields, marker) + blockedLine,
+      featureRefs[task.featureIndex]!.nodeId,
+      // Só TASK é unidade delegável; a label deixa o SM achá-las.
+      ['gitorch:task']
     )
-    itemRefs.push(ref)
-    boardItemByNode.set(ref.nodeId, await addToBoardWithStatus(ref.nodeId))
+    taskRefs.push(ref)
+    const boardItem = await addToBoardWithStatus(ref.nodeId)
+
+    const sprint = sprintByTask.get(i)!
+    await github.setSprint(boardItem, sprint)
+    if (github.setMilestone) await github.setMilestone(ref.number, sprint)
   }
 
-  // 5) Sprint Goal visível no board (status update) — o board é a interface.
-  if (plan.sprint?.sprintGoal && github.postSprintGoal) {
-    await github.postSprintGoal(plan.sprint.sprintGoal)
+  // 6) Sprint Goal + tamanho do roadmap visíveis no board — o cliente sabe em
+  //    qual fase está e quantas sprints o plano tem.
+  if (plan.roadmap.sprintGoal && github.postSprintGoal) {
+    await github.postSprintGoal(
+      `${plan.roadmap.sprintGoal} (Sprint 1 of ${sprintsPlanned} planned)`
+    )
   }
 
-  // 5b) Sprint: seta a iteração nos selecionados.
-  const selected = new Set(plan.sprint?.selectedItemIndexes ?? [])
-  for (const index of selected) {
-    const ref = itemRefs[index]
-    if (!ref) continue
-    const boardItem = boardItemByNode.get(ref.nodeId)
-    if (boardItem) await github.setSprint(boardItem)
-  }
-
-  // 6) Delegação: tasks selecionadas SEM dependência aberta ganham a label.
+  // 7) Delegação: tasks da SPRINT 1 sem dependência aberta ganham a label — o
+  //    resto o SM libera quando os bloqueadores fecharem (delegação contínua).
   if (options.delegateLabel) {
-    for (const index of selected) {
-      const item = plan.items[index]
-      const ref = itemRefs[index]
-      if (!item || !ref) continue
-      const isBlocked = (item.blockedByItemIndexes ?? []).length > 0
-      if (item.kind === 'task' && !isBlocked) {
+    for (let i = 0; i < plan.tasks.length; i++) {
+      const task = plan.tasks[i]!
+      const ref = taskRefs[i]!
+      const isBlocked = (task.blockedByTaskIndexes ?? []).length > 0
+      if (sprintByTask.get(i) === 1 && !isBlocked) {
         await github.addLabels(ref.nodeId, [options.delegateLabel])
       }
     }

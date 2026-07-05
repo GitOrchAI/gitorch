@@ -99,24 +99,30 @@ export interface PoPhasesForm {
 }
 
 export interface PoEpicsForm {
-  epics: Array<{ phaseIndex: number; title: string; description: string }>
+  epics: Array<{
+    phaseIndex: number
+    title: string
+    description: string
+    /** Jornadas do RA que este épico cobre (validado por código). */
+    journeyIndexes: number[]
+  }>
 }
 
-export interface PoBacklogItem {
-  epicIndex: number
-  kind: 'feature' | 'task'
-  /** Task pertencente a uma feature deste mesmo formulário (índice em items). */
-  parentFeatureIndex?: number
-  fields: DoDFields
+export interface PoFeaturesForm {
+  features: Array<{ epicIndex: number; title: string; description: string }>
 }
 
-export interface PoBacklogForm {
-  items: PoBacklogItem[]
+export interface PoTasksForm {
+  tasks: Array<{
+    featureIndex: number
+    fields: DoDFields
+    blockedByTaskIndexes?: number[]
+  }>
 }
 
-export interface PoSprintForm {
+export interface PoRoadmapForm {
   sprintGoal: string
-  selectedItemIndexes: number[]
+  assignments: Array<{ taskIndex: number; sprint: number }>
 }
 
 export interface QaVerdictForm {
@@ -241,11 +247,36 @@ export const RAILS_SCHEMAS = {
     properties: {
       epics: {
         type: 'array',
+        minItems: 1,
         items: {
           type: 'object',
-          required: ['phaseIndex', 'title', 'description'],
+          // journeyIndexes: quais jornadas do RA este épico cobre — é o elo
+          // que permite ao CÓDIGO rejeitar plano que ignora uma jornada.
+          required: ['phaseIndex', 'title', 'description', 'journeyIndexes'],
           properties: {
             phaseIndex: { type: 'number' },
+            title: { type: 'string' },
+            description: { type: 'string' },
+            journeyIndexes: { type: 'array', items: { type: 'number' } },
+          },
+        },
+      },
+    },
+  } as MiniSchema,
+
+  // Features por épico (nível próprio da hierarquia — antes achatado em items).
+  poFeatures: {
+    type: 'object',
+    required: ['features'],
+    properties: {
+      features: {
+        type: 'array',
+        minItems: 1,
+        items: {
+          type: 'object',
+          required: ['epicIndex', 'title', 'description'],
+          properties: {
+            epicIndex: { type: 'number' },
             title: { type: 'string' },
             description: { type: 'string' },
           },
@@ -254,32 +285,46 @@ export const RAILS_SCHEMAS = {
     },
   } as MiniSchema,
 
-  poBacklog: {
+  // Tasks por feature: a unidade delegável, com o DoD completo de 8 campos.
+  poTasks: {
     type: 'object',
-    required: ['items'],
+    required: ['tasks'],
     properties: {
-      items: {
+      tasks: {
         type: 'array',
+        minItems: 1,
         items: {
           type: 'object',
-          required: ['epicIndex', 'kind', 'fields'],
+          required: ['featureIndex', 'fields'],
           properties: {
-            epicIndex: { type: 'number' },
-            kind: { type: 'string', enum: ['feature', 'task'] },
-            parentFeatureIndex: { type: 'number' },
+            featureIndex: { type: 'number' },
             fields: DOD_FIELDS_SCHEMA,
+            blockedByTaskIndexes: { type: 'array', items: { type: 'number' } },
           },
         },
       },
     },
   } as MiniSchema,
 
-  poSprint: {
+  // Roadmap: TODA task ganha uma sprint numerada (1..N) — é o que deixa o
+  // cliente saber em qual fase está e o que sai quando (milestones datados).
+  poRoadmap: {
     type: 'object',
-    required: ['sprintGoal', 'selectedItemIndexes'],
+    required: ['sprintGoal', 'assignments'],
     properties: {
       sprintGoal: { type: 'string' },
-      selectedItemIndexes: { type: 'array', items: { type: 'number' } },
+      assignments: {
+        type: 'array',
+        minItems: 1,
+        items: {
+          type: 'object',
+          required: ['taskIndex', 'sprint'],
+          properties: {
+            taskIndex: { type: 'number' },
+            sprint: { type: 'number' },
+          },
+        },
+      },
     },
   } as MiniSchema,
 

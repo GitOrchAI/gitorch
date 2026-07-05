@@ -5,13 +5,16 @@ import {
   type MissionMemory,
 } from './mission-context.js'
 
-function fakeCortex(initial: Array<{ content: string }> = []): MissionMemory & {
+function fakeCortex(
+  initial: Array<{ content: string }> = [],
+  byRoom: Record<string, Array<{ content: string }>> = {}
+): MissionMemory & {
   written: Array<{ wingId: string; roomId: string; tags: string[]; content: string }>
 } {
   const written: Array<{ wingId: string; roomId: string; tags: string[]; content: string }> = []
   return {
     written,
-    recallLocal: () => initial,
+    recallLocal: (_wing, roomId) => (roomId ? (byRoom[roomId] ?? []) : initial),
     writeDrawer: async (d) => {
       written.push({ wingId: d.wingId, roomId: d.roomId, tags: d.tags, content: d.content })
     },
@@ -37,6 +40,29 @@ describe('buildMissionEnricher', () => {
     const lines = await enrich({ projectId: 'p1', role: 'ra' })
 
     expect(lines).toEqual([])
+  })
+
+  it('PO recebe o entregável do RA INTACTO (quebras de linha preservadas p/ parse de jornadas)', async () => {
+    const ra = 'RA analysis:\n### Journey 0: comprador\n1. abre\n### Journey 1: dados\n1. lê'
+    const cortex = fakeCortex([{ content: ra }, { content: 'outra memória' }], {
+      ra: [{ content: ra }],
+    })
+    const enrich = buildMissionEnricher({ cortex })
+
+    const lines = await enrich({ projectId: 'p1', role: 'po' })
+
+    // bloco intacto (multilinha) + memórias comprimidas SEM duplicar o RA
+    expect(lines[0]).toContain('### Journey 1: dados')
+    expect(lines[0]).toContain('\n')
+    expect(lines[1]).toContain('outra memória')
+    expect(lines[1]).not.toContain('### Journey')
+  })
+
+  it('RA (e outros papéis) não recebem o bloco intacto — só o PO precisa', async () => {
+    const cortex = fakeCortex([{ content: 'm' }], { ra: [{ content: '### Journey 0: x' }] })
+    const enrich = buildMissionEnricher({ cortex })
+    const lines = await enrich({ projectId: 'p1', role: 'ra' })
+    expect(lines.join('\n')).not.toContain('### Journey 0')
   })
 
   it('injeta o codegraph quando há workspace e o resumo isolado responde', async () => {

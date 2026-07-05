@@ -4,14 +4,32 @@ import {
   buildStepPrompt,
   validateDoD,
   validateForm,
-  type PoBacklogForm,
+  type PoTasksForm,
 } from './rails'
 
 describe('RAILS_SCHEMAS', () => {
   it('cobre os formulários dos papéis', () => {
-    for (const key of ['raBrief', 'poPhases', 'poEpics', 'poBacklog', 'poSprint', 'qaVerdict']) {
+    for (const key of [
+      'raAreas',
+      'raJourneys',
+      'raBrief',
+      'poPhases',
+      'poEpics',
+      'poFeatures',
+      'poTasks',
+      'poRoadmap',
+      'qaVerdict',
+    ]) {
       expect(RAILS_SCHEMAS[key as keyof typeof RAILS_SCHEMAS]).toBeTruthy()
     }
+  })
+
+  it('minItems força profundidade: 1 jornada só é rejeitada (e diz por quê)', () => {
+    const r = validateForm(RAILS_SCHEMAS.raJourneys, {
+      journeys: [{ title: 't', actor: 'a', steps: ['1', '2', '3'], insight: 'i' }],
+    })
+    expect(r.ok).toBe(false)
+    expect(r.errors.join(' ')).toContain('at least 2')
   })
 })
 
@@ -88,12 +106,11 @@ describe('buildStepPrompt', () => {
 })
 
 describe('tipos utilizáveis', () => {
-  it('PoBacklogForm tipa itens com 8 campos', () => {
-    const form: PoBacklogForm = {
-      items: [
+  it('PoTasksForm tipa tasks com 8 campos', () => {
+    const form: PoTasksForm = {
+      tasks: [
         {
-          epicIndex: 0,
-          kind: 'task',
+          featureIndex: 0,
           fields: {
             titulo: 't',
             description: 'd',
@@ -107,6 +124,6 @@ describe('tipos utilizáveis', () => {
         },
       ],
     }
-    expect(form.items[0].kind).toBe('task')
+    expect(form.tasks[0].featureIndex).toBe(0)
   })
 })

@@ -21,6 +21,8 @@ export interface GithubBacklogOptions {
   statusFieldName?: string
   /** mapeamento de colunas do projeto (config por projeto; default nativo). */
   statusColumns?: BoardColumns
+  /** duração de cada sprint em dias (config por projeto; padrão 7). */
+  sprintDays?: number
   fetchImpl?: typeof fetch
 }
 
@@ -104,18 +106,23 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
     ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
   })
 
-  // Cache da iteração ativa (resolvida uma vez por execução do plano).
-  let sprintCache: { fieldId: string; iterationId: string } | null | undefined
+  // Cache do campo de iteração (resolvido uma vez por execução do plano).
+  let sprintCache: { fieldId: string; iterations: Array<{ id: string }> } | null | undefined
 
-  const resolveSprint = async (): Promise<{ fieldId: string; iterationId: string } | null> => {
+  const resolveSprint = async (): Promise<{
+    fieldId: string
+    iterations: Array<{ id: string }>
+  } | null> => {
     if (sprintCache !== undefined) return sprintCache
     try {
       const field = await client.getIterationField({
         projectId: options.projectId,
         fieldName: sprintField,
       })
-      const first = field.iterations[0]
-      sprintCache = first ? { fieldId: field.fieldId, iterationId: first.id } : null
+      sprintCache =
+        field.iterations.length > 0
+          ? { fieldId: field.fieldId, iterations: field.iterations }
+          : null
     } catch (error) {
       // Só a AUSÊNCIA do campo Sprint é tolerada (board sem iteração configurada).
       // Qualquer outra falha (FORBIDDEN, rede) é real e deve subir — engolir aqui
@@ -128,6 +135,34 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
       sprintCache = null
     }
     return sprintCache
+  }
+
+  // Milestones "Sprint N" com data de entrega: o ROADMAP visível ao cliente.
+  // Cache por número; criação idempotente por título.
+  const sprintDays = options.sprintDays ?? 7
+  const milestoneCache = new Map<number, number | null>()
+  const ensureMilestone = async (sprintNumber: number): Promise<number | null> => {
+    const cached = milestoneCache.get(sprintNumber)
+    if (cached !== undefined) return cached
+    const title = `Sprint ${sprintNumber}`
+    const existing = (await rest(
+      'GET',
+      `/repos/${options.repository}/milestones?state=all&per_page=100`
+    )) as Array<{ number: number; title: string }>
+    const found = Array.isArray(existing) ? existing.find((m) => m.title === title) : undefined
+    if (found) {
+      milestoneCache.set(sprintNumber, found.number)
+      return found.number
+    }
+    const dueOn = new Date(Date.now() + sprintNumber * sprintDays * 24 * 60 * 60 * 1000)
+    const created = (await rest('POST', `/repos/${options.repository}/milestones`, {
+      title,
+      due_on: dueOn.toISOString(),
+      description: `GitOrch roadmap: sprint ${sprintNumber} (${sprintDays}-day sprints)`,
+    })) as { number?: number }
+    const number = created.number ?? null
+    milestoneCache.set(sprintNumber, number)
+    return number
   }
 
   return {
@@ -171,14 +206,26 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
       }
     },
 
-    async setSprint(boardItemId): Promise<void> {
+    async setSprint(boardItemId, sprintNumber): Promise<void> {
       const sprint = await resolveSprint()
       if (!sprint) return
+      // Sprint N → N-ésima iteração configurada no board; além do horizonte
+      // de iterações existentes, fica sem iteração (o milestone datado cobre).
+      const iteration = sprint.iterations[sprintNumber - 1]
+      if (!iteration) return
       await client.setIterationField({
         projectId: options.projectId,
         itemId: boardItemId,
         fieldId: sprint.fieldId,
-        iterationId: sprint.iterationId,
+        iterationId: iteration.id,
+      })
+    },
+
+    async setMilestone(issueNumber, sprintNumber): Promise<void> {
+      const milestone = await ensureMilestone(sprintNumber)
+      if (milestone === null) return
+      await rest('PATCH', `/repos/${options.repository}/issues/${issueNumber}`, {
+        milestone,
       })
     },
 

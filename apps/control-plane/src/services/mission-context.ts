@@ -86,6 +86,9 @@ export interface MissionMemory {
 
 const MAX_MEMORIES = 5
 const MAX_MEMORY_CHARS = 800
+// O entregável do RA (áreas+jornadas+brief) precisa caber inteiro no contexto
+// do PO — 12k chars cobre folgado o formato do formatRaDeliverable.
+const MAX_RA_DELIVERABLE_CHARS = 12_000
 
 export function buildMissionEnricher(
   deps: {
@@ -95,7 +98,7 @@ export function buildMissionEnricher(
   } = {}
 ): MissionContextEnricher {
   const summarize = deps.summarize ?? summarizeWorkspaceIsolated
-  return async ({ workspacePath, projectId }) => {
+  return async ({ workspacePath, projectId, role }) => {
     const lines: string[] = []
 
     if (workspacePath) {
@@ -105,7 +108,19 @@ export function buildMissionEnricher(
 
     if (deps.cortex) {
       try {
-        const drawers = deps.cortex.recallLocal(projectId).slice(0, MAX_MEMORIES)
+        // O entregável do RA é o CONTRATO do PO (jornadas numeradas, "###
+        // Journey N:"): entra INTACTO — a compressão de memória (colapso de
+        // quebras de linha + corte) destruiria o parse de cobertura.
+        let raIntact: string | undefined
+        if (role === 'po') {
+          raIntact = deps.cortex.recallLocal(projectId, 'ra')[0]?.content
+          if (raIntact) lines.push(raIntact.slice(0, MAX_RA_DELIVERABLE_CHARS))
+        }
+
+        const drawers = deps.cortex
+          .recallLocal(projectId)
+          .filter((d) => d.content !== raIntact)
+          .slice(0, MAX_MEMORIES)
         if (drawers.length > 0) {
           const memoryBlock = [
             'Project memory (deliverables from prior GitOrch missions on THIS project — build on them, do not repeat work):',

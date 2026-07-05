@@ -30,7 +30,11 @@ import { runRaRails } from '../services/role-rails.js'
 import { runQaMissionViaRails } from '../services/qa-rails-mission.js'
 import { runSmDelegation } from '../services/sm-delegation.js'
 import { runSmWatchdog, buildTelegramNotifier } from '../services/sm-watchdog.js'
-import { resolveBoardColumns, createCardMover } from '../services/board-status.js'
+import {
+  resolveBoardColumns,
+  resolveSprintDays,
+  createCardMover,
+} from '../services/board-status.js'
 import { RailsStepError } from '../services/rails-runner.js'
 import { GithubExecutionError } from '../services/github-backlog.js'
 import * as os from 'node:os'
@@ -513,6 +517,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                     githubToken: railsToken as string,
                     contextBlocks,
                     boardColumns,
+                    sprintDays: resolveSprintDays(project.runtimeConfig),
                     execute,
                   })
                 : await runQaMissionViaRails({

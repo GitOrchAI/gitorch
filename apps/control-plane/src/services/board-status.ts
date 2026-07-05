@@ -32,6 +32,15 @@ export function resolveBoardColumns(runtimeConfig: unknown): BoardColumns {
   return { ...DEFAULT_BOARD_COLUMNS, ...(board?.columns ?? {}) }
 }
 
+/**
+ * Duração da sprint em dias — config por projeto (runtimeConfig.board
+ * .sprintDays), default 7. Decide as datas dos milestones do roadmap.
+ */
+export function resolveSprintDays(runtimeConfig: unknown): number {
+  const days = (runtimeConfig as { board?: { sprintDays?: number } } | null)?.board?.sprintDays
+  return typeof days === 'number' && Number.isFinite(days) && days >= 1 ? Math.floor(days) : 7
+}
+
 export type SetStatusOutcome = 'set' | 'field-missing' | 'column-missing'
 
 export interface BoardStatusOptions {

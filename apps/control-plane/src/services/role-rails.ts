@@ -8,8 +8,9 @@ import {
   type RaDeliverable,
   type PoPhasesForm,
   type PoEpicsForm,
-  type PoBacklogForm,
-  type PoSprintForm,
+  type PoFeaturesForm,
+  type PoTasksForm,
+  type PoRoadmapForm,
 } from '@gitorch/cadence'
 import { runFormStep } from './rails-runner.js'
 import type { BacklogPlan, IssueRef } from './backlog-executor.js'
@@ -79,12 +80,28 @@ export interface PoRailsInput {
   wish: IssueRef
   wishText: string
   contextBlocks: string[]
+  /** Quantas jornadas o RA escreveu (para exigir cobertura); 0 = sem RA ainda. */
+  journeysCount?: number
 }
 
+// Exigências de escrita para o dev assíncrono (Jules e similares): o corpo da
+// issue é TUDO que ele tem — padrões do jules-awesome-list + reuse-first.
+const TASK_WRITING_RULES = [
+  'These tasks will be executed by an async dev agent that has NO context beyond the issue body. Write for that reader:',
+  '- Related Files: REAL repository paths copied verbatim from the codegraph context above — never invent a path. If no listed file fits, name the directory to explore and say why.',
+  '- Implementation Guide: numbered steps at file level, each stating the from→to change (e.g. "in src/cart.ts, extract the shipping rule into..."), naming the stack/framework involved.',
+  '- REUSE FIRST: name the existing helper/module/pattern to extend. Only propose a new file when nothing existing fits, and justify that in Notes.',
+  '- ONE focused change per task — never mix unrelated work. Prefer FEWER, denser tasks over many vague ones.',
+  '- Verification Criteria: concrete checks a reviewer can execute (commands, URLs, expected behavior) — not restatements of the title.',
+].join('\n')
+
 /**
- * Roteiro do PO: 4 passos encadeados (fases → épicos → backlog → sprint).
- * Cada passo vê as decisões anteriores como contexto — a LLM nunca precisa
- * segurar o plano inteiro numa resposta só (modelos fracos aguentam).
+ * Roteiro do PO: 5 passos encadeados (fases → épicos → features → tasks →
+ * roadmap). Cada passo vê as decisões anteriores como contexto — a LLM nunca
+ * segura o plano inteiro numa resposta só (modelos fracos aguentam). A
+ * hierarquia completa (fase/épico/feature/task) + sprints numeradas é o que
+ * deixa o cliente saber em qual fase está e o que sai quando — SCRUM de
+ * verdade, não um saco de tasks.
  */
 export async function runPoRails(execute: StepExecutor, input: PoRailsInput): Promise<BacklogPlan> {
   const base = [`Wish (the client's desire): ${input.wishText}`, ...input.contextBlocks]
@@ -93,7 +110,7 @@ export async function runPoRails(execute: StepExecutor, input: PoRailsInput): Pr
     schema: RAILS_SCHEMAS.poPhases,
     prompt: buildStepPrompt('po', 'po-phases', RAILS_SCHEMAS.poPhases, [
       ...base,
-      'Decide the PHASES (major milestones) that turn this wish into reality. Few and well-justified.',
+      'Decide the PHASES (major delivery milestones) that turn this wish into reality, in order. Each phase is something the client can SEE finished. Cover the whole scope the RA journeys reveal — a wish that touches user experience AND data/integrations rarely fits one phase.',
     ]),
     execute,
   })) as PoPhasesForm
@@ -102,12 +119,17 @@ export async function runPoRails(execute: StepExecutor, input: PoRailsInput): Pr
     .map((p, i) => `${i}. ${p.title} — goal: ${p.goal}`)
     .join('\n')}`
 
+  const journeysNote =
+    input.journeysCount && input.journeysCount > 0
+      ? `The RA wrote ${input.journeysCount} journey(s) (indexes 0..${input.journeysCount - 1} in the context above). EVERY journey must be covered by at least one epic (journeyIndexes) — plans that ignore a journey are rejected by code.`
+      : 'No RA journeys available: set journeyIndexes to [] on every epic.'
+
   const epics = (await runFormStep({
     schema: RAILS_SCHEMAS.poEpics,
     prompt: buildStepPrompt('po', 'po-epics', RAILS_SCHEMAS.poEpics, [
       ...base,
       phasesBlock,
-      'Break each phase into EPICS (phaseIndex refers to the list above).',
+      `Break each phase into EPICS (phaseIndex refers to the list above). ${journeysNote}`,
     ]),
     execute,
   })) as PoEpicsForm
@@ -116,47 +138,56 @@ export async function runPoRails(execute: StepExecutor, input: PoRailsInput): Pr
     .map((e, i) => `${i}. [phase ${e.phaseIndex}] ${e.title}`)
     .join('\n')}`
 
-  const backlog = (await runFormStep({
-    schema: RAILS_SCHEMAS.poBacklog,
-    prompt: buildStepPrompt('po', 'po-backlog', RAILS_SCHEMAS.poBacklog, [
+  const features = (await runFormStep({
+    schema: RAILS_SCHEMAS.poFeatures,
+    prompt: buildStepPrompt('po', 'po-features', RAILS_SCHEMAS.poFeatures, [
       ...base,
       phasesBlock,
       epicsBlock,
-      'Write the FEATURES and TASKS (epicIndex refers to the list above; tasks may set parentFeatureIndex). Every item MUST carry the complete 8-field DoD — incomplete items are rejected by code.',
-      // O leitor destas issues é um dev assíncrono SEM nosso contexto (Jules e
-      // similares): o corpo da issue é tudo que ele tem. Padrões do
-      // jules-awesome-list + reuse-first (não sair criando: reutilizar).
-      [
-        'These items will be executed by an async dev agent that has NO context beyond the issue body. Write for that reader:',
-        '- Related Files: REAL repository paths copied verbatim from the codegraph context above — never invent a path. If no listed file fits, name the directory to explore and say why.',
-        '- Implementation Guide: numbered steps at file level, each stating the from→to change (e.g. "in src/cart.ts, extract the shipping rule into..."), naming the stack/framework involved.',
-        '- REUSE FIRST: name the existing helper/module/pattern to extend. Only propose a new file when nothing existing fits, and justify that in Notes.',
-        '- ONE focused change per task — never mix unrelated work. Prefer FEWER, denser tasks over many vague ones.',
-        '- Verification Criteria: concrete checks a reviewer can execute (commands, URLs, expected behavior) — not restatements of the title.',
-      ].join('\n'),
+      'Break each epic into FEATURES (epicIndex refers to the list above): a feature is a capability the user/system gains, not a code chore. Every epic needs at least one feature.',
     ]),
     execute,
-  })) as PoBacklogForm
+  })) as PoFeaturesForm
 
-  const backlogBlock = `Backlog items you decided:\n${backlog.items
-    .map((it, i) => `${i}. [${it.kind}] ${it.fields.titulo}`)
+  const featuresBlock = `Features you decided:\n${features.features
+    .map((f, i) => `${i}. [epic ${f.epicIndex}] ${f.title}`)
     .join('\n')}`
 
-  const sprint = (await runFormStep({
-    schema: RAILS_SCHEMAS.poSprint,
-    prompt: buildStepPrompt('po', 'po-sprint', RAILS_SCHEMAS.poSprint, [
+  const tasks = (await runFormStep({
+    schema: RAILS_SCHEMAS.poTasks,
+    prompt: buildStepPrompt('po', 'po-tasks', RAILS_SCHEMAS.poTasks, [
       ...base,
-      backlogBlock,
-      'Sprint Planning: select the item indexes that are truly ready and write ONE Sprint Goal (a single sentence of outcome).',
+      phasesBlock,
+      epicsBlock,
+      featuresBlock,
+      'Write the TASKS for every feature (featureIndex refers to the list above). Every feature needs at least one task; every task MUST carry the complete 8-field DoD — incomplete tasks are rejected by code. Use blockedByTaskIndexes for real dependencies (earlier tasks only).',
+      TASK_WRITING_RULES,
     ]),
     execute,
-  })) as PoSprintForm
+  })) as PoTasksForm
+
+  const tasksBlock = `Tasks you decided:\n${tasks.tasks
+    .map((t, i) => `${i}. [feature ${t.featureIndex}] ${t.fields.titulo}`)
+    .join('\n')}`
+
+  const roadmap = (await runFormStep({
+    schema: RAILS_SCHEMAS.poRoadmap,
+    prompt: buildStepPrompt('po', 'po-roadmap', RAILS_SCHEMAS.poRoadmap, [
+      ...base,
+      phasesBlock,
+      tasksBlock,
+      'ROADMAP: assign EVERY task above to a numbered sprint (1..N) respecting dependencies (a task never lands before its blockers). Sprint 1 is what starts now — write its Sprint Goal as ONE sentence of client-visible outcome. The client will see this as dated milestones.',
+    ]),
+    execute,
+  })) as PoRoadmapForm
 
   return {
     wish: input.wish,
+    journeysCount: input.journeysCount ?? 0,
     phases: phases.phases,
     epics: epics.epics,
-    items: backlog.items,
-    sprint,
+    features: features.features,
+    tasks: tasks.tasks,
+    roadmap,
   }
 }
