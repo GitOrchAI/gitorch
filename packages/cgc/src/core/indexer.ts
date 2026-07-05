@@ -142,7 +142,21 @@ export class CodeGraphIndexer {
     if (!tree) {
       throw new Error(`Failed to parse file: ${filePath}`)
     }
+    try {
+      await this.indexParsedFile(filePath, content, language, tree)
+    } finally {
+      // Devolve a memória WASM da árvore: sem isto, indexar dezenas de arquivos
+      // estoura a memória linear do módulo e derruba o processo.
+      tree.free()
+    }
+  }
 
+  private async indexParsedFile(
+    filePath: string,
+    content: string,
+    language: string,
+    tree: NonNullable<ReturnType<TreeSitterManager['parseString']>>
+  ): Promise<void> {
     const fileId = `cgc://${filePath}`
 
     // 1. Cleardown existing nodes and relationships for idempotency

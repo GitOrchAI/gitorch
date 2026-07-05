@@ -1,6 +1,59 @@
 import { randomUUID } from 'node:crypto'
-import { summarizeWorkspace } from '@gitorch/cgc'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { F6AgentRole, MissionContextEnricher } from '@gitorch/agents'
+
+const execFileAsync = promisify(execFile)
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+
+/**
+ * Resumo do codegraph em PROCESSO FILHO. O tree-sitter WASM pode morrer com
+ * erro incapturável (memory access out of bounds em finalizador — visto em
+ * produção): in-process, isso derruba o control plane inteiro; aqui, derruba
+ * só o filho e a missão segue sem codegraph. Timeout cobre repo patológico.
+ *
+ * Um arquivo "venenoso" corrompe a instância WASM inteira (repo bagunçado é o
+ * ALVO do produto — isso acontece): o filho denuncia o culpado (exit 3 +
+ * marker) e o pai re-tenta num processo limpo excluindo-o, até MAX_POISONED.
+ */
+const MAX_POISONED_FILES = 5
+
+export async function summarizeWorkspaceIsolated(
+  workspacePath: string,
+  timeoutMs = 90_000
+): Promise<string | undefined> {
+  const child = path.join(__dirname, 'codegraph-child.js')
+  const poisoned: string[] = []
+
+  for (let attempt = 0; attempt <= MAX_POISONED_FILES; attempt++) {
+    let stdout: string
+    try {
+      const result = await execFileAsync(
+        process.execPath,
+        [child, workspacePath, JSON.stringify(poisoned)],
+        { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }
+      )
+      stdout = result.stdout
+    } catch (err) {
+      // exit 3 = veneno identificado; execFile entrega o stdout no erro.
+      const e = err as { code?: number; stdout?: string }
+      const marker = (e.stdout ?? '').match(/^POISON:(.+)$/)
+      if (e.code === 3 && marker?.[1] && !poisoned.includes(marker[1])) {
+        poisoned.push(marker[1])
+        continue
+      }
+      return undefined
+    }
+    if (stdout.trim().length === 0) return undefined
+    // Honestidade com quem decide: o resumo declara o que NÃO foi lido.
+    return poisoned.length > 0
+      ? `${stdout}\n(unparsable files, excluded from the graph: ${poisoned.join(', ')})`
+      : stdout
+  }
+  return undefined
+}
 
 /**
  * Enriquecedor de contexto de missão do GitOrch. Roda no HOST (control plane),
@@ -35,18 +88,19 @@ const MAX_MEMORIES = 5
 const MAX_MEMORY_CHARS = 800
 
 export function buildMissionEnricher(
-  deps: { cortex?: MissionMemory } = {}
+  deps: {
+    cortex?: MissionMemory
+    /** Injetável para teste; default = processo filho isolado. */
+    summarize?: (workspacePath: string) => Promise<string | undefined>
+  } = {}
 ): MissionContextEnricher {
+  const summarize = deps.summarize ?? summarizeWorkspaceIsolated
   return async ({ workspacePath, projectId }) => {
     const lines: string[] = []
 
     if (workspacePath) {
-      try {
-        const codegraph = await summarizeWorkspace(workspacePath)
-        if (codegraph) lines.push(codegraph)
-      } catch {
-        /* codegraph é best-effort */
-      }
+      const codegraph = await summarize(workspacePath)
+      if (codegraph) lines.push(codegraph)
     }
 
     if (deps.cortex) {

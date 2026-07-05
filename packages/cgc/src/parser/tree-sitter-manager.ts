@@ -30,9 +30,21 @@ interface CompatNode {
 interface CompatTree {
   rootNode: CompatNode
   walk(): unknown
+  /**
+   * Libera a memória WASM da árvore. SEM isto, cada parse vaza a árvore na
+   * memória linear do módulo até "memory access out of bounds" derrubar o
+   * processo (visto em produção ao indexar ~40 arquivos). O GC até libera via
+   * finalizador, mas tarde demais — pressão de memória WASM não dispara GC de JS.
+   */
+  free(): void
 }
 
-function wrapNode(node: WasmNode): CompatNode {
+// Cada WasmNode devolvido por child()/parent() é uma ALOCAÇÃO na memória
+// linear do WASM. O registro (arena) permite liberar tudo de uma vez no
+// free() da árvore — sem isso, percorrer a AST vaza centenas de nós por
+// arquivo até "memory access out of bounds" derrubar o processo.
+function wrapNode(node: WasmNode, arena: WasmNode[]): CompatNode {
+  arena.push(node)
   return {
     get type(): string {
       return node.kind()
@@ -41,26 +53,31 @@ function wrapNode(node: WasmNode): CompatNode {
     childCount: () => node.childCount(),
     child: (index: number) => {
       const child = node.child(index)
-      return child ? wrapNode(child) : undefined
+      return child ? wrapNode(child, arena) : undefined
     },
     namedChild: (index: number) => {
       const child = node.namedChild(index)
-      return child ? wrapNode(child) : undefined
+      return child ? wrapNode(child, arena) : undefined
     },
     namedChildCount: () => node.namedChildCount(),
     parent: () => {
       const parent = node.parent()
-      return parent ? wrapNode(parent) : undefined
+      return parent ? wrapNode(parent, arena) : undefined
     },
     startByte: () => node.startByte(),
     endByte: () => node.endByte(),
     startPosition: () => {
+      // WasmPoint também é objeto WASM: copia os números e libera na hora.
       const pos = node.startPosition()
-      return { row: pos.row, column: pos.column }
+      const out = { row: pos.row, column: pos.column }
+      pos.free()
+      return out
     },
     endPosition: () => {
       const pos = node.endPosition()
-      return { row: pos.row, column: pos.column }
+      const out = { row: pos.row, column: pos.column }
+      pos.free()
+      return out
     },
     get text(): string {
       // This would require source text, skipping for now
@@ -70,11 +87,40 @@ function wrapNode(node: WasmNode): CompatNode {
 }
 
 function wrapTree(tree: WasmTree): CompatTree {
+  const arena: WasmNode[] = []
   return {
     get rootNode(): CompatNode {
-      return wrapNode(tree.rootNode())
+      return wrapNode(tree.rootNode(), arena)
     },
     walk: () => tree.walk(),
+    free: () => {
+      for (const n of arena) {
+        try {
+          n.free()
+        } catch {
+          /* já liberado: segue */
+        }
+      }
+      arena.length = 0
+      try {
+        tree.free()
+      } catch {
+        /* já liberada pelo finalizador: nada a fazer */
+      }
+    },
+  }
+}
+
+/**
+ * Um parse que morre DENTRO do WASM corrompe a instância inteira do módulo:
+ * todos os parses seguintes (de qualquer linguagem) passam a falhar, e o
+ * finalizador pode derrubar o processo depois. Este erro sinaliza o
+ * envenenamento para a camada de cima isolar o arquivo culpado.
+ */
+export class WasmPoisonError extends Error {
+  constructor(language: string, cause: unknown) {
+    super(`tree-sitter wasm poisoned while parsing ${language}: ${String(cause)}`)
+    this.name = 'WasmPoisonError'
   }
 }
 
@@ -123,6 +169,13 @@ export class TreeSitterManager {
       const tree = parser.parse(code)
       return tree ? wrapTree(tree) : null
     } catch (error) {
+      // Erro de RUNTIME do WASM ("unreachable", OOB) não é um parse que falhou:
+      // é a instância do módulo corrompida — engolir aqui faria todos os
+      // arquivos seguintes falharem em silêncio. Propaga tipado.
+      if (error instanceof WebAssembly.RuntimeError) {
+        this.parsers.clear()
+        throw new WasmPoisonError(language, error)
+      }
       console.warn(`Failed to parse ${language}:`, error)
       return null
     }

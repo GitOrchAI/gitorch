@@ -39,6 +39,31 @@ describe('buildMissionEnricher', () => {
     expect(lines).toEqual([])
   })
 
+  it('injeta o codegraph quando há workspace e o resumo isolado responde', async () => {
+    const cortex = fakeCortex([])
+    const enrich = buildMissionEnricher({
+      cortex,
+      summarize: async () => 'codegraph: 12 files, routes /api/x',
+    })
+
+    const lines = await enrich({ projectId: 'p1', role: 'po', workspacePath: '/tmp/ws' })
+
+    expect(lines[0]).toContain('codegraph: 12 files')
+  })
+
+  it('segue sem codegraph quando o processo isolado falha (crash do WASM não derruba nada)', async () => {
+    const cortex = fakeCortex([{ content: 'memória sobrevive' }])
+    const enrich = buildMissionEnricher({
+      cortex,
+      summarize: async () => undefined,
+    })
+
+    const lines = await enrich({ projectId: 'p1', role: 'po', workspacePath: '/tmp/ws' })
+
+    expect(lines.length).toBe(1)
+    expect(lines[0]).toContain('memória sobrevive')
+  })
+
   it('sobrevive a um Cortex que lança (best-effort)', async () => {
     const cortex: MissionMemory = {
       recallLocal: () => {

@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative, extname } from 'node:path'
 import { KuzuClient } from './db/kuzu-client'
-import { TreeSitterManager } from './parser/tree-sitter-manager'
+import { TreeSitterManager, WasmPoisonError } from './parser/tree-sitter-manager'
 import { CodeGraphIndexer } from './core/indexer'
 
 // Resumo de codegraph para uma missão de agente. Indexa o workspace num grafo
@@ -39,6 +39,20 @@ export interface SummarizeOptions {
   maxFiles?: number
   /** Ignora arquivos maiores que isto (bytes). */
   maxFileBytes?: number
+  /** Arquivos (relPath) a pular — ex.: já identificados como veneno do parser. */
+  excludeFiles?: string[]
+}
+
+/**
+ * Um arquivo envenenou o parser WASM (corrompe a instância inteira — os parses
+ * seguintes falhariam todos). Carrega o relPath para o chamador excluir e
+ * re-tentar num processo limpo.
+ */
+export class PoisonedFileError extends Error {
+  constructor(public readonly relPath: string) {
+    super(`wasm parser poisoned by file: ${relPath}`)
+    this.name = 'PoisonedFileError'
+  }
 }
 
 interface SourceFile {
@@ -47,11 +61,21 @@ interface SourceFile {
   content: string
 }
 
+/** Testes e verificação valem menos que o código-fonte para o mapa do repo. */
+function isTestLike(relPath: string): boolean {
+  return (
+    /(^|\/)(__tests__|tests?|e2e|jules-scratch|scripts)\//.test(relPath) ||
+    /\.(test|spec)\.[a-z]+$/.test(relPath)
+  )
+}
+
 function collectSourceFiles(root: string, maxFiles: number, maxFileBytes: number): SourceFile[] {
-  const files: SourceFile[] = []
+  // 1ª passada: só caminhos (barato). O conteúdo é lido apenas dos escolhidos.
+  const candidates: Array<{ relPath: string; language: string; full: string }> = []
+  const SCAN_CAP = 4000
 
   const walk = (dir: string): void => {
-    if (files.length >= maxFiles) return
+    if (candidates.length >= SCAN_CAP) return
     let entries: string[]
     try {
       entries = readdirSync(dir)
@@ -59,7 +83,7 @@ function collectSourceFiles(root: string, maxFiles: number, maxFileBytes: number
       return
     }
     for (const entry of entries) {
-      if (files.length >= maxFiles) return
+      if (candidates.length >= SCAN_CAP) return
       if (entry.startsWith('.') && entry !== '.') {
         // pula dotfiles/dirs exceto quando explicitamente úteis (nenhum aqui)
         if (SKIP_DIRS.has(entry)) continue
@@ -78,20 +102,38 @@ function collectSourceFiles(root: string, maxFiles: number, maxFileBytes: number
         const language = EXT_LANG[extname(entry).toLowerCase()]
         if (!language) continue
         if (st.size > maxFileBytes) continue
-        try {
-          files.push({
-            relPath: relative(root, full),
-            language,
-            content: readFileSync(full, 'utf8'),
-          })
-        } catch {
-          /* arquivo ilegível: ignora */
-        }
+        candidates.push({ relPath: relative(root, full), language, full })
       }
     }
   }
 
   walk(root)
+
+  // O orçamento de parse é finito (o módulo WASM aguenta ~centenas de arquivos
+  // por processo): gasta primeiro com o que melhor descreve o sistema —
+  // código-fonte antes de teste, caminhos rasos antes de profundos.
+  candidates.sort((a, b) => {
+    const at = isTestLike(a.relPath) ? 1 : 0
+    const bt = isTestLike(b.relPath) ? 1 : 0
+    if (at !== bt) return at - bt
+    const ad = a.relPath.split('/').length
+    const bd = b.relPath.split('/').length
+    if (ad !== bd) return ad - bd
+    return a.relPath.localeCompare(b.relPath)
+  })
+
+  const files: SourceFile[] = []
+  for (const c of candidates.slice(0, maxFiles)) {
+    try {
+      files.push({
+        relPath: c.relPath,
+        language: c.language,
+        content: readFileSync(c.full, 'utf8'),
+      })
+    } catch {
+      /* arquivo ilegível: ignora */
+    }
+  }
   return files
 }
 
@@ -99,12 +141,18 @@ export async function summarizeWorkspace(
   workspacePath: string,
   options: SummarizeOptions = {}
 ): Promise<string> {
-  const maxFiles = options.maxFiles ?? 600
+  // 100 é o orçamento seguro medido empiricamente: o módulo WASM do parser
+  // vaza memória internamente (upstream) e morre em torno de ~120-130 arquivos
+  // por processo. A priorização acima garante que os 100 são os que importam.
+  const maxFiles = options.maxFiles ?? 100
   const maxFileBytes = options.maxFileBytes ?? 400_000
+  const excluded = new Set(options.excludeFiles ?? [])
 
   let client: KuzuClient | undefined
   try {
-    const sources = collectSourceFiles(workspacePath, maxFiles, maxFileBytes)
+    const sources = collectSourceFiles(workspacePath, maxFiles, maxFileBytes).filter(
+      (f) => !excluded.has(f.relPath)
+    )
     if (sources.length === 0) return ''
 
     client = new KuzuClient(':memory:')
@@ -115,8 +163,12 @@ export async function summarizeWorkspace(
     for (const file of sources) {
       try {
         await indexer.indexFile(file.relPath, file.content, file.language)
-      } catch {
-        /* um arquivo problemático não derruba o resumo inteiro */
+      } catch (err) {
+        // Veneno de WASM corrompe a instância: continuar faria TODOS os
+        // arquivos seguintes falharem em silêncio (e o finalizador pode matar
+        // o processo). Falha rápido com o culpado; o chamador re-tenta limpo.
+        if (err instanceof WasmPoisonError) throw new PoisonedFileError(file.relPath)
+        /* um arquivo problemático (não-veneno) não derruba o resumo inteiro */
       }
     }
 
@@ -164,7 +216,10 @@ export async function summarizeWorkspace(
     )
 
     return lines.join('\n')
-  } catch {
+  } catch (err) {
+    // Veneno NÃO pode ser engolido: o chamador precisa saber o culpado para
+    // re-tentar num processo limpo. O resto continua best-effort.
+    if (err instanceof PoisonedFileError) throw err
     return ''
   } finally {
     if (client) {

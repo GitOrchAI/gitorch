@@ -44,4 +44,28 @@ describe('summarizeWorkspace', () => {
       rmSync(empty, { recursive: true, force: true })
     }
   })
+
+  it('gasta o orçamento de parse com código-fonte antes de testes', async () => {
+    const budget = mkdtempSync(join(tmpdir(), 'cgc-budget-'))
+    try {
+      mkdirSync(join(budget, 'src'), { recursive: true })
+      mkdirSync(join(budget, '__tests__'), { recursive: true })
+      writeFileSync(join(budget, 'src', 'core.ts'), 'export function core(): number { return 1 }\n')
+      writeFileSync(
+        join(budget, '__tests__', 'core.test.ts'),
+        'export function emTeste(): number { return 2 }\n'
+      )
+      // Orçamento de 1: o arquivo de src ganha do arquivo de teste.
+      const summary = await summarizeWorkspace(budget, { maxFiles: 1 })
+      expect(summary).toContain('src/core.ts')
+      expect(summary).not.toContain('core.test.ts')
+    } finally {
+      rmSync(budget, { recursive: true, force: true })
+    }
+  })
+
+  it('excludeFiles pula o arquivo indicado', async () => {
+    const summary = await summarizeWorkspace(dir, { excludeFiles: ['src/main.ts'] })
+    expect(summary).toContain('Indexed 1 source file(s)')
+  })
 })

@@ -88,14 +88,24 @@ export class LocalWorkspaceProvider {
           timeout: 120_000,
         })
       } catch (err) {
-        // Sinaliza staleness em stderr do serviço: sem isso, análises rodariam
-        // sobre código velho parecendo atuais.
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[workspace] git pull falhou em ${repository}; usando clone existente (possivelmente desatualizado): ${String(
-            (err as { message?: string })?.message ?? err
-          )}`
-        )
+        // Histórico divergiu (força-push, clone raso antigo): o workspace é um
+        // clone descartável de LEITURA — alinhar à força com o remoto é o
+        // comportamento certo. O fetch do pull falho já atualizou as refs
+        // remotas; o reset usa o upstream do branch atual.
+        try {
+          await execFileAsync('git', ['-C', workspacePath, 'reset', '--hard', '@{u}'], {
+            timeout: 60_000,
+          })
+        } catch {
+          // Sinaliza staleness em stderr do serviço: sem isso, análises rodariam
+          // sobre código velho parecendo atuais.
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[workspace] git pull e reset falharam em ${repository}; usando clone existente (possivelmente desatualizado): ${String(
+              (err as { message?: string })?.message ?? err
+            )}`
+          )
+        }
       }
       return
     }
