@@ -22,6 +22,8 @@ export interface QaRailsMissionOptions {
   contextBlocks?: string[]
   /** Move o card da issue vinculada no board conforme o veredito (opcional). */
   moveCard?: CardMover
+  /** Label de delegação que marca trabalho de dev assíncrono (padrão 'jules'). */
+  delegateLabel?: string
   fetchImpl?: typeof fetch
 }
 
@@ -78,16 +80,56 @@ export async function runQaMissionViaRails(
     return resp.json().catch(() => ({}))
   }
 
-  // 1) PRs abertas do Jules (o gatilho do QA).
+  // 1) PRs abertas de dev assíncrono delegado (o gatilho do QA). O AUTOR não é
+  // sinal confiável — visto em produção: o Jules abre o PR pela conta do dono
+  // da instalação. O sinal nativo do GitOrch é o PR fechar uma issue com a
+  // label de delegação; o login com "jules" fica só como atalho.
+  const delegateLabel = options.delegateLabel ?? 'jules'
   const prs = (await gh(
     'GET',
     `/repos/${options.repository}/pulls?state=open&sort=created&direction=desc&per_page=20`
-  )) as Array<{ number: number; user?: { login?: string }; draft?: boolean }>
-  const target = Array.isArray(prs)
-    ? prs.find((p) => !p.draft && isJulesAuthor(p.user?.login))
-    : undefined
+  )) as Array<{
+    number: number
+    user?: { login?: string }
+    draft?: boolean
+    body?: string
+    head?: { sha?: string }
+  }>
+  let target: (typeof prs)[number] | undefined
+  for (const p of Array.isArray(prs) ? prs : []) {
+    if (p.draft) continue
+    let delegated = isJulesAuthor(p.user?.login)
+    if (!delegated) {
+      const linked = (p.body ?? '').match(/\b(?:closes|fixes|resolves)\s+#(\d+)/i)?.[1]
+      if (!linked) continue
+      const issue = (await gh('GET', `/repos/${options.repository}/issues/${linked}`)) as {
+        labels?: Array<{ name?: string }>
+      }
+      delegated = (issue.labels ?? []).some((l) => l.name === delegateLabel)
+    }
+    if (!delegated) continue
+    // Não re-julgar o MESMO estado a cada wake: se já há review nossa neste
+    // head, o dev ainda não retrabalhou — julgar de novo só faria spam.
+    const reviews = (await gh(
+      'GET',
+      `/repos/${options.repository}/pulls/${p.number}/reviews?per_page=100`
+    )) as Array<{ body?: string; commit_id?: string }>
+    const alreadyJudged =
+      Array.isArray(reviews) &&
+      reviews.some(
+        (r) => (r.body ?? '').includes(JULES_MARKER) && (!p.head?.sha || r.commit_id === p.head.sha)
+      )
+    if (alreadyJudged) continue
+    target = p
+    break
+  }
   if (!target) {
-    return { exitCode: 0, output: 'QA: no open Jules PR to review.', stderr: '', noOp: true }
+    return {
+      exitCode: 0,
+      output: 'QA: no delegated PR awaiting judgment.',
+      stderr: '',
+      noOp: true,
+    }
   }
 
   // 2) Snapshot curado pelo SISTEMA: PR + issue vinculada + critérios + diff + CI.

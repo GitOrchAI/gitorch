@@ -29,7 +29,14 @@ const REQUEST_CHANGES = JSON.stringify({
   },
 })
 
-function fakeFetch(prs: Array<{ number: number; user: string }>): typeof fetch {
+function fakeFetch(
+  prs: Array<{
+    number: number
+    user: string
+    existingReviews?: Array<{ body: string; commit_id: string }>
+  }>,
+  issueLabels: string[] = ['jules', 'gitorch:task']
+): typeof fetch {
   const posted: { reviews: unknown[]; comments: unknown[] } = { reviews: [], comments: [] }
   const impl = (async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     const u = String(url)
@@ -38,7 +45,19 @@ function fakeFetch(prs: Array<{ number: number; user: string }>): typeof fetch {
     const json = (d: unknown) => new Response(JSON.stringify(d), { status: 200 })
 
     if (u.includes('/pulls?')) {
-      return json(prs.map((p) => ({ number: p.number, user: { login: p.user }, draft: false })))
+      return json(
+        prs.map((p) => ({
+          number: p.number,
+          user: { login: p.user },
+          draft: false,
+          body: 'Closes #50',
+          head: { sha: 'abc123' },
+        }))
+      )
+    }
+    const rv = u.match(/\/pulls\/(\d+)\/reviews/)
+    if (rv && method === 'GET') {
+      return json(prs.find((p) => p.number === Number(rv[1]))?.existingReviews ?? [])
     }
     if (/\/pulls\/\d+$/.test(u.split('?')[0]!)) {
       return json({ number: 1, body: 'Closes #50', head: { sha: 'abc123' } })
@@ -46,6 +65,7 @@ function fakeFetch(prs: Array<{ number: number; user: string }>): typeof fetch {
     if (u.includes('/issues/50')) {
       return json({
         number: 50,
+        labels: issueLabels.map((name) => ({ name })),
         body: '## Verification Criteria\n\n- GET /reviews retorna lista\n- POST valida compra',
       })
     }
@@ -106,6 +126,67 @@ describe('runQaMissionViaRails', () => {
     expect(r.exitCode).toBe(0)
     expect(posted.reviews[0]!.event).toBe('APPROVE')
     expect(posted.comments).toHaveLength(0)
+  })
+
+  it('acha PR delegado mesmo com autor humano (Jules abre pela conta do dono): issue com label jules', async () => {
+    const f = fakeFetch([{ number: 9, user: 'loureng' }])
+    const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+    })
+    expect(r.noOp).toBeUndefined()
+    expect(posted.reviews[0]!.event).toBe('APPROVE')
+  })
+
+  it('autor humano + issue SEM label de delegação → não é trabalho delegado (no-op)', async () => {
+    const f = fakeFetch([{ number: 9, user: 'loureng' }], ['gitorch:task'])
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+    })
+    expect(r.noOp).toBe(true)
+  })
+
+  it('PR já julgado neste head → não re-julga a cada wake (no-op)', async () => {
+    const f = fakeFetch([
+      {
+        number: 9,
+        user: 'jules[bot]',
+        existingReviews: [{ body: '<!-- gitorch:qa -->\nGitOrch QA: ...', commit_id: 'abc123' }],
+      },
+    ])
+    const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+    })
+    expect(r.noOp).toBe(true)
+    expect(posted.reviews).toHaveLength(0)
+  })
+
+  it('head NOVO após rework → julga de novo (review antiga era de outro sha)', async () => {
+    const f = fakeFetch([
+      {
+        number: 9,
+        user: 'jules[bot]',
+        existingReviews: [{ body: '<!-- gitorch:qa -->\nrework pedido', commit_id: 'sha-velho' }],
+      },
+    ])
+    const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
+    await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+    })
+    expect(posted.reviews[0]!.event).toBe('APPROVE')
   })
 
   it('o card da issue segue o veredito: approve → done; rework → inProgress', async () => {
