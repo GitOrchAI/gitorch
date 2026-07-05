@@ -13,11 +13,15 @@ describe('playbooks por papel', () => {
     }
   })
 
-  test('RA: codegraph primeiro, cruft é achado de limpeza, não cria tasks', () => {
+  test('RA: tech scout, codegraph primeiro, cruft é achado, propõe melhoria, não cria tasks', () => {
     const ra = loadPlaybook('ra')
+    expect(ra).toMatch(/technical scout|tech lead/i)
     expect(ra).toMatch(/code graph/i)
     expect(ra).toMatch(/cleanup finding/i)
-    expect(ra).toMatch(/do NOT create epics, features,\s+or tasks/i)
+    expect(ra).toMatch(/improvement/i)
+    expect(ra).toMatch(/do NOT create[\s\S]*tasks/i)
+    // Lei: nenhum tooling de ação no playbook.
+    expect(ra).not.toMatch(/`gh`|gh api|MCP/)
   })
 
   test('PO: hierarquia, DoD de 8 campos, dependências e Sprint Goal', () => {
@@ -30,18 +34,23 @@ describe('playbooks por papel', () => {
     expect(po).toMatch(/Sprint Goal/i)
   })
 
-  test('SM: valida DoD, delega por label jules ou humano, não delega fora do padrão', () => {
+  test('SM: DoD mecânico é do código; delega jules/humano só desbloqueado', () => {
     const sm = loadPlaybook('sm')
     expect(sm).toMatch(/jules/i)
     expect(sm).toMatch(/assignee/i)
-    expect(sm).toMatch(/do NOT delegate/i)
+    // Lei: a conferência mecânica do DoD saiu do SM (é código do executor).
+    expect(sm).toMatch(/BY GITORCH CODE/i)
+    expect(sm).toMatch(/UNBLOCKED/i)
+    expect(sm).not.toMatch(/`gh`|gh api/)
   })
 
-  test('QA: Verification Criteria, CI verde obrigatório, itera com @jules', () => {
+  test('QA: Verification Criteria, CI verde obrigatório, veredito estruturado', () => {
     const qa = loadPlaybook('qa')
     expect(qa).toMatch(/Verification Criteria/i)
-    expect(qa).toMatch(/never approve.*CI/i)
-    expect(qa).toContain('@jules')
+    expect(qa).toMatch(/never approve when CI/i)
+    expect(qa).toMatch(/request_changes/)
+    expect(qa).toMatch(/cannot verify/i)
+    expect(qa).not.toMatch(/`gh`|gh api/)
   })
 })
 

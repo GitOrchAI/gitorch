@@ -101,10 +101,12 @@ describe('prompt da missão carrega o playbook Cadence (fonte única do método)
     expect(m.prompt).toMatch(/cleanup finding/i)
   })
 
-  test('QA recebe Verification Criteria e @jules', () => {
+  test('QA recebe Verification Criteria e veredito estruturado (Lei: sistema posta)', () => {
     const m = buildAgentMission({ ...baseInput, role: 'qa' })
     expect(m.prompt).toContain('Verification Criteria')
-    expect(m.prompt).toContain('@jules')
+    // Lei "LLM decide, sistema executa": o playbook pede o veredito estruturado;
+    // quem menciona @jules na PR é o executor do control plane, não a LLM.
+    expect(m.prompt).toContain('request_changes')
   })
 
   test('prompt não vira romance (gate de tamanho por papel)', () => {

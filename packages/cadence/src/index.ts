@@ -40,3 +40,7 @@ export function loadPlaybook(role: CadenceRole): string {
 export function loadEventPlaybook(event: CadenceEvent): string {
   return readFileSync(join(PLAYBOOKS_DIR, 'events', `${event}.md`), 'utf8')
 }
+
+// Cadence Rails: formulários por passo + validação determinística (a Lei
+// "LLM decide, sistema executa" — docs/agents/cadence-execution-model.md).
+export * from './rails'
