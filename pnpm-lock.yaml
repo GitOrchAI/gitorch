@@ -137,6 +137,9 @@ importers:
       '@gitorch/agents':
         specifier: workspace:*
         version: link:../../packages/agents
+      '@gitorch/cadence':
+        specifier: workspace:*
+        version: link:../../packages/cadence
       '@gitorch/cgc':
         specifier: workspace:*
         version: link:../../packages/cgc

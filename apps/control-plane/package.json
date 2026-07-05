@@ -26,6 +26,7 @@
     "@fastify/swagger-ui": "^6.0.0",
     "@fastify/under-pressure": "^9.0.0",
     "@gitorch/agents": "workspace:*",
+    "@gitorch/cadence": "workspace:*",
     "@gitorch/cgc": "workspace:*",
     "@gitorch/cortex": "workspace:*",
     "@gitorch/github-sync": "workspace:*",
