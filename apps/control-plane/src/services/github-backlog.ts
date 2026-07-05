@@ -62,7 +62,9 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
 
   return {
     async findIssueByMarker(marker: string): Promise<IssueRef | null> {
-      const q = encodeURIComponent(`repo:${options.repository} in:body "${marker}"`)
+      // Só issues ABERTAS contam para idempotência: um nó fechado (plano
+      // abandonado/limpo) não deve ser reusado numa nova aplicação do plano.
+      const q = encodeURIComponent(`repo:${options.repository} in:body "${marker}" state:open`)
       const result = (await rest('GET', `/search/issues?q=${q}&per_page=1`)) as {
         items?: Array<{ number: number; node_id: string }>
       }
@@ -84,7 +86,35 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
     },
 
     async addToBoard(nodeId): Promise<string> {
-      return client.addItemById({ projectId: options.projectId, contentId: nodeId })
+      try {
+        return await client.addItemById({ projectId: options.projectId, contentId: nodeId })
+      } catch (error) {
+        // Idempotência: o GitHub responde "Content already exists in this
+        // project" quando a issue já está no board (ex.: workflow de auto-add
+        // ou re-execução). Resolve o id do item existente em vez de falhar.
+        if (!String(error).includes('already exists')) throw error
+        const query = `query($id: ID!) { node(id: $id) { ... on Issue {
+          projectItems(first: 20) { nodes { id project { id } } } } } }`
+        const resp = await f('https://api.github.com/graphql', {
+          method: 'POST',
+          headers: {
+            authorization: `token ${options.token}`,
+            'content-type': 'application/json',
+            'user-agent': 'gitorch',
+          },
+          body: JSON.stringify({ query, variables: { id: nodeId } }),
+        })
+        const data = (await resp.json()) as {
+          data?: {
+            node?: { projectItems?: { nodes?: Array<{ id: string; project?: { id?: string } }> } }
+          }
+        }
+        const item = data.data?.node?.projectItems?.nodes?.find(
+          (n) => n.project?.id === options.projectId
+        )
+        if (!item) throw error
+        return item.id
+      }
     },
 
     async setSprint(boardItemId): Promise<void> {
