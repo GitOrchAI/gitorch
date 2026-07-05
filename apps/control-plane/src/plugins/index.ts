@@ -34,10 +34,15 @@ export async function registerPlugins(app: FastifyInstance, env: Env): Promise<v
   })
 
   if (env.NODE_ENV !== 'test') {
+    // Limiares realistas para o control plane (Node + Prisma + Fastify já usam
+    // ~160MB de baseline). Os valores antigos (heap 100MB / RSS 200MB) eram
+    // menores que o próprio baseline, então o under-pressure devolvia 503 na API
+    // inteira ao menor respiro. Teto do cgroup do serviço é 3G. Overridável por
+    // env para ajuste em produção sem novo deploy.
     await app.register(fastifyUnderPressure, {
-      maxEventLoopDelay: 1000,
-      maxHeapUsedBytes: 100 * 1024 * 1024,
-      maxRssBytes: 200 * 1024 * 1024,
+      maxEventLoopDelay: Number(process.env['GITORCH_MAX_EVENT_LOOP_DELAY_MS'] ?? 2000),
+      maxHeapUsedBytes: Number(process.env['GITORCH_MAX_HEAP_BYTES'] ?? 1_200 * 1024 * 1024),
+      maxRssBytes: Number(process.env['GITORCH_MAX_RSS_BYTES'] ?? 2_000 * 1024 * 1024),
       maxEventLoopUtilization: 0.98,
     })
   }
