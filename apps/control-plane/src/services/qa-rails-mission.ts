@@ -75,7 +75,12 @@ export async function runQaMissionViaRails(
       ...(body ? { body: JSON.stringify(body) } : {}),
     })
     if (!resp.ok) {
-      throw new GithubExecutionError(`GitHub ${method} ${path} failed (${resp.status})`)
+      // O corpo da resposta é o diagnóstico (ex.: 422 "Can not approve your
+      // own pull request") — sem ele, o erro é um número mudo.
+      const detail = await resp.text().catch(() => '')
+      throw new GithubExecutionError(
+        `GitHub ${method} ${path} failed (${resp.status}): ${detail.slice(0, 200)}`
+      )
     }
     return resp.json().catch(() => ({}))
   }
@@ -191,16 +196,28 @@ export async function runQaMissionViaRails(
       ? 'request_changes'
       : verdict.verdict
 
-  // 4) Executor determinístico posta o veredito.
+  // 4) Executor determinístico posta o veredito. O GitHub PROÍBE
+  // aprovar/pedir-mudanças no PRÓPRIO PR (422) — e o Jules abre o PR pela
+  // conta do dono da instalação, que é a mesma do token. Nesse caso o
+  // veredito sai como review COMMENT (permitido), com o resultado explícito
+  // no texto; o marker continua valendo para o skip de re-julgamento.
+  const viewer = (await gh('GET', '/user')) as { login?: string }
+  const selfPr = (viewer.login ?? '').toLowerCase() === (target.user?.login ?? '').toLowerCase()
+  const reviewEvent = selfPr
+    ? 'COMMENT'
+    : effectiveVerdict === 'approve'
+      ? 'APPROVE'
+      : 'REQUEST_CHANGES'
+
   if (effectiveVerdict === 'approve') {
     await gh('POST', `/repos/${options.repository}/pulls/${target.number}/reviews`, {
-      event: 'APPROVE',
-      body: `${JULES_MARKER}\nGitOrch QA: criteria met, CI green.\n\n${verdict.comment.summary}`,
+      event: reviewEvent,
+      body: `${JULES_MARKER}\nGitOrch QA verdict: APPROVE — criteria met, CI green.${selfPr ? ' (posted as comment: token owner is the PR author)' : ''}\n\n${verdict.comment.summary}`,
     })
   } else {
     await gh('POST', `/repos/${options.repository}/pulls/${target.number}/reviews`, {
-      event: 'REQUEST_CHANGES',
-      body: `${JULES_MARKER}\nGitOrch QA: changes requested (see comment).`,
+      event: reviewEvent,
+      body: `${JULES_MARKER}\nGitOrch QA verdict: REQUEST CHANGES (see comment).${selfPr ? ' (posted as comment: token owner is the PR author)' : ''}`,
     })
     await gh('POST', `/repos/${options.repository}/issues/${target.number}/comments`, {
       body: buildJulesReworkComment(verdict.comment),

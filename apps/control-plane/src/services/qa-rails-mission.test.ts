@@ -59,6 +59,7 @@ function fakeFetch(
     if (rv && method === 'GET') {
       return json(prs.find((p) => p.number === Number(rv[1]))?.existingReviews ?? [])
     }
+    if (u.endsWith('/user')) return json({ login: 'loureng' })
     if (/\/pulls\/\d+$/.test(u.split('?')[0]!)) {
       return json({ number: 1, body: 'Closes #50', head: { sha: 'abc123' } })
     }
@@ -130,7 +131,9 @@ describe('runQaMissionViaRails', () => {
 
   it('acha PR delegado mesmo com autor humano (Jules abre pela conta do dono): issue com label jules', async () => {
     const f = fakeFetch([{ number: 9, user: 'loureng' }])
-    const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
+    const posted = (
+      f as unknown as { posted: { reviews: Array<{ event?: string; body?: string }> } }
+    ).posted
     const r = await runQaMissionViaRails({
       repository: 'o/r',
       githubToken: 't',
@@ -138,6 +141,21 @@ describe('runQaMissionViaRails', () => {
       fetchImpl: f,
     })
     expect(r.noOp).toBeUndefined()
+    // PR do próprio dono do token: o GitHub proíbe APPROVE (422) — o veredito
+    // sai como review COMMENT com o resultado explícito no texto.
+    expect(posted.reviews[0]!.event).toBe('COMMENT')
+    expect(posted.reviews[0]!.body).toContain('APPROVE')
+  })
+
+  it('autor diferente do dono do token → APPROVE de verdade', async () => {
+    const f = fakeFetch([{ number: 9, user: 'google-labs-jules[bot]' }])
+    const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
+    await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+    })
     expect(posted.reviews[0]!.event).toBe('APPROVE')
   })
 
