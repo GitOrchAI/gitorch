@@ -91,5 +91,10 @@ describe('runPoRails', () => {
     expect(prompts[1]).toContain('Fase 1 — Dados')
     expect(prompts[2]).toContain('Épico: material')
     expect(prompts[3]).toContain('[Task] coluna material')
+    // o passo de backlog exige issue densa p/ dev assíncrono sem contexto:
+    // caminhos reais (verbatim do codegraph), reuse-first, uma mudança por task
+    expect(prompts[2]).toContain('copied verbatim from the codegraph')
+    expect(prompts[2]).toContain('REUSE FIRST')
+    expect(prompts[2]).toContain('ONE focused change per task')
   })
 })

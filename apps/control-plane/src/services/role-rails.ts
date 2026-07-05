@@ -76,6 +76,17 @@ export async function runPoRails(execute: StepExecutor, input: PoRailsInput): Pr
       phasesBlock,
       epicsBlock,
       'Write the FEATURES and TASKS (epicIndex refers to the list above; tasks may set parentFeatureIndex). Every item MUST carry the complete 8-field DoD — incomplete items are rejected by code.',
+      // O leitor destas issues é um dev assíncrono SEM nosso contexto (Jules e
+      // similares): o corpo da issue é tudo que ele tem. Padrões do
+      // jules-awesome-list + reuse-first (não sair criando: reutilizar).
+      [
+        'These items will be executed by an async dev agent that has NO context beyond the issue body. Write for that reader:',
+        '- Related Files: REAL repository paths copied verbatim from the codegraph context above — never invent a path. If no listed file fits, name the directory to explore and say why.',
+        '- Implementation Guide: numbered steps at file level, each stating the from→to change (e.g. "in src/cart.ts, extract the shipping rule into..."), naming the stack/framework involved.',
+        '- REUSE FIRST: name the existing helper/module/pattern to extend. Only propose a new file when nothing existing fits, and justify that in Notes.',
+        '- ONE focused change per task — never mix unrelated work. Prefer FEWER, denser tasks over many vague ones.',
+        '- Verification Criteria: concrete checks a reviewer can execute (commands, URLs, expected behavior) — not restatements of the title.',
+      ].join('\n'),
     ]),
     execute,
   })) as PoBacklogForm

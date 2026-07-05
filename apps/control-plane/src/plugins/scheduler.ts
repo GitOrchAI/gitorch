@@ -242,9 +242,10 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     })
   )
 
+  const workspaceProvider = buildWorkspaceProvider(app)
   const orchestrator = new AgentOrchestrator({
     registry,
-    workspace: buildWorkspaceProvider(app),
+    workspace: workspaceProvider,
     // Injeta conhecimento do projeto (codegraph + memórias do Cortex) no contexto.
     enrichContext: buildMissionEnricher({ cortex: app.cortex }),
   })
@@ -464,9 +465,26 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             return step.output
           }
           try {
+            // Codegraph REAL antes de decidir: clona/atualiza o repo do cliente
+            // e injeta o resumo estrutural — sem isso o PO escreveria
+            // "Implementation Guide"/"Related Files" no chute e a issue chega
+            // fraca no dev assíncrono. Best-effort: sem workspace, segue só
+            // com memória.
+            let workspacePath: string | undefined
+            try {
+              const ws = (await workspaceProvider.allocateWorkspace(
+                project.userId ?? 'scheduler-user',
+                project.id,
+                { repository: project.wingId }
+              )) as { path?: string } | undefined
+              workspacePath = ws?.path
+            } catch (wsErr) {
+              app.log.warn(wsErr, `[Scheduler] rails sem workspace para ${project.wingId}`)
+            }
             const contextBlocks = await buildMissionEnricher({ cortex: app.cortex })({
               projectId: project.id,
               role,
+              ...(workspacePath ? { workspacePath } : {}),
             })
             result = poRails
               ? await runPoMissionViaRails({
