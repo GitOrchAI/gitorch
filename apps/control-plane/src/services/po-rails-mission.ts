@@ -2,6 +2,7 @@ import { ProjectV2Client } from '@gitorch/github-sync'
 import { runPoRails } from './role-rails.js'
 import { applyBacklog } from './backlog-executor.js'
 import { createGithubBacklog } from './github-backlog.js'
+import type { BoardColumns } from './board-status.js'
 import type { StepExecutor } from './role-rails.js'
 
 // Missão do PO nos TRILHOS (produção): acha a wish aberta, roda o roteiro de 4
@@ -19,6 +20,8 @@ export interface PoRailsMissionOptions {
   contextBlocks: string[]
   /** Label de delegação (padrão 'jules'). */
   delegateLabel?: string
+  /** Colunas do board deste projeto (config; default nativo do Projects v2). */
+  boardColumns?: BoardColumns
   fetchImpl?: typeof fetch
 }
 
@@ -94,6 +97,7 @@ export async function runPoMissionViaRails(
     token: options.githubToken,
     repository: options.repository,
     projectId,
+    ...(options.boardColumns ? { statusColumns: options.boardColumns } : {}),
     ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
   })
   const result = await applyBacklog({

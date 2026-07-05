@@ -24,6 +24,8 @@ export interface BacklogGitHub {
   addLabels(nodeId: string, labels: string[]): Promise<void>
   /** Publica o Sprint Goal no board (status update) — visível ao cliente. */
   postSprintGoal?(goal: string): Promise<void>
+  /** Seta a coluna de status do card (nome vem da config do projeto). */
+  setStatus?(boardItemId: string, column: 'todo'): Promise<void>
 }
 
 export interface BacklogPlan {
@@ -107,6 +109,14 @@ export async function applyBacklog(options: ApplyBacklogOptions): Promise<ApplyB
 
   const result: ApplyBacklogResult = { createdCount: 0, skippedCount: 0, issues: [] }
 
+  // Cada card criado nasce na coluna inicial ("todo" no mapa do projeto) — o
+  // board é a interface do cliente; card sem status parece esquecido.
+  const addToBoardWithStatus = async (nodeId: string): Promise<string> => {
+    const itemId = await github.addToBoard(nodeId)
+    if (github.setStatus) await github.setStatus(itemId, 'todo')
+    return itemId
+  }
+
   // Cria (ou reusa, por marker) um nó e o coloca no board e na árvore.
   // `labels`: marca o TIPO do nó (ex.: `gitorch:task`) para o SM achar as tasks
   // delegáveis (folhas) sem confundir com épicos/features.
@@ -143,7 +153,7 @@ export async function applyBacklog(options: ApplyBacklogOptions): Promise<ApplyB
       plan.wish.nodeId
     )
     phaseRefs.push(ref)
-    boardItemByNode.set(ref.nodeId, await github.addToBoard(ref.nodeId))
+    boardItemByNode.set(ref.nodeId, await addToBoardWithStatus(ref.nodeId))
   }
 
   // 3) Épicos sob suas fases.
@@ -158,7 +168,7 @@ export async function applyBacklog(options: ApplyBacklogOptions): Promise<ApplyB
       phaseRefs[epic.phaseIndex]!.nodeId
     )
     epicRefs.push(ref)
-    boardItemByNode.set(ref.nodeId, await github.addToBoard(ref.nodeId))
+    boardItemByNode.set(ref.nodeId, await addToBoardWithStatus(ref.nodeId))
   }
 
   // 4) Features e tasks (tasks com parentFeatureIndex penduram na feature).
@@ -185,7 +195,7 @@ export async function applyBacklog(options: ApplyBacklogOptions): Promise<ApplyB
       item.kind === 'task' ? ['gitorch:task'] : undefined
     )
     itemRefs.push(ref)
-    boardItemByNode.set(ref.nodeId, await github.addToBoard(ref.nodeId))
+    boardItemByNode.set(ref.nodeId, await addToBoardWithStatus(ref.nodeId))
   }
 
   // 5) Sprint Goal visível no board (status update) — o board é a interface.

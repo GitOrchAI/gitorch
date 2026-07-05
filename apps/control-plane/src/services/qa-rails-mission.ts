@@ -5,7 +5,8 @@ import {
   type QaVerdictForm,
 } from '@gitorch/cadence'
 import { runFormStep } from './rails-runner.js'
-import { GithubExecutionError } from './github-backlog.js'
+import { GithubExecutionError } from './github-errors.js'
+import type { CardMover } from './board-status.js'
 
 // Missão do QA nos TRILHOS (F3.6): acha a PR do Jules que precisa de julgamento,
 // monta o snapshot (diff + Verification Criteria da issue + estado do CI), o
@@ -19,6 +20,8 @@ export interface QaRailsMissionOptions {
   githubToken: string
   execute: (prompt: string) => Promise<string>
   contextBlocks?: string[]
+  /** Move o card da issue vinculada no board conforme o veredito (opcional). */
+  moveCard?: CardMover
   fetchImpl?: typeof fetch
 }
 
@@ -162,9 +165,25 @@ export async function runQaMissionViaRails(
     })
   }
 
+  // 5) O board acompanha o veredito: aprovado = pronto pelo padrão do GitOrch
+  // (critérios atendidos + CI verde) → "done"; rework → volta a "inProgress".
+  // Best-effort: board sem coluna/campo nunca derruba o julgamento já postado.
+  let cardNote = ''
+  if (options.moveCard && linkedIssue) {
+    try {
+      const moved = await options.moveCard(
+        Number(linkedIssue),
+        effectiveVerdict === 'approve' ? 'done' : 'inProgress'
+      )
+      cardNote = ` ${moved}.`
+    } catch (err) {
+      cardNote = ` card move failed: ${String(err).slice(0, 120)}.`
+    }
+  }
+
   return {
     exitCode: 0,
-    output: `QA judged PR #${target.number}: ${effectiveVerdict} (CI ${ciState}).`,
+    output: `QA judged PR #${target.number}: ${effectiveVerdict} (CI ${ciState}).${cardNote}`,
     stderr: '',
   }
 }

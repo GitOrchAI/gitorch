@@ -1,17 +1,13 @@
 import { ProjectV2Client } from '@gitorch/github-sync'
 import type { BacklogGitHub, IssueRef } from './backlog-executor.js'
+import { GithubExecutionError } from './github-errors.js'
+import { createBoardStatus, type BoardColumns } from './board-status.js'
 
 // Adapter GitHub REAL do backlog-executor: implementa a superfície BacklogGitHub
 // com REST (issues/labels/busca) + ProjectV2Client (árvore, board, sprint).
 // É a ÚNICA fronteira do plano do PO com o GitHub — toda ação auditável aqui.
 
-/** Erro de execução no GitHub: NÃO é falha de motor — nunca aciona failover. */
-export class GithubExecutionError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'GithubExecutionError'
-  }
-}
+export { GithubExecutionError } from './github-errors.js'
 
 export interface GithubBacklogOptions {
   token: string
@@ -21,6 +17,10 @@ export interface GithubBacklogOptions {
   projectId: string
   /** nome do campo de iteração no board (padrão "Sprint") */
   sprintFieldName?: string
+  /** nome do campo de status no board (padrão "Status") */
+  statusFieldName?: string
+  /** mapeamento de colunas do projeto (config por projeto; default nativo). */
+  statusColumns?: BoardColumns
   fetchImpl?: typeof fetch
 }
 
@@ -95,6 +95,14 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
     markerMaps.set(prefix, map)
     return map
   }
+
+  const boardStatus = createBoardStatus({
+    token: options.token,
+    projectId: options.projectId,
+    ...(options.statusFieldName ? { statusFieldName: options.statusFieldName } : {}),
+    ...(options.statusColumns ? { columns: options.statusColumns } : {}),
+    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+  })
 
   // Cache da iteração ativa (resolvida uma vez por execução do plano).
   let sprintCache: { fieldId: string; iterationId: string } | null | undefined
@@ -183,6 +191,16 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
         startDate: new Date().toISOString().slice(0, 10),
         status: 'ON_TRACK',
       })
+    },
+
+    async setStatus(boardItemId, column): Promise<void> {
+      // Coluna/campo ausente no board do cliente não é falha do plano — o
+      // status é acessório; a árvore/labels são o essencial.
+      const outcome = await boardStatus.setStatus(boardItemId, column)
+      if (outcome !== 'set') {
+        // eslint-disable-next-line no-console
+        console.warn(`[backlog] status não aplicado (${outcome}) para item ${boardItemId}`)
+      }
     },
 
     async addLabels(nodeId, labels): Promise<void> {

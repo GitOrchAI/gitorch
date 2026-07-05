@@ -39,6 +39,7 @@ function fakeGitHub(existingMarkers: string[] = []) {
   const subIssues: Array<{ parent: string; child: string }> = []
   const boardAdds: string[] = []
   const iterations: string[] = []
+  const statuses: Array<{ boardItemId: string; column: string }> = []
   let n = 200
   const gh: BacklogGitHub = {
     async findIssueByMarker(marker) {
@@ -60,8 +61,11 @@ function fakeGitHub(existingMarkers: string[] = []) {
       iterations.push(itemId)
     },
     async addLabels() {},
+    async setStatus(boardItemId, column) {
+      statuses.push({ boardItemId, column })
+    },
   }
-  return { gh, created, subIssues, boardAdds, iterations }
+  return { gh, created, subIssues, boardAdds, iterations, statuses }
 }
 
 describe('renderIssueBody', () => {
@@ -96,6 +100,14 @@ describe('applyBacklog', () => {
 
     await expect(applyBacklog({ github: gh, plan: bad })).rejects.toThrow(/verificationCriteria/)
     expect(created).toHaveLength(0)
+  })
+
+  it('todo card criado nasce na coluna inicial (status "todo")', async () => {
+    const { gh, boardAdds, statuses } = fakeGitHub()
+    await applyBacklog({ github: gh, plan: plan() })
+    // 1 fase + 1 épico + 2 itens = 4 cards, todos com status inicial.
+    expect(statuses).toHaveLength(boardAdds.length)
+    expect(statuses.every((s) => s.column === 'todo')).toBe(true)
   })
 
   it('monta a árvore wish→fase→épico→feature→task, board e sprint', async () => {

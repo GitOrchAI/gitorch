@@ -29,6 +29,7 @@ import { runPoMissionViaRails } from '../services/po-rails-mission.js'
 import { runQaMissionViaRails } from '../services/qa-rails-mission.js'
 import { runSmDelegation } from '../services/sm-delegation.js'
 import { runSmWatchdog, buildTelegramNotifier } from '../services/sm-watchdog.js'
+import { resolveBoardColumns, createCardMover } from '../services/board-status.js'
 import { RailsStepError } from '../services/rails-runner.js'
 import { GithubExecutionError } from '../services/github-backlog.js'
 import * as os from 'node:os'
@@ -371,7 +372,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     return { triggered: true, missionId: mission.id }
   }
 
-  type ChainProject = { id: string; wingId: string; name: string; userId: string | null }
+  type ChainProject = {
+    id: string
+    wingId: string
+    name: string
+    userId: string | null
+    runtimeConfig?: unknown
+  }
 
   // Tenta a cadeia de motores em ordem; sucesso encerra; erro de cota/auth cai
   // para o próximo; erro real encerra em failed. Nunca mascara: o estado final
@@ -486,18 +493,33 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               role,
               ...(workspacePath ? { workspacePath } : {}),
             })
+            // Colunas do board: config POR PROJETO (runtimeConfig.board.columns),
+            // com default nativo — o cliente personaliza, o backend acompanha.
+            const boardColumns = resolveBoardColumns(project.runtimeConfig)
             result = poRails
               ? await runPoMissionViaRails({
                   repository: project.wingId,
                   board: railsBoard as string,
                   githubToken: railsToken as string,
                   contextBlocks,
+                  boardColumns,
                   execute,
                 })
               : await runQaMissionViaRails({
                   repository: project.wingId,
                   githubToken: railsToken as string,
                   contextBlocks,
+                  // O QA move o card da issue conforme o veredito (se há board).
+                  ...(railsBoard
+                    ? {
+                        moveCard: createCardMover({
+                          repository: project.wingId,
+                          board: railsBoard,
+                          token: railsToken as string,
+                          columns: boardColumns,
+                        }),
+                      }
+                    : {}),
                   execute,
                 })
           } finally {

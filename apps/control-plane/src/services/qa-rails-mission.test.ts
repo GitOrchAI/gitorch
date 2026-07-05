@@ -108,6 +108,33 @@ describe('runQaMissionViaRails', () => {
     expect(posted.comments).toHaveLength(0)
   })
 
+  it('o card da issue segue o veredito: approve → done; rework → inProgress', async () => {
+    const moves: Array<{ issue: number; column: string }> = []
+    const moveCard = async (issue: number, column: string) => {
+      moves.push({ issue, column })
+      return `card #${issue} -> ${column} (set)`
+    }
+    await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      moveCard,
+      fetchImpl: fakeFetch([{ number: 7, user: 'jules[bot]' }]),
+    })
+    await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      moveCard,
+      fetchImpl: fakeFetch([{ number: 8, user: 'jules[bot]' }]),
+    })
+    // A issue vinculada (Closes #50 no corpo da PR) é a movida — não a PR.
+    expect(moves).toEqual([
+      { issue: 50, column: 'done' },
+      { issue: 50, column: 'inProgress' },
+    ])
+  })
+
   it('request_changes: posta REQUEST_CHANGES + comentário @jules', async () => {
     const f = fakeFetch([{ number: 7, user: 'jules[bot]' }])
     const posted = (
