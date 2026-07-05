@@ -34,6 +34,10 @@ describe('summarizeWorkspace', () => {
     expect(summary).toContain('Indexed 2 source file(s)')
     // 'somar' é chamada por main -> aparece em most-called.
     expect(summary).toContain('somar')
+    // Inventário por diretório: vocabulário de caminhos reais para o PO citar.
+    expect(summary).toContain('File inventory')
+    expect(summary).toContain('src/: main.ts, math.ts')
+    expect(summary).not.toContain('node_modules')
   })
 
   it('devolve string vazia (nunca lança) para diretório sem código-fonte', async () => {

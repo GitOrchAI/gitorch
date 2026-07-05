@@ -211,6 +211,26 @@ export async function summarizeWorkspace(
           .join(', ')}.`
       )
     }
+
+    // Inventário por diretório: é o VOCABULÁRIO de caminhos reais do repo.
+    // Sem ele, quem planeja (PO) escreve "src/types/ ou similar" — com ele,
+    // "Related Files" pode citar arquivo existente verbatim. Wish em português
+    // sobre código em inglês não casa por busca literal; a LLM faz o mapeamento
+    // desde que VEJA os nomes.
+    const byDir = new Map<string, string[]>()
+    for (const s of sources) {
+      const slash = s.relPath.lastIndexOf('/')
+      const dir = slash === -1 ? '.' : s.relPath.slice(0, slash)
+      const base = s.relPath.slice(slash + 1)
+      const list = byDir.get(dir) ?? []
+      list.push(base)
+      byDir.set(dir, list)
+    }
+    lines.push('- File inventory (every indexed file, by directory — cite these paths verbatim):')
+    for (const dir of [...byDir.keys()].sort()) {
+      lines.push(`  ${dir}/: ${byDir.get(dir)!.sort().join(', ')}`)
+    }
+
     lines.push(
       '- Use this to focus your reading on the core symbols; note that files not listed may still matter.'
     )
