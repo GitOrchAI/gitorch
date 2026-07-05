@@ -66,14 +66,16 @@ if [ "${GITORCH_AGY_PLUGIN:-1}" != "0" ] && command -v agy >/dev/null 2>&1 && [ 
     GITORCH_AGENT_ROLE="$GITORCH_AGENT_ROLE" node -e '
       const fs = require("fs"), p = process.argv[1]
       const role = process.env.GITORCH_AGENT_ROLE
-      // F3: RA pesquisa docs (context7); PO/SM/QA agem no GitHub (github-mcp).
-      // Perplexity (cookies+fragil) e CGC-vivo (kuzu no container) ficam para F5;
-      // na F3 o codegraph entra como contexto injetado no prepare (host).
+      // Lei "LLM decide, sistema executa" (docs/agents/cadence-execution-model.md):
+      // NENHUM papel tem ferramenta de AÇÃO no GitHub — quem age é o executor do
+      // control plane a partir dos formulários. O RA mantém apenas PESQUISA de
+      // docs (context7). github-mcp permanece instalado na imagem só para
+      // diagnóstico manual, nunca exposto aos agentes.
       const ALLOW = {
         ra: ["context7"],
-        po: ["github"],
-        sm: ["github"],
-        qa: ["github"],
+        po: [],
+        sm: [],
+        qa: [],
       }
       const allowed = ALLOW[role] || []
       let cfg
