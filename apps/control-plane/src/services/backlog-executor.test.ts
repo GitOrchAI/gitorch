@@ -23,7 +23,7 @@ function fields(over: Partial<DoDFields> = {}): DoDFields {
 
 function plan(): BacklogPlan {
   return {
-    wish: { issueNumber: 100, nodeId: 'I_wish' },
+    wish: { number: 100, nodeId: 'I_wish' },
     phases: [{ title: 'Fase 1 — Dados', goal: 'estruturar', rationale: 'base' }],
     epics: [{ phaseIndex: 0, title: 'Épico: coluna material', description: 'desc' }],
     items: [
@@ -87,7 +87,12 @@ describe('applyBacklog', () => {
   it('valida DoD de TODOS os itens ANTES de criar qualquer coisa (all-or-nothing)', async () => {
     const { gh, created } = fakeGitHub()
     const bad = plan()
-    bad.items[1] = { ...bad.items[1], fields: fields({ verificationCriteria: ' ' }) }
+    bad.items[1] = {
+      epicIndex: 0,
+      kind: 'task',
+      parentFeatureIndex: 0,
+      fields: fields({ verificationCriteria: ' ' }),
+    }
 
     await expect(applyBacklog({ github: gh, plan: bad })).rejects.toThrow(/verificationCriteria/)
     expect(created).toHaveLength(0)
@@ -100,7 +105,7 @@ describe('applyBacklog', () => {
     // criados: 1 fase + 1 épico + 2 itens = 4 issues
     expect(created).toHaveLength(4)
     // árvore: fase sob wish; épico sob fase; feature sob épico; task sob feature
-    expect(subIssues[0].parent).toBe('I_wish')
+    expect(subIssues[0]!.parent).toBe('I_wish')
     expect(subIssues).toHaveLength(4)
     // todos entram no board
     expect(boardAdds).toHaveLength(4)
@@ -128,6 +133,6 @@ describe('applyBacklog', () => {
     }
     await applyBacklog({ github: gh, plan: plan(), delegateLabel: 'jules' })
     expect(labeled).toHaveLength(1)
-    expect(labeled[0].labels).toContain('jules')
+    expect(labeled[0]!.labels).toContain('jules')
   })
 })

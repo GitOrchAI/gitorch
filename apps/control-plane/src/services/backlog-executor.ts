@@ -121,8 +121,8 @@ export async function applyBacklog(options: ApplyBacklogOptions): Promise<ApplyB
   const phaseRefs: IssueRef[] = []
   const boardItemByNode = new Map<string, string>()
   for (let i = 0; i < plan.phases.length; i++) {
-    const phase = plan.phases[i]
-    const marker = `gitorch:node:${plan.wish.issueNumber}:phase:${i}`
+    const phase = plan.phases[i]!
+    const marker = `gitorch:node:${plan.wish.number}:phase:${i}`
     const ref = await ensureNode(
       marker,
       phase.title,
@@ -136,13 +136,13 @@ export async function applyBacklog(options: ApplyBacklogOptions): Promise<ApplyB
   // 3) Épicos sob suas fases.
   const epicRefs: IssueRef[] = []
   for (let i = 0; i < plan.epics.length; i++) {
-    const epic = plan.epics[i]
-    const marker = `gitorch:node:${plan.wish.issueNumber}:epic:${i}`
+    const epic = plan.epics[i]!
+    const marker = `gitorch:node:${plan.wish.number}:epic:${i}`
     const ref = await ensureNode(
       marker,
       epic.title,
       renderNodeBody([epic.description], marker),
-      phaseRefs[epic.phaseIndex].nodeId
+      phaseRefs[epic.phaseIndex]!.nodeId
     )
     epicRefs.push(ref)
     boardItemByNode.set(ref.nodeId, await github.addToBoard(ref.nodeId))
@@ -151,12 +151,12 @@ export async function applyBacklog(options: ApplyBacklogOptions): Promise<ApplyB
   // 4) Features e tasks (tasks com parentFeatureIndex penduram na feature).
   const itemRefs: IssueRef[] = []
   for (let i = 0; i < plan.items.length; i++) {
-    const item = plan.items[i]
+    const item = plan.items[i]!
     const parent =
       item.kind === 'task' && item.parentFeatureIndex !== undefined
-        ? itemRefs[item.parentFeatureIndex]
-        : epicRefs[item.epicIndex]
-    const marker = `gitorch:node:${plan.wish.issueNumber}:item:${i}`
+        ? itemRefs[item.parentFeatureIndex]!
+        : epicRefs[item.epicIndex]!
+    const marker = `gitorch:node:${plan.wish.number}:item:${i}`
     const blocked = (item.blockedByItemIndexes ?? [])
       .map((b) => itemRefs[b]?.number)
       .filter((n): n is number => typeof n === 'number')
