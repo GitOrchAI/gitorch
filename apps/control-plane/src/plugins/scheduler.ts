@@ -26,6 +26,7 @@ import {
 import { LocalWorkspaceProvider, WorkspaceManager } from '@gitorch/workspace-engine'
 import { buildMissionEnricher, persistMissionMemory } from '../services/mission-context.js'
 import { runPoMissionViaRails } from '../services/po-rails-mission.js'
+import { runRaRails } from '../services/role-rails.js'
 import { runQaMissionViaRails } from '../services/qa-rails-mission.js'
 import { runSmDelegation } from '../services/sm-delegation.js'
 import { runSmWatchdog, buildTelegramNotifier } from '../services/sm-watchdog.js'
@@ -423,6 +424,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         const poRails = role === 'po' && Boolean(railsBoard) && Boolean(railsToken)
         const qaRails = role === 'qa' && Boolean(railsToken)
         const smRails = role === 'sm' && Boolean(railsToken)
+        // RA não age no GitHub: os trilhos dele (áreas→jornadas→brief) só
+        // precisam do motor — sempre disponíveis.
+        const raRails = role === 'ra'
         let result: { exitCode: number; output: string; stderr: string; noOp?: boolean }
 
         if (smRails) {
@@ -450,7 +454,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             stderr: '',
             noOp: delegation.noOp === true && watchdog.noOp === true,
           }
-        } else if (poRails || qaRails) {
+        } else if (poRails || qaRails || raRails) {
           const stepDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-rails-'))
           let stepN = 0
           // Executor de passo: uma execução curta do motor por formulário.
@@ -496,32 +500,38 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             // Colunas do board: config POR PROJETO (runtimeConfig.board.columns),
             // com default nativo — o cliente personaliza, o backend acompanha.
             const boardColumns = resolveBoardColumns(project.runtimeConfig)
-            result = poRails
-              ? await runPoMissionViaRails({
-                  repository: project.wingId,
-                  board: railsBoard as string,
-                  githubToken: railsToken as string,
-                  contextBlocks,
-                  boardColumns,
-                  execute,
-                })
-              : await runQaMissionViaRails({
-                  repository: project.wingId,
-                  githubToken: railsToken as string,
-                  contextBlocks,
-                  // O QA move o card da issue conforme o veredito (se há board).
-                  ...(railsBoard
-                    ? {
-                        moveCard: createCardMover({
-                          repository: project.wingId,
-                          board: railsBoard,
-                          token: railsToken as string,
-                          columns: boardColumns,
-                        }),
-                      }
-                    : {}),
-                  execute,
-                })
+            result = raRails
+              ? await runRaRails(execute, contextBlocks).then((ra) => ({
+                  exitCode: 0,
+                  output: ra.text,
+                  stderr: '',
+                }))
+              : poRails
+                ? await runPoMissionViaRails({
+                    repository: project.wingId,
+                    board: railsBoard as string,
+                    githubToken: railsToken as string,
+                    contextBlocks,
+                    boardColumns,
+                    execute,
+                  })
+                : await runQaMissionViaRails({
+                    repository: project.wingId,
+                    githubToken: railsToken as string,
+                    contextBlocks,
+                    // O QA move o card da issue conforme o veredito (se há board).
+                    ...(railsBoard
+                      ? {
+                          moveCard: createCardMover({
+                            repository: project.wingId,
+                            board: railsBoard,
+                            token: railsToken as string,
+                            columns: boardColumns,
+                          }),
+                        }
+                      : {}),
+                    execute,
+                  })
           } finally {
             await fs.rm(stepDir, { recursive: true, force: true }).catch(() => undefined)
           }

@@ -37,12 +37,61 @@ export const DOD_FIELD_MAP: ReadonlyArray<{ key: keyof DoDFields; header: string
   { key: 'relatedFiles', header: 'Related Files' },
 ]
 
+export interface RaAreasForm {
+  areas: Array<{
+    area: string
+    whatExistsToday: string
+    whatTheWishNeedsHere: string
+    filesToRead: string[]
+  }>
+}
+
+export interface RaJourneysForm {
+  journeys: Array<{ title: string; actor: string; steps: string[]; insight: string }>
+}
+
 export interface RaBriefForm {
   whatThisProjectIs: string
   architectureAndStack: string
   topRisks: string[]
   improvementOpportunities: string[]
   openQuestionsForPo: string[]
+}
+
+/** Entregável completo do RA (3 passos): o que o PO recebe como contexto. */
+export interface RaDeliverable {
+  areas: RaAreasForm['areas']
+  journeys: RaJourneysForm['journeys']
+  brief: RaBriefForm
+}
+
+/**
+ * Formata o entregável do RA como texto estruturado — vira memória do projeto
+ * e é o que o PO lê. Formato estável: o PO referencia jornadas por índice.
+ */
+export function formatRaDeliverable(d: RaDeliverable): string {
+  const lines: string[] = ['RA analysis (areas, journeys, brief):', '', '## Areas touched']
+  for (const a of d.areas) {
+    lines.push(
+      `- ${a.area}: today — ${a.whatExistsToday}; the wish needs — ${a.whatTheWishNeedsHere}. Files: ${a.filesToRead.join(', ')}`
+    )
+  }
+  lines.push('', '## Journeys (the PO must cover EVERY journey below)')
+  d.journeys.forEach((j, i) => {
+    lines.push(`### Journey ${i}: ${j.title} (actor: ${j.actor})`)
+    j.steps.forEach((s, k) => lines.push(`${k + 1}. ${s}`))
+    lines.push(`Insight: ${j.insight}`)
+  })
+  lines.push(
+    '',
+    '## Brief',
+    `What this project is: ${d.brief.whatThisProjectIs}`,
+    `Architecture/stack: ${d.brief.architectureAndStack}`,
+    `Top risks: ${d.brief.topRisks.join('; ')}`,
+    `Improvement opportunities: ${d.brief.improvementOpportunities.join('; ')}`,
+    `Open questions for the PO: ${d.brief.openQuestionsForPo.join('; ')}`
+  )
+  return lines.join('\n')
 }
 
 export interface PoPhasesForm {
@@ -81,13 +130,15 @@ export interface SmJudgmentForm {
 }
 
 // Schema minimal: subconjunto de JSON Schema que o validador local entende
-// (type, required, properties, items, enum). Suficiente e sem deps.
+// (type, required, properties, items, enum, minItems). Suficiente e sem deps.
 export interface MiniSchema {
   type: 'object' | 'array' | 'string' | 'number' | 'boolean'
   required?: string[]
   properties?: Record<string, MiniSchema>
   items?: MiniSchema
   enum?: string[]
+  /** Mínimo de itens (arrays): é como o CÓDIGO força profundidade de análise. */
+  minItems?: number
 }
 
 // Derivado da fonte única (DOD_FIELD_MAP) — nunca listar as chaves de novo.
@@ -100,6 +151,53 @@ const DOD_FIELDS_SCHEMA: MiniSchema = {
 }
 
 export const RAILS_SCHEMAS = {
+  // RA passo 1 — ONDE o pedido toca o sistema. Cada área cita arquivos REAIS
+  // do codegraph; integrações existentes são minas de oportunidade (ex.: o
+  // produto já vende no marketplace → avaliações reais já existem lá).
+  raAreas: {
+    type: 'object',
+    required: ['areas'],
+    properties: {
+      areas: {
+        type: 'array',
+        minItems: 1,
+        items: {
+          type: 'object',
+          required: ['area', 'whatExistsToday', 'whatTheWishNeedsHere', 'filesToRead'],
+          properties: {
+            area: { type: 'string' },
+            whatExistsToday: { type: 'string' },
+            whatTheWishNeedsHere: { type: 'string' },
+            filesToRead: { type: 'array', items: { type: 'string' }, minItems: 1 },
+          },
+        },
+      },
+    },
+  } as MiniSchema,
+
+  // RA passo 2 — JORNADAS. O código EXIGE >=2 cenários completos (o lado do
+  // usuário E o lado dos dados/integrações): pedido raso não passa daqui.
+  raJourneys: {
+    type: 'object',
+    required: ['journeys'],
+    properties: {
+      journeys: {
+        type: 'array',
+        minItems: 2,
+        items: {
+          type: 'object',
+          required: ['title', 'actor', 'steps', 'insight'],
+          properties: {
+            title: { type: 'string' },
+            actor: { type: 'string' },
+            steps: { type: 'array', items: { type: 'string' }, minItems: 3 },
+            insight: { type: 'string' },
+          },
+        },
+      },
+    },
+  } as MiniSchema,
+
   raBrief: {
     type: 'object',
     required: [
@@ -242,6 +340,9 @@ function walk(schema: MiniSchema, value: unknown, path: string, errors: string[]
     if (!Array.isArray(value)) {
       errors.push(`${path}: expected array`)
       return
+    }
+    if (schema.minItems !== undefined && value.length < schema.minItems) {
+      errors.push(`${path}: expected at least ${schema.minItems} item(s), got ${value.length}`)
     }
     if (schema.items) {
       value.forEach((item, i) => walk(schema.items as MiniSchema, item, `${path}[${i}]`, errors))

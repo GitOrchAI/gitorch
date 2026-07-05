@@ -1,13 +1,41 @@
 import { describe, it, expect } from 'vitest'
 import { runRaRails, runPoRails, type StepExecutor } from './role-rails.js'
 
-const RA_REPLY = JSON.stringify({
-  whatThisProjectIs: 'E-commerce de produtos 3D.',
-  architectureAndStack: 'React+Vite front; Express+Prisma back.',
-  topRisks: ['auth híbrida'],
-  improvementOpportunities: ['estruturar material no banco'],
-  openQuestionsForPo: ['manter filtro por regex?'],
-})
+const RA_REPLIES: Record<string, string> = {
+  areas: JSON.stringify({
+    areas: [
+      {
+        area: 'backend',
+        whatExistsToday: 'Produtos sem campo de material.',
+        whatTheWishNeedsHere: 'Coluna material + endpoint de filtro.',
+        filesToRead: ['backend/src/app.ts'],
+      },
+    ],
+  }),
+  journeys: JSON.stringify({
+    journeys: [
+      {
+        title: 'Cliente filtra por material',
+        actor: 'comprador',
+        steps: ['abre catálogo', 'escolhe PLA', 'vê só produtos PLA'],
+        insight: 'Filtro reduz abandono.',
+      },
+      {
+        title: 'Dados já existentes no marketplace',
+        actor: 'sistema',
+        steps: ['lê integração MLB', 'coleta atributos', 'preenche material'],
+        insight: 'Marketplace já tem o dado — reutilizar.',
+      },
+    ],
+  }),
+  brief: JSON.stringify({
+    whatThisProjectIs: 'E-commerce de produtos 3D.',
+    architectureAndStack: 'React+Vite front; Express+Prisma back.',
+    topRisks: ['auth híbrida'],
+    improvementOpportunities: ['estruturar material no banco'],
+    openQuestionsForPo: ['manter filtro por regex?'],
+  }),
+}
 
 const PO_REPLIES: Record<string, string> = {
   phases: JSON.stringify({
@@ -38,17 +66,25 @@ const PO_REPLIES: Record<string, string> = {
 }
 
 describe('runRaRails', () => {
-  it('um passo: devolve o brief estruturado validado', async () => {
+  it('três passos encadeados: áreas → jornadas → brief viram o entregável do PO', async () => {
     const prompts: string[] = []
     const execute: StepExecutor = async (p) => {
       prompts.push(p)
-      return RA_REPLY
+      const step = p.match(/Step: ra-(\w+)/)?.[1] ?? '?'
+      return RA_REPLIES[step] ?? '{}'
     }
-    const brief = await runRaRails(execute, ['codegraph resumo', 'memória'])
-    expect(brief.improvementOpportunities).toContain('estruturar material no banco')
+    const { deliverable, text } = await runRaRails(execute, ['codegraph resumo', 'memória'])
+    expect(prompts).toHaveLength(3)
     expect(prompts[0]).toContain('codegraph resumo')
+    // o passo de jornadas vê as áreas; o brief vê as jornadas
+    expect(prompts[1]).toContain('backend/src/app.ts')
+    expect(prompts[2]).toContain('Marketplace já tem o dado')
     // Lei: prompt não menciona tooling de ação
     expect(prompts[0]).not.toMatch(/`gh`|gh api/)
+    expect(deliverable.journeys).toHaveLength(2)
+    // o texto formatado (memória do PO) manda cobrir TODAS as jornadas
+    expect(text).toContain('must cover EVERY journey')
+    expect(text).toContain('Journey 1: Dados já existentes no marketplace')
   })
 })
 

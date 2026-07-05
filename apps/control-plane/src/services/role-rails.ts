@@ -1,7 +1,11 @@
 import {
   RAILS_SCHEMAS,
   buildStepPrompt,
+  formatRaDeliverable,
+  type RaAreasForm,
+  type RaJourneysForm,
   type RaBriefForm,
+  type RaDeliverable,
   type PoPhasesForm,
   type PoEpicsForm,
   type PoBacklogForm,
@@ -19,13 +23,56 @@ import type { BacklogPlan, IssueRef } from './backlog-executor.js'
 /** Executa o motor com um prompt e devolve o texto cru da resposta. */
 export type StepExecutor = (prompt: string) => Promise<string>
 
-/** Roteiro do RA: um passo — o Research Brief estruturado. */
+/**
+ * Roteiro do RA: 3 passos encadeados — áreas → jornadas → brief. A profundidade
+ * é FORÇADA por schema (>=2 jornadas com >=3 passos cada; toda área cita
+ * arquivos reais): o RA pensa como quem conhece o produto, não como um dev
+ * genérico. O entregável formatado vira memória e é o contexto do PO.
+ */
 export async function runRaRails(
   execute: StepExecutor,
   contextBlocks: string[]
-): Promise<RaBriefForm> {
-  const prompt = buildStepPrompt('ra', 'ra-brief', RAILS_SCHEMAS.raBrief, contextBlocks)
-  return (await runFormStep({ schema: RAILS_SCHEMAS.raBrief, prompt, execute })) as RaBriefForm
+): Promise<{ deliverable: RaDeliverable; text: string }> {
+  const areas = (await runFormStep({
+    schema: RAILS_SCHEMAS.raAreas,
+    prompt: buildStepPrompt('ra', 'ra-areas', RAILS_SCHEMAS.raAreas, [
+      ...contextBlocks,
+      'Map WHERE this project/wish touches the system. For EACH area that applies (frontend, backend, database, integrations, infra...): what exists today, what the wish needs there, and the REAL file paths to read (verbatim from the codegraph above — never invent). Do not skip integrations: existing integrations are opportunity goldmines.',
+    ]),
+    execute,
+  })) as RaAreasForm
+
+  const areasBlock = `Areas you mapped:\n${areas.areas
+    .map((a) => `- ${a.area}: ${a.whatTheWishNeedsHere} (files: ${a.filesToRead.join(', ')})`)
+    .join('\n')}`
+
+  const journeys = (await runFormStep({
+    schema: RAILS_SCHEMAS.raJourneys,
+    prompt: buildStepPrompt('ra', 'ra-journeys', RAILS_SCHEMAS.raJourneys, [
+      ...contextBlocks,
+      areasBlock,
+      'Think like the OWNER of this product, not a generic dev. Write AT LEAST 2 complete step-by-step journeys: (1) the end-user side — how a real person lives this wish end to end (browsing, email, login, posting, edge moments); (2) the data/integrations side — what existing systems or marketplaces the codebase ALREADY touches that this wish can leverage (e.g. reviews that already exist on connected platforms). Each journey: actor, ordered steps, and the insight/opportunity it reveals. More journeys are welcome when the wish deserves them.',
+    ]),
+    execute,
+  })) as RaJourneysForm
+
+  const journeysBlock = `Journeys you wrote:\n${journeys.journeys
+    .map((j, i) => `${i}. ${j.title} — insight: ${j.insight}`)
+    .join('\n')}`
+
+  const brief = (await runFormStep({
+    schema: RAILS_SCHEMAS.raBrief,
+    prompt: buildStepPrompt('ra', 'ra-brief', RAILS_SCHEMAS.raBrief, [
+      ...contextBlocks,
+      areasBlock,
+      journeysBlock,
+      'Write the final Research Brief for the PO, grounded in the areas and journeys above.',
+    ]),
+    execute,
+  })) as RaBriefForm
+
+  const deliverable: RaDeliverable = { areas: areas.areas, journeys: journeys.journeys, brief }
+  return { deliverable, text: formatRaDeliverable(deliverable) }
 }
 
 export interface PoRailsInput {

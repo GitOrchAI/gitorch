@@ -12,7 +12,9 @@ describe('TreeSitterManager', () => {
   })
 
   afterAll(() => {
-    // No explicit cleanup needed
+    // Árvores são liberadas em cada teste: objeto WASM vivo no teardown do
+    // worker deixa finalizador do GC rodar em momento arbitrário — flake raro
+    // de "Worker exited unexpectedly" no vitest (visto no CI).
   })
 
   it('should initialize with all language parsers', () => {
@@ -30,6 +32,7 @@ describe('TreeSitterManager', () => {
     const tree = manager.parseString(code, 'typescript')
     expect(tree).toBeDefined()
     expect(tree!.rootNode.type).toBe('program')
+    tree!.free()
   })
 
   it('should parse TSX code', () => {
@@ -37,6 +40,7 @@ describe('TreeSitterManager', () => {
     const tree = manager.parseString(code, 'tsx')
     expect(tree).toBeDefined()
     expect(tree!.rootNode.type).toBe('program')
+    tree!.free()
   })
 
   it('should parse Python code', () => {
@@ -45,6 +49,7 @@ describe('TreeSitterManager', () => {
     const tree = manager.parseString(code, 'python')
     expect(tree).toBeDefined()
     expect(tree!.rootNode.type).toBe('module')
+    tree!.free()
   })
 
   it('should parse Go code', () => {
@@ -56,6 +61,7 @@ func hello(name string) string {
     const tree = manager.parseString(code, 'go')
     expect(tree).toBeDefined()
     expect(tree!.rootNode.type).toBe('source_file')
+    tree!.free()
   })
 
   it('should parse Rust code', () => {
@@ -65,6 +71,7 @@ func hello(name string) string {
     const tree = manager.parseString(code, 'rust')
     expect(tree).toBeDefined()
     expect(tree!.rootNode.type).toBe('source_file')
+    tree!.free()
   })
 
   it('should return null for unknown language', () => {
@@ -81,6 +88,7 @@ func hello(name string) string {
     const tree = manager.parseFile(testFile)
     expect(tree).toBeDefined()
     expect(tree!.rootNode.type).toBe('program')
+    tree!.free()
 
     fs.unlinkSync(testFile)
   })
