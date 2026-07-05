@@ -18,7 +18,28 @@ export interface GithubBacklogOptions {
 
 export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHub {
   const f = options.fetchImpl ?? fetch
-  const client = new ProjectV2Client({ token: options.token })
+  // Com fetchImpl (testes), o GraphQL do client usa o mesmo transporte injetado.
+  const transport = options.fetchImpl
+    ? async <TData>(
+        request: { query: string; variables: Record<string, unknown> },
+        token: string
+      ) => {
+        const resp = await f('https://api.github.com/graphql', {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${token}`,
+            'content-type': 'application/json',
+            'user-agent': 'gitorch',
+          },
+          body: JSON.stringify(request),
+        })
+        return (await resp.json()) as { data?: TData; errors?: Array<{ message: string }> }
+      }
+    : undefined
+  const client = new ProjectV2Client({
+    token: options.token,
+    ...(transport ? { request: transport } : {}),
+  })
   const sprintField = options.sprintFieldName ?? 'Sprint'
 
   const rest = async (method: string, path: string, body?: unknown): Promise<unknown> => {

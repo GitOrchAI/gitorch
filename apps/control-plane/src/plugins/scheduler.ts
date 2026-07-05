@@ -25,6 +25,8 @@ import {
 } from '@gitorch/agents'
 import { LocalWorkspaceProvider, WorkspaceManager } from '@gitorch/workspace-engine'
 import { buildMissionEnricher, persistMissionMemory } from '../services/mission-context.js'
+import { runPoMissionViaRails } from '../services/po-rails-mission.js'
+import * as os from 'node:os'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // dist/plugins -> raiz do repo -> runtime/
@@ -392,24 +394,74 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         .catch(() => undefined)
 
       try {
-        const result = await orchestrator.runMission({
-          id: missionId,
-          projectId: project.id,
-          repository: project.wingId,
-          role,
-          goal: `Analyze and coordinate tasks for ${project.name}`,
-          context: [],
-          runtime: { runtime: sel.runtime as F6AgentRuntime, model },
-          credentialRef: {
-            connectionId: `conn-${role}-${missionId}-${sel.runtime}`,
-            ownerScope: 'project',
-            runtime: sel.runtime as F6AgentRuntime,
-            providedSecrets: [],
-            ...(project.userId ? { ownerUserId: project.userId } : {}),
-          },
-          userId: project.userId ?? 'scheduler-user',
-          timeoutMs: STALE_RUNNING_MS,
-        })
+        const credentialRef = {
+          connectionId: `conn-${role}-${missionId}-${sel.runtime}`,
+          ownerScope: 'project' as const,
+          runtime: sel.runtime as F6AgentRuntime,
+          providedSecrets: [],
+          ...(project.userId ? { ownerUserId: project.userId } : {}),
+        }
+
+        // Lei "LLM decide, sistema executa": o PO roda nos TRILHOS quando o
+        // board e o token do GitHub estão configurados (env na F3.5; banco na
+        // F4). Sem eles, cai no caminho clássico com log honesto.
+        const railsBoard = process.env['GITORCH_PROJECT_BOARD']
+        const railsToken = process.env['GITORCH_GITHUB_TOKEN'] ?? process.env['GITHUB_TOKEN']
+        let result: { exitCode: number; output: string; stderr: string }
+
+        if (role === 'po' && railsBoard && railsToken) {
+          const stepDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-rails-'))
+          let stepN = 0
+          try {
+            const contextBlocks = await buildMissionEnricher({ cortex: app.cortex })({
+              projectId: project.id,
+              role,
+            })
+            result = await runPoMissionViaRails({
+              repository: project.wingId,
+              board: railsBoard,
+              githubToken: railsToken,
+              contextBlocks,
+              execute: async (prompt) => {
+                stepN += 1
+                const adapter = registry.resolve(sel.runtime as F6AgentRuntime)
+                const step = await adapter.run({
+                  missionId: `${missionId}-step-${stepN}`,
+                  prompt,
+                  runtime: { runtime: sel.runtime as F6AgentRuntime, model },
+                  credentialRef,
+                  role,
+                  cwd: stepDir,
+                  timeoutMs: 10 * 60 * 1000,
+                })
+                if (step.exitCode !== 0) {
+                  throw new Error(`rails step ${stepN} failed: ${step.stderr.slice(0, 300)}`)
+                }
+                return step.output
+              },
+            })
+          } finally {
+            await fs.rm(stepDir, { recursive: true, force: true }).catch(() => undefined)
+          }
+        } else {
+          if (role === 'po') {
+            app.log.info(
+              '[Scheduler] PO sem GITORCH_PROJECT_BOARD/GITHUB_TOKEN: usando caminho clássico'
+            )
+          }
+          result = await orchestrator.runMission({
+            id: missionId,
+            projectId: project.id,
+            repository: project.wingId,
+            role,
+            goal: `Analyze and coordinate tasks for ${project.name}`,
+            context: [],
+            runtime: { runtime: sel.runtime as F6AgentRuntime, model },
+            credentialRef,
+            userId: project.userId ?? 'scheduler-user',
+            timeoutMs: STALE_RUNNING_MS,
+          })
+        }
 
         if (result.exitCode === 0 && result.output.trim().length > 0) {
           // O entregável vira memória tipada do projeto: o próximo agente herda.
