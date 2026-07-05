@@ -5,15 +5,24 @@ import { useLanguage, Language } from '../LanguageContext'
 import { Star, Globe } from 'lucide-react'
 import Link from 'next/link'
 
+const GITHUB_REPO = process.env.NEXT_PUBLIC_GITHUB_REPO ?? 'loureng/gitorch'
+export const GITHUB_REPO_URL = `https://github.com/${GITHUB_REPO}`
+
 export default function Header() {
   const { language, setLanguage, t } = useLanguage()
   const [stars, setStars] = useState<number | null>(null)
 
   useEffect(() => {
-    fetch('https://api.github.com/repos/gitorch/gitorch')
-      .then((res) => res.json())
-      .then((data) => setStars(data.stargazers_count || 420))
-      .catch(() => setStars(420))
+    // Repo real vem de config (produto dinâmico, nunca hardcoded). Falhou a
+    // busca → não mostra número nenhum: honestidade > vitrine.
+    fetch(`https://api.github.com/repos/${GITHUB_REPO}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && typeof data.stargazers_count === 'number') {
+          setStars(data.stargazers_count)
+        }
+      })
+      .catch(() => undefined)
   }, [])
 
   const handleLanguageChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -45,11 +54,18 @@ export default function Header() {
       </div>
 
       <div className="flex items-center gap-4 sm:gap-6">
-        <div className="hidden lg:flex items-center gap-2 glass-panel px-4 py-2 rounded-full text-sm hover:border-[#06b6d4] transition-colors cursor-pointer">
-          <Star size={16} className="text-[#06b6d4] fill-[#06b6d4]" />
-          <span className="font-bold">{stars !== null ? stars.toLocaleString() : '...'}</span>
-          <span className="text-[var(--text-secondary)]">{t('hero.githubStars')}</span>
-        </div>
+        {stars !== null && (
+          <a
+            href={GITHUB_REPO_URL}
+            target="_blank"
+            rel="noreferrer"
+            className="hidden lg:flex items-center gap-2 glass-panel px-4 py-2 rounded-full text-sm hover:border-[#06b6d4] transition-colors cursor-pointer"
+          >
+            <Star size={16} className="text-[#06b6d4] fill-[#06b6d4]" />
+            <span className="font-bold">{stars.toLocaleString()}</span>
+            <span className="text-[var(--text-secondary)]">{t('hero.githubStars')}</span>
+          </a>
+        )}
 
         <div className="flex items-center gap-2 text-sm bg-[var(--bg-surface-elevated)] rounded-full px-3 py-1 border border-[var(--glass-border)]">
           <Globe size={14} className="text-[var(--text-secondary)]" />

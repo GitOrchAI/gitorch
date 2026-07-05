@@ -2,6 +2,8 @@
 /* eslint-disable */
 import React, { useState, useEffect } from 'react'
 import Header from '../../components/Header'
+import { useLanguage } from '../../LanguageContext'
+import { API_BASE_URL } from '../../lib/api'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ChevronRight } from 'lucide-react'
 
@@ -16,13 +18,6 @@ import StepPlanSelection from '../../components/setup/StepPlanSelection'
 import StepPlanConfirmation from '../../components/setup/StepPlanConfirmation'
 import StepRepoConfig from '../../components/setup/StepRepoConfig'
 
-const API_BASE_URL =
-  typeof window !== 'undefined'
-    ? window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-      ? 'http://localhost:4000'
-      : 'http://<A1_HOST>:4000'
-    : 'http://localhost:4000'
-
 interface CreatedProject {
   id: string
   name: string
@@ -31,6 +26,7 @@ interface CreatedProject {
 }
 
 export default function SetupWizard() {
+  const { t } = useLanguage()
   const [step, setStep] = useState(1)
   const [token, setToken] = useState('')
   const [selectedRepos, setSelectedRepos] = useState<string[]>([])
@@ -130,7 +126,7 @@ export default function SetupWizard() {
                     onClick={nextStep}
                     className="bg-white text-black px-6 py-3 rounded-full font-bold flex items-center gap-2 hover:scale-105 transition-transform cursor-pointer"
                   >
-                    Começar <ChevronRight size={18} />
+                    {t('setup.beginBtn')} <ChevronRight size={18} />
                   </button>
                 </div>
               </motion.div>

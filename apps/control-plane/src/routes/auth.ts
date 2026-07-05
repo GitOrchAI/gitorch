@@ -22,7 +22,11 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
         return reply.code(500).send({ error: 'GITHUB_CLIENT_ID is not configured' })
       }
 
-      const redirectUri = `${request.protocol}://${request.hostname}/api/v1/auth/github/callback`
+      // request.hostname NÃO carrega a porta (Fastify v5) — o callback morria
+      // em dev (localhost sem :4000). request.host carrega; produção usa a URL
+      // pública configurada.
+      const publicBase = env.GITORCH_PUBLIC_URL ?? `${request.protocol}://${request.host}`
+      const redirectUri = `${publicBase}/api/v1/auth/github/callback`
       const githubAuthUrl = `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=read:user%20user:email%20repo`
 
       return reply.redirect(githubAuthUrl)

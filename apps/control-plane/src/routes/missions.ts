@@ -93,6 +93,37 @@ export const missionRoutes = async (app: FastifyInstance): Promise<void> => {
     }
   )
 
+  // GET /api/missions - Lista das missões do tenant (o painel read-only vive
+  // disto: números REAIS, nunca vitrine).
+  app.get('/api/missions', async (request: FastifyRequest) => {
+    const wingId = request.wingId!
+    const missions = await app.prisma.mission.findMany({
+      where: { project: { wingId } },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+      select: {
+        id: true,
+        type: true,
+        status: true,
+        result: true,
+        error: true,
+        startedAt: true,
+        completedAt: true,
+        createdAt: true,
+      },
+    })
+    const active = await app.prisma.mission.count({
+      where: { project: { wingId }, status: { in: ['pending', 'running'] } },
+    })
+    const completed = await app.prisma.mission.count({
+      where: { project: { wingId }, status: 'completed' },
+    })
+    const failed = await app.prisma.mission.count({
+      where: { project: { wingId }, status: 'failed' },
+    })
+    return { missions, stats: { active, completed, failed } }
+  })
+
   // GET /api/missions/:id - Get mission status
   app.get<{ Params: MissionParams }>(
     '/api/missions/:id',

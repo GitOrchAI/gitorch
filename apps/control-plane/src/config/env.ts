@@ -29,6 +29,9 @@ export const envSchema = z.object({
   GITHUB_CLIENT_ID: z.string().optional(),
   GITHUB_CLIENT_SECRET: z.string().optional(),
   FRONTEND_URL: z.string().url().default('http://localhost:3000'),
+  // Base pública da API para o redirect_uri do OAuth (produção/funnel). Sem
+  // ela, deriva do request — que em dev preserva a porta via request.host.
+  GITORCH_PUBLIC_URL: z.string().url().optional(),
 })
 
 export type Env = z.infer<typeof envSchema>

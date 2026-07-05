@@ -2,7 +2,7 @@
 
 import React from 'react'
 import { useLanguage } from '../LanguageContext'
-import Header from '../components/Header'
+import Header, { GITHUB_REPO_URL } from '../components/Header'
 import Canvas3D from '../components/Canvas3D'
 import { motion } from 'framer-motion'
 import { ShieldCheck, Zap, Server, Code2, GitBranch } from 'lucide-react'
@@ -140,7 +140,7 @@ export default function Home() {
             <div className="text-5xl font-black mb-8 font-mono">{t('pricing.openCorePrice')}</div>
             <p className="text-[var(--text-secondary)] mb-10 flex-1">{t('pricing.openCoreDesc')}</p>
             <a
-              href="https://github.com/gitorch/gitorch"
+              href={GITHUB_REPO_URL}
               target="_blank"
               rel="noreferrer"
               className="w-full py-4 rounded-full border border-[var(--glass-border)] font-bold hover:bg-[var(--bg-surface-elevated)] transition-colors text-center"
@@ -152,7 +152,7 @@ export default function Home() {
           {/* Cloud Pro (Highlight) */}
           <div className="glass-panel p-8 rounded-3xl flex flex-col border border-[#7c3aed] relative shadow-[0_0_50px_rgba(124,58,237,0.15)] transform md:-translate-y-4">
             <div className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-[#7c3aed] text-white px-4 py-1 rounded-full text-xs font-bold tracking-wider">
-              RECOMENDADO
+              {t('pricing.recommended')}
             </div>
             <h3 className="text-2xl font-bold mb-2 text-[#7c3aed]">{t('pricing.cloudPro')}</h3>
             <p className="text-sm text-[var(--text-secondary)] mb-6 h-10">
