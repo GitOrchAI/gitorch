@@ -28,6 +28,7 @@ import { buildMissionEnricher, persistMissionMemory } from '../services/mission-
 import { runPoMissionViaRails } from '../services/po-rails-mission.js'
 import { runQaMissionViaRails } from '../services/qa-rails-mission.js'
 import { runSmDelegation } from '../services/sm-delegation.js'
+import { runSmWatchdog, buildTelegramNotifier } from '../services/sm-watchdog.js'
 import { RailsStepError } from '../services/rails-runner.js'
 import { GithubExecutionError } from '../services/github-backlog.js'
 import * as os from 'node:os'
@@ -417,12 +418,30 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         let result: { exitCode: number; output: string; stderr: string; noOp?: boolean }
 
         if (smRails) {
-          // Delegação contínua do SM é 100% determinística (sem passo de LLM):
-          // encontra tasks prontas e desbloqueadas e aplica a label de delegação.
-          result = await runSmDelegation({
+          // SM é o dono da esteira, 100% determinístico (sem passo de LLM):
+          // (1) delega tasks prontas e desbloqueadas; (2) watchdog do dev
+          // assíncrono — falha do Jules dispara o retry oficial (re-label),
+          // com cap e escalação humana (gitorch:stuck + Telegram).
+          const delegation = await runSmDelegation({
             repository: project.wingId,
             githubToken: railsToken as string,
           })
+          const notify = buildTelegramNotifier({
+            botToken:
+              process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
+            chatId: process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
+          })
+          const watchdog = await runSmWatchdog({
+            repository: project.wingId,
+            githubToken: railsToken as string,
+            ...(notify ? { notify } : {}),
+          })
+          result = {
+            exitCode: 0,
+            output: [delegation.output, watchdog.output].join('\n'),
+            stderr: '',
+            noOp: delegation.noOp === true && watchdog.noOp === true,
+          }
         } else if (poRails || qaRails) {
           const stepDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-rails-'))
           let stepN = 0
