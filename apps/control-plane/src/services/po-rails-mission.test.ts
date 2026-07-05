@@ -50,6 +50,9 @@ function fakeFetch(): typeof fetch {
         return json({ data: { user: { projectV2: { id: 'PVT_board' } } } })
       }
       if (q.includes('addSubIssue')) return json({ data: { addSubIssue: { issue: { id: 'x' } } } })
+      if (q.includes('createProjectV2StatusUpdate')) {
+        return json({ data: { createProjectV2StatusUpdate: { statusUpdate: { id: 'SU_1' } } } })
+      }
       if (q.includes('addProjectV2ItemById')) {
         return json({ data: { addProjectV2ItemById: { item: { id: 'PVTI_1' } } } })
       }

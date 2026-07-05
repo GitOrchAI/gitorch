@@ -16,6 +16,8 @@ export type GraphQLTransport = <TData>(
 export interface ProjectV2ClientOptions {
   token: string
   request?: GraphQLTransport
+  /** fetch alternativo para o transporte padrão (testes/injeção). */
+  fetchImpl?: typeof fetch
 }
 
 export interface AddProjectItemInput {
@@ -88,7 +90,13 @@ export class ProjectV2Client {
     }
 
     this.token = options.token
-    this.request = options.request ?? defaultGraphQLTransport
+    const f = options.fetchImpl
+    this.request =
+      options.request ??
+      (f
+        ? <TData>(request: GraphQLRequest, token: string) =>
+            defaultGraphQLTransport<TData>(request, token, f)
+        : defaultGraphQLTransport)
   }
 
   async addItemById(input: AddProjectItemInput): Promise<string> {
@@ -331,9 +339,10 @@ export class ProjectV2Client {
 
 async function defaultGraphQLTransport<TData>(
   request: GraphQLRequest,
-  token: string
+  token: string,
+  fetchImpl: typeof fetch = fetch
 ): Promise<GraphQLResponse<TData>> {
-  const response = await fetch('https://api.github.com/graphql', {
+  const response = await fetchImpl('https://api.github.com/graphql', {
     method: 'POST',
     headers: {
       authorization: `Bearer ${token}`,

@@ -26,6 +26,8 @@ export interface PoRailsMissionResult {
   exitCode: number
   output: string
   stderr: string
+  /** true quando não havia trabalho (não persiste memória nem conta como plano). */
+  noOp?: boolean
 }
 
 interface WishIssue {
@@ -40,15 +42,33 @@ export async function runPoMissionViaRails(
 ): Promise<PoRailsMissionResult> {
   const f = options.fetchImpl ?? fetch
 
+  // 0) Config validada ANTES de gastar qualquer passo de LLM: um board mal
+  // configurado falharia só depois dos 4 passos, queimando tokens a cada wake.
+  const [owner, numberRaw] = options.board.split('/')
+  const boardNumber = Number(numberRaw)
+  if (!owner || !Number.isFinite(boardNumber)) {
+    throw new Error(`Invalid board reference "${options.board}" (expected "<owner>/<number>")`)
+  }
+
   // 1) A wish mais recente ABERTA com label wishlist (o gatilho do PO).
   const wishResp = await f(
     `https://api.github.com/repos/${options.repository}/issues?labels=wishlist&state=open&sort=created&direction=desc&per_page=1`,
     { headers: { authorization: `token ${options.githubToken}`, 'user-agent': 'gitorch' } }
   )
+  if (!wishResp.ok) {
+    // 401/403/404 NÃO é "sem wishlist": é erro real (token/permissão) e deve
+    // falhar a missão com causa visível, nunca virar sucesso silencioso.
+    throw new Error(`GitHub wishlist lookup failed (${wishResp.status})`)
+  }
   const wishes = (await wishResp.json()) as WishIssue[]
   const wish = Array.isArray(wishes) ? wishes[0] : undefined
   if (!wish) {
-    return { exitCode: 0, output: 'PO: no open wishlist issue; nothing to plan.', stderr: '' }
+    return {
+      exitCode: 0,
+      output: 'PO: no open wishlist issue; nothing to plan.',
+      stderr: '',
+      noOp: true,
+    }
   }
 
   // 2) Roteiro do PO (4 formulários; a LLM nunca toca no GitHub).
@@ -59,32 +79,9 @@ export async function runPoMissionViaRails(
   })
 
   // 3) Executor determinístico aplica no GitHub.
-  const [owner, numberRaw] = options.board.split('/')
-  const boardNumber = Number(numberRaw)
-  if (!owner || !Number.isFinite(boardNumber)) {
-    throw new Error(`Invalid board reference "${options.board}" (expected "<owner>/<number>")`)
-  }
-  // Com fetchImpl (testes), o client GraphQL usa o mesmo transporte injetado.
-  const transport = options.fetchImpl
-    ? async <TData>(
-        request: { query: string; variables: Record<string, unknown> },
-        token: string
-      ) => {
-        const resp = await f('https://api.github.com/graphql', {
-          method: 'POST',
-          headers: {
-            authorization: `Bearer ${token}`,
-            'content-type': 'application/json',
-            'user-agent': 'gitorch',
-          },
-          body: JSON.stringify(request),
-        })
-        return (await resp.json()) as { data?: TData; errors?: Array<{ message: string }> }
-      }
-    : undefined
   const client = new ProjectV2Client({
     token: options.githubToken,
-    ...(transport ? { request: transport } : {}),
+    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
   })
   // Board de usuário primeiro (piloto); org é o destino do produto (F4).
   const projectId = await client

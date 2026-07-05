@@ -21,6 +21,22 @@ export interface DoDFields {
   relatedFiles: string
 }
 
+/**
+ * Fonte ÚNICA do DoD: chave camelCase do formulário ↔ cabeçalho canônico da
+ * issue. Schema, validação e renderização derivam DAQUI — adicionar/renomear
+ * um campo é uma edição só (evita o "campo oco" silencioso).
+ */
+export const DOD_FIELD_MAP: ReadonlyArray<{ key: keyof DoDFields; header: string }> = [
+  { key: 'titulo', header: 'Título' },
+  { key: 'description', header: 'Description' },
+  { key: 'notes', header: 'Notes' },
+  { key: 'implementationGuide', header: 'Implementation Guide' },
+  { key: 'verificationCriteria', header: 'Verification Criteria' },
+  { key: 'summary', header: 'Summary' },
+  { key: 'analysisResult', header: 'Analysis Result' },
+  { key: 'relatedFiles', header: 'Related Files' },
+]
+
 export interface RaBriefForm {
   whatThisProjectIs: string
   architectureAndStack: string
@@ -74,29 +90,12 @@ export interface MiniSchema {
   enum?: string[]
 }
 
+// Derivado da fonte única (DOD_FIELD_MAP) — nunca listar as chaves de novo.
 const DOD_FIELDS_SCHEMA: MiniSchema = {
   type: 'object',
-  required: [
-    'titulo',
-    'description',
-    'notes',
-    'implementationGuide',
-    'verificationCriteria',
-    'summary',
-    'analysisResult',
-    'relatedFiles',
-  ],
+  required: DOD_FIELD_MAP.map((f) => f.key),
   properties: Object.fromEntries(
-    [
-      'titulo',
-      'description',
-      'notes',
-      'implementationGuide',
-      'verificationCriteria',
-      'summary',
-      'analysisResult',
-      'relatedFiles',
-    ].map((k) => [k, { type: 'string' } as MiniSchema])
+    DOD_FIELD_MAP.map((f) => [f.key, { type: 'string' } as MiniSchema])
   ),
 }
 
@@ -272,19 +271,10 @@ function walk(schema: MiniSchema, value: unknown, path: string, errors: string[]
  */
 export function validateDoD(fields: DoDFields): ValidationResult {
   const errors: string[] = []
-  const entries: Array<[keyof DoDFields, string]> = [
-    ['titulo', fields.titulo],
-    ['description', fields.description],
-    ['notes', fields.notes],
-    ['implementationGuide', fields.implementationGuide],
-    ['verificationCriteria', fields.verificationCriteria],
-    ['summary', fields.summary],
-    ['analysisResult', fields.analysisResult],
-    ['relatedFiles', fields.relatedFiles],
-  ]
-  for (const [name, value] of entries) {
+  for (const { key } of DOD_FIELD_MAP) {
+    const value = fields[key]
     if (typeof value !== 'string' || value.trim().length === 0) {
-      errors.push(`${name}: empty (DoD requires all ${ISSUE_DOD_FIELDS.length} fields)`)
+      errors.push(`${key}: empty (DoD requires all ${ISSUE_DOD_FIELDS.length} fields)`)
     }
   }
   if (

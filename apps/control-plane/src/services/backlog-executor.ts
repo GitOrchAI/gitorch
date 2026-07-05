@@ -1,4 +1,4 @@
-import { validateDoD, ISSUE_DOD_FIELDS, type DoDFields } from '@gitorch/cadence'
+import { validateDoD, DOD_FIELD_MAP, type DoDFields } from '@gitorch/cadence'
 
 // Backlog-executor: as MÃOS determinísticas da Lei "LLM decide, sistema
 // executa". Recebe o plano que o PO preencheu (formulários já validados por
@@ -22,6 +22,8 @@ export interface BacklogGitHub {
   /** Seta a iteração (Sprint) corrente no item do board. */
   setSprint(boardItemId: string): Promise<void>
   addLabels(nodeId: string, labels: string[]): Promise<void>
+  /** Publica o Sprint Goal no board (status update) — visível ao cliente. */
+  postSprintGoal?(goal: string): Promise<void>
 }
 
 export interface BacklogPlan {
@@ -54,17 +56,9 @@ export interface ApplyBacklogResult {
 
 /** Corpo canônico da issue: os 8 campos do DoD, na ordem, + marker invisível. */
 export function renderIssueBody(fields: DoDFields, marker: string): string {
-  const values: Record<string, string> = {
-    Título: fields.titulo,
-    Description: fields.description,
-    Notes: fields.notes,
-    'Implementation Guide': fields.implementationGuide,
-    'Verification Criteria': fields.verificationCriteria,
-    Summary: fields.summary,
-    'Analysis Result': fields.analysisResult,
-    'Related Files': fields.relatedFiles,
-  }
-  const sections = ISSUE_DOD_FIELDS.map((h) => `## ${h}\n\n${values[h] ?? ''}`)
+  // Derivado da fonte única do DoD: cabeçalho e valor vêm do MESMO mapa —
+  // impossível publicar seção vazia por descasamento de chave.
+  const sections = DOD_FIELD_MAP.map(({ key, header }) => `## ${header}\n\n${fields[key]}`)
   return [`<!-- ${marker} -->`, ...sections].join('\n\n')
 }
 
@@ -84,6 +78,22 @@ export async function applyBacklog(options: ApplyBacklogOptions): Promise<ApplyB
     if (!dod.ok) problems.push(`items[${i}]: ${dod.errors.join('; ')}`)
     if (item.epicIndex < 0 || item.epicIndex >= plan.epics.length) {
       problems.push(`items[${i}]: epicIndex ${item.epicIndex} out of range`)
+    }
+    // O plano vem da LLM: referências de pai/dependência precisam ser
+    // BACKWARD (apontar para item anterior) e do tipo certo — senão o loop de
+    // criação quebraria DEPOIS de já ter criado nós (fim do all-or-nothing).
+    if (item.parentFeatureIndex !== undefined) {
+      const p = item.parentFeatureIndex
+      if (!Number.isInteger(p) || p < 0 || p >= i) {
+        problems.push(`items[${i}]: parentFeatureIndex ${p} must reference an EARLIER item`)
+      } else if (plan.items[p]?.kind !== 'feature') {
+        problems.push(`items[${i}]: parentFeatureIndex ${p} does not point to a feature`)
+      }
+    }
+    for (const b of item.blockedByItemIndexes ?? []) {
+      if (!Number.isInteger(b) || b < 0 || b >= i) {
+        problems.push(`items[${i}]: blockedBy ${b} must reference an EARLIER item`)
+      }
     }
   })
   plan.epics.forEach((epic, i) => {
@@ -172,7 +182,12 @@ export async function applyBacklog(options: ApplyBacklogOptions): Promise<ApplyB
     boardItemByNode.set(ref.nodeId, await github.addToBoard(ref.nodeId))
   }
 
-  // 5) Sprint: seta a iteração nos selecionados.
+  // 5) Sprint Goal visível no board (status update) — o board é a interface.
+  if (plan.sprint?.sprintGoal && github.postSprintGoal) {
+    await github.postSprintGoal(plan.sprint.sprintGoal)
+  }
+
+  // 5b) Sprint: seta a iteração nos selecionados.
   const selected = new Set(plan.sprint?.selectedItemIndexes ?? [])
   for (const index of selected) {
     const ref = itemRefs[index]

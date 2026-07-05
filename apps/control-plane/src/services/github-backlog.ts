@@ -5,6 +5,14 @@ import type { BacklogGitHub, IssueRef } from './backlog-executor.js'
 // com REST (issues/labels/busca) + ProjectV2Client (árvore, board, sprint).
 // É a ÚNICA fronteira do plano do PO com o GitHub — toda ação auditável aqui.
 
+/** Erro de execução no GitHub: NÃO é falha de motor — nunca aciona failover. */
+export class GithubExecutionError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'GithubExecutionError'
+  }
+}
+
 export interface GithubBacklogOptions {
   token: string
   /** ex.: "loureng/patinhas-3d-crafts" */
@@ -18,27 +26,9 @@ export interface GithubBacklogOptions {
 
 export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHub {
   const f = options.fetchImpl ?? fetch
-  // Com fetchImpl (testes), o GraphQL do client usa o mesmo transporte injetado.
-  const transport = options.fetchImpl
-    ? async <TData>(
-        request: { query: string; variables: Record<string, unknown> },
-        token: string
-      ) => {
-        const resp = await f('https://api.github.com/graphql', {
-          method: 'POST',
-          headers: {
-            authorization: `Bearer ${token}`,
-            'content-type': 'application/json',
-            'user-agent': 'gitorch',
-          },
-          body: JSON.stringify(request),
-        })
-        return (await resp.json()) as { data?: TData; errors?: Array<{ message: string }> }
-      }
-    : undefined
   const client = new ProjectV2Client({
     token: options.token,
-    ...(transport ? { request: transport } : {}),
+    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
   })
   const sprintField = options.sprintFieldName ?? 'Sprint'
 
@@ -55,11 +45,55 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
     })
     const json = (await response.json().catch(() => ({}))) as Record<string, unknown>
     if (!response.ok) {
-      throw new Error(
+      throw new GithubExecutionError(
         `GitHub REST ${method} ${path} failed (${response.status}): ${JSON.stringify(json).slice(0, 200)}`
       )
     }
     return json
+  }
+
+  // Helper GraphQL ÚNICO do adapter (o client cobre as mutations tipadas; este
+  // cobre consultas ad-hoc). Sempre valida errors[] — nada de undefined mudo.
+  const gql = async <T>(query: string, variables: Record<string, unknown>): Promise<T> => {
+    const resp = await f('https://api.github.com/graphql', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${options.token}`,
+        'content-type': 'application/json',
+        'user-agent': 'gitorch',
+      },
+      body: JSON.stringify({ query, variables }),
+    })
+    const json = (await resp.json()) as { data?: T; errors?: Array<{ message: string }> }
+    if (json.errors?.length) {
+      throw new GithubExecutionError(`GitHub GraphQL failed: ${json.errors[0]?.message}`)
+    }
+    if (!json.data) throw new GithubExecutionError('GitHub GraphQL returned no data')
+    return json.data
+  }
+
+  // Idempotência com UMA busca por wish (a Search API tem limite de ~30 req/min;
+  // uma chamada por nó estouraria em planos grandes): busca todos os corpos com
+  // o prefixo do marker da wish e monta o mapa marker→issue em memória.
+  const markerMaps = new Map<string, Map<string, IssueRef>>()
+  const markerPrefix = (marker: string): string => {
+    // "gitorch:node:<wish>:tipo:i" → "gitorch:node:<wish>"
+    return marker.split(':').slice(0, 3).join(':')
+  }
+  const loadMarkers = async (prefix: string): Promise<Map<string, IssueRef>> => {
+    const cached = markerMaps.get(prefix)
+    if (cached) return cached
+    const map = new Map<string, IssueRef>()
+    const q = encodeURIComponent(`repo:${options.repository} in:body "${prefix}" state:open`)
+    const result = (await rest('GET', `/search/issues?q=${q}&per_page=100`)) as {
+      items?: Array<{ number: number; node_id: string; body?: string }>
+    }
+    for (const item of result.items ?? []) {
+      const found = item.body?.match(/<!--\s*(gitorch:node:[^\s>]+)\s*-->/)
+      if (found?.[1]) map.set(found[1], { number: item.number, nodeId: item.node_id })
+    }
+    markerMaps.set(prefix, map)
+    return map
   }
 
   // Cache da iteração ativa (resolvida uma vez por execução do plano).
@@ -74,8 +108,15 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
       })
       const first = field.iterations[0]
       sprintCache = first ? { fieldId: field.fieldId, iterationId: first.id } : null
-    } catch {
-      // Campo Sprint ausente no board: o plano segue sem iteração (não é fatal).
+    } catch (error) {
+      // Só a AUSÊNCIA do campo Sprint é tolerada (board sem iteração configurada).
+      // Qualquer outra falha (FORBIDDEN, rede) é real e deve subir — engolir aqui
+      // perderia o Sprint Planning inteiro em silêncio.
+      if (!String(error).includes('not found')) {
+        throw error instanceof GithubExecutionError
+          ? error
+          : new GithubExecutionError(`resolveSprint failed: ${String(error).slice(0, 200)}`)
+      }
       sprintCache = null
     }
     return sprintCache
@@ -83,14 +124,8 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
 
   return {
     async findIssueByMarker(marker: string): Promise<IssueRef | null> {
-      // Só issues ABERTAS contam para idempotência: um nó fechado (plano
-      // abandonado/limpo) não deve ser reusado numa nova aplicação do plano.
-      const q = encodeURIComponent(`repo:${options.repository} in:body "${marker}" state:open`)
-      const result = (await rest('GET', `/search/issues?q=${q}&per_page=1`)) as {
-        items?: Array<{ number: number; node_id: string }>
-      }
-      const hit = result.items?.[0]
-      return hit ? { number: hit.number, nodeId: hit.node_id } : null
+      const map = await loadMarkers(markerPrefix(marker))
+      return map.get(marker) ?? null
     },
 
     async createIssue(input): Promise<IssueRef> {
@@ -110,27 +145,17 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
       try {
         return await client.addItemById({ projectId: options.projectId, contentId: nodeId })
       } catch (error) {
-        // Idempotência: o GitHub responde "Content already exists in this
-        // project" quando a issue já está no board (ex.: workflow de auto-add
-        // ou re-execução). Resolve o id do item existente em vez de falhar.
+        // Idempotência: "Content already exists in this project" não é falha —
+        // resolve o id do item existente (ex.: workflow de auto-add do board).
         if (!String(error).includes('already exists')) throw error
-        const query = `query($id: ID!) { node(id: $id) { ... on Issue {
-          projectItems(first: 20) { nodes { id project { id } } } } } }`
-        const resp = await f('https://api.github.com/graphql', {
-          method: 'POST',
-          headers: {
-            authorization: `token ${options.token}`,
-            'content-type': 'application/json',
-            'user-agent': 'gitorch',
-          },
-          body: JSON.stringify({ query, variables: { id: nodeId } }),
-        })
-        const data = (await resp.json()) as {
-          data?: {
-            node?: { projectItems?: { nodes?: Array<{ id: string; project?: { id?: string } }> } }
-          }
-        }
-        const item = data.data?.node?.projectItems?.nodes?.find(
+        const data = await gql<{
+          node?: { projectItems?: { nodes?: Array<{ id: string; project?: { id?: string } }> } }
+        }>(
+          `query($id: ID!) { node(id: $id) { ... on Issue {
+            projectItems(first: 20) { nodes { id project { id } } } } } }`,
+          { id: nodeId }
+        )
+        const item = data.node?.projectItems?.nodes?.find(
           (n) => n.project?.id === options.projectId
         )
         if (!item) throw error
@@ -149,24 +174,29 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
       })
     },
 
-    async addLabels(nodeId, labels): Promise<void> {
-      // A API de labels é por número; resolve via GraphQL node -> number/repo.
-      const query = `query($id: ID!) { node(id: $id) { ... on Issue { number repository { nameWithOwner } } } }`
-      const resp = await f('https://api.github.com/graphql', {
-        method: 'POST',
-        headers: {
-          authorization: `token ${options.token}`,
-          'content-type': 'application/json',
-          'user-agent': 'gitorch',
-        },
-        body: JSON.stringify({ query, variables: { id: nodeId } }),
+    async postSprintGoal(goal: string): Promise<void> {
+      // O Sprint Goal fica VISÍVEL no board (status update do Projects v2) — o
+      // board é a interface do cliente; memória interna não basta.
+      await client.createStatusUpdate({
+        projectId: options.projectId,
+        body: `Sprint Goal: ${goal}`,
+        startDate: new Date().toISOString().slice(0, 10),
+        status: 'ON_TRACK',
       })
-      const data = (await resp.json()) as {
-        data?: { node?: { number?: number; repository?: { nameWithOwner?: string } } }
+    },
+
+    async addLabels(nodeId, labels): Promise<void> {
+      const data = await gql<{
+        node?: { number?: number; repository?: { nameWithOwner?: string } }
+      }>(
+        `query($id: ID!) { node(id: $id) { ... on Issue { number repository { nameWithOwner } } } }`,
+        { id: nodeId }
+      )
+      const number = data.node?.number
+      const repo = data.node?.repository?.nameWithOwner ?? options.repository
+      if (!number) {
+        throw new GithubExecutionError(`addLabels: could not resolve issue number for ${nodeId}`)
       }
-      const number = data.data?.node?.number
-      const repo = data.data?.node?.repository?.nameWithOwner ?? options.repository
-      if (!number) throw new Error(`addLabels: could not resolve issue number for ${nodeId}`)
       await rest('POST', `/repos/${repo}/issues/${number}/labels`, { labels })
     },
   }

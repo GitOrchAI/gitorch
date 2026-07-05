@@ -26,6 +26,8 @@ import {
 import { LocalWorkspaceProvider, WorkspaceManager } from '@gitorch/workspace-engine'
 import { buildMissionEnricher, persistMissionMemory } from '../services/mission-context.js'
 import { runPoMissionViaRails } from '../services/po-rails-mission.js'
+import { RailsStepError } from '../services/rails-runner.js'
+import { GithubExecutionError } from '../services/github-backlog.js'
 import * as os from 'node:os'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -464,13 +466,17 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         }
 
         if (result.exitCode === 0 && result.output.trim().length > 0) {
-          // O entregável vira memória tipada do projeto: o próximo agente herda.
-          await persistMissionMemory(app.cortex, {
-            projectId: project.id,
-            role,
-            content: result.output,
-            now: new Date().toISOString(),
-          })
+          // O entregável vira memória tipada do projeto — exceto no-ops (ex.:
+          // "sem wishlist"), que poluiriam o recall e expulsariam o brief do RA.
+          const isNoOp = (result as { noOp?: boolean }).noOp === true
+          if (!isNoOp) {
+            await persistMissionMemory(app.cortex, {
+              projectId: project.id,
+              role,
+              content: result.output,
+              now: new Date().toISOString(),
+            })
+          }
 
           const updated = await app.prisma.mission.updateMany({
             where: { id: missionId, status: 'running' },
@@ -486,15 +492,17 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             return
           }
           app.log.info(`[Scheduler] Mission ${missionId} completed via ${sel.runtime}`)
-          try {
-            await app.saveMissionMemory({
-              wingId: project.wingId,
-              missionId,
-              agentRole: role,
-              content: result.output,
-            })
-          } catch (memErr) {
-            app.log.error(memErr, `[Scheduler] Falha ao gravar memória de ${missionId}`)
+          if (!isNoOp) {
+            try {
+              await app.saveMissionMemory({
+                wingId: project.wingId,
+                missionId,
+                agentRole: role,
+                content: result.output,
+              })
+            } catch (memErr) {
+              app.log.error(memErr, `[Scheduler] Falha ao gravar memória de ${missionId}`)
+            }
           }
           return
         }
@@ -512,10 +520,18 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         break
       } catch (err) {
         lastError = String((err as { stack?: string })?.stack ?? err)
-        // Simétrico com o caminho de exit != 0: só faz failover se o erro for do
-        // tipo cota/rate/auth. Erro sistêmico (ex.: disco cheio, mismatch) falha
-        // rápido em vez de repetir em todos os motores.
-        if (!isLast && isFailoverError(lastError)) {
+        // Classificação de origem do erro (Lei dos trilhos):
+        // - GithubExecutionError: o GitHub falhou (token/rate-limit do REPO) —
+        //   igual para TODOS os motores; failover só repetiria o dano. Falha já.
+        // - RailsStepError: o MOTOR não preencheu o formulário — é exatamente o
+        //   caso do failover (o próximo motor do cliente pode conseguir).
+        // - Demais: failover apenas para cota/rate/auth (padrão existente).
+        if (err instanceof GithubExecutionError) {
+          app.log.error(err, `[Scheduler] erro de execução no GitHub; sem failover`)
+          break
+        }
+        const engineFault = err instanceof RailsStepError || isFailoverError(lastError)
+        if (!isLast && engineFault) {
           app.log.warn(err, `[Scheduler] erro recuperável em ${sel.runtime}; próximo motor`)
           continue
         }

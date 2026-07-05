@@ -135,4 +135,49 @@ describe('applyBacklog', () => {
     expect(labeled).toHaveLength(1)
     expect(labeled[0]!.labels).toContain('jules')
   })
+
+  it('rejeita parentFeatureIndex FORWARD (referência a item posterior) antes de criar', async () => {
+    const { gh, created } = fakeGitHub()
+    const bad = plan()
+    bad.items = [
+      { epicIndex: 0, kind: 'task', parentFeatureIndex: 1, fields: fields() },
+      { epicIndex: 0, kind: 'feature', fields: fields({ titulo: '[Feature] f' }) },
+    ]
+    await expect(applyBacklog({ github: gh, plan: bad })).rejects.toThrow(/EARLIER item/)
+    expect(created).toHaveLength(0)
+  })
+
+  it('rejeita parentFeatureIndex que aponta para uma TASK (não feature)', async () => {
+    const { gh, created } = fakeGitHub()
+    const bad = plan()
+    bad.items = [
+      { epicIndex: 0, kind: 'task', fields: fields() },
+      { epicIndex: 0, kind: 'task', parentFeatureIndex: 0, fields: fields() },
+    ]
+    await expect(applyBacklog({ github: gh, plan: bad })).rejects.toThrow(
+      /does not point to a feature/
+    )
+    expect(created).toHaveLength(0)
+  })
+
+  it('rejeita blockedBy FORWARD antes de criar', async () => {
+    const { gh, created } = fakeGitHub()
+    const bad = plan()
+    bad.items = [
+      { epicIndex: 0, kind: 'task', blockedByItemIndexes: [1], fields: fields() },
+      { epicIndex: 0, kind: 'task', fields: fields() },
+    ]
+    await expect(applyBacklog({ github: gh, plan: bad })).rejects.toThrow(/EARLIER item/)
+    expect(created).toHaveLength(0)
+  })
+
+  it('publica o Sprint Goal no board quando o adapter suporta', async () => {
+    const goals: string[] = []
+    const { gh } = fakeGitHub()
+    gh.postSprintGoal = async (goal) => {
+      goals.push(goal)
+    }
+    await applyBacklog({ github: gh, plan: plan() })
+    expect(goals).toEqual(['Filtrar por material'])
+  })
 })
