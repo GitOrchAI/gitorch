@@ -26,6 +26,7 @@ import {
 import { LocalWorkspaceProvider, WorkspaceManager } from '@gitorch/workspace-engine'
 import { buildMissionEnricher, persistMissionMemory } from '../services/mission-context.js'
 import { runPoMissionViaRails } from '../services/po-rails-mission.js'
+import { runQaMissionViaRails } from '../services/qa-rails-mission.js'
 import { RailsStepError } from '../services/rails-runner.js'
 import { GithubExecutionError } from '../services/github-backlog.js'
 import * as os from 'node:os'
@@ -404,52 +405,61 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           ...(project.userId ? { ownerUserId: project.userId } : {}),
         }
 
-        // Lei "LLM decide, sistema executa": o PO roda nos TRILHOS quando o
-        // board e o token do GitHub estão configurados (env na F3.5; banco na
-        // F4). Sem eles, cai no caminho clássico com log honesto.
+        // Lei "LLM decide, sistema executa": PO e QA rodam nos TRILHOS quando o
+        // token do GitHub (e, para o PO, o board) estão configurados (env na
+        // F3.5; banco na F4). Sem eles, cai no caminho clássico com log honesto.
         const railsBoard = process.env['GITORCH_PROJECT_BOARD']
         const railsToken = process.env['GITORCH_GITHUB_TOKEN'] ?? process.env['GITHUB_TOKEN']
-        let result: { exitCode: number; output: string; stderr: string }
+        const poRails = role === 'po' && Boolean(railsBoard) && Boolean(railsToken)
+        const qaRails = role === 'qa' && Boolean(railsToken)
+        let result: { exitCode: number; output: string; stderr: string; noOp?: boolean }
 
-        if (role === 'po' && railsBoard && railsToken) {
+        if (poRails || qaRails) {
           const stepDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-rails-'))
           let stepN = 0
+          // Executor de passo: uma execução curta do motor por formulário.
+          const execute = async (prompt: string): Promise<string> => {
+            stepN += 1
+            const adapter = registry.resolve(sel.runtime as F6AgentRuntime)
+            const step = await adapter.run({
+              missionId: `${missionId}-step-${stepN}`,
+              prompt,
+              runtime: { runtime: sel.runtime as F6AgentRuntime, model },
+              credentialRef,
+              role,
+              cwd: stepDir,
+              timeoutMs: 10 * 60 * 1000,
+            })
+            if (step.exitCode !== 0) {
+              throw new Error(`rails step ${stepN} failed: ${step.stderr.slice(0, 300)}`)
+            }
+            return step.output
+          }
           try {
             const contextBlocks = await buildMissionEnricher({ cortex: app.cortex })({
               projectId: project.id,
               role,
             })
-            result = await runPoMissionViaRails({
-              repository: project.wingId,
-              board: railsBoard,
-              githubToken: railsToken,
-              contextBlocks,
-              execute: async (prompt) => {
-                stepN += 1
-                const adapter = registry.resolve(sel.runtime as F6AgentRuntime)
-                const step = await adapter.run({
-                  missionId: `${missionId}-step-${stepN}`,
-                  prompt,
-                  runtime: { runtime: sel.runtime as F6AgentRuntime, model },
-                  credentialRef,
-                  role,
-                  cwd: stepDir,
-                  timeoutMs: 10 * 60 * 1000,
+            result = poRails
+              ? await runPoMissionViaRails({
+                  repository: project.wingId,
+                  board: railsBoard as string,
+                  githubToken: railsToken as string,
+                  contextBlocks,
+                  execute,
                 })
-                if (step.exitCode !== 0) {
-                  throw new Error(`rails step ${stepN} failed: ${step.stderr.slice(0, 300)}`)
-                }
-                return step.output
-              },
-            })
+              : await runQaMissionViaRails({
+                  repository: project.wingId,
+                  githubToken: railsToken as string,
+                  contextBlocks,
+                  execute,
+                })
           } finally {
             await fs.rm(stepDir, { recursive: true, force: true }).catch(() => undefined)
           }
         } else {
-          if (role === 'po') {
-            app.log.info(
-              '[Scheduler] PO sem GITORCH_PROJECT_BOARD/GITHUB_TOKEN: usando caminho clássico'
-            )
+          if (role === 'po' || role === 'qa') {
+            app.log.info(`[Scheduler] ${role} sem GITHUB_TOKEN/board: usando caminho clássico`)
           }
           result = await orchestrator.runMission({
             id: missionId,
