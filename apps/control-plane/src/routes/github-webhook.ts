@@ -8,10 +8,13 @@ import {
   GitHubWebhookEventName,
 } from '@gitorch/github-sync'
 
+import type { F6AgentRole } from '@gitorch/agents'
+
 declare module 'fastify' {
   interface FastifyInstance {
     prisma: PrismaClient
     verifyGitHubWebhook: (payload: string, signature: string) => boolean
+    // triggerAgentMission é declarado (globalmente) pelo scheduler; usamos aqui.
   }
   interface FastifyRequest {
     rawBody?: Buffer
@@ -20,6 +23,34 @@ declare module 'fastify' {
 
 const normalizer = new GitHubWebhookNormalizer()
 const syncEngine = new GitHubSyncEngine()
+
+// Label que marca uma issue como "desejo" (wishlist) para o RA analisar.
+const WISHLIST_LABEL = 'wishlist'
+
+// Decide qual missão de agente um evento do GitHub deve acordar (o "sistema
+// nervoso" do loop). Retorna o papel a disparar, ou null se o evento não é um
+// gatilho. É deliberadamente conservador: só dispara nos casos do loop SCRUM.
+export function missionRoleForEvent(
+  event: string | undefined,
+  payload: {
+    action?: string
+    issue?: { labels?: Array<{ name?: string }> }
+    pull_request?: { user?: { login?: string } }
+    sender?: { login?: string }
+  }
+): F6AgentRole | null {
+  // Issue de wishlist recém-aberta -> o RA acorda e produz contexto.
+  if (event === 'issues' && payload.action === 'opened') {
+    const labels = (payload.issue?.labels ?? []).map((l) => (l.name ?? '').toLowerCase())
+    if (labels.includes(WISHLIST_LABEL)) return 'ra'
+  }
+  // PR recém-aberto pelo Jules -> o QA acorda e julga.
+  if (event === 'pull_request' && payload.action === 'opened') {
+    const author = (payload.pull_request?.user?.login ?? payload.sender?.login ?? '').toLowerCase()
+    if (author.includes('jules')) return 'qa'
+  }
+  return null
+}
 
 // Map GitHub event header to supported event names
 function toGitHubEventName(event: string | undefined): GitHubWebhookEventName {
@@ -145,6 +176,20 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
               { eventId: syncEvent.id, reason: ingestResult.reason },
               'GitHub event deduplicated'
             )
+          }
+
+          // Sistema nervoso do loop: acorda o agente do papel certo. Fire-and-
+          // forget — a missão leva minutos e o GitHub exige resposta rápida; o
+          // guard de missão ativa do scheduler evita duplicatas em paralelo.
+          const role = missionRoleForEvent(event, parsedPayload)
+          if (role && app.triggerAgentMission) {
+            app.log.info(
+              { deliveryId, event, role, projectId: project.id },
+              'Webhook acorda missão'
+            )
+            void app
+              .triggerAgentMission(role, project.id)
+              .catch((err) => app.log.error({ err, role }, 'Falha ao disparar missão via webhook'))
           }
 
           // Mark as processed

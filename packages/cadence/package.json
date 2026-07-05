@@ -1,5 +1,5 @@
 {
-  "name": "@gitorch/agents",
+  "name": "@gitorch/cadence",
   "version": "0.1.0",
   "private": true,
   "main": "dist/index.js",
@@ -10,17 +10,15 @@
       "default": "./dist/index.js"
     }
   },
+  "files": [
+    "dist",
+    "playbooks"
+  ],
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src"
-  },
-  "dependencies": {
-    "@gitorch/github-sync": "workspace:*",
-    "@gitorch/synapse": "workspace:*",
-    "@gitorch/workspace-engine": "workspace:*",
-    "@gitorch/cadence": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "26.1.0",

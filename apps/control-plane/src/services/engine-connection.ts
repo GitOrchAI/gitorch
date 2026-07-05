@@ -18,6 +18,11 @@ const DEFAULT_CREDENTIAL_PATHS: Record<string, string[]> = {
   // vai junto para a descoberta de modelos funcionar. Ausência é tolerada.
   codex: ['.codex/auth.json', '.codex/models_cache.json'],
   claude: ['.claude/.credentials.json'],
+  // As "mãos" dos agentes no GitHub: um token (fine-grained PAT hoje; token de
+  // GitHub App no futuro) que a missão recebe como GH_TOKEN dentro do sandbox.
+  // Mesmo ciclo de vida das credenciais de motor: cifrado por usuário,
+  // materializado por missão, nunca exposto no host.
+  github: ['.gitorch/gh-token'],
 }
 
 export const ENGINE_CREDENTIAL_PATHS: Record<string, string[]> = (() => {
@@ -81,6 +86,29 @@ export class EngineConnectionService {
       },
     })
     return toStatus(record)
+  }
+
+  /**
+   * Conecta o GitHub do usuário a partir de um token (fine-grained PAT). O
+   * token vira o arquivo `.gitorch/gh-token` num HOME temporário e segue o
+   * MESMO caminho de qualquer credencial (cifra → EngineConnection) — nenhuma
+   * rota especial de armazenamento.
+   */
+  async connectGitHubToken(userId: string, token: string): Promise<ConnectionStatus> {
+    const trimmed = token.trim()
+    // Formato de token do GitHub: um único token não vazio, sem espaços/quebras
+    // (cobre github_pat_*, ghp_* e tokens de App). Não logamos o valor nunca.
+    if (!trimmed || /\s/.test(trimmed)) {
+      throw new Error('token do GitHub inválido: vazio ou com espaços')
+    }
+    const home = path.join(os.tmpdir(), `gitorch-gh-${randomUUID()}`)
+    await fs.mkdir(path.join(home, '.gitorch'), { recursive: true, mode: 0o700 })
+    try {
+      await fs.writeFile(path.join(home, '.gitorch', 'gh-token'), trimmed, { mode: 0o600 })
+      return await this.captureFromHome(userId, 'github', home)
+    } finally {
+      await fs.rm(home, { recursive: true, force: true })
+    }
   }
 
   /**

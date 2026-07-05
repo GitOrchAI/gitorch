@@ -111,4 +111,31 @@ describe('EngineConnectionService', () => {
 
     await fs.rm(home, { recursive: true, force: true })
   })
+
+  test('connectGitHubToken cifra o PAT e materializa como .gitorch/gh-token 0600', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+
+    const status = await svc.connectGitHubToken('user_gh', 'github_pat_FAKE_abc123')
+    expect(status.runtime).toBe('github')
+    expect(status.status).toBe('connected')
+
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-ghhome-'))
+    expect(await svc.materializeToHome('user_gh', 'github', home)).toBe(true)
+    const tokenPath = path.join(home, '.gitorch', 'gh-token')
+    expect((await fs.readFile(tokenPath, 'utf8')).trim()).toBe('github_pat_FAKE_abc123')
+    const mode = (await fs.stat(tokenPath)).mode & 0o777
+    expect(mode).toBe(0o600)
+
+    await fs.rm(home, { recursive: true, force: true })
+  })
+
+  test('connectGitHubToken rejeita token vazio ou com formato estranho', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+    await expect(svc.connectGitHubToken('u', '')).rejects.toThrow('token')
+    await expect(svc.connectGitHubToken('u', 'senha com espaço\n')).rejects.toThrow('token')
+  })
 })

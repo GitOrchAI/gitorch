@@ -25,5 +25,24 @@ cp "$AGY_BIN" "$CONTEXT_DIR/agy"
 # shell e convergência) que o entrypoint instala no HOME do agy em runtime.
 cp -a "$SCRIPT_DIR/agent-image/plugin" "$CONTEXT_DIR/plugin"
 
+# Playbooks do Cadence viram skills nativas do plugin (o agy ativa a skill do
+# papel pela description). Gerados no build para a imagem nunca divergir da
+# fonte única (packages/cadence/playbooks).
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+for role in ra po sm qa; do
+  case "$role" in
+    ra) role_name="Research Analyst" ;;
+    po) role_name="Product Owner" ;;
+    sm) role_name="Scrum Master" ;;
+    qa) role_name="Quality Assurance" ;;
+  esac
+  skill_dir="$CONTEXT_DIR/plugin/gitorch/skills/gitorch-$role"
+  mkdir -p "$skill_dir"
+  {
+    printf -- '---\nname: gitorch-%s-playbook\ndescription: >-\n  Role playbook for the GitOrch %s agent. Use this skill whenever acting as\n  the GitOrch %s in a mission.\n---\n\n' "$role" "$role_name" "$role_name"
+    cat "$REPO_ROOT/packages/cadence/playbooks/$role.md"
+  } > "$skill_dir/SKILL.md"
+done
+
 "$ENGINE" build -t "$TAG" -f "$CONTEXT_DIR/Containerfile" "$CONTEXT_DIR"
 echo "imagem construída: $TAG"

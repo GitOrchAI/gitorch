@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "github": {
+      "command": "github-mcp-server",
+      "args": ["stdio"],
+      "env": {}
+    },
+    "context7": {
+      "command": "context7-mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}

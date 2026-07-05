@@ -1,6 +1,11 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import type { AgentRuntimeSelection, F6AgentRuntime, RuntimeCredentialRef } from './types'
+import type {
+  AgentRuntimeSelection,
+  F6AgentRole,
+  F6AgentRuntime,
+  RuntimeCredentialRef,
+} from './types'
 
 const execFileAsync = promisify(execFile)
 
@@ -9,6 +14,9 @@ export interface RuntimeExecutionRequest {
   prompt: string
   runtime: AgentRuntimeSelection
   credentialRef: RuntimeCredentialRef
+  /** Papel do agente nesta missão (RA/PO/SM/QA). Vira GITORCH_AGENT_ROLE no
+   *  ambiente do container: o entrypoint usa para filtrar os MCPs do papel. */
+  role?: F6AgentRole
   /** Diretório de trabalho da missão (workspace alocado). */
   cwd?: string
   /** Mata o processo do agente após N ms (guarda contra missão pendurada). */
@@ -209,6 +217,10 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
     runtime: options.runtime,
     async run(request: RuntimeExecutionRequest) {
       const env = buildRuntimeEnvironment(request.credentialRef)
+
+      if (request.role) {
+        env['GITORCH_AGENT_ROLE'] = request.role
+      }
 
       if (request.runtime.model) {
         env['GITORCH_RUNTIME_MODEL'] = request.runtime.model

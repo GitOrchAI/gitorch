@@ -12,6 +12,17 @@ if [ -d "$CRED_SRC" ]; then
   chmod -R u+rwX "$HOME" 2>/dev/null || true
 fi
 
+# As "mãos" no GitHub: quando o dono do projeto conectou um token, ele chega
+# como ~/.gitorch/gh-token e vira GH_TOKEN (gh CLI) e GITHUB_TOKEN (MCPs).
+# O valor nunca é impresso.
+if [ -f "$HOME/.gitorch/gh-token" ]; then
+  GH_TOKEN="$(cat "$HOME/.gitorch/gh-token")"
+  GITHUB_TOKEN="$GH_TOKEN"
+  # O github-mcp-server oficial lê o token desta variável específica.
+  GITHUB_PERSONAL_ACCESS_TOKEN="$GH_TOKEN"
+  export GH_TOKEN GITHUB_TOKEN GITHUB_PERSONAL_ACCESS_TOKEN
+fi
+
 # Instala o plugin nativo do GitOrch no HOME do agy. Ele carrega:
 #  - rules/: identidade "sou agente GitOrch, não do repo" + guardrail de segurança;
 #  - hooks.json: PreToolUse que LIBERA só `gh`/`git` + leitura e NEGA o resto
@@ -43,6 +54,39 @@ if [ "${GITORCH_AGY_PLUGIN:-1}" != "0" ] && command -v agy >/dev/null 2>&1 && [ 
       s.allowAgentAccessNonWorkspaceFiles = false
       fs.writeFileSync(p, JSON.stringify(s, null, 2))
     ' "$AGY_CFG" 2>/dev/null || printf '{"autoExecutionPolicy":"always-proceed","allowAgentAccessNonWorkspaceFiles":false}\n' > "$AGY_CFG"
+  fi
+
+  # Allowlist de MCP POR PAPEL: cada agente enxerga só os servidores do seu
+  # papel (RA pesquisa/codegraph; PO/SM/QA agem no GitHub). O plugin traz o
+  # mcp_config.json completo; aqui filtramos a cópia instalada pelo papel da
+  # missão (GITORCH_AGENT_ROLE). Sem papel definido (execução diagnóstica),
+  # mantém tudo. Override: GITORCH_AGENT_ROLE vazio.
+  MCP_CFG="$HOME/.gemini/config/plugins/gitorch/mcp_config.json"
+  if [ -n "${GITORCH_AGENT_ROLE:-}" ] && [ -f "$MCP_CFG" ]; then
+    GITORCH_AGENT_ROLE="$GITORCH_AGENT_ROLE" node -e '
+      const fs = require("fs"), p = process.argv[1]
+      const role = process.env.GITORCH_AGENT_ROLE
+      // Lei "LLM decide, sistema executa" (docs/agents/cadence-execution-model.md):
+      // NENHUM papel tem ferramenta de AÇÃO no GitHub — quem age é o executor do
+      // control plane a partir dos formulários. O RA mantém apenas PESQUISA de
+      // docs (context7). github-mcp permanece instalado na imagem só para
+      // diagnóstico manual, nunca exposto aos agentes.
+      const ALLOW = {
+        ra: ["context7"],
+        po: [],
+        sm: [],
+        qa: [],
+      }
+      const allowed = ALLOW[role] || []
+      let cfg
+      try { cfg = JSON.parse(fs.readFileSync(p, "utf8")) } catch { process.exit(0) }
+      const servers = cfg.mcpServers || {}
+      for (const name of Object.keys(servers)) {
+        if (!allowed.includes(name)) delete servers[name]
+      }
+      cfg.mcpServers = servers
+      fs.writeFileSync(p, JSON.stringify(cfg, null, 2))
+    ' "$MCP_CFG" 2>/dev/null || true
   fi
 fi
 

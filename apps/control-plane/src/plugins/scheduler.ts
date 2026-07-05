@@ -24,6 +24,11 @@ import {
   type WorkspaceProvider,
 } from '@gitorch/agents'
 import { LocalWorkspaceProvider, WorkspaceManager } from '@gitorch/workspace-engine'
+import { buildMissionEnricher, persistMissionMemory } from '../services/mission-context.js'
+import { runPoMissionViaRails } from '../services/po-rails-mission.js'
+import { RailsStepError } from '../services/rails-runner.js'
+import { GithubExecutionError } from '../services/github-backlog.js'
+import * as os from 'node:os'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // dist/plugins -> raiz do repo -> runtime/
@@ -151,6 +156,10 @@ function buildMissionRunner(app: FastifyInstance): RuntimeCommandRunner | undefi
         )
         return { mounts: [] }
       }
+      // As "mãos" no GitHub: se o dono conectou um token (runtime lógico
+      // `github`), ele entra no MESMO staging e vira GH_TOKEN no container
+      // (entrypoint). Ausência é normal — missão segue só-leitura de GitHub.
+      await app.engineConnections.materializeToHome(ownerUserId, 'github', dir)
       return {
         mounts: [{ source: dir, target: '/run/gitorch-credentials', readOnly: true }],
         cleanup,
@@ -233,6 +242,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   const orchestrator = new AgentOrchestrator({
     registry,
     workspace: buildWorkspaceProvider(app),
+    // Injeta conhecimento do projeto (codegraph + memórias do Cortex) no contexto.
+    enrichContext: buildMissionEnricher({ cortex: app.cortex }),
   })
 
   // Missão presa vira failed: cobre 'running' passado de STALE_RUNNING_MS e
@@ -385,26 +396,88 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         .catch(() => undefined)
 
       try {
-        const result = await orchestrator.runMission({
-          id: missionId,
-          projectId: project.id,
-          repository: project.wingId,
-          role,
-          goal: `Analyze and coordinate tasks for ${project.name}`,
-          context: [],
-          runtime: { runtime: sel.runtime as F6AgentRuntime, model },
-          credentialRef: {
-            connectionId: `conn-${role}-${missionId}-${sel.runtime}`,
-            ownerScope: 'project',
-            runtime: sel.runtime as F6AgentRuntime,
-            providedSecrets: [],
-            ...(project.userId ? { ownerUserId: project.userId } : {}),
-          },
-          userId: project.userId ?? 'scheduler-user',
-          timeoutMs: STALE_RUNNING_MS,
-        })
+        const credentialRef = {
+          connectionId: `conn-${role}-${missionId}-${sel.runtime}`,
+          ownerScope: 'project' as const,
+          runtime: sel.runtime as F6AgentRuntime,
+          providedSecrets: [],
+          ...(project.userId ? { ownerUserId: project.userId } : {}),
+        }
+
+        // Lei "LLM decide, sistema executa": o PO roda nos TRILHOS quando o
+        // board e o token do GitHub estão configurados (env na F3.5; banco na
+        // F4). Sem eles, cai no caminho clássico com log honesto.
+        const railsBoard = process.env['GITORCH_PROJECT_BOARD']
+        const railsToken = process.env['GITORCH_GITHUB_TOKEN'] ?? process.env['GITHUB_TOKEN']
+        let result: { exitCode: number; output: string; stderr: string }
+
+        if (role === 'po' && railsBoard && railsToken) {
+          const stepDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-rails-'))
+          let stepN = 0
+          try {
+            const contextBlocks = await buildMissionEnricher({ cortex: app.cortex })({
+              projectId: project.id,
+              role,
+            })
+            result = await runPoMissionViaRails({
+              repository: project.wingId,
+              board: railsBoard,
+              githubToken: railsToken,
+              contextBlocks,
+              execute: async (prompt) => {
+                stepN += 1
+                const adapter = registry.resolve(sel.runtime as F6AgentRuntime)
+                const step = await adapter.run({
+                  missionId: `${missionId}-step-${stepN}`,
+                  prompt,
+                  runtime: { runtime: sel.runtime as F6AgentRuntime, model },
+                  credentialRef,
+                  role,
+                  cwd: stepDir,
+                  timeoutMs: 10 * 60 * 1000,
+                })
+                if (step.exitCode !== 0) {
+                  throw new Error(`rails step ${stepN} failed: ${step.stderr.slice(0, 300)}`)
+                }
+                return step.output
+              },
+            })
+          } finally {
+            await fs.rm(stepDir, { recursive: true, force: true }).catch(() => undefined)
+          }
+        } else {
+          if (role === 'po') {
+            app.log.info(
+              '[Scheduler] PO sem GITORCH_PROJECT_BOARD/GITHUB_TOKEN: usando caminho clássico'
+            )
+          }
+          result = await orchestrator.runMission({
+            id: missionId,
+            projectId: project.id,
+            repository: project.wingId,
+            role,
+            goal: `Analyze and coordinate tasks for ${project.name}`,
+            context: [],
+            runtime: { runtime: sel.runtime as F6AgentRuntime, model },
+            credentialRef,
+            userId: project.userId ?? 'scheduler-user',
+            timeoutMs: STALE_RUNNING_MS,
+          })
+        }
 
         if (result.exitCode === 0 && result.output.trim().length > 0) {
+          // O entregável vira memória tipada do projeto — exceto no-ops (ex.:
+          // "sem wishlist"), que poluiriam o recall e expulsariam o brief do RA.
+          const isNoOp = (result as { noOp?: boolean }).noOp === true
+          if (!isNoOp) {
+            await persistMissionMemory(app.cortex, {
+              projectId: project.id,
+              role,
+              content: result.output,
+              now: new Date().toISOString(),
+            })
+          }
+
           const updated = await app.prisma.mission.updateMany({
             where: { id: missionId, status: 'running' },
             data: {
@@ -419,15 +492,17 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             return
           }
           app.log.info(`[Scheduler] Mission ${missionId} completed via ${sel.runtime}`)
-          try {
-            await app.saveMissionMemory({
-              wingId: project.wingId,
-              missionId,
-              agentRole: role,
-              content: result.output,
-            })
-          } catch (memErr) {
-            app.log.error(memErr, `[Scheduler] Falha ao gravar memória de ${missionId}`)
+          if (!isNoOp) {
+            try {
+              await app.saveMissionMemory({
+                wingId: project.wingId,
+                missionId,
+                agentRole: role,
+                content: result.output,
+              })
+            } catch (memErr) {
+              app.log.error(memErr, `[Scheduler] Falha ao gravar memória de ${missionId}`)
+            }
           }
           return
         }
@@ -445,10 +520,18 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         break
       } catch (err) {
         lastError = String((err as { stack?: string })?.stack ?? err)
-        // Simétrico com o caminho de exit != 0: só faz failover se o erro for do
-        // tipo cota/rate/auth. Erro sistêmico (ex.: disco cheio, mismatch) falha
-        // rápido em vez de repetir em todos os motores.
-        if (!isLast && isFailoverError(lastError)) {
+        // Classificação de origem do erro (Lei dos trilhos):
+        // - GithubExecutionError: o GitHub falhou (token/rate-limit do REPO) —
+        //   igual para TODOS os motores; failover só repetiria o dano. Falha já.
+        // - RailsStepError: o MOTOR não preencheu o formulário — é exatamente o
+        //   caso do failover (o próximo motor do cliente pode conseguir).
+        // - Demais: failover apenas para cota/rate/auth (padrão existente).
+        if (err instanceof GithubExecutionError) {
+          app.log.error(err, `[Scheduler] erro de execução no GitHub; sem failover`)
+          break
+        }
+        const engineFault = err instanceof RailsStepError || isFailoverError(lastError)
+        if (!isLast && engineFault) {
           app.log.warn(err, `[Scheduler] erro recuperável em ${sel.runtime}; próximo motor`)
           continue
         }

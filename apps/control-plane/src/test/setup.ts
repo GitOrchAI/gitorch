@@ -92,7 +92,10 @@ class MockGitHubSyncEngine {
   ingest = vi.fn().mockReturnValue({ accepted: true })
 }
 
-vi.mock('@gitorch/github-sync', () => ({
+vi.mock('@gitorch/github-sync', async (importOriginal) => ({
+  // Mantém os exports reais (ex.: ProjectV2Client, usado pelos rails) e
+  // sobrescreve apenas as classes de webhook/sync que os testes simulam.
+  ...(await importOriginal<typeof import('@gitorch/github-sync')>()),
   GitHubWebhookVerifier: MockGitHubWebhookVerifier,
   GitHubWebhookNormalizer: MockGitHubWebhookNormalizer,
   GitHubSyncEngine: MockGitHubSyncEngine,
