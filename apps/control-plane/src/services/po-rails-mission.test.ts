@@ -90,6 +90,82 @@ describe('runPoMissionViaRails', () => {
     expect(r.output).toContain('no open wishlist')
   })
 
+  it('tria incidente sem prioridade: label P0 + comentário + liberado ganha gitorch:task e milestone', async () => {
+    const actions: Array<{ method: string; url: string; body?: unknown }> = []
+    const f = (async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const u = String(url)
+      const method = init?.method ?? 'GET'
+      const json = (d: unknown) => new Response(JSON.stringify(d), { status: 200 })
+      if (method !== 'GET') {
+        actions.push({ method, url: u, body: init?.body ? JSON.parse(String(init.body)) : {} })
+      }
+      if (u.includes('/search/issues') && u.includes('gitorch%3Aincident')) {
+        return json({
+          items: [
+            {
+              number: 60,
+              title: '[Incident] CI failing on main: Deploy',
+              body: 'Evidence...',
+              labels: [{ name: 'gitorch:incident' }],
+            },
+          ],
+        })
+      }
+      if (u.includes('/milestones')) return json([{ number: 7, title: 'Sprint 2' }])
+      if (u.includes('/issues?labels=wishlist')) return json([])
+      return json({})
+    }) as typeof fetch
+
+    const r = await runPoMissionViaRails({
+      repository: 'o/r',
+      board: 'o/9',
+      githubToken: 't',
+      contextBlocks: [],
+      fetchImpl: f,
+      execute: async () =>
+        JSON.stringify({ priority: 'P0', rationale: 'main quebrada', releaseNow: true }),
+    })
+
+    expect(r.output).toContain('triaged #60: P0 (released)')
+    expect(r.noOp).toBe(false)
+    const labelPost = actions.find((a) => a.url.includes('/issues/60/labels'))
+    expect(labelPost?.body).toEqual({ labels: ['P0', 'gitorch:task'] })
+    const comment = actions.find((a) => a.url.includes('/issues/60/comments'))
+    expect(JSON.stringify(comment?.body)).toContain('gitorch:triage')
+    const milestone = actions.find((a) => a.method === 'PATCH' && a.url.includes('/issues/60'))
+    expect(milestone?.body).toEqual({ milestone: 7 })
+  })
+
+  it('incidente NÃO liberado: só prioridade e racional, sem furar a sprint', async () => {
+    const actions: Array<{ url: string; body?: unknown }> = []
+    const f = (async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const u = String(url)
+      const method = init?.method ?? 'GET'
+      const json = (d: unknown) => new Response(JSON.stringify(d), { status: 200 })
+      if (method !== 'GET')
+        actions.push({ url: u, body: init?.body ? JSON.parse(String(init.body)) : {} })
+      if (u.includes('/search/issues') && u.includes('gitorch%3Aincident')) {
+        return json({
+          items: [{ number: 61, title: 'x', body: 'y', labels: [{ name: 'gitorch:incident' }] }],
+        })
+      }
+      if (u.includes('/issues?labels=wishlist')) return json([])
+      return json({})
+    }) as typeof fetch
+    await runPoMissionViaRails({
+      repository: 'o/r',
+      board: 'o/9',
+      githubToken: 't',
+      contextBlocks: [],
+      fetchImpl: f,
+      execute: async () =>
+        JSON.stringify({ priority: 'P3', rationale: 'baixo impacto', releaseNow: false }),
+    })
+    const labelPost = actions.find((a) => a.url.includes('/issues/61/labels'))
+    expect(labelPost?.body).toEqual({ labels: ['P3'] })
+    expect(actions.some((a) => a.url.includes('/milestones'))).toBe(false)
+  })
+
   it('com wish: roda os 5 passos e aplica a árvore (resumo no output)', async () => {
     const steps: string[] = []
     const r = await runPoMissionViaRails({

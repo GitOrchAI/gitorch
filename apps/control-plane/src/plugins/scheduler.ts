@@ -30,6 +30,7 @@ import { runRaMissionViaRails } from '../services/ra-rails-mission.js'
 import { runQaMissionViaRails } from '../services/qa-rails-mission.js'
 import { runSmDelegation } from '../services/sm-delegation.js'
 import { runSmWatchdog, buildTelegramNotifier } from '../services/sm-watchdog.js'
+import { runIncidentSensor } from '../services/incident-sensor.js'
 import {
   resolveBoardColumns,
   resolveSprintDays,
@@ -452,11 +453,26 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             githubToken: railsToken as string,
             ...(notify ? { notify } : {}),
           })
+          // Sensor de incidentes (os "olhos"): idempotente por fingerprint —
+          // rodar a cada wake do SM não duplica nada. Best-effort.
+          let sensorOut = ''
+          let sensorNoOp = true
+          try {
+            const sensor = await runIncidentSensor({
+              repository: project.wingId,
+              githubToken: railsToken as string,
+            })
+            sensorOut = sensor.output
+            sensorNoOp = sensor.noOp === true
+          } catch (sensorErr) {
+            app.log.warn(sensorErr, '[Scheduler] sensor de incidentes falhou')
+            sensorOut = 'sensor: failed (see logs).'
+          }
           result = {
             exitCode: 0,
-            output: [delegation.output, watchdog.output].join('\n'),
+            output: [delegation.output, watchdog.output, sensorOut].join('\n'),
             stderr: '',
-            noOp: delegation.noOp === true && watchdog.noOp === true,
+            noOp: delegation.noOp === true && watchdog.noOp === true && sensorNoOp,
           }
         } else if (poRails || qaRails || raRails) {
           const stepDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-rails-'))

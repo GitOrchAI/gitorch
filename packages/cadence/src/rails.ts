@@ -125,6 +125,13 @@ export interface PoRoadmapForm {
   assignments: Array<{ taskIndex: number; sprint: number }>
 }
 
+export interface PoTriageForm {
+  priority: 'P0' | 'P1' | 'P2' | 'P3'
+  rationale: string
+  /** true = fura a fila: entra na próxima sprint para o SM delegar. */
+  releaseNow: boolean
+}
+
 export interface QaVerdictForm {
   verdict: 'approve' | 'request_changes'
   comment: DoDFields
@@ -325,6 +332,18 @@ export const RAILS_SCHEMAS = {
           },
         },
       },
+    },
+  } as MiniSchema,
+
+  // Triagem de INCIDENTE pelo PO: sensor detecta, PO decide a criticidade e
+  // se fura a fila da sprint — nunca o sensor.
+  poTriage: {
+    type: 'object',
+    required: ['priority', 'rationale', 'releaseNow'],
+    properties: {
+      priority: { type: 'string', enum: ['P0', 'P1', 'P2', 'P3'] },
+      rationale: { type: 'string' },
+      releaseNow: { type: 'boolean' },
     },
   } as MiniSchema,
 

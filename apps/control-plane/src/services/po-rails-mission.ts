@@ -1,7 +1,10 @@
 import { ProjectV2Client } from '@gitorch/github-sync'
+import { RAILS_SCHEMAS, buildStepPrompt, type PoTriageForm } from '@gitorch/cadence'
 import { runPoRails } from './role-rails.js'
+import { runFormStep } from './rails-runner.js'
 import { applyBacklog } from './backlog-executor.js'
 import { createGithubBacklog } from './github-backlog.js'
+import { GithubExecutionError } from './github-errors.js'
 import type { BoardColumns } from './board-status.js'
 import type { StepExecutor } from './role-rails.js'
 
@@ -53,6 +56,78 @@ interface WishIssue {
   body?: string
 }
 
+/** Prioridades válidas de triagem — fonte única para busca e validação. */
+const TRIAGE_PRIORITIES = ['P0', 'P1', 'P2', 'P3'] as const
+
+/**
+ * Triagem de incidentes pelo PO: para cada `gitorch:incident` aberto SEM
+ * prioridade, um formulário decide P0..P3 e se fura a fila da sprint. O
+ * executor aplica: label de prioridade + comentário com o racional; se
+ * liberado, ganha `gitorch:task` e o milestone da sprint aberta mais próxima —
+ * a delegação contínua do SM assume dali.
+ */
+async function triageIncidents(args: {
+  gh: (method: string, path: string, body?: unknown) => Promise<unknown>
+  repository: string
+  execute: StepExecutor
+  contextBlocks: string[]
+  cap?: number
+}): Promise<string[]> {
+  const { gh, repository, execute } = args
+  const q = encodeURIComponent(`repo:${repository} label:gitorch:incident state:open`)
+  const found = (await gh('GET', `/search/issues?q=${q}&per_page=20`)) as {
+    items?: Array<{
+      number: number
+      title: string
+      body?: string
+      labels?: Array<{ name?: string }>
+    }>
+  }
+  const pending = (found.items ?? []).filter(
+    (i) => !(i.labels ?? []).some((l) => TRIAGE_PRIORITIES.includes(l.name as never))
+  )
+  const summary: string[] = []
+  for (const incident of pending.slice(0, args.cap ?? 2)) {
+    const prompt = buildStepPrompt('po', 'po-triage', RAILS_SCHEMAS.poTriage, [
+      ...args.contextBlocks,
+      `Incident under triage: #${incident.number} ${incident.title}\n${(incident.body ?? '').slice(0, 3000)}`,
+      'Triage this PRODUCTION incident: P0 = clients impacted right now / main broken; P1 = serious, next sprint; P2 = medium; P3 = low. Set releaseNow=true ONLY when it justifies entering the upcoming sprint ahead of planned work — sprint discipline is the default, jumping the queue is YOUR deliberate call.',
+    ])
+    const triage = (await runFormStep({
+      schema: RAILS_SCHEMAS.poTriage,
+      prompt,
+      execute,
+    })) as PoTriageForm
+
+    await gh('POST', `/repos/${repository}/issues/${incident.number}/labels`, {
+      labels: [triage.priority, ...(triage.releaseNow ? ['gitorch:task'] : [])],
+    })
+    await gh('POST', `/repos/${repository}/issues/${incident.number}/comments`, {
+      body: `<!-- gitorch:triage -->\nGitOrch PO triage: **${triage.priority}**${triage.releaseNow ? ' — liberado para a próxima sprint' : ' — segue o planejamento da sprint'}.\n\n${triage.rationale}`,
+    })
+    if (triage.releaseNow) {
+      // Milestone da sprint aberta mais próxima (menor N) — se existir.
+      const milestones = (await gh(
+        'GET',
+        `/repos/${repository}/milestones?state=open&per_page=100`
+      )) as Array<{ number: number; title: string }>
+      const next = (Array.isArray(milestones) ? milestones : [])
+        .map((m) => ({ ...m, n: Number(m.title.match(/^Sprint (\d+)$/)?.[1]) }))
+        .filter((m) => Number.isFinite(m.n))
+        .sort((a, b) => a.n - b.n)[0]
+      if (next) {
+        await gh('PATCH', `/repos/${repository}/issues/${incident.number}`, {
+          milestone: next.number,
+        })
+      }
+    }
+    summary.push(
+      `triaged #${incident.number}: ${triage.priority}${triage.releaseNow ? ' (released)' : ''}`
+    )
+  }
+  return summary
+}
+
 export async function runPoMissionViaRails(
   options: PoRailsMissionOptions
 ): Promise<PoRailsMissionResult> {
@@ -66,7 +141,42 @@ export async function runPoMissionViaRails(
     throw new Error(`Invalid board reference "${options.board}" (expected "<owner>/<number>")`)
   }
 
-  // 1) A wish mais recente ABERTA com label wishlist (o gatilho do PO).
+  const gh = async (method: string, path: string, body?: unknown): Promise<unknown> => {
+    const resp = await f(`https://api.github.com${path}`, {
+      method,
+      headers: {
+        authorization: `token ${options.githubToken}`,
+        accept: 'application/vnd.github+json',
+        'user-agent': 'gitorch',
+        ...(body ? { 'content-type': 'application/json' } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    })
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => '')
+      throw new GithubExecutionError(
+        `GitHub ${method} ${path} failed (${resp.status}): ${detail.slice(0, 150)}`
+      )
+    }
+    return resp.json().catch(() => ({}))
+  }
+
+  // 1) TRIAGEM antes de planejar: incidentes do sensor sem prioridade recebem
+  // P0..P3 do PO (e, se ele decidir, entram na próxima sprint). Best-effort:
+  // falha na triagem não pode matar o planejamento da wish.
+  let triageSummary: string[] = []
+  try {
+    triageSummary = await triageIncidents({
+      gh,
+      repository: options.repository,
+      execute: options.execute,
+      contextBlocks: options.contextBlocks,
+    })
+  } catch (err) {
+    triageSummary = [`triage failed: ${String(err).slice(0, 120)}`]
+  }
+
+  // 2) A wish mais recente ABERTA com label wishlist (o gatilho do PO).
   const wishResp = await f(
     `https://api.github.com/repos/${options.repository}/issues?labels=wishlist&state=open&sort=created&direction=desc&per_page=1`,
     { headers: { authorization: `token ${options.githubToken}`, 'user-agent': 'gitorch' } }
@@ -81,9 +191,12 @@ export async function runPoMissionViaRails(
   if (!wish) {
     return {
       exitCode: 0,
-      output: 'PO: no open wishlist issue; nothing to plan.',
+      output:
+        triageSummary.length > 0
+          ? `PO: no open wishlist issue. Incident triage: ${triageSummary.join('; ')}.`
+          : 'PO: no open wishlist issue; nothing to plan.',
       stderr: '',
-      noOp: true,
+      noOp: triageSummary.length === 0,
     }
   }
 
@@ -123,6 +236,7 @@ export async function runPoMissionViaRails(
 
   // 4) Resumo textual: vira memória do projeto (e evidência humana).
   const lines = [
+    ...(triageSummary.length > 0 ? [`Incident triage: ${triageSummary.join('; ')}.`] : []),
     `PO rails applied wish #${wish.number} ("${wish.title}").`,
     `Sprint goal: ${plan.roadmap.sprintGoal}`,
     `Tree: ${plan.phases.length} phase(s), ${plan.epics.length} epic(s), ${plan.features.length} feature(s), ${plan.tasks.length} task(s).`,
