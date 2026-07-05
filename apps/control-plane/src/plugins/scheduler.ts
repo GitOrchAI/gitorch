@@ -26,7 +26,7 @@ import {
 import { LocalWorkspaceProvider, WorkspaceManager } from '@gitorch/workspace-engine'
 import { buildMissionEnricher, persistMissionMemory } from '../services/mission-context.js'
 import { runPoMissionViaRails } from '../services/po-rails-mission.js'
-import { runRaRails } from '../services/role-rails.js'
+import { runRaMissionViaRails } from '../services/ra-rails-mission.js'
 import { runQaMissionViaRails } from '../services/qa-rails-mission.js'
 import { runSmDelegation } from '../services/sm-delegation.js'
 import { runSmWatchdog, buildTelegramNotifier } from '../services/sm-watchdog.js'
@@ -505,11 +505,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             // com default nativo — o cliente personaliza, o backend acompanha.
             const boardColumns = resolveBoardColumns(project.runtimeConfig)
             result = raRails
-              ? await runRaRails(execute, contextBlocks).then((ra) => ({
-                  exitCode: 0,
-                  output: ra.text,
-                  stderr: '',
-                }))
+              ? await runRaMissionViaRails({
+                  repository: project.wingId,
+                  githubToken: railsToken,
+                  execute,
+                  contextBlocks,
+                })
               : poRails
                 ? await runPoMissionViaRails({
                     repository: project.wingId,

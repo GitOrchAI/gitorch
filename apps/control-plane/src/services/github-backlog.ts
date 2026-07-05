@@ -11,7 +11,7 @@ export { GithubExecutionError } from './github-errors.js'
 
 export interface GithubBacklogOptions {
   token: string
-  /** ex.: "loureng/patinhas-3d-crafts" */
+  /** ex.: "owner/repo" */
   repository: string
   /** node id do Project v2 (board) */
   projectId: string
