@@ -72,6 +72,19 @@ class MockPrismaClient {
 
 vi.mock('@prisma/client', () => ({
   PrismaClient: MockPrismaClient,
+  // O plugin de RLS deriva do DMMF quais modelos têm wingId — o mock espelha
+  // o schema real (só Project tem a coluna).
+  Prisma: {
+    dmmf: {
+      datamodel: {
+        models: [
+          { name: 'Project', fields: [{ name: 'wingId' }] },
+          { name: 'Mission', fields: [{ name: 'id' }] },
+          { name: 'WebhookDelivery', fields: [{ name: 'id' }] },
+        ],
+      },
+    },
+  },
 }))
 
 // Mock @gitorch/github-sync

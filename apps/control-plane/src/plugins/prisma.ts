@@ -11,6 +11,16 @@ function getCurrentWingId(): string | undefined {
   return wingIdContext.getStore()?.wingId
 }
 
+// Isolamento por tenant: a lista de modelos que carregam wingId vem do PRÓPRIO
+// schema (DMMF), nunca de lista manual — uma lista hardcoded desalinhou do
+// schema e derrubava qualquer escrita em modelos sem a coluna (ex.:
+// WebhookDelivery) dentro de um wingIdContext.
+export const MODELS_WITH_WING: ReadonlySet<string> = new Set(
+  Prisma.dmmf.datamodel.models
+    .filter((m) => m.fields.some((f) => f.name === 'wingId'))
+    .map((m) => m.name)
+)
+
 export function createPrismaClient(): PrismaClient {
   const client = new PrismaClient({
     log: env['NODE_ENV'] === 'development' ? ['query', 'error', 'warn'] : ['error'],
@@ -36,8 +46,7 @@ export function createPrismaClient(): PrismaClient {
           'deleteMany',
         ].includes(params.action)
       ) {
-        const modelsWithWing = ['Project', 'Mission', 'Event', 'ApiKey', 'WebhookDelivery']
-        if (modelsWithWing.includes(params.model ?? '')) {
+        if (MODELS_WITH_WING.has(params.model ?? '')) {
           if (params.action === 'findUnique' || params.action === 'findFirst') {
             params.args.where = { ...params.args.where, wingId }
           } else if (params.action === 'findMany') {
