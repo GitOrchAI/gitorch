@@ -52,8 +52,6 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
 
   const isPublicPath = (url: string) => publicPaths.some((p) => url.startsWith(p))
 
-  // Register a dedicated rate limiter for auth endpoints to protect expensive auth logic from DoS.
-  // This uses a stricter limit (20 req/min) than the global default.
   await app.register(rateLimit, {
     global: true,
     max: 20,
@@ -65,7 +63,9 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
       'x-ratelimit-reset': true,
     },
     allowList: (request: FastifyRequest) =>
-      isPublicPath(request.url) || request.ip === '127.0.0.1' || request.ip === '::1',
+      isPublicPath(request.url) ||
+      request.ip === '127.0.0.1' ||
+      request.ip === '::1',
   })
 
   // API Key & JWT authentication
