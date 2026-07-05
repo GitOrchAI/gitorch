@@ -108,11 +108,14 @@ export async function applyBacklog(options: ApplyBacklogOptions): Promise<ApplyB
   const result: ApplyBacklogResult = { createdCount: 0, skippedCount: 0, issues: [] }
 
   // Cria (ou reusa, por marker) um nó e o coloca no board e na árvore.
+  // `labels`: marca o TIPO do nó (ex.: `gitorch:task`) para o SM achar as tasks
+  // delegáveis (folhas) sem confundir com épicos/features.
   const ensureNode = async (
     marker: string,
     title: string,
     body: string,
-    parentNodeId: string
+    parentNodeId: string,
+    labels?: string[]
   ): Promise<IssueRef> => {
     const existing = await github.findIssueByMarker(marker)
     if (existing) {
@@ -120,7 +123,7 @@ export async function applyBacklog(options: ApplyBacklogOptions): Promise<ApplyB
       result.issues.push({ marker, ref: existing })
       return existing
     }
-    const ref = await github.createIssue({ title, body })
+    const ref = await github.createIssue({ title, body, ...(labels ? { labels } : {}) })
     result.createdCount += 1
     result.issues.push({ marker, ref })
     await github.addSubIssue(parentNodeId, ref.nodeId)
@@ -176,7 +179,10 @@ export async function applyBacklog(options: ApplyBacklogOptions): Promise<ApplyB
       marker,
       item.fields.titulo,
       renderIssueBody(item.fields, marker) + blockedLine,
-      parent.nodeId
+      parent.nodeId,
+      // Só TASK é unidade delegável; a label deixa o SM achá-las (features/épicos
+      // agrupam, não são implementados diretamente pelo dev).
+      item.kind === 'task' ? ['gitorch:task'] : undefined
     )
     itemRefs.push(ref)
     boardItemByNode.set(ref.nodeId, await github.addToBoard(ref.nodeId))

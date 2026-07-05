@@ -27,6 +27,7 @@ import { LocalWorkspaceProvider, WorkspaceManager } from '@gitorch/workspace-eng
 import { buildMissionEnricher, persistMissionMemory } from '../services/mission-context.js'
 import { runPoMissionViaRails } from '../services/po-rails-mission.js'
 import { runQaMissionViaRails } from '../services/qa-rails-mission.js'
+import { runSmDelegation } from '../services/sm-delegation.js'
 import { RailsStepError } from '../services/rails-runner.js'
 import { GithubExecutionError } from '../services/github-backlog.js'
 import * as os from 'node:os'
@@ -412,9 +413,17 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         const railsToken = process.env['GITORCH_GITHUB_TOKEN'] ?? process.env['GITHUB_TOKEN']
         const poRails = role === 'po' && Boolean(railsBoard) && Boolean(railsToken)
         const qaRails = role === 'qa' && Boolean(railsToken)
+        const smRails = role === 'sm' && Boolean(railsToken)
         let result: { exitCode: number; output: string; stderr: string; noOp?: boolean }
 
-        if (poRails || qaRails) {
+        if (smRails) {
+          // Delegação contínua do SM é 100% determinística (sem passo de LLM):
+          // encontra tasks prontas e desbloqueadas e aplica a label de delegação.
+          result = await runSmDelegation({
+            repository: project.wingId,
+            githubToken: railsToken as string,
+          })
+        } else if (poRails || qaRails) {
           const stepDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-rails-'))
           let stepN = 0
           // Executor de passo: uma execução curta do motor por formulário.
