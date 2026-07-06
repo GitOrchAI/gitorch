@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { ChevronRight, Loader2, AlertCircle } from 'lucide-react'
+import { detectCountry } from '../../lib/geo'
 
 interface CreatedProject {
   id: string
@@ -74,7 +75,9 @@ export default function StepPlanConfirmation({
       // Plano pago → checkout do Stripe (na moeda do país do cliente). Grátis →
       // conclui direto. Se o checkout falhar, não trava a conclusão do setup.
       if (!isFree) {
-        const country = (/-([A-Za-z]{2})$/.exec(navigator.language)?.[1] ?? '').toUpperCase()
+        // Mesma detecção por IP da landing: a moeda do checkout Stripe segue a
+        // localização real, não o idioma do navegador.
+        const country = await detectCountry()
         const qs = country ? `?country=${country}` : ''
         try {
           const cr = await fetch(`${apiBaseUrl}/api/billing/checkout${qs}`, {

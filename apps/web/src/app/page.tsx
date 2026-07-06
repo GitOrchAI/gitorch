@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useLanguage } from '../LanguageContext'
 import { API_BASE_URL } from '../lib/api'
+import { detectCountry } from '../lib/geo'
 
 /* Landing copy lives here (not in locales.ts) because it carries structured
    content — arrays of console events and statement words — that the string-only
@@ -17,20 +18,7 @@ const LANDING_LANGS: Lang[] = ['en', 'pt', 'es']
 const GITHUB_REPO = process.env.NEXT_PUBLIC_GITHUB_REPO ?? 'loureng/gitorch'
 const GITHUB_URL = `https://github.com/${GITHUB_REPO}`
 
-// País do visitante a partir do locale do navegador. Região explícita vence
-// (pt-BR → BR); senão mapeia o idioma pro país representativo do mercado.
-function detectCountry(): string | undefined {
-  if (typeof navigator === 'undefined') return undefined
-  const langs = navigator.languages?.length ? navigator.languages : [navigator.language]
-  for (const l of langs) {
-    const m = /-([A-Za-z]{2})$/.exec(l || '')
-    if (m) return m[1].toUpperCase()
-  }
-  const base = (navigator.language || '').slice(0, 2).toLowerCase()
-  return ({ pt: 'BR', es: 'MX', hi: 'IN', id: 'ID', vi: 'VN', en: 'US' } as Record<string, string>)[
-    base
-  ]
-}
+// País pela LOCALIZAÇÃO REAL (IP), não pelo idioma — ver ../lib/geo.
 
 const COPY = {
   pt: {
@@ -535,19 +523,24 @@ export default function Home() {
 
   useEffect(() => {
     let alive = true
-    // País do visitante vem do locale do navegador (a API atrás do Funnel não
-    // recebe geo-IP): pt-BR → BR (vê R$), en-US → US, hi-IN → IN...
-    const country = detectCountry()
-    const qs = country ? `?country=${country}` : ''
-    fetch(`${API_BASE_URL}/api/pricing${qs}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data: { plans?: Array<{ planId: string; unitAmount: number; currency: string }> }) => {
+    void (async () => {
+      // País pela localização real (IP). Passa pro /api/pricing → moeda do país.
+      const country = await detectCountry()
+      if (!alive) return
+      const qs = country ? `?country=${country}` : ''
+      try {
+        const r = await fetch(`${API_BASE_URL}/api/pricing${qs}`)
+        const data = (r.ok ? await r.json() : null) as {
+          plans?: Array<{ planId: string; unitAmount: number; currency: string }>
+        } | null
         if (!alive || !data?.plans) return
         const map: Record<string, { amount: number; currency: string }> = {}
         for (const p of data.plans) map[p.planId] = { amount: p.unitAmount, currency: p.currency }
         setPrices(map)
-      })
-      .catch(() => undefined)
+      } catch {
+        // mantém o preço estático se a API/geo falhar
+      }
+    })()
     return () => {
       alive = false
     }
