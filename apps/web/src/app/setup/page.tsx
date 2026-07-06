@@ -45,6 +45,9 @@ export default function SetupWizard() {
       }
 
       const params = new URLSearchParams(window.location.search)
+      // Plano pré-selecionado pela landing (/setup?plan=solo).
+      const urlPlan = params.get('plan')
+      if (urlPlan && ['free', 'solo', 'pro', 'team'].includes(urlPlan)) setPlan(urlPlan)
       const urlToken = params.get('token')
       if (urlToken) {
         localStorage.setItem('gitorch_token', urlToken)
