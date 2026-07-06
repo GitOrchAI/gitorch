@@ -82,6 +82,9 @@ export const locales = {
       connectTitle: 'Connect to see your agents',
       connectDesc: 'Sign in with GitHub in the setup to see your real missions, live.',
       connectBtn: 'Go to setup',
+      connectCheckError:
+        "We couldn't confirm your session (connection issue). If you're already logged in, try reloading.",
+      checkingSession: 'Checking your session…',
       loadError: 'Could not reach the GitOrch API. Check that your session is valid.',
       title: 'Agents Control Center',
       activeMissions: 'Active Missions',
@@ -176,6 +179,9 @@ export const locales = {
       connectTitle: 'Conecte para ver seus agentes',
       connectDesc: 'Entre com o GitHub no setup para ver suas missões reais, ao vivo.',
       connectBtn: 'Ir para o setup',
+      connectCheckError:
+        'Não deu pra confirmar sua sessão (problema de conexão). Se você já está logado, tente recarregar.',
+      checkingSession: 'Verificando sua sessão…',
       loadError: 'Não foi possível falar com a API do GitOrch. Verifique se sua sessão é válida.',
       title: 'Painel dos Agentes',
       activeMissions: 'Missões Ativas',
@@ -268,6 +274,9 @@ export const locales = {
       connectTitle: 'Conéctate para ver tus agentes',
       connectDesc: 'Inicia sesión con GitHub en el setup para ver tus misiones reales, en vivo.',
       connectBtn: 'Ir al setup',
+      connectCheckError:
+        'No pudimos confirmar tu sesión (problema de conexión). Si ya iniciaste sesión, intenta recargar.',
+      checkingSession: 'Verificando tu sesión…',
       loadError: 'No se pudo contactar la API de GitOrch. Verifica que tu sesión sea válida.',
       title: 'Panel de Agentes',
       activeMissions: 'Misiones Activas',

@@ -39,7 +39,11 @@ export default function Dashboard() {
   const { t } = useLanguage()
   // Sessão via cookie httpOnly (não lido por JS) — o painel checa no
   // servidor se está autenticado, nunca lê um token local (spec §17.4).
+  // `null` = ainda checando (evita piscar a tela de "conectar" pra quem já
+  // está logado); `checkFailed` distingue "não logado" de "não deu pra
+  // checar" (rede/CORS/5xx), que senão viravam a mesma tela sem explicação.
   const [authenticated, setAuthenticated] = useState<boolean | null>(null)
+  const [checkFailed, setCheckFailed] = useState(false)
   const [data, setData] = useState<MissionsResponse | null>(null)
   const [error, setError] = useState(false)
 
@@ -50,7 +54,10 @@ export default function Dashboard() {
         if (!cancelled) setAuthenticated(res.ok)
       })
       .catch(() => {
-        if (!cancelled) setAuthenticated(false)
+        if (!cancelled) {
+          setAuthenticated(false)
+          setCheckFailed(true)
+        }
       })
     return () => {
       cancelled = true
@@ -80,6 +87,19 @@ export default function Dashboard() {
     return () => clearInterval(interval)
   }, [authenticated, load])
 
+  // Ainda checando a sessão: nem afirma nem nega login, só não mostra nada
+  // definitivo ainda — evita o flash de "conecte-se" pra quem já está logado.
+  if (authenticated === null) {
+    return (
+      <main className="min-h-screen flex flex-col bg-[var(--bg-deep)]">
+        <Header />
+        <div className="flex-1 flex items-center justify-center px-8">
+          <p className="text-[var(--text-secondary)]">{t('dashboard.checkingSession')}</p>
+        </div>
+      </main>
+    )
+  }
+
   if (!authenticated) {
     return (
       <main className="min-h-screen flex flex-col bg-[var(--bg-deep)]">
@@ -90,7 +110,9 @@ export default function Dashboard() {
               <LogIn size={28} />
             </div>
             <h2 className="text-2xl font-bold mb-3">{t('dashboard.connectTitle')}</h2>
-            <p className="text-[var(--text-secondary)] mb-8">{t('dashboard.connectDesc')}</p>
+            <p className="text-[var(--text-secondary)] mb-8">
+              {checkFailed ? t('dashboard.connectCheckError') : t('dashboard.connectDesc')}
+            </p>
             <Link
               href="/setup"
               className="inline-block bg-white text-black px-8 py-3 rounded-full font-bold hover:scale-105 transition-transform"
