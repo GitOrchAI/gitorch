@@ -1,7 +1,7 @@
 -- Setup Wizard redesign schema — ADITIVO e não-destrutivo (só cria; não dropa nada).
--- Gerado 2026-07-06 para a conexão real dos 3 motores (Claude/Codex/Antigravity).
+-- Suporta a conexão real dos 3 motores (Claude/Codex/Antigravity).
 --
--- COMO APLICAR (owner, quando aprovar): a partir de apps/control-plane, com o
+-- COMO APLICAR: a partir de apps/control-plane, com o
 -- .env carregado, rode UM dos dois:
 --   npx prisma db push          # caminho normal do projeto (recomendado)
 --   psql "$DATABASE_URL" -f prisma/setup-wizard-migration.sql   # este SQL direto
