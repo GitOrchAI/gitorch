@@ -129,6 +129,25 @@ export class EngineConnectionService {
     return true
   }
 
+  /**
+   * Lê o token do GitHub do usuário em texto puro, para chamadas server-side
+   * à API do GitHub (ex.: listar repos no wizard). Nunca escreve no disco do
+   * host — materializa num HOME temporário 0700, lê, apaga. Retorna null se
+   * não há conexão.
+   */
+  async getRawGithubToken(userId: string): Promise<string | null> {
+    const home = path.join(os.tmpdir(), `gitorch-ghread-${randomUUID()}`)
+    await fs.mkdir(home, { recursive: true, mode: 0o700 })
+    try {
+      const materialized = await this.materializeToHome(userId, 'github', home)
+      if (!materialized) return null
+      const token = await fs.readFile(path.join(home, '.gitorch', 'gh-token'), 'utf8')
+      return token.trim()
+    } finally {
+      await fs.rm(home, { recursive: true, force: true })
+    }
+  }
+
   async list(userId: string): Promise<ConnectionStatus[]> {
     const records = await this.prisma.engineConnection.findMany({ where: { userId } })
     return records.map(toStatus)

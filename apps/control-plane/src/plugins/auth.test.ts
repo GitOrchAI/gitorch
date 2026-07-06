@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest'
-import Fastify from 'fastify'
+import Fastify, { FastifyRequest } from 'fastify'
 import fastifyCookie from '@fastify/cookie'
 import jwt from 'jsonwebtoken'
 import { authPlugin } from './auth.js'
@@ -17,7 +17,10 @@ describe('Auth Plugin', () => {
     await app.register(fastifyCookie)
     await app.register(rateLimit)
     await app.register(authPlugin)
-    app.get('/api/projects', async (request) => ({ projects: [], user: request.user ?? null }))
+    app.get('/api/projects', async (request: FastifyRequest) => ({
+      projects: [],
+      user: request.user ?? null,
+    }))
     app.get('/health', async () => ({ status: 'ok' }))
     app.get('/ready', async () => ({ status: 'ready' }))
     app.get('/metrics', async () => 'metrics')

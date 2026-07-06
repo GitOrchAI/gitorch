@@ -73,10 +73,10 @@ describe('GitHub OAuth callback', () => {
     const tokenMatch = cookieHeader?.match(/gitorch_session=([^;]+)/)
     expect(tokenMatch).not.toBeNull()
     const decoded = jwt.decode(tokenMatch![1]) as Record<string, unknown>
-    expect(decoded.userId).toBe('42')
-    expect(decoded.wingId).toBe('octocat')
+    expect(decoded['userId']).toBe('42')
+    expect(decoded['wingId']).toBe('octocat')
     // O token do GitHub NÃO pode viajar no JWT da sessão (spec §17.4).
-    expect(decoded.githubToken).toBeUndefined()
+    expect(decoded['githubToken']).toBeUndefined()
 
     // O token do GitHub é persistido cifrado por usuário, não no JWT.
     expect(connectGitHubToken).toHaveBeenCalledWith('42', 'gh_raw_token')

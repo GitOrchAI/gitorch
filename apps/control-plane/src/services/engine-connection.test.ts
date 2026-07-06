@@ -138,4 +138,21 @@ describe('EngineConnectionService', () => {
     await expect(svc.connectGitHubToken('u', '')).rejects.toThrow('token')
     await expect(svc.connectGitHubToken('u', 'senha com espaço\n')).rejects.toThrow('token')
   })
+
+  test('getRawGithubToken devolve o token em texto puro (uso server-side, nunca no disco do host)', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+
+    await svc.connectGitHubToken('user_gh2', 'github_pat_ROUNDTRIP_xyz')
+    const token = await svc.getRawGithubToken('user_gh2')
+    expect(token).toBe('github_pat_ROUNDTRIP_xyz')
+  })
+
+  test('getRawGithubToken devolve null quando não há conexão', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+    expect(await svc.getRawGithubToken('user_sem_conexao')).toBeNull()
+  })
 })

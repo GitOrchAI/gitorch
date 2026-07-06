@@ -22,11 +22,15 @@ interface SetupSubmitBody {
 }
 
 export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
-  // GET /api/v1/github/repos - List user repositories using OAuth session token
+  // GET /api/v1/github/repos - List user repositories using the encrypted
+  // per-user GitHub connection (nunca do JWT da sessão — spec §17.4).
   app.get('/api/v1/github/repos', async (request: FastifyRequest, reply: FastifyReply) => {
-    const githubToken = request.user?.githubToken
+    if (!request.user) {
+      return reply.code(401).send({ error: 'UNAUTHORIZED: session required' })
+    }
+    const githubToken = await app.engineConnections.getRawGithubToken(request.user.id)
     if (!githubToken) {
-      return reply.code(401).send({ error: 'UNAUTHORIZED: Missing GitHub Token in session' })
+      return reply.code(401).send({ error: 'UNAUTHORIZED: GitHub not connected' })
     }
 
     const response = await fetch('https://api.github.com/user/repos?per_page=100&sort=updated', {
@@ -122,12 +126,15 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
               name: repoName,
               description: `Project for ${repoFullName}`,
               ...(owner ? { userId: owner.id } : {}),
+              // O token do GitHub NÃO é duplicado aqui em texto puro — já foi
+              // persistido cifrado por usuário no callback OAuth
+              // (EngineConnection, runtime 'github'); a missão o materializa
+              // de lá (spec §17.4).
               runtimeConfig: {
                 engines,
                 telegram: telegram ?? null,
                 plan,
                 envConfig: (envConfig ?? null) as Prisma.JsonObject | null,
-                userGithubToken: user.githubToken ?? null,
               } as Prisma.JsonObject,
             },
           })
