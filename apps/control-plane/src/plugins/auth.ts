@@ -48,6 +48,11 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
     '/api/webhooks/github',
     '/api/v1/auth/github',
     '/api/v1/auth/github/callback',
+    // Billing público: preços pra landing exibir, waitlist e o webhook do Stripe
+    // (que autentica por assinatura, não por Bearer). Checkout fica autenticado.
+    '/api/pricing',
+    '/api/waitlist',
+    '/api/billing/webhook',
   ]
 
   const isPublicPath = (url: string) => publicPaths.some((p) => url.startsWith(p))
