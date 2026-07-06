@@ -57,3 +57,7 @@ ALTER TABLE "engine_connections" ADD COLUMN IF NOT EXISTS "quota_remaining" INTE
 ALTER TABLE "engine_connections" ADD COLUMN IF NOT EXISTS "quota_total" INTEGER;
 ALTER TABLE "engine_connections" ADD COLUMN IF NOT EXISTS "quota_refreshed_at" TIMESTAMP(3);
 ALTER TABLE "missions" ADD COLUMN IF NOT EXISTS "tokens_used" INTEGER;
+
+-- Medição de consumo por diferença de quota (antes/depois) na missão.
+ALTER TABLE "missions" ADD COLUMN IF NOT EXISTS "quota_before" INTEGER;
+ALTER TABLE "missions" ADD COLUMN IF NOT EXISTS "quota_after" INTEGER;
