@@ -50,6 +50,8 @@ export interface SchedulerOptions {
 
 // Guardas operacionais: orçamento diário de missões e proteção de memória do host.
 const MAX_MISSIONS_PER_DAY = Number(process.env['GITORCH_MAX_MISSIONS_PER_DAY'] ?? '4')
+// Teto de missões simultâneas na VM. 1 hoje (12GB); sobe na VM-MT-SaaS (32GB).
+const MAX_CONCURRENT_MISSIONS = Number(process.env['GITORCH_MAX_CONCURRENT'] ?? '1')
 const STALE_RUNNING_MS = Number(
   process.env['GITORCH_STALE_RUNNING_MS'] ?? String(2 * 60 * 60 * 1000)
 )
@@ -287,12 +289,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   const runTrigger = async (role: F6AgentRole, projectId?: string): Promise<TriggerResult> => {
     await failStuckMissions()
 
-    // Concorrência 1: uma missão ativa (pending OU running) por vez.
+    // Concorrência elástica: teto de missões ativas simultâneas na VM. Default 1
+    // (comportamento atual); sobe via env quando a VM-MT-SaaS (32GB) entrar.
     const active = await app.prisma.mission.count({
       where: { status: { in: ['pending', 'running'] } },
     })
-    if (active > 0) {
-      app.log.warn(`[Scheduler] Missão em andamento; pulando janela de ${role}`)
+    if (active >= MAX_CONCURRENT_MISSIONS) {
+      app.log.warn(
+        `[Scheduler] Concorrência cheia (${active}/${MAX_CONCURRENT_MISSIONS}); pulando janela de ${role}`
+      )
       return { triggered: false, reason: 'busy' }
     }
 
@@ -318,6 +323,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         })
       : await app.prisma.project.findFirst({
           where: { isActive: true },
+          // Fila prioritária: projetos de donos em planos mais altos (tierRank
+          // maior) rodam antes. Empate → mais antigo primeiro (fairness).
+          orderBy: [{ user: { plan: { tierRank: 'desc' } } }, { createdAt: 'asc' }],
           include: { user: { include: { plan: true } } },
         })
     if (!project) {

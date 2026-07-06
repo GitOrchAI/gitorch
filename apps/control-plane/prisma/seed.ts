@@ -6,11 +6,74 @@ import { ensureDefaultSchedules } from '../src/lib/project-defaults.js'
 // multi-tenant. Seguro de rodar quantas vezes for preciso.
 const prisma = new PrismaClient()
 
-// Limites dos planos base. maxMissionsPerDay comporta a agenda padrão de um
-// projeto (ra 1x + po 2x + sm 4x = 7 missões/dia) com folga.
+// Planos base. tierRank ordena a fila; maxConcurrentMissions é o teto de
+// missões simultâneas do dono; features governa os direitos (entitlements).
+// persistentMemory é o fosso de retenção (Free não tem, por decisão de produto).
 const DEFAULT_PLANS = [
-  { id: 'free', name: 'Free', maxProjects: 1, maxMissionsPerDay: 10 },
-  { id: 'pro', name: 'Pro', maxProjects: 5, maxMissionsPerDay: 60 },
+  {
+    id: 'free',
+    name: 'Free',
+    maxProjects: 1,
+    maxMissionsPerDay: 10,
+    tierRank: 0,
+    maxConcurrentMissions: 1,
+    seats: 1,
+    features: {
+      autoAutonomy: false,
+      sensors: false,
+      priorityQueue: false,
+      persistentMemory: false,
+      sso: false,
+    },
+  },
+  {
+    id: 'solo',
+    name: 'Solo',
+    maxProjects: 2,
+    maxMissionsPerDay: 30,
+    tierRank: 1,
+    maxConcurrentMissions: 1,
+    seats: 1,
+    features: {
+      autoAutonomy: true,
+      sensors: true,
+      priorityQueue: false,
+      persistentMemory: true,
+      sso: false,
+    },
+  },
+  {
+    id: 'pro',
+    name: 'Pro',
+    maxProjects: 5,
+    maxMissionsPerDay: 90,
+    tierRank: 2,
+    maxConcurrentMissions: 2,
+    seats: 1,
+    features: {
+      autoAutonomy: true,
+      sensors: true,
+      priorityQueue: true,
+      persistentMemory: true,
+      sso: false,
+    },
+  },
+  {
+    id: 'team',
+    name: 'Team',
+    maxProjects: 20,
+    maxMissionsPerDay: 300,
+    tierRank: 3,
+    maxConcurrentMissions: 4,
+    seats: 10,
+    features: {
+      autoAutonomy: true,
+      sensors: true,
+      priorityQueue: true,
+      persistentMemory: true,
+      sso: true,
+    },
+  },
 ]
 
 async function main(): Promise<void> {
@@ -21,6 +84,10 @@ async function main(): Promise<void> {
         name: plan.name,
         maxProjects: plan.maxProjects,
         maxMissionsPerDay: plan.maxMissionsPerDay,
+        tierRank: plan.tierRank,
+        maxConcurrentMissions: plan.maxConcurrentMissions,
+        seats: plan.seats,
+        features: plan.features,
       },
       create: plan,
     })
