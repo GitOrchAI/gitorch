@@ -6,6 +6,7 @@ import type { PrismaClient } from '@prisma/client'
 import { decryptCredential, encryptCredential } from '../lib/credential-crypto.js'
 import { archivePaths, restoreDirectory } from '../lib/credential-archive.js'
 import { MODEL_DISCOVERERS } from './model-catalog.js'
+import { QUOTA_READERS } from './quota-reader.js'
 
 // Runtimes suportados e os CAMINHOS de credencial de cada um, relativos ao HOME.
 // Apenas os arquivos de token/config — NÃO o diretório inteiro (históricos e
@@ -159,9 +160,22 @@ export class EngineConnectionService {
         })
         return []
       }
+      // Junto com os modelos, lê a quota restante do provider (best-effort): o
+      // spend-guard usa isso para não estourar a conta do cliente (BYOK).
+      const readQuota = QUOTA_READERS[runtime]
+      const quota = readQuota
+        ? await readQuota(home).catch(() => ({ remaining: null, total: null }))
+        : { remaining: null, total: null }
       await this.prisma.engineConnection.updateMany({
         where: { userId, runtime },
-        data: { models, modelsRefreshedAt: new Date(), lastError: null },
+        data: {
+          models,
+          modelsRefreshedAt: new Date(),
+          lastError: null,
+          quotaRemaining: quota.remaining,
+          quotaTotal: quota.total,
+          quotaRefreshedAt: new Date(),
+        },
       })
       return models
     } catch {
