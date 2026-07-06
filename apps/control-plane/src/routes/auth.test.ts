@@ -81,6 +81,41 @@ describe('GitHub OAuth callback', () => {
     // O token do GitHub é persistido cifrado por usuário, não no JWT.
     expect(connectGitHubToken).toHaveBeenCalledWith('42', 'gh_raw_token')
   })
+
+  it('falls back to /user/emails when /user returns no public email', async () => {
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = typeof url === 'string' ? url : url.toString()
+      if (href.includes('github.com/login/oauth/access_token')) {
+        return new Response(JSON.stringify({ access_token: 'gh_raw_token' }), { status: 200 })
+      }
+      if (href.includes('api.github.com/user/emails')) {
+        return new Response(
+          JSON.stringify([
+            { email: 'secondary@example.test', primary: false, verified: true },
+            { email: 'primary@example.test', primary: true, verified: true },
+          ]),
+          { status: 200 }
+        )
+      }
+      if (href.includes('api.github.com/user')) {
+        // Conta com e-mail privado: /user não devolve o campo.
+        return new Response(JSON.stringify({ id: 7, login: 'privateuser' }), { status: 200 })
+      }
+      throw new Error(`unexpected fetch ${href}`)
+    }) as unknown as typeof fetch
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/auth/github/callback?code=abc123',
+    })
+
+    expect(res.statusCode).toBe(302)
+    const setCookie = res.headers['set-cookie']
+    const cookieHeader = Array.isArray(setCookie) ? setCookie[0] : setCookie
+    const tokenMatch = cookieHeader?.match(/gitorch_session=([^;]+)/)
+    const decoded = jwt.decode(tokenMatch![1]) as Record<string, unknown>
+    expect(decoded['email']).toBe('primary@example.test')
+  })
 })
 
 describe('GET /api/v1/auth/me', () => {

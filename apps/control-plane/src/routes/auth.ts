@@ -93,6 +93,27 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
 
       const userId = String(userData.id)
 
+      // Contas com e-mail privado não devolvem `email` em /user (mesmo com o
+      // escopo user:email concedido) — sem esse fallback, resolveUserId()
+      // (que exige e-mail) derrubaria as rotas de motor com 401 logo após um
+      // login bem-sucedido.
+      let email = userData.email
+      if (!email) {
+        const emailsResponse = await fetch('https://api.github.com/user/emails', {
+          headers: {
+            Authorization: `Bearer ${githubToken}`,
+            Accept: 'application/json',
+            'User-Agent': 'gitorch-control-plane',
+          },
+        })
+        const emails = (await emailsResponse.json()) as Array<{
+          email: string
+          primary: boolean
+          verified: boolean
+        }>
+        email = emails.find((e) => e.primary && e.verified)?.email ?? emails[0]?.email
+      }
+
       // Sign JWT session token. O token do GitHub NUNCA viaja aqui — o JWT é
       // devolvido dentro de um cookie httpOnly (JS não lê), mas mesmo assim
       // não guardamos o segredo repo-scoped num claim; ele vai cifrado no
@@ -101,7 +122,7 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
         {
           userId,
           wingId: userData.login, // Default wingId is their username
-          email: userData.email,
+          email,
         },
         env.JWT_SECRET,
         { expiresIn: '7d' }
