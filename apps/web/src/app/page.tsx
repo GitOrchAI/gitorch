@@ -8,7 +8,10 @@ import { API_BASE_URL } from '../lib/api'
 /* Landing copy lives here (not in locales.ts) because it carries structured
    content — arrays of console events and statement words — that the string-only
    t() helper can't return. pt + en are authored; es falls back to en. */
-type Lang = 'pt' | 'en'
+type Lang = 'pt' | 'en' | 'es'
+// Idiomas com tradução completa na landing (aparecem no seletor). O sistema
+// (LanguageContext) detecta o navegador; faltando tradução, cai no inglês.
+const LANDING_LANGS: Lang[] = ['en', 'pt', 'es']
 
 // Repo real vem de config (produto dinâmico, nunca hardcoded), igual ao Header.
 const GITHUB_REPO = process.env.NEXT_PUBLIC_GITHUB_REPO ?? 'loureng/gitorch'
@@ -332,6 +335,157 @@ const COPY = {
       l3: ['About', 'Contact'],
     },
   },
+  es: {
+    nav: {
+      entende: 'Entiende',
+      organiza: 'Organiza',
+      vigia: 'Vigila',
+      planos: 'Planes',
+      aberto: 'Código abierto',
+      cta: 'Empezar gratis',
+    },
+    planos: {
+      kicker: 'Planes',
+      title: 'Empieza gratis. Crece cuando quieras.',
+      note: 'Precio en la moneda de tu país. Cancela cuando quieras.',
+      tiers: [
+        {
+          name: 'Gratis',
+          price: '$0',
+          unit: 'para siempre',
+          note: '1 proyecto',
+          desc: 'Apruebas cada misión. Self-hosted open-core ilimitado.',
+          cta: 'Empezar',
+          href: '/setup',
+        },
+        {
+          name: 'Solo',
+          price: '$10',
+          unit: '/mes',
+          note: '2 proyectos · sensores',
+          desc: 'El bucle que mantiene tu repositorio sano, solo.',
+          cta: 'Suscribirse',
+          href: '/setup',
+        },
+        {
+          name: 'Pro',
+          price: '$29',
+          unit: '/mes',
+          note: 'Más misiones · cola prioritaria',
+          desc: 'Para quien depende de GitOrch todos los días.',
+          cta: 'Suscribirse',
+          href: '/setup',
+          featured: true,
+        },
+        {
+          name: 'Team',
+          price: '$79',
+          unit: '/mes',
+          note: 'Multiusuario · SSO',
+          desc: 'Todo tu equipo en piloto automático.',
+          cta: 'Suscribirse',
+          href: '/setup',
+        },
+      ],
+    },
+    hero: {
+      eyebrow: 'Orquestación autónoma de repositorios',
+      t1: 'Tu repositorio desordenado,',
+      t2: 'ordenado solo.',
+      lead: 'Agentes de IA que entienden tu código, planifican el trabajo en Scrum de verdad y entregan Pull Requests — mientras tú diriges el negocio.',
+      ctaPrimary: 'Conectar mi GitHub',
+      ctaGhost: 'Ver cómo funciona',
+      micro: 'Sin tarjeta. Empieza en el plan gratis y corre hoy.',
+    },
+    console: { live: 'EN VIVO', foot: 'entregado solo', mission: 'misión #4021' },
+    events: [
+      { role: 'RA', txt: 'Leí 34 módulos con <b>CGC</b>', sub: '6 rutas · 2 riesgos mapeados' },
+      {
+        role: 'sys',
+        txt: '<b>Cortex</b> · memoria del proyecto creada',
+        sub: 'la “tienda” se volvió marketplace',
+        sys: true,
+      },
+      { role: 'PO', txt: 'Prioricé el checkout lento', sub: '#3461 · P1 · liberado p/ sprint' },
+      { role: 'SM', txt: 'Delegué al agente de dev', sub: 'branch fix/checkout-timeout' },
+      { role: 'QA', txt: 'Validé en el navegador', sub: 'PR #257 · verde ✓' },
+    ],
+    statement:
+      'GitOrch es tu equipo de ingeniería autónomo. |Entiende el código, |decide lo que importa y |entrega — solo, en tu repositorio.',
+    entende: {
+      kicker: 'Entiende',
+      tag: 'CGC + Cortex',
+      title: 'Conoce tu código mejor que el último dev que se fue.',
+      body: 'Antes de tocar nada, lee el repositorio entero con <b>CGC</b>, nuestro grafo de código, y guarda todo en <b>Cortex</b>, la memoria del proyecto. Contexto real — no adivinanzas.',
+      learn: 'El equipo que ejecuta',
+      file: 'CGC · indexando tienda-antigua',
+    },
+    organiza: {
+      kicker: 'Organiza',
+      tag: 'Cadence',
+      title: 'Un equipo entero, corriendo Scrum solo.',
+      body: 'El <b>Cadence</b> es nuestro Scrum autónomo: el Analista descubre, el PO prioriza por valor, el Scrum Master delega y el QA valida en el navegador. Cada tarea entra al sprint solo cuando tiene sentido.',
+      learn: 'Cómo vigila',
+      file: 'Cadence · sprint 4',
+      cols: ['Descubrimiento', 'Priorizado', 'En dev', 'Validado'],
+      titles: ['Envío lento', 'P1 · caja', '#3461', 'PR #261'],
+      subs: ['descubierto', 'PO liberó', 'en dev…', 'verde ✓'],
+      seed: [
+        { b: 'Envío lento', s: 'checkout > 3s' },
+        { b: 'Faltan tests', s: 'módulo caja' },
+        { b: '#3461', s: 'entregando…' },
+        { b: 'PR #257', s: 'verde ✓' },
+      ],
+    },
+    vigia: {
+      kicker: 'Vigila',
+      tag: 'Sensores',
+      title: 'Ve el incidente antes que tú.',
+      body: 'Los sensores siguen las fallas de producción y el CI todo el tiempo. Cuando algo se rompe, se vuelve un incidente: el PO clasifica la gravedad y, si es grave, salta la cola en el próximo sprint. Cero humanos en el camino.',
+      learn: 'Empezar gratis',
+      file: 'Sensores · producción',
+      ping1: 'build de main · verde',
+      ping2: 'deploy · verde',
+      ping3a: 'workflow dependabot → jules · ',
+      ping3b: 'falló',
+      incTitle: 'Build de main roto',
+      incMeta: 'fingerprint ci:dependabot-jules',
+      flow: ['detectado', 'trió P0', 'delegó'],
+    },
+    trust: {
+      kicker: 'Código abierto',
+      title: 'El motor es tuyo. Las llaves también.',
+      items: [
+        {
+          h: 'Tus credenciales, aisladas',
+          p: 'Conectas tu propia cuenta. Cada proyecto corre con tu llave, cifrada y nunca compartida.',
+        },
+        {
+          h: 'Corre donde quieras',
+          p: 'En la nube de GitOrch o en tu propia máquina. Mismo producto, sin ataduras de proveedor.',
+        },
+        {
+          h: 'Fallas honestas',
+          p: 'Si algo no pasó, lo dice. Nada de “debería estar funcionando”: solo entra como listo lo que se vio funcionando.',
+        },
+      ],
+    },
+    close: {
+      title: 'Empieza gratis. Deja que el equipo trabaje.',
+      body: 'Conecta un repositorio y mira la primera misión correr hoy. Sin tarjeta, sin compromiso.',
+      ctaPrimary: 'Empezar con GitHub',
+      ctaGhost: 'Ver los planes',
+    },
+    foot: {
+      tagline: 'Agentes que organizan repositorios solos.',
+      bottom: '© 2026 GitOrch. Código abierto.',
+      made: 'hecho por humanos, ejecutado por agentes',
+      c1: 'Producto',
+      c2: 'Abierto',
+      c3: 'Empresa',
+      l3: ['Acerca de', 'Contacto'],
+    },
+  },
 } as const
 
 const GH = (
@@ -369,8 +523,8 @@ const Mark = () => (
 
 export default function Home() {
   const { language, setLanguage } = useLanguage()
-  const lang: Lang = language === 'en' ? 'en' : 'pt'
-  const c = COPY[lang]
+  const lang: Lang = (LANDING_LANGS as string[]).includes(language) ? (language as Lang) : 'en'
+  const c = COPY[lang] ?? COPY.en
   const rootRef = useRef<HTMLDivElement>(null)
   const [theme, setTheme] = useState<'dark' | 'light' | null>(null)
   // Preços por FAIXA do país do visitante (backend detecta pelo IP). null = ainda
@@ -731,10 +885,13 @@ export default function Home() {
           <div className="gl-nav-right">
             <button
               className="gl-lang"
-              onClick={() => setLanguage(lang === 'pt' ? 'en' : 'pt')}
-              aria-label="Language"
+              onClick={() => {
+                const i = LANDING_LANGS.indexOf(lang)
+                setLanguage(LANDING_LANGS[(i + 1) % LANDING_LANGS.length])
+              }}
+              aria-label="Idioma"
             >
-              {lang === 'pt' ? 'PT' : 'EN'}
+              {lang.toUpperCase()}
             </button>
             <button
               className="gl-toggle"
