@@ -14,6 +14,21 @@ type Lang = 'pt' | 'en'
 const GITHUB_REPO = process.env.NEXT_PUBLIC_GITHUB_REPO ?? 'loureng/gitorch'
 const GITHUB_URL = `https://github.com/${GITHUB_REPO}`
 
+// País do visitante a partir do locale do navegador. Região explícita vence
+// (pt-BR → BR); senão mapeia o idioma pro país representativo do mercado.
+function detectCountry(): string | undefined {
+  if (typeof navigator === 'undefined') return undefined
+  const langs = navigator.languages?.length ? navigator.languages : [navigator.language]
+  for (const l of langs) {
+    const m = /-([A-Za-z]{2})$/.exec(l || '')
+    if (m) return m[1].toUpperCase()
+  }
+  const base = (navigator.language || '').slice(0, 2).toLowerCase()
+  return ({ pt: 'BR', es: 'MX', hi: 'IN', id: 'ID', vi: 'VN', en: 'US' } as Record<string, string>)[
+    base
+  ]
+}
+
 const COPY = {
   pt: {
     nav: {
@@ -27,7 +42,7 @@ const COPY = {
     planos: {
       kicker: 'Planos',
       title: 'Comece grátis. Cresça quando quiser.',
-      note: 'Preços em dólar. Preço por país em breve. Lançamento por lista de espera.',
+      note: 'Preço na moeda do seu país. Cancele quando quiser.',
       tiers: [
         {
           name: 'Grátis',
@@ -44,7 +59,7 @@ const COPY = {
           unit: '/mês',
           note: '2 projetos · sensores',
           desc: 'O loop que mantém seu repositório saudável, sozinho.',
-          cta: 'Entrar na lista',
+          cta: 'Assinar',
           href: '/setup',
         },
         {
@@ -53,7 +68,7 @@ const COPY = {
           unit: '/mês',
           note: 'Mais missões · fila prioritária',
           desc: 'Para quem depende do GitOrch todo dia.',
-          cta: 'Entrar na lista',
+          cta: 'Assinar',
           href: '/setup',
           featured: true,
         },
@@ -63,7 +78,7 @@ const COPY = {
           unit: '/mês',
           note: 'Multiusuário · SSO',
           desc: 'Seu time inteiro no piloto automático.',
-          cta: 'Falar com a gente',
+          cta: 'Assinar',
           href: '/setup',
         },
       ],
@@ -178,7 +193,7 @@ const COPY = {
     planos: {
       kicker: 'Plans',
       title: 'Start free. Grow when you want.',
-      note: 'Prices in USD. Local pricing per country coming soon. Launching by waitlist.',
+      note: 'Prices in your local currency. Cancel anytime.',
       tiers: [
         {
           name: 'Free',
@@ -195,7 +210,7 @@ const COPY = {
           unit: '/mo',
           note: '2 projects · sensors',
           desc: 'The loop that keeps your repository healthy, on its own.',
-          cta: 'Join the list',
+          cta: 'Subscribe',
           href: '/setup',
         },
         {
@@ -204,7 +219,7 @@ const COPY = {
           unit: '/mo',
           note: 'More missions · priority queue',
           desc: 'For those who rely on GitOrch every day.',
-          cta: 'Join the list',
+          cta: 'Subscribe',
           href: '/setup',
           featured: true,
         },
@@ -214,7 +229,7 @@ const COPY = {
           unit: '/mo',
           note: 'Multi-user · SSO',
           desc: 'Your whole team on autopilot.',
-          cta: 'Talk to us',
+          cta: 'Subscribe',
           href: '/setup',
         },
       ],
@@ -363,13 +378,14 @@ export default function Home() {
   const [prices, setPrices] = useState<Record<string, { amount: number; currency: string }> | null>(
     null
   )
-  const [waitPlan, setWaitPlan] = useState<string | null>(null)
-  const [waitEmail, setWaitEmail] = useState('')
-  const [waitStatus, setWaitStatus] = useState<'idle' | 'sending' | 'done' | 'error'>('idle')
 
   useEffect(() => {
     let alive = true
-    fetch(`${API_BASE_URL}/api/pricing`)
+    // País do visitante vem do locale do navegador (a API atrás do Funnel não
+    // recebe geo-IP): pt-BR → BR (vê R$), en-US → US, hi-IN → IN...
+    const country = detectCountry()
+    const qs = country ? `?country=${country}` : ''
+    fetch(`${API_BASE_URL}/api/pricing${qs}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((data: { plans?: Array<{ planId: string; unitAmount: number; currency: string }> }) => {
         if (!alive || !data?.plans) return
@@ -382,21 +398,6 @@ export default function Home() {
       alive = false
     }
   }, [])
-
-  const submitWaitlist = async () => {
-    if (!waitEmail.includes('@')) return
-    setWaitStatus('sending')
-    try {
-      const r = await fetch(`${API_BASE_URL}/api/waitlist`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email: waitEmail, planId: waitPlan }),
-      })
-      setWaitStatus(r.ok ? 'done' : 'error')
-    } catch {
-      setWaitStatus('error')
-    }
-  }
 
   const toggleTheme = () => {
     const prefersDark =
@@ -961,8 +962,9 @@ export default function Home() {
                 let priceLabel = tier.price
                 if (geo) {
                   const v = geo.amount / 100
-                  const sym = geo.currency === 'brl' ? 'R$' : '$'
-                  priceLabel = sym + (Number.isInteger(v) ? String(v) : v.toFixed(2))
+                  const isBrl = geo.currency === 'brl'
+                  const num = Number.isInteger(v) ? String(v) : v.toFixed(2)
+                  priceLabel = (isBrl ? 'R$' : '$') + (isBrl ? num.replace('.', ',') : num)
                 }
                 const isFree = planId === 'free'
                 return (
@@ -980,21 +982,12 @@ export default function Home() {
                     </div>
                     <div className="gl-plan-note">{tier.note}</div>
                     <p className="gl-plan-desc">{tier.desc}</p>
-                    {isFree ? (
-                      <Link className="gl-pill ghost" href="/setup">
-                        {tier.cta}
-                      </Link>
-                    ) : (
-                      <button
-                        className={'gl-pill' + ('featured' in tier ? '' : ' ghost')}
-                        onClick={() => {
-                          setWaitPlan(planId)
-                          setWaitStatus('idle')
-                        }}
-                      >
-                        {tier.cta}
-                      </button>
-                    )}
+                    <Link
+                      className={'gl-pill' + ('featured' in tier ? '' : ' ghost')}
+                      href={isFree ? '/setup' : `/setup?plan=${planId}`}
+                    >
+                      {tier.cta}
+                    </Link>
                   </div>
                 )
               })}
@@ -1057,79 +1050,6 @@ export default function Home() {
           </div>
         </div>
       </footer>
-
-      {waitPlan && (
-        <div
-          className="gl-wait-overlay"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setWaitPlan(null)
-          }}
-        >
-          <div className="gl-wait" role="dialog" aria-modal="true">
-            {waitStatus === 'done' ? (
-              <>
-                <div className="gl-wait-title">
-                  {lang === 'pt' ? 'Você está na lista ✓' : "You're on the list ✓"}
-                </div>
-                <p className="gl-wait-desc">
-                  {lang === 'pt'
-                    ? 'Avisamos assim que abrir uma vaga. Obrigado!'
-                    : "We'll ping you the moment a spot opens. Thanks!"}
-                </p>
-                <button className="gl-pill" onClick={() => setWaitPlan(null)}>
-                  {lang === 'pt' ? 'Fechar' : 'Close'}
-                </button>
-              </>
-            ) : (
-              <>
-                <div className="gl-wait-title">
-                  {lang === 'pt' ? 'Entrar na lista de espera' : 'Join the waitlist'}
-                </div>
-                <p className="gl-wait-desc">
-                  {lang === 'pt'
-                    ? `Plano ${waitPlan}. Estamos abrindo por convite — deixe seu email e chamamos você.`
-                    : `${waitPlan} plan. We're opening by invite — leave your email and we'll reach out.`}
-                </p>
-                <input
-                  className="gl-wait-input"
-                  type="email"
-                  placeholder={lang === 'pt' ? 'seu@email.com' : 'you@email.com'}
-                  value={waitEmail}
-                  onChange={(e) => setWaitEmail(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') void submitWaitlist()
-                  }}
-                />
-                {waitStatus === 'error' && (
-                  <p className="gl-wait-err">
-                    {lang === 'pt'
-                      ? 'Deu erro. Tenta de novo?'
-                      : 'Something went wrong. Try again?'}
-                  </p>
-                )}
-                <div className="gl-wait-actions">
-                  <button className="gl-pill ghost" onClick={() => setWaitPlan(null)}>
-                    {lang === 'pt' ? 'Cancelar' : 'Cancel'}
-                  </button>
-                  <button
-                    className="gl-pill"
-                    disabled={waitStatus === 'sending' || !waitEmail.includes('@')}
-                    onClick={() => void submitWaitlist()}
-                  >
-                    {waitStatus === 'sending'
-                      ? lang === 'pt'
-                        ? 'Enviando…'
-                        : 'Sending…'
-                      : lang === 'pt'
-                        ? 'Entrar'
-                        : 'Join'}
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   )
 }
