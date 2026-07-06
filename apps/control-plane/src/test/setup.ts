@@ -40,7 +40,13 @@ class MockPrismaClient {
   $use = vi.fn()
   $queryRaw = vi.fn().mockResolvedValue([1])
   webhookDelivery = { create: vi.fn() }
-  mission = { create: vi.fn(), count: vi.fn(), updateMany: vi.fn() }
+  mission = {
+    create: vi.fn(),
+    count: vi.fn(),
+    updateMany: vi.fn(),
+    findMany: vi.fn().mockResolvedValue([]),
+    update: vi.fn(),
+  }
   apiKey = {
     findUnique: vi.fn(),
     findMany: vi.fn(),

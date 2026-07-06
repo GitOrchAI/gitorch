@@ -340,6 +340,46 @@ export function selectRuntimeStack(
   return local
 }
 
+export interface SetupMissionRecord {
+  id: string
+  project: {
+    id: string
+    wingId: string
+    userId: string | null
+  }
+}
+
+export interface SetupMissionOutcome {
+  status: 'completed' | 'failed'
+  output?: string
+  error?: string
+}
+
+/**
+ * Executa de verdade a missão `clone_and_start_engines` do wizard: aloca (e
+ * clona) o workspace do projeto no stack ATIVO (local ou remoto, já
+ * selecionado por selectRuntimeStack antes de chamar isto). Sem isto a
+ * missão criada por setup/submit ficava órfã — nenhum código a consumia — e
+ * envelhecia até `failStuckMissions` marcá-la failed, uma falsa falha para
+ * algo que nunca rodou (spec setup-wizard-redesign §17.3).
+ */
+export async function provisionSetupMission(
+  mission: SetupMissionRecord,
+  activeStack: RuntimeStack,
+  githubToken?: string
+): Promise<SetupMissionOutcome> {
+  try {
+    await activeStack.workspaceProvider.allocateWorkspace(
+      mission.project.userId ?? 'scheduler-user',
+      mission.project.id,
+      { repository: mission.project.wingId, ...(githubToken ? { token: githubToken } : {}) }
+    )
+    return { status: 'completed', output: `Ambiente provisionado para ${mission.project.wingId}` }
+  } catch (err) {
+    return { status: 'failed', error: (err as Error).message }
+  }
+}
+
 const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   const localStack = buildRuntimeStack(app, buildMissionRunner(app), buildWorkspaceProvider(app))
   const remoteStack = buildRemoteRuntimeStackIfConfigured(app)
@@ -870,6 +910,57 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     'init',
   ])
 
+  // Processa as missões `clone_and_start_engines` que o wizard cria ao
+  // finalizar o cadastro — sem isto elas ficavam órfãs (spec §17.3). Roda a
+  // cada tick (mesma cadência do resto do dispatch); claim condicional evita
+  // dois ticks pegarem a mesma missão.
+  const processSetupMissions = async (): Promise<void> => {
+    let pending
+    try {
+      pending = await app.prisma.mission.findMany({
+        where: { type: 'clone_and_start_engines', status: 'pending' },
+        include: { project: { include: { user: { include: { plan: true } } } } },
+      })
+    } catch (err) {
+      app.log.error(err, '[Scheduler] falha ao ler missões de setup pendentes')
+      return
+    }
+
+    for (const mission of pending) {
+      const claimed = await app.prisma.mission.updateMany({
+        where: { id: mission.id, status: 'pending' },
+        data: { status: 'running', startedAt: new Date() },
+      })
+      if (claimed.count === 0) continue // outro tick já reivindicou esta missão
+
+      const activeStack = selectRuntimeStack(
+        mission.project.user?.plan?.id,
+        localStack,
+        remoteStack
+      )
+      // Repositório privado clona com o token do PRÓPRIO dono do projeto
+      // (cofre cifrado) — nunca uma credencial do host.
+      const githubToken = mission.project.userId
+        ? await app.engineConnections.getRawGithubToken(mission.project.userId)
+        : null
+      const outcome = await provisionSetupMission(mission, activeStack, githubToken ?? undefined)
+      await app.prisma.mission.update({
+        where: { id: mission.id },
+        data: {
+          status: outcome.status,
+          completedAt: new Date(),
+          ...(outcome.output ? { result: { output: outcome.output } } : {}),
+          ...(outcome.error ? { error: outcome.error } : {}),
+        },
+      })
+      if (outcome.status === 'failed') {
+        app.log.error(
+          `[Scheduler] provisionamento do projeto ${mission.project.wingId} falhou: ${outcome.error}`
+        )
+      }
+    }
+  }
+
   // Agenda dirigida a dados: cada projeto define seu cron por agente em
   // project_schedules. A cada minuto, dispara o que venceu desde o último
   // disparo registrado. O claim condicional do lastTriggeredAt impede dois
@@ -877,6 +968,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // motivo temporário (missão em andamento, orçamento), o claim é revertido
   // para a janela não se perder.
   const tick = async () => {
+    await processSetupMissions()
     const now = new Date()
     let schedules
     try {

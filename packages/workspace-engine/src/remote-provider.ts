@@ -62,10 +62,19 @@ export class RemoteWorkspaceProvider {
     return `${this.baseDir}/${userId}/${projectId}`
   }
 
+  /**
+   * Quota um valor para o shell POSIX remoto usando aspas simples; a própria
+   * aspa simples vira a sequência `'\''` (fecha, aspa escapada, reabre) — o
+   * token nunca escapa do literal mesmo se contiver metacaracteres de shell.
+   */
+  private shellQuote(value: string): string {
+    return `'${value.replace(/'/g, `'\\''`)}'`
+  }
+
   async allocateWorkspace(
     userId: string,
     projectId: string,
-    options?: { repository?: string }
+    options?: { repository?: string; token?: string }
   ): Promise<RemoteWorkspaceInfo> {
     this.validateInput(userId)
     this.validateInput(projectId)
@@ -76,12 +85,18 @@ export class RemoteWorkspaceProvider {
     if (options?.repository) {
       this.validateRepository(options.repository)
       const url = `https://github.com/${options.repository}.git`
+      // Token autentica via header POR-INVOCAÇÃO (-c http.extraHeader) — nunca
+      // embutido na URL remota, onde vazaria por `git remote -v`/logs no nó
+      // compartilhado. Repositório privado usa o token do PRÓPRIO cliente.
+      const auth = options.token
+        ? `-c ${this.shellQuote(`http.extraHeader=Authorization: Bearer ${options.token}`)} `
+        : ''
       // Clone raso se ausente; se já existe, pull best-effort (clone é descartável
       // de LEITURA). `--` encerra as opções do git contra injeção de segunda ordem.
       script +=
         ` && if [ -d ${workspacePath}/.git ]; then` +
-        ` git -C ${workspacePath} pull --ff-only || true;` +
-        ` else git clone --depth 1 -- ${url} ${workspacePath}; fi`
+        ` git ${auth}-C ${workspacePath} pull --ff-only || true;` +
+        ` else git ${auth}clone --depth 1 -- ${url} ${workspacePath}; fi`
     }
 
     const result = await this.runner({

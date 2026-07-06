@@ -1,6 +1,7 @@
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { vi } from 'vitest'
 import { LocalWorkspaceProvider } from './local-provider'
 
 test('allocates a plain directory workspace and hibernates as a no-op', async () => {
@@ -45,5 +46,42 @@ test('rejects repositories that are not a safe owner/repo slug', async () => {
       provider.allocateWorkspace('scheduler-user', 'project-1', { repository: bad })
     ).rejects.toThrow('Repositório inválido')
   }
+  await fs.rm(base, { recursive: true, force: true })
+})
+
+test('clona repo privado autenticando via header HTTP (nunca grava o token em disco)', async () => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-local-ws-'))
+  const gitRunner = vi.fn().mockResolvedValue({ stdout: '', stderr: '' })
+  const provider = new LocalWorkspaceProvider(base, gitRunner)
+
+  await provider.allocateWorkspace('scheduler-user', 'project-1', {
+    repository: 'octocat/private-repo',
+    token: 'gh_secret_token',
+  })
+
+  const [args] = gitRunner.mock.calls[0] as [string[]]
+  expect(args).toContain('clone')
+  // O token viaja num header por-invocação (-c http.extraHeader), nunca
+  // embutido na URL (que iria pro .git/config em texto puro).
+  const headerIdx = args.indexOf('-c')
+  expect(headerIdx).toBeGreaterThanOrEqual(0)
+  expect(args[headerIdx + 1]).toBe('http.extraHeader=Authorization: Bearer gh_secret_token')
+  expect(args.join(' ')).not.toContain('gh_secret_token@')
+
+  await fs.rm(base, { recursive: true, force: true })
+})
+
+test('clona repo público sem header quando nenhum token é passado', async () => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-local-ws-'))
+  const gitRunner = vi.fn().mockResolvedValue({ stdout: '', stderr: '' })
+  const provider = new LocalWorkspaceProvider(base, gitRunner)
+
+  await provider.allocateWorkspace('scheduler-user', 'project-1', {
+    repository: 'octocat/public-repo',
+  })
+
+  const [args] = gitRunner.mock.calls[0] as [string[]]
+  expect(args).not.toContain('-c')
+
   await fs.rm(base, { recursive: true, force: true })
 })

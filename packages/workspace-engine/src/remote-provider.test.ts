@@ -24,6 +24,38 @@ describe('RemoteWorkspaceProvider', () => {
     expect(script).toContain('git clone --depth 1 -- https://github.com/octocat/Hello-World.git')
   })
 
+  test('com token, autentica via header HTTP por-invocação (nunca embutido na URL)', async () => {
+    const runner = vi.fn().mockResolvedValue(ok())
+    const provider = new RemoteWorkspaceProvider(runner, '/home/gitorch/missions')
+
+    await provider.allocateWorkspace('user1', 'proj1', {
+      repository: 'octocat/private-repo',
+      token: 'gh_secret_token',
+    })
+
+    const script: string = runner.mock.calls[0][0].args[1]
+    expect(script).toContain(
+      "git -c 'http.extraHeader=Authorization: Bearer gh_secret_token' clone"
+    )
+    // Token nunca embutido na URL do remoto (vazaria por `git remote -v`/logs).
+    expect(script).not.toContain('gh_secret_token@')
+  })
+
+  test('token com aspa simples é shell-quotado sem escapar do literal (defesa contra injeção)', async () => {
+    const runner = vi.fn().mockResolvedValue(ok())
+    const provider = new RemoteWorkspaceProvider(runner, '/base')
+
+    await provider.allocateWorkspace('u', 'p', {
+      repository: 'octocat/repo',
+      token: "x'; rm -rf /; echo '",
+    })
+
+    const script: string = runner.mock.calls[0][0].args[1]
+    // A aspa simples do token vira a sequência de escape POSIX '\'' — o
+    // comando shell nunca vê `rm -rf /` como um comando separado.
+    expect(script).toContain("x'\\''; rm -rf /; echo '\\''")
+  })
+
   test('sem repositório, só cria o diretório (não clona)', async () => {
     const runner = vi.fn().mockResolvedValue(ok())
     const provider = new RemoteWorkspaceProvider(runner, '/base')
