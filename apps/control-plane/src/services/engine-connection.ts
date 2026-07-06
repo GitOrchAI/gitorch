@@ -74,6 +74,29 @@ export class EngineConnectionService {
   constructor(private readonly prisma: PrismaLike) {}
 
   /**
+   * Cria um HOME temporário 0700 (com `subdir` já criado dentro dele),
+   * executa `fn` ali, e garante a limpeza mesmo se `fn` lançar — inclusive se
+   * a própria limpeza falhar (senão um erro no `rm` mascararia o erro
+   * original de `fn`, que é o que o `finally` bruto de antes fazia). Um único
+   * caminho para as 4 cópias quase idênticas de "temp dir -> trabalho ->
+   * limpeza" que existiam antes (connectGitHubToken, connectRawToken,
+   * connectFileCredential, refreshModels).
+   */
+  private async withTempHome<T>(
+    prefix: string,
+    subdir: string,
+    fn: (home: string) => Promise<T>
+  ): Promise<T> {
+    const home = path.join(os.tmpdir(), `gitorch-${prefix}-${randomUUID()}`)
+    await fs.mkdir(path.join(home, subdir), { recursive: true, mode: 0o700 })
+    try {
+      return await fn(home)
+    } finally {
+      await fs.rm(home, { recursive: true, force: true }).catch(() => undefined)
+    }
+  }
+
+  /**
    * Captura a credencial atual de um motor a partir de um HOME (onde o login do
    * CLI foi concluído), cifra e guarda para o usuário. É o passo que transforma
    * um login em uma conexão persistente e portável do cliente.
@@ -135,14 +158,10 @@ export class EngineConnectionService {
     if (!trimmed || /\s/.test(trimmed)) {
       throw new Error('token do GitHub inválido: vazio ou com espaços')
     }
-    const home = path.join(os.tmpdir(), `gitorch-gh-${randomUUID()}`)
-    await fs.mkdir(path.join(home, '.gitorch'), { recursive: true, mode: 0o700 })
-    try {
+    return this.withTempHome('gh', '.gitorch', async (home) => {
       await fs.writeFile(path.join(home, '.gitorch', 'gh-token'), trimmed, { mode: 0o600 })
       return await this.captureFromHome(userId, 'github', home)
-    } finally {
-      await fs.rm(home, { recursive: true, force: true })
-    }
+    })
   }
 
   /**
@@ -169,9 +188,7 @@ export class EngineConnectionService {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(options.envVarName)) {
       throw new Error(`envVarName inválido: ${options.envVarName}`)
     }
-    const home = path.join(os.tmpdir(), `gitorch-envtoken-${randomUUID()}`)
-    await fs.mkdir(path.join(home, '.gitorch', 'env'), { recursive: true, mode: 0o700 })
-    try {
+    return this.withTempHome('envtoken', path.join('.gitorch', 'env'), async (home) => {
       await fs.writeFile(path.join(home, '.gitorch', 'env', options.envVarName), trimmed, {
         mode: 0o600,
       })
@@ -180,9 +197,7 @@ export class EngineConnectionService {
         envVarName: options.envVarName,
         ...(options.expiresAt ? { expiresAt: options.expiresAt } : {}),
       })
-    } finally {
-      await fs.rm(home, { recursive: true, force: true })
-    }
+    })
   }
 
   /**
@@ -216,14 +231,10 @@ export class EngineConnectionService {
         throw new Error(`credencial de ${runtime} inválida: esperado JSON em ${primaryPath}`)
       }
     }
-    const home = path.join(os.tmpdir(), `gitorch-filecred-${randomUUID()}`)
-    await fs.mkdir(path.join(home, path.dirname(primaryPath)), { recursive: true, mode: 0o700 })
-    try {
+    return this.withTempHome('filecred', path.dirname(primaryPath), async (home) => {
       await fs.writeFile(path.join(home, primaryPath), content, { mode: 0o600 })
       return await this.captureFromHome(userId, runtime, home)
-    } finally {
-      await fs.rm(home, { recursive: true, force: true })
-    }
+    })
   }
 
   /**
@@ -277,48 +288,44 @@ export class EngineConnectionService {
     const discover = MODEL_DISCOVERERS[runtime]
     if (!discover) return []
 
-    const home = path.join(os.tmpdir(), `gitorch-models-${randomUUID()}`, randomUUID())
-    // 0700: o HOME temporário guarda a credencial descriptografada; ninguém mais
-    // no host pode entrar nele.
-    await fs.mkdir(home, { recursive: true, mode: 0o700 })
-    try {
-      const materialized = await this.materializeToHome(userId, runtime, home)
-      if (!materialized) return []
-      const models = await discover(home)
-      // Descoberta vazia NÃO sobrescreve um catálogo bom anterior nem finge que
-      // "atualizou": registra o sinal e preserva o catálogo existente.
-      if (models.length === 0) {
+    return this.withTempHome('models', '.', async (home) => {
+      try {
+        const materialized = await this.materializeToHome(userId, runtime, home)
+        if (!materialized) return []
+        const models = await discover(home)
+        // Descoberta vazia NÃO sobrescreve um catálogo bom anterior nem finge que
+        // "atualizou": registra o sinal e preserva o catálogo existente.
+        if (models.length === 0) {
+          await this.prisma.engineConnection.updateMany({
+            where: { userId, runtime },
+            data: { lastError: 'catálogo de modelos veio vazio na última tentativa' },
+          })
+          return []
+        }
+        // Junto com os modelos, lê a quota restante do provider (best-effort): o
+        // spend-guard usa isso para não estourar a conta do cliente (BYOK).
+        const readQuota = QUOTA_READERS[runtime]
+        const quota = readQuota
+          ? await readQuota(home).catch(() => ({ remaining: null, total: null }))
+          : { remaining: null, total: null }
         await this.prisma.engineConnection.updateMany({
           where: { userId, runtime },
-          data: { lastError: 'catálogo de modelos veio vazio na última tentativa' },
+          data: {
+            models,
+            modelsRefreshedAt: new Date(),
+            lastError: null,
+            quotaRemaining: quota.remaining,
+            quotaTotal: quota.total,
+            quotaRefreshedAt: new Date(),
+          },
         })
+        return models
+      } catch {
+        // Descoberta é best-effort: falha num provider não afeta os demais nem a
+        // conexão. O catálogo anterior (se houver) permanece.
         return []
       }
-      // Junto com os modelos, lê a quota restante do provider (best-effort): o
-      // spend-guard usa isso para não estourar a conta do cliente (BYOK).
-      const readQuota = QUOTA_READERS[runtime]
-      const quota = readQuota
-        ? await readQuota(home).catch(() => ({ remaining: null, total: null }))
-        : { remaining: null, total: null }
-      await this.prisma.engineConnection.updateMany({
-        where: { userId, runtime },
-        data: {
-          models,
-          modelsRefreshedAt: new Date(),
-          lastError: null,
-          quotaRemaining: quota.remaining,
-          quotaTotal: quota.total,
-          quotaRefreshedAt: new Date(),
-        },
-      })
-      return models
-    } catch {
-      // Descoberta é best-effort: falha num provider não afeta os demais nem a
-      // conexão. O catálogo anterior (se houver) permanece.
-      return []
-    } finally {
-      await fs.rm(home, { recursive: true, force: true }).catch(() => undefined)
-    }
+    })
   }
 
   async revoke(userId: string, runtime: string): Promise<void> {
