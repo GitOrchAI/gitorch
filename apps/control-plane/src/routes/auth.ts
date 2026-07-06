@@ -104,12 +104,25 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
             'User-Agent': 'gitorch-control-plane',
           },
         })
-        const emails = (await emailsResponse.json()) as Array<{
-          email: string
-          primary: boolean
-          verified: boolean
-        }>
+        const emailsData: unknown = await emailsResponse.json()
+        // GitHub devolve um objeto de erro (rate limit, etc.), não um array,
+        // quando a chamada falha — sem esta checagem, `.find()` estourava e
+        // virava um 500 não tratado no meio do callback OAuth.
+        const emails = Array.isArray(emailsData)
+          ? (emailsData as Array<{ email: string; primary: boolean; verified: boolean }>)
+          : []
         email = emails.find((e) => e.primary && e.verified)?.email ?? emails[0]?.email
+      }
+
+      // O resto do sistema usa e-mail como chave de junção (User, plano,
+      // EngineConnection) — sem ele o login "sucedia" silenciosamente (cookie
+      // setado, redirect 302) mas sem User/credencial persistidos, e o
+      // cliente caía num 401 sem explicação no primeiro /github/repos.
+      if (!email) {
+        return reply.code(400).send({
+          error:
+            'Não foi possível obter um e-mail verificado da sua conta GitHub. Verifique um e-mail em github.com/settings/emails e tente novamente.',
+        })
       }
 
       // O User é criado/atualizado AQUI — nenhum outro lugar do código faz
@@ -120,15 +133,12 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
       // e-mail → Prisma User.id (cuid) — nunca o id numérico do GitHub. O id
       // da sessão precisa ser o MESMO id, senão a credencial cifrada e o
       // dono do projeto nunca se encontram.
-      let userId = String(userData.id)
-      if (email) {
-        const dbUser = await app.prisma.user.upsert({
-          where: { email },
-          update: { githubLogin: userData.login },
-          create: { email, githubLogin: userData.login },
-        })
-        userId = dbUser.id
-      }
+      const dbUser = await app.prisma.user.upsert({
+        where: { email },
+        update: { githubLogin: userData.login },
+        create: { email, githubLogin: userData.login },
+      })
+      const userId = dbUser.id
 
       // Sign JWT session token. O token do GitHub NUNCA viaja aqui — o JWT é
       // devolvido dentro de um cookie httpOnly (JS não lê), mas mesmo assim
@@ -145,9 +155,8 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
       )
 
       // Persiste o token do GitHub cifrado por usuário (se o serviço estiver
-      // disponível — ausente apenas em testes de rota isolados; e só quando
-      // temos um id de usuário real, senão a credencial fica órfã).
-      if (app.engineConnections && email) {
+      // disponível — ausente apenas em testes de rota isolados).
+      if (app.engineConnections) {
         await app.engineConnections.connectGitHubToken(userId, githubToken)
       }
 

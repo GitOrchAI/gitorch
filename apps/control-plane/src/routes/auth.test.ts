@@ -195,6 +195,63 @@ describe('GitHub OAuth callback', () => {
     const decoded = jwt.decode(tokenMatch![1]) as Record<string, unknown>
     expect(decoded['email']).toBe('primary@example.test')
   })
+
+  it('returns a clean error instead of crashing when /user/emails responds with a non-array body (e.g. rate limit)', async () => {
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = typeof url === 'string' ? url : url.toString()
+      if (href.includes('github.com/login/oauth/access_token')) {
+        return new Response(JSON.stringify({ access_token: 'gh_raw_token' }), { status: 200 })
+      }
+      if (href.includes('api.github.com/user/emails')) {
+        return new Response(JSON.stringify({ message: 'API rate limit exceeded' }), {
+          status: 403,
+        })
+      }
+      if (href.includes('api.github.com/user')) {
+        return new Response(JSON.stringify({ id: 7, login: 'privateuser' }), { status: 200 })
+      }
+      throw new Error(`unexpected fetch ${href}`)
+    }) as unknown as typeof fetch
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/auth/github/callback?code=abc123',
+    })
+
+    expect(res.statusCode).toBe(400)
+    expect(res.json()).toMatchObject({ error: expect.stringContaining('e-mail') })
+    expect(userUpsert).not.toHaveBeenCalled()
+  })
+
+  it('rejects the login with a clean error when no email can be resolved at all (no public email, empty/unverified emails list)', async () => {
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = typeof url === 'string' ? url : url.toString()
+      if (href.includes('github.com/login/oauth/access_token')) {
+        return new Response(JSON.stringify({ access_token: 'gh_raw_token' }), { status: 200 })
+      }
+      if (href.includes('api.github.com/user/emails')) {
+        return new Response(JSON.stringify([]), { status: 200 })
+      }
+      if (href.includes('api.github.com/user')) {
+        return new Response(JSON.stringify({ id: 7, login: 'privateuser' }), { status: 200 })
+      }
+      throw new Error(`unexpected fetch ${href}`)
+    }) as unknown as typeof fetch
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/auth/github/callback?code=abc123',
+    })
+
+    // Sem essa checagem, o login "sucedia" (cookie setado, redirect 302) mas
+    // sem User/EngineConnection persistidos — o cliente cai direto num 401
+    // silencioso no primeiro /api/v1/github/repos, sem explicação nenhuma.
+    expect(res.statusCode).toBe(400)
+    expect(res.json()).toMatchObject({ error: expect.stringContaining('e-mail') })
+    expect(userUpsert).not.toHaveBeenCalled()
+    expect(connectGitHubToken).not.toHaveBeenCalled()
+    expect(res.headers['set-cookie']).toBeUndefined()
+  })
 })
 
 describe('GET /api/v1/auth/me', () => {
