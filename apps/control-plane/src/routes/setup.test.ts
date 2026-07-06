@@ -61,3 +61,93 @@ describe('GET /api/v1/github/repos', () => {
     expect(res.statusCode).toBe(401)
   })
 })
+
+describe('POST /api/v1/setup/submit — runtime wiring', () => {
+  let app: ReturnType<typeof Fastify>
+  let projectCreate: ReturnType<typeof vi.fn>
+  let engineConnectionFindMany: ReturnType<typeof vi.fn> &
+    ((userId: string) => Promise<Array<{ runtime: string; status: string }>>)
+
+  beforeEach(async () => {
+    projectCreate = vi.fn().mockImplementation(async ({ data }) => ({
+      id: 'proj_1',
+      wingId: data.wingId,
+      name: data.name,
+      isActive: true,
+      runtimeConfig: data.runtimeConfig,
+    }))
+    engineConnectionFindMany = vi.fn().mockResolvedValue([
+      { runtime: 'claude', status: 'connected' },
+      { runtime: 'codex', status: 'error' },
+    ]) as typeof engineConnectionFindMany
+
+    app = Fastify()
+    app.decorate('engineConnections', {
+      list: async (userId: string) => {
+        const rows = (await engineConnectionFindMany(userId)) as Array<{
+          runtime: string
+          status: string
+        }>
+        return rows.map((r) => ({
+          ...r,
+          modelsRefreshedAt: null,
+          lastValidatedAt: null,
+          lastError: null,
+        }))
+      },
+    } as unknown as EngineConnectionService)
+    app.decorate('prisma', {
+      user: {
+        findUnique: vi
+          .fn()
+          .mockResolvedValue({ id: 'owner_1', email: 'octocat@example.test', plan: null }),
+      },
+      project: {
+        count: vi.fn().mockResolvedValue(0),
+        findFirst: vi.fn().mockResolvedValue(null),
+        create: projectCreate,
+      },
+      apiKey: { create: vi.fn().mockResolvedValue({}) },
+      mission: { create: vi.fn().mockResolvedValue({}) },
+      projectSchedule: {
+        findMany: vi.fn().mockResolvedValue([]),
+        count: vi.fn().mockResolvedValue(0),
+        create: vi.fn().mockResolvedValue({}),
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+    app.addHook('preHandler', async (request: FastifyRequest) => {
+      request.user = { id: 'owner_1', wingId: 'octocat', email: 'octocat@example.test' }
+    })
+    await setupRoutes(app)
+    await app.ready()
+  })
+
+  it('maps claude-code to claude and writes runtimeConfig.agents for every role', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/setup/submit',
+      payload: { repos: ['octocat/repo'], engines: ['claude-code'], plan: 'pro' },
+    })
+
+    expect(res.statusCode).toBe(200)
+    const createCall = projectCreate.mock.calls[0]![0] as {
+      data: { runtimeConfig: { agents: Record<string, { runtime: string }> } }
+    }
+    const agents = createCall.data.runtimeConfig.agents
+    for (const role of ['po', 'ra', 'sm', 'qa']) {
+      expect(agents[role]?.runtime).toBe('claude')
+    }
+  })
+
+  it('rejects submit when none of the selected engines is actually connected', async () => {
+    engineConnectionFindMany.mockResolvedValue([{ runtime: 'codex', status: 'error' }])
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/setup/submit',
+      payload: { repos: ['octocat/repo'], engines: ['claude-code'], plan: 'pro' },
+    })
+    expect(res.statusCode).toBe(400)
+    expect(projectCreate).not.toHaveBeenCalled()
+  })
+})
