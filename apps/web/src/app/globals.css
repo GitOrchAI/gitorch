@@ -256,6 +256,7 @@ body {
 .gl-links a {
   color: var(--gl-muted);
   font-size: 0.95rem;
+  font-weight: 600;
   transition: color 0.2s;
 }
 .gl-links a:hover {
@@ -911,6 +912,21 @@ body {
   font-size: 0.96rem;
   margin: 0;
   max-width: 34ch;
+}
+.gl-security {
+  border-top: 1px solid color-mix(in srgb, var(--gl-ink) 8%, transparent);
+}
+.gl-sec-tag {
+  display: inline-block;
+  margin-top: 12px;
+  padding: 3px 9px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  font-family: var(--gl-mono, ui-monospace), SFMono-Regular, Menlo, monospace;
+  color: var(--gl-accent-ink);
+  border: 1px solid color-mix(in srgb, var(--gl-accent-ink) 28%, transparent);
+  border-radius: 999px;
 }
 @media (max-width: 800px) {
   .gl-trust-grid {

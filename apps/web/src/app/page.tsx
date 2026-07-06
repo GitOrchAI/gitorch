@@ -26,6 +26,7 @@ const COPY = {
       entende: 'Entende',
       organiza: 'Organiza',
       vigia: 'Vigia',
+      seg: 'Segurança',
       planos: 'Planos',
       aberto: 'Código aberto',
       cta: 'Começar grátis',
@@ -138,6 +139,43 @@ const COPY = {
       incMeta: 'fingerprint ci:dependabot-jules',
       flow: ['detectado', 'triou P0', 'delegou'],
     },
+    security: {
+      kicker: 'Segurança',
+      title: 'Conecte seu repositório sem medo.',
+      sub: 'Padrão de segurança de nível empresarial — do primeiro clique à última missão.',
+      items: [
+        {
+          h: 'Chaves cifradas em repouso',
+          p: 'As chaves dos seus motores de IA são guardadas com criptografia autenticada. Nunca em texto puro, nunca compartilhadas.',
+          tag: 'AES-256-GCM',
+        },
+        {
+          h: 'Cada missão isolada',
+          p: 'Todo trabalho roda num contêiner descartável, criado e destruído a cada missão. O agente enxerga só o necessário.',
+          tag: 'Contêiner por missão',
+        },
+        {
+          h: 'Agente em modo seguro',
+          p: 'Por padrão o agente opera restrito e em somente-leitura — nada roda às cegas no seu código.',
+          tag: 'Sandbox read-only',
+        },
+        {
+          h: 'Um cliente nunca vê o outro',
+          p: 'Isolamento total entre contas no banco: toda consulta é amarrada ao seu espaço.',
+          tag: 'Multi-tenant',
+        },
+        {
+          h: 'Nada entra sem assinatura',
+          p: 'Cada evento do GitHub e de pagamento é verificado por assinatura criptográfica antes de ser aceito.',
+          tag: 'HMAC-SHA256',
+        },
+        {
+          h: 'Acesso blindado',
+          p: 'Credenciais com hash forte, autenticação obrigatória e limite anti-força-bruta no login.',
+          tag: 'bcrypt · rate-limit',
+        },
+      ],
+    },
     trust: {
       kicker: 'Código aberto',
       title: 'O motor é seu. As chaves também.',
@@ -177,6 +215,7 @@ const COPY = {
       entende: 'Understands',
       organiza: 'Organizes',
       vigia: 'Watches',
+      seg: 'Security',
       planos: 'Plans',
       aberto: 'Open source',
       cta: 'Start free',
@@ -289,6 +328,43 @@ const COPY = {
       incMeta: 'fingerprint ci:dependabot-jules',
       flow: ['detected', 'PO triaged P0', 'SM delegated'],
     },
+    security: {
+      kicker: 'Security',
+      title: 'Connect your repository with confidence.',
+      sub: 'Enterprise-grade security — from the first click to the last mission.',
+      items: [
+        {
+          h: 'Keys encrypted at rest',
+          p: 'Your AI engine keys are stored with authenticated encryption. Never in plaintext, never shared.',
+          tag: 'AES-256-GCM',
+        },
+        {
+          h: 'Every mission isolated',
+          p: 'All work runs in a disposable container, created and destroyed per mission. The agent sees only what it needs.',
+          tag: 'Per-mission container',
+        },
+        {
+          h: 'Agents run in safe mode',
+          p: 'By default the agent runs restricted and read-only — nothing executes blindly on your code.',
+          tag: 'Read-only sandbox',
+        },
+        {
+          h: 'One customer never sees another',
+          p: 'Full isolation between accounts at the database: every query is bound to your space.',
+          tag: 'Multi-tenant',
+        },
+        {
+          h: 'Nothing gets in unsigned',
+          p: 'Every GitHub and payment event is verified by cryptographic signature before it is accepted.',
+          tag: 'HMAC-SHA256',
+        },
+        {
+          h: 'Hardened access',
+          p: 'Credentials with strong hashing, mandatory authentication and anti-brute-force limits on login.',
+          tag: 'bcrypt · rate-limit',
+        },
+      ],
+    },
     trust: {
       kicker: 'Open source',
       title: 'The engine is yours. So are the keys.',
@@ -328,6 +404,7 @@ const COPY = {
       entende: 'Entiende',
       organiza: 'Organiza',
       vigia: 'Vigila',
+      seg: 'Seguridad',
       planos: 'Planes',
       aberto: 'Código abierto',
       cta: 'Empezar gratis',
@@ -439,6 +516,43 @@ const COPY = {
       incTitle: 'Build de main roto',
       incMeta: 'fingerprint ci:dependabot-jules',
       flow: ['detectado', 'trió P0', 'delegó'],
+    },
+    security: {
+      kicker: 'Seguridad',
+      title: 'Conecta tu repositorio sin miedo.',
+      sub: 'Seguridad de nivel empresarial — del primer clic a la última misión.',
+      items: [
+        {
+          h: 'Claves cifradas en reposo',
+          p: 'Las claves de tus motores de IA se guardan con cifrado autenticado. Nunca en texto plano, nunca compartidas.',
+          tag: 'AES-256-GCM',
+        },
+        {
+          h: 'Cada misión aislada',
+          p: 'Todo el trabajo corre en un contenedor descartable, creado y destruido en cada misión. El agente ve solo lo necesario.',
+          tag: 'Contenedor por misión',
+        },
+        {
+          h: 'Agente en modo seguro',
+          p: 'Por defecto el agente opera restringido y en solo lectura — nada se ejecuta a ciegas en tu código.',
+          tag: 'Sandbox de solo lectura',
+        },
+        {
+          h: 'Un cliente nunca ve a otro',
+          p: 'Aislamiento total entre cuentas en la base de datos: cada consulta queda ligada a tu espacio.',
+          tag: 'Multi-tenant',
+        },
+        {
+          h: 'Nada entra sin firma',
+          p: 'Cada evento de GitHub y de pago se verifica por firma criptográfica antes de aceptarse.',
+          tag: 'HMAC-SHA256',
+        },
+        {
+          h: 'Acceso blindado',
+          p: 'Credenciales con hash fuerte, autenticación obligatoria y límite anti-fuerza-bruta en el login.',
+          tag: 'bcrypt · rate-limit',
+        },
+      ],
     },
     trust: {
       kicker: 'Código abierto',
@@ -872,6 +986,7 @@ export default function Home() {
             <a href="#entende">{c.nav.entende}</a>
             <a href="#organiza">{c.nav.organiza}</a>
             <a href="#vigia">{c.nav.vigia}</a>
+            <a href="#seguranca">{c.nav.seg}</a>
             <a href="#planos">{c.nav.planos}</a>
             <a href="#aberto">{c.nav.aberto}</a>
           </nav>
@@ -1065,6 +1180,37 @@ export default function Home() {
           }
         />
 
+        <section className="gl-security" id="seguranca">
+          <div className="gl-container" style={{ paddingBlock: 'clamp(72px,13vh,130px)' }}>
+            <div className="gl-reveal" style={{ marginBottom: 'clamp(36px,6vh,56px)' }}>
+              <span className="gl-kicker">{c.security.kicker}</span>
+              <h2 className="gl-trust-title">{c.security.title}</h2>
+              <p
+                style={{
+                  color: 'var(--gl-muted)',
+                  fontSize: '1rem',
+                  margin: '12px 0 0',
+                  maxWidth: '46ch',
+                }}
+              >
+                {c.security.sub}
+              </p>
+            </div>
+            <div className="gl-trust-grid">
+              {c.security.items.map((it, i) => (
+                <div className={'gl-trust-item gl-reveal d' + ((i % 3) + 1)} key={i}>
+                  <h3>
+                    <TrustIcon i={i % 3} />
+                    {it.h}
+                  </h3>
+                  <p>{it.p}</p>
+                  <span className="gl-sec-tag">{it.tag}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
         <section className="gl-trust" id="aberto">
           <div className="gl-container" style={{ paddingBlock: 'clamp(72px,13vh,130px)' }}>
             <div className="gl-reveal" style={{ marginBottom: 'clamp(36px,6vh,56px)' }}>
@@ -1190,6 +1336,7 @@ export default function Home() {
                 <a href="#entende">{c.nav.entende}</a>
                 <a href="#organiza">{c.nav.organiza}</a>
                 <a href="#vigia">{c.nav.vigia}</a>
+                <a href="#seguranca">{c.nav.seg}</a>
                 <a href="#planos">{c.nav.planos}</a>
               </div>
               <div className="gl-foot-col">
