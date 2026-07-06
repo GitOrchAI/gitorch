@@ -2,6 +2,12 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { getEnv } from '../config/env.js'
 import jwt from 'jsonwebtoken'
 
+// Fonte única do tempo de vida da sessão: o cookie e o JWT que ele carrega
+// precisam expirar juntos, senão um sobrevive ao outro (cookie morto sendo
+// reenviado, ou JWT válido descartado cedo demais).
+const SESSION_LIFETIME_SECONDS = 7 * 24 * 60 * 60
+const SESSION_LIFETIME_JWT = '7d'
+
 export const authRoutes = async (app: FastifyInstance): Promise<void> => {
   const env = getEnv()
 
@@ -151,7 +157,7 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
           email,
         },
         env.JWT_SECRET,
-        { expiresIn: '7d' }
+        { expiresIn: SESSION_LIFETIME_JWT }
       )
 
       // Persiste o token do GitHub cifrado por usuário (se o serviço estiver
@@ -173,7 +179,7 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
         secure: !isDev,
         sameSite: isDev ? 'lax' : 'none',
         path: '/',
-        maxAge: 7 * 24 * 60 * 60,
+        maxAge: SESSION_LIFETIME_SECONDS,
       })
 
       // Redireciona para o wizard sem token na URL (histórico/referrer/logs

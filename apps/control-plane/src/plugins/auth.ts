@@ -16,7 +16,6 @@ interface ApiKeyPayload {
 interface UserPayload {
   id: string
   wingId: string
-  githubToken?: string
   email?: string
 }
 
@@ -86,14 +85,12 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
           const decoded = jwt.verify(cookieToken, env.JWT_SECRET) as {
             userId: string
             wingId: string
-            githubToken?: string
             email?: string
           }
 
           request.user = {
             id: decoded.userId,
             wingId: decoded.wingId,
-            githubToken: decoded.githubToken || undefined,
             email: decoded.email || undefined,
           } as UserPayload
           request.wingId = decoded.wingId
@@ -117,14 +114,12 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
         const decoded = jwt.verify(key, env.JWT_SECRET) as {
           userId: string
           wingId: string
-          githubToken?: string
           email?: string
         }
 
         request.user = {
           id: decoded.userId,
           wingId: decoded.wingId,
-          githubToken: decoded.githubToken || undefined,
           email: decoded.email || undefined,
         } as UserPayload
         request.wingId = decoded.wingId
