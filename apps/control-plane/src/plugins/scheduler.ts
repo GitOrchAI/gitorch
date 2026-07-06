@@ -23,7 +23,12 @@ import {
   type RuntimeCommandRunner,
   type WorkspaceProvider,
 } from '@gitorch/agents'
-import { LocalWorkspaceProvider, WorkspaceManager } from '@gitorch/workspace-engine'
+import {
+  LocalWorkspaceProvider,
+  WorkspaceManager,
+  RemoteWorkspaceProvider,
+} from '@gitorch/workspace-engine'
+import { createSshCommandRunner } from '@gitorch/agents'
 import { buildMissionEnricher, persistMissionMemory } from '../services/mission-context.js'
 import { runPoMissionViaRails } from '../services/po-rails-mission.js'
 import { runRaMissionViaRails } from '../services/ra-rails-mission.js'
@@ -200,9 +205,26 @@ function buildMissionRunner(app: FastifyInstance): RuntimeCommandRunner | undefi
   })
 }
 
-const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
+export interface RuntimeStack {
+  registry: RuntimeRegistry
+  orchestrator: AgentOrchestrator
+  workspaceProvider: WorkspaceProvider
+}
+
+/**
+ * Registra os adaptadores de motor (Antigravity + Codex) num registry NOVO e
+ * monta o orchestrator em cima do workspace dado. Parametrizado por
+ * missionRunner/workspaceProvider para poder existir em duas instâncias
+ * independentes — uma local (produção paga, comportamento de sempre) e uma
+ * remota (tier grátis, isolada na MT-SaaS) — sem duplicar a lógica de registro
+ * dos motores.
+ */
+function buildRuntimeStack(
+  app: FastifyInstance,
+  missionRunner: RuntimeCommandRunner | undefined,
+  workspaceProvider: WorkspaceProvider
+): RuntimeStack {
   const registry = new RuntimeRegistry()
-  const missionRunner = buildMissionRunner(app)
   const containerized = missionRunner !== undefined
 
   // Motor principal: Antigravity CLI. Política do projeto: runtimes de agente
@@ -253,13 +275,74 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     })
   )
 
-  const workspaceProvider = buildWorkspaceProvider(app)
   const orchestrator = new AgentOrchestrator({
     registry,
     workspace: workspaceProvider,
     // Injeta conhecimento do projeto (codegraph + memórias do Cortex) no contexto.
     enrichContext: buildMissionEnricher({ cortex: app.cortex }),
   })
+
+  return { registry, orchestrator, workspaceProvider }
+}
+
+/**
+ * Stack REMOTO para missões de tier grátis: roda na MT-SaaS (VM de terceiro,
+ * isolada) via SSH, nunca na nossa VM. Só existe se as variáveis do free-tier
+ * estiverem configuradas — ausência delas é o caso comum hoje (a MT-SaaS não
+ * está com o wiring de produção ligado) e `null` faz o dispatch cair no
+ * stack local de sempre (ver selectRuntimeStack). Sem env → produção intacta.
+ */
+export function buildRemoteRuntimeStackIfConfigured(app: FastifyInstance): RuntimeStack | null {
+  const host = process.env['GITORCH_FREE_TIER_SSH_HOST']
+  const identityFile = process.env['GITORCH_FREE_TIER_SSH_KEY']
+  if (!host || !identityFile) return null
+
+  app.log.info(`[Scheduler] Stack remoto do tier grátis configurado: ${host}`)
+
+  // Um único runner SSH serve tanto o clone do workspace (sh -c direto no nó
+  // remoto) quanto o `podman run` da missão (composto como hostRunner) — o
+  // mesmo destino, a mesma chave, sem duplicar a lógica de conexão.
+  const sshRunner = createSshCommandRunner({ host, identityFile })
+
+  const image = process.env['GITORCH_FREE_TIER_AGENT_IMAGE'] ?? process.env['GITORCH_AGENT_IMAGE']
+  const engine = process.env['GITORCH_FREE_TIER_CONTAINER_ENGINE'] ?? 'podman'
+  const remoteMissionRunner = createPodmanCommandRunner({
+    image: image ?? 'localhost/gitorch-agent:latest',
+    podmanBinary: engine,
+    userNamespace: 'keep-id',
+    memoryLimit: process.env['GITORCH_MISSION_MEMORY'] ?? '2g',
+    hostRunner: sshRunner,
+  })
+
+  // RemoteWorkspaceProvider exige um runner sempre-Promise; RuntimeCommandRunner
+  // permite retorno síncrono (raro, mas o tipo permite) — normaliza com Promise.resolve.
+  const remoteWorkspaceProvider = new RemoteWorkspaceProvider(
+    async (cmd) => sshRunner(cmd),
+    process.env['GITORCH_FREE_TIER_REMOTE_BASE_DIR']
+  )
+
+  return buildRuntimeStack(app, remoteMissionRunner, remoteWorkspaceProvider)
+}
+
+/**
+ * Decide qual stack usa uma missão: grátis com stack remoto disponível → nó
+ * isolado da MT-SaaS; qualquer outro caso (pago, sem plano resolvido, ou
+ * grátis sem o stack remoto configurado) → local, o comportamento de sempre.
+ * Pura e testável — a decisão de roteamento por tier vive aqui, isolada do
+ * resto do dispatch.
+ */
+export function selectRuntimeStack(
+  planId: string | undefined,
+  local: RuntimeStack,
+  remote: RuntimeStack | null
+): RuntimeStack {
+  if (planId === 'free' && remote) return remote
+  return local
+}
+
+const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
+  const localStack = buildRuntimeStack(app, buildMissionRunner(app), buildWorkspaceProvider(app))
+  const remoteStack = buildRemoteRuntimeStackIfConfigured(app)
 
   // Missão presa vira failed: cobre 'running' passado de STALE_RUNNING_MS e
   // 'pending' que nunca chegou a rodar (processo morto entre criar e iniciar).
@@ -431,7 +514,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     )
 
     // Executa em background com failover; o disparo retorna assim que registrada.
-    void executeMissionWithFailover(mission.id, project, role, chain)
+    void executeMissionWithFailover(mission.id, project, role, chain, plan?.id)
 
     return { triggered: true, missionId: mission.id }
   }
@@ -451,8 +534,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     missionId: string,
     project: ChainProject,
     role: F6AgentRole,
-    chain: Array<{ runtime: string; model?: string }>
+    chain: Array<{ runtime: string; model?: string }>,
+    planId?: string
   ): Promise<void> => {
+    // Isolamento por tier: grátis roda no stack remoto (MT-SaaS) quando
+    // configurado; qualquer outro caso usa o stack local de sempre — nunca
+    // corre o risco de rotear uma missão paga para fora da nossa VM.
+    const activeStack = selectRuntimeStack(planId, localStack, remoteStack)
     let lastError = 'nenhum motor executou'
     for (let i = 0; i < chain.length; i++) {
       const sel = chain[i] as { runtime: string; model?: string }
@@ -538,7 +626,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           // Executor de passo: uma execução curta do motor por formulário.
           const execute = async (prompt: string): Promise<string> => {
             stepN += 1
-            const adapter = registry.resolve(sel.runtime as F6AgentRuntime)
+            const adapter = activeStack.registry.resolve(sel.runtime as F6AgentRuntime)
             const step = await adapter.run({
               missionId: `${missionId}-step-${stepN}`,
               prompt,
@@ -561,7 +649,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             // com memória.
             let workspacePath: string | undefined
             try {
-              const ws = (await workspaceProvider.allocateWorkspace(
+              const ws = (await activeStack.workspaceProvider.allocateWorkspace(
                 project.userId ?? 'scheduler-user',
                 project.id,
                 { repository: project.wingId }
@@ -619,7 +707,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           if (role === 'po' || role === 'qa') {
             app.log.info(`[Scheduler] ${role} sem GITHUB_TOKEN/board: usando caminho clássico`)
           }
-          result = await orchestrator.runMission({
+          result = await activeStack.orchestrator.runMission({
             id: missionId,
             projectId: project.id,
             repository: project.wingId,
