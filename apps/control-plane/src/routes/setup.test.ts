@@ -169,6 +169,25 @@ describe('POST /api/v1/setup/submit — runtime wiring', () => {
     expect(res.statusCode).toBe(400)
     expect(projectCreate).not.toHaveBeenCalled()
   })
+
+  it('checks connected engines under the resolved owner.id, not the raw session claim, when they differ', async () => {
+    // Sessão com um userId diferente do id real do dono (ex.: cookie emitido
+    // antes de uma correção de id) — EngineConnection sempre foi gravado sob
+    // o id resolvido por e-mail (owner.id), então é esse que tem que ser usado
+    // pra achar o motor conectado, senão o gate bloqueia um dono já conectado.
+    app.prisma.user.findUnique = vi
+      .fn()
+      .mockResolvedValue({ id: 'owner_real_cuid', email: 'octocat@example.test', plan: null })
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/setup/submit',
+      payload: { repos: ['octocat/repo'], engines: ['claude-code'], plan: 'pro' },
+    })
+
+    expect(engineConnectionFindMany).toHaveBeenCalledWith('owner_real_cuid')
+    expect(res.statusCode).toBe(200)
+  })
 })
 
 describe('POST /api/v1/setup/submit — plano autoritativo (paid-intent, ainda não pago)', () => {

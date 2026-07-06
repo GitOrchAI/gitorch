@@ -142,7 +142,14 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
       if (requestedRuntimes.length === 0) {
         return reply.code(400).send({ error: 'Nenhum motor de IA reconhecido foi selecionado' })
       }
-      const connections = await app.engineConnections.list(user.id)
+      // Usa o id do DONO resolvido por e-mail (owner.id), não o claim bruto do
+      // JWT: EngineConnection.userId é sempre gravado nesse mesmo id (ver
+      // plugins/engines.ts resolveUserId), e uma sessão cujo JWT carregue um
+      // id diferente (ex.: cookie emitido antes de uma correção de id) não
+      // pode ficar bloqueada permanentemente achando que nenhum motor está
+      // conectado. Sem e-mail (legado single-tenant), não há id melhor —
+      // segue com user.id como já fazia.
+      const connections = await app.engineConnections.list(owner?.id ?? user.id)
       const connectedRuntimes = requestedRuntimes.filter((r) =>
         connections.some((c) => c.runtime === r && c.status === 'connected')
       )
