@@ -51,3 +51,9 @@ CREATE TABLE IF NOT EXISTS "waitlist" (
   "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "updated_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Controle de gasto (spend-guard): quota dos motores + tokens por missão.
+ALTER TABLE "engine_connections" ADD COLUMN IF NOT EXISTS "quota_remaining" INTEGER;
+ALTER TABLE "engine_connections" ADD COLUMN IF NOT EXISTS "quota_total" INTEGER;
+ALTER TABLE "engine_connections" ADD COLUMN IF NOT EXISTS "quota_refreshed_at" TIMESTAMP(3);
+ALTER TABLE "missions" ADD COLUMN IF NOT EXISTS "tokens_used" INTEGER;

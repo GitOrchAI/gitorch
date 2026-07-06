@@ -38,6 +38,7 @@ import {
 } from '../services/board-status.js'
 import { RailsStepError } from '../services/rails-runner.js'
 import { GithubExecutionError } from '../services/github-backlog.js'
+import { canRunMission, shouldAlertForQuota } from '../lib/spend-guard.js'
 import * as os from 'node:os'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -356,6 +357,50 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // failover (tenta o próximo motor do cliente se o primeiro esgotar cota/errar).
     const chain = resolveRuntimeChain(role, project.runtimeConfig, RESOLVER_DEFAULTS)
     const primary = chain[0] as { runtime: string; model?: string }
+
+    // Controle de gasto (BYOK): a missão roda no LLM do cliente. Antes de
+    // disparar, checa a quota do motor primário e o orçamento de tokens do
+    // plano. Quota crítica bloqueia (protege a conta do cliente de estourar);
+    // quota baixa só alerta. Ver spend-guard.ts.
+    if (project.userId && plan) {
+      const conn = await app.prisma.engineConnection.findFirst({
+        where: { userId: project.userId, runtime: primary.runtime, status: 'connected' },
+        select: { quotaRemaining: true, quotaTotal: true },
+      })
+      const features = (plan.features ?? {}) as Record<string, unknown>
+      const tokenBudget =
+        typeof features['maxTokensPerMonth'] === 'number'
+          ? (features['maxTokensPerMonth'] as number)
+          : null
+      let tokensSpent = 0
+      if (tokenBudget) {
+        const startOfMonth = new Date()
+        startOfMonth.setDate(1)
+        startOfMonth.setHours(0, 0, 0, 0)
+        const agg = await app.prisma.mission.aggregate({
+          where: { createdAt: { gte: startOfMonth }, project: { userId: project.userId } },
+          _sum: { tokensUsed: true },
+        })
+        tokensSpent = agg._sum.tokensUsed ?? 0
+      }
+      const decision = canRunMission({
+        quotaRemaining: conn?.quotaRemaining ?? null,
+        quotaTotal: conn?.quotaTotal ?? null,
+        tokensSpent,
+        tokenBudget,
+      })
+      if (shouldAlertForQuota(decision.health)) {
+        app.log.warn(
+          `[Scheduler] Quota ${decision.health} no motor ${primary.runtime} do usuário ${project.userId}`
+        )
+      }
+      if (!decision.ok) {
+        app.log.warn(
+          `[Scheduler] Gasto bloqueado (${decision.reason}) para ${project.userId}; pulando ${role}`
+        )
+        return { triggered: false, reason: decision.reason ?? 'spend-blocked' }
+      }
+    }
 
     // Criação atômica já em 'running': fecha a janela de corrida do guard e
     // garante que a missão sempre tem startedAt (varredura de stale a alcança).
@@ -694,6 +739,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     'busy',
     'plan-budget',
     'instance-failsafe',
+    'engine-quota-critical',
+    'token-budget',
     'error',
     'init',
   ])
