@@ -70,6 +70,29 @@ export default function StepPlanConfirmation({
       }
 
       const data = await response.json()
+
+      // Plano pago → checkout do Stripe (na moeda do país do cliente). Grátis →
+      // conclui direto. Se o checkout falhar, não trava a conclusão do setup.
+      if (!isFree) {
+        const country = (/-([A-Za-z]{2})$/.exec(navigator.language)?.[1] ?? '').toUpperCase()
+        const qs = country ? `?country=${country}` : ''
+        try {
+          const cr = await fetch(`${apiBaseUrl}/api/billing/checkout${qs}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ planId: plan }),
+          })
+          if (cr.ok) {
+            const cd = (await cr.json()) as { url?: string }
+            if (cd.url) {
+              window.location.href = cd.url
+              return
+            }
+          }
+        } catch {
+          // segue pra conclusão mesmo se o checkout não abrir
+        }
+      }
       onSuccess(data.projects)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Erro inesperado')
@@ -106,7 +129,7 @@ export default function StepPlanConfirmation({
               Plano Selecionado
             </span>
             <span className="font-bold text-white uppercase">
-              {plan === 'free' ? 'Plano Grátis' : 'Cloud Pro'}
+              {plan === 'free' ? 'Plano Grátis' : plan.charAt(0).toUpperCase() + plan.slice(1)}
             </span>
           </div>
 

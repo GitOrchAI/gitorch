@@ -55,21 +55,24 @@ export async function billingRoutes(app: FastifyInstance): Promise<void> {
   // senão cria a Checkout Session e devolve a URL do Stripe.
   app.post('/api/billing/checkout', async (request: FastifyRequest, reply: FastifyReply) => {
     const body = (request.body ?? {}) as Record<string, unknown>
-    const userId = typeof body['userId'] === 'string' ? body['userId'] : ''
     const planId = typeof body['planId'] === 'string' ? body['planId'] : ''
-    if (!userId || !planId) return reply.code(400).send({ error: 'userId_e_planId_obrigatorios' })
+    if (!planId) return reply.code(400).send({ error: 'planId_obrigatorio' })
+
+    // Usuário vem da SESSÃO autenticada (email), igual ao /setup/submit — nunca
+    // confie num userId enviado pelo cliente.
+    const email = request.user?.email
+    if (!email) return reply.code(401).send({ error: 'sessao_sem_email' })
+    const user = await app.prisma.user.findUnique({ where: { email } })
+    if (!user) return reply.code(404).send({ error: 'user_nao_encontrado' })
 
     if (await atCapacity(app.prisma)) {
       return reply.code(402).send({ error: 'at_capacity', action: 'waitlist' })
     }
 
-    const user = await app.prisma.user.findUnique({ where: { id: userId } })
-    if (!user) return reply.code(404).send({ error: 'user_nao_encontrado' })
-
     const base = process.env['GITORCH_PUBLIC_WEB_URL'] ?? ''
     try {
       const { url, tier } = await createCheckoutSession(app.prisma, {
-        userId,
+        userId: user.id,
         stripeCustomerId: user.stripeCustomerId,
         planId,
         country: countryFrom(request) ?? null,
