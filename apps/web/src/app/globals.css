@@ -1157,3 +1157,70 @@ body {
   width: 100%;
   justify-content: center;
 }
+
+/* Botão como pílula (mesma cara do link) + modal de lista de espera */
+.gl button.gl-pill {
+  font: inherit;
+  font-weight: 500;
+}
+.gl .gl-pill:disabled {
+  opacity: 0.5;
+  cursor: default;
+  transform: none;
+}
+.gl-wait-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--gl-ink) 45%, transparent);
+  backdrop-filter: blur(4px);
+}
+.gl-wait {
+  width: 100%;
+  max-width: 420px;
+  background: var(--gl-surface);
+  border: 1px solid var(--gl-hair);
+  border-radius: 18px;
+  box-shadow: var(--gl-shadow);
+  padding: 28px 26px;
+}
+.gl-wait-title {
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  font-size: 1.2rem;
+  color: var(--gl-ink);
+}
+.gl-wait-desc {
+  color: var(--gl-muted);
+  font-size: 0.95rem;
+  margin: 10px 0 18px;
+}
+.gl-wait-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--gl-hair-strong);
+  background: var(--gl-canvas);
+  color: var(--gl-ink);
+  font: inherit;
+  font-size: 1rem;
+}
+.gl-wait-input:focus {
+  outline: 2px solid var(--gl-accent-ink);
+  outline-offset: 1px;
+}
+.gl-wait-err {
+  color: var(--gl-sev);
+  font-size: 0.85rem;
+  margin: 10px 0 0;
+}
+.gl-wait-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 18px;
+}
