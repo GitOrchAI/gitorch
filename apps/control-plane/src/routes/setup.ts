@@ -104,10 +104,17 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
           })
         : null
 
-      // 1. Limite de projetos do plano (dado, não hardcode): projetos já
-      // existentes do dono + os solicitados não podem passar do teto.
-      const maxProjects =
-        owner?.plan?.maxProjects ?? (plan === 'free' ? 1 : Number.MAX_SAFE_INTEGER)
+      // 1. Limite de projetos: o MAIOR entre o plano REAL do dono (confirmado,
+      // sobe só quando o webhook do Stripe processa o pagamento) e o plano
+      // PRETENDIDO nesta submissão (?plan=team, ainda não pago). Só o maior
+      // evita dois erros opostos: usar só o real rejeitaria um cliente
+      // pago-a-ser com o teto do free ainda gravado; usar só o pretendido
+      // rebaixaria um cliente JÁ pagante que reabre o wizard sem `?plan=`
+      // (front usa 'free' como default). Plano pretendido nunca é uma string
+      // solta do cliente — é buscado no banco; inexistente cai no teto do free.
+      const submittedPlan =
+        plan !== 'free' ? await app.prisma.plan.findUnique({ where: { id: plan } }) : null
+      const maxProjects = Math.max(owner?.plan?.maxProjects ?? 1, submittedPlan?.maxProjects ?? 1)
       if (owner) {
         const currentCount = await app.prisma.project.count({ where: { userId: owner.id } })
         if (currentCount + repos.length > maxProjects) {
