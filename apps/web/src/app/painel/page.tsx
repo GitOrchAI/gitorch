@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect, useCallback, useSyncExternalStore } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import { useLanguage } from '../../LanguageContext'
 import Header from '../../components/Header'
 import { Terminal, Activity, FolderGit2, LogIn } from 'lucide-react'
@@ -37,24 +37,31 @@ const STATUS_COLORS: Record<string, string> = {
 
 export default function Dashboard() {
   const { t } = useLanguage()
-  // useSyncExternalStore: jeito suportado de ler localStorage sem mismatch de
-  // hidratação (servidor rende sem sessão; cliente re-rende com ela).
-  const token = useSyncExternalStore(
-    (cb) => {
-      window.addEventListener('storage', cb)
-      return () => window.removeEventListener('storage', cb)
-    },
-    () => localStorage.getItem('gitorch_token'),
-    () => null
-  )
+  // Sessão via cookie httpOnly (não lido por JS) — o painel checa no
+  // servidor se está autenticado, nunca lê um token local (spec §17.4).
+  const [authenticated, setAuthenticated] = useState<boolean | null>(null)
   const [data, setData] = useState<MissionsResponse | null>(null)
   const [error, setError] = useState(false)
 
+  useEffect(() => {
+    let cancelled = false
+    fetch(`${API_BASE_URL}/api/v1/auth/me`, { credentials: 'include' })
+      .then((res) => {
+        if (!cancelled) setAuthenticated(res.ok)
+      })
+      .catch(() => {
+        if (!cancelled) setAuthenticated(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   const load = useCallback(async () => {
-    if (!token) return
+    if (!authenticated) return
     try {
       const res = await fetch(`${API_BASE_URL}/api/missions`, {
-        headers: { Authorization: `Bearer ${token}` },
+        credentials: 'include',
       })
       if (!res.ok) throw new Error(`${res.status}`)
       setData((await res.json()) as MissionsResponse)
@@ -62,18 +69,18 @@ export default function Dashboard() {
     } catch {
       setError(true)
     }
-  }, [token])
+  }, [authenticated])
 
   useEffect(() => {
-    if (!token) return
+    if (!authenticated) return
     // Primeiro load fora do corpo síncrono do effect (regra react-hooks).
     queueMicrotask(() => void load())
     // Ao vivo de verdade: atualiza a cada 15s enquanto a aba está aberta.
     const interval = setInterval(() => void load(), 15_000)
     return () => clearInterval(interval)
-  }, [token, load])
+  }, [authenticated, load])
 
-  if (!token) {
+  if (!authenticated) {
     return (
       <main className="min-h-screen flex flex-col bg-[var(--bg-deep)]">
         <Header />

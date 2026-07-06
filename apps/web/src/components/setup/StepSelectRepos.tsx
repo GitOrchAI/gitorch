@@ -12,7 +12,7 @@ interface Repo {
 
 interface StepSelectReposProps {
   apiBaseUrl: string
-  token: string
+  authenticated: boolean
   selectedRepos: string[]
   setSelectedRepos: (repos: string[]) => void
   onNext: () => void
@@ -21,7 +21,7 @@ interface StepSelectReposProps {
 
 export default function StepSelectRepos({
   apiBaseUrl,
-  token,
+  authenticated,
   selectedRepos,
   setSelectedRepos,
   onNext,
@@ -37,10 +37,10 @@ export default function StepSelectRepos({
       try {
         setLoading(true)
         setError(null)
+        // Sessão via cookie httpOnly, enviada automaticamente pelo navegador
+        // (spec §17.4 — nunca mais um token lido/manipulado pelo JS).
         const response = await fetch(`${apiBaseUrl}/api/v1/github/repos`, {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
+          credentials: 'include',
         })
 
         if (!response.ok) {
@@ -56,10 +56,10 @@ export default function StepSelectRepos({
       }
     }
 
-    if (token) {
+    if (authenticated) {
       fetchRepos()
     }
-  }, [apiBaseUrl, token])
+  }, [apiBaseUrl, authenticated])
 
   const toggleRepo = (fullName: string) => {
     if (selectedRepos.includes(fullName)) {

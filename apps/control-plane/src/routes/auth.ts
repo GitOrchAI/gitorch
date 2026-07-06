@@ -91,23 +91,56 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
         return reply.code(400).send({ error: 'Failed to fetch user profile from GitHub' })
       }
 
-      // Sign JWT session token
+      const userId = String(userData.id)
+
+      // Sign JWT session token. O token do GitHub NUNCA viaja aqui — o JWT é
+      // devolvido dentro de um cookie httpOnly (JS não lê), mas mesmo assim
+      // não guardamos o segredo repo-scoped num claim; ele vai cifrado no
+      // cofre por usuário (mesmo caminho de qualquer credencial de motor).
       const sessionToken = jwt.sign(
         {
-          userId: String(userData.id),
+          userId,
           wingId: userData.login, // Default wingId is their username
-          githubToken,
           email: userData.email,
         },
         env.JWT_SECRET,
         { expiresIn: '7d' }
       )
 
-      // Redirect to frontend setup wizard page with token
-      const redirectUrl = `${env.FRONTEND_URL}/setup?token=${sessionToken}`
+      // Persiste o token do GitHub cifrado por usuário (se o serviço estiver
+      // disponível — ausente apenas em testes de rota isolados).
+      if (app.engineConnections) {
+        await app.engineConnections.connectGitHubToken(userId, githubToken)
+      }
+
+      reply.setCookie('gitorch_session', sessionToken, {
+        httpOnly: true,
+        secure: env.NODE_ENV !== 'development',
+        sameSite: 'lax',
+        path: '/',
+        maxAge: 7 * 24 * 60 * 60,
+      })
+
+      // Redireciona para o wizard sem token na URL (histórico/referrer/logs
+      // deixam de expor a sessão — spec §17.4).
+      const redirectUrl = `${env.FRONTEND_URL}/setup`
       return reply.redirect(redirectUrl)
     }
   )
+
+  // Sessão atual (cookie ou Bearer, via hook global de auth). O front usa
+  // isto pra saber se já está logado, sem ler token de localStorage/URL.
+  app.get('/api/v1/auth/me', async (request: FastifyRequest, reply: FastifyReply) => {
+    if (!request.user) {
+      return reply.code(401).send({ error: 'UNAUTHORIZED: no session' })
+    }
+    return reply.send({
+      authenticated: true,
+      userId: request.user.id,
+      wingId: request.user.wingId,
+      email: request.user.email ?? null,
+    })
+  })
 }
 
 export default authRoutes

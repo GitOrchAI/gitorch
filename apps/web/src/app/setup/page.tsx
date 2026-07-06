@@ -28,7 +28,10 @@ interface CreatedProject {
 export default function SetupWizard() {
   const { t } = useLanguage()
   const [step, setStep] = useState(1)
-  const [token, setToken] = useState('')
+  // Sessão vive num cookie httpOnly (não lido por JS) — o front só sabe SE
+  // está autenticado, nunca o valor do token (spec §17.4, sem token em
+  // URL/localStorage).
+  const [authenticated, setAuthenticated] = useState(false)
   const [selectedRepos, setSelectedRepos] = useState<string[]>([])
   const [selectedEngines, setSelectedEngines] = useState<string[]>(['claude-code'])
   const [telegram, setTelegram] = useState('')
@@ -36,43 +39,33 @@ export default function SetupWizard() {
   const [plan, setPlan] = useState('free')
   const [createdProjects, setCreatedProjects] = useState<CreatedProject[]>([])
 
-  // Capture token from OAuth callback redirect
+  // Plano pré-selecionado pela landing (/setup?plan=solo) — lido da URL uma
+  // vez, sem depender de sessão.
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const storedToken = localStorage.getItem('gitorch_token')
-      if (storedToken && storedToken !== token) {
-        setToken(storedToken)
-      }
+    if (typeof window === 'undefined') return
+    const params = new URLSearchParams(window.location.search)
+    const urlPlan = params.get('plan')
+    if (urlPlan && ['free', 'solo', 'pro', 'team'].includes(urlPlan)) setPlan(urlPlan)
+  }, [])
 
-      const params = new URLSearchParams(window.location.search)
-      // Plano pré-selecionado pela landing (/setup?plan=solo).
-      const urlPlan = params.get('plan')
-      if (urlPlan && ['free', 'solo', 'pro', 'team'].includes(urlPlan)) setPlan(urlPlan)
-      const urlToken = params.get('token')
-      if (urlToken) {
-        localStorage.setItem('gitorch_token', urlToken)
-        if (urlToken !== token) {
-          setToken(urlToken)
-        }
-
-        // Remove token from query parameters for clean URL
-        const newUrl = window.location.pathname
-        window.history.replaceState({}, '', newUrl)
-
-        // Advance to Step 3 (Accept Terms)
-        if (step !== 3) {
-          setStep(3)
-        }
-      }
-    }
-  }, [token, step])
-
-  // If token is already present and we are on step 1/2, skip to repos/terms
+  // Verifica a sessão real no servidor (cookie httpOnly enviado automaticamente).
   useEffect(() => {
-    if (token && (step === 1 || step === 2)) {
-      setStep(3)
+    let cancelled = false
+    fetch(`${API_BASE_URL}/api/v1/auth/me`, { credentials: 'include' })
+      .then((res) => {
+        if (cancelled) return
+        if (res.ok) {
+          setAuthenticated(true)
+          setStep((current) => (current === 1 || current === 2 ? 3 : current))
+        }
+      })
+      .catch(() => {
+        // Sem sessão ainda — permanece nos passos iniciais de login.
+      })
+    return () => {
+      cancelled = true
     }
-  }, [token, step])
+  }, [])
 
   const nextStep = () => {
     if (step < 10) setStep(step + 1)
@@ -169,7 +162,7 @@ export default function SetupWizard() {
               >
                 <StepSelectRepos
                   apiBaseUrl={API_BASE_URL}
-                  token={token}
+                  authenticated={authenticated}
                   selectedRepos={selectedRepos}
                   setSelectedRepos={setSelectedRepos}
                   onNext={nextStep}
@@ -257,7 +250,6 @@ export default function SetupWizard() {
               >
                 <StepPlanConfirmation
                   apiBaseUrl={API_BASE_URL}
-                  token={token}
                   plan={plan}
                   selectedRepos={selectedRepos}
                   setSelectedRepos={setSelectedRepos}

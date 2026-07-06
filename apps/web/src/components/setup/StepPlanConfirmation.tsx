@@ -11,7 +11,6 @@ interface CreatedProject {
 
 interface StepPlanConfirmationProps {
   apiBaseUrl: string
-  token: string
   plan: string
   selectedRepos: string[]
   setSelectedRepos: (repos: string[]) => void
@@ -24,7 +23,6 @@ interface StepPlanConfirmationProps {
 
 export default function StepPlanConfirmation({
   apiBaseUrl,
-  token,
   plan,
   selectedRepos,
   setSelectedRepos,
@@ -50,9 +48,9 @@ export default function StepPlanConfirmation({
       setError(null)
       const response = await fetch(`${apiBaseUrl}/api/v1/setup/submit`, {
         method: 'POST',
+        credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
           repos: selectedRepos,
@@ -82,7 +80,8 @@ export default function StepPlanConfirmation({
         try {
           const cr = await fetch(`${apiBaseUrl}/api/billing/checkout${qs}`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ planId: plan }),
           })
           if (cr.ok) {
