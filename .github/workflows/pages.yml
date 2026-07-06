@@ -58,7 +58,7 @@ jobs:
           else
             echo "Sem basePath (domínio raiz) — nada a checar."
           fi
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: apps/web/out
   deploy:
