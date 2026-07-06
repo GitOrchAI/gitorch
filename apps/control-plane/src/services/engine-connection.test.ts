@@ -194,4 +194,56 @@ describe('EngineConnectionService', () => {
       svc.connectRawToken('u', 'claude', 'com espaço\n', { envVarName: 'CLAUDE_CODE_OAUTH_TOKEN' })
     ).rejects.toThrow('token')
   })
+
+  test('connectFileCredential grava o conteúdo colado no caminho primário do runtime (codex auth.json)', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+
+    const authJson = JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: 'FAKE' } })
+    const status = await svc.connectFileCredential('user_codex', 'codex', authJson)
+    expect(status.status).toBe('connected')
+
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-codexhome-'))
+    expect(await svc.materializeToHome('user_codex', 'codex', home)).toBe(true)
+    expect(await fs.readFile(path.join(home, '.codex', 'auth.json'), 'utf8')).toBe(authJson)
+
+    await fs.rm(home, { recursive: true, force: true })
+  })
+
+  test('connectFileCredential grava o token do antigravity no caminho primário', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+
+    const status = await svc.connectFileCredential('user_ag', 'antigravity', 'oauth-token-fake')
+    expect(status.status).toBe('connected')
+
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-aghome-'))
+    expect(await svc.materializeToHome('user_ag', 'antigravity', home)).toBe(true)
+    expect(
+      await fs.readFile(
+        path.join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'),
+        'utf8'
+      )
+    ).toBe('oauth-token-fake')
+
+    await fs.rm(home, { recursive: true, force: true })
+  })
+
+  test('connectFileCredential rejeita conteúdo vazio', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+    await expect(svc.connectFileCredential('u', 'codex', '')).rejects.toThrow('vazia')
+  })
+
+  test('connectFileCredential rejeita runtime não suportado', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+    await expect(svc.connectFileCredential('u', 'inexistente', 'x')).rejects.toThrow(
+      'não suportado'
+    )
+  })
 })

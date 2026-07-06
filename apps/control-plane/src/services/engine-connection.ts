@@ -166,6 +166,34 @@ export class EngineConnectionService {
   }
 
   /**
+   * Conecta um motor colando o CONTEÚDO do arquivo de credencial que o login
+   * local do CLI já produziu (ex.: `~/.codex/auth.json` do Codex,
+   * `~/.gemini/antigravity-cli/antigravity-oauth-token` do Antigravity) —
+   * o caminho oficial de "logar localmente e transferir o arquivo" quando não
+   * há fluxo headless completo no servidor. Escreve no caminho PRIMÁRIO
+   * (primeira entrada) de ENGINE_CREDENTIAL_PATHS do runtime.
+   */
+  async connectFileCredential(
+    userId: string,
+    runtime: string,
+    content: string
+  ): Promise<ConnectionStatus> {
+    const relPaths = ENGINE_CREDENTIAL_PATHS[runtime]
+    if (!relPaths) throw new Error(`Runtime não suportado: ${runtime}`)
+    if (!content.trim()) throw new Error(`credencial de ${runtime} vazia`)
+
+    const primaryPath = relPaths[0] as string
+    const home = path.join(os.tmpdir(), `gitorch-filecred-${randomUUID()}`)
+    await fs.mkdir(path.join(home, path.dirname(primaryPath)), { recursive: true, mode: 0o700 })
+    try {
+      await fs.writeFile(path.join(home, primaryPath), content, { mode: 0o600 })
+      return await this.captureFromHome(userId, runtime, home)
+    } finally {
+      await fs.rm(home, { recursive: true, force: true })
+    }
+  }
+
+  /**
    * Restaura a credencial cifrada do usuário para dentro de `homeDir`, para uma
    * missão usar o motor como aquele cliente. Retorna false se não há conexão.
    */

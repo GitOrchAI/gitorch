@@ -31,6 +31,31 @@ const enginesPluginImpl: FastifyPluginAsync = async (app) => {
     }
   })
 
+  // Conexão real dos motores de IA que não expõem um device-code servidor-side
+  // hoje: o cliente cola o que o login LOCAL do CLI produziu — o `setup-token`
+  // do Claude Code (vira env var) ou o conteúdo do arquivo de credencial do
+  // Codex/Antigravity (auth.json / oauth-token). Mesmo cofre cifrado de
+  // qualquer credencial; nunca logado.
+  const ENV_CREDENTIAL_VAR: Record<string, string> = {
+    claude: 'CLAUDE_CODE_OAUTH_TOKEN',
+  }
+  app.post('/api/v1/engines/:runtime/token', async (request, reply) => {
+    const userId = await resolveUserId(app, request)
+    if (!userId) return reply.code(401).send({ error: 'UNAUTHORIZED: user session required' })
+    const { runtime } = request.params as { runtime: string }
+    const { token } = (request.body ?? {}) as { token?: string }
+    if (!token) return reply.code(400).send({ error: 'token é obrigatório' })
+    try {
+      const envVarName = ENV_CREDENTIAL_VAR[runtime]
+      const status = envVarName
+        ? await service.connectRawToken(userId, runtime, token, { envVarName })
+        : await service.connectFileCredential(userId, runtime, token)
+      return reply.send({ connected: true, status })
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message })
+    }
+  })
+
   // Revoga (desconecta) um motor do usuário.
   app.delete('/api/v1/engines/:runtime', async (request, reply) => {
     const userId = await resolveUserId(app, request)
