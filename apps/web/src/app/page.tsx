@@ -1109,12 +1109,19 @@ export default function Home() {
                     } as Record<string, string>
                   )[tier.name] ?? tier.name.toLowerCase()
                 const geo = prices?.[planId]
-                let priceLabel = tier.price
+                // Moeda da faixa detectada (qualquer plano pago define a moeda do
+                // país) — pro plano grátis não mostrar "$0" pra quem vê R$.
+                const geoIsBrl = prices
+                  ? Object.values(prices).some((g) => g.currency === 'brl')
+                  : false
+                let priceLabel: string = tier.price
                 if (geo) {
                   const v = geo.amount / 100
-                  const isBrl = geo.currency === 'brl'
                   const num = Number.isInteger(v) ? String(v) : v.toFixed(2)
-                  priceLabel = (isBrl ? 'R$' : '$') + (isBrl ? num.replace('.', ',') : num)
+                  priceLabel = (geoIsBrl ? 'R$' : '$') + (geoIsBrl ? num.replace('.', ',') : num)
+                } else if (geoIsBrl) {
+                  // grátis (não vem na API): troca só o símbolo pra coerência.
+                  priceLabel = tier.price.replace('$', 'R$')
                 }
                 const isFree = planId === 'free'
                 return (
