@@ -66,15 +66,30 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.d1.outputs.page_url || steps.d2.outputs.page_url || steps.d3.outputs.page_url }}
     steps:
-      - id: deployment
+      # Rigor 2 + auto-cura: a infra do Pages falha com "try again later" de vez
+      # em quando. Até 3 tentativas automáticas para uma falha transitória NUNCA
+      # deixar o site quebrado (foi o que derrubou o site 2x em 06/07).
+      - id: d1
         uses: actions/deploy-pages@v5
-        with:
-          # Rigor 2: a infra do Pages falha com "try again later" de vez em
-          # quando; mais tolerância a erro transitório evita deploy stale/verde-falso.
-          timeout: 600000
-          error_count: 25
+        continue-on-error: true
+        with: { timeout: 600000, error_count: 25 }
+      - if: steps.d1.outcome == 'failure'
+        run: echo "Deploy 1 falhou (transitório); tentando de novo em 20s" && sleep 20
+      - id: d2
+        if: steps.d1.outcome == 'failure'
+        uses: actions/deploy-pages@v5
+        continue-on-error: true
+        with: { timeout: 600000, error_count: 25 }
+      - if: steps.d1.outcome == 'failure' && steps.d2.outcome == 'failure'
+        run: echo "Deploy 2 falhou; última tentativa em 30s" && sleep 30
+      - id: d3
+        if: steps.d1.outcome == 'failure' && steps.d2.outcome == 'failure'
+        uses: actions/deploy-pages@v5
+        with: { timeout: 600000, error_count: 25 }
+      # Se as 3 falharem, o job falha (e o smoke nem roda) — vai vermelho, não
+      # verde-falso. Mas o esperado é uma das 3 passar e o site se curar sozinho.
   smoke:
     # Rigor 3: só passa se o site publicado E seus assets carregarem de verdade.
     needs: deploy
