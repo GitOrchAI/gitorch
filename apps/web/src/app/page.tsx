@@ -1267,7 +1267,7 @@ export default function Home() {
                   priceLabel = (geoIsBrl ? 'R$' : '$') + (geoIsBrl ? num.replace('.', ',') : num)
                 } else if (geoIsBrl) {
                   // grátis (não vem na API): troca só o símbolo pra coerência.
-                  priceLabel = tier.price.replace('$', 'R$')
+                  priceLabel = tier.price.replace(/\$/g, 'R$')
                 }
                 const isFree = planId === 'free'
                 return (
