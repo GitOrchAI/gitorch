@@ -13,14 +13,14 @@ import { PrismaClient } from '@prisma/client'
 
 const prisma = new PrismaClient()
 
-// Valores em centavos de dólar (lançamento USD-only; BRL real vem na Fase 2).
-// A = rica, B = Brasil/emergente (~R$19,90 ≈ $3,60), C = land-grab.
+// Valores em centavos. A = rica (USD), B = Brasil (BRL, R$19,90/59,90/199),
+// C = land-grab (USD). Cada faixa cobra na moeda que faz sentido pro mercado.
 const MATRIX: Record<string, { A: number; B: number; C: number }> = {
-  solo: { A: 1000, B: 360, C: 300 },
-  pro: { A: 2900, B: 1100, C: 900 },
-  team: { A: 7900, B: 3600, C: 2900 },
+  solo: { A: 1000, B: 1990, C: 300 },
+  pro: { A: 2900, B: 5990, C: 900 },
+  team: { A: 7900, B: 19900, C: 2900 },
 }
-const CURRENCY = 'usd'
+const CURRENCY_BY_TIER: Record<'A' | 'B' | 'C', string> = { A: 'usd', B: 'brl', C: 'usd' }
 
 async function main(): Promise<void> {
   const key = process.env['STRIPE_SECRET_KEY']
@@ -49,26 +49,27 @@ async function main(): Promise<void> {
 
     for (const tier of ['A', 'B', 'C'] as const) {
       const amount = byTier[tier]
+      const cur = CURRENCY_BY_TIER[tier]
       const current = await prisma.planPrice.findUnique({
         where: { planId_tier: { planId, tier } },
       })
-      if (current && current.unitAmount === amount && current.currency === CURRENCY) {
-        console.log(`[stripe-sync] ${planId}/${tier} inalterado (${amount})`)
+      if (current && current.unitAmount === amount && current.currency === cur) {
+        console.log(`[stripe-sync] ${planId}/${tier} inalterado (${amount} ${cur})`)
         continue
       }
       const price = await stripe.prices.create({
         product: product.id,
-        currency: CURRENCY,
+        currency: cur,
         unit_amount: amount,
         recurring: { interval: 'month' },
         metadata: { gitorch_plan: planId, gitorch_tier: tier },
       })
       await prisma.planPrice.upsert({
         where: { planId_tier: { planId, tier } },
-        update: { currency: CURRENCY, unitAmount: amount, stripePriceId: price.id },
-        create: { planId, tier, currency: CURRENCY, unitAmount: amount, stripePriceId: price.id },
+        update: { currency: cur, unitAmount: amount, stripePriceId: price.id },
+        create: { planId, tier, currency: cur, unitAmount: amount, stripePriceId: price.id },
       })
-      console.log(`[stripe-sync] ${planId}/${tier} → ${price.id} (${amount} ${CURRENCY})`)
+      console.log(`[stripe-sync] ${planId}/${tier} → ${price.id} (${amount} ${cur})`)
     }
   }
   console.log('[stripe-sync] concluído')
