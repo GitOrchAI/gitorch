@@ -2,19 +2,9 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { randomBytes } from 'node:crypto'
 import bcryptjs from 'bcryptjs'
 import { Prisma } from '@prisma/client'
-import { F6_AGENT_ROLES, type F6AgentRuntime } from '@gitorch/agents'
+import { F6_AGENT_ROLES, isF6AgentRuntime, type F6AgentRuntime } from '@gitorch/agents'
 import { ensureDefaultSchedules } from '../lib/project-defaults.js'
-
-// O wizard grava o motor "Claude Code" como `claude-code` (nome de produto);
-// o runtime de execução real é `claude` (F6AgentRuntime). Sem este mapa, a
-// seleção do cliente é silenciosamente ignorada pelo resolver de runtime, que
-// só reconhece 'codex' | 'claude' | 'antigravity'.
-const WIZARD_ENGINE_TO_RUNTIME: Record<string, F6AgentRuntime> = {
-  'claude-code': 'claude',
-  claude: 'claude',
-  codex: 'codex',
-  antigravity: 'antigravity',
-}
+import { resolveEngineId } from '../services/engine-connection.js'
 
 interface GitHubRepo {
   id: number
@@ -137,8 +127,12 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
       // conectado (validado, não uma string solta) — senão o onboarding
       // "conclui" para uma execução sem credencial nenhuma (spec §17.3).
       const requestedRuntimes = [
-        ...new Set((engines ?? []).map((e) => WIZARD_ENGINE_TO_RUNTIME[e]).filter(Boolean)),
-      ] as F6AgentRuntime[]
+        ...new Set(
+          (engines ?? [])
+            .map((e) => resolveEngineId(e))
+            .filter((r): r is F6AgentRuntime => isF6AgentRuntime(r))
+        ),
+      ]
       if (requestedRuntimes.length === 0) {
         return reply.code(400).send({ error: 'Nenhum motor de IA reconhecido foi selecionado' })
       }

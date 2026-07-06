@@ -1,6 +1,6 @@
 import fp from 'fastify-plugin'
 import { FastifyPluginAsync } from 'fastify'
-import { EngineConnectionService } from '../services/engine-connection.js'
+import { EngineConnectionService, resolveEngineId } from '../services/engine-connection.js'
 
 // Expõe o serviço de conexões de motor e as rotas do usuário para ver/gerir
 // suas conexões. A credencial cifrada NUNCA é retornada — apenas o status.
@@ -42,7 +42,7 @@ const enginesPluginImpl: FastifyPluginAsync = async (app) => {
   app.post('/api/v1/engines/:runtime/token', async (request, reply) => {
     const userId = await resolveUserId(app, request)
     if (!userId) return reply.code(401).send({ error: 'UNAUTHORIZED: user session required' })
-    const { runtime } = request.params as { runtime: string }
+    const runtime = resolveEngineId((request.params as { runtime: string }).runtime)
     const { token } = (request.body ?? {}) as { token?: string }
     if (!token) return reply.code(400).send({ error: 'token é obrigatório' })
     try {
@@ -60,7 +60,7 @@ const enginesPluginImpl: FastifyPluginAsync = async (app) => {
   app.delete('/api/v1/engines/:runtime', async (request, reply) => {
     const userId = await resolveUserId(app, request)
     if (!userId) return reply.code(401).send({ error: 'UNAUTHORIZED: user session required' })
-    const { runtime } = request.params as { runtime: string }
+    const runtime = resolveEngineId((request.params as { runtime: string }).runtime)
     await service.revoke(userId, runtime)
     return reply.send({ revoked: true, runtime })
   })
@@ -69,7 +69,7 @@ const enginesPluginImpl: FastifyPluginAsync = async (app) => {
   app.post('/api/v1/engines/:runtime/models/refresh', async (request, reply) => {
     const userId = await resolveUserId(app, request)
     if (!userId) return reply.code(401).send({ error: 'UNAUTHORIZED: user session required' })
-    const { runtime } = request.params as { runtime: string }
+    const runtime = resolveEngineId((request.params as { runtime: string }).runtime)
     const models = await service.refreshModels(userId, runtime)
     return reply.send({ runtime, models })
   })

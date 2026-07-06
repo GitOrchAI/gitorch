@@ -46,6 +46,20 @@ export function isSupportedRuntime(runtime: string): boolean {
   return runtime in ENGINE_CREDENTIAL_PATHS
 }
 
+// Alias de nome comercial -> id de runtime real: o wizard/frontend usa
+// 'claude-code' (nome de produto), mas o runtime de execução (F6AgentRuntime
+// e as chaves acima) é 'claude'. Fonte ÚNICA — toda rota que recebe um id de
+// motor vindo do cliente (setup/submit, POST /engines/:runtime/token) resolve
+// por aqui, senão os dois vocabulários divergem silenciosamente (já
+// aconteceu: setup/submit reconhecia 'claude-code' e a rota de token não).
+const ENGINE_ID_ALIASES: Record<string, string> = {
+  'claude-code': 'claude',
+}
+
+export function resolveEngineId(id: string): string {
+  return ENGINE_ID_ALIASES[id] ?? id
+}
+
 type PrismaLike = Pick<PrismaClient, 'engineConnection'>
 
 export interface ConnectionStatus {

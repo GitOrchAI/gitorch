@@ -45,6 +45,23 @@ describe('POST /api/v1/engines/:runtime/token', () => {
     )
   })
 
+  it('connects claude via the wizard\'s own product-name alias "claude-code" (same vocabulary setup/submit uses)', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/engines/claude-code/token',
+      payload: { token: 'sk-ant-oat01-FAKE' },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ connected: true })
+    // Precisa cair no caminho de credencial ENV (mesmo do runtime 'claude'),
+    // não no connectFileCredential (que trataria como um arquivo do Codex).
+    expect(app.prisma.engineConnection.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ credentialKind: 'env' }),
+      })
+    )
+  })
+
   it('connects codex via pasted auth.json content (file credential)', async () => {
     const res = await app.inject({
       method: 'POST',
