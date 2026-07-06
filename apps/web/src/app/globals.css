@@ -1008,10 +1008,12 @@ body {
   transition-delay: 0.24s;
 }
 @media (prefers-reduced-motion: reduce) {
-  .gl-reveal {
-    opacity: 1;
+  /* Reveals de scroll CONTINUAM (fade por opacidade, sem deslocamento vertical):
+     fade por opacidade acionado pelo scroll é aceitável em reduce-motion. Só o
+     MOVIMENTO (translate/blur) e as animações AUTOMÁTICAS são desligados. */
+  .gl-reveal,
+  .gl-reveal.in {
     transform: none;
-    transition: none;
   }
   .gl-dot,
   .gl-g,
@@ -1019,8 +1021,6 @@ body {
     animation: none;
   }
   .gl-word {
-    color: var(--gl-ink);
-    opacity: 1;
     filter: none;
     transform: none;
   }
@@ -1072,16 +1072,9 @@ body {
   display: grid;
   place-items: center;
 }
-@media (prefers-reduced-motion: reduce) {
-  .gl-statement {
-    height: auto;
-  }
-  .gl-statement-sticky {
-    position: static;
-    min-height: 0;
-    padding-block: clamp(80px, 14vh, 140px);
-  }
-}
+/* Sob reduce-motion mantemos a frase PINADA para a revelação por opacidade das
+   palavras continuar acontecendo no scroll (o efeito que o dono quer no desktop).
+   O bloco que despinava foi removido de propósito. */
 
 /* Planos */
 .gl-planos {
