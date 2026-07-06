@@ -1,4 +1,5 @@
 import { FastifyInstance } from 'fastify'
+import fastifyCookie from '@fastify/cookie'
 import fastifyCors from '@fastify/cors'
 import fastifyHelmet from '@fastify/helmet'
 import fastifySwagger from '@fastify/swagger'
@@ -32,6 +33,9 @@ export async function registerPlugins(app: FastifyInstance, env: Env): Promise<v
     credentials: true,
     maxAge: CORS_MAX_AGE,
   })
+
+  // Sessão do wizard via cookie httpOnly (não mais token em ?query/localStorage).
+  await app.register(fastifyCookie)
 
   if (env.NODE_ENV !== 'test') {
     // Limiares realistas para o control plane (Node + Prisma + Fastify já usam

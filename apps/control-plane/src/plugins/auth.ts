@@ -74,7 +74,37 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
     if (isPublicPath(request.url)) return
 
     const authHeader = request.headers.authorization
+
+    // Sessão do navegador: cookie httpOnly `gitorch_session` (JWT), nunca
+    // exposta a JS/XSS. Authorization Bearer continua valendo (API keys e
+    // chamadas server-to-server) e tem precedência quando ambos existem.
     if (!authHeader?.startsWith('Bearer ')) {
+      const cookieToken = request.cookies?.['gitorch_session']
+      if (cookieToken) {
+        try {
+          const env = getEnv()
+          const decoded = jwt.verify(cookieToken, env.JWT_SECRET) as {
+            userId: string
+            wingId: string
+            githubToken?: string
+            email?: string
+          }
+
+          request.user = {
+            id: decoded.userId,
+            wingId: decoded.wingId,
+            githubToken: decoded.githubToken || undefined,
+            email: decoded.email || undefined,
+          } as UserPayload
+          request.wingId = decoded.wingId
+
+          wingIdContext.run({ wingId: decoded.wingId }, () => {})
+          return
+        } catch {
+          throw unauthorized('UNAUTHORIZED: Invalid or expired session cookie')
+        }
+      }
+
       throw unauthorized('UNAUTHORIZED: Missing or invalid Authorization header')
     }
 
