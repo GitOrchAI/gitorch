@@ -62,6 +62,24 @@ describe('GET /api/v1/github/repos', () => {
   })
 })
 
+describe('GET /api/v1/github/repos — sem o plugin de motores registrado', () => {
+  it('retorna um 500 limpo em vez de vazar o TypeError interno pro cliente', async () => {
+    const app = Fastify()
+    app.addHook('preHandler', async (request: FastifyRequest) => {
+      request.user = { id: 'user_1', wingId: 'octocat' }
+    })
+    await setupRoutes(app)
+    await app.ready()
+
+    const res = await app.inject({ method: 'GET', url: '/api/v1/github/repos' })
+    expect(res.statusCode).toBe(500)
+    const body = res.json() as { message?: string; error?: string }
+    const leaked = `${body.message ?? ''} ${body.error ?? ''}`
+    expect(leaked).not.toContain('getRawGithubToken')
+    expect(leaked).not.toContain('Cannot read properties')
+  })
+})
+
 describe('POST /api/v1/setup/submit — runtime wiring', () => {
   let app: ReturnType<typeof Fastify>
   let projectCreate: ReturnType<typeof vi.fn>

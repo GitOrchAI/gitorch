@@ -40,6 +40,13 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
     if (!request.user) {
       return reply.code(401).send({ error: 'UNAUTHORIZED: session required' })
     }
+    // Ausente apenas em composições de rota que não registram o plugin de
+    // motores (ex.: teste isolado) — sem este guard, a falta virava um
+    // TypeError vazando detalhe interno ('Cannot read properties of
+    // undefined') pro cliente em vez de um erro limpo.
+    if (!app.engineConnections) {
+      return reply.code(500).send({ error: 'Engine connections service unavailable' })
+    }
     const githubToken = await app.engineConnections.getRawGithubToken(request.user.id)
     if (!githubToken) {
       return reply.code(401).send({ error: 'UNAUTHORIZED: GitHub not connected' })
