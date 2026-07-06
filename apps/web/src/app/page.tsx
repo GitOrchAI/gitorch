@@ -9,14 +9,51 @@ import { useLanguage } from '../LanguageContext'
    t() helper can't return. pt + en are authored; es falls back to en. */
 type Lang = 'pt' | 'en'
 
+// Repo real vem de config (produto dinâmico, nunca hardcoded), igual ao Header.
+const GITHUB_REPO = process.env.NEXT_PUBLIC_GITHUB_REPO ?? 'loureng/gitorch'
+const GITHUB_URL = `https://github.com/${GITHUB_REPO}`
+
 const COPY = {
   pt: {
     nav: {
       entende: 'Entende',
       organiza: 'Organiza',
       vigia: 'Vigia',
+      planos: 'Planos',
       aberto: 'Código aberto',
       cta: 'Começar grátis',
+    },
+    planos: {
+      kicker: 'Planos',
+      title: 'Comece grátis. Cresça quando quiser.',
+      tiers: [
+        {
+          name: 'Open Core',
+          price: 'Grátis',
+          note: 'Para sempre · self-hosted',
+          desc: 'Todo o motor, de código aberto, rodando na sua máquina.',
+          cta: 'Ver no GitHub',
+          href: GITHUB_URL,
+          ext: true,
+        },
+        {
+          name: 'Cloud',
+          price: 'Em breve',
+          note: 'Nuvem gerenciada',
+          desc: 'A gente cuida da infra. Você conecta o GitHub e usa.',
+          cta: 'Começar grátis',
+          href: '/setup',
+          featured: true,
+        },
+        {
+          name: 'Enterprise',
+          price: 'Sob medida',
+          note: 'Times e organizações',
+          desc: 'Isolamento dedicado, SSO e suporte próximo.',
+          cta: 'Começar',
+          href: '/setup',
+        },
+      ],
     },
     hero: {
       eyebrow: 'Orquestração autônoma de repositórios',
@@ -121,8 +158,41 @@ const COPY = {
       entende: 'Understands',
       organiza: 'Organizes',
       vigia: 'Watches',
+      planos: 'Plans',
       aberto: 'Open source',
       cta: 'Start free',
+    },
+    planos: {
+      kicker: 'Plans',
+      title: 'Start free. Grow when you want.',
+      tiers: [
+        {
+          name: 'Open Core',
+          price: 'Free',
+          note: 'Forever · self-hosted',
+          desc: 'The whole engine, open source, running on your own machine.',
+          cta: 'View on GitHub',
+          href: GITHUB_URL,
+          ext: true,
+        },
+        {
+          name: 'Cloud',
+          price: 'Soon',
+          note: 'Managed cloud',
+          desc: 'We handle the infra. You connect GitHub and go.',
+          cta: 'Start free',
+          href: '/setup',
+          featured: true,
+        },
+        {
+          name: 'Enterprise',
+          price: 'Custom',
+          note: 'Teams and orgs',
+          desc: 'Dedicated isolation, SSO and close support.',
+          cta: 'Get started',
+          href: '/setup',
+        },
+      ],
     },
     hero: {
       eyebrow: 'Autonomous repository orchestration',
@@ -328,13 +398,16 @@ export default function Home() {
       const r = stmt.getBoundingClientRect()
       const vh = window.innerHeight
       const N = words.length
-      const p = (vh * 0.82 - r.top) / (vh * 1.05)
+      // stmt is a tall section; while its inner text is pinned (sticky), -top
+      // runs 0 → (height - vh). Map that scroll span to a word-by-word wave.
+      const prog = Math.max(0, Math.min(1, -r.top / Math.max(1, stmt.offsetHeight - vh)))
+      const p = Math.min(1, prog / 0.72) // finish the reveal ~72% through the pin
       words.forEach((w, i) => {
-        const local = Math.max(0, Math.min(1, p * N - i * 0.86))
-        w.style.opacity = (0.1 + 0.9 * local).toFixed(3)
-        w.style.filter = local >= 1 ? 'none' : 'blur(' + ((1 - local) * 6).toFixed(2) + 'px)'
+        const local = Math.max(0, Math.min(1, p * (N + 2) - i))
+        w.style.opacity = (0.08 + 0.92 * local).toFixed(3)
+        w.style.filter = local >= 1 ? 'none' : 'blur(' + ((1 - local) * 7).toFixed(2) + 'px)'
         w.style.transform =
-          local >= 1 ? 'none' : 'translateY(' + ((1 - local) * 6).toFixed(2) + 'px)'
+          local >= 1 ? 'none' : 'translateY(' + ((1 - local) * 8).toFixed(2) + 'px)'
       })
     }
     let tick = false
@@ -462,16 +535,16 @@ export default function Home() {
         const tt = Math.min(t, 1.2)
         const ink = css('--gl-ink'),
           acc = css('--gl-accent'),
-          hair = css('--gl-hair-strong')
+          line = css('--gl-graph-line')
         ctx.clearRect(0, 0, W, H)
-        ctx.strokeStyle = hair
-        ctx.lineWidth = 1
+        ctx.strokeStyle = line
+        ctx.lineWidth = 1.2
         edges.forEach((e) => {
           if (tt > e.born) {
             const a = pts[e.a],
               b = pts[e.b]
             const k = Math.min(1, (tt - e.born) * 3)
-            ctx.globalAlpha = 0.5 * k
+            ctx.globalAlpha = 0.78 * k
             ctx.beginPath()
             ctx.moveTo(a.x, a.y)
             ctx.lineTo(a.x + (b.x - a.x) * k, a.y + (b.y - a.y) * k)
@@ -592,6 +665,7 @@ export default function Home() {
             <a href="#entende">{c.nav.entende}</a>
             <a href="#organiza">{c.nav.organiza}</a>
             <a href="#vigia">{c.nav.vigia}</a>
+            <a href="#planos">{c.nav.planos}</a>
             <a href="#aberto">{c.nav.aberto}</a>
           </nav>
           <div className="gl-nav-right">
@@ -697,8 +771,10 @@ export default function Home() {
           </div>
         </section>
 
-        <section className="gl-statement gl-container">
-          <p>{stmtWords}</p>
+        <section className="gl-statement">
+          <div className="gl-statement-sticky gl-container">
+            <p>{stmtWords}</p>
+          </div>
         </section>
 
         <Pillar
@@ -799,6 +875,53 @@ export default function Home() {
           </div>
         </section>
 
+        <section className="gl-planos" id="planos">
+          <div className="gl-container">
+            <div
+              className="gl-reveal"
+              style={{ textAlign: 'center', marginBottom: 'clamp(40px,7vh,64px)' }}
+            >
+              <span className="gl-kicker">{c.planos.kicker}</span>
+              <h2 className="gl-trust-title" style={{ marginInline: 'auto' }}>
+                {c.planos.title}
+              </h2>
+            </div>
+            <div className="gl-plan-grid">
+              {c.planos.tiers.map((tier, i) => (
+                <div
+                  className={
+                    'gl-plan gl-reveal d' + (i + 1) + ('featured' in tier ? ' featured' : '')
+                  }
+                  key={i}
+                >
+                  {'featured' in tier && <span className="gl-plan-badge">Recomendado</span>}
+                  <div className="gl-plan-name">{tier.name}</div>
+                  <div className="gl-plan-price">{tier.price}</div>
+                  <div className="gl-plan-note">{tier.note}</div>
+                  <p className="gl-plan-desc">{tier.desc}</p>
+                  {'ext' in tier ? (
+                    <a
+                      className={'gl-pill' + ('featured' in tier ? '' : ' ghost')}
+                      href={tier.href}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {tier.cta}
+                    </a>
+                  ) : (
+                    <Link
+                      className={'gl-pill' + ('featured' in tier ? '' : ' ghost')}
+                      href={tier.href}
+                    >
+                      {tier.cta}
+                    </Link>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
         <section className="gl-close gl-container" id="preco">
           <div className="gl-reveal">
             <h2>{c.close.title}</h2>
@@ -808,7 +931,7 @@ export default function Home() {
                 <span className="gl-ico">{GH}</span>
                 {c.close.ctaPrimary}
               </Link>
-              <a className="gl-pill ghost" href="#entende">
+              <a className="gl-pill ghost" href="#planos">
                 {c.close.ctaGhost}
               </a>
             </div>
@@ -836,19 +959,14 @@ export default function Home() {
                 <a href="#entende">{c.nav.entende}</a>
                 <a href="#organiza">{c.nav.organiza}</a>
                 <a href="#vigia">{c.nav.vigia}</a>
+                <a href="#planos">{c.nav.planos}</a>
               </div>
               <div className="gl-foot-col">
                 <h4>{c.foot.c2}</h4>
-                <a href="#aberto">GitHub</a>
+                <a href={GITHUB_URL} target="_blank" rel="noreferrer">
+                  GitHub
+                </a>
                 <a href="#aberto">Self-hosted</a>
-              </div>
-              <div className="gl-foot-col">
-                <h4>{c.foot.c3}</h4>
-                {c.foot.l3.map((l, i) => (
-                  <a href="#top" key={i}>
-                    {l}
-                  </a>
-                ))}
               </div>
             </div>
           </div>
