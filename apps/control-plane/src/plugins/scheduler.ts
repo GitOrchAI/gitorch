@@ -17,12 +17,14 @@ import {
   createPodmanCommandRunner,
   createPythonSdkRuntimeAdapter,
   isF6AgentRole,
+  realRuntimeCommandRunner,
   DEFAULT_AGENT_RUNTIME_ASSIGNMENTS,
   type F6AgentRole,
   type F6AgentRuntime,
   type RuntimeCommandRunner,
   type WorkspaceProvider,
 } from '@gitorch/agents'
+import type { EngineConnectionService } from '../services/engine-connection.js'
 import {
   LocalWorkspaceProvider,
   WorkspaceManager,
@@ -124,13 +126,57 @@ function buildWorkspaceProvider(app: FastifyInstance): WorkspaceProvider {
 }
 
 /**
+ * Runner do executor local-process (sem container): materializa a credencial
+ * conectada do dono num HOME temporário e a expõe ao processo filho — sem
+ * isto, um motor conectado via token colado (ex.: Claude) nunca chegava à
+ * missão fora do podman, porque só o entrypoint da imagem exportava
+ * `.gitorch/env/*` como variável de ambiente (o local-process não tem
+ * entrypoint nenhum). Sem GITORCH_RUNTIME/GITORCH_OWNER_USER_ID no pedido, ou
+ * sem conexão do motor, roda inalterado (fallback pras credenciais ambiente
+ * do host, comportamento de sempre em modo single-tenant).
+ */
+export function createLocalCredentialRunner(
+  engineConnections: Pick<EngineConnectionService, 'materializeToHome'>,
+  innerRunner: RuntimeCommandRunner = realRuntimeCommandRunner
+): RuntimeCommandRunner {
+  return async (request) => {
+    const runtime = request.env['GITORCH_RUNTIME']
+    const ownerUserId = request.env['GITORCH_OWNER_USER_ID']
+    if (!runtime || !ownerUserId) return innerRunner(request)
+
+    const dir = path.join(os.tmpdir(), `gitorch-local-cred-${randomUUID()}`)
+    await fs.mkdir(dir, { recursive: true, mode: 0o700 })
+    try {
+      const ok = await engineConnections.materializeToHome(ownerUserId, runtime, dir)
+      if (!ok) return await innerRunner(request)
+
+      // Espelha o loop genérico do entrypoint.sh (scripts/infra/agent-image):
+      // qualquer arquivo em .gitorch/env/* vira variável de ambiente do
+      // processo filho — aqui é o único lugar que faz isso fora do container.
+      const envDir = path.join(dir, '.gitorch', 'env')
+      const envAdditions: Record<string, string> = { HOME: dir }
+      const envFiles = await fs.readdir(envDir).catch(() => [] as string[])
+      for (const name of envFiles) {
+        envAdditions[name] = (await fs.readFile(path.join(envDir, name), 'utf8')).trim()
+      }
+
+      return await innerRunner({ ...request, env: { ...request.env, ...envAdditions } })
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true })
+    }
+  }
+}
+
+/**
  * Runner das missões conforme o executor. No modo podman, cada missão roda em
  * container descartável: enxerga só o workspace e as credenciais montadas —
- * nunca o .env do control plane ou o sistema de arquivos do host.
+ * nunca o .env do control plane ou o sistema de arquivos do host. No modo
+ * local-process, credencial ainda é materializada (createLocalCredentialRunner)
+ * — só o mecanismo de isolamento (container vs HOME temporário) muda.
  */
-function buildMissionRunner(app: FastifyInstance): RuntimeCommandRunner | undefined {
+function buildMissionRunner(app: FastifyInstance): RuntimeCommandRunner {
   const executor = process.env['GITORCH_EXECUTOR'] ?? 'local-process'
-  if (executor !== 'podman') return undefined
+  if (executor !== 'podman') return createLocalCredentialRunner(app.engineConnections)
 
   const image = process.env['GITORCH_AGENT_IMAGE'] ?? 'localhost/gitorch-agent:latest'
   const engine = process.env['GITORCH_CONTAINER_ENGINE'] ?? 'podman'
@@ -225,7 +271,10 @@ function buildRuntimeStack(
   workspaceProvider: WorkspaceProvider
 ): RuntimeStack {
   const registry = new RuntimeRegistry()
-  const containerized = missionRunner !== undefined
+  // Nota: missionRunner agora é sempre definido (local-process também tem um
+  // runner, via createLocalCredentialRunner) — "containerized" precisa checar
+  // o executor de verdade, não mais a presença de um runner.
+  const containerized = process.env['GITORCH_EXECUTOR'] === 'podman'
 
   // Motor principal: Antigravity CLI. Política do projeto: runtimes de agente
   // autenticam por OAuth (nunca por chave de API embutida no ambiente).
