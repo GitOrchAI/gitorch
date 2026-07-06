@@ -1,4 +1,5 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
+import { Prisma } from '@prisma/client'
 import { getEnv } from '../config/env.js'
 import jwt from 'jsonwebtoken'
 
@@ -139,11 +140,29 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
       // e-mail → Prisma User.id (cuid) — nunca o id numérico do GitHub. O id
       // da sessão precisa ser o MESMO id, senão a credencial cifrada e o
       // dono do projeto nunca se encontram.
-      const dbUser = await app.prisma.user.upsert({
-        where: { email },
-        update: { githubLogin: userData.login },
-        create: { email, githubLogin: userData.login },
-      })
+      let dbUser
+      try {
+        dbUser = await app.prisma.user.upsert({
+          where: { email },
+          update: { githubLogin: userData.login },
+          create: { email, githubLogin: userData.login },
+        })
+      } catch (err) {
+        // Colisão: a conta trocou qual e-mail é primário/verificado no GitHub
+        // desde o último login — o upsert por e-mail tenta CRIAR um User (não
+        // existe nenhum com o e-mail novo) e esbarra na constraint única de
+        // githubLogin, que já pertence ao User antigo dessa MESMA conta.
+        // githubLogin identifica a conta com mais força que o e-mail (que
+        // pode mudar do lado do provider), então re-vincula em vez de falhar.
+        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+          dbUser = await app.prisma.user.update({
+            where: { githubLogin: userData.login },
+            data: { email },
+          })
+        } else {
+          throw err
+        }
+      }
       const userId = dbUser.id
 
       // Sign JWT session token. O token do GitHub NUNCA viaja aqui — o JWT é

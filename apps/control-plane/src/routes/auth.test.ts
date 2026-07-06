@@ -3,6 +3,7 @@ import Fastify from 'fastify'
 import fastifyCookie from '@fastify/cookie'
 import jwt from 'jsonwebtoken'
 import rateLimit from '@fastify/rate-limit'
+import { Prisma } from '@prisma/client'
 import { resetEnvCache } from '../config/env.js'
 import { authRoutes } from './auth.js'
 import { authPlugin } from '../plugins/auth.js'
@@ -251,6 +252,55 @@ describe('GitHub OAuth callback', () => {
     expect(userUpsert).not.toHaveBeenCalled()
     expect(connectGitHubToken).not.toHaveBeenCalled()
     expect(res.headers['set-cookie']).toBeUndefined()
+  })
+
+  it("re-links the account by githubLogin instead of crashing when the GitHub account's email changed", async () => {
+    // A conta já tem um User (githubLogin='octocat', email antigo). O upsert
+    // por e-mail tenta CRIAR (novo e-mail, nenhum User com ele) e colide com
+    // a constraint única de githubLogin — sem tratar isso, o callback OAuth
+    // 500a em vez de atualizar o e-mail do User existente.
+    const p2002 = new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+      code: 'P2002',
+      clientVersion: '5.22.0',
+      meta: { target: ['github_login'] },
+    })
+    userUpsert.mockRejectedValueOnce(p2002)
+    const userUpdate = vi.fn().mockResolvedValue({
+      id: 'dbuser_cuid_123',
+      email: 'novo@example.test',
+      githubLogin: 'octocat',
+    })
+    app.prisma.user.update = userUpdate
+
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = typeof url === 'string' ? url : url.toString()
+      if (href.includes('github.com/login/oauth/access_token')) {
+        return new Response(JSON.stringify({ access_token: 'gh_raw_token' }), { status: 200 })
+      }
+      if (href.includes('api.github.com/user')) {
+        return new Response(
+          JSON.stringify({ id: 42, login: 'octocat', email: 'novo@example.test' }),
+          { status: 200 }
+        )
+      }
+      throw new Error(`unexpected fetch ${href}`)
+    }) as unknown as typeof fetch
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/auth/github/callback?code=abc123',
+    })
+
+    expect(res.statusCode).toBe(302)
+    expect(userUpdate).toHaveBeenCalledWith({
+      where: { githubLogin: 'octocat' },
+      data: { email: 'novo@example.test' },
+    })
+    const setCookie = res.headers['set-cookie']
+    const cookieHeader = Array.isArray(setCookie) ? setCookie[0] : setCookie
+    const tokenMatch = cookieHeader?.match(/gitorch_session=([^;]+)/)
+    const decoded = jwt.decode(tokenMatch![1]) as Record<string, unknown>
+    expect(decoded['userId']).toBe('dbuser_cuid_123')
   })
 })
 
