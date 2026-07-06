@@ -69,7 +69,7 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
         with:
           # Rigor 2: a infra do Pages falha com "try again later" de vez em
           # quando; mais tolerância a erro transitório evita deploy stale/verde-falso.
