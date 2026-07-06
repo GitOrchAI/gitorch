@@ -3,6 +3,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useLanguage } from '../LanguageContext'
+import { API_BASE_URL } from '../lib/api'
 
 /* Landing copy lives here (not in locales.ts) because it carries structured
    content — arrays of console events and statement words — that the string-only
@@ -357,6 +358,45 @@ export default function Home() {
   const c = COPY[lang]
   const rootRef = useRef<HTMLDivElement>(null)
   const [theme, setTheme] = useState<'dark' | 'light' | null>(null)
+  // Preços por FAIXA do país do visitante (backend detecta pelo IP). null = ainda
+  // carregando / falhou → mantém o preço estático dos cards (USD faixa A).
+  const [prices, setPrices] = useState<Record<string, { amount: number; currency: string }> | null>(
+    null
+  )
+  const [waitPlan, setWaitPlan] = useState<string | null>(null)
+  const [waitEmail, setWaitEmail] = useState('')
+  const [waitStatus, setWaitStatus] = useState<'idle' | 'sending' | 'done' | 'error'>('idle')
+
+  useEffect(() => {
+    let alive = true
+    fetch(`${API_BASE_URL}/api/pricing`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { plans?: Array<{ planId: string; unitAmount: number; currency: string }> }) => {
+        if (!alive || !data?.plans) return
+        const map: Record<string, { amount: number; currency: string }> = {}
+        for (const p of data.plans) map[p.planId] = { amount: p.unitAmount, currency: p.currency }
+        setPrices(map)
+      })
+      .catch(() => undefined)
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  const submitWaitlist = async () => {
+    if (!waitEmail.includes('@')) return
+    setWaitStatus('sending')
+    try {
+      const r = await fetch(`${API_BASE_URL}/api/waitlist`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: waitEmail, planId: waitPlan }),
+      })
+      setWaitStatus(r.ok ? 'done' : 'error')
+    } catch {
+      setWaitStatus('error')
+    }
+  }
 
   const toggleTheme = () => {
     const prefersDark =
@@ -906,40 +946,58 @@ export default function Home() {
               </h2>
             </div>
             <div className="gl-plan-grid">
-              {c.planos.tiers.map((tier, i) => (
-                <div
-                  className={
-                    'gl-plan gl-reveal d' + (i + 1) + ('featured' in tier ? ' featured' : '')
-                  }
-                  key={i}
-                >
-                  {'featured' in tier && <span className="gl-plan-badge">Recomendado</span>}
-                  <div className="gl-plan-name">{tier.name}</div>
-                  <div className="gl-plan-price">
-                    {tier.price}
-                    {'unit' in tier && <span className="gl-plan-unit">{tier.unit}</span>}
+              {c.planos.tiers.map((tier, i) => {
+                const planId =
+                  (
+                    {
+                      Grátis: 'free',
+                      Free: 'free',
+                      Solo: 'solo',
+                      Pro: 'pro',
+                      Team: 'team',
+                    } as Record<string, string>
+                  )[tier.name] ?? tier.name.toLowerCase()
+                const geo = prices?.[planId]
+                let priceLabel = tier.price
+                if (geo) {
+                  const v = geo.amount / 100
+                  const sym = geo.currency === 'brl' ? 'R$' : '$'
+                  priceLabel = sym + (Number.isInteger(v) ? String(v) : v.toFixed(2))
+                }
+                const isFree = planId === 'free'
+                return (
+                  <div
+                    className={
+                      'gl-plan gl-reveal d' + (i + 1) + ('featured' in tier ? ' featured' : '')
+                    }
+                    key={i}
+                  >
+                    {'featured' in tier && <span className="gl-plan-badge">Recomendado</span>}
+                    <div className="gl-plan-name">{tier.name}</div>
+                    <div className="gl-plan-price">
+                      {priceLabel}
+                      {'unit' in tier && <span className="gl-plan-unit">{tier.unit}</span>}
+                    </div>
+                    <div className="gl-plan-note">{tier.note}</div>
+                    <p className="gl-plan-desc">{tier.desc}</p>
+                    {isFree ? (
+                      <Link className="gl-pill ghost" href="/setup">
+                        {tier.cta}
+                      </Link>
+                    ) : (
+                      <button
+                        className={'gl-pill' + ('featured' in tier ? '' : ' ghost')}
+                        onClick={() => {
+                          setWaitPlan(planId)
+                          setWaitStatus('idle')
+                        }}
+                      >
+                        {tier.cta}
+                      </button>
+                    )}
                   </div>
-                  <div className="gl-plan-note">{tier.note}</div>
-                  <p className="gl-plan-desc">{tier.desc}</p>
-                  {'ext' in tier ? (
-                    <a
-                      className={'gl-pill' + ('featured' in tier ? '' : ' ghost')}
-                      href={tier.href}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      {tier.cta}
-                    </a>
-                  ) : (
-                    <Link
-                      className={'gl-pill' + ('featured' in tier ? '' : ' ghost')}
-                      href={tier.href}
-                    >
-                      {tier.cta}
-                    </Link>
-                  )}
-                </div>
-              ))}
+                )
+              })}
             </div>
             <p className="gl-plan-foot gl-reveal">{c.planos.note}</p>
           </div>
@@ -999,6 +1057,79 @@ export default function Home() {
           </div>
         </div>
       </footer>
+
+      {waitPlan && (
+        <div
+          className="gl-wait-overlay"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setWaitPlan(null)
+          }}
+        >
+          <div className="gl-wait" role="dialog" aria-modal="true">
+            {waitStatus === 'done' ? (
+              <>
+                <div className="gl-wait-title">
+                  {lang === 'pt' ? 'Você está na lista ✓' : "You're on the list ✓"}
+                </div>
+                <p className="gl-wait-desc">
+                  {lang === 'pt'
+                    ? 'Avisamos assim que abrir uma vaga. Obrigado!'
+                    : "We'll ping you the moment a spot opens. Thanks!"}
+                </p>
+                <button className="gl-pill" onClick={() => setWaitPlan(null)}>
+                  {lang === 'pt' ? 'Fechar' : 'Close'}
+                </button>
+              </>
+            ) : (
+              <>
+                <div className="gl-wait-title">
+                  {lang === 'pt' ? 'Entrar na lista de espera' : 'Join the waitlist'}
+                </div>
+                <p className="gl-wait-desc">
+                  {lang === 'pt'
+                    ? `Plano ${waitPlan}. Estamos abrindo por convite — deixe seu email e chamamos você.`
+                    : `${waitPlan} plan. We're opening by invite — leave your email and we'll reach out.`}
+                </p>
+                <input
+                  className="gl-wait-input"
+                  type="email"
+                  placeholder={lang === 'pt' ? 'seu@email.com' : 'you@email.com'}
+                  value={waitEmail}
+                  onChange={(e) => setWaitEmail(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void submitWaitlist()
+                  }}
+                />
+                {waitStatus === 'error' && (
+                  <p className="gl-wait-err">
+                    {lang === 'pt'
+                      ? 'Deu erro. Tenta de novo?'
+                      : 'Something went wrong. Try again?'}
+                  </p>
+                )}
+                <div className="gl-wait-actions">
+                  <button className="gl-pill ghost" onClick={() => setWaitPlan(null)}>
+                    {lang === 'pt' ? 'Cancelar' : 'Cancel'}
+                  </button>
+                  <button
+                    className="gl-pill"
+                    disabled={waitStatus === 'sending' || !waitEmail.includes('@')}
+                    onClick={() => void submitWaitlist()}
+                  >
+                    {waitStatus === 'sending'
+                      ? lang === 'pt'
+                        ? 'Enviando…'
+                        : 'Sending…'
+                      : lang === 'pt'
+                        ? 'Entrar'
+                        : 'Join'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
