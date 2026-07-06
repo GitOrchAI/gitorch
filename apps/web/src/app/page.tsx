@@ -411,27 +411,22 @@ export default function Home() {
     const words = stmt ? Array.from(stmt.querySelectorAll<HTMLElement>('.gl-word')) : []
     const litOnScroll = () => {
       if (!stmt) return
-      if (reduce) {
-        words.forEach((w) => {
-          w.style.opacity = '1'
-          w.style.filter = 'none'
-          w.style.transform = 'none'
-        })
-        return
-      }
       const r = stmt.getBoundingClientRect()
       const vh = window.innerHeight
       const N = words.length
-      // stmt is a tall section; while its inner text is pinned (sticky), -top
-      // runs 0 → (height - vh). Map that scroll span to a word-by-word wave.
+      // stmt é alto; enquanto o texto fica pinado (sticky), -top vai 0 → (altura-vh).
+      // Mapeia esse trecho de scroll numa onda palavra a palavra. Sob reduce-motion,
+      // revelamos só por OPACIDADE (sem blur/translate) — a "palavra aparecendo ao
+      // rolar" continua funcionando, sem o movimento pesado (acessível).
       const prog = Math.max(0, Math.min(1, -r.top / Math.max(1, stmt.offsetHeight - vh)))
-      const p = Math.min(1, prog / 0.72) // finish the reveal ~72% through the pin
+      const p = Math.min(1, prog / 0.72) // termina a revelação ~72% do pin
       words.forEach((w, i) => {
         const local = Math.max(0, Math.min(1, p * (N + 2) - i))
         w.style.opacity = (0.08 + 0.92 * local).toFixed(3)
-        w.style.filter = local >= 1 ? 'none' : 'blur(' + ((1 - local) * 7).toFixed(2) + 'px)'
+        w.style.filter =
+          reduce || local >= 1 ? 'none' : 'blur(' + ((1 - local) * 7).toFixed(2) + 'px)'
         w.style.transform =
-          local >= 1 ? 'none' : 'translateY(' + ((1 - local) * 8).toFixed(2) + 'px)'
+          reduce || local >= 1 ? 'none' : 'translateY(' + ((1 - local) * 8).toFixed(2) + 'px)'
       })
     }
     let tick = false
