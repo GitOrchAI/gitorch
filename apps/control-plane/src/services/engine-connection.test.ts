@@ -156,6 +156,14 @@ describe('EngineConnectionService', () => {
     expect(await svc.getRawGithubToken('user_sem_conexao')).toBeNull()
   })
 
+  test('getRawGithubToken segue funcionando após parar de materializar em disco (round-trip via readArchiveEntry)', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+    await svc.connectGitHubToken('user_gh3', 'github_pat_NO_DISK_xyz')
+    expect(await svc.getRawGithubToken('user_gh3')).toBe('github_pat_NO_DISK_xyz')
+  })
+
   test('connectRawToken (claude setup-token) materializa como env var, não como arquivo de config', async () => {
     const prisma = fakePrisma()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

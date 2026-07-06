@@ -4,7 +4,7 @@ import * as path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { PrismaClient } from '@prisma/client'
 import { decryptCredential, encryptCredential } from '../lib/credential-crypto.js'
-import { archivePaths, restoreDirectory } from '../lib/credential-archive.js'
+import { archivePaths, readArchiveEntry, restoreDirectory } from '../lib/credential-archive.js'
 import { MODEL_DISCOVERERS } from './model-catalog.js'
 import { QUOTA_READERS } from './quota-reader.js'
 
@@ -212,21 +212,18 @@ export class EngineConnectionService {
 
   /**
    * Lê o token do GitHub do usuário em texto puro, para chamadas server-side
-   * à API do GitHub (ex.: listar repos no wizard). Nunca escreve no disco do
-   * host — materializa num HOME temporário 0700, lê, apaga. Retorna null se
-   * não há conexão.
+   * à API do GitHub (ex.: listar repos no wizard). Lê o blob decifrado
+   * direto em memória (readArchiveEntry) — nunca grava nada no disco do
+   * host. Retorna null se não há conexão.
    */
   async getRawGithubToken(userId: string): Promise<string | null> {
-    const home = path.join(os.tmpdir(), `gitorch-ghread-${randomUUID()}`)
-    await fs.mkdir(home, { recursive: true, mode: 0o700 })
-    try {
-      const materialized = await this.materializeToHome(userId, 'github', home)
-      if (!materialized) return null
-      const token = await fs.readFile(path.join(home, '.gitorch', 'gh-token'), 'utf8')
-      return token.trim()
-    } finally {
-      await fs.rm(home, { recursive: true, force: true })
-    }
+    const record = await this.prisma.engineConnection.findUnique({
+      where: { userId_runtime: { userId, runtime: 'github' } },
+    })
+    if (!record?.encryptedCredential || record.status !== 'connected') return null
+    const blob = decryptCredential(record.encryptedCredential)
+    const token = readArchiveEntry(blob, '.gitorch/gh-token')
+    return token?.trim() ?? null
   }
 
   async list(userId: string): Promise<ConnectionStatus[]> {

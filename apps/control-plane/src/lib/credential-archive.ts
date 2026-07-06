@@ -91,6 +91,20 @@ export async function archivePaths(baseDir: string, relPaths: string[]): Promise
 }
 
 /**
+ * Lê UMA entrada do blob diretamente em memória (sem restaurar em disco).
+ * Para consumidores que só precisam do conteúdo como string (ex.: um token
+ * pra usar numa chamada de API) — evitar o ciclo mkdir/writeFile/readFile/rm
+ * que restoreDirectory exige quando o objetivo real é só ler um valor.
+ * Retorna null se a entrada não existir no blob.
+ */
+export function readArchiveEntry(blob: string, relPath: string): string | null {
+  const archive = JSON.parse(blob) as ArchiveV1
+  const entry = archive.entries.find((e) => e.path === relPath)
+  if (!entry) return null
+  return Buffer.from(entry.content, 'base64').toString('utf8')
+}
+
+/**
  * Restaura um blob em `destDir`. Recusa qualquer entrada cujo caminho escape da
  * raiz (defesa contra path traversal em blob adulterado).
  */
