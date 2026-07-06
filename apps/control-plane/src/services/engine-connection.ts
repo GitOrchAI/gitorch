@@ -18,7 +18,13 @@ const DEFAULT_CREDENTIAL_PATHS: Record<string, string[]> = {
   // models_cache.json é o catálogo de modelos do Codex (atualizado no login);
   // vai junto para a descoberta de modelos funcionar. Ausência é tolerada.
   codex: ['.codex/auth.json', '.codex/models_cache.json'],
-  claude: ['.claude/.credentials.json'],
+  // .claude/.credentials.json cobre o login interativo (/login); o wizard usa
+  // o fluxo real de `claude setup-token` (token colado, sem UI web possível
+  // pro provider) — esse token vira uma variável de ambiente, não um arquivo
+  // de config do CLI, então mora em .gitorch/env/ (mesmo entrypoint que já
+  // exporta .gitorch/gh-token como GH_TOKEN faz o mesmo para qualquer arquivo
+  // aqui — ver scripts/infra/agent-image/entrypoint.sh).
+  claude: ['.claude/.credentials.json', '.gitorch/env/CLAUDE_CODE_OAUTH_TOKEN'],
   // As "mãos" dos agentes no GitHub: um token (fine-grained PAT hoje; token de
   // GitHub App no futuro) que a missão recebe como GH_TOKEN dentro do sandbox.
   // Mesmo ciclo de vida das credenciais de motor: cifrado por usuário,
@@ -61,7 +67,8 @@ export class EngineConnectionService {
   async captureFromHome(
     userId: string,
     runtime: string,
-    homeDir: string
+    homeDir: string,
+    extra?: { credentialKind?: 'file' | 'env'; envVarName?: string; expiresAt?: Date }
   ): Promise<ConnectionStatus> {
     const relPaths = ENGINE_CREDENTIAL_PATHS[runtime]
     if (!relPaths) throw new Error(`Runtime não suportado: ${runtime}`)
@@ -75,15 +82,27 @@ export class EngineConnectionService {
 
     const encryptedCredential = encryptCredential(blob)
     const now = new Date()
+    const extraFields = {
+      ...(extra?.credentialKind ? { credentialKind: extra.credentialKind } : {}),
+      ...(extra?.envVarName ? { envVarName: extra.envVarName } : {}),
+      ...(extra?.expiresAt ? { expiresAt: extra.expiresAt } : {}),
+    }
     const record = await this.prisma.engineConnection.upsert({
       where: { userId_runtime: { userId, runtime } },
-      update: { encryptedCredential, status: 'connected', lastValidatedAt: now, lastError: null },
+      update: {
+        encryptedCredential,
+        status: 'connected',
+        lastValidatedAt: now,
+        lastError: null,
+        ...extraFields,
+      },
       create: {
         userId,
         runtime,
         encryptedCredential,
         status: 'connected',
         lastValidatedAt: now,
+        ...extraFields,
       },
     })
     return toStatus(record)
@@ -107,6 +126,40 @@ export class EngineConnectionService {
     try {
       await fs.writeFile(path.join(home, '.gitorch', 'gh-token'), trimmed, { mode: 0o600 })
       return await this.captureFromHome(userId, 'github', home)
+    } finally {
+      await fs.rm(home, { recursive: true, force: true })
+    }
+  }
+
+  /**
+   * Conecta um motor via token colado que o próprio provider não expõe como
+   * arquivo de config do CLI (ex.: `claude setup-token`, que gera um valor
+   * pra usar como variável de ambiente, não um `.credentials.json`). O token
+   * vira um arquivo em `.gitorch/env/<envVarName>` — o entrypoint da missão
+   * exporta qualquer arquivo ali como env var do mesmo nome (mesma lógica já
+   * usada para `.gitorch/gh-token` → GH_TOKEN).
+   */
+  async connectRawToken(
+    userId: string,
+    runtime: string,
+    token: string,
+    options: { envVarName: string; expiresAt?: Date }
+  ): Promise<ConnectionStatus> {
+    const trimmed = token.trim()
+    if (!trimmed || /\s/.test(trimmed)) {
+      throw new Error(`token de ${runtime} inválido: vazio ou com espaços`)
+    }
+    const home = path.join(os.tmpdir(), `gitorch-envtoken-${randomUUID()}`)
+    await fs.mkdir(path.join(home, '.gitorch', 'env'), { recursive: true, mode: 0o700 })
+    try {
+      await fs.writeFile(path.join(home, '.gitorch', 'env', options.envVarName), trimmed, {
+        mode: 0o600,
+      })
+      return await this.captureFromHome(userId, runtime, home, {
+        credentialKind: 'env',
+        envVarName: options.envVarName,
+        ...(options.expiresAt ? { expiresAt: options.expiresAt } : {}),
+      })
     } finally {
       await fs.rm(home, { recursive: true, force: true })
     }

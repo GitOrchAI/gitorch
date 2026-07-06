@@ -155,4 +155,43 @@ describe('EngineConnectionService', () => {
     const svc = new EngineConnectionService(prisma as any)
     expect(await svc.getRawGithubToken('user_sem_conexao')).toBeNull()
   })
+
+  test('connectRawToken (claude setup-token) materializa como env var, não como arquivo de config', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+
+    const status = await svc.connectRawToken('user_claude', 'claude', 'sk-ant-oat01-FAKE', {
+      envVarName: 'CLAUDE_CODE_OAUTH_TOKEN',
+    })
+    expect(status.runtime).toBe('claude')
+    expect(status.status).toBe('connected')
+
+    const stored = prisma.store.get('user_claude:claude')
+    expect(stored?.['credentialKind']).toBe('env')
+    expect(stored?.['envVarName']).toBe('CLAUDE_CODE_OAUTH_TOKEN')
+    // credencial guardada não é texto puro
+    expect(String(stored?.['encryptedCredential'])).not.toContain('sk-ant-oat01-FAKE')
+
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-claudehome-'))
+    expect(await svc.materializeToHome('user_claude', 'claude', home)).toBe(true)
+    const tokenPath = path.join(home, '.gitorch', 'env', 'CLAUDE_CODE_OAUTH_TOKEN')
+    expect((await fs.readFile(tokenPath, 'utf8')).trim()).toBe('sk-ant-oat01-FAKE')
+    const mode = (await fs.stat(tokenPath)).mode & 0o777
+    expect(mode).toBe(0o600)
+
+    await fs.rm(home, { recursive: true, force: true })
+  })
+
+  test('connectRawToken rejeita token vazio ou com espaço', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+    await expect(
+      svc.connectRawToken('u', 'claude', '', { envVarName: 'CLAUDE_CODE_OAUTH_TOKEN' })
+    ).rejects.toThrow('token')
+    await expect(
+      svc.connectRawToken('u', 'claude', 'com espaço\n', { envVarName: 'CLAUDE_CODE_OAUTH_TOKEN' })
+    ).rejects.toThrow('token')
+  })
 })
