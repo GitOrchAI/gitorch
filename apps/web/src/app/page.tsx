@@ -26,31 +26,43 @@ const COPY = {
     planos: {
       kicker: 'Planos',
       title: 'Comece grátis. Cresça quando quiser.',
+      note: 'Preços em dólar. Preço por país em breve. Lançamento por lista de espera.',
       tiers: [
         {
-          name: 'Open Core',
-          price: 'Grátis',
-          note: 'Para sempre · self-hosted',
-          desc: 'Todo o motor, de código aberto, rodando na sua máquina.',
-          cta: 'Ver no GitHub',
-          href: GITHUB_URL,
-          ext: true,
+          name: 'Grátis',
+          price: '$0',
+          unit: 'para sempre',
+          note: '1 projeto',
+          desc: 'Você aprova cada missão. Self-hosted open-core ilimitado.',
+          cta: 'Começar',
+          href: '/setup',
         },
         {
-          name: 'Cloud',
-          price: 'Em breve',
-          note: 'Nuvem gerenciada',
-          desc: 'A gente cuida da infra. Você conecta o GitHub e usa.',
-          cta: 'Começar grátis',
+          name: 'Solo',
+          price: '$10',
+          unit: '/mês',
+          note: '2 projetos · sensores',
+          desc: 'O loop que mantém seu repositório saudável, sozinho.',
+          cta: 'Entrar na lista',
+          href: '/setup',
+        },
+        {
+          name: 'Pro',
+          price: '$29',
+          unit: '/mês',
+          note: 'Mais missões · fila prioritária',
+          desc: 'Para quem depende do GitOrch todo dia.',
+          cta: 'Entrar na lista',
           href: '/setup',
           featured: true,
         },
         {
-          name: 'Enterprise',
-          price: 'Sob medida',
-          note: 'Times e organizações',
-          desc: 'Isolamento dedicado, SSO e suporte próximo.',
-          cta: 'Começar',
+          name: 'Team',
+          price: '$79',
+          unit: '/mês',
+          note: 'Multiusuário · SSO',
+          desc: 'Seu time inteiro no piloto automático.',
+          cta: 'Falar com a gente',
           href: '/setup',
         },
       ],
@@ -165,31 +177,43 @@ const COPY = {
     planos: {
       kicker: 'Plans',
       title: 'Start free. Grow when you want.',
+      note: 'Prices in USD. Local pricing per country coming soon. Launching by waitlist.',
       tiers: [
         {
-          name: 'Open Core',
-          price: 'Free',
-          note: 'Forever · self-hosted',
-          desc: 'The whole engine, open source, running on your own machine.',
-          cta: 'View on GitHub',
-          href: GITHUB_URL,
-          ext: true,
+          name: 'Free',
+          price: '$0',
+          unit: 'forever',
+          note: '1 project',
+          desc: 'You approve every mission. Self-hosted open-core, unlimited.',
+          cta: 'Start',
+          href: '/setup',
         },
         {
-          name: 'Cloud',
-          price: 'Soon',
-          note: 'Managed cloud',
-          desc: 'We handle the infra. You connect GitHub and go.',
-          cta: 'Start free',
+          name: 'Solo',
+          price: '$10',
+          unit: '/mo',
+          note: '2 projects · sensors',
+          desc: 'The loop that keeps your repository healthy, on its own.',
+          cta: 'Join the list',
+          href: '/setup',
+        },
+        {
+          name: 'Pro',
+          price: '$29',
+          unit: '/mo',
+          note: 'More missions · priority queue',
+          desc: 'For those who rely on GitOrch every day.',
+          cta: 'Join the list',
           href: '/setup',
           featured: true,
         },
         {
-          name: 'Enterprise',
-          price: 'Custom',
-          note: 'Teams and orgs',
-          desc: 'Dedicated isolation, SSO and close support.',
-          cta: 'Get started',
+          name: 'Team',
+          price: '$79',
+          unit: '/mo',
+          note: 'Multi-user · SSO',
+          desc: 'Your whole team on autopilot.',
+          cta: 'Talk to us',
           href: '/setup',
         },
       ],
@@ -896,7 +920,10 @@ export default function Home() {
                 >
                   {'featured' in tier && <span className="gl-plan-badge">Recomendado</span>}
                   <div className="gl-plan-name">{tier.name}</div>
-                  <div className="gl-plan-price">{tier.price}</div>
+                  <div className="gl-plan-price">
+                    {tier.price}
+                    {'unit' in tier && <span className="gl-plan-unit">{tier.unit}</span>}
+                  </div>
                   <div className="gl-plan-note">{tier.note}</div>
                   <p className="gl-plan-desc">{tier.desc}</p>
                   {'ext' in tier ? (
@@ -919,6 +946,7 @@ export default function Home() {
                 </div>
               ))}
             </div>
+            <p className="gl-plan-foot gl-reveal">{c.planos.note}</p>
           </div>
         </section>
 
