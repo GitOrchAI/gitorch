@@ -230,6 +230,10 @@ export class EngineConnectionService {
     })
     if (!record?.encryptedCredential || record.status !== 'connected') return false
     if (!ENGINE_CREDENTIAL_PATHS[runtime]) return false
+    // expiresAt existe desde 151b471 mas nada nunca checava — uma missão
+    // continuava materializando um token vencido silenciosamente até o CLI
+    // falhar a autenticação lá dentro, em vez do control plane detectar aqui.
+    if (record.expiresAt && record.expiresAt.getTime() < Date.now()) return false
 
     // O blob guarda caminhos relativos ao HOME; restaura na raiz do HOME alvo.
     const blob = decryptCredential(record.encryptedCredential)

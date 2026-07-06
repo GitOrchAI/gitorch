@@ -39,6 +39,13 @@ const enginesPluginImpl: FastifyPluginAsync = async (app) => {
   const ENV_CREDENTIAL_VAR: Record<string, string> = {
     claude: 'CLAUDE_CODE_OAUTH_TOKEN',
   }
+  // `claude setup-token` documenta validade de ~1 ano. Sem gravar isto,
+  // expiresAt (schema desde 151b471) ficava pra sempre null e a conexão nunca
+  // era detectada como vencida — materializeToHome seguia servindo o token
+  // morto pras missões até o CLI falhar a autenticação lá dentro.
+  const ENV_CREDENTIAL_TTL_DAYS: Record<string, number> = {
+    claude: 365,
+  }
   app.post('/api/v1/engines/:runtime/token', async (request, reply) => {
     const userId = await resolveUserId(app, request)
     if (!userId) return reply.code(401).send({ error: 'UNAUTHORIZED: user session required' })
@@ -47,9 +54,17 @@ const enginesPluginImpl: FastifyPluginAsync = async (app) => {
     if (!token) return reply.code(400).send({ error: 'token é obrigatório' })
     try {
       const envVarName = ENV_CREDENTIAL_VAR[runtime]
-      const status = envVarName
-        ? await service.connectRawToken(userId, runtime, token, { envVarName })
-        : await service.connectFileCredential(userId, runtime, token)
+      let status
+      if (envVarName) {
+        const ttlDays = ENV_CREDENTIAL_TTL_DAYS[runtime]
+        const expiresAt = ttlDays ? new Date(Date.now() + ttlDays * 24 * 60 * 60 * 1000) : undefined
+        status = await service.connectRawToken(userId, runtime, token, {
+          envVarName,
+          ...(expiresAt ? { expiresAt } : {}),
+        })
+      } else {
+        status = await service.connectFileCredential(userId, runtime, token)
+      }
       return reply.send({ connected: true, status })
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message })

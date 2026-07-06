@@ -43,6 +43,13 @@ describe('POST /api/v1/engines/:runtime/token', () => {
         update: expect.objectContaining({ credentialKind: 'env' }),
       })
     )
+    // O setup-token do Claude vale ~1 ano — sem gravar isso, expiresAt ficava
+    // pra sempre null e a conexão nunca era detectada como vencida depois.
+    const upsertCall = app.prisma.engineConnection.upsert.mock.calls[0]![0] as {
+      update: { expiresAt?: Date }
+    }
+    expect(upsertCall.update.expiresAt).toBeInstanceOf(Date)
+    expect(upsertCall.update.expiresAt!.getTime()).toBeGreaterThan(Date.now())
   })
 
   it('connects claude via the wizard\'s own product-name alias "claude-code" (same vocabulary setup/submit uses)', async () => {

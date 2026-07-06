@@ -191,6 +191,21 @@ describe('EngineConnectionService', () => {
     await fs.rm(home, { recursive: true, force: true })
   })
 
+  test('materializeToHome trata uma conexão com expiresAt no passado como desconectada', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+
+    await svc.connectRawToken('user_expired', 'claude', 'sk-ant-oat01-FAKE', {
+      envVarName: 'CLAUDE_CODE_OAUTH_TOKEN',
+      expiresAt: new Date(Date.now() - 1000),
+    })
+
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-expiredhome-'))
+    expect(await svc.materializeToHome('user_expired', 'claude', home)).toBe(false)
+    await fs.rm(home, { recursive: true, force: true })
+  })
+
   test('connectRawToken rejeita token vazio ou com espaço', async () => {
     const prisma = fakePrisma()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
