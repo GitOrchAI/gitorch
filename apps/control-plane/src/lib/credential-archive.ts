@@ -70,6 +70,7 @@ export async function archiveDirectory(dir: string): Promise<string | null> {
  */
 export async function archivePaths(baseDir: string, relPaths: string[]): Promise<string | null> {
   const entries: ArchivedEntry[] = []
+  let total = 0
   for (const rel of relPaths) {
     const abs = path.join(baseDir, rel)
     // lstat (não stat): um symlink no caminho de credencial não deve ser seguido
@@ -79,8 +80,15 @@ export async function archivePaths(baseDir: string, relPaths: string[]): Promise
     if (!stat) continue
     if (stat.isSymbolicLink()) continue
     if (stat.isDirectory()) {
-      await walk(baseDir, abs, entries)
+      total += await walk(baseDir, abs, entries)
     } else if (stat.isFile()) {
+      // Mesmo teto do walk() — sem isto, um único arquivo colado por
+      // connectFileCredential/connectRawToken (que só passam por ESTE branch,
+      // nunca pelo de diretório) não tinha limite de tamanho nenhum.
+      total += stat.size
+      if (total > MAX_TOTAL_BYTES) {
+        throw new Error(`Credencial excede ${MAX_TOTAL_BYTES} bytes; recusando arquivar`)
+      }
       const content = await fs.readFile(abs)
       entries.push({ path: rel, mode: stat.mode & 0o777, content: content.toString('base64') })
     }
