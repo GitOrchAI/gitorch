@@ -35,6 +35,29 @@ jobs:
           NEXT_PUBLIC_BASE_PATH: ${{ vars.GITORCH_PAGES_BASE_PATH }}
           NEXT_PUBLIC_GITHUB_REPO: ${{ github.repository }}
         run: pnpm build
+      # Rigor 1: se há basePath, os assets do _next TÊM que estar prefixados com
+      # ele. Sem isso o site quebra no GitHub Pages (assets 404). Falha o build
+      # ANTES de publicar — foi exatamente o que quebrou o site em 06/07.
+      - name: Assert basePath aplicado aos assets
+        working-directory: apps/web
+        env:
+          NEXT_PUBLIC_BASE_PATH: ${{ vars.GITORCH_PAGES_BASE_PATH }}
+        run: |
+          BP="${NEXT_PUBLIC_BASE_PATH:-}"
+          if [ -n "$BP" ]; then
+            if grep -qE '(src|href)="/_next/' out/index.html; then
+              echo "::error::Assets referenciados na RAIZ (/_next) apesar de basePath=$BP — o site quebraria (assets 404) no GitHub Pages."
+              grep -oE '(src|href)="/_next[^"]*"' out/index.html | head -5
+              exit 1
+            fi
+            if ! grep -qE "(src|href)=\"$BP/_next/" out/index.html; then
+              echo "::error::Nenhum asset _next prefixado com $BP encontrado em out/index.html."
+              exit 1
+            fi
+            echo "OK: assets prefixados com basePath $BP"
+          else
+            echo "Sem basePath (domínio raiz) — nada a checar."
+          fi
       - uses: actions/upload-pages-artifact@v3
         with:
           path: apps/web/out
@@ -47,3 +70,33 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+        with:
+          # Rigor 2: a infra do Pages falha com "try again later" de vez em
+          # quando; mais tolerância a erro transitório evita deploy stale/verde-falso.
+          timeout: 600000
+          error_count: 25
+  smoke:
+    # Rigor 3: só passa se o site publicado E seus assets carregarem de verdade.
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verifica site publicado + assets carregam
+        run: |
+          HOST="https://${{ github.repository_owner }}.github.io"
+          BASE="$HOST${{ vars.GITORCH_PAGES_BASE_PATH }}/"
+          echo "Testando $BASE"
+          HTML=""
+          for i in 1 2 3 4 5 6 7 8; do
+            HTML=$(curl -fsSL "$BASE" 2>/dev/null) && [ -n "$HTML" ] && break
+            echo "tentativa $i: aguardando propagação do CDN..."; sleep 15
+          done
+          if [ -z "$HTML" ]; then echo "::error::Site não respondeu em $BASE"; exit 1; fi
+          ASSET=$(echo "$HTML" | grep -oE '/[A-Za-z0-9/_.-]*_next/static/[A-Za-z0-9/_.-]+\.(js|css)' | head -1)
+          if [ -z "$ASSET" ]; then echo "::error::Nenhum asset _next referenciado no HTML."; exit 1; fi
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' "$HOST$ASSET")
+          echo "asset $ASSET -> HTTP $CODE"
+          if [ "$CODE" != "200" ]; then
+            echo "::error::Asset do site retornou $CODE — site publicado está QUEBRADO (basePath/assets)."
+            exit 1
+          fi
+          echo "OK: site e assets carregam ($BASE)"
