@@ -207,8 +207,11 @@ model Mission {
   result      Json?
   error       String?
 
-  // Tokens consumidos pela missão no LLM do cliente (BYOK). Somado por período
-  // para o orçamento de tokens do plano (spend-guard). null = ainda não medido.
+  // Consumo da missão no LLM do cliente (BYOK), medido por diferença de quota:
+  // quotaBefore (antes de disparar) − quotaAfter (após concluir) = tokensUsed.
+  // null quando o provider não expõe quota. Somado por período no spend-guard.
+  quotaBefore Int?      @map("quota_before")
+  quotaAfter  Int?      @map("quota_after")
   tokensUsed  Int?      @map("tokens_used")
 
   startedAt   DateTime? @map("started_at")

@@ -39,6 +39,7 @@ import {
 import { RailsStepError } from '../services/rails-runner.js'
 import { GithubExecutionError } from '../services/github-backlog.js'
 import { canRunMission, shouldAlertForQuota } from '../lib/spend-guard.js'
+import { computeConsumption } from '../lib/consumption.js'
 import * as os from 'node:os'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -362,11 +363,14 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // disparar, checa a quota do motor primário e o orçamento de tokens do
     // plano. Quota crítica bloqueia (protege a conta do cliente de estourar);
     // quota baixa só alerta. Ver spend-guard.ts.
+    // Fotografa a quota ANTES da missão (medição de consumo por diferença).
+    let quotaBefore: number | null = null
     if (project.userId && plan) {
       const conn = await app.prisma.engineConnection.findFirst({
         where: { userId: project.userId, runtime: primary.runtime, status: 'connected' },
         select: { quotaRemaining: true, quotaTotal: true },
       })
+      quotaBefore = conn?.quotaRemaining ?? null
       const features = (plan.features ?? {}) as Record<string, unknown>
       const tokenBudget =
         typeof features['maxTokensPerMonth'] === 'number'
@@ -410,6 +414,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         type: `agent-run-${role}`,
         status: 'running',
         startedAt: new Date(),
+        quotaBefore,
         payload: {
           role,
           triggeredBy: 'scheduler',
@@ -655,6 +660,38 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             return
           }
           app.log.info(`[Scheduler] Mission ${missionId} completed via ${sel.runtime}`)
+
+          // Medição de consumo (ideia do owner): refresca a quota do motor que
+          // rodou e grava a diferença antes−depois na missão. Best-effort: nunca
+          // quebra a conclusão. Só funciona quando o provider expõe quota.
+          if (project.userId) {
+            try {
+              await app.engineConnections.refreshModels(project.userId, sel.runtime)
+              const after = await app.prisma.engineConnection.findFirst({
+                where: { userId: project.userId, runtime: sel.runtime, status: 'connected' },
+                select: { quotaRemaining: true },
+              })
+              const before =
+                (
+                  await app.prisma.mission.findUnique({
+                    where: { id: missionId },
+                    select: { quotaBefore: true },
+                  })
+                )?.quotaBefore ?? null
+              const c = computeConsumption(before, after?.quotaRemaining ?? null)
+              if (c.quotaAfter != null || c.tokensUsed != null) {
+                await app.prisma.mission.update({
+                  where: { id: missionId },
+                  data: { quotaAfter: c.quotaAfter, tokensUsed: c.tokensUsed },
+                })
+                app.log.info(
+                  `[Scheduler] Consumo ${missionId}: antes=${before} depois=${c.quotaAfter} usou=${c.tokensUsed}`
+                )
+              }
+            } catch (e) {
+              app.log.warn({ e }, `[Scheduler] medição de consumo falhou para ${missionId}`)
+            }
+          }
           if (!isNoOp) {
             try {
               await app.saveMissionMemory({
