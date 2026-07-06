@@ -19,11 +19,14 @@ model User {
   planId      String   @default("free") @map("plan_id")
   plan        Plan     @relation(fields: [planId], references: [id])
 
+  stripeCustomerId String? @unique @map("stripe_customer_id")
+
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
   projects          Project[]
   engineConnections EngineConnection[]
+  subscription      Subscription?
 
   @@map("users")
 }
@@ -37,9 +40,76 @@ model Plan {
   maxMissionsPerDay Int     @map("max_missions_per_day")
   isActive          Boolean @default(true) @map("is_active")
 
-  users User[]
+  // Escalonamento de missões: tierRank ordena a fila (maior = mais prioridade);
+  // maxConcurrentMissions é o teto de missões simultâneas do dono nesse plano.
+  tierRank              Int @default(0) @map("tier_rank")
+  maxConcurrentMissions Int @default(1) @map("max_concurrent_missions")
+  seats                 Int @default(1)
+
+  // Direitos de feature por plano (autonomia auto, sensores, fila prioritária).
+  // JSON pra evoluir sem migração a cada flag nova. Lido pelo entitlements can().
+  features Json @default("{}")
+
+  users  User[]
+  prices PlanPrice[]
 
   @@map("plans")
+}
+
+// Preço de um plano por FAIXA de poder de compra (A rica / B emergente / C
+// land-grab) e moeda. O stripePriceId aponta pro Price object criado no Stripe.
+// Fonte da verdade do /pricing; preço no Stripe é imutável (reajuste = novo Price).
+model PlanPrice {
+  id           String @id @default(cuid())
+  planId       String @map("plan_id")
+  plan         Plan   @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  tier          String // A | B | C
+  currency      String // usd | brl
+  unitAmount    Int    @map("unit_amount") // em centavos
+  stripePriceId String @map("stripe_price_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([planId, tier])
+  @@map("plan_prices")
+}
+
+// Assinatura Stripe do usuário. Espelho local atualizado pelos webhooks; o
+// User.planId é derivado daqui. Uma assinatura ativa por usuário.
+model Subscription {
+  id     String @id @default(cuid())
+  userId String @unique @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  stripeSubscriptionId String @unique @map("stripe_subscription_id")
+  planId               String @map("plan_id")
+  tier                 String // faixa cobrada (A/B/C)
+  status               String @default("incomplete") // active | past_due | canceled | incomplete
+  currentPeriodEnd     DateTime? @map("current_period_end")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("subscriptions")
+}
+
+// Lista de espera: cap de capacidade da infra atual (~10-20 pagantes ativos).
+// Acima do teto, novos pagantes entram aqui em vez de assinar.
+model Waitlist {
+  id             String  @id @default(cuid())
+  email          String  @unique
+  githubLogin    String? @map("github_login")
+  requestedPlanId String? @map("requested_plan_id")
+  tier           String?
+  country        String?
+  status         String  @default("waiting") // waiting | invited | converted
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("waitlist")
 }
 
 // Conexão OAuth de um motor (runtime) pertencente ao usuário. A credencial é

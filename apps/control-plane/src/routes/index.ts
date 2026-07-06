@@ -8,6 +8,7 @@ import { eventRoutes } from './events.js'
 import { runtimeConfigRoutes } from './runtime-config.js'
 import { authRoutes } from './auth.js'
 import { setupRoutes } from './setup.js'
+import { billingRoutes } from './billing.js'
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   // Health and readiness endpoints
@@ -31,6 +32,9 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
   // Runtime Config endpoint
   await runtimeConfigRoutes(app)
+
+  // Billing: pricing geo, checkout, webhook Stripe, waitlist
+  await billingRoutes(app)
 
   // Events SSE endpoint
   await eventRoutes(app)
