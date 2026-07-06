@@ -197,6 +197,19 @@ export class EngineConnectionService {
     if (!content.trim()) throw new Error(`credencial de ${runtime} vazia`)
 
     const primaryPath = relPaths[0] as string
+    // Validação mínima de FORMATO antes de marcar como 'connected' — sem isto,
+    // qualquer string colada virava uma credencial "válida" e o problema só
+    // aparecia depois, opaco, quando uma missão tentasse usar o motor de
+    // verdade. auth.json do Codex é JSON por definição; o token do
+    // Antigravity não tem formato documentado no código, então só a checagem
+    // de vazio acima se aplica a ele.
+    if (primaryPath.endsWith('.json')) {
+      try {
+        JSON.parse(content)
+      } catch {
+        throw new Error(`credencial de ${runtime} inválida: esperado JSON em ${primaryPath}`)
+      }
+    }
     const home = path.join(os.tmpdir(), `gitorch-filecred-${randomUUID()}`)
     await fs.mkdir(path.join(home, path.dirname(primaryPath)), { recursive: true, mode: 0o700 })
     try {

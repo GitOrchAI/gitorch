@@ -246,6 +246,15 @@ describe('EngineConnectionService', () => {
     await expect(svc.connectFileCredential('u', 'codex', '')).rejects.toThrow('vazia')
   })
 
+  test('connectFileCredential rejeita conteúdo do Codex que não é JSON válido (auth.json tem que ser JSON)', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+    await expect(
+      svc.connectFileCredential('u', 'codex', 'isto claramente não é JSON')
+    ).rejects.toThrow('JSON')
+  })
+
   test('connectFileCredential rejeita runtime não suportado', async () => {
     const prisma = fakePrisma()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
