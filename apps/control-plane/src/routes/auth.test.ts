@@ -79,7 +79,12 @@ describe('GitHub OAuth callback', () => {
     const cookieHeader = Array.isArray(setCookie) ? setCookie[0] : setCookie
     expect(cookieHeader).toContain('gitorch_session=')
     expect(cookieHeader).toContain('HttpOnly')
-    expect(cookieHeader).toContain('SameSite=Lax')
+    // Front (GitHub Pages/NEXT_PUBLIC_API_URL) e control-plane vivem em
+    // origens diferentes em produção — SameSite=Lax nunca acompanha um
+    // fetch/XHR cross-site (só navegação top-level), então todo
+    // credentials:'include' subsequente voltaria 401 logo após o login.
+    expect(cookieHeader).toContain('SameSite=None')
+    expect(cookieHeader).toContain('Secure')
 
     const tokenMatch = cookieHeader?.match(/gitorch_session=([^;]+)/)
     expect(tokenMatch).not.toBeNull()
@@ -107,6 +112,53 @@ describe('GitHub OAuth callback', () => {
     // O token do GitHub é persistido cifrado pelo id REAL do usuário, não o
     // id numérico do GitHub nem um valor solto.
     expect(connectGitHubToken).toHaveBeenCalledWith('dbuser_cuid_123', 'gh_raw_token')
+  })
+
+  it('keeps SameSite=Lax without Secure in local dev (http, same-site ports)', async () => {
+    // env é lido (getEnv) no momento em que authRoutes(app) registra a rota —
+    // por isso este teste monta seu PRÓPRIO app, com NODE_ENV=development
+    // setado ANTES do registro, em vez de reaproveitar o app do beforeEach
+    // (que já capturou NODE_ENV=test ao registrar as rotas).
+    process.env['NODE_ENV'] = 'development'
+    resetEnvCache()
+
+    const devApp = Fastify()
+    await devApp.register(fastifyCookie)
+    devApp.decorate('engineConnections', {
+      connectGitHubToken,
+    } as unknown as EngineConnectionService)
+    devApp.decorate('prisma', { user: { upsert: userUpsert } } as any) // eslint-disable-line @typescript-eslint/no-explicit-any
+    await authRoutes(devApp)
+    await devApp.ready()
+
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = typeof url === 'string' ? url : url.toString()
+      if (href.includes('github.com/login/oauth/access_token')) {
+        return new Response(JSON.stringify({ access_token: 'gh_raw_token' }), { status: 200 })
+      }
+      if (href.includes('api.github.com/user')) {
+        return new Response(
+          JSON.stringify({ id: 42, login: 'octocat', email: 'octocat@example.test' }),
+          { status: 200 }
+        )
+      }
+      throw new Error(`unexpected fetch ${href}`)
+    }) as unknown as typeof fetch
+
+    try {
+      const res = await devApp.inject({
+        method: 'GET',
+        url: '/api/v1/auth/github/callback?code=abc123',
+      })
+
+      const setCookie = res.headers['set-cookie']
+      const cookieHeader = Array.isArray(setCookie) ? setCookie[0] : setCookie
+      expect(cookieHeader).toContain('SameSite=Lax')
+      expect(cookieHeader).not.toContain('Secure')
+    } finally {
+      process.env['NODE_ENV'] = 'test'
+      resetEnvCache()
+    }
   })
 
   it('falls back to /user/emails when /user returns no public email', async () => {

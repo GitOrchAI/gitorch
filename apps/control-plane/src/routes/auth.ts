@@ -151,10 +151,18 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
         await app.engineConnections.connectGitHubToken(userId, githubToken)
       }
 
+      // Front (GitHub Pages/NEXT_PUBLIC_API_URL) e control-plane vivem em
+      // origens diferentes fora do dev local — SameSite=Lax nunca acompanha
+      // um fetch/XHR cross-site (só navegação top-level), então todo
+      // credentials:'include' subsequente (auth/me, github/repos, setup/
+      // submit) voltaria 401 logo após um login que acabou de funcionar.
+      // SameSite=None exige Secure; em dev (http, localhost:3000<->:4000 são
+      // portas diferentes mas mesmo site) Lax sem Secure continua correto.
+      const isDev = env.NODE_ENV === 'development'
       reply.setCookie('gitorch_session', sessionToken, {
         httpOnly: true,
-        secure: env.NODE_ENV !== 'development',
-        sameSite: 'lax',
+        secure: !isDev,
+        sameSite: isDev ? 'lax' : 'none',
         path: '/',
         maxAge: 7 * 24 * 60 * 60,
       })
