@@ -163,6 +163,12 @@ export class EngineConnectionService {
     if (!trimmed || /\s/.test(trimmed)) {
       throw new Error(`token de ${runtime} inválido: vazio ou com espaços`)
     }
+    // Hoje o único chamador (plugins/engines.ts) passa um valor fixo, mas o
+    // método em si não tinha guard nenhum: um envVarName tipo '../../etc/cron.d/evil'
+    // faria o writeFile abaixo escrever fora de .gitorch/env, no filesystem do host.
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(options.envVarName)) {
+      throw new Error(`envVarName inválido: ${options.envVarName}`)
+    }
     const home = path.join(os.tmpdir(), `gitorch-envtoken-${randomUUID()}`)
     await fs.mkdir(path.join(home, '.gitorch', 'env'), { recursive: true, mode: 0o700 })
     try {

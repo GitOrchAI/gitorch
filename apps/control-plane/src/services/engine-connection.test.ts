@@ -218,6 +218,18 @@ describe('EngineConnectionService', () => {
     ).rejects.toThrow('token')
   })
 
+  test('connectRawToken rejeita envVarName que tentaria escapar do diretório .gitorch/env (path traversal)', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+    await expect(
+      svc.connectRawToken('u', 'claude', 'sk-fake', { envVarName: '../../../../etc/cron.d/evil' })
+    ).rejects.toThrow('envVarName')
+    await expect(
+      svc.connectRawToken('u', 'claude', 'sk-fake', { envVarName: 'FOO/BAR' })
+    ).rejects.toThrow('envVarName')
+  })
+
   test('connectFileCredential grava o conteúdo colado no caminho primário do runtime (codex auth.json)', async () => {
     const prisma = fakePrisma()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
