@@ -91,8 +91,6 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
         return reply.code(400).send({ error: 'Failed to fetch user profile from GitHub' })
       }
 
-      const userId = String(userData.id)
-
       // Contas com e-mail privado não devolvem `email` em /user (mesmo com o
       // escopo user:email concedido) — sem esse fallback, resolveUserId()
       // (que exige e-mail) derrubaria as rotas de motor com 401 logo após um
@@ -114,6 +112,24 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
         email = emails.find((e) => e.primary && e.verified)?.email ?? emails[0]?.email
       }
 
+      // O User é criado/atualizado AQUI — nenhum outro lugar do código faz
+      // isso hoje. Sem essa linha de vida, `setup/submit` nunca resolve um
+      // dono pra um cliente novo (cai sempre no fallback legado single-
+      // tenant), e EngineConnection.userId não tem a que se referir: as
+      // rotas de motor (plugins/engines.ts) resolvem o id do usuário via
+      // e-mail → Prisma User.id (cuid) — nunca o id numérico do GitHub. O id
+      // da sessão precisa ser o MESMO id, senão a credencial cifrada e o
+      // dono do projeto nunca se encontram.
+      let userId = String(userData.id)
+      if (email) {
+        const dbUser = await app.prisma.user.upsert({
+          where: { email },
+          update: { githubLogin: userData.login },
+          create: { email, githubLogin: userData.login },
+        })
+        userId = dbUser.id
+      }
+
       // Sign JWT session token. O token do GitHub NUNCA viaja aqui — o JWT é
       // devolvido dentro de um cookie httpOnly (JS não lê), mas mesmo assim
       // não guardamos o segredo repo-scoped num claim; ele vai cifrado no
@@ -129,8 +145,9 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
       )
 
       // Persiste o token do GitHub cifrado por usuário (se o serviço estiver
-      // disponível — ausente apenas em testes de rota isolados).
-      if (app.engineConnections) {
+      // disponível — ausente apenas em testes de rota isolados; e só quando
+      // temos um id de usuário real, senão a credencial fica órfã).
+      if (app.engineConnections && email) {
         await app.engineConnections.connectGitHubToken(userId, githubToken)
       }
 

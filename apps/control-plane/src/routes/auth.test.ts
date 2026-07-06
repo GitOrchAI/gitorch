@@ -12,6 +12,7 @@ describe('GitHub OAuth callback', () => {
   let app: ReturnType<typeof Fastify>
   const originalFetch = global.fetch
   let connectGitHubToken: ReturnType<typeof vi.fn>
+  let userUpsert: ReturnType<typeof vi.fn>
 
   beforeEach(async () => {
     process.env['GITHUB_CLIENT_ID'] = 'test-client-id'
@@ -20,6 +21,11 @@ describe('GitHub OAuth callback', () => {
     resetEnvCache()
 
     connectGitHubToken = vi.fn().mockResolvedValue({ status: 'connected' })
+    userUpsert = vi.fn().mockImplementation(async ({ create }) => ({
+      id: 'dbuser_cuid_123',
+      email: create.email,
+      githubLogin: create.githubLogin,
+    }))
 
     app = Fastify()
     await app.register(fastifyCookie)
@@ -29,6 +35,11 @@ describe('GitHub OAuth callback', () => {
     app.decorate('engineConnections', {
       connectGitHubToken,
     } as unknown as EngineConnectionService)
+    // idem para o Prisma: só o upsert de User importa pra este teste.
+    app.decorate('prisma', {
+      user: { upsert: userUpsert },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
     await authRoutes(app)
     await app.ready()
   })
@@ -73,13 +84,29 @@ describe('GitHub OAuth callback', () => {
     const tokenMatch = cookieHeader?.match(/gitorch_session=([^;]+)/)
     expect(tokenMatch).not.toBeNull()
     const decoded = jwt.decode(tokenMatch![1]) as Record<string, unknown>
-    expect(decoded['userId']).toBe('42')
+    // userId é o id REAL do Prisma User (cuid), não o id numérico do GitHub —
+    // é a chave que EngineConnection.userId e Project.userId esperam por
+    // inteiro no restante do código (ver resolveUserId em plugins/engines.ts).
+    expect(decoded['userId']).toBe('dbuser_cuid_123')
     expect(decoded['wingId']).toBe('octocat')
     // O token do GitHub NÃO pode viajar no JWT da sessão (spec §17.4).
     expect(decoded['githubToken']).toBeUndefined()
 
-    // O token do GitHub é persistido cifrado por usuário, não no JWT.
-    expect(connectGitHubToken).toHaveBeenCalledWith('42', 'gh_raw_token')
+    // O User é criado/atualizado no login (nenhum outro lugar do código faz
+    // isso hoje) — sem isso, owner nunca resolve pra clientes novos.
+    expect(userUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { email: 'octocat@example.test' },
+        create: expect.objectContaining({
+          email: 'octocat@example.test',
+          githubLogin: 'octocat',
+        }),
+      })
+    )
+
+    // O token do GitHub é persistido cifrado pelo id REAL do usuário, não o
+    // id numérico do GitHub nem um valor solto.
+    expect(connectGitHubToken).toHaveBeenCalledWith('dbuser_cuid_123', 'gh_raw_token')
   })
 
   it('falls back to /user/emails when /user returns no public email', async () => {
