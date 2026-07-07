@@ -78,6 +78,12 @@ jobs:
       - name: Prisma generate
         working-directory: apps/control-plane
         run: npx prisma generate
+      # Sem isto, o seed do usuário de teste falha com FK violation em
+      # users_plan_id_fkey (planId='free' não existe ainda) — achado real ao
+      # vivo: rodei o seed na verificação local e esqueci de replicar aqui.
+      - name: Seed plans
+        working-directory: apps/control-plane
+        run: npx tsx prisma/seed.ts
 
       # NEXT_PUBLIC_API_URL explícito: sem isto, o fallback de dev do front
       # (lib/api.ts) manda qualquer host 127.0.0.1 pro control-plane padrão
