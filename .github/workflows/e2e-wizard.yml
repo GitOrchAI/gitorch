@@ -56,6 +56,14 @@ jobs:
       GITORCH_EXECUTOR: local-process
       E2E_BASE_URL: http://127.0.0.1:4010
       E2E_GITHUB_TEST_TOKEN: ${{ secrets.E2E_GITHUB_TEST_TOKEN }}
+      # Em produção /var/lib/gitorch é criado/dono do serviço systemd; o
+      # runner do GitHub Actions não tem permissão de escrever lá (achado
+      # real ao vivo: "EACCES: permission denied, mkdir '/var/lib/gitorch'"
+      # tanto no boot do Cortex quanto no clone do diagnóstico). Os dois já
+      # suportam override por env — só faltava setar aqui, pra um caminho do
+      # próprio runner.
+      GITORCH_WORKSPACES_DIR: ${{ runner.temp }}/gitorch-workspaces
+      GITORCH_CORTEX_DB: ${{ runner.temp }}/gitorch-cortex.sqlite
     steps:
       - uses: actions/checkout@v7
         with:
