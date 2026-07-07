@@ -49,6 +49,20 @@ export class LocalWorkspaceProvider {
     return token ? ['-c', `http.extraHeader=Authorization: Bearer ${token}`] : []
   }
 
+  /**
+   * O Node embute a linha de comando INTEIRA em ExecException.message
+   * ("Command failed: git -c http.extraHeader=Authorization: Bearer <token>
+   * ..."). Sem isto, uma falha de clone vaza o token do cliente em texto
+   * puro pra onde o erro for parar (banco, resposta de API, log de missão) —
+   * achado real do QA da F1 (diagnóstico grátis), corrigido na origem porque
+   * afeta TODO consumidor deste provider, não só o diagnóstico.
+   */
+  private sanitizeGitError(err: unknown, token?: string): Error {
+    let message = err instanceof Error ? err.message : String(err)
+    if (token) message = message.split(token).join('[REDACTED]')
+    return new Error(message)
+  }
+
   private validateInput(value: string): void {
     // Rejeita hífen inicial: um id como "-foo" viraria flag se algum dia
     // fluir para uma linha de comando sem barreira `--`.
@@ -120,12 +134,11 @@ export class LocalWorkspaceProvider {
           await run(['-C', workspacePath, 'reset', '--hard', '@{u}'])
         } catch {
           // Sinaliza staleness em stderr do serviço: sem isso, análises rodariam
-          // sobre código velho parecendo atuais.
+          // sobre código velho parecendo atuais. `err` é o erro do PULL (que
+          // usou `auth`) — sanitiza antes de logar.
           // eslint-disable-next-line no-console
           console.warn(
-            `[workspace] git pull e reset falharam em ${repository}; usando clone existente (possivelmente desatualizado): ${String(
-              (err as { message?: string })?.message ?? err
-            )}`
+            `[workspace] git pull e reset falharam em ${repository}; usando clone existente (possivelmente desatualizado): ${this.sanitizeGitError(err, token).message}`
           )
         }
       }
@@ -139,15 +152,19 @@ export class LocalWorkspaceProvider {
     // como algo parecido com flag, nada depois de `--` é interpretado como
     // opção (defesa contra injeção de argumento de segunda ordem, ex.:
     // `--upload-pack`). A URL é prefixada e o repositório passou pela regex.
-    await run([
-      ...auth,
-      'clone',
-      '--depth',
-      '1',
-      '--',
-      `https://github.com/${repository}.git`,
-      workspacePath,
-    ])
+    try {
+      await run([
+        ...auth,
+        'clone',
+        '--depth',
+        '1',
+        '--',
+        `https://github.com/${repository}.git`,
+        workspacePath,
+      ])
+    } catch (err) {
+      throw this.sanitizeGitError(err, token)
+    }
   }
 
   async hibernateWorkspace(userId: string, projectId: string): Promise<void> {

@@ -71,6 +71,42 @@ test('clona repo privado autenticando via header HTTP (nunca grava o token em di
   await fs.rm(base, { recursive: true, force: true })
 })
 
+test('falha de clone NUNCA vaza o token: erro do git (que embute o comando inteiro) é redigido antes de propagar', async () => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-local-ws-'))
+  const token = 'gh_secret_token_abc123'
+  // Reproduz o formato real do Node: ExecException.message inclui o comando
+  // INTEIRO ("Command failed: git -c http.extraHeader=Authorization: Bearer
+  // <token> clone ..."), exatamente o que vazou no QA real da F1.
+  const gitRunner = vi
+    .fn()
+    .mockRejectedValue(
+      new Error(
+        `Command failed: git -c http.extraHeader=Authorization: Bearer ${token} clone --depth 1 -- https://github.com/octocat/private-repo.git ${base}/scheduler-user/project-1\nfatal: Authentication failed`
+      )
+    )
+  const provider = new LocalWorkspaceProvider(base, gitRunner)
+
+  await expect(
+    provider.allocateWorkspace('scheduler-user', 'project-1', {
+      repository: 'octocat/private-repo',
+      token,
+    })
+  ).rejects.toThrow()
+
+  try {
+    await provider.allocateWorkspace('scheduler-user', 'project-1', {
+      repository: 'octocat/private-repo',
+      token,
+    })
+  } catch (err) {
+    const message = (err as Error).message
+    expect(message).not.toContain(token)
+    expect(message).toContain('[REDACTED]')
+  }
+
+  await fs.rm(base, { recursive: true, force: true })
+})
+
 test('clona repo público sem header quando nenhum token é passado', async () => {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-local-ws-'))
   const gitRunner = vi.fn().mockResolvedValue({ stdout: '', stderr: '' })
