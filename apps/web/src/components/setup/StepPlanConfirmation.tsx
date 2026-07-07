@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { ChevronRight, Loader2, AlertCircle } from 'lucide-react'
 import { detectCountry } from '../../lib/geo'
+import { useLanguage } from '../../LanguageContext'
 
 interface CreatedProject {
   id: string
@@ -11,7 +12,6 @@ interface CreatedProject {
 
 interface StepPlanConfirmationProps {
   apiBaseUrl: string
-  token: string
   plan: string
   selectedRepos: string[]
   setSelectedRepos: (repos: string[]) => void
@@ -24,7 +24,6 @@ interface StepPlanConfirmationProps {
 
 export default function StepPlanConfirmation({
   apiBaseUrl,
-  token,
   plan,
   selectedRepos,
   setSelectedRepos,
@@ -34,6 +33,7 @@ export default function StepPlanConfirmation({
   onSuccess,
   onBack,
 }: StepPlanConfirmationProps) {
+  const { t } = useLanguage()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -50,9 +50,9 @@ export default function StepPlanConfirmation({
       setError(null)
       const response = await fetch(`${apiBaseUrl}/api/v1/setup/submit`, {
         method: 'POST',
+        credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
           repos: selectedRepos,
@@ -67,7 +67,7 @@ export default function StepPlanConfirmation({
 
       if (!response.ok) {
         const errData = await response.json()
-        throw new Error(errData.error || 'Falha ao processar configuração final')
+        throw new Error(errData.error || t('setup.reposError'))
       }
 
       const data = await response.json()
@@ -82,7 +82,8 @@ export default function StepPlanConfirmation({
         try {
           const cr = await fetch(`${apiBaseUrl}/api/billing/checkout${qs}`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ planId: plan }),
           })
           if (cr.ok) {
@@ -98,66 +99,81 @@ export default function StepPlanConfirmation({
       }
       onSuccess(data.projects)
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Erro inesperado')
+      setError(err instanceof Error ? err.message : t('setup.reposError'))
     } finally {
       setLoading(false)
     }
   }
 
-  return (
-    <div className="flex flex-col h-full py-2">
-      <h2 className="text-3xl font-bold mb-4">Confirmação e Inicialização</h2>
-      <p className="text-[var(--text-secondary)] mb-6">
-        Revise suas escolhas. Ao prosseguir, o sistema iniciará a clonagem dos repositórios e a
-        ativação dos motores.
-      </p>
+  const planLabel = isFree
+    ? t('setup.confirmFreePlan')
+    : plan.charAt(0).toUpperCase() + plan.slice(1)
 
-      <div className="flex-1 space-y-4">
+  return (
+    <div className="flex flex-col h-full">
+      <h2 className="wz-h">{t('setup.confirmTitle')}</h2>
+      <p className="wz-sub">{t('setup.confirmDesc')}</p>
+
+      <div className="wz-body space-y-4">
         {isOverlimit && (
-          <div className="bg-[rgba(239,68,68,0.1)] border border-red-500/20 p-4 rounded-xl flex items-start gap-3">
-            <AlertCircle className="text-red-500 shrink-0 mt-0.5" size={20} />
-            <div className="text-xs">
-              <h5 className="font-bold text-white mb-1">Limite de Repositórios Excedido</h5>
-              <p className="text-[var(--text-secondary)] leading-relaxed">
-                Você escolheu o plano **Grátis**, que permite no máximo **1 repositório ativo**.
-                Remova os repositórios extras abaixo para continuar:
-              </p>
+          <div
+            className="flex items-start gap-3 rounded-xl p-4"
+            style={{ background: 'var(--gl-accent-soft)', border: '1px solid var(--gl-hair)' }}
+          >
+            <AlertCircle size={20} style={{ color: 'var(--gl-sev)', flex: 'none', marginTop: 2 }} />
+            <div style={{ fontSize: '0.8rem' }}>
+              <h5 style={{ fontWeight: 600, color: 'var(--gl-ink)', marginBottom: 4 }}>
+                {t('setup.confirmOverTitle')}
+              </h5>
+              <p className="wz-opt-desc">{t('setup.confirmOverBody')}</p>
             </div>
           </div>
         )}
 
-        <div className="bg-[var(--bg-surface-elevated)] p-5 rounded-2xl border border-[var(--glass-border)] space-y-4 text-sm">
+        <div
+          className="space-y-4 rounded-2xl p-5"
+          style={{ background: 'var(--gl-canvas)', border: '1px solid var(--gl-hair)' }}
+        >
           <div>
-            <span className="text-[var(--text-secondary)] block text-xs mb-1">
-              Plano Selecionado
-            </span>
-            <span className="font-bold text-white uppercase">
-              {plan === 'free' ? 'Plano Grátis' : plan.charAt(0).toUpperCase() + plan.slice(1)}
+            <span className="wz-opt-desc block">{t('setup.confirmPlanLabel')}</span>
+            <span className="wz-opt-title" style={{ textTransform: 'uppercase' }}>
+              {planLabel}
             </span>
           </div>
 
           <div>
-            <span className="text-[var(--text-secondary)] block text-xs mb-1">Motores Ativos</span>
-            <span className="font-bold text-white capitalize">{selectedEngines.join(', ')}</span>
+            <span className="wz-opt-desc block">{t('setup.confirmEnginesLabel')}</span>
+            <span className="wz-opt-title" style={{ textTransform: 'capitalize' }}>
+              {selectedEngines.join(', ')}
+            </span>
           </div>
 
           <div>
-            <span className="text-[var(--text-secondary)] block text-xs mb-1">
-              Repositórios ({selectedRepos.length})
+            <span className="wz-opt-desc block">
+              {t('setup.confirmReposLabel')} ({selectedRepos.length})
             </span>
-            <div className="space-y-1.5 mt-2">
+            <div className="mt-2 space-y-1.5">
               {selectedRepos.map((repo) => (
                 <div
                   key={repo}
-                  className="flex justify-between items-center bg-[var(--bg-deep)] px-3 py-2 rounded-lg border border-[var(--glass-border)]"
+                  className="flex items-center justify-between rounded-lg px-3 py-2"
+                  style={{ background: 'var(--gl-surface-2)', border: '1px solid var(--gl-hair)' }}
                 >
-                  <span className="font-mono text-xs text-white">{repo}</span>
+                  <span
+                    style={{
+                      fontFamily: 'ui-monospace, monospace',
+                      fontSize: '0.78rem',
+                      color: 'var(--gl-ink)',
+                    }}
+                  >
+                    {repo}
+                  </span>
                   {isOverlimit && (
                     <button
                       onClick={() => handleRemoveRepo(repo)}
-                      className="text-xs text-red-500 hover:text-red-400 font-bold px-2 py-1"
+                      style={{ fontSize: '0.74rem', color: 'var(--gl-sev)', fontWeight: 600 }}
                     >
-                      Remover
+                      {t('setup.confirmRemove')}
                     </button>
                   )}
                 </div>
@@ -166,29 +182,25 @@ export default function StepPlanConfirmation({
           </div>
         </div>
 
-        {error && <p className="text-red-500 text-xs text-center mt-2">{error}</p>}
+        {error && <p className="wz-err text-center">{error}</p>}
       </div>
 
-      <div className="mt-auto flex justify-between pt-6">
-        <button
-          onClick={onBack}
-          disabled={loading}
-          className="text-[var(--text-secondary)] hover:text-white transition-colors px-4 py-2"
-        >
-          Voltar
+      <div className="wz-actions">
+        <button onClick={onBack} disabled={loading} className="wz-btn wz-btn-ghost">
+          {t('setup.back')}
         </button>
         <button
           onClick={handleSubmit}
           disabled={loading || isOverlimit}
-          className="bg-white text-black px-6 py-3 rounded-full font-bold flex items-center gap-2 disabled:opacity-50 hover:scale-105 transition-transform cursor-pointer"
+          className="wz-btn wz-btn-primary"
         >
           {loading ? (
             <>
-              <Loader2 className="animate-spin" size={18} /> Clonando e Iniciando...
+              <Loader2 className="animate-spin" size={18} /> {t('setup.confirmSubmitting')}
             </>
           ) : (
             <>
-              Finalizar e Clonar <ChevronRight size={18} />
+              {t('setup.confirmSubmit')} <ChevronRight size={18} />
             </>
           )}
         </button>

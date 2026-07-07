@@ -70,6 +70,7 @@ export async function archiveDirectory(dir: string): Promise<string | null> {
  */
 export async function archivePaths(baseDir: string, relPaths: string[]): Promise<string | null> {
   const entries: ArchivedEntry[] = []
+  let total = 0
   for (const rel of relPaths) {
     const abs = path.join(baseDir, rel)
     // lstat (não stat): um symlink no caminho de credencial não deve ser seguido
@@ -79,8 +80,15 @@ export async function archivePaths(baseDir: string, relPaths: string[]): Promise
     if (!stat) continue
     if (stat.isSymbolicLink()) continue
     if (stat.isDirectory()) {
-      await walk(baseDir, abs, entries)
+      total += await walk(baseDir, abs, entries)
     } else if (stat.isFile()) {
+      // Mesmo teto do walk() — sem isto, um único arquivo colado por
+      // connectFileCredential/connectRawToken (que só passam por ESTE branch,
+      // nunca pelo de diretório) não tinha limite de tamanho nenhum.
+      total += stat.size
+      if (total > MAX_TOTAL_BYTES) {
+        throw new Error(`Credencial excede ${MAX_TOTAL_BYTES} bytes; recusando arquivar`)
+      }
       const content = await fs.readFile(abs)
       entries.push({ path: rel, mode: stat.mode & 0o777, content: content.toString('base64') })
     }
@@ -88,6 +96,20 @@ export async function archivePaths(baseDir: string, relPaths: string[]): Promise
   if (entries.length === 0) return null
   const archive: ArchiveV1 = { version: 1, entries }
   return JSON.stringify(archive)
+}
+
+/**
+ * Lê UMA entrada do blob diretamente em memória (sem restaurar em disco).
+ * Para consumidores que só precisam do conteúdo como string (ex.: um token
+ * pra usar numa chamada de API) — evitar o ciclo mkdir/writeFile/readFile/rm
+ * que restoreDirectory exige quando o objetivo real é só ler um valor.
+ * Retorna null se a entrada não existir no blob.
+ */
+export function readArchiveEntry(blob: string, relPath: string): string | null {
+  const archive = JSON.parse(blob) as ArchiveV1
+  const entry = archive.entries.find((e) => e.path === relPath)
+  if (!entry) return null
+  return Buffer.from(entry.content, 'base64').toString('utf8')
 }
 
 /**

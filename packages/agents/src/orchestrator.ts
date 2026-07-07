@@ -25,7 +25,10 @@ export interface WorkspaceProvider {
   allocateWorkspace(
     userId: string,
     projectId: string,
-    options?: { repository?: string }
+    // token: credencial do DONO do projeto para clonar repositório privado
+    // (o próprio cliente, nunca uma credencial do host — spec setup-wizard-
+    // redesign §17.3). Opcional: repositório público não precisa.
+    options?: { repository?: string; token?: string }
   ): Promise<WorkspaceAllocation | unknown>
   hibernateWorkspace(userId: string, projectId: string): Promise<unknown>
 }

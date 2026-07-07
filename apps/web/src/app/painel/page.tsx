@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect, useCallback, useSyncExternalStore } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import { useLanguage } from '../../LanguageContext'
 import Header from '../../components/Header'
 import { Terminal, Activity, FolderGit2, LogIn } from 'lucide-react'
@@ -37,24 +37,38 @@ const STATUS_COLORS: Record<string, string> = {
 
 export default function Dashboard() {
   const { t } = useLanguage()
-  // useSyncExternalStore: jeito suportado de ler localStorage sem mismatch de
-  // hidratação (servidor rende sem sessão; cliente re-rende com ela).
-  const token = useSyncExternalStore(
-    (cb) => {
-      window.addEventListener('storage', cb)
-      return () => window.removeEventListener('storage', cb)
-    },
-    () => localStorage.getItem('gitorch_token'),
-    () => null
-  )
+  // Sessão via cookie httpOnly (não lido por JS) — o painel checa no
+  // servidor se está autenticado, nunca lê um token local (spec §17.4).
+  // `null` = ainda checando (evita piscar a tela de "conectar" pra quem já
+  // está logado); `checkFailed` distingue "não logado" de "não deu pra
+  // checar" (rede/CORS/5xx), que senão viravam a mesma tela sem explicação.
+  const [authenticated, setAuthenticated] = useState<boolean | null>(null)
+  const [checkFailed, setCheckFailed] = useState(false)
   const [data, setData] = useState<MissionsResponse | null>(null)
   const [error, setError] = useState(false)
 
+  useEffect(() => {
+    let cancelled = false
+    fetch(`${API_BASE_URL}/api/v1/auth/me`, { credentials: 'include' })
+      .then((res) => {
+        if (!cancelled) setAuthenticated(res.ok)
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAuthenticated(false)
+          setCheckFailed(true)
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   const load = useCallback(async () => {
-    if (!token) return
+    if (!authenticated) return
     try {
       const res = await fetch(`${API_BASE_URL}/api/missions`, {
-        headers: { Authorization: `Bearer ${token}` },
+        credentials: 'include',
       })
       if (!res.ok) throw new Error(`${res.status}`)
       setData((await res.json()) as MissionsResponse)
@@ -62,18 +76,31 @@ export default function Dashboard() {
     } catch {
       setError(true)
     }
-  }, [token])
+  }, [authenticated])
 
   useEffect(() => {
-    if (!token) return
+    if (!authenticated) return
     // Primeiro load fora do corpo síncrono do effect (regra react-hooks).
     queueMicrotask(() => void load())
     // Ao vivo de verdade: atualiza a cada 15s enquanto a aba está aberta.
     const interval = setInterval(() => void load(), 15_000)
     return () => clearInterval(interval)
-  }, [token, load])
+  }, [authenticated, load])
 
-  if (!token) {
+  // Ainda checando a sessão: nem afirma nem nega login, só não mostra nada
+  // definitivo ainda — evita o flash de "conecte-se" pra quem já está logado.
+  if (authenticated === null) {
+    return (
+      <main className="min-h-screen flex flex-col bg-[var(--bg-deep)]">
+        <Header />
+        <div className="flex-1 flex items-center justify-center px-8">
+          <p className="text-[var(--text-secondary)]">{t('dashboard.checkingSession')}</p>
+        </div>
+      </main>
+    )
+  }
+
+  if (!authenticated) {
     return (
       <main className="min-h-screen flex flex-col bg-[var(--bg-deep)]">
         <Header />
@@ -83,7 +110,9 @@ export default function Dashboard() {
               <LogIn size={28} />
             </div>
             <h2 className="text-2xl font-bold mb-3">{t('dashboard.connectTitle')}</h2>
-            <p className="text-[var(--text-secondary)] mb-8">{t('dashboard.connectDesc')}</p>
+            <p className="text-[var(--text-secondary)] mb-8">
+              {checkFailed ? t('dashboard.connectCheckError') : t('dashboard.connectDesc')}
+            </p>
             <Link
               href="/setup"
               className="inline-block bg-white text-black px-8 py-3 rounded-full font-bold hover:scale-105 transition-transform"

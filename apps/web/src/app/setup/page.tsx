@@ -1,22 +1,21 @@
 'use client'
-/* eslint-disable */
 import React, { useState, useEffect } from 'react'
-import Header from '../../components/Header'
-import { useLanguage } from '../../LanguageContext'
 import { API_BASE_URL } from '../../lib/api'
+import { useLanguage } from '../../LanguageContext'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ChevronRight } from 'lucide-react'
+import WizardShell from '../../components/setup/WizardShell'
 
 // Step Components
 import StepGitHubLogin from '../../components/setup/StepGitHubLogin'
 import StepTerms from '../../components/setup/StepTerms'
 import StepSelectRepos from '../../components/setup/StepSelectRepos'
 import StepSelectEngines from '../../components/setup/StepSelectEngines'
-import StepAssistedLogin from '../../components/setup/StepAssistedLogin'
-import StepAgentConfig from '../../components/setup/StepAgentConfig'
+import StepConnectEngine from '../../components/setup/StepConnectEngine'
+import StepTelegram from '../../components/setup/StepTelegram'
 import StepPlanSelection from '../../components/setup/StepPlanSelection'
 import StepPlanConfirmation from '../../components/setup/StepPlanConfirmation'
-import StepRepoConfig from '../../components/setup/StepRepoConfig'
+import StepReady from '../../components/setup/StepReady'
 
 interface CreatedProject {
   id: string
@@ -25,57 +24,61 @@ interface CreatedProject {
   apiKey: string
 }
 
+const TOTAL_STEPS = 10
+
 export default function SetupWizard() {
   const { t } = useLanguage()
   const [step, setStep] = useState(1)
-  const [token, setToken] = useState('')
+  // Sessão vive num cookie httpOnly (não lido por JS) — o front só sabe SE
+  // está autenticado, nunca o valor do token (spec §17.4, sem token em
+  // URL/localStorage).
+  const [authenticated, setAuthenticated] = useState(false)
   const [selectedRepos, setSelectedRepos] = useState<string[]>([])
   const [selectedEngines, setSelectedEngines] = useState<string[]>(['claude-code'])
   const [telegram, setTelegram] = useState('')
-  const [autonomy, setAutonomy] = useState({ sm: 3, qa: 3, ra: 3, po: 3 })
-  const [plan, setPlan] = useState('free')
+  // Autonomia dos 4 papéis: default sensato enviado ao submit (envConfig). Os
+  // sliders manuais saíram do wizard (Task 3.4) — autonomia/cadência vira
+  // ajuste fino no painel, não fricção no onboarding.
+  const [autonomy] = useState({ sm: 3, qa: 3, ra: 3, po: 3 })
+  // Plano pré-selecionado pela landing (/setup?plan=solo) — derivado da URL no
+  // inicializador (não num effect com setState síncrono). O plano só aparece a
+  // partir do passo 8, então não há divergência de hidratação no passo 1.
+  const [plan, setPlan] = useState<string>(() => {
+    if (typeof window === 'undefined') return 'free'
+    const urlPlan = new URLSearchParams(window.location.search).get('plan')
+    return urlPlan && ['free', 'solo', 'pro', 'team'].includes(urlPlan) ? urlPlan : 'free'
+  })
+  // Intenção de entrada: veio da landing com um plano PAGO no ?plan? Então o
+  // passo de plano confirma essa escolha (não pede pra escolher do zero), e o
+  // funil trata o cliente como quem já decidiu — pode ajustar, sem fricção.
+  const [entryPaidIntent] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false
+    const urlPlan = new URLSearchParams(window.location.search).get('plan')
+    return !!urlPlan && ['solo', 'pro', 'team'].includes(urlPlan)
+  })
   const [createdProjects, setCreatedProjects] = useState<CreatedProject[]>([])
 
-  // Capture token from OAuth callback redirect
+  // Verifica a sessão real no servidor (cookie httpOnly enviado automaticamente).
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const storedToken = localStorage.getItem('gitorch_token')
-      if (storedToken && storedToken !== token) {
-        setToken(storedToken)
-      }
-
-      const params = new URLSearchParams(window.location.search)
-      // Plano pré-selecionado pela landing (/setup?plan=solo).
-      const urlPlan = params.get('plan')
-      if (urlPlan && ['free', 'solo', 'pro', 'team'].includes(urlPlan)) setPlan(urlPlan)
-      const urlToken = params.get('token')
-      if (urlToken) {
-        localStorage.setItem('gitorch_token', urlToken)
-        if (urlToken !== token) {
-          setToken(urlToken)
+    let cancelled = false
+    fetch(`${API_BASE_URL}/api/v1/auth/me`, { credentials: 'include' })
+      .then((res) => {
+        if (cancelled) return
+        if (res.ok) {
+          setAuthenticated(true)
+          setStep((current) => (current === 1 || current === 2 ? 3 : current))
         }
-
-        // Remove token from query parameters for clean URL
-        const newUrl = window.location.pathname
-        window.history.replaceState({}, '', newUrl)
-
-        // Advance to Step 3 (Accept Terms)
-        if (step !== 3) {
-          setStep(3)
-        }
-      }
+      })
+      .catch(() => {
+        // Sem sessão ainda — permanece nos passos iniciais de login.
+      })
+    return () => {
+      cancelled = true
     }
-  }, [token, step])
-
-  // If token is already present and we are on step 1/2, skip to repos/terms
-  useEffect(() => {
-    if (token && (step === 1 || step === 2)) {
-      setStep(3)
-    }
-  }, [token, step])
+  }, [])
 
   const nextStep = () => {
-    if (step < 10) setStep(step + 1)
+    if (step < TOTAL_STEPS) setStep(step + 1)
   }
 
   const prevStep = () => {
@@ -84,29 +87,30 @@ export default function SetupWizard() {
 
   const handleSetupSuccess = (projects: CreatedProject[]) => {
     setCreatedProjects(projects)
-    setStep(10) // Go to final Step 10
+    setStep(TOTAL_STEPS) // Go to final step
   }
 
+  const progressPct = ((step - 1) / (TOTAL_STEPS - 1)) * 100
+
   return (
-    <main className="min-h-screen flex flex-col bg-[var(--bg-deep)]">
-      <Header />
-
-      <div className="flex-1 container mx-auto px-8 flex flex-col items-center py-12">
-        {/* Progress Bar */}
-        <div className="w-full max-w-2xl mb-12 flex justify-between relative">
-          <div className="absolute top-1/2 left-0 w-full h-[2px] bg-[var(--glass-border)] -z-10" />
-          <div
-            className="absolute top-1/2 left-0 h-[2px] bg-[var(--accent-neon-violet)] -z-10 transition-all duration-500"
-            style={{ width: `${((step - 1) / 9) * 100}%` }}
-          />
-
-          {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((num) => (
-            <StepIndicator key={num} currentStep={step} stepNum={num} />
-          ))}
+    <WizardShell>
+      <main className="wz-wrap">
+        {/* Barra de progresso real */}
+        <div className="wz-progress">
+          <div className="wz-progress-track">
+            <div className="wz-progress-fill" style={{ width: `${progressPct}%` }} />
+          </div>
+          <div className="wz-steps">
+            {Array.from({ length: TOTAL_STEPS }, (_, i) => i + 1).map((num) => (
+              <div key={num} className={`wz-dot${step >= num ? ' is-active' : ''}`}>
+                {num}
+              </div>
+            ))}
+          </div>
         </div>
 
-        {/* Wizard Panel */}
-        <div className="glass-panel w-full max-w-2xl p-8 min-h-[460px] relative overflow-hidden flex flex-col justify-between">
+        {/* Painel do passo */}
+        <div className="wz-panel">
           <AnimatePresence mode="wait">
             {step === 1 && (
               <motion.div
@@ -114,22 +118,16 @@ export default function SetupWizard() {
                 initial={{ opacity: 0, x: 20 }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -20 }}
-                className="flex flex-col h-full justify-between flex-1"
+                className="flex flex-col h-full flex-1"
               >
-                <div>
-                  <h2 className="text-3xl font-bold mb-4">Inicie sua Configuração</h2>
-                  <p className="text-[var(--text-secondary)] mb-8 leading-relaxed">
-                    Bem-vindo ao Setup Wizard do GitOrch. Vamos configurar o isolamento do seu
-                    ambiente, conectar seus repositórios e preparar seus agentes inteligentes para
-                    codificar de forma autônoma.
-                  </p>
+                <div className="wz-body">
+                  <h2 className="wz-h">{t('setup.welcomeTitle')}</h2>
+                  <p className="wz-sub">{t('setup.welcomeDesc')}</p>
                 </div>
-                <div className="mt-auto flex justify-end">
-                  <button
-                    onClick={nextStep}
-                    className="bg-white text-black px-6 py-3 rounded-full font-bold flex items-center gap-2 hover:scale-105 transition-transform cursor-pointer"
-                  >
-                    {t('setup.beginBtn')} <ChevronRight size={18} />
+                <div className="wz-actions">
+                  <span />
+                  <button onClick={nextStep} className="wz-btn wz-btn-primary">
+                    {t('setup.begin')} <ChevronRight size={18} />
                   </button>
                 </div>
               </motion.div>
@@ -169,9 +167,10 @@ export default function SetupWizard() {
               >
                 <StepSelectRepos
                   apiBaseUrl={API_BASE_URL}
-                  token={token}
+                  authenticated={authenticated}
                   selectedRepos={selectedRepos}
                   setSelectedRepos={setSelectedRepos}
+                  plan={plan}
                   onNext={nextStep}
                   onBack={prevStep}
                 />
@@ -203,7 +202,8 @@ export default function SetupWizard() {
                 exit={{ opacity: 0, x: -20 }}
                 className="flex flex-col h-full flex-1"
               >
-                <StepAssistedLogin
+                <StepConnectEngine
+                  apiBaseUrl={API_BASE_URL}
                   selectedEngines={selectedEngines}
                   onNext={nextStep}
                   onBack={prevStep}
@@ -219,11 +219,9 @@ export default function SetupWizard() {
                 exit={{ opacity: 0, x: -20 }}
                 className="flex flex-col h-full flex-1"
               >
-                <StepAgentConfig
+                <StepTelegram
                   telegram={telegram}
                   setTelegram={setTelegram}
-                  autonomy={autonomy}
-                  setAutonomy={setAutonomy}
                   onNext={nextStep}
                   onBack={prevStep}
                 />
@@ -241,6 +239,7 @@ export default function SetupWizard() {
                 <StepPlanSelection
                   plan={plan}
                   setPlan={setPlan}
+                  entryPaidIntent={entryPaidIntent}
                   onNext={nextStep}
                   onBack={prevStep}
                 />
@@ -257,7 +256,6 @@ export default function SetupWizard() {
               >
                 <StepPlanConfirmation
                   apiBaseUrl={API_BASE_URL}
-                  token={token}
                   plan={plan}
                   selectedRepos={selectedRepos}
                   setSelectedRepos={setSelectedRepos}
@@ -273,33 +271,16 @@ export default function SetupWizard() {
             {step === 10 && (
               <motion.div
                 key="step10"
-                initial={{ opacity: 0, scale: 0.95 }}
+                initial={{ opacity: 0, scale: 0.98 }}
                 animate={{ opacity: 1, scale: 1 }}
                 className="flex flex-col h-full flex-1"
               >
-                <StepRepoConfig projects={createdProjects} />
+                <StepReady projects={createdProjects} />
               </motion.div>
             )}
           </AnimatePresence>
         </div>
-      </div>
-    </main>
-  )
-}
-
-function StepIndicator({ currentStep, stepNum }: { currentStep: number; stepNum: number }) {
-  const active = currentStep >= stepNum
-  return (
-    <div className="flex flex-col items-center gap-2">
-      <div
-        className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs transition-colors duration-500 ${
-          active
-            ? 'bg-[#7c3aed] text-white glow-border'
-            : 'bg-[var(--bg-surface-elevated)] text-[var(--text-secondary)] border border-[var(--glass-border)]'
-        }`}
-      >
-        {stepNum}
-      </div>
-    </div>
+      </main>
+    </WizardShell>
   )
 }

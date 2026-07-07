@@ -23,6 +23,18 @@ if [ -f "$HOME/.gitorch/gh-token" ]; then
   export GH_TOKEN GITHUB_TOKEN GITHUB_PERSONAL_ACCESS_TOKEN
 fi
 
+# Credenciais de motor cujo provider não expõe como arquivo de config do CLI
+# (ex.: Claude Code — `claude setup-token` gera um valor pra variável de
+# ambiente, não um `.credentials.json`) chegam como um arquivo por variável em
+# ~/.gitorch/env/<NOME>; cada um vira a env var do próprio nome. Valor nunca
+# impresso.
+if [ -d "$HOME/.gitorch/env" ]; then
+  for f in "$HOME/.gitorch/env"/*; do
+    [ -f "$f" ] || continue
+    export "$(basename "$f")=$(cat "$f")"
+  done
+fi
+
 # Instala o plugin nativo do GitOrch no HOME do agy. Ele carrega:
 #  - rules/: identidade "sou agente GitOrch, não do repo" + guardrail de segurança;
 #  - hooks.json: PreToolUse que LIBERA só `gh`/`git` + leitura e NEGA o resto

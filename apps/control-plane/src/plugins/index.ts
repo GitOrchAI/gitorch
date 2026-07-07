@@ -1,11 +1,11 @@
 import { FastifyInstance } from 'fastify'
-import fastifyCors from '@fastify/cors'
+import fastifyCookie from '@fastify/cookie'
 import fastifyHelmet from '@fastify/helmet'
 import fastifySwagger from '@fastify/swagger'
 import fastifySwaggerUi from '@fastify/swagger-ui'
 import fastifyUnderPressure from '@fastify/under-pressure'
 import { Env } from '../config/env.js'
-import { API_PREFIX, CORS_MAX_AGE } from '../config/constants.js'
+import { API_PREFIX } from '../config/constants.js'
 
 import { prismaPlugin } from './prisma.js'
 import { redisPlugin } from './redis.js'
@@ -17,6 +17,7 @@ import { telemetryPlugin } from './telemetry.js'
 import { schedulerPlugin } from './scheduler.js'
 import { cortexPlugin } from './cortex.js'
 import { enginesPlugin } from './engines.js'
+import { corsPlugin } from './cors.js'
 
 import rateLimit from '@fastify/rate-limit'
 
@@ -27,11 +28,10 @@ export async function registerPlugins(app: FastifyInstance, env: Env): Promise<v
     crossOriginEmbedderPolicy: false,
   })
 
-  await app.register(fastifyCors, {
-    origin: env.CORS_ORIGIN === '*' ? true : env.CORS_ORIGIN.split(',').map((o) => o.trim()),
-    credentials: true,
-    maxAge: CORS_MAX_AGE,
-  })
+  await app.register(corsPlugin)
+
+  // Sessão do wizard via cookie httpOnly (não mais token em ?query/localStorage).
+  await app.register(fastifyCookie)
 
   if (env.NODE_ENV !== 'test') {
     // Limiares realistas para o control plane (Node + Prisma + Fastify já usam

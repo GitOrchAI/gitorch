@@ -12,11 +12,14 @@ export default function StepGitHubLogin({ apiBaseUrl }: StepGitHubLoginProps) {
   }
 
   return (
-    <div className="flex flex-col items-center justify-center h-full text-center py-6">
-      <div className="w-16 h-16 bg-[rgba(124,58,237,0.1)] text-[#7c3aed] rounded-full flex items-center justify-center mb-6 glow-border">
+    <div className="wz-body flex flex-col items-center justify-center text-center">
+      <div
+        className="mb-6 flex h-16 w-16 items-center justify-center rounded-full"
+        style={{ background: 'var(--gl-accent-soft)', color: 'var(--gl-accent-ink)' }}
+      >
         <svg
-          width="32"
-          height="32"
+          width="30"
+          height="30"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
@@ -29,14 +32,13 @@ export default function StepGitHubLogin({ apiBaseUrl }: StepGitHubLoginProps) {
         </svg>
       </div>
 
-      <h2 className="text-3xl font-bold mb-4">{t('setup.githubTitle')}</h2>
-      <p className="text-[var(--text-secondary)] mb-8 max-w-md">{t('setup.githubDesc')}</p>
+      <h2 className="wz-h">{t('setup.githubTitle')}</h2>
+      <p className="wz-sub" style={{ maxWidth: '28rem' }}>
+        {t('setup.githubDesc')}
+      </p>
 
-      <button
-        onClick={handleLogin}
-        className="bg-white text-black px-8 py-4 rounded-full font-bold flex items-center gap-3 hover:scale-105 transition-all cursor-pointer shadow-[0_0_30px_rgba(255,255,255,0.15)]"
-      >
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+      <button onClick={handleLogin} className="wz-btn wz-btn-primary">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
           <path
             fillRule="evenodd"
             clipRule="evenodd"

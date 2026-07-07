@@ -2,7 +2,9 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { randomBytes } from 'node:crypto'
 import bcryptjs from 'bcryptjs'
 import { Prisma } from '@prisma/client'
+import { F6_AGENT_ROLES, isF6AgentRuntime, type F6AgentRuntime } from '@gitorch/agents'
 import { ensureDefaultSchedules } from '../lib/project-defaults.js'
+import { resolveEngineId } from '../services/engine-connection.js'
 
 interface GitHubRepo {
   id: number
@@ -22,11 +24,22 @@ interface SetupSubmitBody {
 }
 
 export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
-  // GET /api/v1/github/repos - List user repositories using OAuth session token
+  // GET /api/v1/github/repos - List user repositories using the encrypted
+  // per-user GitHub connection (nunca do JWT da sessão — spec §17.4).
   app.get('/api/v1/github/repos', async (request: FastifyRequest, reply: FastifyReply) => {
-    const githubToken = request.user?.githubToken
+    if (!request.user) {
+      return reply.code(401).send({ error: 'UNAUTHORIZED: session required' })
+    }
+    // Ausente apenas em composições de rota que não registram o plugin de
+    // motores (ex.: teste isolado) — sem este guard, a falta virava um
+    // TypeError vazando detalhe interno ('Cannot read properties of
+    // undefined') pro cliente em vez de um erro limpo.
+    if (!app.engineConnections) {
+      return reply.code(500).send({ error: 'Engine connections service unavailable' })
+    }
+    const githubToken = await app.engineConnections.getRawGithubToken(request.user.id)
     if (!githubToken) {
-      return reply.code(401).send({ error: 'UNAUTHORIZED: Missing GitHub Token in session' })
+      return reply.code(401).send({ error: 'UNAUTHORIZED: GitHub not connected' })
     }
 
     const response = await fetch('https://api.github.com/user/repos?per_page=100&sort=updated', {
@@ -88,10 +101,17 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
           })
         : null
 
-      // 1. Limite de projetos do plano (dado, não hardcode): projetos já
-      // existentes do dono + os solicitados não podem passar do teto.
-      const maxProjects =
-        owner?.plan?.maxProjects ?? (plan === 'free' ? 1 : Number.MAX_SAFE_INTEGER)
+      // 1. Limite de projetos: o MAIOR entre o plano REAL do dono (confirmado,
+      // sobe só quando o webhook do Stripe processa o pagamento) e o plano
+      // PRETENDIDO nesta submissão (?plan=team, ainda não pago). Só o maior
+      // evita dois erros opostos: usar só o real rejeitaria um cliente
+      // pago-a-ser com o teto do free ainda gravado; usar só o pretendido
+      // rebaixaria um cliente JÁ pagante que reabre o wizard sem `?plan=`
+      // (front usa 'free' como default). Plano pretendido nunca é uma string
+      // solta do cliente — é buscado no banco; inexistente cai no teto do free.
+      const submittedPlan =
+        plan !== 'free' ? await app.prisma.plan.findUnique({ where: { id: plan } }) : null
+      const maxProjects = Math.max(owner?.plan?.maxProjects ?? 1, submittedPlan?.maxProjects ?? 1)
       if (owner) {
         const currentCount = await app.prisma.project.count({ where: { userId: owner.id } })
         if (currentCount + repos.length > maxProjects) {
@@ -102,6 +122,51 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
       } else if (plan === 'free' && repos.length > 1) {
         return reply.code(400).send({ error: 'Free plan only allows up to 1 repository' })
       }
+
+      // 1.5. Pelo menos um dos motores selecionados precisa estar REALMENTE
+      // conectado (validado, não uma string solta) — senão o onboarding
+      // "conclui" para uma execução sem credencial nenhuma (spec §17.3).
+      const requestedRuntimes = [
+        ...new Set(
+          (engines ?? [])
+            .map((e) => resolveEngineId(e))
+            .filter((r): r is F6AgentRuntime => isF6AgentRuntime(r))
+        ),
+      ]
+      if (requestedRuntimes.length === 0) {
+        return reply.code(400).send({ error: 'Nenhum motor de IA reconhecido foi selecionado' })
+      }
+      // Usa o id do DONO resolvido por e-mail (owner.id), não o claim bruto do
+      // JWT: EngineConnection.userId é sempre gravado nesse mesmo id (ver
+      // plugins/engines.ts resolveUserId), e uma sessão cujo JWT carregue um
+      // id diferente (ex.: cookie emitido antes de uma correção de id) não
+      // pode ficar bloqueada permanentemente achando que nenhum motor está
+      // conectado. Sem e-mail (legado single-tenant), não há id melhor —
+      // segue com user.id como já fazia.
+      const connections = await app.engineConnections.list(owner?.id ?? user.id)
+      const connectedRuntimes = requestedRuntimes.filter((r) =>
+        connections.some((c) => c.runtime === r && c.status === 'connected')
+      )
+      if (connectedRuntimes.length === 0) {
+        return reply.code(400).send({
+          error:
+            'Conecte pelo menos um motor de IA (Claude, Codex ou Antigravity) antes de finalizar',
+        })
+      }
+      // Preferência dos 4 papéis: o motor primário conectado, com os demais
+      // conectados como fallback — mesmo formato que resolveRuntimeChain lê.
+      const [primaryRuntime, ...fallbackRuntimes] = connectedRuntimes
+      const agentsConfig = Object.fromEntries(
+        F6_AGENT_ROLES.map((role) => [
+          role,
+          {
+            runtime: primaryRuntime,
+            ...(fallbackRuntimes.length
+              ? { fallbacks: fallbackRuntimes.map((runtime) => ({ runtime })) }
+              : {}),
+          },
+        ])
+      )
 
       const createdProjects = []
 
@@ -122,12 +187,20 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
               name: repoName,
               description: `Project for ${repoFullName}`,
               ...(owner ? { userId: owner.id } : {}),
+              // O token do GitHub NÃO é duplicado aqui em texto puro — já foi
+              // persistido cifrado por usuário no callback OAuth
+              // (EngineConnection, runtime 'github'); a missão o materializa
+              // de lá (spec §17.4).
               runtimeConfig: {
                 engines,
+                // Formato que resolveRuntimeChain (lib/runtime-resolver.ts)
+                // realmente lê — sem isto, a seleção do cliente era
+                // silenciosamente ignorada e todo papel caía no default da
+                // instância (spec §17.3).
+                agents: agentsConfig,
                 telegram: telegram ?? null,
                 plan,
                 envConfig: (envConfig ?? null) as Prisma.JsonObject | null,
-                userGithubToken: user.githubToken ?? null,
               } as Prisma.JsonObject,
             },
           })

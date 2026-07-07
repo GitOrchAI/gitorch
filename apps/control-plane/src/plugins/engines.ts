@@ -1,6 +1,6 @@
 import fp from 'fastify-plugin'
 import { FastifyPluginAsync } from 'fastify'
-import { EngineConnectionService } from '../services/engine-connection.js'
+import { EngineConnectionService, resolveEngineId } from '../services/engine-connection.js'
 
 // Expõe o serviço de conexões de motor e as rotas do usuário para ver/gerir
 // suas conexões. A credencial cifrada NUNCA é retornada — apenas o status.
@@ -31,11 +31,51 @@ const enginesPluginImpl: FastifyPluginAsync = async (app) => {
     }
   })
 
+  // Conexão real dos motores de IA que não expõem um device-code servidor-side
+  // hoje: o cliente cola o que o login LOCAL do CLI produziu — o `setup-token`
+  // do Claude Code (vira env var) ou o conteúdo do arquivo de credencial do
+  // Codex/Antigravity (auth.json / oauth-token). Mesmo cofre cifrado de
+  // qualquer credencial; nunca logado.
+  const ENV_CREDENTIAL_VAR: Record<string, string> = {
+    claude: 'CLAUDE_CODE_OAUTH_TOKEN',
+  }
+  // `claude setup-token` documenta validade de ~1 ano. Sem gravar isto,
+  // expiresAt (schema desde 151b471) ficava pra sempre null e a conexão nunca
+  // era detectada como vencida — materializeToHome seguia servindo o token
+  // morto pras missões até o CLI falhar a autenticação lá dentro.
+  const ENV_CREDENTIAL_TTL_DAYS: Record<string, number> = {
+    claude: 365,
+  }
+  app.post('/api/v1/engines/:runtime/token', async (request, reply) => {
+    const userId = await resolveUserId(app, request)
+    if (!userId) return reply.code(401).send({ error: 'UNAUTHORIZED: user session required' })
+    const runtime = resolveEngineId((request.params as { runtime: string }).runtime)
+    const { token } = (request.body ?? {}) as { token?: string }
+    if (!token) return reply.code(400).send({ error: 'token é obrigatório' })
+    try {
+      const envVarName = ENV_CREDENTIAL_VAR[runtime]
+      let status
+      if (envVarName) {
+        const ttlDays = ENV_CREDENTIAL_TTL_DAYS[runtime]
+        const expiresAt = ttlDays ? new Date(Date.now() + ttlDays * 24 * 60 * 60 * 1000) : undefined
+        status = await service.connectRawToken(userId, runtime, token, {
+          envVarName,
+          ...(expiresAt ? { expiresAt } : {}),
+        })
+      } else {
+        status = await service.connectFileCredential(userId, runtime, token)
+      }
+      return reply.send({ connected: true, status })
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message })
+    }
+  })
+
   // Revoga (desconecta) um motor do usuário.
   app.delete('/api/v1/engines/:runtime', async (request, reply) => {
     const userId = await resolveUserId(app, request)
     if (!userId) return reply.code(401).send({ error: 'UNAUTHORIZED: user session required' })
-    const { runtime } = request.params as { runtime: string }
+    const runtime = resolveEngineId((request.params as { runtime: string }).runtime)
     await service.revoke(userId, runtime)
     return reply.send({ revoked: true, runtime })
   })
@@ -44,7 +84,7 @@ const enginesPluginImpl: FastifyPluginAsync = async (app) => {
   app.post('/api/v1/engines/:runtime/models/refresh', async (request, reply) => {
     const userId = await resolveUserId(app, request)
     if (!userId) return reply.code(401).send({ error: 'UNAUTHORIZED: user session required' })
-    const { runtime } = request.params as { runtime: string }
+    const runtime = resolveEngineId((request.params as { runtime: string }).runtime)
     const models = await service.refreshModels(userId, runtime)
     return reply.send({ runtime, models })
   })

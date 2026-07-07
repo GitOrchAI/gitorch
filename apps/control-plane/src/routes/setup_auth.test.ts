@@ -49,6 +49,12 @@ describe('Setup and Auth Integration', () => {
     })
 
     app.prisma.mission.create = vi.fn().mockResolvedValue({})
+    // setup/submit agora exige pelo menos um motor selecionado REALMENTE
+    // conectado (spec §17.3) — sem isso, o onboarding "concluiria" para uma
+    // execução sem credencial nenhuma.
+    app.prisma.engineConnection.findMany = vi
+      .fn()
+      .mockResolvedValue([{ runtime: 'claude', status: 'connected' }])
 
     // 2. Call setup/submit
     const setupRes = await app.inject({
@@ -57,7 +63,7 @@ describe('Setup and Auth Integration', () => {
       headers: sessionHeaders,
       payload: {
         repos: ['owner/repo'],
-        engines: ['engine1'],
+        engines: ['claude-code'],
         plan: 'free',
       },
     })

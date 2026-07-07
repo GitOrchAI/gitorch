@@ -138,4 +138,156 @@ describe('EngineConnectionService', () => {
     await expect(svc.connectGitHubToken('u', '')).rejects.toThrow('token')
     await expect(svc.connectGitHubToken('u', 'senha com espaço\n')).rejects.toThrow('token')
   })
+
+  test('getRawGithubToken devolve o token em texto puro (uso server-side, nunca no disco do host)', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+
+    await svc.connectGitHubToken('user_gh2', 'github_pat_ROUNDTRIP_xyz')
+    const token = await svc.getRawGithubToken('user_gh2')
+    expect(token).toBe('github_pat_ROUNDTRIP_xyz')
+  })
+
+  test('getRawGithubToken devolve null quando não há conexão', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+    expect(await svc.getRawGithubToken('user_sem_conexao')).toBeNull()
+  })
+
+  test('getRawGithubToken segue funcionando após parar de materializar em disco (round-trip via readArchiveEntry)', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+    await svc.connectGitHubToken('user_gh3', 'github_pat_NO_DISK_xyz')
+    expect(await svc.getRawGithubToken('user_gh3')).toBe('github_pat_NO_DISK_xyz')
+  })
+
+  test('connectRawToken (claude setup-token) materializa como env var, não como arquivo de config', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+
+    const status = await svc.connectRawToken('user_claude', 'claude', 'sk-ant-oat01-FAKE', {
+      envVarName: 'CLAUDE_CODE_OAUTH_TOKEN',
+    })
+    expect(status.runtime).toBe('claude')
+    expect(status.status).toBe('connected')
+
+    const stored = prisma.store.get('user_claude:claude')
+    expect(stored?.['credentialKind']).toBe('env')
+    expect(stored?.['envVarName']).toBe('CLAUDE_CODE_OAUTH_TOKEN')
+    // credencial guardada não é texto puro
+    expect(String(stored?.['encryptedCredential'])).not.toContain('sk-ant-oat01-FAKE')
+
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-claudehome-'))
+    expect(await svc.materializeToHome('user_claude', 'claude', home)).toBe(true)
+    const tokenPath = path.join(home, '.gitorch', 'env', 'CLAUDE_CODE_OAUTH_TOKEN')
+    expect((await fs.readFile(tokenPath, 'utf8')).trim()).toBe('sk-ant-oat01-FAKE')
+    const mode = (await fs.stat(tokenPath)).mode & 0o777
+    expect(mode).toBe(0o600)
+
+    await fs.rm(home, { recursive: true, force: true })
+  })
+
+  test('materializeToHome trata uma conexão com expiresAt no passado como desconectada', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+
+    await svc.connectRawToken('user_expired', 'claude', 'sk-ant-oat01-FAKE', {
+      envVarName: 'CLAUDE_CODE_OAUTH_TOKEN',
+      expiresAt: new Date(Date.now() - 1000),
+    })
+
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-expiredhome-'))
+    expect(await svc.materializeToHome('user_expired', 'claude', home)).toBe(false)
+    await fs.rm(home, { recursive: true, force: true })
+  })
+
+  test('connectRawToken rejeita token vazio ou com espaço', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+    await expect(
+      svc.connectRawToken('u', 'claude', '', { envVarName: 'CLAUDE_CODE_OAUTH_TOKEN' })
+    ).rejects.toThrow('token')
+    await expect(
+      svc.connectRawToken('u', 'claude', 'com espaço\n', { envVarName: 'CLAUDE_CODE_OAUTH_TOKEN' })
+    ).rejects.toThrow('token')
+  })
+
+  test('connectRawToken rejeita envVarName que tentaria escapar do diretório .gitorch/env (path traversal)', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+    await expect(
+      svc.connectRawToken('u', 'claude', 'sk-fake', { envVarName: '../../../../etc/cron.d/evil' })
+    ).rejects.toThrow('envVarName')
+    await expect(
+      svc.connectRawToken('u', 'claude', 'sk-fake', { envVarName: 'FOO/BAR' })
+    ).rejects.toThrow('envVarName')
+  })
+
+  test('connectFileCredential grava o conteúdo colado no caminho primário do runtime (codex auth.json)', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+
+    const authJson = JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: 'FAKE' } })
+    const status = await svc.connectFileCredential('user_codex', 'codex', authJson)
+    expect(status.status).toBe('connected')
+
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-codexhome-'))
+    expect(await svc.materializeToHome('user_codex', 'codex', home)).toBe(true)
+    expect(await fs.readFile(path.join(home, '.codex', 'auth.json'), 'utf8')).toBe(authJson)
+
+    await fs.rm(home, { recursive: true, force: true })
+  })
+
+  test('connectFileCredential grava o token do antigravity no caminho primário', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+
+    const status = await svc.connectFileCredential('user_ag', 'antigravity', 'oauth-token-fake')
+    expect(status.status).toBe('connected')
+
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-aghome-'))
+    expect(await svc.materializeToHome('user_ag', 'antigravity', home)).toBe(true)
+    expect(
+      await fs.readFile(
+        path.join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'),
+        'utf8'
+      )
+    ).toBe('oauth-token-fake')
+
+    await fs.rm(home, { recursive: true, force: true })
+  })
+
+  test('connectFileCredential rejeita conteúdo vazio', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+    await expect(svc.connectFileCredential('u', 'codex', '')).rejects.toThrow('vazia')
+  })
+
+  test('connectFileCredential rejeita conteúdo do Codex que não é JSON válido (auth.json tem que ser JSON)', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+    await expect(
+      svc.connectFileCredential('u', 'codex', 'isto claramente não é JSON')
+    ).rejects.toThrow('JSON')
+  })
+
+  test('connectFileCredential rejeita runtime não suportado', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+    await expect(svc.connectFileCredential('u', 'inexistente', 'x')).rejects.toThrow(
+      'não suportado'
+    )
+  })
 })

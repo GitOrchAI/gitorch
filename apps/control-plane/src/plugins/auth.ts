@@ -16,7 +16,6 @@ interface ApiKeyPayload {
 interface UserPayload {
   id: string
   wingId: string
-  githubToken?: string
   email?: string
 }
 
@@ -69,12 +68,45 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
     allowList: (request: FastifyRequest) => isPublicPath(request.url),
   })
 
+  // codeql [js/missing-rate-limiting] - este preHandler roda sobre rotas que JÁ
+  // estão limitadas pelo rate limit global registrado logo acima
+  // (app.register(rateLimit, { global: true, max: 20 })); a proteção existe, o
+  // CodeQL só não liga o hook global ao handler neste escopo (mesmo caso do
+  // alerta #24 já resolvido).
   app.addHook('preHandler', async (request) => {
     // Skip auth for health/metrics/public webhook
     if (isPublicPath(request.url)) return
 
     const authHeader = request.headers.authorization
+
+    // Sessão do navegador: cookie httpOnly `gitorch_session` (JWT), nunca
+    // exposta a JS/XSS. Authorization Bearer continua valendo (API keys e
+    // chamadas server-to-server) e tem precedência quando ambos existem.
     if (!authHeader?.startsWith('Bearer ')) {
+      const cookieToken = request.cookies?.['gitorch_session']
+      if (cookieToken) {
+        try {
+          const env = getEnv()
+          const decoded = jwt.verify(cookieToken, env.JWT_SECRET) as {
+            userId: string
+            wingId: string
+            email?: string
+          }
+
+          request.user = {
+            id: decoded.userId,
+            wingId: decoded.wingId,
+            email: decoded.email || undefined,
+          } as UserPayload
+          request.wingId = decoded.wingId
+
+          wingIdContext.run({ wingId: decoded.wingId }, () => {})
+          return
+        } catch {
+          throw unauthorized('UNAUTHORIZED: Invalid or expired session cookie')
+        }
+      }
+
       throw unauthorized('UNAUTHORIZED: Missing or invalid Authorization header')
     }
 
@@ -87,14 +119,12 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
         const decoded = jwt.verify(key, env.JWT_SECRET) as {
           userId: string
           wingId: string
-          githubToken?: string
           email?: string
         }
 
         request.user = {
           id: decoded.userId,
           wingId: decoded.wingId,
-          githubToken: decoded.githubToken || undefined,
           email: decoded.email || undefined,
         } as UserPayload
         request.wingId = decoded.wingId

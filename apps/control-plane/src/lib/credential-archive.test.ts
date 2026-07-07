@@ -2,7 +2,12 @@ import { describe, expect, test } from 'vitest'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { archiveDirectory, restoreDirectory } from './credential-archive.js'
+import {
+  archiveDirectory,
+  archivePaths,
+  readArchiveEntry,
+  restoreDirectory,
+} from './credential-archive.js'
 
 async function tmp(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix))
@@ -51,5 +56,29 @@ describe('credential-archive', () => {
     })
     await expect(restoreDirectory(evil, dest)).rejects.toThrow('fora da raiz')
     await fs.rm(dest, { recursive: true, force: true })
+  })
+
+  test('recusa arquivo único que excede o teto de tamanho (mesmo guard que já protege o caminho de diretório)', async () => {
+    const src = await tmp('gitorch-cred-bigfile-')
+    await fs.mkdir(path.join(src, '.codex'), { recursive: true })
+    // 33MB > o teto de 32MB que já existe pra archiveDirectory/walk() — o
+    // branch de arquivo único (usado por connectFileCredential/connectRawToken)
+    // não tinha ESSE mesmo guard antes desta correção.
+    await fs.writeFile(path.join(src, '.codex', 'auth.json'), Buffer.alloc(33 * 1024 * 1024, 'a'))
+    await expect(archivePaths(src, ['.codex/auth.json'])).rejects.toThrow('excede')
+    await fs.rm(src, { recursive: true, force: true })
+  })
+
+  test('readArchiveEntry lê uma entrada do blob direto em memória, sem tocar o disco', async () => {
+    const src = await tmp('gitorch-cred-readentry-')
+    await fs.mkdir(path.join(src, '.gitorch'), { recursive: true })
+    await fs.writeFile(path.join(src, '.gitorch', 'gh-token'), 'github_pat_ABC123\n')
+
+    const blob = await archivePaths(src, ['.gitorch/gh-token'])
+    expect(blob).toBeTruthy()
+    expect(readArchiveEntry(blob as string, '.gitorch/gh-token')).toBe('github_pat_ABC123\n')
+    expect(readArchiveEntry(blob as string, 'nao-existe')).toBeNull()
+
+    await fs.rm(src, { recursive: true, force: true })
   })
 })

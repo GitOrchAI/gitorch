@@ -13,6 +13,14 @@ export interface LocalWorkspaceInfo {
   status: 'active' | 'hibernated'
 }
 
+/** Executa `git <args>`. Injetável para teste (evita rede real nos testes). */
+export type GitRunner = (args: string[]) => Promise<{ stdout: string; stderr: string }>
+
+const defaultGitRunner =
+  (timeoutMs: number): GitRunner =>
+  (args: string[]) =>
+    execFileAsync('git', args, { timeout: timeoutMs })
+
 /**
  * Provedor de workspace por processo local (executor `local-process`).
  *
@@ -24,9 +32,21 @@ export interface LocalWorkspaceInfo {
  */
 export class LocalWorkspaceProvider {
   private baseDir: string
+  private gitRunner?: GitRunner
 
-  constructor(baseDir = '/var/lib/gitorch/workspaces') {
+  constructor(baseDir = '/var/lib/gitorch/workspaces', gitRunner?: GitRunner) {
     this.baseDir = baseDir
+    this.gitRunner = gitRunner
+  }
+
+  /**
+   * Prefixo `-c http.extraHeader=...` quando há token: autentica SÓ esta
+   * invocação do git — nunca grava a credencial em `.git/config` nem na URL
+   * remota (onde vazaria por `git remote -v`/logs). Repositório privado usa o
+   * token do PRÓPRIO cliente (spec setup-wizard-redesign §17.3).
+   */
+  private authArgs(token?: string): string[] {
+    return token ? ['-c', `http.extraHeader=Authorization: Bearer ${token}`] : []
   }
 
   private validateInput(value: string): void {
@@ -51,7 +71,7 @@ export class LocalWorkspaceProvider {
   async allocateWorkspace(
     userId: string,
     projectId: string,
-    options?: { repository?: string }
+    options?: { repository?: string; token?: string }
   ): Promise<LocalWorkspaceInfo> {
     this.validateInput(userId)
     this.validateInput(projectId)
@@ -61,7 +81,7 @@ export class LocalWorkspaceProvider {
 
     if (options?.repository) {
       this.validateRepository(options.repository)
-      await this.ensureRepository(workspacePath, options.repository)
+      await this.ensureRepository(workspacePath, options.repository, options.token)
     }
 
     return {
@@ -73,7 +93,13 @@ export class LocalWorkspaceProvider {
     }
   }
 
-  private async ensureRepository(workspacePath: string, repository: string): Promise<void> {
+  private async ensureRepository(
+    workspacePath: string,
+    repository: string,
+    token?: string
+  ): Promise<void> {
+    const run = this.gitRunner ?? defaultGitRunner(300_000)
+    const auth = this.authArgs(token)
     const gitDir = path.posix.join(workspacePath, '.git')
     const hasClone = await fs
       .stat(gitDir)
@@ -84,18 +110,14 @@ export class LocalWorkspaceProvider {
       // Atualização best-effort: um pull falho não pode derrubar a missão
       // (o agente ainda trabalha com o clone existente), mas NÃO fica silencioso.
       try {
-        await execFileAsync('git', ['-C', workspacePath, 'pull', '--ff-only'], {
-          timeout: 120_000,
-        })
+        await run([...auth, '-C', workspacePath, 'pull', '--ff-only'])
       } catch (err) {
         // Histórico divergiu (força-push, clone raso antigo): o workspace é um
         // clone descartável de LEITURA — alinhar à força com o remoto é o
         // comportamento certo. O fetch do pull falho já atualizou as refs
         // remotas; o reset usa o upstream do branch atual.
         try {
-          await execFileAsync('git', ['-C', workspacePath, 'reset', '--hard', '@{u}'], {
-            timeout: 60_000,
-          })
+          await run(['-C', workspacePath, 'reset', '--hard', '@{u}'])
         } catch {
           // Sinaliza staleness em stderr do serviço: sem isso, análises rodariam
           // sobre código velho parecendo atuais.
@@ -111,17 +133,21 @@ export class LocalWorkspaceProvider {
     }
 
     // Sem clone: falha aqui É falha de missão (workspace vazio geraria análise inútil).
-    // Usa o credential helper do git configurado no host quando presente;
-    // repositórios públicos clonam anonimamente.
+    // Com token, autentica via header por-invocação (repo privado do cliente);
+    // sem token, clona anonimamente (repo público).
     // `--` encerra as opções do git: mesmo que `repository` (validado) fluísse
     // como algo parecido com flag, nada depois de `--` é interpretado como
     // opção (defesa contra injeção de argumento de segunda ordem, ex.:
     // `--upload-pack`). A URL é prefixada e o repositório passou pela regex.
-    await execFileAsync(
-      'git',
-      ['clone', '--depth', '1', '--', `https://github.com/${repository}.git`, workspacePath],
-      { timeout: 300_000 }
-    )
+    await run([
+      ...auth,
+      'clone',
+      '--depth',
+      '1',
+      '--',
+      `https://github.com/${repository}.git`,
+      workspacePath,
+    ])
   }
 
   async hibernateWorkspace(userId: string, projectId: string): Promise<void> {

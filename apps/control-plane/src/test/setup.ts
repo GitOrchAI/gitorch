@@ -40,7 +40,13 @@ class MockPrismaClient {
   $use = vi.fn()
   $queryRaw = vi.fn().mockResolvedValue([1])
   webhookDelivery = { create: vi.fn() }
-  mission = { create: vi.fn(), count: vi.fn(), updateMany: vi.fn() }
+  mission = {
+    create: vi.fn(),
+    count: vi.fn(),
+    updateMany: vi.fn(),
+    findMany: vi.fn().mockResolvedValue([]),
+    update: vi.fn(),
+  }
   apiKey = {
     findUnique: vi.fn(),
     findMany: vi.fn(),
@@ -70,6 +76,19 @@ class MockPrismaClient {
   }
 }
 
+// Mesma forma de PrismaClientKnownRequestError (code/meta), só sem a
+// inicialização pesada da real — suficiente para o `instanceof` que o
+// tratamento de colisão de constraint única (auth.ts) precisa checar.
+class MockPrismaClientKnownRequestError extends Error {
+  code: string
+  meta: Record<string, unknown> | undefined
+  constructor(message: string, opts: { code: string; meta?: Record<string, unknown> }) {
+    super(message)
+    this.code = opts.code
+    this.meta = opts.meta
+  }
+}
+
 vi.mock('@prisma/client', () => ({
   PrismaClient: MockPrismaClient,
   // O plugin de RLS deriva do DMMF quais modelos têm wingId — o mock espelha
@@ -84,6 +103,7 @@ vi.mock('@prisma/client', () => ({
         ],
       },
     },
+    PrismaClientKnownRequestError: MockPrismaClientKnownRequestError,
   },
 }))
 
