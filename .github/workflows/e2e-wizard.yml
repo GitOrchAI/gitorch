@@ -42,7 +42,13 @@ jobs:
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/gitorch_e2e
       REDIS_URL: redis://localhost:6379/0
-      NODE_ENV: development
+      # NODE_ENV NÃO fica aqui (nível de job): vazaria pro step de build do
+      # front e quebraria o next build (bug real achado ao vivo — o Next.js
+      # 16 gerencia NODE_ENV=production sozinho no build; um override pra
+      # 'development' faz o pré-render de /_global-error quebrar com
+      # "Cannot read properties of null (reading 'useContext')"). Só o
+      # control-plane em runtime precisa dele (cookie sameSite/secure em
+      # dev) — setado por-step, no "Start control-plane" abaixo.
       PORT: 4010
       HOST: 127.0.0.1
       FRONTEND_URL: http://127.0.0.1:4010
@@ -91,6 +97,8 @@ jobs:
       # CGC (diagnose-child.js) só existe no build.
       - name: Start control-plane
         working-directory: apps/control-plane
+        env:
+          NODE_ENV: development
         run: nohup node dist/index.js > /tmp/control-plane.log 2>&1 &
       - name: Wait for health
         run: |
