@@ -12,7 +12,7 @@ import StepTerms from '../../components/setup/StepTerms'
 import StepSelectRepos from '../../components/setup/StepSelectRepos'
 import StepSelectEngines from '../../components/setup/StepSelectEngines'
 import StepConnectEngine from '../../components/setup/StepConnectEngine'
-import StepAgentConfig from '../../components/setup/StepAgentConfig'
+import StepTelegram from '../../components/setup/StepTelegram'
 import StepPlanSelection from '../../components/setup/StepPlanSelection'
 import StepPlanConfirmation from '../../components/setup/StepPlanConfirmation'
 import StepRepoConfig from '../../components/setup/StepRepoConfig'
@@ -36,7 +36,10 @@ export default function SetupWizard() {
   const [selectedRepos, setSelectedRepos] = useState<string[]>([])
   const [selectedEngines, setSelectedEngines] = useState<string[]>(['claude-code'])
   const [telegram, setTelegram] = useState('')
-  const [autonomy, setAutonomy] = useState({ sm: 3, qa: 3, ra: 3, po: 3 })
+  // Autonomia dos 4 papéis: default sensato enviado ao submit (envConfig). Os
+  // sliders manuais saíram do wizard (Task 3.4) — autonomia/cadência vira
+  // ajuste fino no painel, não fricção no onboarding.
+  const [autonomy] = useState({ sm: 3, qa: 3, ra: 3, po: 3 })
   // Plano pré-selecionado pela landing (/setup?plan=solo) — derivado da URL no
   // inicializador (não num effect com setState síncrono). O plano só aparece a
   // partir do passo 8, então não há divergência de hidratação no passo 1.
@@ -207,11 +210,9 @@ export default function SetupWizard() {
                 exit={{ opacity: 0, x: -20 }}
                 className="flex flex-col h-full flex-1"
               >
-                <StepAgentConfig
+                <StepTelegram
                   telegram={telegram}
                   setTelegram={setTelegram}
-                  autonomy={autonomy}
-                  setAutonomy={setAutonomy}
                   onNext={nextStep}
                   onBack={prevStep}
                 />

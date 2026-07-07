@@ -159,6 +159,13 @@ export const locales = {
       connectCopied: 'Copied',
       connectGate: 'Connect at least one engine to continue.',
       connectError: 'Could not connect. Check what you pasted and try again.',
+      tgTitle: 'Telegram alerts (optional)',
+      tgDesc:
+        'Get a friendly ping when your agents finish a mission or need you. Totally optional — you can set it up later.',
+      tgOpen: 'Open Telegram',
+      tgHandleLabel: 'Your Telegram @username (optional)',
+      tgHandlePlaceholder: '@your_handle',
+      tgHandleHint: 'Open Telegram, start a chat with the bot, and we will reach you there.',
     },
   },
   pt: {
@@ -323,6 +330,13 @@ export const locales = {
       connectCopied: 'Copiado',
       connectGate: 'Conecte pelo menos um motor para continuar.',
       connectError: 'Não deu para conectar. Confira o que você colou e tente de novo.',
+      tgTitle: 'Alertas no Telegram (opcional)',
+      tgDesc:
+        'Receba um aviso amigável quando seus agentes terminarem uma missão ou precisarem de você. Totalmente opcional — dá para configurar depois.',
+      tgOpen: 'Abrir o Telegram',
+      tgHandleLabel: 'Seu @usuário do Telegram (opcional)',
+      tgHandlePlaceholder: '@seu_usuario',
+      tgHandleHint: 'Abra o Telegram, inicie uma conversa com o bot e a gente te encontra por lá.',
     },
   },
   es: {
@@ -488,6 +502,13 @@ export const locales = {
       connectCopied: 'Copiado',
       connectGate: 'Conecta al menos un motor para continuar.',
       connectError: 'No se pudo conectar. Revisa lo que pegaste e inténtalo de nuevo.',
+      tgTitle: 'Alertas en Telegram (opcional)',
+      tgDesc:
+        'Recibe un aviso amistoso cuando tus agentes terminen una misión o te necesiten. Totalmente opcional — puedes configurarlo después.',
+      tgOpen: 'Abrir Telegram',
+      tgHandleLabel: 'Tu @usuario de Telegram (opcional)',
+      tgHandlePlaceholder: '@tu_usuario',
+      tgHandleHint: 'Abre Telegram, inicia un chat con el bot y te contactaremos ahí.',
     },
   },
 }
