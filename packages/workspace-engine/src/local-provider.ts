@@ -128,9 +128,17 @@ export class LocalWorkspaceProvider {
   ): Promise<void> {
     const run = this.gitRunner ?? defaultGitRunner(300_000)
     const auth = this.authArgs(token)
-    const gitDir = path.posix.join(workspacePath, '.git')
+
+    const resolvedWorkspace = path.posix.resolve(workspacePath)
+    const gitDir = path.posix.join(resolvedWorkspace, '.git')
+    const resolvedGitDir = path.posix.resolve(gitDir)
+
+    if (!resolvedGitDir.startsWith(resolvedWorkspace + path.posix.sep)) {
+      return
+    }
+
     const hasClone = await fs
-      .stat(gitDir)
+      .stat(resolvedGitDir)
       .then((s) => s.isDirectory())
       .catch(() => false)
 
