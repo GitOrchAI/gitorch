@@ -44,9 +44,18 @@ export class LocalWorkspaceProvider {
    * invocação do git — nunca grava a credencial em `.git/config` nem na URL
    * remota (onde vazaria por `git remote -v`/logs). Repositório privado usa o
    * token do PRÓPRIO cliente (spec setup-wizard-redesign §17.3).
+   *
+   * Basic, NÃO Bearer: o endpoint smart-HTTP do git no GitHub rejeita
+   * `Authorization: Bearer <token>` com "invalid credentials" mesmo com um
+   * token válido (confirmado ao vivo: o MESMO token autentica normal na API
+   * REST via Bearer, mas falha no clone) — a API REST aceita Bearer, o git
+   * HTTP não. `x-access-token` é o usuário-placeholder que o próprio GitHub
+   * usa nesse esquema; a senha é o token.
    */
   private authArgs(token?: string): string[] {
-    return token ? ['-c', `http.extraHeader=Authorization: Bearer ${token}`] : []
+    if (!token) return []
+    const basic = Buffer.from(`x-access-token:${token}`).toString('base64')
+    return ['-c', `http.extraHeader=Authorization: Basic ${basic}`]
   }
 
   /**
@@ -60,6 +69,11 @@ export class LocalWorkspaceProvider {
   private sanitizeGitError(err: unknown, token?: string): Error {
     let message = err instanceof Error ? err.message : String(err)
     if (token) message = message.split(token).join('[REDACTED]')
+    // Defesa em profundidade: authArgs manda Basic base64("x-access-token:"+
+    // token), que NÃO contém o token cru como substring — o split acima não
+    // pega esse formato. Redige qualquer "Authorization: <esquema> <valor>"
+    // que sobrar, não importa a codificação.
+    message = message.replace(/Authorization:\s*\S+\s+\S+/gi, 'Authorization: [REDACTED]')
     return new Error(message)
   }
 
