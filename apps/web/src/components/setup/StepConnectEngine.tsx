@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react'
-import { ChevronRight, Check, Copy, Loader2, Cpu, Sparkles, Terminal } from 'lucide-react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { ChevronRight, Check, ExternalLink, Loader2, Cpu, Sparkles, Terminal } from 'lucide-react'
 import { useLanguage } from '../../LanguageContext'
 
 interface StepConnectEngineProps {
@@ -9,41 +9,18 @@ interface StepConnectEngineProps {
   onBack: () => void
 }
 
-// Metadados por motor. `id` é o vocabulário do wizard (o backend resolve
-// claude-code→claude via resolveEngineId). `runtime` é o id retornado por
-// GET /api/v1/engines (já resolvido), usado para casar o status. Comando é
-// shell literal (não traduzido); o "how" é i18n.
 const ENGINES = [
-  {
-    id: 'claude-code',
-    runtime: 'claude',
-    name: 'Claude Code',
-    cmd: 'claude setup-token',
-    howKey: 'setup.connectClaudeHow',
-    placeholder: 'sk-ant-oat01-...',
-    Icon: Cpu,
-  },
-  {
-    id: 'codex',
-    runtime: 'codex',
-    name: 'Codex',
-    cmd: 'codex login',
-    howKey: 'setup.connectCodexHow',
-    placeholder: '{ "auth_mode": "chatgpt", ... }',
-    Icon: Sparkles,
-  },
-  {
-    id: 'antigravity',
-    runtime: 'antigravity',
-    name: 'Antigravity',
-    cmd: 'agy login',
-    howKey: 'setup.connectAntigravityHow',
-    placeholder: 'oauth-token...',
-    Icon: Terminal,
-  },
+  { id: 'claude-code', runtime: 'claude', name: 'Claude Code', Icon: Cpu },
+  { id: 'codex', runtime: 'codex', name: 'Codex', Icon: Sparkles },
+  { id: 'antigravity', runtime: 'antigravity', name: 'Antigravity', Icon: Terminal },
 ] as const
 
-type Status = 'idle' | 'connecting' | 'connected' | 'error'
+type LoginState =
+  | { phase: 'idle' }
+  | { phase: 'starting' }
+  | { phase: 'url_ready'; url: string; code?: string }
+  | { phase: 'connected' }
+  | { phase: 'error'; message: string }
 
 export default function StepConnectEngine({
   apiBaseUrl,
@@ -57,26 +34,25 @@ export default function StepConnectEngine({
     [selectedEngines]
   )
 
-  const [tokens, setTokens] = useState<Record<string, string>>({})
-  const [status, setStatus] = useState<Record<string, Status>>({})
-  const [errors, setErrors] = useState<Record<string, string>>({})
-  const [copied, setCopied] = useState<string | null>(null)
+  const [states, setStates] = useState<Record<string, LoginState>>({})
+  const [pastedCode, setPastedCode] = useState<Record<string, string>>({})
+  const loginIds = useRef<Record<string, string>>({})
+  const sources = useRef<Record<string, EventSource>>({})
 
-  // Estado real do servidor: motores já conectados aparecem como conectados
-  // (o cliente pode ter conectado antes, ou reabrir o wizard).
+  // Estado real do servidor: motores já conectados aparecem como conectados.
   useEffect(() => {
     let cancelled = false
     fetch(`${apiBaseUrl}/api/v1/engines`, { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : null))
       .then((data: { engines?: Array<{ runtime: string; status: string }> } | null) => {
         if (cancelled || !data?.engines) return
-        const connected: Record<string, Status> = {}
+        const connected: Record<string, LoginState> = {}
         for (const card of ENGINES) {
           if (data.engines.some((e) => e.runtime === card.runtime && e.status === 'connected')) {
-            connected[card.id] = 'connected'
+            connected[card.id] = { phase: 'connected' }
           }
         }
-        setStatus((prev) => ({ ...connected, ...prev }))
+        setStates((prev) => ({ ...connected, ...prev }))
       })
       .catch(() => undefined)
     return () => {
@@ -84,42 +60,74 @@ export default function StepConnectEngine({
     }
   }, [apiBaseUrl])
 
-  const connect = async (id: string) => {
-    const token = (tokens[id] ?? '').trim()
-    if (!token) return
-    setStatus((s) => ({ ...s, [id]: 'connecting' }))
-    setErrors((e) => ({ ...e, [id]: '' }))
+  // Fecha os EventSource abertos ao desmontar (troca de passo do wizard).
+  useEffect(() => {
+    return () => {
+      for (const src of Object.values(sources.current)) src.close()
+    }
+  }, [])
+
+  const connect = async (id: string, runtime: string) => {
+    // Fecha qualquer stream anterior ainda aberto para este motor — evita
+    // vazar a conexão se "Conectar" for acionado mais de uma vez em sequência
+    // (ex.: duplo clique antes do re-render esconder o botão).
+    const prevSource = sources.current[id]
+    if (prevSource) {
+      prevSource.close()
+      delete sources.current[id]
+    }
+    setStates((s) => ({ ...s, [id]: { phase: 'starting' } }))
     try {
-      const res = await fetch(`${apiBaseUrl}/api/v1/engines/${id}/token`, {
+      const res = await fetch(`${apiBaseUrl}/api/v1/engines/${runtime}/login/start`, {
         method: 'POST',
         credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token }),
       })
       if (!res.ok) {
         const data = (await res.json().catch(() => null)) as { error?: string } | null
-        setStatus((s) => ({ ...s, [id]: 'error' }))
-        setErrors((e) => ({ ...e, [id]: data?.error || t('setup.connectError') }))
+        setStates((s) => ({
+          ...s,
+          [id]: { phase: 'error', message: data?.error || t('setup.connectError') },
+        }))
         return
       }
-      setStatus((s) => ({ ...s, [id]: 'connected' }))
+      const { loginId } = (await res.json()) as { loginId: string }
+      loginIds.current[id] = loginId
+
+      const src = new EventSource(`${apiBaseUrl}/api/v1/engines/login/${loginId}/stream`, {
+        withCredentials: true,
+      } as EventSourceInit)
+      sources.current[id] = src
+      src.addEventListener('state', (evt) => {
+        const state = JSON.parse((evt as MessageEvent).data) as LoginState
+        setStates((s) => ({ ...s, [id]: state }))
+        if (state.phase === 'connected' || state.phase === 'error') {
+          src.close()
+          delete sources.current[id]
+        }
+      })
+      src.onerror = () => {
+        setStates((s) => ({ ...s, [id]: { phase: 'error', message: t('setup.connectError') } }))
+        src.close()
+        delete sources.current[id]
+      }
     } catch {
-      setStatus((s) => ({ ...s, [id]: 'error' }))
-      setErrors((e) => ({ ...e, [id]: t('setup.connectError') }))
+      setStates((s) => ({ ...s, [id]: { phase: 'error', message: t('setup.connectError') } }))
     }
   }
 
-  const copy = (id: string, cmd: string) => {
-    navigator.clipboard?.writeText(cmd).then(
-      () => {
-        setCopied(id)
-        window.setTimeout(() => setCopied((c) => (c === id ? null : c)), 1500)
-      },
-      () => undefined
-    )
+  const submitCode = async (id: string) => {
+    const loginId = loginIds.current[id]
+    const code = (pastedCode[id] ?? '').trim()
+    if (!loginId || !code) return
+    await fetch(`${apiBaseUrl}/api/v1/engines/login/${loginId}/code`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    }).catch(() => undefined)
   }
 
-  const anyConnected = cards.some((c) => status[c.id] === 'connected')
+  const anyConnected = cards.some((c) => states[c.id]?.phase === 'connected')
 
   return (
     <div className="flex flex-col h-full">
@@ -127,9 +135,9 @@ export default function StepConnectEngine({
       <p className="wz-sub">{t('setup.connectDesc')}</p>
 
       <div className="wz-body space-y-4 overflow-y-auto" style={{ maxHeight: '18rem' }}>
-        {cards.map(({ id, name, cmd, howKey, placeholder, Icon }) => {
-          const st: Status = status[id] ?? 'idle'
-          const isConnected = st === 'connected'
+        {cards.map(({ id, runtime, name, Icon }) => {
+          const state: LoginState = states[id] ?? { phase: 'idle' }
+          const isConnected = state.phase === 'connected'
           return (
             <div
               key={id}
@@ -151,48 +159,63 @@ export default function StepConnectEngine({
                 )}
               </div>
 
-              {!isConnected && (
-                <>
-                  <p className="wz-opt-desc" style={{ marginBottom: 12 }}>
-                    {t(howKey)}
-                  </p>
-                  <div className="wz-cmd" style={{ marginBottom: 10 }}>
-                    <code>{cmd}</code>
-                    <button className="wz-cmd-copy" onClick={() => copy(id, cmd)}>
-                      {copied === id ? (
-                        t('setup.connectCopied')
-                      ) : (
-                        <span className="inline-flex items-center gap-1">
-                          <Copy size={12} /> {t('setup.connectCopy')}
-                        </span>
-                      )}
-                    </button>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      className="wz-field"
-                      type="text"
-                      placeholder={placeholder}
-                      value={tokens[id] ?? ''}
-                      onChange={(e) => setTokens((tk) => ({ ...tk, [id]: e.target.value }))}
-                    />
-                    <button
-                      className="wz-btn wz-btn-primary"
-                      style={{ flex: 'none' }}
-                      disabled={st === 'connecting' || !(tokens[id] ?? '').trim()}
-                      onClick={() => connect(id)}
-                    >
-                      {st === 'connecting' ? (
-                        <>
-                          <Loader2 className="animate-spin" size={16} /> {t('setup.connecting')}
-                        </>
-                      ) : (
-                        t('setup.connectBtn')
-                      )}
-                    </button>
-                  </div>
-                  {st === 'error' && errors[id] && <p className="wz-err">{errors[id]}</p>}
-                </>
+              {state.phase === 'idle' && (
+                <button className="wz-btn wz-btn-primary" onClick={() => connect(id, runtime)}>
+                  {t('setup.connectBtn')}
+                </button>
+              )}
+
+              {state.phase === 'starting' && (
+                <span className="wz-opt-desc inline-flex items-center gap-2">
+                  <Loader2 className="animate-spin" size={16} /> {t('setup.connecting')}
+                </span>
+              )}
+
+              {state.phase === 'url_ready' && (
+                <div className="space-y-3">
+                  <a
+                    className="wz-btn wz-btn-primary inline-flex items-center gap-2"
+                    href={state.url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {t('setup.connectOpenLink')} <ExternalLink size={14} />
+                  </a>
+                  {state.code && (
+                    <div className="wz-cmd">
+                      <code>{state.code}</code>
+                    </div>
+                  )}
+                  {!state.code && (
+                    <div className="flex items-center gap-2">
+                      <input
+                        className="wz-field"
+                        type="text"
+                        placeholder={t('setup.connectPasteCodePlaceholder')}
+                        value={pastedCode[id] ?? ''}
+                        onChange={(e) => setPastedCode((p) => ({ ...p, [id]: e.target.value }))}
+                      />
+                      <button
+                        className="wz-btn wz-btn-primary"
+                        style={{ flex: 'none' }}
+                        disabled={!(pastedCode[id] ?? '').trim()}
+                        onClick={() => submitCode(id)}
+                      >
+                        {t('setup.connectSubmitCode')}
+                      </button>
+                    </div>
+                  )}
+                  <p className="wz-opt-desc">{t('setup.connectWaitingApproval')}</p>
+                </div>
+              )}
+
+              {state.phase === 'error' && (
+                <div className="space-y-2">
+                  <p className="wz-err">{state.message}</p>
+                  <button className="wz-btn wz-btn-primary" onClick={() => connect(id, runtime)}>
+                    {t('setup.connectBtn')}
+                  </button>
+                </div>
               )}
             </div>
           )

@@ -28,9 +28,19 @@ export function parseDevicePrompt(buffered: string, runtime: DeviceRuntime): Dev
       const url = clean.match(/https:\/\/claude\.com\/cai\/oauth\/authorize\?\S+/)?.[0]
       return url ? { url } : {}
     }
-    case 'antigravity':
-      // agy não expõe device-code/URL headless (spike): sem markers. Tratado
-      // pelo paste-fallback até um mecanismo automatizável ser confirmado.
-      return {}
+    case 'antigravity': {
+      // Re-testado 2026-07-07 sob PTY com HOME descartável (agy 1.0.16): o menu
+      // "Select login method" emite esta URL do Google OAuth assim que o Enter
+      // inicial seleciona "1. Google OAuth" (ver runDeviceLogin/Task 2 — o
+      // Enter é responsabilidade de quem chama, não deste parser). MESMO
+      // padrão bidirecional do Claude: sem código no stdout, o usuário cola de
+      // volta o que a página antigravity.google/oauth-callback devolver.
+      const url = clean.match(/https:\/\/accounts\.google\.com\/o\/oauth2\/auth\?\S+/)?.[0]
+      return url ? { url } : {}
+    }
   }
+}
+
+export function isDeviceRuntime(x: string): x is DeviceRuntime {
+  return x === 'codex' || x === 'claude' || x === 'antigravity'
 }
