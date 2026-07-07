@@ -25,12 +25,24 @@ describe('Auth Plugin', () => {
     app.get('/ready', async () => ({ status: 'ready' }))
     app.get('/metrics', async () => 'metrics')
     app.post('/api/webhooks/github', async () => ({ ok: true }))
+    // Front estático servido pela MESMA origem: paths fora de /api são públicos.
+    app.get('/setup', async () => 'wizard-html')
+    app.get('/_next/static/app.js', async () => 'asset')
     await app.ready()
   })
 
   it('skips auth for public paths', async () => {
     const res = await app.inject({ method: 'GET', url: '/health' })
     expect(res.statusCode).toBe(200)
+  })
+
+  it('serves the same-origin static front (non-/api paths) without auth, keeps /api protected', async () => {
+    // Sem isso o auth hook devolveria 401 nos próprios arquivos do site,
+    // impedindo o wizard de carregar quando servido pela mesma origem da API.
+    expect((await app.inject({ method: 'GET', url: '/setup' })).statusCode).toBe(200)
+    expect((await app.inject({ method: 'GET', url: '/_next/static/app.js' })).statusCode).toBe(200)
+    // …mas a superfície de API sob /api continua protegida.
+    expect((await app.inject({ method: 'GET', url: '/api/projects' })).statusCode).toBe(401)
   })
 
   it('skips auth for metrics endpoint', async () => {

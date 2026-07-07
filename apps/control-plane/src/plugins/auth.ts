@@ -54,7 +54,16 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
     '/api/billing/webhook',
   ]
 
-  const isPublicPath = (url: string) => publicPaths.some((p) => url.startsWith(p))
+  // O front estático (wizard Next export) é servido pela MESMA origem e é
+  // público por natureza: todo endpoint protegido vive sob `/api/`. Então
+  // qualquer path fora de `/api/` (/, /setup, /_next/*, favicon, etc.) é
+  // público; sob `/api/`, só os explicitamente listados. Assim o auth hook
+  // não devolve 401 para os arquivos do próprio site.
+  const isPublicPath = (url: string) => {
+    const pathOnly = url.split('?')[0] ?? url
+    if (!pathOnly.startsWith('/api/')) return true
+    return publicPaths.some((p) => pathOnly.startsWith(p))
+  }
 
   // Register rate limit for authenticated routes with a stricter limit.
   // This helps mitigate brute-force attacks on API keys and JWTs.

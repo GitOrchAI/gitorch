@@ -2,6 +2,7 @@ import Fastify, { FastifyInstance } from 'fastify'
 import { loadEnv } from './config/env.js'
 import { registerPlugins } from './plugins/index.js'
 import { registerRoutes } from './routes/index.js'
+import { webStaticPlugin } from './plugins/web-static.js'
 
 async function buildApp(): Promise<FastifyInstance> {
   const env = loadEnv()
@@ -23,6 +24,9 @@ async function buildApp(): Promise<FastifyInstance> {
 
   await registerPlugins(app, env)
   await registerRoutes(app)
+  // Depois das rotas de API: serve o wizard estático na MESMA origem (rotas
+  // exatas de /api já registradas têm precedência sobre o wildcard do estático).
+  await app.register(webStaticPlugin)
 
   return app
 }
