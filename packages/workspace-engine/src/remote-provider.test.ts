@@ -24,7 +24,7 @@ describe('RemoteWorkspaceProvider', () => {
     expect(script).toContain('git clone --depth 1 -- https://github.com/octocat/Hello-World.git')
   })
 
-  test('com token, autentica via header HTTP por-invocação (nunca embutido na URL)', async () => {
+  test('com token, autentica via header HTTP Basic por-invocação (nunca embutido na URL)', async () => {
     const runner = vi.fn().mockResolvedValue(ok())
     const provider = new RemoteWorkspaceProvider(runner, '/home/gitorch/missions')
 
@@ -34,26 +34,34 @@ describe('RemoteWorkspaceProvider', () => {
     })
 
     const script: string = runner.mock.calls[0][0].args[1]
+    // Basic, NÃO Bearer: o endpoint smart-HTTP do git no GitHub rejeita
+    // Bearer com "invalid credentials" mesmo com token válido — confirmado
+    // ao vivo no QA da F1 (a API REST aceita Bearer; o git HTTP não).
+    const expectedBasic = Buffer.from('x-access-token:gh_secret_token').toString('base64')
     expect(script).toContain(
-      "git -c 'http.extraHeader=Authorization: Bearer gh_secret_token' clone"
+      `git -c 'http.extraHeader=Authorization: Basic ${expectedBasic}' clone`
     )
-    // Token nunca embutido na URL do remoto (vazaria por `git remote -v`/logs).
+    // Token cru nunca aparece em lugar nenhum do script (nem na URL, nem no header).
     expect(script).not.toContain('gh_secret_token@')
+    expect(script).not.toContain('gh_secret_token')
   })
 
-  test('token com aspa simples é shell-quotado sem escapar do literal (defesa contra injeção)', async () => {
+  test('token com aspa simples nunca quebra o shell — base64 não tem metacaractere de shell', async () => {
     const runner = vi.fn().mockResolvedValue(ok())
     const provider = new RemoteWorkspaceProvider(runner, '/base')
+    const token = "x'; rm -rf /; echo '"
 
     await provider.allocateWorkspace('u', 'p', {
       repository: 'octocat/repo',
-      token: "x'; rm -rf /; echo '",
+      token,
     })
 
     const script: string = runner.mock.calls[0][0].args[1]
-    // A aspa simples do token vira a sequência de escape POSIX '\'' — o
-    // comando shell nunca vê `rm -rf /` como um comando separado.
-    expect(script).toContain("x'\\''; rm -rf /; echo '\\''")
+    // Base64 do header Basic nunca contém aspa simples nem `;` — a
+    // codificação em si já é imune a injeção, antes mesmo do shellQuote.
+    const expectedBasic = Buffer.from(`x-access-token:${token}`).toString('base64')
+    expect(script).toContain(expectedBasic)
+    expect(script).not.toContain('rm -rf /')
   })
 
   test('sem repositório, só cria o diretório (não clona)', async () => {

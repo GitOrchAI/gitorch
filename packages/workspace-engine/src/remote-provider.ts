@@ -88,8 +88,11 @@ export class RemoteWorkspaceProvider {
       // Token autentica via header POR-INVOCAÇÃO (-c http.extraHeader) — nunca
       // embutido na URL remota, onde vazaria por `git remote -v`/logs no nó
       // compartilhado. Repositório privado usa o token do PRÓPRIO cliente.
+      // Basic, NÃO Bearer: o endpoint smart-HTTP do git no GitHub rejeita
+      // Bearer com "invalid credentials" mesmo com token válido (confirmado
+      // ao vivo no QA da F1 — a API REST aceita Bearer, o git HTTP não).
       const auth = options.token
-        ? `-c ${this.shellQuote(`http.extraHeader=Authorization: Bearer ${options.token}`)} `
+        ? `-c ${this.shellQuote(`http.extraHeader=Authorization: Basic ${Buffer.from(`x-access-token:${options.token}`).toString('base64')}`)} `
         : ''
       // Clone raso se ausente; se já existe, pull best-effort (clone é descartável
       // de LEITURA). `--` encerra as opções do git contra injeção de segunda ordem.
