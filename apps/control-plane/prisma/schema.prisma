@@ -27,6 +27,7 @@ model User {
   projects          Project[]
   engineConnections EngineConnection[]
   subscription      Subscription?
+  diagnosisJobs     DiagnosisJob[]
 
   @@map("users")
 }
@@ -287,4 +288,27 @@ model WebhookDelivery {
   @@index([projectId, createdAt])
   @@index([processed])
   @@map("webhook_deliveries")
+}
+
+// Diagnóstico grátis do setup wizard (F1) — ZERO-LLM, roda ANTES de criar um
+// Project (a pessoa ainda não escolheu plano/pagou). Por isso é seu próprio
+// modelo, não uma Mission: não conta contra limite de projeto, não tem custo
+// de LLM/quota, e existe fora do ciclo de vida de um Project.
+model DiagnosisJob {
+  id           String    @id @default(cuid())
+  userId       String    @map("user_id")
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  repoFullName String    @map("repo_full_name")
+  status       String    @default("pending") // pending|running|completed|failed
+  progress     String?   // último passo narrado: cloning|indexing|reading_github|done
+  result       Json?
+  error        String?
+
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+  completedAt  DateTime? @map("completed_at")
+
+  @@index([userId, repoFullName])
+  @@map("diagnosis_jobs")
 }

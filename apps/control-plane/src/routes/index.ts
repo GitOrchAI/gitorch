@@ -9,6 +9,7 @@ import { runtimeConfigRoutes } from './runtime-config.js'
 import { authRoutes } from './auth.js'
 import { setupRoutes } from './setup.js'
 import { billingRoutes } from './billing.js'
+import { diagnoseRoutes } from './diagnose.js'
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   // Health and readiness endpoints
@@ -23,6 +24,9 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   // Auth and Setup endpoints
   await authRoutes(app)
   await setupRoutes(app)
+
+  // Diagnóstico grátis (F1) — antes de existir Project/pagamento
+  await diagnoseRoutes(app)
 
   // Projects CRUD endpoints
   await projectRoutes(app)

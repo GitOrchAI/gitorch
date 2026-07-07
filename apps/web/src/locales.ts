@@ -105,6 +105,37 @@ export const locales = {
       reposSearch: 'Search repository...',
       reposEmpty: 'No repositories found.',
       reposPrivate: 'Private',
+      diagTitle: 'Reading your repository',
+      diagDesc: 'No AI involved yet — this is real, structural analysis of your code, free.',
+      diagLoadingClone: 'Cloning your repository…',
+      diagLoadingIndex: 'Reading the code structure…',
+      diagLoadingGithub: 'Checking issues, pull requests and CI…',
+      diagEmptyTitle: 'Not much to read yet',
+      diagEmptyBody:
+        "This repository doesn't have enough recognizable source code for a structural read. You can pick another one, or continue — the agents can still work here.",
+      diagErrorTitle: 'Could not read this repository',
+      diagErrorBody:
+        'Something went wrong while cloning or reading the code. Check access and try again.',
+      diagRetry: 'Try again',
+      diagScoreLabel: 'Repo health',
+      diagVerdictGood: 'Solid foundation. A few things to tighten up.',
+      diagVerdictWarn: 'Workable, but some real friction is slowing the team down.',
+      diagVerdictBad: 'This repo is fighting back — there is real, fixable pain here.',
+      diagFindingHealthyCore:
+        'Core structure looks solid — {{fileCount}} files indexed, nothing alarming found.',
+      diagFindingUntestedRatio:
+        '{{percent}}% of the code ({{untestedCount}} of {{totalCount}} files) has no matching tests — changes there are a bet, not a certainty.',
+      diagFindingStalePrs:
+        '{{staleCount}} of {{openCount}} open pull requests have been sitting still for a while.',
+      diagFindingCiFailing:
+        'The most recent CI run failed — the main branch may be broken right now.',
+      diagFindingOpenIssues: '{{openIssues}} open issues are piling up.',
+      diagDetailsToggle: 'See the technical details',
+      diagDetailsFiles: 'Files indexed',
+      diagDetailsLargest: 'Largest files',
+      diagDetailsMostCalled: 'Most-called functions',
+      diagDetailsDirs: 'Directory inventory',
+      diagContinue: 'Connect an engine to fix this',
       enginesTitle: 'Choose your engines',
       enginesDesc: 'Pick which AI engines will work in your repository. All three are equals.',
       engClaudeDesc:
@@ -290,6 +321,37 @@ export const locales = {
       reposSearch: 'Buscar repositório...',
       reposEmpty: 'Nenhum repositório encontrado.',
       reposPrivate: 'Privado',
+      diagTitle: 'Lendo o seu repositório',
+      diagDesc: 'Ainda sem IA nenhuma — é análise estrutural real do seu código, de graça.',
+      diagLoadingClone: 'Clonando seu repositório…',
+      diagLoadingIndex: 'Lendo a estrutura do código…',
+      diagLoadingGithub: 'Cruzando issues, pull requests e CI…',
+      diagEmptyTitle: 'Ainda não há muito pra ler',
+      diagEmptyBody:
+        'Este repositório não tem código-fonte reconhecível o suficiente para uma leitura estrutural. Você pode escolher outro, ou continuar — os agentes ainda podem trabalhar aqui.',
+      diagErrorTitle: 'Não consegui ler este repositório',
+      diagErrorBody:
+        'Algo deu errado ao clonar ou ler o código. Verifique o acesso e tente de novo.',
+      diagRetry: 'Tentar de novo',
+      diagScoreLabel: 'Saúde do repo',
+      diagVerdictGood: 'Base sólida. Alguns pontos pra apertar.',
+      diagVerdictWarn: 'Dá pra trabalhar, mas tem fricção real segurando o time.',
+      diagVerdictBad: 'Este repo está resistindo — tem dor real aqui, mas dá pra resolver.',
+      diagFindingHealthyCore:
+        'A base está sólida — {{fileCount}} arquivos indexados, nada alarmante encontrado.',
+      diagFindingUntestedRatio:
+        '{{percent}}% do código ({{untestedCount}} de {{totalCount}} arquivos) não tem teste correspondente — mexer ali é aposta, não certeza.',
+      diagFindingStalePrs:
+        '{{staleCount}} de {{openCount}} pull requests abertos estão parados há um tempo.',
+      diagFindingCiFailing:
+        'O último run do CI falhou — a branch principal pode estar quebrada agora.',
+      diagFindingOpenIssues: '{{openIssues}} issues abertas estão se acumulando.',
+      diagDetailsToggle: 'Ver os detalhes técnicos',
+      diagDetailsFiles: 'Arquivos indexados',
+      diagDetailsLargest: 'Maiores arquivos',
+      diagDetailsMostCalled: 'Funções mais chamadas',
+      diagDetailsDirs: 'Inventário por diretório',
+      diagContinue: 'Conecte um motor pra resolver isso',
       enginesTitle: 'Escolha seus motores',
       enginesDesc:
         'Selecione quais motores de IA vão atuar no seu repositório. Os três são iguais.',
@@ -474,6 +536,37 @@ export const locales = {
       reposSearch: 'Buscar repositorio...',
       reposEmpty: 'No se encontraron repositorios.',
       reposPrivate: 'Privado',
+      diagTitle: 'Leyendo tu repositorio',
+      diagDesc: 'Todavía sin IA — es análisis estructural real de tu código, gratis.',
+      diagLoadingClone: 'Clonando tu repositorio…',
+      diagLoadingIndex: 'Leyendo la estructura del código…',
+      diagLoadingGithub: 'Cruzando issues, pull requests y CI…',
+      diagEmptyTitle: 'Todavía no hay mucho que leer',
+      diagEmptyBody:
+        'Este repositorio no tiene código fuente reconocible suficiente para una lectura estructural. Puedes elegir otro, o continuar — los agentes igual pueden trabajar aquí.',
+      diagErrorTitle: 'No pude leer este repositorio',
+      diagErrorBody:
+        'Algo salió mal al clonar o leer el código. Verifica el acceso e intenta de nuevo.',
+      diagRetry: 'Intentar de nuevo',
+      diagScoreLabel: 'Salud del repo',
+      diagVerdictGood: 'Base sólida. Algunos puntos para ajustar.',
+      diagVerdictWarn: 'Se puede trabajar, pero hay fricción real frenando al equipo.',
+      diagVerdictBad: 'Este repo está resistiendo — hay dolor real aquí, pero se puede resolver.',
+      diagFindingHealthyCore:
+        'La base está sólida — {{fileCount}} archivos indexados, nada alarmante encontrado.',
+      diagFindingUntestedRatio:
+        'El {{percent}}% del código ({{untestedCount}} de {{totalCount}} archivos) no tiene test correspondiente — tocar ahí es apuesta, no certeza.',
+      diagFindingStalePrs:
+        '{{staleCount}} de {{openCount}} pull requests abiertos llevan un tiempo parados.',
+      diagFindingCiFailing:
+        'La última ejecución de CI falló — la rama principal podría estar rota ahora.',
+      diagFindingOpenIssues: '{{openIssues}} issues abiertas se están acumulando.',
+      diagDetailsToggle: 'Ver los detalles técnicos',
+      diagDetailsFiles: 'Archivos indexados',
+      diagDetailsLargest: 'Archivos más grandes',
+      diagDetailsMostCalled: 'Funciones más llamadas',
+      diagDetailsDirs: 'Inventario por directorio',
+      diagContinue: 'Conecta un motor para resolver esto',
       enginesTitle: 'Elige tus motores',
       enginesDesc:
         'Selecciona qué motores de IA trabajarán en tu repositorio. Los tres son iguales.',

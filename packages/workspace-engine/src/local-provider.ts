@@ -44,9 +44,37 @@ export class LocalWorkspaceProvider {
    * invocação do git — nunca grava a credencial em `.git/config` nem na URL
    * remota (onde vazaria por `git remote -v`/logs). Repositório privado usa o
    * token do PRÓPRIO cliente (spec setup-wizard-redesign §17.3).
+   *
+   * Basic, NÃO Bearer: o endpoint smart-HTTP do git no GitHub rejeita
+   * `Authorization: Bearer <token>` com "invalid credentials" mesmo com um
+   * token válido (confirmado ao vivo: o MESMO token autentica normal na API
+   * REST via Bearer, mas falha no clone) — a API REST aceita Bearer, o git
+   * HTTP não. `x-access-token` é o usuário-placeholder que o próprio GitHub
+   * usa nesse esquema; a senha é o token.
    */
   private authArgs(token?: string): string[] {
-    return token ? ['-c', `http.extraHeader=Authorization: Bearer ${token}`] : []
+    if (!token) return []
+    const basic = Buffer.from(`x-access-token:${token}`).toString('base64')
+    return ['-c', `http.extraHeader=Authorization: Basic ${basic}`]
+  }
+
+  /**
+   * O Node embute a linha de comando INTEIRA em ExecException.message
+   * ("Command failed: git -c http.extraHeader=Authorization: Bearer <token>
+   * ..."). Sem isto, uma falha de clone vaza o token do cliente em texto
+   * puro pra onde o erro for parar (banco, resposta de API, log de missão) —
+   * achado real do QA da F1 (diagnóstico grátis), corrigido na origem porque
+   * afeta TODO consumidor deste provider, não só o diagnóstico.
+   */
+  private sanitizeGitError(err: unknown, token?: string): Error {
+    let message = err instanceof Error ? err.message : String(err)
+    if (token) message = message.split(token).join('[REDACTED]')
+    // Defesa em profundidade: authArgs manda Basic base64("x-access-token:"+
+    // token), que NÃO contém o token cru como substring — o split acima não
+    // pega esse formato. Redige qualquer "Authorization: <esquema> <valor>"
+    // que sobrar, não importa a codificação.
+    message = message.replace(/Authorization:\s*\S+\s+\S+/gi, 'Authorization: [REDACTED]')
+    return new Error(message)
   }
 
   private validateInput(value: string): void {
@@ -76,7 +104,16 @@ export class LocalWorkspaceProvider {
     this.validateInput(userId)
     this.validateInput(projectId)
 
-    const workspacePath = path.posix.join(this.baseDir, userId, projectId)
+    // Sanitiza os valores de entrada
+    const sanitizedUserId = userId.replace(/[^a-zA-Z0-9_-]/g, '_')
+    const sanitizedProjectId = projectId.replace(/[^a-zA-Z0-9_-]/g, '_')
+
+    // Constrói o caminho absoluto e garante que ele permaneça dentro de this.baseDir
+    const workspacePath = path.resolve(this.baseDir, sanitizedUserId, sanitizedProjectId)
+    if (!workspacePath.startsWith(path.resolve(this.baseDir))) {
+      throw new Error('Caminho fora da raiz permitida')
+    }
+
     await fs.mkdir(workspacePath, { recursive: true })
 
     if (options?.repository) {
@@ -100,9 +137,17 @@ export class LocalWorkspaceProvider {
   ): Promise<void> {
     const run = this.gitRunner ?? defaultGitRunner(300_000)
     const auth = this.authArgs(token)
-    const gitDir = path.posix.join(workspacePath, '.git')
+
+    const resolvedWorkspace = path.posix.resolve(workspacePath)
+    const gitDir = path.posix.join(resolvedWorkspace, '.git')
+    const resolvedGitDir = path.posix.resolve(gitDir)
+
+    if (!resolvedGitDir.startsWith(resolvedWorkspace + path.posix.sep)) {
+      return
+    }
+
     const hasClone = await fs
-      .stat(gitDir)
+      .stat(resolvedGitDir)
       .then((s) => s.isDirectory())
       .catch(() => false)
 
@@ -120,12 +165,11 @@ export class LocalWorkspaceProvider {
           await run(['-C', workspacePath, 'reset', '--hard', '@{u}'])
         } catch {
           // Sinaliza staleness em stderr do serviço: sem isso, análises rodariam
-          // sobre código velho parecendo atuais.
+          // sobre código velho parecendo atuais. `err` é o erro do PULL (que
+          // usou `auth`) — sanitiza antes de logar.
           // eslint-disable-next-line no-console
           console.warn(
-            `[workspace] git pull e reset falharam em ${repository}; usando clone existente (possivelmente desatualizado): ${String(
-              (err as { message?: string })?.message ?? err
-            )}`
+            `[workspace] git pull e reset falharam em ${repository}; usando clone existente (possivelmente desatualizado): ${this.sanitizeGitError(err, token).message}`
           )
         }
       }
@@ -139,15 +183,19 @@ export class LocalWorkspaceProvider {
     // como algo parecido com flag, nada depois de `--` é interpretado como
     // opção (defesa contra injeção de argumento de segunda ordem, ex.:
     // `--upload-pack`). A URL é prefixada e o repositório passou pela regex.
-    await run([
-      ...auth,
-      'clone',
-      '--depth',
-      '1',
-      '--',
-      `https://github.com/${repository}.git`,
-      workspacePath,
-    ])
+    try {
+      await run([
+        ...auth,
+        'clone',
+        '--depth',
+        '1',
+        '--',
+        `https://github.com/${repository}.git`,
+        workspacePath,
+      ])
+    } catch (err) {
+      throw this.sanitizeGitError(err, token)
+    }
   }
 
   async hibernateWorkspace(userId: string, projectId: string): Promise<void> {

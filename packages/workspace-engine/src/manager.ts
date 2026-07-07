@@ -51,13 +51,26 @@ export class WorkspaceManager {
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async allocateWorkspace(userId: string, projectId: string, config?: any): Promise<WorkspaceInfo> {
+  private getWorkspacePath(userId: string, projectId: string): string {
     this.validateInput(userId)
     this.validateInput(projectId)
 
+    // Sanitiza os valores de entrada
+    const sanitizedUserId = userId.replace(/[^a-zA-Z0-9_-]/g, '_')
+    const sanitizedProjectId = projectId.replace(/[^a-zA-Z0-9_-]/g, '_')
+
+    // Constrói o caminho absoluto e garante que ele permaneça dentro de this.baseDir
+    const workspacePath = path.resolve(this.baseDir, sanitizedUserId, sanitizedProjectId)
+    if (!workspacePath.startsWith(path.resolve(this.baseDir))) {
+      throw new Error('Caminho fora da raiz permitida')
+    }
+    return workspacePath
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async allocateWorkspace(userId: string, projectId: string, config?: any): Promise<WorkspaceInfo> {
     const workspaceId = `ws:${userId}:${projectId}`
-    const workspacePath = path.posix.join(this.baseDir, userId, projectId)
+    const workspacePath = this.getWorkspacePath(userId, projectId)
 
     await fs.mkdir(workspacePath, { recursive: true })
 
@@ -89,11 +102,8 @@ export class WorkspaceManager {
   }
 
   async hibernateWorkspace(userId: string, projectId: string): Promise<void> {
-    this.validateInput(userId)
-    this.validateInput(projectId)
-
     const workspaceId = `ws:${userId}:${projectId}`
-    const workspacePath = path.posix.join(this.baseDir, userId, projectId)
+    const workspacePath = this.getWorkspacePath(userId, projectId)
 
     const socketPath = path.posix.join(workspacePath, 'firecracker.socket')
     const snapshotPath = path.posix.join(workspacePath, 'snapshot.bin')
@@ -130,10 +140,7 @@ export class WorkspaceManager {
     const userId = parts[1]!
     const projectId = parts.slice(2).join(':')
 
-    this.validateInput(userId)
-    this.validateInput(projectId)
-
-    const workspacePath = path.posix.join(this.baseDir, userId, projectId)
+    const workspacePath = this.getWorkspacePath(userId, projectId)
 
     for (const repo of repos) {
       this.validateRepo(repo)
@@ -149,10 +156,7 @@ export class WorkspaceManager {
     const userId = parts[1]!
     const projectId = parts.slice(2).join(':')
 
-    this.validateInput(userId)
-    this.validateInput(projectId)
-
-    const workspacePath = path.posix.join(this.baseDir, userId, projectId)
+    const workspacePath = this.getWorkspacePath(userId, projectId)
 
     for (const runtime of runtimes) {
       this.validateRuntime(runtime)
