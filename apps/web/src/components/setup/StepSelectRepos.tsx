@@ -16,6 +16,7 @@ interface StepSelectReposProps {
   authenticated: boolean
   selectedRepos: string[]
   setSelectedRepos: (repos: string[]) => void
+  plan: string
   onNext: () => void
   onBack: () => void
 }
@@ -25,6 +26,7 @@ export default function StepSelectRepos({
   authenticated,
   selectedRepos,
   setSelectedRepos,
+  plan,
   onNext,
   onBack,
 }: StepSelectReposProps) {
@@ -124,6 +126,20 @@ export default function StepSelectRepos({
               />
             </div>
           </div>
+
+          {plan === 'free' && (
+            <p
+              className="mb-3 rounded-lg px-3 py-2"
+              style={{
+                background: 'var(--gl-accent-soft)',
+                color: 'var(--gl-accent-ink)',
+                fontSize: '0.78rem',
+                lineHeight: 1.45,
+              }}
+            >
+              {t('setup.reposFreeNote')}
+            </p>
+          )}
 
           <div className="flex-1 space-y-2 overflow-y-auto pr-1" style={{ maxHeight: '14rem' }}>
             {filteredRepos.length === 0 ? (

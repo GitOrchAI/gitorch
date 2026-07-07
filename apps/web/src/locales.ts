@@ -178,6 +178,9 @@ export const locales = {
       readyKeysHint:
         'Add this secret to your GitHub Actions so agents running on GitHub can report back:',
       readyGoPanel: 'Go to the panel',
+      planIntent: 'You came in with this plan — you can still change it below.',
+      reposFreeNote:
+        'Your Free plan includes 1 active repository. Pick your most important one, or upgrade for more.',
     },
   },
   pt: {
@@ -361,6 +364,9 @@ export const locales = {
       readyKeysHint:
         'Adicione este segredo nas suas GitHub Actions para os agentes que rodam no GitHub reportarem de volta:',
       readyGoPanel: 'Ir para o painel',
+      planIntent: 'Você entrou já com este plano — dá para mudar aqui embaixo.',
+      reposFreeNote:
+        'Seu plano Grátis inclui 1 repositório ativo. Escolha o mais importante, ou faça upgrade para mais.',
     },
   },
   es: {
@@ -545,6 +551,9 @@ export const locales = {
       readyKeysHint:
         'Añade este secreto a tus GitHub Actions para que los agentes que corren en GitHub reporten de vuelta:',
       readyGoPanel: 'Ir al panel',
+      planIntent: 'Entraste ya con este plan — puedes cambiarlo aquí abajo.',
+      reposFreeNote:
+        'Tu plan Gratis incluye 1 repositorio activo. Elige el más importante, o mejora para tener más.',
     },
   },
 }

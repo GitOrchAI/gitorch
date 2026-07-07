@@ -5,6 +5,10 @@ import { useLanguage } from '../../LanguageContext'
 interface StepPlanSelectionProps {
   plan: string
   setPlan: (plan: string) => void
+  // Cliente chegou da landing já com um plano pago (?plan=solo/pro/team): o
+  // passo vira CONFIRMAÇÃO da escolha (pode ajustar), não uma re-escolha do
+  // zero — funil valor-primeiro, trata quem já decidiu como quem já decidiu.
+  entryPaidIntent?: boolean
   onNext: () => void
   onBack: () => void
 }
@@ -12,6 +16,7 @@ interface StepPlanSelectionProps {
 export default function StepPlanSelection({
   plan,
   setPlan,
+  entryPaidIntent,
   onNext,
   onBack,
 }: StepPlanSelectionProps) {
@@ -22,6 +27,21 @@ export default function StepPlanSelection({
     <div className="flex flex-col h-full">
       <h2 className="wz-h">{t('setup.planTitle')}</h2>
       <p className="wz-sub">{t('setup.planDesc')}</p>
+
+      {entryPaidIntent && (
+        <div
+          className="mb-4 rounded-xl px-4 py-3"
+          style={{
+            background: 'var(--gl-accent-soft)',
+            border: '1px solid var(--gl-hair)',
+            color: 'var(--gl-accent-ink)',
+            fontSize: '0.85rem',
+            fontWeight: 500,
+          }}
+        >
+          {t('setup.planIntent')}
+        </div>
+      )}
 
       <div className="wz-body grid grid-cols-1 gap-4 md:grid-cols-2">
         {/* Free */}

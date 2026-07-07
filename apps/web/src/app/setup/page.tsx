@@ -48,6 +48,14 @@ export default function SetupWizard() {
     const urlPlan = new URLSearchParams(window.location.search).get('plan')
     return urlPlan && ['free', 'solo', 'pro', 'team'].includes(urlPlan) ? urlPlan : 'free'
   })
+  // Intenção de entrada: veio da landing com um plano PAGO no ?plan? Então o
+  // passo de plano confirma essa escolha (não pede pra escolher do zero), e o
+  // funil trata o cliente como quem já decidiu — pode ajustar, sem fricção.
+  const [entryPaidIntent] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false
+    const urlPlan = new URLSearchParams(window.location.search).get('plan')
+    return !!urlPlan && ['solo', 'pro', 'team'].includes(urlPlan)
+  })
   const [createdProjects, setCreatedProjects] = useState<CreatedProject[]>([])
 
   // Verifica a sessão real no servidor (cookie httpOnly enviado automaticamente).
@@ -162,6 +170,7 @@ export default function SetupWizard() {
                   authenticated={authenticated}
                   selectedRepos={selectedRepos}
                   setSelectedRepos={setSelectedRepos}
+                  plan={plan}
                   onNext={nextStep}
                   onBack={prevStep}
                 />
@@ -230,6 +239,7 @@ export default function SetupWizard() {
                 <StepPlanSelection
                   plan={plan}
                   setPlan={setPlan}
+                  entryPaidIntent={entryPaidIntent}
                   onNext={nextStep}
                   onBack={prevStep}
                 />
