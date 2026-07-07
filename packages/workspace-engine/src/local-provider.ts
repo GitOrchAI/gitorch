@@ -104,7 +104,16 @@ export class LocalWorkspaceProvider {
     this.validateInput(userId)
     this.validateInput(projectId)
 
-    const workspacePath = path.posix.join(this.baseDir, userId, projectId)
+    // Sanitiza os valores de entrada
+    const sanitizedUserId = userId.replace(/[^a-zA-Z0-9_-]/g, '_')
+    const sanitizedProjectId = projectId.replace(/[^a-zA-Z0-9_-]/g, '_')
+
+    // Constrói o caminho absoluto e garante que ele permaneça dentro de this.baseDir
+    const workspacePath = path.resolve(this.baseDir, sanitizedUserId, sanitizedProjectId)
+    if (!workspacePath.startsWith(path.resolve(this.baseDir))) {
+      throw new Error('Caminho fora da raiz permitida')
+    }
+
     await fs.mkdir(workspacePath, { recursive: true })
 
     if (options?.repository) {
