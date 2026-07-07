@@ -68,6 +68,11 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
     allowList: (request: FastifyRequest) => isPublicPath(request.url),
   })
 
+  // codeql [js/missing-rate-limiting] - este preHandler roda sobre rotas que JÁ
+  // estão limitadas pelo rate limit global registrado logo acima
+  // (app.register(rateLimit, { global: true, max: 20 })); a proteção existe, o
+  // CodeQL só não liga o hook global ao handler neste escopo (mesmo caso do
+  // alerta #24 já resolvido).
   app.addHook('preHandler', async (request) => {
     // Skip auth for health/metrics/public webhook
     if (isPublicPath(request.url)) return
