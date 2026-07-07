@@ -166,6 +166,18 @@ export const locales = {
       tgHandleLabel: 'Your Telegram @username (optional)',
       tgHandlePlaceholder: '@your_handle',
       tgHandleHint: 'Open Telegram, start a chat with the bot, and we will reach you there.',
+      readyTitle: 'Your environment is coming to life',
+      readyDesc:
+        'Your project and credentials are set. The agents are warming up — follow along from the panel.',
+      readyLedgerRepo: 'Repositories linked',
+      readyLedgerEngines: 'Engines connected',
+      readyLedgerActivating: 'Environment activating',
+      readyLedgerActivatingDesc:
+        'Cortex memory, the code graph and Cadence orchestration are warming up for your repo.',
+      readyKeys: 'Integration keys & CI setup',
+      readyKeysHint:
+        'Add this secret to your GitHub Actions so agents running on GitHub can report back:',
+      readyGoPanel: 'Go to the panel',
     },
   },
   pt: {
@@ -337,6 +349,18 @@ export const locales = {
       tgHandleLabel: 'Seu @usuário do Telegram (opcional)',
       tgHandlePlaceholder: '@seu_usuario',
       tgHandleHint: 'Abra o Telegram, inicie uma conversa com o bot e a gente te encontra por lá.',
+      readyTitle: 'Seu ambiente está nascendo',
+      readyDesc:
+        'Seu projeto e as credenciais estão prontos. Os agentes estão aquecendo — acompanhe pelo painel.',
+      readyLedgerRepo: 'Repositórios vinculados',
+      readyLedgerEngines: 'Motores conectados',
+      readyLedgerActivating: 'Ambiente ativando',
+      readyLedgerActivatingDesc:
+        'A memória Cortex, o grafo de código e a orquestração Cadence estão aquecendo para o seu repositório.',
+      readyKeys: 'Chaves de integração e CI',
+      readyKeysHint:
+        'Adicione este segredo nas suas GitHub Actions para os agentes que rodam no GitHub reportarem de volta:',
+      readyGoPanel: 'Ir para o painel',
     },
   },
   es: {
@@ -509,6 +533,18 @@ export const locales = {
       tgHandleLabel: 'Tu @usuario de Telegram (opcional)',
       tgHandlePlaceholder: '@tu_usuario',
       tgHandleHint: 'Abre Telegram, inicia un chat con el bot y te contactaremos ahí.',
+      readyTitle: 'Tu entorno está naciendo',
+      readyDesc:
+        'Tu proyecto y las credenciales están listos. Los agentes se están preparando — síguelo desde el panel.',
+      readyLedgerRepo: 'Repositorios vinculados',
+      readyLedgerEngines: 'Motores conectados',
+      readyLedgerActivating: 'Entorno activándose',
+      readyLedgerActivatingDesc:
+        'La memoria Cortex, el grafo de código y la orquestación Cadence se están preparando para tu repositorio.',
+      readyKeys: 'Claves de integración y CI',
+      readyKeysHint:
+        'Añade este secreto a tus GitHub Actions para que los agentes que corren en GitHub reporten de vuelta:',
+      readyGoPanel: 'Ir al panel',
     },
   },
 }

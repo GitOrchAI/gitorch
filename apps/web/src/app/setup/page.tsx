@@ -15,7 +15,7 @@ import StepConnectEngine from '../../components/setup/StepConnectEngine'
 import StepTelegram from '../../components/setup/StepTelegram'
 import StepPlanSelection from '../../components/setup/StepPlanSelection'
 import StepPlanConfirmation from '../../components/setup/StepPlanConfirmation'
-import StepRepoConfig from '../../components/setup/StepRepoConfig'
+import StepReady from '../../components/setup/StepReady'
 
 interface CreatedProject {
   id: string
@@ -265,7 +265,7 @@ export default function SetupWizard() {
                 animate={{ opacity: 1, scale: 1 }}
                 className="flex flex-col h-full flex-1"
               >
-                <StepRepoConfig projects={createdProjects} />
+                <StepReady projects={createdProjects} />
               </motion.div>
             )}
           </AnimatePresence>
