@@ -62,7 +62,7 @@ interface SourceFile {
 }
 
 /** Testes e verificação valem menos que o código-fonte para o mapa do repo. */
-function isTestLike(relPath: string): boolean {
+export function isTestLike(relPath: string): boolean {
   return (
     /(^|\/)(__tests__|tests?|e2e|jules-scratch|scripts)\//.test(relPath) ||
     /\.(test|spec)\.[a-z]+$/.test(relPath)
