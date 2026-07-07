@@ -10,6 +10,7 @@ import WizardShell from '../../components/setup/WizardShell'
 import StepGitHubLogin from '../../components/setup/StepGitHubLogin'
 import StepTerms from '../../components/setup/StepTerms'
 import StepSelectRepos from '../../components/setup/StepSelectRepos'
+import StepDiagnosis from '../../components/setup/StepDiagnosis'
 import StepSelectEngines from '../../components/setup/StepSelectEngines'
 import StepConnectEngine from '../../components/setup/StepConnectEngine'
 import StepTelegram from '../../components/setup/StepTelegram'
@@ -24,7 +25,7 @@ interface CreatedProject {
   apiKey: string
 }
 
-const TOTAL_STEPS = 10
+const TOTAL_STEPS = 11
 
 export default function SetupWizard() {
   const { t } = useLanguage()
@@ -185,9 +186,9 @@ export default function SetupWizard() {
                 exit={{ opacity: 0, x: -20 }}
                 className="flex flex-col h-full flex-1"
               >
-                <StepSelectEngines
-                  selectedEngines={selectedEngines}
-                  setSelectedEngines={setSelectedEngines}
+                <StepDiagnosis
+                  apiBaseUrl={API_BASE_URL}
+                  repoFullName={selectedRepos[0] ?? ''}
                   onNext={nextStep}
                   onBack={prevStep}
                 />
@@ -202,9 +203,9 @@ export default function SetupWizard() {
                 exit={{ opacity: 0, x: -20 }}
                 className="flex flex-col h-full flex-1"
               >
-                <StepConnectEngine
-                  apiBaseUrl={API_BASE_URL}
+                <StepSelectEngines
                   selectedEngines={selectedEngines}
+                  setSelectedEngines={setSelectedEngines}
                   onNext={nextStep}
                   onBack={prevStep}
                 />
@@ -219,9 +220,9 @@ export default function SetupWizard() {
                 exit={{ opacity: 0, x: -20 }}
                 className="flex flex-col h-full flex-1"
               >
-                <StepTelegram
-                  telegram={telegram}
-                  setTelegram={setTelegram}
+                <StepConnectEngine
+                  apiBaseUrl={API_BASE_URL}
+                  selectedEngines={selectedEngines}
                   onNext={nextStep}
                   onBack={prevStep}
                 />
@@ -231,6 +232,23 @@ export default function SetupWizard() {
             {step === 8 && (
               <motion.div
                 key="step8"
+                initial={{ opacity: 0, x: 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -20 }}
+                className="flex flex-col h-full flex-1"
+              >
+                <StepTelegram
+                  telegram={telegram}
+                  setTelegram={setTelegram}
+                  onNext={nextStep}
+                  onBack={prevStep}
+                />
+              </motion.div>
+            )}
+
+            {step === 9 && (
+              <motion.div
+                key="step9"
                 initial={{ opacity: 0, x: 20 }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -20 }}
@@ -246,9 +264,9 @@ export default function SetupWizard() {
               </motion.div>
             )}
 
-            {step === 9 && (
+            {step === 10 && (
               <motion.div
-                key="step9"
+                key="step10"
                 initial={{ opacity: 0, x: 20 }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -20 }}
@@ -268,9 +286,9 @@ export default function SetupWizard() {
               </motion.div>
             )}
 
-            {step === 10 && (
+            {step === 11 && (
               <motion.div
-                key="step10"
+                key="step11"
                 initial={{ opacity: 0, scale: 0.98 }}
                 animate={{ opacity: 1, scale: 1 }}
                 className="flex flex-col h-full flex-1"

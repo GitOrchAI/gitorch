@@ -8,7 +8,7 @@ export type Language = 'en' | 'pt' | 'es'
 interface LanguageContextProps {
   language: Language
   setLanguage: (lang: Language) => void
-  t: (key: string) => string
+  t: (key: string, vars?: Record<string, string | number>) => string
 }
 
 const LanguageContext = createContext<LanguageContextProps | undefined>(undefined)
@@ -44,7 +44,17 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     localStorage.setItem('gitorch-lang', lang)
   }
 
-  const t = (key: string): string => {
+  // Interpolação simples {{var}} — só usada por telas que passam `vars`
+  // (ex.: achados do diagnóstico com números reais). Chamadas antigas t(key)
+  // continuam idênticas (vars undefined -> nenhum replace).
+  const interpolate = (s: string, vars?: Record<string, string | number>): string => {
+    if (!vars) return s
+    return s.replace(/\{\{(\w+)\}\}/g, (match, name: string) =>
+      Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name]) : match
+    )
+  }
+
+  const t = (key: string, vars?: Record<string, string | number>): string => {
     const keys = key.split('.')
     let current: Record<string, unknown> = locales[language] as Record<string, unknown>
 
@@ -61,11 +71,11 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             return key // return key if not found anywhere
           }
         }
-        return typeof fallback === 'string' ? fallback : key
+        return typeof fallback === 'string' ? interpolate(fallback, vars) : key
       }
     }
 
-    return typeof current === 'string' ? current : key
+    return typeof current === 'string' ? interpolate(current, vars) : key
   }
 
   return (
