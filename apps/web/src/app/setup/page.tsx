@@ -1,6 +1,7 @@
 'use client'
 import React, { useState, useEffect } from 'react'
 import { API_BASE_URL } from '../../lib/api'
+import { useLanguage } from '../../LanguageContext'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ChevronRight } from 'lucide-react'
 import WizardShell from '../../components/setup/WizardShell'
@@ -26,6 +27,7 @@ interface CreatedProject {
 const TOTAL_STEPS = 10
 
 export default function SetupWizard() {
+  const { t } = useLanguage()
   const [step, setStep] = useState(1)
   // Sessão vive num cookie httpOnly (não lido por JS) — o front só sabe SE
   // está autenticado, nunca o valor do token (spec §17.4, sem token em
@@ -108,17 +110,13 @@ export default function SetupWizard() {
                 className="flex flex-col h-full flex-1"
               >
                 <div className="wz-body">
-                  <h2 className="wz-h">Inicie sua Configuração</h2>
-                  <p className="wz-sub">
-                    Bem-vindo ao Setup Wizard do GitOrch. Vamos configurar o isolamento do seu
-                    ambiente, conectar seus repositórios e preparar seus agentes inteligentes para
-                    codificar de forma autônoma.
-                  </p>
+                  <h2 className="wz-h">{t('setup.welcomeTitle')}</h2>
+                  <p className="wz-sub">{t('setup.welcomeDesc')}</p>
                 </div>
                 <div className="wz-actions">
                   <span />
                   <button onClick={nextStep} className="wz-btn wz-btn-primary">
-                    Começar <ChevronRight size={18} />
+                    {t('setup.begin')} <ChevronRight size={18} />
                   </button>
                 </div>
               </motion.div>
