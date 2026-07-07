@@ -11,7 +11,7 @@ import StepGitHubLogin from '../../components/setup/StepGitHubLogin'
 import StepTerms from '../../components/setup/StepTerms'
 import StepSelectRepos from '../../components/setup/StepSelectRepos'
 import StepSelectEngines from '../../components/setup/StepSelectEngines'
-import StepAssistedLogin from '../../components/setup/StepAssistedLogin'
+import StepConnectEngine from '../../components/setup/StepConnectEngine'
 import StepAgentConfig from '../../components/setup/StepAgentConfig'
 import StepPlanSelection from '../../components/setup/StepPlanSelection'
 import StepPlanConfirmation from '../../components/setup/StepPlanConfirmation'
@@ -190,7 +190,8 @@ export default function SetupWizard() {
                 exit={{ opacity: 0, x: -20 }}
                 className="flex flex-col h-full flex-1"
               >
-                <StepAssistedLogin
+                <StepConnectEngine
+                  apiBaseUrl={API_BASE_URL}
                   selectedEngines={selectedEngines}
                   onNext={nextStep}
                   onBack={prevStep}
