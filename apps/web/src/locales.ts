@@ -177,19 +177,16 @@ export const locales = {
       connectTitle: 'Connect your engines',
       connectDesc:
         'Log in to each engine with your own account. Run the command locally, then paste what it gives you. All three are equal — connect at least one to continue.',
-      connectClaudeHow:
-        'Install Claude Code, run the command, and paste the token it prints (starts with sk-ant-oat).',
-      connectCodexHow: 'Run the command to log in, then paste the contents of ~/.codex/auth.json.',
-      connectAntigravityHow:
-        'Run the command to log in, then paste the contents of your Antigravity oauth-token file.',
       connectPaste: 'Paste here',
       connectBtn: 'Connect',
       connecting: 'Checking...',
       connectedLabel: 'Connected',
-      connectCopy: 'Copy',
-      connectCopied: 'Copied',
       connectGate: 'Connect at least one engine to continue.',
       connectError: 'Could not connect. Check what you pasted and try again.',
+      connectOpenLink: 'Open authorization page',
+      connectPasteCodePlaceholder: 'Paste the code from the page…',
+      connectSubmitCode: 'Submit',
+      connectWaitingApproval: 'Waiting for your approval on the page above…',
       tgTitle: 'Telegram alerts (optional)',
       tgDesc:
         'Get a friendly ping when your agents finish a mission or need you. Totally optional — you can set it up later.',
@@ -394,19 +391,16 @@ export const locales = {
       connectTitle: 'Conecte seus motores',
       connectDesc:
         'Entre em cada motor com a sua própria conta. Rode o comando no seu terminal e cole o que ele devolver. Os três são iguais — conecte pelo menos um para continuar.',
-      connectClaudeHow:
-        'Instale o Claude Code, rode o comando e cole o token que ele imprime (começa com sk-ant-oat).',
-      connectCodexHow: 'Rode o comando para entrar e cole o conteúdo de ~/.codex/auth.json.',
-      connectAntigravityHow:
-        'Rode o comando para entrar e cole o conteúdo do seu arquivo de oauth-token do Antigravity.',
       connectPaste: 'Cole aqui',
       connectBtn: 'Conectar',
       connecting: 'Verificando...',
       connectedLabel: 'Conectado',
-      connectCopy: 'Copiar',
-      connectCopied: 'Copiado',
       connectGate: 'Conecte pelo menos um motor para continuar.',
       connectError: 'Não deu para conectar. Confira o que você colou e tente de novo.',
+      connectOpenLink: 'Abrir página de autorização',
+      connectPasteCodePlaceholder: 'Cole o código da página…',
+      connectSubmitCode: 'Enviar',
+      connectWaitingApproval: 'Aguardando sua aprovação na página acima…',
       tgTitle: 'Alertas no Telegram (opcional)',
       tgDesc:
         'Receba um aviso amigável quando seus agentes terminarem uma missão ou precisarem de você. Totalmente opcional — dá para configurar depois.',
@@ -611,20 +605,16 @@ export const locales = {
       connectTitle: 'Conecta tus motores',
       connectDesc:
         'Inicia sesión en cada motor con tu propia cuenta. Ejecuta el comando en tu terminal y pega lo que te devuelva. Los tres son iguales — conecta al menos uno para continuar.',
-      connectClaudeHow:
-        'Instala Claude Code, ejecuta el comando y pega el token que imprime (empieza con sk-ant-oat).',
-      connectCodexHow:
-        'Ejecuta el comando para iniciar sesión y pega el contenido de ~/.codex/auth.json.',
-      connectAntigravityHow:
-        'Ejecuta el comando para iniciar sesión y pega el contenido de tu archivo oauth-token de Antigravity.',
       connectPaste: 'Pega aquí',
       connectBtn: 'Conectar',
       connecting: 'Verificando...',
       connectedLabel: 'Conectado',
-      connectCopy: 'Copiar',
-      connectCopied: 'Copiado',
       connectGate: 'Conecta al menos un motor para continuar.',
       connectError: 'No se pudo conectar. Revisa lo que pegaste e inténtalo de nuevo.',
+      connectOpenLink: 'Abrir página de autorización',
+      connectPasteCodePlaceholder: 'Pega el código de la página…',
+      connectSubmitCode: 'Enviar',
+      connectWaitingApproval: 'Esperando tu aprobación en la página de arriba…',
       tgTitle: 'Alertas en Telegram (opcional)',
       tgDesc:
         'Recibe un aviso amistoso cuando tus agentes terminen una misión o te necesiten. Totalmente opcional — puedes configurarlo después.',

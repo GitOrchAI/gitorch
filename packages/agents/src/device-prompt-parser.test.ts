@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseDevicePrompt } from './device-prompt-parser.js'
+import { parseDevicePrompt, isDeviceRuntime } from './device-prompt-parser.js'
 
 describe('parseDevicePrompt', () => {
   it('parses the real codex device-auth prompt (url + one-time code)', () => {
@@ -28,7 +28,25 @@ describe('parseDevicePrompt', () => {
     expect(r.code).toBeUndefined()
   })
 
-  it('returns nothing for antigravity (no headless device flow — paste fallback)', () => {
-    expect(parseDevicePrompt('You are not logged into Antigravity', 'antigravity')).toEqual({})
+  it('parses the real antigravity Google OAuth url (re-tested 2026-07-07 — IS automatable)', () => {
+    const out =
+      'Welcome to the Antigravity CLI. You are currently not signed in.\n' +
+      'Select login method:\n1. Google OAuth\n2. Use a Google Cloud project\n' +
+      'Open this URL to authenticate:\n' +
+      'https://accounts.google.com/o/oauth2/auth?client_id=abc123&redirect_uri=https%3A%2F%2Fantigravity.google%2Foauth-callback&response_type=code&scope=openid+email&state=xyz\n' +
+      'Paste the authorization code below: authorization code…'
+    const r = parseDevicePrompt(out, 'antigravity')
+    expect(r.url).toBe(
+      'https://accounts.google.com/o/oauth2/auth?client_id=abc123&redirect_uri=https%3A%2F%2Fantigravity.google%2Foauth-callback&response_type=code&scope=openid+email&state=xyz'
+    )
+    expect(r.code).toBeUndefined()
+  })
+
+  it('isDeviceRuntime narrows valid runtime strings', () => {
+    expect(isDeviceRuntime('codex')).toBe(true)
+    expect(isDeviceRuntime('claude')).toBe(true)
+    expect(isDeviceRuntime('antigravity')).toBe(true)
+    expect(isDeviceRuntime('github')).toBe(false)
+    expect(isDeviceRuntime('bogus')).toBe(false)
   })
 })

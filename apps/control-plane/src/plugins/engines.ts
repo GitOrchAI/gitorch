@@ -1,12 +1,30 @@
 import fp from 'fastify-plugin'
 import { FastifyPluginAsync } from 'fastify'
+import { isDeviceRuntime } from '@gitorch/agents'
 import { EngineConnectionService, resolveEngineId } from '../services/engine-connection.js'
+import {
+  AssistedLoginService,
+  type AssistedLoginOptions,
+  type LoginState,
+} from '../services/assisted-login.js'
+
+// Seam de teste: permite injetar um `runDeviceLoginImpl` fake em vez de
+// disparar um container podman de verdade (usado pelos testes de
+// engines.test.ts para as rotas de login assistido).
+interface EnginesPluginOptions {
+  runDeviceLoginImpl?: AssistedLoginOptions['runDeviceLoginImpl']
+}
 
 // Expõe o serviço de conexões de motor e as rotas do usuário para ver/gerir
 // suas conexões. A credencial cifrada NUNCA é retornada — apenas o status.
-const enginesPluginImpl: FastifyPluginAsync = async (app) => {
+const enginesPluginImpl: FastifyPluginAsync<EnginesPluginOptions> = async (app, opts) => {
   const service = new EngineConnectionService(app.prisma)
   app.decorate('engineConnections', service)
+
+  const assistedLogin = new AssistedLoginService(service, {
+    image: process.env['GITORCH_AGENT_IMAGE'] ?? 'localhost/gitorch-agent:latest',
+    ...(opts.runDeviceLoginImpl ? { runDeviceLoginImpl: opts.runDeviceLoginImpl } : {}),
+  })
 
   // Lista as conexões de motor do usuário autenticado (só status).
   app.get('/api/v1/engines', async (request, reply) => {
@@ -87,6 +105,80 @@ const enginesPluginImpl: FastifyPluginAsync = async (app) => {
     const runtime = resolveEngineId((request.params as { runtime: string }).runtime)
     const models = await service.refreshModels(userId, runtime)
     return reply.send({ runtime, models })
+  })
+
+  // Login assistido: inicia o CLI do motor num container isolado. O
+  // frontend abre o stream SSE logo em seguida com o loginId retornado.
+  app.post('/api/v1/engines/:runtime/login/start', async (request, reply) => {
+    const userId = await resolveUserId(app, request)
+    if (!userId) return reply.code(401).send({ error: 'UNAUTHORIZED: user session required' })
+    const runtime = resolveEngineId((request.params as { runtime: string }).runtime)
+    if (!isDeviceRuntime(runtime)) {
+      return reply
+        .code(400)
+        .send({ error: `runtime não suportado para login assistido: ${runtime}` })
+    }
+    const loginId = assistedLogin.start(userId, runtime)
+    return reply.code(202).send({ loginId })
+  })
+
+  // Código colado de volta da página de OAuth (Claude/Antigravity — Codex não
+  // usa esta rota, o CLI faz polling sozinho depois que o usuário aprova).
+  app.post('/api/v1/engines/login/:loginId/code', async (request, reply) => {
+    const userId = await resolveUserId(app, request)
+    if (!userId) return reply.code(401).send({ error: 'UNAUTHORIZED: user session required' })
+    const { loginId } = request.params as { loginId: string }
+    const { code } = (request.body ?? {}) as { code?: string }
+    if (!code) return reply.code(400).send({ error: 'code é obrigatório' })
+    try {
+      assistedLogin.submitCode(loginId, userId, code)
+      return reply.send({ ok: true })
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message })
+    }
+  })
+
+  // Snapshot pontual do estado (JSON puro, sem manter a conexão aberta) —
+  // fallback de polling caso o `EventSource` do frontend falhe (proxy/rede
+  // que bloqueia SSE), e também o único jeito de checar o estado de fora de
+  // um browser real (ex.: `page.request.get` do Playwright, que não consome
+  // SSE — ver tests/e2e/setup-wizard-assisted-login-codex.spec.ts). Reaproveita
+  // `subscribe()`: seu primeiro callback é SEMPRE síncrono com o estado atual
+  // (contrato testado em assisted-login.test.ts), então capturamos esse
+  // primeiro valor e desinscrevemos na sequência — nunca ficamos de fato
+  // inscritos. `unsubscribe === null` é o mesmo sinal de "não encontrada ou
+  // não é sua" que a rota /stream já usa (mesma proteção contra IDOR).
+  app.get('/api/v1/engines/login/:loginId', async (request, reply) => {
+    const userId = await resolveUserId(app, request)
+    if (!userId) return reply.code(401).send({ error: 'UNAUTHORIZED: user session required' })
+    const { loginId } = request.params as { loginId: string }
+
+    let state: LoginState | undefined
+    const unsubscribe = assistedLogin.subscribe(loginId, userId, (s) => {
+      state = s
+    })
+    if (!unsubscribe) {
+      return reply.code(404).send({ error: 'sessão de login não encontrada' })
+    }
+    unsubscribe()
+    return reply.send(state)
+  })
+
+  // Estado do login em tempo real (mesmo padrão de routes/events.ts).
+  app.get('/api/v1/engines/login/:loginId/stream', async (request, reply) => {
+    const userId = await resolveUserId(app, request)
+    if (!userId) return reply.code(401).send({ error: 'UNAUTHORIZED: user session required' })
+    const { loginId } = request.params as { loginId: string }
+
+    const unsubscribe = assistedLogin.subscribe(loginId, userId, (state) => {
+      reply.sse({ event: 'state', data: JSON.stringify(state) })
+    })
+    if (!unsubscribe) {
+      return reply.code(404).send({ error: 'sessão de login não encontrada' })
+    }
+
+    request.raw.on('close', unsubscribe)
+    await new Promise(() => {})
   })
 }
 

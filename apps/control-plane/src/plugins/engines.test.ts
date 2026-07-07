@@ -1,7 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { randomBytes } from 'node:crypto'
+import { EventEmitter } from 'node:events'
 import Fastify, { FastifyRequest } from 'fastify'
 import { enginesPlugin } from './engines.js'
+import { ssePlugin } from './sse.js'
 
 describe('POST /api/v1/engines/:runtime/token', () => {
   let app: ReturnType<typeof Fastify>
@@ -122,5 +124,302 @@ describe('POST /api/v1/engines/:runtime/token', () => {
       payload: { token: 'x' },
     })
     expect(res.statusCode).toBe(401)
+  })
+})
+
+// Fake do handle de `runDeviceLogin` (mesmo shape usado em
+// services/assisted-login.test.ts) — evita disparar um container podman de
+// verdade num teste unitário. Injetado via `runDeviceLoginImpl` (seam de
+// teste adicionada ao plugin só para isto).
+function fakeHandle() {
+  const emitter = new EventEmitter()
+  let resolveExited: (v: { code: number | null }) => void = () => undefined
+  const exited = new Promise<{ code: number | null }>((r) => {
+    resolveExited = r
+  })
+  const handle = {
+    hostHome: '/tmp/gitorch-engines-test-login',
+    onStdout: (cb: (chunk: string) => void) => emitter.on('stdout', cb),
+    writeStdin: vi.fn(),
+    exited,
+    kill: vi.fn(),
+  }
+  return {
+    handle,
+    emitStdout: (chunk: string) => emitter.emit('stdout', chunk),
+    emitExit: (code: number | null) => resolveExited({ code }),
+  }
+}
+
+describe('login assistido (start / code / stream)', () => {
+  let app: ReturnType<typeof Fastify>
+  let fake: ReturnType<typeof fakeHandle>
+  let runDeviceLoginImpl: ReturnType<typeof vi.fn>
+  // Mutável (em vez de fixado no hook): o teste de IDOR abaixo troca quem
+  // está "autenticado" ENTRE duas requisições na MESMA instância do app —
+  // ou seja, no mesmo AssistedLoginService/mesmas sessões em memória —
+  // pra simular um segundo usuário tentando acessar o loginId do primeiro.
+  let currentUser: { id: string; wingId: string; email: string }
+
+  beforeEach(async () => {
+    process.env['GITORCH_CREDENTIAL_KEY'] = randomBytes(32).toString('hex')
+    fake = fakeHandle()
+    runDeviceLoginImpl = vi.fn().mockReturnValue(fake.handle)
+    currentUser = { id: 'user_1', wingId: 'octocat', email: 'octocat@example.test' }
+    app = Fastify()
+    app.decorate('prisma', {
+      user: {
+        // Resolve por email (não mais um valor fixo): o teste de IDOR precisa
+        // que um segundo email autenticado ('attacker@example.test') resolva
+        // pra um userId DIFERENTE ('user_2') do dono da sessão ('user_1').
+        findUnique: vi
+          .fn()
+          .mockImplementation(async ({ where }: { where: { email: string } }) =>
+            where.email === 'attacker@example.test' ? { id: 'user_2' } : { id: 'user_1' }
+          ),
+      },
+      engineConnection: {
+        upsert: vi.fn(),
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+    app.addHook('preHandler', async (request: FastifyRequest) => {
+      request.user = currentUser
+    })
+    await app.register(ssePlugin)
+    await app.register(enginesPlugin, { runDeviceLoginImpl })
+    await app.ready()
+  })
+
+  it('POST /api/v1/engines/:runtime/login/start inicia um login assistido e retorna loginId', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/engines/codex/login/start',
+    })
+    expect(res.statusCode).toBe(202)
+    expect(JSON.parse(res.body)).toHaveProperty('loginId')
+    expect(runDeviceLoginImpl).toHaveBeenCalledWith(expect.objectContaining({ binary: 'codex' }))
+  })
+
+  it('POST /api/v1/engines/:runtime/login/start aceita o alias "claude-code" (mesmo vocabulário do paste-token)', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/engines/claude-code/login/start',
+    })
+    expect(res.statusCode).toBe(202)
+    expect(runDeviceLoginImpl).toHaveBeenCalledWith(expect.objectContaining({ binary: 'claude' }))
+  })
+
+  it('POST /api/v1/engines/:runtime/login/start rejeita runtime desconhecido', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/engines/bogus/login/start',
+    })
+    expect(res.statusCode).toBe(400)
+    expect(runDeviceLoginImpl).not.toHaveBeenCalled()
+  })
+
+  it('POST /api/v1/engines/:runtime/login/start exige sessão', async () => {
+    const noSessionApp = Fastify()
+    noSessionApp.decorate('prisma', {
+      user: { findUnique: vi.fn().mockResolvedValue(null) },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+    await noSessionApp.register(enginesPlugin)
+    await noSessionApp.ready()
+
+    const res = await noSessionApp.inject({
+      method: 'POST',
+      url: '/api/v1/engines/codex/login/start',
+    })
+    expect(res.statusCode).toBe(401)
+  })
+
+  it('POST /api/v1/engines/login/:loginId/code exige sessão', async () => {
+    const noSessionApp = Fastify()
+    noSessionApp.decorate('prisma', {
+      user: { findUnique: vi.fn().mockResolvedValue(null) },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+    await noSessionApp.register(enginesPlugin)
+    await noSessionApp.ready()
+
+    const res = await noSessionApp.inject({
+      method: 'POST',
+      url: '/api/v1/engines/login/any-id/code',
+      payload: { code: 'x' },
+    })
+    expect(res.statusCode).toBe(401)
+  })
+
+  it('POST /api/v1/engines/login/:loginId/code exige o campo code', async () => {
+    const start = await app.inject({ method: 'POST', url: '/api/v1/engines/claude/login/start' })
+    const { loginId } = JSON.parse(start.body) as { loginId: string }
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/engines/login/${loginId}/code`,
+      payload: {},
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('POST /api/v1/engines/login/:loginId/code repassa o código pro stdin do container', async () => {
+    const start = await app.inject({ method: 'POST', url: '/api/v1/engines/claude/login/start' })
+    const { loginId } = JSON.parse(start.body) as { loginId: string }
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/engines/login/${loginId}/code`,
+      payload: { code: '  the-code  ' },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({ ok: true })
+    expect(fake.handle.writeStdin).toHaveBeenCalledWith('the-code\n')
+  })
+
+  it('POST /api/v1/engines/login/:loginId/code com loginId desconhecido retorna 400', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/engines/login/does-not-exist/code',
+      payload: { code: 'x' },
+    })
+    expect(res.statusCode).toBe(400)
+    expect(JSON.parse(res.body)).toHaveProperty('error')
+  })
+
+  it('GET /api/v1/engines/login/:loginId retorna o estado atual em JSON puro (fallback de polling, sem SSE)', async () => {
+    const start = await app.inject({ method: 'POST', url: '/api/v1/engines/codex/login/start' })
+    const { loginId } = JSON.parse(start.body) as { loginId: string }
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/engines/login/${loginId}`,
+    })
+    expect(res.statusCode).toBe(200)
+    expect(JSON.parse(res.body)).toEqual({ phase: 'starting' })
+  })
+
+  it('GET /api/v1/engines/login/:loginId exige sessão', async () => {
+    const noSessionApp = Fastify()
+    noSessionApp.decorate('prisma', {
+      user: { findUnique: vi.fn().mockResolvedValue(null) },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+    await noSessionApp.register(enginesPlugin)
+    await noSessionApp.ready()
+
+    const res = await noSessionApp.inject({
+      method: 'GET',
+      url: '/api/v1/engines/login/any-id',
+    })
+    expect(res.statusCode).toBe(401)
+  })
+
+  it('GET /api/v1/engines/login/:loginId com loginId desconhecido retorna 404', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/engines/login/does-not-exist',
+    })
+    expect(res.statusCode).toBe(404)
+    expect(JSON.parse(res.body)).toEqual({ error: 'sessão de login não encontrada' })
+  })
+
+  it('IDOR: outro usuário autenticado recebe 404 (não o estado alheio) ao consultar loginId de quem não é dono', async () => {
+    const start = await app.inject({ method: 'POST', url: '/api/v1/engines/claude/login/start' })
+    const { loginId } = JSON.parse(start.body) as { loginId: string }
+
+    currentUser = { id: 'user_2', wingId: 'attacker', email: 'attacker@example.test' }
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/engines/login/${loginId}`,
+    })
+    expect(res.statusCode).toBe(404)
+    expect(JSON.parse(res.body)).toEqual({ error: 'sessão de login não encontrada' })
+
+    // Guarda de regressão: o dono legítimo continua conseguindo consultar.
+    currentUser = { id: 'user_1', wingId: 'octocat', email: 'octocat@example.test' }
+    const ownerRes = await app.inject({
+      method: 'GET',
+      url: `/api/v1/engines/login/${loginId}`,
+    })
+    expect(ownerRes.statusCode).toBe(200)
+  })
+
+  it('GET /api/v1/engines/login/:loginId/stream exige sessão', async () => {
+    const noSessionApp = Fastify()
+    noSessionApp.decorate('prisma', {
+      user: { findUnique: vi.fn().mockResolvedValue(null) },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+    await noSessionApp.register(ssePlugin)
+    await noSessionApp.register(enginesPlugin)
+    await noSessionApp.ready()
+
+    const res = await noSessionApp.inject({
+      method: 'GET',
+      url: '/api/v1/engines/login/any-id/stream',
+    })
+    expect(res.statusCode).toBe(401)
+  })
+
+  it('GET /api/v1/engines/login/:loginId/stream com loginId desconhecido retorna 404', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/engines/login/does-not-exist/stream',
+    })
+    expect(res.statusCode).toBe(404)
+    // Não basta o status: uma rota inexistente também cai em 404 (default do
+    // Fastify) — checar o corpo garante que é o nosso handler (loginId não
+    // encontrado), não a rota faltando.
+    expect(JSON.parse(res.body)).toEqual({ error: 'sessão de login não encontrada' })
+  })
+
+  it('IDOR: outro usuário autenticado não consegue nem submeter código nem abrir o stream do loginId de quem não é dono', async () => {
+    // Usuário A (dono) inicia o login normalmente.
+    const start = await app.inject({ method: 'POST', url: '/api/v1/engines/claude/login/start' })
+    const { loginId } = JSON.parse(start.body) as { loginId: string }
+
+    // Troca o usuário autenticado nesta MESMA app (mesma instância do
+    // AssistedLoginService) para o atacante ('user_2') antes das próximas
+    // requisições — sem reiniciar o app nem o container fake.
+    currentUser = { id: 'user_2', wingId: 'attacker', email: 'attacker@example.test' }
+
+    // (a) POST /code: pré-fix isto retornaria 200 e escreveria o código do
+    // atacante no stdin do container do usuário A (o cenário de
+    // confused-deputy do finding). Pós-fix, cai no mesmo ramo de "sessão não
+    // encontrada" que loginId inexistente — mesmo status e mesma mensagem,
+    // sem distinguir "não existe" de "não é seu".
+    const codeRes = await app.inject({
+      method: 'POST',
+      url: `/api/v1/engines/login/${loginId}/code`,
+      payload: { code: 'stolen-from-attackers-own-oauth-approval' },
+    })
+    expect(codeRes.statusCode).toBe(400)
+    expect(JSON.parse(codeRes.body)).toEqual({ error: 'sessão de login não encontrada' })
+    expect(fake.handle.writeStdin).not.toHaveBeenCalled()
+
+    // (b) GET /stream: pré-fix isto retornaria 200 e passaria a emitir o
+    // estado de login do usuário A pro atacante (vazamento de informação).
+    // Pós-fix, `subscribe` retorna null igual a loginId inexistente, então a
+    // rota cai no mesmo 404 já existente — nenhuma lógica nova na rota.
+    const streamRes = await app.inject({
+      method: 'GET',
+      url: `/api/v1/engines/login/${loginId}/stream`,
+    })
+    expect(streamRes.statusCode).toBe(404)
+    expect(JSON.parse(streamRes.body)).toEqual({ error: 'sessão de login não encontrada' })
+
+    // Guarda de regressão: o dono legítimo ('user_1') continua conseguindo
+    // usar as duas rotas na mesma sessão depois da tentativa do atacante.
+    currentUser = { id: 'user_1', wingId: 'octocat', email: 'octocat@example.test' }
+    const ownerCodeRes = await app.inject({
+      method: 'POST',
+      url: `/api/v1/engines/login/${loginId}/code`,
+      payload: { code: 'the-real-code' },
+    })
+    expect(ownerCodeRes.statusCode).toBe(200)
+    expect(fake.handle.writeStdin).toHaveBeenCalledWith('the-real-code\n')
   })
 })

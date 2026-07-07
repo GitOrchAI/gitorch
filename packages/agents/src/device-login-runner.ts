@@ -79,10 +79,39 @@ export function runDeviceLogin(options: DeviceLoginOptions): DeviceLoginHandle {
     const s = typeof d === 'string' ? d : d.toString('utf8')
     for (const cb of cbs) cb(s)
   })
+  // Sem isto, um EPIPE ao escrever num stdin já torn-down (container morto
+  // antes de um writeStdin atrasado, ex.: submitCode que perdeu a corrida com
+  // cleanup()) seria um 'error' sem listener no stdin — Node trata isso como
+  // exceção não tratada e derruba o processo INTEIRO do control-plane (não só
+  // a sessão do usuário). Não há nada de acionável a fazer aqui: quem chamou
+  // writeStdin não tem como saber de forma síncrona que falhou, e escrever
+  // num processo já morto não é um erro que o chamador deveria tratar.
+  proc.stdin?.on('error', () => undefined)
 
+  // Resolve exatamente uma vez, a partir de QUALQUER UM dos dois eventos que
+  // podem chegar primeiro: 'close' (saída normal) ou 'error' (o processo nem
+  // conseguiu subir — binário ausente, limite de recursos, etc.). Sem um
+  // listener de 'error' aqui, o mesmo problema do stdin acima se repete: o
+  // `proc` é um EventEmitter e um 'error' sem listener derruba o processo
+  // inteiro do control-plane, não só a requisição que disparou o spawn.
+  // 'close' pode nunca disparar depois de um erro de spawn, então o guard
+  // best-effort de "resolver uma vez só" cobre ambas as ordens possíveis.
+  let resolveExited: (result: { code: number | null }) => void
   const exited = new Promise<{ code: number | null }>((resolve) => {
-    proc.on('close', (code: number | null) => resolve({ code }))
+    resolveExited = resolve
   })
+  let settled = false
+  const settleExited = (result: { code: number | null }): void => {
+    if (settled) return
+    settled = true
+    resolveExited(result)
+  }
+  proc.on('close', (code: number | null) => settleExited({ code }))
+  // `code: null` aqui é tratado como falha por AssistedLoginService.onExit:
+  // runtimes não-claude checam `code !== 0` (null !== 0 → falha) e o ramo
+  // claude falha incondicionalmente quando `capturing` ainda não foi setado
+  // (nunca chegou a capturar token nenhum, já que o processo nem subiu).
+  proc.on('error', () => settleExited({ code: null }))
 
   return {
     hostHome,
