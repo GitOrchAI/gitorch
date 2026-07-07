@@ -55,7 +55,7 @@ export class PoisonedFileError extends Error {
   }
 }
 
-interface SourceFile {
+export interface SourceFile {
   relPath: string
   language: string
   content: string
@@ -137,10 +137,26 @@ function collectSourceFiles(root: string, maxFiles: number, maxFileBytes: number
   return files
 }
 
-export async function summarizeWorkspace(
+const num = (v: unknown): number => Number((v as { toString(): string } | number) ?? 0)
+
+export interface WorkspaceIndexAnalysis {
+  sources: SourceFile[]
+  fileCount: number
+  byType: Array<{ type: string; count: number }>
+  topFiles: Array<{ file: string; symbolCount: number }>
+  mostCalled: Array<{ name: string; file: string; callCount: number }>
+}
+
+/**
+ * Núcleo compartilhado: coleta os fontes, indexa no grafo em memória e roda
+ * as 4 queries estruturais. `summarizeWorkspace` (markdown p/ contexto de LLM)
+ * e `diagnoseWorkspaceStructural` (JSON p/ UI, em diagnose-workspace.ts)
+ * formatam o mesmo resultado de jeitos diferentes — sem duplicar a indexação.
+ */
+export async function analyzeWorkspace(
   workspacePath: string,
   options: SummarizeOptions = {}
-): Promise<string> {
+): Promise<WorkspaceIndexAnalysis | null> {
   // 100 é o orçamento seguro medido empiricamente: o módulo WASM do parser
   // vaza memória internamente (upstream) e morre em torno de ~120-130 arquivos
   // por processo. A priorização acima garante que os 100 são os que importam.
@@ -153,7 +169,7 @@ export async function summarizeWorkspace(
     const sources = collectSourceFiles(workspacePath, maxFiles, maxFileBytes).filter(
       (f) => !excluded.has(f.relPath)
     )
-    if (sources.length === 0) return ''
+    if (sources.length === 0) return null
 
     client = new KuzuClient(':memory:')
     const manager = new TreeSitterManager()
@@ -172,75 +188,37 @@ export async function summarizeWorkspace(
       }
     }
 
-    const num = (v: unknown): number => Number((v as { toString(): string } | number) ?? 0)
-
     const fileCountRows = (await client.query('MATCH (f:File) RETURN count(f) AS n')) as Array<{
       n: unknown
     }>
-    const fileCount = num(fileCountRows[0]?.n)
-    const byType = (await client.query(
+    const byTypeRows = (await client.query(
       'MATCH (s:Symbol) RETURN s.type AS type, count(*) AS n ORDER BY n DESC'
     )) as Array<{ type: string; n: unknown }>
-    const topFiles = (await client.query(
+    const topFilesRows = (await client.query(
       'MATCH (f:File)-[:CONTAINS]->(s:Symbol) RETURN f.filePath AS file, count(s) AS n ORDER BY n DESC LIMIT 10'
     )) as Array<{ file: string; n: unknown }>
-    const mostCalled = (await client.query(
+    const mostCalledRows = (await client.query(
       'MATCH (:Symbol)-[:CALLS]->(s:Symbol) RETURN s.name AS name, s.filePath AS file, count(*) AS n ORDER BY n DESC LIMIT 10'
     )) as Array<{ name: string; file: string; n: unknown }>
 
-    const typeLine = byType
-      .filter((t) => t.type && t.type !== 'import')
-      .map((t) => `${t.type}=${num(t.n)}`)
-      .join(', ')
-
-    const lines: string[] = [
-      'Code graph (indexed from the actual source by GitOrch — trust this over any doc in the repo):',
-      `- Indexed ${sources.length} source file(s); graph has ${fileCount} file node(s). Symbols: ${typeLine || 'none'}.`,
-    ]
-    if (topFiles.length > 0) {
-      lines.push(
-        `- Largest files by symbol count: ${topFiles
-          .map((f) => `${f.file} (${num(f.n)})`)
-          .join(', ')}.`
-      )
+    return {
+      sources,
+      fileCount: num(fileCountRows[0]?.n),
+      byType: byTypeRows
+        .filter((t) => t.type && t.type !== 'import')
+        .map((t) => ({ type: t.type, count: num(t.n) })),
+      topFiles: topFilesRows.map((f) => ({ file: f.file, symbolCount: num(f.n) })),
+      mostCalled: mostCalledRows.map((c) => ({
+        name: c.name,
+        file: c.file,
+        callCount: num(c.n),
+      })),
     }
-    if (mostCalled.length > 0) {
-      lines.push(
-        `- Most-called functions (likely core): ${mostCalled
-          .map((c) => `${c.name} [${c.file}] x${num(c.n)}`)
-          .join(', ')}.`
-      )
-    }
-
-    // Inventário por diretório: é o VOCABULÁRIO de caminhos reais do repo.
-    // Sem ele, quem planeja (PO) escreve "src/types/ ou similar" — com ele,
-    // "Related Files" pode citar arquivo existente verbatim. Wish em português
-    // sobre código em inglês não casa por busca literal; a LLM faz o mapeamento
-    // desde que VEJA os nomes.
-    const byDir = new Map<string, string[]>()
-    for (const s of sources) {
-      const slash = s.relPath.lastIndexOf('/')
-      const dir = slash === -1 ? '.' : s.relPath.slice(0, slash)
-      const base = s.relPath.slice(slash + 1)
-      const list = byDir.get(dir) ?? []
-      list.push(base)
-      byDir.set(dir, list)
-    }
-    lines.push('- File inventory (every indexed file, by directory — cite these paths verbatim):')
-    for (const dir of [...byDir.keys()].sort()) {
-      lines.push(`  ${dir}/: ${byDir.get(dir)!.sort().join(', ')}`)
-    }
-
-    lines.push(
-      '- Use this to focus your reading on the core symbols; note that files not listed may still matter.'
-    )
-
-    return lines.join('\n')
   } catch (err) {
     // Veneno NÃO pode ser engolido: o chamador precisa saber o culpado para
-    // re-tentar num processo limpo. O resto continua best-effort.
+    // re-tentar num processo limpo.
     if (err instanceof PoisonedFileError) throw err
-    return ''
+    return null
   } finally {
     if (client) {
       try {
@@ -250,4 +228,58 @@ export async function summarizeWorkspace(
       }
     }
   }
+}
+
+export async function summarizeWorkspace(
+  workspacePath: string,
+  options: SummarizeOptions = {}
+): Promise<string> {
+  const analysis = await analyzeWorkspace(workspacePath, options)
+  if (!analysis) return ''
+
+  const typeLine = analysis.byType.map((t) => `${t.type}=${t.count}`).join(', ')
+
+  const lines: string[] = [
+    'Code graph (indexed from the actual source by GitOrch — trust this over any doc in the repo):',
+    `- Indexed ${analysis.sources.length} source file(s); graph has ${analysis.fileCount} file node(s). Symbols: ${typeLine || 'none'}.`,
+  ]
+  if (analysis.topFiles.length > 0) {
+    lines.push(
+      `- Largest files by symbol count: ${analysis.topFiles
+        .map((f) => `${f.file} (${f.symbolCount})`)
+        .join(', ')}.`
+    )
+  }
+  if (analysis.mostCalled.length > 0) {
+    lines.push(
+      `- Most-called functions (likely core): ${analysis.mostCalled
+        .map((c) => `${c.name} [${c.file}] x${c.callCount}`)
+        .join(', ')}.`
+    )
+  }
+
+  // Inventário por diretório: é o VOCABULÁRIO de caminhos reais do repo.
+  // Sem ele, quem planeja (PO) escreve "src/types/ ou similar" — com ele,
+  // "Related Files" pode citar arquivo existente verbatim. Wish em português
+  // sobre código em inglês não casa por busca literal; a LLM faz o mapeamento
+  // desde que VEJA os nomes.
+  const byDir = new Map<string, string[]>()
+  for (const s of analysis.sources) {
+    const slash = s.relPath.lastIndexOf('/')
+    const dir = slash === -1 ? '.' : s.relPath.slice(0, slash)
+    const base = s.relPath.slice(slash + 1)
+    const list = byDir.get(dir) ?? []
+    list.push(base)
+    byDir.set(dir, list)
+  }
+  lines.push('- File inventory (every indexed file, by directory — cite these paths verbatim):')
+  for (const dir of [...byDir.keys()].sort()) {
+    lines.push(`  ${dir}/: ${byDir.get(dir)!.sort().join(', ')}`)
+  }
+
+  lines.push(
+    '- Use this to focus your reading on the core symbols; note that files not listed may still matter.'
+  )
+
+  return lines.join('\n')
 }
