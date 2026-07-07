@@ -54,6 +54,22 @@ describe('buildRemoteRuntimeStackIfConfigured', () => {
     expect(stack?.registry).toBeDefined()
     expect(stack?.orchestrator).toBeDefined()
   })
+
+  // Os 3 motores são IGUAIS (regra do plano: "engines are equal, all proven
+  // working"). O wizard já conecta a credencial do Claude (env
+  // CLAUDE_CODE_OAUTH_TOKEN), mas sem um adaptador de EXECUÇÃO registrado
+  // aqui, disparar uma missão no Claude lançava
+  // "No runtime adapter registered for claude" — o motor conectava mas nunca
+  // rodava (a fachada que o plano proíbe). Os 3 têm que resolver.
+  test('registra os 3 motores de execução (antigravity, codex, claude)', () => {
+    process.env['GITORCH_FREE_TIER_SSH_HOST'] = 'gitorch@<MT_SAAS_HOST>'
+    process.env['GITORCH_FREE_TIER_SSH_KEY'] = '/home/ubuntu/.ssh/mtsaas_gitorch'
+
+    const stack = buildRemoteRuntimeStackIfConfigured(fakeApp)
+    expect(stack?.registry.resolve('antigravity').runtime).toBe('antigravity')
+    expect(stack?.registry.resolve('codex').runtime).toBe('codex')
+    expect(stack?.registry.resolve('claude').runtime).toBe('claude')
+  })
 })
 
 describe('selectRuntimeStack', () => {

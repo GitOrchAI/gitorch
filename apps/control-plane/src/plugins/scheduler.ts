@@ -324,6 +324,25 @@ function buildRuntimeStack(
     })
   )
 
+  // Motor co-igual: Claude Code CLI (OAuth). A credencial já chega como env
+  // CLAUDE_CODE_OAUTH_TOKEN (connectRawToken, credentialKind 'env') — sem este
+  // adaptador de EXECUÇÃO o motor conectava mas nunca rodava ("No runtime
+  // adapter registered for claude"), que é a fachada que o plano proíbe.
+  // -p: modo não-interativo (print). --permission-mode plan: analisa sem
+  // mutar, o equivalente ao read-only do Codex, e NÃO usamos
+  // --dangerously-skip-permissions (o classificador de permissões bloqueia,
+  // com razão). --model recebe o modelo da missão; o diretório vem pelo cwd
+  // do runner, como no Codex. Flags confirmadas nos docs oficiais do CLI.
+  registry.register(
+    createCliRuntimeAdapter({
+      runtime: 'claude',
+      binary: containerized ? 'claude' : (process.env['GITORCH_CLAUDE_BIN'] ?? 'claude'),
+      args: ['-p', '--permission-mode', 'plan'],
+      modelArgName: '--model',
+      ...(missionRunner ? { runner: missionRunner } : {}),
+    })
+  )
+
   const orchestrator = new AgentOrchestrator({
     registry,
     workspace: workspaceProvider,
