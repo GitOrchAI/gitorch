@@ -1240,3 +1240,234 @@ body {
   justify-content: flex-end;
   margin-top: 18px;
 }
+
+/* ============================================================
+   Setup Wizard (.wz-*) — camada premium sobre os tokens .gl.
+   Verde, claro+escuro (herda data-theme do root .gl), reusada
+   por todos os passos do wizard. Nunca cores literais: só tokens.
+   ============================================================ */
+.wz-wrap {
+  width: 100%;
+  max-width: 720px;
+  margin-inline: auto;
+  padding: 40px 24px 72px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* Barra de progresso real: trilho + preenchimento verde + marcadores. */
+.wz-progress {
+  width: 100%;
+  margin-bottom: 40px;
+}
+.wz-progress-track {
+  position: relative;
+  height: 2px;
+  background: var(--gl-hair-strong);
+  border-radius: 2px;
+}
+.wz-progress-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  height: 100%;
+  background: var(--gl-accent);
+  border-radius: 2px;
+  transition: width 0.5s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+.wz-steps {
+  display: flex;
+  justify-content: space-between;
+  margin-top: -9px;
+}
+.wz-dot {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 0.62rem;
+  font-weight: 700;
+  background: var(--gl-surface-2);
+  color: var(--gl-faint);
+  border: 1px solid var(--gl-hair-strong);
+  transition: all 0.4s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+.wz-dot.is-active {
+  background: var(--gl-accent);
+  color: #fff;
+  border-color: var(--gl-accent);
+  box-shadow: 0 0 0 4px var(--gl-accent-soft);
+}
+
+/* Painel principal do passo. */
+.wz-panel {
+  width: 100%;
+  min-height: 440px;
+  background: var(--gl-surface);
+  border: 1px solid var(--gl-hair);
+  border-radius: 20px;
+  box-shadow: var(--gl-shadow);
+  padding: 34px 34px 26px;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
+.wz-h {
+  font-size: 1.72rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--gl-ink);
+  margin-bottom: 12px;
+  line-height: 1.15;
+}
+.wz-sub {
+  color: var(--gl-muted);
+  font-size: 0.98rem;
+  line-height: 1.6;
+  margin-bottom: 26px;
+}
+.wz-body {
+  flex: 1;
+}
+
+/* Rodapé de ações + botões. */
+.wz-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 24px;
+  padding-top: 20px;
+}
+.wz-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.92rem;
+  font-weight: 600;
+  padding: 12px 22px;
+  border-radius: 999px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition:
+    transform 0.18s cubic-bezier(0.2, 0.7, 0.3, 1),
+    opacity 0.2s,
+    background 0.2s,
+    color 0.2s,
+    border-color 0.2s;
+}
+.wz-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.wz-btn-primary {
+  background: var(--gl-accent);
+  color: #fff;
+}
+.wz-btn-primary:not(:disabled):hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 22px -8px var(--gl-accent);
+}
+.wz-btn-ghost {
+  background: transparent;
+  color: var(--gl-muted);
+  border-color: transparent;
+}
+.wz-btn-ghost:not(:disabled):hover {
+  color: var(--gl-ink);
+}
+
+/* Cards de opção (motor, plano, repo) — usados nos passos seguintes. */
+.wz-opt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  width: 100%;
+  text-align: left;
+  background: var(--gl-canvas);
+  border: 1px solid var(--gl-hair);
+  border-radius: 14px;
+  padding: 16px 18px;
+  cursor: pointer;
+  transition:
+    border-color 0.2s,
+    box-shadow 0.2s,
+    background 0.2s;
+}
+.wz-opt:hover {
+  border-color: var(--gl-hair-strong);
+}
+.wz-opt.is-selected {
+  border-color: var(--gl-accent);
+  box-shadow: 0 0 0 3px var(--gl-accent-soft);
+  background: var(--gl-surface);
+}
+.wz-opt-title {
+  font-weight: 600;
+  color: var(--gl-ink);
+  font-size: 0.98rem;
+}
+.wz-opt-desc {
+  color: var(--gl-muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  margin-top: 2px;
+}
+.wz-ok {
+  color: var(--gl-accent-ink);
+  font-weight: 600;
+  font-size: 0.9rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Bloco de comando/console copiável (Claude/Codex/Antigravity). */
+.wz-cmd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--gl-ink);
+  color: var(--gl-canvas);
+  border-radius: 12px;
+  padding: 12px 14px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem;
+  overflow-x: auto;
+}
+.wz-cmd-copy {
+  flex: none;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  color: var(--gl-canvas);
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: 0.74rem;
+  cursor: pointer;
+}
+.wz-field {
+  width: 100%;
+  background: var(--gl-canvas);
+  border: 1px solid var(--gl-hair-strong);
+  border-radius: 12px;
+  padding: 12px 14px;
+  font-size: 0.9rem;
+  color: var(--gl-ink);
+  outline: none;
+  transition:
+    border-color 0.2s,
+    box-shadow 0.2s;
+}
+.wz-field:focus {
+  border-color: var(--gl-accent);
+  box-shadow: 0 0 0 3px var(--gl-accent-soft);
+}
+.wz-err {
+  color: var(--gl-sev);
+  font-size: 0.82rem;
+  margin-top: 8px;
+}
