@@ -71,6 +71,11 @@ jobs:
           GITLEAKS_ENABLE_COMMENTS: false
       - name: Write pheromone secret-scan marker
         run: pnpm run audit:secrets
+      # Antes só existia o placeholder repo-smoke.spec.ts (não usa fixture de
+      # navegador, nunca precisou de Chromium). O 1º spec real (E2E do
+      # setup wizard) expôs que este job nunca instalava o browser.
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
       - name: Headless Playwright E2E
         run: pnpm run e2e
       - name: Audit summary gate
