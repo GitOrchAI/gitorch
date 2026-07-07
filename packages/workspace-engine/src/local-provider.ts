@@ -34,7 +34,10 @@ export class LocalWorkspaceProvider {
   private baseDir: string
   private gitRunner?: GitRunner
 
-  constructor(baseDir = '/var/lib/gitorch/workspaces', gitRunner?: GitRunner) {
+  constructor(
+    baseDir = process.env['GITORCH_WORKSPACES_DIR'] ?? '/var/lib/gitorch/workspaces',
+    gitRunner?: GitRunner
+  ) {
     this.baseDir = baseDir
     this.gitRunner = gitRunner
   }

@@ -1,0 +1,140 @@
+name: E2E Wizard
+
+# Roda contra uma conta REAL do GitHub (dedicada, descartável — nunca a conta
+# do produto) e faz um clone de verdade — mais lento e sujeito a rate-limit
+# da API do GitHub do que o resto do CI. Por isso: smoke test pós-merge
+# (push no main), não em todo PR. `workflow_dispatch` pra rodar manual.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  e2e-wizard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: gitorch_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/gitorch_e2e
+      REDIS_URL: redis://localhost:6379/0
+      # NODE_ENV NÃO fica aqui (nível de job): vazaria pro step de build do
+      # front e quebraria o next build (bug real achado ao vivo — o Next.js
+      # 16 gerencia NODE_ENV=production sozinho no build; um override pra
+      # 'development' faz o pré-render de /_global-error quebrar com
+      # "Cannot read properties of null (reading 'useContext')"). Só o
+      # control-plane em runtime precisa dele (cookie sameSite/secure em
+      # dev) — setado por-step, no "Start control-plane" abaixo.
+      PORT: 4010
+      HOST: 127.0.0.1
+      FRONTEND_URL: http://127.0.0.1:4010
+      CORS_ORIGIN: http://127.0.0.1:4010
+      GITORCH_EXECUTOR: local-process
+      E2E_BASE_URL: http://127.0.0.1:4010
+      E2E_GITHUB_TEST_TOKEN: ${{ secrets.E2E_GITHUB_TEST_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Segredos EFÊMEROS só deste job isolado (banco/redis descartáveis do
+      # CI) — nunca reaproveitar chave de produção aqui.
+      - name: Generate ephemeral secrets
+        run: |
+          echo "JWT_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          echo "GITORCH_CREDENTIAL_KEY=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          echo "GITHUB_WEBHOOK_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+
+      - name: Apply schema (db push, banco efêmero do CI)
+        working-directory: apps/control-plane
+        run: npx prisma db push --skip-generate
+      - name: Prisma generate
+        working-directory: apps/control-plane
+        run: npx prisma generate
+      # Sem isto, o seed do usuário de teste falha com FK violation em
+      # users_plan_id_fkey (planId='free' não existe ainda) — achado real ao
+      # vivo: rodei o seed na verificação local e esqueci de replicar aqui.
+      - name: Seed plans
+        working-directory: apps/control-plane
+        run: npx tsx prisma/seed.ts
+
+      # NEXT_PUBLIC_API_URL explícito: sem isto, o fallback de dev do front
+      # (lib/api.ts) manda qualquer host 127.0.0.1 pro control-plane padrão
+      # de localhost:4000 — errado aqui, porque o control-plane deste job
+      # sobe na porta 4010 (achado real na verificação local deste workflow).
+      - name: Build web (export estático)
+        run: pnpm --filter web build
+        env:
+          NEXT_PUBLIC_API_URL: http://127.0.0.1:4010
+      - name: Build control-plane + deps
+        run: npx turbo run build --filter=@gitorch/control-plane...
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      # Precisa ser o dist compilado, não `tsx` ao vivo — o processo filho do
+      # CGC (diagnose-child.js) só existe no build.
+      #
+      # GITORCH_WORKSPACES_DIR/GITORCH_CORTEX_DB: em produção /var/lib/gitorch
+      # é criado com dono do serviço systemd; o runner do GitHub Actions não
+      # tem permissão de escrever lá (achado real ao vivo: "EACCES: permission
+      # denied, mkdir '/var/lib/gitorch'" tanto no boot do Cortex quanto no
+      # clone do diagnóstico). O contexto `runner` só é resolvível dentro de
+      # steps, não no `env:` do job (outro achado real — 1a tentativa desta
+      # correção quebrou o parse do workflow por isso).
+      - name: Start control-plane
+        working-directory: apps/control-plane
+        env:
+          NODE_ENV: development
+          GITORCH_WORKSPACES_DIR: ${{ runner.temp }}/gitorch-workspaces
+          GITORCH_CORTEX_DB: ${{ runner.temp }}/gitorch-cortex.sqlite
+        run: nohup node dist/index.js > /tmp/control-plane.log 2>&1 &
+      - name: Wait for health
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:4010/health > /dev/null; then
+              echo "control-plane healthy"; exit 0
+            fi
+            sleep 1
+          done
+          echo "control-plane never became healthy"; cat /tmp/control-plane.log; exit 1
+
+      - name: Run E2E (wizard diagnosis)
+        run: npx playwright test tests/e2e/setup-wizard-diagnosis.spec.ts
+
+      - name: Server logs (on failure)
+        if: failure()
+        run: cat /tmp/control-plane.log || true
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
