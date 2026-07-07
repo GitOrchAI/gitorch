@@ -94,7 +94,10 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
       })
 
       const userData = (await userResponse.json()) as { id: number; login: string; email?: string }
-      if (!userData.login) {
+      // Exige login E id numérico: o id é a âncora de identidade estável (o
+      // login pode ser renomeado/reusado). Sem o guard, um /user degenerado
+      // geraria um e-mail noreply tipo `undefined+login@...`.
+      if (!userData.login || typeof userData.id !== 'number') {
         return reply.code(400).send({ error: 'Failed to fetch user profile from GitHub' })
       }
 
@@ -118,18 +121,22 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
         const emails = Array.isArray(emailsData)
           ? (emailsData as Array<{ email: string; primary: boolean; verified: boolean }>)
           : []
-        email = emails.find((e) => e.primary && e.verified)?.email ?? emails[0]?.email
+        // Só e-mail VERIFICADO vira chave de identidade — nunca o primeiro da
+        // lista sem checar (um secundário não-verificado não prova posse).
+        email =
+          emails.find((e) => e.primary && e.verified)?.email ??
+          emails.find((e) => e.verified)?.email
       }
 
-      // O resto do sistema usa e-mail como chave de junção (User, plano,
-      // EngineConnection) — sem ele o login "sucedia" silenciosamente (cookie
-      // setado, redirect 302) mas sem User/credencial persistidos, e o
-      // cliente caía num 401 sem explicação no primeiro /github/repos.
+      // Sem e-mail utilizável (conta com e-mail privado; ou a credencial é um
+      // GitHub App — client_id Iv23... — cujo /user/emails responde 403 porque
+      // o `scope=user:email` da URL de autorização é IGNORADO por Apps): cai no
+      // endereço NOREPLY estável do GitHub (id+login@users.noreply.github.com).
+      // É único e permanente por usuário (o id numérico nunca muda), formato
+      // oficial do próprio GitHub — serve de chave de identidade sem depender de
+      // scope/permissão de e-mail. Login nunca trava por e-mail indisponível.
       if (!email) {
-        return reply.code(400).send({
-          error:
-            'Não foi possível obter um e-mail verificado da sua conta GitHub. Verifique um e-mail em github.com/settings/emails e tente novamente.',
-        })
+        email = `${userData.id}+${userData.login}@users.noreply.github.com`
       }
 
       // O User é criado/atualizado AQUI — nenhum outro lugar do código faz

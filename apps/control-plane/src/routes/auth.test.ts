@@ -197,14 +197,18 @@ describe('GitHub OAuth callback', () => {
     expect(decoded['email']).toBe('primary@example.test')
   })
 
-  it('returns a clean error instead of crashing when /user/emails responds with a non-array body (e.g. rate limit)', async () => {
+  it('falls back to the stable GitHub noreply email when /user/emails is forbidden (GitHub App ignores user:email scope → 403)', async () => {
+    // A credencial em produção é um GitHub App (client_id Iv23...): o `scope`
+    // da URL de autorização é IGNORADO e /user/emails devolve 403 sem a
+    // permissão de conta "Email addresses". Login NÃO pode travar por isso —
+    // cai no endereço noreply estável do GitHub (id+login@users.noreply...).
     global.fetch = vi.fn(async (url: string | URL | Request) => {
       const href = typeof url === 'string' ? url : url.toString()
       if (href.includes('github.com/login/oauth/access_token')) {
         return new Response(JSON.stringify({ access_token: 'gh_raw_token' }), { status: 200 })
       }
       if (href.includes('api.github.com/user/emails')) {
-        return new Response(JSON.stringify({ message: 'API rate limit exceeded' }), {
+        return new Response(JSON.stringify({ message: 'Resource not accessible by integration' }), {
           status: 403,
         })
       }
@@ -219,9 +223,11 @@ describe('GitHub OAuth callback', () => {
       url: '/api/v1/auth/github/callback?code=abc123',
     })
 
-    expect(res.statusCode).toBe(400)
-    expect(res.json()).toMatchObject({ error: expect.stringContaining('e-mail') })
-    expect(userUpsert).not.toHaveBeenCalled()
+    expect(res.statusCode).toBe(302)
+    expect(res.headers['set-cookie']).toBeDefined()
+    expect(userUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { email: '7+privateuser@users.noreply.github.com' } })
+    )
   })
 
   it('rejects the login with a clean error when no email can be resolved at all (no public email, empty/unverified emails list)', async () => {
@@ -244,14 +250,15 @@ describe('GitHub OAuth callback', () => {
       url: '/api/v1/auth/github/callback?code=abc123',
     })
 
-    // Sem essa checagem, o login "sucedia" (cookie setado, redirect 302) mas
-    // sem User/EngineConnection persistidos — o cliente cai direto num 401
-    // silencioso no primeiro /api/v1/github/repos, sem explicação nenhuma.
-    expect(res.statusCode).toBe(400)
-    expect(res.json()).toMatchObject({ error: expect.stringContaining('e-mail') })
-    expect(userUpsert).not.toHaveBeenCalled()
-    expect(connectGitHubToken).not.toHaveBeenCalled()
-    expect(res.headers['set-cookie']).toBeUndefined()
+    // E-mail privado + lista vazia: login segue com o noreply estável do
+    // GitHub como chave de identidade (id+login@users.noreply.github.com) —
+    // único e permanente por usuário. Nunca mais um 400 travando o onboarding.
+    expect(res.statusCode).toBe(302)
+    expect(res.headers['set-cookie']).toBeDefined()
+    expect(userUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { email: '7+privateuser@users.noreply.github.com' } })
+    )
+    expect(connectGitHubToken).toHaveBeenCalled()
   })
 
   it("re-links the account by githubLogin instead of crashing when the GitHub account's email changed", async () => {
