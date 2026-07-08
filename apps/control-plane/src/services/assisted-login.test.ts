@@ -160,15 +160,35 @@ describe('AssistedLoginService', () => {
     })
   })
 
-  it('antigravity: envia Enter inicial antes de qualquer stdout (seleciona o menu)', () => {
-    const { handle } = fakeHandle()
+  it('antigravity: NÃO envia Enter no spawn; envia CR só depois do menu do TUI aparecer', () => {
+    const { handle, emitStdout } = fakeHandle()
     const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
     const service = new AssistedLoginService(fakeEngineConnections() as never, {
       image: 'img',
       runDeviceLoginImpl,
     })
     service.start('user-1', 'antigravity')
-    expect(handle.writeStdin).toHaveBeenCalledWith('\n')
+
+    // Regressão do bug real (08/07): mandar o Enter no spawn é uma corrida — o
+    // container ainda nem desenhou o menu, o Enter se perde no vazio e a URL
+    // nunca aparece ("fica girando"). Nada pode ser escrito no stdin antes do
+    // menu.
+    expect(handle.writeStdin).not.toHaveBeenCalled()
+
+    // Quando o menu do TUI é desenhado, o serviço confirma "Google OAuth" (a
+    // opção default) com CR ('\r', não '\n' — TUI em modo raw) — só então o
+    // `agy` emite a URL do Google OAuth.
+    emitStdout(
+      ' Welcome to the Antigravity CLI. You are currently not signed in.\n' +
+        ' Signing in... Select login method:\n > 1. Google OAuth\n'
+    )
+    expect(handle.writeStdin).toHaveBeenCalledWith('\r')
+    expect(handle.writeStdin).toHaveBeenCalledTimes(1)
+
+    // Chunks de stdout subsequentes (o menu redesenha, a URL chega etc.) não
+    // podem reenviar o Enter — senão bagunçam o prompt de colar o código.
+    emitStdout('...menu redraws... Select login method: ...\n')
+    expect(handle.writeStdin).toHaveBeenCalledTimes(1)
   })
 
   it('subscribe emite o estado atual imediatamente (sem perder eventos de quem conecta depois)', () => {

@@ -22,13 +22,19 @@ const ARGS: Record<DeviceRuntime, string[]> = {
 }
 
 // Claude e Antigravity só emitem a URL sob PTY (spike 2026-07-07); Codex não
-// precisa. Antigravity também precisa de 1 Enter inicial pra escolher
-// "Google OAuth" no menu do TUI antes da URL aparecer.
+// precisa.
 const NEEDS_PTY: Record<DeviceRuntime, boolean> = { codex: false, claude: true, antigravity: true }
-const NEEDS_INITIAL_ENTER: Record<DeviceRuntime, boolean> = {
-  codex: false,
-  claude: false,
-  antigravity: true,
+
+// Antigravity abre um menu TUI ("Select login method") e só emite a URL depois
+// de "Google OAuth" (a opção default) ser confirmada com Enter. Esse Enter tem
+// que ir DEPOIS do menu ser desenhado: mandá-lo no spawn (como era antes) é uma
+// corrida — o container ainda nem subiu o `agy`, o Enter se perde no vazio e a
+// URL nunca aparece (o sintoma "fica girando"). Além disso, sob o PTY em modo
+// raw do TUI, Enter é CR ('\r'), não LF. Confirmado reproduzindo contra o
+// binário real (08/07): Enter-após-menu com '\r' faz a URL do Google OAuth sair
+// inteira; Enter-no-spawn não produz URL nenhuma.
+const MENU_SELECT_MARKER: Partial<Record<DeviceRuntime, RegExp>> = {
+  antigravity: /select login method/i,
 }
 
 // `claude setup-token` imprime o token final no stdout (não grava arquivo) —
@@ -72,6 +78,10 @@ interface Session {
   //    setState({phase:'connected'}) posterior viraria um no-op silencioso —
   //    usuário veria "tempo esgotado" mesmo com a credencial capturada.
   capturing: boolean
+  // Antigravity: já confirmamos "Google OAuth" no menu do TUI (mandamos o CR
+  // uma vez, quando "Select login method" apareceu no stdout). Guarda contra
+  // reenviar o Enter a cada chunk subsequente de stdout.
+  menuSelected: boolean
 }
 
 export interface AssistedLoginOptions {
@@ -146,10 +156,9 @@ export class AssistedLoginService {
         (this.options.timeoutMs ?? 5 * 60_000) * 20
       ),
       capturing: false,
+      menuSelected: false,
     }
     this.sessions.set(id, session)
-
-    if (NEEDS_INITIAL_ENTER[runtime]) handle.writeStdin('\n')
 
     handle.onStdout((chunk) => this.onStdout(id, chunk))
     handle.exited.then(({ code }) => this.onExit(id, code))
@@ -196,6 +205,16 @@ export class AssistedLoginService {
     if (!session) return
     session.buffer += chunk
     if (session.state.phase === 'connected' || session.state.phase === 'error') return
+
+    // Antigravity: assim que o menu do TUI é desenhado ("Select login method"),
+    // confirma "Google OAuth" (opção default) com CR — só então o `agy` emite a
+    // URL do Google OAuth. Uma vez só (menuSelected), senão cada chunk seguinte
+    // reenviaria o Enter e bagunçaria o prompt de colar o código.
+    const menuMarker = MENU_SELECT_MARKER[session.runtime]
+    if (menuMarker && !session.menuSelected && menuMarker.test(session.buffer)) {
+      session.menuSelected = true
+      session.handle.writeStdin('\r')
+    }
 
     // Continua reparseando enquanto a fase for 'starting' OU já tivermos a URL
     // mas ainda faltar o código (Codex): URL e código podem chegar em chunks
