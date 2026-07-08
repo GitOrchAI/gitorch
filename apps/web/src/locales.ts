@@ -176,7 +176,7 @@ export const locales = {
       confirmSubmitting: 'Cloning & starting...',
       connectTitle: 'Connect your engines',
       connectDesc:
-        'Log in to each engine with your own account. Run the command locally, then paste what it gives you. All three are equal — connect at least one to continue.',
+        'Sign in to each engine with your own account — you just click a link, authorize on the provider’s page, and paste the code back. Nothing to install, no terminal. All three work the same way — connect at least one to continue.',
       connectPaste: 'Paste here',
       connectBtn: 'Connect',
       connecting: 'Checking...',
@@ -390,7 +390,7 @@ export const locales = {
       confirmSubmitting: 'Clonando e iniciando...',
       connectTitle: 'Conecte seus motores',
       connectDesc:
-        'Entre em cada motor com a sua própria conta. Rode o comando no seu terminal e cole o que ele devolver. Os três são iguais — conecte pelo menos um para continuar.',
+        'Entre em cada motor com a sua própria conta — você só clica num link, autoriza na página do provedor e cola o código de volta. Nada pra instalar, nenhum terminal. Os três funcionam do mesmo jeito — conecte pelo menos um para continuar.',
       connectPaste: 'Cole aqui',
       connectBtn: 'Conectar',
       connecting: 'Verificando...',
@@ -604,7 +604,7 @@ export const locales = {
       confirmSubmitting: 'Clonando e iniciando...',
       connectTitle: 'Conecta tus motores',
       connectDesc:
-        'Inicia sesión en cada motor con tu propia cuenta. Ejecuta el comando en tu terminal y pega lo que te devuelva. Los tres son iguales — conecta al menos uno para continuar.',
+        'Inicia sesión en cada motor con tu propia cuenta — solo haces clic en un enlace, autorizas en la página del proveedor y pegas el código de vuelta. Nada que instalar, sin terminal. Los tres funcionan igual — conecta al menos uno para continuar.',
       connectPaste: 'Pega aquí',
       connectBtn: 'Conectar',
       connecting: 'Verificando...',
