@@ -17,10 +17,11 @@
     "lint": "eslint src"
   },
   "dependencies": {
+    "@gitorch/cadence": "workspace:*",
     "@gitorch/github-sync": "workspace:*",
     "@gitorch/synapse": "workspace:*",
     "@gitorch/workspace-engine": "workspace:*",
-    "@gitorch/cadence": "workspace:*"
+    "node-pty-prebuilt-multiarch": "0.10.1-pre.5"
   },
   "devDependencies": {
     "@types/node": "26.1.0",
