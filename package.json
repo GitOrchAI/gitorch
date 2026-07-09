@@ -39,7 +39,7 @@
     "tsx": "4.23.0",
     "turbo": "^2.10.4",
     "typescript": "^5.4.0",
-    "vite": "8.1.3",
+    "vite": "8.1.4",
     "vitest": "^4.1.10"
   },
   "dependencies": {
@@ -68,7 +68,7 @@
       "import-in-the-middle": "3.2.0",
       "minimatch": "10.2.5",
       "postcss": "8.5.16",
-      "vite": "8.1.3",
+      "vite": "8.1.4",
       "tar": "7.5.16",
       "tar-fs": "^3.1.2",
       "tar-stream": "^3.2.0",
