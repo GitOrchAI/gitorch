@@ -44,11 +44,11 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@opentelemetry/auto-instrumentations-node": "0.77.0",
+    "@opentelemetry/auto-instrumentations-node": "0.78.0",
     "@opentelemetry/exporter-prometheus": "0.220.0",
     "@opentelemetry/resources": "^2.9.0",
     "@opentelemetry/sdk-node": "0.220.0",
-    "@opentelemetry/semantic-conventions": "^1.41.1",
+    "@opentelemetry/semantic-conventions": "^1.43.0",
     "fastify-plugin": "^6.0.0",
     "fastify-sse-v2": "^4.0.0",
     "minimatch": "10.2.5",
@@ -58,7 +58,7 @@
   },
   "pnpm": {
     "overrides": {
-      "@opentelemetry/auto-instrumentations-node": "0.77.0",
+      "@opentelemetry/auto-instrumentations-node": "0.78.0",
       "@opentelemetry/core": "^2.8.0",
       "@opentelemetry/exporter-prometheus": "0.220.0",
       "@opentelemetry/instrumentation": "0.219.0",
