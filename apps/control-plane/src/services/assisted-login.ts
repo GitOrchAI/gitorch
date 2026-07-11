@@ -82,6 +82,12 @@ interface Session {
   // uma vez, quando "Select login method" apareceu no stdout). Guarda contra
   // reenviar o Enter a cada chunk subsequente de stdout.
   menuSelected: boolean
+  // O HOME desta sessão é o diretório PERSISTENTE do ambiente do user (0700),
+  // não um temp efêmero. Quando true, cleanup() NÃO apaga o hostHome: a
+  // credencial que o login gravou VIVE ali dentro do ambiente, protegida, e é
+  // a faxina 24h (garbage collector) quem a destrói se o wizard for
+  // abandonado. False = fallback mkdtemp, limpo no cleanup como sempre.
+  persistentHome: boolean
 }
 
 export interface AssistedLoginOptions {
@@ -104,7 +110,18 @@ export class AssistedLoginService {
     private readonly options: AssistedLoginOptions
   ) {}
 
-  start(userId: string, runtime: DeviceRuntime): string {
+  /**
+   * Inicia o login assistido do motor. Quando `envHome` é passado (o diretório
+   * do ambiente isolado do user, 0700), o container usa ELE como HOME: a
+   * credencial que o CLI grava no login (`.codex/`, `.claude/`,
+   * `.gitorch/env/…`) fica DENTRO do ambiente do cliente — o motor "loga
+   * dentro", protegido em disco, ao lado dos clones do passo 4. Sem `envHome`
+   * (fallback), cai no HOME temporário efêmero de sempre (mkdtemp), apagado no
+   * cleanup. Em ambos os casos a credencial também é cifrada pro cofre
+   * (captureFromHome); o `envHome` é sobre ONDE ela vive em disco durante o
+   * wizard, não sobre o cofre.
+   */
+  start(userId: string, runtime: DeviceRuntime, envHome?: string): string {
     const id = randomUUID()
     const run = this.options.runDeviceLoginImpl ?? runDeviceLogin
     const handle = run({
@@ -112,6 +129,10 @@ export class AssistedLoginService {
       binary: BINARY[runtime],
       args: ARGS[runtime],
       usePty: NEEDS_PTY[runtime],
+      // makeHomeImpl faz o runDeviceLogin montar ESTE dir como HOME do
+      // container em vez de criar um mkdtemp. exactOptionalPropertyTypes: só
+      // inclui a chave quando há envHome (nunca passa `undefined` explícito).
+      ...(envHome !== undefined ? { makeHomeImpl: () => envHome } : {}),
     })
 
     const session: Session = {
@@ -157,6 +178,7 @@ export class AssistedLoginService {
       ),
       capturing: false,
       menuSelected: false,
+      persistentHome: envHome !== undefined,
     }
     this.sessions.set(id, session)
 
@@ -329,14 +351,20 @@ export class AssistedLoginService {
     clearTimeout(session.timeoutHandle)
     clearTimeout(session.absoluteTimeoutHandle)
     session.handle.kill()
-    // Best-effort, fire-and-forget: hostHome é um diretório mkdtempSync no
-    // host que pode conter credenciais em texto puro (.codex/auth.json,
+    // HOME persistente (dir do ambiente do user): NÃO apagar. A credencial que
+    // o login gravou VIVE ali dentro do ambiente isolado (0700), protegida, e
+    // quem a destrói é a faxina 24h se o wizard for abandonado — apagar aqui
+    // esvaziaria o ambiente (inclusive os clones do passo 4) a cada login.
+    // HOME efêmero (fallback mkdtemp): apagar. Best-effort, fire-and-forget —
+    // esse dir pode conter credencial em texto puro (.codex/auth.json,
     // .gemini/antigravity-cli/antigravity-oauth-token, ou o
-    // CLAUDE_CODE_OAUTH_TOKEN escrito por captureClaudeToken). cleanup() é
-    // chamado de forma síncrona a partir de setState() e precisa continuar
-    // síncrono — não podemos `await` aqui. `.catch` garante que uma falha de
-    // limpeza nunca vire unhandled rejection.
-    void fs.rm(session.handle.hostHome, { recursive: true, force: true }).catch(() => undefined)
+    // CLAUDE_CODE_OAUTH_TOKEN escrito por captureClaudeToken) que já foi
+    // cifrada pro cofre e não pode ficar largada no host. cleanup() é chamado
+    // de forma síncrona a partir de setState() e precisa continuar síncrono —
+    // não podemos `await` aqui; `.catch` evita unhandled rejection.
+    if (!session.persistentHome) {
+      void fs.rm(session.handle.hostHome, { recursive: true, force: true }).catch(() => undefined)
+    }
     this.sessions.delete(id)
   }
 }

@@ -1,0 +1,117 @@
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
+import Fastify, { FastifyRequest } from 'fastify'
+import * as fs from 'node:fs/promises'
+import * as os from 'node:os'
+import * as path from 'node:path'
+
+// Mocka o provider de workspace: no teste o clone NÃO faz git real.
+const allocateWorkspace = vi.fn(async (envId: string, repo: string) => ({
+  id: `ws:${envId}:${repo}`,
+  userId: envId,
+  projectId: repo,
+  path: `/base/${envId}/${repo.replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+  status: 'active' as const,
+}))
+vi.mock('@gitorch/workspace-engine', () => ({
+  LocalWorkspaceProvider: class {
+    allocateWorkspace = allocateWorkspace
+  },
+}))
+
+import { setupRoutes } from './setup.js'
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+function fakePrisma() {
+  const store = new Map<string, any>()
+  let seq = 0
+  return {
+    clientEnvironment: {
+      findFirst: vi.fn(async ({ where }: any) => {
+        const rows = [...store.values()].filter(
+          (r) => r.userId === where.userId && r.status === where.status
+        )
+        return rows[rows.length - 1] ?? null
+      }),
+      create: vi.fn(async ({ data }: any) => {
+        const now = new Date()
+        const rec = { id: `env_${++seq}`, fixedAt: null, createdAt: now, updatedAt: now, ...data }
+        store.set(rec.id, rec)
+        return rec
+      }),
+      update: vi.fn(async ({ where, data }: any) => {
+        const rec = { ...store.get(where.id), ...data }
+        store.set(where.id, rec)
+        return rec
+      }),
+    },
+  }
+}
+
+describe('POST /api/v1/setup/clone', () => {
+  let app: ReturnType<typeof Fastify>
+  let baseDir: string
+  const orig = process.env['GITORCH_ENVIRONMENTS_DIR']
+
+  beforeEach(async () => {
+    allocateWorkspace.mockClear()
+    baseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-clone-'))
+    process.env['GITORCH_ENVIRONMENTS_DIR'] = baseDir
+    app = Fastify()
+    app.decorate('prisma', fakePrisma() as any)
+    app.decorate('engineConnections', {
+      getRawGithubToken: vi.fn().mockResolvedValue('tok_do_cliente'),
+    } as any)
+    app.addHook('preHandler', async (request: FastifyRequest) => {
+      request.user = { id: 'user_1', wingId: 'octocat' }
+    })
+    await setupRoutes(app)
+    await app.ready()
+  })
+
+  afterEach(async () => {
+    await app.close()
+    await fs.rm(baseDir, { recursive: true, force: true })
+    if (orig === undefined) delete process.env['GITORCH_ENVIRONMENTS_DIR']
+    else process.env['GITORCH_ENVIRONMENTS_DIR'] = orig
+  })
+
+  it('clona os repos dentro do ambiente e responde só a contagem (sem paths internos)', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/setup/clone',
+      payload: { repos: ['octo/a', 'octo/b'] },
+    })
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body.count).toBe(2)
+    expect(body.envId).toBeTruthy()
+    // Regra de infra: nenhum caminho interno em disco na resposta.
+    expect(JSON.stringify(body)).not.toContain('/base/')
+    expect(allocateWorkspace).toHaveBeenCalledTimes(2)
+  })
+
+  it('400 quando nenhum repositório é enviado', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/setup/clone',
+      payload: { repos: [] },
+    })
+    expect(res.statusCode).toBe(400)
+  })
+})
+
+describe('POST /api/v1/setup/clone — sem sessão', () => {
+  it('retorna 401 sem clonar', async () => {
+    const app = Fastify()
+    app.decorate('prisma', fakePrisma() as any)
+    await setupRoutes(app)
+    await app.ready()
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/setup/clone',
+      payload: { repos: ['a/b'] },
+    })
+    expect(res.statusCode).toBe(401)
+    await app.close()
+  })
+})

@@ -133,6 +133,7 @@ describe('POST /api/v1/setup/submit — runtime wiring', () => {
         count: vi.fn().mockResolvedValue(0),
         create: vi.fn().mockResolvedValue({}),
       },
+      clientEnvironment: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     app.addHook('preHandler', async (request: FastifyRequest) => {
@@ -190,6 +191,166 @@ describe('POST /api/v1/setup/submit — runtime wiring', () => {
   })
 })
 
+describe('POST /api/v1/setup/submit — coleta de contexto: board Projects V2 não duplica em re-submit', () => {
+  let app: ReturnType<typeof Fastify>
+  const originalFetch = global.fetch
+  let byWingId: Map<string, { id: string; wingId: string; name: string; runtimeConfig: unknown }>
+  let cortexWriteDrawer: ReturnType<typeof vi.fn>
+
+  // Roteia o `fetch` GraphQL pelo conteúdo da query — mesma técnica usada nos
+  // testes de repo-context-collector/repo-context-cortex, mas aqui contra o
+  // `global.fetch` de verdade: setup.ts não injeta um transporte de teste,
+  // então é o único jeito de exercitar o fluxo INTEIRO (rota → collector →
+  // GraphQL) sem bater na rede real.
+  function stubGithubGraphQL(handlers: { boardNumberCreated: number }): typeof fetch {
+    return vi.fn(async (_url: string, init: { body: string }) => {
+      const body = JSON.parse(init.body) as { query: string }
+      if (body.query.includes('RepoOwner')) {
+        return new Response(
+          JSON.stringify({
+            data: { repository: { owner: { id: 'U_owner', __typename: 'User' } } },
+          }),
+          { status: 200 }
+        )
+      }
+      if (body.query.includes('GetProjectId')) {
+        // Só é chamada quando um boardNumber já é conhecido (reuse) — devolve
+        // o MESMO board criado na 1ª rodada.
+        return new Response(
+          JSON.stringify({ data: { user: { projectV2: { id: 'PVT_reused' } } } }),
+          { status: 200 }
+        )
+      }
+      if (body.query.includes('CreateProjectV2')) {
+        return new Response(
+          JSON.stringify({
+            data: {
+              createProjectV2: {
+                projectV2: { id: 'PVT_created', number: handlers.boardNumberCreated },
+              },
+            },
+          }),
+          { status: 200 }
+        )
+      }
+      if (body.query.includes('RepoContext')) {
+        return new Response(
+          JSON.stringify({
+            data: { repository: { pullRequests: { nodes: [] }, issues: { nodes: [] } } },
+          }),
+          { status: 200 }
+        )
+      }
+      throw new Error(`stub sem handler para a query:\n${body.query}`)
+    }) as unknown as typeof fetch
+  }
+
+  beforeEach(async () => {
+    byWingId = new Map()
+    let nextId = 1
+    cortexWriteDrawer = vi.fn().mockResolvedValue(undefined)
+
+    app = Fastify()
+    app.decorate('cortex', { writeDrawer: cortexWriteDrawer } as never)
+    app.decorate('engineConnections', {
+      list: async () => [
+        {
+          runtime: 'claude',
+          status: 'connected',
+          modelsRefreshedAt: null,
+          lastValidatedAt: null,
+          lastError: null,
+        },
+      ],
+      getRawGithubToken: async () => 'gh_test_token',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+    app.decorate('prisma', {
+      user: {
+        findUnique: vi
+          .fn()
+          .mockResolvedValue({ id: 'owner_1', email: 'octocat@example.test', plan: null }),
+      },
+      plan: { findUnique: vi.fn().mockResolvedValue({ id: 'pro', maxProjects: 2 }) },
+      project: {
+        count: vi.fn().mockResolvedValue(0),
+        // Stateful: reflete o estado real entre os dois submits do teste — é
+        // isso que prova a idempotência (2º submit ACHA o project do 1º).
+        findFirst: vi.fn(async ({ where }: { where: { wingId: string } }) => {
+          return byWingId.get(where.wingId) ?? null
+        }),
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+          const rec = {
+            id: `proj_${nextId++}`,
+            wingId: data['wingId'] as string,
+            name: data['name'] as string,
+            runtimeConfig: data['runtimeConfig'],
+          }
+          byWingId.set(rec.wingId, rec)
+          return rec
+        }),
+        update: vi.fn(
+          async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
+            const rec = [...byWingId.values()].find((p) => p.id === where.id)
+            if (rec) Object.assign(rec, data)
+            return rec
+          }
+        ),
+      },
+      apiKey: { create: vi.fn().mockResolvedValue({}) },
+      mission: { create: vi.fn().mockResolvedValue({}) },
+      projectSchedule: {
+        findMany: vi.fn().mockResolvedValue([]),
+        count: vi.fn().mockResolvedValue(0),
+        create: vi.fn().mockResolvedValue({}),
+      },
+      clientEnvironment: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+    app.addHook('preHandler', async (request: FastifyRequest) => {
+      request.user = { id: 'owner_1', wingId: 'octocat', email: 'octocat@example.test' }
+    })
+    await setupRoutes(app)
+    await app.ready()
+  })
+
+  afterEach(() => {
+    global.fetch = originalFetch
+  })
+
+  it('2 submits do mesmo repo: só o 1º cria o board GitHub; o 2º reusa via runtimeConfig persistido', async () => {
+    global.fetch = stubGithubGraphQL({ boardNumberCreated: 42 })
+
+    const payload = { repos: ['octocat/repo'], engines: ['claude-code'], plan: 'pro' }
+
+    const first = await app.inject({ method: 'POST', url: '/api/v1/setup/submit', payload })
+    expect(first.statusCode).toBe(200)
+
+    const fetchCalls1 = (global.fetch as ReturnType<typeof vi.fn>).mock.calls
+    const queriesRound1 = fetchCalls1.map((c) => (JSON.parse(c[1].body) as { query: string }).query)
+    expect(queriesRound1.some((q) => q.includes('CreateProjectV2'))).toBe(true)
+    expect(queriesRound1.some((q) => q.includes('GetProjectId'))).toBe(false)
+
+    // O board criado (número 42) foi persistido no Project.
+    const project = byWingId.get('octocat/repo')
+    expect((project?.runtimeConfig as { githubBoardNumber?: number })?.githubBoardNumber).toBe(42)
+
+    // 2ª submissão do MESMO repo (reabrir/refinalizar o wizard) — a rota deve
+    // ler o boardNumber persistido e REUSAR, não criar um board novo.
+    ;(global.fetch as ReturnType<typeof vi.fn>).mockClear()
+    const second = await app.inject({ method: 'POST', url: '/api/v1/setup/submit', payload })
+    expect(second.statusCode).toBe(200)
+
+    const fetchCalls2 = (global.fetch as ReturnType<typeof vi.fn>).mock.calls
+    const queriesRound2 = fetchCalls2.map((c) => (JSON.parse(c[1].body) as { query: string }).query)
+    expect(queriesRound2.some((q) => q.includes('GetProjectId'))).toBe(true)
+    expect(queriesRound2.some((q) => q.includes('CreateProjectV2'))).toBe(false)
+
+    // Só 1 Project foi criado no total (2ª submissão reusou o registro).
+    expect(byWingId.size).toBe(1)
+  })
+})
+
 describe('POST /api/v1/setup/submit — plano autoritativo (paid-intent, ainda não pago)', () => {
   let app: ReturnType<typeof Fastify>
   let projectCreate: ReturnType<typeof vi.fn>
@@ -237,6 +398,7 @@ describe('POST /api/v1/setup/submit — plano autoritativo (paid-intent, ainda n
         count: vi.fn().mockResolvedValue(0),
         create: vi.fn().mockResolvedValue({}),
       },
+      clientEnvironment: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     app.addHook('preHandler', async (request: FastifyRequest) => {

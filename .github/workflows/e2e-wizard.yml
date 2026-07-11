@@ -102,19 +102,23 @@ jobs:
       # Precisa ser o dist compilado, não `tsx` ao vivo — o processo filho do
       # CGC (diagnose-child.js) só existe no build.
       #
-      # GITORCH_WORKSPACES_DIR/GITORCH_CORTEX_DB: em produção /var/lib/gitorch
-      # é criado com dono do serviço systemd; o runner do GitHub Actions não
-      # tem permissão de escrever lá (achado real ao vivo: "EACCES: permission
-      # denied, mkdir '/var/lib/gitorch'" tanto no boot do Cortex quanto no
-      # clone do diagnóstico). O contexto `runner` só é resolvível dentro de
-      # steps, não no `env:` do job (outro achado real — 1a tentativa desta
-      # correção quebrou o parse do workflow por isso).
+      # GITORCH_WORKSPACES_DIR/GITORCH_CORTEX_DB/GITORCH_ENVIRONMENTS_DIR: em
+      # produção /var/lib/gitorch é criado com dono do serviço systemd; o runner
+      # do GitHub Actions não tem permissão de escrever lá (achado real ao vivo:
+      # "EACCES: permission denied, mkdir '/var/lib/gitorch'" tanto no boot do
+      # Cortex quanto no clone do diagnóstico). ENVIRONMENTS_DIR é a raiz 0700
+      # dos ambientes isolados — o login assistido grava a credencial DENTRO dele
+      # (HOME do ambiente), então precisa ser writable pelo runner igual aos
+      # irmãos. O contexto `runner` só é resolvível dentro de steps, não no
+      # `env:` do job (outro achado real — 1a tentativa desta correção quebrou o
+      # parse do workflow por isso).
       - name: Start control-plane
         working-directory: apps/control-plane
         env:
           NODE_ENV: development
           GITORCH_WORKSPACES_DIR: ${{ runner.temp }}/gitorch-workspaces
           GITORCH_CORTEX_DB: ${{ runner.temp }}/gitorch-cortex.sqlite
+          GITORCH_ENVIRONMENTS_DIR: ${{ runner.temp }}/gitorch-environments
         run: nohup node dist/index.js > /tmp/control-plane.log 2>&1 &
       - name: Wait for health
         run: |

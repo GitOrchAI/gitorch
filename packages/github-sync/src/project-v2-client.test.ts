@@ -189,3 +189,53 @@ test('surfaces GitHub GraphQL errors with actionable messages', async () => {
     'GitHub GraphQL request failed: Project not found'
   )
 })
+
+test('findProjectId returns the node id when the board exists', async () => {
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async () => ({ data: { user: { projectV2: { id: 'PVT_found' } } } }),
+  })
+
+  const id = await client.findProjectId({ login: 'loureng', number: 3, ownerType: 'user' })
+  expect(id).toBe('PVT_found')
+})
+
+test('findProjectId returns null (does NOT throw) when the board is absent', async () => {
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    // Dono existe, mas não tem o Project v2 #N — o resolver da coleta de
+    // contexto trata isso como "criar", não como erro.
+    request: async () => ({ data: { user: { projectV2: null } } }),
+  })
+
+  const id = await client.findProjectId({ login: 'loureng', number: 99, ownerType: 'user' })
+  expect(id).toBeNull()
+})
+
+test('getProjectId still throws when the board is absent (contrato estrito do PO/SM)', async () => {
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async () => ({ data: { organization: { projectV2: null } } }),
+  })
+
+  await expect(
+    client.getProjectId({ login: 'gitorch-ai', number: 7, ownerType: 'organization' })
+  ).rejects.toThrow('Project v2 #7 not found for organization "gitorch-ai".')
+})
+
+test('createProjectV2 creates a board and returns its id + number', async () => {
+  const calls: GraphQLRequest[] = []
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async (request) => {
+      calls.push(request)
+      return { data: { createProjectV2: { projectV2: { id: 'PVT_new', number: 12 } } } }
+    },
+  })
+
+  const created = await client.createProjectV2({ ownerId: 'U_owner', title: 'GitOrch — contexto' })
+
+  expect(created).toEqual({ id: 'PVT_new', number: 12 })
+  expect(calls[0].variables).toEqual({ ownerId: 'U_owner', title: 'GitOrch — contexto' })
+  expect(calls[0].query).toContain('createProjectV2(input: { ownerId: $ownerId, title: $title }')
+})

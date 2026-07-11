@@ -1,5 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { randomBytes } from 'node:crypto'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
 import Fastify, { FastifyRequest } from 'fastify'
 import { enginesPlugin } from './engines.js'
@@ -163,6 +166,10 @@ describe('login assistido (start / code / stream)', () => {
 
   beforeEach(async () => {
     process.env['GITORCH_CREDENTIAL_KEY'] = randomBytes(32).toString('hex')
+    // O login assistido resolve o ambiente isolado do user (HOME onde a
+    // credencial vive): base de ambientes num tmp dir writable, senão o mkdir
+    // 0700 do createProvisional falharia no CI.
+    process.env['GITORCH_ENVIRONMENTS_DIR'] = mkdtempSync(join(tmpdir(), 'gitorch-engines-env-'))
     fake = fakeHandle()
     runDeviceLoginImpl = vi.fn().mockReturnValue(fake.handle)
     currentUser = { id: 'user_1', wingId: 'octocat', email: 'octocat@example.test' }
@@ -182,6 +189,19 @@ describe('login assistido (start / code / stream)', () => {
         upsert: vi.fn(),
         findMany: vi.fn().mockResolvedValue([]),
       },
+      // createProvisional: sem provisório aberto (findFirst null) cria um novo
+      // e devolve o registro com o `path` (o dir do ambiente que vira o HOME
+      // do login). update ecoa o path que o serviço calculou.
+      clientEnvironment: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        create: vi.fn().mockResolvedValue({ id: 'env_test' }),
+        update: vi.fn().mockImplementation(async ({ data }: { data: { path: string } }) => ({
+          id: 'env_test',
+          userId: 'user_1',
+          status: 'provisional',
+          path: data.path,
+        })),
+      },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     app.addHook('preHandler', async (request: FastifyRequest) => {
@@ -200,6 +220,39 @@ describe('login assistido (start / code / stream)', () => {
     expect(res.statusCode).toBe(202)
     expect(JSON.parse(res.body)).toHaveProperty('loginId')
     expect(runDeviceLoginImpl).toHaveBeenCalledWith(expect.objectContaining({ binary: 'codex' }))
+  })
+
+  it('POST /api/v1/engines/:runtime/login/start: o login usa o HOME do ambiente do user (credenciais vivem ali)', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/engines/codex/login/start',
+    })
+    expect(res.statusCode).toBe(202)
+
+    // O ambiente isolado (0700) do user vira o HOME do container de login:
+    // makeHomeImpl aponta pro dir do ambiente, não pra um mkdtemp efêmero — a
+    // credencial que o CLI grava fica DENTRO do ambiente, protegida, e a
+    // faxina 24h a destrói se o wizard for abandonado.
+    const opts = runDeviceLoginImpl.mock.calls[0]![0] as { makeHomeImpl?: () => string }
+    expect(opts.makeHomeImpl).toBeTypeOf('function')
+    const expectedHome = join(process.env['GITORCH_ENVIRONMENTS_DIR']!, 'env_test')
+    expect(opts.makeHomeImpl!()).toBe(expectedHome)
+  })
+
+  it('POST /login/start: o ambiente é chaveado por request.user.id (JWT) — MESMA base do ciclo em setup.ts — não pelo id do banco', async () => {
+    // Diverge o id do JWT (request.user.id) do id do banco (findUnique por
+    // email → 'user_1' no beforeEach): sem o alinhamento, o login criaria um
+    // ambiente sob o id do banco, separado do que os termos/clone/fix criam
+    // sob o id do JWT — e a faxina 24h apagaria o do login (com a credencial).
+    currentUser = { id: 'jwt-stale-id', wingId: 'octocat', email: 'octocat@example.test' }
+
+    const res = await app.inject({ method: 'POST', url: '/api/v1/engines/codex/login/start' })
+    expect(res.statusCode).toBe(202)
+
+    // createProvisional (→ findFirst) resolve o ambiente pelo id do JWT.
+    expect(app.prisma.clientEnvironment.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { userId: 'jwt-stale-id', status: 'provisional' } })
+    )
   })
 
   it('POST /api/v1/engines/:runtime/login/start aceita o alias "claude-code" (mesmo vocabulário do paste-token)', async () => {

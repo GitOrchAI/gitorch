@@ -5,6 +5,8 @@ import { Prisma } from '@prisma/client'
 import { F6_AGENT_ROLES, isF6AgentRuntime, type F6AgentRuntime } from '@gitorch/agents'
 import { ensureDefaultSchedules } from '../lib/project-defaults.js'
 import { resolveEngineId } from '../services/engine-connection.js'
+import { ClientEnvironmentService } from '../services/environment.js'
+import { collectAndRememberRepoContext } from '../services/repo-context-cortex.js'
 
 interface GitHubRepo {
   id: number
@@ -23,7 +25,28 @@ interface SetupSubmitBody {
   envConfig?: Record<string, unknown>
 }
 
+// Lê o número do board GitHub Projects V2 já criado pra este repo, se algum
+// submit anterior já criou um (gravado por persistBoardNumber abaixo). Sem
+// isto, resolveBoard (repo-context-collector) nunca recebe um número conhecido
+// e cria um board NOVO a cada submit — um board GitHub por reabertura do
+// wizard, acumulando duplicados na conta do cliente.
+function readKnownBoardNumber(
+  runtimeConfig: Prisma.JsonValue | null | undefined
+): number | undefined {
+  if (!runtimeConfig || typeof runtimeConfig !== 'object' || Array.isArray(runtimeConfig)) {
+    return undefined
+  }
+  const raw = (runtimeConfig as Record<string, unknown>)['githubBoardNumber']
+  return typeof raw === 'number' ? raw : undefined
+}
+
 export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
+  // Ambiente isolado do cliente: nasce no aceite dos termos, vive por todo o
+  // wizard (clone + credenciais dentro dele) e fixa no aceite final. O baseDir
+  // vem de env (infra), nunca hardcoded; o `path` é interno e NUNCA vai pro
+  // frontend.
+  const clientEnvironments = new ClientEnvironmentService(app.prisma)
+
   // GET /api/v1/github/repos - List user repositories using the encrypted
   // per-user GitHub connection (nunca do JWT da sessão — spec §17.4).
   app.get('/api/v1/github/repos', async (request: FastifyRequest, reply: FastifyReply) => {
@@ -67,6 +90,46 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
 
     return reply.send(mappedRepos)
   })
+
+  // POST /api/v1/setup/environment - Nasce o ambiente isolado provisório do
+  // cliente no aceite dos termos (passo 3). Idempotente: reabrir o wizard reusa
+  // o mesmo ambiente. Responde só id/status — o path interno nunca é exposto.
+  app.post(
+    '/api/v1/setup/environment',
+    { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      if (!request.user) {
+        return reply.code(401).send({ error: 'UNAUTHORIZED: session required' })
+      }
+      const env = await clientEnvironments.createProvisional(request.user.id)
+      return reply.send({ id: env.id, status: env.status })
+    }
+  )
+
+  // POST /api/v1/setup/clone - Clona os repos escolhidos DENTRO do ambiente do
+  // cliente (passo 4), usando o token do próprio cliente. Responde só a
+  // contagem — os caminhos internos em disco nunca vão pro frontend.
+  app.post(
+    '/api/v1/setup/clone',
+    { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      if (!request.user) {
+        return reply.code(401).send({ error: 'UNAUTHORIZED: session required' })
+      }
+      const { repos } = request.body as { repos?: string[] }
+      if (!repos || repos.length === 0) {
+        return reply.code(400).send({ error: 'At least one repository must be selected' })
+      }
+      // Token do PRÓPRIO cliente (repo privado). Ausente em composições sem o
+      // plugin de motores; clone anônimo cobre repo público.
+      const token = app.engineConnections
+        ? await app.engineConnections.getRawGithubToken(request.user.id)
+        : null
+      const env = await clientEnvironments.createProvisional(request.user.id)
+      const cloned = await clientEnvironments.cloneInto(env.id, repos, token ?? undefined)
+      return reply.send({ envId: env.id, count: cloned.length })
+    }
+  )
 
   // POST /api/v1/setup/submit - Submit final setup wizard data
   app.post(
@@ -169,6 +232,10 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
       )
 
       const createdProjects = []
+      // repoFullName -> Project criado/reusado nesta submissão. Alimenta a
+      // coleta de contexto abaixo: precisa do id (pra persistir o board) e do
+      // runtimeConfig (pra ler o board já conhecido de um submit anterior).
+      const projectsByRepo = new Map<string, { id: string; runtimeConfig: Prisma.JsonValue }>()
 
       // 2. Create Project records and API keys
       for (const repoFullName of repos) {
@@ -205,6 +272,7 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
             },
           })
         }
+        projectsByRepo.set(repoFullName, { id: project.id, runtimeConfig: project.runtimeConfig })
 
         // Projeto novo nasce agendado (senão o scheduler nunca o aciona).
         await ensureDefaultSchedules(app.prisma, project.id)
@@ -246,6 +314,61 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
             status: 'pending',
           },
         })
+      }
+
+      // Aceite final concluído: fixa o ambiente do cliente (provisional → fixed),
+      // tirando-o do alcance da faxina 24h — agora é um cliente de verdade.
+      await clientEnvironments.fix(user.id)
+
+      // Coleta de contexto → memória (F4.2.3): junta board + PRs + Issues de
+      // cada repo e grava no Cortex (ponte GitHub→memória). BEST-EFFORT — nunca
+      // derruba o aceite final: sem Cortex/token (ex.: teste de rota isolado) ou
+      // numa falha de API, o cliente fica fixado do mesmo jeito e só logamos.
+      // `collectAndRememberRepoContext` já não lança; o try/catch é o cinto de
+      // segurança para qualquer erro inesperado (nunca vira 500 pro cliente).
+      try {
+        const githubToken = app.engineConnections
+          ? await app.engineConnections.getRawGithubToken(owner?.id ?? user.id)
+          : null
+        if (app.cortex && githubToken) {
+          for (const repoFullName of repos) {
+            const project = projectsByRepo.get(repoFullName)
+            const boardNumber = readKnownBoardNumber(project?.runtimeConfig)
+            const result = await collectAndRememberRepoContext({
+              token: githubToken,
+              wingId: repoFullName,
+              cortex: app.cortex,
+              ...(boardNumber !== undefined ? { boardNumber } : {}),
+            })
+            if (!result.collected) {
+              app.log.warn(
+                `[setup] coleta de contexto pulada para ${repoFullName}: ${result.reason}`
+              )
+            } else if (result.boardCreated && result.boardNumber !== undefined && project) {
+              // Persiste o número do board recém-criado no Project: o PRÓXIMO
+              // submit (reabrir o wizard) lê `boardNumber` acima e REUSA em vez
+              // de criar um board GitHub novo — sem isto, cada submit acumula
+              // um board duplicado na conta/org do cliente.
+              const existingConfig =
+                project.runtimeConfig &&
+                typeof project.runtimeConfig === 'object' &&
+                !Array.isArray(project.runtimeConfig)
+                  ? (project.runtimeConfig as Prisma.JsonObject)
+                  : {}
+              await app.prisma.project.update({
+                where: { id: project.id },
+                data: {
+                  runtimeConfig: {
+                    ...existingConfig,
+                    githubBoardNumber: result.boardNumber,
+                  } as Prisma.JsonObject,
+                },
+              })
+            }
+          }
+        }
+      } catch (err) {
+        app.log.warn(err, '[setup] coleta de contexto falhou (aceite final não afetado)')
       }
 
       return reply.send({
