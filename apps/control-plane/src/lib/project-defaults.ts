@@ -4,7 +4,7 @@ import type { PrismaClient } from '@prisma/client'
 // nunca é acionado pelo scheduler dirigido a dados, então todo projeto criado
 // recebe estas entradas.
 export const DEFAULT_SCHEDULES: ReadonlyArray<{ agentRole: string; cron: string }> = [
-  { agentRole: 'ra', cron: '0 0 * * *' },
+  { agentRole: 'ra', cron: '0 6,18 * * *' },
   { agentRole: 'po', cron: '0 3,15 * * *' },
   { agentRole: 'sm', cron: '0 5,11,17,23 * * *' },
 ]
