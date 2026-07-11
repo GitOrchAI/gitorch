@@ -239,6 +239,22 @@ describe('login assistido (start / code / stream)', () => {
     expect(opts.makeHomeImpl!()).toBe(expectedHome)
   })
 
+  it('POST /login/start: o ambiente é chaveado por request.user.id (JWT) — MESMA base do ciclo em setup.ts — não pelo id do banco', async () => {
+    // Diverge o id do JWT (request.user.id) do id do banco (findUnique por
+    // email → 'user_1' no beforeEach): sem o alinhamento, o login criaria um
+    // ambiente sob o id do banco, separado do que os termos/clone/fix criam
+    // sob o id do JWT — e a faxina 24h apagaria o do login (com a credencial).
+    currentUser = { id: 'jwt-stale-id', wingId: 'octocat', email: 'octocat@example.test' }
+
+    const res = await app.inject({ method: 'POST', url: '/api/v1/engines/codex/login/start' })
+    expect(res.statusCode).toBe(202)
+
+    // createProvisional (→ findFirst) resolve o ambiente pelo id do JWT.
+    expect(app.prisma.clientEnvironment.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { userId: 'jwt-stale-id', status: 'provisional' } })
+    )
+  })
+
   it('POST /api/v1/engines/:runtime/login/start aceita o alias "claude-code" (mesmo vocabulário do paste-token)', async () => {
     const res = await app.inject({
       method: 'POST',

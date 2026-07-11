@@ -117,7 +117,9 @@ const enginesPluginImpl: FastifyPluginAsync<EnginesPluginOptions> = async (app, 
   // frontend abre o stream SSE logo em seguida com o loginId retornado.
   app.post('/api/v1/engines/:runtime/login/start', async (request, reply) => {
     const userId = await resolveUserId(app, request)
-    if (!userId) return reply.code(401).send({ error: 'UNAUTHORIZED: user session required' })
+    if (!userId || !request.user) {
+      return reply.code(401).send({ error: 'UNAUTHORIZED: user session required' })
+    }
     const runtime = resolveEngineId((request.params as { runtime: string }).runtime)
     if (!isDeviceRuntime(runtime)) {
       return reply
@@ -130,7 +132,17 @@ const enginesPluginImpl: FastifyPluginAsync<EnginesPluginOptions> = async (app, 
     // idempotente — no wizard reusa o ambiente nascido no aceite dos termos
     // (só um findFirst, sem recriar). `path` vazio (impossível na prática) cai
     // no fallback de HOME temporário do próprio serviço.
-    const env = await clientEnvironments.createProvisional(userId)
+    //
+    // O AMBIENTE é chaveado por `request.user.id` (o id do JWT) — a MESMA base
+    // que TODO o ciclo de vida do ambiente no setup.ts usa (aceite dos termos,
+    // clone, fix). O cofre de credenciais (captureFromHome/EngineConnection) é
+    // que é chaveado por `userId` (id do banco, resolvido por e-mail). Misturar
+    // as duas bases aqui criaria, quando o id do JWT diverge do id do banco
+    // (cenário que o setup.ts documenta e trata), um ambiente SEPARADO do que
+    // os termos criaram: o login gravaria a credencial num env que nunca é
+    // fixado e a faxina 24h o apagaria, enquanto o env fixado ficaria sem a
+    // credencial em disco. No caminho feliz os dois ids são iguais.
+    const env = await clientEnvironments.createProvisional(request.user.id)
     const loginId = assistedLogin.start(userId, runtime, env.path || undefined)
     return reply.code(202).send({ loginId })
   })
