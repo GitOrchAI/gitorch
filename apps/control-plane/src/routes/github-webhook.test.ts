@@ -39,6 +39,7 @@ describe('GitHub Webhook Routes', () => {
     app.prisma.webhookDelivery.create = vi.fn().mockResolvedValue({})
     app.prisma.webhookDelivery.updateMany = vi.fn().mockResolvedValue({})
     app.prisma.project.findFirst = vi.fn().mockResolvedValue({ id: 'proj_123', wingId: 'wing_123' })
+    app.prisma.project.update = vi.fn().mockResolvedValue({})
 
     // Test with matching signature based on mock secret 'test-secret'
     const payloadStr = JSON.stringify({ action: 'opened', repository: { id: 123 } })
@@ -64,6 +65,7 @@ describe('GitHub Webhook Routes', () => {
     app.prisma.webhookDelivery.create = vi.fn().mockResolvedValue({})
     app.prisma.webhookDelivery.updateMany = vi.fn().mockResolvedValue({})
     app.prisma.project.findFirst = vi.fn().mockResolvedValue({ id: 'proj_123', wingId: 'wing_123' })
+    app.prisma.project.update = vi.fn().mockResolvedValue({})
 
     const payloadStr = JSON.stringify({ action: 'opened', repository: { id: 123 } })
     const signature =
