@@ -74,6 +74,15 @@ class MockPrismaClient {
     upsert: vi.fn(),
     updateMany: vi.fn(),
   }
+  clientEnvironment = {
+    findFirst: vi.fn().mockResolvedValue(null),
+    findUnique: vi.fn().mockResolvedValue(null),
+    findMany: vi.fn().mockResolvedValue([]),
+    create: vi.fn().mockResolvedValue({ id: 'env_test', status: 'provisional', path: '' }),
+    update: vi.fn().mockResolvedValue({}),
+    updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+    delete: vi.fn().mockResolvedValue({}),
+  }
 }
 
 // Mesma forma de PrismaClientKnownRequestError (code/meta), só sem a

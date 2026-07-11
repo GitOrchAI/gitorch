@@ -7,6 +7,7 @@ import { decryptCredential, encryptCredential } from '../lib/credential-crypto.j
 import { archivePaths, readArchiveEntry, restoreDirectory } from '../lib/credential-archive.js'
 import { MODEL_DISCOVERERS } from './model-catalog.js'
 import { QUOTA_READERS } from './quota-reader.js'
+import { checkLiveness, type LivenessResult } from './engine-liveness.js'
 
 // Runtimes suportados e os CAMINHOS de credencial de cada um, relativos ao HOME.
 // Apenas os arquivos de token/config — NÃO o diretório inteiro (históricos e
@@ -42,8 +43,17 @@ export const ENGINE_CREDENTIAL_PATHS: Record<string, string[]> = (() => {
   }
 })()
 
+// Object.hasOwn (não `runtime in ENGINE_CREDENTIAL_PATHS`, não `!map[runtime]`):
+// ENGINE_CREDENTIAL_PATHS é um objeto-literal comum, que herda de
+// Object.prototype. `runtime` vem de input do cliente (params de rota) sem
+// tipo restrito — um valor como 'constructor'/'toString'/'hasOwnProperty'
+// resolveria para uma função HERDADA do protótipo (verdadeira em `in` e em
+// checagem de falsy), não para `undefined`, escapando do guard "não suportado"
+// e sendo usada como se fosse config/função real de motor mais adiante —
+// achado real do CodeQL (unvalidated dynamic method call), consertado em
+// TODOS os lookups deste arquivo, não só nos apontados pelo scanner.
 export function isSupportedRuntime(runtime: string): boolean {
-  return runtime in ENGINE_CREDENTIAL_PATHS
+  return Object.hasOwn(ENGINE_CREDENTIAL_PATHS, runtime)
 }
 
 // Alias de nome comercial -> id de runtime real: o wizard/frontend usa
@@ -68,10 +78,22 @@ export interface ConnectionStatus {
   modelsRefreshedAt: Date | null
   lastValidatedAt: Date | null
   lastError: string | null
+  models: string[]
+  quotaRemaining: number | null
+  quotaTotal: number | null
 }
 
+type LivenessChecker = (runtime: string, homeDir: string) => Promise<LivenessResult>
+
 export class EngineConnectionService {
-  constructor(private readonly prisma: PrismaLike) {}
+  private readonly liveness: LivenessChecker
+
+  constructor(
+    private readonly prisma: PrismaLike,
+    livenessImpl: LivenessChecker = (runtime, homeDir) => checkLiveness(runtime, homeDir)
+  ) {
+    this.liveness = livenessImpl
+  }
 
   /**
    * Cria um HOME temporário 0700 (com `subdir` já criado dentro dele),
@@ -107,7 +129,9 @@ export class EngineConnectionService {
     homeDir: string,
     extra?: { credentialKind?: 'file' | 'env'; envVarName?: string; expiresAt?: Date }
   ): Promise<ConnectionStatus> {
-    const relPaths = ENGINE_CREDENTIAL_PATHS[runtime]
+    const relPaths = Object.hasOwn(ENGINE_CREDENTIAL_PATHS, runtime)
+      ? ENGINE_CREDENTIAL_PATHS[runtime]
+      : undefined
     if (!relPaths) throw new Error(`Runtime não suportado: ${runtime}`)
 
     const blob = await archivePaths(homeDir, relPaths)
@@ -124,23 +148,18 @@ export class EngineConnectionService {
       ...(extra?.envVarName ? { envVarName: extra.envVarName } : {}),
       ...(extra?.expiresAt ? { expiresAt: extra.expiresAt } : {}),
     }
+
+    // Validação viva (anti-fachada): prova que o motor está autenticado rodando
+    // um comando real ANTES de marcar 'connected'. github NÃO é motor — não tem
+    // liveness, então mantém o comportamento anterior. A credencial acabou de
+    // ser arquivada do homeDir e ainda está lá; validamos no mesmo lugar.
+    const liveness = runtime === 'github' ? null : await this.liveness(runtime, homeDir)
+    const statusFields = buildStatusFields(liveness, now)
+
     const record = await this.prisma.engineConnection.upsert({
       where: { userId_runtime: { userId, runtime } },
-      update: {
-        encryptedCredential,
-        status: 'connected',
-        lastValidatedAt: now,
-        lastError: null,
-        ...extraFields,
-      },
-      create: {
-        userId,
-        runtime,
-        encryptedCredential,
-        status: 'connected',
-        lastValidatedAt: now,
-        ...extraFields,
-      },
+      update: { encryptedCredential, ...statusFields, ...extraFields },
+      create: { userId, runtime, encryptedCredential, ...statusFields, ...extraFields },
     })
     return toStatus(record)
   }
@@ -213,7 +232,9 @@ export class EngineConnectionService {
     runtime: string,
     content: string
   ): Promise<ConnectionStatus> {
-    const relPaths = ENGINE_CREDENTIAL_PATHS[runtime]
+    const relPaths = Object.hasOwn(ENGINE_CREDENTIAL_PATHS, runtime)
+      ? ENGINE_CREDENTIAL_PATHS[runtime]
+      : undefined
     if (!relPaths) throw new Error(`Runtime não suportado: ${runtime}`)
     if (!content.trim()) throw new Error(`credencial de ${runtime} vazia`)
 
@@ -246,7 +267,7 @@ export class EngineConnectionService {
       where: { userId_runtime: { userId, runtime } },
     })
     if (!record?.encryptedCredential || record.status !== 'connected') return false
-    if (!ENGINE_CREDENTIAL_PATHS[runtime]) return false
+    if (!Object.hasOwn(ENGINE_CREDENTIAL_PATHS, runtime)) return false
     // expiresAt existe desde 151b471 mas nada nunca checava — uma missão
     // continuava materializando um token vencido silenciosamente até o CLI
     // falhar a autenticação lá dentro, em vez do control plane detectar aqui.
@@ -285,7 +306,9 @@ export class EngineConnectionService {
    * Retorna a lista descoberta (vazia se não há descoberta para o runtime).
    */
   async refreshModels(userId: string, runtime: string): Promise<string[]> {
-    const discover = MODEL_DISCOVERERS[runtime]
+    const discover = Object.hasOwn(MODEL_DISCOVERERS, runtime)
+      ? MODEL_DISCOVERERS[runtime]
+      : undefined
     if (!discover) return []
 
     return this.withTempHome('models', '.', async (home) => {
@@ -304,7 +327,7 @@ export class EngineConnectionService {
         }
         // Junto com os modelos, lê a quota restante do provider (best-effort): o
         // spend-guard usa isso para não estourar a conta do cliente (BYOK).
-        const readQuota = QUOTA_READERS[runtime]
+        const readQuota = Object.hasOwn(QUOTA_READERS, runtime) ? QUOTA_READERS[runtime] : undefined
         const quota = readQuota
           ? await readQuota(home).catch(() => ({ remaining: null, total: null }))
           : { remaining: null, total: null }
@@ -342,6 +365,9 @@ function toStatus(record: {
   modelsRefreshedAt: Date | null
   lastValidatedAt: Date | null
   lastError: string | null
+  models?: unknown
+  quotaRemaining?: number | null
+  quotaTotal?: number | null
 }): ConnectionStatus {
   return {
     runtime: record.runtime,
@@ -349,5 +375,37 @@ function toStatus(record: {
     modelsRefreshedAt: record.modelsRefreshedAt,
     lastValidatedAt: record.lastValidatedAt,
     lastError: record.lastError,
+    models: Array.isArray(record.models) ? (record.models as string[]) : [],
+    quotaRemaining: record.quotaRemaining ?? null,
+    quotaTotal: record.quotaTotal ?? null,
+  }
+}
+
+/**
+ * Traduz o resultado da validação viva nos campos de status/models/quota do
+ * upsert. Sem liveness (github ou runtime sem comando) preserva o comportamento
+ * anterior ('connected'). Vivo grava models+quota no mesmo passo. Não-vivo marca
+ * 'error' com o motivo real e NÃO atualiza lastValidatedAt (não mente validação),
+ * mantendo a credencial cifrada guardada para reconectar sem recolar.
+ */
+function buildStatusFields(liveness: LivenessResult | null, now: Date): Record<string, unknown> {
+  if (liveness === null) {
+    return { status: 'connected', lastValidatedAt: now, lastError: null }
+  }
+  if (liveness.alive) {
+    return {
+      status: 'connected',
+      lastValidatedAt: now,
+      lastError: null,
+      models: liveness.models,
+      modelsRefreshedAt: now,
+      quotaRemaining: liveness.quota.remaining,
+      quotaTotal: liveness.quota.total,
+      quotaRefreshedAt: now,
+    }
+  }
+  return {
+    status: 'error',
+    lastError: liveness.error ?? 'motor não respondeu à validação viva',
   }
 }

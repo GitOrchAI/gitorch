@@ -23,6 +23,9 @@ export interface FreeDiagnosisDeps {
   workspaceProvider?: WorkspaceProviderLike
   diagnose?: (workspacePath: string) => Promise<StructuralDiagnosis | undefined>
   fetchSignals?: (repoFullName: string, token: string) => Promise<GithubSignals>
+  // Clone já existente (do ambiente do cliente, passo 4) a reaproveitar em vez
+  // de clonar de novo. Ausente = clona o próprio diag-<repo> (teaser puro).
+  existingWorkspacePath?: string
 }
 
 export interface ProcessDiagnosisArgs {
@@ -65,10 +68,14 @@ export async function processDiagnosisJob(
 
   try {
     await setProgress('cloning')
-    const ws = await provider.allocateWorkspace(args.userId, repoWorkspaceSlug(args.repoFullName), {
-      repository: args.repoFullName,
-      token: args.githubToken,
-    })
+    // Reaproveita o clone do ambiente (passo 4) se já existe — não clona 2x.
+    // Sem ambiente (teaser puro), clona o próprio diag-<repo> como antes.
+    const ws = deps.existingWorkspacePath
+      ? { path: deps.existingWorkspacePath }
+      : await provider.allocateWorkspace(args.userId, repoWorkspaceSlug(args.repoFullName), {
+          repository: args.repoFullName,
+          token: args.githubToken,
+        })
 
     await setProgress('indexing')
     const structural = await diagnose(ws.path)

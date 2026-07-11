@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { ChevronRight } from 'lucide-react'
 import { useLanguage } from '../../LanguageContext'
+import { API_BASE_URL } from '../../lib/api'
 
 interface StepTermsProps {
   onAccept: () => void
@@ -9,6 +10,28 @@ interface StepTermsProps {
 export default function StepTerms({ onAccept }: StepTermsProps) {
   const { t } = useLanguage()
   const [accepted, setAccepted] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // Aceitar os termos é o gatilho que faz o ambiente isolado do cliente NASCER
+  // no backend (passo 3 do ciclo de vida). Só avança quando o ambiente foi
+  // criado; se falhar, mantém a pessoa no passo com um aviso, sem seguir.
+  const handleAccept = async () => {
+    if (!accepted || loading) return
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/v1/setup/environment`, {
+        method: 'POST',
+        credentials: 'include',
+      })
+      if (!res.ok) throw new Error(String(res.status))
+      onAccept()
+    } catch {
+      setError(t('setup.termsEnvError'))
+      setLoading(false)
+    }
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -52,10 +75,21 @@ export default function StepTerms({ onAccept }: StepTermsProps) {
         <span style={{ fontSize: '0.9rem', color: 'var(--gl-ink)' }}>{t('setup.termsAccept')}</span>
       </label>
 
+      {error && (
+        <p className="mt-3" style={{ fontSize: '0.85rem', color: 'var(--gl-danger, #d33)' }}>
+          {error}
+        </p>
+      )}
+
       <div className="wz-actions">
         <span />
-        <button onClick={onAccept} disabled={!accepted} className="wz-btn wz-btn-primary">
-          {t('setup.termsAcceptBtn')} <ChevronRight size={18} />
+        <button
+          onClick={handleAccept}
+          disabled={!accepted || loading}
+          className="wz-btn wz-btn-primary"
+        >
+          {loading ? t('setup.termsAccepting') : t('setup.termsAcceptBtn')}{' '}
+          <ChevronRight size={18} />
         </button>
       </div>
     </div>

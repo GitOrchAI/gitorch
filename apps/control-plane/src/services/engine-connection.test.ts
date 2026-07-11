@@ -3,7 +3,7 @@ import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { randomBytes } from 'node:crypto'
-import { EngineConnectionService } from './engine-connection.js'
+import { EngineConnectionService, isSupportedRuntime } from './engine-connection.js'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function fakePrisma() {
@@ -43,6 +43,15 @@ function fakePrisma() {
   }
 }
 
+// Liveness fake: reporta o motor vivo. Os testes de captura validam o
+// ARMAZENAMENTO da credencial, não a validação viva (coberta em
+// engine-liveness.test.ts). Sem isto, o liveness real rodaria o CLI do motor.
+const aliveLiveness = async () => ({
+  alive: true as const,
+  models: [] as string[],
+  quota: { remaining: null as number | null, total: null as number | null },
+})
+
 describe('EngineConnectionService', () => {
   const originalKey = process.env['GITORCH_CREDENTIAL_KEY']
   beforeEach(() => {
@@ -55,8 +64,11 @@ describe('EngineConnectionService', () => {
 
   test('captura de um HOME, cifra e restaura em outro HOME (round-trip do cliente)', async () => {
     const prisma = fakePrisma()
+    // Este teste valida ARMAZENAMENTO da credencial, não liveness — aliveLiveness
+    // evita rodar o CLI real do codex (ausente no runner de CI; presente só
+    // nesta VM de dev, onde o teste passaria por acaso e mascararia o problema).
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const svc = new EngineConnectionService(prisma as any)
+    const svc = new EngineConnectionService(prisma as any, aliveLiveness)
 
     const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-home-'))
     await fs.mkdir(path.join(home, '.codex'), { recursive: true })
@@ -86,7 +98,7 @@ describe('EngineConnectionService', () => {
   test('materialize retorna false sem conexão e após revoke', async () => {
     const prisma = fakePrisma()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const svc = new EngineConnectionService(prisma as any)
+    const svc = new EngineConnectionService(prisma as any, aliveLiveness)
     const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-home2-'))
 
     expect(await svc.materializeToHome('user_x', 'codex', home)).toBe(false)
@@ -166,8 +178,10 @@ describe('EngineConnectionService', () => {
 
   test('connectRawToken (claude setup-token) materializa como env var, não como arquivo de config', async () => {
     const prisma = fakePrisma()
+    // Mesmo motivo do teste de captura acima: valida armazenamento, não
+    // liveness — sem o fake, rodaria `claude auth status` de verdade.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const svc = new EngineConnectionService(prisma as any)
+    const svc = new EngineConnectionService(prisma as any, aliveLiveness)
 
     const status = await svc.connectRawToken('user_claude', 'claude', 'sk-ant-oat01-FAKE', {
       envVarName: 'CLAUDE_CODE_OAUTH_TOKEN',
@@ -193,8 +207,12 @@ describe('EngineConnectionService', () => {
 
   test('materializeToHome trata uma conexão com expiresAt no passado como desconectada', async () => {
     const prisma = fakePrisma()
+    // aliveLiveness garante que o status vira 'connected' na captura — sem
+    // isto, num ambiente sem o CLI do claude, o status já cairia em 'error'
+    // por liveness (não pela expiração), e o teste passaria pelo motivo
+    // ERRADO (mascarando a checagem real de expiresAt).
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const svc = new EngineConnectionService(prisma as any)
+    const svc = new EngineConnectionService(prisma as any, aliveLiveness)
 
     await svc.connectRawToken('user_expired', 'claude', 'sk-ant-oat01-FAKE', {
       envVarName: 'CLAUDE_CODE_OAUTH_TOKEN',
@@ -233,7 +251,7 @@ describe('EngineConnectionService', () => {
   test('connectFileCredential grava o conteúdo colado no caminho primário do runtime (codex auth.json)', async () => {
     const prisma = fakePrisma()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const svc = new EngineConnectionService(prisma as any)
+    const svc = new EngineConnectionService(prisma as any, aliveLiveness)
 
     const authJson = JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: 'FAKE' } })
     const status = await svc.connectFileCredential('user_codex', 'codex', authJson)
@@ -246,10 +264,51 @@ describe('EngineConnectionService', () => {
     await fs.rm(home, { recursive: true, force: true })
   })
 
+  test('captureFromHome marca "error" (não connected) quando o motor não responde à validação viva', async () => {
+    const prisma = fakePrisma()
+    const deadLiveness = async () => ({
+      alive: false as const,
+      models: [] as string[],
+      quota: { remaining: null as number | null, total: null as number | null },
+      error: 'Not logged in',
+    })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any, deadLiveness)
+
+    const status = await svc.connectFileCredential(
+      'user_dead',
+      'codex',
+      JSON.stringify({ tokens: {} })
+    )
+    expect(status.status).toBe('error')
+    expect(status.lastError).toContain('Not logged in')
+    // a credencial FICA guardada (cifrada) pra reconectar sem recolar
+    expect(prisma.store.get('user_dead:codex')?.['encryptedCredential']).toBeTruthy()
+  })
+
+  test('github NÃO passa por validação viva (não é motor) — conecta direto', async () => {
+    const prisma = fakePrisma()
+    let livenessCalled = false
+    const spyLiveness = async () => {
+      livenessCalled = true
+      return {
+        alive: false as const,
+        models: [] as string[],
+        quota: { remaining: null as number | null, total: null as number | null },
+      }
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any, spyLiveness)
+
+    const status = await svc.connectGitHubToken('user_gh', 'ghp_faketoken')
+    expect(status.status).toBe('connected')
+    expect(livenessCalled).toBe(false)
+  })
+
   test('connectFileCredential grava o token do antigravity no caminho primário', async () => {
     const prisma = fakePrisma()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const svc = new EngineConnectionService(prisma as any)
+    const svc = new EngineConnectionService(prisma as any, aliveLiveness)
 
     const status = await svc.connectFileCredential('user_ag', 'antigravity', 'oauth-token-fake')
     expect(status.status).toBe('connected')
@@ -289,5 +348,32 @@ describe('EngineConnectionService', () => {
     await expect(svc.connectFileCredential('u', 'inexistente', 'x')).rejects.toThrow(
       'não suportado'
     )
+  })
+
+  // Achado real do CodeQL (unvalidated dynamic method call): ENGINE_CREDENTIAL_PATHS
+  // e MODEL_DISCOVERERS/QUOTA_READERS são objetos-literais, que herdam de
+  // Object.prototype. Um `runtime` como 'constructor' (input de cliente, vindo
+  // de params de rota sem tipo restrito) resolve para uma função HERDADA do
+  // protótipo — verdadeira em `in`/checagem de falsy — escapando do guard "não
+  // suportado" e sendo tratada como config/função real de motor mais adiante.
+  // Object.hasOwn fecha essa classe inteira de bypass.
+  test('runtime = "constructor" (ou outra propriedade herdada de Object.prototype) é rejeitado como não suportado, não escapa via prototype pollution', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+
+    expect(isSupportedRuntime('constructor')).toBe(false)
+    expect(isSupportedRuntime('toString')).toBe(false)
+    expect(isSupportedRuntime('hasOwnProperty')).toBe(false)
+
+    await expect(svc.connectFileCredential('u', 'constructor', 'x')).rejects.toThrow(
+      'não suportado'
+    )
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-proto-'))
+    await expect(svc.captureFromHome('u', 'constructor', home)).rejects.toThrow('não suportado')
+    expect(await svc.materializeToHome('u', 'constructor', home)).toBe(false)
+    expect(await svc.refreshModels('u', 'constructor')).toEqual([])
+
+    await fs.rm(home, { recursive: true, force: true })
   })
 })

@@ -32,6 +32,7 @@ import {
 } from '@gitorch/workspace-engine'
 import { createSshCommandRunner } from '@gitorch/agents'
 import { buildMissionEnricher, persistMissionMemory } from '../services/mission-context.js'
+import { ClientEnvironmentService } from '../services/environment.js'
 import { runPoMissionViaRails } from '../services/po-rails-mission.js'
 import { runRaMissionViaRails } from '../services/ra-rails-mission.js'
 import { runQaMissionViaRails } from '../services/qa-rails-mission.js'
@@ -1035,8 +1036,26 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // ticks de dispararem a mesma janela; quando o disparo é recusado por um
   // motivo temporário (missão em andamento, orçamento), o claim é revertido
   // para a janela não se perder.
+  // Faxina do ciclo de vida do ambiente: destrói ambientes provisórios (não
+  // fixados) com mais de 24h — abandonados no wizard, guardam credencial + OAuth
+  // do cliente e não podem ficar largados (requisito de segurança). TTL por env.
+  const ENV_TTL_MS = Number(process.env['GITORCH_ENV_TTL_MS'] ?? String(24 * 60 * 60 * 1000))
+  const clientEnvironments = new ClientEnvironmentService(app.prisma)
+  const sweepExpiredEnvironments = async (): Promise<void> => {
+    try {
+      const expired = await clientEnvironments.listExpired(ENV_TTL_MS)
+      for (const env of expired) {
+        await clientEnvironments.destroy(env.id)
+        app.log.info(`[Scheduler] ambiente provisório expirado destruído: ${env.id}`)
+      }
+    } catch (err) {
+      app.log.error(err, '[Scheduler] faxina de ambientes falhou; tenta no próximo tick')
+    }
+  }
+
   const tick = async () => {
     await processSetupMissions()
+    await sweepExpiredEnvironments()
     const now = new Date()
     let schedules
     try {

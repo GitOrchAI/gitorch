@@ -80,6 +80,17 @@ export interface AddSubIssueInput {
   subIssueId: string
 }
 
+export interface CreateProjectV2Input {
+  /** Node id do dono (user ou organization) de onde o board pendura. */
+  ownerId: string
+  title: string
+}
+
+export interface CreatedProjectV2 {
+  id: string
+  number: number
+}
+
 export class ProjectV2Client {
   private readonly token: string
   private readonly request: GraphQLTransport
@@ -201,10 +212,12 @@ export class ProjectV2Client {
     return unwrap(response).createProjectV2StatusUpdate.statusUpdate.id
   }
 
-  // Resolve o node id de um Project v2 a partir do login do dono + número. O PO
-  // precisa disto para operar o board; user e organization têm consultas
+  // Resolve o node id de um Project v2 a partir do login do dono + número, ou
+  // null se o board não existe. É o resolver que NÃO quebra quando ausente: a
+  // coleta de contexto (F4.2) o usa para decidir CRIAR o board (createProjectV2)
+  // em vez de tratar "não existe" como erro. user e organization têm consultas
   // distintas (a org é o destino final; a conta pessoal é a origem dos forks).
-  async getProjectId(input: GetProjectIdInput): Promise<string> {
+  async findProjectId(input: GetProjectIdInput): Promise<string | null> {
     const owner = input.ownerType === 'organization' ? 'organization' : 'user'
     const response = await this.request<
       Record<string, { projectV2: { id: string } | null } | null>
@@ -222,12 +235,44 @@ export class ProjectV2Client {
       this.token
     )
 
-    const data = unwrap(response)
-    const project = data[owner]?.projectV2
-    if (!project) {
+    return unwrap(response)[owner]?.projectV2?.id ?? null
+  }
+
+  // Igual ao findProjectId, mas LANÇA quando o board não existe: os fluxos do PO
+  // e do SM operam um board que TEM que existir, então "não encontrado" ali é
+  // um erro de verdade (não um sinal para criar). Contrato estrito de sempre —
+  // só passou a delegar a consulta ao findProjectId (uma fonte só).
+  async getProjectId(input: GetProjectIdInput): Promise<string> {
+    const id = await this.findProjectId(input)
+    if (id === null) {
+      const owner = input.ownerType === 'organization' ? 'organization' : 'user'
       throw new Error(`Project v2 #${input.number} not found for ${owner} "${input.login}".`)
     }
-    return project.id
+    return id
+  }
+
+  // Cria um Project v2 (board) pendurado no dono (user/org) e devolve seu id +
+  // número. É o "não cria" que faltava: a coleta de contexto cria o board na
+  // primeira vez (quando findProjectId volta null) para então ler/gravar nele.
+  async createProjectV2(input: CreateProjectV2Input): Promise<CreatedProjectV2> {
+    const response = await this.request<{
+      createProjectV2: { projectV2: { id: string; number: number } }
+    }>(
+      {
+        query: `
+          mutation CreateProjectV2($ownerId: ID!, $title: String!) {
+            createProjectV2(input: { ownerId: $ownerId, title: $title }) {
+              projectV2 { id number }
+            }
+          }
+        `,
+        variables: { ...input },
+      },
+      this.token
+    )
+
+    const project = unwrap(response).createProjectV2.projectV2
+    return { id: project.id, number: project.number }
   }
 
   // Lê o campo de iteração (Sprint) pelo nome e devolve suas iterations. O SM usa
