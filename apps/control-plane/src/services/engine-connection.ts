@@ -7,6 +7,7 @@ import { decryptCredential, encryptCredential } from '../lib/credential-crypto.j
 import { archivePaths, readArchiveEntry, restoreDirectory } from '../lib/credential-archive.js'
 import { MODEL_DISCOVERERS } from './model-catalog.js'
 import { QUOTA_READERS } from './quota-reader.js'
+import { checkLiveness, type LivenessResult } from './engine-liveness.js'
 
 // Runtimes suportados e os CAMINHOS de credencial de cada um, relativos ao HOME.
 // Apenas os arquivos de token/config — NÃO o diretório inteiro (históricos e
@@ -68,10 +69,22 @@ export interface ConnectionStatus {
   modelsRefreshedAt: Date | null
   lastValidatedAt: Date | null
   lastError: string | null
+  models: string[]
+  quotaRemaining: number | null
+  quotaTotal: number | null
 }
 
+type LivenessChecker = (runtime: string, homeDir: string) => Promise<LivenessResult>
+
 export class EngineConnectionService {
-  constructor(private readonly prisma: PrismaLike) {}
+  private readonly liveness: LivenessChecker
+
+  constructor(
+    private readonly prisma: PrismaLike,
+    livenessImpl: LivenessChecker = (runtime, homeDir) => checkLiveness(runtime, homeDir)
+  ) {
+    this.liveness = livenessImpl
+  }
 
   /**
    * Cria um HOME temporário 0700 (com `subdir` já criado dentro dele),
@@ -124,23 +137,18 @@ export class EngineConnectionService {
       ...(extra?.envVarName ? { envVarName: extra.envVarName } : {}),
       ...(extra?.expiresAt ? { expiresAt: extra.expiresAt } : {}),
     }
+
+    // Validação viva (anti-fachada): prova que o motor está autenticado rodando
+    // um comando real ANTES de marcar 'connected'. github NÃO é motor — não tem
+    // liveness, então mantém o comportamento anterior. A credencial acabou de
+    // ser arquivada do homeDir e ainda está lá; validamos no mesmo lugar.
+    const liveness = runtime === 'github' ? null : await this.liveness(runtime, homeDir)
+    const statusFields = buildStatusFields(liveness, now)
+
     const record = await this.prisma.engineConnection.upsert({
       where: { userId_runtime: { userId, runtime } },
-      update: {
-        encryptedCredential,
-        status: 'connected',
-        lastValidatedAt: now,
-        lastError: null,
-        ...extraFields,
-      },
-      create: {
-        userId,
-        runtime,
-        encryptedCredential,
-        status: 'connected',
-        lastValidatedAt: now,
-        ...extraFields,
-      },
+      update: { encryptedCredential, ...statusFields, ...extraFields },
+      create: { userId, runtime, encryptedCredential, ...statusFields, ...extraFields },
     })
     return toStatus(record)
   }
@@ -342,6 +350,9 @@ function toStatus(record: {
   modelsRefreshedAt: Date | null
   lastValidatedAt: Date | null
   lastError: string | null
+  models?: unknown
+  quotaRemaining?: number | null
+  quotaTotal?: number | null
 }): ConnectionStatus {
   return {
     runtime: record.runtime,
@@ -349,5 +360,37 @@ function toStatus(record: {
     modelsRefreshedAt: record.modelsRefreshedAt,
     lastValidatedAt: record.lastValidatedAt,
     lastError: record.lastError,
+    models: Array.isArray(record.models) ? (record.models as string[]) : [],
+    quotaRemaining: record.quotaRemaining ?? null,
+    quotaTotal: record.quotaTotal ?? null,
+  }
+}
+
+/**
+ * Traduz o resultado da validação viva nos campos de status/models/quota do
+ * upsert. Sem liveness (github ou runtime sem comando) preserva o comportamento
+ * anterior ('connected'). Vivo grava models+quota no mesmo passo. Não-vivo marca
+ * 'error' com o motivo real e NÃO atualiza lastValidatedAt (não mente validação),
+ * mantendo a credencial cifrada guardada para reconectar sem recolar.
+ */
+function buildStatusFields(liveness: LivenessResult | null, now: Date): Record<string, unknown> {
+  if (liveness === null) {
+    return { status: 'connected', lastValidatedAt: now, lastError: null }
+  }
+  if (liveness.alive) {
+    return {
+      status: 'connected',
+      lastValidatedAt: now,
+      lastError: null,
+      models: liveness.models,
+      modelsRefreshedAt: now,
+      quotaRemaining: liveness.quota.remaining,
+      quotaTotal: liveness.quota.total,
+      quotaRefreshedAt: now,
+    }
+  }
+  return {
+    status: 'error',
+    lastError: liveness.error ?? 'motor não respondeu à validação viva',
   }
 }

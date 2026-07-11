@@ -43,6 +43,15 @@ function fakePrisma() {
   }
 }
 
+// Liveness fake: reporta o motor vivo. Os testes de captura validam o
+// ARMAZENAMENTO da credencial, não a validação viva (coberta em
+// engine-liveness.test.ts). Sem isto, o liveness real rodaria o CLI do motor.
+const aliveLiveness = async () => ({
+  alive: true as const,
+  models: [] as string[],
+  quota: { remaining: null as number | null, total: null as number | null },
+})
+
 describe('EngineConnectionService', () => {
   const originalKey = process.env['GITORCH_CREDENTIAL_KEY']
   beforeEach(() => {
@@ -233,7 +242,7 @@ describe('EngineConnectionService', () => {
   test('connectFileCredential grava o conteúdo colado no caminho primário do runtime (codex auth.json)', async () => {
     const prisma = fakePrisma()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const svc = new EngineConnectionService(prisma as any)
+    const svc = new EngineConnectionService(prisma as any, aliveLiveness)
 
     const authJson = JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: 'FAKE' } })
     const status = await svc.connectFileCredential('user_codex', 'codex', authJson)
@@ -246,10 +255,51 @@ describe('EngineConnectionService', () => {
     await fs.rm(home, { recursive: true, force: true })
   })
 
+  test('captureFromHome marca "error" (não connected) quando o motor não responde à validação viva', async () => {
+    const prisma = fakePrisma()
+    const deadLiveness = async () => ({
+      alive: false as const,
+      models: [] as string[],
+      quota: { remaining: null as number | null, total: null as number | null },
+      error: 'Not logged in',
+    })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any, deadLiveness)
+
+    const status = await svc.connectFileCredential(
+      'user_dead',
+      'codex',
+      JSON.stringify({ tokens: {} })
+    )
+    expect(status.status).toBe('error')
+    expect(status.lastError).toContain('Not logged in')
+    // a credencial FICA guardada (cifrada) pra reconectar sem recolar
+    expect(prisma.store.get('user_dead:codex')?.['encryptedCredential']).toBeTruthy()
+  })
+
+  test('github NÃO passa por validação viva (não é motor) — conecta direto', async () => {
+    const prisma = fakePrisma()
+    let livenessCalled = false
+    const spyLiveness = async () => {
+      livenessCalled = true
+      return {
+        alive: false as const,
+        models: [] as string[],
+        quota: { remaining: null as number | null, total: null as number | null },
+      }
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any, spyLiveness)
+
+    const status = await svc.connectGitHubToken('user_gh', 'ghp_faketoken')
+    expect(status.status).toBe('connected')
+    expect(livenessCalled).toBe(false)
+  })
+
   test('connectFileCredential grava o token do antigravity no caminho primário', async () => {
     const prisma = fakePrisma()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const svc = new EngineConnectionService(prisma as any)
+    const svc = new EngineConnectionService(prisma as any, aliveLiveness)
 
     const status = await svc.connectFileCredential('user_ag', 'antigravity', 'oauth-token-fake')
     expect(status.status).toBe('connected')
