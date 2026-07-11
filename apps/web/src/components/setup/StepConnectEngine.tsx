@@ -137,12 +137,20 @@ export default function StepConnectEngine({
     const loginId = loginIds.current[id]
     const code = (pastedCode[id] ?? '').trim()
     if (!loginId || !code) return
-    await fetch(`${apiBaseUrl}/api/v1/engines/login/${loginId}/code`, {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code }),
-    }).catch(() => undefined)
+    // Falha aqui (rede/500) TEM que virar estado de erro visível: engolir a
+    // falha deixava a pessoa presa em "aguardando aprovação" pra sempre, sem
+    // saber que o código nunca chegou. O bloco de erro já oferece o retry.
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/v1/engines/login/${loginId}/code`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code }),
+      })
+      if (!res.ok) throw new Error(String(res.status))
+    } catch {
+      setStates((s) => ({ ...s, [id]: { phase: 'error', message: t('setup.connectError') } }))
+    }
   }
 
   const anyConnected = cards.some((c) => states[c.id]?.phase === 'connected')

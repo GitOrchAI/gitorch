@@ -66,6 +66,21 @@ export class ClientEnvironmentService {
       where: { id: created.id },
       data: { path: dir },
     })
+
+    // Corrida (dois aceites simultâneos): o canônico é sempre o MAIS RECENTE —
+    // o mesmo critério do findFirst desc usado em todo o serviço, então clone
+    // e login convergem pro mesmo ambiente. Se este create perdeu a corrida
+    // (existe um mais novo), destrói o próprio e devolve o vencedor; um
+    // perdedor que escapar desta janela continua 'provisional' e a faxina 24h
+    // o destrói. O dedup definitivo acontece no fix() antes de fixar.
+    const winner = await this.prisma.clientEnvironment.findFirst({
+      where: { userId, status: 'provisional' },
+      orderBy: { createdAt: 'desc' },
+    })
+    if (winner && winner.id !== updated.id) {
+      await this.destroy(updated.id)
+      return winner as ClientEnvironmentRecord
+    }
     return updated as ClientEnvironmentRecord
   }
 
@@ -83,10 +98,17 @@ export class ClientEnvironmentService {
   ): Promise<Array<{ repo: string; path: string }>> {
     const cloned: Array<{ repo: string; path: string }> = []
     for (const repo of repos) {
+      // O provider valida o projectId com /^[a-zA-Z0-9_][a-zA-Z0-9_-]*$/ —
+      // que REJEITA a barra de "owner/repo". Passar o repo cru quebrava o
+      // clone para QUALQUER repositório real (500 no /setup/clone), e os
+      // testes não pegavam porque mockavam o provider. O slug sanitizado é o
+      // MESMO esquema do repoPathInEnv (owner_repo) — os dois têm que andar
+      // juntos, senão o diagnóstico não reencontra o clone.
+      const slug = repo.replace(/[^a-zA-Z0-9_-]/g, '_')
       // exactOptionalPropertyTypes: só inclui `token` quando existe (nunca
       // passa `undefined` explícito ao provider).
       const options = token !== undefined ? { repository: repo, token } : { repository: repo }
-      const ws = await this.provider.allocateWorkspace(envId, repo, options)
+      const ws = await this.provider.allocateWorkspace(envId, slug, options)
       cloned.push({ repo, path: ws.path })
     }
     return cloned
@@ -157,9 +179,15 @@ export class ClientEnvironmentService {
   async destroy(envId: string): Promise<void> {
     const env = await this.prisma.clientEnvironment.findUnique({ where: { id: envId } })
     if (env?.path) {
+      // Contenção pelo idioma canônico de path.relative (mesma razão do
+      // repoPathInEnv: é o que o CodeQL reconhece como sanitizador). Só apaga
+      // ESTRITAMENTE DENTRO da raiz de ambientes: rel === '' (o próprio
+      // baseDir — apagaria os ambientes de TODOS os clientes de uma vez),
+      // '..' (fora) e absoluto (outro volume) são todos barrados.
       const resolved = path.resolve(env.path)
       const root = path.resolve(this.baseDir)
-      if (resolved === root || resolved.startsWith(root + path.sep)) {
+      const rel = path.relative(root, resolved)
+      if (rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)) {
         await fs.rm(resolved, { recursive: true, force: true }).catch(() => undefined)
       }
     }
@@ -172,6 +200,19 @@ export class ClientEnvironmentService {
    * Idempotente: updateMany não falha se não houver provisional.
    */
   async fix(userId: string): Promise<void> {
+    // Dedup ANTES de fixar: se uma corrida deixou >1 provisional, fixar todos
+    // tornaria o duplicado (vazio, com credencial em disco) permanente e fora
+    // do alcance da faxina 24h — lixo com segredo pra sempre. Mantém só o mais
+    // recente (o canônico do findFirst desc, onde clone e login aconteceram) e
+    // destrói os demais (dir + registro).
+    const provisionals = await this.prisma.clientEnvironment.findMany({
+      where: { userId, status: 'provisional' },
+      orderBy: { createdAt: 'desc' },
+    })
+    for (const dupe of provisionals.slice(1)) {
+      await this.destroy(dupe.id)
+    }
+
     await this.prisma.clientEnvironment.updateMany({
       where: { userId, status: 'provisional' },
       data: { status: 'fixed', fixedAt: new Date() },

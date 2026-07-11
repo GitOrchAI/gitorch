@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { ClientEnvironmentService } from './environment.js'
+import { LocalWorkspaceProvider } from '@gitorch/workspace-engine'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // Fake do Prisma para a tabela client_environments: store em memória com os
@@ -33,13 +34,18 @@ function fakePrisma() {
         store.set(where.id, rec)
         return rec
       }),
-      findMany: vi.fn(async ({ where }: any) =>
-        [...store.values()].filter((r) => {
+      findMany: vi.fn(async ({ where, orderBy }: any) => {
+        let rows = [...store.values()].filter((r) => {
+          if (where?.userId && r.userId !== where.userId) return false
           if (where?.status && r.status !== where.status) return false
           if (where?.createdAt?.lt && !(r.createdAt < where.createdAt.lt)) return false
           return true
         })
-      ),
+        if (orderBy?.createdAt === 'desc') {
+          rows = rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+        }
+        return rows
+      }),
       findUnique: vi.fn(async ({ where }: any) => store.get(where.id) ?? null),
       delete: vi.fn(async ({ where }: any) => {
         const rec = store.get(where.id)
@@ -105,6 +111,32 @@ describe('ClientEnvironmentService.createProvisional', () => {
     expect(b.id).not.toBe(a.id)
     expect(b.path).not.toBe(a.path)
   })
+
+  test('corrida: se outro request criou um provisional mais novo, destrói o próprio e devolve o vencedor', async () => {
+    const prisma = fakePrisma()
+    const svc = new ClientEnvironmentService(prisma as any, baseDir)
+    const winner = {
+      id: 'env_winner',
+      userId: 'user_1',
+      status: 'provisional',
+      path: path.join(baseDir, 'env_winner'),
+      fixedAt: null,
+      createdAt: new Date(Date.now() + 60_000),
+      updatedAt: new Date(),
+    }
+    // 1ª chamada (check inicial): nada; 2ª (recheck pós-create): o vencedor
+    // da corrida já existe — simula outro request criando em paralelo.
+    prisma.clientEnvironment.findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(winner as any)
+
+    const result = await svc.createProvisional('user_1')
+
+    expect(result.id).toBe('env_winner')
+    // o perdedor (env_1) foi destruído: registro fora do store e dir apagado
+    expect(prisma.store.has('env_1')).toBe(false)
+    await expect(fs.stat(path.join(baseDir, 'env_1'))).rejects.toThrow()
+  })
 })
 
 describe('ClientEnvironmentService.cloneInto', () => {
@@ -122,7 +154,9 @@ describe('ClientEnvironmentService.cloneInto', () => {
     const result = await svc.cloneInto('env_1', ['octo/repo-a', 'octo/repo-b'], 'tok_123')
 
     expect(allocateWorkspace).toHaveBeenCalledTimes(2)
-    expect(allocateWorkspace).toHaveBeenCalledWith('env_1', 'octo/repo-a', {
+    // projectId é o SLUG sanitizado (o provider rejeita '/'); o nome real do
+    // repo segue intacto em `repository` (é ele que vira a URL do clone).
+    expect(allocateWorkspace).toHaveBeenCalledWith('env_1', 'octo_repo-a', {
       repository: 'octo/repo-a',
       token: 'tok_123',
     })
@@ -140,6 +174,33 @@ describe('ClientEnvironmentService.cloneInto', () => {
 
     expect(allocateWorkspace).not.toHaveBeenCalled()
     expect(result).toEqual([])
+  })
+
+  test('REGRESSÃO C1: repo real "owner/repo" passa pelo provider REAL (validateInput rejeita barra)', async () => {
+    // Este teste usa o LocalWorkspaceProvider DE VERDADE (só o git é fake):
+    // exercita o validateInput real, que rejeita '/' no projectId. Antes do
+    // fix, cloneInto passava o repo cru e QUALQUER repositório real quebrava
+    // o /setup/clone em produção — e nenhum teste pegava, porque todos
+    // mockavam o provider inteiro.
+    const prisma = fakePrisma()
+    const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-c1-'))
+    const gitCalls: string[][] = []
+    const fakeGit = async (args: string[]) => {
+      gitCalls.push(args)
+      return { stdout: '', stderr: '' }
+    }
+    const realProvider = new LocalWorkspaceProvider(baseDir, fakeGit)
+    const svc = new ClientEnvironmentService(prisma as any, baseDir, realProvider)
+
+    const result = await svc.cloneInto('env_1', ['octocat/hello-world'], 'tok')
+
+    // não lançou; o dir usa o slug sanitizado (mesmo esquema do repoPathInEnv)
+    expect(result[0]!.path).toContain(path.join('env_1', 'octocat_hello-world'))
+    // e o clone em si usa o NOME REAL do repo na URL (o slug é só o dir)
+    const cloneArgs = gitCalls.find((a) => a.includes('clone'))
+    expect(cloneArgs?.join(' ')).toContain('https://github.com/octocat/hello-world.git')
+
+    await fs.rm(baseDir, { recursive: true, force: true })
   })
 })
 
@@ -299,6 +360,27 @@ describe('ClientEnvironmentService — faxina (TTL 24h)', () => {
     expect(prisma.store.has('evil')).toBe(false)
     await fs.rm(outside, { recursive: true, force: true })
   })
+
+  test('destroy com path apontando pro PRÓPRIO baseDir não apaga a raiz de ambientes', async () => {
+    // Antes do fix, o guard tinha um ramo `resolved === root` que autorizava
+    // fs.rm do baseDir inteiro — os ambientes de TODOS os clientes de uma vez.
+    const prisma = fakePrisma()
+    await fs.writeFile(path.join(baseDir, 'outro-cliente.marker'), 'vivo')
+    prisma.store.set('root-attack', {
+      id: 'root-attack',
+      userId: 'u',
+      status: 'provisional',
+      path: baseDir,
+      createdAt: new Date(),
+    })
+    const svc = new ClientEnvironmentService(prisma as any, baseDir)
+
+    await svc.destroy('root-attack')
+
+    // a raiz sobreviveu (com o conteúdo dos outros clientes); só o registro saiu
+    expect(await fs.readFile(path.join(baseDir, 'outro-cliente.marker'), 'utf8')).toBe('vivo')
+    expect(prisma.store.has('root-attack')).toBe(false)
+  })
 })
 
 describe('ClientEnvironmentService.fix', () => {
@@ -324,5 +406,45 @@ describe('ClientEnvironmentService.fix', () => {
     const prisma = fakePrisma()
     const svc = new ClientEnvironmentService(prisma as any, '/base')
     await expect(svc.fix('u')).resolves.toBeUndefined()
+  })
+
+  test('dedup: com 2 provisionais (corrida), fixa só o mais recente e DESTRÓI o duplicado', async () => {
+    // Sem o dedup, o updateMany fixava os dois: o duplicado (vazio, com
+    // credencial em disco) virava permanente e escapava da faxina 24h pra
+    // sempre — lixo com segredo que nenhuma rotina varre.
+    const prisma = fakePrisma()
+    const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-dedup-'))
+    const oldDir = path.join(baseDir, 'e_old')
+    const newDir = path.join(baseDir, 'e_new')
+    await fs.mkdir(oldDir, { recursive: true })
+    await fs.mkdir(newDir, { recursive: true })
+    prisma.store.set('e_old', {
+      id: 'e_old',
+      userId: 'u',
+      status: 'provisional',
+      path: oldDir,
+      fixedAt: null,
+      createdAt: new Date(Date.now() - 60 * 60 * 1000),
+    })
+    prisma.store.set('e_new', {
+      id: 'e_new',
+      userId: 'u',
+      status: 'provisional',
+      path: newDir,
+      fixedAt: null,
+      createdAt: new Date(),
+    })
+    const svc = new ClientEnvironmentService(prisma as any, baseDir)
+
+    await svc.fix('u')
+
+    // o canônico (mais recente) fixou e o dir dele vive
+    expect(prisma.store.get('e_new')?.status).toBe('fixed')
+    expect((await fs.stat(newDir)).isDirectory()).toBe(true)
+    // o duplicado sumiu por inteiro: registro e diretório (com a credencial)
+    expect(prisma.store.has('e_old')).toBe(false)
+    await expect(fs.stat(oldDir)).rejects.toThrow()
+
+    await fs.rm(baseDir, { recursive: true, force: true })
   })
 })
