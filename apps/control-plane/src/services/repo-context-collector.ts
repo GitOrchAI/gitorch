@@ -60,7 +60,7 @@ export class RepoContextCollector {
   constructor(options: RepoContextCollectorOptions) {
     this.token = options.token
     const f = options.fetchImpl ?? fetch
-    this.request = options.request ?? buildTransport(f)
+    this.request = options.request ?? buildGithubGraphQLTransport(f)
     // O MESMO transporte serve o board e a consulta de PRs/Issues — um fake nos
     // testes cobre os dois caminhos.
     this.projects = new ProjectV2Client({ token: options.token, request: this.request })
@@ -165,10 +165,11 @@ function toWorkItem(raw: RawWorkItem): CollectedWorkItem {
   }
 }
 
-// Transporte GraphQL padrão do collector: mesmo endpoint/headers do
-// defaultGraphQLTransport do github-sync (que é privado ao pacote) e do helper
-// `gql` de github-backlog. Só usado quando nenhum `request` é injetado.
-function buildTransport(fetchImpl: typeof fetch): GraphQLTransport {
+// Transporte GraphQL padrão: mesmo endpoint/headers do defaultGraphQLTransport
+// do github-sync (que é privado ao pacote) e do helper `gql` de github-backlog.
+// Exportado para a ponte de contexto (repo-context-cortex) reusar o MESMO
+// transporte na resolução do dono do repo + no collector, sem duplicar o fetch.
+export function buildGithubGraphQLTransport(fetchImpl: typeof fetch): GraphQLTransport {
   return async <TData>(request: GraphQLRequest, token: string): Promise<GraphQLResponse<TData>> => {
     const response = await fetchImpl('https://api.github.com/graphql', {
       method: 'POST',

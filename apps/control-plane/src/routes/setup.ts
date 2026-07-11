@@ -6,6 +6,7 @@ import { F6_AGENT_ROLES, isF6AgentRuntime, type F6AgentRuntime } from '@gitorch/
 import { ensureDefaultSchedules } from '../lib/project-defaults.js'
 import { resolveEngineId } from '../services/engine-connection.js'
 import { ClientEnvironmentService } from '../services/environment.js'
+import { collectAndRememberRepoContext } from '../services/repo-context-cortex.js'
 
 interface GitHubRepo {
   id: number
@@ -298,6 +299,34 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
       // Aceite final concluído: fixa o ambiente do cliente (provisional → fixed),
       // tirando-o do alcance da faxina 24h — agora é um cliente de verdade.
       await clientEnvironments.fix(user.id)
+
+      // Coleta de contexto → memória (F4.2.3): junta board + PRs + Issues de
+      // cada repo e grava no Cortex (ponte GitHub→memória). BEST-EFFORT — nunca
+      // derruba o aceite final: sem Cortex/token (ex.: teste de rota isolado) ou
+      // numa falha de API, o cliente fica fixado do mesmo jeito e só logamos.
+      // `collectAndRememberRepoContext` já não lança; o try/catch é o cinto de
+      // segurança para qualquer erro inesperado (nunca vira 500 pro cliente).
+      try {
+        const githubToken = app.engineConnections
+          ? await app.engineConnections.getRawGithubToken(owner?.id ?? user.id)
+          : null
+        if (app.cortex && githubToken) {
+          for (const repoFullName of repos) {
+            const result = await collectAndRememberRepoContext({
+              token: githubToken,
+              wingId: repoFullName,
+              cortex: app.cortex,
+            })
+            if (!result.collected) {
+              app.log.warn(
+                `[setup] coleta de contexto pulada para ${repoFullName}: ${result.reason}`
+              )
+            }
+          }
+        }
+      } catch (err) {
+        app.log.warn(err, '[setup] coleta de contexto falhou (aceite final não afetado)')
+      }
 
       return reply.send({
         success: true,
