@@ -107,19 +107,21 @@ export class ClientEnvironmentService {
       if (!env?.path) return null
       const sanitized = repo.replace(/[^a-zA-Z0-9_-]/g, '_')
       const dir = path.join(env.path, sanitized)
-      // Guard de contenção (mesmo padrão de destroy()): `repo` é input do
-      // cliente (nome de repositório escolhido no wizard). O replace acima já
-      // elimina barras/pontos, mas o CodeQL sinalizou (corretamente, como
-      // defesa em profundidade) que `dir` carrega dado do cliente até um
-      // fs.stat — resolver e confirmar que `dir` continua DENTRO de env.path
-      // fecha a classe inteira de path traversal, sem depender só do regex.
-      const resolvedDir = path.resolve(dir)
+      // Guard de contenção (idioma canônico via path.relative, o que o CodeQL
+      // reconhece de forma confiável como sanitizador de path traversal — um
+      // startsWith manual NÃO fechou o alerta numa 1a tentativa): `repo` é
+      // input do cliente (nome de repositório escolhido no wizard). O replace
+      // acima já elimina barras/pontos, mas isto é defesa em profundidade —
+      // se `dir` escapar de env.path por QUALQUER via, `relative` começa com
+      // '..' ou vira absoluto, e o guard barra antes do fs.stat.
       const resolvedEnvPath = path.resolve(env.path)
-      if (resolvedDir !== resolvedEnvPath && !resolvedDir.startsWith(resolvedEnvPath + path.sep)) {
+      const resolvedDir = path.resolve(dir)
+      const relativeToEnv = path.relative(resolvedEnvPath, resolvedDir)
+      if (relativeToEnv.startsWith('..') || path.isAbsolute(relativeToEnv)) {
         return null
       }
       const cloned = await fs
-        .stat(path.join(resolvedDir, '.git'))
+        .stat(path.join(resolvedEnvPath, relativeToEnv, '.git'))
         .then((s) => s.isDirectory())
         .catch(() => false)
       return cloned ? resolvedDir : null
