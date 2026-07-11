@@ -152,4 +152,16 @@ export class ClientEnvironmentService {
     }
     await this.prisma.clientEnvironment.delete({ where: { id: envId } }).catch(() => undefined)
   }
+
+  /**
+   * Fixa o ambiente provisório do usuário no aceite final (passo 10): vira
+   * 'fixed' (permanente) e sai do alcance da faxina 24h — agora é um cliente.
+   * Idempotente: updateMany não falha se não houver provisional.
+   */
+  async fix(userId: string): Promise<void> {
+    await this.prisma.clientEnvironment.updateMany({
+      where: { userId, status: 'provisional' },
+      data: { status: 'fixed', fixedAt: new Date() },
+    })
+  }
 }

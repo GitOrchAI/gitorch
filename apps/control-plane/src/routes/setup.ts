@@ -295,6 +295,10 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
         })
       }
 
+      // Aceite final concluído: fixa o ambiente do cliente (provisional → fixed),
+      // tirando-o do alcance da faxina 24h — agora é um cliente de verdade.
+      await clientEnvironments.fix(user.id)
+
       return reply.send({
         success: true,
         projects: createdProjects,

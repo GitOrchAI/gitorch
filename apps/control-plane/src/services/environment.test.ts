@@ -46,6 +46,16 @@ function fakePrisma() {
         store.delete(where.id)
         return rec ?? null
       }),
+      updateMany: vi.fn(async ({ where, data }: any) => {
+        let count = 0
+        for (const [k, r] of store) {
+          if (where?.userId && r.userId !== where.userId) continue
+          if (where?.status && r.status !== where.status) continue
+          store.set(k, { ...r, ...data })
+          count++
+        }
+        return { count }
+      }),
     },
   }
 }
@@ -263,5 +273,31 @@ describe('ClientEnvironmentService — faxina (TTL 24h)', () => {
     expect(await fs.readFile(path.join(outside, 'important'), 'utf8')).toBe('do not delete')
     expect(prisma.store.has('evil')).toBe(false)
     await fs.rm(outside, { recursive: true, force: true })
+  })
+})
+
+describe('ClientEnvironmentService.fix', () => {
+  test('fixa o provisional do user (provisional → fixed) no aceite final', async () => {
+    const prisma = fakePrisma()
+    prisma.store.set('e1', {
+      id: 'e1',
+      userId: 'u',
+      status: 'provisional',
+      path: '/x',
+      fixedAt: null,
+      createdAt: new Date(),
+    })
+    const svc = new ClientEnvironmentService(prisma as any, '/base')
+
+    await svc.fix('u')
+
+    expect(prisma.store.get('e1')?.status).toBe('fixed')
+    expect(prisma.store.get('e1')?.fixedAt).toBeTruthy()
+  })
+
+  test('é idempotente: fix sem provisional não quebra', async () => {
+    const prisma = fakePrisma()
+    const svc = new ClientEnvironmentService(prisma as any, '/base')
+    await expect(svc.fix('u')).resolves.toBeUndefined()
   })
 })

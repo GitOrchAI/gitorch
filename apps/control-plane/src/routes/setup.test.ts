@@ -133,6 +133,7 @@ describe('POST /api/v1/setup/submit — runtime wiring', () => {
         count: vi.fn().mockResolvedValue(0),
         create: vi.fn().mockResolvedValue({}),
       },
+      clientEnvironment: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     app.addHook('preHandler', async (request: FastifyRequest) => {
@@ -237,6 +238,7 @@ describe('POST /api/v1/setup/submit — plano autoritativo (paid-intent, ainda n
         count: vi.fn().mockResolvedValue(0),
         create: vi.fn().mockResolvedValue({}),
       },
+      clientEnvironment: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     app.addHook('preHandler', async (request: FastifyRequest) => {
