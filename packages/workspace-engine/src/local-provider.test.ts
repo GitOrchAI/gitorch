@@ -146,6 +146,88 @@ test('redação também cobre o header Basic (base64) — não só o token cru',
   await fs.rm(base, { recursive: true, force: true })
 })
 
+test('fallback anônimo: clone com token falha por auth -> retenta sem header e sucede', async () => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-local-ws-'))
+  const token = 'gh_secret_token_fallback'
+  const gitRunner = vi
+    .fn()
+    .mockRejectedValueOnce(
+      new Error(
+        `Command failed: git -c http.extraHeader=Authorization: Basic xxx clone --depth 1 -- https://github.com/octocat/public-repo.git ${base}/scheduler-user/project-1\nfatal: Authentication failed`
+      )
+    )
+    .mockResolvedValueOnce({ stdout: '', stderr: '' })
+  const provider = new LocalWorkspaceProvider(base, gitRunner)
+
+  await expect(
+    provider.allocateWorkspace('scheduler-user', 'project-1', {
+      repository: 'octocat/public-repo',
+      token,
+    })
+  ).resolves.toMatchObject({ status: 'active' })
+
+  expect(gitRunner).toHaveBeenCalledTimes(2)
+  const [firstArgs] = gitRunner.mock.calls[0] as [string[]]
+  const [secondArgs] = gitRunner.mock.calls[1] as [string[]]
+  expect(firstArgs).toContain('-c')
+  expect(secondArgs).not.toContain('-c')
+  expect(secondArgs).toContain('clone')
+
+  await fs.rm(base, { recursive: true, force: true })
+})
+
+test('erro não-auth (ex: repositório não encontrado) NÃO retenta e propaga', async () => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-local-ws-'))
+  const token = 'gh_secret_token_notfound'
+  const gitRunner = vi
+    .fn()
+    .mockRejectedValue(
+      new Error(
+        `Command failed: git -c http.extraHeader=Authorization: Basic xxx clone --depth 1 -- https://github.com/octocat/missing-repo.git ${base}/scheduler-user/project-1\nfatal: repository 'https://github.com/octocat/missing-repo.git/' not found`
+      )
+    )
+  const provider = new LocalWorkspaceProvider(base, gitRunner)
+
+  await expect(
+    provider.allocateWorkspace('scheduler-user', 'project-1', {
+      repository: 'octocat/missing-repo',
+      token,
+    })
+  ).rejects.toThrow()
+
+  expect(gitRunner).toHaveBeenCalledTimes(1)
+
+  await fs.rm(base, { recursive: true, force: true })
+})
+
+test('fallback anônimo também falha por auth -> lança erro sanitizado (sem token) após 2 tentativas', async () => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-local-ws-'))
+  const token = 'gh_secret_token_bothfail'
+  const gitRunner = vi
+    .fn()
+    .mockRejectedValue(
+      new Error(
+        `Command failed: git -c http.extraHeader=Authorization: Basic xxx clone --depth 1 -- https://github.com/octocat/private-repo.git ${base}/scheduler-user/project-1\nfatal: Invalid username or token. Password authentication is not supported`
+      )
+    )
+  const provider = new LocalWorkspaceProvider(base, gitRunner)
+
+  try {
+    await provider.allocateWorkspace('scheduler-user', 'project-1', {
+      repository: 'octocat/private-repo',
+      token,
+    })
+    throw new Error('deveria ter lançado')
+  } catch (err) {
+    const message = (err as Error).message
+    expect(message).not.toContain(token)
+  }
+
+  expect(gitRunner).toHaveBeenCalledTimes(2)
+
+  await fs.rm(base, { recursive: true, force: true })
+})
+
 test('clona repo público sem header quando nenhum token é passado', async () => {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-local-ws-'))
   const gitRunner = vi.fn().mockResolvedValue({ stdout: '', stderr: '' })

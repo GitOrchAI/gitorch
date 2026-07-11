@@ -49,6 +49,12 @@ export function missionRoleForEvent(
     const author = (payload.pull_request?.user?.login ?? payload.sender?.login ?? '').toLowerCase()
     if (author.includes('jules')) return 'qa'
   }
+  // CI concluiu (passou ou falhou) -> o QA acorda. QA só começa depois do CI;
+  // ele mesmo é no-op se não houver PR delegado, então acordar em qualquer
+  // conclusão de CI é seguro.
+  if ((event === 'check_suite' || event === 'workflow_run') && payload.action === 'completed') {
+    return 'qa'
+  }
   return null
 }
 
@@ -104,11 +110,16 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
       // Parse payload to get GitHub identifiers
       const parsedPayload = typeof payload === 'string' ? JSON.parse(payload) : payload
 
-      // Identify project by GitHub installation ID or repo ID
+      // Identify project by GitHub installation ID, repo ID, or repo full name.
+      // O wizard cria o Project só com wingId (owner/repo) e deixa
+      // githubInstallationId/githubRepoId NULOS — então casar por full_name
+      // (== wingId) é o que conecta o webhook a projetos já existentes; sem
+      // isto todo projeto criado pelo wizard fica invisível ("Project not found").
       const installationId = parsedPayload.installation?.id
       const repoId = parsedPayload.repository?.id
+      const repoFullName = parsedPayload.repository?.full_name as string | undefined
 
-      if (!installationId && !repoId) {
+      if (!installationId && !repoId && !repoFullName) {
         app.log.warn({ deliveryId, event }, 'Webhook missing installation/repo ID')
         return reply.code(400).send({ error: 'Missing GitHub identifiers' })
       }
@@ -119,9 +130,15 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
           OR: [
             ...(installationId ? [{ githubInstallationId: installationId }] : []),
             ...(repoId ? [{ githubRepoId: BigInt(repoId) }] : []),
+            ...(repoFullName ? [{ wingId: repoFullName }] : []),
           ],
         },
-        select: { id: true, wingId: true },
+        select: {
+          id: true,
+          wingId: true,
+          githubInstallationId: true,
+          githubRepoId: true,
+        },
       })
 
       if (!project) {
@@ -137,6 +154,28 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
       // Set wingId context for Prisma RLS
       const { wingIdContext } = await import('../plugins/prisma.js')
       return await wingIdContext.run({ wingId: project.wingId }, async () => {
+        // Auto-cura: se o projeto casou por wingId mas os IDs numéricos do
+        // GitHub estão nulos, preenche-os agora — assim as próximas entregas
+        // usam o caminho rápido por ID (o wizard não preenchia esses campos).
+        if (
+          (repoId && project.githubRepoId == null) ||
+          (installationId && project.githubInstallationId == null)
+        ) {
+          await app.prisma.project
+            .update({
+              where: { id: project.id },
+              data: {
+                ...(repoId && project.githubRepoId == null ? { githubRepoId: BigInt(repoId) } : {}),
+                ...(installationId && project.githubInstallationId == null
+                  ? { githubInstallationId: installationId }
+                  : {}),
+              },
+            })
+            .catch((err) =>
+              app.log.warn({ err, projectId: project.id }, 'Falha ao backfill de IDs do GitHub')
+            )
+        }
+
         // Persist webhook delivery for idempotency/retry tracking
         await app.prisma.webhookDelivery.create({
           data: {
