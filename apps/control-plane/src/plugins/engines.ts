@@ -2,6 +2,7 @@ import fp from 'fastify-plugin'
 import { FastifyPluginAsync } from 'fastify'
 import { isDeviceRuntime } from '@gitorch/agents'
 import { EngineConnectionService, resolveEngineId } from '../services/engine-connection.js'
+import { ClientEnvironmentService } from '../services/environment.js'
 import {
   AssistedLoginService,
   type AssistedLoginOptions,
@@ -20,6 +21,11 @@ interface EnginesPluginOptions {
 const enginesPluginImpl: FastifyPluginAsync<EnginesPluginOptions> = async (app, opts) => {
   const service = new EngineConnectionService(app.prisma)
   app.decorate('engineConnections', service)
+
+  // Ambiente isolado do user: o login assistido grava a credencial DENTRO dele
+  // (HOME = dir 0700 do ambiente). Idempotente — reusa o provisório do aceite
+  // dos termos; nunca cria um segundo.
+  const clientEnvironments = new ClientEnvironmentService(app.prisma)
 
   const assistedLogin = new AssistedLoginService(service, {
     image: process.env['GITORCH_AGENT_IMAGE'] ?? 'localhost/gitorch-agent:latest',
@@ -118,7 +124,14 @@ const enginesPluginImpl: FastifyPluginAsync<EnginesPluginOptions> = async (app, 
         .code(400)
         .send({ error: `runtime não suportado para login assistido: ${runtime}` })
     }
-    const loginId = assistedLogin.start(userId, runtime)
+    // O motor loga DENTRO do ambiente isolado do user: HOME = dir 0700 do
+    // ambiente, então a credencial que o CLI grava vive ali, protegida, e a
+    // faxina 24h a destrói se o wizard for abandonado. createProvisional é
+    // idempotente — no wizard reusa o ambiente nascido no aceite dos termos
+    // (só um findFirst, sem recriar). `path` vazio (impossível na prática) cai
+    // no fallback de HOME temporário do próprio serviço.
+    const env = await clientEnvironments.createProvisional(userId)
+    const loginId = assistedLogin.start(userId, runtime, env.path || undefined)
     return reply.code(202).send({ loginId })
   })
 

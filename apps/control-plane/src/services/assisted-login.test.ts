@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { EventEmitter } from 'node:events'
 import * as fs from 'node:fs/promises'
+import * as os from 'node:os'
+import * as path from 'node:path'
 import { AssistedLoginService } from './assisted-login.js'
 
 function fakeHandle() {
@@ -393,5 +395,101 @@ describe('AssistedLoginService', () => {
     expect(ownerCb).toHaveBeenCalledWith({ phase: 'starting' })
     expect(() => service.submitCode(id, 'user-1', 'owner-code')).not.toThrow()
     expect(handle.writeStdin).toHaveBeenCalledWith('owner-code\n')
+  })
+
+  it('envHome (HOME do ambiente): makeHomeImpl aponta pro dir do ambiente e o cleanup NÃO o apaga — a credencial vive ali', async () => {
+    const envHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-env-persist-'))
+    // Sentinela: prova de que o dir (e o que o login gravou nele) sobrevive ao
+    // cleanup do login — quem destrói é a faxina 24h se o wizard for abandonado.
+    await fs.writeFile(path.join(envHome, 'sentinel'), 'x')
+
+    const emitter = new EventEmitter()
+    let resolveExited: (v: { code: number | null }) => void = () => undefined
+    const exited = new Promise<{ code: number | null }>((r) => {
+      resolveExited = r
+    })
+    let capturedMakeHome: (() => string) | undefined
+    const runDeviceLoginImpl = vi
+      .fn()
+      .mockImplementation((opts: { makeHomeImpl?: () => string }) => {
+        capturedMakeHome = opts.makeHomeImpl
+        return {
+          // Espelha o runDeviceLogin real: makeHomeImpl decide o hostHome.
+          hostHome: opts.makeHomeImpl ? opts.makeHomeImpl() : '/tmp/should-not-happen',
+          onStdout: (cb: (chunk: string) => void) => emitter.on('stdout', cb),
+          writeStdin: vi.fn(),
+          exited,
+          kill: vi.fn(),
+        }
+      })
+    const service = new AssistedLoginService(fakeEngineConnections() as never, {
+      image: 'img',
+      runDeviceLoginImpl,
+    })
+
+    const states: unknown[] = []
+    const id = service.start('user-1', 'codex', envHome)
+    service.subscribe(id, 'user-1', (s) => states.push(s))
+
+    // O HOME do container é o dir do ambiente do user, não um mkdtemp efêmero.
+    expect(capturedMakeHome).toBeTypeOf('function')
+    expect(capturedMakeHome!()).toBe(envHome)
+
+    // Codex sai 0 → captura → connected → cleanup (estado terminal) roda.
+    resolveExited({ code: 0 })
+    await vi.waitFor(() => {
+      expect(states.at(-1)).toEqual({ phase: 'connected' })
+    })
+
+    // cleanup rodou, mas por ser HOME persistente o dir do ambiente NÃO foi
+    // apagado (senão cada login esvaziaria o ambiente, inclusive os clones).
+    const sentinelSurvives = await fs
+      .stat(path.join(envHome, 'sentinel'))
+      .then(() => true)
+      .catch(() => false)
+    expect(sentinelSurvives).toBe(true)
+
+    await fs.rm(envHome, { recursive: true, force: true })
+  })
+
+  it('sem envHome (fallback): HOME efêmero é apagado no cleanup — o guard é condicional, não um "nunca apagar"', async () => {
+    const ephemeralHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-eph-'))
+    await fs.writeFile(path.join(ephemeralHome, 'sentinel'), 'x')
+
+    const emitter = new EventEmitter()
+    let resolveExited: (v: { code: number | null }) => void = () => undefined
+    const exited = new Promise<{ code: number | null }>((r) => {
+      resolveExited = r
+    })
+    const handle = {
+      hostHome: ephemeralHome,
+      onStdout: (cb: (chunk: string) => void) => emitter.on('stdout', cb),
+      writeStdin: vi.fn(),
+      exited,
+      kill: vi.fn(),
+    }
+    const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
+    const service = new AssistedLoginService(fakeEngineConnections() as never, {
+      image: 'img',
+      runDeviceLoginImpl,
+    })
+
+    const states: unknown[] = []
+    const id = service.start('user-1', 'codex') // sem envHome → HOME efêmero
+    service.subscribe(id, 'user-1', (s) => states.push(s))
+
+    resolveExited({ code: 0 })
+    await vi.waitFor(() => {
+      expect(states.at(-1)).toEqual({ phase: 'connected' })
+    })
+
+    // cleanup é fire-and-forget (fs.rm sem await) → poll até o HOME sumir.
+    await vi.waitFor(async () => {
+      const gone = await fs
+        .stat(path.join(ephemeralHome, 'sentinel'))
+        .then(() => false)
+        .catch(() => true)
+      expect(gone).toBe(true)
+    })
   })
 })
