@@ -19,7 +19,7 @@ type LoginState =
   | { phase: 'idle' }
   | { phase: 'starting' }
   | { phase: 'url_ready'; url: string; code?: string }
-  | { phase: 'connected' }
+  | { phase: 'connected'; models?: number; quota?: number | null }
   | { phase: 'error'; message: string }
 
 export default function StepConnectEngine({
@@ -44,16 +44,34 @@ export default function StepConnectEngine({
     let cancelled = false
     fetch(`${apiBaseUrl}/api/v1/engines`, { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : null))
-      .then((data: { engines?: Array<{ runtime: string; status: string }> } | null) => {
-        if (cancelled || !data?.engines) return
-        const connected: Record<string, LoginState> = {}
-        for (const card of ENGINES) {
-          if (data.engines.some((e) => e.runtime === card.runtime && e.status === 'connected')) {
-            connected[card.id] = { phase: 'connected' }
+      .then(
+        (
+          data: {
+            engines?: Array<{
+              runtime: string
+              status: string
+              models?: string[]
+              quotaRemaining?: number | null
+            }>
+          } | null
+        ) => {
+          if (cancelled || !data?.engines) return
+          const connected: Record<string, LoginState> = {}
+          for (const card of ENGINES) {
+            const eng = data.engines.find(
+              (e) => e.runtime === card.runtime && e.status === 'connected'
+            )
+            if (eng) {
+              connected[card.id] = {
+                phase: 'connected',
+                models: Array.isArray(eng.models) ? eng.models.length : undefined,
+                quota: eng.quotaRemaining ?? null,
+              }
+            }
           }
+          setStates((prev) => ({ ...connected, ...prev }))
         }
-        setStates((prev) => ({ ...connected, ...prev }))
-      })
+      )
       .catch(() => undefined)
     return () => {
       cancelled = true
@@ -158,6 +176,15 @@ export default function StepConnectEngine({
                   </span>
                 )}
               </div>
+
+              {/* Motor VIVO: mostra que respondeu de verdade (nº de modelos + quota). */}
+              {state.phase === 'connected' && (state.models != null || state.quota != null) && (
+                <p className="wz-opt-desc" style={{ fontSize: '0.78rem' }}>
+                  {state.models != null && `${state.models} ${t('setup.connectModelsLabel')}`}
+                  {state.models != null && state.quota != null && ' · '}
+                  {state.quota != null && `${t('setup.connectQuotaLabel')}: ${state.quota}`}
+                </p>
+              )}
 
               {state.phase === 'idle' && (
                 <button className="wz-btn wz-btn-primary" onClick={() => connect(id, runtime)}>
