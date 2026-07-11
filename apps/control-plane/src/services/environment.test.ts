@@ -83,3 +83,39 @@ describe('ClientEnvironmentService.createProvisional', () => {
     expect(b.path).not.toBe(a.path)
   })
 })
+
+describe('ClientEnvironmentService.cloneInto', () => {
+  test('clona cada repo no ambiente, reusando o provider com o token do cliente', async () => {
+    const prisma = fakePrisma()
+    const allocateWorkspace = vi.fn(async (envId: string, repo: string) => ({
+      id: `ws:${envId}:${repo}`,
+      userId: envId,
+      projectId: repo,
+      path: `/base/${envId}/${repo.replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+      status: 'active' as const,
+    }))
+    const svc = new ClientEnvironmentService(prisma as any, '/base', { allocateWorkspace })
+
+    const result = await svc.cloneInto('env_1', ['octo/repo-a', 'octo/repo-b'], 'tok_123')
+
+    expect(allocateWorkspace).toHaveBeenCalledTimes(2)
+    expect(allocateWorkspace).toHaveBeenCalledWith('env_1', 'octo/repo-a', {
+      repository: 'octo/repo-a',
+      token: 'tok_123',
+    })
+    expect(result.map((r) => r.repo)).toEqual(['octo/repo-a', 'octo/repo-b'])
+    // clonado dentro do ambiente (envId no caminho)
+    expect(result[0]!.path).toContain('env_1')
+  })
+
+  test('sem repos selecionados não chama o provider (nada a clonar)', async () => {
+    const prisma = fakePrisma()
+    const allocateWorkspace = vi.fn()
+    const svc = new ClientEnvironmentService(prisma as any, '/base', { allocateWorkspace })
+
+    const result = await svc.cloneInto('env_1', [])
+
+    expect(allocateWorkspace).not.toHaveBeenCalled()
+    expect(result).toEqual([])
+  })
+})

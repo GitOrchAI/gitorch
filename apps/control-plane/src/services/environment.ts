@@ -1,8 +1,13 @@
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import type { PrismaClient } from '@prisma/client'
+import { LocalWorkspaceProvider } from '@gitorch/workspace-engine'
 
 type PrismaLike = Pick<PrismaClient, 'clientEnvironment'>
+
+// Só o que o serviço usa do provider — permite injetar um fake nos testes,
+// sem git real.
+type WorkspaceAllocator = Pick<LocalWorkspaceProvider, 'allocateWorkspace'>
 
 export interface ClientEnvironmentRecord {
   id: string
@@ -26,12 +31,15 @@ export interface ClientEnvironmentRecord {
  */
 export class ClientEnvironmentService {
   private readonly baseDir: string
+  private readonly provider: WorkspaceAllocator
 
   constructor(
     private readonly prisma: PrismaLike,
-    baseDir = process.env['GITORCH_ENVIRONMENTS_DIR'] ?? '/var/lib/gitorch/environments'
+    baseDir = process.env['GITORCH_ENVIRONMENTS_DIR'] ?? '/var/lib/gitorch/environments',
+    provider?: WorkspaceAllocator
   ) {
     this.baseDir = baseDir
+    this.provider = provider ?? new LocalWorkspaceProvider(baseDir)
   }
 
   /**
@@ -59,5 +67,28 @@ export class ClientEnvironmentService {
       data: { path: dir },
     })
     return updated as ClientEnvironmentRecord
+  }
+
+  /**
+   * Clona os repositórios escolhidos DENTRO do ambiente do cliente (passo 4),
+   * cada um num subdiretório do ambiente (nomeado pelo envId). Reusa o
+   * LocalWorkspaceProvider, que autentica com o token do PRÓPRIO cliente por
+   * invocação (nunca grava a credencial em disco/URL) e sanitiza erros de git.
+   * Os clones ficam sob o diretório 0700 do ambiente, protegidos.
+   */
+  async cloneInto(
+    envId: string,
+    repos: string[],
+    token?: string
+  ): Promise<Array<{ repo: string; path: string }>> {
+    const cloned: Array<{ repo: string; path: string }> = []
+    for (const repo of repos) {
+      // exactOptionalPropertyTypes: só inclui `token` quando existe (nunca
+      // passa `undefined` explícito ao provider).
+      const options = token !== undefined ? { repository: repo, token } : { repository: repo }
+      const ws = await this.provider.allocateWorkspace(envId, repo, options)
+      cloned.push({ repo, path: ws.path })
+    }
+    return cloned
   }
 }
