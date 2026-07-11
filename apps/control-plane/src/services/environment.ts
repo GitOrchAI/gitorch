@@ -118,4 +118,38 @@ export class ClientEnvironmentService {
       return null
     }
   }
+
+  /**
+   * Ambientes provisórios (não-fixados) com mais de `maxAgeMs`. Alimenta o
+   * garbage collector: um ambiente abandonado guarda credenciais + OAuth do
+   * cliente e não pode ficar largado — a faxina é requisito de SEGURANÇA.
+   */
+  async listExpired(
+    maxAgeMs: number,
+    now: number = Date.now()
+  ): Promise<ClientEnvironmentRecord[]> {
+    const cutoff = new Date(now - maxAgeMs)
+    const rows = await this.prisma.clientEnvironment.findMany({
+      where: { status: 'provisional', createdAt: { lt: cutoff } },
+    })
+    return rows as ClientEnvironmentRecord[]
+  }
+
+  /**
+   * Destrói um ambiente: apaga o diretório em disco (com as credenciais) e o
+   * registro. O rm é contido ao baseDir (guard de path-traversal) — nunca apaga
+   * fora da raiz de ambientes. Best-effort em cada passo: uma falha no disco não
+   * impede remover o registro, e vice-versa.
+   */
+  async destroy(envId: string): Promise<void> {
+    const env = await this.prisma.clientEnvironment.findUnique({ where: { id: envId } })
+    if (env?.path) {
+      const resolved = path.resolve(env.path)
+      const root = path.resolve(this.baseDir)
+      if (resolved === root || resolved.startsWith(root + path.sep)) {
+        await fs.rm(resolved, { recursive: true, force: true }).catch(() => undefined)
+      }
+    }
+    await this.prisma.clientEnvironment.delete({ where: { id: envId } }).catch(() => undefined)
+  }
 }

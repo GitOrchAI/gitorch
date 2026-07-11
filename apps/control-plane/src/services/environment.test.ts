@@ -33,6 +33,19 @@ function fakePrisma() {
         store.set(where.id, rec)
         return rec
       }),
+      findMany: vi.fn(async ({ where }: any) =>
+        [...store.values()].filter((r) => {
+          if (where?.status && r.status !== where.status) return false
+          if (where?.createdAt?.lt && !(r.createdAt < where.createdAt.lt)) return false
+          return true
+        })
+      ),
+      findUnique: vi.fn(async ({ where }: any) => store.get(where.id) ?? null),
+      delete: vi.fn(async ({ where }: any) => {
+        const rec = store.get(where.id)
+        store.delete(where.id)
+        return rec ?? null
+      }),
     },
   }
 }
@@ -167,5 +180,88 @@ describe('ClientEnvironmentService.repoPathInEnv', () => {
     const prisma = fakePrisma()
     const svc = new ClientEnvironmentService(prisma as any, baseDir)
     expect(await svc.repoPathInEnv('user_1', 'octo/repo')).toBeNull()
+  })
+})
+
+describe('ClientEnvironmentService — faxina (TTL 24h)', () => {
+  let baseDir: string
+  beforeEach(async () => {
+    baseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-faxina-'))
+  })
+  afterEach(async () => {
+    await fs.rm(baseDir, { recursive: true, force: true })
+  })
+
+  const DAY = 24 * 60 * 60 * 1000
+
+  test('listExpired retorna só provisionais mais velhos que o TTL (fixados nunca expiram)', async () => {
+    const prisma = fakePrisma()
+    const now = 1_000_000_000_000
+    prisma.store.set('old', {
+      id: 'old',
+      userId: 'u',
+      status: 'provisional',
+      path: '/x',
+      createdAt: new Date(now - 25 * 60 * 60 * 1000),
+    })
+    prisma.store.set('new', {
+      id: 'new',
+      userId: 'u',
+      status: 'provisional',
+      path: '/x',
+      createdAt: new Date(now - 60 * 60 * 1000),
+    })
+    prisma.store.set('fixed', {
+      id: 'fixed',
+      userId: 'u',
+      status: 'fixed',
+      path: '/x',
+      createdAt: new Date(now - 100 * DAY),
+    })
+    const svc = new ClientEnvironmentService(prisma as any, baseDir)
+
+    const expired = await svc.listExpired(DAY, now)
+
+    expect(expired.map((e) => e.id)).toEqual(['old'])
+  })
+
+  test('destroy apaga o diretório (com as credenciais) e o registro', async () => {
+    const prisma = fakePrisma()
+    const envPath = path.join(baseDir, 'env_kill')
+    await fs.mkdir(path.join(envPath, '.engine-home'), { recursive: true })
+    await fs.writeFile(path.join(envPath, '.engine-home', 'secret'), 'oauth-token')
+    prisma.store.set('env_kill', {
+      id: 'env_kill',
+      userId: 'u',
+      status: 'provisional',
+      path: envPath,
+      createdAt: new Date(),
+    })
+    const svc = new ClientEnvironmentService(prisma as any, baseDir)
+
+    await svc.destroy('env_kill')
+
+    await expect(fs.stat(envPath)).rejects.toThrow()
+    expect(prisma.store.has('env_kill')).toBe(false)
+  })
+
+  test('destroy NÃO apaga fora do baseDir (guard de path-traversal) mas remove o registro', async () => {
+    const prisma = fakePrisma()
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-outside-'))
+    await fs.writeFile(path.join(outside, 'important'), 'do not delete')
+    prisma.store.set('evil', {
+      id: 'evil',
+      userId: 'u',
+      status: 'provisional',
+      path: outside,
+      createdAt: new Date(),
+    })
+    const svc = new ClientEnvironmentService(prisma as any, baseDir)
+
+    await svc.destroy('evil')
+
+    expect(await fs.readFile(path.join(outside, 'important'), 'utf8')).toBe('do not delete')
+    expect(prisma.store.has('evil')).toBe(false)
+    await fs.rm(outside, { recursive: true, force: true })
   })
 })
