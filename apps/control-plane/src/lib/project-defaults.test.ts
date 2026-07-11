@@ -52,3 +52,11 @@ describe('ensureDefaultSchedules', () => {
     expect(prisma.created).toHaveLength(0)
   })
 })
+
+describe('DEFAULT_SCHEDULES', () => {
+  test('RA roda 2x/dia (06h/18h)', () => {
+    const raSchedule = DEFAULT_SCHEDULES.find((s) => s.agentRole === 'ra')
+    expect(raSchedule).toBeDefined()
+    expect(raSchedule?.cron).toBe('0 6,18 * * *')
+  })
+})
