@@ -25,6 +25,21 @@ interface SetupSubmitBody {
   envConfig?: Record<string, unknown>
 }
 
+// Lê o número do board GitHub Projects V2 já criado pra este repo, se algum
+// submit anterior já criou um (gravado por persistBoardNumber abaixo). Sem
+// isto, resolveBoard (repo-context-collector) nunca recebe um número conhecido
+// e cria um board NOVO a cada submit — um board GitHub por reabertura do
+// wizard, acumulando duplicados na conta do cliente.
+function readKnownBoardNumber(
+  runtimeConfig: Prisma.JsonValue | null | undefined
+): number | undefined {
+  if (!runtimeConfig || typeof runtimeConfig !== 'object' || Array.isArray(runtimeConfig)) {
+    return undefined
+  }
+  const raw = (runtimeConfig as Record<string, unknown>)['githubBoardNumber']
+  return typeof raw === 'number' ? raw : undefined
+}
+
 export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
   // Ambiente isolado do cliente: nasce no aceite dos termos, vive por todo o
   // wizard (clone + credenciais dentro dele) e fixa no aceite final. O baseDir
@@ -217,6 +232,10 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
       )
 
       const createdProjects = []
+      // repoFullName -> Project criado/reusado nesta submissão. Alimenta a
+      // coleta de contexto abaixo: precisa do id (pra persistir o board) e do
+      // runtimeConfig (pra ler o board já conhecido de um submit anterior).
+      const projectsByRepo = new Map<string, { id: string; runtimeConfig: Prisma.JsonValue }>()
 
       // 2. Create Project records and API keys
       for (const repoFullName of repos) {
@@ -253,6 +272,7 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
             },
           })
         }
+        projectsByRepo.set(repoFullName, { id: project.id, runtimeConfig: project.runtimeConfig })
 
         // Projeto novo nasce agendado (senão o scheduler nunca o aciona).
         await ensureDefaultSchedules(app.prisma, project.id)
@@ -312,15 +332,38 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
           : null
         if (app.cortex && githubToken) {
           for (const repoFullName of repos) {
+            const project = projectsByRepo.get(repoFullName)
+            const boardNumber = readKnownBoardNumber(project?.runtimeConfig)
             const result = await collectAndRememberRepoContext({
               token: githubToken,
               wingId: repoFullName,
               cortex: app.cortex,
+              ...(boardNumber !== undefined ? { boardNumber } : {}),
             })
             if (!result.collected) {
               app.log.warn(
                 `[setup] coleta de contexto pulada para ${repoFullName}: ${result.reason}`
               )
+            } else if (result.boardCreated && result.boardNumber !== undefined && project) {
+              // Persiste o número do board recém-criado no Project: o PRÓXIMO
+              // submit (reabrir o wizard) lê `boardNumber` acima e REUSA em vez
+              // de criar um board GitHub novo — sem isto, cada submit acumula
+              // um board duplicado na conta/org do cliente.
+              const existingConfig =
+                project.runtimeConfig &&
+                typeof project.runtimeConfig === 'object' &&
+                !Array.isArray(project.runtimeConfig)
+                  ? (project.runtimeConfig as Prisma.JsonObject)
+                  : {}
+              await app.prisma.project.update({
+                where: { id: project.id },
+                data: {
+                  runtimeConfig: {
+                    ...existingConfig,
+                    githubBoardNumber: result.boardNumber,
+                  } as Prisma.JsonObject,
+                },
+              })
             }
           }
         }
