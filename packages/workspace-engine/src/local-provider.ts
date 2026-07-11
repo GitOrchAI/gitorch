@@ -62,6 +62,27 @@ export class LocalWorkspaceProvider {
   }
 
   /**
+   * Um token que autentica a API REST (Bearer) pode não servir pro smart-HTTP
+   * do git (Basic) — ou pode estar simplesmente inválido/expirado/sem escopo.
+   * Nesses casos o clone falha mesmo para um repositório PÚBLICO, que
+   * clonaria normalmente sem credencial nenhuma. Detecta essa classe de erro
+   * pela mensagem (case-insensitive) pra decidir se vale a pena retentar sem
+   * auth — um erro de outra natureza (repo inexistente, rede) não deve
+   * mascarar-se como sucesso possível numa segunda tentativa.
+   */
+  private isAuthError(err: unknown): boolean {
+    const message = err instanceof Error ? err.message : String(err)
+    const patterns = [
+      'authentication failed',
+      'invalid username or token',
+      'could not read username',
+      'terminal prompts disabled',
+    ]
+    const lower = message.toLowerCase()
+    return patterns.some((p) => lower.includes(p))
+  }
+
+  /**
    * O Node embute a linha de comando INTEIRA em ExecException.message
    * ("Command failed: git -c http.extraHeader=Authorization: Bearer <token>
    * ..."). Sem isto, uma falha de clone vaza o token do cliente em texto
@@ -186,17 +207,33 @@ export class LocalWorkspaceProvider {
     // como algo parecido com flag, nada depois de `--` é interpretado como
     // opção (defesa contra injeção de argumento de segunda ordem, ex.:
     // `--upload-pack`). A URL é prefixada e o repositório passou pela regex.
+    const cloneArgs = (extraAuth: string[]) => [
+      ...extraAuth,
+      'clone',
+      '--depth',
+      '1',
+      '--',
+      `https://github.com/${repository}.git`,
+      workspacePath,
+    ]
+
     try {
-      await run([
-        ...auth,
-        'clone',
-        '--depth',
-        '1',
-        '--',
-        `https://github.com/${repository}.git`,
-        workspacePath,
-      ])
+      await run(cloneArgs(auth))
     } catch (err) {
+      // Repositório público bloqueado por um token ruim (inválido, expirado,
+      // sem escopo pra git — comprovado ao vivo com o OAuth token do dono,
+      // que autentica a API REST mas não o smart-HTTP do git): retenta
+      // ANÔNIMO, sem a credencial que causou a falha. Um repo privado sem
+      // token válido continua falhando na segunda tentativa (comportamento
+      // correto). Erro de outra natureza (repo não existe, rede) não retenta.
+      if (token && this.isAuthError(err)) {
+        try {
+          await run(cloneArgs([]))
+          return
+        } catch (retryErr) {
+          throw this.sanitizeGitError(retryErr, token)
+        }
+      }
       throw this.sanitizeGitError(err, token)
     }
   }
