@@ -119,3 +119,53 @@ describe('ClientEnvironmentService.cloneInto', () => {
     expect(result).toEqual([])
   })
 })
+
+describe('ClientEnvironmentService.repoPathInEnv', () => {
+  let baseDir: string
+  beforeEach(async () => {
+    baseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-repopath-'))
+  })
+  afterEach(async () => {
+    await fs.rm(baseDir, { recursive: true, force: true })
+  })
+
+  test('retorna o path do clone quando o repo já existe no ambiente (reuso)', async () => {
+    const prisma = fakePrisma()
+    const envPath = path.join(baseDir, 'env_1')
+    await fs.mkdir(path.join(envPath, 'octo_repo', '.git'), { recursive: true })
+    prisma.store.set('env_1', {
+      id: 'env_1',
+      userId: 'user_1',
+      status: 'provisional',
+      path: envPath,
+      createdAt: new Date(),
+    })
+    const svc = new ClientEnvironmentService(prisma as any, baseDir)
+
+    const p = await svc.repoPathInEnv('user_1', 'octo/repo')
+
+    expect(p).toBe(path.join(envPath, 'octo_repo'))
+  })
+
+  test('retorna null quando o repo ainda não foi clonado', async () => {
+    const prisma = fakePrisma()
+    const envPath = path.join(baseDir, 'env_1')
+    await fs.mkdir(envPath, { recursive: true })
+    prisma.store.set('env_1', {
+      id: 'env_1',
+      userId: 'user_1',
+      status: 'provisional',
+      path: envPath,
+      createdAt: new Date(),
+    })
+    const svc = new ClientEnvironmentService(prisma as any, baseDir)
+
+    expect(await svc.repoPathInEnv('user_1', 'octo/repo')).toBeNull()
+  })
+
+  test('retorna null quando o usuário não tem ambiente', async () => {
+    const prisma = fakePrisma()
+    const svc = new ClientEnvironmentService(prisma as any, baseDir)
+    expect(await svc.repoPathInEnv('user_1', 'octo/repo')).toBeNull()
+  })
+})

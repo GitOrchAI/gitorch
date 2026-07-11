@@ -91,4 +91,31 @@ export class ClientEnvironmentService {
     }
     return cloned
   }
+
+  /**
+   * Caminho do clone de um repo DENTRO do ambiente provisório do usuário —
+   * mesmo esquema de path do cloneInto. Retorna null se não há ambiente ou o
+   * repo ainda não foi clonado. Serve pro diagnóstico reaproveitar o clone do
+   * passo 4 em vez de clonar de novo (não clonar 2x).
+   */
+  async repoPathInEnv(userId: string, repo: string): Promise<string | null> {
+    try {
+      const env = await this.prisma.clientEnvironment.findFirst({
+        where: { userId, status: 'provisional' },
+        orderBy: { createdAt: 'desc' },
+      })
+      if (!env?.path) return null
+      const sanitized = repo.replace(/[^a-zA-Z0-9_-]/g, '_')
+      const dir = path.join(env.path, sanitized)
+      const cloned = await fs
+        .stat(path.join(dir, '.git'))
+        .then((s) => s.isDirectory())
+        .catch(() => false)
+      return cloned ? dir : null
+    } catch {
+      // Reuso é otimização best-effort: se o lookup do ambiente falhar, o
+      // diagnóstico cai no clone próprio (diag-<repo>) — nunca quebra o fluxo.
+      return null
+    }
+  }
 }

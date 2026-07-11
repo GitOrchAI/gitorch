@@ -1,5 +1,6 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import { processDiagnosisJob } from '../services/free-diagnosis.js'
+import { ClientEnvironmentService } from '../services/environment.js'
 
 interface DiagnoseBody {
   repo: string
@@ -13,6 +14,8 @@ interface DiagnoseParams {
 const REUSE_WINDOW_MS = 10 * 60 * 1000
 
 export const diagnoseRoutes = async (app: FastifyInstance): Promise<void> => {
+  const clientEnvironments = new ClientEnvironmentService(app.prisma)
+
   // POST /api/v1/diagnose - Dispara o diagnóstico grátis (F1, zero-LLM) de um
   // repo escolhido no wizard. Roda ANTES de existir Project/pagamento — por
   // isso é DiagnosisJob, não Mission. Responde na hora (não espera o clone).
@@ -64,13 +67,16 @@ export const diagnoseRoutes = async (app: FastifyInstance): Promise<void> => {
         select: { id: true, status: true },
       })
 
+      // Reaproveita o clone do ambiente (passo 4) se já existe — não clona 2x.
+      const existingWorkspacePath = await clientEnvironments.repoPathInEnv(request.user.id, repo)
+
       // Fire-and-forget: o processamento não trava a resposta (clone+índice
       // leva de segundos a ~1min). processDiagnosisJob nunca lança — toda
       // falha vira status=failed no próprio job.
       void processDiagnosisJob(
         job.id,
         { userId: request.user.id, repoFullName: repo, githubToken },
-        { prisma: app.prisma }
+        { prisma: app.prisma, ...(existingWorkspacePath ? { existingWorkspacePath } : {}) }
       )
 
       return reply.code(202).send({ id: job.id, status: job.status })

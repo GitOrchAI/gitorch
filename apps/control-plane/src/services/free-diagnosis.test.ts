@@ -61,6 +61,30 @@ describe('processDiagnosisJob', () => {
     })
   })
 
+  it('reaproveita o clone do ambiente (existingWorkspacePath) — não clona 2x', async () => {
+    const prisma = fakePrisma()
+    const provider = { allocateWorkspace: vi.fn() }
+    const diagnose = vi.fn(async () => STRUCTURAL)
+    const fetchSignals = vi.fn(async () => SIGNALS)
+
+    await processDiagnosisJob(
+      'job-reuse',
+      { userId: 'u1', repoFullName: 'acme/loja', githubToken: 'tok' },
+      {
+        prisma,
+        workspaceProvider: provider,
+        diagnose,
+        fetchSignals,
+        existingWorkspacePath: '/env/env_1/acme_loja',
+      }
+    )
+
+    // não clona de novo; analisa o clone que já existe no ambiente (passo 4)
+    expect(provider.allocateWorkspace).not.toHaveBeenCalled()
+    expect(diagnose).toHaveBeenCalledWith('/env/env_1/acme_loja')
+    expect(prisma.updates.at(-1)!.data['status']).toBe('completed')
+  })
+
   it('repo sem código-fonte reconhecido: estado HONESTO (empty), não erro', async () => {
     const prisma = fakePrisma()
     const provider = { allocateWorkspace: vi.fn(async () => ({ path: '/ws/repo' })) }
