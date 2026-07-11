@@ -35,6 +35,30 @@ export default function StepSelectRepos({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
+  const [cloning, setCloning] = useState(false)
+  const [cloneError, setCloneError] = useState<string | null>(null)
+
+  // Ao avançar, clona os repos escolhidos DENTRO do ambiente isolado do cliente
+  // (passo 4). Só segue quando o clone termina; falha mantém a pessoa no passo
+  // com um aviso, sem avançar.
+  const handleNext = async () => {
+    if (selectedRepos.length === 0 || cloning) return
+    setCloning(true)
+    setCloneError(null)
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/v1/setup/clone`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repos: selectedRepos }),
+      })
+      if (!res.ok) throw new Error(String(res.status))
+      onNext()
+    } catch {
+      setCloneError(t('setup.cloneError'))
+      setCloning(false)
+    }
+  }
 
   useEffect(() => {
     const fetchRepos = async () => {
@@ -191,16 +215,22 @@ export default function StepSelectRepos({
         </div>
       )}
 
+      {cloneError && (
+        <p className="mt-3" style={{ fontSize: '0.85rem', color: 'var(--gl-danger, #d33)' }}>
+          {cloneError}
+        </p>
+      )}
+
       <div className="wz-actions">
-        <button onClick={onBack} className="wz-btn wz-btn-ghost">
+        <button onClick={onBack} disabled={cloning} className="wz-btn wz-btn-ghost">
           {t('setup.back')}
         </button>
         <button
-          onClick={onNext}
-          disabled={selectedRepos.length === 0}
+          onClick={handleNext}
+          disabled={selectedRepos.length === 0 || cloning}
           className="wz-btn wz-btn-primary"
         >
-          {t('setup.next')} <ChevronRight size={18} />
+          {cloning ? t('setup.reposCloning') : t('setup.next')} <ChevronRight size={18} />
         </button>
       </div>
     </div>

@@ -90,6 +90,31 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
     }
   )
 
+  // POST /api/v1/setup/clone - Clona os repos escolhidos DENTRO do ambiente do
+  // cliente (passo 4), usando o token do próprio cliente. Responde só a
+  // contagem — os caminhos internos em disco nunca vão pro frontend.
+  app.post(
+    '/api/v1/setup/clone',
+    { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      if (!request.user) {
+        return reply.code(401).send({ error: 'UNAUTHORIZED: session required' })
+      }
+      const { repos } = request.body as { repos?: string[] }
+      if (!repos || repos.length === 0) {
+        return reply.code(400).send({ error: 'At least one repository must be selected' })
+      }
+      // Token do PRÓPRIO cliente (repo privado). Ausente em composições sem o
+      // plugin de motores; clone anônimo cobre repo público.
+      const token = app.engineConnections
+        ? await app.engineConnections.getRawGithubToken(request.user.id)
+        : null
+      const env = await clientEnvironments.createProvisional(request.user.id)
+      const cloned = await clientEnvironments.cloneInto(env.id, repos, token ?? undefined)
+      return reply.send({ envId: env.id, count: cloned.length })
+    }
+  )
+
   // POST /api/v1/setup/submit - Submit final setup wizard data
   app.post(
     '/api/v1/setup/submit',
