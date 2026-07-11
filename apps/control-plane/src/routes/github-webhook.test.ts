@@ -61,6 +61,58 @@ describe('GitHub Webhook Routes', () => {
     expect(res.payload).toContain('"received":true')
   })
 
+  test('POST /api/webhooks/github resolves project by repository.full_name and backfills numeric IDs', async () => {
+    app.prisma.webhookDelivery.create = vi.fn().mockResolvedValue({})
+    app.prisma.webhookDelivery.updateMany = vi.fn().mockResolvedValue({})
+    app.prisma.project.findFirst = vi.fn().mockResolvedValue({
+      id: 'proj_x',
+      wingId: 'loureng/gitorch',
+      githubInstallationId: null,
+      githubRepoId: null,
+    })
+    app.prisma.project.update = vi.fn().mockResolvedValue({})
+
+    const payloadStr = JSON.stringify({
+      action: 'opened',
+      repository: { id: 1274419899, full_name: 'loureng/gitorch' },
+      issue: { labels: [{ name: 'wishlist' }] },
+    })
+    const signature =
+      'sha256=' + crypto.createHmac('sha256', 'test-secret').update(payloadStr).digest('hex')
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: {
+        'x-hub-signature-256': signature,
+        'x-github-event': 'issues',
+        'x-github-delivery': 'delivery_fullname',
+      },
+      payload: {
+        action: 'opened',
+        repository: { id: 1274419899, full_name: 'loureng/gitorch' },
+        issue: { labels: [{ name: 'wishlist' }] },
+      },
+    })
+
+    expect(res.statusCode).toBe(200)
+
+    expect(app.prisma.project.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: expect.arrayContaining([{ wingId: 'loureng/gitorch' }]),
+        }),
+      })
+    )
+
+    expect(app.prisma.project.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'proj_x' },
+        data: expect.objectContaining({ githubRepoId: 1274419899n }),
+      })
+    )
+  })
+
   test('POST /api/webhooks/github is rate limited', async () => {
     app.prisma.webhookDelivery.create = vi.fn().mockResolvedValue({})
     app.prisma.webhookDelivery.updateMany = vi.fn().mockResolvedValue({})
