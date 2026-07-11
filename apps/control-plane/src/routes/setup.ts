@@ -5,6 +5,7 @@ import { Prisma } from '@prisma/client'
 import { F6_AGENT_ROLES, isF6AgentRuntime, type F6AgentRuntime } from '@gitorch/agents'
 import { ensureDefaultSchedules } from '../lib/project-defaults.js'
 import { resolveEngineId } from '../services/engine-connection.js'
+import { ClientEnvironmentService } from '../services/environment.js'
 
 interface GitHubRepo {
   id: number
@@ -24,6 +25,12 @@ interface SetupSubmitBody {
 }
 
 export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
+  // Ambiente isolado do cliente: nasce no aceite dos termos, vive por todo o
+  // wizard (clone + credenciais dentro dele) e fixa no aceite final. O baseDir
+  // vem de env (infra), nunca hardcoded; o `path` é interno e NUNCA vai pro
+  // frontend.
+  const clientEnvironments = new ClientEnvironmentService(app.prisma)
+
   // GET /api/v1/github/repos - List user repositories using the encrypted
   // per-user GitHub connection (nunca do JWT da sessão — spec §17.4).
   app.get('/api/v1/github/repos', async (request: FastifyRequest, reply: FastifyReply) => {
@@ -67,6 +74,21 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
 
     return reply.send(mappedRepos)
   })
+
+  // POST /api/v1/setup/environment - Nasce o ambiente isolado provisório do
+  // cliente no aceite dos termos (passo 3). Idempotente: reabrir o wizard reusa
+  // o mesmo ambiente. Responde só id/status — o path interno nunca é exposto.
+  app.post(
+    '/api/v1/setup/environment',
+    { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      if (!request.user) {
+        return reply.code(401).send({ error: 'UNAUTHORIZED: session required' })
+      }
+      const env = await clientEnvironments.createProvisional(request.user.id)
+      return reply.send({ id: env.id, status: env.status })
+    }
+  )
 
   // POST /api/v1/setup/submit - Submit final setup wizard data
   app.post(
