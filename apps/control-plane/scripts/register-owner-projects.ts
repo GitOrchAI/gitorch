@@ -1,32 +1,48 @@
 /**
- * Registro dogfood (Fase 0): cria os projetos do dono (loureng/gitorch e
- * loureng/patinhas-3d-crafts) como Project reais, com github_repo_id preenchido
- * (o wizard não preenchia -> "Project not found"). Espelha a criação do
- * setup.ts (runtimeConfig + ensureDefaultSchedules + missão de clone).
- * Idempotente: re-rodar só atualiza os IDs / garante schedules.
+ * Registra projetos (Project) para um usuário, com github_repo_id preenchido —
+ * o wizard não preenchia esse campo, então o webhook (que resolve por repo_id)
+ * dava "Project not found". Espelha a criação do setup.ts (runtimeConfig +
+ * ensureDefaultSchedules + missão de clone). Idempotente: re-rodar só atualiza
+ * os IDs / garante schedules.
  *
- * Uso: DATABASE_URL=<prod> pnpm exec tsx scripts/register-owner-projects.ts
+ * Config por ambiente (nada de ID hardcoded — repo público):
+ *   GITORCH_OWNER_USER_ID   (obrigatório) id do User dono dos projetos
+ *   GITORCH_REGISTER_REPOS  (obrigatório) JSON: [{ "full":"owner/repo", "name":"repo", "repoId":123 }]
+ *   GITORCH_REGISTER_ENGINES (opcional, default "codex") lista separada por vírgula
+ *   GITORCH_REGISTER_PLAN    (opcional, default "free")
+ *   DATABASE_URL             (obrigatório) banco alvo
+ *
+ * Uso: DATABASE_URL=... GITORCH_OWNER_USER_ID=... GITORCH_REGISTER_REPOS='[...]' \
+ *      pnpm exec tsx scripts/register-owner-projects.ts
  */
 import { PrismaClient, Prisma } from '@prisma/client'
 import { F6_AGENT_ROLES } from '@gitorch/agents'
 import { ensureDefaultSchedules } from '../src/lib/project-defaults.js'
 
+interface RepoInput {
+  full: string
+  name: string
+  repoId: number
+}
+
+function requiredEnv(name: string): string {
+  const v = process.env[name]
+  if (!v) throw new Error(`Faltou a variável de ambiente ${name}`)
+  return v
+}
+
 const prisma = new PrismaClient()
 
-// Dono (user#1, dogfood) e a instalação do GitHub App — dos dados reais do banco.
-const OWNER_ID = 'cmr9zrisy00001o9le1yodaoo'
-const ENGINES = ['codex'] // único motor CONECTADO hoje (Antigravity/Claude = login assistido pendente)
-const PLAN = 'free'
-
-const REPOS = [
-  { full: 'loureng/gitorch', name: 'gitorch', repoId: 1274419899 },
-  { full: 'loureng/patinhas-3d-crafts', name: 'patinhas-3d-crafts', repoId: 1032704304 },
-]
+const OWNER_ID = requiredEnv('GITORCH_OWNER_USER_ID')
+const REPOS = JSON.parse(requiredEnv('GITORCH_REGISTER_REPOS')) as RepoInput[]
+const ENGINES = (process.env['GITORCH_REGISTER_ENGINES'] ?? 'codex').split(',').map((s) => s.trim())
+const PLAN = process.env['GITORCH_REGISTER_PLAN'] ?? 'free'
 
 async function main(): Promise<void> {
   // Mesmo formato que resolveRuntimeChain lê: cada papel aponta pro motor primário.
+  const primary = ENGINES[0]
   const agentsConfig = Object.fromEntries(
-    F6_AGENT_ROLES.map((role) => [role, { runtime: 'codex' }])
+    F6_AGENT_ROLES.map((role) => [role, { runtime: primary }])
   )
   const runtimeConfig = {
     engines: ENGINES,
@@ -82,13 +98,7 @@ async function main(): Promise<void> {
   }
 
   const total = await prisma.project.count()
-  const schedules = await prisma.projectSchedule.findMany({
-    select: { agentRole: true, cron: true, isActive: true, project: { select: { wingId: true } } },
-  })
   console.log(`\ntotal de projetos: ${total}`)
-  for (const s of schedules) {
-    console.log(`  ${s.project.wingId} | ${s.agentRole} | ${s.cron} | active=${s.isActive}`)
-  }
 }
 
 main()
