@@ -3,7 +3,21 @@ import Fastify, { FastifyRequest } from 'fastify'
 import crypto from 'node:crypto'
 import { loadEnv } from '../config/env.js'
 import { registerPlugins } from '../plugins/index.js'
-import { githubWebhookRoutes } from './github-webhook.js'
+import { githubWebhookRoutes, missionRoleForEvent } from './github-webhook.js'
+
+describe('missionRoleForEvent', () => {
+  test('acorda o QA quando check_suite conclui', () => {
+    expect(missionRoleForEvent('check_suite', { action: 'completed' })).toBe('qa')
+  })
+
+  test('acorda o QA quando workflow_run conclui', () => {
+    expect(missionRoleForEvent('workflow_run', { action: 'completed' })).toBe('qa')
+  })
+
+  test('não acorda nada quando check_suite ainda não concluiu', () => {
+    expect(missionRoleForEvent('check_suite', { action: 'requested' })).toBeNull()
+  })
+})
 
 describe('GitHub Webhook Routes', () => {
   let app: ReturnType<typeof Fastify>

@@ -49,6 +49,12 @@ export function missionRoleForEvent(
     const author = (payload.pull_request?.user?.login ?? payload.sender?.login ?? '').toLowerCase()
     if (author.includes('jules')) return 'qa'
   }
+  // CI concluiu (passou ou falhou) -> o QA acorda. QA só começa depois do CI;
+  // ele mesmo é no-op se não houver PR delegado, então acordar em qualquer
+  // conclusão de CI é seguro.
+  if ((event === 'check_suite' || event === 'workflow_run') && payload.action === 'completed') {
+    return 'qa'
+  }
   return null
 }
 
@@ -159,9 +165,7 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
             .update({
               where: { id: project.id },
               data: {
-                ...(repoId && project.githubRepoId == null
-                  ? { githubRepoId: BigInt(repoId) }
-                  : {}),
+                ...(repoId && project.githubRepoId == null ? { githubRepoId: BigInt(repoId) } : {}),
                 ...(installationId && project.githubInstallationId == null
                   ? { githubInstallationId: installationId }
                   : {}),
