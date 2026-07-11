@@ -64,8 +64,11 @@ describe('EngineConnectionService', () => {
 
   test('captura de um HOME, cifra e restaura em outro HOME (round-trip do cliente)', async () => {
     const prisma = fakePrisma()
+    // Este teste valida ARMAZENAMENTO da credencial, não liveness — aliveLiveness
+    // evita rodar o CLI real do codex (ausente no runner de CI; presente só
+    // nesta VM de dev, onde o teste passaria por acaso e mascararia o problema).
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const svc = new EngineConnectionService(prisma as any)
+    const svc = new EngineConnectionService(prisma as any, aliveLiveness)
 
     const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-home-'))
     await fs.mkdir(path.join(home, '.codex'), { recursive: true })
@@ -95,7 +98,7 @@ describe('EngineConnectionService', () => {
   test('materialize retorna false sem conexão e após revoke', async () => {
     const prisma = fakePrisma()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const svc = new EngineConnectionService(prisma as any)
+    const svc = new EngineConnectionService(prisma as any, aliveLiveness)
     const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-home2-'))
 
     expect(await svc.materializeToHome('user_x', 'codex', home)).toBe(false)
@@ -175,8 +178,10 @@ describe('EngineConnectionService', () => {
 
   test('connectRawToken (claude setup-token) materializa como env var, não como arquivo de config', async () => {
     const prisma = fakePrisma()
+    // Mesmo motivo do teste de captura acima: valida armazenamento, não
+    // liveness — sem o fake, rodaria `claude auth status` de verdade.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const svc = new EngineConnectionService(prisma as any)
+    const svc = new EngineConnectionService(prisma as any, aliveLiveness)
 
     const status = await svc.connectRawToken('user_claude', 'claude', 'sk-ant-oat01-FAKE', {
       envVarName: 'CLAUDE_CODE_OAUTH_TOKEN',
@@ -202,8 +207,12 @@ describe('EngineConnectionService', () => {
 
   test('materializeToHome trata uma conexão com expiresAt no passado como desconectada', async () => {
     const prisma = fakePrisma()
+    // aliveLiveness garante que o status vira 'connected' na captura — sem
+    // isto, num ambiente sem o CLI do claude, o status já cairia em 'error'
+    // por liveness (não pela expiração), e o teste passaria pelo motivo
+    // ERRADO (mascarando a checagem real de expiresAt).
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const svc = new EngineConnectionService(prisma as any)
+    const svc = new EngineConnectionService(prisma as any, aliveLiveness)
 
     await svc.connectRawToken('user_expired', 'claude', 'sk-ant-oat01-FAKE', {
       envVarName: 'CLAUDE_CODE_OAUTH_TOKEN',
