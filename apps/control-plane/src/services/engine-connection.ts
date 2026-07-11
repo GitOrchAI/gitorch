@@ -43,8 +43,17 @@ export const ENGINE_CREDENTIAL_PATHS: Record<string, string[]> = (() => {
   }
 })()
 
+// Object.hasOwn (não `runtime in ENGINE_CREDENTIAL_PATHS`, não `!map[runtime]`):
+// ENGINE_CREDENTIAL_PATHS é um objeto-literal comum, que herda de
+// Object.prototype. `runtime` vem de input do cliente (params de rota) sem
+// tipo restrito — um valor como 'constructor'/'toString'/'hasOwnProperty'
+// resolveria para uma função HERDADA do protótipo (verdadeira em `in` e em
+// checagem de falsy), não para `undefined`, escapando do guard "não suportado"
+// e sendo usada como se fosse config/função real de motor mais adiante —
+// achado real do CodeQL (unvalidated dynamic method call), consertado em
+// TODOS os lookups deste arquivo, não só nos apontados pelo scanner.
 export function isSupportedRuntime(runtime: string): boolean {
-  return runtime in ENGINE_CREDENTIAL_PATHS
+  return Object.hasOwn(ENGINE_CREDENTIAL_PATHS, runtime)
 }
 
 // Alias de nome comercial -> id de runtime real: o wizard/frontend usa
@@ -120,7 +129,9 @@ export class EngineConnectionService {
     homeDir: string,
     extra?: { credentialKind?: 'file' | 'env'; envVarName?: string; expiresAt?: Date }
   ): Promise<ConnectionStatus> {
-    const relPaths = ENGINE_CREDENTIAL_PATHS[runtime]
+    const relPaths = Object.hasOwn(ENGINE_CREDENTIAL_PATHS, runtime)
+      ? ENGINE_CREDENTIAL_PATHS[runtime]
+      : undefined
     if (!relPaths) throw new Error(`Runtime não suportado: ${runtime}`)
 
     const blob = await archivePaths(homeDir, relPaths)
@@ -221,7 +232,9 @@ export class EngineConnectionService {
     runtime: string,
     content: string
   ): Promise<ConnectionStatus> {
-    const relPaths = ENGINE_CREDENTIAL_PATHS[runtime]
+    const relPaths = Object.hasOwn(ENGINE_CREDENTIAL_PATHS, runtime)
+      ? ENGINE_CREDENTIAL_PATHS[runtime]
+      : undefined
     if (!relPaths) throw new Error(`Runtime não suportado: ${runtime}`)
     if (!content.trim()) throw new Error(`credencial de ${runtime} vazia`)
 
@@ -254,7 +267,7 @@ export class EngineConnectionService {
       where: { userId_runtime: { userId, runtime } },
     })
     if (!record?.encryptedCredential || record.status !== 'connected') return false
-    if (!ENGINE_CREDENTIAL_PATHS[runtime]) return false
+    if (!Object.hasOwn(ENGINE_CREDENTIAL_PATHS, runtime)) return false
     // expiresAt existe desde 151b471 mas nada nunca checava — uma missão
     // continuava materializando um token vencido silenciosamente até o CLI
     // falhar a autenticação lá dentro, em vez do control plane detectar aqui.
@@ -293,7 +306,9 @@ export class EngineConnectionService {
    * Retorna a lista descoberta (vazia se não há descoberta para o runtime).
    */
   async refreshModels(userId: string, runtime: string): Promise<string[]> {
-    const discover = MODEL_DISCOVERERS[runtime]
+    const discover = Object.hasOwn(MODEL_DISCOVERERS, runtime)
+      ? MODEL_DISCOVERERS[runtime]
+      : undefined
     if (!discover) return []
 
     return this.withTempHome('models', '.', async (home) => {
@@ -312,7 +327,7 @@ export class EngineConnectionService {
         }
         // Junto com os modelos, lê a quota restante do provider (best-effort): o
         // spend-guard usa isso para não estourar a conta do cliente (BYOK).
-        const readQuota = QUOTA_READERS[runtime]
+        const readQuota = Object.hasOwn(QUOTA_READERS, runtime) ? QUOTA_READERS[runtime] : undefined
         const quota = readQuota
           ? await readQuota(home).catch(() => ({ remaining: null, total: null }))
           : { remaining: null, total: null }

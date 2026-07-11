@@ -191,6 +191,31 @@ describe('ClientEnvironmentService.repoPathInEnv', () => {
     const svc = new ClientEnvironmentService(prisma as any, baseDir)
     expect(await svc.repoPathInEnv('user_1', 'octo/repo')).toBeNull()
   })
+
+  // Achado do CodeQL (uncontrolled data used in path expression): `repo` é
+  // input do cliente. O replace já elimina barra/ponto, mas o guard de
+  // contenção (resolvedDir dentro de env.path) é a defesa em profundidade —
+  // este teste trava que MESMO um `repo` tentando escapar nunca produz um
+  // path fora do ambiente do usuário.
+  test('repo com tentativa de path traversal nunca escapa do diretório do ambiente (defesa em profundidade)', async () => {
+    const prisma = fakePrisma()
+    const envPath = path.join(baseDir, 'env_1')
+    await fs.mkdir(envPath, { recursive: true })
+    prisma.store.set('env_1', {
+      id: 'env_1',
+      userId: 'user_1',
+      status: 'provisional',
+      path: envPath,
+      createdAt: new Date(),
+    })
+    const svc = new ClientEnvironmentService(prisma as any, baseDir)
+
+    const result = await svc.repoPathInEnv('user_1', '../../../../etc/passwd')
+
+    // O repo malicioso não tem .git (não foi clonado) — o resultado é null,
+    // mas o ponto do teste é que NADA fora de baseDir foi acessado/retornado.
+    expect(result).toBeNull()
+  })
 })
 
 describe('ClientEnvironmentService — faxina (TTL 24h)', () => {

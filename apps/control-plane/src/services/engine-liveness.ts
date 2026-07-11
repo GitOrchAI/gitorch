@@ -113,8 +113,18 @@ export async function checkLiveness(
 
   // Vivo. models e quota são coletados agora, mas são secundários: engolimos
   // qualquer erro (lista vazia / quota nula) para nunca derrubar `alive`.
-  const discover = (deps.discoverers ?? MODEL_DISCOVERERS)[runtime]
-  const readQuota = (deps.quotaReaders ?? QUOTA_READERS)[runtime]
+  //
+  // Object.hasOwn (não indexação direta [runtime]): discoverers/quotaReaders
+  // são objetos-literais comuns, que herdam de Object.prototype. Embora
+  // `runtime` já tenha passado pelo switch de `livenessCommandFor` acima (só
+  // chegamos aqui com 'antigravity'|'codex'|'claude'), o CodeQL não modela essa
+  // correlação de controle-de-fluxo e sinaliza a indexação como "unvalidated
+  // dynamic method call" (achado real do scanner) — o guard explícito fecha o
+  // alerta e documenta a invariante, sem depender de o leitor inferir o switch.
+  const discoverers = deps.discoverers ?? MODEL_DISCOVERERS
+  const quotaReaders = deps.quotaReaders ?? QUOTA_READERS
+  const discover = Object.hasOwn(discoverers, runtime) ? discoverers[runtime] : undefined
+  const readQuota = Object.hasOwn(quotaReaders, runtime) ? quotaReaders[runtime] : undefined
   const models = discover ? await discover(homeDir).catch(() => [] as string[]) : []
   const quota = readQuota ? await readQuota(homeDir).catch(() => emptyQuota()) : emptyQuota()
   return { alive: true, models, quota }

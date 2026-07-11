@@ -3,7 +3,7 @@ import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { randomBytes } from 'node:crypto'
-import { EngineConnectionService } from './engine-connection.js'
+import { EngineConnectionService, isSupportedRuntime } from './engine-connection.js'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function fakePrisma() {
@@ -348,5 +348,32 @@ describe('EngineConnectionService', () => {
     await expect(svc.connectFileCredential('u', 'inexistente', 'x')).rejects.toThrow(
       'não suportado'
     )
+  })
+
+  // Achado real do CodeQL (unvalidated dynamic method call): ENGINE_CREDENTIAL_PATHS
+  // e MODEL_DISCOVERERS/QUOTA_READERS são objetos-literais, que herdam de
+  // Object.prototype. Um `runtime` como 'constructor' (input de cliente, vindo
+  // de params de rota sem tipo restrito) resolve para uma função HERDADA do
+  // protótipo — verdadeira em `in`/checagem de falsy — escapando do guard "não
+  // suportado" e sendo tratada como config/função real de motor mais adiante.
+  // Object.hasOwn fecha essa classe inteira de bypass.
+  test('runtime = "constructor" (ou outra propriedade herdada de Object.prototype) é rejeitado como não suportado, não escapa via prototype pollution', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+
+    expect(isSupportedRuntime('constructor')).toBe(false)
+    expect(isSupportedRuntime('toString')).toBe(false)
+    expect(isSupportedRuntime('hasOwnProperty')).toBe(false)
+
+    await expect(svc.connectFileCredential('u', 'constructor', 'x')).rejects.toThrow(
+      'não suportado'
+    )
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-proto-'))
+    await expect(svc.captureFromHome('u', 'constructor', home)).rejects.toThrow('não suportado')
+    expect(await svc.materializeToHome('u', 'constructor', home)).toBe(false)
+    expect(await svc.refreshModels('u', 'constructor')).toEqual([])
+
+    await fs.rm(home, { recursive: true, force: true })
   })
 })
