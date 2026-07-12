@@ -42,6 +42,26 @@ describe('parseDevicePrompt', () => {
     expect(r.code).toBeUndefined()
   })
 
+  it('REGRESSÃO: url do antigravity como hyperlink OSC-8 (alvo+texto colados) não vira URL dupla', () => {
+    // Saída REAL do agy capturada no QA manual de 2026-07-12: o CLI imprime a
+    // URL como hyperlink OSC-8 — o alvo do link e o texto visível são a MESMA
+    // URL, e no buffer (pós-limpeza de CSI) elas ficam coladas SEM espaço:
+    // `...state=vneHe4m0oofnRq2s84ptNAhttps://accounts.google.com/...`.
+    // O \S+ guloso engolia as duas → Google 404. O match tem que parar na
+    // fronteira do segundo https:// e no `]` do terminador `]8;;`.
+    const target =
+      'https://accounts.google.com/o/oauth2/auth?access_type=offline&client_id=1071006060591&code_challenge=HAH9pOMGoeWhsGK&redirect_uri=https%3A%2F%2Fantigravity.google%2Foauth-callback&response_type=code&scope=openid&state=vneHe4m0oofnRq2s84ptNA'
+    const out =
+      'Your browser should open automatically. If not:\n' +
+      ` ]8;id=auth-url;${target}\\${target}]8;;\\\n` +
+      'If you aren’t automatically redirected, paste the authorization code below:'
+    const r = parseDevicePrompt(out, 'antigravity')
+    expect(r.url).toBe(target)
+    // a URL extraída tem que ser abrível: um único https://, sem lixo de OSC-8
+    expect(r.url?.match(/https:\/\//g)?.length).toBe(1)
+    expect(r.url).not.toContain(']8;')
+  })
+
   it('isDeviceRuntime narrows valid runtime strings', () => {
     expect(isDeviceRuntime('codex')).toBe(true)
     expect(isDeviceRuntime('claude')).toBe(true)

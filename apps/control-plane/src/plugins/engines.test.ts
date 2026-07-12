@@ -329,7 +329,8 @@ describe('login assistido (start / code / stream)', () => {
     })
     expect(res.statusCode).toBe(200)
     expect(JSON.parse(res.body)).toEqual({ ok: true })
-    expect(fake.handle.writeStdin).toHaveBeenCalledWith('the-code\n')
+    // runtime PTY → Enter é '\r' (ver submitCode)
+    expect(fake.handle.writeStdin).toHaveBeenCalledWith('the-code\r')
   })
 
   it('POST /api/v1/engines/login/:loginId/code com loginId desconhecido retorna 400', async () => {
@@ -473,6 +474,7 @@ describe('login assistido (start / code / stream)', () => {
       payload: { code: 'the-real-code' },
     })
     expect(ownerCodeRes.statusCode).toBe(200)
-    expect(fake.handle.writeStdin).toHaveBeenCalledWith('the-real-code\n')
+    // runtime PTY → Enter é '\r' (ver submitCode)
+    expect(fake.handle.writeStdin).toHaveBeenCalledWith('the-real-code\r')
   })
 })

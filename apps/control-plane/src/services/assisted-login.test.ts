@@ -80,7 +80,9 @@ describe('AssistedLoginService', () => {
     service.subscribe(id, 'user-1', (s) => states.push(s))
     emitStdout('https://claude.com/cai/oauth/authorize?code=true&state=abc\n')
     service.submitCode(id, 'user-1', '  the-pasted-code  ')
-    expect(handle.writeStdin).toHaveBeenCalledWith('the-pasted-code\n')
+    // Claude roda sob PTY: o Enter é '\r' — '\n' entregava o texto mas o TUI
+    // nunca submetia (código parado no prompt, login pendurado; QA 2026-07-12).
+    expect(handle.writeStdin).toHaveBeenCalledWith('the-pasted-code\r')
 
     emitStdout('Success! Your token:\nsk-ant-oat01-abc123XYZ\n')
     // captureClaudeToken grava em disco de verdade (mkdir+writeFile) antes de
@@ -394,7 +396,8 @@ describe('AssistedLoginService', () => {
     expect(unsubscribe).not.toBeNull()
     expect(ownerCb).toHaveBeenCalledWith({ phase: 'starting' })
     expect(() => service.submitCode(id, 'user-1', 'owner-code')).not.toThrow()
-    expect(handle.writeStdin).toHaveBeenCalledWith('owner-code\n')
+    // runtime PTY → Enter é '\r' (ver comentário no submitCode)
+    expect(handle.writeStdin).toHaveBeenCalledWith('owner-code\r')
   })
 
   it('envHome (HOME do ambiente): makeHomeImpl aponta pro dir do ambiente e o cleanup NÃO o apaga — a credencial vive ali', async () => {

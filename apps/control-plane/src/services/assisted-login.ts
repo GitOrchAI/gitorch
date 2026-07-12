@@ -219,7 +219,12 @@ export class AssistedLoginService {
   submitCode(id: string, userId: string, code: string): void {
     const session = this.sessions.get(id)
     if (!session || session.userId !== userId) throw new Error('sessão de login não encontrada')
-    session.handle.writeStdin(`${code.trim()}\n`)
+    // Num PTY, o Enter é '\r' (carriage return): '\n' entrega o texto mas o
+    // TUI nunca "submete" — o código ficava parado no prompt e o login pendia
+    // pra sempre (observado ao vivo no QA manual de 2026-07-12, Claude).
+    // Codex roda por pipes (sem PTY), onde '\n' é o correto.
+    const enter = NEEDS_PTY[session.runtime] ? '\r' : '\n'
+    session.handle.writeStdin(`${code.trim()}${enter}`)
   }
 
   private onStdout(id: string, chunk: string): void {

@@ -13,19 +13,33 @@ export interface DevicePrompt {
 // cursor). Removidas antes do match para a URL não vir picotada por escapes.
 const ANSI = /\[[0-9;?]*[A-Za-z]/g
 
+// Cauda de URL que NÃO atravessa fronteiras: para em espaço, em `]` (o
+// terminador visível `]8;;` de hyperlink OSC-8) e ANTES de um segundo
+// `https://`. Necessário porque o agy imprime a URL como hyperlink OSC-8: o
+// alvo do link e o texto visível são a MESMA URL, coladas SEM espaço no buffer
+// limpo — um `\S+` guloso engolia as duas (`...state=XyzHTTPS://accounts...`)
+// e o Google respondia 404 (observado ao vivo no QA manual de 2026-07-12). O
+// primeiro match é o alvo OSC-8, que chega inteiro e sem quebra de linha.
+const URL_TAIL = '(?:(?!https://)[^\\s\\]\\u001b])'
+
+function matchUrl(clean: string, prefix: string, tail: '+' | '*'): string | undefined {
+  const escaped = prefix.replace(/[.?]/g, (m) => `\\${m}`)
+  return clean.match(new RegExp(escaped + URL_TAIL + tail))?.[0]
+}
+
 export function parseDevicePrompt(buffered: string, runtime: DeviceRuntime): DevicePrompt {
   const clean = buffered.replace(ANSI, '')
   switch (runtime) {
     case 'codex': {
       // `codex login --device-auth`: URL fixa + código XXXX-XXXX.
-      const url = clean.match(/https:\/\/auth\.openai\.com\/codex\/device\S*/)?.[0]
+      const url = matchUrl(clean, 'https://auth.openai.com/codex/device', '*')
       const code = clean.match(/\b[A-Z0-9]{4,8}-[A-Z0-9]{4,8}\b/)?.[0]
       return { ...(url ? { url } : {}), ...(code ? { code } : {}) }
     }
     case 'claude': {
       // `claude setup-token` sob PTY: URL OAuth de authorization-code. O código
       // NÃO vem do CLI — o usuário pega na página de callback e cola de volta.
-      const url = clean.match(/https:\/\/claude\.com\/cai\/oauth\/authorize\?\S+/)?.[0]
+      const url = matchUrl(clean, 'https://claude.com/cai/oauth/authorize?', '+')
       return url ? { url } : {}
     }
     case 'antigravity': {
@@ -35,7 +49,7 @@ export function parseDevicePrompt(buffered: string, runtime: DeviceRuntime): Dev
       // Enter é responsabilidade de quem chama, não deste parser). MESMO
       // padrão bidirecional do Claude: sem código no stdout, o usuário cola de
       // volta o que a página antigravity.google/oauth-callback devolver.
-      const url = clean.match(/https:\/\/accounts\.google\.com\/o\/oauth2\/auth\?\S+/)?.[0]
+      const url = matchUrl(clean, 'https://accounts.google.com/o/oauth2/auth?', '+')
       return url ? { url } : {}
     }
   }
