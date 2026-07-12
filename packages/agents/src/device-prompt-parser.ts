@@ -23,8 +23,7 @@ const ANSI = /\[[0-9;?]*[A-Za-z]/g
 const URL_TAIL = '(?:(?!https://)[^\\s\\]\\u001b])'
 
 function matchUrl(clean: string, prefix: string, tail: '+' | '*'): string | undefined {
-  const escaped = prefix.replace(/[.?]/g, (m) => `\\${m}`)
-  return clean.match(new RegExp(escaped + URL_TAIL + tail))?.[0]
+  return clean.match(new RegExp(prefix + URL_TAIL + tail))?.[0]
 }
 
 export function parseDevicePrompt(buffered: string, runtime: DeviceRuntime): DevicePrompt {
@@ -32,14 +31,14 @@ export function parseDevicePrompt(buffered: string, runtime: DeviceRuntime): Dev
   switch (runtime) {
     case 'codex': {
       // `codex login --device-auth`: URL fixa + código XXXX-XXXX.
-      const url = matchUrl(clean, 'https://auth.openai.com/codex/device', '*')
+      const url = matchUrl(clean, 'https://auth\\.openai\\.com/codex/device', '*')
       const code = clean.match(/\b[A-Z0-9]{4,8}-[A-Z0-9]{4,8}\b/)?.[0]
       return { ...(url ? { url } : {}), ...(code ? { code } : {}) }
     }
     case 'claude': {
       // `claude setup-token` sob PTY: URL OAuth de authorization-code. O código
       // NÃO vem do CLI — o usuário pega na página de callback e cola de volta.
-      const url = matchUrl(clean, 'https://claude.com/cai/oauth/authorize?', '+')
+      const url = matchUrl(clean, 'https://claude\\.com/cai/oauth/authorize\\?', '+')
       return url ? { url } : {}
     }
     case 'antigravity': {
@@ -49,7 +48,7 @@ export function parseDevicePrompt(buffered: string, runtime: DeviceRuntime): Dev
       // Enter é responsabilidade de quem chama, não deste parser). MESMO
       // padrão bidirecional do Claude: sem código no stdout, o usuário cola de
       // volta o que a página antigravity.google/oauth-callback devolver.
-      const url = matchUrl(clean, 'https://accounts.google.com/o/oauth2/auth?', '+')
+      const url = matchUrl(clean, 'https://accounts\\.google\\.com/o/oauth2/auth\\?', '+')
       return url ? { url } : {}
     }
   }
