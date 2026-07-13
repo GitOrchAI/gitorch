@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronRight, Check, ExternalLink, Loader2, Cpu, Sparkles, Terminal } from 'lucide-react'
 import { useLanguage } from '../../LanguageContext'
+import { parseTokenResponse, type LoginState } from './engine-status'
 
 interface StepConnectEngineProps {
   apiBaseUrl: string
@@ -14,13 +15,6 @@ const ENGINES = [
   { id: 'codex', runtime: 'codex', name: 'Codex', Icon: Sparkles },
   { id: 'antigravity', runtime: 'antigravity', name: 'Antigravity', Icon: Terminal },
 ] as const
-
-type LoginState =
-  | { phase: 'idle' }
-  | { phase: 'starting' }
-  | { phase: 'url_ready'; url: string; code?: string }
-  | { phase: 'connected'; models?: number; quota?: number | null }
-  | { phase: 'error'; message: string }
 
 export default function StepConnectEngine({
   apiBaseUrl,
@@ -36,6 +30,12 @@ export default function StepConnectEngine({
 
   const [states, setStates] = useState<Record<string, LoginState>>({})
   const [pastedCode, setPastedCode] = useState<Record<string, string>>({})
+  // Rede de segurança (paste manual): quando o login assistido falha, o cliente
+  // cola aqui o token/credencial que o CLI gerou. POSTa em /engines/:runtime/token,
+  // que valida o formato e roda a liveness — o card reflete o status REAL (nunca
+  // connected sem a liveness verde).
+  const [pastedToken, setPastedToken] = useState<Record<string, string>>({})
+  const [manualBusy, setManualBusy] = useState<Record<string, boolean>>({})
   const loginIds = useRef<Record<string, string>>({})
   const sources = useRef<Record<string, EventSource>>({})
 
@@ -153,6 +153,29 @@ export default function StepConnectEngine({
     }
   }
 
+  // Paste manual (rede de segurança): envia o token/credencial colado à rota que
+  // valida e roda a liveness. O card só vira 'connected' se a liveness passou —
+  // parseTokenResponse traduz a resposta honesta ({connected, status}) em estado.
+  const submitManualToken = async (id: string, runtime: string) => {
+    const token = (pastedToken[id] ?? '').trim()
+    if (!token || manualBusy[id]) return
+    setManualBusy((b) => ({ ...b, [id]: true }))
+    try {
+      const res = await fetch(`${apiBaseUrl}/api/v1/engines/${runtime}/token`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token }),
+      })
+      const json = (await res.json().catch(() => null)) as unknown
+      setStates((s) => ({ ...s, [id]: parseTokenResponse(json, t('setup.connectError')) }))
+    } catch {
+      setStates((s) => ({ ...s, [id]: { phase: 'error', message: t('setup.connectError') } }))
+    } finally {
+      setManualBusy((b) => ({ ...b, [id]: false }))
+    }
+  }
+
   const anyConnected = cards.some((c) => states[c.id]?.phase === 'connected')
 
   return (
@@ -251,6 +274,45 @@ export default function StepConnectEngine({
                     {t('setup.connectBtn')}
                   </button>
                 </div>
+              )}
+
+              {/* Rede de segurança: paste manual do token/credencial que o CLI
+                  gerou. Sempre disponível (recolhido) enquanto não conectou;
+                  abre sozinho quando o login assistido falhou. */}
+              {!isConnected && (
+                <details
+                  className="mt-3 rounded-xl"
+                  open={state.phase === 'error'}
+                  style={{ background: 'var(--gl-surface-2)', border: '1px solid var(--gl-hair)' }}
+                >
+                  <summary
+                    className="wz-opt-desc cursor-pointer"
+                    style={{ padding: '10px 12px', listStyle: 'none' }}
+                  >
+                    {t('setup.connectManualToggle')}
+                  </summary>
+                  <div className="space-y-2 px-3 pb-3">
+                    <p className="wz-opt-desc" style={{ fontSize: '0.76rem' }}>
+                      {runtime === 'claude'
+                        ? t('setup.connectManualHintEnv')
+                        : t('setup.connectManualHintFile')}
+                    </p>
+                    <textarea
+                      className="wz-field"
+                      rows={3}
+                      placeholder={t('setup.connectPaste')}
+                      value={pastedToken[id] ?? ''}
+                      onChange={(e) => setPastedToken((p) => ({ ...p, [id]: e.target.value }))}
+                    />
+                    <button
+                      className="wz-btn wz-btn-primary"
+                      disabled={!(pastedToken[id] ?? '').trim() || !!manualBusy[id]}
+                      onClick={() => submitManualToken(id, runtime)}
+                    >
+                      {manualBusy[id] ? t('setup.connecting') : t('setup.connectManualSubmit')}
+                    </button>
+                  </div>
+                </details>
               )}
             </div>
           )
