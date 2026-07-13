@@ -173,8 +173,14 @@ export class ClientEnvironmentService {
   /**
    * Destrói um ambiente: apaga o diretório em disco (com as credenciais) e o
    * registro. O rm é contido ao baseDir (guard de path-traversal) — nunca apaga
-   * fora da raiz de ambientes. Best-effort em cada passo: uma falha no disco não
-   * impede remover o registro, e vice-versa.
+   * fora da raiz de ambientes. A ORDEM importa para SEGURANÇA: o registro do
+   * banco é a ÚNICA forma do GC (listExpired varre linhas do banco) reencontrar
+   * o dir; por isso só apaga o registro DEPOIS do dir sumir (rm OK, ou dir
+   * inexistente — force:true resolve sem erro). Se o rm falhar (disco ocupado,
+   * lock, permissão), preserva o registro e retorna: apagá-lo aqui deixaria a
+   * credencial órfã em disco FORA do alcance da faxina. O GC retenta no tick
+   * seguinte. Quando o guard barra a remoção (rel vazio/'..'/absoluto), não há
+   * dir sob nossa gestão para orfanar, então o registro é removido.
    */
   async destroy(envId: string): Promise<void> {
     const env = await this.prisma.clientEnvironment.findUnique({ where: { id: envId } })
@@ -188,7 +194,17 @@ export class ClientEnvironmentService {
       const root = path.resolve(this.baseDir)
       const rel = path.relative(root, resolved)
       if (rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)) {
-        await fs.rm(resolved, { recursive: true, force: true }).catch(() => undefined)
+        try {
+          await fs.rm(resolved, { recursive: true, force: true })
+        } catch (err) {
+          // rm falhou: NÃO deleta o registro. Deixa o GC reencontrar o dir
+          // (com a credencial) pela linha do banco e retentar no próximo tick.
+          console.warn(
+            '[environment] destroy: rm do dir falhou, registro preservado para o GC retentar',
+            { envId, error: err instanceof Error ? err.message : String(err) }
+          )
+          return
+        }
       }
     }
     await this.prisma.clientEnvironment.delete({ where: { id: envId } }).catch(() => undefined)
