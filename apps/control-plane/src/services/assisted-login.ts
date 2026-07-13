@@ -279,7 +279,7 @@ export class AssistedLoginService {
       const envDir = path.join(session.handle.hostHome, '.gitorch', 'env')
       await fs.mkdir(envDir, { recursive: true, mode: 0o700 })
       await fs.writeFile(path.join(envDir, 'CLAUDE_CODE_OAUTH_TOKEN'), token, { mode: 0o600 })
-      await this.engineConnections.captureFromHome(
+      const st = await this.engineConnections.captureFromHome(
         session.userId,
         'claude',
         session.handle.hostHome,
@@ -289,6 +289,14 @@ export class AssistedLoginService {
           expiresAt: new Date(Date.now() + CLAUDE_TOKEN_TTL_MS),
         }
       )
+      // Anti-fachada: a credencial foi arquivada, mas só é 'connected' se a
+      // validação viva (dentro de captureFromHome) passou. status:'error' aqui
+      // significa que o motor não respondeu ao comando de liveness — mentir
+      // 'connected' faria a missão falhar opaca lá na frente.
+      if (st.status !== 'connected') {
+        this.fail(id, st.lastError ?? 'motor não respondeu à validação viva')
+        return
+      }
       this.setState(id, { phase: 'connected' })
     } catch (err) {
       this.fail(id, (err as Error).message)
@@ -327,11 +335,18 @@ export class AssistedLoginService {
       // single-threaded, não há como o timeout intercalar entre este set e o
       // início do await) e não chamaria fail() nem apagaria a sessão.
       session.capturing = true
-      await this.engineConnections.captureFromHome(
+      const st = await this.engineConnections.captureFromHome(
         session.userId,
         session.runtime,
         session.handle.hostHome
       )
+      // Anti-fachada (mesma regra do Claude): a saída 0 do CLI só prova que o
+      // login LOCAL terminou; 'connected' exige a validação viva verde que
+      // captureFromHome roda. status:'error' ⇒ falha honesta, nunca 'connected'.
+      if (st.status !== 'connected') {
+        this.fail(id, st.lastError ?? 'motor não respondeu à validação viva')
+        return
+      }
       this.setState(id, { phase: 'connected' })
     } catch (err) {
       this.fail(id, (err as Error).message)

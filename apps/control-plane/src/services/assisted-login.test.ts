@@ -366,6 +366,56 @@ describe('AssistedLoginService', () => {
     })
   })
 
+  it('B1 claude: liveness reprovada (captureFromHome status:error) → estado vira error, não connected', async () => {
+    const { handle, emitStdout } = fakeHandle()
+    // captureFromHome arquiva a credencial mas a validação viva REPROVA: devolve
+    // status 'error'. O login NÃO pode dizer 'connected' — seria fachada (dizer
+    // conectado sem o motor ter respondido de verdade).
+    const engineConnections = {
+      captureFromHome: vi.fn().mockResolvedValue({
+        runtime: 'claude',
+        status: 'error',
+        lastError: 'motor não respondeu',
+      }),
+    }
+    const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
+    const service = new AssistedLoginService(engineConnections as never, {
+      image: 'img',
+      runDeviceLoginImpl,
+    })
+    const states: unknown[] = []
+    const id = service.start('user-1', 'claude')
+    service.subscribe(id, 'user-1', (s) => states.push(s))
+    emitStdout('Success! Your token:\nsk-ant-oat01-abc123XYZ\n')
+    await vi.waitFor(() => {
+      expect(engineConnections.captureFromHome).toHaveBeenCalled()
+    })
+    await vi.waitFor(() => {
+      expect(states.at(-1)).toEqual({ phase: 'error', message: 'motor não respondeu' })
+    })
+  })
+
+  it('B1 codex/antigravity (onExit): liveness reprovada (status:error) → estado vira error, não connected', async () => {
+    const { handle, emitExit } = fakeHandle()
+    const engineConnections = {
+      captureFromHome: vi
+        .fn()
+        .mockResolvedValue({ runtime: 'codex', status: 'error', lastError: 'motor não respondeu' }),
+    }
+    const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
+    const service = new AssistedLoginService(engineConnections as never, {
+      image: 'img',
+      runDeviceLoginImpl,
+    })
+    const states: unknown[] = []
+    const id = service.start('user-1', 'codex')
+    service.subscribe(id, 'user-1', (s) => states.push(s))
+    emitExit(0)
+    await vi.waitFor(() => {
+      expect(states.at(-1)).toEqual({ phase: 'error', message: 'motor não respondeu' })
+    })
+  })
+
   it('IDOR: subscribe/submitCode de outro usuário não têm acesso à sessão (nem leem, nem escrevem); o dono continua funcionando', () => {
     const { handle } = fakeHandle()
     const engineConnections = fakeEngineConnections()
