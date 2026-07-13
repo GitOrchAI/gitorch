@@ -8,13 +8,26 @@ import * as path from 'node:path'
 // o login grava SOBREVIVER ao --rm e poder ser capturada).
 const CONTAINER_HOME = '/home/agent'
 
-// Largo o bastante pra uma URL de OAuth de ~350-400 caracteres NUNCA quebrar
-// em múltiplas linhas dentro do terminal do container. Achado real (08/07):
-// sem isto, `claude setup-token` e o `agy` imprimem a URL de autorização
-// quebrada a cada ~80 colunas, e o parser (device-prompt-parser.ts) só
-// capturava a 1ª linha, perdendo o resto (ex.: `redirect_uri`) — o provider
-// então rejeitava a autorização com "parâmetro ausente".
-const PTY_COLS = 400
+// Largo o bastante pra uma URL de OAuth NUNCA quebrar em múltiplas linhas
+// dentro do terminal do container. Achado real (08/07): sem isto, `claude
+// setup-token` e o `agy` imprimem a URL de autorização quebrada a cada ~80
+// colunas, e o parser (device-prompt-parser.ts) só capturava a 1ª linha,
+// perdendo o resto (ex.: `redirect_uri`) — o provider então rejeitava a
+// autorização com "parâmetro ausente".
+// 400 (valor original) já não bastava: reproduzindo contra o agy real
+// (1.0.16, 13/07) a URL do Google OAuth do Antigravity tem ~450-500 chars
+// (mais escopos que Claude/Codex) — em 400 colunas o agy quebrava o hyperlink
+// OSC-8 em duas "linhas" impressas, e a 1a saía sem o terminador OSC-8
+// próprio (BEL) antes de um reset de cor no meio dela. Resultado: ou o
+// stripAnsi tratava aquela URI sem terminador como lixo de escape e apagava a
+// URL inteira, ou o matchUrl pegava a cópia truncada num escape percentual
+// pela metade (ambos os modos de falha reais, cobertos pelos testes "E2" em
+// assisted-login.test.ts com o fixture real de A2). Confirmado ao vivo: com
+// PTY_COLS=1000 o agy emite o hyperlink OSC-8 UMA única vez, corretamente
+// terminado (BEL), sem quebra. 2000 dá folga extra (Google pode crescer o nº
+// de scopes) sem custo real — é só o tamanho do buffer do PTY virtual, não
+// uma tela física.
+const PTY_COLS = 2000
 const PTY_ROWS = 50
 
 type PtySpawn = typeof ptySpawnDefault

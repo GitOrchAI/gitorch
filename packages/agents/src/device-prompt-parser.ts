@@ -24,6 +24,20 @@ export interface DevicePrompt {
 // cursor) e qualquer ESC remanescente.
 // eslint-disable-next-line no-control-regex -- ESC/BEL são o alvo desta limpeza
 const OSC = /\x1b\][^\x07\x1b\n]*(?:\x07|\x1b\\)?/g
+// Hyperlink OSC-8 (`ESC]8;params;URI` terminado por BEL/ST): DIFERENTE do OSC
+// genérico acima — aqui a URI é o próprio conteúdo que precisamos (é onde o
+// agy imprime a URL de autorização do Google como link clicável). Achado real
+// ao iterar contra o binário (agy 1.0.16, fixture A2
+// apps/control-plane/src/services/__fixtures__/agy-login.stdout.txt): o agy
+// NÃO fecha a URI com BEL/ST antes de um reset de cor (`ESC[m`) que aparece
+// no meio dela — a URI "esbarra" direto num CSI sem que o hyperlink tenha seu
+// próprio terminador OSC. O OSC genérico trata essa URI inteira como "lixo de
+// escape sem terminador" e a apaga por completo — bug real observado: a URL
+// do Google OAuth sumia do estado (nunca virava 'url_ready'). Aqui capturamos
+// e PRESERVAMOS a URI como texto visível; só a moldura (`ESC]8;id=...;` e o
+// fechamento `ESC]8;;BEL`) é removida.
+// eslint-disable-next-line no-control-regex -- ESC/BEL são o alvo desta limpeza
+const OSC8_HYPERLINK = /\x1b\]8;[^;]*;([^\x07\x1b\n]*)(?:\x07|\x1b\\)?/g
 // eslint-disable-next-line no-control-regex -- byte ESC é o alvo desta limpeza
 const CSI = /\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]/g
 // eslint-disable-next-line no-control-regex -- byte ESC é o alvo desta limpeza
@@ -31,11 +45,18 @@ const NF_ESC = /\x1b[\x20-\x2f]*[\x30-\x7e]/g
 // eslint-disable-next-line no-control-regex -- byte ESC é o alvo desta limpeza
 const LONE_ESC = /\x1b/g
 
-// Ordem importa: OSC e CSI antes do escape genérico (NF_ESC), senão este comeria
-// só o `ESC]`/`ESC[` e deixaria o corpo da sequência como lixo. LONE_ESC varre
-// qualquer ESC que sobrou (ex.: no fim do buffer, sem byte final).
+// Ordem importa: hyperlink OSC-8 primeiro (preserva a URI antes de qualquer
+// outra limpeza mexer nela), OSC genérico e CSI em seguida, antes do escape
+// genérico (NF_ESC) — senão este comeria só o `ESC]`/`ESC[` e deixaria o corpo
+// da sequência como lixo. LONE_ESC varre qualquer ESC que sobrou (ex.: no fim
+// do buffer, sem byte final).
 export function stripAnsi(s: string): string {
-  return s.replace(OSC, '').replace(CSI, '').replace(NF_ESC, '').replace(LONE_ESC, '')
+  return s
+    .replace(OSC8_HYPERLINK, '$1')
+    .replace(OSC, '')
+    .replace(CSI, '')
+    .replace(NF_ESC, '')
+    .replace(LONE_ESC, '')
 }
 
 // Cauda de URL que NÃO atravessa fronteiras: para em espaço, em `]` (o
@@ -48,7 +69,16 @@ export function stripAnsi(s: string): string {
 const URL_TAIL = '(?:(?!https://)[^\\s\\]\\u001b])'
 
 function matchUrl(clean: string, prefix: string, tail: '+' | '*'): string | undefined {
-  return clean.match(new RegExp(prefix + URL_TAIL + tail))?.[0]
+  // `g`: terminal estreito (achado real, ver PTY_COLS em device-login-runner.ts)
+  // faz o agy quebrar o hyperlink OSC-8 em mais de uma "linha" impressa — cada
+  // pedaço casa o prefixo de novo. Preferir o ÚLTIMO match (não o mais longo:
+  // um pedaço truncado no meio de um escape percentual pode ser TEXTUALMENTE
+  // mais longo que a versão limpa e completa impressa depois) — o que o CLI
+  // desenha por último é o que fica visível/válido na tela. Com PTY largo o
+  // bastante (fix real: PTY_COLS folgado), só há UM match e isto vira no-op.
+  const matches = clean.match(new RegExp(prefix + URL_TAIL + tail, 'g'))
+  if (!matches || matches.length === 0) return undefined
+  return matches[matches.length - 1]
 }
 
 export function parseDevicePrompt(buffered: string, runtime: DeviceRuntime): DevicePrompt {

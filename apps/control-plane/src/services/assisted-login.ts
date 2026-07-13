@@ -39,6 +39,22 @@ const MENU_SELECT_MARKER: Partial<Record<DeviceRuntime, RegExp>> = {
   antigravity: /select login method/i,
 }
 
+// Investigação E2 (13/07): a hipótese de que este ÚNICO '\r' "vaza" no widget
+// de colar código como um submit vazio (agy saindo sozinho code=0 em ~300ms,
+// ANTES do usuário poder colar) NÃO reproduziu iterando contra o binário real
+// (agy 1.0.16, container localhost/gitorch-agent:latest, sem mocks, via um
+// harness ad-hoc que chamava runDeviceLogin de verdade): o processo ficou
+// vivo minutos parado no widget, sobreviveu a um submitCode() com código de
+// teste (tentou de verdade a troca OAuth com o Google, "Malformed auth code"
+// — esperado) e só terminou quando o próprio timeout/kill do teste agiu. O
+// "AUTO-SAI em ~300ms" observado antes batia com
+// scripts/dev/capture-cli-stdout.ts chamando handle.kill() (de propósito)
+// assim que a URL aparece no buffer — não com uma saída espontânea do agy. O
+// bug REAL encontrado (e corrigido) foi outro: PTY_COLS estreito demais pra a
+// URL do Antigravity, corrigido em device-login-runner.ts — ver o comentário
+// lá e os testes "E2" em assisted-login.test.ts (fixture real A2,
+// agy-login.stdout.txt).
+
 const CLAUDE_TOKEN_TTL_MS = 365 * 24 * 60 * 60 * 1000
 
 export type LoginState =

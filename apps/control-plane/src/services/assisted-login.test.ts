@@ -5,7 +5,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { stripAnsi, extractClaudeToken } from '@gitorch/agents'
+import { stripAnsi, extractClaudeToken, parseDevicePrompt } from '@gitorch/agents'
 import { AssistedLoginService } from './assisted-login.js'
 
 function fakeHandle() {
@@ -735,5 +735,82 @@ describe('AssistedLoginService — E1: captura de token Claude resiliente a ANSI
     await vi.waitFor(() => {
       expect(states.at(-1)).toEqual({ phase: 'connected' })
     })
+  })
+})
+
+describe('AssistedLoginService — E2: antigravity sobrevive ao stdout real do agy', () => {
+  const agyFixture = readFileSync(
+    fileURLToPath(new URL('./__fixtures__/agy-login.stdout.txt', import.meta.url)),
+    'utf8'
+  )
+
+  // Oráculo extraído por slicing manual do fixture (independente de
+  // stripAnsi/parseDevicePrompt) — a 2a cópia do hyperlink OSC-8 do agy, que
+  // é a completa (a 1a esbarra num reset de cor sem terminador OSC-8 próprio
+  // antes dele e sai truncada — ver comentário em device-prompt-parser.ts).
+  const EXPECTED_GOOGLE_URL =
+    'https://accounts.google.com/o/oauth2/auth?access_type=offline&client_id=1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com&code_challenge=Z5KSy6sAviAMwqbqTrszyhM7k_JSou6n9Gu_-be0HQc&code_challenge_method=S256&prompt=consent&redirect_uri=https%3A%2F%2Fantigravity.google%2Foauth-callback&response_type=code&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcloud-platform+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fuserinfo.email+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fuserinfo.profile+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcclog+https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fexperimentsandconfigs+openid&state=REDACTED&state=REDACTED'
+
+  // Investigação real (13/07), iterando contra o binário real (agy 1.0.16,
+  // container localhost/gitorch-agent:latest, sem mocks):
+  //
+  // 1) A hipótese original de A2 ("o \r do menu vaza no readline do widget de
+  //    código como submit vazio e o agy sai sozinho em ~300ms") NÃO reproduziu.
+  //    Rodando runDeviceLogin de verdade, o processo ficou vivo >20s parado no
+  //    widget "paste the authorization code", aceitou um código de teste
+  //    digitado via submitCode() e tentou de verdade a troca OAuth com o
+  //    Google (erro "Malformed auth code" — esperado, código era lixo). O
+  //    "AUTO-SAI em ~300ms" da investigação anterior bate, byte a byte, com o
+  //    tempo entre scripts/dev/capture-cli-stdout.ts achar a URL no buffer e
+  //    chamar handle.kill() (o PRÓPRIO script mata o processo ao achar a URL,
+  //    de propósito, pra parar de capturar) — não com o agy saindo sozinho.
+  //
+  // 2) O bug REAL encontrado ao iterar foi outro: com PTY_COLS=400 (valor
+  //    antigo), a URL do Google OAuth do Antigravity (~450-500 chars, mais
+  //    escopos que Claude/Codex) não cabia numa linha e o agy quebrava a
+  //    renderização do hyperlink OSC-8 em duas "linhas" impressas — a 1a saía
+  //    sem terminador OSC-8 próprio (BEL) antes de um reset de cor no meio
+  //    dela. A limpeza OSC genérica tratava aquela URI inteira como "lixo de
+  //    escape sem terminador" e a APAGAVA por completo (a URL sumia do
+  //    estado, nunca chegando a 'url_ready' com link nenhum).
+  //
+  // O FIX PRINCIPAL (causa raiz) é o PTY_COLS mais largo em
+  // device-login-runner.ts: confirmado ao vivo que, largo o bastante, o agy
+  // emite o hyperlink OSC-8 uma ÚNICA vez, corretamente terminado — o cenário
+  // abaixo deixa de ocorrer em produção. Os dois testes abaixo travam uma
+  // correção DEFENSIVA complementar (stripAnsi/matchUrl não perdem nem
+  // truncam a URL mesmo que o hyperlink saia partido) contra o fixture real
+  // de A2 — robustez extra caso um terminal estreito (ou outra versão do
+  // agy) volte a produzir esse padrão.
+  it('FIXTURE REAL (A2): parseDevicePrompt extrai a URL COMPLETA do hyperlink OSC-8 (não some, não trunca)', () => {
+    const result = parseDevicePrompt(agyFixture, 'antigravity')
+    expect(result.url).toBe(EXPECTED_GOOGLE_URL)
+  })
+
+  it('FIXTURE REAL (A2) entregue chunk a chunk: exatamente 1 CR (menu) e o estado final é url_ready com a URL completa', () => {
+    const { handle, emitStdout } = fakeHandle()
+    const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
+    const service = new AssistedLoginService(fakeEngineConnections() as never, {
+      image: 'img',
+      runDeviceLoginImpl,
+    })
+    const states: unknown[] = []
+    const id = service.start('user-1', 'antigravity')
+    service.subscribe(id, 'user-1', (s) => states.push(s))
+
+    // PTY real entrega em pedaços pequenos, não tudo de uma vez — simula o
+    // streaming byte a byte (o parser tem que resistir a URL/hyperlink
+    // partidos em fronteiras de chunk arbitrárias).
+    const CHUNK_SIZE = 48
+    for (let i = 0; i < agyFixture.length; i += CHUNK_SIZE) {
+      emitStdout(agyFixture.slice(i, i + CHUNK_SIZE))
+    }
+
+    // Um único Enter (CR) pra confirmar "Google OAuth" no menu — nunca
+    // reenviado, mesmo com o buffer crescendo e sendo reparseado a cada chunk.
+    expect(handle.writeStdin).toHaveBeenCalledTimes(1)
+    expect(handle.writeStdin).toHaveBeenCalledWith('\r')
+
+    expect(states.at(-1)).toEqual({ phase: 'url_ready', url: EXPECTED_GOOGLE_URL })
   })
 })
