@@ -127,3 +127,18 @@ export function connectErrorHintKey(kind: ConnectErrorKind): string {
       return 'setup.connectErrorHintGeneric'
   }
 }
+
+// Prontidão do provisionamento no StepReady. NÃO há endpoint dedicado de status
+// de provisionamento (a missão `clone_and_start_engines` roda no scheduler sem
+// rota de status — ver relatório/fast-follow); GET /api/v1/engines é o sinal
+// proxy honesto: >=1 motor conectado => pronto; nenhum conectado mas algum em
+// erro => falhou (oferece retry); senão ainda provisionando (segue no polling).
+export type ProvisionStatus = 'provisioning' | 'ready' | 'failed'
+export function deriveProvisionStatus(
+  engines: EngineSnapshot[] | null | undefined
+): ProvisionStatus {
+  if (!engines || engines.length === 0) return 'provisioning'
+  if (engines.some((e) => e.status === 'connected')) return 'ready'
+  if (engines.some((e) => e.status === 'error')) return 'failed'
+  return 'provisioning'
+}

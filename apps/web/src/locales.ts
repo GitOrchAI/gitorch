@@ -219,6 +219,9 @@ export const locales = {
       readyLedgerActivating: 'Environment activating',
       readyLedgerActivatingDesc:
         'Cortex memory, the code graph and Cadence orchestration are warming up for your repo.',
+      readyLedgerActivatingReady: 'Environment is live',
+      readyLedgerActivatingFailed: 'We could not confirm activation',
+      readyRetry: 'Try again',
       readyKeys: 'Integration keys & CI setup',
       readyKeysHint:
         'Add this secret to your GitHub Actions so agents running on GitHub can report back:',
@@ -450,6 +453,9 @@ export const locales = {
       readyLedgerActivating: 'Ambiente ativando',
       readyLedgerActivatingDesc:
         'A memória Cortex, o grafo de código e a orquestração Cadence estão aquecendo para o seu repositório.',
+      readyLedgerActivatingReady: 'Ambiente ativo',
+      readyLedgerActivatingFailed: 'Não conseguimos confirmar a ativação',
+      readyRetry: 'Tentar de novo',
       readyKeys: 'Chaves de integração e CI',
       readyKeysHint:
         'Adicione este segredo nas suas GitHub Actions para os agentes que rodam no GitHub reportarem de volta:',
@@ -681,6 +687,9 @@ export const locales = {
       readyLedgerActivating: 'Entorno activándose',
       readyLedgerActivatingDesc:
         'La memoria Cortex, el grafo de código y la orquestación Cadence se están preparando para tu repositorio.',
+      readyLedgerActivatingReady: 'Entorno activo',
+      readyLedgerActivatingFailed: 'No pudimos confirmar la activación',
+      readyRetry: 'Reintentar',
       readyKeys: 'Claves de integración y CI',
       readyKeysHint:
         'Añade este secreto a tus GitHub Actions para que los agentes que corren en GitHub reporten de vuelta:',

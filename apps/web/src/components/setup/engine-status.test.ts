@@ -5,6 +5,7 @@ import {
   normalizeLoginState,
   classifyConnectError,
   connectErrorHintKey,
+  deriveProvisionStatus,
 } from './engine-status'
 
 describe('modelCount', () => {
@@ -152,5 +153,34 @@ describe('connectErrorHintKey', () => {
     expect(connectErrorHintKey('terms')).toBe('setup.connectErrorHintTerms')
     expect(connectErrorHintKey('capture')).toBe('setup.connectErrorHintCapture')
     expect(connectErrorHintKey('generic')).toBe('setup.connectErrorHintGeneric')
+  })
+})
+
+describe('deriveProvisionStatus', () => {
+  it('nada ainda (null/lista vazia) -> provisioning (segue no polling, não trava)', () => {
+    expect(deriveProvisionStatus(null)).toBe('provisioning')
+    expect(deriveProvisionStatus(undefined)).toBe('provisioning')
+    expect(deriveProvisionStatus([])).toBe('provisioning')
+  })
+
+  it('pelo menos um motor conectado -> ready (fim do spinner eterno)', () => {
+    expect(deriveProvisionStatus([{ runtime: 'claude', status: 'connected', models: ['a'] }])).toBe(
+      'ready'
+    )
+    // conectado vence um erro de outro motor (basta um vivo pra seguir)
+    expect(
+      deriveProvisionStatus([
+        { runtime: 'codex', status: 'error' },
+        { runtime: 'claude', status: 'connected' },
+      ])
+    ).toBe('ready')
+  })
+
+  it('nenhum conectado mas algum em erro -> failed (mostra retry, não spinner)', () => {
+    expect(deriveProvisionStatus([{ runtime: 'codex', status: 'error' }])).toBe('failed')
+  })
+
+  it('só estados não-terminais (ex.: revoked/pending) -> provisioning', () => {
+    expect(deriveProvisionStatus([{ runtime: 'codex', status: 'revoked' }])).toBe('provisioning')
   })
 })

@@ -293,7 +293,7 @@ export default function SetupWizard() {
                 animate={{ opacity: 1, scale: 1 }}
                 className="flex flex-col h-full flex-1"
               >
-                <StepReady projects={createdProjects} />
+                <StepReady projects={createdProjects} apiBaseUrl={API_BASE_URL} />
               </motion.div>
             )}
           </AnimatePresence>
