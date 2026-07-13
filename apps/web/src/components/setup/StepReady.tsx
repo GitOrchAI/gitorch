@@ -1,7 +1,8 @@
-import React, { useState } from 'react'
-import { ChevronRight, Check, Loader2, Copy, KeyRound } from 'lucide-react'
+import React, { useEffect, useState } from 'react'
+import { ChevronRight, Check, Loader2, Copy, KeyRound, AlertTriangle } from 'lucide-react'
 import Link from 'next/link'
 import { useLanguage } from '../../LanguageContext'
+import { deriveProvisionStatus, type ProvisionStatus, type EngineSnapshot } from './engine-status'
 
 interface CreatedProject {
   id: string
@@ -12,6 +13,7 @@ interface CreatedProject {
 
 interface StepReadyProps {
   projects: CreatedProject[]
+  apiBaseUrl: string
 }
 
 /**
@@ -21,9 +23,52 @@ interface StepReadyProps {
  * "concluído" — sem fachada. Nomes próprios do produto (Cortex/CGC/Cadence),
  * nunca tech de terceiros. Chaves/CI ficam num accordion (não gritam).
  */
-export default function StepReady({ projects }: StepReadyProps) {
+export default function StepReady({ projects, apiBaseUrl }: StepReadyProps) {
   const { t } = useLanguage()
   const [copied, setCopied] = useState<number | null>(null)
+
+  // Provisionamento: NÃO há endpoint dedicado de status (a missão
+  // `clone_and_start_engines` roda no scheduler sem rota de status — fast-follow
+  // no relatório). Sinal proxy honesto: GET /api/v1/engines — motores vivos =
+  // ambiente ativo. Polling curto -> estado TERMINAL (pronto ✓ / falhou + retry),
+  // nunca o spinner eterno de antes (done={false} hardcoded).
+  const [provision, setProvision] = useState<ProvisionStatus>('provisioning')
+  const [attempt, setAttempt] = useState(0)
+
+  useEffect(() => {
+    if (provision !== 'provisioning') return
+    // Teto de tentativas: em vez de girar pra sempre, cai num terminal com retry.
+    if (attempt >= 8) {
+      setProvision('failed')
+      return
+    }
+    let cancelled = false
+    const timer = window.setTimeout(
+      () => {
+        fetch(`${apiBaseUrl}/api/v1/engines`, { credentials: 'include' })
+          .then((r) => (r.ok ? r.json() : null))
+          .then((data: { engines?: EngineSnapshot[] } | null) => {
+            if (cancelled) return
+            const next = deriveProvisionStatus(data?.engines ?? null)
+            if (next === 'provisioning') setAttempt((a) => a + 1)
+            else setProvision(next)
+          })
+          .catch(() => {
+            if (!cancelled) setAttempt((a) => a + 1)
+          })
+      },
+      attempt === 0 ? 0 : 2000
+    )
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [apiBaseUrl, attempt, provision])
+
+  const retryProvision = () => {
+    setProvision('provisioning')
+    setAttempt(0)
+  }
 
   const copy = (key: string, idx: number) => {
     navigator.clipboard?.writeText(key).then(
@@ -42,7 +87,13 @@ export default function StepReady({ projects }: StepReadyProps) {
           className="mb-4 flex h-16 w-16 items-center justify-center rounded-full"
           style={{ background: 'var(--gl-accent-soft)', color: 'var(--gl-accent-ink)' }}
         >
-          <Loader2 className="animate-spin" size={30} />
+          {provision === 'ready' ? (
+            <Check size={30} />
+          ) : provision === 'failed' ? (
+            <AlertTriangle size={30} />
+          ) : (
+            <Loader2 className="animate-spin" size={30} />
+          )}
         </div>
         <h2 className="wz-h" style={{ marginBottom: 8 }}>
           {t('setup.readyTitle')}
@@ -60,11 +111,30 @@ export default function StepReady({ projects }: StepReadyProps) {
           sub={projects.map((p) => p.wingId).join(', ')}
         />
         <LedgerItem done label={t('setup.readyLedgerEngines')} />
-        <LedgerItem
-          done={false}
-          label={t('setup.readyLedgerActivating')}
-          sub={t('setup.readyLedgerActivatingDesc')}
-        />
+        {provision === 'ready' ? (
+          <LedgerItem done label={t('setup.readyLedgerActivatingReady')} />
+        ) : provision === 'failed' ? (
+          <LedgerItem
+            done={false}
+            failed
+            label={t('setup.readyLedgerActivatingFailed')}
+            action={
+              <button
+                className="wz-btn wz-btn-ghost"
+                style={{ marginTop: 8 }}
+                onClick={retryProvision}
+              >
+                {t('setup.readyRetry')}
+              </button>
+            }
+          />
+        ) : (
+          <LedgerItem
+            done={false}
+            label={t('setup.readyLedgerActivating')}
+            sub={t('setup.readyLedgerActivatingDesc')}
+          />
+        )}
 
         {/* Chaves + CI: rebaixadas a um accordion */}
         <details
@@ -120,20 +190,39 @@ export default function StepReady({ projects }: StepReadyProps) {
   )
 }
 
-function LedgerItem({ done, label, sub }: { done: boolean; label: string; sub?: string }) {
+function LedgerItem({
+  done,
+  failed,
+  label,
+  sub,
+  action,
+}: {
+  done: boolean
+  failed?: boolean
+  label: string
+  sub?: string
+  action?: React.ReactNode
+}) {
   return (
     <div
       className="flex items-start gap-3 rounded-2xl p-4"
       style={{ background: 'var(--gl-canvas)', border: '1px solid var(--gl-hair)' }}
     >
       <span style={{ flex: 'none', marginTop: 1, color: 'var(--gl-accent-ink)' }}>
-        {done ? <Check size={18} /> : <Loader2 className="animate-spin" size={18} />}
+        {failed ? (
+          <AlertTriangle size={18} />
+        ) : done ? (
+          <Check size={18} />
+        ) : (
+          <Loader2 className="animate-spin" size={18} />
+        )}
       </span>
       <div style={{ minWidth: 0 }}>
         <div className="wz-opt-title" style={{ fontSize: '0.92rem' }}>
           {label}
         </div>
         {sub && <p className="wz-opt-desc">{sub}</p>}
+        {action}
       </div>
     </div>
   )

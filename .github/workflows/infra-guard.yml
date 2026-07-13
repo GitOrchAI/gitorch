@@ -1,0 +1,36 @@
+name: Infra Guard
+
+# Fronteira open-core: mecaniza que segredos, IPs internos, hostnames e paths
+# absolutos da NOSSA VM não vazem para o repositório público. Workflow leve e
+# independente do zero-tolerance (feedback rápido, falha cedo, e sobrevive a
+# edições no ci.yml). O gitleaks aqui é defesa-em-profundidade + fail-fast; o
+# zero-tolerance mantém o dele no gate principal.
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+jobs:
+  infra-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Denylist de infra (paths de VM, IPs internos, hostnames Tailscale)
+        env:
+          # PR: diff vs base da PR. push: diff vs commit anterior. O script cai
+          # para HEAD~1 se a ref não resolver (ex.: primeiro push).
+          INFRA_GUARD_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: bash scripts/ci/infra-guard.sh
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: false

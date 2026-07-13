@@ -4,10 +4,12 @@ import * as path from 'node:path'
 import {
   runDeviceLogin,
   parseDevicePrompt,
+  extractClaudeToken,
   type DeviceLoginHandle,
   type DeviceRuntime,
 } from '@gitorch/agents'
 import type { EngineConnectionService } from './engine-connection.js'
+import { redactSecrets } from './engine-liveness.js'
 
 const BINARY: Record<DeviceRuntime, string> = {
   codex: 'codex',
@@ -37,16 +39,32 @@ const MENU_SELECT_MARKER: Partial<Record<DeviceRuntime, RegExp>> = {
   antigravity: /select login method/i,
 }
 
-// `claude setup-token` imprime o token final no stdout (não grava arquivo) —
-// formato confirmado (já usado como placeholder na tela antiga de paste-token).
-const CLAUDE_TOKEN_RE = /sk-ant-oat01-[A-Za-z0-9_-]+/
+// Investigação E2 (13/07): a hipótese de que este ÚNICO '\r' "vaza" no widget
+// de colar código como um submit vazio (agy saindo sozinho code=0 em ~300ms,
+// ANTES do usuário poder colar) NÃO reproduziu iterando contra o binário real
+// (agy 1.0.16, container localhost/gitorch-agent:latest, sem mocks, via um
+// harness ad-hoc que chamava runDeviceLogin de verdade): o processo ficou
+// vivo minutos parado no widget, sobreviveu a um submitCode() com código de
+// teste (tentou de verdade a troca OAuth com o Google, "Malformed auth code"
+// — esperado) e só terminou quando o próprio timeout/kill do teste agiu. O
+// "AUTO-SAI em ~300ms" observado antes batia com
+// scripts/dev/capture-cli-stdout.ts chamando handle.kill() (de propósito)
+// assim que a URL aparece no buffer — não com uma saída espontânea do agy. O
+// bug REAL encontrado (e corrigido) foi outro: PTY_COLS estreito demais pra a
+// URL do Antigravity, corrigido em device-login-runner.ts — ver o comentário
+// lá e os testes "E2" em assisted-login.test.ts (fixture real A2,
+// agy-login.stdout.txt).
 
 const CLAUDE_TOKEN_TTL_MS = 365 * 24 * 60 * 60 * 1000
 
 export type LoginState =
   | { phase: 'starting' }
   | { phase: 'url_ready'; url: string; code?: string }
-  | { phase: 'connected' }
+  // models/quota são a prova de vida que a liveness (captureFromHome) trouxe no
+  // mesmo passo que confirmou 'connected'. Vão no evento SSE para o card
+  // conectado renderizar "N modelos · quota X" AO VIVO, sem depender do refetch.
+  // `quota` é omitido (não `undefined`) quando o provider não expõe quota.
+  | { phase: 'connected'; models?: unknown; quota?: number }
   | { phase: 'error'; message: string }
 
 interface Session {
@@ -90,10 +108,26 @@ interface Session {
   persistentHome: boolean
 }
 
+// Observabilidade do operador: uma linha por FALHA de login, com o rabo
+// redigido do stdout. É o mínimo para diagnosticar um login que não fechou (que
+// prompt travou, que erro o CLI cuspiu) sem depender de reproduzir na mão.
+export interface AssistedLoginLogger {
+  loginFailed(entry: { runtime: DeviceRuntime; phase: LoginState['phase']; tail: string }): void
+}
+
+const defaultLogger: AssistedLoginLogger = {
+  loginFailed: (entry) => {
+    console.warn('[assisted-login] login falhou', entry)
+  },
+}
+
 export interface AssistedLoginOptions {
   image: string
   timeoutMs?: number
   runDeviceLoginImpl?: typeof runDeviceLogin
+  // Injetável para teste e para trocar o console pelo app.log do Fastify em
+  // produção. Só é chamado em falha — nunca em sucesso.
+  logger?: AssistedLoginLogger
 }
 
 /**
@@ -104,11 +138,14 @@ export interface AssistedLoginOptions {
  */
 export class AssistedLoginService {
   private readonly sessions = new Map<string, Session>()
+  private readonly logger: AssistedLoginLogger
 
   constructor(
     private readonly engineConnections: Pick<EngineConnectionService, 'captureFromHome'>,
     private readonly options: AssistedLoginOptions
-  ) {}
+  ) {
+    this.logger = options.logger ?? defaultLogger
+  }
 
   /**
    * Inicia o login assistido do motor. Quando `envHome` é passado (o diretório
@@ -264,7 +301,10 @@ export class AssistedLoginService {
     }
 
     if (session.runtime === 'claude' && !session.capturing) {
-      const token = session.buffer.match(CLAUDE_TOKEN_RE)?.[0]
+      // extractClaudeToken limpa os escapes ANSI/CSI (incl. as formas privadas
+      // do PTY: ESC[>4m, ESC[<u, …) ANTES de casar. O match cru truncava no
+      // primeiro '[' de um escape adjacente ao token (achado da captura A2).
+      const token = extractClaudeToken(session.buffer)
       if (token) {
         session.capturing = true
         void this.captureClaudeToken(id, token)
@@ -279,7 +319,7 @@ export class AssistedLoginService {
       const envDir = path.join(session.handle.hostHome, '.gitorch', 'env')
       await fs.mkdir(envDir, { recursive: true, mode: 0o700 })
       await fs.writeFile(path.join(envDir, 'CLAUDE_CODE_OAUTH_TOKEN'), token, { mode: 0o600 })
-      await this.engineConnections.captureFromHome(
+      const st = await this.engineConnections.captureFromHome(
         session.userId,
         'claude',
         session.handle.hostHome,
@@ -289,7 +329,19 @@ export class AssistedLoginService {
           expiresAt: new Date(Date.now() + CLAUDE_TOKEN_TTL_MS),
         }
       )
-      this.setState(id, { phase: 'connected' })
+      // Anti-fachada: a credencial foi arquivada, mas só é 'connected' se a
+      // validação viva (dentro de captureFromHome) passou. status:'error' aqui
+      // significa que o motor não respondeu ao comando de liveness — mentir
+      // 'connected' faria a missão falhar opaca lá na frente.
+      if (st.status !== 'connected') {
+        this.fail(id, st.lastError ?? 'motor não respondeu à validação viva')
+        return
+      }
+      this.setState(id, {
+        phase: 'connected',
+        models: st.models,
+        ...(st.quotaRemaining != null ? { quota: st.quotaRemaining } : {}),
+      })
     } catch (err) {
       this.fail(id, (err as Error).message)
     } finally {
@@ -327,12 +379,23 @@ export class AssistedLoginService {
       // single-threaded, não há como o timeout intercalar entre este set e o
       // início do await) e não chamaria fail() nem apagaria a sessão.
       session.capturing = true
-      await this.engineConnections.captureFromHome(
+      const st = await this.engineConnections.captureFromHome(
         session.userId,
         session.runtime,
         session.handle.hostHome
       )
-      this.setState(id, { phase: 'connected' })
+      // Anti-fachada (mesma regra do Claude): a saída 0 do CLI só prova que o
+      // login LOCAL terminou; 'connected' exige a validação viva verde que
+      // captureFromHome roda. status:'error' ⇒ falha honesta, nunca 'connected'.
+      if (st.status !== 'connected') {
+        this.fail(id, st.lastError ?? 'motor não respondeu à validação viva')
+        return
+      }
+      this.setState(id, {
+        phase: 'connected',
+        models: st.models,
+        ...(st.quotaRemaining != null ? { quota: st.quotaRemaining } : {}),
+      })
     } catch (err) {
       this.fail(id, (err as Error).message)
     }
@@ -347,6 +410,19 @@ export class AssistedLoginService {
   }
 
   private fail(id: string, message: string): void {
+    // fail() é o ÚNICO caminho para o estado 'error' (timeouts, onExit,
+    // captureClaudeToken, guards de liveness reprovada) — logar aqui cobre toda
+    // transição de falha num só lugar, e nunca no sucesso (setState 'connected'
+    // não passa por aqui). O tail vai SEMPRE redigido (nunca token cru); a fase
+    // capturada é a de ANTES do erro (o estado ainda não virou 'error').
+    const session = this.sessions.get(id)
+    if (session) {
+      this.logger.loginFailed({
+        runtime: session.runtime,
+        phase: session.state.phase,
+        tail: redactSecrets(session.buffer.slice(-2000)),
+      })
+    }
     this.setState(id, { phase: 'error', message })
   }
 

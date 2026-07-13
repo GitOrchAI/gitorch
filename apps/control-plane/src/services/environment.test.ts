@@ -5,6 +5,15 @@ import * as path from 'node:path'
 import { ClientEnvironmentService } from './environment.js'
 import { LocalWorkspaceProvider } from '@gitorch/workspace-engine'
 
+// Partial mock: mantém TODAS as funções reais de fs/promises (os testes usam
+// disco de verdade — mkdtemp/mkdir/writeFile/stat), mas devolve um objeto
+// configurável para que UM teste possa `vi.spyOn(fs, 'rm')` (o namespace ESM
+// nativo é read-only e não deixa espionar).
+vi.mock('node:fs/promises', async (importActual) => {
+  const actual = await importActual<typeof import('node:fs/promises')>()
+  return { ...actual, default: actual }
+})
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // Fake do Prisma para a tabela client_environments: store em memória com os
 // 3 métodos que o serviço usa. Mesmo padrão de engine-connection.test.ts.
@@ -339,6 +348,38 @@ describe('ClientEnvironmentService — faxina (TTL 24h)', () => {
 
     await expect(fs.stat(envPath)).rejects.toThrow()
     expect(prisma.store.has('env_kill')).toBe(false)
+  })
+
+  test('destroy NÃO apaga o registro se o rm do dir falhar (evita credencial órfã fora do alcance do GC)', async () => {
+    // Se o fs.rm falha (disco ocupado, permissão, lock), o dir com a
+    // credencial em texto puro CONTINUA em disco. O registro no banco é a
+    // ÚNICA forma do GC reencontrar esse dir (listExpired varre linhas do
+    // banco). Apagar o registro aqui deixaria o dir órfão pra SEMPRE, fora do
+    // alcance da faxina. Então: rm falhou ⇒ registro PERMANECE e o GC retenta
+    // o destroy no próximo tick.
+    const prisma = fakePrisma()
+    const envPath = path.join(baseDir, 'env_orphan')
+    await fs.mkdir(path.join(envPath, '.engine-home'), { recursive: true })
+    await fs.writeFile(path.join(envPath, '.engine-home', 'secret'), 'oauth-token')
+    prisma.store.set('env_orphan', {
+      id: 'env_orphan',
+      userId: 'u',
+      status: 'provisional',
+      path: envPath,
+      createdAt: new Date(),
+    })
+    const svc = new ClientEnvironmentService(prisma as any, baseDir)
+    const rmSpy = vi
+      .spyOn(fs, 'rm')
+      .mockRejectedValueOnce(new Error('EBUSY: resource busy or locked'))
+
+    await svc.destroy('env_orphan')
+
+    // o registro CONTINUA no store (o GC vai retentar); o delete NÃO rodou
+    expect(prisma.store.has('env_orphan')).toBe(true)
+    expect(prisma.clientEnvironment.delete).not.toHaveBeenCalled()
+
+    rmSpy.mockRestore()
   })
 
   test('destroy NÃO apaga fora do baseDir (guard de path-traversal) mas remove o registro', async () => {

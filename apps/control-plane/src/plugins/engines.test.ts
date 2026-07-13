@@ -94,6 +94,29 @@ describe('POST /api/v1/engines/:runtime/token', () => {
     expect(res.json()).toMatchObject({ connected: true })
   })
 
+  it('B2: liveness reprova a credencial colada (upsert status:error) → connected:false, não true fixo', async () => {
+    // A validação viva reprova o token colado: o upsert grava status 'error'.
+    // A resposta NÃO pode dizer connected:true (fachada) — reflete o real.
+    const upsertMock = app.prisma.engineConnection.upsert as unknown as {
+      mockResolvedValue: (value: unknown) => void
+    }
+    upsertMock.mockResolvedValue({
+      runtime: 'claude',
+      status: 'error',
+      modelsRefreshedAt: null,
+      lastValidatedAt: null,
+      lastError: 'motor não respondeu à validação viva',
+    })
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/engines/claude/token',
+      payload: { token: 'sk-ant-oat01-FAKE' },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ connected: false, status: { status: 'error' } })
+  })
+
   it('rejects an unsupported runtime with 400', async () => {
     const res = await app.inject({
       method: 'POST',

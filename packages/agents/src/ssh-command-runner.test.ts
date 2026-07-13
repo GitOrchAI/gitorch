@@ -9,7 +9,7 @@ describe('createSshCommandRunner', () => {
   test('embrulha o comando em ssh com identidade e host, quotando os argumentos', async () => {
     const inner = vi.fn().mockResolvedValue(ok())
     const runner = createSshCommandRunner({
-      host: 'gitorch@<MT_SAAS_HOST>',
+      host: 'gitorch@203.0.113.10',
       identityFile: '/keys/mtsaas',
       inner,
     })
@@ -20,7 +20,7 @@ describe('createSshCommandRunner', () => {
     expect(call.binary).toBe('ssh')
     expect(call.args).toContain('-i')
     expect(call.args).toContain('/keys/mtsaas')
-    expect(call.args).toContain('gitorch@<MT_SAAS_HOST>')
+    expect(call.args).toContain('gitorch@203.0.113.10')
     // Último argumento = comando remoto, com cada token quotado: arg com espaço preservado.
     const remote = call.args[call.args.length - 1]
     expect(remote).toBe("'podman' 'run' '--rm' '-e' 'FOO=bar baz'")

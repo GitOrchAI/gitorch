@@ -193,6 +193,17 @@ export const locales = {
       connectPasteCodePlaceholder: 'Paste the code from the page…',
       connectSubmitCode: 'Submit',
       connectWaitingApproval: 'Waiting for your approval on the page above…',
+      connectManualToggle: 'Paste token/credential manually',
+      connectManualHintEnv: 'Paste the token that `claude setup-token` printed in your terminal.',
+      connectManualHintFile:
+        'Paste the contents of the credential file the CLI created (e.g. auth.json).',
+      connectManualSubmit: 'Connect with what I pasted',
+      connectVerifying: 'Verifying the connection…',
+      connectErrorHintTerms:
+        'If the Antigravity Terms screen got stuck, paste the credential manually below.',
+      connectErrorHintCapture:
+        'We could not capture the token automatically. Paste what the CLI printed below.',
+      connectErrorHintGeneric: 'You can also paste the token manually below.',
       tgTitle: 'Telegram alerts (optional)',
       tgDesc:
         'Get a friendly ping when your agents finish a mission or need you. Totally optional — you can set it up later.',
@@ -208,6 +219,9 @@ export const locales = {
       readyLedgerActivating: 'Environment activating',
       readyLedgerActivatingDesc:
         'Cortex memory, the code graph and Cadence orchestration are warming up for your repo.',
+      readyLedgerActivatingReady: 'Environment is live',
+      readyLedgerActivatingFailed: 'We could not confirm activation',
+      readyRetry: 'Try again',
       readyKeys: 'Integration keys & CI setup',
       readyKeysHint:
         'Add this secret to your GitHub Actions so agents running on GitHub can report back:',
@@ -413,6 +427,17 @@ export const locales = {
       connectPasteCodePlaceholder: 'Cole o código da página…',
       connectSubmitCode: 'Enviar',
       connectWaitingApproval: 'Aguardando sua aprovação na página acima…',
+      connectManualToggle: 'Colar token/credencial manualmente',
+      connectManualHintEnv: 'Cole o token que o `claude setup-token` imprimiu no seu terminal.',
+      connectManualHintFile:
+        'Cole o conteúdo do arquivo de credencial que o CLI gerou (ex.: auth.json).',
+      connectManualSubmit: 'Conectar com o que colei',
+      connectVerifying: 'Verificando a conexão…',
+      connectErrorHintTerms:
+        'Se a tela de Termos do Antigravity travou, cole a credencial manualmente abaixo.',
+      connectErrorHintCapture:
+        'Não consegui capturar o token automaticamente. Cole o que o CLI gerou abaixo.',
+      connectErrorHintGeneric: 'Você também pode colar o token manualmente abaixo.',
       tgTitle: 'Alertas no Telegram (opcional)',
       tgDesc:
         'Receba um aviso amigável quando seus agentes terminarem uma missão ou precisarem de você. Totalmente opcional — dá para configurar depois.',
@@ -428,6 +453,9 @@ export const locales = {
       readyLedgerActivating: 'Ambiente ativando',
       readyLedgerActivatingDesc:
         'A memória Cortex, o grafo de código e a orquestração Cadence estão aquecendo para o seu repositório.',
+      readyLedgerActivatingReady: 'Ambiente ativo',
+      readyLedgerActivatingFailed: 'Não conseguimos confirmar a ativação',
+      readyRetry: 'Tentar de novo',
       readyKeys: 'Chaves de integração e CI',
       readyKeysHint:
         'Adicione este segredo nas suas GitHub Actions para os agentes que rodam no GitHub reportarem de volta:',
@@ -633,6 +661,17 @@ export const locales = {
       connectPasteCodePlaceholder: 'Pega el código de la página…',
       connectSubmitCode: 'Enviar',
       connectWaitingApproval: 'Esperando tu aprobación en la página de arriba…',
+      connectManualToggle: 'Pegar token/credencial manualmente',
+      connectManualHintEnv: 'Pega el token que `claude setup-token` imprimió en tu terminal.',
+      connectManualHintFile:
+        'Pega el contenido del archivo de credencial que generó el CLI (p. ej. auth.json).',
+      connectManualSubmit: 'Conectar con lo que pegué',
+      connectVerifying: 'Verificando la conexión…',
+      connectErrorHintTerms:
+        'Si la pantalla de Términos de Antigravity se quedó atascada, pega la credencial manualmente abajo.',
+      connectErrorHintCapture:
+        'No pudimos capturar el token automáticamente. Pega lo que el CLI generó abajo.',
+      connectErrorHintGeneric: 'También puedes pegar el token manualmente abajo.',
       tgTitle: 'Alertas en Telegram (opcional)',
       tgDesc:
         'Recibe un aviso amistoso cuando tus agentes terminen una misión o te necesiten. Totalmente opcional — puedes configurarlo después.',
@@ -648,6 +687,9 @@ export const locales = {
       readyLedgerActivating: 'Entorno activándose',
       readyLedgerActivatingDesc:
         'La memoria Cortex, el grafo de código y la orquestación Cadence se están preparando para tu repositorio.',
+      readyLedgerActivatingReady: 'Entorno activo',
+      readyLedgerActivatingFailed: 'No pudimos confirmar la activación',
+      readyRetry: 'Reintentar',
       readyKeys: 'Claves de integración y CI',
       readyKeysHint:
         'Añade este secreto a tus GitHub Actions para que los agentes que corren en GitHub reporten de vuelta:',
