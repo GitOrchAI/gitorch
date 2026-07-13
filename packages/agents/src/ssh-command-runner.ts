@@ -2,7 +2,7 @@ import type { RuntimeCommandRunner } from './runtime-adapter.js'
 import { realRuntimeCommandRunner } from './runtime-adapter.js'
 
 export interface SshCommandRunnerOptions {
-  /** Destino SSH, ex.: 'gitorch@<MT_SAAS_HOST>' (IP Tailscale do nó remoto). */
+  /** Destino SSH, ex.: 'gitorch@<TAILSCALE_IP>' (host/IP Tailscale do nó remoto). */
   host: string
   /** Caminho da chave privada dedicada (nunca a chave ampla do host). */
   identityFile: string

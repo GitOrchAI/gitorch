@@ -40,13 +40,13 @@ describe('buildRemoteRuntimeStackIfConfigured', () => {
   })
 
   test('retorna null com host mas sem chave', () => {
-    process.env['GITORCH_FREE_TIER_SSH_HOST'] = 'gitorch@<MT_SAAS_HOST>'
+    process.env['GITORCH_FREE_TIER_SSH_HOST'] = 'gitorch@203.0.113.10'
     expect(buildRemoteRuntimeStackIfConfigured(fakeApp)).toBeNull()
   })
 
   test('constrói um stack com RemoteWorkspaceProvider quando host+chave estão presentes', () => {
-    process.env['GITORCH_FREE_TIER_SSH_HOST'] = 'gitorch@<MT_SAAS_HOST>'
-    process.env['GITORCH_FREE_TIER_SSH_KEY'] = '/home/ubuntu/.ssh/mtsaas_gitorch'
+    process.env['GITORCH_FREE_TIER_SSH_HOST'] = 'gitorch@203.0.113.10'
+    process.env['GITORCH_FREE_TIER_SSH_KEY'] = '/etc/gitorch/keys/free-tier'
 
     const stack = buildRemoteRuntimeStackIfConfigured(fakeApp)
     expect(stack).not.toBeNull()
@@ -62,8 +62,8 @@ describe('buildRemoteRuntimeStackIfConfigured', () => {
   // "No runtime adapter registered for claude" — o motor conectava mas nunca
   // rodava (a fachada que o plano proíbe). Os 3 têm que resolver.
   test('registra os 3 motores de execução (antigravity, codex, claude)', () => {
-    process.env['GITORCH_FREE_TIER_SSH_HOST'] = 'gitorch@<MT_SAAS_HOST>'
-    process.env['GITORCH_FREE_TIER_SSH_KEY'] = '/home/ubuntu/.ssh/mtsaas_gitorch'
+    process.env['GITORCH_FREE_TIER_SSH_HOST'] = 'gitorch@203.0.113.10'
+    process.env['GITORCH_FREE_TIER_SSH_KEY'] = '/etc/gitorch/keys/free-tier'
 
     const stack = buildRemoteRuntimeStackIfConfigured(fakeApp)
     expect(stack?.registry.resolve('antigravity').runtime).toBe('antigravity')

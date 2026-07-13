@@ -12,7 +12,9 @@
 set -u
 
 # Caminho do .env do control plane; sobrescrevível por ambiente na unit.
-ENV_FILE="${GITORCH_ENV_FILE:-/home/ubuntu/projects/gitorch/.env}"
+# Default: o .env na raiz do checkout (dois níveis acima deste script), seja
+# qual for o host — sem caminho absoluto de máquina específica embutido.
+ENV_FILE="${GITORCH_ENV_FILE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/.env}"
 STATE_DIR="/var/lib/gitorch/logs"
 HEARTBEAT_FILE="$STATE_DIR/watchdog-heartbeat"
 mkdir -p "$STATE_DIR"

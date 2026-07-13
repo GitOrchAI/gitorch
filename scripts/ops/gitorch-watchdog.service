@@ -5,7 +5,8 @@ Documentation=https://github.com/loureng/gitorch
 [Service]
 Type=oneshot
 User=ubuntu
-ExecStart=/home/ubuntu/projects/gitorch/scripts/ops/gitorch-watchdog.sh
+# Ajuste para o caminho absoluto do checkout no seu host.
+ExecStart=/opt/gitorch/scripts/ops/gitorch-watchdog.sh
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=gitorch-watchdog

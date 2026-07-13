@@ -13,7 +13,7 @@
 ## Prontos (infra verificada nesta sessão)
 - [x] Usuário `gitorch` isolado na MT-SaaS + chave dedicada `~/.ssh/mtsaas_gitorch`.
 - [x] Podman 4.9.3 rootless funcionando como `gitorch` (hello-world rodou).
-- [x] Conectividade Tailscale nossa VM (<A1_HOST>) ↔ MT-SaaS.
+- [x] Conectividade Tailscale nossa VM (<TAILSCALE_IP>) ↔ MT-SaaS.
 
 ## Tarefas (TDD + commits por fase)
 
@@ -25,7 +25,7 @@
 - DoD: `podman run gitorch-agent ...` executa um agy `--version` na MT-SaaS.
 
 ### T2 — Conexão podman remota (control plane → gitorch@MT-SaaS)
-- `podman system connection add mtsaas ssh://gitorch@100.x --identity ~/.ssh/mtsaas_gitorch`.
+- `podman system connection add mtsaas ssh://gitorch@<TAILSCALE_IP> --identity ~/.ssh/mtsaas_gitorch`.
 - Testar `podman --connection mtsaas run --rm gitorch-agent` da nossa VM.
 - DoD: nossa VM lança contêiner rootless na MT-SaaS por Tailscale, sem tocar o docker do colega.
 

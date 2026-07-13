@@ -105,7 +105,7 @@ Antes de criar um documento novo, escolha o tipo:
 4. Toda doc nova deve ser linkada neste `docs/README.md`.
 5. Planos tecnicos devem ter `Status`, data e escopo.
 6. Docs operacionais devem dizer quem executa, quando executa e qual evidencia prova que terminou.
-7. Se uma doc mencionar caminho local, usar o caminho atual do projeto: `/home/ubuntu/projects/gitorch`.
+7. Se uma doc mencionar caminho local, usar o caminho da raiz do checkout no host (ex.: a saida de `git rev-parse --show-toplevel`), nunca um caminho absoluto de uma maquina especifica.
 
 ## Documentos removidos nesta organizacao
 
