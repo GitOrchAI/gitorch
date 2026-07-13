@@ -89,7 +89,10 @@ const enginesPluginImpl: FastifyPluginAsync<EnginesPluginOptions> = async (app, 
       } else {
         status = await service.connectFileCredential(userId, runtime, token)
       }
-      return reply.send({ connected: true, status })
+      // Anti-fachada: connectRawToken/connectFileCredential rodam a validação
+      // viva. Se ela reprovou (status.status === 'error'), a resposta NÃO pode
+      // dizer connected:true — o frontend decide o que mostrar pelo status real.
+      return reply.send({ connected: status.status === 'connected', status })
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message })
     }
