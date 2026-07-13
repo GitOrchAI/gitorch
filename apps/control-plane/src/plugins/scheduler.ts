@@ -39,6 +39,7 @@ import { runQaMissionViaRails } from '../services/qa-rails-mission.js'
 import { runSmDelegation } from '../services/sm-delegation.js'
 import { runSmWatchdog, buildTelegramNotifier } from '../services/sm-watchdog.js'
 import { runIncidentSensor } from '../services/incident-sensor.js'
+import { mintInstallationToken } from '../services/github-app-token.js'
 import {
   resolveBoardColumns,
   resolveSprintDays,
@@ -677,10 +678,14 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         }
 
         // Lei "LLM decide, sistema executa": PO e QA rodam nos TRILHOS quando o
-        // token do GitHub (e, para o PO, o board) estão configurados (env na
-        // F3.5; banco na F4). Sem eles, cai no caminho clássico com log honesto.
+        // token do GitHub (e, para o PO, o board) estão configurados. O token é a
+        // identidade própria do gitorch — um installation token do seu GitHub App,
+        // emitido sob demanda e cacheado ~1h. Um GITORCH_GITHUB_TOKEN explícito, se
+        // definido, tem prioridade (override). Sem App/token, cai no caminho
+        // clássico com log honesto.
         const railsBoard = process.env['GITORCH_PROJECT_BOARD']
-        const railsToken = process.env['GITORCH_GITHUB_TOKEN'] ?? process.env['GITHUB_TOKEN']
+        const railsToken =
+          process.env['GITORCH_GITHUB_TOKEN'] ?? (await mintInstallationToken()) ?? undefined
         const poRails = role === 'po' && Boolean(railsBoard) && Boolean(railsToken)
         const qaRails = role === 'qa' && Boolean(railsToken)
         const smRails = role === 'sm' && Boolean(railsToken)
