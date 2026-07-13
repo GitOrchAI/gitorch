@@ -275,10 +275,13 @@ describe('EngineConnectionService', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const svc = new EngineConnectionService(prisma as any, deadLiveness)
 
+    // O payload passa a validação de FORMA (tem tokens.access_token) e chega na
+    // liveness — que aqui (stub deadLiveness) reprova. É o cenário "credencial
+    // com forma de real, mas o motor não respondeu": guarda e marca 'error'.
     const status = await svc.connectFileCredential(
       'user_dead',
       'codex',
-      JSON.stringify({ tokens: {} })
+      JSON.stringify({ tokens: { access_token: 'aaa.bbb.ccc' } })
     )
     expect(status.status).toBe('error')
     expect(status.lastError).toContain('Not logged in')
@@ -339,6 +342,109 @@ describe('EngineConnectionService', () => {
     await expect(
       svc.connectFileCredential('u', 'codex', 'isto claramente não é JSON')
     ).rejects.toThrow('JSON')
+  })
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Regressão anti-fachada (QA 2026-07-13): credencial colada grosseiramente
+  // FALSA não pode virar 'connected'. Os CLIs reais MENTEM — `codex login status`
+  // e `claude auth status` respondem exit 0 "logado" para JSON lixo parseável /
+  // token não-vazio (reproduzido de verdade nesta VM). Por isso a rejeição TEM que
+  // vir ANTES da liveness. Nos testes abaixo a liveness é um espião que SEMPRE
+  // diria alive:true (simula o CLI mentiroso): se o fix regredir, o motor viraria
+  // 'connected' — exatamente o proibido. `called===false` prova que barramos na porta.
+  function spyAliveLiveness() {
+    const state = { called: false }
+    const liveness = async () => {
+      state.called = true
+      return {
+        alive: true as const,
+        models: [] as string[],
+        quota: { remaining: null as number | null, total: null as number | null },
+      }
+    }
+    return { state, liveness }
+  }
+
+  test('connectFileCredential: codex com JSON falso NÃO vira connected, mesmo com a liveness mentindo (alive)', async () => {
+    const prisma = fakePrisma()
+    const { state, liveness } = spyAliveLiveness()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any, liveness)
+
+    await expect(
+      svc.connectFileCredential('user_fake', 'codex', '{"fake":"qualquer coisa"}')
+    ).rejects.toThrow(/codex inválida/)
+    // barrado ANTES da liveness — o CLI mentiroso nunca foi consultado
+    expect(state.called).toBe(false)
+    // e nada foi persistido: não existe 'connected' nem 'error' meia-boca
+    expect(prisma.store.get('user_fake:codex')).toBeUndefined()
+  })
+
+  test.each([
+    ['objeto vazio', '{}'],
+    ['tokens sem access_token', '{"tokens":{}}'],
+  ])('connectFileCredential: codex %s é rejeitado e não persiste nada', async (_label, content) => {
+    const prisma = fakePrisma()
+    const { state, liveness } = spyAliveLiveness()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any, liveness)
+    await expect(svc.connectFileCredential('u', 'codex', content)).rejects.toThrow(/codex inválida/)
+    expect(state.called).toBe(false)
+    expect(prisma.store.get('u:codex')).toBeUndefined()
+  })
+
+  test('connectFileCredential: codex com forma real (tokens.access_token) conecta', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any, aliveLiveness)
+    const status = await svc.connectFileCredential(
+      'user_ok',
+      'codex',
+      JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: 'aaa.bbb.ccc' } })
+    )
+    expect(status.status).toBe('connected')
+  })
+
+  test('connectRawToken: claude com token lixo NÃO vira connected, mesmo com a liveness mentindo', async () => {
+    const prisma = fakePrisma()
+    const { state, liveness } = spyAliveLiveness()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any, liveness)
+    await expect(
+      svc.connectRawToken('user_fk', 'claude', 'lixo-fake-token', {
+        envVarName: 'CLAUDE_CODE_OAUTH_TOKEN',
+      })
+    ).rejects.toThrow(/claude inválido/)
+    expect(state.called).toBe(false)
+    expect(prisma.store.get('user_fk:claude')).toBeUndefined()
+  })
+
+  test('connectRawToken: claude com token do setup-token (sk-ant-oat...) conecta', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any, aliveLiveness)
+    const status = await svc.connectRawToken('user_ok2', 'claude', 'sk-ant-oat01-abcdef123456', {
+      envVarName: 'CLAUDE_CODE_OAUTH_TOKEN',
+    })
+    expect(status.status).toBe('connected')
+  })
+
+  test('connectFileCredential: antigravity continua entregue à liveness real (agy models faz o round-trip)', async () => {
+    // Antigravity NÃO tem checagem de forma (formato indocumentado); o `agy models`
+    // da liveness dele já reprova token falso ao vivo. Com deadLiveness, um token
+    // qualquer vira 'error' (não connected) — pela liveness, não pela forma.
+    const prisma = fakePrisma()
+    const deadLiveness = async () => ({
+      alive: false as const,
+      models: [] as string[],
+      quota: { remaining: null as number | null, total: null as number | null },
+      error: 'Please sign in',
+    })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any, deadLiveness)
+    const status = await svc.connectFileCredential('user_ag2', 'antigravity', 'lixo')
+    expect(status.status).toBe('error')
+    expect(status.lastError).toContain('Please sign in')
   })
 
   test('connectFileCredential rejeita runtime não suportado', async () => {

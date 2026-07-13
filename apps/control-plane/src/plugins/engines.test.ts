@@ -78,10 +78,29 @@ describe('POST /api/v1/engines/:runtime/token', () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/v1/engines/codex/token',
-      payload: { token: JSON.stringify({ auth_mode: 'chatgpt' }) },
+      // auth.json com a FORMA real (tokens.access_token) — a validação estrutural
+      // do paste exige isso; um `{auth_mode:'chatgpt'}` pelado (sem token) é
+      // rejeitado de propósito (era o "connected mentiroso" do QA 2026-07-13).
+      payload: {
+        token: JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: 'aaa.bbb.ccc' } }),
+      },
     })
     expect(res.statusCode).toBe(200)
     expect(res.json()).toMatchObject({ connected: true })
+  })
+
+  it('rejeita (400) um auth.json do codex grosseiramente falso — não vira connected (QA 2026-07-13)', async () => {
+    // Regressão na camada HTTP: colar `{"fake":"x"}` no wizard devolvia
+    // connected:true porque o `codex login status` mente (exit 0 p/ qualquer JSON).
+    // Agora a validação de forma barra na porta → 400, e o upsert nunca roda.
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/engines/codex/token',
+      payload: { token: '{"fake":"qualquer coisa"}' },
+    })
+    expect(res.statusCode).toBe(400)
+    expect(res.json().error).toMatch(/codex inválida/)
+    expect(app.prisma.engineConnection.upsert).not.toHaveBeenCalled()
   })
 
   it('connects antigravity via pasted oauth-token content (file credential)', async () => {

@@ -8,6 +8,7 @@ import { archivePaths, readArchiveEntry, restoreDirectory } from '../lib/credent
 import { MODEL_DISCOVERERS } from './model-catalog.js'
 import { QUOTA_READERS } from './quota-reader.js'
 import { checkLiveness, type LivenessResult } from './engine-liveness.js'
+import { validatePastedCredential } from './credential-validator.js'
 
 // Runtimes suportados e os CAMINHOS de credencial de cada um, relativos ao HOME.
 // Apenas os arquivos de token/config — NÃO o diretório inteiro (históricos e
@@ -207,6 +208,13 @@ export class EngineConnectionService {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(options.envVarName)) {
       throw new Error(`envVarName inválido: ${options.envVarName}`)
     }
+    // Validação de FORMA (anti-fachada): `claude auth status` marca 'connected'
+    // para QUALQUER valor não-vazio em CLAUDE_CODE_OAUTH_TOKEN — um token colado
+    // que não veio do `claude setup-token` (ex.: "lixo") viraria 'connected' sem
+    // isto. Roda DEPOIS do guard de envVarName (destino) para o erro de
+    // path-traversal ter precedência. Ver credential-validator.ts.
+    const shapeError = validatePastedCredential(runtime, 'raw', trimmed)
+    if (shapeError) throw new Error(shapeError)
     return this.withTempHome('envtoken', path.join('.gitorch', 'env'), async (home) => {
       await fs.writeFile(path.join(home, '.gitorch', 'env', options.envVarName), trimmed, {
         mode: 0o600,
@@ -239,19 +247,17 @@ export class EngineConnectionService {
     if (!content.trim()) throw new Error(`credencial de ${runtime} vazia`)
 
     const primaryPath = relPaths[0] as string
-    // Validação mínima de FORMATO antes de marcar como 'connected' — sem isto,
-    // qualquer string colada virava uma credencial "válida" e o problema só
-    // aparecia depois, opaco, quando uma missão tentasse usar o motor de
-    // verdade. auth.json do Codex é JSON por definição; o token do
-    // Antigravity não tem formato documentado no código, então só a checagem
-    // de vazio acima se aplica a ele.
-    if (primaryPath.endsWith('.json')) {
-      try {
-        JSON.parse(content)
-      } catch {
-        throw new Error(`credencial de ${runtime} inválida: esperado JSON em ${primaryPath}`)
-      }
-    }
+    // Validação de FORMA da credencial (anti-fachada), ANTES da liveness: rodando
+    // os CLIs de verdade (2026-07-13) vimos que `codex login status` e
+    // `claude auth status` retornam exit 0 "logado" para QUALQUER auth.json
+    // parseável / QUALQUER token não-vazio — só provam PRESENÇA, não validade.
+    // Sem esta checagem, um paste grosseiramente falso (`{"fake":"x"}`) passava
+    // pela liveness fraca e virava 'connected' (fachada). Rejeita aqui o que
+    // estruturalmente não é uma credencial real do provider. O Antigravity não
+    // entra: o `agy models` da liveness dele já é um round-trip real e honesto.
+    // Ver credential-validator.ts para o porquê de a liveness não bastar.
+    const shapeError = validatePastedCredential(runtime, 'file', content)
+    if (shapeError) throw new Error(shapeError)
     return this.withTempHome('filecred', path.dirname(primaryPath), async (home) => {
       await fs.writeFile(path.join(home, primaryPath), content, { mode: 0o600 })
       return await this.captureFromHome(userId, runtime, home)

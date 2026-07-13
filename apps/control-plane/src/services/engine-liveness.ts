@@ -18,20 +18,33 @@ const execFileAsync = promisify(execFile)
 //   antigravity → `agy models`
 //     logado:   exit 0 + a lista de modelos (uma por linha).
 //     deslogado: exit 1 + "Please sign in to view available models".
-//     → prova autenticação E entrega a lista de modelos de brinde. Não gasta LLM.
+//     → ÚNICO com round-trip REAL ao servidor: prova validade da credencial E
+//       entrega a lista de modelos de brinde. Não gasta LLM.
 //
 //   codex → `codex login status`
 //     logado:   exit 0 + "Logged in using ChatGPT".
 //     deslogado: exit 1 + "Not logged in".
-//     → prova login diretamente. Não gasta LLM.
+//     → prova PRESENÇA de credencial, NÃO validade. Rodando de verdade nesta VM
+//       (2026-07-13): QUALQUER `.codex/auth.json` que seja JSON parseável — mesmo
+//       `{"fake":"x"}` — devolve exit 0 "Logged in". Não faz round-trip ao servidor.
 //
 //   claude → `claude auth status`
 //     logado:   exit 0 + {"loggedIn": true, ...}.
 //     deslogado: exit 1 + {"loggedIn": false, "authMethod": "none"}.
-//     → prova autenticação de verdade. Não gasta LLM.
-//     Importante: NÃO usamos `claude doctor`. Ele checa só a saúde do auto-updater
-//     (não a autenticação) e abre uma TUI interativa que TRAVA sem terminal —
-//     seria uma fachada de liveness. `claude auth status` é o comando honesto.
+//     → prova PRESENÇA, NÃO validade, quando a credencial é um token de ambiente:
+//       QUALQUER valor não-vazio em CLAUDE_CODE_OAUTH_TOKEN devolve exit 0
+//       {"loggedIn":true,"authMethod":"oauth_token"} (observado 2026-07-13). Não
+//       valida contra a API da Anthropic.
+//       Importante: NÃO usamos `claude doctor`. Ele checa só a saúde do auto-updater
+//       (não a autenticação) e abre uma TUI interativa que TRAVA sem terminal —
+//       seria uma fachada de liveness. `claude auth status` é o menos ruim.
+//
+// CONSEQUÊNCIA (anti-fachada): como codex/claude só provam presença, uma credencial
+// colada grosseiramente falsa passaria como 'connected'. Os caminhos de PASTE
+// (connectFileCredential/connectRawToken) por isso gateiam antes numa validação de
+// FORMA — ver credential-validator.ts. Um round-trip real barato não está disponível
+// para os dois (token ChatGPT do Codex não bate na API pública; token OAuth do
+// Claude toma 401 em /v1/models), então validar forma é o teto honesto possível.
 //
 // Contrato uniforme: exit 0 = vivo; exit != 0 ou timeout = não-vivo (com `error`
 // sanitizado, sem vazar credencial). models e quota são BEST-EFFORT: só coletados
