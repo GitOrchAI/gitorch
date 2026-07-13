@@ -198,6 +198,12 @@ export const locales = {
       connectManualHintFile:
         'Paste the contents of the credential file the CLI created (e.g. auth.json).',
       connectManualSubmit: 'Connect with what I pasted',
+      connectVerifying: 'Verifying the connection…',
+      connectErrorHintTerms:
+        'If the Antigravity Terms screen got stuck, paste the credential manually below.',
+      connectErrorHintCapture:
+        'We could not capture the token automatically. Paste what the CLI printed below.',
+      connectErrorHintGeneric: 'You can also paste the token manually below.',
       tgTitle: 'Telegram alerts (optional)',
       tgDesc:
         'Get a friendly ping when your agents finish a mission or need you. Totally optional — you can set it up later.',
@@ -423,6 +429,12 @@ export const locales = {
       connectManualHintFile:
         'Cole o conteúdo do arquivo de credencial que o CLI gerou (ex.: auth.json).',
       connectManualSubmit: 'Conectar com o que colei',
+      connectVerifying: 'Verificando a conexão…',
+      connectErrorHintTerms:
+        'Se a tela de Termos do Antigravity travou, cole a credencial manualmente abaixo.',
+      connectErrorHintCapture:
+        'Não consegui capturar o token automaticamente. Cole o que o CLI gerou abaixo.',
+      connectErrorHintGeneric: 'Você também pode colar o token manualmente abaixo.',
       tgTitle: 'Alertas no Telegram (opcional)',
       tgDesc:
         'Receba um aviso amigável quando seus agentes terminarem uma missão ou precisarem de você. Totalmente opcional — dá para configurar depois.',
@@ -648,6 +660,12 @@ export const locales = {
       connectManualHintFile:
         'Pega el contenido del archivo de credencial que generó el CLI (p. ej. auth.json).',
       connectManualSubmit: 'Conectar con lo que pegué',
+      connectVerifying: 'Verificando la conexión…',
+      connectErrorHintTerms:
+        'Si la pantalla de Términos de Antigravity se quedó atascada, pega la credencial manualmente abajo.',
+      connectErrorHintCapture:
+        'No pudimos capturar el token automáticamente. Pega lo que el CLI generó abajo.',
+      connectErrorHintGeneric: 'También puedes pegar el token manualmente abajo.',
       tgTitle: 'Alertas en Telegram (opcional)',
       tgDesc:
         'Recibe un aviso amistoso cuando tus agentes terminen una misión o te necesiten. Totalmente opcional — puedes configurarlo después.',

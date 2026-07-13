@@ -52,3 +52,78 @@ export function parseTokenResponse(json: unknown, fallbackError: string): LoginS
   const topError = typeof body.error === 'string' ? body.error.trim() : ''
   return { phase: 'error', message: lastError || topError || fallbackError }
 }
+
+// Normaliza o payload cru do evento SSE `state` num LoginState do card. O ponto
+// central: o backend serializa `models` do connected como LISTA — sem isto o
+// card renderizava a lista inteira ("gpt-5,o4 modelos") AO VIVO, enquanto o
+// refetch de /engines mostrava a contagem certa. Aqui a fase connected passa a
+// contagem, casando o caminho ao vivo com o do refetch. Payload malformado vira
+// erro honesto em vez de um card quebrado.
+export function normalizeLoginState(raw: unknown, fallbackError: string): LoginState {
+  const r = (raw ?? {}) as {
+    phase?: unknown
+    url?: unknown
+    code?: unknown
+    models?: unknown
+    quota?: unknown
+    message?: unknown
+  }
+  switch (r.phase) {
+    case 'starting':
+      return { phase: 'starting' }
+    case 'verifying':
+      return { phase: 'verifying' }
+    case 'url_ready':
+      if (typeof r.url === 'string') {
+        return {
+          phase: 'url_ready',
+          url: r.url,
+          ...(typeof r.code === 'string' ? { code: r.code } : {}),
+        }
+      }
+      return { phase: 'error', message: fallbackError }
+    case 'connected':
+      return {
+        phase: 'connected',
+        models: modelCount(r.models),
+        quota: typeof r.quota === 'number' ? r.quota : null,
+      }
+    case 'error':
+      return {
+        phase: 'error',
+        message: typeof r.message === 'string' && r.message.trim() ? r.message : fallbackError,
+      }
+    default:
+      return { phase: 'error', message: fallbackError }
+  }
+}
+
+// Tipo de falha de conexão, para uma mensagem ACIONÁVEL (aponta o paste manual)
+// em vez de só "tente novamente".
+export type ConnectErrorKind = 'terms' | 'capture' | 'generic'
+
+// Classifica a mensagem de erro do backend por tipo. `terms` = a tela de Termos
+// do Antigravity (precisa aceite); `capture` = o token/credencial não foi
+// capturado ou a liveness reprovou; `generic` = o resto (rede etc.).
+export function classifyConnectError(message: string | undefined): ConnectErrorKind {
+  const m = (message ?? '').toLowerCase()
+  if (/term/.test(m)) return 'terms'
+  if (
+    /captur|token|credenc|credential|não encontr|not found|valida|liveness|respond|encerr/.test(m)
+  )
+    return 'capture'
+  return 'generic'
+}
+
+// Chave de locale da dica acionável por tipo de erro — todas apontam o paste
+// manual (que fica logo abaixo, aberto no estado de erro), com texto adequado.
+export function connectErrorHintKey(kind: ConnectErrorKind): string {
+  switch (kind) {
+    case 'terms':
+      return 'setup.connectErrorHintTerms'
+    case 'capture':
+      return 'setup.connectErrorHintCapture'
+    default:
+      return 'setup.connectErrorHintGeneric'
+  }
+}

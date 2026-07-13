@@ -1,7 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronRight, Check, ExternalLink, Loader2, Cpu, Sparkles, Terminal } from 'lucide-react'
 import { useLanguage } from '../../LanguageContext'
-import { parseTokenResponse, type LoginState } from './engine-status'
+import {
+  parseTokenResponse,
+  normalizeLoginState,
+  classifyConnectError,
+  connectErrorHintKey,
+  type LoginState,
+} from './engine-status'
 
 interface StepConnectEngineProps {
   apiBaseUrl: string
@@ -116,7 +122,13 @@ export default function StepConnectEngine({
       } as EventSourceInit)
       sources.current[id] = src
       src.addEventListener('state', (evt) => {
-        const state = JSON.parse((evt as MessageEvent).data) as LoginState
+        // Normaliza AO VIVO: o backend serializa `models` do connected como
+        // lista — sem isto o card renderizaria a lista crua em vez de "N modelos"
+        // (o refetch de /engines já normaliza; aqui casamos o caminho ao vivo).
+        const state = normalizeLoginState(
+          JSON.parse((evt as MessageEvent).data),
+          t('setup.connectError')
+        )
         setStates((s) => ({ ...s, [id]: state }))
         if (state.phase === 'connected' || state.phase === 'error') {
           src.close()
@@ -148,6 +160,10 @@ export default function StepConnectEngine({
         body: JSON.stringify({ code }),
       })
       if (!res.ok) throw new Error(String(res.status))
+      // Fim do dead-air: entra em "verificando" na hora. O backend não volta a
+      // url_ready depois do código — o próximo evento SSE é connected/error e
+      // sobrescreve esta fase puramente local.
+      setStates((s) => ({ ...s, [id]: { phase: 'verifying' } }))
     } catch {
       setStates((s) => ({ ...s, [id]: { phase: 'error', message: t('setup.connectError') } }))
     }
@@ -229,6 +245,12 @@ export default function StepConnectEngine({
                 </span>
               )}
 
+              {state.phase === 'verifying' && (
+                <span className="wz-opt-desc inline-flex items-center gap-2">
+                  <Loader2 className="animate-spin" size={16} /> {t('setup.connectVerifying')}
+                </span>
+              )}
+
               {state.phase === 'url_ready' && (
                 <div className="space-y-3">
                   <a
@@ -270,6 +292,11 @@ export default function StepConnectEngine({
               {state.phase === 'error' && (
                 <div className="space-y-2">
                   <p className="wz-err">{state.message}</p>
+                  {/* Acionável por tipo: aponta o paste manual (que abre sozinho
+                      logo abaixo no erro) em vez de só "tente de novo". */}
+                  <p className="wz-opt-desc" style={{ fontSize: '0.76rem' }}>
+                    {t(connectErrorHintKey(classifyConnectError(state.message)))}
+                  </p>
                   <button className="wz-btn wz-btn-primary" onClick={() => connect(id, runtime)}>
                     {t('setup.connectBtn')}
                   </button>

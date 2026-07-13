@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { modelCount, parseTokenResponse } from './engine-status'
+import {
+  modelCount,
+  parseTokenResponse,
+  normalizeLoginState,
+  classifyConnectError,
+  connectErrorHintKey,
+} from './engine-status'
 
 describe('modelCount', () => {
   it('conta o tamanho de uma lista de modelos (o que a liveness/SSE entrega)', () => {
@@ -65,5 +71,86 @@ describe('parseTokenResponse', () => {
         message: fallback,
       }
     )
+  })
+})
+
+describe('normalizeLoginState', () => {
+  const fallback = 'Não deu para conectar.'
+
+  it('AO VIVO: connected traz models como LISTA -> vira contagem (casa com o refetch)', () => {
+    const state = normalizeLoginState(
+      { phase: 'connected', models: ['gpt-5', 'o4', 'haiku'], quota: 88 },
+      fallback
+    )
+    expect(state).toEqual({ phase: 'connected', models: 3, quota: 88 })
+  })
+
+  it('connected sem quota -> quota null, sem quebrar a linha de prova de vida', () => {
+    expect(normalizeLoginState({ phase: 'connected', models: [] }, fallback)).toEqual({
+      phase: 'connected',
+      models: 0,
+      quota: null,
+    })
+  })
+
+  it('preserva url_ready (url + code) sem tocar', () => {
+    expect(
+      normalizeLoginState({ phase: 'url_ready', url: 'https://x/y', code: 'AB-CD' }, fallback)
+    ).toEqual({ phase: 'url_ready', url: 'https://x/y', code: 'AB-CD' })
+  })
+
+  it('url_ready sem url é payload quebrado -> erro honesto', () => {
+    expect(normalizeLoginState({ phase: 'url_ready' }, fallback)).toEqual({
+      phase: 'error',
+      message: fallback,
+    })
+  })
+
+  it('preserva error com a mensagem do backend; sem mensagem cai no fallback', () => {
+    expect(normalizeLoginState({ phase: 'error', message: 'tempo esgotado' }, fallback)).toEqual({
+      phase: 'error',
+      message: 'tempo esgotado',
+    })
+    expect(normalizeLoginState({ phase: 'error' }, fallback)).toEqual({
+      phase: 'error',
+      message: fallback,
+    })
+  })
+
+  it('starting passa direto; fase desconhecida/malformada -> erro honesto', () => {
+    expect(normalizeLoginState({ phase: 'starting' }, fallback)).toEqual({ phase: 'starting' })
+    expect(normalizeLoginState({ phase: 'wat' }, fallback)).toEqual({
+      phase: 'error',
+      message: fallback,
+    })
+    expect(normalizeLoginState(null, fallback)).toEqual({ phase: 'error', message: fallback })
+  })
+})
+
+describe('classifyConnectError', () => {
+  it('Termos do Antigravity -> terms', () => {
+    expect(classifyConnectError('Você precisa aceitar os Termos para continuar')).toBe('terms')
+  })
+
+  it('falha de captura / liveness reprovada -> capture', () => {
+    expect(classifyConnectError('login encerrado sem token (código de saída 1)')).toBe('capture')
+    expect(classifyConnectError('motor não respondeu à validação viva')).toBe('capture')
+    expect(classifyConnectError('tempo esgotado (captura travada); tente novamente')).toBe(
+      'capture'
+    )
+  })
+
+  it('erro genérico de rede -> generic', () => {
+    expect(classifyConnectError('Não deu para conectar. Confira e tente de novo.')).toBe('generic')
+    expect(classifyConnectError(undefined)).toBe('generic')
+    expect(classifyConnectError('')).toBe('generic')
+  })
+})
+
+describe('connectErrorHintKey', () => {
+  it('mapeia cada tipo para a chave de dica que aponta o paste manual', () => {
+    expect(connectErrorHintKey('terms')).toBe('setup.connectErrorHintTerms')
+    expect(connectErrorHintKey('capture')).toBe('setup.connectErrorHintCapture')
+    expect(connectErrorHintKey('generic')).toBe('setup.connectErrorHintGeneric')
   })
 })
