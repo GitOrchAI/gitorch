@@ -74,8 +74,11 @@ function matchUrl(clean: string, prefix: string, tail: '+' | '*'): string | unde
   // pedaço casa o prefixo de novo. Preferir o ÚLTIMO match (não o mais longo:
   // um pedaço truncado no meio de um escape percentual pode ser TEXTUALMENTE
   // mais longo que a versão limpa e completa impressa depois) — o que o CLI
-  // desenha por último é o que fica visível/válido na tela. Com PTY largo o
-  // bastante (fix real: PTY_COLS folgado), só há UM match e isto vira no-op.
+  // desenha por último é o que fica visível/válido na tela. NB (empírico,
+  // fixture agy-login.stdout.txt): mesmo com PTY largo o agy imprime a URL
+  // DUAS vezes (alvo do hyperlink OSC-8 + texto visível), então preferir o
+  // último NÃO é no-op — o primeiro match vem colado/truncado. NÃO reverter
+  // para primeiro-match nem para o mais-longo.
   const matches = clean.match(new RegExp(prefix + URL_TAIL + tail, 'g'))
   if (!matches || matches.length === 0) return undefined
   return matches[matches.length - 1]
