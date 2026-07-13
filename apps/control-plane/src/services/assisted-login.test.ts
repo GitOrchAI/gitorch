@@ -416,6 +416,70 @@ describe('AssistedLoginService', () => {
     })
   })
 
+  it('B3: connected carrega models+quota do captureFromHome; JSON.stringify (o que o SSE serializa) os inclui', async () => {
+    const { handle, emitExit } = fakeHandle()
+    // Liveness verde traz o catálogo de modelos e a quota restante — a prova de
+    // vida que o card conectado mostra AO VIVO (evento SSE), sem esperar refetch.
+    const engineConnections = {
+      captureFromHome: vi.fn().mockResolvedValue({
+        runtime: 'codex',
+        status: 'connected',
+        models: ['gpt-5-codex', 'o4-mini'],
+        quotaRemaining: 42,
+      }),
+    }
+    const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
+    const service = new AssistedLoginService(engineConnections as never, {
+      image: 'img',
+      runDeviceLoginImpl,
+    })
+    const states: unknown[] = []
+    const id = service.start('user-1', 'codex')
+    service.subscribe(id, 'user-1', (s) => states.push(s))
+    emitExit(0)
+    await vi.waitFor(() => {
+      expect(states.at(-1)).toEqual({
+        phase: 'connected',
+        models: ['gpt-5-codex', 'o4-mini'],
+        quota: 42,
+      })
+    })
+    // A rota SSE (engines.ts /stream) emite `data: JSON.stringify(state)` sobre
+    // ESTE mesmo objeto de estado — provando que o evento 'connected' leva
+    // models+quota ao vivo (não só no refetch pós-conexão).
+    const ssePayload = JSON.parse(JSON.stringify(states.at(-1))) as Record<string, unknown>
+    expect(ssePayload['models']).toEqual(['gpt-5-codex', 'o4-mini'])
+    expect(ssePayload['quota']).toBe(42)
+  })
+
+  it('B3: quota ausente quando a liveness não trouxe quota (não serializa quota:undefined)', async () => {
+    const { handle, emitExit } = fakeHandle()
+    // Liveness verde mas sem quota (provider sem leitura de quota): o card
+    // conectado não deve inventar um número — a chave `quota` some do estado.
+    const engineConnections = {
+      captureFromHome: vi.fn().mockResolvedValue({
+        runtime: 'codex',
+        status: 'connected',
+        models: ['gpt-5-codex'],
+        quotaRemaining: null,
+      }),
+    }
+    const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
+    const service = new AssistedLoginService(engineConnections as never, {
+      image: 'img',
+      runDeviceLoginImpl,
+    })
+    const states: unknown[] = []
+    const id = service.start('user-1', 'codex')
+    service.subscribe(id, 'user-1', (s) => states.push(s))
+    emitExit(0)
+    await vi.waitFor(() => {
+      expect(states.at(-1)).toEqual({ phase: 'connected', models: ['gpt-5-codex'] })
+    })
+    const ssePayload = JSON.parse(JSON.stringify(states.at(-1))) as Record<string, unknown>
+    expect('quota' in ssePayload).toBe(false)
+  })
+
   it('IDOR: subscribe/submitCode de outro usuário não têm acesso à sessão (nem leem, nem escrevem); o dono continua funcionando', () => {
     const { handle } = fakeHandle()
     const engineConnections = fakeEngineConnections()

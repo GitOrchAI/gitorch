@@ -46,7 +46,11 @@ const CLAUDE_TOKEN_TTL_MS = 365 * 24 * 60 * 60 * 1000
 export type LoginState =
   | { phase: 'starting' }
   | { phase: 'url_ready'; url: string; code?: string }
-  | { phase: 'connected' }
+  // models/quota são a prova de vida que a liveness (captureFromHome) trouxe no
+  // mesmo passo que confirmou 'connected'. Vão no evento SSE para o card
+  // conectado renderizar "N modelos · quota X" AO VIVO, sem depender do refetch.
+  // `quota` é omitido (não `undefined`) quando o provider não expõe quota.
+  | { phase: 'connected'; models?: unknown; quota?: number }
   | { phase: 'error'; message: string }
 
 interface Session {
@@ -297,7 +301,11 @@ export class AssistedLoginService {
         this.fail(id, st.lastError ?? 'motor não respondeu à validação viva')
         return
       }
-      this.setState(id, { phase: 'connected' })
+      this.setState(id, {
+        phase: 'connected',
+        models: st.models,
+        ...(st.quotaRemaining != null ? { quota: st.quotaRemaining } : {}),
+      })
     } catch (err) {
       this.fail(id, (err as Error).message)
     } finally {
@@ -347,7 +355,11 @@ export class AssistedLoginService {
         this.fail(id, st.lastError ?? 'motor não respondeu à validação viva')
         return
       }
-      this.setState(id, { phase: 'connected' })
+      this.setState(id, {
+        phase: 'connected',
+        models: st.models,
+        ...(st.quotaRemaining != null ? { quota: st.quotaRemaining } : {}),
+      })
     } catch (err) {
       this.fail(id, (err as Error).message)
     }
