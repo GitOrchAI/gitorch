@@ -8,6 +8,7 @@ import {
   type DeviceRuntime,
 } from '@gitorch/agents'
 import type { EngineConnectionService } from './engine-connection.js'
+import { redactSecrets } from './engine-liveness.js'
 
 const BINARY: Record<DeviceRuntime, string> = {
   codex: 'codex',
@@ -94,10 +95,26 @@ interface Session {
   persistentHome: boolean
 }
 
+// Observabilidade do operador: uma linha por FALHA de login, com o rabo
+// redigido do stdout. É o mínimo para diagnosticar um login que não fechou (que
+// prompt travou, que erro o CLI cuspiu) sem depender de reproduzir na mão.
+export interface AssistedLoginLogger {
+  loginFailed(entry: { runtime: DeviceRuntime; phase: LoginState['phase']; tail: string }): void
+}
+
+const defaultLogger: AssistedLoginLogger = {
+  loginFailed: (entry) => {
+    console.warn('[assisted-login] login falhou', entry)
+  },
+}
+
 export interface AssistedLoginOptions {
   image: string
   timeoutMs?: number
   runDeviceLoginImpl?: typeof runDeviceLogin
+  // Injetável para teste e para trocar o console pelo app.log do Fastify em
+  // produção. Só é chamado em falha — nunca em sucesso.
+  logger?: AssistedLoginLogger
 }
 
 /**
@@ -108,11 +125,14 @@ export interface AssistedLoginOptions {
  */
 export class AssistedLoginService {
   private readonly sessions = new Map<string, Session>()
+  private readonly logger: AssistedLoginLogger
 
   constructor(
     private readonly engineConnections: Pick<EngineConnectionService, 'captureFromHome'>,
     private readonly options: AssistedLoginOptions
-  ) {}
+  ) {
+    this.logger = options.logger ?? defaultLogger
+  }
 
   /**
    * Inicia o login assistido do motor. Quando `envHome` é passado (o diretório
@@ -374,6 +394,19 @@ export class AssistedLoginService {
   }
 
   private fail(id: string, message: string): void {
+    // fail() é o ÚNICO caminho para o estado 'error' (timeouts, onExit,
+    // captureClaudeToken, guards de liveness reprovada) — logar aqui cobre toda
+    // transição de falha num só lugar, e nunca no sucesso (setState 'connected'
+    // não passa por aqui). O tail vai SEMPRE redigido (nunca token cru); a fase
+    // capturada é a de ANTES do erro (o estado ainda não virou 'error').
+    const session = this.sessions.get(id)
+    if (session) {
+      this.logger.loginFailed({
+        runtime: session.runtime,
+        phase: session.state.phase,
+        tail: redactSecrets(session.buffer.slice(-2000)),
+      })
+    }
     this.setState(id, { phase: 'error', message })
   }
 

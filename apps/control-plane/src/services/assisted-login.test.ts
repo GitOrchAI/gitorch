@@ -480,6 +480,64 @@ describe('AssistedLoginService', () => {
     expect('quota' in ssePayload).toBe(false)
   })
 
+  it('A1: em timeout, loga o tail redigido do stdout (runtime+phase), sem o token cru', async () => {
+    const { handle, emitStdout } = fakeHandle()
+    const engineConnections = fakeEngineConnections()
+    const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
+    const logger = { loginFailed: vi.fn() }
+    const service = new AssistedLoginService(engineConnections as never, {
+      image: 'img',
+      runDeviceLoginImpl,
+      // timeoutMs curto: o timeout principal dispara de verdade e chama fail().
+      timeoutMs: 10,
+      logger,
+    })
+
+    // Não precisamos do loginId aqui: o teste observa só o logger de falha.
+    service.start('user-1', 'codex')
+    // Um segredo vazando no stdout (cenário exato que a redação tem que cobrir):
+    // a redação NÃO pode deixar o token cru chegar ao log do operador.
+    emitStdout(
+      'aguardando aprovação...\nCLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-abcdefghijklmnopqrstuv0123\n'
+    )
+
+    await vi.waitFor(() => {
+      expect(logger.loginFailed).toHaveBeenCalled()
+    })
+    const entry = logger.loginFailed.mock.calls[0]![0] as {
+      runtime: string
+      phase: string
+      tail: string
+    }
+    expect(entry.runtime).toBe('codex')
+    expect(entry.phase).toBe('starting')
+    // O tail é o conteúdo real do buffer (prova de que é o stdout), mas com o
+    // segredo redigido: sem o token cru, com marca de redação.
+    expect(entry.tail).toContain('aguardando aprovação')
+    expect(entry.tail).not.toContain('sk-ant-oat01')
+    expect(entry.tail).toContain('***')
+  })
+
+  it('A1: NUNCA loga em sucesso (connected não dispara o logger de falha)', async () => {
+    const { handle, emitExit } = fakeHandle()
+    const engineConnections = fakeEngineConnections()
+    const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
+    const logger = { loginFailed: vi.fn() }
+    const service = new AssistedLoginService(engineConnections as never, {
+      image: 'img',
+      runDeviceLoginImpl,
+      logger,
+    })
+    const states: unknown[] = []
+    const id = service.start('user-1', 'codex')
+    service.subscribe(id, 'user-1', (s) => states.push(s))
+    emitExit(0)
+    await vi.waitFor(() => {
+      expect(states.at(-1)).toEqual({ phase: 'connected' })
+    })
+    expect(logger.loginFailed).not.toHaveBeenCalled()
+  })
+
   it('IDOR: subscribe/submitCode de outro usuário não têm acesso à sessão (nem leem, nem escrevem); o dono continua funcionando', () => {
     const { handle } = fakeHandle()
     const engineConnections = fakeEngineConnections()

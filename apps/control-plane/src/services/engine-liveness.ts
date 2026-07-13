@@ -168,8 +168,8 @@ const SECRET_ASSIGNMENT =
   /\b([A-Za-z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL)[A-Za-z0-9_]*)\s*[=:]\s*\S+/gi
 const LONG_TOKEN = /\b[A-Za-z0-9_-]{24,}\b/g
 
-/** Redige credenciais de um texto antes de expô-lo em `error`. */
-function redactSecrets(text: string): string {
+/** Redige credenciais de um texto antes de expô-lo em `error` ou log. */
+export function redactSecrets(text: string): string {
   return text.replace(SECRET_ASSIGNMENT, '$1=***').replace(LONG_TOKEN, '***')
 }
 
