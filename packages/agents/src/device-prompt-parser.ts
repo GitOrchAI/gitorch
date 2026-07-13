@@ -9,9 +9,34 @@ export interface DevicePrompt {
   code?: string
 }
 
-// Sequências ANSI/CSI que os CLIs interativos intercalam no stdout (spinners,
-// cursor). Removidas antes do match para a URL não vir picotada por escapes.
-const ANSI = /\[[0-9;?]*[A-Za-z]/g
+// Limpeza de escapes de terminal (locus ÚNICO) do stdout dos CLIs sob PTY.
+// A captura REAL (Task A2 — apps/control-plane/src/services/__fixtures__/
+// claude-setup-token.stdout.txt) provou que a limpeza antiga
+// (/\[[0-9;?]*[A-Za-z]/) era insuficiente por dois motivos:
+//   1. NÃO consumia o byte ESC (0x1b) — deixava um ESC solto grudado no texto.
+//   2. Só aceitava [0-9;?] nos parâmetros, então NÃO limpava as formas privadas
+//      que o `claude` emite: ESC[>4m, ESC[>0q, ESC[<u (e a família ESC[=…u),
+//      que sobravam como lixo visível (>4m, >0q, <u).
+// Um escape adjacente à URL (ou no meio do token) picotava o match. Aqui cobrimos
+// a gramática CSI COMPLETA (parâmetros 0x30–0x3f, incluindo `< = > ?`, +
+// intermediários 0x20–0x2f + byte final 0x40–0x7e), OSC (ESC]…BEL/ST), escapes
+// nF/de dois caracteres (ESC(B designação de charset, ESC7/ESC8 salvar/restaurar
+// cursor) e qualquer ESC remanescente.
+// eslint-disable-next-line no-control-regex -- ESC/BEL são o alvo desta limpeza
+const OSC = /\x1b\][^\x07\x1b\n]*(?:\x07|\x1b\\)?/g
+// eslint-disable-next-line no-control-regex -- byte ESC é o alvo desta limpeza
+const CSI = /\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]/g
+// eslint-disable-next-line no-control-regex -- byte ESC é o alvo desta limpeza
+const NF_ESC = /\x1b[\x20-\x2f]*[\x30-\x7e]/g
+// eslint-disable-next-line no-control-regex -- byte ESC é o alvo desta limpeza
+const LONE_ESC = /\x1b/g
+
+// Ordem importa: OSC e CSI antes do escape genérico (NF_ESC), senão este comeria
+// só o `ESC]`/`ESC[` e deixaria o corpo da sequência como lixo. LONE_ESC varre
+// qualquer ESC que sobrou (ex.: no fim do buffer, sem byte final).
+export function stripAnsi(s: string): string {
+  return s.replace(OSC, '').replace(CSI, '').replace(NF_ESC, '').replace(LONE_ESC, '')
+}
 
 // Cauda de URL que NÃO atravessa fronteiras: para em espaço, em `]` (o
 // terminador visível `]8;;` de hyperlink OSC-8) e ANTES de um segundo
@@ -27,7 +52,7 @@ function matchUrl(clean: string, prefix: string, tail: '+' | '*'): string | unde
 }
 
 export function parseDevicePrompt(buffered: string, runtime: DeviceRuntime): DevicePrompt {
-  const clean = buffered.replace(ANSI, '')
+  const clean = stripAnsi(buffered)
   switch (runtime) {
     case 'codex': {
       // `codex login --device-auth`: URL fixa + código XXXX-XXXX.
@@ -52,6 +77,31 @@ export function parseDevicePrompt(buffered: string, runtime: DeviceRuntime): Dev
       return url ? { url } : {}
     }
   }
+}
+
+// `claude setup-token` imprime o token final no stdout (não grava arquivo). O
+// token real tem corpo longo (~100+ chars); um corpo curtíssimo é fragmento/lixo
+// de escape sobrevivente, não credencial — daí o piso de shape. A fronteira à
+// direita (?![A-Za-z0-9_-]) formaliza que o match é o token COMPLETO (o `+`
+// guloso já estende até ela) — nunca um pedaço truncado por um caractere adiante.
+const CLAUDE_TOKEN_RE = /sk-ant-oat01-[A-Za-z0-9_-]+(?![A-Za-z0-9_-])/
+const CLAUDE_TOKEN_PREFIX = 'sk-ant-oat01-'
+// Piso conservador: barra fragmentos absurdos sem rejeitar os tokens curtos dos
+// testes. A validade REAL do token é atestada pela liveness (captureFromHome),
+// não aqui — este helper só garante extração íntegra, resistente a ANSI.
+const MIN_CLAUDE_TOKEN_BODY = 8
+
+/**
+ * Extrai o token final do `claude setup-token` do stdout cru (com ANSI). Limpa
+ * os escapes ANTES de casar — a captura A2 mostrou formas privadas (ESC[>4m,
+ * ESC[<u, …) que, adjacentes ao token, cortavam o match cru no primeiro `[`.
+ * Retorna o token COMPLETO ou `null` (nunca um fragmento parcial).
+ */
+export function extractClaudeToken(buffer: string): string | null {
+  const token = stripAnsi(buffer).match(CLAUDE_TOKEN_RE)?.[0]
+  if (!token) return null
+  if (token.length - CLAUDE_TOKEN_PREFIX.length < MIN_CLAUDE_TOKEN_BODY) return null
+  return token
 }
 
 export function isDeviceRuntime(x: string): x is DeviceRuntime {

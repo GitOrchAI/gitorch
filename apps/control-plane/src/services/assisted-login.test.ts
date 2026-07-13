@@ -3,6 +3,9 @@ import { EventEmitter } from 'node:events'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { stripAnsi, extractClaudeToken } from '@gitorch/agents'
 import { AssistedLoginService } from './assisted-login.js'
 
 function fakeHandle() {
@@ -665,6 +668,72 @@ describe('AssistedLoginService', () => {
         .then(() => false)
         .catch(() => true)
       expect(gone).toBe(true)
+    })
+  })
+})
+
+describe('AssistedLoginService — E1: captura de token Claude resiliente a ANSI', () => {
+  const fixture = readFileSync(
+    fileURLToPath(new URL('./__fixtures__/claude-setup-token.stdout.txt', import.meta.url)),
+    'utf8'
+  )
+
+  it('FIXTURE REAL (A2): stripAnsi limpa as formas privadas presentes (>4m, >0q, <u) e a URL do Claude fica legível', () => {
+    const clean = stripAnsi(fixture)
+    // As três formas privadas que a captura REAL contém — a limpeza antiga
+    // (/\[[0-9;?]*[A-Za-z]/) as deixava como lixo visível.
+    for (const junk of ['>4m', '>0q', '<u']) expect(clean).not.toContain(junk)
+    // Nenhum byte ESC sobra (a limpeza antiga não consumia o 0x1b).
+    expect(clean).not.toContain('\x1b')
+    // A URL OAuth do Claude sai inteira e legível (não picotada por escapes).
+    expect(clean).toContain(
+      'https://claude.com/cai/oauth/authorize?code=REDACTED&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=user%3Ainference&code_challenge=PszW0Pfw1ouVX9UxKVaNqixlqLsp1kfRgHFb1ABDz74&code_challenge_method=S256&state=REDACTED'
+    )
+    // O fixture não tem OAuth completo → sem token → extração devolve null.
+    expect(extractClaudeToken(fixture)).toBeNull()
+  })
+
+  it('token do stdout cercado E partido por escapes ANSI é gravado COMPLETO (não truncado no primeiro [)', async () => {
+    const { handle, emitStdout } = fakeHandle()
+    // captureFromHome fica pendente (controlada): garante que a leitura do arquivo
+    // aconteça ANTES de connected disparar o cleanup (que apagaria o HOME efêmero).
+    let resolveCapture: (v: { runtime: string; status: string }) => void = () => undefined
+    const capturePromise = new Promise<{ runtime: string; status: string }>((r) => {
+      resolveCapture = r
+    })
+    const engineConnections = { captureFromHome: vi.fn().mockReturnValue(capturePromise) }
+    const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
+    const service = new AssistedLoginService(engineConnections as never, {
+      image: 'img',
+      runDeviceLoginImpl,
+    })
+    const states: unknown[] = []
+    const id = service.start('user-1', 'claude')
+    service.subscribe(id, 'user-1', (s) => states.push(s))
+
+    // Token cercado por SGR (ESC[37m/ESC[39m) e PARTIDO no meio por uma forma
+    // privada (ESC[>4m). O match cru (/sk-ant-oat01-[A-Za-z0-9_-]+/) parava no
+    // primeiro '\x1b' e gravava 'sk-ant-oat01-ABCDEFGHIJ' (truncado). Com
+    // extractClaudeToken os escapes somem e o token sai inteiro.
+    const fullToken = 'sk-ant-oat01-ABCDEFGHIJKLMNOPQRST'
+    emitStdout(
+      'Success! Your token:\r\n\x1b[37msk-ant-oat01-ABCDEFGHIJ\x1b[>4mKLMNOPQRST\x1b[39m\r\n'
+    )
+
+    await vi.waitFor(() => {
+      expect(engineConnections.captureFromHome).toHaveBeenCalled()
+    })
+    // writeFile ocorre ANTES de captureFromHome (pendente) → o cofre recebe
+    // exatamente este arquivo. O token gravado é a prova dura da captura íntegra.
+    const written = await fs.readFile(
+      path.join(handle.hostHome, '.gitorch', 'env', 'CLAUDE_CODE_OAUTH_TOKEN'),
+      'utf8'
+    )
+    expect(written).toBe(fullToken)
+
+    resolveCapture({ runtime: 'claude', status: 'connected' })
+    await vi.waitFor(() => {
+      expect(states.at(-1)).toEqual({ phase: 'connected' })
     })
   })
 })

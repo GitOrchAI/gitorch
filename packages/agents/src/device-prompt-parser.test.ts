@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { parseDevicePrompt, isDeviceRuntime } from './device-prompt-parser.js'
+import {
+  parseDevicePrompt,
+  isDeviceRuntime,
+  stripAnsi,
+  extractClaudeToken,
+} from './device-prompt-parser.js'
 
 describe('parseDevicePrompt', () => {
   it('parses the real codex device-auth prompt (url + one-time code)', () => {
@@ -68,5 +73,60 @@ describe('parseDevicePrompt', () => {
     expect(isDeviceRuntime('antigravity')).toBe(true)
     expect(isDeviceRuntime('github')).toBe(false)
     expect(isDeviceRuntime('bogus')).toBe(false)
+  })
+})
+
+describe('stripAnsi', () => {
+  it('limpa as formas privadas de CSI (< > = e final != m) que a limpeza antiga deixava como lixo', () => {
+    // A limpeza antiga (/\[[0-9;?]*[A-Za-z]/) só aceitava [0-9;?] nos parâmetros
+    // e não consumia o ESC: estas quatro (observadas/derivadas da captura A2)
+    // sobravam como lixo visível (>4m, >0q, <u, =1;1u).
+    const clean = stripAnsi('a\x1b[>4mb\x1b[>0qc\x1b[<ud\x1b[=1;1ue')
+    expect(clean).toBe('abcde')
+    for (const junk of ['>4m', '>0q', '<u', '=1;1u']) expect(clean).not.toContain(junk)
+    expect(clean).not.toContain('\x1b')
+  })
+
+  it('consome o byte ESC (0x1b) e as demais famílias de escape do PTY, não só CSI', () => {
+    expect(stripAnsi('x\x1b[37my')).toBe('xy') // SGR (CSI)
+    expect(stripAnsi('x\x1b7y\x1b8z')).toBe('xyz') // salvar/restaurar cursor (ESC7/ESC8)
+    expect(stripAnsi('x\x1b(By')).toBe('xy') // designação de charset G0 (ESC(B)
+    expect(stripAnsi('x\x1b]0;título do terminal\x07y')).toBe('xy') // OSC de título (BEL)
+    expect(stripAnsi('xy\x1b')).toBe('xy') // ESC solto no fim do buffer
+  })
+
+  it('não toca em texto sem escapes (idempotente sobre a URL já limpa)', () => {
+    const url = 'https://claude.com/cai/oauth/authorize?code=x&state=y'
+    expect(stripAnsi(url)).toBe(url)
+  })
+})
+
+describe('extractClaudeToken', () => {
+  it('token cercado E picotado por escapes ANSI/CSI (incl. formas privadas) volta COMPLETO', () => {
+    // O modo de falha real: um escape adjacente/no meio do token cortava o match
+    // cru no primeiro '['. Aqui o token vem cercado por SGR e formas privadas e
+    // partido ao meio por ESC[<u/ESC[=1;1u — stripAnsi junta e o token sai inteiro.
+    const body = 'aB3xZ9q7'.repeat(14).slice(0, 108) // 108 chars [A-Za-z0-9]
+    const token = `sk-ant-oat01-${body}`
+    const cut = 40 // bem depois do prefixo de 13 chars, no miolo do corpo
+    const buffer =
+      '\x1b[37m\x1b[>4mSuccess! Your token:\r\n' +
+      token.slice(0, cut) +
+      '\x1b[<u\x1b[=1;1u' + // picote no MEIO com formas privadas
+      token.slice(cut) +
+      '\x1b[>0q\x1b[39m\r\n\x1b[2GPaste code here >'
+    expect(extractClaudeToken(buffer)).toBe(token)
+  })
+
+  it('sem token no buffer → null (nunca inventa credencial a partir de ruído do terminal)', () => {
+    expect(extractClaudeToken('\x1b[37mnada aqui, só moldura de terminal\x1b[39m')).toBeNull()
+    expect(extractClaudeToken('')).toBeNull()
+  })
+
+  it('fragmento curto demais (chunk cortou o token cedo) → null, nunca um token parcial', () => {
+    // Piso de shape: um prefixo com corpo minúsculo é fragmento/lixo, não token.
+    // Quando o resto chega (corpo plausível), extrai completo.
+    expect(extractClaudeToken('sk-ant-oat01-abc')).toBeNull()
+    expect(extractClaudeToken('sk-ant-oat01-abcdefghij0123')).toBe('sk-ant-oat01-abcdefghij0123')
   })
 })

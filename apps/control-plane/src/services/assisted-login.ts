@@ -4,6 +4,7 @@ import * as path from 'node:path'
 import {
   runDeviceLogin,
   parseDevicePrompt,
+  extractClaudeToken,
   type DeviceLoginHandle,
   type DeviceRuntime,
 } from '@gitorch/agents'
@@ -37,10 +38,6 @@ const NEEDS_PTY: Record<DeviceRuntime, boolean> = { codex: false, claude: true, 
 const MENU_SELECT_MARKER: Partial<Record<DeviceRuntime, RegExp>> = {
   antigravity: /select login method/i,
 }
-
-// `claude setup-token` imprime o token final no stdout (não grava arquivo) —
-// formato confirmado (já usado como placeholder na tela antiga de paste-token).
-const CLAUDE_TOKEN_RE = /sk-ant-oat01-[A-Za-z0-9_-]+/
 
 const CLAUDE_TOKEN_TTL_MS = 365 * 24 * 60 * 60 * 1000
 
@@ -288,7 +285,10 @@ export class AssistedLoginService {
     }
 
     if (session.runtime === 'claude' && !session.capturing) {
-      const token = session.buffer.match(CLAUDE_TOKEN_RE)?.[0]
+      // extractClaudeToken limpa os escapes ANSI/CSI (incl. as formas privadas
+      // do PTY: ESC[>4m, ESC[<u, …) ANTES de casar. O match cru truncava no
+      // primeiro '[' de um escape adjacente ao token (achado da captura A2).
+      const token = extractClaudeToken(session.buffer)
       if (token) {
         session.capturing = true
         void this.captureClaudeToken(id, token)
