@@ -23,9 +23,14 @@ export const envSchema = z.object({
   OTEL_EXPORTER_OTLP_ENDPOINT: z.string().url().optional(),
   PROMETHEUS_PORT: z.coerce.number().default(9464),
 
+  // GitHub App "gitorch-ai": automação/webhooks/token de missão (server-to-server).
   GITHUB_APP_ID: z.string().optional(),
   GITHUB_APP_PRIVATE_KEY: z.string().optional(),
   GITHUB_WEBHOOK_SECRET: z.string().optional(),
+  // OAuth App do LOGIN de usuário do wizard (flow OAuth em routes/auth.ts) — SEPARADO do
+  // GitHub App acima. .optional() é intencional: o app sobe sem eles e é a rota
+  // GET /api/v1/auth/github que devolve 500 ("GITHUB_CLIENT_ID is not configured") quando
+  // ausentes. Não remover na faxina do .env achando que o GitHub App os dispensa.
   GITHUB_CLIENT_ID: z.string().optional(),
   GITHUB_CLIENT_SECRET: z.string().optional(),
   FRONTEND_URL: z.string().url().default('http://localhost:3000'),
