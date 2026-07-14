@@ -25,6 +25,30 @@ describe('Mission and Event Routes', () => {
     await app.ready()
   })
 
+  // REGRESSÃO: o painel nascia VAZIO para sempre. A sessão carrega
+  // wingId = login do GitHub ("loureng"), mas o projeto criado pelo wizard
+  // carrega wingId = repositório ("loureng/gitorch"), porque é esse valor que o
+  // scheduler usa como endereço de clone. O painel cruzava os dois e nunca
+  // casava — mesmo com a missão rodando e concluída. O dono é `userId`.
+  test('GET /api/missions filtra pelo DONO (userId), não pelo repositório (wingId)', async () => {
+    const findMany = vi.fn().mockResolvedValue([])
+    const count = vi.fn().mockResolvedValue(0)
+    app.prisma.mission.findMany = findMany
+    app.prisma.mission.count = count
+
+    const res = await app.inject({ method: 'GET', url: '/api/missions', headers: authHeaders })
+    expect(res.statusCode).toBe(200)
+
+    const where = findMany.mock.calls[0]?.[0]?.where
+    expect(where).toEqual({ project: { userId: 'user_123' } })
+    // e nunca mais pelo login do GitHub
+    expect(JSON.stringify(where)).not.toContain('wing_123')
+
+    for (const call of count.mock.calls) {
+      expect(call[0].where.project).toEqual({ userId: 'user_123' })
+    }
+  })
+
   test('POST /api/missions/trigger should create mission', async () => {
     app.prisma.project.findFirst = vi.fn().mockResolvedValue({ id: 'proj_456', name: 'Test' })
     app.prisma.mission.create = vi.fn().mockResolvedValue({

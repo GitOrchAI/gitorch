@@ -5,7 +5,8 @@ import {
   normalizeLoginState,
   classifyConnectError,
   connectErrorHintKey,
-  deriveProvisionStatus,
+  parseSetupStatus,
+  isProvisionTerminal,
 } from './engine-status'
 
 describe('modelCount', () => {
@@ -156,31 +157,75 @@ describe('connectErrorHintKey', () => {
   })
 })
 
-describe('deriveProvisionStatus', () => {
-  it('nada ainda (null/lista vazia) -> provisioning (segue no polling, não trava)', () => {
-    expect(deriveProvisionStatus(null)).toBe('provisioning')
-    expect(deriveProvisionStatus(undefined)).toBe('provisioning')
-    expect(deriveProvisionStatus([])).toBe('provisioning')
+// A verdade do provisionamento vem de GET /api/v1/setup/status (o estado REAL
+// da missão `clone_and_start_engines` no banco). O sinal antigo — a lista de
+// motores — era uma TAUTOLOGIA: o submit só passa com um motor conectado e a
+// linha 'github' nasce conectada no OAuth, então o primeiro poll SEMPRE achava
+// um motor "connected" e pintava ✓ verde enquanto a missão ainda estava pending.
+describe('parseSetupStatus', () => {
+  it('pendente -> pending (o wizard diz "provisionando", nunca "pronto")', () => {
+    expect(parseSetupStatus({ status: 'pending', error: null })).toEqual({
+      status: 'pending',
+      error: null,
+    })
   })
 
-  it('pelo menos um motor conectado -> ready (fim do spinner eterno)', () => {
-    expect(deriveProvisionStatus([{ runtime: 'claude', status: 'connected', models: ['a'] }])).toBe(
-      'ready'
-    )
-    // conectado vence um erro de outro motor (basta um vivo pra seguir)
+  it('em andamento -> running (o scheduler pegou a missão)', () => {
+    expect(parseSetupStatus({ status: 'running', error: null })).toEqual({
+      status: 'running',
+      error: null,
+    })
+  })
+
+  it('concluída -> completed (só AQUI o ✓ verde é verdade)', () => {
+    expect(parseSetupStatus({ status: 'completed', error: null })).toEqual({
+      status: 'completed',
+      error: null,
+    })
+  })
+
+  it('falhou -> failed COM a causa real do backend (o cliente sabe o que aconteceu)', () => {
     expect(
-      deriveProvisionStatus([
-        { runtime: 'codex', status: 'error' },
-        { runtime: 'claude', status: 'connected' },
-      ])
-    ).toBe('ready')
+      parseSetupStatus({ status: 'failed', error: 'git clone falhou: repositório não encontrado' })
+    ).toEqual({ status: 'failed', error: 'git clone falhou: repositório não encontrado' })
   })
 
-  it('nenhum conectado mas algum em erro -> failed (mostra retry, não spinner)', () => {
-    expect(deriveProvisionStatus([{ runtime: 'codex', status: 'error' }])).toBe('failed')
+  it('falhou sem causa -> error null (a UI cai num texto localizado, não numa mentira)', () => {
+    expect(parseSetupStatus({ status: 'failed', error: null })).toEqual({
+      status: 'failed',
+      error: null,
+    })
+    expect(parseSetupStatus({ status: 'failed', error: '   ' })).toEqual({
+      status: 'failed',
+      error: null,
+    })
   })
 
-  it('só estados não-terminais (ex.: revoked/pending) -> provisioning', () => {
-    expect(deriveProvisionStatus([{ runtime: 'codex', status: 'revoked' }])).toBe('provisioning')
+  it('causa pendurada num estado bom é ruído -> ignorada', () => {
+    expect(parseSetupStatus({ status: 'completed', error: 'falha antiga' })).toEqual({
+      status: 'completed',
+      error: null,
+    })
+  })
+
+  it('payload nulo/malformado/estado desconhecido -> unknown (segue no polling, nunca chuta ✓)', () => {
+    expect(parseSetupStatus(null)).toEqual({ status: 'unknown', error: null })
+    expect(parseSetupStatus(undefined)).toEqual({ status: 'unknown', error: null })
+    expect(parseSetupStatus({})).toEqual({ status: 'unknown', error: null })
+    expect(parseSetupStatus({ status: 'ready' })).toEqual({ status: 'unknown', error: null })
+    expect(parseSetupStatus({ status: 42 })).toEqual({ status: 'unknown', error: null })
+  })
+})
+
+describe('isProvisionTerminal', () => {
+  it('completed e failed são terminais (o polling para)', () => {
+    expect(isProvisionTerminal('completed')).toBe(true)
+    expect(isProvisionTerminal('failed')).toBe(true)
+  })
+
+  it('pending, running e unknown NÃO são terminais (o polling continua)', () => {
+    expect(isProvisionTerminal('pending')).toBe(false)
+    expect(isProvisionTerminal('running')).toBe(false)
+    expect(isProvisionTerminal('unknown')).toBe(false)
   })
 })
