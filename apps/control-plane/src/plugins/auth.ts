@@ -1,6 +1,15 @@
 import { FastifyPluginAsync, FastifyRequest } from 'fastify'
 import fp from 'fastify-plugin'
 import { prisma, wingIdContext, tenantContext } from './prisma.js'
+
+/**
+ * O escopo de isolamento da requisição: o DONO (userId) quando há um, ou o
+ * projeto (wingId) para chaves de API de projeto legado sem dono.
+ */
+interface TenantScope {
+  userId?: string
+  wingId?: string
+}
 import { createHash } from 'node:crypto'
 import jwt from 'jsonwebtoken'
 import bcryptjs from 'bcryptjs'
@@ -82,10 +91,10 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
   // (app.register(rateLimit, { global: true, max: 20 })); a proteção existe, o
   // CodeQL só não liga o hook global ao handler neste escopo (mesmo caso do
   // alerta #24 já resolvido).
-  app.addHook('preHandler', async (request) => {
-    // Skip auth for health/metrics/public webhook
-    if (isPublicPath(request.url)) return
-
+  // Autentica e DEVOLVE o escopo do tenant — sem tocar no AsyncLocalStorage.
+  // Quem entra no contexto é o hook abaixo, com `run()`, para que ele seja
+  // restaurado quando a requisição termina.
+  const resolveScope = async (request: FastifyRequest): Promise<TenantScope> => {
     const authHeader = request.headers.authorization
 
     // Sessão do navegador: cookie httpOnly `gitorch_session` (JWT), nunca
@@ -109,11 +118,7 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
           } as UserPayload
           request.wingId = decoded.wingId
 
-          // enterWith, NÃO run(store, () => {}): o `run` com callback vazio abre
-          // e fecha o contexto na hora, deixando o guard do Prisma inerte no
-          // handler (era assim antes — o isolamento entre clientes era fachada).
-          tenantContext.enterWith({ userId: decoded.userId })
-          return
+          return { userId: decoded.userId }
         } catch {
           throw unauthorized('UNAUTHORIZED: Invalid or expired session cookie')
         }
@@ -141,8 +146,7 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
         } as UserPayload
         request.wingId = decoded.wingId
 
-        tenantContext.enterWith({ userId: decoded.userId })
-        return
+        return { userId: decoded.userId }
       } catch (err) {
         throw unauthorized('UNAUTHORIZED: Invalid or expired JWT session')
       }
@@ -208,13 +212,43 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
     request.wingId = apiKey.project.wingId
 
     // A chave de API pertence a um projeto, e o projeto a um dono: o escopo da
-    // request é o DONO. Projeto legado sem dono (userId nulo) cai no escopo por
-    // projeto, que é o comportamento anterior.
-    if (apiKey.project.userId) {
-      tenantContext.enterWith({ userId: apiKey.project.userId })
-    } else {
-      wingIdContext.enterWith({ wingId: apiKey.project.wingId })
+    // requisição é o DONO. Projeto legado sem dono (userId nulo) cai no escopo
+    // por projeto, que é o comportamento anterior.
+    return apiKey.project.userId
+      ? { userId: apiKey.project.userId }
+      : { wingId: apiKey.project.wingId }
+  }
+
+  /**
+   * Entra no contexto do tenant com `run()`, chamando `done()` DENTRO dele: todo
+   * o resto da requisição (hooks seguintes, handler, queries do Prisma) herda o
+   * escopo, e ele é restaurado quando a requisição acaba.
+   *
+   * NÃO use `enterWith()` aqui. A documentação do Node avisa que ele "persiste
+   * pelo resto da execução síncrona", e foi o que se observou na prática: o dono
+   * continuava no contexto DEPOIS da requisição terminar (ver
+   * tenant-concurrency.test.ts). Num guard de isolamento isso é grave — código
+   * que rode em seguida herdaria um dono que não é dele.
+   */
+  app.addHook('preHandler', (request, reply, done) => {
+    if (isPublicPath(request.url)) {
+      done()
+      return
     }
+
+    resolveScope(request)
+      .then((scope) => {
+        if (scope.userId !== undefined) {
+          tenantContext.run({ userId: scope.userId }, () => done())
+          return
+        }
+        if (scope.wingId !== undefined) {
+          wingIdContext.run({ wingId: scope.wingId }, () => done())
+          return
+        }
+        done()
+      })
+      .catch((err: Error) => done(err))
   })
 
   // JWT helper decorator
