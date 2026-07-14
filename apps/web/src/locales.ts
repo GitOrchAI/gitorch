@@ -219,8 +219,16 @@ export const locales = {
       readyLedgerActivating: 'Environment activating',
       readyLedgerActivatingDesc:
         'Cortex memory, the code graph and Cadence orchestration are warming up for your repo.',
+      readyLedgerActivatingQueued: 'Queued: provisioning starts in a moment.',
+      readyLedgerActivatingRunning:
+        'Cloning your repository and starting the engines inside your environment.',
+      readyLedgerActivatingSlow:
+        'This is taking longer than usual. Provisioning keeps running in the background — refresh to see the current state.',
       readyLedgerActivatingReady: 'Environment is live',
-      readyLedgerActivatingFailed: 'We could not confirm activation',
+      readyLedgerActivatingFailed: 'Provisioning failed',
+      readyLedgerActivatingFailedDesc:
+        'We could not provision your environment. You can try again.',
+      readyRefresh: 'Refresh',
       readyRetry: 'Try again',
       readyKeys: 'Integration keys & CI setup',
       readyKeysHint:
@@ -453,8 +461,16 @@ export const locales = {
       readyLedgerActivating: 'Ambiente ativando',
       readyLedgerActivatingDesc:
         'A memória Cortex, o grafo de código e a orquestração Cadence estão aquecendo para o seu repositório.',
+      readyLedgerActivatingQueued: 'Na fila: o provisionamento começa em instantes.',
+      readyLedgerActivatingRunning:
+        'Clonando o seu repositório e ligando os motores dentro do seu ambiente.',
+      readyLedgerActivatingSlow:
+        'Está demorando mais que o normal. O provisionamento continua rodando em segundo plano — atualize para ver o estado atual.',
       readyLedgerActivatingReady: 'Ambiente ativo',
-      readyLedgerActivatingFailed: 'Não conseguimos confirmar a ativação',
+      readyLedgerActivatingFailed: 'O provisionamento falhou',
+      readyLedgerActivatingFailedDesc:
+        'Não conseguimos provisionar o seu ambiente. Você pode tentar de novo.',
+      readyRefresh: 'Atualizar',
       readyRetry: 'Tentar de novo',
       readyKeys: 'Chaves de integração e CI',
       readyKeysHint:
@@ -687,8 +703,16 @@ export const locales = {
       readyLedgerActivating: 'Entorno activándose',
       readyLedgerActivatingDesc:
         'La memoria Cortex, el grafo de código y la orquestación Cadence se están preparando para tu repositorio.',
+      readyLedgerActivatingQueued: 'En la cola: el aprovisionamiento empieza en instantes.',
+      readyLedgerActivatingRunning:
+        'Clonando tu repositorio y encendiendo los motores dentro de tu entorno.',
+      readyLedgerActivatingSlow:
+        'Está tardando más de lo normal. El aprovisionamiento sigue en segundo plano — actualiza para ver el estado actual.',
       readyLedgerActivatingReady: 'Entorno activo',
-      readyLedgerActivatingFailed: 'No pudimos confirmar la activación',
+      readyLedgerActivatingFailed: 'El aprovisionamiento falló',
+      readyLedgerActivatingFailedDesc:
+        'No pudimos aprovisionar tu entorno. Puedes intentarlo de nuevo.',
+      readyRefresh: 'Actualizar',
       readyRetry: 'Reintentar',
       readyKeys: 'Claves de integración y CI',
       readyKeysHint:
