@@ -17,13 +17,9 @@ import StepTelegram from '../../components/setup/StepTelegram'
 import StepPlanSelection from '../../components/setup/StepPlanSelection'
 import StepPlanConfirmation from '../../components/setup/StepPlanConfirmation'
 import StepReady from '../../components/setup/StepReady'
-
-interface CreatedProject {
-  id: string
-  name: string
-  wingId: string
-  apiKey: string
-}
+// Forma dos projetos recém-criados (com a chave em claro): fonte única em
+// submit-flow, o módulo que fala com o backend.
+import type { CreatedProject } from '../../components/setup/submit-flow'
 
 const TOTAL_STEPS = 11
 
@@ -293,7 +289,9 @@ export default function SetupWizard() {
                 animate={{ opacity: 1, scale: 1 }}
                 className="flex flex-col h-full flex-1"
               >
-                <StepReady projects={createdProjects} apiBaseUrl={API_BASE_URL} />
+                {/* `plan` aqui não é decoração: é o StepReady que leva ao
+                    pagamento, DEPOIS de mostrar a chave. */}
+                <StepReady projects={createdProjects} apiBaseUrl={API_BASE_URL} plan={plan} />
               </motion.div>
             )}
           </AnimatePresence>

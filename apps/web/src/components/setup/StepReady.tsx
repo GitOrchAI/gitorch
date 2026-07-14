@@ -2,18 +2,14 @@ import React, { useEffect, useMemo, useState } from 'react'
 import { ChevronRight, Check, Loader2, Copy, KeyRound, AlertTriangle } from 'lucide-react'
 import Link from 'next/link'
 import { useLanguage } from '../../LanguageContext'
+import { detectCountry } from '../../lib/geo'
 import { isProvisionTerminal, parseSetupStatus, type ProvisionSnapshot } from './engine-status'
-
-interface CreatedProject {
-  id: string
-  name: string
-  wingId: string
-  apiKey: string
-}
+import { isPaidPlan, startCheckout, type CreatedProject } from './submit-flow'
 
 interface StepReadyProps {
   projects: CreatedProject[]
   apiBaseUrl: string
+  plan: string
 }
 
 // Cadência do acompanhamento. 5s x 60 = 5 minutos de polling: o scheduler só
@@ -30,11 +26,32 @@ const MAX_ATTEMPTS = 60
  * processada pelo scheduler). Nada de ✓ verde antes de 'completed'; a falha
  * aparece com a CAUSA que o scheduler gravou; a retentativa reenfileira a missão
  * de verdade. Nomes próprios do produto (Cortex/CGC/Cadence), nunca tech de
- * terceiros. Chaves/CI ficam num accordion (não gritam).
+ * terceiros.
+ *
+ * ESTA É A ÚNICA TELA QUE MOSTRA A CHAVE DE API — e a única vez que ela existe em
+ * texto puro (o banco guarda só o hash). Duas consequências no desenho daqui:
+ *
+ * 1. A chave NÃO fica mais escondida atrás de um accordion fechado. Ela aparece
+ *    aberta, com o aviso de que é a única exibição.
+ * 2. Todas as saídas desta tela (pagamento e painel) ficam travadas até o cliente
+ *    reconhecer que guardou a chave — copiar já vale como reconhecimento. Sair
+ *    daqui sem ela é perdê-la para sempre, então a saída fácil não pode ser a
+ *    saída burra.
+ *
+ * O pagamento também mora aqui, e não no passo anterior: o plano pago vê a
+ * credencial ANTES de ser levado ao Stripe (de lá o cliente cai no /painel e
+ * nunca mais volta ao wizard).
  */
-export default function StepReady({ projects, apiBaseUrl }: StepReadyProps) {
+export default function StepReady({ projects, apiBaseUrl, plan }: StepReadyProps) {
   const { t } = useLanguage()
   const [copied, setCopied] = useState<number | null>(null)
+  // Reconhecimento explícito de que a chave foi guardada. Vive só na memória do
+  // React: a chave nunca vai pra localStorage/sessionStorage (qualquer XSS leria,
+  // e ela sobreviveria em disco) nem pra URL (histórico, logs e o header Referer
+  // mandado ao Stripe vazariam o segredo).
+  const [keySaved, setKeySaved] = useState(false)
+  const [paying, setPaying] = useState(false)
+  const [payError, setPayError] = useState<string | null>(null)
 
   const [provision, setProvision] = useState<ProvisionSnapshot>({ status: 'unknown', error: null })
   const [attempt, setAttempt] = useState(0)
@@ -100,14 +117,51 @@ export default function StepReady({ projects, apiBaseUrl }: StepReadyProps) {
       })
   }
 
+  // Copiar já É o reconhecimento (o cliente que copiou não perde nada). O checkbox
+  // continua existindo como caminho alternativo: `navigator.clipboard` não existe
+  // em origem não-segura, e nesse caso o copiar simplesmente não acontece.
   const copy = (key: string, idx: number) => {
     navigator.clipboard?.writeText(key).then(
       () => {
         setCopied(idx)
+        setKeySaved(true)
         window.setTimeout(() => setCopied((c) => (c === idx ? null : c)), 1800)
       },
       () => undefined
     )
+  }
+
+  const needsPayment = isPaidPlan(plan)
+  const hasKeys = projects.length > 0
+  // Trava as saídas enquanto a chave não foi reconhecida. Sem chave na lista
+  // (não deveria acontecer — o submit falha antes disso) não há o que travar:
+  // prender o cliente numa tela sem credencial seria só crueldade.
+  const locked = hasKeys && !keySaved
+
+  /**
+   * Leva ao Stripe — DEPOIS da chave estar na tela e reconhecida. É o único ponto
+   * do wizard que tira o cliente do app, e ele é um clique consciente, não um
+   * redirect automático nas costas de quem acabou de receber uma credencial
+   * irrecuperável.
+   *
+   * Se o checkout não abrir, ninguém fica no prejuízo: o projeto e a chave já
+   * existem: o cliente vê a causa e pode tentar de novo ou ir para o painel.
+   */
+  const goToPayment = async () => {
+    setPaying(true)
+    setPayError(null)
+    // Mesma detecção por IP da landing: a moeda do checkout segue a localização
+    // real do cliente, não o idioma do navegador.
+    const country = await detectCountry()
+    const outcome = await startCheckout({ apiBaseUrl, plan, country })
+    if (outcome.ok) {
+      window.location.assign(outcome.url)
+      return
+    }
+    setPayError(
+      outcome.reason === 'at_capacity' ? t('setup.readyPayCapacity') : t('setup.readyPayFailed')
+    )
+    setPaying(false)
   }
 
   return (
@@ -133,7 +187,87 @@ export default function StepReady({ projects, apiBaseUrl }: StepReadyProps) {
         </p>
       </div>
 
-      <div className="wz-body space-y-3 overflow-y-auto" style={{ maxHeight: '15rem' }}>
+      <div className="wz-body space-y-3 overflow-y-auto" style={{ maxHeight: '18rem' }}>
+        {/* A CHAVE VEM PRIMEIRO, antes do ledger — e aberta, não escondida atrás de
+            um accordion fechado. Este bloco é a única vez que a credencial existe
+            em texto puro em qualquer lugar do mundo; o ledger ao lado é só status
+            ao vivo, que o cliente pode reler no painel quando quiser. O perecível
+            fica onde o olho bate primeiro, sem depender de rolagem. */}
+        {hasKeys && (
+          <div
+            className="rounded-2xl"
+            style={{ background: 'var(--gl-canvas)', border: '1px solid var(--gl-hair)' }}
+          >
+            <div
+              className="wz-opt-title flex items-center gap-2"
+              style={{ fontSize: '0.9rem', padding: '14px 16px 8px' }}
+            >
+              <KeyRound size={16} style={{ color: 'var(--gl-accent-ink)' }} />{' '}
+              {t('setup.readyKeys')}
+            </div>
+            <div className="space-y-3 px-4 pb-4">
+              {/* O aviso. Sem meio-termo: não existe "ver depois". */}
+              <div
+                className="flex items-start gap-2 rounded-xl p-3"
+                style={{ background: 'var(--gl-accent-soft)', border: '1px solid var(--gl-hair)' }}
+              >
+                <AlertTriangle
+                  size={16}
+                  style={{ color: 'var(--gl-sev)', flex: 'none', marginTop: 2 }}
+                />
+                <p className="wz-opt-desc" style={{ margin: 0 }}>
+                  {t('setup.readyKeyOnce')}
+                </p>
+              </div>
+
+              <p className="wz-opt-desc">{t('setup.readyKeysHint')}</p>
+
+              {projects.map((proj, idx) => (
+                <div
+                  key={proj.id}
+                  className="flex items-center justify-between gap-2 rounded-lg px-3 py-2"
+                  style={{ background: 'var(--gl-surface-2)', border: '1px solid var(--gl-hair)' }}
+                >
+                  <span
+                    className="select-all truncate"
+                    style={{
+                      fontFamily: 'ui-monospace, monospace',
+                      fontSize: '0.74rem',
+                      color: 'var(--gl-accent-ink)',
+                    }}
+                  >
+                    {proj.apiKey}
+                  </span>
+                  <button
+                    onClick={() => copy(proj.apiKey, idx)}
+                    aria-label={t('setup.readyKeyCopy')}
+                    style={{ color: 'var(--gl-muted)', flex: 'none' }}
+                  >
+                    {copied === idx ? (
+                      <Check size={14} style={{ color: 'var(--gl-accent-ink)' }} />
+                    ) : (
+                      <Copy size={14} />
+                    )}
+                  </button>
+                </div>
+              ))}
+
+              {/* O reconhecimento que destrava as saídas. Copiar também marca. */}
+              <label className="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={keySaved}
+                  onChange={(e) => setKeySaved(e.target.checked)}
+                  style={{ accentColor: 'var(--gl-accent)', flex: 'none' }}
+                />
+                <span className="wz-opt-desc" style={{ margin: 0 }}>
+                  {t('setup.readyKeySaved')}
+                </span>
+              </label>
+            </div>
+          </div>
+        )}
+
         {/* Ledger honesto: feito ✓ vs provisionando (o que o banco diz, não o que soa bem) */}
         <LedgerItem
           done
@@ -190,56 +324,54 @@ export default function StepReady({ projects, apiBaseUrl }: StepReadyProps) {
             }
           />
         )}
-
-        {/* Chaves + CI: rebaixadas a um accordion */}
-        <details
-          className="rounded-2xl"
-          style={{ background: 'var(--gl-canvas)', border: '1px solid var(--gl-hair)' }}
-        >
-          <summary
-            className="wz-opt-title flex cursor-pointer items-center gap-2"
-            style={{ fontSize: '0.9rem', padding: '14px 16px', listStyle: 'none' }}
-          >
-            <KeyRound size={16} style={{ color: 'var(--gl-accent-ink)' }} /> {t('setup.readyKeys')}
-          </summary>
-          <div className="space-y-3 px-4 pb-4">
-            <p className="wz-opt-desc">{t('setup.readyKeysHint')}</p>
-            {projects.map((proj, idx) => (
-              <div
-                key={proj.id}
-                className="flex items-center justify-between gap-2 rounded-lg px-3 py-2"
-                style={{ background: 'var(--gl-surface-2)', border: '1px solid var(--gl-hair)' }}
-              >
-                <span
-                  className="select-all truncate"
-                  style={{
-                    fontFamily: 'ui-monospace, monospace',
-                    fontSize: '0.74rem',
-                    color: 'var(--gl-accent-ink)',
-                  }}
-                >
-                  {proj.apiKey}
-                </span>
-                <button
-                  onClick={() => copy(proj.apiKey, idx)}
-                  style={{ color: 'var(--gl-muted)', flex: 'none' }}
-                >
-                  {copied === idx ? (
-                    <Check size={14} style={{ color: 'var(--gl-accent-ink)' }} />
-                  ) : (
-                    <Copy size={14} />
-                  )}
-                </button>
-              </div>
-            ))}
-          </div>
-        </details>
       </div>
 
-      <div className="wz-actions" style={{ justifyContent: 'center' }}>
-        <Link href="/painel" className="wz-btn wz-btn-primary">
-          {t('setup.readyGoPanel')} <ChevronRight size={18} />
-        </Link>
+      <div
+        className="wz-actions"
+        style={{ flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}
+      >
+        {payError && <p className="wz-err text-center">{payError}</p>}
+        {locked && (
+          <p className="wz-opt-desc text-center" style={{ margin: 0 }}>
+            {t('setup.readyLockedHint')}
+          </p>
+        )}
+        <div className="flex items-center justify-center gap-3">
+          {needsPayment && (
+            <button
+              onClick={goToPayment}
+              disabled={locked || paying}
+              className="wz-btn wz-btn-primary"
+            >
+              {paying ? (
+                <>
+                  <Loader2 className="animate-spin" size={18} /> {t('setup.readyPaying')}
+                </>
+              ) : (
+                <>
+                  {t('setup.readyGoPay')} <ChevronRight size={18} />
+                </>
+              )}
+            </button>
+          )}
+          {locked ? (
+            // Link não sabe ficar desabilitado — enquanto a chave não for
+            // reconhecida, a porta do painel é um botão morto, de propósito.
+            <button
+              disabled
+              className={needsPayment ? 'wz-btn wz-btn-ghost' : 'wz-btn wz-btn-primary'}
+            >
+              {t('setup.readyGoPanel')}
+            </button>
+          ) : (
+            <Link
+              href="/painel"
+              className={needsPayment ? 'wz-btn wz-btn-ghost' : 'wz-btn wz-btn-primary'}
+            >
+              {t('setup.readyGoPanel')} <ChevronRight size={18} />
+            </Link>
+          )}
+        </div>
       </div>
     </div>
   )
