@@ -130,8 +130,21 @@ jobs:
           done
           echo "control-plane never became healthy"; cat /tmp/control-plane.log; exit 1
 
-      - name: Run E2E (wizard diagnosis)
-        run: npx playwright test tests/e2e/setup-wizard-diagnosis.spec.ts
+      # --workers=1: os dois specs falam com o MESMO control-plane, e o limite
+      # de taxa das rotas autenticadas é por IP (20 req/min, plugins/auth.ts).
+      # Em paralelo eles dividiriam esse orçamento e um 429 viraria "falha" que
+      # não é do produto. Serial mantém o veredito honesto.
+      #
+      # setup-wizard-fluxo-completo NÃO depende de E2E_GITHUB_TEST_TOKEN (não
+      # fala com o GitHub): roda sempre, inclusive em fork, e nunca se auto-pula
+      # — ele quebra de propósito se JWT_SECRET/DATABASE_URL faltarem, porque um
+      # guarda que se pula sozinho não guarda nada. JWT_SECRET e
+      # GITORCH_CREDENTIAL_KEY já são gerados efêmeros no step acima.
+      - name: Run E2E (wizard: diagnóstico real + fluxo completo)
+        run: |
+          npx playwright test --workers=1 \
+            tests/e2e/setup-wizard-diagnosis.spec.ts \
+            tests/e2e/setup-wizard-fluxo-completo.spec.ts
 
       - name: Server logs (on failure)
         if: failure()
