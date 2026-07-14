@@ -243,6 +243,8 @@ describe('login assistido (start / code / stream)', () => {
           status: 'provisional',
           path: data.path,
         })),
+        // touch(): renova o relógio da faxina a cada atividade real do wizard.
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
@@ -383,6 +385,28 @@ describe('login assistido (start / code / stream)', () => {
     })
     expect(res.statusCode).toBe(400)
     expect(JSON.parse(res.body)).toHaveProperty('error')
+  })
+
+  it('colar o código RENOVA o relógio da faxina (concluir o login é atividade real)', async () => {
+    // Concluir o login é o passo do wizard que NÃO passa pelo createProvisional.
+    // Sem renovar aqui, um cliente a quem só faltasse colar o código podia ter o
+    // ambiente varrido pelo GC — com a credencial que o CLI acabou de gravar.
+    const start = await app.inject({ method: 'POST', url: '/api/v1/engines/claude/login/start' })
+    const { loginId } = JSON.parse(start.body) as { loginId: string }
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/v1/engines/login/${loginId}/code`,
+      payload: { code: 'the-code' },
+    })
+
+    expect(res.statusCode).toBe(200)
+    // Escopado ao ambiente provisório DAQUELE dono (id do JWT), nunca ao fixado
+    // nem ao de outro cliente.
+    expect(app.prisma.clientEnvironment.updateMany).toHaveBeenCalledWith({
+      where: { userId: 'user_1', status: 'provisional' },
+      data: { lastActivityAt: expect.any(Date) },
+    })
   })
 
   it('GET /api/v1/engines/login/:loginId retorna o estado atual em JSON puro (fallback de polling, sem SSE)', async () => {
