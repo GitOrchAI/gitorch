@@ -1,6 +1,6 @@
 import { FastifyPluginAsync, FastifyRequest } from 'fastify'
 import fp from 'fastify-plugin'
-import { prisma, wingIdContext } from './prisma.js'
+import { prisma, wingIdContext, tenantContext } from './prisma.js'
 import { createHash } from 'node:crypto'
 import jwt from 'jsonwebtoken'
 import bcryptjs from 'bcryptjs'
@@ -109,7 +109,10 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
           } as UserPayload
           request.wingId = decoded.wingId
 
-          wingIdContext.run({ wingId: decoded.wingId }, () => {})
+          // enterWith, NÃO run(store, () => {}): o `run` com callback vazio abre
+          // e fecha o contexto na hora, deixando o guard do Prisma inerte no
+          // handler (era assim antes — o isolamento entre clientes era fachada).
+          tenantContext.enterWith({ userId: decoded.userId })
           return
         } catch {
           throw unauthorized('UNAUTHORIZED: Invalid or expired session cookie')
@@ -138,8 +141,7 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
         } as UserPayload
         request.wingId = decoded.wingId
 
-        // Set wing_id context for Prisma RLS
-        wingIdContext.run({ wingId: decoded.wingId }, () => {})
+        tenantContext.enterWith({ userId: decoded.userId })
         return
       } catch (err) {
         throw unauthorized('UNAUTHORIZED: Invalid or expired JWT session')
@@ -205,8 +207,14 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
     }
     request.wingId = apiKey.project.wingId
 
-    // Set wing_id context for Prisma RLS
-    wingIdContext.run({ wingId: apiKey.project.wingId }, () => {})
+    // A chave de API pertence a um projeto, e o projeto a um dono: o escopo da
+    // request é o DONO. Projeto legado sem dono (userId nulo) cai no escopo por
+    // projeto, que é o comportamento anterior.
+    if (apiKey.project.userId) {
+      tenantContext.enterWith({ userId: apiKey.project.userId })
+    } else {
+      wingIdContext.enterWith({ wingId: apiKey.project.wingId })
+    }
   })
 
   // JWT helper decorator
