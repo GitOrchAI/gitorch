@@ -24,8 +24,12 @@ function fakePrisma() {
     store,
     clientEnvironment: {
       findFirst: vi.fn(async ({ where, orderBy }: any) => {
+        // `status` ausente = sem filtro de status (é o que o Prisma real faz com
+        // uma chave undefined) — current() consulta o ambiente do usuário seja
+        // ele provisional ou fixed.
         let rows = [...store.values()].filter(
-          (r) => r.userId === where.userId && r.status === where.status
+          (r) =>
+            r.userId === where.userId && (where.status === undefined || r.status === where.status)
         )
         if (orderBy?.createdAt === 'desc') {
           rows = rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
@@ -487,5 +491,38 @@ describe('ClientEnvironmentService.fix', () => {
     await expect(fs.stat(oldDir)).rejects.toThrow()
 
     await fs.rm(baseDir, { recursive: true, force: true })
+  })
+})
+
+describe('ClientEnvironmentService.current', () => {
+  test('devolve o ambiente mais recente do usuário (provisional ou fixed)', async () => {
+    const prisma = fakePrisma()
+    prisma.store.set('e_old', {
+      id: 'e_old',
+      userId: 'u',
+      status: 'fixed',
+      path: '/base/e_old',
+      createdAt: new Date('2026-07-10T10:00:00Z'),
+    })
+    prisma.store.set('e_new', {
+      id: 'e_new',
+      userId: 'u',
+      status: 'provisional',
+      path: '/base/e_new',
+      createdAt: new Date('2026-07-14T10:00:00Z'),
+    })
+    const svc = new ClientEnvironmentService(prisma as any, '/base')
+
+    const env = await svc.current('u')
+
+    expect(env?.id).toBe('e_new')
+    expect(env?.status).toBe('provisional')
+  })
+
+  test('usuário sem ambiente -> null (o status do wizard não inventa um)', async () => {
+    const prisma = fakePrisma()
+    const svc = new ClientEnvironmentService(prisma as any, '/base')
+
+    expect(await svc.current('ninguem')).toBeNull()
   })
 })
