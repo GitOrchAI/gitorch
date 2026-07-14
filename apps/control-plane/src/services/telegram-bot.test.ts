@@ -86,7 +86,7 @@ describe('getUpdates — ouvir o bot sem depender de URL pública', () => {
     expect(result.updates).toHaveLength(2)
     expect(result.nextOffset).toBe(12) // maior update_id + 1
     expect(result.conflict).toBe(false)
-    const url = String((fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0])
+    const url = String((fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0]?.[0])
     expect(url).toContain('/getUpdates')
     expect(url).toContain('offset=10')
   })
@@ -142,8 +142,8 @@ describe('sendMessage — é o chat_id que endereça, não o @username', () => {
 
     expect(ok).toBe(true)
     const call = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
-    expect(String(call[0])).toContain('/sendMessage')
-    expect(JSON.parse(String(call[1].body))).toEqual({ chat_id: '555', text: 'task travada' })
+    expect(String(call?.[0])).toContain('/sendMessage')
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ chat_id: '555', text: 'task travada' })
   })
 
   it('falha do Telegram é falha (não devolve "true" de consolo)', async () => {
