@@ -301,8 +301,21 @@ export class EngineConnectionService {
     return token?.trim() ?? null
   }
 
+  /**
+   * Os MOTORES conectados do usuário. A linha 'github' mora nesta mesma tabela
+   * (o cofre cifrado é reusado de propósito), mas github NÃO é motor: não tem
+   * liveness e nasce 'connected' no callback do OAuth. Listá-la junto dos
+   * motores de IA confundia a UI e, pior, era um dos pés da tautologia que fazia
+   * o passo final do wizard cantar vitória antes da hora ("existe motor
+   * connected => ambiente pronto"). Quem precisa do GitHub tem a porta certa:
+   * getRawGithubToken (/github/repos, scheduler) — não esta lista.
+   * Deny-list (e não allow-list dos runtimes de IA conhecidos) de propósito: um
+   * motor novo aparece na lista sozinho, sem precisar lembrar de registrá-lo.
+   */
   async list(userId: string): Promise<ConnectionStatus[]> {
-    const records = await this.prisma.engineConnection.findMany({ where: { userId } })
+    const records = await this.prisma.engineConnection.findMany({
+      where: { userId, runtime: { not: 'github' } },
+    })
     return records.map(toStatus)
   }
 
