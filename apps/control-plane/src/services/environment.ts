@@ -155,6 +155,21 @@ export class ClientEnvironmentService {
   }
 
   /**
+   * O ambiente ATUAL do usuário (o mais recente — mesmo critério `desc` que
+   * createProvisional/fix usam para eleger o canônico), ou null se ele não tem
+   * nenhum. Alimenta o status do provisionamento no fim do wizard: o cliente vê
+   * o estado real do ambiente dele (provisional/fixed). Quem chama só pode
+   * expor `id` e `status` — o `path` é infra e NUNCA vai pro frontend.
+   */
+  async current(userId: string): Promise<ClientEnvironmentRecord | null> {
+    const env = await this.prisma.clientEnvironment.findFirst({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+    })
+    return (env as ClientEnvironmentRecord | null) ?? null
+  }
+
+  /**
    * Ambientes provisórios (não-fixados) com mais de `maxAgeMs`. Alimenta o
    * garbage collector: um ambiente abandonado guarda credenciais + OAuth do
    * cliente e não pode ficar largado — a faxina é requisito de SEGURANÇA.

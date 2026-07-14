@@ -40,6 +40,68 @@ function readKnownBoardNumber(
   return typeof raw === 'number' ? raw : undefined
 }
 
+// A missão que o submit enfileira — o provisionamento REAL do wizard (clone do
+// repo + subida dos motores no ambiente do cliente), processada pelo scheduler.
+const SETUP_MISSION_TYPE = 'clone_and_start_engines'
+
+// Estado agregado do provisionamento, do ponto de vista do cliente.
+type ProvisionStatus = 'unknown' | 'pending' | 'running' | 'completed' | 'failed'
+
+interface SetupMissionRow {
+  projectId: string
+  status: string
+  error: string | null
+  payload: Prisma.JsonValue
+  project: { wingId: string }
+}
+
+/**
+ * Só a missão MAIS RECENTE de cada projeto conta. Uma retentativa cria uma
+ * missão NOVA (a antiga fica no histórico); sem este corte, uma falha velha —
+ * já superada — assombraria o status do cliente para sempre. Depende de a
+ * consulta vir em `createdAt desc`.
+ */
+function latestPerProject<T extends { projectId: string }>(missions: T[]): T[] {
+  const seen = new Set<string>()
+  const latest: T[] = []
+  for (const mission of missions) {
+    if (seen.has(mission.projectId)) continue
+    seen.add(mission.projectId)
+    latest.push(mission)
+  }
+  return latest
+}
+
+/**
+ * Agregação HONESTA do provisionamento:
+ * - qualquer falha vence tudo (o cliente precisa saber que algo quebrou, mesmo
+ *   que outro repo tenha subido);
+ * - depois "ainda trabalhando" (running > pending) vence "concluído" — nada de
+ *   ✓ verde enquanto uma missão ainda respira;
+ * - completed SÓ quando todas terminaram bem;
+ * - sem missão (ou com estado que não conhecemos), unknown: não inventa sucesso
+ *   nem fracasso.
+ */
+function aggregateStatus(missions: Array<{ status: string }>): ProvisionStatus {
+  if (missions.length === 0) return 'unknown'
+  if (missions.some((m) => m.status === 'failed')) return 'failed'
+  if (missions.some((m) => m.status === 'running')) return 'running'
+  if (missions.some((m) => m.status === 'pending')) return 'pending'
+  if (missions.every((m) => m.status === 'completed')) return 'completed'
+  return 'unknown'
+}
+
+// `?projects=a,b` / `{ projects: ['a','b'] }` — os projetos criados NESTE submit
+// (o front os conhece pela resposta do /submit). Restringe o status ao que o
+// cliente acabou de pedir, sem deixar um projeto antigo contaminar a leitura.
+// Vazio = sem filtro (nunca vira um `in: []`, que não casaria com nada).
+function parseProjectIds(raw: unknown): string[] {
+  const list = typeof raw === 'string' ? raw.split(',') : Array.isArray(raw) ? raw : []
+  return list
+    .filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+    .map((id) => id.trim())
+}
+
 export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
   // Ambiente isolado do cliente: nasce no aceite dos termos, vive por todo o
   // wizard (clone + credenciais dentro dele) e fixa no aceite final. O baseDir
@@ -375,6 +437,110 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
         success: true,
         projects: createdProjects,
       })
+    }
+  )
+
+  // Dono canônico da sessão: EngineConnection e Project são gravados sob o id
+  // resolvido por e-mail (ver submit acima e plugins/engines.ts). Sem e-mail
+  // (legado single-tenant), o id da sessão é o melhor que existe.
+  const resolveOwnerId = async (user: { id: string; email?: string }): Promise<string> => {
+    if (!user.email) return user.id
+    const owner = await app.prisma.user.findUnique({ where: { email: user.email } })
+    return owner?.id ?? user.id
+  }
+
+  // Missões de provisionamento do dono, mais recentes primeiro. O escopo por
+  // `project.userId` é o que impede um cliente de ler o provisionamento alheio.
+  const findSetupMissions = async (
+    ownerId: string,
+    projectIds: string[],
+    status?: string
+  ): Promise<SetupMissionRow[]> => {
+    const missions = await app.prisma.mission.findMany({
+      where: {
+        type: SETUP_MISSION_TYPE,
+        ...(status ? { status } : {}),
+        project: { userId: ownerId },
+        ...(projectIds.length > 0 ? { projectId: { in: projectIds } } : {}),
+      },
+      orderBy: { createdAt: 'desc' },
+      include: { project: { select: { id: true, wingId: true } } },
+    })
+    return missions as SetupMissionRow[]
+  }
+
+  // GET /api/v1/setup/status - A VERDADE do provisionamento (passo 11 do
+  // wizard). Lê o estado REAL no banco: a missão `clone_and_start_engines` que
+  // o submit enfileirou (pending -> running -> completed/failed, processada
+  // pelo scheduler) + o ambiente do cliente. Antes disto o passo final derivava
+  // "pronto" da lista de motores — uma tautologia (o submit já exige um motor
+  // conectado, e a linha 'github' nasce conectada no OAuth), então o wizard
+  // pintava ✓ verde no primeiro poll enquanto o provisionamento sequer havia
+  // começado. Limite próprio de taxa: é uma rota de POLLING e o teto global (20
+  // req/min) transformaria o acompanhamento honesto num 429.
+  app.get(
+    '/api/v1/setup/status',
+    { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const user = request.user
+      if (!user) {
+        return reply.code(401).send({ error: 'UNAUTHORIZED: session required' })
+      }
+      const ownerId = await resolveOwnerId(user)
+      const { projects } = request.query as { projects?: string }
+      const missions = latestPerProject(await findSetupMissions(ownerId, parseProjectIds(projects)))
+
+      // A causa da falha vem da PRÓPRIA missão (Mission.error, gravado pelo
+      // scheduler) — o cliente merece saber o que quebrou, não um "ops".
+      const failed = missions.find((m) => m.status === 'failed')
+      const environment = await clientEnvironments.current(user.id)
+
+      return reply.send({
+        status: aggregateStatus(missions),
+        error: failed?.error ?? null,
+        missions: missions.map((m) => ({
+          projectId: m.projectId,
+          wingId: m.project.wingId,
+          status: m.status,
+          error: m.error ?? null,
+        })),
+        // Só id + status: o `path` do ambiente é infra e NUNCA vai pro frontend.
+        environment: environment ? { id: environment.id, status: environment.status } : null,
+      })
+    }
+  )
+
+  // POST /api/v1/setup/retry - Retentativa REAL do provisionamento que falhou.
+  // Cria uma missão NOVA (mesmo payload) em vez de ressuscitar a antiga: o
+  // sweeper do scheduler mata como "presa" qualquer pending cujo createdAt
+  // passe do PENDING_TIMEOUT_MS, então reusar a linha velha faria a retentativa
+  // "falhar" na hora. O status volta a pending e o próximo tick a processa.
+  app.post(
+    '/api/v1/setup/retry',
+    { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const user = request.user
+      if (!user) {
+        return reply.code(401).send({ error: 'UNAUTHORIZED: session required' })
+      }
+      const ownerId = await resolveOwnerId(user)
+      const { projects } = (request.body ?? {}) as { projects?: string[] }
+      const failed = latestPerProject(
+        await findSetupMissions(ownerId, parseProjectIds(projects), 'failed')
+      )
+
+      for (const mission of failed) {
+        await app.prisma.mission.create({
+          data: {
+            projectId: mission.projectId,
+            type: SETUP_MISSION_TYPE,
+            payload: mission.payload as Prisma.JsonObject,
+            status: 'pending',
+          },
+        })
+      }
+
+      return reply.send({ retried: failed.length })
     }
   )
 }
