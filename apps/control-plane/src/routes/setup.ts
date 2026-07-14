@@ -7,6 +7,7 @@ import { ensureDefaultSchedules } from '../lib/project-defaults.js'
 import { resolveEngineId } from '../services/engine-connection.js'
 import { ClientEnvironmentService } from '../services/environment.js'
 import { collectAndRememberRepoContext } from '../services/repo-context-cortex.js'
+import { startTelegramLink, readTelegramLink } from '../services/telegram-link.js'
 
 interface GitHubRepo {
   id: number
@@ -17,10 +18,14 @@ interface GitHubRepo {
   html_url: string
 }
 
+// Sem `telegram` aqui, e não é esquecimento: o @username que o passo 8 mandava
+// era gravado em runtimeConfig/payload e ninguém lia — nem adiantaria ler, já
+// que a API do Telegram endereça por `chat_id`, não por @username. O vínculo de
+// verdade tem tabela própria (telegram_links) e nasce do `/start <token>` que o
+// cliente dispara no bot. Ver services/telegram-link.ts.
 interface SetupSubmitBody {
   repos: string[]
   engines: string[]
-  telegram?: string
   plan: string
   envConfig?: Record<string, unknown>
 }
@@ -210,7 +215,7 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
         return reply.code(401).send({ error: 'UNAUTHORIZED: User session required' })
       }
 
-      const { repos, engines, telegram, plan, envConfig } = request.body as SetupSubmitBody
+      const { repos, engines, plan, envConfig } = request.body as SetupSubmitBody
 
       if (!repos || repos.length === 0) {
         return reply.code(400).send({ error: 'At least one repository must be selected' })
@@ -337,7 +342,6 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
                 // silenciosamente ignorada e todo papel caía no default da
                 // instância (spec §17.3).
                 agents: agentsConfig,
-                telegram: telegram ?? null,
                 plan,
                 envConfig: (envConfig ?? null) as Prisma.JsonObject | null,
               } as Prisma.JsonObject,
@@ -380,7 +384,6 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
             payload: {
               repoUrl: `https://github.com/${repoFullName}`,
               engines,
-              telegram: telegram ?? null,
               envConfig: (envConfig ?? null) as Prisma.JsonObject | null,
             } as Prisma.JsonObject,
             status: 'pending',
@@ -458,6 +461,47 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
     const owner = await app.prisma.user.findUnique({ where: { email: user.email } })
     return owner?.id ?? user.id
   }
+
+  // POST /api/v1/setup/telegram/link — o passo 8, agora de verdade.
+  //
+  // Gera (ou reaproveita) o token de vínculo e devolve o deep link do bot. O
+  // cliente abre, aperta Start, e o bot recebe `/start <token>` — é ali, e só
+  // ali, que o `chat_id` dele passa a existir (plugins/telegram.ts escuta).
+  // Antes disto o passo capturava um @username e não falava com backend nenhum:
+  // o cliente informava o Telegram e nunca recebia nada.
+  //
+  // O vínculo é gravado sob o DONO resolvido por e-mail — o MESMO id que o
+  // notificador usa para achar o chat a partir de `project.userId`. Gravar sob o
+  // id cru do JWT deixaria o vínculo órfão (o mesmo pecado que o wizard já
+  // corrigiu nas conexões de motor).
+  app.post(
+    '/api/v1/setup/telegram/link',
+    { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      if (!request.user) {
+        return reply.code(401).send({ error: 'UNAUTHORIZED: session required' })
+      }
+      const ownerId = await resolveOwnerId(request.user)
+      return reply.send(await startTelegramLink(app.prisma, ownerId))
+    }
+  )
+
+  // GET /api/v1/setup/telegram/status — a VERDADE do vínculo, para o wizard
+  // parar de girar só quando o Start acontecer de fato. Rota de POLLING: teto
+  // próprio (como /setup/status), senão o limite global viraria 429 no meio da
+  // espera. Devolve status + deepLink e NADA mais: o chat_id é dado pessoal e
+  // não tem por que voltar para o navegador.
+  app.get(
+    '/api/v1/setup/telegram/status',
+    { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      if (!request.user) {
+        return reply.code(401).send({ error: 'UNAUTHORIZED: session required' })
+      }
+      const ownerId = await resolveOwnerId(request.user)
+      return reply.send(await readTelegramLink(app.prisma, ownerId))
+    }
+  )
 
   // Missões de provisionamento do dono, mais recentes primeiro. O escopo por
   // `project.userId` é o que impede um cliente de ler o provisionamento alheio.

@@ -38,6 +38,7 @@ import { runRaMissionViaRails } from '../services/ra-rails-mission.js'
 import { runQaMissionViaRails } from '../services/qa-rails-mission.js'
 import { runSmDelegation } from '../services/sm-delegation.js'
 import { runSmWatchdog, buildTelegramNotifier } from '../services/sm-watchdog.js'
+import { resolveNotifyChatId } from '../services/telegram-link.js'
 import { runIncidentSensor } from '../services/incident-sensor.js'
 import { mintInstallationToken } from '../services/github-app-token.js'
 import {
@@ -703,10 +704,23 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             repository: project.wingId,
             githubToken: railsToken as string,
           })
+          // O aviso é do DONO do projeto — a task travada é a dele. Antes, o
+          // chat vinha direto do env (GITORCH_TELEGRAM_CHAT_ID): TODO cliente
+          // "notificado" caía no chat da gitorch e o cliente, que informara o
+          // Telegram dele no wizard, nunca recebia nada. Agora o chat sai do
+          // vínculo real (telegram_links, nascido do /start do próprio cliente);
+          // o nosso chat só entra quando o projeto é NOSSO — aí é notificação
+          // interna de verdade. Sem vínculo, ninguém é avisado: o repo/issue de
+          // um cliente não vira mensagem no chat de outro nem no nosso.
+          const notifyChatId = await resolveNotifyChatId(app.prisma, project, {
+            instanceOwnerEmail: process.env['GITORCH_OWNER_EMAIL'],
+            instanceChatId:
+              process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
+          })
           const notify = buildTelegramNotifier({
             botToken:
               process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
-            chatId: process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
+            ...(notifyChatId ? { chatId: notifyChatId } : {}),
           })
           const watchdog = await runSmWatchdog({
             repository: project.wingId,

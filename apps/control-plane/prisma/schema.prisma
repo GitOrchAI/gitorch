@@ -29,8 +29,46 @@ model User {
   subscription      Subscription?
   diagnosisJobs     DiagnosisJob[]
   environments      ClientEnvironment[]
+  telegramLink      TelegramLink?
 
   @@map("users")
+}
+
+// Vínculo do Telegram do CLIENTE — o que torna o aviso possível.
+//
+// FATO DA API DO TELEGRAM: um bot só consegue mandar mensagem para quem já
+// falou com ele, e `sendMessage` exige um `chat_id` (numérico). Um @username de
+// pessoa NÃO endereça ninguém. Por isso o passo do wizard que só guardava o
+// @username era incapaz de funcionar por construção: dado write-only.
+//
+// O caminho real (padrão do Telegram) é o deep link com token: geramos um token
+// de uso único, o cliente abre `t.me/<bot>?start=<token>` e aperta Start; o bot
+// recebe `/start <token>` e é NESSE update que o `chat_id` finalmente existe —
+// aí sim ele é vinculado ao dono do token.
+model TelegramLink {
+  id     String @id @default(cuid())
+  userId String @unique @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // pending (deep link gerado, esperando o Start) | linked (chat_id capturado).
+  // Nunca há um terceiro estado "achamos que deu certo" — o wizard mostra
+  // exatamente um destes dois.
+  status String @default("pending")
+
+  // Token que viaja no deep link e volta pra nós no /start. É de USO ÚNICO
+  // (consumido no vínculo, vira NULL) e EXPIRA: sem isso, quem visse o link uma
+  // vez poderia apontar as notificações do dono para o próprio chat.
+  token          String?   @unique
+  tokenExpiresAt DateTime? @map("token_expires_at")
+
+  // Só existe DEPOIS do Start. É ele que a API do Telegram exige para enviar.
+  chatId   String?   @map("chat_id")
+  linkedAt DateTime? @map("linked_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("telegram_links")
 }
 
 // Plano é dado configurável (limites), não código. Valores/precificação são

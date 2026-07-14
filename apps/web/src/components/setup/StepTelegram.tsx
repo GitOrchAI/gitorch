@@ -1,26 +1,77 @@
-import React from 'react'
-import { ChevronRight, Send } from 'lucide-react'
+import React, { useCallback, useEffect, useState } from 'react'
+import { AlertCircle, Check, ChevronRight, Loader2, Send } from 'lucide-react'
 import { useLanguage } from '../../LanguageContext'
+import { readTelegramLink, startTelegramLink, type TelegramLinkState } from './telegram-link'
 
 interface StepTelegramProps {
-  telegram: string
-  setTelegram: (username: string) => void
+  apiBaseUrl: string
   onNext: () => void
   onBack: () => void
 }
 
-// Bot configurável (produto dinâmico, nunca hardcoded por ambiente). Sem env,
-// cai no bot público conhecido.
-const BOT = process.env.NEXT_PUBLIC_TELEGRAM_BOT ?? 'GitOrchAI_bot'
+// Cadência do polling: rápido o bastante para o ✓ aparecer logo depois do Start,
+// devagar o bastante para caber no teto da rota (60/min).
+const POLL_MS = 2500
 
 /**
- * Passo do Telegram: OPCIONAL e amigável para leigos. Abre o bot de verdade
- * (deep-link) e captura o @username opcional que o setup/submit já aceita.
- * Sem estado falso de "conectado por polling" — não há binding automático de
- * chat_id no backend hoje (isso é um follow-up que exige o bot ao vivo).
+ * Passo do Telegram — OPCIONAL, e agora VERDADEIRO.
+ *
+ * O que este passo era: um link para o bot e um campo de @username guardado em
+ * estado local. Zero backend. E não havia backend que salvasse: a API do
+ * Telegram só entrega mensagem a quem já falou com o bot, endereçando por
+ * `chat_id` — um @username de pessoa não endereça nada. O cliente informava o
+ * Telegram dele e nunca receberia mensagem nenhuma.
+ *
+ * O que este passo é: o backend gera um token e devolve o deep link
+ * `t.me/<bot>?start=<token>`; o cliente abre e aperta Start; o bot recebe
+ * `/start <token>` e é ali que o `chat_id` nasce e é vinculado ao dono. Esta
+ * tela só mostra ✓ quando o BACKEND confirma o vínculo — enquanto isso, ela diz
+ * exatamente o que está acontecendo ("aperte Start; estamos esperando").
  */
-export default function StepTelegram({ telegram, setTelegram, onNext, onBack }: StepTelegramProps) {
+export default function StepTelegram({ apiBaseUrl, onNext, onBack }: StepTelegramProps) {
   const { t } = useLanguage()
+  const [state, setState] = useState<TelegramLinkState>({ phase: 'idle' })
+  const [connecting, setConnecting] = useState(false)
+
+  // Já vinculado (reabriu o wizard)? A tela nasce dizendo a verdade.
+  useEffect(() => {
+    let cancelled = false
+    void readTelegramLink({ apiBaseUrl, fallbackError: t('setup.tgError') }).then((next) => {
+      if (!cancelled && next && next.phase === 'linked') setState(next)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [apiBaseUrl, t])
+
+  // Enquanto pendente, pergunta ao backend se o Start já chegou. Só ele sabe —
+  // abrir o Telegram não prova nada, e este passo não inventa sucesso.
+  useEffect(() => {
+    if (state.phase !== 'pending') return
+    let cancelled = false
+    const id = setInterval(() => {
+      void readTelegramLink({ apiBaseUrl, fallbackError: t('setup.tgError') }).then((next) => {
+        // `null` = o poll não respondeu (rede/429): mantém o estado, não assusta.
+        if (cancelled || !next) return
+        if (next.phase === 'linked') setState(next)
+      })
+    }, POLL_MS)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+  }, [state.phase, apiBaseUrl, t])
+
+  const handleConnect = useCallback(async () => {
+    setConnecting(true)
+    const next = await startTelegramLink({ apiBaseUrl, fallbackError: t('setup.tgError') })
+    setConnecting(false)
+    setState(next)
+    // Abre o Telegram no próprio gesto do clique (popup blocker respeita isso).
+    if (next.phase === 'pending') window.open(next.deepLink, '_blank', 'noopener,noreferrer')
+  }, [apiBaseUrl, t])
+
+  const linked = state.phase === 'linked'
 
   return (
     <div className="flex flex-col h-full">
@@ -28,29 +79,41 @@ export default function StepTelegram({ telegram, setTelegram, onNext, onBack }: 
       <p className="wz-sub">{t('setup.tgDesc')}</p>
 
       <div className="wz-body space-y-4">
-        <a
-          href={`https://t.me/${BOT}`}
-          target="_blank"
-          rel="noreferrer"
-          className="wz-btn wz-btn-primary"
-          style={{ width: 'fit-content' }}
-        >
-          <Send size={16} /> {t('setup.tgOpen')}
-        </a>
+        {!linked && (
+          <button
+            onClick={() => void handleConnect()}
+            disabled={connecting}
+            className="wz-btn wz-btn-primary"
+            style={{ width: 'fit-content' }}
+          >
+            {connecting ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+            {state.phase === 'error' ? t('setup.tgRetry') : t('setup.tgConnect')}
+          </button>
+        )}
 
-        <div className="flex flex-col gap-2">
-          <label className="wz-opt-title" style={{ fontSize: '0.9rem' }}>
-            {t('setup.tgHandleLabel')}
-          </label>
-          <input
-            type="text"
-            className="wz-field"
-            placeholder={t('setup.tgHandlePlaceholder')}
-            value={telegram}
-            onChange={(e) => setTelegram(e.target.value)}
-          />
-          <p className="wz-opt-desc">{t('setup.tgHandleHint')}</p>
-        </div>
+        {/* Pendente NÃO é sucesso: o texto diz o que falta (apertar Start). */}
+        {state.phase === 'pending' && (
+          <div className="flex items-center gap-2 wz-opt-desc">
+            <Loader2 size={16} className="animate-spin" />
+            <span>{t('setup.tgWaiting')}</span>
+          </div>
+        )}
+
+        {linked && (
+          <div className="flex items-center gap-2 wz-opt-title" style={{ fontSize: '0.9rem' }}>
+            <Check size={16} />
+            <span>{t('setup.tgLinked')}</span>
+          </div>
+        )}
+
+        {state.phase === 'error' && (
+          <div className="flex items-center gap-2 wz-opt-desc">
+            <AlertCircle size={16} />
+            <span>{state.message}</span>
+          </div>
+        )}
+
+        <p className="wz-opt-desc">{t('setup.tgOptional')}</p>
       </div>
 
       <div className="wz-actions">

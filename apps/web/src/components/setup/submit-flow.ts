@@ -60,12 +60,15 @@ export function parseCreatedProjects(json: unknown): CreatedProject[] {
   })
 }
 
+// Sem `telegram`: o @username que este submit carregava era gravado em
+// runtimeConfig/payload e ninguém lia — nem poderia, já que o Telegram endereça
+// por chat_id, não por @username. O vínculo real tem rota e tabela próprias
+// (setup/telegram/link -> /start -> telegram_links). Ver ./telegram-link.ts.
 export interface SubmitInput {
   apiBaseUrl: string
   plan: string
   repos: string[]
   engines: string[]
-  telegram: string
   autonomy: Record<string, number>
 }
 
@@ -92,7 +95,6 @@ export async function submitSetup(input: SubmitInput, deps: SubmitDeps): Promise
     body: JSON.stringify({
       repos: input.repos,
       engines: input.engines,
-      telegram: input.telegram,
       plan: input.plan,
       envConfig: { autonomy: input.autonomy },
     }),

@@ -161,7 +161,13 @@ export async function runSmWatchdog(options: SmWatchdogOptions): Promise<SmWatch
   }
 }
 
-/** Notificador Telegram a partir do env; ausente/config incompleta → undefined. */
+/**
+ * Notificador Telegram. O `chatId` NÃO sai do env: quem o resolve é
+ * `resolveNotifyChatId` (services/telegram-link.ts), a partir do vínculo real do
+ * DONO daquele projeto — o bot só alcança quem apertou Start nele. Sem chat
+ * resolvido → undefined → o watchdog simplesmente não notifica (nunca despeja o
+ * evento de um cliente num chat que não é o dele).
+ */
 export function buildTelegramNotifier(env: {
   botToken?: string | undefined
   chatId?: string | undefined
