@@ -178,6 +178,8 @@ export const locales = {
       confirmFreePlan: 'Free plan',
       confirmSubmit: 'Finish & clone',
       confirmSubmitting: 'Cloning & starting...',
+      confirmPayNext:
+        'Next we create your environment and show your API key — you will only see it once. Payment comes right after that.',
       connectTitle: 'Connect your engines',
       connectDesc:
         'Sign in to each engine with your own account — you just click a link, authorize on the provider’s page, and paste the code back. Nothing to install, no terminal. All three work the same way — connect at least one to continue.',
@@ -230,9 +232,20 @@ export const locales = {
         'We could not provision your environment. You can try again.',
       readyRefresh: 'Refresh',
       readyRetry: 'Try again',
-      readyKeys: 'Integration keys & CI setup',
+      readyKeys: 'Your API key',
+      readyKeyOnce:
+        'This is the only time we show your key. We only store a scrambled version of it, so not even we can display it again — copy it now and keep it somewhere safe.',
+      readyKeySaved: 'I have saved my key somewhere safe',
+      readyKeyCopy: 'Copy the key',
+      readyLockedHint: 'Copy the key (or tick the box above) to continue.',
       readyKeysHint:
         'Add this secret to your GitHub Actions so agents running on GitHub can report back:',
+      readyGoPay: 'Go to payment',
+      readyPaying: 'Opening payment...',
+      readyPayFailed:
+        'We could not open payment right now. Your environment and key are ready — try again or head to the panel.',
+      readyPayCapacity:
+        'We are at capacity right now. Your environment and key are ready — we will reach out to unlock the paid plan.',
       readyGoPanel: 'Go to the panel',
       planIntent: 'You came in with this plan — you can still change it below.',
       reposFreeNote:
@@ -420,6 +433,8 @@ export const locales = {
       confirmFreePlan: 'Plano Grátis',
       confirmSubmit: 'Finalizar e clonar',
       confirmSubmitting: 'Clonando e iniciando...',
+      confirmPayNext:
+        'A seguir criamos o seu ambiente e mostramos a sua chave de API — você só vai vê-la uma vez. O pagamento vem logo depois disso.',
       connectTitle: 'Conecte seus motores',
       connectDesc:
         'Entre em cada motor com a sua própria conta — você só clica num link, autoriza na página do provedor e cola o código de volta. Nada pra instalar, nenhum terminal. Os três funcionam do mesmo jeito — conecte pelo menos um para continuar.',
@@ -472,9 +487,20 @@ export const locales = {
         'Não conseguimos provisionar o seu ambiente. Você pode tentar de novo.',
       readyRefresh: 'Atualizar',
       readyRetry: 'Tentar de novo',
-      readyKeys: 'Chaves de integração e CI',
+      readyKeys: 'Sua chave de API',
+      readyKeyOnce:
+        'Esta é a única vez que mostramos a sua chave. Guardamos apenas uma versão embaralhada dela, então nem nós conseguimos exibi-la de novo — copie agora e guarde num lugar seguro.',
+      readyKeySaved: 'Já guardei minha chave em um lugar seguro',
+      readyKeyCopy: 'Copiar a chave',
+      readyLockedHint: 'Copie a chave (ou marque a caixa acima) para continuar.',
       readyKeysHint:
         'Adicione este segredo nas suas GitHub Actions para os agentes que rodam no GitHub reportarem de volta:',
+      readyGoPay: 'Ir para o pagamento',
+      readyPaying: 'Abrindo o pagamento...',
+      readyPayFailed:
+        'Não conseguimos abrir o pagamento agora. Seu ambiente e sua chave já estão prontos — tente de novo ou siga para o painel.',
+      readyPayCapacity:
+        'Estamos no limite de capacidade no momento. Seu ambiente e sua chave já estão prontos — entramos em contato para liberar o plano pago.',
       readyGoPanel: 'Ir para o painel',
       planIntent: 'Você entrou já com este plano — dá para mudar aqui embaixo.',
       reposFreeNote:
@@ -662,6 +688,8 @@ export const locales = {
       confirmFreePlan: 'Plan Gratis',
       confirmSubmit: 'Finalizar y clonar',
       confirmSubmitting: 'Clonando e iniciando...',
+      confirmPayNext:
+        'A continuación creamos tu entorno y mostramos tu clave de API — solo la verás una vez. El pago viene justo después.',
       connectTitle: 'Conecta tus motores',
       connectDesc:
         'Inicia sesión en cada motor con tu propia cuenta — solo haces clic en un enlace, autorizas en la página del proveedor y pegas el código de vuelta. Nada que instalar, sin terminal. Los tres funcionan igual — conecta al menos uno para continuar.',
@@ -714,9 +742,20 @@ export const locales = {
         'No pudimos aprovisionar tu entorno. Puedes intentarlo de nuevo.',
       readyRefresh: 'Actualizar',
       readyRetry: 'Reintentar',
-      readyKeys: 'Claves de integración y CI',
+      readyKeys: 'Tu clave de API',
+      readyKeyOnce:
+        'Esta es la única vez que mostramos tu clave. Solo guardamos una versión cifrada de ella, así que ni nosotros podemos volver a mostrarla — cópiala ahora y guárdala en un lugar seguro.',
+      readyKeySaved: 'Ya guardé mi clave en un lugar seguro',
+      readyKeyCopy: 'Copiar la clave',
+      readyLockedHint: 'Copia la clave (o marca la casilla de arriba) para continuar.',
       readyKeysHint:
         'Añade este secreto a tus GitHub Actions para que los agentes que corren en GitHub reporten de vuelta:',
+      readyGoPay: 'Ir al pago',
+      readyPaying: 'Abriendo el pago...',
+      readyPayFailed:
+        'No pudimos abrir el pago ahora. Tu entorno y tu clave ya están listos — inténtalo de nuevo o ve al panel.',
+      readyPayCapacity:
+        'Estamos al límite de capacidad en este momento. Tu entorno y tu clave ya están listos — te contactaremos para desbloquear el plan de pago.',
       readyGoPanel: 'Ir al panel',
       planIntent: 'Entraste ya con este plan — puedes cambiarlo aquí abajo.',
       reposFreeNote:

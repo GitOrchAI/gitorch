@@ -1,14 +1,7 @@
 import React, { useState } from 'react'
 import { ChevronRight, Loader2, AlertCircle } from 'lucide-react'
-import { detectCountry } from '../../lib/geo'
 import { useLanguage } from '../../LanguageContext'
-
-interface CreatedProject {
-  id: string
-  name: string
-  wingId: string
-  apiKey: string
-}
+import { isPaidPlan, submitSetup, type CreatedProject } from './submit-flow'
 
 interface StepPlanConfirmationProps {
   apiBaseUrl: string
@@ -37,67 +30,45 @@ export default function StepPlanConfirmation({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const isFree = plan === 'free'
+  const isPaid = isPaidPlan(plan)
+  const isFree = !isPaid
   const isOverlimit = isFree && selectedRepos.length > 1
 
   const handleRemoveRepo = (fullName: string) => {
     setSelectedRepos(selectedRepos.filter((r) => r !== fullName))
   }
 
+  /**
+   * Cria o ambiente e SEGUE PARA O PASSO FINAL — pago ou grátis, o mesmo caminho.
+   *
+   * Aqui morava a promessa quebrada: no plano pago, o submit emendava num redirect
+   * automático pro Stripe e dava `return`, pulando o StepReady. Como o StepReady é
+   * o ÚNICO lugar que renderiza a chave de API — e o texto puro dela só existe
+   * nesta resposta (o banco guarda só o hash) — quem PAGAVA saía do funil sem
+   * nunca ter visto a própria credencial, e ela era irrecuperável.
+   *
+   * Agora este passo não navega para lugar nenhum. Ele entrega os projetos (com a
+   * chave) para a memória do wizard, e o pagamento vira um botão no StepReady —
+   * depois de a chave estar na tela, com o aviso de que é a única exibição.
+   * A guarda em submit-flow.test.ts existe para que ninguém reintroduza o
+   * redirect: este componente não pode conter navegação, ponto.
+   */
   const handleSubmit = async () => {
     try {
       setLoading(true)
       setError(null)
-      const response = await fetch(`${apiBaseUrl}/api/v1/setup/submit`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
+      const projects = await submitSetup(
+        {
+          apiBaseUrl,
+          plan,
           repos: selectedRepos,
           engines: selectedEngines,
           telegram,
-          plan,
-          envConfig: {
-            autonomy,
-          },
-        }),
-      })
-
-      if (!response.ok) {
-        const errData = await response.json()
-        throw new Error(errData.error || t('setup.reposError'))
-      }
-
-      const data = await response.json()
-
-      // Plano pago → checkout do Stripe (na moeda do país do cliente). Grátis →
-      // conclui direto. Se o checkout falhar, não trava a conclusão do setup.
-      if (!isFree) {
-        // Mesma detecção por IP da landing: a moeda do checkout Stripe segue a
-        // localização real, não o idioma do navegador.
-        const country = await detectCountry()
-        const qs = country ? `?country=${country}` : ''
-        try {
-          const cr = await fetch(`${apiBaseUrl}/api/billing/checkout${qs}`, {
-            method: 'POST',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ planId: plan }),
-          })
-          if (cr.ok) {
-            const cd = (await cr.json()) as { url?: string }
-            if (cd.url) {
-              window.location.href = cd.url
-              return
-            }
-          }
-        } catch {
-          // segue pra conclusão mesmo se o checkout não abrir
-        }
-      }
-      onSuccess(data.projects)
+          autonomy,
+        },
+        { fallbackError: t('setup.reposError') }
+      )
+      onSuccess(projects)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : t('setup.reposError'))
     } finally {
@@ -181,6 +152,10 @@ export default function StepPlanConfirmation({
             </div>
           </div>
         </div>
+
+        {/* Plano pago: diz na cara a ordem do que vem — primeiro a chave, depois o
+            pagamento. Ninguém é jogado num checkout sem aviso. */}
+        {isPaid && <p className="wz-opt-desc">{t('setup.confirmPayNext')}</p>}
 
         {error && <p className="wz-err text-center">{error}</p>}
       </div>
