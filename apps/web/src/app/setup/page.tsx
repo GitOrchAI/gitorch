@@ -32,7 +32,10 @@ export default function SetupWizard() {
   const [authenticated, setAuthenticated] = useState(false)
   const [selectedRepos, setSelectedRepos] = useState<string[]>([])
   const [selectedEngines, setSelectedEngines] = useState<string[]>(['claude-code'])
-  const [telegram, setTelegram] = useState('')
+  // Sem estado de telegram aqui: o vínculo NÃO é um campo de formulário que
+  // viaja no submit — ele nasce no backend (token -> /start -> chat_id) e vive
+  // em telegram_links. Guardar um @username aqui era o que fazia o passo 8
+  // prometer um aviso que nunca chegava.
   // Autonomia dos 4 papéis: default sensato enviado ao submit (envConfig). Os
   // sliders manuais saíram do wizard (Task 3.4) — autonomia/cadência vira
   // ajuste fino no painel, não fricção no onboarding.
@@ -233,12 +236,7 @@ export default function SetupWizard() {
                 exit={{ opacity: 0, x: -20 }}
                 className="flex flex-col h-full flex-1"
               >
-                <StepTelegram
-                  telegram={telegram}
-                  setTelegram={setTelegram}
-                  onNext={nextStep}
-                  onBack={prevStep}
-                />
+                <StepTelegram apiBaseUrl={API_BASE_URL} onNext={nextStep} onBack={prevStep} />
               </motion.div>
             )}
 
@@ -274,7 +272,6 @@ export default function SetupWizard() {
                   selectedRepos={selectedRepos}
                   setSelectedRepos={setSelectedRepos}
                   selectedEngines={selectedEngines}
-                  telegram={telegram}
                   autonomy={autonomy}
                   onSuccess={handleSetupSuccess}
                   onBack={prevStep}

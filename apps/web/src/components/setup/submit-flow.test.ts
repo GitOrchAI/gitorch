@@ -56,7 +56,6 @@ const SUBMIT_INPUT = {
   apiBaseUrl: 'https://api.example',
   repos: ['dono/app'],
   engines: ['claude-code'],
-  telegram: '',
   autonomy: { sm: 3, qa: 3, ra: 3, po: 3 },
 }
 
