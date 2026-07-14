@@ -216,15 +216,22 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
         return reply.code(400).send({ error: 'At least one repository must be selected' })
       }
 
-      // Resolve o dono a partir da sessão (email do usuário autenticado) e o
-      // limite de projetos do plano dele. Em ausência de email na sessão,
-      // segue sem dono (comportamento legado single-tenant).
+      // Resolve o DONO a partir da sessão (e-mail do usuário autenticado) e o
+      // limite de projetos do plano dele.
       const owner = user.email
         ? await app.prisma.user.findUnique({
             where: { email: user.email },
             include: { plan: true },
           })
         : null
+
+      // Sem dono resolvido não há a quem o projeto pertença — e um Project órfão
+      // (user_id nulo) cai num namespace GLOBAL onde o próximo cliente sem dono
+      // o encontraria pelo repo e herdaria uma ApiKey sobre ele. É a porta exata
+      // do vazamento entre clientes: recusa em vez de criar no limbo.
+      if (!owner) {
+        return reply.code(401).send({ error: 'UNAUTHORIZED: sessão sem dono resolvível' })
+      }
 
       // 1. Limite de projetos: o MAIOR entre o plano REAL do dono (confirmado,
       // sobe só quando o webhook do Stripe processa o pagamento) e o plano
@@ -236,16 +243,12 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
       // solta do cliente — é buscado no banco; inexistente cai no teto do free.
       const submittedPlan =
         plan !== 'free' ? await app.prisma.plan.findUnique({ where: { id: plan } }) : null
-      const maxProjects = Math.max(owner?.plan?.maxProjects ?? 1, submittedPlan?.maxProjects ?? 1)
-      if (owner) {
-        const currentCount = await app.prisma.project.count({ where: { userId: owner.id } })
-        if (currentCount + repos.length > maxProjects) {
-          return reply.code(400).send({
-            error: `Plan limit reached: up to ${maxProjects} project(s) allowed (${currentCount} in use)`,
-          })
-        }
-      } else if (plan === 'free' && repos.length > 1) {
-        return reply.code(400).send({ error: 'Free plan only allows up to 1 repository' })
+      const maxProjects = Math.max(owner.plan?.maxProjects ?? 1, submittedPlan?.maxProjects ?? 1)
+      const currentCount = await app.prisma.project.count({ where: { userId: owner.id } })
+      if (currentCount + repos.length > maxProjects) {
+        return reply.code(400).send({
+          error: `Plan limit reached: up to ${maxProjects} project(s) allowed (${currentCount} in use)`,
+        })
       }
 
       // 1.5. Pelo menos um dos motores selecionados precisa estar REALMENTE
@@ -266,9 +269,8 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
       // plugins/engines.ts resolveUserId), e uma sessão cujo JWT carregue um
       // id diferente (ex.: cookie emitido antes de uma correção de id) não
       // pode ficar bloqueada permanentemente achando que nenhum motor está
-      // conectado. Sem e-mail (legado single-tenant), não há id melhor —
-      // segue com user.id como já fazia.
-      const connections = await app.engineConnections.list(owner?.id ?? user.id)
+      // conectado.
+      const connections = await app.engineConnections.list(owner.id)
       const connectedRuntimes = requestedRuntimes.filter((r) =>
         connections.some((c) => c.runtime === r && c.status === 'connected')
       )
@@ -304,9 +306,16 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
         const repoName = repoFullName.split('/')[1] || repoFullName
         const wingId = repoFullName // owner/repo maps to wingId
 
-        // Check if project already exists
+        // O projeto já existe PARA ESTE DONO? O escopo por `userId` é o que
+        // impede o vazamento entre clientes: `wingId` é o repositório
+        // ("owner/repo"), e dois clientes podem cadastrar o mesmo repo (dois
+        // colaboradores de "acme/api"). Buscando só por `wingId`, o segundo
+        // achava o Project do PRIMEIRO e recebia uma ApiKey válida sobre o
+        // projeto alheio. O banco garante o mesmo invariante
+        // (@@unique([userId, wingId])); aqui é defesa em profundidade — junto
+        // com o guard de tenant do Prisma, que também injeta o dono da sessão.
         let project = await app.prisma.project.findFirst({
-          where: { wingId },
+          where: { wingId, userId: owner.id },
         })
 
         if (!project) {
@@ -315,7 +324,8 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
               wingId,
               name: repoName,
               description: `Project for ${repoFullName}`,
-              ...(owner ? { userId: owner.id } : {}),
+              // O projeto nasce sempre COM dono — nunca no limbo global.
+              userId: owner.id,
               // O token do GitHub NÃO é duplicado aqui em texto puro — já foi
               // persistido cifrado por usuário no callback OAuth
               // (EngineConnection, runtime 'github'); a missão o materializa
@@ -390,7 +400,7 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
       // segurança para qualquer erro inesperado (nunca vira 500 pro cliente).
       try {
         const githubToken = app.engineConnections
-          ? await app.engineConnections.getRawGithubToken(owner?.id ?? user.id)
+          ? await app.engineConnections.getRawGithubToken(owner.id)
           : null
         if (app.cortex && githubToken) {
           for (const repoFullName of repos) {

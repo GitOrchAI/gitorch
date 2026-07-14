@@ -157,7 +157,13 @@ model EngineConnection {
 
 model Project {
   id          String   @id @default(cuid())
-  wingId      String   @unique @map("wing_id")
+  // "owner/repo" — o endereço do REPOSITÓRIO (o scheduler clona a partir dele e
+  // o webhook casa `repository.full_name` contra ele), NÃO a chave do tenant.
+  // Por isso NÃO é único global: dois clientes podem, legitimamente, cadastrar o
+  // mesmo repo (dois colaboradores de "acme/api"). O único global fazia o
+  // segundo cliente ACHAR o Project do primeiro no wizard e receber uma ApiKey
+  // válida sobre o projeto alheio. A unicidade é por DONO (@@unique abaixo).
+  wingId      String   @map("wing_id")
   name        String
   description String?
   avatarUrl   String?  @map("avatar_url")
@@ -182,6 +188,13 @@ model Project {
   webhookDeliveries WebhookDelivery[]
   schedules   ProjectSchedule[]
 
+  // Um repo, um projeto, POR DONO. É o banco garantindo o que a rota de setup
+  // passou a exigir — mesmo repo em dois clientes = dois projetos distintos.
+  // (Legado sem dono: no Postgres NULLs são distintos entre si, então linhas
+  // órfãs antigas não colidem; projeto novo nunca nasce sem dono.)
+  @@unique([userId, wingId])
+  // Mantido: é por ele que o webhook do GitHub reencontra o projeto pelo
+  // full_name do repositório (o wizard não preenche os ids numéricos).
   @@index([wingId])
   @@index([userId])
   @@map("projects")

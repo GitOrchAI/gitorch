@@ -470,3 +470,160 @@ describe('POST /api/v1/setup/submit — plano autoritativo (paid-intent, ainda n
     expect(projectCreate).toHaveBeenCalledTimes(2)
   })
 })
+
+describe('POST /api/v1/setup/submit — isolamento entre clientes (o projeto é do DONO)', () => {
+  let app: ReturnType<typeof Fastify>
+  let currentUser: { id: string; wingId: string; email?: string }
+  let projects: Array<{
+    id: string
+    wingId: string
+    name: string
+    userId: string | null
+    runtimeConfig: unknown
+  }>
+  let apiKeys: Array<{ projectId: string }>
+  let owners: Record<string, { id: string; email: string }>
+
+  beforeEach(async () => {
+    projects = []
+    apiKeys = []
+    let nextId = 1
+    owners = {
+      'ana@example.test': { id: 'user_ana', email: 'ana@example.test' },
+      'bob@example.test': { id: 'user_bob', email: 'bob@example.test' },
+    }
+    currentUser = { id: 'user_ana', wingId: 'acme', email: 'ana@example.test' }
+
+    app = Fastify()
+    app.decorate('engineConnections', {
+      list: async () => [{ runtime: 'claude', status: 'connected' }],
+    } as unknown as EngineConnectionService)
+    app.decorate('prisma', {
+      user: {
+        findUnique: vi.fn(async ({ where }: { where: { email: string } }) => {
+          const owner = owners[where.email]
+          return owner ? { ...owner, plan: { id: 'pro', maxProjects: 5 } } : null
+        }),
+      },
+      plan: { findUnique: vi.fn().mockResolvedValue({ id: 'pro', maxProjects: 5 }) },
+      project: {
+        count: vi.fn(
+          async ({ where }: { where: { userId?: string } }) =>
+            projects.filter((p) => p.userId === where.userId).length
+        ),
+        // Honra TODOS os campos do `where`, como o Postgres faz. É exatamente
+        // isso que torna o vazamento visível: com a busca só por `wingId`, o
+        // segundo cliente ACHA o projeto do primeiro.
+        findFirst: vi.fn(
+          async ({ where }: { where: { wingId?: string; userId?: string } }) =>
+            projects.find(
+              (p) =>
+                (where.wingId === undefined || p.wingId === where.wingId) &&
+                (where.userId === undefined || p.userId === where.userId)
+            ) ?? null
+        ),
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+          const rec = {
+            id: `proj_${nextId++}`,
+            wingId: data['wingId'] as string,
+            name: data['name'] as string,
+            userId: (data['userId'] as string | undefined) ?? null,
+            runtimeConfig: data['runtimeConfig'],
+          }
+          projects.push(rec)
+          return rec
+        }),
+        update: vi.fn().mockResolvedValue({}),
+      },
+      apiKey: {
+        create: vi.fn(async ({ data }: { data: { projectId: string } }) => {
+          apiKeys.push({ projectId: data.projectId })
+          return {}
+        }),
+      },
+      mission: { create: vi.fn().mockResolvedValue({}) },
+      projectSchedule: {
+        findMany: vi.fn().mockResolvedValue([]),
+        count: vi.fn().mockResolvedValue(0),
+        create: vi.fn().mockResolvedValue({}),
+      },
+      clientEnvironment: {
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+    app.addHook('preHandler', async (request: FastifyRequest) => {
+      request.user = currentUser
+    })
+    await setupRoutes(app)
+    await app.ready()
+  })
+
+  const submit = async (): Promise<{
+    projects: Array<{ id: string; wingId: string; apiKey: string }>
+  }> => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/setup/submit',
+      payload: { repos: ['acme/api'], engines: ['claude-code'], plan: 'pro' },
+    })
+    expect(res.statusCode).toBe(200)
+    return res.json() as { projects: Array<{ id: string; wingId: string; apiKey: string }> }
+  }
+
+  it('VAZAMENTO: o cliente B fazendo setup do MESMO repo do cliente A não recebe o projeto de A', async () => {
+    // Dois colaboradores do mesmo repositório ("acme/api") passam pelo wizard.
+    // Com o Project.wingId único GLOBAL e a busca só por wingId, o segundo
+    // ACHAVA o Project do primeiro e ganhava uma ApiKey VÁLIDA sobre o projeto
+    // alheio — controle total do repo de outro cliente. O projeto é do DONO:
+    // mesmo repo, donos diferentes, projetos diferentes.
+    currentUser = { id: 'user_ana', wingId: 'acme', email: 'ana@example.test' }
+    const ana = await submit()
+
+    currentUser = { id: 'user_bob', wingId: 'acme', email: 'bob@example.test' }
+    const bob = await submit()
+
+    const anaProject = ana.projects[0]!
+    const bobProject = bob.projects[0]!
+
+    // B NÃO recebeu o projeto de A.
+    expect(bobProject.id).not.toBe(anaProject.id)
+    // Nasceram dois projetos, um por dono, ambos para o mesmo repo.
+    expect(projects).toHaveLength(2)
+    expect(projects.map((p) => p.userId).sort()).toEqual(['user_ana', 'user_bob'])
+    expect(projects.every((p) => p.wingId === 'acme/api')).toBe(true)
+    // E a ApiKey de B está sobre o projeto de B — nunca sobre o de A.
+    expect(apiKeys.map((k) => k.projectId)).toEqual([anaProject.id, bobProject.id])
+  })
+
+  it('idempotência preservada: o MESMO dono resubmetendo o mesmo repo reusa o projeto dele', async () => {
+    const first = await submit()
+    const second = await submit()
+
+    expect(second.projects[0]!.id).toBe(first.projects[0]!.id)
+    expect(projects).toHaveLength(1)
+  })
+
+  it('todo projeto nasce COM dono (nunca no limbo global de onde o próximo cliente o acha)', async () => {
+    await submit()
+    expect(projects[0]!.userId).toBe('user_ana')
+  })
+
+  it('401 quando o dono da sessão não é resolvível (sem dono não há a quem pertencer o projeto)', async () => {
+    // Sessão sem e-mail (JWT legado) ou cujo usuário não existe mais: sem dono
+    // resolvido, o projeto nasceria órfão num namespace global — a porta exata
+    // do vazamento. Recusa em vez de criar.
+    currentUser = { id: 'user_fantasma', wingId: 'acme' }
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/setup/submit',
+      payload: { repos: ['acme/api'], engines: ['claude-code'], plan: 'pro' },
+    })
+
+    expect(res.statusCode).toBe(401)
+    expect(projects).toHaveLength(0)
+    expect(apiKeys).toHaveLength(0)
+  })
+})
