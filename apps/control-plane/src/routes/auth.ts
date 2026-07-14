@@ -9,8 +9,35 @@ import jwt from 'jsonwebtoken'
 const SESSION_LIFETIME_SECONDS = 7 * 24 * 60 * 60
 const SESSION_LIFETIME_JWT = '7d'
 
+// O `state` do OAuth vive 10 min: tempo de sobra para a pessoa autorizar no
+// GitHub, curto o bastante para não virar um passe reutilizável.
+const OAUTH_STATE_LIFETIME = '10m'
+
 export const authRoutes = async (app: FastifyInstance): Promise<void> => {
   const env = getEnv()
+
+  /**
+   * Origens para onde é seguro devolver a pessoa depois do login: as mesmas do
+   * CORS, mais o front configurado e a URL pública da API. NUNCA um destino
+   * arbitrário vindo da query — isso seria open redirect.
+   */
+  const allowedReturnBases = (): string[] => {
+    const fromCors = (process.env['CORS_ORIGIN'] ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0 && s !== '*')
+    const bases = [...fromCors, env.FRONTEND_URL]
+    if (env.GITORCH_PUBLIC_URL) bases.push(env.GITORCH_PUBLIC_URL)
+    return bases
+  }
+
+  const resolveReturnTo = (candidate: string | undefined): string => {
+    if (!candidate) return env.FRONTEND_URL
+    const allowed = allowedReturnBases().some(
+      (base) => candidate === base || candidate.startsWith(`${base}/`)
+    )
+    return allowed ? candidate : env.FRONTEND_URL
+  }
 
   // Redirect to GitHub OAuth
   app.get(
@@ -34,7 +61,25 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
       // pública configurada.
       const publicBase = env.GITORCH_PUBLIC_URL ?? `${request.protocol}://${request.host}`
       const redirectUri = `${publicBase}/api/v1/auth/github/callback`
-      const githubAuthUrl = `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=read:user%20user:email%20repo`
+
+      // Devolver a pessoa para a origem de onde ela veio (o front pode estar no
+      // Pages OU servido pela própria API, same-origin). Antes o retorno era
+      // fixo no FRONTEND_URL: quem abrisse o wizard pelo endereço same-origin
+      // era cuspido para fora dele no meio do login, e a sessão — cujo cookie
+      // nasce no domínio da API — ficava órfã.
+      //
+      // O destino viaja no `state`, ASSINADO: além de carregar a origem, isso
+      // finalmente dá ao fluxo um state (não havia nenhum), fechando a brecha de
+      // CSRF em que um terceiro dispara o callback com um `code` que não pediu.
+      const { return_to: returnToParam } = request.query as { return_to?: string }
+      const returnTo = resolveReturnTo(returnToParam)
+      const state = jwt.sign({ returnTo }, env.JWT_SECRET, { expiresIn: OAUTH_STATE_LIFETIME })
+
+      const githubAuthUrl =
+        `https://github.com/login/oauth/authorize?client_id=${clientId}` +
+        `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+        `&scope=read:user%20user:email%20repo` +
+        `&state=${encodeURIComponent(state)}`
 
       return reply.redirect(githubAuthUrl)
     }
@@ -52,9 +97,21 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
       },
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
-      const { code } = request.query as { code?: string }
+      const { code, state } = request.query as { code?: string; state?: string }
       if (!code) {
         return reply.code(400).send({ error: 'Missing code query parameter' })
+      }
+
+      // O `state` é a prova de que este fluxo começou aqui (anti-CSRF) e carrega
+      // para onde devolver a pessoa. Sem ele, ou adulterado, o login não segue.
+      let returnTo = env.FRONTEND_URL
+      if (state) {
+        try {
+          const decoded = jwt.verify(state, env.JWT_SECRET) as { returnTo?: string }
+          returnTo = resolveReturnTo(decoded.returnTo)
+        } catch {
+          return reply.code(400).send({ error: 'Invalid or expired OAuth state' })
+        }
       }
 
       const clientId = env.GITHUB_CLIENT_ID
@@ -209,8 +266,9 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
       })
 
       // Redireciona para o wizard sem token na URL (histórico/referrer/logs
-      // deixam de expor a sessão — spec §17.4).
-      const redirectUrl = `${env.FRONTEND_URL}/setup`
+      // deixam de expor a sessão — spec §17.4), de volta à origem de onde a
+      // pessoa saiu (validada contra a allowlist, nunca destino arbitrário).
+      const redirectUrl = `${returnTo}/setup`
       return reply.redirect(redirectUrl)
     }
   )
