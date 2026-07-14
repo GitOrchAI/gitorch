@@ -124,7 +124,18 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
         return reply.code(400).send({ error: 'Missing GitHub identifiers' })
       }
 
-      // Find project by GitHub identifiers
+      // Find project by GitHub identifiers.
+      //
+      // `wingId` deixou de ser único global (um repo pode estar cadastrado por
+      // mais de um cliente — dois colaboradores de "acme/api"), então o casamento
+      // por full_name pode ter MAIS DE UM candidato. Sem uma ordem explícita, o
+      // Postgres devolveria um qualquer e a entrega do MESMO repo cairia ora num
+      // cliente, ora noutro. `createdAt asc` fixa o destino no primeiro projeto
+      // que cadastrou aquele repositório — estável entre entregas.
+      //
+      // (Os ids numéricos do GitHub continuam sendo únicos globais e, quando
+      // presentes, casam um único projeto; o desempate só importa no fallback
+      // por full_name, que é o caminho de todo projeto criado pelo wizard.)
       const project = await app.prisma.project.findFirst({
         where: {
           OR: [
@@ -133,6 +144,7 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
             ...(repoFullName ? [{ wingId: repoFullName }] : []),
           ],
         },
+        orderBy: { createdAt: 'asc' },
         select: {
           id: true,
           wingId: true,
