@@ -130,3 +130,35 @@ describe('extractClaudeToken', () => {
     expect(extractClaudeToken('sk-ant-oat01-abcdefghij0123')).toBe('sk-ant-oat01-abcdefghij0123')
   })
 })
+
+/**
+ * O token do Claude tem ~100 chars. A captura dele nunca tinha sido exercida
+ * contra saída real: a fixture não contém token nenhum e o único teste com
+ * token+ANSI usava uma string inventada à mão. Estes testes fixam o contrato
+ * que interessa: extrair o token íntegro, ou NADA — jamais uma credencial
+ * corrompida (que passaria na extração e morreria depois como "token inválido",
+ * sem ninguém entender por quê).
+ */
+describe('extractClaudeToken — íntegro ou nada', () => {
+  const CORPO = 'AbC123_xyz-DEF456ghi789JKLmno012PQRstu345VWXyz678abc901DEF234ghi567jkl890MNO'
+  const TOKEN = `sk-ant-oat01-${CORPO}`
+
+  it('extrai o token quando vem inteiro', () => {
+    expect(extractClaudeToken(`Token:\n${TOKEN}\n`)).toBe(TOKEN)
+  })
+
+  it('extrai com ANSI colado nas duas pontas', () => {
+    expect(extractClaudeToken(`\x1b[37m${TOKEN}\x1b[39m`)).toBe(TOKEN)
+  })
+
+  it('NÃO engole a linha seguinte (não devolve credencial corrompida)', () => {
+    expect(extractClaudeToken(`${TOKEN}\nFim`)).toBe(TOKEN)
+    expect(extractClaudeToken(`${TOKEN}\n\nPronto!`)).toBe(TOKEN)
+    expect(extractClaudeToken(`${TOKEN} guarde isso`)).toBe(TOKEN)
+  })
+
+  it('devolve null quando não há token (não inventa credencial)', () => {
+    expect(extractClaudeToken('Abra a URL e autorize')).toBeNull()
+    expect(extractClaudeToken('sk-ant-oat01-cur')).toBeNull()
+  })
+})

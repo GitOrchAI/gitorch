@@ -114,21 +114,31 @@ export function parseDevicePrompt(buffered: string, runtime: DeviceRuntime): Dev
 
 // `claude setup-token` imprime o token final no stdout (não grava arquivo). O
 // token real tem corpo longo (~100+ chars); um corpo curtíssimo é fragmento/lixo
-// de escape sobrevivente, não credencial — daí o piso de shape. A fronteira à
-// direita (?![A-Za-z0-9_-]) formaliza que o match é o token COMPLETO (o `+`
-// guloso já estende até ela) — nunca um pedaço truncado por um caractere adiante.
-const CLAUDE_TOKEN_RE = /sk-ant-oat01-[A-Za-z0-9_-]+(?![A-Za-z0-9_-])/
+// de escape sobrevivente, não credencial — daí o piso de shape.
 const CLAUDE_TOKEN_PREFIX = 'sk-ant-oat01-'
 // Piso conservador: barra fragmentos absurdos sem rejeitar os tokens curtos dos
 // testes. A validade REAL do token é atestada pela liveness (captureFromHome),
 // não aqui — este helper só garante extração íntegra, resistente a ANSI.
 const MIN_CLAUDE_TOKEN_BODY = 8
 
+// A fronteira à direita (?![A-Za-z0-9_-]) formaliza que o match é o token
+// COMPLETO (o `+` guloso já estende até ela) — nunca um pedaço truncado.
+const CLAUDE_TOKEN_RE = /sk-ant-oat01-[A-Za-z0-9_-]+(?![A-Za-z0-9_-])/
+
 /**
  * Extrai o token final do `claude setup-token` do stdout cru (com ANSI). Limpa
  * os escapes ANTES de casar — a captura A2 mostrou formas privadas (ESC[>4m,
  * ESC[<u, …) que, adjacentes ao token, cortavam o match cru no primeiro `[`.
  * Retorna o token COMPLETO ou `null` (nunca um fragmento parcial).
+ *
+ * DELIBERADAMENTE não costura token partido por hard-wrap do terminal. Sem saber
+ * a largura da tela é impossível distinguir `<token>\nFim` (token inteiro,
+ * seguido de outra linha) de um token de verdade quebrado ao meio — e colar as
+ * duas partes no palpite errado devolveria uma credencial CORROMPIDA, que é pior
+ * do que não capturar: passaria pela extração e só morreria depois, como "token
+ * inválido", sem ninguém entender por quê. O wrap é evitado na origem, com o PTY
+ * largo (PTY_COLS), e a falha de captura tem rede de segurança explícita (colar
+ * o token à mão) em vez de heurística adivinhando.
  */
 export function extractClaudeToken(buffer: string): string | null {
   const token = stripAnsi(buffer).match(CLAUDE_TOKEN_RE)?.[0]
