@@ -332,7 +332,7 @@ model DiagnosisJob {
 // repos (passo 4) e as credenciais de motor logadas DENTRO dele (passo 7), e
 // vira 'fixed' no aceite final (passo 10), quando o contexto do repo é
 // coletado pra memória. Um garbage collector destrói ambientes 'provisional'
-// com mais de 24h — requisito de SEGURANÇA, não higiene: o diretório guarda
+// SEM ATIVIDADE há 24h — requisito de SEGURANÇA, não higiene: o diretório guarda
 // credenciais + OAuth do cliente e não pode ficar largado se ele abandona.
 model ClientEnvironment {
   id     String @id @default(cuid())
@@ -348,8 +348,20 @@ model ClientEnvironment {
   createdAt DateTime  @default(now()) @map("created_at")
   updatedAt DateTime  @updatedAt @map("updated_at")
 
-  // status+createdAt: o garbage collector varre 'provisional' por idade (24h).
+  // O relógio da faxina: última ATIVIDADE REAL do cliente neste ambiente
+  // (aceitar termos, clonar repo, iniciar/concluir login de motor). O TTL mede
+  // INATIVIDADE, não idade — cortando por `createdAt`, quem aceitava os termos,
+  // conectava os motores e voltava pra terminar o wizard depois de 24h tinha o
+  // ambiente destruído NO MEIO do cadastro, junto com o clone e as credenciais.
+  //
+  // É coluna PRÓPRIA, e não o `updatedAt`: o @updatedAt sobe a QUALQUER escrita
+  // na linha, então um backfill/manutenção ressuscitaria em massa ambientes
+  // abandonados cheios de credencial. A renovação tem que ser um ato explícito
+  // e auditável (ClientEnvironmentService.touch), nunca um efeito colateral.
+  lastActivityAt DateTime @default(now()) @map("last_activity_at")
+
+  // status+lastActivityAt: é o corte exato que o garbage collector faz.
   @@index([userId])
-  @@index([status, createdAt])
+  @@index([status, lastActivityAt])
   @@map("client_environments")
 }
