@@ -53,7 +53,11 @@ export default function StepReady({ projects, apiBaseUrl, plan }: StepReadyProps
   const [paying, setPaying] = useState(false)
   const [payError, setPayError] = useState<string | null>(null)
 
-  const [provision, setProvision] = useState<ProvisionSnapshot>({ status: 'unknown', error: null })
+  const [provision, setProvision] = useState<ProvisionSnapshot>({
+    status: 'unknown',
+    error: null,
+    queuePosition: null,
+  })
   const [attempt, setAttempt] = useState(0)
   const [retrying, setRetrying] = useState(false)
 
@@ -95,7 +99,7 @@ export default function StepReady({ projects, apiBaseUrl, plan }: StepReadyProps
 
   // Volta a perguntar ao servidor (que é a fonte da verdade) desde o zero.
   const resumePolling = () => {
-    setProvision({ status: 'unknown', error: null })
+    setProvision({ status: 'unknown', error: null, queuePosition: null })
     setAttempt(0)
   }
 
@@ -346,7 +350,11 @@ export default function StepReady({ projects, apiBaseUrl, plan }: StepReadyProps
             label={t('setup.readyLedgerActivating')}
             sub={
               provision.status === 'pending'
-                ? t('setup.readyLedgerActivatingQueued')
+                ? provision.queuePosition
+                  ? t('setup.readyLedgerActivatingQueuedPosition', {
+                      position: provision.queuePosition,
+                    })
+                  : t('setup.readyLedgerActivatingQueued')
                 : provision.status === 'running'
                   ? t('setup.readyLedgerActivatingRunning')
                   : t('setup.readyLedgerActivatingDesc')

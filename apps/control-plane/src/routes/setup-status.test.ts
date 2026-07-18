@@ -22,7 +22,13 @@ interface MissionRow {
 interface StatusBody {
   status: string
   error: string | null
-  missions: Array<{ projectId: string; wingId: string; status: string; error: string | null }>
+  missions: Array<{
+    projectId: string
+    wingId: string
+    status: string
+    error: string | null
+    queuePosition: number | null
+  }>
   environment: { id: string; status: string } | null
 }
 
@@ -90,7 +96,13 @@ describe('GET /api/v1/setup/status', () => {
     expect(body.status).toBe('pending')
     expect(body.error).toBeNull()
     expect(body.missions).toEqual([
-      { projectId: 'proj_1', wingId: 'octocat/repo', status: 'pending', error: null },
+      {
+        projectId: 'proj_1',
+        wingId: 'octocat/repo',
+        status: 'pending',
+        error: null,
+        queuePosition: 1,
+      },
     ])
   })
 
@@ -144,6 +156,36 @@ describe('GET /api/v1/setup/status', () => {
       missionRow({ id: 'm_1', projectId: 'proj_1', status: 'pending' }),
     ])
     expect((await get()).status).toBe('pending')
+  })
+
+  it('2 missões pending: a 2ª (mais nova) tem queuePosition 2 (fila global por createdAt, mesma ordem do scheduler)', async () => {
+    const primeira = missionRow({
+      id: 'm_1',
+      projectId: 'proj_1',
+      status: 'pending',
+      createdAt: new Date('2026-07-14T12:00:00Z'),
+    })
+    const segunda = missionRow({
+      id: 'm_2',
+      projectId: 'proj_2',
+      status: 'pending',
+      project: { id: 'proj_2', wingId: 'octocat/repo2' },
+      createdAt: new Date('2026-07-14T12:05:00Z'),
+    })
+    // A fila global (createdAt asc) é a MESMA ordem que selectClaimableSetupMissions
+    // usa pra reivindicar — a mais antiga primeiro.
+    missionFindMany.mockResolvedValue([primeira, segunda])
+
+    const body = await get()
+    const porProjeto = new Map(body.missions.map((m) => [m.projectId, m.queuePosition]))
+    expect(porProjeto.get('proj_1')).toBe(1)
+    expect(porProjeto.get('proj_2')).toBe(2)
+  })
+
+  it('missão running não tem posição na fila (já não está esperando)', async () => {
+    missionFindMany.mockResolvedValue([missionRow({ status: 'running' })])
+    const body = await get()
+    expect(body.missions[0]?.queuePosition).toBeNull()
   })
 
   it('running vence pending quando não há falha (o mais avançado que ainda trabalha)', async () => {

@@ -54,11 +54,26 @@ const SETUP_MISSION_TYPE = 'clone_and_start_engines'
 type ProvisionStatus = 'unknown' | 'pending' | 'running' | 'completed' | 'failed'
 
 interface SetupMissionRow {
+  id: string
   projectId: string
   status: string
   error: string | null
   payload: Prisma.JsonValue
   project: { wingId: string }
+}
+
+/**
+ * Posição (1-based) de cada missão PENDENTE na fila global do scheduler —
+ * mesma ordem (createdAt asc) que `processSetupMissions` usa pra decidir
+ * quem reivindica primeiro quando o teto de concorrência está cheio (ver
+ * scheduler.ts: selectClaimableSetupMissions). "Global" porque o teto é da
+ * instância inteira, não por dono: a posição do cliente reflete a fila real
+ * que ele vai esperar, não uma fila fictícia só dele.
+ */
+function buildQueuePositionById(globalPendingFifo: Array<{ id: string }>): Map<string, number> {
+  const positions = new Map<string, number>()
+  globalPendingFifo.forEach((mission, index) => positions.set(mission.id, index + 1))
+  return positions
 }
 
 /**
@@ -591,6 +606,18 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
       const failed = missions.find((m) => m.status === 'failed')
       const environment = await clientEnvironments.current(user.id)
 
+      // Fila só quando ALGUMA missão deste dono está pending — poupa a query
+      // global no caso comum (running/completed/failed, sem nada esperando).
+      const queuePositionById = missions.some((m) => m.status === 'pending')
+        ? buildQueuePositionById(
+            await app.prisma.mission.findMany({
+              where: { type: SETUP_MISSION_TYPE, status: 'pending' },
+              orderBy: { createdAt: 'asc' },
+              select: { id: true },
+            })
+          )
+        : new Map<string, number>()
+
       return reply.send({
         status: aggregateStatus(missions),
         error: failed?.error ?? null,
@@ -599,6 +626,10 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
           wingId: m.project.wingId,
           status: m.status,
           error: m.error ?? null,
+          // null quando running/completed/failed — só quem ainda espera tem
+          // posição; o scheduler processa por esta MESMA ordem (FIFO por
+          // createdAt, ver selectClaimableSetupMissions).
+          queuePosition: m.status === 'pending' ? (queuePositionById.get(m.id) ?? null) : null,
         })),
         // Só id + status: o `path` do ambiente é infra e NUNCA vai pro frontend.
         environment: environment ? { id: environment.id, status: environment.status } : null,

@@ -1,6 +1,7 @@
 export * from './types'
 export * from './runtime-config'
 export * from './runtime-adapter'
+export * from './execution-limits'
 export * from './podman-runner'
 export * from './ssh-command-runner'
 export * from './agent-mission'
