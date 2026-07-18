@@ -7,6 +7,7 @@ import { missionRoutes } from './missions.js'
 import { eventRoutes } from './events.js'
 import { runtimeConfigRoutes } from './runtime-config.js'
 import { authRoutes } from './auth.js'
+import { githubAppInstallRoutes } from './github-app-install.js'
 import { setupRoutes } from './setup.js'
 import { billingRoutes } from './billing.js'
 import { diagnoseRoutes } from './diagnose.js'
@@ -23,6 +24,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
   // Auth and Setup endpoints
   await authRoutes(app)
+  await githubAppInstallRoutes(app)
   await setupRoutes(app)
 
   // Diagnóstico grátis (F1) — antes de existir Project/pagamento

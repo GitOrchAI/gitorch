@@ -26,6 +26,10 @@ export const envSchema = z.object({
   GITHUB_APP_ID: z.string().optional(),
   GITHUB_APP_PRIVATE_KEY: z.string().optional(),
   GITHUB_WEBHOOK_SECRET: z.string().optional(),
+  // Slug público do GitHub App (a parte depois de github.com/apps/) — usado
+  // para montar o link de instalação (routes/github-app-install.ts). É
+  // diferente do GITHUB_APP_ID (numérico, usado para assinar o JWT do App).
+  GITHUB_APP_SLUG: z.string().optional(),
   GITHUB_CLIENT_ID: z.string().optional(),
   GITHUB_CLIENT_SECRET: z.string().optional(),
   FRONTEND_URL: z.string().url().default('http://localhost:3000'),

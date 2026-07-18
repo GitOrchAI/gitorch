@@ -225,27 +225,51 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
       // e-mail → Prisma User.id (cuid) — nunca o id numérico do GitHub. O id
       // da sessão precisa ser o MESMO id, senão a credencial cifrada e o
       // dono do projeto nunca se encontram.
+      //
+      // F1 Onda 2 — identidade por githubId: o `login` pode ser renomeado, e
+      // o username abandonado fica livre para OUTRA conta reivindicar. Casar
+      // primeiro por e-mail/githubLogin faria essa outra conta "herdar" o
+      // User (e os projetos) de quem tinha o username antes — um takeover
+      // silencioso. O id numérico do GitHub nunca muda nem é reciclado: é a
+      // âncora que resolvemos PRIMEIRO, antes de qualquer coisa baseada em
+      // e-mail ou login.
+      const githubId = BigInt(userData.id)
       let dbUser
-      try {
-        dbUser = await app.prisma.user.upsert({
-          where: { email },
-          update: { githubLogin: userData.login },
-          create: { email, githubLogin: userData.login },
+      const byGithubId = await app.prisma.user.findUnique({ where: { githubId } })
+      if (byGithubId) {
+        dbUser = await app.prisma.user.update({
+          where: { id: byGithubId.id },
+          data: { email, githubLogin: userData.login },
         })
-      } catch (err) {
-        // Colisão: a conta trocou qual e-mail é primário/verificado no GitHub
-        // desde o último login — o upsert por e-mail tenta CRIAR um User (não
-        // existe nenhum com o e-mail novo) e esbarra na constraint única de
-        // githubLogin, que já pertence ao User antigo dessa MESMA conta.
-        // githubLogin identifica a conta com mais força que o e-mail (que
-        // pode mudar do lado do provider), então re-vincula em vez de falhar.
-        if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-          dbUser = await app.prisma.user.update({
-            where: { githubLogin: userData.login },
-            data: { email },
+      } else {
+        // Backfill: sem githubId ainda — conta nova, ou um User de antes
+        // desta coluna existir. Cai no caminho de sempre (casar por e-mail) e
+        // GRAVA o githubId agora, fechando a lacuna pros próximos logins.
+        try {
+          dbUser = await app.prisma.user.upsert({
+            where: { email },
+            update: { githubLogin: userData.login, githubId },
+            create: { email, githubLogin: userData.login, githubId },
           })
-        } else {
-          throw err
+        } catch (err) {
+          // Colisão: a conta trocou qual e-mail é primário/verificado no
+          // GitHub desde o último login — o upsert por e-mail tenta CRIAR um
+          // User (não existe nenhum com o e-mail novo) e esbarra na
+          // constraint única de githubLogin, que já pertence ao User antigo
+          // dessa MESMA conta. githubLogin identifica a conta com mais força
+          // que o e-mail (que pode mudar do lado do provider), então
+          // re-vincula em vez de falhar. Não grava githubId aqui de
+          // propósito (mantém este resgate idêntico ao de antes) — ele
+          // fecha sozinho no PRÓXIMO login, quando o e-mail já bate e o
+          // upsert normal acima roda sem colidir.
+          if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+            dbUser = await app.prisma.user.update({
+              where: { githubLogin: userData.login },
+              data: { email },
+            })
+          } else {
+            throw err
+          }
         }
       }
       const userId = dbUser.id

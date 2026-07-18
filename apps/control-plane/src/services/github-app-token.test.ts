@@ -123,3 +123,100 @@ describe('mintInstallationToken', () => {
     expect(await mintInstallationToken({ appId: '1', privateKey, fetchImpl })).toBeNull()
   })
 })
+
+/**
+ * F1 Onda 2 — installationId explícito: um cliente do wizard escolheu SUA
+ * instalação (users.github_installation_id), diferente da instalação[0] que
+ * o caminho dos trilhos usa por padrão. As duas nunca podem se confundir —
+ * nem no token devolvido, nem no cache.
+ */
+describe('mintInstallationToken — installationId explícito (por usuário)', () => {
+  beforeEach(() => resetAppTokenCache())
+
+  it('com installationId explícito, pula a listagem e mint direto naquela instalação', async () => {
+    const { privateKey } = makeKeypair()
+    const calls: Call[] = []
+    const fetchImpl = fakeGithub({ token: 'ghs_user_7', calls })
+
+    const token = await mintInstallationToken({
+      appId: '1',
+      privateKey,
+      fetchImpl,
+      installationId: 7,
+    })
+
+    expect(token).toBe('ghs_user_7')
+    expect(calls).toHaveLength(1) // nenhuma chamada a /app/installations
+    expect(calls[0]!.url).toContain('/app/installations/7/access_tokens')
+  })
+
+  it('instalações diferentes nunca compartilham token nem cache', async () => {
+    const { privateKey } = makeKeypair()
+    const callsA: Call[] = []
+    const tokenA = await mintInstallationToken({
+      appId: '1',
+      privateKey,
+      fetchImpl: fakeGithub({ token: 'ghs_A', calls: callsA }),
+      installationId: 111,
+    })
+
+    const callsB: Call[] = []
+    const tokenB = await mintInstallationToken({
+      appId: '1',
+      privateKey,
+      fetchImpl: fakeGithub({ token: 'ghs_B', calls: callsB }),
+      installationId: 222,
+    })
+
+    expect(tokenA).toBe('ghs_A')
+    expect(tokenB).toBe('ghs_B')
+    expect(callsB[0]!.url).toContain('/app/installations/222/access_tokens')
+
+    // Repetir a 111 usa o CACHE dela (nunca o token/estado da 222)
+    const callsA2: Call[] = []
+    const tokenA2 = await mintInstallationToken({
+      appId: '1',
+      privateKey,
+      fetchImpl: fakeGithub({ token: 'nao-deveria-usar-este', calls: callsA2 }),
+      installationId: 111,
+    })
+    expect(tokenA2).toBe('ghs_A')
+    expect(callsA2).toHaveLength(0) // cache hit, zero rede
+  })
+
+  it('installationId explícito não contamina o cache do caminho default (installations[0])', async () => {
+    const { privateKey } = makeKeypair()
+    // caminho default (sem installationId): resolve installations[0] = 4242
+    const callsDefault: Call[] = []
+    const tokenDefault = await mintInstallationToken({
+      appId: '1',
+      privateKey,
+      fetchImpl: fakeGithub({ installationId: 4242, token: 'ghs_default', calls: callsDefault }),
+    })
+    expect(tokenDefault).toBe('ghs_default')
+
+    // usuário com instalação explícita diferente
+    const callsUser: Call[] = []
+    await mintInstallationToken({
+      appId: '1',
+      privateKey,
+      fetchImpl: fakeGithub({ token: 'ghs_user', calls: callsUser }),
+      installationId: 999,
+    })
+
+    // caminho default de novo: ainda serve o token de 4242 do cache, sem
+    // rede nova (a instalação explícita de outro dono não interferiu)
+    const callsDefault2: Call[] = []
+    const tokenDefault2 = await mintInstallationToken({
+      appId: '1',
+      privateKey,
+      fetchImpl: fakeGithub({
+        installationId: 4242,
+        token: 'nao-deveria-usar-este',
+        calls: callsDefault2,
+      }),
+    })
+    expect(tokenDefault2).toBe('ghs_default')
+    expect(callsDefault2).toHaveLength(0)
+  })
+})

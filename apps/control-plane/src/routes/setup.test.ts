@@ -1,7 +1,9 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import Fastify, { FastifyRequest } from 'fastify'
+import { generateKeyPairSync } from 'node:crypto'
 import { setupRoutes } from './setup.js'
 import type { EngineConnectionService } from '../services/engine-connection.js'
+import { resetAppTokenCache } from '../services/github-app-token.js'
 
 describe('GET /api/v1/github/repos', () => {
   let app: ReturnType<typeof Fastify>
@@ -15,6 +17,12 @@ describe('GET /api/v1/github/repos', () => {
     app.decorate('engineConnections', {
       getRawGithubToken,
     } as unknown as EngineConnectionService)
+    // Sem instalação do GitHub App escolhida — vai direto pro caminho OAuth
+    // clássico, que é o que este describe cobre.
+    app.decorate('prisma', {
+      user: { findUnique: vi.fn().mockResolvedValue({ githubInstallationId: null }) },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
     // Simula o hook global de auth já tendo populado request.user (cookie ou
     // Bearer) — o token do GitHub em si NÃO vem mais daqui (spec §17.4).
     app.addHook('preHandler', async (request: FastifyRequest) => {
@@ -77,6 +85,161 @@ describe('GET /api/v1/github/repos — sem o plugin de motores registrado', () =
     const leaked = `${body.message ?? ''} ${body.error ?? ''}`
     expect(leaked).not.toContain('getRawGithubToken')
     expect(leaked).not.toContain('Cannot read properties')
+  })
+})
+
+/**
+ * F1 Onda 2 — GET /api/v1/github/repos via installation do GitHub App: quem
+ * já instalou (routes/github-app-install.ts) e escolheu repositórios na
+ * própria tela do GitHub deixa de depender do escopo amplo do OAuth App
+ * clássico (`repo`, todos os repositórios da conta). Os dois caminhos
+ * coexistem — compat é o próprio requisito: quem nunca instalou o App
+ * continua funcionando exatamente como antes.
+ */
+describe('GET /api/v1/github/repos — via installation do GitHub App (F1 Onda 2)', () => {
+  let app: ReturnType<typeof Fastify>
+  const originalFetch = global.fetch
+  let getRawGithubToken: ReturnType<typeof vi.fn>
+  let userFindUnique: ReturnType<typeof vi.fn>
+  const { privateKey } = generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+  })
+
+  beforeEach(async () => {
+    resetAppTokenCache()
+    process.env['GITHUB_APP_ID'] = 'app_123'
+    process.env['GITHUB_APP_PRIVATE_KEY'] = privateKey
+
+    getRawGithubToken = vi.fn().mockResolvedValue('gh_oauth_fallback_token')
+    userFindUnique = vi.fn().mockResolvedValue({ githubInstallationId: 555 })
+
+    app = Fastify()
+    app.decorate('engineConnections', {
+      getRawGithubToken,
+    } as unknown as EngineConnectionService)
+    app.decorate('prisma', {
+      user: { findUnique: userFindUnique },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+    app.addHook('preHandler', async (request: FastifyRequest) => {
+      request.user = { id: 'user_1', wingId: 'octocat' }
+    })
+    await setupRoutes(app)
+    await app.ready()
+  })
+
+  afterEach(() => {
+    global.fetch = originalFetch
+    resetAppTokenCache()
+    delete process.env['GITHUB_APP_ID']
+    delete process.env['GITHUB_APP_PRIVATE_KEY']
+  })
+
+  it('usuário com githubInstallationId: lista via GET /installation/repositories, nunca toca o caminho OAuth', async () => {
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url)
+      if (href.includes('/app/installations/555/access_tokens')) {
+        return new Response(
+          JSON.stringify({
+            token: 'ghs_install',
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          }),
+          { status: 201 }
+        )
+      }
+      if (href.startsWith('https://api.github.com/installation/repositories')) {
+        return new Response(
+          JSON.stringify({
+            total_count: 1,
+            repositories: [
+              {
+                id: 9,
+                name: 'privado',
+                full_name: 'octocat/privado',
+                description: 'só o que ele autorizou',
+                private: true,
+                html_url: 'https://github.com/octocat/privado',
+              },
+            ],
+          }),
+          { status: 200 }
+        )
+      }
+      throw new Error('URL inesperada no teste: ' + href)
+    }) as unknown as typeof fetch
+
+    const res = await app.inject({ method: 'GET', url: '/api/v1/github/repos' })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual([
+      {
+        id: 9,
+        name: 'privado',
+        fullName: 'octocat/privado',
+        description: 'só o que ele autorizou',
+        private: true,
+        url: 'https://github.com/octocat/privado',
+      },
+    ])
+    expect(getRawGithubToken).not.toHaveBeenCalled()
+  })
+
+  it('installation token indisponível (App não configurado/acessível): cai pro OAuth clássico, sem quebrar o wizard', async () => {
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url)
+      if (href.includes('/access_tokens')) {
+        return new Response(JSON.stringify({}), { status: 401 })
+      }
+      if (href.startsWith('https://api.github.com/user/repos')) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: 1,
+              name: 'repo',
+              full_name: 'octocat/repo',
+              description: null,
+              private: false,
+              html_url: 'https://github.com/octocat/repo',
+            },
+          ]),
+          { status: 200 }
+        )
+      }
+      throw new Error('URL inesperada no teste: ' + href)
+    }) as unknown as typeof fetch
+
+    const res = await app.inject({ method: 'GET', url: '/api/v1/github/repos' })
+
+    expect(res.statusCode).toBe(200)
+    expect(getRawGithubToken).toHaveBeenCalledWith('user_1')
+    expect(res.json()).toEqual([
+      {
+        id: 1,
+        name: 'repo',
+        fullName: 'octocat/repo',
+        description: null,
+        private: false,
+        url: 'https://github.com/octocat/repo',
+      },
+    ])
+  })
+
+  it('usuário sem githubInstallationId: nem tenta mintar token do App — vai direto pro OAuth', async () => {
+    userFindUnique.mockResolvedValue({ githubInstallationId: null })
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url)
+      if (href.startsWith('https://api.github.com/user/repos')) {
+        return new Response(JSON.stringify([]), { status: 200 })
+      }
+      throw new Error('não deveria tentar mintar token do App sem installationId: ' + href)
+    }) as unknown as typeof fetch
+
+    const res = await app.inject({ method: 'GET', url: '/api/v1/github/repos' })
+
+    expect(res.statusCode).toBe(200)
+    expect(getRawGithubToken).toHaveBeenCalledWith('user_1')
   })
 })
 
