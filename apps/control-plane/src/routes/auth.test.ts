@@ -38,7 +38,7 @@ describe('GitHub OAuth callback', () => {
     } as unknown as EngineConnectionService)
     // idem para o Prisma: só o upsert de User importa pra este teste.
     app.decorate('prisma', {
-      user: { upsert: userUpsert },
+      user: { upsert: userUpsert, findUnique: vi.fn().mockResolvedValue({ id: '42' }) },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     await authRoutes(app)
@@ -128,7 +128,9 @@ describe('GitHub OAuth callback', () => {
     devApp.decorate('engineConnections', {
       connectGitHubToken,
     } as unknown as EngineConnectionService)
-    devApp.decorate('prisma', { user: { upsert: userUpsert } } as any) // eslint-disable-line @typescript-eslint/no-explicit-any
+    devApp.decorate('prisma', {
+      user: { upsert: userUpsert, findUnique: vi.fn().mockResolvedValue({ id: '42' }) },
+    } as any) // eslint-disable-line @typescript-eslint/no-explicit-any
     await authRoutes(devApp)
     await devApp.ready()
 
@@ -328,6 +330,10 @@ describe('GET /api/v1/auth/me', () => {
     // rota protegida, não reimplementar a checagem.
     await app.register(authPlugin)
     app.decorate('engineConnections', {} as unknown as EngineConnectionService)
+    // Sessão-zumbi: /auth/me agora confirma no banco que o usuário do cookie
+    // existe — o mock devolve o próprio userId do teste.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    app.decorate('prisma', { user: { findUnique: vi.fn().mockResolvedValue({ id: '42' }) } } as any)
     await authRoutes(app)
     await app.ready()
   })

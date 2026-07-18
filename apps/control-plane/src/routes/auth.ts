@@ -279,6 +279,19 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
     if (!request.user) {
       return reply.code(401).send({ error: 'UNAUTHORIZED: no session' })
     }
+    // Sessão-zumbi: o cookie é um JWT auto-contido — a assinatura sobrevive a
+    // troca/reset de banco e a usuário apagado. Sem esta checagem, o wizard
+    // pula o login com um "usuário" que nenhuma rota protegida resolve (caso
+    // real 18/07: repos morria em "GitHub not connected" sem saída). Usuário
+    // sumiu => 401 + cookie limpo => a pessoa volta pro login de verdade.
+    const exists = await app.prisma.user.findUnique({
+      where: { id: request.user.id },
+      select: { id: true },
+    })
+    if (!exists) {
+      reply.clearCookie('gitorch_session', { path: '/' })
+      return reply.code(401).send({ error: 'UNAUTHORIZED: SESSION_STALE — faça login novamente' })
+    }
     return reply.send({
       authenticated: true,
       userId: request.user.id,
