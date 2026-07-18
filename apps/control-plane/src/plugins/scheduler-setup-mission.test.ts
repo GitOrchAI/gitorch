@@ -1,5 +1,9 @@
 import { describe, expect, test, vi } from 'vitest'
-import { provisionSetupMission, type RuntimeStack } from './scheduler.js'
+import {
+  provisionSetupMission,
+  selectClaimableSetupMissions,
+  type RuntimeStack,
+} from './scheduler.js'
 
 function fakeStack(allocateWorkspace: ReturnType<typeof vi.fn>): RuntimeStack {
   return {
@@ -75,5 +79,55 @@ describe('provisionSetupMission', () => {
 
     expect(outcome.status).toBe('failed')
     expect(outcome.error).toContain('workspace remoto falhou')
+  })
+})
+
+// O teto de concorrência (MAX_CONCURRENT_MISSIONS) passa a cobrir TAMBÉM o
+// wizard, não só a cadência (spec Onda 2 / F1.1.6). processSetupMissions usa
+// esta função pura para decidir o que cabe nesta rodada; a fiação com o
+// Prisma (contagem real de pending+running) fica no plugin, não aqui.
+describe('selectClaimableSetupMissions', () => {
+  test('teto=1 e 1 missão já rodando (fora deste lote): a 2ª setup mission pendente fica na fila', () => {
+    const pendingFifo = [{ id: 'setup_2' }]
+
+    const claimable = selectClaimableSetupMissions(pendingFifo, /* otherActiveCount */ 1, 1)
+
+    expect(claimable).toEqual([])
+  })
+
+  test('sem nada mais ativo e teto=2, as 2 primeiras pendentes (FIFO) são reivindicadas; a 3ª fica na fila', () => {
+    const pendingFifo = [{ id: 'setup_1' }, { id: 'setup_2' }, { id: 'setup_3' }]
+
+    const claimable = selectClaimableSetupMissions(pendingFifo, 0, 2)
+
+    expect(claimable.map((m) => m.id)).toEqual(['setup_1', 'setup_2'])
+  })
+
+  test('1 outra ativa e teto=2: só a mais antiga da fila é reivindicada', () => {
+    const pendingFifo = [{ id: 'setup_1' }, { id: 'setup_2' }]
+
+    const claimable = selectClaimableSetupMissions(pendingFifo, 1, 2)
+
+    expect(claimable.map((m) => m.id)).toEqual(['setup_1'])
+  })
+
+  test('capacidade sobrando (teto alto): todas as pendentes são reivindicadas', () => {
+    const pendingFifo = [{ id: 'setup_1' }, { id: 'setup_2' }]
+
+    const claimable = selectClaimableSetupMissions(pendingFifo, 0, 5)
+
+    expect(claimable.map((m) => m.id)).toEqual(['setup_1', 'setup_2'])
+  })
+
+  test('sem capacidade nenhuma (outras ativas já no teto): fila inteira espera', () => {
+    const pendingFifo = [{ id: 'setup_1' }, { id: 'setup_2' }]
+
+    const claimable = selectClaimableSetupMissions(pendingFifo, 3, 2)
+
+    expect(claimable).toEqual([])
+  })
+
+  test('fila vazia: nada a reivindicar, sem tocar no teto', () => {
+    expect(selectClaimableSetupMissions([], 0, 1)).toEqual([])
   })
 })

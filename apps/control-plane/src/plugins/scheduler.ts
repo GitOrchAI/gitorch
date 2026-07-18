@@ -62,7 +62,11 @@ export interface SchedulerOptions {
 
 // Guardas operacionais: orçamento diário de missões e proteção de memória do host.
 const MAX_MISSIONS_PER_DAY = Number(process.env['GITORCH_MAX_MISSIONS_PER_DAY'] ?? '4')
-// Teto de missões simultâneas na VM. 1 hoje (12GB); sobe na VM-MT-SaaS (32GB).
+// Teto de missões simultâneas na VM — cobre cadência E o wizard
+// (processSetupMissions). Default 1 (seguro pra qualquer install não
+// configurada); a VM dev atual (ARM 4CPU/11GB) roda com
+// GITORCH_MAX_CONCURRENT=2 (ver .env.example), cada missão sob
+// GITORCH_EXEC_LIMITS (execution-limits.ts); sobe mais na VM-MT-SaaS (32GB).
 const MAX_CONCURRENT_MISSIONS = Number(process.env['GITORCH_MAX_CONCURRENT'] ?? '1')
 const STALE_RUNNING_MS = Number(
   process.env['GITORCH_STALE_RUNNING_MS'] ?? String(2 * 60 * 60 * 1000)
@@ -450,6 +454,35 @@ export async function provisionSetupMission(
   } catch (err) {
     return { status: 'failed', error: (err as Error).message }
   }
+}
+
+/**
+ * Decide quais missões de setup PENDENTES (já em ordem FIFO por createdAt)
+ * cabem no teto global de concorrência nesta rodada.
+ *
+ * `otherActiveCount` é tudo que JÁ ocupa uma vaga e não faz parte deste lote
+ * (cadência em running, ou pending de outro tipo) — nunca o próprio lote:
+ * contar o lote pendente contra si mesmo faria a fila se autobloquear para
+ * sempre (a mera existência de itens pendentes já saturaria o teto e nada
+ * jamais provaria ter capacidade disponível).
+ *
+ * Para na primeira que não cabe (FIFO): as seguintes são mais novas e também
+ * ficam de fora — sem "furar a fila" processando uma mais nova antes de uma
+ * mais velha só porque ela coube por acaso.
+ */
+export function selectClaimableSetupMissions<T>(
+  pendingFifo: T[],
+  otherActiveCount: number,
+  maxConcurrent: number
+): T[] {
+  let available = maxConcurrent - otherActiveCount
+  const claimable: T[] = []
+  for (const mission of pendingFifo) {
+    if (available <= 0) break
+    claimable.push(mission)
+    available -= 1
+  }
+  return claimable
 }
 
 const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
@@ -1008,6 +1041,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     try {
       pending = await app.prisma.mission.findMany({
         where: { type: 'clone_and_start_engines', status: 'pending' },
+        // FIFO: a mais antiga primeiro — mesma ordem da fila visível em
+        // GET /api/v1/setup/status (queuePosition).
+        orderBy: { createdAt: 'asc' },
         include: { project: { include: { user: { include: { plan: true } } } } },
       })
     } catch (err) {
@@ -1015,7 +1051,33 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       return
     }
 
+    if (pending.length === 0) return
+
+    // O wizard passa a respeitar o MESMO teto global da cadência: antes disto
+    // processSetupMissions nunca checava concorrência nenhuma e disparava
+    // clone+subida de motores sem limite, ignorando o orçamento de CPU/RAM da
+    // VM. `active` é a mesma contagem pending+running que runTrigger usa;
+    // subtraímos o próprio lote (todo pending, então já contado ali) para
+    // achar o que outra coisa já ocupa.
+    const active = await app.prisma.mission.count({
+      where: { status: { in: ['pending', 'running'] } },
+    })
+    const otherActiveCount = active - pending.length
+    const claimable = selectClaimableSetupMissions(
+      pending,
+      otherActiveCount,
+      MAX_CONCURRENT_MISSIONS
+    )
+    const claimableIds = new Set(claimable.map((m) => m.id))
+
     for (const mission of pending) {
+      if (!claimableIds.has(mission.id)) {
+        app.log.warn(
+          `[Scheduler] Concorrência cheia (${MAX_CONCURRENT_MISSIONS}); setup mission ${mission.id} (${mission.project.wingId}) fica na fila`
+        )
+        continue
+      }
+
       const claimed = await app.prisma.mission.updateMany({
         where: { id: mission.id, status: 'pending' },
         data: { status: 'running', startedAt: new Date() },
