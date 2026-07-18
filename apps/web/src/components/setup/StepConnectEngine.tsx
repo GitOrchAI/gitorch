@@ -6,6 +6,8 @@ import {
   normalizeLoginState,
   classifyConnectError,
   connectErrorHintKey,
+  isManualAccordionVisible,
+  looksLikeAuthCode,
   type LoginState,
 } from './engine-status'
 
@@ -42,6 +44,11 @@ export default function StepConnectEngine({
   // connected sem a liveness verde).
   const [pastedToken, setPastedToken] = useState<Record<string, string>>({})
   const [manualBusy, setManualBusy] = useState<Record<string, boolean>>({})
+  // Dupla-colagem morta: o accordion manual NÃO fica mais "de graça" ao lado
+  // do campo de código durante url_ready — só abre sozinho quando o login
+  // assistido falha de verdade (fase 'error') ou quando a pessoa pede
+  // explicitamente por este link discreto, por motor.
+  const [manualRequested, setManualRequested] = useState<Record<string, boolean>>({})
   const loginIds = useRef<Record<string, string>>({})
   const sources = useRef<Record<string, EventSource>>({})
 
@@ -293,9 +300,14 @@ export default function StepConnectEngine({
                 <div className="space-y-2">
                   <p className="wz-err">{state.message}</p>
                   {/* Acionável por tipo: aponta o paste manual (que abre sozinho
-                      logo abaixo no erro) em vez de só "tente de novo". */}
+                      logo abaixo no erro) em vez de só "tente de novo". Exceção:
+                      se o que está no campo de token TEM CARA do código da
+                      página (a dupla-colagem real, 18/07), o hint aponta o
+                      campo certo em vez de repetir "esperado sk-ant-oat". */}
                   <p className="wz-opt-desc" style={{ fontSize: '0.76rem' }}>
-                    {t(connectErrorHintKey(classifyConnectError(state.message)))}
+                    {looksLikeAuthCode(pastedToken[id] ?? '', runtime)
+                      ? t('setup.connectManualLooksLikeCode')
+                      : t(connectErrorHintKey(classifyConnectError(state.message)))}
                   </p>
                   <button className="wz-btn wz-btn-primary" onClick={() => connect(id, runtime)}>
                     {t('setup.connectBtn')}
@@ -304,21 +316,17 @@ export default function StepConnectEngine({
               )}
 
               {/* Rede de segurança: paste manual do token/credencial que o CLI
-                  gerou. Sempre disponível (recolhido) enquanto não conectou;
-                  abre sozinho quando o login assistido falhou. */}
-              {!isConnected && (
-                <details
+                  gerou. NUNCA visível "de graça" ao lado do campo de código
+                  durante url_ready (era isso que causava a dupla-colagem, 18/07:
+                  o código da página de autorização ia parar no campo de token
+                  errado). Só existe de verdade quando o login assistido falhou
+                  (abre sozinho) ou a pessoa pediu pelo link discreto abaixo. */}
+              {!isConnected && isManualAccordionVisible(state.phase, !!manualRequested[id]) && (
+                <div
                   className="mt-3 rounded-xl"
-                  open={state.phase === 'error'}
                   style={{ background: 'var(--gl-surface-2)', border: '1px solid var(--gl-hair)' }}
                 >
-                  <summary
-                    className="wz-opt-desc cursor-pointer"
-                    style={{ padding: '10px 12px', listStyle: 'none' }}
-                  >
-                    {t('setup.connectManualToggle')}
-                  </summary>
-                  <div className="space-y-2 px-3 pb-3">
+                  <div className="space-y-2 px-3 py-3">
                     <p className="wz-opt-desc" style={{ fontSize: '0.76rem' }}>
                       {runtime === 'claude'
                         ? t('setup.connectManualHintEnv')
@@ -339,7 +347,20 @@ export default function StepConnectEngine({
                       {manualBusy[id] ? t('setup.connecting') : t('setup.connectManualSubmit')}
                     </button>
                   </div>
-                </details>
+                </div>
+              )}
+
+              {/* Link discreto: só aparece quando o accordion está escondido —
+                  é a única forma de abri-lo fora da fase de erro. */}
+              {!isConnected && !isManualAccordionVisible(state.phase, !!manualRequested[id]) && (
+                <button
+                  type="button"
+                  className="wz-diag-details-toggle"
+                  style={{ marginTop: 10 }}
+                  onClick={() => setManualRequested((m) => ({ ...m, [id]: true }))}
+                >
+                  {t('setup.connectManualToggle')}
+                </button>
               )}
             </div>
           )

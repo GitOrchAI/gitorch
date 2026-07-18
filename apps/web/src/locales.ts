@@ -192,13 +192,14 @@ export const locales = {
       connectGate: 'Connect at least one engine to continue.',
       connectError: 'Could not connect. Check what you pasted and try again.',
       connectOpenLink: 'Open authorization page',
-      connectPasteCodePlaceholder: 'Paste the code from the page…',
+      connectPasteCodePlaceholder: 'Authorization page code',
       connectSubmitCode: 'Submit',
       connectWaitingApproval: 'Waiting for your approval on the page above…',
-      connectManualToggle: 'Paste token/credential manually',
-      connectManualHintEnv: 'Paste the token that `claude setup-token` printed in your terminal.',
+      connectManualToggle: 'Problems? Paste the token manually',
+      connectManualHintEnv:
+        'Paste the `claude setup-token` token (starts with sk-ant-oat…) — this is not the authorization page code.',
       connectManualHintFile:
-        'Paste the contents of the credential file the CLI created (e.g. auth.json).',
+        'Paste the contents of the credential file the CLI created (e.g. auth.json) — this is not the authorization page code.',
       connectManualSubmit: 'Connect with what I pasted',
       connectVerifying: 'Verifying the connection…',
       connectErrorHintTerms:
@@ -206,6 +207,8 @@ export const locales = {
       connectErrorHintCapture:
         'We could not capture the token automatically. Paste what the CLI printed below.',
       connectErrorHintGeneric: 'You can also paste the token manually below.',
+      connectManualLooksLikeCode:
+        'This looks like the authorization page code — paste it in the "Authorization page code" field above instead.',
       tgTitle: 'Telegram alerts (optional)',
       tgDesc:
         'Get a ping when a task in your project gets stuck or needs you. Tap the button, press Start in Telegram, and you are connected.',
@@ -449,13 +452,14 @@ export const locales = {
       connectGate: 'Conecte pelo menos um motor para continuar.',
       connectError: 'Não deu para conectar. Confira o que você colou e tente de novo.',
       connectOpenLink: 'Abrir página de autorização',
-      connectPasteCodePlaceholder: 'Cole o código da página…',
+      connectPasteCodePlaceholder: 'Código da página de autorização',
       connectSubmitCode: 'Enviar',
       connectWaitingApproval: 'Aguardando sua aprovação na página acima…',
-      connectManualToggle: 'Colar token/credencial manualmente',
-      connectManualHintEnv: 'Cole o token que o `claude setup-token` imprimiu no seu terminal.',
+      connectManualToggle: 'Problemas? Colar token manualmente',
+      connectManualHintEnv:
+        'Cole o token do `claude setup-token` (começa com sk-ant-oat…) — não é o código da página de autorização.',
       connectManualHintFile:
-        'Cole o conteúdo do arquivo de credencial que o CLI gerou (ex.: auth.json).',
+        'Cole o conteúdo do arquivo de credencial que o CLI gerou (ex.: auth.json) — não é o código da página de autorização.',
       connectManualSubmit: 'Conectar com o que colei',
       connectVerifying: 'Verificando a conexão…',
       connectErrorHintTerms:
@@ -463,6 +467,8 @@ export const locales = {
       connectErrorHintCapture:
         'Não consegui capturar o token automaticamente. Cole o que o CLI gerou abaixo.',
       connectErrorHintGeneric: 'Você também pode colar o token manualmente abaixo.',
+      connectManualLooksLikeCode:
+        'Isso parece o código da página — cole no campo "Código da página de autorização" acima.',
       tgTitle: 'Alertas no Telegram (opcional)',
       tgDesc:
         'Receba um aviso quando uma task do seu projeto travar ou precisar de você. Toque no botão, aperte Start no Telegram e pronto.',
@@ -706,13 +712,14 @@ export const locales = {
       connectGate: 'Conecta al menos un motor para continuar.',
       connectError: 'No se pudo conectar. Revisa lo que pegaste e inténtalo de nuevo.',
       connectOpenLink: 'Abrir página de autorización',
-      connectPasteCodePlaceholder: 'Pega el código de la página…',
+      connectPasteCodePlaceholder: 'Código de la página de autorización',
       connectSubmitCode: 'Enviar',
       connectWaitingApproval: 'Esperando tu aprobación en la página de arriba…',
-      connectManualToggle: 'Pegar token/credencial manualmente',
-      connectManualHintEnv: 'Pega el token que `claude setup-token` imprimió en tu terminal.',
+      connectManualToggle: '¿Problemas? Pegar el token manualmente',
+      connectManualHintEnv:
+        'Pega el token de `claude setup-token` (empieza con sk-ant-oat…) — no es el código de la página de autorización.',
       connectManualHintFile:
-        'Pega el contenido del archivo de credencial que generó el CLI (p. ej. auth.json).',
+        'Pega el contenido del archivo de credencial que generó el CLI (p. ej. auth.json) — no es el código de la página de autorización.',
       connectManualSubmit: 'Conectar con lo que pegué',
       connectVerifying: 'Verificando la conexión…',
       connectErrorHintTerms:
@@ -720,6 +727,8 @@ export const locales = {
       connectErrorHintCapture:
         'No pudimos capturar el token automáticamente. Pega lo que el CLI generó abajo.',
       connectErrorHintGeneric: 'También puedes pegar el token manualmente abajo.',
+      connectManualLooksLikeCode:
+        'Esto parece el código de la página — pégalo en el campo "Código de la página de autorización" de arriba.',
       tgTitle: 'Alertas en Telegram (opcional)',
       tgDesc:
         'Recibe un aviso cuando una tarea de tu proyecto se atasque o te necesite. Toca el botón, pulsa Start en Telegram y listo.',

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, it, expect } from 'vitest'
 import {
   modelCount,
@@ -7,6 +8,8 @@ import {
   connectErrorHintKey,
   parseSetupStatus,
   isProvisionTerminal,
+  isManualAccordionVisible,
+  looksLikeAuthCode,
 } from './engine-status'
 
 describe('modelCount', () => {
@@ -227,5 +230,96 @@ describe('isProvisionTerminal', () => {
     expect(isProvisionTerminal('pending')).toBe(false)
     expect(isProvisionTerminal('running')).toBe(false)
     expect(isProvisionTerminal('unknown')).toBe(false)
+  })
+})
+
+// A dupla-colagem (bug real visto pelo dono 18/07): a pessoa colou o CÓDIGO da
+// página de autorização no campo de TOKEN manual e recebeu "esperado
+// sk-ant-oat" — um erro tecnicamente correto, mas inútil, porque o campo
+// errado nem deveria estar visível ali. Duas defesas: (1) o accordion manual
+// só aparece quando pedido de verdade (fase 'error' o abre sozinho; fora
+// disso só um link discreto), nunca "de graça" ao lado do campo de código
+// durante url_ready; (2) se o que foi colado no campo de token TEM CARA de
+// código de autorização, o hint aponta o campo certo em vez de repetir o erro
+// cru do backend.
+describe('isManualAccordionVisible — o accordion não pode mais estar "de graça" ao lado do código', () => {
+  it('url_ready sem pedido explícito -> ESCONDIDO (era aqui que a colagem errada acontecia)', () => {
+    expect(isManualAccordionVisible('url_ready', false)).toBe(false)
+  })
+
+  it('idle/starting/verifying sem pedido explícito -> escondido também', () => {
+    expect(isManualAccordionVisible('idle', false)).toBe(false)
+    expect(isManualAccordionVisible('starting', false)).toBe(false)
+    expect(isManualAccordionVisible('verifying', false)).toBe(false)
+  })
+
+  it('error SEMPRE abre, mesmo sem clique — é a rede de segurança de verdade', () => {
+    expect(isManualAccordionVisible('error', false)).toBe(true)
+    expect(isManualAccordionVisible('error', true)).toBe(true)
+  })
+
+  it('clicou no link discreto "Problemas? Colar manualmente" -> abre em qualquer fase', () => {
+    expect(isManualAccordionVisible('url_ready', true)).toBe(true)
+    expect(isManualAccordionVisible('idle', true)).toBe(true)
+  })
+})
+
+describe('looksLikeAuthCode — detecta quando o campo de token recebeu o código, não o token', () => {
+  it('formato de device code XXXX-XXXX -> parece código, em qualquer runtime', () => {
+    expect(looksLikeAuthCode('ABCD-1234', 'claude')).toBe(true)
+    expect(looksLikeAuthCode('wdjq-mzbg', 'codex')).toBe(true) // minúsculo também
+    expect(looksLikeAuthCode('AB12-CD34', 'antigravity')).toBe(true)
+  })
+
+  it('vazio (nada colado ainda) -> nunca parece código', () => {
+    expect(looksLikeAuthCode('', 'claude')).toBe(false)
+    expect(looksLikeAuthCode('   ', 'claude')).toBe(false)
+  })
+
+  it('token de claude de verdade (prefixo sk-ant-oat) -> não parece código', () => {
+    expect(looksLikeAuthCode('sk-ant-oat01-abcxyz1234567890', 'claude')).toBe(false)
+  })
+
+  it('claude: string curta sem o prefixo esperado -> parece código (o bug real)', () => {
+    expect(looksLikeAuthCode('a1b2c3', 'claude')).toBe(true)
+  })
+
+  it('claude: string longa sem o prefixo -> não é classificada como código (é só inválida)', () => {
+    expect(looksLikeAuthCode('x'.repeat(40), 'claude')).toBe(false)
+  })
+
+  it('runtimes que não são claude: string curta genérica não vira "parece código" pelo prefixo', () => {
+    // Sem device-code pattern, o heurístico de prefixo só se aplica ao claude
+    // (é o único runtime com prefixo conhecido e documentado, sk-ant-oat).
+    expect(looksLikeAuthCode('a1b2c3', 'codex')).toBe(false)
+  })
+})
+
+// Guarda ARQUITETURAL: o app web não tem jsdom/testing-library (decisão
+// registrada acima), então o que precisa de teste sobre o COMPONENTE mora
+// aqui, lendo o source real — mesmo padrão usado em submit-flow.test.ts pra
+// proteger StepPlanConfirmation/StepReady.
+describe('guarda: StepConnectEngine usa as funções puras pra decidir o accordion manual', () => {
+  const source = (): string =>
+    readFileSync(new URL('./StepConnectEngine.tsx', import.meta.url), 'utf8')
+
+  it('o accordion manual é gated por isManualAccordionVisible, não mais sempre-renderizado', () => {
+    const step = source()
+    expect(step).toContain('isManualAccordionVisible(state.phase, !!manualRequested[id])')
+    // Regressão: o padrão antigo (`<details open={state.phase === 'error'}>`)
+    // sempre RENDERIZAVA o accordion (só recolhido) ao lado do campo de
+    // código — era exatamente isso que causava a dupla-colagem (18/07).
+    expect(step).not.toContain("open={state.phase === 'error'}")
+  })
+
+  it('o hint de erro verifica looksLikeAuthCode antes de cair no genérico', () => {
+    const step = source()
+    expect(step).toContain("looksLikeAuthCode(pastedToken[id] ?? '', runtime)")
+    expect(step).toContain("t('setup.connectManualLooksLikeCode')")
+  })
+
+  it('existe o link discreto que abre o accordion fora da fase de erro', () => {
+    const step = source()
+    expect(step).toContain('setManualRequested((m) => ({ ...m, [id]: true }))')
   })
 })
