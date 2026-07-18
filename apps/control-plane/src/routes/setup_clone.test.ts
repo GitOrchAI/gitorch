@@ -98,6 +98,44 @@ describe('POST /api/v1/setup/clone', () => {
     })
     expect(res.statusCode).toBe(400)
   })
+
+  it('clone falho: nunca um 500 cru — responde {error, code} classificado (contrato de erro)', async () => {
+    allocateWorkspace.mockRejectedValueOnce(
+      new Error(
+        'Command failed: git clone --depth 1 -- https://github.com/octo/sumiu.git /base\n' +
+          "Cloning into '/base'...\n" +
+          'remote: Repository not found.\n' +
+          "fatal: repository 'https://github.com/octo/sumiu.git/' not found\n"
+      )
+    )
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/setup/clone',
+      payload: { repos: ['octo/sumiu'] },
+    })
+    expect(res.statusCode).toBe(404)
+    const body = res.json()
+    expect(body.code).toBe('REPO_NOT_FOUND')
+    expect(body.error).toBeTruthy()
+    // Nenhum caminho interno de disco nem stack cru vazado na resposta.
+    expect(JSON.stringify(body)).not.toContain('/base/')
+  })
+
+  it('timeout de clone -> 504 com code CLONE_TIMEOUT', async () => {
+    allocateWorkspace.mockRejectedValueOnce(
+      Object.assign(new Error('Command failed: git clone ...\n'), {
+        killed: true,
+        signal: 'SIGTERM',
+      })
+    )
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/setup/clone',
+      payload: { repos: ['octo/lento'] },
+    })
+    expect(res.statusCode).toBe(504)
+    expect(res.json().code).toBe('CLONE_TIMEOUT')
+  })
 })
 
 describe('POST /api/v1/setup/clone — sem sessão', () => {

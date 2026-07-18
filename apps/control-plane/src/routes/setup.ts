@@ -8,6 +8,7 @@ import { resolveEngineId } from '../services/engine-connection.js'
 import { ClientEnvironmentService } from '../services/environment.js'
 import { collectAndRememberRepoContext } from '../services/repo-context-cortex.js'
 import { startTelegramLink, readTelegramLink } from '../services/telegram-link.js'
+import { classifyCloneError, setupErrorHttpStatus } from '../lib/setup-errors.js'
 
 interface GitHubRepo {
   id: number
@@ -173,6 +174,31 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
     }
   )
 
+  // POST /api/v1/setup/environment/reset - "Recomeçar do zero": destrói o
+  // ambiente ATUAL do cliente (provisório com um clone quebrado, ou já
+  // fixado com um provisionamento que falhou) e cria um provisório novo,
+  // vazio. É o botão de último recurso — /setup/retry (missão) já cobre a
+  // retentativa cirúrgica (mesmo projeto, mesmo payload); este reset é para
+  // quando o cliente prefere simplesmente recomeçar o wizard. `destroy()`
+  // (environment.ts) já contém o guard de path-traversal e nunca apaga fora
+  // da raiz de ambientes; aqui só decidimos QUAL ambiente destruir — e é
+  // sempre o do dono da sessão, nunca de outro cliente.
+  app.post(
+    '/api/v1/setup/environment/reset',
+    { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      if (!request.user) {
+        return reply.code(401).send({ error: 'UNAUTHORIZED: session required' })
+      }
+      const current = await clientEnvironments.current(request.user.id)
+      if (current) {
+        await clientEnvironments.destroy(current.id)
+      }
+      const env = await clientEnvironments.createProvisional(request.user.id)
+      return reply.send({ id: env.id, status: env.status })
+    }
+  )
+
   // POST /api/v1/setup/clone - Clona os repos escolhidos DENTRO do ambiente do
   // cliente (passo 4), usando o token do próprio cliente. Responde só a
   // contagem — os caminhos internos em disco nunca vão pro frontend.
@@ -193,8 +219,24 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
         ? await app.engineConnections.getRawGithubToken(request.user.id)
         : null
       const env = await clientEnvironments.createProvisional(request.user.id)
-      const cloned = await clientEnvironments.cloneInto(env.id, repos, token ?? undefined)
-      return reply.send({ envId: env.id, count: cloned.length })
+      try {
+        const cloned = await clientEnvironments.cloneInto(env.id, repos, token ?? undefined)
+        return reply.send({ envId: env.id, count: cloned.length })
+      } catch (err) {
+        // Contrato de erro ponta-a-ponta: NUNCA um 500 cru (sem classificar).
+        // O code é o que o frontend usa pra escolher a dica certa; a
+        // mensagem aqui é só pra log — nunca conteve o token (o provider já
+        // sanitiza) nem caminho em disco.
+        const code = classifyCloneError(err)
+        app.log.warn(
+          { code, error: err instanceof Error ? err.message : String(err) },
+          '[setup] clone falhou'
+        )
+        return reply.code(setupErrorHttpStatus(code)).send({
+          error: err instanceof Error ? err.message : 'Clone failed',
+          code,
+        })
+      }
     }
   )
 
