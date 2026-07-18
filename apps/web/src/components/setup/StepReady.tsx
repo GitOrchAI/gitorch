@@ -117,6 +117,24 @@ export default function StepReady({ projects, apiBaseUrl, plan }: StepReadyProps
       })
   }
 
+  // "Recomeçar do zero" — último recurso quando a retentativa cirúrgica
+  // (mesma missão, mesmo projeto) não resolve: destrói o ambiente do cliente
+  // (o clone quebrado incluso) e recarrega a página, que volta ao início do
+  // wizard com um estado limpo garantido pelo servidor. Best-effort: mesmo
+  // se a chamada de rede falhar, recarregar ainda ajuda.
+  const [startingOver, setStartingOver] = useState(false)
+  const startOver = () => {
+    setStartingOver(true)
+    fetch(`${apiBaseUrl}/api/v1/setup/environment/reset`, {
+      method: 'POST',
+      credentials: 'include',
+    })
+      .catch(() => undefined)
+      .finally(() => {
+        window.location.reload()
+      })
+  }
+
   // Copiar já É o reconhecimento (o cliente que copiou não perde nada). O checkbox
   // continua existindo como caminho alternativo: `navigator.clipboard` não existe
   // em origem não-segura, e nesse caso o copiar simplesmente não acontece.
@@ -286,14 +304,25 @@ export default function StepReady({ projects, apiBaseUrl, plan }: StepReadyProps
             // texto localizado — nunca um "deu tudo certo" mentiroso.
             sub={provision.error ?? t('setup.readyLedgerActivatingFailedDesc')}
             action={
-              <button
-                className="wz-btn wz-btn-ghost"
-                style={{ marginTop: 8 }}
-                onClick={retryProvision}
-                disabled={retrying}
-              >
-                {t('setup.readyRetry')}
-              </button>
+              <div className="flex items-center gap-2" style={{ marginTop: 8 }}>
+                <button
+                  className="wz-btn wz-btn-ghost"
+                  onClick={retryProvision}
+                  disabled={retrying || startingOver}
+                >
+                  {t('setup.readyRetry')}
+                </button>
+                {/* Último recurso: a retentativa cirúrgica acima reusa a MESMA
+                    missão/projeto; isto destrói o ambiente inteiro e recomeça
+                    o wizard do zero — para quando a retentativa não resolve. */}
+                <button
+                  className="wz-btn wz-btn-ghost"
+                  onClick={startOver}
+                  disabled={retrying || startingOver}
+                >
+                  {t('setup.startOver')}
+                </button>
+              </div>
             }
           />
         ) : stalled ? (

@@ -252,6 +252,22 @@ export const locales = {
       planIntent: 'You came in with this plan — you can still change it below.',
       reposFreeNote:
         'Your Free plan includes 1 active repository. Pick your most important one, or upgrade for more.',
+      startOver: 'Start over',
+      startOverError: 'Could not reset your environment. Please try again.',
+      errREPO_ACCESS_DENIED:
+        'Access denied. Make sure GitOrch has permission to this repository (reconnect GitHub if needed), then try again.',
+      errREPO_NOT_FOUND:
+        'We could not find this repository. Check that the name is right and that you still have access to it.',
+      errRATE_LIMITED: 'GitHub is rate-limiting requests right now. Wait a minute and try again.',
+      errDISK_FULL:
+        'We ran out of storage on our side while working on this. Try again in a moment — if it keeps happening, start over.',
+      errCLONE_TIMEOUT:
+        'Cloning this repository took too long (it may be large, or the connection is slow). Try again.',
+      errDIAG_TIMEOUT:
+        'Reading this repository took too long. Try again, or continue without the free read.',
+      errDIAG_EMPTY_REPO:
+        "This repository doesn't have any commits yet. Push some code to it first, then try again.",
+      errINTERNAL: 'Something unexpected happened on our side. Try again in a moment.',
     },
   },
   pt: {
@@ -509,6 +525,23 @@ export const locales = {
       planIntent: 'Você entrou já com este plano — dá para mudar aqui embaixo.',
       reposFreeNote:
         'Seu plano Grátis inclui 1 repositório ativo. Escolha o mais importante, ou faça upgrade para mais.',
+      startOver: 'Recomeçar do zero',
+      startOverError: 'Não foi possível reiniciar o seu ambiente. Tente novamente.',
+      errREPO_ACCESS_DENIED:
+        'Acesso negado. Confira se o GitOrch tem permissão nesse repositório (reconecte o GitHub se precisar) e tente de novo.',
+      errREPO_NOT_FOUND:
+        'Não encontramos esse repositório. Confira se o nome está certo e se você ainda tem acesso a ele.',
+      errRATE_LIMITED:
+        'O GitHub está limitando as requisições agora. Espere um minuto e tente de novo.',
+      errDISK_FULL:
+        'Ficamos sem espaço de armazenamento do nosso lado nessa hora. Tente de novo em instantes — se continuar acontecendo, recomece do zero.',
+      errCLONE_TIMEOUT:
+        'Clonar esse repositório demorou demais (pode ser grande, ou a conexão está lenta). Tente de novo.',
+      errDIAG_TIMEOUT:
+        'Ler esse repositório demorou demais. Tente de novo, ou continue sem a leitura grátis.',
+      errDIAG_EMPTY_REPO:
+        'Esse repositório ainda não tem nenhum commit. Suba algum código nele primeiro e tente de novo.',
+      errINTERNAL: 'Algo inesperado aconteceu do nosso lado. Tente de novo em instantes.',
     },
   },
   es: {
@@ -766,6 +799,23 @@ export const locales = {
       planIntent: 'Entraste ya con este plan — puedes cambiarlo aquí abajo.',
       reposFreeNote:
         'Tu plan Gratis incluye 1 repositorio activo. Elige el más importante, o mejora para tener más.',
+      startOver: 'Empezar de nuevo',
+      startOverError: 'No pudimos reiniciar tu entorno. Inténtalo de nuevo.',
+      errREPO_ACCESS_DENIED:
+        'Acceso denegado. Verifica que GitOrch tenga permiso sobre este repositorio (reconecta GitHub si hace falta) e inténtalo de nuevo.',
+      errREPO_NOT_FOUND:
+        'No encontramos este repositorio. Verifica que el nombre sea correcto y que todavía tengas acceso a él.',
+      errRATE_LIMITED:
+        'GitHub está limitando las solicitudes en este momento. Espera un minuto e inténtalo de nuevo.',
+      errDISK_FULL:
+        'Nos quedamos sin espacio de almacenamiento de nuestro lado en este momento. Inténtalo de nuevo en un momento — si sigue pasando, empieza de nuevo.',
+      errCLONE_TIMEOUT:
+        'Clonar este repositorio tardó demasiado (puede ser grande, o la conexión está lenta). Inténtalo de nuevo.',
+      errDIAG_TIMEOUT:
+        'Leer este repositorio tardó demasiado. Inténtalo de nuevo, o continúa sin la lectura gratis.',
+      errDIAG_EMPTY_REPO:
+        'Este repositorio todavía no tiene ningún commit. Sube algo de código primero e inténtalo de nuevo.',
+      errINTERNAL: 'Algo inesperado pasó de nuestro lado. Inténtalo de nuevo en un momento.',
     },
   },
 }
