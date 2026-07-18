@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { ChevronRight, Loader2, CheckCircle2, AlertTriangle, AlertCircle } from 'lucide-react'
 import { useLanguage } from '../../LanguageContext'
+import { parseDiagnosisErrorCode, setupErrorHintKey } from './setup-errors'
 
 interface DiagnosisFinding {
   key: 'healthy_core' | 'untested_ratio' | 'stale_prs' | 'ci_failing' | 'open_issues'
@@ -168,7 +169,16 @@ export default function StepDiagnosis({
           <p className="wz-h" style={{ fontSize: '1.1rem' }}>
             {t('setup.diagErrorTitle')}
           </p>
-          <p className="wz-err mb-4">{job?.error ?? t('setup.diagErrorBody')}</p>
+          {/* job.error vem no formato "CODE: mensagem" (free-diagnosis.ts) — o
+              code escolhe a dica traduzida certa; sem code reconhecido (rota
+              antiga, job de antes deste PR, ou erro de rede sem job nenhum)
+              cai na mensagem sanitizada atual / texto genérico de sempre. */}
+          <p className="wz-err mb-4">
+            {(() => {
+              const code = parseDiagnosisErrorCode(job?.error ?? null)
+              return code ? t(setupErrorHintKey(code)) : (job?.error ?? t('setup.diagErrorBody'))
+            })()}
+          </p>
           <button onClick={retry} className="wz-btn wz-btn-ghost">
             {t('setup.diagRetry')}
           </button>

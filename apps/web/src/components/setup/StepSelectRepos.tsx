@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { ChevronRight, Search, Loader2, Check } from 'lucide-react'
 import { useLanguage } from '../../LanguageContext'
+import { parseSetupErrorCode, setupErrorHintKey, type SetupErrorCode } from './setup-errors'
 
 interface Repo {
   id: number
@@ -37,6 +38,11 @@ export default function StepSelectRepos({
   const [search, setSearch] = useState('')
   const [cloning, setCloning] = useState(false)
   const [cloneError, setCloneError] = useState<string | null>(null)
+  // Code classificado (REPO_ACCESS_DENIED, CLONE_TIMEOUT etc.) — quando a
+  // rota devolve um, mostramos a dica traduzida específica além do aviso
+  // genérico. null = rota antiga/erro de rede/JSON malformado.
+  const [cloneErrorCode, setCloneErrorCode] = useState<SetupErrorCode | null>(null)
+  const [resetting, setResetting] = useState(false)
 
   // Ao avançar, clona os repos escolhidos DENTRO do ambiente isolado do cliente
   // (passo 4). Só segue quando o clone termina; falha mantém a pessoa no passo
@@ -45,6 +51,7 @@ export default function StepSelectRepos({
     if (selectedRepos.length === 0 || cloning) return
     setCloning(true)
     setCloneError(null)
+    setCloneErrorCode(null)
     try {
       const res = await fetch(`${apiBaseUrl}/api/v1/setup/clone`, {
         method: 'POST',
@@ -52,11 +59,37 @@ export default function StepSelectRepos({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ repos: selectedRepos }),
       })
-      if (!res.ok) throw new Error(String(res.status))
+      if (!res.ok) {
+        // Lê o corpo {error, code} da rota (contrato de erro) em vez de só o
+        // status HTTP — o code escolhe a dica traduzida certa (dica genérica
+        // "tente de novo" some quando sabemos exatamente o que aconteceu).
+        const body = await res.json().catch(() => null)
+        setCloneErrorCode(parseSetupErrorCode(body))
+        throw new Error(String(res.status))
+      }
       onNext()
     } catch {
       setCloneError(t('setup.cloneError'))
       setCloning(false)
+    }
+  }
+
+  // "Recomeçar do zero": destrói o ambiente atual (clone quebrado incluso) e
+  // cria outro vazio, depois recarrega a página — a forma mais simples de
+  // voltar ao início do wizard com um estado limpo garantido pelo servidor.
+  // Best-effort: mesmo se a chamada falhar (rede), recarregar ainda ajuda —
+  // o próximo passo cria um ambiente novo do mesmo jeito.
+  const startOver = async () => {
+    setResetting(true)
+    try {
+      await fetch(`${apiBaseUrl}/api/v1/setup/environment/reset`, {
+        method: 'POST',
+        credentials: 'include',
+      })
+    } catch {
+      // melhor esforço — ver comentário acima
+    } finally {
+      window.location.reload()
     }
   }
 
@@ -216,9 +249,23 @@ export default function StepSelectRepos({
       )}
 
       {cloneError && (
-        <p className="mt-3" style={{ fontSize: '0.85rem', color: 'var(--gl-danger, #d33)' }}>
-          {cloneError}
-        </p>
+        <div className="mt-3">
+          <p style={{ fontSize: '0.85rem', color: 'var(--gl-danger, #d33)' }}>{cloneError}</p>
+          {cloneErrorCode && (
+            <p className="wz-opt-desc" style={{ marginTop: 4 }}>
+              {t(setupErrorHintKey(cloneErrorCode))}
+            </p>
+          )}
+          <button
+            type="button"
+            onClick={startOver}
+            disabled={resetting}
+            className="wz-btn wz-btn-ghost"
+            style={{ marginTop: 8, fontSize: '0.8rem' }}
+          >
+            {t('setup.startOver')}
+          </button>
+        </div>
       )}
 
       <div className="wz-actions">
