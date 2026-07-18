@@ -39,6 +39,10 @@ describe('OAuth: state assinado + retorno para a origem de quem entrou', () => {
     } as unknown as EngineConnectionService)
     app.decorate('prisma', {
       user: {
+        // Sem User conhecido por githubId (findUnique → null): estes testes
+        // cobrem o state/CSRF do OAuth, não a resolução de identidade —
+        // força o caminho de backfill por e-mail, que é o de sempre.
+        findUnique: vi.fn().mockResolvedValue(null),
         upsert: vi.fn().mockResolvedValue({
           id: 'user_1',
           email: 'quem@example.test',
@@ -175,6 +179,10 @@ describe('OAuth: o plano de entrada atravessa o round-trip', () => {
     } as unknown as EngineConnectionService)
     app.decorate('prisma', {
       user: {
+        // Sem User conhecido por githubId (findUnique → null): estes testes
+        // cobrem o state/CSRF do OAuth, não a resolução de identidade —
+        // força o caminho de backfill por e-mail, que é o de sempre.
+        findUnique: vi.fn().mockResolvedValue(null),
         upsert: vi.fn().mockResolvedValue({
           id: 'user_1',
           email: 'quem@example.test',

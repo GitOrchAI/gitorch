@@ -36,9 +36,12 @@ describe('GitHub OAuth callback', () => {
     app.decorate('engineConnections', {
       connectGitHubToken,
     } as unknown as EngineConnectionService)
-    // idem para o Prisma: só o upsert de User importa pra este teste.
+    // idem para o Prisma: só o upsert de User importa pra este teste. Sem
+    // User conhecido por githubId (findUnique → null): força o caminho de
+    // backfill por e-mail/githubLogin, que é o que este describe cobre. O
+    // caminho "achou por githubId" tem describe próprio mais abaixo.
     app.decorate('prisma', {
-      user: { upsert: userUpsert, findUnique: vi.fn().mockResolvedValue({ id: '42' }) },
+      user: { upsert: userUpsert, findUnique: vi.fn().mockResolvedValue(null) },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     await authRoutes(app)
@@ -106,6 +109,7 @@ describe('GitHub OAuth callback', () => {
         create: expect.objectContaining({
           email: 'octocat@example.test',
           githubLogin: 'octocat',
+          githubId: 42n,
         }),
       })
     )
@@ -129,7 +133,7 @@ describe('GitHub OAuth callback', () => {
       connectGitHubToken,
     } as unknown as EngineConnectionService)
     devApp.decorate('prisma', {
-      user: { upsert: userUpsert, findUnique: vi.fn().mockResolvedValue({ id: '42' }) },
+      user: { upsert: userUpsert, findUnique: vi.fn().mockResolvedValue(null) },
     } as any) // eslint-disable-line @typescript-eslint/no-explicit-any
     await authRoutes(devApp)
     await devApp.ready()
@@ -309,6 +313,66 @@ describe('GitHub OAuth callback', () => {
     const cookieHeader = Array.isArray(setCookie) ? setCookie[0] : setCookie
     const tokenMatch = cookieHeader?.match(/gitorch_session=([^;]+)/)
     const decoded = jwt.decode(tokenMatch![1]) as Record<string, unknown>
+    expect(decoded['userId']).toBe('dbuser_cuid_123')
+  })
+
+  it('githubId já conhecido: dois logins com o MESMO githubId e LOGIN diferente resolvem pro mesmo User (fecha takeover por reuso de username)', async () => {
+    // A pessoa renomeou o username no GitHub desde o último login: id
+    // numérico (a âncora) continua 42, mas o `login` mudou de
+    // 'nome-antigo' pra 'octocat'. Sem casar por githubId primeiro, o
+    // upsert-por-e-mail (se o e-mail também mudou) ou uma constraint de
+    // githubLogin poderiam criar um User NOVO ou, pior, deixar outra conta
+    // que reivindicasse 'nome-antigo' depois herdar o User errado.
+    const userFindUnique = vi.fn().mockResolvedValue({
+      id: 'dbuser_cuid_123',
+      email: 'antigo@example.test',
+      githubLogin: 'nome-antigo',
+      githubId: 42n,
+    })
+    const userUpdate = vi.fn().mockResolvedValue({
+      id: 'dbuser_cuid_123',
+      email: 'octocat@example.test',
+      githubLogin: 'octocat',
+      githubId: 42n,
+    })
+    app.prisma.user.findUnique = userFindUnique
+    app.prisma.user.update = userUpdate
+
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = typeof url === 'string' ? url : url.toString()
+      if (href.includes('github.com/login/oauth/access_token')) {
+        return new Response(JSON.stringify({ access_token: 'gh_raw_token' }), { status: 200 })
+      }
+      if (href.includes('api.github.com/user')) {
+        return new Response(
+          JSON.stringify({ id: 42, login: 'octocat', email: 'octocat@example.test' }),
+          { status: 200 }
+        )
+      }
+      throw new Error(`unexpected fetch ${href}`)
+    }) as unknown as typeof fetch
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/auth/github/callback?code=abc123',
+    })
+
+    expect(res.statusCode).toBe(302)
+    expect(userFindUnique).toHaveBeenCalledWith({ where: { githubId: 42n } })
+    expect(userUpdate).toHaveBeenCalledWith({
+      where: { id: 'dbuser_cuid_123' },
+      data: { email: 'octocat@example.test', githubLogin: 'octocat' },
+    })
+    // Achou por githubId — nunca precisou (nem deveria) passar pelo upsert
+    // por e-mail, que é o caminho de backfill para User sem githubId ainda.
+    expect(userUpsert).not.toHaveBeenCalled()
+
+    const setCookie = res.headers['set-cookie']
+    const cookieHeader = Array.isArray(setCookie) ? setCookie[0] : setCookie
+    const tokenMatch = cookieHeader?.match(/gitorch_session=([^;]+)/)
+    const decoded = jwt.decode(tokenMatch![1]) as Record<string, unknown>
+    // MESMO User (dbuser_cuid_123), apesar do login novo — é exatamente o
+    // takeover que a âncora por githubId fecha.
     expect(decoded['userId']).toBe('dbuser_cuid_123')
   })
 })
