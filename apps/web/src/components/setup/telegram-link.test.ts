@@ -1,5 +1,12 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
-import { parseLinkView, startTelegramLink, readTelegramLink } from './telegram-link'
+import {
+  parseLinkView,
+  startTelegramLink,
+  readTelegramLink,
+  TELEGRAM_BENEFIT_KEYS,
+} from './telegram-link'
+import { locales } from '../../locales'
 import type { Fetcher, HttpResponse } from './submit-flow'
 
 // O passo 8 é o último lugar do wizard onde ainda havia uma promessa vazia: ele
@@ -112,5 +119,37 @@ describe('readTelegramLink — o polling que espera o Start', () => {
       { fetchImpl: fetcherOf(fail(429)) }
     )
     expect(state).toBeNull()
+  })
+})
+
+// O passo 8 pedia Telegram sem nunca dizer PRA QUE serve — só um botão "Conectar
+// meu Telegram" solto. Ninguém clica num botão sem saber o benefício. Os 4
+// bullets (anúncios, alertas de incidente, perguntas dos agentes com botões,
+// /wish) ficam acima do botão de conectar.
+describe('TELEGRAM_BENEFIT_KEYS — os 4 bullets do passo, e sua tradução completa', () => {
+  it('são exatamente 4 chaves, únicas', () => {
+    expect(TELEGRAM_BENEFIT_KEYS).toHaveLength(4)
+    expect(new Set(TELEGRAM_BENEFIT_KEYS).size).toBe(4)
+  })
+
+  it('pt, en e es têm todas as chaves de benefício preenchidas', () => {
+    for (const lang of ['pt', 'en', 'es'] as const) {
+      const setup = locales[lang].setup as Record<string, string>
+      for (const key of TELEGRAM_BENEFIT_KEYS) {
+        const shortKey = key.replace('setup.', '')
+        expect(setup[shortKey], `${lang}.${key}`).toBeTruthy()
+      }
+    }
+  })
+})
+
+describe('guarda: StepTelegram renderiza os 4 bullets acima do botão de conectar', () => {
+  it('a lista de benefícios aparece no JSX antes do botão onClick={handleConnect}', () => {
+    const step = readFileSync(new URL('./StepTelegram.tsx', import.meta.url), 'utf8')
+    const benefitsIdx = step.indexOf('TELEGRAM_BENEFIT_KEYS.map')
+    const buttonIdx = step.indexOf('void handleConnect()')
+    expect(benefitsIdx).toBeGreaterThan(-1)
+    expect(buttonIdx).toBeGreaterThan(-1)
+    expect(benefitsIdx).toBeLessThan(buttonIdx)
   })
 })

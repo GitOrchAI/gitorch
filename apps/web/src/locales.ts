@@ -212,6 +212,10 @@ export const locales = {
       tgTitle: 'Telegram alerts (optional)',
       tgDesc:
         'Get a ping when a task in your project gets stuck or needs you. Tap the button, press Start in Telegram, and you are connected.',
+      tgBenefit1: 'Updates when there is news about your project',
+      tgBenefit2: 'Alerts when something breaks (incidents)',
+      tgBenefit3: 'Questions from the agents, with buttons to reply right in the chat',
+      tgBenefit4: 'Ask for improvements anytime with /wish',
       tgConnect: 'Connect my Telegram',
       tgWaiting: 'Telegram is open — press Start there. We are waiting for it, right here.',
       tgLinked: 'Telegram connected — alerts about your project land in this chat.',
@@ -472,6 +476,10 @@ export const locales = {
       tgTitle: 'Alertas no Telegram (opcional)',
       tgDesc:
         'Receba um aviso quando uma task do seu projeto travar ou precisar de você. Toque no botão, aperte Start no Telegram e pronto.',
+      tgBenefit1: 'Anúncios de novidades do seu projeto',
+      tgBenefit2: 'Alertas quando algo dá errado (incidentes)',
+      tgBenefit3: 'Perguntas dos agentes, com botões pra você responder direto no chat',
+      tgBenefit4: 'Peça melhorias a qualquer momento com /wish',
       tgConnect: 'Conectar meu Telegram',
       tgWaiting: 'O Telegram abriu — aperte Start por lá. A gente fica esperando aqui.',
       tgLinked: 'Telegram conectado — os avisos do seu projeto chegam nesta conversa.',
@@ -732,6 +740,10 @@ export const locales = {
       tgTitle: 'Alertas en Telegram (opcional)',
       tgDesc:
         'Recibe un aviso cuando una tarea de tu proyecto se atasque o te necesite. Toca el botón, pulsa Start en Telegram y listo.',
+      tgBenefit1: 'Anuncios de novedades de tu proyecto',
+      tgBenefit2: 'Alertas cuando algo falla (incidentes)',
+      tgBenefit3: 'Preguntas de los agentes, con botones para responder directo en el chat',
+      tgBenefit4: 'Pide mejoras en cualquier momento con /wish',
       tgConnect: 'Conectar mi Telegram',
       tgWaiting: 'Telegram se abrió — pulsa Start ahí. Nosotros esperamos aquí.',
       tgLinked: 'Telegram conectado — los avisos de tu proyecto llegan a este chat.',
