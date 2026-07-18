@@ -1,9 +1,11 @@
 name: Infra Guard
 
 # Fronteira open-core: mecaniza que segredos, IPs internos, hostnames e paths
-# absolutos da NOSSA VM não vazem para o repositório público. Workflow leve e
-# independente do zero-tolerance (feedback rápido, falha cedo, e sobrevive a
-# edições no ci.yml). O gitleaks aqui é defesa-em-profundidade + fail-fast; o
+# absolutos da NOSSA VM — e agora também referências ao repo IRMÃO privado
+# gitorch-cloud (infra de nuvem/SaaS, manifest de versão de motores) — não
+# vazem para o repositório público. Workflow leve e independente do
+# zero-tolerance (feedback rápido, falha cedo, e sobrevive a edições no
+# ci.yml). O gitleaks aqui é defesa-em-profundidade + fail-fast; o
 # zero-tolerance mantém o dele no gate principal.
 
 on:
@@ -23,7 +25,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - name: Denylist de infra (paths de VM, IPs internos, hostnames Tailscale)
+      - name: Denylist de infra (paths de VM, IPs internos, hostnames Tailscale, repo privado gitorch-cloud)
         env:
           # PR: diff vs base da PR. push: diff vs commit anterior. O script cai
           # para HEAD~1 se a ref não resolver (ex.: primeiro push).
