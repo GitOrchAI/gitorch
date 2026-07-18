@@ -29,8 +29,46 @@ model User {
   subscription      Subscription?
   diagnosisJobs     DiagnosisJob[]
   environments      ClientEnvironment[]
+  telegramLink      TelegramLink?
 
   @@map("users")
+}
+
+// Vínculo do Telegram do CLIENTE — o que torna o aviso possível.
+//
+// FATO DA API DO TELEGRAM: um bot só consegue mandar mensagem para quem já
+// falou com ele, e `sendMessage` exige um `chat_id` (numérico). Um @username de
+// pessoa NÃO endereça ninguém. Por isso o passo do wizard que só guardava o
+// @username era incapaz de funcionar por construção: dado write-only.
+//
+// O caminho real (padrão do Telegram) é o deep link com token: geramos um token
+// de uso único, o cliente abre `t.me/<bot>?start=<token>` e aperta Start; o bot
+// recebe `/start <token>` e é NESSE update que o `chat_id` finalmente existe —
+// aí sim ele é vinculado ao dono do token.
+model TelegramLink {
+  id     String @id @default(cuid())
+  userId String @unique @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // pending (deep link gerado, esperando o Start) | linked (chat_id capturado).
+  // Nunca há um terceiro estado "achamos que deu certo" — o wizard mostra
+  // exatamente um destes dois.
+  status String @default("pending")
+
+  // Token que viaja no deep link e volta pra nós no /start. É de USO ÚNICO
+  // (consumido no vínculo, vira NULL) e EXPIRA: sem isso, quem visse o link uma
+  // vez poderia apontar as notificações do dono para o próprio chat.
+  token          String?   @unique
+  tokenExpiresAt DateTime? @map("token_expires_at")
+
+  // Só existe DEPOIS do Start. É ele que a API do Telegram exige para enviar.
+  chatId   String?   @map("chat_id")
+  linkedAt DateTime? @map("linked_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("telegram_links")
 }
 
 // Plano é dado configurável (limites), não código. Valores/precificação são
@@ -157,7 +195,13 @@ model EngineConnection {
 
 model Project {
   id          String   @id @default(cuid())
-  wingId      String   @unique @map("wing_id")
+  // "owner/repo" — o endereço do REPOSITÓRIO (o scheduler clona a partir dele e
+  // o webhook casa `repository.full_name` contra ele), NÃO a chave do tenant.
+  // Por isso NÃO é único global: dois clientes podem, legitimamente, cadastrar o
+  // mesmo repo (dois colaboradores de "acme/api"). O único global fazia o
+  // segundo cliente ACHAR o Project do primeiro no wizard e receber uma ApiKey
+  // válida sobre o projeto alheio. A unicidade é por DONO (@@unique abaixo).
+  wingId      String   @map("wing_id")
   name        String
   description String?
   avatarUrl   String?  @map("avatar_url")
@@ -182,6 +226,13 @@ model Project {
   webhookDeliveries WebhookDelivery[]
   schedules   ProjectSchedule[]
 
+  // Um repo, um projeto, POR DONO. É o banco garantindo o que a rota de setup
+  // passou a exigir — mesmo repo em dois clientes = dois projetos distintos.
+  // (Legado sem dono: no Postgres NULLs são distintos entre si, então linhas
+  // órfãs antigas não colidem; projeto novo nunca nasce sem dono.)
+  @@unique([userId, wingId])
+  // Mantido: é por ele que o webhook do GitHub reencontra o projeto pelo
+  // full_name do repositório (o wizard não preenche os ids numéricos).
   @@index([wingId])
   @@index([userId])
   @@map("projects")
@@ -319,7 +370,7 @@ model DiagnosisJob {
 // repos (passo 4) e as credenciais de motor logadas DENTRO dele (passo 7), e
 // vira 'fixed' no aceite final (passo 10), quando o contexto do repo é
 // coletado pra memória. Um garbage collector destrói ambientes 'provisional'
-// com mais de 24h — requisito de SEGURANÇA, não higiene: o diretório guarda
+// SEM ATIVIDADE há 24h — requisito de SEGURANÇA, não higiene: o diretório guarda
 // credenciais + OAuth do cliente e não pode ficar largado se ele abandona.
 model ClientEnvironment {
   id     String @id @default(cuid())
@@ -335,8 +386,20 @@ model ClientEnvironment {
   createdAt DateTime  @default(now()) @map("created_at")
   updatedAt DateTime  @updatedAt @map("updated_at")
 
-  // status+createdAt: o garbage collector varre 'provisional' por idade (24h).
+  // O relógio da faxina: última ATIVIDADE REAL do cliente neste ambiente
+  // (aceitar termos, clonar repo, iniciar/concluir login de motor). O TTL mede
+  // INATIVIDADE, não idade — cortando por `createdAt`, quem aceitava os termos,
+  // conectava os motores e voltava pra terminar o wizard depois de 24h tinha o
+  // ambiente destruído NO MEIO do cadastro, junto com o clone e as credenciais.
+  //
+  // É coluna PRÓPRIA, e não o `updatedAt`: o @updatedAt sobe a QUALQUER escrita
+  // na linha, então um backfill/manutenção ressuscitaria em massa ambientes
+  // abandonados cheios de credencial. A renovação tem que ser um ato explícito
+  // e auditável (ClientEnvironmentService.touch), nunca um efeito colateral.
+  lastActivityAt DateTime @default(now()) @map("last_activity_at")
+
+  // status+lastActivityAt: é o corte exato que o garbage collector faz.
   @@index([userId])
-  @@index([status, createdAt])
+  @@index([status, lastActivityAt])
   @@map("client_environments")
 }

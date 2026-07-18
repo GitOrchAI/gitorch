@@ -20,8 +20,16 @@ describe('Setup and Auth Integration', () => {
 
     // Sessão de usuário real (JWT com githubToken) para o setup/submit:
     // o hook de auth é global e decodifica o user a partir do token.
+    // O `email` é o que resolve o DONO do projeto — o submit recusa (401) uma
+    // sessão sem dono resolvível, porque um Project órfão cairia num namespace
+    // global de onde o próximo cliente o herdaria (vazamento entre clientes).
     const token = jwt.sign(
-      { userId: 'user_123', wingId: 'wing_123', githubToken: 'gh_token' },
+      {
+        userId: 'user_123',
+        wingId: 'wing_123',
+        email: 'owner@example.test',
+        githubToken: 'gh_token',
+      },
       env.JWT_SECRET
     )
     sessionHeaders = { authorization: `Bearer ${token}` }
@@ -34,6 +42,12 @@ describe('Setup and Auth Integration', () => {
     let savedPrefix = ''
 
     // 1. Mock Prisma for setup/submit
+    // O DONO da sessão (resolvido por e-mail) e a contagem de projetos dele —
+    // o submit exige um dono para não criar projeto órfão.
+    app.prisma.user.findUnique = vi
+      .fn()
+      .mockResolvedValue({ id: 'user_123', email: 'owner@example.test', plan: null })
+    app.prisma.project.count = vi.fn().mockResolvedValue(0)
     app.prisma.project.findFirst = vi.fn().mockResolvedValue(null)
     app.prisma.project.create = vi.fn().mockResolvedValue({
       id: 'proj_123',

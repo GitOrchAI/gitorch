@@ -24,8 +24,12 @@ function fakePrisma() {
     store,
     clientEnvironment: {
       findFirst: vi.fn(async ({ where, orderBy }: any) => {
+        // `status` ausente = sem filtro de status (é o que o Prisma real faz com
+        // uma chave undefined) — current() consulta o ambiente do usuário seja
+        // ele provisional ou fixed.
         let rows = [...store.values()].filter(
-          (r) => r.userId === where.userId && r.status === where.status
+          (r) =>
+            r.userId === where.userId && (where.status === undefined || r.status === where.status)
         )
         if (orderBy?.createdAt === 'desc') {
           rows = rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
@@ -34,7 +38,15 @@ function fakePrisma() {
       }),
       create: vi.fn(async ({ data }: any) => {
         const now = new Date()
-        const rec = { id: `env_${++seq}`, fixedAt: null, createdAt: now, updatedAt: now, ...data }
+        // `lastActivityAt` espelha o DEFAULT do banco (@default(now())).
+        const rec = {
+          id: `env_${++seq}`,
+          fixedAt: null,
+          createdAt: now,
+          updatedAt: now,
+          lastActivityAt: now,
+          ...data,
+        }
         store.set(rec.id, rec)
         return rec
       }),
@@ -48,6 +60,9 @@ function fakePrisma() {
           if (where?.userId && r.userId !== where.userId) return false
           if (where?.status && r.status !== where.status) return false
           if (where?.createdAt?.lt && !(r.createdAt < where.createdAt.lt)) return false
+          if (where?.lastActivityAt?.lt && !(r.lastActivityAt < where.lastActivityAt.lt)) {
+            return false
+          }
           return true
         })
         if (orderBy?.createdAt === 'desc') {
@@ -299,22 +314,27 @@ describe('ClientEnvironmentService — faxina (TTL 24h)', () => {
 
   const DAY = 24 * 60 * 60 * 1000
 
-  test('listExpired retorna só provisionais mais velhos que o TTL (fixados nunca expiram)', async () => {
+  test('listExpired corta por INATIVIDADE, não por idade (fixados nunca expiram)', async () => {
     const prisma = fakePrisma()
     const now = 1_000_000_000_000
-    prisma.store.set('old', {
-      id: 'old',
+    // Abandonado de verdade: nasceu há dias E não tem atividade há 25h.
+    prisma.store.set('abandonado', {
+      id: 'abandonado',
       userId: 'u',
       status: 'provisional',
       path: '/x',
-      createdAt: new Date(now - 25 * 60 * 60 * 1000),
+      createdAt: new Date(now - 3 * DAY),
+      lastActivityAt: new Date(now - 25 * 60 * 60 * 1000),
     })
-    prisma.store.set('new', {
-      id: 'new',
+    // Ativo: também nasceu há dias, mas o cliente mexeu nele há 1h. A faxina por
+    // IDADE apagava este — no meio do cadastro do cliente.
+    prisma.store.set('ativo', {
+      id: 'ativo',
       userId: 'u',
       status: 'provisional',
       path: '/x',
-      createdAt: new Date(now - 60 * 60 * 1000),
+      createdAt: new Date(now - 3 * DAY),
+      lastActivityAt: new Date(now - 60 * 60 * 1000),
     })
     prisma.store.set('fixed', {
       id: 'fixed',
@@ -322,12 +342,32 @@ describe('ClientEnvironmentService — faxina (TTL 24h)', () => {
       status: 'fixed',
       path: '/x',
       createdAt: new Date(now - 100 * DAY),
+      lastActivityAt: new Date(now - 100 * DAY),
     })
     const svc = new ClientEnvironmentService(prisma as any, baseDir)
 
     const expired = await svc.listExpired(DAY, now)
 
-    expect(expired.map((e) => e.id)).toEqual(['old'])
+    expect(expired.map((e) => e.id)).toEqual(['abandonado'])
+  })
+
+  test('ambiente VELHO com atividade recente NUNCA é apagado (o cliente voltou pra terminar)', async () => {
+    // O cenário do bug: aceita os termos, conecta os motores, some por 2 dias e
+    // volta pra terminar o wizard. A faxina por idade destruía o ambiente no meio
+    // do processo — junto com o clone e as credenciais que o CLI gravou no HOME.
+    const prisma = fakePrisma()
+    const now = 1_000_000_000_000
+    prisma.store.set('voltou', {
+      id: 'voltou',
+      userId: 'u',
+      status: 'provisional',
+      path: '/x',
+      createdAt: new Date(now - 10 * DAY),
+      lastActivityAt: new Date(now - 5 * 60 * 1000), // mexeu há 5 minutos
+    })
+    const svc = new ClientEnvironmentService(prisma as any, baseDir)
+
+    expect(await svc.listExpired(DAY, now)).toEqual([])
   })
 
   test('destroy apaga o diretório (com as credenciais) e o registro', async () => {
@@ -424,6 +464,127 @@ describe('ClientEnvironmentService — faxina (TTL 24h)', () => {
   })
 })
 
+describe('ClientEnvironmentService — renovação por atividade (o relógio da faxina)', () => {
+  let baseDir: string
+  beforeEach(async () => {
+    baseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-touch-'))
+  })
+  afterEach(async () => {
+    await fs.rm(baseDir, { recursive: true, force: true })
+  })
+
+  const DAY = 24 * 60 * 60 * 1000
+
+  test('createProvisional RENOVA o relógio ao reusar o ambiente (voltar ao wizard é atividade)', async () => {
+    // createProvisional é o funil de TODA atividade do wizard: aceitar os termos,
+    // clonar os repos (/setup/clone) e iniciar o login de motor passam por ele.
+    // Reusando a linha sem renovar, o relógio ficava preso no `createdAt` e o
+    // ambiente morria 24h depois do PRIMEIRO passo, mesmo em uso.
+    const prisma = fakePrisma()
+    const stale = new Date(Date.now() - 23 * 60 * 60 * 1000)
+    prisma.store.set('env_1', {
+      id: 'env_1',
+      userId: 'user_1',
+      status: 'provisional',
+      path: path.join(baseDir, 'env_1'),
+      fixedAt: null,
+      createdAt: stale,
+      updatedAt: stale,
+      lastActivityAt: stale,
+    })
+    const svc = new ClientEnvironmentService(prisma as any, baseDir)
+
+    const env = await svc.createProvisional('user_1')
+
+    expect(env.id).toBe('env_1')
+    // não criou um segundo ambiente...
+    expect(prisma.clientEnvironment.create).not.toHaveBeenCalled()
+    // ...e o relógio da faxina foi renovado
+    expect(prisma.store.get('env_1')?.lastActivityAt.getTime()).toBeGreaterThan(stale.getTime())
+  })
+
+  test('touch renova o ambiente provisório do usuário (concluir o login de motor é atividade)', async () => {
+    const prisma = fakePrisma()
+    const stale = new Date(Date.now() - 20 * 60 * 60 * 1000)
+    prisma.store.set('env_1', {
+      id: 'env_1',
+      userId: 'user_1',
+      status: 'provisional',
+      path: '/x',
+      fixedAt: null,
+      createdAt: stale,
+      updatedAt: stale,
+      lastActivityAt: stale,
+    })
+    const svc = new ClientEnvironmentService(prisma as any, baseDir)
+
+    await svc.touch('user_1')
+
+    expect(prisma.store.get('env_1')?.lastActivityAt.getTime()).toBeGreaterThan(stale.getTime())
+  })
+
+  test('touch é inofensivo para quem não tem ambiente aberto (idempotente, sem criar nada)', async () => {
+    const prisma = fakePrisma()
+    const svc = new ClientEnvironmentService(prisma as any, baseDir)
+
+    await expect(svc.touch('user_sem_ambiente')).resolves.toBeUndefined()
+    expect(prisma.clientEnvironment.create).not.toHaveBeenCalled()
+  })
+
+  test('touch NÃO ressuscita ambiente FIXADO nem mexe no de outro cliente', async () => {
+    // A renovação é do ambiente provisório DAQUELE dono. Um fixado já está fora
+    // da faxina (não precisa), e o de outro cliente jamais pode ser tocado.
+    const prisma = fakePrisma()
+    const stale = new Date(Date.now() - 20 * 60 * 60 * 1000)
+    prisma.store.set('meu', {
+      id: 'meu',
+      userId: 'user_1',
+      status: 'provisional',
+      path: '/x',
+      createdAt: stale,
+      lastActivityAt: stale,
+    })
+    prisma.store.set('alheio', {
+      id: 'alheio',
+      userId: 'user_2',
+      status: 'provisional',
+      path: '/x',
+      createdAt: stale,
+      lastActivityAt: stale,
+    })
+    const svc = new ClientEnvironmentService(prisma as any, baseDir)
+
+    await svc.touch('user_1')
+
+    expect(prisma.store.get('meu')?.lastActivityAt.getTime()).toBeGreaterThan(stale.getTime())
+    expect(prisma.store.get('alheio')?.lastActivityAt.getTime()).toBe(stale.getTime())
+  })
+
+  test('o ambiente renovado sai da mira da faxina; sem renovar, continua na mira', async () => {
+    // Fecha o ciclo ponta a ponta: renovar tira da lista de expirados. É o que
+    // impede o GC de destruir o ambiente de um cliente que está usando o wizard.
+    const prisma = fakePrisma()
+    const stale = new Date(Date.now() - 30 * 60 * 60 * 1000)
+    prisma.store.set('env_1', {
+      id: 'env_1',
+      userId: 'user_1',
+      status: 'provisional',
+      path: '/x',
+      createdAt: stale,
+      lastActivityAt: stale,
+    })
+    const svc = new ClientEnvironmentService(prisma as any, baseDir)
+
+    // sem atividade: está na mira
+    expect((await svc.listExpired(DAY)).map((e) => e.id)).toEqual(['env_1'])
+
+    await svc.touch('user_1')
+
+    // depois da atividade: saiu da mira
+    expect(await svc.listExpired(DAY)).toEqual([])
+  })
+})
+
 describe('ClientEnvironmentService.fix', () => {
   test('fixa o provisional do user (provisional → fixed) no aceite final', async () => {
     const prisma = fakePrisma()
@@ -487,5 +648,38 @@ describe('ClientEnvironmentService.fix', () => {
     await expect(fs.stat(oldDir)).rejects.toThrow()
 
     await fs.rm(baseDir, { recursive: true, force: true })
+  })
+})
+
+describe('ClientEnvironmentService.current', () => {
+  test('devolve o ambiente mais recente do usuário (provisional ou fixed)', async () => {
+    const prisma = fakePrisma()
+    prisma.store.set('e_old', {
+      id: 'e_old',
+      userId: 'u',
+      status: 'fixed',
+      path: '/base/e_old',
+      createdAt: new Date('2026-07-10T10:00:00Z'),
+    })
+    prisma.store.set('e_new', {
+      id: 'e_new',
+      userId: 'u',
+      status: 'provisional',
+      path: '/base/e_new',
+      createdAt: new Date('2026-07-14T10:00:00Z'),
+    })
+    const svc = new ClientEnvironmentService(prisma as any, '/base')
+
+    const env = await svc.current('u')
+
+    expect(env?.id).toBe('e_new')
+    expect(env?.status).toBe('provisional')
+  })
+
+  test('usuário sem ambiente -> null (o status do wizard não inventa um)', async () => {
+    const prisma = fakePrisma()
+    const svc = new ClientEnvironmentService(prisma as any, '/base')
+
+    expect(await svc.current('ninguem')).toBeNull()
   })
 })

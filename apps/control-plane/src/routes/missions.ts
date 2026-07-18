@@ -93,12 +93,17 @@ export const missionRoutes = async (app: FastifyInstance): Promise<void> => {
     }
   )
 
-  // GET /api/missions - Lista das missões do tenant (o painel read-only vive
+  // GET /api/missions - Lista das missões do DONO (o painel read-only vive
   // disto: números REAIS, nunca vitrine).
+  //
+  // O filtro é por `project.userId`, não por `project.wingId`. `wingId` no
+  // Project é o repositório ("owner/repo" — o scheduler o usa como endereço de
+  // clone), enquanto `request.wingId` é o login do GitHub. Cruzar os dois nunca
+  // casava: o painel voltava vazio mesmo com missões rodando e concluídas.
   app.get('/api/missions', async (request: FastifyRequest) => {
-    const wingId = request.wingId!
+    const userId = request.user!.id
     const missions = await app.prisma.mission.findMany({
-      where: { project: { wingId } },
+      where: { project: { userId } },
       orderBy: { createdAt: 'desc' },
       take: 20,
       select: {
@@ -113,13 +118,13 @@ export const missionRoutes = async (app: FastifyInstance): Promise<void> => {
       },
     })
     const active = await app.prisma.mission.count({
-      where: { project: { wingId }, status: { in: ['pending', 'running'] } },
+      where: { project: { userId }, status: { in: ['pending', 'running'] } },
     })
     const completed = await app.prisma.mission.count({
-      where: { project: { wingId }, status: 'completed' },
+      where: { project: { userId }, status: 'completed' },
     })
     const failed = await app.prisma.mission.count({
-      where: { project: { wingId }, status: 'failed' },
+      where: { project: { userId }, status: 'failed' },
     })
     return { missions, stats: { active, completed, failed } }
   })

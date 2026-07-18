@@ -154,12 +154,22 @@ const enginesPluginImpl: FastifyPluginAsync<EnginesPluginOptions> = async (app, 
   // usa esta rota, o CLI faz polling sozinho depois que o usuário aprova).
   app.post('/api/v1/engines/login/:loginId/code', async (request, reply) => {
     const userId = await resolveUserId(app, request)
-    if (!userId) return reply.code(401).send({ error: 'UNAUTHORIZED: user session required' })
+    if (!userId || !request.user) {
+      return reply.code(401).send({ error: 'UNAUTHORIZED: user session required' })
+    }
     const { loginId } = request.params as { loginId: string }
     const { code } = (request.body ?? {}) as { code?: string }
     if (!code) return reply.code(400).send({ error: 'code é obrigatório' })
     try {
       assistedLogin.submitCode(loginId, userId, code)
+      // Concluir o login de um motor é ATIVIDADE REAL do cliente — renova o
+      // relógio da faxina. É o passo do wizard que NÃO passa pelo funil do
+      // createProvisional; sem este touch, um cliente a quem só faltasse colar o
+      // código podia ter o ambiente destruído pelo GC — com as credenciais que o
+      // CLI acabou de gravar dentro. O ambiente é chaveado por `request.user.id`
+      // (o id do JWT), a MESMA base que /login/start e todo o setup.ts usam —
+      // nunca o `userId` do cofre (id do banco, resolvido por e-mail).
+      await clientEnvironments.touch(request.user.id)
       return reply.send({ ok: true })
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message })

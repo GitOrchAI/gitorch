@@ -15,14 +15,6 @@ export type LoginState =
   | { phase: 'connected'; models?: number; quota?: number | null }
   | { phase: 'error'; message: string }
 
-// Forma de um motor como GET /api/v1/engines devolve (só os campos que a UI lê).
-export interface EngineSnapshot {
-  runtime: string
-  status: string
-  models?: unknown
-  quotaRemaining?: number | null
-}
-
 // A liveness devolve `models` como LISTA (string[]); o refetch de /engines já
 // normaliza pra contagem, mas o evento SSE `connected` entrega a lista crua.
 // Fonte única de "quantos modelos" — lista -> tamanho; número -> ele mesmo;
@@ -128,17 +120,37 @@ export function connectErrorHintKey(kind: ConnectErrorKind): string {
   }
 }
 
-// Prontidão do provisionamento no StepReady. NÃO há endpoint dedicado de status
-// de provisionamento (a missão `clone_and_start_engines` roda no scheduler sem
-// rota de status — ver relatório/fast-follow); GET /api/v1/engines é o sinal
-// proxy honesto: >=1 motor conectado => pronto; nenhum conectado mas algum em
-// erro => falhou (oferece retry); senão ainda provisionando (segue no polling).
-export type ProvisionStatus = 'provisioning' | 'ready' | 'failed'
-export function deriveProvisionStatus(
-  engines: EngineSnapshot[] | null | undefined
-): ProvisionStatus {
-  if (!engines || engines.length === 0) return 'provisioning'
-  if (engines.some((e) => e.status === 'connected')) return 'ready'
-  if (engines.some((e) => e.status === 'error')) return 'failed'
-  return 'provisioning'
+// Provisionamento no StepReady: a VERDADE vem de GET /api/v1/setup/status, que
+// lê o estado real da missão `clone_and_start_engines` no banco (a mesma que o
+// submit enfileira e o scheduler processa).
+//
+// O sinal anterior — "algum motor conectado em GET /api/v1/engines" — era uma
+// TAUTOLOGIA: o submit só passa se já houver um motor conectado, e a linha
+// 'github' nasce 'connected' no login OAuth. O primeiro poll SEMPRE achava um
+// motor conectado e pintava "ambiente ativo ✓" na hora, enquanto a missão ainda
+// estava 'pending' e só seria processada até 60s depois. Sucesso falso — e os
+// estados 'provisioning'/'failed' eram inalcançáveis.
+const PROVISION_STATUSES = ['unknown', 'pending', 'running', 'completed', 'failed'] as const
+export type ProvisionStatus = (typeof PROVISION_STATUSES)[number]
+
+export interface ProvisionSnapshot {
+  status: ProvisionStatus
+  // Causa REAL da falha (Mission.error, gravada pelo scheduler). null quando não
+  // há falha ou o backend não registrou motivo — a UI cai num texto localizado.
+  error: string | null
+}
+
+export function parseSetupStatus(json: unknown): ProvisionSnapshot {
+  const body = (json ?? {}) as { status?: unknown; error?: unknown }
+  const status = PROVISION_STATUSES.find((s) => s === body.status) ?? 'unknown'
+  const error = typeof body.error === 'string' && body.error.trim() ? body.error.trim() : null
+  // Causa só faz sentido na falha: um `error` pendurado num estado bom seria
+  // ruído (e nada pode manchar um provisionamento que deu certo).
+  return { status, error: status === 'failed' ? error : null }
+}
+
+// Estados em que o provisionamento ACABOU (o polling para). 'unknown' não é
+// terminal: ainda não sabemos, então continuamos perguntando.
+export function isProvisionTerminal(status: ProvisionStatus): boolean {
+  return status === 'completed' || status === 'failed'
 }

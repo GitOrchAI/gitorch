@@ -8,7 +8,14 @@ interface StepGitHubLoginProps {
 export default function StepGitHubLogin({ apiBaseUrl }: StepGitHubLoginProps) {
   const { t } = useLanguage()
   const handleLogin = () => {
-    window.location.href = `${apiBaseUrl}/api/v1/auth/github`
+    // Diz à API de onde viemos, para o login devolver a pessoa a ESTA origem —
+    // o wizard roda tanto no site publicado quanto servido pela própria API
+    // (same-origin). Sem isso o retorno era fixo e jogava quem entrasse pelo
+    // segundo caminho para fora do wizard, com a sessão órfã em outro domínio.
+    // A API valida este valor contra uma allowlist (não é destino livre).
+    const base = window.location.href.split('/setup')[0]
+    const returnTo = encodeURIComponent(base)
+    window.location.href = `${apiBaseUrl}/api/v1/auth/github?return_to=${returnTo}`
   }
 
   return (

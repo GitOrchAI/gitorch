@@ -17,13 +17,16 @@ export interface ClientEnvironmentRecord {
   fixedAt: Date | null
   createdAt: Date
   updatedAt: Date
+  /** Última atividade REAL do cliente neste ambiente — o relógio da faxina. */
+  lastActivityAt: Date
 }
 
 /**
  * Gerencia o ciclo de vida do ambiente isolado de cada cliente no setup wizard.
  * O ambiente nasce 'provisional' no aceite dos termos, acumula o clone dos
  * repos e as credenciais de motor logadas dentro dele, e vira 'fixed' no aceite
- * final. Um garbage collector (à parte) destrói 'provisional' com mais de 24h.
+ * final. Um garbage collector (à parte) destrói 'provisional' SEM ATIVIDADE há
+ * mais de 24h — o TTL mede INATIVIDADE, não idade (ver `touch`/`listExpired`).
  *
  * O diretório base é infra da VM: vem de GITORCH_ENVIRONMENTS_DIR (nunca
  * hardcoded fixo), mesmo padrão do LocalWorkspaceProvider. O `path` guardado
@@ -48,16 +51,27 @@ export class ClientEnvironmentService {
    * wizard não pode multiplicar ambientes, pois cada um passa a guardar as
    * credenciais do cliente em disco. Cria um diretório 0700 exclusivo (só o
    * dono acessa), nomeado pelo id do registro.
+   *
+   * Reusar é ATIVIDADE: renova o relógio da faxina. Este método é o FUNIL por
+   * onde passam o aceite dos termos (/setup/environment), o clone dos repos
+   * (/setup/clone) e o início do login de motor (engines) — renovando aqui,
+   * nenhum desses passos pode ser esquecido.
    */
   async createProvisional(userId: string): Promise<ClientEnvironmentRecord> {
     const existing = await this.prisma.clientEnvironment.findFirst({
       where: { userId, status: 'provisional' },
       orderBy: { createdAt: 'desc' },
     })
-    if (existing) return existing as ClientEnvironmentRecord
+    if (existing) {
+      const renewed = await this.prisma.clientEnvironment.update({
+        where: { id: existing.id },
+        data: { lastActivityAt: new Date() },
+      })
+      return renewed as ClientEnvironmentRecord
+    }
 
     const created = await this.prisma.clientEnvironment.create({
-      data: { userId, status: 'provisional', path: '' },
+      data: { userId, status: 'provisional', path: '', lastActivityAt: new Date() },
     })
     const dir = path.join(this.baseDir, created.id)
     await fs.mkdir(dir, { recursive: true, mode: 0o700 })
@@ -155,17 +169,57 @@ export class ClientEnvironmentService {
   }
 
   /**
-   * Ambientes provisórios (não-fixados) com mais de `maxAgeMs`. Alimenta o
-   * garbage collector: um ambiente abandonado guarda credenciais + OAuth do
-   * cliente e não pode ficar largado — a faxina é requisito de SEGURANÇA.
+   * O ambiente ATUAL do usuário (o mais recente — mesmo critério `desc` que
+   * createProvisional/fix usam para eleger o canônico), ou null se ele não tem
+   * nenhum. Alimenta o status do provisionamento no fim do wizard: o cliente vê
+   * o estado real do ambiente dele (provisional/fixed). Quem chama só pode
+   * expor `id` e `status` — o `path` é infra e NUNCA vai pro frontend.
+   */
+  async current(userId: string): Promise<ClientEnvironmentRecord | null> {
+    const env = await this.prisma.clientEnvironment.findFirst({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+    })
+    return (env as ClientEnvironmentRecord | null) ?? null
+  }
+
+  /**
+   * Renova o relógio da faxina: marca ATIVIDADE REAL do cliente no ambiente
+   * provisório dele. Chamado quando o cliente faz algo de fato no wizard — e o
+   * `createProvisional` (funil dos termos, do clone e do início do login) já
+   * renova sozinho; este `touch` cobre a atividade que NÃO passa por lá, como
+   * concluir o login de um motor.
+   *
+   * Idempotente e inofensivo: `updateMany` não falha se o usuário não tem
+   * ambiente aberto, e o escopo (userId + 'provisional') garante que jamais
+   * ressuscita um ambiente fixado nem toca no de outro cliente.
+   */
+  async touch(userId: string): Promise<void> {
+    await this.prisma.clientEnvironment.updateMany({
+      where: { userId, status: 'provisional' },
+      data: { lastActivityAt: new Date() },
+    })
+  }
+
+  /**
+   * Ambientes provisórios (não-fixados) SEM ATIVIDADE há mais de `maxAgeMs`.
+   * Alimenta o garbage collector: um ambiente abandonado guarda credenciais +
+   * OAuth do cliente e não pode ficar largado — a faxina é requisito de
+   * SEGURANÇA e continua valendo.
+   *
+   * O corte é por INATIVIDADE (`lastActivityAt`), não por idade (`createdAt`):
+   * cortando por idade, o cliente que aceitava os termos, conectava os motores e
+   * voltava pra terminar o wizard depois de 24h tinha o ambiente destruído NO
+   * MEIO do cadastro — com o clone e as credenciais dentro. Quem realmente
+   * abandonou não renova nada e é destruído do mesmo jeito.
    */
   async listExpired(
-    maxAgeMs: number,
+    maxIdleMs: number,
     now: number = Date.now()
   ): Promise<ClientEnvironmentRecord[]> {
-    const cutoff = new Date(now - maxAgeMs)
+    const cutoff = new Date(now - maxIdleMs)
     const rows = await this.prisma.clientEnvironment.findMany({
-      where: { status: 'provisional', createdAt: { lt: cutoff } },
+      where: { status: 'provisional', lastActivityAt: { lt: cutoff } },
     })
     return rows as ClientEnvironmentRecord[]
   }

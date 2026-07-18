@@ -31,7 +31,13 @@ function fakePrisma() {
           store.get(key(where.userId_runtime.userId, where.userId_runtime.runtime)) ?? null
       ),
       findMany: vi.fn(async ({ where }: any) =>
-        [...store.values()].filter((r) => r['userId'] === where.userId)
+        [...store.values()].filter((r) => {
+          if (r['userId'] !== where.userId) return false
+          // Honra `runtime: { not: 'x' }` como o Prisma real — é o filtro que
+          // mantém a linha do github FORA da listagem de motores.
+          if (where.runtime?.not !== undefined && r['runtime'] === where.runtime.not) return false
+          return true
+        })
       ),
       updateMany: vi.fn(async ({ where, data }: any) => {
         const k = key(where.userId, where.runtime)
@@ -122,6 +128,43 @@ describe('EngineConnectionService', () => {
     await expect(svc.captureFromHome('u', 'claude', home)).rejects.toThrow('não encontrada')
 
     await fs.rm(home, { recursive: true, force: true })
+  })
+
+  // A listagem é de MOTORES. A linha 'github' mora na MESMA tabela (o cofre
+  // cifrado é reusado), mas github NÃO é motor: entra pelo OAuth já 'connected',
+  // sem liveness. Misturada aos motores de IA, ela confundia a UI — e era um dos
+  // pés da tautologia que fazia o passo final do wizard cantar vitória cedo.
+  test('list() devolve só os motores de IA — a linha do github nunca aparece', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any, aliveLiveness)
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-list-'))
+    await fs.mkdir(path.join(home, '.codex'), { recursive: true })
+    await fs.writeFile(path.join(home, '.codex', 'auth.json'), '{"token":"do-cliente"}')
+
+    await svc.captureFromHome('user_1', 'codex', home)
+    await svc.connectGitHubToken('user_1', 'ghp_token_do_cliente')
+
+    // as duas linhas existem no cofre...
+    expect(prisma.store.has('user_1:codex')).toBe(true)
+    expect(prisma.store.has('user_1:github')).toBe(true)
+    // ...mas só o motor de IA é listado como motor
+    const list = await svc.list('user_1')
+    expect(list.map((c) => c.runtime)).toEqual(['codex'])
+
+    await fs.rm(home, { recursive: true, force: true })
+  })
+
+  test('excluir o github da lista NÃO quebra quem depende dele (o token segue acessível)', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any, aliveLiveness)
+
+    await svc.connectGitHubToken('user_1', 'ghp_token_do_cliente')
+
+    // a porta certa pro github é esta (usada por /github/repos e pelo scheduler)
+    expect(await svc.getRawGithubToken('user_1')).toBe('ghp_token_do_cliente')
+    expect(await svc.list('user_1')).toEqual([])
   })
 
   test('connectGitHubToken cifra o PAT e materializa como .gitorch/gh-token 0600', async () => {

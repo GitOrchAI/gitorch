@@ -178,6 +178,8 @@ export const locales = {
       confirmFreePlan: 'Free plan',
       confirmSubmit: 'Finish & clone',
       confirmSubmitting: 'Cloning & starting...',
+      confirmPayNext:
+        'Next we create your environment and show your API key — you will only see it once. Payment comes right after that.',
       connectTitle: 'Connect your engines',
       connectDesc:
         'Sign in to each engine with your own account — you just click a link, authorize on the provider’s page, and paste the code back. Nothing to install, no terminal. All three work the same way — connect at least one to continue.',
@@ -206,11 +208,13 @@ export const locales = {
       connectErrorHintGeneric: 'You can also paste the token manually below.',
       tgTitle: 'Telegram alerts (optional)',
       tgDesc:
-        'Get a friendly ping when your agents finish a mission or need you. Totally optional — you can set it up later.',
-      tgOpen: 'Open Telegram',
-      tgHandleLabel: 'Your Telegram @username (optional)',
-      tgHandlePlaceholder: '@your_handle',
-      tgHandleHint: 'Open Telegram, start a chat with the bot, and we will reach you there.',
+        'Get a ping when a task in your project gets stuck or needs you. Tap the button, press Start in Telegram, and you are connected.',
+      tgConnect: 'Connect my Telegram',
+      tgWaiting: 'Telegram is open — press Start there. We are waiting for it, right here.',
+      tgLinked: 'Telegram connected — alerts about your project land in this chat.',
+      tgError: 'We could not connect right now. Try again, or set it up later from the panel.',
+      tgRetry: 'Try again',
+      tgOptional: 'Optional. You can connect later from the panel — nothing here is lost.',
       readyTitle: 'Your environment is coming to life',
       readyDesc:
         'Your project and credentials are set. The agents are warming up — follow along from the panel.',
@@ -219,12 +223,31 @@ export const locales = {
       readyLedgerActivating: 'Environment activating',
       readyLedgerActivatingDesc:
         'Cortex memory, the code graph and Cadence orchestration are warming up for your repo.',
+      readyLedgerActivatingQueued: 'Queued: provisioning starts in a moment.',
+      readyLedgerActivatingRunning:
+        'Cloning your repository and starting the engines inside your environment.',
+      readyLedgerActivatingSlow:
+        'This is taking longer than usual. Provisioning keeps running in the background — refresh to see the current state.',
       readyLedgerActivatingReady: 'Environment is live',
-      readyLedgerActivatingFailed: 'We could not confirm activation',
+      readyLedgerActivatingFailed: 'Provisioning failed',
+      readyLedgerActivatingFailedDesc:
+        'We could not provision your environment. You can try again.',
+      readyRefresh: 'Refresh',
       readyRetry: 'Try again',
-      readyKeys: 'Integration keys & CI setup',
+      readyKeys: 'Your API key',
+      readyKeyOnce:
+        'This is the only time we show your key. We only store a scrambled version of it, so not even we can display it again — copy it now and keep it somewhere safe.',
+      readyKeySaved: 'I have saved my key somewhere safe',
+      readyKeyCopy: 'Copy the key',
+      readyLockedHint: 'Copy the key (or tick the box above) to continue.',
       readyKeysHint:
         'Add this secret to your GitHub Actions so agents running on GitHub can report back:',
+      readyGoPay: 'Go to payment',
+      readyPaying: 'Opening payment...',
+      readyPayFailed:
+        'We could not open payment right now. Your environment and key are ready — try again or head to the panel.',
+      readyPayCapacity:
+        'We are at capacity right now. Your environment and key are ready — we will reach out to unlock the paid plan.',
       readyGoPanel: 'Go to the panel',
       planIntent: 'You came in with this plan — you can still change it below.',
       reposFreeNote:
@@ -412,6 +435,8 @@ export const locales = {
       confirmFreePlan: 'Plano Grátis',
       confirmSubmit: 'Finalizar e clonar',
       confirmSubmitting: 'Clonando e iniciando...',
+      confirmPayNext:
+        'A seguir criamos o seu ambiente e mostramos a sua chave de API — você só vai vê-la uma vez. O pagamento vem logo depois disso.',
       connectTitle: 'Conecte seus motores',
       connectDesc:
         'Entre em cada motor com a sua própria conta — você só clica num link, autoriza na página do provedor e cola o código de volta. Nada pra instalar, nenhum terminal. Os três funcionam do mesmo jeito — conecte pelo menos um para continuar.',
@@ -440,11 +465,13 @@ export const locales = {
       connectErrorHintGeneric: 'Você também pode colar o token manualmente abaixo.',
       tgTitle: 'Alertas no Telegram (opcional)',
       tgDesc:
-        'Receba um aviso amigável quando seus agentes terminarem uma missão ou precisarem de você. Totalmente opcional — dá para configurar depois.',
-      tgOpen: 'Abrir o Telegram',
-      tgHandleLabel: 'Seu @usuário do Telegram (opcional)',
-      tgHandlePlaceholder: '@seu_usuario',
-      tgHandleHint: 'Abra o Telegram, inicie uma conversa com o bot e a gente te encontra por lá.',
+        'Receba um aviso quando uma task do seu projeto travar ou precisar de você. Toque no botão, aperte Start no Telegram e pronto.',
+      tgConnect: 'Conectar meu Telegram',
+      tgWaiting: 'O Telegram abriu — aperte Start por lá. A gente fica esperando aqui.',
+      tgLinked: 'Telegram conectado — os avisos do seu projeto chegam nesta conversa.',
+      tgError: 'Não deu para conectar agora. Tente de novo, ou conecte depois pelo painel.',
+      tgRetry: 'Tentar de novo',
+      tgOptional: 'Opcional. Dá para conectar depois pelo painel — nada aqui se perde.',
       readyTitle: 'Seu ambiente está nascendo',
       readyDesc:
         'Seu projeto e as credenciais estão prontos. Os agentes estão aquecendo — acompanhe pelo painel.',
@@ -453,12 +480,31 @@ export const locales = {
       readyLedgerActivating: 'Ambiente ativando',
       readyLedgerActivatingDesc:
         'A memória Cortex, o grafo de código e a orquestração Cadence estão aquecendo para o seu repositório.',
+      readyLedgerActivatingQueued: 'Na fila: o provisionamento começa em instantes.',
+      readyLedgerActivatingRunning:
+        'Clonando o seu repositório e ligando os motores dentro do seu ambiente.',
+      readyLedgerActivatingSlow:
+        'Está demorando mais que o normal. O provisionamento continua rodando em segundo plano — atualize para ver o estado atual.',
       readyLedgerActivatingReady: 'Ambiente ativo',
-      readyLedgerActivatingFailed: 'Não conseguimos confirmar a ativação',
+      readyLedgerActivatingFailed: 'O provisionamento falhou',
+      readyLedgerActivatingFailedDesc:
+        'Não conseguimos provisionar o seu ambiente. Você pode tentar de novo.',
+      readyRefresh: 'Atualizar',
       readyRetry: 'Tentar de novo',
-      readyKeys: 'Chaves de integração e CI',
+      readyKeys: 'Sua chave de API',
+      readyKeyOnce:
+        'Esta é a única vez que mostramos a sua chave. Guardamos apenas uma versão embaralhada dela, então nem nós conseguimos exibi-la de novo — copie agora e guarde num lugar seguro.',
+      readyKeySaved: 'Já guardei minha chave em um lugar seguro',
+      readyKeyCopy: 'Copiar a chave',
+      readyLockedHint: 'Copie a chave (ou marque a caixa acima) para continuar.',
       readyKeysHint:
         'Adicione este segredo nas suas GitHub Actions para os agentes que rodam no GitHub reportarem de volta:',
+      readyGoPay: 'Ir para o pagamento',
+      readyPaying: 'Abrindo o pagamento...',
+      readyPayFailed:
+        'Não conseguimos abrir o pagamento agora. Seu ambiente e sua chave já estão prontos — tente de novo ou siga para o painel.',
+      readyPayCapacity:
+        'Estamos no limite de capacidade no momento. Seu ambiente e sua chave já estão prontos — entramos em contato para liberar o plano pago.',
       readyGoPanel: 'Ir para o painel',
       planIntent: 'Você entrou já com este plano — dá para mudar aqui embaixo.',
       reposFreeNote:
@@ -646,6 +692,8 @@ export const locales = {
       confirmFreePlan: 'Plan Gratis',
       confirmSubmit: 'Finalizar y clonar',
       confirmSubmitting: 'Clonando e iniciando...',
+      confirmPayNext:
+        'A continuación creamos tu entorno y mostramos tu clave de API — solo la verás una vez. El pago viene justo después.',
       connectTitle: 'Conecta tus motores',
       connectDesc:
         'Inicia sesión en cada motor con tu propia cuenta — solo haces clic en un enlace, autorizas en la página del proveedor y pegas el código de vuelta. Nada que instalar, sin terminal. Los tres funcionan igual — conecta al menos uno para continuar.',
@@ -674,11 +722,13 @@ export const locales = {
       connectErrorHintGeneric: 'También puedes pegar el token manualmente abajo.',
       tgTitle: 'Alertas en Telegram (opcional)',
       tgDesc:
-        'Recibe un aviso amistoso cuando tus agentes terminen una misión o te necesiten. Totalmente opcional — puedes configurarlo después.',
-      tgOpen: 'Abrir Telegram',
-      tgHandleLabel: 'Tu @usuario de Telegram (opcional)',
-      tgHandlePlaceholder: '@tu_usuario',
-      tgHandleHint: 'Abre Telegram, inicia un chat con el bot y te contactaremos ahí.',
+        'Recibe un aviso cuando una tarea de tu proyecto se atasque o te necesite. Toca el botón, pulsa Start en Telegram y listo.',
+      tgConnect: 'Conectar mi Telegram',
+      tgWaiting: 'Telegram se abrió — pulsa Start ahí. Nosotros esperamos aquí.',
+      tgLinked: 'Telegram conectado — los avisos de tu proyecto llegan a este chat.',
+      tgError: 'No pudimos conectar ahora. Inténtalo de nuevo, o conéctalo después desde el panel.',
+      tgRetry: 'Intentar de nuevo',
+      tgOptional: 'Opcional. Puedes conectarlo después desde el panel — aquí no se pierde nada.',
       readyTitle: 'Tu entorno está naciendo',
       readyDesc:
         'Tu proyecto y las credenciales están listos. Los agentes se están preparando — síguelo desde el panel.',
@@ -687,12 +737,31 @@ export const locales = {
       readyLedgerActivating: 'Entorno activándose',
       readyLedgerActivatingDesc:
         'La memoria Cortex, el grafo de código y la orquestación Cadence se están preparando para tu repositorio.',
+      readyLedgerActivatingQueued: 'En la cola: el aprovisionamiento empieza en instantes.',
+      readyLedgerActivatingRunning:
+        'Clonando tu repositorio y encendiendo los motores dentro de tu entorno.',
+      readyLedgerActivatingSlow:
+        'Está tardando más de lo normal. El aprovisionamiento sigue en segundo plano — actualiza para ver el estado actual.',
       readyLedgerActivatingReady: 'Entorno activo',
-      readyLedgerActivatingFailed: 'No pudimos confirmar la activación',
+      readyLedgerActivatingFailed: 'El aprovisionamiento falló',
+      readyLedgerActivatingFailedDesc:
+        'No pudimos aprovisionar tu entorno. Puedes intentarlo de nuevo.',
+      readyRefresh: 'Actualizar',
       readyRetry: 'Reintentar',
-      readyKeys: 'Claves de integración y CI',
+      readyKeys: 'Tu clave de API',
+      readyKeyOnce:
+        'Esta es la única vez que mostramos tu clave. Solo guardamos una versión cifrada de ella, así que ni nosotros podemos volver a mostrarla — cópiala ahora y guárdala en un lugar seguro.',
+      readyKeySaved: 'Ya guardé mi clave en un lugar seguro',
+      readyKeyCopy: 'Copiar la clave',
+      readyLockedHint: 'Copia la clave (o marca la casilla de arriba) para continuar.',
       readyKeysHint:
         'Añade este secreto a tus GitHub Actions para que los agentes que corren en GitHub reporten de vuelta:',
+      readyGoPay: 'Ir al pago',
+      readyPaying: 'Abriendo el pago...',
+      readyPayFailed:
+        'No pudimos abrir el pago ahora. Tu entorno y tu clave ya están listos — inténtalo de nuevo o ve al panel.',
+      readyPayCapacity:
+        'Estamos al límite de capacidad en este momento. Tu entorno y tu clave ya están listos — te contactaremos para desbloquear el plan de pago.',
       readyGoPanel: 'Ir al panel',
       planIntent: 'Entraste ya con este plan — puedes cambiarlo aquí abajo.',
       reposFreeNote:

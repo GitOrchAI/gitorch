@@ -17,13 +17,9 @@ import StepTelegram from '../../components/setup/StepTelegram'
 import StepPlanSelection from '../../components/setup/StepPlanSelection'
 import StepPlanConfirmation from '../../components/setup/StepPlanConfirmation'
 import StepReady from '../../components/setup/StepReady'
-
-interface CreatedProject {
-  id: string
-  name: string
-  wingId: string
-  apiKey: string
-}
+// Forma dos projetos recém-criados (com a chave em claro): fonte única em
+// submit-flow, o módulo que fala com o backend.
+import type { CreatedProject } from '../../components/setup/submit-flow'
 
 const TOTAL_STEPS = 11
 
@@ -36,7 +32,10 @@ export default function SetupWizard() {
   const [authenticated, setAuthenticated] = useState(false)
   const [selectedRepos, setSelectedRepos] = useState<string[]>([])
   const [selectedEngines, setSelectedEngines] = useState<string[]>(['claude-code'])
-  const [telegram, setTelegram] = useState('')
+  // Sem estado de telegram aqui: o vínculo NÃO é um campo de formulário que
+  // viaja no submit — ele nasce no backend (token -> /start -> chat_id) e vive
+  // em telegram_links. Guardar um @username aqui era o que fazia o passo 8
+  // prometer um aviso que nunca chegava.
   // Autonomia dos 4 papéis: default sensato enviado ao submit (envConfig). Os
   // sliders manuais saíram do wizard (Task 3.4) — autonomia/cadência vira
   // ajuste fino no painel, não fricção no onboarding.
@@ -237,12 +236,7 @@ export default function SetupWizard() {
                 exit={{ opacity: 0, x: -20 }}
                 className="flex flex-col h-full flex-1"
               >
-                <StepTelegram
-                  telegram={telegram}
-                  setTelegram={setTelegram}
-                  onNext={nextStep}
-                  onBack={prevStep}
-                />
+                <StepTelegram apiBaseUrl={API_BASE_URL} onNext={nextStep} onBack={prevStep} />
               </motion.div>
             )}
 
@@ -278,7 +272,6 @@ export default function SetupWizard() {
                   selectedRepos={selectedRepos}
                   setSelectedRepos={setSelectedRepos}
                   selectedEngines={selectedEngines}
-                  telegram={telegram}
                   autonomy={autonomy}
                   onSuccess={handleSetupSuccess}
                   onBack={prevStep}
@@ -293,7 +286,9 @@ export default function SetupWizard() {
                 animate={{ opacity: 1, scale: 1 }}
                 className="flex flex-col h-full flex-1"
               >
-                <StepReady projects={createdProjects} apiBaseUrl={API_BASE_URL} />
+                {/* `plan` aqui não é decoração: é o StepReady que leva ao
+                    pagamento, DEPOIS de mostrar a chave. */}
+                <StepReady projects={createdProjects} apiBaseUrl={API_BASE_URL} plan={plan} />
               </motion.div>
             )}
           </AnimatePresence>

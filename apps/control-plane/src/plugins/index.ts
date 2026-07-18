@@ -15,6 +15,7 @@ import { webhookVerifyPlugin } from './webhook-verify.js'
 import { securityHookPlugin } from './security.js'
 import { telemetryPlugin } from './telemetry.js'
 import { schedulerPlugin } from './scheduler.js'
+import { telegramPlugin } from './telegram.js'
 import { cortexPlugin } from './cortex.js'
 import { enginesPlugin } from './engines.js'
 import { corsPlugin } from './cors.js'
@@ -106,4 +107,7 @@ export async function registerPlugins(app: FastifyInstance, env: Env): Promise<v
   await app.register(cortexPlugin)
   await app.register(enginesPlugin)
   await app.register(schedulerPlugin)
+  // Ouve o bot do Telegram: é por aqui que o `/start <token>` do cliente vira o
+  // chat_id vinculado — sem isto o passo 8 do wizard nunca sai de "aguardando".
+  await app.register(telegramPlugin)
 }

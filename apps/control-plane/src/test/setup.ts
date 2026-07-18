@@ -100,15 +100,22 @@ class MockPrismaClientKnownRequestError extends Error {
 
 vi.mock('@prisma/client', () => ({
   PrismaClient: MockPrismaClient,
-  // O plugin de RLS deriva do DMMF quais modelos têm wingId — o mock espelha
-  // o schema real (só Project tem a coluna).
+  // O guard de isolamento deriva do DMMF quais modelos carregam `userId` (o
+  // dono) e quais carregam `wingId` (o repositório) — este mock espelha o
+  // schema real. Ele estava desatualizado (só listava wingId), o que mantinha
+  // o escopo por dono invisível para os testes.
   Prisma: {
     dmmf: {
       datamodel: {
         models: [
-          { name: 'Project', fields: [{ name: 'wingId' }] },
+          { name: 'Project', fields: [{ name: 'wingId' }, { name: 'userId' }] },
+          { name: 'EngineConnection', fields: [{ name: 'userId' }] },
+          { name: 'ClientEnvironment', fields: [{ name: 'userId' }] },
+          { name: 'DiagnosisJob', fields: [{ name: 'userId' }] },
+          { name: 'Subscription', fields: [{ name: 'userId' }] },
           { name: 'Mission', fields: [{ name: 'id' }] },
           { name: 'WebhookDelivery', fields: [{ name: 'id' }] },
+          { name: 'Plan', fields: [{ name: 'id' }] },
         ],
       },
     },
