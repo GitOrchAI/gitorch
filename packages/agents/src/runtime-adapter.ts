@@ -6,8 +6,18 @@ import type {
   F6AgentRuntime,
   RuntimeCredentialRef,
 } from './types'
+import { wrapWithLimits, type ExecutionLimits } from './execution-limits'
 
 const execFileAsync = promisify(execFile)
+
+// Teto por execução (ver execution-limits.ts). Configurável por env; o
+// default (2G/150%) é o valor da radiografia para a VM dev (ARM 4CPU/11GB) —
+// só entra em vigor quando GITORCH_EXEC_LIMITS=systemd; caso contrário o
+// comando roda cru, exatamente como antes desta mudança.
+const EXEC_LIMITS: ExecutionLimits = {
+  memoryMax: process.env['GITORCH_EXEC_MEMORY_MAX'] ?? '2G',
+  cpuQuota: process.env['GITORCH_EXEC_CPU_QUOTA'] ?? '150%',
+}
 
 export interface RuntimeExecutionRequest {
   missionId: string
@@ -101,8 +111,12 @@ export type RuntimeCommandRunner = (
 
 export const realRuntimeCommandRunner: RuntimeCommandRunner = async (request) => {
   const start = Date.now()
+  // GITORCH_EXEC_LIMITS=systemd + systemd-run no PATH: prefixa a execução com
+  // o cgroup transitório do teto. Em qualquer outro caso devolve o comando
+  // intacto (ver execution-limits.ts) — a linha abaixo é um no-op hoje.
+  const { binary, args } = wrapWithLimits(request.binary, request.args, EXEC_LIMITS)
   try {
-    const pending = execFileAsync(request.binary, request.args, {
+    const pending = execFileAsync(binary, args, {
       env: buildChildProcessEnv(request.env),
       cwd: request.cwd,
       // Saída de CLIs agênticos pode passar do 1MB default do execFile.

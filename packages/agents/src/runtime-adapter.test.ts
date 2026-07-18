@@ -1,3 +1,6 @@
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { delimiter, join } from 'node:path'
 import {
   RuntimeRegistry,
   buildRuntimeEnvironment,
@@ -240,5 +243,52 @@ describe('createCliRuntimeAdapter promptSeparator', () => {
     const args: string[] = runner.mock.calls[0][0].args
     expect(args.slice(-2)).toEqual(['--', 'analyze'])
     expect(args[args.indexOf('--add-dir') + 1]).toBe('/ws/p')
+  })
+})
+
+// Integração de ponta a ponta do teto de recursos (execution-limits.ts) com o
+// runner real: um fake `systemd-run` no PATH devolve o próprio argv recebido,
+// provando que realRuntimeCommandRunner de fato prefixa a execução quando a
+// flag está ligada, e que o default (sem a flag) continua rodando cru.
+describe('realRuntimeCommandRunner respeita GITORCH_EXEC_LIMITS', () => {
+  let dir: string
+  let prevLimits: string | undefined
+  let prevPath: string | undefined
+
+  beforeEach(() => {
+    prevLimits = process.env.GITORCH_EXEC_LIMITS
+    prevPath = process.env.PATH
+  })
+
+  afterEach(() => {
+    if (prevLimits === undefined) delete process.env.GITORCH_EXEC_LIMITS
+    else process.env.GITORCH_EXEC_LIMITS = prevLimits
+    process.env.PATH = prevPath
+    if (dir) rmSync(dir, { recursive: true, force: true })
+  })
+
+  test('modo systemd com systemd-run no PATH prefixa a execução com o wrapper de limites', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'gitorch-systemd-run-'))
+    writeFileSync(join(dir, 'systemd-run'), '#!/bin/sh\necho "SYSTEMD_ARGS:$@"\n')
+    chmodSync(join(dir, 'systemd-run'), 0o755)
+
+    process.env.GITORCH_EXEC_LIMITS = 'systemd'
+    process.env.PATH = `${dir}${delimiter}${prevPath ?? ''}`
+
+    const result = await realRuntimeCommandRunner({ binary: 'echo', args: ['hi'], env: {} })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout.trim()).toBe(
+      'SYSTEMD_ARGS:--scope --quiet -p MemoryMax=2G -p CPUQuota=150% -- echo hi'
+    )
+  })
+
+  test('sem a flag (default), o comando roda cru — systemd-run nem existe no PATH de teste', async () => {
+    delete process.env.GITORCH_EXEC_LIMITS
+
+    const result = await realRuntimeCommandRunner({ binary: 'echo', args: ['hi'], env: {} })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout.trim()).toBe('hi')
   })
 })
