@@ -154,3 +154,52 @@ export function parseSetupStatus(json: unknown): ProvisionSnapshot {
 export function isProvisionTerminal(status: ProvisionStatus): boolean {
   return status === 'completed' || status === 'failed'
 }
+
+// Visibilidade do accordion de paste manual (rede de segurança do login
+// assistido). Bug real visto pelo dono (18/07): o accordion ficava sempre
+// renderizado (só recolhido) ao lado do campo de código durante `url_ready` —
+// um clique de curiosidade abria os dois campos lado a lado e o código da
+// página de autorização acabava colado no campo de TOKEN errado. Agora o
+// accordion só existe de verdade em duas situações: o login assistido FALHOU
+// (fase 'error' — aí é rede de segurança de fato, abre sozinha) ou a pessoa
+// pediu explicitamente pelo link discreto "Problemas? Colar manualmente"
+// (`manualRequested`, por motor). Fora isso, nem renderiza.
+export function isManualAccordionVisible(
+  phase: LoginState['phase'],
+  manualRequested: boolean
+): boolean {
+  return phase === 'error' || manualRequested
+}
+
+// Formato do device code que as páginas de autorização mostram para digitar
+// de volta no CLI (ex.: GitHub, Antigravity): blocos alfanuméricos curtos
+// separados por hífen, tipo WDJQ-MZBG. Case-insensitive — a página mostra
+// maiúsculo, mas nada garante que a pessoa preserve o caso ao copiar.
+const DEVICE_CODE_PATTERN = /^[A-Za-z0-9]{4,8}-[A-Za-z0-9]{4,8}$/
+
+// Acima deste tamanho, uma string sem o prefixo esperado já não parece um
+// código curto de autorização — é só uma credencial inválida (não vira "cole
+// no campo certo", vira o erro genérico de sempre).
+const SHORT_PASTE_LIMIT = 20
+
+/**
+ * Detecta se o que foi colado no campo de TOKEN manual tem cara do CÓDIGO da
+ * página de autorização, não de uma credencial real — é exatamente o erro
+ * humano que gerou "esperado sk-ant-oat" para um código que nunca deveria ter
+ * ido parar ali. Dispara com o formato de device code (qualquer runtime) ou,
+ * para Claude especificamente (único com prefixo documentado, sk-ant-oat),
+ * qualquer string curta que não comece com esse prefixo.
+ */
+export function looksLikeAuthCode(pasted: string, runtime: string): boolean {
+  const v = pasted.trim()
+  if (!v) return false
+  if (DEVICE_CODE_PATTERN.test(v)) return true
+  if (
+    runtime === 'claude' &&
+    v.length <= SHORT_PASTE_LIMIT &&
+    !v.toLowerCase().startsWith('sk-ant-oat')
+  ) {
+    return true
+  }
+  return false
+}

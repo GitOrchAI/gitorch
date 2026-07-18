@@ -39,6 +39,14 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
     return allowed ? candidate : env.FRONTEND_URL
   }
 
+  // Planos válidos do wizard — mesmo conjunto que o front usa pra validar
+  // `?plan=` (apps/web/src/components/setup/plan-persistence.ts). Um valor
+  // fora daqui é descartado silenciosamente: nunca vira um plano não
+  // reconhecido pendurado no state assinado nem no redirect final.
+  const VALID_PLANS = ['free', 'solo', 'pro', 'team']
+  const resolvePlanParam = (candidate: string | undefined): string | undefined =>
+    candidate && VALID_PLANS.includes(candidate) ? candidate : undefined
+
   // Redirect to GitHub OAuth
   app.get(
     '/api/v1/auth/github',
@@ -71,9 +79,19 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
       // O destino viaja no `state`, ASSINADO: além de carregar a origem, isso
       // finalmente dá ao fluxo um state (não havia nenhum), fechando a brecha de
       // CSRF em que um terceiro dispara o callback com um `code` que não pediu.
-      const { return_to: returnToParam } = request.query as { return_to?: string }
+      // O plano de entrada (?plan=pro na landing) viaja no mesmo `state`
+      // assinado — é a ÚNICA forma de sobreviver ao round-trip do OAuth (a
+      // navegação de página inteira apaga qualquer estado em memória React).
+      // Sem isso, quem entrava querendo pagar voltava do login como 'free'.
+      const { return_to: returnToParam, plan: planParam } = request.query as {
+        return_to?: string
+        plan?: string
+      }
       const returnTo = resolveReturnTo(returnToParam)
-      const state = jwt.sign({ returnTo }, env.JWT_SECRET, { expiresIn: OAUTH_STATE_LIFETIME })
+      const plan = resolvePlanParam(planParam)
+      const state = jwt.sign({ returnTo, ...(plan ? { plan } : {}) }, env.JWT_SECRET, {
+        expiresIn: OAUTH_STATE_LIFETIME,
+      })
 
       const githubAuthUrl =
         `https://github.com/login/oauth/authorize?client_id=${clientId}` +
@@ -103,12 +121,15 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
       }
 
       // O `state` é a prova de que este fluxo começou aqui (anti-CSRF) e carrega
-      // para onde devolver a pessoa. Sem ele, ou adulterado, o login não segue.
+      // para onde devolver a pessoa — e, agora, o plano de entrada. Sem ele, ou
+      // adulterado, o login não segue.
       let returnTo = env.FRONTEND_URL
+      let plan: string | undefined
       if (state) {
         try {
-          const decoded = jwt.verify(state, env.JWT_SECRET) as { returnTo?: string }
+          const decoded = jwt.verify(state, env.JWT_SECRET) as { returnTo?: string; plan?: string }
           returnTo = resolveReturnTo(decoded.returnTo)
+          plan = resolvePlanParam(decoded.plan)
         } catch {
           return reply.code(400).send({ error: 'Invalid or expired OAuth state' })
         }
@@ -268,7 +289,9 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
       // Redireciona para o wizard sem token na URL (histórico/referrer/logs
       // deixam de expor a sessão — spec §17.4), de volta à origem de onde a
       // pessoa saiu (validada contra a allowlist, nunca destino arbitrário).
-      const redirectUrl = `${returnTo}/setup`
+      // O plano de entrada volta na query quando presente — é o front
+      // (page.tsx) que lê `?plan=` de novo pós-mount e retoma de onde parou.
+      const redirectUrl = plan ? `${returnTo}/setup?plan=${plan}` : `${returnTo}/setup`
       return reply.redirect(redirectUrl)
     }
   )

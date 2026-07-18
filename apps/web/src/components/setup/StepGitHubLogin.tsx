@@ -3,9 +3,14 @@ import { useLanguage } from '../../LanguageContext'
 
 interface StepGitHubLoginProps {
   apiBaseUrl: string
+  // Plano com que a pessoa entrou no wizard (?plan=pro na landing). Viaja pro
+  // backend, que o carrega no `state` assinado do OAuth e devolve na URL do
+  // redirect final — sem isso, o login (uma navegação de página inteira, não
+  // SPA) apagava a escolha e a pessoa voltava sempre como 'free'.
+  plan: string
 }
 
-export default function StepGitHubLogin({ apiBaseUrl }: StepGitHubLoginProps) {
+export default function StepGitHubLogin({ apiBaseUrl, plan }: StepGitHubLoginProps) {
   const { t } = useLanguage()
   const handleLogin = () => {
     // Diz à API de onde viemos, para o login devolver a pessoa a ESTA origem —
@@ -15,7 +20,8 @@ export default function StepGitHubLogin({ apiBaseUrl }: StepGitHubLoginProps) {
     // A API valida este valor contra uma allowlist (não é destino livre).
     const base = window.location.href.split('/setup')[0]
     const returnTo = encodeURIComponent(base)
-    window.location.href = `${apiBaseUrl}/api/v1/auth/github?return_to=${returnTo}`
+    const planParam = encodeURIComponent(plan)
+    window.location.href = `${apiBaseUrl}/api/v1/auth/github?return_to=${returnTo}&plan=${planParam}`
   }
 
   return (

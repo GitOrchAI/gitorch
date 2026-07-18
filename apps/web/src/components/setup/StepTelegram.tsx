@@ -1,7 +1,12 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { AlertCircle, Check, ChevronRight, Loader2, Send } from 'lucide-react'
 import { useLanguage } from '../../LanguageContext'
-import { readTelegramLink, startTelegramLink, type TelegramLinkState } from './telegram-link'
+import {
+  readTelegramLink,
+  startTelegramLink,
+  TELEGRAM_BENEFIT_KEYS,
+  type TelegramLinkState,
+} from './telegram-link'
 
 interface StepTelegramProps {
   apiBaseUrl: string
@@ -79,6 +84,16 @@ export default function StepTelegram({ apiBaseUrl, onNext, onBack }: StepTelegra
       <p className="wz-sub">{t('setup.tgDesc')}</p>
 
       <div className="wz-body space-y-4">
+        {/* PRA QUE serve o Telegram — o passo antigo pedia o contato sem nunca
+            dizer o motivo. Fica acima do botão, some quando já vinculado. */}
+        {!linked && (
+          <ul className="space-y-1.5" style={{ fontSize: '0.78rem', color: 'var(--gl-muted)' }}>
+            {TELEGRAM_BENEFIT_KEYS.map((key) => (
+              <li key={key}>✓ {t(key)}</li>
+            ))}
+          </ul>
+        )}
+
         {!linked && (
           <button
             onClick={() => void handleConnect()}

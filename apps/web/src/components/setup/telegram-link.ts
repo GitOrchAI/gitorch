@@ -22,6 +22,15 @@ export type TelegramLinkState =
   | { phase: 'linked' }
   | { phase: 'error'; message: string }
 
+// Os 4 benefícios do vínculo, mostrados acima do botão de conectar — o passo
+// pedia Telegram sem nunca dizer PRA QUE serve. Ordem = ordem de exibição.
+export const TELEGRAM_BENEFIT_KEYS = [
+  'setup.tgBenefit1',
+  'setup.tgBenefit2',
+  'setup.tgBenefit3',
+  'setup.tgBenefit4',
+] as const
+
 const defaultFetcher: Fetcher = (url, init) => fetch(url, init)
 
 export interface TelegramLinkInput {

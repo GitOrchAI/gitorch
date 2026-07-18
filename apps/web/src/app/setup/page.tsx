@@ -20,6 +20,9 @@ import StepReady from '../../components/setup/StepReady'
 // Forma dos projetos recém-criados (com a chave em claro): fonte única em
 // submit-flow, o módulo que fala com o backend.
 import type { CreatedProject } from '../../components/setup/submit-flow'
+// Resolução do plano ativo (URL > sessionStorage > free) — fonte única com o
+// backend (routes/auth.ts), que devolve ?plan= no redirect pós-OAuth.
+import { resolvePlan, PLAN_STORAGE_KEY } from '../../components/setup/plan-persistence'
 
 const TOTAL_STEPS = 11
 
@@ -43,10 +46,13 @@ export default function SetupWizard() {
   // Plano pré-selecionado pela landing (/setup?plan=solo) — derivado da URL no
   // inicializador (não num effect com setState síncrono). O plano só aparece a
   // partir do passo 8, então não há divergência de hidratação no passo 1.
+  // Prioridade URL > sessionStorage > 'free' (plan-persistence.ts): a URL é o
+  // sinal mais recente (inclusive o que o backend devolve no redirect pós-
+  // OAuth); o sessionStorage é o fallback pro caso raro de a volta não
+  // carregar a query.
   const [plan, setPlan] = useState<string>(() => {
     if (typeof window === 'undefined') return 'free'
-    const urlPlan = new URLSearchParams(window.location.search).get('plan')
-    return urlPlan && ['free', 'solo', 'pro', 'team'].includes(urlPlan) ? urlPlan : 'free'
+    return resolvePlan(window.location.search, sessionStorage.getItem(PLAN_STORAGE_KEY))
   })
   // Intenção de entrada: veio da landing com um plano PAGO no ?plan? Então o
   // passo de plano confirma essa escolha (não pede pra escolher do zero), e o
@@ -57,6 +63,23 @@ export default function SetupWizard() {
     return !!urlPlan && ['solo', 'pro', 'team'].includes(urlPlan)
   })
   const [createdProjects, setCreatedProjects] = useState<CreatedProject[]>([])
+
+  // Bug real (18/07): quem entrava com ?plan=pro e logava com GitHub voltava
+  // do OAuth como 'free'. O login é uma navegação de página INTEIRA — este
+  // componente remonta do zero, e o useState acima já cobre o caso comum. Este
+  // efeito é a defesa extra: roda de novo pós-mount (cobre navegação client-
+  // side que mude a query sem remontar) e SEMPRE persiste o resultado em
+  // sessionStorage, pra sobreviver mesmo se uma volta futura não carregar a
+  // query.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const resolved = resolvePlan(window.location.search, sessionStorage.getItem(PLAN_STORAGE_KEY))
+    setPlan(resolved)
+  }, [])
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') sessionStorage.setItem(PLAN_STORAGE_KEY, plan)
+  }, [plan])
 
   // Verifica a sessão real no servidor (cookie httpOnly enviado automaticamente).
   useEffect(() => {
@@ -141,7 +164,7 @@ export default function SetupWizard() {
                 exit={{ opacity: 0, x: -20 }}
                 className="flex flex-col h-full flex-1"
               >
-                <StepGitHubLogin apiBaseUrl={API_BASE_URL} />
+                <StepGitHubLogin apiBaseUrl={API_BASE_URL} plan={plan} />
               </motion.div>
             )}
 
