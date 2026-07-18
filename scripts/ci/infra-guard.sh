@@ -22,11 +22,13 @@
 # genérico e público, NÃO é vazamento; por isso não está na denylist.
 #
 # EXCEÇÃO DOCUMENTADA: NÃO existe um padrão bare para "infra/" ou
-# "manifest.json" soltos. O público já tem `scripts/infra/` (tooling legítimo
-# de build de agent image, referenciado em comentários/docs) e apps/web é
-# Next.js (public/manifest.json de PWA é convenção normal). Um padrão solto
-# nesses dois colidiria com conteúdo público real. Por isso os padrões abaixo
-# são escopados ao contexto do repo privado (gitorch-cloud / engine version).
+# "manifest.json" soltos. `scripts/infra/` migrou pro privado na task t8 (o
+# público hoje só cita o caminho antigo em comentários/docs, em passado), mas
+# um "infra/" solto na denylist ainda colidiria com tooling público legítimo
+# que reapareça (ex.: self-host /init da F3) e apps/web é Next.js
+# (public/manifest.json de PWA é convenção normal). Por isso os padrões
+# abaixo são escopados ao contexto do repo privado (gitorch-cloud / engine
+# version) em vez de bare.
 #
 # ESCAPE INLINE: uma linha que contenha o marcador `infra-guard-allow` é
 # isentada (use com parcimônia e justificativa no próprio comentário).
@@ -75,7 +77,7 @@ PATTERNS=(
   'BEGIN ([A-Z0-9]+ )*PRIVATE KEY'                                             # bloco de chave privada
   'gitorch-cloud'                                                              # repo IRMÃO privado — nunca citar no público
   'engines?[/-]manifest\.json'                                                 # manifest de versão de motores (arquivo do privado; NÃO usar "manifest.json" solto — colide com public/manifest.json de PWA em apps/web)
-  'gitorch-cloud[/-]infra'                                                     # infra/ do repo privado (NÃO usar "infra/" solto — colide com scripts/infra/ público, tooling legítimo de agent image)
+  'gitorch-cloud[/-]infra'                                                     # infra/ do repo privado (NÃO usar "infra/" solto — colidiria com tooling público legítimo que venha a existir, ex.: self-host /init)
 )
 
 # Junta a denylist numa única alternação ERE.
