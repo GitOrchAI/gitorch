@@ -14,6 +14,20 @@ model User {
   email       String   @unique
   name        String?
   githubLogin String?  @unique @map("github_login")
+  // Âncora de identidade estável do GitHub (o `login` pode ser renomeado ou
+  // reusado por outra conta depois que o dono original o abandona — sem esta
+  // coluna, um upsert por githubLogin faria um usuário NOVO "herdar" o User
+  // antigo de quem já teve aquele username, um takeover silencioso). BigInt
+  // porque o id numérico do GitHub já ultrapassa o range de um Int de 32 bits
+  // para contas mais recentes.
+  githubId    BigInt?  @unique @map("github_id")
+  // Instalação do GitHub App (gitorch) que este usuário concedeu, escolhida
+  // por ELE na tela de instalação do GitHub — não confundir com
+  // Project.githubInstallationId (a instalação vinculada a um repositório
+  // específico, usada pelo webhook). Esta aqui é por USUÁRIO: com ela,
+  // GET /api/v1/github/repos passa a listar só os repos que a pessoa
+  // realmente autorizou, em vez do escopo amplo do OAuth App clássico.
+  githubInstallationId Int? @map("github_installation_id")
   isActive    Boolean  @default(true) @map("is_active")
 
   planId      String   @default("free") @map("plan_id")
