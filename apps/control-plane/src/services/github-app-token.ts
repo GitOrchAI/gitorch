@@ -19,6 +19,13 @@ export interface AppTokenDeps {
   fetchImpl?: typeof fetch
   /** injeção para teste; default: Date.now */
   now?: () => number
+  /**
+   * Instalação explícita a mintar (ex.: users.github_installation_id do
+   * cliente do wizard). Default: comportamento antigo — a PRIMEIRA
+   * instalação do App (`installations[0]`), usado pelo caminho dos trilhos,
+   * que não sabe (nem precisa saber) o ID de ninguém específico.
+   */
+  installationId?: number | undefined
 }
 
 const GITHUB_API = 'https://api.github.com'
@@ -30,7 +37,12 @@ interface CachedToken {
   expiresAtMs: number
 }
 
-let tokenCache: CachedToken | null = null
+// Cache POR instalação — um cliente do wizard (installationId explícito) e o
+// caminho dos trilhos (installations[0]) nunca devem compartilhar o token um
+// do outro. `cachedInstallationId` continua existindo só para o caminho SEM
+// installationId explícito, evitando repetir a chamada de listagem a cada
+// tick — exatamente o comportamento de antes.
+const tokenCacheByInstallation = new Map<number, CachedToken>()
 let cachedInstallationId: number | null = null
 
 function base64url(input: string): string {
@@ -65,8 +77,15 @@ export async function mintInstallationToken(deps: AppTokenDeps = {}): Promise<st
   const fetchImpl = deps.fetchImpl ?? fetch
   const nowMs = deps.now ? deps.now() : Date.now()
 
-  if (tokenCache && tokenCache.expiresAtMs - CLOCK_SKEW_MS > nowMs) {
-    return tokenCache.token
+  // Resolve o ID sem tocar rede quando possível: explícito, ou o já
+  // descoberto por uma chamada anterior sem installationId.
+  let installationId = deps.installationId ?? cachedInstallationId ?? undefined
+
+  if (installationId !== undefined) {
+    const cached = tokenCacheByInstallation.get(installationId)
+    if (cached && cached.expiresAtMs - CLOCK_SKEW_MS > nowMs) {
+      return cached.token
+    }
   }
 
   try {
@@ -78,8 +97,7 @@ export async function mintInstallationToken(deps: AppTokenDeps = {}): Promise<st
       'X-GitHub-Api-Version': '2022-11-28',
     }
 
-    let installationId = cachedInstallationId
-    if (!installationId) {
+    if (installationId === undefined) {
       const res = await fetchImpl(`${GITHUB_API}/app/installations`, {
         headers,
         signal: AbortSignal.timeout(TIMEOUT_MS),
@@ -91,8 +109,8 @@ export async function mintInstallationToken(deps: AppTokenDeps = {}): Promise<st
         return null
       }
       const installations = (await res.json()) as Array<{ id: number }>
-      installationId = installations[0]?.id ?? null
-      if (!installationId) {
+      installationId = installations[0]?.id ?? undefined
+      if (installationId === undefined) {
         console.warn(
           '[github-app-token] GitHub App sem nenhuma instalação — trilhos ficam desligados'
         )
@@ -115,11 +133,12 @@ export async function mintInstallationToken(deps: AppTokenDeps = {}): Promise<st
     const body = (await res.json()) as { token?: string; expires_at?: string }
     if (!body.token) return null
 
-    tokenCache = {
+    const cachedToken: CachedToken = {
       token: body.token,
       expiresAtMs: body.expires_at ? Date.parse(body.expires_at) : nowMs + 55 * 60_000,
     }
-    return tokenCache.token
+    tokenCacheByInstallation.set(installationId, cachedToken)
+    return cachedToken.token
   } catch (err) {
     console.warn(
       `[github-app-token] erro ao emitir token do App (${(err as Error).message}) — trilhos ficam desligados`
@@ -130,6 +149,6 @@ export async function mintInstallationToken(deps: AppTokenDeps = {}): Promise<st
 
 /** Limpa o cache em memória — usado em testes. */
 export function resetAppTokenCache(): void {
-  tokenCache = null
+  tokenCacheByInstallation.clear()
   cachedInstallationId = null
 }
