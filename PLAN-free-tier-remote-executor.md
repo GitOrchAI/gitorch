@@ -19,8 +19,11 @@
 
 ### T1 — Imagem do agente x86_64 na MT-SaaS
 - Obter binário `agy` x86_64 (o nosso é aarch64). Investigar origem/distribuição do agy.
-- Rodar `scripts/infra/build-agent-image.sh` na MT-SaaS como `gitorch` (rootless) com
-  `GITORCH_AGY_BIN` apontando pro binário x86_64. Verificar `podman images` mostra
+- Rodar `infra/build-agent-image.sh` (repo privado de infra — migrado de
+  `scripts/infra/build-agent-image.sh` na task t8) na MT-SaaS como `gitorch`
+  (rootless) com `GITORCH_AGY_BIN` apontando pro binário x86_64 e
+  `GITORCH_PUBLIC_REPO_ROOT` apontando pro checkout local deste repo público
+  (fonte dos playbooks do Cadence). Verificar `podman images` mostra
   `localhost/gitorch-agent:latest`.
 - DoD: `podman run gitorch-agent ...` executa um agy `--version` na MT-SaaS.
 

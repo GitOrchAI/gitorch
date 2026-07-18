@@ -25,7 +25,8 @@ const DEFAULT_CREDENTIAL_PATHS: Record<string, string[]> = {
   // pro provider) — esse token vira uma variável de ambiente, não um arquivo
   // de config do CLI, então mora em .gitorch/env/ (mesmo entrypoint que já
   // exporta .gitorch/gh-token como GH_TOKEN faz o mesmo para qualquer arquivo
-  // aqui — ver scripts/infra/agent-image/entrypoint.sh).
+  // aqui — ver entrypoint.sh em infra/agent-image/ no repo privado de infra,
+  // movido de scripts/infra/agent-image/ na task t8 — fronteira open-core).
   claude: ['.claude/.credentials.json', '.gitorch/env/CLAUDE_CODE_OAUTH_TOKEN'],
   // As "mãos" dos agentes no GitHub: um token (fine-grained PAT hoje; token de
   // GitHub App no futuro) que a missão recebe como GH_TOKEN dentro do sandbox.

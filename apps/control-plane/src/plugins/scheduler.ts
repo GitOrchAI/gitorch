@@ -153,7 +153,8 @@ export function createLocalCredentialRunner(
       const ok = await engineConnections.materializeToHome(ownerUserId, runtime, dir)
       if (!ok) return await innerRunner(request)
 
-      // Espelha o loop genérico do entrypoint.sh (scripts/infra/agent-image):
+      // Espelha o loop genérico do entrypoint.sh (infra/agent-image/ no repo
+      // privado de infra, movido de scripts/infra/agent-image/ na task t8):
       // qualquer arquivo em .gitorch/env/* vira variável de ambiente do
       // processo filho — aqui é o único lugar que faz isso fora do container.
       const envDir = path.join(dir, '.gitorch', 'env')
