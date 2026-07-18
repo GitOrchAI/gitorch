@@ -170,6 +170,7 @@ describe('parseSetupStatus', () => {
     expect(parseSetupStatus({ status: 'pending', error: null })).toEqual({
       status: 'pending',
       error: null,
+      queuePosition: null,
     })
   })
 
@@ -177,6 +178,7 @@ describe('parseSetupStatus', () => {
     expect(parseSetupStatus({ status: 'running', error: null })).toEqual({
       status: 'running',
       error: null,
+      queuePosition: null,
     })
   })
 
@@ -184,23 +186,30 @@ describe('parseSetupStatus', () => {
     expect(parseSetupStatus({ status: 'completed', error: null })).toEqual({
       status: 'completed',
       error: null,
+      queuePosition: null,
     })
   })
 
   it('falhou -> failed COM a causa real do backend (o cliente sabe o que aconteceu)', () => {
     expect(
       parseSetupStatus({ status: 'failed', error: 'git clone falhou: repositório não encontrado' })
-    ).toEqual({ status: 'failed', error: 'git clone falhou: repositório não encontrado' })
+    ).toEqual({
+      status: 'failed',
+      error: 'git clone falhou: repositório não encontrado',
+      queuePosition: null,
+    })
   })
 
   it('falhou sem causa -> error null (a UI cai num texto localizado, não numa mentira)', () => {
     expect(parseSetupStatus({ status: 'failed', error: null })).toEqual({
       status: 'failed',
       error: null,
+      queuePosition: null,
     })
     expect(parseSetupStatus({ status: 'failed', error: '   ' })).toEqual({
       status: 'failed',
       error: null,
+      queuePosition: null,
     })
   })
 
@@ -208,15 +217,61 @@ describe('parseSetupStatus', () => {
     expect(parseSetupStatus({ status: 'completed', error: 'falha antiga' })).toEqual({
       status: 'completed',
       error: null,
+      queuePosition: null,
     })
   })
 
   it('payload nulo/malformado/estado desconhecido -> unknown (segue no polling, nunca chuta ✓)', () => {
-    expect(parseSetupStatus(null)).toEqual({ status: 'unknown', error: null })
-    expect(parseSetupStatus(undefined)).toEqual({ status: 'unknown', error: null })
-    expect(parseSetupStatus({})).toEqual({ status: 'unknown', error: null })
-    expect(parseSetupStatus({ status: 'ready' })).toEqual({ status: 'unknown', error: null })
-    expect(parseSetupStatus({ status: 42 })).toEqual({ status: 'unknown', error: null })
+    expect(parseSetupStatus(null)).toEqual({ status: 'unknown', error: null, queuePosition: null })
+    expect(parseSetupStatus(undefined)).toEqual({
+      status: 'unknown',
+      error: null,
+      queuePosition: null,
+    })
+    expect(parseSetupStatus({})).toEqual({ status: 'unknown', error: null, queuePosition: null })
+    expect(parseSetupStatus({ status: 'ready' })).toEqual({
+      status: 'unknown',
+      error: null,
+      queuePosition: null,
+    })
+    expect(parseSetupStatus({ status: 42 })).toEqual({
+      status: 'unknown',
+      error: null,
+      queuePosition: null,
+    })
+  })
+
+  it('pending com queuePosition nas missões -> expõe a MENOR posição (a que o cliente vê progredir primeiro)', () => {
+    expect(
+      parseSetupStatus({
+        status: 'pending',
+        error: null,
+        missions: [
+          { projectId: 'proj_2', status: 'pending', queuePosition: 3 },
+          { projectId: 'proj_1', status: 'pending', queuePosition: 1 },
+        ],
+      })
+    ).toEqual({ status: 'pending', error: null, queuePosition: 1 })
+  })
+
+  it('fora de pending, queuePosition é sempre null mesmo se vier no payload (já não está esperando)', () => {
+    expect(
+      parseSetupStatus({
+        status: 'running',
+        error: null,
+        missions: [{ projectId: 'proj_1', status: 'running', queuePosition: null }],
+      })
+    ).toEqual({ status: 'running', error: null, queuePosition: null })
+  })
+
+  it('pending sem nenhuma missão com queuePosition numérico -> null (não inventa posição)', () => {
+    expect(
+      parseSetupStatus({
+        status: 'pending',
+        error: null,
+        missions: [{ projectId: 'proj_1', status: 'pending', queuePosition: null }],
+      })
+    ).toEqual({ status: 'pending', error: null, queuePosition: null })
   })
 })
 

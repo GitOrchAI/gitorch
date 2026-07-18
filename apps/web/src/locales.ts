@@ -231,6 +231,8 @@ export const locales = {
       readyLedgerActivatingDesc:
         'Cortex memory, the code graph and Cadence orchestration are warming up for your repo.',
       readyLedgerActivatingQueued: 'Queued: provisioning starts in a moment.',
+      readyLedgerActivatingQueuedPosition:
+        'In queue (position {{position}}): the instance is at capacity — provisioning starts as soon as a slot frees up.',
       readyLedgerActivatingRunning:
         'Cloning your repository and starting the engines inside your environment.',
       readyLedgerActivatingSlow:
@@ -511,6 +513,8 @@ export const locales = {
       readyLedgerActivatingDesc:
         'A memória Cortex, o grafo de código e a orquestração Cadence estão aquecendo para o seu repositório.',
       readyLedgerActivatingQueued: 'Na fila: o provisionamento começa em instantes.',
+      readyLedgerActivatingQueuedPosition:
+        'Na fila (posição {{position}}): a instância está no limite de capacidade — o provisionamento começa assim que uma vaga abrir.',
       readyLedgerActivatingRunning:
         'Clonando o seu repositório e ligando os motores dentro do seu ambiente.',
       readyLedgerActivatingSlow:
@@ -792,6 +796,8 @@ export const locales = {
       readyLedgerActivatingDesc:
         'La memoria Cortex, el grafo de código y la orquestación Cadence se están preparando para tu repositorio.',
       readyLedgerActivatingQueued: 'En la cola: el aprovisionamiento empieza en instantes.',
+      readyLedgerActivatingQueuedPosition:
+        'En la cola (posición {{position}}): la instancia está al límite de capacidad — el aprovisionamiento empieza en cuanto se libere un lugar.',
       readyLedgerActivatingRunning:
         'Clonando tu repositorio y encendiendo los motores dentro de tu entorno.',
       readyLedgerActivatingSlow:

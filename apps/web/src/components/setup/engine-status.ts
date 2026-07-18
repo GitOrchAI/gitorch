@@ -138,15 +138,30 @@ export interface ProvisionSnapshot {
   // Causa REAL da falha (Mission.error, gravada pelo scheduler). null quando não
   // há falha ou o backend não registrou motivo — a UI cai num texto localizado.
   error: string | null
+  // Posição (1-based) na fila global do scheduler — a MENOR entre as missões
+  // deste submit que ainda estão pending (o backend só a preenche quando o
+  // teto de concorrência está cheio; ver scheduler.ts:selectClaimableSetupMissions).
+  // null fora do estado 'pending' ou quando o backend não devolveu nenhuma.
+  queuePosition: number | null
 }
 
 export function parseSetupStatus(json: unknown): ProvisionSnapshot {
-  const body = (json ?? {}) as { status?: unknown; error?: unknown }
+  const body = (json ?? {}) as { status?: unknown; error?: unknown; missions?: unknown }
   const status = PROVISION_STATUSES.find((s) => s === body.status) ?? 'unknown'
   const error = typeof body.error === 'string' && body.error.trim() ? body.error.trim() : null
-  // Causa só faz sentido na falha: um `error` pendurado num estado bom seria
-  // ruído (e nada pode manchar um provisionamento que deu certo).
-  return { status, error: status === 'failed' ? error : null }
+  const missions = Array.isArray(body.missions) ? body.missions : []
+  const queuePositions = missions
+    .map((m) => (m as { queuePosition?: unknown } | null)?.queuePosition)
+    .filter((p): p is number => typeof p === 'number' && Number.isFinite(p))
+  // Causa/posição só fazem sentido no estado correspondente: um `error`
+  // pendurado num estado bom seria ruído, e uma posição de fila fora de
+  // 'pending' não significa nada (já não está esperando).
+  return {
+    status,
+    error: status === 'failed' ? error : null,
+    queuePosition:
+      status === 'pending' && queuePositions.length > 0 ? Math.min(...queuePositions) : null,
+  }
 }
 
 // Estados em que o provisionamento ACABOU (o polling para). 'unknown' não é
