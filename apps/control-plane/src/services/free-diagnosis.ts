@@ -2,6 +2,7 @@ import { LocalWorkspaceProvider } from '@gitorch/workspace-engine'
 import { diagnoseWorkspaceIsolated } from './workspace-diagnosis.js'
 import { fetchGithubSignals, type GithubSignals } from './github-signals.js'
 import { buildDiagnosisFindings } from './diagnosis-findings.js'
+import { classifyDiagnosisError } from '../lib/setup-errors.js'
 import type { StructuralDiagnosis } from '@gitorch/cgc'
 
 interface WorkspaceProviderLike {
@@ -110,10 +111,16 @@ export async function processDiagnosisJob(
       },
     })
   } catch (err) {
+    // "CODE: mensagem" — o code é o CONTRATO estável que o front usa pra
+    // escolher a dica traduzida certa (setupErrorHintKey); a mensagem crua
+    // continua ali atrás, só pra log/depuração (GET /api/v1/diagnose/:id
+    // repassa o job inteiro sem reformatar).
+    const code = classifyDiagnosisError(err)
+    const message = err instanceof Error ? err.message : String(err)
     await deps.prisma.diagnosisJob
       .update({
         where: { id: jobId },
-        data: { status: 'failed', error: (err as Error).message, completedAt: new Date() },
+        data: { status: 'failed', error: `${code}: ${message}`, completedAt: new Date() },
       })
       .catch(() => {
         /* melhor esforço: se nem o registro de falha grava, não há mais o que fazer aqui */

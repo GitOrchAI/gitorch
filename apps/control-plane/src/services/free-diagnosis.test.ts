@@ -126,6 +126,55 @@ describe('processDiagnosisJob', () => {
     expect(final.data['error']).toContain('permission denied')
     expect(diagnose).not.toHaveBeenCalled()
   })
+
+  it('falha de clone classificada grava "CODE: mensagem" no error (contrato de erro pro front)', async () => {
+    const prisma = fakePrisma()
+    const provider = {
+      allocateWorkspace: vi.fn(async () => {
+        throw new Error(
+          'Command failed: git clone --depth 1 -- https://github.com/acme/sumiu.git /ws\n' +
+            "Cloning into '/ws'...\n" +
+            'remote: Repository not found.\n' +
+            "fatal: repository 'https://github.com/acme/sumiu.git/' not found\n"
+        )
+      }),
+    }
+    const diagnose = vi.fn()
+    const fetchSignals = vi.fn()
+
+    await processDiagnosisJob(
+      'job4',
+      { userId: 'u1', repoFullName: 'acme/sumiu', githubToken: 'tok' },
+      { prisma, workspaceProvider: provider, diagnose, fetchSignals }
+    )
+
+    const final = prisma.updates.at(-1)!
+    expect(final.data['status']).toBe('failed')
+    expect(final.data['error']).toMatch(/^REPO_NOT_FOUND: /)
+  })
+
+  it('timeout do clone (killed/signal) vira DIAG_TIMEOUT no error do job', async () => {
+    const prisma = fakePrisma()
+    const provider = {
+      allocateWorkspace: vi.fn(async () => {
+        throw Object.assign(new Error('Command failed: git clone ...\n'), {
+          killed: true,
+          signal: 'SIGTERM',
+        })
+      }),
+    }
+    const diagnose = vi.fn()
+    const fetchSignals = vi.fn()
+
+    await processDiagnosisJob(
+      'job5',
+      { userId: 'u1', repoFullName: 'acme/lento', githubToken: 'tok' },
+      { prisma, workspaceProvider: provider, diagnose, fetchSignals }
+    )
+
+    const final = prisma.updates.at(-1)!
+    expect(final.data['error']).toMatch(/^DIAG_TIMEOUT: /)
+  })
 })
 
 describe('repoWorkspaceSlug', () => {

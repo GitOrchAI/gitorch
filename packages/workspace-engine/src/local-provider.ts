@@ -98,7 +98,22 @@ export class LocalWorkspaceProvider {
     // pega esse formato. Redige qualquer "Authorization: <esquema> <valor>"
     // que sobrar, não importa a codificação.
     message = message.replace(/Authorization:\s*\S+\s+\S+/gi, 'Authorization: [REDACTED]')
-    return new Error(message)
+    const sanitized = new Error(message)
+    // Preserva o sinal de ESTOURO DE PRAZO do child_process (killed/signal):
+    // quando o `timeout` do execFile mata o processo, a MENSAGEM não diz
+    // "timeout" em lugar nenhum (fica só "Command failed: <cmd>\n" — o Node
+    // não anota a causa em texto). Sem repassar essas duas propriedades pro
+    // Error sanitizado, quem consome este erro (classifyCloneError no
+    // control-plane) não tem como diferenciar um clone que estourou o prazo
+    // de qualquer outra falha genérica.
+    const original = err as { killed?: boolean; signal?: NodeJS.Signals | null } | null
+    if (original && (original.killed === true || original.signal)) {
+      Object.assign(sanitized, {
+        killed: original.killed,
+        ...(original.signal ? { signal: original.signal } : {}),
+      })
+    }
+    return sanitized
   }
 
   private validateInput(value: string): void {

@@ -228,6 +228,55 @@ test('fallback anônimo também falha por auth -> lança erro sanitizado (sem to
   await fs.rm(base, { recursive: true, force: true })
 })
 
+test('estouro de prazo (timeout do execFile): killed/signal sobrevivem à sanitização do erro', async () => {
+  // O Node NÃO escreve "timeout" na mensagem quando mata o processo por
+  // estouro de prazo — só `killed`/`signal` denunciam (confirmado
+  // experimentalmente com execFile+timeout curto: a mensagem fica só
+  // "Command failed: <cmd>\n", sem stderr nenhum se o kill aconteceu antes
+  // do git escrever algo). Sem preservar essas duas propriedades,
+  // classifyCloneError (control-plane) não tem como distinguir um clone que
+  // estourou o prazo de qualquer outra falha genérica — e o cliente veria
+  // "algo deu errado" em vez de "está demorando demais".
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-local-ws-'))
+  const gitRunner = vi.fn().mockRejectedValue(
+    Object.assign(new Error('Command failed: git clone --depth 1 -- ... \n'), {
+      killed: true,
+      signal: 'SIGTERM',
+      code: null,
+    })
+  )
+  const provider = new LocalWorkspaceProvider(base, gitRunner)
+
+  try {
+    await provider.allocateWorkspace('scheduler-user', 'project-1', {
+      repository: 'octocat/slow-repo',
+    })
+    throw new Error('deveria ter lançado')
+  } catch (err) {
+    expect((err as Error & { killed?: boolean; signal?: string }).killed).toBe(true)
+    expect((err as Error & { killed?: boolean; signal?: string }).signal).toBe('SIGTERM')
+  }
+
+  await fs.rm(base, { recursive: true, force: true })
+})
+
+test('erro sem killed/signal (falha comum) não ganha essas propriedades por engano', async () => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-local-ws-'))
+  const gitRunner = vi.fn().mockRejectedValue(new Error('fatal: repository not found'))
+  const provider = new LocalWorkspaceProvider(base, gitRunner)
+
+  try {
+    await provider.allocateWorkspace('scheduler-user', 'project-1', {
+      repository: 'octocat/missing',
+    })
+    throw new Error('deveria ter lançado')
+  } catch (err) {
+    expect((err as Error & { killed?: boolean }).killed).toBeUndefined()
+  }
+
+  await fs.rm(base, { recursive: true, force: true })
+})
+
 test('clona repo público sem header quando nenhum token é passado', async () => {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-local-ws-'))
   const gitRunner = vi.fn().mockResolvedValue({ stdout: '', stderr: '' })
