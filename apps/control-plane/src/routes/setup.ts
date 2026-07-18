@@ -9,6 +9,7 @@ import { ClientEnvironmentService } from '../services/environment.js'
 import { collectAndRememberRepoContext } from '../services/repo-context-cortex.js'
 import { startTelegramLink, readTelegramLink } from '../services/telegram-link.js'
 import { classifyCloneError, setupErrorHttpStatus } from '../lib/setup-errors.js'
+import { mintInstallationToken } from '../services/github-app-token.js'
 
 interface GitHubRepo {
   id: number
@@ -108,6 +109,56 @@ function parseProjectIds(raw: unknown): string[] {
     .map((id) => id.trim())
 }
 
+// Estrutura simplificada que o front consome — igual para os dois caminhos
+// (OAuth clássico e installation token), então StepSelectRepos nunca precisa
+// saber qual dos dois trouxe a lista.
+function mapGitHubRepos(repos: GitHubRepo[]): Array<{
+  id: number
+  name: string
+  fullName: string
+  description: string | null
+  private: boolean
+  url: string
+}> {
+  return repos.map((repo) => ({
+    id: repo.id,
+    name: repo.name,
+    fullName: repo.full_name,
+    description: repo.description,
+    private: repo.private,
+    url: repo.html_url,
+  }))
+}
+
+/**
+ * Lista os repositórios via installation token, quando o usuário JÁ escolheu
+ * uma instalação do GitHub App (routes/github-app-install.ts) — só os repos
+ * que ELE autorizou na tela do GitHub, ao contrário do escopo amplo do OAuth
+ * App clássico. `undefined` (nunca lança) sinaliza "sem instalação usável
+ * agora" — quem chama cai de volta no caminho OAuth (compat), nunca quebra
+ * o wizard por causa disto.
+ */
+async function listReposViaInstallation(
+  installationId: number
+): Promise<ReturnType<typeof mapGitHubRepos> | undefined> {
+  const installationToken = await mintInstallationToken({ installationId })
+  if (!installationToken) return undefined
+
+  const response = await fetch('https://api.github.com/installation/repositories?per_page=100', {
+    headers: {
+      Authorization: `Bearer ${installationToken}`,
+      Accept: 'application/vnd.github+json',
+      'User-Agent': 'gitorch-control-plane',
+    },
+  })
+  if (!response.ok) return undefined
+
+  const body = (await response.json()) as { repositories?: GitHubRepo[] }
+  if (!Array.isArray(body.repositories)) return undefined
+
+  return mapGitHubRepos(body.repositories)
+}
+
 export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
   // Ambiente isolado do cliente: nasce no aceite dos termos, vive por todo o
   // wizard (clone + credenciais dentro dele) e fixa no aceite final. O baseDir
@@ -115,8 +166,16 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
   // frontend.
   const clientEnvironments = new ClientEnvironmentService(app.prisma)
 
-  // GET /api/v1/github/repos - List user repositories using the encrypted
-  // per-user GitHub connection (nunca do JWT da sessão — spec §17.4).
+  // GET /api/v1/github/repos - List user repositories.
+  //
+  // Dois caminhos, nesta ordem:
+  // 1. Se o usuário JÁ instalou o GitHub App e escolheu quais repos (F1 Onda
+  //    2, routes/github-app-install.ts), lista via installation token — só o
+  //    que ELE autorizou na tela do GitHub.
+  // 2. Senão (ou se o installation token falhar por qualquer razão — App não
+  //    configurado, instalação removida, API fora), cai no caminho OAuth
+  //    clássico de sempre (conexão cifrada por usuário, NUNCA do JWT da
+  //    sessão — spec §17.4). Nunca quebra o wizard por causa disto.
   app.get('/api/v1/github/repos', async (request: FastifyRequest, reply: FastifyReply) => {
     if (!request.user) {
       return reply.code(401).send({ error: 'UNAUTHORIZED: session required' })
@@ -128,6 +187,20 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
     if (!app.engineConnections) {
       return reply.code(500).send({ error: 'Engine connections service unavailable' })
     }
+
+    const dbUser = await app.prisma.user.findUnique({
+      where: { id: request.user.id },
+      select: { githubInstallationId: true },
+    })
+    if (dbUser?.githubInstallationId) {
+      const viaInstallation = await listReposViaInstallation(dbUser.githubInstallationId)
+      if (viaInstallation) {
+        return reply.send(viaInstallation)
+      }
+      // installation token indisponível agora — segue pro caminho OAuth
+      // abaixo em vez de devolver erro pro cliente.
+    }
+
     const githubToken = await app.engineConnections.getRawGithubToken(request.user.id)
     if (!githubToken) {
       return reply.code(401).send({ error: 'UNAUTHORIZED: GitHub not connected' })
@@ -146,17 +219,7 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
       return reply.code(500).send({ error: 'Failed to fetch repositories from GitHub' })
     }
 
-    // Map to simplified structure for the frontend setup list
-    const mappedRepos = repos.map((repo: GitHubRepo) => ({
-      id: repo.id,
-      name: repo.name,
-      fullName: repo.full_name,
-      description: repo.description,
-      private: repo.private,
-      url: repo.html_url,
-    }))
-
-    return reply.send(mappedRepos)
+    return reply.send(mapGitHubRepos(repos))
   })
 
   // POST /api/v1/setup/environment - Nasce o ambiente isolado provisório do
