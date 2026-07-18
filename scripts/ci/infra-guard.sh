@@ -6,6 +6,10 @@
 # hostnames e paths absolutos da nossa VM NÃO podem entrar no git. Este guard
 # mecaniza essa fronteira com uma denylist de padrões de infra.
 #
+# Além da VM, existe agora um repo IRMÃO privado (gitorch-cloud) com a infra
+# de nuvem/SaaS. O público não pode citar esse repo, seus arquivos de versão
+# de motores nem seus caminhos de infra — ver denylist abaixo.
+#
 # MODOS:
 #   (padrão)  diff  — varre só as LINHAS ADICIONADAS vs a base (INFRA_GUARD_BASE
 #                     ou origin/main). Pega vazamentos NOVOS sem quebrar por
@@ -16,6 +20,13 @@
 # EXCEÇÃO DOCUMENTADA: '/var/lib/gitorch/...' é default de env var no código
 # (environment.ts, cortex.ts, scheduler.ts, local-provider.ts) — path FHS
 # genérico e público, NÃO é vazamento; por isso não está na denylist.
+#
+# EXCEÇÃO DOCUMENTADA: NÃO existe um padrão bare para "infra/" ou
+# "manifest.json" soltos. O público já tem `scripts/infra/` (tooling legítimo
+# de build de agent image, referenciado em comentários/docs) e apps/web é
+# Next.js (public/manifest.json de PWA é convenção normal). Um padrão solto
+# nesses dois colidiria com conteúdo público real. Por isso os padrões abaixo
+# são escopados ao contexto do repo privado (gitorch-cloud / engine version).
 #
 # ESCAPE INLINE: uma linha que contenha o marcador `infra-guard-allow` é
 # isentada (use com parcimônia e justificativa no próprio comentário).
@@ -37,7 +48,7 @@ for arg in "$@"; do
     # chamá-lo do git. Serve para testes e para um hook pre-receive.
     --diff-file=*) DIFF_FILE="${arg#--diff-file=}" ;;
     -h | --help)
-      sed -n '2,29p' "$0"
+      sed -n '2,37p' "$0"
       exit 0
       ;;
     *)
@@ -62,6 +73,9 @@ PATTERNS=(
   '/home/ubuntu'                                                                # HOME da nossa VM
   '/mnt/gitorch-vault'                                                          # mount do nosso vault
   'BEGIN ([A-Z0-9]+ )*PRIVATE KEY'                                             # bloco de chave privada
+  'gitorch-cloud'                                                              # repo IRMÃO privado — nunca citar no público
+  'engines?[/-]manifest\.json'                                                 # manifest de versão de motores (arquivo do privado; NÃO usar "manifest.json" solto — colide com public/manifest.json de PWA em apps/web)
+  'gitorch-cloud[/-]infra'                                                     # infra/ do repo privado (NÃO usar "infra/" solto — colide com scripts/infra/ público, tooling legítimo de agent image)
 )
 
 # Junta a denylist numa única alternação ERE.
