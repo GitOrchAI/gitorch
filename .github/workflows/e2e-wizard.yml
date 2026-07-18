@@ -140,7 +140,7 @@ jobs:
       # — ele quebra de propósito se JWT_SECRET/DATABASE_URL faltarem, porque um
       # guarda que se pula sozinho não guarda nada. JWT_SECRET e
       # GITORCH_CREDENTIAL_KEY já são gerados efêmeros no step acima.
-      - name: Run E2E (wizard: diagnóstico real + fluxo completo)
+      - name: "Run E2E (wizard: diagnóstico real + fluxo completo)"
         run: |
           npx playwright test --workers=1 \
             tests/e2e/setup-wizard-diagnosis.spec.ts \
