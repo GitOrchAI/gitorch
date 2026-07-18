@@ -69,7 +69,14 @@ export function isTestLike(relPath: string): boolean {
   )
 }
 
-function collectSourceFiles(root: string, maxFiles: number, maxFileBytes: number): SourceFile[] {
+/** Exportado para export-graph.ts reusar a MESMA coleta/priorização de arquivos
+ * (código-fonte antes de teste, caminhos rasos antes de profundos) sem duplicar
+ * a lógica de varredura do workspace. */
+export function collectSourceFiles(
+  root: string,
+  maxFiles: number,
+  maxFileBytes: number
+): SourceFile[] {
   // 1ª passada: só caminhos (barato). O conteúdo é lido apenas dos escolhidos.
   const candidates: Array<{ relPath: string; language: string; full: string }> = []
   const SCAN_CAP = 4000
