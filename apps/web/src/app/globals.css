@@ -1580,3 +1580,116 @@ body {
   line-height: 1.7;
   color: var(--gl-muted);
 }
+
+/* Grafo 3D interativo (F1 — Onda 3, "momento mágico"). Grafo central +
+   score/achados no painel ao lado em telas largas; empilha em telas
+   estreitas (o canvas nunca fica espremido a ponto de virar ilegível). */
+.wz-diag-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+@media (max-width: 760px) {
+  .wz-diag-layout {
+    grid-template-columns: 1fr;
+  }
+}
+.wz-graph3d-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 300px;
+  border-radius: 14px;
+  background: var(--gl-canvas);
+  border: 1px solid var(--gl-hair);
+}
+.wz-graph3d {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.wz-graph3d-banner {
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--gl-warn);
+  background: var(--gl-warn-soft);
+  border: 1px solid color-mix(in srgb, var(--gl-warn) 35%, var(--gl-hair));
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+.wz-graph3d-stage {
+  position: relative;
+  height: 300px;
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--gl-canvas);
+  border: 1px solid var(--gl-hair);
+  /* O canvas do react-three-fiber preenche o pai (100%/100%) — nunca a
+     página: OrbitControls captura o gesto de arrastar SÓ dentro desta caixa,
+     nunca compete com o scroll fora dela. */
+  touch-action: none;
+}
+.wz-graph3d-stage canvas {
+  display: block;
+}
+.wz-graph3d-expand {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  padding: 7px 12px;
+  border-radius: 999px;
+  background: var(--gl-pill-bg);
+  color: var(--gl-pill-ink);
+  border: none;
+  cursor: pointer;
+  box-shadow: var(--gl-shadow);
+}
+.wz-graph3d-panel {
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: var(--gl-canvas);
+  border: 1px solid var(--gl-hair);
+  font-size: 0.84rem;
+  color: var(--gl-muted);
+  min-height: 120px;
+}
+.wz-graph3d-panel-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--gl-faint);
+  margin-bottom: 6px;
+}
+.wz-graph3d-panel-label {
+  font-weight: 600;
+  color: var(--gl-ink);
+  font-size: 0.94rem;
+  margin-bottom: 4px;
+  word-break: break-word;
+}
+/* Fullscreen (mobile "Expandir grafo"): cobre a viewport inteira. O scroll
+   do body é travado via JS (document.body.style.overflow) enquanto ativo —
+   ver RepoGraph3D.tsx. */
+.wz-graph3d-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: var(--gl-canvas);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.wz-graph3d-fullscreen .wz-graph3d-stage {
+  flex: 1;
+  height: auto;
+}
