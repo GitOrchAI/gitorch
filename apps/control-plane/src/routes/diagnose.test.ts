@@ -11,6 +11,26 @@ const processDiagnosisJob = vi.fn(
 vi.mock('../services/free-diagnosis.js', () => ({
   processDiagnosisJob: (id: string, args: unknown, deps: unknown) =>
     processDiagnosisJob(id, args, deps),
+  // repoWorkspaceSlug é puro (sem I/O) — reusa a implementação real em vez
+  // de reinventar o esquema `diag-<repo sanitizado>` aqui no mock.
+  repoWorkspaceSlug: (repo: string) => `diag-${repo.replace(/[^a-zA-Z0-9]/g, '_')}`,
+}))
+
+// Isolamento do grafo (Onda 3): nunca spawna processo/child real em teste de
+// rota — a lógica de export já tem TDD dedicado em export-graph.test.ts
+// (cgc) e graph-export.test.ts (isolamento). Aqui só o contrato HTTP.
+const exportGraphIsolated = vi.fn(async (_workspacePath: string): Promise<unknown> => undefined)
+vi.mock('../services/graph-export.js', () => ({
+  exportGraphIsolated: (workspacePath: string) => exportGraphIsolated(workspacePath),
+}))
+
+const allocateWorkspace = vi.fn(async (_userId: string, _slug: string) => ({ path: '/fake/ws' }))
+vi.mock('@gitorch/workspace-engine', () => ({
+  LocalWorkspaceProvider: class {
+    allocateWorkspace(userId: string, slug: string): Promise<{ path: string }> {
+      return allocateWorkspace(userId, slug)
+    }
+  },
 }))
 
 const { diagnoseRoutes } = await import('./diagnose.js')
@@ -165,5 +185,100 @@ describe('GET /api/v1/diagnose/:id', () => {
     const res = await app.inject({ method: 'GET', url: '/api/v1/diagnose/job_1' })
     expect(res.statusCode).toBe(200)
     expect(res.json()).toEqual(job)
+  })
+})
+
+describe('GET /api/v1/diagnose/:id/graph', () => {
+  beforeEach(() => {
+    exportGraphIsolated.mockClear()
+    allocateWorkspace.mockClear()
+  })
+
+  const completedJob = {
+    id: 'job_1',
+    status: 'completed',
+    repoFullName: 'acme/loja',
+  }
+
+  it('devolve o grafo só do DONO — 404 indistinguível pra job inexistente ou de outro usuário', async () => {
+    const findFirst = vi.fn().mockResolvedValue(null)
+    const prisma = { diagnosisJob: { findFirst, create: vi.fn() } }
+    const app = buildApp(prisma, vi.fn())
+    await diagnoseRoutes(app)
+    await app.ready()
+
+    const res = await app.inject({ method: 'GET', url: '/api/v1/diagnose/job_x/graph' })
+    expect(res.statusCode).toBe(404)
+    expect(res.json()).toEqual({ error: 'NOT_FOUND' })
+    expect(findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'job_x', userId: 'user_1' } })
+    )
+    expect(exportGraphIsolated).not.toHaveBeenCalled()
+  })
+
+  it('devolve o grafo quando o job é do dono e está completo', async () => {
+    const graph = {
+      nodes: [{ id: 'a', label: 'a', file: 'a.ts', type: 'function', health: 'good' }],
+      edges: [],
+      truncated: false,
+    }
+    exportGraphIsolated.mockResolvedValue(graph)
+    const prisma = {
+      diagnosisJob: { findFirst: vi.fn().mockResolvedValue(completedJob), create: vi.fn() },
+    }
+    const app = buildApp(prisma, vi.fn())
+    await diagnoseRoutes(app)
+    await app.ready()
+
+    const res = await app.inject({ method: 'GET', url: '/api/v1/diagnose/job_1/graph' })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual(graph)
+    // Sem clone do ambiente na fixture (prisma sem clientEnvironment) -> cai
+    // no workspace diag-<repo> via allocateWorkspace, SEM `repository` (não
+    // clona de novo).
+    expect(allocateWorkspace).toHaveBeenCalledWith('user_1', 'diag-acme_loja')
+    expect(exportGraphIsolated).toHaveBeenCalledWith('/fake/ws')
+  })
+
+  it('job ainda não completo -> 409, nunca tenta exportar', async () => {
+    const prisma = {
+      diagnosisJob: {
+        findFirst: vi.fn().mockResolvedValue({ ...completedJob, status: 'running' }),
+        create: vi.fn(),
+      },
+    }
+    const app = buildApp(prisma, vi.fn())
+    await diagnoseRoutes(app)
+    await app.ready()
+
+    const res = await app.inject({ method: 'GET', url: '/api/v1/diagnose/job_1/graph' })
+    expect(res.statusCode).toBe(409)
+    expect(exportGraphIsolated).not.toHaveBeenCalled()
+  })
+
+  it('export falha/vazio -> 404 GRAPH_UNAVAILABLE (front cai pro fallback em tabela)', async () => {
+    exportGraphIsolated.mockResolvedValue(undefined)
+    const prisma = {
+      diagnosisJob: { findFirst: vi.fn().mockResolvedValue(completedJob), create: vi.fn() },
+    }
+    const app = buildApp(prisma, vi.fn())
+    await diagnoseRoutes(app)
+    await app.ready()
+
+    const res = await app.inject({ method: 'GET', url: '/api/v1/diagnose/job_1/graph' })
+    expect(res.statusCode).toBe(404)
+    expect(res.json()).toEqual({ error: 'GRAPH_UNAVAILABLE' })
+  })
+
+  it('sem sessão -> 401', async () => {
+    const prisma = { diagnosisJob: { findFirst: vi.fn(), create: vi.fn() } }
+    const app = Fastify()
+    app.decorate('prisma', prisma as never)
+    app.decorate('engineConnections', {} as unknown as EngineConnectionService)
+    await diagnoseRoutes(app)
+    await app.ready()
+
+    const res = await app.inject({ method: 'GET', url: '/api/v1/diagnose/job_1/graph' })
+    expect(res.statusCode).toBe(401)
   })
 })
