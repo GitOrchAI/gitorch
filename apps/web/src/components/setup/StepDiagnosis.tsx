@@ -1,7 +1,26 @@
 import React, { useEffect, useRef, useState } from 'react'
+import dynamic from 'next/dynamic'
 import { ChevronRight, Loader2, CheckCircle2, AlertTriangle, AlertCircle } from 'lucide-react'
 import { useLanguage } from '../../LanguageContext'
 import { parseDiagnosisErrorCode, setupErrorHintKey } from './setup-errors'
+import { isWebglAvailable } from './graph3d-layout'
+import type { RepoGraph3DNode, RepoGraph3DEdge } from './RepoGraph3D'
+
+// react-three-fiber precisa de WebGL/`document` — `next build` (output:
+// 'export') faz um passe de pré-render em Node sem nenhum dos dois.
+// `ssr: false` tira o componente do bundle de servidor inteiramente; ele só
+// monta no browser, depois que isWebglAvailable() (mesma guarda) já decidiu
+// que dá pra tentar.
+const RepoGraph3D = dynamic(() => import('./RepoGraph3D'), { ssr: false })
+
+interface GraphExportResult {
+  nodes: RepoGraph3DNode[]
+  edges: RepoGraph3DEdge[]
+  truncated: boolean
+  aggregatedBy?: 'directory'
+}
+
+const GRAPH_FETCH_TIMEOUT_MS = 8000
 
 interface DiagnosisFinding {
   key: 'healthy_core' | 'untested_ratio' | 'stale_prs' | 'ci_failing' | 'open_issues'
@@ -80,9 +99,23 @@ export default function StepDiagnosis({
   const [attempt, setAttempt] = useState(0)
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Grafo 3D (F1 — Onda 3): busca só DEPOIS do diagnóstico já ter completado
+  // com código real (nunca em paralelo com o polling, nunca pra repo vazio).
+  // 'unavailable' cobre TUDO que não é sucesso — rede, 5xx, timeout de 8s,
+  // sem WebGL — e cai no fallback em tabela que já existe (wz-diag-details),
+  // nunca bloqueia o resto do wizard.
+  const [graph, setGraph] = useState<GraphExportResult | null>(null)
+  const [graphState, setGraphState] = useState<'idle' | 'loading' | 'ready' | 'unavailable'>('idle')
+  // Inicializador preguiçoso (roda 1x na primeira renderização, não num
+  // efeito) — checar WebGL nunca precisa de setState dentro do efeito de
+  // busca abaixo, só um early-return síncrono.
+  const [webglAvailable] = useState(isWebglAvailable)
+
   const retry = () => {
     setStartFailed(false)
     setJob(null)
+    setGraph(null)
+    setGraphState('idle')
     setAttempt((a) => a + 1)
   }
 
@@ -135,6 +168,56 @@ export default function StepDiagnosis({
       if (pollTimer.current) clearTimeout(pollTimer.current)
     }
   }, [apiBaseUrl, repoFullName, attempt])
+
+  const jobId = job?.status === 'completed' && job.result?.structural ? job.id : null
+
+  useEffect(() => {
+    // Sem job completo ainda, ou sem WebGL: nada a buscar — `retry()`
+    // (handler de clique, não efeito) já zera graph/graphState entre
+    // tentativas. Nenhum setState síncrono aqui: o 'loading' é DERIVADO
+    // (effectiveGraphState abaixo) em vez de marcado no topo do efeito — só
+    // setamos estado de dentro do callback assíncrono, depois do fetch.
+    if (!jobId || !webglAvailable) return undefined
+
+    let alive = true
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), GRAPH_FETCH_TIMEOUT_MS)
+
+    void (async () => {
+      try {
+        const res = await fetch(`${apiBaseUrl}/api/v1/diagnose/${jobId}/graph`, {
+          credentials: 'include',
+          signal: controller.signal,
+        })
+        if (!res.ok) throw new Error('graph fetch failed')
+        const data = (await res.json()) as GraphExportResult
+        if (!alive) return
+        setGraph(data)
+        setGraphState('ready')
+      } catch {
+        if (!alive) return
+        setGraphState('unavailable')
+      } finally {
+        clearTimeout(timeout)
+      }
+    })()
+
+    return () => {
+      alive = false
+      controller.abort()
+      clearTimeout(timeout)
+    }
+  }, [apiBaseUrl, jobId, webglAvailable])
+
+  // 'loading' é derivado (nunca setado direto no efeito, ver acima): há job
+  // completo + WebGL, mas a busca ainda não resolveu pra 'ready'/'unavailable'.
+  // Sem WebGL, cai direto em 'unavailable' sem esperar setState nenhum.
+  const effectiveGraphState =
+    jobId && !webglAvailable
+      ? 'unavailable'
+      : jobId && webglAvailable && graphState === 'idle'
+        ? 'loading'
+        : graphState
 
   const loadingLabel = (progress: string | null): string => {
     if (progress === 'indexing') return t('setup.diagLoadingIndex')
@@ -196,54 +279,75 @@ export default function StepDiagnosis({
 
       {result?.structural && (
         <div className="wz-body">
-          <div className="wz-diag-verdict">
-            <span className="wz-diag-score">{result.healthScore}</span>
+          <div className={effectiveGraphState === 'ready' && graph ? 'wz-diag-layout' : undefined}>
+            {effectiveGraphState === 'loading' && (
+              <div className="wz-graph3d-loading">
+                <Loader2 className="animate-spin" size={28} style={{ color: 'var(--gl-accent)' }} />
+                <span className="wz-opt-desc">{t('setup.diagGraphLoading')}</span>
+              </div>
+            )}
+            {effectiveGraphState === 'ready' && graph && (
+              <RepoGraph3D nodes={graph.nodes} edges={graph.edges} truncated={graph.truncated} />
+            )}
+
             <div>
-              <div className="wz-diag-score-label">{t('setup.diagScoreLabel')}</div>
-              <div className="wz-diag-verdict-line">{t(verdictKey(result.healthScore ?? 0))}</div>
-            </div>
-          </div>
-
-          <div className="wz-diag-findings">
-            {(result.findings ?? []).map((f, i) => (
-              <div key={i} className={`wz-diag-finding ${f.severity}`}>
-                <SeverityIcon severity={f.severity} />
-                <span>{t(findingCopyKey(f.key), f.data)}</span>
-              </div>
-            ))}
-          </div>
-
-          <button
-            type="button"
-            className="wz-diag-details-toggle"
-            onClick={() => setShowDetails((s) => !s)}
-          >
-            {t('setup.diagDetailsToggle')}
-          </button>
-
-          {showDetails && (
-            <div className="wz-diag-details">
-              <div>
-                <b>{t('setup.diagDetailsFiles')}:</b> {result.structural.indexedFiles}
-              </div>
-              {result.structural.largestFiles.length > 0 && (
+              <div className="wz-diag-verdict">
+                <span className="wz-diag-score">{result.healthScore}</span>
                 <div>
-                  <b>{t('setup.diagDetailsLargest')}:</b>{' '}
-                  {result.structural.largestFiles.map((f) => f.file).join(', ')}
+                  <div className="wz-diag-score-label">{t('setup.diagScoreLabel')}</div>
+                  <div className="wz-diag-verdict-line">
+                    {t(verdictKey(result.healthScore ?? 0))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="wz-diag-findings">
+                {(result.findings ?? []).map((f, i) => (
+                  <div key={i} className={`wz-diag-finding ${f.severity}`}>
+                    <SeverityIcon severity={f.severity} />
+                    <span>{t(findingCopyKey(f.key), f.data)}</span>
+                  </div>
+                ))}
+              </div>
+
+              <button
+                type="button"
+                className="wz-diag-details-toggle"
+                onClick={() => setShowDetails((s) => !s)}
+              >
+                {t('setup.diagDetailsToggle')}
+              </button>
+
+              {(showDetails || effectiveGraphState === 'unavailable') && (
+                <div className="wz-diag-details">
+                  {effectiveGraphState === 'unavailable' && (
+                    <p className="wz-opt-desc" style={{ marginBottom: 8 }}>
+                      {t('setup.diagGraphUnavailable')}
+                    </p>
+                  )}
+                  <div>
+                    <b>{t('setup.diagDetailsFiles')}:</b> {result.structural.indexedFiles}
+                  </div>
+                  {result.structural.largestFiles.length > 0 && (
+                    <div>
+                      <b>{t('setup.diagDetailsLargest')}:</b>{' '}
+                      {result.structural.largestFiles.map((f) => f.file).join(', ')}
+                    </div>
+                  )}
+                  {result.structural.mostCalledFunctions.length > 0 && (
+                    <div>
+                      <b>{t('setup.diagDetailsMostCalled')}:</b>{' '}
+                      {result.structural.mostCalledFunctions.map((f) => f.name).join(', ')}
+                    </div>
+                  )}
+                  <div>
+                    <b>{t('setup.diagDetailsDirs')}:</b>{' '}
+                    {Object.keys(result.structural.directoryInventory).join(', ')}
+                  </div>
                 </div>
               )}
-              {result.structural.mostCalledFunctions.length > 0 && (
-                <div>
-                  <b>{t('setup.diagDetailsMostCalled')}:</b>{' '}
-                  {result.structural.mostCalledFunctions.map((f) => f.name).join(', ')}
-                </div>
-              )}
-              <div>
-                <b>{t('setup.diagDetailsDirs')}:</b>{' '}
-                {Object.keys(result.structural.directoryInventory).join(', ')}
-              </div>
             </div>
-          )}
+          </div>
         </div>
       )}
 
