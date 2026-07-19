@@ -20,7 +20,14 @@ interface GraphExportResult {
   aggregatedBy?: 'directory'
 }
 
-const GRAPH_FETCH_TIMEOUT_MS = 8000
+// O export do grafo (CGC) reprocessa o repo do zero na 1ª chamada: ~7-8s
+// medido local, mais ainda pela rede real (Tailscale) que o dono usa — 8s
+// cortava a resposta ANTES dela chegar, e caía sempre no fallback em tabela
+// mesmo a rota respondendo 200 com o grafo real (a causa raiz do bug, não
+// WebGL nem o grafo em si). 30s dá folga de sobra pro pior caso a frio; o
+// cache no backend (DiagnosisJob.graph) faz a 2ª chamada em diante voltar
+// quase instantânea, então esse teto alto só é pago uma vez por job.
+const GRAPH_FETCH_TIMEOUT_MS = 30_000
 
 interface DiagnosisFinding {
   key: 'healthy_core' | 'untested_ratio' | 'stale_prs' | 'ci_failing' | 'open_issues'

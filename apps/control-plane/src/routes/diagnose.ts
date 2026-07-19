@@ -1,4 +1,5 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
+import { Prisma } from '@prisma/client'
 import { LocalWorkspaceProvider } from '@gitorch/workspace-engine'
 import { processDiagnosisJob, repoWorkspaceSlug } from '../services/free-diagnosis.js'
 import { ClientEnvironmentService } from '../services/environment.js'
@@ -129,13 +130,22 @@ export const diagnoseRoutes = async (app: FastifyInstance): Promise<void> => {
       }
       const job = await app.prisma.diagnosisJob.findFirst({
         where: { id: request.params.id, userId: request.user.id },
-        select: { id: true, status: true, repoFullName: true },
+        select: { id: true, status: true, repoFullName: true, graph: true },
       })
       if (!job) {
         return reply.code(404).send({ error: 'NOT_FOUND' })
       }
       if (job.status !== 'completed') {
         return reply.code(409).send({ error: 'DIAGNOSIS_NOT_READY' })
+      }
+
+      // Cache (1 job = 1 export): o CGC reprocessa o repo do zero a cada
+      // chamada (~7-8s) — sem isto, TODA carga da tela (reload, voltar no
+      // wizard) pagava o custo de novo, e passava do timeout de rede do
+      // front antes de responder. Só cacheia sucesso — falha/ausência nunca
+      // é gravada, pra não travar um repo em GRAPH_UNAVAILABLE permanente.
+      if (job.graph) {
+        return reply.send(job.graph)
       }
 
       // NUNCA clona de novo: reusa o clone do ambiente (passo 4) se existir;
@@ -158,6 +168,10 @@ export const diagnoseRoutes = async (app: FastifyInstance): Promise<void> => {
       if (!graph) {
         return reply.code(404).send({ error: 'GRAPH_UNAVAILABLE' })
       }
+      await app.prisma.diagnosisJob.update({
+        where: { id: job.id },
+        data: { graph: graph as unknown as Prisma.InputJsonValue },
+      })
       return reply.send(graph)
     }
   )
