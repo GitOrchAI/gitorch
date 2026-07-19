@@ -83,3 +83,137 @@ jobs:
       - name: Upload CI audit
         if: always()
         uses: ./.github/actions/upload-ci-audit
+
+  # F1 Onda 4 ("Prova"): o funil INTEIRO do setup wizard (login, termos,
+  # repo, clone, diagnóstico+grafo 3D, os 3 motores, telegram, plano, submit,
+  # status final) navegado de verdade no navegador, em TODO PR — não só
+  # depois do merge. Existe pra matar "disseram pronto sem prova".
+  #
+  # Roda com GITORCH_FAKE_ENGINES=1 (services/fake-engines.ts): login
+  # assistido e liveness dos 3 motores são fakes determinísticos, sem
+  # podman/imagem de agente/CLI real. NÃO precisa de nenhum secret (a fixture
+  # gitorch-e2e-fixture é pública — clone anônimo — e a listagem de repos do
+  # GitHub é interceptada no navegador, tests/e2e/setup-wizard-funil-completo-
+  # fake.spec.ts) — de propósito: um job que se auto-pula por falta de
+  # secret não prova nada, e este é o único ponto da Onda 4 que existe
+  # exatamente pra nunca deixar isso acontecer de novo. Job separado do
+  # zero-tolerance (infra própria: banco/redis efêmeros + control-plane real)
+  # e do e2e-wizard.yml (que continua só pós-merge, com credencial real de
+  # GitHub e sujeito a rate-limit da API deles — o oposto do que este job
+  # busca).
+  e2e-funil-fake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: gitorch_e2e_funil_fake
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/gitorch_e2e_funil_fake
+      REDIS_URL: redis://localhost:6379/0
+      PORT: 4012
+      HOST: 127.0.0.1
+      FRONTEND_URL: http://127.0.0.1:4012
+      CORS_ORIGIN: http://127.0.0.1:4012
+      GITORCH_EXECUTOR: local-process
+      E2E_BASE_URL: http://127.0.0.1:4012
+      # O CORAÇÃO deste job: fakes determinísticos no boot (services/fake-
+      # engines.ts) — sem eles o passo 7 tentaria abrir um container podman
+      # de verdade e o job travaria/falharia por falta de imagem de agente.
+      GITORCH_FAKE_ENGINES: '1'
+      # O scheduler processa clone_and_start_engines a cada tick (default
+      # 60s) — rápido demais pra esperar num job de PR. 2s é suficiente pra
+      # missão (clone da fixture pública, minúscula) processar em segundos.
+      GITORCH_SCHEDULER_TICK_MS: '2000'
+      # Achado real (ver commit do spec): o funil INTEIRO comprimido pelos
+      # fakes em ~20s facilmente passa das 20 requisições autenticadas/min
+      # que auth.ts aplica contra brute-force — teto correto pra uma sessão
+      # HUMANA (minutos), apertado demais pra este teste. Só este job eleva;
+      # produção continua em 20.
+      GITORCH_AUTH_RATE_LIMIT_MAX: '2000'
+      RATE_LIMIT_MAX: '2000'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup-pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate ephemeral secrets
+        run: |
+          echo "JWT_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          echo "GITORCH_CREDENTIAL_KEY=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+          echo "GITHUB_WEBHOOK_SECRET=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+
+      - name: Apply schema (db push, banco efêmero do CI)
+        working-directory: apps/control-plane
+        run: npx prisma db push --skip-generate
+      - name: Prisma generate
+        working-directory: apps/control-plane
+        run: npx prisma generate
+      - name: Seed plans
+        working-directory: apps/control-plane
+        run: npx tsx prisma/seed.ts
+
+      - name: Build web (export estático)
+        run: pnpm --filter web build
+        env:
+          NEXT_PUBLIC_API_URL: http://127.0.0.1:4012
+      - name: Build control-plane + deps
+        run: npx turbo run build --filter=@gitorch/control-plane...
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Start control-plane
+        working-directory: apps/control-plane
+        env:
+          NODE_ENV: development
+          GITORCH_WORKSPACES_DIR: ${{ runner.temp }}/gitorch-workspaces
+          GITORCH_CORTEX_DB: ${{ runner.temp }}/gitorch-cortex.sqlite
+          GITORCH_ENVIRONMENTS_DIR: ${{ runner.temp }}/gitorch-environments
+        run: nohup node dist/index.js > /tmp/control-plane.log 2>&1 &
+      - name: Wait for health
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:4012/health > /dev/null; then
+              echo "control-plane healthy"; exit 0
+            fi
+            sleep 1
+          done
+          echo "control-plane never became healthy"; cat /tmp/control-plane.log; exit 1
+
+      - name: "Run E2E (funil completo do setup wizard, motores fake)"
+        run: |
+          npx playwright test --workers=1 \
+            tests/e2e/setup-wizard-funil-completo-fake.spec.ts
+
+      - name: Server logs (on failure)
+        if: failure()
+        run: cat /tmp/control-plane.log || true
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: playwright-report-funil-fake
+          path: playwright-report/
+          retention-days: 7
