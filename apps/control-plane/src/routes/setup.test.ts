@@ -68,6 +68,45 @@ describe('GET /api/v1/github/repos', () => {
     const res = await app.inject({ method: 'GET', url: '/api/v1/github/repos' })
     expect(res.statusCode).toBe(401)
   })
+
+  // Achado real do QA (19/07): o token do usuário existe (foi conectado um
+  // dia) mas o GitHub o rejeita — expirado ou revogado no lado deles. A API
+  // REST responde 401 com {"message": "Bad credentials", ...} (um objeto, não
+  // array), o que ANTES caía sem classificar no branch genérico
+  // `!Array.isArray(repos)` -> 500 cru. Contrato de erro do wizard exige um
+  // code estável, igual ao que POST /setup/clone já devolve.
+  it('token GitHub expirado/revogado (GitHub responde 401 Bad credentials) -> 401 com code GITHUB_TOKEN_EXPIRED, não 500 cru', async () => {
+    global.fetch = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          message: 'Bad credentials',
+          documentation_url: 'https://docs.github.com/rest',
+        }),
+        { status: 401 }
+      )
+    }) as unknown as typeof fetch
+
+    const res = await app.inject({ method: 'GET', url: '/api/v1/github/repos' })
+
+    expect(res.statusCode).toBe(401)
+    const body = res.json() as { error?: string; code?: string }
+    expect(body.code).toBe('GITHUB_TOKEN_EXPIRED')
+    expect(res.statusCode).not.toBe(500)
+  })
+
+  it('GitHub rate-limitando (403 com mensagem de rate limit) -> 429 com code RATE_LIMITED', async () => {
+    global.fetch = vi.fn(async () => {
+      return new Response(JSON.stringify({ message: 'API rate limit exceeded for x.x.x.x.' }), {
+        status: 403,
+      })
+    }) as unknown as typeof fetch
+
+    const res = await app.inject({ method: 'GET', url: '/api/v1/github/repos' })
+
+    expect(res.statusCode).toBe(429)
+    const body = res.json() as { code?: string }
+    expect(body.code).toBe('RATE_LIMITED')
+  })
 })
 
 describe('GET /api/v1/github/repos — sem o plugin de motores registrado', () => {
