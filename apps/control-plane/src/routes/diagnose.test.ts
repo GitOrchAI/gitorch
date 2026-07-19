@@ -39,6 +39,7 @@ interface FakePrisma {
   diagnosisJob: {
     findFirst: ReturnType<typeof vi.fn>
     create: ReturnType<typeof vi.fn>
+    update?: ReturnType<typeof vi.fn>
   }
 }
 
@@ -198,6 +199,7 @@ describe('GET /api/v1/diagnose/:id/graph', () => {
     id: 'job_1',
     status: 'completed',
     repoFullName: 'acme/loja',
+    graph: null,
   }
 
   it('devolve o grafo só do DONO — 404 indistinguível pra job inexistente ou de outro usuário', async () => {
@@ -216,15 +218,16 @@ describe('GET /api/v1/diagnose/:id/graph', () => {
     expect(exportGraphIsolated).not.toHaveBeenCalled()
   })
 
-  it('devolve o grafo quando o job é do dono e está completo', async () => {
+  it('devolve o grafo quando o job é do dono e está completo, e GRAVA no cache', async () => {
     const graph = {
       nodes: [{ id: 'a', label: 'a', file: 'a.ts', type: 'function', health: 'good' }],
       edges: [],
       truncated: false,
     }
     exportGraphIsolated.mockResolvedValue(graph)
+    const update = vi.fn().mockResolvedValue({})
     const prisma = {
-      diagnosisJob: { findFirst: vi.fn().mockResolvedValue(completedJob), create: vi.fn() },
+      diagnosisJob: { findFirst: vi.fn().mockResolvedValue(completedJob), create: vi.fn(), update },
     }
     const app = buildApp(prisma, vi.fn())
     await diagnoseRoutes(app)
@@ -238,6 +241,35 @@ describe('GET /api/v1/diagnose/:id/graph', () => {
     // clona de novo).
     expect(allocateWorkspace).toHaveBeenCalledWith('user_1', 'diag-acme_loja')
     expect(exportGraphIsolated).toHaveBeenCalledWith('/fake/ws')
+    // Cache: o 1º export bem-sucedido persiste no job, pra próxima chamada
+    // não reprocessar o CGC do zero.
+    expect(update).toHaveBeenCalledWith({ where: { id: 'job_1' }, data: { graph } })
+  })
+
+  it('grafo já em cache -> devolve do banco SEM rodar o CGC de novo', async () => {
+    const cachedGraph = {
+      nodes: [{ id: 'b', label: 'b', file: 'b.ts', type: 'function', health: 'good' }],
+      edges: [],
+      truncated: false,
+    }
+    const update = vi.fn()
+    const prisma = {
+      diagnosisJob: {
+        findFirst: vi.fn().mockResolvedValue({ ...completedJob, graph: cachedGraph }),
+        create: vi.fn(),
+        update,
+      },
+    }
+    const app = buildApp(prisma, vi.fn())
+    await diagnoseRoutes(app)
+    await app.ready()
+
+    const res = await app.inject({ method: 'GET', url: '/api/v1/diagnose/job_1/graph' })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual(cachedGraph)
+    expect(exportGraphIsolated).not.toHaveBeenCalled()
+    expect(allocateWorkspace).not.toHaveBeenCalled()
+    expect(update).not.toHaveBeenCalled()
   })
 
   it('job ainda não completo -> 409, nunca tenta exportar', async () => {
@@ -256,10 +288,11 @@ describe('GET /api/v1/diagnose/:id/graph', () => {
     expect(exportGraphIsolated).not.toHaveBeenCalled()
   })
 
-  it('export falha/vazio -> 404 GRAPH_UNAVAILABLE (front cai pro fallback em tabela)', async () => {
+  it('export falha/vazio -> 404 GRAPH_UNAVAILABLE (front cai pro fallback em tabela), sem cachear', async () => {
     exportGraphIsolated.mockResolvedValue(undefined)
+    const update = vi.fn()
     const prisma = {
-      diagnosisJob: { findFirst: vi.fn().mockResolvedValue(completedJob), create: vi.fn() },
+      diagnosisJob: { findFirst: vi.fn().mockResolvedValue(completedJob), create: vi.fn(), update },
     }
     const app = buildApp(prisma, vi.fn())
     await diagnoseRoutes(app)
@@ -268,6 +301,7 @@ describe('GET /api/v1/diagnose/:id/graph', () => {
     const res = await app.inject({ method: 'GET', url: '/api/v1/diagnose/job_1/graph' })
     expect(res.statusCode).toBe(404)
     expect(res.json()).toEqual({ error: 'GRAPH_UNAVAILABLE' })
+    expect(update).not.toHaveBeenCalled()
   })
 
   it('sem sessão -> 401', async () => {

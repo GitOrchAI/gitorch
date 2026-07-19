@@ -370,6 +370,11 @@ model DiagnosisJob {
   progress     String?   // último passo narrado: cloning|indexing|reading_github|done
   result       Json?
   error        String?
+  // Cache do grafo 3D (GET /:id/graph): o export reprocessa o CGC do zero
+  // (~7-8s) — sem isto, toda 2ª carga da tela (ou reload) pagava o custo de
+  // novo. Preenchido no 1º export bem-sucedido; nulo até lá / se o export
+  // falhar (não cacheia ausência, só sucesso).
+  graph        Json?
 
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
