@@ -1195,15 +1195,22 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     }
   }
 
-  // Loop de verificação a cada minuto. Não roda sob teste para não vazar timer
-  // nem disparar missão real contra o Prisma de teste (paridade com under-pressure).
-  // A execução é envolvida para nunca propagar rejeição (o processo não cai).
+  // Loop de verificação a cada minuto (GITORCH_SCHEDULER_TICK_MS sobrescreve —
+  // usado pelo E2E do funil completo com GITORCH_FAKE_ENGINES=1 para não
+  // esperar até 60s pela missão clone_and_start_engines processar; ausente,
+  // comportamento de sempre). Não roda sob teste para não vazar timer nem
+  // disparar missão real contra o Prisma de teste (paridade com
+  // under-pressure). A execução é envolvida para nunca propagar rejeição (o
+  // processo não cai).
   const intervalId =
     process.env['NODE_ENV'] === 'test'
       ? undefined
-      : setInterval(() => {
-          void tick().catch((err) => app.log.error(err, '[Scheduler] tick rejeitou'))
-        }, 60 * 1000)
+      : setInterval(
+          () => {
+            void tick().catch((err) => app.log.error(err, '[Scheduler] tick rejeitou'))
+          },
+          Number(process.env['GITORCH_SCHEDULER_TICK_MS'] ?? 60 * 1000)
+        )
 
   // Clean up interval on app close
   app.addHook('onClose', async () => {

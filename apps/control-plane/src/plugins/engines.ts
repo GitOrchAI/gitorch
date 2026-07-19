@@ -3,23 +3,34 @@ import { FastifyPluginAsync } from 'fastify'
 import { isDeviceRuntime } from '@gitorch/agents'
 import { EngineConnectionService, resolveEngineId } from '../services/engine-connection.js'
 import { ClientEnvironmentService } from '../services/environment.js'
+import { checkLiveness, type CheckLivenessDeps } from '../services/engine-liveness.js'
 import {
   AssistedLoginService,
   type AssistedLoginOptions,
   type LoginState,
 } from '../services/assisted-login.js'
 
-// Seam de teste: permite injetar um `runDeviceLoginImpl` fake em vez de
+// Seam de teste/fake: permite injetar um `runDeviceLoginImpl` fake em vez de
 // disparar um container podman de verdade (usado pelos testes de
-// engines.test.ts para as rotas de login assistido).
+// engines.test.ts e, no boot real, pelo GITORCH_FAKE_ENGINES=1 — ver
+// plugins/index.ts e services/fake-engines.ts) e/ou uma liveness fake
+// (mesma razão: sem ela, um login assistido fake conectaria mas
+// captureFromHome chamaria `codex login status` de verdade e falharia com
+// "binário não encontrado").
 interface EnginesPluginOptions {
   runDeviceLoginImpl?: AssistedLoginOptions['runDeviceLoginImpl']
+  livenessDeps?: CheckLivenessDeps
 }
 
 // Expõe o serviço de conexões de motor e as rotas do usuário para ver/gerir
 // suas conexões. A credencial cifrada NUNCA é retornada — apenas o status.
 const enginesPluginImpl: FastifyPluginAsync<EnginesPluginOptions> = async (app, opts) => {
-  const service = new EngineConnectionService(app.prisma)
+  const service = new EngineConnectionService(
+    app.prisma,
+    opts.livenessDeps
+      ? (runtime, homeDir) => checkLiveness(runtime, homeDir, opts.livenessDeps)
+      : undefined
+  )
   app.decorate('engineConnections', service)
 
   // Ambiente isolado do user: o login assistido grava a credencial DENTRO dele
