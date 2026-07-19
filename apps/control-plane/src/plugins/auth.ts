@@ -79,9 +79,20 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
   // We use global: true here because authPlugin is usually registered
   // in a way that its scope covers the routes it needs to protect.
   // This resolves CodeQL alert #24.
+  //
+  // GITORCH_AUTH_RATE_LIMIT_MAX (default 20, o mesmo de sempre): achado real
+  // rodando o E2E do funil completo (GITORCH_FAKE_ENGINES=1) — este teto é
+  // SEPARADO do RATE_LIMIT_MAX global (plugins/index.ts) e mais apertado; um
+  // wizard inteiro (login+termos+repo+diagnóstico+3 motores+telegram+plano+
+  // submit+status) comprimido em ~20s pelos fakes facilmente passa de 20
+  // requisições autenticadas na mesma janela de 1 min — algo que uma sessão
+  // REAL (minutos, login humano) nunca chegaria perto de fazer. Sem esta
+  // válvula o E2E do funil (Onda 4) tropeça no PRÓPRIO anti-brute-force, não
+  // num bug do produto. Só o job de CI com fakes eleva isto; produção
+  // continua com o padrão de sempre.
   await app.register(rateLimit, {
     global: true,
-    max: 20,
+    max: Number(process.env['GITORCH_AUTH_RATE_LIMIT_MAX'] ?? 20),
     timeWindow: '1 minute',
     allowList: (request: FastifyRequest) => isPublicPath(request.url),
   })

@@ -19,6 +19,11 @@ import { telegramPlugin } from './telegram.js'
 import { cortexPlugin } from './cortex.js'
 import { enginesPlugin } from './engines.js'
 import { corsPlugin } from './cors.js'
+import {
+  fakeEnginesEnabled,
+  FAKE_LIVENESS_DEPS,
+  fakeRunDeviceLogin,
+} from '../services/fake-engines.js'
 
 import rateLimit from '@fastify/rate-limit'
 
@@ -105,7 +110,24 @@ export async function registerPlugins(app: FastifyInstance, env: Env): Promise<v
   await app.register(ssePlugin)
   await app.register(webhookVerifyPlugin)
   await app.register(cortexPlugin)
-  await app.register(enginesPlugin)
+
+  // GITORCH_FAKE_ENGINES=1 (nunca em produção — fakeEnginesEnabled() já
+  // recusa NODE_ENV=production): troca o login assistido e a liveness dos 3
+  // motores por fakes determinísticos no boot. Existe só para o E2E do funil
+  // completo (tests/e2e/setup-wizard-funil-completo-fake.spec.ts) provar o
+  // wizard inteiro em todo PR sem podman/CLIs reais/credenciais de provider —
+  // ver services/fake-engines.ts.
+  if (fakeEnginesEnabled()) {
+    app.log.warn(
+      '[boot] GITORCH_FAKE_ENGINES=1: login assistido e liveness dos motores são FAKES determinísticos — nunca use isto em produção'
+    )
+  }
+  await app.register(
+    enginesPlugin,
+    fakeEnginesEnabled()
+      ? { runDeviceLoginImpl: fakeRunDeviceLogin, livenessDeps: FAKE_LIVENESS_DEPS }
+      : {}
+  )
   await app.register(schedulerPlugin)
   // Ouve o bot do Telegram: é por aqui que o `/start <token>` do cliente vira o
   // chat_id vinculado — sem isto o passo 8 do wizard nunca sai de "aguardando".
