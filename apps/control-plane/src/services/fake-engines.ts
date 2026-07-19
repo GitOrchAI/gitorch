@@ -70,6 +70,12 @@ const RUNTIME_BY_BINARY: Record<string, 'codex' | 'claude' | 'antigravity'> = {
   agy: 'antigravity',
 }
 
+// Ver o comentário dentro de fakeRunDeviceLogin: precisa ser > 0 para não
+// perder a corrida contra o EventSource do SSE que o navegador abre DEPOIS
+// do 202 de /login/start. Curto o bastante para nunca ser percebido como
+// "lento" num E2E ou QA manual.
+const FAKE_LOGIN_DELAY_MS = 250
+
 /**
  * Escreve uma credencial FAKE no caminho PRIMÁRIO que
  * ENGINE_CREDENTIAL_PATHS espera para `runtime`, dentro de `homeDir` — é
@@ -118,11 +124,21 @@ export function fakeRunDeviceLogin(options: DeviceLoginOptions): DeviceLoginHand
     resolveExited = resolve
   })
 
-  // setImmediate (não síncrono): garante que AssistedLoginService.start() já
-  // assinou onStdout/exited.then ANTES do fake "acontecer" — a mesma ordem
-  // que um processo real teria (spawn nunca resolve antes do handle voltar
-  // para quem chamou).
-  setImmediate(() => {
+  // FAKE_LOGIN_DELAY_MS (não setImmediate/0ms): achado real rodando o E2E do
+  // funil completo pela primeira vez — um "instantâneo" de verdade (mesmo
+  // tick) termina a sessão (setState 'connected' -> cleanup(), que APAGA a
+  // sessão do Map) ANTES do navegador sequer ter aberto o EventSource do
+  // SSE (POST /login/start -> 202 -> só ENTÃO o front chama `new
+  // EventSource(...)`, um round-trip HTTP inteiro depois). O GET
+  // /login/:id/stream que chega depois da sessão já ter sumido vira 404
+  // ("sessão não encontrada") — subscribe() devolve null pro MESMO usuário
+  // que acabou de iniciar o login, e o card mostra "Could not connect" sem
+  // NENHUM loginFailed logado (a falha nem passou por fail(), foi um 404 de
+  // corrida). Um atraso pequeno e determinístico fecha essa janela sem
+  // deixar de ser "instantâneo" do ponto de vista humano — e é, na
+  // realidade, mais fiel a um login de verdade (que nunca resolve no MESMO
+  // tick que o spawn).
+  setTimeout(() => {
     void (async () => {
       try {
         if (runtime === 'claude') {
@@ -134,7 +150,7 @@ export function fakeRunDeviceLogin(options: DeviceLoginOptions): DeviceLoginHand
         resolveExited({ code: 0 })
       }
     })()
-  })
+  }, FAKE_LOGIN_DELAY_MS)
 
   return {
     hostHome,

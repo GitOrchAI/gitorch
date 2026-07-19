@@ -16,7 +16,15 @@ export default defineConfig({
   // não há, ele nem entra na lista. Um `testIgnore` incondicional seria pior que
   // o bug: ele apagaria o spec TAMBÉM do e2e-wizard.yml (o `--list` por nome
   // devolve 0 testes), desligando em silêncio justamente a guarda que ele é.
-  testIgnore: process.env['DATABASE_URL'] ? [] : ['**/setup-wizard-fluxo-completo.spec.ts'],
+  //
+  // setup-wizard-funil-completo-fake.spec.ts (Onda 4) é o MESMO caso: exige
+  // control-plane+Postgres reais (com GITORCH_FAKE_ENGINES=1) e lança no
+  // beforeAll em vez de se auto-pular — coletado só onde há banco; o job
+  // e2e-funil-fake (ci.yml) o roda pelo nome, como o e2e-wizard.yml faz com
+  // fluxo-completo.
+  testIgnore: process.env['DATABASE_URL']
+    ? []
+    : ['**/setup-wizard-fluxo-completo.spec.ts', '**/setup-wizard-funil-completo-fake.spec.ts'],
   use: {
     headless: true,
     trace: 'retain-on-failure',
