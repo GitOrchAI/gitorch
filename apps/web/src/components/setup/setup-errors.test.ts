@@ -13,6 +13,17 @@ describe('parseSetupErrorCode', () => {
     )
   })
 
+  // Achado real do QA (19/07): GET /api/v1/github/repos agora devolve este
+  // code quando o token do usuário está expirado/revogado no GitHub.
+  it('extrai GITHUB_TOKEN_EXPIRED do corpo de GET /github/repos', () => {
+    expect(
+      parseSetupErrorCode({
+        error: 'Failed to fetch repositories from GitHub',
+        code: 'GITHUB_TOKEN_EXPIRED',
+      })
+    ).toBe('GITHUB_TOKEN_EXPIRED')
+  })
+
   it('code desconhecido (rota antiga/futura) -> null, não quebra o front', () => {
     expect(parseSetupErrorCode({ error: 'x', code: 'SOMETHING_NEW' })).toBeNull()
   })
@@ -60,6 +71,7 @@ describe('setupErrorHintKey', () => {
       'CLONE_TIMEOUT',
       'DIAG_TIMEOUT',
       'DIAG_EMPTY_REPO',
+      'GITHUB_TOKEN_EXPIRED',
       'INTERNAL',
     ]
     for (const code of codes) {
@@ -70,5 +82,9 @@ describe('setupErrorHintKey', () => {
     }
     // chaves distintas por code (nenhum colapso acidental)
     expect(new Set(codes.map(setupErrorHintKey)).size).toBe(codes.length)
+  })
+
+  it('GITHUB_TOKEN_EXPIRED tem chave PRÓPRIA (não colapsa em errINTERNAL)', () => {
+    expect(setupErrorHintKey('GITHUB_TOKEN_EXPIRED')).toBe('setup.errGITHUB_TOKEN_EXPIRED')
   })
 })
