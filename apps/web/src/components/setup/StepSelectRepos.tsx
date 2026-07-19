@@ -35,6 +35,12 @@ export default function StepSelectRepos({
   const [repos, setRepos] = useState<Repo[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  // Code classificado da falha ao LISTAR os repos (GET /github/repos) — hoje o
+  // único que o front trata de forma especial é GITHUB_TOKEN_EXPIRED (token
+  // OAuth expirado/revogado), que troca o botão "tentar de novo" por um
+  // atalho direto pro login do GitHub. null = rota antiga/erro de
+  // rede/JSON malformado, cai no aviso genérico de sempre.
+  const [reposErrorCode, setReposErrorCode] = useState<SetupErrorCode | null>(null)
   const [search, setSearch] = useState('')
   const [cloning, setCloning] = useState(false)
   const [cloneError, setCloneError] = useState<string | null>(null)
@@ -98,6 +104,7 @@ export default function StepSelectRepos({
       try {
         setLoading(true)
         setError(null)
+        setReposErrorCode(null)
         // Sessão via cookie httpOnly, enviada automaticamente pelo navegador
         // (spec §17.4 — nunca mais um token lido/manipulado pelo JS).
         const response = await fetch(`${apiBaseUrl}/api/v1/github/repos`, {
@@ -105,6 +112,12 @@ export default function StepSelectRepos({
         })
 
         if (!response.ok) {
+          // Lê o corpo {error, code} (mesmo contrato do POST /setup/clone) —
+          // achado real do QA (19/07): token GitHub expirado/revogado
+          // devolvia 401 cru do lado do GitHub, e este passo só mostrava um
+          // aviso genérico sem indicar o que fazer.
+          const body = await response.json().catch(() => null)
+          setReposErrorCode(parseSetupErrorCode(body))
           throw new Error(t('setup.reposError'))
         }
 
@@ -121,6 +134,17 @@ export default function StepSelectRepos({
       fetchRepos()
     }
   }, [apiBaseUrl, authenticated, t])
+
+  // Mesma lógica de StepGitHubLogin: manda a pessoa de volta pro login do
+  // GitHub, dizendo à API pra onde voltar (allowlist validada no backend) e
+  // com que plano — usado quando o token expirou/foi revogado
+  // (GITHUB_TOKEN_EXPIRED) e "tentar de novo" não resolveria nada.
+  const signInAgain = () => {
+    const base = window.location.href.split('/setup')[0]
+    const returnTo = encodeURIComponent(base)
+    const planParam = encodeURIComponent(plan)
+    window.location.href = `${apiBaseUrl}/api/v1/auth/github?return_to=${returnTo}&plan=${planParam}`
+  }
 
   const toggleRepo = (fullName: string) => {
     if (selectedRepos.includes(fullName)) {
@@ -155,9 +179,18 @@ export default function StepSelectRepos({
           style={{ minHeight: 250 }}
         >
           <p className="wz-err mb-4">{error}</p>
-          <button onClick={() => window.location.reload()} className="wz-btn wz-btn-ghost">
-            {t('setup.retry')}
-          </button>
+          {reposErrorCode && (
+            <p className="wz-opt-desc mb-4">{t(setupErrorHintKey(reposErrorCode))}</p>
+          )}
+          {reposErrorCode === 'GITHUB_TOKEN_EXPIRED' ? (
+            <button onClick={signInAgain} className="wz-btn wz-btn-primary">
+              {t('setup.reposSignInAgain')}
+            </button>
+          ) : (
+            <button onClick={() => window.location.reload()} className="wz-btn wz-btn-ghost">
+              {t('setup.retry')}
+            </button>
+          )}
         </div>
       ) : (
         <div className="wz-body flex flex-col" style={{ minHeight: 250 }}>

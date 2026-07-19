@@ -16,6 +16,7 @@ export type SetupErrorCode =
   | 'CLONE_TIMEOUT'
   | 'DIAG_TIMEOUT'
   | 'DIAG_EMPTY_REPO'
+  | 'GITHUB_TOKEN_EXPIRED'
   | 'INTERNAL'
 
 function errorMessage(err: unknown): string {
@@ -100,6 +101,38 @@ export function classifyDiagnosisError(err: unknown): SetupErrorCode {
   return cloneCode === 'CLONE_TIMEOUT' ? 'DIAG_TIMEOUT' : cloneCode
 }
 
+// Corpo REAL que a API REST do GitHub devolve numa falha ({"message": "..."}),
+// confirmado na documentação oficial: 401 "Bad credentials" (token
+// expirado/revogado) e 403 "API rate limit exceeded ..." / "You have exceeded
+// a secondary rate limit ...". Extraímos só `message` — o resto do corpo
+// (`documentation_url` etc.) não importa pra classificação.
+function extractGithubApiMessage(body: unknown): string {
+  if (body && typeof body === 'object' && !Array.isArray(body)) {
+    const message = (body as { message?: unknown }).message
+    if (typeof message === 'string') return message
+  }
+  return typeof body === 'string' ? body : ''
+}
+
+/**
+ * Classifica uma resposta NÃO-ok da API REST do GitHub (ex.: GET
+ * /user/repos em GET /api/v1/github/repos) pelo `status` HTTP + corpo
+ * decodificado. 401 é SEMPRE credencial ruim (GitHub nunca usa 401 para outra
+ * coisa nesta API) — o token do cliente expirou ou foi revogado, então ele
+ * precisa logar de novo, não "tentar de novo". 403 é ambíguo (pode ser rate
+ * limit OU permissão/SSO de org): só vira RATE_LIMITED quando a mensagem
+ * confirma; o resto cai em INTERNAL, nunca inventamos REPO_ACCESS_DENIED sem
+ * uma mensagem de git real por trás (esse code é reservado à classificação de
+ * clone).
+ */
+export function classifyGithubApiError(status: number, body: unknown): SetupErrorCode {
+  if (status === 401) return 'GITHUB_TOKEN_EXPIRED'
+  if (status === 403 && matches(extractGithubApiMessage(body), RATE_LIMIT_PATTERNS)) {
+    return 'RATE_LIMITED'
+  }
+  return 'INTERNAL'
+}
+
 /**
  * Status HTTP para cada code — sempre um corpo DECORADO `{error, code}`,
  * nunca um 500 cru sem classificação. Causas do CLIENTE (acesso, não
@@ -115,6 +148,8 @@ export function setupErrorHttpStatus(code: SetupErrorCode): number {
       return 404
     case 'RATE_LIMITED':
       return 429
+    case 'GITHUB_TOKEN_EXPIRED':
+      return 401
     case 'DIAG_EMPTY_REPO':
       return 422
     case 'CLONE_TIMEOUT':

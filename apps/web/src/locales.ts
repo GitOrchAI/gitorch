@@ -287,7 +287,10 @@ export const locales = {
         'Reading this repository took too long. Try again, or continue without the free read.',
       errDIAG_EMPTY_REPO:
         "This repository doesn't have any commits yet. Push some code to it first, then try again.",
+      errGITHUB_TOKEN_EXPIRED:
+        'Your GitHub access has expired. The login expired or was revoked — sign in with GitHub again to continue.',
       errINTERNAL: 'Something unexpected happened on our side. Try again in a moment.',
+      reposSignInAgain: 'Sign in to GitHub again',
     },
   },
   pt: {
@@ -581,7 +584,10 @@ export const locales = {
         'Ler esse repositório demorou demais. Tente de novo, ou continue sem a leitura grátis.',
       errDIAG_EMPTY_REPO:
         'Esse repositório ainda não tem nenhum commit. Suba algum código nele primeiro e tente de novo.',
+      errGITHUB_TOKEN_EXPIRED:
+        'Seu acesso ao GitHub expirou. O login expirou ou foi revogado — faça login de novo para continuar.',
       errINTERNAL: 'Algo inesperado aconteceu do nosso lado. Tente de novo em instantes.',
+      reposSignInAgain: 'Entrar de novo no GitHub',
     },
   },
   es: {
@@ -875,7 +881,10 @@ export const locales = {
         'Leer este repositorio tardó demasiado. Inténtalo de nuevo, o continúa sin la lectura gratis.',
       errDIAG_EMPTY_REPO:
         'Este repositorio todavía no tiene ningún commit. Sube algo de código primero e inténtalo de nuevo.',
+      errGITHUB_TOKEN_EXPIRED:
+        'Tu acceso a GitHub expiró. El inicio de sesión expiró o fue revocado — inicia sesión de nuevo para continuar.',
       errINTERNAL: 'Algo inesperado pasó de nuestro lado. Inténtalo de nuevo en un momento.',
+      reposSignInAgain: 'Inicia sesión de nuevo en GitHub',
     },
   },
 }

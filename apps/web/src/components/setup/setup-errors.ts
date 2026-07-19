@@ -11,6 +11,7 @@ export type SetupErrorCode =
   | 'CLONE_TIMEOUT'
   | 'DIAG_TIMEOUT'
   | 'DIAG_EMPTY_REPO'
+  | 'GITHUB_TOKEN_EXPIRED'
   | 'INTERNAL'
 
 const SETUP_ERROR_CODES: readonly SetupErrorCode[] = [
@@ -21,6 +22,7 @@ const SETUP_ERROR_CODES: readonly SetupErrorCode[] = [
   'CLONE_TIMEOUT',
   'DIAG_TIMEOUT',
   'DIAG_EMPTY_REPO',
+  'GITHUB_TOKEN_EXPIRED',
   'INTERNAL',
 ]
 
@@ -66,6 +68,7 @@ const HINT_KEYS: Record<SetupErrorCode, string> = {
   CLONE_TIMEOUT: 'setup.errCLONE_TIMEOUT',
   DIAG_TIMEOUT: 'setup.errDIAG_TIMEOUT',
   DIAG_EMPTY_REPO: 'setup.errDIAG_EMPTY_REPO',
+  GITHUB_TOKEN_EXPIRED: 'setup.errGITHUB_TOKEN_EXPIRED',
   INTERNAL: 'setup.errINTERNAL',
 }
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   classifyCloneError,
   classifyDiagnosisError,
+  classifyGithubApiError,
   setupErrorHttpStatus,
   type SetupErrorCode,
 } from './setup-errors.js'
@@ -130,11 +131,60 @@ describe('classifyDiagnosisError', () => {
   })
 })
 
+describe('classifyGithubApiError', () => {
+  // Corpo REAL da API REST do GitHub numa credencial ruim (documentado):
+  // {"message": "Bad credentials", "documentation_url": "..."}
+  it('401 (token expirado/revogado) -> GITHUB_TOKEN_EXPIRED, achado real do QA (19/07)', () => {
+    expect(
+      classifyGithubApiError(401, {
+        message: 'Bad credentials',
+        documentation_url: 'https://docs.github.com/rest',
+      })
+    ).toBe('GITHUB_TOKEN_EXPIRED')
+  })
+
+  it('401 sem corpo decodificável ainda vira GITHUB_TOKEN_EXPIRED (o status já basta)', () => {
+    expect(classifyGithubApiError(401, null)).toBe('GITHUB_TOKEN_EXPIRED')
+  })
+
+  it('403 com mensagem de rate limit primário -> RATE_LIMITED', () => {
+    expect(
+      classifyGithubApiError(403, {
+        message: 'API rate limit exceeded for x.x.x.x.',
+      })
+    ).toBe('RATE_LIMITED')
+  })
+
+  it('403 com mensagem de rate limit secundário -> RATE_LIMITED', () => {
+    expect(
+      classifyGithubApiError(403, {
+        message: 'You have exceeded a secondary rate limit. Please wait a few minutes.',
+      })
+    ).toBe('RATE_LIMITED')
+  })
+
+  it('403 sem indício de rate limit (ex.: SSO/permissão) -> INTERNAL, não inventa REPO_ACCESS_DENIED', () => {
+    expect(classifyGithubApiError(403, { message: 'Resource not accessible by integration' })).toBe(
+      'INTERNAL'
+    )
+  })
+
+  it('outro status (ex.: 500 do próprio GitHub) -> INTERNAL', () => {
+    expect(classifyGithubApiError(500, { message: 'Internal Server Error' })).toBe('INTERNAL')
+  })
+
+  it('corpo não-objeto (array/string crua) não quebra a classificação', () => {
+    expect(classifyGithubApiError(403, [])).toBe('INTERNAL')
+    expect(classifyGithubApiError(403, 'boom')).toBe('INTERNAL')
+  })
+})
+
 describe('setupErrorHttpStatus', () => {
   const cases: Array<[SetupErrorCode, number]> = [
     ['REPO_ACCESS_DENIED', 403],
     ['REPO_NOT_FOUND', 404],
     ['RATE_LIMITED', 429],
+    ['GITHUB_TOKEN_EXPIRED', 401],
     ['DISK_FULL', 507],
     ['CLONE_TIMEOUT', 504],
     ['DIAG_TIMEOUT', 504],
@@ -149,5 +199,6 @@ describe('setupErrorHttpStatus', () => {
     expect(setupErrorHttpStatus('REPO_ACCESS_DENIED')).toBeLessThan(500)
     expect(setupErrorHttpStatus('REPO_NOT_FOUND')).toBeLessThan(500)
     expect(setupErrorHttpStatus('RATE_LIMITED')).toBeLessThan(500)
+    expect(setupErrorHttpStatus('GITHUB_TOKEN_EXPIRED')).toBeLessThan(500)
   })
 })

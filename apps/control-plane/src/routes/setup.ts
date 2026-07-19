@@ -8,7 +8,11 @@ import { resolveEngineId } from '../services/engine-connection.js'
 import { ClientEnvironmentService } from '../services/environment.js'
 import { collectAndRememberRepoContext } from '../services/repo-context-cortex.js'
 import { startTelegramLink, readTelegramLink } from '../services/telegram-link.js'
-import { classifyCloneError, setupErrorHttpStatus } from '../lib/setup-errors.js'
+import {
+  classifyCloneError,
+  classifyGithubApiError,
+  setupErrorHttpStatus,
+} from '../lib/setup-errors.js'
 import { mintInstallationToken } from '../services/github-app-token.js'
 
 interface GitHubRepo {
@@ -228,6 +232,21 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
         'User-Agent': 'gitorch-control-plane',
       },
     })
+
+    if (!response.ok) {
+      // Contrato de erro do wizard (mesmo padrão do POST /setup/clone): NUNCA
+      // um 500 cru sem classificar. Achado real do QA (19/07) — token
+      // expirado/revogado fazia a API do GitHub responder 401 "Bad
+      // credentials" (um objeto, não array), e o código anterior caía direto
+      // no branch genérico abaixo por engano de tipo.
+      const body = await response.json().catch(() => null)
+      const code = classifyGithubApiError(response.status, body)
+      app.log.warn({ code, status: response.status }, '[setup] GET /user/repos do GitHub falhou')
+      return reply.code(setupErrorHttpStatus(code)).send({
+        error: 'Failed to fetch repositories from GitHub',
+        code,
+      })
+    }
 
     const repos = (await response.json()) as GitHubRepo[]
     if (!Array.isArray(repos)) {
