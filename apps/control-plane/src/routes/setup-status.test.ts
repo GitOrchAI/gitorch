@@ -29,7 +29,11 @@ interface StatusBody {
     error: string | null
     queuePosition: number | null
   }>
-  environment: { id: string; status: string } | null
+  environment: {
+    id: string
+    status: string
+    resources: { engines: Array<{ name: string; version: string }>; commit: string } | null
+  } | null
 }
 
 interface MissionWhere {
@@ -63,6 +67,7 @@ describe('GET /api/v1/setup/status', () => {
       userId: 'user_1',
       status: 'fixed',
       path: '/caminho/interno/que/nunca/pode/vazar/env_1',
+      resourcesLock: null,
       fixedAt: new Date('2026-07-14T12:00:00Z'),
       createdAt: new Date('2026-07-14T11:00:00Z'),
       updatedAt: new Date('2026-07-14T12:00:00Z'),
@@ -259,7 +264,7 @@ describe('GET /api/v1/setup/status', () => {
   it('devolve o ambiente do cliente, mas o caminho em disco NUNCA vaza', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/v1/setup/status' })
     const body = res.json() as StatusBody
-    expect(body.environment).toEqual({ id: 'env_1', status: 'fixed' })
+    expect(body.environment).toEqual({ id: 'env_1', status: 'fixed', resources: null })
     expect(res.payload).not.toContain('/caminho/interno')
     expect(res.payload).not.toContain('path')
   })
@@ -267,6 +272,65 @@ describe('GET /api/v1/setup/status', () => {
   it('sem ambiente registrado -> environment null (sem fingir)', async () => {
     environmentFindFirst.mockResolvedValue(null)
     expect((await get()).environment).toBeNull()
+  })
+
+  it('ambiente sem resourcesLock ainda (bootstrap não rodou/não terminou) -> resources null', async () => {
+    environmentFindFirst.mockResolvedValue({
+      id: 'env_1',
+      userId: 'user_1',
+      status: 'provisioning',
+      path: '/caminho/interno/env_1',
+      resourcesLock: null,
+      fixedAt: new Date('2026-07-14T12:00:00Z'),
+      createdAt: new Date('2026-07-14T11:00:00Z'),
+      updatedAt: new Date('2026-07-14T12:00:00Z'),
+    })
+    const body = await get()
+    expect(body.environment).toEqual({ id: 'env_1', status: 'provisioning', resources: null })
+  })
+
+  it('ambiente com resourcesLock -> devolve name+version dos motores + commit curto (nunca sha/path/npm)', async () => {
+    environmentFindFirst.mockResolvedValue({
+      id: 'env_1',
+      userId: 'user_1',
+      status: 'ready',
+      path: '/caminho/interno/que/nunca/pode/vazar/env_1',
+      resourcesLock: {
+        generatedAt: '2026-07-20T00:00:00Z',
+        engines: {
+          claude: { npm: '@anthropic-ai/claude-code', version: '2.1.200', cache: '/x' },
+          codex: { npm: '@openai/codex', version: '0.142.5', cache: '/x' },
+          antigravity: {
+            binary: 'agy',
+            version: '1.1.4',
+            sha256: 'sha-completo-nunca-deve-vazar',
+            arch: 'arm64',
+            cache: '/x',
+          },
+        },
+        resources: { repo: 'https://github.com/loureng/gitorch.git', commit: 'abc123def456' },
+      },
+      fixedAt: new Date('2026-07-14T12:00:00Z'),
+      createdAt: new Date('2026-07-14T11:00:00Z'),
+      updatedAt: new Date('2026-07-14T12:00:00Z'),
+    })
+    const res = await app.inject({ method: 'GET', url: '/api/v1/setup/status' })
+    const body = res.json() as StatusBody
+    expect(body.environment).toEqual({
+      id: 'env_1',
+      status: 'ready',
+      resources: {
+        engines: [
+          { name: 'claude', version: '2.1.200' },
+          { name: 'codex', version: '0.142.5' },
+          { name: 'antigravity', version: '1.1.4' },
+        ],
+        commit: 'abc123d',
+      },
+    })
+    expect(res.payload).not.toContain('sha-completo-nunca-deve-vazar')
+    expect(res.payload).not.toContain('/caminho/interno')
+    expect(res.payload).not.toContain('@anthropic-ai/claude-code')
   })
 })
 

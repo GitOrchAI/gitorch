@@ -254,6 +254,9 @@ export const locales = {
         'We could not provision your environment. You can try again.',
       readyRefresh: 'Refresh',
       readyRetry: 'Try again',
+      readyResourcesTitle: 'Your isolated environment is ready with:',
+      readyResourcesCommit: 'GitOrch resources at version {{commit}}',
+      readyResourcesPreparing: 'Preparing your environment…',
       readyKeys: 'Your API key',
       readyKeyOnce:
         'This is the only time we show your key. We only store a scrambled version of it, so not even we can display it again — copy it now and keep it somewhere safe.',
@@ -550,6 +553,9 @@ export const locales = {
         'Não conseguimos provisionar o seu ambiente. Você pode tentar de novo.',
       readyRefresh: 'Atualizar',
       readyRetry: 'Tentar de novo',
+      readyResourcesTitle: 'Seu ambiente isolado está pronto com:',
+      readyResourcesCommit: 'recursos do GitOrch na versão {{commit}}',
+      readyResourcesPreparing: 'Preparando seu ambiente…',
       readyKeys: 'Sua chave de API',
       readyKeyOnce:
         'Esta é a única vez que mostramos a sua chave. Guardamos apenas uma versão embaralhada dela, então nem nós conseguimos exibi-la de novo — copie agora e guarde num lugar seguro.',
@@ -847,6 +853,9 @@ export const locales = {
         'No pudimos aprovisionar tu entorno. Puedes intentarlo de nuevo.',
       readyRefresh: 'Actualizar',
       readyRetry: 'Reintentar',
+      readyResourcesTitle: 'Tu entorno aislado está listo con:',
+      readyResourcesCommit: 'recursos de GitOrch en la versión {{commit}}',
+      readyResourcesPreparing: 'Preparando tu entorno…',
       readyKeys: 'Tu clave de API',
       readyKeyOnce:
         'Esta es la única vez que mostramos tu clave. Solo guardamos una versión cifrada de ella, así que ni nosotros podemos volver a mostrarla — cópiala ahora y guárdala en un lugar seguro.',

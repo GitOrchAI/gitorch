@@ -133,6 +133,20 @@ export function connectErrorHintKey(kind: ConnectErrorKind): string {
 const PROVISION_STATUSES = ['unknown', 'pending', 'running', 'completed', 'failed'] as const
 export type ProvisionStatus = (typeof PROVISION_STATUSES)[number]
 
+// Versões REAIS instaladas no ambiente isolado do cliente (W1: o gate desta
+// fase é o dono VER isto, não supor). Espelha o que o backend devolve em
+// `environment.resources` (setup.ts, via summarizeResourcesLock) — só
+// name+version dos motores + o commit curto dos recursos, nunca path/sha.
+export interface EnvironmentEngineVersion {
+  name: string
+  version: string
+}
+
+export interface EnvironmentResources {
+  engines: EnvironmentEngineVersion[]
+  commit: string
+}
+
 export interface ProvisionSnapshot {
   status: ProvisionStatus
   // Causa REAL da falha (Mission.error, gravada pelo scheduler). null quando não
@@ -143,16 +157,44 @@ export interface ProvisionSnapshot {
   // teto de concorrência está cheio; ver scheduler.ts:selectClaimableSetupMissions).
   // null fora do estado 'pending' ou quando o backend não devolveu nenhuma.
   queuePosition: number | null
+  // null enquanto o bootstrap de recursos não terminou (ou não há ambiente
+  // ainda) — o StepReady mostra "preparando", nunca uma versão inventada.
+  environmentResources: EnvironmentResources | null
+}
+
+function parseEnvironmentResources(raw: unknown): EnvironmentResources | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const body = raw as { engines?: unknown; commit?: unknown }
+  if (!Array.isArray(body.engines) || typeof body.commit !== 'string' || !body.commit.trim()) {
+    return null
+  }
+  const engines: EnvironmentEngineVersion[] = []
+  for (const entry of body.engines) {
+    const e = entry as { name?: unknown; version?: unknown } | null
+    if (typeof e?.name === 'string' && e.name && typeof e?.version === 'string' && e.version) {
+      engines.push({ name: e.name, version: e.version })
+    }
+  }
+  // Um lock malformado (motor sem nome/versão válidos) não vira um bloco pela
+  // metade — descarta por inteiro, como o backend já faz.
+  if (engines.length !== body.engines.length || engines.length === 0) return null
+  return { engines, commit: body.commit.trim() }
 }
 
 export function parseSetupStatus(json: unknown): ProvisionSnapshot {
-  const body = (json ?? {}) as { status?: unknown; error?: unknown; missions?: unknown }
+  const body = (json ?? {}) as {
+    status?: unknown
+    error?: unknown
+    missions?: unknown
+    environment?: unknown
+  }
   const status = PROVISION_STATUSES.find((s) => s === body.status) ?? 'unknown'
   const error = typeof body.error === 'string' && body.error.trim() ? body.error.trim() : null
   const missions = Array.isArray(body.missions) ? body.missions : []
   const queuePositions = missions
     .map((m) => (m as { queuePosition?: unknown } | null)?.queuePosition)
     .filter((p): p is number => typeof p === 'number' && Number.isFinite(p))
+  const environment = (body.environment ?? null) as { resources?: unknown } | null
   // Causa/posição só fazem sentido no estado correspondente: um `error`
   // pendurado num estado bom seria ruído, e uma posição de fila fora de
   // 'pending' não significa nada (já não está esperando).
@@ -161,7 +203,23 @@ export function parseSetupStatus(json: unknown): ProvisionSnapshot {
     error: status === 'failed' ? error : null,
     queuePosition:
       status === 'pending' && queuePositions.length > 0 ? Math.min(...queuePositions) : null,
+    environmentResources: environment ? parseEnvironmentResources(environment.resources) : null,
   }
+}
+
+// Nomes de exibição — os MESMOS 3 motores dos cards de StepConnectEngine
+// (runtime -> nome bonito). Um motor fora dessa lista (nunca deveria
+// acontecer — o backend só reconhece estes 3) cai no nome cru em vez de
+// desaparecer: melhor mostrar algo do que esconder um motor real instalado.
+const ENGINE_DISPLAY_NAMES: Record<string, string> = {
+  claude: 'Claude Code',
+  codex: 'Codex',
+  antigravity: 'Antigravity',
+}
+
+// Texto honesto pro StepReady: "Claude Code 2.1.200 · Codex 0.142.5 · ...".
+export function formatEngineVersions(engines: EnvironmentEngineVersion[]): string {
+  return engines.map((e) => `${ENGINE_DISPLAY_NAMES[e.name] ?? e.name} ${e.version}`).join(' · ')
 }
 
 // Estados em que o provisionamento ACABOU (o polling para). 'unknown' não é

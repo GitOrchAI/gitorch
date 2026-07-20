@@ -3,7 +3,12 @@ import { ChevronRight, Check, Loader2, Copy, KeyRound, AlertTriangle } from 'luc
 import Link from 'next/link'
 import { useLanguage } from '../../LanguageContext'
 import { detectCountry } from '../../lib/geo'
-import { isProvisionTerminal, parseSetupStatus, type ProvisionSnapshot } from './engine-status'
+import {
+  isProvisionTerminal,
+  parseSetupStatus,
+  formatEngineVersions,
+  type ProvisionSnapshot,
+} from './engine-status'
 import { isPaidPlan, startCheckout, type CreatedProject } from './submit-flow'
 
 interface StepReadyProps {
@@ -57,6 +62,7 @@ export default function StepReady({ projects, apiBaseUrl, plan }: StepReadyProps
     status: 'unknown',
     error: null,
     queuePosition: null,
+    environmentResources: null,
   })
   const [attempt, setAttempt] = useState(0)
   const [retrying, setRetrying] = useState(false)
@@ -99,7 +105,12 @@ export default function StepReady({ projects, apiBaseUrl, plan }: StepReadyProps
 
   // Volta a perguntar ao servidor (que é a fonte da verdade) desde o zero.
   const resumePolling = () => {
-    setProvision({ status: 'unknown', error: null, queuePosition: null })
+    setProvision({
+      status: 'unknown',
+      error: null,
+      queuePosition: null,
+      environmentResources: null,
+    })
     setAttempt(0)
   }
 
@@ -361,6 +372,36 @@ export default function StepReady({ projects, apiBaseUrl, plan }: StepReadyProps
             }
           />
         )}
+
+        {/* W1: as versões REAIS instaladas no ambiente isolado do cliente — o
+            gate desta fase é ele VER isto, nunca supor. `environmentResources`
+            vem de GET /setup/status (via ClientEnvironment.resourcesLock no
+            backend) e só existe quando o bootstrap terminou de instalar os
+            motores; até lá, o texto diz "preparando", nunca finge pronto. */}
+        <div
+          className="rounded-2xl p-4"
+          style={{ background: 'var(--gl-canvas)', border: '1px solid var(--gl-hair)' }}
+        >
+          {provision.environmentResources ? (
+            <>
+              <div className="wz-opt-title" style={{ fontSize: '0.92rem' }}>
+                {t('setup.readyResourcesTitle')}
+              </div>
+              <p className="wz-opt-desc" style={{ margin: 0 }}>
+                {formatEngineVersions(provision.environmentResources.engines)}
+              </p>
+              <p className="wz-opt-desc" style={{ margin: 0 }}>
+                {t('setup.readyResourcesCommit', {
+                  commit: provision.environmentResources.commit,
+                })}
+              </p>
+            </>
+          ) : (
+            <p className="wz-opt-desc" style={{ margin: 0 }}>
+              {t('setup.readyResourcesPreparing')}
+            </p>
+          )}
+        </div>
       </div>
 
       <div
