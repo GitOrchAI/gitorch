@@ -7,6 +7,7 @@ import {
   classifyConnectError,
   connectErrorHintKey,
   parseSetupStatus,
+  formatEngineVersions,
   isProvisionTerminal,
   isManualAccordionVisible,
   looksLikeAuthCode,
@@ -171,6 +172,7 @@ describe('parseSetupStatus', () => {
       status: 'pending',
       error: null,
       queuePosition: null,
+      environmentResources: null,
     })
   })
 
@@ -179,6 +181,7 @@ describe('parseSetupStatus', () => {
       status: 'running',
       error: null,
       queuePosition: null,
+      environmentResources: null,
     })
   })
 
@@ -187,6 +190,7 @@ describe('parseSetupStatus', () => {
       status: 'completed',
       error: null,
       queuePosition: null,
+      environmentResources: null,
     })
   })
 
@@ -197,6 +201,7 @@ describe('parseSetupStatus', () => {
       status: 'failed',
       error: 'git clone falhou: repositório não encontrado',
       queuePosition: null,
+      environmentResources: null,
     })
   })
 
@@ -205,11 +210,13 @@ describe('parseSetupStatus', () => {
       status: 'failed',
       error: null,
       queuePosition: null,
+      environmentResources: null,
     })
     expect(parseSetupStatus({ status: 'failed', error: '   ' })).toEqual({
       status: 'failed',
       error: null,
       queuePosition: null,
+      environmentResources: null,
     })
   })
 
@@ -218,26 +225,40 @@ describe('parseSetupStatus', () => {
       status: 'completed',
       error: null,
       queuePosition: null,
+      environmentResources: null,
     })
   })
 
   it('payload nulo/malformado/estado desconhecido -> unknown (segue no polling, nunca chuta ✓)', () => {
-    expect(parseSetupStatus(null)).toEqual({ status: 'unknown', error: null, queuePosition: null })
+    expect(parseSetupStatus(null)).toEqual({
+      status: 'unknown',
+      error: null,
+      queuePosition: null,
+      environmentResources: null,
+    })
     expect(parseSetupStatus(undefined)).toEqual({
       status: 'unknown',
       error: null,
       queuePosition: null,
+      environmentResources: null,
     })
-    expect(parseSetupStatus({})).toEqual({ status: 'unknown', error: null, queuePosition: null })
+    expect(parseSetupStatus({})).toEqual({
+      status: 'unknown',
+      error: null,
+      queuePosition: null,
+      environmentResources: null,
+    })
     expect(parseSetupStatus({ status: 'ready' })).toEqual({
       status: 'unknown',
       error: null,
       queuePosition: null,
+      environmentResources: null,
     })
     expect(parseSetupStatus({ status: 42 })).toEqual({
       status: 'unknown',
       error: null,
       queuePosition: null,
+      environmentResources: null,
     })
   })
 
@@ -251,7 +272,7 @@ describe('parseSetupStatus', () => {
           { projectId: 'proj_1', status: 'pending', queuePosition: 1 },
         ],
       })
-    ).toEqual({ status: 'pending', error: null, queuePosition: 1 })
+    ).toEqual({ status: 'pending', error: null, queuePosition: 1, environmentResources: null })
   })
 
   it('fora de pending, queuePosition é sempre null mesmo se vier no payload (já não está esperando)', () => {
@@ -261,7 +282,7 @@ describe('parseSetupStatus', () => {
         error: null,
         missions: [{ projectId: 'proj_1', status: 'running', queuePosition: null }],
       })
-    ).toEqual({ status: 'running', error: null, queuePosition: null })
+    ).toEqual({ status: 'running', error: null, queuePosition: null, environmentResources: null })
   })
 
   it('pending sem nenhuma missão com queuePosition numérico -> null (não inventa posição)', () => {
@@ -271,7 +292,121 @@ describe('parseSetupStatus', () => {
         error: null,
         missions: [{ projectId: 'proj_1', status: 'pending', queuePosition: null }],
       })
-    ).toEqual({ status: 'pending', error: null, queuePosition: null })
+    ).toEqual({ status: 'pending', error: null, queuePosition: null, environmentResources: null })
+  })
+
+  // W1: environment.resources vem de GET /setup/status (via
+  // summarizeResourcesLock no backend) — o dono precisa VER as versões REAIS
+  // instaladas no ambiente isolado dele, não uma suposição. null enquanto o
+  // bootstrap não terminou (ou o backend não devolveu `environment` nenhum).
+  it('environment.resources presente -> repassado como environmentResources', () => {
+    expect(
+      parseSetupStatus({
+        status: 'completed',
+        error: null,
+        environment: {
+          id: 'env_1',
+          status: 'ready',
+          resources: {
+            engines: [
+              { name: 'claude', version: '2.1.200' },
+              { name: 'codex', version: '0.142.5' },
+              { name: 'antigravity', version: '1.1.4' },
+            ],
+            commit: 'abc123d',
+          },
+        },
+      })
+    ).toEqual({
+      status: 'completed',
+      error: null,
+      queuePosition: null,
+      environmentResources: {
+        engines: [
+          { name: 'claude', version: '2.1.200' },
+          { name: 'codex', version: '0.142.5' },
+          { name: 'antigravity', version: '1.1.4' },
+        ],
+        commit: 'abc123d',
+      },
+    })
+  })
+
+  it('environment presente mas resources null (bootstrap ainda rodando) -> environmentResources null', () => {
+    expect(
+      parseSetupStatus({
+        status: 'running',
+        error: null,
+        environment: { id: 'env_1', status: 'provisioning', resources: null },
+      })
+    ).toEqual({
+      status: 'running',
+      error: null,
+      queuePosition: null,
+      environmentResources: null,
+    })
+  })
+
+  it('environment ausente -> environmentResources null (sem inventar)', () => {
+    expect(parseSetupStatus({ status: 'pending', error: null, environment: null })).toEqual({
+      status: 'pending',
+      error: null,
+      queuePosition: null,
+      environmentResources: null,
+    })
+  })
+
+  it('environment.resources malformado (engines não é array, motor sem version) é descartado por inteiro -> null', () => {
+    expect(
+      parseSetupStatus({
+        status: 'completed',
+        error: null,
+        environment: { id: 'env_1', status: 'ready', resources: { engines: 'nope', commit: 'x' } },
+      })
+    ).toEqual({
+      status: 'completed',
+      error: null,
+      queuePosition: null,
+      environmentResources: null,
+    })
+    expect(
+      parseSetupStatus({
+        status: 'completed',
+        error: null,
+        environment: {
+          id: 'env_1',
+          status: 'ready',
+          resources: { engines: [{ name: 'claude' }], commit: 'x' },
+        },
+      })
+    ).toEqual({
+      status: 'completed',
+      error: null,
+      queuePosition: null,
+      environmentResources: null,
+    })
+  })
+})
+
+// Texto honesto para o StepReady: nome de exibição conhecido (mesmo dos
+// cards de StepConnectEngine) + a versão REAL — nunca uma suposição.
+describe('formatEngineVersions', () => {
+  it('formata os 3 motores conhecidos com nome de exibição, separados por · ', () => {
+    expect(
+      formatEngineVersions([
+        { name: 'claude', version: '2.1.200' },
+        { name: 'codex', version: '0.142.5' },
+        { name: 'antigravity', version: '1.1.4' },
+      ])
+    ).toBe('Claude Code 2.1.200 · Codex 0.142.5 · Antigravity 1.1.4')
+  })
+
+  it('lista vazia -> string vazia (quem chama decide o que mostrar)', () => {
+    expect(formatEngineVersions([])).toBe('')
+  })
+
+  it('motor sem nome de exibição conhecido cai no nome cru (nunca esconde um motor real)', () => {
+    expect(formatEngineVersions([{ name: 'exotic', version: '9.9.9' }])).toBe('exotic 9.9.9')
   })
 })
 
