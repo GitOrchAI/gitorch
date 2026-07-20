@@ -136,14 +136,13 @@ export class EngineConnectionService {
       : undefined
     if (!relPaths) throw new Error(`Runtime não suportado: ${runtime}`)
 
-    const blob = await archivePaths(homeDir, relPaths)
-    if (!blob) {
+    const initialBlob = await archivePaths(homeDir, relPaths)
+    if (!initialBlob) {
       throw new Error(
         `Credencial de ${runtime} não encontrada em ${homeDir} (${relPaths.join(', ')}); o login foi concluído?`
       )
     }
 
-    const encryptedCredential = encryptCredential(blob)
     const now = new Date()
     const extraFields = {
       ...(extra?.credentialKind ? { credentialKind: extra.credentialKind } : {}),
@@ -157,6 +156,19 @@ export class EngineConnectionService {
     // ser arquivada do homeDir e ainda está lá; validamos no mesmo lugar.
     const liveness = runtime === 'github' ? null : await this.liveness(runtime, homeDir)
     const statusFields = buildStatusFields(liveness, now)
+
+    // Rearquiva DEPOIS da liveness (não antes): para o Codex, é a própria
+    // descoberta de modelos dentro da liveness que aquece e grava
+    // `.codex/models_cache.json` em homeDir pela 1ª vez (só nasce numa sessão
+    // real do CLI — ver makeCodexDiscoverer em model-catalog.ts). Sem
+    // rearquivar aqui, esse arquivo recém-criado nunca entraria no blob
+    // cifrado persistido — e toda missão completada (refreshModels chamado em
+    // scheduler.ts após cada uma) teria que aquecer de novo, gastando quota do
+    // dono à toa a cada vez. Fallback pro blob inicial se o rearquivo falhar
+    // (best-effort: nunca é motivo pra derrubar uma conexão que já provou
+    // estar viva).
+    const finalBlob = (await archivePaths(homeDir, relPaths).catch(() => null)) ?? initialBlob
+    const encryptedCredential = encryptCredential(finalBlob)
 
     const record = await this.prisma.engineConnection.upsert({
       where: { userId_runtime: { userId, runtime } },
@@ -351,6 +363,17 @@ export class EngineConnectionService {
         const quota = readQuota
           ? await readQuota(home).catch(() => ({ remaining: null, total: null }))
           : { remaining: null, total: null }
+        // Rearquiva a credencial: a descoberta pode ter criado/atualizado
+        // arquivos no HOME materializado (ex.: o aquecimento do Codex grava
+        // `.codex/models_cache.json` na 1ª vez que o cache está ausente — ver
+        // makeCodexDiscoverer em model-catalog.ts). Sem isto, uma conexão sem
+        // o cache ainda persistido (ex.: criada antes deste fix) aqueceria de
+        // novo a CADA missão completada (scheduler chama refreshModels depois
+        // de todas), gastando quota do dono à toa. Best-effort: se o
+        // rearquivo falhar, ainda gravamos os models/quota que já temos.
+        const refreshedBlob = Object.hasOwn(ENGINE_CREDENTIAL_PATHS, runtime)
+          ? await archivePaths(home, ENGINE_CREDENTIAL_PATHS[runtime] as string[]).catch(() => null)
+          : null
         await this.prisma.engineConnection.updateMany({
           where: { userId, runtime },
           data: {
@@ -360,6 +383,7 @@ export class EngineConnectionService {
             quotaRemaining: quota.remaining,
             quotaTotal: quota.total,
             quotaRefreshedAt: new Date(),
+            ...(refreshedBlob ? { encryptedCredential: encryptCredential(refreshedBlob) } : {}),
           },
         })
         return models

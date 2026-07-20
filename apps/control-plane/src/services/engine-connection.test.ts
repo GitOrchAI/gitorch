@@ -4,6 +4,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { EngineConnectionService, isSupportedRuntime } from './engine-connection.js'
+import { MODEL_DISCOVERERS } from './model-catalog.js'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function fakePrisma() {
@@ -524,5 +525,94 @@ describe('EngineConnectionService', () => {
     expect(await svc.refreshModels('u', 'constructor')).toEqual([])
 
     await fs.rm(home, { recursive: true, force: true })
+  })
+
+  // Regressão do bug real do Codex (2026-07-20, diagnóstico
+  // docs/superpowers/qa/2026-07-20-diagnostico-3-motores.md): a liveness do
+  // Codex, ao descobrir modelos, pode aquecer e GRAVAR
+  // `.codex/models_cache.json` no homeDir pela 1ª vez (ver makeCodexDiscoverer
+  // em model-catalog.ts) — o arquivo não existia quando o login terminou.
+  // Sem rearquivar DEPOIS da liveness, esse arquivo nunca entraria no blob
+  // cifrado persistido, e toda missão completada teria que aquecer de novo.
+  test('captureFromHome rearquiva a credencial depois da liveness (pega arquivo que a descoberta de modelos criou)', async () => {
+    const prisma = fakePrisma()
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-home-warmup-'))
+    await fs.mkdir(path.join(home, '.codex'), { recursive: true })
+    await fs.writeFile(path.join(home, '.codex', 'auth.json'), '{"token":"do-cliente"}')
+
+    // Simula o que a liveness real faz ao descobrir modelos do Codex: grava
+    // models_cache.json no MESMO homeDir só DEPOIS que a 1ª arquivagem (a de
+    // dentro de captureFromHome, antes da liveness) já rodou.
+    const livenessQueAquece = async () => {
+      await fs.writeFile(
+        path.join(home, '.codex', 'models_cache.json'),
+        JSON.stringify({ models: [{ slug: 'gpt-5.5' }] })
+      )
+      return {
+        alive: true as const,
+        models: ['gpt-5.5'],
+        quota: { remaining: null as number | null, total: null as number | null },
+      }
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any, livenessQueAquece)
+
+    const status = await svc.captureFromHome('user_warm', 'codex', home)
+    expect(status.models).toEqual(['gpt-5.5'])
+
+    // A credencial PERSISTIDA também tem que ter pego o cache recém-criado —
+    // senão toda missão completada (refreshModels em scheduler.ts) teria que
+    // aquecer de novo, gastando quota do dono à toa.
+    const missionHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-mhome-warmup-'))
+    expect(await svc.materializeToHome('user_warm', 'codex', missionHome)).toBe(true)
+    expect(
+      await fs.readFile(path.join(missionHome, '.codex', 'models_cache.json'), 'utf8')
+    ).toContain('gpt-5.5')
+
+    await fs.rm(home, { recursive: true, force: true })
+    await fs.rm(missionHome, { recursive: true, force: true })
+  })
+
+  test('refreshModels rearquiva a credencial com o que a descoberta grava no HOME (evita aquecer de novo em toda missão)', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any, aliveLiveness)
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-refresh-'))
+    await fs.mkdir(path.join(home, '.codex'), { recursive: true })
+    await fs.writeFile(path.join(home, '.codex', 'auth.json'), '{"token":"x"}')
+    await svc.captureFromHome('user_refresh', 'codex', home)
+
+    // Substitui o discoverer real do Codex por um fake que simula o
+    // aquecimento: grava models_cache.json no HOME MATERIALIZADO (a prova de
+    // que a descoberta aconteceu ali) e devolve os modelos. MODEL_DISCOVERERS
+    // é um objeto-módulo mutável de propósito só para este teste (sem mock de
+    // módulo), restaurado no finally.
+    const originalDiscoverer = MODEL_DISCOVERERS['codex']
+    if (!originalDiscoverer) throw new Error('setup do teste: MODEL_DISCOVERERS.codex ausente')
+    MODEL_DISCOVERERS['codex'] = async (materializedHome: string) => {
+      await fs.writeFile(
+        path.join(materializedHome, '.codex', 'models_cache.json'),
+        JSON.stringify({ models: [{ slug: 'gpt-5.5' }] })
+      )
+      return ['gpt-5.5']
+    }
+    try {
+      const models = await svc.refreshModels('user_refresh', 'codex')
+      expect(models).toEqual(['gpt-5.5'])
+    } finally {
+      MODEL_DISCOVERERS['codex'] = originalDiscoverer
+    }
+
+    // A credencial persistida tem que ter pego o cache — uma missão
+    // subsequente (que restaura o blob salvo) já encontra o cache pronto, sem
+    // precisar aquecer de novo.
+    const missionHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-refresh-mission-'))
+    expect(await svc.materializeToHome('user_refresh', 'codex', missionHome)).toBe(true)
+    expect(
+      await fs.readFile(path.join(missionHome, '.codex', 'models_cache.json'), 'utf8')
+    ).toContain('gpt-5.5')
+
+    await fs.rm(home, { recursive: true, force: true })
+    await fs.rm(missionHome, { recursive: true, force: true })
   })
 })

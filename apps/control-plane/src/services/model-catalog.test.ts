@@ -6,6 +6,7 @@ import {
   discoverClaudeModels,
   discoverCodexModels,
   makeAntigravityDiscoverer,
+  makeCodexDiscoverer,
 } from './model-catalog.js'
 
 describe('model-catalog', () => {
@@ -28,8 +29,63 @@ describe('model-catalog', () => {
     await fs.rm(home, { recursive: true, force: true })
   })
 
-  test('codex: lista vazia quando não há cache', async () => {
-    expect(await discoverCodexModels('/tmp/gitorch-inexistente-xyz')).toEqual([])
+  // Regressão do bug real (2026-07-20): `codex login`/`codex login status` NÃO
+  // gera models_cache.json — só uma sessão real (`codex exec`) gera. A
+  // liveness passava (login ok) mas o catálogo vinha 0. Estes testes cobrem o
+  // aquecimento com um FAKE runner (nunca invocam o binário `codex` real —
+  // isso quebraria em CI, onde ele não existe, e seria lento/instável mesmo
+  // nesta VM de dev).
+  describe('codex: aquecimento do cache ausente', () => {
+    test('cache ausente + aquecimento funciona -> lê os modelos recém-gravados', async () => {
+      const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-codex-warmup-ok-'))
+      let warmUpCalls = 0
+      const discover = makeCodexDiscoverer('codex-fake-bin', async (bin, warmHome) => {
+        warmUpCalls++
+        expect(bin).toBe('codex-fake-bin')
+        expect(warmHome).toBe(home)
+        // Simula o que `codex exec` faz de verdade: grava o cache no HOME.
+        await fs.mkdir(path.join(warmHome, '.codex'), { recursive: true })
+        await fs.writeFile(
+          path.join(warmHome, '.codex', 'models_cache.json'),
+          JSON.stringify({ models: [{ slug: 'gpt-5.5', display_name: 'GPT-5.5' }] })
+        )
+      })
+
+      expect(await discover(home)).toEqual(['GPT-5.5'])
+      expect(warmUpCalls).toBe(1)
+
+      await fs.rm(home, { recursive: true, force: true })
+    })
+
+    test('cache já existe -> NÃO aquece de novo (warm-up nunca chamado)', async () => {
+      const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-codex-warmup-skip-'))
+      await fs.mkdir(path.join(home, '.codex'), { recursive: true })
+      await fs.writeFile(
+        path.join(home, '.codex', 'models_cache.json'),
+        JSON.stringify({ models: [{ slug: 'o4' }] })
+      )
+      const discover = makeCodexDiscoverer('codex-fake-bin', async () => {
+        throw new Error('warm-up não deveria ter sido chamado: cache já existia')
+      })
+
+      expect(await discover(home)).toEqual(['o4'])
+
+      await fs.rm(home, { recursive: true, force: true })
+    })
+
+    test('aquecimento falha -> lista vazia, sem lançar (connect não quebra)', async () => {
+      const discover = makeCodexDiscoverer('codex-fake-bin', async () => {
+        throw new Error('provider indisponível neste teste')
+      })
+      await expect(discover('/tmp/gitorch-codex-warmup-falha-xyz')).resolves.toEqual([])
+    })
+  })
+
+  test('codex: lista vazia quando não há cache e o aquecimento não roda (binário ausente)', async () => {
+    // Usa um binário que certamente não existe no PATH — prova o fallback
+    // honesto (nunca invoca o `codex` real do ambiente de teste).
+    const discover = makeCodexDiscoverer('codex-binario-que-nao-existe-xyz')
+    expect(await discover('/tmp/gitorch-inexistente-xyz')).toEqual([])
   })
 
   describe('claude', () => {
