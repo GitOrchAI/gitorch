@@ -13,6 +13,7 @@ import {
   classifyGithubApiError,
   setupErrorHttpStatus,
 } from '../lib/setup-errors.js'
+import { summarizeResourcesLock } from '../lib/environment-resources.js'
 import { mintInstallationToken } from '../services/github-app-token.js'
 
 interface GitHubRepo {
@@ -731,8 +732,19 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
           // createdAt, ver selectClaimableSetupMissions).
           queuePosition: m.status === 'pending' ? (queuePositionById.get(m.id) ?? null) : null,
         })),
-        // Só id + status: o `path` do ambiente é infra e NUNCA vai pro frontend.
-        environment: environment ? { id: environment.id, status: environment.status } : null,
+        // Só id + status + resumo honesto das versões instaladas (W1: o dono
+        // precisa VER o que está rodando no ambiente dele). O `path` é infra
+        // e NUNCA vai pro frontend; `resources` nunca carrega npm/cache/
+        // sha256/binary/arch/repo do lock cru — summarizeResourcesLock já
+        // filtra isso, e devolve null enquanto o bootstrap não gerou o lock
+        // ainda (o front mostra "preparando", nunca um bloco inventado).
+        environment: environment
+          ? {
+              id: environment.id,
+              status: environment.status,
+              resources: summarizeResourcesLock(environment.resourcesLock),
+            }
+          : null,
       })
     }
   )
