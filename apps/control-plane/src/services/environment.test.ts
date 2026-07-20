@@ -683,3 +683,183 @@ describe('ClientEnvironmentService.current', () => {
     expect(await svc.current('ninguem')).toBeNull()
   })
 })
+
+describe('ClientEnvironmentService.bootstrapResources', () => {
+  let baseDir: string
+  beforeEach(async () => {
+    baseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-bootstrap-'))
+  })
+  afterEach(async () => {
+    await fs.rm(baseDir, { recursive: true, force: true })
+  })
+
+  // Formato real gravado pelo bootstrap-env.sh privado (ver env-lock.json de
+  // produção): versões dos 3 motores + referência dos recursos nativos.
+  const LOCK_CONTENT = {
+    generatedAt: '2026-07-20T00:00:00Z',
+    engines: {
+      claude: { npm: '@anthropic-ai/claude-code', version: '2.1.200', cache: '/x' },
+      codex: { npm: '@openai/codex', version: '0.142.5', cache: '/x' },
+      antigravity: { binary: 'agy', version: '1.1.4', sha256: 'abc', arch: 'arm64', cache: '/x' },
+    },
+    resources: { repo: 'https://github.com/loureng/gitorch.git', commit: 'abc123' },
+  }
+
+  test('bootstrap OK: grava resourcesLock com as versões e marca o ambiente ready', async () => {
+    const prisma = fakePrisma()
+    const envPath = path.join(baseDir, 'env_ok')
+    await fs.mkdir(envPath, { recursive: true })
+    prisma.store.set('env_ok', {
+      id: 'env_ok',
+      userId: 'u',
+      status: 'fixed',
+      path: envPath,
+      createdAt: new Date(),
+    })
+    // Runner fake: mimetiza o efeito real do script (escreve o env-lock.json
+    // dentro do ambiente) sem rodar nada de verdade — nenhum teste de CI roda
+    // o bootstrap real.
+    const runner = vi.fn(async (dir: string) => {
+      await fs.mkdir(path.join(dir, '.gitorch'), { recursive: true })
+      await fs.writeFile(path.join(dir, '.gitorch', 'env-lock.json'), JSON.stringify(LOCK_CONTENT))
+      return { exitCode: 0, stderr: '' }
+    })
+    const svc = new ClientEnvironmentService(prisma as any, baseDir, undefined, runner)
+
+    const result = await svc.bootstrapResources('env_ok')
+
+    expect(result).toEqual({ ok: true, lock: LOCK_CONTENT })
+    expect(runner).toHaveBeenCalledWith(envPath)
+    expect(prisma.store.get('env_ok')?.status).toBe('ready')
+    expect(prisma.store.get('env_ok')?.resourcesLock).toEqual(LOCK_CONTENT)
+  })
+
+  test('bootstrap falha (exit != 0): ambiente error com a causa real, resourcesLock NÃO gravado', async () => {
+    const prisma = fakePrisma()
+    const envPath = path.join(baseDir, 'env_fail')
+    await fs.mkdir(envPath, { recursive: true })
+    prisma.store.set('env_fail', {
+      id: 'env_fail',
+      userId: 'u',
+      status: 'fixed',
+      path: envPath,
+      createdAt: new Date(),
+    })
+    const runner = vi.fn(async () => ({
+      exitCode: 1,
+      stderr: 'erro: sha256 do agy do host DIVERGE do manifesto',
+    }))
+    const svc = new ClientEnvironmentService(prisma as any, baseDir, undefined, runner)
+
+    const result = await svc.bootstrapResources('env_fail')
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain('sha256 do agy do host DIVERGE')
+    expect(prisma.store.get('env_fail')?.status).toBe('error')
+    expect(prisma.store.get('env_fail')?.resourcesLock).toBeUndefined()
+  })
+
+  test('env-lock.json ausente mesmo com exit 0: ambiente error (nunca "ativo" sem os recursos)', async () => {
+    const prisma = fakePrisma()
+    const envPath = path.join(baseDir, 'env_nolock')
+    await fs.mkdir(envPath, { recursive: true })
+    prisma.store.set('env_nolock', {
+      id: 'env_nolock',
+      userId: 'u',
+      status: 'fixed',
+      path: envPath,
+      createdAt: new Date(),
+    })
+    // Exit 0 "de mentira": o script terminou sem erro, mas por qualquer razão
+    // não escreveu o env-lock.json. Honestidade > confiar no código de saída.
+    const runner = vi.fn(async () => ({ exitCode: 0, stderr: '' }))
+    const svc = new ClientEnvironmentService(prisma as any, baseDir, undefined, runner)
+
+    const result = await svc.bootstrapResources('env_nolock')
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain('env-lock.json')
+    expect(prisma.store.get('env_nolock')?.status).toBe('error')
+    expect(prisma.store.get('env_nolock')?.resourcesLock).toBeUndefined()
+  })
+
+  test('env-lock.json corrompido (JSON inválido): ambiente error com a causa', async () => {
+    const prisma = fakePrisma()
+    const envPath = path.join(baseDir, 'env_corrupt')
+    await fs.mkdir(path.join(envPath, '.gitorch'), { recursive: true })
+    await fs.writeFile(path.join(envPath, '.gitorch', 'env-lock.json'), '{ isto não é json')
+    prisma.store.set('env_corrupt', {
+      id: 'env_corrupt',
+      userId: 'u',
+      status: 'fixed',
+      path: envPath,
+      createdAt: new Date(),
+    })
+    const runner = vi.fn(async () => ({ exitCode: 0, stderr: '' }))
+    const svc = new ClientEnvironmentService(prisma as any, baseDir, undefined, runner)
+
+    const result = await svc.bootstrapResources('env_corrupt')
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain('env-lock.json inválido')
+    expect(prisma.store.get('env_corrupt')?.status).toBe('error')
+  })
+
+  test('runner lança (ex.: GITORCH_BOOTSTRAP_SCRIPT ausente): captura, não propaga, marca error', async () => {
+    const prisma = fakePrisma()
+    const envPath = path.join(baseDir, 'env_throw')
+    await fs.mkdir(envPath, { recursive: true })
+    prisma.store.set('env_throw', {
+      id: 'env_throw',
+      userId: 'u',
+      status: 'fixed',
+      path: envPath,
+      createdAt: new Date(),
+    })
+    const runner = vi.fn(async () => {
+      throw new Error('GITORCH_BOOTSTRAP_SCRIPT não definido')
+    })
+    const svc = new ClientEnvironmentService(prisma as any, baseDir, undefined, runner)
+
+    const result = await svc.bootstrapResources('env_throw')
+
+    expect(result).toEqual({ ok: false, error: 'GITORCH_BOOTSTRAP_SCRIPT não definido' })
+    expect(prisma.store.get('env_throw')?.status).toBe('error')
+  })
+
+  test('ambiente inexistente: devolve erro sem lançar e sem tentar rodar o script', async () => {
+    const prisma = fakePrisma()
+    const runner = vi.fn()
+    const svc = new ClientEnvironmentService(prisma as any, baseDir, undefined, runner)
+
+    const result = await svc.bootstrapResources('nao-existe')
+
+    expect(result).toEqual({ ok: false, error: 'ambiente não encontrado' })
+    expect(runner).not.toHaveBeenCalled()
+  })
+
+  test('marca "provisioning" ANTES de rodar o script (progresso visível durante a instalação)', async () => {
+    const prisma = fakePrisma()
+    const envPath = path.join(baseDir, 'env_prog')
+    await fs.mkdir(envPath, { recursive: true })
+    prisma.store.set('env_prog', {
+      id: 'env_prog',
+      userId: 'u',
+      status: 'fixed',
+      path: envPath,
+      createdAt: new Date(),
+    })
+    let statusDuringRun: string | undefined
+    const runner = vi.fn(async (dir: string) => {
+      statusDuringRun = prisma.store.get('env_prog')?.status
+      await fs.mkdir(path.join(dir, '.gitorch'), { recursive: true })
+      await fs.writeFile(path.join(dir, '.gitorch', 'env-lock.json'), JSON.stringify(LOCK_CONTENT))
+      return { exitCode: 0, stderr: '' }
+    })
+    const svc = new ClientEnvironmentService(prisma as any, baseDir, undefined, runner)
+
+    await svc.bootstrapResources('env_prog')
+
+    expect(statusDuringRun).toBe('provisioning')
+  })
+})

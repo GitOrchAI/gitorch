@@ -396,10 +396,21 @@ model ClientEnvironment {
   userId String @map("user_id")
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  // provisional (durante o wizard) | fixed (aceite final concluído)
+  // provisional (durante o wizard) | fixed (aceite final concluído) |
+  // provisioning (bootstrap de recursos rodando pós-fixação, W1.2.2) |
+  // ready (recursos instalados — ver resourcesLock) | error (bootstrap
+  // falhou; NUNCA fica 'ready' sem os recursos de verdade instalados)
   status String @default("provisional")
   // Diretório isolado em disco onde o clone + as credenciais do cliente vivem.
   path   String
+
+  // Versões REALMENTE instaladas pelo bootstrap (infra/bootstrap-env.sh) DENTRO
+  // do ambiente — o mesmo conteúdo do <env>/.gitorch/env-lock.json gerado por
+  // ele (motores versionados + commit dos recursos nativos do manifesto).
+  // Auditável, exibido ao dono no painel/StepReady. null enquanto o bootstrap
+  // não rodou ainda ou falhou (ver ClientEnvironmentService.bootstrapResources)
+  // — nunca inventa uma versão instalada.
+  resourcesLock Json? @map("resources_lock")
 
   fixedAt   DateTime? @map("fixed_at")
   createdAt DateTime  @default(now()) @map("created_at")

@@ -534,6 +534,24 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
       // tirando-o do alcance da faxina 24h — agora é um cliente de verdade.
       await clientEnvironments.fix(user.id)
 
+      // Dispara o bootstrap de recursos (W1.2.2): instala os motores/recursos
+      // VERSIONADOS do manifesto DENTRO do ambiente recém-fixado
+      // (fixed -> provisioning -> ready/error). Assíncrono de propósito — não
+      // trava esta resposta HTTP (a 1ª instalação de uma versão nova pode
+      // levar minutos); o progresso real fica no `environment.status` que
+      // GET /setup/status já expõe. bootstrapResources() nunca lança (captura
+      // as próprias falhas internamente); o catch aqui é só cinto de
+      // segurança contra um bug inesperado no disparo em si.
+      const fixedEnv = await clientEnvironments.current(user.id)
+      if (fixedEnv) {
+        clientEnvironments.bootstrapResources(fixedEnv.id).catch((err) => {
+          app.log.error(
+            { error: err instanceof Error ? err.message : String(err) },
+            '[setup] disparo do bootstrap de recursos falhou inesperadamente'
+          )
+        })
+      }
+
       // Coleta de contexto → memória (F4.2.3): junta board + PRs + Issues de
       // cada repo e grava no Cortex (ponte GitHub→memória). BEST-EFFORT — nunca
       // derruba o aceite final: sem Cortex/token (ex.: teste de rota isolado) ou

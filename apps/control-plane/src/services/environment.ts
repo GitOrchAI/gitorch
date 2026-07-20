@@ -1,7 +1,10 @@
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
-import type { PrismaClient } from '@prisma/client'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { Prisma, type PrismaClient } from '@prisma/client'
 import { LocalWorkspaceProvider } from '@gitorch/workspace-engine'
+import { buildChildProcessEnv, wrapWithLimits, type ExecutionLimits } from '@gitorch/agents'
 
 type PrismaLike = Pick<PrismaClient, 'clientEnvironment'>
 
@@ -14,6 +17,8 @@ export interface ClientEnvironmentRecord {
   userId: string
   status: string
   path: string
+  /** Versões instaladas pelo bootstrap (env-lock.json) — null até rodar/falhar. */
+  resourcesLock: unknown
   fixedAt: Date | null
   createdAt: Date
   updatedAt: Date
@@ -21,12 +26,117 @@ export interface ClientEnvironmentRecord {
   lastActivityAt: Date
 }
 
+/** Resultado cru (sem interpretar sucesso/erro) de rodar o script de bootstrap. */
+export interface BootstrapRunResult {
+  exitCode: number
+  stderr: string
+}
+
+/**
+ * Roda `infra/bootstrap-env.sh <envDir>` (script PRIVADO, path via
+ * GITORCH_BOOTSTRAP_SCRIPT) e devolve o resultado cru. Injetável — os testes
+ * usam um fake determinístico, NUNCA o script real (que instala CLIs de
+ * verdade via npm/cópia+sha256).
+ */
+export type BootstrapRunner = (envDir: string) => Promise<BootstrapRunResult>
+
+/** Resultado interpretado de `bootstrapResources`: honesto sobre sucesso/causa. */
+export interface BootstrapResourcesResult {
+  ok: boolean
+  /** Causa REAL da falha (stderr do script, ou o motivo do env-lock ausente/inválido). */
+  error?: string
+  /** Conteúdo do env-lock.json quando `ok` — o mesmo que fica em resourcesLock. */
+  lock?: unknown
+}
+
+const execFileAsync = promisify(execFile)
+
+// 10min: a 1ª instalação de uma versão de motor faz `npm install -g` (pode
+// demorar); instalações seguintes do MESMO ambiente/versão reusam o cache
+// compartilhado (ver infra/bootstrap-env.sh) e terminam em segundos. Só entra
+// em vigor no runner REAL — os testes usam um runner fake sem timeout algum.
+const DEFAULT_BOOTSTRAP_TIMEOUT_MS = 10 * 60 * 1000
+
+// Mesmo teto (env vars) que packages/agents/runtime-adapter.ts usa para a
+// execução de missões — GITORCH_EXEC_LIMITS=systemd (com systemd-run no
+// PATH) prefixa o comando com o cgroup transitório; em qualquer outro caso
+// (default) o comando roda cru, sem alterar o comportamento atual da VM.
+const BOOTSTRAP_EXEC_LIMITS: ExecutionLimits = {
+  memoryMax: process.env['GITORCH_EXEC_MEMORY_MAX'] ?? '2G',
+  cpuQuota: process.env['GITORCH_EXEC_CPU_QUOTA'] ?? '150%',
+}
+
+function normalizeExitCode(code: unknown): number {
+  return typeof code === 'number' ? code : 1
+}
+
+// Passa só o essencial pro script (nunca process.env inteiro: o control
+// plane carrega DATABASE_URL/JWT_SECRET/tokens — o script é infra confiável,
+// mas defesa em profundidade é grátis aqui) + os GITORCH_* que o PRÓPRIO
+// script reconhece (ver infra/bootstrap-env.sh), quando o operador os
+// configurou nesta instância.
+function buildBootstrapEnv(): Record<string, string> {
+  const passthroughKeys = [
+    'GITORCH_MANIFEST_PATH',
+    'GITORCH_ENGINES_CACHE',
+    'GITORCH_AGY_BIN',
+  ] as const
+  const passthrough: Record<string, string> = {}
+  for (const key of passthroughKeys) {
+    const value = process.env[key]
+    if (value !== undefined) passthrough[key] = value
+  }
+  return { ...buildChildProcessEnv({}), ...passthrough }
+}
+
+/**
+ * Runner REAL: dispara `GITORCH_BOOTSTRAP_SCRIPT <envDir>` via execFile (sem
+ * shell), com o teto de recurso do `wrapWithLimits` e timeout. Sem a env var
+ * configurada, rejeita cedo com uma causa clara — nunca finge que rodou.
+ */
+export const realBootstrapRunner: BootstrapRunner = async (envDir) => {
+  const scriptPath = process.env['GITORCH_BOOTSTRAP_SCRIPT']
+  if (!scriptPath) {
+    throw new Error(
+      'GITORCH_BOOTSTRAP_SCRIPT não definido — não é possível instalar os recursos do ambiente'
+    )
+  }
+  const timeoutMs = Number(
+    process.env['GITORCH_BOOTSTRAP_TIMEOUT_MS'] ?? DEFAULT_BOOTSTRAP_TIMEOUT_MS
+  )
+  const { binary, args } = wrapWithLimits(scriptPath, [envDir], BOOTSTRAP_EXEC_LIMITS)
+  try {
+    const { stderr } = await execFileAsync(binary, args, {
+      env: buildBootstrapEnv(),
+      maxBuffer: 16 * 1024 * 1024,
+      timeout: timeoutMs,
+      killSignal: 'SIGKILL',
+    })
+    return { exitCode: 0, stderr }
+  } catch (error: unknown) {
+    const err = error as {
+      code?: number | string
+      killed?: boolean
+      signal?: string
+      stderr?: string
+      message?: string
+    }
+    const timedOut = err.killed === true || err.signal === 'SIGKILL'
+    return {
+      exitCode: timedOut ? 124 : normalizeExitCode(err.code),
+      stderr: err.stderr || err.message || String(error),
+    }
+  }
+}
+
 /**
  * Gerencia o ciclo de vida do ambiente isolado de cada cliente no setup wizard.
  * O ambiente nasce 'provisional' no aceite dos termos, acumula o clone dos
  * repos e as credenciais de motor logadas dentro dele, e vira 'fixed' no aceite
- * final. Um garbage collector (à parte) destrói 'provisional' SEM ATIVIDADE há
- * mais de 24h — o TTL mede INATIVIDADE, não idade (ver `touch`/`listExpired`).
+ * final. A partir daí, `bootstrapResources` instala os recursos VERSIONADOS do
+ * manifesto dentro dele ('fixed' -> 'provisioning' -> 'ready'/'error'). Um
+ * garbage collector (à parte) destrói 'provisional' SEM ATIVIDADE há mais de
+ * 24h — o TTL mede INATIVIDADE, não idade (ver `touch`/`listExpired`).
  *
  * O diretório base é infra da VM: vem de GITORCH_ENVIRONMENTS_DIR (nunca
  * hardcoded fixo), mesmo padrão do LocalWorkspaceProvider. O `path` guardado
@@ -35,14 +145,17 @@ export interface ClientEnvironmentRecord {
 export class ClientEnvironmentService {
   private readonly baseDir: string
   private readonly provider: WorkspaceAllocator
+  private readonly bootstrapRunner: BootstrapRunner
 
   constructor(
     private readonly prisma: PrismaLike,
     baseDir = process.env['GITORCH_ENVIRONMENTS_DIR'] ?? '/var/lib/gitorch/environments',
-    provider?: WorkspaceAllocator
+    provider?: WorkspaceAllocator,
+    bootstrapRunner?: BootstrapRunner
   ) {
     this.baseDir = baseDir
     this.provider = provider ?? new LocalWorkspaceProvider(baseDir)
+    this.bootstrapRunner = bootstrapRunner ?? realBootstrapRunner
   }
 
   /**
@@ -287,5 +400,91 @@ export class ClientEnvironmentService {
       where: { userId, status: 'provisional' },
       data: { status: 'fixed', fixedAt: new Date() },
     })
+  }
+
+  /**
+   * Instala os recursos VERSIONADOS do manifesto (motores + referência dos
+   * pacotes nativos) DENTRO do ambiente `envId`, rodando o script de bootstrap
+   * (privado, `GITORCH_BOOTSTRAP_SCRIPT`) e lendo de volta o
+   * `<env>/.gitorch/env-lock.json` que ele gera — o registro auditável do que
+   * foi REALMENTE instalado, gravado em `resourcesLock`.
+   *
+   * Honestidade acima de tudo: o ambiente vira 'provisioning' antes de rodar
+   * e só chega a 'ready' quando o script sai com sucesso E o env-lock existe
+   * e é um JSON válido. QUALQUER desvio disso (script falhou, timeout, env
+   * var ausente, env-lock ausente/corrompido) marca 'error' com a causa REAL
+   * — nunca deixa o ambiente "pronto" sem os recursos de fato instalados
+   * (o dono não aceita um "concluído" fingido).
+   *
+   * Assíncrono do ponto de vista de quem chama (não lança: falhas viram um
+   * resultado `{ ok: false, error }`), pensado para ser dado como
+   * fire-and-forget pela rota (não trava a resposta HTTP) — o progresso real
+   * fica em `status`, lido por quem consulta o ambiente (GET /setup/status).
+   */
+  async bootstrapResources(envId: string): Promise<BootstrapResourcesResult> {
+    const env = await this.prisma.clientEnvironment.findUnique({ where: { id: envId } })
+    if (!env?.path) {
+      console.warn('[environment] bootstrapResources: ambiente inexistente ou sem path', { envId })
+      return { ok: false, error: 'ambiente não encontrado' }
+    }
+
+    await this.prisma.clientEnvironment.update({
+      where: { id: envId },
+      data: { status: 'provisioning' },
+    })
+
+    try {
+      const result = await this.bootstrapRunner(env.path)
+      if (result.exitCode !== 0) {
+        const cause = result.stderr.trim() || `bootstrap-env.sh saiu com código ${result.exitCode}`
+        return await this.markBootstrapError(envId, cause)
+      }
+
+      const lockPath = path.join(env.path, '.gitorch', 'env-lock.json')
+      let raw: string
+      try {
+        raw = await fs.readFile(lockPath, 'utf8')
+      } catch (err) {
+        const cause = `env-lock.json não foi gerado pelo bootstrap (${lockPath}): ${
+          err instanceof Error ? err.message : String(err)
+        }`
+        return await this.markBootstrapError(envId, cause)
+      }
+
+      let lock: unknown
+      try {
+        lock = JSON.parse(raw)
+      } catch (err) {
+        const cause = `env-lock.json inválido em ${lockPath}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+        return await this.markBootstrapError(envId, cause)
+      }
+
+      await this.prisma.clientEnvironment.update({
+        where: { id: envId },
+        data: { status: 'ready', resourcesLock: lock as Prisma.InputJsonValue },
+      })
+      return { ok: true, lock }
+    } catch (err) {
+      const cause = err instanceof Error ? err.message : String(err)
+      return await this.markBootstrapError(envId, cause)
+    }
+  }
+
+  /** Marca o ambiente 'error' com a causa REAL e loga — nunca some com o motivo. */
+  private async markBootstrapError(
+    envId: string,
+    cause: string
+  ): Promise<BootstrapResourcesResult> {
+    console.warn('[environment] bootstrapResources falhou — ambiente marcado error', {
+      envId,
+      cause,
+    })
+    await this.prisma.clientEnvironment.update({
+      where: { id: envId },
+      data: { status: 'error' },
+    })
+    return { ok: false, error: cause }
   }
 }
