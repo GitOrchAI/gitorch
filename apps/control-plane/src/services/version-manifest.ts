@@ -2,8 +2,8 @@ import * as fs from 'node:fs'
 
 // Ponte público↔privado: o control-plane (repo público) não contém as
 // versões pinadas dos motores nem a referência dos pacotes nativos
-// (cadence/cgc/memória) — isso vive no manifesto de versões do repo privado
-// gitorch-cloud (infra/manifest.json). Este serviço só LÊ esse manifesto de
+// (cadence/cgc/memória) — isso vive num manifesto de versões mantido fora
+// deste repositório, em infra privada. Este serviço só LÊ esse manifesto de
 // um path configurável; nunca assume onde ele está nem embute segredo algum.
 // Quem usa (bootstrap do ambiente de missão, próximas tasks da W1) recebe
 // tipos estáveis (EngineVersion/ResourcesRef) sem depender do formato bruto.
@@ -61,7 +61,7 @@ export function loadManifest(path?: string): VersionManifest {
   const manifestPath = path ?? process.env['GITORCH_MANIFEST_PATH']
   if (!manifestPath) {
     throw new Error(
-      'GITORCH_MANIFEST_PATH não configurado: o ambiente precisa do manifesto de versões do repo privado (gitorch-cloud/infra/manifest.json). Configure a variável de ambiente GITORCH_MANIFEST_PATH ou passe o path explicitamente.'
+      'GITORCH_MANIFEST_PATH não configurado: o ambiente precisa do manifesto de versões do repo privado. Configure a variável de ambiente GITORCH_MANIFEST_PATH ou passe o path explicitamente.'
     )
   }
 
