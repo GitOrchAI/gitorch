@@ -235,6 +235,62 @@ describe('AssistedLoginService', () => {
     expect(handle.writeStdin).toHaveBeenCalledTimes(1)
   })
 
+  it('BUG2 antigravity: detecta a tela de consentimento pós-login e confirma [Done] com CR, uma única vez', () => {
+    const { handle, emitStdout } = fakeHandle()
+    const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
+    const service = new AssistedLoginService(fakeEngineConnections() as never, {
+      image: 'img',
+      runDeviceLoginImpl,
+    })
+    service.start('user-1', 'antigravity')
+
+    // Menu de login primeiro — Enter #1, comportamento pré-existente (PR#303).
+    emitStdout(' Signing in... Select login method:\n > 1. Google OAuth\n')
+    expect(handle.writeStdin).toHaveBeenCalledTimes(1)
+
+    // Depois do código trocado com sucesso, o agy mostra uma 2a tela — o
+    // orquestrador não conhecia isto antes deste fix (diagnóstico 20/07): só
+    // existia MENU_SELECT_MARKER para o menu de login. Sem confirmar aqui, o
+    // agy nunca sai sozinho e a captura (via onExit) nunca dispara.
+    emitStdout(
+      '\n Yes, I agree to help improve Antigravity CLI by sending anonymous usage data\n' +
+        ' [Previous]  [Done]\n'
+    )
+    expect(handle.writeStdin).toHaveBeenCalledTimes(2)
+    expect(handle.writeStdin).toHaveBeenNthCalledWith(2, '\r')
+
+    // Chunks seguintes (a tela redesenha) não podem reenviar a confirmação —
+    // mesma disciplina do guard `menuSelected`.
+    emitStdout(' [Previous]  [Done]\n')
+    expect(handle.writeStdin).toHaveBeenCalledTimes(2)
+  })
+
+  it('BUG2 antigravity: reenvio do código depois de já submetido não reescreve o stdin (evita virar toggle da checkbox de consentimento)', async () => {
+    const { handle } = fakeHandle()
+    const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
+    const service = new AssistedLoginService(fakeEngineConnections() as never, {
+      image: 'img',
+      runDeviceLoginImpl,
+    })
+    const id = service.start('user-1', 'antigravity')
+
+    service.submitCode(id, 'user-1', 'the-pasted-code')
+    expect(handle.writeStdin).toHaveBeenCalledWith('the-pasted-code')
+    await vi.waitFor(() => {
+      expect(handle.writeStdin).toHaveBeenCalledWith('\r')
+    })
+    const callsAfterFirstSubmit = handle.writeStdin.mock.calls.length
+
+    // Dono reenvia achando que o código não foi (sintoma real do incidente:
+    // 4 reenvios no log). Pré-fix, cada reenvio escrevia cegamente no stdin,
+    // virando toque de navegação/toggle da checkbox de consentimento
+    // (evidência no log: `]\b\bx]\b\b ]`).
+    service.submitCode(id, 'user-1', 'the-pasted-code')
+    service.submitCode(id, 'user-1', 'the-pasted-code')
+    await new Promise((r) => setTimeout(r, 100))
+    expect(handle.writeStdin).toHaveBeenCalledTimes(callsAfterFirstSubmit)
+  })
+
   it('subscribe emite o estado atual imediatamente (sem perder eventos de quem conecta depois)', () => {
     const { handle } = fakeHandle()
     const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
