@@ -85,7 +85,15 @@ describe('AssistedLoginService', () => {
     service.submitCode(id, 'user-1', '  the-pasted-code  ')
     // Claude roda sob PTY: o Enter é '\r' — '\n' entregava o texto mas o TUI
     // nunca submetia (código parado no prompt, login pendurado; QA 2026-07-12).
-    expect(handle.writeStdin).toHaveBeenCalledWith('the-pasted-code\r')
+    // BUG 1 (diagnóstico 20/07): código e '\r' vão em writeStdin SEPARADOS —
+    // nunca grudados no mesmo burst. O campo mascarado do `claude setup-token`
+    // não reconhece o '\r' colado ao código para bursts longos (~90 chars,
+    // tamanho real do token OAuth).
+    expect(handle.writeStdin).toHaveBeenCalledWith('the-pasted-code')
+    expect(handle.writeStdin).not.toHaveBeenCalledWith('the-pasted-code\r')
+    await vi.waitFor(() => {
+      expect(handle.writeStdin).toHaveBeenCalledWith('\r')
+    })
 
     emitStdout('Success! Your token:\nsk-ant-oat01-abc123XYZ\n')
     // captureClaudeToken grava em disco de verdade (mkdir+writeFile) antes de
@@ -135,6 +143,35 @@ describe('AssistedLoginService', () => {
     await new Promise((r) => setTimeout(r, 0))
     expect(engineConnections.captureFromHome).toHaveBeenCalledTimes(captureCallsAfterFirstToken)
     expect(handle.kill).toHaveBeenCalledTimes(killCallsAfterFirstToken)
+  })
+
+  it('BUG1 claude: código longo (~90 chars, tamanho real do token OAuth) e Enter vão em writeStdin SEPARADOS, nunca grudados', async () => {
+    const { handle } = fakeHandle()
+    const engineConnections = fakeEngineConnections()
+    const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
+    const service = new AssistedLoginService(engineConnections as never, {
+      image: 'img',
+      runDeviceLoginImpl,
+    })
+
+    const id = service.start('user-1', 'claude')
+    // Tamanho real do código OAuth do Claude (diagnóstico 20/07): reproduzido
+    // que código curto passa, mas ~92 chars trava idêntico ao log do dono
+    // quando código+'\r' vão no mesmo burst de writeStdin.
+    const longCode = 'a'.repeat(92)
+    service.submitCode(id, 'user-1', longCode)
+
+    // O código é escrito PRIMEIRO, sozinho — nunca com o '\r' grudado no
+    // mesmo burst (causa raiz: o campo mascarado do `claude setup-token` não
+    // reconhece o '\r' quando ele chega colado ao código, para bursts longos).
+    expect(handle.writeStdin).toHaveBeenCalledWith(longCode)
+    expect(handle.writeStdin).not.toHaveBeenCalledWith(`${longCode}\r`)
+
+    // O '\r' chega num SEGUNDO writeStdin, após um pequeno delay.
+    await vi.waitFor(() => {
+      expect(handle.writeStdin).toHaveBeenCalledWith('\r')
+    })
+    expect(handle.writeStdin).toHaveBeenCalledTimes(2)
   })
 
   it('codex: URL e código chegando em chunks de stdout separados ainda resultam nos dois no estado final', () => {
@@ -541,7 +578,7 @@ describe('AssistedLoginService', () => {
     expect(logger.loginFailed).not.toHaveBeenCalled()
   })
 
-  it('IDOR: subscribe/submitCode de outro usuário não têm acesso à sessão (nem leem, nem escrevem); o dono continua funcionando', () => {
+  it('IDOR: subscribe/submitCode de outro usuário não têm acesso à sessão (nem leem, nem escrevem); o dono continua funcionando', async () => {
     const { handle } = fakeHandle()
     const engineConnections = fakeEngineConnections()
     const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
@@ -571,8 +608,12 @@ describe('AssistedLoginService', () => {
     expect(unsubscribe).not.toBeNull()
     expect(ownerCb).toHaveBeenCalledWith({ phase: 'starting' })
     expect(() => service.submitCode(id, 'user-1', 'owner-code')).not.toThrow()
-    // runtime PTY → Enter é '\r' (ver comentário no submitCode)
-    expect(handle.writeStdin).toHaveBeenCalledWith('owner-code\r')
+    // runtime PTY → Enter é '\r' (ver comentário no submitCode); vai num
+    // SEGUNDO writeStdin, separado do código (BUG 1).
+    expect(handle.writeStdin).toHaveBeenCalledWith('owner-code')
+    await vi.waitFor(() => {
+      expect(handle.writeStdin).toHaveBeenCalledWith('\r')
+    })
   })
 
   it('envHome (HOME do ambiente): makeHomeImpl aponta pro dir do ambiente e o cleanup NÃO o apaga — a credencial vive ali', async () => {

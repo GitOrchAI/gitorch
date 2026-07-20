@@ -39,6 +39,10 @@ const MENU_SELECT_MARKER: Partial<Record<DeviceRuntime, RegExp>> = {
   antigravity: /select login method/i,
 }
 
+// Pequeno atraso entre o código e o Enter em `submitCode` (BUG 1, diagnóstico
+// 20/07): ver o comentário em `submitCode` para a causa raiz completa.
+const SUBMIT_CODE_ENTER_DELAY_MS = 75
+
 // Investigação E2 (13/07): a hipótese de que este ÚNICO '\r' "vaza" no widget
 // de colar código como um submit vazio (agy saindo sozinho code=0 em ~300ms,
 // ANTES do usuário poder colar) NÃO reproduziu iterando contra o binário real
@@ -261,7 +265,17 @@ export class AssistedLoginService {
     // pra sempre (observado ao vivo no QA manual de 2026-07-12, Claude).
     // Codex roda por pipes (sem PTY), onde '\n' é o correto.
     const enter = NEEDS_PTY[session.runtime] ? '\r' : '\n'
-    session.handle.writeStdin(`${code.trim()}${enter}`)
+    // BUG 1 (Claude, diagnóstico 20/07): código e Enter vão em DOIS writeStdin
+    // separados, nunca no mesmo burst. Causa raiz reproduzida byte a byte
+    // contra o binário real: o campo mascarado do `claude setup-token` não
+    // reconhece o Enter quando ele chega GRUDADO ao código no mesmo burst,
+    // para códigos longos (~90 chars, tamanho real do token OAuth do Claude)
+    // — código curto passa, código longo trava idêntico ao log do dono.
+    // Determinístico pelo tamanho do burst, independe da versão do CLI.
+    session.handle.writeStdin(code.trim())
+    setTimeout(() => {
+      session.handle.writeStdin(enter)
+    }, SUBMIT_CODE_ENTER_DELAY_MS)
   }
 
   private onStdout(id: string, chunk: string): void {
