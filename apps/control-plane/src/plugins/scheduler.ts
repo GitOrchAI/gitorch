@@ -132,6 +132,61 @@ function buildWorkspaceProvider(app: FastifyInstance): WorkspaceProvider {
   return new LocalWorkspaceProvider()
 }
 
+/** Só o que a resolução do motor versionado lê do ambiente do cliente —
+ *  permite injetar um fake nos testes sem tocar Prisma/disco reais, mesmo
+ *  padrão de Pick<EngineConnectionService, 'materializeToHome'> acima. */
+export type EnvironmentLookup = Pick<ClientEnvironmentService, 'current'>
+
+export interface EngineBinResolution {
+  /** Diretório do motor versionado do ambiente (prepend no PATH da execução). */
+  dir?: string
+  /** Motivo de ter caído no host — SEMPRE presente quando `dir` está ausente. */
+  fallbackReason?: string
+}
+
+async function defaultBinDirExists(dir: string): Promise<boolean> {
+  return fs
+    .stat(dir)
+    .then((s) => s.isDirectory())
+    .catch(() => false)
+}
+
+/**
+ * Resolve `<env>/.gitorch/engines/<runtime>/bin` do AMBIENTE DO CLIENTE — não
+ * o binário genérico do host. O bootstrap (W1.2) instala os motores nas
+ * versões do manifesto ali dentro e só grava `resourcesLock` no banco quando
+ * termina com sucesso (ClientEnvironmentService.bootstrapResources).
+ *
+ * Fallback SEMPRE explicado (o motivo vai em `fallbackReason`, nunca
+ * silencioso): sem ambiente para o usuário, ambiente sem resourcesLock
+ * (bootstrap não rodou ou falhou), ou o bin do motor específico não existe em
+ * disco (ex.: manifesto não lista aquele runtime, ou o diretório foi
+ * removido) — em qualquer um desses casos a missão roda com o binário do
+ * host, o comportamento de sempre.
+ */
+export async function resolveEngineBinDir(
+  ownerUserId: string,
+  runtime: string,
+  environments: EnvironmentLookup,
+  pathExists: (dir: string) => Promise<boolean> = defaultBinDirExists
+): Promise<EngineBinResolution> {
+  const env = await environments.current(ownerUserId)
+  if (!env) {
+    return { fallbackReason: `usuário ${ownerUserId} sem ambiente provisionado` }
+  }
+  if (!env.resourcesLock) {
+    return {
+      fallbackReason: `ambiente ${env.id} (status=${env.status}) sem resourcesLock — bootstrap não rodou ou falhou`,
+    }
+  }
+  const dir = path.join(env.path, '.gitorch', 'engines', runtime, 'bin')
+  const exists = await pathExists(dir)
+  if (!exists) {
+    return { fallbackReason: `bin do motor '${runtime}' não encontrado em ${dir}` }
+  }
+  return { dir }
+}
+
 /**
  * Runner do executor local-process (sem container): materializa a credencial
  * conectada do dono num HOME temporário e a expõe ao processo filho — sem
@@ -141,10 +196,16 @@ function buildWorkspaceProvider(app: FastifyInstance): WorkspaceProvider {
  * entrypoint nenhum). Sem GITORCH_RUNTIME/GITORCH_OWNER_USER_ID no pedido, ou
  * sem conexão do motor, roda inalterado (fallback pras credenciais ambiente
  * do host, comportamento de sempre em modo single-tenant).
+ *
+ * `environments` (W1.3.1, opcional/injetável) resolve o motor VERSIONADO do
+ * ambiente do cliente e o antepõe no PATH da execução — sem ele (ou sem os
+ * recursos instalados), cai no binário do host com log claro (`log`).
  */
 export function createLocalCredentialRunner(
   engineConnections: Pick<EngineConnectionService, 'materializeToHome'>,
-  innerRunner: RuntimeCommandRunner = realRuntimeCommandRunner
+  innerRunner: RuntimeCommandRunner = realRuntimeCommandRunner,
+  environments?: EnvironmentLookup,
+  log?: { info: (msg: string) => void; warn: (msg: string) => void }
 ): RuntimeCommandRunner {
   return async (request) => {
     const runtime = request.env['GITORCH_RUNTIME']
@@ -168,6 +229,28 @@ export function createLocalCredentialRunner(
         envAdditions[name] = (await fs.readFile(path.join(envDir, name), 'utf8')).trim()
       }
 
+      // Motor VERSIONADO do ambiente do cliente (W1.3.1): se o bootstrap já
+      // instalou o runtime ali dentro, o processo filho o acha ANTES do
+      // binário genérico do host (prepend no PATH) — sem isto a missão
+      // sempre rodava o `agy`/`codex`/`claude` do host, ignorando o
+      // isolamento por versão que o wizard prometeu. Fallback (sem
+      // ambiente/resourcesLock/bin) preserva o comportamento de hoje, mas
+      // nunca em silêncio.
+      if (environments) {
+        const resolution = await resolveEngineBinDir(ownerUserId, runtime, environments)
+        if (resolution.dir) {
+          const hostPath = request.env['PATH'] ?? process.env['PATH'] ?? ''
+          envAdditions['PATH'] = `${resolution.dir}:${hostPath}`
+          log?.info(
+            `[Scheduler] Missão de ${ownerUserId} usa motor versionado do ambiente (${runtime}): ${resolution.dir}`
+          )
+        } else {
+          log?.warn(
+            `[Scheduler] Motor versionado indisponível para ${ownerUserId}/${runtime} — caindo pro binário do host (${resolution.fallbackReason})`
+          )
+        }
+      }
+
       return await innerRunner({ ...request, env: { ...request.env, ...envAdditions } })
     } finally {
       await fs.rm(dir, { recursive: true, force: true })
@@ -182,9 +265,14 @@ export function createLocalCredentialRunner(
  * local-process, credencial ainda é materializada (createLocalCredentialRunner)
  * — só o mecanismo de isolamento (container vs HOME temporário) muda.
  */
-function buildMissionRunner(app: FastifyInstance): RuntimeCommandRunner {
+function buildMissionRunner(
+  app: FastifyInstance,
+  environments: EnvironmentLookup
+): RuntimeCommandRunner {
   const executor = process.env['GITORCH_EXECUTOR'] ?? 'local-process'
-  if (executor !== 'podman') return createLocalCredentialRunner(app.engineConnections)
+  if (executor !== 'podman') {
+    return createLocalCredentialRunner(app.engineConnections, undefined, environments, app.log)
+  }
 
   const image = process.env['GITORCH_AGENT_IMAGE'] ?? 'localhost/gitorch-agent:latest'
   const engine = process.env['GITORCH_CONTAINER_ENGINE'] ?? 'podman'
@@ -486,7 +574,15 @@ export function selectClaimableSetupMissions<T>(
 }
 
 const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
-  const localStack = buildRuntimeStack(app, buildMissionRunner(app), buildWorkspaceProvider(app))
+  // Instanciado cedo: buildMissionRunner (W1.3.1) precisa dele para resolver o
+  // motor VERSIONADO do ambiente do dono do projeto ao montar o stack local; a
+  // faxina de ambientes expirados (mais abaixo) reusa a MESMA instância.
+  const clientEnvironments = new ClientEnvironmentService(app.prisma)
+  const localStack = buildRuntimeStack(
+    app,
+    buildMissionRunner(app, clientEnvironments),
+    buildWorkspaceProvider(app)
+  )
   const remoteStack = buildRemoteRuntimeStackIfConfigured(app)
 
   // Missão presa vira failed: cobre 'running' passado de STALE_RUNNING_MS e
@@ -1125,7 +1221,6 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // está usando o wizard renova o ambiente a cada passo real (ver
   // ClientEnvironmentService.touch) e nunca é varrido no meio do cadastro.
   const ENV_TTL_MS = Number(process.env['GITORCH_ENV_TTL_MS'] ?? String(24 * 60 * 60 * 1000))
-  const clientEnvironments = new ClientEnvironmentService(app.prisma)
   const sweepExpiredEnvironments = async (): Promise<void> => {
     try {
       const expired = await clientEnvironments.listExpired(ENV_TTL_MS)
