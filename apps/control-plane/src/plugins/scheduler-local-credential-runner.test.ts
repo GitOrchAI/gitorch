@@ -94,4 +94,203 @@ describe('createLocalCredentialRunner', () => {
 
     await expect(fs.stat(capturedDir)).rejects.toThrow()
   })
+
+  // W1.3.1: a missão passa a rodar com o motor VERSIONADO do AMBIENTE DO
+  // CLIENTE (instalado pelo bootstrap, W1.2), não o binário genérico do host.
+  describe('motor versionado do ambiente do cliente (W1.3.1)', () => {
+    test('ambiente com resourcesLock + bin do motor instalado: prepend do dir versionado no PATH', async () => {
+      const engineBinDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-env-engines-'))
+      tmpDirs.push(engineBinDir)
+      const envPath = path.join(engineBinDir, 'env_ready')
+      const binDir = path.join(envPath, '.gitorch', 'engines', 'claude', 'bin')
+      await fs.mkdir(binDir, { recursive: true })
+
+      const materializeToHome = vi.fn(async (_u: string, _r: string, dir: string) => {
+        tmpDirs.push(dir)
+        return true
+      })
+      const inner = vi.fn(async (request: { env: Record<string, string> }) => ({
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        durationMs: 1,
+        capturedEnv: request.env,
+      }))
+      const environments = {
+        current: vi.fn(async (userId: string) => ({
+          id: 'env_ready',
+          userId,
+          status: 'ready',
+          path: envPath,
+          resourcesLock: { engines: { claude: { version: '2.1.200' } } },
+          fixedAt: new Date(),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          lastActivityAt: new Date(),
+        })),
+      }
+      const log = { info: vi.fn(), warn: vi.fn() }
+
+      const runner = createLocalCredentialRunner(
+        { materializeToHome },
+        inner as never,
+        environments,
+        log
+      )
+      const result = (await runner({
+        binary: 'claude',
+        args: [],
+        env: { GITORCH_RUNTIME: 'claude', GITORCH_OWNER_USER_ID: 'user_env' },
+      })) as unknown as { capturedEnv: Record<string, string> }
+
+      expect(environments.current).toHaveBeenCalledWith('user_env')
+      expect(result.capturedEnv['PATH']).toMatch(new RegExp(`^${binDir}:`))
+      expect(log.info).toHaveBeenCalledWith(expect.stringContaining(binDir))
+      expect(log.warn).not.toHaveBeenCalled()
+    })
+
+    test('sem ambiente para o usuário: cai no host com log claro (não silencioso)', async () => {
+      const materializeToHome = vi.fn(async (_u: string, _r: string, dir: string) => {
+        tmpDirs.push(dir)
+        return true
+      })
+      const inner = vi.fn(async (request: { env: Record<string, string> }) => ({
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        durationMs: 1,
+        capturedEnv: request.env,
+      }))
+      const environments = { current: vi.fn(async () => null) }
+      const log = { info: vi.fn(), warn: vi.fn() }
+
+      const runner = createLocalCredentialRunner(
+        { materializeToHome },
+        inner as never,
+        environments,
+        log
+      )
+      const result = (await runner({
+        binary: 'claude',
+        args: [],
+        env: { GITORCH_RUNTIME: 'claude', GITORCH_OWNER_USER_ID: 'user_sem_env' },
+      })) as unknown as { capturedEnv: Record<string, string> }
+
+      expect(result.capturedEnv['PATH']).toBeUndefined()
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('user_sem_env'))
+    })
+
+    test('ambiente sem resourcesLock (bootstrap não rodou/falhou): cai no host com log claro', async () => {
+      const envPath = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-env-no-lock-'))
+      tmpDirs.push(envPath)
+      const materializeToHome = vi.fn(async (_u: string, _r: string, dir: string) => {
+        tmpDirs.push(dir)
+        return true
+      })
+      const inner = vi.fn(async (request: { env: Record<string, string> }) => ({
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        durationMs: 1,
+        capturedEnv: request.env,
+      }))
+      const environments = {
+        current: vi.fn(async () => ({
+          id: 'env_no_lock',
+          userId: 'user_sem_lock',
+          status: 'fixed',
+          path: envPath,
+          resourcesLock: null,
+          fixedAt: new Date(),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          lastActivityAt: new Date(),
+        })),
+      }
+      const log = { info: vi.fn(), warn: vi.fn() }
+
+      const runner = createLocalCredentialRunner(
+        { materializeToHome },
+        inner as never,
+        environments,
+        log
+      )
+      const result = (await runner({
+        binary: 'claude',
+        args: [],
+        env: { GITORCH_RUNTIME: 'claude', GITORCH_OWNER_USER_ID: 'user_sem_lock' },
+      })) as unknown as { capturedEnv: Record<string, string> }
+
+      expect(result.capturedEnv['PATH']).toBeUndefined()
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('resourcesLock'))
+    })
+
+    test('resourcesLock presente mas bin do motor não existe em disco (motor não instalado): cai no host com log claro', async () => {
+      const envPath = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-env-no-bin-'))
+      tmpDirs.push(envPath)
+      const materializeToHome = vi.fn(async (_u: string, _r: string, dir: string) => {
+        tmpDirs.push(dir)
+        return true
+      })
+      const inner = vi.fn(async (request: { env: Record<string, string> }) => ({
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        durationMs: 1,
+        capturedEnv: request.env,
+      }))
+      const environments = {
+        current: vi.fn(async () => ({
+          id: 'env_no_bin',
+          userId: 'user_sem_bin',
+          status: 'ready',
+          path: envPath,
+          resourcesLock: { engines: {} },
+          fixedAt: new Date(),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          lastActivityAt: new Date(),
+        })),
+      }
+      const log = { info: vi.fn(), warn: vi.fn() }
+
+      const runner = createLocalCredentialRunner(
+        { materializeToHome },
+        inner as never,
+        environments,
+        log
+      )
+      const result = (await runner({
+        binary: 'antigravity',
+        args: [],
+        env: { GITORCH_RUNTIME: 'antigravity', GITORCH_OWNER_USER_ID: 'user_sem_bin' },
+      })) as unknown as { capturedEnv: Record<string, string> }
+
+      expect(result.capturedEnv['PATH']).toBeUndefined()
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('antigravity'))
+    })
+
+    test('sem `environments` injetado (retrocompatibilidade): não toca PATH nem loga', async () => {
+      const materializeToHome = vi.fn(async (_u: string, _r: string, dir: string) => {
+        tmpDirs.push(dir)
+        return true
+      })
+      const inner = vi.fn(async (request: { env: Record<string, string> }) => ({
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        durationMs: 1,
+        capturedEnv: request.env,
+      }))
+
+      const runner = createLocalCredentialRunner({ materializeToHome }, inner as never)
+      const result = (await runner({
+        binary: 'claude',
+        args: [],
+        env: { GITORCH_RUNTIME: 'claude', GITORCH_OWNER_USER_ID: 'user_legacy' },
+      })) as unknown as { capturedEnv: Record<string, string> }
+
+      expect(result.capturedEnv['PATH']).toBeUndefined()
+    })
+  })
 })
