@@ -85,7 +85,15 @@ describe('AssistedLoginService', () => {
     service.submitCode(id, 'user-1', '  the-pasted-code  ')
     // Claude roda sob PTY: o Enter é '\r' — '\n' entregava o texto mas o TUI
     // nunca submetia (código parado no prompt, login pendurado; QA 2026-07-12).
-    expect(handle.writeStdin).toHaveBeenCalledWith('the-pasted-code\r')
+    // BUG 1 (diagnóstico 20/07): código e '\r' vão em writeStdin SEPARADOS —
+    // nunca grudados no mesmo burst. O campo mascarado do `claude setup-token`
+    // não reconhece o '\r' colado ao código para bursts longos (~90 chars,
+    // tamanho real do token OAuth).
+    expect(handle.writeStdin).toHaveBeenCalledWith('the-pasted-code')
+    expect(handle.writeStdin).not.toHaveBeenCalledWith('the-pasted-code\r')
+    await vi.waitFor(() => {
+      expect(handle.writeStdin).toHaveBeenCalledWith('\r')
+    })
 
     emitStdout('Success! Your token:\nsk-ant-oat01-abc123XYZ\n')
     // captureClaudeToken grava em disco de verdade (mkdir+writeFile) antes de
@@ -135,6 +143,35 @@ describe('AssistedLoginService', () => {
     await new Promise((r) => setTimeout(r, 0))
     expect(engineConnections.captureFromHome).toHaveBeenCalledTimes(captureCallsAfterFirstToken)
     expect(handle.kill).toHaveBeenCalledTimes(killCallsAfterFirstToken)
+  })
+
+  it('BUG1 claude: código longo (~90 chars, tamanho real do token OAuth) e Enter vão em writeStdin SEPARADOS, nunca grudados', async () => {
+    const { handle } = fakeHandle()
+    const engineConnections = fakeEngineConnections()
+    const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
+    const service = new AssistedLoginService(engineConnections as never, {
+      image: 'img',
+      runDeviceLoginImpl,
+    })
+
+    const id = service.start('user-1', 'claude')
+    // Tamanho real do código OAuth do Claude (diagnóstico 20/07): reproduzido
+    // que código curto passa, mas ~92 chars trava idêntico ao log do dono
+    // quando código+'\r' vão no mesmo burst de writeStdin.
+    const longCode = 'a'.repeat(92)
+    service.submitCode(id, 'user-1', longCode)
+
+    // O código é escrito PRIMEIRO, sozinho — nunca com o '\r' grudado no
+    // mesmo burst (causa raiz: o campo mascarado do `claude setup-token` não
+    // reconhece o '\r' quando ele chega colado ao código, para bursts longos).
+    expect(handle.writeStdin).toHaveBeenCalledWith(longCode)
+    expect(handle.writeStdin).not.toHaveBeenCalledWith(`${longCode}\r`)
+
+    // O '\r' chega num SEGUNDO writeStdin, após um pequeno delay.
+    await vi.waitFor(() => {
+      expect(handle.writeStdin).toHaveBeenCalledWith('\r')
+    })
+    expect(handle.writeStdin).toHaveBeenCalledTimes(2)
   })
 
   it('codex: URL e código chegando em chunks de stdout separados ainda resultam nos dois no estado final', () => {
@@ -196,6 +233,62 @@ describe('AssistedLoginService', () => {
     // podem reenviar o Enter — senão bagunçam o prompt de colar o código.
     emitStdout('...menu redraws... Select login method: ...\n')
     expect(handle.writeStdin).toHaveBeenCalledTimes(1)
+  })
+
+  it('BUG2 antigravity: detecta a tela de consentimento pós-login e confirma [Done] com CR, uma única vez', () => {
+    const { handle, emitStdout } = fakeHandle()
+    const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
+    const service = new AssistedLoginService(fakeEngineConnections() as never, {
+      image: 'img',
+      runDeviceLoginImpl,
+    })
+    service.start('user-1', 'antigravity')
+
+    // Menu de login primeiro — Enter #1, comportamento pré-existente (PR#303).
+    emitStdout(' Signing in... Select login method:\n > 1. Google OAuth\n')
+    expect(handle.writeStdin).toHaveBeenCalledTimes(1)
+
+    // Depois do código trocado com sucesso, o agy mostra uma 2a tela — o
+    // orquestrador não conhecia isto antes deste fix (diagnóstico 20/07): só
+    // existia MENU_SELECT_MARKER para o menu de login. Sem confirmar aqui, o
+    // agy nunca sai sozinho e a captura (via onExit) nunca dispara.
+    emitStdout(
+      '\n Yes, I agree to help improve Antigravity CLI by sending anonymous usage data\n' +
+        ' [Previous]  [Done]\n'
+    )
+    expect(handle.writeStdin).toHaveBeenCalledTimes(2)
+    expect(handle.writeStdin).toHaveBeenNthCalledWith(2, '\r')
+
+    // Chunks seguintes (a tela redesenha) não podem reenviar a confirmação —
+    // mesma disciplina do guard `menuSelected`.
+    emitStdout(' [Previous]  [Done]\n')
+    expect(handle.writeStdin).toHaveBeenCalledTimes(2)
+  })
+
+  it('BUG2 antigravity: reenvio do código depois de já submetido não reescreve o stdin (evita virar toggle da checkbox de consentimento)', async () => {
+    const { handle } = fakeHandle()
+    const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
+    const service = new AssistedLoginService(fakeEngineConnections() as never, {
+      image: 'img',
+      runDeviceLoginImpl,
+    })
+    const id = service.start('user-1', 'antigravity')
+
+    service.submitCode(id, 'user-1', 'the-pasted-code')
+    expect(handle.writeStdin).toHaveBeenCalledWith('the-pasted-code')
+    await vi.waitFor(() => {
+      expect(handle.writeStdin).toHaveBeenCalledWith('\r')
+    })
+    const callsAfterFirstSubmit = handle.writeStdin.mock.calls.length
+
+    // Dono reenvia achando que o código não foi (sintoma real do incidente:
+    // 4 reenvios no log). Pré-fix, cada reenvio escrevia cegamente no stdin,
+    // virando toque de navegação/toggle da checkbox de consentimento
+    // (evidência no log: `]\b\bx]\b\b ]`).
+    service.submitCode(id, 'user-1', 'the-pasted-code')
+    service.submitCode(id, 'user-1', 'the-pasted-code')
+    await new Promise((r) => setTimeout(r, 100))
+    expect(handle.writeStdin).toHaveBeenCalledTimes(callsAfterFirstSubmit)
   })
 
   it('subscribe emite o estado atual imediatamente (sem perder eventos de quem conecta depois)', () => {
@@ -541,7 +634,7 @@ describe('AssistedLoginService', () => {
     expect(logger.loginFailed).not.toHaveBeenCalled()
   })
 
-  it('IDOR: subscribe/submitCode de outro usuário não têm acesso à sessão (nem leem, nem escrevem); o dono continua funcionando', () => {
+  it('IDOR: subscribe/submitCode de outro usuário não têm acesso à sessão (nem leem, nem escrevem); o dono continua funcionando', async () => {
     const { handle } = fakeHandle()
     const engineConnections = fakeEngineConnections()
     const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
@@ -571,8 +664,12 @@ describe('AssistedLoginService', () => {
     expect(unsubscribe).not.toBeNull()
     expect(ownerCb).toHaveBeenCalledWith({ phase: 'starting' })
     expect(() => service.submitCode(id, 'user-1', 'owner-code')).not.toThrow()
-    // runtime PTY → Enter é '\r' (ver comentário no submitCode)
-    expect(handle.writeStdin).toHaveBeenCalledWith('owner-code\r')
+    // runtime PTY → Enter é '\r' (ver comentário no submitCode); vai num
+    // SEGUNDO writeStdin, separado do código (BUG 1).
+    expect(handle.writeStdin).toHaveBeenCalledWith('owner-code')
+    await vi.waitFor(() => {
+      expect(handle.writeStdin).toHaveBeenCalledWith('\r')
+    })
   })
 
   it('envHome (HOME do ambiente): makeHomeImpl aponta pro dir do ambiente e o cleanup NÃO o apaga — a credencial vive ali', async () => {

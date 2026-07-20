@@ -373,8 +373,13 @@ describe('login assistido (start / code / stream)', () => {
     })
     expect(res.statusCode).toBe(200)
     expect(JSON.parse(res.body)).toEqual({ ok: true })
-    // runtime PTY → Enter é '\r' (ver submitCode)
-    expect(fake.handle.writeStdin).toHaveBeenCalledWith('the-code\r')
+    // runtime PTY → Enter é '\r' (ver submitCode); código e Enter vão em
+    // writeStdin SEPARADOS (BUG 1, diagnóstico 20/07) — o Enter chega num
+    // segundo write, após um pequeno delay.
+    expect(fake.handle.writeStdin).toHaveBeenCalledWith('the-code')
+    await vi.waitFor(() => {
+      expect(fake.handle.writeStdin).toHaveBeenCalledWith('\r')
+    })
   })
 
   it('POST /api/v1/engines/login/:loginId/code com loginId desconhecido retorna 400', async () => {
@@ -540,7 +545,11 @@ describe('login assistido (start / code / stream)', () => {
       payload: { code: 'the-real-code' },
     })
     expect(ownerCodeRes.statusCode).toBe(200)
-    // runtime PTY → Enter é '\r' (ver submitCode)
-    expect(fake.handle.writeStdin).toHaveBeenCalledWith('the-real-code\r')
+    // runtime PTY → Enter é '\r' (ver submitCode); código e Enter em writeStdin
+    // SEPARADOS (BUG 1) — o Enter chega num segundo write, após um pequeno delay.
+    expect(fake.handle.writeStdin).toHaveBeenCalledWith('the-real-code')
+    await vi.waitFor(() => {
+      expect(fake.handle.writeStdin).toHaveBeenCalledWith('\r')
+    })
   })
 })

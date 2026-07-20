@@ -39,6 +39,28 @@ const MENU_SELECT_MARKER: Partial<Record<DeviceRuntime, RegExp>> = {
   antigravity: /select login method/i,
 }
 
+// BUG 2 (diagnóstico 20/07): o login OAuth do Antigravity dá CERTO (o Google
+// troca o código), mas o `agy` mostra uma 2a tela de TUI — consentimento de
+// telemetria ("Yes, I agree to help improve Antigravity CLI", botões
+// [Previous]/[Done]) — que o orquestrador não conhecia: só existia
+// MENU_SELECT_MARKER para o menu de LOGIN inicial. Sem confirmar esta tela, o
+// `agy` fica parado nela para sempre — nunca sai sozinho — e a captura (só via
+// onExit, ver mais abaixo) nunca dispara; o timeout de 5min mata a sessão
+// achando "código colado, nada aconteceu". Os reenvios cegos do dono (achando
+// que o código não tinha ido) escreviam caracteres diretamente nesta tela,
+// virando toque de navegação/toggle da checkbox (evidência no log do
+// incidente: `]\b\bx]\b\b ]`) — daí o guard em `submitCode` (ver `Session.
+// codeSubmitted`) travando reenvios, além desta detecção. Mesma técnica do
+// menu de login: uma vez detectada, confirma `[Done]` com CR (TUI em modo
+// raw) — uma única vez.
+const CONSENT_MARKER: Partial<Record<DeviceRuntime, RegExp>> = {
+  antigravity: /agree to help improve antigravity|\[done\]/i,
+}
+
+// Pequeno atraso entre o código e o Enter em `submitCode` (BUG 1, diagnóstico
+// 20/07): ver o comentário em `submitCode` para a causa raiz completa.
+const SUBMIT_CODE_ENTER_DELAY_MS = 75
+
 // Investigação E2 (13/07): a hipótese de que este ÚNICO '\r' "vaza" no widget
 // de colar código como um submit vazio (agy saindo sozinho code=0 em ~300ms,
 // ANTES do usuário poder colar) NÃO reproduziu iterando contra o binário real
@@ -100,6 +122,16 @@ interface Session {
   // uma vez, quando "Select login method" apareceu no stdout). Guarda contra
   // reenviar o Enter a cada chunk subsequente de stdout.
   menuSelected: boolean
+  // Antigravity (BUG 2): já confirmamos a tela de consentimento pós-login
+  // ("[Done]") com CR. Mesmo raciocínio de `menuSelected`: sem este guard,
+  // cada chunk subsequente de stdout (a tela redesenha) reenviaria o CR.
+  consentConfirmed: boolean
+  // Guarda contra reenvio cego do código em `submitCode` (BUG 2): uma vez que
+  // o código já foi escrito no stdin desta sessão, chamadas subsequentes
+  // (dono reenviando achando que não foi) são no-op — não há widget de código
+  // para reenviar para, e escrever de novo só atrapalha qualquer tela seguinte
+  // (ex.: a de consentimento do Antigravity, que virava toggle de checkbox).
+  codeSubmitted: boolean
   // O HOME desta sessão é o diretório PERSISTENTE do ambiente do user (0700),
   // não um temp efêmero. Quando true, cleanup() NÃO apaga o hostHome: a
   // credencial que o login gravou VIVE ali dentro do ambiente, protegida, e é
@@ -215,6 +247,8 @@ export class AssistedLoginService {
       ),
       capturing: false,
       menuSelected: false,
+      consentConfirmed: false,
+      codeSubmitted: false,
       persistentHome: envHome !== undefined,
     }
     this.sessions.set(id, session)
@@ -256,12 +290,30 @@ export class AssistedLoginService {
   submitCode(id: string, userId: string, code: string): void {
     const session = this.sessions.get(id)
     if (!session || session.userId !== userId) throw new Error('sessão de login não encontrada')
+    // BUG 2 (Antigravity, diagnóstico 20/07): trava reenvios cegos. Uma vez
+    // que o código já foi submetido nesta sessão, ignora silenciosamente
+    // qualquer chamada seguinte — o dono reenviando (achando que não foi)
+    // escrevia cegamente no stdin, e depois do widget de código sumir isso
+    // vira toque de navegação/toggle na tela seguinte (a de consentimento do
+    // Antigravity, ver CONSENT_MARKER).
+    if (session.codeSubmitted) return
+    session.codeSubmitted = true
     // Num PTY, o Enter é '\r' (carriage return): '\n' entrega o texto mas o
     // TUI nunca "submete" — o código ficava parado no prompt e o login pendia
     // pra sempre (observado ao vivo no QA manual de 2026-07-12, Claude).
     // Codex roda por pipes (sem PTY), onde '\n' é o correto.
     const enter = NEEDS_PTY[session.runtime] ? '\r' : '\n'
-    session.handle.writeStdin(`${code.trim()}${enter}`)
+    // BUG 1 (Claude, diagnóstico 20/07): código e Enter vão em DOIS writeStdin
+    // separados, nunca no mesmo burst. Causa raiz reproduzida byte a byte
+    // contra o binário real: o campo mascarado do `claude setup-token` não
+    // reconhece o Enter quando ele chega GRUDADO ao código no mesmo burst,
+    // para códigos longos (~90 chars, tamanho real do token OAuth do Claude)
+    // — código curto passa, código longo trava idêntico ao log do dono.
+    // Determinístico pelo tamanho do burst, independe da versão do CLI.
+    session.handle.writeStdin(code.trim())
+    setTimeout(() => {
+      session.handle.writeStdin(enter)
+    }, SUBMIT_CODE_ENTER_DELAY_MS)
   }
 
   private onStdout(id: string, chunk: string): void {
@@ -277,6 +329,16 @@ export class AssistedLoginService {
     const menuMarker = MENU_SELECT_MARKER[session.runtime]
     if (menuMarker && !session.menuSelected && menuMarker.test(session.buffer)) {
       session.menuSelected = true
+      session.handle.writeStdin('\r')
+    }
+
+    // BUG 2 (Antigravity): tela de consentimento pós-login ("[Done]") — ver
+    // CONSENT_MARKER para a causa raiz completa. Confirma com CR uma única
+    // vez (mesmo padrão do menu acima), senão o `agy` nunca sai sozinho e a
+    // captura (via onExit) nunca dispara.
+    const consentMarker = CONSENT_MARKER[session.runtime]
+    if (consentMarker && !session.consentConfirmed && consentMarker.test(session.buffer)) {
+      session.consentConfirmed = true
       session.handle.writeStdin('\r')
     }
 
