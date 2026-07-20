@@ -338,6 +338,11 @@ describe('POST /api/v1/setup/submit — runtime wiring', () => {
       clientEnvironment: {
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
         findMany: vi.fn().mockResolvedValue([]),
+        // current() (chamado após fix() para disparar o bootstrap de
+        // recursos, W1.2.2) usa findFirst — sem ambiente nenhum aqui, devolve
+        // null e o disparo do bootstrap é pulado (não é o que este teste
+        // exercita).
+        findFirst: vi.fn().mockResolvedValue(null),
       },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
@@ -512,6 +517,11 @@ describe('POST /api/v1/setup/submit — coleta de contexto: board Projects V2 n�
       clientEnvironment: {
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
         findMany: vi.fn().mockResolvedValue([]),
+        // current() (chamado após fix() para disparar o bootstrap de
+        // recursos, W1.2.2) usa findFirst — sem ambiente nenhum aqui, devolve
+        // null e o disparo do bootstrap é pulado (não é o que este teste
+        // exercita).
+        findFirst: vi.fn().mockResolvedValue(null),
       },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
@@ -609,6 +619,11 @@ describe('POST /api/v1/setup/submit — plano autoritativo (paid-intent, ainda n
       clientEnvironment: {
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
         findMany: vi.fn().mockResolvedValue([]),
+        // current() (chamado após fix() para disparar o bootstrap de
+        // recursos, W1.2.2) usa findFirst — sem ambiente nenhum aqui, devolve
+        // null e o disparo do bootstrap é pulado (não é o que este teste
+        // exercita).
+        findFirst: vi.fn().mockResolvedValue(null),
       },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
@@ -752,6 +767,11 @@ describe('POST /api/v1/setup/submit — isolamento entre clientes (o projeto é 
       clientEnvironment: {
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
         findMany: vi.fn().mockResolvedValue([]),
+        // current() (chamado após fix() para disparar o bootstrap de
+        // recursos, W1.2.2) usa findFirst — sem ambiente nenhum aqui, devolve
+        // null e o disparo do bootstrap é pulado (não é o que este teste
+        // exercita).
+        findFirst: vi.fn().mockResolvedValue(null),
       },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
