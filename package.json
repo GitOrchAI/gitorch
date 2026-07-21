@@ -73,7 +73,8 @@
       "tar-fs": "^3.1.2",
       "tar-stream": "^3.2.0",
       "uuid": "11.1.1",
-      "launch-editor": "2.14.1"
+      "launch-editor": "2.14.1",
+      "protobufjs": "7.6.5"
     },
     "patchedDependencies": {
       "tar@7.5.16": "patches/tar@7.5.16.patch"
