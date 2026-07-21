@@ -12,17 +12,20 @@ export type LoginState =
   | { phase: 'starting' }
   | { phase: 'verifying' }
   | { phase: 'url_ready'; url: string; code?: string }
-  | { phase: 'connected'; models?: number; quota?: number | null }
+  | { phase: 'connected'; models?: string[]; quota?: number | null }
   | { phase: 'error'; message: string }
 
-// A liveness devolve `models` como LISTA (string[]); o refetch de /engines já
-// normaliza pra contagem, mas o evento SSE `connected` entrega a lista crua.
-// Fonte única de "quantos modelos" — lista -> tamanho; número -> ele mesmo;
-// qualquer outra coisa -> indefinido (não renderiza a linha).
-export function modelCount(models: unknown): number | undefined {
-  if (Array.isArray(models)) return models.length
-  if (typeof models === 'number' && Number.isFinite(models)) return models
-  return undefined
+// 20/07: substitui o antigo `modelCount`, que reduzia a lista de modelos a um
+// NÚMERO. O dono reclamou direto olhando a tela ("mostra os modelos? mostra
+// as quotas?") — o backend (engine-connection.ts) já manda os NOMES reais,
+// nunca hardcoded pra Codex/Antigravity; era só o front jogando a lista fora.
+// Valida `models` cru (do SSE ao vivo ou do refetch, mesmo formato dos dois)
+// como lista de nomes: filtra qualquer entrada que não seja string (payload
+// malformado perde só a entrada ruim, não quebra o card) e devolve undefined
+// quando nem é lista — a linha simplesmente não renderiza.
+export function normalizeModelNames(models: unknown): string[] | undefined {
+  if (!Array.isArray(models)) return undefined
+  return models.filter((m): m is string => typeof m === 'string')
 }
 
 // Resposta de POST /api/v1/engines/:runtime/token -> LoginState do card.
@@ -38,19 +41,19 @@ export function parseTokenResponse(json: unknown, fallbackError: string): LoginS
   const status = body.status
   if (body.connected === true && status?.status === 'connected') {
     const quota = typeof status.quotaRemaining === 'number' ? status.quotaRemaining : null
-    return { phase: 'connected', models: modelCount(status.models), quota }
+    return { phase: 'connected', models: normalizeModelNames(status.models), quota }
   }
   const lastError = typeof status?.lastError === 'string' ? status.lastError.trim() : ''
   const topError = typeof body.error === 'string' ? body.error.trim() : ''
   return { phase: 'error', message: lastError || topError || fallbackError }
 }
 
-// Normaliza o payload cru do evento SSE `state` num LoginState do card. O ponto
-// central: o backend serializa `models` do connected como LISTA — sem isto o
-// card renderizava a lista inteira ("gpt-5,o4 modelos") AO VIVO, enquanto o
-// refetch de /engines mostrava a contagem certa. Aqui a fase connected passa a
-// contagem, casando o caminho ao vivo com o do refetch. Payload malformado vira
-// erro honesto em vez de um card quebrado.
+// Normaliza o payload cru do evento SSE `state` num LoginState do card. O
+// backend serializa `models` do connected como LISTA — o mesmo formato que o
+// refetch de /engines devolve. Os dois caminhos (SSE ao vivo e refetch) agora
+// preservam os NOMES até o componente; é ele quem decide como exibir (join
+// por vírgula). Payload malformado vira erro honesto em vez de um card
+// quebrado.
 export function normalizeLoginState(raw: unknown, fallbackError: string): LoginState {
   const r = (raw ?? {}) as {
     phase?: unknown
@@ -77,7 +80,7 @@ export function normalizeLoginState(raw: unknown, fallbackError: string): LoginS
     case 'connected':
       return {
         phase: 'connected',
-        models: modelCount(r.models),
+        models: normalizeModelNames(r.models),
         quota: typeof r.quota === 'number' ? r.quota : null,
       }
     case 'error':
@@ -88,6 +91,22 @@ export function normalizeLoginState(raw: unknown, fallbackError: string): LoginS
     default:
       return { phase: 'error', message: fallbackError }
   }
+}
+
+// Claude é o único motor sem quota de verdade: a CLI não expõe nenhum comando
+// que devolva remaining/total (quota-reader.ts só lê de override de ambiente,
+// pra teste/staging — em uso real é sempre null). Ao lado de Codex/Antigravity
+// mostrando um número, a linha de quota simplesmente SOME e parece bug, não
+// "não existe de propósito". Esta função decide quando trocar o silêncio por
+// uma legenda honesta: só Claude, já conectado (a lista de modelos existe,
+// mesmo vazia) e sem nenhuma quota pra mostrar.
+export function isClaudeQuotaManagedByPlan(runtime: string, state: LoginState): boolean {
+  return (
+    runtime === 'claude' &&
+    state.phase === 'connected' &&
+    state.quota == null &&
+    state.models != null
+  )
 }
 
 // Tipo de falha de conexão, para uma mensagem ACIONÁVEL (aponta o paste manual)

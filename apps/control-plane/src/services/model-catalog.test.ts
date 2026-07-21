@@ -3,7 +3,7 @@ import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import {
-  discoverClaudeModels,
+  knownClaudeModels,
   discoverCodexModels,
   makeAntigravityDiscoverer,
   makeCodexDiscoverer,
@@ -88,7 +88,11 @@ describe('model-catalog', () => {
     expect(await discover('/tmp/gitorch-inexistente-xyz')).toEqual([])
   })
 
-  describe('claude', () => {
+  // Renomeado de `discoverClaudeModels` (20/07): o nome antigo mentia — a CLI
+  // do Claude não tem NENHUM comando de listagem (verificado), então isto
+  // nunca "descobre" nada; é a lista CONHECIDA de modelos reais disponíveis
+  // hoje, a melhor fonte possível (não é dívida técnica).
+  describe('knownClaudeModels', () => {
     const original = process.env['GITORCH_CLAUDE_MODELS']
     beforeEach(() => delete process.env['GITORCH_CLAUDE_MODELS'])
     afterEach(() => {
@@ -97,13 +101,13 @@ describe('model-catalog', () => {
     })
 
     test('usa a lista conhecida por padrão', async () => {
-      const models = await discoverClaudeModels('/tmp')
+      const models = await knownClaudeModels('/tmp')
       expect(models).toContain('claude-fable-5')
     })
 
     test('sobrescreve por ambiente', async () => {
       process.env['GITORCH_CLAUDE_MODELS'] = 'model-a, model-b'
-      expect(await discoverClaudeModels('/tmp')).toEqual(['model-a', 'model-b'])
+      expect(await knownClaudeModels('/tmp')).toEqual(['model-a', 'model-b'])
     })
   })
 })

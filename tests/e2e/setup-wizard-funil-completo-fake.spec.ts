@@ -207,18 +207,21 @@ test('funil completo do setup wizard: login → termos → repo → diagnóstico
     await primaryButton(page).click()
   })
 
-  await test.step('passo 7: conecta os 3 motores fake — cada um mostra "N modelos · quota"', async () => {
+  await test.step('passo 7: conecta os 3 motores fake — cada um mostra os NOMES dos modelos + quota', async () => {
     for (const name of ['Claude Code', 'Codex', 'Antigravity']) {
       const card = page.locator('div.rounded-2xl.p-5', { hasText: name })
       await expect(card, `card de ${name} não apareceu`).toBeVisible({ timeout: 10000 })
       await card.getByRole('button', { name: /connect|conectar|conecta/i }).click()
       // Fake: instantâneo (sem container/CLI real) — SSE entrega
-      // starting -> connected em milissegundos. 2 modelos e quota 900 são
-      // FAKE_MODELS/FAKE_QUOTA (services/fake-engines.ts).
+      // starting -> connected em milissegundos. fake-model-a/fake-model-b e
+      // quota 900 são FAKE_MODELS/FAKE_QUOTA (services/fake-engines.ts). 20/07
+      // (fix/w2-model-names-quota): a tela passou a mostrar os NOMES dos
+      // modelos, não mais uma contagem — o teste trava o texto real.
       await expect(
-        card.getByText(/2\s*(models|modelos)/i),
-        `${name} não chegou a "2 modelos" — liveness fake não conectou`
+        card.getByText(/fake-model-a/i),
+        `${name} não mostrou os nomes dos modelos fake — liveness fake não conectou`
       ).toBeVisible({ timeout: 15000 })
+      await expect(card.getByText(/fake-model-b/i)).toBeVisible()
       await expect(card.getByText(/900/)).toBeVisible()
       await expect(card.getByText(/connected|conectado/i)).toBeVisible()
     }

@@ -97,11 +97,16 @@ async function defaultCodexWarmUp(bin: string, home: string): Promise<void> {
 }
 
 /**
- * Claude: a CLI não expõe listagem simples; usa a lista conhecida (mais recente
- * primeiro), sobrescrevível por ambiente (GITORCH_CLAUDE_MODELS, separada por
- * vírgula) para acompanhar lançamentos sem redeploy.
+ * Claude: a CLI não expõe NENHUM comando de listagem (verificado — não existe
+ * `claude models` nem equivalente), então não há como "descobrir" de verdade
+ * como Codex/Antigravity fazem. Isto é a lista CONHECIDA dos modelos reais
+ * disponíveis hoje (mais recente primeiro), sobrescrevível por ambiente
+ * (GITORCH_CLAUDE_MODELS, separada por vírgula) para acompanhar lançamentos
+ * sem redeploy. Renomeado de `discoverClaudeModels` (20/07) — o nome antigo
+ * mentia sobre descoberta dinâmica; isto é a MELHOR fonte possível hoje, não
+ * dívida técnica.
  */
-export const discoverClaudeModels: ModelDiscoverer = async () => {
+export const knownClaudeModels: ModelDiscoverer = async () => {
   const env = process.env['GITORCH_CLAUDE_MODELS']
   if (env) {
     return env
@@ -115,7 +120,7 @@ export const discoverClaudeModels: ModelDiscoverer = async () => {
 export const MODEL_DISCOVERERS: Record<string, ModelDiscoverer> = {
   antigravity: makeAntigravityDiscoverer(),
   codex: discoverCodexModels,
-  claude: discoverClaudeModels,
+  claude: knownClaudeModels,
 }
 
 async function defaultRunner(bin: string, args: string[], home: string): Promise<string> {

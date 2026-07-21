@@ -7,6 +7,7 @@ import {
   classifyConnectError,
   connectErrorHintKey,
   isManualAccordionVisible,
+  isClaudeQuotaManagedByPlan,
   looksLikeAuthCode,
   type LoginState,
 } from './engine-status'
@@ -75,9 +76,13 @@ export default function StepConnectEngine({
               (e) => e.runtime === card.runtime && e.status === 'connected'
             )
             if (eng) {
+              // A LISTA de nomes, não o tamanho — o refetch chega com o mesmo
+              // formato do evento SSE ao vivo (engine-connection.ts já manda
+              // string[] real); truncar aqui era exatamente o bug que o dono
+              // reclamou ("mostra os modelos? mostra as quotas?").
               connected[card.id] = {
                 phase: 'connected',
-                models: Array.isArray(eng.models) ? eng.models.length : undefined,
+                models: Array.isArray(eng.models) ? eng.models : undefined,
                 quota: eng.quotaRemaining ?? null,
               }
             }
@@ -231,14 +236,32 @@ export default function StepConnectEngine({
                 )}
               </div>
 
-              {/* Motor VIVO: mostra que respondeu de verdade (nº de modelos + quota). */}
-              {state.phase === 'connected' && (state.models != null || state.quota != null) && (
-                <p className="wz-opt-desc" style={{ fontSize: '0.78rem' }}>
-                  {state.models != null && `${state.models} ${t('setup.connectModelsLabel')}`}
-                  {state.models != null && state.quota != null && ' · '}
-                  {state.quota != null && `${t('setup.connectQuotaLabel')}: ${state.quota}`}
-                </p>
-              )}
+              {/* Motor VIVO: mostra que respondeu de verdade — os NOMES dos
+                  modelos (não uma contagem) e a quota real. Pra Claude, que
+                  nunca expõe quota (a CLI não tem esse comando), a linha não
+                  fica em silêncio: isClaudeQuotaManagedByPlan troca o número
+                  ausente por uma legenda honesta em vez de parecer bug. */}
+              {state.phase === 'connected' &&
+                (state.models != null ||
+                  state.quota != null ||
+                  isClaudeQuotaManagedByPlan(runtime, state)) && (
+                  <p className="wz-opt-desc" style={{ fontSize: '0.78rem' }}>
+                    {state.models != null &&
+                      state.models.length > 0 &&
+                      `${t('setup.connectModelsLabel')}: ${state.models.join(', ')}`}
+                    {state.models != null &&
+                      state.models.length > 0 &&
+                      state.quota != null &&
+                      ' · '}
+                    {state.quota != null && `${t('setup.connectQuotaLabel')}: ${state.quota}`}
+                    {state.quota == null && isClaudeQuotaManagedByPlan(runtime, state) && (
+                      <>
+                        {state.models != null && state.models.length > 0 && ' · '}
+                        {t('setup.connectQuotaManagedByPlan')}
+                      </>
+                    )}
+                  </p>
+                )}
 
               {state.phase === 'idle' && (
                 <button className="wz-btn wz-btn-primary" onClick={() => connect(id, runtime)}>
