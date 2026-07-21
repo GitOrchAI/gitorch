@@ -59,6 +59,13 @@ describe('startTelegramLink — pede o deep link ao backend', () => {
     const call = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
     expect(String(call[0])).toBe('http://api.test/api/v1/setup/telegram/link')
     expect(call[1]).toMatchObject({ method: 'POST', credentials: 'include' })
+    // REGRESSÃO do bug 400 (achado no teste do dono): o POST não tem body, então
+    // NÃO pode anunciar `Content-Type: application/json` — o Fastify rejeita
+    // corpo vazio+json com 400 (FST_ERR_CTP_EMPTY_JSON_BODY) e o vínculo quebra
+    // antes de capturar o chat_id. Sem header de Content-Type nenhum.
+    const headers = ((call[1] as RequestInit).headers ?? {}) as Record<string, string>
+    expect(headers['Content-Type']).toBeUndefined()
+    expect(headers['content-type']).toBeUndefined()
   })
 
   it('já vinculado -> vinculado (reabrir o wizard não desfaz nada)', async () => {

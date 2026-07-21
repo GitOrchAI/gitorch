@@ -72,10 +72,14 @@ export async function startTelegramLink(
 ): Promise<TelegramLinkState> {
   const doFetch = deps.fetchImpl ?? defaultFetcher
   try {
+    // POST SEM body — então NÃO mandar `Content-Type: application/json`: o
+    // Fastify (backend) rejeita um corpo vazio anunciado como JSON com 400
+    // (FST_ERR_CTP_EMPTY_JSON_BODY). Era exatamente o "erro ao conectar" que o
+    // dono via — o vínculo quebrava ANTES de capturar o chat_id (o ID do
+    // cliente). Sem o header, o POST vazio passa e o deep link é gerado.
     const response = await doFetch(`${input.apiBaseUrl}/api/v1/setup/telegram/link`, {
       method: 'POST',
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
     })
     return await readState(response, input.fallbackError)
   } catch {
