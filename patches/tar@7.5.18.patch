@@ -1,5 +1,5 @@
 diff --git a/dist/commonjs/unpack.js b/dist/commonjs/unpack.js
-index 3df1031d84cbe5574174a8b78502ce1f1cf3c86a..bd57669b6309885bd0fe38cc0a639f3bbd383c09 100644
+index 0e9f861abb87cb43b49d29f6b9f4052035971975..f7abd665f84cd6a6ebfcebac13dd435fd3536906 100644
 --- a/dist/commonjs/unpack.js
 +++ b/dist/commonjs/unpack.js
 @@ -556,6 +556,20 @@ class Unpack extends parse_js_1.Parser {
@@ -24,7 +24,7 @@ index 3df1031d84cbe5574174a8b78502ce1f1cf3c86a..bd57669b6309885bd0fe38cc0a639f3b
          this[ENSURE_NO_SYMLINK](entry, this.cwd, parts, () => this[LINK](entry, linkpath, 'link', done), er => {
              this[ONERROR](er, entry);
 diff --git a/dist/esm/unpack.js b/dist/esm/unpack.js
-index 46c53db2ad57c69d1704613c1d49189ecf91b68a..e3b0d39821c138d07d695a03efd930c3bb2662ca 100644
+index 3bbdad99bcd8a0cca15261a89eac0b08bee51de1..b56777ab946311dc0cc3982299dfc59c5e96e32f 100644
 --- a/dist/esm/unpack.js
 +++ b/dist/esm/unpack.js
 @@ -517,6 +517,20 @@ export class Unpack extends Parser {
@@ -48,3 +48,45 @@ index 46c53db2ad57c69d1704613c1d49189ecf91b68a..e3b0d39821c138d07d695a03efd930c3
          const parts = normalizeWindowsPath(String(entry.linkpath)).split('/');
          this[ENSURE_NO_SYMLINK](entry, this.cwd, parts, () => this[LINK](entry, linkpath, 'link', done), er => {
              this[ONERROR](er, entry);
+diff --git a/package.json b/package.json
+index 3879bc38a1d05ee19b5159e739967035c7a9680c..1c2d80736f5f0457625f2026ab4543f7602f00ba 100644
+--- a/package.json
++++ b/package.json
+@@ -59,11 +59,11 @@
+       ".": {
+         "import": {
+           "types": "./dist/esm/index.d.ts",
+-          "default": "./dist/esm/index.min.js"
++          "default": "./dist/esm/index.js"
+         },
+         "require": {
+           "types": "./dist/commonjs/index.d.ts",
+-          "default": "./dist/commonjs/index.min.js"
++          "default": "./dist/commonjs/index.js"
+         }
+       },
+       "./raw": "./src/index.ts",
+@@ -93,11 +93,11 @@
+     ".": {
+       "import": {
+         "types": "./dist/esm/index.d.ts",
+-        "default": "./dist/esm/index.min.js"
++        "default": "./dist/esm/index.js"
+       },
+       "require": {
+         "types": "./dist/commonjs/index.d.ts",
+-        "default": "./dist/commonjs/index.min.js"
++        "default": "./dist/commonjs/index.js"
+       }
+     },
+     "./raw": {
+@@ -292,7 +292,7 @@
+     }
+   },
+   "type": "module",
+-  "main": "./dist/commonjs/index.min.js",
++  "main": "./dist/commonjs/index.js",
+   "types": "./dist/commonjs/index.d.ts",
+-  "module": "./dist/esm/index.min.js"
++  "module": "./dist/esm/index.js"
+ }
