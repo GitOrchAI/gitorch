@@ -32,21 +32,14 @@ describe('tar security check', () => {
         resume: () => {},
       }
 
-      const hardlinkSymbol = Object.getOwnPropertySymbols(Unpack.prototype)
-        .find((s) => s.toString() === 'Symbol(hardlink)')
-
-      console.log('hardlinkSymbol:', hardlinkSymbol)
+      const hardlinkSymbol = Object.getOwnPropertySymbols(Unpack.prototype).find(
+        (s) => s.toString() === 'Symbol(hardlink)'
+      )
 
       if (hardlinkSymbol) {
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (unpacker as any)[hardlinkSymbol](mockEntry, () => {})
-        } catch (err) {
-          console.error('Captured synchronous throw:', err)
-        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(unpacker as any)[hardlinkSymbol](mockEntry, () => {})
       }
-
-      console.log('observedWarning:', observedWarning)
 
       expect(observedWarning).not.toBeNull()
       expect(observedWarning).toContain('hardlink outside extraction directory')
