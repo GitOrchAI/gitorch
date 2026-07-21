@@ -266,7 +266,14 @@ describe('AssistedLoginService', () => {
     expect(handle.writeStdin).toHaveBeenCalledTimes(1)
   })
 
-  it('BUG2 antigravity: detecta a tela de consentimento pós-login e confirma [Done] com CR, uma única vez', () => {
+  it('CORREÇÃO 21/07 antigravity: a tela de Terms of Service/consentimento NÃO confirma com um CR solto — navega até "Done"', async () => {
+    // Este teste substitui a versão antiga (PR#359), que assumia que um único
+    // CR confirmava esta tela. Testando AO VIVO contra a conta do dono (21/07,
+    // ver docs/operations/engine-collection-real-steps.md): o foco inicial
+    // desta tela é a CHECKBOX (já marcada) — um CR sozinho a DESMARCA (toggle),
+    // nunca confirma. A confirmação real exige navegar até o botão "Done":
+    // Down (foca "Previous") → Right (foca "Done") → Enter. Ver a cobertura
+    // completa (incl. repaint/idempotência) na suíte E3 mais abaixo.
     const { handle, emitStdout } = fakeHandle()
     const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
     const service = new AssistedLoginService(fakeEngineConnections() as never, {
@@ -279,21 +286,31 @@ describe('AssistedLoginService', () => {
     emitStdout(' Signing in... Select login method:\n > 1. Google OAuth\n')
     expect(handle.writeStdin).toHaveBeenCalledTimes(1)
 
-    // Depois do código trocado com sucesso, o agy mostra uma 2a tela — o
-    // orquestrador não conhecia isto antes deste fix (diagnóstico 20/07): só
-    // existia MENU_SELECT_MARKER para o menu de login. Sem confirmar aqui, o
-    // agy nunca sai sozinho e a captura (via onExit) nunca dispara.
+    // Depois do código trocado com sucesso, o agy mostra a tela de Terms of
+    // Service/consentimento — checkbox já marcada `[x]`, botões
+    // `[Previous]  [Done]`.
     emitStdout(
-      '\n Yes, I agree to help improve Antigravity CLI by sending anonymous usage data\n' +
+      '\n Terms of Service & Data Use\n' +
+        ' [x] I agree to the Terms of Service and Privacy Policy\n' +
         ' [Previous]  [Done]\n'
     )
-    expect(handle.writeStdin).toHaveBeenCalledTimes(2)
-    expect(handle.writeStdin).toHaveBeenNthCalledWith(2, '\r')
+    // NUNCA um "\r" sozinho logo após o menu (isso desmarcaria a checkbox) —
+    // a sequência correta é Down, Right, Enter, em 3 writeStdin separados.
+    await vi.waitFor(() => {
+      expect(handle.writeStdin).toHaveBeenCalledTimes(4)
+    })
+    expect(handle.writeStdin.mock.calls.slice(1)).toEqual([['\x1b[B'], ['\x1b[C'], ['\r']])
 
-    // Chunks seguintes (a tela redesenha) não podem reenviar a confirmação —
-    // mesma disciplina do guard `menuSelected`.
-    emitStdout(' [Previous]  [Done]\n')
-    expect(handle.writeStdin).toHaveBeenCalledTimes(2)
+    // Chunks seguintes (a tela redesenha por inteiro — repaint idêntico) não
+    // podem reenviar a navegação — mesma disciplina do guard `menuSelected`,
+    // generalizada por tela (ver `onboardingScreensConfirmed`).
+    emitStdout(
+      '\n Terms of Service & Data Use\n' +
+        ' [x] I agree to the Terms of Service and Privacy Policy\n' +
+        ' [Previous]  [Done]\n'
+    )
+    await new Promise((r) => setTimeout(r, 200))
+    expect(handle.writeStdin).toHaveBeenCalledTimes(4)
   })
 
   it('BUG2 antigravity: reenvio do código depois de já submetido não reescreve o stdin (evita virar toggle da checkbox de consentimento)', async () => {
@@ -943,44 +960,47 @@ describe('AssistedLoginService — E2: antigravity sobrevive ao stdout real do a
   })
 })
 
-describe('AssistedLoginService — E3: onboarding do Antigravity (BUG 3, diagnóstico 21/07)', () => {
-  // Fixture real: os últimos 2000 chars do buffer (mesmo `.slice(-2000)` que
-  // `fail()` loga), capturados byte a byte do journalctl do servidor durante
-  // o reteste do dono. O login passou do menu de login (PR#303) e do
-  // consentimento (PR#353), mas caiu numa tela de tutorial NUNCA vista antes
-  // — "Choose your color scheme:", uma prévia de código Go simulada, botão
-  // "[Next]" navegável por ↑/↓+Enter. A sessão real do dono deu timeout
-  // AINDA NESTA tela: não sabemos o que vem depois de confirmar "[Next]" —
-  // o mecanismo abaixo é GENÉRICO por causa disso (não um marker a mais).
-  const onboardingFixture = readFileSync(
+describe('AssistedLoginService — E3: onboarding do Antigravity (sequência REAL 21/07: color-scheme → ToS → trust-folder)', () => {
+  // Fixture real da tela de color-scheme: os últimos 2000 chars do buffer
+  // (mesmo `.slice(-2000)` que `fail()` loga), capturados byte a byte do
+  // journalctl do servidor. Investigação AO VIVO de 21/07 (ver
+  // docs/operations/engine-collection-real-steps.md, seção Antigravity)
+  // corrigiu o entendimento do PR#359: esta é a 1a tela real pós-OAuth —
+  // ANTES do consentimento/ToS, não depois. O PR#359 assumia a ordem
+  // `menu → consentimento → onboarding genérico` e gateava a detecção em
+  // `consentConfirmed`; como esta tela (com colchetes) chega ANTES do
+  // consentimento na vida real, aquele gate impedia a confirmação da 1a tela
+  // de verdade.
+  const colorSchemeFixture = readFileSync(
     fileURLToPath(new URL('./__fixtures__/agy-onboarding.stdout.txt', import.meta.url)),
     'utf8'
   )
 
-  // A detecção genérica de onboarding só é ativada depois do consentimento
-  // confirmado (a ordem real é menu → consentimento → onboarding — ver o
-  // comentário em `onStdout()`). Reusa o MESMO texto dos testes de
-  // MENU_SELECT_MARKER/CONSENT_MARKER acima para levar a sessão até lá antes
-  // de testar o onboarding em si; sem isto, o "[Done]" da própria tela de
-  // consentimento (antes dela ser confirmada) colidiria com o marker
-  // genérico de onboarding.
-  function primeMenuAndConsent(emitStdout: (chunk: string) => void) {
+  // ToS e trust-folder: não temos captura byte a byte destas duas telas (só
+  // da tela de color-scheme acima) — texto sintético fiel às strings REAIS
+  // observadas ao vivo (ver a seção Antigravity do doc de operações).
+  const TERMS_OF_SERVICE_SCREEN =
+    '\n Terms of Service & Data Use\n' +
+    ' [x] I agree to the Terms of Service and Privacy Policy\n' +
+    ' [Previous]  [Done]\n'
+  const TRUST_FOLDER_SCREEN =
+    '\n Do you trust the contents of this project?\n' +
+    ' > Yes, I trust this folder\n' +
+    '   No, exit\n'
+
+  function primeMenu(emitStdout: (chunk: string) => void) {
     emitStdout(' Signing in... Select login method:\n > 1. Google OAuth\n')
-    emitStdout(
-      '\n Yes, I agree to help improve Antigravity CLI by sending anonymous usage data\n' +
-        ' [Previous]  [Done]\n'
-    )
   }
 
-  it('FIXTURE REAL: stripAnsi expõe exatamente um botão "[Next]" na tela de tutorial capturada', () => {
-    const clean = stripAnsi(onboardingFixture)
+  it('FIXTURE REAL: stripAnsi expõe exatamente um botão "[Next]" na tela de color-scheme', () => {
+    const clean = stripAnsi(colorSchemeFixture)
     expect(clean).toContain('Choose your color scheme')
     const matches = [...clean.matchAll(/\[(?:next|done|get started|continue|finish)\]/gi)]
     expect(matches).toHaveLength(1)
     expect(matches[0]?.[0]).toBe('[Next]')
   })
 
-  it('FIXTURE REAL: confirma a tela de onboarding ("[Next]") com CR, uma única vez', () => {
+  it('Teste 1 — FIXTURE REAL: tela de color-scheme confirma com um único CR (Enter avança do [Next])', () => {
     const { handle, emitStdout } = fakeHandle()
     const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
     const service = new AssistedLoginService(fakeEngineConnections() as never, {
@@ -988,16 +1008,16 @@ describe('AssistedLoginService — E3: onboarding do Antigravity (BUG 3, diagnó
       runDeviceLoginImpl,
     })
     service.start('user-1', 'antigravity')
-    primeMenuAndConsent(emitStdout) // 2 CRs (menu + consentimento), fora do escopo deste teste
+    primeMenu(emitStdout)
     const callsBefore = handle.writeStdin.mock.calls.length
 
-    emitStdout(onboardingFixture)
+    emitStdout(colorSchemeFixture)
 
     expect(handle.writeStdin).toHaveBeenCalledTimes(callsBefore + 1)
     expect(handle.writeStdin).toHaveBeenLastCalledWith('\r')
   })
 
-  it('repaint idêntico da MESMA tela de onboarding (fixture real reenviada) NÃO reconfirma', () => {
+  it('Teste 2 — ToS: NÃO manda só "\\r" (desmarcaria a checkbox já marcada); navega Down→Right→Enter até "Done"', async () => {
     const { handle, emitStdout } = fakeHandle()
     const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
     const service = new AssistedLoginService(fakeEngineConnections() as never, {
@@ -1005,22 +1025,25 @@ describe('AssistedLoginService — E3: onboarding do Antigravity (BUG 3, diagnó
       runDeviceLoginImpl,
     })
     service.start('user-1', 'antigravity')
-    primeMenuAndConsent(emitStdout)
+    primeMenu(emitStdout)
     const callsBefore = handle.writeStdin.mock.calls.length
 
-    emitStdout(onboardingFixture)
-    expect(handle.writeStdin).toHaveBeenCalledTimes(callsBefore + 1)
+    emitStdout(TERMS_OF_SERVICE_SCREEN)
 
-    // Repaint idêntico: o `agy` redesenha a MESMA tela (spinner, cursor
-    // piscando) reemitindo o mesmo conteúdo por inteiro, como um chunk novo
-    // de stdout. Pré-fix (ou com um guard ingênuo por posição), isso
-    // reenviaria o CR de novo — o mesmo bug de fundo que `menuSelected` e
-    // `consentConfirmed` já evitam para as telas conhecidas.
-    emitStdout(onboardingFixture)
-    expect(handle.writeStdin).toHaveBeenCalledTimes(callsBefore + 1)
+    // Down (sai da checkbox, foca "Previous") → Right (foca "Done") → Enter
+    // (confirma) — nunca um "\r" sozinho, que TOGGLARIA a checkbox em vez de
+    // confirmar (achado ao vivo, 21/07).
+    await vi.waitFor(() => {
+      expect(handle.writeStdin.mock.calls.length).toBe(callsBefore + 3)
+    })
+    expect(handle.writeStdin.mock.calls.slice(callsBefore)).toEqual([
+      ['\x1b[B'],
+      ['\x1b[C'],
+      ['\r'],
+    ])
   })
 
-  it('sequência SINTÉTICA de 3 telas diferentes confirma 3x, uma por tela, na ordem certa', () => {
+  it('Teste 3 — trust-folder (SEM colchetes) é detectada pelo TEXTO e confirmada com CR (foco já em "Yes")', () => {
     const { handle, emitStdout } = fakeHandle()
     const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
     const service = new AssistedLoginService(fakeEngineConnections() as never, {
@@ -1028,28 +1051,86 @@ describe('AssistedLoginService — E3: onboarding do Antigravity (BUG 3, diagnó
       runDeviceLoginImpl,
     })
     service.start('user-1', 'antigravity')
-    primeMenuAndConsent(emitStdout)
+    primeMenu(emitStdout)
     const callsBefore = handle.writeStdin.mock.calls.length
 
-    // A fixture real só prova a 1a tela do tutorial ("color scheme"); as
-    // strings do binário (`agy`) sugerem mais telas na sequência real
-    // (keybindings, usage mode, telemetria) — sintéticas aqui porque nunca
-    // vimos o conteúdo exato delas ao vivo. O mecanismo é GENÉRICO por
-    // causa disso: qualquer conteúdo novo terminando num botão reconhecido
-    // confirma, não importa o texto específico da tela.
-    emitStdout('Choose your color scheme:\n [Next]\n')
+    // Esta tela NUNCA teve colchetes — prova de que a detecção não depende
+    // mais só do padrão genérico de botão (ONBOARDING_BUTTON_MARKER).
+    expect(TRUST_FOLDER_SCREEN).not.toMatch(/\[(?:next|done|get started|continue|finish)\]/i)
+
+    emitStdout(TRUST_FOLDER_SCREEN)
+
     expect(handle.writeStdin).toHaveBeenCalledTimes(callsBefore + 1)
-
-    emitStdout('Choose your keybindings:\n [Next]\n')
-    expect(handle.writeStdin).toHaveBeenCalledTimes(callsBefore + 2)
-
-    emitStdout('Choose your usage mode:\n [Done]\n')
-    expect(handle.writeStdin).toHaveBeenCalledTimes(callsBefore + 3)
-
-    expect(handle.writeStdin.mock.calls.slice(callsBefore)).toEqual([['\r'], ['\r'], ['\r']])
+    expect(handle.writeStdin).toHaveBeenLastCalledWith('\r')
   })
 
-  it('mais de 8 telas "diferentes" em sequência (loop preso) para de confirmar após o teto — erro honesto, não gira pra sempre', () => {
+  it('Teste 4 — sequência REAL inteira (color-scheme → ToS → trust-folder) confirma cada tela 1x, na ordem certa', async () => {
+    const { handle, emitStdout } = fakeHandle()
+    const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
+    const service = new AssistedLoginService(fakeEngineConnections() as never, {
+      image: 'img',
+      runDeviceLoginImpl,
+    })
+    service.start('user-1', 'antigravity')
+    primeMenu(emitStdout)
+    const callsBefore = handle.writeStdin.mock.calls.length
+
+    // Cada tela emitida só depois que a anterior terminou de confirmar (o
+    // `agy` real só desenha a PRÓXIMA tela depois que a atual foi de fato
+    // confirmada) — sem isto, a navegação assíncrona da ToS (Down→Right→Enter
+    // com delay) poderia intercalar com a confirmação síncrona da tela
+    // seguinte, invertendo a ordem observada dos writeStdin.
+    emitStdout(colorSchemeFixture)
+    expect(handle.writeStdin.mock.calls.length).toBe(callsBefore + 1)
+
+    emitStdout(TERMS_OF_SERVICE_SCREEN)
+    await vi.waitFor(() => {
+      expect(handle.writeStdin.mock.calls.length).toBe(callsBefore + 4)
+    })
+
+    emitStdout(TRUST_FOLDER_SCREEN)
+    expect(handle.writeStdin.mock.calls.length).toBe(callsBefore + 5)
+
+    expect(handle.writeStdin.mock.calls.slice(callsBefore)).toEqual([
+      ['\r'], // color-scheme
+      ['\x1b[B'],
+      ['\x1b[C'],
+      ['\r'], // ToS: navega até Done
+      ['\r'], // trust-folder
+    ])
+  })
+
+  it('Teste 5 — repaint idêntico de qualquer tela conhecida NÃO reconfirma', async () => {
+    const { handle, emitStdout } = fakeHandle()
+    const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
+    const service = new AssistedLoginService(fakeEngineConnections() as never, {
+      image: 'img',
+      runDeviceLoginImpl,
+    })
+    service.start('user-1', 'antigravity')
+    primeMenu(emitStdout)
+    const callsBefore = handle.writeStdin.mock.calls.length
+
+    emitStdout(colorSchemeFixture)
+    expect(handle.writeStdin).toHaveBeenCalledTimes(callsBefore + 1)
+    emitStdout(colorSchemeFixture) // repaint idêntico (spinner, cursor piscando)
+    expect(handle.writeStdin).toHaveBeenCalledTimes(callsBefore + 1)
+
+    emitStdout(TERMS_OF_SERVICE_SCREEN)
+    await vi.waitFor(() => {
+      expect(handle.writeStdin.mock.calls.length).toBe(callsBefore + 4)
+    })
+    emitStdout(TERMS_OF_SERVICE_SCREEN) // repaint idêntico
+    await new Promise((r) => setTimeout(r, 200))
+    expect(handle.writeStdin.mock.calls.length).toBe(callsBefore + 4)
+
+    emitStdout(TRUST_FOLDER_SCREEN)
+    expect(handle.writeStdin.mock.calls.length).toBe(callsBefore + 5)
+    emitStdout(TRUST_FOLDER_SCREEN) // repaint idêntico
+    expect(handle.writeStdin.mock.calls.length).toBe(callsBefore + 5)
+  })
+
+  it('Teste 6 — loop preso (mesma tela "nova" desconhecida repetida além do teto) → fail() honesto', () => {
     const { handle, emitStdout } = fakeHandle()
     const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
     const service = new AssistedLoginService(fakeEngineConnections() as never, {
@@ -1059,23 +1140,38 @@ describe('AssistedLoginService — E3: onboarding do Antigravity (BUG 3, diagnó
     const states: unknown[] = []
     const id = service.start('user-1', 'antigravity')
     service.subscribe(id, 'user-1', (s) => states.push(s))
-    primeMenuAndConsent(emitStdout)
+    primeMenu(emitStdout)
     const callsBefore = handle.writeStdin.mock.calls.length
 
-    // 9 telas com conteúdo textual DISTINTO simulam um loop preso: um bug
-    // real onde o `agy` fica apresentando telas de onboarding "novas"
-    // indefinidamente sem nunca sair do tutorial — exatamente o sintoma
-    // reportado pelo dono ("verificando conexão" pra sempre), só que
-    // provado forçando o teto de propósito em vez de esperar minutos reais.
+    // 9 telas DESCONHECIDAS (nenhuma das 3 reais) com conteúdo textual
+    // distinto simulam um loop preso — o fallback genérico (telas de versões
+    // futuras do agy, fora das 3 conhecidas) tem que ceder ao teto.
     for (let i = 1; i <= 9; i++) {
       emitStdout(`Tela desconhecida número ${i}:\n [Next]\n`)
     }
 
     // Confirma só as primeiras 8 (o teto — ver MAX_ONBOARDING_AUTO_CONFIRMS
-    // em assisted-login.ts) — a 9a NÃO dispara mais um CR.
+    // em assisted-login.ts) — a 9a NÃO dispara mais um CR, e a sessão falha
+    // honesto em vez de girar pra sempre.
     expect(handle.writeStdin).toHaveBeenCalledTimes(callsBefore + 8)
     const lastState = states.at(-1) as { phase: string; message?: string }
     expect(lastState.phase).toBe('error')
     expect(lastState.message).toMatch(/onboarding/i)
+  })
+
+  it('tela desconhecida (fora das 3 reais) ainda é confirmada pelo fallback genérico de colchetes (compat com versões futuras do agy)', () => {
+    const { handle, emitStdout } = fakeHandle()
+    const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
+    const service = new AssistedLoginService(fakeEngineConnections() as never, {
+      image: 'img',
+      runDeviceLoginImpl,
+    })
+    service.start('user-1', 'antigravity')
+    primeMenu(emitStdout)
+    const callsBefore = handle.writeStdin.mock.calls.length
+
+    emitStdout('Choose your keybindings:\n [Next]\n')
+    expect(handle.writeStdin).toHaveBeenCalledTimes(callsBefore + 1)
+    expect(handle.writeStdin).toHaveBeenLastCalledWith('\r')
   })
 })

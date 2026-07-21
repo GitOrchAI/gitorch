@@ -40,51 +40,121 @@ const MENU_SELECT_MARKER: Partial<Record<DeviceRuntime, RegExp>> = {
   antigravity: /select login method/i,
 }
 
-// BUG 2 (diagnóstico 20/07): o login OAuth do Antigravity dá CERTO (o Google
-// troca o código), mas o `agy` mostra uma 2a tela de TUI — consentimento de
-// telemetria ("Yes, I agree to help improve Antigravity CLI", botões
-// [Previous]/[Done]) — que o orquestrador não conhecia: só existia
-// MENU_SELECT_MARKER para o menu de LOGIN inicial. Sem confirmar esta tela, o
-// `agy` fica parado nela para sempre — nunca sai sozinho — e a captura (só via
-// onExit, ver mais abaixo) nunca dispara; o timeout de 5min mata a sessão
-// achando "código colado, nada aconteceu". Os reenvios cegos do dono (achando
-// que o código não tinha ido) escreviam caracteres diretamente nesta tela,
-// virando toque de navegação/toggle da checkbox (evidência no log do
-// incidente: `]\b\bx]\b\b ]`) — daí o guard em `submitCode` (ver `Session.
-// codeSubmitted`) travando reenvios, além desta detecção. Mesma técnica do
-// menu de login: uma vez detectada, confirma `[Done]` com CR (TUI em modo
-// raw) — uma única vez.
-const CONSENT_MARKER: Partial<Record<DeviceRuntime, RegExp>> = {
-  antigravity: /agree to help improve antigravity|\[done\]/i,
-}
-
-// BUG 3 (diagnóstico 21/07): depois do consentimento de telemetria, o `agy`
-// entra num TUTORIAL interativo de onboarding nunca visto antes — "Choose
-// your color scheme:", uma prévia de código Go simulada, e um botão "[Next]"
-// navegável por ↑/↓ + Enter (fixture real: __fixtures__/agy-onboarding.stdout.txt,
-// capturada byte a byte do log de produção; timeout do dono aconteceu ainda
-// NESSA tela — nunca vimos o que vem depois de confirmar). Strings dentro do
-// binário (`strings $(command -v agy)`) sugerem mais telas na sequência
-// (keybindings, usage mode, telemetria) com variantes prováveis do mesmo
-// botão de ação primária: [Next], [Done], [Get Started], [Continue],
-// [Finish]. O padrão de MENU_SELECT_MARKER/CONSENT_MARKER (1 marker = 1 flag
-// booleana = 1 tela conhecida) NÃO escala aqui: são N telas DESCONHECIDAS em
-// sequência, não uma única tela fixa. Detecção GENÉRICA em vez de mais
-// markers hardcoded: qualquer tela que mostre um botão de ação primária entre
-// colchetes (regex case-insensitive) é confirmada com CR — ver o bloco de
-// tratamento em `onStdout()` para os dois guards que tornam isso seguro
-// (teto anti-loop + fingerprint de conteúdo por tela).
+// CORREÇÃO 21/07 — o PR#359 (histórico BUG 2/BUG 3 abaixo) tinha a ORDEM e as
+// TELAS erradas. Testando AO VIVO contra a conta do dono, num container
+// isolado (ver docs/operations/engine-collection-real-steps.md, seção
+// Antigravity), a sequência REAL pós-OAuth do Antigravity (agy 1.1.4/1.1.5),
+// EM ORDEM, é:
+//   1. "Choose your color scheme" → botão [Next]. Enter confirma. É a
+//      PRIMEIRA tela real — ANTES do consentimento/ToS, não depois.
+//   2. "Terms of Service & Data Use" → checkbox `[x]` JÁ MARCADA + botões
+//      [Previous] [Done]. O foco inicial é a CHECKBOX: Enter aqui TOGGLA
+//      (desmarca!), nunca confirma. Confirma navegando até "Done": Down (sai
+//      da checkbox, foca "Previous") → Right (foca "Done") → Enter.
+//   3. "Do you trust the contents of this project?" → "Yes, I trust this
+//      folder" / "No, exit" — SEM colchetes. Foco já em "Yes"; Enter confirma.
+//   4. Chat principal (logado).
+// O PR#359 assumia a ordem `menu → consentimento → onboarding genérico por
+// colchetes`, gateando a detecção do onboarding em `consentConfirmed`: como o
+// color-scheme (que TEM colchetes) chega ANTES do consentimento na vida
+// real, aquele gate impedia a confirmação da 1a tela de verdade; mandar um
+// único CR na tela de ToS DESMARCAVA a checkbox em vez de confirmar; e a
+// tela de trust-folder (sem colchetes) nunca casava o marker genérico de
+// qualquer forma — o login travava nela pra sempre.
+//
+// Redesenho (`ANTIGRAVITY_ONBOARDING_SCREENS` mais abaixo): cada tela
+// conhecida é reconhecida pelo seu TEXTO identificador (mais robusto que só o
+// botão — trust-folder nem TEM botão entre colchetes) e tem sua PRÓPRIA ação
+// de confirmação. A detecção NÃO depende de `consentConfirmed` nem de um
+// contador rígido de ordem: cada detector age quando SUA tela aparece,
+// tolerando versões do agy que troquem a ordem ou insiram telas extras — ver
+// `processAntigravityOnboarding()`. Um fallback genérico
+// (`ONBOARDING_BUTTON_MARKER`, mesmo padrão de colchetes de antes) cobre
+// telas DESCONHECIDAS (futuras versões do agy — keybindings, usage mode,
+// telemetria, conforme sugerido pelas strings do binário) com o mesmo teto
+// anti-loop de sempre.
 const ONBOARDING_BUTTON_MARKER: Partial<Record<DeviceRuntime, RegExp>> = {
   antigravity: /\[(?:next|done|get started|continue|finish)\]/gi,
 }
 
-// Teto de confirmações automáticas do onboarding por sessão. Generoso o
-// bastante pra cobrir qualquer sequência real de tutorial (a fixture real
-// mostra 1 tela; o binário sugere poucas mais), mas finito: se a MESMA tela
-// ficar sendo "confirmada" indefinidamente (bug real, não uma sequência
-// legítima), a sessão tem que falhar honesto em vez de girar em "verificando
-// conexão" pra sempre — que era exatamente o sintoma reportado pelo dono.
+// Teto de confirmações automáticas do fallback GENÉRICO (telas desconhecidas,
+// fora das 3 reais mapeadas em ANTIGRAVITY_ONBOARDING_SCREENS) por sessão. As
+// 3 telas conhecidas NÃO consomem este teto — são finitas por definição (uma
+// flag por id, nunca reconfirmadas). Existe só pra telas NOVAS/desconhecidas:
+// se a MESMA tela ficar sendo "confirmada" indefinidamente (bug real, não uma
+// sequência legítima), a sessão tem que falhar honesto em vez de girar em
+// "verificando conexão" pra sempre — que era exatamente o sintoma reportado
+// pelo dono.
 const MAX_ONBOARDING_AUTO_CONFIRMS = 8
+
+// Teclas de navegação sob PTY em modo raw (ANSI padrão de terminal): Down é
+// `ESC [ B`, Right é `ESC [ C`, Enter é `\r` (CR — TUI raw nunca aceita LF
+// como submit, ver `submitCode`).
+const KEY_DOWN = '\x1b[B'
+const KEY_RIGHT = '\x1b[C'
+const KEY_ENTER = '\r'
+
+// Mesmo delay de SUBMIT_CODE_ENTER_DELAY_MS (ver abaixo): sob PTY em modo
+// raw, o TUI processa uma tecla de cada vez — mandar Down/Right/Enter
+// grudados no mesmo burst arrisca perder toques, mesmo raciocínio do delay
+// entre código e Enter em `submitCode`.
+const ONBOARDING_NAV_KEY_DELAY_MS = 75
+
+function confirmWithEnter(session: Session): void {
+  session.handle.writeStdin(KEY_ENTER)
+}
+
+// Terms of Service & Data Use: o foco inicial é a checkbox "[x]" (já marcada
+// por padrão) — mandar só Enter aqui TOGGLA a checkbox (desmarca!), nunca
+// confirma a tela. Provado ao vivo (21/07): pra confirmar de verdade é
+// preciso navegar até o botão "Done": Down (sai da checkbox, foca
+// "Previous") → Right (foca "Done") → Enter (confirma). O rodapé do TUI
+// mostra "enter Toggle" com foco na checkbox e "enter Confirm" num botão —
+// confirmando que um único Enter ali NÃO tem o efeito de confirmar.
+function confirmTermsOfServiceByNavigatingToDone(session: Session): void {
+  session.handle.writeStdin(KEY_DOWN)
+  setTimeout(() => {
+    session.handle.writeStdin(KEY_RIGHT)
+    setTimeout(() => {
+      session.handle.writeStdin(KEY_ENTER)
+    }, ONBOARDING_NAV_KEY_DELAY_MS)
+  }, ONBOARDING_NAV_KEY_DELAY_MS)
+}
+
+interface AntigravityOnboardingScreen {
+  /** Só para logs/comentários — não é exposto nem persistido. */
+  id: string
+  /** Texto identificador da tela (case-insensitive), testado contra o buffer
+   * já limpo de ANSI. Mais robusto que detectar só pelo botão: a tela de
+   * trust-folder nem TEM botão entre colchetes. */
+  matcher: RegExp
+  confirm: (session: Session) => void
+}
+
+// Sequência REAL pós-OAuth do Antigravity (agy 1.1.4/1.1.5), provada ao vivo
+// contra a conta do dono num container isolado (21/07 — ver
+// docs/operations/engine-collection-real-steps.md, seção Antigravity). A
+// ORDEM real é color-scheme → ToS → trust-folder, mas a detecção não
+// depende de posição: cada detector abaixo é checado a cada chunk de
+// stdout e age quando SUA tela aparece (ver `processAntigravityOnboarding`),
+// tolerando variações de ordem ou telas extras entre versões do agy.
+const ANTIGRAVITY_ONBOARDING_SCREENS: readonly AntigravityOnboardingScreen[] = [
+  {
+    id: 'color-scheme',
+    matcher: /choose your color scheme/i,
+    confirm: confirmWithEnter,
+  },
+  {
+    id: 'terms-of-service',
+    matcher: /terms of service|agree to help improve antigravity/i,
+    confirm: confirmTermsOfServiceByNavigatingToDone,
+  },
+  {
+    id: 'trust-folder',
+    matcher: /do you trust|trust this folder/i,
+    confirm: confirmWithEnter,
+  },
+]
 
 // Pequeno atraso entre o código e o Enter em `submitCode` (BUG 1, diagnóstico
 // 20/07): ver o comentário em `submitCode` para a causa raiz completa.
@@ -151,29 +221,35 @@ interface Session {
   // uma vez, quando "Select login method" apareceu no stdout). Guarda contra
   // reenviar o Enter a cada chunk subsequente de stdout.
   menuSelected: boolean
-  // Antigravity (BUG 2): já confirmamos a tela de consentimento pós-login
-  // ("[Done]") com CR. Mesmo raciocínio de `menuSelected`: sem este guard,
-  // cada chunk subsequente de stdout (a tela redesenha) reenviaria o CR.
-  consentConfirmed: boolean
-  // Antigravity (BUG 3, onboarding genérico): quantas telas de tutorial já
-  // confirmamos automaticamente nesta sessão. Gate contra o teto
+  // Antigravity: ids das telas CONHECIDAS de onboarding (ver
+  // ANTIGRAVITY_ONBOARDING_SCREENS) já confirmadas nesta sessão — 'color-scheme',
+  // 'terms-of-service', 'trust-folder'. Generaliza o raciocínio de
+  // `menuSelected` (1 flag booleana por tela conhecida) para as 3 telas reais:
+  // cada uma é confirmada no máximo 1 vez; um repaint da MESMA tela (id já no
+  // set) não reenvia a ação.
+  onboardingScreensConfirmed: Set<string>
+  // Antigravity (fallback genérico — telas DESCONHECIDAS, fora das 3 reais):
+  // quantas já confirmamos automaticamente nesta sessão. Gate contra o teto
   // (MAX_ONBOARDING_AUTO_CONFIRMS) — ver o comentário em ONBOARDING_BUTTON_MARKER.
   onboardingConfirmCount: number
   // Posição (no texto já limpo de ANSI via stripAnsi) até onde já
-  // examinamos o buffer em busca de telas de onboarding. Avança para o fim
-  // do buffer limpo a cada onStdout processado (tenha confirmado ou não) —
-  // nunca só até o fim do match — para que o texto de rodapé que vem DEPOIS
-  // do botão (ex.: "↑/↓ Navigate...") não vaze pro fingerprint da PRÓXIMA
-  // tela (ver `onboardingLastFingerprint`).
+  // examinamos o buffer em busca de telas de onboarding (conhecidas OU
+  // desconhecidas). Avança para o fim do buffer limpo a cada onStdout
+  // processado (tenha confirmado ou não) — nunca só até o fim do match —
+  // para que o texto de rodapé que vem DEPOIS do botão (ex.: "↑/↓
+  // Navigate...") não vaze pro fingerprint da PRÓXIMA tela desconhecida (ver
+  // `onboardingLastFingerprint`), e para que uma tela CONHECIDA já
+  // processada nunca seja reinterpretada pelo fallback genérico como tela
+  // nova.
   onboardingScanPos: number
   // Fingerprint (o texto limpo desde `onboardingScanPos` até o fim do
-  // último match confirmado) da ÚLTIMA tela de onboarding confirmada. Um
-  // repaint idêntico da MESMA tela (spinner, cursor piscando) reproduz o
-  // MESMO fingerprint — não reconfirma. Conteúdo genuinamente novo (mesmo
-  // que termine no mesmo rótulo de botão, ex. dois "[Next]" seguidos de
-  // telas diferentes) produz um fingerprint diferente — confirma de novo.
-  // Generaliza o raciocínio de `menuSelected`/`consentConfirmed` (1 flag
-  // booleana pra 1 tela conhecida) para N telas desconhecidas em sequência.
+  // último match confirmado) da ÚLTIMA tela DESCONHECIDA confirmada pelo
+  // fallback genérico. Um repaint idêntico da MESMA tela (spinner, cursor
+  // piscando) reproduz o MESMO fingerprint — não reconfirma. Conteúdo
+  // genuinamente novo (mesmo que termine no mesmo rótulo de botão, ex. dois
+  // "[Next]" seguidos de telas diferentes) produz um fingerprint diferente —
+  // confirma de novo. Só usado pelo fallback: as 3 telas conhecidas usam
+  // `onboardingScreensConfirmed` (idempotência por id, não por conteúdo).
   onboardingLastFingerprint: string
   // Guarda contra reenvio cego do código em `submitCode` (BUG 2): uma vez que
   // o código já foi escrito no stdin desta sessão, chamadas subsequentes
@@ -296,7 +372,7 @@ export class AssistedLoginService {
       ),
       capturing: false,
       menuSelected: false,
-      consentConfirmed: false,
+      onboardingScreensConfirmed: new Set(),
       onboardingConfirmCount: 0,
       onboardingScanPos: 0,
       onboardingLastFingerprint: '',
@@ -346,8 +422,8 @@ export class AssistedLoginService {
     // que o código já foi submetido nesta sessão, ignora silenciosamente
     // qualquer chamada seguinte — o dono reenviando (achando que não foi)
     // escrevia cegamente no stdin, e depois do widget de código sumir isso
-    // vira toque de navegação/toggle na tela seguinte (a de consentimento do
-    // Antigravity, ver CONSENT_MARKER).
+    // vira toque de navegação/toggle na tela seguinte (a de Terms of
+    // Service/consentimento do Antigravity, ver ANTIGRAVITY_ONBOARDING_SCREENS).
     if (session.codeSubmitted) return
     session.codeSubmitted = true
     // Num PTY, o Enter é '\r' (carriage return): '\n' entrega o texto mas o
@@ -396,106 +472,14 @@ export class AssistedLoginService {
       session.handle.writeStdin('\r')
     }
 
-    // BUG 2 (Antigravity): tela de consentimento pós-login ("[Done]") — ver
-    // CONSENT_MARKER para a causa raiz completa. Confirma com CR uma única
-    // vez (mesmo padrão do menu acima), senão o `agy` nunca sai sozinho e a
-    // captura (via onExit) nunca dispara.
-    const consentMarker = CONSENT_MARKER[session.runtime]
-    if (consentMarker && !session.consentConfirmed && consentMarker.test(session.buffer)) {
-      session.consentConfirmed = true
-      session.handle.writeStdin('\r')
-      // A tela de consentimento também casa o padrão genérico de botão entre
-      // colchetes (ela TEM um "[Done]") — sem isto, a detecção de onboarding
-      // logo abaixo trataria esta MESMA tela como se fosse a 1a tela de
-      // tutorial e mandaria um CR a mais. Avança o ponteiro do scanner de
-      // onboarding para o fim de tudo que já foi visto: o scanner de
-      // onboarding só examina conteúdo que chega DEPOIS do consentimento.
-      session.onboardingScanPos = stripAnsi(session.buffer).length
-    }
-
-    // BUG 3 (Antigravity): tutorial de onboarding pós-consentimento — N telas
-    // desconhecidas em sequência, cada uma com um botão de ação primária
-    // entre colchetes (ver ONBOARDING_BUTTON_MARKER). Ao contrário dos dois
-    // markers acima (1 flag booleana = 1 tela conhecida), aqui não sabemos
-    // quantas telas existem nem o conteúdo delas — só o PADRÃO do botão.
-    //
-    // Gate em `consentConfirmed`: a ordem real é menu → consentimento →
-    // onboarding, cada estágio só é alcançado depois do anterior. Sem este
-    // gate, o próprio "[Done]" da tela de consentimento (antes dela ser
-    // confirmada) seria lido como uma tela de onboarding também.
-    //
-    // stripAnsi roda sobre o buffer ACUMULADO inteiro (nunca só o chunk
-    // novo) pelo mesmo motivo do parseDevicePrompt logo abaixo: um botão como
-    // "[Next]" pode chegar partido entre dois chunks de stdout (ex.: um
-    // chunk termina em "[Ne" e o próximo continua "xt]") — só casa quando
-    // reconstituído no buffer completo.
-    //
-    // matchAll (buffer inteiro) + o filtro `matchEnd > onboardingScanPos`
-    // ignora matches já processados em chamadas anteriores. Do que sobra,
-    // pega o ÚLTIMO (mais recente) — cobre tanto "uma tela nova por
-    // chamada" (o caso comum, PTY entrega aos poucos) quanto múltiplas
-    // telas concatenadas no mesmo chunk (processa só a mais recente; casos
-    // do meio são raros o bastante pra não valer a complexidade extra).
-    const onboardingMarker = ONBOARDING_BUTTON_MARKER[session.runtime]
-    if (onboardingMarker && session.consentConfirmed) {
-      const clean = stripAnsi(session.buffer)
-      const newRegion = clean.slice(session.onboardingScanPos)
-
-      // A tela de CONSENTIMENTO já confirmada pode redesenhar sozinha (ex.:
-      // só a linha do botão, sem repetir "Yes, I agree..." — cenário do
-      // teste de regressão do PR#353) — e ela TEM um "[Done]", o mesmo
-      // padrão genérico de botão. Antes da 1a tela de onboarding de verdade
-      // ser confirmada (`onboardingLastFingerprint` ainda vazio), um
-      // conteúdo novo que também casa CONSENT_MARKER é tratado como esse
-      // repaint, não como uma tela de onboarding nova — só consome (avança
-      // o ponteiro), sem reconfirmar. Depois que a 1a tela de onboarding
-      // real já foi confirmada, presumimos ter avançado para além do
-      // consentimento de vez, e um "[Done]" subsequente é uma tela de
-      // onboarding legítima (ex.: o passo final do tutorial).
-      const looksLikeConsentRepaint =
-        session.onboardingLastFingerprint === '' && !!consentMarker && consentMarker.test(newRegion)
-
-      if (looksLikeConsentRepaint) {
-        session.onboardingScanPos = clean.length
-      } else {
-        let lastNewMatch: RegExpMatchArray | undefined
-        for (const match of clean.matchAll(onboardingMarker)) {
-          const matchEnd = (match.index ?? 0) + match[0].length
-          if (matchEnd > session.onboardingScanPos) lastNewMatch = match
-        }
-        if (lastNewMatch) {
-          const matchEnd = (lastNewMatch.index ?? 0) + lastNewMatch[0].length
-          // Fingerprint = todo o conteúdo novo desde a última tela processada
-          // até o fim DESTE botão — não só o texto do botão em si. Duas
-          // telas diferentes que por acaso terminam no mesmo rótulo (ex.:
-          // dois "[Next]" seguidos) têm fingerprints diferentes porque o
-          // conteúdo ANTES do botão difere.
-          const fingerprint = clean.slice(session.onboardingScanPos, matchEnd)
-          // Avança para o fim do BUFFER LIMPO inteiro (não só até
-          // `matchEnd`): qualquer rodapé que venha depois do botão neste
-          // mesmo chunk (ex.: "↑/↓ Navigate...") fica marcado como já
-          // visto, para não vazar pro fingerprint da PRÓXIMA tela caso a
-          // MESMA tela seja reimpressa por inteiro (repaint) num chunk
-          // separado.
-          session.onboardingScanPos = clean.length
-          if (fingerprint !== session.onboardingLastFingerprint) {
-            if (session.onboardingConfirmCount >= MAX_ONBOARDING_AUTO_CONFIRMS) {
-              this.fail(
-                id,
-                `onboarding do Antigravity não avançou após ${MAX_ONBOARDING_AUTO_CONFIRMS} confirmações automáticas; possível loop — tente novamente`
-              )
-              return
-            }
-            session.onboardingLastFingerprint = fingerprint
-            session.onboardingConfirmCount++
-            session.handle.writeStdin('\r')
-          }
-          // fingerprint === onboardingLastFingerprint: repaint idêntico da
-          // MESMA tela (spinner, cursor piscando) — não reconfirma, mas
-          // onboardingScanPos já avançou acima, então não fica reexaminando
-          // este trecho pra sempre.
-        }
-      }
+    // Antigravity pós-OAuth: sequência REAL de telas provada AO VIVO (21/07,
+    // ver o comentário grande em ANTIGRAVITY_ONBOARDING_SCREENS acima e
+    // docs/operations/engine-collection-real-steps.md). Sem gate em
+    // "consentimento confirmado": cada tela conhecida (color-scheme, ToS,
+    // trust-folder) é reconhecida pelo próprio texto, independente de ordem.
+    if (session.runtime === 'antigravity') {
+      const failed = this.processAntigravityOnboarding(id, session)
+      if (failed) return
     }
 
     // Continua reparseando enquanto a fase for 'starting' OU já tivermos a URL
@@ -528,6 +512,87 @@ export class AssistedLoginService {
         void this.captureClaudeToken(id, token)
       }
     }
+  }
+
+  /**
+   * Antigravity pós-OAuth: reconhece e confirma cada tela da sequência REAL
+   * (color-scheme → ToS → trust-folder, ver ANTIGRAVITY_ONBOARDING_SCREENS)
+   * pelo próprio TEXTO, independente de ordem rígida — e usa um fallback
+   * genérico (colchetes + fingerprint + teto anti-loop) para telas
+   * desconhecidas de versões futuras do agy. Examina só a região do buffer
+   * (já limpo de ANSI) ainda não escaneada (`onboardingScanPos`).
+   *
+   * Retorna `true` se a sessão falhou (teto anti-loop estourado) — o
+   * chamador (`onStdout`) deve parar de processar este chunk nesse caso
+   * (mesma disciplina do `return` que o teto já tinha inline antes).
+   */
+  private processAntigravityOnboarding(id: string, session: Session): boolean {
+    const clean = stripAnsi(session.buffer)
+    const newRegion = clean.slice(session.onboardingScanPos)
+    if (newRegion.length === 0) return false
+
+    // 1) Telas CONHECIDAS (as 3 reais). Testadas contra a região NOVA (nunca
+    // o buffer inteiro): uma tela antiga permanece no buffer acumulado para
+    // sempre, e testar o buffer inteiro a cada chamada faria o scanner
+    // "pular" por cima de conteúdo novo ainda não examinado sempre que
+    // qualquer tela conhecida já tivesse aparecido alguma vez.
+    const knownScreen = ANTIGRAVITY_ONBOARDING_SCREENS.find((screen) =>
+      screen.matcher.test(newRegion)
+    )
+    if (knownScreen) {
+      // Consome TODA a região nova — nunca deixa esse conteúdo cair no
+      // fallback genérico abaixo (ex.: a própria tela de ToS TEM um
+      // "[Done]", que também casaria o padrão genérico de botão).
+      session.onboardingScanPos = clean.length
+      if (!session.onboardingScreensConfirmed.has(knownScreen.id)) {
+        session.onboardingScreensConfirmed.add(knownScreen.id)
+        knownScreen.confirm(session)
+      }
+      // Repaint (id já confirmado): não reconfirma, mas a região já foi
+      // consumida acima — não fica reexaminando este trecho pra sempre.
+      return false
+    }
+
+    // 2) Fallback genérico: tela DESCONHECIDA (versão do agy com telas
+    // extras — keybindings, usage mode, telemetria etc., ver comentário em
+    // ANTIGRAVITY_ONBOARDING_SCREENS) com um botão de ação primária entre
+    // colchetes. Mesmo mecanismo de fingerprint+teto do PR#359 original, só
+    // que escopado à região nova (não mais gateado em `consentConfirmed`,
+    // removido) e nunca reprocessando o que as 3 telas conhecidas já
+    // consumiram acima.
+    const onboardingMarker = ONBOARDING_BUTTON_MARKER[session.runtime]
+    if (!onboardingMarker) return false
+
+    let lastMatch: RegExpMatchArray | undefined
+    for (const match of newRegion.matchAll(onboardingMarker)) lastMatch = match
+    if (!lastMatch) return false
+
+    const matchEnd = (lastMatch.index ?? 0) + lastMatch[0].length
+    // Fingerprint = todo o conteúdo novo desde o início da região até o fim
+    // DESTE botão — não só o texto do botão em si. Duas telas diferentes que
+    // por acaso terminam no mesmo rótulo (ex.: dois "[Next]" seguidos) têm
+    // fingerprints diferentes porque o conteúdo antes do botão difere.
+    const fingerprint = newRegion.slice(0, matchEnd)
+    // Avança para o fim do BUFFER LIMPO inteiro (não só até `matchEnd`):
+    // qualquer rodapé que venha depois do botão neste mesmo chunk (ex.:
+    // "↑/↓ Navigate...") fica marcado como já visto, para não vazar pro
+    // fingerprint da PRÓXIMA tela caso a MESMA tela seja reimpressa por
+    // inteiro (repaint) num chunk separado.
+    session.onboardingScanPos = clean.length
+
+    if (fingerprint === session.onboardingLastFingerprint) return false // repaint idêntico
+
+    if (session.onboardingConfirmCount >= MAX_ONBOARDING_AUTO_CONFIRMS) {
+      this.fail(
+        id,
+        `onboarding do Antigravity não avançou após ${MAX_ONBOARDING_AUTO_CONFIRMS} confirmações automáticas; possível loop — tente novamente`
+      )
+      return true
+    }
+    session.onboardingLastFingerprint = fingerprint
+    session.onboardingConfirmCount++
+    session.handle.writeStdin('\r')
+    return false
   }
 
   private async captureClaudeToken(id: string, token: string): Promise<void> {
