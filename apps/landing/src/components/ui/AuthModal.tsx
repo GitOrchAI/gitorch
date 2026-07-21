@@ -62,10 +62,8 @@ export function AuthModal({ isOpen, onClose }: AuthModalProps) {
       window.location.href = `https://github.com/login/oauth/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scope)}&state=${state}`
     } else if (provider === 'google') {
       // Google OAuth implementation
-      console.log('Google OAuth - to be implemented')
     } else if (provider === 'email') {
       // Email magic link implementation
-      console.log('Email magic link - to be implemented')
     }
   }
 
