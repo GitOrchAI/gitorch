@@ -624,6 +624,128 @@ describe('AssistedLoginService', () => {
     expect('quota' in ssePayload).toBe(false)
   })
 
+  // BUG DE INTEGRAÇÃO (achado ao vivo 21/07): o dono via os modelos do Claude
+  // mas NENHUMA quota. A coleta trazia a quota de sessão/semana no
+  // ConnectionStatus, mas o setState 'connected' descartava esses campos — só
+  // repassava models+quota(número). O SSE ao vivo nunca levava a quota nova.
+  it('B4: connected propaga a quota de sessão/semana (Claude/Codex/Antigravity) pro SSE, não só o número', async () => {
+    const { handle, emitExit } = fakeHandle()
+    const engineConnections = {
+      captureFromHome: vi.fn().mockResolvedValue({
+        runtime: 'claude',
+        status: 'connected',
+        models: ['claude-sonnet-5', 'claude-opus-4-8'],
+        quotaRemaining: null,
+        sessionPercentUsed: 99,
+        sessionResetsAt: '2026-07-21T03:09:00Z',
+        weekPercentUsed: 40,
+        weekResetsAt: '2026-07-26T17:59:00Z',
+      }),
+    }
+    const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
+    const service = new AssistedLoginService(engineConnections as never, {
+      image: 'img',
+      runDeviceLoginImpl,
+    })
+    const states: unknown[] = []
+    const id = service.start('user-1', 'codex')
+    service.subscribe(id, 'user-1', (s) => states.push(s))
+    emitExit(0)
+    await vi.waitFor(() => {
+      expect(states.at(-1)).toEqual({
+        phase: 'connected',
+        models: ['claude-sonnet-5', 'claude-opus-4-8'],
+        sessionPercentUsed: 99,
+        sessionResetsAt: '2026-07-21T03:09:00Z',
+        weekPercentUsed: 40,
+        weekResetsAt: '2026-07-26T17:59:00Z',
+      })
+    })
+    // O que o SSE serializa (engines.ts /stream) leva a quota real ao vivo.
+    const sse = JSON.parse(JSON.stringify(states.at(-1))) as Record<string, unknown>
+    expect(sse['sessionPercentUsed']).toBe(99)
+    expect(sse['weekPercentUsed']).toBe(40)
+    expect(sse['weekResetsAt']).toBe('2026-07-26T17:59:00Z')
+  })
+
+  // BUG DE INTEGRAÇÃO (achado ao vivo 21/07): "tempo esgotado" no Antigravity.
+  // O `agy`, depois do login+onboarding, abre o chat interativo e fica VIVO —
+  // o onExit nunca dispara, a captura nunca roda, o login morre no timeout. O
+  // sinal do chat pronto ("? for shortcuts") passa a disparar a captura.
+  it('B5 antigravity: chat pronto ("? for shortcuts") dispara a captura sem esperar o onExit', async () => {
+    const { handle, emitStdout } = fakeHandle()
+    const engineConnections = {
+      captureFromHome: vi.fn().mockResolvedValue({
+        runtime: 'antigravity',
+        status: 'connected',
+        models: ['gemini-3.5-flash-medium', 'claude-sonnet-4-6'],
+        quotaRemaining: null,
+        weekPercentUsed: 18,
+        weekResetsAt: '2026-07-23T00:00:00Z',
+      }),
+    }
+    const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
+    const service = new AssistedLoginService(engineConnections as never, {
+      image: 'img',
+      runDeviceLoginImpl,
+    })
+    const states: unknown[] = []
+    const id = service.start('user-1', 'antigravity')
+    service.subscribe(id, 'user-1', (s) => states.push(s))
+
+    // Chat do agy já logado — a linha de rodapé fixa (cercada de ANSI como no
+    // buffer real). Nenhum emitExit: o processo continua VIVO no chat.
+    emitStdout('\x1B[90m? for shortcuts\x1B[m  Gemini 3.5 Flash · medium\n')
+
+    await vi.waitFor(() => {
+      expect(engineConnections.captureFromHome).toHaveBeenCalledWith(
+        'user-1',
+        'antigravity',
+        handle.hostHome
+      )
+    })
+    // Mata o chat (a credencial já está em disco) e conecta com models+quota.
+    expect(handle.kill).toHaveBeenCalled()
+    await vi.waitFor(() => {
+      expect((states.at(-1) as { phase: string }).phase).toBe('connected')
+    })
+    expect(states.at(-1)).toMatchObject({
+      phase: 'connected',
+      models: ['gemini-3.5-flash-medium', 'claude-sonnet-4-6'],
+      weekPercentUsed: 18,
+    })
+  })
+
+  it('B5 antigravity: o onExit disparado pelo nosso kill (captura já em curso) NÃO vira erro', async () => {
+    const { handle, emitStdout, emitExit } = fakeHandle()
+    const engineConnections = {
+      captureFromHome: vi.fn().mockResolvedValue({
+        runtime: 'antigravity',
+        status: 'connected',
+        models: ['gemini-3.5-flash-medium'],
+        quotaRemaining: null,
+      }),
+    }
+    const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
+    const service = new AssistedLoginService(engineConnections as never, {
+      image: 'img',
+      runDeviceLoginImpl,
+    })
+    const states: unknown[] = []
+    const id = service.start('user-1', 'antigravity')
+    service.subscribe(id, 'user-1', (s) => states.push(s))
+
+    emitStdout('\x1B[90m? for shortcuts\x1B[m\n')
+    // O kill que a captura faz gera um exit (código de sinal) — não pode virar
+    // "login encerrado com erro": a captura já está em curso (capturing=true).
+    emitExit(143)
+
+    await vi.waitFor(() => {
+      expect((states.at(-1) as { phase: string }).phase).toBe('connected')
+    })
+    expect(states.some((s) => (s as { phase: string }).phase === 'error')).toBe(false)
+  })
+
   it('A1: em timeout, loga o tail redigido do stdout (runtime+phase), sem o token cru', async () => {
     const { handle, emitStdout } = fakeHandle()
     const engineConnections = fakeEngineConnections()

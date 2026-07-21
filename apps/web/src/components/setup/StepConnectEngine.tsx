@@ -179,9 +179,17 @@ export default function StepConnectEngine({
     const loginId = loginIds.current[id]
     const code = (pastedCode[id] ?? '').trim()
     if (!loginId || !code) return
+    // Feedback IMEDIATO: entra em 'verifying' no CLIQUE, ANTES do fetch. Sem
+    // isto, a tela continuava em 'url_ready' (campo + botão "enviar" à vista)
+    // até o POST voltar — se ele demora, a pessoa acha que nada aconteceu e
+    // clica de novo (o "2 cliques pra começar a processar" reportado ao vivo
+    // 21/07). Ao trocar pra 'verifying' na hora, o campo/botão somem e aparece
+    // o spinner: um clique só. O próximo evento SSE (connected/error)
+    // sobrescreve esta fase local.
+    setStates((s) => ({ ...s, [id]: { phase: 'verifying' } }))
     // Falha aqui (rede/500) TEM que virar estado de erro visível: engolir a
-    // falha deixava a pessoa presa em "aguardando aprovação" pra sempre, sem
-    // saber que o código nunca chegou. O bloco de erro já oferece o retry.
+    // falha deixava a pessoa presa sem saber que o código nunca chegou. O
+    // bloco de erro já oferece o retry.
     try {
       const res = await fetch(`${apiBaseUrl}/api/v1/engines/login/${loginId}/code`, {
         method: 'POST',
@@ -190,10 +198,6 @@ export default function StepConnectEngine({
         body: JSON.stringify({ code }),
       })
       if (!res.ok) throw new Error(String(res.status))
-      // Fim do dead-air: entra em "verificando" na hora. O backend não volta a
-      // url_ready depois do código — o próximo evento SSE é connected/error e
-      // sobrescreve esta fase puramente local.
-      setStates((s) => ({ ...s, [id]: { phase: 'verifying' } }))
     } catch {
       setStates((s) => ({ ...s, [id]: { phase: 'error', message: t('setup.connectError') } }))
     }
