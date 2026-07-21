@@ -30,8 +30,12 @@ const CONTAINER_HOME = '/home/agent'
 const PTY_COLS = 2000
 const PTY_ROWS = 50
 
-type PtySpawn = typeof ptySpawnDefault
-type IPty = ReturnType<PtySpawn>
+// Exportados (não mais `type` privado do módulo): `agy-chat-runner.ts`
+// reusa o MESMO tipo de node-pty pra tipar seu próprio `ptySpawnImpl`
+// injetável, sem duplicar a definição nem reimportar node-pty direto —
+// mesma ideia de `wirePtyHandle` abaixo (uma fonte só pra fiação de PTY).
+export type PtySpawn = typeof ptySpawnDefault
+export type IPty = ReturnType<PtySpawn>
 
 export interface DeviceLoginHandle {
   /** Dir do host montado como HOME do container; feed para captureFromHome. */
@@ -94,31 +98,33 @@ function buildArgs(options: DeviceLoginOptions, hostHome: string): string[] {
   ]
 }
 
-/**
- * Caminho via PTY real (Claude/Antigravity). `node-pty-prebuilt-multiarch` já
- * é seguro por padrão nos dois casos que o caminho de pipes abaixo precisa
- * de proteção manual para: um `spawn` que falha (binário ausente etc.) NÃO
- * lança exceção síncrona — `onExit` dispara com um exit code não-zero; e um
- * `.write()` depois do processo já ter saído NÃO lança (é um no-op seguro).
- * Confirmado empiricamente (não é suposição) — ver o plano desta correção.
- */
-function runViaPty(
-  options: DeviceLoginOptions,
-  podmanBinary: string,
-  args: string[],
-  hostHome: string
-): DeviceLoginHandle {
-  const spawnPty = options.ptySpawnImpl ?? ptySpawnDefault
-  const ptyProcess: IPty = spawnPty(podmanBinary, args, {
-    name: 'xterm-256color',
-    cols: PTY_COLS,
-    rows: PTY_ROWS,
-  })
+/** Mesmo shape de `DeviceLoginHandle` sem o `hostHome` (que só faz sentido
+ * pro login, onde é o dir bind-mountado no container) — o que sobra depois
+ * de ligar um `IPty` já spawnado a callbacks de stdout/stdin/exit/kill. */
+export type WiredPtyHandle = Omit<DeviceLoginHandle, 'hostHome'>
 
+/**
+ * Liga um `IPty` (node-pty) JÁ SPAWNADO num handle de stdout/stdin/exit/kill.
+ * Extraído de `runViaPty` (21/07) pra ser reusado por `runAgyChatCommand`
+ * (agy-chat-runner.ts) — que precisa do MESMO comportamento de PTY (onData
+ * sempre assíncrono, onExit resolvendo `exited` exatamente uma vez, write/kill
+ * seguros mesmo após o processo já ter saído) só que rodando o `agy` DIRETO no
+ * host, sem o wrapping de podman que ESTE arquivo é especializado em montar
+ * (ver `buildArgs`/`runViaPty` abaixo, exclusivos do login assistido). Nunca
+ * reinventar node-pty em outro lugar — esta é a fonte única da fiação.
+ *
+ * `node-pty-prebuilt-multiarch` já é seguro por padrão nos dois casos que o
+ * caminho de pipes (`runViaPipes`) precisa de proteção manual para: um
+ * `spawn` que falha (binário ausente etc.) NÃO lança exceção síncrona —
+ * `onExit` dispara com um exit code não-zero; e um `.write()` depois do
+ * processo já ter saído NÃO lança (é um no-op seguro). Confirmado
+ * empiricamente (não é suposição) — ver o plano desta correção.
+ */
+export function wirePtyHandle(ptyProcess: IPty): WiredPtyHandle {
   // node-pty entrega dados via `onData` de forma sempre assíncrona (evento
   // real de net.Socket/libuv — nunca dispara antes do próximo tick). Como
-  // `runDeviceLogin` não tem nenhum `await` entre o spawn e o retorno do
-  // handle, e quem chama (AssistedLoginService.start()) assina `onStdout` na
+  // quem spawna (`runViaPty`/`runAgyChatCommand`) não tem nenhum `await`
+  // entre o spawn e o retorno do handle, e quem chama assina `onStdout` na
   // linha seguinte, síncrona, a assinatura SEMPRE chega antes do primeiro
   // chunk possível — não há necessidade de bufferizar/repetir dados para
   // assinantes tardios.
@@ -136,12 +142,34 @@ function runViaPty(
   })
 
   return {
-    hostHome,
     onStdout: (cb) => cbs.push(cb),
     writeStdin: (data) => ptyProcess.write(data),
     exited,
     kill: () => ptyProcess.kill('SIGTERM'),
   }
+}
+
+/**
+ * Caminho via PTY real (Claude/Antigravity), rodando dentro do container
+ * (podman). A fiação do IPty em si é `wirePtyHandle` (ver acima); esta
+ * função só monta o `podmanBinary`/`args` (que `buildArgs` já preparou) e
+ * agrega o `hostHome` que o resto do login assistido depende (bind-mount
+ * onde a credencial sobrevive ao `--rm`).
+ */
+function runViaPty(
+  options: DeviceLoginOptions,
+  podmanBinary: string,
+  args: string[],
+  hostHome: string
+): DeviceLoginHandle {
+  const spawnPty = options.ptySpawnImpl ?? ptySpawnDefault
+  const ptyProcess: IPty = spawnPty(podmanBinary, args, {
+    name: 'xterm-256color',
+    cols: PTY_COLS,
+    rows: PTY_ROWS,
+  })
+
+  return { hostHome, ...wirePtyHandle(ptyProcess) }
 }
 
 /**

@@ -1,39 +1,27 @@
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import {
   readClaudeTokenFromHome,
   CLAUDE_API_BASE,
   CLAUDE_API_TIMEOUT_MS,
   claudeApiHeaders,
 } from './claude-token.js'
-
-const execFileAsync = promisify(execFile)
+import { numberish, envReading, type QuotaReading, type QuotaReader } from './quota-env.js'
+import { readAntigravityQuota } from './antigravity-quota-reader.js'
 
 // Leitura DINÂMICA da quota restante por motor (BYOK). Espelha o padrão do
 // model-catalog: cada motor lê de um jeito próprio; nada hardcoded. Best-effort:
 // se o motor não expõe quota, devolve { remaining: null } e o spend-guard trata
 // como 'unknown' (não bloqueia). Sempre dá pra sobrescrever por ambiente.
-
-export interface QuotaReading {
-  remaining: number | null
-  total: number | null
-  // Claude (ver parseClaudeRateLimitHeaders/makeClaudeQuotaReader abaixo): a
-  // API não devolve um saldo remaining/total — devolve % USADO de DUAS
-  // janelas independentes (sessão rolante de ~5h e semana, todos os modelos)
-  // mais o horário de reset de cada uma, nos HEADERS de qualquer resposta de
-  // POST /v1/messages. Forçar isso no formato remaining/total inventaria um
-  // número que não existe — por isso campos NOVOS e opcionais, só o Claude os
-  // popula. Codex/Antigravity continuam só em remaining/total; estes ficam
-  // undefined/null pra eles, sem regressão.
-  sessionPercentUsed?: number | null
-  sessionResetsAt?: string | null
-  weekPercentUsed?: number | null
-  weekResetsAt?: string | null
-}
-
-export type QuotaReader = (homeDir: string) => Promise<QuotaReading>
+//
+// QuotaReading/QuotaReader/numberish/envReading agora vivem em quota-env.ts
+// (módulo-folha, 21/07) — RE-EXPORTADOS aqui pra todo o resto do control-plane
+// que já importa `type QuotaReading`/`type QuotaReader` DE quota-reader.ts
+// continuar funcionando sem mudança nenhuma (engine-connection.ts,
+// engine-liveness.ts, fake-engines.ts). Ver o comentário de quota-env.ts para
+// o PORQUÊ da extração (quebrar um ciclo de import com
+// antigravity-quota-reader.ts, importado logo abaixo).
+export type { QuotaReading, QuotaReader }
 
 const UNKNOWN: QuotaReading = { remaining: null, total: null }
 
@@ -70,15 +58,6 @@ export function parseQuotaText(text: string): QuotaReading {
   return { remaining, total }
 }
 
-function numberish(v: unknown): number | null {
-  if (typeof v === 'number' && Number.isFinite(v)) return v
-  if (typeof v === 'string') {
-    const n = Number(v.replace(/[,_\s]/g, ''))
-    return Number.isFinite(n) ? n : null
-  }
-  return null
-}
-
 function matchNumber(text: string, re: RegExp): number | null {
   const m = re.exec(text)
   if (!m || !m[1]) return null
@@ -86,31 +65,16 @@ function matchNumber(text: string, re: RegExp): number | null {
   return Number.isFinite(n) ? n : null
 }
 
-/** Override por ambiente: GITORCH_<RUNTIME>_QUOTA_REMAINING / _TOTAL. */
-function envReading(runtime: string): QuotaReading | null {
-  const up = runtime.toUpperCase()
-  const remaining = numberish(process.env[`GITORCH_${up}_QUOTA_REMAINING`])
-  const total = numberish(process.env[`GITORCH_${up}_QUOTA_TOTAL`])
-  if (remaining == null && total == null) return null
-  return { remaining, total }
-}
-
-/** Antigravity: `agy usage` (best-effort; parse texto/JSON). */
-export function makeAntigravityQuotaReader(
-  agyBin = process.env['GITORCH_AGY_BIN'] ?? 'agy',
-  subcommand = (process.env['GITORCH_AGY_QUOTA_CMD'] ?? 'usage').split(' '),
-  runner: (bin: string, args: string[], home: string) => Promise<string> = defaultRunner
-): QuotaReader {
-  return async (homeDir: string) => {
-    const env = envReading('antigravity')
-    if (env) return env
-    try {
-      return parseQuotaText(await runner(agyBin, subcommand, homeDir))
-    } catch {
-      return UNKNOWN
-    }
-  }
-}
+// Antigravity: REMOVIDO 21/07 o `makeAntigravityQuotaReader` que rodava
+// `agy usage` via `execFile` (defaultRunner, sem TTY). Provado ao vivo (ver
+// docs/operations/engine-collection-real-steps.md, seção Antigravity): esse
+// comando FALHA sem TTY (`CLI error: bubbletea: could not open TTY`) — e
+// mesmo COM TTY, `agy usage` não é o comando de quota (abre o chat normal).
+// A quota do Antigravity NUNCA funcionou por este caminho. Mesmo padrão de
+// remoção que `parseClaudeUsageText` (Claude, removida 21/07) e a leitura de
+// `~/.codex/usage.json` (Codex, removida 21/07): a fonte real vem de outro
+// lugar — aqui, o slash `/usage` DENTRO do chat TUI do `agy`, que exige PTY.
+// Ver `makeAntigravityQuotaReaderPty` em antigravity-quota-reader.ts.
 
 // Unknown específico do Codex: mesmos 6 campos null do EMPTY_CLAUDE_QUOTA
 // (nunca undefined) — reaproveita o formato sessão/semana criado pro Claude
@@ -443,16 +407,7 @@ export function makeClaudeQuotaReader(
 export const readClaudeQuota: QuotaReader = makeClaudeQuotaReader()
 
 export const QUOTA_READERS: Record<string, QuotaReader> = {
-  antigravity: makeAntigravityQuotaReader(),
+  antigravity: readAntigravityQuota,
   codex: readCodexQuota,
   claude: readClaudeQuota,
-}
-
-async function defaultRunner(bin: string, args: string[], home: string): Promise<string> {
-  const env: Record<string, string> = { PATH: process.env['PATH'] ?? '', HOME: home }
-  if (process.env['XDG_RUNTIME_DIR']) env['XDG_RUNTIME_DIR'] = process.env['XDG_RUNTIME_DIR']
-  const pending = execFileAsync(bin, args, { env, timeout: 60_000, maxBuffer: 4 * 1024 * 1024 })
-  pending.child.stdin?.end()
-  const { stdout } = await pending
-  return stdout
 }

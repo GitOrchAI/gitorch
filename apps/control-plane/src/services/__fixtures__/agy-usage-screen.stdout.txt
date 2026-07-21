@@ -1,0 +1,11 @@
+GEMINI MODELS
+  Weekly Limit    [████████████████░░] 82.29%
+    82% remaining · Refreshes in 34h 59m
+  Five Hour Limit [██████████████████░] 96.99%
+    97% remaining · Refreshes in 4h 30m
+CLAUDE AND GPT MODELS
+  Models within this group: Claude Opus, Claude Sonnet, GPT-OSS
+  Weekly Limit    [████████████████████] 100.00%
+    Quota available
+  Five Hour Limit [████████████████████] 100.00%
+    Quota available

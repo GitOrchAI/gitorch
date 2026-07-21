@@ -4,7 +4,6 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import {
   parseQuotaText,
-  makeAntigravityQuotaReader,
   readClaudeQuota,
   makeClaudeQuotaReader,
   parseClaudeRateLimitHeaders,
@@ -226,26 +225,12 @@ describe('makeClaudeQuotaReader (API real, fetch/token fake)', () => {
   })
 })
 
-describe('Antigravity reader', () => {
-  it('parseia a saída do runner', async () => {
-    const runner = vi.fn().mockResolvedValue('{"remaining": 900, "total": 1000}')
-    const reader = makeAntigravityQuotaReader('agy', ['usage'], runner)
-    expect(await reader('/home/x')).toEqual({ remaining: 900, total: 1000 })
-    expect(runner).toHaveBeenCalledWith('agy', ['usage'], '/home/x')
-  })
-  it('runner falhando → unknown (não quebra)', async () => {
-    const runner = vi.fn().mockRejectedValue(new Error('agy ausente'))
-    const reader = makeAntigravityQuotaReader('agy', ['usage'], runner)
-    expect(await reader('/home/x')).toEqual({ remaining: null, total: null })
-  })
-  it('env vence o runner', async () => {
-    process.env['GITORCH_ANTIGRAVITY_QUOTA_REMAINING'] = '77'
-    const runner = vi.fn().mockResolvedValue('{"remaining": 1}')
-    const reader = makeAntigravityQuotaReader('agy', ['usage'], runner)
-    expect((await reader('/home/x')).remaining).toBe(77)
-    expect(runner).not.toHaveBeenCalled()
-  })
-})
+// A quota REAL do Antigravity (via /usage no chat TUI sob PTY, com onboarding
+// e pior-caso entre grupos) tem seus próprios testes em
+// antigravity-quota-reader.test.ts — `makeAntigravityQuotaReader` (que rodava
+// `agy usage` via execFile, sem TTY) foi REMOVIDO 21/07 por nunca ter
+// funcionado (ver o comentário de remoção em quota-reader.ts e
+// docs/operations/engine-collection-real-steps.md).
 
 // Evento REAL observado ao vivo 21/07 (docs/operations/engine-collection-real-
 // steps.md): plano free do dono, sem janela secundária (~5h).
