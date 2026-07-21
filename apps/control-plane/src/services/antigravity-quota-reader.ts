@@ -302,7 +302,27 @@ export function makeAntigravityQuotaReaderPty(
         }
       }
 
-      const timer = setTimeout(() => settle(EMPTY_ANTIGRAVITY_QUOTA), timeoutMs)
+      // Diagnóstico dos caminhos SILENCIOSOS (achado 21/07: a quota do
+      // Antigravity veio nula no reteste do dono sem NENHUM log — o timeout e o
+      // exit resolviam EMPTY sem dizer onde pararam). Loga um resumo do estado:
+      // chegou no chat? mandou /usage? o que a última tela mostrava? Tudo já
+      // limpo de ANSI e truncado (a tela do /usage não tem segredo, mas o tail
+      // curto evita despejar quilobytes no journal).
+      const diag = (motivo: string): void => {
+        const clean = stripAnsi(buffer)
+        console.warn('[antigravity-quota-reader] quota nula', {
+          motivo,
+          chatDetectado: CHAT_PROMPT_MARKER.test(clean),
+          usageEnviado: usageSent,
+          janelasVistas: parseAntigravityUsageWindows(clean, now).length,
+          tail: clean.slice(-300).replace(/\s+/g, ' ').trim(),
+        })
+      }
+
+      const timer = setTimeout(() => {
+        diag('timeout')
+        settle(EMPTY_ANTIGRAVITY_QUOTA)
+      }, timeoutMs)
 
       handle.onStdout((chunk) => {
         if (settled) return
@@ -361,7 +381,10 @@ export function makeAntigravityQuotaReaderPty(
 
       // Processo saiu (crash, kill externo, ou nunca chegou no chat) sem
       // nunca mostrar a tela do /usage — best-effort, nunca lança.
-      handle.exited.then(() => settle(EMPTY_ANTIGRAVITY_QUOTA))
+      handle.exited.then(() => {
+        if (!settled) diag('processo saiu antes do /usage')
+        settle(EMPTY_ANTIGRAVITY_QUOTA)
+      })
     })
 }
 
