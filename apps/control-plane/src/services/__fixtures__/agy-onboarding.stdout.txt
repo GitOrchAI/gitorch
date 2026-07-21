@@ -1,0 +1,22 @@
+ ⣻  ⣽  ⣾  ⣷ [H
+ [P
+[P
+[P
+[P
+[94m▄[m[P
+
+Welcome to [94mAntigravity CLI[m!
+
+[1mChoose your color scheme:[m        [90m╭─────────────────────────────────────────────────────────────╮[m[11;34H[90m│[m [34;1m> you: [madd a greeting function[30X[11;96H[90m│[m
+  > terminal[21X[12;34H[90m│[m[61X[12;96H[90m│[m
+[5Glight[24X[13;34H[90m│[m [32;1m  Here's the change:[m[40X[13;96H[90m│[m
+[5Gsolarized light[14X[14;34H[90m│[m[61X[14;96H[90m│[m
+[5Gcolorblind-friendly light    [90m│[m [90m 3 [m  import "fmt"[43X[15;96H[90m│[m
+[5Gdark[25X[16;34H[90m│[m [90m 4 [m[57X[16;96H[90m│[m
+[5Gsolarized dark[15X[17;34H[90m│[m [90m 5 [31m- func main() {[35X[17;89H[m       [90m│[m
+[5Gcolorblind-friendly dark     [90m│[m [90m 5 [32m+ func greet(name string) {[23X[18;89H[m       [90m│[m
+[5Gtokyo night[18X[19;34H[90m│[m [90m 6 [32m+     fmt.Printf("Hello, %s!\n", name)            [m       [90m│[m[20;34H[90m│[m [90m 7 [m  }[54X[20;96H[90m│[m[21;34H[90m│[m[61X[21;96H[90m│[m[22;34H[90m│[m [37m  ▾ Thought Process[m[41X[22;96H[90m│[m[23;34H[90m│[m [37m    I need to add a greeting function. I'll use fmt.Printf.[m [90m│[m[24;34H[90m│[m [33m  ⚙ tool: [mwrite_file main.go[32X[24;96H[90m│[m[25;34H[90m│[m [35m  ◉ task: [mImplementing greeting[29X[25;96H[90m│[m[26;34H[90m│[m [31m  ✗ error: [mcompilation failed[31X[26;96H[90m│[m[27;34H[90m│[m [33m  ⚠ warning: [mdeprecation warning[28X[27;96H[90m│[m[28;34H[90m│[m   → link: [34;4mfile:///path/to/main.go[m[27X[28;96H[90m│[m[29;34H[90m│[m [94;1m  ★ accent: [mhighlighted text[32X[29;96H[90m│[m[30;34H[90m│[m [90m  · dim: press Enter to continue[m[28X[30;96H[90m│[m[31;34H[90m╰─────────────────────────────────────────────────────────────╯[m
+
+[5G[32;1m[Next][m
+
+  [94;1m↑/↓[90;22m Navigate · [94;1menter[90;22m Confirm[m[36;1976H[2mGemini 3.5 Flash (Medium)[m

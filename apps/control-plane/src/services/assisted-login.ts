@@ -5,6 +5,7 @@ import {
   runDeviceLogin,
   parseDevicePrompt,
   extractClaudeToken,
+  stripAnsi,
   type DeviceLoginHandle,
   type DeviceRuntime,
 } from '@gitorch/agents'
@@ -56,6 +57,34 @@ const MENU_SELECT_MARKER: Partial<Record<DeviceRuntime, RegExp>> = {
 const CONSENT_MARKER: Partial<Record<DeviceRuntime, RegExp>> = {
   antigravity: /agree to help improve antigravity|\[done\]/i,
 }
+
+// BUG 3 (diagnóstico 21/07): depois do consentimento de telemetria, o `agy`
+// entra num TUTORIAL interativo de onboarding nunca visto antes — "Choose
+// your color scheme:", uma prévia de código Go simulada, e um botão "[Next]"
+// navegável por ↑/↓ + Enter (fixture real: __fixtures__/agy-onboarding.stdout.txt,
+// capturada byte a byte do log de produção; timeout do dono aconteceu ainda
+// NESSA tela — nunca vimos o que vem depois de confirmar). Strings dentro do
+// binário (`strings $(command -v agy)`) sugerem mais telas na sequência
+// (keybindings, usage mode, telemetria) com variantes prováveis do mesmo
+// botão de ação primária: [Next], [Done], [Get Started], [Continue],
+// [Finish]. O padrão de MENU_SELECT_MARKER/CONSENT_MARKER (1 marker = 1 flag
+// booleana = 1 tela conhecida) NÃO escala aqui: são N telas DESCONHECIDAS em
+// sequência, não uma única tela fixa. Detecção GENÉRICA em vez de mais
+// markers hardcoded: qualquer tela que mostre um botão de ação primária entre
+// colchetes (regex case-insensitive) é confirmada com CR — ver o bloco de
+// tratamento em `onStdout()` para os dois guards que tornam isso seguro
+// (teto anti-loop + fingerprint de conteúdo por tela).
+const ONBOARDING_BUTTON_MARKER: Partial<Record<DeviceRuntime, RegExp>> = {
+  antigravity: /\[(?:next|done|get started|continue|finish)\]/gi,
+}
+
+// Teto de confirmações automáticas do onboarding por sessão. Generoso o
+// bastante pra cobrir qualquer sequência real de tutorial (a fixture real
+// mostra 1 tela; o binário sugere poucas mais), mas finito: se a MESMA tela
+// ficar sendo "confirmada" indefinidamente (bug real, não uma sequência
+// legítima), a sessão tem que falhar honesto em vez de girar em "verificando
+// conexão" pra sempre — que era exatamente o sintoma reportado pelo dono.
+const MAX_ONBOARDING_AUTO_CONFIRMS = 8
 
 // Pequeno atraso entre o código e o Enter em `submitCode` (BUG 1, diagnóstico
 // 20/07): ver o comentário em `submitCode` para a causa raiz completa.
@@ -126,6 +155,26 @@ interface Session {
   // ("[Done]") com CR. Mesmo raciocínio de `menuSelected`: sem este guard,
   // cada chunk subsequente de stdout (a tela redesenha) reenviaria o CR.
   consentConfirmed: boolean
+  // Antigravity (BUG 3, onboarding genérico): quantas telas de tutorial já
+  // confirmamos automaticamente nesta sessão. Gate contra o teto
+  // (MAX_ONBOARDING_AUTO_CONFIRMS) — ver o comentário em ONBOARDING_BUTTON_MARKER.
+  onboardingConfirmCount: number
+  // Posição (no texto já limpo de ANSI via stripAnsi) até onde já
+  // examinamos o buffer em busca de telas de onboarding. Avança para o fim
+  // do buffer limpo a cada onStdout processado (tenha confirmado ou não) —
+  // nunca só até o fim do match — para que o texto de rodapé que vem DEPOIS
+  // do botão (ex.: "↑/↓ Navigate...") não vaze pro fingerprint da PRÓXIMA
+  // tela (ver `onboardingLastFingerprint`).
+  onboardingScanPos: number
+  // Fingerprint (o texto limpo desde `onboardingScanPos` até o fim do
+  // último match confirmado) da ÚLTIMA tela de onboarding confirmada. Um
+  // repaint idêntico da MESMA tela (spinner, cursor piscando) reproduz o
+  // MESMO fingerprint — não reconfirma. Conteúdo genuinamente novo (mesmo
+  // que termine no mesmo rótulo de botão, ex. dois "[Next]" seguidos de
+  // telas diferentes) produz um fingerprint diferente — confirma de novo.
+  // Generaliza o raciocínio de `menuSelected`/`consentConfirmed` (1 flag
+  // booleana pra 1 tela conhecida) para N telas desconhecidas em sequência.
+  onboardingLastFingerprint: string
   // Guarda contra reenvio cego do código em `submitCode` (BUG 2): uma vez que
   // o código já foi escrito no stdin desta sessão, chamadas subsequentes
   // (dono reenviando achando que não foi) são no-op — não há widget de código
@@ -248,6 +297,9 @@ export class AssistedLoginService {
       capturing: false,
       menuSelected: false,
       consentConfirmed: false,
+      onboardingConfirmCount: 0,
+      onboardingScanPos: 0,
+      onboardingLastFingerprint: '',
       codeSubmitted: false,
       persistentHome: envHome !== undefined,
     }
@@ -352,6 +404,98 @@ export class AssistedLoginService {
     if (consentMarker && !session.consentConfirmed && consentMarker.test(session.buffer)) {
       session.consentConfirmed = true
       session.handle.writeStdin('\r')
+      // A tela de consentimento também casa o padrão genérico de botão entre
+      // colchetes (ela TEM um "[Done]") — sem isto, a detecção de onboarding
+      // logo abaixo trataria esta MESMA tela como se fosse a 1a tela de
+      // tutorial e mandaria um CR a mais. Avança o ponteiro do scanner de
+      // onboarding para o fim de tudo que já foi visto: o scanner de
+      // onboarding só examina conteúdo que chega DEPOIS do consentimento.
+      session.onboardingScanPos = stripAnsi(session.buffer).length
+    }
+
+    // BUG 3 (Antigravity): tutorial de onboarding pós-consentimento — N telas
+    // desconhecidas em sequência, cada uma com um botão de ação primária
+    // entre colchetes (ver ONBOARDING_BUTTON_MARKER). Ao contrário dos dois
+    // markers acima (1 flag booleana = 1 tela conhecida), aqui não sabemos
+    // quantas telas existem nem o conteúdo delas — só o PADRÃO do botão.
+    //
+    // Gate em `consentConfirmed`: a ordem real é menu → consentimento →
+    // onboarding, cada estágio só é alcançado depois do anterior. Sem este
+    // gate, o próprio "[Done]" da tela de consentimento (antes dela ser
+    // confirmada) seria lido como uma tela de onboarding também.
+    //
+    // stripAnsi roda sobre o buffer ACUMULADO inteiro (nunca só o chunk
+    // novo) pelo mesmo motivo do parseDevicePrompt logo abaixo: um botão como
+    // "[Next]" pode chegar partido entre dois chunks de stdout (ex.: um
+    // chunk termina em "[Ne" e o próximo continua "xt]") — só casa quando
+    // reconstituído no buffer completo.
+    //
+    // matchAll (buffer inteiro) + o filtro `matchEnd > onboardingScanPos`
+    // ignora matches já processados em chamadas anteriores. Do que sobra,
+    // pega o ÚLTIMO (mais recente) — cobre tanto "uma tela nova por
+    // chamada" (o caso comum, PTY entrega aos poucos) quanto múltiplas
+    // telas concatenadas no mesmo chunk (processa só a mais recente; casos
+    // do meio são raros o bastante pra não valer a complexidade extra).
+    const onboardingMarker = ONBOARDING_BUTTON_MARKER[session.runtime]
+    if (onboardingMarker && session.consentConfirmed) {
+      const clean = stripAnsi(session.buffer)
+      const newRegion = clean.slice(session.onboardingScanPos)
+
+      // A tela de CONSENTIMENTO já confirmada pode redesenhar sozinha (ex.:
+      // só a linha do botão, sem repetir "Yes, I agree..." — cenário do
+      // teste de regressão do PR#353) — e ela TEM um "[Done]", o mesmo
+      // padrão genérico de botão. Antes da 1a tela de onboarding de verdade
+      // ser confirmada (`onboardingLastFingerprint` ainda vazio), um
+      // conteúdo novo que também casa CONSENT_MARKER é tratado como esse
+      // repaint, não como uma tela de onboarding nova — só consome (avança
+      // o ponteiro), sem reconfirmar. Depois que a 1a tela de onboarding
+      // real já foi confirmada, presumimos ter avançado para além do
+      // consentimento de vez, e um "[Done]" subsequente é uma tela de
+      // onboarding legítima (ex.: o passo final do tutorial).
+      const looksLikeConsentRepaint =
+        session.onboardingLastFingerprint === '' && !!consentMarker && consentMarker.test(newRegion)
+
+      if (looksLikeConsentRepaint) {
+        session.onboardingScanPos = clean.length
+      } else {
+        let lastNewMatch: RegExpMatchArray | undefined
+        for (const match of clean.matchAll(onboardingMarker)) {
+          const matchEnd = (match.index ?? 0) + match[0].length
+          if (matchEnd > session.onboardingScanPos) lastNewMatch = match
+        }
+        if (lastNewMatch) {
+          const matchEnd = (lastNewMatch.index ?? 0) + lastNewMatch[0].length
+          // Fingerprint = todo o conteúdo novo desde a última tela processada
+          // até o fim DESTE botão — não só o texto do botão em si. Duas
+          // telas diferentes que por acaso terminam no mesmo rótulo (ex.:
+          // dois "[Next]" seguidos) têm fingerprints diferentes porque o
+          // conteúdo ANTES do botão difere.
+          const fingerprint = clean.slice(session.onboardingScanPos, matchEnd)
+          // Avança para o fim do BUFFER LIMPO inteiro (não só até
+          // `matchEnd`): qualquer rodapé que venha depois do botão neste
+          // mesmo chunk (ex.: "↑/↓ Navigate...") fica marcado como já
+          // visto, para não vazar pro fingerprint da PRÓXIMA tela caso a
+          // MESMA tela seja reimpressa por inteiro (repaint) num chunk
+          // separado.
+          session.onboardingScanPos = clean.length
+          if (fingerprint !== session.onboardingLastFingerprint) {
+            if (session.onboardingConfirmCount >= MAX_ONBOARDING_AUTO_CONFIRMS) {
+              this.fail(
+                id,
+                `onboarding do Antigravity não avançou após ${MAX_ONBOARDING_AUTO_CONFIRMS} confirmações automáticas; possível loop — tente novamente`
+              )
+              return
+            }
+            session.onboardingLastFingerprint = fingerprint
+            session.onboardingConfirmCount++
+            session.handle.writeStdin('\r')
+          }
+          // fingerprint === onboardingLastFingerprint: repaint idêntico da
+          // MESMA tela (spinner, cursor piscando) — não reconfirma, mas
+          // onboardingScanPos já avançou acima, então não fica reexaminando
+          // este trecho pra sempre.
+        }
+      }
     }
 
     // Continua reparseando enquanto a fase for 'starting' OU já tivermos a URL
