@@ -310,7 +310,19 @@ export class AssistedLoginService {
     // para códigos longos (~90 chars, tamanho real do token OAuth do Claude)
     // — código curto passa, código longo trava idêntico ao log do dono.
     // Determinístico pelo tamanho do burst, independe da versão do CLI.
-    session.handle.writeStdin(code.trim())
+    //
+    // BUG 3 (Claude, achado 21/07 nos logs reais do dono: CLI respondeu "OAuth
+    // error: Invalid code. Please make sure the full code was copied"): um
+    // código OAuth nunca contém espaço — mas `.trim()` só limpa as PONTAS. A
+    // página de autorização exibe o código quebrado em mais de uma linha
+    // visualmente; selecionar/copiar essa exibição pode trazer um '\n' ou
+    // espaço EMBUTIDO no meio da string (não nas pontas). Um '\r'/'\n' embutido
+    // vira um Enter prematuro dentro do campo mascarado — submete só o PEDAÇO
+    // colado até ali, exatamente o sintoma relatado. Remove TODO espaço em
+    // branco (não só das pontas): a única forma seguro de garantir que o burst
+    // escrito é o código inteiro, sem quebra no meio.
+    const sanitizedCode = code.replace(/\s+/g, '')
+    session.handle.writeStdin(sanitizedCode)
     setTimeout(() => {
       session.handle.writeStdin(enter)
     }, SUBMIT_CODE_ENTER_DELAY_MS)

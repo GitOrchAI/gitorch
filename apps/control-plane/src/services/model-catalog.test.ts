@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -78,6 +78,23 @@ describe('model-catalog', () => {
         throw new Error('provider indisponível neste teste')
       })
       await expect(discover('/tmp/gitorch-codex-warmup-falha-xyz')).resolves.toEqual([])
+    })
+
+    // Achado 21/07: o dono viu "conectado, 0 modelos" e não havia NENHUM log
+    // pra investigar o porquê — o catch antigo engolia o erro em silêncio.
+    test('aquecimento falha -> loga a causa real (nunca mais silêncio)', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+      const discover = makeCodexDiscoverer('codex-fake-bin', async () => {
+        throw new Error('timeout: provider não respondeu')
+      })
+
+      await discover('/tmp/gitorch-codex-warmup-falha-log-xyz')
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[model-catalog] aquecimento do Codex falhou — 0 modelos',
+        expect.objectContaining({ error: 'timeout: provider não respondeu' })
+      )
+      warnSpy.mockRestore()
     })
   })
 

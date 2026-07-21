@@ -174,6 +174,37 @@ describe('AssistedLoginService', () => {
     expect(handle.writeStdin).toHaveBeenCalledTimes(2)
   })
 
+  it('BUG3 claude: quebra de linha/espaço EMBUTIDO no meio do código colado é removido, não só das pontas', async () => {
+    const { handle } = fakeHandle()
+    const engineConnections = fakeEngineConnections()
+    const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)
+    const service = new AssistedLoginService(engineConnections as never, {
+      image: 'img',
+      runDeviceLoginImpl,
+    })
+
+    const id = service.start('user-1', 'claude')
+    // Achado 21/07 nos logs reais do dono: Claude respondeu "OAuth error:
+    // Invalid code. Please make sure the full code was copied". A página de
+    // autorização quebra o código em mais de uma linha visualmente — uma
+    // seleção/cópia por arraste pode trazer um '\n' (ou espaço) EMBUTIDO no
+    // meio da string. `.trim()` (fix anterior) só limpa as PONTAS; um '\n' no
+    // MEIO ainda vira um Enter prematuro no campo mascarado, submetendo só o
+    // pedaço colado até ali — exatamente o sintoma relatado.
+    service.submitCode(id, 'user-1', 'the-first-half\nthe-second-half')
+
+    // O burst inteiro chega JUNTO, sem a quebra do meio — nunca em pedaços
+    // separados por causa do '\n' embutido (que viraria um Enter cedo demais).
+    expect(handle.writeStdin).toHaveBeenCalledWith('the-first-halfthe-second-half')
+    expect(handle.writeStdin).not.toHaveBeenCalledWith('the-first-half\nthe-second-half')
+    expect(handle.writeStdin).not.toHaveBeenCalledWith('the-first-half')
+
+    await vi.waitFor(() => {
+      expect(handle.writeStdin).toHaveBeenCalledWith('\r')
+    })
+    expect(handle.writeStdin).toHaveBeenCalledTimes(2)
+  })
+
   it('codex: URL e código chegando em chunks de stdout separados ainda resultam nos dois no estado final', () => {
     const { handle, emitStdout } = fakeHandle()
     const runDeviceLoginImpl = vi.fn().mockReturnValue(handle)

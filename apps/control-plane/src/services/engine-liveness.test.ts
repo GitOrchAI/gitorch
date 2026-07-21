@@ -102,6 +102,33 @@ describe('checkLiveness', () => {
     expect(res.quota).toEqual({ remaining: null, total: null })
   })
 
+  // Achado 21/07: o dono viu "conectado, 0 modelos, 0 quota" sem NENHUMA
+  // pista do porquê — os catches antigos engoliam o erro em silêncio.
+  test('falha em models/quota loga a causa real (nunca mais silêncio)', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const discoverers: Record<string, ModelDiscoverer> = {
+      claude: async () => {
+        throw new Error('descoberta falhou')
+      },
+    }
+    const quotaReaders: Record<string, QuotaReader> = {
+      claude: async () => {
+        throw new Error('quota falhou')
+      },
+    }
+    await checkLiveness('claude', '/home/fake', { runner: okRunner, discoverers, quotaReaders })
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[engine-liveness] descoberta de modelos falhou — 0 modelos',
+      expect.objectContaining({ runtime: 'claude', error: 'descoberta falhou' })
+    )
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[engine-liveness] leitura de quota falhou — quota nula',
+      expect.objectContaining({ runtime: 'claude', error: 'quota falhou' })
+    )
+    warnSpy.mockRestore()
+  })
+
   test('usa o comando de liveness honesto de cada motor', async () => {
     const runner = vi.fn(okRunner)
     await checkLiveness('antigravity', '/h', { runner, ...emptyCollectors })

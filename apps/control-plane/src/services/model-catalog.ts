@@ -9,9 +9,11 @@ const execFileAsync = promisify(execFile)
 // Aquecimento do Codex: prompt mínimo e diretivo (sem tools), sandbox
 // read-only, timeout curto — nunca segura o connect se o provider estiver
 // lento/fora do ar. Reproduzido de verdade nesta VM (2026-07-20) contra o
-// codex-cli 0.142.5: ~19s e ~2.4k tokens; a margem cobre reasoning mais lento
-// sem deixar o usuário esperando minutos.
-const CODEX_WARMUP_TIMEOUT_MS = 30_000
+// codex-cli 0.142.5: ~19s e ~2.4k tokens. Reproduzido de novo em 21/07 (mesma
+// VM, mesmo binário): ~7k tokens dessa vez — a variação de reasoning entre
+// chamadas é real, então a margem sobe pra 45s (30s era apertado demais para
+// o pior caso observado).
+const CODEX_WARMUP_TIMEOUT_MS = 45_000
 
 // Catálogo DINÂMICO de modelos por provider: novos modelos aparecem sozinhos
 // como opção para o cliente. Cada motor descobre de um jeito próprio; a lista
@@ -53,7 +55,16 @@ export function makeCodexDiscoverer(
     const file = path.join(homeDir, '.codex', 'models_cache.json')
     let raw = await fs.readFile(file, 'utf8').catch(() => null)
     if (!raw) {
-      await warmUp(codexBin, homeDir).catch(() => undefined)
+      // NUNCA engolir em silêncio (achado 21/07): o dono viu "conectado, 0
+      // modelos" sem NENHUMA pista do porquê — este catch escondia o erro
+      // real (timeout, provider fora do ar, etc.) atrás de um simples `[]`.
+      // O connect continua honesto (lista vazia é melhor que quebrar), mas
+      // agora o motivo fica visível pra investigar de verdade, não adivinhar.
+      await warmUp(codexBin, homeDir).catch((err) => {
+        console.warn('[model-catalog] aquecimento do Codex falhou — 0 modelos', {
+          error: err instanceof Error ? err.message : String(err),
+        })
+      })
       raw = await fs.readFile(file, 'utf8').catch(() => null)
     }
     if (!raw) return []

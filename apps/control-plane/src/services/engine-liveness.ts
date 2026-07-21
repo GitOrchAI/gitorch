@@ -138,8 +138,31 @@ export async function checkLiveness(
   const quotaReaders = deps.quotaReaders ?? QUOTA_READERS
   const discover = Object.hasOwn(discoverers, runtime) ? discoverers[runtime] : undefined
   const readQuota = Object.hasOwn(quotaReaders, runtime) ? quotaReaders[runtime] : undefined
-  const models = discover ? await discover(homeDir).catch(() => [] as string[]) : []
-  const quota = readQuota ? await readQuota(homeDir).catch(() => emptyQuota()) : emptyQuota()
+  // NUNCA engolir em silêncio (achado 21/07): o dono viu "conectado, 0
+  // modelos, 0 quota" sem NENHUMA pista do porquê — estes catches escondiam
+  // qualquer erro real (timeout, provider fora do ar) atrás de um `[]`/null
+  // silencioso. `alive` continua honesto (best-effort nunca derruba a
+  // conexão), mas agora o motivo fica nos logs pra investigar de verdade.
+  const models = discover
+    ? await discover(homeDir).catch((err) => {
+        // `runtime` NUNCA entra na string de formato (CodeQL: format string
+        // dependente de valor vindo de fora) — vai só como campo estruturado.
+        console.warn('[engine-liveness] descoberta de modelos falhou — 0 modelos', {
+          runtime,
+          error: err instanceof Error ? err.message : String(err),
+        })
+        return [] as string[]
+      })
+    : []
+  const quota = readQuota
+    ? await readQuota(homeDir).catch((err) => {
+        console.warn('[engine-liveness] leitura de quota falhou — quota nula', {
+          runtime,
+          error: err instanceof Error ? err.message : String(err),
+        })
+        return emptyQuota()
+      })
+    : emptyQuota()
   return { alive: true, models, quota }
 }
 
