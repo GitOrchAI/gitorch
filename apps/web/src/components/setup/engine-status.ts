@@ -201,6 +201,22 @@ export function formatClaudeUsage(state: LoginState, labels: ClaudeUsageLabels):
   return parts.length > 0 ? parts.join(' · ') : null
 }
 
+// Formata o horário de reset da quota (ex.: "2026-07-26T17:00:47.000Z", um ISO
+// vindo do backend) numa data curta e legível no FUSO do navegador — "26/07
+// 14:00" em vez do ISO cru que o dono via no card (21/07). Se `resetsAt` não
+// for uma data parseável (um formato de texto legado), devolve como veio (nunca
+// esconde a informação). `undefined` no locale usa o do próprio navegador.
+export function formatResetTime(resetsAt: string): string {
+  const ts = Date.parse(resetsAt)
+  if (Number.isNaN(ts)) return resetsAt
+  return new Date(ts).toLocaleString(undefined, {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
 function formatClaudeUsageWindow(
   windowLabel: string,
   percentUsed: number | null | undefined,
@@ -208,7 +224,7 @@ function formatClaudeUsageWindow(
   labels: ClaudeUsageLabels
 ): string | null {
   if (typeof percentUsed !== 'number') return null
-  const reset = resetsAt ? ` (${labels.resets} ${resetsAt})` : ''
+  const reset = resetsAt ? ` (${labels.resets} ${formatResetTime(resetsAt)})` : ''
   return `${windowLabel}: ${percentUsed}% ${labels.used}${reset}`
 }
 

@@ -4,6 +4,7 @@ import {
   normalizeModelNames,
   hasUsageWindowData,
   formatClaudeUsage,
+  formatResetTime,
   parseTokenResponse,
   normalizeLoginState,
   classifyConnectError,
@@ -243,6 +244,24 @@ describe('hasUsageWindowData — quota de sessão/semana pra QUALQUER motor', ()
 
   it('fase diferente de connected -> false', () => {
     expect(hasUsageWindowData({ phase: 'idle' })).toBe(false)
+  })
+})
+
+describe('formatResetTime — data de reset legível, não ISO cru', () => {
+  it('ISO válido -> data curta (não é mais o ISO cru que o dono via)', () => {
+    const out = formatResetTime('2026-07-26T17:00:47.000Z')
+    // Não checa o valor exato (depende do fuso do ambiente), só que MUDOU do ISO
+    // cru e não tem mais o "T"/"Z"/segundos/milissegundos.
+    expect(out).not.toBe('2026-07-26T17:00:47.000Z')
+    expect(out).not.toContain('T')
+    expect(out).not.toContain('Z')
+    expect(out).not.toContain('.000')
+    expect(out).toMatch(/\d/)
+  })
+
+  it('string não-parseável (formato legado) -> devolve como veio, nunca esconde', () => {
+    expect(formatResetTime('Jul 21, 3:09am (UTC)')).toBe('Jul 21, 3:09am (UTC)')
+    expect(formatResetTime('sem data')).toBe('sem data')
   })
 })
 
