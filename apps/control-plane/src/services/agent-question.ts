@@ -1,8 +1,13 @@
 import type { Prisma, PrismaClient } from '@prisma/client'
+import type { CortexClient, CortexDrawer } from '@gitorch/cortex'
 
 // Só o que o serviço usa do Prisma — permite injetar um fake nos testes
 // (mesmo padrão de environment.ts/engine-connection.ts), nunca banco real.
 type PrismaLike = Pick<PrismaClient, 'agentQuestion' | 'event'>
+
+// Só o que answer() usa do Cortex — permite injetar um fake nos testes (mesmo
+// padrão de repo-context-cortex.ts).
+type CortexWriter = Pick<CortexClient, 'writeDrawer'>
 
 export interface AgentQuestionOption {
   label: string
@@ -49,6 +54,8 @@ export type NotifyFn = (question: AgentQuestionRecord) => Promise<void>
 
 export interface AgentQuestionServiceDeps {
   notify?: NotifyFn
+  /** Grava a decisão respondida na memória de longo prazo (Cortex) — best-effort. */
+  cortex?: CortexWriter
   now?: () => Date
 }
 
@@ -123,5 +130,123 @@ export class AgentQuestionService {
     }
 
     return { deduped: false, question }
+  }
+
+  /**
+   * Registra a resposta do dono: grava `answer/answeredAt/answeredVia` e
+   * marca `status: 'answered'`. Em seguida grava a DECISÃO na memória de
+   * longo prazo (Cortex) do projeto — a fonte que os agentes consultam antes
+   * de perguntar de novo (ver `ask`/dedupKey). O Cortex é BEST-EFFORT: se a
+   * gravação falhar, loga e segue — o banco (o `answer` em si) é a fonte de
+   * verdade, nunca desfeito por uma falha de memória.
+   *
+   * IDEMPOTENTE: se a questão já está `answered`, devolve o estado atual sem
+   * regravar nem duplicar a memória (responder 2x — ex.: Telegram reentrega o
+   * callback_query — é inofensivo).
+   *
+   * `questionId` inexistente devolve `null` sem lançar.
+   */
+  async answer(
+    questionId: string,
+    value: string,
+    via: 'telegram' | 'panel'
+  ): Promise<AgentQuestionRecord | null> {
+    const existing = await this.prisma.agentQuestion.findUnique({
+      where: { id: questionId },
+      include: { project: { select: { wingId: true } } },
+    })
+    if (!existing) {
+      console.warn('[agent-question] answer: dúvida não encontrada', { questionId })
+      return null
+    }
+    if (existing.status === 'answered') {
+      return existing as unknown as AgentQuestionRecord
+    }
+
+    const now = this.deps.now ? this.deps.now() : new Date()
+    const updated = await this.prisma.agentQuestion.update({
+      where: { id: questionId },
+      data: { answer: value, answeredAt: now, answeredVia: via, status: 'answered' },
+    })
+    const question = updated as unknown as AgentQuestionRecord
+
+    if (this.deps.cortex) {
+      try {
+        await this.deps.cortex.writeDrawer(
+          buildDecisionDrawer(existing.project.wingId, questionId, existing.text, value, now)
+        )
+      } catch (err) {
+        // Best-effort (spec W3.2.3): a memória nunca desfaz o answer, que já
+        // está gravado no banco (fonte de verdade). Loga a CAUSA, não o
+        // conteúdo da decisão.
+        console.warn(
+          '[agent-question] gravação no Cortex falhou (best-effort, answer já gravado)',
+          {
+            questionId,
+            error: err instanceof Error ? err.message : String(err),
+          }
+        )
+      }
+    }
+
+    return question
+  }
+
+  /**
+   * Dúvidas do DONO (userId), em qualquer projeto — abertas primeiro, depois
+   * por `createdAt` (mais recente primeiro). Alimenta o painel (GET .../
+   * agent-questions, rota de outra task).
+   */
+  async listForUser(userId: string): Promise<AgentQuestionRecord[]> {
+    const rows = await this.prisma.agentQuestion.findMany({ where: { userId } })
+    return sortOpenFirst(rows as unknown as AgentQuestionRecord[])
+  }
+
+  /** Dúvidas ABERTAS de um projeto — mesma ordenação de `listForUser`. */
+  async listOpen(projectId: string): Promise<AgentQuestionRecord[]> {
+    const rows = await this.prisma.agentQuestion.findMany({
+      where: { projectId, status: 'open' },
+    })
+    return sortOpenFirst(rows as unknown as AgentQuestionRecord[])
+  }
+}
+
+// Abertas primeiro (open antes de answered/expired), depois mais recente
+// primeiro — o Prisma não ordena por um valor de string "customizado"
+// (open < answered não é alfabético), então a ordenação é em memória.
+function sortOpenFirst(rows: AgentQuestionRecord[]): AgentQuestionRecord[] {
+  const rank = (status: string): number => (status === 'open' ? 0 : 1)
+  return [...rows].sort((a, b) => {
+    const byStatus = rank(a.status) - rank(b.status)
+    if (byStatus !== 0) return byStatus
+    return b.createdAt.getTime() - a.createdAt.getTime()
+  })
+}
+
+// Molde da gaveta de decisão: id DETERMINÍSTICO (writeDrawer faz upsert —
+// mesmo padrão de repo-context-cortex.ts baseDrawer) garante que, mesmo que
+// este método fosse chamado de novo, nunca duplicaria a memória (a guarda
+// real de idempotência é o early-return em `answer` acima; o id
+// determinístico é defesa em profundidade).
+function buildDecisionDrawer(
+  wingId: string,
+  questionId: string,
+  text: string,
+  value: string,
+  now: Date
+): CortexDrawer {
+  const ts = now.toISOString()
+  return {
+    id: `agent-question:${questionId}`,
+    wingId,
+    roomId: 'decisoes-de-rumo',
+    hallId: 'agent-question',
+    content: `Decisão de rumo registrada pelo dono: ${text} → ${value}`,
+    importance: 0.6,
+    emotionalWeight: 0,
+    createdAt: ts,
+    validFrom: ts,
+    confidence: 0.95,
+    tags: ['decisao', 'rumo', 'agent-question'],
   }
 }
