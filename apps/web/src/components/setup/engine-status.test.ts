@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { describe, it, expect } from 'vitest'
 import {
   normalizeModelNames,
-  hasClaudeUsageData,
+  hasUsageWindowData,
   formatClaudeUsage,
   parseTokenResponse,
   normalizeLoginState,
@@ -211,10 +211,10 @@ describe('normalizeLoginState', () => {
 // forma real de coletar (headers de rate limit da API da Anthropic, ver
 // quota-reader.ts no control-plane) — % usado de sessão/semana + reset de
 // cada uma.
-describe('hasClaudeUsageData — dado REAL no lugar da legenda genérica', () => {
-  it('claude conectado com sessionPercentUsed -> true', () => {
+describe('hasUsageWindowData — quota de sessão/semana pra QUALQUER motor', () => {
+  it('conectado com sessionPercentUsed -> true', () => {
     expect(
-      hasClaudeUsageData('claude', {
+      hasUsageWindowData({
         phase: 'connected',
         models: ['claude-sonnet-5'],
         sessionPercentUsed: 100,
@@ -222,26 +222,27 @@ describe('hasClaudeUsageData — dado REAL no lugar da legenda genérica', () =>
     ).toBe(true)
   })
 
-  it('claude conectado com weekPercentUsed (mas não sessão) -> true', () => {
-    expect(
-      hasClaudeUsageData('claude', { phase: 'connected', models: [], weekPercentUsed: 41 })
-    ).toBe(true)
+  it('conectado com weekPercentUsed (mas não sessão) -> true', () => {
+    expect(hasUsageWindowData({ phase: 'connected', models: [], weekPercentUsed: 41 })).toBe(true)
   })
 
-  it('claude conectado sem nenhuma das duas janelas -> false (nunca inventa um número)', () => {
+  it('conectado sem nenhuma das duas janelas -> false (nunca inventa um número)', () => {
     expect(
-      hasClaudeUsageData('claude', { phase: 'connected', models: ['claude-sonnet-5'], quota: null })
+      hasUsageWindowData({ phase: 'connected', models: ['claude-sonnet-5'], quota: null })
     ).toBe(false)
   })
 
-  it('outro motor (codex/antigravity) -> false, mesmo com os campos presentes (só o Claude usa essa janela)', () => {
-    expect(
-      hasClaudeUsageData('codex', { phase: 'connected', models: ['gpt-5'], sessionPercentUsed: 10 })
-    ).toBe(false)
+  // 21/07: ANTES gated em runtime==='claude' — o Codex/Antigravity NÃO
+  // mostravam a quota mesmo tendo o dado (o bug do reteste do dono). Agora
+  // qualquer motor com os campos preenchidos passa.
+  it('Codex/Antigravity com os campos preenchidos -> TRUE (não é mais só Claude)', () => {
+    expect(hasUsageWindowData({ phase: 'connected', models: ['gpt-5'], weekPercentUsed: 8 })).toBe(
+      true
+    )
   })
 
   it('fase diferente de connected -> false', () => {
-    expect(hasClaudeUsageData('claude', { phase: 'idle' })).toBe(false)
+    expect(hasUsageWindowData({ phase: 'idle' })).toBe(false)
   })
 })
 
@@ -691,13 +692,14 @@ describe('guarda: StepConnectEngine mostra os NOMES dos modelos e a quota REAL d
     expect(step).not.toContain('${state.models} ${')
   })
 
-  // 21/07: substitui a legenda genérica antiga ("cota gerenciada pela sua
-  // assinatura", que o dono rejeitou) pelo dado real coletado de verdade.
-  it('usa hasClaudeUsageData/formatClaudeUsage pra mostrar a quota REAL do Claude, não mais uma legenda genérica', () => {
+  // 21/07: mostra a quota REAL de sessão/semana pra QUALQUER motor (antes só
+  // Claude — o gate fazia Codex/Antigravity não exibirem a quota que tinham).
+  it('usa hasUsageWindowData/formatClaudeUsage pra mostrar a quota REAL, sem gate de runtime', () => {
     const step = source()
-    expect(step).toContain('hasClaudeUsageData(runtime, state)')
+    expect(step).toContain('hasUsageWindowData(state)')
     expect(step).toContain('formatClaudeUsage(state,')
-    // Regressão: a legenda genérica antiga não pode voltar.
+    // Regressão: nunca mais o gate de runtime nem a legenda genérica antiga.
+    expect(step).not.toContain('hasClaudeUsageData(runtime, state)')
     expect(step).not.toContain('isClaudeQuotaManagedByPlan')
     expect(step).not.toContain('connectQuotaManagedByPlan')
   })

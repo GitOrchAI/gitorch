@@ -158,16 +158,16 @@ function claudeUsageFields(r: {
   }
 }
 
-// 21/07: substitui isClaudeQuotaManagedByPlan (removida) — correção de um erro
-// real. O dono rejeitou a legenda genérica "cota gerenciada pela sua
-// assinatura" ("sobre quota nao aceito isso... tem que coletar!"), e ele tinha
-// razão: os headers de rate limit da API da Anthropic COLETAM a quota de
-// verdade (% usado da sessão e da semana + reset de cada uma). Esta função
-// decide quando existe dado REAL pra mostrar (nunca mais uma legenda
-// genérica no lugar do silêncio).
-export function hasClaudeUsageData(runtime: string, state: LoginState): boolean {
+// TODOS os 3 motores expõem a quota como % USADO de janela(s) de sessão/semana
+// — Claude (headers da API), Codex (evento rate_limits), Antigravity (/usage no
+// chat). Antes gated em `runtime === 'claude'` (a coleta começou pelo Claude),
+// o que fazia Codex/Antigravity NÃO mostrarem a quota no card mesmo tendo o
+// dado — achado ao vivo 21/07: o Codex conectava com "semana 8% usada" no
+// backend, mas o card não desenhava nada. Sem gate de runtime: qualquer motor
+// com os campos preenchidos exibe. (Substituiu isClaudeQuotaManagedByPlan, a
+// legenda genérica que o dono rejeitou — "tem que coletar!".)
+export function hasUsageWindowData(state: LoginState): boolean {
   return (
-    runtime === 'claude' &&
     state.phase === 'connected' &&
     (typeof state.sessionPercentUsed === 'number' || typeof state.weekPercentUsed === 'number')
   )

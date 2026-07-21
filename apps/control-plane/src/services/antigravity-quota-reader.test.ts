@@ -58,19 +58,22 @@ describe('parseAntigravityUsageWindows', () => {
     expect(fiveHour).toHaveLength(2)
   })
 
-  it('SEMÂNTICA (o ponto fácil de errar): barra 82.29% + "82% remaining" -> percentUsed ≈ 17.71 (100 - barra)', () => {
+  // Fixture = tela REAL capturada ao vivo do dono (21/07): o rótulo, a barra e
+  // o caption em LINHAS SEPARADAS (o formato antigo, tudo numa linha, era
+  // inventado e nunca casava o produto — causa da quota nula no reteste).
+  it('SEMÂNTICA (o ponto fácil de errar): barra 80.82% + "81% remaining" -> percentUsed ≈ 19.18 (100 - barra)', () => {
     const windows = parseAntigravityUsageWindows(USAGE_SCREEN_FIXTURE, now)
-    const geminiWeekly = windows.find((w) => w.kind === 'weekly' && w.percentRemaining === 82.29)
+    const geminiWeekly = windows.find((w) => w.kind === 'weekly' && w.percentRemaining === 80.82)
     expect(geminiWeekly).toBeDefined()
-    expect(geminiWeekly?.percentUsed).toBeCloseTo(17.71, 2)
+    expect(geminiWeekly?.percentUsed).toBeCloseTo(19.18, 2)
   })
 
-  it('barra 96.99% (five hour) -> percentUsed ≈ 3.01', () => {
+  it('barra 92.91% (five hour) -> percentUsed ≈ 7.09', () => {
     const windows = parseAntigravityUsageWindows(USAGE_SCREEN_FIXTURE, now)
     const geminiFiveHour = windows.find(
-      (w) => w.kind === 'five_hour' && w.percentRemaining === 96.99
+      (w) => w.kind === 'five_hour' && w.percentRemaining === 92.91
     )
-    expect(geminiFiveHour?.percentUsed).toBeCloseTo(3.01, 2)
+    expect(geminiFiveHour?.percentUsed).toBeCloseTo(7.09, 2)
   })
 
   it('"Quota available" (barra 100.00%) -> percentUsed = 0, resetsAt null (nada a esperar)', () => {
@@ -83,19 +86,19 @@ describe('parseAntigravityUsageWindows', () => {
     }
   })
 
-  it('"Refreshes in 34h 59m" vira resetsAt = now + 34h59m em ISO', () => {
+  it('"Refreshes in 21h 25m" vira resetsAt = now + 21h25m em ISO', () => {
     const windows = parseAntigravityUsageWindows(USAGE_SCREEN_FIXTURE, now)
-    const geminiWeekly = windows.find((w) => w.kind === 'weekly' && w.percentRemaining === 82.29)
-    const expected = new Date(FIXED_NOW + (34 * 3600 + 59 * 60) * 1000).toISOString()
+    const geminiWeekly = windows.find((w) => w.kind === 'weekly' && w.percentRemaining === 80.82)
+    const expected = new Date(FIXED_NOW + (21 * 3600 + 25 * 60) * 1000).toISOString()
     expect(geminiWeekly?.resetsAt).toBe(expected)
   })
 
-  it('"Refreshes in 4h 30m" vira resetsAt = now + 4h30m em ISO', () => {
+  it('"Refreshes in 4h 20m" vira resetsAt = now + 4h20m em ISO', () => {
     const windows = parseAntigravityUsageWindows(USAGE_SCREEN_FIXTURE, now)
     const geminiFiveHour = windows.find(
-      (w) => w.kind === 'five_hour' && w.percentRemaining === 96.99
+      (w) => w.kind === 'five_hour' && w.percentRemaining === 92.91
     )
-    const expected = new Date(FIXED_NOW + (4 * 3600 + 30 * 60) * 1000).toISOString()
+    const expected = new Date(FIXED_NOW + (4 * 3600 + 20 * 60) * 1000).toISOString()
     expect(geminiFiveHour?.resetsAt).toBe(expected)
   })
 
@@ -105,8 +108,10 @@ describe('parseAntigravityUsageWindows', () => {
   })
 
   it('aceita "34h" ou "59m" isolados na legenda (janela só com horas ou só com minutos)', () => {
-    const onlyHours = '  Weekly Limit    [████] 50.00%\n    50% remaining · Refreshes in 10h\n'
-    const onlyMinutes = '  Five Hour Limit [████] 50.00%\n    50% remaining · Refreshes in 45m\n'
+    // Formato REAL: rótulo numa linha, barra+% na seguinte, caption na terceira.
+    const onlyHours = '  Weekly Limit\n    [████] 50.00%\n    50% remaining · Refreshes in 10h\n'
+    const onlyMinutes =
+      '  Five Hour Limit\n    [████] 50.00%\n    50% remaining · Refreshes in 45m\n'
     const w1 = parseAntigravityUsageWindows(onlyHours, now)
     expect(w1[0]?.resetsAt).toBe(new Date(FIXED_NOW + 10 * 3600 * 1000).toISOString())
     const w2 = parseAntigravityUsageWindows(onlyMinutes, now)
@@ -119,13 +124,13 @@ describe('antigravityUsageScreenToQuotaReading (pior caso entre grupos)', () => 
     const reading = antigravityUsageScreenToQuotaReading(USAGE_SCREEN_FIXTURE, now)
     expect(reading.remaining).toBeNull()
     expect(reading.total).toBeNull()
-    expect(reading.weekPercentUsed).toBeCloseTo(17.71, 2) // Gemini pior que Claude/GPT (0)
-    expect(reading.sessionPercentUsed).toBeCloseTo(3.01, 2) // Gemini pior que Claude/GPT (0)
+    expect(reading.weekPercentUsed).toBeCloseTo(19.18, 2) // Gemini pior que Claude/GPT (0)
+    expect(reading.sessionPercentUsed).toBeCloseTo(7.09, 2) // Gemini pior que Claude/GPT (0)
     expect(reading.weekResetsAt).toBe(
-      new Date(FIXED_NOW + (34 * 3600 + 59 * 60) * 1000).toISOString()
+      new Date(FIXED_NOW + (21 * 3600 + 25 * 60) * 1000).toISOString()
     )
     expect(reading.sessionResetsAt).toBe(
-      new Date(FIXED_NOW + (4 * 3600 + 30 * 60) * 1000).toISOString()
+      new Date(FIXED_NOW + (4 * 3600 + 20 * 60) * 1000).toISOString()
     )
   })
 
@@ -135,15 +140,11 @@ describe('antigravityUsageScreenToQuotaReading (pior caso entre grupos)', () => 
     // certo, não sempre do mesmo grupo.
     const text =
       'GROUP A\n' +
-      '  Weekly Limit    [████] 10.00%\n' +
-      '    10% remaining · Refreshes in 1h 0m\n' +
-      '  Five Hour Limit [████] 100.00%\n' +
-      '    Quota available\n' +
+      '  Weekly Limit\n    [████] 10.00%\n    10% remaining · Refreshes in 1h 0m\n' +
+      '  Five Hour Limit\n    [████] 100.00%\n    Quota available\n' +
       'GROUP B\n' +
-      '  Weekly Limit    [████] 100.00%\n' +
-      '    Quota available\n' +
-      '  Five Hour Limit [████] 30.00%\n' +
-      '    30% remaining · Refreshes in 2h 0m\n'
+      '  Weekly Limit\n    [████] 100.00%\n    Quota available\n' +
+      '  Five Hour Limit\n    [████] 30.00%\n    30% remaining · Refreshes in 2h 0m\n'
     const reading = antigravityUsageScreenToQuotaReading(text, now)
     expect(reading.weekPercentUsed).toBeCloseTo(90, 2) // Group A
     expect(reading.sessionPercentUsed).toBeCloseTo(70, 2) // Group B
@@ -221,8 +222,8 @@ describe('makeAntigravityQuotaReaderPty (reader com PTY fake — nunca sobe o ag
     emitStdout(USAGE_SCREEN_FIXTURE)
 
     const reading = await promise
-    expect(reading.weekPercentUsed).toBeCloseTo(17.71, 2)
-    expect(reading.sessionPercentUsed).toBeCloseTo(3.01, 2)
+    expect(reading.weekPercentUsed).toBeCloseTo(19.18, 2)
+    expect(reading.sessionPercentUsed).toBeCloseTo(7.09, 2)
     // Sai limpo: Esc antes do kill.
     expect(handle.writeStdin).toHaveBeenLastCalledWith('\x1b')
     expect(handle.kill).toHaveBeenCalledTimes(1)
@@ -279,7 +280,7 @@ describe('makeAntigravityQuotaReaderPty (reader com PTY fake — nunca sobe o ag
 
     emitStdout(USAGE_SCREEN_FIXTURE)
     const reading = await promise
-    expect(reading.weekPercentUsed).toBeCloseTo(17.71, 2)
+    expect(reading.weekPercentUsed).toBeCloseTo(19.18, 2)
   })
 
   it('onboarding em loop (teto estourado) -> tudo null, mata o processo (nunca trava)', async () => {
@@ -381,9 +382,11 @@ describe('makeAntigravityQuotaReaderPty (reader com PTY fake — nunca sobe o ag
     // restante), depois — ainda DENTRO do silêncio — um segundo grupo com
     // janela pior ainda (5% restante). O resultado final tem que refletir o
     // PIOR entre os dois, não só o primeiro a chegar.
-    emitStdout('GROUP A\n  Weekly Limit    [████] 10.00%\n    10% remaining · Refreshes in 1h 0m\n')
+    emitStdout(
+      'GROUP A\n  Weekly Limit\n    [████] 10.00%\n    10% remaining · Refreshes in 1h 0m\n'
+    )
     await new Promise((r) => setTimeout(r, 20)) // < quietMs — ainda não fechou
-    emitStdout('GROUP B\n  Weekly Limit    [████] 5.00%\n    5% remaining · Refreshes in 2h 0m\n')
+    emitStdout('GROUP B\n  Weekly Limit\n    [████] 5.00%\n    5% remaining · Refreshes in 2h 0m\n')
 
     const reading = await promise
     expect(reading.weekPercentUsed).toBeCloseTo(95, 2) // 100 - 5 (pior entre 90 e 95)
