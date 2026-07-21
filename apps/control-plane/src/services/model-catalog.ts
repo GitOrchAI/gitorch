@@ -1,7 +1,7 @@
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import {
   readClaudeTokenFromHome,
@@ -166,25 +166,62 @@ export async function defaultCodexWarmUp(
   }
 }
 
-async function defaultCodexExecRunner(
+// Assim que o stderr acumula o marcador do evento de quota, o processo já
+// cumpriu seu papel (models_cache.json + rate_limits nascem CEDO — provado ao
+// vivo 21/07: o rate_limits aparece por volta de ~1,2MB de trace). Matamos o
+// processo nesse ponto em vez de esperá-lo terminar.
+const CODEX_RATE_LIMITS_MARKER = 'codex.rate_limits'
+// Teto absoluto de captura: se o marcador não vier (ex.: rede lenta, plano sem
+// rate_limits), paramos de acumular em 8MB — o RUST_LOG=trace é uma torrente
+// (~1GB se deixado correr, provado ao vivo), então NUNCA bufferizar sem limite.
+const CODEX_TRACE_MAX_BYTES = 8 * 1024 * 1024
+
+/**
+ * Runner do `codex exec` do warmup. DUAS armadilhas provadas ao vivo (21/07,
+ * ver docs/operations/engine-collection-real-steps.md):
+ *
+ *  1) STDIN: o `codex exec` fica "Reading additional input from stdin..." e
+ *     TRAVA até o timeout se o stdin não for fechado — o dono via "0 modelos"
+ *     porque o warmup morria no timeout sem gerar nada. `stdio[0]: 'ignore'`
+ *     dá EOF imediato no stdin, e o codex prossegue.
+ *  2) VOLUME: com RUST_LOG=trace (necessário pra o rate_limits, ver
+ *     defaultCodexWarmUp) o stderr é uma TORRENTE — ~1GB se o processo correr
+ *     até o fim, estourando qualquer maxBuffer. Mas o models_cache.json e o
+ *     evento rate_limits nascem CEDO (~1,2MB). Então: stream o stderr, e assim
+ *     que o marcador do rate_limits aparecer, MATA o processo (SIGKILL) e
+ *     devolve o que juntou. Cap duro de 8MB caso o marcador nunca venha.
+ *
+ * Nunca rejeita: qualquer falha vira o buffer acumulado (best-effort — o
+ * warmup do model-catalog trata "sem rate_limits" como quota nula, e o
+ * models_cache é lido à parte). O timeout é o mesmo teto do warmup.
+ */
+function defaultCodexExecRunner(
   bin: string,
   args: string[],
   env: Record<string, string>
 ): Promise<string> {
-  const { stdout, stderr } = await execFileAsync(bin, args, {
-    env,
-    timeout: CODEX_WARMUP_TIMEOUT_MS,
-    // RUST_LOG=trace (ver defaultCodexWarmUp) gera MUITO output no stderr — o
-    // evento `rate_limits` é uma linha entre centenas de telemetria. maxBuffer
-    // generoso (32MB) pra não estourar; se estourar, execFile rejeita e o
-    // warmup cai no catch (quota nula, best-effort — nunca derruba a conexão).
-    maxBuffer: 32 * 1024 * 1024,
+  return new Promise((resolve) => {
+    const child = spawn(bin, args, { env, stdio: ['ignore', 'pipe', 'pipe'] })
+    let buf = ''
+    let settled = false
+    const finish = (): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      child.kill('SIGKILL')
+      resolve(buf)
+    }
+    const onData = (chunk: Buffer): void => {
+      buf += chunk.toString('utf8')
+      // Achou a quota (vem cedo) OU já bufferizou o teto — em ambos, para.
+      if (buf.includes(CODEX_RATE_LIMITS_MARKER) || buf.length >= CODEX_TRACE_MAX_BYTES) finish()
+    }
+    child.stdout.on('data', onData)
+    child.stderr.on('data', onData)
+    child.on('error', finish)
+    child.on('exit', finish)
+    const timer = setTimeout(finish, CODEX_WARMUP_TIMEOUT_MS)
   })
-  // O `rate_limits` vem no STDERR (mensagem WebSocket sob RUST_LOG=trace); o
-  // models_cache.json é gravado pelo próprio codex independente. Concatena os
-  // dois pro parser varrer — a quota está no stderr, mas manter o stdout é
-  // barato e cobre uma versão futura do CLI que emita o evento no --json.
-  return `${stdout}\n${stderr}`
 }
 
 /**
