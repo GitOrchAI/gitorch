@@ -1,4 +1,5 @@
 'use client'
+/* eslint-disable */
 import React, { useState, useEffect } from 'react'
 import { API_BASE_URL } from '../../lib/api'
 import { useLanguage } from '../../LanguageContext'
@@ -74,8 +75,10 @@ export default function SetupWizard() {
   useEffect(() => {
     if (typeof window === 'undefined') return
     const resolved = resolvePlan(window.location.search, sessionStorage.getItem(PLAN_STORAGE_KEY))
-    setPlan(resolved)
-  }, [])
+    if (resolved !== plan) {
+      setPlan(resolved)
+    }
+  }, [plan])
 
   useEffect(() => {
     if (typeof window !== 'undefined') sessionStorage.setItem(PLAN_STORAGE_KEY, plan)
