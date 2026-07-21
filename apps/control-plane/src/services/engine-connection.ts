@@ -6,7 +6,7 @@ import type { PrismaClient } from '@prisma/client'
 import { decryptCredential, encryptCredential } from '../lib/credential-crypto.js'
 import { archivePaths, readArchiveEntry, restoreDirectory } from '../lib/credential-archive.js'
 import { MODEL_DISCOVERERS } from './model-catalog.js'
-import { QUOTA_READERS } from './quota-reader.js'
+import { QUOTA_READERS, type QuotaReading } from './quota-reader.js'
 import { checkLiveness, type LivenessResult } from './engine-liveness.js'
 import { validatePastedCredential } from './credential-validator.js'
 
@@ -83,6 +83,14 @@ export interface ConnectionStatus {
   models: string[]
   quotaRemaining: number | null
   quotaTotal: number | null
+  // Claude (ver quota-reader.ts/QuotaReading): a CLI não expõe um saldo
+  // remaining/total — expõe % usado + reset de DUAS janelas (sessão/semana).
+  // Só o runtime 'claude' popula; Codex/Antigravity ficam undefined aqui,
+  // sem regressão no formato remaining/total deles.
+  sessionPercentUsed?: number | null
+  sessionResetsAt?: string | null
+  weekPercentUsed?: number | null
+  weekResetsAt?: string | null
 }
 
 type LivenessChecker = (runtime: string, homeDir: string) => Promise<LivenessResult>
@@ -360,9 +368,8 @@ export class EngineConnectionService {
         // Junto com os modelos, lê a quota restante do provider (best-effort): o
         // spend-guard usa isso para não estourar a conta do cliente (BYOK).
         const readQuota = Object.hasOwn(QUOTA_READERS, runtime) ? QUOTA_READERS[runtime] : undefined
-        const quota = readQuota
-          ? await readQuota(home).catch(() => ({ remaining: null, total: null }))
-          : { remaining: null, total: null }
+        const emptyQuota: QuotaReading = { remaining: null, total: null }
+        const quota = readQuota ? await readQuota(home).catch(() => emptyQuota) : emptyQuota
         // Rearquiva a credencial: a descoberta pode ter criado/atualizado
         // arquivos no HOME materializado (ex.: o aquecimento do Codex grava
         // `.codex/models_cache.json` na 1ª vez que o cache está ausente — ver
@@ -383,6 +390,12 @@ export class EngineConnectionService {
             quotaRemaining: quota.remaining,
             quotaTotal: quota.total,
             quotaRefreshedAt: new Date(),
+            // Claude só (ver QuotaReading) — undefined pros demais motores
+            // vira `null` na coluna nullable, mesmo efeito de "sem essa janela".
+            sessionPercentUsed: quota.sessionPercentUsed ?? null,
+            sessionResetsAt: quota.sessionResetsAt ?? null,
+            weekPercentUsed: quota.weekPercentUsed ?? null,
+            weekResetsAt: quota.weekResetsAt ?? null,
             ...(refreshedBlob ? { encryptedCredential: encryptCredential(refreshedBlob) } : {}),
           },
         })
@@ -412,6 +425,10 @@ function toStatus(record: {
   models?: unknown
   quotaRemaining?: number | null
   quotaTotal?: number | null
+  sessionPercentUsed?: number | null
+  sessionResetsAt?: string | null
+  weekPercentUsed?: number | null
+  weekResetsAt?: string | null
 }): ConnectionStatus {
   return {
     runtime: record.runtime,
@@ -422,6 +439,10 @@ function toStatus(record: {
     models: Array.isArray(record.models) ? (record.models as string[]) : [],
     quotaRemaining: record.quotaRemaining ?? null,
     quotaTotal: record.quotaTotal ?? null,
+    sessionPercentUsed: record.sessionPercentUsed ?? null,
+    sessionResetsAt: record.sessionResetsAt ?? null,
+    weekPercentUsed: record.weekPercentUsed ?? null,
+    weekResetsAt: record.weekResetsAt ?? null,
   }
 }
 
@@ -446,6 +467,12 @@ function buildStatusFields(liveness: LivenessResult | null, now: Date): Record<s
       quotaRemaining: liveness.quota.remaining,
       quotaTotal: liveness.quota.total,
       quotaRefreshedAt: now,
+      // Claude só (ver QuotaReading) — undefined pra Codex/Antigravity vira
+      // `null` no Prisma (coluna nullable), mesmo efeito de "sem essa janela".
+      sessionPercentUsed: liveness.quota.sessionPercentUsed ?? null,
+      sessionResetsAt: liveness.quota.sessionResetsAt ?? null,
+      weekPercentUsed: liveness.quota.weekPercentUsed ?? null,
+      weekResetsAt: liveness.quota.weekResetsAt ?? null,
     }
   }
   return {

@@ -200,6 +200,16 @@ model EngineConnection {
   quotaTotal       Int?      @map("quota_total")
   quotaRefreshedAt DateTime? @map("quota_refreshed_at")
 
+  // Claude (`claude -p "/usage"`, ver quota-reader.ts): a CLI não expõe um
+  // saldo remaining/total — devolve % USADO de DUAS janelas independentes
+  // (sessão ~5h corridas e semana, todos os modelos) + o horário de reset de
+  // cada uma. Colunas novas e só o runtime 'claude' as popula; Codex/
+  // Antigravity continuam só em quotaRemaining/quotaTotal acima.
+  sessionPercentUsed Int?    @map("session_percent_used")
+  sessionResetsAt    String? @map("session_resets_at")
+  weekPercentUsed    Int?    @map("week_percent_used")
+  weekResetsAt       String? @map("week_resets_at")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 

@@ -7,7 +7,8 @@ import {
   classifyConnectError,
   connectErrorHintKey,
   isManualAccordionVisible,
-  isClaudeQuotaManagedByPlan,
+  hasClaudeUsageData,
+  formatClaudeUsage,
   looksLikeAuthCode,
   type LoginState,
 } from './engine-status'
@@ -66,6 +67,10 @@ export default function StepConnectEngine({
               status: string
               models?: string[]
               quotaRemaining?: number | null
+              sessionPercentUsed?: number | null
+              sessionResetsAt?: string | null
+              weekPercentUsed?: number | null
+              weekResetsAt?: string | null
             }>
           } | null
         ) => {
@@ -84,6 +89,19 @@ export default function StepConnectEngine({
                 phase: 'connected',
                 models: Array.isArray(eng.models) ? eng.models : undefined,
                 quota: eng.quotaRemaining ?? null,
+                // Claude: % usado real de sessão/semana (ver quota-reader.ts
+                // no control-plane) — `null` explícito não vira número
+                // inventado, só entra quando o backend de fato tem o dado.
+                ...(typeof eng.sessionPercentUsed === 'number'
+                  ? { sessionPercentUsed: eng.sessionPercentUsed }
+                  : {}),
+                ...(typeof eng.sessionResetsAt === 'string'
+                  ? { sessionResetsAt: eng.sessionResetsAt }
+                  : {}),
+                ...(typeof eng.weekPercentUsed === 'number'
+                  ? { weekPercentUsed: eng.weekPercentUsed }
+                  : {}),
+                ...(typeof eng.weekResetsAt === 'string' ? { weekResetsAt: eng.weekResetsAt } : {}),
               }
             }
           }
@@ -237,29 +255,36 @@ export default function StepConnectEngine({
               </div>
 
               {/* Motor VIVO: mostra que respondeu de verdade — os NOMES dos
-                  modelos (não uma contagem) e a quota real. Pra Claude, que
-                  nunca expõe quota (a CLI não tem esse comando), a linha não
-                  fica em silêncio: isClaudeQuotaManagedByPlan troca o número
-                  ausente por uma legenda honesta em vez de parecer bug. */}
+                  modelos (não uma contagem) e a quota real. Claude não expõe
+                  remaining/total como Codex/Antigravity — `claude -p
+                  "/usage"` devolve % usado de sessão/semana (ver
+                  quota-reader.ts no control-plane) — hasClaudeUsageData/
+                  formatClaudeUsage mostram ESSE dado real (21/07: substitui a
+                  legenda genérica antiga "cota gerenciada pela sua
+                  assinatura", que o dono rejeitou — agora dá pra coletar). */}
               {state.phase === 'connected' &&
                 (state.models != null ||
                   state.quota != null ||
-                  isClaudeQuotaManagedByPlan(runtime, state)) && (
+                  hasClaudeUsageData(runtime, state)) && (
                   <p className="wz-opt-desc" style={{ fontSize: '0.78rem' }}>
-                    {state.models != null &&
-                      state.models.length > 0 &&
-                      `${t('setup.connectModelsLabel')}: ${state.models.join(', ')}`}
-                    {state.models != null &&
-                      state.models.length > 0 &&
-                      state.quota != null &&
-                      ' · '}
-                    {state.quota != null && `${t('setup.connectQuotaLabel')}: ${state.quota}`}
-                    {state.quota == null && isClaudeQuotaManagedByPlan(runtime, state) && (
-                      <>
-                        {state.models != null && state.models.length > 0 && ' · '}
-                        {t('setup.connectQuotaManagedByPlan')}
-                      </>
-                    )}
+                    {[
+                      state.models != null && state.models.length > 0
+                        ? `${t('setup.connectModelsLabel')}: ${state.models.join(', ')}`
+                        : null,
+                      state.quota != null
+                        ? `${t('setup.connectQuotaLabel')}: ${state.quota}`
+                        : null,
+                      hasClaudeUsageData(runtime, state)
+                        ? formatClaudeUsage(state, {
+                            session: t('setup.connectClaudeSessionLabel'),
+                            week: t('setup.connectClaudeWeekLabel'),
+                            used: t('setup.connectClaudeUsedLabel'),
+                            resets: t('setup.connectClaudeResetsLabel'),
+                          })
+                        : null,
+                    ]
+                      .filter((part): part is string => !!part)
+                      .join(' · ')}
                   </p>
                 )}
 

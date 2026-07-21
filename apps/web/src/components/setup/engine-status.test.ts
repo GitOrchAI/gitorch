@@ -2,7 +2,8 @@ import { readFileSync } from 'node:fs'
 import { describe, it, expect } from 'vitest'
 import {
   normalizeModelNames,
-  isClaudeQuotaManagedByPlan,
+  hasClaudeUsageData,
+  formatClaudeUsage,
   parseTokenResponse,
   normalizeLoginState,
   classifyConnectError,
@@ -13,6 +14,8 @@ import {
   isManualAccordionVisible,
   looksLikeAuthCode,
 } from './engine-status'
+
+const CLAUDE_USAGE_LABELS = { session: 'Session', week: 'Week', used: 'used', resets: 'resets' }
 
 // 20/07: substitui o antigo `modelCount`, que reduzia a lista de modelos a um
 // NÚMERO — o dono reclamou direto ("mostra os modelos? mostra as quotas?"):
@@ -62,6 +65,42 @@ describe('parseTokenResponse', () => {
     expect(state).toEqual({ phase: 'connected', models: [], quota: null })
   })
 
+  // 21/07: a quota REAL do Claude (claude -p "/usage", ver quota-reader.ts no
+  // control-plane) chega como % usado de sessão/semana, não remaining/total.
+  it('Claude: traz sessionPercentUsed/sessionResetsAt/weekPercentUsed/weekResetsAt quando o backend os manda', () => {
+    const state = parseTokenResponse(
+      {
+        connected: true,
+        status: {
+          status: 'connected',
+          models: ['claude-sonnet-5'],
+          sessionPercentUsed: 100,
+          sessionResetsAt: 'Jul 21, 3:09am (UTC)',
+          weekPercentUsed: 41,
+          weekResetsAt: 'Jul 26, 5:59pm (UTC)',
+        },
+      },
+      fallback
+    )
+    expect(state).toEqual({
+      phase: 'connected',
+      models: ['claude-sonnet-5'],
+      quota: null,
+      sessionPercentUsed: 100,
+      sessionResetsAt: 'Jul 21, 3:09am (UTC)',
+      weekPercentUsed: 41,
+      weekResetsAt: 'Jul 26, 5:59pm (UTC)',
+    })
+  })
+
+  it('Codex/Antigravity: sem os campos de sessão/semana, o shape continua {phase,models,quota} (sem regressão)', () => {
+    const state = parseTokenResponse(
+      { connected: true, status: { status: 'connected', models: ['gpt-5'], quotaRemaining: 900 } },
+      fallback
+    )
+    expect(state).toEqual({ phase: 'connected', models: ['gpt-5'], quota: 900 })
+  })
+
   it('anti-fachada: liveness reprovou (status error) -> error com a causa real, nunca connected', () => {
     const state = parseTokenResponse(
       {
@@ -108,6 +147,29 @@ describe('normalizeLoginState', () => {
     })
   })
 
+  it('AO VIVO (Claude): preserva sessionPercentUsed/sessionResetsAt/weekPercentUsed/weekResetsAt quando vêm no evento', () => {
+    const state = normalizeLoginState(
+      {
+        phase: 'connected',
+        models: ['claude-sonnet-5'],
+        sessionPercentUsed: 100,
+        sessionResetsAt: 'Jul 21, 3:09am (UTC)',
+        weekPercentUsed: 41,
+        weekResetsAt: 'Jul 26, 5:59pm (UTC)',
+      },
+      fallback
+    )
+    expect(state).toEqual({
+      phase: 'connected',
+      models: ['claude-sonnet-5'],
+      quota: null,
+      sessionPercentUsed: 100,
+      sessionResetsAt: 'Jul 21, 3:09am (UTC)',
+      weekPercentUsed: 41,
+      weekResetsAt: 'Jul 26, 5:59pm (UTC)',
+    })
+  })
+
   it('preserva url_ready (url + code) sem tocar', () => {
     expect(
       normalizeLoginState({ phase: 'url_ready', url: 'https://x/y', code: 'AB-CD' }, fallback)
@@ -142,45 +204,90 @@ describe('normalizeLoginState', () => {
   })
 })
 
-// Claude é o único motor sem quota de verdade (a CLI não expõe nenhum comando
-// pra isso — verificado, ver quota-reader.ts). Sem esta legenda, a linha de
-// quota simplesmente SOME ao lado de Codex/Antigravity mostrando um número —
-// parece bug, não "não existe de propósito".
-describe('isClaudeQuotaManagedByPlan — legenda honesta no lugar do silêncio', () => {
-  it('claude conectado sem quota -> true (a CLI não expõe quota, é a assinatura que controla)', () => {
+// 21/07: substitui isClaudeQuotaManagedByPlan (removida) — correção de um
+// erro real. O dono rejeitou a legenda genérica "cota gerenciada pela sua
+// assinatura" ("sobre quota nao aceito isso... tem que coletar!"): existe uma
+// forma real de coletar (`claude -p "/usage"`, ver quota-reader.ts no
+// control-plane) — % usado de sessão/semana + reset de cada uma.
+describe('hasClaudeUsageData — dado REAL no lugar da legenda genérica', () => {
+  it('claude conectado com sessionPercentUsed -> true', () => {
     expect(
-      isClaudeQuotaManagedByPlan('claude', {
+      hasClaudeUsageData('claude', {
         phase: 'connected',
         models: ['claude-sonnet-5'],
-        quota: null,
+        sessionPercentUsed: 100,
       })
     ).toBe(true)
   })
 
-  it('claude conectado sem quota mas com lista vazia de modelos -> ainda true (conectado é conectado)', () => {
+  it('claude conectado com weekPercentUsed (mas não sessão) -> true', () => {
     expect(
-      isClaudeQuotaManagedByPlan('claude', { phase: 'connected', models: [], quota: null })
+      hasClaudeUsageData('claude', { phase: 'connected', models: [], weekPercentUsed: 41 })
     ).toBe(true)
   })
 
-  it('claude conectado COM quota -> false (nunca sobrepõe um número real)', () => {
+  it('claude conectado sem nenhuma das duas janelas -> false (nunca inventa um número)', () => {
     expect(
-      isClaudeQuotaManagedByPlan('claude', { phase: 'connected', models: ['x'], quota: 10 })
+      hasClaudeUsageData('claude', { phase: 'connected', models: ['claude-sonnet-5'], quota: null })
     ).toBe(false)
   })
 
-  it('claude conectado sem quota e sem lista de modelos (payload malformado) -> false', () => {
-    expect(isClaudeQuotaManagedByPlan('claude', { phase: 'connected', quota: null })).toBe(false)
-  })
-
-  it('outro motor (codex/antigravity) sem quota -> false (a legenda é só pro caso conhecido do Claude)', () => {
+  it('outro motor (codex/antigravity) -> false, mesmo com os campos presentes (só o Claude usa essa janela)', () => {
     expect(
-      isClaudeQuotaManagedByPlan('codex', { phase: 'connected', models: ['gpt-5'], quota: null })
+      hasClaudeUsageData('codex', { phase: 'connected', models: ['gpt-5'], sessionPercentUsed: 10 })
     ).toBe(false)
   })
 
   it('fase diferente de connected -> false', () => {
-    expect(isClaudeQuotaManagedByPlan('claude', { phase: 'idle' })).toBe(false)
+    expect(hasClaudeUsageData('claude', { phase: 'idle' })).toBe(false)
+  })
+})
+
+describe('formatClaudeUsage — monta a linha de exibição a partir do dado real', () => {
+  it('as duas janelas presentes -> junta sessão e semana com " · "', () => {
+    expect(
+      formatClaudeUsage(
+        {
+          phase: 'connected',
+          models: ['claude-sonnet-5'],
+          sessionPercentUsed: 100,
+          sessionResetsAt: 'Jul 21, 3:09am (UTC)',
+          weekPercentUsed: 41,
+          weekResetsAt: 'Jul 26, 5:59pm (UTC)',
+        },
+        CLAUDE_USAGE_LABELS
+      )
+    ).toBe(
+      'Session: 100% used (resets Jul 21, 3:09am (UTC)) · Week: 41% used (resets Jul 26, 5:59pm (UTC))'
+    )
+  })
+
+  it('só uma janela presente -> mostra só ela (nunca inventa a outra)', () => {
+    expect(
+      formatClaudeUsage(
+        { phase: 'connected', models: [], weekPercentUsed: 41, weekResetsAt: '26/07' },
+        CLAUDE_USAGE_LABELS
+      )
+    ).toBe('Week: 41% used (resets 26/07)')
+  })
+
+  it('percentual sem reset capturado -> mostra o percentual sem o parêntese (não inventa o horário)', () => {
+    expect(
+      formatClaudeUsage(
+        { phase: 'connected', models: [], sessionPercentUsed: 57 },
+        CLAUDE_USAGE_LABELS
+      )
+    ).toBe('Session: 57% used')
+  })
+
+  it('nenhuma janela -> null', () => {
+    expect(
+      formatClaudeUsage({ phase: 'connected', models: [], quota: null }, CLAUDE_USAGE_LABELS)
+    ).toBe(null)
+  })
+
+  it('fase diferente de connected -> null', () => {
+    expect(formatClaudeUsage({ phase: 'idle' }, CLAUDE_USAGE_LABELS)).toBe(null)
   })
 })
 
@@ -569,7 +676,7 @@ describe('guarda: StepConnectEngine usa as funções puras pra decidir o accordi
 // (20/07 — "mostra os modelos? mostra as quotas?") é sobre RENDER, então o que
 // dá pra travar sem jsdom é ler o source e garantir que o padrão certo está
 // lá e o padrão errado (a contagem) não voltou.
-describe('guarda: StepConnectEngine mostra os NOMES dos modelos e a legenda honesta de quota do Claude', () => {
+describe('guarda: StepConnectEngine mostra os NOMES dos modelos e a quota REAL do Claude', () => {
   const source = (): string =>
     readFileSync(new URL('./StepConnectEngine.tsx', import.meta.url), 'utf8')
 
@@ -582,10 +689,15 @@ describe('guarda: StepConnectEngine mostra os NOMES dos modelos e a legenda hone
     expect(step).not.toContain('${state.models} ${')
   })
 
-  it('usa isClaudeQuotaManagedByPlan pra decidir a legenda honesta de quota do Claude', () => {
+  // 21/07: substitui a legenda genérica antiga ("cota gerenciada pela sua
+  // assinatura", que o dono rejeitou) pelo dado real coletado de verdade.
+  it('usa hasClaudeUsageData/formatClaudeUsage pra mostrar a quota REAL do Claude, não mais uma legenda genérica', () => {
     const step = source()
-    expect(step).toContain('isClaudeQuotaManagedByPlan(runtime, state)')
-    expect(step).toContain("t('setup.connectQuotaManagedByPlan')")
+    expect(step).toContain('hasClaudeUsageData(runtime, state)')
+    expect(step).toContain('formatClaudeUsage(state,')
+    // Regressão: a legenda genérica antiga não pode voltar.
+    expect(step).not.toContain('isClaudeQuotaManagedByPlan')
+    expect(step).not.toContain('connectQuotaManagedByPlan')
   })
 
   it('o refetch de /engines repassa a LISTA de modelos, não mais só o tamanho', () => {

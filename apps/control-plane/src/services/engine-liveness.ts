@@ -94,6 +94,14 @@ function livenessCommandFor(runtime: string): LivenessCommand | undefined {
   }
 }
 
+// Campos de sessão/semana (só o Claude popula, ver quota-reader.ts) ficam
+// AUSENTES aqui de propósito (não `undefined` explícito: o tsconfig usa
+// exactOptionalPropertyTypes — atribuir `undefined` a um campo tipado
+// `number | null` é erro de tipo; omitir a chave é o jeito correto de "não
+// se aplica"). Ausente == undefined pro TS e pro toEqual (Vitest/Jest
+// ignoram chaves com valor undefined nas comparações profundas), então os
+// testes existentes que travam `{remaining:null,total:null}` continuam
+// passando sem mudança.
 const emptyQuota = (): QuotaReading => ({ remaining: null, total: null })
 
 /**

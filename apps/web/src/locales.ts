@@ -200,10 +200,13 @@ export const locales = {
       connectedLabel: 'Connected',
       connectModelsLabel: 'models',
       connectQuotaLabel: 'quota',
-      // Claude never exposes a real quota number (the CLI has no command for
-      // it) — instead of the quota line just going silent next to Codex/
-      // Antigravity showing a number, this honest caption explains why.
-      connectQuotaManagedByPlan: 'quota managed by your Claude subscription plan',
+      // 21/07: Claude's real usage (`claude -p "/usage"`) — % used per window
+      // (session/week) with each reset time. Replaces the old generic caption
+      // ("quota managed by your subscription") now that we actually collect it.
+      connectClaudeSessionLabel: 'Session',
+      connectClaudeWeekLabel: 'Week (all models)',
+      connectClaudeUsedLabel: 'used',
+      connectClaudeResetsLabel: 'resets',
       connectGate: 'Connect at least one engine to continue.',
       connectError: 'Could not connect. Check what you pasted and try again.',
       connectOpenLink: 'Open authorization page',
@@ -503,11 +506,14 @@ export const locales = {
       connectedLabel: 'Conectado',
       connectModelsLabel: 'modelos',
       connectQuotaLabel: 'cota',
-      // O Claude nunca expõe um número real de cota (a CLI não tem esse
-      // comando) — em vez da linha de cota simplesmente sumir ao lado de
-      // Codex/Antigravity mostrando um número, esta legenda honesta explica
-      // o porquê.
-      connectQuotaManagedByPlan: 'cota gerenciada pela sua assinatura do Claude',
+      // 21/07: quota REAL do Claude (`claude -p "/usage"`) — % usado por
+      // janela (sessão/semana) com o horário de reset de cada uma. Substitui
+      // a legenda genérica antiga ("cota gerenciada pela sua assinatura")
+      // agora que dá pra coletar de verdade.
+      connectClaudeSessionLabel: 'Sessão',
+      connectClaudeWeekLabel: 'Semana (todos os modelos)',
+      connectClaudeUsedLabel: 'usada',
+      connectClaudeResetsLabel: 'reseta',
       connectGate: 'Conecte pelo menos um motor para continuar.',
       connectError: 'Não deu para conectar. Confira o que você colou e tente de novo.',
       connectOpenLink: 'Abrir página de autorização',
@@ -808,10 +814,14 @@ export const locales = {
       connectedLabel: 'Conectado',
       connectModelsLabel: 'modelos',
       connectQuotaLabel: 'cuota',
-      // Claude nunca expone una cuota real (la CLI no tiene ese comando) — en
-      // vez de que la línea de cuota simplemente desaparezca junto a Codex/
-      // Antigravity mostrando un número, esta leyenda honesta explica por qué.
-      connectQuotaManagedByPlan: 'cuota gestionada por tu plan de suscripción de Claude',
+      // 21/07: cuota REAL de Claude (`claude -p "/usage"`) — % usado por
+      // ventana (sesión/semana) con la hora de reinicio de cada una. Sustituye
+      // la leyenda genérica anterior ("cuota gestionada por tu plan") ahora
+      // que se puede recolectar de verdad.
+      connectClaudeSessionLabel: 'Sesión',
+      connectClaudeWeekLabel: 'Semana (todos los modelos)',
+      connectClaudeUsedLabel: 'usada',
+      connectClaudeResetsLabel: 'reinicia',
       connectGate: 'Conecta al menos un motor para continuar.',
       connectError: 'No se pudo conectar. Revisa lo que pegaste e inténtalo de nuevo.',
       connectOpenLink: 'Abrir página de autorización',

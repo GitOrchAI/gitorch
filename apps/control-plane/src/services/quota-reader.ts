@@ -13,11 +13,36 @@ const execFileAsync = promisify(execFile)
 export interface QuotaReading {
   remaining: number | null
   total: number | null
+  // Claude (`claude -p "/usage"`, ver parseClaudeUsageText/makeClaudeQuotaReader
+  // abaixo): a CLI não devolve um saldo remaining/total — devolve % USADO de
+  // DUAS janelas independentes (sessão de ~5h corridas e semana, todos os
+  // modelos) mais o horário de reset de cada uma. Forçar isso no formato
+  // remaining/total inventaria um número que não existe — por isso campos
+  // NOVOS e opcionais, só o Claude os popula. Codex/Antigravity continuam só
+  // em remaining/total; estes ficam undefined/null pra eles, sem regressão.
+  sessionPercentUsed?: number | null
+  sessionResetsAt?: string | null
+  weekPercentUsed?: number | null
+  weekResetsAt?: string | null
 }
 
 export type QuotaReader = (homeDir: string) => Promise<QuotaReading>
 
 const UNKNOWN: QuotaReading = { remaining: null, total: null }
+
+// Unknown específico do Claude: TODOS os 6 campos null (nunca undefined) —
+// "tudo null, nunca lança" mesmo quando o binário falha/dá timeout/a saída
+// vem vazia ou sem as linhas esperadas. Separado do UNKNOWN genérico acima
+// (usado por parseQuotaText/Codex/Antigravity) para não mudar o formato de
+// 2 campos que os testes deles já travam.
+const EMPTY_CLAUDE_QUOTA: QuotaReading = {
+  remaining: null,
+  total: null,
+  sessionPercentUsed: null,
+  sessionResetsAt: null,
+  weekPercentUsed: null,
+  weekResetsAt: null,
+}
 
 /** Extrai {remaining,total} de um texto/JSON de quota. Puro e testável. */
 export function parseQuotaText(text: string): QuotaReading {
@@ -90,8 +115,77 @@ export const readCodexQuota: QuotaReader = async (homeDir: string) => {
   return parseQuotaText(raw)
 }
 
-/** Claude: sem leitura simples da CLI; só por ambiente. */
-export const readClaudeQuota: QuotaReader = async () => envReading('claude') ?? UNKNOWN
+/**
+ * Extrai as duas linhas relevantes de `claude -p "/usage"`:
+ *
+ *   Current session: 100% used · resets Jul 21, 3:09am (UTC)
+ *   Current week (all models): 41% used · resets Jul 26, 5:59pm (UTC)
+ *
+ * Essas 2 linhas refletem o estado da CONTA no servidor da Anthropic (janela
+ * rolante de sessão ~5h, semanal pros modelos) — é o dado real que o roteiro
+ * original pedia ("quotas coletadas no login"). O texto que vem DEPOIS
+ * ("What's contributing to your limits usage?") é histórico LOCAL desta
+ * máquina (não inclui outros dispositivos nem claude.ai) — inútil pra uma
+ * conexão nova (homeDir efêmero sem sessões locais) e ignorado de propósito:
+ * esta função nunca olha além das linhas "Current session"/"Current week".
+ *
+ * Tolerante a variação de espaçamento/pontuação (é texto humano, não JSON):
+ * não trava em formatação exata — procura "current session"/"current week"
+ * em qualquer linha (case-insensitive) e extrai só o percentual e o texto
+ * depois de "resets". Linha ausente ou sem percentual reconhecível -> null
+ * nos campos daquela janela, nunca lança.
+ */
+export function parseClaudeUsageText(text: string): QuotaReading {
+  const lines = text.split(/\r?\n/)
+  const sessionLine = lines.find((l) => /current\s+session/i.test(l))
+  const weekLine = lines.find((l) => /current\s+week/i.test(l))
+  return {
+    remaining: null,
+    total: null,
+    sessionPercentUsed: sessionLine ? extractUsagePercent(sessionLine) : null,
+    sessionResetsAt: sessionLine ? extractResetsAt(sessionLine) : null,
+    weekPercentUsed: weekLine ? extractUsagePercent(weekLine) : null,
+    weekResetsAt: weekLine ? extractResetsAt(weekLine) : null,
+  }
+}
+
+function extractUsagePercent(line: string): number | null {
+  const m = /(\d+(?:\.\d+)?)\s*%/.exec(line)
+  return m?.[1] ? Number(m[1]) : null
+}
+
+function extractResetsAt(line: string): string | null {
+  const m = /resets?\b[:\-]?\s*(.+?)\s*$/i.exec(line)
+  return m?.[1]?.trim() || null
+}
+
+/**
+ * Claude: `claude -p "/usage"` (best-effort; DI de runner — reusa o mesmo
+ * `defaultRunner` do Antigravity/execFileAsync, mesmo padrão do resto do
+ * arquivo). Override por ambiente (GITORCH_CLAUDE_QUOTA_REMAINING/TOTAL)
+ * vence e evita qualquer spawn — mesmo contrato do Antigravity. Runner
+ * falhando (binário ausente, timeout, exit != 0) nunca lança: cai no
+ * EMPTY_CLAUDE_QUOTA (tudo null).
+ */
+export function makeClaudeQuotaReader(
+  claudeBin = process.env['GITORCH_CLAUDE_BIN'] ?? 'claude',
+  args = (process.env['GITORCH_CLAUDE_QUOTA_CMD'] ?? '-p /usage').split(' '),
+  runner: (bin: string, args: string[], home: string) => Promise<string> = defaultRunner
+): QuotaReader {
+  return async (homeDir: string) => {
+    const env = envReading('claude')
+    if (env) return env
+    try {
+      return parseClaudeUsageText(await runner(claudeBin, args, homeDir))
+    } catch {
+      return EMPTY_CLAUDE_QUOTA
+    }
+  }
+}
+
+/** Instância real usada em produção (QUOTA_READERS.claude) — roda o binário
+ *  de verdade via defaultRunner. */
+export const readClaudeQuota: QuotaReader = makeClaudeQuotaReader()
 
 export const QUOTA_READERS: Record<string, QuotaReader> = {
   antigravity: makeAntigravityQuotaReader(),

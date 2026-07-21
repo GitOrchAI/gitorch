@@ -12,7 +12,19 @@ export type LoginState =
   | { phase: 'starting' }
   | { phase: 'verifying' }
   | { phase: 'url_ready'; url: string; code?: string }
-  | { phase: 'connected'; models?: string[]; quota?: number | null }
+  | {
+      phase: 'connected'
+      models?: string[]
+      quota?: number | null
+      // Claude (ver quota-reader.ts no control-plane, `claude -p "/usage"`):
+      // não existe remaining/total — existe % USADO de duas janelas
+      // independentes (sessão/semana) + o horário de reset de cada uma. Só
+      // populado pro Claude; Codex/Antigravity continuam só em `quota`.
+      sessionPercentUsed?: number | null
+      sessionResetsAt?: string | null
+      weekPercentUsed?: number | null
+      weekResetsAt?: string | null
+    }
   | { phase: 'error'; message: string }
 
 // 20/07: substitui o antigo `modelCount`, que reduzia a lista de modelos a um
@@ -36,12 +48,26 @@ export function parseTokenResponse(json: unknown, fallbackError: string): LoginS
   const body = (json ?? {}) as {
     connected?: unknown
     error?: unknown
-    status?: { status?: unknown; models?: unknown; quotaRemaining?: unknown; lastError?: unknown }
+    status?: {
+      status?: unknown
+      models?: unknown
+      quotaRemaining?: unknown
+      lastError?: unknown
+      sessionPercentUsed?: unknown
+      sessionResetsAt?: unknown
+      weekPercentUsed?: unknown
+      weekResetsAt?: unknown
+    }
   }
   const status = body.status
   if (body.connected === true && status?.status === 'connected') {
     const quota = typeof status.quotaRemaining === 'number' ? status.quotaRemaining : null
-    return { phase: 'connected', models: normalizeModelNames(status.models), quota }
+    return {
+      phase: 'connected',
+      models: normalizeModelNames(status.models),
+      quota,
+      ...claudeUsageFields(status),
+    }
   }
   const lastError = typeof status?.lastError === 'string' ? status.lastError.trim() : ''
   const topError = typeof body.error === 'string' ? body.error.trim() : ''
@@ -62,6 +88,10 @@ export function normalizeLoginState(raw: unknown, fallbackError: string): LoginS
     models?: unknown
     quota?: unknown
     message?: unknown
+    sessionPercentUsed?: unknown
+    sessionResetsAt?: unknown
+    weekPercentUsed?: unknown
+    weekResetsAt?: unknown
   }
   switch (r.phase) {
     case 'starting':
@@ -82,6 +112,7 @@ export function normalizeLoginState(raw: unknown, fallbackError: string): LoginS
         phase: 'connected',
         models: normalizeModelNames(r.models),
         quota: typeof r.quota === 'number' ? r.quota : null,
+        ...claudeUsageFields(r),
       }
     case 'error':
       return {
@@ -93,20 +124,89 @@ export function normalizeLoginState(raw: unknown, fallbackError: string): LoginS
   }
 }
 
-// Claude é o único motor sem quota de verdade: a CLI não expõe nenhum comando
-// que devolva remaining/total (quota-reader.ts só lê de override de ambiente,
-// pra teste/staging — em uso real é sempre null). Ao lado de Codex/Antigravity
-// mostrando um número, a linha de quota simplesmente SOME e parece bug, não
-// "não existe de propósito". Esta função decide quando trocar o silêncio por
-// uma legenda honesta: só Claude, já conectado (a lista de modelos existe,
-// mesmo vazia) e sem nenhuma quota pra mostrar.
-export function isClaudeQuotaManagedByPlan(runtime: string, state: LoginState): boolean {
+// Extrai só os campos de quota REAL do Claude (sessionPercentUsed/
+// sessionResetsAt/weekPercentUsed/weekResetsAt — ver quota-reader.ts no
+// control-plane, `claude -p "/usage"`) de um payload cru (POST /token ou SSE),
+// incluindo cada chave SÓ quando o tipo bate — nunca um `null` forçado. Isso
+// preserva o formato exato de {phase,models,quota} quando o backend não manda
+// esses campos (Codex/Antigravity, ou uma resposta antiga em cache), sem
+// chaves extras aparecendo no objeto.
+function claudeUsageFields(r: {
+  sessionPercentUsed?: unknown
+  sessionResetsAt?: unknown
+  weekPercentUsed?: unknown
+  weekResetsAt?: unknown
+}): {
+  sessionPercentUsed?: number
+  sessionResetsAt?: string
+  weekPercentUsed?: number
+  weekResetsAt?: string
+} {
+  return {
+    ...(typeof r.sessionPercentUsed === 'number'
+      ? { sessionPercentUsed: r.sessionPercentUsed }
+      : {}),
+    ...(typeof r.sessionResetsAt === 'string' && r.sessionResetsAt
+      ? { sessionResetsAt: r.sessionResetsAt }
+      : {}),
+    ...(typeof r.weekPercentUsed === 'number' ? { weekPercentUsed: r.weekPercentUsed } : {}),
+    ...(typeof r.weekResetsAt === 'string' && r.weekResetsAt
+      ? { weekResetsAt: r.weekResetsAt }
+      : {}),
+  }
+}
+
+// 21/07: substitui isClaudeQuotaManagedByPlan (removida) — correção de um erro
+// real. O dono rejeitou a legenda genérica "cota gerenciada pela sua
+// assinatura" ("sobre quota nao aceito isso... tem que coletar!"), e ele tinha
+// razão: `claude -p "/usage"` COLETA a quota de verdade (% usado da sessão e
+// da semana + reset de cada uma). Esta função decide quando existe dado REAL
+// pra mostrar (nunca mais uma legenda genérica no lugar do silêncio).
+export function hasClaudeUsageData(runtime: string, state: LoginState): boolean {
   return (
     runtime === 'claude' &&
     state.phase === 'connected' &&
-    state.quota == null &&
-    state.models != null
+    (typeof state.sessionPercentUsed === 'number' || typeof state.weekPercentUsed === 'number')
   )
+}
+
+// Rótulos localizados (vêm de fora — useLanguage/t() não existe fora de
+// React) pra montar a única linha de texto com as duas janelas.
+export interface ClaudeUsageLabels {
+  session: string
+  week: string
+  used: string
+  resets: string
+}
+
+// Monta "Sessão: 100% usada (reseta Jul 21, 3:09am (UTC)) · Semana: 41%
+// usada (reseta Jul 26, 5:59pm (UTC))" a partir do estado 'connected' — só as
+// janelas com percentual reconhecido entram (nunca inventa "0%"); o reset só
+// aparece quando o backend o capturou. null se não há nenhuma janela (chamar
+// só depois de hasClaudeUsageData confirmar que há dado).
+export function formatClaudeUsage(state: LoginState, labels: ClaudeUsageLabels): string | null {
+  if (state.phase !== 'connected') return null
+  const parts = [
+    formatClaudeUsageWindow(
+      labels.session,
+      state.sessionPercentUsed,
+      state.sessionResetsAt,
+      labels
+    ),
+    formatClaudeUsageWindow(labels.week, state.weekPercentUsed, state.weekResetsAt, labels),
+  ].filter((p): p is string => p != null)
+  return parts.length > 0 ? parts.join(' · ') : null
+}
+
+function formatClaudeUsageWindow(
+  windowLabel: string,
+  percentUsed: number | null | undefined,
+  resetsAt: string | null | undefined,
+  labels: ClaudeUsageLabels
+): string | null {
+  if (typeof percentUsed !== 'number') return null
+  const reset = resetsAt ? ` (${labels.resets} ${resetsAt})` : ''
+  return `${windowLabel}: ${percentUsed}% ${labels.used}${reset}`
 }
 
 // Tipo de falha de conexão, para uma mensagem ACIONÁVEL (aponta o paste manual)
