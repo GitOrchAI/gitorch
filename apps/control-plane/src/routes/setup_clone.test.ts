@@ -19,6 +19,7 @@ vi.mock('@gitorch/workspace-engine', () => ({
 }))
 
 import { setupRoutes } from './setup.js'
+import { ClientEnvironmentService } from '../services/environment.js'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function fakePrisma() {
@@ -135,6 +136,52 @@ describe('POST /api/v1/setup/clone', () => {
     })
     expect(res.statusCode).toBe(504)
     expect(res.json().code).toBe('CLONE_TIMEOUT')
+  })
+
+  // Correção do bug de TIMING (W1): o dono testou até o passo 7 (conectar
+  // motores) e nunca chegou no submit (passo 10) — como bootstrapResources()
+  // só disparava lá, o ambiente dele nunca teve os recursos instalados. Agora
+  // dispara aqui, no clone (passo 4/5), bem mais cedo no funil.
+  it('clone bem-sucedido dispara bootstrapResources (recursos versionados) no ambiente, sem esperar por ele', async () => {
+    const bootstrapSpy = vi
+      .spyOn(ClientEnvironmentService.prototype, 'bootstrapResources')
+      .mockResolvedValue({ ok: true, lock: {} })
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/setup/clone',
+      payload: { repos: ['octo/a'] },
+    })
+
+    expect(res.statusCode).toBe(200)
+    const envId = res.json().envId as string
+    // Fire-and-forget: dá um tick de microtask pro disparo encadear antes de
+    // checar a spy (a resposta HTTP não espera pelo bootstrap).
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(bootstrapSpy).toHaveBeenCalledTimes(1)
+    expect(bootstrapSpy).toHaveBeenCalledWith(envId)
+
+    bootstrapSpy.mockRestore()
+  })
+
+  it('bootstrap falhando no clone NÃO derruba a resposta HTTP (fire-and-forget de verdade)', async () => {
+    const bootstrapSpy = vi
+      .spyOn(ClientEnvironmentService.prototype, 'bootstrapResources')
+      .mockRejectedValue(new Error('boom: script quebrou'))
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/setup/clone',
+      payload: { repos: ['octo/a'] },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(res.json().count).toBe(1)
+    // dá tempo do .catch() interno da rota engolir a rejeição (senão vira
+    // unhandled rejection no processo de teste)
+    await new Promise((resolve) => setImmediate(resolve))
+
+    bootstrapSpy.mockRestore()
   })
 })
 

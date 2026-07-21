@@ -194,7 +194,16 @@ export function parseSetupStatus(json: unknown): ProvisionSnapshot {
   const queuePositions = missions
     .map((m) => (m as { queuePosition?: unknown } | null)?.queuePosition)
     .filter((p): p is number => typeof p === 'number' && Number.isFinite(p))
-  const environment = (body.environment ?? null) as { resources?: unknown } | null
+  const environment = (body.environment ?? null) as {
+    resources?: unknown
+    // Progresso do bootstrap (ClientEnvironment.resourcesStatus no backend),
+    // desacoplado do ciclo de vida — correção do bug de timing (W1). Contrato
+    // alinhado com GET /setup/status; a UI continua decidindo só por
+    // `resources` não-nulo vs nulo (ver parseEnvironmentResources acima),
+    // então este campo não muda comportamento agora — só evita o tipo ficar
+    // desalinhado da resposta real do backend.
+    resourcesStatus?: string | null
+  } | null
   // Causa/posição só fazem sentido no estado correspondente: um `error`
   // pendurado num estado bom seria ruído, e uma posição de fila fora de
   // 'pending' não significa nada (já não está esperando).

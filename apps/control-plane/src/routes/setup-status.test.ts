@@ -32,6 +32,11 @@ interface StatusBody {
   environment: {
     id: string
     status: string
+    // Progresso do bootstrap, desacoplado do ciclo de vida (`status` acima) —
+    // ver ClientEnvironment.resourcesStatus, schema.prisma. Contrato novo do
+    // fix de timing (W1): não muda o comportamento da UI (que ainda decide
+    // por `resources` não-nulo vs nulo), só evita o tipo ficar desalinhado.
+    resourcesStatus: string | null
     resources: { engines: Array<{ name: string; version: string }>; commit: string } | null
   } | null
 }
@@ -67,6 +72,7 @@ describe('GET /api/v1/setup/status', () => {
       userId: 'user_1',
       status: 'fixed',
       path: '/caminho/interno/que/nunca/pode/vazar/env_1',
+      resourcesStatus: null,
       resourcesLock: null,
       fixedAt: new Date('2026-07-14T12:00:00Z'),
       createdAt: new Date('2026-07-14T11:00:00Z'),
@@ -264,7 +270,12 @@ describe('GET /api/v1/setup/status', () => {
   it('devolve o ambiente do cliente, mas o caminho em disco NUNCA vaza', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/v1/setup/status' })
     const body = res.json() as StatusBody
-    expect(body.environment).toEqual({ id: 'env_1', status: 'fixed', resources: null })
+    expect(body.environment).toEqual({
+      id: 'env_1',
+      status: 'fixed',
+      resourcesStatus: null,
+      resources: null,
+    })
     expect(res.payload).not.toContain('/caminho/interno')
     expect(res.payload).not.toContain('path')
   })
@@ -274,27 +285,38 @@ describe('GET /api/v1/setup/status', () => {
     expect((await get()).environment).toBeNull()
   })
 
-  it('ambiente sem resourcesLock ainda (bootstrap não rodou/não terminou) -> resources null', async () => {
+  it('ambiente sem resourcesLock ainda (bootstrap rodando) -> resourcesStatus "provisioning", resources null', async () => {
+    // status (ciclo de vida) e resourcesStatus (progresso do bootstrap) são
+    // campos DESACOPLADOS desde o fix de timing (W1) — por isso `status`
+    // aqui é 'fixed' (aceite final já concluído) enquanto `resourcesStatus`
+    // é 'provisioning' (o script ainda está rodando).
     environmentFindFirst.mockResolvedValue({
       id: 'env_1',
       userId: 'user_1',
-      status: 'provisioning',
+      status: 'fixed',
       path: '/caminho/interno/env_1',
+      resourcesStatus: 'provisioning',
       resourcesLock: null,
       fixedAt: new Date('2026-07-14T12:00:00Z'),
       createdAt: new Date('2026-07-14T11:00:00Z'),
       updatedAt: new Date('2026-07-14T12:00:00Z'),
     })
     const body = await get()
-    expect(body.environment).toEqual({ id: 'env_1', status: 'provisioning', resources: null })
+    expect(body.environment).toEqual({
+      id: 'env_1',
+      status: 'fixed',
+      resourcesStatus: 'provisioning',
+      resources: null,
+    })
   })
 
   it('ambiente com resourcesLock -> devolve name+version dos motores + commit curto (nunca sha/path/npm)', async () => {
     environmentFindFirst.mockResolvedValue({
       id: 'env_1',
       userId: 'user_1',
-      status: 'ready',
+      status: 'fixed',
       path: '/caminho/interno/que/nunca/pode/vazar/env_1',
+      resourcesStatus: 'ready',
       resourcesLock: {
         generatedAt: '2026-07-20T00:00:00Z',
         engines: {
@@ -318,7 +340,8 @@ describe('GET /api/v1/setup/status', () => {
     const body = res.json() as StatusBody
     expect(body.environment).toEqual({
       id: 'env_1',
-      status: 'ready',
+      status: 'fixed',
+      resourcesStatus: 'ready',
       resources: {
         engines: [
           { name: 'claude', version: '2.1.200' },

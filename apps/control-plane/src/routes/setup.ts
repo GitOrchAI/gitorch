@@ -319,6 +319,24 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
       const env = await clientEnvironments.createProvisional(request.user.id)
       try {
         const cloned = await clientEnvironments.cloneInto(env.id, repos, token ?? undefined)
+        // Dispara o bootstrap de recursos AQUI (correção do bug de TIMING,
+        // W1): antes, só o /setup/submit (passo 10) disparava — e o dono
+        // testou até o passo 7 (conectar motores) sem nunca chegar no
+        // submit, então seu ambiente NUNCA teve os recursos instalados. Agora
+        // dispara logo após o clone (passo 4/5), bem mais cedo no funil.
+        // Fire-and-forget (mesmo padrão do submit, abaixo): não trava esta
+        // resposta HTTP (a 1ª instalação de uma versão nova pode levar
+        // minutos); bootstrapResources() nunca lança sozinho (captura as
+        // próprias falhas), o catch aqui é só cinto de segurança contra um
+        // bug inesperado no disparo em si. O guard de reentrância dentro de
+        // bootstrapResources (environment.ts) torna seguro o disparo
+        // REPETIDO daqui e do submit para o MESMO ambiente.
+        clientEnvironments.bootstrapResources(env.id).catch((err) => {
+          app.log.error(
+            { error: err instanceof Error ? err.message : String(err) },
+            '[setup] disparo do bootstrap de recursos falhou inesperadamente (clone)'
+          )
+        })
         return reply.send({ envId: env.id, count: cloned.length })
       } catch (err) {
         // Contrato de erro ponta-a-ponta: NUNCA um 500 cru (sem classificar).
@@ -535,14 +553,20 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
       // tirando-o do alcance da faxina 24h — agora é um cliente de verdade.
       await clientEnvironments.fix(user.id)
 
-      // Dispara o bootstrap de recursos (W1.2.2): instala os motores/recursos
-      // VERSIONADOS do manifesto DENTRO do ambiente recém-fixado
-      // (fixed -> provisioning -> ready/error). Assíncrono de propósito — não
-      // trava esta resposta HTTP (a 1ª instalação de uma versão nova pode
-      // levar minutos); o progresso real fica no `environment.status` que
-      // GET /setup/status já expõe. bootstrapResources() nunca lança (captura
-      // as próprias falhas internamente); o catch aqui é só cinto de
-      // segurança contra um bug inesperado no disparo em si.
+      // SALVAGUARDA (correção do bug de TIMING, W1): o disparo PRINCIPAL do
+      // bootstrap de recursos agora acontece cedo, no /setup/clone (passo
+      // 4/5) — ver o comentário lá. Este aqui cobre o caso de um ambiente
+      // que pulou o clone por algum motivo, ou onde o clone disparou mas
+      // falhou silenciosamente antes de chegar aqui. Graças ao guard de
+      // reentrância em bootstrapResources (environment.ts: resourcesStatus
+      // 'ready'/'provisioning' retornam cedo sem rodar o script de novo), este
+      // 2º disparo é um no-op seguro no caso comum (clone já cuidou disso).
+      // Assíncrono de propósito — não trava esta resposta HTTP (a 1ª
+      // instalação de uma versão nova pode levar minutos); o progresso real
+      // fica em `environment.resourcesStatus`, que GET /setup/status expõe.
+      // bootstrapResources() nunca lança (captura as próprias falhas
+      // internamente); o catch aqui é só cinto de segurança contra um bug
+      // inesperado no disparo em si.
       const fixedEnv = await clientEnvironments.current(user.id)
       if (fixedEnv) {
         clientEnvironments.bootstrapResources(fixedEnv.id).catch((err) => {
@@ -742,6 +766,13 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
           ? {
               id: environment.id,
               status: environment.status,
+              // Progresso do bootstrap, DESACOPLADO do ciclo de vida acima
+              // (correção do bug de timing, W1 — ver ClientEnvironment.
+              // resourcesStatus, schema.prisma). Contrato novo: a UI
+              // (StepReady) continua decidindo só por `resources` não-nulo
+              // vs nulo, então isto não muda o comportamento visual agora —
+              // só evita o tipo/contrato ficar desalinhado do backend.
+              resourcesStatus: environment.resourcesStatus ?? null,
               resources: summarizeResourcesLock(environment.resourcesLock),
             }
           : null,

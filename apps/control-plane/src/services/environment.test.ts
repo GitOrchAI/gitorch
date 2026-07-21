@@ -314,6 +314,32 @@ describe('ClientEnvironmentService — faxina (TTL 24h)', () => {
 
   const DAY = 24 * 60 * 60 * 1000
 
+  test('listExpired ainda encontra ambiente abandonado com resourcesStatus "ready" (a faxina NÃO escapa mais do bug de timing)', async () => {
+    // O risco de SEGURANÇA que o desacoplamento fecha: antes deste fix, o
+    // bootstrap sobrescrevia `status` para 'ready'/'error'/'provisioning', e
+    // um ambiente ABANDONADO nesse estado (bootstrap rodou no clone, cliente
+    // nunca voltou pro submit) escapava do filtro `status: 'provisional'`
+    // desta query — a faxina de 24h (que existe para apagar credencial/OAuth
+    // órfã) nunca o encontrava. Aqui `status` continua 'provisional' (o
+    // bootstrap não mexe nele) mesmo com o bootstrap já concluído.
+    const prisma = fakePrisma()
+    const now = 1_000_000_000_000
+    prisma.store.set('abandonado_com_bootstrap_pronto', {
+      id: 'abandonado_com_bootstrap_pronto',
+      userId: 'u',
+      status: 'provisional',
+      resourcesStatus: 'ready',
+      path: '/x',
+      createdAt: new Date(now - 3 * DAY),
+      lastActivityAt: new Date(now - 25 * 60 * 60 * 1000),
+    })
+    const svc = new ClientEnvironmentService(prisma as any, baseDir)
+
+    const expired = await svc.listExpired(DAY, now)
+
+    expect(expired.map((e) => e.id)).toEqual(['abandonado_com_bootstrap_pronto'])
+  })
+
   test('listExpired corta por INATIVIDADE, não por idade (fixados nunca expiram)', async () => {
     const prisma = fakePrisma()
     const now = 1_000_000_000_000
@@ -610,6 +636,34 @@ describe('ClientEnvironmentService.fix', () => {
     await expect(svc.fix('u')).resolves.toBeUndefined()
   })
 
+  test('PROVA do fix de timing: fixa normalmente mesmo com resourcesStatus já "ready" (bootstrap concluído ANTES do submit)', async () => {
+    // O cenário exato do bug: o bootstrap agora dispara no CLONE (passo 4/5),
+    // bem antes do aceite final (passo 10). Antes deste fix, o bootstrap
+    // sobrescrevia `status` para 'ready' e este updateMany (que filtra
+    // status: 'provisional') nunca mais encontrava o ambiente — o aceite
+    // final NUNCA fixava. Com os dois campos desacoplados, `status` continua
+    // 'provisional' até fix() rodar, mesmo com o bootstrap já pronto.
+    const prisma = fakePrisma()
+    prisma.store.set('e1', {
+      id: 'e1',
+      userId: 'u',
+      status: 'provisional',
+      resourcesStatus: 'ready',
+      resourcesLock: { engines: {} },
+      path: '/x',
+      fixedAt: null,
+      createdAt: new Date(),
+    })
+    const svc = new ClientEnvironmentService(prisma as any, '/base')
+
+    await svc.fix('u')
+
+    expect(prisma.store.get('e1')?.status).toBe('fixed')
+    expect(prisma.store.get('e1')?.fixedAt).toBeTruthy()
+    // fix() nunca mexe no progresso do bootstrap — ele continua honesto.
+    expect(prisma.store.get('e1')?.resourcesStatus).toBe('ready')
+  })
+
   test('dedup: com 2 provisionais (corrida), fixa só o mais recente e DESTRÓI o duplicado', async () => {
     // Sem o dedup, o updateMany fixava os dois: o duplicado (vazio, com
     // credencial em disco) virava permanente e escapava da faxina 24h pra
@@ -705,14 +759,19 @@ describe('ClientEnvironmentService.bootstrapResources', () => {
     resources: { repo: 'https://github.com/loureng/gitorch.git', commit: 'abc123' },
   }
 
-  test('bootstrap OK: grava resourcesLock com as versões e marca o ambiente ready', async () => {
+  test('bootstrap OK: grava resourcesLock e marca resourcesStatus ready — status (ciclo de vida) INTOCADO', async () => {
     const prisma = fakePrisma()
     const envPath = path.join(baseDir, 'env_ok')
     await fs.mkdir(envPath, { recursive: true })
+    // status 'provisional' de propósito (não 'fixed'): prova o ponto central
+    // do fix de timing — o bootstrap dispara cedo agora (no clone), enquanto
+    // o ambiente ainda está no MEIO do wizard. Antes deste fix, esta mesma
+    // chamada sobrescrevia `status` para 'ready' e o fix()/createProvisional()
+    // (que filtram status:'provisional') nunca mais reconheciam o ambiente.
     prisma.store.set('env_ok', {
       id: 'env_ok',
       userId: 'u',
-      status: 'fixed',
+      status: 'provisional',
       path: envPath,
       createdAt: new Date(),
     })
@@ -730,18 +789,22 @@ describe('ClientEnvironmentService.bootstrapResources', () => {
 
     expect(result).toEqual({ ok: true, lock: LOCK_CONTENT })
     expect(runner).toHaveBeenCalledWith(envPath)
-    expect(prisma.store.get('env_ok')?.status).toBe('ready')
+    expect(prisma.store.get('env_ok')?.resourcesStatus).toBe('ready')
     expect(prisma.store.get('env_ok')?.resourcesLock).toEqual(LOCK_CONTENT)
+    // O CERNE do desacoplamento: o ciclo de vida nunca muda por causa do
+    // bootstrap. Sem isto, fix() (que só reconhece status:'provisional')
+    // jamais fixaria este ambiente no aceite final.
+    expect(prisma.store.get('env_ok')?.status).toBe('provisional')
   })
 
-  test('bootstrap falha (exit != 0): ambiente error com a causa real, resourcesLock NÃO gravado', async () => {
+  test('bootstrap falha (exit != 0): resourcesStatus error com a causa real, resourcesLock NÃO gravado, status intocado', async () => {
     const prisma = fakePrisma()
     const envPath = path.join(baseDir, 'env_fail')
     await fs.mkdir(envPath, { recursive: true })
     prisma.store.set('env_fail', {
       id: 'env_fail',
       userId: 'u',
-      status: 'fixed',
+      status: 'provisional',
       path: envPath,
       createdAt: new Date(),
     })
@@ -755,11 +818,12 @@ describe('ClientEnvironmentService.bootstrapResources', () => {
 
     expect(result.ok).toBe(false)
     expect(result.error).toContain('sha256 do agy do host DIVERGE')
-    expect(prisma.store.get('env_fail')?.status).toBe('error')
+    expect(prisma.store.get('env_fail')?.resourcesStatus).toBe('error')
     expect(prisma.store.get('env_fail')?.resourcesLock).toBeUndefined()
+    expect(prisma.store.get('env_fail')?.status).toBe('provisional')
   })
 
-  test('env-lock.json ausente mesmo com exit 0: ambiente error (nunca "ativo" sem os recursos)', async () => {
+  test('env-lock.json ausente mesmo com exit 0: resourcesStatus error (nunca "ativo" sem os recursos)', async () => {
     const prisma = fakePrisma()
     const envPath = path.join(baseDir, 'env_nolock')
     await fs.mkdir(envPath, { recursive: true })
@@ -779,11 +843,11 @@ describe('ClientEnvironmentService.bootstrapResources', () => {
 
     expect(result.ok).toBe(false)
     expect(result.error).toContain('env-lock.json')
-    expect(prisma.store.get('env_nolock')?.status).toBe('error')
+    expect(prisma.store.get('env_nolock')?.resourcesStatus).toBe('error')
     expect(prisma.store.get('env_nolock')?.resourcesLock).toBeUndefined()
   })
 
-  test('env-lock.json corrompido (JSON inválido): ambiente error com a causa', async () => {
+  test('env-lock.json corrompido (JSON inválido): resourcesStatus error com a causa', async () => {
     const prisma = fakePrisma()
     const envPath = path.join(baseDir, 'env_corrupt')
     await fs.mkdir(path.join(envPath, '.gitorch'), { recursive: true })
@@ -802,10 +866,10 @@ describe('ClientEnvironmentService.bootstrapResources', () => {
 
     expect(result.ok).toBe(false)
     expect(result.error).toContain('env-lock.json inválido')
-    expect(prisma.store.get('env_corrupt')?.status).toBe('error')
+    expect(prisma.store.get('env_corrupt')?.resourcesStatus).toBe('error')
   })
 
-  test('runner lança (ex.: GITORCH_BOOTSTRAP_SCRIPT ausente): captura, não propaga, marca error', async () => {
+  test('runner lança (ex.: GITORCH_BOOTSTRAP_SCRIPT ausente): captura, não propaga, marca resourcesStatus error', async () => {
     const prisma = fakePrisma()
     const envPath = path.join(baseDir, 'env_throw')
     await fs.mkdir(envPath, { recursive: true })
@@ -824,7 +888,7 @@ describe('ClientEnvironmentService.bootstrapResources', () => {
     const result = await svc.bootstrapResources('env_throw')
 
     expect(result).toEqual({ ok: false, error: 'GITORCH_BOOTSTRAP_SCRIPT não definido' })
-    expect(prisma.store.get('env_throw')?.status).toBe('error')
+    expect(prisma.store.get('env_throw')?.resourcesStatus).toBe('error')
   })
 
   test('ambiente inexistente: devolve erro sem lançar e sem tentar rodar o script', async () => {
@@ -838,7 +902,7 @@ describe('ClientEnvironmentService.bootstrapResources', () => {
     expect(runner).not.toHaveBeenCalled()
   })
 
-  test('marca "provisioning" ANTES de rodar o script (progresso visível durante a instalação)', async () => {
+  test('marca resourcesStatus "provisioning" ANTES de rodar o script (progresso visível durante a instalação)', async () => {
     const prisma = fakePrisma()
     const envPath = path.join(baseDir, 'env_prog')
     await fs.mkdir(envPath, { recursive: true })
@@ -849,9 +913,9 @@ describe('ClientEnvironmentService.bootstrapResources', () => {
       path: envPath,
       createdAt: new Date(),
     })
-    let statusDuringRun: string | undefined
+    let resourcesStatusDuringRun: string | undefined
     const runner = vi.fn(async (dir: string) => {
-      statusDuringRun = prisma.store.get('env_prog')?.status
+      resourcesStatusDuringRun = prisma.store.get('env_prog')?.resourcesStatus
       await fs.mkdir(path.join(dir, '.gitorch'), { recursive: true })
       await fs.writeFile(path.join(dir, '.gitorch', 'env-lock.json'), JSON.stringify(LOCK_CONTENT))
       return { exitCode: 0, stderr: '' }
@@ -860,6 +924,90 @@ describe('ClientEnvironmentService.bootstrapResources', () => {
 
     await svc.bootstrapResources('env_prog')
 
-    expect(statusDuringRun).toBe('provisioning')
+    expect(resourcesStatusDuringRun).toBe('provisioning')
+  })
+
+  // Guard de reentrância: agora que o disparo acontece no CLONE (passo 4/5) E
+  // de novo como salvaguarda no SUBMIT (passo 10, ver routes/setup.ts), a
+  // MESMA função pode ser chamada 2x para o mesmo ambiente. Rodar o script de
+  // bootstrap 2x em paralelo é uma corrida real — dois processos escrevendo
+  // env-lock.json ao mesmo tempo.
+  describe('guard de reentrância', () => {
+    test('resourcesStatus "ready": devolve ok com o lock já gravado, sem rodar o runner de novo', async () => {
+      const prisma = fakePrisma()
+      const envPath = path.join(baseDir, 'env_already_ready')
+      await fs.mkdir(envPath, { recursive: true })
+      prisma.store.set('env_already_ready', {
+        id: 'env_already_ready',
+        userId: 'u',
+        status: 'fixed',
+        path: envPath,
+        resourcesStatus: 'ready',
+        resourcesLock: LOCK_CONTENT,
+        createdAt: new Date(),
+      })
+      const runner = vi.fn()
+      const svc = new ClientEnvironmentService(prisma as any, baseDir, undefined, runner)
+
+      const result = await svc.bootstrapResources('env_already_ready')
+
+      expect(result).toEqual({ ok: true, lock: LOCK_CONTENT })
+      expect(runner).not.toHaveBeenCalled()
+    })
+
+    test('resourcesStatus "provisioning": devolve erro sem tocar em nada, sem rodar o runner', async () => {
+      const prisma = fakePrisma()
+      const envPath = path.join(baseDir, 'env_inflight')
+      await fs.mkdir(envPath, { recursive: true })
+      prisma.store.set('env_inflight', {
+        id: 'env_inflight',
+        userId: 'u',
+        status: 'fixed',
+        path: envPath,
+        resourcesStatus: 'provisioning',
+        createdAt: new Date(),
+      })
+      const runner = vi.fn()
+      const svc = new ClientEnvironmentService(prisma as any, baseDir, undefined, runner)
+
+      const result = await svc.bootstrapResources('env_inflight')
+
+      expect(result).toEqual({ ok: false, error: 'bootstrap já em andamento' })
+      expect(runner).not.toHaveBeenCalled()
+      // nada foi tocado: nem resourcesStatus nem resourcesLock mudaram
+      expect(prisma.clientEnvironment.update).not.toHaveBeenCalled()
+    })
+
+    test('2 chamadas em sequência para o MESMO ambiente: o runner roda só na 1ª (a 2ª acha resourcesStatus ready)', async () => {
+      const prisma = fakePrisma()
+      const envPath = path.join(baseDir, 'env_twice')
+      await fs.mkdir(envPath, { recursive: true })
+      prisma.store.set('env_twice', {
+        id: 'env_twice',
+        userId: 'u',
+        status: 'provisional',
+        path: envPath,
+        createdAt: new Date(),
+      })
+      const runner = vi.fn(async (dir: string) => {
+        await fs.mkdir(path.join(dir, '.gitorch'), { recursive: true })
+        await fs.writeFile(
+          path.join(dir, '.gitorch', 'env-lock.json'),
+          JSON.stringify(LOCK_CONTENT)
+        )
+        return { exitCode: 0, stderr: '' }
+      })
+      const svc = new ClientEnvironmentService(prisma as any, baseDir, undefined, runner)
+
+      // 1ª chamada: dispara de verdade (ex.: clone-time).
+      const first = await svc.bootstrapResources('env_twice')
+      // 2ª chamada: dispara de novo (ex.: submit-time, salvaguarda) — o
+      // ambiente já está ready, então é um no-op seguro.
+      const second = await svc.bootstrapResources('env_twice')
+
+      expect(first).toEqual({ ok: true, lock: LOCK_CONTENT })
+      expect(second).toEqual({ ok: true, lock: LOCK_CONTENT })
+      expect(runner).toHaveBeenCalledTimes(1)
+    })
   })
 })

@@ -15,8 +15,17 @@ type WorkspaceAllocator = Pick<LocalWorkspaceProvider, 'allocateWorkspace'>
 export interface ClientEnvironmentRecord {
   id: string
   userId: string
+  /** SÓ o ciclo de vida do wizard: 'provisional' | 'fixed'. */
   status: string
   path: string
+  /**
+   * Progresso do bootstrap de recursos, DESACOPLADO de `status` (correção do
+   * bug de timing — ver schema.prisma): null | 'provisioning' | 'ready' | 'error'.
+   * Opcional no TIPO (não no banco — a coluna sempre existe) só para não
+   * quebrar fakes de outros testes (ex.: scheduler.ts) que constroem um
+   * ClientEnvironmentRecord parcial sem este campo novo.
+   */
+  resourcesStatus?: string | null
   /** Versões instaladas pelo bootstrap (env-lock.json) — null até rodar/falhar. */
   resourcesLock: unknown
   fixedAt: Date | null
@@ -133,10 +142,20 @@ export const realBootstrapRunner: BootstrapRunner = async (envDir) => {
  * Gerencia o ciclo de vida do ambiente isolado de cada cliente no setup wizard.
  * O ambiente nasce 'provisional' no aceite dos termos, acumula o clone dos
  * repos e as credenciais de motor logadas dentro dele, e vira 'fixed' no aceite
- * final. A partir daí, `bootstrapResources` instala os recursos VERSIONADOS do
- * manifesto dentro dele ('fixed' -> 'provisioning' -> 'ready'/'error'). Um
- * garbage collector (à parte) destrói 'provisional' SEM ATIVIDADE há mais de
- * 24h — o TTL mede INATIVIDADE, não idade (ver `touch`/`listExpired`).
+ * final. Um garbage collector (à parte) destrói 'provisional' SEM ATIVIDADE há
+ * mais de 24h — o TTL mede INATIVIDADE, não idade (ver `touch`/`listExpired`).
+ *
+ * `bootstrapResources` instala os recursos VERSIONADOS do manifesto DENTRO do
+ * ambiente (null -> 'provisioning' -> 'ready'/'error') — mas em
+ * `resourcesStatus`, um campo PRÓPRIO e DESACOPLADO do `status` do ciclo de
+ * vida acima. Isso importa porque o disparo agora acontece cedo (no clone,
+ * passo 4/5, ver routes/setup.ts), bem ANTES do aceite final (passo 10): se o
+ * bootstrap escrevesse em `status` (como antes deste fix), um ambiente ainda
+ * em pleno wizard sairia de 'provisional' NO MEIO do processo, e
+ * fix()/createProvisional()/listExpired() — que só reconhecem
+ * 'provisional'/'fixed' — parariam de enxergá-lo (o aceite final nunca
+ * fixava, e a faxina de segurança de 24h deixava de proteger a credencial do
+ * ambiente abandonado nesse meio-tempo).
  *
  * O diretório base é infra da VM: vem de GITORCH_ENVIRONMENTS_DIR (nunca
  * hardcoded fixo), mesmo padrão do LocalWorkspaceProvider. O `path` guardado
@@ -414,12 +433,23 @@ export class ClientEnvironmentService {
    * e é um JSON válido. QUALQUER desvio disso (script falhou, timeout, env
    * var ausente, env-lock ausente/corrompido) marca 'error' com a causa REAL
    * — nunca deixa o ambiente "pronto" sem os recursos de fato instalados
-   * (o dono não aceita um "concluído" fingido).
+   * (o dono não aceita um "concluído" fingido). TUDO isso é escrito em
+   * `resourcesStatus`, NUNCA em `status` (ver o comentário da classe acima) —
+   * o ciclo de vida do wizard é assunto de outro método (fix/createProvisional).
    *
    * Assíncrono do ponto de vista de quem chama (não lança: falhas viram um
    * resultado `{ ok: false, error }`), pensado para ser dado como
    * fire-and-forget pela rota (não trava a resposta HTTP) — o progresso real
-   * fica em `status`, lido por quem consulta o ambiente (GET /setup/status).
+   * fica em `resourcesStatus`, lido por quem consulta o ambiente (GET
+   * /setup/status).
+   *
+   * Guard de reentrância: esta função dispara tanto no CLONE (passo 4/5,
+   * cedo) quanto no SUBMIT (passo 10, salvaguarda) — ver routes/setup.ts. Sem
+   * o guard, o 2º disparo para o MESMO ambiente rodaria o script de bootstrap
+   * em paralelo com o 1º — dois processos escrevendo env-lock.json ao mesmo
+   * tempo, uma corrida real. 'ready' devolve o resultado já conhecido (sem
+   * rodar de novo); 'provisioning' devolve erro sem tocar em nada (a chamada
+   * em andamento é quem decide o resultado final).
    */
   async bootstrapResources(envId: string): Promise<BootstrapResourcesResult> {
     const env = await this.prisma.clientEnvironment.findUnique({ where: { id: envId } })
@@ -428,9 +458,16 @@ export class ClientEnvironmentService {
       return { ok: false, error: 'ambiente não encontrado' }
     }
 
+    if (env.resourcesStatus === 'ready') {
+      return { ok: true, lock: env.resourcesLock }
+    }
+    if (env.resourcesStatus === 'provisioning') {
+      return { ok: false, error: 'bootstrap já em andamento' }
+    }
+
     await this.prisma.clientEnvironment.update({
       where: { id: envId },
-      data: { status: 'provisioning' },
+      data: { resourcesStatus: 'provisioning' },
     })
 
     try {
@@ -463,7 +500,7 @@ export class ClientEnvironmentService {
 
       await this.prisma.clientEnvironment.update({
         where: { id: envId },
-        data: { status: 'ready', resourcesLock: lock as Prisma.InputJsonValue },
+        data: { resourcesStatus: 'ready', resourcesLock: lock as Prisma.InputJsonValue },
       })
       return { ok: true, lock }
     } catch (err) {
@@ -472,7 +509,7 @@ export class ClientEnvironmentService {
     }
   }
 
-  /** Marca o ambiente 'error' com a causa REAL e loga — nunca some com o motivo. */
+  /** Marca resourcesStatus 'error' com a causa REAL e loga — nunca some com o motivo. */
   private async markBootstrapError(
     envId: string,
     cause: string
@@ -483,7 +520,7 @@ export class ClientEnvironmentService {
     })
     await this.prisma.clientEnvironment.update({
       where: { id: envId },
-      data: { status: 'error' },
+      data: { resourcesStatus: 'error' },
     })
     return { ok: false, error: cause }
   }

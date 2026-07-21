@@ -396,13 +396,30 @@ model ClientEnvironment {
   userId String @map("user_id")
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  // provisional (durante o wizard) | fixed (aceite final concluído) |
-  // provisioning (bootstrap de recursos rodando pós-fixação, W1.2.2) |
-  // ready (recursos instalados — ver resourcesLock) | error (bootstrap
-  // falhou; NUNCA fica 'ready' sem os recursos de verdade instalados)
+  // SÓ o ciclo de vida do wizard: 'provisional' (durante o wizard) | 'fixed'
+  // (aceite final concluído, passo 10). Filtrado por fix()/createProvisional()/
+  // listExpired() — todos tratam 'provisional' como "ainda no wizard, sujeito
+  // à faxina de 24h". NUNCA MAIS escrito pelo bootstrap de recursos (ver
+  // `resourcesStatus` abaixo): antes desta coluna existir, os dois papéis
+  // dividiam este MESMO campo, e um ambiente cujo bootstrap rodasse ANTES do
+  // submit (ex.: no clone, passo 4/5) saía de 'provisional' NO MEIO do wizard
+  // — fix() parava de reconhecê-lo (nunca fixava) e listExpired() (a faxina
+  // que apaga ambiente abandonado com credencial) parava de enxergá-lo
+  // (vazamento real). Correção de timing: branch fix/w1-bootstrap-timing.
   status String @default("provisional")
   // Diretório isolado em disco onde o clone + as credenciais do cliente vivem.
   path   String
+
+  // Progresso do bootstrap de recursos, DESACOPLADO do ciclo de vida acima:
+  // null (bootstrap não rodou ainda) -> 'provisioning' -> 'ready'/'error'.
+  // Existe porque o bootstrap dispara cedo — no CLONE (passo 4/5) — bem antes
+  // do aceite final (passo 10); se ele escrevesse em `status` (como antes),
+  // um ambiente ainda em pleno wizard virava 'ready'/'error' e quebrava o
+  // ciclo de vida acima (ver o comentário de `status`). Ver
+  // ClientEnvironmentService.bootstrapResources para a máquina de estados e
+  // o guard de reentrância (a função pode ser chamada 2x: clone-time e
+  // submit-time como salvaguarda).
+  resourcesStatus String? @map("resources_status")
 
   // Versões REALMENTE instaladas pelo bootstrap (infra/bootstrap-env.sh) DENTRO
   // do ambiente — o mesmo conteúdo do <env>/.gitorch/env-lock.json gerado por
