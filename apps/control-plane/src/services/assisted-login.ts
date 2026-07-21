@@ -43,6 +43,21 @@ const MENU_SELECT_MARKER: Partial<Record<DeviceRuntime, RegExp>> = {
   antigravity: /select login method/i,
 }
 
+// Antigravity chegou no CHAT (logado). CAUSA RAIZ do "tempo esgotado" achado
+// ao vivo (21/07): ao contrário do Codex (device-auth, que SAI após o login →
+// dispara onExit → captura), o `agy` depois do login+onboarding ABRE o chat
+// interativo e fica VIVO PARA SEMPRE — o onExit nunca dispara, a captura nunca
+// roda, e a sessão morria no timeout de 5min (o log mostrava o chat pronto,
+// "? for shortcuts" + "(Google AI Pro)", mas o estado travado em url_ready).
+// A credencial (antigravity-oauth-token) já foi gravada em disco pelo OAuth
+// bem-sucedido bem antes do chat; o prompt do chat é o sinal inequívoco de que
+// login+onboarding terminaram. Ao detectá-lo, NÓS matamos o processo e
+// capturamos (ver `captureAntigravityAfterChat`). "? for shortcuts" é a linha
+// de rodapé fixa do chat do agy — não aparece em nenhuma tela de login/
+// onboarding, então é um marcador seguro. Casa no buffer cru (o texto vem
+// cercado de ANSI, mas a substring literal está lá).
+const ANTIGRAVITY_CHAT_READY_MARKER = /\? for shortcuts/i
+
 // CORREÇÃO 21/07 — o PR#359 (histórico BUG 2/BUG 3 abaixo) tinha a ORDEM e as
 // TELAS erradas. Testando AO VIVO contra a conta do dono, num container
 // isolado (ver docs/operations/engine-collection-real-steps.md, seção
@@ -113,8 +128,50 @@ export type LoginState =
   // mesmo passo que confirmou 'connected'. Vão no evento SSE para o card
   // conectado renderizar "N modelos · quota X" AO VIVO, sem depender do refetch.
   // `quota` é omitido (não `undefined`) quando o provider não expõe quota.
-  | { phase: 'connected'; models?: unknown; quota?: number }
+  //
+  // BUG DE INTEGRAÇÃO (achado ao vivo 21/07): os campos de quota REAL de
+  // sessão/semana (Claude via API, Codex via rate_limits, Antigravity via
+  // /usage — ver quota-reader.ts) chegam no `ConnectionStatus` que
+  // captureFromHome devolve, mas ANTES desta correção o setState 'connected'
+  // só repassava `models` + `quota` (número). Resultado: no login AO VIVO, o
+  // dono via os modelos do Claude mas NENHUMA quota — os campos existiam no
+  // backend e o front já sabia lê-los (normalizeLoginState/claudeUsageFields),
+  // só nunca eram ENVIADOS pelo evento SSE. Agora o LoginState connected
+  // carrega os 4 campos, e `connectedStateFrom` os propaga do ConnectionStatus.
+  | {
+      phase: 'connected'
+      models?: unknown
+      quota?: number
+      sessionPercentUsed?: number | null
+      sessionResetsAt?: string | null
+      weekPercentUsed?: number | null
+      weekResetsAt?: string | null
+    }
   | { phase: 'error'; message: string }
+
+// O que captureFromHome devolve (models + quota real, incluindo os campos de
+// sessão/semana coletados na liveness). Tipado a partir do próprio método pra
+// não depender de um import extra do ConnectionStatus.
+type CapturedStatus = Awaited<ReturnType<EngineConnectionService['captureFromHome']>>
+
+// Monta o LoginState 'connected' a partir do ConnectionStatus que a liveness
+// produziu — a FONTE ÚNICA que os dois caminhos de captura (Claude via stdout,
+// Codex/Antigravity via onExit) usam. Propaga TODOS os campos de quota (o
+// número legado `quota` E os campos de sessão/semana), cada um só quando
+// presente (nunca força `undefined`/`null` no evento). Antes desta função, os
+// campos de sessão/semana existiam no `st` mas eram descartados aqui — o card
+// AO VIVO ficava sem quota (ver o comentário do LoginState connected acima).
+function connectedStateFrom(st: CapturedStatus): LoginState {
+  return {
+    phase: 'connected',
+    models: st.models,
+    ...(st.quotaRemaining != null ? { quota: st.quotaRemaining } : {}),
+    ...(st.sessionPercentUsed != null ? { sessionPercentUsed: st.sessionPercentUsed } : {}),
+    ...(st.sessionResetsAt != null ? { sessionResetsAt: st.sessionResetsAt } : {}),
+    ...(st.weekPercentUsed != null ? { weekPercentUsed: st.weekPercentUsed } : {}),
+    ...(st.weekResetsAt != null ? { weekResetsAt: st.weekResetsAt } : {}),
+  }
+}
 
 interface Session {
   id: string
@@ -381,6 +438,15 @@ export class AssistedLoginService {
     if (session.runtime === 'antigravity') {
       const failed = this.processAntigravityOnboarding(id, session)
       if (failed) return
+
+      // Chat pronto = login+onboarding terminaram e a credencial já está em
+      // disco. O `agy` não vai sair sozinho (fica no chat), então capturamos
+      // aqui em vez de esperar um onExit que nunca vem. Uma vez só (capturing).
+      if (!session.capturing && ANTIGRAVITY_CHAT_READY_MARKER.test(session.buffer)) {
+        session.capturing = true
+        void this.captureAntigravityAfterChat(id)
+        return
+      }
     }
 
     // Continua reparseando enquanto a fase for 'starting' OU já tivermos a URL
@@ -464,11 +530,7 @@ export class AssistedLoginService {
         this.fail(id, st.lastError ?? 'motor não respondeu à validação viva')
         return
       }
-      this.setState(id, {
-        phase: 'connected',
-        models: st.models,
-        ...(st.quotaRemaining != null ? { quota: st.quotaRemaining } : {}),
-      })
+      this.setState(id, connectedStateFrom(st))
     } catch (err) {
       this.fail(id, (err as Error).message)
     } finally {
@@ -476,21 +538,54 @@ export class AssistedLoginService {
     }
   }
 
+  /**
+   * Antigravity: o login+onboarding terminaram e o `agy` está no chat (vivo).
+   * A credencial já está em disco; capturamos aqui em vez de esperar um onExit
+   * que nunca vem (ver ANTIGRAVITY_CHAT_READY_MARKER). Mata o chat ANTES de
+   * capturar: a liveness (`agy models`) e a quota (`/usage` sob PTY) rodam
+   * `agy` em processos novos no MESMO homeDir — deixar o chat vivo segurando os
+   * locks (sqlite do agy) arriscaria conflito. Matar não perde a credencial
+   * (ela já foi gravada). O onExit que este kill dispara vê `capturing` já true
+   * e não interfere.
+   */
+  private async captureAntigravityAfterChat(id: string): Promise<void> {
+    const session = this.sessions.get(id)
+    if (!session || session.state.phase === 'connected' || session.state.phase === 'error') return
+    session.handle.kill()
+    try {
+      const st = await this.engineConnections.captureFromHome(
+        session.userId,
+        'antigravity',
+        session.handle.hostHome
+      )
+      if (st.status !== 'connected') {
+        this.fail(id, st.lastError ?? 'motor não respondeu à validação viva')
+        return
+      }
+      this.setState(id, connectedStateFrom(st))
+    } catch (err) {
+      this.fail(id, (err as Error).message)
+    }
+  }
+
   private async onExit(id: string, code: number | null): Promise<void> {
     const session = this.sessions.get(id)
     if (!session || session.state.phase === 'connected' || session.state.phase === 'error') return
 
-    // Claude captura via stdout (captureClaudeToken), nunca via exit code. Se
-    // uma captura já está em andamento (capturing), NÃO falhar aqui: o
-    // processo pode legitimamente sair logo após imprimir o token, enquanto
-    // captureClaudeToken ainda está no meio do seu chain assíncrono
-    // (mkdir/writeFile/captureFromHome). Chamar fail() aqui apagaria a sessão
-    // (cleanup) e o setState({phase:'connected'}) posterior de
-    // captureClaudeToken viraria um no-op silencioso — usuário veria "error"
-    // mesmo com a credencial capturada com sucesso. Deixamos o próprio
-    // captureClaudeToken (sucesso ou catch) dono da transição terminal.
+    // Captura JÁ em andamento por outro caminho — NÃO falhar aqui: o exit é
+    // consequência do nosso próprio kill(), não um erro. Cobre dois casos:
+    //  - Claude: capturado via stdout (captureClaudeToken), o processo sai logo
+    //    depois de imprimir o token enquanto a captura assíncrona ainda corre.
+    //  - Antigravity: capturado ao detectar o chat pronto
+    //    (captureAntigravityAfterChat), que mata o processo de propósito.
+    // Chamar fail() aqui apagaria a sessão (cleanup) e o setState('connected')
+    // posterior da captura viraria no-op silencioso — o usuário veria "error"
+    // mesmo com a credencial capturada. A captura em curso é dona do estado.
+    if (session.capturing) return
+
+    // Claude captura via stdout, nunca via exit. Se chegou aqui SEM capturing,
+    // o CLI saiu sem imprimir o token = falha legítima.
     if (session.runtime === 'claude') {
-      if (session.capturing) return
       this.fail(id, `login encerrado sem token (código de saída ${code})`)
       return
     }
@@ -518,11 +613,7 @@ export class AssistedLoginService {
         this.fail(id, st.lastError ?? 'motor não respondeu à validação viva')
         return
       }
-      this.setState(id, {
-        phase: 'connected',
-        models: st.models,
-        ...(st.quotaRemaining != null ? { quota: st.quotaRemaining } : {}),
-      })
+      this.setState(id, connectedStateFrom(st))
     } catch (err) {
       this.fail(id, (err as Error).message)
     }
