@@ -112,14 +112,215 @@ export function makeAntigravityQuotaReader(
   }
 }
 
-/** Codex: lê ~/.codex/usage.json se existir (best-effort). */
+// Unknown específico do Codex: mesmos 6 campos null do EMPTY_CLAUDE_QUOTA
+// (nunca undefined) — reaproveita o formato sessão/semana criado pro Claude
+// (ver comentário de QuotaReading acima) em vez do UNKNOWN genérico de 2
+// campos, para o front tratar os dois motores da mesma forma quando a
+// coleta falha ou nunca rodou.
+const EMPTY_CODEX_QUOTA: QuotaReading = {
+  remaining: null,
+  total: null,
+  sessionPercentUsed: null,
+  sessionResetsAt: null,
+  weekPercentUsed: null,
+  weekResetsAt: null,
+}
+
+// ---- Codex: quota via evento `rate_limits` do `codex exec --json` ----
+//
+// `~/.codex/usage.json` NUNCA existe (provado ao vivo 21/07, ver
+// docs/operations/engine-collection-real-steps.md): nem logo após o login,
+// nem depois do warmup — só `auth.json` e `models_cache.json` aparecem. A
+// quota real vem de um evento JSONL `rate_limits` emitido no STDOUT do
+// `codex exec --json` — o MESMO comando que o warmup do model-catalog já
+// roda pra gerar `models_cache.json` (ver `defaultCodexWarmUp` em
+// model-catalog.ts). Nunca rodamos `codex exec` duas vezes: o warmup extrai
+// o evento desse único stdout e grava `~/.codex/gitorch-quota.json`; esta
+// leitura só lê esse arquivo.
+
+/** Uma janela de rate limit do Codex, como vem no evento `rate_limits`.
+ * `used_percent` já é PERCENTUAL (0..100) — ao contrário do Claude, que
+ * manda uma fração (0..1) no header e por isso precisa de
+ * `utilizationToPercent`. NÃO reaplicar essa conversão aqui. */
+export interface CodexRateLimitWindow {
+  used_percent: number
+  window_minutes: number
+  reset_after_seconds?: number
+  reset_at: number
+}
+
+/** Evento bruto `rate_limits` do `codex exec --json`. `primary` é a janela
+ * semanal (`window_minutes` 10080 = 7 dias); `secondary`, quando existe, é a
+ * janela curta (~5h, de planos pagos) — `null` no plano free (provado ao
+ * vivo com a conta do dono, 21/07). */
+export interface CodexRateLimitsEvent {
+  allowed?: boolean
+  limit_reached?: boolean
+  primary: CodexRateLimitWindow | null
+  secondary: CodexRateLimitWindow | null
+}
+
+/** Formato gravado em `~/.codex/gitorch-quota.json`: os campos de `primary`
+ * são achatados pro nível raiz (used_percent/window_minutes/reset_at);
+ * `secondary` fica aninhado (ou `null`). */
+export interface CodexQuotaFile {
+  used_percent: number | null
+  window_minutes: number | null
+  reset_at: number | null
+  secondary: {
+    used_percent: number | null
+    window_minutes: number | null
+    reset_at: number | null
+  } | null
+}
+
+const CODEX_QUOTA_FILE_NAME = 'gitorch-quota.json'
+
+/** Caminho de `~/.codex/gitorch-quota.json` — usado tanto pra gravar (warmup
+ * em model-catalog.ts) quanto pra ler (readCodexQuota abaixo). */
+export function codexQuotaFilePath(homeDir: string): string {
+  return path.join(homeDir, '.codex', CODEX_QUOTA_FILE_NAME)
+}
+
+/** `node` tem o formato do evento `rate_limits` (tem as chaves `primary` E
+ * `secondary`, mesmo que uma delas seja `null`)? Checagem estrutural, não de
+ * tipo — o `unknown` vem de JSON.parse de uma linha de stdout externa. */
+function isRateLimitsShape(node: unknown): node is CodexRateLimitsEvent {
+  if (!node || typeof node !== 'object' || Array.isArray(node)) return false
+  const obj = node as Record<string, unknown>
+  return 'primary' in obj && 'secondary' in obj
+}
+
+/** Busca recursiva (profundidade limitada) pelo evento `rate_limits` dentro
+ * de uma linha JSONL já parseada. Cobre tanto a chave `rate_limits`
+ * aninhada num envelope (ex.: `{"msg":{"type":"...","rate_limits":{...}}}`)
+ * quanto o objeto já vir "solto" na raiz da linha — sem hardcodar um shape
+ * específico de envelope. Profundidade limitada (JSON não tem ciclos, mas
+ * uma linha maliciosa/gigante não deve travar o parse). */
+function findRateLimitsNode(node: unknown, depth: number): CodexRateLimitsEvent | null {
+  if (depth > 8 || node == null || typeof node !== 'object') return null
+  if (!Array.isArray(node)) {
+    const obj = node as Record<string, unknown>
+    if ('rate_limits' in obj && isRateLimitsShape(obj['rate_limits'])) {
+      return obj['rate_limits'] as CodexRateLimitsEvent
+    }
+    if (isRateLimitsShape(obj)) return obj
+  }
+  const children = Array.isArray(node) ? node : Object.values(node as Record<string, unknown>)
+  for (const child of children) {
+    const found = findRateLimitsNode(child, depth + 1)
+    if (found) return found
+  }
+  return null
+}
+
+/**
+ * Acha e parseia o evento `rate_limits` no stdout JSONL do `codex exec
+ * --json` (chamado pelo warmup em model-catalog.ts, nunca aqui — este
+ * módulo só parseia texto, não roda processo). Cada linha do stdout é um
+ * evento JSON; linhas que não são JSON válido são ignoradas silenciosamente
+ * (o `codex exec --json` mistura outros eventos no meio). Nunca lança —
+ * devolve `null` se nenhuma linha tiver o evento. Formato real provado ao
+ * vivo 21/07 (ver docs/operations/engine-collection-real-steps.md).
+ */
+export function parseCodexRateLimitsFromJsonl(stdout: string): CodexRateLimitsEvent | null {
+  for (const line of stdout.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(trimmed)
+    } catch {
+      continue
+    }
+    const found = findRateLimitsNode(parsed, 0)
+    if (found) return found
+  }
+  return null
+}
+
+/** Achata o evento `rate_limits` pro formato gravado em disco (`CodexQuotaFile`).
+ * Pura e testável — separada de `writeCodexQuotaFile` (I/O) de propósito. */
+export function toCodexQuotaFile(event: CodexRateLimitsEvent): CodexQuotaFile {
+  return {
+    used_percent: event.primary?.used_percent ?? null,
+    window_minutes: event.primary?.window_minutes ?? null,
+    reset_at: event.primary?.reset_at ?? null,
+    secondary: event.secondary
+      ? {
+          used_percent: event.secondary.used_percent ?? null,
+          window_minutes: event.secondary.window_minutes ?? null,
+          reset_at: event.secondary.reset_at ?? null,
+        }
+      : null,
+  }
+}
+
+/**
+ * Grava `~/.codex/gitorch-quota.json` a partir do evento `rate_limits`
+ * extraído do stdout do warmup (chamada por `defaultCodexWarmUp` em
+ * model-catalog.ts, logo após o ÚNICO `codex exec --json` do fluxo — nunca
+ * rodamos `codex exec` duas vezes). Cria `~/.codex` se ainda não existir
+ * (pode ser a primeira escrita do CLI naquele HOME). Deixa o erro subir pro
+ * chamador decidir (best-effort é responsabilidade de quem chama, igual ao
+ * resto do warmup) — nunca lançamos aqui por conta própria além do que o
+ * `fs` já lança.
+ */
+export async function writeCodexQuotaFile(
+  homeDir: string,
+  event: CodexRateLimitsEvent
+): Promise<void> {
+  const file = codexQuotaFilePath(homeDir)
+  await fs.mkdir(path.dirname(file), { recursive: true })
+  await fs.writeFile(file, JSON.stringify(toCodexQuotaFile(event)), 'utf8')
+}
+
+/**
+ * Codex: lê `~/.codex/gitorch-quota.json`, gravado pelo warmup
+ * (`defaultCodexWarmUp` em model-catalog.ts) a partir do evento
+ * `rate_limits` do `codex exec --json`. SUBSTITUI a leitura de
+ * `~/.codex/usage.json` (removida 21/07 — esse arquivo nunca existe, ver
+ * comentário do bloco acima).
+ *
+ * Mapeia pro QuotaReading reaproveitando os campos criados pro Claude (ver
+ * comentário de QuotaReading no topo do arquivo): `primary` (janela semanal,
+ * `window_minutes` 10080) -> `weekPercentUsed`/`weekResetsAt`; `secondary`
+ * (janela curta ~5h, só existe em planos pagos — `null` no free do dono) ->
+ * `sessionPercentUsed`/`sessionResetsAt`. `remaining`/`total` continuam
+ * `null` — o Codex não expõe saldo, nunca inventamos um número.
+ *
+ * `reset_at` (unix, segundos) é convertido com `resetToIso` — MESMO formato
+ * (ISO string) que o Claude já usa, para o front tratar os dois de forma
+ * uniforme.
+ *
+ * Sem o arquivo (warmup nunca rodou ou falhou) ou JSON inválido/corrompido
+ * -> `EMPTY_CODEX_QUOTA` (tudo null), nunca lança — mesmo contrato
+ * best-effort do resto do arquivo.
+ */
 export const readCodexQuota: QuotaReader = async (homeDir: string) => {
   const env = envReading('codex')
   if (env) return env
-  const file = path.join(homeDir, '.codex', 'usage.json')
-  const raw = await fs.readFile(file, 'utf8').catch(() => null)
-  if (!raw) return UNKNOWN
-  return parseQuotaText(raw)
+  const raw = await fs.readFile(codexQuotaFilePath(homeDir), 'utf8').catch(() => null)
+  if (!raw) return EMPTY_CODEX_QUOTA
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return EMPTY_CODEX_QUOTA
+  }
+  if (!parsed || typeof parsed !== 'object') return EMPTY_CODEX_QUOTA
+  const file = parsed as Partial<CodexQuotaFile>
+  const secondary = file.secondary ?? null
+  return {
+    remaining: null,
+    total: null,
+    weekPercentUsed: numberish(file.used_percent),
+    weekResetsAt: resetToIso(file.reset_at != null ? String(file.reset_at) : null),
+    sessionPercentUsed: secondary ? numberish(secondary.used_percent) : null,
+    sessionResetsAt: secondary
+      ? resetToIso(secondary.reset_at != null ? String(secondary.reset_at) : null)
+      : null,
+  }
 }
 
 /** Objeto mínimo compatível com `Response.headers` (Fetch API) — só o `.get()`

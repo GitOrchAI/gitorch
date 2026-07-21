@@ -83,10 +83,12 @@ export interface ConnectionStatus {
   models: string[]
   quotaRemaining: number | null
   quotaTotal: number | null
-  // Claude (ver quota-reader.ts/QuotaReading): a CLI não expõe um saldo
-  // remaining/total — expõe % usado + reset de DUAS janelas (sessão/semana).
-  // Só o runtime 'claude' popula; Codex/Antigravity ficam undefined aqui,
-  // sem regressão no formato remaining/total deles.
+  // Claude e Codex (ver quota-reader.ts/QuotaReading): nenhum dos dois expõe
+  // um saldo remaining/total — expõem % usado + reset de DUAS janelas
+  // (sessão/semana). Codex passou a popular isso em 21/07 via
+  // `readCodexQuota` (evento `rate_limits` do `codex exec --json`, ver
+  // model-catalog.ts); Antigravity fica undefined aqui, sem regressão no
+  // formato remaining/total dele.
   sessionPercentUsed?: number | null
   sessionResetsAt?: string | null
   weekPercentUsed?: number | null
@@ -390,7 +392,7 @@ export class EngineConnectionService {
             quotaRemaining: quota.remaining,
             quotaTotal: quota.total,
             quotaRefreshedAt: new Date(),
-            // Claude só (ver QuotaReading) — undefined pros demais motores
+            // Claude e Codex (ver QuotaReading) — undefined pro Antigravity
             // vira `null` na coluna nullable, mesmo efeito de "sem essa janela".
             sessionPercentUsed: quota.sessionPercentUsed ?? null,
             sessionResetsAt: quota.sessionResetsAt ?? null,
@@ -467,7 +469,7 @@ function buildStatusFields(liveness: LivenessResult | null, now: Date): Record<s
       quotaRemaining: liveness.quota.remaining,
       quotaTotal: liveness.quota.total,
       quotaRefreshedAt: now,
-      // Claude só (ver QuotaReading) — undefined pra Codex/Antigravity vira
+      // Claude e Codex (ver QuotaReading) — undefined pro Antigravity vira
       // `null` no Prisma (coluna nullable), mesmo efeito de "sem essa janela".
       sessionPercentUsed: liveness.quota.sessionPercentUsed ?? null,
       sessionResetsAt: liveness.quota.sessionResetsAt ?? null,

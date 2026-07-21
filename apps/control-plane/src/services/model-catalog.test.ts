@@ -8,7 +8,9 @@ import {
   makeAntigravityDiscoverer,
   makeCodexDiscoverer,
   makeClaudeModelDiscoverer,
+  defaultCodexWarmUp,
 } from './model-catalog.js'
+import { codexQuotaFilePath } from './quota-reader.js'
 
 describe('model-catalog', () => {
   test('antigravity: uma linha por modelo', async () => {
@@ -206,6 +208,77 @@ describe('model-catalog', () => {
       expect(await discover('/home/x')).toEqual(['model-a', 'model-b'])
       expect(fetchSpy).not.toHaveBeenCalled()
       expect(readToken).not.toHaveBeenCalled()
+    })
+  })
+})
+
+// Evento REAL observado ao vivo 21/07 (docs/operations/engine-collection-real-
+// steps.md): plano free do dono, sem janela secundária (~5h).
+const REAL_RATE_LIMITS_LINE =
+  '{"allowed":true,"limit_reached":false,"primary":{"used_percent":7,"window_minutes":10080,"reset_after_seconds":482917,"reset_at":1785085248},"secondary":null}'
+
+// `defaultCodexWarmUp` roda `codex exec --json` (UM ÚNICO exec — nunca dois)
+// e usa o MESMO stdout pra alimentar tanto `models_cache.json` (o próprio
+// CLI grava isso, fora do controle deste código) quanto
+// `~/.codex/gitorch-quota.json` (este código grava, a partir do evento
+// `rate_limits`). O runner é injetável (`CodexExecRunner`) — nenhum destes
+// testes invoca o binário `codex` real.
+describe('defaultCodexWarmUp (grava gitorch-quota.json a partir do stdout)', () => {
+  async function withTempHome(fn: (home: string) => Promise<void>): Promise<void> {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-codex-warmup-quota-'))
+    try {
+      await fn(home)
+    } finally {
+      await fs.rm(home, { recursive: true, force: true })
+    }
+  }
+
+  test('runner emite o evento rate_limits -> grava gitorch-quota.json com os campos certos', async () => {
+    await withTempHome(async (home) => {
+      const runner = vi.fn().mockResolvedValue(REAL_RATE_LIMITS_LINE)
+      await defaultCodexWarmUp('codex-fake-bin', home, runner)
+
+      expect(runner).toHaveBeenCalledTimes(1)
+      const raw = await fs.readFile(codexQuotaFilePath(home), 'utf8')
+      expect(JSON.parse(raw)).toEqual({
+        used_percent: 7,
+        window_minutes: 10080,
+        reset_at: 1785085248,
+        secondary: null,
+      })
+    })
+  })
+
+  test('roda `codex exec --json` (uma vez só) com o bin e o HOME certos', async () => {
+    await withTempHome(async (home) => {
+      const runner = vi.fn().mockResolvedValue(REAL_RATE_LIMITS_LINE)
+      await defaultCodexWarmUp('codex-fake-bin', home, runner)
+
+      expect(runner).toHaveBeenCalledTimes(1)
+      const [bin, args, env] = runner.mock.calls[0] as [string, string[], Record<string, string>]
+      expect(bin).toBe('codex-fake-bin')
+      expect(args[0]).toBe('exec')
+      expect(args).toContain('--json')
+      expect(env['HOME']).toBe(home)
+    })
+  })
+
+  test('stdout sem o evento rate_limits -> não grava arquivo, não lança', async () => {
+    await withTempHome(async (home) => {
+      const runner = vi.fn().mockResolvedValue('{"type":"item.completed"}\n')
+      await expect(defaultCodexWarmUp('codex-fake-bin', home, runner)).resolves.toBeUndefined()
+
+      await expect(fs.readFile(codexQuotaFilePath(home), 'utf8')).rejects.toThrow()
+    })
+  })
+
+  test('runner (o exec) falha -> warmUp propaga o erro, não grava arquivo', async () => {
+    await withTempHome(async (home) => {
+      const runner = vi.fn().mockRejectedValue(new Error('timeout: provider não respondeu'))
+      await expect(defaultCodexWarmUp('codex-fake-bin', home, runner)).rejects.toThrow(
+        'timeout: provider não respondeu'
+      )
+      await expect(fs.readFile(codexQuotaFilePath(home), 'utf8')).rejects.toThrow()
     })
   })
 })

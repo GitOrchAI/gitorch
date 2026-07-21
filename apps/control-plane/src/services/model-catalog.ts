@@ -9,6 +9,7 @@ import {
   CLAUDE_API_TIMEOUT_MS,
   claudeApiHeaders,
 } from './claude-token.js'
+import { parseCodexRateLimitsFromJsonl, writeCodexQuotaFile } from './quota-reader.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -52,6 +53,10 @@ export function makeAntigravityDiscoverer(
  * barato e real (ver `defaultCodexWarmUp`) — só então lê o arquivo. Falha no
  * aquecimento nunca lança: cai para [] (0 modelos honesto é melhor que
  * quebrar o connect).
+ *
+ * Esse MESMO aquecimento (21/07) também alimenta a quota do Codex: ver o
+ * comentário de `defaultCodexWarmUp` abaixo e `readCodexQuota` em
+ * quota-reader.ts. Um único `codex exec` por chamada — nunca dois.
  */
 export function makeCodexDiscoverer(
   codexBin = process.env['GITORCH_CODEX_BIN'] ?? 'codex',
@@ -83,22 +88,52 @@ export function makeCodexDiscoverer(
 
 export const discoverCodexModels: ModelDiscoverer = makeCodexDiscoverer()
 
+/** Runner injetável do `codex exec --json` (execFile real por padrão; um
+ * FAKE nos testes — nunca invoca o binário `codex` de verdade). Devolve o
+ * stdout bruto (JSONL) pro warmup extrair o evento `rate_limits`. Separado
+ * do `runner` genérico de `defaultRunner` (usado por Antigravity) porque
+ * este warmup precisa do stdout — os outros só do texto já pronto. */
+export type CodexExecRunner = (
+  bin: string,
+  args: string[],
+  env: Record<string, string>
+) => Promise<string>
+
 /**
- * Roda `codex exec` com um prompt mínimo que só pede a palavra "ok" (sem
- * tools) — minimiza tokens gastos. `-s read-only` (não pode alterar nada
- * fora do próprio HOME que o CLI já gerencia); `-C` num diretório vazio
+ * Roda `codex exec --json` com um prompt mínimo que só pede a palavra "ok"
+ * (sem tools) — minimiza tokens gastos. `-s read-only` (não pode alterar
+ * nada fora do próprio HOME que o CLI já gerencia); `-C` num diretório vazio
  * dedicado (nem o HOME nem o cwd do processo real) para o modelo não ter
  * nada de real pra explorar; `--skip-git-repo-check` porque esse diretório
  * isolado não é um repo git.
+ *
+ * `--json` (novo 21/07): o MESMO comando que já gera `models_cache.json`
+ * (efeito colateral do próprio CLI, ver `makeCodexDiscoverer` acima) agora
+ * TAMBÉM emite eventos JSONL no stdout — um deles é `rate_limits`, a única
+ * fonte real de quota do Codex (`~/.codex/usage.json` NUNCA existe, provado
+ * ao vivo, ver docs/operations/engine-collection-real-steps.md). Extraímos
+ * esse evento (`parseCodexRateLimitsFromJsonl`, quota-reader.ts) e gravamos
+ * `~/.codex/gitorch-quota.json` (`writeCodexQuotaFile`) pra `readCodexQuota`
+ * ler depois. Isto é o ÚNICO `codex exec` do fluxo — NUNCA rodar `codex
+ * exec` de novo só pra quota, gastaria a quota do dono em dobro. A escrita
+ * do arquivo de quota é best-effort (nunca lança): se o evento não aparecer
+ * no stdout (ex.: versão antiga do CLI) ou a escrita falhar, a quota
+ * simplesmente fica null depois (mesmo contrato honesto do resto do
+ * arquivo) — não derruba o warmup nem o catálogo de modelos.
  */
-async function defaultCodexWarmUp(bin: string, home: string): Promise<void> {
+export async function defaultCodexWarmUp(
+  bin: string,
+  home: string,
+  runner: CodexExecRunner = defaultCodexExecRunner
+): Promise<void> {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-codex-warmup-'))
   try {
     const env: Record<string, string> = { PATH: process.env['PATH'] ?? '', HOME: home }
-    await execFileAsync(
+    const stdout = await runner(
       bin,
       [
         'exec',
+        '--json',
         'Reply with only the word ok. Do not run any shell commands or tools.',
         '-s',
         'read-only',
@@ -106,11 +141,32 @@ async function defaultCodexWarmUp(bin: string, home: string): Promise<void> {
         '-C',
         cwd,
       ],
-      { env, timeout: CODEX_WARMUP_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 }
+      env
     )
+    const event = parseCodexRateLimitsFromJsonl(stdout)
+    if (event) {
+      await writeCodexQuotaFile(home, event).catch((err) => {
+        console.warn('[model-catalog] gravar gitorch-quota.json falhou — quota do Codex nula', {
+          error: err instanceof Error ? err.message : String(err),
+        })
+      })
+    }
   } finally {
     await fs.rm(cwd, { recursive: true, force: true }).catch(() => undefined)
   }
+}
+
+async function defaultCodexExecRunner(
+  bin: string,
+  args: string[],
+  env: Record<string, string>
+): Promise<string> {
+  const { stdout } = await execFileAsync(bin, args, {
+    env,
+    timeout: CODEX_WARMUP_TIMEOUT_MS,
+    maxBuffer: 4 * 1024 * 1024,
+  })
+  return stdout
 }
 
 /**

@@ -1,16 +1,25 @@
 import { describe, expect, it, test, vi, afterEach } from 'vitest'
+import * as fs from 'node:fs/promises'
+import * as os from 'node:os'
+import * as path from 'node:path'
 import {
   parseQuotaText,
   makeAntigravityQuotaReader,
   readClaudeQuota,
   makeClaudeQuotaReader,
   parseClaudeRateLimitHeaders,
+  parseCodexRateLimitsFromJsonl,
+  writeCodexQuotaFile,
+  readCodexQuota,
+  codexQuotaFilePath,
 } from './quota-reader.js'
 
 afterEach(() => {
   delete process.env['GITORCH_CLAUDE_QUOTA_REMAINING']
   delete process.env['GITORCH_CLAUDE_QUOTA_TOTAL']
   delete process.env['GITORCH_ANTIGRAVITY_QUOTA_REMAINING']
+  delete process.env['GITORCH_CODEX_QUOTA_REMAINING']
+  delete process.env['GITORCH_CODEX_QUOTA_TOTAL']
 })
 
 describe('parseQuotaText', () => {
@@ -235,5 +244,203 @@ describe('Antigravity reader', () => {
     const reader = makeAntigravityQuotaReader('agy', ['usage'], runner)
     expect((await reader('/home/x')).remaining).toBe(77)
     expect(runner).not.toHaveBeenCalled()
+  })
+})
+
+// Evento REAL observado ao vivo 21/07 (docs/operations/engine-collection-real-
+// steps.md): plano free do dono, sem janela secundária (~5h).
+const REAL_RATE_LIMITS_LINE =
+  '{"allowed":true,"limit_reached":false,"primary":{"used_percent":7,"window_minutes":10080,"reset_after_seconds":482917,"reset_at":1785085248},"secondary":null}'
+
+describe('parseCodexRateLimitsFromJsonl', () => {
+  it('parseia a linha real (plano free, secondary null)', () => {
+    const event = parseCodexRateLimitsFromJsonl(REAL_RATE_LIMITS_LINE)
+    expect(event).toEqual({
+      allowed: true,
+      limit_reached: false,
+      primary: {
+        used_percent: 7,
+        window_minutes: 10080,
+        reset_after_seconds: 482917,
+        reset_at: 1785085248,
+      },
+      secondary: null,
+    })
+  })
+
+  it('parseia com secondary preenchido (plano pago hipotético)', () => {
+    const line = JSON.stringify({
+      allowed: true,
+      limit_reached: false,
+      primary: { used_percent: 12, window_minutes: 10080, reset_at: 1785085248 },
+      secondary: { used_percent: 55, window_minutes: 300, reset_at: 1700000000 },
+    })
+    const event = parseCodexRateLimitsFromJsonl(line)
+    expect(event?.primary?.used_percent).toBe(12)
+    expect(event?.secondary).toEqual({
+      used_percent: 55,
+      window_minutes: 300,
+      reset_at: 1700000000,
+    })
+  })
+
+  it('acha o evento aninhado num envelope (ex.: {"msg":{"rate_limits":{...}}})', () => {
+    const line = JSON.stringify({
+      id: '1',
+      msg: {
+        type: 'token_count',
+        rate_limits: {
+          allowed: true,
+          limit_reached: false,
+          primary: { used_percent: 7, window_minutes: 10080, reset_at: 1785085248 },
+          secondary: null,
+        },
+      },
+    })
+    const event = parseCodexRateLimitsFromJsonl(line)
+    expect(event?.primary?.used_percent).toBe(7)
+  })
+
+  it('múltiplas linhas: acha a certa, ignora ruído e JSON inválido', () => {
+    const stdout = [
+      '{"type":"item.started","item":{"id":"x"}}',
+      'não é json — linha de log solta',
+      REAL_RATE_LIMITS_LINE,
+      '{"type":"item.completed"}',
+    ].join('\n')
+    const event = parseCodexRateLimitsFromJsonl(stdout)
+    expect(event?.primary?.used_percent).toBe(7)
+  })
+
+  it('nenhuma linha tem rate_limits -> null (nunca lança)', () => {
+    const stdout = ['{"type":"item.started"}', '{"type":"item.completed"}'].join('\n')
+    expect(parseCodexRateLimitsFromJsonl(stdout)).toBeNull()
+  })
+
+  it('stdout vazio -> null', () => {
+    expect(parseCodexRateLimitsFromJsonl('')).toBeNull()
+  })
+})
+
+describe('writeCodexQuotaFile + readCodexQuota (arquivo real em disco)', () => {
+  async function withTempHome(fn: (home: string) => Promise<void>): Promise<void> {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-codex-quota-'))
+    try {
+      await fn(home)
+    } finally {
+      await fs.rm(home, { recursive: true, force: true })
+    }
+  }
+
+  it('grava o arquivo achatado (primary no topo, secondary null)', async () => {
+    await withTempHome(async (home) => {
+      const event = parseCodexRateLimitsFromJsonl(REAL_RATE_LIMITS_LINE)
+      expect(event).not.toBeNull()
+      await writeCodexQuotaFile(home, event!)
+
+      const raw = await fs.readFile(codexQuotaFilePath(home), 'utf8')
+      expect(JSON.parse(raw)).toEqual({
+        used_percent: 7,
+        window_minutes: 10080,
+        reset_at: 1785085248,
+        secondary: null,
+      })
+    })
+  })
+
+  it('grava o arquivo com secondary aninhado quando presente', async () => {
+    await withTempHome(async (home) => {
+      await writeCodexQuotaFile(home, {
+        allowed: true,
+        limit_reached: false,
+        primary: { used_percent: 12, window_minutes: 10080, reset_at: 1785085248 },
+        secondary: { used_percent: 55, window_minutes: 300, reset_at: 1700000000 },
+      })
+      const raw = await fs.readFile(codexQuotaFilePath(home), 'utf8')
+      expect(JSON.parse(raw)).toEqual({
+        used_percent: 12,
+        window_minutes: 10080,
+        reset_at: 1785085248,
+        secondary: { used_percent: 55, window_minutes: 300, reset_at: 1700000000 },
+      })
+    })
+  })
+
+  it('readCodexQuota lê o arquivo e mapeia primary->week, secondary null->session null', async () => {
+    await withTempHome(async (home) => {
+      const event = parseCodexRateLimitsFromJsonl(REAL_RATE_LIMITS_LINE)
+      await writeCodexQuotaFile(home, event!)
+
+      const reading = await readCodexQuota(home)
+      expect(reading).toEqual({
+        remaining: null,
+        total: null,
+        weekPercentUsed: 7,
+        weekResetsAt: new Date(1785085248 * 1000).toISOString(),
+        sessionPercentUsed: null,
+        sessionResetsAt: null,
+      })
+    })
+  })
+
+  it('readCodexQuota mapeia secondary->session quando presente', async () => {
+    await withTempHome(async (home) => {
+      await writeCodexQuotaFile(home, {
+        allowed: true,
+        limit_reached: false,
+        primary: { used_percent: 12, window_minutes: 10080, reset_at: 1785085248 },
+        secondary: { used_percent: 55, window_minutes: 300, reset_at: 1700000000 },
+      })
+
+      const reading = await readCodexQuota(home)
+      expect(reading).toEqual({
+        remaining: null,
+        total: null,
+        weekPercentUsed: 12,
+        weekResetsAt: new Date(1785085248 * 1000).toISOString(),
+        sessionPercentUsed: 55,
+        sessionResetsAt: new Date(1700000000 * 1000).toISOString(),
+      })
+    })
+  })
+
+  it('sem o arquivo (warmup nunca rodou/falhou) -> tudo null, nunca lança', async () => {
+    await withTempHome(async (home) => {
+      const reading = await readCodexQuota(home)
+      expect(reading).toEqual({
+        remaining: null,
+        total: null,
+        sessionPercentUsed: null,
+        sessionResetsAt: null,
+        weekPercentUsed: null,
+        weekResetsAt: null,
+      })
+    })
+  })
+
+  it('arquivo com JSON inválido -> tudo null, nunca lança', async () => {
+    await withTempHome(async (home) => {
+      await fs.mkdir(path.join(home, '.codex'), { recursive: true })
+      await fs.writeFile(codexQuotaFilePath(home), '{ isso não é json válido', 'utf8')
+
+      const reading = await readCodexQuota(home)
+      expect(reading).toEqual({
+        remaining: null,
+        total: null,
+        sessionPercentUsed: null,
+        sessionResetsAt: null,
+        weekPercentUsed: null,
+        weekResetsAt: null,
+      })
+    })
+  })
+
+  it('GITORCH_CODEX_QUOTA_REMAINING/TOTAL vencem tudo — nunca lê o arquivo', async () => {
+    await withTempHome(async (home) => {
+      process.env['GITORCH_CODEX_QUOTA_REMAINING'] = '5'
+      process.env['GITORCH_CODEX_QUOTA_TOTAL'] = '10'
+      // Nem grava o arquivo — se o código tentasse ler, cairia no fallback null.
+      expect(await readCodexQuota(home)).toEqual({ remaining: 5, total: 10 })
+    })
   })
 })
