@@ -22,14 +22,13 @@ export type TelegramLinkState =
   | { phase: 'linked' }
   | { phase: 'error'; message: string }
 
-// Os 4 benefícios do vínculo, mostrados acima do botão de conectar — o passo
-// pedia Telegram sem nunca dizer PRA QUE serve. Ordem = ordem de exibição.
-export const TELEGRAM_BENEFIT_KEYS = [
-  'setup.tgBenefit1',
-  'setup.tgBenefit2',
-  'setup.tgBenefit3',
-  'setup.tgBenefit4',
-] as const
+// Os benefícios REAIS do vínculo, mostrados acima do botão de conectar. Ordem =
+// ordem de exibição. 21/07 (W3): a tela prometia 4, mas só 2 existem de
+// verdade — perguntas dos agentes com botões (human-in-the-loop, construído
+// nesta fase) e alertas de incidente. "Anúncios de novidades" e "/wish" foram
+// REMOVIDOS (não existem; viram ciclo próprio) — nada de prometer o que não
+// entrega.
+export const TELEGRAM_BENEFIT_KEYS = ['setup.tgBenefit1', 'setup.tgBenefit2'] as const
 
 const defaultFetcher: Fetcher = (url, init) => fetch(url, init)
 

@@ -130,13 +130,23 @@ describe('readTelegramLink — o polling que espera o Start', () => {
 })
 
 // O passo 8 pedia Telegram sem nunca dizer PRA QUE serve — só um botão "Conectar
-// meu Telegram" solto. Ninguém clica num botão sem saber o benefício. Os 4
-// bullets (anúncios, alertas de incidente, perguntas dos agentes com botões,
-// /wish) ficam acima do botão de conectar.
-describe('TELEGRAM_BENEFIT_KEYS — os 4 bullets do passo, e sua tradução completa', () => {
-  it('são exatamente 4 chaves, únicas', () => {
-    expect(TELEGRAM_BENEFIT_KEYS).toHaveLength(4)
-    expect(new Set(TELEGRAM_BENEFIT_KEYS).size).toBe(4)
+// meu Telegram" solto. Ninguém clica num botão sem saber o benefício. 21/07 (W3):
+// os benefícios agora são só os REAIS — perguntas dos agentes com botões
+// (human-in-the-loop, construído nesta fase) e alertas de incidente. "Anúncios"
+// e "/wish" foram REMOVIDOS: não existem, e a tela não promete o que não entrega.
+describe('TELEGRAM_BENEFIT_KEYS — só os 2 benefícios reais, e sua tradução completa', () => {
+  it('são exatamente 2 chaves, únicas (sem promessa falsa)', () => {
+    expect(TELEGRAM_BENEFIT_KEYS).toHaveLength(2)
+    expect(new Set(TELEGRAM_BENEFIT_KEYS).size).toBe(2)
+  })
+
+  it('nenhum benefício menciona /wish ou anúncios (o que não existe não é prometido)', () => {
+    for (const lang of ['pt', 'en', 'es'] as const) {
+      const setup = locales[lang].setup as Record<string, string>
+      const texts = TELEGRAM_BENEFIT_KEYS.map((k) => setup[k.replace('setup.', '')]).join(' ')
+      expect(texts).not.toMatch(/wish/i)
+      expect(texts).not.toMatch(/anúncio|anuncio|announc|novidad|novedad/i)
+    }
   })
 
   it('pt, en e es têm todas as chaves de benefício preenchidas', () => {
@@ -150,7 +160,7 @@ describe('TELEGRAM_BENEFIT_KEYS — os 4 bullets do passo, e sua tradução comp
   })
 })
 
-describe('guarda: StepTelegram renderiza os 4 bullets acima do botão de conectar', () => {
+describe('guarda: StepTelegram renderiza os benefícios acima do botão de conectar', () => {
   it('a lista de benefícios aparece no JSX antes do botão onClick={handleConnect}', () => {
     const step = readFileSync(new URL('./StepTelegram.tsx', import.meta.url), 'utf8')
     const benefitsIdx = step.indexOf('TELEGRAM_BENEFIT_KEYS.map')
