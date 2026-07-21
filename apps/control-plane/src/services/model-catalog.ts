@@ -3,6 +3,12 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import {
+  readClaudeTokenFromHome,
+  CLAUDE_API_BASE,
+  CLAUDE_API_TIMEOUT_MS,
+  claudeApiHeaders,
+} from './claude-token.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -108,14 +114,18 @@ async function defaultCodexWarmUp(bin: string, home: string): Promise<void> {
 }
 
 /**
- * Claude: a CLI não expõe NENHUM comando de listagem (verificado — não existe
- * `claude models` nem equivalente), então não há como "descobrir" de verdade
- * como Codex/Antigravity fazem. Isto é a lista CONHECIDA dos modelos reais
- * disponíveis hoje (mais recente primeiro), sobrescrevível por ambiente
- * (GITORCH_CLAUDE_MODELS, separada por vírgula) para acompanhar lançamentos
- * sem redeploy. Renomeado de `discoverClaudeModels` (20/07) — o nome antigo
- * mentia sobre descoberta dinâmica; isto é a MELHOR fonte possível hoje, não
- * dívida técnica.
+ * Claude: ÚLTIMO RECURSO quando a API real (ver `makeClaudeModelDiscoverer`
+ * abaixo) não está disponível — sem token no homeDir, ou a API fora do ar.
+ * Lista CONHECIDA dos modelos reais disponíveis hoje (mais recente primeiro),
+ * sobrescrevível por ambiente (GITORCH_CLAUDE_MODELS, separada por vírgula)
+ * para acompanhar lançamentos sem redeploy mesmo neste modo degradado.
+ *
+ * Até 20/07 esta era a fonte PRIMÁRIA (a CLI não expõe nenhum comando de
+ * listagem — verificado, não existe `claude models`). Rebaixada a fallback em
+ * 21/07: a API pública da Anthropic tem `GET /v1/models`, e o token que o
+ * produto já captura (`claude setup-token`, escopo `user:inference`) AUTENTICA
+ * essa chamada de verdade — não tem mais motivo pra hardcode ser a fonte
+ * principal (ver docs/operations/engine-collection-real-steps.md).
  */
 export const knownClaudeModels: ModelDiscoverer = async () => {
   const env = process.env['GITORCH_CLAUDE_MODELS']
@@ -128,10 +138,78 @@ export const knownClaudeModels: ModelDiscoverer = async () => {
   return ['claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5-20251001']
 }
 
+interface ClaudeModelsResponse {
+  data?: Array<{ id?: unknown; display_name?: unknown }>
+}
+
+/**
+ * Claude: descobre os modelos reais via `GET /v1/models` da API pública da
+ * Anthropic — fonte PRIMÁRIA agora (ver comentário de `knownClaudeModels`
+ * acima para o porquê da troca). Autentica com o MESMO token que o produto
+ * captura do `claude setup-token` (lido do homeDir por
+ * `readClaudeTokenFromHome`, ver claude-token.ts).
+ *
+ * Prova ao vivo 21/07 (docs/operations/engine-collection-real-steps.md):
+ * `GET /v1/models?limit=20` devolveu 10 modelos reais desta conta.
+ *
+ * `fetchImpl`/`readToken` injetáveis (DI, mesmo padrão do resto do arquivo) —
+ * nos testes nunca bate rede real nem lê um homeDir de verdade. Contrato
+ * honesto: GITORCH_CLAUDE_MODELS (override manual) vence tudo sem tocar rede;
+ * sem token no homeDir, resposta não-ok, corpo sem `data`/lista vazia, ou
+ * qualquer erro de rede/timeout — cai em `knownClaudeModels` (fallback de
+ * último recurso). NUNCA lança.
+ */
+export function makeClaudeModelDiscoverer(
+  fetchImpl: typeof fetch = fetch,
+  readToken: (homeDir: string) => Promise<string | null> = readClaudeTokenFromHome
+): ModelDiscoverer {
+  return async (homeDir: string) => {
+    const env = process.env['GITORCH_CLAUDE_MODELS']
+    if (env) {
+      return env
+        .split(',')
+        .map((m) => m.trim())
+        .filter(Boolean)
+    }
+    const token = await readToken(homeDir)
+    if (!token) return knownClaudeModels(homeDir)
+    try {
+      const res = await fetchImpl(`${CLAUDE_API_BASE}/v1/models?limit=20`, {
+        method: 'GET',
+        headers: claudeApiHeaders(token),
+        signal: AbortSignal.timeout(CLAUDE_API_TIMEOUT_MS),
+      })
+      if (!res.ok) {
+        console.warn('[model-catalog] GET /v1/models não-ok — caindo na lista conhecida', {
+          status: res.status,
+        })
+        return knownClaudeModels(homeDir)
+      }
+      const body = (await res.json()) as ClaudeModelsResponse
+      const models = (body.data ?? [])
+        .map((m) => {
+          if (typeof m.display_name === 'string' && m.display_name) return m.display_name
+          if (typeof m.id === 'string' && m.id) return m.id
+          return null
+        })
+        .filter((m): m is string => Boolean(m))
+      return models.length > 0 ? models : await knownClaudeModels(homeDir)
+    } catch (err) {
+      console.warn('[model-catalog] GET /v1/models falhou — caindo na lista conhecida', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+      return knownClaudeModels(homeDir)
+    }
+  }
+}
+
+/** Instância real usada em produção (MODEL_DISCOVERERS.claude). */
+export const discoverClaudeModels: ModelDiscoverer = makeClaudeModelDiscoverer()
+
 export const MODEL_DISCOVERERS: Record<string, ModelDiscoverer> = {
   antigravity: makeAntigravityDiscoverer(),
   codex: discoverCodexModels,
-  claude: knownClaudeModels,
+  claude: discoverClaudeModels,
 }
 
 async function defaultRunner(bin: string, args: string[], home: string): Promise<string> {

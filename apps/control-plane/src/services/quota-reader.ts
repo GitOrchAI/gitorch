@@ -2,6 +2,12 @@ import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import {
+  readClaudeTokenFromHome,
+  CLAUDE_API_BASE,
+  CLAUDE_API_TIMEOUT_MS,
+  claudeApiHeaders,
+} from './claude-token.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -13,13 +19,14 @@ const execFileAsync = promisify(execFile)
 export interface QuotaReading {
   remaining: number | null
   total: number | null
-  // Claude (`claude -p "/usage"`, ver parseClaudeUsageText/makeClaudeQuotaReader
-  // abaixo): a CLI não devolve um saldo remaining/total — devolve % USADO de
-  // DUAS janelas independentes (sessão de ~5h corridas e semana, todos os
-  // modelos) mais o horário de reset de cada uma. Forçar isso no formato
-  // remaining/total inventaria um número que não existe — por isso campos
-  // NOVOS e opcionais, só o Claude os popula. Codex/Antigravity continuam só
-  // em remaining/total; estes ficam undefined/null pra eles, sem regressão.
+  // Claude (ver parseClaudeRateLimitHeaders/makeClaudeQuotaReader abaixo): a
+  // API não devolve um saldo remaining/total — devolve % USADO de DUAS
+  // janelas independentes (sessão rolante de ~5h e semana, todos os modelos)
+  // mais o horário de reset de cada uma, nos HEADERS de qualquer resposta de
+  // POST /v1/messages. Forçar isso no formato remaining/total inventaria um
+  // número que não existe — por isso campos NOVOS e opcionais, só o Claude os
+  // popula. Codex/Antigravity continuam só em remaining/total; estes ficam
+  // undefined/null pra eles, sem regressão.
   sessionPercentUsed?: number | null
   sessionResetsAt?: string | null
   weekPercentUsed?: number | null
@@ -115,76 +122,123 @@ export const readCodexQuota: QuotaReader = async (homeDir: string) => {
   return parseQuotaText(raw)
 }
 
+/** Objeto mínimo compatível com `Response.headers` (Fetch API) — só o `.get()`
+ *  que os parsers abaixo usam. Aceita tanto o `Headers` real do fetch quanto
+ *  um fake de teste. */
+export interface HeaderReader {
+  get(name: string): string | null
+}
+
 /**
- * Extrai as duas linhas relevantes de `claude -p "/usage"`:
- *
- *   Current session: 100% used · resets Jul 21, 3:09am (UTC)
- *   Current week (all models): 41% used · resets Jul 26, 5:59pm (UTC)
- *
- * Essas 2 linhas refletem o estado da CONTA no servidor da Anthropic (janela
- * rolante de sessão ~5h, semanal pros modelos) — é o dado real que o roteiro
- * original pedia ("quotas coletadas no login"). O texto que vem DEPOIS
- * ("What's contributing to your limits usage?") é histórico LOCAL desta
- * máquina (não inclui outros dispositivos nem claude.ai) — inútil pra uma
- * conexão nova (homeDir efêmero sem sessões locais) e ignorado de propósito:
- * esta função nunca olha além das linhas "Current session"/"Current week".
- *
- * Tolerante a variação de espaçamento/pontuação (é texto humano, não JSON):
- * não trava em formatação exata — procura "current session"/"current week"
- * em qualquer linha (case-insensitive) e extrai só o percentual e o texto
- * depois de "resets". Linha ausente ou sem percentual reconhecível -> null
- * nos campos daquela janela, nunca lança.
+ * Converte uma utilization (fração 0..1, como a API manda) em percentual
+ * inteiro (0..100). `0.99` -> `99`. Header ausente ou não-numérico -> null,
+ * nunca NaN.
  */
-export function parseClaudeUsageText(text: string): QuotaReading {
-  const lines = text.split(/\r?\n/)
-  const sessionLine = lines.find((l) => /current\s+session/i.test(l))
-  const weekLine = lines.find((l) => /current\s+week/i.test(l))
+function utilizationToPercent(raw: string | null): number | null {
+  if (raw == null) return null
+  const n = Number(raw)
+  if (!Number.isFinite(n)) return null
+  return Math.round(n * 100)
+}
+
+/** Converte um reset unix (segundos, como a API manda) em ISO string. Header
+ *  ausente ou não-numérico -> null, nunca uma data inválida. */
+function resetToIso(raw: string | null): string | null {
+  if (raw == null) return null
+  const n = Number(raw)
+  if (!Number.isFinite(n)) return null
+  const date = new Date(n * 1000)
+  if (Number.isNaN(date.getTime())) return null
+  return date.toISOString()
+}
+
+/**
+ * Extrai a quota do Claude dos HEADERS de rate limit da API pública da
+ * Anthropic (qualquer resposta de `/v1/messages`, sucesso OU erro — a
+ * Anthropic manda esses headers nos dois casos):
+ *
+ *   anthropic-ratelimit-unified-5h-utilization  (fração 0..1) + -5h-reset (unix)
+ *   anthropic-ratelimit-unified-7d-utilization  (fração 0..1) + -7d-reset (unix)
+ *
+ * Substitui `parseClaudeUsageText` (removida 21/07): aquele parser lia texto
+ * de `claude -p "/usage"`, que NUNCA funcionou com o token que o produto
+ * captura (`claude setup-token`, escopo `user:inference` — devolve só um
+ * resumo de sessão zerado, provado ao vivo). Estes headers vêm da MESMA
+ * chamada que já autentica com esse token (ver makeClaudeQuotaReader),
+ * refletindo o estado real da conta no servidor. Ver
+ * docs/operations/engine-collection-real-steps.md (privado).
+ */
+export function parseClaudeRateLimitHeaders(headers: HeaderReader): QuotaReading {
   return {
     remaining: null,
     total: null,
-    sessionPercentUsed: sessionLine ? extractUsagePercent(sessionLine) : null,
-    sessionResetsAt: sessionLine ? extractResetsAt(sessionLine) : null,
-    weekPercentUsed: weekLine ? extractUsagePercent(weekLine) : null,
-    weekResetsAt: weekLine ? extractResetsAt(weekLine) : null,
+    sessionPercentUsed: utilizationToPercent(
+      headers.get('anthropic-ratelimit-unified-5h-utilization')
+    ),
+    sessionResetsAt: resetToIso(headers.get('anthropic-ratelimit-unified-5h-reset')),
+    weekPercentUsed: utilizationToPercent(
+      headers.get('anthropic-ratelimit-unified-7d-utilization')
+    ),
+    weekResetsAt: resetToIso(headers.get('anthropic-ratelimit-unified-7d-reset')),
   }
 }
 
-function extractUsagePercent(line: string): number | null {
-  const m = /(\d+(?:\.\d+)?)\s*%/.exec(line)
-  return m?.[1] ? Number(m[1]) : null
-}
-
-function extractResetsAt(line: string): string | null {
-  const m = /resets?\b[:\-]?\s*(.+?)\s*$/i.exec(line)
-  return m?.[1]?.trim() || null
-}
+// Modelo mais barato disponível pra sondar a quota — a chamada só serve pra
+// ler os HEADERS de rate limit da resposta, o corpo (1 token de saída) é
+// descartado. Custo desprezível por leitura.
+const CLAUDE_QUOTA_PROBE_MODEL = 'claude-haiku-4-5-20251001'
 
 /**
- * Claude: `claude -p "/usage"` (best-effort; DI de runner — reusa o mesmo
- * `defaultRunner` do Antigravity/execFileAsync, mesmo padrão do resto do
- * arquivo). Override por ambiente (GITORCH_CLAUDE_QUOTA_REMAINING/TOTAL)
- * vence e evita qualquer spawn — mesmo contrato do Antigravity. Runner
- * falhando (binário ausente, timeout, exit != 0) nunca lança: cai no
- * EMPTY_CLAUDE_QUOTA (tudo null).
+ * Claude: sonda a quota fazendo um `POST /v1/messages` mínimo (max_tokens: 1)
+ * na API pública da Anthropic, autenticado com o token que `claude
+ * setup-token` gera (lido do homeDir por `readClaudeTokenFromHome`) — e lê o
+ * resultado dos HEADERS da resposta (`parseClaudeRateLimitHeaders`), não do
+ * corpo. Prova ao vivo 21/07 (docs/operations/engine-collection-real-steps.md):
+ * 5h ≈ 99% usado, semana ≈ 40% usado.
+ *
+ * Override por ambiente (GITORCH_CLAUDE_QUOTA_REMAINING/TOTAL) vence e evita
+ * qualquer chamada de rede — mesmo contrato de antes/do Antigravity.
+ * `fetchImpl`/`readToken` injetáveis (DI) — nenhum teste bate rede real.
+ * Sem token no homeDir, ou qualquer erro de rede/timeout: cai no
+ * EMPTY_CLAUDE_QUOTA (tudo null), nunca lança. Uma resposta não-ok (ex.: 429
+ * por estourar a quota) ainda tem os headers de rate limit — não descartamos
+ * o dado só por causa do status.
  */
 export function makeClaudeQuotaReader(
-  claudeBin = process.env['GITORCH_CLAUDE_BIN'] ?? 'claude',
-  args = (process.env['GITORCH_CLAUDE_QUOTA_CMD'] ?? '-p /usage').split(' '),
-  runner: (bin: string, args: string[], home: string) => Promise<string> = defaultRunner
+  fetchImpl: typeof fetch = fetch,
+  readToken: (homeDir: string) => Promise<string | null> = readClaudeTokenFromHome
 ): QuotaReader {
   return async (homeDir: string) => {
     const env = envReading('claude')
     if (env) return env
+    const token = await readToken(homeDir)
+    if (!token) return EMPTY_CLAUDE_QUOTA
     try {
-      return parseClaudeUsageText(await runner(claudeBin, args, homeDir))
-    } catch {
+      const res = await fetchImpl(`${CLAUDE_API_BASE}/v1/messages`, {
+        method: 'POST',
+        headers: {
+          ...claudeApiHeaders(token),
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: CLAUDE_QUOTA_PROBE_MODEL,
+          max_tokens: 1,
+          messages: [{ role: 'user', content: 'hi' }],
+        }),
+        signal: AbortSignal.timeout(CLAUDE_API_TIMEOUT_MS),
+      })
+      return parseClaudeRateLimitHeaders(res.headers)
+    } catch (err) {
+      console.warn('[quota-reader] POST /v1/messages falhou — quota do Claude nula', {
+        error: err instanceof Error ? err.message : String(err),
+      })
       return EMPTY_CLAUDE_QUOTA
     }
   }
 }
 
-/** Instância real usada em produção (QUOTA_READERS.claude) — roda o binário
- *  de verdade via defaultRunner. */
+/** Instância real usada em produção (QUOTA_READERS.claude) — chama a API de
+ *  verdade via fetch global. */
 export const readClaudeQuota: QuotaReader = makeClaudeQuotaReader()
 
 export const QUOTA_READERS: Record<string, QuotaReader> = {

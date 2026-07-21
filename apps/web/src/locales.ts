@@ -200,9 +200,10 @@ export const locales = {
       connectedLabel: 'Connected',
       connectModelsLabel: 'models',
       connectQuotaLabel: 'quota',
-      // 21/07: Claude's real usage (`claude -p "/usage"`) — % used per window
-      // (session/week) with each reset time. Replaces the old generic caption
-      // ("quota managed by your subscription") now that we actually collect it.
+      // 21/07: Claude's real usage (Anthropic API rate-limit headers) — %
+      // used per window (session/week) with each reset time. Replaces the
+      // old generic caption ("quota managed by your subscription") now that
+      // we actually collect it.
       connectClaudeSessionLabel: 'Session',
       connectClaudeWeekLabel: 'Week (all models)',
       connectClaudeUsedLabel: 'used',
@@ -506,10 +507,11 @@ export const locales = {
       connectedLabel: 'Conectado',
       connectModelsLabel: 'modelos',
       connectQuotaLabel: 'cota',
-      // 21/07: quota REAL do Claude (`claude -p "/usage"`) — % usado por
-      // janela (sessão/semana) com o horário de reset de cada uma. Substitui
-      // a legenda genérica antiga ("cota gerenciada pela sua assinatura")
-      // agora que dá pra coletar de verdade.
+      // 21/07: quota REAL do Claude (headers de rate limit da API da
+      // Anthropic) — % usado por janela (sessão/semana) com o horário de
+      // reset de cada uma. Substitui a legenda genérica antiga ("cota
+      // gerenciada pela sua assinatura") agora que dá pra coletar de
+      // verdade.
       connectClaudeSessionLabel: 'Sessão',
       connectClaudeWeekLabel: 'Semana (todos os modelos)',
       connectClaudeUsedLabel: 'usada',
@@ -814,10 +816,10 @@ export const locales = {
       connectedLabel: 'Conectado',
       connectModelsLabel: 'modelos',
       connectQuotaLabel: 'cuota',
-      // 21/07: cuota REAL de Claude (`claude -p "/usage"`) — % usado por
-      // ventana (sesión/semana) con la hora de reinicio de cada una. Sustituye
-      // la leyenda genérica anterior ("cuota gestionada por tu plan") ahora
-      // que se puede recolectar de verdad.
+      // 21/07: cuota REAL de Claude (headers de rate limit de la API de
+      // Anthropic) — % usado por ventana (sesión/semana) con la hora de
+      // reinicio de cada una. Sustituye la leyenda genérica anterior ("cuota
+      // gestionada por tu plan") ahora que se puede recolectar de verdad.
       connectClaudeSessionLabel: 'Sesión',
       connectClaudeWeekLabel: 'Semana (todos los modelos)',
       connectClaudeUsedLabel: 'usada',

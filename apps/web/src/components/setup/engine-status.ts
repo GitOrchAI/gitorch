@@ -16,10 +16,11 @@ export type LoginState =
       phase: 'connected'
       models?: string[]
       quota?: number | null
-      // Claude (ver quota-reader.ts no control-plane, `claude -p "/usage"`):
-      // não existe remaining/total — existe % USADO de duas janelas
-      // independentes (sessão/semana) + o horário de reset de cada uma. Só
-      // populado pro Claude; Codex/Antigravity continuam só em `quota`.
+      // Claude (ver quota-reader.ts no control-plane — headers de rate limit
+      // da API da Anthropic): não existe remaining/total — existe % USADO de
+      // duas janelas independentes (sessão/semana) + o horário de reset de
+      // cada uma. Só populado pro Claude; Codex/Antigravity continuam só em
+      // `quota`.
       sessionPercentUsed?: number | null
       sessionResetsAt?: string | null
       weekPercentUsed?: number | null
@@ -126,9 +127,10 @@ export function normalizeLoginState(raw: unknown, fallbackError: string): LoginS
 
 // Extrai só os campos de quota REAL do Claude (sessionPercentUsed/
 // sessionResetsAt/weekPercentUsed/weekResetsAt — ver quota-reader.ts no
-// control-plane, `claude -p "/usage"`) de um payload cru (POST /token ou SSE),
-// incluindo cada chave SÓ quando o tipo bate — nunca um `null` forçado. Isso
-// preserva o formato exato de {phase,models,quota} quando o backend não manda
+// control-plane, headers de rate limit da API da Anthropic) de um payload cru
+// (POST /token ou SSE), incluindo cada chave SÓ quando o tipo bate — nunca um
+// `null` forçado. Isso preserva o formato exato de {phase,models,quota}
+// quando o backend não manda
 // esses campos (Codex/Antigravity, ou uma resposta antiga em cache), sem
 // chaves extras aparecendo no objeto.
 function claudeUsageFields(r: {
@@ -159,9 +161,10 @@ function claudeUsageFields(r: {
 // 21/07: substitui isClaudeQuotaManagedByPlan (removida) — correção de um erro
 // real. O dono rejeitou a legenda genérica "cota gerenciada pela sua
 // assinatura" ("sobre quota nao aceito isso... tem que coletar!"), e ele tinha
-// razão: `claude -p "/usage"` COLETA a quota de verdade (% usado da sessão e
-// da semana + reset de cada uma). Esta função decide quando existe dado REAL
-// pra mostrar (nunca mais uma legenda genérica no lugar do silêncio).
+// razão: os headers de rate limit da API da Anthropic COLETAM a quota de
+// verdade (% usado da sessão e da semana + reset de cada uma). Esta função
+// decide quando existe dado REAL pra mostrar (nunca mais uma legenda
+// genérica no lugar do silêncio).
 export function hasClaudeUsageData(runtime: string, state: LoginState): boolean {
   return (
     runtime === 'claude' &&

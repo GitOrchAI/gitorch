@@ -65,8 +65,9 @@ describe('parseTokenResponse', () => {
     expect(state).toEqual({ phase: 'connected', models: [], quota: null })
   })
 
-  // 21/07: a quota REAL do Claude (claude -p "/usage", ver quota-reader.ts no
-  // control-plane) chega como % usado de sessão/semana, não remaining/total.
+  // 21/07: a quota REAL do Claude (headers de rate limit da API da Anthropic,
+  // ver quota-reader.ts no control-plane) chega como % usado de
+  // sessão/semana, não remaining/total.
   it('Claude: traz sessionPercentUsed/sessionResetsAt/weekPercentUsed/weekResetsAt quando o backend os manda', () => {
     const state = parseTokenResponse(
       {
@@ -207,8 +208,9 @@ describe('normalizeLoginState', () => {
 // 21/07: substitui isClaudeQuotaManagedByPlan (removida) — correção de um
 // erro real. O dono rejeitou a legenda genérica "cota gerenciada pela sua
 // assinatura" ("sobre quota nao aceito isso... tem que coletar!"): existe uma
-// forma real de coletar (`claude -p "/usage"`, ver quota-reader.ts no
-// control-plane) — % usado de sessão/semana + reset de cada uma.
+// forma real de coletar (headers de rate limit da API da Anthropic, ver
+// quota-reader.ts no control-plane) — % usado de sessão/semana + reset de
+// cada uma.
 describe('hasClaudeUsageData — dado REAL no lugar da legenda genérica', () => {
   it('claude conectado com sessionPercentUsed -> true', () => {
     expect(

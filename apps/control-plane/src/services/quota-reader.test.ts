@@ -1,10 +1,10 @@
-import { describe, expect, it, vi, afterEach } from 'vitest'
+import { describe, expect, it, test, vi, afterEach } from 'vitest'
 import {
   parseQuotaText,
   makeAntigravityQuotaReader,
   readClaudeQuota,
-  parseClaudeUsageText,
   makeClaudeQuotaReader,
+  parseClaudeRateLimitHeaders,
 } from './quota-reader.js'
 
 afterEach(() => {
@@ -39,53 +39,55 @@ describe('parseQuotaText', () => {
 })
 
 describe('override por ambiente', () => {
-  it('Claude lê da env (vence o runner real, nunca chega a rodar `claude`)', async () => {
+  it('Claude lê da env (vence o token/fetch reais, nunca chama a API)', async () => {
     process.env['GITORCH_CLAUDE_QUOTA_REMAINING'] = '42000'
     process.env['GITORCH_CLAUDE_QUOTA_TOTAL'] = '100000'
     expect(await readClaudeQuota('/tmp')).toEqual({ remaining: 42000, total: 100000 })
   })
 })
 
-// Texto EXATO colado pelo dono, rodando `claude -p "/usage"` ao vivo nesta VM
-// (~3.2s, exit 0). Só as 2 primeiras linhas (Current session / Current week)
-// refletem a CONTA no servidor da Anthropic — o resto ("What's contributing")
-// é histórico LOCAL desta máquina e é ignorado de propósito.
-const REAL_USAGE_FIXTURE = [
-  'You are currently using your subscription to power your Claude Code usage',
-  '',
-  'Current session: 100% used · resets Jul 21, 3:09am (UTC)',
-  'Current week (all models): 41% used · resets Jul 26, 5:59pm (UTC)',
-  '',
-  "What's contributing to your limits usage?",
-  'Approximate, based on local sessions on this machine — does not include other devices or claude.ai.',
-  'Behaviors are independent characteristics, not a breakdown.',
-].join('\n')
+/** Fake mínimo de `Headers` — só o `.get()` que o parser usa. */
+function fakeHeaders(map: Record<string, string>): { get(name: string): string | null } {
+  return { get: (name: string) => map[name] ?? null }
+}
 
-describe('parseClaudeUsageText', () => {
-  it('parseia as 2 linhas reais de `claude -p "/usage"` (sessão + semana)', () => {
-    expect(parseClaudeUsageText(REAL_USAGE_FIXTURE)).toEqual({
-      remaining: null,
-      total: null,
-      sessionPercentUsed: 100,
-      sessionResetsAt: 'Jul 21, 3:09am (UTC)',
-      weekPercentUsed: 41,
-      weekResetsAt: 'Jul 26, 5:59pm (UTC)',
+// Valores REAIS observados ao vivo (docs/operations/engine-collection-real-
+// steps.md, 21/07): 5h ≈ 99% usado, semana ≈ 40% usado.
+describe('parseClaudeRateLimitHeaders', () => {
+  it('converte utilization (fração 0..1) em percent (0..100) arredondado', () => {
+    const headers = fakeHeaders({
+      'anthropic-ratelimit-unified-5h-utilization': '0.99',
+      'anthropic-ratelimit-unified-7d-utilization': '0.4',
     })
+    const result = parseClaudeRateLimitHeaders(headers)
+    expect(result.sessionPercentUsed).toBe(99)
+    expect(result.weekPercentUsed).toBe(40)
+    expect(result.remaining).toBeNull()
+    expect(result.total).toBeNull()
   })
 
-  it('tolerante a variação de espaçamento/pontuação (texto humano, não JSON)', () => {
-    const result = parseClaudeUsageText(
-      'Current session:   57%   used  - resets Aug 1, 12:00pm (UTC)\n' +
-        'Current week (all models):9% used·resets Aug 3, 1:15am (UTC)'
-    )
-    expect(result.sessionPercentUsed).toBe(57)
-    expect(result.sessionResetsAt).toBe('Aug 1, 12:00pm (UTC)')
-    expect(result.weekPercentUsed).toBe(9)
-    expect(result.weekResetsAt).toBe('Aug 3, 1:15am (UTC)')
+  it('arredonda frações não-exatas (0.994 -> 99, 0.401 -> 40)', () => {
+    const headers = fakeHeaders({
+      'anthropic-ratelimit-unified-5h-utilization': '0.994',
+      'anthropic-ratelimit-unified-7d-utilization': '0.401',
+    })
+    const result = parseClaudeRateLimitHeaders(headers)
+    expect(result.sessionPercentUsed).toBe(99)
+    expect(result.weekPercentUsed).toBe(40)
   })
 
-  it('texto vazio ou sem as linhas esperadas -> tudo null (nunca lança)', () => {
-    expect(parseClaudeUsageText('')).toEqual({
+  it('converte o reset unix (segundos) em ISO string', () => {
+    const headers = fakeHeaders({
+      'anthropic-ratelimit-unified-5h-reset': '1700000000',
+      'anthropic-ratelimit-unified-7d-reset': '1700500000',
+    })
+    const result = parseClaudeRateLimitHeaders(headers)
+    expect(result.sessionResetsAt).toBe(new Date(1700000000 * 1000).toISOString())
+    expect(result.weekResetsAt).toBe(new Date(1700500000 * 1000).toISOString())
+  })
+
+  it('headers ausentes -> tudo null (nunca lança)', () => {
+    expect(parseClaudeRateLimitHeaders(fakeHeaders({}))).toEqual({
       remaining: null,
       total: null,
       sessionPercentUsed: null,
@@ -93,35 +95,80 @@ describe('parseClaudeUsageText', () => {
       weekPercentUsed: null,
       weekResetsAt: null,
     })
-    expect(parseClaudeUsageText('saída inesperada, sem nada reconhecível')).toEqual({
-      remaining: null,
-      total: null,
-      sessionPercentUsed: null,
-      sessionResetsAt: null,
-      weekPercentUsed: null,
-      weekResetsAt: null,
+  })
+
+  it('valor não-numérico no header -> null pro campo (nunca NaN, nunca lança)', () => {
+    const headers = fakeHeaders({
+      'anthropic-ratelimit-unified-5h-utilization': 'não-é-número',
+      'anthropic-ratelimit-unified-5h-reset': 'também-não',
     })
+    const result = parseClaudeRateLimitHeaders(headers)
+    expect(result.sessionPercentUsed).toBeNull()
+    expect(result.sessionResetsAt).toBeNull()
   })
 })
 
-describe('makeClaudeQuotaReader', () => {
-  it('parseia a saída real do runner (DI — nunca spawna `claude` de verdade no teste)', async () => {
-    const runner = vi.fn().mockResolvedValue(REAL_USAGE_FIXTURE)
-    const reader = makeClaudeQuotaReader('claude', ['-p', '/usage'], runner)
-    expect(await reader('/home/x')).toEqual({
+describe('makeClaudeQuotaReader (API real, fetch/token fake)', () => {
+  test('sem token no homeDir -> tudo null, nunca chama fetch', async () => {
+    const fetchSpy = vi.fn()
+    const reader = makeClaudeQuotaReader(fetchSpy, async () => null)
+    await expect(reader('/tmp/gitorch-sem-token-xyz')).resolves.toEqual({
       remaining: null,
       total: null,
-      sessionPercentUsed: 100,
-      sessionResetsAt: 'Jul 21, 3:09am (UTC)',
-      weekPercentUsed: 41,
-      weekResetsAt: 'Jul 26, 5:59pm (UTC)',
+      sessionPercentUsed: null,
+      sessionResetsAt: null,
+      weekPercentUsed: null,
+      weekResetsAt: null,
     })
-    expect(runner).toHaveBeenCalledWith('claude', ['-p', '/usage'], '/home/x')
+    expect(fetchSpy).not.toHaveBeenCalled()
   })
 
-  it('runner falhando (binário ausente/timeout) -> tudo null, nunca lança', async () => {
-    const runner = vi.fn().mockRejectedValue(new Error('claude ausente no PATH'))
-    const reader = makeClaudeQuotaReader('claude', ['-p', '/usage'], runner)
+  test('com token -> POST /v1/messages com os headers de auth certos e parseia os headers de rate limit', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: fakeHeaders({
+        'anthropic-ratelimit-unified-5h-utilization': '0.99',
+        'anthropic-ratelimit-unified-5h-reset': '1700000000',
+        'anthropic-ratelimit-unified-7d-utilization': '0.4',
+        'anthropic-ratelimit-unified-7d-reset': '1700500000',
+      }),
+    })
+    const reader = makeClaudeQuotaReader(fetchSpy, async () => 'sk-ant-oat01-fake')
+    const result = await reader('/home/x')
+
+    expect(result).toEqual({
+      remaining: null,
+      total: null,
+      sessionPercentUsed: 99,
+      sessionResetsAt: new Date(1700000000 * 1000).toISOString(),
+      weekPercentUsed: 40,
+      weekResetsAt: new Date(1700500000 * 1000).toISOString(),
+    })
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('https://api.anthropic.com/v1/messages')
+    expect(init.method).toBe('POST')
+    expect(init.headers).toMatchObject({
+      authorization: 'Bearer sk-ant-oat01-fake',
+      'anthropic-beta': 'oauth-2025-04-20',
+      'anthropic-version': '2023-06-01',
+    })
+    const body = JSON.parse(init.body as string) as {
+      model: string
+      max_tokens: number
+      messages: Array<{ role: string; content: string }>
+    }
+    expect(body.max_tokens).toBe(1)
+    expect(body.messages).toEqual([{ role: 'user', content: 'hi' }])
+    expect(typeof body.model).toBe('string')
+    expect(body.model.length).toBeGreaterThan(0)
+  })
+
+  test('resposta sem os headers de rate limit -> tudo null pras janelas, nunca lança', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({ ok: true, status: 200, headers: fakeHeaders({}) })
+    const reader = makeClaudeQuotaReader(fetchSpy, async () => 'sk-ant-oat01-fake')
     await expect(reader('/home/x')).resolves.toEqual({
       remaining: null,
       total: null,
@@ -132,13 +179,41 @@ describe('makeClaudeQuotaReader', () => {
     })
   })
 
-  it('env vence o runner (override pra teste/staging, mesmo contrato do Antigravity)', async () => {
+  test('resposta não-ok (401/429) ainda lê os headers de rate limit quando presentes', async () => {
+    // A Anthropic manda os headers de rate limit mesmo em respostas de erro
+    // (ex.: 429 por estourar quota) — não descartamos o dado só por status.
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 429,
+      headers: fakeHeaders({ 'anthropic-ratelimit-unified-5h-utilization': '1' }),
+    })
+    const reader = makeClaudeQuotaReader(fetchSpy, async () => 'sk-ant-oat01-fake')
+    const result = await reader('/home/x')
+    expect(result.sessionPercentUsed).toBe(100)
+  })
+
+  test('fetch rejeita (rede fora/timeout) -> tudo null, nunca lança', async () => {
+    const fetchSpy = vi.fn().mockRejectedValue(new Error('network down'))
+    const reader = makeClaudeQuotaReader(fetchSpy, async () => 'sk-ant-oat01-fake')
+    await expect(reader('/home/x')).resolves.toEqual({
+      remaining: null,
+      total: null,
+      sessionPercentUsed: null,
+      sessionResetsAt: null,
+      weekPercentUsed: null,
+      weekResetsAt: null,
+    })
+  })
+
+  test('GITORCH_CLAUDE_QUOTA_REMAINING/TOTAL vencem tudo — nunca lê token nem chama fetch', async () => {
     process.env['GITORCH_CLAUDE_QUOTA_REMAINING'] = '5'
     process.env['GITORCH_CLAUDE_QUOTA_TOTAL'] = '10'
-    const runner = vi.fn()
-    const reader = makeClaudeQuotaReader('claude', ['-p', '/usage'], runner)
+    const fetchSpy = vi.fn()
+    const readToken = vi.fn()
+    const reader = makeClaudeQuotaReader(fetchSpy, readToken)
     expect(await reader('/home/x')).toEqual({ remaining: 5, total: 10 })
-    expect(runner).not.toHaveBeenCalled()
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(readToken).not.toHaveBeenCalled()
   })
 })
 
