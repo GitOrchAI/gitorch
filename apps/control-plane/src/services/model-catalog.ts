@@ -128,8 +128,18 @@ export async function defaultCodexWarmUp(
 ): Promise<void> {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-codex-warmup-'))
   try {
-    const env: Record<string, string> = { PATH: process.env['PATH'] ?? '', HOME: home }
-    const stdout = await runner(
+    // RUST_LOG=trace é OBRIGATÓRIO pra quota (achado ao vivo 21/07, ver
+    // docs/operations/engine-collection-real-steps.md): o evento `rate_limits`
+    // do Codex NÃO sai no stdout do `--json` — vem numa mensagem WebSocket que
+    // só o log de trace expõe (no STDERR). Sem isto a quota do Codex é sempre
+    // nula (foi exatamente o bug do PR #363, que lia do stdout onde o evento
+    // nunca esteve). Os modelos (models_cache.json) nascem independente do log.
+    const env: Record<string, string> = {
+      PATH: process.env['PATH'] ?? '',
+      HOME: home,
+      RUST_LOG: 'trace',
+    }
+    const output = await runner(
       bin,
       [
         'exec',
@@ -143,7 +153,7 @@ export async function defaultCodexWarmUp(
       ],
       env
     )
-    const event = parseCodexRateLimitsFromJsonl(stdout)
+    const event = parseCodexRateLimitsFromJsonl(output)
     if (event) {
       await writeCodexQuotaFile(home, event).catch((err) => {
         console.warn('[model-catalog] gravar gitorch-quota.json falhou — quota do Codex nula', {
@@ -161,12 +171,20 @@ async function defaultCodexExecRunner(
   args: string[],
   env: Record<string, string>
 ): Promise<string> {
-  const { stdout } = await execFileAsync(bin, args, {
+  const { stdout, stderr } = await execFileAsync(bin, args, {
     env,
     timeout: CODEX_WARMUP_TIMEOUT_MS,
-    maxBuffer: 4 * 1024 * 1024,
+    // RUST_LOG=trace (ver defaultCodexWarmUp) gera MUITO output no stderr — o
+    // evento `rate_limits` é uma linha entre centenas de telemetria. maxBuffer
+    // generoso (32MB) pra não estourar; se estourar, execFile rejeita e o
+    // warmup cai no catch (quota nula, best-effort — nunca derruba a conexão).
+    maxBuffer: 32 * 1024 * 1024,
   })
-  return stdout
+  // O `rate_limits` vem no STDERR (mensagem WebSocket sob RUST_LOG=trace); o
+  // models_cache.json é gravado pelo próprio codex independente. Concatena os
+  // dois pro parser varrer — a quota está no stderr, mas manter o stdout é
+  // barato e cobre uma versão futura do CLI que emita o evento no --json.
+  return `${stdout}\n${stderr}`
 }
 
 /**

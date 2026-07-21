@@ -253,6 +253,39 @@ describe('parseCodexRateLimitsFromJsonl', () => {
     })
   })
 
+  // CASO CRÍTICO (achado ao vivo 21/07): a fonte REAL do rate_limits do Codex.
+  // O evento NÃO sai no stdout do `--json` — vem no STDERR, com RUST_LOG=trace,
+  // numa linha de trace do tungstenite (WebSocket) com o JSON EMBUTIDO no fim,
+  // precedido de timestamp + nível + target + "Received message". O parser tem
+  // que extrair o JSON a partir do 1º `{`, não só tentar a linha inteira.
+  it('extrai o rate_limits da LINHA DE TRACE real (JSON embutido, prefixo de log)', () => {
+    const traceLine =
+      '2026-07-21T15:22:50.214727Z TRACE tungstenite::protocol: Received message ' +
+      '{"type":"codex.rate_limits","plan_type":"free","rate_limits":{"allowed":true,' +
+      '"limit_reached":false,"primary":{"used_percent":8,"window_minutes":10080,' +
+      '"reset_after_seconds":437878,"reset_at":1785085247},"secondary":null},' +
+      '"code_review_rate_limits":null}'
+    const event = parseCodexRateLimitsFromJsonl(traceLine)
+    expect(event?.primary?.used_percent).toBe(8)
+    expect(event?.primary?.window_minutes).toBe(10080)
+    expect(event?.primary?.reset_at).toBe(1785085247)
+    expect(event?.secondary).toBeNull()
+  })
+
+  it('varre STDOUT+STDERR concatenados (centenas de linhas de trace) e acha a certa', () => {
+    const noise = Array.from(
+      { length: 200 },
+      (_, i) => `2026-07-21T15:22:${i}Z TRACE opentelemetry_sdk: Metrics.InstrumentCreated ${i}`
+    ).join('\n')
+    const traceLine =
+      '2026-07-21T15:22:50Z TRACE tungstenite::protocol: Received message ' +
+      '{"type":"codex.rate_limits","rate_limits":{"allowed":true,"limit_reached":false,' +
+      '"primary":{"used_percent":42,"window_minutes":10080,"reset_at":1785085247},"secondary":null}}'
+    const combined = `{"type":"agent_message","message":"ok"}\n${noise}\n${traceLine}\n${noise}`
+    const event = parseCodexRateLimitsFromJsonl(combined)
+    expect(event?.primary?.used_percent).toBe(42)
+  })
+
   it('parseia com secondary preenchido (plano pago hipotético)', () => {
     const line = JSON.stringify({
       allowed: true,

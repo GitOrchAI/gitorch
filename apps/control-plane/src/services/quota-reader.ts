@@ -187,20 +187,42 @@ function findRateLimitsNode(node: unknown, depth: number): CodexRateLimitsEvent 
  * devolve `null` se nenhuma linha tiver o evento. Formato real provado ao
  * vivo 21/07 (ver docs/operations/engine-collection-real-steps.md).
  */
-export function parseCodexRateLimitsFromJsonl(stdout: string): CodexRateLimitsEvent | null {
-  for (const line of stdout.split('\n')) {
+export function parseCodexRateLimitsFromJsonl(output: string): CodexRateLimitsEvent | null {
+  for (const line of output.split('\n')) {
     const trimmed = line.trim()
     if (!trimmed) continue
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(trimmed)
-    } catch {
-      continue
+    // Duas formas de a linha carregar o evento:
+    //  (a) JSONL puro — a linha inteira é um JSON (formato que o `codex exec
+    //      --json` PODERIA emitir, coberto por retrocompat).
+    //  (b) Linha de trace do CLI — provado ao vivo 21/07 (ver
+    //      docs/operations/engine-collection-real-steps.md, seção Codex): o
+    //      evento `rate_limits` NÃO sai no stdout do `--json`; vem no STDERR,
+    //      só com RUST_LOG=trace, numa mensagem WebSocket cujo formato é
+    //      `<timestamp> TRACE tungstenite::protocol: Received message {JSON}`.
+    //      O JSON está embutido no fim da linha — pegamos a partir do 1º `{`.
+    for (const candidate of jsonCandidatesFromLine(trimmed)) {
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(candidate)
+      } catch {
+        continue
+      }
+      const found = findRateLimitsNode(parsed, 0)
+      if (found) return found
     }
-    const found = findRateLimitsNode(parsed, 0)
-    if (found) return found
   }
   return null
+}
+
+/** Candidatos de JSON numa linha: a linha inteira (JSONL puro) e, se ela tiver
+ * texto antes do JSON (linha de trace `... Received message {…}`), o trecho a
+ * partir do 1º `{`. Ordem: mais específico (embutido) não importa — os dois são
+ * tentados; o primeiro que parseia e casa o shape vence. */
+function jsonCandidatesFromLine(line: string): string[] {
+  const candidates = [line]
+  const brace = line.indexOf('{')
+  if (brace > 0) candidates.push(line.slice(brace))
+  return candidates
 }
 
 /** Achata o evento `rate_limits` pro formato gravado em disco (`CodexQuotaFile`).
