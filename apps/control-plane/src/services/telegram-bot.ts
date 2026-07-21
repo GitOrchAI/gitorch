@@ -118,6 +118,75 @@ export async function sendTelegramMessage(input: {
   }
 }
 
+export interface TelegramQuestionOption {
+  label: string
+  value: string
+}
+
+// Labels curtos (ex.: nomes de cores/hex) cabem 2 por linha sem virar
+// ilegível no celular; labels longos (frases) vão 1 por linha. Decisão
+// simples de propósito — não é um layout engine.
+const SHORT_LABEL_MAX_LEN = 16
+
+function buildQuestionKeyboard(
+  questionId: string,
+  options: TelegramQuestionOption[]
+): { inline_keyboard: { text: string; callback_data: string }[][] } {
+  const buttons = options.map((opt, i) => ({
+    text: opt.label,
+    // O ÍNDICE viaja no callback_data, não o `value`: o campo tem limite de
+    // 64 bytes na API do Telegram, e um value arbitrário (ex.: um hex de cor,
+    // mas também poderia ser texto livre) pode estourar isso. O índice mapeia
+    // de volta pro `options[i].value` no clique (`handleTelegramCallback`,
+    // épico W3.3.2).
+    callback_data: `q:${questionId}:${i}`,
+  }))
+  const perRow = buttons.every((b) => b.text.length <= SHORT_LABEL_MAX_LEN) ? 2 : 1
+  const rows: { text: string; callback_data: string }[][] = []
+  for (let i = 0; i < buttons.length; i += perRow) {
+    rows.push(buttons.slice(i, i + perRow))
+  }
+  return { inline_keyboard: rows }
+}
+
+/**
+ * Manda a dúvida do agente com botões (uma `AgentQuestion` — ver
+ * services/agent-question.ts). Sem `options`, manda só o texto: é a pergunta
+ * aberta, respondida em mensagem livre (fora do escopo desta fase). Devolve o
+ * `message_id` (guardado em `telegramMessageId`, pra futura edição/confirmação);
+ * `undefined` se o envio falhar — best-effort, quem chama trata (nunca lança).
+ */
+export async function sendTelegramQuestion(input: {
+  botToken: string
+  chatId: string
+  questionId: string
+  text: string
+  options: TelegramQuestionOption[]
+  fetchImpl?: typeof fetch
+}): Promise<number | undefined> {
+  const f = input.fetchImpl ?? fetch
+  const body: { chat_id: string; text: string; reply_markup?: unknown } = {
+    chat_id: input.chatId,
+    text: input.text,
+  }
+  if (input.options.length > 0) {
+    body.reply_markup = buildQuestionKeyboard(input.questionId, input.options)
+  }
+  try {
+    const resp = await f(`${API}/bot${input.botToken}/sendMessage`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (!resp.ok) return undefined
+    const json = (await resp.json().catch(() => ({}))) as { result?: { message_id?: number } }
+    return json.result?.message_id
+  } catch {
+    // Telegram fora do ar não pode derrubar a esteira que gerou a dúvida.
+    return undefined
+  }
+}
+
 type BotLocale = 'pt' | 'es' | 'en'
 
 // A pessoa fala com o bot no idioma DELA (o Telegram manda `language_code`);

@@ -3,6 +3,7 @@ import {
   parseStartToken,
   getTelegramUpdates,
   sendTelegramMessage,
+  sendTelegramQuestion,
   handleTelegramUpdate,
 } from './telegram-bot.js'
 
@@ -162,6 +163,126 @@ describe('sendMessage — é o chat_id que endereça, não o @username', () => {
     expect(await sendTelegramMessage({ botToken: BOT, chatId: '5', text: 'x', fetchImpl })).toBe(
       false
     )
+  })
+})
+
+describe('sendTelegramQuestion — a dúvida do agente vira botões (W3.3.1)', () => {
+  it('monta um inline_keyboard com callback_data "q:<id>:<índice>" (não o value — cabe em 64 bytes)', async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ ok: true, result: { message_id: 42 } }), { status: 200 })
+    ) as unknown as typeof fetch
+
+    await sendTelegramQuestion({
+      botToken: BOT,
+      chatId: '555',
+      questionId: 'q_abc123',
+      text: 'Qual é o azul oficial do site?',
+      options: [
+        { label: '#2563EB', value: '#2563EB' },
+        { label: '#1E40AF', value: '#1E40AF' },
+      ],
+      fetchImpl,
+    })
+
+    const call = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(String(call?.[0])).toContain('/sendMessage')
+    const body = JSON.parse(String(call?.[1]?.body))
+    expect(body.chat_id).toBe('555')
+    expect(body.text).toBe('Qual é o azul oficial do site?')
+    expect(body.reply_markup.inline_keyboard).toEqual([
+      [
+        { text: '#2563EB', callback_data: 'q:q_abc123:0' },
+        { text: '#1E40AF', callback_data: 'q:q_abc123:1' },
+      ],
+    ])
+  })
+
+  it('sem opções: manda só o texto (pergunta aberta), sem reply_markup', async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ ok: true, result: { message_id: 7 } }), { status: 200 })
+    ) as unknown as typeof fetch
+
+    await sendTelegramQuestion({
+      botToken: BOT,
+      chatId: '555',
+      questionId: 'q_aberta',
+      text: 'Descreva em texto livre...',
+      options: [],
+      fetchImpl,
+    })
+
+    const call = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    const body = JSON.parse(String(call?.[1]?.body))
+    expect(body).toEqual({ chat_id: '555', text: 'Descreva em texto livre...' })
+    expect(body.reply_markup).toBeUndefined()
+  })
+
+  it('devolve o message_id da resposta (pro telegramMessageId da AgentQuestion)', async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ ok: true, result: { message_id: 999 } }), { status: 200 })
+    ) as unknown as typeof fetch
+
+    const messageId = await sendTelegramQuestion({
+      botToken: BOT,
+      chatId: '555',
+      questionId: 'q_x',
+      text: 'oi',
+      options: [],
+      fetchImpl,
+    })
+
+    expect(messageId).toBe(999)
+  })
+
+  it('labels longos: 1 botão por linha (decisão simples de layout)', async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 })
+    ) as unknown as typeof fetch
+
+    await sendTelegramQuestion({
+      botToken: BOT,
+      chatId: '555',
+      questionId: 'q_y',
+      text: 'Qual opção?',
+      options: [
+        { label: 'Manter o azul #2563EB em todas as páginas', value: 'a' },
+        { label: 'Trocar tudo para o #1E40AF do painel', value: 'b' },
+      ],
+      fetchImpl,
+    })
+
+    const call = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    const body = JSON.parse(String(call?.[1]?.body))
+    expect(body.reply_markup.inline_keyboard).toHaveLength(2) // 1 por linha
+    expect(body.reply_markup.inline_keyboard[0]).toHaveLength(1)
+  })
+
+  it('callback_data cabe no limite de 64 bytes do Telegram mesmo com um id realista (cuid) e índice de 2 dígitos', () => {
+    const realisticId = 'clx1a2b3c4d5e6f7g8h9i0j1' // formato cuid típico
+    for (let i = 0; i < 10; i++) {
+      const callbackData = `q:${realisticId}:${i}`
+      expect(Buffer.byteLength(callbackData, 'utf8')).toBeLessThanOrEqual(64)
+    }
+  })
+
+  it('falha do Telegram não lança — devolve undefined (best-effort, quem chama trata)', async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response(JSON.stringify({ ok: false }), { status: 400 })
+    ) as unknown as typeof fetch
+
+    const messageId = await sendTelegramQuestion({
+      botToken: BOT,
+      chatId: '555',
+      questionId: 'q_z',
+      text: 'oi',
+      options: [],
+      fetchImpl,
+    })
+
+    expect(messageId).toBeUndefined()
   })
 })
 
