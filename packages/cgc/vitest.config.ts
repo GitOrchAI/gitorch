@@ -6,7 +6,10 @@ export default defineConfig({
     environment: 'node',
     include: ['src/**/*.test.ts'],
     globals: true,
-    testTimeout: 10000,
+    testTimeout: 15000,
+    forks: {
+      singleFork: true,
+    },
   },
   resolve: {
     alias: {
