@@ -373,7 +373,7 @@ export default function StepSelectRepos({
 
       {cloneError && (
         <div className="mt-3">
-          <p style={{ fontSize: '0.85rem', color: 'var(--gl-danger, #d33)' }}>{cloneError}</p>
+          <p style={{ fontSize: '0.85rem', color: 'var(--gl-sev)' }}>{cloneError}</p>
           {cloneErrorCode && (
             <p className="wz-opt-desc" style={{ marginTop: 4 }}>
               {t(setupErrorHintKey(cloneErrorCode))}

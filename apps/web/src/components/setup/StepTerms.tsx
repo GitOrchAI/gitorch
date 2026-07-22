@@ -76,7 +76,7 @@ export default function StepTerms({ onAccept }: StepTermsProps) {
       </label>
 
       {error && (
-        <p className="mt-3" style={{ fontSize: '0.85rem', color: 'var(--gl-danger, #d33)' }}>
+        <p className="mt-3" style={{ fontSize: '0.85rem', color: 'var(--gl-sev)' }}>
           {error}
         </p>
       )}
