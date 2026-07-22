@@ -249,6 +249,7 @@ model Project {
   apiKeys     ApiKey[]
   webhookDeliveries WebhookDelivery[]
   schedules   ProjectSchedule[]
+  agentQuestions AgentQuestion[]
 
   // Um repo, um projeto, POR DONO. É o banco garantindo o que a rota de setup
   // passou a exigir — mesmo repo em dois clientes = dois projetos distintos.
@@ -459,4 +460,60 @@ model ClientEnvironment {
   @@index([userId])
   @@index([status, lastActivityAt])
   @@map("client_environments")
+}
+
+// Dúvida registrada por um agente (human-in-the-loop, épico W3) — fonte ÚNICA
+// consumida pelo painel E pelo Telegram. Quando um agente esbarra numa decisão
+// de rumo NÃO documentada (ex.: 3 páginas com cores diferentes — "qual a cor
+// oficial?"), ele registra aqui em vez de travar: o dono responde (painel ou,
+// nesta fase, só Telegram — ver docs/superpowers/specs/2026-07-21-w3-telegram-
+// duvidas-design.md) e a resposta vira memória (Cortex), então o agente nunca
+// mais pergunta a mesma coisa (ver AgentQuestionService.ask, dedupKey).
+model AgentQuestion {
+  id        String   @id @default(cuid())
+  projectId String   @map("project_id")
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  // O DONO do projeto — não necessariamente quem clicou (só o dono responde
+  // hoje); é por ele que a notificação acha o chat_id certo (TelegramLink).
+  userId String @map("user_id")
+
+  text    String
+  // Evidência/onde a dúvida se encaixa (ex.: os 3 arquivos com cores
+  // divergentes) — opcional, só contexto para o dono decidir.
+  context String?
+
+  // Array de {label, value} — cada item vira um botão no Telegram
+  // (callback_data referencia o ÍNDICE, não o value — ver W3.3). Vazio =
+  // pergunta aberta (o dono responde em texto livre).
+  options Json @default("[]")
+
+  // dedupKey normaliza a pergunta (ex.: "cor-oficial-site"): se já existe uma
+  // AgentQuestion 'answered' do MESMO projeto com a mesma chave, ask() devolve
+  // a decisão já tomada em vez de perguntar de novo — é o contrato central
+  // do human-in-the-loop (o dono não quer ser perguntado 2x a mesma coisa).
+  dedupKey String? @map("dedup_key")
+
+  // open (aguardando) | answered (o dono decidiu) | expired (reservado para
+  // política futura de TTL — não usado nesta fase).
+  status String @default("open")
+
+  answer      String?   // o value escolhido (ou o texto livre da resposta aberta)
+  answeredAt  DateTime? @map("answered_at")
+  answeredVia String?   @map("answered_via") // telegram | panel
+
+  // Id da mensagem enviada no Telegram — permite editar/confirmar depois do
+  // clique (ex.: "✓ Respondido: <label>"). Nulo até a notificação sair.
+  telegramMessageId Int? @map("telegram_message_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // O painel lista "abertas primeiro" por projeto — filtro quente.
+  @@index([projectId, status])
+  // ask() busca por dedupKey (escopado ao projeto na query, não aqui) antes
+  // de criar — chave de busca quente, não única (dedupKey pode repetir entre
+  // projetos e entre uma pergunta aberta e a respondida antiga).
+  @@index([dedupKey])
+  @@map("agent_questions")
 }

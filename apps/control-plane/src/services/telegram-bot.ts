@@ -1,5 +1,6 @@
 import type { PrismaClient } from '@prisma/client'
 import { bindChatFromStart } from './telegram-link.js'
+import type { AgentQuestionService } from './agent-question.js'
 
 // A ponte HTTP com a API do Telegram: ouvir o bot e falar por ele.
 //
@@ -22,12 +23,24 @@ import { bindChatFromStart } from './telegram-link.js'
 
 type PrismaLike = Pick<PrismaClient, 'telegramLink'>
 
+// callback_query também precisa ler a AgentQuestion (achar o dono/as opções)
+// pra rotear o clique — ver `handleTelegramCallback`.
+type PrismaWithQuestions = Pick<PrismaClient, 'telegramLink' | 'agentQuestion'>
+
 export interface TelegramUpdate {
   update_id: number
   message?: {
     chat?: { id?: number | string }
     text?: string
     from?: { language_code?: string }
+  }
+  /** Clique num botão inline (ver `sendTelegramQuestion`/`handleTelegramCallback`). */
+  callback_query?: {
+    id: string
+    from?: { id?: number | string }
+    message?: { message_id?: number }
+    /** Formato esperado: `q:<questionId>:<optionIndex>` — ver `parseQuestionCallbackData`. */
+    data?: string
   }
 }
 
@@ -73,6 +86,9 @@ export async function getTelegramUpdates(input: {
   const timeout = input.timeoutSec ?? 30
   const params = new URLSearchParams({ timeout: String(timeout) })
   if (input.offset !== undefined) params.set('offset', String(input.offset))
+  // Sem isto o Telegram NÃO entrega callback_query (cliques de botão) — só
+  // `message`, que é o default histórico da API.
+  params.set('allowed_updates', JSON.stringify(['message', 'callback_query']))
 
   const resp = await f(`${API}/bot${input.botToken}/getUpdates?${params.toString()}`, {
     ...(input.signal ? { signal: input.signal } : {}),
@@ -116,6 +132,175 @@ export async function sendTelegramMessage(input: {
     // Telegram fora do ar não pode derrubar a esteira que gerou o aviso.
     return false
   }
+}
+
+export interface TelegramQuestionOption {
+  label: string
+  value: string
+}
+
+// Labels curtos (ex.: nomes de cores/hex) cabem 2 por linha sem virar
+// ilegível no celular; labels longos (frases) vão 1 por linha. Decisão
+// simples de propósito — não é um layout engine.
+const SHORT_LABEL_MAX_LEN = 16
+
+function buildQuestionKeyboard(
+  questionId: string,
+  options: TelegramQuestionOption[]
+): { inline_keyboard: { text: string; callback_data: string }[][] } {
+  const buttons = options.map((opt, i) => ({
+    text: opt.label,
+    // O ÍNDICE viaja no callback_data, não o `value`: o campo tem limite de
+    // 64 bytes na API do Telegram, e um value arbitrário (ex.: um hex de cor,
+    // mas também poderia ser texto livre) pode estourar isso. O índice mapeia
+    // de volta pro `options[i].value` no clique (`handleTelegramCallback`).
+    callback_data: `q:${questionId}:${i}`,
+  }))
+  const perRow = buttons.every((b) => b.text.length <= SHORT_LABEL_MAX_LEN) ? 2 : 1
+  const rows: { text: string; callback_data: string }[][] = []
+  for (let i = 0; i < buttons.length; i += perRow) {
+    rows.push(buttons.slice(i, i + perRow))
+  }
+  return { inline_keyboard: rows }
+}
+
+/**
+ * Manda a dúvida do agente com botões (uma `AgentQuestion` — ver
+ * services/agent-question.ts). Sem `options`, manda só o texto: é a pergunta
+ * aberta, respondida em mensagem livre (fora do escopo desta fase). Devolve o
+ * `message_id` (guardado em `telegramMessageId`, pra futura edição/confirmação);
+ * `undefined` se o envio falhar — best-effort, quem chama trata (nunca lança).
+ */
+export async function sendTelegramQuestion(input: {
+  botToken: string
+  chatId: string
+  questionId: string
+  text: string
+  options: TelegramQuestionOption[]
+  fetchImpl?: typeof fetch
+}): Promise<number | undefined> {
+  const f = input.fetchImpl ?? fetch
+  const body: { chat_id: string; text: string; reply_markup?: unknown } = {
+    chat_id: input.chatId,
+    text: input.text,
+  }
+  if (input.options.length > 0) {
+    body.reply_markup = buildQuestionKeyboard(input.questionId, input.options)
+  }
+  try {
+    const resp = await f(`${API}/bot${input.botToken}/sendMessage`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (!resp.ok) return undefined
+    const json = (await resp.json().catch(() => ({}))) as { result?: { message_id?: number } }
+    return json.result?.message_id
+  } catch {
+    // Telegram fora do ar não pode derrubar a esteira que gerou a dúvida.
+    return undefined
+  }
+}
+
+/**
+ * Some com o "carregando" do botão no celular do dono (a API do Telegram
+ * exige essa chamada depois de processar um callback_query, senão o cliente
+ * mostra o spinner até dar timeout).
+ */
+export async function answerTelegramCallback(input: {
+  botToken: string
+  callbackQueryId: string
+  text?: string
+  fetchImpl?: typeof fetch
+}): Promise<boolean> {
+  const f = input.fetchImpl ?? fetch
+  try {
+    const resp = await f(`${API}/bot${input.botToken}/answerCallbackQuery`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        callback_query_id: input.callbackQueryId,
+        ...(input.text !== undefined ? { text: input.text } : {}),
+      }),
+    })
+    return resp.ok
+  } catch {
+    return false
+  }
+}
+
+export interface ParsedQuestionCallback {
+  questionId: string
+  optionIndex: number
+}
+
+/**
+ * Parse do `callback_data` de um clique — formato `q:<questionId>:<índice>`
+ * (ver `buildQuestionKeyboard`). Robusto por contrato: o Telegram apenas
+ * ecoa de volta o que mandamos, mas nunca se confia cegamente num payload que
+ * chega de fora — formato torto devolve `null` (o chamador ignora).
+ */
+export function parseQuestionCallbackData(data: string | undefined): ParsedQuestionCallback | null {
+  if (!data) return null
+  const match = data.match(/^q:([^:]+):(\d+)$/)
+  if (!match) return null
+  const questionId = match[1]
+  const optionIndex = Number(match[2])
+  if (!questionId || !Number.isInteger(optionIndex) || optionIndex < 0) return null
+  return { questionId, optionIndex }
+}
+
+export interface TelegramCallbackDeps {
+  prisma: PrismaWithQuestions
+  agentQuestionService: Pick<AgentQuestionService, 'answer'>
+  botToken: string
+  fetchImpl?: typeof fetch
+}
+
+/**
+ * Roteia UM clique de botão (`callback_query`) pra resposta da `AgentQuestion`
+ * correspondente. GUARD anti cross-tenant: só o chat vinculado ao DONO da
+ * pergunta (`AgentQuestion.userId`, via `TelegramLink`) pode responder — todo
+ * clique de outro chat é IGNORADO em silêncio (nem responde, nem processa,
+ * nem revela nada sobre a dúvida). `answer()` já é idempotente do lado do
+ * serviço, então um clique repetido (Telegram reentrega updates) é inofensivo.
+ */
+export async function handleTelegramCallback(
+  deps: TelegramCallbackDeps,
+  update: TelegramUpdate
+): Promise<void> {
+  const cq = update.callback_query
+  if (!cq?.data) return
+
+  const parsed = parseQuestionCallbackData(cq.data)
+  if (!parsed) return
+
+  const question = await deps.prisma.agentQuestion.findUnique({ where: { id: parsed.questionId } })
+  if (!question) return
+
+  const options = Array.isArray(question.options)
+    ? (question.options as unknown as TelegramQuestionOption[])
+    : []
+  const option = options[parsed.optionIndex]
+  if (!option) return
+
+  const clickerChatId = cq.from?.id === undefined || cq.from.id === null ? null : String(cq.from.id)
+  if (!clickerChatId) return
+
+  const link = await deps.prisma.telegramLink.findUnique({ where: { userId: question.userId } })
+  if (!link || link.status !== 'linked' || !link.chatId || link.chatId !== clickerChatId) {
+    // Cross-tenant (ou vínculo perdido/nunca feito): ignora. Nenhuma resposta
+    // sai, nada é gravado — o painel continua a via de fallback.
+    return
+  }
+
+  await deps.agentQuestionService.answer(parsed.questionId, option.value, 'telegram')
+  await answerTelegramCallback({
+    botToken: deps.botToken,
+    callbackQueryId: cq.id,
+    text: '✓ registrado',
+    ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+  })
 }
 
 type BotLocale = 'pt' | 'es' | 'en'
