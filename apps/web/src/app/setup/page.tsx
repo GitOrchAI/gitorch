@@ -42,10 +42,7 @@ export default function SetupWizard() {
   // viaja no submit — ele nasce no backend (token -> /start -> chat_id) e vive
   // em telegram_links. Guardar um @username aqui era o que fazia o passo 8
   // prometer um aviso que nunca chegava.
-  // Autonomia dos 4 papéis: default sensato enviado ao submit (envConfig). Os
-  // sliders manuais saíram do wizard (Task 3.4) — autonomia/cadência vira
-  // ajuste fino no painel, não fricção no onboarding.
-  const [autonomy] = useState({ sm: 3, qa: 3, ra: 3, po: 3 })
+
   // Plano pré-selecionado pela landing (/setup?plan=solo) — derivado da URL no
   // inicializador (não num effect com setState síncrono). O plano só aparece a
   // partir do passo 8, então não há divergência de hidratação no passo 1.
@@ -318,7 +315,6 @@ export default function SetupWizard() {
                   selectedRepos={selectedRepos}
                   setSelectedRepos={setSelectedRepos}
                   selectedEngines={selectedEngines}
-                  autonomy={autonomy}
                   onSuccess={handleSetupSuccess}
                   onBack={prevStep}
                 />

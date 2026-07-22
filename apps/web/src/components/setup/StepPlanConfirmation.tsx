@@ -9,7 +9,6 @@ interface StepPlanConfirmationProps {
   selectedRepos: string[]
   setSelectedRepos: (repos: string[]) => void
   selectedEngines: string[]
-  autonomy: Record<string, number>
   onSuccess: (projects: CreatedProject[]) => void
   onBack: () => void
 }
@@ -20,7 +19,6 @@ export default function StepPlanConfirmation({
   selectedRepos,
   setSelectedRepos,
   selectedEngines,
-  autonomy,
   onSuccess,
   onBack,
 }: StepPlanConfirmationProps) {
@@ -61,7 +59,6 @@ export default function StepPlanConfirmation({
           plan,
           repos: selectedRepos,
           engines: selectedEngines,
-          autonomy,
         },
         { fallbackError: t('setup.reposError') }
       )
