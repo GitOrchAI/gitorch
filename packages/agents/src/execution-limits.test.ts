@@ -66,6 +66,7 @@ describe('wrapWithLimits', () => {
       expect(result).toEqual({
         binary: 'systemd-run',
         args: [
+          '--user',
           '--scope',
           '--quiet',
           '-p',

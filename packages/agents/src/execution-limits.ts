@@ -82,6 +82,7 @@ export function wrapWithLimits(
   return {
     binary: SYSTEMD_RUN_BINARY,
     args: [
+      '--user',
       '--scope',
       '--quiet',
       '-p',
