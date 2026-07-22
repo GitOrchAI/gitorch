@@ -3,10 +3,16 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { useLanguage } from '../../LanguageContext'
 import Header from '../../components/Header'
-import { Terminal, Activity, FolderGit2, LogIn } from 'lucide-react'
+import { Terminal, Activity, FolderGit2, LogIn, HelpCircle } from 'lucide-react'
 import { motion } from 'framer-motion'
 import Link from 'next/link'
 import { API_BASE_URL } from '../../lib/api'
+import {
+  fetchAgentQuestions,
+  sortQuestions,
+  statusLabel,
+  type AgentQuestionView,
+} from '../../components/painel/agent-questions'
 
 // Painel READ-ONLY (Fase 4, épico 4.3): mostra o GitHub/missões do cliente
 // organizados — NUNCA opera agentes (eles são autônomos) e NUNCA inventa
@@ -35,6 +41,14 @@ const STATUS_COLORS: Record<string, string> = {
   failed: '#ef4444',
 }
 
+// Cores do badge de status das dúvidas dos agentes (W3.4.2) — mesma paleta
+// semântica dos status de missão acima (âmbar=espera, verde=resolvido).
+const QUESTION_STATUS_COLORS: Record<string, string> = {
+  open: '#f59e0b',
+  answered: '#10b981',
+  expired: '#6b7280',
+}
+
 export default function Dashboard() {
   const { t } = useLanguage()
   // Sessão via cookie httpOnly (não lido por JS) — o painel checa no
@@ -46,6 +60,10 @@ export default function Dashboard() {
   const [checkFailed, setCheckFailed] = useState(false)
   const [data, setData] = useState<MissionsResponse | null>(null)
   const [error, setError] = useState(false)
+  // Dúvidas dos agentes (W3.4.2) — READ-ONLY: o painel só EXIBE, responder
+  // continua sendo pelo Telegram. Falha na busca não derruba o painel, a
+  // seção só fica vazia (fetchAgentQuestions nunca lança).
+  const [questions, setQuestions] = useState<AgentQuestionView[]>([])
 
   useEffect(() => {
     let cancelled = false
@@ -86,6 +104,22 @@ export default function Dashboard() {
     const interval = setInterval(() => void load(), 15_000)
     return () => clearInterval(interval)
   }, [authenticated, load])
+
+  useEffect(() => {
+    if (!authenticated) return
+    let cancelled = false
+    fetchAgentQuestions(API_BASE_URL)
+      .then((qs) => {
+        if (!cancelled) setQuestions(qs)
+      })
+      .catch(() => {
+        // fetchAgentQuestions já nunca lança, mas por contrato: falha aqui
+        // nunca derruba o painel, só mantém a seção vazia.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [authenticated])
 
   // Ainda checando a sessão: nem afirma nem nega login, só não mostra nada
   // definitivo ainda — evita o flash de "conecte-se" pra quem já está logado.
@@ -214,6 +248,66 @@ export default function Dashboard() {
                   </span>
                 )}
               </motion.div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Dúvidas dos agentes (W3.4.2) — READ-ONLY: só exibe. Responder é pelo
+          Telegram (o clique-a-clique fica pra próxima fase). */}
+      <div className="container mx-auto px-8 pb-8">
+        <div className="glass-panel p-6">
+          <div className="flex items-center justify-between mb-4 border-b border-[var(--glass-border)] pb-4">
+            <h3 className="font-bold flex items-center gap-2">
+              <HelpCircle className="text-[#f59e0b]" size={18} />
+              Dúvidas dos agentes
+            </h3>
+          </div>
+
+          {questions.length === 0 && (
+            <div className="text-[var(--text-secondary)]">Nenhuma dúvida no momento.</div>
+          )}
+
+          <div className="space-y-4">
+            {sortQuestions(questions).map((q) => (
+              <div
+                key={q.id}
+                className="bg-[var(--bg-surface-elevated)] p-4 rounded-xl border border-[var(--glass-border)]"
+              >
+                <div className="flex items-start justify-between gap-3 mb-2">
+                  <span className="text-white font-medium">{q.text}</span>
+                  <span
+                    className="text-xs font-bold px-2 py-1 rounded-full whitespace-nowrap"
+                    style={{
+                      color: QUESTION_STATUS_COLORS[q.status] ?? '#9ca3af',
+                      backgroundColor: 'rgba(255,255,255,0.05)',
+                    }}
+                  >
+                    {statusLabel(q.status)}
+                  </span>
+                </div>
+
+                {q.context && (
+                  <p className="text-sm text-[var(--text-secondary)] mb-2">{q.context}</p>
+                )}
+
+                {q.options.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mb-2">
+                    {q.options.map((opt) => (
+                      <span
+                        key={opt.value}
+                        className="text-xs px-3 py-1 rounded-full border border-[var(--glass-border)] text-[var(--text-secondary)]"
+                      >
+                        {opt.label}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {q.status === 'answered' && q.answer && (
+                  <p className="text-sm text-[#10b981]">Resposta: {q.answer}</p>
+                )}
+              </div>
             ))}
           </div>
         </div>
