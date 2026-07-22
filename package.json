@@ -74,7 +74,10 @@
       "tar-stream": "^3.2.0",
       "uuid": "11.1.1",
       "launch-editor": "2.14.1",
-      "protobufjs": "7.6.5"
+      "protobufjs": "7.6.5",
+      "fast-uri@2": "2.4.3",
+      "fast-uri@3": "3.1.4",
+      "fast-uri@4": "4.1.1"
     },
     "patchedDependencies": {
       "tar@7.5.19": "patches/tar@7.5.19.patch"
