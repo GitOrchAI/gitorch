@@ -1,7 +1,29 @@
 import React, { useEffect, useState } from 'react'
+import dynamic from 'next/dynamic'
 import { ChevronRight, Search, Loader2, Check } from 'lucide-react'
 import { useLanguage } from '../../LanguageContext'
 import { parseSetupErrorCode, setupErrorHintKey, type SetupErrorCode } from './setup-errors'
+import { isWebglAvailable } from './graph3d-layout'
+
+const RepoGraph3D = dynamic(() => import('./RepoGraph3D'), { ssr: false })
+
+const PREP_NODES = [
+  { id: 'env', label: 'isolated-env', file: '/env', type: 'dir', health: 'good' as const },
+  {
+    id: 'manifest',
+    label: 'manifest-lock',
+    file: '/manifest.json',
+    type: 'file',
+    health: 'good' as const,
+  },
+  { id: 'cgc', label: 'cgc-graph', file: '/graph.json', type: 'file', health: 'good' as const },
+  { id: 'engine', label: 'cli-runtimes', file: '/runtimes', type: 'dir', health: 'good' as const },
+]
+const PREP_EDGES = [
+  { source: 'env', target: 'manifest', rel: 'imports' },
+  { source: 'env', target: 'cgc', rel: 'indexes' },
+  { source: 'env', target: 'engine', rel: 'executes' },
+]
 
 interface Repo {
   id: number
@@ -18,8 +40,24 @@ interface StepSelectReposProps {
   selectedRepos: string[]
   setSelectedRepos: (repos: string[]) => void
   plan: string
+  hostingMode?: 'cloud' | 'vm'
   onNext: () => void
   onBack: () => void
+}
+
+export function getPlanRepoLimit(plan: string, hostingMode: 'cloud' | 'vm' = 'cloud'): number {
+  if (hostingMode === 'vm') return Infinity
+  switch (plan.toLowerCase()) {
+    case 'solo':
+      return 2
+    case 'pro':
+      return 5
+    case 'team':
+      return 15
+    case 'free':
+    default:
+      return 1
+  }
 }
 
 export default function StepSelectRepos({
@@ -28,6 +66,7 @@ export default function StepSelectRepos({
   selectedRepos,
   setSelectedRepos,
   plan,
+  hostingMode = 'cloud',
   onNext,
   onBack,
 }: StepSelectReposProps) {
@@ -49,6 +88,9 @@ export default function StepSelectRepos({
   // genérico. null = rota antiga/erro de rede/JSON malformado.
   const [cloneErrorCode, setCloneErrorCode] = useState<SetupErrorCode | null>(null)
   const [resetting, setResetting] = useState(false)
+  const [limitExceeded, setLimitExceeded] = useState(false)
+
+  const repoLimit = getPlanRepoLimit(plan, hostingMode)
 
   // Ao avançar, clona os repos escolhidos DENTRO do ambiente isolado do cliente
   // (passo 4). Só segue quando o clone termina; falha mantém a pessoa no passo
@@ -148,9 +190,19 @@ export default function StepSelectRepos({
 
   const toggleRepo = (fullName: string) => {
     if (selectedRepos.includes(fullName)) {
+      // Desmarcar sempre pode, e limpa o aviso de cota.
       setSelectedRepos(selectedRepos.filter((r) => r !== fullName))
+      setLimitExceeded(false)
     } else {
+      // TRAVA REAL: não deixa passar do teto do plano (o banner só aparecia
+      // porque o setter nunca era chamado — a trava era um no-op). O backend
+      // valida de novo o teto (defesa em profundidade, anti-burla).
+      if (selectedRepos.length >= repoLimit) {
+        setLimitExceeded(true)
+        return
+      }
       setSelectedRepos([...selectedRepos, fullName])
+      setLimitExceeded(false)
     }
   }
 
@@ -165,7 +217,28 @@ export default function StepSelectRepos({
       <h2 className="wz-h">{t('setup.reposTitle')}</h2>
       <p className="wz-sub">{t('setup.reposDesc')}</p>
 
-      {loading ? (
+      {cloning ? (
+        <div
+          className="wz-body flex flex-col items-center justify-center relative overflow-hidden"
+          style={{ minHeight: 280 }}
+        >
+          {isWebglAvailable() ? (
+            <div className="w-full h-48 mb-3 rounded-lg overflow-hidden border border-gray-800">
+              <RepoGraph3D nodes={PREP_NODES} edges={PREP_EDGES} truncated={false} />
+            </div>
+          ) : (
+            <Loader2
+              className="animate-spin mb-4"
+              size={38}
+              style={{ color: 'var(--gl-accent)' }}
+            />
+          )}
+          <p className="wz-opt-desc flex items-center gap-2">
+            <Loader2 className="animate-spin" size={16} />
+            {t('setup.reposCloning')}
+          </p>
+        </div>
+      ) : loading ? (
         <div
           className="wz-body flex flex-col items-center justify-center"
           style={{ minHeight: 250 }}
@@ -228,6 +301,23 @@ export default function StepSelectRepos({
               }}
             >
               {t('setup.reposFreeNote')}
+            </p>
+          )}
+
+          {limitExceeded && (
+            <p
+              className="mb-3 rounded-lg px-3 py-2 flex items-center justify-between"
+              style={{
+                background: 'var(--gl-accent-soft)',
+                color: 'var(--gl-accent-ink)',
+                fontSize: '0.78rem',
+                lineHeight: 1.45,
+              }}
+            >
+              <span>
+                Limite do plano ({plan.toUpperCase()}): máximo de {repoLimit} repositório(s) na
+                nuvem.
+              </span>
             </p>
           )}
 

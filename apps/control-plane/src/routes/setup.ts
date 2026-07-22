@@ -347,6 +347,28 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
       if (!repos || repos.length === 0) {
         return reply.code(400).send({ error: 'At least one repository must be selected' })
       }
+      // Teto de repos por plano — lido do PLANO REAL do usuário no SERVIDOR, nunca
+      // do corpo da requisição. A versão anterior fazia `plan ?? body...` e
+      // confiava no `plan` que o cliente mandava: bastava enviar plan:'team' pra
+      // furar o limite do grátis (e o fallback `request.user.planId` era código
+      // morto — o token não carrega esse campo). Fonte única de verdade:
+      // User.planId + Plan.maxProjects (o mesmo par que o billing usa).
+      const dbUser = await app.prisma.user.findUnique({
+        where: { id: request.user.id },
+        select: { planId: true },
+      })
+      const userPlan = dbUser?.planId ?? 'free'
+      const planRow = await app.prisma.plan.findUnique({
+        where: { id: userPlan },
+        select: { maxProjects: true },
+      })
+      const maxRepos = planRow?.maxProjects ?? 1
+      if (repos.length > maxRepos) {
+        return reply.code(400).send({
+          error: `Plan limit exceeded: plan (${userPlan.toUpperCase()}) allows at most ${maxRepos} repository/repositories`,
+          code: 'REPOS_EXCEED_PLAN_LIMIT',
+        })
+      }
       // Token do PRÓPRIO cliente (repo privado). Ausente em composições sem o
       // plugin de motores; clone anônimo cobre repo público.
       const token = app.engineConnections

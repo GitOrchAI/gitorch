@@ -12,6 +12,7 @@ export type SetupErrorCode =
   | 'DIAG_TIMEOUT'
   | 'DIAG_EMPTY_REPO'
   | 'GITHUB_TOKEN_EXPIRED'
+  | 'REPOS_EXCEED_PLAN_LIMIT'
   | 'INTERNAL'
 
 const SETUP_ERROR_CODES: readonly SetupErrorCode[] = [
@@ -23,6 +24,7 @@ const SETUP_ERROR_CODES: readonly SetupErrorCode[] = [
   'DIAG_TIMEOUT',
   'DIAG_EMPTY_REPO',
   'GITHUB_TOKEN_EXPIRED',
+  'REPOS_EXCEED_PLAN_LIMIT',
   'INTERNAL',
 ]
 
@@ -69,6 +71,7 @@ const HINT_KEYS: Record<SetupErrorCode, string> = {
   DIAG_TIMEOUT: 'setup.errDIAG_TIMEOUT',
   DIAG_EMPTY_REPO: 'setup.errDIAG_EMPTY_REPO',
   GITHUB_TOKEN_EXPIRED: 'setup.errGITHUB_TOKEN_EXPIRED',
+  REPOS_EXCEED_PLAN_LIMIT: 'setup.errREPOS_EXCEED_PLAN_LIMIT',
   INTERNAL: 'setup.errINTERNAL',
 }
 

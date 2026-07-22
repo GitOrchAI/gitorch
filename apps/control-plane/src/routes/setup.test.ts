@@ -20,7 +20,12 @@ describe('GET /api/v1/github/repos', () => {
     // Sem instalação do GitHub App escolhida — vai direto pro caminho OAuth
     // clássico, que é o que este describe cobre.
     app.decorate('prisma', {
-      user: { findUnique: vi.fn().mockResolvedValue({ githubInstallationId: null }) },
+      user: {
+        findUnique: vi.fn().mockResolvedValue({ githubInstallationId: null, planId: 'free' }),
+      },
+      // Teto de repos vem de Plan.maxProjects (free = 1) — a rota /clone lê isto
+      // do banco, nunca do corpo da requisição (anti-burla).
+      plan: { findUnique: vi.fn().mockResolvedValue({ maxProjects: 1 }) },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     // Simula o hook global de auth já tendo populado request.user (cookie ou
@@ -34,6 +39,33 @@ describe('GET /api/v1/github/repos', () => {
 
   afterEach(() => {
     global.fetch = originalFetch
+  })
+
+  it('rejects POST /api/v1/setup/clone when repo count exceeds plan limit', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/setup/clone',
+      payload: { repos: ['owner/repo1', 'owner/repo2'] },
+    })
+
+    expect(res.statusCode).toBe(400)
+    const json = JSON.parse(res.payload)
+    expect(json.code).toBe('REPOS_EXCEED_PLAN_LIMIT')
+  })
+
+  it('IGNORA o plano do corpo — usa o plano REAL do banco (anti-burla)', async () => {
+    // O banco diz que o usuário é 'free' (teto 1). Mesmo mandando plan:'team' no
+    // corpo (a burla clássica), o servidor lê User.planId + Plan.maxProjects e
+    // continua bloqueando 2 repositórios. Antes, `plan ?? body` deixava o
+    // cliente escolher o próprio limite.
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/setup/clone',
+      payload: { repos: ['owner/repo1', 'owner/repo2'], plan: 'team' },
+    })
+
+    expect(res.statusCode).toBe(400)
+    expect(JSON.parse(res.payload).code).toBe('REPOS_EXCEED_PLAN_LIMIT')
   })
 
   it('fetches repos using the token decrypted from the user vault, not the session', async () => {
