@@ -56,7 +56,7 @@ const SKIP_ENTER = process.env['SKIP_ENTER'] === '1'
  */
 function redact(s: string): string {
   return s
-    .replace(/sk-ant-oat01-[A-Za-z0-9_-]+/g, 'sk-ant-oat01-REDACTED')
+    .replace(/sk-ant-oat01-[A-Za-z0-9_-]+/g, 'sk-ant-oat01-REDACTED') // infra-guard-allow: regex p/ REDIGIR o token real do stdout, não é credencial
     .replace(/([?&](?:state|code|access_token|id_token|refresh_token)=)[^&\s\]"'`]+/g, '$1REDACTED')
 }
 
