@@ -12,3 +12,19 @@ test-results/
 docs/
 .gstack/
 .hermes/
+
+# --- Segurança de dados (W5.0): o repo é PÚBLICO. Nada de dado desta VM, de
+# agente ou de conversa pode entrar no git — alguém clona e lê. Estes artefatos
+# são LOCAIS por natureza; nunca versionar. O CI (scripts/ci/infra-guard.sh)
+# também barra se algum destes for adicionado. ---
+.claude/
+.gemini/
+.cursor/
+.aider*
+.phase/
+scratchpad/
+graphify-out/
+*.sqlite
+*.sqlite-journal
+*.sqlite3
+*.local
