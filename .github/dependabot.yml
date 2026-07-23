@@ -23,6 +23,17 @@ updates:
         update-types:
           - "patch"
           - "minor"
+    # MAJOR não entra por auto-PR. O `groups` acima só AGRUPA patch/minor — uma
+    # major continuava ganhando PR PRÓPRIO, e foi assim que o TypeScript 7 (o
+    # compilador nativo) entrou sozinho em 23/07 e deixou a main VERMELHA para
+    # todos os PRs abertos (o TS 7 removeu o subpath './bin/tsc', quebrando o
+    # typecheck estrito do CI). Major é MIGRAÇÃO deliberada, com plano e teste —
+    # não atualização de rotina. Isto alinha a config ao que o comentário do topo
+    # deste arquivo já prometia: aqui só rotina (patch/minor).
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
 
   # Configuração de atualizações do ecossistema GitHub Actions
   - package-ecosystem: "github-actions"
@@ -32,3 +43,9 @@ updates:
     labels:
       - "dependabot"
       - "github-actions"
+    # Mesma regra: bump de major de uma Action pode mudar comportamento do CI
+    # inteiro. Entra por decisão, não por bot.
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
