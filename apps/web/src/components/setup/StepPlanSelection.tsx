@@ -114,7 +114,10 @@ export default function StepPlanSelection({
               top: 0,
               right: 0,
               background: 'var(--gl-accent)',
-              color: '#fff',
+              // Mesma tinta fixa do badge "Recomendado" da landing (.gl-plan-badge):
+              // no tema escuro --gl-accent vira verde claro, e texto branco perderia
+              // contraste ali — tinta escura funciona nos dois temas (ver page.tsx).
+              color: '#08090b',
               fontSize: '0.58rem',
               fontWeight: 700,
               letterSpacing: '0.06em',

@@ -83,7 +83,14 @@ export default function StepPlanConfirmation({
         {isOverlimit && (
           <div
             className="flex items-start gap-3 rounded-xl p-4"
-            style={{ background: 'var(--gl-accent-soft)', border: '1px solid var(--gl-hair)' }}
+            // Fundo verde (--gl-accent-soft, cor de sucesso) atrás de um ícone
+            // vermelho (--gl-sev) era a mesma contradição visual do achado que
+            // reabriu esta task. Borda tingida de --gl-sev, igual a
+            // wz-diag-finding.bad em globals.css, concorda com o ícone.
+            style={{
+              background: 'var(--gl-canvas)',
+              border: '1px solid color-mix(in srgb, var(--gl-sev) 35%, var(--gl-hair))',
+            }}
           >
             <AlertCircle size={20} style={{ color: 'var(--gl-sev)', flex: 'none', marginTop: 2 }} />
             <div style={{ fontSize: '0.8rem' }}>

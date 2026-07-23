@@ -223,7 +223,13 @@ export default function StepSelectRepos({
           style={{ minHeight: 280 }}
         >
           {isWebglAvailable() ? (
-            <div className="w-full h-48 mb-3 rounded-lg overflow-hidden border border-gray-800">
+            // `border-gray-800` era um cinza fixo do Tailwind, fora do vocabulário
+            // --gl-* (não reagia a tema, nem existe no design system da marca) —
+            // troca pro token de borda real (--gl-hair, o mesmo do resto do funil).
+            <div
+              className="w-full h-48 mb-3 rounded-lg overflow-hidden"
+              style={{ border: '1px solid var(--gl-hair)' }}
+            >
               <RepoGraph3D nodes={PREP_NODES} edges={PREP_EDGES} truncated={false} />
             </div>
           ) : (
@@ -308,8 +314,13 @@ export default function StepSelectRepos({
             <p
               className="mb-3 rounded-lg px-3 py-2 flex items-center justify-between"
               style={{
-                background: 'var(--gl-accent-soft)',
-                color: 'var(--gl-accent-ink)',
+                // Aviso de limite = alerta, não sucesso: usava as mesmas cores verdes
+                // (--gl-accent-*) do aviso informativo do plano free logo acima, sem
+                // nenhuma distinção visual. Troca pro par --gl-warn/--gl-warn-soft,
+                // o mesmo vocabulário de aviso já usado em wz-diag-finding.warn e
+                // wz-graph3d-banner no resto do funil.
+                background: 'var(--gl-warn-soft)',
+                color: 'var(--gl-warn)',
                 fontSize: '0.78rem',
                 lineHeight: 1.45,
               }}
