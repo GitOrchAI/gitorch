@@ -473,7 +473,16 @@ function LedgerItem({
       className="flex items-start gap-3 rounded-2xl p-4"
       style={{ background: 'var(--gl-canvas)', border: '1px solid var(--gl-hair)' }}
     >
-      <span style={{ flex: 'none', marginTop: 1, color: 'var(--gl-accent-ink)' }}>
+      {/* Cor do ícone segue o estado real: falha É vermelho (--gl-sev), igual ao
+          resto do funil (wz-diag-finding.bad, wz-err) — antes ficava sempre no
+          verde de sucesso (--gl-accent-ink), inclusive quando a missão falhava. */}
+      <span
+        style={{
+          flex: 'none',
+          marginTop: 1,
+          color: failed ? 'var(--gl-sev)' : 'var(--gl-accent-ink)',
+        }}
+      >
         {failed ? (
           <AlertTriangle size={18} />
         ) : done ? (
