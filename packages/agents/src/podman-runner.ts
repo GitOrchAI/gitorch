@@ -39,6 +39,20 @@ export interface CreatePodmanCommandRunnerOptions {
   mounts?: PodmanMount[]
   /** Limite de memória do container (formato do podman, ex.: '2g'). */
   memoryLimit?: string
+  /**
+   * Limite de memória+swap do container (formato do podman, ex.: '2g'). Vira
+   * `--memory-swap`. Default: igual a `memoryLimit` — ou seja, ZERO swap
+   * adicional além do teto de RAM.
+   *
+   * SEM ISTO, provado ao vivo nesta VM que o podman deixa o container
+   * escapar do `--memory` nominal: com `--memory=64m` sem `--memory-swap`
+   * explícito, um processo que aloca 100MB (bem acima do teto) SOBREVIVE —
+   * o rootless/crun aplica `memory.swap.max` igual ao `memory.max` por
+   * padrão (permite até ~2x o teto antes do OOM killer agir). Passando
+   * `--memory-swap` igual a `--memory` fecha essa folga: o mesmo teste
+   * (100MB contra teto de 64m) é morto (SIGKILL, exit 137).
+   */
+  memorySwapLimit?: string
   /** Limite de processos dentro do container. */
   pidsLimit?: number
   /** Runner usado para executar o podman em si (injetável para teste). */
@@ -73,6 +87,10 @@ export function createPodmanCommandRunner(
     // Nome fixo por execução: permite matar o container se o cliente podman for
     // morto por timeout (senão o agente segue rodando órfão, segurando RAM).
     const containerName = `gitorch-mission-${randomUUID()}`
+    const memoryLimit = options.memoryLimit ?? '2g'
+    // Default = o próprio memoryLimit: zero swap adicional (ver comentário da
+    // opção). Só concede mais folga se o operador configurar explicitamente.
+    const memorySwapLimit = options.memorySwapLimit ?? memoryLimit
 
     const args: string[] = [
       'run',
@@ -87,7 +105,9 @@ export function createPodmanCommandRunner(
       // arquivos criados no workspace continuam legíveis pelo host (rootless).
       ...(userNamespace ? [`--userns=${userNamespace}`] : []),
       '--memory',
-      options.memoryLimit ?? '2g',
+      memoryLimit,
+      '--memory-swap',
+      memorySwapLimit,
       '--pids-limit',
       String(options.pidsLimit ?? 512),
       // Diretório de runtime gravável para CLIs que abrem sockets locais.
