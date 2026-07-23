@@ -21,6 +21,19 @@ export type ExecutionLimitsMode = 'systemd' | 'none'
 export interface ExecutionLimits {
   /** Ex.: '2G'. Vira `-p MemoryMax=<memoryMax>` do systemd-run. */
   memoryMax: string
+  /**
+   * Ex.: '0'. Vira `-p MemorySwapMax=<memorySwapMax>` do systemd-run.
+   *
+   * SEM ISTO, `MemoryMax` sozinho NÃO mata o processo: provado ao vivo nesta
+   * VM (9GB de swap) que um processo alocando 300MB contra um MemoryMax=64M
+   * termina normal (exit 0) — o kernel deixa o processo escorrer pra swap em
+   * vez de matar. `MemorySwapMax=0` fecha essa fuga (proíbe qualquer swap
+   * ADICIONAL além do MemoryMax): o mesmo teste, com o flag, mata o processo
+   * (SIGKILL do OOM killer do cgroup, exit 137). Configurável por env porque,
+   * em tese, um operador pode querer permitir alguma folga de swap — mas o
+   * default é o valor que REALMENTE protege a VM.
+   */
+  memorySwapMax: string
   /** Ex.: '150%'. Vira `-p CPUQuota=<cpuQuota>` do systemd-run. */
   cpuQuota: string
 }
@@ -62,9 +75,17 @@ export function isBinaryOnPath(binary: string, env: NodeJS.ProcessEnv = process.
 }
 
 /**
- * Prefixa `cmd args` com `systemd-run --scope --quiet -p MemoryMax=<x> -p
- * CPUQuota=<y> --` quando o modo é 'systemd' E o binário existe no PATH. Em
- * qualquer outro caso devolve o comando intacto (cru) — nunca lança.
+ * Prefixa `cmd args` com `systemd-run --user --scope --quiet -p MemoryMax=<x>
+ * -p MemorySwapMax=<z> -p CPUQuota=<y> --` quando o modo é 'systemd' E o
+ * binário existe no PATH. Em qualquer outro caso devolve o comando intacto
+ * (cru) — nunca lança.
+ *
+ * `--user`: testado ao vivo nas duas formas (com e sem `--user`) — o cgroup
+ * `--user` MATA corretamente contanto que `MemorySwapMax` esteja presente
+ * (sem ele, nem `--user` nem o modo system-wide matam, porque o processo
+ * escorre pra swap). Mantido `--user` porque o executor roda como usuário sem
+ * privilégio (sem sudo em produção) e o cgroup de usuário já basta para
+ * matar de verdade quando `MemorySwapMax` fecha a fuga de swap.
  */
 export function wrapWithLimits(
   cmd: string,
@@ -87,6 +108,8 @@ export function wrapWithLimits(
       '--quiet',
       '-p',
       `MemoryMax=${limits.memoryMax}`,
+      '-p',
+      `MemorySwapMax=${limits.memorySwapMax}`,
       '-p',
       `CPUQuota=${limits.cpuQuota}`,
       '--',

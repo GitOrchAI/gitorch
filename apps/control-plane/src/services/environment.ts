@@ -70,8 +70,11 @@ const DEFAULT_BOOTSTRAP_TIMEOUT_MS = 10 * 60 * 1000
 // execução de missões — GITORCH_EXEC_LIMITS=systemd (com systemd-run no
 // PATH) prefixa o comando com o cgroup transitório; em qualquer outro caso
 // (default) o comando roda cru, sem alterar o comportamento atual da VM.
+// MemorySwapMax default '0': sem ele, MemoryMax sozinho não mata (o processo
+// escorre pra swap) — ver comentário em packages/agents/execution-limits.ts.
 const BOOTSTRAP_EXEC_LIMITS: ExecutionLimits = {
   memoryMax: process.env['GITORCH_EXEC_MEMORY_MAX'] ?? '2G',
+  memorySwapMax: process.env['GITORCH_EXEC_MEMORY_SWAP_MAX'] ?? '0',
   cpuQuota: process.env['GITORCH_EXEC_CPU_QUOTA'] ?? '150%',
 }
 
