@@ -70,7 +70,7 @@
       "fastify": "5.9.0",
       "import-in-the-middle": "3.2.0",
       "minimatch": "10.2.5",
-      "postcss": "8.5.16",
+      "postcss": "8.5.18",
       "vite": "8.1.5",
       "tar": "7.5.19",
       "tar-fs": "^3.1.2",
