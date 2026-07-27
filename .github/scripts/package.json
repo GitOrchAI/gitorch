@@ -42,7 +42,8 @@
     "tsx": "4.22.4",
     "eslint": {
       "brace-expansion": "1.1.16"
-    }
+    },
+    "postcss": "8.5.18"
   },
   "engines": {
     "node": ">=20.0.0"
