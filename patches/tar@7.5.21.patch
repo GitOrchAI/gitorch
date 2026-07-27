@@ -49,7 +49,7 @@ index 3bbdad99bcd8a0cca15261a89eac0b08bee51de1..b56777ab946311dc0cc3982299dfc59c
          this[ENSURE_NO_SYMLINK](entry, this.cwd, parts, () => this[LINK](entry, linkpath, 'link', done), er => {
              this[ONERROR](er, entry);
 diff --git a/package.json b/package.json
-index 9d082e4404947775276e0d6278516aadaab8bcbe..a77f8b25494e3781b55daec2c3ae0d3beaf6c6ac 100644
+index 7fd782b12c3d5859f770962154f2ebdf54e747e6..5c71ec7f3088948ac9f6821a1be719c0b30b723b 100644
 --- a/package.json
 +++ b/package.json
 @@ -59,11 +59,11 @@
