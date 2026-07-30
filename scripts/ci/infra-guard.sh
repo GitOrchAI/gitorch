@@ -10,6 +10,15 @@
 # de nuvem/SaaS. O público não pode citar esse repo, seus arquivos de versão
 # de motores nem seus caminhos de infra — ver denylist abaixo.
 #
+# DUAS CAMADAS de proteção:
+#   1) CONTEÚDO — denylist de padrões (IPs, hostnames, paths, chave privada e
+#      tokens/credenciais: Anthropic, GitHub, AWS, Slack) nas linhas do diff.
+#   2) CAMINHO — barra a própria PRESENÇA no git de artefatos locais de
+#      VM/agente (.claude/, .gemini/, .cursor/, .phase/, scratchpad/,
+#      graphify-out/, *.sqlite), mesmo que o conteúdo não contenha segredo.
+#      É defesa em profundidade além do .gitignore: um `git add -f` forçado
+#      ainda seria pego aqui, no CI.
+#
 # MODOS:
 #   (padrão)  diff  — varre só as LINHAS ADICIONADAS vs a base (INFRA_GUARD_BASE
 #                     ou origin/main). Pega vazamentos NOVOS sem quebrar por
@@ -30,13 +39,23 @@
 # abaixo são escopados ao contexto do repo privado (gitorch-cloud / engine
 # version) em vez de bare.
 #
+# EXCEÇÃO DOCUMENTADA: os padrões de token/credencial (camada 1) NÃO varrem
+# '**/*.example', '**/__fixtures__/**' nem '**/*.test.ts' — são tokens FAKE de
+# propósito (ex.: 'sk-ant-oat01-FAKE' em testes, placeholders em .env.example,
+# stdout capturado/redigido em fixture). O check de CAMINHO (camada 2), por
+# ser sobre o arquivo em si e não sobre conteúdo, NÃO usa essa exceção: um
+# '.claude/x.test.ts' sendo adicionado continua barrado.
+#
 # ESCAPE INLINE: uma linha que contenha o marcador `infra-guard-allow` é
-# isentada (use com parcimônia e justificativa no próprio comentário).
+# isentada do check de CONTEÚDO (use com parcimônia e justificativa no próprio
+# comentário). Não existe escape para o check de CAMINHO — esses diretórios/
+# extensão nunca devem ser rastreados no git, ponto.
 #
 # Uso:
 #   scripts/ci/infra-guard.sh                 # gate diff (base = origin/main)
 #   INFRA_GUARD_BASE=<sha> scripts/ci/infra-guard.sh
 #   scripts/ci/infra-guard.sh --all           # auditoria completa
+#   scripts/ci/infra-guard.sh --diff-file=-   # lê um unified diff do stdin (testes)
 set -euo pipefail
 
 MODE="diff"
@@ -50,7 +69,7 @@ for arg in "$@"; do
     # chamá-lo do git. Serve para testes e para um hook pre-receive.
     --diff-file=*) DIFF_FILE="${arg#--diff-file=}" ;;
     -h | --help)
-      sed -n '2,37p' "$0"
+      sed -n '2,58p' "$0"
       exit 0
       ;;
     *)
@@ -59,6 +78,14 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+# stdin só pode ser lido uma vez: se vier de '--diff-file=-', captura logo aqui
+# (uma única leitura) para os dois checks (conteúdo e caminho) reutilizarem.
+# Não faz sentido em --all (ignora DIFF_FILE) — não trava esperando stdin.
+STDIN_DIFF=""
+if [[ "$MODE" != "all" && "$DIFF_FILE" == "-" ]]; then
+  STDIN_DIFF="$(cat)"
+fi
 
 # Fronteiras de octeto: matam falsos-positivos de dados decimais/coordenadas
 # (ex.: paths de SVG com "10.9.6.1") exigindo que o IP não esteja embutido numa
@@ -78,6 +105,10 @@ PATTERNS=(
   'gitorch-cloud'                                                              # repo IRMÃO privado — nunca citar no público
   'engines?[/-]manifest\.json'                                                 # manifest de versão de motores (arquivo do privado; NÃO usar "manifest.json" solto — colide com public/manifest.json de PWA em apps/web)
   'gitorch-cloud[/-]infra'                                                     # infra/ do repo privado (NÃO usar "infra/" solto — colidiria com tooling público legítimo que venha a existir, ex.: self-host /init)
+  'sk-ant-[A-Za-z0-9_-]{8,}'                                                   # chave/token Anthropic (API key ou OAuth Claude Code, ex.: sk-ant-oat01-...)
+  'gh[pousr]_[A-Za-z0-9]{20,}'                                                 # token GitHub (ghp_ pessoal, gho_ oauth, ghu_ user-to-server, ghs_ server-to-server, ghr_ refresh)
+  'AKIA[0-9A-Z]{12,}'                                                          # AWS access key id
+  'xox[baprs]-[A-Za-z0-9-]{10,}'                                               # token Slack (bot/app/user/refresh/legacy)
 )
 
 # Junta a denylist numa única alternação ERE.
@@ -86,12 +117,18 @@ JOINED="$(
   printf '%s' "${PATTERNS[*]}"
 )"
 
-# Arquivos que o guard NÃO varre — contêm os próprios padrões da denylist e
-# casariam a si mesmos. Também exclui o lockfile (ruído, sem infra nossa).
+# Arquivos que o CHECK DE CONTEÚDO não varre — os dois primeiros contêm os
+# próprios padrões da denylist e casariam a si mesmos; o lockfile é ruído sem
+# infra nossa; os três últimos legitimamente citam tokens FAKE (exemplo,
+# fixture de teste, teste automatizado) — ver exceção documentada acima. Isso
+# NÃO afeta o check de CAMINHO (scan_paths), que é independente.
 EXCLUDES=(
   ':(exclude)scripts/ci/infra-guard.sh'
   ':(exclude).github/workflows/infra-guard.yml'
   ':(exclude)pnpm-lock.yaml'
+  ':(exclude)**/*.example'
+  ':(exclude)**/__fixtures__/**'
+  ':(exclude)**/*.test.ts'
 )
 
 ALLOW_MARK='infra-guard-allow'
@@ -99,7 +136,7 @@ ALLOW_MARK='infra-guard-allow'
 # Emite `arquivo:linha:conteúdo` para cada LINHA ADICIONADA no diff vs a base.
 scan_diff() {
   if [[ -n "$DIFF_FILE" ]]; then
-    if [[ "$DIFF_FILE" == "-" ]]; then cat; else cat "$DIFF_FILE"; fi
+    if [[ "$DIFF_FILE" == "-" ]]; then printf '%s\n' "$STDIN_DIFF"; else cat "$DIFF_FILE"; fi
   else
     local base="$BASE_REF"
     if ! git rev-parse --verify --quiet "${base}^{commit}" >/dev/null 2>&1; then
@@ -122,6 +159,31 @@ scan_diff() {
   '
 }
 
+# --- Camada 2: check de CAMINHO (defesa em profundidade) --------------------
+# Barra a própria presença no git de artefatos locais de VM/agente, sem olhar
+# conteúdo. NÃO usa os EXCLUDES de teste/fixture do check de conteúdo — um
+# '.claude/x.test.ts' sendo adicionado deve continuar barrado por aqui.
+PATH_DENY_RE='(^(\.claude|\.gemini|\.cursor|\.phase|scratchpad|graphify-out)/)|(\.sqlite$)'
+
+# Emite um path por linha: no modo diff, arquivos com linha NOVA (+++ b/...)
+# no diff (real ou vindo de --diff-file); no modo --all, todo arquivo já
+# rastreado no repo (git ls-files).
+scan_paths() {
+  if [[ "$MODE" == "all" ]]; then
+    git ls-files
+    return
+  fi
+  if [[ -n "$DIFF_FILE" ]]; then
+    if [[ "$DIFF_FILE" == "-" ]]; then printf '%s\n' "$STDIN_DIFF"; else cat "$DIFF_FILE"; fi
+  else
+    local base="$BASE_REF"
+    if ! git rev-parse --verify --quiet "${base}^{commit}" >/dev/null 2>&1; then
+      base="$(git rev-parse --verify --quiet 'HEAD~1^{commit}' || git rev-parse HEAD)"
+    fi
+    git diff --unified=0 "${base}...HEAD" -- .
+  fi | grep -E '^\+\+\+ b/' | sed -E 's#^\+\+\+ b/##'
+}
+
 # Coleta as linhas candidatas conforme o modo, aplica a denylist e o escape.
 if [[ "$MODE" == "all" ]]; then
   candidates="$(git grep -nIE "$JOINED" -- . "${EXCLUDES[@]}" 2>/dev/null || true)"
@@ -131,14 +193,28 @@ fi
 
 matches="$(printf '%s\n' "$candidates" | grep -Fv "$ALLOW_MARK" | sed '/^[[:space:]]*$/d' || true)"
 
-if [[ -n "$matches" ]]; then
+path_matches="$(scan_paths | grep -E "$PATH_DENY_RE" | sed '/^[[:space:]]*$/d' || true)"
+
+if [[ -n "$matches" || -n "$path_matches" ]]; then
   {
-    echo "❌ infra-guard: padrão de infra proibido encontrado (modo: $MODE)."
-    echo "   Segredos/IPs/hostnames/paths da nossa VM não podem entrar no repo público."
-    echo "   Se for legítimo e público, use env var (ex.: default /var/lib/gitorch) ou"
-    echo "   marque a linha com 'infra-guard-allow' justificando. Ocorrências:"
-    echo
-    printf '%s\n' "$matches"
+    if [[ -n "$matches" ]]; then
+      echo "❌ infra-guard: padrão de infra proibido encontrado (modo: $MODE)."
+      echo "   Segredos/IPs/hostnames/paths da nossa VM não podem entrar no repo público."
+      echo "   Se for legítimo e público, use env var (ex.: default /var/lib/gitorch) ou"
+      echo "   marque a linha com 'infra-guard-allow' justificando. Ocorrências:"
+      echo
+      printf '%s\n' "$matches"
+    fi
+    if [[ -n "$path_matches" ]]; then
+      [[ -n "$matches" ]] && echo
+      echo "❌ infra-guard: artefato local de VM/agente não pode entrar no git — está no .gitignore (modo: $MODE)."
+      echo "   Caminhos sob .claude/, .gemini/, .cursor/, .phase/, scratchpad/ ou"
+      echo "   graphify-out/, e qualquer *.sqlite, são locais/efêmeros da VM/agente —"
+      echo "   nunca do repo público. Remova do commit (git rm --cached <arquivo>)."
+      echo "   Ocorrências:"
+      echo
+      printf '%s\n' "$path_matches"
+    fi
   } >&2
   exit 1
 fi

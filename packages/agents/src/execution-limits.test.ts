@@ -33,7 +33,7 @@ describe('isBinaryOnPath', () => {
 })
 
 describe('wrapWithLimits', () => {
-  const limits = { memoryMax: '2G', cpuQuota: '150%' }
+  const limits = { memoryMax: '2G', memorySwapMax: '0', cpuQuota: '150%' }
 
   test('modo none (default) devolve o comando cru, intacto', () => {
     const result = wrapWithLimits('claude', ['-p', 'oi'], limits, { env: {} })
@@ -54,7 +54,7 @@ describe('wrapWithLimits', () => {
       if (dir) rmSync(dir, { recursive: true, force: true })
     })
 
-    test('monta o argv certo: --scope --quiet -p MemoryMax=<x> -p CPUQuota=<y> -- <cmd> <args>', () => {
+    test('monta o argv certo: --user --scope --quiet -p MemoryMax=<x> -p MemorySwapMax=<z> -p CPUQuota=<y> -- <cmd> <args>', () => {
       dir = mkdtempSync(join(tmpdir(), 'gitorch-systemd-run-'))
       writeFileSync(join(dir, 'systemd-run'), '#!/bin/sh\nexit 0\n')
       chmodSync(join(dir, 'systemd-run'), 0o755)
@@ -66,10 +66,13 @@ describe('wrapWithLimits', () => {
       expect(result).toEqual({
         binary: 'systemd-run',
         args: [
+          '--user',
           '--scope',
           '--quiet',
           '-p',
           'MemoryMax=2G',
+          '-p',
+          'MemorySwapMax=0',
           '-p',
           'CPUQuota=150%',
           '--',
@@ -78,6 +81,27 @@ describe('wrapWithLimits', () => {
           'oi',
         ],
       })
+    })
+
+    // Regressão: esta é a alma da task W5.3 — provado ao vivo que SEM
+    // MemorySwapMax, MemoryMax sozinho não mata o processo (ele escorre pra
+    // swap). Este teste garante que o argv sempre carrega o -p MemorySwapMax,
+    // não importa o valor configurado.
+    test('regressão: MemorySwapMax sempre presente no argv (sem ele, o teto não mata — provado ao vivo)', () => {
+      dir = mkdtempSync(join(tmpdir(), 'gitorch-systemd-run-'))
+      writeFileSync(join(dir, 'systemd-run'), '#!/bin/sh\nexit 0\n')
+      chmodSync(join(dir, 'systemd-run'), 0o755)
+
+      const result = wrapWithLimits(
+        'claude',
+        ['-p', 'oi'],
+        { memoryMax: '64M', memorySwapMax: '0', cpuQuota: '150%' },
+        { env: { GITORCH_EXEC_LIMITS: 'systemd', PATH: dir } }
+      )
+
+      const idx = result.args.indexOf('-p')
+      expect(result.args).toContain('MemorySwapMax=0')
+      expect(idx).toBeGreaterThanOrEqual(0)
     })
 
     test('preserva args vazios do comando original (sem prompt posicional, ex.: promptViaStdin)', () => {

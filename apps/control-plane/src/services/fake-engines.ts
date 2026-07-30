@@ -60,7 +60,7 @@ export const FAKE_LIVENESS_DEPS: CheckLivenessDeps = {
 // `claude setup-token` real emite "sk-ant-oat01-<corpo>"; extractClaudeToken
 // (device-prompt-parser.ts) exige corpo >= 8 chars. O fake respeita a MESMA
 // forma para exercitar o parser real, não um atalho que o contorna.
-const FAKE_CLAUDE_TOKEN = `sk-ant-oat01-fake-e2e-${'a'.repeat(24)}`
+const FAKE_CLAUDE_TOKEN = `sk-ant-oat01-fake-e2e-${'a'.repeat(24)}` // infra-guard-allow: fake determinístico do E2E (GITORCH_FAKE_ENGINES), não é credencial real
 
 // Inverso de BINARY (assisted-login.ts) — não exportado de lá, pequeno o
 // bastante para duplicar aqui sem acoplar os dois módulos.

@@ -115,14 +115,20 @@ export default function StepTelegram({ apiBaseUrl, onNext, onBack }: StepTelegra
         )}
 
         {linked && (
-          <div className="flex items-center gap-2 wz-opt-title" style={{ fontSize: '0.9rem' }}>
+          // Vínculo confirmado = mesmo verde de sucesso do resto do funil
+          // (wz-ok, usado em StepConnectEngine/StepSelectRepos/StepReady) — antes
+          // ficava na cor de texto padrão (wz-opt-title), sem sinalizar sucesso.
+          <div className="flex items-center gap-2 wz-ok" style={{ fontSize: '0.9rem' }}>
             <Check size={16} />
             <span>{t('setup.tgLinked')}</span>
           </div>
         )}
 
         {state.phase === 'error' && (
-          <div className="flex items-center gap-2 wz-opt-desc">
+          // Mensagem de erro real precisa de --gl-sev (wz-err), igual a todo
+          // outro erro do funil — usava wz-opt-desc (cinza neutro), o mesmo
+          // padrão de bug que reabriu esta task.
+          <div className="flex items-center gap-2 wz-err">
             <AlertCircle size={16} />
             <span>{state.message}</span>
           </div>

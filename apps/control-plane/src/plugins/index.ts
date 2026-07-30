@@ -19,6 +19,7 @@ import { telegramPlugin } from './telegram.js'
 import { cortexPlugin } from './cortex.js'
 import { enginesPlugin } from './engines.js'
 import { corsPlugin } from './cors.js'
+import { devAgentQuestionRoutes } from '../routes/dev-agent-question.js'
 import {
   fakeEnginesEnabled,
   FAKE_LIVENESS_DEPS,
@@ -131,5 +132,14 @@ export async function registerPlugins(app: FastifyInstance, env: Env): Promise<v
   await app.register(schedulerPlugin)
   // Ouve o bot do Telegram: é por aqui que o `/start <token>` do cliente vira o
   // chat_id vinculado — sem isto o passo 8 do wizard nunca sai de "aguardando".
+  // Decora `app.agentQuestionService` (notify + Cortex ligados) — precisa vir
+  // ANTES da rota de dev abaixo, que reusa essa MESMA instância.
   await app.register(telegramPlugin)
+
+  // Rota de DEV isolada (W3.5.1 — Prova real): dispara a dúvida real das
+  // cores oficiais pra provar o loop human-in-the-loop no gate do dono.
+  // Desligada por padrão (flag GITORCH_DEV_ROUTES, não NODE_ENV — o ambiente
+  // dev deployado roda NODE_ENV=production). Arquivo isolado em
+  // routes/dev-agent-question.ts pra não conflitar com routes/setup.ts.
+  await app.register(devAgentQuestionRoutes)
 }

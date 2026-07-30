@@ -11,11 +11,16 @@ import { wrapWithLimits, type ExecutionLimits } from './execution-limits'
 const execFileAsync = promisify(execFile)
 
 // Teto por execução (ver execution-limits.ts). Configurável por env; o
-// default (2G/150%) é o valor da radiografia para a VM dev (ARM 4CPU/11GB) —
+// default (2G/0/150%) é o valor da radiografia para a VM dev (ARM 4CPU/11GB) —
 // só entra em vigor quando GITORCH_EXEC_LIMITS=systemd; caso contrário o
 // comando roda cru, exatamente como antes desta mudança.
+//
+// MemorySwapMax default '0' (proíbe swap ADICIONAL além do MemoryMax): sem
+// isto, provado ao vivo que MemoryMax sozinho NÃO mata o processo nesta VM
+// (9GB de swap) — ele escorre e termina normal. Ver execution-limits.ts.
 const EXEC_LIMITS: ExecutionLimits = {
   memoryMax: process.env['GITORCH_EXEC_MEMORY_MAX'] ?? '2G',
+  memorySwapMax: process.env['GITORCH_EXEC_MEMORY_SWAP_MAX'] ?? '0',
   cpuQuota: process.env['GITORCH_EXEC_CPU_QUOTA'] ?? '150%',
 }
 

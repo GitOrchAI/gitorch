@@ -45,6 +45,12 @@ function fakePrisma() {
         return rec
       }),
     },
+    // A rota /clone agora lê o plano REAL do usuário (User.planId +
+    // Plan.maxProjects) pra o teto de repos — anti-burla. Estes testes cobrem o
+    // COMPORTAMENTO do clone (o limite em si é testado em setup.test.ts), então
+    // o plano aqui é permissivo pra nunca bloquear a seleção sob teste.
+    user: { findUnique: vi.fn(async () => ({ planId: 'free' })) },
+    plan: { findUnique: vi.fn(async () => ({ maxProjects: 50 })) },
   }
 }
 

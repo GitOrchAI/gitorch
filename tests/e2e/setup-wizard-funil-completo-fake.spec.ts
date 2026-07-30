@@ -156,7 +156,17 @@ test('funil completo do setup wizard: login → termos → repo → diagnóstico
     await page.getByRole('button', { name: /accept|aceitar/i }).click()
   })
 
-  await test.step('passo 4: seleção de repo (listagem interceptada) + clone real (fixture pública)', async () => {
+  await test.step('passo 4: escolha de hospedagem (Nossa Nuvem)', async () => {
+    // Passo novo (W4): "Nossa Nuvem vs Minha VM". A nuvem é o default e o único
+    // que segue o funil (VM = self-host "em breve", com o Continuar travado).
+    // Garante a nuvem selecionada e avança.
+    const cloudCard = page.getByRole('button', { name: /GitOrch Cloud|Nossa Nuvem|Nuestra Nube/i })
+    await expect(cloudCard).toBeVisible({ timeout: 15000 })
+    await cloudCard.click()
+    await page.getByRole('button', { name: /^(continue|continuar)/i }).click()
+  })
+
+  await test.step('passo 5: seleção de repo (listagem interceptada) + clone real (fixture pública)', async () => {
     const search = page.getByPlaceholder(/search repository|buscar reposit/i)
     await expect(search).toBeVisible({ timeout: 15000 })
     await search.fill('gitorch-e2e-fixture')

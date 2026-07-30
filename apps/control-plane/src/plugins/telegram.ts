@@ -3,8 +3,12 @@ import { FastifyInstance } from 'fastify'
 import {
   getTelegramUpdates,
   handleTelegramUpdate,
+  handleTelegramCallback,
   sendTelegramMessage,
+  sendTelegramQuestion,
 } from '../services/telegram-bot.js'
+import { resolveNotifyChatId } from '../services/telegram-link.js'
+import { AgentQuestionService, type AgentQuestionRecord } from '../services/agent-question.js'
 
 // O ouvido do bot. Sem ele, o deep link do passo 8 abriria o Telegram, o cliente
 // apertaria Start... e ninguém estaria escutando — o `chat_id` (a única coisa
@@ -24,6 +28,52 @@ const ERROR_BACKOFF_MS = 15_000
 
 export const telegramPlugin = fp(async (app: FastifyInstance) => {
   const botToken = process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN']
+
+  // Notifica o dono de uma AgentQuestion nova pelo Telegram (épico W3.3): sem
+  // vínculo, no-op — a dúvida já existe e o painel é sempre o fallback
+  // (contrato best-effort de AgentQuestionService.ask). Guarda o message_id
+  // devolvido pra futura edição/confirmação (`telegramMessageId`). SÓ existe
+  // com bot token — sem ele, `ask()` cria a dúvida mas não notifica (degrada
+  // com clareza, nunca lança).
+  const notifyOwner = botToken
+    ? async (question: AgentQuestionRecord): Promise<void> => {
+        const chatId = await resolveNotifyChatId(app.prisma, { userId: question.userId })
+        if (!chatId) return
+
+        const options = Array.isArray(question.options)
+          ? (question.options as unknown as { label: string; value: string }[])
+          : []
+        const messageId = await sendTelegramQuestion({
+          botToken,
+          chatId,
+          questionId: question.id,
+          text: question.text,
+          options,
+        })
+        if (messageId !== undefined) {
+          await app.prisma.agentQuestion.update({
+            where: { id: question.id },
+            data: { telegramMessageId: messageId },
+          })
+        }
+      }
+    : undefined
+
+  // A API interna que qualquer agente chama pra registrar uma dúvida
+  // (docs/superpowers/specs/2026-07-21-w3-telegram-duvidas-design.md). O
+  // notify real (Telegram) e o Cortex (memória de longo prazo das decisões)
+  // ficam ligados aqui — é este service que também resolve o clique do botão
+  // (`handleTelegramCallback`, abaixo).
+  //
+  // DECORADO SEMPRE (mesmo sem bot token, mesmo em teste): outras rotas que
+  // registram dúvidas (ex.: routes/dev-agent-question.ts, W3.5.1) reusam esta
+  // MESMA instância via `app.agentQuestionService`, pra criar E notificar
+  // pelo mesmo caminho de produção em vez de duplicar a ligação com o Cortex.
+  const agentQuestionService = new AgentQuestionService(app.prisma, {
+    ...(notifyOwner ? { notify: notifyOwner } : {}),
+    cortex: app.cortex,
+  })
+  app.decorate('agentQuestionService', agentQuestionService)
 
   // Em teste não se abre laço nem socket (paridade com o scheduler): a lógica
   // toda é testada nos serviços, sem rede.
@@ -64,6 +114,17 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
         offset = result.nextOffset
 
         for (const update of result.updates) {
+          if (update.callback_query) {
+            // Clique num botão de AgentQuestion (épico W3.3) — roteamento
+            // próprio, com guard anti cross-tenant embutido em
+            // handleTelegramCallback. Nunca é também um /start: são tipos de
+            // update mutuamente exclusivos.
+            await handleTelegramCallback(
+              { prisma: app.prisma, agentQuestionService, botToken },
+              update
+            )
+            continue
+          }
           const reply = await handleTelegramUpdate(app.prisma, update)
           if (!reply) continue
           await sendTelegramMessage({ botToken, chatId: reply.chatId, text: reply.text })
@@ -90,5 +151,17 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
     controller.abort()
   })
 })
+
+declare module 'fastify' {
+  interface FastifyInstance {
+    /**
+     * A instância ÚNICA de AgentQuestionService com notify (Telegram) + Cortex
+     * já ligados (ver acima). Sempre decorada quando este plugin está
+     * registrado — outras rotas reusam em vez de instanciar um serviço
+     * "mudo" (sem notify) por engano.
+     */
+    agentQuestionService?: AgentQuestionService
+  }
+}
 
 export default telegramPlugin
