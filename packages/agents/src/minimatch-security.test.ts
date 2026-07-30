@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { minimatch, Minimatch } from 'minimatch'
+import { expand } from 'brace-expansion'
 
 describe('Minimatch Security (ReDoS)', () => {
   it('should not generate exponential backtracking regex for nested extglobs', () => {
@@ -60,5 +61,24 @@ describe('Minimatch Security (ReDoS)', () => {
     expect(result).toBe(false)
     // In vulnerable versions, this pattern would take effectively forever
     expect(duration).toBeLessThan(100)
+  })
+})
+
+describe('Brace Expansion Security (CVE-2026-14257)', () => {
+  it('should handle large brace expansion safely without causing process crash (OOM)', () => {
+    // Input that used to crash vulnerable versions (< 5.0.8) with an uncatchable Out-Of-Memory error
+    const input = '{a,b}'.repeat(1500)
+
+    const start = performance.now()
+    // In version 5.0.8, the maxLength option limits the total length of the expanded output
+    // and returns a truncated/bounded array rather than crashing the process.
+    const result = expand(input)
+    const duration = performance.now() - start
+
+    expect(Array.isArray(result)).toBe(true)
+    // The result should be truncated/bounded
+    expect(result.length).toBeLessThanOrEqual(100000)
+    // Verify that it completed safely and in reasonable time
+    expect(duration).toBeLessThan(1500) // generous timeout for slow CI environments
   })
 })
