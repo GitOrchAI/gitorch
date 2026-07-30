@@ -158,16 +158,16 @@ function claudeUsageFields(r: {
   }
 }
 
-// 21/07: substitui isClaudeQuotaManagedByPlan (removida) — correção de um erro
-// real. O dono rejeitou a legenda genérica "cota gerenciada pela sua
-// assinatura" ("sobre quota nao aceito isso... tem que coletar!"), e ele tinha
-// razão: os headers de rate limit da API da Anthropic COLETAM a quota de
-// verdade (% usado da sessão e da semana + reset de cada uma). Esta função
-// decide quando existe dado REAL pra mostrar (nunca mais uma legenda
-// genérica no lugar do silêncio).
-export function hasClaudeUsageData(runtime: string, state: LoginState): boolean {
+// TODOS os 3 motores expõem a quota como % USADO de janela(s) de sessão/semana
+// — Claude (headers da API), Codex (evento rate_limits), Antigravity (/usage no
+// chat). Antes gated em `runtime === 'claude'` (a coleta começou pelo Claude),
+// o que fazia Codex/Antigravity NÃO mostrarem a quota no card mesmo tendo o
+// dado — achado ao vivo 21/07: o Codex conectava com "semana 8% usada" no
+// backend, mas o card não desenhava nada. Sem gate de runtime: qualquer motor
+// com os campos preenchidos exibe. (Substituiu isClaudeQuotaManagedByPlan, a
+// legenda genérica que o dono rejeitou — "tem que coletar!".)
+export function hasUsageWindowData(state: LoginState): boolean {
   return (
-    runtime === 'claude' &&
     state.phase === 'connected' &&
     (typeof state.sessionPercentUsed === 'number' || typeof state.weekPercentUsed === 'number')
   )
@@ -201,6 +201,22 @@ export function formatClaudeUsage(state: LoginState, labels: ClaudeUsageLabels):
   return parts.length > 0 ? parts.join(' · ') : null
 }
 
+// Formata o horário de reset da quota (ex.: "2026-07-26T17:00:47.000Z", um ISO
+// vindo do backend) numa data curta e legível no FUSO do navegador — "26/07
+// 14:00" em vez do ISO cru que o dono via no card (21/07). Se `resetsAt` não
+// for uma data parseável (um formato de texto legado), devolve como veio (nunca
+// esconde a informação). `undefined` no locale usa o do próprio navegador.
+export function formatResetTime(resetsAt: string): string {
+  const ts = Date.parse(resetsAt)
+  if (Number.isNaN(ts)) return resetsAt
+  return new Date(ts).toLocaleString(undefined, {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
 function formatClaudeUsageWindow(
   windowLabel: string,
   percentUsed: number | null | undefined,
@@ -208,7 +224,7 @@ function formatClaudeUsageWindow(
   labels: ClaudeUsageLabels
 ): string | null {
   if (typeof percentUsed !== 'number') return null
-  const reset = resetsAt ? ` (${labels.resets} ${resetsAt})` : ''
+  const reset = resetsAt ? ` (${labels.resets} ${formatResetTime(resetsAt)})` : ''
   return `${windowLabel}: ${percentUsed}% ${labels.used}${reset}`
 }
 

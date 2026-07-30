@@ -17,6 +17,7 @@ export type SetupErrorCode =
   | 'DIAG_TIMEOUT'
   | 'DIAG_EMPTY_REPO'
   | 'GITHUB_TOKEN_EXPIRED'
+  | 'REPOS_EXCEED_PLAN_LIMIT'
   | 'INTERNAL'
 
 function errorMessage(err: unknown): string {

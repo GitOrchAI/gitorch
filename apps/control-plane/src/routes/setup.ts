@@ -8,6 +8,7 @@ import { resolveEngineId } from '../services/engine-connection.js'
 import { ClientEnvironmentService } from '../services/environment.js'
 import { collectAndRememberRepoContext } from '../services/repo-context-cortex.js'
 import { startTelegramLink, readTelegramLink } from '../services/telegram-link.js'
+import { AgentQuestionService, type AgentQuestionRecord } from '../services/agent-question.js'
 import {
   classifyCloneError,
   classifyGithubApiError,
@@ -148,6 +149,41 @@ function mapGitHubRepos(repos: GitHubRepo[]): Array<{
     private: repo.private,
     url: repo.html_url,
   }))
+}
+
+/** Shape público de uma dúvida de agente — o que o painel (GET .../agent-questions) recebe. */
+interface PublicAgentQuestion {
+  id: string
+  text: string
+  context: string | null
+  options: AgentQuestionOptionView[]
+  status: string
+  answer: string | null
+  answeredAt: Date | null
+  createdAt: Date
+}
+
+interface AgentQuestionOptionView {
+  label: string
+  value: string
+}
+
+// Nunca expõe campo interno/sensível (userId, telegramMessageId, dedupKey — ver
+// AgentQuestionRecord em services/agent-question.ts): o painel só EXIBE, quem
+// responde é o dono pelo Telegram. `options` sempre vira array — se o dado
+// gravado não for um array (nunca deveria acontecer, mas o Json do Prisma não
+// garante o shape em tempo de compilação), devolve `[]` em vez de lançar.
+function toPublicQuestion(q: AgentQuestionRecord): PublicAgentQuestion {
+  return {
+    id: q.id,
+    text: q.text,
+    context: q.context,
+    options: Array.isArray(q.options) ? (q.options as unknown as AgentQuestionOptionView[]) : [],
+    status: q.status,
+    answer: q.answer,
+    answeredAt: q.answeredAt,
+    createdAt: q.createdAt,
+  }
 }
 
 /**
@@ -310,6 +346,28 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
       const { repos } = request.body as { repos?: string[] }
       if (!repos || repos.length === 0) {
         return reply.code(400).send({ error: 'At least one repository must be selected' })
+      }
+      // Teto de repos por plano — lido do PLANO REAL do usuário no SERVIDOR, nunca
+      // do corpo da requisição. A versão anterior fazia `plan ?? body...` e
+      // confiava no `plan` que o cliente mandava: bastava enviar plan:'team' pra
+      // furar o limite do grátis (e o fallback `request.user.planId` era código
+      // morto — o token não carrega esse campo). Fonte única de verdade:
+      // User.planId + Plan.maxProjects (o mesmo par que o billing usa).
+      const dbUser = await app.prisma.user.findUnique({
+        where: { id: request.user.id },
+        select: { planId: true },
+      })
+      const userPlan = dbUser?.planId ?? 'free'
+      const planRow = await app.prisma.plan.findUnique({
+        where: { id: userPlan },
+        select: { maxProjects: true },
+      })
+      const maxRepos = planRow?.maxProjects ?? 1
+      if (repos.length > maxRepos) {
+        return reply.code(400).send({
+          error: `Plan limit exceeded: plan (${userPlan.toUpperCase()}) allows at most ${maxRepos} repository/repositories`,
+          code: 'REPOS_EXCEED_PLAN_LIMIT',
+        })
       }
       // Token do PRÓPRIO cliente (repo privado). Ausente em composições sem o
       // plugin de motores; clone anônimo cobre repo público.
@@ -682,6 +740,26 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
       }
       const ownerId = await resolveOwnerId(request.user)
       return reply.send(await readTelegramLink(app.prisma, ownerId))
+    }
+  )
+
+  // GET /api/v1/setup/agent-questions — o painel passa a EXIBIR as dúvidas de
+  // rumo que os agentes registram (human-in-the-loop, épico W3), READ-ONLY:
+  // responder continua sendo só pelo Telegram (services/telegram-bot.ts) —
+  // ligar o painel para responder fica pra próxima fase (backlog). Escopo por
+  // DONO resolvido por e-mail (mesmo id de toda rota acima); listForUser já
+  // filtra por userId e ordena (abertas primeiro) — a garantia anti-vazamento
+  // entre contas. toPublicQuestion nunca deixa passar campo interno.
+  app.get(
+    '/api/v1/setup/agent-questions',
+    { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      if (!request.user) {
+        return reply.code(401).send({ error: 'UNAUTHORIZED: session required' })
+      }
+      const ownerId = await resolveOwnerId(request.user)
+      const questions = await new AgentQuestionService(app.prisma).listForUser(ownerId)
+      return reply.send({ questions: questions.map(toPublicQuestion) })
     }
   )
 

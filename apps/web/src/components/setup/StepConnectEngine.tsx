@@ -7,7 +7,7 @@ import {
   classifyConnectError,
   connectErrorHintKey,
   isManualAccordionVisible,
-  hasClaudeUsageData,
+  hasUsageWindowData,
   formatClaudeUsage,
   looksLikeAuthCode,
   type LoginState,
@@ -259,17 +259,15 @@ export default function StepConnectEngine({
               </div>
 
               {/* Motor VIVO: mostra que respondeu de verdade — os NOMES dos
-                  modelos (não uma contagem) e a quota real. Claude não expõe
-                  remaining/total como Codex/Antigravity — `claude -p
-                  "/usage"` devolve % usado de sessão/semana (ver
-                  quota-reader.ts no control-plane) — hasClaudeUsageData/
-                  formatClaudeUsage mostram ESSE dado real (21/07: substitui a
-                  legenda genérica antiga "cota gerenciada pela sua
-                  assinatura", que o dono rejeitou — agora dá pra coletar). */}
+                  modelos (não uma contagem) e a quota real. Os 3 motores
+                  expõem a quota como % usado de sessão/semana (Claude via API,
+                  Codex via rate_limits, Antigravity via /usage) — ver
+                  quota-reader.ts no control-plane. hasUsageWindowData/
+                  formatClaudeUsage mostram ESSE dado real pra QUALQUER motor
+                  (21/07: antes era gated só no Claude, então o Codex/Antigravity
+                  não mostravam a quota mesmo tendo o dado). */}
               {state.phase === 'connected' &&
-                (state.models != null ||
-                  state.quota != null ||
-                  hasClaudeUsageData(runtime, state)) && (
+                (state.models != null || state.quota != null || hasUsageWindowData(state)) && (
                   <p className="wz-opt-desc" style={{ fontSize: '0.78rem' }}>
                     {[
                       state.models != null && state.models.length > 0
@@ -278,7 +276,7 @@ export default function StepConnectEngine({
                       state.quota != null
                         ? `${t('setup.connectQuotaLabel')}: ${state.quota}`
                         : null,
-                      hasClaudeUsageData(runtime, state)
+                      hasUsageWindowData(state)
                         ? formatClaudeUsage(state, {
                             session: t('setup.connectClaudeSessionLabel'),
                             week: t('setup.connectClaudeWeekLabel'),

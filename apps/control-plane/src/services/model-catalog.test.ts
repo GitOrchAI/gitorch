@@ -260,6 +260,9 @@ describe('defaultCodexWarmUp (grava gitorch-quota.json a partir do stdout)', () 
       expect(args[0]).toBe('exec')
       expect(args).toContain('--json')
       expect(env['HOME']).toBe(home)
+      // RUST_LOG=trace é o que faz o evento `rate_limits` sair (no stderr, via
+      // WebSocket) — sem isto a quota do Codex é sempre nula (bug do PR #363).
+      expect(env['RUST_LOG']).toBe('trace')
     })
   })
 

@@ -119,12 +119,22 @@ export interface AntigravityUsageWindowMatch {
   resetsAt: string | null
 }
 
-// "  Weekly Limit    [████████████████░░] 82.29%" — captura o RÓTULO da
-// janela e o percentual da barra. NUNCA depende do conteúdo entre colchetes
-// (os blocos ASCII da barra variam por terminal/versão) — só do texto fora
-// deles.
-const WINDOW_LINE_RE =
-  /^\s*(Weekly Limit|Five Hour Limit)\s*\[[^\]]*\]\s*([0-9]+(?:\.[0-9]+)?)\s*%\s*$/i
+// CORREÇÃO 21/07 (tela REAL capturada ao vivo do dono, ver
+// docs/operations/engine-collection-real-steps.md): o rótulo e a barra/percentual
+// ficam em LINHAS SEPARADAS, não na mesma linha. O formato real é:
+//     "  Weekly Limit"                              <- só o rótulo
+//     "    [████████████░░] 80.82%"                 <- a barra + percentual
+//     "    81% remaining · Refreshes in 21h 25m"    <- o caption do reset
+// O regex antigo (`Weekly Limit [barra] NN%` tudo numa linha) NUNCA casava a
+// tela real → `janelasVistas: 0` → quota nula (achado no diagnóstico do reteste
+// do dono, apesar da tela ter aparecido de verdade). Agora são dois regexes:
+// o rótulo sozinho e a barra+percentual na linha seguinte.
+const WINDOW_LABEL_RE = /^\s*(Weekly Limit|Five Hour Limit)\s*$/i
+
+// "    [████████████████░░] 80.82%" — a barra + o percentual, numa linha só
+// (a linha logo abaixo do rótulo). NUNCA depende do conteúdo entre colchetes
+// (os blocos ASCII variam por terminal/versão), só do percentual após o `]`.
+const WINDOW_BAR_RE = /\[[^\]]*\]\s*([0-9]+(?:\.[0-9]+)?)\s*%/
 
 // "    82% remaining · Refreshes in 34h 59m" — só usada pro tempo de reset
 // (o percentual em si vem da barra, ver comentário grande no topo do
@@ -157,20 +167,24 @@ export function parseAntigravityUsageWindows(
   const windows: AntigravityUsageWindowMatch[] = []
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? ''
-    const match = WINDOW_LINE_RE.exec(line)
-    if (!match) continue
+    const labelMatch = WINDOW_LABEL_RE.exec(lines[i] ?? '')
+    if (!labelMatch) continue
+    const label = labelMatch[1]
+    if (!label) continue
 
-    const label = match[1]
-    const percentRemainingRaw = match[2]
-    if (!label || !percentRemainingRaw) continue
+    // A barra + o percentual estão na PRÓXIMA linha (ver WINDOW_BAR_RE). Sem
+    // ela, a janela não tem número — ignora (não é uma janela válida).
+    const barMatch = WINDOW_BAR_RE.exec(lines[i + 1] ?? '')
+    const percentRemainingRaw = barMatch?.[1]
+    if (!percentRemainingRaw) continue
     const percentRemaining = Number(percentRemainingRaw)
     if (!Number.isFinite(percentRemaining)) continue
 
     const kind: AntigravityUsageWindowKind =
       label.toLowerCase() === 'weekly limit' ? 'weekly' : 'five_hour'
 
-    const caption = (lines[i + 1] ?? '').trim()
+    // O caption (reset OU "Quota available") vem na linha SEGUINTE à barra.
+    const caption = (lines[i + 2] ?? '').trim()
     let resetsAt: string | null = null
     if (!QUOTA_AVAILABLE_RE.test(caption)) {
       const capMatch = REMAINING_CAPTION_RE.exec(caption)
@@ -302,7 +316,27 @@ export function makeAntigravityQuotaReaderPty(
         }
       }
 
-      const timer = setTimeout(() => settle(EMPTY_ANTIGRAVITY_QUOTA), timeoutMs)
+      // Diagnóstico dos caminhos SILENCIOSOS (achado 21/07: a quota do
+      // Antigravity veio nula no reteste do dono sem NENHUM log — o timeout e o
+      // exit resolviam EMPTY sem dizer onde pararam). Loga um resumo do estado:
+      // chegou no chat? mandou /usage? o que a última tela mostrava? Tudo já
+      // limpo de ANSI e truncado (a tela do /usage não tem segredo, mas o tail
+      // curto evita despejar quilobytes no journal).
+      const diag = (motivo: string): void => {
+        const clean = stripAnsi(buffer)
+        console.warn('[antigravity-quota-reader] quota nula', {
+          motivo,
+          chatDetectado: CHAT_PROMPT_MARKER.test(clean),
+          usageEnviado: usageSent,
+          janelasVistas: parseAntigravityUsageWindows(clean, now).length,
+          tail: clean.slice(-300).replace(/\s+/g, ' ').trim(),
+        })
+      }
+
+      const timer = setTimeout(() => {
+        diag('timeout')
+        settle(EMPTY_ANTIGRAVITY_QUOTA)
+      }, timeoutMs)
 
       handle.onStdout((chunk) => {
         if (settled) return
@@ -361,7 +395,10 @@ export function makeAntigravityQuotaReaderPty(
 
       // Processo saiu (crash, kill externo, ou nunca chegou no chat) sem
       // nunca mostrar a tela do /usage — best-effort, nunca lança.
-      handle.exited.then(() => settle(EMPTY_ANTIGRAVITY_QUOTA))
+      handle.exited.then(() => {
+        if (!settled) diag('processo saiu antes do /usage')
+        settle(EMPTY_ANTIGRAVITY_QUOTA)
+      })
     })
 }
 

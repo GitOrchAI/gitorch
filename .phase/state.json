@@ -1,0 +1,169 @@
+{
+  "project": "gitorch",
+  "plan_path": "docs/superpowers/plans/2026-07-22-w5-fechamento.md",
+  "current": "completed",
+  "tree": [
+    {
+      "id": "p1",
+      "type": "phase",
+      "title": "W5 — Fechamento do Setup Wizard (segurança de dados + lixo + visual + OOM + gate final 100%)",
+      "status": "done",
+      "children": [
+        {
+          "id": "e1",
+          "type": "epic",
+          "title": "W5.0 — Segurança de dados (repo público) — PRIORIDADE #1",
+          "status": "done",
+          "children": [
+            {
+              "id": "f1",
+              "type": "feature",
+              "title": ".gitignore blindado",
+              "status": "done",
+              "children": [
+                {
+                  "id": "t1",
+                  "type": "task",
+                  "title": "W5.0.1 — endurecer .gitignore (.claude/ .phase/ .gemini/ .cursor/ *.sqlite scratchpad/) + verificar git ls-files que nada sensível está rastreado",
+                  "status": "done",
+                  "gate": {
+                    "tests": "green",
+                    "qa": "green",
+                    "commit": "20b1f06"
+                  }
+                }
+              ]
+            },
+            {
+              "id": "f2",
+              "type": "feature",
+              "title": "Guard no CI contra vazamento",
+              "status": "done",
+              "children": [
+                {
+                  "id": "t2",
+                  "type": "task",
+                  "title": "W5.0.2 — estender scripts/ci/infra-guard.sh: falha o CI se artefato de agente/VM for rastreado OU hostname/IP/token hardcoded fora de env.example/docs/testes + TDD do guard",
+                  "status": "done",
+                  "gate": {
+                    "tests": "green",
+                    "qa": "green",
+                    "commit": "6057ec3"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "e2",
+          "type": "epic",
+          "title": "W5.1 — Descartar lixo",
+          "status": "done",
+          "children": [
+            {
+              "id": "f3",
+              "type": "feature",
+              "title": "Código morto do wizard",
+              "status": "done",
+              "children": [
+                {
+                  "id": "t3",
+                  "type": "task",
+                  "title": "W5.1.1 — remover autonomy hardcoded (page.tsx:48/321) + resíduos não-usados que o graphify apontar; build+testes verdes",
+                  "status": "done",
+                  "gate": {
+                    "tests": "green",
+                    "qa": "green",
+                    "commit": "2d245b5"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "e3",
+          "type": "epic",
+          "title": "W5.2 — Auditoria visual (wizard = landing)",
+          "status": "done",
+          "children": [
+            {
+              "id": "f4",
+              "type": "feature",
+              "title": "Consistência visual com a landing",
+              "status": "done",
+              "children": [
+                {
+                  "id": "t4",
+                  "type": "task",
+                  "title": "W5.2.1 — /design-review do funil inteiro vs landing (cor/tipografia/espaçamento) + corrigir divergências + QA visual no navegador",
+                  "status": "done",
+                  "gate": {
+                    "tests": "green",
+                    "qa": "green",
+                    "commit": "a43c623"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "e4",
+          "type": "epic",
+          "title": "W5.3 — Limites de recurso / prova de OOM",
+          "status": "done",
+          "children": [
+            {
+              "id": "f5",
+              "type": "feature",
+              "title": "Teto por execução PROVADO",
+              "status": "done",
+              "children": [
+                {
+                  "id": "t5",
+                  "type": "task",
+                  "title": "W5.3.1 — confirmar/ativar teto (2G/1.5cpu, podman/systemd-run) + PROVAR OOM real: processo que estoura 2G é morto pelo cgroup, a VM não cai (evidência exit 137/log)",
+                  "status": "done",
+                  "gate": {
+                    "tests": "green",
+                    "qa": "green",
+                    "commit": "3f84eed"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "e5",
+          "type": "epic",
+          "title": "W5.4 — GATE FINAL do dono (100%)",
+          "status": "done",
+          "children": [
+            {
+              "id": "f6",
+              "type": "feature",
+              "title": "Aprovação total do funil",
+              "status": "done",
+              "children": [
+                {
+                  "id": "t6",
+                  "type": "task",
+                  "title": "W5.4.1 — reset + dono faz o funil INTEIRO do zero (login→painel) e aprova 100% por clique; docs+memória+supermemory; depois F2 (produção)",
+                  "status": "done",
+                  "gate": {
+                    "tests": "green",
+                    "qa": "green",
+                    "commit": "3f84eed"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

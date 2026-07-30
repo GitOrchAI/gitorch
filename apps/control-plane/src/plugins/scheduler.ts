@@ -338,11 +338,17 @@ function buildMissionRunner(
     }
   }
 
+  const memoryLimit = process.env['GITORCH_MISSION_MEMORY'] ?? '2g'
   return createPodmanCommandRunner({
     image,
     podmanBinary: engine,
     userNamespace: engine === 'docker' ? false : 'keep-id',
-    memoryLimit: process.env['GITORCH_MISSION_MEMORY'] ?? '2g',
+    memoryLimit,
+    // Default = o próprio memoryLimit (zero swap adicional): provado ao vivo
+    // que sem --memory-swap o podman deixa o container escapar até ~2x o
+    // teto nominal (ver podman-runner.ts). Configurável separadamente só se
+    // o operador quiser conceder folga de swap de propósito.
+    memorySwapLimit: process.env['GITORCH_MISSION_MEMORY_SWAP'] ?? memoryLimit,
     prepareMounts,
   })
 }
@@ -470,11 +476,15 @@ export function buildRemoteRuntimeStackIfConfigured(app: FastifyInstance): Runti
 
   const image = process.env['GITORCH_FREE_TIER_AGENT_IMAGE'] ?? process.env['GITORCH_AGENT_IMAGE']
   const engine = process.env['GITORCH_FREE_TIER_CONTAINER_ENGINE'] ?? 'podman'
+  const remoteMemoryLimit = process.env['GITORCH_MISSION_MEMORY'] ?? '2g'
   const remoteMissionRunner = createPodmanCommandRunner({
     image: image ?? 'localhost/gitorch-agent:latest',
     podmanBinary: engine,
     userNamespace: 'keep-id',
-    memoryLimit: process.env['GITORCH_MISSION_MEMORY'] ?? '2g',
+    memoryLimit: remoteMemoryLimit,
+    // Mesmo raciocínio do stack local (ver buildMissionRunner): default sem
+    // folga de swap, fechando a mesma fuga provada ao vivo no podman.
+    memorySwapLimit: process.env['GITORCH_MISSION_MEMORY_SWAP'] ?? remoteMemoryLimit,
     hostRunner: sshRunner,
   })
 

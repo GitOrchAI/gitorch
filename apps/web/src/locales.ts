@@ -100,6 +100,21 @@ export const locales = {
       termsAcceptBtn: 'Accept & continue',
       termsAccepting: 'Preparing your environment…',
       termsEnvError: 'Could not prepare your environment. Please try again.',
+      hostingTitle: 'Select your hosting mode',
+      hostingDesc: 'Choose where your GitOrch agent fleet and workspace execution run.',
+      hostingCloudTitle: 'GitOrch Cloud (Managed)',
+      hostingCloudBadge: 'RECOMMENDED',
+      hostingCloudDesc:
+        'Isolated high-performance cloud environment with zero ops and continuous cadence.',
+      hostingVmTitle: 'My VM (Self-Hosted)',
+      hostingVmBadge: 'COMING SOON',
+      hostingVmDesc:
+        'Run the GitOrch agent directly on your own infrastructure, with no repository limits from GitOrch.',
+      hostingVmSpec:
+        'Minimum spec required: 8 GB RAM · 2 vCPU (4 recommended) · 40 GB disk (+2 GB RAM per concurrent project).',
+      hostingVmNote:
+        'Self-hosting is coming soon. For now, choose GitOrch Cloud to get started — your setup carries over.',
+      hostingVmComingSoon: 'Self-host coming soon',
       reposTitle: 'Select your repositories',
       reposDesc: 'Choose which repositories the GitOrch AI agents will work on.',
       reposLoading: 'Loading your GitHub repositories...',
@@ -231,10 +246,8 @@ export const locales = {
       tgTitle: 'Telegram alerts (optional)',
       tgDesc:
         'Get a ping when a task in your project gets stuck or needs you. Tap the button, press Start in Telegram, and you are connected.',
-      tgBenefit1: 'Updates when there is news about your project',
+      tgBenefit1: 'Questions from the agents, with buttons to reply right in the chat',
       tgBenefit2: 'Alerts when something breaks (incidents)',
-      tgBenefit3: 'Questions from the agents, with buttons to reply right in the chat',
-      tgBenefit4: 'Ask for improvements anytime with /wish',
       tgConnect: 'Connect my Telegram',
       tgWaiting: 'Telegram is open — press Start there. We are waiting for it, right here.',
       tgLinked: 'Telegram connected — alerts about your project land in this chat.',
@@ -406,6 +419,21 @@ export const locales = {
       termsAcceptBtn: 'Aceitar e continuar',
       termsAccepting: 'Preparando seu ambiente…',
       termsEnvError: 'Não foi possível preparar seu ambiente. Tente novamente.',
+      hostingTitle: 'Escolha a modalidade de hospedagem',
+      hostingDesc: 'Escolha onde sua frota de agentes e os ambientes do GitOrch serão executados.',
+      hostingCloudTitle: 'Nossa Nuvem (Gerida)',
+      hostingCloudBadge: 'RECOMENDADO',
+      hostingCloudDesc:
+        'Ambiente isolado de alta performance com zero ops, cadência contínua e prioridade.',
+      hostingVmTitle: 'Minha VM (Self-Hosted)',
+      hostingVmBadge: 'EM BREVE',
+      hostingVmDesc:
+        'Rode o agente do GitOrch direto na sua própria infraestrutura, sem limite de repositórios pela GitOrch.',
+      hostingVmSpec:
+        'Requisito mínimo recomendado: 8 GB RAM · 2 vCPUs (4 ideal) · 40 GB de disco (+2 GB RAM por projeto simultâneo).',
+      hostingVmNote:
+        'O self-host chega em breve. Por enquanto, escolha a Nossa Nuvem pra começar — sua configuração é aproveitada.',
+      hostingVmComingSoon: 'Self-host em breve',
       reposTitle: 'Selecione seus repositórios',
       reposDesc: 'Escolha em quais repositórios os agentes de IA do GitOrch vão atuar.',
       reposLoading: 'Carregando seus repositórios do GitHub...',
@@ -539,10 +567,8 @@ export const locales = {
       tgTitle: 'Alertas no Telegram (opcional)',
       tgDesc:
         'Receba um aviso quando uma task do seu projeto travar ou precisar de você. Toque no botão, aperte Start no Telegram e pronto.',
-      tgBenefit1: 'Anúncios de novidades do seu projeto',
+      tgBenefit1: 'Perguntas dos agentes, com botões pra você responder direto no chat',
       tgBenefit2: 'Alertas quando algo dá errado (incidentes)',
-      tgBenefit3: 'Perguntas dos agentes, com botões pra você responder direto no chat',
-      tgBenefit4: 'Peça melhorias a qualquer momento com /wish',
       tgConnect: 'Conectar meu Telegram',
       tgWaiting: 'O Telegram abriu — aperte Start por lá. A gente fica esperando aqui.',
       tgLinked: 'Telegram conectado — os avisos do seu projeto chegam nesta conversa.',
@@ -713,6 +739,21 @@ export const locales = {
       termsAcceptBtn: 'Aceptar y continuar',
       termsAccepting: 'Preparando tu entorno…',
       termsEnvError: 'No se pudo preparar tu entorno. Inténtalo de nuevo.',
+      hostingTitle: 'Selecciona la modalidad de alojamiento',
+      hostingDesc: 'Elige dónde se ejecutará tu flota de agentes y los entornos de GitOrch.',
+      hostingCloudTitle: 'Nuestra Nube (Gestionada)',
+      hostingCloudBadge: 'RECOMENDADO',
+      hostingCloudDesc:
+        'Entorno aislado de alto rendimiento con cero ops, cadencia continua y prioridad.',
+      hostingVmTitle: 'Mi VM (Self-Hosted)',
+      hostingVmBadge: 'PRÓXIMAMENTE',
+      hostingVmDesc:
+        'Ejecuta el agente de GitOrch directamente en tu propia infraestructura, sin límites de repositorios por GitOrch.',
+      hostingVmSpec:
+        'Requisito mínimo recomendado: 8 GB RAM · 2 vCPUs (4 ideal) · 40 GB de disco (+2 GB RAM por proyecto simultáneo).',
+      hostingVmNote:
+        'El self-host llega próximamente. Por ahora, elige Nuestra Nube para empezar — tu configuración se conserva.',
+      hostingVmComingSoon: 'Self-host próximamente',
       reposTitle: 'Selecciona tus repositorios',
       reposDesc: 'Elige en qué repositorios trabajarán los agentes de IA de GitOrch.',
       reposLoading: 'Cargando tus repositorios de GitHub...',
@@ -847,10 +888,8 @@ export const locales = {
       tgTitle: 'Alertas en Telegram (opcional)',
       tgDesc:
         'Recibe un aviso cuando una tarea de tu proyecto se atasque o te necesite. Toca el botón, pulsa Start en Telegram y listo.',
-      tgBenefit1: 'Anuncios de novedades de tu proyecto',
+      tgBenefit1: 'Preguntas de los agentes, con botones para responder directo en el chat',
       tgBenefit2: 'Alertas cuando algo falla (incidentes)',
-      tgBenefit3: 'Preguntas de los agentes, con botones para responder directo en el chat',
-      tgBenefit4: 'Pide mejoras en cualquier momento con /wish',
       tgConnect: 'Conectar mi Telegram',
       tgWaiting: 'Telegram se abrió — pulsa Start ahí. Nosotros esperamos aquí.',
       tgLinked: 'Telegram conectado — los avisos de tu proyecto llegan a este chat.',

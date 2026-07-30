@@ -69,7 +69,6 @@ export interface SubmitInput {
   plan: string
   repos: string[]
   engines: string[]
-  autonomy: Record<string, number>
 }
 
 export interface SubmitDeps {
@@ -96,7 +95,6 @@ export async function submitSetup(input: SubmitInput, deps: SubmitDeps): Promise
       repos: input.repos,
       engines: input.engines,
       plan: input.plan,
-      envConfig: { autonomy: input.autonomy },
     }),
   })
 

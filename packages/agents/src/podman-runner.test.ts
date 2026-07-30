@@ -36,6 +36,36 @@ describe('createPodmanCommandRunner', () => {
     expect(call.args).toContain('HOME=/home/agent')
   })
 
+  test('aplica --memory e --memory-swap (default: swap igual à memória, zero folga)', async () => {
+    const hostRunner = vi.fn().mockResolvedValue(ok())
+    const runner = createPodmanCommandRunner({ image: 'img', hostRunner, memoryLimit: '64m' })
+
+    await runner(buildRequest())
+
+    const args: string[] = hostRunner.mock.calls[0][0].args
+    expect(args[args.indexOf('--memory') + 1]).toBe('64m')
+    // Regressão: SEM --memory-swap, provado ao vivo que o podman deixa o
+    // container escapar até ~2x o teto nominal antes do OOM killer agir
+    // (memory.swap.max default = memory.max). Por isso o default aqui tem
+    // que IGUALAR o memoryLimit — nunca ficar ausente.
+    expect(args[args.indexOf('--memory-swap') + 1]).toBe('64m')
+  })
+
+  test('memorySwapLimit explícito sobrepõe o default (operador pode conceder folga de swap)', async () => {
+    const hostRunner = vi.fn().mockResolvedValue(ok())
+    const runner = createPodmanCommandRunner({
+      image: 'img',
+      hostRunner,
+      memoryLimit: '64m',
+      memorySwapLimit: '128m',
+    })
+
+    await runner(buildRequest())
+
+    const args: string[] = hostRunner.mock.calls[0][0].args
+    expect(args[args.indexOf('--memory-swap') + 1]).toBe('128m')
+  })
+
   test('com stdin, adiciona -i e encaminha o conteúdo ao hostRunner (prompt do agy)', async () => {
     const hostRunner = vi.fn().mockResolvedValue(ok())
     const runner = createPodmanCommandRunner({ image: 'img', hostRunner })

@@ -279,7 +279,7 @@ describe('realRuntimeCommandRunner respeita GITORCH_EXEC_LIMITS', () => {
 
     expect(result.exitCode).toBe(0)
     expect(result.stdout.trim()).toBe(
-      'SYSTEMD_ARGS:--scope --quiet -p MemoryMax=2G -p CPUQuota=150% -- echo hi'
+      'SYSTEMD_ARGS:--user --scope --quiet -p MemoryMax=2G -p MemorySwapMax=0 -p CPUQuota=150% -- echo hi'
     )
   })
 
