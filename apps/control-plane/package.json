@@ -25,7 +25,7 @@
     "@fastify/rate-limit": "^11.1.0",
     "@fastify/static": "^10.1.2",
     "@fastify/swagger": "^9.8.1",
-    "@fastify/swagger-ui": "^6.1.0",
+    "@fastify/swagger-ui": "^6.1.1",
     "@fastify/under-pressure": "^9.1.0",
     "@gitorch/agents": "workspace:*",
     "@gitorch/cadence": "workspace:*",
@@ -56,7 +56,7 @@
   "devDependencies": {
     "@types/bcryptjs": "^3.0.0",
     "@types/jsonwebtoken": "^9.0.10",
-    "@types/node": "26.1.1",
+    "@types/node": "26.1.2",
     "eslint": "^8.0.0",
     "fast-uri": "4.1.1",
     "prisma": "^5.0.0",
