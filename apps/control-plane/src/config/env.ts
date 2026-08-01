@@ -18,6 +18,12 @@ export const envSchema = z.object({
   CORS_ORIGIN: z.string().default('*'),
   RATE_LIMIT_MAX: z.coerce.number().default(100),
   RATE_LIMIT_WINDOW_MS: z.coerce.number().default(60000),
+  // Produção atrás do Tailscale Funnel: o proxy injeta X-Forwarded-For; sem
+  // trustProxy o request.ip é o loopback do tailscaled e o rate limit colapsa
+  // (P1-1). Ligar SÓ quando há proxy confiável na frente.
+  GITORCH_TRUST_PROXY: z.coerce.boolean().default(false),
+  // CSV de IPs isentos de rate limit. Em prod DEVE ser vazio ("").
+  GITORCH_RATE_LIMIT_ALLOWLIST: z.string().default('127.0.0.1,::1'),
 
   OTEL_SERVICE_NAME: z.string().default('gitorch-control-plane'),
   OTEL_EXPORTER_OTLP_ENDPOINT: z.string().url().optional(),

@@ -15,6 +15,7 @@ import jwt from 'jsonwebtoken'
 import bcryptjs from 'bcryptjs'
 import { getEnv } from '../config/env.js'
 import rateLimit from '@fastify/rate-limit'
+import { authRateLimitKey } from './rate-limit-keys.js'
 
 interface ApiKeyPayload {
   projectId: string
@@ -95,6 +96,7 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
     max: Number(process.env['GITORCH_AUTH_RATE_LIMIT_MAX'] ?? 20),
     timeWindow: '1 minute',
     allowList: (request: FastifyRequest) => isPublicPath(request.url),
+    keyGenerator: (request: FastifyRequest) => authRateLimitKey(request),
   })
 
   // codeql [js/missing-rate-limiting] - este preHandler roda sobre rotas que JÁ

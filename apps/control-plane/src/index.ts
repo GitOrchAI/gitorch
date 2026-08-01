@@ -8,6 +8,7 @@ async function buildApp(): Promise<FastifyInstance> {
   const env = loadEnv()
 
   const app = Fastify({
+    trustProxy: env.GITORCH_TRUST_PROXY,
     logger: env.LOG_PRETTY
       ? {
           level: env.LOG_LEVEL,

@@ -6,6 +6,7 @@ import fastifySwaggerUi from '@fastify/swagger-ui'
 import fastifyUnderPressure from '@fastify/under-pressure'
 import { Env } from '../config/env.js'
 import { API_PREFIX } from '../config/constants.js'
+import { parseRateLimitAllowList } from './rate-limit-keys.js'
 
 import { prismaPlugin } from './prisma.js'
 import { redisPlugin } from './redis.js'
@@ -104,7 +105,7 @@ export async function registerPlugins(app: FastifyInstance, env: Env): Promise<v
       'x-ratelimit-remaining': true,
       'x-ratelimit-reset': true,
     },
-    allowList: ['127.0.0.1', '::1'],
+    allowList: parseRateLimitAllowList(env.GITORCH_RATE_LIMIT_ALLOWLIST),
   })
 
   await app.register(authPlugin)
