@@ -16,7 +16,8 @@
     "typecheck": "tsc --noEmit",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:studio": "prisma studio"
+    "prisma:studio": "prisma studio",
+    "db:migrate": "bash scripts/db-migrate.sh"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.2",
