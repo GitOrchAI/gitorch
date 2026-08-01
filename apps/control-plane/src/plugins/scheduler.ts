@@ -52,7 +52,7 @@ import { canRunMission, shouldAlertForQuota } from '../lib/spend-guard.js'
 import { computeConsumption } from '../lib/consumption.js'
 import { pipelineCheckEnabled } from '../config/pipeline-check.js'
 import { resolveMissionCpus } from '../config/mission-cpus.js'
-import { reapOrphanContainers, failOrphanRunningMissions } from './boot-reaper.js'
+import { reapOrphanContainers, failOrphanRunningMissions, type ReapResult } from './boot-reaper.js'
 import * as os from 'node:os'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -615,12 +615,21 @@ export async function runBootReaper(
 ): Promise<void> {
   if ((process.env['GITORCH_EXECUTOR'] ?? 'local-process') === 'podman') {
     const engine = process.env['GITORCH_CONTAINER_ENGINE'] ?? 'podman'
-    const removed = await reapOrphanContainers(run, engine).catch((err: unknown) => {
-      app.log.warn(err, '[Scheduler] ceifador: falha ao listar/remover containers órfãos')
-      return [] as string[]
+    const result = await reapOrphanContainers(run, engine).catch((err: unknown) => {
+      app.log.warn(err, '[Scheduler] ceifador: falha ao listar containers órfãos')
+      return { removed: [], failed: [] } as ReapResult
     })
-    if (removed.length > 0) {
-      app.log.warn(`[Scheduler] ceifador: ${removed.length} container(s) órfão(s) removidos`)
+    if (result.removed.length > 0) {
+      app.log.warn(`[Scheduler] ceifador: ${result.removed.length} container(s) órfão(s) removidos`)
+    }
+    if (result.failed.length > 0) {
+      // Honesto: um `rm -f` que não confirmou remoção NUNCA vira "removido"
+      // no log — é exatamente o container-segurando-RAM que este ceifador
+      // existe para eliminar (ver ReapResult em boot-reaper.ts).
+      app.log.warn(
+        { failed: result.failed },
+        `[Scheduler] ceifador: ${result.failed.length} container(s) órfão(s) falharam ao remover`
+      )
     }
   }
 

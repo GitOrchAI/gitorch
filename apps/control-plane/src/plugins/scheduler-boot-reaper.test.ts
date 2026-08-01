@@ -70,10 +70,67 @@ describe('runBootReaper', () => {
     expect(prisma.mission.updateMany).toHaveBeenCalledTimes(1)
   })
 
-  it('runtime de container falhando (podman ausente/timeout) NÃO derruba o boot — loga e segue para falhar as missões', async () => {
+  it('listagem falhando via exitCode não-zero (CONTRATO REAL: podman ausente/permissão negada resolvem, nunca rejeitam — ver runtime-adapter.ts) NÃO derruba o boot — loga de verdade e segue para falhar as missões', async () => {
+    process.env['GITORCH_EXECUTOR'] = 'podman'
+    const run: RuntimeCommandRunner = async (req) => {
+      if (req.args[0] === 'ps') {
+        return { exitCode: 127, stdout: '', stderr: 'podman: command not found', durationMs: 0 }
+      }
+      throw new Error('não deveria chamar rm sem containers listados')
+    }
+    // count=0: a única fonte possível de um warn neste teste é a falha de
+    // listagem — se `prisma` também gerasse um warn (missões órfãs > 0), um
+    // `toHaveBeenCalled()` genérico passaria mesmo sem o ceifador jamais
+    // enxergar a falha do `ps` (foi exatamente esse falso-positivo que
+    // escondeu o bug original).
+    const prisma = fakePrisma(0)
+    const app = { log: fakeLog, prisma } as never
+
+    // fakeLog é compartilhado entre os `it` deste describe (nunca resetado
+    // no beforeEach) — limpa antes de checar, senão `toHaveBeenCalled()`
+    // fica trivialmente verdadeiro por causa de um teste anterior e não prova
+    // nada sobre ESTE cenário (achado crítico da review).
+    fakeLog.warn.mockClear()
+    await expect(runBootReaper(app, run)).resolves.toBeUndefined()
+    // Sem o check de exitCode, stdout vazio é indistinguível de "zero
+    // órfãos" e este warn nunca dispara.
+    expect(fakeLog.warn).toHaveBeenCalled()
+    const warnMessages = fakeLog.warn.mock.calls.map((call) =>
+      call.map((arg) => (arg instanceof Error ? arg.message : String(arg))).join(' | ')
+    )
+    expect(warnMessages.some((m) => m.includes('listar'))).toBe(true)
+  })
+
+  it('rm falhando via exitCode não-zero (CONTRATO REAL do runner) NÃO é contado como removido — log honesto, container continua de pé', async () => {
+    process.env['GITORCH_EXECUTOR'] = 'podman'
+    const run: RuntimeCommandRunner = async (req) => {
+      if (req.args[0] === 'ps') {
+        return { exitCode: 0, stdout: 'gitorch-mission-x\n', stderr: '', durationMs: 0 }
+      }
+      // rm nunca rejeita no contrato real — resolve com exitCode != 0.
+      return { exitCode: 1, stdout: '', stderr: 'no such container', durationMs: 0 }
+    }
+    const prisma = fakePrisma(0)
+    const app = { log: fakeLog, prisma } as never
+
+    // fakeLog é compartilhado entre os `it` deste describe (nunca resetado
+    // no beforeEach) — limpa antes de inspecionar conteúdo de mensagem, senão
+    // um "removidos" de um teste anterior faz esta asserção mentir.
+    fakeLog.warn.mockClear()
+    await runBootReaper(app, run)
+
+    const warnMessages = fakeLog.warn.mock.calls.map((call) =>
+      typeof call[0] === 'string' ? call[0] : call[1]
+    )
+    // Nunca reporta sucesso de remoção para um `rm` que não confirmou.
+    expect(warnMessages.some((m) => typeof m === 'string' && m.includes('removidos'))).toBe(false)
+    expect(warnMessages.some((m) => typeof m === 'string' && m.includes('falharam'))).toBe(true)
+  })
+
+  it('runtime rejeitando (caminho genuinamente excepcional, não o contrato real do runner) NÃO derruba o boot — loga e segue para falhar as missões', async () => {
     process.env['GITORCH_EXECUTOR'] = 'podman'
     const run: RuntimeCommandRunner = async () => {
-      throw new Error('spawn podman ENOENT')
+      throw new Error('erro inesperado no runner')
     }
     const prisma = fakePrisma(1)
     const app = { log: fakeLog, prisma } as never
