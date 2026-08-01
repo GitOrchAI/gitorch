@@ -51,6 +51,7 @@ import { GithubExecutionError } from '../services/github-backlog.js'
 import { canRunMission, shouldAlertForQuota } from '../lib/spend-guard.js'
 import { computeConsumption } from '../lib/consumption.js'
 import { pipelineCheckEnabled } from '../config/pipeline-check.js'
+import { resolveMissionCpus } from '../config/mission-cpus.js'
 import * as os from 'node:os'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -266,7 +267,7 @@ export function createLocalCredentialRunner(
  * local-process, credencial ainda é materializada (createLocalCredentialRunner)
  * — só o mecanismo de isolamento (container vs HOME temporário) muda.
  */
-function buildMissionRunner(
+export function buildMissionRunner(
   app: FastifyInstance,
   environments: EnvironmentLookup
 ): RuntimeCommandRunner {
@@ -340,7 +341,7 @@ function buildMissionRunner(
   }
 
   const memoryLimit = process.env['GITORCH_MISSION_MEMORY'] ?? '2g'
-  const missionCpus = process.env['GITORCH_MISSION_CPUS'] ?? '1.5'
+  const missionCpus = resolveMissionCpus()
   return createPodmanCommandRunner({
     image,
     podmanBinary: engine,
@@ -490,8 +491,9 @@ export function buildRemoteRuntimeStackIfConfigured(app: FastifyInstance): Runti
     // Mesmo raciocínio do stack local (ver buildMissionRunner): default sem
     // folga de swap, fechando a mesma fuga provada ao vivo no podman.
     memorySwapLimit: process.env['GITORCH_MISSION_MEMORY_SWAP'] ?? remoteMemoryLimit,
-    // Mesmo teto de CPU do stack local (P2-4): sem env, mesmo default 1.5.
-    cpus: process.env['GITORCH_MISSION_CPUS'] ?? '1.5',
+    // Mesmo teto de CPU do stack local (P2-4): mesma resolução, mesmo default
+    // e mesma blindagem contra env vazia/inválida (ver config/mission-cpus.ts).
+    cpus: resolveMissionCpus(),
     hostRunner: sshRunner,
   })
 
