@@ -52,6 +52,7 @@ import { canRunMission, shouldAlertForQuota } from '../lib/spend-guard.js'
 import { computeConsumption } from '../lib/consumption.js'
 import { pipelineCheckEnabled } from '../config/pipeline-check.js'
 import { resolveMissionCpus } from '../config/mission-cpus.js'
+import { reapOrphanContainers, failOrphanRunningMissions } from './boot-reaper.js'
 import * as os from 'node:os'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -592,6 +593,46 @@ export function selectClaimableSetupMissions<T>(
   return claimable
 }
 
+/**
+ * Ceifador de BOOT (P2-2/E5): a execução de missão vive numa promise em
+ * memória (executeMissionWithFailover, abaixo) — um restart do control-plane
+ * deixa (a) a linha `running` fantasma no banco até a varredura de stale
+ * (STALE_RUNNING_MS) e (b) o container podman vivo segurando RAM/CPU numa VM
+ * compartilhada. DECISÃO DO DONO: a esteira de DEPLOY drena missões em voo
+ * (timeout) antes de trocar de versão (F2.3.2) — a instância anterior sempre
+ * para por completo antes da nova subir. A única outra instância que pode
+ * coexistir é o probe INERTE de pipeline-check (GITORCH_PIPELINE_CHECK=1,
+ * F2.1.2), que retorna ANTES de chegar aqui (ver guard no início do plugin) e
+ * nunca reap. Logo, no boot, todo container `gitorch-mission-*` e toda
+ * missão `running` são órfãos por construção — sem essa garantia isto seria
+ * destrutivo (mataria trabalho legítimo). Nunca derruba o boot: falha do
+ * runtime de container (podman ausente, permissão, timeout) OU do prisma é
+ * capturada e logada aqui — nunca silenciosa, nunca propaga.
+ */
+export async function runBootReaper(
+  app: FastifyInstance,
+  run: RuntimeCommandRunner = realRuntimeCommandRunner
+): Promise<void> {
+  if ((process.env['GITORCH_EXECUTOR'] ?? 'local-process') === 'podman') {
+    const engine = process.env['GITORCH_CONTAINER_ENGINE'] ?? 'podman'
+    const removed = await reapOrphanContainers(run, engine).catch((err: unknown) => {
+      app.log.warn(err, '[Scheduler] ceifador: falha ao listar/remover containers órfãos')
+      return [] as string[]
+    })
+    if (removed.length > 0) {
+      app.log.warn(`[Scheduler] ceifador: ${removed.length} container(s) órfão(s) removidos`)
+    }
+  }
+
+  const failed = await failOrphanRunningMissions(app.prisma).catch((err: unknown) => {
+    app.log.warn(err, '[Scheduler] ceifador: falha ao marcar missões órfãs')
+    return 0
+  })
+  if (failed > 0) {
+    app.log.warn(`[Scheduler] ceifador: ${failed} missão(ões) órfã(s) de restart → failed`)
+  }
+}
+
 const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // Modo INERTE do health pré-switch da esteira (F2.3/P1-2): sai ANTES de tocar
   // prisma/engineConnections/cortex — a instância de verificação aponta pro
@@ -606,6 +647,20 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       reason: 'pipeline-check',
     }))
     return
+  }
+
+  // Ceifador de boot (P2-2): nada de "running"/container de missão sobrevive
+  // a um restart (ver runBootReaper acima para o raciocínio completo).
+  // Fire-and-forget (mesmo padrão da faxina de staging de credenciais
+  // abaixo): não atrasa o boot do servidor por causa de uma limpeza
+  // best-effort. Nunca sob teste: a suíte inteira roda contra um Prisma de
+  // teste/sem podman — disparar aqui marcaria missões de teste como failed e
+  // tentaria falar com um runtime de container que não existe (paridade com
+  // o guard do tick, mais abaixo).
+  if (process.env['NODE_ENV'] !== 'test') {
+    void runBootReaper(app).catch((err: unknown) =>
+      app.log.error(err, '[Scheduler] ceifador de boot falhou inesperadamente')
+    )
   }
 
   // Instanciado cedo: buildMissionRunner (W1.3.1) precisa dele para resolver o
