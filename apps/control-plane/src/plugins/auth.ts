@@ -15,7 +15,6 @@ import jwt from 'jsonwebtoken'
 import bcryptjs from 'bcryptjs'
 import { getEnv } from '../config/env.js'
 import rateLimit from '@fastify/rate-limit'
-import { authRateLimitKey } from './rate-limit-keys.js'
 
 interface ApiKeyPayload {
   projectId: string
@@ -96,7 +95,15 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
     max: Number(process.env['GITORCH_AUTH_RATE_LIMIT_MAX'] ?? 20),
     timeWindow: '1 minute',
     allowList: (request: FastifyRequest) => isPublicPath(request.url),
-    keyGenerator: (request: FastifyRequest) => authRateLimitKey(request),
+    // Sem keyGenerator custom: usa o default do plugin (chaveia por
+    // request.ip). Chavear pela CREDENCIAL (sessão/token) foi tentado e
+    // revertido — um atacante testando uma credencial diferente a cada
+    // requisição cairia num balde novo sempre, esvaziando a proteção contra
+    // brute-force que este limiter existe pra dar. Com trustProxy ligado
+    // (ver GITORCH_TRUST_PROXY em config/env.ts), request.ip já é o IP real
+    // do cliente atrás do Funnel — o problema original (todo mundo caindo no
+    // mesmo balde do loopback do tailscaled) é resolvido por aí, não por
+    // trocar a chave.
   })
 
   // codeql [js/missing-rate-limiting] - este preHandler roda sobre rotas que JÁ
