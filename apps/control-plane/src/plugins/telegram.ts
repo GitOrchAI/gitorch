@@ -80,10 +80,11 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
   // toda é testada nos serviços, sem rede. Em modo pipeline-check (F2.3/P1-2)
   // também não: a instância de verificação escutando o MESMO bot que a prod
   // viva causaria 409 no getUpdates (ver config/pipeline-check.ts).
-  if (!botToken || process.env['NODE_ENV'] === 'test' || pipelineCheckEnabled()) {
+  const pipelineCheck = pipelineCheckEnabled()
+  if (!botToken || process.env['NODE_ENV'] === 'test' || pipelineCheck) {
     if (!botToken) {
       app.log.info('[Telegram] sem GITORCH_TELEGRAM_BOT_TOKEN — o bot não será ouvido')
-    } else if (pipelineCheckEnabled()) {
+    } else if (pipelineCheck) {
       app.log.warn(
         '[Telegram] GITORCH_PIPELINE_CHECK=1: bot NÃO será ouvido (evita 409 contra a prod viva)'
       )
