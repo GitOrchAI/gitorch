@@ -340,6 +340,7 @@ function buildMissionRunner(
   }
 
   const memoryLimit = process.env['GITORCH_MISSION_MEMORY'] ?? '2g'
+  const missionCpus = process.env['GITORCH_MISSION_CPUS'] ?? '1.5'
   return createPodmanCommandRunner({
     image,
     podmanBinary: engine,
@@ -350,6 +351,9 @@ function buildMissionRunner(
     // teto nominal (ver podman-runner.ts). Configurável separadamente só se
     // o operador quiser conceder folga de swap de propósito.
     memorySwapLimit: process.env['GITORCH_MISSION_MEMORY_SWAP'] ?? memoryLimit,
+    // Teto de CPU (P2-4): fecha o caminho que faltava — memória já tinha teto,
+    // CPU não tinha nenhum (ver podman-runner.ts).
+    cpus: missionCpus,
     prepareMounts,
   })
 }
@@ -486,6 +490,8 @@ export function buildRemoteRuntimeStackIfConfigured(app: FastifyInstance): Runti
     // Mesmo raciocínio do stack local (ver buildMissionRunner): default sem
     // folga de swap, fechando a mesma fuga provada ao vivo no podman.
     memorySwapLimit: process.env['GITORCH_MISSION_MEMORY_SWAP'] ?? remoteMemoryLimit,
+    // Mesmo teto de CPU do stack local (P2-4): sem env, mesmo default 1.5.
+    cpus: process.env['GITORCH_MISSION_CPUS'] ?? '1.5',
     hostRunner: sshRunner,
   })
 
