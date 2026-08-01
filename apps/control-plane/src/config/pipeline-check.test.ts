@@ -60,7 +60,15 @@ describe('telegram plugin em modo pipeline-check', () => {
     process.env['NODE_ENV'] = 'production'
     const getUpdatesSpy = vi.mocked(getTelegramUpdates)
     getUpdatesSpy.mockReset()
-    getUpdatesSpy.mockResolvedValue({ updates: [], nextOffset: undefined, conflict: false })
+    // Limita o dano de uma regressão: se o guard cair, o loop `listen()`
+    // só tem UMA resposta resolvida disponível — a segunda chamada em
+    // diante trava numa promise que nunca resolve. Sem este limite, um
+    // guard quebrado faz o mock resolver instantaneamente em loop
+    // (microtasks puros, sem `setTimeout`), o que morre de OOM (~27s)
+    // antes do testTimeout do vitest conseguir disparar — falha lenta e
+    // confusa em vez de um timeout limpo (ver timeout explícito abaixo).
+    getUpdatesSpy.mockResolvedValueOnce({ updates: [], nextOffset: undefined, conflict: false })
+    getUpdatesSpy.mockImplementation(() => new Promise(() => {}))
     try {
       // App PELADA (mesmo padrão do teste do scheduler acima): sem prisma,
       // sem cortex. A decoração de agentQuestionService não depende de
@@ -80,5 +88,5 @@ describe('telegram plugin em modo pipeline-check', () => {
       if (originalNodeEnv === undefined) delete process.env['NODE_ENV']
       else process.env['NODE_ENV'] = originalNodeEnv
     }
-  })
+  }, 2000)
 })
