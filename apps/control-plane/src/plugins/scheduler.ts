@@ -470,8 +470,12 @@ function buildRuntimeStack(
  * stack local de sempre (ver selectRuntimeStack). Sem env → produção intacta.
  */
 export function buildRemoteRuntimeStackIfConfigured(app: FastifyInstance): RuntimeStack | null {
-  const host = process.env['GITORCH_FREE_TIER_SSH_HOST']
-  const identityFile = process.env['GITORCH_FREE_TIER_SSH_KEY']
+  // .trim() antes do teste de vazio: nem todo mecanismo que seta env var
+  // corta espaço (ex.: `export` de shell) — um valor só-espaço passaria no
+  // teste falsy cru e tentaria um build remoto quebrado em vez de cair no
+  // stack local (mesma convenção de config/mission-cpus.ts).
+  const host = process.env['GITORCH_FREE_TIER_SSH_HOST']?.trim()
+  const identityFile = process.env['GITORCH_FREE_TIER_SSH_KEY']?.trim()
   if (!host || !identityFile) return null
 
   app.log.info(`[Scheduler] Stack remoto do tier grátis configurado: ${host}`)

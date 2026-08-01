@@ -102,4 +102,16 @@ describe('F2.1.5: free tier roda LOCAL em produção com os MESMOS tetos das pag
     expect(capturedOptions[0]?.memorySwapLimit).toBe('2g')
     expect(capturedOptions[0]?.cpus).toBe('1.5')
   })
+
+  test('host só-espaço (env sem trim automático, ex.: export de shell) cai pro stack local, não tenta build remoto quebrado', () => {
+    process.env['GITORCH_FREE_TIER_SSH_HOST'] = '   '
+    process.env['GITORCH_FREE_TIER_SSH_KEY'] = '/some/key'
+    expect(buildRemoteRuntimeStackIfConfigured(fakeApp)).toBeNull()
+  })
+
+  test('key só-espaço cai pro stack local, não tenta build remoto quebrado', () => {
+    process.env['GITORCH_FREE_TIER_SSH_HOST'] = 'host.example.com'
+    process.env['GITORCH_FREE_TIER_SSH_KEY'] = '   '
+    expect(buildRemoteRuntimeStackIfConfigured(fakeApp)).toBeNull()
+  })
 })
