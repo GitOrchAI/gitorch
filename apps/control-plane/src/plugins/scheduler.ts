@@ -50,6 +50,7 @@ import { RailsStepError } from '../services/rails-runner.js'
 import { GithubExecutionError } from '../services/github-backlog.js'
 import { canRunMission, shouldAlertForQuota } from '../lib/spend-guard.js'
 import { computeConsumption } from '../lib/consumption.js'
+import { pipelineCheckEnabled } from '../config/pipeline-check.js'
 import * as os from 'node:os'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -584,6 +585,21 @@ export function selectClaimableSetupMissions<T>(
 }
 
 const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
+  // Modo INERTE do health pré-switch da esteira (F2.3/P1-2): sai ANTES de tocar
+  // prisma/engineConnections/cortex — a instância de verificação aponta pro
+  // banco de PROD e não pode varrer mission-creds, disparar tick nem disputar
+  // missões contra a instância viva. Ver config/pipeline-check.ts.
+  if (pipelineCheckEnabled()) {
+    app.log.warn(
+      '[Scheduler] GITORCH_PIPELINE_CHECK=1: scheduler INERTE (sem tick, sem varredura de creds, sem missões)'
+    )
+    app.decorate('triggerAgentMission', async (): Promise<TriggerResult> => ({
+      triggered: false,
+      reason: 'pipeline-check',
+    }))
+    return
+  }
+
   // Instanciado cedo: buildMissionRunner (W1.3.1) precisa dele para resolver o
   // motor VERSIONADO do ambiente do dono do projeto ao montar o stack local; a
   // faxina de ambientes expirados (mais abaixo) reusa a MESMA instância.
