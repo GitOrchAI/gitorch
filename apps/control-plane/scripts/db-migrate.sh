@@ -4,15 +4,30 @@
 # todo deploy ANTES do switch de tráfego (F2.3.2 chama isto). Exige: psql no
 # PATH, DATABASE_URL no ambiente.
 #
-# Três casos, decididos pelo estado real do banco (nunca por uma flag):
+# Dois casos pra estabelecer o schema base, decididos pelo estado real do
+# banco (nunca por uma flag):
 #  - banco VIRGEM (sem tabela `users`): baseline completo via `prisma migrate
-#    diff --from-empty` (só CREATE, gerado do schema.prisma atual) + seed dos
-#    planos + replay idempotente dos 12 SQLs do ledger (paridade de registro
-#    com o caminho legado) + ledger marcado como aplicado.
-#  - banco LEGADO (`users` existe, gitorch_schema_migrations vazia — A1/dev,
-#    aplicado à mão historicamente): re-aplica TODOS os SQLs em ordem — são
-#    idempotentes (IF NOT EXISTS / DROP...IF EXISTS+ADD) — e registra cada um.
-#  - banco EM DIA: aplica só as pendentes, em ordem, registrando cada uma.
+#    diff --from-empty` (só CREATE, gerado do schema.prisma atual).
+#  - banco não-virgem (`users` já existe — legado A1/dev ou já migrado
+#    antes): pula o baseline, o schema já está lá.
+#
+# A partir daí o caminho é ÚNICO pros dois casos (ver achado de review
+# F2.1.6#1): o seed dos planos roda SEMPRE, incondicional, e só depois o
+# ledger é reconciliado — aplica em ordem só o que ainda não está em
+# gitorch_schema_migrations (pra banco virgem isso é "todos os 12"; pra banco
+# legado, só o que faltar). Rodar seed incondicionalmente é deliberado: seed é
+# idempotente (só upsert, ver prisma/seed.ts) e a alternativa — rastrear "seed
+# aplicado" como uma linha sintética no ledger — quebraria o drift-guard 1:1
+# que compara MIGRATION_LEDGER contra os arquivos *-migration.sql em disco
+# (migration-ledger.test.ts), por uma entrada que não corresponde a nenhum
+# arquivo real. Antes desta correção, o seed só rodava dentro do branch
+# virgem: uma morte do processo depois do baseline criar `users` mas antes do
+# seed terminar fazia toda rodada futura ver `users` existindo, tomar o branch
+# não-virgem, e NUNCA rodar o seed de novo — a tabela `plans` ficava vazia
+# pra sempre enquanto o script saía com exit 0 dizendo "em dia". Como
+# User.planId tem FK obrigatória pra Plan.id, o primeiro signup real quebrava
+# com violação de FK. Seed incondicional fecha esse buraco: não existe mais
+# um estado intermediário onde `users` existe e os planos não.
 #
 # Recuperação de falha: cada migração só é registrada em
 # gitorch_schema_migrations DEPOIS de aplicada com sucesso (ON_ERROR_STOP=1 +
@@ -21,6 +36,11 @@
 # aplicada, e como todo SQL do ledger é idempotente, rodar o script de novo
 # reaplica exatamente a partir dela (as anteriores, já registradas, são
 # puladas). O script não decide "resumir" — o estado do banco decide.
+#
+# Drift de conteúdo: o checksum sha256 gravado por migração é COMPARADO (não
+# só guardado) a cada rodada contra o arquivo atual em prisma/ — se o
+# conteúdo de uma migração já aplicada mudou desde então, o script aborta em
+# vez de pular silenciosamente (achado de review F2.1.6#5).
 set -euo pipefail
 cd "$(dirname "$0")/.."   # apps/control-plane
 : "${DATABASE_URL:?DATABASE_URL ausente}"
@@ -55,28 +75,50 @@ if [ "$USERS_EXISTS" != "t" ]; then
   "${PSQL[@]}" -f "$TMP_BASELINE"
   rm -f "$TMP_BASELINE"
   trap - EXIT
-  echo "[db-migrate] seed de planos (mesmo passo do e2e-wizard.yml)"
-  "$TSX_BIN" prisma/seed.ts
-  for m in "${LEDGER[@]}"; do
-    "${PSQL[@]}" -f "prisma/$m"   # idempotentes: baseline já cobre; replay garante paridade de registro
-    registra "$m"
-  done
-  echo "[db-migrate] virgem -> baseline + ${#LEDGER[@]} entradas registradas"
-  exit 0
 fi
 
-mapfile -t APPLIED < <("${PSQL[@]}" -c "SELECT name FROM gitorch_schema_migrations ORDER BY name")
+# Seed roda sempre — virgem ou não, ver cabeçalho do arquivo. Precisa vir
+# depois do baseline (senão a tabela `plans` não existe ainda no caso virgem)
+# e antes do ledger (não depende dele; planos não são criados por nenhum dos
+# 12 SQLs).
+echo "[db-migrate] seed de planos (idempotente, roda sempre)"
+"$TSX_BIN" prisma/seed.ts
+
+declare -A LEDGER_SET=()
+for m in "${LEDGER[@]}"; do LEDGER_SET["$m"]=1; done
+
+# Captura direta (não process substitution): `mapfile -t X < <(cmd)` roda cmd
+# num subshell cujo exit code o `set -e` do shell pai NÃO enxerga — uma falha
+# de psql aqui (timeout de lock, permissão, conectividade) silenciosamente
+# vira APPLIED_RAW vazio, indistinguível de "banco sem nada aplicado ainda",
+# e o script reaplicaria e re-registraria tudo de novo, mascarando o erro real
+# (achado de review F2.1.6#3). `VAR=$(cmd)` é uma atribuição simples: seu
+# exit code É o do comando, e o `set -e` aborta nela normalmente.
+APPLIED_RAW=$("${PSQL[@]}" -c "SELECT name || '|' || checksum FROM gitorch_schema_migrations ORDER BY name")
+mapfile -t APPLIED_ROWS <<< "$APPLIED_RAW"
+
+APPLIED=()
+for row in "${APPLIED_ROWS[@]:-}"; do
+  [ -n "$row" ] || continue
+  name="${row%%|*}"
+  checksum="${row#*|}"
+  if [ -z "${LEDGER_SET[$name]:-}" ]; then
+    echo "[db-migrate] '$name' aplicada mas fora do ledger — banco à frente do código; ABORTA" >&2
+    exit 2
+  fi
+  current_sum=$(sha256sum "prisma/$name" | cut -d' ' -f1)
+  if [ "$current_sum" != "$checksum" ]; then
+    echo "[db-migrate] DRIFT: '$name' foi aplicada, mas o conteúdo do arquivo mudou desde então (checksum não bate) — ABORTA" >&2
+    exit 3
+  fi
+  APPLIED+=("$name")
+done
+
 is_applied() {
   local n
   for n in "${APPLIED[@]:-}"; do [ "$n" = "$1" ] && return 0; done
   return 1
 }
-for a in "${APPLIED[@]:-}"; do
-  [ -n "$a" ] || continue
-  ok=1
-  for m in "${LEDGER[@]}"; do [ "$m" = "$a" ] && ok=0; done
-  [ "$ok" = 0 ] || { echo "[db-migrate] '$a' aplicada mas fora do ledger — banco à frente do código; ABORTA" >&2; exit 2; }
-done
 PEND=0
 for m in "${LEDGER[@]}"; do
   if ! is_applied "$m"; then

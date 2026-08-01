@@ -14,8 +14,23 @@ describe('MIGRATION_LEDGER', () => {
     expect([...MIGRATION_LEDGER].sort()).toEqual(onDisk)
   })
   it('ordem cronológica congelada (mudar a ordem é mudança de contrato)', () => {
-    expect(MIGRATION_LEDGER[0]).toBe('billing-migration.sql')
-    expect(MIGRATION_LEDGER[MIGRATION_LEDGER.length - 1]).toBe('agent-question-migration.sql')
+    // Igualdade do array INTEIRO, não só ponta a ponta — só checar índice 0 e
+    // o último deixa qualquer reordenação no meio passar batido (achado de
+    // review F2.1.6#2: trocar duas entradas do meio ficava verde aqui).
+    expect([...MIGRATION_LEDGER]).toEqual([
+      'billing-migration.sql',
+      'setup-wizard-migration.sql',
+      'diagnosis-job-migration.sql',
+      'client-environment-activity-migration.sql',
+      'project-owner-scope-migration.sql',
+      'telegram-link-migration.sql',
+      'github-app-install-migration.sql',
+      'graph-cache-migration.sql',
+      'resources-lock-migration.sql',
+      'resources-status-migration.sql',
+      'claude-quota-migration.sql',
+      'agent-question-migration.sql',
+    ])
   })
 })
 
