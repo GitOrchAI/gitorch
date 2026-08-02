@@ -9,7 +9,7 @@
     "build": "tsc",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
-    "test": "vitest run",
+    "test": "vitest run --exclude test/db-migrate.integration.test.ts && vitest run test/db-migrate.integration.test.ts",
     "test:watch": "vitest",
     "lint": "eslint src",
     "lint:fix": "eslint src --fix",

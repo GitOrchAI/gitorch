@@ -37,6 +37,24 @@ const controlPlaneDir = join(dirname(fileURLToPath(import.meta.url)), '..')
 const scriptPath = join(controlPlaneDir, 'scripts', 'db-migrate.sh')
 const adminUrl = process.env['GITORCH_TEST_DATABASE_URL']
 
+// Achado FW-6-fixture / FW-5: nome único e reconhecível da fixture do teste
+// "achado I4" abaixo — escrita DENTRO de prisma/, o mesmo diretório que
+// src/lib/migration-ledger.test.ts varre inteiro e exige 1:1 com o ledger.
+const I4_FIXTURE_NAME = '2026-08-x-migration.sql'
+const i4FixturePath = join(controlPlaneDir, 'prisma', I4_FIXTURE_NAME)
+
+// Achado FW-5: autocura, roda incondicionalmente ao CARREGAR este arquivo —
+// antes de qualquer describe/it, inclusive quando `reachable` é false e a
+// suíte inteira abaixo é pulada (describe.skipIf). Se uma rodada anterior
+// morreu (SIGKILL) no meio do teste "achado I4" logo abaixo, o `finally`
+// dele nunca chega a rodar e a fixture fica presa em prisma/ pra sempre —
+// quebrando tanto este arquivo (achado I4 veria a fixture já existir) quanto
+// src/lib/migration-ledger.test.ts (exige 1:1 exato entre prisma/*-migration
+// .sql e o ledger) em TODA rodada seguinte, até alguém notar e apagar à mão.
+// Isto garante que a PRÓXIMA vez que este arquivo é importado — reachable ou
+// não — o estado começa limpo.
+rmSync(i4FixturePath, { force: true })
+
 function canConnect(url: string): boolean {
   try {
     execFileSync('psql', [url, '-tAc', 'SELECT 1'], { stdio: 'pipe' })
@@ -328,6 +346,24 @@ describe.skipIf(!reachable)('scripts/db-migrate.sh (integração, postgres real 
     }
   }, 30000)
 
+  // Achado FW-5: este teste escreve uma fixture *-migration.sql DENTRO de
+  // prisma/ — o MESMO diretório que src/lib/migration-ledger.test.ts varre
+  // inteiro (readdirSync) exigindo 1:1 exato com o ledger. Os dois arquivos
+  // de teste estão no mesmo `include` do vitest e, por padrão, arquivos
+  // rodam em paralelo (workers/threads separados) — se migration-ledger.
+  // test.ts ler prisma/ na janela em que esta fixture existe, vê um arquivo
+  // a mais e quebra por uma corrida, não por um bug real. A correção não é
+  // aqui dentro (não dá pra "esconder" a fixture de um readdirSync que
+  // precisa vê-la pra provar o guard do shell): scripts/db-migrate.sh
+  // extrai/compara com o MESMO glob `prisma/*-migration.sql`, então a
+  // fixture TEM que estar ali de verdade. A correção é em
+  // apps/control-plane/package.json ("test"): este arquivo roda numa 2ª
+  // invocação de `vitest run` SEPARADA, só depois da 1ª (que cobre
+  // src/**/*.test.ts, incluindo migration-ledger.test.ts) já ter terminado
+  // — as duas nunca mais se sobrepõem no tempo. A limpeza da fixture (linha
+  // ~40 deste arquivo, incondicional ao carregar o módulo) cobre o caso
+  // complementar: uma rodada anterior morta (SIGKILL) que nunca chegou a
+  // rodar o `finally` abaixo.
   it('achado I4: um arquivo *-migration.sql em disco sem entrada correspondente extraída do ledger TS aborta o deploy (guard de contagem, não mais "-ge 12" hardcoded)', () => {
     const dbName = uniqueDbName('ledgerdrift')
     createDb(dbName)
@@ -335,21 +371,20 @@ describe.skipIf(!reachable)('scripts/db-migrate.sh (integração, postgres real 
     // Fixture com dígito no nome: exatamente o caso que a regex de extração
     // do script (`[a-z-]+-migration\.sql`) NUNCA vai casar — simula um SQL
     // real em prisma/ que "sumiria" do ledger extraído pelo shell, mas que
-    // migration-ledger.ts (TS) e o disco concordam ter. O guard de contagem
-    // (extraído vs. arquivos em disco) tem que pegar essa divergência, não
-    // importa de qual lado ela vem.
-    const fixtureName = '2026-08-x-migration.sql'
-    const fixturePath = join(controlPlaneDir, 'prisma', fixtureName)
+    // migration-ledger.ts (TS) e o disco concordam ter. O guard (comparação
+    // exata de listas desde o achado FW-6) tem que pegar essa divergência,
+    // não importa de qual lado ela vem.
+    rmSync(i4FixturePath, { force: true })
     try {
       writeFileSync(
-        fixturePath,
+        i4FixturePath,
         '-- fixture de teste (achado I4), removido ao fim do teste\nSELECT 1;\n'
       )
       const result = runScript(dbUrl)
       expect(result.status).not.toBe(0)
       expect(result.stderr).toContain('dessincronizada')
     } finally {
-      rmSync(fixturePath, { force: true })
+      rmSync(i4FixturePath, { force: true })
       dropDb(dbName)
     }
   }, 30000)
