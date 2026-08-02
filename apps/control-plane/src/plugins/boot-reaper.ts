@@ -84,11 +84,26 @@ export async function reapOrphanContainers(
   return { removed, failed }
 }
 
-export async function failOrphanRunningMissions(prisma: {
-  mission: { updateMany(args: unknown): Promise<{ count: number }> }
-}): Promise<number> {
+/**
+ * `bootAt` (achado M1) delimita o que este ceifador pode legitimamente
+ * considerar órfão: só missão com `startedAt` ANTES do boot — ou seja,
+ * criada pelo processo ANTERIOR, que morreu. Sem esse filtro, uma missão
+ * disparada de verdade pela rota admin/QA no intervalo entre `listen()`
+ * resolver e este ceifador terminar (no caminho podman, `ps` + N × `rm -f`
+ * pode levar segundos) é marcada `failed` enquanto ainda roda genuinamente —
+ * ela nasce DEPOIS do boot, então nunca pode ter sido deixada pelo processo
+ * anterior. `bootAt` é capturado no registro do plugin (scheduler.ts), antes
+ * de `app.listen()` sequer devolver — nenhuma requisição HTTP (logo, nenhum
+ * dispatch de missão) é possível antes disso.
+ */
+export async function failOrphanRunningMissions(
+  prisma: {
+    mission: { updateMany(args: unknown): Promise<{ count: number }> }
+  },
+  bootAt: Date
+): Promise<number> {
   const res = await prisma.mission.updateMany({
-    where: { status: 'running' },
+    where: { status: 'running', startedAt: { lt: bootAt } },
     data: {
       status: 'failed',
       error:

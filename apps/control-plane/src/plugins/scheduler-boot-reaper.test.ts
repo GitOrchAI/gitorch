@@ -55,8 +55,13 @@ describe('runBootReaper', () => {
     expect(calls[0]?.[1]).toBe('ps')
     expect(calls[1]).toEqual(['podman', 'rm', '-f', 'gitorch-mission-x'])
     expect(prisma.mission.updateMany).toHaveBeenCalledTimes(1)
-    const arg = prisma.mission.updateMany.mock.calls[0]?.[0] as { where: { status: string } }
-    expect(arg.where).toEqual({ status: 'running' })
+    const arg = prisma.mission.updateMany.mock.calls[0]?.[0] as {
+      where: { status: string; startedAt: { lt: Date } }
+    }
+    // Achado M1: o filtro agora exige startedAt < bootAt (o default de
+    // runBootReaper quando nenhum bootAt explícito é passado, como aqui).
+    expect(arg.where.status).toBe('running')
+    expect(arg.where.startedAt.lt).toBeInstanceOf(Date)
   })
 
   it('executor local-process (default): NUNCA chama o runtime de container, mas ainda falha as missões running', async () => {
@@ -194,8 +199,11 @@ describe('boot reaper wiring em schedulerPlugin (real seam)', () => {
     await app.register(schedulerPlugin)
     await new Promise((resolve) => setImmediate(resolve))
     expect(updateMany).toHaveBeenCalledTimes(1)
-    const arg = updateMany.mock.calls[0]?.[0] as { where: { status: string } }
-    expect(arg.where).toEqual({ status: 'running' })
+    const arg = updateMany.mock.calls[0]?.[0] as {
+      where: { status: string; startedAt: { lt: Date } }
+    }
+    expect(arg.where.status).toBe('running')
+    expect(arg.where.startedAt.lt).toBeInstanceOf(Date)
     await app.close()
   })
 })

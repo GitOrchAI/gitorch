@@ -615,7 +615,8 @@ export function selectClaimableSetupMissions<T>(
  */
 export async function runBootReaper(
   app: FastifyInstance,
-  run: RuntimeCommandRunner = realRuntimeCommandRunner
+  run: RuntimeCommandRunner = realRuntimeCommandRunner,
+  bootAt: Date = new Date()
 ): Promise<void> {
   if ((process.env['GITORCH_EXECUTOR'] ?? 'local-process') === 'podman') {
     const engine = process.env['GITORCH_CONTAINER_ENGINE'] ?? 'podman'
@@ -637,7 +638,7 @@ export async function runBootReaper(
     }
   }
 
-  const failed = await failOrphanRunningMissions(app.prisma).catch((err: unknown) => {
+  const failed = await failOrphanRunningMissions(app.prisma, bootAt).catch((err: unknown) => {
     app.log.warn(err, '[Scheduler] ceifador: falha ao marcar missões órfãs')
     return 0
   })
@@ -652,7 +653,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // banco de PROD e não pode varrer mission-creds, disparar tick nem disputar
   // missões contra a instância viva. Ver config/pipeline-check.ts.
   if (pipelineCheckEnabled()) {
-    app.log.warn(
+    // `error`, não `warn` (achado I6): esta é a variável mais perigosa que a
+    // branch adiciona — se vazar pro ambiente real, o app sobe, responde
+    // health check e serve o front normalmente, mas fica pra sempre inerte
+    // (sem tick, sem missão, sem Telegram). Um `warn` se perde no volume
+    // normal de log; `error` é impossível de não ver.
+    app.log.error(
       '[Scheduler] GITORCH_PIPELINE_CHECK=1: scheduler INERTE (sem tick, sem varredura de creds, sem missões)'
     )
     app.decorate('triggerAgentMission', async (): Promise<TriggerResult> => ({
@@ -661,6 +667,14 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     }))
     return
   }
+
+  // Boot timestamp (achado M1): capturado AQUI, no registro do plugin — antes
+  // de `app.listen()` sequer devolver, logo antes de qualquer requisição HTTP
+  // (e portanto qualquer dispatch de missão via rota admin/QA) ser possível.
+  // runBootReaper usa isto pra só falhar missão com `startedAt` ANTERIOR ao
+  // boot — nunca uma disparada de verdade nos segundos entre o boot e o
+  // ceifador terminar (caminho podman: `ps` + N × `rm -f`).
+  const bootAt = new Date()
 
   // Ceifador de boot (P2-2): nada de "running"/container de missão sobrevive
   // a um restart (ver runBootReaper acima para o raciocínio completo).
@@ -671,7 +685,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // tentaria falar com um runtime de container que não existe (paridade com
   // o guard do tick, mais abaixo).
   if (process.env['NODE_ENV'] !== 'test') {
-    void runBootReaper(app).catch((err: unknown) =>
+    void runBootReaper(app, undefined, bootAt).catch((err: unknown) =>
       app.log.error(err, '[Scheduler] ceifador de boot falhou inesperadamente')
     )
   }

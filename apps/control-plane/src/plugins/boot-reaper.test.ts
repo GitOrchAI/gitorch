@@ -113,7 +113,7 @@ describe('reapOrphanContainers', () => {
 })
 
 describe('failOrphanRunningMissions', () => {
-  it('marca TODA running como failed imediatamente (no boot não há voo legítimo)', async () => {
+  it('marca running ANTERIOR ao boot como failed imediatamente (no boot não há voo legítimo mais velho que ele)', async () => {
     let captured: unknown
     const prisma = {
       mission: {
@@ -123,16 +123,55 @@ describe('failOrphanRunningMissions', () => {
         },
       },
     }
-    const n = await failOrphanRunningMissions(prisma)
+    const bootAt = new Date('2026-01-01T00:00:00.000Z')
+    const n = await failOrphanRunningMissions(prisma, bootAt)
     expect(n).toBe(3)
-    const arg = captured as { where: { status: string }; data: { status: string; error: string } }
-    expect(arg.where).toEqual({ status: 'running' })
+    const arg = captured as {
+      where: { status: string; startedAt: { lt: Date } }
+      data: { status: string; error: string }
+    }
+    expect(arg.where).toEqual({ status: 'running', startedAt: { lt: bootAt } })
     expect(arg.data.status).toBe('failed')
     expect(arg.data.error).toContain('restart')
   })
 
   it('zero running, retorna 0 sem erro', async () => {
     const prisma = { mission: { updateMany: async () => ({ count: 0 }) } }
-    expect(await failOrphanRunningMissions(prisma)).toBe(0)
+    expect(await failOrphanRunningMissions(prisma, new Date())).toBe(0)
+  })
+
+  // Achado M1: uma missão disparada de verdade (ex.: via rota admin/QA) nos
+  // segundos entre o boot e este ceifador terminar (caminho podman: `ps` + N
+  // × `rm -f`) nasce DEPOIS de `bootAt` — nunca pode ter sido deixada pelo
+  // processo anterior, e o ceifador não pode marcá-la failed. Simula o filtro
+  // real do Postgres (`startedAt < bootAt`) contra duas missões fixas pra
+  // provar a SEMÂNTICA do filtro, não só que o argumento foi passado adiante.
+  it('não falha missão com startedAt DEPOIS do boot (dispatch real logo após listen())', async () => {
+    const bootAt = new Date('2026-01-01T00:00:00.000Z')
+    const missions = [
+      {
+        id: 'orfa-antes-do-boot',
+        status: 'running',
+        startedAt: new Date('2025-12-31T23:00:00.000Z'),
+      },
+      {
+        id: 'dispatch-real-apos-boot',
+        status: 'running',
+        startedAt: new Date('2026-01-01T00:00:01.000Z'),
+      },
+    ]
+    const prisma = {
+      mission: {
+        updateMany: async (args: unknown) => {
+          const { where } = args as { where: { status: string; startedAt: { lt: Date } } }
+          const affected = missions.filter(
+            (m) => m.status === where.status && m.startedAt < where.startedAt.lt
+          )
+          return { count: affected.length }
+        },
+      },
+    }
+    const n = await failOrphanRunningMissions(prisma, bootAt)
+    expect(n).toBe(1)
   })
 })
