@@ -9,6 +9,7 @@ import {
 } from '../services/telegram-bot.js'
 import { resolveNotifyChatId } from '../services/telegram-link.js'
 import { AgentQuestionService, type AgentQuestionRecord } from '../services/agent-question.js'
+import { pipelineCheckEnabled } from '../config/pipeline-check.js'
 
 // O ouvido do bot. Sem ele, o deep link do passo 8 abriria o Telegram, o cliente
 // apertaria Start... e ninguém estaria escutando — o `chat_id` (a única coisa
@@ -76,10 +77,17 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
   app.decorate('agentQuestionService', agentQuestionService)
 
   // Em teste não se abre laço nem socket (paridade com o scheduler): a lógica
-  // toda é testada nos serviços, sem rede.
-  if (!botToken || process.env['NODE_ENV'] === 'test') {
+  // toda é testada nos serviços, sem rede. Em modo pipeline-check (F2.3/P1-2)
+  // também não: a instância de verificação escutando o MESMO bot que a prod
+  // viva causaria 409 no getUpdates (ver config/pipeline-check.ts).
+  const pipelineCheck = pipelineCheckEnabled()
+  if (!botToken || process.env['NODE_ENV'] === 'test' || pipelineCheck) {
     if (!botToken) {
       app.log.info('[Telegram] sem GITORCH_TELEGRAM_BOT_TOKEN — o bot não será ouvido')
+    } else if (pipelineCheck) {
+      app.log.warn(
+        '[Telegram] GITORCH_PIPELINE_CHECK=1: bot NÃO será ouvido (evita 409 contra a prod viva)'
+      )
     }
     return
   }

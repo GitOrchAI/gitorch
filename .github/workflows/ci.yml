@@ -27,6 +27,18 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+    env:
+      # apps/control-plane/test/db-migrate.integration.test.ts (F2.1.6) usa
+      # isto como conexão-admin pra criar/derrubar bancos descartáveis de
+      # cada teste (gitorch_it_*) contra o Postgres deste próprio serviço.
+      # Nome DIFERENTE de DATABASE_URL de propósito: src/test/setup.ts
+      # sobrescreve DATABASE_URL globalmente com um placeholder falso antes
+      # da suíte padrão rodar. Sem esta var o teste se auto-pula (skip) em
+      # vez de falhar — mas então nunca prova nada em nenhum PR. O banco
+      # gitorch_ci provisionado acima não é usado por nenhum outro passo
+      # deste job, então reusá-lo como conexão-admin não arrisca interferir
+      # com mais nada.
+      GITORCH_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/gitorch_ci
     steps:
       - uses: actions/checkout@v7
         with:

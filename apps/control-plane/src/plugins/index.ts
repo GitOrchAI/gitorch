@@ -6,6 +6,7 @@ import fastifySwaggerUi from '@fastify/swagger-ui'
 import fastifyUnderPressure from '@fastify/under-pressure'
 import { Env } from '../config/env.js'
 import { API_PREFIX } from '../config/constants.js'
+import { parseRateLimitAllowList } from './rate-limit-keys.js'
 
 import { prismaPlugin } from './prisma.js'
 import { redisPlugin } from './redis.js'
@@ -29,6 +30,23 @@ import {
 import rateLimit from '@fastify/rate-limit'
 
 export async function registerPlugins(app: FastifyInstance, env: Env): Promise<void> {
+  // Achado I3: a ÚNICA combinação segura em produção atrás do Funnel é
+  // trustProxy=1 E allowlist vazia — qualquer uma das duas erradas restaura
+  // silenciosamente o bug original (peer loopback do tailscaled isento do
+  // rate limit, ou rate limit contornável girando X-Forwarded-For). "Setar
+  // uma env como vazia" é exatamente o tipo de config que mecanismo de
+  // deploy trata de forma inconsistente (var ausente cai no default
+  // '127.0.0.1,::1', não em ""), então nada garantia que isto seria notado.
+  // Loga em `error` (não `warn`) pra ser impossível de não ver.
+  if (env.NODE_ENV === 'production') {
+    const allowlist = parseRateLimitAllowList(env.GITORCH_RATE_LIMIT_ALLOWLIST)
+    if (allowlist.length > 0 || !env.GITORCH_TRUST_PROXY) {
+      app.log.error(
+        `[boot] Config de rate limit INSEGURA em produção: GITORCH_TRUST_PROXY=${env.GITORCH_TRUST_PROXY} GITORCH_RATE_LIMIT_ALLOWLIST=${JSON.stringify(allowlist)} — sem trustProxy=1 E allowlist vazia, o rate limit (incluindo o limitador de brute-force do login) fica contornável ou isenta todo tráfego do Funnel. Configure GITORCH_TRUST_PROXY=1 e GITORCH_RATE_LIMIT_ALLOWLIST= (vazio) no ambiente de produção.`
+      )
+    }
+  }
+
   await app.register(securityHookPlugin)
   await app.register(fastifyHelmet, {
     contentSecurityPolicy: false,
@@ -90,6 +108,7 @@ export async function registerPlugins(app: FastifyInstance, env: Env): Promise<v
 
   // Register rate limit before auth to protect auth hooks from DoS
   // Using preHandler hook ensures wingId context is established for multi-tenant limits
+  const rateLimitAllowList = parseRateLimitAllowList(env.GITORCH_RATE_LIMIT_ALLOWLIST)
   await app.register(rateLimit, {
     max: env.RATE_LIMIT_MAX,
     timeWindow: env.RATE_LIMIT_WINDOW_MS,
@@ -104,7 +123,16 @@ export async function registerPlugins(app: FastifyInstance, env: Env): Promise<v
       'x-ratelimit-remaining': true,
       'x-ratelimit-reset': true,
     },
-    allowList: ['127.0.0.1', '::1'],
+    // Função, não array (achado descoberto ao escrever o teste de seam do
+    // achado M2): @fastify/rate-limit compara um `allowList` array contra a
+    // CHAVE pós-keyGenerator (`ip:<ip>` ou `wing:<wingId>`, ver acima), não
+    // contra `request.ip` cru — um array de IPs crus (o que
+    // GITORCH_RATE_LIMIT_ALLOWLIST documenta e parseRateLimitAllowList
+    // produz) NUNCA batia com isso, deixando a allowlist permanentemente
+    // inerte em QUALQUER ambiente desde que o keyGenerator por
+    // wingId/sessão entrou (Task F2.1.1). Uma função ignora a chave e
+    // compara sempre contra o IP resolvido de verdade.
+    allowList: (request) => rateLimitAllowList.includes(request.ip),
   })
 
   await app.register(authPlugin)

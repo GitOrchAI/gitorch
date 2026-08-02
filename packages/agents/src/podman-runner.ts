@@ -55,6 +55,13 @@ export interface CreatePodmanCommandRunnerOptions {
   memorySwapLimit?: string
   /** Limite de processos dentro do container. */
   pidsLimit?: number
+  /**
+   * Teto de CPU do container (formato do podman `--cpus`, ex.: '1.5').
+   * Sem isto o teto de 1,5 vCPU do plano de capacidade NÃO existia no caminho
+   * podman (P2-4): uma missão em loop ocupava quantos cores quisesse na VM
+   * compartilhada. Opcional para não mudar hosts já calibrados sem a env.
+   */
+  cpus?: string
   /** Runner usado para executar o podman em si (injetável para teste). */
   hostRunner?: RuntimeCommandRunner
   /**
@@ -110,6 +117,7 @@ export function createPodmanCommandRunner(
       memorySwapLimit,
       '--pids-limit',
       String(options.pidsLimit ?? 512),
+      ...(options.cpus ? ['--cpus', options.cpus] : []),
       // Diretório de runtime gravável para CLIs que abrem sockets locais.
       '--tmpfs',
       '/tmp:rw,exec',

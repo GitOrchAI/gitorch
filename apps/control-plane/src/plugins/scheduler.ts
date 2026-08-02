@@ -50,6 +50,9 @@ import { RailsStepError } from '../services/rails-runner.js'
 import { GithubExecutionError } from '../services/github-backlog.js'
 import { canRunMission, shouldAlertForQuota } from '../lib/spend-guard.js'
 import { computeConsumption } from '../lib/consumption.js'
+import { pipelineCheckEnabled } from '../config/pipeline-check.js'
+import { resolveMissionCpus } from '../config/mission-cpus.js'
+import { reapOrphanContainers, failOrphanRunningMissions, type ReapResult } from './boot-reaper.js'
 import * as os from 'node:os'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -265,7 +268,7 @@ export function createLocalCredentialRunner(
  * local-process, credencial ainda é materializada (createLocalCredentialRunner)
  * — só o mecanismo de isolamento (container vs HOME temporário) muda.
  */
-function buildMissionRunner(
+export function buildMissionRunner(
   app: FastifyInstance,
   environments: EnvironmentLookup
 ): RuntimeCommandRunner {
@@ -339,6 +342,7 @@ function buildMissionRunner(
   }
 
   const memoryLimit = process.env['GITORCH_MISSION_MEMORY'] ?? '2g'
+  const missionCpus = resolveMissionCpus()
   return createPodmanCommandRunner({
     image,
     podmanBinary: engine,
@@ -349,6 +353,9 @@ function buildMissionRunner(
     // teto nominal (ver podman-runner.ts). Configurável separadamente só se
     // o operador quiser conceder folga de swap de propósito.
     memorySwapLimit: process.env['GITORCH_MISSION_MEMORY_SWAP'] ?? memoryLimit,
+    // Teto de CPU (P2-4): fecha o caminho que faltava — memória já tinha teto,
+    // CPU não tinha nenhum (ver podman-runner.ts).
+    cpus: missionCpus,
     prepareMounts,
   })
 }
@@ -463,8 +470,12 @@ function buildRuntimeStack(
  * stack local de sempre (ver selectRuntimeStack). Sem env → produção intacta.
  */
 export function buildRemoteRuntimeStackIfConfigured(app: FastifyInstance): RuntimeStack | null {
-  const host = process.env['GITORCH_FREE_TIER_SSH_HOST']
-  const identityFile = process.env['GITORCH_FREE_TIER_SSH_KEY']
+  // .trim() antes do teste de vazio: nem todo mecanismo que seta env var
+  // corta espaço (ex.: `export` de shell) — um valor só-espaço passaria no
+  // teste falsy cru e tentaria um build remoto quebrado em vez de cair no
+  // stack local (mesma convenção de config/mission-cpus.ts).
+  const host = process.env['GITORCH_FREE_TIER_SSH_HOST']?.trim()
+  const identityFile = process.env['GITORCH_FREE_TIER_SSH_KEY']?.trim()
   if (!host || !identityFile) return null
 
   app.log.info(`[Scheduler] Stack remoto do tier grátis configurado: ${host}`)
@@ -485,6 +496,9 @@ export function buildRemoteRuntimeStackIfConfigured(app: FastifyInstance): Runti
     // Mesmo raciocínio do stack local (ver buildMissionRunner): default sem
     // folga de swap, fechando a mesma fuga provada ao vivo no podman.
     memorySwapLimit: process.env['GITORCH_MISSION_MEMORY_SWAP'] ?? remoteMemoryLimit,
+    // Mesmo teto de CPU do stack local (P2-4): mesma resolução, mesmo default
+    // e mesma blindagem contra env vazia/inválida (ver config/mission-cpus.ts).
+    cpus: resolveMissionCpus(),
     hostRunner: sshRunner,
   })
 
@@ -583,7 +597,99 @@ export function selectClaimableSetupMissions<T>(
   return claimable
 }
 
+/**
+ * Ceifador de BOOT (P2-2/E5): a execução de missão vive numa promise em
+ * memória (executeMissionWithFailover, abaixo) — um restart do control-plane
+ * deixa (a) a linha `running` fantasma no banco até a varredura de stale
+ * (STALE_RUNNING_MS) e (b) o container podman vivo segurando RAM/CPU numa VM
+ * compartilhada. DECISÃO DO DONO: a esteira de DEPLOY drena missões em voo
+ * (timeout) antes de trocar de versão (F2.3.2) — a instância anterior sempre
+ * para por completo antes da nova subir. A única outra instância que pode
+ * coexistir é o probe INERTE de pipeline-check (GITORCH_PIPELINE_CHECK=1,
+ * F2.1.2), que retorna ANTES de chegar aqui (ver guard no início do plugin) e
+ * nunca reap. Logo, no boot, todo container `gitorch-mission-*` e toda
+ * missão `running` são órfãos por construção — sem essa garantia isto seria
+ * destrutivo (mataria trabalho legítimo). Nunca derruba o boot: falha do
+ * runtime de container (podman ausente, permissão, timeout) OU do prisma é
+ * capturada e logada aqui — nunca silenciosa, nunca propaga.
+ */
+export async function runBootReaper(
+  app: FastifyInstance,
+  run: RuntimeCommandRunner = realRuntimeCommandRunner,
+  bootAt: Date = new Date()
+): Promise<void> {
+  if ((process.env['GITORCH_EXECUTOR'] ?? 'local-process') === 'podman') {
+    const engine = process.env['GITORCH_CONTAINER_ENGINE'] ?? 'podman'
+    const result = await reapOrphanContainers(run, engine).catch((err: unknown) => {
+      app.log.warn(err, '[Scheduler] ceifador: falha ao listar containers órfãos')
+      return { removed: [], failed: [] } as ReapResult
+    })
+    if (result.removed.length > 0) {
+      app.log.warn(`[Scheduler] ceifador: ${result.removed.length} container(s) órfão(s) removidos`)
+    }
+    if (result.failed.length > 0) {
+      // Honesto: um `rm -f` que não confirmou remoção NUNCA vira "removido"
+      // no log — é exatamente o container-segurando-RAM que este ceifador
+      // existe para eliminar (ver ReapResult em boot-reaper.ts).
+      app.log.warn(
+        { failed: result.failed },
+        `[Scheduler] ceifador: ${result.failed.length} container(s) órfão(s) falharam ao remover`
+      )
+    }
+  }
+
+  const failed = await failOrphanRunningMissions(app.prisma, bootAt).catch((err: unknown) => {
+    app.log.warn(err, '[Scheduler] ceifador: falha ao marcar missões órfãs')
+    return 0
+  })
+  if (failed > 0) {
+    app.log.warn(`[Scheduler] ceifador: ${failed} missão(ões) órfã(s) de restart → failed`)
+  }
+}
+
 const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
+  // Modo INERTE do health pré-switch da esteira (F2.3/P1-2): sai ANTES de tocar
+  // prisma/engineConnections/cortex — a instância de verificação aponta pro
+  // banco de PROD e não pode varrer mission-creds, disparar tick nem disputar
+  // missões contra a instância viva. Ver config/pipeline-check.ts.
+  if (pipelineCheckEnabled()) {
+    // `error`, não `warn` (achado I6): esta é a variável mais perigosa que a
+    // branch adiciona — se vazar pro ambiente real, o app sobe, responde
+    // health check e serve o front normalmente, mas fica pra sempre inerte
+    // (sem tick, sem missão, sem Telegram). Um `warn` se perde no volume
+    // normal de log; `error` é impossível de não ver.
+    app.log.error(
+      '[Scheduler] GITORCH_PIPELINE_CHECK=1: scheduler INERTE (sem tick, sem varredura de creds, sem missões)'
+    )
+    app.decorate('triggerAgentMission', async (): Promise<TriggerResult> => ({
+      triggered: false,
+      reason: 'pipeline-check',
+    }))
+    return
+  }
+
+  // Boot timestamp (achado M1): capturado AQUI, no registro do plugin — antes
+  // de `app.listen()` sequer devolver, logo antes de qualquer requisição HTTP
+  // (e portanto qualquer dispatch de missão via rota admin/QA) ser possível.
+  // runBootReaper usa isto pra só falhar missão com `startedAt` ANTERIOR ao
+  // boot — nunca uma disparada de verdade nos segundos entre o boot e o
+  // ceifador terminar (caminho podman: `ps` + N × `rm -f`).
+  const bootAt = new Date()
+
+  // Ceifador de boot (P2-2): nada de "running"/container de missão sobrevive
+  // a um restart (ver runBootReaper acima para o raciocínio completo).
+  // Fire-and-forget (mesmo padrão da faxina de staging de credenciais
+  // abaixo): não atrasa o boot do servidor por causa de uma limpeza
+  // best-effort. Nunca sob teste: a suíte inteira roda contra um Prisma de
+  // teste/sem podman — disparar aqui marcaria missões de teste como failed e
+  // tentaria falar com um runtime de container que não existe (paridade com
+  // o guard do tick, mais abaixo).
+  if (process.env['NODE_ENV'] !== 'test') {
+    void runBootReaper(app, undefined, bootAt).catch((err: unknown) =>
+      app.log.error(err, '[Scheduler] ceifador de boot falhou inesperadamente')
+    )
+  }
+
   // Instanciado cedo: buildMissionRunner (W1.3.1) precisa dele para resolver o
   // motor VERSIONADO do ambiente do dono do projeto ao montar o stack local; a
   // faxina de ambientes expirados (mais abaixo) reusa a MESMA instância.
