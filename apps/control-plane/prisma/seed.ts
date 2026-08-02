@@ -1,9 +1,22 @@
 import { PrismaClient } from '@prisma/client'
 import { ensureDefaultSchedules } from '../src/lib/project-defaults.js'
 
-// Seed idempotente: cria os planos base, garante o usuário dono da instância
-// e migra dados legados (projetos sem dono e agenda fixa) para o modelo
-// multi-tenant. Seguro de rodar quantas vezes for preciso.
+// Seed idempotente: cria os planos base e, fora do modo --plans-only, garante
+// o usuário dono da instância e migra dados legados (projetos sem dono e
+// agenda fixa) para o modelo multi-tenant.
+//
+// --plans-only (achado de review I5): scripts/db-migrate.sh SEMPRE roda com
+// esta flag, em todo deploy. O bloco de upsert dos planos é seguro de repetir
+// (só upsert). O bloco de dono/legado NÃO é — é uma migração de dados de
+// 2025 (reivindicar pro dono da instância todo Project com userId nulo) que,
+// promovida a hot path automático num sistema multi-tenant, reescreveria o
+// projeto (missões e API keys inclusas) de um cliente real no dia em que
+// qualquer caminho produzisse um userId nulo por engano (Project.userId é
+// nulo só pra registro legado por design — ver prisma/schema.prisma). Por
+// isso o bloco de dono/legado só roda SEM a flag, invocado manualmente e uma
+// vez (`node_modules/.bin/tsx prisma/seed.ts`) — nunca em automação.
+const PLANS_ONLY = process.argv.includes('--plans-only')
+
 const prisma = new PrismaClient()
 
 // Planos base. tierRank ordena a fila; maxConcurrentMissions é o teto de
@@ -91,6 +104,13 @@ async function main(): Promise<void> {
       },
       create: plan,
     })
+  }
+
+  if (PLANS_ONLY) {
+    console.log(
+      '[seed] --plans-only: pulando dono da instância e reivindicação de projetos legados sem dono'
+    )
+    return
   }
 
   const ownerEmail = process.env['GITORCH_OWNER_EMAIL']

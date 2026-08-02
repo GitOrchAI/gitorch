@@ -11,23 +11,46 @@
 #  - banco não-virgem (`users` já existe — legado A1/dev ou já migrado
 #    antes): pula o baseline, o schema já está lá.
 #
-# A partir daí o caminho é ÚNICO pros dois casos (ver achado de review
-# F2.1.6#1): o seed dos planos roda SEMPRE, incondicional, e só depois o
-# ledger é reconciliado — aplica em ordem só o que ainda não está em
+# A partir daí o caminho é ÚNICO pros dois casos: primeiro o ledger é
+# reconciliado — aplica em ordem só o que ainda não está em
 # gitorch_schema_migrations (pra banco virgem isso é "todos os 12"; pra banco
-# legado, só o que faltar). Rodar seed incondicionalmente é deliberado: seed é
-# idempotente (só upsert, ver prisma/seed.ts) e a alternativa — rastrear "seed
-# aplicado" como uma linha sintética no ledger — quebraria o drift-guard 1:1
-# que compara MIGRATION_LEDGER contra os arquivos *-migration.sql em disco
-# (migration-ledger.test.ts), por uma entrada que não corresponde a nenhum
-# arquivo real. Antes desta correção, o seed só rodava dentro do branch
-# virgem: uma morte do processo depois do baseline criar `users` mas antes do
-# seed terminar fazia toda rodada futura ver `users` existindo, tomar o branch
-# não-virgem, e NUNCA rodar o seed de novo — a tabela `plans` ficava vazia
-# pra sempre enquanto o script saía com exit 0 dizendo "em dia". Como
-# User.planId tem FK obrigatória pra Plan.id, o primeiro signup real quebrava
-# com violação de FK. Seed incondicional fecha esse buraco: não existe mais
-# um estado intermediário onde `users` existe e os planos não.
+# legado, só o que faltar) —, e SÓ DEPOIS roda o seed dos planos, em modo
+# --plans-only (achado de review C1). ORDEM IMPORTA, e a versão anterior
+# desta task tinha invertida: o seed grava tierRank/maxConcurrentMissions/
+# seats/features em `plans` — colunas que só existem depois de
+# billing-migration.sql, a PRIMEIRA entrada do ledger. Rodar o seed ANTES do
+# ledger (como este script fazia até esta correção) deadlocka QUALQUER banco
+# legado sem billing-migration aplicada (exatamente o caso "A1/dev legado"
+# que o comentário acima diz suportar): o seed morre com "column tier_rank of
+# relation plans does not exist", `set -e` aborta o script, o ledger NUNCA
+# chega a rodar, billing-migration nunca é aplicada, e toda rodada futura
+# repete o mesmíssimo erro — preso pra sempre, só destrancável à mão. Também
+# armava a produção: a PRIMEIRA migração futura que alterasse `plans`/`users`
+# quebraria o PRÓXIMO deploy, porque o seed sempre rodava contra o schema
+# ANTERIOR com um client Prisma gerado do schema NOVO. Com o ledger primeiro,
+# o schema já está atualizado quando o seed roda, nos dois caminhos (virgem e
+# legado) — ver db-migrate.integration.test.ts pro banco-não-virgem-e-
+# desatualizado que prova isso.
+#
+# Seed em modo --plans-only (não o seed completo) também é deliberado (achado
+# I5): o bloco completo do seed (dono da instância + reivindicação de
+# projetos legados sem dono, ensureDefaultSchedules) é uma migração de dados
+# de 2025, não algo seguro de repetir em TODO deploy de um sistema
+# multi-tenant — reescreveria dados de cliente (Project.userId nulo é só pra
+# registro legado; ver prisma/schema.prisma) se algum dia um projeto acabar
+# com userId nulo por outro motivo. Fica reservado pra invocação manual e
+# explícita (`node_modules/.bin/tsx prisma/seed.ts`, sem a flag) — nunca
+# automático.
+#
+# Rodar o seed --plans-only incondicionalmente a cada deploy é deliberado: é
+# idempotente (só upsert dos 4 planos, ver prisma/seed.ts) e a alternativa —
+# rastrear "seed aplicado" como uma linha sintética no ledger — quebraria o
+# drift-guard 1:1 que compara MIGRATION_LEDGER contra os arquivos
+# *-migration.sql em disco (migration-ledger.test.ts), por uma entrada que
+# não corresponde a nenhum arquivo real. Rodar incondicionalmente também
+# fecha o buraco original (F2.1.6#1): uma morte do processo entre o baseline
+# e o seed não deixa `plans` vazia pra sempre — a rodada seguinte reaplica o
+# ledger (idempotente, no-op se já tudo aplicado) e roda o seed de novo.
 #
 # Recuperação de falha: cada migração só é registrada em
 # gitorch_schema_migrations DEPOIS de aplicada com sucesso (ON_ERROR_STOP=1 +
@@ -51,13 +74,40 @@ PSQL=(psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -qtA)
 PRISMA_BIN="node_modules/.bin/prisma"
 TSX_BIN="node_modules/.bin/tsx"
 
+# Preflight (achado M4): prisma e tsx são devDependencies — um
+# `pnpm install --prod` (ou um prune) no ambiente de deploy os apaga, e sem
+# este check a primeira falha do script seria um "No such file or directory"
+# cru vindo de dentro do `${PSQL[@]}`/binário chamado, sem pista nenhuma de
+# causa. Falha aqui, ANTES de tocar o banco, com uma mensagem acionável.
+for bin_path in "$PRISMA_BIN" "$TSX_BIN"; do
+  [ -x "$bin_path" ] || {
+    echo "[db-migrate] binário ausente ou não-executável: $bin_path — rode 'pnpm install' completo (sem --prod / sem prune de devDependencies) antes do deploy" >&2
+    exit 1
+  }
+done
+
 "${PSQL[@]}" -c "CREATE TABLE IF NOT EXISTS gitorch_schema_migrations (
   name text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())"
 
 # Ordem canônica: extraída do MESMO módulo que o vitest valida (fonte única —
 # ver src/lib/migration-ledger.ts). Nunca duplicar a lista aqui à mão.
 mapfile -t LEDGER < <(grep -oE "'[a-z-]+-migration\.sql'" src/lib/migration-ledger.ts | tr -d "'")
-[ "${#LEDGER[@]}" -ge 12 ] || { echo "[db-migrate] ledger vazio/curto — módulo movido ou formato mudou?" >&2; exit 1; }
+# Guard de drift do PRÓPRIO extrator (achado I4): a regex acima não casa
+# dígito nem maiúscula. Um arquivo futuro tipo `2026-08-x-migration.sql`
+# ficaria em disco E em MIGRATION_LEDGER (o array TS, fonte da verdade), mas
+# sumiria desta extração — o antigo guard hardcoded (`-ge 12`) não pegava
+# isso, porque a contagem extraída continuava >= 12 mesmo faltando um. O
+# script imprimiria "em dia" sem NUNCA aplicar a migração nova. Comparar
+# contra a contagem REAL de arquivos *-migration.sql em disco pega essa
+# direção e a simétrica (um comentário futuro citando '...-migration.sql'
+# entre aspas simples, injetando uma entrada fantasma que não existe em
+# disco) — o mesmo drift-guard que migration-ledger.test.ts já faz do lado
+# TS, espelhado aqui do lado shell.
+ON_DISK_COUNT=$(find prisma -maxdepth 1 -name '*-migration.sql' -type f | wc -l | tr -d ' ')
+[ "${#LEDGER[@]}" -eq "$ON_DISK_COUNT" ] || {
+  echo "[db-migrate] ledger extraído de src/lib/migration-ledger.ts (${#LEDGER[@]} entradas) != arquivos *-migration.sql em prisma/ ($ON_DISK_COUNT) — regex de extração dessincronizada (nome com dígito/maiúscula? comentário citando um nome fantasma?)" >&2
+  exit 1
+}
 
 registra() { # nome
   local sum
@@ -76,13 +126,6 @@ if [ "$USERS_EXISTS" != "t" ]; then
   rm -f "$TMP_BASELINE"
   trap - EXIT
 fi
-
-# Seed roda sempre — virgem ou não, ver cabeçalho do arquivo. Precisa vir
-# depois do baseline (senão a tabela `plans` não existe ainda no caso virgem)
-# e antes do ledger (não depende dele; planos não são criados por nenhum dos
-# 12 SQLs).
-echo "[db-migrate] seed de planos (idempotente, roda sempre)"
-"$TSX_BIN" prisma/seed.ts
 
 declare -A LEDGER_SET=()
 for m in "${LEDGER[@]}"; do LEDGER_SET["$m"]=1; done
@@ -128,4 +171,11 @@ for m in "${LEDGER[@]}"; do
     PEND=$((PEND + 1))
   fi
 done
-echo "[db-migrate] em dia ($PEND aplicadas agora, $(( ${#LEDGER[@]} - PEND )) já registradas)"
+echo "[db-migrate] ledger em dia ($PEND aplicadas agora, $(( ${#LEDGER[@]} - PEND )) já registradas)"
+
+# Seed (--plans-only) roda por ÚLTIMO, depois do ledger inteiro reconciliado
+# — ver cabeçalho do arquivo (achado C1). As colunas que ele grava só existem
+# depois de billing-migration.sql (a 1ª entrada do ledger, já garantida
+# acima nos dois caminhos, virgem ou legado).
+echo "[db-migrate] seed de planos (--plans-only, idempotente, roda sempre)"
+"$TSX_BIN" prisma/seed.ts --plans-only

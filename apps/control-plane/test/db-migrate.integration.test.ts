@@ -136,6 +136,23 @@ function applyBaselineOnly(dbUrl: string): void {
   }
 }
 
+// Simula um banco NÃO-virgem e DESATUALIZADO (achado C1): schema atual
+// (applyBaselineOnly já criou tudo, billing-migration.sql incluída) menos as
+// colunas que SÓ billing-migration.sql cria. É o estado real de um legado
+// A1/dev que nunca rodou essa migração — o `applyBaselineOnly` puro (usado
+// pelo teste do achado F2.1.6#1, abaixo) não serve pra isto porque o
+// baseline É o schema.prisma atual, que JÁ tem essas colunas de fábrica.
+function stripBillingColumns(dbUrl: string): void {
+  psql(
+    dbUrl,
+    'ALTER TABLE "plans" DROP COLUMN IF EXISTS "tier_rank", ' +
+      'DROP COLUMN IF EXISTS "max_concurrent_missions", ' +
+      'DROP COLUMN IF EXISTS "seats", ' +
+      'DROP COLUMN IF EXISTS "features"; ' +
+      'ALTER TABLE "users" DROP COLUMN IF EXISTS "stripe_customer_id"'
+  )
+}
+
 function createLedgerTable(dbUrl: string): void {
   psql(
     dbUrl,
@@ -279,6 +296,60 @@ describe.skipIf(!reachable)('scripts/db-migrate.sh (integração, postgres real 
       expect(failing.stdout).not.toContain('aplicando')
     } finally {
       if (lockHolder) releaseLock(lockHolder)
+      dropDb(dbName)
+    }
+  }, 30000)
+
+  it('achado C1: banco NÃO-virgem e DESATUALIZADO (schema anterior a billing-migration.sql) não deadlocka — o ledger roda ANTES do seed', () => {
+    const dbName = uniqueDbName('outofdate')
+    createDb(dbName)
+    const dbUrl = withDatabase(requireAdminUrl(), dbName)
+    try {
+      applyBaselineOnly(dbUrl)
+      // Estado real de um legado A1/dev que nunca rodou billing-migration.sql
+      // (a 1ª entrada do ledger): `plans` sem tierRank/maxConcurrentMissions/
+      // seats/features, `users` sem stripeCustomerId. `users` já existe →
+      // o script toma o caminho NÃO-virgem.
+      stripBillingColumns(dbUrl)
+
+      const result = runScript(dbUrl)
+      // Achado C1: se o seed rodasse ANTES do ledger (ordem antiga), este
+      // `expect` falharia — o seed tentaria escrever `tier_rank` numa
+      // `plans` que ainda não tem a coluna, morreria com exit != 0, e o
+      // ledger (que traria a coluna de volta via billing-migration.sql)
+      // NUNCA chegaria a rodar. Com a ordem corrigida, billing-migration.sql
+      // roda primeiro (repõe as colunas) e o seed, rodando depois, funciona.
+      expect(result.status).toBe(0)
+      expect(planIds(dbUrl)).toEqual(['free', 'pro', 'solo', 'team'])
+      expect(appliedNames(dbUrl)).toContain('billing-migration.sql')
+      expect(countLedgerRows(dbUrl)).toBe(MIGRATION_LEDGER.length)
+    } finally {
+      dropDb(dbName)
+    }
+  }, 30000)
+
+  it('achado I4: um arquivo *-migration.sql em disco sem entrada correspondente extraída do ledger TS aborta o deploy (guard de contagem, não mais "-ge 12" hardcoded)', () => {
+    const dbName = uniqueDbName('ledgerdrift')
+    createDb(dbName)
+    const dbUrl = withDatabase(requireAdminUrl(), dbName)
+    // Fixture com dígito no nome: exatamente o caso que a regex de extração
+    // do script (`[a-z-]+-migration\.sql`) NUNCA vai casar — simula um SQL
+    // real em prisma/ que "sumiria" do ledger extraído pelo shell, mas que
+    // migration-ledger.ts (TS) e o disco concordam ter. O guard de contagem
+    // (extraído vs. arquivos em disco) tem que pegar essa divergência, não
+    // importa de qual lado ela vem.
+    const fixtureName = '2026-08-x-migration.sql'
+    const fixturePath = join(controlPlaneDir, 'prisma', fixtureName)
+    try {
+      writeFileSync(
+        fixturePath,
+        '-- fixture de teste (achado I4), removido ao fim do teste\nSELECT 1;\n'
+      )
+      const result = runScript(dbUrl)
+      expect(result.status).not.toBe(0)
+      expect(result.stderr).toContain('dessincronizada')
+    } finally {
+      rmSync(fixturePath, { force: true })
       dropDb(dbName)
     }
   }, 30000)
