@@ -92,20 +92,27 @@ done
 # Ordem canônica: extraída do MESMO módulo que o vitest valida (fonte única —
 # ver src/lib/migration-ledger.ts). Nunca duplicar a lista aqui à mão.
 mapfile -t LEDGER < <(grep -oE "'[a-z-]+-migration\.sql'" src/lib/migration-ledger.ts | tr -d "'")
-# Guard de drift do PRÓPRIO extrator (achado I4): a regex acima não casa
-# dígito nem maiúscula. Um arquivo futuro tipo `2026-08-x-migration.sql`
-# ficaria em disco E em MIGRATION_LEDGER (o array TS, fonte da verdade), mas
-# sumiria desta extração — o antigo guard hardcoded (`-ge 12`) não pegava
-# isso, porque a contagem extraída continuava >= 12 mesmo faltando um. O
-# script imprimiria "em dia" sem NUNCA aplicar a migração nova. Comparar
-# contra a contagem REAL de arquivos *-migration.sql em disco pega essa
-# direção e a simétrica (um comentário futuro citando '...-migration.sql'
-# entre aspas simples, injetando uma entrada fantasma que não existe em
-# disco) — o mesmo drift-guard que migration-ledger.test.ts já faz do lado
-# TS, espelhado aqui do lado shell.
-ON_DISK_COUNT=$(find prisma -maxdepth 1 -name '*-migration.sql' -type f | wc -l | tr -d ' ')
-[ "${#LEDGER[@]}" -eq "$ON_DISK_COUNT" ] || {
-  echo "[db-migrate] ledger extraído de src/lib/migration-ledger.ts (${#LEDGER[@]} entradas) != arquivos *-migration.sql em prisma/ ($ON_DISK_COUNT) — regex de extração dessincronizada (nome com dígito/maiúscula? comentário citando um nome fantasma?)" >&2
+# Guard de drift do PRÓPRIO extrator (achado I4, comparação exata desde o
+# achado FW-6): a regex acima não casa dígito nem maiúscula. Um arquivo
+# futuro tipo `2026-08-x-migration.sql` ficaria em disco E em
+# MIGRATION_LEDGER (o array TS, fonte da verdade), mas sumiria desta
+# extração — o guard hardcoded original (`-ge 12`) não pegava isso, porque a
+# contagem extraída continuava >= 12 mesmo faltando um.
+#
+# Comparar só a CONTAGEM (achado FW-6) tem o mesmo buraco um nível acima: um
+# comentário futuro citando '...-migration.sql' entre aspas simples (soma 1
+# fantasma no LEDGER extraído, sem arquivo correspondente em disco) AO MESMO
+# TEMPO que um arquivo real com dígito/maiúscula escapa da regex (soma 1 no
+# disco, falta 1 no LEDGER extraído) — as duas contagens voltam a bater, e o
+# guard passa batido com a lista de nomes divergente por baixo. Comparar as
+# duas LISTAS de nomes, ordenadas, pega esse caso exato: só passa se forem
+# EXATAMENTE os mesmos nomes, não só o mesmo tamanho.
+mapfile -t ON_DISK < <(find prisma -maxdepth 1 -name '*-migration.sql' -type f -printf '%f\n' | sort)
+SORTED_LEDGER=$(printf '%s\n' "${LEDGER[@]}" | sort)
+[ "$SORTED_LEDGER" = "$(printf '%s\n' "${ON_DISK[@]}")" ] || {
+  echo "[db-migrate] ledger extraído de src/lib/migration-ledger.ts (${#LEDGER[@]} entradas) != arquivos *-migration.sql em prisma/ (${#ON_DISK[@]}) — regex de extração dessincronizada (nome com dígito/maiúscula? comentário citando um nome fantasma?)" >&2
+  echo "[db-migrate] extraído: $(printf '%s ' "${LEDGER[@]}")" >&2
+  echo "[db-migrate] em disco: $(printf '%s ' "${ON_DISK[@]}")" >&2
   exit 1
 }
 
