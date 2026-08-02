@@ -97,4 +97,36 @@ describe('integração REAL: buildApp() — wiring de produção de trustProxy e
 
     await app.close()
   })
+
+  // Achado FW-3: `trustProxy` real é uma LISTA de peers confiáveis
+  // (['127.0.0.1', '::1'] — o Funnel roda local), não uma CONTAGEM de hops.
+  // Com contagem, `request.ip` confiaria em X-Forwarded-For não importa QUEM
+  // conectou de verdade na porta — qualquer processo na mesma VM/rede
+  // privada que alcance a porta DIRETO (pulando o Funnel de propósito) podia
+  // escrever seu próprio X-Forwarded-For e ser obedecido do mesmo jeito,
+  // girando o balde do rate limit à vontade. Este teste conecta como um peer
+  // NÃO-confiável (remoteAddress fora de 127.0.0.1/::1, o "socket" real que
+  // o light-my-request simula) e prova que o X-Forwarded-For forjado é
+  // completamente ignorado — `request.ip` cai pro peer real da conexão.
+  it('achado FW-3: peer NÃO-confiável (conexão direta, não o proxy local) não controla o IP resolvido via X-Forwarded-For forjado', async () => {
+    process.env['GITORCH_TRUST_PROXY'] = '1'
+    resetEnvCache()
+    const app = await buildApp()
+    app.get('/__test-resolved-ip', async (req) => ({ ip: req.ip }))
+
+    const attackerDirectConnect = await app.inject({
+      url: '/__test-resolved-ip',
+      // Simula um processo que fala DIRETO com a porta da API (não passa
+      // pelo Funnel/proxy local) tentando se passar por outro cliente via
+      // header forjado.
+      remoteAddress: '203.0.113.50',
+      headers: { 'x-forwarded-for': '6.6.6.6, 9.9.9.9' },
+    })
+    // O peer real da conexão NÃO está na lista de confiança
+    // (['127.0.0.1', '::1']) — o cabeçalho inteiro é ignorado, `request.ip`
+    // é o peer real, nunca uma das entradas forjadas do header.
+    expect(attackerDirectConnect.json()).toEqual({ ip: '203.0.113.50' })
+
+    await app.close()
+  })
 })
