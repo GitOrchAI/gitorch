@@ -66,6 +66,25 @@ function canConnect(url: string): boolean {
 
 const reachable = Boolean(adminUrl) && canConnect(adminUrl as string)
 
+// Achado: "pulado" e "passou" eram indistinguíveis num CI verde — este guard
+// troca isso por uma FALHA alto-e-clara. `CI` é a variável padrão que toda
+// plataforma de CI (incl. GitHub Actions) seta sozinha; só dispara lá dentro.
+// Máquina de dev sem Postgres local continua pulando limpo via
+// describe.skipIf abaixo — este guard nunca fecha o skip local legítimo.
+const isCI = Boolean(process.env['CI'])
+if (isCI && !reachable) {
+  throw new Error(
+    adminUrl
+      ? 'GITORCH_TEST_DATABASE_URL setada mas o Postgres está inalcançável em CI — a suíte de ' +
+          'integração de scripts/db-migrate.sh não pode se auto-pular aqui; verifique o serviço ' +
+          '"postgres" do job zero-tolerance em .github/workflows/ci.yml.'
+      : 'GITORCH_TEST_DATABASE_URL ausente em CI — a suíte de integração de scripts/db-migrate.sh ' +
+          'não pode se auto-pular aqui; verifique se a var está declarada no job zero-tolerance ' +
+          '(.github/workflows/ci.yml) E na chave "env" da task "test" em turbo.json (o turbo em modo ' +
+          'strict apaga env não declarada ali antes do processo filho nascer).'
+  )
+}
+
 function requireAdminUrl(): string {
   if (!adminUrl) throw new Error('GITORCH_TEST_DATABASE_URL ausente')
   return adminUrl
