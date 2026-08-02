@@ -32,8 +32,20 @@ export const envSchema = z.object({
   // config/mission-cpus.ts valida explicitamente em vez de confiar em
   // coerção implícita).
   GITORCH_TRUST_PROXY: z.preprocess((v) => v === '1', z.boolean()),
-  // CSV de IPs isentos de rate limit. Em prod DEVE ser vazio ("").
-  GITORCH_RATE_LIMIT_ALLOWLIST: z.string().default('127.0.0.1,::1'),
+  // CSV de IPs isentos de rate limit. Default VAZIO (achado FW-2): antes o
+  // default era '127.0.0.1,::1' — inofensivo enquanto a comparação da
+  // allowlist estava quebrada (o bug corrigido na rodada anterior), mas
+  // agora que ela funciona de verdade, QUALQUER ambiente que não declare
+  // esta env explicitamente isenta o loopback de verdade. Atrás de um proxy
+  // local com trust-proxy desligado — a forma do staging, alcançado por rede
+  // privada — `request.ip` é SEMPRE o loopback do próprio proxy pra TODO
+  // tráfego, então um default não-vazio zera o rate limit inteiro no
+  // próximo deploy, sem aviso nenhum (o check de má-configuração em
+  // plugins/index.ts só roda com NODE_ENV=production, staging não bate
+  // nisso). Isenção agora é OPT-IN (setar a env), nunca opt-out (teria que
+  // lembrar de zerar em todo ambiente nunca-produção). Dev local que precise
+  // do loopback isento documenta isso em .env.example.
+  GITORCH_RATE_LIMIT_ALLOWLIST: z.string().default(''),
 
   OTEL_SERVICE_NAME: z.string().default('gitorch-control-plane'),
   OTEL_EXPORTER_OTLP_ENDPOINT: z.string().url().optional(),
