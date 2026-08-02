@@ -134,3 +134,45 @@ test('auditoria completa (--all) no repo atual não acusa débito novo', () => {
   const result = runGuardAll()
   expect(result.status).toBe(0)
 })
+
+// F2.5.1: prova das DUAS direções para o hostname do Funnel de produção
+// (vps.tailcc2470.ts.net) usando o escape genérico infra-guard-allow já
+// existente — a exceção mais estreita possível (nenhum padrão novo, nenhuma
+// allowlist permanente). A URL real entra por Variables do repo (pages.yml
+// lê vars.GITORCH_PUBLIC_API_URL), não por código versionado.
+test('hostname do Funnel de produção COM infra-guard-allow passa (linha revisada)', () => {
+  const diff = `diff --git a/README.md b/README.md
+index 111..222 100644
+--- a/README.md
++++ b/README.md
+@@ -1,0 +2,1 @@
++A API de produção fica em https://vps.tailcc2470.ts.net // infra-guard-allow: hostname do Funnel de produção, divulgação intencional neste doc
+`
+  const result = runGuard(diff)
+  expect(result.status).toBe(0)
+})
+
+test('regressão: um *.ts.net QUALQUER OUTRO continua barrado mesmo depois do teste acima', () => {
+  const diff = `diff --git a/README.md b/README.md
+index 111..222 100644
+--- a/README.md
++++ b/README.md
+@@ -1,0 +2,1 @@
++debug: tente também https://outro-node-qualquer.tailcc2470.ts.net
+`
+  const result = runGuard(diff)
+  expect(result.status).not.toBe(0)
+  expect(result.stderr).toContain('padrão de infra proibido')
+})
+
+test('regressão: o próprio hostname do Funnel de produção SEM o marcador continua barrado (sem allowlist permanente)', () => {
+  const diff = `diff --git a/README.md b/README.md
+index 111..222 100644
+--- a/README.md
++++ b/README.md
+@@ -1,0 +2,1 @@
++debug: https://vps.tailcc2470.ts.net sem marcador nenhum
+`
+  const result = runGuard(diff)
+  expect(result.status).not.toBe(0)
+})
