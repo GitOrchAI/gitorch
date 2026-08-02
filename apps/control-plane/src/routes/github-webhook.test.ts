@@ -1,7 +1,7 @@
-import { test, expect, describe, vi, beforeEach } from 'vitest'
+import { test, expect, describe, vi, beforeEach, afterEach } from 'vitest'
 import Fastify, { FastifyRequest } from 'fastify'
 import crypto from 'node:crypto'
-import { loadEnv } from '../config/env.js'
+import { loadEnv, resetEnvCache } from '../config/env.js'
 import { registerPlugins } from '../plugins/index.js'
 import { githubWebhookRoutes, missionRoleForEvent } from './github-webhook.js'
 
@@ -125,6 +125,43 @@ describe('GitHub Webhook Routes', () => {
         data: expect.objectContaining({ githubRepoId: 1274419899n }),
       })
     )
+  })
+})
+
+// Isolado num describe próprio (achados I1/M2): request.ip via app.inject()
+// sem X-Forwarded-For é '127.0.0.1' — o default de GITORCH_RATE_LIMIT_ALLOWLIST
+// ('127.0.0.1,::1', ver .env.example). Antes da correção do achado M2,
+// allowList comparava contra a CHAVE pós-keyGenerator (`ip:127.0.0.1`), que
+// nunca batia com o array de IPs crus — a allowlist ficava inerte e todo
+// request, mesmo de um IP "isento", era limitado normalmente (foi assim que
+// este teste passava). Com a allowlist FUNCIONANDO de verdade, o describe
+// pai deixaria de rate-limitar 127.0.0.1 — então este teste, cujo PONTO é
+// provar que o limite de fato dispara, zera a allowlist pra simular
+// produção atrás do Funnel (GITORCH_RATE_LIMIT_ALLOWLIST=, ver I3).
+describe('GitHub Webhook Routes — rate limit (allowlist vazia, como em produção)', () => {
+  let app: ReturnType<typeof Fastify>
+
+  beforeEach(async () => {
+    process.env['GITORCH_RATE_LIMIT_ALLOWLIST'] = ''
+    resetEnvCache()
+
+    app = Fastify()
+    const env = loadEnv()
+    await registerPlugins(app, env)
+    await githubWebhookRoutes(app)
+
+    app.addHook('onRequest', async (req: FastifyRequest) => {
+      // @ts-expect-error - mock authentication
+      req.user = { wingId: 'wing_123', projectId: 'proj_456' }
+      req.wingId = 'wing_123'
+    })
+
+    await app.ready()
+  })
+
+  afterEach(() => {
+    delete process.env['GITORCH_RATE_LIMIT_ALLOWLIST']
+    resetEnvCache()
   })
 
   test('POST /api/webhooks/github is rate limited', async () => {
