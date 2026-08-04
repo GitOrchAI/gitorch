@@ -728,7 +728,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // concorrência e a criação da missão (dois POST simultâneos criariam duas).
   let triggerChain: Promise<TriggerResult> = Promise.resolve({ triggered: false, reason: 'init' })
 
-  const runTrigger = async (role: F6AgentRole, projectId?: string): Promise<TriggerResult> => {
+  const runTrigger = async (
+    role: F6AgentRole,
+    projectId?: string,
+    onboardingSequence?: F6AgentRole[]
+  ): Promise<TriggerResult> => {
     await failStuckMissions()
 
     // Concorrência elástica: teto de missões ativas simultâneas na VM. Default 1
@@ -857,7 +861,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         quotaBefore,
         payload: {
           role,
-          triggeredBy: 'scheduler',
+          triggeredBy: onboardingSequence !== undefined ? 'onboarding' : 'scheduler',
+          ...(onboardingSequence !== undefined ? { onboardingSequence } : {}),
           runtime: primary.runtime,
           model: primary.model ?? MODEL_BY_ROLE[role],
         },
@@ -1056,6 +1061,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                     boardColumns,
                     sprintDays: resolveSprintDays(project.runtimeConfig),
                     execute,
+                    projectId: project.id,
+                    userId: project.userId ?? undefined,
+                    agentQuestionService: app.agentQuestionService,
                   })
                 : await runQaMissionViaRails({
                     repository: project.wingId,
@@ -1165,6 +1173,29 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             } catch (memErr) {
               app.log.error(memErr, `[Scheduler] Falha ao gravar memória de ${missionId}`)
             }
+
+            // Encadeamento automático de onboarding (Evento 1)
+            try {
+              const m = await app.prisma.mission.findUnique({
+                where: { id: missionId },
+                select: { payload: true, projectId: true },
+              })
+              const p = m?.payload as { onboardingSequence?: F6AgentRole[] } | null
+              const seq = p?.onboardingSequence
+              if (seq && seq.length > 0) {
+                const [nextRole, ...remaining] = seq
+                app.log.info(
+                  `[Scheduler] Onboarding (${role} concluído): disparando ${nextRole} para ${project.wingId}`
+                )
+                void triggerAgentMission(
+                  nextRole as F6AgentRole,
+                  m?.projectId,
+                  remaining as F6AgentRole[]
+                )
+              }
+            } catch (chainErr) {
+              app.log.error(chainErr, `[Scheduler] Falha ao encadear onboarding após ${role}`)
+            }
           }
           return
         }
@@ -1214,13 +1245,14 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
 
   const triggerAgentMission = async (
     role: F6AgentRole,
-    projectId?: string
+    projectId?: string,
+    onboardingSequence?: F6AgentRole[]
   ): Promise<TriggerResult> => {
     app.log.info(`[Scheduler] Triggering agent mission for role: ${role}`)
     // Encadeia os disparos para que nunca rodem concorrentes (guard sem corrida).
     const result = triggerChain.then(
-      () => runTrigger(role, projectId),
-      () => runTrigger(role, projectId)
+      () => runTrigger(role, projectId, onboardingSequence),
+      () => runTrigger(role, projectId, onboardingSequence)
     )
     triggerChain = result.catch(() => ({ triggered: false, reason: 'error' }))
     try {
@@ -1320,6 +1352,21 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         app.log.error(
           `[Scheduler] provisionamento do projeto ${mission.project.wingId} falhou: ${outcome.error}`
         )
+      } else if (outcome.status === 'completed') {
+        // Trigger next mission in onboarding sequence if present
+        const payload = mission.payload as { onboardingSequence?: F6AgentRole[] } | null
+        const seq = payload?.onboardingSequence
+        if (seq && seq.length > 0) {
+          const [nextRole, ...remaining] = seq
+          app.log.info(
+            `[Scheduler] Setup concluído para ${mission.project.wingId}. Disparando onboarding: ${nextRole}`
+          )
+          void triggerAgentMission(
+            nextRole as F6AgentRole,
+            mission.projectId,
+            remaining as F6AgentRole[]
+          )
+        }
       }
     }
   }
@@ -1436,7 +1483,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
 
 declare module 'fastify' {
   interface FastifyInstance {
-    triggerAgentMission: (role: F6AgentRole, projectId?: string) => Promise<TriggerResult>
+    triggerAgentMission: (
+      role: F6AgentRole,
+      projectId?: string,
+      onboardingSequence?: F6AgentRole[]
+    ) => Promise<TriggerResult>
   }
 }
 

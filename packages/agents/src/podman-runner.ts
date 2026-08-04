@@ -176,6 +176,27 @@ export function createPodmanCommandRunner(
         ...(request.stdin !== undefined ? { stdin: request.stdin } : {}),
       })
 
+      // Fallback gracioso para hosts sem cgroup cpu (ex.: ARM VM rootless):
+      // se a execução falha especificamente porque a flag `--cpus` exigiu o
+      // controller `cpu` indisponível no kernel/cgroup v2 rootless do host,
+      // re-tenta a missão sem a flag `--cpus` em vez de travar o agente.
+      if (
+        result.exitCode !== 0 &&
+        args.includes('--cpus') &&
+        /cgroup.*controller.*cpu|cpu.*controller.*not available/i.test(result.stderr)
+      ) {
+        const fallbackArgs = args.filter(
+          (arg, idx, arr) => arg !== '--cpus' && arr[idx - 1] !== '--cpus'
+        )
+        return await hostRunner({
+          binary: podmanBinary,
+          args: fallbackArgs,
+          env: {},
+          timeoutMs: request.timeoutMs,
+          ...(request.stdin !== undefined ? { stdin: request.stdin } : {}),
+        })
+      }
+
       // Timeout (exit 124) mata só o cliente podman no host; o container pode
       // seguir vivo sob o conmon. Removê-lo à força libera RAM e o workspace.
       if (result.exitCode === 124) {

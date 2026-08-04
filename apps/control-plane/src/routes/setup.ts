@@ -601,6 +601,7 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
               repoUrl: `https://github.com/${repoFullName}`,
               engines,
               envConfig: (envConfig ?? null) as Prisma.JsonObject | null,
+              onboardingSequence: ['ra', 'po', 'sm'],
             } as Prisma.JsonObject,
             status: 'pending',
           },

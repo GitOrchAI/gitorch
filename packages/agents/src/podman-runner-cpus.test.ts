@@ -31,4 +31,30 @@ describe('teto de CPU por missão (P2-4)', () => {
     await createPodmanCommandRunner({ image: 'img', hostRunner: runner })(request)
     expect(calls[0]!).not.toContain('--cpus')
   })
+  it('fallback sem --cpus se o host falhar com erro de cgroup cpu indisponível', async () => {
+    const calls: string[][] = []
+    const runner: RuntimeCommandRunner = async (req): Promise<RuntimeCommandResult> => {
+      calls.push([req.binary, ...req.args])
+      if (req.args.includes('--cpus')) {
+        return {
+          exitCode: 126,
+          stdout: '',
+          stderr:
+            'Error: sd-bus call: OCI runtime error: the requested cgroup controller `cpu` is not available',
+          durationMs: 1,
+        }
+      }
+      return { exitCode: 0, stdout: 'sucesso no fallback', stderr: '', durationMs: 1 }
+    }
+    const result = await createPodmanCommandRunner({
+      image: 'img',
+      hostRunner: runner,
+      cpus: '1.5',
+    })(request)
+    expect(calls.length).toBe(2)
+    expect(calls[0]!).toContain('--cpus')
+    expect(calls[1]!).not.toContain('--cpus')
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toBe('sucesso no fallback')
+  })
 })

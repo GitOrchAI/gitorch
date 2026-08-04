@@ -13,6 +13,8 @@ import type { StepExecutor } from './role-rails.js'
 // Wish→Fase→Épico→Feature→Task no board. Retorna um resultado compatível com o
 // fluxo do scheduler (output textual vira memória do projeto).
 
+import type { AgentQuestionService } from './agent-question.js'
+
 export interface PoRailsMissionOptions {
   repository: string
   /** ex.: "loureng/9" — dono e número do Projects v2 (env na F3.5; banco na F4). */
@@ -28,6 +30,9 @@ export interface PoRailsMissionOptions {
   /** Duração da sprint em dias (config por projeto; padrão 7). */
   sprintDays?: number
   fetchImpl?: typeof fetch
+  projectId?: string
+  userId?: string | null | undefined
+  agentQuestionService?: AgentQuestionService | undefined
 }
 
 /**
@@ -189,12 +194,31 @@ export async function runPoMissionViaRails(
   const wishes = (await wishResp.json()) as WishIssue[]
   const wish = Array.isArray(wishes) ? wishes[0] : undefined
   if (!wish) {
+    if (options.agentQuestionService && options.projectId && options.userId) {
+      try {
+        await options.agentQuestionService.ask(options.userId, options.projectId, {
+          dedupKey: `po-onboarding-wishlist-${options.repository}`,
+          text: `Olá! Sou o PO do seu projeto ${options.repository}. Mapeamento inicial concluído, mas ainda não temos uma Wishlist definida. Qual é o seu objetivo principal de negócio para este repositório?`,
+          context: `Análise técnica do RA concluída. Aguardando alinhamento do stakeholder para geração do roadmap.`,
+          options: [
+            { label: '🚀 Lançar MVP / Funcionalidades principais', value: 'wishlist-mvp-features' },
+            {
+              label: '🛠️ Focar em Saúde Técnica, CI/CD e Testes',
+              value: 'wishlist-technical-health',
+            },
+            { label: '🎨 Refatorar Interface / UX / Design System', value: 'wishlist-ui-design' },
+          ],
+        })
+      } catch (err) {
+        // Best-effort
+      }
+    }
     return {
       exitCode: 0,
       output:
         triageSummary.length > 0
           ? `PO: no open wishlist issue. Incident triage: ${triageSummary.join('; ')}.`
-          : 'PO: no open wishlist issue; nothing to plan.',
+          : 'PO: no open wishlist issue; registered AgentQuestion for stakeholder via Telegram/Panel.',
       stderr: '',
       noOp: triageSummary.length === 0,
     }
