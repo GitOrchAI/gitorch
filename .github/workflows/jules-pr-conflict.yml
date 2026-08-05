@@ -1,12 +1,21 @@
 name: Jules PR Conflict Resolver
 
+# DESLIGADO: so roda por disparo manual.
+#
+# Esta automacao precisa de SECURITY_PAT (credencial propria, para empurrar o
+# merge resolvido de volta a branch do PR) e de OPENROUTER_API_KEY. Nenhum dos
+# dois existe nesta organizacao, e o dev assincrono que ela atende tambem nao
+# esta ligado — entao ela nao tinha o que resolver e mesmo assim falhava no
+# checkout, deixando VERMELHO todo PR do repositorio, inclusive os que nada
+# tinham a ver com ela. Um workflow que so pode falhar nao pode gatear o
+# trabalho de ninguem.
+#
+# Para religar: cadastre os dois segredos na organizacao e devolva os gatilhos
+# automaticos abaixo (pull_request_target nos tipos opened/synchronize/
+# reopened/labeled, e push na main para varrer PRs que ficaram conflitantes
+# quando a main moveu). O passo de verificacao de configuracao ja existe e
+# deixa o fluxo pular sozinho enquanto os segredos faltarem.
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened, labeled]
-  # Quando a main move, PRs abertos podem ficar conflitantes sem disparar evento de PR.
-  # Este push varre todos os PRs da automação em busca de novos conflitos.
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       pr_number:
