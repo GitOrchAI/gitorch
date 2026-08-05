@@ -29,23 +29,45 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       github.event_name == 'push' ||
       github.event_name == 'pull_request_target'
+    env:
+      # Esta automacao so funciona com credencial propria (precisa empurrar o
+      # merge resolvido de volta para a branch do PR). Sem o segredo cadastrado
+      # ela nao tem o que fazer — e antes disto ela FALHAVA, deixando vermelho
+      # todo PR do repositorio, inclusive os que nada tem a ver com o Jules.
+      # Ausencia de credencial e "nao configurado", nao "quebrado": os passos
+      # sao pulados e o job termina limpo. Cadastre SECURITY_PAT para ligar.
+      SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
     steps:
+      - name: Verificar se a automacao esta configurada
+        id: preflight
+        run: |
+          if [ -z "${SECURITY_PAT:-}" ]; then
+            echo "configurada=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::SECURITY_PAT nao cadastrado — resolucao automatica de conflitos desligada neste repositorio."
+          else
+            echo "configurada=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout Repository
+        if: steps.preflight.outputs.configurada == 'true'
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
           token: ${{ secrets.SECURITY_PAT }}
 
       - name: Setup Node
+        if: steps.preflight.outputs.configurada == 'true'
         uses: actions/setup-node@v7
         with:
           node-version: '20'
 
       - name: Install Dependencies
+        if: steps.preflight.outputs.configurada == 'true'
         working-directory: .github/scripts
         run: npm ci
 
       - name: Analyze Merge Conflicts
+        if: steps.preflight.outputs.configurada == 'true'
         env:
           SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -71,6 +93,7 @@ jobs:
         working-directory: .github/scripts
 
       - name: Remove Conflict Label if Resolved
+        if: steps.preflight.outputs.configurada == 'true'
         if: success() && github.event_name == 'pull_request_target' && github.event.action == 'synchronize'
         env:
           GH_TOKEN: ${{ secrets.SECURITY_PAT }}
