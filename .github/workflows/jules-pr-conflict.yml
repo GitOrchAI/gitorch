@@ -93,8 +93,10 @@ jobs:
         working-directory: .github/scripts
 
       - name: Remove Conflict Label if Resolved
-        if: steps.preflight.outputs.configurada == 'true'
-        if: success() && github.event_name == 'pull_request_target' && github.event.action == 'synchronize'
+        if: >-
+          steps.preflight.outputs.configurada == 'true' &&
+          success() && github.event_name == 'pull_request_target' &&
+          github.event.action == 'synchronize'
         env:
           GH_TOKEN: ${{ secrets.SECURITY_PAT }}
           SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
