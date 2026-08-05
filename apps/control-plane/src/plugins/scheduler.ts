@@ -32,6 +32,7 @@ import {
 } from '@gitorch/workspace-engine'
 import { createSshCommandRunner } from '@gitorch/agents'
 import { buildMissionEnricher, persistMissionMemory } from '../services/mission-context.js'
+import { assertMissionDelivered } from '../services/mission-outcome.js'
 import { ClientEnvironmentService } from '../services/environment.js'
 import { runPoMissionViaRails } from '../services/po-rails-mission.js'
 import { runRaMissionViaRails } from '../services/ra-rails-mission.js'
@@ -46,6 +47,12 @@ import {
   resolveSprintDays,
   createCardMover,
 } from '../services/board-status.js'
+import {
+  ensureProjectBoard,
+  resolveGithubOwnerId,
+  type ResolvedOwner,
+} from '../services/onboarding-board.js'
+import { ProjectV2Client } from '@gitorch/github-sync'
 import { RailsStepError } from '../services/rails-runner.js'
 import { GithubExecutionError } from '../services/github-backlog.js'
 import { canRunMission, shouldAlertForQuota } from '../lib/spend-guard.js'
@@ -53,6 +60,7 @@ import { computeConsumption } from '../lib/consumption.js'
 import { pipelineCheckEnabled } from '../config/pipeline-check.js'
 import { resolveMissionCpus } from '../config/mission-cpus.js'
 import { reapOrphanContainers, failOrphanRunningMissions, type ReapResult } from './boot-reaper.js'
+import type { PrismaClient } from '@prisma/client'
 import * as os from 'node:os'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -357,6 +365,11 @@ export function buildMissionRunner(
     // CPU não tinha nenhum (ver podman-runner.ts).
     cpus: missionCpus,
     prepareMounts,
+    // Decisão do dono (ver AGY_SKIP_PERMISSIONS_FLAG abaixo): nenhuma missão
+    // roda sem confirmar que o plugin de segurança do GitOrch está na
+    // imagem — --dangerously-skip-permissions fixa no código não pode ficar
+    // sem trava se o plugin um dia deixar de ser instalado.
+    requireGitorchPlugin: true,
   })
 }
 
@@ -364,6 +377,26 @@ export interface RuntimeStack {
   registry: RuntimeRegistry
   orchestrator: AgentOrchestrator
   workspaceProvider: WorkspaceProvider
+}
+
+/** Fixa no código — ver o comentário no call site em buildRuntimeStack. */
+const AGY_SKIP_PERMISSIONS_FLAG = '--dangerously-skip-permissions'
+
+/**
+ * Monta os argumentos do Antigravity CLI. `--dangerously-skip-permissions`
+ * sempre aparece, exatamente uma vez, mesmo que GITORCH_AGY_EXTRA_ARGS também
+ * a declare (dedupe) — nunca depende só da env var, que pode não existir num
+ * ambiente novo/recriado.
+ */
+export function buildAntigravityCliArgs(
+  printTimeout: string,
+  extraArgsEnv: string | undefined
+): string[] {
+  const extraArgs = (extraArgsEnv ?? '')
+    .split(' ')
+    .filter(Boolean)
+    .filter((arg) => arg !== AGY_SKIP_PERMISSIONS_FLAG)
+  return ['--sandbox', '--print-timeout', printTimeout, AGY_SKIP_PERMISSIONS_FLAG, ...extraArgs]
 }
 
 /**
@@ -396,26 +429,29 @@ function buildRuntimeStack(
       })
     )
   } else {
-    // --print: não-interativo. --sandbox: ADICIONA restrições de terminal e faz
-    // os hooks do plugin GitOrch (gate de shell/leitura, convergência) rodarem.
-    // --print-timeout limita a espera pela resposta do modelo.
-    //
-    // CRÍTICO (QA real 2026-07-04): o agy lê a MISSÃO do STDIN. Entregar o prompt
-    // como argumento posicional com o stdin vazio faz o motor "fixar" nas
-    // próprias flags de CLI (--sandbox/--print-timeout) como se fossem a tarefa —
-    // ele escrevia "Relatório de Verificação de Sandbox" em vez do deliverable.
-    // Com o prompt via stdin (promptViaStdin) ele foca e entrega o brief correto.
-    const agyExtraArgs = (process.env['GITORCH_AGY_EXTRA_ARGS'] ?? '').split(' ').filter(Boolean)
+    // --sandbox: ADICIONA restrições de terminal e é o que faz os hooks do
+    // plugin GitOrch (gate de shell/leitura, convergência) rodarem.
+    // --dangerously-skip-permissions: FIXA NO CÓDIGO, não numa env var. Em modo
+    // headless o motor não tem como perguntar "posso?" e auto-nega toda
+    // ferramenta (o agente só narra intenções); o próprio binário instrui esta
+    // flag ("Settings allow-rules do not apply"). Vivendo só numa env var, uma
+    // reinstalação ou um .env recriado quebra a esteira inteira em silêncio —
+    // por isso ela é obrigatória aqui. A segurança real continua sendo o gate
+    // de hooks do GitOrch dentro do container, verificado ao vivo bloqueando
+    // npm install e curl mesmo com a flag ligada (as duas negativas ficam no
+    // log de auditoria).
+    // --print <missão>: a missão é o VALOR de --print e vem POR ÚLTIMO. Medido
+    // ao vivo contra a imagem real: stdin 0/3, argumento solto 0/1, assim 2/2.
     const printTimeout = process.env['GITORCH_AGY_PRINT_TIMEOUT'] ?? '20m'
     registry.register(
       createCliRuntimeAdapter({
         runtime: 'antigravity',
         // Em container o binário vem da imagem; no host, do PATH/config.
         binary: containerized ? 'agy' : (process.env['GITORCH_AGY_BIN'] ?? 'agy'),
-        args: ['--print', '--sandbox', '--print-timeout', printTimeout, ...agyExtraArgs],
+        args: buildAntigravityCliArgs(printTimeout, process.env['GITORCH_AGY_EXTRA_ARGS']),
         modelArgName: '--model',
         workspaceDirArgName: '--add-dir',
-        promptViaStdin: true,
+        promptArgName: '--print',
         ...(missionRunner ? { runner: missionRunner } : {}),
       })
     )
@@ -500,6 +536,9 @@ export function buildRemoteRuntimeStackIfConfigured(app: FastifyInstance): Runti
     // e mesma blindagem contra env vazia/inválida (ver config/mission-cpus.ts).
     cpus: resolveMissionCpus(),
     hostRunner: sshRunner,
+    // Mesma trava do stack local (ver buildMissionRunner): a verificação sobe
+    // pelo MESMO sshRunner, confirmando o gate na imagem do nó remoto real.
+    requireGitorchPlugin: true,
   })
 
   // RemoteWorkspaceProvider exige um runner sempre-Promise; RuntimeCommandRunner
@@ -534,6 +573,7 @@ export interface SetupMissionRecord {
     id: string
     wingId: string
     userId: string | null
+    runtimeConfig?: unknown
   }
 }
 
@@ -543,6 +583,24 @@ export interface SetupMissionOutcome {
   error?: string
 }
 
+/** Só o pedaço do Prisma que o board precisa gravar — testável sem mock do client inteiro. */
+type SetupBoardPrisma = Pick<PrismaClient, 'project'>
+
+export interface ProvisionSetupMissionDeps {
+  /**
+   * Presença habilita o passo do board (Task 9): sem `prisma` (chamadas
+   * antigas/testes de clone), o passo é pulado por completo — nunca toca
+   * rede nem tenta gravar nada. Produção sempre passa `app.prisma`.
+   */
+  prisma?: SetupBoardPrisma
+  /** injeção para teste; default: `new ProjectV2Client({ token })`. */
+  createProjectV2Client?: (
+    token: string
+  ) => Pick<ProjectV2Client, 'findProjectId' | 'createProjectV2'>
+  /** injeção para teste; default: `resolveGithubOwnerId(owner, token)`. */
+  resolveOwner?: (owner: string, token: string) => Promise<ResolvedOwner>
+}
+
 /**
  * Executa de verdade a missão `clone_and_start_engines` do wizard: aloca (e
  * clona) o workspace do projeto no stack ATIVO (local ou remoto, já
@@ -550,11 +608,18 @@ export interface SetupMissionOutcome {
  * missão criada por setup/submit ficava órfã — nenhum código a consumia — e
  * envelhecia até `failStuckMissions` marcá-la failed, uma falsa falha para
  * algo que nunca rodou (spec setup-wizard-redesign §17.3).
+ *
+ * Também garante o PRÓPRIO board Projects v2 do projeto (Task 9): antes disto
+ * `GITORCH_PROJECT_BOARD` era um env GLOBAL, então todo projeto novo apontava
+ * para o board pessoal de outro projeto. Falha ao criar o board NUNCA derruba
+ * o provisionamento — `ensureProjectBoard` já degrada sozinho e avisa; aqui só
+ * persistimos o resultado quando ele vier não-nulo.
  */
 export async function provisionSetupMission(
   mission: SetupMissionRecord,
   activeStack: RuntimeStack,
-  githubToken?: string
+  githubToken?: string,
+  deps: ProvisionSetupMissionDeps = {}
 ): Promise<SetupMissionOutcome> {
   try {
     await activeStack.workspaceProvider.allocateWorkspace(
@@ -562,6 +627,38 @@ export async function provisionSetupMission(
       mission.project.id,
       { repository: mission.project.wingId, ...(githubToken ? { token: githubToken } : {}) }
     )
+
+    if (githubToken && deps.prisma) {
+      const client = deps.createProjectV2Client
+        ? deps.createProjectV2Client(githubToken)
+        : new ProjectV2Client({ token: githubToken })
+      const board = await ensureProjectBoard({
+        repository: mission.project.wingId,
+        client,
+        resolveOwner: (owner) =>
+          deps.resolveOwner
+            ? deps.resolveOwner(owner, githubToken)
+            : resolveGithubOwnerId(owner, githubToken),
+        onWarn: (m) => console.warn(`[Scheduler] ${m}`),
+      })
+
+      if (board) {
+        const runtimeConfig = (mission.project.runtimeConfig as Record<string, unknown>) ?? {}
+        await deps.prisma.project.update({
+          where: { id: mission.project.id },
+          data: {
+            runtimeConfig: {
+              ...runtimeConfig,
+              envConfig: {
+                ...((runtimeConfig['envConfig'] as Record<string, unknown> | undefined) ?? {}),
+                GITORCH_PROJECT_BOARD: `${board.owner}/${board.number}`,
+              },
+            },
+          },
+        })
+      }
+    }
+
     return { status: 'completed', output: `Ambiente provisionado para ${mission.project.wingId}` }
   } catch (err) {
     return { status: 'failed', error: (err as Error).message }
@@ -876,7 +973,14 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     )
 
     // Executa em background com failover; o disparo retorna assim que registrada.
-    void executeMissionWithFailover(mission.id, project, role, chain, plan?.id)
+    void executeMissionWithFailover(
+      mission.id,
+      project,
+      role,
+      chain,
+      plan?.id,
+      onboardingSequence !== undefined
+    )
 
     return { triggered: true, missionId: mission.id }
   }
@@ -897,7 +1001,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     project: ChainProject,
     role: F6AgentRole,
     chain: Array<{ runtime: string; model?: string }>,
-    planId?: string
+    planId?: string,
+    // A cascata de onboarding (Task 10) é hoje o ÚNICO caminho que acorda o
+    // QA — o projeto não tem agenda de QA própria em project_schedules. Sem
+    // este sinal, o QA nos trilhos sempre cairia no julgamento clássico de PR
+    // e, sem PR aberta, terminaria em no-op (ver qa-rails-mission.ts).
+    isOnboarding = false
   ): Promise<void> => {
     // Isolamento por tier: grátis roda no stack remoto (MT-SaaS) quando
     // configurado; qualquer outro caso usa o stack local de sempre — nunca
@@ -935,7 +1044,17 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         // emitido sob demanda e cacheado ~1h. Um GITORCH_GITHUB_TOKEN explícito, se
         // definido, tem prioridade (override). Sem App/token, cai no caminho
         // clássico com log honesto.
-        const railsBoard = process.env['GITORCH_PROJECT_BOARD']
+        //
+        // Board (Task 9): o PRÓPRIO board do projeto (gravado em
+        // Project.runtimeConfig.envConfig.GITORCH_PROJECT_BOARD por
+        // provisionSetupMission) tem prioridade sobre o env global — o env
+        // global (hoje `loureng/9`, board pessoal de outro projeto) só entra
+        // como ÚLTIMO RECURSO, para projetos criados antes desta task.
+        const boardDoProjeto = (
+          (project.runtimeConfig as Record<string, unknown> | null)?.['envConfig'] as
+            Record<string, unknown> | undefined
+        )?.['GITORCH_PROJECT_BOARD'] as string | undefined
+        const railsBoard = boardDoProjeto ?? process.env['GITORCH_PROJECT_BOARD']
         const railsToken =
           process.env['GITORCH_GITHUB_TOKEN'] ?? (await mintInstallationToken()) ?? undefined
         const poRails = role === 'po' && Boolean(railsBoard) && Boolean(railsToken)
@@ -1069,6 +1188,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                     repository: project.wingId,
                     githubToken: railsToken as string,
                     contextBlocks,
+                    // Fase 1 do QA (Reconhecimento): só entra quando este QA foi
+                    // acordado pela cascata de onboarding (Task 10) — hoje o
+                    // único jeito de o QA rodar, já que o projeto não tem
+                    // agenda de QA própria em project_schedules.
+                    ...(isOnboarding ? { mode: 'recon' as const } : {}),
                     // O QA move o card da issue conforme o veredito (se há board).
                     ...(railsBoard
                       ? {
@@ -1103,7 +1227,28 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           })
         }
 
-        if (result.exitCode === 0 && result.output.trim().length > 0) {
+        const entrega =
+          result.exitCode === 0
+            ? assertMissionDelivered(role, result.output)
+            : ({ delivered: false, reason: `motor saiu com codigo ${result.exitCode}` } as const)
+
+        if (result.exitCode === 0 && !entrega.delivered) {
+          // Verde mentiroso: o motor respondeu, mas não entregou. Falha honesta
+          // com o motivo, e NADA vai para a memória do projeto.
+          app.log.warn(`[Scheduler] Mission ${missionId} sem entregavel: ${entrega.reason}`)
+          await app.prisma.mission.updateMany({
+            where: { id: missionId, status: 'running' },
+            data: {
+              status: 'failed',
+              completedAt: new Date(),
+              error: entrega.reason,
+              result: { output: result.output, stderr: result.stderr, runtime: sel.runtime },
+            },
+          })
+          return
+        }
+
+        if (result.exitCode === 0 && entrega.delivered) {
           // O entregável vira memória tipada do projeto — exceto no-ops (ex.:
           // "sem wishlist"), que poluiriam o recall e expulsariam o brief do RA.
           const isNoOp = (result as { noOp?: boolean }).noOp === true
@@ -1338,7 +1483,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       const githubToken = mission.project.userId
         ? await app.engineConnections.getRawGithubToken(mission.project.userId)
         : null
-      const outcome = await provisionSetupMission(mission, activeStack, githubToken ?? undefined)
+      const outcome = await provisionSetupMission(mission, activeStack, githubToken ?? undefined, {
+        prisma: app.prisma,
+      })
       await app.prisma.mission.update({
         where: { id: mission.id },
         data: {

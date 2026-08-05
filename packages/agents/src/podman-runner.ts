@@ -73,6 +73,82 @@ export interface CreatePodmanCommandRunnerOptions {
   prepareMounts?: (
     request: RuntimeCommandRequest
   ) => Promise<{ mounts: PodmanMount[]; cleanup?: () => Promise<void> }>
+  /**
+   * Antes de QUALQUER missão, verifica que a imagem TEM o plugin de
+   * segurança do GitOrch instalado (hooks.json em /opt/gitorch-plugin/gitorch)
+   * — decisão do dono do projeto: `--dangerously-skip-permissions` (fixa no
+   * código, ver scheduler.ts) só desliga a caixa de diálogo "posso
+   * executar?" do motor; quem trava de verdade é o plugin de hooks do
+   * GitOrch dentro do container. Sem essa verificação, se o plugin um dia
+   * deixar de ser instalado na imagem, a flag ficaria sem NENHUM gate e nada
+   * avisaria. `GITORCH_AGY_PLUGIN=0` (a env que desliga o plugin no
+   * entrypoint da imagem, mesmo que ele exista nela) recusa pelo MESMO
+   * motivo. Default false: só os dois pontos reais de produção
+   * (buildMissionRunner/buildRemoteRuntimeStackIfConfigured em scheduler.ts)
+   * ligam isto — os testes unitários deste módulo continuam exercitando só a
+   * montagem do comando, sem depender de podman de verdade.
+   */
+  requireGitorchPlugin?: boolean
+}
+
+/** Onde o plugin de segurança do GitOrch fica instalado na imagem (ver
+ *  infra/agent-image/Containerfile: `COPY plugin /opt/gitorch-plugin`). */
+export const GITORCH_PLUGIN_MARKER_PATH = '/opt/gitorch-plugin/gitorch/hooks.json'
+
+export const GITORCH_PLUGIN_MISSING_MESSAGE =
+  `GitOrch: missão recusada — a imagem do agente está sem o gate de segurança do GitOrch ` +
+  `(${GITORCH_PLUGIN_MARKER_PATH} não encontrado). Sem o plugin instalado, ` +
+  `--dangerously-skip-permissions ficaria sem NENHUMA trava real. Execução negada.`
+
+export const GITORCH_PLUGIN_DISABLED_MESSAGE =
+  'GitOrch: missão recusada — GITORCH_AGY_PLUGIN=0 desliga o plugin de segurança do GitOrch ' +
+  'dentro do container. Sem o plugin ativo, --dangerously-skip-permissions ficaria sem NENHUMA ' +
+  'trava real. Execução negada.'
+
+// Cache por PROCESSO (nunca por missão): chaveado por engine+imagem, guarda a
+// Promise da verificação — a primeira missão paga o custo de UM container
+// descartável extra; todas as seguintes (mesma imagem) reusam o resultado.
+const pluginPresenceCache = new Map<string, Promise<boolean>>()
+
+/** Só para os testes isolarem casos entre si — nunca chamado em produção. */
+export function resetGitorchPluginPresenceCache(): void {
+  pluginPresenceCache.clear()
+}
+
+/**
+ * Verifica, com cache por processo, que a imagem dada tem o plugin de
+ * segurança do GitOrch instalado. Barata e determinística: sobe a própria
+ * imagem com o entrypoint substituído por `sh -c 'test -f <marcador>'` — não
+ * roda o entrypoint real (não materializa credencial nenhuma), só checa o
+ * arquivo.
+ */
+export async function isGitorchPluginPresentInImage(
+  image: string,
+  podmanBinary: string,
+  hostRunner: RuntimeCommandRunner
+): Promise<boolean> {
+  const cacheKey = `${podmanBinary}::${image}`
+  const cached = pluginPresenceCache.get(cacheKey)
+  if (cached) return cached
+
+  const check = (async () => {
+    const result = await hostRunner({
+      binary: podmanBinary,
+      args: [
+        'run',
+        '--rm',
+        '--entrypoint',
+        'sh',
+        image,
+        '-c',
+        `test -f ${GITORCH_PLUGIN_MARKER_PATH}`,
+      ],
+      env: {},
+    })
+    return result.exitCode === 0
+  })()
+  pluginPresenceCache.set(cacheKey, check)
+  return check
 }
 
 /**
@@ -90,6 +166,21 @@ export function createPodmanCommandRunner(
   const hostRunner = options.hostRunner ?? realRuntimeCommandRunner
 
   return async (request: RuntimeCommandRequest): Promise<RuntimeCommandResult> => {
+    // Porteiro (decisão do dono, ver comentário da opção): nunca roda missão
+    // alguma sem confirmar que o gate de segurança do GitOrch está de pé.
+    // Verificado ANTES de qualquer efeito colateral (inclusive prepareMounts,
+    // que materializaria credencial à toa se a missão fosse recusada mesmo
+    // assim).
+    if (options.requireGitorchPlugin) {
+      if ((process.env['GITORCH_AGY_PLUGIN'] ?? '1') === '0') {
+        return { exitCode: 1, stdout: '', stderr: GITORCH_PLUGIN_DISABLED_MESSAGE, durationMs: 0 }
+      }
+      const present = await isGitorchPluginPresentInImage(options.image, podmanBinary, hostRunner)
+      if (!present) {
+        return { exitCode: 1, stdout: '', stderr: GITORCH_PLUGIN_MISSING_MESSAGE, durationMs: 0 }
+      }
+    }
+
     const userNamespace = options.userNamespace ?? 'keep-id'
     // Nome fixo por execução: permite matar o container se o cliente podman for
     // morto por timeout (senão o agente segue rodando órfão, segurando RAM).

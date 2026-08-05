@@ -136,6 +136,54 @@ test('promptViaStdin delivers the prompt on stdin and keeps it out of argv', asy
   expect(calls[0].stdin).toBe('Produce the Research Brief')
 })
 
+test('promptArgName entrega o prompt como valor da flag, sempre por último, e sem stdin', async () => {
+  const calls: RuntimeCommandRequest[] = []
+  const adapter = createCliRuntimeAdapter({
+    runtime: 'antigravity',
+    binary: 'agy',
+    args: ['--sandbox', '--print-timeout', '20m', '--dangerously-skip-permissions'],
+    modelArgName: '--model',
+    workspaceDirArgName: '--add-dir',
+    promptArgName: '--print',
+    runner: async (request) => {
+      calls.push(request)
+      return { exitCode: 0, stdout: 'entregue', stderr: '', durationMs: 7 }
+    },
+  })
+
+  await adapter.run({
+    missionId: 'mission-agy-print',
+    prompt: 'Analise o repositorio',
+    runtime: { runtime: 'antigravity', model: 'gemini-x' },
+    credentialRef: {
+      connectionId: 'conn-agy-print',
+      ownerScope: 'project',
+      runtime: 'antigravity',
+      providedSecrets: [],
+    },
+    cwd: '/workspace',
+  })
+
+  const args = calls[0]!.args
+  // A missão é o VALOR de --print, e --print é a ÚLTIMA flag: com a missão em
+  // qualquer outra posição o motor trata as próprias flags como a tarefa
+  // (medido ao vivo: 0/3 pelo stdin, 0/1 como argumento solto, 2/2 assim).
+  expect(args.slice(-2)).toEqual(['--print', 'Analise o repositorio'])
+  expect(args).toEqual([
+    '--sandbox',
+    '--print-timeout',
+    '20m',
+    '--dangerously-skip-permissions',
+    '--model',
+    'gemini-x',
+    '--add-dir',
+    '/workspace',
+    '--print',
+    'Analise o repositorio',
+  ])
+  expect(calls[0]!.stdin).toBeUndefined()
+})
+
 test('realRuntimeCommandRunner writes request.stdin to the child stdin', async () => {
   const result = await realRuntimeCommandRunner({
     binary: 'cat',

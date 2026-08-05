@@ -137,6 +137,41 @@ export interface QaVerdictForm {
   comment: DoDFields
 }
 
+/**
+ * Fase 1 do QA (Reconhecimento) — projeto novo, sem PR para julgar ainda.
+ * O baseline que ele grava na memória ANTES do primeiro PR chegar: o que
+ * "correto" significa neste repositório (docs/agents/quality-assurance.md §2).
+ */
+export interface QaReconForm {
+  ci: string
+  testSuites: string[]
+  coverageExpectation: string
+  criticalPaths: string[]
+}
+
+/**
+ * Formata o baseline de reconhecimento como texto estruturado — precisa
+ * passar no contrato de entregável (assertMissionDelivered): seções `##`,
+ * listas, mais de 40 caracteres úteis.
+ */
+export function formatQaReconDeliverable(d: QaReconForm): string {
+  return [
+    'QA reconnaissance baseline (Fase 1 — Reconhecimento, docs/agents/quality-assurance.md):',
+    '',
+    '## CI/CD',
+    d.ci,
+    '',
+    '## Test suites',
+    ...d.testSuites.map((s) => `- ${s}`),
+    '',
+    '## Coverage expectation',
+    d.coverageExpectation,
+    '',
+    '## Critical paths',
+    ...d.criticalPaths.map((p) => `- ${p}`),
+  ].join('\n')
+}
+
 export interface SmJudgmentForm {
   impediments: string[]
   notes: string
@@ -353,6 +388,19 @@ export const RAILS_SCHEMAS = {
     properties: {
       verdict: { type: 'string', enum: ['approve', 'request_changes'] },
       comment: DOD_FIELDS_SCHEMA,
+    },
+  } as MiniSchema,
+
+  // QA Fase 1 — Reconhecimento: sem PR para julgar, o formulário é o
+  // baseline de qualidade do repositório (docs/agents/quality-assurance.md §2).
+  qaRecon: {
+    type: 'object',
+    required: ['ci', 'testSuites', 'coverageExpectation', 'criticalPaths'],
+    properties: {
+      ci: { type: 'string' },
+      testSuites: { type: 'array', items: { type: 'string' }, minItems: 1 },
+      coverageExpectation: { type: 'string' },
+      criticalPaths: { type: 'array', items: { type: 'string' }, minItems: 1 },
     },
   } as MiniSchema,
 

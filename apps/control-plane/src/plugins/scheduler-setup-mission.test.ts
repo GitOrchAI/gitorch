@@ -80,6 +80,131 @@ describe('provisionSetupMission', () => {
     expect(outcome.status).toBe('failed')
     expect(outcome.error).toContain('workspace remoto falhou')
   })
+
+  // Task 9: projeto novo ganha a PRÓPRIA mesa de trabalho no setup — sem
+  // prisma (deps antigas/testes de clone acima) o passo é pulado por
+  // completo, então esses 4 testes continuam verdes sem tocar rede nenhuma.
+  test('com token e prisma, cria o board e grava GITORCH_PROJECT_BOARD no runtimeConfig do projeto', async () => {
+    const allocateWorkspace = vi.fn().mockResolvedValue({ path: '/workspace/x' })
+    const stack = fakeStack(allocateWorkspace)
+    const update = vi.fn().mockResolvedValue({})
+    const findProjectId = vi.fn(async () => null)
+    const createProjectV2 = vi.fn(async () => ({ id: 'PVT_novo', number: 9 }))
+
+    const outcome = await provisionSetupMission(
+      {
+        id: 'mission_5',
+        project: { id: 'proj_5', wingId: 'GitOrchAI/gitorch', userId: 'user_1' },
+      },
+      stack,
+      'gh_owner_token',
+      {
+        prisma: { project: { update } } as never,
+        createProjectV2Client: () => ({ findProjectId, createProjectV2 }),
+        resolveOwner: async () => ({ id: 'O_org_gitorchai', type: 'organization' }),
+      }
+    )
+
+    expect(outcome.status).toBe('completed')
+    expect(createProjectV2).toHaveBeenCalledWith({
+      ownerId: 'O_org_gitorchai',
+      title: 'GitOrchAI/gitorch',
+    })
+    expect(update).toHaveBeenCalledWith({
+      where: { id: 'proj_5' },
+      data: {
+        runtimeConfig: {
+          envConfig: { GITORCH_PROJECT_BOARD: 'GitOrchAI/9' },
+        },
+      },
+    })
+  })
+
+  test('falha ao criar o board NÃO derruba o provisionamento (workspace já alocado fica completed)', async () => {
+    const allocateWorkspace = vi.fn().mockResolvedValue({ path: '/workspace/x' })
+    const stack = fakeStack(allocateWorkspace)
+    const update = vi.fn().mockResolvedValue({})
+    const createProjectV2 = vi.fn(async () => {
+      throw new Error('Resource not accessible by integration')
+    })
+
+    const outcome = await provisionSetupMission(
+      {
+        id: 'mission_6',
+        project: { id: 'proj_6', wingId: 'GitOrchAI/gitorch', userId: 'user_1' },
+      },
+      stack,
+      'gh_owner_token',
+      {
+        prisma: { project: { update } } as never,
+        createProjectV2Client: () => ({
+          findProjectId: vi.fn(async () => null),
+          createProjectV2,
+        }),
+        resolveOwner: async () => ({ id: 'O_org_gitorchai', type: 'organization' }),
+      }
+    )
+
+    expect(outcome.status).toBe('completed')
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  test('sem prisma nas deps, pula o board por completo (não toca rede nem grava nada)', async () => {
+    const allocateWorkspace = vi.fn().mockResolvedValue({ path: '/workspace/x' })
+    const stack = fakeStack(allocateWorkspace)
+    const resolveOwner = vi.fn()
+
+    const outcome = await provisionSetupMission(
+      {
+        id: 'mission_7',
+        project: { id: 'proj_7', wingId: 'GitOrchAI/gitorch', userId: 'user_1' },
+      },
+      stack,
+      'gh_owner_token',
+      { resolveOwner }
+    )
+
+    expect(outcome.status).toBe('completed')
+    expect(resolveOwner).not.toHaveBeenCalled()
+  })
+
+  test('preserva o resto de runtimeConfig/envConfig já gravado ao adicionar o board', async () => {
+    const allocateWorkspace = vi.fn().mockResolvedValue({ path: '/workspace/x' })
+    const stack = fakeStack(allocateWorkspace)
+    const update = vi.fn().mockResolvedValue({})
+
+    await provisionSetupMission(
+      {
+        id: 'mission_8',
+        project: {
+          id: 'proj_8',
+          wingId: 'GitOrchAI/gitorch',
+          userId: 'user_1',
+          runtimeConfig: { envConfig: { OUTRA_CHAVE: 'x' }, outroCampo: true },
+        },
+      },
+      stack,
+      'gh_owner_token',
+      {
+        prisma: { project: { update } } as never,
+        createProjectV2Client: () => ({
+          findProjectId: vi.fn(async () => null),
+          createProjectV2: vi.fn(async () => ({ id: 'PVT', number: 3 })),
+        }),
+        resolveOwner: async () => ({ id: 'O_x', type: 'organization' }),
+      }
+    )
+
+    expect(update).toHaveBeenCalledWith({
+      where: { id: 'proj_8' },
+      data: {
+        runtimeConfig: {
+          outroCampo: true,
+          envConfig: { OUTRA_CHAVE: 'x', GITORCH_PROJECT_BOARD: 'GitOrchAI/3' },
+        },
+      },
+    })
+  })
 })
 
 // O teto de concorrência (MAX_CONCURRENT_MISSIONS) passa a cobrir TAMBÉM o

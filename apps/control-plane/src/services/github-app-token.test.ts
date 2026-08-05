@@ -122,6 +122,34 @@ describe('mintInstallationToken', () => {
     })) as unknown as typeof fetch
     expect(await mintInstallationToken({ appId: '1', privateKey, fetchImpl })).toBeNull()
   })
+
+  it('chave privada inválida: devolve null E registra o motivo real (não some com o erro)', async () => {
+    const logged: unknown[] = []
+    const token = await mintInstallationToken({
+      appId: '4038070',
+      privateKey: '-----BEGIN RSA PRIVATE KEY-----\nchave-truncada\n-----END RSA PRIVATE KEY-----',
+      fetchImpl: (async () => {
+        throw new Error('a rede nunca deve ser tocada: a assinatura falha antes')
+      }) as unknown as typeof fetch,
+      onError: (message: string) => logged.push(message),
+    })
+
+    expect(token).toBeNull()
+    expect(logged).toHaveLength(1)
+    expect(String(logged[0])).toContain('GITHUB_APP_PRIVATE_KEY')
+  })
+
+  it('App não configurado: devolve null em silêncio, sem reportar erro', async () => {
+    const logged: unknown[] = []
+    const token = await mintInstallationToken({
+      appId: undefined,
+      privateKey: undefined,
+      onError: (message: string) => logged.push(message),
+    })
+
+    expect(token).toBeNull()
+    expect(logged).toEqual([])
+  })
 })
 
 /**
