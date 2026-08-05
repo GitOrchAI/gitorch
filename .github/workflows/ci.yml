@@ -77,10 +77,23 @@ jobs:
             pnpm exec turbo run test $filters
           fi
       - name: Secret scan
-        uses: gitleaks/gitleaks-action@v3
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_ENABLE_COMMENTS: false
+          # A ferramenta gitleaks (MIT) roda sem chave nenhuma. Quem exige
+          # cadastro para conta de organizacao e a Action que a embrulha —
+          # e este repositorio passou a pertencer a uma organizacao, o que
+          # deixou o scan vermelho em TODO PR e na propria main. Instalar o
+          # binario oficial mantem exatamente a mesma varredura, sem depender
+          # de segredo de terceiro. Versao pinada: build reproduzivel.
+          GITLEAKS_VERSION: 8.30.1
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${{ env.GITLEAKS_VERSION }}/gitleaks_${{ env.GITLEAKS_VERSION }}_linux_x64.tar.gz"
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          sudo install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+          gitleaks detect --source . --redact --exit-code 1 \
+            --report-format sarif --report-path results.sarif
       - name: Write pheromone secret-scan marker
         run: pnpm run audit:secrets
       # Antes só existia o placeholder repo-smoke.spec.ts (não usa fixture de
