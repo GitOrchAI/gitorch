@@ -26,6 +26,14 @@ export interface AppTokenDeps {
    * que não sabe (nem precisa saber) o ID de ninguém específico.
    */
   installationId?: number | undefined
+  /**
+   * Chamado quando o App ESTÁ configurado e mesmo assim a emissão falha —
+   * chave corrompida, App revogado, API fora. Default: console.error.
+   * Existe porque o contrato de devolver `null` sem lançar já desligou o
+   * produto inteiro em silêncio: sem token, PO/SM/QA caem no caminho clássico
+   * e nunca criam uma issue. Ausência de App continua sendo silêncio legítimo.
+   */
+  onError?: (message: string) => void
 }
 
 const GITHUB_API = 'https://api.github.com'
@@ -88,8 +96,21 @@ export async function mintInstallationToken(deps: AppTokenDeps = {}): Promise<st
     }
   }
 
+  const report = deps.onError ?? ((message: string) => console.error(message))
+
+  let jwt: string
   try {
-    const jwt = signAppJwt(appId, privateKey, Math.floor(nowMs / 1000))
+    jwt = signAppJwt(appId, privateKey, Math.floor(nowMs / 1000))
+  } catch (err) {
+    report(
+      `[github-app-token] GITHUB_APP_PRIVATE_KEY presente (${privateKey.length} chars) mas INVALIDA: ${
+        (err as Error).message
+      } — trilhos desligados: PO/SM/QA nao criarao issues.`
+    )
+    return null
+  }
+
+  try {
     const headers = {
       Authorization: `Bearer ${jwt}`,
       Accept: 'application/vnd.github+json',
@@ -140,7 +161,7 @@ export async function mintInstallationToken(deps: AppTokenDeps = {}): Promise<st
     tokenCacheByInstallation.set(installationId, cachedToken)
     return cachedToken.token
   } catch (err) {
-    console.warn(
+    report(
       `[github-app-token] erro ao emitir token do App (${(err as Error).message}) — trilhos ficam desligados`
     )
     return null
