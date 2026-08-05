@@ -2,7 +2,9 @@ import {
   RAILS_SCHEMAS,
   buildStepPrompt,
   ISSUE_DOD_FIELDS,
+  formatQaReconDeliverable,
   type QaVerdictForm,
+  type QaReconForm,
 } from '@gitorch/cadence'
 import { runFormStep } from './rails-runner.js'
 import { GithubExecutionError } from './github-errors.js'
@@ -24,6 +26,13 @@ export interface QaRailsMissionOptions {
   moveCard?: CardMover
   /** Label de delegação que marca trabalho de dev assíncrono (padrão 'jules'). */
   delegateLabel?: string
+  /**
+   * 'recon' = Fase 1 do QA (docs/agents/quality-assurance.md §2): projeto novo,
+   * sem PR para julgar ainda. Em vez do no-op clássico, roda o roteiro de
+   * reconhecimento e devolve o baseline de qualidade do repositório. Sem este
+   * modo, o padrão é o caminho clássico (julgamento de PR; sem PR = no-op).
+   */
+  mode?: 'judge' | 'recon'
   fetchImpl?: typeof fetch
 }
 
@@ -129,6 +138,32 @@ export async function runQaMissionViaRails(
     break
   }
   if (!target) {
+    // Fase 1 — Reconhecimento (docs/agents/quality-assurance.md §2): projeto
+    // novo, sem PR aberta ainda. Sem este modo, a esteira de onboarding
+    // terminaria em no-op — e, com o contrato de entregável do scheduler
+    // (assertMissionDelivered), um no-op sem estrutura passaria a ser falha
+    // explícita em vez de silêncio. Aqui o QA aprende o repositório (CI,
+    // suítes, cobertura, caminhos críticos) ANTES do primeiro PR chegar.
+    if (options.mode === 'recon') {
+      const prompt = buildStepPrompt('qa', 'qa-recon', RAILS_SCHEMAS.qaRecon, [
+        ...(options.contextBlocks ?? []),
+        'No delegated PR is open yet — this project was just onboarded to GitOrch.',
+        'Your job now is RECONNAISSANCE, not judgment: learn this repository before ' +
+          'the first PR arrives. Use the codegraph/context above to identify the CI ' +
+          'tool in use, the test suites/frameworks that exist, what test coverage is ' +
+          'expected of new code, and the critical paths that must never break.',
+      ])
+      const recon = (await runFormStep({
+        schema: RAILS_SCHEMAS.qaRecon,
+        prompt,
+        execute: options.execute,
+      })) as QaReconForm
+      return {
+        exitCode: 0,
+        output: formatQaReconDeliverable(recon),
+        stderr: '',
+      }
+    }
     return {
       exitCode: 0,
       output: 'QA: no delegated PR awaiting judgment.',

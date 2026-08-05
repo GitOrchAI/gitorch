@@ -601,7 +601,10 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
               repoUrl: `https://github.com/${repoFullName}`,
               engines,
               envConfig: (envConfig ?? null) as Prisma.JsonObject | null,
-              onboardingSequence: ['ra', 'po', 'sm'],
+              // Evento 1 completo: o QA fecha o onboarding em modo Reconhecimento
+              // (projeto novo não tem PR para revisar; ele aprende o que "correto"
+              // significa neste repositório antes do primeiro PR chegar).
+              onboardingSequence: ['ra', 'po', 'sm', 'qa'],
             } as Prisma.JsonObject,
             status: 'pending',
           },

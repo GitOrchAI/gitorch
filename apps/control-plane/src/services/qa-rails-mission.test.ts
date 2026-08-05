@@ -1,5 +1,16 @@
 import { describe, it, expect } from 'vitest'
 import { runQaMissionViaRails, buildJulesReworkComment } from './qa-rails-mission.js'
+import { assertMissionDelivered } from './mission-outcome.js'
+
+const RECON = JSON.stringify({
+  ci: 'GitHub Actions (.github/workflows/ci.yml) — roda lint, typecheck e testes por workspace.',
+  testSuites: ['vitest (unit, apps/control-plane)', 'vitest (unit, packages/cadence)'],
+  coverageExpectation: 'todo arquivo de serviço novo ganha *.test.ts equivalente antes do merge.',
+  criticalPaths: [
+    'apps/control-plane/src/plugins/scheduler.ts (encadeamento de missões)',
+    'apps/control-plane/src/services/qa-rails-mission.ts (veredito do QA)',
+  ],
+})
 
 const APPROVE = JSON.stringify({
   verdict: 'approve',
@@ -232,6 +243,41 @@ describe('runQaMissionViaRails', () => {
       { issue: 50, column: 'done' },
       { issue: 50, column: 'inProgress' },
     ])
+  })
+
+  it('sem PR aberta e mode "recon": produz o baseline de reconhecimento, não noOp', async () => {
+    const f = fakeFetch([])
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      mode: 'recon',
+      execute: async () => RECON,
+      fetchImpl: f,
+    })
+    expect(r.exitCode).toBe(0)
+    expect(r.noOp).toBeUndefined()
+    expect(r.output).toContain('## CI/CD')
+    expect(r.output).toContain('## Test suites')
+    expect(r.output).toContain('## Coverage expectation')
+    expect(r.output).toContain('## Critical paths')
+    expect(r.output).toContain('GitHub Actions')
+
+    // Contrato de entregável (mission-outcome.ts): o scheduler só grava
+    // memória e marca a missão como concluída se isto passar. Sem o modo
+    // recon, "sem PR" saía como noOp — aqui precisa ser entregável real.
+    const entrega = assertMissionDelivered('qa', r.output)
+    expect(entrega.delivered).toBe(true)
+  })
+
+  it('sem PR aberta e SEM mode "recon": continua no-op (comportamento clássico preservado)', async () => {
+    const f = fakeFetch([])
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => RECON,
+      fetchImpl: f,
+    })
+    expect(r.noOp).toBe(true)
   })
 
   it('request_changes: posta REQUEST_CHANGES + comentário @jules', async () => {

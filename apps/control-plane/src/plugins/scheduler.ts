@@ -973,7 +973,14 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     )
 
     // Executa em background com failover; o disparo retorna assim que registrada.
-    void executeMissionWithFailover(mission.id, project, role, chain, plan?.id)
+    void executeMissionWithFailover(
+      mission.id,
+      project,
+      role,
+      chain,
+      plan?.id,
+      onboardingSequence !== undefined
+    )
 
     return { triggered: true, missionId: mission.id }
   }
@@ -994,7 +1001,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     project: ChainProject,
     role: F6AgentRole,
     chain: Array<{ runtime: string; model?: string }>,
-    planId?: string
+    planId?: string,
+    // A cascata de onboarding (Task 10) é hoje o ÚNICO caminho que acorda o
+    // QA — o projeto não tem agenda de QA própria em project_schedules. Sem
+    // este sinal, o QA nos trilhos sempre cairia no julgamento clássico de PR
+    // e, sem PR aberta, terminaria em no-op (ver qa-rails-mission.ts).
+    isOnboarding = false
   ): Promise<void> => {
     // Isolamento por tier: grátis roda no stack remoto (MT-SaaS) quando
     // configurado; qualquer outro caso usa o stack local de sempre — nunca
@@ -1176,6 +1188,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                     repository: project.wingId,
                     githubToken: railsToken as string,
                     contextBlocks,
+                    // Fase 1 do QA (Reconhecimento): só entra quando este QA foi
+                    // acordado pela cascata de onboarding (Task 10) — hoje o
+                    // único jeito de o QA rodar, já que o projeto não tem
+                    // agenda de QA própria em project_schedules.
+                    ...(isOnboarding ? { mode: 'recon' as const } : {}),
                     // O QA move o card da issue conforme o veredito (se há board).
                     ...(railsBoard
                       ? {
