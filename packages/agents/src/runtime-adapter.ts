@@ -225,6 +225,15 @@ export interface CreateCliRuntimeAdapterOptions {
    * vazio ele trata as próprias flags como a missão. Ver RuntimeCommandRequest.stdin.
    */
   promptViaStdin?: boolean
+  /**
+   * Entrega o prompt como VALOR desta flag, sempre no fim da linha de comando
+   * (ex.: '--print'). Necessário para o Antigravity CLI a partir da 1.1.x: a
+   * missão precisa ser o valor de `--print`. Medido ao vivo contra a imagem
+   * real: pelo stdin 0/3, como argumento posicional solto 0/1, assim 2/2 —
+   * em qualquer outra forma o motor trata as próprias flags como a tarefa.
+   * Tem precedência sobre `promptViaStdin` e sobre o prompt posicional.
+   */
+  promptArgName?: string
 }
 
 export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions): RuntimeAdapter {
@@ -257,9 +266,11 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
       const workspaceArgs =
         options.workspaceDirArgName && request.cwd ? [options.workspaceDirArgName, request.cwd] : []
 
-      const promptArgs = options.promptViaStdin
-        ? []
-        : [...(options.promptSeparator ? [options.promptSeparator] : []), request.prompt]
+      const promptArgs = options.promptArgName
+        ? [options.promptArgName, request.prompt]
+        : options.promptViaStdin
+          ? []
+          : [...(options.promptSeparator ? [options.promptSeparator] : []), request.prompt]
 
       const result = await runner({
         binary: options.binary,
@@ -267,7 +278,7 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
         env,
         cwd: request.cwd,
         timeoutMs: request.timeoutMs,
-        ...(options.promptViaStdin ? { stdin: request.prompt } : {}),
+        ...(options.promptViaStdin && !options.promptArgName ? { stdin: request.prompt } : {}),
       })
 
       return {

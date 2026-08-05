@@ -396,15 +396,14 @@ function buildRuntimeStack(
       })
     )
   } else {
-    // --print: não-interativo. --sandbox: ADICIONA restrições de terminal e faz
-    // os hooks do plugin GitOrch (gate de shell/leitura, convergência) rodarem.
-    // --print-timeout limita a espera pela resposta do modelo.
-    //
-    // CRÍTICO (QA real 2026-07-04): o agy lê a MISSÃO do STDIN. Entregar o prompt
-    // como argumento posicional com o stdin vazio faz o motor "fixar" nas
-    // próprias flags de CLI (--sandbox/--print-timeout) como se fossem a tarefa —
-    // ele escrevia "Relatório de Verificação de Sandbox" em vez do deliverable.
-    // Com o prompt via stdin (promptViaStdin) ele foca e entrega o brief correto.
+    // --sandbox: ADICIONA restrições de terminal e é o que faz os hooks do
+    // plugin GitOrch (gate de shell/leitura, convergência) rodarem.
+    // --dangerously-skip-permissions: em modo headless o motor não tem como
+    // perguntar "posso?" e auto-nega toda ferramenta; o próprio binário instrui
+    // esta flag ("Settings allow-rules do not apply"). A segurança real continua
+    // sendo o gate do GitOrch, verificado bloqueando npm e curl.
+    // --print <missão>: a missão é o VALOR de --print e vem POR ÚLTIMO. Medido
+    // ao vivo contra a imagem real: stdin 0/3, argumento solto 0/1, assim 2/2.
     const agyExtraArgs = (process.env['GITORCH_AGY_EXTRA_ARGS'] ?? '').split(' ').filter(Boolean)
     const printTimeout = process.env['GITORCH_AGY_PRINT_TIMEOUT'] ?? '20m'
     registry.register(
@@ -412,10 +411,10 @@ function buildRuntimeStack(
         runtime: 'antigravity',
         // Em container o binário vem da imagem; no host, do PATH/config.
         binary: containerized ? 'agy' : (process.env['GITORCH_AGY_BIN'] ?? 'agy'),
-        args: ['--print', '--sandbox', '--print-timeout', printTimeout, ...agyExtraArgs],
+        args: ['--sandbox', '--print-timeout', printTimeout, ...agyExtraArgs],
         modelArgName: '--model',
         workspaceDirArgName: '--add-dir',
-        promptViaStdin: true,
+        promptArgName: '--print',
         ...(missionRunner ? { runner: missionRunner } : {}),
       })
     )
