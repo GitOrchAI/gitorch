@@ -1,12 +1,21 @@
 name: Jules PR Conflict Resolver
 
+# DESLIGADO: so roda por disparo manual.
+#
+# Esta automacao precisa de SECURITY_PAT (credencial propria, para empurrar o
+# merge resolvido de volta a branch do PR) e de OPENROUTER_API_KEY. Nenhum dos
+# dois existe nesta organizacao, e o dev assincrono que ela atende tambem nao
+# esta ligado — entao ela nao tinha o que resolver e mesmo assim falhava no
+# checkout, deixando VERMELHO todo PR do repositorio, inclusive os que nada
+# tinham a ver com ela. Um workflow que so pode falhar nao pode gatear o
+# trabalho de ninguem.
+#
+# Para religar: cadastre os dois segredos na organizacao e devolva os gatilhos
+# automaticos abaixo (pull_request_target nos tipos opened/synchronize/
+# reopened/labeled, e push na main para varrer PRs que ficaram conflitantes
+# quando a main moveu). O passo de verificacao de configuracao ja existe e
+# deixa o fluxo pular sozinho enquanto os segredos faltarem.
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened, labeled]
-  # Quando a main move, PRs abertos podem ficar conflitantes sem disparar evento de PR.
-  # Este push varre todos os PRs da automação em busca de novos conflitos.
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       pr_number:
@@ -29,23 +38,45 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       github.event_name == 'push' ||
       github.event_name == 'pull_request_target'
+    env:
+      # Esta automacao so funciona com credencial propria (precisa empurrar o
+      # merge resolvido de volta para a branch do PR). Sem o segredo cadastrado
+      # ela nao tem o que fazer — e antes disto ela FALHAVA, deixando vermelho
+      # todo PR do repositorio, inclusive os que nada tem a ver com o Jules.
+      # Ausencia de credencial e "nao configurado", nao "quebrado": os passos
+      # sao pulados e o job termina limpo. Cadastre SECURITY_PAT para ligar.
+      SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
     steps:
+      - name: Verificar se a automacao esta configurada
+        id: preflight
+        run: |
+          if [ -z "${SECURITY_PAT:-}" ]; then
+            echo "configurada=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::SECURITY_PAT nao cadastrado — resolucao automatica de conflitos desligada neste repositorio."
+          else
+            echo "configurada=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout Repository
+        if: steps.preflight.outputs.configurada == 'true'
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
           token: ${{ secrets.SECURITY_PAT }}
 
       - name: Setup Node
+        if: steps.preflight.outputs.configurada == 'true'
         uses: actions/setup-node@v7
         with:
           node-version: '20'
 
       - name: Install Dependencies
+        if: steps.preflight.outputs.configurada == 'true'
         working-directory: .github/scripts
         run: npm ci
 
       - name: Analyze Merge Conflicts
+        if: steps.preflight.outputs.configurada == 'true'
         env:
           SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -71,7 +102,10 @@ jobs:
         working-directory: .github/scripts
 
       - name: Remove Conflict Label if Resolved
-        if: success() && github.event_name == 'pull_request_target' && github.event.action == 'synchronize'
+        if: >-
+          steps.preflight.outputs.configurada == 'true' &&
+          success() && github.event_name == 'pull_request_target' &&
+          github.event.action == 'synchronize'
         env:
           GH_TOKEN: ${{ secrets.SECURITY_PAT }}
           SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
