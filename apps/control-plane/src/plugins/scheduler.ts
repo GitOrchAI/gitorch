@@ -32,6 +32,7 @@ import {
 } from '@gitorch/workspace-engine'
 import { createSshCommandRunner } from '@gitorch/agents'
 import { buildMissionEnricher, persistMissionMemory } from '../services/mission-context.js'
+import { assertMissionDelivered } from '../services/mission-outcome.js'
 import { ClientEnvironmentService } from '../services/environment.js'
 import { runPoMissionViaRails } from '../services/po-rails-mission.js'
 import { runRaMissionViaRails } from '../services/ra-rails-mission.js'
@@ -1134,7 +1135,28 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           })
         }
 
-        if (result.exitCode === 0 && result.output.trim().length > 0) {
+        const entrega =
+          result.exitCode === 0
+            ? assertMissionDelivered(role, result.output)
+            : ({ delivered: false, reason: `motor saiu com codigo ${result.exitCode}` } as const)
+
+        if (result.exitCode === 0 && !entrega.delivered) {
+          // Verde mentiroso: o motor respondeu, mas não entregou. Falha honesta
+          // com o motivo, e NADA vai para a memória do projeto.
+          app.log.warn(`[Scheduler] Mission ${missionId} sem entregavel: ${entrega.reason}`)
+          await app.prisma.mission.updateMany({
+            where: { id: missionId, status: 'running' },
+            data: {
+              status: 'failed',
+              completedAt: new Date(),
+              error: entrega.reason,
+              result: { output: result.output, stderr: result.stderr, runtime: sel.runtime },
+            },
+          })
+          return
+        }
+
+        if (result.exitCode === 0 && entrega.delivered) {
           // O entregável vira memória tipada do projeto — exceto no-ops (ex.:
           // "sem wishlist"), que poluiriam o recall e expulsariam o brief do RA.
           const isNoOp = (result as { noOp?: boolean }).noOp === true
