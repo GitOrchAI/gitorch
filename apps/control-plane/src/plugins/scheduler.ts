@@ -357,6 +357,11 @@ export function buildMissionRunner(
     // CPU não tinha nenhum (ver podman-runner.ts).
     cpus: missionCpus,
     prepareMounts,
+    // Decisão do dono (ver AGY_SKIP_PERMISSIONS_FLAG abaixo): nenhuma missão
+    // roda sem confirmar que o plugin de segurança do GitOrch está na
+    // imagem — --dangerously-skip-permissions fixa no código não pode ficar
+    // sem trava se o plugin um dia deixar de ser instalado.
+    requireGitorchPlugin: true,
   })
 }
 
@@ -364,6 +369,26 @@ export interface RuntimeStack {
   registry: RuntimeRegistry
   orchestrator: AgentOrchestrator
   workspaceProvider: WorkspaceProvider
+}
+
+/** Fixa no código — ver o comentário no call site em buildRuntimeStack. */
+const AGY_SKIP_PERMISSIONS_FLAG = '--dangerously-skip-permissions'
+
+/**
+ * Monta os argumentos do Antigravity CLI. `--dangerously-skip-permissions`
+ * sempre aparece, exatamente uma vez, mesmo que GITORCH_AGY_EXTRA_ARGS também
+ * a declare (dedupe) — nunca depende só da env var, que pode não existir num
+ * ambiente novo/recriado.
+ */
+export function buildAntigravityCliArgs(
+  printTimeout: string,
+  extraArgsEnv: string | undefined
+): string[] {
+  const extraArgs = (extraArgsEnv ?? '')
+    .split(' ')
+    .filter(Boolean)
+    .filter((arg) => arg !== AGY_SKIP_PERMISSIONS_FLAG)
+  return ['--sandbox', '--print-timeout', printTimeout, AGY_SKIP_PERMISSIONS_FLAG, ...extraArgs]
 }
 
 /**
@@ -398,20 +423,24 @@ function buildRuntimeStack(
   } else {
     // --sandbox: ADICIONA restrições de terminal e é o que faz os hooks do
     // plugin GitOrch (gate de shell/leitura, convergência) rodarem.
-    // --dangerously-skip-permissions: em modo headless o motor não tem como
-    // perguntar "posso?" e auto-nega toda ferramenta; o próprio binário instrui
-    // esta flag ("Settings allow-rules do not apply"). A segurança real continua
-    // sendo o gate do GitOrch, verificado bloqueando npm e curl.
+    // --dangerously-skip-permissions: FIXA NO CÓDIGO, não numa env var. Em modo
+    // headless o motor não tem como perguntar "posso?" e auto-nega toda
+    // ferramenta (o agente só narra intenções); o próprio binário instrui esta
+    // flag ("Settings allow-rules do not apply"). Vivendo só numa env var, uma
+    // reinstalação ou um .env recriado quebra a esteira inteira em silêncio —
+    // por isso ela é obrigatória aqui. A segurança real continua sendo o gate
+    // de hooks do GitOrch dentro do container, verificado ao vivo bloqueando
+    // npm install e curl mesmo com a flag ligada (as duas negativas ficam no
+    // log de auditoria).
     // --print <missão>: a missão é o VALOR de --print e vem POR ÚLTIMO. Medido
     // ao vivo contra a imagem real: stdin 0/3, argumento solto 0/1, assim 2/2.
-    const agyExtraArgs = (process.env['GITORCH_AGY_EXTRA_ARGS'] ?? '').split(' ').filter(Boolean)
     const printTimeout = process.env['GITORCH_AGY_PRINT_TIMEOUT'] ?? '20m'
     registry.register(
       createCliRuntimeAdapter({
         runtime: 'antigravity',
         // Em container o binário vem da imagem; no host, do PATH/config.
         binary: containerized ? 'agy' : (process.env['GITORCH_AGY_BIN'] ?? 'agy'),
-        args: ['--sandbox', '--print-timeout', printTimeout, ...agyExtraArgs],
+        args: buildAntigravityCliArgs(printTimeout, process.env['GITORCH_AGY_EXTRA_ARGS']),
         modelArgName: '--model',
         workspaceDirArgName: '--add-dir',
         promptArgName: '--print',
@@ -499,6 +528,9 @@ export function buildRemoteRuntimeStackIfConfigured(app: FastifyInstance): Runti
     // e mesma blindagem contra env vazia/inválida (ver config/mission-cpus.ts).
     cpus: resolveMissionCpus(),
     hostRunner: sshRunner,
+    // Mesma trava do stack local (ver buildMissionRunner): a verificação sobe
+    // pelo MESMO sshRunner, confirmando o gate na imagem do nó remoto real.
+    requireGitorchPlugin: true,
   })
 
   // RemoteWorkspaceProvider exige um runner sempre-Promise; RuntimeCommandRunner
