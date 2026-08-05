@@ -28,3 +28,10 @@ graphify-out/
 *.sqlite-journal
 *.sqlite3
 *.local
+
+# Rascunho do fluxo subagent-driven-development (briefs, relatorios, ledger de
+# progresso). E scratch de sessao de desenvolvimento, nunca artefato do produto:
+# ja entrou no repositorio uma vez porque os passos de commit de um plano antigo
+# mandavam adicionar o proprio relatorio ao git.
+.superpowers/
+.superpowers-arquivo/
