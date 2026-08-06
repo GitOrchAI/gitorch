@@ -14,6 +14,7 @@ import type { StepExecutor } from './role-rails.js'
 // fluxo do scheduler (output textual vira memória do projeto).
 
 import type { AgentQuestionService } from './agent-question.js'
+import { buildFreeTextOption } from './telegram-bot.js'
 
 export interface PoRailsMissionOptions {
   repository: string
@@ -207,6 +208,11 @@ export async function runPoMissionViaRails(
               value: 'wishlist-technical-health',
             },
             { label: '🎨 Refatorar Interface / UX / Design System', value: 'wishlist-ui-design' },
+            // Feedback do dono: nem sempre uma das 3 fechadas serve — "a 4ª
+            // resposta tem que ser manual". Esta opção não é gravada como
+            // resposta; instrui a responder em texto livre (ver
+            // handleTelegramQuestionReply em services/telegram-bot.ts).
+            buildFreeTextOption(),
           ],
         })
       } catch (err) {
