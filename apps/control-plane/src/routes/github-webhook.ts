@@ -37,6 +37,8 @@ export function missionRoleForEvent(
     issue?: { labels?: Array<{ name?: string }> }
     pull_request?: { user?: { login?: string } }
     sender?: { login?: string }
+    check_suite?: { pull_requests?: Array<{ number?: number }> }
+    workflow_run?: { pull_requests?: Array<{ number?: number }> }
   }
 ): F6AgentRole | null {
   // Issue de wishlist recém-aberta -> o RA acorda e produz contexto.
@@ -49,11 +51,17 @@ export function missionRoleForEvent(
     const author = (payload.pull_request?.user?.login ?? payload.sender?.login ?? '').toLowerCase()
     if (author.includes('jules')) return 'qa'
   }
-  // CI concluiu (passou ou falhou) -> o QA acorda. QA só começa depois do CI;
-  // ele mesmo é no-op se não houver PR delegado, então acordar em qualquer
-  // conclusão de CI é seguro.
+  // CI concluiu (passou ou falhou) -> o QA acorda para julgar o PR.
+  //
+  // Só quando o CI é DE UM PR. Antes acordava em qualquer conclusão, com o
+  // argumento de que o QA é no-op sem PR delegado — mas "no-op" aqui não é
+  // grátis: sobe container e gasta cota do motor do cliente. Num repositório
+  // com CI ativo, cada push virava uma rajada de missões que só respondiam
+  // "nada a julgar". Sem PR no evento, não há o que julgar: não acorda.
   if ((event === 'check_suite' || event === 'workflow_run') && payload.action === 'completed') {
-    return 'qa'
+    const prsDoEvento =
+      payload.check_suite?.pull_requests ?? payload.workflow_run?.pull_requests ?? []
+    return prsDoEvento.length > 0 ? 'qa' : null
   }
   return null
 }

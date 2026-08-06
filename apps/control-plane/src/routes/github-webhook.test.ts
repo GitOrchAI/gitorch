@@ -6,12 +6,25 @@ import { registerPlugins } from '../plugins/index.js'
 import { githubWebhookRoutes, missionRoleForEvent } from './github-webhook.js'
 
 describe('missionRoleForEvent', () => {
-  test('acorda o QA quando check_suite conclui', () => {
-    expect(missionRoleForEvent('check_suite', { action: 'completed' })).toBe('qa')
+  // Estes dois testes afirmavam o comportamento que custava cota: acordar o QA
+  // em QUALQUER conclusão de CI, mesmo sem PR para julgar. Agora exigem o PR
+  // no evento — que é o que dá trabalho real ao QA.
+  test('acorda o QA quando o CI de um PR conclui', () => {
+    expect(
+      missionRoleForEvent('check_suite', {
+        action: 'completed',
+        check_suite: { pull_requests: [{ number: 7 }] },
+      })
+    ).toBe('qa')
   })
 
-  test('acorda o QA quando workflow_run conclui', () => {
-    expect(missionRoleForEvent('workflow_run', { action: 'completed' })).toBe('qa')
+  test('acorda o QA quando o workflow de um PR conclui', () => {
+    expect(
+      missionRoleForEvent('workflow_run', {
+        action: 'completed',
+        workflow_run: { pull_requests: [{ number: 7 }] },
+      })
+    ).toBe('qa')
   })
 
   test('não acorda nada quando check_suite ainda não concluiu', () => {

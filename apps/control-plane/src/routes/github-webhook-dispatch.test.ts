@@ -48,3 +48,38 @@ describe('missionRoleForEvent', () => {
     expect(missionRoleForEvent('push', {})).toBeNull()
   })
 })
+
+// Custo real medido em produção: assim que o App foi instalado na organização,
+// cada conclusão de CI virou uma missão de QA. Sete missões em quatro minutos,
+// todas respondendo "nada a julgar" — e cada uma sobe container e gasta cota
+// do motor do cliente. O comentário antigo dizia que acordar sempre era
+// "seguro" porque o QA é no-op sem PR; seguro não é o mesmo que barato.
+describe('missionRoleForEvent: CI sem PR associado não acorda o QA', () => {
+  it('conclusão de CI de um PR ainda acorda o QA', () => {
+    expect(
+      missionRoleForEvent('check_suite', {
+        action: 'completed',
+        check_suite: { pull_requests: [{ number: 42 }] },
+      })
+    ).toBe('qa')
+  })
+
+  it('conclusão de CI sem PR nenhum (push direto na branch principal) NÃO acorda o QA', () => {
+    expect(
+      missionRoleForEvent('check_suite', {
+        action: 'completed',
+        check_suite: { pull_requests: [] },
+      })
+    ).toBeNull()
+    expect(
+      missionRoleForEvent('workflow_run', {
+        action: 'completed',
+        workflow_run: { pull_requests: [] },
+      })
+    ).toBeNull()
+  })
+
+  it('payload sem a lista de PRs: não inventa trabalho, não acorda', () => {
+    expect(missionRoleForEvent('workflow_run', { action: 'completed' })).toBeNull()
+  })
+})
