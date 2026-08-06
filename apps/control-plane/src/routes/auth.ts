@@ -331,14 +331,11 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
     // pula o login com um "usuário" que nenhuma rota protegida resolve (caso
     // real 18/07: repos morria em "GitHub not connected" sem saída). Usuário
     // sumiu => 401 + cookie limpo => a pessoa volta pro login de verdade.
-    const exists = await app.prisma.user.findUnique({
-      where: { id: request.user.id },
-      select: { id: true },
-    })
-    if (!exists) {
-      reply.clearCookie('gitorch_session', { path: '/' })
-      return reply.code(401).send({ error: 'UNAUTHORIZED: SESSION_STALE — faça login novamente' })
-    }
+    // A checagem de "o dono ainda existe" saiu daqui: ela vive no hook de
+    // autenticação (plugins/auth.ts), então vale para TODA rota de sessão —
+    // não só para esta. Antes, qualquer outra rota estourava em 500 com um
+    // cookie de usuário apagado; aqui ela era conferida e no resto do produto
+    // não. Repetir a consulta agora seria só uma ida ao banco a mais.
     return reply.send({
       authenticated: true,
       userId: request.user.id,
