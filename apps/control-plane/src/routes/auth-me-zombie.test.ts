@@ -5,6 +5,7 @@ import jwt from 'jsonwebtoken'
 import { resetEnvCache, getEnv } from '../config/env.js'
 import { authPlugin } from '../plugins/auth.js'
 import { authRoutes } from './auth.js'
+import { prisma } from '../plugins/prisma.js'
 
 /**
  * Sessão-zumbi: um cookie `gitorch_session` criptograficamente VÁLIDO (assinado
@@ -29,10 +30,12 @@ describe('/api/v1/auth/me — sessão-zumbi (usuário do cookie não existe no b
 
     app = Fastify()
     await app.register(fastifyCookie)
+    // A checagem de "o dono ainda existe" vive no HOOK de autenticação (vale
+    // para toda rota de sessão, não só para /auth/me), e o hook usa o cliente
+    // do módulo — é ele que o cenário precisa preparar.
+    ;(prisma.user.findUnique as ReturnType<typeof vi.fn>).mockResolvedValue(findUniqueResult)
     app.decorate('prisma', {
-      user: {
-        findUnique: vi.fn().mockResolvedValue(findUniqueResult),
-      },
+      user: { findUnique: vi.fn().mockResolvedValue(findUniqueResult) },
       apiKey: { findMany: vi.fn().mockResolvedValue([]) },
     } as never)
     await app.register(authPlugin)
@@ -60,7 +63,7 @@ describe('/api/v1/auth/me — sessão-zumbi (usuário do cookie não existe no b
       cookies: { gitorch_session: cookieFor('usuario-que-nao-existe') },
     })
     expect(res.statusCode).toBe(401)
-    expect(res.json()).toMatchObject({ error: expect.stringContaining('SESSION_STALE') })
+    expect(res.body).toContain('SESSION_STALE')
     const setCookie = res.headers['set-cookie']
     expect(String(setCookie)).toContain('gitorch_session=')
     expect(String(setCookie)).toMatch(/Expires=Thu, 01 Jan 1970|Max-Age=0/)

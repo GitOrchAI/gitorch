@@ -1,4 +1,5 @@
 import { GithubExecutionError } from './github-backlog.js'
+import { aplicarLabelDoAgente } from './agent-label.js'
 
 // Delegação contínua do SM (F3.6 item 2): a cada wake, encontra as TASKS prontas
 // (label `gitorch:task`, sem `jules`, com todos os "Blocked by" já fechados) e
@@ -15,6 +16,19 @@ export interface SmDelegationOptions {
   delegateLabel?: string
   /** Máximo de delegações por ciclo (fluxo sustentável; padrão 3). */
   cap?: number
+  /**
+   * Aciona o dev assíncrono de verdade e devolve o identificador da sessão.
+   *
+   * Sem isto, delegar era só pendurar o label e esperar que alguém do outro
+   * lado percebesse — se ninguém estivesse escutando, a esteira morria em
+   * silêncio. Devolver `null` é aceitável (recurso desligado, repositório não
+   * conectado, serviço fora): o label continua valendo como plano B.
+   */
+  criarSessaoDev?: (args: {
+    repository: string
+    titulo: string
+    prompt: string
+  }) => Promise<string | null>
   fetchImpl?: typeof fetch
 }
 
@@ -57,12 +71,14 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
   const tasks = (await gh(
     'GET',
     `/repos/${options.repository}/issues?state=open&labels=${encodeURIComponent(TASK_LABEL)}&per_page=100`
-  )) as Array<{ number: number; labels: Array<{ name: string }>; body?: string }>
+  )) as Array<{ number: number; title?: string; labels: Array<{ name: string }>; body?: string }>
   const candidates = (Array.isArray(tasks) ? tasks : []).filter(
     (t) => !t.labels.some((l) => l.name === label)
   )
 
   const delegated: number[] = []
+  // Identificadores das sessões abertas no dev assíncrono, para o watchdog cobrar.
+  const sessoes: string[] = []
   for (const task of candidates) {
     if (delegated.length >= cap) break
     // Pronta = todos os "Blocked by" fechados.
@@ -81,14 +97,57 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
     await gh('POST', `/repos/${options.repository}/issues/${task.number}/labels`, {
       labels: [label],
     })
+
+    // A bola passa do PO/RA para o dev assíncrono: marca a issue como sua e
+    // tira quem estava com ela antes. Best-effort: aplicarLabelDoAgente nunca
+    // lança — a delegação em si já aconteceu acima.
+    await aplicarLabelDoAgente({
+      repository: options.repository,
+      issueNumber: task.number,
+      agente: 'jules',
+      lerLabels: async () => task.labels.map((l) => l.name),
+      adicionarLabel: async (l) => {
+        await gh('POST', `/repos/${options.repository}/issues/${task.number}/labels`, {
+          labels: [l],
+        })
+      },
+      removerLabel: async (l) => {
+        await gh(
+          'DELETE',
+          `/repos/${options.repository}/issues/${task.number}/labels/${encodeURIComponent(l)}`
+        )
+      },
+    })
+
     delegated.push(task.number)
+
+    // O label marca a issue; a sessão é quem efetivamente põe o dev a
+    // trabalhar. Guardamos o identificador na saída da missão para o watchdog
+    // ter o que cobrar depois.
+    if (options.criarSessaoDev) {
+      const sessao = await options.criarSessaoDev({
+        repository: options.repository,
+        titulo: `#${task.number} ${task.title ?? ''}`.trim(),
+        prompt: [
+          `Work on issue #${task.number} of ${options.repository}.`,
+          '',
+          task.body ?? '',
+          '',
+          'Deliver a pull request that closes the issue and satisfies every item',
+          'under "Verification Criteria". Do not change anything outside the scope',
+          'described above.',
+        ].join('\n'),
+      })
+      if (sessao) sessoes.push(`#${task.number}→${sessao}`)
+    }
   }
 
   return {
     exitCode: 0,
     output:
       delegated.length > 0
-        ? `SM delegated ${delegated.length} ready task(s): ${delegated.map((n) => `#${n}`).join(', ')}.`
+        ? `SM delegated ${delegated.length} ready task(s): ${delegated.map((n) => `#${n}`).join(', ')}.` +
+          (sessoes.length > 0 ? ` Dev sessions: ${sessoes.join(', ')}.` : '')
         : 'SM: no newly-ready task to delegate.',
     stderr: '',
     noOp: delegated.length === 0,

@@ -1,4 +1,5 @@
 import { GithubExecutionError } from './github-errors.js'
+import type { CardMover } from './board-status.js'
 
 // SENSOR de incidentes (os "olhos" do GitOrch): coleta erros REAIS do projeto
 // e os transforma em issues `gitorch:incident` — tipo próprio, fora da árvore
@@ -27,6 +28,16 @@ export interface IncidentSensorOptions {
   /** Máximo de incidentes novos por varredura (proteção contra tempestade). */
   cap?: number
   fetchImpl?: typeof fetch
+  /**
+   * Move o card recém-criado para o quadro (issueNumber, coluna) — mesma
+   * injeção que o QA já usa (qa-rails-mission.ts), construída pelo chamador
+   * via createCardMover (board-status.ts) quando o projeto tem board próprio
+   * configurado (Project.runtimeConfig.envConfig.GITORCH_PROJECT_BOARD).
+   * Achado em produção: sem isto a issue de incidente nascia fora do quadro
+   * — best-effort (nunca derruba o incidente já criado, só avisa).
+   */
+  moveCard?: CardMover
+  onWarn?: (message: string) => void
 }
 
 export interface IncidentSensorResult {
@@ -109,16 +120,34 @@ export async function runIncidentSensor(
     return { exitCode: 0, output: 'sensor: no findings.', stderr: '', noOp: true, created: [] }
   }
 
-  // Dedup por fingerprint: UMA busca pelos markers de incidente abertos.
-  const q = encodeURIComponent(`repo:${options.repository} in:body "gitorch:incident:" state:open`)
-  const existing = (await gh('GET', `/search/issues?q=${q}&per_page=100`)) as {
-    items?: Array<{ body?: string }>
-  }
+  // Dedup por fingerprint: lista issues ABERTAS com o label do sensor.
+  //
+  // Achado em produção: a versão anterior usava `GET /search/issues`, cuja
+  // indexação é ASSÍNCRONA — uma issue criada há pouco pode ainda não estar
+  // indexada, então uma varredura seguinte recriaria o MESMO incidente. A
+  // listagem por label é consistente NA HORA (não depende de índice) —
+  // reflete o estado real das issues do repositório. O marcador no corpo
+  // continua o mesmo, então issues já criadas pela versão antiga seguem
+  // reconhecidas.
+  const existing = (await gh(
+    'GET',
+    `/repos/${options.repository}/issues?labels=${encodeURIComponent(INCIDENT_LABEL)}&state=open&per_page=100`
+  )) as Array<{ body?: string }>
   const openMarkers = new Set(
-    (existing.items ?? [])
-      .map((i) => i.body?.match(/<!--\s*(gitorch:incident:[^\s>]+)\s*-->/)?.[1])
+    (Array.isArray(existing) ? existing : [])
+      // Segundo achado, ao vivo (#20 e #25 duplicavam o mesmo incidente "CI
+      // failing on main: Sincronizar Atualizações na Wiki Pública"): o
+      // fingerprint carrega o NOME do workflow, texto livre que quase sempre
+      // tem espaço — `[^\s>]+` parava no primeiro espaço e truncava o
+      // marcador ("...ci:Sincronizar"), então NUNCA batia com o marcador
+      // completo do finding novo e o incidente era recriado em TODA
+      // varredura em que o workflow continuasse falhando. `.+?` (não-guloso)
+      // até o `-->` captura o marcador inteiro, espaços inclusos.
+      .map((i) => i.body?.match(/<!--\s*(gitorch:incident:.+?)\s*-->/)?.[1])
       .filter((m): m is string => Boolean(m))
   )
+
+  const warn = options.onWarn ?? (() => undefined)
 
   const created: number[] = []
   for (const finding of findings) {
@@ -139,7 +168,26 @@ export async function runIncidentSensor(
         '_Aguardando triagem do PO (P0–P3). Este incidente não entra em sprint até o PO liberar._',
       ].join('\n'),
     })) as { number?: number }
-    if (issue.number) created.push(issue.number)
+    if (!issue.number) continue
+    created.push(issue.number)
+
+    // Achado em produção: a issue nascia fora do quadro Projects v2 do
+    // projeto — o sensor criava e parava. Best-effort: falha ao mover NUNCA
+    // desfaz o incidente já registrado (a issue é o que importa; o card no
+    // quadro é acessório).
+    if (options.moveCard) {
+      try {
+        await options.moveCard(issue.number, 'todo')
+      } catch (err) {
+        warn(
+          `incidente #${issue.number} criado mas não entrou no quadro: ${String(err).slice(0, 150)}`
+        )
+      }
+    } else {
+      warn(
+        `incidente #${issue.number} criado sem quadro configurado para ${options.repository}; card fica fora do quadro`
+      )
+    }
   }
 
   return {

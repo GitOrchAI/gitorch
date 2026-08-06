@@ -39,6 +39,7 @@ import { runPoMissionViaRails } from '../services/po-rails-mission.js'
 import { runRaMissionViaRails } from '../services/ra-rails-mission.js'
 import { runQaMissionViaRails } from '../services/qa-rails-mission.js'
 import { runSmDelegation } from '../services/sm-delegation.js'
+import { criarSessaoJules } from '../services/jules-client.js'
 import { runSmWatchdog, buildTelegramNotifier } from '../services/sm-watchdog.js'
 import { resolveNotifyChatId } from '../services/telegram-link.js'
 import { runIncidentSensor } from '../services/incident-sensor.js'
@@ -52,6 +53,7 @@ import {
   ensureAndPersistProjectBoard,
   ensureProjectBoard,
   resolveGithubOwnerId,
+  resolveGithubRepositoryId,
   type ResolvedOwner,
 } from '../services/onboarding-board.js'
 import { ProjectV2Client } from '@gitorch/github-sync'
@@ -671,6 +673,15 @@ export interface ProvisionSetupMissionDeps {
   /** injeção para teste; default: `resolveGithubOwnerId(owner, token)`. */
   resolveOwner?: (owner: string, token: string) => Promise<ResolvedOwner>
   /**
+   * injeção para teste; default: `resolveGithubRepositoryId(repository, token)`.
+   * Liga o board recém-criado ao repositório (achado em produção: sem isto o
+   * board fica pendurado só no dono, nunca aparece na aba /projects do
+   * repositório). Só é usada quando `createProjectV2Client` também não foi
+   * sobrescrito — testes que injetam um client próprio (sem
+   * `linkProjectV2ToRepository`) continuam pulando o passo, como antes.
+   */
+  resolveRepositoryId?: (repository: string, token: string) => Promise<string>
+  /**
    * injeção para teste; default: `mintInstallationToken`. O board é criado
    * com a identidade do PRODUTO (installation token do App), não com o token
    * pessoal do dono: criar board de organização com o token do login
@@ -754,6 +765,21 @@ export async function provisionSetupMission(
           deps.resolveOwner
             ? deps.resolveOwner(owner, boardToken)
             : resolveGithubOwnerId(owner, boardToken),
+        // Só resolve/liga quando há como (deps explícita, ou nenhum client
+        // customizado foi injetado — aí `client` é o ProjectV2Client real, que
+        // TEM linkProjectV2ToRepository). Testes que injetam createProjectV2Client
+        // próprio sem esse método continuam pulando o passo, como sempre.
+        ...(deps.resolveRepositoryId
+          ? {
+              resolveRepositoryId: (repository: string) =>
+                deps.resolveRepositoryId!(repository, boardToken),
+            }
+          : !deps.createProjectV2Client
+            ? {
+                resolveRepositoryId: (repository: string) =>
+                  resolveGithubRepositoryId(repository, boardToken),
+              }
+            : {}),
         ...(existingNumber !== undefined && Number.isFinite(existingNumber)
           ? { existingNumber }
           : {}),
@@ -1202,6 +1228,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             mintInstallationToken,
             createProjectV2Client: (token: string) => new ProjectV2Client({ token }),
             resolveOwner: resolveGithubOwnerId,
+            resolveRepositoryId: resolveGithubRepositoryId,
             onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
           })
           if (railsBoard) {
@@ -1241,6 +1268,18 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           const delegation = await runSmDelegation({
             repository: project.wingId,
             githubToken: railsToken as string,
+            // Delegar de verdade: além do label, abrir a sessão de trabalho no
+            // dev assíncrono. Sem chave configurada, `criarSessaoJules`
+            // devolve null e o label continua sendo o plano B.
+            criarSessaoDev: async ({ repository, titulo, prompt }) =>
+              criarSessaoJules({
+                apiKey: process.env['JULES_API_KEY'],
+                repository,
+                startingBranch: process.env['GITORCH_DEV_BASE_BRANCH'] ?? 'main',
+                titulo,
+                prompt,
+                onWarn: (m) => app.log.warn(m),
+              }),
           })
           // O aviso é do DONO do projeto — a task travada é a dele. Antes, o
           // chat vinha direto do env (GITORCH_TELEGRAM_CHAT_ID): TODO cliente
@@ -1267,12 +1306,30 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           })
           // Sensor de incidentes (os "olhos"): idempotente por fingerprint —
           // rodar a cada wake do SM não duplica nada. Best-effort.
+          //
+          // O incidente entra no quadro do projeto (coluna inicial) quando há
+          // board próprio configurado — mesma injeção `moveCard` que o QA já
+          // usa. `railsBoard` aqui é só o LIDO de runtimeConfig (SM não cria
+          // board; quem cria/recupera é o wake do PO, acima); sem board
+          // configurado o incidente ainda é registrado (comportamento de
+          // hoje), só fica fora do quadro — o sensor avisa via onWarn.
           let sensorOut = ''
           let sensorNoOp = true
           try {
             const sensor = await runIncidentSensor({
               repository: project.wingId,
               githubToken: railsToken as string,
+              ...(railsBoard
+                ? {
+                    moveCard: createCardMover({
+                      repository: project.wingId,
+                      board: railsBoard,
+                      token: railsToken as string,
+                      columns: resolveBoardColumns(project.runtimeConfig),
+                    }),
+                  }
+                : {}),
+              onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
             })
             sensorOut = sensor.output
             sensorNoOp = sensor.noOp === true

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { runPoMissionViaRails } from './po-rails-mission.js'
+import { FREE_TEXT_OPTION_VALUE } from './telegram-bot.js'
 
 const PO_REPLIES: Record<string, string> = {
   phases: '{"phases":[{"title":"Fase 1","goal":"g","rationale":"r"}]}',
@@ -91,6 +92,44 @@ describe('runPoMissionViaRails', () => {
     expect(r.output).toContain('no open wishlist')
   })
 
+  it('sem wish aberta: a pergunta ao dono tem as 3 opções fechadas + a 4ª livre (feedback do dono: "a 4ª resposta tem que ser manual")', async () => {
+    const f = (async () => new Response(JSON.stringify([]), { status: 200 })) as typeof fetch
+    /* eslint-disable @typescript-eslint/no-explicit-any */
+    const askCalls: any[] = []
+    const agentQuestionService = {
+      ask: async (userId: string, projectId: string, input: any) => {
+        askCalls.push({ userId, projectId, input })
+        return { deduped: false, question: { id: 'q_1' } }
+      },
+    }
+
+    const r = await runPoMissionViaRails({
+      repository: 'o/r',
+      board: 'o/9',
+      githubToken: 't',
+      execute: async () => '{}',
+      contextBlocks: [],
+      fetchImpl: f,
+      projectId: 'proj_1',
+      userId: 'user_1',
+      agentQuestionService: agentQuestionService as any,
+    })
+
+    expect(r.exitCode).toBe(0)
+    expect(askCalls).toHaveLength(1)
+    const options = askCalls[0].input.options
+    expect(options).toHaveLength(4)
+    // as 3 fechadas continuam lá, na mesma ordem de sempre.
+    expect(options.slice(0, 3).map((o: any) => o.value)).toEqual([
+      'wishlist-mvp-features',
+      'wishlist-technical-health',
+      'wishlist-ui-design',
+    ])
+    // a 4ª é o escape hatch de texto livre — nunca um 4º valor fechado.
+    expect(options[3].value).toBe(FREE_TEXT_OPTION_VALUE)
+    expect(options[3].label).toContain('Outro')
+  })
+
   it('tria incidente sem prioridade: label P0 + comentário + liberado ganha gitorch:task e milestone', async () => {
     const actions: Array<{ method: string; url: string; body?: unknown }> = []
     const f = (async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
@@ -165,6 +204,56 @@ describe('runPoMissionViaRails', () => {
     const labelPost = actions.find((a) => a.url.includes('/issues/61/labels'))
     expect(labelPost?.body).toEqual({ labels: ['P3'] })
     expect(actions.some((a) => a.url.includes('/milestones'))).toBe(false)
+  })
+
+  it('PO ao triar incidente marca a issue como sua (gitorch:agent:po) e tira o agente anterior', async () => {
+    const actions: Array<{ method: string; url: string; body?: unknown }> = []
+    const f = (async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const u = String(url)
+      const method = init?.method ?? 'GET'
+      const json = (d: unknown) => new Response(JSON.stringify(d), { status: 200 })
+      if (method !== 'GET') {
+        actions.push({ method, url: u, body: init?.body ? JSON.parse(String(init.body)) : {} })
+      }
+      if (u.includes('/search/issues') && u.includes('gitorch%3Aincident')) {
+        return json({
+          items: [
+            {
+              number: 62,
+              title: '[Incident] x',
+              body: 'y',
+              // RA já tinha passado pela issue antes do PO assumir a triagem.
+              labels: [{ name: 'gitorch:incident' }, { name: 'gitorch:agent:ra' }],
+            },
+          ],
+        })
+      }
+      if (u.includes('/issues?labels=wishlist')) return json([])
+      return json({})
+    }) as typeof fetch
+
+    await runPoMissionViaRails({
+      repository: 'o/r',
+      board: 'o/9',
+      githubToken: 't',
+      contextBlocks: [],
+      fetchImpl: f,
+      execute: async () =>
+        JSON.stringify({ priority: 'P2', rationale: 'triagem normal', releaseNow: false }),
+    })
+
+    const agentLabelPost = actions.find(
+      (a) =>
+        a.method === 'POST' &&
+        a.url.includes('/issues/62/labels') &&
+        JSON.stringify(a.body).includes('gitorch:agent:po')
+    )
+    expect(agentLabelPost).toBeDefined()
+
+    const removal = actions.find(
+      (a) => a.method === 'DELETE' && a.url.includes('/issues/62/labels/')
+    )
+    expect(removal?.url).toContain(encodeURIComponent('gitorch:agent:ra'))
   })
 
   it('com wish: roda os 5 passos e aplica a árvore (resumo no output)', async () => {

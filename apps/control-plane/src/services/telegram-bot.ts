@@ -33,12 +33,20 @@ export interface TelegramUpdate {
     chat?: { id?: number | string }
     text?: string
     from?: { language_code?: string }
+    /**
+     * Presente quando a mensagem é um REPLY (o dono tocou em "Responder" em
+     * cima da pergunta) — é o que permite casar texto livre com a
+     * `AgentQuestion` original sem precisar de webhook nem de estado extra em
+     * memória (ver `handleTelegramQuestionReply`).
+     */
+    reply_to_message?: { message_id?: number }
   }
   /** Clique num botão inline (ver `sendTelegramQuestion`/`handleTelegramCallback`). */
   callback_query?: {
     id: string
     from?: { id?: number | string }
-    message?: { message_id?: number }
+    /** A mensagem QUE TINHA o teclado — é dela que colapsamos os botões. */
+    message?: { message_id?: number; chat?: { id?: number | string } }
     /** Formato esperado: `q:<questionId>:<optionIndex>` — ver `parseQuestionCallbackData`. */
     data?: string
   }
@@ -139,6 +147,28 @@ export interface TelegramQuestionOption {
   value: string
 }
 
+/**
+ * Sentinel do `value` da opção "responda por texto" (feedback do dono: as 3
+ * opções fechadas não bastam — "a 4ª resposta tem que ser manual"). NUNCA é
+ * gravado como resposta de verdade — é só o marcador que `handleTelegramCallback`
+ * reconhece pra instruir em vez de responder (ver ali). Qualquer chamador (hoje
+ * `po-rails-mission.ts`, amanhã outro agente) usa `buildFreeTextOption()` em vez
+ * de reinventar o valor.
+ */
+export const FREE_TEXT_OPTION_VALUE = '__gitorch_free_text__'
+
+/**
+ * A 4ª opção "escape hatch": quando nenhuma das opções fechadas serve, o dono
+ * clica aqui e é instruído a responder (reply) à própria mensagem da pergunta
+ * com texto livre — `handleTelegramQuestionReply` casa essa resposta com a
+ * pergunta original via `message.reply_to_message`.
+ */
+export function buildFreeTextOption(
+  label = '✍️ Outro (respondo por texto)'
+): TelegramQuestionOption {
+  return { label, value: FREE_TEXT_OPTION_VALUE }
+}
+
 // Labels curtos (ex.: nomes de cores/hex) cabem 2 por linha sem virar
 // ilegível no celular; labels longos (frases) vão 1 por linha. Decisão
 // simples de propósito — não é um layout engine.
@@ -211,6 +241,8 @@ export async function answerTelegramCallback(input: {
   botToken: string
   callbackQueryId: string
   text?: string
+  /** true = popup modal (o dono PRECISA ler e fechar) em vez do toast que some sozinho. */
+  showAlert?: boolean
   fetchImpl?: typeof fetch
 }): Promise<boolean> {
   const f = input.fetchImpl ?? fetch
@@ -221,12 +253,66 @@ export async function answerTelegramCallback(input: {
       body: JSON.stringify({
         callback_query_id: input.callbackQueryId,
         ...(input.text !== undefined ? { text: input.text } : {}),
+        ...(input.showAlert ? { show_alert: true } : {}),
       }),
     })
     return resp.ok
   } catch {
     return false
   }
+}
+
+/**
+ * Colapsa a pergunta já respondida: reescreve o texto com o que foi
+ * escolhido e ZERA o teclado (`inline_keyboard: []`). É a correção do
+ * feedback do dono — "os botões não somem depois da escolha" — espelhando o
+ * comportamento do AskUserQuestion do Claude Code (a pergunta colapsa e
+ * mostra a resposta escolhida). Best-effort por contrato, como todo o resto
+ * deste arquivo: uma edição que falha (ex.: mensagem já editada com o MESMO
+ * conteúdo — o Telegram devolve 400 "message is not modified") nunca pode
+ * quebrar a esteira. `answer()` já é a fonte de verdade; isto é só o espelho
+ * visual dela.
+ */
+export async function collapseTelegramQuestion(input: {
+  botToken: string
+  chatId: string
+  messageId: number
+  questionText: string
+  chosenLabel: string
+  fetchImpl?: typeof fetch
+}): Promise<boolean> {
+  const f = input.fetchImpl ?? fetch
+  try {
+    const resp = await f(`${API}/bot${input.botToken}/editMessageText`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: input.chatId,
+        message_id: input.messageId,
+        text: `${input.questionText}\n\n✓ Você escolheu: ${input.chosenLabel}`,
+        reply_markup: { inline_keyboard: [] },
+      }),
+    })
+    return resp.ok
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Acha o rótulo a mostrar no colapso pra um `answer` já gravado. Se o valor
+ * bate com uma das opções fechadas, usa o label bonito dela; senão (resposta
+ * em texto livre, ou uma resposta que veio pelo painel) mostra o texto puro —
+ * sempre a VERDADE gravada, nunca o que foi clicado agora (ver o contrato de
+ * idempotência de `AgentQuestionService.answer`).
+ */
+function resolveAnswerLabel(
+  options: TelegramQuestionOption[],
+  answerValue: string | null | undefined
+): string {
+  if (!answerValue) return ''
+  const match = options.find((o) => o.value === answerValue)
+  return match ? match.label : answerValue
 }
 
 export interface ParsedQuestionCallback {
@@ -257,6 +343,12 @@ export interface TelegramCallbackDeps {
   fetchImpl?: typeof fetch
 }
 
+// O que mostrar quando o dono clica em "✍️ Outro" (ver FREE_TEXT_OPTION_VALUE).
+// show_alert:true — é uma instrução de ação, precisa ser lida, não um toast
+// que some sozinho.
+const FREE_TEXT_HINT =
+  '✍️ Toque em "Responder" nesta mensagem e digite sua resposta em texto livre.'
+
 /**
  * Roteia UM clique de botão (`callback_query`) pra resposta da `AgentQuestion`
  * correspondente. GUARD anti cross-tenant: só o chat vinculado ao DONO da
@@ -264,6 +356,16 @@ export interface TelegramCallbackDeps {
  * clique de outro chat é IGNORADO em silêncio (nem responde, nem processa,
  * nem revela nada sobre a dúvida). `answer()` já é idempotente do lado do
  * serviço, então um clique repetido (Telegram reentrega updates) é inofensivo.
+ *
+ * A opção "✍️ Outro" (`FREE_TEXT_OPTION_VALUE`) é tratada à parte: não é uma
+ * resposta, é um PEDIDO de instrução — não grava nada, não colapsa, só avisa
+ * como responder em texto (ver `handleTelegramQuestionReply`, que trata a
+ * resposta em si).
+ *
+ * Depois de gravar a resposta de verdade, COLAPSA a mensagem (feedback do
+ * dono: "os botões não somem depois da escolha") — reescreve o texto com o
+ * que foi escolhido e zera o teclado, best-effort (nunca lança se a edição
+ * falhar; `answer()` continua sendo a fonte de verdade).
  */
 export async function handleTelegramCallback(
   deps: TelegramCallbackDeps,
@@ -294,13 +396,113 @@ export async function handleTelegramCallback(
     return
   }
 
-  await deps.agentQuestionService.answer(parsed.questionId, option.value, 'telegram')
+  if (option.value === FREE_TEXT_OPTION_VALUE) {
+    await answerTelegramCallback({
+      botToken: deps.botToken,
+      callbackQueryId: cq.id,
+      text: FREE_TEXT_HINT,
+      showAlert: true,
+      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    })
+    return
+  }
+
+  const updated = await deps.agentQuestionService.answer(
+    parsed.questionId,
+    option.value,
+    'telegram'
+  )
   await answerTelegramCallback({
     botToken: deps.botToken,
     callbackQueryId: cq.id,
     text: '✓ registrado',
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
   })
+
+  // A mensagem com o teclado é a MESMA que recebeu o clique — `cq.message` é
+  // mais confiável que `telegramMessageId` do banco (que só existe se o
+  // notify original conseguiu gravar); cai pro banco só se faltar no update.
+  const messageId = cq.message?.message_id ?? question.telegramMessageId ?? undefined
+  if (updated && messageId !== undefined && messageId !== null) {
+    await collapseTelegramQuestion({
+      botToken: deps.botToken,
+      chatId: clickerChatId,
+      messageId,
+      questionText: question.text,
+      chosenLabel: resolveAnswerLabel(options, updated.answer),
+      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    })
+  }
+}
+
+/**
+ * Trata uma resposta em TEXTO LIVRE — o dono responde (reply) direto à
+ * mensagem da pergunta no Telegram, em vez de clicar num botão (a opção
+ * "✍️ Outro" existe pra guiar esse gesto, mas nada impede o dono de simplesmente
+ * responder sem clicar nela). O Telegram entrega o vínculo em
+ * `message.reply_to_message.message_id`, que casamos com o
+ * `AgentQuestion.telegramMessageId` gravado no envio (`sendTelegramQuestion` /
+ * `notifyOwner` em plugins/telegram.ts).
+ *
+ * Por que reply e não outro mecanismo: `getUpdates` (long-polling, ver o
+ * cabeçalho do arquivo) não guarda estado de conversa — não há "sessão"
+ * esperando a próxima mensagem do chat. `reply_to_message` é o único sinal que
+ * o PRÓPRIO Telegram fornece pra amarrar uma mensagem solta a uma pergunta
+ * específica, sem inventar estado extra (nem em memória, que morre no
+ * restart, nem em banco). Mesmo GUARD anti cross-tenant de
+ * `handleTelegramCallback`: só o chat vinculado ao DONO da pergunta responde.
+ *
+ * Devolve `true` quando tratou o reply (mesmo quando ignora por guard —
+ * "tratou" aqui significa "reconheceu que ISTO É um reply", não "gravou uma
+ * resposta"); `false` quando não é resposta a pergunta nenhuma — aí quem
+ * chama segue pro fluxo normal de mensagem (`handleTelegramUpdate`, ex.: um
+ * `/start` solto nunca é também um reply).
+ */
+export async function handleTelegramQuestionReply(
+  deps: TelegramCallbackDeps,
+  update: TelegramUpdate
+): Promise<boolean> {
+  const message = update.message
+  if (!message) return false
+
+  const replyToId = message.reply_to_message?.message_id
+  if (replyToId === undefined || replyToId === null) return false
+
+  const text = message.text?.trim()
+  if (!text) return false
+
+  const rawChatId = message.chat?.id
+  if (rawChatId === undefined || rawChatId === null) return false
+  const chatId = String(rawChatId)
+
+  // 1º: QUEM é este chat (via TelegramLink) — nunca o contrário (achar a
+  // AgentQuestion primeiro por telegramMessageId sozinho seria ambíguo: o
+  // Telegram numera message_id POR CHAT, então o mesmo número pode existir em
+  // conversas de donos diferentes).
+  const link = await deps.prisma.telegramLink.findFirst({ where: { chatId, status: 'linked' } })
+  if (!link) return false
+
+  const question = await deps.prisma.agentQuestion.findFirst({
+    where: { userId: link.userId, telegramMessageId: replyToId },
+  })
+  if (!question) return false // reply a uma mensagem que não é pergunta nossa
+
+  const updated = await deps.agentQuestionService.answer(question.id, text, 'telegram')
+  if (!updated) return true // pergunta sumiu entre o findFirst e o answer (corrida rara); nada a colapsar
+
+  const options = Array.isArray(question.options)
+    ? (question.options as unknown as TelegramQuestionOption[])
+    : []
+  const messageId = question.telegramMessageId ?? replyToId
+  await collapseTelegramQuestion({
+    botToken: deps.botToken,
+    chatId,
+    messageId,
+    questionText: question.text,
+    chosenLabel: resolveAnswerLabel(options, updated.answer),
+    ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+  })
+  return true
 }
 
 type BotLocale = 'pt' | 'es' | 'en'

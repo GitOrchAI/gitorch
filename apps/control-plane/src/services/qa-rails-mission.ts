@@ -8,6 +8,7 @@ import {
 } from '@gitorch/cadence'
 import { runFormStep } from './rails-runner.js'
 import { GithubExecutionError } from './github-errors.js'
+import { aplicarLabelDoAgente } from './agent-label.js'
 import type { CardMover } from './board-status.js'
 
 // Missão do QA nos TRILHOS (F3.6): acha a PR do Jules que precisa de julgamento,
@@ -180,10 +181,15 @@ export async function runQaMissionViaRails(
   }
   const linkedIssue = (pr.body ?? '').match(/\b(?:closes|fixes|resolves)\s+#(\d+)/i)?.[1]
   let criteria = '(no linked issue / Verification Criteria not found)'
+  let linkedIssueLabels: string[] = []
   if (linkedIssue) {
     const issue = (await gh('GET', `/repos/${options.repository}/issues/${linkedIssue}`)) as {
       body?: string
+      labels?: Array<{ name?: string }>
     }
+    linkedIssueLabels = (issue.labels ?? [])
+      .map((l) => l.name)
+      .filter((name): name is string => Boolean(name))
     const found = (issue.body ?? '').match(
       /##\s*Verification Criteria\s*\n+([\s\S]*?)(?:\n##\s|$)/i
     )
@@ -237,26 +243,77 @@ export async function runQaMissionViaRails(
   // conta do dono da instalação, que é a mesma do token. Nesse caso o
   // veredito sai como review COMMENT (permitido), com o resultado explícito
   // no texto; o marker continua valendo para o skip de re-julgamento.
-  const viewer = (await gh('GET', '/user')) as { login?: string }
-  const selfPr = (viewer.login ?? '').toLowerCase() === (target.user?.login ?? '').toLowerCase()
-  const reviewEvent = selfPr
-    ? 'COMMENT'
-    : effectiveVerdict === 'approve'
-      ? 'APPROVE'
-      : 'REQUEST_CHANGES'
+  // Antes daqui havia um `GET /user` para saber se o PR era do próprio ator —
+  // o GitHub recusa (422) que alguém revise a própria PR. Só que a identidade
+  // do GitOrch é a de um APLICATIVO, e aplicativo não é uma pessoa: `/user`
+  // responde 403 "Resource not accessible by integration" SEMPRE, e a missão
+  // do QA morria antes de postar qualquer veredito.
+  //
+  // Quem responde essa pergunta melhor que nós é o próprio GitHub: tenta com
+  // força total e, se vier o 422, reposta como comentário — que é sempre
+  // permitido. O veredito sai nos dois casos; o marcador continua valendo para
+  // não re-julgar o mesmo estado.
+  const reviewEvent = effectiveVerdict === 'approve' ? 'APPROVE' : 'REQUEST_CHANGES'
+
+  const postarReview = async (evento: string, corpo: string): Promise<boolean> => {
+    try {
+      await gh('POST', `/repos/${options.repository}/pulls/${target.number}/reviews`, {
+        event: evento,
+        body: corpo,
+      })
+      return false
+    } catch (err) {
+      const recusouProprioPr =
+        err instanceof GithubExecutionError &&
+        err.message.includes('(422)') &&
+        /own pull request/i.test(err.message)
+      if (!recusouProprioPr) throw err
+      await gh('POST', `/repos/${options.repository}/pulls/${target.number}/reviews`, {
+        event: 'COMMENT',
+        body: `${corpo}\n\n_(publicado como comentário: o autor da PR é a própria identidade do GitOrch)_`,
+      })
+      return true
+    }
+  }
 
   if (effectiveVerdict === 'approve') {
-    await gh('POST', `/repos/${options.repository}/pulls/${target.number}/reviews`, {
-      event: reviewEvent,
-      body: `${JULES_MARKER}\nGitOrch QA verdict: APPROVE — criteria met, CI green.${selfPr ? ' (posted as comment: token owner is the PR author)' : ''}\n\n${verdict.comment.goal}`,
-    })
+    // Caminho resiliente (o GitHub decide se pode aprovar) + o campo do padrão
+    // Shrimp: o resumo do veredito é o Goal.
+    await postarReview(
+      reviewEvent,
+      `${JULES_MARKER}\nGitOrch QA verdict: APPROVE — criteria met, CI green.\n\n${verdict.comment.goal}`
+    )
   } else {
-    await gh('POST', `/repos/${options.repository}/pulls/${target.number}/reviews`, {
-      event: reviewEvent,
-      body: `${JULES_MARKER}\nGitOrch QA verdict: REQUEST CHANGES (see comment).${selfPr ? ' (posted as comment: token owner is the PR author)' : ''}`,
-    })
+    await postarReview(
+      reviewEvent,
+      `${JULES_MARKER}\nGitOrch QA verdict: REQUEST CHANGES (see comment).`
+    )
     await gh('POST', `/repos/${options.repository}/issues/${target.number}/comments`, {
       body: buildJulesReworkComment(verdict.comment),
+    })
+  }
+
+  // 4b) O QA acabou de julgar: marca a issue VINCULADA (não a PR) como sua,
+  // tirando quem estava com ela antes (ex.: gitorch:agent:jules, o dev
+  // assíncrono que abriu o PR). Best-effort: aplicarLabelDoAgente nunca lança
+  // — o veredito já foi postado acima, isso é só sinalização.
+  if (linkedIssue) {
+    await aplicarLabelDoAgente({
+      repository: options.repository,
+      issueNumber: Number(linkedIssue),
+      agente: 'qa',
+      lerLabels: async () => linkedIssueLabels,
+      adicionarLabel: async (l) => {
+        await gh('POST', `/repos/${options.repository}/issues/${linkedIssue}/labels`, {
+          labels: [l],
+        })
+      },
+      removerLabel: async (l) => {
+        await gh(
+          'DELETE',
+          `/repos/${options.repository}/issues/${linkedIssue}/labels/${encodeURIComponent(l)}`
+        )
+      },
     })
   }
 
