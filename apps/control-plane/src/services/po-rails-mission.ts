@@ -17,7 +17,7 @@ import type { AgentQuestionService } from './agent-question.js'
 
 export interface PoRailsMissionOptions {
   repository: string
-  /** ex.: "loureng/9" — dono e número do Projects v2 (env na F3.5; banco na F4). */
+  /** ex.: "dono/9" — dono e número do Projects v2 (env na F3.5; banco na F4). */
   board: string
   githubToken: string
   execute: StepExecutor
