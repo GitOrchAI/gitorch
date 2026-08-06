@@ -15,6 +15,7 @@ interface FakeIssue {
   labels: string[]
   body: string
   state?: string
+  title?: string
 }
 
 function fakeFetch(issues: FakeIssue[], closed: number[] = []) {
@@ -30,6 +31,7 @@ function fakeFetch(issues: FakeIssue[], closed: number[] = []) {
       return json(
         issues.map((i) => ({
           number: i.number,
+          title: i.title,
           labels: i.labels.map((n) => ({ name: n })),
           body: i.body,
         }))
@@ -92,5 +94,59 @@ describe('runSmDelegation', () => {
     const labeled = (f as unknown as { labeled: Array<{ number: number }> }).labeled
     await runSmDelegation({ repository: 'o/r', githubToken: 't', cap: 2, fetchImpl: f })
     expect(labeled).toHaveLength(2)
+  })
+})
+
+// Desejo do dono: delegar tem de ACIONAR o dev assíncrono. Antes disto o SM
+// aplicava o label e terminava — e, se ninguém estivesse escutando, a esteira
+// morria ali em silêncio (medido: uma task P0 delegada, treze missões depois,
+// nenhum PR). Agora a delegação cria uma sessão de trabalho com identificador,
+// que o SM registra na saída para poder ser cobrada.
+describe('runSmDelegation: aciona o dev assíncrono', () => {
+  // fábrica, não constante: o fetch falso MUTA os labels da issue ao delegar —
+  // compartilhar o objeto faria o segundo teste ver a task já delegada.
+  const taskPronta = (): FakeIssue => ({
+    number: 42,
+    title: 'Corrigir emissão de token',
+    labels: ['gitorch:task'],
+    body: 'sem bloqueio',
+  })
+
+  it('ao delegar, cria a sessão do dev com o repositório e o número da task', async () => {
+    const impl = fakeFetch([taskPronta()])
+    const pedidos: Array<{ repository: string; titulo: string; prompt: string }> = []
+
+    const r = await runSmDelegation({
+      repository: 'GitOrchAI/gitorch',
+      githubToken: 't',
+      fetchImpl: impl,
+      criarSessaoDev: async (args) => {
+        pedidos.push(args)
+        return 'sessions/xyz'
+      },
+    })
+
+    expect(r.delegated).toEqual([42])
+    expect(pedidos).toHaveLength(1)
+    expect(pedidos[0]!.repository).toBe('GitOrchAI/gitorch')
+    expect(pedidos[0]!.prompt).toContain('#42')
+    expect(r.output).toContain('sessions/xyz')
+  })
+
+  it('dev assíncrono indisponível: a delegação continua valendo (label aplicado)', async () => {
+    const impl = fakeFetch([taskPronta()])
+    const labeled = (impl as unknown as { labeled: Array<{ number: number; labels: string[] }> })
+      .labeled
+
+    const r = await runSmDelegation({
+      repository: 'GitOrchAI/gitorch',
+      githubToken: 't',
+      fetchImpl: impl,
+      criarSessaoDev: async () => null,
+    })
+
+    expect(r.delegated).toEqual([42])
+    expect(labeled.some((l) => l.labels.includes('jules'))).toBe(true)
+    expect(r.output).toContain('#42')
   })
 })
