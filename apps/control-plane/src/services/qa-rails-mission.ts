@@ -45,15 +45,17 @@ export interface QaRailsMissionResult {
 
 /** Comentário de rework estruturado (8 campos) mencionando @jules. */
 export function buildJulesReworkComment(comment: QaVerdictForm['comment']): string {
+  // Mesmo contrato da issue (padrão Shrimp): o rework que o QA devolve tem de
+  // ser lido com a mesma régua com que a task foi escrita.
   const map: Record<string, string> = {
-    Título: comment.titulo,
-    Description: comment.description,
-    Notes: comment.notes,
+    Goal: comment.goal,
+    'Task Details': comment.taskDetails,
+    'Task Description': comment.taskDescription,
     'Implementation Guide': comment.implementationGuide,
     'Verification Criteria': comment.verificationCriteria,
-    Summary: comment.summary,
-    'Analysis Result': comment.analysisResult,
+    Dependencies: comment.dependencies,
     'Related Files': comment.relatedFiles,
+    Notes: comment.notes,
   }
   const sections = ISSUE_DOD_FIELDS.map((h) => `## ${h}\n\n${map[h] ?? ''}`)
   return [
@@ -246,7 +248,7 @@ export async function runQaMissionViaRails(
   if (effectiveVerdict === 'approve') {
     await gh('POST', `/repos/${options.repository}/pulls/${target.number}/reviews`, {
       event: reviewEvent,
-      body: `${JULES_MARKER}\nGitOrch QA verdict: APPROVE — criteria met, CI green.${selfPr ? ' (posted as comment: token owner is the PR author)' : ''}\n\n${verdict.comment.summary}`,
+      body: `${JULES_MARKER}\nGitOrch QA verdict: APPROVE — criteria met, CI green.${selfPr ? ' (posted as comment: token owner is the PR author)' : ''}\n\n${verdict.comment.goal}`,
     })
   } else {
     await gh('POST', `/repos/${options.repository}/pulls/${target.number}/reviews`, {

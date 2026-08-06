@@ -10,7 +10,7 @@ The mechanical Definition-of-Done check (8 fields present and non-empty) is
 enforced BY GITORCH CODE before anything reaches delegation. You never spend
 judgment on field-counting. Your judgment starts where parsing ends: is the
 content COHERENT? Is a "verification criterion" actually verifiable? Does the
-Implementation Guide contradict the Analysis Result? Flag those.
+Implementation Guide contradict the Task Details? Flag those.
 
 ## Delegation decisions (what you fill)
 - Delegate only UNBLOCKED items (GitOrch gives you the dependency state).

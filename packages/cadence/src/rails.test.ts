@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  DOD_FIELD_MAP,
   RAILS_SCHEMAS,
   buildStepPrompt,
   validateDoD,
@@ -52,13 +53,14 @@ describe('validateForm (validador minimal por schema)', () => {
       verdict: 'maybe',
       comment: {
         titulo: 'x',
-        description: 'x',
-        notes: 'x',
+        goal: 'x',
+        taskDetails: 'x',
+        taskDescription: 'x',
         implementationGuide: 'x',
         verificationCriteria: 'x',
-        summary: 'x',
-        analysisResult: 'x',
+        dependencies: 'x',
         relatedFiles: 'x',
+        notes: 'x',
       },
     })
     expect(r.ok).toBe(false)
@@ -69,13 +71,14 @@ describe('validateForm (validador minimal por schema)', () => {
 describe('validateDoD (código puro, 8 campos)', () => {
   const good = {
     titulo: '[Task] Adicionar coluna material',
-    description: 'Adicionar coluna material na tabela products.',
-    notes: 'Enum inicial: PLA, PETG, ABS.',
+    goal: 'Filtrar produtos por material sem depender de texto livre.',
+    taskDetails: 'Hoje material é extraído por regex na descrição (frágil).',
+    taskDescription: 'Adicionar coluna material na tabela products e expor no filtro.',
     implementationGuide: '1. migration; 2. backfill; 3. expor na API.',
     verificationCriteria: '- GET /products?material=PLA retorna só PLA.',
-    summary: 'Coluna estruturada de material.',
-    analysisResult: 'Hoje material é regex na descrição (frágil).',
+    dependencies: 'Nenhuma.',
     relatedFiles: 'schema_tables.sql, src/pages/Products.tsx',
+    notes: 'Enum inicial: PLA, PETG, ABS.',
   }
 
   it('aceita item completo', () => {
@@ -113,17 +116,68 @@ describe('tipos utilizáveis', () => {
           featureIndex: 0,
           fields: {
             titulo: 't',
-            description: 'd',
-            notes: 'n',
+            goal: 'g',
+            taskDetails: 'td',
+            taskDescription: 'd',
             implementationGuide: 'i',
             verificationCriteria: 'v',
-            summary: 's',
-            analysisResult: 'a',
+            dependencies: 'nenhuma',
             relatedFiles: 'r',
+            notes: 'n',
           },
         },
       ],
     }
     expect(form.tasks[0].featureIndex).toBe(0)
+  })
+})
+
+// Decisão do dono (registrada no gate do onboarding): o padrão OFICIAL de
+// issue é o Shrimp, o mesmo que a documentação do RA e do SM já exigiam —
+// Goal, Task Details, Task Description, Implementation Guide, Verification
+// Criteria, Dependencies, Related Files, Notes.
+//
+// O código rodava outro contrato (Description/Summary/Analysis Result), o que
+// deixava a issue publicada diferente do que a documentação mandava conferir:
+// o SM sinalizaria como fora do padrão issues criadas pelo próprio produto.
+describe('padrão Shrimp: contrato oficial da issue', () => {
+  it('os cabeçalhos são exatamente os 8 do padrão, na ordem documentada', () => {
+    expect(DOD_FIELD_MAP.map((f) => f.header)).toEqual([
+      'Goal',
+      'Task Details',
+      'Task Description',
+      'Implementation Guide',
+      'Verification Criteria',
+      'Dependencies',
+      'Related Files',
+      'Notes',
+    ])
+  })
+
+  it('não sobrou nenhum campo do contrato antigo', () => {
+    const headers = DOD_FIELD_MAP.map((f) => f.header)
+    expect(headers).not.toContain('Summary')
+    expect(headers).not.toContain('Analysis Result')
+    expect(headers).not.toContain('Description')
+  })
+
+  it('exige todos os campos do padrão preenchidos', () => {
+    const completo = {
+      titulo: 'Corrigir emissão de token',
+      goal: 'Garantir que o token emitido alcance o repositório do projeto.',
+      taskDetails: 'O emissor escolhe a instalação errada quando há mais de uma.',
+      taskDescription: 'Resolver a instalação pelo repositório e cachear por repositório.',
+      implementationGuide: '1. Ler o repositório\n2. Resolver a instalação\n3. Cachear',
+      verificationCriteria: '- Token emitido alcança o repositório\n- Sem instalação, avisa',
+      dependencies: 'Nenhuma',
+      relatedFiles: 'apps/control-plane/src/services/github-app-token.ts',
+      notes: 'Reinstalar o App troca o id da instalação.',
+    }
+    expect(validateDoD(completo).ok).toBe(true)
+
+    const semGoal = { ...completo, goal: '   ' }
+    const r = validateDoD(semGoal)
+    expect(r.ok).toBe(false)
+    expect(r.errors.join(' ')).toContain('goal')
   })
 })
