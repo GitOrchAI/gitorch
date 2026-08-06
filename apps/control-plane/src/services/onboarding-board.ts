@@ -119,3 +119,83 @@ export async function resolveGithubOwnerId(
     `nao foi possivel resolver o dono '${owner}' no GitHub (HTTP ${userRes.status} em /users, ${orgRes.status} em /orgs)`
   )
 }
+
+export interface ProjectComBoard {
+  id: string
+  wingId: string
+  runtimeConfig?: unknown
+}
+
+export interface EnsureAndPersistDeps {
+  project: ProjectComBoard
+  prisma: { project: { update: (args: unknown) => Promise<unknown> } }
+  /** Emissor do installation token do App — a identidade do produto. */
+  mintInstallationToken: (args: {
+    repository: string
+    onWarn?: (message: string) => void
+    onError?: (message: string) => void
+  }) => Promise<string | null>
+  createProjectV2Client: (
+    token: string
+  ) => Pick<ProjectV2Client, 'findProjectId' | 'createProjectV2'>
+  resolveOwner: (owner: string, token: string) => Promise<ResolvedOwner>
+  onWarn?: (message: string) => void
+}
+
+/** Lê o board já gravado no projeto, no formato "dono/numero". */
+export function boardGravado(project: ProjectComBoard): string | undefined {
+  const envConfig = (project.runtimeConfig as Record<string, unknown> | null)?.['envConfig'] as
+    Record<string, unknown> | undefined
+  const valor = envConfig?.['GITORCH_PROJECT_BOARD']
+  return typeof valor === 'string' && valor.length > 0 ? valor : undefined
+}
+
+/**
+ * Garante o quadro do projeto e PERSISTE o resultado — pode ser chamada
+ * quantas vezes for preciso.
+ *
+ * Existe porque o quadro era tentado uma única vez, no registro do projeto. Se
+ * naquele instante o App ainda não estava instalado no dono do repositório, a
+ * criação falhava e o projeto ficava sem quadro para sempre: os trilhos do PO
+ * ficam desligados sem quadro, então nenhuma issue jamais seria criada, mesmo
+ * depois de instalar o App. Chamando isto quando o PO acorda, a esteira se
+ * recupera sozinha em vez de exigir um novo registro do projeto.
+ *
+ * NUNCA lança: sem token (App não instalado) devolve `undefined` com aviso.
+ */
+export async function ensureAndPersistProjectBoard(
+  deps: EnsureAndPersistDeps
+): Promise<string | undefined> {
+  const jaGravado = boardGravado(deps.project)
+  if (jaGravado) return jaGravado
+
+  const warn = deps.onWarn ?? (() => undefined)
+  const token = await deps.mintInstallationToken({
+    repository: deps.project.wingId,
+    onWarn: warn,
+    onError: warn,
+  })
+  if (!token) return undefined
+
+  const board = await ensureProjectBoard({
+    repository: deps.project.wingId,
+    client: deps.createProjectV2Client(token),
+    resolveOwner: (owner) => deps.resolveOwner(owner, token),
+    onWarn: warn,
+  })
+  if (!board) return undefined
+
+  const valor = `${board.owner}/${board.number}`
+  const runtimeConfig = (deps.project.runtimeConfig as Record<string, unknown> | null) ?? {}
+  const envConfig = (runtimeConfig['envConfig'] as Record<string, unknown> | undefined) ?? {}
+  await deps.prisma.project.update({
+    where: { id: deps.project.id },
+    data: {
+      runtimeConfig: {
+        ...runtimeConfig,
+        envConfig: { ...envConfig, GITORCH_PROJECT_BOARD: valor },
+      },
+    },
+  })
+  return valor
+}

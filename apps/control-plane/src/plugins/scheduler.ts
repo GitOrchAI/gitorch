@@ -49,6 +49,7 @@ import {
   createCardMover,
 } from '../services/board-status.js'
 import {
+  ensureAndPersistProjectBoard,
   ensureProjectBoard,
   resolveGithubOwnerId,
   type ResolvedOwner,
@@ -1183,11 +1184,35 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         // multi-tenant que esta task dizia matar. Sem board PRÓPRIO, os
         // trilhos do PO ficam desligados para o projeto (log honesto abaixo)
         // — o roadmap ainda sai na memória, só o quadro que falta.
-        const railsBoard = resolveRailsBoard(project)
+        // O quadro era tentado UMA vez, no registro do projeto. Se naquele
+        // instante o App ainda não estava instalado no dono do repositório, a
+        // criação falhava e o projeto ficava sem quadro para sempre — e sem
+        // quadro o PO nunca cria issue, mesmo depois de instalar o App. Aqui
+        // a esteira se recupera sozinha: o PO tenta garantir o quadro toda vez
+        // que acorda, sem exigir um novo registro do projeto.
+        let railsBoard = resolveRailsBoard(project)
         if (role === 'po' && !railsBoard) {
-          app.log.warn(
-            `[Scheduler] PO sem board próprio para ${project.wingId}; trilhos do PO desligados (nunca cai no board global de outro projeto)`
-          )
+          railsBoard = await ensureAndPersistProjectBoard({
+            project: {
+              id: project.id,
+              wingId: project.wingId,
+              runtimeConfig: project.runtimeConfig,
+            },
+            prisma: app.prisma as never,
+            mintInstallationToken,
+            createProjectV2Client: (token: string) => new ProjectV2Client({ token }),
+            resolveOwner: resolveGithubOwnerId,
+            onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+          })
+          if (railsBoard) {
+            app.log.info(
+              `[Scheduler] Quadro do projeto ${project.wingId} criado no wake do PO: ${railsBoard}`
+            )
+          } else {
+            app.log.warn(
+              `[Scheduler] PO sem board próprio para ${project.wingId}; trilhos do PO desligados (nunca cai no board global de outro projeto)`
+            )
+          }
         }
         const railsToken =
           process.env['GITORCH_GITHUB_TOKEN'] ??
