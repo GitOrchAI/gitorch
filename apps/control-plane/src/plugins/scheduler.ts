@@ -650,6 +650,19 @@ export interface ProvisionSetupMissionDeps {
   /** injeção para teste; default: `resolveGithubOwnerId(owner, token)`. */
   resolveOwner?: (owner: string, token: string) => Promise<ResolvedOwner>
   /**
+   * injeção para teste; default: `mintInstallationToken`. O board é criado
+   * com a identidade do PRODUTO (installation token do App), não com o token
+   * pessoal do dono: criar board de organização com o token do login
+   * user-to-server devolve "does not have the correct permissions to execute
+   * CreateProjectV2". Sem instalação do App para o repositório, cai no token
+   * do dono — que ainda resolve board de conta pessoal.
+   */
+  mintInstallationToken?: (args: {
+    repository: string
+    onWarn?: (message: string) => void
+    onError?: (message: string) => void
+  }) => Promise<string | null>
+  /**
    * Logger estruturado (produção sempre passa `app.log`); sem ele cai no
    * console apenas para chamadas fora do plugin (ex.: scripts, testes que
    * não o injetam). Achado importante: sem `githubToken`/`prisma`, o passo do
@@ -686,10 +699,23 @@ export async function provisionSetupMission(
       { repository: mission.project.wingId, ...(githubToken ? { token: githubToken } : {}) }
     )
 
-    if (githubToken && deps.prisma) {
+    // Identidade certa para o board: o App instalado no repositório. O token
+    // do dono é o plano B (conta pessoal), nunca o preferido.
+    const mintForBoard = deps.mintInstallationToken ?? mintInstallationToken
+    const avisarBoard = (m: string): void => (deps.log ?? console).warn(`[Scheduler] ${m}`)
+    const appToken = deps.prisma
+      ? await mintForBoard({
+          repository: mission.project.wingId,
+          onWarn: avisarBoard,
+          onError: avisarBoard,
+        })
+      : null
+    const boardToken = appToken ?? githubToken
+
+    if (boardToken && deps.prisma) {
       const client = deps.createProjectV2Client
-        ? deps.createProjectV2Client(githubToken)
-        : new ProjectV2Client({ token: githubToken })
+        ? deps.createProjectV2Client(boardToken)
+        : new ProjectV2Client({ token: boardToken })
       // Achado importante: sem passar o número já gravado, findProjectId
       // nunca rodava e todo provisionamento criava board NOVO — finalizar o
       // wizard 2x para o mesmo repositório duplicava o board. O número já
@@ -705,8 +731,8 @@ export async function provisionSetupMission(
         client,
         resolveOwner: (owner) =>
           deps.resolveOwner
-            ? deps.resolveOwner(owner, githubToken)
-            : resolveGithubOwnerId(owner, githubToken),
+            ? deps.resolveOwner(owner, boardToken)
+            : resolveGithubOwnerId(owner, boardToken),
         ...(existingNumber !== undefined && Number.isFinite(existingNumber)
           ? { existingNumber }
           : {}),
@@ -1146,6 +1172,10 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         const railsToken =
           process.env['GITORCH_GITHUB_TOKEN'] ??
           (await mintInstallationToken({
+            // Sem o repositório, o App emitia o token da PRIMEIRA instalação
+            // da lista — a de outra conta — e toda escrita no repositório do
+            // projeto voltava 403.
+            repository: project.wingId,
             onError: (m) => app.log.error(m),
             onWarn: (m) => app.log.warn(m),
           })) ??
