@@ -239,3 +239,29 @@ test('createProjectV2 creates a board and returns its id + number', async () => 
   expect(calls[0].variables).toEqual({ ownerId: 'U_owner', title: 'GitOrch — contexto' })
   expect(calls[0].query).toContain('createProjectV2(input: { ownerId: $ownerId, title: $title }')
 })
+
+// Achado em produção: o quadro nascia órfão — `organization.projectsV2` o via,
+// mas `repository.projectsV2.totalCount` ficava em 0 (não aparecia na aba
+// /projects do repositório). `createProjectV2` cria o board pendurado no
+// DONO; sem esta mutation ele nunca é anunciado ao repositório.
+test('linkProjectV2ToRepository liga o board recém-criado ao repositório', async () => {
+  const calls: GraphQLRequest[] = []
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async (request) => {
+      calls.push(request)
+      return { data: { linkProjectV2ToRepository: { repository: { id: 'R_repo' } } } }
+    },
+  })
+
+  const id = await client.linkProjectV2ToRepository({
+    projectId: 'PVT_new',
+    repositoryId: 'R_repo',
+  })
+
+  expect(id).toBe('R_repo')
+  expect(calls[0].variables).toEqual({ projectId: 'PVT_new', repositoryId: 'R_repo' })
+  expect(calls[0].query).toContain(
+    'linkProjectV2ToRepository(input: { projectId: $projectId, repositoryId: $repositoryId }'
+  )
+})

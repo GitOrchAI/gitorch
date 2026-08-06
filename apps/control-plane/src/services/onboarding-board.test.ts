@@ -3,11 +3,13 @@ import {
   ensureAndPersistProjectBoard,
   ensureProjectBoard,
   resolveGithubOwnerId,
+  resolveGithubRepositoryId,
 } from './onboarding-board.js'
 
 const cliente = (overrides: Record<string, unknown> = {}) => ({
   findProjectId: vi.fn(async () => null),
   createProjectV2: vi.fn(async () => ({ id: 'PVT_novo', number: 42 })),
+  linkProjectV2ToRepository: vi.fn(async () => 'R_repo'),
   ...overrides,
 })
 
@@ -78,6 +80,68 @@ describe('ensureProjectBoard', () => {
     expect(c.createProjectV2).not.toHaveBeenCalled()
     expect(avisos.length).toBeGreaterThan(0)
   })
+
+  // Achado em produção (medido via API do próprio GitHub): o board era criado
+  // pendurado no dono (organization.projectsV2 o via), mas nunca anunciado ao
+  // repositório (repository.projectsV2.totalCount ficava em 0 — não aparecia
+  // na aba /projects do repositório). `linkProjectV2ToRepository` é chamada
+  // logo após `createProjectV2`, só no caminho de CRIAÇÃO.
+  it('quadro recém-criado é ligado ao repositório quando resolveRepositoryId é fornecido', async () => {
+    const c = cliente()
+    const r = await ensureProjectBoard({
+      repository: 'GitOrchAI/gitorch',
+      client: c as never,
+      resolveOwner: async () => ({ id: 'O_org_gitorchai', type: 'organization' }),
+      resolveRepositoryId: async () => 'R_gitorch',
+    })
+    expect(r).toEqual({ owner: 'GitOrchAI', number: 42 })
+    expect(c.linkProjectV2ToRepository).toHaveBeenCalledWith({
+      projectId: 'PVT_novo',
+      repositoryId: 'R_gitorch',
+    })
+  })
+
+  it('board REAPROVEITADO (existingNumber) não tenta ligar de novo', async () => {
+    const c = cliente({ findProjectId: vi.fn(async () => 'PVT_existente') })
+    const r = await ensureProjectBoard({
+      repository: 'GitOrchAI/gitorch',
+      client: c as never,
+      resolveOwner: async () => ({ id: 'O_org_gitorchai', type: 'organization' }),
+      resolveRepositoryId: async () => 'R_gitorch',
+      existingNumber: 7,
+    })
+    expect(r).toEqual({ owner: 'GitOrchAI', number: 7 })
+    expect(c.linkProjectV2ToRepository).not.toHaveBeenCalled()
+  })
+
+  it('sem resolveRepositoryId configurado, cria o board normalmente sem tentar ligar', async () => {
+    const c = cliente()
+    const r = await ensureProjectBoard({
+      repository: 'GitOrchAI/gitorch',
+      client: c as never,
+      resolveOwner: async () => ({ id: 'O_org_gitorchai', type: 'organization' }),
+    })
+    expect(r).toEqual({ owner: 'GitOrchAI', number: 42 })
+    expect(c.linkProjectV2ToRepository).not.toHaveBeenCalled()
+  })
+
+  it('falha ao ligar o quadro ao repositório NÃO derruba a criação (aviso, board criado normalmente)', async () => {
+    const c = cliente({
+      linkProjectV2ToRepository: vi.fn(async () => {
+        throw new Error('Resource not accessible by integration')
+      }),
+    })
+    const avisos: string[] = []
+    const r = await ensureProjectBoard({
+      repository: 'GitOrchAI/gitorch',
+      client: c as never,
+      resolveOwner: async () => ({ id: 'O_org_gitorchai', type: 'organization' }),
+      resolveRepositoryId: async () => 'R_gitorch',
+      onWarn: (m) => avisos.push(m),
+    })
+    expect(r).toEqual({ owner: 'GitOrchAI', number: 42 })
+    expect(avisos.join(' ')).toContain('ligar')
+  })
 })
 
 describe('resolveGithubOwnerId', () => {
@@ -126,6 +190,35 @@ describe('resolveGithubOwnerId', () => {
       json: async () => ({}),
     })) as unknown as typeof fetch
     await expect(resolveGithubOwnerId('fantasma', 'tok', { fetchImpl })).rejects.toThrow()
+  })
+})
+
+describe('resolveGithubRepositoryId', () => {
+  it('resolve o node id do repositório via GET /repos/{owner}/{repo}', async () => {
+    const calls: string[] = []
+    const fetchImpl = (async (url: string | URL | Request) => {
+      calls.push(String(url))
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ node_id: 'R_gitorch' }),
+      } as unknown as Response
+    }) as unknown as typeof fetch
+
+    const id = await resolveGithubRepositoryId('GitOrchAI/gitorch', 'tok', { fetchImpl })
+    expect(id).toBe('R_gitorch')
+    expect(calls).toEqual(['https://api.github.com/repos/GitOrchAI/gitorch'])
+  })
+
+  it('lança quando o repositório não é encontrado', async () => {
+    const fetchImpl = (async () => ({
+      ok: false,
+      status: 404,
+      json: async () => ({}),
+    })) as unknown as typeof fetch
+    await expect(
+      resolveGithubRepositoryId('GitOrchAI/fantasma', 'tok', { fetchImpl })
+    ).rejects.toThrow()
   })
 })
 

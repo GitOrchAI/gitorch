@@ -91,6 +91,13 @@ export interface CreatedProjectV2 {
   number: number
 }
 
+export interface LinkProjectV2ToRepositoryInput {
+  /** Node id do board (devolvido por createProjectV2/findProjectId). */
+  projectId: string
+  /** Node id GraphQL do repositório a anunciar o board. */
+  repositoryId: string
+}
+
 export class ProjectV2Client {
   private readonly token: string
   private readonly request: GraphQLTransport
@@ -273,6 +280,31 @@ export class ProjectV2Client {
 
     const project = unwrap(response).createProjectV2.projectV2
     return { id: project.id, number: project.number }
+  }
+
+  // Anuncia o board ao repositório. `createProjectV2` sozinho pendura o board
+  // no DONO (user/org) — sem esta mutation ele existe (aparece em
+  // organization.projectsV2) mas fica órfão de repositório
+  // (repository.projectsV2.totalCount = 0, nunca aparece na aba /projects do
+  // repositório). Achado ao vivo em produção via API do próprio GitHub.
+  async linkProjectV2ToRepository(input: LinkProjectV2ToRepositoryInput): Promise<string> {
+    const response = await this.request<{
+      linkProjectV2ToRepository: { repository: { id: string } }
+    }>(
+      {
+        query: `
+          mutation LinkProjectV2ToRepository($projectId: ID!, $repositoryId: ID!) {
+            linkProjectV2ToRepository(input: { projectId: $projectId, repositoryId: $repositoryId }) {
+              repository { id }
+            }
+          }
+        `,
+        variables: { ...input },
+      },
+      this.token
+    )
+
+    return unwrap(response).linkProjectV2ToRepository.repository.id
   }
 
   // Lê o campo de iteração (Sprint) pelo nome e devolve suas iterations. O SM usa
