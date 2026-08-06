@@ -27,6 +27,19 @@ export interface AppTokenDeps {
    */
   installationId?: number | undefined
   /**
+   * Repositório do projeto (`dono/repo`) que o token vai operar. Quando
+   * informado, a instalação é resolvida POR ELE (`/repos/{dono}/{repo}/
+   * installation`) — a única que pode escrever ali.
+   *
+   * Sem isto, o caminho antigo pega `installations[0]`: a PRIMEIRA instalação
+   * do App, que não tem relação nenhuma com o repositório do projeto. Com uma
+   * instalação na conta pessoal e o repositório numa organização, o token
+   * emitido não alcança o repositório e tudo falha com 403 confuso ("You do
+   * not have permission to create labels on this repository") — o produto
+   * parecia quebrado quando faltava apenas instalar o App na organização.
+   */
+  repository?: string | undefined
+  /**
    * Chamado quando o App ESTÁ configurado e mesmo assim a emissão falha —
    * chave corrompida, App revogado, API fora. Default: console.error.
    * Existe porque o contrato de devolver `null` sem lançar já desligou o
@@ -59,6 +72,9 @@ interface CachedToken {
 // tick — exatamente o comportamento de antes.
 const tokenCacheByInstallation = new Map<number, CachedToken>()
 let cachedInstallationId: number | null = null
+// Instalação resolvida por repositório: evita repetir a consulta a cada tick
+// sem nunca servir a um repositório a instalação descoberta para outro.
+const installationIdByRepository = new Map<string, number>()
 
 function base64url(input: string): string {
   return Buffer.from(input).toString('base64url')
@@ -92,9 +108,12 @@ export async function mintInstallationToken(deps: AppTokenDeps = {}): Promise<st
   const fetchImpl = deps.fetchImpl ?? fetch
   const nowMs = deps.now ? deps.now() : Date.now()
 
-  // Resolve o ID sem tocar rede quando possível: explícito, ou o já
-  // descoberto por uma chamada anterior sem installationId.
-  let installationId = deps.installationId ?? cachedInstallationId ?? undefined
+  // Resolve o ID sem tocar rede quando possível: explícito, o já descoberto
+  // para ESTE repositório, ou (só no caminho sem repositório) o global.
+  const repository = deps.repository
+  let installationId =
+    deps.installationId ??
+    (repository ? installationIdByRepository.get(repository) : (cachedInstallationId ?? undefined))
 
   if (installationId !== undefined) {
     const cached = tokenCacheByInstallation.get(installationId)
@@ -124,6 +143,35 @@ export async function mintInstallationToken(deps: AppTokenDeps = {}): Promise<st
       Accept: 'application/vnd.github+json',
       'User-Agent': 'gitorch-control-plane',
       'X-GitHub-Api-Version': '2022-11-28',
+    }
+
+    if (installationId === undefined && repository) {
+      const res = await fetchImpl(`${GITHUB_API}/repos/${repository}/installation`, {
+        headers,
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      })
+      if (!res.ok) {
+        const dono = repository.split('/')[0] ?? repository
+        warn(
+          `[github-app-token] o GitHub App não está instalado em ${dono} (HTTP ${res.status} para ${repository}) — ` +
+            `sem isso não há como criar issues ou quadro nesse repositório. Instale o App na conta/organização ${dono} e dê acesso ao repositório.`
+        )
+        return null
+      }
+      const instalacao = (await res.json()) as { id?: number }
+      if (instalacao.id === undefined) {
+        warn(
+          `[github-app-token] resposta sem id de instalação para ${repository} — trilhos ficam desligados`
+        )
+        return null
+      }
+      installationId = instalacao.id
+      installationIdByRepository.set(repository, installationId)
+
+      const cachedDoRepo = tokenCacheByInstallation.get(installationId)
+      if (cachedDoRepo && cachedDoRepo.expiresAtMs - CLOCK_SKEW_MS > nowMs) {
+        return cachedDoRepo.token
+      }
     }
 
     if (installationId === undefined) {
@@ -177,5 +225,6 @@ export async function mintInstallationToken(deps: AppTokenDeps = {}): Promise<st
 /** Limpa o cache em memória — usado em testes. */
 export function resetAppTokenCache(): void {
   tokenCacheByInstallation.clear()
+  installationIdByRepository.clear()
   cachedInstallationId = null
 }

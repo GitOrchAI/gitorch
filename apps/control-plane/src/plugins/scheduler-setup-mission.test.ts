@@ -120,6 +120,74 @@ describe('provisionSetupMission', () => {
     })
   })
 
+  // O board é do PRODUTO agindo como ele mesmo, não do dono agindo em nome
+  // dele. Com o token pessoal, criar board de ORGANIZAÇÃO devolve
+  // "loureng does not have the correct permissions to execute CreateProjectV2"
+  // (visto em produção): o login é user-to-server de GitHub App e não carrega
+  // poder de projects. O installation token do App carrega — quando o App
+  // está instalado na organização.
+  test('cria o board com o installation token do App, não com o token pessoal do dono', async () => {
+    const stack = fakeStack(vi.fn().mockResolvedValue({ path: '/workspace/x' }))
+    const tokensUsados: string[] = []
+    const repositoriosPedidos: (string | undefined)[] = []
+
+    const outcome = await provisionSetupMission(
+      {
+        id: 'mission_app_token',
+        project: { id: 'proj_app', wingId: 'GitOrchAI/gitorch', userId: 'user_1' },
+      },
+      stack,
+      'gh_token_pessoal_do_dono',
+      {
+        prisma: { project: { update: vi.fn().mockResolvedValue({}) } } as never,
+        createProjectV2Client: (token: string) => {
+          tokensUsados.push(token)
+          return {
+            findProjectId: vi.fn(async () => null),
+            createProjectV2: vi.fn(async () => ({ id: 'PVT_x', number: 3 })),
+          }
+        },
+        resolveOwner: async () => ({ id: 'O_org', type: 'organization' }),
+        mintInstallationToken: async ({ repository }) => {
+          repositoriosPedidos.push(repository)
+          return 'ghs_token_do_app'
+        },
+      }
+    )
+
+    expect(outcome.status).toBe('completed')
+    expect(tokensUsados).toEqual(['ghs_token_do_app'])
+    expect(repositoriosPedidos).toEqual(['GitOrchAI/gitorch'])
+  })
+
+  test('sem instalação do App para o repositório, o board ainda tenta com o token do dono', async () => {
+    const stack = fakeStack(vi.fn().mockResolvedValue({ path: '/workspace/x' }))
+    const tokensUsados: string[] = []
+
+    await provisionSetupMission(
+      {
+        id: 'mission_sem_app',
+        project: { id: 'proj_sem_app', wingId: 'loureng/pessoal', userId: 'user_1' },
+      },
+      stack,
+      'gh_token_pessoal_do_dono',
+      {
+        prisma: { project: { update: vi.fn().mockResolvedValue({}) } } as never,
+        createProjectV2Client: (token: string) => {
+          tokensUsados.push(token)
+          return {
+            findProjectId: vi.fn(async () => null),
+            createProjectV2: vi.fn(async () => ({ id: 'PVT_y', number: 4 })),
+          }
+        },
+        resolveOwner: async () => ({ id: 'O_user', type: 'user' }),
+        mintInstallationToken: async () => null,
+      }
+    )
+
+    expect(tokensUsados).toEqual(['gh_token_pessoal_do_dono'])
+  })
+
   // Achado importante: `existingNumber` era código morto — nenhum chamador
   // passava, então `findProjectId` nunca rodava e TODO provisionamento criava
   // board NOVO. Finalizar o wizard 2x para o mesmo repositório (ex.: o

@@ -273,3 +273,105 @@ describe('mintInstallationToken — installationId explícito (por usuário)', (
     expect(callsDefault2).toHaveLength(0)
   })
 })
+
+describe('mintInstallationToken com repositório', () => {
+  beforeEach(() => resetAppTokenCache())
+
+  /**
+   * fetch fake com DUAS instalações: a da conta pessoal (a primeira da lista) e
+   * a da organização dona do repositório. Só a segunda pode escrever no repo.
+   */
+  function githubComDuasInstalacoes(opts: {
+    repoInstallationId?: number
+    calls?: Call[]
+    repoStatus?: number
+  }) {
+    const { repoInstallationId = 777, calls, repoStatus = 200 } = opts
+    return (async (url: string | URL | Request, init?: RequestInit) => {
+      const u = String(url)
+      calls?.push({ url: u, init })
+      if (u.endsWith('/app/installations')) {
+        // conta pessoal em primeiro: é ela que o bug escolhia
+        return {
+          ok: true,
+          status: 200,
+          json: async () => [{ id: 111 }, { id: repoInstallationId }],
+        } as unknown as Response
+      }
+      if (u.includes('/installation') && u.includes('/repos/')) {
+        if (repoStatus !== 200) {
+          return { ok: false, status: repoStatus, json: async () => ({}) } as unknown as Response
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ id: repoInstallationId }),
+        } as unknown as Response
+      }
+      if (u.includes('/access_tokens')) {
+        const id = Number(u.match(/installations\/(\d+)\/access_tokens/)?.[1])
+        return {
+          ok: true,
+          status: 201,
+          json: async () => ({
+            token: `ghs_inst_${id}`,
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          }),
+        } as unknown as Response
+      }
+      throw new Error('URL inesperada no teste: ' + u)
+    }) as unknown as typeof fetch
+  }
+
+  it('emite o token da instalação que cobre o REPOSITÓRIO, não a primeira da lista', async () => {
+    const { privateKey } = makeKeypair()
+    const calls: Call[] = []
+    const token = await mintInstallationToken({
+      appId: '1',
+      privateKey,
+      repository: 'GitOrchAI/gitorch',
+      fetchImpl: githubComDuasInstalacoes({ repoInstallationId: 777, calls }),
+    })
+
+    expect(token).toBe('ghs_inst_777')
+    expect(calls[0]!.url).toContain('/repos/GitOrchAI/gitorch/installation')
+    expect(calls.some((c) => c.url.endsWith('/app/installations'))).toBe(false)
+  })
+
+  it('sem instalação cobrindo o repositório: devolve null e avisa como resolver — nunca usa a instalação de outra conta', async () => {
+    const { privateKey } = makeKeypair()
+    const avisos: string[] = []
+    const calls: Call[] = []
+    const token = await mintInstallationToken({
+      appId: '1',
+      privateKey,
+      repository: 'GitOrchAI/gitorch',
+      fetchImpl: githubComDuasInstalacoes({ repoStatus: 404, calls }),
+      onWarn: (m) => avisos.push(m),
+    })
+
+    expect(token).toBeNull()
+    expect(calls.some((c) => c.url.includes('/access_tokens'))).toBe(false)
+    expect(avisos.join(' ')).toContain('GitOrchAI')
+    expect(avisos.join(' ')).toContain('instal')
+  })
+
+  it('não serve a um repositório o token cacheado de outro', async () => {
+    const { privateKey } = makeKeypair()
+    const primeiro = await mintInstallationToken({
+      appId: '1',
+      privateKey,
+      repository: 'GitOrchAI/gitorch',
+      fetchImpl: githubComDuasInstalacoes({ repoInstallationId: 777 }),
+    })
+    const segundo = await mintInstallationToken({
+      appId: '1',
+      privateKey,
+      repository: 'outro-dono/outro-repo',
+      fetchImpl: githubComDuasInstalacoes({ repoInstallationId: 888 }),
+    })
+
+    expect(primeiro).toBe('ghs_inst_777')
+    expect(segundo).toBe('ghs_inst_888')
+  })
+})
