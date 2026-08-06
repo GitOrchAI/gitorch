@@ -72,8 +72,18 @@ export function resolvePrimaryRuntime(
 
 // Erros que justificam trocar de motor (cota esgotada, rate limit, auth). Erros
 // de conteúdo do repositório de terceiros NÃO devem disparar failover às cegas.
+//
+// E2BIG (achado importante): o prompt vira um único argumento de linha de
+// comando e o Linux limita cada argumento (e o total de argv+env) a ~128 KiB.
+// Em repositório grande — o alvo declarado do produto — a missão morria com
+// `spawn E2BIG` e, sem este padrão, NENHUM failover era tentado: o próximo
+// motor da cadeia do cliente nunca era acionado por um erro que é do
+// processo local, não do motor. Isso some junto com o teto de tamanho de
+// prompt em runtime-adapter.ts (capPromptForArgv) — o teto reduz a chance de
+// E2BIG acontecer; isFailoverError cobre o que ainda passar (ex.: um
+// argumento de outra origem, ou um SO com ARG_MAX menor).
 const FAILOVER_PATTERN =
-  /quota|rate.?limit|429|exhaust|insufficient|unauthor|forbidden|\b401\b|\b403\b|invalid.?api.?key/i
+  /quota|rate.?limit|429|exhaust|insufficient|unauthor|forbidden|\b401\b|\b403\b|invalid.?api.?key|e2big|argument list too long/i
 
 export function isFailoverError(message: string): boolean {
   return FAILOVER_PATTERN.test(message)

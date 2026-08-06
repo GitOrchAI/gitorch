@@ -4,6 +4,7 @@ import { delimiter, join } from 'node:path'
 import {
   RuntimeRegistry,
   buildRuntimeEnvironment,
+  capPromptForArgv,
   createCliRuntimeAdapter,
   realRuntimeCommandRunner,
   type RuntimeAdapter,
@@ -338,5 +339,138 @@ describe('realRuntimeCommandRunner respeita GITORCH_EXEC_LIMITS', () => {
 
     expect(result.exitCode).toBe(0)
     expect(result.stdout.trim()).toBe('hi')
+  })
+})
+
+// Achado importante da revisão: em repositório grande o contexto injetado
+// (codegraph, entregável do RA, memórias, até 20 KB de diff no QA) não tinha
+// teto, o prompt virava um argumento de linha de comando gigante e a missão
+// morria com `spawn E2BIG` — sem failover, porque isFailoverError não
+// reconhecia o erro (coberto em runtime-resolver.test.ts).
+describe('capPromptForArgv (achado importante: E2BIG)', () => {
+  test('prompt dentro do teto sai intacto, sem marcar truncated', () => {
+    const prompt = 'Step: po-triage\n' + 'x'.repeat(1000)
+    const r = capPromptForArgv(prompt, 96 * 1024)
+    expect(r).toEqual({ prompt, truncated: false, originalBytes: Buffer.byteLength(prompt) })
+  })
+
+  test('prompt gigante (contexto sem teto) é cortado no MEIO, preservando cabeça e cauda', () => {
+    const cabeca = 'You are the GitOrch Product Owner agent.\nStep: po-triage\n\n'
+    // Simula o contexto sem teto (codegraph + memórias + diff de 20KB) que
+    // hoje estoura sem este corte.
+    const contextoGigante = 'CONTEXTO-'.repeat(50_000) // ~450KB
+    const cauda =
+      '\nDecide e responda SOMENTE com um JSON valido conforme o schema:\n{"campo":"valor"}\n'
+    const prompt = cabeca + contextoGigante + cauda
+
+    const maxBytes = 96 * 1024
+    const r = capPromptForArgv(prompt, maxBytes)
+
+    expect(r.truncated).toBe(true)
+    expect(r.originalBytes).toBe(Buffer.byteLength(prompt, 'utf8'))
+    // Nunca estoura o teto pedido.
+    expect(Buffer.byteLength(r.prompt, 'utf8')).toBeLessThanOrEqual(maxBytes)
+    // A pergunta do passo (cabeça) sobrevive.
+    expect(r.prompt.startsWith(cabeca)).toBe(true)
+    // O schema do formulário (cauda) sobrevive.
+    expect(r.prompt.endsWith(cauda)).toBe(true)
+    // O corte é explícito, não silencioso.
+    expect(r.prompt).toContain('GitOrch cortou o CONTEXTO aqui')
+    expect(r.prompt).toContain(String(r.originalBytes))
+  })
+
+  test('teto configurável por env (GITORCH_MAX_PROMPT_ARG_BYTES) é respeitado quando não passado explicitamente', async () => {
+    const prev = process.env['GITORCH_MAX_PROMPT_ARG_BYTES']
+    try {
+      process.env['GITORCH_MAX_PROMPT_ARG_BYTES'] = String(200)
+      // Reimporta o módulo para pegar o valor do env no momento do load.
+      vi.resetModules()
+      const mod = await import('./runtime-adapter')
+      const r = mod.capPromptForArgv('x'.repeat(10_000))
+      expect(r.truncated).toBe(true)
+      expect(Buffer.byteLength(r.prompt, 'utf8')).toBeLessThanOrEqual(200)
+    } finally {
+      if (prev === undefined) delete process.env['GITORCH_MAX_PROMPT_ARG_BYTES']
+      else process.env['GITORCH_MAX_PROMPT_ARG_BYTES'] = prev
+      vi.resetModules()
+    }
+  })
+})
+
+describe('createCliRuntimeAdapter corta o prompt gigante antes de virar argumento (E2BIG)', () => {
+  test('promptArgName: prompt gigante é cortado antes de ir para args, e o corte é avisado', async () => {
+    const calls: RuntimeCommandRequest[] = []
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const adapter = createCliRuntimeAdapter({
+        runtime: 'antigravity',
+        binary: 'agy',
+        args: ['--sandbox'],
+        promptArgName: '--print',
+        runner: async (request) => {
+          calls.push(request)
+          return { exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1 }
+        },
+      })
+
+      const promptGigante = 'Step: qa-verdict\n' + 'DIFF-'.repeat(60_000) // bem acima de 96KB
+
+      await adapter.run({
+        missionId: 'mission-e2big',
+        prompt: promptGigante,
+        runtime: { runtime: 'antigravity' },
+        credentialRef: {
+          connectionId: 'c1',
+          ownerScope: 'project',
+          runtime: 'antigravity',
+          providedSecrets: [],
+        },
+      })
+
+      const sentPrompt = calls[0]!.args.at(-1) as string
+      expect(Buffer.byteLength(sentPrompt, 'utf8')).toBeLessThan(Buffer.byteLength(promptGigante))
+      expect(sentPrompt.startsWith('Step: qa-verdict')).toBe(true)
+      expect(warnSpy).toHaveBeenCalled()
+      expect(String(warnSpy.mock.calls[0]?.[0])).toContain('E2BIG')
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  test('promptViaStdin: prompt gigante NÃO é cortado (não vira argv, não corre risco de E2BIG)', async () => {
+    const calls: RuntimeCommandRequest[] = []
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const adapter = createCliRuntimeAdapter({
+        runtime: 'antigravity',
+        binary: 'agy',
+        args: ['--print'],
+        promptViaStdin: true,
+        runner: async (request) => {
+          calls.push(request)
+          return { exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1 }
+        },
+      })
+
+      const promptGigante = 'CONTEXTO-'.repeat(50_000)
+
+      await adapter.run({
+        missionId: 'mission-stdin-gigante',
+        prompt: promptGigante,
+        runtime: { runtime: 'antigravity' },
+        credentialRef: {
+          connectionId: 'c1',
+          ownerScope: 'project',
+          runtime: 'antigravity',
+          providedSecrets: [],
+        },
+      })
+
+      expect(calls[0]!.stdin).toBe(promptGigante)
+      expect(calls[0]!.args).not.toContain(promptGigante)
+      expect(warnSpy).not.toHaveBeenCalled()
+    } finally {
+      warnSpy.mockRestore()
+    }
   })
 })

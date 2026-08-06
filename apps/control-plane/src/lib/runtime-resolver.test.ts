@@ -63,4 +63,14 @@ describe('isFailoverError', () => {
       expect(isFailoverError(m)).toBe(false)
     }
   })
+
+  // Achado importante: prompt como argumento de linha de comando estourava
+  // E2BIG em repositório grande e NENHUM failover era tentado — o erro é do
+  // processo local (limite do SO), não do motor, então o próximo motor da
+  // cadeia do cliente merece a chance.
+  test('dispara em E2BIG (achado importante: prompt gigante como argumento)', () => {
+    for (const m of ['spawn agy E2BIG', 'Error: spawn E2BIG', 'execvp: Argument list too long']) {
+      expect(isFailoverError(m)).toBe(true)
+    }
+  })
 })
