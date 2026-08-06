@@ -5,7 +5,19 @@ import { rules as eslintConfigPrettierRules } from 'eslint-config-prettier'
 
 export default [
   {
-    ignores: ['**/dist/**', '**/*.d.ts', '**/node_modules/**', '**/.next/**', '**/coverage/**', 'ci/audit/**'],
+    ignores: [
+      '**/dist/**',
+      '**/*.d.ts',
+      '**/node_modules/**',
+      '**/.next/**',
+      '**/coverage/**',
+      'ci/audit/**',
+      // Worktrees de sessões de agente vivem ANINHADOS em .claude/worktrees/ e
+      // não fazem parte do repositório (o git nem os rastreia). Sem este
+      // ignore, uma verificação local reprova por causa de código de outra
+      // branch — vermelho falso que não existe no CI, onde o checkout é limpo.
+      '.claude/**',
+    ],
   },
   {
     rules: eslintConfigPrettierRules,
