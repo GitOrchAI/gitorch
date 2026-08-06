@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from 'vitest'
-import { ensureProjectBoard, resolveGithubOwnerId } from './onboarding-board.js'
+import {
+  ensureAndPersistProjectBoard,
+  ensureProjectBoard,
+  resolveGithubOwnerId,
+} from './onboarding-board.js'
 
 const cliente = (overrides: Record<string, unknown> = {}) => ({
   findProjectId: vi.fn(async () => null),
@@ -122,5 +126,84 @@ describe('resolveGithubOwnerId', () => {
       json: async () => ({}),
     })) as unknown as typeof fetch
     await expect(resolveGithubOwnerId('fantasma', 'tok', { fetchImpl })).rejects.toThrow()
+  })
+})
+
+// Visto em produção: no momento do registro do projeto o App ainda não estava
+// instalado na organização, então criar o board falhou. Como o board só era
+// tentado UMA vez (no provisionamento), o projeto ficava sem quadro para
+// sempre — e sem quadro os trilhos do PO ficam desligados, ou seja, nenhuma
+// issue jamais seria criada, mesmo depois de instalar o App. A esteira tem de
+// se recuperar sozinha na próxima vez que o PO acorda.
+describe('ensureAndPersistProjectBoard', () => {
+  const projetoSemBoard = {
+    id: 'proj_1',
+    wingId: 'GitOrchAI/gitorch',
+    runtimeConfig: { envConfig: { OUTRA_COISA: 'preservar' } },
+  }
+
+  it('projeto sem quadro: cria, grava em runtimeConfig preservando o resto e devolve owner/number', async () => {
+    const update = vi.fn().mockResolvedValue({})
+    const c = cliente()
+
+    const r = await ensureAndPersistProjectBoard({
+      project: projetoSemBoard,
+      prisma: { project: { update } } as never,
+      mintInstallationToken: async () => 'ghs_app',
+      createProjectV2Client: () => c as never,
+      resolveOwner: async () => ({ id: 'O_org', type: 'organization' }),
+    })
+
+    expect(r).toBe('GitOrchAI/42')
+    expect(update).toHaveBeenCalledWith({
+      where: { id: 'proj_1' },
+      data: {
+        runtimeConfig: {
+          envConfig: { OUTRA_COISA: 'preservar', GITORCH_PROJECT_BOARD: 'GitOrchAI/42' },
+        },
+      },
+    })
+  })
+
+  it('projeto que já tem quadro: devolve o gravado sem tocar no GitHub nem no banco', async () => {
+    const update = vi.fn()
+    const c = cliente()
+
+    const r = await ensureAndPersistProjectBoard({
+      project: {
+        id: 'proj_2',
+        wingId: 'GitOrchAI/gitorch',
+        runtimeConfig: { envConfig: { GITORCH_PROJECT_BOARD: 'GitOrchAI/7' } },
+      },
+      prisma: { project: { update } } as never,
+      mintInstallationToken: async () => 'ghs_app',
+      createProjectV2Client: () => c as never,
+      resolveOwner: async () => ({ id: 'O_org', type: 'organization' }),
+    })
+
+    expect(r).toBe('GitOrchAI/7')
+    expect(c.createProjectV2).not.toHaveBeenCalled()
+    expect(update).not.toHaveBeenCalled()
+  })
+
+  it('App ainda não instalado no dono do repositório: devolve undefined e avisa, sem gravar nada', async () => {
+    const update = vi.fn()
+    const avisos: string[] = []
+
+    const r = await ensureAndPersistProjectBoard({
+      project: projetoSemBoard,
+      prisma: { project: { update } } as never,
+      mintInstallationToken: async ({ onWarn }) => {
+        onWarn?.('o GitHub App não está instalado em GitOrchAI')
+        return null
+      },
+      createProjectV2Client: () => cliente() as never,
+      resolveOwner: async () => ({ id: 'O_org', type: 'organization' }),
+      onWarn: (m) => avisos.push(m),
+    })
+
+    expect(r).toBeUndefined()
+    expect(update).not.toHaveBeenCalled()
+    expect(avisos.join(' ')).toContain('não está instalado')
   })
 })
