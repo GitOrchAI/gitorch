@@ -200,6 +200,10 @@ export async function mintInstallationToken(deps: AppTokenDeps = {}): Promise<st
       signal: AbortSignal.timeout(TIMEOUT_MS),
     })
     if (!res.ok) {
+      // Reinstalar o App troca o id da instalação: sem esquecer o id velho,
+      // a próxima volta reusaria um id morto para sempre (até reiniciar o
+      // serviço) e o produto ficaria preso num 404 que já tem conserto.
+      if (repository) installationIdByRepository.delete(repository)
       warn(
         `[github-app-token] falha ao emitir installation token (HTTP ${res.status}) — trilhos ficam desligados`
       )
@@ -215,6 +219,7 @@ export async function mintInstallationToken(deps: AppTokenDeps = {}): Promise<st
     tokenCacheByInstallation.set(installationId, cachedToken)
     return cachedToken.token
   } catch (err) {
+    if (repository) installationIdByRepository.delete(repository)
     report(
       `[github-app-token] erro ao emitir token do App (${(err as Error).message}) — trilhos ficam desligados`
     )

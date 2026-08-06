@@ -356,6 +356,57 @@ describe('mintInstallationToken com repositório', () => {
     expect(avisos.join(' ')).toContain('instal')
   })
 
+  it('esquece a instalação cacheada quando a emissão falha (App reinstalado muda o id)', async () => {
+    const { privateKey } = makeKeypair()
+
+    const t0 = 1_800_000_000_000
+    const duasHorasDepois = t0 + 2 * 3_600_000 // o token de 1h já expirou
+
+    // 1ª volta: descobre a instalação 777 e emite normalmente.
+    expect(
+      await mintInstallationToken({
+        appId: '1',
+        privateKey,
+        repository: 'GitOrchAI/gitorch',
+        fetchImpl: githubComDuasInstalacoes({ repoInstallationId: 777 }),
+        now: () => t0,
+      })
+    ).toBe('ghs_inst_777')
+
+    // 2ª volta: a instalação 777 não existe mais (App reinstalado) e a
+    // emissão devolve 404 — o id velho não pode ficar grudado no cache.
+    const emissaoFalha = (async (url: string | URL | Request) => {
+      const u = String(url)
+      if (u.includes('/access_tokens')) {
+        return { ok: false, status: 404, json: async () => ({}) } as unknown as Response
+      }
+      throw new Error('URL inesperada: ' + u)
+    }) as unknown as typeof fetch
+    expect(
+      await mintInstallationToken({
+        appId: '1',
+        privateKey,
+        repository: 'GitOrchAI/gitorch',
+        fetchImpl: emissaoFalha,
+        onWarn: () => undefined,
+        now: () => duasHorasDepois,
+      })
+    ).toBeNull()
+
+    // 3ª volta: resolve de novo pelo repositório e acha a instalação NOVA.
+    const calls: Call[] = []
+    expect(
+      await mintInstallationToken({
+        appId: '1',
+        privateKey,
+        repository: 'GitOrchAI/gitorch',
+        fetchImpl: githubComDuasInstalacoes({ repoInstallationId: 999, calls }),
+        now: () => duasHorasDepois,
+      })
+    ).toBe('ghs_inst_999')
+    expect(calls[0]!.url).toContain('/repos/GitOrchAI/gitorch/installation')
+  })
+
   it('não serve a um repositório o token cacheado de outro', async () => {
     const { privateKey } = makeKeypair()
     const primeiro = await mintInstallationToken({

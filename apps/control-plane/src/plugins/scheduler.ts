@@ -657,7 +657,11 @@ export interface ProvisionSetupMissionDeps {
    * CreateProjectV2". Sem instalação do App para o repositório, cai no token
    * do dono — que ainda resolve board de conta pessoal.
    */
-  mintInstallationToken?: (args: { repository: string }) => Promise<string | null>
+  mintInstallationToken?: (args: {
+    repository: string
+    onWarn?: (message: string) => void
+    onError?: (message: string) => void
+  }) => Promise<string | null>
   /**
    * Logger estruturado (produção sempre passa `app.log`); sem ele cai no
    * console apenas para chamadas fora do plugin (ex.: scripts, testes que
@@ -698,7 +702,14 @@ export async function provisionSetupMission(
     // Identidade certa para o board: o App instalado no repositório. O token
     // do dono é o plano B (conta pessoal), nunca o preferido.
     const mintForBoard = deps.mintInstallationToken ?? mintInstallationToken
-    const appToken = deps.prisma ? await mintForBoard({ repository: mission.project.wingId }) : null
+    const avisarBoard = (m: string): void => (deps.log ?? console).warn(`[Scheduler] ${m}`)
+    const appToken = deps.prisma
+      ? await mintForBoard({
+          repository: mission.project.wingId,
+          onWarn: avisarBoard,
+          onError: avisarBoard,
+        })
+      : null
     const boardToken = appToken ?? githubToken
 
     if (boardToken && deps.prisma) {

@@ -160,6 +160,35 @@ describe('provisionSetupMission', () => {
     expect(repositoriosPedidos).toEqual(['GitOrchAI/gitorch'])
   })
 
+  test('o aviso de App não instalado sai no log do servidor, não no console', async () => {
+    const stack = fakeStack(vi.fn().mockResolvedValue({ path: '/workspace/x' }))
+    const warn = vi.fn()
+
+    await provisionSetupMission(
+      {
+        id: 'mission_log',
+        project: { id: 'proj_log', wingId: 'GitOrchAI/gitorch', userId: 'user_1' },
+      },
+      stack,
+      'gh_token_pessoal_do_dono',
+      {
+        prisma: { project: { update: vi.fn().mockResolvedValue({}) } } as never,
+        createProjectV2Client: () => ({
+          findProjectId: vi.fn(async () => null),
+          createProjectV2: vi.fn(async () => ({ id: 'PVT_z', number: 5 })),
+        }),
+        resolveOwner: async () => ({ id: 'O_org', type: 'organization' }),
+        log: { warn, info: vi.fn() },
+        mintInstallationToken: async ({ onWarn }) => {
+          onWarn?.('o GitHub App não está instalado em GitOrchAI')
+          return null
+        },
+      }
+    )
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('não está instalado em GitOrchAI'))
+  })
+
   test('sem instalação do App para o repositório, o board ainda tenta com o token do dono', async () => {
     const stack = fakeStack(vi.fn().mockResolvedValue({ path: '/workspace/x' }))
     const tokensUsados: string[] = []
