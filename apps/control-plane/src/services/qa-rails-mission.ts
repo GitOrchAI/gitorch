@@ -8,6 +8,7 @@ import {
 } from '@gitorch/cadence'
 import { runFormStep } from './rails-runner.js'
 import { GithubExecutionError } from './github-errors.js'
+import { aplicarLabelDoAgente } from './agent-label.js'
 import type { CardMover } from './board-status.js'
 
 // Missão do QA nos TRILHOS (F3.6): acha a PR do Jules que precisa de julgamento,
@@ -178,10 +179,15 @@ export async function runQaMissionViaRails(
   }
   const linkedIssue = (pr.body ?? '').match(/\b(?:closes|fixes|resolves)\s+#(\d+)/i)?.[1]
   let criteria = '(no linked issue / Verification Criteria not found)'
+  let linkedIssueLabels: string[] = []
   if (linkedIssue) {
     const issue = (await gh('GET', `/repos/${options.repository}/issues/${linkedIssue}`)) as {
       body?: string
+      labels?: Array<{ name?: string }>
     }
+    linkedIssueLabels = (issue.labels ?? [])
+      .map((l) => l.name)
+      .filter((name): name is string => Boolean(name))
     const found = (issue.body ?? '').match(
       /##\s*Verification Criteria\s*\n+([\s\S]*?)(?:\n##\s|$)/i
     )
@@ -280,6 +286,30 @@ export async function runQaMissionViaRails(
     )
     await gh('POST', `/repos/${options.repository}/issues/${target.number}/comments`, {
       body: buildJulesReworkComment(verdict.comment),
+    })
+  }
+
+  // 4b) O QA acabou de julgar: marca a issue VINCULADA (não a PR) como sua,
+  // tirando quem estava com ela antes (ex.: gitorch:agent:jules, o dev
+  // assíncrono que abriu o PR). Best-effort: aplicarLabelDoAgente nunca lança
+  // — o veredito já foi postado acima, isso é só sinalização.
+  if (linkedIssue) {
+    await aplicarLabelDoAgente({
+      repository: options.repository,
+      issueNumber: Number(linkedIssue),
+      agente: 'qa',
+      lerLabels: async () => linkedIssueLabels,
+      adicionarLabel: async (l) => {
+        await gh('POST', `/repos/${options.repository}/issues/${linkedIssue}/labels`, {
+          labels: [l],
+        })
+      },
+      removerLabel: async (l) => {
+        await gh(
+          'DELETE',
+          `/repos/${options.repository}/issues/${linkedIssue}/labels/${encodeURIComponent(l)}`
+        )
+      },
     })
   }
 

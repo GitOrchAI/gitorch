@@ -166,6 +166,56 @@ describe('runPoMissionViaRails', () => {
     expect(actions.some((a) => a.url.includes('/milestones'))).toBe(false)
   })
 
+  it('PO ao triar incidente marca a issue como sua (gitorch:agent:po) e tira o agente anterior', async () => {
+    const actions: Array<{ method: string; url: string; body?: unknown }> = []
+    const f = (async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const u = String(url)
+      const method = init?.method ?? 'GET'
+      const json = (d: unknown) => new Response(JSON.stringify(d), { status: 200 })
+      if (method !== 'GET') {
+        actions.push({ method, url: u, body: init?.body ? JSON.parse(String(init.body)) : {} })
+      }
+      if (u.includes('/search/issues') && u.includes('gitorch%3Aincident')) {
+        return json({
+          items: [
+            {
+              number: 62,
+              title: '[Incident] x',
+              body: 'y',
+              // RA já tinha passado pela issue antes do PO assumir a triagem.
+              labels: [{ name: 'gitorch:incident' }, { name: 'gitorch:agent:ra' }],
+            },
+          ],
+        })
+      }
+      if (u.includes('/issues?labels=wishlist')) return json([])
+      return json({})
+    }) as typeof fetch
+
+    await runPoMissionViaRails({
+      repository: 'o/r',
+      board: 'o/9',
+      githubToken: 't',
+      contextBlocks: [],
+      fetchImpl: f,
+      execute: async () =>
+        JSON.stringify({ priority: 'P2', rationale: 'triagem normal', releaseNow: false }),
+    })
+
+    const agentLabelPost = actions.find(
+      (a) =>
+        a.method === 'POST' &&
+        a.url.includes('/issues/62/labels') &&
+        JSON.stringify(a.body).includes('gitorch:agent:po')
+    )
+    expect(agentLabelPost).toBeDefined()
+
+    const removal = actions.find(
+      (a) => a.method === 'DELETE' && a.url.includes('/issues/62/labels/')
+    )
+    expect(removal?.url).toContain(encodeURIComponent('gitorch:agent:ra'))
+  })
+
   it('com wish: roda os 5 passos e aplica a árvore (resumo no output)', async () => {
     const steps: string[] = []
     const r = await runPoMissionViaRails({

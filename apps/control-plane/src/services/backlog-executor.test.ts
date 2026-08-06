@@ -6,6 +6,7 @@ import {
   type BacklogGitHub,
   type BacklogPlan,
 } from './backlog-executor.js'
+import { agentLabel } from './agent-label.js'
 import type { DoDFields } from '@gitorch/cadence'
 
 function fields(over: Partial<DoDFields> = {}): DoDFields {
@@ -202,6 +203,17 @@ describe('applyBacklog', () => {
     const task2 = created[4]!
     expect(task2.body).toContain('Blocked by #204')
     // tasks nascem com a label de tipo p/ delegação contínua do SM
+    expect(created[3]!.labels).toContain('gitorch:task')
+  })
+
+  it('toda issue nova nasce marcada como produção do PO (gitorch:agent:po)', async () => {
+    const { gh, created } = fakeGitHub()
+    await applyBacklog({ github: gh, plan: plan() })
+
+    // fase, épico, feature e as 2 tasks — os 5 nós que o PO produziu.
+    expect(created).toHaveLength(5)
+    expect(created.every((c) => (c.labels ?? []).includes(agentLabel('po')))).toBe(true)
+    // a task continua carregando a label de TIPO, que o SM usa para achá-la.
     expect(created[3]!.labels).toContain('gitorch:task')
   })
 

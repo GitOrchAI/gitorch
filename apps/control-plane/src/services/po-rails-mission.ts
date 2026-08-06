@@ -5,6 +5,7 @@ import { runFormStep } from './rails-runner.js'
 import { applyBacklog } from './backlog-executor.js'
 import { createGithubBacklog } from './github-backlog.js'
 import { GithubExecutionError } from './github-errors.js'
+import { aplicarLabelDoAgente } from './agent-label.js'
 import type { BoardColumns } from './board-status.js'
 import type { StepExecutor } from './role-rails.js'
 
@@ -107,6 +108,30 @@ async function triageIncidents(args: {
     await gh('POST', `/repos/${repository}/issues/${incident.number}/labels`, {
       labels: [triage.priority, ...(triage.releaseNow ? ['gitorch:task'] : [])],
     })
+
+    // O PO acabou de assumir esta issue (é quem decide a prioridade) — marca
+    // com o label de agente atuante, tirando quem tinha a bola antes (ex.: o
+    // RA, que já tinha olhado o incidente). Best-effort: aplicarLabelDoAgente
+    // nunca lança.
+    await aplicarLabelDoAgente({
+      repository,
+      issueNumber: incident.number,
+      agente: 'po',
+      lerLabels: async () =>
+        (incident.labels ?? []).map((l) => l.name).filter((name): name is string => Boolean(name)),
+      adicionarLabel: async (label) => {
+        await gh('POST', `/repos/${repository}/issues/${incident.number}/labels`, {
+          labels: [label],
+        })
+      },
+      removerLabel: async (label) => {
+        await gh(
+          'DELETE',
+          `/repos/${repository}/issues/${incident.number}/labels/${encodeURIComponent(label)}`
+        )
+      },
+    })
+
     await gh('POST', `/repos/${repository}/issues/${incident.number}/comments`, {
       body: `<!-- gitorch:triage -->\nGitOrch PO triage: **${triage.priority}**${triage.releaseNow ? ' — liberado para a próxima sprint' : ' — segue o planejamento da sprint'}.\n\n${triage.rationale}`,
     })

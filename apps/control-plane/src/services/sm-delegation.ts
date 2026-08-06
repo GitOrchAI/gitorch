@@ -1,4 +1,5 @@
 import { GithubExecutionError } from './github-backlog.js'
+import { aplicarLabelDoAgente } from './agent-label.js'
 
 // Delegação contínua do SM (F3.6 item 2): a cada wake, encontra as TASKS prontas
 // (label `gitorch:task`, sem `jules`, com todos os "Blocked by" já fechados) e
@@ -81,6 +82,28 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
     await gh('POST', `/repos/${options.repository}/issues/${task.number}/labels`, {
       labels: [label],
     })
+
+    // A bola passa do PO/RA para o dev assíncrono: marca a issue como sua e
+    // tira quem estava com ela antes. Best-effort: aplicarLabelDoAgente nunca
+    // lança — a delegação em si já aconteceu acima.
+    await aplicarLabelDoAgente({
+      repository: options.repository,
+      issueNumber: task.number,
+      agente: 'jules',
+      lerLabels: async () => task.labels.map((l) => l.name),
+      adicionarLabel: async (l) => {
+        await gh('POST', `/repos/${options.repository}/issues/${task.number}/labels`, {
+          labels: [l],
+        })
+      },
+      removerLabel: async (l) => {
+        await gh(
+          'DELETE',
+          `/repos/${options.repository}/issues/${task.number}/labels/${encodeURIComponent(l)}`
+        )
+      },
+    })
+
     delegated.push(task.number)
   }
 

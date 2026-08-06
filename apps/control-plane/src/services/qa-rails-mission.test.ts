@@ -48,7 +48,11 @@ function fakeFetch(
   }>,
   issueLabels: string[] = ['jules', 'gitorch:task']
 ): typeof fetch {
-  const posted: { reviews: unknown[]; comments: unknown[] } = { reviews: [], comments: [] }
+  const posted: {
+    reviews: unknown[]
+    comments: unknown[]
+    labels: Array<{ number: number; method: string; label?: string; labels?: string[] }>
+  } = { reviews: [], comments: [], labels: [] }
   const impl = (async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     const u = String(url)
     const method = init?.method ?? 'GET'
@@ -73,6 +77,18 @@ function fakeFetch(
     if (u.endsWith('/user')) return json({ login: 'loureng' })
     if (/\/pulls\/\d+$/.test(u.split('?')[0]!)) {
       return json({ number: 1, body: 'Closes #50', head: { sha: 'abc123' } })
+    }
+    // label da issue vinculada — checar ANTES de "/issues/50" (que também
+    // casaria com "/issues/50/labels" por ser substring).
+    const dm = u.match(/\/issues\/(\d+)\/labels\/([^/]+)$/)
+    if (dm && method === 'DELETE') {
+      posted.labels.push({ number: Number(dm[1]), method, label: decodeURIComponent(dm[2]!) })
+      return json({})
+    }
+    const lm = u.match(/\/issues\/(\d+)\/labels$/)
+    if (lm && method === 'POST') {
+      posted.labels.push({ number: Number(lm[1]), method, labels: body.labels })
+      return json([])
     }
     if (u.includes('/issues/50')) {
       return json({
@@ -280,6 +296,33 @@ describe('runQaMissionViaRails', () => {
       fetchImpl: f,
     })
     expect(r.noOp).toBe(true)
+  })
+
+  it('ao julgar, marca a issue VINCULADA (não a PR) com gitorch:agent:qa e tira o agente anterior', async () => {
+    const f = fakeFetch(
+      [{ number: 7, user: 'jules[bot]' }],
+      ['jules', 'gitorch:task', 'gitorch:agent:jules']
+    )
+    const posted = (
+      f as unknown as {
+        posted: {
+          labels: Array<{ number: number; method: string; label?: string; labels?: string[] }>
+        }
+      }
+    ).posted
+    await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+    })
+
+    const added = posted.labels.find(
+      (l) => l.method === 'POST' && (l.labels ?? []).includes('gitorch:agent:qa')
+    )
+    expect(added?.number).toBe(50) // a issue #50 vinculada pelo "Closes #50", não a PR #7
+    const removed = posted.labels.find((l) => l.method === 'DELETE')
+    expect(removed).toEqual({ number: 50, method: 'DELETE', label: 'gitorch:agent:jules' })
   })
 
   it('request_changes: posta REQUEST_CHANGES + comentário @jules', async () => {
