@@ -46,15 +46,17 @@ export interface QaRailsMissionResult {
 
 /** Comentário de rework estruturado (8 campos) mencionando @jules. */
 export function buildJulesReworkComment(comment: QaVerdictForm['comment']): string {
+  // Mesmo contrato da issue (padrão Shrimp): o rework que o QA devolve tem de
+  // ser lido com a mesma régua com que a task foi escrita.
   const map: Record<string, string> = {
-    Título: comment.titulo,
-    Description: comment.description,
-    Notes: comment.notes,
+    Goal: comment.goal,
+    'Task Details': comment.taskDetails,
+    'Task Description': comment.taskDescription,
     'Implementation Guide': comment.implementationGuide,
     'Verification Criteria': comment.verificationCriteria,
-    Summary: comment.summary,
-    'Analysis Result': comment.analysisResult,
+    Dependencies: comment.dependencies,
     'Related Files': comment.relatedFiles,
+    Notes: comment.notes,
   }
   const sections = ISSUE_DOD_FIELDS.map((h) => `## ${h}\n\n${map[h] ?? ''}`)
   return [
@@ -275,9 +277,11 @@ export async function runQaMissionViaRails(
   }
 
   if (effectiveVerdict === 'approve') {
+    // Caminho resiliente (o GitHub decide se pode aprovar) + o campo do padrão
+    // Shrimp: o resumo do veredito é o Goal.
     await postarReview(
       reviewEvent,
-      `${JULES_MARKER}\nGitOrch QA verdict: APPROVE — criteria met, CI green.\n\n${verdict.comment.summary}`
+      `${JULES_MARKER}\nGitOrch QA verdict: APPROVE — criteria met, CI green.\n\n${verdict.comment.goal}`
     )
   } else {
     await postarReview(

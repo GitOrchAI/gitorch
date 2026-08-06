@@ -16,19 +16,24 @@ export type CadenceEvent = 'sprint-planning' | 'daily' | 'sprint-review' | 'spri
 export const CADENCE_VERSION = '0.1.0'
 
 /**
- * Definition of Done de toda issue de Task: os 8 campos canônicos, na ordem
- * (decisão do owner, 2026-07-04). O PO gera; o SM valida e bloqueia delegação
- * sem eles; o QA reprova PRs citando-os no comentário @jules.
+ * Definition of Done de toda issue de Task — o **padrão Shrimp**, contrato
+ * oficial decidido pelo dono do produto e o mesmo que a documentação do RA e
+ * do SM já exigiam. O PO gera; o SM valida e bloqueia delegação sem eles; o QA
+ * reprova PRs citando-os no comentário do dev assíncrono.
+ *
+ * O runtime chegou a publicar outro conjunto (Description/Summary/Analysis
+ * Result): a issue criada pelo próprio produto reprovaria na conferência de
+ * padrão que o SM aplica, porque documentação e código discordavam.
  */
 export const ISSUE_DOD_FIELDS = [
-  'Título',
-  'Description',
-  'Notes',
+  'Goal',
+  'Task Details',
+  'Task Description',
   'Implementation Guide',
   'Verification Criteria',
-  'Summary',
-  'Analysis Result',
+  'Dependencies',
   'Related Files',
+  'Notes',
 ] as const
 
 /** Playbook do papel (markdown, em inglês — vai direto ao motor). */

@@ -70,14 +70,14 @@ describe('playbooks de eventos SCRUM', () => {
 describe('constantes', () => {
   test('DoD tem exatamente os 8 campos canônicos, na ordem', () => {
     expect(ISSUE_DOD_FIELDS).toEqual([
-      'Título',
-      'Description',
-      'Notes',
+      'Goal',
+      'Task Details',
+      'Task Description',
       'Implementation Guide',
       'Verification Criteria',
-      'Summary',
-      'Analysis Result',
+      'Dependencies',
       'Related Files',
+      'Notes',
     ])
   })
 

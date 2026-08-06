@@ -92,7 +92,7 @@ describe('prompt da missão carrega o playbook Cadence (fonte única do método)
     const m = buildAgentMission({ ...baseInput, role: 'po' })
     expect(m.prompt).toContain('Sprint Goal')
     expect(m.prompt).toContain('Implementation Guide')
-    expect(m.prompt).toContain('Analysis Result')
+    expect(m.prompt).toContain('Task Details')
   })
 
   test('RA recebe codegraph-first e cleanup findings', () => {

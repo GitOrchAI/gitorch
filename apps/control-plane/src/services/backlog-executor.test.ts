@@ -12,13 +12,14 @@ import type { DoDFields } from '@gitorch/cadence'
 function fields(over: Partial<DoDFields> = {}): DoDFields {
   return {
     titulo: '[Task] t',
-    description: 'd',
-    notes: 'n',
+    goal: 'g',
+    taskDetails: 'td',
+    taskDescription: 'd',
     implementationGuide: '1. a; 2. b; 3. c',
     verificationCriteria: '- resposta filtrada por material\n- teste de API verde',
-    summary: 's',
-    analysisResult: 'a',
+    dependencies: 'nenhuma',
     relatedFiles: 'x.ts',
+    notes: 'n',
     ...over,
   }
 }
@@ -94,17 +95,17 @@ function fakeGitHub(existingMarkers: string[] = []) {
 }
 
 describe('renderIssueBody', () => {
-  it('corpo tem os 8 campos na ordem canônica + marker de idempotência', () => {
+  it('corpo tem os 8 campos do padrão Shrimp na ordem canônica + marker de idempotência', () => {
     const body = renderIssueBody(fields(), 'gitorch:node:abc')
     const idx = [
-      'Título',
-      'Description',
-      'Notes',
+      'Goal',
+      'Task Details',
+      'Task Description',
       'Implementation Guide',
       'Verification Criteria',
-      'Summary',
-      'Analysis Result',
+      'Dependencies',
       'Related Files',
+      'Notes',
     ].map((h) => body.indexOf(`## ${h}`))
     expect(idx.every((i) => i >= 0)).toBe(true)
     expect([...idx].sort((a, b) => a - b)).toEqual(idx)

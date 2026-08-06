@@ -10,15 +10,27 @@ import { loadPlaybook, type CadenceRole, ISSUE_DOD_FIELDS } from './index'
 // Formulários (tipos + JSON Schema minimal — sem dependência externa)
 // ---------------------------------------------------------------------------
 
+/**
+ * Padrão Shrimp — o contrato OFICIAL da issue, decidido pelo dono do produto e
+ * o mesmo que a documentação do RA e do SM já exigiam.
+ *
+ * Antes o código publicava outro conjunto (Description/Summary/Analysis
+ * Result): a issue criada pelo próprio produto não passava na conferência de
+ * padrão que o SM aplica, porque documentação e runtime discordavam.
+ *
+ * `titulo` é o título da issue, não uma seção do corpo — por isso fica fora
+ * do mapa de seções abaixo.
+ */
 export interface DoDFields {
   titulo: string
-  description: string
-  notes: string
+  goal: string
+  taskDetails: string
+  taskDescription: string
   implementationGuide: string
   verificationCriteria: string
-  summary: string
-  analysisResult: string
+  dependencies: string
   relatedFiles: string
+  notes: string
 }
 
 /**
@@ -27,14 +39,14 @@ export interface DoDFields {
  * um campo é uma edição só (evita o "campo oco" silencioso).
  */
 export const DOD_FIELD_MAP: ReadonlyArray<{ key: keyof DoDFields; header: string }> = [
-  { key: 'titulo', header: 'Título' },
-  { key: 'description', header: 'Description' },
-  { key: 'notes', header: 'Notes' },
+  { key: 'goal', header: 'Goal' },
+  { key: 'taskDetails', header: 'Task Details' },
+  { key: 'taskDescription', header: 'Task Description' },
   { key: 'implementationGuide', header: 'Implementation Guide' },
   { key: 'verificationCriteria', header: 'Verification Criteria' },
-  { key: 'summary', header: 'Summary' },
-  { key: 'analysisResult', header: 'Analysis Result' },
+  { key: 'dependencies', header: 'Dependencies' },
   { key: 'relatedFiles', header: 'Related Files' },
+  { key: 'notes', header: 'Notes' },
 ]
 
 export interface RaAreasForm {
@@ -190,11 +202,15 @@ export interface MiniSchema {
 }
 
 // Derivado da fonte única (DOD_FIELD_MAP) — nunca listar as chaves de novo.
+// `titulo` entra à parte: é o título da issue, não uma seção do corpo, mas
+// continua obrigatório no formulário que a LLM preenche.
 const DOD_FIELDS_SCHEMA: MiniSchema = {
   type: 'object',
-  required: DOD_FIELD_MAP.map((f) => f.key),
+  required: ['titulo', ...DOD_FIELD_MAP.map((f) => f.key)],
   properties: Object.fromEntries(
-    DOD_FIELD_MAP.map((f) => [f.key, { type: 'string' } as MiniSchema])
+    [['titulo', { type: 'string' } as MiniSchema]].concat(
+      DOD_FIELD_MAP.map((f) => [f.key, { type: 'string' } as MiniSchema])
+    ) as Array<[string, MiniSchema]>
   ),
 }
 
@@ -484,7 +500,8 @@ function walk(schema: MiniSchema, value: unknown, path: string, errors: string[]
  */
 export function validateDoD(fields: DoDFields): ValidationResult {
   const errors: string[] = []
-  for (const { key } of DOD_FIELD_MAP) {
+  const obrigatorios: Array<keyof DoDFields> = ['titulo', ...DOD_FIELD_MAP.map((f) => f.key)]
+  for (const key of obrigatorios) {
     const value = fields[key]
     if (typeof value !== 'string' || value.trim().length === 0) {
       errors.push(`${key}: empty (DoD requires all ${ISSUE_DOD_FIELDS.length} fields)`)

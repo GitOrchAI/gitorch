@@ -16,13 +16,14 @@ const APPROVE = JSON.stringify({
   verdict: 'approve',
   comment: {
     titulo: 'Reviews API',
-    description: 'PR entrega os endpoints.',
-    notes: 'CI verde.',
+    goal: 'Todos os critérios atendidos.',
+    taskDetails: 'Diff cobre schema+rota+teste.',
+    taskDescription: 'PR entrega os endpoints.',
     implementationGuide: 'n/a',
     verificationCriteria: '- GET /reviews retorna lista: OK\n- POST valida compra: OK',
-    summary: 'Todos os critérios atendidos.',
-    analysisResult: 'Diff cobre schema+rota+teste.',
+    dependencies: 'nenhuma',
     relatedFiles: 'src/reviews.ts',
+    notes: 'CI verde.',
   },
 })
 
@@ -30,13 +31,14 @@ const REQUEST_CHANGES = JSON.stringify({
   verdict: 'request_changes',
   comment: {
     titulo: 'Faltou validação',
-    description: 'POST /reviews não valida material.',
-    notes: 'CI vermelho no unit-test.',
+    goal: 'Rework necessário.',
+    taskDetails: 'Sem checagem de material no controller.',
+    taskDescription: 'POST /reviews não valida material.',
     implementationGuide: '1. validar body; 2. teste do caso inválido',
     verificationCriteria: '- retornar 400 para material inexistente',
-    summary: 'Rework necessário.',
-    analysisResult: 'Sem checagem de material no controller.',
+    dependencies: 'nenhuma',
     relatedFiles: 'src/reviews.ts',
+    notes: 'CI vermelho no unit-test.',
   },
 })
 
