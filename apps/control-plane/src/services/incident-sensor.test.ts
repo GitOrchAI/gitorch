@@ -3,18 +3,34 @@ import { runIncidentSensor, collectCiFailures } from './incident-sensor.js'
 
 function fakeFetch(opts: {
   failures?: Array<{ name: string; html_url: string; created_at: string }>
+  /** Incidentes ABERTOS que a listagem por label (consistente na hora) já mostra. */
   openIncidentMarkers?: string[]
+  /**
+   * Se `true`, `/search/issues` devolve SEMPRE vazio — simula o lag de
+   * indexação real do GitHub (uma issue criada há segundos ainda não está
+   * indexada). O dedup correto NUNCA deve depender disso.
+   */
+  searchApiLagged?: boolean
 }) {
   const created: Array<{ title: string; body: string; labels: string[] }> = []
+  const urls: string[] = []
   const impl = (async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     const u = String(url)
+    urls.push(u)
     const method = init?.method ?? 'GET'
     const json = (d: unknown) => new Response(JSON.stringify(d), { status: 200 })
     if (u.includes('/actions/runs')) return json({ workflow_runs: opts.failures ?? [] })
     if (u.includes('/search/issues')) {
       return json({
-        items: (opts.openIncidentMarkers ?? []).map((m) => ({ body: `<!-- ${m} -->` })),
+        items: opts.searchApiLagged
+          ? []
+          : (opts.openIncidentMarkers ?? []).map((m) => ({ body: `<!-- ${m} -->` })),
       })
+    }
+    if (u.includes('/issues?labels=') && method === 'GET') {
+      // GET /repos/{repo}/issues?labels=... devolve um ARRAY direto (não
+      // { items: [...] } como a search API).
+      return json((opts.openIncidentMarkers ?? []).map((m) => ({ body: `<!-- ${m} -->` })))
     }
     if (u.endsWith('/issues') && method === 'POST') {
       const body = JSON.parse(String(init?.body))
@@ -23,7 +39,8 @@ function fakeFetch(opts: {
     }
     return json({})
   }) as typeof fetch
-  ;(impl as unknown as { created: typeof created }).created = created
+  ;(impl as unknown as { created: typeof created; urls: typeof urls }).created = created
+  ;(impl as unknown as { created: typeof created; urls: typeof urls }).urls = urls
   return impl
 }
 
@@ -63,6 +80,52 @@ describe('runIncidentSensor', () => {
       openIncidentMarkers: ['gitorch:incident:ci:Deploy'],
     })
     const r = await runIncidentSensor({ repository: 'o/r', githubToken: 't', fetchImpl: f })
+    expect(r.created).toHaveLength(0)
+    expect(r.noOp).toBe(true)
+  })
+
+  // Bug real visto em produção: #20 e #25 eram o MESMO incidente
+  // ("CI failing on main: Sincronizar Atualizações na Wiki Pública"),
+  // criados ~3h de intervalo. Causa 1: o dedup usava `/search/issues`, cuja
+  // indexação é assíncrona — uma issue criada há pouco ainda não aparece na
+  // busca, então a rodada seguinte a recria. A listagem por label
+  // (`GET /repos/{repo}/issues?labels=...`) é consistente na hora: não
+  // depende de índice, reflete o estado real do banco do GitHub.
+  it('dedup não depende da search API (indexação assíncrona): usa listagem por label, consistente na hora', async () => {
+    const f = fakeFetch({
+      failures: [{ name: 'Deploy', html_url: 'u1', created_at: '2026-08-06T14:15:00Z' }],
+      openIncidentMarkers: ['gitorch:incident:ci:Deploy'],
+      // Simula exatamente o bug: a issue já existe, mas /search/issues ainda
+      // não a indexou (devolve vazio) — o comportamento antigo duplicaria.
+      searchApiLagged: true,
+    })
+
+    const r = await runIncidentSensor({ repository: 'o/r', githubToken: 't', fetchImpl: f })
+
+    expect(r.created).toHaveLength(0)
+    expect(r.noOp).toBe(true)
+    const urls = (f as unknown as { urls: string[] }).urls
+    expect(
+      urls.some((u) => u.includes('/issues?labels=gitorch%3Aincident') && u.includes('state=open'))
+    ).toBe(true)
+  })
+
+  // Causa 2 do MESMO bug real (#20/#25): o fingerprint carrega o NOME do
+  // workflow, texto livre quase sempre com espaço ("Sincronizar Atualizações
+  // na Wiki Pública"). O regex antigo de extração do marcador parava no
+  // primeiro espaço e truncava — nunca batia com o marcador completo do
+  // finding novo, então o incidente era recriado em TODA varredura em que o
+  // workflow continuasse falhando, mesmo com o dedup já usando a listagem
+  // por label (sem depender de índice nenhum).
+  it('dedup reconhece fingerprint com espaço no nome do workflow (não trunca o marcador)', async () => {
+    const nomeComEspaco = 'Sincronizar Atualizações na Wiki Pública'
+    const f = fakeFetch({
+      failures: [{ name: nomeComEspaco, html_url: 'u1', created_at: '2026-08-06T14:15:00Z' }],
+      openIncidentMarkers: [`gitorch:incident:ci:${nomeComEspaco}`],
+    })
+
+    const r = await runIncidentSensor({ repository: 'o/r', githubToken: 't', fetchImpl: f })
+
     expect(r.created).toHaveLength(0)
     expect(r.noOp).toBe(true)
   })

@@ -109,14 +109,30 @@ export async function runIncidentSensor(
     return { exitCode: 0, output: 'sensor: no findings.', stderr: '', noOp: true, created: [] }
   }
 
-  // Dedup por fingerprint: UMA busca pelos markers de incidente abertos.
-  const q = encodeURIComponent(`repo:${options.repository} in:body "gitorch:incident:" state:open`)
-  const existing = (await gh('GET', `/search/issues?q=${q}&per_page=100`)) as {
-    items?: Array<{ body?: string }>
-  }
+  // Dedup por fingerprint: lista issues ABERTAS com o label do sensor.
+  //
+  // Achado em produção: a versão anterior usava `GET /search/issues`, cuja
+  // indexação é ASSÍNCRONA — uma issue criada há pouco pode ainda não estar
+  // indexada, então uma varredura seguinte recriaria o MESMO incidente. A
+  // listagem por label é consistente NA HORA (não depende de índice) —
+  // reflete o estado real das issues do repositório. O marcador no corpo
+  // continua o mesmo, então issues já criadas pela versão antiga seguem
+  // reconhecidas.
+  const existing = (await gh(
+    'GET',
+    `/repos/${options.repository}/issues?labels=${encodeURIComponent(INCIDENT_LABEL)}&state=open&per_page=100`
+  )) as Array<{ body?: string }>
   const openMarkers = new Set(
-    (existing.items ?? [])
-      .map((i) => i.body?.match(/<!--\s*(gitorch:incident:[^\s>]+)\s*-->/)?.[1])
+    (Array.isArray(existing) ? existing : [])
+      // Segundo achado, ao vivo (#20 e #25 duplicavam o mesmo incidente "CI
+      // failing on main: Sincronizar Atualizações na Wiki Pública"): o
+      // fingerprint carrega o NOME do workflow, texto livre que quase sempre
+      // tem espaço — `[^\s>]+` parava no primeiro espaço e truncava o
+      // marcador ("...ci:Sincronizar"), então NUNCA batia com o marcador
+      // completo do finding novo e o incidente era recriado em TODA
+      // varredura em que o workflow continuasse falhando. `.+?` (não-guloso)
+      // até o `-->` captura o marcador inteiro, espaços inclusos.
+      .map((i) => i.body?.match(/<!--\s*(gitorch:incident:.+?)\s*-->/)?.[1])
       .filter((m): m is string => Boolean(m))
   )
 
