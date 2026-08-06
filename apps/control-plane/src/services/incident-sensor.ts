@@ -1,4 +1,5 @@
 import { GithubExecutionError } from './github-errors.js'
+import type { CardMover } from './board-status.js'
 
 // SENSOR de incidentes (os "olhos" do GitOrch): coleta erros REAIS do projeto
 // e os transforma em issues `gitorch:incident` — tipo próprio, fora da árvore
@@ -27,6 +28,16 @@ export interface IncidentSensorOptions {
   /** Máximo de incidentes novos por varredura (proteção contra tempestade). */
   cap?: number
   fetchImpl?: typeof fetch
+  /**
+   * Move o card recém-criado para o quadro (issueNumber, coluna) — mesma
+   * injeção que o QA já usa (qa-rails-mission.ts), construída pelo chamador
+   * via createCardMover (board-status.ts) quando o projeto tem board próprio
+   * configurado (Project.runtimeConfig.envConfig.GITORCH_PROJECT_BOARD).
+   * Achado em produção: sem isto a issue de incidente nascia fora do quadro
+   * — best-effort (nunca derruba o incidente já criado, só avisa).
+   */
+  moveCard?: CardMover
+  onWarn?: (message: string) => void
 }
 
 export interface IncidentSensorResult {
@@ -136,6 +147,8 @@ export async function runIncidentSensor(
       .filter((m): m is string => Boolean(m))
   )
 
+  const warn = options.onWarn ?? (() => undefined)
+
   const created: number[] = []
   for (const finding of findings) {
     if (created.length >= cap) break
@@ -155,7 +168,26 @@ export async function runIncidentSensor(
         '_Aguardando triagem do PO (P0–P3). Este incidente não entra em sprint até o PO liberar._',
       ].join('\n'),
     })) as { number?: number }
-    if (issue.number) created.push(issue.number)
+    if (!issue.number) continue
+    created.push(issue.number)
+
+    // Achado em produção: a issue nascia fora do quadro Projects v2 do
+    // projeto — o sensor criava e parava. Best-effort: falha ao mover NUNCA
+    // desfaz o incidente já registrado (a issue é o que importa; o card no
+    // quadro é acessório).
+    if (options.moveCard) {
+      try {
+        await options.moveCard(issue.number, 'todo')
+      } catch (err) {
+        warn(
+          `incidente #${issue.number} criado mas não entrou no quadro: ${String(err).slice(0, 150)}`
+        )
+      }
+    } else {
+      warn(
+        `incidente #${issue.number} criado sem quadro configurado para ${options.repository}; card fica fora do quadro`
+      )
+    }
   }
 
   return {

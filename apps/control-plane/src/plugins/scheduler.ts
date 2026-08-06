@@ -1293,12 +1293,30 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           })
           // Sensor de incidentes (os "olhos"): idempotente por fingerprint —
           // rodar a cada wake do SM não duplica nada. Best-effort.
+          //
+          // O incidente entra no quadro do projeto (coluna inicial) quando há
+          // board próprio configurado — mesma injeção `moveCard` que o QA já
+          // usa. `railsBoard` aqui é só o LIDO de runtimeConfig (SM não cria
+          // board; quem cria/recupera é o wake do PO, acima); sem board
+          // configurado o incidente ainda é registrado (comportamento de
+          // hoje), só fica fora do quadro — o sensor avisa via onWarn.
           let sensorOut = ''
           let sensorNoOp = true
           try {
             const sensor = await runIncidentSensor({
               repository: project.wingId,
               githubToken: railsToken as string,
+              ...(railsBoard
+                ? {
+                    moveCard: createCardMover({
+                      repository: project.wingId,
+                      board: railsBoard,
+                      token: railsToken as string,
+                      columns: resolveBoardColumns(project.runtimeConfig),
+                    }),
+                  }
+                : {}),
+              onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
             })
             sensorOut = sensor.output
             sensorNoOp = sensor.noOp === true

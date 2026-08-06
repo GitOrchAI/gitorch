@@ -154,4 +154,69 @@ describe('runIncidentSensor', () => {
     expect(r.noOp).toBe(true)
     expect(r.output).toContain('no findings')
   })
+
+  // Achado real em produção: o sensor criava a issue de incidente e parava —
+  // nunca entrava no quadro Projects v2 do projeto. `moveCard` é a mesma
+  // injeção que o QA já usa (qa-rails-mission.ts), construída pelo chamador
+  // via createCardMover quando o projeto tem board próprio configurado.
+  describe('moveCard (issue de incidente entra no quadro)', () => {
+    it('incidente novo entra no quadro, na coluna inicial (todo)', async () => {
+      const f = fakeFetch({
+        failures: [{ name: 'Deploy', html_url: 'u1', created_at: '2026-07-05T10:00:00Z' }],
+      })
+      const calls: Array<[number, string]> = []
+      const moveCard = async (issueNumber: number, column: string): Promise<string> => {
+        calls.push([issueNumber, column])
+        return `card #${issueNumber} -> Todo (set)`
+      }
+
+      const r = await runIncidentSensor({
+        repository: 'o/r',
+        githubToken: 't',
+        fetchImpl: f,
+        moveCard: moveCard as never,
+      })
+
+      expect(r.created).toHaveLength(1)
+      expect(calls).toEqual([[r.created[0], 'todo']])
+    })
+
+    it('sem moveCard configurado, cria a issue normalmente (comportamento de hoje) e avisa', async () => {
+      const f = fakeFetch({
+        failures: [{ name: 'Deploy', html_url: 'u1', created_at: '2026-07-05T10:00:00Z' }],
+      })
+      const avisos: string[] = []
+
+      const r = await runIncidentSensor({
+        repository: 'o/r',
+        githubToken: 't',
+        fetchImpl: f,
+        onWarn: (m) => avisos.push(m),
+      })
+
+      expect(r.created).toHaveLength(1)
+      expect(avisos.join(' ')).toContain('quadro')
+    })
+
+    it('falha ao mover pro quadro NÃO derruba o incidente (já foi criado); avisa', async () => {
+      const f = fakeFetch({
+        failures: [{ name: 'Deploy', html_url: 'u1', created_at: '2026-07-05T10:00:00Z' }],
+      })
+      const avisos: string[] = []
+      const moveCard = async (): Promise<string> => {
+        throw new Error('board sem coluna Todo configurada')
+      }
+
+      const r = await runIncidentSensor({
+        repository: 'o/r',
+        githubToken: 't',
+        fetchImpl: f,
+        moveCard: moveCard as never,
+        onWarn: (m) => avisos.push(m),
+      })
+
+      expect(r.created).toHaveLength(1)
+      expect(avisos.join(' ')).toContain('quadro')
+    })
+  })
 })
