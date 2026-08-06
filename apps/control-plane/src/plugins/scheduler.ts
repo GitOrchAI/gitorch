@@ -145,6 +145,23 @@ export function nextOnboardingStep(
   return { role: role as F6AgentRole, remaining }
 }
 
+/**
+ * Board dos trilhos: só o PRÓPRIO board do projeto (gravado em
+ * Project.runtimeConfig.envConfig.GITORCH_PROJECT_BOARD por
+ * provisionSetupMission). Achado crítico da revisão pós-merge: esta função
+ * NUNCA lê `process.env['GITORCH_PROJECT_BOARD']` (o board global de outro
+ * projeto do dono) — de propósito, para que um projeto sem board próprio
+ * jamais herde o board alheio, mesmo que a env global esteja setada (era
+ * exatamente o vazamento multi-tenant que esta task dizia matar). Pura e
+ * testável isolada do resto do dispatch.
+ */
+export function resolveRailsBoard(project: { runtimeConfig?: unknown }): string | undefined {
+  return (
+    (project.runtimeConfig as Record<string, unknown> | null)?.['envConfig'] as
+      Record<string, unknown> | undefined
+  )?.['GITORCH_PROJECT_BOARD'] as string | undefined
+}
+
 function buildWorkspaceProvider(app: FastifyInstance): WorkspaceProvider {
   const executor = process.env['GITORCH_EXECUTOR'] ?? 'local-process'
   if (executor === 'firecracker') {
@@ -1120,11 +1137,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         // multi-tenant que esta task dizia matar. Sem board PRÓPRIO, os
         // trilhos do PO ficam desligados para o projeto (log honesto abaixo)
         // — o roadmap ainda sai na memória, só o quadro que falta.
-        const boardDoProjeto = (
-          (project.runtimeConfig as Record<string, unknown> | null)?.['envConfig'] as
-            Record<string, unknown> | undefined
-        )?.['GITORCH_PROJECT_BOARD'] as string | undefined
-        const railsBoard = boardDoProjeto
+        const railsBoard = resolveRailsBoard(project)
         if (role === 'po' && !railsBoard) {
           app.log.warn(
             `[Scheduler] PO sem board próprio para ${project.wingId}; trilhos do PO desligados (nunca cai no board global de outro projeto)`
