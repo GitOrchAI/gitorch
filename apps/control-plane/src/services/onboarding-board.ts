@@ -18,9 +18,21 @@ export interface ResolvedOwner {
 export interface EnsureProjectBoardDeps {
   /** 'dono/repo' do projeto, como gravado em Project.wingId. */
   repository: string
-  client: Pick<ProjectV2Client, 'findProjectId' | 'createProjectV2'>
+  // `linkProjectV2ToRepository` fica OPCIONAL de propósito (Partial): callers
+  // antigos que injetam um client de teste sem esse método continuam
+  // compilando sem tocar em nada — o passo de ligação só roda quando
+  // `resolveRepositoryId` E o método existem os dois.
+  client: Pick<ProjectV2Client, 'findProjectId' | 'createProjectV2'> &
+    Partial<Pick<ProjectV2Client, 'linkProjectV2ToRepository'>>
   /** Resolve o node id + tipo (user ou organization) do dono no GitHub. */
   resolveOwner: (owner: string) => Promise<ResolvedOwner>
+  /**
+   * Resolve o node id GraphQL do REPOSITÓRIO — usado só para ligar o board
+   * RECÉM-CRIADO a ele (linkProjectV2ToRepository). Opcional: sem ela, o board
+   * é criado normalmente e fica sem o link (comportamento de antes desta
+   * correção); com ela, uma falha na ligação também nunca derruba a criação.
+   */
+  resolveRepositoryId?: (repository: string) => Promise<string>
   /** Número do board já conhecido do projeto, quando houver. */
   existingNumber?: number
   onWarn?: (message: string) => void
@@ -71,6 +83,25 @@ export async function ensureProjectBoard(
       ownerId: resolved.id,
       title: deps.repository,
     })
+
+    // Achado em produção (medido via API do próprio GitHub): createProjectV2
+    // pendura o board no DONO — organization.projectsV2 o via — mas ele nunca
+    // era anunciado ao REPOSITÓRIO (repository.projectsV2.totalCount ficava em
+    // 0, o board nunca aparecia na aba /projects do repositório). Ligar aqui,
+    // logo após criar; falha em ligar NUNCA derruba a criação do board (o
+    // roadmap ainda funciona sem o link — só a aba /projects que fica sem o
+    // atalho).
+    if (deps.resolveRepositoryId && deps.client.linkProjectV2ToRepository) {
+      try {
+        const repositoryId = await deps.resolveRepositoryId(deps.repository)
+        await deps.client.linkProjectV2ToRepository({ projectId: criado.id, repositoryId })
+      } catch (err) {
+        warn(
+          `board ${deps.repository} criado mas falhou ao ligar ao repositório: ${(err as Error).message}`
+        )
+      }
+    }
+
     return { owner, number: criado.number }
   } catch (err) {
     warn(`falha ao garantir o board do projeto ${deps.repository}: ${(err as Error).message}`)
@@ -120,6 +151,33 @@ export async function resolveGithubOwnerId(
   )
 }
 
+/**
+ * Resolve o node id GraphQL de um repositório ('dono/repo') via
+ * `GET /repos/{owner}/{repo}` — é o `repositoryId` que
+ * `linkProjectV2ToRepository` pede para anunciar o board ao repositório.
+ */
+export async function resolveGithubRepositoryId(
+  repository: string,
+  token: string,
+  deps: ResolveGithubOwnerIdDeps = {}
+): Promise<string> {
+  const f = deps.fetchImpl ?? fetch
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    Accept: 'application/vnd.github+json',
+    'User-Agent': 'gitorch-control-plane',
+  }
+
+  const res = await f(`${GITHUB_API}/repos/${repository}`, { headers })
+  if (!res.ok) {
+    throw new Error(
+      `nao foi possivel resolver o repositorio '${repository}' no GitHub (HTTP ${res.status})`
+    )
+  }
+  const data = (await res.json()) as { node_id: string }
+  return data.node_id
+}
+
 export interface ProjectComBoard {
   id: string
   wingId: string
@@ -137,8 +195,10 @@ export interface EnsureAndPersistDeps {
   }) => Promise<string | null>
   createProjectV2Client: (
     token: string
-  ) => Pick<ProjectV2Client, 'findProjectId' | 'createProjectV2'>
+  ) => Pick<ProjectV2Client, 'findProjectId' | 'createProjectV2' | 'linkProjectV2ToRepository'>
   resolveOwner: (owner: string, token: string) => Promise<ResolvedOwner>
+  /** Resolve o node id GraphQL do repositório — liga o board recém-criado a ele (best-effort). */
+  resolveRepositoryId?: (repository: string, token: string) => Promise<string>
   onWarn?: (message: string) => void
 }
 
@@ -181,6 +241,11 @@ export async function ensureAndPersistProjectBoard(
     repository: deps.project.wingId,
     client: deps.createProjectV2Client(token),
     resolveOwner: (owner) => deps.resolveOwner(owner, token),
+    ...(deps.resolveRepositoryId
+      ? {
+          resolveRepositoryId: (repository: string) => deps.resolveRepositoryId!(repository, token),
+        }
+      : {}),
     onWarn: warn,
   })
   if (!board) return undefined
