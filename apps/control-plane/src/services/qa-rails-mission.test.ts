@@ -152,9 +152,11 @@ describe('runQaMissionViaRails', () => {
       fetchImpl: f,
     })
     expect(r.noOp).toBeUndefined()
-    // PR do próprio dono do token: o GitHub proíbe APPROVE (422) — o veredito
-    // sai como review COMMENT com o resultado explícito no texto.
-    expect(posted.reviews[0]!.event).toBe('COMMENT')
+    // O veredito é tentado com força total: quem sabe dizer se a PR é do
+    // próprio ator é o GitHub (422 "own pull request"), não uma pergunta de
+    // identidade que o token de aplicativo não pode responder. Neste cenário o
+    // GitHub aceita, então sai APPROVE mesmo.
+    expect(posted.reviews[0]!.event).toBe('APPROVE')
     expect(posted.reviews[0]!.body).toContain('APPROVE')
   })
 
@@ -295,5 +297,106 @@ describe('runQaMissionViaRails', () => {
     })
     expect(posted.reviews[0]!.event).toBe('REQUEST_CHANGES')
     expect(posted.comments[0]!.body).toContain('@jules')
+  })
+})
+
+// Visto em produção, com a missão do QA marcada FAILED:
+//
+//   GithubExecutionError: GitHub GET /user failed (403):
+//   {"message":"Resource not accessible by integration"}
+//
+// O QA perguntava "quem sou eu?" para não tentar aprovar o próprio PR — o
+// GitHub recusa isso com 422. Só que a identidade agora é a do APLICATIVO, e
+// aplicativo não é uma pessoa: `GET /user` responde 403 sempre. A pergunta era
+// impossível de responder com o token que ele tem.
+//
+// Agora quem decide é a resposta do GitHub: tenta o veredito com força total e,
+// se vier o 422 de "não pode revisar o próprio PR", reposta como comentário —
+// que é sempre permitido. Nunca falha a missão por causa disso.
+describe('QA: veredito sem depender de "quem sou eu"', () => {
+  const prAberta = {
+    number: 7,
+    user: { login: 'app/gitorch-ai' },
+    body: 'closes #3',
+    head: { sha: 'abc' },
+    draft: false,
+  }
+
+  function githubFake(opts: { recusaReview: boolean }) {
+    const chamadas: Array<{ method: string; path: string; body?: unknown }> = []
+    const impl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const u = String(url).replace('https://api.github.com', '')
+      const method = init?.method ?? 'GET'
+      const body = init?.body ? JSON.parse(String(init.body)) : undefined
+      chamadas.push({ method, path: u, body })
+      const ok = (d: unknown) =>
+        ({
+          ok: true,
+          status: 200,
+          json: async () => d,
+          text: async () => '',
+        }) as unknown as Response
+
+      if (u === '/user') {
+        return {
+          ok: false,
+          status: 403,
+          json: async () => ({ message: 'Resource not accessible by integration' }),
+          text: async () => 'Resource not accessible by integration',
+        } as unknown as Response
+      }
+      if (u.includes('/pulls?')) return ok([prAberta])
+      if (u.match(/\/pulls\/\d+$/)) return ok({ body: 'closes #3', head: { sha: 'abc' } })
+      if (u.includes('/reviews?')) return ok([])
+      if (u.includes('/issues/'))
+        return ok({ body: '## Verification Criteria\n\n- funciona', labels: [{ name: 'jules' }] })
+      if (u.includes('/files')) return ok([{ filename: 'a.ts', patch: '+1' }])
+      if (u.includes('/check-runs') || u.includes('/status'))
+        return ok({ check_runs: [], state: 'success' })
+      if (method === 'POST' && u.includes('/reviews')) {
+        const evento = (body as { event?: string })?.event
+        if (opts.recusaReview && evento !== 'COMMENT') {
+          return {
+            ok: false,
+            status: 422,
+            json: async () => ({ message: 'Can not approve your own pull request' }),
+            text: async () => 'Can not approve your own pull request',
+          } as unknown as Response
+        }
+        return ok({})
+      }
+      return ok({})
+    }) as unknown as typeof fetch
+    return { impl, chamadas }
+  }
+
+  it('não pergunta mais "quem sou eu" — a missão não quebra com o 403 do aplicativo', async () => {
+    const { impl, chamadas } = githubFake({ recusaReview: false })
+
+    const r = await runQaMissionViaRails({
+      repository: 'dono/repo',
+      githubToken: 'ghs_app',
+      execute: async () => APPROVE,
+      fetchImpl: impl,
+    })
+
+    expect(r.exitCode).toBe(0)
+    expect(chamadas.some((c) => c.path === '/user')).toBe(false)
+  })
+
+  it('PR do próprio ator: o 422 do GitHub vira comentário, e o veredito sai mesmo assim', async () => {
+    const { impl, chamadas } = githubFake({ recusaReview: true })
+
+    const r = await runQaMissionViaRails({
+      repository: 'dono/repo',
+      githubToken: 'ghs_app',
+      execute: async () => APPROVE,
+      fetchImpl: impl,
+    })
+
+    expect(r.exitCode).toBe(0)
+    const reviews = chamadas.filter((c) => c.method === 'POST' && c.path.includes('/reviews'))
+    expect(reviews.length).toBeGreaterThanOrEqual(2)
+    expect((reviews.at(-1)!.body as { event?: string }).event).toBe('COMMENT')
   })
 })
