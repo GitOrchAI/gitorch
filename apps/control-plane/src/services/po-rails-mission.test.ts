@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { runPoMissionViaRails } from './po-rails-mission.js'
+import { FREE_TEXT_OPTION_VALUE } from './telegram-bot.js'
 
 const PO_REPLIES: Record<string, string> = {
   phases: '{"phases":[{"title":"Fase 1","goal":"g","rationale":"r"}]}',
@@ -88,6 +89,44 @@ describe('runPoMissionViaRails', () => {
     })
     expect(r.exitCode).toBe(0)
     expect(r.output).toContain('no open wishlist')
+  })
+
+  it('sem wish aberta: a pergunta ao dono tem as 3 opções fechadas + a 4ª livre (feedback do dono: "a 4ª resposta tem que ser manual")', async () => {
+    const f = (async () => new Response(JSON.stringify([]), { status: 200 })) as typeof fetch
+    /* eslint-disable @typescript-eslint/no-explicit-any */
+    const askCalls: any[] = []
+    const agentQuestionService = {
+      ask: async (userId: string, projectId: string, input: any) => {
+        askCalls.push({ userId, projectId, input })
+        return { deduped: false, question: { id: 'q_1' } }
+      },
+    }
+
+    const r = await runPoMissionViaRails({
+      repository: 'o/r',
+      board: 'o/9',
+      githubToken: 't',
+      execute: async () => '{}',
+      contextBlocks: [],
+      fetchImpl: f,
+      projectId: 'proj_1',
+      userId: 'user_1',
+      agentQuestionService: agentQuestionService as any,
+    })
+
+    expect(r.exitCode).toBe(0)
+    expect(askCalls).toHaveLength(1)
+    const options = askCalls[0].input.options
+    expect(options).toHaveLength(4)
+    // as 3 fechadas continuam lá, na mesma ordem de sempre.
+    expect(options.slice(0, 3).map((o: any) => o.value)).toEqual([
+      'wishlist-mvp-features',
+      'wishlist-technical-health',
+      'wishlist-ui-design',
+    ])
+    // a 4ª é o escape hatch de texto livre — nunca um 4º valor fechado.
+    expect(options[3].value).toBe(FREE_TEXT_OPTION_VALUE)
+    expect(options[3].label).toContain('Outro')
   })
 
   it('tria incidente sem prioridade: label P0 + comentário + liberado ganha gitorch:task e milestone', async () => {

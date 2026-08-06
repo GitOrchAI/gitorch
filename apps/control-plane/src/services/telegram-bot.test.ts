@@ -8,6 +8,10 @@ import {
   parseQuestionCallbackData,
   handleTelegramCallback,
   handleTelegramUpdate,
+  handleTelegramQuestionReply,
+  collapseTelegramQuestion,
+  buildFreeTextOption,
+  FREE_TEXT_OPTION_VALUE,
 } from './telegram-bot.js'
 
 // A ponte com a API do Telegram. Aqui mora o único jeito de o bot descobrir o
@@ -402,6 +406,99 @@ describe('answerTelegramCallback — some o "carregando" do botão no celular do
       await answerTelegramCallback({ botToken: BOT, callbackQueryId: 'cbq_3', fetchImpl })
     ).toBe(false)
   })
+
+  it('showAlert manda show_alert:true (pro Telegram mostrar um popup modal, não só o toast)', async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response(JSON.stringify({ ok: true }), { status: 200 })
+    ) as unknown as typeof fetch
+
+    await answerTelegramCallback({
+      botToken: BOT,
+      callbackQueryId: 'cbq_4',
+      text: 'instrução',
+      showAlert: true,
+      fetchImpl,
+    })
+
+    const call = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+      callback_query_id: 'cbq_4',
+      text: 'instrução',
+      show_alert: true,
+    })
+  })
+})
+
+describe('collapseTelegramQuestion — a pergunta some com os botões depois de respondida (W3.3.x, feedback do dono)', () => {
+  it('reescreve o texto com o que foi escolhido e ZERA o teclado (editMessageText)', async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response(JSON.stringify({ ok: true }), { status: 200 })
+    ) as unknown as typeof fetch
+
+    const ok = await collapseTelegramQuestion({
+      botToken: BOT,
+      chatId: '555',
+      messageId: 42,
+      questionText: 'Qual é o azul oficial do site?',
+      chosenLabel: '#2563EB',
+      fetchImpl,
+    })
+
+    expect(ok).toBe(true)
+    const call = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(String(call?.[0])).toContain('/editMessageText')
+    const body = JSON.parse(String(call?.[1]?.body))
+    expect(body.chat_id).toBe('555')
+    expect(body.message_id).toBe(42)
+    expect(body.text).toBe('Qual é o azul oficial do site?\n\n✓ Você escolheu: #2563EB')
+    expect(body.reply_markup).toEqual({ inline_keyboard: [] })
+  })
+
+  it('falha do Telegram (ex.: "message is not modified" em edição repetida) não lança — devolve false', async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response(JSON.stringify({ ok: false }), { status: 400 })
+    ) as unknown as typeof fetch
+    expect(
+      await collapseTelegramQuestion({
+        botToken: BOT,
+        chatId: '555',
+        messageId: 1,
+        questionText: 'x',
+        chosenLabel: 'y',
+        fetchImpl,
+      })
+    ).toBe(false)
+  })
+
+  it('rede fora não derruba a esteira', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('ECONNRESET')
+    }) as unknown as typeof fetch
+    expect(
+      await collapseTelegramQuestion({
+        botToken: BOT,
+        chatId: '555',
+        messageId: 1,
+        questionText: 'x',
+        chosenLabel: 'y',
+        fetchImpl,
+      })
+    ).toBe(false)
+  })
+})
+
+describe('buildFreeTextOption — a 4ª opção "responda por texto" (feedback do dono: falta escape hatch)', () => {
+  it('devolve uma opção com o sentinel FREE_TEXT_OPTION_VALUE', () => {
+    const opt = buildFreeTextOption()
+    expect(opt.value).toBe(FREE_TEXT_OPTION_VALUE)
+    expect(opt.label).toContain('Outro')
+  })
+
+  it('aceita label customizado', () => {
+    const opt = buildFreeTextOption('✍️ Nenhuma das anteriores')
+    expect(opt.label).toBe('✍️ Nenhuma das anteriores')
+    expect(opt.value).toBe(FREE_TEXT_OPTION_VALUE)
+  })
 })
 
 describe('parseQuestionCallbackData — "q:<id>:<índice>" sem confiar cegamente no que o Telegram manda', () => {
@@ -430,7 +527,15 @@ describe('parseQuestionCallbackData — "q:<id>:<índice>" sem confiar cegamente
 
 describe('handleTelegramCallback — o clique no botão vira answer(), com guard anti cross-tenant (W3.3.2)', () => {
   /* eslint-disable @typescript-eslint/no-explicit-any */
-  function fakeDeps(opts: { question?: any; link?: any; fetchOk?: boolean }) {
+  function fakeDeps(opts: {
+    question?: any
+    link?: any
+    fetchOk?: boolean
+    // Por padrão devolve null (comportamento histórico dos testes abaixo, que
+    // não olham pro record devolvido). Os testes de colapso passam um record
+    // de verdade, como o answer() real devolveria.
+    answerReturns?: any
+  }) {
     const answerCalls: any[] = []
     const fetchImpl = vi.fn(
       async () => new Response(JSON.stringify({ ok: opts.fetchOk ?? true }), { status: 200 })
@@ -451,7 +556,7 @@ describe('handleTelegramCallback — o clique no botão vira answer(), com guard
       agentQuestionService: {
         answer: vi.fn(async (id: string, value: string, via: string) => {
           answerCalls.push({ id, value, via })
-          return null
+          return opts.answerReturns ?? null
         }),
       },
       botToken: BOT,
@@ -463,6 +568,8 @@ describe('handleTelegramCallback — o clique no botão vira answer(), com guard
   const QUESTION = {
     id: 'q_1',
     userId: 'user_dono',
+    text: 'Qual é o azul oficial do site?',
+    telegramMessageId: 42,
     options: [
       { label: '#2563EB', value: '#2563EB' },
       { label: '#1E40AF', value: '#1E40AF' },
@@ -554,5 +661,272 @@ describe('handleTelegramCallback — o clique no botão vira answer(), com guard
 
     expect(answerCalls).toEqual([])
     expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('COLAPSA a mensagem depois de responder: edita o texto (com a escolha) e remove o teclado (feedback do dono)', async () => {
+    const answeredRecord = { ...QUESTION, status: 'answered', answer: '#1E40AF' }
+    const { deps, fetchImpl } = fakeDeps({
+      question: QUESTION,
+      link: LINK_DONO,
+      answerReturns: answeredRecord,
+    })
+
+    await handleTelegramCallback(deps as any, {
+      update_id: 8,
+      callback_query: {
+        id: 'cbq_8',
+        from: { id: 555 },
+        message: { message_id: 42, chat: { id: 555 } },
+        data: 'q:q_1:1',
+      },
+    })
+
+    const editCall = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.find((c) =>
+      String(c[0]).includes('/editMessageText')
+    )
+    expect(editCall).toBeTruthy()
+    const body = JSON.parse(String(editCall?.[1]?.body))
+    expect(body.chat_id).toBe('555')
+    expect(body.message_id).toBe(42)
+    expect(body.text).toBe('Qual é o azul oficial do site?\n\n✓ Você escolheu: #1E40AF')
+    expect(body.reply_markup).toEqual({ inline_keyboard: [] })
+  })
+
+  it('resposta idempotente (2º clique numa pergunta JÁ respondida): o colapso reflete a resposta ORIGINAL gravada, não o clique novo', async () => {
+    // answer() é idempotente por contrato (agent-question.ts): a 2ª chamada
+    // devolve o record JÁ existente, com o valor da 1ª resposta — mesmo que o
+    // clique atual seja em outra opção. A mensagem editada tem que mostrar a
+    // verdade gravada, não o que a pessoa acabou de clicar.
+    const originalAnswer = { ...QUESTION, status: 'answered', answer: '#2563EB' }
+    const { deps, fetchImpl } = fakeDeps({
+      question: QUESTION,
+      link: LINK_DONO,
+      answerReturns: originalAnswer,
+    })
+
+    await handleTelegramCallback(deps as any, {
+      update_id: 9,
+      callback_query: {
+        id: 'cbq_9',
+        from: { id: 555 },
+        message: { message_id: 42, chat: { id: 555 } },
+        data: 'q:q_1:1', // clicou em #1E40AF de novo, mas a resposta gravada é #2563EB
+      },
+    })
+
+    const editCall = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.find((c) =>
+      String(c[0]).includes('/editMessageText')
+    )
+    const body = JSON.parse(String(editCall?.[1]?.body))
+    expect(body.text).toContain('✓ Você escolheu: #2563EB')
+  })
+
+  it('sem messageId disponível (nem cq.message, nem telegramMessageId no banco): não tenta colapsar', async () => {
+    const questionSemMessageId = { ...QUESTION, telegramMessageId: null }
+    const answeredRecord = { ...questionSemMessageId, status: 'answered', answer: '#1E40AF' }
+    const { deps, fetchImpl } = fakeDeps({
+      question: questionSemMessageId,
+      link: LINK_DONO,
+      answerReturns: answeredRecord,
+    })
+
+    await handleTelegramCallback(deps as any, {
+      update_id: 10,
+      callback_query: { id: 'cbq_10', from: { id: 555 }, data: 'q:q_1:1' }, // sem cq.message
+    })
+
+    const editCall = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.find((c) =>
+      String(c[0]).includes('/editMessageText')
+    )
+    expect(editCall).toBeUndefined()
+  })
+
+  it('4ª opção "Outro" (FREE_TEXT_OPTION_VALUE): NÃO grava resposta nenhuma, só instrui a responder por texto — e NÃO colapsa (a pergunta continua aberta)', async () => {
+    const questionComOutro = {
+      ...QUESTION,
+      options: [
+        ...QUESTION.options,
+        { label: '✍️ Outro (respondo por texto)', value: FREE_TEXT_OPTION_VALUE },
+      ],
+    }
+    const { deps, answerCalls, fetchImpl } = fakeDeps({
+      question: questionComOutro,
+      link: LINK_DONO,
+    })
+
+    await handleTelegramCallback(deps as any, {
+      update_id: 11,
+      callback_query: {
+        id: 'cbq_11',
+        from: { id: 555 },
+        message: { message_id: 42, chat: { id: 555 } },
+        data: 'q:q_1:2',
+      },
+    })
+
+    // Nenhuma resposta foi gravada — "Outro" não é uma resposta, é uma instrução.
+    expect(answerCalls).toEqual([])
+
+    // Instrui via popup MODAL (show_alert), não o toast discreto de "✓ registrado".
+    const alertCall = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.find((c) =>
+      String(c[0]).includes('/answerCallbackQuery')
+    )
+    expect(alertCall).toBeTruthy()
+    const alertBody = JSON.parse(String(alertCall?.[1]?.body))
+    expect(alertBody.show_alert).toBe(true)
+    expect(alertBody.text).toBeTruthy()
+
+    // A pergunta NÃO colapsa: ainda está esperando a resposta em texto.
+    const editCall = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.find((c) =>
+      String(c[0]).includes('/editMessageText')
+    )
+    expect(editCall).toBeUndefined()
+  })
+})
+
+describe('handleTelegramQuestionReply — resposta em TEXTO LIVRE casada por reply_to_message (feedback do dono: falta escape hatch)', () => {
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  function fakeDeps(opts: { question?: any; link?: any; answerReturns?: any }) {
+    const answerCalls: any[] = []
+    const fetchImpl = vi.fn(
+      async () => new Response(JSON.stringify({ ok: true }), { status: 200 })
+    ) as unknown as typeof fetch
+    const deps = {
+      prisma: {
+        agentQuestion: {
+          findFirst: vi.fn(async ({ where }: any) =>
+            opts.question &&
+            where.userId === opts.question.userId &&
+            where.telegramMessageId === opts.question.telegramMessageId
+              ? opts.question
+              : null
+          ),
+        },
+        telegramLink: {
+          findFirst: vi.fn(async ({ where }: any) =>
+            opts.link && where.chatId === opts.link.chatId && where.status === 'linked'
+              ? opts.link
+              : null
+          ),
+        },
+      },
+      agentQuestionService: {
+        answer: vi.fn(async (id: string, value: string, via: string) => {
+          answerCalls.push({ id, value, via })
+          return opts.answerReturns ?? null
+        }),
+      },
+      botToken: BOT,
+      fetchImpl,
+    }
+    return { deps, answerCalls, fetchImpl }
+  }
+
+  const QUESTION = {
+    id: 'q_livre_1',
+    userId: 'user_dono',
+    text: 'Nenhuma opção serve? Descreva o que você quer.',
+    telegramMessageId: 77,
+    options: [],
+  }
+  const LINK_DONO = { userId: 'user_dono', status: 'linked', chatId: '555' }
+
+  it('reply à mensagem da pergunta: casa por reply_to_message.message_id, grava o TEXTO como resposta e colapsa', async () => {
+    const answeredRecord = { ...QUESTION, status: 'answered', answer: 'quero um tom mais escuro' }
+    const { deps, answerCalls, fetchImpl } = fakeDeps({
+      question: QUESTION,
+      link: LINK_DONO,
+      answerReturns: answeredRecord,
+    })
+
+    const handled = await handleTelegramQuestionReply(deps as any, {
+      update_id: 1,
+      message: {
+        chat: { id: 555 },
+        text: 'quero um tom mais escuro',
+        reply_to_message: { message_id: 77 },
+      },
+    })
+
+    expect(handled).toBe(true)
+    expect(answerCalls).toEqual([
+      { id: 'q_livre_1', value: 'quero um tom mais escuro', via: 'telegram' },
+    ])
+
+    const editCall = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.find((c) =>
+      String(c[0]).includes('/editMessageText')
+    )
+    expect(editCall).toBeTruthy()
+    const body = JSON.parse(String(editCall?.[1]?.body))
+    expect(body.text).toContain('✓ Você escolheu: quero um tom mais escuro')
+    expect(body.reply_markup).toEqual({ inline_keyboard: [] })
+  })
+
+  it('mensagem que NÃO é reply a nada: devolve false, não toca no banco nem na rede', async () => {
+    const { deps, answerCalls, fetchImpl } = fakeDeps({ question: QUESTION, link: LINK_DONO })
+
+    const handled = await handleTelegramQuestionReply(deps as any, {
+      update_id: 2,
+      message: { chat: { id: 555 }, text: 'oi, tudo bem?' },
+    })
+
+    expect(handled).toBe(false)
+    expect(answerCalls).toEqual([])
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('reply a uma mensagem que NÃO é de nenhuma AgentQuestion: devolve false (segue pro fluxo normal)', async () => {
+    const { deps, answerCalls, fetchImpl } = fakeDeps({ question: QUESTION, link: LINK_DONO })
+
+    const handled = await handleTelegramQuestionReply(deps as any, {
+      update_id: 3,
+      message: {
+        chat: { id: 555 },
+        text: 'resposta qualquer',
+        reply_to_message: { message_id: 999999 }, // não é o 77 da QUESTION
+      },
+    })
+
+    expect(handled).toBe(false)
+    expect(answerCalls).toEqual([])
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('GUARD cross-tenant: reply de um chat sem TelegramLink vinculado → ignora', async () => {
+    const { deps, answerCalls, fetchImpl } = fakeDeps({ question: QUESTION, link: undefined })
+
+    const handled = await handleTelegramQuestionReply(deps as any, {
+      update_id: 4,
+      message: {
+        chat: { id: 555 },
+        text: 'resposta qualquer',
+        reply_to_message: { message_id: 77 },
+      },
+    })
+
+    expect(handled).toBe(false)
+    expect(answerCalls).toEqual([])
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('texto vazio (reply sem conteúdo, ex.: só uma foto) → devolve false', async () => {
+    const { deps, answerCalls } = fakeDeps({ question: QUESTION, link: LINK_DONO })
+
+    const handled = await handleTelegramQuestionReply(deps as any, {
+      update_id: 5,
+      message: { chat: { id: 555 }, text: '   ', reply_to_message: { message_id: 77 } },
+    })
+
+    expect(handled).toBe(false)
+    expect(answerCalls).toEqual([])
+  })
+
+  it('update sem message (ex.: callback_query) → devolve false', async () => {
+    const { deps } = fakeDeps({ question: QUESTION, link: LINK_DONO })
+    const handled = await handleTelegramQuestionReply(deps as any, {
+      update_id: 6,
+      callback_query: { id: 'cbq_x', data: 'q:x:0' },
+    })
+    expect(handled).toBe(false)
   })
 })

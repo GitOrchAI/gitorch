@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { CortexDrawer } from '@gitorch/cortex'
 import { AgentQuestionService } from './agent-question.js'
-import { handleTelegramCallback, type TelegramCallbackDeps } from './telegram-bot.js'
+import {
+  handleTelegramCallback,
+  handleTelegramQuestionReply,
+  buildFreeTextOption,
+  FREE_TEXT_OPTION_VALUE,
+  type TelegramCallbackDeps,
+} from './telegram-bot.js'
 
 // Prova real (W3.5.2): o loop human-in-the-loop INTEIRO, de ponta a ponta,
 // backend — criar dúvida → clique no Telegram → answered + memória (Cortex) —
@@ -41,6 +47,12 @@ function fakePrisma() {
           if (where.projectId !== undefined && r.projectId !== where.projectId) return false
           if (where.dedupKey !== undefined && r.dedupKey !== where.dedupKey) return false
           if (where.status !== undefined && r.status !== where.status) return false
+          if (where.userId !== undefined && r.userId !== where.userId) return false
+          if (
+            where.telegramMessageId !== undefined &&
+            r.telegramMessageId !== where.telegramMessageId
+          )
+            return false
           return true
         })
         return rows[0] ?? null
@@ -85,6 +97,14 @@ function fakePrisma() {
     },
     telegramLink: {
       findUnique: vi.fn(async ({ where }: any) => telegramLinks.get(where.userId) ?? null),
+      findFirst: vi.fn(async ({ where }: any) => {
+        const rows = [...telegramLinks.values()].filter((r) => {
+          if (where.chatId !== undefined && r.chatId !== where.chatId) return false
+          if (where.status !== undefined && r.status !== where.status) return false
+          return true
+        })
+        return rows[0] ?? null
+      }),
     },
   }
 }
@@ -208,5 +228,140 @@ describe('Loop human-in-the-loop E2E (W3.5.2) — criar dúvida → clique → a
     expect(stillOpen.answer).toBeNull()
     expect(cortex.writeDrawer).not.toHaveBeenCalled()
     expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('PROVA (feedback do dono): o clique COLAPSA a mensagem — o texto passa a mostrar o que foi escolhido e o teclado some', async () => {
+    const prisma = fakePrisma()
+    prisma.projects.set('proj_1', { id: 'proj_1', wingId: 'octo/repo' })
+    prisma.telegramLinks.set(OWNER_ID, {
+      userId: OWNER_ID,
+      status: 'linked',
+      chatId: OWNER_CHAT_ID,
+    })
+
+    const cortex = fakeCortex()
+    const agentQuestionService = new AgentQuestionService(prisma as any, { cortex })
+    const created = await agentQuestionService.ask(OWNER_ID, 'proj_1', COR_AZUL_QUESTION)
+    const questionId = created.question.id
+
+    const fetchImpl = vi.fn(
+      async () => new Response(JSON.stringify({ ok: true }), { status: 200 })
+    ) as unknown as typeof fetch
+    const deps: TelegramCallbackDeps = {
+      prisma: prisma as any,
+      agentQuestionService,
+      botToken: BOT_TOKEN,
+      fetchImpl,
+    }
+
+    // O clique vem com `callback_query.message` (a mensagem QUE TINHA o
+    // teclado) — é o que o Telegram de verdade manda, e é dela que colapsamos.
+    await handleTelegramCallback(deps, {
+      update_id: 10,
+      callback_query: {
+        id: 'cbq_10',
+        from: { id: Number(OWNER_CHAT_ID) },
+        message: { message_id: 555, chat: { id: Number(OWNER_CHAT_ID) } },
+        data: `q:${questionId}:1`, // #1E40AF
+      },
+    })
+
+    const editCall = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.find((c) =>
+      String(c[0]).includes('/editMessageText')
+    )
+    expect(editCall).toBeTruthy()
+    const body = JSON.parse(String(editCall?.[1]?.body))
+    expect(body.chat_id).toBe(OWNER_CHAT_ID)
+    expect(body.message_id).toBe(555)
+    expect(body.text).toContain(COR_AZUL_QUESTION.text)
+    expect(body.text).toContain('✓ Você escolheu: #1E40AF')
+    expect(body.reply_markup).toEqual({ inline_keyboard: [] })
+  })
+
+  it('PROVA (feedback do dono, opção b): a 4ª opção livre existe, e uma resposta por REPLY (sem clicar em botão) vira answered + memória, casada por reply_to_message', async () => {
+    const prisma = fakePrisma()
+    prisma.projects.set('proj_1', { id: 'proj_1', wingId: 'octo/repo' })
+    prisma.telegramLinks.set(OWNER_ID, {
+      userId: OWNER_ID,
+      status: 'linked',
+      chatId: OWNER_CHAT_ID,
+    })
+
+    const cortex = fakeCortex()
+    const agentQuestionService = new AgentQuestionService(prisma as any, { cortex })
+
+    // A pergunta oferece a 4ª opção livre (o mesmo formato que
+    // po-rails-mission.ts monta hoje).
+    const created = await agentQuestionService.ask(OWNER_ID, 'proj_1', {
+      ...COR_AZUL_QUESTION,
+      options: [...COR_AZUL_QUESTION.options, buildFreeTextOption()],
+    })
+    const questionId = created.question.id
+    const createdOptions = created.question.options as unknown as { value: string }[]
+    expect(createdOptions[createdOptions.length - 1]?.value).toBe(FREE_TEXT_OPTION_VALUE)
+
+    // O envio real (notifyOwner em plugins/telegram.ts) grava o message_id
+    // devolvido pelo Telegram — aqui simulamos esse estado já persistido.
+    prisma.questions.get(questionId).telegramMessageId = 777
+
+    const fetchImpl = vi.fn(
+      async () => new Response(JSON.stringify({ ok: true }), { status: 200 })
+    ) as unknown as typeof fetch
+    const deps: TelegramCallbackDeps = {
+      prisma: prisma as any,
+      agentQuestionService,
+      botToken: BOT_TOKEN,
+      fetchImpl,
+    }
+
+    // O dono NÃO clicou em botão nenhum: respondeu (reply) direto na
+    // mensagem, com texto livre — o caminho real quando nenhuma das 3
+    // opções fechadas serve.
+    const handled = await handleTelegramQuestionReply(deps, {
+      update_id: 20,
+      message: {
+        chat: { id: Number(OWNER_CHAT_ID) },
+        text: 'Nenhum desses — quero um azul mais escuro que #1E40AF, tipo #0F2A6B',
+        reply_to_message: { message_id: 777 },
+      },
+    })
+
+    expect(handled).toBe(true)
+
+    const answered = prisma.questions.get(questionId)
+    expect(answered.status).toBe('answered')
+    expect(answered.answer).toBe(
+      'Nenhum desses — quero um azul mais escuro que #1E40AF, tipo #0F2A6B'
+    )
+    expect(answered.answeredVia).toBe('telegram')
+
+    expect(cortex.writeDrawer).toHaveBeenCalledTimes(1)
+    const drawer = cortex.writeDrawer.mock.calls[0]![0]
+    expect(drawer.content).toContain('#0F2A6B')
+
+    // Colapsou mostrando o TEXTO LIVRE de verdade (não um label de opção).
+    const editCall = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.find((c) =>
+      String(c[0]).includes('/editMessageText')
+    )
+    expect(editCall).toBeTruthy()
+    const body = JSON.parse(String(editCall?.[1]?.body))
+    expect(body.text).toContain('✓ Você escolheu: Nenhum desses')
+
+    // 2ª tentativa (ex.: o dono manda outro reply por engano): idempotente —
+    // a resposta gravada NÃO muda, reflete a 1ª de verdade.
+    ;(fetchImpl as unknown as ReturnType<typeof vi.fn>).mockClear()
+    const handledAgain = await handleTelegramQuestionReply(deps, {
+      update_id: 21,
+      message: {
+        chat: { id: Number(OWNER_CHAT_ID) },
+        text: 'mudei de ideia, quero #FF0000',
+        reply_to_message: { message_id: 777 },
+      },
+    })
+    expect(handledAgain).toBe(true)
+    expect(prisma.questions.get(questionId).answer).toBe(
+      'Nenhum desses — quero um azul mais escuro que #1E40AF, tipo #0F2A6B'
+    )
+    expect(cortex.writeDrawer).toHaveBeenCalledTimes(1) // não gravou de novo
   })
 })
