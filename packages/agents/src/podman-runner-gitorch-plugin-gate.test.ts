@@ -142,4 +142,74 @@ describe('createPodmanCommandRunner com requireGitorchPlugin', () => {
     )
     expect(checkCalls).toHaveLength(1)
   })
+
+  // Achado importante: stack local e stack remoto do free-tier podem ter o
+  // MESMO engine+imagem por default — sem `runnerId` na chave do cache, a
+  // missão do segundo runner reusava o resultado verificado no PRIMEIRO,
+  // sem nunca checar o host dela de verdade.
+  test('runnerId distintos (mesma imagem/engine) NÃO compartilham cache — cada runner é verificado de verdade', async () => {
+    const hostRunnerLocal = vi.fn().mockResolvedValue(ok())
+    const hostRunnerRemoto = vi.fn().mockResolvedValue(fail())
+
+    const runnerLocal = createPodmanCommandRunner({
+      image: 'img-mesma-tag',
+      podmanBinary: 'podman',
+      hostRunner: hostRunnerLocal,
+      requireGitorchPlugin: true,
+      runnerId: 'local',
+    })
+    const runnerRemoto = createPodmanCommandRunner({
+      image: 'img-mesma-tag',
+      podmanBinary: 'podman',
+      hostRunner: hostRunnerRemoto,
+      requireGitorchPlugin: true,
+      runnerId: 'ssh:free-tier-host',
+    })
+
+    const resultLocal = await runnerLocal(buildRequest())
+    const resultRemoto = await runnerRemoto(buildRequest())
+
+    // O local tem o plugin (ok()) e roda a missão.
+    expect(resultLocal.exitCode).toBe(0)
+    expect(hostRunnerLocal).toHaveBeenCalledTimes(2) // verificação + missão
+
+    // O remoto NÃO tem o plugin (fail()) e é recusado — a checagem dele
+    // rodou de verdade, não herdou o resultado positivo do local.
+    expect(resultRemoto.exitCode).not.toBe(0)
+    expect(resultRemoto.stderr).toBe(GITORCH_PLUGIN_MISSING_MESSAGE)
+    expect(hostRunnerRemoto).toHaveBeenCalledTimes(1) // só a verificação, nunca a missão
+  })
+
+  // Achado importante: falha transitória (hiccup do host runner) não pode
+  // virar recusa permanente — só o `true` é cacheado.
+  test('resultado NEGATIVO não fica cacheado: um hiccup transitório não recusa todas as missões seguintes para sempre', async () => {
+    const hostRunner = vi
+      .fn()
+      // 1ª verificação: hiccup (não tem o plugin desta vez / rede instável).
+      .mockResolvedValueOnce(fail())
+      // 2ª verificação (nova tentativa, missão seguinte): agora confirma.
+      .mockResolvedValueOnce(ok())
+      // Execução da missão da 2ª tentativa.
+      .mockResolvedValueOnce(ok())
+
+    const runner = createPodmanCommandRunner({
+      image: 'img-hiccup',
+      hostRunner,
+      requireGitorchPlugin: true,
+    })
+
+    const primeira = await runner(buildRequest())
+    expect(primeira.exitCode).not.toBe(0)
+    expect(primeira.stderr).toBe(GITORCH_PLUGIN_MISSING_MESSAGE)
+
+    const segunda = await runner(buildRequest())
+
+    // A missão seguinte tentou verificar de NOVO (não confiou cegamente no
+    // `false` cacheado) e, desta vez, o plugin foi confirmado — a missão roda.
+    expect(segunda.exitCode).toBe(0)
+    const checkCalls = hostRunner.mock.calls.filter(
+      (call) => Array.isArray(call[0].args) && call[0].args.includes('--entrypoint')
+    )
+    expect(checkCalls).toHaveLength(2)
+  })
 })

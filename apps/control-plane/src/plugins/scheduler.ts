@@ -18,6 +18,7 @@ import {
   createPythonSdkRuntimeAdapter,
   isF6AgentRole,
   realRuntimeCommandRunner,
+  wrapWithHostGitorchPluginGate,
   DEFAULT_AGENT_RUNTIME_ASSIGNMENTS,
   type F6AgentRole,
   type F6AgentRuntime,
@@ -298,7 +299,14 @@ export function buildMissionRunner(
 ): RuntimeCommandRunner {
   const executor = process.env['GITORCH_EXECUTOR'] ?? 'local-process'
   if (executor !== 'podman') {
-    return createLocalCredentialRunner(app.engineConnections, undefined, environments, app.log)
+    // Achado importante da revisão pós-merge: local-process é o DEFAULT (e o
+    // que a CI usa) e não tinha NENHUMA trava equivalente à do caminho
+    // podman — --dangerously-skip-permissions (fixa no código) rodava solta.
+    // Regra do dono, literal: "nunca existe agente solto sem trava". Mesmo
+    // gate do container, adaptado pro host (ver host-plugin-gate.ts).
+    return wrapWithHostGitorchPluginGate(
+      createLocalCredentialRunner(app.engineConnections, undefined, environments, app.log)
+    )
   }
 
   const image = process.env['GITORCH_AGENT_IMAGE'] ?? 'localhost/gitorch-agent:latest'
@@ -386,6 +394,10 @@ export function buildMissionRunner(
     // imagem — --dangerously-skip-permissions fixa no código não pode ficar
     // sem trava se o plugin um dia deixar de ser instalado.
     requireGitorchPlugin: true,
+    // Achado importante: identifica ESTE runner (o host local) na chave do
+    // cache da verificação — sem isto colide com o stack remoto do free-tier
+    // quando engine+imagem batem por default (ver runnerId em podman-runner.ts).
+    runnerId: 'local',
   })
 }
 
@@ -555,6 +567,11 @@ export function buildRemoteRuntimeStackIfConfigured(app: FastifyInstance): Runti
     // Mesma trava do stack local (ver buildMissionRunner): a verificação sobe
     // pelo MESMO sshRunner, confirmando o gate na imagem do nó remoto real.
     requireGitorchPlugin: true,
+    // Achado importante: sem isto, engine+imagem defaults iguais ao stack
+    // local colidiam na MESMA chave de cache e a missão remota reusava,
+    // sem nunca checar de verdade, o resultado verificado no host LOCAL.
+    // `host` distingue nós remotos diferentes entre si também.
+    runnerId: `ssh:${host}`,
   })
 
   // RemoteWorkspaceProvider exige um runner sempre-Promise; RuntimeCommandRunner
