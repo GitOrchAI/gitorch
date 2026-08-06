@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { assertMissionDelivered } from './mission-outcome.js'
+import { assertMissionDelivered, resolveMissionDelivery } from './mission-outcome.js'
 
 describe('assertMissionDelivered', () => {
   it('rejeita a saudação de motor sem missão (o caso real que ficava verde)', () => {
@@ -93,5 +93,90 @@ describe('assertMissionDelivered', () => {
 
     expect(saida.length).toBeGreaterThan(7000)
     expect(assertMissionDelivered('sm', saida).delivered).toBe(true)
+  })
+
+  // Achado Importante 8: uma saudação com as perguntas de esclarecimento
+  // formatadas como lista markdown tinha estrutura ("- ") e por isso passava
+  // pelo contrato antigo, apesar de ser exatamente o motor ocioso do
+  // Crítico 1. Estrutura FRACA (bullets soltos) não pode mais anular o
+  // padrão de saudação — só estrutura FORTE (seções/numeração/código/JSON).
+  it('rejeita saudação formatada como lista markdown (falso positivo do achado #8)', () => {
+    const saida = [
+      'I received your request with just --sandbox. Could you please clarify:',
+      '- Do you want me to analyse the repository?',
+      '- Do you want me to write code?',
+    ].join('\n')
+    const r = assertMissionDelivered('po', saida)
+    expect(r.delivered).toBe(false)
+  })
+
+  // Menor: o padrão de narração não pode comer uma linha de entregável real
+  // em português só porque começa com "vou "/"irei " — esse catch-all foi
+  // removido por falta de evidência real (o incidente só tinha narração em
+  // inglês) e por risco de falso negativo.
+  it('não trata "vou "/"irei " como narração (evita comer entregável em pt-BR)', () => {
+    const saida = [
+      '## Relatório',
+      'Vou implementar a validação da seguinte forma: valido o token antes de',
+      'gravar a credencial, e irei registrar o resultado no log estruturado.',
+      '- passo concluído com sucesso',
+    ].join('\n')
+    expect(assertMissionDelivered('ra', saida).delivered).toBe(true)
+  })
+})
+
+describe('resolveMissionDelivery (Crítico 1: o contrato só vale no caminho clássico)', () => {
+  // As 5 saídas reais dos trilhos que REPROVAVAM antes desta correção
+  // (verificadas ao vivo contra assertMissionDelivered) — vindas do caminho
+  // de trilhos, todas têm que ser aceitas, porque são entregável por
+  // construção (executor determinístico, não o motor narrando).
+  const saidasReaisDosTrilhos: Array<{ role: 'po' | 'sm' | 'qa'; output: string }> = [
+    {
+      role: 'po',
+      output:
+        'PO rails applied wish #7 (algo).\nSprint goal: entregar o wizard.\nTree: 1 phase, 2 epics, 4 features.\nExecutor: created issues #21, #22.',
+    },
+    {
+      role: 'sm',
+      output:
+        'SM delegated 2 ready task(s): #14, #15.\nWatchdog: no stuck PRs.\nsensor: no new incidents.',
+    },
+    {
+      role: 'qa',
+      output: 'QA judged PR #12: approve (CI green). Posted review and moved the card.',
+    },
+    { role: 'qa', output: 'QA: no delegated PR awaiting judgment.' },
+    {
+      role: 'po',
+      output:
+        'PO: no open wishlist issue; registered AgentQuestion asking the owner for the priority.',
+    },
+  ]
+
+  it.each(saidasReaisDosTrilhos)(
+    'aceita a entrega real dos trilhos do $role: "$output"',
+    ({ role, output }) => {
+      expect(resolveMissionDelivery(role, output, 'rails')).toEqual({ delivered: true })
+    }
+  )
+
+  it('confirma que essas mesmas 5 saídas REPROVARIAM sem o gate (prova do bug original)', () => {
+    for (const { role, output } of saidasReaisDosTrilhos) {
+      expect(assertMissionDelivered(role, output).delivered).toBe(false)
+    }
+  })
+
+  it('uma saudação crua do caminho CLÁSSICO continua sendo reprovada', () => {
+    const r = resolveMissionDelivery(
+      'po',
+      'I am ready in the sandbox environment. How can I help you today?',
+      'classic'
+    )
+    expect(r.delivered).toBe(false)
+  })
+
+  it('no caminho clássico, uma entrega real (com estrutura) continua sendo aceita', () => {
+    const brief = ['## Areas', '- backend: control-plane em Fastify'].join('\n')
+    expect(resolveMissionDelivery('ra', brief, 'classic')).toEqual({ delivered: true })
   })
 })

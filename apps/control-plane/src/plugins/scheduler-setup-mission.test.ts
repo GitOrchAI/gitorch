@@ -120,6 +120,62 @@ describe('provisionSetupMission', () => {
     })
   })
 
+  // Achado importante: `existingNumber` era código morto — nenhum chamador
+  // passava, então `findProjectId` nunca rodava e TODO provisionamento criava
+  // board NOVO. Finalizar o wizard 2x para o mesmo repositório (ex.: o
+  // cliente reenvia o form, ou uma missão de setup é reprocessada) duplicava
+  // o board. Este teste prova que, com o número JÁ gravado no projeto (de
+  // uma execução anterior desta mesma função), a 2ª chamada passa
+  // `existingNumber` pro findProjectId — e reusa o board em vez de criar
+  // outro.
+  test('projeto que já tem board gravado (2ª finalização do wizard): reusa via findProjectId, NUNCA cria outro', async () => {
+    const allocateWorkspace = vi.fn().mockResolvedValue({ path: '/workspace/x' })
+    const stack = fakeStack(allocateWorkspace)
+    const update = vi.fn().mockResolvedValue({})
+    const findProjectId = vi.fn(async () => 'PVT_existente')
+    const createProjectV2 = vi.fn(async () => ({ id: 'PVT_novo_indevido', number: 999 }))
+
+    const outcome = await provisionSetupMission(
+      {
+        id: 'mission_9',
+        project: {
+          id: 'proj_9',
+          wingId: 'GitOrchAI/gitorch',
+          userId: 'user_1',
+          // Já gravado por uma execução anterior — é isto que a 1ª
+          // finalização do wizard deixa no projeto.
+          runtimeConfig: { envConfig: { GITORCH_PROJECT_BOARD: 'GitOrchAI/9' } },
+        },
+      },
+      stack,
+      'gh_owner_token',
+      {
+        prisma: { project: { update } } as never,
+        createProjectV2Client: () => ({ findProjectId, createProjectV2 }),
+        resolveOwner: async () => ({ id: 'O_org_gitorchai', type: 'organization' }),
+      }
+    )
+
+    expect(outcome.status).toBe('completed')
+    // findProjectId foi chamado com o NÚMERO já gravado — a checagem de
+    // reuso de fato rodou, não foi pulada.
+    expect(findProjectId).toHaveBeenCalledWith(
+      expect.objectContaining({ login: 'GitOrchAI', number: 9 })
+    )
+    // Board NUNCA foi criado de novo — reusou o existente.
+    expect(createProjectV2).not.toHaveBeenCalled()
+    // O runtimeConfig gravado continua apontando pro MESMO board (9), não pro
+    // 999 que createProjectV2 devolveria se tivesse rodado.
+    expect(update).toHaveBeenCalledWith({
+      where: { id: 'proj_9' },
+      data: {
+        runtimeConfig: {
+          envConfig: { GITORCH_PROJECT_BOARD: 'GitOrchAI/9' },
+        },
+      },
+    })
+  })
+
   test('falha ao criar o board NÃO derruba o provisionamento (workspace já alocado fica completed)', async () => {
     const allocateWorkspace = vi.fn().mockResolvedValue({ path: '/workspace/x' })
     const stack = fakeStack(allocateWorkspace)

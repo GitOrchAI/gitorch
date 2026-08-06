@@ -34,6 +34,13 @@ export interface AppTokenDeps {
    * e nunca criam uma issue. Ausência de App continua sendo silêncio legítimo.
    */
   onError?: (message: string) => void
+  /**
+   * Chamado para os avisos de degradação esperada (App sem instalação, HTTP
+   * não-ok ao listar/emitir) — antes hardcoded em `console.warn`, invisível
+   * na observabilidade estruturada. Produção (scheduler.ts) sempre passa
+   * `app.log.warn`. Default: console.warn (só pra chamadas fora do plugin).
+   */
+  onWarn?: (message: string) => void
 }
 
 const GITHUB_API = 'https://api.github.com'
@@ -97,6 +104,7 @@ export async function mintInstallationToken(deps: AppTokenDeps = {}): Promise<st
   }
 
   const report = deps.onError ?? ((message: string) => console.error(message))
+  const warn = deps.onWarn ?? ((message: string) => console.warn(message))
 
   let jwt: string
   try {
@@ -124,7 +132,7 @@ export async function mintInstallationToken(deps: AppTokenDeps = {}): Promise<st
         signal: AbortSignal.timeout(TIMEOUT_MS),
       })
       if (!res.ok) {
-        console.warn(
+        warn(
           `[github-app-token] falha ao listar instalações (HTTP ${res.status}) — trilhos ficam desligados`
         )
         return null
@@ -132,9 +140,7 @@ export async function mintInstallationToken(deps: AppTokenDeps = {}): Promise<st
       const installations = (await res.json()) as Array<{ id: number }>
       installationId = installations[0]?.id ?? undefined
       if (installationId === undefined) {
-        console.warn(
-          '[github-app-token] GitHub App sem nenhuma instalação — trilhos ficam desligados'
-        )
+        warn('[github-app-token] GitHub App sem nenhuma instalação — trilhos ficam desligados')
         return null
       }
       cachedInstallationId = installationId
@@ -146,7 +152,7 @@ export async function mintInstallationToken(deps: AppTokenDeps = {}): Promise<st
       signal: AbortSignal.timeout(TIMEOUT_MS),
     })
     if (!res.ok) {
-      console.warn(
+      warn(
         `[github-app-token] falha ao emitir installation token (HTTP ${res.status}) — trilhos ficam desligados`
       )
       return null

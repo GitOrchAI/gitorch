@@ -1,5 +1,5 @@
 import fp from 'fastify-plugin'
-import { FastifyInstance } from 'fastify'
+import { FastifyInstance, FastifyBaseLogger } from 'fastify'
 import * as fs from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
@@ -18,6 +18,7 @@ import {
   createPythonSdkRuntimeAdapter,
   isF6AgentRole,
   realRuntimeCommandRunner,
+  wrapWithHostGitorchPluginGate,
   DEFAULT_AGENT_RUNTIME_ASSIGNMENTS,
   type F6AgentRole,
   type F6AgentRuntime,
@@ -32,7 +33,7 @@ import {
 } from '@gitorch/workspace-engine'
 import { createSshCommandRunner } from '@gitorch/agents'
 import { buildMissionEnricher, persistMissionMemory } from '../services/mission-context.js'
-import { assertMissionDelivered } from '../services/mission-outcome.js'
+import { resolveMissionDelivery, type MissionPathKind } from '../services/mission-outcome.js'
 import { ClientEnvironmentService } from '../services/environment.js'
 import { runPoMissionViaRails } from '../services/po-rails-mission.js'
 import { runRaMissionViaRails } from '../services/ra-rails-mission.js'
@@ -126,6 +127,39 @@ export function isScheduleDue(cron: string, lastTriggeredAt: Date | null, now: D
   const previousOccurrence = expression.prev().toDate()
   if (previousOccurrence > now) return false
   return lastTriggeredAt === null || previousOccurrence > lastTriggeredAt
+}
+
+/**
+ * Mecânica pura da cascata de onboarding: dada a fila de papéis restante
+ * (gravada em Mission.payload.onboardingSequence), decide qual é o próximo
+ * papel a disparar e o que resta depois dele. Extraída para ser testável sem
+ * subir Prisma/o resto do scheduler — prova a mecânica do encadeamento (Crítico
+ * 1, item c) isolada da decisão de entrega (resolveMissionDelivery), que é o
+ * único gate que ficava entre uma missão de trilhos concluída e este passo.
+ */
+export function nextOnboardingStep(
+  sequence: F6AgentRole[] | null | undefined
+): { role: F6AgentRole; remaining: F6AgentRole[] } | null {
+  if (!sequence || sequence.length === 0) return null
+  const [role, ...remaining] = sequence
+  return { role: role as F6AgentRole, remaining }
+}
+
+/**
+ * Board dos trilhos: só o PRÓPRIO board do projeto (gravado em
+ * Project.runtimeConfig.envConfig.GITORCH_PROJECT_BOARD por
+ * provisionSetupMission). Achado crítico da revisão pós-merge: esta função
+ * NUNCA lê `process.env['GITORCH_PROJECT_BOARD']` (o board global de outro
+ * projeto do dono) — de propósito, para que um projeto sem board próprio
+ * jamais herde o board alheio, mesmo que a env global esteja setada (era
+ * exatamente o vazamento multi-tenant que esta task dizia matar). Pura e
+ * testável isolada do resto do dispatch.
+ */
+export function resolveRailsBoard(project: { runtimeConfig?: unknown }): string | undefined {
+  return (
+    (project.runtimeConfig as Record<string, unknown> | null)?.['envConfig'] as
+      Record<string, unknown> | undefined
+  )?.['GITORCH_PROJECT_BOARD'] as string | undefined
 }
 
 function buildWorkspaceProvider(app: FastifyInstance): WorkspaceProvider {
@@ -282,7 +316,14 @@ export function buildMissionRunner(
 ): RuntimeCommandRunner {
   const executor = process.env['GITORCH_EXECUTOR'] ?? 'local-process'
   if (executor !== 'podman') {
-    return createLocalCredentialRunner(app.engineConnections, undefined, environments, app.log)
+    // Achado importante da revisão pós-merge: local-process é o DEFAULT (e o
+    // que a CI usa) e não tinha NENHUMA trava equivalente à do caminho
+    // podman — --dangerously-skip-permissions (fixa no código) rodava solta.
+    // Regra do dono, literal: "nunca existe agente solto sem trava". Mesmo
+    // gate do container, adaptado pro host (ver host-plugin-gate.ts).
+    return wrapWithHostGitorchPluginGate(
+      createLocalCredentialRunner(app.engineConnections, undefined, environments, app.log)
+    )
   }
 
   const image = process.env['GITORCH_AGENT_IMAGE'] ?? 'localhost/gitorch-agent:latest'
@@ -370,6 +411,10 @@ export function buildMissionRunner(
     // imagem — --dangerously-skip-permissions fixa no código não pode ficar
     // sem trava se o plugin um dia deixar de ser instalado.
     requireGitorchPlugin: true,
+    // Achado importante: identifica ESTE runner (o host local) na chave do
+    // cache da verificação — sem isto colide com o stack remoto do free-tier
+    // quando engine+imagem batem por default (ver runnerId em podman-runner.ts).
+    runnerId: 'local',
   })
 }
 
@@ -539,6 +584,11 @@ export function buildRemoteRuntimeStackIfConfigured(app: FastifyInstance): Runti
     // Mesma trava do stack local (ver buildMissionRunner): a verificação sobe
     // pelo MESMO sshRunner, confirmando o gate na imagem do nó remoto real.
     requireGitorchPlugin: true,
+    // Achado importante: sem isto, engine+imagem defaults iguais ao stack
+    // local colidiam na MESMA chave de cache e a missão remota reusava,
+    // sem nunca checar de verdade, o resultado verificado no host LOCAL.
+    // `host` distingue nós remotos diferentes entre si também.
+    runnerId: `ssh:${host}`,
   })
 
   // RemoteWorkspaceProvider exige um runner sempre-Promise; RuntimeCommandRunner
@@ -599,6 +649,14 @@ export interface ProvisionSetupMissionDeps {
   ) => Pick<ProjectV2Client, 'findProjectId' | 'createProjectV2'>
   /** injeção para teste; default: `resolveGithubOwnerId(owner, token)`. */
   resolveOwner?: (owner: string, token: string) => Promise<ResolvedOwner>
+  /**
+   * Logger estruturado (produção sempre passa `app.log`); sem ele cai no
+   * console apenas para chamadas fora do plugin (ex.: scripts, testes que
+   * não o injetam). Achado importante: sem `githubToken`/`prisma`, o passo do
+   * board era pulado calado — o projeto herdava o board global sem nenhum
+   * rastro. Agora o pulo sempre avisa por quê.
+   */
+  log?: Pick<FastifyBaseLogger, 'warn' | 'info'>
 }
 
 /**
@@ -632,6 +690,16 @@ export async function provisionSetupMission(
       const client = deps.createProjectV2Client
         ? deps.createProjectV2Client(githubToken)
         : new ProjectV2Client({ token: githubToken })
+      // Achado importante: sem passar o número já gravado, findProjectId
+      // nunca rodava e todo provisionamento criava board NOVO — finalizar o
+      // wizard 2x para o mesmo repositório duplicava o board. O número já
+      // vive em runtimeConfig.envConfig.GITORCH_PROJECT_BOARD ("owner/N"),
+      // gravado pela primeira execução desta mesma função.
+      const boardJaGravado = (
+        (mission.project.runtimeConfig as Record<string, unknown> | null)?.['envConfig'] as
+          Record<string, unknown> | undefined
+      )?.['GITORCH_PROJECT_BOARD'] as string | undefined
+      const existingNumber = boardJaGravado ? Number(boardJaGravado.split('/')[1]) : undefined
       const board = await ensureProjectBoard({
         repository: mission.project.wingId,
         client,
@@ -639,7 +707,10 @@ export async function provisionSetupMission(
           deps.resolveOwner
             ? deps.resolveOwner(owner, githubToken)
             : resolveGithubOwnerId(owner, githubToken),
-        onWarn: (m) => console.warn(`[Scheduler] ${m}`),
+        ...(existingNumber !== undefined && Number.isFinite(existingNumber)
+          ? { existingNumber }
+          : {}),
+        onWarn: (m) => (deps.log ?? console).warn(`[Scheduler] ${m}`),
       })
 
       if (board) {
@@ -657,6 +728,15 @@ export async function provisionSetupMission(
           },
         })
       }
+    } else {
+      // Degradação silenciosa (achado importante): sem token do dono ou sem
+      // prisma, o projeto NUNCA ganha board próprio e herdaria o board
+      // global de outro projeto no primeiro trilho do PO. Isso precisa
+      // aparecer no log — antes era um pulo mudo.
+      const motivo = !githubToken ? 'sem token do GitHub do dono' : 'sem acesso ao Prisma'
+      ;(deps.log ?? console).warn(
+        `[Scheduler] board próprio NÃO provisionado para ${mission.project.wingId} (${motivo}); trilhos do PO ficam desligados até haver board`
+      )
     }
 
     return { status: 'completed', output: `Ambiente provisionado para ${mission.project.wingId}` }
@@ -1047,16 +1127,29 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         //
         // Board (Task 9): o PRÓPRIO board do projeto (gravado em
         // Project.runtimeConfig.envConfig.GITORCH_PROJECT_BOARD por
-        // provisionSetupMission) tem prioridade sobre o env global — o env
-        // global (hoje `loureng/9`, board pessoal de outro projeto) só entra
-        // como ÚLTIMO RECURSO, para projetos criados antes desta task.
-        const boardDoProjeto = (
-          (project.runtimeConfig as Record<string, unknown> | null)?.['envConfig'] as
-            Record<string, unknown> | undefined
-        )?.['GITORCH_PROJECT_BOARD'] as string | undefined
-        const railsBoard = boardDoProjeto ?? process.env['GITORCH_PROJECT_BOARD']
+        // provisionSetupMission) é a ÚNICA fonte aceita.
+        //
+        // Achado crítico da revisão pós-merge: NUNCA cair no board global de
+        // outro projeto (env `GITORCH_PROJECT_BOARD`) — esse env aponta para
+        // o board pessoal de OUTRO projeto do dono, e `ensureProjectBoard`
+        // pode falhar em silêncio; sem essa trava, issues/cards de um
+        // projeto vazavam pro board alheio, exatamente o vazamento
+        // multi-tenant que esta task dizia matar. Sem board PRÓPRIO, os
+        // trilhos do PO ficam desligados para o projeto (log honesto abaixo)
+        // — o roadmap ainda sai na memória, só o quadro que falta.
+        const railsBoard = resolveRailsBoard(project)
+        if (role === 'po' && !railsBoard) {
+          app.log.warn(
+            `[Scheduler] PO sem board próprio para ${project.wingId}; trilhos do PO desligados (nunca cai no board global de outro projeto)`
+          )
+        }
         const railsToken =
-          process.env['GITORCH_GITHUB_TOKEN'] ?? (await mintInstallationToken()) ?? undefined
+          process.env['GITORCH_GITHUB_TOKEN'] ??
+          (await mintInstallationToken({
+            onError: (m) => app.log.error(m),
+            onWarn: (m) => app.log.warn(m),
+          })) ??
+          undefined
         const poRails = role === 'po' && Boolean(railsBoard) && Boolean(railsToken)
         const qaRails = role === 'qa' && Boolean(railsToken)
         const smRails = role === 'sm' && Boolean(railsToken)
@@ -1227,12 +1320,24 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           })
         }
 
+        // Achado crítico da revisão pós-merge: o contrato de entregável só
+        // faz sentido no caminho CLÁSSICO (saída crua do motor). Nos
+        // trilhos (PO/SM/QA/RA), a LLM só preenche formulário validado por
+        // schema e o executor determinístico é quem produz a saída final —
+        // entrega por construção. Aplicar o contrato ali reprovava saídas
+        // reais dos trilhos e travava a cascata de onboarding (SM/QA nunca
+        // acordavam, pois o ramo "entregue" nunca era alcançado).
+        const pathKind: MissionPathKind =
+          smRails || poRails || qaRails || raRails ? 'rails' : 'classic'
+        // Menor da revisão: `entrega` só faz sentido quando o motor saiu 0 —
+        // com exitCode != 0 a missão já falhou pelo código de saída, e o
+        // valor antigo (sempre construído, mesmo aqui) nunca era lido por
+        // nenhum dos dois `if` abaixo (ambos exigem exitCode === 0). Só
+        // computa quando pode importar.
         const entrega =
-          result.exitCode === 0
-            ? assertMissionDelivered(role, result.output)
-            : ({ delivered: false, reason: `motor saiu com codigo ${result.exitCode}` } as const)
+          result.exitCode === 0 ? resolveMissionDelivery(role, result.output, pathKind) : undefined
 
-        if (result.exitCode === 0 && !entrega.delivered) {
+        if (entrega && !entrega.delivered) {
           // Verde mentiroso: o motor respondeu, mas não entregou. Falha honesta
           // com o motivo, e NADA vai para a memória do projeto.
           app.log.warn(`[Scheduler] Mission ${missionId} sem entregavel: ${entrega.reason}`)
@@ -1248,7 +1353,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           return
         }
 
-        if (result.exitCode === 0 && entrega.delivered) {
+        if (entrega && entrega.delivered) {
           // O entregável vira memória tipada do projeto — exceto no-ops (ex.:
           // "sem wishlist"), que poluiriam o recall e expulsariam o brief do RA.
           const isNoOp = (result as { noOp?: boolean }).noOp === true
@@ -1326,17 +1431,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 select: { payload: true, projectId: true },
               })
               const p = m?.payload as { onboardingSequence?: F6AgentRole[] } | null
-              const seq = p?.onboardingSequence
-              if (seq && seq.length > 0) {
-                const [nextRole, ...remaining] = seq
+              const next = nextOnboardingStep(p?.onboardingSequence)
+              if (next) {
                 app.log.info(
-                  `[Scheduler] Onboarding (${role} concluído): disparando ${nextRole} para ${project.wingId}`
+                  `[Scheduler] Onboarding (${role} concluído): disparando ${next.role} para ${project.wingId}`
                 )
-                void triggerAgentMission(
-                  nextRole as F6AgentRole,
-                  m?.projectId,
-                  remaining as F6AgentRole[]
-                )
+                void triggerAgentMission(next.role, m?.projectId, next.remaining)
               }
             } catch (chainErr) {
               app.log.error(chainErr, `[Scheduler] Falha ao encadear onboarding após ${role}`)
@@ -1485,6 +1585,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         : null
       const outcome = await provisionSetupMission(mission, activeStack, githubToken ?? undefined, {
         prisma: app.prisma,
+        log: app.log,
       })
       await app.prisma.mission.update({
         where: { id: mission.id },

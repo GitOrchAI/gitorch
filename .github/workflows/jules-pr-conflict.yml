@@ -33,11 +33,12 @@ jobs:
     name: Analyze & Resolve Merge Conflicts
     runs-on: ubuntu-latest
     # Elegibilidade NÃO é gateada por label (PR do Jules não tem label 'jules'); quem decide é o
-    # script (isSecurityAutomationPR). Aqui só filtramos os tipos de evento relevantes.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'push' ||
-      github.event_name == 'pull_request_target'
+    # script (isSecurityAutomationPR). Aqui só filtramos os tipos de evento relevantes — hoje só
+    # workflow_dispatch está em `on:` (ver o bloco DESLIGADO acima). Achado menor: este `if:`
+    # chegou a citar 'push'/'pull_request_target' depois que esses gatilhos foram removidos de
+    # `on:` — condição morta, nunca verdadeira. Ao "religar" (restaurar os gatilhos em `on:`),
+    # restaure as duas condições abaixo também.
+    if: github.event_name == 'workflow_dispatch'
     env:
       # Esta automacao so funciona com credencial propria (precisa empurrar o
       # merge resolvido de volta para a branch do PR). Sem o segredo cadastrado

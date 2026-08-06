@@ -89,6 +89,18 @@ export interface CreatePodmanCommandRunnerOptions {
    * montagem do comando, sem depender de podman de verdade.
    */
   requireGitorchPlugin?: boolean
+  /**
+   * Identifica o RUNNER (não só engine+imagem) na chave do cache da
+   * verificação do plugin. Achado importante da revisão pós-merge: sem isto,
+   * o stack LOCAL e o stack REMOTO do free-tier (via SSH) podem ter o mesmo
+   * `podmanBinary`+`image` por default e colidiam na MESMA chave — a
+   * verificação "pelo mesmo runner remoto" prometida não acontecia de
+   * verdade: a missão remota reusava, sem nunca checar, o resultado que
+   * tinha sido verificado no host LOCAL (ou vice-versa). Produção sempre
+   * passa algo que distingue os hosts reais (ex.: 'local' vs `ssh:<host>`);
+   * default 'default' cobre quem não passa (testes, chamadas antigas).
+   */
+  runnerId?: string
 }
 
 /** Onde o plugin de segurança do GitOrch fica instalado na imagem (ver
@@ -121,34 +133,63 @@ export function resetGitorchPluginPresenceCache(): void {
  * imagem com o entrypoint substituído por `sh -c 'test -f <marcador>'` — não
  * roda o entrypoint real (não materializa credencial nenhuma), só checa o
  * arquivo.
+ *
+ * `runnerId` (achado importante) entra na chave para não colidir stack local
+ * com stack remoto quando engine+imagem batem por default — ver o comentário
+ * de `runnerId` em CreatePodmanCommandRunnerOptions.
+ *
+ * Um resultado NEGATIVO nunca é cacheado (achado importante): uma falha
+ * transitória do host runner (hiccup de rede, registry fora do ar) não pode
+ * virar recusa permanente pro resto da vida do processo — a próxima missão
+ * tenta de novo. Só o `true` (plugin confirmado presente) é cacheado, porque
+ * esse fato não muda até a imagem trocar.
  */
 export async function isGitorchPluginPresentInImage(
   image: string,
   podmanBinary: string,
-  hostRunner: RuntimeCommandRunner
+  hostRunner: RuntimeCommandRunner,
+  runnerId = 'default'
 ): Promise<boolean> {
-  const cacheKey = `${podmanBinary}::${image}`
+  const cacheKey = `${runnerId}::${podmanBinary}::${image}`
   const cached = pluginPresenceCache.get(cacheKey)
   if (cached) return cached
 
   const check = (async () => {
-    const result = await hostRunner({
-      binary: podmanBinary,
-      args: [
-        'run',
-        '--rm',
-        '--entrypoint',
-        'sh',
-        image,
-        '-c',
-        `test -f ${GITORCH_PLUGIN_MARKER_PATH}`,
-      ],
-      env: {},
-    })
-    return result.exitCode === 0
+    try {
+      const result = await hostRunner({
+        binary: podmanBinary,
+        args: [
+          'run',
+          '--rm',
+          '--entrypoint',
+          'sh',
+          image,
+          '-c',
+          `test -f ${GITORCH_PLUGIN_MARKER_PATH}`,
+        ],
+        env: {},
+      })
+      return result.exitCode === 0
+    } catch {
+      // hostRunner não deveria lançar (realRuntimeCommandRunner e o SSH
+      // runner capturam e devolvem exitCode!=0) — mas se lançar mesmo assim,
+      // trata como "não confirmado" em vez de propagar, pelo mesmo motivo:
+      // não pode virar recusa cacheada para sempre por uma exceção.
+      return false
+    }
   })()
   pluginPresenceCache.set(cacheKey, check)
-  return check
+
+  const present = await check
+  if (!present) {
+    // Não cacheia negativo: libera a chave pra próxima missão tentar de
+    // novo, a menos que uma chamada concorrente já tenha posto uma tentativa
+    // NOVA no lugar (não apaga o trabalho de outro caller).
+    if (pluginPresenceCache.get(cacheKey) === check) {
+      pluginPresenceCache.delete(cacheKey)
+    }
+  }
+  return present
 }
 
 /**
@@ -175,7 +216,12 @@ export function createPodmanCommandRunner(
       if ((process.env['GITORCH_AGY_PLUGIN'] ?? '1') === '0') {
         return { exitCode: 1, stdout: '', stderr: GITORCH_PLUGIN_DISABLED_MESSAGE, durationMs: 0 }
       }
-      const present = await isGitorchPluginPresentInImage(options.image, podmanBinary, hostRunner)
+      const present = await isGitorchPluginPresentInImage(
+        options.image,
+        podmanBinary,
+        hostRunner,
+        options.runnerId
+      )
       if (!present) {
         return { exitCode: 1, stdout: '', stderr: GITORCH_PLUGIN_MISSING_MESSAGE, durationMs: 0 }
       }

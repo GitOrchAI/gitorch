@@ -103,6 +103,56 @@ function normalizeExitCode(code: unknown): number {
   return typeof code === 'number' ? code : 1
 }
 
+// Achado importante da revisão pós-merge: quando o prompt vira um único
+// argumento de linha de comando (ver promptArgs em createCliRuntimeAdapter),
+// o Linux estoura com `spawn E2BIG` acima de ~128 KiB por argumento (e o
+// limite real conta TODO o argv+env do processo, não só este argumento).
+// Ficamos bem abaixo do teto do SO pra sobrar espaço pro resto do argv/env
+// (binário, flags, PATH/HOME etc.). Configurável só para teste/ajuste fino —
+// não existe motivo de produção pra subir isto perto do limite real do SO.
+const MAX_PROMPT_ARG_BYTES = Number(process.env['GITORCH_MAX_PROMPT_ARG_BYTES'] ?? 96 * 1024)
+
+export interface CapPromptResult {
+  prompt: string
+  truncated: boolean
+  originalBytes: number
+}
+
+/**
+ * Corta o MEIO de um prompt grande demais para virar argumento de linha de
+ * comando sem estourar E2BIG — nunca a ponta. Os prompts dos trilhos
+ * (buildStepPrompt em @gitorch/cadence) têm formato fixo: identidade do
+ * papel + "Step: <id>" (a pergunta do passo) no INÍCIO, e o schema JSON do
+ * formulário + instrução final no FIM; só o meio (playbook + contexto
+ * injetado pelo sistema — codegraph, memórias, diff) pode crescer sem teto.
+ * Preservar cabeça e cauda, cortando só o meio, garante que a pergunta do
+ * passo e o schema NUNCA são os que somem — é sempre o contexto, com um
+ * marcador explícito de quanto foi cortado.
+ */
+export function capPromptForArgv(
+  prompt: string,
+  maxBytes: number = MAX_PROMPT_ARG_BYTES
+): CapPromptResult {
+  const originalBytes = Buffer.byteLength(prompt, 'utf8')
+  if (originalBytes <= maxBytes) {
+    return { prompt, truncated: false, originalBytes }
+  }
+
+  const marker = `\n\n[...GitOrch cortou o CONTEXTO aqui: prompt original tinha ${originalBytes} bytes, acima do teto de ${maxBytes} (GITORCH_MAX_PROMPT_ARG_BYTES) para nao estourar E2BIG...]\n\n`
+  const markerBytes = Buffer.byteLength(marker, 'utf8')
+  const budget = Math.max(maxBytes - markerBytes, 0)
+  // Cabeça maior que a cauda: a cabeça carrega a identidade+pergunta do
+  // passo (curta e fixa); a cauda só precisa do schema+instrução final.
+  const headBytes = Math.floor(budget * 0.6)
+  const tailBytes = budget - headBytes
+
+  const buf = Buffer.from(prompt, 'utf8')
+  const head = buf.subarray(0, headBytes).toString('utf8')
+  const tail = buf.subarray(Math.max(buf.length - tailBytes, headBytes)).toString('utf8')
+
+  return { prompt: head + marker + tail, truncated: true, originalBytes }
+}
+
 export interface RuntimeCommandResult {
   exitCode: number
   stdout: string
@@ -266,11 +316,26 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
       const workspaceArgs =
         options.workspaceDirArgName && request.cwd ? [options.workspaceDirArgName, request.cwd] : []
 
+      // O prompt só corre risco de E2BIG quando vira ARGUMENTO de linha de
+      // comando (promptArgName ou posicional); pelo stdin não há esse teto
+      // do SO, então não cortamos ali.
+      const goesViaArgv = !(options.promptViaStdin && !options.promptArgName)
+      const cappedPrompt = goesViaArgv ? capPromptForArgv(request.prompt) : undefined
+      if (cappedPrompt?.truncated) {
+        // Sem logger injetado nesta camada (biblioteca pura, sem FastifyInstance);
+        // console é o mesmo fallback já usado em outros pontos do backend sem
+        // `app` em escopo. O aviso é o que a revisão pediu: nunca truncar calado.
+        console.warn(
+          `[runtime-adapter] prompt de ${options.runtime} cortado de ${cappedPrompt.originalBytes} para ~${MAX_PROMPT_ARG_BYTES} bytes antes de virar argumento (evita spawn E2BIG); missão ${request.missionId}`
+        )
+      }
+      const effectivePrompt = cappedPrompt?.prompt ?? request.prompt
+
       const promptArgs = options.promptArgName
-        ? [options.promptArgName, request.prompt]
+        ? [options.promptArgName, effectivePrompt]
         : options.promptViaStdin
           ? []
-          : [...(options.promptSeparator ? [options.promptSeparator] : []), request.prompt]
+          : [...(options.promptSeparator ? [options.promptSeparator] : []), effectivePrompt]
 
       const result = await runner({
         binary: options.binary,

@@ -2,10 +2,10 @@ import type { ProjectV2Client } from '@gitorch/github-sync'
 
 // A mesa de trabalho do PRÓPRIO projeto (Task 9). Antes disto o board vinha de
 // um env GLOBAL (GITORCH_PROJECT_BOARD), o que fazia todo projeto novo apontar
-// para o board pessoal de outro projeto (loureng/9, "GitOrch — Jardim das
-// Patinhas"). Um projeto novo precisa da própria mesa antes de o PO acordar —
-// board gravado no próprio projeto (Project.runtimeConfig) primeiro, env
-// global só como último recurso.
+// para o board global de outro projeto do dono. Um projeto novo precisa da
+// própria mesa antes de o PO acordar — board gravado no próprio projeto
+// (Project.runtimeConfig). Sem board próprio, os trilhos do PO ficam
+// desligados: nunca há fallback para o board global de outro projeto.
 
 export type GithubOwnerType = 'user' | 'organization'
 
@@ -35,13 +35,14 @@ export interface ProjectBoardRef {
  * Garante que o projeto tem seu PRÓPRIO board Projects v2: cria na primeira
  * vez, reaproveita se `existingNumber` ainda existir no GitHub.
  *
- * NUNCA lança. Risco conhecido: o GitHub App está instalado na conta pessoal
- * (loureng), não na organização (GitOrchAI) — criar board de ORGANIZAÇÃO pode
- * exigir escopo que o installation token não tem e devolver "Resource not
- * accessible by integration". Se isso acontecer em produção, o certo é avisar
- * e seguir: sem board o PO ainda entrega o roadmap na memória, o que se perde
- * é só o quadro. Derrubar o provisionamento inteiro por isso seria pior que o
- * problema que resolve — mas nunca em silêncio (`onWarn` é chamado sempre).
+ * NUNCA lança. Risco conhecido: quem chama esta função no provisionamento do
+ * wizard usa o token OAuth do PRÓPRIO dono do projeto (não um installation
+ * token do GitHub App) — criar board de ORGANIZAÇÃO pode exigir um escopo que
+ * aquele OAuth não tem e devolver "Resource not accessible by integration".
+ * Se isso acontecer em produção, o certo é avisar e seguir: sem board o PO
+ * ainda entrega o roadmap na memória, o que se perde é só o quadro. Derrubar
+ * o provisionamento inteiro por isso seria pior que o problema que resolve —
+ * mas nunca em silêncio (`onWarn` é chamado sempre).
  */
 export async function ensureProjectBoard(
   deps: EnsureProjectBoardDeps
@@ -86,10 +87,9 @@ export interface ResolveGithubOwnerIdDeps {
 
 /**
  * Resolve o node id GraphQL + tipo do dono de um repositório no GitHub.
- * Tenta `GET /users/{owner}` primeiro (cobre conta pessoal, como `loureng`
- * hoje); se não achar, cai para `GET /orgs/{owner}` (organização, como
- * `GitOrchAI`, o destino final quando o App migrar a instalação). Precisa dos
- * dois caminhos porque o dono do board pode ser qualquer um dos dois.
+ * Tenta `GET /users/{owner}` primeiro (cobre conta pessoal); se não achar,
+ * cai para `GET /orgs/{owner}` (organização). Precisa dos dois caminhos
+ * porque o dono do board pode ser qualquer um dos dois.
  */
 export async function resolveGithubOwnerId(
   owner: string,
