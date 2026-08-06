@@ -1,4 +1,5 @@
 import { validateDoD, DOD_FIELD_MAP, type DoDFields } from '@gitorch/cadence'
+import { agentLabel } from './agent-label.js'
 
 // Backlog-executor: as MÃOS determinísticas da Lei "LLM decide, sistema
 // executa". Recebe o plano que o PO preencheu (formulários já validados por
@@ -232,7 +233,9 @@ export async function applyBacklog(options: ApplyBacklogOptions): Promise<ApplyB
       marker,
       phase.title,
       renderNodeBody([`**Goal**: ${phase.goal}`, `**Rationale**: ${phase.rationale}`], marker),
-      plan.wish.nodeId
+      plan.wish.nodeId,
+      // Quem produziu este nó foi o PO — visível de relance no quadro.
+      [agentLabel('po')]
     )
     phaseRefs.push(ref)
     await addToBoardWithStatus(ref.nodeId)
@@ -251,7 +254,8 @@ export async function applyBacklog(options: ApplyBacklogOptions): Promise<ApplyB
       marker,
       epic.title,
       renderNodeBody([epic.description, ...journeyLine], marker),
-      phaseRefs[epic.phaseIndex]!.nodeId
+      phaseRefs[epic.phaseIndex]!.nodeId,
+      [agentLabel('po')]
     )
     epicRefs.push(ref)
     await addToBoardWithStatus(ref.nodeId)
@@ -266,7 +270,8 @@ export async function applyBacklog(options: ApplyBacklogOptions): Promise<ApplyB
       marker,
       feature.title,
       renderNodeBody([feature.description], marker),
-      epicRefs[feature.epicIndex]!.nodeId
+      epicRefs[feature.epicIndex]!.nodeId,
+      [agentLabel('po')]
     )
     featureRefs.push(ref)
     await addToBoardWithStatus(ref.nodeId)
@@ -288,8 +293,10 @@ export async function applyBacklog(options: ApplyBacklogOptions): Promise<ApplyB
       task.fields.titulo,
       renderIssueBody(task.fields, marker) + blockedLine,
       featureRefs[task.featureIndex]!.nodeId,
-      // Só TASK é unidade delegável; a label deixa o SM achá-las.
-      ['gitorch:task']
+      // Só TASK é unidade delegável; a label de TIPO deixa o SM achá-las. A de
+      // AGENTE (mesmo prefixo do resto da árvore) diz que quem a produziu foi
+      // o PO — o SM troca por `gitorch:agent:jules` quando delega (aplicarLabelDoAgente).
+      ['gitorch:task', agentLabel('po')]
     )
     taskRefs.push(ref)
     const boardItem = await addToBoardWithStatus(ref.nodeId)
