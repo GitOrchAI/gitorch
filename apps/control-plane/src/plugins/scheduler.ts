@@ -1131,7 +1131,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           )
         }
         const railsToken =
-          process.env['GITORCH_GITHUB_TOKEN'] ?? (await mintInstallationToken()) ?? undefined
+          process.env['GITORCH_GITHUB_TOKEN'] ??
+          (await mintInstallationToken({
+            onError: (m) => app.log.error(m),
+            onWarn: (m) => app.log.warn(m),
+          })) ??
+          undefined
         const poRails = role === 'po' && Boolean(railsBoard) && Boolean(railsToken)
         const qaRails = role === 'qa' && Boolean(railsToken)
         const smRails = role === 'sm' && Boolean(railsToken)
@@ -1311,12 +1316,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         // acordavam, pois o ramo "entregue" nunca era alcançado).
         const pathKind: MissionPathKind =
           smRails || poRails || qaRails || raRails ? 'rails' : 'classic'
+        // Menor da revisão: `entrega` só faz sentido quando o motor saiu 0 —
+        // com exitCode != 0 a missão já falhou pelo código de saída, e o
+        // valor antigo (sempre construído, mesmo aqui) nunca era lido por
+        // nenhum dos dois `if` abaixo (ambos exigem exitCode === 0). Só
+        // computa quando pode importar.
         const entrega =
-          result.exitCode === 0
-            ? resolveMissionDelivery(role, result.output, pathKind)
-            : ({ delivered: false, reason: `motor saiu com codigo ${result.exitCode}` } as const)
+          result.exitCode === 0 ? resolveMissionDelivery(role, result.output, pathKind) : undefined
 
-        if (result.exitCode === 0 && !entrega.delivered) {
+        if (entrega && !entrega.delivered) {
           // Verde mentiroso: o motor respondeu, mas não entregou. Falha honesta
           // com o motivo, e NADA vai para a memória do projeto.
           app.log.warn(`[Scheduler] Mission ${missionId} sem entregavel: ${entrega.reason}`)
@@ -1332,7 +1340,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           return
         }
 
-        if (result.exitCode === 0 && entrega.delivered) {
+        if (entrega && entrega.delivered) {
           // O entregável vira memória tipada do projeto — exceto no-ops (ex.:
           // "sem wishlist"), que poluiriam o recall e expulsariam o brief do RA.
           const isNoOp = (result as { noOp?: boolean }).noOp === true

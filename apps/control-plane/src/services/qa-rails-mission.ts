@@ -27,7 +27,7 @@ export interface QaRailsMissionOptions {
   /** Label de delegação que marca trabalho de dev assíncrono (padrão 'jules'). */
   delegateLabel?: string
   /**
-   * 'recon' = Fase 1 do QA (docs/agents/quality-assurance.md §2): projeto novo,
+   * 'recon' = Fase 1 do QA (a fase de Reconhecimento do papel): projeto novo,
    * sem PR para julgar ainda. Em vez do no-op clássico, roda o roteiro de
    * reconhecimento e devolve o baseline de qualidade do repositório. Sem este
    * modo, o padrão é o caminho clássico (julgamento de PR; sem PR = no-op).
@@ -138,12 +138,11 @@ export async function runQaMissionViaRails(
     break
   }
   if (!target) {
-    // Fase 1 — Reconhecimento (docs/agents/quality-assurance.md §2): projeto
-    // novo, sem PR aberta ainda. Sem este modo, a esteira de onboarding
-    // terminaria em no-op — e, com o contrato de entregável do scheduler
-    // (assertMissionDelivered), um no-op sem estrutura passaria a ser falha
-    // explícita em vez de silêncio. Aqui o QA aprende o repositório (CI,
-    // suítes, cobertura, caminhos críticos) ANTES do primeiro PR chegar.
+    // Fase 1 — Reconhecimento: projeto novo, sem PR aberta ainda. Sem este
+    // modo, a esteira de onboarding terminaria num no-op ("QA: no delegated
+    // PR awaiting judgment.") sem aprender nada do repositório. Aqui o QA
+    // aprende o repositório (CI, suítes, cobertura, caminhos críticos) ANTES
+    // do primeiro PR chegar.
     if (options.mode === 'recon') {
       const prompt = buildStepPrompt('qa', 'qa-recon', RAILS_SCHEMAS.qaRecon, [
         ...(options.contextBlocks ?? []),

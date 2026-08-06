@@ -123,6 +123,31 @@ describe('mintInstallationToken', () => {
     expect(await mintInstallationToken({ appId: '1', privateKey, fetchImpl })).toBeNull()
   })
 
+  // Menor da revisão: os 3 avisos de degradação (listar instalações falhou,
+  // sem instalação nenhuma, emitir token falhou) eram console.warn fixo,
+  // invisível pro log estruturado. onWarn injetável prova que dá pra levar
+  // isso pro app.log (scheduler.ts injeta na produção).
+  it('HTTP não-ok ao listar instalações: chama onWarn com a causa real, em vez de só console.warn', async () => {
+    const { privateKey } = makeKeypair()
+    const warnings: unknown[] = []
+    const fetchImpl = (async () => ({
+      ok: false,
+      status: 503,
+      json: async () => ({}),
+    })) as unknown as typeof fetch
+
+    const token = await mintInstallationToken({
+      appId: '1',
+      privateKey,
+      fetchImpl,
+      onWarn: (message: string) => warnings.push(message),
+    })
+
+    expect(token).toBeNull()
+    expect(warnings).toHaveLength(1)
+    expect(String(warnings[0])).toContain('503')
+  })
+
   it('chave privada inválida: devolve null E registra o motivo real (não some com o erro)', async () => {
     const logged: unknown[] = []
     const token = await mintInstallationToken({
