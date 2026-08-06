@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
-import { nextOnboardingStep, resolveRailsBoard } from './scheduler.js'
+import { nextOnboardingStep, resolveRailsBoard, shouldChainOnboarding } from './scheduler.js'
 
 // Crítico 1, item (c): a mecânica da cascata de onboarding (dado o que resta
 // da fila, qual é o próximo papel a disparar) isolada da decisão de entrega
@@ -27,6 +27,32 @@ describe('nextOnboardingStep', () => {
   test('sequência ausente (missão fora de uma cascata de onboarding): não há próximo papel', () => {
     expect(nextOnboardingStep(undefined)).toBeNull()
     expect(nextOnboardingStep(null)).toBeNull()
+  })
+})
+
+// Visto em produção: a esteira de onboarding morreu no SM. O SM não tinha
+// nada para delegar (projeto recém-registrado, sem issues) — um no-op
+// LEGÍTIMO — e o QA nunca acordou, então o reconhecimento de qualidade não
+// aconteceu. O encadeamento morava dentro do mesmo bloco que grava memória,
+// que é (corretamente) pulado em no-op. São decisões diferentes: memória
+// depende de ter entregue; a cascata depende de ainda haver fila.
+describe('shouldChainOnboarding', () => {
+  test('missão sem trabalho a fazer NÃO interrompe a cascata (o caso que matou o QA)', () => {
+    expect(shouldChainOnboarding({ isNoOp: true, sequence: ['qa'] })).toBe(true)
+  })
+
+  test('missão que entregou também encadeia', () => {
+    expect(shouldChainOnboarding({ isNoOp: false, sequence: ['sm', 'qa'] })).toBe(true)
+  })
+
+  test('fila vazia: a cascata terminou, não encadeia', () => {
+    expect(shouldChainOnboarding({ isNoOp: false, sequence: [] })).toBe(false)
+    expect(shouldChainOnboarding({ isNoOp: true, sequence: [] })).toBe(false)
+  })
+
+  test('missão fora de uma cascata de onboarding: não encadeia nada', () => {
+    expect(shouldChainOnboarding({ isNoOp: false, sequence: undefined })).toBe(false)
+    expect(shouldChainOnboarding({ isNoOp: true, sequence: null })).toBe(false)
   })
 })
 
