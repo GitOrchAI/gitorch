@@ -39,6 +39,7 @@ import { runPoMissionViaRails } from '../services/po-rails-mission.js'
 import { runRaMissionViaRails } from '../services/ra-rails-mission.js'
 import { runQaMissionViaRails } from '../services/qa-rails-mission.js'
 import { runSmDelegation } from '../services/sm-delegation.js'
+import { criarSessaoJules } from '../services/jules-client.js'
 import { runSmWatchdog, buildTelegramNotifier } from '../services/sm-watchdog.js'
 import { resolveNotifyChatId } from '../services/telegram-link.js'
 import { runIncidentSensor } from '../services/incident-sensor.js'
@@ -1267,6 +1268,18 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           const delegation = await runSmDelegation({
             repository: project.wingId,
             githubToken: railsToken as string,
+            // Delegar de verdade: além do label, abrir a sessão de trabalho no
+            // dev assíncrono. Sem chave configurada, `criarSessaoJules`
+            // devolve null e o label continua sendo o plano B.
+            criarSessaoDev: async ({ repository, titulo, prompt }) =>
+              criarSessaoJules({
+                apiKey: process.env['JULES_API_KEY'],
+                repository,
+                startingBranch: process.env['GITORCH_DEV_BASE_BRANCH'] ?? 'main',
+                titulo,
+                prompt,
+                onWarn: (m) => app.log.warn(m),
+              }),
           })
           // O aviso é do DONO do projeto — a task travada é a dele. Antes, o
           // chat vinha direto do env (GITORCH_TELEGRAM_CHAT_ID): TODO cliente
