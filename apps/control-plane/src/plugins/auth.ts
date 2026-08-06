@@ -131,6 +131,20 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
             email?: string
           }
 
+          // Assinatura válida não prova que o dono ainda existe. Depois de o
+          // ambiente de um cliente ser zerado, a aba antiga continua mandando
+          // o cookie: sem esta checagem, a rota tenta trabalhar para um dono
+          // fantasma e estoura em 500 (violação de chave estrangeira) — que,
+          // para quem está usando, é "deu erro do nada". A verificação vivia
+          // só em /auth/me; aqui ela vale para toda rota de sessão.
+          const donoAindaExiste = await prisma.user.findUnique({
+            where: { id: decoded.userId },
+            select: { id: true },
+          })
+          if (!donoAindaExiste) {
+            throw unauthorized('UNAUTHORIZED: SESSION_STALE — faça login novamente')
+          }
+
           request.user = {
             id: decoded.userId,
             wingId: decoded.wingId,
@@ -139,7 +153,11 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
           request.wingId = decoded.wingId
 
           return { userId: decoded.userId }
-        } catch {
+        } catch (err) {
+          // Sessão de usuário apagado tem mensagem própria (o front sabe
+          // mandar a pessoa para o login); qualquer outra falha continua
+          // sendo "cookie inválido".
+          if (err instanceof Error && err.message.includes('SESSION_STALE')) throw err
           throw unauthorized('UNAUTHORIZED: Invalid or expired session cookie')
         }
       }
@@ -250,7 +268,7 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
    * tenant-concurrency.test.ts). Num guard de isolamento isso é grave — código
    * que rode em seguida herdaria um dono que não é dele.
    */
-  app.addHook('preHandler', (request, _reply, done) => {
+  app.addHook('preHandler', (request, reply, done) => {
     if (isPublicPath(request.url)) {
       done()
       return
@@ -268,7 +286,15 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
         }
         done()
       })
-      .catch((err: Error) => done(err))
+      .catch((err: Error) => {
+        // Sessão de dono apagado: além do 401, o cookie morto SAI do navegador.
+        // Sem isso a pessoa fica presa — cada recarregada manda de volta o
+        // mesmo cookie e leva o mesmo erro, sem entender por quê.
+        if (err.message.includes('SESSION_STALE')) {
+          reply.clearCookie('gitorch_session', { path: '/' })
+        }
+        done(err)
+      })
   })
 
   // JWT helper decorator

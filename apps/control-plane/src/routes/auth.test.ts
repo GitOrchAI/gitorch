@@ -7,6 +7,7 @@ import { Prisma } from '@prisma/client'
 import { resetEnvCache } from '../config/env.js'
 import { authRoutes } from './auth.js'
 import { authPlugin } from '../plugins/auth.js'
+import { prisma as prismaModule } from '../plugins/prisma.js'
 import type { EngineConnectionService } from '../services/engine-connection.js'
 
 describe('GitHub OAuth callback', () => {
@@ -394,8 +395,10 @@ describe('GET /api/v1/auth/me', () => {
     // rota protegida, não reimplementar a checagem.
     await app.register(authPlugin)
     app.decorate('engineConnections', {} as unknown as EngineConnectionService)
-    // Sessão-zumbi: /auth/me agora confirma no banco que o usuário do cookie
-    // existe — o mock devolve o próprio userId do teste.
+    // Sessão-zumbi: quem confirma no banco que o dono do cookie existe é o
+    // HOOK de autenticação (vale para toda rota de sessão), e ele usa o
+    // cliente do módulo — é esse que o cenário prepara.
+    ;(prismaModule.user.findUnique as ReturnType<typeof vi.fn>).mockResolvedValue({ id: '42' })
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     app.decorate('prisma', { user: { findUnique: vi.fn().mockResolvedValue({ id: '42' }) } } as any)
     await authRoutes(app)
