@@ -4,6 +4,7 @@ import {
   getTelegramUpdates,
   handleTelegramUpdate,
   handleTelegramCallback,
+  handleTelegramQuestionReply,
   sendTelegramMessage,
   sendTelegramQuestion,
 } from '../services/telegram-bot.js'
@@ -133,6 +134,18 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
             )
             continue
           }
+          // Reply (o dono respondeu à MENSAGEM da pergunta) — casa com a
+          // AgentQuestion aberta via `message.reply_to_message` (feedback do
+          // dono: falta uma 4ª resposta manual quando nenhuma opção serve).
+          // Só entra aqui quando FOI de fato um reply a uma pergunta nossa;
+          // qualquer outra mensagem (ex.: um /start) segue pro fluxo normal
+          // logo abaixo.
+          const handledAsAnswer = await handleTelegramQuestionReply(
+            { prisma: app.prisma, agentQuestionService, botToken },
+            update
+          )
+          if (handledAsAnswer) continue
+
           const reply = await handleTelegramUpdate(app.prisma, update)
           if (!reply) continue
           await sendTelegramMessage({ botToken, chatId: reply.chatId, text: reply.text })
