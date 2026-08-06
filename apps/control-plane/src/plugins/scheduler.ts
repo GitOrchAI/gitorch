@@ -146,6 +146,26 @@ export function nextOnboardingStep(
 }
 
 /**
+ * A cascata de onboarding continua enquanto houver fila — inclusive depois de
+ * uma missão que não teve trabalho a fazer.
+ *
+ * Visto em produção: o SM de um projeto recém-registrado não tinha nada para
+ * delegar (não havia issues ainda). Isso é um no-op LEGÍTIMO, mas o
+ * encadeamento morava dentro do bloco que grava memória — pulado em no-op — e
+ * a esteira morreu ali: o QA nunca acordou e o reconhecimento de qualidade
+ * nunca aconteceu, sem nenhum erro aparente.
+ *
+ * São duas decisões independentes: gravar memória depende de ter ENTREGUE;
+ * seguir a cascata depende apenas de ainda haver próximo papel.
+ */
+export function shouldChainOnboarding(args: {
+  isNoOp: boolean
+  sequence: F6AgentRole[] | null | undefined
+}): boolean {
+  return nextOnboardingStep(args.sequence) !== null
+}
+
+/**
  * Board dos trilhos: só o PRÓPRIO board do projeto (gravado em
  * Project.runtimeConfig.envConfig.GITORCH_PROJECT_BOARD por
  * provisionSetupMission). Achado crítico da revisão pós-merge: esta função
@@ -1453,24 +1473,29 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             } catch (memErr) {
               app.log.error(memErr, `[Scheduler] Falha ao gravar memória de ${missionId}`)
             }
+          }
 
-            // Encadeamento automático de onboarding (Evento 1)
-            try {
-              const m = await app.prisma.mission.findUnique({
-                where: { id: missionId },
-                select: { payload: true, projectId: true },
-              })
-              const p = m?.payload as { onboardingSequence?: F6AgentRole[] } | null
+          // Encadeamento automático de onboarding (Evento 1) — FORA do bloco
+          // de memória de propósito: uma missão sem trabalho a fazer (SM de
+          // projeto novo, sem nada para delegar) é no-op legítimo e não pode
+          // matar a esteira. Enquanto houver fila, a cascata segue.
+          try {
+            const m = await app.prisma.mission.findUnique({
+              where: { id: missionId },
+              select: { payload: true, projectId: true },
+            })
+            const p = m?.payload as { onboardingSequence?: F6AgentRole[] } | null
+            if (shouldChainOnboarding({ isNoOp, sequence: p?.onboardingSequence })) {
               const next = nextOnboardingStep(p?.onboardingSequence)
               if (next) {
                 app.log.info(
-                  `[Scheduler] Onboarding (${role} concluído): disparando ${next.role} para ${project.wingId}`
+                  `[Scheduler] Onboarding (${role} concluído${isNoOp ? ', sem trabalho a fazer' : ''}): disparando ${next.role} para ${project.wingId}`
                 )
                 void triggerAgentMission(next.role, m?.projectId, next.remaining)
               }
-            } catch (chainErr) {
-              app.log.error(chainErr, `[Scheduler] Falha ao encadear onboarding após ${role}`)
             }
+          } catch (chainErr) {
+            app.log.error(chainErr, `[Scheduler] Falha ao encadear onboarding após ${role}`)
           }
           return
         }
