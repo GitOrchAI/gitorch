@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react'
 import dynamic from 'next/dynamic'
-import { ChevronRight, Search, Loader2, Check } from 'lucide-react'
+import { ChevronRight, Search, Loader2, Check, Building2 } from 'lucide-react'
 import { useLanguage } from '../../LanguageContext'
 import { parseSetupErrorCode, setupErrorHintKey, type SetupErrorCode } from './setup-errors'
 import { isWebglAvailable } from './graph3d-layout'
+import { buildInstallAppUrl } from './install-app-link'
 
 const RepoGraph3D = dynamic(() => import('./RepoGraph3D'), { ssr: false })
 
@@ -188,6 +189,16 @@ export default function StepSelectRepos({
     window.location.href = `${apiBaseUrl}/api/v1/auth/github?return_to=${returnTo}&plan=${planParam}`
   }
 
+  // Leva a pessoa pra instalar o GitHub App numa organização (ver
+  // install-app-link.ts para o porquê). Sem isso, um repositório de
+  // organização nunca aparece de verdade utilizável aqui: o login OAuth
+  // clássico (StepGitHubLogin) só autoriza a conta PESSOAL de quem loga, e a
+  // instalação do App vale para a conta DONA do repositório — instalar na
+  // conta pessoal não dá acesso a repositório de organização nenhuma.
+  const handleInstallApp = () => {
+    window.location.href = buildInstallAppUrl({ apiBaseUrl, currentHref: window.location.href })
+  }
+
   const toggleRepo = (fullName: string) => {
     if (selectedRepos.includes(fullName)) {
       // Desmarcar sempre pode, e limpa o aviso de cota.
@@ -294,6 +305,24 @@ export default function StepSelectRepos({
                 style={{ paddingLeft: 38 }}
               />
             </div>
+          </div>
+
+          <div
+            className="mb-3 flex items-center justify-between gap-3 rounded-lg px-3 py-2"
+            style={{ border: '1px solid var(--gl-hair)' }}
+          >
+            <p className="wz-opt-desc" style={{ margin: 0, flex: 1 }}>
+              {t('setup.reposInstallAppHint')}
+            </p>
+            <button
+              type="button"
+              onClick={handleInstallApp}
+              className="wz-btn wz-btn-ghost"
+              style={{ fontSize: '0.78rem', flex: 'none', whiteSpace: 'nowrap' }}
+            >
+              <Building2 size={14} />
+              {t('setup.reposInstallApp')}
+            </button>
           </div>
 
           {plan === 'free' && (

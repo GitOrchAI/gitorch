@@ -124,6 +124,9 @@ export const locales = {
       reposSearch: 'Search repository...',
       reposEmpty: 'No repositories found.',
       reposPrivate: 'Private',
+      reposInstallApp: 'Install GitOrch on my organization',
+      reposInstallAppHint:
+        'A repository that belongs to an organization needs the app installed on that organization, not on your personal account.',
       diagTitle: 'Reading your repository',
       diagDesc: 'No AI involved yet — this is real, structural analysis of your code, free.',
       diagLoadingClone: 'Cloning your repository…',
@@ -443,6 +446,9 @@ export const locales = {
       reposSearch: 'Buscar repositório...',
       reposEmpty: 'Nenhum repositório encontrado.',
       reposPrivate: 'Privado',
+      reposInstallApp: 'Instalar o GitOrch na minha organização',
+      reposInstallAppHint:
+        'Repositório que pertence a uma organização precisa do aplicativo instalado nela, não na sua conta pessoal.',
       diagTitle: 'Lendo o seu repositório',
       diagDesc: 'Ainda sem IA nenhuma — é análise estrutural real do seu código, de graça.',
       diagLoadingClone: 'Clonando seu repositório…',
@@ -763,6 +769,9 @@ export const locales = {
       reposSearch: 'Buscar repositorio...',
       reposEmpty: 'No se encontraron repositorios.',
       reposPrivate: 'Privado',
+      reposInstallApp: 'Instalar GitOrch en mi organización',
+      reposInstallAppHint:
+        'Un repositorio que pertenece a una organización necesita la app instalada en ella, no en tu cuenta personal.',
       diagTitle: 'Leyendo tu repositorio',
       diagDesc: 'Todavía sin IA — es análisis estructural real de tu código, gratis.',
       diagLoadingClone: 'Clonando tu repositorio…',
