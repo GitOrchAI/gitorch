@@ -114,11 +114,26 @@ pnpm exec tsx scripts/ci/impact-radius.ts "$(git diff --name-only origin/main...
 
 ## Branch protection
 
-Para proteger `main`, exigir pelo menos:
+Esta seção descreve o que está **efetivamente configurado** na plataforma, não o que seria desejável. Ao mudar a configuração, mude este texto junto — as duas coisas divergiram no passado, e uma proteção que só existe no documento não protege nada.
 
-- status check `ci`;
-- PR aprovado por humano;
-- branch atualizada;
-- secret scan aprovado.
+O que a `main` exige hoje:
+
+| Regra | Estado | Efeito |
+|---|---|---|
+| Status checks obrigatórios | `zero-tolerance`, `infra-guard` | A plataforma recusa a mesclagem enquanto esses dois não estiverem verdes |
+| Branch atualizada antes de mesclar (`strict`) | desligado | Evita a fila de rebase em cadeia quando vários PRs de dependência abrem juntos |
+| Aprovação obrigatória de revisor | desligado | Ver a justificativa abaixo |
+| Force-push | bloqueado | Ninguém reescreve o histórico da `main` |
+| Exclusão da branch | bloqueada | — |
+| Histórico linear | exigido | Merge commit direto na `main` é recusado; squash e rebase continuam valendo, e o merge automático já usa squash |
+| Administradores incluídos (`enforce_admins`) | desligado | Quem tem admin no repositório continua passando por cima, de propósito: é a válvula de emergência para consertar a `main` quando o próprio CI está quebrado |
+
+Os nomes na primeira linha são os **nomes dos checks** (`zero-tolerance` e `infra-guard`, os jobs), não os nomes dos workflows (`CI` e `Infra Guard`). Marcar um contexto que nunca é reportado deixa todo PR parado para sempre em "waiting for status to be reported" — por isso só entram aqui jobs que rodam em **todo** PR contra a `main`, sem filtro de `paths` e sem `if:` condicional.
+
+Por que aprovação obrigatória de revisor está desligada: ela quebraria o merge automático de dependências. O `auto-merge.yml` aprova o PR com o token da automação antes de mesclar, e a configuração "Allow GitHub Actions to create and approve pull requests" está desligada no repositório e na organização — a aprovação da automação falha, e a falha está engolida por um `|| true` no workflow. Ligar a exigência sem antes resolver isso (habilitar aquela opção, ou dar à automação um token de pessoa via secret `SECURITY_PAT`) faria todo PR do Dependabot parar à espera de um clique manual.
+
+A proteção é a rede de segurança **atrás** do `auto-merge.yml`, não um substituto dele: mesmo que o workflow tenha um defeito e tente mesclar cedo, a plataforma recusa enquanto o CI não estiver verde.
+
+Falta cobrir: secret scan como check obrigatório separado (hoje ele é um passo dentro do `zero-tolerance`, então já bloqueia por tabela).
 
 QA Gate automático só deve entrar depois de existir API/workflow real.
