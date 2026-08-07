@@ -19,14 +19,21 @@ jobs:
         with:
           token: ${{ secrets.SECURITY_PAT }}
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+      - name: Setup Node
+        uses: actions/setup-node@v7
         with:
-          bun-version: latest
+          node-version: '20'
 
+      # `npm ci` e não `install`: instala exatamente o que está no lockfile
+      # versionado. Este passo roda no mesmo trabalho que recebe o token de
+      # segurança, então resolver dependência do registry na hora — sem pin —
+      # deixaria qualquer versão nova de dependência transitiva entrar sem
+      # revisão, ao alcance desse token. O runtime também deixa de ser um
+      # detalhe: os outros robôs desta automação já rodam em Node com o mesmo
+      # lockfile, e era este o único fora do padrão.
       - name: Install Dependencies
         working-directory: .github/scripts
-        run: bun install
+        run: npm ci
 
       - name: Run SLA Tracker
         env:
@@ -36,5 +43,5 @@ jobs:
           SLA_BUSINESS_DAYS: ${{ env.SLA_BUSINESS_DAYS || '1' }}
         run: |
           echo "Running SLA tracker for Dependabot alerts..."
-          bun run sla-tracker.ts "${{ env.SLA_BUSINESS_DAYS }}"
+          npx tsx sla-tracker.ts "$SLA_BUSINESS_DAYS"
         working-directory: .github/scripts
