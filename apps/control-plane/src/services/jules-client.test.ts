@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { julesSourceName, criarSessaoJules } from './jules-client.js'
+import {
+  julesSourceName,
+  criarSessaoJules,
+  lerSessaoJules,
+  responderSessaoJules,
+  aprovarPlanoJules,
+} from './jules-client.js'
 
 // Desejo do dono (issue de wishlist deste repositório): delegar tem de ACIONAR
 // o dev assíncrono, não apenas pendurar um label e torcer para alguém escutar.
@@ -94,5 +100,76 @@ describe('criarSessaoJules', () => {
       criarSessaoJules({ ...base, fetchImpl: impl, onWarn: (m) => avisos.push(m) })
     ).resolves.toBeNull()
     expect(avisos.length).toBeGreaterThan(0)
+  })
+})
+
+// O loop de acompanhamento precisa de três verbos além de criar: ler o estado,
+// responder e aprovar o plano. Sem eles a sessão criada fica órfã — foi o que
+// aconteceu em produção, com o dev esperando resposta que nunca vinha.
+describe('acompanhamento da sessão', () => {
+  const respostaOk = (body: unknown) =>
+    ({ ok: true, status: 200, json: async () => body }) as unknown as Response
+
+  it('lê o estado e a última mensagem do dev', async () => {
+    const chamadas: string[] = []
+    const impl = (async (url: string | URL | Request) => {
+      const u = String(url)
+      chamadas.push(u)
+      if (u.endsWith('/activities?pageSize=30')) {
+        return respostaOk({
+          activities: [{ agentMessaged: { agentMessage: 'devo adicionar o caso novo?' } }],
+        })
+      }
+      return respostaOk({ name: 'sessions/1', state: 'AWAITING_USER_FEEDBACK' })
+    }) as unknown as typeof fetch
+
+    const s = await lerSessaoJules({ apiKey: 'k', sessionId: 'sessions/1', fetchImpl: impl })
+
+    expect(s?.estado).toBe('AWAITING_USER_FEEDBACK')
+    expect(s?.ultimaMensagem).toContain('caso novo')
+    expect(chamadas.some((c) => c.includes('/activities'))).toBe(true)
+  })
+
+  it('envia a resposta ao dev', async () => {
+    const corpos: unknown[] = []
+    const impl = (async (url: string | URL | Request, init?: RequestInit) => {
+      corpos.push({ url: String(url), body: JSON.parse(String(init?.body ?? '{}')) })
+      return respostaOk({})
+    }) as unknown as typeof fetch
+
+    const ok = await responderSessaoJules({
+      apiKey: 'k',
+      sessionId: 'sessions/1',
+      texto: 'sim, inclua o caso novo',
+      fetchImpl: impl,
+    })
+
+    expect(ok).toBe(true)
+    const enviado = corpos[0] as { url: string; body: { prompt: string } }
+    expect(enviado.url).toContain(':sendMessage')
+    expect(enviado.body.prompt).toContain('caso novo')
+  })
+
+  it('aprova o plano quando o dev pede aprovação', async () => {
+    const urls: string[] = []
+    const impl = (async (url: string | URL | Request) => {
+      urls.push(String(url))
+      return respostaOk({})
+    }) as unknown as typeof fetch
+
+    const ok = await aprovarPlanoJules({ apiKey: 'k', sessionId: 'sessions/1', fetchImpl: impl })
+
+    expect(ok).toBe(true)
+    expect(urls[0]).toContain(':approvePlan')
+  })
+
+  it('sem chave configurada, nenhum dos três toca a rede', async () => {
+    const impl = (async () => {
+      throw new Error('não deveria tocar a rede')
+    }) as unknown as typeof fetch
+
+    expect(await lerSessaoJules({ sessionId: 's', fetchImpl: impl })).toBeNull()
+    expect(await responderSessaoJules({ sessionId: 's', texto: 'x', fetchImpl: impl })).toBe(false)
+    expect(await aprovarPlanoJules({ sessionId: 's', fetchImpl: impl })).toBe(false)
   })
 })
