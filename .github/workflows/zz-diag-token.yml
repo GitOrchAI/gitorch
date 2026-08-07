@@ -1,0 +1,71 @@
+name: ZZ Diag Token (temporario)
+
+# TEMPORARIO: prova, no Actions de verdade, o que o GITHUB_TOKEN padrao consegue
+# fazer nas APIs que a automacao de seguranca usa. Removido apos a medicao.
+
+on:
+  push:
+    branches:
+      - claude/determined-darwin-72097c
+
+permissions:
+  contents: read
+  security-events: read
+  issues: write
+  pull-requests: read
+  actions: read
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout com GITHUB_TOKEN explicito
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Testar APIs com GITHUB_TOKEN
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          probe() {
+            local nome="$1"; shift
+            local code
+            code=$(gh api "$@" --include --silent 2>&1 | grep -iE '^HTTP/' | tail -1 || true)
+            if gh api "$@" >/tmp/out.json 2>/tmp/err.txt; then
+              echo "OK       $nome  -> $(head -c 120 /tmp/out.json)"
+            else
+              echo "FALHOU   $nome  -> $(head -c 200 /tmp/err.txt)"
+            fi
+          }
+
+          echo "==== leitura: alertas do Dependabot ===="
+          probe "GET dependabot/alerts" "/repos/${{ github.repository }}/dependabot/alerts?state=open&per_page=1"
+
+          echo "==== leitura: alertas do Code Scanning ===="
+          probe "GET code-scanning/alerts" "/repos/${{ github.repository }}/code-scanning/alerts?state=open&per_page=1"
+
+          echo "==== leitura: issues ===="
+          probe "GET issues" "/repos/${{ github.repository }}/issues?state=all&per_page=1&labels=jules"
+
+          echo "==== leitura: runs de workflow (analyze-ci-failure) ===="
+          probe "GET actions/runs" "/repos/${{ github.repository }}/actions/runs?per_page=1"
+
+          echo "==== escrita: criar issue de teste e fechar ===="
+          if ISSUE=$(gh api --method POST "/repos/${{ github.repository }}/issues" \
+                -f title="[diag] teste de permissao do GITHUB_TOKEN" \
+                -f body="Issue automatica de diagnostico. Fechada em seguida." 2>/tmp/err.txt); then
+            NUM=$(echo "$ISSUE" | jq -r '.number')
+            echo "OK       POST issues -> criada #$NUM"
+            if gh api --method POST "/repos/${{ github.repository }}/issues/$NUM/labels" \
+                 -f "labels[]=documentation" >/dev/null 2>/tmp/err2.txt; then
+              echo "OK       POST labels -> label aplicada em #$NUM"
+            else
+              echo "FALHOU   POST labels -> $(head -c 200 /tmp/err2.txt)"
+            fi
+            gh api --method PATCH "/repos/${{ github.repository }}/issues/$NUM" -f state=closed >/dev/null
+            echo "         (issue #$NUM fechada)"
+          else
+            echo "FALHOU   POST issues -> $(head -c 200 /tmp/err.txt)"
+          fi
