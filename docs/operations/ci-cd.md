@@ -88,17 +88,23 @@ O `.github/workflows/auto-merge.yml` mescla sozinho **apenas** pull requests da 
 | Código do dev assíncrono sem veredito do QA | segura, e diz que aguarda o julgamento |
 | QA reprovou | segura, e diz o que destrava |
 | QA aprovou **outra versão** e o topo mudou desde então | segura — aprovação vale para a versão julgada, não para o pull request |
+| Aprovação do QA foi **descartada** | segura — descarte revoga, e não deixa um julgamento anterior no lugar |
+| Aprovação vinda de conta homônima **sem o sufixo de robô** | segura — não é o QA |
 | QA aprovou a versão atual | libera |
-| Rotina de dependência, sem reprovação pendente | libera (não espera veredito que nunca vem) |
+| Rotina de dependência (todos os commits do topo são do robô) | libera (não espera veredito que nunca vem) |
 | Falha ao consultar o veredito | segura — na dúvida, não mescla |
 
-Três detalhes que parecem preciosismo e não são:
+Cinco detalhes que parecem preciosismo e não são:
 
 1. **O veredito é reconferido segundos antes de mesclar**, não só no início. Entre a primeira consulta e a mesclagem existe a espera pelo CI, que dura minutos — e é exatamente nela que o dev assíncrono envia correção quando o CI fica vermelho. Sem reconferir, a aprovação de um commit liberaria outro.
-2. **O sistema não julga a si mesmo.** A automação aprova em nome da plataforma antes de mesclar; essa aprovação nunca conta como julgamento, mesmo que o revisor de qualidade seja configurado com a identidade dela.
-3. **O gatilho `pull_request_review` é necessário para o laço fechar.** O veredito chega como revisão, e revisão não dispara nenhum dos outros eventos — sem ele o pull request aprovado esperaria para sempre.
+2. **A mesclagem se prende à versão reconferida.** Ela exige da plataforma que o topo seja exatamente o commit julgado e recusa se tiver mudado; sem isso, o intervalo entre reconferir e mesclar continuaria aberto.
+3. **O login do revisor é comparado inteiro, com o sufixo `[bot]`.** O QA é um App e revisa como `nome[bot]`; o login `nome`, sem o sufixo, é uma conta de pessoa que qualquer um pode registrar — e num repositório público qualquer pessoa pode aprovar um pull request. Colchete não é caractere válido em nome de usuário, então o sufixo é justamente o que não dá para falsificar.
+4. **O sistema não julga a si mesmo.** A automação aprova em nome da plataforma antes de mesclar; essa aprovação nunca conta como julgamento, mesmo que o revisor de qualidade seja configurado com a identidade dela.
+5. **O gatilho `pull_request_review` é necessário para o laço fechar.** O veredito chega como revisão, e revisão não dispara nenhum dos outros eventos — sem ele o pull request aprovado esperaria para sempre.
 
-Quem é o revisor de qualidade sai da variável de repositório `GITORCH_QA_REVIEWER` (o App do produto, por padrão).
+Dispensar o julgamento é decisão sobre o **código do topo**, não sobre quem abriu o pull request: quem abriu continua sendo o robô de dependências mesmo depois que outra pessoa empurra um commit no mesmo ramo. Por isso a pergunta é feita sobre a autoria de cada commit.
+
+Quem é o revisor de qualidade sai da variável de repositório `GITORCH_QA_REVIEWER`. Quando ela não existe, vale o App do produto com o sufixo de robô — a identidade que não é registrável por terceiros.
 
 ## Scripts relevantes
 
