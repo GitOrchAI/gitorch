@@ -90,9 +90,10 @@ async function main(): Promise<void> {
     em: r.submitted_at ?? new Date(0).toISOString(),
   }))
 
-  // Quem dispensa o julgamento do QA é o CÓDIGO que está no topo, não a
-  // identidade de quem abriu o pull request. O autor continua sendo o robô de
-  // dependências mesmo depois que outra pessoa empurra um commit no mesmo ramo.
+  // Dispensar o julgamento do QA exige duas coisas: que o robô tenha aberto o
+  // pull request E que todo commit do topo seja dele. Quem abriu continua sendo
+  // o robô depois que outra pessoa empurra um commit no mesmo ramo; e commits
+  // que só se dizem do robô não bastam.
   const commitsBrutos = await octokit.paginate(octokit.rest.pulls.listCommits, {
     owner,
     repo,
@@ -100,12 +101,20 @@ async function main(): Promise<void> {
     per_page: 100,
   })
 
+  // Só a autoria que a PLATAFORMA reconheceu, nunca o nome escrito dentro do
+  // commit. O nome é livre — `git -c user.name=...` aceita qualquer coisa — e,
+  // quando o e-mail não pertence a conta nenhuma, é justamente o que sobraria.
+  // Ler dali seria decidir quem dispensa o controle de qualidade por um campo
+  // que quem comita preenche.
   const commits: CommitDoPr[] = commitsBrutos.map((c) => ({
-    autor: c.author?.login ?? c.commit?.author?.name ?? '',
-    enviadoPor: c.committer?.login ?? undefined,
+    autor: c.author?.login ?? null,
+    enviadoPor: c.committer?.login ?? null,
   }))
 
-  const exigeAprovacao = !ehRotinaDeDependencia(commits)
+  const exigeAprovacao = !ehRotinaDeDependencia({
+    autorDoPr: { login: pr.user?.login ?? '', tipoDeConta: pr.user?.type },
+    commits,
+  })
 
   const decisao = decidirMerge({
     revisorDeQualidade,

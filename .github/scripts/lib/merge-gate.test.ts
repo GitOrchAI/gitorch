@@ -335,17 +335,33 @@ describe('decidirMerge', () => {
 // e aí o que entra na linha principal já não é rotina nenhuma.
 describe('ehRotinaDeDependencia', () => {
   const ROBO = 'dependabot[bot]'
+  const ABERTO_PELO_ROBO = { login: ROBO, tipoDeConta: 'Bot' }
 
-  it('pull request cujos commits são todos do robô de dependências', () => {
-    expect(ehRotinaDeDependencia([{ autor: ROBO }, { autor: ROBO }])).toBe(true)
+  it('pull request do robô cujos commits são todos dele', () => {
+    expect(
+      ehRotinaDeDependencia({
+        autorDoPr: ABERTO_PELO_ROBO,
+        commits: [{ autor: ROBO, enviadoPor: 'web-flow' }],
+      })
+    ).toBe(true)
   })
 
   it('um único commit de outra pessoa já exige o julgamento do QA', () => {
-    expect(ehRotinaDeDependencia([{ autor: ROBO }, { autor: 'alguem' }])).toBe(false)
+    expect(
+      ehRotinaDeDependencia({
+        autorDoPr: ABERTO_PELO_ROBO,
+        commits: [{ autor: ROBO, enviadoPor: 'web-flow' }, { autor: 'alguem' }],
+      })
+    ).toBe(false)
   })
 
   it('commit assinado pelo robô mas enviado por outra pessoa também exige', () => {
-    expect(ehRotinaDeDependencia([{ autor: ROBO, enviadoPor: 'alguem' }])).toBe(false)
+    expect(
+      ehRotinaDeDependencia({
+        autorDoPr: ABERTO_PELO_ROBO,
+        commits: [{ autor: ROBO, enviadoPor: 'alguem' }],
+      })
+    ).toBe(false)
   })
 
   // Conferido contra um bump real: o robô cria os commits pela API do GitHub, e
@@ -354,10 +370,59 @@ describe('ehRotinaDeDependencia', () => {
   // para que ninguém "endureça" essa regra de novo sem olhar um pull request de
   // verdade.
   it('o enviador que a plataforma usa nos commits criados por ela conta como rotina', () => {
-    expect(ehRotinaDeDependencia([{ autor: ROBO, enviadoPor: 'web-flow' }])).toBe(true)
+    expect(
+      ehRotinaDeDependencia({
+        autorDoPr: ABERTO_PELO_ROBO,
+        commits: [{ autor: ROBO, enviadoPor: 'web-flow' }],
+      })
+    ).toBe(true)
   })
 
   it('sem commits conhecidos, não presume rotina', () => {
-    expect(ehRotinaDeDependencia([])).toBe(false)
+    expect(ehRotinaDeDependencia({ autorDoPr: ABERTO_PELO_ROBO, commits: [] })).toBe(false)
+  })
+
+  // O NOME que vem dentro do commit é escolhido por quem comita — `git -c
+  // user.name=...` aceita qualquer coisa. Quando o e-mail do commit não está
+  // ligado a nenhuma conta, a plataforma devolve autoria vazia, e é esse o caso
+  // NORMAL dos commits que saem das máquinas deste projeto. Confiar no nome
+  // seria deixar a dispensa do QA a um campo que o atacante preenche.
+  it('autoria não reconhecida pela plataforma nunca dispensa o QA', () => {
+    expect(
+      ehRotinaDeDependencia({
+        autorDoPr: ABERTO_PELO_ROBO,
+        commits: [{ autor: null, enviadoPor: 'web-flow' }],
+      })
+    ).toBe(false)
+  })
+
+  it('enviador não reconhecido também não dispensa', () => {
+    expect(
+      ehRotinaDeDependencia({
+        autorDoPr: ABERTO_PELO_ROBO,
+        commits: [{ autor: ROBO, enviadoPor: null }],
+      })
+    ).toBe(false)
+  })
+
+  // A outra metade da trava: mesmo com todos os commits em ordem, quem ABRIU o
+  // pull request precisa ser a conta do robô. Um pull request aberto por outra
+  // pessoa contendo commits que dizem ser do robô não é rotina nenhuma.
+  it('pull request aberto por outra conta não é rotina, mesmo com commits do robô', () => {
+    expect(
+      ehRotinaDeDependencia({
+        autorDoPr: { login: 'alguem', tipoDeConta: 'User' },
+        commits: [{ autor: ROBO, enviadoPor: 'web-flow' }],
+      })
+    ).toBe(false)
+  })
+
+  it('conta de pessoa com o nome do robô não passa como robô', () => {
+    expect(
+      ehRotinaDeDependencia({
+        autorDoPr: { login: ROBO, tipoDeConta: 'User' },
+        commits: [{ autor: ROBO, enviadoPor: 'web-flow' }],
+      })
+    ).toBe(false)
   })
 })

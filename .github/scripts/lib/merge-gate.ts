@@ -40,12 +40,28 @@ export interface RevisaoDoPr {
   em: string
 }
 
-/** Autoria de um commit do pull request, como a plataforma devolve. */
+/**
+ * Autoria de um commit, como a PLATAFORMA a reconhece.
+ *
+ * Os dois campos são a conta que o GitHub resolveu a partir do e-mail do
+ * commit — não o nome escrito dentro dele. Essa distinção é a diferença entre
+ * um dado autenticado e um campo que quem comita preenche à vontade: `git -c
+ * user.name=qualquer-coisa` aceita o que se mandar. Quando o e-mail não
+ * pertence a conta nenhuma, a plataforma devolve vazio, e vazio aqui significa
+ * "não sei quem é" — nunca "pode passar".
+ */
 export interface CommitDoPr {
-  /** Quem escreveu. */
-  autor: string
-  /** Quem enviou; costuma ser igual ao autor, e divergir importa. */
-  enviadoPor?: string | undefined
+  /** Conta de quem escreveu; nulo quando a plataforma não reconhece o e-mail. */
+  autor: string | null
+  /** Conta de quem enviou; nulo quando a plataforma não reconhece. */
+  enviadoPor?: string | null | undefined
+}
+
+/** Quem abriu o pull request, como a plataforma o identifica. */
+export interface AutorDoPr {
+  login: string
+  /** `Bot` ou `User`. */
+  tipoDeConta?: string | undefined
 }
 
 export interface DecisaoDeMerge {
@@ -119,18 +135,37 @@ function contaCompativel(revisao: RevisaoDoPr, revisorDeQualidade: string): bool
  * Decide se o pull request é rotina de dependência — o único caso que dispensa
  * o julgamento do QA.
  *
- * A pergunta é sobre o CÓDIGO que está no topo agora, não sobre quem abriu o
- * pull request. Quem abriu continua sendo o robô mesmo depois que outra pessoa
- * empurra um commit no mesmo ramo, e nesse ponto o que entraria na linha
- * principal já não é rotina nenhuma.
+ * Exige as DUAS coisas, e por motivos diferentes:
  *
- * Sem commits conhecidos, responde que não: na dúvida, exige julgamento.
+ * - quem ABRIU precisa ser a conta do robô. Só a plataforma escreve esse campo;
+ *   ninguém abre pull request em nome de outra conta.
+ * - todo commit do topo precisa ser reconhecido pela plataforma como sendo do
+ *   robô. Quem abriu continua sendo o robô mesmo depois que outra pessoa
+ *   empurra um commit no mesmo ramo, e nesse ponto o que entraria na linha
+ *   principal já não é rotina nenhuma.
+ *
+ * Uma sozinha não basta: a primeira ignora o que foi acrescentado depois, e a
+ * segunda, se fosse a única, aceitaria um pull request de qualquer um cujos
+ * commits apenas se digam do robô.
+ *
+ * Autoria que a plataforma não reconhece conta como recusa. Sem commits,
+ * também: na dúvida, exige julgamento.
  */
-export function ehRotinaDeDependencia(commits: readonly CommitDoPr[]): boolean {
-  if (commits.length === 0) return false
-  return commits.every(
+export function ehRotinaDeDependencia(args: {
+  autorDoPr: AutorDoPr
+  commits: readonly CommitDoPr[]
+}): boolean {
+  const abertoPeloRobo =
+    identidade(args.autorDoPr.login) === ROBO_DE_DEPENDENCIA &&
+    (args.autorDoPr.tipoDeConta === undefined || args.autorDoPr.tipoDeConta === 'Bot')
+  if (!abertoPeloRobo) return false
+
+  if (args.commits.length === 0) return false
+  return args.commits.every(
     (c) =>
+      c.autor !== null &&
       identidade(c.autor) === ROBO_DE_DEPENDENCIA &&
+      c.enviadoPor !== null &&
       (c.enviadoPor === undefined || ENVIADORES_DE_ROTINA.has(identidade(c.enviadoPor)))
   )
 }
