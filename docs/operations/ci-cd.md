@@ -45,11 +45,13 @@ postgres:16
 
 Não há Redis no CI atual.
 
-## Passos executados
+## Passos executados (job `zero-tolerance`)
+
+O `ci.yml` tem três trabalhos: `zero-tolerance` (a tabela abaixo), `e2e-funil-fake` (o funil do setup wizard navegado no navegador em todo PR) e `scripts-de-automacao` (descrito adiante).
 
 | Ordem | Etapa | Comando / ação |
 |---:|---|---|
-| 1 | Checkout | `actions/checkout@v4` com `fetch-depth: 0` |
+| 1 | Checkout | `actions/checkout@v7` com `fetch-depth: 0` |
 | 2 | Setup pnpm | `.github/actions/setup-pnpm` |
 | 3 | Install | `pnpm install --frozen-lockfile` |
 | 4 | CI baseline | `pnpm exec tsx scripts/ci/verify-ci-baseline.ts` |
@@ -64,6 +66,39 @@ Não há Redis no CI atual.
 | 13 | Playwright E2E | `pnpm run e2e` |
 | 14 | Audit summary | `pnpm exec tsx scripts/ci/audit-summary.ts` |
 | 15 | Upload CI audit | `.github/actions/upload-ci-audit` |
+
+## Testes dos scripts de automação
+
+Os scripts que governam as automações do repositório vivem em `.github/scripts`, que fica **fora dos workspaces do pnpm**. Nenhum job alcançava esse diretório, então os testes que existiam ali nunca rodaram em PR nenhum.
+
+O job `scripts-de-automacao` fecha isso: instala pelo lockfile do próprio diretório, roda o typecheck e a suíte. Não depende de banco nem de navegador — leva segundos.
+
+```bash
+cd .github/scripts && npm ci && npm run typecheck && npm test
+```
+
+## Merge automático e o portão do QA
+
+O `.github/workflows/auto-merge.yml` mescla sozinho **apenas** pull requests da automação de segurança: os do Dependabot e os do dev assíncrono que resolvem uma issue com label `dependabot`/`jules`. Qualquer outro pull request não entra por essa via.
+
+**São dois porteiros, não um.** O CI diz se o código roda; o QA diz se o código resolve o que a issue pediu. A regra vive em `.github/scripts/lib/merge-gate.ts`, separada do workflow justamente para poder ser testada:
+
+| Situação | Decisão |
+|---|---|
+| Código do dev assíncrono sem veredito do QA | segura, e diz que aguarda o julgamento |
+| QA reprovou | segura, e diz o que destrava |
+| QA aprovou **outra versão** e o topo mudou desde então | segura — aprovação vale para a versão julgada, não para o pull request |
+| QA aprovou a versão atual | libera |
+| Rotina de dependência, sem reprovação pendente | libera (não espera veredito que nunca vem) |
+| Falha ao consultar o veredito | segura — na dúvida, não mescla |
+
+Três detalhes que parecem preciosismo e não são:
+
+1. **O veredito é reconferido segundos antes de mesclar**, não só no início. Entre a primeira consulta e a mesclagem existe a espera pelo CI, que dura minutos — e é exatamente nela que o dev assíncrono envia correção quando o CI fica vermelho. Sem reconferir, a aprovação de um commit liberaria outro.
+2. **O sistema não julga a si mesmo.** A automação aprova em nome da plataforma antes de mesclar; essa aprovação nunca conta como julgamento, mesmo que o revisor de qualidade seja configurado com a identidade dela.
+3. **O gatilho `pull_request_review` é necessário para o laço fechar.** O veredito chega como revisão, e revisão não dispara nenhum dos outros eventos — sem ele o pull request aprovado esperaria para sempre.
+
+Quem é o revisor de qualidade sai da variável de repositório `GITORCH_QA_REVIEWER` (o App do produto, por padrão).
 
 ## Scripts relevantes
 
@@ -121,4 +156,4 @@ Para proteger `main`, exigir pelo menos:
 - branch atualizada;
 - secret scan aprovado.
 
-QA Gate automático só deve entrar depois de existir API/workflow real.
+O portão do QA descrito acima **não substitui** a proteção de branch: ele governa apenas a via do merge automático, e a proteção continua valendo para todo o resto.
