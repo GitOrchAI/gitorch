@@ -2,11 +2,21 @@ name: Auto-Merge PRs (Dependabot & Jules)
 
 # Auto-merge ESTRITO: só PR desta automação de segurança — PR do Dependabot, ou PR do Jules
 # que resolve uma issue com label 'dependabot'/'jules'. Qualquer outro PR NÃO entra.
-# Mescla (squash) assim que o CI fica 100% verde. O CI é o porteiro (tolerância zero).
+# Mescla (squash) quando o CI fica 100% verde E o QA autoriza.
+#
+# São dois porteiros, não um. O CI diz se o código roda; o QA diz se o código
+# resolve o que a issue pediu. Já aconteceu de um pull request reprovado pelo QA
+# entrar na linha principal um minuto depois da reprovação, porque a mesclagem
+# olhava só os testes — o julgamento existia e não valia nada.
 
 on:
   pull_request_target:
     types: [opened, reopened, synchronize, labeled, ready_for_review]
+  # Sem isto o laço não fecha: o veredito do QA chega como revisão, e revisão não
+  # dispara nenhum dos outros eventos. O PR aprovado ficaria esperando para
+  # sempre alguém enviar um commit novo só para acordar a automação.
+  pull_request_review:
+    types: [submitted, dismissed]
   check_suite:
     types: [completed]
   workflow_dispatch:
@@ -92,8 +102,39 @@ jobs:
             core.setOutput('eligible', eligible ? 'true' : 'false');
             core.setOutput('prNumber', String(prNumber));
 
-      - name: Wait for CI and Merge
+      # O código do repositório BASE, nunca o do pull request: este workflow roda
+      # com permissão de escrita, e executar código vindo de fora com esse token
+      # seria entregar a chave. `checkout` sem `ref` no pull_request_target já
+      # pega o base — é de propósito que não há `ref` aqui.
+      - name: Checkout Base Repository
         if: steps.evaluate.outputs.eligible == 'true'
+        uses: actions/checkout@v7
+
+      - name: Setup Bun
+        if: steps.evaluate.outputs.eligible == 'true'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install Script Dependencies
+        if: steps.evaluate.outputs.eligible == 'true'
+        working-directory: .github/scripts
+        run: bun install
+
+      - name: QA Verdict Gate
+        id: gate
+        if: steps.evaluate.outputs.eligible == 'true'
+        working-directory: .github/scripts
+        env:
+          GITHUB_TOKEN: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          PR_NUMBER: ${{ steps.evaluate.outputs.prNumber }}
+          QA_REVIEWER: ${{ vars.GITORCH_QA_REVIEWER }}
+        run: bun run check-merge-gate.ts
+
+      - name: Wait for CI and Merge
+        if: steps.evaluate.outputs.eligible == 'true' && steps.gate.outputs.pode == 'true'
         env:
           GH_TOKEN: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
           PR_NUM: ${{ steps.evaluate.outputs.prNumber }}
@@ -118,8 +159,11 @@ jobs:
 
             if [ "$PENDING" -eq 0 ] && [ "$TOTAL" -gt 0 ]; then
               echo "CI 100% verde no PR #$PR_NUM. Mesclando..."
+              # Formalidade para a plataforma liberar a mesclagem. A aprovação de
+              # mérito é a do QA, verificada no passo anterior — esta aqui não
+              # substitui nem dispensa aquela.
               gh pr review "$PR_NUM" --approve \
-                --body "Aprovado automaticamente pelo pipeline de segurança (Dependabot/Jules)." \
+                --body "Mesclagem liberada: CI verde e veredito do QA favorável." \
                 --repo "$REPO" || true
               for t in 1 2 3; do
                 if gh pr merge "$PR_NUM" --squash --repo "$REPO"; then
@@ -137,3 +181,10 @@ jobs:
           done
           echo "::error::Timeout aguardando CI do PR #$PR_NUM."
           exit 1
+
+      - name: Explain Retained Merge
+        if: steps.evaluate.outputs.eligible == 'true' && steps.gate.outputs.pode != 'true'
+        run: |
+          echo "### Merge automático retido" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.gate.outputs.motivo }}" >> "$GITHUB_STEP_SUMMARY"
