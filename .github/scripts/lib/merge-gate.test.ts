@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { decidirMerge, ultimoVeredito } from './merge-gate.js'
+import { decidirMerge, ultimoVeredito, ehRotinaDeDependencia } from './merge-gate.js'
 
 // Visto em produção, num PR escrito pelo dev assíncrono:
 //
@@ -11,7 +11,10 @@ import { decidirMerge, ultimoVeredito } from './merge-gate.js'
 // principal, porque só olhava os testes. Um produto que vende julgamento não
 // pode mesclar o que o próprio julgamento recusou.
 
-const QA = 'gitorch-ai'
+// O login CRU do App, com o sufixo. Ele importa: o GitHub não aceita colchetes
+// em nome de usuário, então `gitorch-ai[bot]` é impossível de registrar por uma
+// pessoa — enquanto `gitorch-ai`, sem o sufixo, está livre para quem quiser.
+const QA = 'gitorch-ai[bot]'
 const SHA = 'abc123'
 
 describe('ultimoVeredito', () => {
@@ -212,6 +215,85 @@ describe('decidirMerge', () => {
     }
   })
 
+  // O QA é um App e revisa como `gitorch-ai[bot]`. Enquanto isso, o login
+  // `gitorch-ai` — sem o sufixo — está livre no GitHub para qualquer pessoa
+  // registrar. Num repositório público qualquer um pode aprovar um pull
+  // request. Se o portão tratar os dois como a mesma identidade, o veredito do
+  // QA passa a ser assinável por um estranho ao custo de criar uma conta.
+  it('um homônimo sem o sufixo de robô não assina pelo QA', () => {
+    const d = decidirMerge({
+      revisorDeQualidade: QA,
+      revisoes: [
+        { autor: 'gitorch-ai', estado: 'APPROVED', commitId: SHA, em: '2026-01-01T14:00:00Z' },
+      ],
+      commitAtual: SHA,
+      exigeAprovacao: true,
+    })
+    expect(d.pode).toBe(false)
+  })
+
+  it('e nem consegue derrubar uma reprovação verdadeira do QA', () => {
+    const d = decidirMerge({
+      revisorDeQualidade: QA,
+      revisoes: [
+        { autor: QA, estado: 'CHANGES_REQUESTED', commitId: SHA, em: '2026-01-01T13:34:57Z' },
+        { autor: 'gitorch-ai', estado: 'APPROVED', commitId: SHA, em: '2026-01-01T14:00:00Z' },
+      ],
+      commitAtual: SHA,
+      exigeAprovacao: true,
+    })
+    expect(d.pode).toBe(false)
+  })
+
+  // Reforço de identidade: mesmo com o login idêntico, uma conta de pessoa não
+  // pode assinar por um revisor declarado como robô.
+  it('conta de pessoa não vale como veredito de um revisor que é robô', () => {
+    const d = decidirMerge({
+      revisorDeQualidade: QA,
+      revisoes: [
+        {
+          autor: QA,
+          tipoDeConta: 'User',
+          estado: 'APPROVED',
+          commitId: SHA,
+          em: '2026-01-01T14:00:00Z',
+        },
+      ],
+      commitAtual: SHA,
+      exigeAprovacao: true,
+    })
+    expect(d.pode).toBe(false)
+  })
+
+  // Descartar uma revisão é o gesto de dizer "esse julgamento não vale mais".
+  // Se o portão simplesmente ignora o descarte, um julgamento ANTERIOR volta a
+  // valer sozinho — e "aprovado" ressuscita depois de ter sido revogado.
+  it('descartar a aprovação não faz o pull request voltar a estar aprovado', () => {
+    const d = decidirMerge({
+      revisorDeQualidade: QA,
+      revisoes: [
+        { autor: QA, estado: 'APPROVED', commitId: SHA, em: '2026-01-01T10:00:00Z' },
+        { autor: QA, estado: 'DISMISSED', commitId: SHA, em: '2026-01-01T11:00:00Z' },
+      ],
+      commitAtual: SHA,
+      exigeAprovacao: true,
+    })
+    expect(d.pode).toBe(false)
+  })
+
+  it('descartar a reprovação também não vale como aprovação', () => {
+    const d = decidirMerge({
+      revisorDeQualidade: QA,
+      revisoes: [
+        { autor: QA, estado: 'CHANGES_REQUESTED', commitId: SHA, em: '2026-01-01T10:00:00Z' },
+        { autor: QA, estado: 'DISMISSED', commitId: SHA, em: '2026-01-01T11:00:00Z' },
+      ],
+      commitAtual: SHA,
+      exigeAprovacao: true,
+    })
+    expect(d.pode).toBe(false)
+  })
+
   // Revisão antiga do GitHub pode não trazer o commit julgado; tratar ausência
   // como "serve para qualquer versão" reabriria a porta que este portão fecha.
   it('veredito sem versão registrada não é aceito como atual', () => {
@@ -225,6 +307,7 @@ describe('decidirMerge', () => {
   })
 
   it('o motivo sempre explica o que fazer para destravar', () => {
+    // (mantido abaixo)
     for (const caso of [
       { revisoes: [], exigeAprovacao: true },
       {
@@ -242,5 +325,39 @@ describe('decidirMerge', () => {
       const d = decidirMerge({ revisorDeQualidade: QA, commitAtual: SHA, ...caso })
       expect(d.motivo.length).toBeGreaterThan(20)
     }
+  })
+})
+
+// Quem dispensa o julgamento do QA é a natureza do CÓDIGO, não a identidade de
+// quem abriu o pull request. Bump de dependência é código gerado por rotina e
+// não tem o que julgar; mas o autor do pull request continua sendo o robô de
+// dependências mesmo depois que outra pessoa empurra um commit no mesmo ramo —
+// e aí o que entra na linha principal já não é rotina nenhuma.
+describe('ehRotinaDeDependencia', () => {
+  const ROBO = 'dependabot[bot]'
+
+  it('pull request cujos commits são todos do robô de dependências', () => {
+    expect(ehRotinaDeDependencia([{ autor: ROBO }, { autor: ROBO }])).toBe(true)
+  })
+
+  it('um único commit de outra pessoa já exige o julgamento do QA', () => {
+    expect(ehRotinaDeDependencia([{ autor: ROBO }, { autor: 'alguem' }])).toBe(false)
+  })
+
+  it('commit assinado pelo robô mas enviado por outra pessoa também exige', () => {
+    expect(ehRotinaDeDependencia([{ autor: ROBO, enviadoPor: 'alguem' }])).toBe(false)
+  })
+
+  // Conferido contra um bump real: o robô cria os commits pela API do GitHub, e
+  // a plataforma registra `web-flow` como enviador. Exigir o próprio robô ali
+  // travaria toda atualização de dependência do repositório — e o teste existe
+  // para que ninguém "endureça" essa regra de novo sem olhar um pull request de
+  // verdade.
+  it('o enviador que a plataforma usa nos commits criados por ela conta como rotina', () => {
+    expect(ehRotinaDeDependencia([{ autor: ROBO, enviadoPor: 'web-flow' }])).toBe(true)
+  })
+
+  it('sem commits conhecidos, não presume rotina', () => {
+    expect(ehRotinaDeDependencia([])).toBe(false)
   })
 })

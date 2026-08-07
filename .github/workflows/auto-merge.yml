@@ -114,13 +114,25 @@ jobs:
             core.setOutput('eligible', eligible ? 'true' : 'false');
             core.setOutput('prNumber', String(prNumber));
 
-      # O código do repositório BASE, nunca o do pull request: este workflow roda
-      # com permissão de escrita, e executar código vindo de fora com esse token
-      # seria entregar a chave. `checkout` sem `ref` no pull_request_target já
-      # pega o base — é de propósito que não há `ref` aqui.
+      # O código do repositório BASE, nunca o do pull request: este trabalho roda
+      # com permissão de escrita e acesso a segredos, e executar código vindo de
+      # fora com esse token seria entregar a chave.
+      #
+      # O `ref` é explícito de propósito. Confiar no padrão só seria seguro se o
+      # trabalho tivesse um gatilho só; aqui são quatro, cada um com uma noção
+      # própria do que é "a referência atual", e um deles bastaria para trazer o
+      # código do pull request para dentro do passo privilegiado. Nomear a base
+      # custa uma linha e não depende de lembrar essa tabela.
+      #
+      # `persist-credentials: false` porque nenhum passo daqui para baixo usa git
+      # autenticado — o que a mesclagem precisa vem por `gh`, com o token no
+      # ambiente do passo, e não pela credencial que o checkout deixaria gravada.
       - name: Checkout Base Repository
         if: steps.evaluate.outputs.eligible == 'true'
         uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}
+          persist-credentials: false
 
       - name: Setup Node
         if: steps.evaluate.outputs.eligible == 'true'
@@ -196,16 +208,26 @@ jobs:
                 exit 1
               fi
 
-              echo "Veredito reconfirmado. Mesclando..."
+              # A versão que acabou de ser aprovada. A mesclagem se prende a ela:
+              # reconferir e depois mesclar "o topo, seja ele qual for" deixaria
+              # de fora justamente o instante entre uma coisa e outra.
+              SHA_JULGADO=$(cat .github/scripts/.sha-reconferido)
+              echo "Veredito reconfirmado para ${SHA_JULGADO:0:7}. Mesclando..."
               # Formalidade para a plataforma liberar a mesclagem. A aprovação de
               # mérito é a do QA, verificada no passo anterior — esta aqui não
               # substitui nem dispensa aquela.
               gh pr review "$PR_NUM" --approve \
                 --body "Mesclagem liberada: CI verde e veredito do QA favorável." \
                 --repo "$REPO" || true
+              # `--match-head-commit` faz a plataforma recusar a mesclagem se o
+              # topo tiver mudado. É o que transforma a reconferência em garantia:
+              # sem ele, as três tentativas com dez segundos de intervalo seriam
+              # três janelas para um commit novo entrar carregado por um veredito
+              # que não era sobre ele.
               for t in 1 2 3; do
-                if gh pr merge "$PR_NUM" --squash --repo "$REPO"; then
-                  echo "PR #$PR_NUM mesclado."
+                if gh pr merge "$PR_NUM" --squash --repo "$REPO" \
+                     --match-head-commit "$SHA_JULGADO"; then
+                  echo "PR #$PR_NUM mesclado na versão ${SHA_JULGADO:0:7}."
                   exit 0
                 fi
                 echo "Tentativa de merge $t falhou, repetindo em 10s..."

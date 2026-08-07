@@ -20,21 +20,36 @@
  * outra — exatamente o buraco que este portão existe para fechar.
  */
 
-import { appendFileSync } from 'node:fs'
+import { appendFileSync, writeFileSync } from 'node:fs'
 import { Octokit } from '@octokit/rest'
-import { decidirMerge, type RevisaoDoPr, type EstadoDaRevisao } from './lib/merge-gate.js'
+import {
+  decidirMerge,
+  ehRotinaDeDependencia,
+  type RevisaoDoPr,
+  type CommitDoPr,
+  type EstadoDaRevisao,
+} from './lib/merge-gate.js'
 
-/** Login do revisor cuja palavra vale; o App do produto, por padrão. */
-const QA_PADRAO = 'gitorch-ai'
+/**
+ * Login do revisor cuja palavra vale; o App do produto, por padrão.
+ *
+ * O sufixo `[bot]` faz parte do nome e não é decoração: `gitorch-ai`, sem ele,
+ * é um login de pessoa que qualquer um pode registrar. O padrão precisa apontar
+ * para a identidade que não dá para falsificar.
+ */
+const QA_PADRAO = 'gitorch-ai[bot]'
+
+/** Onde o modo reconferência anota a versão que aprovou, para o merge se prender a ela. */
+const ARQUIVO_DA_VERSAO = process.env['ARQUIVO_SHA_RECONFERIDO'] ?? '.sha-reconferido'
+
+/** Reconferência de última hora: aqui a negativa precisa abortar o passo. */
+const EXIGIR = process.argv.includes('--exigir')
 
 function exigir(nome: string): string {
   const v = process.env[nome]
   if (!v) throw new Error(`variável de ambiente ausente: ${nome}`)
   return v
 }
-
-/** Reconferência de última hora: aqui a negativa precisa abortar o passo. */
-const EXIGIR = process.argv.includes('--exigir')
 
 function publicar(pode: boolean, motivo: string): void {
   const saida = process.env['GITHUB_OUTPUT']
@@ -66,19 +81,31 @@ async function main(): Promise<void> {
   })
 
   const revisoes: RevisaoDoPr[] = revisoesBrutas.map((r) => ({
-    // Login cru: o App revisa como "gitorch-ai[bot]" e quem configura escreve
-    // "gitorch-ai". Quem concilia as duas grafias é o portão, em um lugar só.
+    // Login inteiro, com o sufixo de robô: é ele que distingue o App do produto
+    // de uma conta de pessoa com nome parecido.
     autor: r.user?.login ?? '',
+    tipoDeConta: r.user?.type,
     estado: (r.state ?? 'COMMENTED') as EstadoDaRevisao,
     commitId: r.commit_id ?? null,
     em: r.submitted_at ?? new Date(0).toISOString(),
   }))
 
-  // Dentro do que já é elegível, quem não é rotina de dependência é código
-  // escrito pelo dev assíncrono — e esse não entra sem o QA aprovar. O autor do
-  // pull request do dev sai como a pessoa que conectou a conta, então "não é o
-  // robô de dependências" é justamente o teste certo aqui.
-  const exigeAprovacao = pr.user?.login !== 'dependabot[bot]'
+  // Quem dispensa o julgamento do QA é o CÓDIGO que está no topo, não a
+  // identidade de quem abriu o pull request. O autor continua sendo o robô de
+  // dependências mesmo depois que outra pessoa empurra um commit no mesmo ramo.
+  const commitsBrutos = await octokit.paginate(octokit.rest.pulls.listCommits, {
+    owner,
+    repo,
+    pull_number: prNumber,
+    per_page: 100,
+  })
+
+  const commits: CommitDoPr[] = commitsBrutos.map((c) => ({
+    autor: c.author?.login ?? c.commit?.author?.name ?? '',
+    enviadoPor: c.committer?.login ?? undefined,
+  }))
+
+  const exigeAprovacao = !ehRotinaDeDependencia(commits)
 
   const decisao = decidirMerge({
     revisorDeQualidade,
@@ -87,9 +114,17 @@ async function main(): Promise<void> {
     exigeAprovacao,
   })
 
+  // A mesclagem se prende a esta versão exata. Sem isso, um commit que chegue
+  // entre a reconferência e o merge entraria carregado pela decisão que valia
+  // para o commit anterior.
+  if (decisao.pode) {
+    writeFileSync(ARQUIVO_DA_VERSAO, pr.head.sha)
+  }
+
   console.log(
     `PR #${prNumber} · topo ${pr.head.sha.slice(0, 7)} · ` +
-      `${revisoes.length} revisão(ões) · exige aprovação do QA: ${exigeAprovacao}`
+      `${revisoes.length} revisão(ões) · ${commits.length} commit(s) · ` +
+      `exige aprovação do QA: ${exigeAprovacao}`
   )
   publicar(decisao.pode, decisao.motivo)
 }

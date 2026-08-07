@@ -7,7 +7,7 @@
  * este portão, um pull request reprovado entra na linha principal desde que os
  * testes estejam verdes, e o julgamento vira enfeite.
  *
- * Duas decisões que parecem detalhe e não são:
+ * Quatro decisões que parecem detalhe e não são:
  *
  * 1. Veredito é sempre sobre uma VERSÃO. Aprovação de um commit anterior não
  *    autoriza o commit de agora — senão bastaria enviar qualquer alteração
@@ -15,18 +15,37 @@
  * 2. Só conta o veredito do revisor de qualidade. A automação aprova em nome do
  *    sistema antes de mesclar; se essa aprovação contasse, o portão abriria
  *    sozinho.
+ * 3. O login do revisor é comparado INTEIRO, com o sufixo de robô. O QA é um
+ *    App e revisa como `nome[bot]`; o login `nome`, sem o sufixo, é uma conta
+ *    de pessoa que qualquer um pode registrar. Tratar os dois como a mesma
+ *    identidade tornaria o veredito assinável por um estranho — num repositório
+ *    público, qualquer pessoa pode aprovar um pull request. Colchete não é
+ *    caractere válido em nome de usuário, então o sufixo é justamente o que não
+ *    dá para falsificar.
+ * 4. Quem dispensa o julgamento é a natureza do CÓDIGO, não a identidade de
+ *    quem abriu o pull request.
  */
 
 export type EstadoDaRevisao = 'APPROVED' | 'CHANGES_REQUESTED' | 'COMMENTED' | 'DISMISSED'
 
 export interface RevisaoDoPr {
-  /** Login de quem revisou. */
+  /** Login de quem revisou, como a plataforma devolve — sufixo de robô incluso. */
   autor: string
+  /** `Bot` ou `User`, como a plataforma classifica a conta. */
+  tipoDeConta?: string | undefined
   estado: EstadoDaRevisao
   /** Commit que a revisão julgou; nulo em revisões antigas. */
   commitId?: string | null
   /** Momento da revisão, em ISO 8601. */
   em: string
+}
+
+/** Autoria de um commit do pull request, como a plataforma devolve. */
+export interface CommitDoPr {
+  /** Quem escreveu. */
+  autor: string
+  /** Quem enviou; costuma ser igual ao autor, e divergir importa. */
+  enviadoPor?: string | undefined
 }
 
 export interface DecisaoDeMerge {
@@ -35,8 +54,18 @@ export interface DecisaoDeMerge {
   motivo: string
 }
 
-/** Estados que carregam julgamento; comentário e revisão descartada não carregam. */
-const ESTADOS_COM_VEREDITO: ReadonlyArray<EstadoDaRevisao> = ['APPROVED', 'CHANGES_REQUESTED']
+/**
+ * Estados que carregam julgamento. `COMMENTED` nunca carregou. `DISMISSED`
+ * entra na lista de propósito: descartar uma revisão é o gesto de dizer que
+ * aquele julgamento não vale mais, e ele precisa ser VISTO para poder anular o
+ * anterior. Se fosse filtrado fora, uma aprovação antiga voltaria a valer
+ * sozinha depois de revogada.
+ */
+const ESTADOS_COM_VEREDITO: ReadonlyArray<EstadoDaRevisao> = [
+  'APPROVED',
+  'CHANGES_REQUESTED',
+  'DISMISSED',
+]
 
 /**
  * Identidades que a própria automação usa para aprovar antes de mesclar. Nunca
@@ -46,21 +75,70 @@ const ESTADOS_COM_VEREDITO: ReadonlyArray<EstadoDaRevisao> = ['APPROVED', 'CHANG
  */
 const IDENTIDADES_DO_SISTEMA: ReadonlySet<string> = new Set([
   'github-actions',
+  'github-actions[bot]',
   'app/github-actions',
 ])
 
-/** Tira o sufixo de robô e a diferença de caixa; `Gitorch-AI[bot]` e `gitorch-ai` são a mesma pessoa. */
+/** O robô que abre os bumps de dependência. */
+const ROBO_DE_DEPENDENCIA = 'dependabot[bot]'
+
+/**
+ * Quem pode constar como enviador de um commit de rotina.
+ *
+ * `web-flow` é a identidade com que o GitHub assina os commits criados pela
+ * própria API — é assim que os bumps de dependência nascem, e conferido contra
+ * pull requests reais é o que aparece ali. Exigir que o enviador fosse o robô
+ * travaria toda atualização de dependência do repositório.
+ *
+ * Aceitá-la não afrouxa nada: commit enviado por `git push` carrega como
+ * enviador quem o criou na máquina de origem, nunca `web-flow`. Continua sendo
+ * o autor de cada commit que decide se isto é rotina.
+ */
+const ENVIADORES_DE_ROTINA: ReadonlySet<string> = new Set([ROBO_DE_DEPENDENCIA, 'web-flow'])
+
+/**
+ * Nome de usuário no GitHub não diferencia maiúscula de minúscula, então
+ * comparar em caixa baixa é seguro. O que NÃO se pode fazer é remover o sufixo
+ * `[bot]`: ele é a única parte do login que uma pessoa não consegue registrar.
+ */
 function identidade(login: string): string {
-  return login.replace(/\[bot\]$/, '').toLowerCase()
+  return login.toLowerCase()
 }
 
 function ehIdentidadeDoSistema(login: string): boolean {
   return IDENTIDADES_DO_SISTEMA.has(identidade(login))
 }
 
+/** Um revisor declarado com o sufixo de robô só pode ser atendido por um robô. */
+function contaCompativel(revisao: RevisaoDoPr, revisorDeQualidade: string): boolean {
+  if (!identidade(revisorDeQualidade).endsWith('[bot]')) return true
+  return revisao.tipoDeConta === undefined || revisao.tipoDeConta === 'Bot'
+}
+
+/**
+ * Decide se o pull request é rotina de dependência — o único caso que dispensa
+ * o julgamento do QA.
+ *
+ * A pergunta é sobre o CÓDIGO que está no topo agora, não sobre quem abriu o
+ * pull request. Quem abriu continua sendo o robô mesmo depois que outra pessoa
+ * empurra um commit no mesmo ramo, e nesse ponto o que entraria na linha
+ * principal já não é rotina nenhuma.
+ *
+ * Sem commits conhecidos, responde que não: na dúvida, exige julgamento.
+ */
+export function ehRotinaDeDependencia(commits: readonly CommitDoPr[]): boolean {
+  if (commits.length === 0) return false
+  return commits.every(
+    (c) =>
+      identidade(c.autor) === ROBO_DE_DEPENDENCIA &&
+      (c.enviadoPor === undefined || ENVIADORES_DE_ROTINA.has(identidade(c.enviadoPor)))
+  )
+}
+
 /**
  * Último julgamento do revisor de qualidade, ou `undefined` se ele ainda não
- * julgou. Revisões se acumulam no pull request; vale a mais recente.
+ * julgou — ou se o julgamento mais recente dele foi descartado. Revisões se
+ * acumulam no pull request; vale a mais recente.
  */
 export function ultimoVeredito(
   revisoes: readonly RevisaoDoPr[],
@@ -69,15 +147,19 @@ export function ultimoVeredito(
   if (ehIdentidadeDoSistema(revisorDeQualidade)) return undefined
 
   const alvo = identidade(revisorDeQualidade)
-  return revisoes
+  const maisRecente = revisoes
     .filter(
       (r) =>
         identidade(r.autor) === alvo &&
         !ehIdentidadeDoSistema(r.autor) &&
+        contaCompativel(r, revisorDeQualidade) &&
         ESTADOS_COM_VEREDITO.includes(r.estado)
     )
     .sort((a, b) => Date.parse(a.em) - Date.parse(b.em))
     .at(-1)
+
+  // Julgamento descartado não é julgamento: some, e não deixa o anterior no lugar.
+  return maisRecente?.estado === 'DISMISSED' ? undefined : maisRecente
 }
 
 /**
