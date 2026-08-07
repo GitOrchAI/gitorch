@@ -39,6 +39,26 @@ export interface DecisaoDeMerge {
 const ESTADOS_COM_VEREDITO: ReadonlyArray<EstadoDaRevisao> = ['APPROVED', 'CHANGES_REQUESTED']
 
 /**
+ * Identidades que a própria automação usa para aprovar antes de mesclar. Nunca
+ * julgam, mesmo que alguém configure o revisor de qualidade como uma delas: o
+ * sistema não é testemunha de si mesmo, e um erro de configuração não pode
+ * abrir o portão em silêncio.
+ */
+const IDENTIDADES_DO_SISTEMA: ReadonlySet<string> = new Set([
+  'github-actions',
+  'app/github-actions',
+])
+
+/** Tira o sufixo de robô e a diferença de caixa; `Gitorch-AI[bot]` e `gitorch-ai` são a mesma pessoa. */
+function identidade(login: string): string {
+  return login.replace(/\[bot\]$/, '').toLowerCase()
+}
+
+function ehIdentidadeDoSistema(login: string): boolean {
+  return IDENTIDADES_DO_SISTEMA.has(identidade(login))
+}
+
+/**
  * Último julgamento do revisor de qualidade, ou `undefined` se ele ainda não
  * julgou. Revisões se acumulam no pull request; vale a mais recente.
  */
@@ -46,8 +66,16 @@ export function ultimoVeredito(
   revisoes: readonly RevisaoDoPr[],
   revisorDeQualidade: string
 ): RevisaoDoPr | undefined {
+  if (ehIdentidadeDoSistema(revisorDeQualidade)) return undefined
+
+  const alvo = identidade(revisorDeQualidade)
   return revisoes
-    .filter((r) => r.autor === revisorDeQualidade && ESTADOS_COM_VEREDITO.includes(r.estado))
+    .filter(
+      (r) =>
+        identidade(r.autor) === alvo &&
+        !ehIdentidadeDoSistema(r.autor) &&
+        ESTADOS_COM_VEREDITO.includes(r.estado)
+    )
     .sort((a, b) => Date.parse(a.em) - Date.parse(b.em))
     .at(-1)
 }
@@ -67,6 +95,18 @@ export function decidirMerge(args: {
   commitAtual: string
   exigeAprovacao: boolean
 }): DecisaoDeMerge {
+  // Configuração inválida não pode virar "aguardando o QA": ficaria indistinguível
+  // de um julgamento que ainda não veio, e o pull request esperaria calado para
+  // sempre por alguém que não existe.
+  if (ehIdentidadeDoSistema(args.revisorDeQualidade)) {
+    return {
+      pode: false,
+      motivo:
+        'o revisor de qualidade está configurado como a identidade da própria automação — ' +
+        'aponte-o para o revisor de verdade para que o julgamento volte a existir',
+    }
+  }
+
   const veredito = ultimoVeredito(args.revisoes, args.revisorDeQualidade)
 
   if (!veredito) {

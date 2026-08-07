@@ -185,6 +185,33 @@ describe('decidirMerge', () => {
     expect(d.pode).toBe(false)
   })
 
+  // O teste acima passa porque, na configuração de hoje, o QA é outra
+  // identidade. Isso é sorte, não garantia: quem configura o revisor pode
+  // apontá-lo, por engano, para a identidade que a própria automação usa — e aí
+  // o portão volta a se auto-aprovar, calado. A recusa tem que estar no código.
+  it('nem que configurem o revisor como a própria automação: o sistema não julga a si mesmo', () => {
+    for (const identidadeDoSistema of [
+      'github-actions',
+      'github-actions[bot]',
+      'app/github-actions',
+    ]) {
+      const d = decidirMerge({
+        revisorDeQualidade: identidadeDoSistema,
+        revisoes: [
+          {
+            autor: identidadeDoSistema,
+            estado: 'APPROVED',
+            commitId: SHA,
+            em: '2026-01-01T13:36:20Z',
+          },
+        ],
+        commitAtual: SHA,
+        exigeAprovacao: true,
+      })
+      expect(d.pode, `${identidadeDoSistema} não pode valer como veredito`).toBe(false)
+    }
+  })
+
   // Revisão antiga do GitHub pode não trazer o commit julgado; tratar ausência
   // como "serve para qualquer versão" reabriria a porta que este portão fecha.
   it('veredito sem versão registrada não é aceito como atual', () => {

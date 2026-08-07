@@ -8,6 +8,16 @@
  * Sai com código zero mesmo quando nega: reprovação do QA não é falha de
  * infraestrutura e não deve pintar o pull request de vermelho como se o CI
  * tivesse quebrado. A negativa aparece como aviso, com o motivo.
+ *
+ * Com `--exigir`, inverte esse contrato: sai diferente de zero quando nega. É o
+ * modo da reconferência feita segundos antes de mesclar, onde uma negativa
+ * precisa abortar o passo. A pergunta é a mesma; o que muda é quem escuta.
+ *
+ * Por que reconferir: entre a primeira consulta e a mesclagem existe a espera
+ * pelo CI, que dura minutos. Nesse intervalo o dev assíncrono pode enviar um
+ * commit novo (é o que a automação de CI vermelho manda ele fazer) ou o QA pode
+ * mudar de ideia. Perguntar uma vez só faria a aprovação de uma versão liberar
+ * outra — exatamente o buraco que este portão existe para fechar.
  */
 
 import { appendFileSync } from 'node:fs'
@@ -23,13 +33,20 @@ function exigir(nome: string): string {
   return v
 }
 
+/** Reconferência de última hora: aqui a negativa precisa abortar o passo. */
+const EXIGIR = process.argv.includes('--exigir')
+
 function publicar(pode: boolean, motivo: string): void {
   const saida = process.env['GITHUB_OUTPUT']
-  if (saida) {
+  // Na reconferência não se reescreve o resultado da consulta original: aquele
+  // output já governou quais passos rodariam, e sobrescrevê-lo agora só
+  // confundiria a leitura do que aconteceu.
+  if (saida && !EXIGIR) {
     appendFileSync(saida, `pode=${pode ? 'true' : 'false'}\nmotivo=${motivo}\n`)
   }
   console.log(pode ? `✓ portão do QA liberou: ${motivo}` : `✗ portão do QA segurou: ${motivo}`)
   if (!pode) console.log(`::notice title=Merge automático retido::${motivo}`)
+  if (!pode && EXIGIR) process.exitCode = 1
 }
 
 async function main(): Promise<void> {
@@ -49,9 +66,9 @@ async function main(): Promise<void> {
   })
 
   const revisoes: RevisaoDoPr[] = revisoesBrutas.map((r) => ({
-    // O App revisa como "gitorch-ai[bot]"; o sufixo é detalhe da plataforma e
-    // não deve obrigar quem configura a decorá-lo.
-    autor: (r.user?.login ?? '').replace(/\[bot\]$/, ''),
+    // Login cru: o App revisa como "gitorch-ai[bot]" e quem configura escreve
+    // "gitorch-ai". Quem concilia as duas grafias é o portão, em um lugar só.
+    autor: r.user?.login ?? '',
     estado: (r.state ?? 'COMMENTED') as EstadoDaRevisao,
     commitId: r.commit_id ?? null,
     em: r.submitted_at ?? new Date(0).toISOString(),
@@ -79,7 +96,7 @@ async function main(): Promise<void> {
 
 main().catch((err: unknown) => {
   // Falha ao consultar o portão nunca vira "pode mesclar": na dúvida, segura.
-  const motivo = `não foi possível consultar o veredito do QA (${(err as Error).message})`
-  publicar(false, motivo)
-  process.exitCode = 0
+  // `publicar` já decide o código de saída — na reconferência, erro precisa
+  // abortar; na consulta inicial, vira aviso e o merge simplesmente não ocorre.
+  publicar(false, `não foi possível consultar o veredito do QA (${(err as Error).message})`)
 })
