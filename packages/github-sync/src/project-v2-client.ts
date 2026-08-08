@@ -133,6 +133,8 @@ export interface DetalharQuadroInput {
   projectId: string
   /** 'dono/repo' de quem está perguntando — tudo fora disso conta como outro. */
   repositorio: string
+  /** Teto de páginas de 100 itens. Padrão 20 (dois mil itens). */
+  maxPaginas?: number
 }
 
 export interface QuadroDetalhado {
@@ -147,6 +149,19 @@ export interface QuadroDetalhado {
  * uma página alimenta a chamada da próxima, e sem um tipo declarado o
  * compilador entra em referência circular ao tentar inferi-lo.
  */
+/** Forma da página de itens de um quadro; nomeada pelo mesmo motivo. */
+interface PaginaDeItens {
+  node: {
+    fields: { totalCount: number } | null
+    items: {
+      pageInfo: { hasNextPage: boolean; endCursor: string | null }
+      nodes: Array<{
+        content: { repository: { nameWithOwner: string } | null } | null
+      } | null> | null
+    } | null
+  } | null
+}
+
 interface PaginaDeIssues {
   repository: {
     issues: {
@@ -455,49 +470,61 @@ export class ProjectV2Client {
   // quando há mais de um: quanto alguém já investiu nele (número de campos) e
   // se ele guarda trabalho de outros repositórios (aí é compartilhado, e
   // despejar backlog dentro seria invadir).
+  //
+  // Os itens são PAGINADOS, e isso não é zelo excessivo: quadro cuidado à mão
+  // passa de cem itens sem esforço — o do caso que motivou esta função tem
+  // cento e quarenta e seis. Olhar só a primeira página faria um quadro
+  // compartilhado passar por exclusivo sempre que o item alheio estivesse lá
+  // no fim, e a esteira despejaria o backlog deste projeto na casa de outro.
   async detalharQuadro(input: DetalharQuadroInput): Promise<QuadroDetalhado> {
-    const response = await this.request<{
-      node: {
-        fields: { totalCount: number } | null
-        items: {
-          nodes: Array<{
-            content: { repository: { nameWithOwner: string } | null } | null
-          } | null> | null
-        } | null
-      } | null
-    }>(
-      {
-        query: `
-          query DetalharQuadro($id: ID!) {
-            node(id: $id) {
-              ... on ProjectV2 {
-                fields(first: 1) { totalCount }
-                items(first: 100) {
-                  nodes {
-                    content {
-                      ... on Issue { repository { nameWithOwner } }
-                      ... on PullRequest { repository { nameWithOwner } }
+    const teto = input.maxPaginas ?? 20
+    const outros = new Set<string>()
+    let camposCount = 0
+    let cursor: string | null = null
+
+    for (let pagina = 0; pagina < teto; pagina++) {
+      const response: GraphQLResponse<PaginaDeItens> = await this.request<PaginaDeItens>(
+        {
+          query: `
+            query DetalharQuadro($id: ID!, $cursor: String) {
+              node(id: $id) {
+                ... on ProjectV2 {
+                  fields(first: 1) { totalCount }
+                  items(first: 100, after: $cursor) {
+                    pageInfo { hasNextPage endCursor }
+                    nodes {
+                      content {
+                        ... on Issue { repository { nameWithOwner } }
+                        ... on PullRequest { repository { nameWithOwner } }
+                      }
                     }
                   }
                 }
               }
             }
-          }
-        `,
-        variables: { id: input.projectId },
-      },
-      this.token
-    )
+          `,
+          variables: { id: input.projectId, cursor },
+        },
+        this.token
+      )
 
-    const node = unwrap(response).node
-    const outros = new Set<string>()
-    for (const item of node?.items?.nodes ?? []) {
-      const nome = item?.content?.repository?.nameWithOwner
-      // Rascunho não pertence a repositório nenhum e não indica invasão.
-      if (nome && nome !== input.repositorio) outros.add(nome)
+      const node = unwrap(response).node
+      camposCount = node?.fields?.totalCount ?? camposCount
+      for (const item of node?.items?.nodes ?? []) {
+        const nome = item?.content?.repository?.nameWithOwner
+        // Rascunho não pertence a repositório nenhum e não indica invasão.
+        if (nome && nome !== input.repositorio) outros.add(nome)
+      }
+
+      const proxima: string | null = node?.items?.pageInfo?.hasNextPage
+        ? (node.items.pageInfo.endCursor ?? null)
+        : null
+      // Sem cursor não há como avançar: repetir a mesma página só gastaria cota.
+      if (!proxima) break
+      cursor = proxima
     }
 
-    return { camposCount: node?.fields?.totalCount ?? 0, outrosRepositorios: [...outros] }
+    return { camposCount, outrosRepositorios: [...outros] }
   }
 
   // Cria um Project v2 (board) pendurado no dono (user/org) e devolve seu id +

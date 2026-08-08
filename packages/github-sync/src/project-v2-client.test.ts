@@ -543,3 +543,69 @@ test('quadro só com itens deste repositório não tem outros repositórios', as
     client.detalharQuadro({ projectId: 'PVT_a', repositorio: 'dono/repo' })
   ).resolves.toEqual({ camposCount: 14, outrosRepositorios: [] })
 })
+
+// Quadro curado à mão passa de cem itens com facilidade — o do caso real tem
+// cento e quarenta e seis. Olhar só a primeira página faria um quadro
+// compartilhado passar por exclusivo, e a esteira despejaria o backlog deste
+// projeto dentro do quadro de outro. Exatamente o desastre que a descoberta por
+// evidência existe para evitar, só que por outra porta.
+test('detalharQuadro pagina os itens: repositório alheio além do centésimo é visto', async () => {
+  const paginas = [
+    {
+      data: {
+        node: {
+          fields: { totalCount: 23 },
+          items: {
+            pageInfo: { hasNextPage: true, endCursor: 'C1' },
+            nodes: [{ content: { repository: { nameWithOwner: 'dono/repo' } } }],
+          },
+        },
+      },
+    },
+    {
+      data: {
+        node: {
+          fields: { totalCount: 23 },
+          items: {
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: [{ content: { repository: { nameWithOwner: 'outro/alheio' } } }],
+          },
+        },
+      },
+    },
+  ]
+  let i = 0
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async () => paginas[i++] as never,
+  })
+
+  const d = await client.detalharQuadro({ projectId: 'PVT_a', repositorio: 'dono/repo' })
+
+  expect(d).toEqual({ camposCount: 23, outrosRepositorios: ['outro/alheio'] })
+})
+
+test('detalharQuadro respeita um teto de páginas de itens', async () => {
+  let chamadas = 0
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async () => {
+      chamadas++
+      return {
+        data: {
+          node: {
+            fields: { totalCount: 5 },
+            items: {
+              pageInfo: { hasNextPage: true, endCursor: 'C' },
+              nodes: [{ content: { repository: { nameWithOwner: 'dono/repo' } } }],
+            },
+          },
+        },
+      } as never
+    },
+  })
+
+  await client.detalharQuadro({ projectId: 'PVT_a', repositorio: 'dono/repo', maxPaginas: 3 })
+
+  expect(chamadas).toBe(3)
+})

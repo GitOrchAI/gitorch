@@ -439,3 +439,28 @@ describe('ensureProjectBoard — descobre por evidência antes de criar', () => 
     expect(r).toEqual({ owner: 'dono', number: 42 })
   })
 })
+
+// Achado de revisão: o tipo permite um cliente que descobre quadros mas não
+// sabe olhar dentro deles. Nesse caso não há como afirmar exclusividade, e
+// adotar assim mesmo reabriria o risco de despejar o backlog na casa de outro.
+describe('ensureProjectBoard — sem poder verificar exclusividade', () => {
+  it('não adota candidato quando o cliente não sabe detalhar o quadro', async () => {
+    const c = {
+      findProjectId: vi.fn(async () => null),
+      createProjectV2: vi.fn(async () => ({ id: 'PVT_novo', number: 42 })),
+      linkProjectV2ToRepository: vi.fn(async () => 'R_repo'),
+      descobrirQuadrosPorIssues: vi.fn(async () => [
+        { id: 'PVT_x', number: 5, title: 'algum', closed: false, issuesDesteRepo: 3 },
+      ]),
+      // repare: sem detalharQuadro
+    }
+    const r = await ensureProjectBoard({
+      repository: 'dono/repo',
+      client: c as never,
+      resolveOwner: async () => ({ id: 'U_dono', type: 'user' as const }),
+      resolveRepositoryId: async () => 'R_repo',
+    })
+    expect(r).toEqual({ owner: 'dono', number: 42 })
+    expect(c.createProjectV2).toHaveBeenCalled()
+  })
+})

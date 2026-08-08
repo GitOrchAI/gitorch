@@ -71,10 +71,17 @@ async function escolherMaisRico<T extends { id: string; number: number }>(
 ): Promise<T | undefined> {
   if (candidatos.length === 0) return undefined
 
-  // Sem como medir riqueza nem exclusividade, o primeiro serve — é o
-  // comportamento de quem injeta um cliente reduzido.
-  if (!deps.client.detalharQuadro) return candidatos[0]
+  if (!deps.client.detalharQuadro) {
+    // Sem como olhar dentro do quadro, não dá para afirmar que ele é só deste
+    // repositório — e adotar sem essa certeza é justamente o risco que a
+    // exclusividade existe para evitar. Aqui, "não sei" resolve em não adotar;
+    // quem chamou segue para criar um quadro próprio, que é sempre seguro.
+    if (opcoes.exigirExclusivo) return undefined
+    return candidatos[0]
+  }
 
+  // Empate de campos: vence o PRIMEIRO da lista, porque a comparação é estrita.
+  // Determinístico de propósito — a mesma entrada sempre elege o mesmo quadro.
   let melhor: { item: T; campos: number } | undefined
   for (const c of candidatos) {
     const detalhe = await deps.client.detalharQuadro({
