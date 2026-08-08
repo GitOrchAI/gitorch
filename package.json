@@ -15,6 +15,7 @@
     "lint": "turbo run lint",
     "lint:ci": "eslint . --max-warnings 0",
     "typecheck:strict": "pnpm exec tsx scripts/ci/run-typecheck-strict.ts",
+    "test:scripts": "vitest run --dir scripts",
     "audit:cgc": "pnpm exec tsx scripts/ci/run-cgc-audit.ts",
     "audit:readme-parity": "pnpm exec tsx scripts/ci/readme-code-parity.ts",
     "audit:secrets": "pnpm exec tsx scripts/ci/secret-scan.ts",

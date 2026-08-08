@@ -46,6 +46,18 @@ jobs:
       - uses: ./.github/actions/setup-pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      # scripts/ci guarda os proprios portoes do pipeline (o gate de tipos
+      # estrito, o audit de impacto, o scan de segredo etc.) e tem testes
+      # (scripts/ci/*.test.ts) pra cada um deles — mas a raiz do monorepo nao
+      # e um workspace do pnpm (ver pnpm-workspace.yaml), entao `pnpm run
+      # test` (turbo run test, alguns passos abaixo) nunca alcancava esses
+      # arquivos: eles existiam e nunca rodavam. Uma regressao num desses
+      # scripts passaria verde pelo resto do CI, e o proprio gate que existe
+      # pra pegar regressao viraria enfeite — exatamente o que aconteceu com
+      # o gate de tipos estrito antes de ser corrigido. Roda cedo, antes de
+      # qualquer passo abaixo usar esses scripts pra decidir algo.
+      - name: Testes dos scripts que governam o CI (fora dos workspaces)
+        run: pnpm run test:scripts
       - name: Verify CI baseline
         run: pnpm exec tsx scripts/ci/verify-ci-baseline.ts
       - name: Validate workflow YAML (sem chaves duplicadas)
