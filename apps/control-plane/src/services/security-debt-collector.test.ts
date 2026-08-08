@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { coletarDividaDeSeguranca } from './security-debt-collector.js'
+import { coletarDividaDeSeguranca, pedirUrlSegura } from './security-debt-collector.js'
 import { restDeMentira as githubDeMentira } from '../test/rest-fake.js'
 
 const ALERTA_BRUTO = {
@@ -428,6 +428,72 @@ describe('coletarDividaDeSeguranca', () => {
       expect(chamadas.some((u) => u.includes('isto-nao-e-uma-url'))).toBe(false)
       expect(d.alertas).toHaveLength(1)
       expect(d.naoVerificado).toContain('alertas-link-suspeito')
+    })
+  })
+
+  // As duas suítes acima ('recusa repository fora do formato dono/repo' e
+  // 'recusa seguir paginação para fora do host da API do GitHub') provam a
+  // defesa em profundidade nos CHAMADORES — mas ambas passam por
+  // `coletarDividaDeSeguranca`, que já filtra o dado antes de chegar em
+  // `pedirUrl`. Este teste chama `pedirUrlSegura` DIRETAMENTE — sem
+  // `repository`, sem o wrapper de paginação, sem nenhuma das validações
+  // acima no caminho — para provar que a porta de saída de rede em si,
+  // sozinha, já recusa. É a garantia estrutural que sobrevive mesmo se
+  // algum chamador novo esquecer de validar antes de chamar.
+  describe('pedirUrlSegura — a porta de saída de rede segura sozinha, sem depender de nenhum chamador', () => {
+    it('recusa host alheio sem chamar fetch, mesmo sem passar por repositorioValido nem pela checagem da paginação', async () => {
+      const fetchImpl = vi.fn() as unknown as typeof fetch
+
+      await expect(
+        pedirUrlSegura(
+          'http://servidor-alheio.invalido/x',
+          fetchImpl,
+          { Authorization: 'Bearer t' },
+          1000
+        )
+      ).rejects.toThrow()
+
+      expect(fetchImpl).not.toHaveBeenCalled()
+    })
+
+    it('recusa host que só parece o do GitHub (subdomínio forjado), sem chamar fetch', async () => {
+      const fetchImpl = vi.fn() as unknown as typeof fetch
+
+      await expect(
+        pedirUrlSegura(
+          'https://api.github.com.servidor-alheio.invalido/x',
+          fetchImpl,
+          { Authorization: 'Bearer t' },
+          1000
+        )
+      ).rejects.toThrow()
+
+      expect(fetchImpl).not.toHaveBeenCalled()
+    })
+
+    it('recusa URL malformada sem chamar fetch', async () => {
+      const fetchImpl = vi.fn() as unknown as typeof fetch
+
+      await expect(
+        pedirUrlSegura('isto-nao-e-uma-url', fetchImpl, { Authorization: 'Bearer t' }, 1000)
+      ).rejects.toThrow()
+
+      expect(fetchImpl).not.toHaveBeenCalled()
+    })
+
+    it('deixa passar o host real da API do GitHub', async () => {
+      const resposta = new Response(null, { status: 204 })
+      const fetchImpl = vi.fn(async () => resposta) as unknown as typeof fetch
+
+      const r = await pedirUrlSegura(
+        'https://api.github.com/repos/dono/repo/vulnerability-alerts',
+        fetchImpl,
+        { Authorization: 'Bearer t' },
+        1000
+      )
+
+      expect(r.status).toBe(204)
+      expect(fetchImpl).toHaveBeenCalledTimes(1)
     })
   })
 

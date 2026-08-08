@@ -45,6 +45,35 @@ function apontaParaApiDoGithub(url: string): boolean {
   }
 }
 
+// A ÚNICA porta de saída de rede deste arquivo: toda requisição que
+// `coletarDividaDeSeguranca` faz — a montada com `repository` e a que segue
+// o cabeçalho Link da paginação — passa por aqui antes de tocar `fetch`. A
+// checagem de host mora NESTA função, não nos chamadores: um caminho novo
+// que alguém adicione amanhã (mais uma rota, mais uma paginação) nasce
+// protegido por construção, em vez de depender de lembrar de repetir a
+// checagem em mais um lugar. As validações que os chamadores de hoje já
+// fazem (`repositorioValido` na entrada da função, o host-check antes de
+// seguir o Link) continuam existindo como defesa em profundidade — dão uma
+// mensagem melhor e param mais cedo — mas a garantia estrutural é esta.
+// Exportada só para o teste poder provar a porta sozinha, sem passar pelas
+// validações que os chamadores de hoje já fazem antes de chegar aqui.
+export function pedirUrlSegura(
+  url: string,
+  fetchImpl: typeof fetch,
+  cabecalhos: Record<string, string>,
+  timeoutMs: number
+): Promise<Response> {
+  if (!apontaParaApiDoGithub(url)) {
+    // Rejeição, não exceção síncrona: quem chama (dentro de
+    // coletarDividaDeSeguranca) já trata qualquer falha de `pedirUrl` num
+    // try/catch que marca o rótulo correspondente em naoVerificado e segue
+    // best-effort — nunca deixa a coleta inteira cair nem o retrato dizer
+    // "está limpo" sem registrar o que não deu para verificar.
+    return Promise.reject(new Error('recusado: a URL não aponta para o host da API do GitHub'))
+  }
+  return fetchImpl(url, { headers: cabecalhos, signal: AbortSignal.timeout(timeoutMs) })
+}
+
 function repositorioValido(repository: string): boolean {
   const partes = repository.split('/')
   if (partes.length !== 2) return false
@@ -157,9 +186,10 @@ export async function coletarDividaDeSeguranca(deps: {
 
   // Um AbortSignal novo por chamada (não um único reutilizado): cada rota
   // tem seu próprio orçamento de tempo, independente das outras — igual ao
-  // isolamento que o try/catch de cada bloco já garante para falhas.
-  const pedirUrl = (url: string): Promise<Response> =>
-    f(url, { headers: cabecalhos, signal: AbortSignal.timeout(timeoutMs) })
+  // isolamento que o try/catch de cada bloco já garante para falhas. A
+  // checagem de host que protege a saída de rede mora dentro de
+  // `pedirUrlSegura` (a porta única, ver comentário lá) — não repetida aqui.
+  const pedirUrl = (url: string): Promise<Response> => pedirUrlSegura(url, f, cabecalhos, timeoutMs)
   const pedir = (caminho: string): Promise<Response> => pedirUrl(`${GITHUB_API}${caminho}`)
 
   // Cada rota é independente: uma falhar (status inesperado OU exceção de
