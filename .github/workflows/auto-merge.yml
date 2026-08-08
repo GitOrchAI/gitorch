@@ -2,11 +2,21 @@ name: Auto-Merge PRs (Dependabot & Jules)
 
 # Auto-merge ESTRITO: só PR desta automação de segurança — PR do Dependabot, ou PR do Jules
 # que resolve uma issue com label 'dependabot'/'jules'. Qualquer outro PR NÃO entra.
-# Mescla (squash) assim que o CI fica 100% verde. O CI é o porteiro (tolerância zero).
+# Mescla (squash) quando o CI fica 100% verde E o QA autoriza.
+#
+# São dois porteiros, não um. O CI diz se o código roda; o QA diz se o código
+# resolve o que a issue pediu. Já aconteceu de um pull request reprovado pelo QA
+# entrar na linha principal um minuto depois da reprovação, porque a mesclagem
+# olhava só os testes — o julgamento existia e não valia nada.
 
 on:
   pull_request_target:
     types: [opened, reopened, synchronize, labeled, ready_for_review]
+  # Sem isto o laço não fecha: o veredito do QA chega como revisão, e revisão não
+  # dispara nenhum dos outros eventos. O PR aprovado ficaria esperando para
+  # sempre alguém enviar um commit novo só para acordar a automação.
+  pull_request_review:
+    types: [submitted, dismissed]
   check_suite:
     types: [completed]
   workflow_dispatch:
@@ -21,6 +31,18 @@ permissions:
   pull-requests: write
   issues: read
   checks: read
+
+# Um pull request de cada vez. Sem isto, um commit novo e uma revisão chegando
+# quase juntos abrem duas execuções que esperam o mesmo CI e correm para mesclar
+# o mesmo PR. Enfileirar, nunca cancelar: cancelar no meio da mesclagem deixaria
+# o pull request num estado que ninguém pediu.
+concurrency:
+  group: >-
+    auto-merge-${{ github.event.pull_request.number
+    || github.event.check_suite.pull_requests[0].number
+    || github.event.inputs.pr_number
+    || github.run_id }}
+  cancel-in-progress: false
 
 # Nome do próprio check deste workflow — para excluí-lo da espera (senão dá deadlock).
 env:
@@ -92,12 +114,66 @@ jobs:
             core.setOutput('eligible', eligible ? 'true' : 'false');
             core.setOutput('prNumber', String(prNumber));
 
-      - name: Wait for CI and Merge
+      # O código do repositório BASE, nunca o do pull request: este trabalho roda
+      # com permissão de escrita e acesso a segredos, e executar código vindo de
+      # fora com esse token seria entregar a chave.
+      #
+      # O `ref` é explícito de propósito. Confiar no padrão só seria seguro se o
+      # trabalho tivesse um gatilho só; aqui são quatro, cada um com uma noção
+      # própria do que é "a referência atual", e um deles bastaria para trazer o
+      # código do pull request para dentro do passo privilegiado. Nomear a base
+      # custa uma linha e não depende de lembrar essa tabela.
+      #
+      # `persist-credentials: false` porque nenhum passo daqui para baixo usa git
+      # autenticado — o que a mesclagem precisa vem por `gh`, com o token no
+      # ambiente do passo, e não pela credencial que o checkout deixaria gravada.
+      - name: Checkout Base Repository
         if: steps.evaluate.outputs.eligible == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Setup Node
+        if: steps.evaluate.outputs.eligible == 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+
+      # `npm ci` e não `install`: instala exatamente o que está no lockfile
+      # versionado. Este passo roda com token de escrita e acesso a secrets, então
+      # resolver dependência do registry na hora — sem pin — seria deixar a porta
+      # aberta para qualquer versão publicada depois desta revisão.
+      - name: Install Script Dependencies
+        if: steps.evaluate.outputs.eligible == 'true'
+        working-directory: .github/scripts
+        run: npm ci
+
+      - name: QA Verdict Gate
+        id: gate
+        if: steps.evaluate.outputs.eligible == 'true'
+        working-directory: .github/scripts
+        env:
+          GITHUB_TOKEN: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          PR_NUMBER: ${{ steps.evaluate.outputs.prNumber }}
+          QA_REVIEWER: ${{ vars.GITORCH_QA_REVIEWER }}
+        run: npx tsx check-merge-gate.ts
+
+      - name: Wait for CI and Merge
+        if: steps.evaluate.outputs.eligible == 'true' && steps.gate.outputs.pode == 'true'
         env:
           GH_TOKEN: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
           PR_NUM: ${{ steps.evaluate.outputs.prNumber }}
           REPO: ${{ github.repository }}
+          # A reconferência de última hora faz a mesma pergunta ao portão, logo
+          # antes de mesclar; por isso repete o ambiente do passo anterior.
+          GITHUB_TOKEN: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          PR_NUMBER: ${{ steps.evaluate.outputs.prNumber }}
+          QA_REVIEWER: ${{ vars.GITORCH_QA_REVIEWER }}
         run: |
           echo "Avaliando checks do PR #$PR_NUM (exclui o próprio '$SELF_CHECK_NAME')..."
           # Buckets do gh: pass | skipping | pending | fail | cancel
@@ -117,13 +193,41 @@ jobs:
             fi
 
             if [ "$PENDING" -eq 0 ] && [ "$TOTAL" -gt 0 ]; then
-              echo "CI 100% verde no PR #$PR_NUM. Mesclando..."
+              echo "CI 100% verde no PR #$PR_NUM. Reconferindo o veredito do QA..."
+
+              # A consulta lá de cima é de minutos atrás. Nesse meio-tempo o dev
+              # assíncrono pode ter enviado um commit novo — é literalmente o que
+              # a automação de CI vermelho manda ele fazer — ou o QA pode ter
+              # reprovado. Mesclar com base naquela resposta antiga entregaria à
+              # linha principal um código que ninguém julgou: o mesmo defeito que
+              # este portão existe para fechar, só que pela porta dos fundos.
+              # O portão relê o topo do PR agora, e `--exigir` faz a negativa
+              # abortar em vez de virar aviso.
+              if ! ( cd .github/scripts && npx tsx check-merge-gate.ts --exigir ); then
+                echo "::error::O veredito do QA mudou durante a espera pelo CI — merge do PR #$PR_NUM cancelado."
+                exit 1
+              fi
+
+              # A versão que acabou de ser aprovada. A mesclagem se prende a ela:
+              # reconferir e depois mesclar "o topo, seja ele qual for" deixaria
+              # de fora justamente o instante entre uma coisa e outra.
+              SHA_JULGADO=$(cat .github/scripts/.sha-reconferido)
+              echo "Veredito reconfirmado para ${SHA_JULGADO:0:7}. Mesclando..."
+              # Formalidade para a plataforma liberar a mesclagem. A aprovação de
+              # mérito é a do QA, verificada no passo anterior — esta aqui não
+              # substitui nem dispensa aquela.
               gh pr review "$PR_NUM" --approve \
-                --body "Aprovado automaticamente pelo pipeline de segurança (Dependabot/Jules)." \
+                --body "Mesclagem liberada: CI verde e veredito do QA favorável." \
                 --repo "$REPO" || true
+              # `--match-head-commit` faz a plataforma recusar a mesclagem se o
+              # topo tiver mudado. É o que transforma a reconferência em garantia:
+              # sem ele, as três tentativas com dez segundos de intervalo seriam
+              # três janelas para um commit novo entrar carregado por um veredito
+              # que não era sobre ele.
               for t in 1 2 3; do
-                if gh pr merge "$PR_NUM" --squash --repo "$REPO"; then
-                  echo "PR #$PR_NUM mesclado."
+                if gh pr merge "$PR_NUM" --squash --repo "$REPO" \
+                     --match-head-commit "$SHA_JULGADO"; then
+                  echo "PR #$PR_NUM mesclado na versão ${SHA_JULGADO:0:7}."
                   exit 0
                 fi
                 echo "Tentativa de merge $t falhou, repetindo em 10s..."
@@ -137,3 +241,19 @@ jobs:
           done
           echo "::error::Timeout aguardando CI do PR #$PR_NUM."
           exit 1
+
+      - name: Explain Retained Merge
+        if: steps.evaluate.outputs.eligible == 'true' && steps.gate.outputs.pode != 'true'
+        # O motivo entra por variável de ambiente, nunca interpolado direto no
+        # shell. Hoje ele só carrega texto fixo e identificadores de commit, mas
+        # o passo existe para explicar — e explicação tende a citar o que veio de
+        # fora. Interpolar aqui seria dar ao texto de terceiros um comando de
+        # shell com token de escrita na mão.
+        env:
+          MOTIVO: ${{ steps.gate.outputs.motivo }}
+        run: |
+          {
+            echo "### Merge automático retido"
+            echo ""
+            echo "$MOTIVO"
+          } >> "$GITHUB_STEP_SUMMARY"

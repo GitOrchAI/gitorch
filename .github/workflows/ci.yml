@@ -242,3 +242,29 @@ jobs:
           name: playwright-report-funil-fake
           path: playwright-report/
           retention-days: 7
+
+  # Os scripts que governam as automações do repositório — entre eles o portão
+  # que decide se um pull request pode ser mesclado — moram em .github/scripts,
+  # que fica fora dos workspaces do pnpm. Nenhum job alcançava esse diretório:
+  # os testes existiam e nunca rodavam. Uma regressão no portão passaria verde
+  # por todo o CI, e a proteção viraria enfeite exatamente como já aconteceu.
+  # Job próprio porque não depende de banco nem de navegador — leva segundos.
+  scripts-de-automacao:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: .github/scripts/package-lock.json
+      - name: Install dependencies
+        working-directory: .github/scripts
+        run: npm ci
+      - name: Typecheck
+        working-directory: .github/scripts
+        run: npm run typecheck
+      - name: Test
+        working-directory: .github/scripts
+        run: npm test
