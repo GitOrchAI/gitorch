@@ -333,9 +333,17 @@ export interface EnsureAndPersistDeps {
   resolveOwner: (owner: string, token: string) => Promise<ResolvedOwner>
   /** Resolve o node id GraphQL do repositório — liga o board recém-criado a ele (best-effort). */
   resolveRepositoryId?: (repository: string, token: string) => Promise<string>
-  /** Credencial do próprio cliente, quando guardada — repassada a
-   *  `ensureProjectBoard` para a segunda tentativa em conta pessoal. */
-  clientToken?: string | null
+  /**
+   * Lê a credencial do PRÓPRIO cliente, quando guardada — reforço opcional
+   * para conta pessoal (repassada a `ensureProjectBoard` para a segunda
+   * tentativa). É uma FUNÇÃO, não o valor já resolvido, de propósito: a
+   * leitura passa por banco + decifragem, e as duas podem lançar (chave
+   * rotacionada, dado corrompido, banco fora do ar). Chamada por dentro desta
+   * função, com a mesma garantia de nunca lançar que o resto dela — perder
+   * essa leitura nunca pode custar o wake inteiro do PO por um reforço que é
+   * opcional por definição.
+   */
+  lerClientToken?: () => Promise<string | null>
   /** Monta o client no mesmo formato de `createProjectV2Client`, sob a
    *  credencial do cliente. */
   criarClienteAlternativo?: (token: string) => EnsureProjectBoardDeps['client']
@@ -377,6 +385,19 @@ export async function ensureAndPersistProjectBoard(
   })
   if (!token) return undefined
 
+  // Reforço opcional: se a leitura falhar por qualquer motivo, segue como se
+  // não houvesse credencial — nunca deixa a exceção subir e derrubar o wake
+  // inteiro do PO por causa de um recurso que só existe para cobrir conta
+  // pessoal.
+  const clientToken = deps.lerClientToken
+    ? await deps.lerClientToken().catch((err) => {
+        warn(
+          `nao foi possivel ler a credencial do cliente para ${deps.project.wingId}, seguindo sem ela: ${(err as Error).message}`
+        )
+        return null
+      })
+    : null
+
   const board = await ensureProjectBoard({
     repository: deps.project.wingId,
     client: deps.createProjectV2Client(token),
@@ -386,7 +407,7 @@ export async function ensureAndPersistProjectBoard(
           resolveRepositoryId: (repository: string) => deps.resolveRepositoryId!(repository, token),
         }
       : {}),
-    clientToken: deps.clientToken,
+    clientToken,
     criarClienteAlternativo: deps.criarClienteAlternativo,
     onWarn: warn,
   })

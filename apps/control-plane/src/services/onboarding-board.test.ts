@@ -348,6 +348,58 @@ describe('ensureAndPersistProjectBoard', () => {
     expect(update).not.toHaveBeenCalled()
     expect(avisos.join(' ')).toContain('não está instalado')
   })
+
+  it('credencial do cliente lida com sucesso: chega como clientToken e viabiliza a segunda tentativa', async () => {
+    const clienteDoProduto = cliente({
+      createProjectV2: vi.fn(async () => {
+        throw new Error('does not have permission to create projects on ownerId U_x')
+      }),
+    })
+    const clienteDoCliente = cliente({
+      createProjectV2: vi.fn(async () => ({ id: 'PVT_cliente', number: 77 })),
+    })
+    const update = vi.fn().mockResolvedValue({})
+
+    const r = await ensureAndPersistProjectBoard({
+      project: { id: 'proj_5', wingId: 'dono/repo', runtimeConfig: null },
+      prisma: { project: { update } } as never,
+      mintInstallationToken: async () => 'ghs_app',
+      createProjectV2Client: () => clienteDoProduto as never,
+      resolveOwner: async () => ({ id: 'U_dono', type: 'user' as const }),
+      lerClientToken: async () => 'tok-do-cliente',
+      criarClienteAlternativo: (token) => {
+        expect(token).toBe('tok-do-cliente')
+        return clienteDoCliente as never
+      },
+    })
+
+    expect(r).toBe('dono/77')
+    expect(clienteDoCliente.createProjectV2).toHaveBeenCalled()
+  })
+
+  it('leitura da credencial do cliente lança: engolida, o quadro segue sendo tentado sem ela', async () => {
+    const c = cliente()
+    const update = vi.fn().mockResolvedValue({})
+    const avisos: string[] = []
+    const criarClienteAlternativo = vi.fn()
+
+    const r = await ensureAndPersistProjectBoard({
+      project: { id: 'proj_6', wingId: 'dono/repo', runtimeConfig: null },
+      prisma: { project: { update } } as never,
+      mintInstallationToken: async () => 'ghs_app',
+      createProjectV2Client: () => c as never,
+      resolveOwner: async () => ({ id: 'U_dono', type: 'user' as const }),
+      lerClientToken: async () => {
+        throw new Error('chave de cifragem rotacionada')
+      },
+      criarClienteAlternativo,
+      onWarn: (m) => avisos.push(m),
+    })
+
+    expect(r).toBe('dono/42')
+    expect(criarClienteAlternativo).not.toHaveBeenCalled()
+    expect(avisos.join(' ')).toContain('credencial do cliente')
+  })
 })
 
 // A árvore que a esteira percorre antes de criar qualquer coisa.

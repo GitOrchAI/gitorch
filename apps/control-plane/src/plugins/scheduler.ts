@@ -1222,11 +1222,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           // Conta pessoal: a credencial do App não cria quadro ali (medido na
           // API real). Havendo a credencial do próprio cliente guardada, ela
           // é a segunda tentativa — ensureProjectBoard só recorre a ela se a
-          // primeira, com a identidade do produto, falhar.
-          const clientToken = await lerCredencialDoProjeto({
-            prisma: app.prisma as never,
-            projectId: project.id,
-          })
+          // primeira, com a identidade do produto, falhar. A leitura vai como
+          // FUNÇÃO (não já resolvida aqui fora): passa por banco + decifragem,
+          // e as duas podem lançar (chave rotacionada, banco fora do ar) — se
+          // isso acontecesse aqui fora, sem proteção, a exceção cairia direto
+          // no try do failover de motores e derrubaria o wake inteiro do PO
+          // por causa de um reforço que é opcional. `ensureAndPersistProjectBoard`
+          // é quem chama e engole essa falha.
           railsBoard = await ensureAndPersistProjectBoard({
             project: {
               id: project.id,
@@ -1238,7 +1240,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             createProjectV2Client: (token: string) => new ProjectV2Client({ token }),
             resolveOwner: resolveGithubOwnerId,
             resolveRepositoryId: resolveGithubRepositoryId,
-            clientToken,
+            lerClientToken: () =>
+              lerCredencialDoProjeto({ prisma: app.prisma as never, projectId: project.id }),
             criarClienteAlternativo: (token: string) => new ProjectV2Client({ token }),
             onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
           })
