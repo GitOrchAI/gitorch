@@ -142,6 +142,55 @@ describe('ensureProjectBoard', () => {
     expect(r).toEqual({ owner: 'GitOrchAI', number: 42 })
     expect(avisos.join(' ')).toContain('ligar')
   })
+
+  it('quando a credencial do produto não cria o quadro, tenta com a do cliente', async () => {
+    const clienteDoProduto = {
+      findProjectId: vi.fn(async () => null),
+      createProjectV2: vi.fn(async () => {
+        throw new Error('does not have permission to create projects on ownerId U_x')
+      }),
+      linkProjectV2ToRepository: vi.fn(async () => 'R_repo'),
+      descobrirQuadrosPorIssues: vi.fn(async () => []),
+      detalharQuadro: vi.fn(async () => ({ camposCount: 0, outrosRepositorios: [] })),
+    }
+    const clienteDoCliente = {
+      ...clienteDoProduto,
+      createProjectV2: vi.fn(async () => ({ id: 'PVT_do_cliente', number: 77 })),
+    }
+
+    const r = await ensureProjectBoard({
+      repository: 'dono/repo',
+      client: clienteDoProduto as never,
+      resolveOwner: async () => ({ id: 'U_dono', type: 'user' as const }),
+      resolveRepositoryId: async () => 'R_repo',
+      clientToken: 'tok-do-cliente',
+      criarClienteAlternativo: () => clienteDoCliente as never,
+    })
+
+    expect(r).toEqual({ owner: 'dono', number: 77 })
+    expect(clienteDoCliente.createProjectV2).toHaveBeenCalled()
+  })
+
+  it('sem credencial do cliente, a falha continua resolvendo em aviso acionável', async () => {
+    const avisos: string[] = []
+    const c = {
+      findProjectId: vi.fn(async () => null),
+      createProjectV2: vi.fn(async () => {
+        throw new Error('does not have permission to create projects on ownerId U_x')
+      }),
+      linkProjectV2ToRepository: vi.fn(async () => 'R_repo'),
+      descobrirQuadrosPorIssues: vi.fn(async () => []),
+      detalharQuadro: vi.fn(async () => ({ camposCount: 0, outrosRepositorios: [] })),
+    }
+    const r = await ensureProjectBoard({
+      repository: 'dono/repo',
+      client: c as never,
+      resolveOwner: async () => ({ id: 'U_dono', type: 'user' as const }),
+      onWarn: (m) => avisos.push(m),
+    })
+    expect(r).toBeNull()
+    expect(avisos.join(' ')).toContain('permission')
+  })
 })
 
 describe('resolveGithubOwnerId', () => {
@@ -298,6 +347,58 @@ describe('ensureAndPersistProjectBoard', () => {
     expect(r).toBeUndefined()
     expect(update).not.toHaveBeenCalled()
     expect(avisos.join(' ')).toContain('não está instalado')
+  })
+
+  it('credencial do cliente lida com sucesso: chega como clientToken e viabiliza a segunda tentativa', async () => {
+    const clienteDoProduto = cliente({
+      createProjectV2: vi.fn(async () => {
+        throw new Error('does not have permission to create projects on ownerId U_x')
+      }),
+    })
+    const clienteDoCliente = cliente({
+      createProjectV2: vi.fn(async () => ({ id: 'PVT_cliente', number: 77 })),
+    })
+    const update = vi.fn().mockResolvedValue({})
+
+    const r = await ensureAndPersistProjectBoard({
+      project: { id: 'proj_5', wingId: 'dono/repo', runtimeConfig: null },
+      prisma: { project: { update } } as never,
+      mintInstallationToken: async () => 'ghs_app',
+      createProjectV2Client: () => clienteDoProduto as never,
+      resolveOwner: async () => ({ id: 'U_dono', type: 'user' as const }),
+      lerClientToken: async () => 'tok-do-cliente',
+      criarClienteAlternativo: (token) => {
+        expect(token).toBe('tok-do-cliente')
+        return clienteDoCliente as never
+      },
+    })
+
+    expect(r).toBe('dono/77')
+    expect(clienteDoCliente.createProjectV2).toHaveBeenCalled()
+  })
+
+  it('leitura da credencial do cliente lança: engolida, o quadro segue sendo tentado sem ela', async () => {
+    const c = cliente()
+    const update = vi.fn().mockResolvedValue({})
+    const avisos: string[] = []
+    const criarClienteAlternativo = vi.fn()
+
+    const r = await ensureAndPersistProjectBoard({
+      project: { id: 'proj_6', wingId: 'dono/repo', runtimeConfig: null },
+      prisma: { project: { update } } as never,
+      mintInstallationToken: async () => 'ghs_app',
+      createProjectV2Client: () => c as never,
+      resolveOwner: async () => ({ id: 'U_dono', type: 'user' as const }),
+      lerClientToken: async () => {
+        throw new Error('chave de cifragem rotacionada')
+      },
+      criarClienteAlternativo,
+      onWarn: (m) => avisos.push(m),
+    })
+
+    expect(r).toBe('dono/42')
+    expect(criarClienteAlternativo).not.toHaveBeenCalled()
+    expect(avisos.join(' ')).toContain('credencial do cliente')
   })
 })
 

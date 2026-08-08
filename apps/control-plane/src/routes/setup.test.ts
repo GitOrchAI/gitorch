@@ -1,9 +1,10 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import Fastify, { FastifyRequest } from 'fastify'
-import { generateKeyPairSync } from 'node:crypto'
+import { generateKeyPairSync, randomBytes } from 'node:crypto'
 import { setupRoutes } from './setup.js'
 import type { EngineConnectionService } from '../services/engine-connection.js'
 import { resetAppTokenCache } from '../services/github-app-token.js'
+import { encryptCredential } from '../lib/credential-crypto.js'
 
 describe('GET /api/v1/github/repos', () => {
   let app: ReturnType<typeof Fastify>
@@ -538,6 +539,11 @@ describe('POST /api/v1/setup/submit — coleta de contexto: board Projects V2 n�
             return rec
           }
         ),
+        // Nenhum cliente passou por /setup/credencial-do-cliente neste
+        // teste — lerCredencialDoProjeto (chamada pela coleta de contexto)
+        // precisa deste método existir para resolver "sem credencial" (null),
+        // não para quebrar com um TypeError.
+        findUnique: vi.fn().mockResolvedValue(null),
       },
       apiKey: { create: vi.fn().mockResolvedValue({}) },
       mission: { create: vi.fn().mockResolvedValue({}) },
@@ -598,6 +604,152 @@ describe('POST /api/v1/setup/submit — coleta de contexto: board Projects V2 n�
 
     // Só 1 Project foi criado no total (2ª submissão reusou o registro).
     expect(byWingId.size).toBe(1)
+  })
+})
+
+// A leitura da credencial do cliente (lerCredencialDoProjeto, chamada pela
+// coleta de contexto) é por repositório — uma chave rotacionada ou um
+// envelope corrompido num repo não pode custar o board/PRs/issues de outro
+// repo no MESMO submit. Antes desta suíte a chamada não tinha proteção
+// própria e a exceção abortava o laço inteiro.
+describe('POST /api/v1/setup/submit — leitura de credencial de um repo não derruba a coleta dos demais', () => {
+  let app: ReturnType<typeof Fastify>
+  const originalFetch = global.fetch
+  let byWingId: Map<string, { id: string; wingId: string; name: string; runtimeConfig: unknown }>
+  let cortexWriteDrawer: ReturnType<typeof vi.fn>
+
+  // Só GraphQL — sem credencial do cliente resolvida (throw ou null), as
+  // rotas REST de segurança nem são chamadas (repo-context-collector.ts:
+  // sem clientToken, coletarDividaDeSeguranca é pulado).
+  function stubGithubGraphQL(): typeof fetch {
+    return vi.fn(async (_url: string, init: { body: string }) => {
+      const body = JSON.parse(init.body) as { query: string }
+      if (body.query.includes('RepoOwner')) {
+        return new Response(
+          JSON.stringify({
+            data: { repository: { owner: { id: 'U_owner', __typename: 'User' } } },
+          }),
+          { status: 200 }
+        )
+      }
+      if (body.query.includes('CreateProjectV2')) {
+        return new Response(
+          JSON.stringify({
+            data: { createProjectV2: { projectV2: { id: 'PVT_created', number: 42 } } },
+          }),
+          { status: 200 }
+        )
+      }
+      if (body.query.includes('RepoContext')) {
+        return new Response(
+          JSON.stringify({
+            data: { repository: { pullRequests: { nodes: [] }, issues: { nodes: [] } } },
+          }),
+          { status: 200 }
+        )
+      }
+      throw new Error(`stub sem handler para a query:\n${body.query}`)
+    }) as unknown as typeof fetch
+  }
+
+  beforeEach(async () => {
+    byWingId = new Map()
+    let nextId = 1
+    cortexWriteDrawer = vi.fn().mockResolvedValue(undefined)
+
+    app = Fastify()
+    app.decorate('cortex', { writeDrawer: cortexWriteDrawer } as never)
+    app.decorate('engineConnections', {
+      list: async () => [
+        {
+          runtime: 'claude',
+          status: 'connected',
+          modelsRefreshedAt: null,
+          lastValidatedAt: null,
+          lastError: null,
+        },
+      ],
+      getRawGithubToken: async () => 'gh_test_token',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+    app.decorate('prisma', {
+      user: {
+        findUnique: vi
+          .fn()
+          .mockResolvedValue({ id: 'owner_1', email: 'octocat@example.test', plan: null }),
+      },
+      plan: { findUnique: vi.fn().mockResolvedValue({ id: 'pro', maxProjects: 2 }) },
+      project: {
+        count: vi.fn().mockResolvedValue(0),
+        findFirst: vi.fn(async ({ where }: { where: { wingId: string } }) => {
+          return byWingId.get(where.wingId) ?? null
+        }),
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+          const rec = {
+            id: `proj_${nextId++}`,
+            wingId: data['wingId'] as string,
+            name: data['name'] as string,
+            runtimeConfig: data['runtimeConfig'],
+          }
+          byWingId.set(rec.wingId, rec)
+          return rec
+        }),
+        update: vi.fn(
+          async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
+            const rec = [...byWingId.values()].find((p) => p.id === where.id)
+            if (rec) Object.assign(rec, data)
+            return rec
+          }
+        ),
+        // repo1: a leitura da credencial lança (chave rotacionada / envelope
+        // corrompido — cenário real). repo2: sem credencial guardada (null).
+        // O que a suíte prova não é o valor devolvido, é que a exceção do
+        // repo1 não impede o repo2 de ser processado.
+        findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
+          const rec = [...byWingId.values()].find((p) => p.id === where.id)
+          if (rec?.wingId === 'octocat/repo1') {
+            throw new Error('credencial ilegível: envelope corrompido')
+          }
+          return null
+        }),
+      },
+      apiKey: { create: vi.fn().mockResolvedValue({}) },
+      mission: { create: vi.fn().mockResolvedValue({}) },
+      projectSchedule: {
+        findMany: vi.fn().mockResolvedValue([]),
+        count: vi.fn().mockResolvedValue(0),
+        create: vi.fn().mockResolvedValue({}),
+      },
+      clientEnvironment: {
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        findMany: vi.fn().mockResolvedValue([]),
+        findFirst: vi.fn().mockResolvedValue(null),
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+    app.addHook('preHandler', async (request: FastifyRequest) => {
+      request.user = { id: 'owner_1', wingId: 'octocat', email: 'octocat@example.test' }
+    })
+    await setupRoutes(app)
+    await app.ready()
+  })
+
+  afterEach(() => {
+    global.fetch = originalFetch
+  })
+
+  it('repo1 com credencial ilegível: repo2 ainda ganha board/PRs/issues na memória', async () => {
+    global.fetch = stubGithubGraphQL()
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/setup/submit',
+      payload: { repos: ['octocat/repo1', 'octocat/repo2'], engines: ['claude-code'], plan: 'pro' },
+    })
+
+    expect(res.statusCode).toBe(200)
+    const drawerIds = cortexWriteDrawer.mock.calls.map((c) => (c[0] as { id: string }).id)
+    expect(drawerIds).toContain('github:octocat/repo2:board')
   })
 })
 
@@ -879,5 +1031,295 @@ describe('POST /api/v1/setup/submit — isolamento entre clientes (o projeto é 
     expect(res.statusCode).toBe(401)
     expect(projects).toHaveLength(0)
     expect(apiKeys).toHaveLength(0)
+  })
+})
+
+describe('POST /api/v1/setup/credencial-do-cliente', () => {
+  let app: ReturnType<typeof Fastify>
+  const originalFetch = global.fetch
+  const originalKey = process.env['GITORCH_CREDENTIAL_KEY']
+  let projectFindFirst: ReturnType<typeof vi.fn>
+  let projectUpdate: ReturnType<typeof vi.fn>
+
+  // Simula a resposta de GET /user do GitHub — mesmo formato que
+  // verificarCredencial (services/project-credential.ts) consome.
+  const stubGithubUser = (escopos: string): void => {
+    global.fetch = vi.fn(async () => {
+      return new Response(JSON.stringify({ login: 'cliente' }), {
+        status: 200,
+        headers: { 'x-oauth-scopes': escopos },
+      })
+    }) as unknown as typeof fetch
+  }
+
+  beforeEach(async () => {
+    process.env['GITORCH_CREDENTIAL_KEY'] = randomBytes(32).toString('hex')
+
+    projectFindFirst = vi.fn().mockResolvedValue({ id: 'proj_1' })
+    projectUpdate = vi.fn().mockResolvedValue({})
+
+    app = Fastify()
+    app.decorate('prisma', {
+      user: {
+        findUnique: vi.fn().mockResolvedValue({ id: 'owner_1', email: 'octocat@example.test' }),
+      },
+      project: { findFirst: projectFindFirst, update: projectUpdate },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+    app.addHook('preHandler', async (request: FastifyRequest) => {
+      request.user = { id: 'owner_1', wingId: 'octocat', email: 'octocat@example.test' }
+    })
+    await setupRoutes(app)
+    await app.ready()
+  })
+
+  afterEach(() => {
+    global.fetch = originalFetch
+    if (originalKey === undefined) delete process.env['GITORCH_CREDENTIAL_KEY']
+    else process.env['GITORCH_CREDENTIAL_KEY'] = originalKey
+  })
+
+  it('recusa credencial sem os escopos, dizendo exatamente o que falta', async () => {
+    stubGithubUser('repo')
+    const resp = await app.inject({
+      method: 'POST',
+      url: '/api/v1/setup/credencial-do-cliente',
+      payload: { projectId: 'proj_1', token: 'tok-sem-escopo' },
+    })
+    expect(resp.statusCode).toBe(400)
+    expect(resp.json().faltando).toContain('project')
+    expect(projectUpdate).not.toHaveBeenCalled()
+  })
+
+  it('aceita credencial completa e não devolve o segredo de volta', async () => {
+    stubGithubUser('repo, project')
+    const resp = await app.inject({
+      method: 'POST',
+      url: '/api/v1/setup/credencial-do-cliente',
+      payload: { projectId: 'proj_1', token: 'tok-completo' },
+    })
+    expect(resp.statusCode).toBe(200)
+    expect(JSON.stringify(resp.json())).not.toContain('tok-completo')
+    expect(resp.json()).toEqual({ login: 'cliente', faltando: [] })
+
+    // A credencial foi guardada CIFRADA — nunca em texto puro.
+    expect(projectUpdate).toHaveBeenCalledTimes(1)
+    const gravado = projectUpdate.mock.calls[0]![0].data.encryptedClientToken as string
+    expect(gravado).not.toContain('tok-completo')
+  })
+
+  it('prova de dono: recusa quando o projeto não pertence ao dono resolvido da sessão', async () => {
+    // findFirst filtrado por { id, userId } não acha nada — o mesmo padrão
+    // anti-vazamento que o submit já usa (isolamento entre clientes).
+    projectFindFirst.mockResolvedValue(null)
+    stubGithubUser('repo, project')
+
+    const resp = await app.inject({
+      method: 'POST',
+      url: '/api/v1/setup/credencial-do-cliente',
+      payload: { projectId: 'proj_de_outro_dono', token: 'tok-completo' },
+    })
+
+    expect(resp.statusCode).toBe(404)
+    expect(projectUpdate).not.toHaveBeenCalled()
+    expect(projectFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: 'proj_de_outro_dono', userId: 'owner_1' }),
+      })
+    )
+  })
+
+  it('GitHub indisponível (5xx): não culpa a credencial, diz que não deu para verificar agora', async () => {
+    global.fetch = vi.fn(async () => new Response('{}', { status: 503 })) as unknown as typeof fetch
+
+    const resp = await app.inject({
+      method: 'POST',
+      url: '/api/v1/setup/credencial-do-cliente',
+      payload: { projectId: 'proj_1', token: 'tok-qualquer' },
+    })
+
+    expect(resp.statusCode).toBe(503)
+    const body = resp.json() as { erro?: string }
+    expect(body.erro).not.toMatch(/inválid/i)
+    expect(projectUpdate).not.toHaveBeenCalled()
+  })
+
+  it('401 sem sessão', async () => {
+    const semSessao = Fastify()
+    await setupRoutes(semSessao)
+    await semSessao.ready()
+    const resp = await semSessao.inject({
+      method: 'POST',
+      url: '/api/v1/setup/credencial-do-cliente',
+      payload: { projectId: 'proj_1', token: 'tok' },
+    })
+    expect(resp.statusCode).toBe(401)
+  })
+
+  it('400 quando faltam campos obrigatórios no corpo', async () => {
+    const resp = await app.inject({
+      method: 'POST',
+      url: '/api/v1/setup/credencial-do-cliente',
+      payload: { projectId: 'proj_1' },
+    })
+    expect(resp.statusCode).toBe(400)
+  })
+})
+
+// A dívida de segurança só é alcançável com a credencial do CLIENTE (o App do
+// produto leva 403 nessas rotas) — sem repassar o que
+// /setup/credencial-do-cliente guardou até collectAndRememberRepoContext, ela
+// nunca é coletada de verdade.
+describe('POST /api/v1/setup/submit — coleta de contexto usa a credencial do cliente guardada', () => {
+  let app: ReturnType<typeof Fastify>
+  const originalFetch = global.fetch
+  const originalKey = process.env['GITORCH_CREDENTIAL_KEY']
+  let cortexWriteDrawer: ReturnType<typeof vi.fn>
+  let projectFindUnique: ReturnType<typeof vi.fn>
+
+  // Igual ao stubGithubGraphQL usado na suíte de idempotência do board, mas
+  // também roteia as chamadas REST (sem corpo JSON) que
+  // coletarDividaDeSeguranca faz contra as rotas de segurança.
+  function stubGithubGraphQLAndRest(): typeof fetch {
+    return vi.fn(async (url: string, init?: { body?: string }) => {
+      if (init?.body) {
+        const body = JSON.parse(init.body) as { query: string }
+        if (body.query.includes('RepoOwner')) {
+          return new Response(
+            JSON.stringify({
+              data: { repository: { owner: { id: 'U_owner', __typename: 'User' } } },
+            }),
+            { status: 200 }
+          )
+        }
+        if (body.query.includes('CreateProjectV2')) {
+          return new Response(
+            JSON.stringify({
+              data: { createProjectV2: { projectV2: { id: 'PVT_created', number: 42 } } },
+            }),
+            { status: 200 }
+          )
+        }
+        if (body.query.includes('RepoContext')) {
+          return new Response(
+            JSON.stringify({
+              data: { repository: { pullRequests: { nodes: [] }, issues: { nodes: [] } } },
+            }),
+            { status: 200 }
+          )
+        }
+        throw new Error(`stub sem handler para a query GraphQL:\n${body.query}`)
+      }
+      const caminho = String(url).replace('https://api.github.com', '')
+      const mapa: Record<string, { status: number; corpo?: unknown }> = {
+        '/repos/octocat/repo/vulnerability-alerts': { status: 204 },
+        '/repos/octocat/repo/automated-security-fixes': { status: 404 },
+        '/repos/octocat/repo/contents/.github/dependabot.yml': { status: 404 },
+        '/repos/octocat/repo/dependabot/alerts?state=open&per_page=100': { status: 200, corpo: [] },
+      }
+      const r = mapa[caminho] ?? { status: 404 }
+      return new Response(r.corpo === undefined ? null : JSON.stringify(r.corpo), {
+        status: r.status,
+      })
+    }) as unknown as typeof fetch
+  }
+
+  beforeEach(async () => {
+    process.env['GITORCH_CREDENTIAL_KEY'] = randomBytes(32).toString('hex')
+    cortexWriteDrawer = vi.fn().mockResolvedValue(undefined)
+    // Devolve uma credencial de cliente guardada por padrão; os testes
+    // individuais sobrescrevem para o caso "sem credencial".
+    projectFindUnique = vi
+      .fn()
+      .mockResolvedValue({ encryptedClientToken: encryptCredential('tok-cliente-guardado') })
+
+    app = Fastify()
+    app.decorate('cortex', { writeDrawer: cortexWriteDrawer } as never)
+    app.decorate('engineConnections', {
+      list: async () => [
+        {
+          runtime: 'claude',
+          status: 'connected',
+          modelsRefreshedAt: null,
+          lastValidatedAt: null,
+          lastError: null,
+        },
+      ],
+      getRawGithubToken: async () => 'gh_app_token',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+    app.decorate('prisma', {
+      user: {
+        findUnique: vi
+          .fn()
+          .mockResolvedValue({ id: 'owner_1', email: 'octocat@example.test', plan: null }),
+      },
+      plan: { findUnique: vi.fn().mockResolvedValue({ id: 'pro', maxProjects: 2 }) },
+      project: {
+        count: vi.fn().mockResolvedValue(0),
+        findFirst: vi.fn().mockResolvedValue(null),
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({
+          id: 'proj_1',
+          wingId: data['wingId'],
+          name: data['name'],
+          runtimeConfig: data['runtimeConfig'],
+        })),
+        update: vi.fn().mockResolvedValue({}),
+        findUnique: projectFindUnique,
+      },
+      apiKey: { create: vi.fn().mockResolvedValue({}) },
+      mission: { create: vi.fn().mockResolvedValue({}) },
+      projectSchedule: {
+        findMany: vi.fn().mockResolvedValue([]),
+        count: vi.fn().mockResolvedValue(0),
+        create: vi.fn().mockResolvedValue({}),
+      },
+      clientEnvironment: {
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        findMany: vi.fn().mockResolvedValue([]),
+        findFirst: vi.fn().mockResolvedValue(null),
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+    app.addHook('preHandler', async (request: FastifyRequest) => {
+      request.user = { id: 'owner_1', wingId: 'octocat', email: 'octocat@example.test' }
+    })
+    await setupRoutes(app)
+    await app.ready()
+  })
+
+  afterEach(() => {
+    global.fetch = originalFetch
+    if (originalKey === undefined) delete process.env['GITORCH_CREDENTIAL_KEY']
+    else process.env['GITORCH_CREDENTIAL_KEY'] = originalKey
+  })
+
+  it('projeto com credencial do cliente guardada: a dívida de segurança é coletada e vira gaveta', async () => {
+    global.fetch = stubGithubGraphQLAndRest()
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/setup/submit',
+      payload: { repos: ['octocat/repo'], engines: ['claude-code'], plan: 'pro' },
+    })
+
+    expect(res.statusCode).toBe(200)
+    const drawerIds = cortexWriteDrawer.mock.calls.map((c) => (c[0] as { id: string }).id)
+    expect(drawerIds).toContain('github:octocat/repo:divida-de-seguranca')
+  })
+
+  it('projeto sem credencial do cliente guardada: submit continua funcionando, sem gaveta de dívida', async () => {
+    projectFindUnique.mockResolvedValue({ encryptedClientToken: null })
+    global.fetch = stubGithubGraphQLAndRest()
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/setup/submit',
+      payload: { repos: ['octocat/repo'], engines: ['claude-code'], plan: 'pro' },
+    })
+
+    expect(res.statusCode).toBe(200)
+    const drawerIds = cortexWriteDrawer.mock.calls.map((c) => (c[0] as { id: string }).id)
+    expect(drawerIds).not.toContain('github:octocat/repo:divida-de-seguranca')
   })
 })

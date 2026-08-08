@@ -3,6 +3,8 @@ import type { CortexDrawer } from '@gitorch/cortex'
 import type { GraphQLRequest, GraphQLResponse, GraphQLTransport } from '@gitorch/github-sync'
 import { collectAndRememberRepoContext, rememberRepoContext } from './repo-context-cortex.js'
 import type { CollectedRepoContext } from './repo-context-collector.js'
+import type { DividaDeSeguranca } from './security-debt-collector.js'
+import { restDeMentira } from '../test/rest-fake.js'
 
 type ResponseFor = (req: GraphQLRequest) => GraphQLResponse<unknown>
 
@@ -91,6 +93,86 @@ describe('rememberRepoContext (ponte GitHub → Cortex)', () => {
     expect(drawers).toHaveLength(4)
     expect(new Set(drawers.map((d) => d.id)).size).toBe(2)
   })
+
+  it('grava a dívida de segurança como gaveta própria, com resumo por severidade e a lista dos alertas', async () => {
+    const { writeDrawer, drawers } = fakeCortex()
+    const divida: DividaDeSeguranca = {
+      vigilanciaLigada: true,
+      correcaoAutomaticaLigada: true,
+      temConfiguracao: true,
+      alertas: [
+        {
+          numero: 42,
+          severidade: 'critical',
+          pacote: 'pacote-x',
+          ecossistema: 'npm',
+          manifesto: 'pnpm-lock.yaml',
+          resumo: 'resumo do problema',
+          versaoCorrigida: '2.0.0',
+          url: 'https://exemplo.invalido/alerta/42',
+          criadoEm: '2026-01-01T00:00:00Z',
+        },
+      ],
+      porSeveridade: { critical: 1, high: 0, medium: 0, low: 0 },
+      naoVerificado: [],
+    }
+    const context: CollectedRepoContext = {
+      board: { id: 'PVT_1', number: 5, created: false },
+      pullRequests: [],
+      issues: [],
+      dividaDeSeguranca: divida,
+    }
+
+    await rememberRepoContext({ writeDrawer }, 'loureng/gitorch', context, () => 'TS')
+
+    expect(drawers).toHaveLength(2) // board + dívida (sem PR/Issue neste caso)
+    const gaveta = drawers.find((d) => d.id === 'github:loureng/gitorch:divida-de-seguranca')
+    expect(gaveta).toBeDefined()
+    expect(gaveta?.wingId).toBe('loureng/gitorch')
+    expect(gaveta?.content).toContain('1 crítico(s)')
+    expect(gaveta?.content).toContain('#42 pacote-x (critical)')
+  })
+
+  it('preserva naoVerificado na gaveta — nunca finge zero alertas quando ninguém verificou', async () => {
+    const { writeDrawer, drawers } = fakeCortex()
+    const dividaSemAlcance: DividaDeSeguranca = {
+      vigilanciaLigada: null,
+      correcaoAutomaticaLigada: null,
+      temConfiguracao: false,
+      alertas: [],
+      porSeveridade: { critical: 0, high: 0, medium: 0, low: 0 },
+      naoVerificado: ['vigilancia', 'alertas'],
+    }
+    const context: CollectedRepoContext = {
+      board: { id: 'PVT_1', number: 5, created: false },
+      pullRequests: [],
+      issues: [],
+      dividaDeSeguranca: dividaSemAlcance,
+    }
+
+    await rememberRepoContext({ writeDrawer }, 'o/r', context, () => 'TS')
+
+    const gaveta = drawers.find((d) => d.id === 'github:o/r:divida-de-seguranca')
+    // "0 alertas" sozinho, sem o aviso, mentiria: ninguém verificou —
+    // não é a mesma coisa que "verificado, zero encontrado".
+    expect(gaveta?.content).toContain('0 alerta(s)')
+    expect(gaveta?.content).toContain('vigilancia')
+    expect(gaveta?.content).toContain('alertas')
+  })
+
+  it('sem dívida de segurança no contexto (undefined), não grava gaveta extra', async () => {
+    const { writeDrawer, drawers } = fakeCortex()
+    const context: CollectedRepoContext = {
+      board: { id: 'PVT_1', number: 5, created: false },
+      pullRequests: [],
+      issues: [],
+    }
+
+    await rememberRepoContext({ writeDrawer }, 'o/r', context, () => 'TS')
+
+    expect(drawers).toHaveLength(1) // só o board
+    expect(drawers.some((d) => d.id.includes('divida-de-seguranca'))).toBe(false)
+  })
 })
 
 describe('collectAndRememberRepoContext (orquestração best-effort)', () => {
@@ -137,6 +219,71 @@ describe('collectAndRememberRepoContext (orquestração best-effort)', () => {
     })
     // board + 1 PR gravados.
     expect(writeDrawer).toHaveBeenCalledTimes(2)
+  })
+
+  // Sem repassar a credencial do cliente até o collector, a dívida de
+  // segurança nunca é coletada em produção — mesmo que ela já esteja
+  // guardada para o projeto.
+  it('com clientToken, a dívida de segurança entra no contexto e vira gaveta própria', async () => {
+    const { writeDrawer, drawers } = fakeCortex()
+    const transport = routingTransport({
+      owner: () => ({ data: { repository: { owner: { id: 'U_owner', __typename: 'User' } } } }),
+      create: () => ({ data: { createProjectV2: { projectV2: { id: 'PVT_new', number: 9 } } } }),
+      repo: () => ({
+        data: { repository: { pullRequests: { nodes: [] }, issues: { nodes: [] } } },
+      }),
+    })
+    const fetchImpl = restDeMentira({
+      '/repos/loureng/gitorch/vulnerability-alerts': { status: 204 },
+      '/repos/loureng/gitorch/automated-security-fixes': { status: 404 },
+      '/repos/loureng/gitorch/contents/.github/dependabot.yml': { status: 404 },
+      '/repos/loureng/gitorch/dependabot/alerts?state=open&per_page=100': {
+        status: 200,
+        corpo: [],
+      },
+    })
+
+    const result = await collectAndRememberRepoContext({
+      token: 't',
+      clientToken: 'tok-cliente',
+      wingId: 'loureng/gitorch',
+      cortex: { writeDrawer },
+      request: transport,
+      fetchImpl,
+      now: () => 'TS',
+    })
+
+    expect(result.collected).toBe(true)
+    const gaveta = drawers.find((d) => d.id === 'github:loureng/gitorch:divida-de-seguranca')
+    expect(gaveta).toBeDefined()
+  })
+
+  it('sem clientToken, o contexto sai sem dívida de segurança (comportamento best-effort preservado)', async () => {
+    const { writeDrawer, drawers } = fakeCortex()
+    const transport = routingTransport({
+      owner: () => ({ data: { repository: { owner: { id: 'U_owner', __typename: 'User' } } } }),
+      create: () => ({ data: { createProjectV2: { projectV2: { id: 'PVT_new', number: 9 } } } }),
+      repo: () => ({
+        data: { repository: { pullRequests: { nodes: [] }, issues: { nodes: [] } } },
+      }),
+    })
+    const chamadasRest: string[] = []
+    const fetchImpl = (async (url: string | URL) => {
+      chamadasRest.push(String(url))
+      return new Response(null, { status: 404 })
+    }) as unknown as typeof fetch
+
+    await collectAndRememberRepoContext({
+      token: 't',
+      wingId: 'loureng/gitorch',
+      cortex: { writeDrawer },
+      request: transport,
+      fetchImpl,
+      now: () => 'TS',
+    })
+
+    expect(chamadasRest).toEqual([])
+    expect(drawers.some((d) => d.id.includes('divida-de-seguranca'))).toBe(false)
   })
 
   it('best-effort: wingId inválido (sem "/") → collected:false, não grava nada', async () => {

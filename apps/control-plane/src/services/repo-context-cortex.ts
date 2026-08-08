@@ -6,6 +6,7 @@ import {
   type CollectedRepoContext,
   type CollectedWorkItem,
 } from './repo-context-collector.js'
+import type { DividaDeSeguranca } from './security-debt-collector.js'
 
 // Só o que a ponte usa do Cortex — permite injetar um fake nos testes.
 type CortexWriter = Pick<CortexClient, 'writeDrawer'>
@@ -17,6 +18,10 @@ export interface CollectAndRememberDeps {
   cortex: CortexWriter
   /** número do board GitOrch já conhecido (evita criar 2x); ausente → cria. */
   boardNumber?: number
+  /** Credencial do cliente — só ela alcança as rotas de segurança (o App do
+   *  produto recebe 403). Ausente/null: o retrato sai sem a dívida de
+   *  segurança, sem falhar (mesmo contrato best-effort do collector). */
+  clientToken?: string | null
   /** transporte GraphQL injetável (testes). */
   request?: GraphQLTransport
   fetchImpl?: typeof fetch
@@ -51,7 +56,8 @@ export async function collectAndRememberRepoContext(
   if (!owner || !repo) {
     return { collected: false, reason: `wingId inválido (esperado "owner/repo"): ${deps.wingId}` }
   }
-  const request = deps.request ?? buildGithubGraphQLTransport(deps.fetchImpl ?? fetch)
+  const fetchImpl = deps.fetchImpl ?? fetch
+  const request = deps.request ?? buildGithubGraphQLTransport(fetchImpl)
   const now = deps.now ?? (() => new Date().toISOString())
 
   try {
@@ -62,13 +68,18 @@ export async function collectAndRememberRepoContext(
       return { collected: false, reason: `dono do repo ${deps.wingId} não resolvido` }
     }
 
-    const collector = new RepoContextCollector({ token: deps.token, request })
+    // `fetchImpl` também vai para o collector (não só para montar o
+    // transporte GraphQL padrão): é ele quem coletarDividaDeSeguranca usa
+    // para as chamadas REST das rotas de segurança — sem repassar, um
+    // fetchImpl de teste nunca alcançaria essa parte da coleta.
+    const collector = new RepoContextCollector({ token: deps.token, request, fetchImpl })
     const context = await collector.collect({
       owner,
       repo,
       ownerType: ownerInfo.ownerType,
       ownerId: ownerInfo.ownerId,
       ...(deps.boardNumber !== undefined ? { boardNumber: deps.boardNumber } : {}),
+      clientToken: deps.clientToken ?? null,
     })
 
     await rememberRepoContext(deps.cortex, deps.wingId, context, now)
@@ -109,6 +120,12 @@ export async function rememberRepoContext(
     }),
     ...context.pullRequests.map((pr) => workItemDrawer(wingId, ts, 'pull-request', 'PR', pr)),
     ...context.issues.map((issue) => workItemDrawer(wingId, ts, 'issue', 'Issue', issue)),
+    // Ausente quando o contexto não trouxe dívida de segurança (sem
+    // credencial do cliente) — a gaveta só existe quando há retrato de
+    // verdade pra guardar.
+    ...(context.dividaDeSeguranca
+      ? [securityDebtDrawer(wingId, ts, context.dividaDeSeguranca)]
+      : []),
   ]
 
   for (const drawer of drawers) {
@@ -166,6 +183,36 @@ function workItemDrawer(
     content: `${label} #${item.number} "${item.title}" — estado ${item.state}, ${author}, atualizado ${item.updatedAt} (${item.url}).`,
     tags: ['github', kind, item.state.toLowerCase()],
     importance: 0.5,
+  })
+}
+
+// A dívida de segurança vira UMA gaveta (não uma por alerta): é um retrato de
+// um momento, não um item de trabalho isolado como PR/Issue. O resumo por
+// severidade entra no texto para o Cortex achar isso sem parsear JSON depois.
+// O que não deu para verificar precisa aparecer no texto também: dizer que
+// não há alerta quando ninguém conseguiu olhar seria mentir por omissão — a
+// memória tem que distinguir "verificado, zero encontrado" de "não sei".
+function securityDebtDrawer(wingId: string, ts: string, divida: DividaDeSeguranca): CortexDrawer {
+  const total = divida.alertas.length
+  const p = divida.porSeveridade
+  const resumo = `${total} alerta(s) aberto(s): ${p.critical} crítico(s), ${p.high} alto(s), ${p.medium} médio(s), ${p.low} baixo(s).`
+  const aviso =
+    divida.naoVerificado.length > 0
+      ? ` Não verificado (retrato pode estar incompleto): ${divida.naoVerificado.join(', ')}.`
+      : ''
+  const listaAlertas = divida.alertas
+    .map((a) => `#${a.numero} ${a.pacote} (${a.severidade})`)
+    .join('; ')
+  const content = `${resumo}${aviso}${listaAlertas ? ` Alertas: ${listaAlertas}.` : ''}`
+  return baseDrawer({
+    id: `github:${wingId}:divida-de-seguranca`,
+    wingId,
+    ts,
+    content,
+    tags: ['github', 'seguranca', 'onboarding'],
+    // Alerta crítico aberto pesa mais que o board/PR/Issue rotineiros — é o
+    // tipo de fato que a esteira não pode deixar afundar na memória.
+    importance: p.critical > 0 ? 0.8 : 0.5,
   })
 }
 

@@ -7,6 +7,12 @@ import { ensureDefaultSchedules } from '../lib/project-defaults.js'
 import { resolveEngineId } from '../services/engine-connection.js'
 import { ClientEnvironmentService } from '../services/environment.js'
 import { collectAndRememberRepoContext } from '../services/repo-context-cortex.js'
+import {
+  verificarCredencial,
+  guardarCredencialDoProjeto,
+  lerCredencialDoProjeto,
+  VerificacaoIndisponivelError,
+} from '../services/project-credential.js'
 import { startTelegramLink, readTelegramLink } from '../services/telegram-link.js'
 import { AgentQuestionService, type AgentQuestionRecord } from '../services/agent-question.js'
 import {
@@ -653,10 +659,32 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
           for (const repoFullName of repos) {
             const project = projectsByRepo.get(repoFullName)
             const boardNumber = readKnownBoardNumber(project?.runtimeConfig)
+            // Sem isto a dívida de segurança NUNCA é coletada em produção: o
+            // App do produto (githubToken acima) leva 403 nessas rotas, só a
+            // credencial que o cliente forneceu em /setup/credencial-do-cliente
+            // alcança. Ausente (cliente ainda não passou por lá) é um estado
+            // válido — collect() já sabe sair sem a dívida nesse caso.
+            // O .catch é próprio: sem ele, uma credencial ilegível (chave
+            // rotacionada, envelope corrompido) neste repositório derruba o
+            // laço inteiro e outros repositórios do mesmo submit perdem
+            // board/PRs/issues também, sem ter problema nenhum — mesmo
+            // padrão best-effort aplicado à leitura equivalente em
+            // onboarding-board.ts.
+            const clientToken = project
+              ? await lerCredencialDoProjeto({ prisma: app.prisma, projectId: project.id }).catch(
+                  (err) => {
+                    app.log.warn(
+                      `[setup] nao foi possivel ler a credencial do cliente para ${repoFullName}, seguindo sem ela: ${(err as Error).message}`
+                    )
+                    return null
+                  }
+                )
+              : null
             const result = await collectAndRememberRepoContext({
               token: githubToken,
               wingId: repoFullName,
               cortex: app.cortex,
+              clientToken,
               ...(boardNumber !== undefined ? { boardNumber } : {}),
             })
             if (!result.collected) {
@@ -705,6 +733,72 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
     const owner = await app.prisma.user.findUnique({ where: { email: user.email } })
     return owner?.id ?? user.id
   }
+
+  // POST /api/v1/setup/credencial-do-cliente — a porta de entrada da
+  // credencial PRÓPRIA do cliente. O App do produto é recusado com 403 tanto
+  // no quadro de conta pessoal quanto em qualquer rota de segurança
+  // (dependabot, alertas) — só a credencial do próprio cliente alcança essas
+  // duas coisas, e é esta rota que a recebe e guarda.
+  //
+  // Prova de dono: só aceita gravar sobre um projeto que já pertence ao dono
+  // resolvido da SESSÃO (mesmo padrão anti-vazamento que /setup/submit usa —
+  // `userId: ownerId` no filtro, nunca só o id cru do corpo). Sem isto,
+  // qualquer sessão autenticada poderia plantar ou substituir a credencial de
+  // um projeto alheio só sabendo o id dele.
+  app.post(
+    '/api/v1/setup/credencial-do-cliente',
+    { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      if (!request.user) {
+        return reply.code(401).send({ error: 'UNAUTHORIZED: session required' })
+      }
+      const { projectId, token } = (request.body ?? {}) as { projectId?: string; token?: string }
+      if (!projectId || !token) {
+        return reply.code(400).send({ erro: 'projectId e token são obrigatórios' })
+      }
+
+      const ownerId = await resolveOwnerId(request.user)
+      const project = await app.prisma.project.findFirst({
+        where: { id: projectId, userId: ownerId },
+        select: { id: true },
+      })
+      if (!project) {
+        return reply.code(404).send({ erro: 'projeto não encontrado' })
+      }
+
+      let credencial
+      try {
+        credencial = await verificarCredencial({ token })
+      } catch (err) {
+        if (err instanceof VerificacaoIndisponivelError) {
+          // Falha em COMUNICAR com o GitHub (instável, rate-limited) — nunca
+          // culpa da credencial. Dizer o contrário mandaria o cliente trocar
+          // um token que está certo.
+          return reply.code(503).send({
+            erro: 'Não foi possível verificar a credencial agora — o GitHub está indisponível, tente de novo em instantes',
+            faltando: [],
+          })
+        }
+        throw err
+      }
+
+      if (!credencial) {
+        return reply.code(400).send({ erro: 'Credencial inválida ou expirada', faltando: [] })
+      }
+      if (credencial.faltando.length > 0) {
+        return reply.code(400).send({
+          erro: 'A credencial não tem os escopos necessários',
+          faltando: credencial.faltando,
+        })
+      }
+
+      // Cifra e grava só depois de confirmar que a credencial cumpre o que
+      // foi prometido — nunca guarda algo que ainda não sabemos que serve.
+      await guardarCredencialDoProjeto({ prisma: app.prisma, projectId, token })
+
+      return reply.send({ login: credencial.login, faltando: [] })
+    }
+  )
 
   // POST /api/v1/setup/telegram/link — o passo 8, agora de verdade.
   //

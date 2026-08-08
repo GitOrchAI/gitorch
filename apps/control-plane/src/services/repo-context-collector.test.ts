@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { RepoContextCollector } from './repo-context-collector.js'
 import type { GraphQLRequest, GraphQLResponse, GraphQLTransport } from '@gitorch/github-sync'
+import { restDeMentira } from '../test/rest-fake.js'
 
 type ResponseFor = (req: GraphQLRequest) => GraphQLResponse<unknown>
 
@@ -198,5 +199,66 @@ describe('RepoContextCollector', () => {
     await expect(
       collector.collect({ owner: 'o', repo: 'r', ownerType: 'user', ownerId: 'U' })
     ).rejects.toThrow('GitHub GraphQL request failed: API rate limit exceeded')
+  })
+
+  // As rotas de segurança recusam a credencial do App do produto com 403 — só
+  // a do cliente alcança. Sem ela, tentar a rota só produziria naoVerificado
+  // por 403 disfarçado; o correto é nem chamar.
+  it('sem credencial do cliente, o contexto sai sem dívida de segurança — e não tenta a rota', async () => {
+    const { transport } = routingTransport({
+      create: () => ({ data: { createProjectV2: { projectV2: { id: 'PVT_1', number: 1 } } } }),
+      repo: () => ({
+        data: { repository: { pullRequests: { nodes: [] }, issues: { nodes: [] } } },
+      }),
+    })
+    const chamadasRest: string[] = []
+    const fetchImpl = (async (url: string | URL) => {
+      chamadasRest.push(String(url))
+      return new Response(null, { status: 404 })
+    }) as unknown as typeof fetch
+    const collector = new RepoContextCollector({ token: 't', request: transport, fetchImpl })
+
+    const ctx = await collector.collect({
+      owner: 'o',
+      repo: 'r',
+      ownerType: 'user',
+      ownerId: 'U',
+      clientToken: null,
+    })
+
+    expect(ctx.dividaDeSeguranca).toBeUndefined()
+    expect(chamadasRest).toEqual([])
+  })
+
+  it('com credencial do cliente, a dívida de segurança entra no retrato', async () => {
+    const { transport } = routingTransport({
+      create: () => ({ data: { createProjectV2: { projectV2: { id: 'PVT_1', number: 1 } } } }),
+      repo: () => ({
+        data: { repository: { pullRequests: { nodes: [] }, issues: { nodes: [] } } },
+      }),
+    })
+    const fetchImpl = restDeMentira({
+      '/repos/o/r/vulnerability-alerts': { status: 204 },
+      '/repos/o/r/automated-security-fixes': { status: 404 },
+      '/repos/o/r/contents/.github/dependabot.yml': { status: 404 },
+      '/repos/o/r/dependabot/alerts?state=open&per_page=100': { status: 200, corpo: [] },
+    })
+    const collector = new RepoContextCollector({ token: 't', request: transport, fetchImpl })
+
+    const ctx = await collector.collect({
+      owner: 'o',
+      repo: 'r',
+      ownerType: 'user',
+      ownerId: 'U',
+      clientToken: 'tok-cliente',
+    })
+
+    expect(ctx.dividaDeSeguranca?.porSeveridade).toEqual({
+      critical: 0,
+      high: 0,
+      medium: 0,
+      low: 0,
+    })
+    expect(ctx.dividaDeSeguranca?.vigilanciaLigada).toBe(true)
   })
 })
