@@ -8,6 +8,32 @@
 
 const GITHUB_API = 'https://api.github.com'
 
+// `deps.repository` chega de um valor que o cliente escolhe (o repo
+// selecionado no funil, gravado como wingId do projeto) — NÃO é um literal
+// controlado pelo produto. Toda chamada desta função carrega a credencial do
+// PRÓPRIO cliente no cabeçalho Authorization (é o motivo desta função
+// existir: só essa credencial alcança as rotas de segurança). Se o valor
+// pudesse escapar do formato `dono/repo` que o GitHub realmente aceita —
+// atravessando diretório, embutindo outro host, ganhando uma query string —
+// a URL montada abaixo sairia para um destino diferente do GitHub e levaria
+// a credencial do cliente junto. Validar aqui, antes de montar qualquer URL,
+// é a única defesa que não depende de quem chama esta função hoje ou vier a
+// chamar amanhã.
+const SEGMENTO_VALIDO = /^[A-Za-z0-9._-]+$/
+
+function repositorioValido(repository: string): boolean {
+  const partes = repository.split('/')
+  if (partes.length !== 2) return false
+  const [dono, nome] = partes
+  if (!dono || !nome) return false
+  if (!SEGMENTO_VALIDO.test(dono) || !SEGMENTO_VALIDO.test(nome)) return false
+  // O charset acima já aceita '.', mas '..' isolado é o caso que abre
+  // travessia de diretório em outras APIs — recusar mesmo sem precisar dele
+  // aqui é mais barato do que confiar que nunca vai importar.
+  if (dono.includes('..') || nome.includes('..')) return false
+  return true
+}
+
 // Cada chamada aqui já é independente e best-effort — uma falhar só marca o
 // rótulo correspondente em naoVerificado, nunca derruba a coleta (comentário
 // acima do bloco try/catch). Mas sem tempo-limite uma conexão pendurada
@@ -47,8 +73,11 @@ export interface DividaDeSeguranca {
    *  possíveis: 'vigilancia', 'correcao-automatica', 'configuracao',
    *  'alertas' (a coleta parou antes do fim — status inesperado ou falha de
    *  rede), 'alertas-parcial' (o teto de páginas foi atingido com mais
-   *  restando) e 'severidade-desconhecida' (a API devolveu uma severidade
-   *  fora das quatro conhecidas — tratada como 'critical' por segurança). */
+   *  restando), 'severidade-desconhecida' (a API devolveu uma severidade
+   *  fora das quatro conhecidas — tratada como 'critical' por segurança) e
+   *  'repositorio-invalido' (o valor de `repository` não tem o formato
+   *  `dono/repo` que o GitHub aceita — nenhuma chamada de rede é feita
+   *  nesse caso). */
   naoVerificado: string[]
 }
 
@@ -72,6 +101,25 @@ export async function coletarDividaDeSeguranca(deps: {
   const f = deps.fetchImpl ?? fetch
   const timeoutMs = deps.timeoutMs ?? CHAMADA_TIMEOUT_MS
   const naoVerificado: string[] = []
+
+  // Recusa ANTES de montar qualquer URL ou tocar a rede — ver o comentário
+  // de `repositorioValido` acima sobre por que isto importa: a credencial do
+  // cliente vai no cabeçalho de toda chamada que este arquivo faz. Best-
+  // effort por contrato (mesmo padrão do resto da função): um `repository`
+  // ruim não vira exceção que derruba a coleta do board/PRs/Issues que já
+  // rodou antes desta função ser chamada — vira "não verificado", honesto
+  // sobre o que não deu para checar.
+  if (!repositorioValido(deps.repository)) {
+    naoVerificado.push('repositorio-invalido')
+    return {
+      vigilanciaLigada: null,
+      correcaoAutomaticaLigada: null,
+      temConfiguracao: false,
+      alertas: [],
+      porSeveridade: { critical: 0, high: 0, medium: 0, low: 0 },
+      naoVerificado,
+    }
+  }
 
   const cabecalhos = {
     Authorization: `Bearer ${deps.token}`,

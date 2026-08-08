@@ -369,4 +369,36 @@ describe('coletarDividaDeSeguranca', () => {
     const d = await coletarDividaDeSeguranca({ repository: 'dono/repo', token: 't', fetchImpl })
     expect(d.alertas[0]?.versaoCorrigida).toBeNull()
   })
+
+  // `repository` chega de um valor que o próprio cliente escolhe (o repo
+  // selecionado no funil). A requisição carrega a credencial DELE no
+  // cabeçalho Authorization — se o valor pudesse escapar do formato
+  // `dono/repo` esperado, a credencial sairia junto para onde quer que a URL
+  // apontasse. Cada caso abaixo tem que ser recusado SEM gerar nenhuma
+  // chamada de rede — recusar depois de já ter chamado o `fetch` não
+  // protegeria nada.
+  describe('recusa repository fora do formato dono/repo — nunca chama a rede', () => {
+    const CASOS: Array<[string, string]> = [
+      ['atravessa diretório com ../', 'dono/repo/../../outro'],
+      ['embute outro host com @', '@servidor-alheio/caminho'],
+      ['injeta query string', 'dono/repo?x=y'],
+      ['string vazia', ''],
+      ['barra a mais no caminho', 'dono/repo/extra'],
+    ]
+
+    for (const [descricao, repository] of CASOS) {
+      it(descricao, async () => {
+        const fetchImpl = vi.fn() as unknown as typeof fetch
+
+        const d = await coletarDividaDeSeguranca({ repository, token: 't', fetchImpl })
+
+        expect(fetchImpl).not.toHaveBeenCalled()
+        expect(d.naoVerificado).toContain('repositorio-invalido')
+        expect(d.alertas).toEqual([])
+        expect(d.vigilanciaLigada).toBeNull()
+        expect(d.correcaoAutomaticaLigada).toBeNull()
+        expect(d.temConfiguracao).toBe(false)
+      })
+    }
+  })
 })
