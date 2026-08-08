@@ -23,7 +23,12 @@ export interface EnsureProjectBoardDeps {
   // compilando sem tocar em nada — o passo de ligação só roda quando
   // `resolveRepositoryId` E o método existem os dois.
   client: Pick<ProjectV2Client, 'findProjectId' | 'createProjectV2'> &
-    Partial<Pick<ProjectV2Client, 'linkProjectV2ToRepository'>>
+    Partial<
+      Pick<
+        ProjectV2Client,
+        'linkProjectV2ToRepository' | 'listarQuadrosDoRepositorio' | 'listarQuadrosDaConta'
+      >
+    >
   /** Resolve o node id + tipo (user ou organization) do dono no GitHub. */
   resolveOwner: (owner: string) => Promise<ResolvedOwner>
   /**
@@ -44,8 +49,54 @@ export interface ProjectBoardRef {
 }
 
 /**
- * Garante que o projeto tem seu PRÓPRIO board Projects v2: cria na primeira
- * vez, reaproveita se `existingNumber` ainda existir no GitHub.
+ * Um quadro serve a este repositório quando o título diz isso: ou o caminho
+ * completo (`dono/repo`, que é como o produto batiza os que cria), ou o nome do
+ * repositório em si — inclusive escrito por extenso, que é como uma pessoa
+ * costuma nomear o quadro do próprio projeto ("Jardim das Patinhas" para
+ * `jardim-das-patinhas`).
+ *
+ * O casamento é deliberadamente conservador: na dúvida, não reconhece. Adotar o
+ * quadro errado é pior que criar um novo — seria despejar o backlog de um
+ * projeto dentro do quadro de outro.
+ */
+function quadroServeAoRepositorio(titulo: string, repository: string): boolean {
+  const normalizar = (s: string) =>
+    s
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim()
+
+  const alvoCompleto = normalizar(repository)
+  const nomeDoRepo = normalizar(repository.split('/')[1] ?? '')
+  const t = normalizar(titulo)
+
+  if (!t) return false
+  if (t === alvoCompleto) return true
+  return nomeDoRepo.length > 0 && t === nomeDoRepo
+}
+
+/**
+ * Garante que o projeto tem seu PRÓPRIO board Projects v2, percorrendo a
+ * descoberta antes de criar qualquer coisa:
+ *
+ *   1. já existe quadro ANUNCIADO a este repositório?      -> guarda o número
+ *   2. a conta tem um quadro deste repositório, mas solto?  -> liga
+ *   3. nada disso                                           -> cria e liga
+ *
+ * O que motivou a ordem: um repositório de cliente já mantinha dois quadros
+ * próprios e o produto ignorava os dois, tentando criar um terceiro por cima. O
+ * trabalho do cliente é o primeiro lugar onde se procura, não o último.
+ *
+ * NUNCA lança. Risco conhecido: quem chama esta função no provisionamento do
+ * wizard usa o token OAuth do PRÓPRIO dono do projeto (não um installation
+ * token do GitHub App) — criar board de ORGANIZAÇÃO pode exigir um escopo que
+ * aquele OAuth não tem e devolver "Resource not accessible by integration".
+ * Se isso acontecer em produção, o certo é avisar e seguir: sem board o PO
+ * ainda entrega o roadmap na memória, o que se perde é só o quadro. Derrubar
+ * o provisionamento inteiro por isso seria pior que o problema que resolve —
+ * mas nunca em silêncio (`onWarn` é chamado sempre).
  *
  * NUNCA lança. Risco conhecido: quem chama esta função no provisionamento do
  * wizard usa o token OAuth do PRÓPRIO dono do projeto (não um installation
@@ -79,6 +130,47 @@ export async function ensureProjectBoard(
       if (existente) return { owner, number: deps.existingNumber }
     }
 
+    // 1) Já anunciado a este repositório? Então não há o que criar nem ligar.
+    if (deps.client.listarQuadrosDoRepositorio) {
+      const [dono, nome] = deps.repository.split('/')
+      const ligados = await deps.client.listarQuadrosDoRepositorio({
+        owner: dono ?? '',
+        repo: nome ?? '',
+      })
+      const servindo = ligados.find((q) => quadroServeAoRepositorio(q.title, deps.repository))
+      const escolhido = servindo ?? ligados[0]
+      if (escolhido) return { owner, number: escolhido.number }
+    }
+
+    // 2) A conta já tem um quadro deste repositório, só que solto? Então liga,
+    //    em vez de abrir outro por cima do que o cliente mantém.
+    if (deps.client.listarQuadrosDaConta) {
+      const daConta = await deps.client.listarQuadrosDaConta({
+        login: owner,
+        ownerType: resolved.type,
+      })
+      const candidato = daConta.find((q) => quadroServeAoRepositorio(q.title, deps.repository))
+      if (candidato) {
+        if (deps.resolveRepositoryId && deps.client.linkProjectV2ToRepository) {
+          try {
+            const repositoryId = await deps.resolveRepositoryId(deps.repository)
+            await deps.client.linkProjectV2ToRepository({
+              projectId: candidato.id,
+              repositoryId,
+            })
+          } catch (err) {
+            // O quadro existe e serve; não conseguir anunciá-lo ao repositório
+            // tira o atalho da aba /projects, não o quadro.
+            warn(
+              `quadro #${candidato.number} de ${deps.repository} encontrado, mas falhou ao ligar ao repositório: ${(err as Error).message}`
+            )
+          }
+        }
+        return { owner, number: candidato.number }
+      }
+    }
+
+    // 3) Nada existe: cria.
     const criado = await deps.client.createProjectV2({
       ownerId: resolved.id,
       title: deps.repository,

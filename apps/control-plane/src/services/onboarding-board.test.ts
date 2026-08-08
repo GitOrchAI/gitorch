@@ -300,3 +300,139 @@ describe('ensureAndPersistProjectBoard', () => {
     expect(avisos.join(' ')).toContain('não está instalado')
   })
 })
+
+// A árvore de decisão que a esteira precisa percorrer antes de criar qualquer
+// coisa. Sem ela, um cliente que já mantém o quadro do próprio projeto vê o
+// produto ignorar o quadro dele e abrir outro por cima — foi o que aconteceu
+// num repositório que já tinha dois.
+describe('ensureProjectBoard — descobre antes de criar', () => {
+  const clienteCompleto = (over: Record<string, unknown> = {}) => ({
+    findProjectId: vi.fn(async () => null),
+    createProjectV2: vi.fn(async () => ({ id: 'PVT_novo', number: 42 })),
+    linkProjectV2ToRepository: vi.fn(async () => 'R_repo'),
+    listarQuadrosDoRepositorio: vi.fn(async () => []),
+    listarQuadrosDaConta: vi.fn(async () => []),
+    ...over,
+  })
+
+  it('1) já ligado ao repositório: coleta o número e não cria nada', async () => {
+    const c = clienteCompleto({
+      listarQuadrosDoRepositorio: vi.fn(async () => [
+        { id: 'PVT_ja', number: 7, title: 'dono/repo' },
+      ]),
+    })
+    const r = await ensureProjectBoard({
+      repository: 'dono/repo',
+      client: c as never,
+      resolveOwner: async () => ({ id: 'U_dono', type: 'user' }),
+    })
+    expect(r).toEqual({ owner: 'dono', number: 7 })
+    expect(c.createProjectV2).not.toHaveBeenCalled()
+    expect(c.linkProjectV2ToRepository).not.toHaveBeenCalled()
+  })
+
+  it('2) existe na conta um quadro deste repositório, mas solto: liga em vez de criar', async () => {
+    const c = clienteCompleto({
+      listarQuadrosDoRepositorio: vi.fn(async () => []),
+      listarQuadrosDaConta: vi.fn(async () => [
+        { id: 'PVT_outro', number: 3, title: 'Coisa sem relação' },
+        { id: 'PVT_certo', number: 9, title: 'dono/repo' },
+      ]),
+    })
+    const r = await ensureProjectBoard({
+      repository: 'dono/repo',
+      client: c as never,
+      resolveOwner: async () => ({ id: 'U_dono', type: 'user' }),
+      resolveRepositoryId: async () => 'R_repo',
+    })
+    expect(r).toEqual({ owner: 'dono', number: 9 })
+    expect(c.createProjectV2).not.toHaveBeenCalled()
+    expect(c.linkProjectV2ToRepository).toHaveBeenCalledWith({
+      projectId: 'PVT_certo',
+      repositoryId: 'R_repo',
+    })
+  })
+
+  it('reconhece o quadro pelo nome do repositório, não só pelo caminho completo', async () => {
+    const c = clienteCompleto({
+      listarQuadrosDaConta: vi.fn(async () => [
+        { id: 'PVT_x', number: 4, title: 'Jardim das Patinhas' },
+      ]),
+    })
+    const r = await ensureProjectBoard({
+      repository: 'loureng/jardim-das-patinhas',
+      client: c as never,
+      resolveOwner: async () => ({ id: 'U_l', type: 'user' }),
+      resolveRepositoryId: async () => 'R_j',
+    })
+    expect(r).toEqual({ owner: 'loureng', number: 4 })
+    expect(c.createProjectV2).not.toHaveBeenCalled()
+  })
+
+  it('quadro da conta que NÃO é deste repositório não é sequestrado', async () => {
+    const c = clienteCompleto({
+      listarQuadrosDaConta: vi.fn(async () => [
+        { id: 'PVT_alheio', number: 5, title: 'Outro projeto qualquer' },
+      ]),
+    })
+    const r = await ensureProjectBoard({
+      repository: 'dono/repo',
+      client: c as never,
+      resolveOwner: async () => ({ id: 'U_dono', type: 'user' }),
+    })
+    expect(r).toEqual({ owner: 'dono', number: 42 })
+    expect(c.createProjectV2).toHaveBeenCalled()
+  })
+
+  it('3) nada existe: cria e liga', async () => {
+    const c = clienteCompleto()
+    const r = await ensureProjectBoard({
+      repository: 'dono/repo',
+      client: c as never,
+      resolveOwner: async () => ({ id: 'U_dono', type: 'user' }),
+      resolveRepositoryId: async () => 'R_repo',
+    })
+    expect(r).toEqual({ owner: 'dono', number: 42 })
+    expect(c.createProjectV2).toHaveBeenCalled()
+    expect(c.linkProjectV2ToRepository).toHaveBeenCalledWith({
+      projectId: 'PVT_novo',
+      repositoryId: 'R_repo',
+    })
+  })
+
+  // Conta pessoal: a credencial do App não enxerga nem cria quadro. O aviso
+  // precisa dizer o que aconteceu — sem quadro a esteira segue, mas quem lê o
+  // log tem que saber por quê.
+  it('não conseguir criar resolve em aviso acionável, nunca em silêncio', async () => {
+    const avisos: string[] = []
+    const c = clienteCompleto({
+      createProjectV2: vi.fn(async () => {
+        throw new Error('does not have permission to create projects on ownerId U_x')
+      }),
+    })
+    const r = await ensureProjectBoard({
+      repository: 'dono/repo',
+      client: c as never,
+      resolveOwner: async () => ({ id: 'U_dono', type: 'user' }),
+      onWarn: (m) => avisos.push(m),
+    })
+    expect(r).toBeNull()
+    expect(avisos.join(' ')).toContain('dono/repo')
+    expect(avisos.join(' ')).toContain('permission')
+  })
+
+  // Cliente antigo, sem os métodos de descoberta, não pode quebrar.
+  it('cliente sem as consultas de descoberta continua criando como antes', async () => {
+    const c = {
+      findProjectId: vi.fn(async () => null),
+      createProjectV2: vi.fn(async () => ({ id: 'PVT_novo', number: 42 })),
+      linkProjectV2ToRepository: vi.fn(async () => 'R_repo'),
+    }
+    const r = await ensureProjectBoard({
+      repository: 'dono/repo',
+      client: c as never,
+      resolveOwner: async () => ({ id: 'U_dono', type: 'user' }),
+    })
+    expect(r).toEqual({ owner: 'dono', number: 42 })
+  })
+})

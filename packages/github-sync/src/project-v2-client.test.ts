@@ -265,3 +265,101 @@ test('linkProjectV2ToRepository liga o board recém-criado ao repositório', asy
     'linkProjectV2ToRepository(input: { projectId: $projectId, repositoryId: $repositoryId }'
   )
 })
+
+// A esteira precisa DESCOBRIR quadro, não só criar às cegas. Sem estas duas
+// consultas ela ignora um quadro que o cliente já mantém e tenta criar outro
+// por cima — foi o que aconteceu num repositório que já tinha dois.
+
+test('lista os quadros já ligados a um repositório', async () => {
+  const calls: GraphQLRequest[] = []
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async (request) => {
+      calls.push(request)
+      return {
+        data: {
+          repository: {
+            projectsV2: {
+              nodes: [
+                { id: 'PVT_a', number: 2, title: 'dono/repo' },
+                { id: 'PVT_b', number: 9, title: 'Outro quadro' },
+              ],
+            },
+          },
+        },
+      }
+    },
+  })
+
+  const quadros = await client.listarQuadrosDoRepositorio({ owner: 'dono', repo: 'repo' })
+
+  expect(quadros).toEqual([
+    { id: 'PVT_a', number: 2, title: 'dono/repo' },
+    { id: 'PVT_b', number: 9, title: 'Outro quadro' },
+  ])
+  expect(calls[0]?.variables).toEqual({ owner: 'dono', repo: 'repo' })
+})
+
+test('repositório sem quadro ligado devolve lista vazia, não erro', async () => {
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async () => ({ data: { repository: { projectsV2: { nodes: [] } } } }),
+  })
+
+  await expect(client.listarQuadrosDoRepositorio({ owner: 'dono', repo: 'repo' })).resolves.toEqual(
+    []
+  )
+})
+
+test('lista os quadros da conta, distinguindo pessoa de organização', async () => {
+  const calls: GraphQLRequest[] = []
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async (request) => {
+      calls.push(request)
+      return {
+        data: { organization: { projectsV2: { nodes: [{ id: 'PVT_c', number: 1, title: 'x' }] } } },
+      }
+    },
+  })
+
+  const quadros = await client.listarQuadrosDaConta({
+    login: 'umaOrg',
+    ownerType: 'organization',
+  })
+
+  expect(quadros).toEqual([{ id: 'PVT_c', number: 1, title: 'x' }])
+  expect(calls[0]?.query).toContain('organization(login:')
+  expect(calls[0]?.query).not.toContain('user(login:')
+})
+
+test('conta de pessoa consulta o campo de usuário', async () => {
+  const calls: GraphQLRequest[] = []
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async (request) => {
+      calls.push(request)
+      return { data: { user: { projectsV2: { nodes: [] } } } }
+    },
+  })
+
+  await client.listarQuadrosDaConta({ login: 'umaPessoa', ownerType: 'user' })
+
+  expect(calls[0]?.query).toContain('user(login:')
+  expect(calls[0]?.query).not.toContain('organization(login:')
+})
+
+// O App do produto é CEGO para quadro de conta pessoal: a consulta responde
+// com sucesso e a conta vem nula, mesmo havendo quadros. Tratar isso como
+// "não existe nenhum" faria a esteira tentar criar um por cima; o certo é
+// devolver lista vazia e deixar quem chama decidir com o aviso na mão.
+test('conta invisível para a credencial atual devolve lista vazia', async () => {
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async () => ({ data: { user: null } }),
+  })
+
+  await expect(
+    client.listarQuadrosDaConta({ login: 'umaPessoa', ownerType: 'user' })
+  ).resolves.toEqual([])
+})

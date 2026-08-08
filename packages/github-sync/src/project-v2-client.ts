@@ -98,6 +98,23 @@ export interface LinkProjectV2ToRepositoryInput {
   repositoryId: string
 }
 
+/** Um board como ele aparece numa listagem — o bastante para decidir se serve. */
+export interface QuadroListado {
+  id: string
+  number: number
+  title: string
+}
+
+export interface ListarQuadrosDoRepositorioInput {
+  owner: string
+  repo: string
+}
+
+export interface ListarQuadrosDaContaInput {
+  login: string
+  ownerType: 'user' | 'organization'
+}
+
 export class ProjectV2Client {
   private readonly token: string
   private readonly request: GraphQLTransport
@@ -256,6 +273,61 @@ export class ProjectV2Client {
       throw new Error(`Project v2 #${input.number} not found for ${owner} "${input.login}".`)
     }
     return id
+  }
+
+  // Quais boards JÁ estão anunciados a este repositório. É a primeira pergunta
+  // da descoberta: se a resposta não for vazia, não há o que criar nem ligar —
+  // basta guardar o que já existe.
+  async listarQuadrosDoRepositorio(
+    input: ListarQuadrosDoRepositorioInput
+  ): Promise<QuadroListado[]> {
+    const response = await this.request<{
+      repository: { projectsV2: { nodes: QuadroListado[] | null } | null } | null
+    }>(
+      {
+        query: `
+          query ListarQuadrosDoRepositorio($owner: String!, $repo: String!) {
+            repository(owner: $owner, name: $repo) {
+              projectsV2(first: 50) { nodes { id number title } }
+            }
+          }
+        `,
+        variables: { owner: input.owner, repo: input.repo },
+      },
+      this.token
+    )
+
+    return unwrap(response).repository?.projectsV2?.nodes ?? []
+  }
+
+  // Quais boards a CONTA tem, ligados a este repositório ou não. É a segunda
+  // pergunta: o cliente pode já manter um quadro do projeto sem nunca tê-lo
+  // anunciado ao repositório, e criar outro por cima seria duplicar o trabalho
+  // dele.
+  //
+  // Conta que volta nula resolve em lista vazia de propósito: a credencial do
+  // App responde assim para quadro de conta pessoal — sucesso, dono nulo, ainda
+  // que existam quadros. Distinguir "não tem" de "não enxergo" é papel de quem
+  // chama, com o aviso na mão; aqui só não se inventa que a lista tem algo.
+  async listarQuadrosDaConta(input: ListarQuadrosDaContaInput): Promise<QuadroListado[]> {
+    const campo = input.ownerType === 'organization' ? 'organization' : 'user'
+    const response = await this.request<
+      Record<string, { projectsV2: { nodes: QuadroListado[] | null } | null } | null>
+    >(
+      {
+        query: `
+          query ListarQuadrosDaConta($login: String!) {
+            ${campo}(login: $login) {
+              projectsV2(first: 50) { nodes { id number title } }
+            }
+          }
+        `,
+        variables: { login: input.login },
+      },
+      this.token
+    )
+
+    return unwrap(response)[campo]?.projectsV2?.nodes ?? []
   }
 
   // Cria um Project v2 (board) pendurado no dono (user/org) e devolve seu id +
