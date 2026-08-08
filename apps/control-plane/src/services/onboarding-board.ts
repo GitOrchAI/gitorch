@@ -217,6 +217,35 @@ export async function ensureProjectBoard(
 
 const GITHUB_API = 'https://api.github.com'
 
+// `owner`/`repository` chegam de um valor que o CLIENTE escolhe no funil de
+// entrada (Project.wingId), não de um literal do produto. As duas funções
+// abaixo montam a URL por concatenação e a chamada carrega uma credencial
+// (token do App ou do próprio cliente) no cabeçalho Authorization — se o
+// valor pudesse escapar do formato que o GitHub realmente aceita
+// (atravessando diretório, embutindo outro host, ganhando uma query string),
+// a URL montada sairia para um destino diferente do GitHub e levaria a
+// credencial junto (mesma falha que o CodeQL já apontou como crítica em
+// outro coletor deste repositório). Validar aqui, antes de montar qualquer
+// URL, é a única defesa que não depende de quem chama estas funções hoje ou
+// vier a chamar amanhã.
+const SEGMENTO_VALIDO = /^[A-Za-z0-9._-]+$/
+
+function segmentoValido(segmento: string): boolean {
+  if (!SEGMENTO_VALIDO.test(segmento)) return false
+  // O charset acima aceita '.', mas '..' isolado é o caso que abre travessia
+  // de diretório em outras APIs — recusar aqui é mais barato do que confiar
+  // que nunca vai importar.
+  if (segmento.includes('..')) return false
+  return true
+}
+
+function repositorioValido(repository: string): boolean {
+  const partes = repository.split('/')
+  if (partes.length !== 2) return false
+  const [dono, nome] = partes
+  return !!dono && !!nome && segmentoValido(dono) && segmentoValido(nome)
+}
+
 export interface ResolveGithubOwnerIdDeps {
   /** injeção para teste; default: fetch global. */
   fetchImpl?: typeof fetch
@@ -233,6 +262,15 @@ export async function resolveGithubOwnerId(
   token: string,
   deps: ResolveGithubOwnerIdDeps = {}
 ): Promise<ResolvedOwner> {
+  if (!segmentoValido(owner)) {
+    // Recusa ANTES de montar a URL ou tocar a rede — quem chama esta função
+    // (`ensureProjectBoard`) já embrulha tudo em try/catch e nunca deixa
+    // exceção subir (vira aviso + board null), então lançar aqui é seguro.
+    throw new Error(
+      `dono '${owner}' fora do formato aceito pelo GitHub — requisição recusada antes de montar a URL`
+    )
+  }
+
   const f = deps.fetchImpl ?? fetch
   const headers = {
     Authorization: `Bearer ${token}`,
@@ -267,6 +305,17 @@ export async function resolveGithubRepositoryId(
   token: string,
   deps: ResolveGithubOwnerIdDeps = {}
 ): Promise<string> {
+  if (!repositorioValido(repository)) {
+    // Mesma defesa de `resolveGithubOwnerId` acima, mas a superfície aqui é
+    // maior: `repository` monta a URL inteira (`/repos/{repository}`), não
+    // só um segmento. Quem chama esta função (`ensureProjectBoard`, direto ou
+    // via `resolveRepositoryId`) já embrulha em try/catch próprio — lançar
+    // aqui não derruba nada.
+    throw new Error(
+      `repositorio '${repository}' fora do formato dono/repo aceito pelo GitHub — requisição recusada antes de montar a URL`
+    )
+  }
+
   const f = deps.fetchImpl ?? fetch
   const headers = {
     Authorization: `Bearer ${token}`,

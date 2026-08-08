@@ -191,6 +191,29 @@ describe('resolveGithubOwnerId', () => {
     })) as unknown as typeof fetch
     await expect(resolveGithubOwnerId('fantasma', 'tok', { fetchImpl })).rejects.toThrow()
   })
+
+  // `owner` chega de um valor que o cliente escolhe no funil (Project.wingId),
+  // não de um literal do produto. A chamada carrega a credencial (token do App
+  // ou do próprio cliente) no cabeçalho Authorization — se o valor pudesse
+  // escapar do formato que o GitHub aceita, a URL montada sairia do GitHub e
+  // levaria a credencial junto. Cada caso abaixo tem que ser recusado SEM
+  // gerar nenhuma chamada de rede.
+  describe('recusa owner fora do formato aceito pelo GitHub — nunca chama a rede', () => {
+    const CASOS: Array<[string, string]> = [
+      ['embute outro host com @', '@servidor-alheio'],
+      ['string vazia', ''],
+      ['caractere fora do conjunto permitido', 'dono!'],
+      ['apenas ..', '..'],
+    ]
+
+    for (const [descricao, owner] of CASOS) {
+      it(descricao, async () => {
+        const fetchImpl = vi.fn() as unknown as typeof fetch
+        await expect(resolveGithubOwnerId(owner, 'tok', { fetchImpl })).rejects.toThrow()
+        expect(fetchImpl).not.toHaveBeenCalled()
+      })
+    }
+  })
 })
 
 describe('resolveGithubRepositoryId', () => {
@@ -219,6 +242,29 @@ describe('resolveGithubRepositoryId', () => {
     await expect(
       resolveGithubRepositoryId('GitOrchAI/fantasma', 'tok', { fetchImpl })
     ).rejects.toThrow()
+  })
+
+  // Mesmo risco de `resolveGithubOwnerId` acima, mas aqui `repository` monta a
+  // URL inteira (`/repos/{repository}`) — a superfície é maior: travessia de
+  // diretório, host embutido, query string injetada. Cada caso tem que ser
+  // recusado SEM gerar nenhuma chamada de rede.
+  describe('recusa repository fora do formato dono/repo — nunca chama a rede', () => {
+    const CASOS: Array<[string, string]> = [
+      ['atravessa diretório com ../', 'dono/repo/../../outro'],
+      ['embute outro host com @', '@servidor-alheio/caminho'],
+      ['injeta query string', 'dono/repo?x=y'],
+      ['string vazia', ''],
+      ['barra a mais no caminho', 'dono/repo/extra'],
+      ['caractere fora do conjunto permitido', 'dono/repo!'],
+    ]
+
+    for (const [descricao, repository] of CASOS) {
+      it(descricao, async () => {
+        const fetchImpl = vi.fn() as unknown as typeof fetch
+        await expect(resolveGithubRepositoryId(repository, 'tok', { fetchImpl })).rejects.toThrow()
+        expect(fetchImpl).not.toHaveBeenCalled()
+      })
+    }
   })
 })
 
