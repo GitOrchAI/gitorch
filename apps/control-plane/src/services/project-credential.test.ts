@@ -4,6 +4,7 @@ import {
   guardarCredencialDoProjeto,
   lerCredencialDoProjeto,
   verificarCredencial,
+  VerificacaoIndisponivelError,
 } from './project-credential.js'
 
 const resposta = (escopos: string, login = 'alguem') =>
@@ -41,6 +42,18 @@ describe('verificarCredencial', () => {
     )
     const r = await verificarCredencial({ token: 't', fetchImpl: fetchImpl as never })
     expect(r).toEqual({ login: 'alguem', escopos: [], faltando: ['repo', 'project'] })
+  })
+
+  // 401 é a única resposta que a API do GitHub reserva para credencial
+  // inválida/expirada neste endpoint (mesma garantia usada em
+  // classifyGithubApiError). Qualquer outro status de falha é o GitHub
+  // instável, não a credencial — devolver nulo aqui diria ao cliente "sua
+  // credencial está errada" quando o problema não é dele.
+  it('GitHub indisponível (5xx) não vira "credencial inválida" — lança para o chamador distinguir', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{}', { status: 503 }))
+    await expect(
+      verificarCredencial({ token: 't', fetchImpl: fetchImpl as never })
+    ).rejects.toBeInstanceOf(VerificacaoIndisponivelError)
   })
 })
 

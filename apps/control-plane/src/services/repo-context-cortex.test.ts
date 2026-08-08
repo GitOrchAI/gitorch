@@ -220,6 +220,71 @@ describe('collectAndRememberRepoContext (orquestração best-effort)', () => {
     expect(writeDrawer).toHaveBeenCalledTimes(2)
   })
 
+  // Sem repassar a credencial do cliente até o collector, a dívida de
+  // segurança nunca é coletada em produção — mesmo que ela já esteja
+  // guardada para o projeto.
+  it('com clientToken, a dívida de segurança entra no contexto e vira gaveta própria', async () => {
+    const { writeDrawer, drawers } = fakeCortex()
+    const transport = routingTransport({
+      owner: () => ({ data: { repository: { owner: { id: 'U_owner', __typename: 'User' } } } }),
+      create: () => ({ data: { createProjectV2: { projectV2: { id: 'PVT_new', number: 9 } } } }),
+      repo: () => ({
+        data: { repository: { pullRequests: { nodes: [] }, issues: { nodes: [] } } },
+      }),
+    })
+    const fetchImpl = restDeMentira({
+      '/repos/loureng/gitorch/vulnerability-alerts': { status: 204 },
+      '/repos/loureng/gitorch/automated-security-fixes': { status: 404 },
+      '/repos/loureng/gitorch/contents/.github/dependabot.yml': { status: 404 },
+      '/repos/loureng/gitorch/dependabot/alerts?state=open&per_page=100': {
+        status: 200,
+        corpo: [],
+      },
+    })
+
+    const result = await collectAndRememberRepoContext({
+      token: 't',
+      clientToken: 'tok-cliente',
+      wingId: 'loureng/gitorch',
+      cortex: { writeDrawer },
+      request: transport,
+      fetchImpl,
+      now: () => 'TS',
+    })
+
+    expect(result.collected).toBe(true)
+    const gaveta = drawers.find((d) => d.id === 'github:loureng/gitorch:divida-de-seguranca')
+    expect(gaveta).toBeDefined()
+  })
+
+  it('sem clientToken, o contexto sai sem dívida de segurança (comportamento best-effort preservado)', async () => {
+    const { writeDrawer, drawers } = fakeCortex()
+    const transport = routingTransport({
+      owner: () => ({ data: { repository: { owner: { id: 'U_owner', __typename: 'User' } } } }),
+      create: () => ({ data: { createProjectV2: { projectV2: { id: 'PVT_new', number: 9 } } } }),
+      repo: () => ({
+        data: { repository: { pullRequests: { nodes: [] }, issues: { nodes: [] } } },
+      }),
+    })
+    const chamadasRest: string[] = []
+    const fetchImpl = (async (url: string | URL) => {
+      chamadasRest.push(String(url))
+      return new Response(null, { status: 404 })
+    }) as unknown as typeof fetch
+
+    await collectAndRememberRepoContext({
+      token: 't',
+      wingId: 'loureng/gitorch',
+      cortex: { writeDrawer },
+      request: transport,
+      fetchImpl,
+      now: () => 'TS',
+    })
+
+    expect(chamadasRest).toEqual([])
+    expect(drawers.some((d) => d.id.includes('divida-de-seguranca'))).toBe(false)
+  })
+
   it('best-effort: wingId inválido (sem "/") → collected:false, não grava nada', async () => {
     const { writeDrawer } = fakeCortex()
     const result = await collectAndRememberRepoContext({
@@ -262,3 +327,19 @@ describe('collectAndRememberRepoContext (orquestração best-effort)', () => {
     expect(writeDrawer).not.toHaveBeenCalled()
   })
 })
+
+// Fake REST mínimo para as rotas de segurança (não-GraphQL) que
+// coletarDividaDeSeguranca chama — mesma forma do fake usado em
+// repo-context-collector.test.ts, para não inventar uma montagem paralela.
+function restDeMentira(
+  mapa: Record<string, { status: number; corpo?: unknown; headers?: Record<string, string> }>
+): typeof fetch {
+  return (async (url: string | URL) => {
+    const caminho = String(url).replace('https://api.github.com', '')
+    const r = mapa[caminho] ?? { status: 404 }
+    return new Response(r.corpo === undefined ? null : JSON.stringify(r.corpo), {
+      status: r.status,
+      headers: r.headers,
+    })
+  }) as unknown as typeof fetch
+}

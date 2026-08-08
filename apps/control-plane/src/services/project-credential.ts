@@ -18,6 +18,18 @@ export interface CredencialVerificada {
   faltando: EscopoFaltante[]
 }
 
+/** Falha em COMUNICAR com o GitHub (instabilidade, rate limit, 5xx) — nunca
+ *  culpa da credencial em si. Distinta do `null` de verificarCredencial (que
+ *  é reservado para credencial que realmente não autentica): confundir as
+ *  duas diria ao cliente "sua credencial está errada" quando o problema é do
+ *  GitHub estar fora do ar. */
+export class VerificacaoIndisponivelError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'VerificacaoIndisponivelError'
+  }
+}
+
 export async function verificarCredencial(deps: {
   token: string
   fetchImpl?: typeof fetch
@@ -31,7 +43,16 @@ export async function verificarCredencial(deps: {
     },
   })
 
-  if (!resp.ok) return null
+  if (!resp.ok) {
+    // 401 é a única resposta que a API do GitHub reserva para credencial
+    // inválida/expirada neste endpoint (a mesma garantia que
+    // classifyGithubApiError usa em setup-errors.ts). Qualquer outro status
+    // de falha (rate limit, 5xx) é o GitHub instável, não a credencial.
+    if (resp.status === 401) return null
+    throw new VerificacaoIndisponivelError(
+      `GitHub respondeu ${resp.status} ao tentar verificar a credencial`
+    )
+  }
 
   const corpo = (await resp.json()) as { login?: string }
   // Credencial de formato novo não declara escopos neste cabeçalho. Ausência é

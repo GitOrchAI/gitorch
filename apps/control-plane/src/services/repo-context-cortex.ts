@@ -18,6 +18,10 @@ export interface CollectAndRememberDeps {
   cortex: CortexWriter
   /** número do board GitOrch já conhecido (evita criar 2x); ausente → cria. */
   boardNumber?: number
+  /** Credencial do cliente — só ela alcança as rotas de segurança (o App do
+   *  produto recebe 403). Ausente/null: o retrato sai sem a dívida de
+   *  segurança, sem falhar (mesmo contrato best-effort do collector). */
+  clientToken?: string | null
   /** transporte GraphQL injetável (testes). */
   request?: GraphQLTransport
   fetchImpl?: typeof fetch
@@ -52,7 +56,8 @@ export async function collectAndRememberRepoContext(
   if (!owner || !repo) {
     return { collected: false, reason: `wingId inválido (esperado "owner/repo"): ${deps.wingId}` }
   }
-  const request = deps.request ?? buildGithubGraphQLTransport(deps.fetchImpl ?? fetch)
+  const fetchImpl = deps.fetchImpl ?? fetch
+  const request = deps.request ?? buildGithubGraphQLTransport(fetchImpl)
   const now = deps.now ?? (() => new Date().toISOString())
 
   try {
@@ -63,13 +68,18 @@ export async function collectAndRememberRepoContext(
       return { collected: false, reason: `dono do repo ${deps.wingId} não resolvido` }
     }
 
-    const collector = new RepoContextCollector({ token: deps.token, request })
+    // `fetchImpl` também vai para o collector (não só para montar o
+    // transporte GraphQL padrão): é ele quem coletarDividaDeSeguranca usa
+    // para as chamadas REST das rotas de segurança — sem repassar, um
+    // fetchImpl de teste nunca alcançaria essa parte da coleta.
+    const collector = new RepoContextCollector({ token: deps.token, request, fetchImpl })
     const context = await collector.collect({
       owner,
       repo,
       ownerType: ownerInfo.ownerType,
       ownerId: ownerInfo.ownerId,
       ...(deps.boardNumber !== undefined ? { boardNumber: deps.boardNumber } : {}),
+      clientToken: deps.clientToken,
     })
 
     await rememberRepoContext(deps.cortex, deps.wingId, context, now)
