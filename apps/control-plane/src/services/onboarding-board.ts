@@ -408,7 +408,9 @@ export async function ensureAndPersistProjectBoard(
         }
       : {}),
     clientToken,
-    criarClienteAlternativo: deps.criarClienteAlternativo,
+    ...(deps.criarClienteAlternativo
+      ? { criarClienteAlternativo: deps.criarClienteAlternativo }
+      : {}),
     onWarn: warn,
   })
   if (!board) return undefined

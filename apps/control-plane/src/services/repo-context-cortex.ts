@@ -79,7 +79,7 @@ export async function collectAndRememberRepoContext(
       ownerType: ownerInfo.ownerType,
       ownerId: ownerInfo.ownerId,
       ...(deps.boardNumber !== undefined ? { boardNumber: deps.boardNumber } : {}),
-      clientToken: deps.clientToken,
+      clientToken: deps.clientToken ?? null,
     })
 
     await rememberRepoContext(deps.cortex, deps.wingId, context, now)

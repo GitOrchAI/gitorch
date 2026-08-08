@@ -7,6 +7,13 @@ import { decryptCredential, encryptCredential } from '../lib/credential-crypto.j
 
 const GITHUB_API = 'https://api.github.com'
 
+// Única chamada externa da rota de verificação — síncrona, com o cliente
+// esperando na tela do wizard. 10s é generoso o bastante para absorver uma
+// lentidão transitória do GitHub (latência típica desta rota é bem abaixo de
+// 1s) sem deixar o cliente preso indefinidamente numa API que não vai
+// responder.
+const VERIFICACAO_TIMEOUT_MS = 10_000
+
 /** Escopos sem os quais a credencial não cumpre o que foi prometido. */
 const ESCOPOS_EXIGIDOS = ['repo', 'project'] as const
 
@@ -33,15 +40,36 @@ export class VerificacaoIndisponivelError extends Error {
 export async function verificarCredencial(deps: {
   token: string
   fetchImpl?: typeof fetch
+  /** Override só para teste — não faz sentido esperar o timeout de produção
+   *  rodar de verdade numa suíte. */
+  timeoutMs?: number
 }): Promise<CredencialVerificada | null> {
   const f = deps.fetchImpl ?? fetch
-  const resp = await f(`${GITHUB_API}/user`, {
-    headers: {
-      Authorization: `Bearer ${deps.token}`,
-      Accept: 'application/vnd.github+json',
-      'User-Agent': 'gitorch',
-    },
-  })
+  const timeoutMs = deps.timeoutMs ?? VERIFICACAO_TIMEOUT_MS
+  let resp: Response
+  try {
+    resp = await f(`${GITHUB_API}/user`, {
+      headers: {
+        Authorization: `Bearer ${deps.token}`,
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'gitorch',
+      },
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+  } catch (err) {
+    // AbortSignal.timeout aborta com um TimeoutError (confirmado contra o
+    // fetch nativo do Node) — distinto de um abort manual. Estouro de tempo
+    // é indisponibilidade do GitHub, não credencial inválida: usa o mesmo
+    // VerificacaoIndisponivelError que já cobre rate limit/5xx, para o
+    // cliente nunca ouvir "sua credencial está errada" quando o problema é
+    // a rede.
+    if (err instanceof Error && err.name === 'TimeoutError') {
+      throw new VerificacaoIndisponivelError(
+        `GitHub não respondeu em ${timeoutMs}ms ao tentar verificar a credencial`
+      )
+    }
+    throw err
+  }
 
   if (!resp.ok) {
     // 401 é a única resposta que a API do GitHub reserva para credencial

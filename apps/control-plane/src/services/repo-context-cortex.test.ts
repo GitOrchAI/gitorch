@@ -4,6 +4,7 @@ import type { GraphQLRequest, GraphQLResponse, GraphQLTransport } from '@gitorch
 import { collectAndRememberRepoContext, rememberRepoContext } from './repo-context-cortex.js'
 import type { CollectedRepoContext } from './repo-context-collector.js'
 import type { DividaDeSeguranca } from './security-debt-collector.js'
+import { restDeMentira } from '../test/rest-fake.js'
 
 type ResponseFor = (req: GraphQLRequest) => GraphQLResponse<unknown>
 
@@ -327,19 +328,3 @@ describe('collectAndRememberRepoContext (orquestração best-effort)', () => {
     expect(writeDrawer).not.toHaveBeenCalled()
   })
 })
-
-// Fake REST mínimo para as rotas de segurança (não-GraphQL) que
-// coletarDividaDeSeguranca chama — mesma forma do fake usado em
-// repo-context-collector.test.ts, para não inventar uma montagem paralela.
-function restDeMentira(
-  mapa: Record<string, { status: number; corpo?: unknown; headers?: Record<string, string> }>
-): typeof fetch {
-  return (async (url: string | URL) => {
-    const caminho = String(url).replace('https://api.github.com', '')
-    const r = mapa[caminho] ?? { status: 404 }
-    return new Response(r.corpo === undefined ? null : JSON.stringify(r.corpo), {
-      status: r.status,
-      headers: r.headers,
-    })
-  }) as unknown as typeof fetch
-}

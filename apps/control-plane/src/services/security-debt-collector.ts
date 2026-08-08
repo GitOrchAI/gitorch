@@ -8,6 +8,17 @@
 
 const GITHUB_API = 'https://api.github.com'
 
+// Cada chamada aqui já é independente e best-effort — uma falhar só marca o
+// rótulo correspondente em naoVerificado, nunca derruba a coleta (comentário
+// acima do bloco try/catch). Mas sem tempo-limite uma conexão pendurada
+// (nunca falha, nunca responde) travaria essa mesma chamada indefinidamente
+// numa rota síncrona do wizard — e esta função soma até ~13 chamadas
+// sequenciais no pior caso (3 checagens fixas + até 10 páginas de alertas).
+// 8s por chamada é generoso o bastante para uma resposta lenta da API REST
+// do GitHub (latência típica bem abaixo de 1s) sem deixar uma única rota
+// travada segurar o retrato inteiro por tempo desproporcional.
+const CHAMADA_TIMEOUT_MS = 8_000
+
 export type Severidade = 'critical' | 'high' | 'medium' | 'low'
 
 const SEVERIDADES: Severidade[] = ['critical', 'high', 'medium', 'low']
@@ -54,8 +65,12 @@ export async function coletarDividaDeSeguranca(deps: {
   repository: string
   token: string
   fetchImpl?: typeof fetch
+  /** Override só para teste — não faz sentido esperar o timeout de produção
+   *  rodar de verdade numa suíte. */
+  timeoutMs?: number
 }): Promise<DividaDeSeguranca> {
   const f = deps.fetchImpl ?? fetch
+  const timeoutMs = deps.timeoutMs ?? CHAMADA_TIMEOUT_MS
   const naoVerificado: string[] = []
 
   const cabecalhos = {
@@ -65,7 +80,11 @@ export async function coletarDividaDeSeguranca(deps: {
     'X-GitHub-Api-Version': '2022-11-28',
   }
 
-  const pedirUrl = (url: string): Promise<Response> => f(url, { headers: cabecalhos })
+  // Um AbortSignal novo por chamada (não um único reutilizado): cada rota
+  // tem seu próprio orçamento de tempo, independente das outras — igual ao
+  // isolamento que o try/catch de cada bloco já garante para falhas.
+  const pedirUrl = (url: string): Promise<Response> =>
+    f(url, { headers: cabecalhos, signal: AbortSignal.timeout(timeoutMs) })
   const pedir = (caminho: string): Promise<Response> => pedirUrl(`${GITHUB_API}${caminho}`)
 
   // Cada rota é independente: uma falhar (status inesperado OU exceção de

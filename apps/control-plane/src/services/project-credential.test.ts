@@ -55,7 +55,35 @@ describe('verificarCredencial', () => {
       verificarCredencial({ token: 't', fetchImpl: fetchImpl as never })
     ).rejects.toBeInstanceOf(VerificacaoIndisponivelError)
   })
+
+  // Mesmo raciocínio do teste de 5xx acima, mas para o caso em que o GitHub
+  // nem chega a responder: sem tempo-limite, esta é a única chamada externa
+  // de uma rota síncrona e o cliente ficaria preso na tela do wizard
+  // indefinidamente. `fetchQueNuncaResponde` imita o `fetch` nativo: honra o
+  // `signal` recebido e rejeita com o mesmo TimeoutError que
+  // `AbortSignal.timeout` produz de verdade (confirmado contra o fetch
+  // nativo do Node).
+  it('GitHub não responde a tempo — estouro é indisponibilidade, não credencial inválida', async () => {
+    const fetchImpl = fetchQueNuncaResponde()
+    await expect(
+      verificarCredencial({ token: 't', fetchImpl: fetchImpl as never, timeoutMs: 5 })
+    ).rejects.toBeInstanceOf(VerificacaoIndisponivelError)
+  })
 })
+
+/** Fake de `fetch` que nunca resolve por conta própria — só reage ao aborto
+ *  do `signal`, exatamente como o `fetch` nativo faz quando
+ *  `AbortSignal.timeout` dispara. Usado para testar tempo-limite sem
+ *  depender de rede real nem de temporizadores globais mockados. */
+function fetchQueNuncaResponde(): typeof fetch {
+  return ((_url: string, init?: { signal?: AbortSignal }) => {
+    return new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => {
+        reject(init.signal!.reason as Error)
+      })
+    })
+  }) as unknown as typeof fetch
+}
 
 describe('guardarCredencialDoProjeto / lerCredencialDoProjeto', () => {
   const originalKey = process.env['GITORCH_CREDENTIAL_KEY']
@@ -69,13 +97,15 @@ describe('guardarCredencialDoProjeto / lerCredencialDoProjeto', () => {
   })
 
   it('a credencial nunca é gravada em texto puro', async () => {
-    const update = vi.fn(async () => ({}))
+    const update = vi.fn(
+      async (_args: { where: { id: string }; data: Record<string, unknown> }) => ({})
+    )
     await guardarCredencialDoProjeto({
       prisma: { project: { update, findUnique: vi.fn() } } as never,
       projectId: 'proj_1',
       token: 'segredo-do-cliente',
     })
-    const gravado = update.mock.calls[0]![0].data.encryptedClientToken as string
+    const gravado = update.mock.calls[0]![0].data['encryptedClientToken'] as string
     expect(gravado).not.toContain('segredo-do-cliente')
     expect(gravado.length).toBeGreaterThan(0)
   })

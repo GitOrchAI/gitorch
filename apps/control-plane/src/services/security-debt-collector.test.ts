@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { coletarDividaDeSeguranca } from './security-debt-collector.js'
+import { restDeMentira as githubDeMentira } from '../test/rest-fake.js'
 
 const ALERTA_BRUTO = {
   number: 182,
@@ -12,22 +13,6 @@ const ALERTA_BRUTO = {
   },
   security_advisory: { severity: 'medium', summary: 'resumo do problema' },
   security_vulnerability: { first_patched_version: { identifier: '4.12.34' } },
-}
-
-function githubDeMentira(
-  mapa: Record<string, { status: number; corpo?: unknown; headers?: Record<string, string> }>
-) {
-  return vi.fn(async (url: string | URL) => {
-    const caminho = String(url).replace('https://api.github.com', '')
-    const r = mapa[caminho] ?? { status: 404 }
-    // null, não '': status como 204 é "null body status" no Fetch nativo do
-    // Node — corpo vazio como string ainda conta como corpo e o constructor
-    // recusa. Nenhum teste aqui lê o corpo quando não há `corpo` definido.
-    return new Response(r.corpo === undefined ? null : JSON.stringify(r.corpo), {
-      status: r.status,
-      headers: r.headers,
-    })
-  }) as unknown as typeof fetch
 }
 
 describe('coletarDividaDeSeguranca', () => {
@@ -188,6 +173,40 @@ describe('coletarDividaDeSeguranca', () => {
     expect(d.vigilanciaLigada).toBe(true)
     expect(d.alertas).toEqual([])
     expect(d.naoVerificado).toContain('alertas')
+  })
+
+  // Mesmo raciocínio do teste de "falha de rede" acima, mas para o caso em
+  // que a conexão fica pendurada em vez de recusar na hora: sem
+  // tempo-limite, uma rota que nunca responde trava a coleta inteira (até
+  // ~13 chamadas sequenciais neste fluxo) numa rota síncrona do wizard. O
+  // fake honra o `signal` recebido e rejeita com o mesmo TimeoutError que
+  // `AbortSignal.timeout` produz de verdade (confirmado contra o fetch
+  // nativo do Node) — é o mesmo catch genérico do teste acima que já sabe
+  // tratar isso, só falta a chamada carregar um tempo-limite.
+  it('rota que não responde a tempo entra em naoVerificado — não trava a coleta inteira', async () => {
+    const base = githubDeMentira({
+      '/repos/dono/repo/automated-security-fixes': { status: 404 },
+      '/repos/dono/repo/contents/.github/dependabot.yml': { status: 404 },
+      '/repos/dono/repo/dependabot/alerts?state=open&per_page=100': { status: 200, corpo: [] },
+    })
+    const fetchImpl = vi.fn(async (url: string | URL, init?: { signal?: AbortSignal }) => {
+      if (String(url).includes('/vulnerability-alerts')) {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal!.reason as Error))
+        })
+      }
+      return base(url)
+    }) as unknown as typeof fetch
+
+    const d = await coletarDividaDeSeguranca({
+      repository: 'dono/repo',
+      token: 't',
+      fetchImpl,
+      timeoutMs: 5,
+    })
+
+    expect(d.vigilanciaLigada).toBeNull()
+    expect(d.naoVerificado).toContain('vigilancia')
   })
 
   // 403 na config é "não consegui olhar", não "não existe". Confundir os
