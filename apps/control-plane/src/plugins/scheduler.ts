@@ -1252,7 +1252,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             onWarn: (m) => app.log.warn(m),
           })) ??
           undefined
-        const poRails = role === 'po' && Boolean(railsBoard) && Boolean(railsToken)
+        // O quadro deixou de ser condição para o PO agir. Ele é a vitrine do
+        // plano, não o plano: sem quadro, as issues, a árvore entre elas e os
+        // marcos continuam sendo criados — e é isso que o cliente precisa
+        // receber. Enquanto os dois estiveram amarrados, todo repositório de
+        // conta pessoal (onde a credencial do produto não consegue criar nem
+        // sequer enxergar quadro) ficava sem backlog nenhum, em silêncio.
+        const poRails = role === 'po' && Boolean(railsToken)
         const qaRails = role === 'qa' && Boolean(railsToken)
         const smRails = role === 'sm' && Boolean(railsToken)
         // RA não age no GitHub: os trilhos dele (áreas→jornadas→brief) só
@@ -1399,7 +1405,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               : poRails
                 ? await runPoMissionViaRails({
                     repository: project.wingId,
-                    board: railsBoard as string,
+                    ...(railsBoard ? { board: railsBoard } : {}),
                     githubToken: railsToken as string,
                     contextBlocks,
                     boardColumns,

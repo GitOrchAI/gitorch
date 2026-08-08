@@ -13,8 +13,18 @@ export interface GithubBacklogOptions {
   token: string
   /** ex.: "owner/repo" */
   repository: string
-  /** node id do Project v2 (board) */
-  projectId: string
+  /**
+   * Node id do Project v2 (board). AUSENTE quando o projeto não tem quadro —
+   * hoje isso acontece em repositório de conta pessoal, onde a credencial do
+   * produto não consegue criar nem sequer enxergar quadro.
+   *
+   * Sem quadro o backlog continua sendo criado: issues, a árvore entre elas e
+   * os marcos são trabalho de repositório e não dependem de board. O que se
+   * perde é só a vitrine — card, coluna, iteração e o recado de sprint. Antes
+   * desta separação o produto desistia das duas coisas juntas, e o cliente que
+   * não podia ter quadro também não recebia backlog nenhum.
+   */
+  projectId?: string | undefined
   /** nome do campo de iteração no board (padrão "Sprint") */
   sprintFieldName?: string
   /** nome do campo de status no board (padrão "Status") */
@@ -98,13 +108,18 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
     return map
   }
 
-  const boardStatus = createBoardStatus({
-    token: options.token,
-    projectId: options.projectId,
-    ...(options.statusFieldName ? { statusFieldName: options.statusFieldName } : {}),
-    ...(options.statusColumns ? { columns: options.statusColumns } : {}),
-    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
-  })
+  /** Sem quadro não há onde pendurar card: os passos de vitrine viram silêncio útil. */
+  const quadro = options.projectId
+
+  const boardStatus = quadro
+    ? createBoardStatus({
+        token: options.token,
+        projectId: quadro,
+        ...(options.statusFieldName ? { statusFieldName: options.statusFieldName } : {}),
+        ...(options.statusColumns ? { columns: options.statusColumns } : {}),
+        ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+      })
+    : null
 
   // Cache do campo de iteração (resolvido uma vez por execução do plano).
   let sprintCache: { fieldId: string; iterations: Array<{ id: string }> } | null | undefined
@@ -114,9 +129,10 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
     iterations: Array<{ id: string }>
   } | null> => {
     if (sprintCache !== undefined) return sprintCache
+    if (!quadro) return (sprintCache = null)
     try {
       const field = await client.getIterationField({
-        projectId: options.projectId,
+        projectId: quadro,
         fieldName: sprintField,
       })
       sprintCache =
@@ -185,8 +201,12 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
     },
 
     async addToBoard(nodeId): Promise<string> {
+      // Sem quadro, a issue já foi criada e continua valendo; o que não existe
+      // é o card. Devolver vazio deixa os passos seguintes (status, sprint)
+      // saberem que não há item para enfeitar.
+      if (!quadro) return ''
       try {
-        return await client.addItemById({ projectId: options.projectId, contentId: nodeId })
+        return await client.addItemById({ projectId: quadro, contentId: nodeId })
       } catch (error) {
         // Idempotência: "Content already exists in this project" não é falha —
         // resolve o id do item existente (ex.: workflow de auto-add do board).
@@ -198,9 +218,7 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
             projectItems(first: 20) { nodes { id project { id } } } } } }`,
           { id: nodeId }
         )
-        const item = data.node?.projectItems?.nodes?.find(
-          (n) => n.project?.id === options.projectId
-        )
+        const item = data.node?.projectItems?.nodes?.find((n) => n.project?.id === quadro)
         if (!item) throw error
         return item.id
       }
@@ -213,8 +231,9 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
       // de iterações existentes, fica sem iteração (o milestone datado cobre).
       const iteration = sprint.iterations[sprintNumber - 1]
       if (!iteration) return
+      if (!quadro || !boardItemId) return
       await client.setIterationField({
-        projectId: options.projectId,
+        projectId: quadro,
         itemId: boardItemId,
         fieldId: sprint.fieldId,
         iterationId: iteration.id,
@@ -232,8 +251,9 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
     async postSprintGoal(goal: string): Promise<void> {
       // O Sprint Goal fica VISÍVEL no board (status update do Projects v2) — o
       // board é a interface do cliente; memória interna não basta.
+      if (!quadro) return
       await client.createStatusUpdate({
-        projectId: options.projectId,
+        projectId: quadro,
         body: `Sprint Goal: ${goal}`,
         startDate: new Date().toISOString().slice(0, 10),
         status: 'ON_TRACK',
@@ -242,7 +262,9 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
 
     async setStatus(boardItemId, column): Promise<void> {
       // Coluna/campo ausente no board do cliente não é falha do plano — o
-      // status é acessório; a árvore/labels são o essencial.
+      // status é acessório; a árvore/labels são o essencial. Sem board nenhum,
+      // o acessório simplesmente não existe.
+      if (!boardStatus || !boardItemId) return
       const outcome = await boardStatus.setStatus(boardItemId, column)
       if (outcome !== 'set') {
         // eslint-disable-next-line no-console

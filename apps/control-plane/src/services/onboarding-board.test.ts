@@ -152,13 +152,13 @@ describe('resolveGithubOwnerId', () => {
       return {
         ok: true,
         status: 200,
-        json: async () => ({ node_id: 'U_loureng', type: 'User' }),
+        json: async () => ({ node_id: 'U_dono_exemplo', type: 'User' }),
       } as unknown as Response
     }) as unknown as typeof fetch
 
-    const r = await resolveGithubOwnerId('loureng', 'tok', { fetchImpl })
-    expect(r).toEqual({ id: 'U_loureng', type: 'user' })
-    expect(calls).toEqual(['https://api.github.com/users/loureng'])
+    const r = await resolveGithubOwnerId('dono-exemplo', 'tok', { fetchImpl })
+    expect(r).toEqual({ id: 'U_dono_exemplo', type: 'user' })
+    expect(calls).toEqual(['https://api.github.com/users/dono-exemplo'])
   })
 
   it('cai para GET /orgs/{owner} quando /users não acha', async () => {
@@ -298,5 +298,169 @@ describe('ensureAndPersistProjectBoard', () => {
     expect(r).toBeUndefined()
     expect(update).not.toHaveBeenCalled()
     expect(avisos.join(' ')).toContain('não está instalado')
+  })
+})
+
+// A árvore que a esteira percorre antes de criar qualquer coisa.
+//
+// A descoberta é por EVIDÊNCIA, não por semelhança de nome: o quadro deste
+// repositório é aquele onde as issues dele já estão. Casar por título foi
+// tentado e reprovado — a comparação normalizava separadores e acabou adotando
+// o quadro de um repositório para outro sem relação nenhuma. Uma issue dentro
+// de um quadro é fato; nome parecido é palpite.
+describe('ensureProjectBoard — descobre por evidência antes de criar', () => {
+  const clienteCompleto = (over: Record<string, unknown> = {}) => ({
+    findProjectId: vi.fn(async () => null),
+    createProjectV2: vi.fn(async () => ({ id: 'PVT_novo', number: 42 })),
+    linkProjectV2ToRepository: vi.fn(async () => 'R_repo'),
+    listarQuadrosDoRepositorio: vi.fn(async () => []),
+    descobrirQuadrosPorIssues: vi.fn(async () => []),
+    detalharQuadro: vi.fn(async () => ({ camposCount: 14, outrosRepositorios: [] })),
+    ...over,
+  })
+
+  const base = {
+    repository: 'dono/repo',
+    resolveOwner: async () => ({ id: 'U_dono', type: 'user' as const }),
+    resolveRepositoryId: async () => 'R_repo',
+  }
+
+  it('1) já ligado ao repositório: coleta o número e não cria nem liga nada', async () => {
+    const c = clienteCompleto({
+      listarQuadrosDoRepositorio: vi.fn(async () => [{ id: 'PVT_ja', number: 7, title: 'x' }]),
+    })
+    const r = await ensureProjectBoard({ ...base, client: c as never })
+    expect(r).toEqual({ owner: 'dono', number: 7 })
+    expect(c.createProjectV2).not.toHaveBeenCalled()
+    expect(c.linkProjectV2ToRepository).not.toHaveBeenCalled()
+  })
+
+  it('2) issues do repositório apontam um quadro solto: liga esse quadro', async () => {
+    const c = clienteCompleto({
+      descobrirQuadrosPorIssues: vi.fn(async () => [
+        { id: 'PVT_achado', number: 9, title: 'qualquer nome', closed: false, issuesDesteRepo: 48 },
+      ]),
+    })
+    const r = await ensureProjectBoard({ ...base, client: c as never })
+    expect(r).toEqual({ owner: 'dono', number: 9 })
+    expect(c.createProjectV2).not.toHaveBeenCalled()
+    expect(c.linkProjectV2ToRepository).toHaveBeenCalledWith({
+      projectId: 'PVT_achado',
+      repositoryId: 'R_repo',
+    })
+  })
+
+  // Decisão do dono: vence o quadro com MAIS CAMPOS. Respeita quem investiu
+  // trabalho no quadro à mão, em vez de preferir o mais novo — que costuma ser
+  // justamente o que o próprio produto criou, e o mais pobre.
+  it('havendo mais de um candidato, vence o quadro mais rico em campos', async () => {
+    const c = clienteCompleto({
+      descobrirQuadrosPorIssues: vi.fn(async () => [
+        { id: 'PVT_pobre', number: 9, title: 'novo', closed: false, issuesDesteRepo: 78 },
+        { id: 'PVT_rico', number: 3, title: 'antigo', closed: false, issuesDesteRepo: 48 },
+      ]),
+      detalharQuadro: vi.fn(async ({ projectId }: { projectId: string }) =>
+        projectId === 'PVT_rico'
+          ? { camposCount: 23, outrosRepositorios: [] }
+          : { camposCount: 14, outrosRepositorios: [] }
+      ),
+    })
+    const r = await ensureProjectBoard({ ...base, client: c as never })
+    expect(r).toEqual({ owner: 'dono', number: 3 })
+    expect(c.linkProjectV2ToRepository).toHaveBeenCalledWith({
+      projectId: 'PVT_rico',
+      repositoryId: 'R_repo',
+    })
+  })
+
+  // Quadro que guarda trabalho de outros repositórios é casa dos outros:
+  // despejar o backlog deste projeto lá dentro seria invadir.
+  it('quadro compartilhado com outro repositório não é adotado', async () => {
+    const c = clienteCompleto({
+      descobrirQuadrosPorIssues: vi.fn(async () => [
+        { id: 'PVT_comum', number: 7, title: 'roadmap geral', closed: false, issuesDesteRepo: 3 },
+      ]),
+      detalharQuadro: vi.fn(async () => ({
+        camposCount: 30,
+        outrosRepositorios: ['outro/alheio'],
+      })),
+    })
+    const r = await ensureProjectBoard({ ...base, client: c as never })
+    expect(r).toEqual({ owner: 'dono', number: 42 })
+    expect(c.createProjectV2).toHaveBeenCalled()
+  })
+
+  it('quadro fechado não é adotado', async () => {
+    const c = clienteCompleto({
+      descobrirQuadrosPorIssues: vi.fn(async () => [
+        { id: 'PVT_morto', number: 4, title: 'arquivado', closed: true, issuesDesteRepo: 10 },
+      ]),
+    })
+    const r = await ensureProjectBoard({ ...base, client: c as never })
+    expect(r).toEqual({ owner: 'dono', number: 42 })
+    expect(c.createProjectV2).toHaveBeenCalled()
+  })
+
+  it('3) nada existe: cria e liga', async () => {
+    const c = clienteCompleto()
+    const r = await ensureProjectBoard({ ...base, client: c as never })
+    expect(r).toEqual({ owner: 'dono', number: 42 })
+    expect(c.createProjectV2).toHaveBeenCalled()
+    expect(c.linkProjectV2ToRepository).toHaveBeenCalledWith({
+      projectId: 'PVT_novo',
+      repositoryId: 'R_repo',
+    })
+  })
+
+  it('não conseguir criar resolve em aviso acionável, nunca em silêncio', async () => {
+    const avisos: string[] = []
+    const c = clienteCompleto({
+      createProjectV2: vi.fn(async () => {
+        throw new Error('does not have permission to create projects on ownerId U_x')
+      }),
+    })
+    const r = await ensureProjectBoard({
+      ...base,
+      client: c as never,
+      onWarn: (m) => avisos.push(m),
+    })
+    expect(r).toBeNull()
+    expect(avisos.join(' ')).toContain('dono/repo')
+    expect(avisos.join(' ')).toContain('permission')
+  })
+
+  it('cliente sem as consultas de descoberta continua criando como antes', async () => {
+    const c = {
+      findProjectId: vi.fn(async () => null),
+      createProjectV2: vi.fn(async () => ({ id: 'PVT_novo', number: 42 })),
+      linkProjectV2ToRepository: vi.fn(async () => 'R_repo'),
+    }
+    const r = await ensureProjectBoard({ ...base, client: c as never })
+    expect(r).toEqual({ owner: 'dono', number: 42 })
+  })
+})
+
+// Achado de revisão: o tipo permite um cliente que descobre quadros mas não
+// sabe olhar dentro deles. Nesse caso não há como afirmar exclusividade, e
+// adotar assim mesmo reabriria o risco de despejar o backlog na casa de outro.
+describe('ensureProjectBoard — sem poder verificar exclusividade', () => {
+  it('não adota candidato quando o cliente não sabe detalhar o quadro', async () => {
+    const c = {
+      findProjectId: vi.fn(async () => null),
+      createProjectV2: vi.fn(async () => ({ id: 'PVT_novo', number: 42 })),
+      linkProjectV2ToRepository: vi.fn(async () => 'R_repo'),
+      descobrirQuadrosPorIssues: vi.fn(async () => [
+        { id: 'PVT_x', number: 5, title: 'algum', closed: false, issuesDesteRepo: 3 },
+      ]),
+      // repare: sem detalharQuadro
+    }
+    const r = await ensureProjectBoard({
+      repository: 'dono/repo',
+      client: c as never,
+      resolveOwner: async () => ({ id: 'U_dono', type: 'user' as const }),
+      resolveRepositoryId: async () => 'R_repo',
+    })
+    expect(r).toEqual({ owner: 'dono', number: 42 })
+    expect(c.createProjectV2).toHaveBeenCalled()
   })
 })

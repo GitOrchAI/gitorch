@@ -23,7 +23,16 @@ export interface EnsureProjectBoardDeps {
   // compilando sem tocar em nada — o passo de ligação só roda quando
   // `resolveRepositoryId` E o método existem os dois.
   client: Pick<ProjectV2Client, 'findProjectId' | 'createProjectV2'> &
-    Partial<Pick<ProjectV2Client, 'linkProjectV2ToRepository'>>
+    Partial<
+      Pick<
+        ProjectV2Client,
+        | 'linkProjectV2ToRepository'
+        | 'listarQuadrosDoRepositorio'
+        | 'listarQuadrosDaConta'
+        | 'descobrirQuadrosPorIssues'
+        | 'detalharQuadro'
+      >
+    >
   /** Resolve o node id + tipo (user ou organization) do dono no GitHub. */
   resolveOwner: (owner: string) => Promise<ResolvedOwner>
   /**
@@ -44,8 +53,60 @@ export interface ProjectBoardRef {
 }
 
 /**
- * Garante que o projeto tem seu PRÓPRIO board Projects v2: cria na primeira
- * vez, reaproveita se `existingNumber` ainda existir no GitHub.
+ * Entre vários candidatos, vence o que tem MAIS CAMPOS.
+ *
+ * Decisão do dono, e a razão é o respeito ao trabalho de quem já cuidava do
+ * quadro: campos são a medida de quanto alguém investiu ali. Preferir o mais
+ * recente daria o resultado oposto — o mais novo costuma ser justamente o que o
+ * próprio produto criou, e o mais pobre.
+ *
+ * Com `exigirExclusivo`, descarta quadro que guarda trabalho de outros
+ * repositórios: ali é casa dos outros, e despejar o backlog deste projeto
+ * dentro seria invadir.
+ */
+async function escolherMaisRico<T extends { id: string; number: number }>(
+  candidatos: readonly T[],
+  deps: EnsureProjectBoardDeps,
+  opcoes: { exigirExclusivo?: boolean } = {}
+): Promise<T | undefined> {
+  if (candidatos.length === 0) return undefined
+
+  if (!deps.client.detalharQuadro) {
+    // Sem como olhar dentro do quadro, não dá para afirmar que ele é só deste
+    // repositório — e adotar sem essa certeza é justamente o risco que a
+    // exclusividade existe para evitar. Aqui, "não sei" resolve em não adotar;
+    // quem chamou segue para criar um quadro próprio, que é sempre seguro.
+    if (opcoes.exigirExclusivo) return undefined
+    return candidatos[0]
+  }
+
+  // Empate de campos: vence o PRIMEIRO da lista, porque a comparação é estrita.
+  // Determinístico de propósito — a mesma entrada sempre elege o mesmo quadro.
+  let melhor: { item: T; campos: number } | undefined
+  for (const c of candidatos) {
+    const detalhe = await deps.client.detalharQuadro({
+      projectId: c.id,
+      repositorio: deps.repository,
+    })
+    if (opcoes.exigirExclusivo && detalhe.outrosRepositorios.length > 0) continue
+    if (!melhor || detalhe.camposCount > melhor.campos) {
+      melhor = { item: c, campos: detalhe.camposCount }
+    }
+  }
+  return melhor?.item
+}
+
+/**
+ * Garante que o projeto tem seu PRÓPRIO board Projects v2, percorrendo a
+ * descoberta antes de criar qualquer coisa:
+ *
+ *   1. já existe quadro ANUNCIADO a este repositório?      -> guarda o número
+ *   2. a conta tem um quadro deste repositório, mas solto?  -> liga
+ *   3. nada disso                                           -> cria e liga
+ *
+ * O que motivou a ordem: um repositório de cliente já mantinha dois quadros
+ * próprios e o produto ignorava os dois, tentando criar um terceiro por cima. O
+ * trabalho do cliente é o primeiro lugar onde se procura, não o último.
  *
  * NUNCA lança. Risco conhecido: quem chama esta função no provisionamento do
  * wizard usa o token OAuth do PRÓPRIO dono do projeto (não um installation
@@ -79,6 +140,51 @@ export async function ensureProjectBoard(
       if (existente) return { owner, number: deps.existingNumber }
     }
 
+    const [dono, nome] = deps.repository.split('/')
+
+    // 1) Já anunciado a este repositório? Então não há o que criar nem ligar.
+    if (deps.client.listarQuadrosDoRepositorio) {
+      const ligados = await deps.client.listarQuadrosDoRepositorio({
+        owner: dono ?? '',
+        repo: nome ?? '',
+      })
+      if (ligados.length > 0) {
+        const escolhido = await escolherMaisRico(ligados, deps)
+        if (escolhido) return { owner, number: escolhido.number }
+      }
+    }
+
+    // 2) As issues deste repositório já vivem em algum quadro? Esse é o quadro
+    //    dele — por evidência, não por parecença de nome. Só falta anunciá-lo.
+    if (deps.client.descobrirQuadrosPorIssues) {
+      const achados = await deps.client.descobrirQuadrosPorIssues({
+        owner: dono ?? '',
+        repo: nome ?? '',
+      })
+      const vivos = achados.filter((q) => !q.closed)
+      const candidato = await escolherMaisRico(vivos, deps, { exigirExclusivo: true })
+
+      if (candidato) {
+        if (deps.resolveRepositoryId && deps.client.linkProjectV2ToRepository) {
+          try {
+            const repositoryId = await deps.resolveRepositoryId(deps.repository)
+            await deps.client.linkProjectV2ToRepository({
+              projectId: candidato.id,
+              repositoryId,
+            })
+          } catch (err) {
+            // O quadro existe e é o certo; não conseguir anunciá-lo ao
+            // repositório tira o atalho da aba /projects, não o quadro.
+            warn(
+              `quadro #${candidato.number} de ${deps.repository} encontrado, mas falhou ao ligar ao repositório: ${(err as Error).message}`
+            )
+          }
+        }
+        return { owner, number: candidato.number }
+      }
+    }
+
+    // 3) Nada existe: cria.
     const criado = await deps.client.createProjectV2({
       ownerId: resolved.id,
       title: deps.repository,

@@ -19,8 +19,15 @@ import { buildFreeTextOption } from './telegram-bot.js'
 
 export interface PoRailsMissionOptions {
   repository: string
-  /** ex.: "dono/9" — dono e número do Projects v2 (env na F3.5; banco na F4). */
-  board: string
+  /**
+   * ex.: "dono/9" — dono e número do Projects v2 (env na F3.5; banco na F4).
+   *
+   * VAZIO quando o projeto não tem quadro: o backlog é criado assim mesmo, só
+   * sem a vitrine. Repositório de conta pessoal cai neste caso, porque a
+   * credencial do produto não consegue criar nem enxergar quadro lá — e ficar
+   * sem quadro não pode significar ficar sem plano.
+   */
+  board?: string
   githubToken: string
   execute: StepExecutor
   /** Contexto do projeto montado pelo sistema (codegraph, memórias). */
@@ -166,9 +173,14 @@ export async function runPoMissionViaRails(
 
   // 0) Config validada ANTES de gastar qualquer passo de LLM: um board mal
   // configurado falharia só depois dos 4 passos, queimando tokens a cada wake.
-  const [owner, numberRaw] = options.board.split('/')
+  //
+  // Board AUSENTE é caso legítimo e segue adiante (o backlog vale sem vitrine);
+  // board PREENCHIDO E TORTO continua sendo erro — aí alguém configurou errado,
+  // e engolir isso esconderia o engano em vez de mostrá-lo.
+  const semQuadro = !options.board
+  const [owner, numberRaw] = (options.board ?? '').split('/')
   const boardNumber = Number(numberRaw)
-  if (!owner || !Number.isFinite(boardNumber)) {
+  if (!semQuadro && (!owner || !Number.isFinite(boardNumber))) {
     throw new Error(`Invalid board reference "${options.board}" (expected "<owner>/<number>")`)
   }
 
@@ -269,16 +281,22 @@ export async function runPoMissionViaRails(
     ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
   })
   // Board de usuário primeiro (piloto); org é o destino do produto (F4).
-  const projectId = await client
-    .getProjectId({ login: owner, number: boardNumber, ownerType: 'user' })
-    .catch(() =>
-      client.getProjectId({ login: owner, number: boardNumber, ownerType: 'organization' })
-    )
+  const projectId = semQuadro
+    ? undefined
+    : await client
+        .getProjectId({ login: owner as string, number: boardNumber, ownerType: 'user' })
+        .catch(() =>
+          client.getProjectId({
+            login: owner as string,
+            number: boardNumber,
+            ownerType: 'organization',
+          })
+        )
 
   const github = createGithubBacklog({
     token: options.githubToken,
     repository: options.repository,
-    projectId,
+    ...(projectId ? { projectId } : {}),
     ...(options.boardColumns ? { statusColumns: options.boardColumns } : {}),
     ...(options.sprintDays ? { sprintDays: options.sprintDays } : {}),
     ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),

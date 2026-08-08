@@ -98,6 +98,86 @@ export interface LinkProjectV2ToRepositoryInput {
   repositoryId: string
 }
 
+/** Um board como ele aparece numa listagem — o bastante para decidir se serve. */
+export interface QuadroListado {
+  id: string
+  number: number
+  title: string
+}
+
+export interface ListarQuadrosDoRepositorioInput {
+  owner: string
+  repo: string
+}
+
+export interface ListarQuadrosDaContaInput {
+  login: string
+  ownerType: 'user' | 'organization'
+}
+
+/** Um quadro alcançado a partir das issues do repositório. */
+export interface QuadroDescoberto extends QuadroListado {
+  closed: boolean
+  /** Quantas issues deste repositório já estão dentro dele. */
+  issuesDesteRepo: number
+}
+
+export interface DescobrirQuadrosPorIssuesInput {
+  owner: string
+  repo: string
+  /** Teto de páginas de 100 issues. Padrão 10 (mil issues). */
+  maxPaginas?: number
+}
+
+export interface DetalharQuadroInput {
+  projectId: string
+  /** 'dono/repo' de quem está perguntando — tudo fora disso conta como outro. */
+  repositorio: string
+  /** Teto de páginas de 100 itens. Padrão 20 (dois mil itens). */
+  maxPaginas?: number
+}
+
+export interface QuadroDetalhado {
+  /** Quantos campos o quadro tem: a medida de quanto alguém já investiu nele. */
+  camposCount: number
+  /** Repositórios de dentro do quadro que NÃO são o que perguntou. */
+  outrosRepositorios: string[]
+}
+
+/**
+ * Forma da página de issues na descoberta. Nomeada de propósito: o cursor de
+ * uma página alimenta a chamada da próxima, e sem um tipo declarado o
+ * compilador entra em referência circular ao tentar inferi-lo.
+ */
+/** Forma da página de itens de um quadro; nomeada pelo mesmo motivo. */
+interface PaginaDeItens {
+  node: {
+    fields: { totalCount: number } | null
+    items: {
+      pageInfo: { hasNextPage: boolean; endCursor: string | null }
+      nodes: Array<{
+        content: { repository: { nameWithOwner: string } | null } | null
+      } | null> | null
+    } | null
+  } | null
+}
+
+interface PaginaDeIssues {
+  repository: {
+    issues: {
+      pageInfo: { hasNextPage: boolean; endCursor: string | null }
+      nodes: Array<{
+        number: number
+        projectItems: {
+          nodes: Array<{
+            project: { id: string; number: number; title: string; closed: boolean } | null
+          } | null> | null
+        } | null
+      } | null> | null
+    } | null
+  } | null
+}
+
 export class ProjectV2Client {
   private readonly token: string
   private readonly request: GraphQLTransport
@@ -256,6 +336,195 @@ export class ProjectV2Client {
       throw new Error(`Project v2 #${input.number} not found for ${owner} "${input.login}".`)
     }
     return id
+  }
+
+  // Quais boards JÁ estão anunciados a este repositório. É a primeira pergunta
+  // da descoberta: se a resposta não for vazia, não há o que criar nem ligar —
+  // basta guardar o que já existe.
+  async listarQuadrosDoRepositorio(
+    input: ListarQuadrosDoRepositorioInput
+  ): Promise<QuadroListado[]> {
+    const response = await this.request<{
+      repository: { projectsV2: { nodes: QuadroListado[] | null } | null } | null
+    }>(
+      {
+        query: `
+          query ListarQuadrosDoRepositorio($owner: String!, $repo: String!) {
+            repository(owner: $owner, name: $repo) {
+              projectsV2(first: 50) { nodes { id number title } }
+            }
+          }
+        `,
+        variables: { owner: input.owner, repo: input.repo },
+      },
+      this.token
+    )
+
+    return unwrap(response).repository?.projectsV2?.nodes ?? []
+  }
+
+  // Quais boards a CONTA tem, ligados a este repositório ou não. É a segunda
+  // pergunta: o cliente pode já manter um quadro do projeto sem nunca tê-lo
+  // anunciado ao repositório, e criar outro por cima seria duplicar o trabalho
+  // dele.
+  //
+  // Conta que volta nula resolve em lista vazia de propósito: a credencial do
+  // App responde assim para quadro de conta pessoal — sucesso, dono nulo, ainda
+  // que existam quadros. Distinguir "não tem" de "não enxergo" é papel de quem
+  // chama, com o aviso na mão; aqui só não se inventa que a lista tem algo.
+  async listarQuadrosDaConta(input: ListarQuadrosDaContaInput): Promise<QuadroListado[]> {
+    const campo = input.ownerType === 'organization' ? 'organization' : 'user'
+    const response = await this.request<
+      Record<string, { projectsV2: { nodes: QuadroListado[] | null } | null } | null>
+    >(
+      {
+        query: `
+          query ListarQuadrosDaConta($login: String!) {
+            ${campo}(login: $login) {
+              projectsV2(first: 50) { nodes { id number title } }
+            }
+          }
+        `,
+        variables: { login: input.login },
+      },
+      this.token
+    )
+
+    return unwrap(response)[campo]?.projectsV2?.nodes ?? []
+  }
+
+  // Descobre o quadro deste repositório pela EVIDÊNCIA de que ele já é usado:
+  // as issues do próprio repositório que já estão dentro de algum quadro.
+  //
+  // Por que não pelo título: casar nome é frágil e perigoso. Numa revisão, a
+  // comparação por semelhança acabou adotando o quadro de um repositório e
+  // ligando-o a outro sem relação nenhuma, porque os nomes normalizavam igual.
+  // Uma issue dentro de um quadro é fato, não parecença.
+  //
+  // Pagina até achar, com teto: o quadro que interessa pode estar preso a
+  // issues antigas (num repositório de milhares, as do quadro curado à mão
+  // eram velhas e as 100 mais recentes só achavam o quadro novo). Varrer tudo
+  // sem limite, por outro lado, roda a cada acordar do agente e estouraria a
+  // cota — daí o teto.
+  async descobrirQuadrosPorIssues(
+    input: DescobrirQuadrosPorIssuesInput
+  ): Promise<QuadroDescoberto[]> {
+    const teto = input.maxPaginas ?? 10
+    const achados = new Map<string, QuadroDescoberto>()
+    let cursor: string | null = null
+
+    for (let pagina = 0; pagina < teto; pagina++) {
+      const response: GraphQLResponse<PaginaDeIssues> = await this.request<PaginaDeIssues>(
+        {
+          query: `
+            query DescobrirQuadrosPorIssues($owner: String!, $repo: String!, $cursor: String) {
+              repository(owner: $owner, name: $repo) {
+                issues(first: 100, after: $cursor, states: [OPEN, CLOSED],
+                       orderBy: { field: UPDATED_AT, direction: DESC }) {
+                  pageInfo { hasNextPage endCursor }
+                  nodes {
+                    number
+                    projectItems(first: 10) {
+                      nodes { project { id number title closed } }
+                    }
+                  }
+                }
+              }
+            }
+          `,
+          variables: { owner: input.owner, repo: input.repo, cursor },
+        },
+        this.token
+      )
+
+      const issues = unwrap(response).repository?.issues
+      for (const issue of issues?.nodes ?? []) {
+        for (const item of issue?.projectItems?.nodes ?? []) {
+          const p = item?.project
+          if (!p) continue
+          const ja = achados.get(p.id)
+          if (ja) ja.issuesDesteRepo += 1
+          else
+            achados.set(p.id, {
+              id: p.id,
+              number: p.number,
+              title: p.title,
+              closed: p.closed,
+              issuesDesteRepo: 1,
+            })
+        }
+      }
+
+      // NÃO para no primeiro quadro encontrado. Achar um não é achar todos, e
+      // sem todos não há desempate: medido num repositório real, o quadro novo
+      // e pobre aparecia na primeira página e o quadro curado à mão só na
+      // terceira — parar cedo elegeria justamente o pior dos dois.
+      if (!issues?.pageInfo?.hasNextPage) break
+      cursor = issues.pageInfo.endCursor
+    }
+
+    return [...achados.values()]
+  }
+
+  // Duas perguntas que decidem se um quadro pode ser adotado, e qual vence
+  // quando há mais de um: quanto alguém já investiu nele (número de campos) e
+  // se ele guarda trabalho de outros repositórios (aí é compartilhado, e
+  // despejar backlog dentro seria invadir).
+  //
+  // Os itens são PAGINADOS, e isso não é zelo excessivo: quadro cuidado à mão
+  // passa de cem itens sem esforço — o do caso que motivou esta função tem
+  // cento e quarenta e seis. Olhar só a primeira página faria um quadro
+  // compartilhado passar por exclusivo sempre que o item alheio estivesse lá
+  // no fim, e a esteira despejaria o backlog deste projeto na casa de outro.
+  async detalharQuadro(input: DetalharQuadroInput): Promise<QuadroDetalhado> {
+    const teto = input.maxPaginas ?? 20
+    const outros = new Set<string>()
+    let camposCount = 0
+    let cursor: string | null = null
+
+    for (let pagina = 0; pagina < teto; pagina++) {
+      const response: GraphQLResponse<PaginaDeItens> = await this.request<PaginaDeItens>(
+        {
+          query: `
+            query DetalharQuadro($id: ID!, $cursor: String) {
+              node(id: $id) {
+                ... on ProjectV2 {
+                  fields(first: 1) { totalCount }
+                  items(first: 100, after: $cursor) {
+                    pageInfo { hasNextPage endCursor }
+                    nodes {
+                      content {
+                        ... on Issue { repository { nameWithOwner } }
+                        ... on PullRequest { repository { nameWithOwner } }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          `,
+          variables: { id: input.projectId, cursor },
+        },
+        this.token
+      )
+
+      const node = unwrap(response).node
+      camposCount = node?.fields?.totalCount ?? camposCount
+      for (const item of node?.items?.nodes ?? []) {
+        const nome = item?.content?.repository?.nameWithOwner
+        // Rascunho não pertence a repositório nenhum e não indica invasão.
+        if (nome && nome !== input.repositorio) outros.add(nome)
+      }
+
+      const proxima: string | null = node?.items?.pageInfo?.hasNextPage
+        ? (node.items.pageInfo.endCursor ?? null)
+        : null
+      // Sem cursor não há como avançar: repetir a mesma página só gastaria cota.
+      if (!proxima) break
+      cursor = proxima
+    }
+
+    return { camposCount, outrosRepositorios: [...outros] }
   }
 
   // Cria um Project v2 (board) pendurado no dono (user/org) e devolve seu id +

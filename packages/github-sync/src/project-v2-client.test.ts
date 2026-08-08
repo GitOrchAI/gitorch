@@ -63,10 +63,10 @@ test('resolves a user project node id by number', async () => {
     },
   })
 
-  const id = await client.getProjectId({ login: 'loureng', number: 3, ownerType: 'user' })
+  const id = await client.getProjectId({ login: 'dono-exemplo', number: 3, ownerType: 'user' })
 
   expect(id).toBe('PVT_user_1')
-  expect(calls[0].variables).toEqual({ login: 'loureng', number: 3 })
+  expect(calls[0].variables).toEqual({ login: 'dono-exemplo', number: 3 })
   expect(calls[0].query).toContain('user(login: $login)')
 })
 
@@ -196,7 +196,7 @@ test('findProjectId returns the node id when the board exists', async () => {
     request: async () => ({ data: { user: { projectV2: { id: 'PVT_found' } } } }),
   })
 
-  const id = await client.findProjectId({ login: 'loureng', number: 3, ownerType: 'user' })
+  const id = await client.findProjectId({ login: 'dono-exemplo', number: 3, ownerType: 'user' })
   expect(id).toBe('PVT_found')
 })
 
@@ -208,7 +208,7 @@ test('findProjectId returns null (does NOT throw) when the board is absent', asy
     request: async () => ({ data: { user: { projectV2: null } } }),
   })
 
-  const id = await client.findProjectId({ login: 'loureng', number: 99, ownerType: 'user' })
+  const id = await client.findProjectId({ login: 'dono-exemplo', number: 99, ownerType: 'user' })
   expect(id).toBeNull()
 })
 
@@ -264,4 +264,348 @@ test('linkProjectV2ToRepository liga o board recém-criado ao repositório', asy
   expect(calls[0].query).toContain(
     'linkProjectV2ToRepository(input: { projectId: $projectId, repositoryId: $repositoryId }'
   )
+})
+
+// A esteira precisa DESCOBRIR quadro, não só criar às cegas. Sem estas duas
+// consultas ela ignora um quadro que o cliente já mantém e tenta criar outro
+// por cima — foi o que aconteceu num repositório que já tinha dois.
+
+test('lista os quadros já ligados a um repositório', async () => {
+  const calls: GraphQLRequest[] = []
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async (request) => {
+      calls.push(request)
+      return {
+        data: {
+          repository: {
+            projectsV2: {
+              nodes: [
+                { id: 'PVT_a', number: 2, title: 'dono/repo' },
+                { id: 'PVT_b', number: 9, title: 'Outro quadro' },
+              ],
+            },
+          },
+        },
+      }
+    },
+  })
+
+  const quadros = await client.listarQuadrosDoRepositorio({ owner: 'dono', repo: 'repo' })
+
+  expect(quadros).toEqual([
+    { id: 'PVT_a', number: 2, title: 'dono/repo' },
+    { id: 'PVT_b', number: 9, title: 'Outro quadro' },
+  ])
+  expect(calls[0]?.variables).toEqual({ owner: 'dono', repo: 'repo' })
+})
+
+test('repositório sem quadro ligado devolve lista vazia, não erro', async () => {
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async () => ({ data: { repository: { projectsV2: { nodes: [] } } } }),
+  })
+
+  await expect(client.listarQuadrosDoRepositorio({ owner: 'dono', repo: 'repo' })).resolves.toEqual(
+    []
+  )
+})
+
+test('lista os quadros da conta, distinguindo pessoa de organização', async () => {
+  const calls: GraphQLRequest[] = []
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async (request) => {
+      calls.push(request)
+      return {
+        data: { organization: { projectsV2: { nodes: [{ id: 'PVT_c', number: 1, title: 'x' }] } } },
+      }
+    },
+  })
+
+  const quadros = await client.listarQuadrosDaConta({
+    login: 'umaOrg',
+    ownerType: 'organization',
+  })
+
+  expect(quadros).toEqual([{ id: 'PVT_c', number: 1, title: 'x' }])
+  expect(calls[0]?.query).toContain('organization(login:')
+  expect(calls[0]?.query).not.toContain('user(login:')
+})
+
+test('conta de pessoa consulta o campo de usuário', async () => {
+  const calls: GraphQLRequest[] = []
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async (request) => {
+      calls.push(request)
+      return { data: { user: { projectsV2: { nodes: [] } } } }
+    },
+  })
+
+  await client.listarQuadrosDaConta({ login: 'umaPessoa', ownerType: 'user' })
+
+  expect(calls[0]?.query).toContain('user(login:')
+  expect(calls[0]?.query).not.toContain('organization(login:')
+})
+
+// O App do produto é CEGO para quadro de conta pessoal: a consulta responde
+// com sucesso e a conta vem nula, mesmo havendo quadros. Tratar isso como
+// "não existe nenhum" faria a esteira tentar criar um por cima; o certo é
+// devolver lista vazia e deixar quem chama decidir com o aviso na mão.
+test('conta invisível para a credencial atual devolve lista vazia', async () => {
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async () => ({ data: { user: null } }),
+  })
+
+  await expect(
+    client.listarQuadrosDaConta({ login: 'umaPessoa', ownerType: 'user' })
+  ).resolves.toEqual([])
+})
+
+// Descoberta por EVIDÊNCIA: o quadro deste repositório é aquele onde as issues
+// dele já estão. Casar por semelhança de título foi rejeitado — a normalização
+// colapsava separadores e um quadro acabou ligado a um repositório sem relação.
+
+// Medido num repositório real: o quadro criado pelo produto aparecia já na
+// primeira página, e o quadro curado à mão — o que deve vencer o desempate —
+// só na terceira. Parar no primeiro achado elegeria justamente o pior dos dois.
+test('não para no primeiro quadro: continua varrendo para achar os demais', async () => {
+  const calls: GraphQLRequest[] = []
+  const paginas = [
+    {
+      data: {
+        repository: {
+          issues: {
+            pageInfo: { hasNextPage: true, endCursor: 'C1' },
+            nodes: [
+              {
+                number: 1,
+                projectItems: {
+                  nodes: [{ project: { id: 'PVT_novo', number: 9, title: 'novo', closed: false } }],
+                },
+              },
+            ],
+          },
+        },
+      },
+    },
+    {
+      data: {
+        repository: {
+          issues: {
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: [
+              {
+                number: 2,
+                projectItems: {
+                  nodes: [
+                    { project: { id: 'PVT_antigo', number: 3, title: 'antigo', closed: false } },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      },
+    },
+  ]
+  let i = 0
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async (request) => {
+      calls.push(request)
+      return paginas[i++] as never
+    },
+  })
+
+  const achados = await client.descobrirQuadrosPorIssues({ owner: 'dono', repo: 'repo' })
+
+  expect(achados).toEqual([
+    { id: 'PVT_novo', number: 9, title: 'novo', closed: false, issuesDesteRepo: 1 },
+    { id: 'PVT_antigo', number: 3, title: 'antigo', closed: false, issuesDesteRepo: 1 },
+  ])
+  expect(calls).toHaveLength(2)
+  expect(calls[1]?.variables).toMatchObject({ cursor: 'C1' })
+})
+
+test('respeita o teto de páginas quando nada é encontrado', async () => {
+  let chamadas = 0
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async () => {
+      chamadas++
+      return {
+        data: {
+          repository: {
+            issues: { pageInfo: { hasNextPage: true, endCursor: 'C' }, nodes: [] },
+          },
+        },
+      } as never
+    },
+  })
+
+  const achados = await client.descobrirQuadrosPorIssues({
+    owner: 'dono',
+    repo: 'repo',
+    maxPaginas: 3,
+  })
+
+  expect(achados).toEqual([])
+  expect(chamadas).toBe(3)
+})
+
+test('conta quantas issues deste repositório cada quadro tem', async () => {
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async () =>
+      ({
+        data: {
+          repository: {
+            issues: {
+              pageInfo: { hasNextPage: false, endCursor: null },
+              nodes: [
+                {
+                  number: 1,
+                  projectItems: {
+                    nodes: [{ project: { id: 'PVT_a', number: 3, title: 'A', closed: false } }],
+                  },
+                },
+                {
+                  number: 2,
+                  projectItems: {
+                    nodes: [
+                      { project: { id: 'PVT_a', number: 3, title: 'A', closed: false } },
+                      { project: { id: 'PVT_b', number: 9, title: 'B', closed: false } },
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+        },
+      }) as never,
+  })
+
+  const achados = await client.descobrirQuadrosPorIssues({ owner: 'dono', repo: 'repo' })
+
+  expect(achados).toEqual([
+    { id: 'PVT_a', number: 3, title: 'A', closed: false, issuesDesteRepo: 2 },
+    { id: 'PVT_b', number: 9, title: 'B', closed: false, issuesDesteRepo: 1 },
+  ])
+})
+
+// Para desempatar (quadro mais rico vence) e para não sequestrar quadro
+// compartilhado, é preciso saber quantos campos o quadro tem e de quais
+// repositórios são os itens dentro dele.
+test('detalha um quadro: quantidade de campos e repositórios de dentro', async () => {
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async () =>
+      ({
+        data: {
+          node: {
+            fields: { totalCount: 23 },
+            items: {
+              nodes: [
+                { content: { repository: { nameWithOwner: 'dono/repo' } } },
+                { content: { repository: { nameWithOwner: 'dono/repo' } } },
+                { content: { repository: { nameWithOwner: 'outro/alheio' } } },
+                { content: null },
+              ],
+            },
+          },
+        },
+      }) as never,
+  })
+
+  const d = await client.detalharQuadro({ projectId: 'PVT_a', repositorio: 'dono/repo' })
+
+  expect(d).toEqual({ camposCount: 23, outrosRepositorios: ['outro/alheio'] })
+})
+
+test('quadro só com itens deste repositório não tem outros repositórios', async () => {
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async () =>
+      ({
+        data: {
+          node: {
+            fields: { totalCount: 14 },
+            items: { nodes: [{ content: { repository: { nameWithOwner: 'dono/repo' } } }] },
+          },
+        },
+      }) as never,
+  })
+
+  await expect(
+    client.detalharQuadro({ projectId: 'PVT_a', repositorio: 'dono/repo' })
+  ).resolves.toEqual({ camposCount: 14, outrosRepositorios: [] })
+})
+
+// Quadro curado à mão passa de cem itens com facilidade — o do caso real tem
+// cento e quarenta e seis. Olhar só a primeira página faria um quadro
+// compartilhado passar por exclusivo, e a esteira despejaria o backlog deste
+// projeto dentro do quadro de outro. Exatamente o desastre que a descoberta por
+// evidência existe para evitar, só que por outra porta.
+test('detalharQuadro pagina os itens: repositório alheio além do centésimo é visto', async () => {
+  const paginas = [
+    {
+      data: {
+        node: {
+          fields: { totalCount: 23 },
+          items: {
+            pageInfo: { hasNextPage: true, endCursor: 'C1' },
+            nodes: [{ content: { repository: { nameWithOwner: 'dono/repo' } } }],
+          },
+        },
+      },
+    },
+    {
+      data: {
+        node: {
+          fields: { totalCount: 23 },
+          items: {
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: [{ content: { repository: { nameWithOwner: 'outro/alheio' } } }],
+          },
+        },
+      },
+    },
+  ]
+  let i = 0
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async () => paginas[i++] as never,
+  })
+
+  const d = await client.detalharQuadro({ projectId: 'PVT_a', repositorio: 'dono/repo' })
+
+  expect(d).toEqual({ camposCount: 23, outrosRepositorios: ['outro/alheio'] })
+})
+
+test('detalharQuadro respeita um teto de páginas de itens', async () => {
+  let chamadas = 0
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async () => {
+      chamadas++
+      return {
+        data: {
+          node: {
+            fields: { totalCount: 5 },
+            items: {
+              pageInfo: { hasNextPage: true, endCursor: 'C' },
+              nodes: [{ content: { repository: { nameWithOwner: 'dono/repo' } } }],
+            },
+          },
+        },
+      } as never
+    },
+  })
+
+  await client.detalharQuadro({ projectId: 'PVT_a', repositorio: 'dono/repo', maxPaginas: 3 })
+
+  expect(chamadas).toBe(3)
 })
