@@ -241,6 +241,11 @@ model Project {
   githubInstallationId Int?   @unique @map("github_installation_id")
   githubRepoId        BigInt? @unique @map("github_repo_id")
 
+  // Credencial do PRÓPRIO cliente, cifrada. Existe porque a credencial do
+  // produto não alcança quadro de conta pessoal nem rota de segurança nenhuma:
+  // é usada só onde o App não chega, nunca como atalho geral.
+  encryptedClientToken String? @map("encrypted_client_token")
+
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 

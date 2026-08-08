@@ -30,6 +30,7 @@ describe('MIGRATION_LEDGER', () => {
       'resources-status-migration.sql',
       'claude-quota-migration.sql',
       'agent-question-migration.sql',
+      'client-token-migration.sql',
     ])
   })
 })

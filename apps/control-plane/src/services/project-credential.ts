@@ -3,6 +3,8 @@
 // segurança. Antes de guardá-la, conferir que ela serve — descobrir isso na
 // hora de usar significaria descobrir com o cliente já fora da tela.
 
+import { decryptCredential, encryptCredential } from '../lib/credential-crypto.js'
+
 const GITHUB_API = 'https://api.github.com'
 
 /** Escopos sem os quais a credencial não cumpre o que foi prometido. */
@@ -45,4 +47,43 @@ export async function verificarCredencial(deps: {
     escopos,
     faltando: ESCOPOS_EXIGIDOS.filter((e) => !escopos.includes(e)),
   }
+}
+
+/** Recorte do Prisma que o cofre precisa — só o suficiente para gravar e ler
+ *  a credencial do projeto, sem acoplar este serviço ao client inteiro. */
+export interface PrismaLike {
+  project: {
+    update: (args: { where: { id: string }; data: Record<string, unknown> }) => Promise<unknown>
+    findUnique: (args: {
+      where: { id: string }
+      select: Record<string, boolean>
+    }) => Promise<{ encryptedClientToken?: string | null } | null>
+  }
+}
+
+/** Cifra a credencial do cliente e grava no projeto. Nunca toca o banco com
+ *  texto puro — a cifragem acontece antes de qualquer chamada ao Prisma. */
+export async function guardarCredencialDoProjeto(deps: {
+  prisma: PrismaLike
+  projectId: string
+  token: string
+}): Promise<void> {
+  await deps.prisma.project.update({
+    where: { id: deps.projectId },
+    data: { encryptedClientToken: encryptCredential(deps.token) },
+  })
+}
+
+/** Lê e decifra a credencial do projeto. Projeto sem credencial guardada
+ *  devolve nulo — ausência não é erro, é um estado válido do fluxo. */
+export async function lerCredencialDoProjeto(deps: {
+  prisma: PrismaLike
+  projectId: string
+}): Promise<string | null> {
+  const registro = await deps.prisma.project.findUnique({
+    where: { id: deps.projectId },
+    select: { encryptedClientToken: true },
+  })
+  if (!registro?.encryptedClientToken) return null
+  return decryptCredential(registro.encryptedClientToken)
 }
