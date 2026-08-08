@@ -1,5 +1,6 @@
 import { ProjectV2Client } from '@gitorch/github-sync'
 import type { GraphQLRequest, GraphQLResponse, GraphQLTransport } from '@gitorch/github-sync'
+import { coletarDividaDeSeguranca, type DividaDeSeguranca } from './security-debt-collector.js'
 
 export interface RepoContextCollectorOptions {
   token: string
@@ -24,6 +25,9 @@ export interface CollectRepoContextInput {
   prLimit?: number
   /** teto de Issues a coletar (default 20). */
   issueLimit?: number
+  /** Credencial do cliente — as rotas de segurança recusam a do App do
+   *  produto com 403. Ausente/null: o retrato sai sem a dívida, sem falhar. */
+  clientToken?: string | null
 }
 
 export interface CollectedWorkItem {
@@ -41,26 +45,31 @@ export interface CollectedRepoContext {
   board: { id: string; number: number; created: boolean }
   pullRequests: CollectedWorkItem[]
   issues: CollectedWorkItem[]
+  /** Ausente quando não havia credencial do cliente para alcançar as rotas
+   *  de segurança — não é o mesmo que "verificado, zero encontrado". */
+  dividaDeSeguranca?: DividaDeSeguranca
 }
 
 const DEFAULT_LIMIT = 20
 
 /**
  * Coleta o contexto de um repo no aceite final do wizard: o board Projects V2
- * (CRIANDO-o se ainda não existe), os PRs e as Issues mais recentes. Devolve
- * tudo estruturado — quem grava na memória (Cortex) é o passo seguinte (F4.2.3),
- * não este. A única escrita no GitHub é criar o board quando ausente; PRs/Issues
- * são leitura pura.
+ * (CRIANDO-o se ainda não existe), os PRs e as Issues mais recentes, e — só
+ * quando há credencial do cliente — a dívida de segurança (o App do produto
+ * é recusado com 403 nessas rotas). Devolve tudo estruturado — quem grava na
+ * memória (Cortex) é o passo seguinte (F4.2.3), não este. A única escrita no
+ * GitHub é criar o board quando ausente; o resto é leitura pura.
  */
 export class RepoContextCollector {
   private readonly token: string
   private readonly request: GraphQLTransport
   private readonly projects: ProjectV2Client
+  private readonly fetchImpl: typeof fetch
 
   constructor(options: RepoContextCollectorOptions) {
     this.token = options.token
-    const f = options.fetchImpl ?? fetch
-    this.request = options.request ?? buildGithubGraphQLTransport(f)
+    this.fetchImpl = options.fetchImpl ?? fetch
+    this.request = options.request ?? buildGithubGraphQLTransport(this.fetchImpl)
     // O MESMO transporte serve o board e a consulta de PRs/Issues — um fake nos
     // testes cobre os dois caminhos.
     this.projects = new ProjectV2Client({ token: options.token, request: this.request })
@@ -69,7 +78,18 @@ export class RepoContextCollector {
   async collect(input: CollectRepoContextInput): Promise<CollectedRepoContext> {
     const board = await this.resolveBoard(input)
     const { pullRequests, issues } = await this.readPullRequestsAndIssues(input)
-    return { board, pullRequests, issues }
+    // Sem credencial do cliente as rotas de segurança devolvem 403 pra tudo —
+    // tentar mesmo assim só produziria "não verificado" disfarçado de dado
+    // real. Não é falha: a chave nem entra no objeto devolvido.
+    if (!input.clientToken) {
+      return { board, pullRequests, issues }
+    }
+    const dividaDeSeguranca = await coletarDividaDeSeguranca({
+      repository: `${input.owner}/${input.repo}`,
+      token: input.clientToken,
+      fetchImpl: this.fetchImpl,
+    })
+    return { board, pullRequests, issues, dividaDeSeguranca }
   }
 
   // Acha o board pelo número conhecido; se não há número, ou ele não existe
