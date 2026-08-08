@@ -26,7 +26,11 @@ export interface EnsureProjectBoardDeps {
     Partial<
       Pick<
         ProjectV2Client,
-        'linkProjectV2ToRepository' | 'listarQuadrosDoRepositorio' | 'listarQuadrosDaConta'
+        | 'linkProjectV2ToRepository'
+        | 'listarQuadrosDoRepositorio'
+        | 'listarQuadrosDaConta'
+        | 'descobrirQuadrosPorIssues'
+        | 'detalharQuadro'
       >
     >
   /** Resolve o node id + tipo (user ou organization) do dono no GitHub. */
@@ -49,32 +53,40 @@ export interface ProjectBoardRef {
 }
 
 /**
- * Um quadro serve a este repositório quando o título diz isso: ou o caminho
- * completo (`dono/repo`, que é como o produto batiza os que cria), ou o nome do
- * repositório em si — inclusive escrito por extenso, que é como uma pessoa
- * costuma nomear o quadro do próprio projeto ("Jardim das Patinhas" para
- * `jardim-das-patinhas`).
+ * Entre vários candidatos, vence o que tem MAIS CAMPOS.
  *
- * O casamento é deliberadamente conservador: na dúvida, não reconhece. Adotar o
- * quadro errado é pior que criar um novo — seria despejar o backlog de um
- * projeto dentro do quadro de outro.
+ * Decisão do dono, e a razão é o respeito ao trabalho de quem já cuidava do
+ * quadro: campos são a medida de quanto alguém investiu ali. Preferir o mais
+ * recente daria o resultado oposto — o mais novo costuma ser justamente o que o
+ * próprio produto criou, e o mais pobre.
+ *
+ * Com `exigirExclusivo`, descarta quadro que guarda trabalho de outros
+ * repositórios: ali é casa dos outros, e despejar o backlog deste projeto
+ * dentro seria invadir.
  */
-function quadroServeAoRepositorio(titulo: string, repository: string): boolean {
-  const normalizar = (s: string) =>
-    s
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[̀-ͯ]/g, '')
-      .replace(/[^a-z0-9]+/g, ' ')
-      .trim()
+async function escolherMaisRico<T extends { id: string; number: number }>(
+  candidatos: readonly T[],
+  deps: EnsureProjectBoardDeps,
+  opcoes: { exigirExclusivo?: boolean } = {}
+): Promise<T | undefined> {
+  if (candidatos.length === 0) return undefined
 
-  const alvoCompleto = normalizar(repository)
-  const nomeDoRepo = normalizar(repository.split('/')[1] ?? '')
-  const t = normalizar(titulo)
+  // Sem como medir riqueza nem exclusividade, o primeiro serve — é o
+  // comportamento de quem injeta um cliente reduzido.
+  if (!deps.client.detalharQuadro) return candidatos[0]
 
-  if (!t) return false
-  if (t === alvoCompleto) return true
-  return nomeDoRepo.length > 0 && t === nomeDoRepo
+  let melhor: { item: T; campos: number } | undefined
+  for (const c of candidatos) {
+    const detalhe = await deps.client.detalharQuadro({
+      projectId: c.id,
+      repositorio: deps.repository,
+    })
+    if (opcoes.exigirExclusivo && detalhe.outrosRepositorios.length > 0) continue
+    if (!melhor || detalhe.camposCount > melhor.campos) {
+      melhor = { item: c, campos: detalhe.camposCount }
+    }
+  }
+  return melhor?.item
 }
 
 /**
@@ -88,15 +100,6 @@ function quadroServeAoRepositorio(titulo: string, repository: string): boolean {
  * O que motivou a ordem: um repositório de cliente já mantinha dois quadros
  * próprios e o produto ignorava os dois, tentando criar um terceiro por cima. O
  * trabalho do cliente é o primeiro lugar onde se procura, não o último.
- *
- * NUNCA lança. Risco conhecido: quem chama esta função no provisionamento do
- * wizard usa o token OAuth do PRÓPRIO dono do projeto (não um installation
- * token do GitHub App) — criar board de ORGANIZAÇÃO pode exigir um escopo que
- * aquele OAuth não tem e devolver "Resource not accessible by integration".
- * Se isso acontecer em produção, o certo é avisar e seguir: sem board o PO
- * ainda entrega o roadmap na memória, o que se perde é só o quadro. Derrubar
- * o provisionamento inteiro por isso seria pior que o problema que resolve —
- * mas nunca em silêncio (`onWarn` é chamado sempre).
  *
  * NUNCA lança. Risco conhecido: quem chama esta função no provisionamento do
  * wizard usa o token OAuth do PRÓPRIO dono do projeto (não um installation
@@ -130,26 +133,30 @@ export async function ensureProjectBoard(
       if (existente) return { owner, number: deps.existingNumber }
     }
 
+    const [dono, nome] = deps.repository.split('/')
+
     // 1) Já anunciado a este repositório? Então não há o que criar nem ligar.
     if (deps.client.listarQuadrosDoRepositorio) {
-      const [dono, nome] = deps.repository.split('/')
       const ligados = await deps.client.listarQuadrosDoRepositorio({
         owner: dono ?? '',
         repo: nome ?? '',
       })
-      const servindo = ligados.find((q) => quadroServeAoRepositorio(q.title, deps.repository))
-      const escolhido = servindo ?? ligados[0]
-      if (escolhido) return { owner, number: escolhido.number }
+      if (ligados.length > 0) {
+        const escolhido = await escolherMaisRico(ligados, deps)
+        if (escolhido) return { owner, number: escolhido.number }
+      }
     }
 
-    // 2) A conta já tem um quadro deste repositório, só que solto? Então liga,
-    //    em vez de abrir outro por cima do que o cliente mantém.
-    if (deps.client.listarQuadrosDaConta) {
-      const daConta = await deps.client.listarQuadrosDaConta({
-        login: owner,
-        ownerType: resolved.type,
+    // 2) As issues deste repositório já vivem em algum quadro? Esse é o quadro
+    //    dele — por evidência, não por parecença de nome. Só falta anunciá-lo.
+    if (deps.client.descobrirQuadrosPorIssues) {
+      const achados = await deps.client.descobrirQuadrosPorIssues({
+        owner: dono ?? '',
+        repo: nome ?? '',
       })
-      const candidato = daConta.find((q) => quadroServeAoRepositorio(q.title, deps.repository))
+      const vivos = achados.filter((q) => !q.closed)
+      const candidato = await escolherMaisRico(vivos, deps, { exigirExclusivo: true })
+
       if (candidato) {
         if (deps.resolveRepositoryId && deps.client.linkProjectV2ToRepository) {
           try {
@@ -159,8 +166,8 @@ export async function ensureProjectBoard(
               repositoryId,
             })
           } catch (err) {
-            // O quadro existe e serve; não conseguir anunciá-lo ao repositório
-            // tira o atalho da aba /projects, não o quadro.
+            // O quadro existe e é o certo; não conseguir anunciá-lo ao
+            // repositório tira o atalho da aba /projects, não o quadro.
             warn(
               `quadro #${candidato.number} de ${deps.repository} encontrado, mas falhou ao ligar ao repositório: ${(err as Error).message}`
             )
