@@ -19,9 +19,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
@@ -58,7 +58,7 @@ jobs:
             fi
             echo "OK: $f com assets em $BP"
           done
-      - uses: actions/upload-pages-artifact@v5
+      - uses: actions/upload-pages-artifact@v3
         with:
           path: apps/web/out
   deploy:
@@ -72,21 +72,21 @@ jobs:
       # em quando. Até 3 tentativas automáticas para uma falha transitória NUNCA
       # deixar o site quebrado (foi o que derrubou o site 2x em 06/07).
       - id: d1
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@v4
         continue-on-error: true
         with: { timeout: 600000, error_count: 25 }
       - if: steps.d1.outcome == 'failure'
         run: echo "Deploy 1 falhou (transitório); tentando de novo em 20s" && sleep 20
       - id: d2
         if: steps.d1.outcome == 'failure'
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@v4
         continue-on-error: true
         with: { timeout: 600000, error_count: 25 }
       - if: steps.d1.outcome == 'failure' && steps.d2.outcome == 'failure'
         run: echo "Deploy 2 falhou; última tentativa em 30s" && sleep 30
       - id: d3
         if: steps.d1.outcome == 'failure' && steps.d2.outcome == 'failure'
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@v4
         with: { timeout: 600000, error_count: 25 }
       # Se as 3 falharem, o job falha (e o smoke nem roda) — vai vermelho, não
       # verde-falso. Mas o esperado é uma das 3 passar e o site se curar sozinho.
