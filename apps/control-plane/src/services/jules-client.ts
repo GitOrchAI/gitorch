@@ -104,3 +104,120 @@ export async function criarSessaoJules(deps: CriarSessaoDeps): Promise<string | 
     return null
   }
 }
+
+// ---------------------------------------------------------------------------
+// Acompanhamento da sessão
+//
+// Criar sessão sem acompanhar é falar sem ouvir: em produção o dev fez o
+// trabalho, terminou com uma pergunta e ficou parado porque ninguém do nosso
+// lado escutava. Os três verbos abaixo são o que o loop precisa — ler o
+// estado, responder, e aprovar plano.
+// ---------------------------------------------------------------------------
+
+export interface SessaoJules {
+  estado: string
+  ultimaMensagem: string
+}
+
+interface AcessoSessao {
+  apiKey?: string | undefined
+  sessionId: string
+  fetchImpl?: typeof fetch
+  onWarn?: (message: string) => void
+}
+
+/** `sessions/123` e `123` devem chegar na mesma URL. */
+function caminhoDaSessao(sessionId: string): string {
+  return sessionId.startsWith('sessions/') ? sessionId : `sessions/${sessionId}`
+}
+
+/** Estado atual da sessão + a última coisa que o dev disse. */
+export async function lerSessaoJules(deps: AcessoSessao): Promise<SessaoJules | null> {
+  const warn = deps.onWarn ?? (() => undefined)
+  if (!deps.apiKey) return null
+  const f = deps.fetchImpl ?? fetch
+  const base = `${JULES_API}/${caminhoDaSessao(deps.sessionId)}`
+  const headers = { 'X-Goog-Api-Key': deps.apiKey }
+
+  try {
+    const resp = await f(base, { headers, signal: AbortSignal.timeout(TIMEOUT_MS) })
+    if (!resp.ok) {
+      warn(`[jules] não foi possível ler a sessão ${deps.sessionId} (HTTP ${resp.status})`)
+      return null
+    }
+    const sessao = (await resp.json()) as { state?: string }
+
+    // A mensagem vive nas atividades, não no recurso da sessão.
+    let ultimaMensagem = ''
+    const atividades = await f(`${base}/activities?pageSize=30`, {
+      headers,
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    })
+    if (atividades.ok) {
+      const corpo = (await atividades.json()) as {
+        activities?: Array<{ agentMessaged?: { agentMessage?: string } }>
+      }
+      const mensagens = (corpo.activities ?? [])
+        .map((a) => a.agentMessaged?.agentMessage)
+        .filter((m): m is string => Boolean(m))
+      ultimaMensagem = mensagens.at(-1) ?? ''
+    }
+
+    return { estado: sessao.state ?? 'DESCONHECIDO', ultimaMensagem }
+  } catch (err) {
+    warn(`[jules] falha ao ler a sessão ${deps.sessionId}: ${(err as Error).message}`)
+    return null
+  }
+}
+
+/** Responde ao dev assíncrono. O texto vem do motor; quem envia é o executor. */
+export async function responderSessaoJules(
+  deps: AcessoSessao & { texto: string }
+): Promise<boolean> {
+  const warn = deps.onWarn ?? (() => undefined)
+  if (!deps.apiKey) return false
+  const f = deps.fetchImpl ?? fetch
+
+  try {
+    const resp = await f(`${JULES_API}/${caminhoDaSessao(deps.sessionId)}:sendMessage`, {
+      method: 'POST',
+      headers: { 'X-Goog-Api-Key': deps.apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: deps.texto }),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    })
+    if (!resp.ok) {
+      warn(`[jules] não foi possível responder a sessão ${deps.sessionId} (HTTP ${resp.status})`)
+      return false
+    }
+    return true
+  } catch (err) {
+    warn(`[jules] falha ao responder a sessão ${deps.sessionId}: ${(err as Error).message}`)
+    return false
+  }
+}
+
+/** Libera o plano proposto pelo dev — o contrato do trabalho já está na issue. */
+export async function aprovarPlanoJules(deps: AcessoSessao): Promise<boolean> {
+  const warn = deps.onWarn ?? (() => undefined)
+  if (!deps.apiKey) return false
+  const f = deps.fetchImpl ?? fetch
+
+  try {
+    const resp = await f(`${JULES_API}/${caminhoDaSessao(deps.sessionId)}:approvePlan`, {
+      method: 'POST',
+      headers: { 'X-Goog-Api-Key': deps.apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    })
+    if (!resp.ok) {
+      warn(
+        `[jules] não foi possível aprovar o plano da sessão ${deps.sessionId} (HTTP ${resp.status})`
+      )
+      return false
+    }
+    return true
+  } catch (err) {
+    warn(`[jules] falha ao aprovar o plano da sessão ${deps.sessionId}: ${(err as Error).message}`)
+    return false
+  }
+}
