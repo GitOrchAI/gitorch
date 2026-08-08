@@ -354,6 +354,83 @@ describe('coletarDividaDeSeguranca', () => {
     expect(d.alertas).toHaveLength(2)
   })
 
+  // O cabeçalho Link vem da RESPOSTA HTTP — dado que a API devolve, não algo
+  // que o produto controla. Toda chamada desta função carrega a credencial
+  // do cliente no Authorization: seguir cegamente uma URL vinda desse
+  // cabeçalho entregaria essa credencial a qualquer host que a resposta
+  // apontasse. Os três casos abaixo têm que ser recusados SEM nenhuma
+  // chamada de rede para o host suspeito — recusar depois de já ter chamado
+  // `fetch` não protegeria a credencial de nada.
+  describe('recusa seguir paginação para fora do host da API do GitHub — nunca vaza a credencial', () => {
+    it('link aponta para outro host inteiramente', async () => {
+      const fetchImpl = githubDeMentira({
+        '/repos/dono/repo/vulnerability-alerts': { status: 204 },
+        '/repos/dono/repo/automated-security-fixes': { status: 404 },
+        '/repos/dono/repo/contents/.github/dependabot.yml': { status: 404 },
+        '/repos/dono/repo/dependabot/alerts?state=open&per_page=100': {
+          status: 200,
+          corpo: [ALERTA_BRUTO],
+          headers: { link: '<http://servidor-alheio.invalido/x>; rel="next"' },
+        },
+      })
+
+      const d = await coletarDividaDeSeguranca({ repository: 'dono/repo', token: 't', fetchImpl })
+
+      const chamadas = (fetchImpl as unknown as { mock: { calls: unknown[][] } }).mock.calls.map(
+        (c) => String(c[0])
+      )
+      expect(chamadas.some((u) => u.includes('servidor-alheio'))).toBe(false)
+      expect(d.alertas).toHaveLength(1)
+      expect(d.naoVerificado).toContain('alertas-link-suspeito')
+    })
+
+    it('link aponta para host que só parece o do GitHub (sufixo, não igualdade)', async () => {
+      const fetchImpl = githubDeMentira({
+        '/repos/dono/repo/vulnerability-alerts': { status: 204 },
+        '/repos/dono/repo/automated-security-fixes': { status: 404 },
+        '/repos/dono/repo/contents/.github/dependabot.yml': { status: 404 },
+        '/repos/dono/repo/dependabot/alerts?state=open&per_page=100': {
+          status: 200,
+          corpo: [ALERTA_BRUTO],
+          headers: {
+            link: '<https://api.github.com.servidor-alheio.invalido/x>; rel="next"',
+          },
+        },
+      })
+
+      const d = await coletarDividaDeSeguranca({ repository: 'dono/repo', token: 't', fetchImpl })
+
+      const chamadas = (fetchImpl as unknown as { mock: { calls: unknown[][] } }).mock.calls.map(
+        (c) => String(c[0])
+      )
+      expect(chamadas.some((u) => u.includes('servidor-alheio'))).toBe(false)
+      expect(d.alertas).toHaveLength(1)
+      expect(d.naoVerificado).toContain('alertas-link-suspeito')
+    })
+
+    it('link com URL malformada é recusado, não estoura exceção', async () => {
+      const fetchImpl = githubDeMentira({
+        '/repos/dono/repo/vulnerability-alerts': { status: 204 },
+        '/repos/dono/repo/automated-security-fixes': { status: 404 },
+        '/repos/dono/repo/contents/.github/dependabot.yml': { status: 404 },
+        '/repos/dono/repo/dependabot/alerts?state=open&per_page=100': {
+          status: 200,
+          corpo: [ALERTA_BRUTO],
+          headers: { link: '<isto-nao-e-uma-url>; rel="next"' },
+        },
+      })
+
+      const d = await coletarDividaDeSeguranca({ repository: 'dono/repo', token: 't', fetchImpl })
+
+      const chamadas = (fetchImpl as unknown as { mock: { calls: unknown[][] } }).mock.calls.map(
+        (c) => String(c[0])
+      )
+      expect(chamadas.some((u) => u.includes('isto-nao-e-uma-url'))).toBe(false)
+      expect(d.alertas).toHaveLength(1)
+      expect(d.naoVerificado).toContain('alertas-link-suspeito')
+    })
+  })
+
   it('alerta sem versão corrigida não vira string vazia', async () => {
     const semCorrecao = { ...ALERTA_BRUTO, security_vulnerability: {} }
     const fetchImpl = githubDeMentira({

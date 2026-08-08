@@ -21,6 +21,30 @@ const GITHUB_API = 'https://api.github.com'
 // chamar amanhã.
 const SEGMENTO_VALIDO = /^[A-Za-z0-9._-]+$/
 
+// O cabeçalho `Link` que a paginação segue (ver `proximaPaginaDoLink` mais
+// abaixo) vem da RESPOSTA HTTP — dado que a API devolve, não um literal que
+// este arquivo controla. `pedirUrl` manda a credencial do cliente no
+// Authorization em toda chamada; se o código seguisse a URL do Link sem
+// checar, um `Link: <http://servidor-alheio/x>; rel="next"` faria a
+// PRÓXIMA chamada (com a credencial junto) sair para esse host — hoje a
+// primeira chamada sempre vai para o GitHub, então a resposta "deveria" ser
+// confiável, mas "deveria" não é uma garantia que o código expressa: basta
+// um proxy no meio do caminho, um redirecionamento, ou este arquivo um dia
+// apontar para outro provedor para deixar de valer. Comparar o HOST inteiro
+// (nunca prefixo/substring: "https://api.github.com.servidor-alheio" bate
+// em startsWith/includes de "https://api.github.com" mas é outro host por
+// completo) é a única checagem que não depende de quem monta a resposta.
+const HOST_API_GITHUB = new URL(GITHUB_API).host
+
+function apontaParaApiDoGithub(url: string): boolean {
+  try {
+    return new URL(url).host === HOST_API_GITHUB
+  } catch {
+    // URL malformada não é um host válido — mesma recusa.
+    return false
+  }
+}
+
 function repositorioValido(repository: string): boolean {
   const partes = repository.split('/')
   if (partes.length !== 2) return false
@@ -73,11 +97,14 @@ export interface DividaDeSeguranca {
    *  possíveis: 'vigilancia', 'correcao-automatica', 'configuracao',
    *  'alertas' (a coleta parou antes do fim — status inesperado ou falha de
    *  rede), 'alertas-parcial' (o teto de páginas foi atingido com mais
-   *  restando), 'severidade-desconhecida' (a API devolveu uma severidade
-   *  fora das quatro conhecidas — tratada como 'critical' por segurança) e
-   *  'repositorio-invalido' (o valor de `repository` não tem o formato
-   *  `dono/repo` que o GitHub aceita — nenhuma chamada de rede é feita
-   *  nesse caso). */
+   *  restando), 'alertas-link-suspeito' (o cabeçalho Link da resposta
+   *  apontava para um host diferente do da API do GitHub — a paginação foi
+   *  interrompida ANTES de mandar a credencial do cliente para lá; ver
+   *  `apontaParaApiDoGithub`), 'severidade-desconhecida' (a API devolveu uma
+   *  severidade fora das quatro conhecidas — tratada como 'critical' por
+   *  segurança) e 'repositorio-invalido' (o valor de `repository` não tem o
+   *  formato `dono/repo` que o GitHub aceita — nenhuma chamada de rede é
+   *  feita nesse caso). */
   naoVerificado: string[]
 }
 
@@ -226,6 +253,16 @@ export async function coletarDividaDeSeguranca(deps: {
     }
 
     const proxima = proximaPaginaDoLink(linkHeader)
+    // A URL de `proxima` veio do cabeçalho Link da RESPOSTA — dado externo,
+    // não um literal deste arquivo. Antes de mandar a próxima chamada (e a
+    // credencial do cliente que ela carrega) para lá, confirma que ainda
+    // aponta para o host da API do GitHub. Recusa é o mesmo tratamento do
+    // teto de páginas logo abaixo: registra e para, nunca finge que a
+    // coleta terminou limpa.
+    if (proxima !== null && !apontaParaApiDoGithub(proxima)) {
+      naoVerificado.push('alertas-link-suspeito')
+      break
+    }
     // Teto atingido com página seguinte ainda anunciada: parar aqui em
     // silêncio mentiria por omissão sobre alertas não coletados.
     if (pagina === 10 && proxima !== null) naoVerificado.push('alertas-parcial')
