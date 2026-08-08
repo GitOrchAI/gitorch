@@ -142,6 +142,55 @@ describe('ensureProjectBoard', () => {
     expect(r).toEqual({ owner: 'GitOrchAI', number: 42 })
     expect(avisos.join(' ')).toContain('ligar')
   })
+
+  it('quando a credencial do produto não cria o quadro, tenta com a do cliente', async () => {
+    const clienteDoProduto = {
+      findProjectId: vi.fn(async () => null),
+      createProjectV2: vi.fn(async () => {
+        throw new Error('does not have permission to create projects on ownerId U_x')
+      }),
+      linkProjectV2ToRepository: vi.fn(async () => 'R_repo'),
+      descobrirQuadrosPorIssues: vi.fn(async () => []),
+      detalharQuadro: vi.fn(async () => ({ camposCount: 0, outrosRepositorios: [] })),
+    }
+    const clienteDoCliente = {
+      ...clienteDoProduto,
+      createProjectV2: vi.fn(async () => ({ id: 'PVT_do_cliente', number: 77 })),
+    }
+
+    const r = await ensureProjectBoard({
+      repository: 'dono/repo',
+      client: clienteDoProduto as never,
+      resolveOwner: async () => ({ id: 'U_dono', type: 'user' as const }),
+      resolveRepositoryId: async () => 'R_repo',
+      clientToken: 'tok-do-cliente',
+      criarClienteAlternativo: () => clienteDoCliente as never,
+    })
+
+    expect(r).toEqual({ owner: 'dono', number: 77 })
+    expect(clienteDoCliente.createProjectV2).toHaveBeenCalled()
+  })
+
+  it('sem credencial do cliente, a falha continua resolvendo em aviso acionável', async () => {
+    const avisos: string[] = []
+    const c = {
+      findProjectId: vi.fn(async () => null),
+      createProjectV2: vi.fn(async () => {
+        throw new Error('does not have permission to create projects on ownerId U_x')
+      }),
+      linkProjectV2ToRepository: vi.fn(async () => 'R_repo'),
+      descobrirQuadrosPorIssues: vi.fn(async () => []),
+      detalharQuadro: vi.fn(async () => ({ camposCount: 0, outrosRepositorios: [] })),
+    }
+    const r = await ensureProjectBoard({
+      repository: 'dono/repo',
+      client: c as never,
+      resolveOwner: async () => ({ id: 'U_dono', type: 'user' as const }),
+      onWarn: (m) => avisos.push(m),
+    })
+    expect(r).toBeNull()
+    expect(avisos.join(' ')).toContain('permission')
+  })
 })
 
 describe('resolveGithubOwnerId', () => {

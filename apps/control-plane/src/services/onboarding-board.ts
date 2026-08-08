@@ -44,6 +44,17 @@ export interface EnsureProjectBoardDeps {
   resolveRepositoryId?: (repository: string) => Promise<string>
   /** Número do board já conhecido do projeto, quando houver. */
   existingNumber?: number
+  /**
+   * Credencial do PRÓPRIO cliente, quando guardada — a única capaz de criar
+   * quadro em CONTA PESSOAL (medido na API real: a credencial do produto
+   * devolve "does not have permission to create projects on ownerId ..." ali;
+   * em organização funciona). Só entra em jogo se a criação com a credencial
+   * do produto falhar.
+   */
+  clientToken?: string | null
+  /** Monta, a partir da credencial do cliente, o mesmo formato de client que
+   *  `deps.client` usa — permite repetir a criação sob a identidade certa. */
+  criarClienteAlternativo?: (token: string) => EnsureProjectBoardDeps['client']
   onWarn?: (message: string) => void
 }
 
@@ -185,30 +196,47 @@ export async function ensureProjectBoard(
     }
 
     // 3) Nada existe: cria.
-    const criado = await deps.client.createProjectV2({
-      ownerId: resolved.id,
-      title: deps.repository,
-    })
+    const criarELigarQuadro = async (
+      client: EnsureProjectBoardDeps['client']
+    ): Promise<ProjectBoardRef> => {
+      const criado = await client.createProjectV2({
+        ownerId: resolved.id,
+        title: deps.repository,
+      })
 
-    // Achado em produção (medido via API do próprio GitHub): createProjectV2
-    // pendura o board no DONO — organization.projectsV2 o via — mas ele nunca
-    // era anunciado ao REPOSITÓRIO (repository.projectsV2.totalCount ficava em
-    // 0, o board nunca aparecia na aba /projects do repositório). Ligar aqui,
-    // logo após criar; falha em ligar NUNCA derruba a criação do board (o
-    // roadmap ainda funciona sem o link — só a aba /projects que fica sem o
-    // atalho).
-    if (deps.resolveRepositoryId && deps.client.linkProjectV2ToRepository) {
-      try {
-        const repositoryId = await deps.resolveRepositoryId(deps.repository)
-        await deps.client.linkProjectV2ToRepository({ projectId: criado.id, repositoryId })
-      } catch (err) {
-        warn(
-          `board ${deps.repository} criado mas falhou ao ligar ao repositório: ${(err as Error).message}`
-        )
+      // Achado em produção (medido via API do próprio GitHub): createProjectV2
+      // pendura o board no DONO — organization.projectsV2 o via — mas ele nunca
+      // era anunciado ao REPOSITÓRIO (repository.projectsV2.totalCount ficava em
+      // 0, o board nunca aparecia na aba /projects do repositório). Ligar aqui,
+      // logo após criar; falha em ligar NUNCA derruba a criação do board (o
+      // roadmap ainda funciona sem o link — só a aba /projects que fica sem o
+      // atalho).
+      if (deps.resolveRepositoryId && client.linkProjectV2ToRepository) {
+        try {
+          const repositoryId = await deps.resolveRepositoryId(deps.repository)
+          await client.linkProjectV2ToRepository({ projectId: criado.id, repositoryId })
+        } catch (err) {
+          warn(
+            `board ${deps.repository} criado mas falhou ao ligar ao repositório: ${(err as Error).message}`
+          )
+        }
       }
+
+      return { owner, number: criado.number }
     }
 
-    return { owner, number: criado.number }
+    try {
+      return await criarELigarQuadro(deps.client)
+    } catch (err) {
+      // Medido na API real: a credencial do PRODUTO (o App) não tem permissão
+      // para criar quadro em CONTA PESSOAL — só em organização. Havendo a
+      // credencial do PRÓPRIO cliente, a segunda tentativa nasce sob a
+      // identidade dele. Sem ela, o erro sobe para o catch de fora, que já
+      // resolve em aviso acionável — nunca em silêncio.
+      if (!deps.clientToken || !deps.criarClienteAlternativo) throw err
+      const clienteAlternativo = deps.criarClienteAlternativo(deps.clientToken)
+      return await criarELigarQuadro(clienteAlternativo)
+    }
   } catch (err) {
     warn(`falha ao garantir o board do projeto ${deps.repository}: ${(err as Error).message}`)
     return null
@@ -305,6 +333,12 @@ export interface EnsureAndPersistDeps {
   resolveOwner: (owner: string, token: string) => Promise<ResolvedOwner>
   /** Resolve o node id GraphQL do repositório — liga o board recém-criado a ele (best-effort). */
   resolveRepositoryId?: (repository: string, token: string) => Promise<string>
+  /** Credencial do próprio cliente, quando guardada — repassada a
+   *  `ensureProjectBoard` para a segunda tentativa em conta pessoal. */
+  clientToken?: string | null
+  /** Monta o client no mesmo formato de `createProjectV2Client`, sob a
+   *  credencial do cliente. */
+  criarClienteAlternativo?: (token: string) => EnsureProjectBoardDeps['client']
   onWarn?: (message: string) => void
 }
 
@@ -352,6 +386,8 @@ export async function ensureAndPersistProjectBoard(
           resolveRepositoryId: (repository: string) => deps.resolveRepositoryId!(repository, token),
         }
       : {}),
+    clientToken: deps.clientToken,
+    criarClienteAlternativo: deps.criarClienteAlternativo,
     onWarn: warn,
   })
   if (!board) return undefined

@@ -56,6 +56,7 @@ import {
   resolveGithubRepositoryId,
   type ResolvedOwner,
 } from '../services/onboarding-board.js'
+import { lerCredencialDoProjeto } from '../services/project-credential.js'
 import { ProjectV2Client } from '@gitorch/github-sync'
 import { RailsStepError } from '../services/rails-runner.js'
 import { GithubExecutionError } from '../services/github-backlog.js'
@@ -1218,6 +1219,14 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         // que acorda, sem exigir um novo registro do projeto.
         let railsBoard = resolveRailsBoard(project)
         if (role === 'po' && !railsBoard) {
+          // Conta pessoal: a credencial do App não cria quadro ali (medido na
+          // API real). Havendo a credencial do próprio cliente guardada, ela
+          // é a segunda tentativa — ensureProjectBoard só recorre a ela se a
+          // primeira, com a identidade do produto, falhar.
+          const clientToken = await lerCredencialDoProjeto({
+            prisma: app.prisma as never,
+            projectId: project.id,
+          })
           railsBoard = await ensureAndPersistProjectBoard({
             project: {
               id: project.id,
@@ -1229,6 +1238,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             createProjectV2Client: (token: string) => new ProjectV2Client({ token }),
             resolveOwner: resolveGithubOwnerId,
             resolveRepositoryId: resolveGithubRepositoryId,
+            clientToken,
+            criarClienteAlternativo: (token: string) => new ProjectV2Client({ token }),
             onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
           })
           if (railsBoard) {
