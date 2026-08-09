@@ -24,6 +24,13 @@ export interface LinhaDeSessao {
   attempts: number
   nudges: number
   lastProgressAt: Date | null
+  /**
+   * Última vez que a vigia examinou esta sessão. É o que dá a cadência: sem
+   * ele, cada tick reexaminaria toda sessão viva a cada minuto, gastando
+   * chamada ao serviço externo (e, pior, potencialmente motor) sem que nada
+   * tivesse mudado desde a última olhada.
+   */
+  stateCheckedAt: Date | null
 }
 
 /** Por que a linha saiu da vigia. `merged` é o único caminho feliz. */

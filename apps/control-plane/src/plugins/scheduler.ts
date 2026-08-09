@@ -39,8 +39,23 @@ import { runPoMissionViaRails } from '../services/po-rails-mission.js'
 import { runRaMissionViaRails } from '../services/ra-rails-mission.js'
 import { runQaMissionViaRails } from '../services/qa-rails-mission.js'
 import { runSmDelegation } from '../services/sm-delegation.js'
-import { abrirSessao, type PrismaDevSession } from '../services/dev-session-store.js'
-import { criarSessaoJules } from '../services/jules-client.js'
+import {
+  abrirSessao,
+  sessoesVivas,
+  registrarEstado,
+  registrarResposta,
+  registrarPr,
+  fecharSessao,
+  type PrismaDevSession,
+} from '../services/dev-session-store.js'
+import {
+  criarSessaoJules,
+  consultarSessaoJules,
+  responderSessaoJules,
+  aprovarPlanoJules,
+  ultimaMensagemDoDevJules,
+} from '../services/jules-client.js'
+import { vigiarSessoes } from '../services/session-watch.js'
 import { runSmWatchdog, buildTelegramNotifier } from '../services/sm-watchdog.js'
 import { resolveNotifyChatId } from '../services/telegram-link.js'
 import { runIncidentSensor } from '../services/incident-sensor.js'
@@ -1385,6 +1400,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             app.log.warn(sensorErr, '[Scheduler] sensor de incidentes falhou')
             sensorOut = 'sensor: failed (see logs).'
           }
+
           result = {
             exitCode: 0,
             output: [delegation.output, watchdog.output, sensorOut].join('\n'),
@@ -1829,8 +1845,114 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     }
   }
 
+  // Vigia das sessões do dev assíncrono.
+  //
+  // Roda no TICK, não no acordar do SM. A diferença importa: o SM acorda quatro
+  // vezes por dia, e uma pergunta feita logo depois do acordar dormiria seis
+  // horas esperando resposta. O tick roda a cada minuto e a própria
+  // `vigiarSessoes` só reexamina uma sessão a cada dez minutos — é daí que sai
+  // a cadência, e não de um relógio novo.
+  //
+  // Escopada por construção: só varre PROJETOS QUE TÊM sessão viva. Sem sessão
+  // viva em lugar nenhum, não há uma única chamada ao serviço externo.
+  const varrerSessoesDoDev = async (): Promise<void> => {
+    let projetosComSessao: Array<{ projectId: string }>
+    try {
+      projetosComSessao = await app.prisma.devSession.findMany({
+        where: { closedAt: null },
+        distinct: ['projectId'],
+        select: { projectId: true },
+      })
+    } catch (err) {
+      app.log.error(err, '[Scheduler] vigia não conseguiu listar sessões vivas')
+      return
+    }
+    if (projetosComSessao.length === 0) return
+
+    for (const { projectId } of projetosComSessao) {
+      try {
+        // O aviso é do DONO do projeto — a sessão abandonada é dele. Mesma
+        // resolução usada no wake do SM: sem vínculo, ninguém é avisado, e o
+        // projeto de um cliente nunca vira mensagem no chat de outro.
+        const projeto = await app.prisma.project.findUnique({ where: { id: projectId } })
+        if (!projeto) continue
+        const notifyChatId = await resolveNotifyChatId(app.prisma, projeto, {
+          instanceOwnerEmail: process.env['GITORCH_OWNER_EMAIL'],
+          instanceChatId:
+            process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
+        })
+        const notify = buildTelegramNotifier({
+          botToken: process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
+          ...(notifyChatId ? { chatId: notifyChatId } : {}),
+        })
+        // Vigia da esteira (Fase 2): lê o estado de cada sessão VIVA do dev
+        // assíncrono no serviço externo e age — sem isso a Fase 1
+        // (dev-session-store) só guarda a ligação issue↔sessão↔PR e ninguém
+        // nunca a lê de volta. Mesmo wake do SM porque ele é o dono da
+        // esteira; best-effort como o sensor acima — falha aqui não pode
+        // derrubar a delegação nem o watchdog.
+        const sessoesDoProjeto = await sessoesVivas({
+          prisma: app.prisma as unknown as PrismaDevSession,
+          projectId,
+        })
+        const julesApiKey = process.env['JULES_API_KEY']
+        const vigiaOut = await vigiarSessoes({
+          sessoes: sessoesDoProjeto,
+          consultarSessao: (sessionName) =>
+            consultarSessaoJules({
+              apiKey: julesApiKey,
+              sessionName,
+              onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+            }),
+          ultimaMensagem: (sessionName) =>
+            ultimaMensagemDoDevJules({
+              apiKey: julesApiKey,
+              sessionName,
+              onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+            }),
+          aprovarPlano: (sessionName) =>
+            aprovarPlanoJules({
+              apiKey: julesApiKey,
+              sessionName,
+              onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+            }),
+          pedirParaContinuar: (sessionName) =>
+            responderSessaoJules({
+              apiKey: julesApiKey,
+              sessionName,
+              texto:
+                'Please continue working on this task from where you left off. If you are ' +
+                'blocked on something, explain what is blocking you instead of stopping silently.',
+              onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+            }),
+          // Nunca chama motor direto: passa pelo MESMO portão de
+          // concorrência, orçamento diário por plano e guarda de gasto que
+          // o resto do scheduler usa — é o `triggerAgentMission` de sempre.
+          dispararMissao: async (papel, projectIdDaMissao) => {
+            void triggerAgentMission(papel, projectIdDaMissao)
+          },
+          registrarEstado: (args) =>
+            registrarEstado({ prisma: app.prisma as unknown as PrismaDevSession, ...args }),
+          registrarResposta: (args) =>
+            registrarResposta({ prisma: app.prisma as unknown as PrismaDevSession, ...args }),
+          registrarPr: (args) =>
+            registrarPr({ prisma: app.prisma as unknown as PrismaDevSession, ...args }),
+          fecharSessao: (args) =>
+            fecharSessao({ prisma: app.prisma as unknown as PrismaDevSession, ...args }),
+          ...(notify ? { avisarDono: notify } : {}),
+          agora: new Date(),
+          onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+        })
+        if (vigiaOut) app.log.info(`[Scheduler] ${vigiaOut}`)
+      } catch (vigiaErr) {
+        app.log.warn(vigiaErr, `[Scheduler] vigia de sessões falhou no projeto ${projectId}`)
+      }
+    }
+  }
+
   const tick = async () => {
     await processSetupMissions()
+    await varrerSessoesDoDev()
     await sweepExpiredEnvironments()
     const now = new Date()
     let schedules
