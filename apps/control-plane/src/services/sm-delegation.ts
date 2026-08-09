@@ -29,6 +29,16 @@ export interface SmDelegationOptions {
     titulo: string
     prompt: string
   }) => Promise<string | null>
+  /**
+   * Guarda a ligação entre a issue e a sessão que acabou de nascer.
+   *
+   * Existe porque essa ligação vivia só no texto de saída desta missão e
+   * evaporava com o log. Sem ela o PR entregue não é reconhecido para
+   * julgamento: ele chega com o autor da conta da instalação e sem palavra de
+   * ligação no corpo, então nenhum sinal lido do GitHub sozinho o identifica
+   * como trabalho delegado.
+   */
+  aoCriarSessao?: (dados: { issueNumber: number; sessionName: string }) => Promise<void>
   fetchImpl?: typeof fetch
 }
 
@@ -138,7 +148,23 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
           'described above.',
         ].join('\n'),
       })
-      if (sessao) sessoes.push(`#${task.number}→${sessao}`)
+      if (sessao) {
+        sessoes.push(`#${task.number}→${sessao}`)
+        // A ligação tem de ser GUARDADA aqui, não só impressa: é ela que o
+        // julgamento consulta depois. O try/catch é deliberado — falhar ao
+        // guardar não pode derrubar a delegação das outras tasks, e o aviso
+        // diz exatamente o que ficou para trás.
+        if (options.aoCriarSessao) {
+          try {
+            await options.aoCriarSessao({ issueNumber: task.number, sessionName: sessao })
+          } catch (err) {
+            console.warn(
+              `[sm] sessão criada para #${task.number} mas a ligação não pôde ser guardada; ` +
+                `o julgamento não vai encontrar este PR: ${(err as Error).message}`
+            )
+          }
+        }
+      }
     }
   }
 

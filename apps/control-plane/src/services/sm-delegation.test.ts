@@ -167,6 +167,56 @@ describe('runSmDelegation: aciona o dev assíncrono', () => {
     expect(r.output).toContain('sessions/xyz')
   })
 
+  it('guarda a ligação issue → sessão assim que a sessão nasce', async () => {
+    const impl = fakeFetch([taskPronta()])
+    const guardadas: Array<{ issueNumber: number; sessionName: string }> = []
+
+    await runSmDelegation({
+      repository: 'GitOrchAI/gitorch',
+      githubToken: 't',
+      fetchImpl: impl,
+      criarSessaoDev: async () => 'sessions/xyz',
+      aoCriarSessao: async (d) => {
+        guardadas.push(d)
+      },
+    })
+
+    expect(guardadas).toEqual([{ issueNumber: 42, sessionName: 'sessions/xyz' }])
+  })
+
+  it('falha ao guardar a ligação não derruba a delegação das outras tasks', async () => {
+    const impl = fakeFetch([taskPronta()])
+
+    const r = await runSmDelegation({
+      repository: 'GitOrchAI/gitorch',
+      githubToken: 't',
+      fetchImpl: impl,
+      criarSessaoDev: async () => 'sessions/xyz',
+      aoCriarSessao: async () => {
+        throw new Error('banco fora do ar')
+      },
+    })
+
+    expect(r.delegated).toEqual([42])
+  })
+
+  it('sem sessão criada, não há ligação para guardar', async () => {
+    const impl = fakeFetch([taskPronta()])
+    const guardadas: Array<{ issueNumber: number; sessionName: string }> = []
+
+    await runSmDelegation({
+      repository: 'GitOrchAI/gitorch',
+      githubToken: 't',
+      fetchImpl: impl,
+      criarSessaoDev: async () => null,
+      aoCriarSessao: async (d) => {
+        guardadas.push(d)
+      },
+    })
+
+    expect(guardadas).toEqual([])
+  })
+
   it('dev assíncrono indisponível: a delegação continua valendo (label aplicado)', async () => {
     const impl = fakeFetch([taskPronta()])
     const labeled = (impl as unknown as { labeled: Array<{ number: number; labels: string[] }> })

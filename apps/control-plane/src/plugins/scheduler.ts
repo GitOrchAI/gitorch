@@ -39,6 +39,7 @@ import { runPoMissionViaRails } from '../services/po-rails-mission.js'
 import { runRaMissionViaRails } from '../services/ra-rails-mission.js'
 import { runQaMissionViaRails } from '../services/qa-rails-mission.js'
 import { runSmDelegation } from '../services/sm-delegation.js'
+import { abrirSessao, type PrismaDevSession } from '../services/dev-session-store.js'
 import { criarSessaoJules } from '../services/jules-client.js'
 import { runSmWatchdog, buildTelegramNotifier } from '../services/sm-watchdog.js'
 import { resolveNotifyChatId } from '../services/telegram-link.js'
@@ -1300,6 +1301,33 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 prompt,
                 onWarn: (m) => app.log.warn(m),
               }),
+            // Guardar a ligação é o que permite julgar o PR depois: ele chega
+            // com o autor da conta da instalação e sem palavra de ligação no
+            // corpo, então o GitHub sozinho não conta de quem é o trabalho.
+            //
+            // `abrirSessao` devolve resultado tipado (nunca lança em cima de
+            // colisão esperada); `ok: false` aqui significa que já existe
+            // sessão viva para esta issue (índice único parcial
+            // `dev_sessions_open_per_issue`) — a sessão nova nasceu no
+            // serviço externo mas a ligação não pôde ser guardada. Lançamos
+            // para que o try/catch de `runSmDelegation` (sm-delegation.ts)
+            // registre o aviso do jeito de sempre, sem derrubar as outras
+            // delegações do ciclo.
+            aoCriarSessao: async ({ issueNumber, sessionName }) => {
+              const resultado = await abrirSessao({
+                prisma: app.prisma as unknown as PrismaDevSession,
+                projectId: project.id,
+                issueNumber,
+                sessionName,
+                agora: new Date(),
+              })
+              if (!resultado.ok) {
+                throw new Error(
+                  `já existe sessão viva para a issue #${issueNumber} (${resultado.motivo}); ` +
+                    `a ligação com "${sessionName}" não foi guardada`
+                )
+              }
+            },
           })
           // O aviso é do DONO do projeto — a task travada é a dele. Antes, o
           // chat vinha direto do env (GITORCH_TELEGRAM_CHAT_ID): TODO cliente

@@ -30,6 +30,7 @@ export const MIGRATION_LEDGER = [
   'claude-quota-migration.sql',
   'agent-question-migration.sql',
   'client-token-migration.sql',
+  'dev-session-migration.sql',
 ] as const
 
 /**
