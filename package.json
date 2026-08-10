@@ -37,10 +37,10 @@
     "jsonwebtoken": "^9.0.3",
     "lint-staged": "^17.3.0",
     "prettier": "^3.9.6",
-    "tsx": "4.23.5",
+    "tsx": "4.23.10",
     "turbo": "^2.10.8",
     "typescript": "^5.4.0",
-    "vite": "8.2.0",
+    "vite": "8.2.1",
     "vitest": "^4.1.10"
   },
   "dependencies": {
@@ -72,7 +72,7 @@
       "import-in-the-middle": "3.2.0",
       "minimatch": "10.2.6",
       "postcss": "8.5.18",
-      "vite": "8.2.0",
+      "vite": "8.2.1",
       "tar": "7.5.21",
       "tar-fs": "^3.1.2",
       "tar-stream": "^3.2.0",
