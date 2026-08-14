@@ -116,26 +116,50 @@ export function buildMissionEnricher(
         // Journey N:"): entra INTACTO — a compressão de memória (colapso de
         // quebras de linha + corte) destruiria o parse de cobertura.
         let raIntact: string | undefined
+        // Gavetas do QA para o PO (plural: diferente do RA, aqui NÃO é "a mais
+        // nova vence" — cada missão do QA pode revelar uma lacuna distinta, e
+        // todas viram candidatas a backlog). Só populada para o papel 'po'.
+        let qaDrawers: Array<{ content: string; createdAt?: string }> = []
+        // Ordenação por recência reaproveitada tanto para o RA quanto para o
+        // QA: o recall ordena por importância e duas gavetas do mesmo papel
+        // empatam — sem isto o PO leria a entrega antiga primeiro.
+        const porMaisRecente = (a: { createdAt?: string }, b: { createdAt?: string }) =>
+          (b.createdAt ?? '').localeCompare(a.createdAt ?? '')
+
         if (role === 'po') {
-          // O MAIS NOVO explicitamente: o recall ordena por importância e dois
-          // entregáveis do RA empatam — sem isto o PO leria a análise antiga.
-          const raDrawers = [...deps.cortex.recallLocal(projectId, 'ra')].sort((a, b) =>
-            (b.createdAt ?? '').localeCompare(a.createdAt ?? '')
-          )
+          const raDrawers = [...deps.cortex.recallLocal(projectId, 'ra')].sort(porMaisRecente)
           raIntact = raDrawers[0]?.content
           if (raIntact) lines.push(raIntact.slice(0, MAX_RA_DELIVERABLE_CHARS))
+
+          // O PO planeja em cima de DUAS memórias, não uma. A do RA diz o que o
+          // desejo precisa; a do QA diz o que a entrega revelou sobre o
+          // repositório — inclusive lacunas críticas como "não tem verificação
+          // automática", que precisam virar tarefa em vez de virar exceção
+          // silenciosa no merge. Decisão do dono, 14/08/2026.
+          // Sem teto NOVO aqui: recallLocal já limita internamente (l2Limit do
+          // Cortex, packages/cortex/src/core/layers.ts); o corte por item
+          // (MAX_MEMORY_CHARS, abaixo) é o mesmo que as memórias genéricas já
+          // usam — declarado, não um teto silencioso adicional.
+          qaDrawers = [...deps.cortex.recallLocal(projectId, 'qa')].sort(porMaisRecente)
         }
 
+        // As gavetas do QA já entram como bullets próprios (abaixo); não
+        // duplicá-las caso também apareçam na lista geral de memórias do
+        // projeto (mesmo cuidado já tomado para o RA, na linha do filter).
+        const qaContents = new Set(qaDrawers.map((d) => d.content))
         const drawers = deps.cortex
           .recallLocal(projectId)
-          .filter((d) => d.content !== raIntact)
+          .filter((d) => d.content !== raIntact && !qaContents.has(d.content))
           .slice(0, MAX_MEMORIES)
-        if (drawers.length > 0) {
+
+        const formatarBullet = (d: { content: string }) =>
+          `- ${d.content.slice(0, MAX_MEMORY_CHARS).replace(/\s+/g, ' ').trim()}`
+
+        if (drawers.length > 0 || qaDrawers.length > 0) {
           const memoryBlock = [
             'Project memory (deliverables from prior GitOrch missions on THIS project — build on them, do not repeat work):',
-            ...drawers.map(
-              (d) => `- ${d.content.slice(0, MAX_MEMORY_CHARS).replace(/\s+/g, ' ').trim()}`
-            ),
+            ...drawers.map(formatarBullet),
+            ...qaDrawers.map(formatarBullet),
           ].join('\n')
           lines.push(memoryBlock)
         }
