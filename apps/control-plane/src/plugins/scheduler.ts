@@ -48,6 +48,7 @@ import {
   registrarPr,
   fecharSessao,
   type PrismaDevSession,
+  type LinhaDeSessao,
 } from '../services/dev-session-store.js'
 import {
   criarSessaoJules,
@@ -201,6 +202,36 @@ export function resolveRailsBoard(project: { runtimeConfig?: unknown }): string 
     (project.runtimeConfig as Record<string, unknown> | null)?.['envConfig'] as
       Record<string, unknown> | undefined
   )?.['GITORCH_PROJECT_BOARD'] as string | undefined
+}
+
+/**
+ * Monta as opções de teto e fila que a delegação do SM recebe.
+ *
+ * Existe como função pura EXPORTADA por um motivo de segurança, não de
+ * estilo: é aqui que o teto do plano do dev assíncrono (declarado pelo dono
+ * no cadastro — a API do Jules não expõe consulta de cota, ver
+ * plano-do-dev.ts) entra no caminho de delegação. Antes desta extração, a
+ * montagem vivia dentro de `executeMissionWithFailover` — closure não
+ * exportada — e não havia como testar que o teto do plano chega de fato à
+ * delegação: uma regressão que reintroduzisse os literais `3`/`15` não
+ * quebraria teste nenhum, estourando a cota do cliente em silêncio. Ver
+ * scheduler-teto-delegacao.test.ts.
+ */
+export function montarOpcoesDeDelegacao(args: {
+  devPlan: string | null | undefined
+  sessoesVivas: LinhaDeSessao[]
+  delegadasHoje: number
+}): {
+  sessoesVivas: LinhaDeSessao[]
+  delegadasHoje: number
+  tetoConcorrentes: number
+  tetoDiario: number
+} {
+  return {
+    sessoesVivas: args.sessoesVivas,
+    delegadasHoje: args.delegadasHoje,
+    ...tetosDoPlanoDoDev(args.devPlan),
+  }
 }
 
 function buildWorkspaceProvider(app: FastifyInstance): WorkspaceProvider {
@@ -1345,23 +1376,25 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 )
               }
             },
-            // A fila real: issue com linha viva já está sendo trabalhada; sem
-            // linha viva está por delegar, mesmo que já tenha sido delegada
-            // antes e a sessão tenha morrido (fila-de-delegacao.ts).
-            sessoesVivas: await sessoesVivas({
-              prisma: app.prisma as unknown as PrismaDevSession,
-              projectId: project.id,
-            }),
-            delegadasHoje: await app.prisma.devSession.count({
-              where: {
+            // A fila real e os tetos do plano são montados pela função pura
+            // exportada `montarOpcoesDeDelegacao` (topo do arquivo) — só as
+            // leituras (Prisma) ficam aqui, dentro da closure não exportada.
+            ...montarOpcoesDeDelegacao({
+              devPlan: project.devPlan,
+              // A fila real: issue com linha viva já está sendo trabalhada;
+              // sem linha viva está por delegar, mesmo que já tenha sido
+              // delegada antes e a sessão tenha morrido (fila-de-delegacao.ts).
+              sessoesVivas: await sessoesVivas({
+                prisma: app.prisma as unknown as PrismaDevSession,
                 projectId: project.id,
-                createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
-              },
+              }),
+              delegadasHoje: await app.prisma.devSession.count({
+                where: {
+                  projectId: project.id,
+                  createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+                },
+              }),
             }),
-            // O teto vem do plano declarado pelo dono no cadastro (D13): a API
-            // do dev assíncrono não expõe consulta de cota, então o valor não
-            // pode ser medido — só declarado. Ver plano-do-dev.ts.
-            ...tetosDoPlanoDoDev(project.devPlan),
           })
           // O aviso é do DONO do projeto — a task travada é a dele. Antes, o
           // chat vinha direto do env (GITORCH_TELEGRAM_CHAT_ID): TODO cliente
