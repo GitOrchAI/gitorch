@@ -53,4 +53,30 @@ describe('Project Routes', () => {
     expect(res.statusCode).toBe(200)
     expect(res.json().runtimeConfig).toEqual({ model: 'gpt-4' })
   })
+
+  test('PATCH /api/projects/:id/runtime-config aceita o plano do dev assíncrono e recusa valor inventado', async () => {
+    app.prisma.project.findFirst = vi.fn().mockResolvedValue({ id: 'proj_456', wingId: 'wing_123' })
+    app.prisma.project.update = vi.fn().mockResolvedValue({
+      id: 'proj_456',
+      name: 'Test',
+      devPlan: 'pro',
+    })
+
+    const ok = await app.inject({
+      method: 'PATCH',
+      url: '/api/projects/proj_456/runtime-config',
+      headers: authHeaders,
+      payload: { devPlan: 'pro' },
+    })
+    expect(ok.statusCode).toBe(200)
+    expect(ok.json().devPlan).toBe('pro')
+
+    const ruim = await app.inject({
+      method: 'PATCH',
+      url: '/api/projects/proj_456/runtime-config',
+      headers: authHeaders,
+      payload: { devPlan: 'enterprise' },
+    })
+    expect(ruim.statusCode).toBe(400)
+  })
 })

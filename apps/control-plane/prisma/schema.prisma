@@ -238,6 +238,10 @@ model Project {
 
   runtimeConfig Json?    @map("runtime_config")
 
+  // Plano do dev assíncrono declarado pelo dono: 'free' | 'pro' | 'ultra'.
+  // A API do serviço não oferece consulta de cota, então o teto é declarado.
+  devPlan String? @map("dev_plan")
+
   githubInstallationId Int?   @unique @map("github_installation_id")
   githubRepoId        BigInt? @unique @map("github_repo_id")
 

@@ -39,6 +39,7 @@ import { runPoMissionViaRails } from '../services/po-rails-mission.js'
 import { runRaMissionViaRails } from '../services/ra-rails-mission.js'
 import { runQaMissionViaRails } from '../services/qa-rails-mission.js'
 import { runSmDelegation } from '../services/sm-delegation.js'
+import { tetosDoPlanoDoDev } from '../services/plano-do-dev.js'
 import {
   abrirSessao,
   sessoesVivas,
@@ -1161,6 +1162,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     name: string
     userId: string | null
     runtimeConfig?: unknown
+    devPlan?: string | null
   }
 
   // Tenta a cadeia de motores em ordem; sucesso encerra; erro de cota/auth cai
@@ -1356,11 +1358,10 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
               },
             }),
-            // Literais por enquanto: o plano do dev assíncrono ainda não existe
-            // (nada hoje lê teto por conta). Uma tarefa futura troca as duas
-            // linhas abaixo por `...tetosDoPlanoDoDev(project.devPlan)`.
-            tetoConcorrentes: 3,
-            tetoDiario: 15,
+            // O teto vem do plano declarado pelo dono no cadastro (D13): a API
+            // do dev assíncrono não expõe consulta de cota, então o valor não
+            // pode ser medido — só declarado. Ver plano-do-dev.ts.
+            ...tetosDoPlanoDoDev(project.devPlan),
           })
           // O aviso é do DONO do projeto — a task travada é a dele. Antes, o
           // chat vinha direto do env (GITORCH_TELEGRAM_CHAT_ID): TODO cliente
