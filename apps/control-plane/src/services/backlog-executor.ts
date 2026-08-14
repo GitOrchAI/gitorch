@@ -4,9 +4,9 @@ import { agentLabel } from './agent-label.js'
 // Backlog-executor: as MÃOS determinísticas da Lei "LLM decide, sistema
 // executa". Recebe o plano que o PO preencheu (formulários já validados por
 // schema) e o aplica no GitHub como árvore de sub-issues
-// (wish→fase→épico→feature→task) + board + roadmap (milestones de sprint) +
-// delegação. Idempotente por marker no corpo da issue: re-executar o mesmo
-// plano não duplica nada.
+// (wish→fase→épico→feature→task) + board + roadmap (milestones de sprint).
+// Idempotente por marker no corpo da issue: re-executar o mesmo plano não
+// duplica nada.
 
 export interface IssueRef {
   number: number
@@ -56,7 +56,12 @@ export interface BacklogPlan {
 export interface ApplyBacklogOptions {
   github: BacklogGitHub
   plan: BacklogPlan
-  /** Label de delegação para tasks prontas (ex.: 'jules'); ausente = não delega. */
+  /**
+   * Mantido só por compatibilidade da assinatura pública: é IGNORADO.
+   * Delegar é decisão exclusiva do SM (ver `sm-delegation.ts`) desde 14/08/2026 —
+   * quando o PO também delegava, havia dois donos para a mesma decisão e nenhum
+   * olhava o teto diário do dev assíncrono.
+   */
   delegateLabel?: string
 }
 
@@ -278,7 +283,7 @@ export async function applyBacklog(options: ApplyBacklogOptions): Promise<ApplyB
   }
 
   // 5) Tasks sob suas features: DoD completo, dependências, sprint (milestone
-  //    datado + iteração do board) e delegação quando prontas na sprint 1.
+  //    datado + iteração do board).
   const taskRefs: IssueRef[] = []
   for (let i = 0; i < plan.tasks.length; i++) {
     const task = plan.tasks[i]!
