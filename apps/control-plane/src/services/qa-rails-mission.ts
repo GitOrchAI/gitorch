@@ -366,9 +366,36 @@ export async function runQaMissionViaRails(
     }
   }
 
+  // A lacuna vira MEMÓRIA, não exceção de merge. Decisão do dono (14/08/2026):
+  // repositório sem verificação automática é trabalho de backlog — o QA
+  // registra, o RA monta os dados técnicos de como criar a verificação naquele
+  // projeto, e o PO gera as tarefas. Tratar "sem verificação" como verde era
+  // mesclar sem nenhuma rede, exatamente no repositório bagunçado que o produto
+  // existe para arrumar.
+  const lacunas: string[] = []
+  if (ciState === 'no checks') {
+    lacunas.push(
+      'GITORCH-GAP: this repository has no automated checks. Judgment fell back to ' +
+        'diff reading alone, with no test evidence. This is a CRITICAL gap: the ' +
+        'repository needs a CI workflow before delivery can be trusted. RA: produce ' +
+        'the technical grounding for adding it (which commands, which files, which ' +
+        'trigger). PO: turn it into backlog.'
+    )
+  }
+  if (truncado) {
+    lacunas.push(
+      `GITORCH-GAP: PR #${target.number} diff did not fit (${arquivos} files); ` +
+        'judgment was made on a partial view and approval was blocked.'
+    )
+  }
+
+  // `cardNote` já é efeito colateral registrado (a movimentação em si já
+  // aconteceu acima) — preservado aqui como parte do resumo para não perder
+  // informação que já existia na saída antes desta mudança.
+  const resumo = `QA judged PR #${target.number}: ${effectiveVerdict} (CI ${ciState}).${cardNote}`
   return {
     exitCode: 0,
-    output: `QA judged PR #${target.number}: ${effectiveVerdict} (CI ${ciState}).${cardNote}`,
+    output: [resumo, ...lacunas].join('\n'),
     stderr: '',
   }
 }

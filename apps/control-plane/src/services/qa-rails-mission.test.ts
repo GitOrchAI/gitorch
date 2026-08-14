@@ -438,6 +438,39 @@ describe('runQaMissionViaRails', () => {
     expect(r.output).toContain('request_changes')
   })
 
+  // Task 8 (decisão do dono 14/08/2026): repositório sem verificação
+  // automática não é caso para aprovar em silêncio — é trabalho de backlog.
+  // A trava acima já vira o veredito em REQUEST_CHANGES; falta a outra
+  // metade: a lacuna precisa aparecer na SAÍDA da missão, porque é a saída
+  // que `persistMissionMemory` (scheduler.ts) grava como memória do
+  // projeto — sem o marcador `GITORCH-GAP` na saída, o RA nunca saberia que
+  // precisa fundamentar a criação de CI, e o PO nunca teria o que virar
+  // tarefa.
+  it('sem verificação automática: não aprova e registra a lacuna na saída', async () => {
+    const f = fakeFetch([{ number: 7, user: 'jules[bot]' }], undefined, undefined, {
+      checkRuns: [],
+    })
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE, // o motor manda aprovar — a lacuna tem que sobrepor
+      fetchImpl: f,
+    })
+    expect(r.output).toContain('GITORCH-GAP: this repository has no automated checks')
+    expect(r.output).toContain('request_changes')
+  })
+
+  it('com verificação verde, não registra lacuna', async () => {
+    const f = fakeFetch([{ number: 7, user: 'jules[bot]' }]) // default: checkRuns 'success'
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+    })
+    expect(r.output).not.toContain('GITORCH-GAP')
+  })
+
   // Achado Importante 2 da revisão da Task 7: nenhum teste desta suíte tinha
   // `truncado: true` de ponta a ponta (os patches dos fixtures são
   // minúsculos) — uma regressão que removesse `|| truncado` da trava não
