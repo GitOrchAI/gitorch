@@ -7,6 +7,7 @@ import {
   responderSessaoJules,
   aprovarPlanoJules,
 } from './jules-client.js'
+import * as julesClient from './jules-client.js'
 
 // Desejo do dono (issue de wishlist deste repositório): delegar tem de ACIONAR
 // o dev assíncrono, não apenas pendurar um label e torcer para alguém escutar.
@@ -198,5 +199,23 @@ describe('responderSessaoJules e aprovarPlanoJules', () => {
     expect(await aprovarPlanoJules({ apiKey: 'k', sessionName: 'sessions/1', fetchImpl })).toBe(
       false
     )
+  })
+})
+
+describe('a superfície do cliente do Jules bate com a API oficial', () => {
+  it('não expõe funções que chamam endereços inexistentes', () => {
+    // `:continue` e `/quota` não existem na API do Jules (documentação oficial
+    // e sondagem: 404). Manter função para eles é código morto disfarçado de
+    // funcional — sempre caiu no próprio catch.
+    expect(julesClient).not.toHaveProperty('continuarSessaoJules')
+    expect(julesClient).not.toHaveProperty('getJulesQuota')
+    expect(julesClient).not.toHaveProperty('getSessaoJulesStatus')
+  })
+
+  it('expõe as quatro funções que a vigia usa', () => {
+    expect(typeof julesClient.consultarSessaoJules).toBe('function')
+    expect(typeof julesClient.responderSessaoJules).toBe('function')
+    expect(typeof julesClient.aprovarPlanoJules).toBe('function')
+    expect(typeof julesClient.ultimaMensagemDoDevJules).toBe('function')
   })
 })
