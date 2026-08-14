@@ -79,7 +79,24 @@ function fakeFetch(
    * Default 50 preserva o comportamento antigo; os testes do caminho
    * autoritativo (linha da sessão) passam a issue real da linha.
    */
-  issueNumber = 50
+  issueNumber = 50,
+  /**
+   * Achado Crítico da revisão da Task 7 (`diff-do-pr.ts`): antes desta
+   * correção, `truncado` ficava `false` quando o laço de paginação esgotava
+   * `MAX_PAGINAS` com o último lote ainda não-vazio. Este mock respondia ao
+   * mesmo array em TODAS as páginas (ignorava `page=`), então `lerDiffDoPr`
+   * sempre esgotava as 20 páginas — inofensivo enquanto o bug deixava
+   * `truncado = false`, mas com a correção isso marcaria `truncado = true`
+   * em todo teste que passa por aqui, quebrando as asserções de `APPROVE`
+   * que nada têm a ver com truncamento. Por isso a página 2+ agora devolve
+   * vazio — fiel ao GitHub real — e `patchArquivoUnico`/`checkRuns` deixam
+   * os achados Importante 1 e 2 simularem "sem verificação" e "diff grande"
+   * sem precisar de outro mock do zero.
+   */
+  opts: {
+    patchArquivoUnico?: string
+    checkRuns?: Array<{ conclusion?: string; status?: string }>
+  } = {}
 ): typeof fetch {
   const posted: {
     reviews: unknown[]
@@ -136,10 +153,19 @@ function fakeFetch(
       })
     }
     if (u.includes('/commits/') && u.includes('/check-runs')) {
-      return json({ check_runs: [{ name: 'ci', conclusion: 'success', status: 'completed' }] })
+      return json({
+        check_runs: opts.checkRuns ?? [{ name: 'ci', conclusion: 'success', status: 'completed' }],
+      })
     }
-    if (u.match(/\/pulls\/\d+\/files/))
-      return json([{ filename: 'src/reviews.ts', patch: '+code' }])
+    if (u.match(/\/pulls\/\d+\/files/)) {
+      // A página 1 traz o arquivo; da página 2 em diante, vazio — como o
+      // GitHub real. Sem isso `lerDiffDoPr` nunca vê uma página vazia e
+      // esgota MAX_PAGINAS sempre, o que (depois da correção do Achado
+      // Crítico) marcaria `truncado = true` em todo teste à toa.
+      const pagina = Number(new URL(u).searchParams.get('page') ?? '1')
+      if (pagina > 1) return json([])
+      return json([{ filename: 'src/reviews.ts', patch: opts.patchArquivoUnico ?? '+code' }])
+    }
     if (u.match(/\/issues\/\d+\/comments/) && method === 'GET') return json([]) // sem marker
     if (u.match(/\/pulls\/\d+\/reviews/) && method === 'POST') {
       posted.reviews.push(body)
@@ -378,6 +404,65 @@ describe('runQaMissionViaRails', () => {
     })
     expect(posted.reviews[0]!.event).toBe('REQUEST_CHANGES')
     expect(posted.comments[0]!.body).toContain('@jules')
+  })
+
+  // Achado Importante 1 da revisão da Task 7: `'no checks'` SAIU da lista de
+  // estados aprováveis (só `ciState === 'green'` libera aprovação), mas
+  // nenhum teste provava isso — a suíte inteira continuava verde mesmo se
+  // alguém reintroduzisse a exceção. Repositório sem verificação nenhuma é
+  // exatamente o alvo da tese do produto: aprovar sem rede de segurança é o
+  // risco que a trava existe para fechar.
+  it('sem NENHUMA verificação (check_runs vazio), o motor aprova mas a trava vira REQUEST_CHANGES', async () => {
+    const f = fakeFetch([{ number: 7, user: 'jules[bot]' }], undefined, undefined, {
+      checkRuns: [],
+    })
+    const posted = (
+      f as unknown as {
+        posted: {
+          reviews: Array<{ event?: string; body?: string }>
+          comments: Array<{ body?: string }>
+        }
+      }
+    ).posted
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE, // o motor manda aprovar — a trava tem que sobrepor
+      fetchImpl: f,
+    })
+    // O evento do review postado é a prova real (não só o exitCode): sem
+    // verificação nenhuma, o veredito efetivo NUNCA pode ser aprovação.
+    expect(posted.reviews[0]!.event).toBe('REQUEST_CHANGES')
+    expect(posted.reviews[0]!.body).toContain('REQUEST CHANGES')
+    expect(posted.comments).toHaveLength(1) // rework comment postado (fluxo de request_changes)
+    expect(r.output).toContain('request_changes')
+  })
+
+  // Achado Importante 2 da revisão da Task 7: nenhum teste desta suíte tinha
+  // `truncado: true` de ponta a ponta (os patches dos fixtures são
+  // minúsculos) — uma regressão que removesse `|| truncado` da trava não
+  // quebraria nada aqui.
+  it('diff que estoura LIMITE_DE_CARACTERES: o motor aprova mas a trava vira REQUEST_CHANGES, e o prompt avisa TRUNCATED', async () => {
+    const patchGigante = 'x'.repeat(130_000) // > 120_000 (LIMITE_DE_CARACTERES)
+    const f = fakeFetch([{ number: 7, user: 'jules[bot]' }], undefined, undefined, {
+      patchArquivoUnico: patchGigante,
+    })
+    const posted = (
+      f as unknown as { posted: { reviews: Array<{ event?: string; body?: string }> } }
+    ).posted
+    const prompts: string[] = []
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async (prompt) => {
+        prompts.push(prompt)
+        return APPROVE // o motor manda aprovar — a trava tem que sobrepor
+      },
+      fetchImpl: f,
+    })
+    expect(posted.reviews[0]!.event).toBe('REQUEST_CHANGES')
+    expect(prompts[0]).toContain('TRUNCATED')
+    expect(r.output).toContain('request_changes')
   })
 
   // Achado 1 da revisão da Task 6: os 15 testes acima nunca passam `sessoes`,
