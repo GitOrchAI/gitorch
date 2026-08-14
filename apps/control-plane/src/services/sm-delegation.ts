@@ -1,11 +1,20 @@
 import { GithubExecutionError } from './github-backlog.js'
 import { aplicarLabelDoAgente } from './agent-label.js'
+import { escolherParaDelegar, type IssueCandidata } from './fila-de-delegacao.js'
+import type { LinhaDeSessao } from './dev-session-store.js'
 
 // Delegação contínua do SM (F3.6 item 2): a cada wake, encontra as TASKS prontas
-// (label `gitorch:task`, sem `jules`, com todos os "Blocked by" já fechados) e
-// aplica a label de delegação — assim uma task que desbloqueia no MEIO da sprint
-// segue sozinha, sem esperar o próximo sprint-planning. É determinístico (o
-// "julgamento" mecânico é código, não LLM — a Lei).
+// (label `gitorch:task`, sem sessão viva na tabela `dev_sessions`, com todos os
+// "Blocked by" já fechados) e aplica a label de delegação — assim uma task que
+// desbloqueia no MEIO da sprint segue sozinha, sem esperar o próximo
+// sprint-planning. É determinístico (o "julgamento" mecânico é código, não LLM
+// — a Lei).
+//
+// A fila é decidida pela linha da sessão (fila-de-delegacao.ts), não pela
+// etiqueta: a etiqueta é irreversível na prática (uma vez aplicada, nunca sai
+// sozinha), e usá-la como critério de fila foi o que fez #46, #47 e #48
+// morrerem em silêncio — delegadas, a sessão caiu, e como carregavam a
+// etiqueta nunca voltaram a ser candidatas.
 
 const TASK_LABEL = 'gitorch:task'
 
@@ -40,6 +49,17 @@ export interface SmDelegationOptions {
    */
   aoCriarSessao?: (dados: { issueNumber: number; sessionName: string }) => Promise<void>
   fetchImpl?: typeof fetch
+  /**
+   * Linhas de sessão abertas deste projeto. É a fila real: issue com linha viva
+   * já está sendo trabalhada; issue sem linha viva está por delegar, mesmo que
+   * já tenha sido delegada antes e a sessão tenha morrido.
+   */
+  sessoesVivas?: LinhaDeSessao[]
+  /** Sessões abertas neste projeto nas últimas 24h, para o teto diário. */
+  delegadasHoje?: number
+  /** Do plano declarado pelo dono. Padrão: Free, que é o mais restritivo. */
+  tetoConcorrentes?: number
+  tetoDiario?: number
 }
 
 export interface SmDelegationResult {
@@ -77,33 +97,45 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
     return resp.json().catch(() => ({}))
   }
 
-  // Candidatas: tasks abertas do GitOrch ainda NÃO delegadas.
+  // Candidatas na ordem que o GitHub devolveu (a ordem da sprint).
   const tasks = (await gh(
     'GET',
     `/repos/${options.repository}/issues?state=open&labels=${encodeURIComponent(TASK_LABEL)}&per_page=100`
   )) as Array<{ number: number; title?: string; labels: Array<{ name: string }>; body?: string }>
-  const candidates = (Array.isArray(tasks) ? tasks : []).filter(
-    (t) => !t.labels.some((l) => l.name === label)
-  )
+  const abertas = Array.isArray(tasks) ? tasks : []
+
+  // Bloqueadores só para quem ainda não tem sessão viva — não adianta gastar
+  // chamada em issue que já está em trabalho.
+  const comSessaoViva = new Set((options.sessoesVivas ?? []).map((s) => s.issueNumber))
+  const candidatas: IssueCandidata[] = []
+  for (const t of abertas) {
+    if (comSessaoViva.has(t.number)) continue
+    let abertosCount = 0
+    for (const b of extractBlockers(t.body ?? '')) {
+      const blocker = (await gh('GET', `/repos/${options.repository}/issues/${b}`)) as {
+        state?: string
+      }
+      if (blocker.state !== 'closed') abertosCount += 1
+    }
+    candidatas.push({ number: t.number, bloqueadoresAbertos: abertosCount })
+  }
+
+  const escolhidas = escolherParaDelegar({
+    candidatas,
+    sessoesVivas: options.sessoesVivas ?? [],
+    delegadasHoje: options.delegadasHoje ?? 0,
+    tetoConcorrentes: options.tetoConcorrentes ?? 3,
+    tetoDiario: options.tetoDiario ?? 15,
+    capPorCiclo: cap,
+  })
+  const porNumero = new Map(abertas.map((t) => [t.number, t]))
 
   const delegated: number[] = []
   // Identificadores das sessões abertas no dev assíncrono, para o watchdog cobrar.
   const sessoes: string[] = []
-  for (const task of candidates) {
-    if (delegated.length >= cap) break
-    // Pronta = todos os "Blocked by" fechados.
-    const blockers = extractBlockers(task.body ?? '')
-    let ready = true
-    for (const b of blockers) {
-      const blocker = (await gh('GET', `/repos/${options.repository}/issues/${b}`)) as {
-        state?: string
-      }
-      if (blocker.state !== 'closed') {
-        ready = false
-        break
-      }
-    }
-    if (!ready) continue
+  for (const numero of escolhidas) {
+    const task = porNumero.get(numero)
+    if (!task) continue
     await gh('POST', `/repos/${options.repository}/issues/${task.number}/labels`, {
       labels: [label],
     })

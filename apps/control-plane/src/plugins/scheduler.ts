@@ -1343,6 +1343,24 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 )
               }
             },
+            // A fila real: issue com linha viva já está sendo trabalhada; sem
+            // linha viva está por delegar, mesmo que já tenha sido delegada
+            // antes e a sessão tenha morrido (fila-de-delegacao.ts).
+            sessoesVivas: await sessoesVivas({
+              prisma: app.prisma as unknown as PrismaDevSession,
+              projectId: project.id,
+            }),
+            delegadasHoje: await app.prisma.devSession.count({
+              where: {
+                projectId: project.id,
+                createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+              },
+            }),
+            // Literais por enquanto: o plano do dev assíncrono ainda não existe
+            // (nada hoje lê teto por conta). Uma tarefa futura troca as duas
+            // linhas abaixo por `...tetosDoPlanoDoDev(project.devPlan)`.
+            tetoConcorrentes: 3,
+            tetoDiario: 15,
           })
           // O aviso é do DONO do projeto — a task travada é a dele. Antes, o
           // chat vinha direto do env (GITORCH_TELEGRAM_CHAT_ID): TODO cliente

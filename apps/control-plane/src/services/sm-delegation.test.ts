@@ -73,14 +73,36 @@ function fakeFetch(issues: FakeIssue[], closed: number[] = []) {
 }
 
 describe('runSmDelegation', () => {
-  it('delega tasks prontas: sem bloqueio, sem jules', async () => {
+  it('delega task pronta; NÃO delega task com sessão viva', async () => {
+    // #11 já carrega a etiqueta `jules`, mas isso sozinho não a tira da fila
+    // (é exatamente o defeito que fazia #46/#47/#48 morrerem em silêncio). O
+    // que a tira da fila é ter uma linha viva em `sessoesVivas`.
     const f = fakeFetch([
       { number: 10, labels: ['gitorch:task'], body: 'sem bloqueio' },
-      { number: 11, labels: ['gitorch:task', 'jules'], body: 'já delegada' },
+      { number: 11, labels: ['gitorch:task', 'jules'], body: 'sessão em andamento' },
     ])
     const labeled = (f as unknown as { labeled: Array<{ number: number; labels: string[] }> })
       .labeled
-    const r = await runSmDelegation({ repository: 'o/r', githubToken: 't', fetchImpl: f })
+    const r = await runSmDelegation({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: f,
+      sessoesVivas: [
+        {
+          id: 'x',
+          projectId: 'p',
+          issueNumber: 11,
+          sessionName: 's',
+          state: 'IN_PROGRESS',
+          answeredHash: null,
+          pullRequestNumber: null,
+          attempts: 1,
+          nudges: 0,
+          lastProgressAt: null,
+          stateCheckedAt: null,
+        },
+      ],
+    })
     const delegateCalls = labeled.filter((l) => l.labels.includes('jules'))
     expect(delegateCalls.map((l) => l.number)).toEqual([10])
     expect(r.delegated).toEqual([10])
@@ -232,5 +254,80 @@ describe('runSmDelegation: aciona o dev assíncrono', () => {
     expect(r.delegated).toEqual([42])
     expect(labeled.some((l) => l.labels.includes('jules'))).toBe(true)
     expect(r.output).toContain('#42')
+  })
+})
+
+// Desejo do dono: a fila deixa de ser "issue sem a etiqueta" e passa a ser a
+// linha viva em `dev_sessions`. Medido em produção: #46, #47 e #48 foram
+// delegadas, o trabalho morreu na sessão, e como as três carregavam a
+// etiqueta nunca mais voltaram para a fila — morreram em silêncio.
+describe('runSmDelegation: fila sai da linha da sessão, não da etiqueta', () => {
+  it('redelega issue que já tem a etiqueta mas cuja sessão morreu', async () => {
+    const fetchImpl = (async (url: string) => {
+      if (String(url).includes('/issues?state=open')) {
+        return new Response(
+          JSON.stringify([
+            {
+              number: 46,
+              title: 'morta',
+              labels: [{ name: 'gitorch:task' }, { name: 'jules' }],
+              body: '',
+            },
+          ]),
+          { status: 200 }
+        )
+      }
+      return new Response(JSON.stringify({}), { status: 200 })
+    }) as unknown as typeof fetch
+
+    const r = await runSmDelegation({
+      repository: 'acme/api',
+      githubToken: 't',
+      fetchImpl,
+      sessoesVivas: [],
+      delegadasHoje: 0,
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+    })
+    expect(r.delegated).toEqual([46])
+  })
+
+  it('não delega issue que já tem sessão viva', async () => {
+    const fetchImpl = (async (url: string) => {
+      if (String(url).includes('/issues?state=open')) {
+        return new Response(
+          JSON.stringify([
+            { number: 46, title: 'em trabalho', labels: [{ name: 'gitorch:task' }], body: '' },
+          ]),
+          { status: 200 }
+        )
+      }
+      return new Response(JSON.stringify({}), { status: 200 })
+    }) as unknown as typeof fetch
+
+    const r = await runSmDelegation({
+      repository: 'acme/api',
+      githubToken: 't',
+      fetchImpl,
+      sessoesVivas: [
+        {
+          id: 'x',
+          projectId: 'p',
+          issueNumber: 46,
+          sessionName: 's',
+          state: 'IN_PROGRESS',
+          answeredHash: null,
+          pullRequestNumber: null,
+          attempts: 1,
+          nudges: 0,
+          lastProgressAt: null,
+          stateCheckedAt: null,
+        },
+      ],
+      delegadasHoje: 0,
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+    })
+    expect(r.delegated).toEqual([])
   })
 })
