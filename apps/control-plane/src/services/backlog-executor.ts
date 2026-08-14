@@ -314,18 +314,10 @@ export async function applyBacklog(options: ApplyBacklogOptions): Promise<ApplyB
     )
   }
 
-  // 7) Delegação: tasks da SPRINT 1 sem dependência aberta ganham a label — o
-  //    resto o SM libera quando os bloqueadores fecharem (delegação contínua).
-  if (options.delegateLabel) {
-    for (let i = 0; i < plan.tasks.length; i++) {
-      const task = plan.tasks[i]!
-      const ref = taskRefs[i]!
-      const isBlocked = (task.blockedByTaskIndexes ?? []).length > 0
-      if (sprintByTask.get(i) === 1 && !isBlocked) {
-        await github.addLabels(ref.nodeId, [options.delegateLabel])
-      }
-    }
-  }
+  // A delegação NÃO nasce aqui. Decisão do dono (14/08/2026): só o SM delega.
+  // O PO monta o plano e para. Quando o PO também delegava, havia dois donos
+  // para a mesma decisão — e nenhum dos dois olhava o teto do plano do dev
+  // assíncrono. Ver `fila-de-delegacao.ts`.
 
   return result
 }
