@@ -12,6 +12,7 @@ import { aplicarLabelDoAgente } from './agent-label.js'
 import type { CardMover } from './board-status.js'
 import { ehPrDelegado } from './pr-delegado.js'
 import type { LinhaDeSessao } from './dev-session-store.js'
+import { lerDiffDoPr, type ArquivoDoPr } from './diff-do-pr.js'
 
 // Missão do QA nos TRILHOS (F3.6): acha a PR do Jules que precisa de julgamento,
 // monta o snapshot (diff + Verification Criteria da issue + estado do CI), o
@@ -219,14 +220,13 @@ export async function runQaMissionViaRails(
     )
     if (found?.[1]) criteria = found[1].trim()
   }
-  const files = (await gh(
-    'GET',
-    `/repos/${options.repository}/pulls/${target.number}/files?per_page=50`
-  )) as Array<{ filename: string; patch?: string }>
-  const diff = (Array.isArray(files) ? files : [])
-    .map((x) => `--- ${x.filename}\n${(x.patch ?? '').slice(0, 2000)}`)
-    .join('\n')
-    .slice(0, 20000)
+  const { diff, arquivos, truncado } = await lerDiffDoPr({
+    buscarPagina: async (pagina) =>
+      (await gh(
+        'GET',
+        `/repos/${options.repository}/pulls/${target.number}/files?per_page=100&page=${pagina}`
+      )) as ArquivoDoPr[],
+  })
   let ciState = 'unknown'
   if (pr.head?.sha) {
     const checks = (await gh(
@@ -247,7 +247,11 @@ export async function runQaMissionViaRails(
     `PR #${target.number} by ${target.user?.login}.`,
     `Verification Criteria (from linked issue #${linkedIssue ?? '?'}):\n${criteria}`,
     `CI status: ${ciState}. (You MUST NOT approve when CI is not green.)`,
-    `Diff (truncated):\n${diff}`,
+    truncado
+      ? `Diff: ${arquivos} file(s), TRUNCATED — you are NOT seeing the whole change. ` +
+        `You MUST NOT approve on a truncated diff: if the criteria cannot be checked ` +
+        `against what you can see, say so explicitly in your comment.\n${diff}`
+      : `Diff (${arquivos} file(s), complete):\n${diff}`,
   ])
   const verdict = (await runFormStep({
     schema: RAILS_SCHEMAS.qaVerdict,
@@ -255,10 +259,15 @@ export async function runQaMissionViaRails(
     execute: options.execute,
   })) as QaVerdictForm
 
-  // 3b) Trava de segurança determinística: nunca aprovar com CI não-verde,
-  // mesmo se a LLM disser approve (a Lei: o sistema é o guarda final).
+  // Trava determinística: nunca aprovar com verificação não-verde nem sobre um
+  // diff que não coube por inteiro. O sistema é o guarda final, não a leitura
+  // do motor.
+  //
+  // `no checks` SAIU da lista de estados aceitáveis: ausência de verificação
+  // não é aprovação. Ela vira lacuna registrada na memória do projeto (ver
+  // adiante neste arquivo), para o RA fundamentar e o PO transformar em tarefa.
   const effectiveVerdict =
-    verdict.verdict === 'approve' && ciState !== 'green' && ciState !== 'no checks'
+    verdict.verdict === 'approve' && (ciState !== 'green' || truncado)
       ? 'request_changes'
       : verdict.verdict
 
