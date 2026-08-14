@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { runQaMissionViaRails, buildJulesReworkComment } from './qa-rails-mission.js'
 import { assertMissionDelivered } from './mission-outcome.js'
+import type { LinhaDeSessao } from './dev-session-store.js'
 
 const RECON = JSON.stringify({
   ci: 'GitHub Actions (.github/workflows/ci.yml) — roda lint, typecheck e testes por workspace.',
@@ -42,13 +43,43 @@ const REQUEST_CHANGES = JSON.stringify({
   },
 })
 
+/**
+ * Linha de `dev_sessions` para os testes que exercitam o caminho autoritativo
+ * de `ehPrDelegado` (Achado 1 da revisão da Task 6). Mesmo shape do helper de
+ * `pr-delegado.test.ts` — não inventar outro.
+ */
+function linha(over: Partial<LinhaDeSessao>): LinhaDeSessao {
+  return {
+    id: 'x',
+    projectId: 'p',
+    issueNumber: 1,
+    sessionName: 's',
+    state: 'COMPLETED',
+    answeredHash: null,
+    pullRequestNumber: null,
+    attempts: 1,
+    nudges: 0,
+    lastProgressAt: null,
+    stateCheckedAt: null,
+    ...over,
+  }
+}
+
 function fakeFetch(
   prs: Array<{
     number: number
     user: string
     existingReviews?: Array<{ body: string; commit_id: string }>
+    /** Corpo do PR. Default preserva o `Closes #50` que os 15 testes antigos assumem. */
+    body?: string
   }>,
-  issueLabels: string[] = ['jules', 'gitorch:task']
+  issueLabels: string[] = ['jules', 'gitorch:task'],
+  /**
+   * Número da issue vinculada consultada para Verification Criteria/labels.
+   * Default 50 preserva o comportamento antigo; os testes do caminho
+   * autoritativo (linha da sessão) passam a issue real da linha.
+   */
+  issueNumber = 50
 ): typeof fetch {
   const posted: {
     reviews: unknown[]
@@ -67,7 +98,7 @@ function fakeFetch(
           number: p.number,
           user: { login: p.user },
           draft: false,
-          body: 'Closes #50',
+          body: p.body ?? 'Closes #50',
           head: { sha: 'abc123' },
         }))
       )
@@ -78,10 +109,15 @@ function fakeFetch(
     }
     if (u.endsWith('/user')) return json({ login: 'loureng' })
     if (/\/pulls\/\d+$/.test(u.split('?')[0]!)) {
-      return json({ number: 1, body: 'Closes #50', head: { sha: 'abc123' } })
+      // O fetch da PR isolada devolve o MESMO corpo da listagem (é a mesma PR
+      // no GitHub real) — sem isso, um teste que dependesse deste corpo (ex.:
+      // "Closes #N" de outra issue) veria sempre o valor fixo antigo.
+      const numeroDoPr = Number(u.split('?')[0]!.match(/\/pulls\/(\d+)$/)?.[1])
+      const p = prs.find((x) => x.number === numeroDoPr)
+      return json({ number: numeroDoPr, body: p?.body ?? 'Closes #50', head: { sha: 'abc123' } })
     }
-    // label da issue vinculada — checar ANTES de "/issues/50" (que também
-    // casaria com "/issues/50/labels" por ser substring).
+    // label da issue vinculada — checar ANTES de "/issues/{issueNumber}" (que também
+    // casaria com "/issues/{issueNumber}/labels" por ser substring).
     const dm = u.match(/\/issues\/(\d+)\/labels\/([^/]+)$/)
     if (dm && method === 'DELETE') {
       posted.labels.push({ number: Number(dm[1]), method, label: decodeURIComponent(dm[2]!) })
@@ -92,9 +128,9 @@ function fakeFetch(
       posted.labels.push({ number: Number(lm[1]), method, labels: body.labels })
       return json([])
     }
-    if (u.includes('/issues/50')) {
+    if (u.includes(`/issues/${issueNumber}`)) {
       return json({
-        number: 50,
+        number: issueNumber,
         labels: issueLabels.map((name) => ({ name })),
         body: '## Verification Criteria\n\n- GET /reviews retorna lista\n- POST valida compra',
       })
@@ -342,6 +378,86 @@ describe('runQaMissionViaRails', () => {
     })
     expect(posted.reviews[0]!.event).toBe('REQUEST_CHANGES')
     expect(posted.comments[0]!.body).toContain('@jules')
+  })
+
+  // Achado 1 da revisão da Task 6: os 15 testes acima nunca passam `sessoes`,
+  // então `ehPrDelegado` sempre cai direto nos recuos (2 e 3) — o caminho 1
+  // (a linha guardada, o autoritativo, o que resolveu o defeito medido em
+  // produção) nunca era exercitado no ponto onde ele de fato opera. Uma
+  // regressão que trocasse `options.sessoes ?? []` por `[]`, ou invertesse a
+  // ordem de autoridade dentro de `ehPrDelegado`, passaria batida pelos 1159
+  // testes da suíte. Os dois testes abaixo cobrem o cenário real do PR #63.
+  it('reconhece o PR #63 real pela linha da sessão: autor loureng (sem "jules"), corpo sem Closes #N', async () => {
+    // Caso real de produção: 85 execuções do QA dizendo "no delegated PR"
+    // com este PR aberto na frente dele — o autor é a conta da instalação
+    // (não contém "jules") e o corpo não traz palavra de ligação nenhuma.
+    // Só a linha guardada (`sessoes`) sabe que o PR #63 nasceu da issue #24.
+    const f = fakeFetch(
+      [{ number: 63, user: 'loureng', body: 'Fix failing CI by downgrading action versions' }],
+      ['jules', 'gitorch:task'],
+      24
+    )
+    const posted = (
+      f as unknown as {
+        posted: {
+          reviews: Array<{ event?: string }>
+          labels: Array<{ number: number; method: string; labels?: string[] }>
+        }
+      }
+    ).posted
+    const prompts: string[] = []
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async (prompt) => {
+        prompts.push(prompt)
+        return APPROVE
+      },
+      sessoes: [linha({ issueNumber: 24, pullRequestNumber: 63 })],
+      fetchImpl: f,
+    })
+
+    // Não é no-op: o PR foi reconhecido como delegado (sem isso o QA nunca
+    // chegaria a julgar nada, que era exatamente o defeito de produção).
+    expect(r.noOp).toBeUndefined()
+    expect(posted.reviews[0]!.event).toBe('APPROVE')
+    // A issue usada no julgamento (Verification Criteria + label final) é a
+    // #24 da LINHA — não uma issue extraída do corpo, que aqui nem existe.
+    expect(prompts[0]).toContain('linked issue #24')
+    const marcada = posted.labels.find(
+      (l) => l.method === 'POST' && (l.labels ?? []).includes('gitorch:agent:qa')
+    )
+    expect(marcada?.number).toBe(24)
+  })
+
+  it('a linha vence a palavra de ligação: corpo aponta para OUTRA issue, a linha decide', async () => {
+    // Prova a ORDEM de autoridade: mesmo com "Closes #99" no corpo, quem
+    // decide a issue vinculada é a linha guardada (#24), não a regex do
+    // corpo. Uma inversão de ordem em `ehPrDelegado` faria este teste falhar.
+    const f = fakeFetch([{ number: 70, user: 'loureng', body: 'Closes #99' }], ['jules'], 24)
+    const posted = (
+      f as unknown as {
+        posted: { labels: Array<{ number: number; method: string; labels?: string[] }> }
+      }
+    ).posted
+    const prompts: string[] = []
+    await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async (prompt) => {
+        prompts.push(prompt)
+        return APPROVE
+      },
+      sessoes: [linha({ issueNumber: 24, pullRequestNumber: 70 })],
+      fetchImpl: f,
+    })
+
+    expect(prompts[0]).toContain('linked issue #24')
+    expect(prompts[0]).not.toContain('linked issue #99')
+    const marcada = posted.labels.find(
+      (l) => l.method === 'POST' && (l.labels ?? []).includes('gitorch:agent:qa')
+    )
+    expect(marcada?.number).toBe(24)
   })
 })
 
