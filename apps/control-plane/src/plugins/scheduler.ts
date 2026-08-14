@@ -83,7 +83,7 @@ import { computeConsumption } from '../lib/consumption.js'
 import { pipelineCheckEnabled } from '../config/pipeline-check.js'
 import { resolveMissionCpus } from '../config/mission-cpus.js'
 import { reapOrphanContainers, failOrphanRunningMissions, type ReapResult } from './boot-reaper.js'
-import type { PrismaClient } from '@prisma/client'
+import type { Prisma, PrismaClient } from '@prisma/client'
 import * as os from 'node:os'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -231,6 +231,36 @@ export function montarOpcoesDeDelegacao(args: {
     sessoesVivas: args.sessoesVivas,
     delegadasHoje: args.delegadasHoje,
     ...tetosDoPlanoDoDev(args.devPlan),
+  }
+}
+
+/**
+ * O filtro das sessões que o julgamento precisa enxergar.
+ *
+ * Exportado para ser testável: é ele que decide se o QA acha ou não o PR do dev
+ * assíncrono, e um erro aqui é silencioso — o QA simplesmente diz que não há PR
+ * para julgar, como já aconteceu 85 vezes em produção.
+ *
+ * Sem teto (`take`) de propósito: `dev_sessions` nunca é apagada (o
+ * fechamento é lógico, ver dev-session-store.ts), então qualquer limite de
+ * quantidade acabaria escondendo a sessão certa num projeto de operação
+ * longa — o mesmo defeito que esta correção existe para matar. Em vez de
+ * limitar por quantidade, exclui-se só o que já terminou de verdade: as
+ * sessões mescladas, que são as únicas que se acumulam sem limite ao longo
+ * do tempo (as demais continuam candidatas até virarem 'merged').
+ *
+ * - Viva (`closedAt: null`) é candidata natural: pode ganhar PR a qualquer
+ *   momento.
+ * - Fechada só interessa se ainda tem PR pendente de veredito — é o caso da
+ *   sessão abandonada por teto de retomadas (`closedReason: 'abandoned'`) cujo
+ *   PR continua aberto no GitHub. `closedReason !== 'merged'` cobre esse caso
+ *   (e também 'failed_final'); o `pullRequestNumber` não nulo garante que só
+ *   entra quem de fato tem algo a julgar.
+ */
+export function filtroDeSessoesParaJulgamento(projectId: string): Prisma.DevSessionWhereInput {
+  return {
+    projectId,
+    OR: [{ closedAt: null }, { closedReason: { not: 'merged' }, pullRequestNumber: { not: null } }],
   }
 }
 
@@ -1529,12 +1559,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                     repository: project.wingId,
                     githubToken: railsToken as string,
                     contextBlocks,
-                    // TODAS as linhas do projeto, não só as vivas: um PR pode
-                    // chegar para julgamento depois de a sessão ter fechado.
+                    // Vivas + fechadas com PR pendente (não mescladas), sem
+                    // teto — ver filtroDeSessoesParaJulgamento.
                     sessoes: await app.prisma.devSession.findMany({
-                      where: { projectId: project.id },
+                      where: filtroDeSessoesParaJulgamento(project.id),
                       orderBy: { createdAt: 'desc' },
-                      take: 100,
                     }),
                     // Fase 1 do QA (Reconhecimento): só entra quando este QA foi
                     // acordado pela cascata de onboarding (Task 10) — hoje o
