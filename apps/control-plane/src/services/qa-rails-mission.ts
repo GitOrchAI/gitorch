@@ -10,6 +10,8 @@ import { runFormStep } from './rails-runner.js'
 import { GithubExecutionError } from './github-errors.js'
 import { aplicarLabelDoAgente } from './agent-label.js'
 import type { CardMover } from './board-status.js'
+import { ehPrDelegado } from './pr-delegado.js'
+import type { LinhaDeSessao } from './dev-session-store.js'
 
 // Missão do QA nos TRILHOS (F3.6): acha a PR do Jules que precisa de julgamento,
 // monta o snapshot (diff + Verification Criteria da issue + estado do CI), o
@@ -35,6 +37,8 @@ export interface QaRailsMissionOptions {
    */
   mode?: 'judge' | 'recon'
   fetchImpl?: typeof fetch
+  /** Linhas de sessão deste projeto — a forma autoritativa de reconhecer o PR. */
+  sessoes?: LinhaDeSessao[]
 }
 
 export interface QaRailsMissionResult {
@@ -65,10 +69,6 @@ export function buildJulesReworkComment(comment: QaVerdictForm['comment']): stri
     '',
     ...sections,
   ].join('\n\n')
-}
-
-function isJulesAuthor(login: string | undefined): boolean {
-  return (login ?? '').toLowerCase().includes('jules')
 }
 
 export async function runQaMissionViaRails(
@@ -113,18 +113,34 @@ export async function runQaMissionViaRails(
     head?: { sha?: string }
   }>
   let target: (typeof prs)[number] | undefined
+  let issueDaEntrega: number | null = null
   for (const p of Array.isArray(prs) ? prs : []) {
     if (p.draft) continue
-    let delegated = isJulesAuthor(p.user?.login)
-    if (!delegated) {
-      const linked = (p.body ?? '').match(/\b(?:closes|fixes|resolves)\s+#(\d+)/i)?.[1]
-      if (!linked) continue
-      const issue = (await gh('GET', `/repos/${options.repository}/issues/${linked}`)) as {
+
+    // A consulta à issue só acontece no recuo 3, e só quando há palavra de
+    // ligação — o caminho autoritativo (linha guardada) não gasta chamada
+    // nenhuma.
+    const etiquetasPorIssue = new Map<number, boolean>()
+    const ligada = (p.body ?? '').match(/\b(?:closes|fixes|resolves)\s+#(\d+)/i)?.[1]
+    if (ligada) {
+      const issue = (await gh('GET', `/repos/${options.repository}/issues/${ligada}`)) as {
         labels?: Array<{ name?: string }>
       }
-      delegated = (issue.labels ?? []).some((l) => l.name === delegateLabel)
+      etiquetasPorIssue.set(
+        Number(ligada),
+        (issue.labels ?? []).some((l) => l.name === delegateLabel)
+      )
     }
-    if (!delegated) continue
+
+    const veredito = ehPrDelegado({
+      numeroDoPr: p.number,
+      autor: p.user?.login,
+      corpo: p.body,
+      sessoes: options.sessoes ?? [],
+      issueComEtiquetaDeDelegacao: (n) => etiquetasPorIssue.get(n) ?? false,
+    })
+    if (!veredito.delegado) continue
+
     // Não re-julgar o MESMO estado a cada wake: se já há review nossa neste
     // head, o dev ainda não retrabalhou — julgar de novo só faria spam.
     const reviews = (await gh(
@@ -137,7 +153,9 @@ export async function runQaMissionViaRails(
         (r) => (r.body ?? '').includes(JULES_MARKER) && (!p.head?.sha || r.commit_id === p.head.sha)
       )
     if (alreadyJudged) continue
+
     target = p
+    issueDaEntrega = veredito.issueNumber
     break
   }
   if (!target) {
@@ -179,7 +197,13 @@ export async function runQaMissionViaRails(
     body?: string
     head?: { sha?: string }
   }
-  const linkedIssue = (pr.body ?? '').match(/\b(?:closes|fixes|resolves)\s+#(\d+)/i)?.[1]
+  // A issue vinculada vem PRIMEIRO da linha guardada (autoritativa); só cai
+  // para a palavra de ligação no corpo quando a delegação foi reconhecida
+  // pelos recuos (login do autor ou etiqueta), que não sabem a issue de origem.
+  const linkedIssue =
+    issueDaEntrega !== null
+      ? String(issueDaEntrega)
+      : (pr.body ?? '').match(/\b(?:closes|fixes|resolves)\s+#(\d+)/i)?.[1]
   let criteria = '(no linked issue / Verification Criteria not found)'
   let linkedIssueLabels: string[] = []
   if (linkedIssue) {

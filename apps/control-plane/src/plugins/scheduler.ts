@@ -1529,6 +1529,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                     repository: project.wingId,
                     githubToken: railsToken as string,
                     contextBlocks,
+                    // TODAS as linhas do projeto, não só as vivas: um PR pode
+                    // chegar para julgamento depois de a sessão ter fechado.
+                    sessoes: await app.prisma.devSession.findMany({
+                      where: { projectId: project.id },
+                      orderBy: { createdAt: 'desc' },
+                      take: 100,
+                    }),
                     // Fase 1 do QA (Reconhecimento): só entra quando este QA foi
                     // acordado pela cascata de onboarding (Task 10) — hoje o
                     // único jeito de o QA rodar, já que o projeto não tem
