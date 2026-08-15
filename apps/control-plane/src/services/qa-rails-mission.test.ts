@@ -96,13 +96,31 @@ function fakeFetch(
   opts: {
     patchArquivoUnico?: string
     checkRuns?: Array<{ conclusion?: string; status?: string }>
+    /**
+     * Achado Importante da revisão da Task 11: sem isto, o fallback genérico
+     * (`return json({})` no final desta função) absorvia o `PUT .../merge`
+     * sem que nenhum teste pudesse provar o caminho onde o GitHub recusa o
+     * merge — `mesclarPr` cai no `catch` e devolve `mesclado: false`, mas a
+     * suíte inteira era cega a esse ramo. Quando `true`, a rota de merge
+     * devolve uma resposta NÃO-ok (405, "not mergeable"), fiel ao formato
+     * real do erro do GitHub.
+     */
+    mergeFalha?: boolean
   } = {}
 ): typeof fetch {
   const posted: {
     reviews: unknown[]
     comments: unknown[]
     labels: Array<{ number: number; method: string; label?: string; labels?: string[] }>
-  } = { reviews: [], comments: [], labels: [] }
+    /**
+     * Achado Importante da revisão da Task 11: antes, NENHUMA chamada ao
+     * `PUT .../merge` era capturada — caía direto no fallback genérico
+     * `return json({})`, que aceita qualquer coisa sem registrar nada. Sem
+     * este array, nenhum teste consegue provar que o merge foi chamado, com
+     * que corpo, ou para qual PR.
+     */
+    merges: Array<{ number: number; body: unknown }>
+  } = { reviews: [], comments: [], labels: [], merges: [] }
   const impl = (async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     const u = String(url)
     const method = init?.method ?? 'GET'
@@ -174,6 +192,22 @@ function fakeFetch(
     if (u.match(/\/issues\/\d+\/comments/) && method === 'POST') {
       posted.comments.push(body)
       return json({ id: 1 })
+    }
+    // Rota de merge (Task 11): precisa vir ANTES do fallback genérico, senão
+    // `return json({})` no final absorve a chamada sem registrar nada — o
+    // mesmo defeito que a revisão apontou no dublê original.
+    const mm = u.match(/\/pulls\/(\d+)\/merge$/)
+    if (mm && method === 'PUT') {
+      posted.merges.push({ number: Number(mm[1]), body })
+      if (opts.mergeFalha) {
+        // Resposta NÃO-ok de verdade (via `Response` real, `.ok` calculado
+        // pelo status) — fiel ao formato do GitHub quando o PR não pode ser
+        // mesclado (ex.: 405 "Pull Request is not mergeable").
+        return new Response(JSON.stringify({ message: 'Pull Request is not mergeable' }), {
+          status: 405,
+        })
+      }
+      return json({ merged: true, sha: 'deadbeef', message: 'Squashed and merged.' })
     }
     return json({})
   }) as typeof fetch
@@ -717,6 +751,87 @@ describe('runQaMissionViaRails', () => {
       (l) => l.method === 'POST' && (l.labels ?? []).includes('gitorch:agent:qa')
     )
     expect(marcada?.number).toBe(24)
+  })
+
+  // Achado Importante da revisão da Task 11 (a mais perigosa do plano: dá ao
+  // produto o poder de mesclar código do cliente sem humano nenhum). A função
+  // pura `mesclarPr` já tinha teste por porteiro em `merge-do-pr.test.ts`, mas
+  // a INTEGRAÇÃO dentro desta missão nunca era exercitada — os 15+ testes do
+  // ramo de aprovação continuavam verdes só porque o fallback genérico do
+  // dublê (`return json({})`) absorvia o `PUT .../merge` sem checar nada. Uma
+  // regressão que trocasse `merge_method`, removesse a chamada, invertesse a
+  // condição de `aoMesclar`, ou apagasse o `mergeNote` do resumo passaria
+  // batida pela suíte inteira — numa ação que mescla código de cliente sem
+  // supervisão.
+  it('approve com CI verde e diff completo: chama PUT .../merge com merge_method squash', async () => {
+    const f = fakeFetch([{ number: 7, user: 'jules[bot]' }]) // default: checkRuns 'success', patch pequeno (diff completo)
+    const posted = (
+      f as unknown as { posted: { merges: Array<{ number: number; body: unknown }> } }
+    ).posted
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+    })
+    expect(r.exitCode).toBe(0)
+    // Não basta contar a chamada: precisa ser NO PR certo e com o método de
+    // merge que a decisão do dono (D7) fixou.
+    expect(posted.merges).toHaveLength(1)
+    expect(posted.merges[0]).toEqual({ number: 7, body: { merge_method: 'squash' } })
+  })
+
+  it('merge acontece: aoMesclar dispara UMA vez com o número certo do PR, e a saída declara "merged"', async () => {
+    const f = fakeFetch([{ number: 7, user: 'jules[bot]' }])
+    const mesclados: Array<{ numeroDoPr: number }> = []
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      aoMesclar: async (args) => {
+        mesclados.push(args)
+      },
+      fetchImpl: f,
+    })
+    // (b) fechar a sessão como "mesclada" só pode acontecer quando o merge de
+    // fato aconteceu — aqui aconteceu, então `aoMesclar` tem que ter disparado
+    // exatamente uma vez, com o PR #7.
+    expect(mesclados).toEqual([{ numeroDoPr: 7 }])
+    // (c) o resumo da missão precisa declarar o resultado do merge — texto
+    // real do `mergeNote` (qa-rails-mission.ts), não inventado.
+    expect(r.output).toContain('Merge: merged (verificação verde e QA aprovou).')
+  })
+
+  it('GitHub recusa o merge: aoMesclar NÃO dispara (perderia o rastro de um trabalho que continua aberto), e a saída declara "blocked"', async () => {
+    const f = fakeFetch([{ number: 7, user: 'jules[bot]' }], undefined, undefined, {
+      mergeFalha: true,
+    })
+    const posted = (
+      f as unknown as { posted: { merges: Array<{ number: number; body: unknown }> } }
+    ).posted
+    const mesclados: Array<{ numeroDoPr: number }> = []
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      aoMesclar: async (args) => {
+        mesclados.push(args)
+      },
+      fetchImpl: f,
+    })
+    // A tentativa aconteceu (não é que o sistema nunca chamou o GitHub) — só
+    // que o GitHub recusou.
+    expect(posted.merges).toHaveLength(1)
+    // (b) sem merge de verdade, `aoMesclar` fecharia a sessão como concluída
+    // por engano — a linha ficaria "morta" com PR ainda aberto no GitHub.
+    expect(mesclados).toHaveLength(0)
+    // A missão não quebra por causa disso: o veredito de aprovação já foi
+    // postado no PR antes da tentativa de merge.
+    expect(r.exitCode).toBe(0)
+    // (c) o resumo declara o bloqueio, com o motivo real devolvido por
+    // `mesclarPr` quando `deps.merge()` lança (branch de exceção).
+    expect(r.output).toContain('Merge: blocked (falha ao mesclar:')
+    expect(r.output).toContain('pulls/7/merge failed (405)')
   })
 })
 
