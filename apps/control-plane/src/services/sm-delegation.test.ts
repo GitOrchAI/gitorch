@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { runSmDelegation, extractBlockers } from './sm-delegation.js'
 
 describe('extractBlockers', () => {
@@ -220,6 +220,43 @@ describe('runSmDelegation: aciona o dev assíncrono', () => {
     })
 
     expect(r.delegated).toEqual([42])
+  })
+
+  // I4 (achado importante da revisão final): este é EXATAMENTE o caso em
+  // que "o julgamento não vai encontrar este PR" — a sessão nasceu no dev
+  // assíncrono mas a ligação issue↔sessão não pôde ser guardada. Sem canal
+  // injetado, o aviso saía por `console.warn` cru, invisível no logger
+  // estruturado (pino). Mesmo padrão já aplicado no QA (commit 5477a3e) e
+  // em `github-app-token.ts`: `onWarn` opcional, default `console.warn`.
+  it('o aviso sai pelo canal injetado, não pelo console — é ele que aparece no log estruturado', async () => {
+    const impl = fakeFetch([taskPronta()])
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    // `console.warn` já é um `vi.fn()` global (mock de `src/test/setup.ts`)
+    // compartilhado entre testes deste arquivo — `spyOn` nele devolve a MESMA
+    // instância, sem limpar chamadas de testes anteriores (ex.: "falha ao
+    // guardar a ligação..." acima, que aciona o mesmo caminho SEM `onWarn`).
+    // Limpa aqui para a asserção `not.toHaveBeenCalled()` medir só ESTA
+    // chamada, não o histórico acumulado do arquivo.
+    warnSpy.mockClear()
+    const avisos: string[] = []
+
+    const r = await runSmDelegation({
+      repository: 'GitOrchAI/gitorch',
+      githubToken: 't',
+      fetchImpl: impl,
+      criarSessaoDev: async () => 'sessions/xyz',
+      aoCriarSessao: async () => {
+        throw new Error('banco fora do ar')
+      },
+      onWarn: (m) => avisos.push(m),
+    })
+
+    expect(r.delegated).toEqual([42])
+    expect(avisos).toHaveLength(1)
+    expect(avisos[0]).toContain('#42')
+    expect(avisos[0]).toContain('banco fora do ar')
+    expect(warnSpy).not.toHaveBeenCalled()
+    warnSpy.mockRestore()
   })
 
   it('sem sessão criada, não há ligação para guardar', async () => {

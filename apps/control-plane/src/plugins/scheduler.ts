@@ -1429,6 +1429,10 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 },
               }),
             }),
+            // I4 (revisão final): antes hardcoded em `console.warn` dentro de
+            // `sm-delegation.ts`, invisível no logger estruturado — mesmo
+            // padrão já aplicado em `runQaMissionViaRails` (commit 5477a3e).
+            onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
           })
           // O aviso é do DONO do projeto — a task travada é a dele. Antes, o
           // chat vinha direto do env (GITORCH_TELEGRAM_CHAT_ID): TODO cliente

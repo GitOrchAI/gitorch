@@ -60,6 +60,19 @@ export interface SmDelegationOptions {
   /** Do plano declarado pelo dono. Padrão: Free, que é o mais restritivo. */
   tetoConcorrentes?: number
   tetoDiario?: number
+  /**
+   * Canal do aviso de degradação — antes hardcoded em `console.warn`,
+   * invisível na observabilidade estruturada. Produção (scheduler.ts) sempre
+   * passa `app.log.warn`. Default: console.warn (só pra chamadas fora do
+   * plugin).
+   *
+   * Não é preciosismo: este é justamente o aviso que existe para o
+   * julgamento não morrer em silêncio quando a sessão nasceu no dev
+   * assíncrono mas a ligação issue↔sessão não pôde ser guardada — sem essa
+   * ligação, o QA não reconhece o PR que chegar depois. Mesmo motivo já
+   * registrado em `github-app-token.ts` e `qa-rails-mission.ts`.
+   */
+  onWarn?: (message: string) => void
 }
 
 export interface SmDelegationResult {
@@ -190,7 +203,8 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
           try {
             await options.aoCriarSessao({ issueNumber: task.number, sessionName: sessao })
           } catch (err) {
-            console.warn(
+            const avisar = options.onWarn ?? console.warn
+            avisar(
               `[sm] sessão criada para #${task.number} mas a ligação não pôde ser guardada; ` +
                 `o julgamento não vai encontrar este PR: ${(err as Error).message}`
             )
