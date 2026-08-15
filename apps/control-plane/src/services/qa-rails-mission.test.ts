@@ -833,6 +833,95 @@ describe('runQaMissionViaRails', () => {
     expect(r.output).toContain('Merge: blocked (falha ao mesclar:')
     expect(r.output).toContain('pulls/7/merge failed (405)')
   })
+
+  // C1 (achado crítico da revisão final): a aprovação já foi postada no PR
+  // quando o GitHub recusa o merge (405, ou porque o produto não pôde
+  // aprovar a própria PR e a review virou COMMENT). Sem esta correção, o
+  // laço de descoberta via `alreadyJudged` pulava o PR PARA SEMPRE no ciclo
+  // seguinte — já existe review nossa (com o marcador) naquele mesmo head —
+  // e a esteira ficava presa: a linha da sessão nunca fecha, a issue nunca
+  // volta à fila, e a vigia dispara o QA 6x/hora devolvendo sempre "nenhum
+  // PR para julgar". Exatamente o defeito das 85 execuções cegas
+  // ressuscitado. Prova em DOIS ciclos: ciclo 1 aprova e o GitHub recusa;
+  // ciclo 2 (mesmo obstáculo já removido no GitHub) tem de reexaminar o
+  // MESMO PR e tentar o merge de novo — não pode ser noOp.
+  it('C1: aprovação recusada pelo GitHub não é beco sem saída — no ciclo seguinte o PR é reexaminado e o merge é tentado de novo', async () => {
+    // Ciclo 1: QA aprova, GitHub recusa o merge (405). A review de aprovação
+    // já foi postada ANTES da tentativa de merge — é o texto dela que o
+    // ciclo 2 vai encontrar como "já julgada" no mesmo head.
+    const f1 = fakeFetch([{ number: 7, user: 'jules[bot]' }], undefined, undefined, {
+      mergeFalha: true,
+    })
+    const posted1 = (
+      f1 as unknown as {
+        posted: { reviews: Array<{ body?: string }>; merges: Array<{ number: number }> }
+      }
+    ).posted
+    const r1 = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f1,
+    })
+    expect(r1.output).toContain('Merge: blocked')
+    expect(posted1.merges).toHaveLength(1)
+    const corpoDaAprovacao = posted1.reviews[0]!.body as string
+    expect(corpoDaAprovacao).toContain('<!-- gitorch:qa -->')
+
+    // Ciclo 2: o obstáculo já foi removido no GitHub (ex.: proteção de
+    // branch ajustada) — mas a review de aprovação do ciclo 1 continua lá,
+    // no MESMO head (mesmo commit_id 'abc123' que `fakeFetch` usa sempre).
+    // Sem a correção, o PR seria pulado para sempre por já ter review nossa
+    // ali, e a missão devolveria noOp eternamente mesmo com o merge
+    // possível agora.
+    const f2 = fakeFetch([
+      {
+        number: 7,
+        user: 'jules[bot]',
+        existingReviews: [{ body: corpoDaAprovacao, commit_id: 'abc123' }],
+      },
+    ])
+    const posted2 = (
+      f2 as unknown as { posted: { merges: Array<{ number: number; body: unknown }> } }
+    ).posted
+    const r2 = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f2,
+    })
+    expect(r2.noOp).toBeFalsy()
+    expect(posted2.merges).toHaveLength(1)
+    expect(r2.output).toContain('Merge: merged')
+  })
+
+  // Cuidado com o problema oposto: um PR REPROVADO cujo dev ainda não
+  // retrabalhou continua sendo pulado — reexaminar aqui só faria spam de
+  // re-julgamento, o defeito que `alreadyJudged` existia para evitar.
+  it('C1: PR reprovado (review marcada de REQUEST CHANGES) continua pulado no mesmo head — sem spam de re-julgamento', async () => {
+    const f = fakeFetch([
+      {
+        number: 9,
+        user: 'jules[bot]',
+        existingReviews: [
+          {
+            body: '<!-- gitorch:qa -->\nGitOrch QA verdict: REQUEST CHANGES (see comment).',
+            commit_id: 'abc123',
+          },
+        ],
+      },
+    ])
+    const posted = (f as unknown as { posted: { reviews: unknown[]; merges: unknown[] } }).posted
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+    })
+    expect(r.noOp).toBe(true)
+    expect(posted.reviews).toHaveLength(0)
+    expect(posted.merges).toHaveLength(0)
+  })
 })
 
 // Visto em produção, com a missão do QA marcada FAILED:

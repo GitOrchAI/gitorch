@@ -21,6 +21,16 @@ import { mesclarPr, type ResultadoDoMerge } from './merge-do-pr.js'
 // for rework — o comentário mencionando @jules. A LLM nunca toca no GitHub.
 
 const JULES_MARKER = '<!-- gitorch:qa -->'
+/**
+ * Substring EXATA do texto que a review de APROVAÇÃO posta (ver a montagem
+ * do corpo mais abaixo, no ramo `effectiveVerdict === 'approve'`). É o que
+ * permite ao laço de descoberta (C1, revisão final) diferenciar, entre as
+ * reviews MARCADAS (com `JULES_MARKER`) já postadas no mesmo head, uma
+ * aprovação de uma reprovação — sem isto as duas ficam indistinguíveis e um
+ * PR aprovado cujo merge o GitHub recusou fica pulado para sempre, do mesmo
+ * jeito que um PR reprovado esperando rework.
+ */
+const APPROVAL_VERDICT_MARKER = 'verdict: APPROVE'
 
 export interface QaRailsMissionOptions {
   repository: string
@@ -177,16 +187,32 @@ export async function runQaMissionViaRails(
 
     // Não re-julgar o MESMO estado a cada wake: se já há review nossa neste
     // head, o dev ainda não retrabalhou — julgar de novo só faria spam.
+    //
+    // C1 (revisão final): EXCETO quando essa review marcada é uma
+    // APROVAÇÃO. Aprovação postada + PR ainda ABERTO (este laço só olha PRs
+    // `state=open`) é PROVA de que o merge não aconteceu — o GitHub recusou
+    // (405, proteção de branch) ou o produto não pôde aprovar a própria PR
+    // e a review virou COMMENT. Tratar isso como "já julgado" era um beco
+    // sem saída permanente: a linha da sessão nunca fecha, a issue nunca
+    // volta à fila, e a vigia dispara o QA para sempre sem nunca reentar o
+    // merge — o defeito das 85 execuções cegas ressuscitado. Um PR
+    // REPROVADO cujo dev ainda não retrabalhou continua pulado normalmente:
+    // é o que evita spam de re-julgamento.
     const reviews = (await gh(
       'GET',
       `/repos/${options.repository}/pulls/${p.number}/reviews?per_page=100`
     )) as Array<{ body?: string; commit_id?: string }>
-    const alreadyJudged =
-      Array.isArray(reviews) &&
-      reviews.some(
-        (r) => (r.body ?? '').includes(JULES_MARKER) && (!p.head?.sha || r.commit_id === p.head.sha)
-      )
-    if (alreadyJudged) continue
+    const reviewMarcadaNesteHead = Array.isArray(reviews)
+      ? reviews.find(
+          (r) =>
+            (r.body ?? '').includes(JULES_MARKER) && (!p.head?.sha || r.commit_id === p.head.sha)
+        )
+      : undefined
+    const foiAprovacao = Boolean(
+      reviewMarcadaNesteHead &&
+      (reviewMarcadaNesteHead.body ?? '').includes(APPROVAL_VERDICT_MARKER)
+    )
+    if (reviewMarcadaNesteHead && !foiAprovacao) continue
 
     target = p
     issueDaEntrega = veredito.issueNumber
