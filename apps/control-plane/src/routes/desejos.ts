@@ -49,7 +49,10 @@ export async function desejosRoutes(app: FastifyInstance, deps: DependenciasDeDe
         })
       } catch (erro) {
         // O erro do GitHub pode conter credencial; nunca repassar ao cliente.
-        request.log.error({ erro }, 'falha ao registrar o desejo no GitHub')
+        // A chave é `err` de propósito: o pino só serializa um Error sob ela.
+        // Sob qualquer outra chave o objeto vira `{}` e a linha registra
+        // "falhou" sem o motivo — exatamente o que ninguém consegue consertar.
+        request.log.error({ err: erro }, 'falha ao registrar o desejo no GitHub')
         return reply.code(502).send({ error: 'Não consegui registrar o pedido agora.' })
       }
     }

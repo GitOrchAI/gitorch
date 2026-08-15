@@ -76,4 +76,62 @@ describe('criarIssueDeDesejo', () => {
       })
     ).rejects.toThrow(/número/i)
   })
+
+  it('a chamada leva prazo — GitHub travado não segura a rota para sempre', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => ({ number: 1 }),
+    })
+    await criarIssueDeDesejo({
+      ...ARGS,
+      obterToken: async () => 'segredo',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    const [, init] = fetchImpl.mock.calls[0] as [string, { signal?: AbortSignal }]
+    expect(init.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  describe('nome de repositório é conferido ANTES de a credencial sair', () => {
+    // Prova do porquê: o texto do repositório vai colado numa URL que carrega
+    // o token. A normalização de URL resolve o ".." e o "?" ANTES de a
+    // requisição sair, então quem escolhe o texto escolhe o endereço.
+    it('o endereço de fato muda quando o texto tem travessia', () => {
+      expect(new URL('https://api.github.com/repos/a/b/../../../user/repos/issues').pathname).toBe(
+        '/user/repos/issues'
+      )
+      expect(new URL('https://api.github.com/repos/../user/repos?/issues').href).toBe(
+        'https://api.github.com/user/repos?/issues'
+      )
+    })
+
+    const venenos = [
+      'a/b/../../../user/repos',
+      '../user/repos?',
+      'a/b/c',
+      '/b',
+      'a/',
+      '',
+      'a b/c',
+      'https://x/y',
+      `dono/${'r'.repeat(300)}`,
+    ]
+
+    for (const repo of venenos) {
+      it(`recusa ${JSON.stringify(repo)} sem tocar rede nem pedir credencial`, async () => {
+        const fetchImpl = vi.fn()
+        const obterToken = vi.fn()
+        await expect(
+          criarIssueDeDesejo({
+            ...ARGS,
+            repo,
+            obterToken,
+            fetchImpl: fetchImpl as unknown as typeof fetch,
+          })
+        ).rejects.toBeInstanceOf(GithubExecutionError)
+        expect(fetchImpl).not.toHaveBeenCalled()
+        expect(obterToken).not.toHaveBeenCalled()
+      })
+    }
+  })
 })

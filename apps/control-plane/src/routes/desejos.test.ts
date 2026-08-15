@@ -2,8 +2,21 @@ import Fastify from 'fastify'
 import { describe, expect, it, vi } from 'vitest'
 import { desejosRoutes } from './desejos.js'
 
-function appDeTeste(deps: Parameters<typeof desejosRoutes>[1]) {
-  const app = Fastify()
+function appDeTeste(deps: Parameters<typeof desejosRoutes>[1], linhas?: string[]) {
+  const app = Fastify(
+    linhas
+      ? {
+          logger: {
+            level: 'error',
+            stream: {
+              write: (linha: string) => {
+                linhas.push(linha)
+              },
+            },
+          },
+        }
+      : {}
+  )
   // O app real declara `request.user` como `UserPayload | undefined`; decorar
   // com `undefined` cria a propriedade sem mentir sobre o tipo.
   app.decorateRequest('user', undefined)
@@ -77,5 +90,25 @@ describe('POST /api/v1/desejos', () => {
     })
     expect(r.statusCode).toBe(502)
     expect(JSON.stringify(r.json())).not.toContain('ghp_')
+  })
+
+  it('o motivo da falha sobrevive no log — sem ele ninguém conserta nada', async () => {
+    // O pino só sabe serializar um Error sob a chave `err`. Sob qualquer outra
+    // chave o objeto vira `{}` e a linha de log fica sem motivo nenhum: o
+    // produto registra "falhou" e some com o porquê.
+    const linhas: string[] = []
+    const app = appDeTeste(
+      {
+        buscarProjeto: vi.fn().mockResolvedValue(projeto),
+        criarIssue: vi.fn().mockRejectedValue(new Error('repositório em formato inesperado')),
+      },
+      linhas
+    )
+    await app.inject({
+      method: 'POST',
+      url: '/api/v1/desejos',
+      payload: { projectId: 'p1', texto: 'oi' },
+    })
+    expect(linhas.join('\n')).toContain('repositório em formato inesperado')
   })
 })

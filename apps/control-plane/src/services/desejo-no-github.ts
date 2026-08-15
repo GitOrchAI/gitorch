@@ -1,5 +1,9 @@
 import { mintInstallationToken } from './github-app-token.js'
 import { GithubExecutionError } from './github-errors.js'
+import { nomeDeRepositorioValido } from './nome-de-repositorio.js'
+
+/** Prazo da chamada ao GitHub: a API fora do ar não segura a rota para sempre. */
+const TIMEOUT_MS = 10_000
 
 // Escreve a issue de desejo no repositório do cliente.
 //
@@ -42,6 +46,16 @@ export async function criarIssueDeDesejo(args: {
   const obter = args.obterToken ?? ((repo: string) => tokenDoRepositorio(repo, log))
   const f = args.fetchImpl ?? fetch
 
+  // Primeira coisa que acontece aqui, antes de existir credencial em memória:
+  // o repositório vai colado numa URL que carrega o token, então um texto
+  // fora do formato não é "nome estranho" — é o poder de escolher qual
+  // endereço da API recebe a credencial. Recusar sem tocar rede é a guarda.
+  if (!nomeDeRepositorioValido(args.repo)) {
+    throw new GithubExecutionError(
+      `repositório em formato inválido, não é "dono/repositorio": ${JSON.stringify(args.repo).slice(0, 80)}`
+    )
+  }
+
   const token = await obter(args.repo)
   if (!token) {
     throw new GithubExecutionError(`sem credencial do GitHub para o repositório ${args.repo}`)
@@ -56,6 +70,7 @@ export async function criarIssueDeDesejo(args: {
       'content-type': 'application/json',
     },
     body: JSON.stringify({ title: args.titulo, body: args.corpo, labels: args.etiquetas }),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
   })
   if (!resposta.ok) {
     const detalhe = await resposta.text().catch(() => '')
