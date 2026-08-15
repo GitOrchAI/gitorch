@@ -2,12 +2,23 @@ import { GithubExecutionError } from './github-backlog.js'
 
 // Watchdog do SM (F3.6): o SM é o dono da esteira — quando o dev assíncrono
 // (Jules) falha, é o SM que destrava. Tudo determinístico (a Lei: julgamento
-// mecânico é código, não LLM). O estado vive no próprio GitHub: comentários de
-// falha do Jules disparam o retry oficial (remover e re-aplicar a label) e
-// markers nossos nos comentários contam as tentativas. Estourou o limite →
-// `gitorch:stuck` + aviso humano (Telegram, se configurado).
+// mecânico é código, não LLM).
+//
+// Já teve um retry oficial aqui (remover e re-aplicar a label de delegação).
+// Aposentado: era inerte desde sempre — a fila de delegação escolhia
+// justamente as issues SEM a label, então reaplicá-la numa issue que já a
+// tinha nunca a devolvia à fila. A cobrança real mudou para a linha da
+// sessão em `dev_sessions` (ver `fila-de-delegacao.ts`): sessão fechada sem
+// merge devolve a issue para a fila sozinha, no ciclo seguinte.
+//
+// O que sobra aqui é só a escalação: os markers `RETRY_MARKER` já gravados
+// no histórico de comentários (de antes desta aposentadoria) ainda contam as
+// tentativas para o teto — estourou o limite → `gitorch:stuck` + aviso
+// humano (Telegram, se configurado).
 
 const TASK_LABEL = 'gitorch:task'
+// Não é mais escrito por este arquivo (o retry que o gravava foi aposentado) —
+// só lido, para contar tentativas já registradas antes da aposentadoria.
 const RETRY_MARKER = '<!-- gitorch:sm-retry -->'
 const STUCK_MARKER = '<!-- gitorch:sm-stuck -->'
 const STUCK_LABEL = 'gitorch:stuck'
@@ -35,7 +46,6 @@ export interface SmWatchdogResult {
   output: string
   stderr: string
   noOp?: boolean
-  retried: number[]
   stuck: number[]
 }
 
@@ -74,7 +84,6 @@ export async function runSmWatchdog(options: SmWatchdogOptions): Promise<SmWatch
     )}&per_page=100`
   )) as Array<{ number: number; labels: Array<{ name: string }> }>
 
-  const retried: number[] = []
   const stuck: number[] = []
 
   for (const issue of Array.isArray(issues) ? issues : []) {
@@ -134,29 +143,20 @@ export async function runSmWatchdog(options: SmWatchdogOptions): Promise<SmWatch
       continue
     }
 
-    // Retry oficial do Jules: remover e re-aplicar a label de delegação.
-    await gh(
-      'DELETE',
-      `/repos/${options.repository}/issues/${issue.number}/labels/${encodeURIComponent(label)}`
-    )
-    await gh('POST', `/repos/${options.repository}/issues/${issue.number}/labels`, {
-      labels: [label],
-    })
-    await gh('POST', `/repos/${options.repository}/issues/${issue.number}/comments`, {
-      body: `${RETRY_MARKER}\nGitOrch SM: falha do dev assíncrono detectada — retentativa ${retryCount + 1}/${maxRetries} (label re-aplicada).`,
-    })
-    retried.push(issue.number)
+    // O retentar NÃO mora mais aqui. Reaplicar a etiqueta era inerte: a fila de
+    // delegação escolhia justamente as issues SEM a etiqueta, então a issue
+    // reaplicada nunca voltava a ser escolhida. A cobrança agora é a linha da
+    // sessão (`fila-de-delegacao.ts`): sessão fechada sem merge devolve a issue
+    // para a fila no ciclo seguinte, sozinha.
   }
 
   const parts: string[] = []
-  if (retried.length > 0) parts.push(`retried ${retried.map((n) => `#${n}`).join(', ')}`)
   if (stuck.length > 0) parts.push(`escalated ${stuck.map((n) => `#${n}`).join(', ')}`)
   return {
     exitCode: 0,
     output: parts.length > 0 ? `SM watchdog: ${parts.join('; ')}.` : 'SM watchdog: all quiet.',
     stderr: '',
     noOp: parts.length === 0,
-    retried,
     stuck,
   }
 }
