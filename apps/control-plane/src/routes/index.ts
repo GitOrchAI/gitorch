@@ -12,8 +12,7 @@ import { setupRoutes } from './setup.js'
 import { billingRoutes } from './billing.js'
 import { diagnoseRoutes } from './diagnose.js'
 import { desejosRoutes } from './desejos.js'
-import { mintInstallationToken } from '../services/github-app-token.js'
-import { GithubExecutionError } from '../services/github-errors.js'
+import { criarIssueDeDesejo } from '../services/desejo-no-github.js'
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   // Health and readiness endpoints
@@ -53,44 +52,17 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       })
       return projeto ? { id: projeto.id, githubRepo: projeto.wingId } : null
     },
-    criarIssue: async ({ repo, titulo, corpo, etiquetas }) => {
-      // Mesma credencial que os trilhos usam para escrever no repositório do
-      // cliente: a instalação do App RESOLVIDA PELO REPOSITÓRIO. Sem passar o
-      // repositório, o App emite o token da primeira instalação da lista — de
-      // outra conta — e toda escrita volta 403.
-      const token =
-        process.env['GITORCH_GITHUB_TOKEN'] ??
-        (await mintInstallationToken({
-          repository: repo,
-          onError: (m) => app.log.error(m),
-          onWarn: (m) => app.log.warn(m),
-        }))
-      if (!token) {
-        throw new GithubExecutionError(`sem credencial do GitHub para o repositório ${repo}`)
-      }
-
-      const resposta = await fetch(`https://api.github.com/repos/${repo}/issues`, {
-        method: 'POST',
-        headers: {
-          authorization: `token ${token}`,
-          accept: 'application/vnd.github+json',
-          'user-agent': 'gitorch',
-          'content-type': 'application/json',
-        },
-        body: JSON.stringify({ title: titulo, body: corpo, labels: etiquetas }),
-      })
-      if (!resposta.ok) {
-        const detalhe = await resposta.text().catch(() => '')
-        throw new GithubExecutionError(
-          `GitHub POST /repos/${repo}/issues falhou (${resposta.status}): ${detalhe.slice(0, 150)}`
-        )
-      }
-      const criada = (await resposta.json()) as { number?: number }
-      if (typeof criada.number !== 'number') {
-        throw new GithubExecutionError(`GitHub criou a issue em ${repo} sem devolver o número`)
-      }
-      return { numero: criada.number }
-    },
+    // A escrita da issue mora no serviço porque o mensageiro (bot do Telegram)
+    // registra o desejo pelo MESMO caminho — o pedido do dono nasce igual venha
+    // da tela ou do celular.
+    criarIssue: ({ repo, titulo, corpo, etiquetas }) =>
+      criarIssueDeDesejo({
+        repo,
+        titulo,
+        corpo,
+        etiquetas,
+        log: { onError: (m) => app.log.error(m), onWarn: (m) => app.log.warn(m) },
+      }),
   })
 
   // Runtime Config endpoint

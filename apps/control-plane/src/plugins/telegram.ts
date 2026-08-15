@@ -7,7 +7,10 @@ import {
   handleTelegramQuestionReply,
   sendTelegramMessage,
   sendTelegramQuestion,
+  tratarPedidoDeDesejo,
+  type TelegramDesejoDeps,
 } from '../services/telegram-bot.js'
+import { criarIssueDeDesejo } from '../services/desejo-no-github.js'
 import { resolveNotifyChatId } from '../services/telegram-link.js'
 import { AgentQuestionService, type AgentQuestionRecord } from '../services/agent-question.js'
 import { pipelineCheckEnabled } from '../config/pipeline-check.js'
@@ -93,6 +96,39 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
     return
   }
 
+  // A porta do desejo pelo mensageiro. O pedido em linguagem de gente vira a
+  // MESMA issue oficial que a tela cria (ver routes/index.ts) — quem escreve é
+  // o serviço compartilhado, então o registro nasce igual venha de onde vier.
+  const desejoDeps: TelegramDesejoDeps = {
+    // O chat só vale como identidade quando está vinculado: é o vínculo que diz
+    // de QUEM ele é, e portanto em qual repositório o pedido pode ser escrito.
+    donoDoChat: async (chatId) => {
+      const link = await app.prisma.telegramLink.findFirst({
+        where: { chatId, status: 'linked' },
+      })
+      return link?.userId ?? null
+    },
+    // `wingId` do Project é o endereço do REPOSITÓRIO ("dono/repo"), não a
+    // chave do tenant — por isso é ele que vira o repo do pedido.
+    projetosDoDono: async (userId) => {
+      const projetos = await app.prisma.project.findMany({
+        where: { userId, isActive: true },
+        select: { id: true, name: true, wingId: true },
+        orderBy: { createdAt: 'asc' },
+      })
+      return projetos.map((p) => ({ id: p.id, nome: p.name, repo: p.wingId }))
+    },
+    criarIssue: ({ repo, titulo, corpo, etiquetas }) =>
+      criarIssueDeDesejo({
+        repo,
+        titulo,
+        corpo,
+        etiquetas,
+        log: { onError: (m) => app.log.error(m), onWarn: (m) => app.log.warn(m) },
+      }),
+    registrarFalha: (erro) => app.log.error(erro, '[Telegram] falha ao registrar o desejo'),
+  }
+
   let stopped = false
   const controller = new AbortController()
   let offset: number | undefined
@@ -145,6 +181,16 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
             update
           )
           if (handledAsAnswer) continue
+
+          // `/desejo` (ou `/quero`): o pedido do dono em linguagem natural.
+          // Vem depois do reply porque uma resposta a uma dúvida do agente é
+          // outra conversa, e antes do /start porque mensagem solta que não é
+          // desejo continua caindo no fluxo normal.
+          const desejo = await tratarPedidoDeDesejo(desejoDeps, update)
+          if (desejo) {
+            await sendTelegramMessage({ botToken, chatId: desejo.chatId, text: desejo.text })
+            continue
+          }
 
           const reply = await handleTelegramUpdate(app.prisma, update)
           if (!reply) continue

@@ -1,5 +1,6 @@
 import type { PrismaClient } from '@prisma/client'
 import { bindChatFromStart } from './telegram-link.js'
+import { montarDesejo } from './desejo.js'
 import type { AgentQuestionService } from './agent-question.js'
 
 // A ponte HTTP com a API do Telegram: ouvir o bot e falar por ele.
@@ -76,6 +77,20 @@ export function parseStartToken(text: string | undefined): string | null {
 
 function isStartCommand(text: string | undefined): boolean {
   return !!text && /^\/start(?:@[A-Za-z0-9_]+)?\b/.test(text.trim())
+}
+
+/**
+ * Reconhece o pedido de desejo vindo do mensageiro.
+ *
+ * Em grupo, o Telegram entrega o comando com o nome do bot colado
+ * ("/desejo@meu_bot ..."); sem tratar isso o comando some no grupo.
+ */
+export function interpretarPedidoDeDesejo(texto: string): { ehDesejo: boolean; texto: string } {
+  const casado = /^\/(desejo|quero)(?:@[\w_]+)?\s*([\s\S]*)$/i.exec(texto.trim())
+  if (!casado) return { ehDesejo: false, texto: '' }
+  const pedido = (casado[2] ?? '').trim()
+  if (pedido === '') return { ehDesejo: false, texto: '' }
+  return { ehDesejo: true, texto: pedido }
 }
 
 /**
@@ -541,6 +556,151 @@ const MESSAGES: Record<BotLocale, { linked: string; invalid: string; noToken: st
     noToken:
       'Hi! To know who you are, use the "Connect my Telegram" button on the GitOrch Telegram step — that link is what ties us together.',
   },
+}
+
+/** Projeto do dono, do ponto de vista de "para qual repositório vai o pedido". */
+export interface ProjetoParaDesejo {
+  id: string
+  nome: string
+  repo: string
+}
+
+export interface TelegramDesejoDeps {
+  /** Quem é o dono deste chat (vínculo do Telegram). `null` = chat não vinculado. */
+  donoDoChat: (chatId: string) => Promise<string | null>
+  /** Projetos daquele dono — é entre eles que o pedido escolhe o repositório. */
+  projetosDoDono: (userId: string) => Promise<ProjetoParaDesejo[]>
+  /** O MESMO caminho de criação de issue usado pela porta HTTP do desejo. */
+  criarIssue: (args: {
+    repo: string
+    titulo: string
+    corpo: string
+    etiquetas: string[]
+  }) => Promise<{ numero: number }>
+  /** Onde a falha é registrada. Nunca vai para o chat: pode conter credencial. */
+  registrarFalha?: (erro: unknown) => void
+}
+
+// Quando o dono tem mais de um projeto, o pedido diz a qual deles pertence com
+// o nome antes de dois-pontos ("Loja: quero busca por cor"). Sem isso, o dono
+// de dois projetos ficaria sem saída: o bot pediria o projeto e não haveria
+// como informá-lo. Só é lido quando há ambiguidade de verdade — com um projeto
+// só, dois-pontos no meio da frase continua sendo texto comum.
+const PREFIXO_DO_PROJETO = /^([^:\n]{1,80}):\s*([\s\S]+)$/
+
+function acharProjeto(
+  projetos: ProjetoParaDesejo[],
+  pedido: string
+): { projeto: ProjetoParaDesejo; texto: string } | null {
+  const primeiro = projetos[0]
+  if (projetos.length === 1 && primeiro) return { projeto: primeiro, texto: pedido }
+
+  const casado = PREFIXO_DO_PROJETO.exec(pedido)
+  if (!casado) return null
+  const escolha = (casado[1] ?? '').trim().toLowerCase()
+  const resto = (casado[2] ?? '').trim()
+  if (resto === '') return null
+
+  const projeto = projetos.find(
+    (p) => p.nome.trim().toLowerCase() === escolha || p.repo.trim().toLowerCase() === escolha
+  )
+  return projeto ? { projeto, texto: resto } : null
+}
+
+const MENSAGENS_DE_DESEJO: Record<
+  BotLocale,
+  {
+    semVinculo: string
+    semProjeto: string
+    falhou: string
+    qualProjeto: (nomes: string[]) => string
+    criado: (numero: number, endereco: string, projeto: string) => string
+  }
+> = {
+  pt: {
+    semVinculo:
+      'Ainda não sei quem é você por aqui. Abra o passo do Telegram no GitOrch e use o botão "Conectar meu Telegram" — depois disso o /desejo funciona.',
+    semProjeto:
+      'Você ainda não tem nenhum projeto no GitOrch. Cadastre um repositório e eu registro seus pedidos nele.',
+    falhou: 'Não consegui registrar seu pedido agora. Tente de novo em alguns minutos.',
+    qualProjeto: (nomes) =>
+      `Você tem mais de um projeto. Diga qual, assim: /desejo ${nomes[0]}: o que você quer.\n\nSeus projetos: ${nomes.join(', ')}`,
+    criado: (numero, endereco, projeto) =>
+      `Anotado! ✅ Registrei seu pedido em ${projeto} como o item nº ${numero}.\n${endereco}`,
+  },
+  es: {
+    semVinculo:
+      'Todavía no sé quién eres por aquí. Abre el paso de Telegram en GitOrch y usa el botón "Conectar mi Telegram" — después de eso /desejo funciona.',
+    semProjeto:
+      'Aún no tienes ningún proyecto en GitOrch. Registra un repositorio y anotaré tus pedidos allí.',
+    falhou: 'No conseguí registrar tu pedido ahora. Inténtalo de nuevo en unos minutos.',
+    qualProjeto: (nomes) =>
+      `Tienes más de un proyecto. Dime cuál, así: /desejo ${nomes[0]}: lo que quieres.\n\nTus proyectos: ${nomes.join(', ')}`,
+    criado: (numero, endereco, projeto) =>
+      `¡Anotado! ✅ Registré tu pedido en ${projeto} como el ítem nº ${numero}.\n${endereco}`,
+  },
+  en: {
+    semVinculo:
+      'I don\'t know who you are here yet. Open the Telegram step in GitOrch and use the "Connect my Telegram" button — after that /desejo works.',
+    semProjeto:
+      "You don't have any project in GitOrch yet. Add a repository and I'll record your requests there.",
+    falhou: "I couldn't record your request right now. Please try again in a few minutes.",
+    qualProjeto: (nomes) =>
+      `You have more than one project. Tell me which one, like this: /desejo ${nomes[0]}: what you want.\n\nYour projects: ${nomes.join(', ')}`,
+    criado: (numero, endereco, projeto) =>
+      `Got it! ✅ I recorded your request in ${projeto} as item #${numero}.\n${endereco}`,
+  },
+}
+
+/**
+ * Trata uma mensagem de `/desejo` (ou `/quero`): o pedido em linguagem de gente
+ * vira a issue oficial no repositório do dono, pela MESMA porta que a tela usa
+ * (`montarDesejo` + criação da issue). Devolve o que responder, ou `null`
+ * quando a mensagem não é um pedido — aí o fluxo normal do bot segue.
+ *
+ * O chat só vale como identidade quando está vinculado: é o vínculo que diz de
+ * QUEM é este chat, e portanto em qual repositório o pedido pode ser escrito.
+ * Chat solto não escreve em repositório nenhum.
+ */
+export async function tratarPedidoDeDesejo(
+  deps: TelegramDesejoDeps,
+  update: TelegramUpdate
+): Promise<{ chatId: string; text: string } | null> {
+  const message = update.message
+  const rawChatId = message?.chat?.id
+  if (rawChatId === undefined || rawChatId === null) return null
+
+  const pedido = interpretarPedidoDeDesejo(message?.text ?? '')
+  if (!pedido.ehDesejo) return null
+
+  const chatId = String(rawChatId)
+  const textos = MENSAGENS_DE_DESEJO[pickLocale(message?.from?.language_code)]
+
+  const userId = await deps.donoDoChat(chatId)
+  if (!userId) return { chatId, text: textos.semVinculo }
+
+  const projetos = await deps.projetosDoDono(userId)
+  if (projetos.length === 0) return { chatId, text: textos.semProjeto }
+
+  const alvo = acharProjeto(projetos, pedido.texto)
+  if (!alvo) return { chatId, text: textos.qualProjeto(projetos.map((p) => p.nome)) }
+
+  const desejo = montarDesejo({ texto: alvo.texto, autor: userId })
+  try {
+    const criada = await deps.criarIssue({
+      repo: alvo.projeto.repo,
+      titulo: desejo.titulo,
+      corpo: desejo.corpo,
+      etiquetas: desejo.etiquetas,
+    })
+    const endereco = `https://github.com/${alvo.projeto.repo}/issues/${criada.numero}`
+    return { chatId, text: textos.criado(criada.numero, endereco, alvo.projeto.nome) }
+  } catch (erro) {
+    // A falha do GitHub pode trazer credencial no texto; o chat recebe só o
+    // recado de gente, e o detalhe vai para o log.
+    deps.registrarFalha?.(erro)
+    return { chatId, text: textos.falhou }
+  }
 }
 
 /**
