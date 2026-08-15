@@ -80,6 +80,10 @@ export const locales = {
       wishSending: 'Sending…',
       wishSuccess: 'Request registered as #{{numero}}.',
       wishSuccessLink: 'Open on GitHub',
+      wishLoadingProjects: 'Loading your projects…',
+      wishProjectsUnavailable:
+        'We could not check your projects right now. This says nothing about your setup — try again.',
+      wishProjectsRetry: 'Try again',
       wishNoProjects: 'No project connected yet. Finish the setup to send a request.',
       wishErrorEmpty: 'Write what you want before sending.',
       wishErrorProject: 'Pick one of your projects — that one is not available.',
@@ -416,6 +420,10 @@ export const locales = {
       wishSending: 'Enviando…',
       wishSuccess: 'Pedido registrado como #{{numero}}.',
       wishSuccessLink: 'Abrir no GitHub',
+      wishLoadingProjects: 'Carregando seus projetos…',
+      wishProjectsUnavailable:
+        'Não deu para verificar seus projetos agora. Isso não diz nada sobre o seu setup — tente de novo.',
+      wishProjectsRetry: 'Tentar de novo',
       wishNoProjects: 'Nenhum projeto conectado ainda. Conclua o setup para poder pedir.',
       wishErrorEmpty: 'Escreva o que você quer antes de enviar.',
       wishErrorProject: 'Escolha um dos seus projetos — esse não está disponível.',
@@ -754,6 +762,10 @@ export const locales = {
       wishSending: 'Enviando…',
       wishSuccess: 'Pedido registrado como #{{numero}}.',
       wishSuccessLink: 'Abrir en GitHub',
+      wishLoadingProjects: 'Cargando tus proyectos…',
+      wishProjectsUnavailable:
+        'No pudimos verificar tus proyectos ahora. Esto no dice nada sobre tu setup — inténtalo de nuevo.',
+      wishProjectsRetry: 'Intentar de nuevo',
       wishNoProjects: 'Aún no hay proyecto conectado. Termina el setup para poder pedir.',
       wishErrorEmpty: 'Escribe lo que quieres antes de enviar.',
       wishErrorProject: 'Elige uno de tus proyectos — ese no está disponible.',

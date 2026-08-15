@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
-import { enviarDesejo, fetchProjetos, type ProjetoDoPainel } from './desejo'
+import { enviarDesejo, estadoDaTelaDePedir, fetchProjetos, type ProjetoDoPainel } from './desejo'
 
 // A tela de pedir é a porta de entrada do desejo pelo navegador. O que estes
 // testes travam: (a) o pedido só sai daqui quando tem texto E projeto — dedo
 // escorregado nunca vira issue; (b) toda falha do backend vira uma CHAVE de
 // texto, nunca a mensagem crua do servidor (que pode carregar detalhe interno);
-// (c) listar os projetos nunca derruba o painel.
+// (c) listar os projetos nunca derruba o painel; (d) a tela nunca AFIRMA
+// "você não tem projeto" quando na verdade ela ainda não sabe ou não conseguiu
+// saber — os três casos são distintos e têm de continuar distintos.
 
 const okResponse = (status: number, json: unknown): Response =>
   ({ ok: status >= 200 && status < 300, status, json: async () => json }) as unknown as Response
@@ -29,25 +31,51 @@ describe('fetchProjetos — de onde a tela tira a lista de projetos do dono', ()
       })
     )
 
-    const projetos = await fetchProjetos('http://api.test', { fetchImpl })
+    const r = await fetchProjetos('http://api.test', { fetchImpl })
 
-    expect(projetos).toEqual([projeto(), projeto({ id: 'p2', repo: 'dono/outro' })])
+    expect(r).toEqual({
+      estado: 'ok',
+      projetos: [projeto(), projeto({ id: 'p2', repo: 'dono/outro' })],
+    })
     expect(fetchImpl).toHaveBeenCalledWith('http://api.test/api/v1/setup/status', {
       credentials: 'include',
     })
   })
 
-  it('sessão ausente, backend fora ou corpo torto viram lista vazia, nunca exceção', async () => {
-    const semSessao = vi.fn<typeof fetch>(async () => okResponse(401, { error: 'x' }))
-    const corpoTorto = vi.fn<typeof fetch>(async () => okResponse(200, { missions: 'nada disso' }))
-    const redeCaida = vi.fn<typeof fetch>(async () => {
-      throw new Error('offline')
-    })
+  it('resposta REAL sem missão nenhuma é a única coisa que significa "não tem projeto"', async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => okResponse(200, { missions: [] }))
 
-    await expect(fetchProjetos('http://api.test', { fetchImpl: semSessao })).resolves.toEqual([])
-    await expect(fetchProjetos('http://api.test', { fetchImpl: corpoTorto })).resolves.toEqual([])
-    await expect(fetchProjetos('http://api.test', { fetchImpl: redeCaida })).resolves.toEqual([])
+    await expect(fetchProjetos('http://api.test', { fetchImpl })).resolves.toEqual({
+      estado: 'ok',
+      projetos: [],
+    })
   })
+
+  it.each([
+    ['sessão vencida', vi.fn<typeof fetch>(async () => okResponse(401, { error: 'x' }))],
+    ['backend fora', vi.fn<typeof fetch>(async () => okResponse(500, { error: 'x' }))],
+    ['excesso de chamadas', vi.fn<typeof fetch>(async () => okResponse(429, { error: 'x' }))],
+    [
+      'corpo fora do formato',
+      vi.fn<typeof fetch>(async () => okResponse(200, { missions: 'nada disso' })),
+    ],
+    [
+      'rede caída',
+      vi.fn<typeof fetch>(async () => {
+        throw new Error('offline')
+      }),
+    ],
+  ])(
+    '%s não vira "nenhum projeto": volta marcado como não-verificado, sem exceção',
+    async (_caso, fetchImpl) => {
+      // Este é o defeito que a revisão pegou: enquanto a falha virava lista
+      // vazia, o painel dizia a quem JÁ concluiu o setup que ele não tem
+      // projeto — afirmando o que não sabe.
+      await expect(fetchProjetos('http://api.test', { fetchImpl })).resolves.toEqual({
+        estado: 'indisponivel',
+      })
+    }
+  )
 
   it('descarta item sem projectId ou sem repositório em vez de perder a lista inteira', async () => {
     const fetchImpl = vi.fn<typeof fetch>(async () =>
@@ -60,7 +88,30 @@ describe('fetchProjetos — de onde a tela tira a lista de projetos do dono', ()
       })
     )
 
-    await expect(fetchProjetos('http://api.test', { fetchImpl })).resolves.toEqual([projeto()])
+    await expect(fetchProjetos('http://api.test', { fetchImpl })).resolves.toEqual({
+      estado: 'ok',
+      projetos: [projeto()],
+    })
+  })
+})
+
+describe('estadoDaTelaDePedir — o que a tela pode AFIRMAR sobre os projetos', () => {
+  it('antes da resposta chegar, a tela está carregando — não é "sem projeto"', () => {
+    // O caso que aparecia em TODA carga de página: entre o login confirmar e a
+    // lista chegar, a tela mandava o dono refazer um setup já concluído.
+    expect(estadoDaTelaDePedir(null)).toBe('carregando')
+  })
+
+  it('falha na busca é "não consegui verificar", nunca "sem projeto"', () => {
+    expect(estadoDaTelaDePedir({ estado: 'indisponivel' })).toBe('indisponivel')
+  })
+
+  it('só uma resposta real e vazia autoriza dizer "sem projeto"', () => {
+    expect(estadoDaTelaDePedir({ estado: 'ok', projetos: [] })).toBe('semProjeto')
+  })
+
+  it('com projeto na mão, o formulário é oferecido', () => {
+    expect(estadoDaTelaDePedir({ estado: 'ok', projetos: [projeto()] })).toBe('pronto')
   })
 })
 

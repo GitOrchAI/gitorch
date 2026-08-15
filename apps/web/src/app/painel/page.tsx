@@ -13,7 +13,12 @@ import {
   statusLabel,
   type AgentQuestionView,
 } from '../../components/painel/agent-questions'
-import { enviarDesejo, fetchProjetos, type ProjetoDoPainel } from '../../components/painel/desejo'
+import {
+  enviarDesejo,
+  estadoDaTelaDePedir,
+  fetchProjetos,
+  type ResultadoDosProjetos,
+} from '../../components/painel/desejo'
 
 // Painel: mostra o GitHub/missões do cliente organizados — NUNCA opera agentes
 // (eles são autônomos) e NUNCA inventa número. Sem sessão → convite honesto
@@ -68,9 +73,12 @@ export default function Dashboard() {
   // continua sendo pelo Telegram. Falha na busca não derruba o painel, a
   // seção só fica vazia (fetchAgentQuestions nunca lança).
   const [questions, setQuestions] = useState<AgentQuestionView[]>([])
-  // Formulário de desejo. `projetos` vazio = ainda não há projeto conectado,
-  // e aí o formulário não é oferecido: pedir sem projeto só produziria erro.
-  const [projetos, setProjetos] = useState<ProjetoDoPainel[]>([])
+  // Formulário de desejo. `null` = a lista de projetos ainda não voltou, e aí a
+  // tela não afirma nada sobre ela — do mesmo jeito que `authenticated === null`
+  // não afirma nada sobre a sessão. Falha na busca volta como `indisponivel`, e
+  // só uma resposta REAL e vazia autoriza dizer "conclua o setup": mandar
+  // refazer um setup já concluído seria o painel afirmando o que não sabe.
+  const [projetos, setProjetos] = useState<ResultadoDosProjetos | null>(null)
   const [projetoEscolhido, setProjetoEscolhido] = useState('')
   const [textoDoDesejo, setTextoDoDesejo] = useState('')
   const [enviandoDesejo, setEnviandoDesejo] = useState(false)
@@ -135,25 +143,29 @@ export default function Dashboard() {
     }
   }, [authenticated])
 
+  // Fica em useCallback porque o botão de "tentar de novo" precisa refazer
+  // exatamente esta busca: quando a rota falha, a pessoa tem uma saída na tela
+  // em vez de ficar com uma mensagem parada até recarregar a página.
+  const carregarProjetos = useCallback(async () => {
+    // Volta para "carregando" antes de reconsultar: enquanto a nova resposta
+    // não chega, a tela não deve seguir afirmando o resultado velho.
+    setProjetos(null)
+    const r = await fetchProjetos(API_BASE_URL)
+    setProjetos(r)
+    // Um projeto só: já vem escolhido, e o seletor nem aparece — não faz
+    // sentido obrigar a escolher quando não há escolha.
+    if (r.estado === 'ok' && r.projetos.length === 1 && r.projetos[0]) {
+      setProjetoEscolhido(r.projetos[0].id)
+    }
+  }, [])
+
   useEffect(() => {
     if (!authenticated) return
-    let cancelled = false
-    fetchProjetos(API_BASE_URL)
-      .then((lista) => {
-        if (cancelled) return
-        setProjetos(lista)
-        // Um projeto só: já vem escolhido, e o seletor nem aparece — não faz
-        // sentido obrigar a escolher quando não há escolha.
-        if (lista.length === 1 && lista[0]) setProjetoEscolhido(lista[0].id)
-      })
-      .catch(() => {
-        // fetchProjetos já nunca lança; por contrato, falha aqui só deixa o
-        // formulário escondido — nunca derruba o painel inteiro.
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [authenticated])
+    // Fora do corpo síncrono do effect (mesma regra react-hooks já respeitada
+    // pelo load das missões). fetchProjetos nunca lança — a falha vem como
+    // `indisponivel` dentro do resultado —, então não há rejeição a tratar.
+    queueMicrotask(() => void carregarProjetos())
+  }, [authenticated, carregarProjetos])
 
   const pedirDesejo = useCallback(async () => {
     setEnviandoDesejo(true)
@@ -215,6 +227,10 @@ export default function Dashboard() {
 
   const stats = data?.stats
   const missions = data?.missions ?? []
+  // O que a área de pedido tem direito de dizer sobre os projetos (a decisão
+  // mora em desejo.ts, onde dá para testá-la; aqui só se desenha o resultado).
+  const estadoDoPedido = estadoDaTelaDePedir(projetos)
+  const listaDeProjetos = projetos?.estado === 'ok' ? projetos.projetos : []
 
   return (
     <main className="min-h-screen flex flex-col bg-[var(--bg-deep)]">
@@ -231,13 +247,36 @@ export default function Dashboard() {
           </h2>
           <p className="text-[var(--text-secondary)] mb-4">{t('dashboard.wishHint')}</p>
 
-          {projetos.length === 0 ? (
+          {/* Três coisas diferentes, três frases diferentes: ainda não sei,
+              não consegui saber, e realmente não há projeto. */}
+          {estadoDoPedido === 'carregando' && (
+            <p className="text-[var(--text-secondary)]">{t('dashboard.wishLoadingProjects')}</p>
+          )}
+
+          {estadoDoPedido === 'indisponivel' && (
+            <div className="flex flex-wrap items-center gap-4">
+              <p className="text-[var(--text-secondary)]">
+                {t('dashboard.wishProjectsUnavailable')}
+              </p>
+              <button
+                type="button"
+                onClick={() => void carregarProjetos()}
+                className="border border-[var(--glass-border)] px-6 py-2 rounded-full font-bold text-white transition-transform hover:scale-105"
+              >
+                {t('dashboard.wishProjectsRetry')}
+              </button>
+            </div>
+          )}
+
+          {estadoDoPedido === 'semProjeto' && (
             <p className="text-[var(--text-secondary)]">{t('dashboard.wishNoProjects')}</p>
-          ) : (
+          )}
+
+          {estadoDoPedido === 'pronto' && (
             <div className="space-y-4">
               {/* Seletor só quando há mais de um projeto: com um só, escolher
                   não é decisão, é obstáculo. */}
-              {projetos.length > 1 && (
+              {listaDeProjetos.length > 1 && (
                 <label className="block">
                   <span className="block text-sm text-[var(--text-secondary)] mb-1">
                     {t('dashboard.wishProjectLabel')}
@@ -248,7 +287,7 @@ export default function Dashboard() {
                     className="w-full bg-[var(--bg-surface-elevated)] border border-[var(--glass-border)] rounded-xl px-4 py-3 text-white"
                   >
                     <option value="">—</option>
-                    {projetos.map((p) => (
+                    {listaDeProjetos.map((p) => (
                       <option key={p.id} value={p.id}>
                         {p.repo}
                       </option>
