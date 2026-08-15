@@ -11,7 +11,7 @@ import {
   type TelegramDesejoDeps,
 } from '../services/telegram-bot.js'
 import { criarIssueDeDesejo } from '../services/desejo-no-github.js'
-import { resolveNotifyChatId } from '../services/telegram-link.js'
+import { resolveNotifyChatId, resolveDonoDoChat } from '../services/telegram-link.js'
 import { AgentQuestionService, type AgentQuestionRecord } from '../services/agent-question.js'
 import { pipelineCheckEnabled } from '../config/pipeline-check.js'
 
@@ -100,14 +100,11 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
   // MESMA issue oficial que a tela cria (ver routes/index.ts) — quem escreve é
   // o serviço compartilhado, então o registro nasce igual venha de onde vier.
   const desejoDeps: TelegramDesejoDeps = {
-    // O chat só vale como identidade quando está vinculado: é o vínculo que diz
-    // de QUEM ele é, e portanto em qual repositório o pedido pode ser escrito.
-    donoDoChat: async (chatId) => {
-      const link = await app.prisma.telegramLink.findFirst({
-        where: { chatId, status: 'linked' },
-      })
-      return link?.userId ?? null
-    },
+    // O chat só vale como identidade quando está vinculado a UMA conta: é o
+    // vínculo que diz de QUEM ele é, e portanto em qual repositório o pedido
+    // pode ser escrito. Chat com duas contas volta `ambiguo` e o pedido é
+    // recusado — jamais escrito num repositório sorteado.
+    donoDoChat: (chatId) => resolveDonoDoChat(app.prisma, chatId),
     // `wingId` do Project é o endereço do REPOSITÓRIO ("dono/repo"), não a
     // chave do tenant — por isso é ele que vira o repo do pedido.
     projetosDoDono: async (userId) => {

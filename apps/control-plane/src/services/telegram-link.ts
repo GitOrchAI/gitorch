@@ -44,7 +44,7 @@ export interface TelegramLinkView {
 }
 
 export type BindResult =
-  { ok: true; userId: string } | { ok: false; reason: 'unknown_token' | 'expired' }
+  { ok: true; userId: string } | { ok: false; reason: 'unknown_token' | 'expired' | 'chat_taken' }
 
 interface Clock {
   now?: Date | undefined
@@ -127,6 +127,18 @@ export async function bindChatFromStart(
   if (!link) return { ok: false, reason: 'unknown_token' }
   if (!link.tokenExpiresAt || link.tokenExpiresAt <= now) return { ok: false, reason: 'expired' }
 
+  // Um chat NÃO pode pertencer a duas contas. `chat_id` não é único no banco
+  // (só `user_id` é), então nada impediria a mesma conversa de virar o vínculo
+  // de duas contas — e aí "de quem é este chat" passaria a ter duas respostas.
+  // Isso não é só barulho de notificação: é a identidade do chat que autoriza
+  // escrever no repositório de alguém (o /desejo do mensageiro). Vinculação de
+  // conta nova em chat ocupado é RECUSADA; a conta atual revincular o próprio
+  // chat continua valendo.
+  const deOutraConta = await prisma.telegramLink.findFirst({
+    where: { chatId: input.chatId, status: 'linked', NOT: { userId: link.userId } },
+  })
+  if (deOutraConta) return { ok: false, reason: 'chat_taken' }
+
   const claimed = await prisma.telegramLink.updateMany({
     where: { token: input.token, status: 'pending', tokenExpiresAt: { gt: now } },
     data: {
@@ -140,6 +152,34 @@ export async function bindChatFromStart(
   })
   if (claimed.count === 0) return { ok: false, reason: 'unknown_token' }
   return { ok: true, userId: link.userId }
+}
+
+/**
+ * De quem é um chat. `ambiguo` existe porque o banco AINDA aceita duas contas
+ * no mesmo `chat_id` (instalações antigas, ou uma corrida entre dois Starts
+ * que escapasse da guarda de `bindChatFromStart`).
+ */
+export type DonoDoChat =
+  { tipo: 'nenhum' } | { tipo: 'unico'; userId: string } | { tipo: 'ambiguo' }
+
+/**
+ * O caminho INVERSO do vínculo: dado o chat, de quem ele é. É esta resposta que
+ * autoriza escrever no repositório de alguém (o `/desejo` pelo mensageiro), e
+ * por isso ela nunca pode ser "uma linha qualquer": com dois vínculos no mesmo
+ * chat, um `findFirst` devolveria ora uma conta, ora outra, e o pedido cairia
+ * no repositório errado sem ninguém perceber. Duplicata = `ambiguo`, e quem
+ * chama RECUSA em vez de sortear.
+ */
+export async function resolveDonoDoChat(prisma: PrismaLike, chatId: string): Promise<DonoDoChat> {
+  // `take: 2` é o bastante: precisamos saber se é zero, um, ou "mais de um".
+  const links = await prisma.telegramLink.findMany({
+    where: { chatId, status: 'linked' },
+    select: { userId: true },
+    take: 2,
+  })
+  if (links.length > 1) return { tipo: 'ambiguo' }
+  const unico = links[0]
+  return unico ? { tipo: 'unico', userId: unico.userId } : { tipo: 'nenhum' }
 }
 
 /** Projeto, do ponto de vista de "a quem este aviso pertence". */

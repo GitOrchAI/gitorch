@@ -1,5 +1,5 @@
 import type { PrismaClient } from '@prisma/client'
-import { bindChatFromStart } from './telegram-link.js'
+import { bindChatFromStart, type DonoDoChat } from './telegram-link.js'
 import { montarDesejo } from './desejo.js'
 import type { AgentQuestionService } from './agent-question.js'
 
@@ -33,7 +33,13 @@ export interface TelegramUpdate {
   message?: {
     chat?: { id?: number | string }
     text?: string
-    from?: { language_code?: string }
+    /**
+     * QUEM digitou. `id` é a pessoa, e não se confunde com o chat: em grupo o
+     * `chat.id` é do grupo e o `from.id` é de cada participante. Comando que
+     * escreve em repositório de alguém depende dessa distinção (ver
+     * `tratarPedidoDeDesejo`).
+     */
+    from?: { id?: number | string; language_code?: string }
     /**
      * Presente quando a mensagem é um REPLY (o dono tocou em "Responder" em
      * cima da pergunta) — é o que permite casar texto livre com a
@@ -84,9 +90,15 @@ function isStartCommand(text: string | undefined): boolean {
  *
  * Em grupo, o Telegram entrega o comando com o nome do bot colado
  * ("/desejo@meu_bot ..."); sem tratar isso o comando some no grupo.
+ *
+ * O comando tem que TERMINAR ali: ou o nome do bot, ou espaço, ou fim da
+ * mensagem. Sem esse delimitador, "/desejos" (plural, erro de digitação de quem
+ * espera ver a lista) vira o pedido "s" e "/quero-relatorio" vira o pedido
+ * "-relatorio" — e como a esteira consome a wishlist ABERTA MAIS RECENTE, esse
+ * lixo entra na frente do pedido de verdade e vira tarefa do robô.
  */
 export function interpretarPedidoDeDesejo(texto: string): { ehDesejo: boolean; texto: string } {
-  const casado = /^\/(desejo|quero)(?:@[\w_]+)?\s*([\s\S]*)$/i.exec(texto.trim())
+  const casado = /^\/(desejo|quero)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]*))?$/i.exec(texto.trim())
   if (!casado) return { ehDesejo: false, texto: '' }
   const pedido = (casado[2] ?? '').trim()
   if (pedido === '') return { ehDesejo: false, texto: '' }
@@ -531,12 +543,17 @@ function pickLocale(languageCode: string | undefined): BotLocale {
   return 'en'
 }
 
-const MESSAGES: Record<BotLocale, { linked: string; invalid: string; noToken: string }> = {
+const MESSAGES: Record<
+  BotLocale,
+  { linked: string; invalid: string; noToken: string; chatTaken: string }
+> = {
   pt: {
     linked:
       'Pronto, conectado! ✅ A partir de agora eu te aviso por aqui quando uma task do seu projeto travar ou precisar de você.',
     invalid:
       'Este link de conexão expirou ou já foi usado. Abra o passo do Telegram no GitOrch e gere um novo.',
+    chatTaken:
+      'Esta conversa já está conectada a outra conta do GitOrch. Desconecte a outra conta, ou conecte esta em outra conversa — duas contas na mesma conversa deixariam eu sem saber de quem é cada pedido.',
     noToken:
       'Oi! Para eu saber quem é você, use o botão "Conectar meu Telegram" no passo do Telegram do GitOrch — é o link de lá que faz a ligação.',
   },
@@ -545,6 +562,8 @@ const MESSAGES: Record<BotLocale, { linked: string; invalid: string; noToken: st
       '¡Listo, conectado! ✅ A partir de ahora te aviso por aquí cuando una tarea de tu proyecto se atasque o necesite de ti.',
     invalid:
       'Este enlace de conexión caducó o ya fue usado. Abre el paso de Telegram en GitOrch y genera uno nuevo.',
+    chatTaken:
+      'Esta conversación ya está conectada a otra cuenta de GitOrch. Desconecta la otra cuenta, o conecta esta en otra conversación — dos cuentas en la misma conversación me dejarían sin saber de quién es cada pedido.',
     noToken:
       '¡Hola! Para saber quién eres, usa el botón "Conectar mi Telegram" en el paso de Telegram de GitOrch — es ese enlace el que hace la conexión.',
   },
@@ -553,6 +572,8 @@ const MESSAGES: Record<BotLocale, { linked: string; invalid: string; noToken: st
       "You're connected! ✅ From now on I'll ping you here whenever a task in your project gets stuck or needs you.",
     invalid:
       'This connection link has expired or was already used. Open the Telegram step in GitOrch and generate a new one.',
+    chatTaken:
+      'This chat is already connected to another GitOrch account. Disconnect the other account, or connect this one in a different chat — two accounts in the same chat would leave me unable to tell whose request is whose.',
     noToken:
       'Hi! To know who you are, use the "Connect my Telegram" button on the GitOrch Telegram step — that link is what ties us together.',
   },
@@ -566,8 +587,12 @@ export interface ProjetoParaDesejo {
 }
 
 export interface TelegramDesejoDeps {
-  /** Quem é o dono deste chat (vínculo do Telegram). `null` = chat não vinculado. */
-  donoDoChat: (chatId: string) => Promise<string | null>
+  /**
+   * De quem é este chat (vínculo do Telegram). Devolve `ambiguo` quando o mesmo
+   * chat aparece em duas contas — aí o pedido é RECUSADO em vez de cair num
+   * repositório sorteado (ver `resolveDonoDoChat`).
+   */
+  donoDoChat: (chatId: string) => Promise<DonoDoChat>
   /** Projetos daquele dono — é entre eles que o pedido escolhe o repositório. */
   projetosDoDono: (userId: string) => Promise<ProjetoParaDesejo[]>
   /** O MESMO caminho de criação de issue usado pela porta HTTP do desejo. */
@@ -611,6 +636,8 @@ const MENSAGENS_DE_DESEJO: Record<
   BotLocale,
   {
     semVinculo: string
+    soNoPrivado: string
+    chatAmbiguo: string
     semProjeto: string
     falhou: string
     qualProjeto: (nomes: string[]) => string
@@ -618,6 +645,10 @@ const MENSAGENS_DE_DESEJO: Record<
   }
 > = {
   pt: {
+    soNoPrivado:
+      'Só registro pedidos na conversa privada de quem é dono da conta: em grupo eu não tenho como provar quem é quem, e o pedido vira tarefa de verdade no repositório. Me chame no privado e mande o /desejo por lá.',
+    chatAmbiguo:
+      'Esta conversa está conectada a mais de uma conta do GitOrch, então eu não sei em qual repositório registrar. Deixe só uma conta conectada aqui e mande de novo.',
     semVinculo:
       'Ainda não sei quem é você por aqui. Abra o passo do Telegram no GitOrch e use o botão "Conectar meu Telegram" — depois disso o /desejo funciona.',
     semProjeto:
@@ -629,6 +660,10 @@ const MENSAGENS_DE_DESEJO: Record<
       `Anotado! ✅ Registrei seu pedido em ${projeto} como o item nº ${numero}.\n${endereco}`,
   },
   es: {
+    soNoPrivado:
+      'Solo registro pedidos en la conversación privada de quien es dueño de la cuenta: en un grupo no puedo probar quién es quién, y el pedido se vuelve una tarea real en el repositorio. Escríbeme en privado y manda el /desejo por allí.',
+    chatAmbiguo:
+      'Esta conversación está conectada a más de una cuenta de GitOrch, así que no sé en qué repositorio registrar. Deja solo una cuenta conectada aquí y mándalo de nuevo.',
     semVinculo:
       'Todavía no sé quién eres por aquí. Abre el paso de Telegram en GitOrch y usa el botón "Conectar mi Telegram" — después de eso /desejo funciona.',
     semProjeto:
@@ -640,6 +675,10 @@ const MENSAGENS_DE_DESEJO: Record<
       `¡Anotado! ✅ Registré tu pedido en ${projeto} como el ítem nº ${numero}.\n${endereco}`,
   },
   en: {
+    soNoPrivado:
+      "I only record requests in the account owner's private chat: in a group I can't prove who is who, and a request becomes a real task in the repository. Message me privately and send /desejo there.",
+    chatAmbiguo:
+      "This chat is connected to more than one GitOrch account, so I don't know which repository to record it in. Leave only one account connected here and send it again.",
     semVinculo:
       'I don\'t know who you are here yet. Open the Telegram step in GitOrch and use the "Connect my Telegram" button — after that /desejo works.',
     semProjeto:
@@ -658,9 +697,20 @@ const MENSAGENS_DE_DESEJO: Record<
  * (`montarDesejo` + criação da issue). Devolve o que responder, ou `null`
  * quando a mensagem não é um pedido — aí o fluxo normal do bot segue.
  *
- * O chat só vale como identidade quando está vinculado: é o vínculo que diz de
- * QUEM é este chat, e portanto em qual repositório o pedido pode ser escrito.
- * Chat solto não escreve em repositório nenhum.
+ * QUEM MANDA É A PESSOA, NUNCA O CHAT. O pedido vira issue no repositório do
+ * dono e a esteira o executa sozinha (analista → dev → PR → merge), então
+ * aceitar "veio de um chat vinculado" seria entregar o repositório do dono a
+ * qualquer participante de um grupo — e o vínculo em grupo é suportado
+ * (`parseStartToken` aceita `/start@Bot <token>`). O que sabemos provar é uma
+ * coisa só: no chat PRIVADO, o `from.id` de quem digitou é o próprio `chat.id`
+ * vinculado. Fora disso (grupo, canal, remetente ausente) o pedido é recusado
+ * com a explicação — mesmo guard de pessoa que `handleTelegramCallback` já usa
+ * para o clique de botão.
+ *
+ * E o chat só vale como identidade quando está vinculado a UMA conta: é o
+ * vínculo que diz de QUEM ele é, e portanto em qual repositório o pedido pode
+ * ser escrito. Chat solto — ou conectado a duas contas — não escreve em
+ * repositório nenhum.
  */
 export async function tratarPedidoDeDesejo(
   deps: TelegramDesejoDeps,
@@ -676,16 +726,26 @@ export async function tratarPedidoDeDesejo(
   const chatId = String(rawChatId)
   const textos = MENSAGENS_DE_DESEJO[pickLocale(message?.from?.language_code)]
 
-  const userId = await deps.donoDoChat(chatId)
-  if (!userId) return { chatId, text: textos.semVinculo }
+  // A prova de que quem digitou é o dono: no chat privado o id da PESSOA é o
+  // próprio id do chat. Em grupo os dois diferem (e o do grupo é negativo), em
+  // canal não há `from` — nos dois casos não há como provar nada.
+  const remetente = message?.from?.id
+  const remetenteId = remetente === undefined || remetente === null ? null : String(remetente)
+  if (remetenteId === null || remetenteId !== chatId) {
+    return { chatId, text: textos.soNoPrivado }
+  }
 
-  const projetos = await deps.projetosDoDono(userId)
+  const dono = await deps.donoDoChat(chatId)
+  if (dono.tipo === 'ambiguo') return { chatId, text: textos.chatAmbiguo }
+  if (dono.tipo === 'nenhum') return { chatId, text: textos.semVinculo }
+
+  const projetos = await deps.projetosDoDono(dono.userId)
   if (projetos.length === 0) return { chatId, text: textos.semProjeto }
 
   const alvo = acharProjeto(projetos, pedido.texto)
   if (!alvo) return { chatId, text: textos.qualProjeto(projetos.map((p) => p.nome)) }
 
-  const desejo = montarDesejo({ texto: alvo.texto, autor: userId })
+  const desejo = montarDesejo({ texto: alvo.texto, autor: dono.userId })
   try {
     const criada = await deps.criarIssue({
       repo: alvo.projeto.repo,
@@ -723,8 +783,11 @@ export async function handleTelegramUpdate(
   if (!token) return { chatId, text: MESSAGES[locale].noToken }
 
   const result = await bindChatFromStart(prisma, { token, chatId })
+  if (result.ok) return { chatId, text: MESSAGES[locale].linked }
+  // Recusa por chat ocupado tem causa própria: dizer "link expirou" mandaria a
+  // pessoa gerar outro link e bater na mesma parede para sempre.
   return {
     chatId,
-    text: result.ok ? MESSAGES[locale].linked : MESSAGES[locale].invalid,
+    text: result.reason === 'chat_taken' ? MESSAGES[locale].chatTaken : MESSAGES[locale].invalid,
   }
 }
