@@ -10,6 +10,10 @@ import { runFormStep } from './rails-runner.js'
 import { GithubExecutionError } from './github-errors.js'
 import { aplicarLabelDoAgente } from './agent-label.js'
 import type { CardMover } from './board-status.js'
+import { ehPrDelegado } from './pr-delegado.js'
+import type { LinhaDeSessao } from './dev-session-store.js'
+import { lerDiffDoPr, type ArquivoDoPr } from './diff-do-pr.js'
+import { mesclarPr, type ResultadoDoMerge } from './merge-do-pr.js'
 
 // Missão do QA nos TRILHOS (F3.6): acha a PR do Jules que precisa de julgamento,
 // monta o snapshot (diff + Verification Criteria da issue + estado do CI), o
@@ -17,6 +21,16 @@ import type { CardMover } from './board-status.js'
 // for rework — o comentário mencionando @jules. A LLM nunca toca no GitHub.
 
 const JULES_MARKER = '<!-- gitorch:qa -->'
+/**
+ * Substring EXATA do texto que a review de APROVAÇÃO posta (ver a montagem
+ * do corpo mais abaixo, no ramo `effectiveVerdict === 'approve'`). É o que
+ * permite ao laço de descoberta (C1, revisão final) diferenciar, entre as
+ * reviews MARCADAS (com `JULES_MARKER`) já postadas no mesmo head, uma
+ * aprovação de uma reprovação — sem isto as duas ficam indistinguíveis e um
+ * PR aprovado cujo merge o GitHub recusou fica pulado para sempre, do mesmo
+ * jeito que um PR reprovado esperando rework.
+ */
+const APPROVAL_VERDICT_MARKER = 'verdict: APPROVE'
 
 export interface QaRailsMissionOptions {
   repository: string
@@ -35,6 +49,40 @@ export interface QaRailsMissionOptions {
    */
   mode?: 'judge' | 'recon'
   fetchImpl?: typeof fetch
+  /** Linhas de sessão deste projeto — a forma autoritativa de reconhecer o PR. */
+  sessoes?: LinhaDeSessao[]
+  /**
+   * Entrega a reprovação à sessão do dev assíncrono.
+   *
+   * Sem isto o laço não fecha: o veredito vira comentário no PR e o dev, que não
+   * lê o PR dele, nunca fica sabendo. Medido: o PR #79 ficou 5 dias aberto, com
+   * verificação verde e uma reprovação, sem ninguém retrabalhar. A API não tem
+   * retomada — `sendMessage` é o único caminho.
+   */
+  avisarSessao?: (args: { sessionName: string; texto: string }) => Promise<boolean>
+  /**
+   * Fecha a linha da sessão do dev assíncrono quando o PR dela é mesclado.
+   *
+   * Sem isto o merge acontece mas a vigia (dev-session-store) nunca fica
+   * sabendo: a linha continua "viva" para sempre, `filtroDeSessoesParaJulgamento`
+   * segue candidatando-a e o QA voltaria a procurar veredito para um PR que já
+   * foi mesclado. `fecharSessao` com o motivo `'merged'` é quem tira a linha da
+   * vigia — decisão de quem chama (o scheduler conhece o Prisma), não deste
+   * módulo, que não sabe nada de banco.
+   */
+  aoMesclar?: (args: { numeroDoPr: number }) => Promise<void>
+  /**
+   * Canal do aviso de degradação — antes hardcoded em `console.warn`,
+   * invisível na observabilidade estruturada. Produção (scheduler.ts) sempre
+   * passa `app.log.warn`. Default: console.warn (só pra chamadas fora do
+   * plugin).
+   *
+   * Não é preciosismo: este é justamente o aviso que existe para o veredito
+   * não morrer em silêncio quando a sessão do dev não pôde ser avisada. Se ele
+   * escapa do logger, o silêncio volta pela porta dos fundos. Mesmo motivo já
+   * registrado em `github-app-token.ts`.
+   */
+  onWarn?: (message: string) => void
 }
 
 export interface QaRailsMissionResult {
@@ -65,10 +113,6 @@ export function buildJulesReworkComment(comment: QaVerdictForm['comment']): stri
     '',
     ...sections,
   ].join('\n\n')
-}
-
-function isJulesAuthor(login: string | undefined): boolean {
-  return (login ?? '').toLowerCase().includes('jules')
 }
 
 export async function runQaMissionViaRails(
@@ -113,31 +157,65 @@ export async function runQaMissionViaRails(
     head?: { sha?: string }
   }>
   let target: (typeof prs)[number] | undefined
+  let issueDaEntrega: number | null = null
   for (const p of Array.isArray(prs) ? prs : []) {
     if (p.draft) continue
-    let delegated = isJulesAuthor(p.user?.login)
-    if (!delegated) {
-      const linked = (p.body ?? '').match(/\b(?:closes|fixes|resolves)\s+#(\d+)/i)?.[1]
-      if (!linked) continue
-      const issue = (await gh('GET', `/repos/${options.repository}/issues/${linked}`)) as {
+
+    // A consulta à issue só acontece no recuo 3, e só quando há palavra de
+    // ligação — o caminho autoritativo (linha guardada) não gasta chamada
+    // nenhuma.
+    const etiquetasPorIssue = new Map<number, boolean>()
+    const ligada = (p.body ?? '').match(/\b(?:closes|fixes|resolves)\s+#(\d+)/i)?.[1]
+    if (ligada) {
+      const issue = (await gh('GET', `/repos/${options.repository}/issues/${ligada}`)) as {
         labels?: Array<{ name?: string }>
       }
-      delegated = (issue.labels ?? []).some((l) => l.name === delegateLabel)
+      etiquetasPorIssue.set(
+        Number(ligada),
+        (issue.labels ?? []).some((l) => l.name === delegateLabel)
+      )
     }
-    if (!delegated) continue
+
+    const veredito = ehPrDelegado({
+      numeroDoPr: p.number,
+      autor: p.user?.login,
+      corpo: p.body,
+      sessoes: options.sessoes ?? [],
+      issueComEtiquetaDeDelegacao: (n) => etiquetasPorIssue.get(n) ?? false,
+    })
+    if (!veredito.delegado) continue
+
     // Não re-julgar o MESMO estado a cada wake: se já há review nossa neste
     // head, o dev ainda não retrabalhou — julgar de novo só faria spam.
+    //
+    // C1 (revisão final): EXCETO quando essa review marcada é uma
+    // APROVAÇÃO. Aprovação postada + PR ainda ABERTO (este laço só olha PRs
+    // `state=open`) é PROVA de que o merge não aconteceu — o GitHub recusou
+    // (405, proteção de branch) ou o produto não pôde aprovar a própria PR
+    // e a review virou COMMENT. Tratar isso como "já julgado" era um beco
+    // sem saída permanente: a linha da sessão nunca fecha, a issue nunca
+    // volta à fila, e a vigia dispara o QA para sempre sem nunca reentar o
+    // merge — o defeito das 85 execuções cegas ressuscitado. Um PR
+    // REPROVADO cujo dev ainda não retrabalhou continua pulado normalmente:
+    // é o que evita spam de re-julgamento.
     const reviews = (await gh(
       'GET',
       `/repos/${options.repository}/pulls/${p.number}/reviews?per_page=100`
     )) as Array<{ body?: string; commit_id?: string }>
-    const alreadyJudged =
-      Array.isArray(reviews) &&
-      reviews.some(
-        (r) => (r.body ?? '').includes(JULES_MARKER) && (!p.head?.sha || r.commit_id === p.head.sha)
-      )
-    if (alreadyJudged) continue
+    const reviewMarcadaNesteHead = Array.isArray(reviews)
+      ? reviews.find(
+          (r) =>
+            (r.body ?? '').includes(JULES_MARKER) && (!p.head?.sha || r.commit_id === p.head.sha)
+        )
+      : undefined
+    const foiAprovacao = Boolean(
+      reviewMarcadaNesteHead &&
+      (reviewMarcadaNesteHead.body ?? '').includes(APPROVAL_VERDICT_MARKER)
+    )
+    if (reviewMarcadaNesteHead && !foiAprovacao) continue
+
     target = p
+    issueDaEntrega = veredito.issueNumber
     break
   }
   if (!target) {
@@ -179,7 +257,13 @@ export async function runQaMissionViaRails(
     body?: string
     head?: { sha?: string }
   }
-  const linkedIssue = (pr.body ?? '').match(/\b(?:closes|fixes|resolves)\s+#(\d+)/i)?.[1]
+  // A issue vinculada vem PRIMEIRO da linha guardada (autoritativa); só cai
+  // para a palavra de ligação no corpo quando a delegação foi reconhecida
+  // pelos recuos (login do autor ou etiqueta), que não sabem a issue de origem.
+  const linkedIssue =
+    issueDaEntrega !== null
+      ? String(issueDaEntrega)
+      : (pr.body ?? '').match(/\b(?:closes|fixes|resolves)\s+#(\d+)/i)?.[1]
   let criteria = '(no linked issue / Verification Criteria not found)'
   let linkedIssueLabels: string[] = []
   if (linkedIssue) {
@@ -195,14 +279,13 @@ export async function runQaMissionViaRails(
     )
     if (found?.[1]) criteria = found[1].trim()
   }
-  const files = (await gh(
-    'GET',
-    `/repos/${options.repository}/pulls/${target.number}/files?per_page=50`
-  )) as Array<{ filename: string; patch?: string }>
-  const diff = (Array.isArray(files) ? files : [])
-    .map((x) => `--- ${x.filename}\n${(x.patch ?? '').slice(0, 2000)}`)
-    .join('\n')
-    .slice(0, 20000)
+  const { diff, arquivos, truncado } = await lerDiffDoPr({
+    buscarPagina: async (pagina) =>
+      (await gh(
+        'GET',
+        `/repos/${options.repository}/pulls/${target.number}/files?per_page=100&page=${pagina}`
+      )) as ArquivoDoPr[],
+  })
   let ciState = 'unknown'
   if (pr.head?.sha) {
     const checks = (await gh(
@@ -223,7 +306,11 @@ export async function runQaMissionViaRails(
     `PR #${target.number} by ${target.user?.login}.`,
     `Verification Criteria (from linked issue #${linkedIssue ?? '?'}):\n${criteria}`,
     `CI status: ${ciState}. (You MUST NOT approve when CI is not green.)`,
-    `Diff (truncated):\n${diff}`,
+    truncado
+      ? `Diff: ${arquivos} file(s), TRUNCATED — you are NOT seeing the whole change. ` +
+        `You MUST NOT approve on a truncated diff: if the criteria cannot be checked ` +
+        `against what you can see, say so explicitly in your comment.\n${diff}`
+      : `Diff (${arquivos} file(s), complete):\n${diff}`,
   ])
   const verdict = (await runFormStep({
     schema: RAILS_SCHEMAS.qaVerdict,
@@ -231,10 +318,15 @@ export async function runQaMissionViaRails(
     execute: options.execute,
   })) as QaVerdictForm
 
-  // 3b) Trava de segurança determinística: nunca aprovar com CI não-verde,
-  // mesmo se a LLM disser approve (a Lei: o sistema é o guarda final).
+  // Trava determinística: nunca aprovar com verificação não-verde nem sobre um
+  // diff que não coube por inteiro. O sistema é o guarda final, não a leitura
+  // do motor.
+  //
+  // `no checks` SAIU da lista de estados aceitáveis: ausência de verificação
+  // não é aprovação. Ela vira lacuna registrada na memória do projeto (ver
+  // adiante neste arquivo), para o RA fundamentar e o PO transformar em tarefa.
   const effectiveVerdict =
-    verdict.verdict === 'approve' && ciState !== 'green' && ciState !== 'no checks'
+    verdict.verdict === 'approve' && (ciState !== 'green' || truncado)
       ? 'request_changes'
       : verdict.verdict
 
@@ -276,6 +368,13 @@ export async function runQaMissionViaRails(
     }
   }
 
+  // Task 11 (decisão do dono D7): o produto mescla sozinho desde o primeiro
+  // ciclo, sem confirmação humana — não há dono para esse passo hoje, e
+  // represar para confirmação foi proposto e recusado pelo dono. Declarado
+  // fora do `if` para poder entrar na saída da missão nos dois ramos
+  // (mesclado ou não) sem repetir a variável.
+  let resultadoDoMerge: ResultadoDoMerge | null = null
+
   if (effectiveVerdict === 'approve') {
     // Caminho resiliente (o GitHub decide se pode aprovar) + o campo do padrão
     // Shrimp: o resumo do veredito é o Goal.
@@ -283,6 +382,40 @@ export async function runQaMissionViaRails(
       reviewEvent,
       `${JULES_MARKER}\nGitOrch QA verdict: APPROVE — criteria met, CI green.\n\n${verdict.comment.goal}`
     )
+
+    // Os TRÊS porteiros (QA aprovou, CI verde, diff completo) já foram
+    // satisfeitos para chegar aqui — `mesclarPr` os reconfere de propósito:
+    // é o guarda final antes de tocar no repositório do cliente, não uma
+    // confiança cega no que a trava de cima já decidiu.
+    resultadoDoMerge = await mesclarPr({
+      numeroDoPr: target.number,
+      ciState,
+      vereditoDoQa: effectiveVerdict,
+      diffTruncado: truncado,
+      merge: async () => {
+        // Nunca seguir URL devolvida pelo GitHub: a rota é montada aqui, a
+        // partir do NÚMERO do PR e do repositório que já temos — nunca de um
+        // campo `url`/`html_url` vindo da resposta de outra chamada.
+        //
+        // I2 (revisão final): `sha` amarra o merge ao HEAD que foi de fato
+        // revisado — lido em `pr.head.sha` (passo 2, minutos antes de chegar
+        // aqui: o motor demora). Sem isto, um push do dev nessa janela (e é
+        // exatamente o que o QA pede ao reprovar: "Revise the SAME pull
+        // request") faz o produto mesclar código que ninguém leu nem
+        // verificou — furando os três porteiros por dentro. O GitHub recusa
+        // com 409 se o head mudou desde então, e 409 já cai no caminho de
+        // "merge recusado" (mesmo tratamento do C1), virando motivo
+        // declarado em vez de mesclar às cegas.
+        await gh('PUT', `/repos/${options.repository}/pulls/${target.number}/merge`, {
+          merge_method: 'squash',
+          sha: pr.head?.sha,
+        })
+        return true
+      },
+    })
+    if (resultadoDoMerge.mesclado && options.aoMesclar) {
+      await options.aoMesclar({ numeroDoPr: target.number })
+    }
   } else {
     await postarReview(
       reviewEvent,
@@ -291,6 +424,44 @@ export async function runQaMissionViaRails(
     await gh('POST', `/repos/${options.repository}/issues/${target.number}/comments`, {
       body: buildJulesReworkComment(verdict.comment),
     })
+
+    // Task 10 (decisão do dono 14/08/2026): "tem que ter lógica entre jules e
+    // QA". O comentário acima morre no PR — o dev assíncrono não lê o PR
+    // dele. Entrega a MESMA reprovação na sessão viva para ele retrabalhar.
+    // Sem linha correspondente (PR de humano, ou anterior a esta mudança), a
+    // missão segue sem avisar — não é falha.
+    if (options.avisarSessao) {
+      const linha = (options.sessoes ?? []).find((s) => s.pullRequestNumber === target.number)
+      if (linha) {
+        const texto = [
+          `GitOrch QA reviewed your pull request #${target.number} and it is NOT accepted yet.`,
+          '',
+          'What must change:',
+          verdict.comment.implementationGuide,
+          '',
+          'Verification Criteria that are still not met:',
+          verdict.comment.verificationCriteria,
+          '',
+          'Revise the SAME pull request. Do not open a new one, and do not change',
+          'anything outside the scope described above.',
+        ].join('\n')
+
+        // Best-effort e BARULHENTO: falhar ao avisar não pode derrubar a
+        // missão (o veredito já foi postado no PR), mas silenciar seria
+        // repetir o defeito que esta mudança existe para matar — por isso o
+        // aviso sai mesmo quando `avisarSessao` rejeita ou lança.
+        const avisou = await options
+          .avisarSessao({ sessionName: linha.sessionName, texto })
+          .catch(() => false)
+        if (!avisou) {
+          const avisar = options.onWarn ?? console.warn
+          avisar(
+            `[qa] veredito postado no PR #${target.number}, mas a sessão ` +
+              `${linha.sessionName} não foi avisada — o dev não vai retrabalhar sozinho`
+          )
+        }
+      }
+    }
   }
 
   // 4b) O QA acabou de julgar: marca a issue VINCULADA (não a PR) como sua,
@@ -333,9 +504,45 @@ export async function runQaMissionViaRails(
     }
   }
 
+  // A lacuna vira MEMÓRIA, não exceção de merge. Decisão do dono (14/08/2026):
+  // repositório sem verificação automática é trabalho de backlog — o QA
+  // registra, o RA monta os dados técnicos de como criar a verificação naquele
+  // projeto, e o PO gera as tarefas. Tratar "sem verificação" como verde era
+  // mesclar sem nenhuma rede, exatamente no repositório bagunçado que o produto
+  // existe para arrumar.
+  const lacunas: string[] = []
+  if (ciState === 'no checks') {
+    lacunas.push(
+      'GITORCH-GAP: this repository has no automated checks. Judgment fell back to ' +
+        'diff reading alone, with no test evidence. This is a CRITICAL gap: the ' +
+        'repository needs a CI workflow before delivery can be trusted. RA: produce ' +
+        'the technical grounding for adding it (which commands, which files, which ' +
+        'trigger). PO: turn it into backlog.'
+    )
+  }
+  if (truncado) {
+    lacunas.push(
+      `GITORCH-GAP: PR #${target.number} diff did not fit (${arquivos} files); ` +
+        'judgment was made on a partial view and approval was blocked.'
+    )
+  }
+
+  // `cardNote` já é efeito colateral registrado (a movimentação em si já
+  // aconteceu acima) — preservado aqui como parte do resumo para não perder
+  // informação que já existia na saída antes desta mudança.
+  //
+  // `resultadoDoMerge` só existe no ramo de aprovação (`null` em rework), e o
+  // motivo — mesclado ou não — precisa aparecer aqui: uma falha do GitHub no
+  // merge (PR com conflito, 405, etc.) não pode ficar muda dentro do try/catch
+  // de `mesclarPr`. Ela vira texto na saída da missão, que `persistMissionMemory`
+  // grava como memória do projeto — declarada, nunca engolida.
+  const mergeNote = resultadoDoMerge
+    ? ` Merge: ${resultadoDoMerge.mesclado ? 'merged' : 'blocked'} (${resultadoDoMerge.motivo}).`
+    : ''
+  const resumo = `QA judged PR #${target.number}: ${effectiveVerdict} (CI ${ciState}).${cardNote}${mergeNote}`
   return {
     exitCode: 0,
-    output: `QA judged PR #${target.number}: ${effectiveVerdict} (CI ${ciState}).${cardNote}`,
+    output: [resumo, ...lacunas].join('\n'),
     stderr: '',
   }
 }

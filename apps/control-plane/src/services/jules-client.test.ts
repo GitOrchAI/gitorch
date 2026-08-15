@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest'
-import { julesSourceName, criarSessaoJules } from './jules-client.js'
+import {
+  julesSourceName,
+  criarSessaoJules,
+  numeroDoPrDaSaida,
+  consultarSessaoJules,
+  responderSessaoJules,
+  aprovarPlanoJules,
+} from './jules-client.js'
+import * as julesClient from './jules-client.js'
 
 // Desejo do dono (issue de wishlist deste repositório): delegar tem de ACIONAR
 // o dev assíncrono, não apenas pendurar um label e torcer para alguém escutar.
@@ -94,5 +102,120 @@ describe('criarSessaoJules', () => {
       criarSessaoJules({ ...base, fetchImpl: impl, onWarn: (m) => avisos.push(m) })
     ).resolves.toBeNull()
     expect(avisos.length).toBeGreaterThan(0)
+  })
+})
+
+describe('numeroDoPrDaSaida', () => {
+  it('extrai o número do PR da saída da sessão', () => {
+    expect(
+      numeroDoPrDaSaida([{ pullRequest: { url: 'https://github.com/dono/repo/pull/63' } }])
+    ).toBe(63)
+  })
+
+  it('endereço fora do formato esperado não vira número', () => {
+    // Sem a âncora de fim, ".../pull/63x" e ".../pull/63.qualquer-coisa"
+    // casariam — e o número extraído apontaria para um PR que não é aquele.
+    expect(numeroDoPrDaSaida([{ pullRequest: { url: 'https://exemplo.invalido/x' } }])).toBeNull()
+    expect(
+      numeroDoPrDaSaida([{ pullRequest: { url: 'https://github.com/dono/repo/pull/63x' } }])
+    ).toBeNull()
+  })
+
+  it('saída vazia ou de outro formato devolve nulo em vez de explodir', () => {
+    expect(numeroDoPrDaSaida(undefined)).toBeNull()
+    expect(numeroDoPrDaSaida([])).toBeNull()
+    expect(numeroDoPrDaSaida([{ changeSet: {} }])).toBeNull()
+  })
+})
+
+describe('consultarSessaoJules', () => {
+  it('devolve estado e número do PR, sem carregar a URL adiante', async () => {
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify({
+          state: 'COMPLETED',
+          updateTime: '2026-01-01T00:00:00Z',
+          outputs: [{ pullRequest: { url: 'https://github.com/dono/repo/pull/63' } }],
+        }),
+        { status: 200 }
+      )) as unknown as typeof fetch
+
+    const lido = await consultarSessaoJules({ apiKey: 'k', sessionName: 'sessions/1', fetchImpl })
+
+    expect(lido).toEqual({
+      estado: 'COMPLETED',
+      numeroDoPr: 63,
+      ultimaAtualizacao: '2026-01-01T00:00:00Z',
+    })
+  })
+
+  it('sem chave configurada, o recurso está desligado — não é erro', async () => {
+    expect(await consultarSessaoJules({ sessionName: 'sessions/1' })).toBeNull()
+  })
+
+  it('serviço fora do ar avisa e devolve nulo, sem derrubar a vigia', async () => {
+    const avisos: string[] = []
+    const fetchImpl = (async () => {
+      throw new Error('rede caiu')
+    }) as unknown as typeof fetch
+
+    const lido = await consultarSessaoJules({
+      apiKey: 'k',
+      sessionName: 'sessions/1',
+      fetchImpl,
+      onWarn: (m) => avisos.push(m),
+    })
+
+    expect(lido).toBeNull()
+    expect(avisos[0]).toContain('sessions/1')
+  })
+})
+
+describe('responderSessaoJules e aprovarPlanoJules', () => {
+  it('a resposta vai no corpo, para o método de mensagem da sessão', async () => {
+    let urlChamada = ''
+    let corpo = ''
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      urlChamada = String(url)
+      corpo = String(init.body)
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch
+
+    const ok = await responderSessaoJules({
+      apiKey: 'k',
+      sessionName: 'sessions/1',
+      texto: 'siga pelo caminho A',
+      fetchImpl,
+    })
+
+    expect(ok).toBe(true)
+    expect(urlChamada).toContain('sessions/1:sendMessage')
+    expect(JSON.parse(corpo)).toEqual({ prompt: 'siga pelo caminho A' })
+  })
+
+  it('recusa do serviço não lança: devolve falso e o ciclo seguinte tenta de novo', async () => {
+    const fetchImpl = (async () => new Response('{}', { status: 500 })) as unknown as typeof fetch
+
+    expect(await aprovarPlanoJules({ apiKey: 'k', sessionName: 'sessions/1', fetchImpl })).toBe(
+      false
+    )
+  })
+})
+
+describe('a superfície do cliente do Jules bate com a API oficial', () => {
+  it('não expõe funções que chamam endereços inexistentes', () => {
+    // `:continue` e `/quota` não existem na API do Jules (documentação oficial
+    // e sondagem: 404). Manter função para eles é código morto disfarçado de
+    // funcional — sempre caiu no próprio catch.
+    expect(julesClient).not.toHaveProperty('continuarSessaoJules')
+    expect(julesClient).not.toHaveProperty('getJulesQuota')
+    expect(julesClient).not.toHaveProperty('getSessaoJulesStatus')
+  })
+
+  it('expõe as quatro funções que a vigia usa', () => {
+    expect(typeof julesClient.consultarSessaoJules).toBe('function')
+    expect(typeof julesClient.responderSessaoJules).toBe('function')
+    expect(typeof julesClient.aprovarPlanoJules).toBe('function')
+    expect(typeof julesClient.ultimaMensagemDoDevJules).toBe('function')
   })
 })

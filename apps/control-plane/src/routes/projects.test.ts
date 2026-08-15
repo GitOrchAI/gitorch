@@ -53,4 +53,56 @@ describe('Project Routes', () => {
     expect(res.statusCode).toBe(200)
     expect(res.json().runtimeConfig).toEqual({ model: 'gpt-4' })
   })
+
+  test('PATCH /api/projects/:id/runtime-config aceita o plano do dev assíncrono e recusa valor inventado', async () => {
+    app.prisma.project.findFirst = vi.fn().mockResolvedValue({ id: 'proj_456', wingId: 'wing_123' })
+    // Mock guardado numa variável (em vez de inline) para dar pra inspecionar
+    // os argumentos REAIS que a rota mandou pro Prisma — só conferir o corpo
+    // da resposta HTTP não prova nada, porque o mock devolve 'pro' de
+    // qualquer jeito, mesmo que a rota nunca repasse devPlan pro `data`.
+    const updateMock = vi.fn().mockResolvedValue({
+      id: 'proj_456',
+      name: 'Test',
+      devPlan: 'pro',
+    })
+    app.prisma.project.update = updateMock
+
+    const ok = await app.inject({
+      method: 'PATCH',
+      url: '/api/projects/proj_456/runtime-config',
+      headers: authHeaders,
+      payload: { devPlan: 'pro' },
+    })
+    expect(ok.statusCode).toBe(200)
+    expect(ok.json().devPlan).toBe('pro')
+    // Prova de verdade #1: o devPlan que veio no corpo da requisição tem que
+    // chegar ao `data` do update do Prisma — não só ao JSON da resposta.
+    expect(updateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ devPlan: 'pro' }) })
+    )
+
+    const ruim = await app.inject({
+      method: 'PATCH',
+      url: '/api/projects/proj_456/runtime-config',
+      headers: authHeaders,
+      payload: { devPlan: 'enterprise' },
+    })
+    expect(ruim.statusCode).toBe(400)
+
+    // Prova de verdade #2: devPlan AUSENTE no corpo não pode apagar o plano
+    // já salvo. A rota monta o `data` só com as chaves que vieram na
+    // requisição, então um PATCH que só mexe em runtimeConfig não pode levar
+    // a chave devPlan junto (nem como undefined) pro update do Prisma.
+    const semDevPlan = await app.inject({
+      method: 'PATCH',
+      url: '/api/projects/proj_456/runtime-config',
+      headers: authHeaders,
+      payload: { runtimeConfig: { model: 'gpt-4' } },
+    })
+    expect(semDevPlan.statusCode).toBe(200)
+    const ultimaChamada = updateMock.mock.calls[updateMock.mock.calls.length - 1]![0] as {
+      data: Record<string, unknown>
+    }
+    expect(ultimaChamada.data).not.toHaveProperty('devPlan')
+  })
 })

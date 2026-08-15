@@ -1,11 +1,20 @@
 import { GithubExecutionError } from './github-backlog.js'
 import { aplicarLabelDoAgente } from './agent-label.js'
+import { escolherParaDelegar, type IssueCandidata } from './fila-de-delegacao.js'
+import type { LinhaDeSessao } from './dev-session-store.js'
 
 // Delegação contínua do SM (F3.6 item 2): a cada wake, encontra as TASKS prontas
-// (label `gitorch:task`, sem `jules`, com todos os "Blocked by" já fechados) e
-// aplica a label de delegação — assim uma task que desbloqueia no MEIO da sprint
-// segue sozinha, sem esperar o próximo sprint-planning. É determinístico (o
-// "julgamento" mecânico é código, não LLM — a Lei).
+// (label `gitorch:task`, sem sessão viva na tabela `dev_sessions`, com todos os
+// "Blocked by" já fechados) e aplica a label de delegação — assim uma task que
+// desbloqueia no MEIO da sprint segue sozinha, sem esperar o próximo
+// sprint-planning. É determinístico (o "julgamento" mecânico é código, não LLM
+// — a Lei).
+//
+// A fila é decidida pela linha da sessão (fila-de-delegacao.ts), não pela
+// etiqueta: a etiqueta é irreversível na prática (uma vez aplicada, nunca sai
+// sozinha), e usá-la como critério de fila foi o que fez #46, #47 e #48
+// morrerem em silêncio — delegadas, a sessão caiu, e como carregavam a
+// etiqueta nunca voltaram a ser candidatas.
 
 const TASK_LABEL = 'gitorch:task'
 
@@ -29,7 +38,41 @@ export interface SmDelegationOptions {
     titulo: string
     prompt: string
   }) => Promise<string | null>
+  /**
+   * Guarda a ligação entre a issue e a sessão que acabou de nascer.
+   *
+   * Existe porque essa ligação vivia só no texto de saída desta missão e
+   * evaporava com o log. Sem ela o PR entregue não é reconhecido para
+   * julgamento: ele chega com o autor da conta da instalação e sem palavra de
+   * ligação no corpo, então nenhum sinal lido do GitHub sozinho o identifica
+   * como trabalho delegado.
+   */
+  aoCriarSessao?: (dados: { issueNumber: number; sessionName: string }) => Promise<void>
   fetchImpl?: typeof fetch
+  /**
+   * Linhas de sessão abertas deste projeto. É a fila real: issue com linha viva
+   * já está sendo trabalhada; issue sem linha viva está por delegar, mesmo que
+   * já tenha sido delegada antes e a sessão tenha morrido.
+   */
+  sessoesVivas?: LinhaDeSessao[]
+  /** Sessões abertas neste projeto nas últimas 24h, para o teto diário. */
+  delegadasHoje?: number
+  /** Do plano declarado pelo dono. Padrão: Free, que é o mais restritivo. */
+  tetoConcorrentes?: number
+  tetoDiario?: number
+  /**
+   * Canal do aviso de degradação — antes hardcoded em `console.warn`,
+   * invisível na observabilidade estruturada. Produção (scheduler.ts) sempre
+   * passa `app.log.warn`. Default: console.warn (só pra chamadas fora do
+   * plugin).
+   *
+   * Não é preciosismo: este é justamente o aviso que existe para o
+   * julgamento não morrer em silêncio quando a sessão nasceu no dev
+   * assíncrono mas a ligação issue↔sessão não pôde ser guardada — sem essa
+   * ligação, o QA não reconhece o PR que chegar depois. Mesmo motivo já
+   * registrado em `github-app-token.ts` e `qa-rails-mission.ts`.
+   */
+  onWarn?: (message: string) => void
 }
 
 export interface SmDelegationResult {
@@ -67,33 +110,45 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
     return resp.json().catch(() => ({}))
   }
 
-  // Candidatas: tasks abertas do GitOrch ainda NÃO delegadas.
+  // Candidatas na ordem que o GitHub devolveu (a ordem da sprint).
   const tasks = (await gh(
     'GET',
     `/repos/${options.repository}/issues?state=open&labels=${encodeURIComponent(TASK_LABEL)}&per_page=100`
   )) as Array<{ number: number; title?: string; labels: Array<{ name: string }>; body?: string }>
-  const candidates = (Array.isArray(tasks) ? tasks : []).filter(
-    (t) => !t.labels.some((l) => l.name === label)
-  )
+  const abertas = Array.isArray(tasks) ? tasks : []
+
+  // Bloqueadores só para quem ainda não tem sessão viva — não adianta gastar
+  // chamada em issue que já está em trabalho.
+  const comSessaoViva = new Set((options.sessoesVivas ?? []).map((s) => s.issueNumber))
+  const candidatas: IssueCandidata[] = []
+  for (const t of abertas) {
+    if (comSessaoViva.has(t.number)) continue
+    let abertosCount = 0
+    for (const b of extractBlockers(t.body ?? '')) {
+      const blocker = (await gh('GET', `/repos/${options.repository}/issues/${b}`)) as {
+        state?: string
+      }
+      if (blocker.state !== 'closed') abertosCount += 1
+    }
+    candidatas.push({ number: t.number, bloqueadoresAbertos: abertosCount })
+  }
+
+  const escolhidas = escolherParaDelegar({
+    candidatas,
+    sessoesVivas: options.sessoesVivas ?? [],
+    delegadasHoje: options.delegadasHoje ?? 0,
+    tetoConcorrentes: options.tetoConcorrentes ?? 3,
+    tetoDiario: options.tetoDiario ?? 15,
+    capPorCiclo: cap,
+  })
+  const porNumero = new Map(abertas.map((t) => [t.number, t]))
 
   const delegated: number[] = []
   // Identificadores das sessões abertas no dev assíncrono, para o watchdog cobrar.
   const sessoes: string[] = []
-  for (const task of candidates) {
-    if (delegated.length >= cap) break
-    // Pronta = todos os "Blocked by" fechados.
-    const blockers = extractBlockers(task.body ?? '')
-    let ready = true
-    for (const b of blockers) {
-      const blocker = (await gh('GET', `/repos/${options.repository}/issues/${b}`)) as {
-        state?: string
-      }
-      if (blocker.state !== 'closed') {
-        ready = false
-        break
-      }
-    }
-    if (!ready) continue
+  for (const numero of escolhidas) {
+    const task = porNumero.get(numero)
+    if (!task) continue
     await gh('POST', `/repos/${options.repository}/issues/${task.number}/labels`, {
       labels: [label],
     })
@@ -138,7 +193,24 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
           'described above.',
         ].join('\n'),
       })
-      if (sessao) sessoes.push(`#${task.number}→${sessao}`)
+      if (sessao) {
+        sessoes.push(`#${task.number}→${sessao}`)
+        // A ligação tem de ser GUARDADA aqui, não só impressa: é ela que o
+        // julgamento consulta depois. O try/catch é deliberado — falhar ao
+        // guardar não pode derrubar a delegação das outras tasks, e o aviso
+        // diz exatamente o que ficou para trás.
+        if (options.aoCriarSessao) {
+          try {
+            await options.aoCriarSessao({ issueNumber: task.number, sessionName: sessao })
+          } catch (err) {
+            const avisar = options.onWarn ?? console.warn
+            avisar(
+              `[sm] sessão criada para #${task.number} mas a ligação não pôde ser guardada; ` +
+                `o julgamento não vai encontrar este PR: ${(err as Error).message}`
+            )
+          }
+        }
+      }
     }
   }
 

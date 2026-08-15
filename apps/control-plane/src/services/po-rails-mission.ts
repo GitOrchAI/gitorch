@@ -32,8 +32,6 @@ export interface PoRailsMissionOptions {
   execute: StepExecutor
   /** Contexto do projeto montado pelo sistema (codegraph, memórias). */
   contextBlocks: string[]
-  /** Label de delegação (padrão 'jules'). */
-  delegateLabel?: string
   /** Colunas do board deste projeto (config; default nativo do Projects v2). */
   boardColumns?: BoardColumns
   /** Duração da sprint em dias (config por projeto; padrão 7). */
@@ -301,11 +299,11 @@ export async function runPoMissionViaRails(
     ...(options.sprintDays ? { sprintDays: options.sprintDays } : {}),
     ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
   })
-  const result = await applyBacklog({
-    github,
-    plan,
-    delegateLabel: options.delegateLabel ?? 'jules',
-  })
+  // A delegação NÃO nasce aqui. Decisão do dono (14/08/2026): só o SM delega.
+  // O PO monta o plano e para. Quando o PO também delegava, havia dois donos
+  // para a mesma decisão — e nenhum dos dois olhava o teto do plano do dev
+  // assíncrono. Ver `fila-de-delegacao.ts`.
+  const result = await applyBacklog({ github, plan })
 
   // 4) Resumo textual: vira memória do projeto (e evidência humana).
   const lines = [

@@ -39,7 +39,26 @@ import { runPoMissionViaRails } from '../services/po-rails-mission.js'
 import { runRaMissionViaRails } from '../services/ra-rails-mission.js'
 import { runQaMissionViaRails } from '../services/qa-rails-mission.js'
 import { runSmDelegation } from '../services/sm-delegation.js'
-import { criarSessaoJules } from '../services/jules-client.js'
+import { tetosDoPlanoDoDev } from '../services/plano-do-dev.js'
+import {
+  abrirSessao,
+  sessoesVivas,
+  registrarEstado,
+  registrarResposta,
+  registrarPr,
+  fecharSessao,
+  registrarInvestigacao,
+  type PrismaDevSession,
+  type LinhaDeSessao,
+} from '../services/dev-session-store.js'
+import {
+  criarSessaoJules,
+  consultarSessaoJules,
+  responderSessaoJules,
+  aprovarPlanoJules,
+  ultimaMensagemDoDevJules,
+} from '../services/jules-client.js'
+import { vigiarSessoes } from '../services/session-watch.js'
 import { runSmWatchdog, buildTelegramNotifier } from '../services/sm-watchdog.js'
 import { resolveNotifyChatId } from '../services/telegram-link.js'
 import { runIncidentSensor } from '../services/incident-sensor.js'
@@ -65,7 +84,7 @@ import { computeConsumption } from '../lib/consumption.js'
 import { pipelineCheckEnabled } from '../config/pipeline-check.js'
 import { resolveMissionCpus } from '../config/mission-cpus.js'
 import { reapOrphanContainers, failOrphanRunningMissions, type ReapResult } from './boot-reaper.js'
-import type { PrismaClient } from '@prisma/client'
+import type { Prisma, PrismaClient } from '@prisma/client'
 import * as os from 'node:os'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -184,6 +203,66 @@ export function resolveRailsBoard(project: { runtimeConfig?: unknown }): string 
     (project.runtimeConfig as Record<string, unknown> | null)?.['envConfig'] as
       Record<string, unknown> | undefined
   )?.['GITORCH_PROJECT_BOARD'] as string | undefined
+}
+
+/**
+ * Monta as opções de teto e fila que a delegação do SM recebe.
+ *
+ * Existe como função pura EXPORTADA por um motivo de segurança, não de
+ * estilo: é aqui que o teto do plano do dev assíncrono (declarado pelo dono
+ * no cadastro — a API do Jules não expõe consulta de cota, ver
+ * plano-do-dev.ts) entra no caminho de delegação. Antes desta extração, a
+ * montagem vivia dentro de `executeMissionWithFailover` — closure não
+ * exportada — e não havia como testar que o teto do plano chega de fato à
+ * delegação: uma regressão que reintroduzisse os literais `3`/`15` não
+ * quebraria teste nenhum, estourando a cota do cliente em silêncio. Ver
+ * scheduler-teto-delegacao.test.ts.
+ */
+export function montarOpcoesDeDelegacao(args: {
+  devPlan: string | null | undefined
+  sessoesVivas: LinhaDeSessao[]
+  delegadasHoje: number
+}): {
+  sessoesVivas: LinhaDeSessao[]
+  delegadasHoje: number
+  tetoConcorrentes: number
+  tetoDiario: number
+} {
+  return {
+    sessoesVivas: args.sessoesVivas,
+    delegadasHoje: args.delegadasHoje,
+    ...tetosDoPlanoDoDev(args.devPlan),
+  }
+}
+
+/**
+ * O filtro das sessões que o julgamento precisa enxergar.
+ *
+ * Exportado para ser testável: é ele que decide se o QA acha ou não o PR do dev
+ * assíncrono, e um erro aqui é silencioso — o QA simplesmente diz que não há PR
+ * para julgar, como já aconteceu 85 vezes em produção.
+ *
+ * Sem teto (`take`) de propósito: `dev_sessions` nunca é apagada (o
+ * fechamento é lógico, ver dev-session-store.ts), então qualquer limite de
+ * quantidade acabaria escondendo a sessão certa num projeto de operação
+ * longa — o mesmo defeito que esta correção existe para matar. Em vez de
+ * limitar por quantidade, exclui-se só o que já terminou de verdade: as
+ * sessões mescladas, que são as únicas que se acumulam sem limite ao longo
+ * do tempo (as demais continuam candidatas até virarem 'merged').
+ *
+ * - Viva (`closedAt: null`) é candidata natural: pode ganhar PR a qualquer
+ *   momento.
+ * - Fechada só interessa se ainda tem PR pendente de veredito — é o caso da
+ *   sessão abandonada por teto de retomadas (`closedReason: 'abandoned'`) cujo
+ *   PR continua aberto no GitHub. `closedReason !== 'merged'` cobre esse caso
+ *   (e também 'failed_final'); o `pullRequestNumber` não nulo garante que só
+ *   entra quem de fato tem algo a julgar.
+ */
+export function filtroDeSessoesParaJulgamento(projectId: string): Prisma.DevSessionWhereInput {
+  return {
+    projectId,
+    OR: [{ closedAt: null }, { closedReason: { not: 'merged' }, pullRequestNumber: { not: null } }],
+  }
 }
 
 function buildWorkspaceProvider(app: FastifyInstance): WorkspaceProvider {
@@ -1145,6 +1224,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     name: string
     userId: string | null
     runtimeConfig?: unknown
+    devPlan?: string | null
   }
 
   // Tenta a cadeia de motores em ordem; sucesso encerra; erro de cota/auth cai
@@ -1282,9 +1362,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
 
         if (smRails) {
           // SM é o dono da esteira, 100% determinístico (sem passo de LLM):
-          // (1) delega tasks prontas e desbloqueadas; (2) watchdog do dev
-          // assíncrono — falha do Jules dispara o retry oficial (re-label),
-          // com cap e escalação humana (gitorch:stuck + Telegram).
+          // (1) delega tasks prontas e desbloqueadas; (2) a cobrança do dev
+          // assíncrono NÃO é mais por re-label — é a linha da sessão
+          // (dev-session-store) que a vigia (`varrerSessoesDoDev` /
+          // `vigiarSessoes`) examina a cada tick. A vigia mantém só
+          // escalonamento (aciona o SM para investigar falha/estagnação) e
+          // aviso ao dono (Telegram), com teto para não virar spam.
           const delegation = await runSmDelegation({
             repository: project.wingId,
             githubToken: railsToken as string,
@@ -1300,6 +1383,56 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 prompt,
                 onWarn: (m) => app.log.warn(m),
               }),
+            // Guardar a ligação é o que permite julgar o PR depois: ele chega
+            // com o autor da conta da instalação e sem palavra de ligação no
+            // corpo, então o GitHub sozinho não conta de quem é o trabalho.
+            //
+            // `abrirSessao` devolve resultado tipado (nunca lança em cima de
+            // colisão esperada); `ok: false` aqui significa que já existe
+            // sessão viva para esta issue (índice único parcial
+            // `dev_sessions_open_per_issue`) — a sessão nova nasceu no
+            // serviço externo mas a ligação não pôde ser guardada. Lançamos
+            // para que o try/catch de `runSmDelegation` (sm-delegation.ts)
+            // registre o aviso do jeito de sempre, sem derrubar as outras
+            // delegações do ciclo.
+            aoCriarSessao: async ({ issueNumber, sessionName }) => {
+              const resultado = await abrirSessao({
+                prisma: app.prisma as unknown as PrismaDevSession,
+                projectId: project.id,
+                issueNumber,
+                sessionName,
+                agora: new Date(),
+              })
+              if (!resultado.ok) {
+                throw new Error(
+                  `já existe sessão viva para a issue #${issueNumber} (${resultado.motivo}); ` +
+                    `a ligação com "${sessionName}" não foi guardada`
+                )
+              }
+            },
+            // A fila real e os tetos do plano são montados pela função pura
+            // exportada `montarOpcoesDeDelegacao` (topo do arquivo) — só as
+            // leituras (Prisma) ficam aqui, dentro da closure não exportada.
+            ...montarOpcoesDeDelegacao({
+              devPlan: project.devPlan,
+              // A fila real: issue com linha viva já está sendo trabalhada;
+              // sem linha viva está por delegar, mesmo que já tenha sido
+              // delegada antes e a sessão tenha morrido (fila-de-delegacao.ts).
+              sessoesVivas: await sessoesVivas({
+                prisma: app.prisma as unknown as PrismaDevSession,
+                projectId: project.id,
+              }),
+              delegadasHoje: await app.prisma.devSession.count({
+                where: {
+                  projectId: project.id,
+                  createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+                },
+              }),
+            }),
+            // I4 (revisão final): antes hardcoded em `console.warn` dentro de
+            // `sm-delegation.ts`, invisível no logger estruturado — mesmo
+            // padrão já aplicado em `runQaMissionViaRails` (commit 5477a3e).
+            onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
           })
           // O aviso é do DONO do projeto — a task travada é a dele. Antes, o
           // chat vinha direto do env (GITORCH_TELEGRAM_CHAT_ID): TODO cliente
@@ -1357,6 +1490,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             app.log.warn(sensorErr, '[Scheduler] sensor de incidentes falhou')
             sensorOut = 'sensor: failed (see logs).'
           }
+
           result = {
             exitCode: 0,
             output: [delegation.output, watchdog.output, sensorOut].join('\n'),
@@ -1433,6 +1567,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                     repository: project.wingId,
                     githubToken: railsToken as string,
                     contextBlocks,
+                    // Vivas + fechadas com PR pendente (não mescladas), sem
+                    // teto — ver filtroDeSessoesParaJulgamento.
+                    sessoes: await app.prisma.devSession.findMany({
+                      where: filtroDeSessoesParaJulgamento(project.id),
+                      orderBy: { createdAt: 'desc' },
+                    }),
                     // Fase 1 do QA (Reconhecimento): só entra quando este QA foi
                     // acordado pela cascata de onboarding (Task 10) — hoje o
                     // único jeito de o QA rodar, já que o projeto não tem
@@ -1449,6 +1589,45 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                           }),
                         }
                       : {}),
+                    // Task 10: a reprovação volta para a sessão do dev
+                    // assíncrono — sem isto o veredito morre no comentário do
+                    // PR (medido: PR #79, 5 dias parado, 12 reprovações, zero
+                    // retrabalho). A API não tem retomada; `sendMessage` é o
+                    // único caminho, por isso `responderSessaoJules` mesmo.
+                    avisarSessao: async ({ sessionName, texto }) =>
+                      responderSessaoJules({
+                        apiKey: process.env['JULES_API_KEY'],
+                        sessionName,
+                        texto,
+                        onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+                      }),
+                    // Task 11 (decisão do dono D7): o produto mescla sozinho,
+                    // sem confirmação humana. `mesclarPr` já fez o merge de
+                    // verdade quando este callback dispara — aqui só fecha a
+                    // linha da vigia (`fecharSessao` com 'merged'), que é o
+                    // que tira a sessão de `filtroDeSessoesParaJulgamento` e
+                    // impede o QA de procurar veredito para um PR que já foi
+                    // mesclado. Sem linha correspondente (PR de humano, ou
+                    // sessão fechada por outro motivo), não há o que fechar —
+                    // não é falha.
+                    aoMesclar: async ({ numeroDoPr }) => {
+                      const linha = await app.prisma.devSession.findFirst({
+                        where: {
+                          projectId: project.id,
+                          pullRequestNumber: numeroDoPr,
+                          closedAt: null,
+                        },
+                      })
+                      if (linha) {
+                        await fecharSessao({
+                          prisma: app.prisma as unknown as PrismaDevSession,
+                          sessionName: linha.sessionName,
+                          motivo: 'merged',
+                          agora: new Date(),
+                        })
+                      }
+                    },
+                    onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
                     execute,
                   })
           } finally {
@@ -1801,8 +1980,116 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     }
   }
 
+  // Vigia das sessões do dev assíncrono.
+  //
+  // Roda no TICK, não no acordar do SM. A diferença importa: o SM acorda quatro
+  // vezes por dia, e uma pergunta feita logo depois do acordar dormiria seis
+  // horas esperando resposta. O tick roda a cada minuto e a própria
+  // `vigiarSessoes` só reexamina uma sessão a cada dez minutos — é daí que sai
+  // a cadência, e não de um relógio novo.
+  //
+  // Escopada por construção: só varre PROJETOS QUE TÊM sessão viva. Sem sessão
+  // viva em lugar nenhum, não há uma única chamada ao serviço externo.
+  const varrerSessoesDoDev = async (): Promise<void> => {
+    let projetosComSessao: Array<{ projectId: string }>
+    try {
+      projetosComSessao = await app.prisma.devSession.findMany({
+        where: { closedAt: null },
+        distinct: ['projectId'],
+        select: { projectId: true },
+      })
+    } catch (err) {
+      app.log.error(err, '[Scheduler] vigia não conseguiu listar sessões vivas')
+      return
+    }
+    if (projetosComSessao.length === 0) return
+
+    for (const { projectId } of projetosComSessao) {
+      try {
+        // O aviso é do DONO do projeto — a sessão abandonada é dele. Mesma
+        // resolução usada no wake do SM: sem vínculo, ninguém é avisado, e o
+        // projeto de um cliente nunca vira mensagem no chat de outro.
+        const projeto = await app.prisma.project.findUnique({ where: { id: projectId } })
+        if (!projeto) continue
+        const notifyChatId = await resolveNotifyChatId(app.prisma, projeto, {
+          instanceOwnerEmail: process.env['GITORCH_OWNER_EMAIL'],
+          instanceChatId:
+            process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
+        })
+        const notify = buildTelegramNotifier({
+          botToken: process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
+          ...(notifyChatId ? { chatId: notifyChatId } : {}),
+        })
+        // Vigia da esteira (Fase 2): lê o estado de cada sessão VIVA do dev
+        // assíncrono no serviço externo e age — sem isso a Fase 1
+        // (dev-session-store) só guarda a ligação issue↔sessão↔PR e ninguém
+        // nunca a lê de volta. Mesmo wake do SM porque ele é o dono da
+        // esteira; best-effort como o sensor acima — falha aqui não pode
+        // derrubar a delegação nem o watchdog.
+        const sessoesDoProjeto = await sessoesVivas({
+          prisma: app.prisma as unknown as PrismaDevSession,
+          projectId,
+        })
+        const julesApiKey = process.env['JULES_API_KEY']
+        const vigiaOut = await vigiarSessoes({
+          sessoes: sessoesDoProjeto,
+          consultarSessao: (sessionName) =>
+            consultarSessaoJules({
+              apiKey: julesApiKey,
+              sessionName,
+              onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+            }),
+          ultimaMensagem: (sessionName) =>
+            ultimaMensagemDoDevJules({
+              apiKey: julesApiKey,
+              sessionName,
+              onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+            }),
+          aprovarPlano: (sessionName) =>
+            aprovarPlanoJules({
+              apiKey: julesApiKey,
+              sessionName,
+              onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+            }),
+          pedirParaContinuar: (sessionName) =>
+            responderSessaoJules({
+              apiKey: julesApiKey,
+              sessionName,
+              texto:
+                'Please continue working on this task from where you left off. If you are ' +
+                'blocked on something, explain what is blocking you instead of stopping silently.',
+              onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+            }),
+          // Nunca chama motor direto: passa pelo MESMO portão de
+          // concorrência, orçamento diário por plano e guarda de gasto que
+          // o resto do scheduler usa — é o `triggerAgentMission` de sempre.
+          dispararMissao: async (papel, projectIdDaMissao) => {
+            void triggerAgentMission(papel, projectIdDaMissao)
+          },
+          registrarEstado: (args) =>
+            registrarEstado({ prisma: app.prisma as unknown as PrismaDevSession, ...args }),
+          registrarResposta: (args) =>
+            registrarResposta({ prisma: app.prisma as unknown as PrismaDevSession, ...args }),
+          registrarPr: (args) =>
+            registrarPr({ prisma: app.prisma as unknown as PrismaDevSession, ...args }),
+          fecharSessao: (args) =>
+            fecharSessao({ prisma: app.prisma as unknown as PrismaDevSession, ...args }),
+          registrarInvestigacao: (args) =>
+            registrarInvestigacao({ prisma: app.prisma as unknown as PrismaDevSession, ...args }),
+          ...(notify ? { avisarDono: notify } : {}),
+          agora: new Date(),
+          onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+        })
+        if (vigiaOut) app.log.info(`[Scheduler] ${vigiaOut}`)
+      } catch (vigiaErr) {
+        app.log.warn(vigiaErr, `[Scheduler] vigia de sessões falhou no projeto ${projectId}`)
+      }
+    }
+  }
+
   const tick = async () => {
     await processSetupMissions()
+    await varrerSessoesDoDev()
     await sweepExpiredEnvironments()
     const now = new Date()
     let schedules

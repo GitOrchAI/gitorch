@@ -66,7 +66,13 @@ function actionsOf(f: typeof fetch) {
 }
 
 describe('runSmWatchdog', () => {
-  it('falha nova do Jules → remove e re-aplica a label + comenta a retentativa', async () => {
+  it('falha nova do Jules NÃO reaplica a label — a cobrança mora na linha da sessão', async () => {
+    // Comportamento antigo (removido): esta mesma falha disparava
+    // unlabel+label+comment de retentativa. Provado inerte — a fila de
+    // delegação escolhia justamente as issues SEM a label ('jules'), então
+    // reaplicá-la numa issue que já a tem nunca a devolvia à fila. Quem
+    // cobra agora é a linha da sessão em dev_sessions (fila-de-delegacao.ts):
+    // sessão fechada sem merge devolve a issue sozinha, sem tocar em labels.
     const f = fakeFetch([
       {
         number: 10,
@@ -75,11 +81,8 @@ describe('runSmWatchdog', () => {
       },
     ])
     const r = await runSmWatchdog({ repository: 'o/r', githubToken: 't', fetchImpl: f })
-    const a = actionsOf(f)
-    expect(a.map((x) => x.kind)).toEqual(['unlabel', 'label', 'comment'])
-    expect(a[0]!.detail).toBe('jules')
-    expect(a[2]!.detail).toContain('1/3')
-    expect(r.retried).toEqual([10])
+    expect(actionsOf(f)).toEqual([])
+    expect(r.noOp).toBe(true)
   })
 
   it('falha ANTERIOR à última retentativa não dispara de novo (no-op)', async () => {
