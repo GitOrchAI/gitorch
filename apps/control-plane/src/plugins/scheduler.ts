@@ -47,6 +47,7 @@ import {
   registrarResposta,
   registrarPr,
   fecharSessao,
+  registrarInvestigacao,
   type PrismaDevSession,
   type LinhaDeSessao,
 } from '../services/dev-session-store.js'
@@ -1361,9 +1362,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
 
         if (smRails) {
           // SM é o dono da esteira, 100% determinístico (sem passo de LLM):
-          // (1) delega tasks prontas e desbloqueadas; (2) watchdog do dev
-          // assíncrono — falha do Jules dispara o retry oficial (re-label),
-          // com cap e escalação humana (gitorch:stuck + Telegram).
+          // (1) delega tasks prontas e desbloqueadas; (2) a cobrança do dev
+          // assíncrono NÃO é mais por re-label — é a linha da sessão
+          // (dev-session-store) que a vigia (`varrerSessoesDoDev` /
+          // `vigiarSessoes`) examina a cada tick. A vigia mantém só
+          // escalonamento (aciona o SM para investigar falha/estagnação) e
+          // aviso ao dono (Telegram), com teto para não virar spam.
           const delegation = await runSmDelegation({
             repository: project.wingId,
             githubToken: railsToken as string,
@@ -2066,6 +2070,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             registrarPr({ prisma: app.prisma as unknown as PrismaDevSession, ...args }),
           fecharSessao: (args) =>
             fecharSessao({ prisma: app.prisma as unknown as PrismaDevSession, ...args }),
+          registrarInvestigacao: (args) =>
+            registrarInvestigacao({ prisma: app.prisma as unknown as PrismaDevSession, ...args }),
           ...(notify ? { avisarDono: notify } : {}),
           agora: new Date(),
           onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),

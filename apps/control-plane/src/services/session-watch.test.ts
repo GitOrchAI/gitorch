@@ -40,6 +40,7 @@ function depsFalso(overrides: Partial<VigiaDeps> = {}): VigiaDeps {
     registrarResposta: vi.fn(async (_args: unknown) => undefined),
     registrarPr: vi.fn(async (_args: unknown) => undefined),
     fecharSessao: vi.fn(async (_args: unknown) => undefined),
+    registrarInvestigacao: vi.fn(async (_args: unknown) => undefined),
     avisarDono: vi.fn(async (_mensagem: string) => undefined),
     agora,
     onWarn: vi.fn(),
@@ -97,6 +98,72 @@ describe('vigiarSessoes', () => {
 
     expect(deps.dispararMissao).toHaveBeenCalledWith('sm', 'proj1')
     expect(deps.registrarPr).not.toHaveBeenCalled()
+  })
+
+  it('estado FAILED aciona o SM E avisa o dono — a lacuna que deixava a falha em silêncio', async () => {
+    const deps = depsFalso({
+      sessoes: [linha({ sessionName: 'sessions/falhou', issueNumber: 42 })],
+      consultarSessao: vi.fn(async () => ({
+        estado: 'FAILED',
+        numeroDoPr: null,
+        ultimaAtualizacao: agora.toISOString(),
+      })),
+    })
+
+    await vigiarSessoes(deps)
+
+    // Regra 1: o SM continua sendo acionado — isso não muda (decisão D5).
+    expect(deps.dispararMissao).toHaveBeenCalledWith('sm', 'proj1')
+    // Regra 2: o aviso ao dono é ADICIONAL e precisa ser acionável — issue,
+    // sessão e estado lido, além de dizer que o SM foi chamado.
+    expect(deps.avisarDono).toHaveBeenCalledWith(expect.stringContaining('#42'))
+    expect(deps.avisarDono).toHaveBeenCalledWith(expect.stringContaining('sessions/falhou'))
+    expect(deps.avisarDono).toHaveBeenCalledWith(expect.stringContaining('FAILED'))
+    expect(deps.avisarDono).toHaveBeenCalledWith(expect.stringMatching(/SM|investig/i))
+    expect(deps.registrarInvestigacao).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionName: 'sessions/falhou' })
+    )
+  })
+
+  it('aviso ao dono não se repete no ciclo seguinte para a mesma sessão no mesmo estado', async () => {
+    const consultarSessao = vi.fn(async () => ({
+      estado: 'FAILED',
+      numeroDoPr: null,
+      ultimaAtualizacao: agora.toISOString(),
+    }))
+
+    // Ciclo 1: primeira vez que a vigia vê esta sessão em FAILED.
+    const deps1 = depsFalso({
+      sessoes: [linha({ sessionName: 'sessions/repete', issueNumber: 7 })],
+      consultarSessao,
+    })
+    await vigiarSessoes(deps1)
+    expect(deps1.avisarDono).toHaveBeenCalledTimes(1)
+
+    const hashGravado: string | null =
+      vi.mocked(deps1.registrarInvestigacao).mock.calls[0]?.[0]?.hash ?? null
+    expect(hashGravado).toBeTruthy()
+
+    // Ciclo 2: mesma sessão, mesmo estado FAILED, e o hash já gravado no
+    // ciclo anterior — exatamente o que a leitura seguinte da linha traria.
+    // Fora da cadência de 10 min para garantir que o exame realmente acontece
+    // (o que se testa aqui é o dedupe do AVISO, não o corte de cadência).
+    const deps2 = depsFalso({
+      sessoes: [
+        linha({
+          sessionName: 'sessions/repete',
+          issueNumber: 7,
+          answeredHash: hashGravado,
+          stateCheckedAt: new Date(agora.getTime() - 30 * 60 * 1000),
+        }),
+      ],
+      consultarSessao,
+    })
+    await vigiarSessoes(deps2)
+
+    // O SM segue sendo acionado todo ciclo — só o aviso ao dono tem teto.
+    expect(deps2.dispararMissao).toHaveBeenCalledWith('sm', 'proj1')
+    expect(deps2.avisarDono).not.toHaveBeenCalled()
   })
 
   it('pergunta nova dispara QA e grava o hash', async () => {

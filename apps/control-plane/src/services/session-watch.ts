@@ -59,7 +59,15 @@ export interface VigiaDeps {
     motivo: MotivoDeFechamento
     agora: Date
   }) => Promise<void>
-  /** Avisa o dono quando a sessão é abandonada por teto estourado. */
+  /**
+   * Grava que já avisamos o dono sobre este estado de falha ('investigar'),
+   * para não repetir o aviso a cada ciclo enquanto a sessão continua parada
+   * no mesmo estado. NÃO mexe em `nudges` — ver `registrarInvestigacao` em
+   * dev-session-store.ts para o porquê.
+   */
+  registrarInvestigacao: (args: { sessionName: string; hash: string; agora: Date }) => Promise<void>
+  /** Avisa o dono quando a sessão é abandonada por teto estourado, ou quando
+   *  a falha entra em 'investigar' pela primeira vez (ver o ramo abaixo). */
   avisarDono?: (mensagem: string) => Promise<void>
   agora: Date
   onWarn?: (m: string) => void
@@ -190,6 +198,41 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
         }
 
         case 'investigar': {
+          // O sm-watchdog aposentado lia os comentários de falha do próprio
+          // dev ("Jules has failed...") e, depois de 3 ocorrências, travava
+          // a issue e avisava o dono. Essa via saiu porque era inerte para a
+          // fila — mas o alarme foi junto, e o workflow que serviria de rede
+          // (jules-apology-handler.yml) está morto por falta do
+          // SECURITY_PAT. Sem este aviso, uma sessão que falha
+          // explicitamente aciona o SM para investigar, mas se a
+          // investigação não resolver, ninguém é avisado — o trabalho fica
+          // parado em silêncio.
+          //
+          // Idempotência por estado, no mesmo espírito do hash de pergunta
+          // já respondida (ver `responder` acima): sem ela, uma sessão presa
+          // em FAILED geraria um aviso a CADA ciclo em que a vigia a
+          // reexamina, porque o SM continua sendo acionado todo ciclo
+          // (decisão D5) — e SPAM apaga sinal tanto quanto silêncio.
+          const hashDoEstado = hashDaMensagem(`investigar:${estadoBruto}`)
+          const jaAvisado = hashDoEstado === linha.answeredHash
+          if (!jaAvisado) {
+            await deps.registrarInvestigacao({
+              sessionName: linha.sessionName,
+              hash: hashDoEstado,
+              agora: deps.agora,
+            })
+            if (deps.avisarDono) {
+              await deps
+                .avisarDono(
+                  `GitOrch: a sessão da issue #${linha.issueNumber} (${linha.sessionName}) chegou ` +
+                    `ao estado ${estadoBruto} sem entregar PR. O SM foi acionado para investigar ` +
+                    `o impedimento.`
+                )
+                .catch(() => undefined)
+            }
+          }
+          // Regra D5 do dono: o SM investiga o impedimento. Isso não muda —
+          // o aviso acima é ADICIONAL, nunca substitui o SM.
           await deps.dispararMissao('sm', linha.projectId)
           investigacoes += 1
           break

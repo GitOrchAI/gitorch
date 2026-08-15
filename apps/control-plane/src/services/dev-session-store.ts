@@ -205,6 +205,34 @@ export async function registrarPr(deps: {
 }
 
 /**
+ * Marca que a vigia já avisou o dono sobre ESTE estado de falha desta sessão.
+ *
+ * Reaproveita o campo `answeredHash` no mesmo espírito de `registrarResposta`:
+ * comparar o hash guardado com o hash calculado é o que evita repetir a ação.
+ * `investigar` só dispara para estados (COMPLETED sem PR, FAILED, CANCELLED)
+ * que nunca coincidem com AWAITING_USER_FEEDBACK — o único outro caminho que
+ * lê `answeredHash` — então reaproveitar o campo não colide com uma pergunta
+ * real do dev.
+ *
+ * De propósito NÃO incrementa `nudges`: nudges é "quantas vezes pedimos para
+ * a sessão continuar" (o teto que decide abandono); investigar é outra
+ * categoria de evento e não deve empurrar a sessão para o abandono mais
+ * rápido. Por isso não reaproveita `registrarResposta` (que incrementa
+ * nudges como efeito colateral) e ganha uma função própria.
+ */
+export async function registrarInvestigacao(deps: {
+  prisma: PrismaDevSession
+  sessionName: string
+  hash: string
+  agora: Date
+}): Promise<void> {
+  await deps.prisma.devSession.update({
+    where: { sessionName: deps.sessionName },
+    data: { answeredHash: deps.hash },
+  })
+}
+
+/**
  * Tira a linha da vigia.
  *
  * O motivo fica registrado porque a diferença entre "mesclou" e "desistimos"
