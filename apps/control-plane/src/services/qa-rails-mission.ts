@@ -257,6 +257,61 @@ export async function runQaMissionViaRails(
     body?: string
     head?: { sha?: string }
   }
+
+  // O ESTADO da verificação vem logo após buscar a PR — ANTES de gastar
+  // chamadas com a issue vinculada e o diff — porque um dos dois estados
+  // abaixo (`pending`/`unknown`) faz a missão voltar sem julgar nada; não há
+  // por que buscar critérios e diff de um PR que não vai ser julgado agora.
+  let ciState = 'unknown'
+  if (pr.head?.sha) {
+    const checks = (await gh(
+      'GET',
+      `/repos/${options.repository}/commits/${pr.head.sha}/check-runs`
+    )) as { check_runs?: Array<{ conclusion?: string; status?: string }> }
+    const runs = checks.check_runs ?? []
+    if (runs.length === 0) ciState = 'no checks'
+    else if (runs.some((r) => r.status !== 'completed')) ciState = 'pending'
+    else if (runs.every((r) => r.conclusion === 'success' || r.conclusion === 'neutral'))
+      ciState = 'green'
+    else ciState = 'red'
+  }
+
+  // Defeito real de produção (PR #97, 15/08/2026 16:42:22): o QA julgou este
+  // PR ENQUANTO a verificação ainda rodava (`ciState === 'pending'`),
+  // reprovou com "CI pending", e minutos depois a verificação terminou 100%
+  // verde (8 checks) — mas a reprovação ficou PRESA para sempre: o skip de
+  // "já julgado" (mais acima, mesmo head sha) nunca deixa o QA re-julgar o
+  // mesmo estado, então um motivo TRANSITÓRIO virou um bloqueio PERMANENTE.
+  // `pending` não é um veredito ("aprovado"/"reprovado") — é "ainda não
+  // sei", e julgar mesmo assim foi o erro. A correção: pular esta passagem
+  // (nenhuma review postada, nenhum comentário, nenhum merge) e deixar a
+  // PRÓXIMA execução do QA — o scheduler roda em ciclo — encontrar a
+  // verificação já resolvida.
+  //
+  // `unknown` (não deu para ler check-runs porque o GitHub não devolveu o
+  // sha do head) entra no MESMO pulo, pelo MESMO motivo: julgar sem saber
+  // corre exatamente o mesmo risco de travar um PR para sempre com uma
+  // reprovação possivelmente incorreta — é o defeito do PR #97 por uma porta
+  // diferente. Isto é DIFERENTE de `no checks`: aquele é um estado ESTÁVEL
+  // (o repositório simplesmente não tem verificação nenhuma configurada, e
+  // não passa a ter uma só de o QA esperar), então continua sendo julgado e
+  // gerando a lacuna GITORCH-GAP (ver adiante). `unknown` não tem NENHUMA
+  // evidência sobre qual dos quatro estados é o real — errar para o lado de
+  // não agir agora é mais seguro que errar para o lado de uma reprovação
+  // permanente e talvez errada.
+  if (ciState === 'pending' || ciState === 'unknown') {
+    const motivo =
+      ciState === 'pending'
+        ? 'aguardando a verificação automática terminar'
+        : 'não julgado — não foi possível ler o estado da verificação automática (unknown)'
+    return {
+      exitCode: 0,
+      output: `QA: PR #${target.number} ${motivo}.`,
+      stderr: '',
+      noOp: true,
+    }
+  }
+
   // A issue vinculada vem PRIMEIRO da linha guardada (autoritativa); só cai
   // para a palavra de ligação no corpo quando a delegação foi reconhecida
   // pelos recuos (login do autor ou etiqueta), que não sabem a issue de origem.
@@ -286,19 +341,6 @@ export async function runQaMissionViaRails(
         `/repos/${options.repository}/pulls/${target.number}/files?per_page=100&page=${pagina}`
       )) as ArquivoDoPr[],
   })
-  let ciState = 'unknown'
-  if (pr.head?.sha) {
-    const checks = (await gh(
-      'GET',
-      `/repos/${options.repository}/commits/${pr.head.sha}/check-runs`
-    )) as { check_runs?: Array<{ conclusion?: string; status?: string }> }
-    const runs = checks.check_runs ?? []
-    if (runs.length === 0) ciState = 'no checks'
-    else if (runs.some((r) => r.status !== 'completed')) ciState = 'pending'
-    else if (runs.every((r) => r.conclusion === 'success' || r.conclusion === 'neutral'))
-      ciState = 'green'
-    else ciState = 'red'
-  }
 
   // 3) Roteiro do QA: um formulário de veredito.
   const prompt = buildStepPrompt('qa', 'qa-verdict', RAILS_SCHEMAS.qaVerdict, [
