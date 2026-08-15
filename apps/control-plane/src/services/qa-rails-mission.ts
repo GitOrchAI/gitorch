@@ -396,8 +396,19 @@ export async function runQaMissionViaRails(
         // Nunca seguir URL devolvida pelo GitHub: a rota é montada aqui, a
         // partir do NÚMERO do PR e do repositório que já temos — nunca de um
         // campo `url`/`html_url` vindo da resposta de outra chamada.
+        //
+        // I2 (revisão final): `sha` amarra o merge ao HEAD que foi de fato
+        // revisado — lido em `pr.head.sha` (passo 2, minutos antes de chegar
+        // aqui: o motor demora). Sem isto, um push do dev nessa janela (e é
+        // exatamente o que o QA pede ao reprovar: "Revise the SAME pull
+        // request") faz o produto mesclar código que ninguém leu nem
+        // verificou — furando os três porteiros por dentro. O GitHub recusa
+        // com 409 se o head mudou desde então, e 409 já cai no caminho de
+        // "merge recusado" (mesmo tratamento do C1), virando motivo
+        // declarado em vez de mesclar às cegas.
         await gh('PUT', `/repos/${options.repository}/pulls/${target.number}/merge`, {
           merge_method: 'squash',
+          sha: pr.head?.sha,
         })
         return true
       },

@@ -778,7 +778,31 @@ describe('runQaMissionViaRails', () => {
     // Não basta contar a chamada: precisa ser NO PR certo e com o método de
     // merge que a decisão do dono (D7) fixou.
     expect(posted.merges).toHaveLength(1)
-    expect(posted.merges[0]).toEqual({ number: 7, body: { merge_method: 'squash' } })
+    expect(posted.merges[0]).toEqual({ number: 7, body: { merge_method: 'squash', sha: 'abc123' } })
+  })
+
+  // I2 (achado importante da revisão final): o diff e o estado da
+  // verificação são lidos MINUTOS antes do motor produzir o veredito (linha
+  // ~289 chama o motor, que demora); o merge só acontece depois. Sem
+  // amarrar o merge ao head que foi de fato revisado, um push do dev nessa
+  // janela — e é exatamente o que o QA pede ao reprovar: "Revise the SAME
+  // pull request" — faria o produto mesclar código que ninguém leu nem
+  // verificou, furando os três porteiros por dentro.
+  it('I2: o corpo do PUT .../merge contém o sha do head que foi revisado', async () => {
+    const f = fakeFetch([{ number: 7, user: 'jules[bot]' }])
+    const posted = (
+      f as unknown as { posted: { merges: Array<{ number: number; body: unknown }> } }
+    ).posted
+    await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+    })
+    expect(posted.merges).toHaveLength(1)
+    // 'abc123' é o head.sha que `fakeFetch` devolve tanto na listagem quanto
+    // na leitura isolada da PR (o mesmo lido no passo 2, antes do motor).
+    expect(posted.merges[0]!.body).toEqual({ merge_method: 'squash', sha: 'abc123' })
   })
 
   it('merge acontece: aoMesclar dispara UMA vez com o número certo do PR, e a saída declara "merged"', async () => {
