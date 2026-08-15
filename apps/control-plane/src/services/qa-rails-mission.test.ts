@@ -723,6 +723,72 @@ describe('runQaMissionViaRails', () => {
     warnSpy.mockRestore()
   })
 
+  // Reproduz, com carimbo de hora real (15/08/2026), a corrida entre o QA e a
+  // vigia: às 16:42:22 o QA julgou o PR #97 (achou a delegação pelo recuo 3 —
+  // corpo com "Fixes #74" + issue com a etiqueta) e às 16:45:01 a vigia gravou
+  // `pullRequestNumber = 97` na linha. NESTE instante do julgamento a linha
+  // ainda não tem o PR gravado — é exatamente o estado que este teste monta.
+  it('reprova ANTES de a vigia gravar o PR na linha: avisa a sessão pela issue de origem, não pelo PR', async () => {
+    const f = fakeFetch(
+      [{ number: 97, user: 'gitorch-app[bot]', body: 'Fixes #74' }],
+      ['jules'],
+      74
+    )
+    const enviadas: Array<{ sessionName: string; texto: string }> = []
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      // A vigia ainda não gravou o PR: pullRequestNumber continua null.
+      sessoes: [linha({ issueNumber: 74, pullRequestNumber: null, sessionName: 'sessions/74abc' })],
+      avisarSessao: async (args) => {
+        enviadas.push(args)
+        return true
+      },
+      fetchImpl: f,
+    })
+    expect(r.exitCode).toBe(0)
+    expect(enviadas).toHaveLength(1)
+    expect(enviadas[0]!.sessionName).toBe('sessions/74abc')
+    expect(enviadas[0]!.texto).toContain('#97')
+  })
+
+  it('duas linhas para a mesma issue (uma abandonada com PR velho, outra viva): avisa a viva/mais recente', async () => {
+    // `LinhaDeSessao` não expõe `closedAt` — quem garante "viva/mais recente"
+    // aqui é a ORDEM em que o chamador entrega `sessoes` (o scheduler entrega
+    // `createdAt: 'desc'`, mais recente primeiro). A linha abandonada, com um
+    // PR de uma tentativa anterior, vem DEPOIS no array — se o código pegasse
+    // a primeira linha da issue sem respeitar essa ordem, ou se caísse de
+    // volta para a linha errada, este teste pegaria a regressão.
+    const f = fakeFetch(
+      [{ number: 97, user: 'gitorch-app[bot]', body: 'Fixes #74' }],
+      ['jules'],
+      74
+    )
+    const enviadas: Array<{ sessionName: string; texto: string }> = []
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      sessoes: [
+        linha({ issueNumber: 74, pullRequestNumber: null, sessionName: 'sessions/nova-viva' }),
+        linha({
+          issueNumber: 74,
+          pullRequestNumber: 90,
+          sessionName: 'sessions/velha-abandonada',
+        }),
+      ],
+      avisarSessao: async (args) => {
+        enviadas.push(args)
+        return true
+      },
+      fetchImpl: f,
+    })
+    expect(r.exitCode).toBe(0)
+    expect(enviadas).toHaveLength(1)
+    expect(enviadas[0]!.sessionName).toBe('sessions/nova-viva')
+  })
+
   it('a linha vence a palavra de ligação: corpo aponta para OUTRA issue, a linha decide', async () => {
     // Prova a ORDEM de autoridade: mesmo com "Closes #99" no corpo, quem
     // decide a issue vinculada é a linha guardada (#24), não a regex do

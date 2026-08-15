@@ -49,7 +49,14 @@ export interface QaRailsMissionOptions {
    */
   mode?: 'judge' | 'recon'
   fetchImpl?: typeof fetch
-  /** Linhas de sessão deste projeto — a forma autoritativa de reconhecer o PR. */
+  /**
+   * Linhas de sessão deste projeto — a forma autoritativa de reconhecer o PR
+   * e, quando o PR ainda não foi gravado na linha (ver o aviso de reprovação
+   * mais abaixo), de achar a sessão pela issue de origem. Espera-se ordenada
+   * por `createdAt` decrescente (mais recente primeiro) — é assim que o
+   * scheduler entrega, e é o que garante achar a linha viva quando há mais
+   * de uma para a mesma issue.
+   */
   sessoes?: LinhaDeSessao[]
   /**
    * Entrega a reprovação à sessão do dev assíncrono.
@@ -431,7 +438,37 @@ export async function runQaMissionViaRails(
     // Sem linha correspondente (PR de humano, ou anterior a esta mudança), a
     // missão segue sem avisar — não é falha.
     if (options.avisarSessao) {
-      const linha = (options.sessoes ?? []).find((s) => s.pullRequestNumber === target.number)
+      // A linha pode ainda não ter o PR gravado: quem grava é a vigia, e ela
+      // roda em outro ciclo. Medido em produção (15/08/2026): o QA julgou o
+      // PR #97 às 16:42:22 (achou a delegação pelo recuo do corpo — "Fixes
+      // #74" — porque a linha guardada ainda não tinha o PR) e a vigia só
+      // gravou `pullRequestNumber = 97` às 16:45:01. Buscando só por PR, o
+      // `find` não achava nada e nada era enviado ao dev: as 14 atividades da
+      // sessão terminavam em "concluída" às 16:40:34, sem nenhum aviso nosso
+      // depois — o trabalho parava em silêncio, o mesmo destino do PR #79 (5
+      // dias parado), reproduzido ao vivo. A issue de origem o QA já conhece
+      // neste instante (`issueDaEntrega`, resolvida no laço de descoberta
+      // acima), então ela entra como SEGUNDA tentativa — não substitui a
+      // busca por PR, que é inequívoca (um PR só tem uma linha) e continua
+      // sendo a primeira. Quando `issueDaEntrega` é `null` (recuo por login
+      // do autor — `ehPrDelegado` não tem como saber a issue nesse recuo), só
+      // a busca por PR vale mesmo.
+      //
+      // `LinhaDeSessao` não expõe `closedAt` (só `dev-session-store.ts`
+      // grava; o tipo devolvido aqui é deliberadamente estreito), então não
+      // há como filtrar "só viva" dentro deste módulo. Em vez disso, `find`
+      // pega a PRIMEIRA linha da issue na ordem em que `options.sessoes`
+      // chegou — documentada acima como `createdAt` decrescente. O índice
+      // único parcial `dev_sessions_open_per_issue` garante no máximo UMA
+      // sessão viva por issue ao mesmo tempo, então a linha mais recente para
+      // essa issue É a viva (ou a única candidata, se todas já fecharam) —
+      // resolve "prefira a viva/mais recente" sem precisar do campo que o
+      // tipo não tem.
+      const linha =
+        (options.sessoes ?? []).find((s) => s.pullRequestNumber === target.number) ??
+        (issueDaEntrega !== null
+          ? (options.sessoes ?? []).find((s) => s.issueNumber === issueDaEntrega)
+          : undefined)
       if (linha) {
         const texto = [
           `GitOrch QA reviewed your pull request #${target.number} and it is NOT accepted yet.`,
