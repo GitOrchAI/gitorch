@@ -176,6 +176,16 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
           } else {
             warn(`[vigia] não foi possível aprovar o plano de ${linha.sessionName}`)
           }
+          // Marca o exame SEMPRE, aprovando ou não — mesmo remédio do
+          // commit 0193bd8 (ramo `investigar`). Sem isto `stateCheckedAt`
+          // nunca avança neste ramo e, como a cadência de dez minutos é
+          // medida por ele, uma sessão em AWAITING_PLAN_APPROVAL seria
+          // reexaminada a cada tick (um minuto) em vez de a cada dez.
+          await deps.registrarEstado({
+            sessionName: linha.sessionName,
+            estado: estadoBruto,
+            agora: deps.agora,
+          })
           break
         }
 
@@ -268,16 +278,27 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
 
         case 'insistir': {
           const ok = await deps.pedirParaContinuar(linha.sessionName)
+          // Conta a tentativa e marca o exame nos DOIS casos — sucesso ou
+          // falha de envio. Antes, uma falha de envio não chamava
+          // `registrarResposta`: `stateCheckedAt` não avançava (a sessão
+          // seria reexaminada a cada tick, sessenta vezes por hora em vez
+          // de seis) E `nudges` — o teto que decide abandono — ficava
+          // parado. `nudges` mede "quantas vezes TENTAMOS pedir para
+          // continuar", não "quantas vezes o pedido chegou": uma falha de
+          // envio persistente (rede fora do ar, por exemplo) girava em
+          // 'insistir' para sempre, sem jamais alcançar MAX_NUDGES nem
+          // avisar o dono — o mesmo padrão de falha silenciosa que esta
+          // branch já corrigiu duas vezes. Não há pergunta para marcar como
+          // respondida aqui — reaproveita `registrarResposta` só pelo
+          // efeito de contar a insistência e mover `stateCheckedAt`,
+          // preservando o hash já guardado (string vazia quando nunca
+          // houve um).
+          await deps.registrarResposta({
+            sessionName: linha.sessionName,
+            hashDaPergunta: linha.answeredHash ?? '',
+            agora: deps.agora,
+          })
           if (ok) {
-            // Não há pergunta para marcar como respondida aqui — reaproveita
-            // `registrarResposta` só pelo efeito de contar a insistência
-            // (nudges) e mover `stateCheckedAt`, preservando o hash já
-            // guardado (string vazia quando nunca houve um).
-            await deps.registrarResposta({
-              sessionName: linha.sessionName,
-              hashDaPergunta: linha.answeredHash ?? '',
-              agora: deps.agora,
-            })
             insistidas += 1
           } else {
             warn(`[vigia] não foi possível pedir para ${linha.sessionName} continuar`)
