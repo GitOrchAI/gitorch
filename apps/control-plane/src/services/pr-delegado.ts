@@ -36,11 +36,30 @@ export function ehPrDelegado(args: {
     return { delegado: true, issueNumber: null }
   }
 
-  // 3) Recuo: palavra de ligação no corpo + etiqueta na issue.
+  // 3) Recuo: palavra de ligação no corpo + etiqueta na issue + SESSÃO
+  // registrada para aquela issue.
+  //
+  // A sessão é obrigatória aqui — não é reforço, é a correção do furo mais
+  // perigoso medido em produção (15/08/2026). Caso real: abri o PR #99 (autor
+  // `loureng`, humano) e, ao DESCREVER um defeito no corpo, citei "Fixes #74"
+  // — não como intenção de fechar aquela issue, só como referência. A issue
+  // #74 carregava a etiqueta de delegação, mas nunca foi delegada (sem linha
+  // em `dev_sessions`). Sem este guard, texto no corpo + etiqueta na issue
+  // eram suficientes para o QA julgar o PR #99 como entrega do dev assíncrono
+  // ("QA judged PR #99: request_changes (CI pending)") — só não mesclou
+  // porque a verificação ainda rodava. Com CI verde e aprovação, o produto
+  // teria mesclado sozinho um PR humano. Qualquer PR que mencione a palavra
+  // de ligação com o número de uma issue delegada casava, por citação,
+  // documentação ou relatório — como aconteceu aqui. Se ninguém de fato
+  // delegou aquela issue ao dev assíncrono (sem linha), nenhum PR pode ser
+  // "entrega" dela, por mais que o texto diga.
   const ligada = (args.corpo ?? '').match(/\b(?:closes|fixes|resolves)\s+#(\d+)/i)?.[1]
   if (ligada) {
     const n = Number(ligada)
-    if (args.issueComEtiquetaDeDelegacao(n)) return { delegado: true, issueNumber: n }
+    const houveSessaoParaEssaIssue = args.sessoes.some((s) => s.issueNumber === n)
+    if (houveSessaoParaEssaIssue && args.issueComEtiquetaDeDelegacao(n)) {
+      return { delegado: true, issueNumber: n }
+    }
   }
 
   return { delegado: false, issueNumber: null }

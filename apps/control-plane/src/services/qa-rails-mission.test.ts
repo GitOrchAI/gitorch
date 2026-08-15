@@ -254,7 +254,13 @@ describe('runQaMissionViaRails', () => {
     expect(posted.comments).toHaveLength(0)
   })
 
-  it('acha PR delegado mesmo com autor humano (Jules abre pela conta do dono): issue com label jules', async () => {
+  it('acha PR delegado mesmo com autor humano (Jules abre pela conta do dono): issue com label jules E sessão para ela', async () => {
+    // fix/pr-humano-nao-e-entrega-do-dev: o caminho 3 (corpo + etiqueta) só
+    // reconhece delegação com uma linha de sessão por trás — a SM cria a
+    // linha ANTES do dev assíncrono abrir o PR, então este cenário (a
+    // instalação abre o PR pela conta do dono, sem "jules" no login) sempre
+    // tem sessão real disponível na produção. Sem a linha aqui, este teste
+    // estaria provando de novo o mesmo furo do PR #99 (ver pr-delegado.test.ts).
     const f = fakeFetch([{ number: 9, user: 'loureng' }])
     const posted = (
       f as unknown as { posted: { reviews: Array<{ event?: string; body?: string }> } }
@@ -263,6 +269,7 @@ describe('runQaMissionViaRails', () => {
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: null })],
       fetchImpl: f,
     })
     expect(r.noOp).toBeUndefined()
@@ -1105,6 +1112,13 @@ describe('QA: veredito sem depender de "quem sou eu"', () => {
       repository: 'dono/repo',
       githubToken: 'ghs_app',
       execute: async () => APPROVE,
+      // fix/pr-humano-nao-e-entrega-do-dev: `prAberta` usa "closes #3" +
+      // issue #3 com label `jules`, sem "jules" no login (`app/gitorch-ai`)
+      // — o caminho 3 agora exige sessão real para essa issue (ver
+      // pr-delegado.test.ts, caso real do PR #99). Na produção a SM grava a
+      // linha ANTES do dev assíncrono abrir o PR, então este cenário sempre
+      // tem sessão disponível.
+      sessoes: [linha({ issueNumber: 3, pullRequestNumber: null })],
       fetchImpl: impl,
     })
 
