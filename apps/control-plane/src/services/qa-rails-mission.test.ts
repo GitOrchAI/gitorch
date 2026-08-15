@@ -106,6 +106,13 @@ function fakeFetch(
      * real do erro do GitHub.
      */
     mergeFalha?: boolean
+    /**
+     * fix/qa-nao-julga-com-verificacao-pendente: quando `true`, a resposta da
+     * PR isolada (`GET /pulls/{n}`) devolve `head: {}` — sem `sha`. Simula o
+     * caso em que o GitHub não devolve o SHA do head, o que deixa `ciState`
+     * em `'unknown'` (não dá para consultar check-runs sem o sha).
+     */
+    semShaNaPrIsolada?: boolean
   } = {}
 ): typeof fetch {
   const posted: {
@@ -149,7 +156,11 @@ function fakeFetch(
       // "Closes #N" de outra issue) veria sempre o valor fixo antigo.
       const numeroDoPr = Number(u.split('?')[0]!.match(/\/pulls\/(\d+)$/)?.[1])
       const p = prs.find((x) => x.number === numeroDoPr)
-      return json({ number: numeroDoPr, body: p?.body ?? 'Closes #50', head: { sha: 'abc123' } })
+      return json({
+        number: numeroDoPr,
+        body: p?.body ?? 'Closes #50',
+        head: opts.semShaNaPrIsolada ? {} : { sha: 'abc123' },
+      })
     }
     // label da issue vinculada — checar ANTES de "/issues/{issueNumber}" (que também
     // casaria com "/issues/{issueNumber}/labels" por ser substring).
@@ -254,7 +265,13 @@ describe('runQaMissionViaRails', () => {
     expect(posted.comments).toHaveLength(0)
   })
 
-  it('acha PR delegado mesmo com autor humano (Jules abre pela conta do dono): issue com label jules', async () => {
+  it('acha PR delegado mesmo com autor humano (Jules abre pela conta do dono): issue com label jules E sessão para ela', async () => {
+    // fix/pr-humano-nao-e-entrega-do-dev: o caminho 3 (corpo + etiqueta) só
+    // reconhece delegação com uma linha de sessão por trás — a SM cria a
+    // linha ANTES do dev assíncrono abrir o PR, então este cenário (a
+    // instalação abre o PR pela conta do dono, sem "jules" no login) sempre
+    // tem sessão real disponível na produção. Sem a linha aqui, este teste
+    // estaria provando de novo o mesmo furo do PR #99 (ver pr-delegado.test.ts).
     const f = fakeFetch([{ number: 9, user: 'loureng' }])
     const posted = (
       f as unknown as { posted: { reviews: Array<{ event?: string; body?: string }> } }
@@ -263,6 +280,7 @@ describe('runQaMissionViaRails', () => {
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: null })],
       fetchImpl: f,
     })
     expect(r.noOp).toBeUndefined()
@@ -503,6 +521,105 @@ describe('runQaMissionViaRails', () => {
       fetchImpl: f,
     })
     expect(r.output).not.toContain('GITORCH-GAP')
+  })
+
+  // Defeito real de produção (15/08/2026, 16:42:22): o QA julgou o PR #97
+  // ENQUANTO a verificação automática ainda rodava — `QA judged PR #97:
+  // request_changes (CI pending)`. Minutos depois a verificação terminou
+  // 100% verde (8 checks), mas a reprovação ficou PRESA para sempre: o skip
+  // de "já julgado" (linha ~215, mesmo head sha) nunca deixa o QA re-julgar
+  // o mesmo estado, e um motivo TRANSITÓRIO (verificação ainda rodando)
+  // virou um bloqueio PERMANENTE. `pending` não é veredito — é "ainda não
+  // sei". A correção: pular esta passagem (sem postar review nenhuma) e
+  // deixar a PRÓXIMA execução do QA (o scheduler roda em ciclo) encontrar a
+  // verificação já resolvida.
+  it('verificação PENDENTE (PR #97): não julga, não posta review nenhuma, e a saída avisa que está esperando', async () => {
+    const f = fakeFetch([{ number: 97, user: 'jules[bot]' }], undefined, undefined, {
+      checkRuns: [{ status: 'in_progress' }],
+    })
+    const posted = (
+      f as unknown as { posted: { reviews: unknown[]; comments: unknown[]; merges: unknown[] } }
+    ).posted
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      // Se a missão chegar a chamar o motor aqui, o pulo não aconteceu antes
+      // do julgamento — o teste tem que falhar de forma ruidosa, não muda.
+      execute: async () => {
+        throw new Error('não deveria julgar com CI pendente')
+      },
+      fetchImpl: f,
+    })
+    expect(posted.reviews).toHaveLength(0)
+    expect(posted.comments).toHaveLength(0)
+    expect(posted.merges).toHaveLength(0)
+    expect(r.exitCode).toBe(0)
+    expect(r.noOp).toBe(true)
+    expect(r.output).toContain('PR #97')
+    expect(r.output).toMatch(/aguardando.*verifica/i)
+  })
+
+  it('verificação VERDE: continua julgando normalmente (não regrediu)', async () => {
+    const f = fakeFetch([{ number: 97, user: 'jules[bot]' }], undefined, undefined, {
+      checkRuns: [{ conclusion: 'success', status: 'completed' }],
+    })
+    const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+    })
+    expect(posted.reviews[0]!.event).toBe('APPROVE')
+    expect(r.noOp).toBeUndefined()
+  })
+
+  it('verificação RED (falhou): continua reprovando, não pula', async () => {
+    const f = fakeFetch([{ number: 12, user: 'jules[bot]' }], undefined, undefined, {
+      checkRuns: [{ conclusion: 'failure', status: 'completed' }],
+    })
+    const posted = (
+      f as unknown as { posted: { reviews: Array<{ event?: string }>; comments: unknown[] } }
+    ).posted
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE, // o motor manda aprovar — a trava tem que sobrepor (CI vermelho)
+      fetchImpl: f,
+    })
+    expect(posted.reviews[0]!.event).toBe('REQUEST_CHANGES')
+    expect(posted.comments).toHaveLength(1)
+    expect(r.output).toContain('request_changes')
+    expect(r.noOp).toBeUndefined()
+  })
+
+  // `unknown` (não deu para ler o head sha, logo não dá para consultar
+  // check-runs) entra no MESMO pulo que `pending`, e pelo mesmo motivo:
+  // julgar às cegas arrisca travar um PR para sempre com uma reprovação
+  // possivelmente errada — o mesmo defeito do PR #97, só que por uma porta
+  // diferente. Ao contrário de `no checks` (estado ESTÁVEL — o repositório
+  // não tem verificação e não vai passar a ter só de esperar, por isso
+  // CONTINUA sendo julgado e vira a lacuna GITORCH-GAP), `unknown` é uma
+  // leitura SEM evidência nenhuma sobre qual dos quatro estados é o real.
+  // Errar para o lado de não agir agora é mais seguro que errar para o lado
+  // de uma reprovação permanente e talvez incorreta.
+  it('CI unknown (head sha ausente): pula como pending, não julga às cegas', async () => {
+    const f = fakeFetch([{ number: 55, user: 'jules[bot]' }], undefined, undefined, {
+      semShaNaPrIsolada: true,
+    })
+    const posted = (f as unknown as { posted: { reviews: unknown[]; comments: unknown[] } }).posted
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => {
+        throw new Error('não deveria julgar com CI unknown')
+      },
+      fetchImpl: f,
+    })
+    expect(posted.reviews).toHaveLength(0)
+    expect(posted.comments).toHaveLength(0)
+    expect(r.noOp).toBe(true)
+    expect(r.output).toContain('PR #55')
   })
 
   // Achado Importante 2 da revisão da Task 7: nenhum teste desta suíte tinha
@@ -1105,6 +1222,13 @@ describe('QA: veredito sem depender de "quem sou eu"', () => {
       repository: 'dono/repo',
       githubToken: 'ghs_app',
       execute: async () => APPROVE,
+      // fix/pr-humano-nao-e-entrega-do-dev: `prAberta` usa "closes #3" +
+      // issue #3 com label `jules`, sem "jules" no login (`app/gitorch-ai`)
+      // — o caminho 3 agora exige sessão real para essa issue (ver
+      // pr-delegado.test.ts, caso real do PR #99). Na produção a SM grava a
+      // linha ANTES do dev assíncrono abrir o PR, então este cenário sempre
+      // tem sessão disponível.
+      sessoes: [linha({ issueNumber: 3, pullRequestNumber: null })],
       fetchImpl: impl,
     })
 
