@@ -123,6 +123,13 @@ describe('vigiarSessoes', () => {
     expect(deps.registrarInvestigacao).toHaveBeenCalledWith(
       expect.objectContaining({ sessionName: 'sessions/falhou' })
     )
+    // Regra 3: o exame TEM de ser marcado, avisando ou não. A cadência de dez
+    // minutos é medida por `stateCheckedAt`; sem esta marca, a sessão presa em
+    // FAILED seria reexaminada a cada tick (um minuto) e o SM acionado sessenta
+    // vezes por hora, queimando a cota do motor do cliente.
+    expect(deps.registrarEstado).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionName: 'sessions/falhou', estado: 'FAILED' })
+    )
   })
 
   it('aviso ao dono não se repete no ciclo seguinte para a mesma sessão no mesmo estado', async () => {

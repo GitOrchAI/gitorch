@@ -231,6 +231,18 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
                 .catch(() => undefined)
             }
           }
+          // Marca o exame SEMPRE, avisando ou não. Sem isto `stateCheckedAt`
+          // nunca avança neste ramo — e como a cadência de dez minutos é
+          // medida por ele, uma sessão presa em FAILED seria reexaminada a
+          // cada tick (um minuto), acionando o SM sessenta vezes por hora e
+          // queimando a cota do motor do cliente. O `registrarInvestigacao`
+          // acima não serve para isso: ele só grava o hash, e só na primeira
+          // vez.
+          await deps.registrarEstado({
+            sessionName: linha.sessionName,
+            estado: estadoBruto,
+            agora: deps.agora,
+          })
           // Regra D5 do dono: o SM investiga o impedimento. Isso não muda —
           // o aviso acima é ADICIONAL, nunca substitui o SM.
           await deps.dispararMissao('sm', linha.projectId)
