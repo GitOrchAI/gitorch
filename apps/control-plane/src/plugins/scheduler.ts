@@ -77,7 +77,7 @@ import {
 } from '../services/onboarding-board.js'
 import { lerCredencialDoProjeto } from '../services/project-credential.js'
 import { ProjectV2Client } from '@gitorch/github-sync'
-import { RailsStepError } from '../services/rails-runner.js'
+import { RailsStepError, RailsExecutionError } from '../services/rails-runner.js'
 import { GithubExecutionError } from '../services/github-backlog.js'
 import { canRunMission, shouldAlertForQuota } from '../lib/spend-guard.js'
 import { computeConsumption } from '../lib/consumption.js'
@@ -203,6 +203,49 @@ export function resolveRailsBoard(project: { runtimeConfig?: unknown }): string 
     (project.runtimeConfig as Record<string, unknown> | null)?.['envConfig'] as
       Record<string, unknown> | undefined
   )?.['GITORCH_PROJECT_BOARD'] as string | undefined
+}
+
+/**
+ * Decide se um erro lançado durante a tentativa de UM motor da cadeia
+ * justifica trocar para o PRÓXIMO motor (failover) — usada por
+ * `executeMissionWithFailover` no catch de cada tentativa.
+ *
+ * Extraída como função pura EXPORTADA pelo mesmo motivo de
+ * `montarOpcoesDeDelegacao` acima: antes, a classificação vivia só dentro do
+ * catch da closure não exportada, e não havia como provar em teste que um
+ * caso novo de falha de motor realmente aciona o failover — foi exatamente
+ * assim que o bug real escapou (ver abaixo).
+ *
+ * GithubExecutionError é SEMPRE `false` aqui, por TIPO — nunca por texto: é
+ * erro do GITHUB (token/rate-limit do repositório), igual para todos os
+ * motores, e failover só repetiria o dano. Isso é checado explicitamente
+ * dentro da função (não só confiado à ordem de chamada) porque a mensagem de
+ * um GithubExecutionError pode conter palavras do regex de cota/auth (ex.:
+ * "403", "rate limit") sem que isso signifique falha de MOTOR — depender só
+ * do chamador verificar antes seria frágil a esse tipo de colisão de texto.
+ * O chamador ainda quebra o loop nesse caso ANTES de chamar esta função,
+ * pelo log e semântica próprios: "erro de execução no GitHub; sem failover".
+ *
+ * Bug real de produção (loureng/patinhas-3d-crafts, chain=codex>antigravity,
+ * falhas diárias desde 12/08): quando o PROCESSO do motor saía com exitCode
+ * != 0 (crash, binário ausente, timeout do processo), o passo de trilhos
+ * lançava um `Error` genérico. Essa exceção não era `RailsStepError` (que só
+ * cobre "o motor respondeu mas o formulário não validou") nem batia no regex
+ * de cota/auth de `isFailoverError` — a missão morria sem NUNCA tentar o
+ * motor de reserva, e sem sequer logar o aviso de failover.
+ * `RailsExecutionError` (rails-runner.ts) fecha essa lacuna: é o tipo que o
+ * passo de trilhos agora lança quando o PROCESSO do motor falha, e esta
+ * função a reconhece como falha de motor — sem depender de casar texto de
+ * mensagem (proibido: um regex mais largo teria o mesmo furo pra qualquer
+ * mensagem de erro de processo ainda não prevista).
+ */
+export function isEngineFault(err: unknown, lastError: string): boolean {
+  if (err instanceof GithubExecutionError) return false
+  return (
+    err instanceof RailsStepError ||
+    err instanceof RailsExecutionError ||
+    isFailoverError(lastError)
+  )
 }
 
 /**
@@ -1514,7 +1557,19 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               timeoutMs: 10 * 60 * 1000,
             })
             if (step.exitCode !== 0) {
-              throw new Error(`rails step ${stepN} failed: ${step.stderr.slice(0, 300)}`)
+              // O PROCESSO do motor falhou (crash, binário ausente, timeout do
+              // processo etc.) — o motor nem chegou a responder, então não há
+              // JSON para o runFormStep validar. Isso é diferente de
+              // RailsStepError (motor respondeu, formulário nunca validou),
+              // mas é IGUALMENTE falha de motor: o próximo motor da cadeia
+              // pode conseguir. Antes disto lançava um `Error` genérico que
+              // isEngineFault não reconhecia — a missão morria sem nunca
+              // tentar o motor de reserva (bug real: chain=codex>antigravity
+              // falhando todo dia, antigravity nunca acionado).
+              throw new RailsExecutionError(
+                `rails step ${stepN} failed: ${step.stderr.slice(0, 300)}`,
+                step.exitCode
+              )
             }
             return step.output
           }
@@ -1794,17 +1849,18 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         break
       } catch (err) {
         lastError = String((err as { stack?: string })?.stack ?? err)
-        // Classificação de origem do erro (Lei dos trilhos):
+        // Classificação de origem do erro (Lei dos trilhos) — ver isEngineFault:
         // - GithubExecutionError: o GitHub falhou (token/rate-limit do REPO) —
         //   igual para TODOS os motores; failover só repetiria o dano. Falha já.
-        // - RailsStepError: o MOTOR não preencheu o formulário — é exatamente o
-        //   caso do failover (o próximo motor do cliente pode conseguir).
+        // - RailsStepError / RailsExecutionError: falha de MOTOR (formulário
+        //   nunca validou, OU o processo do motor saiu com exitCode != 0) —
+        //   é exatamente o caso do failover (o próximo motor pode conseguir).
         // - Demais: failover apenas para cota/rate/auth (padrão existente).
         if (err instanceof GithubExecutionError) {
           app.log.error(err, `[Scheduler] erro de execução no GitHub; sem failover`)
           break
         }
-        const engineFault = err instanceof RailsStepError || isFailoverError(lastError)
+        const engineFault = isEngineFault(err, lastError)
         if (!isLast && engineFault) {
           app.log.warn(err, `[Scheduler] erro recuperável em ${sel.runtime}; próximo motor`)
           continue
