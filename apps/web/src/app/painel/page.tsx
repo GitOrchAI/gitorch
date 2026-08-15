@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { useLanguage } from '../../LanguageContext'
 import Header from '../../components/Header'
-import { Terminal, Activity, FolderGit2, LogIn, HelpCircle } from 'lucide-react'
+import { Terminal, Activity, FolderGit2, LogIn, HelpCircle, Sparkles } from 'lucide-react'
 import { motion } from 'framer-motion'
 import Link from 'next/link'
 import { API_BASE_URL } from '../../lib/api'
@@ -13,11 +13,15 @@ import {
   statusLabel,
   type AgentQuestionView,
 } from '../../components/painel/agent-questions'
+import { enviarDesejo, fetchProjetos, type ProjetoDoPainel } from '../../components/painel/desejo'
 
-// Painel READ-ONLY (Fase 4, épico 4.3): mostra o GitHub/missões do cliente
-// organizados — NUNCA opera agentes (eles são autônomos) e NUNCA inventa
-// número. Sem sessão → convite honesto para conectar. Com sessão → dados
-// reais da API, com estado vazio honesto.
+// Painel: mostra o GitHub/missões do cliente organizados — NUNCA opera agentes
+// (eles são autônomos) e NUNCA inventa número. Sem sessão → convite honesto
+// para conectar. Com sessão → dados reais da API, com estado vazio honesto.
+//
+// A única coisa que a pessoa OPERA aqui é o pedido: o formulário de desejo
+// abaixo é a porta de entrada em linguagem de gente. Ele não manda em agente
+// nenhum — só registra a issue oficial, que é de onde a esteira parte.
 
 interface Mission {
   id: string
@@ -64,6 +68,16 @@ export default function Dashboard() {
   // continua sendo pelo Telegram. Falha na busca não derruba o painel, a
   // seção só fica vazia (fetchAgentQuestions nunca lança).
   const [questions, setQuestions] = useState<AgentQuestionView[]>([])
+  // Formulário de desejo. `projetos` vazio = ainda não há projeto conectado,
+  // e aí o formulário não é oferecido: pedir sem projeto só produziria erro.
+  const [projetos, setProjetos] = useState<ProjetoDoPainel[]>([])
+  const [projetoEscolhido, setProjetoEscolhido] = useState('')
+  const [textoDoDesejo, setTextoDoDesejo] = useState('')
+  const [enviandoDesejo, setEnviandoDesejo] = useState(false)
+  const [desejoCriado, setDesejoCriado] = useState<{ numero: number; endereco: string } | null>(
+    null
+  )
+  const [erroDoDesejo, setErroDoDesejo] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -121,6 +135,46 @@ export default function Dashboard() {
     }
   }, [authenticated])
 
+  useEffect(() => {
+    if (!authenticated) return
+    let cancelled = false
+    fetchProjetos(API_BASE_URL)
+      .then((lista) => {
+        if (cancelled) return
+        setProjetos(lista)
+        // Um projeto só: já vem escolhido, e o seletor nem aparece — não faz
+        // sentido obrigar a escolher quando não há escolha.
+        if (lista.length === 1 && lista[0]) setProjetoEscolhido(lista[0].id)
+      })
+      .catch(() => {
+        // fetchProjetos já nunca lança; por contrato, falha aqui só deixa o
+        // formulário escondido — nunca derruba o painel inteiro.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [authenticated])
+
+  const pedirDesejo = useCallback(async () => {
+    setEnviandoDesejo(true)
+    setErroDoDesejo(null)
+    setDesejoCriado(null)
+    const r = await enviarDesejo({
+      apiBaseUrl: API_BASE_URL,
+      projectId: projetoEscolhido,
+      texto: textoDoDesejo,
+    })
+    if (r.ok) {
+      setDesejoCriado({ numero: r.numero, endereco: r.endereco })
+      // Limpa a caixa só no sucesso: em erro, o texto que a pessoa escreveu
+      // continua ali para ela reenviar sem redigitar.
+      setTextoDoDesejo('')
+    } else {
+      setErroDoDesejo(r.chaveDoErro)
+    }
+    setEnviandoDesejo(false)
+  }, [projetoEscolhido, textoDoDesejo])
+
   // Ainda checando a sessão: nem afirma nem nega login, só não mostra nada
   // definitivo ainda — evita o flash de "conecte-se" pra quem já está logado.
   if (authenticated === null) {
@@ -165,6 +219,84 @@ export default function Dashboard() {
   return (
     <main className="min-h-screen flex flex-col bg-[var(--bg-deep)]">
       <Header />
+
+      {/* A tela de pedir: a porta de entrada do desejo em linguagem de gente.
+          Fica no topo porque é a única coisa que a pessoa FAZ aqui — o resto
+          do painel é leitura. */}
+      <div className="container mx-auto px-8 pt-8">
+        <div className="glass-panel p-6">
+          <h2 className="text-xl font-bold mb-2 flex items-center gap-2">
+            <Sparkles className="text-[#7c3aed]" size={20} />
+            {t('dashboard.wishTitle')}
+          </h2>
+          <p className="text-[var(--text-secondary)] mb-4">{t('dashboard.wishHint')}</p>
+
+          {projetos.length === 0 ? (
+            <p className="text-[var(--text-secondary)]">{t('dashboard.wishNoProjects')}</p>
+          ) : (
+            <div className="space-y-4">
+              {/* Seletor só quando há mais de um projeto: com um só, escolher
+                  não é decisão, é obstáculo. */}
+              {projetos.length > 1 && (
+                <label className="block">
+                  <span className="block text-sm text-[var(--text-secondary)] mb-1">
+                    {t('dashboard.wishProjectLabel')}
+                  </span>
+                  <select
+                    value={projetoEscolhido}
+                    onChange={(e) => setProjetoEscolhido(e.target.value)}
+                    className="w-full bg-[var(--bg-surface-elevated)] border border-[var(--glass-border)] rounded-xl px-4 py-3 text-white"
+                  >
+                    <option value="">—</option>
+                    {projetos.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.repo}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+
+              <textarea
+                value={textoDoDesejo}
+                onChange={(e) => setTextoDoDesejo(e.target.value)}
+                placeholder={t('dashboard.wishPlaceholder')}
+                rows={4}
+                className="w-full bg-[var(--bg-surface-elevated)] border border-[var(--glass-border)] rounded-xl px-4 py-3 text-white placeholder:text-[var(--text-secondary)] resize-y"
+              />
+
+              <div className="flex flex-wrap items-center gap-4">
+                <button
+                  type="button"
+                  onClick={() => void pedirDesejo()}
+                  disabled={enviandoDesejo}
+                  className="bg-white text-black px-8 py-3 rounded-full font-bold transition-transform hover:scale-105 disabled:opacity-50 disabled:hover:scale-100 disabled:cursor-not-allowed"
+                >
+                  {enviandoDesejo ? t('dashboard.wishSending') : t('dashboard.wishSubmit')}
+                </button>
+
+                {desejoCriado && (
+                  <span className="text-[#10b981]">
+                    {t('dashboard.wishSuccess', { numero: desejoCriado.numero })}{' '}
+                    {desejoCriado.endereco && (
+                      <a
+                        href={desejoCriado.endereco}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="underline"
+                      >
+                        {t('dashboard.wishSuccessLink')}
+                      </a>
+                    )}
+                  </span>
+                )}
+
+                {erroDoDesejo && <span className="text-[#ef4444]">{t(erroDoDesejo)}</span>}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
 
       <div className="flex-1 container mx-auto px-8 py-8 flex flex-col lg:flex-row gap-8">
         {/* Coluna esquerda: números REAIS */}
