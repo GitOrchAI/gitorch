@@ -1593,6 +1593,32 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                         texto,
                         onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
                       }),
+                    // Task 11 (decisão do dono D7): o produto mescla sozinho,
+                    // sem confirmação humana. `mesclarPr` já fez o merge de
+                    // verdade quando este callback dispara — aqui só fecha a
+                    // linha da vigia (`fecharSessao` com 'merged'), que é o
+                    // que tira a sessão de `filtroDeSessoesParaJulgamento` e
+                    // impede o QA de procurar veredito para um PR que já foi
+                    // mesclado. Sem linha correspondente (PR de humano, ou
+                    // sessão fechada por outro motivo), não há o que fechar —
+                    // não é falha.
+                    aoMesclar: async ({ numeroDoPr }) => {
+                      const linha = await app.prisma.devSession.findFirst({
+                        where: {
+                          projectId: project.id,
+                          pullRequestNumber: numeroDoPr,
+                          closedAt: null,
+                        },
+                      })
+                      if (linha) {
+                        await fecharSessao({
+                          prisma: app.prisma as unknown as PrismaDevSession,
+                          sessionName: linha.sessionName,
+                          motivo: 'merged',
+                          agora: new Date(),
+                        })
+                      }
+                    },
                     onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
                     execute,
                   })

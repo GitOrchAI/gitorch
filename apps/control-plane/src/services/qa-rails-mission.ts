@@ -13,6 +13,7 @@ import type { CardMover } from './board-status.js'
 import { ehPrDelegado } from './pr-delegado.js'
 import type { LinhaDeSessao } from './dev-session-store.js'
 import { lerDiffDoPr, type ArquivoDoPr } from './diff-do-pr.js'
+import { mesclarPr, type ResultadoDoMerge } from './merge-do-pr.js'
 
 // Missão do QA nos TRILHOS (F3.6): acha a PR do Jules que precisa de julgamento,
 // monta o snapshot (diff + Verification Criteria da issue + estado do CI), o
@@ -49,6 +50,17 @@ export interface QaRailsMissionOptions {
    * retomada — `sendMessage` é o único caminho.
    */
   avisarSessao?: (args: { sessionName: string; texto: string }) => Promise<boolean>
+  /**
+   * Fecha a linha da sessão do dev assíncrono quando o PR dela é mesclado.
+   *
+   * Sem isto o merge acontece mas a vigia (dev-session-store) nunca fica
+   * sabendo: a linha continua "viva" para sempre, `filtroDeSessoesParaJulgamento`
+   * segue candidatando-a e o QA voltaria a procurar veredito para um PR que já
+   * foi mesclado. `fecharSessao` com o motivo `'merged'` é quem tira a linha da
+   * vigia — decisão de quem chama (o scheduler conhece o Prisma), não deste
+   * módulo, que não sabe nada de banco.
+   */
+  aoMesclar?: (args: { numeroDoPr: number }) => Promise<void>
   /**
    * Canal do aviso de degradação — antes hardcoded em `console.warn`,
    * invisível na observabilidade estruturada. Produção (scheduler.ts) sempre
@@ -330,6 +342,13 @@ export async function runQaMissionViaRails(
     }
   }
 
+  // Task 11 (decisão do dono D7): o produto mescla sozinho desde o primeiro
+  // ciclo, sem confirmação humana — não há dono para esse passo hoje, e
+  // represar para confirmação foi proposto e recusado pelo dono. Declarado
+  // fora do `if` para poder entrar na saída da missão nos dois ramos
+  // (mesclado ou não) sem repetir a variável.
+  let resultadoDoMerge: ResultadoDoMerge | null = null
+
   if (effectiveVerdict === 'approve') {
     // Caminho resiliente (o GitHub decide se pode aprovar) + o campo do padrão
     // Shrimp: o resumo do veredito é o Goal.
@@ -337,6 +356,29 @@ export async function runQaMissionViaRails(
       reviewEvent,
       `${JULES_MARKER}\nGitOrch QA verdict: APPROVE — criteria met, CI green.\n\n${verdict.comment.goal}`
     )
+
+    // Os TRÊS porteiros (QA aprovou, CI verde, diff completo) já foram
+    // satisfeitos para chegar aqui — `mesclarPr` os reconfere de propósito:
+    // é o guarda final antes de tocar no repositório do cliente, não uma
+    // confiança cega no que a trava de cima já decidiu.
+    resultadoDoMerge = await mesclarPr({
+      numeroDoPr: target.number,
+      ciState,
+      vereditoDoQa: effectiveVerdict,
+      diffTruncado: truncado,
+      merge: async () => {
+        // Nunca seguir URL devolvida pelo GitHub: a rota é montada aqui, a
+        // partir do NÚMERO do PR e do repositório que já temos — nunca de um
+        // campo `url`/`html_url` vindo da resposta de outra chamada.
+        await gh('PUT', `/repos/${options.repository}/pulls/${target.number}/merge`, {
+          merge_method: 'squash',
+        })
+        return true
+      },
+    })
+    if (resultadoDoMerge.mesclado && options.aoMesclar) {
+      await options.aoMesclar({ numeroDoPr: target.number })
+    }
   } else {
     await postarReview(
       reviewEvent,
@@ -451,7 +493,16 @@ export async function runQaMissionViaRails(
   // `cardNote` já é efeito colateral registrado (a movimentação em si já
   // aconteceu acima) — preservado aqui como parte do resumo para não perder
   // informação que já existia na saída antes desta mudança.
-  const resumo = `QA judged PR #${target.number}: ${effectiveVerdict} (CI ${ciState}).${cardNote}`
+  //
+  // `resultadoDoMerge` só existe no ramo de aprovação (`null` em rework), e o
+  // motivo — mesclado ou não — precisa aparecer aqui: uma falha do GitHub no
+  // merge (PR com conflito, 405, etc.) não pode ficar muda dentro do try/catch
+  // de `mesclarPr`. Ela vira texto na saída da missão, que `persistMissionMemory`
+  // grava como memória do projeto — declarada, nunca engolida.
+  const mergeNote = resultadoDoMerge
+    ? ` Merge: ${resultadoDoMerge.mesclado ? 'merged' : 'blocked'} (${resultadoDoMerge.motivo}).`
+    : ''
+  const resumo = `QA judged PR #${target.number}: ${effectiveVerdict} (CI ${ciState}).${cardNote}${mergeNote}`
   return {
     exitCode: 0,
     output: [resumo, ...lacunas].join('\n'),
