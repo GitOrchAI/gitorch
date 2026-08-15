@@ -647,6 +647,30 @@ describe('runQaMissionViaRails', () => {
     warnSpy.mockRestore()
   })
 
+  it('o aviso sai pelo canal injetado, não pelo console — é ele que aparece no log estruturado', async () => {
+    // Em produção o scheduler passa `app.log.warn`. Se o aviso escapasse para
+    // o console, ele sumiria da observabilidade e o silêncio que esta peça
+    // existe para matar voltaria pela porta dos fundos.
+    const f = fakeFetch([{ number: 79, user: 'jules[bot]' }])
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const avisos: string[] = []
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 79, sessionName: 'sessions/123' })],
+      avisarSessao: async () => false,
+      onWarn: (m) => avisos.push(m),
+      fetchImpl: f,
+    })
+    expect(r.exitCode).toBe(0)
+    expect(avisos).toHaveLength(1)
+    expect(avisos[0]).toContain('#79')
+    expect(avisos[0]).toContain('sessions/123')
+    expect(warnSpy).not.toHaveBeenCalled()
+    warnSpy.mockRestore()
+  })
+
   it('avisarSessao lança exceção: a missão não quebra, e o aviso ainda sai (best-effort de verdade)', async () => {
     const f = fakeFetch([{ number: 79, user: 'jules[bot]' }])
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)

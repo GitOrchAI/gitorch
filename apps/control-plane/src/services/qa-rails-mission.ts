@@ -49,6 +49,18 @@ export interface QaRailsMissionOptions {
    * retomada — `sendMessage` é o único caminho.
    */
   avisarSessao?: (args: { sessionName: string; texto: string }) => Promise<boolean>
+  /**
+   * Canal do aviso de degradação — antes hardcoded em `console.warn`,
+   * invisível na observabilidade estruturada. Produção (scheduler.ts) sempre
+   * passa `app.log.warn`. Default: console.warn (só pra chamadas fora do
+   * plugin).
+   *
+   * Não é preciosismo: este é justamente o aviso que existe para o veredito
+   * não morrer em silêncio quando a sessão do dev não pôde ser avisada. Se ele
+   * escapa do logger, o silêncio volta pela porta dos fundos. Mesmo motivo já
+   * registrado em `github-app-token.ts`.
+   */
+  onWarn?: (message: string) => void
 }
 
 export interface QaRailsMissionResult {
@@ -363,7 +375,8 @@ export async function runQaMissionViaRails(
           .avisarSessao({ sessionName: linha.sessionName, texto })
           .catch(() => false)
         if (!avisou) {
-          console.warn(
+          const avisar = options.onWarn ?? console.warn
+          avisar(
             `[qa] veredito postado no PR #${target.number}, mas a sessão ` +
               `${linha.sessionName} não foi avisada — o dev não vai retrabalhar sozinho`
           )

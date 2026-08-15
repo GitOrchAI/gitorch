@@ -1593,6 +1593,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                         texto,
                         onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
                       }),
+                    onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
                     execute,
                   })
           } finally {
