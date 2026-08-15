@@ -40,6 +40,15 @@ export interface QaRailsMissionOptions {
   fetchImpl?: typeof fetch
   /** Linhas de sessão deste projeto — a forma autoritativa de reconhecer o PR. */
   sessoes?: LinhaDeSessao[]
+  /**
+   * Entrega a reprovação à sessão do dev assíncrono.
+   *
+   * Sem isto o laço não fecha: o veredito vira comentário no PR e o dev, que não
+   * lê o PR dele, nunca fica sabendo. Medido: o PR #79 ficou 5 dias aberto, com
+   * verificação verde e uma reprovação, sem ninguém retrabalhar. A API não tem
+   * retomada — `sendMessage` é o único caminho.
+   */
+  avisarSessao?: (args: { sessionName: string; texto: string }) => Promise<boolean>
 }
 
 export interface QaRailsMissionResult {
@@ -324,6 +333,43 @@ export async function runQaMissionViaRails(
     await gh('POST', `/repos/${options.repository}/issues/${target.number}/comments`, {
       body: buildJulesReworkComment(verdict.comment),
     })
+
+    // Task 10 (decisão do dono 14/08/2026): "tem que ter lógica entre jules e
+    // QA". O comentário acima morre no PR — o dev assíncrono não lê o PR
+    // dele. Entrega a MESMA reprovação na sessão viva para ele retrabalhar.
+    // Sem linha correspondente (PR de humano, ou anterior a esta mudança), a
+    // missão segue sem avisar — não é falha.
+    if (options.avisarSessao) {
+      const linha = (options.sessoes ?? []).find((s) => s.pullRequestNumber === target.number)
+      if (linha) {
+        const texto = [
+          `GitOrch QA reviewed your pull request #${target.number} and it is NOT accepted yet.`,
+          '',
+          'What must change:',
+          verdict.comment.implementationGuide,
+          '',
+          'Verification Criteria that are still not met:',
+          verdict.comment.verificationCriteria,
+          '',
+          'Revise the SAME pull request. Do not open a new one, and do not change',
+          'anything outside the scope described above.',
+        ].join('\n')
+
+        // Best-effort e BARULHENTO: falhar ao avisar não pode derrubar a
+        // missão (o veredito já foi postado no PR), mas silenciar seria
+        // repetir o defeito que esta mudança existe para matar — por isso o
+        // aviso sai mesmo quando `avisarSessao` rejeita ou lança.
+        const avisou = await options
+          .avisarSessao({ sessionName: linha.sessionName, texto })
+          .catch(() => false)
+        if (!avisou) {
+          console.warn(
+            `[qa] veredito postado no PR #${target.number}, mas a sessão ` +
+              `${linha.sessionName} não foi avisada — o dev não vai retrabalhar sozinho`
+          )
+        }
+      }
+    }
   }
 
   // 4b) O QA acabou de julgar: marca a issue VINCULADA (não a PR) como sua,

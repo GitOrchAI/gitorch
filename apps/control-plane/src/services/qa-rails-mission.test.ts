@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { runQaMissionViaRails, buildJulesReworkComment } from './qa-rails-mission.js'
 import { assertMissionDelivered } from './mission-outcome.js'
 import type { LinhaDeSessao } from './dev-session-store.js'
@@ -546,6 +546,123 @@ describe('runQaMissionViaRails', () => {
       (l) => l.method === 'POST' && (l.labels ?? []).includes('gitorch:agent:qa')
     )
     expect(marcada?.number).toBe(24)
+  })
+
+  // Task 10 (decisão do dono 14/08/2026): "tem que ter lógica entre jules e
+  // QA". Sem isto, o veredito de rework vira comentário no PR e morre ali —
+  // o dev assíncrono não lê o PR dele (medido: PR #79 real, 5 dias parado,
+  // CI verde, 12 reprovações, zero retrabalho). `avisarSessao` é o fio que
+  // fecha o laço: entrega a MESMA informação do comentário na sessão viva.
+  it('ao reprovar, manda o que precisa mudar para a sessão do dev', async () => {
+    const f = fakeFetch([{ number: 79, user: 'jules[bot]' }])
+    const enviadas: Array<{ sessionName: string; texto: string }> = []
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 79, sessionName: 'sessions/123' })],
+      avisarSessao: async (args) => {
+        enviadas.push(args)
+        return true
+      },
+      fetchImpl: f,
+    })
+    expect(r.exitCode).toBe(0)
+    expect(enviadas).toHaveLength(1)
+    expect(enviadas[0]!.sessionName).toBe('sessions/123')
+    expect(enviadas[0]!.texto).toContain('#79')
+    // Os nomes REAIS do schema (DoDFields): implementationGuide e
+    // verificationCriteria — não os inventados por engano em rascunho.
+    expect(enviadas[0]!.texto).toContain('1. validar body; 2. teste do caso inválido')
+    expect(enviadas[0]!.texto).toContain('- retornar 400 para material inexistente')
+    // Instrução explícita: revisar o MESMO PR, não abrir outro.
+    expect(enviadas[0]!.texto).toContain('SAME pull request')
+  })
+
+  it('ao aprovar, não manda nada para a sessão', async () => {
+    const f = fakeFetch([{ number: 79, user: 'jules[bot]' }])
+    const enviadas: unknown[] = []
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 79, sessionName: 'sessions/123' })],
+      avisarSessao: async (a) => {
+        enviadas.push(a)
+        return true
+      },
+      fetchImpl: f,
+    })
+    expect(r.exitCode).toBe(0)
+    expect(enviadas).toHaveLength(0)
+  })
+
+  it('reprovação sem linha de sessão correspondente ao PR não derruba a missão', async () => {
+    // O PR pode ser de um humano, ou anterior a esta mudança — sem linha
+    // guardada, a missão segue sem avisar ninguém (não é erro).
+    const f = fakeFetch([{ number: 79, user: 'jules[bot]' }])
+    const enviadas: unknown[] = []
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      sessoes: [],
+      avisarSessao: async (a) => {
+        enviadas.push(a)
+        return true
+      },
+      fetchImpl: f,
+    })
+    expect(r.exitCode).toBe(0)
+    expect(enviadas).toHaveLength(0)
+  })
+
+  it('sem avisarSessao (opção ausente): comportamento clássico preservado, sem quebrar', async () => {
+    const f = fakeFetch([{ number: 79, user: 'jules[bot]' }])
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 79, sessionName: 'sessions/123' })],
+      fetchImpl: f,
+    })
+    expect(r.exitCode).toBe(0)
+  })
+
+  it('avisarSessao falha (retorna false): a missão não quebra, mas o silêncio é proibido — avisa no console', async () => {
+    const f = fakeFetch([{ number: 79, user: 'jules[bot]' }])
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 79, sessionName: 'sessions/123' })],
+      avisarSessao: async () => false,
+      fetchImpl: f,
+    })
+    expect(r.exitCode).toBe(0) // o veredito já foi postado — isso não pode derrubar a missão
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+    expect(warnSpy.mock.calls[0]![0]).toContain('#79')
+    expect(warnSpy.mock.calls[0]![0]).toContain('sessions/123')
+    warnSpy.mockRestore()
+  })
+
+  it('avisarSessao lança exceção: a missão não quebra, e o aviso ainda sai (best-effort de verdade)', async () => {
+    const f = fakeFetch([{ number: 79, user: 'jules[bot]' }])
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 79, sessionName: 'sessions/123' })],
+      avisarSessao: async () => {
+        throw new Error('serviço externo fora do ar')
+      },
+      fetchImpl: f,
+    })
+    expect(r.exitCode).toBe(0)
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+    warnSpy.mockRestore()
   })
 
   it('a linha vence a palavra de ligação: corpo aponta para OUTRA issue, a linha decide', async () => {

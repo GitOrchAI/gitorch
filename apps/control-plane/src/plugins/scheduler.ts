@@ -1581,6 +1581,18 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                           }),
                         }
                       : {}),
+                    // Task 10: a reprovação volta para a sessão do dev
+                    // assíncrono — sem isto o veredito morre no comentário do
+                    // PR (medido: PR #79, 5 dias parado, 12 reprovações, zero
+                    // retrabalho). A API não tem retomada; `sendMessage` é o
+                    // único caminho, por isso `responderSessaoJules` mesmo.
+                    avisarSessao: async ({ sessionName, texto }) =>
+                      responderSessaoJules({
+                        apiKey: process.env['JULES_API_KEY'],
+                        sessionName,
+                        texto,
+                        onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+                      }),
                     execute,
                   })
           } finally {
