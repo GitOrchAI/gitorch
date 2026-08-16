@@ -236,6 +236,12 @@ describe('enviarDesejo — o pedido em linguagem de gente vira issue', () => {
   it.each([
     [400, 'dashboard.wishErrorEmpty'],
     [401, 'dashboard.wishErrorSession'],
+    // 403 nesta rota é UM fato só: o dono perdeu o acesso de escrita ao
+    // repositório do projeto (o servidor reconfere no GitHub na hora de
+    // registrar). Enquanto caía junto com o 401, a tela mandava a pessoa
+    // entrar de novo — e entrar de novo não devolve acesso a repositório
+    // nenhum: ela repetiria o login para sempre sem entender o motivo.
+    [403, 'dashboard.wishErrorRepoAccess'],
     [404, 'dashboard.wishErrorProject'],
     // O servidor também tem o teto de tamanho, e recusa com 413. Sem esta
     // linha, um texto grande vindo de um navegador sem o `maxLength` chegaria
@@ -243,6 +249,9 @@ describe('enviarDesejo — o pedido em linguagem de gente vira issue', () => {
     [413, 'dashboard.wishErrorTooLong'],
     [502, 'dashboard.wishErrorGithub'],
     [500, 'dashboard.wishErrorGithub'],
+    // Indisponibilidade tem nome próprio: o servidor não conseguiu confirmar
+    // com o GitHub agora. Não é "seu pedido falhou", é "tente de novo".
+    [503, 'dashboard.wishErrorRepoUnverified'],
   ])('recusa %s vira a chave de texto %s', async (status, chaveDoErro) => {
     const fetchImpl = vi.fn<typeof fetch>(async () =>
       okResponse(status, { error: 'token ghp_segredo inválido' })

@@ -2,6 +2,7 @@ import Fastify from 'fastify'
 import { describe, expect, it, vi } from 'vitest'
 import { desejosRoutes, type DependenciasDeDesejos } from './desejos.js'
 import { LIMITE_DO_TEXTO_DO_DESEJO } from '../services/desejo.js'
+import { AcessoNaoVerificavelError } from '../services/acesso-ao-repositorio.js'
 
 // Cada teste declara só a dependência que o caso realmente exercita; o resto
 // cai num padrão inofensivo. Sem isso, acrescentar uma dependência nova
@@ -11,6 +12,7 @@ function appDeTeste(deps: Partial<DependenciasDeDesejos>, linhas?: string[]) {
     buscarProjeto: async () => ({ id: 'p1', githubRepo: 'dono/repo' }),
     listarProjetos: async () => [],
     buscarAutor: async () => null,
+    confirmarAcesso: async () => true,
     criarIssue: async () => ({ numero: 1 }),
     ...deps,
   }
@@ -87,6 +89,57 @@ describe('POST /api/v1/desejos', () => {
       payload: { projectId: 'de-outro', texto: 'oi' },
     })
     expect(r.statusCode).toBe(404)
+  })
+
+  /**
+   * O acesso era provado UMA vez, no cadastro: o endereço virava `wingId` e
+   * nunca mais era conferido. Se a organização remove a pessoa depois, o
+   * projeto continua ativo apontando para repositório alheio — e o produto
+   * escreve lá com a credencial da instalação, que não é dela.
+   */
+  it('dono que PERDEU o acesso ao repositório não escreve mais nele', async () => {
+    const criarIssue = vi.fn()
+    const app = appDeTeste({
+      buscarProjeto: vi.fn().mockResolvedValue(projeto),
+      confirmarAcesso: vi.fn().mockResolvedValue(false),
+      criarIssue,
+    })
+    const r = await app.inject({
+      method: 'POST',
+      url: '/api/v1/desejos',
+      payload: { projectId: 'p1', texto: 'quero busca por cor' },
+    })
+    expect(r.statusCode).toBe(403)
+    expect(r.json().code).toBe('REPO_SEM_ACESSO')
+    expect(criarIssue).not.toHaveBeenCalled()
+  })
+
+  it('a prova é feita para o REPOSITÓRIO do projeto e o dono da sessão', async () => {
+    const confirmarAcesso = vi.fn().mockResolvedValue(true)
+    const app = appDeTeste({ buscarProjeto: vi.fn().mockResolvedValue(projeto), confirmarAcesso })
+    await app.inject({
+      method: 'POST',
+      url: '/api/v1/desejos',
+      payload: { projectId: 'p1', texto: 'quero busca por cor' },
+    })
+    expect(confirmarAcesso).toHaveBeenCalledWith('dono/repo', 'u1')
+  })
+
+  it('GitHub indisponível na hora de conferir é recusa TEMPORÁRIA, não permissão', async () => {
+    const criarIssue = vi.fn()
+    const app = appDeTeste({
+      buscarProjeto: vi.fn().mockResolvedValue(projeto),
+      confirmarAcesso: vi.fn().mockRejectedValue(new AcessoNaoVerificavelError('ECONNRESET')),
+      criarIssue,
+    })
+    const r = await app.inject({
+      method: 'POST',
+      url: '/api/v1/desejos',
+      payload: { projectId: 'p1', texto: 'quero busca por cor' },
+    })
+    expect(r.statusCode).toBe(503)
+    expect(r.json().code).toBe('REPO_NAO_VERIFICAVEL')
+    expect(criarIssue).not.toHaveBeenCalled()
   })
 
   it('devolve 502 quando o GitHub recusa, sem vazar detalhe interno', async () => {
@@ -219,6 +272,7 @@ describe('GET /api/v1/desejos/projetos', () => {
       buscarProjeto: async () => null,
       listarProjetos,
       buscarAutor: async () => null,
+      confirmarAcesso: async () => true,
       criarIssue: async () => ({ numero: 1 }),
     })
     const r = await app.inject({ method: 'GET', url: '/api/v1/desejos/projetos' })

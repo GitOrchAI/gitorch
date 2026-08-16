@@ -92,6 +92,10 @@ export const locales = {
       wishErrorNoProject: 'Pick which project this request is for.',
       wishErrorProject: 'That project is not available for requests. Pick another one.',
       wishErrorSession: 'Your session expired. Sign in again and resend.',
+      wishErrorRepoAccess:
+        "You no longer have write access to this project's repository on GitHub, so the request can't be recorded there. Ask for access again and resend.",
+      wishErrorRepoUnverified:
+        "We couldn't confirm with GitHub that this repository is still yours. Try again in a moment.",
       wishErrorGithub: 'We could not register the request right now. Try again in a moment.',
       wishErrorNetwork: 'We could not reach GitOrch. Check your connection and try again.',
     },
@@ -436,6 +440,10 @@ export const locales = {
       wishErrorNoProject: 'Escolha para qual projeto é este pedido.',
       wishErrorProject: 'Esse projeto não está disponível para pedidos. Escolha outro.',
       wishErrorSession: 'Sua sessão expirou. Entre de novo e mande outra vez.',
+      wishErrorRepoAccess:
+        'Você não tem mais acesso de escrita ao repositório deste projeto no GitHub, então o pedido não pode ser registrado lá. Peça o acesso de volta e mande outra vez.',
+      wishErrorRepoUnverified:
+        'Não deu para confirmar no GitHub que esse repositório ainda é seu. Tente de novo em instantes.',
       wishErrorGithub: 'Não deu para registrar o pedido agora. Tente de novo em instantes.',
       wishErrorNetwork: 'Não deu para falar com o GitOrch. Verifique sua conexão e tente de novo.',
     },
@@ -782,6 +790,10 @@ export const locales = {
       wishErrorNoProject: 'Elige para qué proyecto es este pedido.',
       wishErrorProject: 'Ese proyecto no está disponible para pedidos. Elige otro.',
       wishErrorSession: 'Tu sesión expiró. Inicia sesión de nuevo y envíalo otra vez.',
+      wishErrorRepoAccess:
+        'Ya no tienes acceso de escritura al repositorio de este proyecto en GitHub, así que el pedido no puede registrarse allí. Pide el acceso de vuelta y envíalo otra vez.',
+      wishErrorRepoUnverified:
+        'No pudimos confirmar en GitHub que ese repositorio siga siendo tuyo. Inténtalo de nuevo en un momento.',
       wishErrorGithub: 'No pudimos registrar el pedido ahora. Inténtalo de nuevo en un momento.',
       wishErrorNetwork: 'No pudimos contactar a GitOrch. Revisa tu conexión e inténtalo de nuevo.',
     },

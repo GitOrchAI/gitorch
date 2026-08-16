@@ -14,6 +14,7 @@ import { diagnoseRoutes } from './diagnose.js'
 import { desejosRoutes } from './desejos.js'
 import { criarIssueDeDesejo } from '../services/desejo-no-github.js'
 import { projetoParaDesejo, projetosParaDesejo } from '../services/projetos-do-desejo.js'
+import { provaDeEscritaNoUso } from '../services/acesso-ao-repositorio.js'
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   // Health and readiness endpoints
@@ -63,6 +64,13 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       })
       return dono ? { nome: dono.name, arroba: dono.githubLogin } : null
     },
+    // Defesa em profundidade: o acesso ao repositório foi provado UMA vez, no
+    // wizard, e o endereço virou `project.wingId` para sempre. Se a organização
+    // remove a pessoa depois, o projeto continua ativo apontando para
+    // repositório alheio — e o pedido daqui viraria escrita real lá dentro. A
+    // MESMA prova roda no mensageiro (plugins/telegram.ts): uma pergunta, dois
+    // lugares, nenhuma chance de divergirem.
+    confirmarAcesso: provaDeEscritaNoUso(app.engineConnections),
     // A escrita da issue mora no serviço porque o mensageiro (bot do Telegram)
     // registra o desejo pelo MESMO caminho — o pedido do dono nasce igual venha
     // da tela ou do celular.

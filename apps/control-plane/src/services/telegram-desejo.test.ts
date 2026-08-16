@@ -6,6 +6,7 @@ import {
   type ProjetoParaDesejo,
   type TelegramDesejoDeps,
 } from './telegram-bot.js'
+import { AcessoNaoVerificavelError } from './acesso-ao-repositorio.js'
 
 describe('interpretarPedidoDeDesejo', () => {
   it('reconhece /desejo e devolve só o texto do pedido', () => {
@@ -138,6 +139,7 @@ function deps(over: Partial<TelegramDesejoDeps> = {}): TelegramDesejoDeps {
   return {
     donoDoChat: vi.fn().mockResolvedValue({ tipo: 'unico', userId: 'user_a' }),
     projetosDoDono: vi.fn().mockResolvedValue([PROJETO_UNICO]),
+    confirmarAcesso: vi.fn().mockResolvedValue(true),
     criarIssue: vi.fn().mockResolvedValue({ numero: 77 }),
     ...over,
   }
@@ -190,6 +192,36 @@ describe('tratarPedidoDeDesejo', () => {
     expect(r?.chatId).toBe('555')
     expect(r?.text).toMatch(/conectar|vincul/i)
     expect(d.criarIssue).not.toHaveBeenCalled()
+  })
+
+  /**
+   * A MESMA reconferência da porta HTTP, aqui: o acesso era provado uma vez, no
+   * cadastro, e o endereço nunca mais era conferido. Removida da organização
+   * depois, a pessoa continuaria mandando pedido para o repositório alheio — e
+   * o produto escreveria lá com a credencial da instalação.
+   */
+  it('dono que PERDEU o acesso ao repositório não escreve mais nele', async () => {
+    const d = deps({ confirmarAcesso: vi.fn().mockResolvedValue(false) })
+    const r = await tratarPedidoDeDesejo(d, updateComTexto('/desejo quero busca por cor'))
+    expect(d.criarIssue).not.toHaveBeenCalled()
+    expect(r?.chatId).toBe('555')
+    expect(r?.text).toMatch(/acesso/i)
+  })
+
+  it('a prova é feita para o repositório escolhido e o dono do vínculo', async () => {
+    const confirmarAcesso = vi.fn().mockResolvedValue(true)
+    const d = deps({ confirmarAcesso })
+    await tratarPedidoDeDesejo(d, updateComTexto('/desejo quero busca por cor'))
+    expect(confirmarAcesso).toHaveBeenCalledWith('dono/loja', 'user_a')
+  })
+
+  it('GitHub indisponível na hora de conferir vira recusa TEMPORÁRIA, não permissão', async () => {
+    const d = deps({
+      confirmarAcesso: vi.fn().mockRejectedValue(new AcessoNaoVerificavelError('ECONNRESET')),
+    })
+    const r = await tratarPedidoDeDesejo(d, updateComTexto('/desejo quero busca por cor'))
+    expect(d.criarIssue).not.toHaveBeenCalled()
+    expect(r?.text).toMatch(/agora|minutos|instantes/i)
   })
 
   it('dono sem projeto nenhum é avisado, sem criar issue', async () => {

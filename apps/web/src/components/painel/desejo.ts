@@ -37,6 +37,13 @@ const ERRO_LONGO = 'dashboard.wishErrorTooLong'
 const ERRO_SEM_PROJETO = 'dashboard.wishErrorNoProject'
 const ERRO_PROJETO = 'dashboard.wishErrorProject'
 const ERRO_SESSAO = 'dashboard.wishErrorSession'
+// O acesso ao repositório é reconferido no GitHub na hora de registrar (o
+// servidor não confia no que foi provado lá atrás, no setup). Dois fatos
+// diferentes saem daí, e cada um tem a sua chave: "você não escreve mais
+// nesse repositório" — que entrar de novo NÃO resolve — e "não consegui
+// confirmar agora", que é indisponibilidade e pede só uma nova tentativa.
+const ERRO_ACESSO_AO_REPO = 'dashboard.wishErrorRepoAccess'
+const ERRO_REPO_NAO_VERIFICADO = 'dashboard.wishErrorRepoUnverified'
 const ERRO_GITHUB = 'dashboard.wishErrorGithub'
 const ERRO_REDE = 'dashboard.wishErrorNetwork'
 
@@ -235,8 +242,13 @@ export function avisoAindaVale(
 // novo em instantes" — que é justamente o conselho impossível de cumprir.
 function chaveDoStatus(status: number): string {
   if (status === 400) return ERRO_VAZIO
-  if (status === 401 || status === 403) return ERRO_SESSAO
+  if (status === 401) return ERRO_SESSAO
+  // 403 nesta rota é um fato só: o dono perdeu o acesso de escrita ao
+  // repositório. Junto com o 401 ele virava "sua sessão expirou" — e entrar de
+  // novo não devolve acesso a repositório nenhum.
+  if (status === 403) return ERRO_ACESSO_AO_REPO
   if (status === 404) return ERRO_PROJETO
   if (status === 413) return ERRO_LONGO
+  if (status === 503) return ERRO_REPO_NAO_VERIFICADO
   return ERRO_GITHUB
 }

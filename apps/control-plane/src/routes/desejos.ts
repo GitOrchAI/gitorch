@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { autorLegivel, LIMITE_DO_TEXTO_DO_DESEJO, montarDesejo } from '../services/desejo.js'
+import { AcessoNaoVerificavelError } from '../services/acesso-ao-repositorio.js'
 
 // Porta HTTP do desejo: o dono descreve o que quer em linguagem de gente e o
 // produto registra a issue oficial. As dependências entram por injeção porque
@@ -21,6 +22,12 @@ export interface DependenciasDeDesejos {
    * identificador da conta nunca é a assinatura: ver `autorLegivel`.
    */
   buscarAutor: (userId: string) => Promise<{ nome: string | null; arroba: string | null } | null>
+  /**
+   * A prova, NO MOMENTO DO USO, de que aquele dono ainda pode escrever naquele
+   * repositório. Lança `AcessoNaoVerificavelError` quando não dá para saber —
+   * e "não sei" é recusa temporária, nunca permissão.
+   */
+  confirmarAcesso: (repo: string, userId: string) => Promise<boolean>
   criarIssue: (args: {
     repo: string
     titulo: string
@@ -76,6 +83,42 @@ export async function desejosRoutes(app: FastifyInstance, deps: DependenciasDeDe
 
       const projeto = await deps.buscarProjeto({ projectId, userId })
       if (!projeto) return reply.code(404).send({ error: 'Projeto não encontrado.' })
+
+      // O acesso foi provado no cadastro — e só. Daquele momento em diante o
+      // endereço virou `wingId` e ninguém mais perguntou nada. Se a organização
+      // removeu a pessoa depois, o projeto continua ativo apontando para
+      // repositório alheio, e o pedido daqui viraria escrita real lá dentro,
+      // com a credencial da INSTALAÇÃO — que não é dela. Por isso a mesma prova
+      // do wizard é refeita aqui, na hora de usar.
+      try {
+        if (!(await deps.confirmarAcesso(projeto.githubRepo, userId))) {
+          request.log.warn(
+            { userId, repo: projeto.githubRepo },
+            'pedido recusado: o dono não escreve mais neste repositório'
+          )
+          return reply.code(403).send({
+            error:
+              'Você não tem mais acesso de escrita a este repositório no GitHub, então não dá para registrar o pedido nele.',
+            code: 'REPO_SEM_ACESSO',
+          })
+        }
+      } catch (erro) {
+        if (erro instanceof AcessoNaoVerificavelError) {
+          // Indisponibilidade se diz com o nome dela: recusa temporária, com
+          // convite a tentar de novo. Seguir no escuro seria escrever no
+          // repositório sem saber se ainda é dele.
+          request.log.warn(
+            { err: erro, userId, repo: projeto.githubRepo },
+            'pedido recusado: não foi possível confirmar o acesso ao repositório'
+          )
+          return reply.code(503).send({
+            error:
+              'Não consegui confirmar no GitHub que este repositório ainda é seu. Tente de novo em instantes.',
+            code: 'REPO_NAO_VERIFICAVEL',
+          })
+        }
+        throw erro
+      }
 
       // Quem assina a issue é a PESSOA. Falha ao ler o cadastro não derruba o
       // pedido: `autorLegivel` cai no identificador da conta, que é feio mas

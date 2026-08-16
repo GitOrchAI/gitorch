@@ -651,6 +651,13 @@ export interface TelegramDesejoDeps {
   donoDoChat: (chatId: string) => Promise<DonoDoChat>
   /** Projetos daquele dono — é entre eles que o pedido escolhe o repositório. */
   projetosDoDono: (userId: string) => Promise<ProjetoParaDesejo[]>
+  /**
+   * A prova, NO MOMENTO DO USO, de que aquele dono ainda pode escrever naquele
+   * repositório — a MESMA da porta HTTP (routes/desejos.ts). Lança
+   * `AcessoNaoVerificavelError` quando não dá para saber, e aí a resposta é
+   * recusa temporária, nunca permissão.
+   */
+  confirmarAcesso: (repo: string, userId: string) => Promise<boolean>
   /** O MESMO caminho de criação de issue usado pela porta HTTP do desejo. */
   criarIssue: (args: {
     repo: string
@@ -775,6 +782,10 @@ const MENSAGENS_DE_DESEJO: Record<
     chatAmbiguo: string
     semProjeto: string
     falhou: string
+    /** O dono perdeu o acesso de escrita ao repositório do projeto. */
+    semAcessoAoRepositorio: (projeto: string) => string
+    /** Não deu para confirmar o acesso agora — recusa TEMPORÁRIA. */
+    acessoNaoVerificavel: string
     /** Resposta a quem digitou só o comando: um exemplo, não um erro. */
     comoUsar: string
     /** `exemplo` é o endereço a digitar; `lista`, o que o dono reconhece. */
@@ -792,6 +803,10 @@ const MENSAGENS_DE_DESEJO: Record<
     semProjeto:
       'Você ainda não tem nenhum projeto no GitOrch. Cadastre um repositório e eu registro seus pedidos nele.',
     falhou: 'Não consegui registrar seu pedido agora. Tente de novo em alguns minutos.',
+    semAcessoAoRepositorio: (projeto) =>
+      `Você não tem mais acesso de escrita a ${projeto} no GitHub, então não posso registrar o pedido lá. Se isso for engano, peça de volta o acesso ao repositório e mande de novo.`,
+    acessoNaoVerificavel:
+      'Não consegui confirmar agora, no GitHub, que esse repositório ainda é seu. Tente de novo em alguns minutos.',
     comoUsar:
       'Escreva o pedido junto com o comando, em linguagem de gente. Assim:\n\n/desejo quero que o site aceite avaliação com foto\n\nEu registro isso como uma tarefa no seu repositório.',
     qualProjeto: (exemplo, lista) =>
@@ -809,6 +824,10 @@ const MENSAGENS_DE_DESEJO: Record<
     semProjeto:
       'Aún no tienes ningún proyecto en GitOrch. Registra un repositorio y anotaré tus pedidos allí.',
     falhou: 'No conseguí registrar tu pedido ahora. Inténtalo de nuevo en unos minutos.',
+    semAcessoAoRepositorio: (projeto) =>
+      `Ya no tienes acceso de escritura a ${projeto} en GitHub, así que no puedo registrar el pedido allí. Si es un error, pide de vuelta el acceso al repositorio y mándalo otra vez.`,
+    acessoNaoVerificavel:
+      'No pude confirmar ahora, en GitHub, que ese repositorio siga siendo tuyo. Inténtalo de nuevo en unos minutos.',
     comoUsar:
       'Escribe el pedido junto con el comando, en lenguaje normal. Así:\n\n/desejo quiero que el sitio acepte reseñas con foto\n\nLo registro como una tarea en tu repositorio.',
     qualProjeto: (exemplo, lista) =>
@@ -826,6 +845,10 @@ const MENSAGENS_DE_DESEJO: Record<
     semProjeto:
       "You don't have any project in GitOrch yet. Add a repository and I'll record your requests there.",
     falhou: "I couldn't record your request right now. Please try again in a few minutes.",
+    semAcessoAoRepositorio: (projeto) =>
+      `You no longer have write access to ${projeto} on GitHub, so I can't record the request there. If that's a mistake, ask for repository access again and send it once more.`,
+    acessoNaoVerificavel:
+      "I couldn't confirm with GitHub right now that this repository is still yours. Please try again in a few minutes.",
     comoUsar:
       'Write the request together with the command, in plain words. Like this:\n\n/desejo I want the site to accept reviews with photos\n\nI record that as a real task in your repository.',
     qualProjeto: (exemplo, lista) =>
@@ -901,6 +924,22 @@ export async function tratarPedidoDeDesejo(
   if (!alvo) {
     const exemplo = projetos[0]?.repo ?? ''
     return { chatId, text: textos.qualProjeto(exemplo, projetos.map(rotularProjeto)) }
+  }
+
+  // O acesso foi provado no cadastro — e só. Daquele momento em diante o
+  // endereço virou `wingId` do projeto e ninguém mais perguntou nada. Removido
+  // da organização depois, o dono continuaria mandando pedido daqui e o produto
+  // escreveria no repositório alheio com a credencial da INSTALAÇÃO. A mesma
+  // prova da porta HTTP é refeita aqui, na hora de usar.
+  try {
+    if (!(await deps.confirmarAcesso(alvo.projeto.repo, dono.userId))) {
+      return { chatId, text: textos.semAcessoAoRepositorio(rotularProjeto(alvo.projeto)) }
+    }
+  } catch (erro) {
+    // Não conseguir conferir é recusa TEMPORÁRIA, com o nome certo — nunca
+    // permissão. O detalhe vai para o log; o chat recebe o recado de gente.
+    deps.registrarFalha?.(erro)
+    return { chatId, text: textos.acessoNaoVerificavel }
   }
 
   const desejo = montarDesejo({

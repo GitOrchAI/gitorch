@@ -12,6 +12,7 @@ import {
 } from '../services/telegram-bot.js'
 import { criarIssueDeDesejo } from '../services/desejo-no-github.js'
 import { projetosParaDesejo } from '../services/projetos-do-desejo.js'
+import { provaDeEscritaNoUso } from '../services/acesso-ao-repositorio.js'
 import {
   resolveNotifyChatId,
   resolveDonoDoChat,
@@ -114,6 +115,12 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
     // cada porta escreveu o próprio filtro, elas divergiram sobre projeto
     // desativado e o dono recebia duas respostas para o mesmo fato.
     projetosDoDono: (userId) => projetosParaDesejo(app.prisma, userId),
+    // Defesa em profundidade, e a MESMA função que a porta HTTP usa
+    // (routes/index.ts): o acesso ao repositório foi provado uma vez, no
+    // wizard, e o endereço virou `project.wingId` para sempre. Removido da
+    // organização depois, o dono continuaria mandando pedido daqui e o produto
+    // escreveria no repositório alheio com a credencial da instalação.
+    confirmarAcesso: provaDeEscritaNoUso(app.engineConnections),
     // Comando endereçado a outro bot do grupo não é nosso. O nome sai da mesma
     // fonte que monta o deep link do wizard.
     nomeDoBot: telegramBotUsername(),
