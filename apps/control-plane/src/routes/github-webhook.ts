@@ -1,5 +1,5 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
-import { PrismaClient } from '@prisma/client'
+import { PrismaClient, Prisma } from '@prisma/client'
 import crypto from 'node:crypto'
 import {
   GitHubWebhookNormalizer,
@@ -83,6 +83,97 @@ function toGitHubEventName(event: string | undefined): GitHubWebhookEventName {
     : 'ping'
 }
 
+/**
+ * Como o projeto desta entrega foi encontrado. A assinatura HMAC prova que o
+ * aviso veio do GitHub; ela NÃO diz a qual projeto do gitorch ele pertence.
+ * Quem responde isso é o critério abaixo — e eles têm forças muito diferentes:
+ *
+ * - `repoId`: identificador numérico do repositório, atribuído pelo GitHub,
+ *   único e imutável (sobrevive a renomear e a transferir). É prova.
+ * - `wingId`: o endereço "dono/repositorio" que o CLIENTE declarou no wizard.
+ *   O wizard confere se ele tem acesso de escrita ali, mas o endereço muda
+ *   quando o repositório é renomeado e pode ser declarado por mais de um
+ *   cliente (dois colaboradores do mesmo repositório). É indício, não prova.
+ * - `instalacao`: a instalação do App cobre MUITOS repositórios de uma conta.
+ *   Casar por ela uma entrega que fala de UM repositório entregaria a um
+ *   projeto os avisos de todos os outros repositórios daquela conta — por isso
+ *   ela só vale para entrega que não traz repositório nenhum (evento de quadro
+ *   ou de ciclo de vida da instalação).
+ */
+type CriterioDeCasamento = 'repoId' | 'wingId' | 'instalacao'
+
+interface ProjetoDaEntrega {
+  id: string
+  wingId: string
+  githubInstallationId: number | null
+  githubRepoId: bigint | null
+}
+
+interface Casamento {
+  projeto: ProjetoDaEntrega
+  criterio: CriterioDeCasamento
+  /** Mais de um projeto declarou este mesmo endereço: o escolhido pode ser o errado. */
+  empatado: boolean
+}
+
+const CAMPOS_DO_PROJETO = {
+  id: true,
+  wingId: true,
+  githubInstallationId: true,
+  githubRepoId: true,
+} as const
+
+/**
+ * Procura o projeto da entrega do critério MAIS FORTE para o mais fraco, em
+ * vez de um `OU` cego entre os três. O `OU` deixava o banco escolher qualquer
+ * linha que satisfizesse qualquer um deles — na prática, a instalação (a mais
+ * ampla) competia de igual para igual com o identificador do repositório.
+ */
+async function casarProjeto(
+  prisma: PrismaClient,
+  entrega: {
+    repoId: number | undefined
+    repoFullName: string | undefined
+    installationId: number | undefined
+  }
+): Promise<Casamento | null> {
+  if (entrega.repoId) {
+    const porId = await prisma.project.findFirst({
+      where: { githubRepoId: BigInt(entrega.repoId) },
+      select: CAMPOS_DO_PROJETO,
+    })
+    if (porId) return { projeto: porId, criterio: 'repoId', empatado: false }
+  }
+
+  if (entrega.repoFullName) {
+    // `take: 2` porque a única pergunta que interessa além de "quem?" é "tem
+    // mais de um?". `createdAt asc` fixa o destino entre entregas, como antes.
+    const candidatos = await prisma.project.findMany({
+      where: { wingId: entrega.repoFullName },
+      orderBy: { createdAt: 'asc' },
+      take: 2,
+      select: CAMPOS_DO_PROJETO,
+    })
+    const primeiro = candidatos[0]
+    if (primeiro) {
+      return { projeto: primeiro, criterio: 'wingId', empatado: candidatos.length > 1 }
+    }
+  }
+
+  // Só entrega SEM repositório chega aqui: quando há repositório e nem o id nem
+  // o endereço acharam dono, a resposta certa é "não é de ninguém" — nunca
+  // "então fica com quem tem a mesma instalação".
+  if (entrega.installationId && !entrega.repoId && !entrega.repoFullName) {
+    const porInstalacao = await prisma.project.findFirst({
+      where: { githubInstallationId: entrega.installationId },
+      select: CAMPOS_DO_PROJETO,
+    })
+    if (porInstalacao) return { projeto: porInstalacao, criterio: 'instalacao', empatado: false }
+  }
+
+  return null
+}
+
 export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
   app.post(
     '/api/webhooks/github',
@@ -132,36 +223,13 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
         return reply.code(400).send({ error: 'Missing GitHub identifiers' })
       }
 
-      // Find project by GitHub identifiers.
-      //
-      // `wingId` deixou de ser único global (um repo pode estar cadastrado por
-      // mais de um cliente — dois colaboradores de "acme/api"), então o casamento
-      // por full_name pode ter MAIS DE UM candidato. Sem uma ordem explícita, o
-      // Postgres devolveria um qualquer e a entrega do MESMO repo cairia ora num
-      // cliente, ora noutro. `createdAt asc` fixa o destino no primeiro projeto
-      // que cadastrou aquele repositório — estável entre entregas.
-      //
-      // (Os ids numéricos do GitHub continuam sendo únicos globais e, quando
-      // presentes, casam um único projeto; o desempate só importa no fallback
-      // por full_name, que é o caminho de todo projeto criado pelo wizard.)
-      const project = await app.prisma.project.findFirst({
-        where: {
-          OR: [
-            ...(installationId ? [{ githubInstallationId: installationId }] : []),
-            ...(repoId ? [{ githubRepoId: BigInt(repoId) }] : []),
-            ...(repoFullName ? [{ wingId: repoFullName }] : []),
-          ],
-        },
-        orderBy: { createdAt: 'asc' },
-        select: {
-          id: true,
-          wingId: true,
-          githubInstallationId: true,
-          githubRepoId: true,
-        },
+      const casamento = await casarProjeto(app.prisma, {
+        repoId,
+        repoFullName,
+        installationId,
       })
 
-      if (!project) {
+      if (!casamento) {
         app.log.warn(
           { deliveryId, event, installationId, repoId },
           'Project not found for GitHub identifiers'
@@ -171,29 +239,56 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
           .send({ error: 'Project not found for this GitHub repository/installation' })
       }
 
+      const project = casamento.projeto
+
       // Set wingId context for Prisma RLS
       const { wingIdContext } = await import('../plugins/prisma.js')
       return await wingIdContext.run({ wingId: project.wingId }, async () => {
-        // Auto-cura: se o projeto casou por wingId mas os IDs numéricos do
-        // GitHub estão nulos, preenche-os agora — assim as próximas entregas
-        // usam o caminho rápido por ID (o wizard não preenchia esses campos).
-        if (
-          (repoId && project.githubRepoId == null) ||
-          (installationId && project.githubInstallationId == null)
-        ) {
-          await app.prisma.project
-            .update({
+        // AUTO-CURA — o que ela pode e o que ela NUNCA pode.
+        //
+        // Ela existe porque o wizard grava só o endereço declarado, e endereço
+        // muda: renomear o repositório no GitHub deixaria o projeto órfão de
+        // todas as entregas seguintes. Trocar o texto pelo identificador
+        // numérico da própria entrega conserta isso.
+        //
+        // Mas ela só pode ESTREITAR a identidade do projeto, nunca ALARGAR:
+        //
+        // - `githubInstallationId` deixou de ser escrito aqui. Adotar uma
+        //   instalação é alargar: ela cobre a conta inteira, e o projeto
+        //   passaria a receber avisos de repositórios que ninguém declarou.
+        //   Quem prova posse de instalação é o retorno assinado do fluxo de
+        //   instalação (routes/github-app-install.ts), que pergunta ao GitHub
+        //   antes de gravar — não uma entrega que apenas calhou de casar.
+        // - `githubRepoId` só é gravado quando o casamento foi pelo endereço E
+        //   um único projeto declara aquele endereço. Havendo empate, o
+        //   escolhido pode ser o errado, e carimbar nele um identificador
+        //   imutável congelaria o engano.
+        const podeCurar =
+          casamento.criterio === 'wingId' &&
+          !casamento.empatado &&
+          repoId &&
+          project.githubRepoId == null
+
+        if (podeCurar) {
+          try {
+            await app.prisma.project.update({
               where: { id: project.id },
-              data: {
-                ...(repoId && project.githubRepoId == null ? { githubRepoId: BigInt(repoId) } : {}),
-                ...(installationId && project.githubInstallationId == null
-                  ? { githubInstallationId: installationId }
-                  : {}),
-              },
+              data: { githubRepoId: BigInt(repoId) },
             })
-            .catch((err) =>
+          } catch (err) {
+            // As duas colunas são únicas no banco. Numa corrida (duas entregas
+            // do mesmo repositório ao mesmo tempo), a segunda gravação colide —
+            // e colisão não pode derrubar a entrega: o projeto já foi
+            // encontrado, a cura era só um atalho para as próximas.
+            if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+              app.log.warn(
+                { projectId: project.id, repoId, alvo: err.meta?.['target'] },
+                'Identificador do repositório já pertence a outro projeto: cura ignorada'
+              )
+            } else {
               app.log.warn({ err, projectId: project.id }, 'Falha ao backfill de IDs do GitHub')
-            )
+            }
+          }
         }
 
         // Persist webhook delivery for idempotency/retry tracking

@@ -91,12 +91,17 @@ describe('GitHub Webhook Routes', () => {
   test('POST /api/webhooks/github resolves project by repository.full_name and backfills numeric IDs', async () => {
     app.prisma.webhookDelivery.create = vi.fn().mockResolvedValue({})
     app.prisma.webhookDelivery.updateMany = vi.fn().mockResolvedValue({})
-    app.prisma.project.findFirst = vi.fn().mockResolvedValue({
-      id: 'proj_x',
-      wingId: 'loureng/gitorch',
-      githubInstallationId: null,
-      githubRepoId: null,
-    })
+    // Nenhum projeto carrega ainda o id numérico do repositório — é justamente
+    // o caso em que o casamento cai no endereço declarado e a cura entra.
+    app.prisma.project.findFirst = vi.fn().mockResolvedValue(null)
+    app.prisma.project.findMany = vi.fn().mockResolvedValue([
+      {
+        id: 'proj_x',
+        wingId: 'loureng/gitorch',
+        githubInstallationId: null,
+        githubRepoId: null,
+      },
+    ])
     app.prisma.project.update = vi.fn().mockResolvedValue({})
 
     const payloadStr = JSON.stringify({
@@ -124,12 +129,8 @@ describe('GitHub Webhook Routes', () => {
 
     expect(res.statusCode).toBe(200)
 
-    expect(app.prisma.project.findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          OR: expect.arrayContaining([{ wingId: 'loureng/gitorch' }]),
-        }),
-      })
+    expect(app.prisma.project.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { wingId: 'loureng/gitorch' } })
     )
 
     expect(app.prisma.project.update).toHaveBeenCalledWith(

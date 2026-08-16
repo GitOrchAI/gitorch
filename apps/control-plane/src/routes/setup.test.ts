@@ -1132,6 +1132,26 @@ describe('POST /api/v1/setup/submit — isolamento entre clientes (o projeto é 
     expect(projects[0]!.userId).toBe('user_ana')
   })
 
+  /**
+   * As duas colunas de identidade do GitHub são ÚNICAS no banco. Se o cadastro
+   * as escrevesse, quem chegasse primeiro tomaria o identificador do
+   * repositório e o dono de verdade não conseguiria mais se cadastrar — a
+   * unicidade já estaria ocupada e o erro chegaria como falha crua.
+   *
+   * A defesa é não escrever: o cadastro guarda só o endereço declarado. Quem
+   * preenche a identidade é o fluxo autenticado do GitHub, e sob as condições
+   * de routes/github-webhook.ts.
+   */
+  it('o projeto nasce SEM a identidade do GitHub: ela não faz parte do cadastro', async () => {
+    await submit()
+
+    const chamadas = (app.prisma.project.create as unknown as ReturnType<typeof vi.fn>).mock.calls
+    expect(chamadas).toHaveLength(1)
+    const dados = (chamadas[0]![0] as { data: Record<string, unknown> }).data
+    expect(dados).not.toHaveProperty('githubRepoId')
+    expect(dados).not.toHaveProperty('githubInstallationId')
+  })
+
   it('401 quando o dono da sessão não é resolvível (sem dono não há a quem pertencer o projeto)', async () => {
     // Sessão sem e-mail (JWT legado) ou cujo usuário não existe mais: sem dono
     // resolvido, o projeto nasceria órfão num namespace global — a porta exata
