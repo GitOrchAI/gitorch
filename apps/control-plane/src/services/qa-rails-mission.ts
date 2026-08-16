@@ -16,6 +16,7 @@ import { lerDiffDoPr, type ArquivoDoPr } from './diff-do-pr.js'
 import { mesclarPr, type ResultadoDoMerge } from './merge-do-pr.js'
 import { decidirSobreVerificacao, type EstadoDaVerificacao } from './vigia-da-verificacao.js'
 import { hashDaMensagem } from './session-watch.js'
+import { fecharTarefaEntregue } from './fechar-tarefa.js'
 
 // Missão do QA nos TRILHOS (F3.6): acha a PR do Jules que precisa de julgamento,
 // monta o snapshot (diff + Verification Criteria da issue + estado do CI), o
@@ -656,6 +657,13 @@ export async function runQaMissionViaRails(
   // (mesclado ou não) sem repetir a variável.
   let resultadoDoMerge: ResultadoDoMerge | null = null
 
+  // Task 15: só ganha texto quando o fechamento da tarefa foi TENTADO e
+  // falhou (ver o bloco logo após o merge, mais abaixo) — mesmo padrão de
+  // `cardNote`/`mergeNote`: uma falha aqui não pode ficar muda dentro de um
+  // try/catch, ela vira texto na saída da missão, que `persistMissionMemory`
+  // grava como memória do projeto.
+  let fechamentoNote = ''
+
   // Task 8: o parecer sobre uma entrega NÃO delegada carrega, em linguagem
   // de negócio, a mesma frase que existe para não repetir o quase-acidente
   // do PR #99 — o GitOrch opina, mas quem decide se mescla é a pessoa dona
@@ -731,9 +739,64 @@ export async function runQaMissionViaRails(
           return true
         },
       })
-      if (resultadoDoMerge.mesclado && options.aoMesclar) {
-        await options.aoMesclar({ numeroDoPr: target.number })
-      } else if (!resultadoDoMerge.mesclado && chamouOGithub && linhaDaEntrega) {
+      if (resultadoDoMerge.mesclado) {
+        if (options.aoMesclar) {
+          await options.aoMesclar({ numeroDoPr: target.number })
+        }
+
+        // Task 15: a entrega foi mesclada — provado ao vivo que o texto dela
+        // não é garantia nenhuma de que o GitHub fecha a tarefa sozinho (o
+        // dev assíncrono é externo, o produto não controla o que ele
+        // escreve). No método deste produto quem administra tarefa é o
+        // gerente, não o dev — então o produto fecha por conta própria.
+        // `linkedIssue` pode estar ausente (recuo por login sem issue de
+        // origem conhecida); sem saber QUAL tarefa fechar, não há o que
+        // fazer aqui.
+        if (linkedIssue) {
+          try {
+            await fecharTarefaEntregue({
+              numeroDoPr: target.number,
+              mesclado: resultadoDoMerge.mesclado,
+              delegado,
+              lerEstadoDaTarefa: async () => {
+                // Lido FRESCO, não herdado de `linkedIssueLabels`/`criteria`
+                // (buscados minutos antes, no passo 2) — a tarefa pode ter
+                // fechado sozinha nesse intervalo.
+                const tarefa = (await gh(
+                  'GET',
+                  `/repos/${options.repository}/issues/${linkedIssue}`
+                )) as { state?: string }
+                return tarefa.state === 'closed' ? 'closed' : 'open'
+              },
+              comentar: async (texto) => {
+                await gh('POST', `/repos/${options.repository}/issues/${linkedIssue}/comments`, {
+                  body: texto,
+                })
+              },
+              fechar: async () => {
+                await gh('PATCH', `/repos/${options.repository}/issues/${linkedIssue}`, {
+                  state: 'closed',
+                })
+              },
+            })
+          } catch (err) {
+            // NUNCA engolida: fechar a tarefa do cliente é uma escrita real
+            // na infraestrutura dele — se falhar (permissão, rede), isso
+            // precisa aparecer tanto no log estruturado (visível AGORA, para
+            // quem observa o scheduler rodando) quanto na saída da missão
+            // (visível DEPOIS, porque `persistMissionMemory` grava o
+            // resumo como memória do projeto). O merge em si já aconteceu —
+            // uma falha em fechar a tarefa não pode derrubar a missão que
+            // já entregou o essencial.
+            const motivo = String(err).slice(0, 120)
+            fechamentoNote = ` fechar a tarefa #${linkedIssue} falhou: ${motivo}.`
+            const avisar = options.onWarn ?? console.warn
+            avisar(
+              `[qa] PR #${target.number} mesclado, mas fechar a tarefa #${linkedIssue} falhou: ${motivo}`
+            )
+          }
+        }
+      } else if (chamouOGithub && linhaDaEntrega) {
         // Tarefa 10: o GitHub recusou de verdade (conflito, regra do
         // repositório, pedido inválido, ou a chamada falhou por rede — R3 do
         // controlador não distingue o motivo). Conta mais um fracasso contra
@@ -913,7 +976,7 @@ export async function runQaMissionViaRails(
   const mergeNote = resultadoDoMerge
     ? ` Merge: ${resultadoDoMerge.mesclado ? 'merged' : 'blocked'} (${resultadoDoMerge.motivo}).`
     : ''
-  const resumo = `QA judged PR #${target.number}: ${effectiveVerdict} (CI ${ciState}).${cardNote}${mergeNote}`
+  const resumo = `QA judged PR #${target.number}: ${effectiveVerdict} (CI ${ciState}).${cardNote}${mergeNote}${fechamentoNote}`
   return {
     exitCode: 0,
     output: [resumo, ...lacunas].join('\n'),

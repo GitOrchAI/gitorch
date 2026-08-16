@@ -1913,3 +1913,129 @@ describe('QA: veredito sem depender de "quem sou eu"', () => {
     expect((reviews.at(-1)!.body as { event?: string }).event).toBe('COMMENT')
   })
 })
+
+// Task 15: provado ao vivo — a entrega foi mesclada e a tarefa ficou aberta,
+// porque o texto da PR não trazia a palavra que faz o GitHub fechar sozinho.
+// A missão do QA passa a fechar a tarefa por conta própria logo após a
+// mescla — mesmo padrão de `moveCard`/`aplicarLabelDoAgente`: escrita na
+// infraestrutura do CLIENTE, best-effort, gated por `delegado` e por saber
+// qual issue fechar (`linkedIssue`).
+//
+// O dublê é local (não reaproveita `fakeFetch`) por precisão: a asserção
+// precisa distinguir a leitura do estado da tarefa (GET), o comentário
+// (POST /issues/{n}/comments) e o fechamento (PATCH /issues/{n}) da mesma
+// issue #99 — o helper compartilhado atende toda `GET/POST/PATCH
+// /issues/{issueNumber}` com a MESMA resposta fixa (ela existe para simular
+// a leitura de critérios/labels, não para rastrear closes), então usá-lo
+// aqui esconderia exatamente o que este teste precisa provar.
+describe('Tarefa 15: o gerente fecha a tarefa entregue', () => {
+  function fetchParaFechamento(
+    opts: { estadoDaTarefa?: 'open' | 'closed'; fecharFalha?: boolean } = {}
+  ) {
+    const comentarios: Array<{ body?: string }> = []
+    const fechamentos: Array<{ state?: string }> = []
+    const impl = (async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const u = String(url)
+      const method = init?.method ?? 'GET'
+      const body = init?.body ? JSON.parse(String(init.body)) : {}
+      const json = (d: unknown) => new Response(JSON.stringify(d), { status: 200 })
+
+      if (u.includes('/pulls?')) {
+        return json([
+          {
+            number: 7,
+            user: { login: 'jules[bot]' },
+            draft: false,
+            body: 'Closes #99',
+            head: { sha: 'abc123' },
+          },
+        ])
+      }
+      if (u.match(/\/pulls\/7\/reviews/) && method === 'GET') return json([])
+      if (/\/pulls\/7$/.test(u.split('?')[0]!)) {
+        return json({ number: 7, body: 'Closes #99', head: { sha: 'abc123' } })
+      }
+      if (u.endsWith('/repos/o/r/issues/99') && method === 'GET') {
+        return json({
+          number: 99,
+          labels: [],
+          body: '## Verification Criteria\n\n- ok',
+          state: opts.estadoDaTarefa ?? 'open',
+        })
+      }
+      if (u.endsWith('/repos/o/r/issues/99') && method === 'PATCH') {
+        if (opts.fecharFalha) {
+          return new Response(JSON.stringify({ message: 'Forbidden' }), { status: 403 })
+        }
+        fechamentos.push(body)
+        return json({})
+      }
+      if (u.includes('/commits/') && u.includes('/check-runs')) {
+        return json({ check_runs: [{ conclusion: 'success', status: 'completed' }] })
+      }
+      if (u.match(/\/pulls\/7\/files/)) {
+        const pagina = Number(new URL(u).searchParams.get('page') ?? '1')
+        if (pagina > 1) return json([])
+        return json([{ filename: 'src/x.ts', patch: '+code' }])
+      }
+      if (u.endsWith('/repos/o/r/issues/99/comments') && method === 'POST') {
+        comentarios.push(body)
+        return json({ id: 1 })
+      }
+      if (u.match(/\/pulls\/7\/reviews/) && method === 'POST') return json({ id: 1 })
+      if (u.match(/\/pulls\/7\/merge$/) && method === 'PUT') {
+        return json({ merged: true, sha: 'deadbeef', message: 'Squashed and merged.' })
+      }
+      return json({})
+    }) as typeof fetch
+    return { impl, comentarios, fechamentos }
+  }
+
+  it('mesclado e a tarefa continua aberta: comenta dizendo qual PR resolveu, e fecha', async () => {
+    const { impl, comentarios, fechamentos } = fetchParaFechamento()
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: impl,
+    })
+    expect(r.exitCode).toBe(0)
+    expect(comentarios).toHaveLength(1)
+    expect(comentarios[0]!.body).toContain('#7')
+    expect(fechamentos).toHaveLength(1)
+    expect(fechamentos[0]!.state).toBe('closed')
+  })
+
+  it('o GitHub já fechou a tarefa sozinho: não comenta nem fecha de novo (fechar duas vezes seria ruído e uma mentira pequena)', async () => {
+    const { impl, comentarios, fechamentos } = fetchParaFechamento({ estadoDaTarefa: 'closed' })
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: impl,
+    })
+    expect(r.exitCode).toBe(0)
+    expect(comentarios).toHaveLength(0)
+    expect(fechamentos).toHaveLength(0)
+  })
+
+  it('o fechamento falha (permissão): a missão não quebra, e a falha fica visível na saída E no aviso estruturado — nunca engolida', async () => {
+    const { impl, comentarios } = fetchParaFechamento({ fecharFalha: true })
+    const avisos: string[] = []
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: impl,
+      onWarn: (m) => avisos.push(m),
+    })
+    // O comentário já tinha saído antes do PATCH falhar — não é desfeito.
+    expect(comentarios).toHaveLength(1)
+    // O merge já aconteceu e é o essencial da missão: uma falha em fechar a
+    // tarefa não pode derrubar isso.
+    expect(r.exitCode).toBe(0)
+    expect(r.output).toContain('fechar a tarefa #99 falhou')
+    expect(r.output).toContain('Forbidden')
+    expect(avisos.some((a) => a.includes('#99') && a.includes('falhou'))).toBe(true)
+  })
+})
