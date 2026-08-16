@@ -308,3 +308,35 @@ export async function limparPendencia(deps: {
     data: { pendingSince: null },
   })
 }
+
+/**
+ * Marca que o dono já foi avisado da verificação parada, para ESTE commit.
+ *
+ * Achado 2 da revisão da Tarefa 7: `avisar-demora` dispara a cada tick do
+ * scheduler (~1min) enquanto a verificação continuar parada — sem uma marca
+ * de "já avisei isto", o dono seria avisado a cada minuto, para sempre.
+ *
+ * Reaproveita `answeredHash` — o MESMO campo e a mesma disciplina que
+ * `registrarInvestigacao` já usa para não repetir aviso a cada ciclo
+ * (session-watch.ts: "SPAM apaga sinal tanto quanto silêncio"), aplicada a
+ * um sinal diferente: aqui o hash amarra o aviso ao COMMIT que está parado
+ * (`hashDaMensagem` de `avisar-demora:${sha}`, ver qa-rails-mission.ts). Se
+ * um push novo mudar o head enquanto a verificação ainda está pendente, o
+ * hash muda e o dono é avisado de novo — a situação mudou de verdade, não é
+ * o mesmo silêncio de sempre.
+ *
+ * Não colide com o uso de `registrarInvestigacao`: os dois só escrevem
+ * `answeredHash` em janelas da sessão que não coincidem (`julgar`, o ramo do
+ * QA que leva a esta chamada, nunca é a mesma decisão que `investigar`, o
+ * ramo do SM — ver `decidirRespostaDaSessao` em jules-session-loop.ts).
+ */
+export async function registrarAvisoDeDemora(deps: {
+  prisma: PrismaDevSession
+  sessionName: string
+  hash: string
+}): Promise<void> {
+  await deps.prisma.devSession.update({
+    where: { sessionName: deps.sessionName },
+    data: { answeredHash: deps.hash },
+  })
+}

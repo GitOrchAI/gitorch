@@ -73,8 +73,18 @@ export interface VigiaDeps {
   onWarn?: (m: string) => void
 }
 
-/** Hash determinístico e curto da mensagem, só para comparar "é a mesma pergunta?". */
-function hashDaMensagem(mensagem: string): string {
+/**
+ * Hash determinístico e curto de uma string, para comparar "já vi isto?" sem
+ * guardar o texto inteiro.
+ *
+ * Exportado porque `qa-rails-mission.ts` (achado 2 da revisão da Tarefa 7)
+ * reaproveita esta MESMA função para a idempotência do aviso de verificação
+ * parada — mesma disciplina do ramo `investigar` logo abaixo ("SPAM apaga
+ * sinal tanto quanto silêncio"), aplicada a um sinal diferente (commit
+ * parado, não estado de sessão). Duas funções de hash locais divergiriam
+ * cedo ou tarde; uma só, reaproveitada, não.
+ */
+export function hashDaMensagem(mensagem: string): string {
   return createHash('sha256').update(mensagem).digest('hex').slice(0, 16)
 }
 

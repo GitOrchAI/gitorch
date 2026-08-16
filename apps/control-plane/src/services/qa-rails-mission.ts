@@ -15,6 +15,7 @@ import type { LinhaDeSessao } from './dev-session-store.js'
 import { lerDiffDoPr, type ArquivoDoPr } from './diff-do-pr.js'
 import { mesclarPr, type ResultadoDoMerge } from './merge-do-pr.js'
 import { decidirSobreVerificacao, type EstadoDaVerificacao } from './vigia-da-verificacao.js'
+import { hashDaMensagem } from './session-watch.js'
 
 // Missão do QA nos TRILHOS (F3.6): acha a PR do Jules que precisa de julgamento,
 // monta o snapshot (diff + Verification Criteria da issue + estado do CI), o
@@ -98,6 +99,16 @@ export interface QaRailsMissionOptions {
    * — não é uma segunda campainha, é o mesmo aviso.
    */
   avisarDono?: (mensagem: string) => Promise<void>
+  /**
+   * Achado 2 da revisão da Tarefa 7: grava que o dono já foi avisado desta
+   * verificação parada, PARA ESTE COMMIT. Sem isto, `avisarDono` dispara a
+   * cada tick do scheduler (~1min) enquanto a verificação continuar parada —
+   * o dono seria avisado a cada minuto, para sempre, depois do teto. Mesma
+   * disciplina de `session-watch.ts` ("SPAM apaga sinal tanto quanto
+   * silêncio"), reaproveitando o MESMO campo (`answeredHash`, ver
+   * `LinhaDeSessao`) e a mesma função de hash (`hashDaMensagem`).
+   */
+  registrarAvisoDeDemora?: (args: { sessionName: string; hash: string }) => Promise<void>
   /**
    * Canal do aviso de degradação — antes hardcoded em `console.warn`,
    * invisível na observabilidade estruturada. Produção (scheduler.ts) sempre
@@ -372,13 +383,31 @@ export async function runQaMissionViaRails(
     // `avisar-demora`: o MESMO aviso que `session-watch.ts` usa para o dono —
     // não uma segunda campainha. Best-effort: um aviso que falha não pode
     // travar a missão, mesmo espírito do aviso à sessão do dev mais abaixo.
-    if (decisao.acao === 'avisar-demora' && options.avisarDono) {
-      await options
-        .avisarDono(
-          `GitOrch: a verificação automática do PR #${target.number} (${options.repository}) ` +
-            `está parada — ${decisao.motivo}.`
-        )
-        .catch(() => undefined)
+    //
+    // Achado 2 da revisão da Tarefa 7: o scheduler acorda a cada tick
+    // (~1min), e sem uma marca de idempotência este `if` dispararia todo
+    // tick, para sempre, depois do teto — SPAM apaga sinal tanto quanto
+    // silêncio (mesma disciplina de `session-watch.ts`, ramo `investigar`).
+    // O hash amarra o aviso ao COMMIT que está parado (`pr.head.sha`): se um
+    // push novo mudar o head enquanto a verificação segue pendente, o hash
+    // muda e o dono é avisado de novo — a situação mudou de verdade.
+    if (decisao.acao === 'avisar-demora') {
+      const hashDoAviso = hashDaMensagem(`avisar-demora:${pr.head?.sha ?? ''}`)
+      const jaAvisado = linhaDaEntrega?.answeredHash === hashDoAviso
+      if (!jaAvisado && options.avisarDono) {
+        await options
+          .avisarDono(
+            `GitOrch: a verificação automática do PR #${target.number} (${options.repository}) ` +
+              `está parada — ${decisao.motivo}.`
+          )
+          .catch(() => undefined)
+        if (linhaDaEntrega && options.registrarAvisoDeDemora) {
+          await options.registrarAvisoDeDemora({
+            sessionName: linhaDaEntrega.sessionName,
+            hash: hashDoAviso,
+          })
+        }
+      }
     }
     return {
       exitCode: 0,

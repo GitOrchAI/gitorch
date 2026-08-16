@@ -37,7 +37,7 @@ import { resolveMissionDelivery, type MissionPathKind } from '../services/missio
 import { ClientEnvironmentService } from '../services/environment.js'
 import { runPoMissionViaRails } from '../services/po-rails-mission.js'
 import { runRaMissionViaRails } from '../services/ra-rails-mission.js'
-import { runQaMissionViaRails } from '../services/qa-rails-mission.js'
+import { runQaMissionViaRails, type QaRailsMissionOptions } from '../services/qa-rails-mission.js'
 import { runSmDelegation } from '../services/sm-delegation.js'
 import { tetosDoPlanoDoDev } from '../services/plano-do-dev.js'
 import {
@@ -48,6 +48,9 @@ import {
   registrarPr,
   fecharSessao,
   registrarInvestigacao,
+  registrarPendencia,
+  limparPendencia,
+  registrarAvisoDeDemora,
   type PrismaDevSession,
   type LinhaDeSessao,
 } from '../services/dev-session-store.js'
@@ -281,6 +284,39 @@ export function montarOpcoesDeDelegacao(args: {
     sessoesVivas: args.sessoesVivas,
     delegadasHoje: args.delegadasHoje,
     ...tetosDoPlanoDoDev(args.devPlan),
+  }
+}
+
+/**
+ * Monta as opções da Tarefa 7 (vigília da verificação) que o julgamento do
+ * QA recebe: `registrarPendencia`/`limparPendencia`/`registrarAvisoDeDemora`
+ * ligadas ao Prisma real, e `avisarDono` quando um notificador foi montado.
+ *
+ * Achado 1 da revisão da Tarefa 7: as três primeiras foram ADICIONADAS à
+ * interface de `runQaMissionViaRails` mas nunca chegavam a este ponto de
+ * disparo — a lógica ficava correta e testada em isolamento
+ * (qa-rails-mission.test.ts) e inerte em produção (`pending_since` nunca era
+ * gravado, o teto de 90min nunca amadurecia, o dono nunca era avisado).
+ *
+ * Função pura EXPORTADA pelo mesmo motivo de `montarOpcoesDeDelegacao`
+ * (achado 2 da Tarefa 5): a montagem viveria só dentro de
+ * `executeMissionWithFailover`, fechamento não exportado, e uma regressão
+ * que voltasse a esquecer uma das três opções no call site de
+ * `runQaMissionViaRails` não quebraria teste nenhum. Ver
+ * scheduler-julgamento-opcoes.test.ts.
+ */
+export function montarOpcoesDoJulgamento(args: {
+  prisma: PrismaDevSession
+  avisarDono?: ((mensagem: string) => Promise<void>) | undefined
+}): Pick<
+  QaRailsMissionOptions,
+  'registrarPendencia' | 'limparPendencia' | 'registrarAvisoDeDemora' | 'avisarDono'
+> {
+  return {
+    registrarPendencia: (a) => registrarPendencia({ prisma: args.prisma, ...a }),
+    limparPendencia: (a) => limparPendencia({ prisma: args.prisma, ...a }),
+    registrarAvisoDeDemora: (a) => registrarAvisoDeDemora({ prisma: args.prisma, ...a }),
+    ...(args.avisarDono ? { avisarDono: args.avisarDono } : {}),
   }
 }
 
@@ -1711,6 +1747,24 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             // Colunas do board: config POR PROJETO (runtimeConfig.board.columns),
             // com default nativo — o cliente personaliza, o backend acompanha.
             const boardColumns = resolveBoardColumns(project.runtimeConfig)
+            // Tarefa 7 (achado 1 da revisão): o aviso de verificação parada é
+            // do DONO do projeto — mesma resolução usada pelo watchdog do SM
+            // (acima) e pela vigia da esteira (varrerSessoesDoDev, mais
+            // abaixo). Construído só para o QA: PO e RA não julgam
+            // verificação, não precisam deste notificador.
+            let avisarDono: ((mensagem: string) => Promise<void>) | undefined
+            if (qaRails) {
+              const notifyChatId = await resolveNotifyChatId(app.prisma, project, {
+                instanceOwnerEmail: process.env['GITORCH_OWNER_EMAIL'],
+                instanceChatId:
+                  process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
+              })
+              avisarDono = buildTelegramNotifier({
+                botToken:
+                  process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
+                ...(notifyChatId ? { chatId: notifyChatId } : {}),
+              })
+            }
             result = raRails
               ? await runRaMissionViaRails({
                   repository: project.wingId,
@@ -1740,6 +1794,16 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                     sessoes: await app.prisma.devSession.findMany({
                       where: filtroDeSessoesParaJulgamento(project.id),
                       orderBy: { createdAt: 'desc' },
+                    }),
+                    // Tarefa 7 (achado 1 da revisão): registrarPendencia,
+                    // limparPendencia, registrarAvisoDeDemora e avisarDono —
+                    // sem isto a vigília da verificação fica correta e
+                    // testada em isolamento, e inerte aqui: pending_since
+                    // nunca é gravado, o teto de 90min nunca amadurece, o
+                    // dono nunca é avisado.
+                    ...montarOpcoesDoJulgamento({
+                      prisma: app.prisma as unknown as PrismaDevSession,
+                      avisarDono,
                     }),
                     // Fase 1 do QA (Reconhecimento): só entra quando este QA foi
                     // acordado pela cascata de onboarding (Task 10) — hoje o

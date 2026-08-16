@@ -118,6 +118,13 @@ function fakeFetch(
      * em `'unknown'` (não dá para consultar check-runs sem o sha).
      */
     semShaNaPrIsolada?: boolean
+    /**
+     * Achado 2 da revisão da Tarefa 7: o hash de idempotência do aviso de
+     * demora amarra o aviso ao SHA do head. Default 'abc123' preserva o
+     * comportamento de todos os testes existentes; os testes que provam a
+     * dedupe/rearme do aviso variam este valor para simular um push novo.
+     */
+    headSha?: string
   } = {}
 ): typeof fetch {
   const posted: {
@@ -146,7 +153,7 @@ function fakeFetch(
           user: { login: p.user },
           draft: false,
           body: p.body ?? 'Closes #50',
-          head: { sha: 'abc123' },
+          head: { sha: opts.headSha ?? 'abc123' },
         }))
       )
     }
@@ -164,7 +171,7 @@ function fakeFetch(
       return json({
         number: numeroDoPr,
         body: p?.body ?? 'Closes #50',
-        head: opts.semShaNaPrIsolada ? {} : { sha: 'abc123' },
+        head: opts.semShaNaPrIsolada ? {} : { sha: opts.headSha ?? 'abc123' },
       })
     }
     // label da issue vinculada — checar ANTES de "/issues/{issueNumber}" (que também
@@ -1213,6 +1220,145 @@ describe('runQaMissionViaRails', () => {
       // está gravada desde o primeiro avistamento; regravar não é o papel
       // deste ramo.
       expect(registradas).toHaveLength(0)
+    })
+
+    // Achado 2 da revisão da Tarefa 7: sem idempotência, `avisar-demora`
+    // dispararia a cada tick do scheduler (~1min) — o dono seria avisado a
+    // cada minuto, para sempre, depois do teto. A correção reaproveita
+    // `answeredHash`/`hashDaMensagem`, a MESMA disciplina que
+    // `session-watch.ts` já usa para o ramo `investigar`
+    // ("SPAM apaga sinal tanto quanto silêncio").
+    it('avisar-demora consecutivo para o MESMO commit parado NÃO avisa de novo', async () => {
+      const pendingSince = new Date(Date.now() - (TETO_DE_ESPERA_MS + 5 * 60 * 1000))
+
+      // Primeira passagem: nunca avisado (answeredHash: null) — avisa e
+      // grava o hash amarrado ao commit parado.
+      const f1 = fakeFetch([{ number: 11, user: 'jules[bot]' }], undefined, undefined, {
+        checkRuns: [{ status: 'in_progress' }],
+        headSha: 'commit-parado',
+      })
+      const avisos1: string[] = []
+      const marcas: Array<{ sessionName: string; hash: string }> = []
+      await runQaMissionViaRails({
+        repository: 'o/r',
+        githubToken: 't',
+        execute: async () => {
+          throw new Error('não deveria julgar')
+        },
+        sessoes: [
+          linha({
+            issueNumber: 52,
+            pullRequestNumber: 11,
+            sessionName: 'sessions/pend-d',
+            pendingSince,
+            answeredHash: null,
+          }),
+        ],
+        avisarDono: async (mensagem) => {
+          avisos1.push(mensagem)
+        },
+        registrarAvisoDeDemora: async (args) => {
+          marcas.push(args)
+        },
+        fetchImpl: f1,
+      })
+      expect(avisos1).toHaveLength(1)
+      expect(marcas).toHaveLength(1)
+      expect(marcas[0]!.sessionName).toBe('sessions/pend-d')
+
+      // Segunda passagem, próximo tick: MESMO commit ('commit-parado'), com
+      // o hash da primeira já persistido na linha (simula o que
+      // `registrarAvisoDeDemora` teria gravado) — nada mudou de verdade.
+      const f2 = fakeFetch([{ number: 11, user: 'jules[bot]' }], undefined, undefined, {
+        checkRuns: [{ status: 'in_progress' }],
+        headSha: 'commit-parado',
+      })
+      const avisos2: string[] = []
+      await runQaMissionViaRails({
+        repository: 'o/r',
+        githubToken: 't',
+        execute: async () => {
+          throw new Error('não deveria julgar')
+        },
+        sessoes: [
+          linha({
+            issueNumber: 52,
+            pullRequestNumber: 11,
+            sessionName: 'sessions/pend-d',
+            pendingSince,
+            answeredHash: marcas[0]!.hash,
+          }),
+        ],
+        avisarDono: async (mensagem) => {
+          avisos2.push(mensagem)
+        },
+        fetchImpl: f2,
+      })
+      expect(avisos2).toHaveLength(0)
+    })
+
+    it('novo push (commit muda) enquanto a verificação segue parada: avisa de novo — a situação mudou de verdade', async () => {
+      const pendingSince = new Date(Date.now() - (TETO_DE_ESPERA_MS + 5 * 60 * 1000))
+
+      const f1 = fakeFetch([{ number: 12, user: 'jules[bot]' }], undefined, undefined, {
+        checkRuns: [{ status: 'in_progress' }],
+        headSha: 'commit-1',
+      })
+      const avisos1: string[] = []
+      const marcas: Array<{ sessionName: string; hash: string }> = []
+      await runQaMissionViaRails({
+        repository: 'o/r',
+        githubToken: 't',
+        execute: async () => {
+          throw new Error('não deveria julgar')
+        },
+        sessoes: [
+          linha({
+            issueNumber: 53,
+            pullRequestNumber: 12,
+            sessionName: 'sessions/pend-e',
+            pendingSince,
+            answeredHash: null,
+          }),
+        ],
+        avisarDono: async (mensagem) => {
+          avisos1.push(mensagem)
+        },
+        registrarAvisoDeDemora: async (args) => {
+          marcas.push(args)
+        },
+        fetchImpl: f1,
+      })
+      expect(avisos1).toHaveLength(1)
+
+      // O dev empurrou algo novo enquanto a verificação seguia pendente: o
+      // head mudou. O hash amarrado ao commit ANTERIOR não bate mais.
+      const f2 = fakeFetch([{ number: 12, user: 'jules[bot]' }], undefined, undefined, {
+        checkRuns: [{ status: 'in_progress' }],
+        headSha: 'commit-2',
+      })
+      const avisos2: string[] = []
+      await runQaMissionViaRails({
+        repository: 'o/r',
+        githubToken: 't',
+        execute: async () => {
+          throw new Error('não deveria julgar')
+        },
+        sessoes: [
+          linha({
+            issueNumber: 53,
+            pullRequestNumber: 12,
+            sessionName: 'sessions/pend-e',
+            pendingSince,
+            answeredHash: marcas[0]!.hash,
+          }),
+        ],
+        avisarDono: async (mensagem) => {
+          avisos2.push(mensagem)
+        },
+        fetchImpl: f2,
+      })
+      expect(avisos2).toHaveLength(1)
     })
 
     it('(c) verde depois de pendente: julga normalmente, e PROVA que limparPendencia foi chamada para esta sessão (R2)', async () => {

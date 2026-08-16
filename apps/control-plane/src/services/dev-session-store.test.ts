@@ -7,6 +7,7 @@ import {
   registrarResposta,
   registrarPr,
   fecharSessao,
+  registrarPendencia,
 } from './dev-session-store.js'
 
 const agora = new Date('2026-01-01T00:00:00.000Z')
@@ -212,5 +213,57 @@ describe('fecharSessao', () => {
         data: expect.objectContaining({ closedAt: agora, closedReason: 'merged' }),
       })
     )
+  })
+})
+
+// Achado 3 da revisão da Tarefa 7: o `where` de `registrarPendencia` inclui
+// `pendingSince: null` — a marca é do PRIMEIRO avistamento — mas até aqui
+// nenhum teste exercitava essa cláusula. Se um edit futuro derrubasse o
+// filtro, a marca seria regravada a cada passagem, o teto de espera nunca
+// amadureceria, e a espera ficaria silenciosa e infinita — com toda a suíte
+// (inclusive `qa-rails-mission.test.ts`, que só mocka `registrarPendencia`
+// e nunca prova o `where`) permanecendo verde.
+describe('registrarPendencia', () => {
+  it('o where inclui pendingSince: null — sem isto o teste em memória abaixo não provaria nada', async () => {
+    const prisma = prismaFalso()
+
+    await registrarPendencia({ prisma, sessionName: 'sessions/1', agora })
+
+    expect(prisma.devSession.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { sessionName: 'sessions/1', pendingSince: null },
+        data: { pendingSince: agora },
+      })
+    )
+  })
+
+  it('uma sessão JÁ marcada não tem a marca sobrescrita — a marca é do primeiro avistamento', async () => {
+    // Simula o WHERE do Prisma de verdade: `updateMany` só aplica `data`
+    // quando TODAS as condições do `where` batem contra a linha em memória.
+    // É essa fidelidade que prova (e não só documenta) que a proteção vem do
+    // FILTRO em si, e não de algum outro comportamento do teste.
+    const linha: { pendingSince: Date | null } = { pendingSince: null }
+    const prisma = prismaFalso({
+      updateMany: vi.fn(
+        async (args: { where: Record<string, unknown>; data: { pendingSince: Date } }) => {
+          const bate = Object.entries(args.where).every(([campo, valor]) =>
+            campo === 'sessionName' ? true : linha[campo as keyof typeof linha] === valor
+          )
+          if (bate) linha.pendingSince = args.data.pendingSince
+          return { count: bate ? 1 : 0 }
+        }
+      ),
+    })
+
+    const primeiroAvistamento = new Date('2026-01-01T00:00:00.000Z')
+    await registrarPendencia({ prisma, sessionName: 'sessions/1', agora: primeiroAvistamento })
+    expect(linha.pendingSince).toEqual(primeiroAvistamento)
+
+    // Segunda passagem, bem depois — a pendência continua, a marca NÃO pode
+    // mudar: é dela que o teto de 90min (TETO_DE_ESPERA_MS) conta o tempo.
+    const passagemSeguinte = new Date('2026-01-01T00:45:00.000Z')
+    await registrarPendencia({ prisma, sessionName: 'sessions/1', agora: passagemSeguinte })
+
+    expect(linha.pendingSince).toEqual(primeiroAvistamento)
   })
 })
