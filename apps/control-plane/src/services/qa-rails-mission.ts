@@ -168,8 +168,19 @@ export interface QaRailsMissionOptions extends VigiliaDoJulgamentoOptions {
    * quem fecha a linha é a vigília da publicação (`varrerPublicacoes`,
    * scheduler.ts), quando há veredito. Este módulo continua sem saber nada
    * de banco — só entrega o fato de que a mescla aconteceu, e com qual commit.
+   *
+   * `issueNumber` (Importante 4 da revisão final da branch): a MESMA issue
+   * de origem (`issueDaEntrega`, resolvida pelo laço de descoberta acima)
+   * que este módulo já usa como recuo para achar `linhaDaEntrega` quando o
+   * número do PR ainda não foi gravado na linha. `aoMesclarUmaEntrega`
+   * (scheduler.ts) buscava SÓ pelo número do PR e desistia em silêncio —
+   * este campo permite o MESMO recuo do outro lado da fronteira.
    */
-  aoMesclar?: (args: { numeroDoPr: number; mergeCommitSha: string }) => Promise<void>
+  aoMesclar?: (args: {
+    numeroDoPr: number
+    mergeCommitSha: string
+    issueNumber: number | null
+  }) => Promise<void>
   /**
    * Canal do aviso de degradação — antes hardcoded em `console.warn`,
    * invisível na observabilidade estruturada. Produção (scheduler.ts) sempre
@@ -755,7 +766,11 @@ export async function runQaMissionViaRails(
       })
       if (resultadoDoMerge.mesclado) {
         if (options.aoMesclar) {
-          await options.aoMesclar({ numeroDoPr: target.number, mergeCommitSha })
+          await options.aoMesclar({
+            numeroDoPr: target.number,
+            mergeCommitSha,
+            issueNumber: issueDaEntrega,
+          })
         }
 
         // Task 15: a entrega foi mesclada — provado ao vivo que o texto dela

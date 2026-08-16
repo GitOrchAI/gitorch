@@ -122,7 +122,11 @@ describe('achados da revisão da Tarefa 17 — pelo seam real', () => {
       attempts: 1,
       nudges: 0,
       lastProgressAt: null,
-      stateCheckedAt: null,
+      // Importante 5 da revisão final: dado real de produção — o merge
+      // acabou de acontecer, e é `stateCheckedAt` (gravado por
+      // `registrarMescla` no instante do merge) que agora mede "desde
+      // quando" para a janela de tolerância, não mais um relógio em memória.
+      stateCheckedAt: new Date(),
       pendingSince: null,
       mergeCommitSha: 'deadbeef',
       deployState: null,

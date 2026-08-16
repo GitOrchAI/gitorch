@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import { acompanharPublicacao, JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS } from './publicacao.js'
+import {
+  acompanharPublicacao,
+  JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS,
+  TETO_DE_COMMIT_ERRADO_MS,
+} from './publicacao.js'
 
 const mecanismoWorkflow = { tipo: 'workflow', arquivo: 'cd.yml', nome: 'CD' } as const
 
@@ -343,7 +347,7 @@ describe('acompanharPublicacao', () => {
         lerEstadosDaPublicacao: vi.fn(),
         lerExecucoes: vi.fn(),
         lerEtapas: vi.fn(),
-        esperaSemEvidenciaMs: 0,
+        desdeAMescla: 0,
       })
       expect(v.estado).toBe('publicando')
       expect(v.semEvidenciaDeTodoAmbiente).toBe(true)
@@ -358,7 +362,7 @@ describe('acompanharPublicacao', () => {
         lerEstadosDaPublicacao: vi.fn(),
         lerExecucoes: vi.fn(),
         lerEtapas: vi.fn(),
-        esperaSemEvidenciaMs: JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS - 1,
+        desdeAMescla: JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS - 1,
       })
       expect(v.estado).toBe('publicando')
     })
@@ -371,7 +375,7 @@ describe('acompanharPublicacao', () => {
         lerEstadosDaPublicacao: vi.fn(),
         lerExecucoes: vi.fn(),
         lerEtapas: vi.fn(),
-        esperaSemEvidenciaMs: JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS,
+        desdeAMescla: JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS,
       })
       expect(v.estado).toBe('sem-publicacao')
       expect(v.semEvidenciaDeTodoAmbiente).toBe(true)
@@ -385,12 +389,12 @@ describe('acompanharPublicacao', () => {
         lerEstadosDaPublicacao: vi.fn(),
         lerExecucoes: vi.fn(),
         lerEtapas: vi.fn(),
-        esperaSemEvidenciaMs: 60 * 60_000,
+        desdeAMescla: 60 * 60_000,
       })
       expect(v.estado).toBe('sem-publicacao')
     })
 
-    it('sem informar esperaSemEvidenciaMs: comportamento de sempre (final na hora) — nenhum call site esquecido silenciosamente fica seguro', async () => {
+    it('sem informar desdeAMescla: comportamento de sempre (final na hora) — nenhum call site esquecido silenciosamente fica seguro', async () => {
       const v = await acompanharPublicacao({
         mecanismo: { tipo: 'deployment', ambientes: ['github-pages'] },
         shaDaMescla: 'abc123',
@@ -426,7 +430,7 @@ describe('acompanharPublicacao', () => {
           ]),
         lerExecucoes: vi.fn(),
         lerEtapas: vi.fn(),
-        esperaSemEvidenciaMs: 0,
+        desdeAMescla: 0,
       })
       expect(v.estado).toBe('falhou')
       expect(v.semEvidenciaDeTodoAmbiente).toBe(false)
@@ -440,10 +444,119 @@ describe('acompanharPublicacao', () => {
         lerEstadosDaPublicacao: vi.fn(),
         lerExecucoes: vi.fn(),
         lerEtapas: vi.fn(),
-        esperaSemEvidenciaMs: 0,
+        desdeAMescla: 0,
       })
       expect(v.estado).toBe('sem-publicacao')
       expect(v.semEvidenciaDeTodoAmbiente).toBe(false)
+    })
+  })
+
+  // CRÍTICO 2 da revisão final da branch — "não lê como nunca": o histórico
+  // do workflow de publicação pode estar VAZIO logo após o merge (repositório
+  // que acabou de ganhar o workflow), e sem esta janela isso virava
+  // `sem-publicacao` FINAL no primeiro tique, ~1 minuto depois de mesclar,
+  // fechando a sessão em silêncio bem no momento em que a publicação estava
+  // começando.
+  describe('crítico 2 — janela de tolerância também no caminho de WORKFLOW (histórico vazio)', () => {
+    it('histórico vazio ANTES da janela: ainda publicando, não fecha', async () => {
+      const v = await acompanharPublicacao({
+        mecanismo: mecanismoWorkflow,
+        shaDaMescla: 'abc123',
+        lerExecucoes: vi.fn().mockResolvedValue([]),
+        lerEtapas: vi.fn(),
+        lerPublicacoes: vi.fn(),
+        lerEstadosDaPublicacao: vi.fn(),
+        desdeAMescla: 0,
+      })
+      expect(v.estado).toBe('publicando')
+      expect(v.semEvidenciaDeTodoAmbiente).toBe(true)
+      expect(v.motivo).toMatch(/nenhuma execução|janela de tolerância/i)
+    })
+
+    it('histórico vazio DEPOIS da janela: sem-publicacao (final) — não espera para sempre', async () => {
+      const v = await acompanharPublicacao({
+        mecanismo: mecanismoWorkflow,
+        shaDaMescla: 'abc123',
+        lerExecucoes: vi.fn().mockResolvedValue([]),
+        lerEtapas: vi.fn(),
+        lerPublicacoes: vi.fn(),
+        lerEstadosDaPublicacao: vi.fn(),
+        desdeAMescla: JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS,
+      })
+      expect(v.estado).toBe('sem-publicacao')
+      expect(v.semEvidenciaDeTodoAmbiente).toBe(true)
+    })
+
+    it('sem informar desdeAMescla: comportamento de sempre (final na hora) — nenhum call site esquecido silenciosamente fica seguro', async () => {
+      const v = await acompanharPublicacao({
+        mecanismo: mecanismoWorkflow,
+        shaDaMescla: 'abc123',
+        lerExecucoes: vi.fn().mockResolvedValue([]),
+        lerEtapas: vi.fn(),
+        lerPublicacoes: vi.fn(),
+        lerEstadosDaPublicacao: vi.fn(),
+      })
+      expect(v.estado).toBe('sem-publicacao')
+    })
+  })
+
+  // CRÍTICO 1 da revisão final da branch — o beco sem saída voltou por outra
+  // porta: sem teto, `commit-errado` nunca vira final e a sessão fica aberta
+  // para sempre, consultando o GitHub a cada dez minutos.
+  describe('crítico 1 — teto para "commit-errado" no caminho de WORKFLOW', () => {
+    it('commit errado ANTES do teto: continua commit-errado (não-final, reexaminado)', async () => {
+      const v = await acompanharPublicacao({
+        mecanismo: mecanismoWorkflow,
+        shaDaMescla: 'abc123',
+        lerExecucoes: vi
+          .fn()
+          .mockResolvedValue([
+            { id: 9, head_sha: 'antigo99', status: 'completed', conclusion: 'success' },
+          ]),
+        lerEtapas: vi.fn(),
+        lerPublicacoes: vi.fn(),
+        lerEstadosDaPublicacao: vi.fn(),
+        desdeAMescla: TETO_DE_COMMIT_ERRADO_MS - 1,
+      })
+      expect(v.estado).toBe('commit-errado')
+    })
+
+    it('commit errado DEPOIS do teto: vira sem-publicacao (final) — a sessão finalmente fecha', async () => {
+      const v = await acompanharPublicacao({
+        mecanismo: mecanismoWorkflow,
+        shaDaMescla: 'abc123',
+        lerExecucoes: vi
+          .fn()
+          .mockResolvedValue([
+            { id: 9, head_sha: 'antigo99', status: 'completed', conclusion: 'success' },
+          ]),
+        lerEtapas: vi.fn(),
+        lerPublicacoes: vi.fn(),
+        lerEstadosDaPublicacao: vi.fn(),
+        desdeAMescla: TETO_DE_COMMIT_ERRADO_MS,
+      })
+      expect(v.estado).toBe('sem-publicacao')
+      // "aqui está o que vimos": o motivo carrega o commit errado encontrado,
+      // não um veredito genérico — é o que o dono lê na mensagem final.
+      expect(v.motivo).toMatch(/antigo99/)
+      // Não é "zero evidência" — houve execução, só que do commit errado.
+      expect(v.semEvidenciaDeTodoAmbiente).toBe(false)
+    })
+
+    it('sem informar desdeAMescla: comportamento de sempre (nunca finaliza sozinho) — nenhum call site esquecido silenciosamente fica seguro', async () => {
+      const v = await acompanharPublicacao({
+        mecanismo: mecanismoWorkflow,
+        shaDaMescla: 'abc123',
+        lerExecucoes: vi
+          .fn()
+          .mockResolvedValue([
+            { id: 9, head_sha: 'antigo99', status: 'completed', conclusion: 'success' },
+          ]),
+        lerEtapas: vi.fn(),
+        lerPublicacoes: vi.fn(),
+        lerEstadosDaPublicacao: vi.fn(),
+      })
+      expect(v.estado).toBe('commit-errado')
     })
   })
 })

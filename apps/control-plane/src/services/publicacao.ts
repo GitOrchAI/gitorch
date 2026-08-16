@@ -58,16 +58,17 @@ export const CADENCIA_DE_PUBLICACAO_MS = 10 * 60_000
  * estava começando. "Ainda não" e "nunca" são vereditos diferentes; esta
  * janela é o que separa um do outro.
  *
- * Só o caminho de DEPLOYMENT usa esta janela (ver `esperaSemEvidenciaMs` em
- * `acompanharPublicacao` e `semEvidenciaDeTodoAmbiente` em
- * `VereditoDaPublicacao`). O caminho de WORKFLOW não precisa: quando existe
- * QUALQUER execução no histórico do workflow de publicação (o caso comum —
- * repositório que já publicou antes), a mais recente quase sempre é de
- * OUTRO commit logo após um merge novo, o que já resolve em `commit-errado`
- * (não-final, reexaminado na próxima cadência) — uma saída segura de graça.
- * O caminho de deployment não tem essa saída: a leitura já vem filtrada pelo
- * commit exato (`sha=` na consulta), então zero evidência é zero evidência
- * mesmo com histórico normal de publicações anteriores.
+ * CRÍTICO 2 da revisão final da branch: a suposição original era que o
+ * caminho de WORKFLOW não precisava desta janela, porque histórico normal
+ * (repositório que já publicou antes) sempre resolveria em `commit-errado`
+ * — uma saída segura de graça. Falso para o caso de histórico VAZIO: um
+ * repositório que acabou de ganhar o workflow de publicação (inclusive se
+ * fomos NÓS que o criamos) não tem execução NENHUMA ainda, e sem esta janela
+ * isso virava `sem-publicacao` FINAL no primeiro tique — a mesma mentira que
+ * esta janela existe para impedir no caminho de deployment, só que por outra
+ * porta. `esperaSemEvidenciaMs` (agora `desdeAMescla` em
+ * `acompanharPublicacao`) por isso também é usado por `acompanharPorWorkflow`
+ * — ver `semEvidenciaDeTodoAmbiente` em `VereditoDaPublicacao`.
  *
  * Trinta minutos = três ciclos de `CADENCIA_DE_PUBLICACAO_MS` (dez minutos
  * cada — a cadência da própria vigília pós-merge, que também governa de
@@ -80,6 +81,32 @@ export const CADENCIA_DE_PUBLICACAO_MS = 10 * 60_000
  * evitar: ver `semEvidenciaDeTodoAmbiente` e `acompanharPorDeployment`).
  */
 export const JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS = 30 * 60_000
+
+/**
+ * CRÍTICO 1 da revisão final da branch: teto para o estado `commit-errado`
+ * (caminho de WORKFLOW) — mesmo espírito de `MAX_TENTATIVAS_DE_MERGE`
+ * (qa-rails-mission.ts) e `TETO_DE_ESPERA_MS` (vigia-da-verificacao.ts): toda
+ * espera sem fim declarado neste produto precisa de uma saída.
+ *
+ * `sessoesParaAcompanharPublicacao` (pos-merge.ts) trata `commit-errado` como
+ * NÃO-final de propósito — a maioria dos casos se resolve sozinha: a
+ * PRÓXIMA execução do CD já é a do commit certo (executor em fila lento,
+ * execução antiga cancelada). Mas há repositórios em que a execução mais
+ * recente NUNCA vai casar com o commit mesclado: um CD com filtro de
+ * `paths` que não inclui o diff desta entrega, um gatilho só por tag, ou um
+ * histórico grande o bastante para a nossa execução cair fora da primeira
+ * página consultada (`per_page=10`). Nesses casos, sem teto, a sessão fica
+ * aberta para sempre, e o GitHub é consultado a cada
+ * `CADENCIA_DE_PUBLICACAO_MS` para sempre.
+ *
+ * O DOBRO de `JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS` (uma hora, seis ciclos
+ * de dez minutos): aqui já existe PROVA de atividade real — uma execução
+ * aconteceu, só que para outro commit — o que dá mais chance de se resolver
+ * sozinho do que silêncio total (zero evidência), por isso merece mais
+ * paciência que aquela janela. Ainda assim curto o bastante para o dono
+ * saber no mesmo dia, em vez de a sessão nunca fechar.
+ */
+export const TETO_DE_COMMIT_ERRADO_MS = 60 * 60_000
 
 /**
  * `GET /repos/{o}/{r}/actions/workflows/{arquivo}/runs` — e também o formato
@@ -132,18 +159,21 @@ export type VereditoDaPublicacao = {
   enderecos: string[]
   motivo: string
   /**
-   * Achado 1 da revisão da Tarefa 17: `true` só quando o caminho de
-   * DEPLOYMENT não achou publicação NENHUMA (zero evidência, não apenas um
-   * resultado ruim) para o commit mesclado em NENHUM dos ambientes
-   * declarados. É o sinal que `varrerPublicacoes` (scheduler.ts) usa para
-   * saber quando começar — e quando parar — de contar a janela de
-   * tolerância (`JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS`).
+   * Achado 1 da revisão da Tarefa 17: `true` quando NENHUMA publicação foi
+   * achada para o commit mesclado (zero evidência, não apenas um resultado
+   * ruim) — no caminho de DEPLOYMENT, em NENHUM dos ambientes declarados; no
+   * caminho de WORKFLOW (CRÍTICO 2 da revisão final), quando o histórico do
+   * workflow de publicação está inteiramente VAZIO. É o sinal de quando
+   * `desdeAMescla` (`acompanharPublicacao`) decide começar a contar a janela
+   * de tolerância (`JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS`).
    *
-   * Sempre `false` no caminho de WORKFLOW (esta janela não se aplica lá, ver
-   * o comentário da constante). No caminho de deployment, `false` sempre que
-   * QUALQUER ambiente tiver alguma publicação encontrada — mesmo inativa ou
-   * em estado desconhecido, porque isso já é evidência real de que algo
-   * aconteceu, não "ainda não aconteceu nada".
+   * No caminho de deployment, `false` sempre que QUALQUER ambiente tiver
+   * alguma publicação encontrada — mesmo inativa ou em estado desconhecido,
+   * porque isso já é evidência real de que algo aconteceu, não "ainda não
+   * aconteceu nada". No caminho de workflow, `false` quando existe QUALQUER
+   * execução no histórico (mesmo que seja de outro commit — `commit-errado`
+   * é evidência de atividade real, governada pelo teto separado
+   * `TETO_DE_COMMIT_ERRADO_MS`, não por esta janela).
    */
   semEvidenciaDeTodoAmbiente: boolean
 }
@@ -223,22 +253,23 @@ export async function acompanharPublicacao(args: {
   /** Lê os estados de uma publicação declarada, mais novo primeiro. */
   lerEstadosDaPublicacao: (idDaPublicacao: number) => Promise<EstadoDaPublicacao[]>
   /**
-   * Achado 1 da revisão da Tarefa 17: há quanto tempo (ms) a vigília já vem
-   * observando ZERO evidência de publicação para esta sessão, contado desde
-   * a PRIMEIRA vez que isso foi visto — não desde o merge propriamente (na
-   * prática a diferença é desprezível: a primeira observação acontece no
-   * tique seguinte ao merge). Quem guarda esse relógio é quem chama esta
-   * função (scheduler.ts, em memória, mesmo padrão do cache de mecanismo);
-   * esta função só decide com base nele — nunca lê hora nem toca banco.
+   * Há quanto tempo (ms) o merge desta entrega aconteceu — o mesmo relógio
+   * usado tanto para a janela de tolerância de zero evidência
+   * (`JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS`, os dois caminhos) quanto para
+   * o teto de `commit-errado` (`TETO_DE_COMMIT_ERRADO_MS`, caminho de
+   * workflow). Quem mede esse tempo é quem chama esta função (scheduler.ts,
+   * a partir de `stateCheckedAt` — Importante 5 da revisão final: sobrevive
+   * a reinício do processo); esta função só decide com base nele — nunca lê
+   * hora nem toca banco.
    *
-   * Omitido (ou infinito): trata como se a janela já tivesse se esgotado —
-   * o comportamento de sempre, preservado para quem não passa este
-   * argumento (os testes deste arquivo que não exercem o achado 1).
+   * Omitido: nenhuma das duas checagens de tempo dispara — cada uma cai no
+   * comportamento de sempre (a janela de zero evidência finaliza na hora, o
+   * teto de commit-errado nunca finaliza sozinho), preservado para quem não
+   * passa este argumento (a maioria dos testes deste arquivo).
    */
-  esperaSemEvidenciaMs?: number
+  desdeAMescla?: number
 }): Promise<VereditoDaPublicacao> {
-  const { mecanismo, shaDaMescla } = args
-  const esperaSemEvidenciaMs = args.esperaSemEvidenciaMs ?? Number.POSITIVE_INFINITY
+  const { mecanismo, shaDaMescla, desdeAMescla } = args
 
   if (mecanismo.tipo === 'nenhum') {
     return {
@@ -251,7 +282,13 @@ export async function acompanharPublicacao(args: {
   }
 
   if (mecanismo.tipo === 'workflow') {
-    return acompanharPorWorkflow(mecanismo, shaDaMescla, args.lerExecucoes, args.lerEtapas)
+    return acompanharPorWorkflow(
+      mecanismo,
+      shaDaMescla,
+      args.lerExecucoes,
+      args.lerEtapas,
+      desdeAMescla
+    )
   }
 
   return acompanharPorDeployment(
@@ -259,7 +296,7 @@ export async function acompanharPublicacao(args: {
     shaDaMescla,
     args.lerPublicacoes,
     args.lerEstadosDaPublicacao,
-    esperaSemEvidenciaMs
+    desdeAMescla
   )
 }
 
@@ -267,7 +304,8 @@ async function acompanharPorWorkflow(
   mecanismo: Extract<Mecanismo, { tipo: 'workflow' }>,
   shaDaMescla: string,
   lerExecucoes: (arquivo: string) => Promise<ExecucaoDeWorkflow[]>,
-  lerEtapas: (idDaExecucao: number) => Promise<EtapaDaExecucao[]>
+  lerEtapas: (idDaExecucao: number) => Promise<EtapaDaExecucao[]>,
+  desdeAMescla: number | undefined
 ): Promise<VereditoDaPublicacao> {
   // A API lista as execuções mais recentes primeiro — por isso a primeira
   // que bater com o commit da mescla já é a que importa.
@@ -277,11 +315,51 @@ async function acompanharPorWorkflow(
   if (!execucaoDoCommit) {
     const execucaoMaisRecente = execucoes[0]
     if (!execucaoMaisRecente) {
+      // CRÍTICO 2 da revisão final: histórico vazio não distingue "ainda não
+      // publicou" de "nunca vai publicar" — a mesma janela de tolerância do
+      // caminho de deployment agora também governa aqui. Sem ela, um
+      // repositório que acabou de ganhar o workflow de publicação tinha o
+      // veredito FINAL `sem-publicacao` no primeiro tique depois do merge, a
+      // sessão fechando calada ~1 minuto após mesclar.
+      if (desdeAMescla !== undefined && desdeAMescla < JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS) {
+        return {
+          estado: 'publicando',
+          etapas: [],
+          enderecos: [],
+          motivo:
+            `ainda não há nenhuma execução de "${mecanismo.nome}" registrada para o commit ` +
+            `mesclado (${shaDaMescla}); aguardando dentro da janela de tolerância (esperando ` +
+            `há ${Math.round(desdeAMescla / 60_000)} min de ` +
+            `${Math.round(JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS / 60_000)} min).`,
+          semEvidenciaDeTodoAmbiente: true,
+        }
+      }
       return {
         estado: 'sem-publicacao',
         etapas: [],
         enderecos: [],
         motivo: `nenhuma execução de "${mecanismo.nome}" foi encontrada ainda para o commit mesclado.`,
+        semEvidenciaDeTodoAmbiente: true,
+      }
+    }
+    // CRÍTICO 1 da revisão final: sem teto, `commit-errado` nunca é tratado
+    // como final por `sessoesParaAcompanharPublicacao` (pos-merge.ts) de
+    // propósito — a maioria dos casos se resolve sozinha (a próxima
+    // execução já é do commit certo). Mas quando o CD tem filtro de
+    // `paths`, dispara só por tag, ou a execução certa nunca cai na primeira
+    // página consultada, a execução mais recente NUNCA vai casar — sem
+    // teto, a sessão ficava aberta e o GitHub era consultado para sempre.
+    if (desdeAMescla !== undefined && desdeAMescla >= TETO_DE_COMMIT_ERRADO_MS) {
+      return {
+        estado: 'sem-publicacao',
+        etapas: [],
+        enderecos: [],
+        motivo:
+          `mesclamos, e não conseguimos confirmar a publicação deste commit: a execução mais ` +
+          `recente de "${mecanismo.nome}" continua sendo de outro commit ` +
+          `(${execucaoMaisRecente.head_sha}) depois de ${Math.round(desdeAMescla / 60_000)} min ` +
+          `de espera — pode ser um filtro de caminho no CD, um gatilho só por tag, ou o ` +
+          `repositório ter execuções demais para a nossa aparecer na primeira página consultada.`,
         semEvidenciaDeTodoAmbiente: false,
       }
     }
@@ -387,7 +465,7 @@ async function acompanharPorDeployment(
   shaDaMescla: string,
   lerPublicacoes: (ambiente: string, sha: string) => Promise<PublicacaoDeclarada[]>,
   lerEstadosDaPublicacao: (idDaPublicacao: number) => Promise<EstadoDaPublicacao[]>,
-  esperaSemEvidenciaMs: number
+  desdeAMescla: number | undefined
 ): Promise<VereditoDaPublicacao> {
   const etapas: Array<{ nome: string; resultado: string }> = []
   const enderecos: string[] = []
@@ -487,7 +565,11 @@ async function acompanharPorDeployment(
   // janela, cai para a agregação normal abaixo, que resolve em
   // `sem-publicacao` (final) pelas mesmas regras de sempre.
   const todosSemEvidencia = resultados.length > 0 && resultados.every((r) => r.evidenciaZero)
-  if (todosSemEvidencia && esperaSemEvidenciaMs < JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS) {
+  if (
+    todosSemEvidencia &&
+    desdeAMescla !== undefined &&
+    desdeAMescla < JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS
+  ) {
     return {
       estado: 'publicando',
       etapas,
@@ -495,7 +577,7 @@ async function acompanharPorDeployment(
       motivo:
         `ainda não há publicação registrada para o commit mesclado (${shaDaMescla}) em ` +
         `nenhum dos ambientes declarados (${mecanismo.ambientes.join(', ')}); aguardando ` +
-        `dentro da janela de tolerância (esperando há ${Math.round(esperaSemEvidenciaMs / 60_000)} ` +
+        `dentro da janela de tolerância (esperando há ${Math.round(desdeAMescla / 60_000)} ` +
         `min de ${Math.round(JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS / 60_000)} min).`,
       semEvidenciaDeTodoAmbiente: true,
     }

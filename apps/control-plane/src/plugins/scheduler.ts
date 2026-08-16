@@ -57,6 +57,7 @@ import {
   registrarFracassoDeMerge,
   registrarMescla,
   registrarEstadoDaPublicacao,
+  registrarCadenciaDePublicacao,
   type PrismaDevSession,
   type LinhaDeSessao,
 } from '../services/dev-session-store.js'
@@ -385,6 +386,16 @@ export function montarOpcoesDoJulgamento(args: {
  * esquecesse de gravar o commit mesclado) não quebraria teste nenhum se essa
  * lógica só existisse dentro daquele fechamento. Ver
  * scheduler-pos-merge-opcoes.test.ts.
+ *
+ * Importante 4 da revisão final da branch: buscava a linha SÓ pelo número do
+ * PR e desistia em silêncio numa falha. Mas o número do PR às vezes só é
+ * gravado minutos depois do merge — o MESMO atraso que `qa-rails-mission.ts`
+ * já documenta e resolve com um recuo pela issue de origem
+ * (`linhaDaEntrega`, ali). Nessa janela, `aoMesclarUmaEntrega` não achava a
+ * linha, `mergeCommitSha` nunca era gravado, a sessão nunca entrava na
+ * vigília de publicação e — como o PR já está mesclado (fechado no GitHub) —
+ * o juiz nunca mais veria essa entrega de novo: o capítulo pós-merge inteiro
+ * era pulado, calado, para aquela entrega.
  */
 export async function aoMesclarUmaEntrega(args: {
   prisma: PrismaDevSession
@@ -392,11 +403,39 @@ export async function aoMesclarUmaEntrega(args: {
   numeroDoPr: number
   mergeCommitSha: string
   agora: Date
+  /**
+   * A mesma issue de origem que `qa-rails-mission.ts` resolve
+   * (`issueDaEntrega`) e agora repassa em `aoMesclar`. `null` quando o
+   * recuo que achou a entrega (login do autor) não tem como saber a issue —
+   * nesse caso só a busca por PR vale, do mesmo jeito que em
+   * `qa-rails-mission.ts`.
+   */
+  issueNumber?: number | null
+  /**
+   * Chamado quando NENHUMA das duas buscas acha a linha — nunca em
+   * silêncio: sem isto, o capítulo inteiro do pós-merge é pulado para esta
+   * entrega e ninguém percebe (produção (achado real): PR mesclado, linha
+   * nunca encontrada, sessão nunca fechada).
+   */
+  onWarn?: (mensagem: string) => void
 }): Promise<void> {
-  const linha = await args.prisma.devSession.findFirst({
+  const porNumeroDoPr = await args.prisma.devSession.findFirst({
     where: { projectId: args.projectId, pullRequestNumber: args.numeroDoPr, closedAt: null },
   })
-  if (!linha) return
+  let linha = porNumeroDoPr
+  if (!linha && args.issueNumber != null) {
+    linha = await args.prisma.devSession.findFirst({
+      where: { projectId: args.projectId, issueNumber: args.issueNumber, closedAt: null },
+    })
+  }
+  if (!linha) {
+    args.onWarn?.(
+      `merge do PR #${args.numeroDoPr} (commit ${args.mergeCommitSha}) não achou a linha da ` +
+        `sessão nem pelo número do PR nem pela issue #${args.issueNumber ?? '?'} — o capítulo ` +
+        `pós-merge (vigília de publicação) não vai rodar para esta entrega.`
+    )
+    return
+  }
   await registrarMescla({
     prisma: args.prisma,
     sessionName: linha.sessionName,
@@ -2025,13 +2064,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                     // já mesclado sai da listagem de PRs ABERTOS do GitHub
                     // que alimenta o laço de descoberta do QA — não porque a
                     // linha esteja fechada.
-                    aoMesclar: async ({ numeroDoPr, mergeCommitSha }) =>
+                    aoMesclar: async ({ numeroDoPr, mergeCommitSha, issueNumber }) =>
                       aoMesclarUmaEntrega({
                         prisma: app.prisma as unknown as PrismaDevSession,
                         projectId: project.id,
                         numeroDoPr,
                         mergeCommitSha,
+                        issueNumber,
                         agora: new Date(),
+                        onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
                       }),
                     onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
                     execute,
@@ -2628,28 +2669,6 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     return mecanismo
   }
 
-  // Achado 1 da revisão da Tarefa 17: relógio de "desde quando esta sessão
-  // vem vendo ZERO evidência de publicação" (caminho de deployment) —
-  // `sessionName` -> hora (ms) da PRIMEIRA observação. Mesmo padrão de
-  // `cacheDeMecanismo` acima: em memória, sem coluna nova, sem migração. Se
-  // o processo reinicia, a janela recomeça — o pior caso é esperar mais um
-  // pouco antes de fechar, nunca fechar cedo demais (o mesmo custo aceito
-  // que o comentário do cache de mecanismo já documenta: "redescobre —
-  // custa uma consulta").
-  //
-  // NÃO reaproveita nenhuma coluna existente de propósito: `stateCheckedAt`
-  // seria o candidato óbvio (é gravado na hora do merge, por
-  // `aoMesclarUmaEntrega`), mas continua sendo escrito pela vigia de sessões
-  // do dev (`varrerSessoesDoDev`/`vigiarSessoes`) enquanto a linha segue
-  // aberta pós-merge — ela não para de examinar só porque a sessão já
-  // mesclou (filtra por `closedAt: null`, não por `mergeCommitSha`). Usar
-  // esse campo aqui mediria "desde a última vez que QUALQUER vigia tocou a
-  // linha", não "desde quando vemos zero evidência" — um relógio errado que
-  // nunca vence. `deployCheckedAt` também não serve: é sobrescrito a CADA
-  // varredura desta função (é o que dá a cadência de dez minutos), perdendo
-  // a primeira observação assim que a segunda acontece.
-  const primeiraObservacaoSemEvidencia = new Map<string, number>()
-
   // Avisa o dono do PROJETO — mesma resolução do resto do relógio
   // (varrerSessoesDoDev, reconferirAcessoDoRelogio): sem vínculo real de
   // Telegram, ninguém é avisado, e o projeto de um cliente nunca vira
@@ -2685,6 +2704,19 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
    * Cadência de 10 minutos por sessão (`sessoesParaAcompanharPublicacao`,
    * pos-merge.ts) — nunca reexamina quem já tem veredito final, para não
    * gastar a quota do GitHub do cliente à toa.
+   *
+   * Importante 5 da revisão final da branch: o relógio de "desde quando
+   * esta sessão vem vendo zero evidência" já foi um Map em memória, dentro
+   * deste fechamento — reiniciar o processo (e este produto se reimplanta)
+   * zerava a janela de tolerância, e um restart mais frequente que ela fazia
+   * o veredito nunca chegar a final. Hoje `desdeAMescla` (abaixo, dentro do
+   * laço) é lido de `sessao.stateCheckedAt`: gravado no EXATO instante do
+   * merge por `registrarMescla` (dev-session-store.ts) e, depois do merge,
+   * ninguém mais escreve nele — a vigia pré-merge para de examinar a sessão
+   * assim que `mergeCommitSha` é gravado (`sessoesParaVigiaPreMerge`,
+   * acima), e o PR já mesclado sai da listagem de PRs abertos que alimenta o
+   * laço de descoberta do QA. Sobrevive a qualquer reinício, sem coluna
+   * nova.
    */
   const varrerPublicacoes = async (): Promise<void> => {
     let sessoes: LinhaDeSessao[]
@@ -2721,26 +2753,45 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           app.log.warn(
             `[Scheduler] varredura de publicações sem credencial do GitHub para ${projeto.wingId}; tenta no próximo ciclo`
           )
+          // Importante 3 da revisão final: mesmo sem conseguir ler nada, a
+          // cadência avança — senão uma instalação revogada ou um projeto
+          // suspenso (credencial que nunca volta sozinha) vira reexame a
+          // cada tique (~60s) em vez de dez em dez minutos, e sob limite de
+          // taxa do GitHub o próprio laço alimenta o limite que o derrubou.
+          await registrarCadenciaDePublicacao({
+            prisma: app.prisma as unknown as PrismaDevSession,
+            sessionName: sessao.sessionName,
+            agora,
+          }).catch((cadenciaErr) =>
+            app.log.warn(
+              cadenciaErr,
+              `[Scheduler] falha ao carimbar cadência de publicação para ${sessao.sessionName}`
+            )
+          )
           continue
         }
 
         const mecanismo = await descobrirMecanismoComCache(projeto.wingId, githubToken, agora)
         const shaDaMescla = sessao.mergeCommitSha as string
 
-        // Achado 1: há quanto tempo esta sessão já vem vendo zero evidência
-        // de publicação (0 se esta é a primeira vez — `sessao.sessionName`
-        // ainda não está no relógio). É a mesma primeira observação para
-        // TODA sessão nova, e persiste entre ciclos enquanto o processo não
-        // reinicia (ver o comentário do relógio, acima).
-        const primeiraVezSemEvidencia = primeiraObservacaoSemEvidencia.get(sessao.sessionName)
-        const esperaSemEvidenciaMs = primeiraVezSemEvidencia
-          ? agora.getTime() - primeiraVezSemEvidencia
-          : 0
+        // Importante 5: há quanto tempo o merge desta entrega aconteceu —
+        // fonte é a LINHA (`stateCheckedAt`, gravado por `registrarMescla`
+        // no instante do merge), não um relógio em memória do processo. É o
+        // mesmo valor que governa a janela de tolerância de zero evidência
+        // (`JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS`, os dois caminhos) e o
+        // teto de `commit-errado` (`TETO_DE_COMMIT_ERRADO_MS`, caminho de
+        // workflow) dentro de `acompanharPublicacao`. `stateCheckedAt`
+        // ausente (linha antiga de antes desta coluna existir) trata como
+        // "tempo desconhecido" — nunca finaliza sozinho por dado faltando,
+        // mesmo comportamento de quando o argumento é omitido.
+        const desdeAMescla = sessao.stateCheckedAt
+          ? agora.getTime() - sessao.stateCheckedAt.getTime()
+          : undefined
 
         const veredito = await acompanharPublicacao({
           mecanismo,
           shaDaMescla,
-          esperaSemEvidenciaMs,
+          ...(desdeAMescla !== undefined ? { desdeAMescla } : {}),
           lerExecucoes: async (arquivo) => {
             const resp = (await ghGet(
               `/repos/${projeto.wingId}/actions/workflows/${arquivo}/runs?per_page=10`,
@@ -2770,22 +2821,6 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             return resp ?? []
           },
         })
-
-        // Achado 1: mantém o relógio de zero evidência SÓ enquanto a razão
-        // de "ainda publicando" continua sendo zero evidência — qualquer
-        // outro desfecho (evidência real apareceu, virou final dos dois
-        // lados) apaga a marca. Sem isto, uma sessão que eventualmente
-        // recebe evidência de verdade carregaria um relógio velho para
-        // sempre (inofensivo aqui, mas um vazamento de memória sem fim
-        // claro) — e uma sessão que fecha nunca mais seria lida de novo de
-        // qualquer forma.
-        if (veredito.estado === 'publicando' && veredito.semEvidenciaDeTodoAmbiente) {
-          if (!primeiraObservacaoSemEvidencia.has(sessao.sessionName)) {
-            primeiraObservacaoSemEvidencia.set(sessao.sessionName, agora.getTime())
-          }
-        } else {
-          primeiraObservacaoSemEvidencia.delete(sessao.sessionName)
-        }
 
         // Achado 2: o estado ANTERIOR (antes de `registrarEstadoDaPublicacao`
         // sobrescrever) é o que decide se o dono já foi avisado desta MESMA
@@ -2893,6 +2928,21 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           err,
           `[Scheduler] varredura de publicação falhou na sessão ${sessao.sessionName}; tenta no próximo ciclo`
         )
+        // Importante 3 da revisão final: a cadência avança mesmo numa
+        // exceção no meio do caminho (um 403 do GitHub, por exemplo) — sem
+        // isto, uma falha PERSISTENTE reexamina a cada tique (~60s) em vez
+        // de dez em dez minutos, e sob limite de taxa do GitHub o próprio
+        // laço alimenta o limite que o derrubou.
+        await registrarCadenciaDePublicacao({
+          prisma: app.prisma as unknown as PrismaDevSession,
+          sessionName: sessao.sessionName,
+          agora,
+        }).catch((cadenciaErr) =>
+          app.log.warn(
+            cadenciaErr,
+            `[Scheduler] falha ao carimbar cadência de publicação para ${sessao.sessionName}`
+          )
+        )
       }
     }
   }
@@ -2974,12 +3024,35 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // disparar missão real contra o Prisma de teste (paridade com
   // under-pressure). A execução é envolvida para nunca propagar rejeição (o
   // processo não cai).
+  // Importante 8 da revisão final da branch: `tick` faz I/O de rede
+  // sequencial através de vários projetos — um tique pode, sozinho, demorar
+  // mais que o próprio intervalo do relógio. Sem uma trava de "já em
+  // andamento", dois `tick()` corriam sobre a MESMA linha de sessão ao mesmo
+  // tempo; o dedupe de aviso em `varrerPublicacoes` (`estadoAnterior`, lido
+  // antes de escrever) é ler-depois-escrever, não atômico, então os dois
+  // avisariam o dono e fechariam a sessão em duplicidade. A trava é
+  // deliberadamente simples: um `boolean` no fechamento do plugin, marcado
+  // antes de chamar `tick()` e liberado no `finally`, para um disparo do
+  // `setInterval` que encontra o anterior ainda rodando simplesmente pular
+  // este tique (a próxima janela tenta de novo).
+  let tickEmAndamento = false
   const intervalId =
     process.env['NODE_ENV'] === 'test'
       ? undefined
       : setInterval(
           () => {
-            void tick().catch((err) => app.log.error(err, '[Scheduler] tick rejeitou'))
+            if (tickEmAndamento) {
+              app.log.warn(
+                '[Scheduler] tick anterior ainda em andamento; pulando este disparo do relógio'
+              )
+              return
+            }
+            tickEmAndamento = true
+            void tick()
+              .catch((err) => app.log.error(err, '[Scheduler] tick rejeitou'))
+              .finally(() => {
+                tickEmAndamento = false
+              })
           },
           Number(process.env['GITORCH_SCHEDULER_TICK_MS'] ?? 60 * 1000)
         )

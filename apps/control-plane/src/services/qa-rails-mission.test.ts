@@ -1017,7 +1017,11 @@ describe('runQaMissionViaRails', () => {
 
   it('merge acontece: aoMesclar dispara UMA vez com o número certo do PR, e a saída declara "merged"', async () => {
     const f = fakeFetch([{ number: 7, user: 'jules[bot]' }])
-    const mesclados: Array<{ numeroDoPr: number; mergeCommitSha: string }> = []
+    const mesclados: Array<{
+      numeroDoPr: number
+      mergeCommitSha: string
+      issueNumber: number | null
+    }> = []
     const r = await runQaMissionViaRails({
       repository: 'o/r',
       githubToken: 't',
@@ -1033,11 +1037,39 @@ describe('runQaMissionViaRails', () => {
     // 'deadbeef' — o `sha` que `fakeFetch` devolve na RESPOSTA do
     // `PUT .../merge` — nunca 'abc123', o head.sha da PR: depois do squash
     // aquele commit não existe no branch base, e é o branch base que o CD
-    // publica.
-    expect(mesclados).toEqual([{ numeroDoPr: 7, mergeCommitSha: 'deadbeef' }])
+    // publica. `issueNumber` é `null` aqui: o recuo por AUTOR ("jules[bot]")
+    // não conhece a issue de origem — Importante 4 cobre o recuo pela LINHA
+    // autoritativa, no teste seguinte.
+    expect(mesclados).toEqual([{ numeroDoPr: 7, mergeCommitSha: 'deadbeef', issueNumber: null }])
     // (c) o resumo da missão precisa declarar o resultado do merge — texto
     // real do `mergeNote` (qa-rails-mission.ts), não inventado.
     expect(r.output).toContain('Merge: merged (verificação verde e QA aprovou).')
+  })
+
+  // Importante 4 da revisão final da branch: `aoMesclarUmaEntrega`
+  // (scheduler.ts) precisa do número da issue para o recuo quando o PR ainda
+  // não foi gravado na linha — este teste prova que o valor REAL da issue
+  // (resolvido pelo laço de descoberta, não um valor qualquer) chega até
+  // `aoMesclar`.
+  it('Importante 4: aoMesclar leva também o número da issue de origem (achado pela linha autoritativa)', async () => {
+    const f = fakeFetch([{ number: 7, user: 'jules[bot]' }])
+    const mesclados: Array<{
+      numeroDoPr: number
+      mergeCommitSha: string
+      issueNumber: number | null
+    }> = []
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      sessoes: [linha({ pullRequestNumber: 7, issueNumber: 99, sessionName: 'sessions/xyz' })],
+      aoMesclar: async (args) => {
+        mesclados.push(args)
+      },
+      fetchImpl: f,
+    })
+    expect(mesclados).toEqual([{ numeroDoPr: 7, mergeCommitSha: 'deadbeef', issueNumber: 99 }])
+    expect(r.exitCode).toBe(0)
   })
 
   it('GitHub recusa o merge: aoMesclar NÃO dispara (perderia o rastro de um trabalho que continua aberto), e a saída declara "blocked"', async () => {

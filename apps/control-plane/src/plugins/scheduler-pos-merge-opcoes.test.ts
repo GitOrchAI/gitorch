@@ -96,3 +96,93 @@ describe('aoMesclarUmaEntrega', () => {
     expect(prisma.devSession.update).not.toHaveBeenCalled()
   })
 })
+
+// Importante 4 da revisão final da branch: `aoMesclarUmaEntrega` buscava a
+// linha SÓ pelo número do PR e desistia em silêncio. Mas o juiz que
+// autorizou o mesmo merge (`qa-rails-mission.ts`, `linhaDaEntrega`) já usa um
+// recuo pela ISSUE de origem, documentado ali com um caso real de produção:
+// o número do PR às vezes só é gravado minutos depois do merge. Nessa
+// janela, sem o mesmo recuo aqui, `mergeCommitSha` nunca era gravado e o
+// capítulo pós-merge inteiro (Tarefa 17) era pulado para aquela entrega —
+// sem qualquer registro do que aconteceu.
+describe('aoMesclarUmaEntrega — Importante 4 (recuo pela issue + aviso, nunca silêncio)', () => {
+  function prismaComRotas(porPr: LinhaDeSessao | null, porIssue: LinhaDeSessao | null) {
+    return {
+      devSession: {
+        upsert: vi.fn(async (_args: unknown) => undefined),
+        update: vi.fn(async (_args: unknown) => undefined),
+        updateMany: vi.fn(async (_args: unknown) => undefined),
+        findMany: vi.fn(async (_args: unknown) => []),
+        findFirst: vi.fn(
+          async (args: { where: { pullRequestNumber?: number; issueNumber?: number } }) => {
+            if (args.where.pullRequestNumber !== undefined) return porPr
+            if (args.where.issueNumber !== undefined) return porIssue
+            return null
+          }
+        ),
+      },
+    } as unknown as PrismaDevSession
+  }
+
+  test('PR ainda não gravado na linha: acha pela ISSUE de origem e grava o commit (mesmo recuo do juiz)', async () => {
+    const linhaPorIssue = linha({ sessionName: 'sessions/por-issue', issueNumber: 99 })
+    const prisma = prismaComRotas(null, linhaPorIssue)
+    const agora = new Date('2026-01-01T00:00:00.000Z')
+
+    await aoMesclarUmaEntrega({
+      prisma,
+      projectId: 'proj_1',
+      numeroDoPr: 7,
+      mergeCommitSha: 'deadbeef',
+      issueNumber: 99,
+      agora,
+    })
+
+    expect(prisma.devSession.findFirst).toHaveBeenNthCalledWith(1, {
+      where: { projectId: 'proj_1', pullRequestNumber: 7, closedAt: null },
+    })
+    expect(prisma.devSession.findFirst).toHaveBeenNthCalledWith(2, {
+      where: { projectId: 'proj_1', issueNumber: 99, closedAt: null },
+    })
+    expect(prisma.devSession.update).toHaveBeenCalledWith({
+      where: { sessionName: 'sessions/por-issue' },
+      data: { mergeCommitSha: 'deadbeef', stateCheckedAt: agora },
+    })
+  })
+
+  test('sem issueNumber (recuo por login, sem issue conhecida): não tenta o segundo recuo', async () => {
+    const prisma = prismaComRotas(null, linha({ sessionName: 'sessions/nunca-achada' }))
+
+    await aoMesclarUmaEntrega({
+      prisma,
+      projectId: 'proj_1',
+      numeroDoPr: 7,
+      mergeCommitSha: 'deadbeef',
+      issueNumber: null,
+      agora: new Date(),
+    })
+
+    expect(prisma.devSession.findFirst).toHaveBeenCalledTimes(1)
+    expect(prisma.devSession.update).not.toHaveBeenCalled()
+  })
+
+  test('nem PR nem issue acham a linha: registra o aviso — o capítulo pós-merge não pode ser pulado em silêncio', async () => {
+    const prisma = prismaComRotas(null, null)
+    const avisos: string[] = []
+
+    await aoMesclarUmaEntrega({
+      prisma,
+      projectId: 'proj_1',
+      numeroDoPr: 42,
+      mergeCommitSha: 'deadbeef',
+      issueNumber: 7,
+      agora: new Date(),
+      onWarn: (m) => avisos.push(m),
+    })
+
+    expect(prisma.devSession.update).not.toHaveBeenCalled()
+    expect(avisos).toHaveLength(1)
+    expect(avisos[0]).toMatch(/#42/)
+    expect(avisos[0]).toMatch(/#7/)
+  })
+})

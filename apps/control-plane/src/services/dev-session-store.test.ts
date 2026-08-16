@@ -11,6 +11,7 @@ import {
   registrarFracassoDeMerge,
   registrarMescla,
   registrarEstadoDaPublicacao,
+  registrarCadenciaDePublicacao,
 } from './dev-session-store.js'
 
 const agora = new Date('2026-01-01T00:00:00.000Z')
@@ -327,5 +328,23 @@ describe('registrarEstadoDaPublicacao', () => {
       where: { sessionName: 'sessions/1' },
       data: { deployState: 'publicando', deployCheckedAt: agora },
     })
+  })
+})
+
+// Importante 3 da revisão final da branch: usada nos caminhos de ERRO da
+// varredura de publicação (sem credencial, ou exceção no meio do caminho) —
+// que antes pulavam o carimbo de cadência inteiramente.
+describe('registrarCadenciaDePublicacao', () => {
+  it('grava SÓ deployCheckedAt — deployState fica intocado (não é um veredito)', async () => {
+    const prisma = prismaFalso()
+
+    await registrarCadenciaDePublicacao({ prisma, sessionName: 'sessions/1', agora })
+
+    expect(prisma.devSession.update).toHaveBeenCalledWith({
+      where: { sessionName: 'sessions/1' },
+      data: { deployCheckedAt: agora },
+    })
+    const chamada = prisma.devSession.update.mock.calls[0]?.[0] as { data: Record<string, unknown> }
+    expect(chamada.data).not.toHaveProperty('deployState')
   })
 })

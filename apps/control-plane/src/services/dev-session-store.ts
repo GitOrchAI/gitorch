@@ -422,3 +422,35 @@ export async function registrarEstadoDaPublicacao(deps: {
     data: { deployState: deps.estado, deployCheckedAt: deps.agora },
   })
 }
+
+/**
+ * Marca só a CADÊNCIA da vigília da publicação, sem afirmar nenhum veredito
+ * — usada quando a varredura desta sessão FALHA antes de conseguir uma
+ * leitura real (sem credencial do GitHub, ou uma exceção no meio do
+ * caminho).
+ *
+ * Importante 3 da revisão final da branch: antes desta função,
+ * `deployCheckedAt` só era gravado no caminho de SUCESSO
+ * (`registrarEstadoDaPublicacao`) — todo caminho de erro pulava o carimbo, e
+ * `sessoesParaAcompanharPublicacao` (pos-merge.ts) trata carimbo nulo ou
+ * antigo como "vencido agora". Uma falha PERSISTENTE (projeto suspenso,
+ * instalação revogada, 403 do GitHub) virava, então, reexame a cada
+ * `GITORCH_SCHEDULER_TICK_MS` (~60s) em vez de `CADENCIA_DE_PUBLICACAO_MS`
+ * (dez minutos) — e sob limite de taxa do GitHub, o próprio laço alimentava
+ * o limite que o derrubou.
+ *
+ * `deployState` fica INTOCADO de propósito: uma falha de leitura não é um
+ * veredito, e sobrescrever o último estado conhecido com "não sei" quebraria
+ * o dedupe de aviso por transição de estado (`estadoAnterior`,
+ * scheduler.ts) e a lista de estados finais (`ESTADOS_FINAIS`, pos-merge.ts).
+ */
+export async function registrarCadenciaDePublicacao(deps: {
+  prisma: PrismaDevSession
+  sessionName: string
+  agora: Date
+}): Promise<void> {
+  await deps.prisma.devSession.update({
+    where: { sessionName: deps.sessionName },
+    data: { deployCheckedAt: deps.agora },
+  })
+}
