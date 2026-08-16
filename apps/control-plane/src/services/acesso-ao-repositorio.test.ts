@@ -3,6 +3,7 @@ import {
   podeEscreverNoRepositorio,
   repositoriosSemEscrita,
   provaDeEscritaNoUso,
+  escreveSegundoAListagem,
   AcessoNaoVerificavelError,
 } from './acesso-ao-repositorio.js'
 
@@ -152,6 +153,41 @@ describe('podeEscreverNoRepositorio', () => {
     await expect(
       podeEscreverNoRepositorio('acme/api', { githubToken: 'gho', fetchImpl })
     ).resolves.toBe(false)
+  })
+})
+
+/**
+ * A LISTAGEM monta a oferta; a PROVA autoriza. São dois papéis diferentes, e
+ * é por isso que existem duas funções — mas o CRITÉRIO é o mesmo (`push ===
+ * true`), para a tela nunca oferecer o que o passo final vai recusar.
+ *
+ * `GET /user/repos` já devolve, item a item, o bloco `permissions` do portador
+ * do token. Ler dali custa zero chamada extra; provar um a um custava uma
+ * chamada por repositório da cota do cliente.
+ */
+describe('escreveSegundoAListagem', () => {
+  it('aceita o item da listagem em que o portador do token tem push', () => {
+    expect(escreveSegundoAListagem({ permissions: COMO_DONO })).toBe(true)
+  })
+
+  it('recusa quem só lê — a régua é a mesma da prova direta', () => {
+    expect(escreveSegundoAListagem({ permissions: SO_LEITURA })).toBe(false)
+  })
+
+  it('item SEM o bloco permissions não entra na oferta (não se supõe escrita)', () => {
+    expect(escreveSegundoAListagem({ full_name: 'acme/api' })).toBe(false)
+  })
+
+  it('push que não é o booleano do GitHub não vale como prova', () => {
+    expect(escreveSegundoAListagem({ permissions: { push: 'true' } })).toBe(false)
+    expect(escreveSegundoAListagem({ permissions: { push: 1 } })).toBe(false)
+  })
+
+  it('permissions em formato inesperado (lista, texto, nulo) recusa em vez de quebrar', () => {
+    expect(escreveSegundoAListagem({ permissions: ['push'] })).toBe(false)
+    expect(escreveSegundoAListagem({ permissions: 'push' })).toBe(false)
+    expect(escreveSegundoAListagem({ permissions: null })).toBe(false)
+    expect(escreveSegundoAListagem(null)).toBe(false)
   })
 })
 

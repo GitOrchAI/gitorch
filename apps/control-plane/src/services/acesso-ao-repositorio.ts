@@ -151,6 +151,43 @@ export async function podeEscreverNoRepositorio(
 }
 
 /**
+ * A LISTAGEM já respondeu? Então não se pergunta de novo.
+ *
+ * `GET /user/repos` devolve, em CADA item, o bloco `permissions` do portador
+ * do token — a mesma informação que a prova direta busca, só que de graça:
+ * uma chamada por página em vez de uma por repositório. Provar candidato a
+ * candidato para MONTAR a tela custava 1 + N chamadas da cota do cliente (até
+ * 101 para quem tem cem repositórios), a mesma cota que o clone, o
+ * diagnóstico e a coleta de contexto consomem depois.
+ *
+ * A divisão de papéis é esta, e ela não pode inverter:
+ *
+ * - **a listagem monta a OFERTA** — o que a tela tem direito de mostrar;
+ * - **a prova direta AUTORIZA** — e continua obrigatória no passo final
+ *   (`POST /api/v1/setup/submit`), onde os repositórios são poucos e é ali que
+ *   a autorização de fato acontece.
+ *
+ * O critério é o MESMO nos dois lados (`push === true`), de propósito: a tela
+ * nunca oferece o que o passo final vai recusar.
+ *
+ * Só serve para listagem do PRÓPRIO CLIENTE. O bloco `permissions` de
+ * `GET /installation/repositories` é do APP naquele repositório, não do
+ * cliente — lê-lo como se fosse dele é justamente o buraco que deixava a
+ * colaboradora de `acme/api` enxergar `acme/segredos`.
+ *
+ * Ausência de `permissions`, formato inesperado ou `push` que não seja o
+ * booleano do GitHub: fora da oferta. Nada aqui aprova por suposição.
+ */
+export function escreveSegundoAListagem(item: unknown): boolean {
+  if (typeof item !== 'object' || item === null || Array.isArray(item)) return false
+  const permissoes = (item as { permissions?: unknown }).permissions
+  if (typeof permissoes !== 'object' || permissoes === null || Array.isArray(permissoes)) {
+    return false
+  }
+  return (permissoes as Record<string, unknown>)['push'] === true
+}
+
+/**
  * Aplica a prova a um lote e devolve os endereços que o cliente NÃO pode
  * escrever, com o texto ORIGINAL que ele digitou (a mensagem de erro cita o
  * que ele escreveu, não uma versão normalizada).

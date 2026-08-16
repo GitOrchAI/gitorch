@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import Fastify, { FastifyRequest } from 'fastify'
 import { generateKeyPairSync, randomBytes } from 'node:crypto'
-import { setupRoutes } from './setup.js'
+import { setupRoutes, TETO_DE_PROVAS_DA_TELA } from './setup.js'
 import type { EngineConnectionService } from '../services/engine-connection.js'
 import { resetAppTokenCache } from '../services/github-app-token.js'
 import { encryptCredential } from '../lib/credential-crypto.js'
@@ -127,16 +127,13 @@ describe('GET /api/v1/github/repos', () => {
               description: null,
               private: false,
               html_url: 'https://github.com/octocat/repo',
+              permissions: PODE_ESCREVER,
             },
           ]),
           { status: 200 }
         )
       }
-      // A prova por repositório: é ela que autoriza o que a tela oferece.
-      return new Response(
-        JSON.stringify({ full_name: 'octocat/repo', permissions: PODE_ESCREVER }),
-        { status: 200 }
-      )
+      throw new Error('chamada inesperada ao GitHub neste cenário: ' + href)
     }) as unknown as typeof fetch
 
     const res = await app.inject({ method: 'GET', url: '/api/v1/github/repos' })
@@ -144,13 +141,73 @@ describe('GET /api/v1/github/repos', () => {
     expect(res.statusCode).toBe(200)
     expect(getRawGithubToken).toHaveBeenCalledWith('user_1')
     const chamadas = (global.fetch as ReturnType<typeof vi.fn>).mock.calls
-    // Tanto a listagem quanto a prova vão com o token do CLIENTE, nunca com a
-    // chave do App.
+    // A listagem vai com o token do CLIENTE, nunca com a chave do App.
     for (const chamada of chamadas) {
       const headers = chamada?.[1]?.headers as Record<string, string>
       expect(headers['Authorization']).toBe('Bearer gh_encrypted_roundtrip_token')
     }
-    expect(chamadas.map((c) => String(c[0]))).toContain('https://api.github.com/repos/octocat/repo')
+  })
+
+  /**
+   * Montar a tela custava 1 + N: a listagem, e depois uma prova por candidato.
+   * Um cliente com cem repositórios gastava até 101 chamadas da cota DELE — a
+   * mesma cota do clone, do diagnóstico e da coleta de contexto — só para ver
+   * a lista.
+   *
+   * A resposta de `GET /user/repos` já traz, em cada item, o bloco
+   * `permissions` do PORTADOR DO TOKEN. Para MONTAR a oferta isso basta, e
+   * pelo mesmo critério do passo final (`push`), então a tela continua não
+   * oferecendo o que o submit vai recusar.
+   */
+  it('a tela sai de UMA chamada: a listagem do próprio cliente já traz permissions', async () => {
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url)
+      if (href.startsWith('https://api.github.com/user/repos')) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: 1,
+              name: 'a',
+              full_name: 'octocat/a',
+              description: null,
+              private: false,
+              html_url: 'https://github.com/octocat/a',
+              permissions: PODE_ESCREVER,
+            },
+            {
+              id: 2,
+              name: 'b',
+              full_name: 'octocat/b',
+              description: null,
+              private: false,
+              html_url: 'https://github.com/octocat/b',
+              permissions: PODE_ESCREVER,
+            },
+            {
+              id: 3,
+              name: 'c',
+              full_name: 'octocat/c',
+              description: null,
+              private: false,
+              html_url: 'https://github.com/octocat/c',
+              permissions: PODE_ESCREVER,
+            },
+          ]),
+          { status: 200 }
+        )
+      }
+      throw new Error('a tela não deve provar repositório um a um: ' + href)
+    }) as unknown as typeof fetch
+
+    const res = await app.inject({ method: 'GET', url: '/api/v1/github/repos' })
+
+    expect(res.statusCode).toBe(200)
+    expect((res.json() as Array<{ fullName: string }>).map((r) => r.fullName)).toEqual([
+      'octocat/a',
+      'octocat/b',
+      'octocat/c',
+    ])
+    expect((global.fetch as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1)
   })
 
   // A tela e o passo final têm de concordar. A listagem vinha crua de
@@ -172,6 +229,7 @@ describe('GET /api/v1/github/repos', () => {
               description: null,
               private: false,
               html_url: 'https://github.com/octocat/repo',
+              permissions: PODE_ESCREVER,
             },
             {
               id: 2,
@@ -180,25 +238,31 @@ describe('GET /api/v1/github/repos', () => {
               description: null,
               private: true,
               html_url: 'https://github.com/vitima/cofre',
+              // Só leitura: aparece na listagem (o GitHub lista o que a pessoa
+              // ENXERGA), mas não pode ser oferecido.
+              permissions: {
+                admin: false,
+                maintain: false,
+                push: false,
+                triage: false,
+                pull: true,
+              },
+            },
+            {
+              id: 3,
+              name: 'antigo',
+              full_name: 'vitima/antigo',
+              description: null,
+              private: true,
+              html_url: 'https://github.com/vitima/antigo',
+              // Listagem sem o bloco `permissions` (resposta truncada, versão
+              // antiga da API): sem prova de escrita não se oferece nada.
             },
           ]),
           { status: 200 }
         )
       }
-      // A prova por repositório separa o que ele escreve do que ele só lê.
-      if (href === 'https://api.github.com/repos/octocat/repo') {
-        return new Response(
-          JSON.stringify({ full_name: 'octocat/repo', permissions: PODE_ESCREVER }),
-          { status: 200 }
-        )
-      }
-      return new Response(
-        JSON.stringify({
-          full_name: 'vitima/cofre',
-          permissions: { admin: false, maintain: false, push: false, triage: false, pull: true },
-        }),
-        { status: 200 }
-      )
+      throw new Error('a tela não deve provar repositório um a um: ' + href)
     }) as unknown as typeof fetch
 
     const res = await app.inject({ method: 'GET', url: '/api/v1/github/repos' })
@@ -388,6 +452,8 @@ describe('GET /api/v1/github/repos — via installation do GitHub App (F1 Onda 2
         return new Response(JSON.stringify({}), { status: 401 })
       }
       if (href.startsWith('https://api.github.com/user/repos')) {
+        // Listagem do PRÓPRIO cliente: o `permissions` daqui é dele, e é o que
+        // monta a oferta neste caminho — sem prova extra por repositório.
         return new Response(
           JSON.stringify([
             {
@@ -397,14 +463,9 @@ describe('GET /api/v1/github/repos — via installation do GitHub App (F1 Onda 2
               description: null,
               private: false,
               html_url: 'https://github.com/octocat/repo',
+              permissions: PODE_ESCREVER,
             },
           ]),
-          { status: 200 }
-        )
-      }
-      if (href === 'https://api.github.com/repos/octocat/repo') {
-        return new Response(
-          JSON.stringify({ full_name: 'octocat/repo', permissions: PODE_ESCREVER }),
           { status: 200 }
         )
       }
@@ -495,6 +556,65 @@ describe('GET /api/v1/github/repos — via installation do GitHub App (F1 Onda 2
     expect(res.statusCode).toBe(200)
     const lista = res.json() as Array<{ fullName: string }>
     expect(lista.map((r) => r.fullName)).toEqual(['acme/api'])
+  })
+
+  /**
+   * O caminho da instalação é o ÚNICO em que a prova por repositório na tela é
+   * inevitável: a resposta de `/installation/repositories` também traz
+   * `permissions`, mas é a permissão do APP naquele repositório, não a do
+   * cliente — foi exatamente ler esse bloco como se fosse dele que deixava a
+   * colaboradora de um repositório enxergar o vizinho.
+   *
+   * Como cada prova custa uma chamada da cota do cliente, o número delas tem
+   * teto. Acima dele a tela oferece menos do que a instalação cobre, e isso
+   * fica no log — melhor uma oferta menor do que uma tela que gasta a cota do
+   * cliente inteira toda vez que ele a abre.
+   */
+  it('instalação enorme: a tela prova no máximo o teto de candidatos, não um por repositório', async () => {
+    const cobertos = Array.from({ length: TETO_DE_PROVAS_DA_TELA + 7 }, (_, i) => ({
+      id: i + 1,
+      name: `repo${i}`,
+      full_name: `acme/repo${i}`,
+      description: null,
+      private: true,
+      html_url: `https://github.com/acme/repo${i}`,
+    }))
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url)
+      if (href.includes('/app/installations/555/access_tokens')) {
+        return new Response(
+          JSON.stringify({
+            token: 'ghs_install',
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          }),
+          { status: 201 }
+        )
+      }
+      if (href.startsWith('https://api.github.com/installation/repositories')) {
+        return new Response(
+          JSON.stringify({ total_count: cobertos.length, repositories: cobertos }),
+          {
+            status: 200,
+          }
+        )
+      }
+      const prova = /^https:\/\/api\.github\.com\/repos\/(acme\/repo\d+)$/.exec(href)
+      if (prova) {
+        return new Response(JSON.stringify({ full_name: prova[1], permissions: PODE_ESCREVER }), {
+          status: 200,
+        })
+      }
+      throw new Error('URL inesperada no teste: ' + href)
+    }) as unknown as typeof fetch
+
+    const res = await app.inject({ method: 'GET', url: '/api/v1/github/repos' })
+
+    expect(res.statusCode).toBe(200)
+    const provas = (global.fetch as ReturnType<typeof vi.fn>).mock.calls
+      .map((c) => String(c[0]))
+      .filter((u) => /^https:\/\/api\.github\.com\/repos\//.test(u))
+    expect(provas).toHaveLength(TETO_DE_PROVAS_DA_TELA)
+    expect(res.json() as unknown[]).toHaveLength(TETO_DE_PROVAS_DA_TELA)
   })
 
   it('usuário sem githubInstallationId: nem tenta mintar token do App — vai direto pro OAuth', async () => {

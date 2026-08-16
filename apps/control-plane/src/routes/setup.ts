@@ -25,6 +25,7 @@ import { mintInstallationToken } from '../services/github-app-token.js'
 import { nomeDeRepositorioValido } from '../services/nome-de-repositorio.js'
 import {
   repositoriosSemEscrita,
+  escreveSegundoAListagem,
   AcessoNaoVerificavelError,
 } from '../services/acesso-ao-repositorio.js'
 
@@ -32,11 +33,12 @@ import {
  * O que uma listagem do GitHub devolve por repositório, do pouco que a tela
  * precisa exibir.
  *
- * Sem `permissions` de propósito: o bloco que as listagens trazem (quando
- * trazem) deixou de decidir qualquer coisa. Quem responde "este cliente pode
- * escrever aqui?" é a prova por repositório, uma chamada exata a
- * `GET /repos/{dono}/{repo}` com o token dele — deduzir de uma listagem foi o
- * erro que se repetiu três vezes.
+ * `permissions` entra tipado como `unknown` de propósito: o bloco só vale
+ * quando a listagem é do PRÓPRIO CLIENTE (`GET /user/repos`), onde ele
+ * descreve o portador do token; na listagem da instalação ele descreve o APP,
+ * e lê-lo como se fosse do cliente foi um dos buracos fechados aqui. Quem
+ * decide é `escreveSegundoAListagem` (services/acesso-ao-repositorio.ts), e
+ * ela nunca é aplicada à lista da instalação.
  */
 interface GitHubRepo {
   id: number
@@ -45,6 +47,7 @@ interface GitHubRepo {
   description: string | null
   private: boolean
   html_url: string
+  permissions?: unknown
 }
 
 // Sem `telegram` aqui, e não é esquecimento: o @username que o passo 8 mandava
@@ -242,6 +245,25 @@ async function candidatosViaInstalacao(installationId: number): Promise<GitHubRe
 }
 
 /**
+ * Teto de provas por repositório para MONTAR a tela — vale só no caminho da
+ * instalação, o único em que a listagem não responde a pergunta certa.
+ *
+ * Ali o custo é inevitável e é por repositório: `/installation/repositories`
+ * também traz um bloco `permissions`, mas é o do APP naquele repositório, não
+ * o do cliente — e foi ler esse bloco como se fosse dele que deixou a
+ * colaboradora de `acme/api` enxergar `acme/segredos`. Como cada prova gasta
+ * uma chamada da cota do PRÓPRIO cliente (a mesma do clone, do diagnóstico e
+ * da coleta de contexto), o número delas tem um teto.
+ *
+ * Acima do teto a tela oferece menos do que a instalação cobre, e o corte fica
+ * no log: numa organização com centenas de repositórios, abrir o wizard
+ * gastaria centenas de chamadas do cliente antes de ele clicar em nada. O
+ * caminho normal (listagem do próprio cliente) não paga nada disso e não tem
+ * teto nenhum.
+ */
+export const TETO_DE_PROVAS_DA_TELA = 30
+
+/**
  * Peneira os candidatos pela prova por repositório: fica só o que o CLIENTE
  * pode escrever. Propaga `AcessoNaoVerificavelError` — a tela prefere dizer
  * "não consegui confirmar agora" a devolver uma lista curta que o cliente leria
@@ -251,7 +273,9 @@ async function somenteOndeOClienteEscreve(
   candidatos: GitHubRepo[],
   githubToken: string
 ): Promise<GitHubRepo[]> {
-  const comEndereco = candidatos.filter((repo) => typeof repo.full_name === 'string')
+  const comEndereco = candidatos
+    .filter((repo) => typeof repo.full_name === 'string')
+    .slice(0, TETO_DE_PROVAS_DA_TELA)
   const semEscrita = new Set(
     (
       await repositoriosSemEscrita(
@@ -273,22 +297,32 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
   // GET /api/v1/github/repos - List user repositories.
   //
   // LISTAR e AUTORIZAR são coisas diferentes aqui, e confundir as duas foi o
-  // que abriu três buracos seguidos. A listagem só MONTA a tela — ela responde
-  // "o que pode aparecer". Quem AUTORIZA é a prova por repositório
-  // (services/acesso-ao-repositorio.ts), com o token do PRÓPRIO cliente, e é
-  // exatamente a mesma prova que o passo final aplica: por isso a tela nunca
-  // oferece o que o /setup/submit vai recusar.
+  // que abriu três buracos seguidos. A LISTAGEM monta a OFERTA — ela responde
+  // "o que a tela tem direito de mostrar". Quem AUTORIZA é a prova por
+  // repositório (services/acesso-ao-repositorio.ts), com o token do PRÓPRIO
+  // cliente, e ela continua obrigatória no passo final
+  // (`POST /api/v1/setup/submit`), onde os repositórios são poucos e é ali que
+  // a autorização de fato acontece.
+  //
+  // A oferta usa o MESMO critério da prova (escrita — `push`), de propósito:
+  // assim a tela nunca oferece o que o passo final vai recusar.
   //
   // Duas fontes de candidatos, nesta ordem:
   // 1. Se o usuário JÁ instalou o GitHub App e escolheu quais repos (F1 Onda
   //    2, routes/github-app-install.ts), a instalação dá a lista mais curta —
-  //    mas NÃO é autorização: numa organização ela cobre repositório que
-  //    aquele cliente não alcança.
+  //    mas ela é do APP, não dele: numa organização cobre repositório que
+  //    aquele cliente não alcança, e o `permissions` que vem ali é o do App
+  //    naquele repositório. É o único caminho em que provar candidato a
+  //    candidato na tela é inevitável — e por isso ele tem teto
+  //    (TETO_DE_PROVAS_DA_TELA).
   // 2. Senão (ou se o installation token falhar por qualquer razão — App não
   //    configurado, instalação removida, API fora), cai no caminho OAuth
   //    clássico de sempre (conexão cifrada por usuário, NUNCA do JWT da
   //    sessão — spec §17.4). Ali a lista é ainda mais ampla de propósito pelo
-  //    GitHub (`affiliation` traz colaborador e membro de organização).
+  //    GitHub (`affiliation` traz colaborador e membro de organização) — mas
+  //    cada item já vem com o `permissions` DO CLIENTE, então a oferta sai da
+  //    própria listagem: uma chamada por página, prova extra nenhuma. Antes
+  //    disto, montar a tela custava 1 + N chamadas da cota do cliente.
   app.get('/api/v1/github/repos', async (request: FastifyRequest, reply: FastifyReply) => {
     if (!request.user) {
       return reply.code(401).send({ error: 'UNAUTHORIZED: session required' })
@@ -315,14 +349,26 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
       select: { githubInstallationId: true },
     })
 
-    let candidatos: GitHubRepo[] | undefined
+    // Candidatos vindos da INSTALAÇÃO: a lista é do App, então cada um precisa
+    // da prova com o token do cliente (com teto, ver TETO_DE_PROVAS_DA_TELA).
+    let candidatosDaInstalacao: GitHubRepo[] | undefined
     if (dbUser?.githubInstallationId) {
-      candidatos = await candidatosViaInstalacao(dbUser.githubInstallationId)
+      candidatosDaInstalacao = await candidatosViaInstalacao(dbUser.githubInstallationId)
       // installation token indisponível agora — segue pro caminho OAuth
       // abaixo em vez de devolver erro pro cliente.
+      if (candidatosDaInstalacao && candidatosDaInstalacao.length > TETO_DE_PROVAS_DA_TELA) {
+        app.log.warn(
+          {
+            userId: request.user.id,
+            cobertos: candidatosDaInstalacao.length,
+            teto: TETO_DE_PROVAS_DA_TELA,
+          },
+          '[setup] a instalação cobre mais repositórios do que a tela prova por vez; a oferta foi cortada no teto'
+        )
+      }
     }
 
-    if (!candidatos) {
+    if (!candidatosDaInstalacao) {
       const response = await fetch('https://api.github.com/user/repos?per_page=100&sort=updated', {
         headers: {
           Authorization: `Bearer ${githubToken}`,
@@ -350,11 +396,18 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
       if (!Array.isArray(repos)) {
         return reply.code(500).send({ error: 'Failed to fetch repositories from GitHub' })
       }
-      candidatos = repos
+
+      // A listagem do PRÓPRIO cliente já traz o `permissions` dele em cada
+      // item: a oferta sai daí, com o mesmo critério de escrita que o passo
+      // final aplica. Nenhuma chamada extra — e nenhuma suposição: item sem
+      // `permissions` fica de fora.
+      return reply.send(mapGitHubRepos(repos.filter(escreveSegundoAListagem)))
     }
 
     try {
-      return reply.send(mapGitHubRepos(await somenteOndeOClienteEscreve(candidatos, githubToken)))
+      return reply.send(
+        mapGitHubRepos(await somenteOndeOClienteEscreve(candidatosDaInstalacao, githubToken))
+      )
     } catch (err) {
       if (err instanceof AcessoNaoVerificavelError) {
         // Devolver a lista peneirada pela metade seria mentir por omissão: o
