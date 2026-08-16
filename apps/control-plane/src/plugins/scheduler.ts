@@ -435,6 +435,39 @@ export function filtroDeSessoesParaJulgamento(projectId: string): Prisma.DevSess
   }
 }
 
+/**
+ * O que sobra de `sessoesVivas` para a vigia PRÉ-merge (`varrerSessoesDoDev`
+ * / `vigiarSessoes`) examinar.
+ *
+ * Exportada pelo MESMO motivo de `montarOpcoesDeDelegacao` e
+ * `filtroDeSessoesParaJulgamento` acima: o call site real vive dentro do
+ * fechamento não exportado de `varrerSessoesDoDev`, e uma regressão que
+ * voltasse a passar a lista crua de `sessoesVivas` direto para
+ * `vigiarSessoes` não quebraria teste nenhum se este filtro só existisse ali
+ * dentro.
+ *
+ * `sessoesVivas` (dev-session-store.ts) continua trazendo TUDO que está
+ * `closedAt: null` — inclusive sessão já mesclada — de propósito: a fila de
+ * delegação (`montarOpcoesDeDelegacao`, acima, é o OUTRO chamador de
+ * `sessoesVivas`) precisa contar essas sessões como ocupadas, senão o SM
+ * re-delegaria a MESMA issue enquanto o veredito de publicação (Tarefa 17,
+ * `varrerPublicacoes`) ainda está em aberto. Mudar a semântica de
+ * `sessoesVivas` na fonte quebraria aquele outro chamador; o filtro por isso
+ * mora no CONSUMIDOR pré-merge, não na fonte.
+ *
+ * A partir do merge (`mergeCommitSha` gravado por `registrarMescla`), a
+ * sessão passa a ser propriedade EXCLUSIVA de `varrerPublicacoes` — é ela
+ * quem evolui e fecha a linha dali em diante. Sem este filtro, a vigia
+ * pré-merge (que só entende estado ANTES do merge, pela cadência própria de
+ * `CADENCIA_DE_EXAME_MS`) continuaria interrogando o serviço externo sobre
+ * uma entrega que já chegou lá: na melhor das hipóteses, cota gasta à toa;
+ * na pior, um `COMPLETED` com PR dispara `julgar` (missão de QA) contra um
+ * pull request que já foi mesclado.
+ */
+export function sessoesParaVigiaPreMerge(sessoes: LinhaDeSessao[]): LinhaDeSessao[] {
+  return sessoes.filter((sessao) => sessao.mergeCommitSha === null)
+}
+
 function buildWorkspaceProvider(app: FastifyInstance): WorkspaceProvider {
   const executor = process.env['GITORCH_EXECUTOR'] ?? 'local-process'
   if (executor === 'firecracker') {
@@ -2477,7 +2510,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         })
         const julesApiKey = process.env['JULES_API_KEY']
         const vigiaOut = await vigiarSessoes({
-          sessoes: sessoesDoProjeto,
+          sessoes: sessoesParaVigiaPreMerge(sessoesDoProjeto),
           consultarSessao: (sessionName) =>
             consultarSessaoJules({
               apiKey: julesApiKey,
