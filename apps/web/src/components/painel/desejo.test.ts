@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
-import { enviarDesejo, estadoDaTelaDePedir, fetchProjetos, type ProjetoDoPainel } from './desejo'
+import {
+  avisoAindaVale,
+  enviarDesejo,
+  estadoDaTelaDePedir,
+  fetchProjetos,
+  LIMITE_DO_TEXTO_DO_DESEJO,
+  type DesejoRegistrado,
+  type ProjetoDoPainel,
+} from './desejo'
 
 // A tela de pedir é a porta de entrada do desejo pelo navegador. O que estes
 // testes travam: (a) o pedido só sai daqui quando tem texto E projeto — dedo
@@ -151,7 +159,12 @@ describe('enviarDesejo — o pedido em linguagem de gente vira issue', () => {
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 
-  it('sem projeto escolhido não sai pedido nenhum', async () => {
+  // Dois fatos diferentes, duas frases diferentes. "Você não escolheu projeto"
+  // é uma instrução do que fazer agora; "esse projeto não é seu" é uma recusa.
+  // Enquanto os dois dividiam a mesma chave, quem só esqueceu de escolher lia
+  // que o projeto dele não estava disponível — e ia procurar um problema que
+  // não existia.
+  it('sem projeto escolhido, a tela manda escolher — não diz que o projeto é inválido', async () => {
     const fetchImpl = vi.fn<typeof fetch>()
 
     const r = await enviarDesejo(
@@ -159,8 +172,48 @@ describe('enviarDesejo — o pedido em linguagem de gente vira issue', () => {
       { fetchImpl }
     )
 
-    expect(r).toEqual({ ok: false, chaveDoErro: 'dashboard.wishErrorProject' })
+    expect(r).toEqual({ ok: false, chaveDoErro: 'dashboard.wishErrorNoProject' })
     expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  // O corpo de uma issue do GitHub tem teto de 65.536 caracteres. Um texto
+  // colado acima disso era recusado com 422, virava 502 na rota e chegava à
+  // tela como "tente de novo em instantes" — conselho que NUNCA ia funcionar,
+  // por mais vezes que a pessoa tentasse.
+  it('texto maior que o teto do GitHub não sai do navegador e diz o motivo real', async () => {
+    const fetchImpl = vi.fn<typeof fetch>()
+
+    const r = await enviarDesejo(
+      {
+        apiBaseUrl: 'http://api.test',
+        projectId: 'p1',
+        texto: 'a'.repeat(LIMITE_DO_TEXTO_DO_DESEJO + 1),
+      },
+      { fetchImpl }
+    )
+
+    expect(r).toEqual({ ok: false, chaveDoErro: 'dashboard.wishErrorTooLong' })
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('texto exatamente no limite ainda é aceito', async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => okResponse(201, { numero: 1, endereco: '' }))
+
+    const r = await enviarDesejo(
+      {
+        apiBaseUrl: 'http://api.test',
+        projectId: 'p1',
+        texto: 'a'.repeat(LIMITE_DO_TEXTO_DO_DESEJO),
+      },
+      { fetchImpl }
+    )
+
+    expect(r.ok).toBe(true)
+    expect(fetchImpl).toHaveBeenCalled()
+  })
+
+  it('o limite fica abaixo do teto do GitHub, com folga para o rodapé do corpo', () => {
+    expect(LIMITE_DO_TEXTO_DO_DESEJO).toBeLessThan(65_536)
   })
 
   it.each([
@@ -217,5 +270,40 @@ describe('enviarDesejo — o pedido em linguagem de gente vira issue', () => {
     )
 
     expect(r).toEqual({ ok: false, chaveDoErro: 'dashboard.wishErrorGithub' })
+  })
+})
+
+// O aviso de "registrado como #77" descreve UM pedido, num projeto. Quando a
+// tela deixa de descrever esse pedido — porque o dono trocou de projeto, ou já
+// começou a escrever o próximo —, o aviso vira uma afirmação sobre outra coisa.
+// Quem bate o olho lê "registrado" e acha que já mandou.
+describe('avisoAindaVale — quando o aviso de sucesso ainda descreve a tela', () => {
+  const aviso: DesejoRegistrado = {
+    numero: 77,
+    endereco: 'https://github.com/dono/repo/issues/77',
+    projectId: 'p1',
+    repo: 'dono/repo',
+  }
+
+  it('sem aviso não há nada a mostrar', () => {
+    expect(avisoAindaVale(null, { projectId: 'p1', texto: '' })).toBe(false)
+  })
+
+  it('logo depois do envio, com a caixa limpa, o aviso vale', () => {
+    expect(avisoAindaVale(aviso, { projectId: 'p1', texto: '' })).toBe(true)
+  })
+
+  it('trocar de projeto tira o aviso: ele era sobre o projeto anterior', () => {
+    expect(avisoAindaVale(aviso, { projectId: 'p2', texto: '' })).toBe(false)
+  })
+
+  it('começar a escrever o próximo pedido tira o aviso do pedido anterior', () => {
+    expect(avisoAindaVale(aviso, { projectId: 'p1', texto: 'quero também busca por cor' })).toBe(
+      false
+    )
+  })
+
+  it('espaço em branco na caixa não conta como pedido novo', () => {
+    expect(avisoAindaVale(aviso, { projectId: 'p1', texto: '   ' })).toBe(true)
   })
 })

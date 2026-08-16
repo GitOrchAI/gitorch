@@ -28,10 +28,32 @@ export type ResultadoDoDesejo =
   { ok: true; numero: number; endereco: string } | { ok: false; chaveDoErro: string }
 
 const ERRO_VAZIO = 'dashboard.wishErrorEmpty'
+const ERRO_LONGO = 'dashboard.wishErrorTooLong'
+// Dois fatos DIFERENTES, e por isso duas chaves: "você não escolheu projeto" é
+// uma instrução do que fazer agora; "esse projeto não é seu (ou não está
+// disponível)" é uma recusa do servidor. Enquanto dividiam a mesma chave, quem
+// só tinha esquecido de escolher lia que o projeto dele estava indisponível e
+// saía procurando um problema que não existia.
+const ERRO_SEM_PROJETO = 'dashboard.wishErrorNoProject'
 const ERRO_PROJETO = 'dashboard.wishErrorProject'
 const ERRO_SESSAO = 'dashboard.wishErrorSession'
 const ERRO_GITHUB = 'dashboard.wishErrorGithub'
 const ERRO_REDE = 'dashboard.wishErrorNetwork'
+
+/**
+ * Teto do texto do pedido.
+ *
+ * O corpo de uma issue do GitHub tem limite de 65.536 caracteres. Sem este
+ * teto, um texto colado acima disso era recusado com 422, virava 502 na rota e
+ * chegava à tela como "tente de novo em instantes" — um conselho que NUNCA
+ * funcionaria, por mais vezes que a pessoa tentasse.
+ *
+ * A folga até os 65.536 não é arredondamento: o corpo carrega o rodapé (quem
+ * pediu, de onde veio) e o texto ainda cresce um pouco ao ter os comandos de
+ * fechar issue neutralizados ("closes #42" vira "closes nº 42"), em
+ * services/desejo.ts do control-plane.
+ */
+export const LIMITE_DO_TEXTO_DO_DESEJO = 60_000
 
 /**
  * O que a busca de projetos conseguiu apurar.
@@ -124,7 +146,8 @@ export async function enviarDesejo(
 ): Promise<ResultadoDoDesejo> {
   const texto = args.texto.trim()
   if (texto === '') return { ok: false, chaveDoErro: ERRO_VAZIO }
-  if (args.projectId.trim() === '') return { ok: false, chaveDoErro: ERRO_PROJETO }
+  if (texto.length > LIMITE_DO_TEXTO_DO_DESEJO) return { ok: false, chaveDoErro: ERRO_LONGO }
+  if (args.projectId.trim() === '') return { ok: false, chaveDoErro: ERRO_SEM_PROJETO }
 
   const doFetch = deps.fetchImpl ?? fetch
   let res: Response
@@ -155,9 +178,45 @@ export async function enviarDesejo(
   }
 }
 
+/**
+ * Um pedido já registrado, do jeito que o aviso da tela precisa dele.
+ *
+ * Carrega o projeto de propósito: o aviso "registrado como #77" não é sobre a
+ * tela em geral, é sobre UM pedido em UM repositório — e sem isso ele não tem
+ * como se identificar nem como saber que deixou de valer.
+ */
+export interface DesejoRegistrado {
+  numero: number
+  endereco: string
+  /** A qual projeto este aviso pertence. */
+  projectId: string
+  /** Endereço do repositório, para o aviso dizer ONDE o pedido foi registrado. */
+  repo: string
+}
+
+/**
+ * O aviso de sucesso ainda descreve o que está na tela?
+ *
+ * Ele só era limpo no começo do envio seguinte. Quem trocasse de projeto, ou
+ * começasse a digitar o próximo pedido, continuava vendo "registrado como #77"
+ * — sem dizer de qual projeto — e batendo o olho concluía que já tinha enviado.
+ *
+ * A regra é a mesma que uma pessoa usaria: o aviso vale enquanto a tela ainda
+ * mostra o estado em que aquele pedido foi feito (o mesmo projeto, e a caixa de
+ * texto ainda vazia). Espaço em branco não é um pedido novo.
+ */
+export function avisoAindaVale(
+  aviso: DesejoRegistrado | null,
+  tela: { projectId: string; texto: string }
+): boolean {
+  if (!aviso) return false
+  if (aviso.projectId !== tela.projectId) return false
+  return tela.texto.trim() === ''
+}
+
 // Cada recusa vira a explicação do que a PESSOA pode fazer a respeito: 401 é
-// sessão vencida (entrar de novo), 404 é projeto que não é dela (escolher
-// outro), o resto é falha do nosso lado (tentar de novo).
+// sessão vencida (entrar de novo), 404 é projeto que não é dela ou está
+// desativado (escolher outro), o resto é falha do nosso lado (tentar de novo).
 function chaveDoStatus(status: number): string {
   if (status === 400) return ERRO_VAZIO
   if (status === 401 || status === 403) return ERRO_SESSAO

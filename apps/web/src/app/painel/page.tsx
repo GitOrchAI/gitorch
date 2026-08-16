@@ -14,9 +14,12 @@ import {
   type AgentQuestionView,
 } from '../../components/painel/agent-questions'
 import {
+  avisoAindaVale,
   enviarDesejo,
   estadoDaTelaDePedir,
   fetchProjetos,
+  LIMITE_DO_TEXTO_DO_DESEJO,
+  type DesejoRegistrado,
   type ResultadoDosProjetos,
 } from '../../components/painel/desejo'
 
@@ -82,9 +85,10 @@ export default function Dashboard() {
   const [projetoEscolhido, setProjetoEscolhido] = useState('')
   const [textoDoDesejo, setTextoDoDesejo] = useState('')
   const [enviandoDesejo, setEnviandoDesejo] = useState(false)
-  const [desejoCriado, setDesejoCriado] = useState<{ numero: number; endereco: string } | null>(
-    null
-  )
+  // O aviso guarda a QUAL projeto ele pertence: sem isso ele não tem como dizer
+  // onde o pedido foi registrado, nem como saber que deixou de valer quando a
+  // tela mudou (ver `avisoAindaVale`).
+  const [desejoCriado, setDesejoCriado] = useState<DesejoRegistrado | null>(null)
   const [erroDoDesejo, setErroDoDesejo] = useState<string | null>(null)
 
   useEffect(() => {
@@ -171,13 +175,24 @@ export default function Dashboard() {
     setEnviandoDesejo(true)
     setErroDoDesejo(null)
     setDesejoCriado(null)
+    // O repositório é resolvido ANTES do envio: é ele que o aviso mostra, e a
+    // lista pode ser recarregada enquanto o pedido está no ar.
+    const escolhido =
+      projetos?.estado === 'ok'
+        ? projetos.projetos.find((p) => p.id === projetoEscolhido)
+        : undefined
     const r = await enviarDesejo({
       apiBaseUrl: API_BASE_URL,
       projectId: projetoEscolhido,
       texto: textoDoDesejo,
     })
     if (r.ok) {
-      setDesejoCriado({ numero: r.numero, endereco: r.endereco })
+      setDesejoCriado({
+        numero: r.numero,
+        endereco: r.endereco,
+        projectId: projetoEscolhido,
+        repo: escolhido?.repo ?? '',
+      })
       // Limpa a caixa só no sucesso: em erro, o texto que a pessoa escreveu
       // continua ali para ela reenviar sem redigitar.
       setTextoDoDesejo('')
@@ -185,7 +200,7 @@ export default function Dashboard() {
       setErroDoDesejo(r.chaveDoErro)
     }
     setEnviandoDesejo(false)
-  }, [projetoEscolhido, textoDoDesejo])
+  }, [projetos, projetoEscolhido, textoDoDesejo])
 
   // Ainda checando a sessão: nem afirma nem nega login, só não mostra nada
   // definitivo ainda — evita o flash de "conecte-se" pra quem já está logado.
@@ -231,6 +246,16 @@ export default function Dashboard() {
   // mora em desejo.ts, onde dá para testá-la; aqui só se desenha o resultado).
   const estadoDoPedido = estadoDaTelaDePedir(projetos)
   const listaDeProjetos = projetos?.estado === 'ok' ? projetos.projetos : []
+  // O aviso de "registrado" é DERIVADO, nunca um resíduo: assim que a tela
+  // deixa de mostrar o estado em que aquele pedido foi feito (trocou de projeto,
+  // ou já se está escrevendo o próximo), ele some sozinho — sem effect e sem
+  // depender de o próximo envio começar para limpá-lo.
+  const avisoDeSucesso = avisoAindaVale(desejoCriado, {
+    projectId: projetoEscolhido,
+    texto: textoDoDesejo,
+  })
+    ? desejoCriado
+    : null
 
   return (
     <main className="min-h-screen flex flex-col bg-[var(--bg-deep)]">
@@ -296,13 +321,26 @@ export default function Dashboard() {
                 </label>
               )}
 
+              {/* `maxLength` impede que o texto passe do que cabe numa issue do
+                  GitHub; a validação do envio (desejo.ts) explica o motivo se
+                  ele passar mesmo assim. O contador só aparece perto do teto —
+                  antes disso é ruído, e ali é a única pista de que um texto
+                  colado foi cortado. */}
               <textarea
                 value={textoDoDesejo}
                 onChange={(e) => setTextoDoDesejo(e.target.value)}
                 placeholder={t('dashboard.wishPlaceholder')}
                 rows={4}
+                maxLength={LIMITE_DO_TEXTO_DO_DESEJO}
                 className="w-full bg-[var(--bg-surface-elevated)] border border-[var(--glass-border)] rounded-xl px-4 py-3 text-white placeholder:text-[var(--text-secondary)] resize-y"
               />
+
+              {textoDoDesejo.length > LIMITE_DO_TEXTO_DO_DESEJO * 0.9 && (
+                <p className="text-sm text-[var(--text-secondary)] text-right">
+                  {textoDoDesejo.length.toLocaleString()} /{' '}
+                  {LIMITE_DO_TEXTO_DO_DESEJO.toLocaleString()}
+                </p>
+              )}
 
               <div className="flex flex-wrap items-center gap-4">
                 <button
@@ -314,12 +352,17 @@ export default function Dashboard() {
                   {enviandoDesejo ? t('dashboard.wishSending') : t('dashboard.wishSubmit')}
                 </button>
 
-                {desejoCriado && (
+                {avisoDeSucesso && (
                   <span className="text-[#10b981]">
-                    {t('dashboard.wishSuccess', { numero: desejoCriado.numero })}{' '}
-                    {desejoCriado.endereco && (
+                    {/* Sem o endereço do repositório em mãos, o aviso diz menos
+                        em vez de mostrar um buraco no meio da frase. */}
+                    {t(
+                      avisoDeSucesso.repo ? 'dashboard.wishSuccess' : 'dashboard.wishSuccessNoRepo',
+                      { numero: avisoDeSucesso.numero, repo: avisoDeSucesso.repo }
+                    )}{' '}
+                    {avisoDeSucesso.endereco && (
                       <a
-                        href={desejoCriado.endereco}
+                        href={avisoDeSucesso.endereco}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="underline"
@@ -330,7 +373,13 @@ export default function Dashboard() {
                   </span>
                 )}
 
-                {erroDoDesejo && <span className="text-[#ef4444]">{t(erroDoDesejo)}</span>}
+                {/* `limite` viaja sempre: as chaves que não usam a variável a
+                    ignoram, e a de texto longo precisa dizer o número real. */}
+                {erroDoDesejo && (
+                  <span className="text-[#ef4444]">
+                    {t(erroDoDesejo, { limite: LIMITE_DO_TEXTO_DO_DESEJO.toLocaleString() })}
+                  </span>
+                )}
               </div>
             </div>
           )}
