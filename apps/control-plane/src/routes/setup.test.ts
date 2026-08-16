@@ -6,36 +6,43 @@ import type { EngineConnectionService } from '../services/engine-connection.js'
 import { resetAppTokenCache } from '../services/github-app-token.js'
 import { encryptCredential } from '../lib/credential-crypto.js'
 
+/** Permissões do portador do token, como o GitHub as devolve. */
+const PODE_ESCREVER = { admin: true, maintain: true, push: true, triage: true, pull: true }
+
 /**
- * A lista REAL de repositórios do cliente no GitHub.
+ * O que o GitHub responde sobre os repositórios do cliente.
  *
- * O passo final do wizard passou a exigir que o repositório declarado seja
- * mesmo de quem pede — `routes/setup.ts` cruza o que veio no corpo com esta
- * listagem antes de criar qualquer coisa. Por isso todo cenário de submit
- * precisa dizer o que o cliente acessa: sem resposta, o pedido é recusado por
- * não ser verificável, que é o comportamento correto.
+ * Duas perguntas diferentes, e a distinção é o que a rodada de conserto
+ * introduziu:
+ * - a LISTAGEM (`/user/repos`, `/installation/repositories`) só monta a tela;
+ * - a PROVA (`/repos/{dono}/{repo}`, com o token do próprio cliente) é o que
+ *   AUTORIZA — `permissions.push` decide, e 404 é o "não" do GitHub.
+ *
+ * Por isso todo cenário de submit precisa dizer o que o cliente ESCREVE: sem
+ * resposta, o pedido é recusado por não ser verificável, que é o comportamento
+ * correto.
  *
  * Devolve `null` para qualquer outra chamada, para as suítes que já roteiam
  * GraphQL/REST continuarem tratando o resto como antes.
  */
 function respostaDaListaDeRepos(url: unknown, doCliente: string[]): Response | null {
   const href = String(url)
-  if (!href.includes('/user/repos') && !href.includes('/installation/repositories')) return null
-  // `permissions` de dono: a checagem do submit exige ESCRITA, não só o
-  // repositório aparecer na lista (é assim que o colaborador só-leitura é
-  // recusado). Estes cenários falam de repositórios do próprio cliente.
-  return new Response(
-    JSON.stringify(
-      doCliente.map((full_name) => ({
-        full_name,
-        permissions: { admin: true, maintain: true, push: true, triage: true, pull: true },
-      }))
-    ),
-    { status: 200 }
-  )
+  if (href.includes('/user/repos') || href.includes('/installation/repositories')) {
+    return new Response(JSON.stringify(doCliente.map((full_name) => ({ full_name }))), {
+      status: 200,
+    })
+  }
+  const prova = /^https:\/\/api\.github\.com\/repos\/([^/]+\/[^/?#]+)$/.exec(href)
+  if (!prova) return null
+  const nome = prova[1] ?? ''
+  const alcanca = doCliente.some((r) => r.toLowerCase() === nome.toLowerCase())
+  if (!alcanca) return new Response(JSON.stringify({ message: 'Not Found' }), { status: 404 })
+  return new Response(JSON.stringify({ full_name: nome, permissions: PODE_ESCREVER }), {
+    status: 200,
+  })
 }
 
-/** `global.fetch` que só sabe responder a listagem de repositórios do cliente. */
+/** `global.fetch` que só sabe responder sobre os repositórios do cliente. */
 function fetchSoDaListaDeRepos(doCliente: string[]): typeof fetch {
   return vi.fn(async (url: string | URL | Request) => {
     const lista = respostaDaListaDeRepos(url, doCliente)
@@ -108,18 +115,26 @@ describe('GET /api/v1/github/repos', () => {
   })
 
   it('fetches repos using the token decrypted from the user vault, not the session', async () => {
-    global.fetch = vi.fn(async () => {
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url)
+      if (href.startsWith('https://api.github.com/user/repos')) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: 1,
+              name: 'repo',
+              full_name: 'octocat/repo',
+              description: null,
+              private: false,
+              html_url: 'https://github.com/octocat/repo',
+            },
+          ]),
+          { status: 200 }
+        )
+      }
+      // A prova por repositório: é ela que autoriza o que a tela oferece.
       return new Response(
-        JSON.stringify([
-          {
-            id: 1,
-            name: 'repo',
-            full_name: 'octocat/repo',
-            description: null,
-            private: false,
-            html_url: 'https://github.com/octocat/repo',
-          },
-        ]),
+        JSON.stringify({ full_name: 'octocat/repo', permissions: PODE_ESCREVER }),
         { status: 200 }
       )
     }) as unknown as typeof fetch
@@ -128,10 +143,14 @@ describe('GET /api/v1/github/repos', () => {
 
     expect(res.statusCode).toBe(200)
     expect(getRawGithubToken).toHaveBeenCalledWith('user_1')
-    const fetchCall = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
-    expect(fetchCall).toBeDefined()
-    const headers = fetchCall?.[1]?.headers as Record<string, string>
-    expect(headers['Authorization']).toBe('Bearer gh_encrypted_roundtrip_token')
+    const chamadas = (global.fetch as ReturnType<typeof vi.fn>).mock.calls
+    // Tanto a listagem quanto a prova vão com o token do CLIENTE, nunca com a
+    // chave do App.
+    for (const chamada of chamadas) {
+      const headers = chamada?.[1]?.headers as Record<string, string>
+      expect(headers['Authorization']).toBe('Bearer gh_encrypted_roundtrip_token')
+    }
+    expect(chamadas.map((c) => String(c[0]))).toContain('https://api.github.com/repos/octocat/repo')
   })
 
   // A tela e o passo final têm de concordar. A listagem vinha crua de
@@ -141,28 +160,43 @@ describe('GET /api/v1/github/repos', () => {
   // seguinte recusar com "você não tem acesso" — e ainda daria ao cliente a
   // impressão de que aquilo é dele.
   it('não oferece na tela o repositório em que o cliente só pode LER', async () => {
-    global.fetch = vi.fn(async () => {
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url)
+      if (href.startsWith('https://api.github.com/user/repos')) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: 1,
+              name: 'repo',
+              full_name: 'octocat/repo',
+              description: null,
+              private: false,
+              html_url: 'https://github.com/octocat/repo',
+            },
+            {
+              id: 2,
+              name: 'cofre',
+              full_name: 'vitima/cofre',
+              description: null,
+              private: true,
+              html_url: 'https://github.com/vitima/cofre',
+            },
+          ]),
+          { status: 200 }
+        )
+      }
+      // A prova por repositório separa o que ele escreve do que ele só lê.
+      if (href === 'https://api.github.com/repos/octocat/repo') {
+        return new Response(
+          JSON.stringify({ full_name: 'octocat/repo', permissions: PODE_ESCREVER }),
+          { status: 200 }
+        )
+      }
       return new Response(
-        JSON.stringify([
-          {
-            id: 1,
-            name: 'repo',
-            full_name: 'octocat/repo',
-            description: null,
-            private: false,
-            html_url: 'https://github.com/octocat/repo',
-            permissions: { admin: true, maintain: true, push: true, triage: true, pull: true },
-          },
-          {
-            id: 2,
-            name: 'cofre',
-            full_name: 'vitima/cofre',
-            description: null,
-            private: true,
-            html_url: 'https://github.com/vitima/cofre',
-            permissions: { admin: false, maintain: false, push: false, triage: false, pull: true },
-          },
-        ]),
+        JSON.stringify({
+          full_name: 'vitima/cofre',
+          permissions: { admin: false, maintain: false, push: false, triage: false, pull: true },
+        }),
         { status: 200 }
       )
     }) as unknown as typeof fetch
@@ -287,7 +321,7 @@ describe('GET /api/v1/github/repos — via installation do GitHub App (F1 Onda 2
     delete process.env['GITHUB_APP_PRIVATE_KEY']
   })
 
-  it('usuário com githubInstallationId: lista via GET /installation/repositories, nunca toca o caminho OAuth', async () => {
+  it('usuário com githubInstallationId: os CANDIDATOS vêm da instalação, sem passar pelo /user/repos', async () => {
     global.fetch = vi.fn(async (url: string | URL | Request) => {
       const href = String(url)
       if (href.includes('/app/installations/555/access_tokens')) {
@@ -317,6 +351,12 @@ describe('GET /api/v1/github/repos — via installation do GitHub App (F1 Onda 2
           { status: 200 }
         )
       }
+      if (href === 'https://api.github.com/repos/octocat/privado') {
+        return new Response(
+          JSON.stringify({ full_name: 'octocat/privado', permissions: PODE_ESCREVER }),
+          { status: 200 }
+        )
+      }
       throw new Error('URL inesperada no teste: ' + href)
     }) as unknown as typeof fetch
 
@@ -333,7 +373,12 @@ describe('GET /api/v1/github/repos — via installation do GitHub App (F1 Onda 2
         url: 'https://github.com/octocat/privado',
       },
     ])
-    expect(getRawGithubToken).not.toHaveBeenCalled()
+    // O token do cliente É lido — e tem de ser: a instalação diz o que PODE
+    // aparecer, mas quem autoriza é a prova por repositório, e ela pergunta
+    // com a credencial dele. A listagem ampla do OAuth é que não acontece.
+    expect(getRawGithubToken).toHaveBeenCalledWith('user_1')
+    const chamadas = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]))
+    expect(chamadas.some((u) => u.startsWith('https://api.github.com/user/repos'))).toBe(false)
   })
 
   it('installation token indisponível (App não configurado/acessível): cai pro OAuth clássico, sem quebrar o wizard', async () => {
@@ -352,9 +397,14 @@ describe('GET /api/v1/github/repos — via installation do GitHub App (F1 Onda 2
               description: null,
               private: false,
               html_url: 'https://github.com/octocat/repo',
-              permissions: { admin: true, maintain: true, push: true, triage: true, pull: true },
             },
           ]),
+          { status: 200 }
+        )
+      }
+      if (href === 'https://api.github.com/repos/octocat/repo') {
+        return new Response(
+          JSON.stringify({ full_name: 'octocat/repo', permissions: PODE_ESCREVER }),
           { status: 200 }
         )
       }
@@ -375,6 +425,76 @@ describe('GET /api/v1/github/repos — via installation do GitHub App (F1 Onda 2
         url: 'https://github.com/octocat/repo',
       },
     ])
+  })
+
+  /**
+   * A tela não pode oferecer o que o passo final vai recusar — nem, pior,
+   * sugerir ao cliente que o repositório alheio é dele.
+   *
+   * `GET /installation/repositories` é do APP e devolve TODA a instalação: numa
+   * organização, isso inclui repositório que aquele cliente não alcança. A
+   * listagem serve para MONTAR a tela; quem AUTORIZA é a prova por repositório
+   * com o token do próprio cliente.
+   */
+  it('a tela só oferece o que o CLIENTE escreve, mesmo que a instalação cubra mais', async () => {
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url)
+      if (href.includes('/app/installations/555/access_tokens')) {
+        return new Response(
+          JSON.stringify({
+            token: 'ghs_install',
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          }),
+          { status: 201 }
+        )
+      }
+      if (href.startsWith('https://api.github.com/installation/repositories')) {
+        return new Response(
+          JSON.stringify({
+            total_count: 2,
+            repositories: [
+              {
+                id: 9,
+                name: 'api',
+                full_name: 'acme/api',
+                description: null,
+                private: true,
+                html_url: 'https://github.com/acme/api',
+              },
+              {
+                id: 10,
+                name: 'segredos',
+                full_name: 'acme/segredos',
+                description: null,
+                private: true,
+                html_url: 'https://github.com/acme/segredos',
+              },
+            ],
+          }),
+          { status: 200 }
+        )
+      }
+      if (href === 'https://api.github.com/repos/acme/api') {
+        return new Response(
+          JSON.stringify({
+            full_name: 'acme/api',
+            permissions: { admin: false, maintain: false, push: true, triage: true, pull: true },
+          }),
+          { status: 200 }
+        )
+      }
+      if (href === 'https://api.github.com/repos/acme/segredos') {
+        // O cliente não alcança este: o GitHub esconde com 404.
+        return new Response(JSON.stringify({ message: 'Not Found' }), { status: 404 })
+      }
+      throw new Error('URL inesperada no teste: ' + href)
+    }) as unknown as typeof fetch
+
+    const res = await app.inject({ method: 'GET', url: '/api/v1/github/repos' })
+
+    expect(res.statusCode).toBe(200)
+    const lista = res.json() as Array<{ fullName: string }>
+    expect(lista.map((r) => r.fullName)).toEqual(['acme/api'])
   })
 
   it('usuário sem githubInstallationId: nem tenta mintar token do App — vai direto pro OAuth', async () => {

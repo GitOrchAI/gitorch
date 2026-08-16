@@ -19,19 +19,16 @@ describe('Setup and Auth Integration', () => {
 
   beforeEach(async () => {
     // O submit exige provar que "owner/repo" é do cliente antes de criar
-    // qualquer coisa: sem a lista real do GitHub o pedido é recusado por não
-    // ser verificável. E não basta o repositório APARECER na lista — o GitHub
-    // devolve ali também o que a pessoa só consegue ler; a prova é o bloco de
-    // permissões dizer que ela escreve.
+    // qualquer coisa: sem a resposta do GitHub o pedido é recusado por não ser
+    // verificável. A pergunta é direta — `GET /repos/{dono}/{repo}` com o token
+    // do próprio cliente — e o que autoriza é `permissions.push`.
     global.fetch = vi.fn(async (url: string | URL | Request) => {
-      if (String(url).includes('/user/repos')) {
+      if (String(url) === 'https://api.github.com/repos/owner/repo') {
         return new Response(
-          JSON.stringify([
-            {
-              full_name: 'owner/repo',
-              permissions: { admin: true, maintain: true, push: true, triage: true, pull: true },
-            },
-          ]),
+          JSON.stringify({
+            full_name: 'owner/repo',
+            permissions: { admin: true, maintain: true, push: true, triage: true, pull: true },
+          }),
           { status: 200 }
         )
       }

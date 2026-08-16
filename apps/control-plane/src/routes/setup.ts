@@ -24,11 +24,20 @@ import { summarizeResourcesLock } from '../lib/environment-resources.js'
 import { mintInstallationToken } from '../services/github-app-token.js'
 import { nomeDeRepositorioValido } from '../services/nome-de-repositorio.js'
 import {
-  repositoriosSemAcesso,
-  RepositoriosNaoVerificaveisError,
-  temEscrita,
-} from '../services/repositorios-do-usuario.js'
+  repositoriosSemEscrita,
+  AcessoNaoVerificavelError,
+} from '../services/acesso-ao-repositorio.js'
 
+/**
+ * O que uma listagem do GitHub devolve por repositório, do pouco que a tela
+ * precisa exibir.
+ *
+ * Sem `permissions` de propósito: o bloco que as listagens trazem (quando
+ * trazem) deixou de decidir qualquer coisa. Quem responde "este cliente pode
+ * escrever aqui?" é a prova por repositório, uma chamada exata a
+ * `GET /repos/{dono}/{repo}` com o token dele — deduzir de uma listagem foi o
+ * erro que se repetiu três vezes.
+ */
 interface GitHubRepo {
   id: number
   name: string
@@ -36,12 +45,6 @@ interface GitHubRepo {
   description: string | null
   private: boolean
   html_url: string
-  /**
-   * O que a pessoa PODE fazer neste repositório, como o GitHub responde em
-   * `GET /user/repos`. Opcional no tipo porque a listagem da instalação não o
-   * documenta — ver o uso em cada caminho, abaixo.
-   */
-  permissions?: { admin?: boolean; maintain?: boolean; push?: boolean }
 }
 
 // Sem `telegram` aqui, e não é esquecimento: o @username que o passo 8 mandava
@@ -205,16 +208,21 @@ function toPublicQuestion(q: AgentQuestionRecord): PublicAgentQuestion {
 }
 
 /**
- * Lista os repositórios via installation token, quando o usuário JÁ escolheu
- * uma instalação do GitHub App (routes/github-app-install.ts) — só os repos
- * que ELE autorizou na tela do GitHub, ao contrário do escopo amplo do OAuth
- * App clássico. `undefined` (nunca lança) sinaliza "sem instalação usável
- * agora" — quem chama cai de volta no caminho OAuth (compat), nunca quebra
- * o wizard por causa disto.
+ * CANDIDATOS a aparecer na tela, vindos da instalação do GitHub App que o
+ * usuário escolheu (routes/github-app-install.ts).
+ *
+ * "Candidatos", não "autorizados", e a diferença é o buraco que fechamos: esta
+ * chamada é do APP (token assinado com a chave privada) e devolve TODOS os
+ * repositórios cobertos pela instalação. Numa organização, isso inclui o que
+ * aquele cliente não alcança — a colaboradora de `acme/api` via `acme/segredos`
+ * na lista. Listar continua servindo para MONTAR a tela; quem AUTORIZA é a
+ * prova por repositório com o token do próprio cliente
+ * (services/acesso-ao-repositorio.ts), aplicada logo depois.
+ *
+ * `undefined` (nunca lança) sinaliza "sem instalação usável agora" — quem chama
+ * cai de volta no caminho OAuth (compat), nunca quebra o wizard por causa disto.
  */
-async function listReposViaInstallation(
-  installationId: number
-): Promise<ReturnType<typeof mapGitHubRepos> | undefined> {
+async function candidatosViaInstalacao(installationId: number): Promise<GitHubRepo[] | undefined> {
   const installationToken = await mintInstallationToken({ installationId })
   if (!installationToken) return undefined
 
@@ -230,7 +238,29 @@ async function listReposViaInstallation(
   const body = (await response.json()) as { repositories?: GitHubRepo[] }
   if (!Array.isArray(body.repositories)) return undefined
 
-  return mapGitHubRepos(body.repositories)
+  return body.repositories
+}
+
+/**
+ * Peneira os candidatos pela prova por repositório: fica só o que o CLIENTE
+ * pode escrever. Propaga `AcessoNaoVerificavelError` — a tela prefere dizer
+ * "não consegui confirmar agora" a devolver uma lista curta que o cliente leria
+ * como "você não tem esses repositórios".
+ */
+async function somenteOndeOClienteEscreve(
+  candidatos: GitHubRepo[],
+  githubToken: string
+): Promise<GitHubRepo[]> {
+  const comEndereco = candidatos.filter((repo) => typeof repo.full_name === 'string')
+  const semEscrita = new Set(
+    (
+      await repositoriosSemEscrita(
+        comEndereco.map((repo) => repo.full_name),
+        { githubToken }
+      )
+    ).map((nome) => nome.trim().toLowerCase())
+  )
+  return comEndereco.filter((repo) => !semEscrita.has(repo.full_name.trim().toLowerCase()))
 }
 
 export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
@@ -242,14 +272,23 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
 
   // GET /api/v1/github/repos - List user repositories.
   //
-  // Dois caminhos, nesta ordem:
+  // LISTAR e AUTORIZAR são coisas diferentes aqui, e confundir as duas foi o
+  // que abriu três buracos seguidos. A listagem só MONTA a tela — ela responde
+  // "o que pode aparecer". Quem AUTORIZA é a prova por repositório
+  // (services/acesso-ao-repositorio.ts), com o token do PRÓPRIO cliente, e é
+  // exatamente a mesma prova que o passo final aplica: por isso a tela nunca
+  // oferece o que o /setup/submit vai recusar.
+  //
+  // Duas fontes de candidatos, nesta ordem:
   // 1. Se o usuário JÁ instalou o GitHub App e escolheu quais repos (F1 Onda
-  //    2, routes/github-app-install.ts), lista via installation token — só o
-  //    que ELE autorizou na tela do GitHub.
+  //    2, routes/github-app-install.ts), a instalação dá a lista mais curta —
+  //    mas NÃO é autorização: numa organização ela cobre repositório que
+  //    aquele cliente não alcança.
   // 2. Senão (ou se o installation token falhar por qualquer razão — App não
   //    configurado, instalação removida, API fora), cai no caminho OAuth
   //    clássico de sempre (conexão cifrada por usuário, NUNCA do JWT da
-  //    sessão — spec §17.4). Nunca quebra o wizard por causa disto.
+  //    sessão — spec §17.4). Ali a lista é ainda mais ampla de propósito pelo
+  //    GitHub (`affiliation` traz colaborador e membro de organização).
   app.get('/api/v1/github/repos', async (request: FastifyRequest, reply: FastifyReply) => {
     if (!request.user) {
       return reply.code(401).send({ error: 'UNAUTHORIZED: session required' })
@@ -262,59 +301,77 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
       return reply.code(500).send({ error: 'Engine connections service unavailable' })
     }
 
-    const dbUser = await app.prisma.user.findUnique({
-      where: { id: request.user.id },
-      select: { githubInstallationId: true },
-    })
-    if (dbUser?.githubInstallationId) {
-      const viaInstallation = await listReposViaInstallation(dbUser.githubInstallationId)
-      if (viaInstallation) {
-        return reply.send(viaInstallation)
-      }
-      // installation token indisponível agora — segue pro caminho OAuth
-      // abaixo em vez de devolver erro pro cliente.
-    }
-
+    // O token do cliente é lido ANTES de qualquer fonte: sem ele não há prova
+    // possível, e uma tela montada sem prova é justamente o que oferecia
+    // repositório alheio. Sem credencial, o wizard pede a reconexão em vez de
+    // mostrar uma lista que não pode sustentar.
     const githubToken = await app.engineConnections.getRawGithubToken(request.user.id)
     if (!githubToken) {
       return reply.code(401).send({ error: 'UNAUTHORIZED: GitHub not connected' })
     }
 
-    const response = await fetch('https://api.github.com/user/repos?per_page=100&sort=updated', {
-      headers: {
-        Authorization: `Bearer ${githubToken}`,
-        Accept: 'application/json',
-        'User-Agent': 'gitorch-control-plane',
-      },
+    const dbUser = await app.prisma.user.findUnique({
+      where: { id: request.user.id },
+      select: { githubInstallationId: true },
     })
 
-    if (!response.ok) {
-      // Contrato de erro do wizard (mesmo padrão do POST /setup/clone): NUNCA
-      // um 500 cru sem classificar. Achado real do QA (19/07) — token
-      // expirado/revogado fazia a API do GitHub responder 401 "Bad
-      // credentials" (um objeto, não array), e o código anterior caía direto
-      // no branch genérico abaixo por engano de tipo.
-      const body = await response.json().catch(() => null)
-      const code = classifyGithubApiError(response.status, body)
-      app.log.warn({ code, status: response.status }, '[setup] GET /user/repos do GitHub falhou')
-      return reply.code(setupErrorHttpStatus(code)).send({
-        error: 'Failed to fetch repositories from GitHub',
-        code,
+    let candidatos: GitHubRepo[] | undefined
+    if (dbUser?.githubInstallationId) {
+      candidatos = await candidatosViaInstalacao(dbUser.githubInstallationId)
+      // installation token indisponível agora — segue pro caminho OAuth
+      // abaixo em vez de devolver erro pro cliente.
+    }
+
+    if (!candidatos) {
+      const response = await fetch('https://api.github.com/user/repos?per_page=100&sort=updated', {
+        headers: {
+          Authorization: `Bearer ${githubToken}`,
+          Accept: 'application/json',
+          'User-Agent': 'gitorch-control-plane',
+        },
       })
+
+      if (!response.ok) {
+        // Contrato de erro do wizard (mesmo padrão do POST /setup/clone): NUNCA
+        // um 500 cru sem classificar. Achado real do QA (19/07) — token
+        // expirado/revogado fazia a API do GitHub responder 401 "Bad
+        // credentials" (um objeto, não array), e o código anterior caía direto
+        // no branch genérico abaixo por engano de tipo.
+        const body = await response.json().catch(() => null)
+        const code = classifyGithubApiError(response.status, body)
+        app.log.warn({ code, status: response.status }, '[setup] GET /user/repos do GitHub falhou')
+        return reply.code(setupErrorHttpStatus(code)).send({
+          error: 'Failed to fetch repositories from GitHub',
+          code,
+        })
+      }
+
+      const repos = (await response.json()) as GitHubRepo[]
+      if (!Array.isArray(repos)) {
+        return reply.code(500).send({ error: 'Failed to fetch repositories from GitHub' })
+      }
+      candidatos = repos
     }
 
-    const repos = (await response.json()) as GitHubRepo[]
-    if (!Array.isArray(repos)) {
-      return reply.code(500).send({ error: 'Failed to fetch repositories from GitHub' })
+    try {
+      return reply.send(mapGitHubRepos(await somenteOndeOClienteEscreve(candidatos, githubToken)))
+    } catch (err) {
+      if (err instanceof AcessoNaoVerificavelError) {
+        // Devolver a lista peneirada pela metade seria mentir por omissão: o
+        // cliente leria "não tenho esses repositórios". Indisponibilidade se
+        // diz com o nome dela.
+        app.log.warn(
+          { userId: request.user.id, error: err.message },
+          '[setup] listagem recusada: não foi possível confirmar o acesso aos repositórios'
+        )
+        return reply.code(503).send({
+          error:
+            'Não foi possível confirmar no GitHub quais repositórios são seus agora — tente de novo em instantes.',
+          code: 'REPOS_NAO_VERIFICAVEIS',
+        })
+      }
+      throw err
     }
-
-    // A tela só oferece o que o passo final vai aceitar. `GET /user/repos`
-    // devolve tudo que a pessoa ENXERGA (colaboradora só-leitura, membro da
-    // organização); a guarda do submit exige ESCRITA. Sem este filtro a tela
-    // ofereceria um repositório para o clique seguinte recusar — e, pior,
-    // sugeriria ao cliente que o repositório alheio é dele. A regra é a MESMA
-    // função dos dois lados, de propósito: divergir aqui é reabrir o buraco.
-    return reply.send(mapGitHubRepos(repos.filter((repo) => temEscrita(repo))))
   })
 
   // POST /api/v1/setup/environment - Nasce o ambiente isolado provisório do
@@ -574,11 +631,27 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
           })
         : null
 
-      try {
-        const semAcesso = await repositoriosSemAcesso(repos, {
-          installationId: owner.githubInstallationId,
-          githubToken: githubTokenDoDono,
+      // Sem credencial do cliente não há pergunta a fazer — e "não sei" nunca
+      // vira "pode". A instalação do App NÃO substitui isto: o token dela é
+      // emitido com a chave privada do App e responde pela instalação inteira,
+      // não por este cliente (ver services/acesso-ao-repositorio.ts).
+      if (!githubTokenDoDono) {
+        app.log.warn(
+          { ownerId: owner.id },
+          '[setup] submit recusado: sem credencial do GitHub para provar o acesso'
+        )
+        return reply.code(503).send({
+          error:
+            'Não foi possível confirmar no GitHub que estes repositórios são seus agora — reconecte o GitHub ou tente de novo em instantes.',
+          code: 'REPOS_NAO_VERIFICAVEIS',
         })
+      }
+
+      try {
+        // A MESMA prova que a tela usou para montar a lista, repetida aqui: uma
+        // chamada exata por repositório, com o token do PRÓPRIO cliente, onde
+        // `push === true` é o que autoriza.
+        const semAcesso = await repositoriosSemEscrita(repos, { githubToken: githubTokenDoDono })
         if (semAcesso.length > 0) {
           app.log.warn(
             { ownerId: owner.id, semAcesso },
@@ -590,7 +663,7 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
           })
         }
       } catch (err) {
-        if (err instanceof RepositoriosNaoVerificaveisError) {
+        if (err instanceof AcessoNaoVerificavelError) {
           // Não conseguir conferir NÃO é permissão. Recusa com motivo claro e
           // convite a tentar de novo — nunca cria o projeto no escuro.
           app.log.warn(
