@@ -1,13 +1,21 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
-  usuarioAdministraInstalacao,
+  usuarioEnxergaInstalacao,
   InstalacaoNaoVerificavelError,
 } from './instalacoes-do-usuario.js'
 
 /**
- * Este módulo é o que separa "o cliente disse" de "o GitHub confirmou". Os testes
- * abaixo prendem as duas pontas: a resposta afirmativa só sai com o id na lista
- * DELE, e qualquer forma de não-saber vira recusa — nunca liberação.
+ * Este módulo separa "o cliente disse" de "o GitHub confirmou" — mas confirma
+ * MENOS do que o nome antigo prometia, e é isso que estes testes prendem.
+ *
+ * `GET /user/installations` responde as instalações ACESSÍVEIS ao token do
+ * usuário; é o que ele ENXERGA, não o que ele administra. Serve como porteiro
+ * de qual instalação o produto aceita mintar credencial do App — nunca como
+ * prova de posse de repositório. Essa prova é outra, e mora em
+ * services/acesso-ao-repositorio.ts.
+ *
+ * O que continua valendo: a resposta afirmativa só sai com o id na lista DELE,
+ * e qualquer forma de não-saber vira recusa — nunca liberação.
  */
 
 /** Uma página de `GET /user/installations` com os ids informados. */
@@ -18,27 +26,27 @@ function pagina(ids: number[]): Response {
   )
 }
 
-describe('usuarioAdministraInstalacao', () => {
+describe('usuarioEnxergaInstalacao', () => {
   it('id presente na lista do cliente: aprova', async () => {
     const fetchImpl = vi.fn(async () => pagina([10, 20, 30])) as unknown as typeof fetch
 
-    await expect(usuarioAdministraInstalacao(20, { githubToken: 'tok', fetchImpl })).resolves.toBe(
+    await expect(usuarioEnxergaInstalacao(20, { githubToken: 'tok', fetchImpl })).resolves.toBe(
       true
     )
   })
 
-  it('id AUSENTE da lista do cliente: recusa (é a instalação de outra pessoa)', async () => {
+  it('id AUSENTE da lista do cliente: recusa (ele não enxerga essa instalação)', async () => {
     const fetchImpl = vi.fn(async () => pagina([10, 20, 30])) as unknown as typeof fetch
 
-    await expect(
-      usuarioAdministraInstalacao(424242, { githubToken: 'tok', fetchImpl })
-    ).resolves.toBe(false)
+    await expect(usuarioEnxergaInstalacao(424242, { githubToken: 'tok', fetchImpl })).resolves.toBe(
+      false
+    )
   })
 
   it('pergunta com o token do cliente e no endpoint do usuário, não no do App', async () => {
     const fetchImpl = vi.fn(async () => pagina([7])) as unknown as typeof fetch
 
-    await usuarioAdministraInstalacao(7, { githubToken: 'gho_do_cliente', fetchImpl })
+    await usuarioEnxergaInstalacao(7, { githubToken: 'gho_do_cliente', fetchImpl })
 
     const chamada = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0]!
     expect(String(chamada[0])).toBe('https://api.github.com/user/installations?per_page=100&page=1')
@@ -55,7 +63,7 @@ describe('usuarioAdministraInstalacao', () => {
       String(url).endsWith('page=1') ? pagina(primeira) : pagina([999])
     ) as unknown as typeof fetch
 
-    await expect(usuarioAdministraInstalacao(999, { githubToken: 'tok', fetchImpl })).resolves.toBe(
+    await expect(usuarioEnxergaInstalacao(999, { githubToken: 'tok', fetchImpl })).resolves.toBe(
       true
     )
     expect((fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(2)
@@ -64,7 +72,7 @@ describe('usuarioAdministraInstalacao', () => {
   it('para na primeira página que responde: não gasta chamada à toa', async () => {
     const fetchImpl = vi.fn(async () => pagina([5])) as unknown as typeof fetch
 
-    await usuarioAdministraInstalacao(5, { githubToken: 'tok', fetchImpl })
+    await usuarioEnxergaInstalacao(5, { githubToken: 'tok', fetchImpl })
 
     expect((fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1)
   })
@@ -75,7 +83,7 @@ describe('usuarioAdministraInstalacao', () => {
     }) as unknown as typeof fetch
 
     await expect(
-      usuarioAdministraInstalacao(1, { githubToken: 'tok', fetchImpl })
+      usuarioEnxergaInstalacao(1, { githubToken: 'tok', fetchImpl })
     ).rejects.toBeInstanceOf(InstalacaoNaoVerificavelError)
   })
 
@@ -85,7 +93,7 @@ describe('usuarioAdministraInstalacao', () => {
     ) as unknown as typeof fetch
 
     await expect(
-      usuarioAdministraInstalacao(1, { githubToken: 'tok', fetchImpl })
+      usuarioEnxergaInstalacao(1, { githubToken: 'tok', fetchImpl })
     ).rejects.toBeInstanceOf(InstalacaoNaoVerificavelError)
   })
 
@@ -99,7 +107,7 @@ describe('usuarioAdministraInstalacao', () => {
     ) as unknown as typeof fetch
 
     await expect(
-      usuarioAdministraInstalacao(1, { githubToken: 'tok', fetchImpl })
+      usuarioEnxergaInstalacao(1, { githubToken: 'tok', fetchImpl })
     ).rejects.toBeInstanceOf(InstalacaoNaoVerificavelError)
   })
 
@@ -108,8 +116,25 @@ describe('usuarioAdministraInstalacao', () => {
     const fetchImpl = vi.fn(async () => pagina(cheia)) as unknown as typeof fetch
 
     await expect(
-      usuarioAdministraInstalacao(424242, { githubToken: 'tok', fetchImpl })
+      usuarioEnxergaInstalacao(424242, { githubToken: 'tok', fetchImpl })
     ).rejects.toBeInstanceOf(InstalacaoNaoVerificavelError)
+  })
+
+  /**
+   * O limite honesto desta guarda, escrito como teste para ninguém voltar a
+   * confundir: quem apenas ENXERGA a instalação (membro da organização, sem
+   * administrar nada) passa por aqui. Por isso ela não pode autorizar
+   * repositório nenhum — quem autoriza é a prova por repositório, com o token
+   * do cliente (services/acesso-ao-repositorio.ts).
+   */
+  it('quem só ENXERGA a instalação também passa: isto não prova administração', async () => {
+    // A resposta do GitHub é a mesma para quem administra e para quem apenas
+    // tem acesso — não há campo que os separe nesta rota.
+    const fetchImpl = vi.fn(async () => pagina([777])) as unknown as typeof fetch
+
+    await expect(usuarioEnxergaInstalacao(777, { githubToken: 'tok', fetchImpl })).resolves.toBe(
+      true
+    )
   })
 
   it('item sem id numérico é ignorado, não confundido com o id procurado', async () => {
@@ -121,7 +146,7 @@ describe('usuarioAdministraInstalacao', () => {
         })
     ) as unknown as typeof fetch
 
-    await expect(usuarioAdministraInstalacao(42, { githubToken: 'tok', fetchImpl })).resolves.toBe(
+    await expect(usuarioEnxergaInstalacao(42, { githubToken: 'tok', fetchImpl })).resolves.toBe(
       false
     )
   })

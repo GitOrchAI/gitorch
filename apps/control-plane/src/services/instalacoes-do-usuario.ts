@@ -1,35 +1,41 @@
 /**
- * Prova de que uma instalação do GitHub App declarada pelo cliente é REALMENTE
- * dele.
+ * O que o GitHub confirma sobre a instalação do App que o cliente declarou —
+ * e, com igual importância, o que ele NÃO confirma.
  *
- * `users.github_installation_id` não é um campo qualquer: é a AUTORIDADE que o
- * passo final do wizard consulta para responder "quais repositórios são deste
- * cliente?" (services/repositorios-do-usuario.ts). E o token daquela instalação
- * é emitido com a chave privada do App — que abre QUALQUER instalação, não só a
- * de quem pediu. Ou seja: quem consegue escrever um id alheio nesta coluna passa
- * a ser comparado contra a lista de repositórios da vítima, e a guarda que
- * deveria barrar o projeto alheio o aprova.
+ * O que esta rota responde, exatamente: `GET /user/installations` lista as
+ * instalações do nosso App ACESSÍVEIS ao token do usuário. É o que ele
+ * ENXERGA. Um membro comum de uma organização enxerga a instalação dela sem
+ * administrar coisa alguma — então aparecer nesta lista NÃO é prova de posse,
+ * e nada neste produto pode tratá-la como se fosse. Foi exatamente esse tipo
+ * de dedução (deduzir acesso de uma listagem) que abriu três buracos seguidos.
  *
- * O retorno da tela de instalação do GitHub traz `installation_id` na query, e
- * query é texto do cliente. O `state` assinado que acompanha prova apenas que
- * quem voltou é quem saiu (anti-CSRF) — não diz nada sobre de quem é a
- * instalação. A única fonte que sabe é o próprio GitHub, perguntado com o token
- * do CLIENTE: `GET /user/installations` lista as instalações do nosso App que o
- * usuário autenticado tem permissão de acessar.
+ * Quem prova acesso é outra pergunta, direta e por repositório:
+ * `GET /repos/{dono}/{repo}` com o token do próprio cliente, onde
+ * `permissions.push === true` autoriza (services/acesso-ao-repositorio.ts).
+ * Toda porta que grava ou usa um repositório passa por lá.
+ *
+ * Então para que esta guarda continua servindo? Para uma coisa só, e ela é
+ * real: `users.github_installation_id` decide de QUAL instalação o produto
+ * mintará um token com a CHAVE PRIVADA DO APP (routes/setup.ts,
+ * `candidatosViaInstalacao`). A chave abre qualquer instalação; sem esta
+ * porteira, bastava chamar o callback com o id de outra pessoa para o produto
+ * emitir credencial sobre a instalação dela e puxar a lista de repositórios
+ * dela para a memória. Os nomes alheios não chegam mais à tela — a prova por
+ * repositório os corta —, mas emitir a credencial já é um passo que não nos
+ * cabe dar a pedido de estranho.
  *
  * Duas regras que este módulo não abre mão:
  *
- * 1. **A pergunta vai com o token do cliente, nunca com a chave do App.** Com a
- *    chave do App a resposta seria "todas as instalações que existem" — a
+ * 1. **A pergunta vai com o token do cliente, nunca com a chave do App.** Com
+ *    a chave do App a resposta seria "todas as instalações que existem" — a
  *    pergunta errada, que devolve sim para o ataque.
  *
  * 2. **Não conseguir verificar NUNCA vira "pode".** GitHub fora do ar, token
  *    revogado, corpo em formato inesperado: tudo resolve em
- *    `InstalacaoNaoVerificavelError`, e quem chama recusa sem gravar. Deixar
- *    passar quando a checagem falha é o mesmo buraco com outra roupa.
+ *    `InstalacaoNaoVerificavelError`, e quem chama recusa sem gravar.
  */
 
-/** Não deu para saber de quem é a instalação. Quem chama RECUSA — nunca aprova. */
+/** Não deu para saber se o cliente enxerga a instalação. Quem chama RECUSA. */
 export class InstalacaoNaoVerificavelError extends Error {
   constructor(motivo: string) {
     super(`não foi possível verificar a instalação do GitHub do cliente: ${motivo}`)
@@ -59,14 +65,18 @@ interface InstalacaoDoGitHub {
 }
 
 /**
- * `true` quando o cliente comprovadamente administra a instalação informada;
- * `false` quando a lista dele foi percorrida por inteiro e a instalação não está
- * lá. Lança `InstalacaoNaoVerificavelError` quando não deu para concluir.
+ * `true` quando a instalação informada aparece na lista do próprio cliente —
+ * ou seja, ele a ENXERGA; `false` quando a lista dele foi percorrida por
+ * inteiro e a instalação não está lá. Lança `InstalacaoNaoVerificavelError`
+ * quando não deu para concluir.
+ *
+ * Leia o nome ao pé da letra: enxergar não é administrar, e muito menos
+ * autoriza repositório. É porteira de mint, não autoridade de acesso.
  *
  * A varredura para na primeira página que contém o id: o caso comum — a pessoa
  * acabou de instalar e tem uma ou duas instalações — custa uma chamada.
  */
-export async function usuarioAdministraInstalacao(
+export async function usuarioEnxergaInstalacao(
   installationId: number,
   deps: DependenciasDeInstalacao
 ): Promise<boolean> {
@@ -118,7 +128,8 @@ export async function usuarioAdministraInstalacao(
       if (typeof item.id === 'number' && item.id === installationId) return true
     }
 
-    // Página incompleta = fim da lista: a instalação comprovadamente não é dele.
+    // Página incompleta = fim da lista: ele comprovadamente não enxerga esta
+    // instalação.
     if (lista.length < POR_PAGINA) return false
   }
 

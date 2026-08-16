@@ -124,17 +124,20 @@ describe('GET /api/v1/auth/github/install', () => {
  * cabeçalho Location de `GET /install`, nunca passar pelo GitHub, e chamar o
  * callback com o `installation_id` da VÍTIMA.
  *
- * O estrago não parava no campo: `users.github_installation_id` é a AUTORIDADE
- * que o passo final do wizard consulta para saber "quais repositórios são deste
- * cliente?" (services/repositorios-do-usuario.ts). O installation token é emitido
- * com a chave privada do App, que abre qualquer instalação — então a guarda
- * passaria a comparar o repositório declarado contra a lista da vítima e
- * autorizaria o projeto alheio. Envenenar esta coluna desarma a guarda inteira.
+ * O estrago não para no campo: `users.github_installation_id` decide de QUAL
+ * instalação o produto minta um token com a chave privada do App — chave que
+ * abre qualquer instalação. Envenenar esta coluna faz o produto emitir
+ * credencial sobre a instalação da vítima a pedido de um estranho.
  *
- * A correção: antes de gravar, perguntar ao GitHub — com o token do PRÓPRIO
- * cliente — quais instalações ele administra (`GET /user/installations`) e exigir
- * que o id recebido esteja lá. Não conseguir perguntar não é permissão: sem
- * resposta conclusiva, nada é gravado.
+ * A correção aqui: antes de gravar, perguntar ao GitHub — com o token do
+ * PRÓPRIO cliente — se ele ao menos ENXERGA aquela instalação
+ * (`GET /user/installations`) e exigir que o id recebido esteja lá. Não
+ * conseguir perguntar não é permissão: sem resposta conclusiva, nada é gravado.
+ *
+ * O que esta checagem NÃO faz, e é preciso dizer com todas as letras: ela não
+ * prova posse de repositório nenhum — enxergar uma instalação de organização é
+ * coisa que qualquer membro consegue. Quem autoriza repositório é a prova por
+ * repositório, com o token do cliente (services/acesso-ao-repositorio.ts).
  */
 describe('GET /api/v1/auth/github/install/callback', () => {
   let app: ReturnType<typeof Fastify>
@@ -301,7 +304,8 @@ describe('GET /api/v1/auth/github/install/callback', () => {
 
     expect(res.statusCode).toBe(403)
     expect(res.json().code).toBe('INSTALACAO_NAO_E_SUA')
-    // O ponto que importa: a autoridade da guarda do wizard continua limpa.
+    // O ponto que importa: o produto não passa a mintar credencial do App
+    // sobre a instalação de outra pessoa.
     expect(prismaUpdate).not.toHaveBeenCalled()
   })
 
