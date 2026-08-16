@@ -1265,6 +1265,20 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // processo, de propósito (não é coluna de banco): o pior caso é um aviso
   // extra logo após um restart do control-plane, nunca silêncio além de 24h
   // dentro do mesmo processo vivo.
+  //
+  // Achado (finding 3 da revisão da Tarefa 16, documentado honestamente, não
+  // resolvido — decisão deliberada, não coluna de banco): este Map é POR
+  // PROCESSO. Hoje a esteira roda como UM control-plane numa única VM, então
+  // isto é o comportamento real: um aviso por dono+motor por dia. Se um dia
+  // existirem N processos do control-plane ao mesmo tempo (ex.: deploy
+  // blue-green sobrepondo dois processos, ou horizontal scaling), CADA
+  // processo tem o seu próprio Map e decide "ainda não avisei hoje"
+  // independentemente — o dono receberia até N avisos idênticos no mesmo
+  // dia, não um só. Não é um bug funcional NESTE deployment (não é o que
+  // está no ar), mas fica registrado aqui para quem for escalar horizontalmente
+  // não redescobrir isto em produção: a dedup real multi-processo exigiria um
+  // estado compartilhado (ex.: coluna em EngineConnection ou tabela própria),
+  // fora do escopo desta tarefa.
   const avisosDeCredencialExpirada = new Map<string, number>()
 
   const runTrigger = async (
