@@ -16,7 +16,6 @@ import { lerDiffDoPr, type ArquivoDoPr } from './diff-do-pr.js'
 import { mesclarPr, type ResultadoDoMerge } from './merge-do-pr.js'
 import { decidirSobreVerificacao, type EstadoDaVerificacao } from './vigia-da-verificacao.js'
 import { hashDaMensagem } from './session-watch.js'
-import { fecharTarefaEntregue } from './fechar-tarefa.js'
 
 // Missão do QA nos TRILHOS (F3.6): acha a PR do Jules que precisa de julgamento,
 // monta o snapshot (diff + Verification Criteria da issue + estado do CI), o
@@ -125,7 +124,12 @@ export interface QaRailsMissionOptions extends VigiliaDoJulgamentoOptions {
   githubToken: string
   execute: (prompt: string) => Promise<string>
   contextBlocks?: string[]
-  /** Move o card da issue vinculada no board conforme o veredito (opcional). */
+  /**
+   * Move o card da issue vinculada no board quando o veredito é rework
+   * (opcional). Leva B: aprovação NÃO move mais o card para "done" por
+   * aqui — isso só acontece quando a publicação confirma (ou o repositório
+   * prova que não publica), em `resolverEntregaDoBoard` (scheduler.ts).
+   */
   moveCard?: CardMover
   /** Label de delegação que marca trabalho de dev assíncrono (padrão 'jules'). */
   delegateLabel?: string
@@ -672,13 +676,6 @@ export async function runQaMissionViaRails(
   // (mesclado ou não) sem repetir a variável.
   let resultadoDoMerge: ResultadoDoMerge | null = null
 
-  // Task 15: só ganha texto quando o fechamento da tarefa foi TENTADO e
-  // falhou (ver o bloco logo após o merge, mais abaixo) — mesmo padrão de
-  // `cardNote`/`mergeNote`: uma falha aqui não pode ficar muda dentro de um
-  // try/catch, ela vira texto na saída da missão, que `persistMissionMemory`
-  // grava como memória do projeto.
-  let fechamentoNote = ''
-
   // Task 8: o parecer sobre uma entrega NÃO delegada carrega, em linguagem
   // de negócio, a mesma frase que existe para não repetir o quase-acidente
   // do PR #99 — o GitOrch opina, mas quem decide se mescla é a pessoa dona
@@ -773,58 +770,15 @@ export async function runQaMissionViaRails(
           })
         }
 
-        // Task 15: a entrega foi mesclada — provado ao vivo que o texto dela
-        // não é garantia nenhuma de que o GitHub fecha a tarefa sozinho (o
-        // dev assíncrono é externo, o produto não controla o que ele
-        // escreve). No método deste produto quem administra tarefa é o
-        // gerente, não o dev — então o produto fecha por conta própria.
-        // `linkedIssue` pode estar ausente (recuo por login sem issue de
-        // origem conhecida); sem saber QUAL tarefa fechar, não há o que
-        // fazer aqui.
-        if (linkedIssue) {
-          try {
-            await fecharTarefaEntregue({
-              numeroDoPr: target.number,
-              mesclado: resultadoDoMerge.mesclado,
-              delegado,
-              lerEstadoDaTarefa: async () => {
-                // Lido FRESCO, não herdado de `linkedIssueLabels`/`criteria`
-                // (buscados minutos antes, no passo 2) — a tarefa pode ter
-                // fechado sozinha nesse intervalo.
-                const tarefa = (await gh(
-                  'GET',
-                  `/repos/${options.repository}/issues/${linkedIssue}`
-                )) as { state?: string }
-                return tarefa.state === 'closed' ? 'closed' : 'open'
-              },
-              comentar: async (texto) => {
-                await gh('POST', `/repos/${options.repository}/issues/${linkedIssue}/comments`, {
-                  body: texto,
-                })
-              },
-              fechar: async () => {
-                await gh('PATCH', `/repos/${options.repository}/issues/${linkedIssue}`, {
-                  state: 'closed',
-                })
-              },
-            })
-          } catch (err) {
-            // NUNCA engolida: fechar a tarefa do cliente é uma escrita real
-            // na infraestrutura dele — se falhar (permissão, rede), isso
-            // precisa aparecer tanto no log estruturado (visível AGORA, para
-            // quem observa o scheduler rodando) quanto na saída da missão
-            // (visível DEPOIS, porque `persistMissionMemory` grava o
-            // resumo como memória do projeto). O merge em si já aconteceu —
-            // uma falha em fechar a tarefa não pode derrubar a missão que
-            // já entregou o essencial.
-            const motivo = String(err).slice(0, 120)
-            fechamentoNote = ` fechar a tarefa #${linkedIssue} falhou: ${motivo}.`
-            const avisar = options.onWarn ?? console.warn
-            avisar(
-              `[qa] PR #${target.number} mesclado, mas fechar a tarefa #${linkedIssue} falhou: ${motivo}`
-            )
-          }
-        }
+        // Leva B ("o quadro do cliente não pode dizer entregue antes da
+        // hora"): este módulo NÃO fecha mais a tarefa nem move o card aqui.
+        // O merge só prova que o CÓDIGO mudou de mãos — nada aqui sabe
+        // ainda se aquilo chegou ao ar. Quem decide fechar a tarefa
+        // (`fecharTarefaEntregue`, fechar-tarefa.ts) e mover o card para
+        // "done" é `varrerPublicacoes` (scheduler.ts,
+        // `resolverEntregaDoBoard`), no momento em que a vigília pós-merge
+        // chega a um veredito sobre a publicação — positivo, ou repositório
+        // provado sem mecanismo de publicação (aí o merge já É a entrega).
       } else if (chamouOGithub && linhaDaEntrega) {
         // Tarefa 10: o GitHub recusou de verdade (conflito, regra do
         // repositório, pedido inválido, ou a chamada falhou por rede — R3 do
@@ -951,19 +905,25 @@ export async function runQaMissionViaRails(
     })
   }
 
-  // 5) O board acompanha o veredito: aprovado = pronto pelo padrão do GitOrch
-  // (critérios atendidos + CI verde) → "done"; rework → volta a "inProgress".
-  // Best-effort: board sem coluna/campo nunca derruba o julgamento já postado.
+  // 5) Rework: o card volta para "inProgress" — sinaliza que a entrega
+  // precisa de retrabalho, o que é verdade no INSTANTE do julgamento, sem
+  // depender de publicação nenhuma. Best-effort: board sem coluna/campo
+  // nunca derruba o julgamento já postado.
+  //
+  // Leva B: aprovação NÃO move mais o card para "done" aqui — só a
+  // publicação confirmada (ou repositório provado sem mecanismo de
+  // publicação) move, em `resolverEntregaDoBoard` (scheduler.ts). Antes
+  // desta mudança o card ia para "done" no instante do JULGAMENTO,
+  // independente até de o merge ter de fato acontecido (`resultadoDoMerge`
+  // não era consultado aqui) — o quadro do cliente podia dizer "pronto" com
+  // o merge bloqueado por conflito.
   //
   // Mesmo gate do Achado B acima: mover o card do cliente também é escrita em
   // infraestrutura do cliente para trabalho que ele não encomendou.
   let cardNote = ''
-  if (delegado && options.moveCard && linkedIssue) {
+  if (delegado && options.moveCard && linkedIssue && effectiveVerdict !== 'approve') {
     try {
-      const moved = await options.moveCard(
-        Number(linkedIssue),
-        effectiveVerdict === 'approve' ? 'done' : 'inProgress'
-      )
+      const moved = await options.moveCard(Number(linkedIssue), 'inProgress')
       cardNote = ` ${moved}.`
     } catch (err) {
       cardNote = ` card move failed: ${String(err).slice(0, 120)}.`
@@ -1005,7 +965,7 @@ export async function runQaMissionViaRails(
   const mergeNote = resultadoDoMerge
     ? ` Merge: ${resultadoDoMerge.mesclado ? 'merged' : 'blocked'} (${resultadoDoMerge.motivo}).`
     : ''
-  const resumo = `QA judged PR #${target.number}: ${effectiveVerdict} (CI ${ciState}).${cardNote}${mergeNote}${fechamentoNote}`
+  const resumo = `QA judged PR #${target.number}: ${effectiveVerdict} (CI ${ciState}).${cardNote}${mergeNote}`
   return {
     exitCode: 0,
     output: [resumo, ...lacunas].join('\n'),
