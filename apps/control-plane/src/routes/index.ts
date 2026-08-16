@@ -13,6 +13,7 @@ import { billingRoutes } from './billing.js'
 import { diagnoseRoutes } from './diagnose.js'
 import { desejosRoutes } from './desejos.js'
 import { criarIssueDeDesejo } from '../services/desejo-no-github.js'
+import { projetoParaDesejo } from '../services/projetos-do-desejo.js'
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   // Health and readiness endpoints
@@ -40,18 +41,12 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
   // Porta do desejo: pedido em linguagem natural vira a issue oficial.
   //
-  // `wingId` do Project é o endereço do REPOSITÓRIO ("dono/repo"), não a chave
-  // do tenant — por isso é ele que vira `githubRepo`. O filtro é por `userId`
-  // (o DONO), como no painel: cruzar `request.wingId` (login do GitHub) com o
-  // `wingId` do Project nunca casa.
+  // Quem decide QUAL projeto aceita o pedido é `services/projetos-do-desejo.ts`,
+  // a MESMA regra que o mensageiro usa (plugins/telegram.ts). Enquanto cada
+  // porta escreveu a própria consulta, elas divergiram: esta aceitava projeto
+  // desativado e a outra dizia ao mesmo dono que ele não tinha projeto nenhum.
   await app.register(desejosRoutes, {
-    buscarProjeto: async ({ projectId, userId }) => {
-      const projeto = await app.prisma.project.findFirst({
-        where: { id: projectId, userId },
-        select: { id: true, wingId: true },
-      })
-      return projeto ? { id: projeto.id, githubRepo: projeto.wingId } : null
-    },
+    buscarProjeto: ({ projectId, userId }) => projetoParaDesejo(app.prisma, { projectId, userId }),
     // A escrita da issue mora no serviço porque o mensageiro (bot do Telegram)
     // registra o desejo pelo MESMO caminho — o pedido do dono nasce igual venha
     // da tela ou do celular.

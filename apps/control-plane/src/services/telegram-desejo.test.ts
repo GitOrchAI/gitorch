@@ -44,6 +44,26 @@ describe('interpretarPedidoDeDesejo', () => {
   it('comando com o nome do bot e sem texto também não vira desejo', () => {
     expect(interpretarPedidoDeDesejo('/desejo@GitOrchAI_bot').ehDesejo).toBe(false)
   })
+
+  // Convenção do Telegram: num grupo com vários bots, o comando endereçado a
+  // OUTRO bot é dele, não nosso. Atender assim mesmo faria dois bots
+  // responderem ao mesmo comando — e, pior aqui, escreveria uma issue no
+  // repositório do dono a partir de uma ordem que não era para nós.
+  it('comando endereçado a outro bot não é nosso', () => {
+    expect(interpretarPedidoDeDesejo('/quero@OutroBot cafe')).toEqual({
+      ehDesejo: false,
+      texto: '',
+    })
+  })
+
+  it('o nome do bot não diferencia maiúscula de minúscula (o Telegram também não)', () => {
+    expect(interpretarPedidoDeDesejo('/desejo@gitorchai_bot busca por cor').ehDesejo).toBe(true)
+  })
+
+  it('respeita o nome de bot informado, não só o do ambiente', () => {
+    expect(interpretarPedidoDeDesejo('/desejo@meu_bot cafe', 'meu_bot').ehDesejo).toBe(true)
+    expect(interpretarPedidoDeDesejo('/desejo@GitOrchAI_bot cafe', 'meu_bot').ehDesejo).toBe(false)
+  })
 })
 
 // A porta do desejo no mensageiro. O que está sob teste aqui é a DECISÃO —
@@ -71,6 +91,15 @@ function updateComTexto(
       from: { language_code: 'pt-BR', ...(remetenteId === null ? {} : { id: remetenteId }) },
     },
   }
+}
+
+// O corpo da issue que o pedido gerou. Falha alto quando nem houve chamada:
+// asserção sobre uma issue que não existe passaria despercebida.
+function corpoDaIssueCriada(deps: TelegramDesejoDeps): string {
+  const chamadas = (deps.criarIssue as ReturnType<typeof vi.fn>).mock.calls
+  const primeira = chamadas[0]?.[0] as { corpo?: unknown } | undefined
+  if (typeof primeira?.corpo !== 'string') throw new Error('nenhuma issue foi criada')
+  return primeira.corpo
 }
 
 function deps(over: Partial<TelegramDesejoDeps> = {}): TelegramDesejoDeps {
@@ -174,6 +203,86 @@ describe('tratarPedidoDeDesejo', () => {
     expect(d.criarIssue).toHaveBeenCalledWith(
       expect.objectContaining({ repo: 'dono/site', titulo: 'quero busca por cor' })
     )
+  })
+
+  // O nome NÃO identifica projeto: o banco só garante @@unique([userId, wingId]),
+  // então o mesmo dono pode ter dois projetos chamados "Loja". Escolher o
+  // primeiro deixaria o segundo inalcançável para sempre — e o pedido cairia no
+  // repositório errado sem ninguém perceber.
+  const DOIS_COM_MESMO_NOME: ProjetoParaDesejo[] = [
+    { id: 'p1', nome: 'Loja', repo: 'dono/loja-antiga' },
+    { id: 'p2', nome: 'Loja', repo: 'dono/loja-nova' },
+  ]
+
+  it('o endereço do repositório escolhe o projeto, mesmo com nomes repetidos', async () => {
+    const d = deps({ projetosDoDono: vi.fn().mockResolvedValue(DOIS_COM_MESMO_NOME) })
+    await tratarPedidoDeDesejo(d, updateComTexto('/desejo dono/loja-nova: quero busca por cor'))
+    expect(d.criarIssue).toHaveBeenCalledWith(
+      expect.objectContaining({ repo: 'dono/loja-nova', titulo: 'quero busca por cor' })
+    )
+  })
+
+  it('nome repetido não escolhe no escuro: o bot pergunta de novo', async () => {
+    const d = deps({ projetosDoDono: vi.fn().mockResolvedValue(DOIS_COM_MESMO_NOME) })
+    const r = await tratarPedidoDeDesejo(d, updateComTexto('/desejo Loja: quero busca por cor'))
+    expect(d.criarIssue).not.toHaveBeenCalled()
+    expect(r?.text).toContain('dono/loja-antiga')
+    expect(r?.text).toContain('dono/loja-nova')
+  })
+
+  it('a lista de desambiguação mostra o endereço do repositório, que é único', async () => {
+    const d = deps({ projetosDoDono: vi.fn().mockResolvedValue(DOIS_COM_MESMO_NOME) })
+    const r = await tratarPedidoDeDesejo(d, updateComTexto('/desejo quero busca por cor'))
+    expect(d.criarIssue).not.toHaveBeenCalled()
+    expect(r?.text).toContain('dono/loja-antiga')
+    expect(r?.text).toContain('dono/loja-nova')
+  })
+
+  // O laço de escuta do bot é ÚNICO e sequencial: uma chamada ao GitHub sem
+  // prazo pendura TODO o bot — inclusive o "/start <token>" de outro cliente no
+  // meio do wizard. O prazo transforma um travamento indefinido numa recusa.
+  it('GitHub pendurado não trava o bot: o prazo estoura e o dono é avisado', async () => {
+    const registrarFalha = vi.fn()
+    const d = deps({
+      criarIssue: vi.fn().mockImplementation(() => new Promise(() => {})),
+      registrarFalha,
+      prazoDaIssueMs: 5,
+    })
+    const r = await tratarPedidoDeDesejo(d, updateComTexto('/desejo quero busca por cor'))
+    expect(r?.text).toMatch(/não consegui|nao consegui/i)
+    expect(registrarFalha).toHaveBeenCalled()
+  })
+
+  // O corpo da issue é lido por gente (o analista, e o próprio dono depois). Um
+  // identificador interno do banco não diz nada a ninguém; o Telegram entrega o
+  // nome e o @ de quem digitou junto com a mensagem.
+  it('o corpo da issue diz quem pediu com nome e @, não com o id interno', async () => {
+    const d = deps()
+    await tratarPedidoDeDesejo(d, {
+      update_id: 1,
+      message: {
+        chat: { id: 555 },
+        text: '/desejo quero busca por cor',
+        from: {
+          id: 555,
+          language_code: 'pt-BR',
+          username: 'guilherme',
+          first_name: 'Guilherme',
+          last_name: 'Souza',
+        },
+      },
+    })
+    const corpo = corpoDaIssueCriada(d)
+    expect(corpo).toContain('Guilherme Souza')
+    expect(corpo).toContain('@guilherme')
+    expect(corpo).not.toContain('user_a')
+  })
+
+  it('sem nome nem @ no Telegram, cai no identificador da conta em vez de mentir', async () => {
+    const d = deps()
+    await tratarPedidoDeDesejo(d, updateComTexto('/desejo quero busca por cor'))
+    const corpo = corpoDaIssueCriada(d)
+    expect(corpo).toContain('user_a')
   })
 
   it('GitHub recusando não vaza detalhe interno para o chat', async () => {

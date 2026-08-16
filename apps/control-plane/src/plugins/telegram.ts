@@ -11,7 +11,12 @@ import {
   type TelegramDesejoDeps,
 } from '../services/telegram-bot.js'
 import { criarIssueDeDesejo } from '../services/desejo-no-github.js'
-import { resolveNotifyChatId, resolveDonoDoChat } from '../services/telegram-link.js'
+import { projetosParaDesejo } from '../services/projetos-do-desejo.js'
+import {
+  resolveNotifyChatId,
+  resolveDonoDoChat,
+  telegramBotUsername,
+} from '../services/telegram-link.js'
 import { AgentQuestionService, type AgentQuestionRecord } from '../services/agent-question.js'
 import { pipelineCheckEnabled } from '../config/pipeline-check.js'
 
@@ -105,16 +110,13 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
     // pode ser escrito. Chat com duas contas volta `ambiguo` e o pedido é
     // recusado — jamais escrito num repositório sorteado.
     donoDoChat: (chatId) => resolveDonoDoChat(app.prisma, chatId),
-    // `wingId` do Project é o endereço do REPOSITÓRIO ("dono/repo"), não a
-    // chave do tenant — por isso é ele que vira o repo do pedido.
-    projetosDoDono: async (userId) => {
-      const projetos = await app.prisma.project.findMany({
-        where: { userId, isActive: true },
-        select: { id: true, name: true, wingId: true },
-        orderBy: { createdAt: 'asc' },
-      })
-      return projetos.map((p) => ({ id: p.id, nome: p.name, repo: p.wingId }))
-    },
+    // A MESMA regra da porta HTTP (services/projetos-do-desejo.ts): enquanto
+    // cada porta escreveu o próprio filtro, elas divergiram sobre projeto
+    // desativado e o dono recebia duas respostas para o mesmo fato.
+    projetosDoDono: (userId) => projetosParaDesejo(app.prisma, userId),
+    // Comando endereçado a outro bot do grupo não é nosso. O nome sai da mesma
+    // fonte que monta o deep link do wizard.
+    nomeDoBot: telegramBotUsername(),
     criarIssue: ({ repo, titulo, corpo, etiquetas }) =>
       criarIssueDeDesejo({
         repo,

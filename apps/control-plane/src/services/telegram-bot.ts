@@ -1,5 +1,5 @@
 import type { PrismaClient } from '@prisma/client'
-import { bindChatFromStart, type DonoDoChat } from './telegram-link.js'
+import { bindChatFromStart, telegramBotUsername, type DonoDoChat } from './telegram-link.js'
 import { montarDesejo } from './desejo.js'
 import type { AgentQuestionService } from './agent-question.js'
 
@@ -28,18 +28,28 @@ type PrismaLike = Pick<PrismaClient, 'telegramLink'>
 // pra rotear o clique — ver `handleTelegramCallback`.
 type PrismaWithQuestions = Pick<PrismaClient, 'telegramLink' | 'agentQuestion'>
 
+/**
+ * QUEM digitou. `id` é a pessoa, e não se confunde com o chat: em grupo o
+ * `chat.id` é do grupo e o `from.id` é de cada participante. Comando que
+ * escreve em repositório de alguém depende dessa distinção (ver
+ * `tratarPedidoDeDesejo`).
+ */
+export interface RemetenteDoTelegram {
+  id?: number | string
+  language_code?: string
+  /** O @ público da pessoa. Opcional no Telegram (nem todo mundo tem um). */
+  username?: string
+  /** Sempre presente para pessoa; é o nome que ela mesma escolheu exibir. */
+  first_name?: string
+  last_name?: string
+}
+
 export interface TelegramUpdate {
   update_id: number
   message?: {
     chat?: { id?: number | string }
     text?: string
-    /**
-     * QUEM digitou. `id` é a pessoa, e não se confunde com o chat: em grupo o
-     * `chat.id` é do grupo e o `from.id` é de cada participante. Comando que
-     * escreve em repositório de alguém depende dessa distinção (ver
-     * `tratarPedidoDeDesejo`).
-     */
-    from?: { id?: number | string; language_code?: string }
+    from?: RemetenteDoTelegram
     /**
      * Presente quando a mensagem é um REPLY (o dono tocou em "Responder" em
      * cima da pergunta) — é o que permite casar texto livre com a
@@ -96,11 +106,28 @@ function isStartCommand(text: string | undefined): boolean {
  * espera ver a lista) vira o pedido "s" e "/quero-relatorio" vira o pedido
  * "-relatorio" — e como a esteira consome a wishlist ABERTA MAIS RECENTE, esse
  * lixo entra na frente do pedido de verdade e vira tarefa do robô.
+ *
+ * E o nome colado tem que ser o NOSSO. É a convenção do Telegram: num grupo com
+ * vários bots, "/quero@OutroBot cafe" é ordem para o outro bot, e atender
+ * assim mesmo escreveria uma issue no repositório do dono a partir de uma ordem
+ * que não era para nós. O nome vem da MESMA fonte que monta o deep link do
+ * wizard (`telegramBotUsername`), para não existirem duas versões de "quem é
+ * este bot"; o Telegram não diferencia maiúscula de minúscula em @username, e
+ * aqui também não.
  */
-export function interpretarPedidoDeDesejo(texto: string): { ehDesejo: boolean; texto: string } {
-  const casado = /^\/(desejo|quero)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]*))?$/i.exec(texto.trim())
+export function interpretarPedidoDeDesejo(
+  texto: string,
+  nomeDoBot: string = telegramBotUsername()
+): { ehDesejo: boolean; texto: string } {
+  const casado = /^\/(desejo|quero)(?:@([A-Za-z0-9_]+))?(?:\s+([\s\S]*))?$/i.exec(texto.trim())
   if (!casado) return { ehDesejo: false, texto: '' }
-  const pedido = (casado[2] ?? '').trim()
+
+  const enderecadoA = casado[2]
+  if (enderecadoA !== undefined && enderecadoA.toLowerCase() !== nomeDoBot.trim().toLowerCase()) {
+    return { ehDesejo: false, texto: '' }
+  }
+
+  const pedido = (casado[3] ?? '').trim()
   if (pedido === '') return { ehDesejo: false, texto: '' }
   return { ehDesejo: true, texto: pedido }
 }
@@ -604,15 +631,65 @@ export interface TelegramDesejoDeps {
   }) => Promise<{ numero: number }>
   /** Onde a falha é registrada. Nunca vai para o chat: pode conter credencial. */
   registrarFalha?: (erro: unknown) => void
+  /** Prazo do registro no GitHub. Só os testes mexem; ver `PRAZO_DA_ISSUE_MS`. */
+  prazoDaIssueMs?: number
+  /** Qual bot é este. Só os testes mexem; ver `interpretarPedidoDeDesejo`. */
+  nomeDoBot?: string
+}
+
+/**
+ * Prazo máximo do registro da issue, visto do bot.
+ *
+ * O laço de escuta é ÚNICO e sequencial (ver o cabeçalho deste arquivo): tudo o
+ * que trava dentro dele trava o bot inteiro. Uma api.github.com pendurada
+ * deixaria de responder não só a este pedido, mas ao "/start <token>" de outro
+ * cliente no meio do wizard — e o vínculo dele nunca aconteceria.
+ *
+ * Menor que o long-poll de 30s de propósito: o prazo tem que estourar ANTES de
+ * a rodada seguinte de updates ficar para trás. `criarIssueDeDesejo` já tem o
+ * seu próprio prazo de rede; este é a rede de segurança do LAÇO, que vale para
+ * qualquer implementação de `criarIssue` (inclusive uma que trave sem rede).
+ */
+export const PRAZO_DA_ISSUE_MS = 15_000
+
+/**
+ * Devolve o que a promessa devolver, ou LANÇA quando o prazo estoura. Nunca
+ * deixa o temporizador vivo (o `finally`) nem segura o processo (`unref`).
+ */
+async function comPrazo<T>(promessa: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const relogio = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`prazo de ${ms}ms estourado`)), ms)
+    timer.unref?.()
+  })
+  try {
+    return await Promise.race([promessa, relogio])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }
 
 // Quando o dono tem mais de um projeto, o pedido diz a qual deles pertence com
-// o nome antes de dois-pontos ("Loja: quero busca por cor"). Sem isso, o dono
-// de dois projetos ficaria sem saída: o bot pediria o projeto e não haveria
-// como informá-lo. Só é lido quando há ambiguidade de verdade — com um projeto
-// só, dois-pontos no meio da frase continua sendo texto comum.
+// o endereço do repositório antes de dois-pontos ("dono/loja: quero busca por
+// cor"). Sem isso, o dono de dois projetos ficaria sem saída: o bot pediria o
+// projeto e não haveria como informá-lo. Só é lido quando há ambiguidade de
+// verdade — com um projeto só, dois-pontos no meio da frase continua sendo
+// texto comum.
 const PREFIXO_DO_PROJETO = /^([^:\n]{1,80}):\s*([\s\S]+)$/
 
+/**
+ * Qual projeto recebe o pedido.
+ *
+ * O REPOSITÓRIO é o identificador de verdade: o banco garante
+ * `@@unique([userId, wingId])`, então "dono/loja" aponta para um projeto só
+ * deste dono. O NOME não garante nada — nada impede dois projetos chamados
+ * "Loja", e escolher o primeiro deixaria o segundo inalcançável para sempre,
+ * com o pedido caindo no repositório errado sem ninguém perceber.
+ *
+ * Por isso o nome continua valendo como atalho, mas SÓ quando ele identifica um
+ * projeto só. Empatou, o bot pergunta de novo (listando os endereços) em vez de
+ * sortear.
+ */
 function acharProjeto(
   projetos: ProjetoParaDesejo[],
   pedido: string
@@ -626,10 +703,42 @@ function acharProjeto(
   const resto = (casado[2] ?? '').trim()
   if (resto === '') return null
 
-  const projeto = projetos.find(
-    (p) => p.nome.trim().toLowerCase() === escolha || p.repo.trim().toLowerCase() === escolha
-  )
-  return projeto ? { projeto, texto: resto } : null
+  const porRepo = projetos.find((p) => p.repo.trim().toLowerCase() === escolha)
+  if (porRepo) return { projeto: porRepo, texto: resto }
+
+  const porNome = projetos.filter((p) => p.nome.trim().toLowerCase() === escolha)
+  const unico = porNome.length === 1 ? porNome[0] : undefined
+  return unico ? { projeto: unico, texto: resto } : null
+}
+
+/**
+ * Como o dono vê cada projeto na hora de escolher: o endereço (que é o que ele
+ * DIGITA, e é único) com o nome ao lado, que é o que ele reconhece.
+ */
+function rotularProjeto(p: ProjetoParaDesejo): string {
+  const nome = p.nome.trim()
+  return nome === '' || nome.toLowerCase() === p.repo.trim().toLowerCase()
+    ? p.repo
+    : `${p.repo} (${nome})`
+}
+
+/**
+ * Quem pediu, do jeito que uma PESSOA reconhece. O identificador da conta é o
+ * que o banco usa — no corpo da issue ele não diz nada a ninguém, nem para o
+ * analista que vai ler, nem para o próprio dono meses depois. O Telegram entrega
+ * o nome e o @ junto com a mensagem; o identificador interno só sobra quando não
+ * veio nada (mensagem sem remetente), e aí é melhor que uma linha vazia.
+ */
+function autorLegivel(from: RemetenteDoTelegram | undefined, identificadorDaConta: string): string {
+  const nome = [from?.first_name, from?.last_name]
+    .map((p) => (typeof p === 'string' ? p.trim() : ''))
+    .filter((p) => p !== '')
+    .join(' ')
+  const arroba = typeof from?.username === 'string' ? from.username.trim() : ''
+  if (nome !== '' && arroba !== '') return `${nome} (@${arroba})`
+  if (arroba !== '') return `@${arroba}`
+  if (nome !== '') return nome
+  return identificadorDaConta
 }
 
 const MENSAGENS_DE_DESEJO: Record<
@@ -640,7 +749,8 @@ const MENSAGENS_DE_DESEJO: Record<
     chatAmbiguo: string
     semProjeto: string
     falhou: string
-    qualProjeto: (nomes: string[]) => string
+    /** `exemplo` é o endereço a digitar; `lista`, o que o dono reconhece. */
+    qualProjeto: (exemplo: string, lista: string[]) => string
     criado: (numero: number, endereco: string, projeto: string) => string
   }
 > = {
@@ -654,8 +764,8 @@ const MENSAGENS_DE_DESEJO: Record<
     semProjeto:
       'Você ainda não tem nenhum projeto no GitOrch. Cadastre um repositório e eu registro seus pedidos nele.',
     falhou: 'Não consegui registrar seu pedido agora. Tente de novo em alguns minutos.',
-    qualProjeto: (nomes) =>
-      `Você tem mais de um projeto. Diga qual, assim: /desejo ${nomes[0]}: o que você quer.\n\nSeus projetos: ${nomes.join(', ')}`,
+    qualProjeto: (exemplo, lista) =>
+      `Você tem mais de um projeto. Diga qual, assim: /desejo ${exemplo}: o que você quer.\n\nSeus projetos: ${lista.join(', ')}`,
     criado: (numero, endereco, projeto) =>
       `Anotado! ✅ Registrei seu pedido em ${projeto} como o item nº ${numero}.\n${endereco}`,
   },
@@ -669,8 +779,8 @@ const MENSAGENS_DE_DESEJO: Record<
     semProjeto:
       'Aún no tienes ningún proyecto en GitOrch. Registra un repositorio y anotaré tus pedidos allí.',
     falhou: 'No conseguí registrar tu pedido ahora. Inténtalo de nuevo en unos minutos.',
-    qualProjeto: (nomes) =>
-      `Tienes más de un proyecto. Dime cuál, así: /desejo ${nomes[0]}: lo que quieres.\n\nTus proyectos: ${nomes.join(', ')}`,
+    qualProjeto: (exemplo, lista) =>
+      `Tienes más de un proyecto. Dime cuál, así: /desejo ${exemplo}: lo que quieres.\n\nTus proyectos: ${lista.join(', ')}`,
     criado: (numero, endereco, projeto) =>
       `¡Anotado! ✅ Registré tu pedido en ${projeto} como el ítem nº ${numero}.\n${endereco}`,
   },
@@ -684,8 +794,8 @@ const MENSAGENS_DE_DESEJO: Record<
     semProjeto:
       "You don't have any project in GitOrch yet. Add a repository and I'll record your requests there.",
     falhou: "I couldn't record your request right now. Please try again in a few minutes.",
-    qualProjeto: (nomes) =>
-      `You have more than one project. Tell me which one, like this: /desejo ${nomes[0]}: what you want.\n\nYour projects: ${nomes.join(', ')}`,
+    qualProjeto: (exemplo, lista) =>
+      `You have more than one project. Tell me which one, like this: /desejo ${exemplo}: what you want.\n\nYour projects: ${lista.join(', ')}`,
     criado: (numero, endereco, projeto) =>
       `Got it! ✅ I recorded your request in ${projeto} as item #${numero}.\n${endereco}`,
   },
@@ -720,7 +830,10 @@ export async function tratarPedidoDeDesejo(
   const rawChatId = message?.chat?.id
   if (rawChatId === undefined || rawChatId === null) return null
 
-  const pedido = interpretarPedidoDeDesejo(message?.text ?? '')
+  const pedido = interpretarPedidoDeDesejo(
+    message?.text ?? '',
+    deps.nomeDoBot ?? telegramBotUsername()
+  )
   if (!pedido.ehDesejo) return null
 
   const chatId = String(rawChatId)
@@ -743,16 +856,25 @@ export async function tratarPedidoDeDesejo(
   if (projetos.length === 0) return { chatId, text: textos.semProjeto }
 
   const alvo = acharProjeto(projetos, pedido.texto)
-  if (!alvo) return { chatId, text: textos.qualProjeto(projetos.map((p) => p.nome)) }
+  if (!alvo) {
+    const exemplo = projetos[0]?.repo ?? ''
+    return { chatId, text: textos.qualProjeto(exemplo, projetos.map(rotularProjeto)) }
+  }
 
-  const desejo = montarDesejo({ texto: alvo.texto, autor: dono.userId })
+  const desejo = montarDesejo({
+    texto: alvo.texto,
+    autor: autorLegivel(message?.from, dono.userId),
+  })
   try {
-    const criada = await deps.criarIssue({
-      repo: alvo.projeto.repo,
-      titulo: desejo.titulo,
-      corpo: desejo.corpo,
-      etiquetas: desejo.etiquetas,
-    })
+    const criada = await comPrazo(
+      deps.criarIssue({
+        repo: alvo.projeto.repo,
+        titulo: desejo.titulo,
+        corpo: desejo.corpo,
+        etiquetas: desejo.etiquetas,
+      }),
+      deps.prazoDaIssueMs ?? PRAZO_DA_ISSUE_MS
+    )
     const endereco = `https://github.com/${alvo.projeto.repo}/issues/${criada.numero}`
     return { chatId, text: textos.criado(criada.numero, endereco, alvo.projeto.nome) }
   } catch (erro) {

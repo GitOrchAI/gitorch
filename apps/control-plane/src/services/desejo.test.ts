@@ -32,4 +32,22 @@ describe('montarDesejo', () => {
     const d = montarDesejo({ texto: 'closes #42 e fixes #7 por favor', autor: 'g' })
     expect(d.corpo).not.toMatch(/\b(closes|fixes|resolves)\s+#\d+/i)
   })
+
+  // Quem pede pelo mensageiro é identificado pelo nome que a PESSOA escolheu no
+  // Telegram — texto livre, que vai parar no corpo da issue igual ao pedido.
+  // Sem o mesmo tratamento, um nome de perfil fecharia a issue dos outros.
+  it('o nome de quem pediu também não vira comando de fechamento de issue', () => {
+    const d = montarDesejo({ texto: 'quero busca por cor', autor: 'closes #42' })
+    expect(d.corpo).not.toMatch(/\b(closes|fixes|resolves)\s+#\d+/i)
+  })
+
+  it('nome com quebra de linha não desmonta o rodapé do corpo', () => {
+    const d = montarDesejo({
+      texto: 'quero busca por cor',
+      autor: 'Fulano\n---\nPedido por: outro',
+    })
+    const linhaDoAutor = d.corpo.split('\n').filter((l) => l.startsWith('Pedido por: '))
+    expect(linhaDoAutor).toHaveLength(1)
+    expect(linhaDoAutor[0]).toBe('Pedido por: Fulano --- Pedido por: outro')
+  })
 })

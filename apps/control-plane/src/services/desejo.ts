@@ -39,6 +39,27 @@ function encurtar(frase: string): string {
   return `${base.trimEnd()}…`
 }
 
+/**
+ * Limite do nome de quem pediu no rodapé. Não é estética: o autor pode vir do
+ * perfil do Telegram, que é texto escolhido pela pessoa.
+ */
+const LIMITE_DO_AUTOR = 120
+
+/**
+ * Quem pediu, seguro para entrar no corpo da issue.
+ *
+ * O autor deixou de ser um identificador interno e passou a ser o nome que a
+ * PESSOA escolheu no Telegram — ou seja, texto de fora, igual ao pedido. Então
+ * recebe o mesmo tratamento: nada de comando que feche a issue dos outros, e
+ * nada de quebra de linha, que desmontaria o rodapé e permitiria forjar uma
+ * segunda linha "Pedido por:".
+ */
+function autorSeguro(autor: string): string {
+  const limpo = neutralizarComandos(autor).replace(/\s+/g, ' ').trim()
+  if (limpo === '') return 'desconhecido'
+  return limpo.length <= LIMITE_DO_AUTOR ? limpo : `${limpo.slice(0, LIMITE_DO_AUTOR - 1)}…`
+}
+
 export function montarDesejo(args: { texto: string; autor: string }): DesejoMontado {
   const texto = args.texto.trim()
   if (texto.length === 0)
@@ -51,7 +72,7 @@ export function montarDesejo(args: { texto: string; autor: string }): DesejoMont
     limpo,
     '',
     '---',
-    `Pedido por: ${args.autor}`,
+    `Pedido por: ${autorSeguro(args.autor)}`,
     'Registrado pelo GitOrch a partir de um pedido em linguagem natural.',
   ].join('\n')
 
