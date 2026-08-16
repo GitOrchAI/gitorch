@@ -3,6 +3,7 @@ import {
   DOD_FIELD_MAP,
   RAILS_SCHEMAS,
   buildStepPrompt,
+  formatRaJourneys,
   validateDoD,
   validateForm,
   type PoTasksForm,
@@ -26,8 +27,9 @@ describe('RAILS_SCHEMAS', () => {
   })
 
   it('minItems força profundidade: 1 jornada só é rejeitada (e diz por quê)', () => {
+    const passo = { passo: 'p', detalhes: ['d'], ancora: 'a' }
     const r = validateForm(RAILS_SCHEMAS.raJourneys, {
-      journeys: [{ title: 't', actor: 'a', steps: ['1', '2', '3'], insight: 'i' }],
+      journeys: [{ title: 't', actor: 'a', steps: [passo, passo, passo], insight: 'i' }],
     })
     expect(r.ok).toBe(false)
     expect(r.errors.join(' ')).toContain('at least 2')
@@ -105,6 +107,72 @@ describe('buildStepPrompt', () => {
     // NUNCA instruir ação direta no GitHub
     expect(p.toLowerCase()).not.toContain('gh ')
     expect(p.toLowerCase()).not.toContain('create the issue')
+  })
+})
+
+describe('jornada do analista com detalhe', () => {
+  it('exige ao menos um detalhe e uma âncora em cada passo', () => {
+    const semDetalhe = {
+      journeys: [
+        {
+          title: 'Avaliar',
+          actor: 'comprador',
+          insight: 'x',
+          steps: [{ passo: 'abre a página', detalhes: [], ancora: 'src/pages/produto.tsx' }],
+        },
+        {
+          title: 'B',
+          actor: 'b',
+          insight: 'y',
+          steps: [{ passo: 'p', detalhes: ['d'], ancora: 'a' }],
+        },
+      ],
+    }
+    expect(validateForm(RAILS_SCHEMAS.raJourneys, semDetalhe).ok).toBe(false)
+  })
+
+  it('aceita passo completo e numera os detalhes na formatação', () => {
+    const bom = {
+      journeys: [
+        {
+          title: 'Avaliar',
+          actor: 'comprador',
+          insight: 'sem foto hoje',
+          steps: [
+            {
+              passo: 'abre a página do produto',
+              detalhes: ['vê as avaliações', 'vê o selo'],
+              ancora: 'src/pages/produto.tsx',
+            },
+            {
+              passo: 'clica em avaliar',
+              detalhes: ['escolhe a nota'],
+              ancora: 'src/components/Avaliar.tsx',
+            },
+            { passo: 'anexa a foto', detalhes: ['envia o arquivo'], ancora: 'src/api/upload.ts' },
+          ],
+        },
+        {
+          title: 'Moderar',
+          actor: 'lojista',
+          insight: 'não existe',
+          steps: [
+            {
+              passo: 'abre o painel',
+              detalhes: ['lista pendentes'],
+              ancora: 'src/admin/index.tsx',
+            },
+            { passo: 'aprova', detalhes: ['publica'], ancora: 'src/admin/aprovar.ts' },
+            { passo: 'recusa', detalhes: ['avisa o autor'], ancora: 'src/admin/recusar.ts' },
+          ],
+        },
+      ],
+    }
+    expect(validateForm(RAILS_SCHEMAS.raJourneys, bom).ok).toBe(true)
+    const texto = formatRaJourneys(bom)
+    expect(texto).toContain('1.1')
+    expect(texto).toContain('1.2')
+    expect(texto).toContain('src/pages/produto.tsx')
   })
 })
 

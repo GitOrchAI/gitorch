@@ -58,8 +58,17 @@ export interface RaAreasForm {
   }>
 }
 
+export interface RaJourneyStep {
+  /** O que a pessoa faz, em uma frase. */
+  passo: string
+  /** O que acontece dentro desse passo. É aqui que o plano deixa de ser vago. */
+  detalhes: string[]
+  /** Arquivo/módulo real onde isso vive ou vai viver. Sem âncora, o passo é chute. */
+  ancora: string
+}
+
 export interface RaJourneysForm {
-  journeys: Array<{ title: string; actor: string; steps: string[]; insight: string }>
+  journeys: Array<{ title: string; actor: string; steps: RaJourneyStep[]; insight: string }>
 }
 
 export interface RaBriefForm {
@@ -78,6 +87,26 @@ export interface RaDeliverable {
 }
 
 /**
+ * Formata SÓ as jornadas, com numeração em dois níveis: o passo (`I.K`) e,
+ * logo abaixo, cada detalhe do que acontece dentro dele (`I.K.N`) — a
+ * profundidade que faltava para o PO escrever tarefa em cima de algo real,
+ * não de uma frase solta. A âncora do passo (arquivo/módulo real) vai ao
+ * lado do próprio passo, nunca escondida nos detalhes.
+ */
+export function formatRaJourneys(form: RaJourneysForm): string {
+  const lines: string[] = ['## Journeys (the PO must cover EVERY journey below)']
+  form.journeys.forEach((j, i) => {
+    lines.push(`### Journey ${i}: ${j.title} (actor: ${j.actor})`)
+    j.steps.forEach((s, k) => {
+      lines.push(`${i + 1}.${k + 1} ${s.passo}  →  ${s.ancora}`)
+      s.detalhes.forEach((detalhe, n) => lines.push(`${i + 1}.${k + 1}.${n + 1} ${detalhe}`))
+    })
+    lines.push(`Insight: ${j.insight}`)
+  })
+  return lines.join('\n')
+}
+
+/**
  * Formata o entregável do RA como texto estruturado — vira memória do projeto
  * e é o que o PO lê. Formato estável: o PO referencia jornadas por índice.
  */
@@ -88,12 +117,7 @@ export function formatRaDeliverable(d: RaDeliverable): string {
       `- ${a.area}: today — ${a.whatExistsToday}; the wish needs — ${a.whatTheWishNeedsHere}. Files: ${a.filesToRead.join(', ')}`
     )
   }
-  lines.push('', '## Journeys (the PO must cover EVERY journey below)')
-  d.journeys.forEach((j, i) => {
-    lines.push(`### Journey ${i}: ${j.title} (actor: ${j.actor})`)
-    j.steps.forEach((s, k) => lines.push(`${k + 1}. ${s}`))
-    lines.push(`Insight: ${j.insight}`)
-  })
+  lines.push('', formatRaJourneys({ journeys: d.journeys }))
   lines.push(
     '',
     '## Brief',
@@ -254,7 +278,21 @@ export const RAILS_SCHEMAS = {
           properties: {
             title: { type: 'string' },
             actor: { type: 'string' },
-            steps: { type: 'array', items: { type: 'string' }, minItems: 3 },
+            // Cada passo agora exige sub-passos (detalhes) E âncora real no
+            // código — um passo sem nenhum dos dois é chute, não análise.
+            steps: {
+              type: 'array',
+              minItems: 3,
+              items: {
+                type: 'object',
+                required: ['passo', 'detalhes', 'ancora'],
+                properties: {
+                  passo: { type: 'string' },
+                  detalhes: { type: 'array', items: { type: 'string' }, minItems: 1 },
+                  ancora: { type: 'string' },
+                },
+              },
+            },
             insight: { type: 'string' },
           },
         },

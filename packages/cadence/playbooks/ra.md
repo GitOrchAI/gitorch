@@ -34,6 +34,10 @@ Deliver CONTEXT the PO can plan phases from:
 - Impact and risks: what breaks, what depends on the touched area, hidden debt.
 - Improvement options: the ways to do it, with trade-offs (simplest viable
   first).
+- Journeys: every step of a journey must carry the sub-steps of what actually
+  happens inside it, and point to the real file/module where it lives or will
+  live (the anchor) — taken from the code graph above, never invented. A step
+  with no anchor is a guess, not analysis.
 - Open questions: record them and proceed with what you can ground — never
   block waiting for answers.
 

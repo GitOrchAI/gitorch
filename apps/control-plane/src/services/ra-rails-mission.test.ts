@@ -14,8 +14,26 @@ const RA_REPLIES: Record<string, string> = {
   }),
   journeys: JSON.stringify({
     journeys: [
-      { title: 'J1', actor: 'user', steps: ['1', '2', '3'], insight: 'i1' },
-      { title: 'J2', actor: 'system', steps: ['1', '2', '3'], insight: 'i2' },
+      {
+        title: 'J1',
+        actor: 'user',
+        steps: [
+          { passo: 'p1', detalhes: ['d1'], ancora: 'src/a.tsx' },
+          { passo: 'p2', detalhes: ['d2'], ancora: 'src/a.tsx' },
+          { passo: 'p3', detalhes: ['d3'], ancora: 'src/a.tsx' },
+        ],
+        insight: 'i1',
+      },
+      {
+        title: 'J2',
+        actor: 'system',
+        steps: [
+          { passo: 'p1', detalhes: ['d1'], ancora: 'src/a.tsx' },
+          { passo: 'p2', detalhes: ['d2'], ancora: 'src/a.tsx' },
+          { passo: 'p3', detalhes: ['d3'], ancora: 'src/a.tsx' },
+        ],
+        insight: 'i2',
+      },
     ],
   }),
   brief: JSON.stringify({

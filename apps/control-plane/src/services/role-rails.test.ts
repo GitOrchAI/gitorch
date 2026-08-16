@@ -17,13 +17,45 @@ const RA_REPLIES: Record<string, string> = {
       {
         title: 'Cliente filtra por material',
         actor: 'comprador',
-        steps: ['abre catálogo', 'escolhe PLA', 'vê só produtos PLA'],
+        steps: [
+          {
+            passo: 'abre catálogo',
+            detalhes: ['vê a lista completa de produtos'],
+            ancora: 'frontend/src/pages/Catalogo.tsx',
+          },
+          {
+            passo: 'escolhe PLA',
+            detalhes: ['aplica o filtro de material'],
+            ancora: 'frontend/src/components/FiltroMaterial.tsx',
+          },
+          {
+            passo: 'vê só produtos PLA',
+            detalhes: ['lista atualizada pela API'],
+            ancora: 'backend/src/app.ts',
+          },
+        ],
         insight: 'Filtro reduz abandono.',
       },
       {
         title: 'Dados já existentes no marketplace',
         actor: 'sistema',
-        steps: ['lê integração MLB', 'coleta atributos', 'preenche material'],
+        steps: [
+          {
+            passo: 'lê integração MLB',
+            detalhes: ['consulta a API do Mercado Livre'],
+            ancora: 'backend/src/integrations/mercado-livre.ts',
+          },
+          {
+            passo: 'coleta atributos',
+            detalhes: ['extrai o material do anúncio'],
+            ancora: 'backend/src/integrations/mercado-livre.ts',
+          },
+          {
+            passo: 'preenche material',
+            detalhes: ['grava na coluna material'],
+            ancora: 'backend/src/app.ts',
+          },
+        ],
         insight: 'Marketplace já tem o dado — reutilizar.',
       },
     ],
