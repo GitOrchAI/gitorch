@@ -1,6 +1,10 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { getEnv } from '../config/env.js'
+import {
+  usuarioAdministraInstalacao,
+  InstalacaoNaoVerificavelError,
+} from '../services/instalacoes-do-usuario.js'
 
 /**
  * Instalação do GitHub App (gitorch) por usuário — complementa o login OAuth
@@ -89,10 +93,16 @@ export const githubAppInstallRoutes = async (app: FastifyInstance): Promise<void
   // installation_id + setup_action (install|update|request) + o state que
   // mandamos. O próprio GitHub avisa (docs da API de Apps) para não confiar
   // cegamente no installation_id da query — pode ser forjado por quem
-  // simplesmente chame esta URL sem passar pela instalação de verdade. O
-  // `state` assinado é a prova real: comparamos o userId nele contra o da
-  // sessão atual (a mesma pessoa que saiu é a que voltou) antes de gravar
-  // qualquer coisa.
+  // simplesmente chame esta URL sem passar pela instalação de verdade.
+  //
+  // São DUAS provas independentes, e nenhuma substitui a outra:
+  //   1. o `state` assinado prova QUEM voltou (o userId nele contra o da sessão
+  //      atual) — anti-CSRF, e só isso;
+  //   2. `GET /user/installations`, com o token do próprio cliente, prova DE QUEM
+  //      É a instalação recebida.
+  // Confiar só na primeira deixava o cliente forjar o passo do GitHub com o
+  // próprio state e gravar a instalação de outra pessoa (ver
+  // services/instalacoes-do-usuario.ts).
   app.get(
     '/api/v1/auth/github/install/callback',
     { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
@@ -138,6 +148,74 @@ export const githubAppInstallRoutes = async (app: FastifyInstance): Promise<void
       const installationId = Number(installationIdRaw)
       if (!Number.isInteger(installationId) || installationId <= 0) {
         return reply.code(400).send({ error: 'Invalid installation_id' })
+      }
+
+      // A partir daqui vale o que está escrito em services/instalacoes-do-usuario.ts:
+      // o `state` provou que quem voltou é quem saiu, e NADA MAIS. O
+      // `installation_id` continua sendo texto do cliente, e esta coluna é a
+      // autoridade que o wizard consulta depois para decidir de quem é cada
+      // repositório. Sem provar a posse antes de gravar, bastava chamar esta URL
+      // direto — com o próprio state, sem passar pelo GitHub — para apontar a
+      // guarda do wizard para a conta de outra pessoa.
+      if (!app.engineConnections) {
+        app.log.warn(
+          { userId: request.user.id },
+          '[install] serviço de conexões indisponível — instalação NÃO gravada'
+        )
+        return reply.code(503).send({
+          error:
+            'Não foi possível confirmar no GitHub que esta instalação é sua agora — tente de novo em instantes.',
+          code: 'INSTALACAO_NAO_VERIFICAVEL',
+        })
+      }
+
+      const githubToken = await app.engineConnections
+        .getRawGithubToken(request.user.id)
+        .catch((err: unknown) => {
+          app.log.warn(
+            { error: err instanceof Error ? err.message : String(err) },
+            '[install] não foi possível ler a credencial do GitHub do cliente'
+          )
+          return null
+        })
+
+      // Sem credencial do cliente não há como perguntar de quem é a instalação —
+      // e "não sei" nunca vira "pode".
+      if (!githubToken) {
+        return reply.code(503).send({
+          error:
+            'Reconecte sua conta do GitHub: sem ela não dá para confirmar que esta instalação é sua.',
+          code: 'INSTALACAO_NAO_VERIFICAVEL',
+        })
+      }
+
+      let ehDele: boolean
+      try {
+        ehDele = await usuarioAdministraInstalacao(installationId, { githubToken })
+      } catch (err) {
+        if (err instanceof InstalacaoNaoVerificavelError) {
+          app.log.warn(
+            { userId: request.user.id, installationId, error: err.message },
+            '[install] instalação NÃO gravada: não foi possível confirmar a posse'
+          )
+          return reply.code(503).send({
+            error:
+              'Não foi possível confirmar no GitHub que esta instalação é sua agora — tente de novo em instantes.',
+            code: 'INSTALACAO_NAO_VERIFICAVEL',
+          })
+        }
+        throw err
+      }
+
+      if (!ehDele) {
+        app.log.warn(
+          { userId: request.user.id, installationId },
+          '[install] instalação recusada: não pertence a quem está logado'
+        )
+        return reply.code(403).send({
+          error: 'Esta instalação do GitHub não é sua. Refaça a instalação a partir do gitorch.',
+          code: 'INSTALACAO_NAO_E_SUA',
+        })
       }
 
       await app.prisma.user.update({

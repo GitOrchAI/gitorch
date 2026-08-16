@@ -3,6 +3,7 @@ import Fastify, { FastifyRequest } from 'fastify'
 import jwt from 'jsonwebtoken'
 import { resetEnvCache, getEnv } from '../config/env.js'
 import { githubAppInstallRoutes } from './github-app-install.js'
+import type { EngineConnectionService } from '../services/engine-connection.js'
 
 /**
  * F1 Onda 2 — instalação do GitHub App por usuário, com seleção de repos.
@@ -115,18 +116,63 @@ describe('GET /api/v1/auth/github/install', () => {
   })
 })
 
+/**
+ * O ATAQUE que a segunda metade deste arquivo fecha: o `state` assinado prova
+ * apenas que quem voltou do GitHub é quem saiu (anti-CSRF) — não diz NADA sobre
+ * de quem é a instalação que veio na query. Como o callback gravava
+ * `installation_id` cru, um cliente legítimo podia pegar o próprio `state` no
+ * cabeçalho Location de `GET /install`, nunca passar pelo GitHub, e chamar o
+ * callback com o `installation_id` da VÍTIMA.
+ *
+ * O estrago não parava no campo: `users.github_installation_id` é a AUTORIDADE
+ * que o passo final do wizard consulta para saber "quais repositórios são deste
+ * cliente?" (services/repositorios-do-usuario.ts). O installation token é emitido
+ * com a chave privada do App, que abre qualquer instalação — então a guarda
+ * passaria a comparar o repositório declarado contra a lista da vítima e
+ * autorizaria o projeto alheio. Envenenar esta coluna desarma a guarda inteira.
+ *
+ * A correção: antes de gravar, perguntar ao GitHub — com o token do PRÓPRIO
+ * cliente — quais instalações ele administra (`GET /user/installations`) e exigir
+ * que o id recebido esteja lá. Não conseguir perguntar não é permissão: sem
+ * resposta conclusiva, nada é gravado.
+ */
 describe('GET /api/v1/auth/github/install/callback', () => {
   let app: ReturnType<typeof Fastify>
   let prismaUpdate: ReturnType<typeof vi.fn>
+  let getRawGithubToken: ReturnType<typeof vi.fn>
   const PAGES = 'https://pages.example.test'
+  const fetchOriginal = global.fetch
 
-  const mountWithUser = async (userId = 'user_1'): Promise<void> => {
+  /** Uma página de `GET /user/installations` com os ids que o cliente administra. */
+  const paginaDeInstalacoes = (ids: number[]): Response =>
+    new Response(
+      JSON.stringify({ total_count: ids.length, installations: ids.map((id) => ({ id })) }),
+      { status: 200, headers: { 'content-type': 'application/json' } }
+    )
+
+  const mountWithUser = async (
+    userId = 'user_1',
+    opcoes: { instalacoesDoUsuario?: number[]; tokenDoGitHub?: string | null } = {}
+  ): Promise<void> => {
     prismaUpdate = vi.fn().mockResolvedValue({ id: userId })
+    getRawGithubToken = vi
+      .fn()
+      .mockResolvedValue(
+        opcoes.tokenDoGitHub === undefined ? 'gho_token_do_cliente' : opcoes.tokenDoGitHub
+      )
+    // Por padrão o cliente administra a instalação 98765 — a do caminho feliz.
+    global.fetch = vi.fn(async () =>
+      paginaDeInstalacoes(opcoes.instalacoesDoUsuario ?? [98765])
+    ) as unknown as typeof fetch
+
     app = Fastify()
     app.decorate('prisma', {
       user: { update: prismaUpdate },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
+    app.decorate('engineConnections', {
+      getRawGithubToken,
+    } as unknown as EngineConnectionService)
     app.addHook('preHandler', async (request: FastifyRequest) => {
       request.user = { id: userId, wingId: 'octocat' }
     })
@@ -145,6 +191,7 @@ describe('GET /api/v1/auth/github/install/callback', () => {
 
   afterEach(async () => {
     await app?.close()
+    global.fetch = fetchOriginal
     resetEnvCache()
     delete process.env['GITHUB_APP_SLUG']
   })
@@ -240,11 +287,92 @@ describe('GET /api/v1/auth/github/install/callback', () => {
     })
   })
 
+  it('ATAQUE: sessão válida + state próprio + installation_id da VÍTIMA — 403 e nada gravado', async () => {
+    // Mallory é cliente legítimo: sessão de verdade e state assinado por ela
+    // mesma (pego do Location de GET /install, sem nunca falar com o GitHub).
+    // O que ela NÃO tem é a instalação 424242, que é da vítima.
+    await mountWithUser('user_mallory', { instalacoesDoUsuario: [111, 222] })
+    const state = stateFor('user_mallory')
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/auth/github/install/callback?installation_id=424242&setup_action=install&state=${encodeURIComponent(state)}`,
+    })
+
+    expect(res.statusCode).toBe(403)
+    expect(res.json().code).toBe('INSTALACAO_NAO_E_SUA')
+    // O ponto que importa: a autoridade da guarda do wizard continua limpa.
+    expect(prismaUpdate).not.toHaveBeenCalled()
+  })
+
+  it('FAIL-CLOSED: GitHub fora do ar na hora de conferir — 503 e nada gravado', async () => {
+    await mountWithUser('user_1')
+    global.fetch = vi.fn(async () => {
+      throw new Error('ECONNRESET')
+    }) as unknown as typeof fetch
+    const state = stateFor('user_1')
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/auth/github/install/callback?installation_id=98765&setup_action=install&state=${encodeURIComponent(state)}`,
+    })
+
+    expect(res.statusCode).toBe(503)
+    expect(res.json().code).toBe('INSTALACAO_NAO_VERIFICAVEL')
+    expect(prismaUpdate).not.toHaveBeenCalled()
+  })
+
+  it('FAIL-CLOSED: token do GitHub revogado (HTTP 401 na conferência) — 503 e nada gravado', async () => {
+    await mountWithUser('user_1')
+    global.fetch = vi.fn(
+      async () => new Response(JSON.stringify({ message: 'Bad credentials' }), { status: 401 })
+    ) as unknown as typeof fetch
+    const state = stateFor('user_1')
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/auth/github/install/callback?installation_id=98765&setup_action=install&state=${encodeURIComponent(state)}`,
+    })
+
+    expect(res.statusCode).toBe(503)
+    expect(prismaUpdate).not.toHaveBeenCalled()
+  })
+
+  it('FAIL-CLOSED: sem credencial do GitHub guardada, nem tenta adivinhar — 503 e nada gravado', async () => {
+    await mountWithUser('user_1', { tokenDoGitHub: null })
+    const state = stateFor('user_1')
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/v1/auth/github/install/callback?installation_id=98765&setup_action=install&state=${encodeURIComponent(state)}`,
+    })
+
+    expect(res.statusCode).toBe(503)
+    expect(prismaUpdate).not.toHaveBeenCalled()
+  })
+
+  it('a conferência usa o token do PRÓPRIO cliente, nunca a chave do App', async () => {
+    await mountWithUser('user_1')
+    const state = stateFor('user_1')
+
+    await app.inject({
+      method: 'GET',
+      url: `/api/v1/auth/github/install/callback?installation_id=98765&setup_action=install&state=${encodeURIComponent(state)}`,
+    })
+
+    expect(getRawGithubToken).toHaveBeenCalledWith('user_1')
+    const chamada = (global.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]!
+    expect(String(chamada[0])).toContain('https://api.github.com/user/installations')
+    expect((chamada[1] as { headers: Record<string, string> }).headers['Authorization']).toBe(
+      'Bearer gho_token_do_cliente'
+    )
+  })
+
   it('devolve para a origem carregada no state (returnTo), não sempre o FRONTEND_URL', async () => {
     process.env['GITORCH_PUBLIC_URL'] = 'https://api.example.test'
     process.env['CORS_ORIGIN'] = 'https://api.example.test'
     resetEnvCache()
-    await mountWithUser('user_1')
+    await mountWithUser('user_1', { instalacoesDoUsuario: [1] })
     const state = stateFor('user_1', 'https://api.example.test')
 
     const res = await app.inject({
