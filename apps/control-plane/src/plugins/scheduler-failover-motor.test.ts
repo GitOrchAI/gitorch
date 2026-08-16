@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest'
 import { isEngineFault } from './scheduler.js'
 import { RailsExecutionError, RailsStepError } from '../services/rails-runner.js'
 import { GithubExecutionError } from '../services/github-errors.js'
+import { CredencialExpiradaError } from '../services/credencial-do-motor.js'
 
 // Defeito real de produção (loureng/patinhas-3d-crafts, chain=codex>antigravity,
 // 12/08 em diante): o motor `codex` saía com exitCode != 0 todo dia e a missão
@@ -41,6 +42,17 @@ describe('isEngineFault — classificação que decide o failover de motor', () 
   test('erro genérico sem relação com motor/cota: não é falha de motor (a classificação não pode virar um catch-all)', () => {
     const err = new Error('ECONNREFUSED 127.0.0.1:5432 (banco fora do ar)')
     expect(isEngineFault(err, String(err))).toBe(false)
+  })
+
+  // Tarefa 16: o motor `codex` responde "Your access token could not be
+  // refreshed. Please log out and sign in again." e SAI COM CÓDIGO 0 — nem
+  // RailsExecutionError (processo != 0) nem isFailoverError (o texto não bate
+  // no regex de cota/auth) pegam isto. O ponto de reconhecimento por texto é
+  // credencial-do-motor.ts (ehCredencialExpirada), na ORIGEM (saída crua do
+  // motor); daqui em diante é tipo, igual RailsExecutionError.
+  test('CredencialExpiradaError (motor pediu novo login): É falha de motor — a cadeia deve trocar de motor', () => {
+    const err = new CredencialExpiradaError('motor codex pediu novo login', 'codex')
+    expect(isEngineFault(err, String(err))).toBe(true)
   })
 })
 
@@ -86,5 +98,20 @@ describe('cadeia de failover (forma do loop de executeMissionWithFailover)', () 
     })
     expect(resultado.tentados).toEqual(['codex'])
     expect(resultado.motivo).toBe('github-sem-failover')
+  })
+
+  // Tarefa 16: o caso real provado ao vivo — codex com credencial expirada,
+  // saindo com código 0 e uma mensagem pedindo login novo. O trabalho não
+  // pode parar: antigravity (a reserva) precisa ser tentado no mesmo tick,
+  // exatamente como qualquer outra falha de motor.
+  test('codex com credencial expirada (CredencialExpiradaError): antigravity (a reserva) é tentado em seguida', () => {
+    const chain = ['codex', 'antigravity']
+    const resultado = simulaCadeia(chain, {
+      codex: new CredencialExpiradaError(
+        'motor codex pediu novo login: Your access token could not be refreshed.',
+        'codex'
+      ),
+    })
+    expect(resultado.tentados).toEqual(['codex', 'antigravity'])
   })
 })

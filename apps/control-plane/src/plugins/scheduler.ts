@@ -92,6 +92,11 @@ import {
 import { ProjectV2Client } from '@gitorch/github-sync'
 import { RailsStepError, RailsExecutionError } from '../services/rails-runner.js'
 import { GithubExecutionError } from '../services/github-backlog.js'
+import {
+  ehCredencialExpirada,
+  CredencialExpiradaError,
+  deveAvisarDeNovo,
+} from '../services/credencial-do-motor.js'
 import { canRunMission, shouldAlertForQuota } from '../lib/spend-guard.js'
 import { computeConsumption } from '../lib/consumption.js'
 import { pipelineCheckEnabled } from '../config/pipeline-check.js'
@@ -251,12 +256,19 @@ export function resolveRailsBoard(project: { runtimeConfig?: unknown }): string 
  * função a reconhece como falha de motor — sem depender de casar texto de
  * mensagem (proibido: um regex mais largo teria o mesmo furo pra qualquer
  * mensagem de erro de processo ainda não prevista).
+ *
+ * Tarefa 16 (credencial de motor expirada): `CredencialExpiradaError`
+ * (credencial-do-motor.ts) entra na mesma lista por TIPO, pelo mesmo motivo
+ * de `RailsExecutionError` acima — é igualmente falha de MOTOR (o próximo da
+ * cadeia pode ter credencial válida), e o reconhecimento por texto já
+ * aconteceu na origem (onde a saída crua do motor existe), não aqui.
  */
 export function isEngineFault(err: unknown, lastError: string): boolean {
   if (err instanceof GithubExecutionError) return false
   return (
     err instanceof RailsStepError ||
     err instanceof RailsExecutionError ||
+    err instanceof CredencialExpiradaError ||
     isFailoverError(lastError)
   )
 }
@@ -1248,6 +1260,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // concorrência e a criação da missão (dois POST simultâneos criariam duas).
   let triggerChain: Promise<TriggerResult> = Promise.resolve({ triggered: false, reason: 'init' })
 
+  // Dedup de "credencial expirada" (Tarefa 16): uma vez por dono+motor por
+  // dia — ver deveAvisarDeNovo em credencial-do-motor.ts. Em memória do
+  // processo, de propósito (não é coluna de banco): o pior caso é um aviso
+  // extra logo após um restart do control-plane, nunca silêncio além de 24h
+  // dentro do mesmo processo vivo.
+  const avisosDeCredencialExpirada = new Map<string, number>()
+
   const runTrigger = async (
     role: F6AgentRole,
     projectId?: string,
@@ -1726,6 +1745,26 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               cwd: stepDir,
               timeoutMs: 10 * 60 * 1000,
             })
+            // Tarefa 16: checado ANTES do exitCode != 0 de propósito — o bug
+            // real é o motor saindo com código 0 (sucesso) enquanto o texto
+            // é um pedido de login novo. Sem este corte aqui, a saída cai no
+            // runFormStep de baixo, que gasta as tentativas de reparo à toa
+            // (repetir o PROMPT não conserta um token expirado) e o texto
+            // real do motor se perde atrás de um RailsStepError genérico
+            // ("no JSON object found") — exatamente o silêncio que esta
+            // tarefa existe para fechar. Ver credencial-do-motor.ts.
+            if (
+              ehCredencialExpirada({
+                stdout: step.output,
+                stderr: step.stderr,
+                exitCode: step.exitCode,
+              })
+            ) {
+              throw new CredencialExpiradaError(
+                `motor ${sel.runtime} pediu novo login: ${(step.stderr || step.output).slice(0, 300)}`,
+                sel.runtime
+              )
+            }
             if (step.exitCode !== 0) {
               // O PROCESSO do motor falhou (crash, binário ausente, timeout do
               // processo etc.) — o motor nem chegou a responder, então não há
@@ -1902,6 +1941,24 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             userId: project.userId ?? 'scheduler-user',
             timeoutMs: STALE_RUNNING_MS,
           })
+          // Tarefa 16: só faz sentido AQUI, no caminho clássico — é o único
+          // ramo deste if/else-if/else onde `result.output` é saída CRUA do
+          // motor. Nos trilhos o sinal já foi checado dentro de `execute()`
+          // (mais acima) contra a saída crua real, antes do runFormStep
+          // sintetizar outra coisa; no smRails (delegação/watchdog/sensor)
+          // não há chamada de motor nenhuma para checar.
+          if (
+            ehCredencialExpirada({
+              stdout: result.output,
+              stderr: result.stderr,
+              exitCode: result.exitCode,
+            })
+          ) {
+            throw new CredencialExpiradaError(
+              `motor ${sel.runtime} pediu novo login: ${(result.stderr || result.output).slice(0, 300)}`,
+              sel.runtime
+            )
+          }
         }
 
         // Achado crítico da revisão pós-merge: o contrato de entregável só
@@ -2057,6 +2114,37 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         if (err instanceof GithubExecutionError) {
           app.log.error(err, `[Scheduler] erro de execução no GitHub; sem failover`)
           break
+        }
+        // Tarefa 16: credencial expirada é falha de motor (cai para a
+        // reserva via isEngineFault, abaixo, exatamente como qualquer outra)
+        // — mas É DIFERENTE de qualquer outra porque só o DONO resolve
+        // (refazendo o login). Sem isto, a esteira segue funcionando pela
+        // reserva e ninguém percebe que um motor ficou pra trás, como
+        // aconteceu de verdade em produção. Avisa uma vez por dono+motor por
+        // dia (deveAvisarDeNovo) — SPAM apaga sinal tanto quanto silêncio,
+        // mesma disciplina de session-watch.ts.
+        if (err instanceof CredencialExpiradaError) {
+          const chaveDoAviso = `${project.userId ?? project.id}:${err.runtime}`
+          if (deveAvisarDeNovo(avisosDeCredencialExpirada, chaveDoAviso, Date.now())) {
+            avisosDeCredencialExpirada.set(chaveDoAviso, Date.now())
+            const notifyChatId = await resolveNotifyChatId(app.prisma, project, {
+              instanceOwnerEmail: process.env['GITORCH_OWNER_EMAIL'],
+              instanceChatId:
+                process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
+            })
+            const avisar = buildTelegramNotifier({
+              botToken:
+                process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
+              ...(notifyChatId ? { chatId: notifyChatId } : {}),
+            })
+            if (avisar) {
+              await avisar(
+                `GitOrch: a credencial do motor ${err.runtime} expirou (projeto ${project.wingId}) ` +
+                  `— refaça o login do motor ${err.runtime} para ele voltar a rodar. Até lá, a ` +
+                  `reserva da cadeia assume o trabalho.`
+              ).catch(() => undefined)
+            }
+          }
         }
         const engineFault = isEngineFault(err, lastError)
         if (!isLast && engineFault) {
