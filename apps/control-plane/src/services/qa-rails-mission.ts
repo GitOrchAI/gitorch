@@ -45,7 +45,81 @@ const APPROVAL_VERDICT_MARKER = 'verdict: APPROVE'
  */
 export const MAX_TENTATIVAS_DE_MERGE = 3
 
-export interface QaRailsMissionOptions {
+/**
+ * Família de opções que só faz sentido ligada ao Prisma/notificador real do
+ * dono — em produção, SEMPRE montada por `montarOpcoesDoJulgamento`
+ * (scheduler.ts), nunca escrita à mão em outro call site.
+ *
+ * Guarda estrutural criada depois de esta família falhar de ligar DUAS vezes
+ * seguidas (Tarefa 7: `registrarPendencia`/`limparPendencia`/
+ * `registrarAvisoDeDemora`/`avisarDono` ficaram inertes; Tarefa 10:
+ * `registrarFracassoDeMerge` repetiu o mesmo furo). As opções eram
+ * ADICIONADAS aqui e nunca chegavam ao call site real — a lógica ficava
+ * correta e testada em isolamento, e inerte em produção, porque sendo
+ * opcionais o compilador não via nada de errado em omiti-las.
+ *
+ * Por isso este grupo agora vive numa interface PRÓPRIA: o tipo de retorno
+ * de `montarOpcoesDoJulgamento` é `Required<Omit<VigiliaDoJulgamentoOptions,
+ * 'avisarDono'>> & ...` — DERIVADO desta declaração, não uma lista de nomes
+ * copiada à mão em outro lugar. Um campo novo aqui vira, automaticamente,
+ * obrigatório no retorno daquela função — esquecer de ligá-lo quebra a build
+ * (`pnpm --filter @gitorch/control-plane build`), não fica em silêncio até
+ * alguém notar em produção. Ver `montarOpcoesDoJulgamento` em scheduler.ts.
+ */
+export interface VigiliaDoJulgamentoOptions {
+  /**
+   * Tarefa 7: grava a PRIMEIRA vez que esta entrega é vista com a
+   * verificação pendente. Sem isto o teto de espera (`TETO_DE_ESPERA_MS`,
+   * vigia-da-verificacao.ts) não tem de onde contar — a decisão de esperar
+   * continua correta, só nunca amadurece para o aviso de demora.
+   */
+  registrarPendencia?: (args: { sessionName: string; agora: Date }) => Promise<void>
+  /**
+   * Tarefa 7: apaga a marca de pendência. Chamada de dentro deste mesmo laço
+   * (R2 do controlador), no instante em que a verificação deixa de estar
+   * pendente — nunca por um gatilho externo nem por uma varredura própria.
+   */
+  limparPendencia?: (args: { sessionName: string }) => Promise<void>
+  /**
+   * Avisa o dono quando a verificação de um PR fica parada além do teto de
+   * espera. MESMO caminho que `session-watch.ts` usa (`VigiaDeps.avisarDono`)
+   * — não é uma segunda campainha, é o mesmo aviso.
+   *
+   * A ÚNICA opção da família legitimamente ausente às vezes: sem notificador
+   * (Telegram) configurado, não há para onde avisar — omitida de propósito,
+   * por isso fica de fora do `Required<Omit<...>>` do retorno da função.
+   */
+  avisarDono?: (mensagem: string) => Promise<void>
+  /**
+   * Achado 2 da revisão da Tarefa 7: grava que o dono já foi avisado desta
+   * verificação parada, PARA ESTE COMMIT. Sem isto, `avisarDono` dispara a
+   * cada tick do scheduler (~1min) enquanto a verificação continuar parada —
+   * o dono seria avisado a cada minuto, para sempre, depois do teto. Mesma
+   * disciplina de `session-watch.ts` ("SPAM apaga sinal tanto quanto
+   * silêncio"), reaproveitando o MESMO campo (`answeredHash`, ver
+   * `LinhaDeSessao`) e a mesma função de hash (`hashDaMensagem`).
+   */
+  registrarAvisoDeDemora?: (args: { sessionName: string; hash: string }) => Promise<void>
+  /**
+   * Tarefa 10: grava quantos fracassos de mescla SEGUIDOS já aconteceram
+   * contra o commit atual desta entrega. `contador` já vem PRONTO de quem
+   * chama — zerado e recomeçado em 1 se o commit mudou desde o último
+   * fracasso, somado ao anterior se é o mesmo commit tentando de novo — esta
+   * função só persiste o número final (mesmo espírito de `registrarPr`: o
+   * dado já resolvido chega, o depósito não reinterpreta nada).
+   *
+   * Sem isto o teto (`MAX_TENTATIVAS_DE_MERGE`) nunca teria de onde contar:
+   * a exceção do C1 (aprovação-ainda-aberta é reprocessada, não pulada)
+   * reprocessaria para sempre, sem nunca acionar o aviso ao dono.
+   */
+  registrarFracassoDeMerge?: (args: {
+    sessionName: string
+    contador: number
+    agora: Date
+  }) => Promise<void>
+}
+
+export interface QaRailsMissionOptions extends VigiliaDoJulgamentoOptions {
   repository: string
   githubToken: string
   execute: (prompt: string) => Promise<string>
@@ -91,52 +165,6 @@ export interface QaRailsMissionOptions {
    * módulo, que não sabe nada de banco.
    */
   aoMesclar?: (args: { numeroDoPr: number }) => Promise<void>
-  /**
-   * Tarefa 7: grava a PRIMEIRA vez que esta entrega é vista com a
-   * verificação pendente. Sem isto o teto de espera (`TETO_DE_ESPERA_MS`,
-   * vigia-da-verificacao.ts) não tem de onde contar — a decisão de esperar
-   * continua correta, só nunca amadurece para o aviso de demora.
-   */
-  registrarPendencia?: (args: { sessionName: string; agora: Date }) => Promise<void>
-  /**
-   * Tarefa 7: apaga a marca de pendência. Chamada de dentro deste mesmo laço
-   * (R2 do controlador), no instante em que a verificação deixa de estar
-   * pendente — nunca por um gatilho externo nem por uma varredura própria.
-   */
-  limparPendencia?: (args: { sessionName: string }) => Promise<void>
-  /**
-   * Avisa o dono quando a verificação de um PR fica parada além do teto de
-   * espera. MESMO caminho que `session-watch.ts` usa (`VigiaDeps.avisarDono`)
-   * — não é uma segunda campainha, é o mesmo aviso.
-   */
-  avisarDono?: (mensagem: string) => Promise<void>
-  /**
-   * Achado 2 da revisão da Tarefa 7: grava que o dono já foi avisado desta
-   * verificação parada, PARA ESTE COMMIT. Sem isto, `avisarDono` dispara a
-   * cada tick do scheduler (~1min) enquanto a verificação continuar parada —
-   * o dono seria avisado a cada minuto, para sempre, depois do teto. Mesma
-   * disciplina de `session-watch.ts` ("SPAM apaga sinal tanto quanto
-   * silêncio"), reaproveitando o MESMO campo (`answeredHash`, ver
-   * `LinhaDeSessao`) e a mesma função de hash (`hashDaMensagem`).
-   */
-  registrarAvisoDeDemora?: (args: { sessionName: string; hash: string }) => Promise<void>
-  /**
-   * Tarefa 10: grava quantos fracassos de mescla SEGUIDOS já aconteceram
-   * contra o commit atual desta entrega. `contador` já vem PRONTO de quem
-   * chama — zerado e recomeçado em 1 se o commit mudou desde o último
-   * fracasso, somado ao anterior se é o mesmo commit tentando de novo — esta
-   * função só persiste o número final (mesmo espírito de `registrarPr`: o
-   * dado já resolvido chega, o depósito não reinterpreta nada).
-   *
-   * Sem isto o teto (`MAX_TENTATIVAS_DE_MERGE`) nunca teria de onde contar:
-   * a exceção do C1 (aprovação-ainda-aberta é reprocessada, não pulada)
-   * reprocessaria para sempre, sem nunca acionar o aviso ao dono.
-   */
-  registrarFracassoDeMerge?: (args: {
-    sessionName: string
-    contador: number
-    agora: Date
-  }) => Promise<void>
   /**
    * Canal do aviso de degradação — antes hardcoded em `console.warn`,
    * invisível na observabilidade estruturada. Produção (scheduler.ts) sempre

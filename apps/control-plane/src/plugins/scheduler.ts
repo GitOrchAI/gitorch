@@ -37,7 +37,10 @@ import { resolveMissionDelivery, type MissionPathKind } from '../services/missio
 import { ClientEnvironmentService } from '../services/environment.js'
 import { runPoMissionViaRails } from '../services/po-rails-mission.js'
 import { runRaMissionViaRails } from '../services/ra-rails-mission.js'
-import { runQaMissionViaRails, type QaRailsMissionOptions } from '../services/qa-rails-mission.js'
+import {
+  runQaMissionViaRails,
+  type VigiliaDoJulgamentoOptions,
+} from '../services/qa-rails-mission.js'
 import { runSmDelegation } from '../services/sm-delegation.js'
 import { tetosDoPlanoDoDev } from '../services/plano-do-dev.js'
 import {
@@ -289,10 +292,11 @@ export function montarOpcoesDeDelegacao(args: {
 }
 
 /**
- * Monta as opções da Tarefa 7 (vigília da verificação) que o julgamento do
- * QA recebe: `registrarPendencia`/`limparPendencia`/`registrarAvisoDeDemora`
- * ligadas ao Prisma real, `registrarFracassoDeMerge` (Tarefa 10) e
- * `avisarDono` quando um notificador foi montado.
+ * Monta as opções da família `VigiliaDoJulgamentoOptions` (ver
+ * qa-rails-mission.ts) que o julgamento do QA recebe:
+ * `registrarPendencia`/`limparPendencia`/`registrarAvisoDeDemora`/
+ * `registrarFracassoDeMerge` ligadas ao Prisma real, e `avisarDono` quando
+ * um notificador foi montado.
  *
  * Achado 1 da revisão da Tarefa 7: as três primeiras foram ADICIONADAS à
  * interface de `runQaMissionViaRails` mas nunca chegavam a este ponto de
@@ -301,11 +305,9 @@ export function montarOpcoesDeDelegacao(args: {
  * gravado, o teto de 90min nunca amadurecia, o dono nunca era avisado).
  *
  * Achado crítico da revisão da Tarefa 10: `registrarFracassoDeMerge` repetiu
- * o MESMO furo — adicionada à interface, nunca ligada aqui. Em produção,
- * `mergeFailures` lido do banco ficava sempre 0, o teto de tentativas nunca
- * disparava, e a entrega era retentada contra o GitHub a cada tique do
- * scheduler, para sempre. Esta correção liga a quinta opção da mesma forma
- * que as outras quatro.
+ * o MESMO furo — adicionada à interface, nunca ligada aqui. Corrigido no
+ * commit anterior; este commit fecha a CLASSE do defeito (ver guarda
+ * estrutural abaixo), para não haver uma terceira vez.
  *
  * Função pura EXPORTADA pelo mesmo motivo de `montarOpcoesDeDelegacao`
  * (achado 2 da Tarefa 5): a montagem viveria só dentro de
@@ -313,18 +315,23 @@ export function montarOpcoesDeDelegacao(args: {
  * que voltasse a esquecer uma das opções no call site de
  * `runQaMissionViaRails` não quebraria teste nenhum. Ver
  * scheduler-julgamento-opcoes.test.ts.
+ *
+ * Guarda estrutural (pós-Tarefa 10, para a classe do defeito não se repetir
+ * uma TERCEIRA vez): o tipo de retorno abaixo não é uma lista de nomes
+ * copiada à mão — é `Required<Omit<VigiliaDoJulgamentoOptions, 'avisarDono'>>`,
+ * DERIVADO da interface em qa-rails-mission.ts. Uma opção nova adicionada
+ * àquela família fica, automaticamente, obrigatória neste retorno; esquecer
+ * de devolvê-la aqui agora quebra `pnpm --filter @gitorch/control-plane
+ * build` (erro "Property is missing"), em vez de compilar em silêncio como
+ * aconteceu nas Tarefas 7 e 10. `avisarDono` é a ÚNICA exceção — omitida de
+ * propósito quando não há notificador, por isso fica fora do `Required` e
+ * como `Pick` optativo, igual sempre foi.
  */
 export function montarOpcoesDoJulgamento(args: {
   prisma: PrismaDevSession
   avisarDono?: ((mensagem: string) => Promise<void>) | undefined
-}): Pick<
-  QaRailsMissionOptions,
-  | 'registrarPendencia'
-  | 'limparPendencia'
-  | 'registrarAvisoDeDemora'
-  | 'avisarDono'
-  | 'registrarFracassoDeMerge'
-> {
+}): Required<Omit<VigiliaDoJulgamentoOptions, 'avisarDono'>> &
+  Pick<VigiliaDoJulgamentoOptions, 'avisarDono'> {
   return {
     registrarPendencia: (a) => registrarPendencia({ prisma: args.prisma, ...a }),
     limparPendencia: (a) => limparPendencia({ prisma: args.prisma, ...a }),

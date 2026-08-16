@@ -25,6 +25,17 @@ import type { PrismaDevSession } from '../services/dev-session-store.js'
 // objeto (não fica presente com `undefined`) quando nenhum notificador foi
 // construído — mesma disciplina de `...(notify ? { avisarDono: notify } : {})`
 // já usada em `varrerSessoesDoDev` (scheduler.ts:~2248).
+//
+// Guarda estrutural pós-Tarefa 10 (para a classe do defeito não se repetir
+// uma TERCEIRA vez): `montarOpcoesDoJulgamento` agora declara seu retorno como
+// `Required<Omit<VigiliaDoJulgamentoOptions, 'avisarDono'>> & ...` — tipo
+// DERIVADO da interface `VigiliaDoJulgamentoOptions` (qa-rails-mission.ts),
+// não uma lista de nomes copiada à mão aqui ou lá. Um campo novo adicionado
+// àquela interface fica automaticamente OBRIGATÓRIO no retorno desta função;
+// esquecer de devolvê-lo quebra `pnpm --filter @gitorch/control-plane build`
+// (erro de tipo "Property is missing"), antes mesmo dos testes rodarem — o
+// mesmo esquecimento que passou por 2 revisões inteiras (Tarefas 7 e 10)
+// sem o compilador reclamar nada, porque a opção era só OPCIONAL demais.
 function prismaFalso() {
   return {
     devSession: {
@@ -43,7 +54,7 @@ describe('montarOpcoesDoJulgamento', () => {
 
     const agora = new Date('2026-01-01T00:00:00.000Z')
     // As quatro funções são sempre devolvidas (só `avisarDono` é condicional)
-    // — o `?` na assinatura vem só do formato que `QaRailsMissionOptions`
+    // — o `?` na assinatura vem só do formato que `VigiliaDoJulgamentoOptions`
     // declara (opcional PARA QUEM CHAMA `runQaMissionViaRails`), não de
     // `montarOpcoesDoJulgamento` já não as devolver.
     expect(opcoes.registrarPendencia).toBeDefined()
