@@ -250,6 +250,18 @@ model Project {
   // é usada só onde o App não chega, nunca como atalho geral.
   encryptedClientToken String? @map("encrypted_client_token")
 
+  // Reconferência PERIÓDICA do acesso do dono ao repositório (o acesso era
+  // provado uma vez, no cadastro, e o caminho automático nunca mais perguntava
+  // nada — ver services/reconferencia-de-acesso.ts).
+  // Nulo = nunca conferido: entra no primeiro ciclo depois do deploy.
+  accessCheckedAt   DateTime? @map("access_checked_at")
+  // Preenchido = projeto SUSPENSO: não dispara missão até o acesso voltar.
+  accessSuspendedAt DateTime? @map("access_suspended_at")
+  accessSuspendedReason String? @map("access_suspended_reason")
+  // Conferências seguidas que não concluíram nada. NUNCA suspendem — só
+  // encurtam o intervalo da próxima tentativa e, no limite, avisam o dono.
+  accessCheckFailures Int @default(0) @map("access_check_failures")
+
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 

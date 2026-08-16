@@ -76,6 +76,12 @@ import {
   type ResolvedOwner,
 } from '../services/onboarding-board.js'
 import { lerCredencialDoProjeto } from '../services/project-credential.js'
+import { provaDeEscritaNoUso } from '../services/acesso-ao-repositorio.js'
+import {
+  reconferirAcessoDosProjetos,
+  projetoEstaSuspensoPorAcesso,
+  type ResumoDaReconferencia,
+} from '../services/reconferencia-de-acesso.js'
 import { ProjectV2Client } from '@gitorch/github-sync'
 import { RailsStepError, RailsExecutionError } from '../services/rails-runner.js'
 import { GithubExecutionError } from '../services/github-backlog.js'
@@ -1020,6 +1026,90 @@ export async function runBootReaper(
   }
 }
 
+/**
+ * A reconferência PERIÓDICA de acesso, ligada ao relógio.
+ *
+ * A decisão em si é pura e mora em services/reconferencia-de-acesso.ts (com os
+ * casos: acesso ok, sem acesso, inverificável uma vez, inverificável várias
+ * vezes, recuperado). Aqui só se resolve DE ONDE vêm os projetos, COM QUAL
+ * credencial a pergunta é feita, ONDE o resultado é gravado e POR ONDE o dono
+ * é avisado.
+ *
+ * Exportada — e não escondida dentro do plugin — pelo mesmo motivo de
+ * `runBootReaper`: é o pedaço que só o wiring pode errar, e ele precisa ser
+ * testável sem subir o relógio inteiro.
+ *
+ * Roda a cada tique, mas NÃO pergunta a cada tique: `precisaReconferir` é que
+ * decide, projeto a projeto, se já é hora — uma prova por projeto por ciclo,
+ * nunca uma por missão.
+ */
+export async function reconferirAcessoDoRelogio(
+  app: FastifyInstance,
+  agora?: Date
+): Promise<ResumoDaReconferencia> {
+  const provarEscrita = provaDeEscritaNoUso(app.engineConnections)
+
+  return reconferirAcessoDosProjetos({
+    projetos: async () => {
+      const linhas = await app.prisma.project.findMany({
+        where: { isActive: true },
+        select: {
+          id: true,
+          wingId: true,
+          userId: true,
+          accessCheckedAt: true,
+          accessSuspendedAt: true,
+          accessSuspendedReason: true,
+          accessCheckFailures: true,
+        },
+      })
+      return linhas.map((linha) => ({
+        id: linha.id,
+        repo: linha.wingId,
+        ownerId: linha.userId,
+        estado: {
+          conferidoEm: linha.accessCheckedAt,
+          suspensoEm: linha.accessSuspendedAt,
+          motivoDaSuspensao: linha.accessSuspendedReason,
+          falhasSeguidas: linha.accessCheckFailures,
+        },
+      }))
+    },
+    provarEscrita,
+    salvar: async (projectId, estado) => {
+      await app.prisma.project.update({
+        where: { id: projectId },
+        data: {
+          accessCheckedAt: estado.conferidoEm,
+          accessSuspendedAt: estado.suspensoEm,
+          accessSuspendedReason: estado.motivoDaSuspensao,
+          accessCheckFailures: estado.falhasSeguidas,
+        },
+      })
+    },
+    // O aviso é do DONO daquele projeto — mesma resolução do resto do
+    // scheduler: sem vínculo real (telegram_links, nascido do /start dele),
+    // ninguém é avisado, e o projeto de um cliente nunca vira mensagem no chat
+    // de outro. Sem vínculo o trabalho segue igual: a suspensão vale mesmo sem
+    // aviso.
+    avisarDono: async (projectId, texto) => {
+      const projeto = await app.prisma.project.findUnique({ where: { id: projectId } })
+      if (!projeto) return
+      const chatId = await resolveNotifyChatId(app.prisma, projeto, {
+        instanceOwnerEmail: process.env['GITORCH_OWNER_EMAIL'],
+        instanceChatId: process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
+      })
+      const notify = buildTelegramNotifier({
+        botToken: process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
+        ...(chatId ? { chatId } : {}),
+      })
+      if (notify) await notify(texto)
+    },
+    ...(agora ? { agora } : {}),
+    onWarn: (mensagem) => app.log.warn(`[Scheduler] ${mensagem}`),
+  })
+}
+
 const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // Modo INERTE do health pré-switch da esteira (F2.3/P1-2): sai ANTES de tocar
   // prisma/engineConnections/cortex — a instância de verificação aponta pro
@@ -1141,7 +1231,10 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           include: { user: { include: { plan: true } } },
         })
       : await app.prisma.project.findFirst({
-          where: { isActive: true },
+          // Projeto suspenso por falta de acesso não entra na fila: sem este
+          // filtro, o rodízio escolheria justamente ele e a instância ficaria
+          // parada em cima de um projeto que não pode escrever em lugar nenhum.
+          where: { isActive: true, accessSuspendedAt: null },
           // Fila prioritária: projetos de donos em planos mais altos (tierRank
           // maior) rodam antes. Empate → mais antigo primeiro (fairness).
           orderBy: [{ user: { plan: { tierRank: 'desc' } } }, { createdAt: 'asc' }],
@@ -1150,6 +1243,26 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     if (!project) {
       app.log.warn('[Scheduler] No active project found to trigger mission')
       return { triggered: false, reason: 'no-project' }
+    }
+
+    // O ÚNICO ponto por onde uma missão nasce — e por isso é aqui que a
+    // suspensão por perda de acesso segura o freio, valendo para o relógio e
+    // para qualquer disparo sob demanda (rota admin, QA).
+    //
+    // O acesso era provado uma vez, no cadastro, e nunca mais: removido do
+    // repositório depois, o dono continuava com o relógio escrevendo lá com a
+    // credencial da INSTALAÇÃO, que continua legítima. Quem devolve o projeto
+    // ao ar é a própria reconferência, sozinha, quando o acesso volta
+    // (services/reconferencia-de-acesso.ts) — ninguém precisa mexer em nada.
+    //
+    // Não é reason "retentável" de propósito: repetir a janela a cada minuto
+    // não muda nada enquanto o acesso não voltar.
+    if (projetoEstaSuspensoPorAcesso(project)) {
+      app.log.warn(
+        { projectId: project.id, motivo: project.accessSuspendedReason },
+        '[Scheduler] projeto suspenso por falta de acesso ao repositório; nenhuma missão é disparada'
+      )
+      return { triggered: false, reason: 'acesso-suspenso' }
     }
 
     // Orçamento do plano: total de missões do dia somando TODOS os projetos do
@@ -2144,6 +2257,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   }
 
   const tick = async () => {
+    // ANTES de qualquer disparo: quem perdeu o acesso ao repositório não pode
+    // ter o dia começando com uma missão escrevendo lá. `reconferirAcessoDoRelogio`
+    // nunca rejeita e só pergunta ao GitHub sobre os projetos cujo ciclo
+    // venceu — não é uma chamada por tique nem por missão.
+    await reconferirAcessoDoRelogio(app)
     await processSetupMissions()
     await varrerSessoesDoDev()
     await sweepExpiredEnvironments()
