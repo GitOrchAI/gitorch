@@ -22,6 +22,11 @@ import {
 } from '../lib/setup-errors.js'
 import { summarizeResourcesLock } from '../lib/environment-resources.js'
 import { mintInstallationToken } from '../services/github-app-token.js'
+import { nomeDeRepositorioValido } from '../services/nome-de-repositorio.js'
+import {
+  repositoriosSemAcesso,
+  RepositoriosNaoVerificaveisError,
+} from '../services/repositorios-do-usuario.js'
 
 interface GitHubRepo {
   id: number
@@ -522,6 +527,72 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
         ])
       )
 
+      // 1.6. DE QUEM É O REPOSITÓRIO. Nenhuma checagem acima pergunta isso —
+      // elas cuidam de quantidade, plano e motor. O endereço vinha cru do corpo
+      // e virava `wingId` do projeto; como o produto resolve a instalação do
+      // GitHub PELO REPOSITÓRIO (services/github-app-token.ts), declarar o
+      // endereço de outro cliente fazia o gitorch emitir credencial da
+      // instalação DELE e passar a escrever na conta de quem nunca autorizou.
+      //
+      // A guarda de FORMATO não cobre isto — "vitima/repo" é um endereço
+      // perfeitamente válido —, mas continua valendo como primeira porta: ela
+      // recusa o texto que tentaria trocar o endpoint chamado lá na frente, e
+      // dá um erro honesto em vez de um "sem acesso" confuso.
+      const foraDeFormato = repos.filter((repo) => !nomeDeRepositorioValido(repo))
+      if (foraDeFormato.length > 0) {
+        return reply.code(400).send({
+          error: `Endereço de repositório inválido (esperado "dono/repositorio"): ${foraDeFormato.join(', ')}`,
+          code: 'REPO_FORMATO_INVALIDO',
+        })
+      }
+
+      // O token do dono é lido UMA vez e serve a dois propósitos: provar o
+      // acesso agora e alimentar a coleta de contexto lá embaixo. Se a leitura
+      // falhar (envelope corrompido, chave rotacionada), fica `null` — e sem
+      // credencial não há como verificar, então o pedido é recusado em vez de
+      // seguir no escuro.
+      const githubTokenDoDono = app.engineConnections
+        ? await app.engineConnections.getRawGithubToken(owner.id).catch((err: unknown) => {
+            app.log.warn(
+              { error: err instanceof Error ? err.message : String(err) },
+              '[setup] não foi possível ler a credencial do GitHub do dono'
+            )
+            return null
+          })
+        : null
+
+      try {
+        const semAcesso = await repositoriosSemAcesso(repos, {
+          installationId: owner.githubInstallationId,
+          githubToken: githubTokenDoDono,
+        })
+        if (semAcesso.length > 0) {
+          app.log.warn(
+            { ownerId: owner.id, semAcesso },
+            '[setup] submit recusado: repositório declarado não pertence a quem pediu'
+          )
+          return reply.code(403).send({
+            error: `Você não tem acesso a este repositório no GitHub: ${semAcesso.join(', ')}. Escolha um da sua lista.`,
+            code: 'REPO_SEM_ACESSO',
+          })
+        }
+      } catch (err) {
+        if (err instanceof RepositoriosNaoVerificaveisError) {
+          // Não conseguir conferir NÃO é permissão. Recusa com motivo claro e
+          // convite a tentar de novo — nunca cria o projeto no escuro.
+          app.log.warn(
+            { ownerId: owner.id, error: err.message },
+            '[setup] submit recusado: não foi possível confirmar o acesso aos repositórios'
+          )
+          return reply.code(503).send({
+            error:
+              'Não foi possível confirmar no GitHub que estes repositórios são seus agora — reconecte o GitHub ou tente de novo em instantes.',
+            code: 'REPOS_NAO_VERIFICAVEIS',
+          })
+        }
+        throw err
+      }
+
       const createdProjects = []
       // repoFullName -> Project criado/reusado nesta submissão. Alimenta a
       // coleta de contexto abaixo: precisa do id (pra persistir o board) e do
@@ -652,9 +723,10 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
       // `collectAndRememberRepoContext` já não lança; o try/catch é o cinto de
       // segurança para qualquer erro inesperado (nunca vira 500 pro cliente).
       try {
-        const githubToken = app.engineConnections
-          ? await app.engineConnections.getRawGithubToken(owner.id)
-          : null
+        // Mesmo token já lido na verificação de acesso — reusar evita uma
+        // segunda decifragem e garante que os dois passos falem da mesma
+        // credencial.
+        const githubToken = githubTokenDoDono
         if (app.cortex && githubToken) {
           for (const repoFullName of repos) {
             const project = projectsByRepo.get(repoFullName)

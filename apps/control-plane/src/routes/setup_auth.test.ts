@@ -1,4 +1,4 @@
-import { test, expect, describe, vi, beforeEach } from 'vitest'
+import { test, expect, describe, vi, beforeEach, afterEach } from 'vitest'
 import Fastify from 'fastify'
 import jwt from 'jsonwebtoken'
 import { loadEnv } from '../config/env.js'
@@ -10,8 +10,24 @@ import bcrypt from 'bcryptjs'
 describe('Setup and Auth Integration', () => {
   let app: ReturnType<typeof Fastify>
   let sessionHeaders: { authorization: string }
+  const fetchOriginal = global.fetch
+
+  afterEach(() => {
+    global.fetch = fetchOriginal
+    vi.restoreAllMocks()
+  })
 
   beforeEach(async () => {
+    // O submit exige provar que "owner/repo" é do cliente antes de criar
+    // qualquer coisa: sem a lista real do GitHub o pedido é recusado por não
+    // ser verificável.
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).includes('/user/repos')) {
+        return new Response(JSON.stringify([{ full_name: 'owner/repo' }]), { status: 200 })
+      }
+      throw new Error(`chamada inesperada ao GitHub: ${String(url)}`)
+    }) as unknown as typeof fetch
+
     app = Fastify()
     const env = loadEnv()
     await registerPlugins(app, env)
@@ -69,6 +85,10 @@ describe('Setup and Auth Integration', () => {
     app.prisma.engineConnection.findMany = vi
       .fn()
       .mockResolvedValue([{ runtime: 'claude', status: 'connected' }])
+    // Credencial do GitHub do dono: é com ela que o submit confere no GitHub
+    // que "owner/repo" é mesmo dele. Sem cofre cifrado montado no teste, o
+    // atalho é no ponto de leitura.
+    vi.spyOn(app.engineConnections, 'getRawGithubToken').mockResolvedValue('gh_token')
 
     // 2. Call setup/submit
     const setupRes = await app.inject({

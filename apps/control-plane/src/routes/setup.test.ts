@@ -6,6 +6,35 @@ import type { EngineConnectionService } from '../services/engine-connection.js'
 import { resetAppTokenCache } from '../services/github-app-token.js'
 import { encryptCredential } from '../lib/credential-crypto.js'
 
+/**
+ * A lista REAL de repositórios do cliente no GitHub.
+ *
+ * O passo final do wizard passou a exigir que o repositório declarado seja
+ * mesmo de quem pede — `routes/setup.ts` cruza o que veio no corpo com esta
+ * listagem antes de criar qualquer coisa. Por isso todo cenário de submit
+ * precisa dizer o que o cliente acessa: sem resposta, o pedido é recusado por
+ * não ser verificável, que é o comportamento correto.
+ *
+ * Devolve `null` para qualquer outra chamada, para as suítes que já roteiam
+ * GraphQL/REST continuarem tratando o resto como antes.
+ */
+function respostaDaListaDeRepos(url: unknown, doCliente: string[]): Response | null {
+  const href = String(url)
+  if (!href.includes('/user/repos') && !href.includes('/installation/repositories')) return null
+  return new Response(JSON.stringify(doCliente.map((full_name) => ({ full_name }))), {
+    status: 200,
+  })
+}
+
+/** `global.fetch` que só sabe responder a listagem de repositórios do cliente. */
+function fetchSoDaListaDeRepos(doCliente: string[]): typeof fetch {
+  return vi.fn(async (url: string | URL | Request) => {
+    const lista = respostaDaListaDeRepos(url, doCliente)
+    if (lista) return lista
+    throw new Error(`chamada inesperada ao GitHub neste cenário: ${String(url)}`)
+  }) as unknown as typeof fetch
+}
+
 describe('GET /api/v1/github/repos', () => {
   let app: ReturnType<typeof Fastify>
   const originalFetch = global.fetch
@@ -317,11 +346,17 @@ describe('GET /api/v1/github/repos — via installation do GitHub App (F1 Onda 2
 
 describe('POST /api/v1/setup/submit — runtime wiring', () => {
   let app: ReturnType<typeof Fastify>
+  const originalFetch = global.fetch
   let projectCreate: ReturnType<typeof vi.fn>
   let engineConnectionFindMany: ReturnType<typeof vi.fn> &
     ((userId: string) => Promise<Array<{ runtime: string; status: string }>>)
 
+  afterEach(() => {
+    global.fetch = originalFetch
+  })
+
   beforeEach(async () => {
+    global.fetch = fetchSoDaListaDeRepos(['octocat/repo'])
     projectCreate = vi.fn().mockImplementation(async ({ data }) => ({
       id: 'proj_1',
       wingId: data.wingId,
@@ -348,6 +383,7 @@ describe('POST /api/v1/setup/submit — runtime wiring', () => {
           lastError: null,
         }))
       },
+      getRawGithubToken: async () => 'gh_test_token',
     } as unknown as EngineConnectionService)
     app.decorate('prisma', {
       user: {
@@ -446,7 +482,11 @@ describe('POST /api/v1/setup/submit — coleta de contexto: board Projects V2 n�
   // então é o único jeito de exercitar o fluxo INTEIRO (rota → collector →
   // GraphQL) sem bater na rede real.
   function stubGithubGraphQL(handlers: { boardNumberCreated: number }): typeof fetch {
-    return vi.fn(async (_url: string, init: { body: string }) => {
+    return vi.fn(async (url: string, init: { body: string }) => {
+      // A prova de que o repositório é do cliente vem antes de qualquer
+      // GraphQL — sem ela o submit nem chega na coleta de contexto.
+      const lista = respostaDaListaDeRepos(url, ['octocat/repo'])
+      if (lista) return lista
       const body = JSON.parse(init.body) as { query: string }
       if (body.query.includes('RepoOwner')) {
         return new Response(
@@ -582,8 +622,15 @@ describe('POST /api/v1/setup/submit — coleta de contexto: board Projects V2 n�
     const first = await app.inject({ method: 'POST', url: '/api/v1/setup/submit', payload })
     expect(first.statusCode).toBe(200)
 
+    // Só as chamadas GraphQL têm corpo — a listagem de repositórios do cliente
+    // (a prova de que o repo é dele) é um GET sem corpo.
+    const soGraphQL = (chamadas: unknown[][]): string[] =>
+      chamadas
+        .filter((c) => (c[1] as { body?: string } | undefined)?.body)
+        .map((c) => (JSON.parse((c[1] as { body: string }).body) as { query: string }).query)
+
     const fetchCalls1 = (global.fetch as ReturnType<typeof vi.fn>).mock.calls
-    const queriesRound1 = fetchCalls1.map((c) => (JSON.parse(c[1].body) as { query: string }).query)
+    const queriesRound1 = soGraphQL(fetchCalls1)
     expect(queriesRound1.some((q) => q.includes('CreateProjectV2'))).toBe(true)
     expect(queriesRound1.some((q) => q.includes('GetProjectId'))).toBe(false)
 
@@ -598,7 +645,7 @@ describe('POST /api/v1/setup/submit — coleta de contexto: board Projects V2 n�
     expect(second.statusCode).toBe(200)
 
     const fetchCalls2 = (global.fetch as ReturnType<typeof vi.fn>).mock.calls
-    const queriesRound2 = fetchCalls2.map((c) => (JSON.parse(c[1].body) as { query: string }).query)
+    const queriesRound2 = soGraphQL(fetchCalls2)
     expect(queriesRound2.some((q) => q.includes('GetProjectId'))).toBe(true)
     expect(queriesRound2.some((q) => q.includes('CreateProjectV2'))).toBe(false)
 
@@ -622,7 +669,9 @@ describe('POST /api/v1/setup/submit — leitura de credencial de um repo não de
   // rotas REST de segurança nem são chamadas (repo-context-collector.ts:
   // sem clientToken, coletarDividaDeSeguranca é pulado).
   function stubGithubGraphQL(): typeof fetch {
-    return vi.fn(async (_url: string, init: { body: string }) => {
+    return vi.fn(async (url: string, init: { body: string }) => {
+      const lista = respostaDaListaDeRepos(url, ['octocat/repo1', 'octocat/repo2'])
+      if (lista) return lista
       const body = JSON.parse(init.body) as { query: string }
       if (body.query.includes('RepoOwner')) {
         return new Response(
@@ -755,10 +804,16 @@ describe('POST /api/v1/setup/submit — leitura de credencial de um repo não de
 
 describe('POST /api/v1/setup/submit — plano autoritativo (paid-intent, ainda não pago)', () => {
   let app: ReturnType<typeof Fastify>
+  const originalFetch = global.fetch
   let projectCreate: ReturnType<typeof vi.fn>
   let planFindUnique: ReturnType<typeof vi.fn>
 
+  afterEach(() => {
+    global.fetch = originalFetch
+  })
+
   beforeEach(async () => {
+    global.fetch = fetchSoDaListaDeRepos(['octocat/repo1', 'octocat/repo2', 'octocat/repo3'])
     projectCreate = vi.fn().mockImplementation(async ({ data }) => ({
       id: 'proj_1',
       wingId: data.wingId,
@@ -778,6 +833,7 @@ describe('POST /api/v1/setup/submit — plano autoritativo (paid-intent, ainda n
     app = Fastify()
     app.decorate('engineConnections', {
       list: async () => [{ runtime: 'claude', status: 'connected' }],
+      getRawGithubToken: async () => 'gh_test_token',
     } as unknown as EngineConnectionService)
     app.decorate('prisma', {
       user: {
@@ -884,8 +940,17 @@ describe('POST /api/v1/setup/submit — isolamento entre clientes (o projeto é 
   }>
   let apiKeys: Array<{ projectId: string }>
   let owners: Record<string, { id: string; email: string }>
+  const originalFetch = global.fetch
+
+  afterEach(() => {
+    global.fetch = originalFetch
+  })
 
   beforeEach(async () => {
+    // Ana e Bob são os dois colaboradores REAIS de "acme/api" — o repositório
+    // aparece na lista dos dois, e é exatamente por isso que o cenário do
+    // vazamento continua válido depois da guarda de acesso.
+    global.fetch = fetchSoDaListaDeRepos(['acme/api'])
     projects = []
     apiKeys = []
     let nextId = 1
@@ -898,6 +963,7 @@ describe('POST /api/v1/setup/submit — isolamento entre clientes (o projeto é 
     app = Fastify()
     app.decorate('engineConnections', {
       list: async () => [{ runtime: 'claude', status: 'connected' }],
+      getRawGithubToken: async () => 'gh_test_token',
     } as unknown as EngineConnectionService)
     app.decorate('prisma', {
       user: {
@@ -1182,6 +1248,8 @@ describe('POST /api/v1/setup/submit — coleta de contexto usa a credencial do c
   // coletarDividaDeSeguranca faz contra as rotas de segurança.
   function stubGithubGraphQLAndRest(): typeof fetch {
     return vi.fn(async (url: string, init?: { body?: string }) => {
+      const lista = respostaDaListaDeRepos(url, ['octocat/repo'])
+      if (lista) return lista
       if (init?.body) {
         const body = JSON.parse(init.body) as { query: string }
         if (body.query.includes('RepoOwner')) {
