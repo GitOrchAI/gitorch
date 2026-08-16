@@ -36,6 +36,18 @@
 import type { Mecanismo } from './mecanismo-de-publicacao.js'
 
 /**
+ * Cadência da vigília pós-merge (Tarefa 17, R6 do controlador): de quanto em
+ * quanto tempo uma sessão mesclada, ainda sem veredito de publicação, é
+ * reexaminada. Mesma ordem de grandeza da vigília de sessões do dev
+ * assíncrono — perguntar ao GitHub a cada tique do relógio (1 minuto)
+ * gastaria a quota do cliente sem que nada tivesse mudado desde a última
+ * olhada. Vive aqui (não em `scheduler.ts`) porque é o relógio E o teste
+ * (`pos-merge.test.ts`) que precisam dela — nunca o número solto em nenhum
+ * dos dois lados.
+ */
+export const CADENCIA_DE_PUBLICACAO_MS = 10 * 60_000
+
+/**
  * `GET /repos/{o}/{r}/actions/workflows/{arquivo}/runs` — e também o formato
  * de `GET /repos/{o}/{r}/actions/runs/{id}`. Assinatura provada ao vivo
  * contra a API do GitHub.

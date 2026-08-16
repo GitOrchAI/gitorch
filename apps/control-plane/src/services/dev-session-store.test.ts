@@ -9,6 +9,8 @@ import {
   fecharSessao,
   registrarPendencia,
   registrarFracassoDeMerge,
+  registrarMescla,
+  registrarEstadoDaPublicacao,
 } from './dev-session-store.js'
 
 const agora = new Date('2026-01-01T00:00:00.000Z')
@@ -22,6 +24,7 @@ function prismaFalso(overrides: Record<string, unknown> = {}) {
       update: vi.fn(async (_args: unknown) => undefined),
       updateMany: vi.fn(async (_args: unknown) => undefined),
       findMany: vi.fn(async (_args: unknown) => []),
+      findFirst: vi.fn(async (_args: unknown) => null),
       ...overrides,
     },
   }
@@ -290,5 +293,39 @@ describe('registrarFracassoDeMerge', () => {
 
     const chamada = prisma.devSession.update.mock.calls[0]?.[0] as { data: Record<string, unknown> }
     expect(chamada.data).not.toHaveProperty('answeredHash')
+  })
+})
+
+describe('registrarMescla', () => {
+  it('grava o commit mesclado e NÃO fecha a linha (Tarefa 17: a sessão só encerra com veredito de publicação)', async () => {
+    const prisma = prismaFalso()
+
+    await registrarMescla({ prisma, sessionName: 'sessions/1', mergeCommitSha: 'deadbeef', agora })
+
+    expect(prisma.devSession.update).toHaveBeenCalledWith({
+      where: { sessionName: 'sessions/1' },
+      data: { mergeCommitSha: 'deadbeef', stateCheckedAt: agora },
+    })
+    const chamada = prisma.devSession.update.mock.calls[0]?.[0] as { data: Record<string, unknown> }
+    expect(chamada.data).not.toHaveProperty('closedAt')
+    expect(chamada.data).not.toHaveProperty('closedReason')
+  })
+})
+
+describe('registrarEstadoDaPublicacao', () => {
+  it('grava o veredito e quando foi checado — é o que dá a cadência da vigília', async () => {
+    const prisma = prismaFalso()
+
+    await registrarEstadoDaPublicacao({
+      prisma,
+      sessionName: 'sessions/1',
+      estado: 'publicando',
+      agora,
+    })
+
+    expect(prisma.devSession.update).toHaveBeenCalledWith({
+      where: { sessionName: 'sessions/1' },
+      data: { deployState: 'publicando', deployCheckedAt: agora },
+    })
   })
 })

@@ -19,6 +19,26 @@
 
 import { buscarComGuarda, enderecoPermitido } from './endereco-seguro.js'
 
+/**
+ * Os caminhos que o ensaio visita, por projeto: configuração declarada em
+ * `runtimeConfig.ambientes.caminhos` (Tarefa 17), com padrão `['/']` quando
+ * ausente, vazia, ou malformada. Fica NESTE arquivo (não em `testarAmbiente`,
+ * que continua sem saber nada de `runtimeConfig` — decisão da Tarefa 14) e
+ * não em `scheduler.ts`, pelo mesmo motivo de `resolveBoardColumns`/
+ * `resolveSprintDays` (board-status.ts): a config vive ao lado do que ela
+ * configura, testável sem subir o relógio.
+ *
+ * Nunca chuta rota de cliente: sem configuração válida, testa só a raiz —
+ * o próprio texto do brief da Tarefa 14 proíbe advinhar caminho.
+ */
+export function resolveCaminhosDeAmbiente(runtimeConfig: unknown): string[] {
+  const caminhos = (runtimeConfig as { ambientes?: { caminhos?: unknown } } | null)?.ambientes
+    ?.caminhos
+  if (!Array.isArray(caminhos)) return ['/']
+  const validos = caminhos.filter((c): c is string => typeof c === 'string' && c.length > 0)
+  return validos.length > 0 ? validos : ['/']
+}
+
 export type RelatorioDeAmbiente = {
   veredito: 'passou' | 'falhou' | 'inalcancavel' | 'sem-endereco'
   testes: Array<{ caminho: string; status: number | null; ok: boolean }>

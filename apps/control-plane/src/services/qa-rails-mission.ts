@@ -156,16 +156,20 @@ export interface QaRailsMissionOptions extends VigiliaDoJulgamentoOptions {
    */
   avisarSessao?: (args: { sessionName: string; texto: string }) => Promise<boolean>
   /**
-   * Fecha a linha da sessão do dev assíncrono quando o PR dela é mesclado.
+   * Avisa que o PR foi mesclado de verdade — com o SHA do commit que o
+   * GitHub de fato criou (`sha` da resposta de `PUT .../merge`, capturado
+   * abaixo, NUNCA `pr.head.sha`: depois de um squash, o head da PR nunca
+   * existe no branch base, e é o branch base que o CD publica).
    *
-   * Sem isto o merge acontece mas a vigia (dev-session-store) nunca fica
-   * sabendo: a linha continua "viva" para sempre, `filtroDeSessoesParaJulgamento`
-   * segue candidatando-a e o QA voltaria a procurar veredito para um PR que já
-   * foi mesclado. `fecharSessao` com o motivo `'merged'` é quem tira a linha da
-   * vigia — decisão de quem chama (o scheduler conhece o Prisma), não deste
-   * módulo, que não sabe nada de banco.
+   * Tarefa 17: antes, quem chamava fechava a linha da vigia aqui mesmo
+   * (`fecharSessao` com `'merged'`) — a sessão "concluía" no instante do
+   * merge e o produto nunca soube se aquele código chegou ao ar. Agora quem
+   * chama só GRAVA o commit mesclado (`registrarMescla`, dev-session-store.ts);
+   * quem fecha a linha é a vigília da publicação (`varrerPublicacoes`,
+   * scheduler.ts), quando há veredito. Este módulo continua sem saber nada
+   * de banco — só entrega o fato de que a mescla aconteceu, e com qual commit.
    */
-  aoMesclar?: (args: { numeroDoPr: number }) => Promise<void>
+  aoMesclar?: (args: { numeroDoPr: number; mergeCommitSha: string }) => Promise<void>
   /**
    * Canal do aviso de degradação — antes hardcoded em `console.warn`,
    * invisível na observabilidade estruturada. Produção (scheduler.ts) sempre
@@ -709,6 +713,14 @@ export async function runQaMissionViaRails(
       // cinco porteiros bloqueou antes disso (ex.: o sha mudou de novo nesta
       // fresta). Um porteiro nosso não é uma recusa do GitHub.
       let chamouOGithub = false
+      // Gravado dentro do `merge()` abaixo, quando (e só quando) o GitHub de
+      // fato aceita a mescla. É o sha do commit NOVO que o squash cria no
+      // branch base — nunca `pr.head.sha` (aquele commit, da branch da
+      // entrega, deixa de existir depois do squash). Sem este valor certo, a
+      // Tarefa 13 (`acompanharPublicacao`) jamais encontraria a execução do
+      // CD que publica ESTE commit — compararia contra um sha que nunca
+      // aparece no branch que o CD observa.
+      let mergeCommitSha = ''
       resultadoDoMerge = await mesclarPr({
         numeroDoPr: target.number,
         ciState,
@@ -732,16 +744,18 @@ export async function runQaMissionViaRails(
           // "merge recusado" (mesmo tratamento do C1), virando motivo
           // declarado em vez de mesclar às cegas.
           chamouOGithub = true
-          await gh('PUT', `/repos/${options.repository}/pulls/${target.number}/merge`, {
-            merge_method: 'squash',
-            sha: pr.head?.sha,
-          })
+          const resposta = (await gh(
+            'PUT',
+            `/repos/${options.repository}/pulls/${target.number}/merge`,
+            { merge_method: 'squash', sha: pr.head?.sha }
+          )) as { sha?: string }
+          mergeCommitSha = resposta.sha ?? ''
           return true
         },
       })
       if (resultadoDoMerge.mesclado) {
         if (options.aoMesclar) {
-          await options.aoMesclar({ numeroDoPr: target.number })
+          await options.aoMesclar({ numeroDoPr: target.number, mergeCommitSha })
         }
 
         // Task 15: a entrega foi mesclada — provado ao vivo que o texto dela

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { testarAmbiente } from './qa-de-ambiente.js'
+import { testarAmbiente, resolveCaminhosDeAmbiente } from './qa-de-ambiente.js'
 
 describe('testarAmbiente', () => {
   it('sem endereço nenhum: diz que não tem, não inventa veredito', async () => {
@@ -50,5 +50,34 @@ describe('testarAmbiente', () => {
       buscar: vi.fn().mockRejectedValue(new Error('tempo esgotado')),
     })
     expect(r.veredito).toBe('inalcancavel')
+  })
+})
+
+describe('resolveCaminhosDeAmbiente', () => {
+  it('sem runtimeConfig nenhum: padrão só a raiz', () => {
+    expect(resolveCaminhosDeAmbiente(null)).toEqual(['/'])
+    expect(resolveCaminhosDeAmbiente(undefined)).toEqual(['/'])
+  })
+
+  it('runtimeConfig sem a chave ambientes.caminhos: padrão só a raiz', () => {
+    expect(resolveCaminhosDeAmbiente({})).toEqual(['/'])
+    expect(resolveCaminhosDeAmbiente({ board: { sprintDays: 5 } })).toEqual(['/'])
+  })
+
+  it('lê os caminhos declarados pelo projeto', () => {
+    expect(
+      resolveCaminhosDeAmbiente({ ambientes: { caminhos: ['/', '/produtos', '/checkout'] } })
+    ).toEqual(['/', '/produtos', '/checkout'])
+  })
+
+  it('caminhos malformado (não é array, ou array vazio): padrão só a raiz — nunca chuta rota', () => {
+    expect(resolveCaminhosDeAmbiente({ ambientes: { caminhos: '/produtos' } })).toEqual(['/'])
+    expect(resolveCaminhosDeAmbiente({ ambientes: { caminhos: [] } })).toEqual(['/'])
+  })
+
+  it('descarta entradas que não são texto (nunca inventa caminho a partir de lixo)', () => {
+    expect(
+      resolveCaminhosDeAmbiente({ ambientes: { caminhos: ['/produtos', 42, null, ''] } })
+    ).toEqual(['/produtos'])
   })
 })

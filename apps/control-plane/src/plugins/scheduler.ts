@@ -55,9 +55,22 @@ import {
   limparPendencia,
   registrarAvisoDeDemora,
   registrarFracassoDeMerge,
+  registrarMescla,
+  registrarEstadoDaPublicacao,
   type PrismaDevSession,
   type LinhaDeSessao,
 } from '../services/dev-session-store.js'
+import { sessoesParaAcompanharPublicacao } from '../services/pos-merge.js'
+import { descobrirMecanismo, type Mecanismo } from '../services/mecanismo-de-publicacao.js'
+import {
+  acompanharPublicacao,
+  type ExecucaoDeWorkflow,
+  type EtapaDaExecucao,
+  type PublicacaoDeclarada,
+  type EstadoDaPublicacao,
+} from '../services/publicacao.js'
+import { testarAmbiente, resolveCaminhosDeAmbiente } from '../services/qa-de-ambiente.js'
+import { buscarComGuarda } from '../services/endereco-seguro.js'
 import {
   criarSessaoJules,
   consultarSessaoJules,
@@ -352,6 +365,44 @@ export function montarOpcoesDoJulgamento(args: {
     registrarFracassoDeMerge: (a) => registrarFracassoDeMerge({ prisma: args.prisma, ...a }),
     ...(args.avisarDono ? { avisarDono: args.avisarDono } : {}),
   }
+}
+
+/**
+ * O que acontece quando uma entrega é de fato mesclada (`aoMesclar`,
+ * runQaMissionViaRails/qa-rails-mission.ts).
+ *
+ * Tarefa 17: ANTES desta mudança, este ponto fechava a linha da vigia na
+ * hora (`fecharSessao` com `'merged'`) — a sessão "concluía" no instante do
+ * merge e o produto nunca soube se aquele código chegou ao ar. Agora só
+ * GRAVA o commit mesclado (`registrarMescla`, dev-session-store.ts); quem
+ * fecha é `varrerPublicacoes` (mais abaixo), quando há veredito sobre a
+ * publicação.
+ *
+ * Exportada e testável isoladamente pelo MESMO motivo de
+ * `montarOpcoesDoJulgamento` (Tarefas 7 e 10, ver o comentário acima): o
+ * call site real dentro de `executeMissionWithFailover` é um fechamento não
+ * exportado — uma regressão que voltasse a fechar a sessão aqui (ou
+ * esquecesse de gravar o commit mesclado) não quebraria teste nenhum se essa
+ * lógica só existisse dentro daquele fechamento. Ver
+ * scheduler-pos-merge-opcoes.test.ts.
+ */
+export async function aoMesclarUmaEntrega(args: {
+  prisma: PrismaDevSession
+  projectId: string
+  numeroDoPr: number
+  mergeCommitSha: string
+  agora: Date
+}): Promise<void> {
+  const linha = await args.prisma.devSession.findFirst({
+    where: { projectId: args.projectId, pullRequestNumber: args.numeroDoPr, closedAt: null },
+  })
+  if (!linha) return
+  await registrarMescla({
+    prisma: args.prisma,
+    sessionName: linha.sessionName,
+    mergeCommitSha: args.mergeCommitSha,
+    agora: args.agora,
+  })
 }
 
 /**
@@ -1932,30 +1983,23 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                       }),
                     // Task 11 (decisão do dono D7): o produto mescla sozinho,
                     // sem confirmação humana. `mesclarPr` já fez o merge de
-                    // verdade quando este callback dispara — aqui só fecha a
-                    // linha da vigia (`fecharSessao` com 'merged'), que é o
-                    // que tira a sessão de `filtroDeSessoesParaJulgamento` e
-                    // impede o QA de procurar veredito para um PR que já foi
-                    // mesclado. Sem linha correspondente (PR de humano, ou
-                    // sessão fechada por outro motivo), não há o que fechar —
-                    // não é falha.
-                    aoMesclar: async ({ numeroDoPr }) => {
-                      const linha = await app.prisma.devSession.findFirst({
-                        where: {
-                          projectId: project.id,
-                          pullRequestNumber: numeroDoPr,
-                          closedAt: null,
-                        },
-                      })
-                      if (linha) {
-                        await fecharSessao({
-                          prisma: app.prisma as unknown as PrismaDevSession,
-                          sessionName: linha.sessionName,
-                          motivo: 'merged',
-                          agora: new Date(),
-                        })
-                      }
-                    },
+                    // verdade quando este callback dispara. Tarefa 17: NÃO
+                    // fecha mais a linha da vigia aqui — só grava o commit
+                    // mesclado (`aoMesclarUmaEntrega`, acima). Quem fecha é
+                    // `varrerPublicacoes` (mais abaixo), quando há veredito
+                    // sobre a publicação; até lá a sessão continua fora de
+                    // `filtroDeSessoesParaJulgamento` na prática, porque o PR
+                    // já mesclado sai da listagem de PRs ABERTOS do GitHub
+                    // que alimenta o laço de descoberta do QA — não porque a
+                    // linha esteja fechada.
+                    aoMesclar: async ({ numeroDoPr, mergeCommitSha }) =>
+                      aoMesclarUmaEntrega({
+                        prisma: app.prisma as unknown as PrismaDevSession,
+                        projectId: project.id,
+                        numeroDoPr,
+                        mergeCommitSha,
+                        agora: new Date(),
+                      }),
                     onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
                     execute,
                   })
@@ -2488,6 +2532,251 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     }
   }
 
+  // Tarefa 17 — a esteira acompanha a publicação e só encerra a sessão com
+  // veredito.
+  //
+  // Leitura mínima do GitHub (GET simples, token no header) — o mesmo
+  // formato que `qa-rails-mission.ts`/`sm-delegation.ts` usam para as
+  // próprias chamadas, sem depender de nenhum cliente maior.
+  const ghGet = async (path: string, githubToken: string): Promise<unknown> => {
+    const resp = await fetch(`https://api.github.com${path}`, {
+      headers: {
+        authorization: `token ${githubToken}`,
+        accept: 'application/vnd.github+json',
+        'user-agent': 'gitorch',
+      },
+    })
+    if (!resp.ok) {
+      throw new Error(`GitHub GET ${path} failed (${resp.status})`)
+    }
+    return resp.json()
+  }
+
+  // R6 do controlador: o mecanismo de publicação (Tarefa 12) muda raramente
+  // mas NÃO é imutável — guardado em memória, por repositório, com validade
+  // de uma hora. Sem coluna nova, sem migração: se o processo reinicia,
+  // redescobre — custa uma consulta. Vive DENTRO do plugin (não em escopo de
+  // módulo) para cada instância do relógio ter o próprio cache, isolado
+  // entre testes que registram o plugin mais de uma vez.
+  const VALIDADE_DO_CACHE_DE_MECANISMO_MS = 60 * 60_000
+  const cacheDeMecanismo = new Map<string, { mecanismo: Mecanismo; expiraEm: number }>()
+
+  const descobrirMecanismoComCache = async (
+    repository: string,
+    githubToken: string,
+    agora: Date
+  ): Promise<Mecanismo> => {
+    const emCache = cacheDeMecanismo.get(repository)
+    if (emCache && emCache.expiraEm > agora.getTime()) {
+      return emCache.mecanismo
+    }
+    const mecanismo = await descobrirMecanismo({
+      listarAmbientes: async () => {
+        const resp = (await ghGet(`/repos/${repository}/environments`, githubToken)) as {
+          environments?: Array<{ name: string }>
+        }
+        return (resp.environments ?? []).map((e) => e.name)
+      },
+      listarWorkflows: async () => {
+        const resp = (await ghGet(`/repos/${repository}/actions/workflows`, githubToken)) as {
+          workflows?: Array<{ name: string; path: string; state: string }>
+        }
+        return (resp.workflows ?? []).map((w) => ({
+          nome: w.name,
+          arquivo: w.path,
+          ativo: w.state === 'active',
+        }))
+      },
+    })
+    cacheDeMecanismo.set(repository, {
+      mecanismo,
+      expiraEm: agora.getTime() + VALIDADE_DO_CACHE_DE_MECANISMO_MS,
+    })
+    return mecanismo
+  }
+
+  // Avisa o dono do PROJETO — mesma resolução do resto do relógio
+  // (varrerSessoesDoDev, reconferirAcessoDoRelogio): sem vínculo real de
+  // Telegram, ninguém é avisado, e o projeto de um cliente nunca vira
+  // mensagem no chat de outro.
+  const avisarDonoDoProjeto = async (
+    projeto: NonNullable<Awaited<ReturnType<PrismaClient['project']['findUnique']>>>,
+    texto: string
+  ): Promise<void> => {
+    const notifyChatId = await resolveNotifyChatId(app.prisma, projeto, {
+      instanceOwnerEmail: process.env['GITORCH_OWNER_EMAIL'],
+      instanceChatId: process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
+    })
+    const notify = buildTelegramNotifier({
+      botToken: process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
+      ...(notifyChatId ? { chatId: notifyChatId } : {}),
+    })
+    if (!notify) return
+    await notify(texto).catch((err) =>
+      app.log.warn(err, `[Scheduler] aviso de publicação falhou para ${projeto.wingId}`)
+    )
+  }
+
+  /**
+   * A sessão não encerra mais no merge (`aoMesclarUmaEntrega`, acima) —
+   * encerra quando há VEREDITO sobre a publicação. Esta varredura é quem
+   * chega até esse veredito: descobre como o repositório publica (Tarefa 12,
+   * com cache de uma hora), acompanha se o commit mesclado foi ao ar (Tarefa
+   * 13), testa o endereço quando ele sobe (Tarefa 14), e só então fecha a
+   * linha — carregando SEMPRE o motivo (Tarefa 13/14) no aviso ao dono, não
+   * só o veredito cru: é o `motivo` que registra, por exemplo, um endereço
+   * excluído pela guarda de rede (Tarefa 11) antes de qualquer chamada.
+   *
+   * Cadência de 10 minutos por sessão (`sessoesParaAcompanharPublicacao`,
+   * pos-merge.ts) — nunca reexamina quem já tem veredito final, para não
+   * gastar a quota do GitHub do cliente à toa.
+   */
+  const varrerPublicacoes = async (): Promise<void> => {
+    let sessoes: LinhaDeSessao[]
+    try {
+      sessoes = await app.prisma.devSession.findMany({
+        where: { closedAt: null, mergeCommitSha: { not: null } },
+      })
+    } catch (err) {
+      app.log.error(
+        err,
+        '[Scheduler] varredura de publicações não conseguiu listar sessões mescladas'
+      )
+      return
+    }
+    if (sessoes.length === 0) return
+
+    const agora = new Date()
+    const candidatas = sessoesParaAcompanharPublicacao(sessoes, agora)
+
+    for (const sessao of candidatas) {
+      try {
+        const projeto = await app.prisma.project.findUnique({ where: { id: sessao.projectId } })
+        if (!projeto) continue
+
+        const githubToken =
+          process.env['GITORCH_GITHUB_TOKEN'] ??
+          (await mintInstallationToken({
+            repository: projeto.wingId,
+            onError: (m) => app.log.error(m),
+            onWarn: (m) => app.log.warn(m),
+          })) ??
+          undefined
+        if (!githubToken) {
+          app.log.warn(
+            `[Scheduler] varredura de publicações sem credencial do GitHub para ${projeto.wingId}; tenta no próximo ciclo`
+          )
+          continue
+        }
+
+        const mecanismo = await descobrirMecanismoComCache(projeto.wingId, githubToken, agora)
+        const shaDaMescla = sessao.mergeCommitSha as string
+
+        const veredito = await acompanharPublicacao({
+          mecanismo,
+          shaDaMescla,
+          lerExecucoes: async (arquivo) => {
+            const resp = (await ghGet(
+              `/repos/${projeto.wingId}/actions/workflows/${arquivo}/runs?per_page=10`,
+              githubToken
+            )) as { workflow_runs?: ExecucaoDeWorkflow[] }
+            return resp.workflow_runs ?? []
+          },
+          lerEtapas: async (idDaExecucao) => {
+            const resp = (await ghGet(
+              `/repos/${projeto.wingId}/actions/runs/${idDaExecucao}/jobs`,
+              githubToken
+            )) as { jobs?: EtapaDaExecucao[] }
+            return resp.jobs ?? []
+          },
+          lerPublicacoes: async (ambiente, sha) => {
+            const resp = (await ghGet(
+              `/repos/${projeto.wingId}/deployments?environment=${encodeURIComponent(ambiente)}&sha=${encodeURIComponent(sha)}`,
+              githubToken
+            )) as PublicacaoDeclarada[]
+            return resp ?? []
+          },
+          lerEstadosDaPublicacao: async (idDaPublicacao) => {
+            const resp = (await ghGet(
+              `/repos/${projeto.wingId}/deployments/${idDaPublicacao}/statuses`,
+              githubToken
+            )) as EstadoDaPublicacao[]
+            return resp ?? []
+          },
+        })
+
+        await registrarEstadoDaPublicacao({
+          prisma: app.prisma as unknown as PrismaDevSession,
+          sessionName: sessao.sessionName,
+          estado: veredito.estado,
+          agora,
+        })
+
+        if (veredito.estado === 'no-ar') {
+          // A publicação PROVOU que é deste commit — agora o juiz abre o
+          // endereço de verdade. O ensaio não decide se a sessão fecha (a
+          // publicação já aconteceu, isso é fato consumado); é informação
+          // ADICIONAL para o dono, sempre carregando o `motivo` (Tarefa 14),
+          // nunca só o veredito — é ali que mora, por exemplo, o aviso de um
+          // endereço recusado pela guarda antes de qualquer chamada.
+          const relatorio = await testarAmbiente({
+            enderecos: veredito.enderecos,
+            // Configuração POR PROJETO (`runtimeConfig.ambientes.caminhos`,
+            // Tarefa 14/17) — nunca chuta rota de cliente; sem config, testa
+            // só a raiz.
+            caminhos: resolveCaminhosDeAmbiente(projeto.runtimeConfig),
+            buscar: buscarComGuarda,
+          }).catch((err) => {
+            app.log.warn(err, `[Scheduler] QA de ambiente falhou para ${sessao.sessionName}`)
+            return null
+          })
+          const notaDeAmbiente = relatorio
+            ? ` Ensaio do ambiente: ${relatorio.veredito} — ${relatorio.motivo}`
+            : ''
+          app.log.info(
+            `[Scheduler] publicação confirmada para ${sessao.sessionName} (${veredito.motivo}).${notaDeAmbiente}`
+          )
+          await fecharSessao({
+            prisma: app.prisma as unknown as PrismaDevSession,
+            sessionName: sessao.sessionName,
+            motivo: 'merged',
+            agora,
+          })
+          await avisarDonoDoProjeto(
+            projeto,
+            `GitOrch: a entrega de ${projeto.wingId} foi ao ar. ${veredito.motivo}${notaDeAmbiente}`
+          )
+        } else if (veredito.estado === 'falhou' || veredito.estado === 'commit-errado') {
+          // Não fecha: o CD pode ser retentado pelo cliente, e uma execução
+          // presa na fila (commit-errado) pode ser sucedida pela certa —
+          // `sessoesParaAcompanharPublicacao` reexamina no próximo ciclo.
+          const etapasTexto = veredito.etapas.map((e) => `${e.nome}: ${e.resultado}`).join('; ')
+          await avisarDonoDoProjeto(
+            projeto,
+            `GitOrch: a publicação de ${projeto.wingId} (commit ${shaDaMescla}) precisa de atenção — ${veredito.motivo}${etapasTexto ? ` Etapas: ${etapasTexto}.` : ''}`
+          )
+        } else if (veredito.estado === 'sem-publicacao') {
+          app.log.info(
+            `[Scheduler] ${projeto.wingId} não publica (${veredito.motivo}) — encerrando ${sessao.sessionName}`
+          )
+          await fecharSessao({
+            prisma: app.prisma as unknown as PrismaDevSession,
+            sessionName: sessao.sessionName,
+            motivo: 'merged',
+            agora,
+          })
+        }
+        // 'publicando': nada a fazer agora — a próxima passagem (depois da
+        // cadência) reexamina.
+      } catch (err) {
+        app.log.warn(
+          err,
+          `[Scheduler] varredura de publicação falhou na sessão ${sessao.sessionName}; tenta no próximo ciclo`
+        )
+      }
+    }
+  }
+
   const tick = async () => {
     // ANTES de qualquer disparo: quem perdeu o acesso ao repositório não pode
     // ter o dia começando com uma missão escrevendo lá. `reconferirAcessoDoRelogio`
@@ -2496,6 +2785,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     await reconferirAcessoDoRelogio(app)
     await processSetupMissions()
     await varrerSessoesDoDev()
+    // Tarefa 17: falha aqui não pode derrubar o tick — o próprio
+    // `varrerPublicacoes` já isola cada sessão em try/catch; este é só o
+    // último cinto de segurança (mesmo padrão de `sweepExpiredEnvironments`
+    // logo abaixo).
+    await varrerPublicacoes().catch((err) =>
+      app.log.error(err, '[Scheduler] varredura de publicações falhou; tenta no próximo tick')
+    )
     await sweepExpiredEnvironments()
     const now = new Date()
     let schedules

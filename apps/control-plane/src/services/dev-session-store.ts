@@ -75,6 +75,8 @@ export interface PrismaDevSession {
     /** Só `registrarPendencia` usa — é o que permite gravar "primeiro avistamento" sem um read antes. */
     updateMany: (args: unknown) => Promise<unknown>
     findMany: (args: unknown) => Promise<LinhaDeSessao[]>
+    /** Tarefa 17 (`aoMesclarUmaEntrega`, scheduler.ts): acha a linha viva pelo número do PR mesclado. */
+    findFirst: (args: unknown) => Promise<LinhaDeSessao | null>
   }
 }
 
@@ -376,5 +378,47 @@ export async function registrarFracassoDeMerge(deps: {
   await deps.prisma.devSession.update({
     where: { sessionName: deps.sessionName },
     data: { mergeFailures: deps.contador, mergeLastFailedAt: deps.agora },
+  })
+}
+
+/**
+ * Grava o commit que foi de fato mesclado (Tarefa 17).
+ *
+ * NÃO fecha a linha. Antes desta tarefa, o merge encerrava a sessão na hora
+ * (`fecharSessao` com `'merged'`) — o produto declarava a entrega concluída
+ * sem nunca saber se aquele código chegou ao ar. Agora o merge só grava a
+ * chave que a vigília da publicação (`varrerPublicacoes`, scheduler.ts) usa
+ * para achar a execução certa (Tarefa 13, `acompanharPublicacao`); quem
+ * fecha é aquela vigília, quando há veredito.
+ */
+export async function registrarMescla(deps: {
+  prisma: PrismaDevSession
+  sessionName: string
+  mergeCommitSha: string
+  agora: Date
+}): Promise<void> {
+  await deps.prisma.devSession.update({
+    where: { sessionName: deps.sessionName },
+    data: { mergeCommitSha: deps.mergeCommitSha, stateCheckedAt: deps.agora },
+  })
+}
+
+/**
+ * Grava o veredito mais recente sobre a publicação do commit mesclado, e
+ * quando foi checado.
+ *
+ * `deployCheckedAt` é o que dá a cadência de `sessoesParaAcompanharPublicacao`
+ * (pos-merge.ts): sem ele, cada tique do relógio reexaminaria a publicação
+ * de toda sessão mesclada, gastando a quota do GitHub do cliente à toa.
+ */
+export async function registrarEstadoDaPublicacao(deps: {
+  prisma: PrismaDevSession
+  sessionName: string
+  estado: string
+  agora: Date
+}): Promise<void> {
+  await deps.prisma.devSession.update({
+    where: { sessionName: deps.sessionName },
+    data: { deployState: deps.estado, deployCheckedAt: deps.agora },
   })
 }

@@ -1017,7 +1017,7 @@ describe('runQaMissionViaRails', () => {
 
   it('merge acontece: aoMesclar dispara UMA vez com o número certo do PR, e a saída declara "merged"', async () => {
     const f = fakeFetch([{ number: 7, user: 'jules[bot]' }])
-    const mesclados: Array<{ numeroDoPr: number }> = []
+    const mesclados: Array<{ numeroDoPr: number; mergeCommitSha: string }> = []
     const r = await runQaMissionViaRails({
       repository: 'o/r',
       githubToken: 't',
@@ -1029,8 +1029,12 @@ describe('runQaMissionViaRails', () => {
     })
     // (b) fechar a sessão como "mesclada" só pode acontecer quando o merge de
     // fato aconteceu — aqui aconteceu, então `aoMesclar` tem que ter disparado
-    // exatamente uma vez, com o PR #7.
-    expect(mesclados).toEqual([{ numeroDoPr: 7 }])
+    // exatamente uma vez, com o PR #7. (Tarefa 17) `mergeCommitSha` é
+    // 'deadbeef' — o `sha` que `fakeFetch` devolve na RESPOSTA do
+    // `PUT .../merge` — nunca 'abc123', o head.sha da PR: depois do squash
+    // aquele commit não existe no branch base, e é o branch base que o CD
+    // publica.
+    expect(mesclados).toEqual([{ numeroDoPr: 7, mergeCommitSha: 'deadbeef' }])
     // (c) o resumo da missão precisa declarar o resultado do merge — texto
     // real do `mergeNote` (qa-rails-mission.ts), não inventado.
     expect(r.output).toContain('Merge: merged (verificação verde e QA aprovou).')
@@ -1043,7 +1047,7 @@ describe('runQaMissionViaRails', () => {
     const posted = (
       f as unknown as { posted: { merges: Array<{ number: number; body: unknown }> } }
     ).posted
-    const mesclados: Array<{ numeroDoPr: number }> = []
+    const mesclados: Array<{ numeroDoPr: number; mergeCommitSha: string }> = []
     const r = await runQaMissionViaRails({
       repository: 'o/r',
       githubToken: 't',
