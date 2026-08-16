@@ -94,6 +94,7 @@ import { RailsStepError, RailsExecutionError } from '../services/rails-runner.js
 import { GithubExecutionError } from '../services/github-backlog.js'
 import {
   ehCredencialExpirada,
+  ehFalhaDeCredencialCorroborada,
   CredencialExpiradaError,
   deveAvisarDeNovo,
 } from '../services/credencial-do-motor.js'
@@ -1767,6 +1768,28 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             // real do motor se perde atrás de um RailsStepError genérico
             // ("no JSON object found") — exatamente o silêncio que esta
             // tarefa existe para fechar. Ver credencial-do-motor.ts.
+            //
+            // Correção 2 (corroboração) — decisão deliberada de NÃO estender
+            // aqui: `resolveMissionDelivery` (mission-outcome.ts) só avalia
+            // entregável de verdade no `pathKind === 'classic'`; em
+            // `'rails'` ele devolve `{ delivered: true }` TRIVIALMENTE, por
+            // construção (é o próprio desenho do contrato — ver o comentário
+            // no topo de mission-outcome.ts). Usar esse resultado aqui
+            // faria `entrega.delivered` ser SEMPRE true para todo passo de
+            // trilhos, o que apagaria PARA SEMPRE a detecção de credencial
+            // expirada no caminho que originou esta tarefa (o bug real de
+            // produção, chain=codex>antigravity, foi observado exatamente
+            // AQUI — saída sem JSON de um passo de trilhos, não no caminho
+            // clássico). Não existe, hoje, uma segunda noção JÁ EXISTENTE de
+            // "este passo de trilhos não produziu nada" para reaproveitar
+            // sem inventar uma (o candidato mais próximo, `runFormStep`
+            // conseguir extrair um JSON válido de `step.output`, é um
+            // mecanismo DIFERENTE — rails-runner.ts — não o contrato de
+            // entregável por papel que esta correção foi instruída a
+            // reaproveitar). Por isso este ponto de checagem permanece só
+            // com os dois níveis de confiança de `ehCredencialExpirada`,
+            // sem corroboração — risco residual documentado no relatório da
+            // tarefa (ADENDO 2), não resolvido aqui de propósito.
             if (
               ehCredencialExpirada({
                 stdout: step.output,
@@ -1961,12 +1984,28 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           // (mais acima) contra a saída crua real, antes do runFormStep
           // sintetizar outra coisa; no smRails (delegação/watchdog/sensor)
           // não há chamada de motor nenhuma para checar.
+          //
+          // Correção 2 (corroboração): calcula o entregável do papel ANTES
+          // do sinal textual, sobre a MESMA saída — é o único ponto de
+          // checagem de credencial expirada onde o contrato de entregável
+          // por papel (`resolveMissionDelivery`, mission-outcome.ts, commit
+          // 87806ea) se aplica de verdade (pathKind='classic' sempre, aqui).
+          // Sem isto, uma missão de documentação/análise que só MENCIONA
+          // `invalid_grant`/`401 unauthorized` de passagem — mas entregou o
+          // relatório de verdade — disparava o aviso falso (medido na
+          // segunda revisão). Puro e independente de exitCode: mesmo um
+          // motor que saiu != 0 pode ter tentado escrever algo real antes de
+          // cair, e o contrato só olha o TEXTO.
+          const entregaParaCorroboracao = resolveMissionDelivery(role, result.output, 'classic')
           if (
-            ehCredencialExpirada({
-              stdout: result.output,
-              stderr: result.stderr,
-              exitCode: result.exitCode,
-            })
+            ehFalhaDeCredencialCorroborada(
+              {
+                stdout: result.output,
+                stderr: result.stderr,
+                exitCode: result.exitCode,
+              },
+              entregaParaCorroboracao
+            )
           ) {
             throw new CredencialExpiradaError(
               `motor ${sel.runtime} pediu novo login: ${(result.stderr || result.output).slice(0, 300)}`,
@@ -2152,10 +2191,16 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               ...(notifyChatId ? { chatId: notifyChatId } : {}),
             })
             if (avisar) {
+              // Correção 2: mesmo corroborada, isto é uma INFERÊNCIA (texto +
+              // ausência de entregável), não um fato observado — o produto
+              // nunca viu a credencial em si, só concluiu a partir da saída.
+              // A mensagem não afirma "a credencial expirou" como certeza;
+              // descreve o que foi observado (terminou sem entregar, saída
+              // parece pedido de login) e pede para o dono CONFERIR.
               await avisar(
-                `GitOrch: a credencial do motor ${err.runtime} expirou (projeto ${project.wingId}) ` +
-                  `— refaça o login do motor ${err.runtime} para ele voltar a rodar. Até lá, a ` +
-                  `reserva da cadeia assume o trabalho.`
+                `GitOrch: o motor ${err.runtime} terminou sem entregar nada no projeto ` +
+                  `${project.wingId}, e a saída lembra um pedido de login expirado — vale conferir ` +
+                  `a conexão desse motor. Até lá, a reserva da cadeia assume o trabalho.`
               ).catch(() => undefined)
             }
           }

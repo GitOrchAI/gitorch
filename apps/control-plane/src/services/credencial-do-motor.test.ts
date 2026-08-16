@@ -3,7 +3,9 @@ import {
   CredencialExpiradaError,
   deveAvisarDeNovo,
   ehCredencialExpirada,
+  ehFalhaDeCredencialCorroborada,
 } from './credencial-do-motor.js'
+import { resolveMissionDelivery, type MissionDeliveryCheck } from './mission-outcome.js'
 
 describe('ehCredencialExpirada', () => {
   it('reconhece o recado do motor mesmo com código de saída 0', () => {
@@ -198,5 +200,123 @@ describe('deveAvisarDeNovo — dedup em memória, uma vez por motor por dia', ()
   it('chave diferente (outro motor/dono): não é afetada pelo aviso anterior', () => {
     const registro = new Map<string, number>([['user-1:codex', 1000]])
     expect(deveAvisarDeNovo(registro, 'user-1:antigravity', 1000 + 60_000)).toBe(true)
+  })
+})
+
+// Achado CRÍTICO da SEGUNDA revisão: o limiar de terseness (achado 1) não
+// fecha um falso-positivo de SINAL FORTE, porque sinal forte ignora tamanho
+// de propósito. Um revisor mediu 3 casos novos, todos com sinal forte (ou
+// fraco genuinamente curto) numa missão que ENTREGOU de verdade. A defesa
+// certa não é apertar texto — é corroborar com o contrato de entregável por
+// papel já existente (`resolveMissionDelivery`, mission-outcome.ts, commit
+// 87806ea): se a missão entregou, o motor funcionou, não importa o texto.
+//
+// Cada teste abaixo prova as DUAS metades: (a) sem corroboração o sinal
+// textual sozinho JÁ dispararia (`ehCredencialExpirada` verdadeiro) — não é
+// um caso que o achado 1 já resolvia; (b) com corroboração
+// (`ehFalhaDeCredencialCorroborada`, usando o contrato real via
+// `resolveMissionDelivery` com pathKind='classic' — o único caminho onde
+// esta corroboração é aplicada em produção, ver scheduler.ts) o aviso NÃO
+// dispara, porque a mesma saída tem entregável real.
+describe('ehFalhaDeCredencialCorroborada — corroboração de entregável fecha os 3 falsos-positivos da segunda revisão', () => {
+  it('missão de documentação citando a especificação OAuth (menciona invalid_grant do RFC 6749) NÃO é credencial expirada do motor', () => {
+    const saida =
+      '## Documentação: fluxo de autorização OAuth\n\n' +
+      'Esta missão documenta, para o time de suporte, os erros que o provedor de\n' +
+      'identidade pode devolver durante o fluxo de autorização.\n\n' +
+      '### Erros da especificação (RFC 6749, seção 5.2)\n\n' +
+      '1. `invalid_request` — o pedido de autorização está malformado.\n' +
+      '2. `invalid_grant` — o código de autorização, a credencial de refresh ou\n' +
+      '   o redirect URI informados são inválidos, expiraram, ou já foram usados.\n' +
+      '3. `unauthorized_client` — o cliente não está autorizado a usar este\n' +
+      '   método de concessão.\n\n' +
+      '### Recomendação\n\n' +
+      'Nosso middleware já mapeia `invalid_grant` para um novo login do usuário\n' +
+      'final automaticamente — nenhuma mudança de código é necessária aqui, este\n' +
+      'documento só formaliza o comportamento existente para referência do time.'
+    const entrada = { exitCode: 0, stdout: saida, stderr: '' }
+    expect(saida.length).toBeGreaterThan(500)
+    // Sem corroboração, o sinal forte sozinho já dispararia (achado 1 não
+    // resolve isto — sinal forte ignora terseness de propósito).
+    expect(ehCredencialExpirada(entrada)).toBe(true)
+    const entrega = resolveMissionDelivery('sm', saida, 'classic')
+    expect(entrega.delivered).toBe(true)
+    expect(ehFalhaDeCredencialCorroborada(entrada, entrega)).toBe(false)
+  })
+
+  it('análise de stack trace com o texto literal "OAuthError: invalid_grant" NÃO é credencial expirada do motor', () => {
+    const saida =
+      '## Investigação do incidente #884\n\n' +
+      'A sessão de um cliente caiu com a seguinte pilha:\n\n' +
+      '```\n' +
+      'OAuthError: invalid_grant\n' +
+      '    at TokenClient.refresh (oauth-client.ts:142)\n' +
+      '    at SessionManager.renew (session-manager.ts:58)\n' +
+      '    at processTicksAndRejections (node:internal/process/task_queues:95)\n' +
+      '```\n\n' +
+      '### Causa raiz\n\n' +
+      'O refresh token do CLIENTE (não do GitOrch) expirou no provedor deles antes\n' +
+      'de a renovação automática rodar — não é um problema do nosso motor. Abri a\n' +
+      'issue #885 pedindo para o time de integração do cliente aumentar a folga do\n' +
+      'agendador de renovação.'
+    const entrada = { exitCode: 0, stdout: saida, stderr: '' }
+    expect(saida.length).toBeGreaterThan(500)
+    expect(ehCredencialExpirada(entrada)).toBe(true)
+    const entrega = resolveMissionDelivery('sm', saida, 'classic')
+    expect(entrega.delivered).toBe(true)
+    expect(ehFalhaDeCredencialCorroborada(entrada, entrega)).toBe(false)
+  })
+
+  it('um 401 Unauthorized curto mas LEGÍTIMO (da própria API do cliente) NÃO é credencial expirada do motor', () => {
+    // Deliberadamente curto (bem abaixo de LIMITE_SAIDA_TERSE_CHARS) — é
+    // exatamente o caso que nenhum limiar de tamanho fecha: o achado 1
+    // resolveria isto SÓ se a saída fosse longa; aqui ela já é curta por
+    // natureza (um diagnóstico direto), então só a corroboração de
+    // entregável distingue de um banner real de login.
+    const saida =
+      'Verifiquei o endpoint de pedidos do cliente.\n' +
+      '- GET /v1/orders retorna 401 Unauthorized\n' +
+      '- causa: token do cliente revogado no provedor deles, não o nosso.'
+    const entrada = { exitCode: 0, stdout: saida, stderr: '' }
+    expect(saida.length).toBeLessThanOrEqual(200)
+    // Sinal fraco + saída curta: sem corroboração já dispararia (achado 1
+    // deixa passar de propósito quando a saída inteira é terse).
+    expect(ehCredencialExpirada(entrada)).toBe(true)
+    const entrega = resolveMissionDelivery('qa', saida, 'classic')
+    expect(entrega.delivered).toBe(true)
+    expect(ehFalhaDeCredencialCorroborada(entrada, entrega)).toBe(false)
+  })
+})
+
+describe('ehFalhaDeCredencialCorroborada — a detecção real não quebra (necessária, não excessiva)', () => {
+  it('o banner real de credencial expirada (curto, sem estrutura) ainda avisa quando não há entregável', () => {
+    const bannerReal =
+      'ERROR codex_login::auth::manager: Failed to refresh token: Your access ' +
+      'token could not be refreshed. Please log out and sign in again.'
+    const entrada = { exitCode: 0, stdout: '', stderr: bannerReal }
+    // Prova que a corroboração usa o MESMO contrato real (não um mock) e que
+    // o banner real, sem estrutura nenhuma, resolve delivered:false — a
+    // corroboração não introduz um segundo obstáculo que a detecção real
+    // não consiga vencer.
+    const entrega = resolveMissionDelivery('sm', bannerReal, 'classic')
+    expect(entrega.delivered).toBe(false)
+    expect(ehFalhaDeCredencialCorroborada(entrada, entrega)).toBe(true)
+  })
+
+  it('sinal presente + entregável real (delivered:true) → NÃO avisa — é o teste da própria regra nova, isolado do contrato de mission-outcome.ts', () => {
+    const entrada = {
+      exitCode: 0,
+      stdout: 'texto qualquer mencionando invalid_grant de passagem',
+      stderr: '',
+    }
+    const entrega: MissionDeliveryCheck = { delivered: true }
+    expect(ehCredencialExpirada(entrada)).toBe(true)
+    expect(ehFalhaDeCredencialCorroborada(entrada, entrega)).toBe(false)
+  })
+
+  it('sinal ausente + sem entregável → continua sem avisar (corroboração é necessária, mas não SUFICIENTE sozinha)', () => {
+    const entrada = { exitCode: 1, stdout: '', stderr: 'file not found' }
+    const entrega: MissionDeliveryCheck = { delivered: false, reason: 'sem entregável' }
+    expect(ehFalhaDeCredencialCorroborada(entrada, entrega)).toBe(false)
   })
 })

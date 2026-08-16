@@ -61,7 +61,13 @@ function buildFakePrisma(chatId: string | null) {
   let missionCounter = 0
   return {
     mission: {
-      updateMany: vi.fn(async () => ({ count: 0 })),
+      // count:1 (não 0): a via de sucesso (~scheduler.ts, bloco "entrega
+      // delivered") confere o count do updateMany condicional
+      // (where: { status: 'running' }) para decidir se OUTRO tick já
+      // reivindicou a missão — com 0 sempre, ela se autodescartava como
+      // "já não estava running" mesmo tendo acabado de rodar, e a missão
+      // de sucesso do teste de corroboração nunca persistia 'completed'.
+      updateMany: vi.fn(async () => ({ count: 1 })),
       count: vi.fn(async () => 0),
       create: vi.fn(async () => {
         missionCounter += 1
@@ -144,9 +150,17 @@ describe('Tarefa 16 (achado 2 da revisão) — aviso de credencial expirada pelo
     expect(url).toBe('https://api.telegram.org/botbot-token-de-teste/sendMessage')
     const corpo = JSON.parse(String(init.body)) as { chat_id: string; text: string }
     expect(corpo.chat_id).toBe('chat-do-dono')
-    expect(corpo.text).toContain('expirou')
+    expect(corpo.text).toContain('antigravity')
     expect(corpo.text).toContain('acme/api')
-    expect(corpo.text).toContain('refaça o login')
+    // Correção 2 (segunda revisão): a mensagem não afirma "a credencial
+    // expirou" como fato — é uma inferência (sinal textual + ausência de
+    // entregável), nunca uma observação direta da credencial em si. Descreve
+    // o que foi observado (terminou sem entregar; a saída LEMBRA um login
+    // expirado) e pede para o dono CONFERIR, não afirma com certeza.
+    expect(corpo.text).toContain('terminou sem entregar')
+    expect(corpo.text).toContain('login expirado')
+    expect(corpo.text).toContain('conferir')
+    expect(corpo.text).not.toContain('a credencial do motor')
     // Nunca vaza o texto cru do motor (que poderia um dia carregar mais que a
     // frase de recado) — o aviso ao DONO é sempre a mensagem sintetizada do
     // produto, nunca stderr/output relatado.
@@ -209,6 +223,68 @@ describe('Tarefa 16 (achado 2 da revisão) — aviso de credencial expirada pelo
     // uma segunda chamada — SPAM apaga sinal tanto quanto silêncio.
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    await app.close()
+  })
+
+  // Correção 2 (segunda revisão, achado 1 residual): sinal forte
+  // ("invalid_grant") sozinho não basta mais — precisa TAMBÉM que a missão
+  // não tenha entregado. Este teste atravessa o MESMO seam real dos três
+  // acima (nada reimplementado) com uma saída que TEM o sinal forte E tem
+  // entregável real (estrutura de relatório técnico) — é o caso que
+  // disparava falso antes da corroboração e é a prova mais forte possível de
+  // que a correção está ligada de verdade no call site de produção, não só
+  // testada em unidade pura.
+  test('sinal forte presente (invalid_grant) MAS a missão entregou um relatório real: NÃO avisa, e a missão completa normalmente', async () => {
+    resultadoDoMotor.atual = {
+      missionId: 'irrelevante-aqui',
+      runtime: 'antigravity',
+      exitCode: 0,
+      durationMs: 1,
+      output:
+        '## Investigação do incidente #884\n\n' +
+        'A sessão de um cliente caiu com a seguinte pilha:\n\n' +
+        '```\n' +
+        'OAuthError: invalid_grant\n' +
+        '    at TokenClient.refresh (oauth-client.ts:142)\n' +
+        '```\n\n' +
+        '### Causa raiz\n\n' +
+        'O refresh token do CLIENTE (não do GitOrch) expirou no provedor deles — ' +
+        'não é um problema do nosso motor.',
+      stderr: '',
+    }
+    const fetchMock = vi.fn(async () => new Response('{"ok":true}', { status: 200 }))
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    const app = Fastify({ logger: false })
+    const prisma = buildFakePrisma('chat-do-dono')
+    app.decorate('prisma', prisma as never)
+    await app.register(schedulerPlugin)
+
+    const resultado = await app.triggerAgentMission('qa', 'proj_1')
+    expect(resultado.triggered).toBe(true)
+
+    // Espera especificamente a chamada de SUCESSO (status 'completed'), não
+    // "qualquer chamada" — a faxina de missões presas (failStuckMissions)
+    // também chama updateMany, cedo, sem relação com esta missão; esperar só
+    // "toHaveBeenCalled()" resolve antes da persistência real terminar
+    // (corrida observada: passa isolado, falha junto com os outros testes
+    // do arquivo). Some chamadas de updateMany são dessa faxina — por isso
+    // procuramos, entre TODAS as chamadas, uma que marcou status
+    // 'completed' (só a via de sucesso real faz isso).
+    const encontrouChamadaDeSucesso = () => {
+      const chamadas = prisma.mission.updateMany.mock.calls as unknown as Array<
+        [{ data?: { status?: string } }]
+      >
+      return chamadas.some(([arg]) => arg.data?.status === 'completed')
+    }
+    await vi.waitFor(() => expect(encontrouChamadaDeSucesso()).toBe(true), { timeout: 2000 })
+    // Nenhum aviso de credencial expirada — a missão entregou. E o motivo de
+    // não ter avisado é que ela foi tratada como sucesso, não como uma falha
+    // silenciosa qualquer (senão o teste passaria "por acidente" caso outra
+    // parte do código também suprimisse o aviso) — já verificado acima pelo
+    // wait na chamada 'completed'.
+    expect(fetchMock).not.toHaveBeenCalled()
 
     await app.close()
   })

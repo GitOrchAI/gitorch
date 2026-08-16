@@ -1,3 +1,5 @@
+import type { MissionDeliveryCheck } from './mission-outcome.js'
+
 // Credencial de motor expirada vira aviso, não silêncio.
 //
 // Bug real de produção (chain=codex>antigravity, falhando todo dia): o motor
@@ -59,6 +61,29 @@
 // Forbidden" sem a palavra "401"/"unauthorized", ou um sinal fraco genuíno
 // que por acaso apareça isolado (raro, mas possível — o preço aceito de não
 // termos banner real de todo motor/versão para calibrar melhor).
+//
+// Achado crítico da SEGUNDA revisão: o limiar de terseness estreitou a
+// janela do achado 1, mas não a fechou — porque SINAIS_FORTES ignora
+// terseness DE PROPÓSITO (é o ponto deles: bastar sozinhos). Um revisor
+// mediu TRÊS falsos-positivos novos, todos usando sinal forte fora do
+// limiar: uma missão de documentação citando a especificação OAuth (que
+// MENCIONA `invalid_grant` por ser parte do RFC 6749, 761 caracteres), uma
+// análise de stack trace com o texto literal `OAuthError: invalid_grant`
+// (637 caracteres), e um `401 Unauthorized` genuinamente curto (122
+// caracteres) mas LEGÍTIMO — a API do próprio cliente respondendo 401
+// dentro do trabalho da missão, não o motor pedindo login. Nenhum limiar de
+// tamanho fecha isso: o terceiro caso já É curto.
+//
+// A corroboração certa (ver `ehFalhaDeCredencialCorroborada` abaixo): uma
+// credencial expirada tem uma FORMA muito específica — o motor morre ANTES
+// de produzir qualquer trabalho. Se a missão ENTREGOU o entregável do seu
+// papel (contrato já existente, `resolveMissionDelivery` em
+// mission-outcome.ts, commit 87806ea), então o motor claramente FUNCIONOU o
+// bastante para produzir o resultado — não importa o que o texto mencione
+// de passagem sobre autenticação. Corroboração é NECESSÁRIA (sem ela, sinal
+// nenhum dispara o aviso) mas não SUFICIENTE (ainda precisa do sinal
+// textual, nos mesmos dois níveis de confiança acima) — as duas defesas se
+// somam, não se substituem.
 const SINAIS_FORTES: readonly string[] = ['access token could not be refreshed', 'invalid_grant']
 
 const SINAIS_FRACOS: readonly string[] = [
@@ -100,10 +125,19 @@ export interface SaidaDoMotor {
  * a mesma cegueira que esta função existe para fechar.
  *
  * Sinal forte → basta ele sozinho, em qualquer tamanho de saída. Sinal fraco
- * → só conta quando a saída inteira é curta (LIMITE_SAIDA_TERSE_CHARS): é a
- * corroboração que falta para o vocabulário genérico de HTTP/auth não
- * disparar em cima de trabalho ordinário (ver o comentário longo acima do
- * módulo para a medição real que motivou isto).
+ * → só conta quando a saída inteira é curta (LIMITE_SAIDA_TERSE_CHARS): é o
+ * filtro de TAMANHO que reduz o vocabulário genérico de HTTP/auth disparando
+ * em cima de trabalho ordinário (ver o comentário longo acima do módulo para
+ * a medição real que motivou isto).
+ *
+ * Este filtro sozinho NÃO é suficiente — nem para sinal fraco curto, nem
+ * (principalmente) para sinal forte, que ignora tamanho de propósito. Quem
+ * decide se o aviso realmente dispara é `ehFalhaDeCredencialCorroborada`
+ * abaixo, que soma este sinal textual à corroboração de entregável. Esta
+ * função (`ehCredencialExpirada`) continua exportada sozinha só porque os
+ * testes do Step 1 do brief e a suíte de falsos-positivos da primeira
+ * revisão a testam diretamente — não é mais, por si só, o critério final de
+ * produção.
  */
 export function ehCredencialExpirada(saida: SaidaDoMotor): boolean {
   const textoOriginal = `${saida.stdout}\n${saida.stderr}`
@@ -115,6 +149,36 @@ export function ehCredencialExpirada(saida: SaidaDoMotor): boolean {
   if (!temSinalFraco) return false
 
   return textoOriginal.trim().length <= LIMITE_SAIDA_TERSE_CHARS
+}
+
+/**
+ * Critério de produção: um sinal textual (`ehCredencialExpirada`) NUNCA
+ * basta sozinho — precisa, ALÉM disso, que a missão não tenha entregado o
+ * entregável do seu papel. É a corroboração que fecha os 3 falsos-positivos
+ * da segunda revisão (documentação citando `invalid_grant` do RFC, análise
+ * de stack trace com o mesmo texto, um 401 curto mas legítimo da API do
+ * cliente): nos três casos a missão ENTREGOU de verdade, então o motor
+ * funcionou — não importa o que o texto mencione de passagem.
+ *
+ * `entrega` é o resultado JÁ CALCULADO do contrato de entregável por papel
+ * (`resolveMissionDelivery`, mission-outcome.ts, commit 87806ea) para a
+ * MESMA saída que `saida` representa — este módulo não recalcula nem
+ * reimplementa esse contrato (não é uma segunda noção de "não produziu
+ * nada"), só compõe o resultado dele com o sinal textual. Quem chama decide
+ * QUAL contrato passar (`pathKind`); este módulo não sabe nem precisa saber
+ * a diferença entre caminho clássico e trilhos.
+ *
+ * Necessária, não suficiente: `entrega.delivered === false` sozinho não
+ * dispara nada (a maioria das falhas sem entregável não tem nada a ver com
+ * credencial) — ainda precisa do sinal textual, nos mesmos dois níveis de
+ * confiança de `ehCredencialExpirada`.
+ */
+export function ehFalhaDeCredencialCorroborada(
+  saida: SaidaDoMotor,
+  entrega: MissionDeliveryCheck
+): boolean {
+  if (entrega.delivered) return false
+  return ehCredencialExpirada(saida)
 }
 
 /**
