@@ -51,6 +51,7 @@ import {
   registrarPendencia,
   limparPendencia,
   registrarAvisoDeDemora,
+  registrarFracassoDeMerge,
   type PrismaDevSession,
   type LinhaDeSessao,
 } from '../services/dev-session-store.js'
@@ -290,7 +291,8 @@ export function montarOpcoesDeDelegacao(args: {
 /**
  * Monta as opções da Tarefa 7 (vigília da verificação) que o julgamento do
  * QA recebe: `registrarPendencia`/`limparPendencia`/`registrarAvisoDeDemora`
- * ligadas ao Prisma real, e `avisarDono` quando um notificador foi montado.
+ * ligadas ao Prisma real, `registrarFracassoDeMerge` (Tarefa 10) e
+ * `avisarDono` quando um notificador foi montado.
  *
  * Achado 1 da revisão da Tarefa 7: as três primeiras foram ADICIONADAS à
  * interface de `runQaMissionViaRails` mas nunca chegavam a este ponto de
@@ -298,10 +300,17 @@ export function montarOpcoesDeDelegacao(args: {
  * (qa-rails-mission.test.ts) e inerte em produção (`pending_since` nunca era
  * gravado, o teto de 90min nunca amadurecia, o dono nunca era avisado).
  *
+ * Achado crítico da revisão da Tarefa 10: `registrarFracassoDeMerge` repetiu
+ * o MESMO furo — adicionada à interface, nunca ligada aqui. Em produção,
+ * `mergeFailures` lido do banco ficava sempre 0, o teto de tentativas nunca
+ * disparava, e a entrega era retentada contra o GitHub a cada tique do
+ * scheduler, para sempre. Esta correção liga a quinta opção da mesma forma
+ * que as outras quatro.
+ *
  * Função pura EXPORTADA pelo mesmo motivo de `montarOpcoesDeDelegacao`
  * (achado 2 da Tarefa 5): a montagem viveria só dentro de
  * `executeMissionWithFailover`, fechamento não exportado, e uma regressão
- * que voltasse a esquecer uma das três opções no call site de
+ * que voltasse a esquecer uma das opções no call site de
  * `runQaMissionViaRails` não quebraria teste nenhum. Ver
  * scheduler-julgamento-opcoes.test.ts.
  */
@@ -310,12 +319,17 @@ export function montarOpcoesDoJulgamento(args: {
   avisarDono?: ((mensagem: string) => Promise<void>) | undefined
 }): Pick<
   QaRailsMissionOptions,
-  'registrarPendencia' | 'limparPendencia' | 'registrarAvisoDeDemora' | 'avisarDono'
+  | 'registrarPendencia'
+  | 'limparPendencia'
+  | 'registrarAvisoDeDemora'
+  | 'avisarDono'
+  | 'registrarFracassoDeMerge'
 > {
   return {
     registrarPendencia: (a) => registrarPendencia({ prisma: args.prisma, ...a }),
     limparPendencia: (a) => limparPendencia({ prisma: args.prisma, ...a }),
     registrarAvisoDeDemora: (a) => registrarAvisoDeDemora({ prisma: args.prisma, ...a }),
+    registrarFracassoDeMerge: (a) => registrarFracassoDeMerge({ prisma: args.prisma, ...a }),
     ...(args.avisarDono ? { avisarDono: args.avisarDono } : {}),
   }
 }

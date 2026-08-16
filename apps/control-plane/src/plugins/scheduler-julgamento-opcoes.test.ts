@@ -10,11 +10,17 @@ import type { PrismaDevSession } from '../services/dev-session-store.js'
 // avisado de uma verificação parada — a lógica ficava correta e 100% testada
 // em isolamento (qa-rails-mission.test.ts) e inerte na esteira de verdade.
 //
+// Achado crítico da revisão da Tarefa 10: `registrarFracassoDeMerge` repetiu
+// o MESMO furo — adicionada à interface, nunca chegava a este ponto de
+// disparo. `mergeFailures` lido do banco ficava sempre 0, o teto de 3
+// tentativas nunca disparava, e a entrega era retentada contra o GitHub a
+// cada tique do scheduler, para sempre.
+//
 // `montarOpcoesDoJulgamento` (extraída pelo mesmo motivo de
 // `montarOpcoesDeDelegacao`, achado 2 da Tarefa 5 — ver
 // scheduler-teto-delegacao.test.ts) é o que o call site agora espalha
 // (`...montarOpcoesDoJulgamento(...)`) dentro do objeto passado a
-// `runQaMissionViaRails`. Este arquivo prova que a função devolve as TRÊS
+// `runQaMissionViaRails`. Este arquivo prova que a função devolve as QUATRO
 // opções ligadas ao Prisma de VERDADE (não stubs) e que `avisarDono` some do
 // objeto (não fica presente com `undefined`) quando nenhum notificador foi
 // construído — mesma disciplina de `...(notify ? { avisarDono: notify } : {})`
@@ -36,8 +42,8 @@ describe('montarOpcoesDoJulgamento', () => {
     const opcoes = montarOpcoesDoJulgamento({ prisma })
 
     const agora = new Date('2026-01-01T00:00:00.000Z')
-    // As três funções são sempre devolvidas (só `avisarDono` é condicional) —
-    // o `?` na assinatura vem só do formato que `QaRailsMissionOptions`
+    // As quatro funções são sempre devolvidas (só `avisarDono` é condicional)
+    // — o `?` na assinatura vem só do formato que `QaRailsMissionOptions`
     // declara (opcional PARA QUEM CHAMA `runQaMissionViaRails`), não de
     // `montarOpcoesDoJulgamento` já não as devolver.
     expect(opcoes.registrarPendencia).toBeDefined()
@@ -75,6 +81,29 @@ describe('montarOpcoesDoJulgamento', () => {
     expect(prisma.devSession.update).toHaveBeenCalledWith({
       where: { sessionName: 'sessions/abc' },
       data: { answeredHash: 'h1' },
+    })
+  })
+
+  // Achado crítico da revisão da Tarefa 10: esta opção existia na interface
+  // (`QaRailsMissionOptions`/`VigiliaDoJulgamentoOptions`), tinha lógica
+  // correta e testada em `qa-rails-mission.test.ts`, e `registrarPr`,
+  // `registrarPendencia` etc. já provavam o padrão — mas
+  // `montarOpcoesDoJulgamento` nunca a devolvia. Este teste é o que teria
+  // pegado o furo antes do merge.
+  test('registrarFracassoDeMerge devolvido chama update no Prisma real (não um stub desconectado)', async () => {
+    const prisma = prismaFalso()
+    const opcoes = montarOpcoesDoJulgamento({ prisma })
+
+    const agora = new Date('2026-01-01T00:00:00.000Z')
+    expect(opcoes.registrarFracassoDeMerge).toBeDefined()
+    await opcoes.registrarFracassoDeMerge!({ sessionName: 'sessions/abc', contador: 2, agora })
+
+    // Prova que a função devolvida É `registrarFracassoDeMerge` de
+    // dev-session-store.ts (mesmo `mergeFailures`/`mergeLastFailedAt` da
+    // Tarefa 10), não uma cópia solta que só parece certa.
+    expect(prisma.devSession.update).toHaveBeenCalledWith({
+      where: { sessionName: 'sessions/abc' },
+      data: { mergeFailures: 2, mergeLastFailedAt: agora },
     })
   })
 
