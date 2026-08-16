@@ -1,6 +1,9 @@
 import type { FastifyInstance } from 'fastify'
 import { autorLegivel, LIMITE_DO_TEXTO_DO_DESEJO, montarDesejo } from '../services/desejo.js'
-import { AcessoNaoVerificavelError } from '../services/acesso-ao-repositorio.js'
+import {
+  AcessoNaoVerificavelError,
+  CredencialDoGithubInvalidaError,
+} from '../services/acesso-ao-repositorio.js'
 
 // Porta HTTP do desejo: o dono descreve o que quer em linguagem de gente e o
 // produto registra a issue oficial. As dependências entram por injeção porque
@@ -103,6 +106,22 @@ export async function desejosRoutes(app: FastifyInstance, deps: DependenciasDeDe
           })
         }
       } catch (erro) {
+        // Credencial que o GitHub recusa tem UM conserto — reconectar — e ele
+        // precisa aparecer antes do ramo geral: ali a recusa sairia como
+        // indisponibilidade, cujo único conselho é "tente de novo em
+        // instantes". Tentar de novo nunca ressuscita um token revogado, então
+        // o cliente ficaria preso num aviso que não leva a lugar nenhum.
+        // A recusa é a mesma (o pedido não é registrado); muda só a frase.
+        if (erro instanceof CredencialDoGithubInvalidaError) {
+          request.log.warn(
+            { err: erro, userId, repo: projeto.githubRepo },
+            'pedido recusado: o GitHub não aceita mais a credencial do dono'
+          )
+          return reply.code(503).send({
+            error: 'Sua conexão com o GitHub não vale mais. Reconecte sua conta e mande de novo.',
+            code: 'GITHUB_DESCONECTADO',
+          })
+        }
         if (erro instanceof AcessoNaoVerificavelError) {
           // Indisponibilidade se diz com o nome dela: recusa temporária, com
           // convite a tentar de novo. Seguir no escuro seria escrever no

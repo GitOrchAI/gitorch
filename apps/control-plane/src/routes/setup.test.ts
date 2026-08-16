@@ -559,6 +559,54 @@ describe('GET /api/v1/github/repos — via installation do GitHub App (F1 Onda 2
   })
 
   /**
+   * Quem tem instalação gravada não passa mais pela listagem OAuth — e era
+   * ali que o 401 do GitHub virava "reconecte o GitHub". Com a listagem
+   * saindo da chave do App (que continua válida), a credencial morta do
+   * cliente só aparecia DENTRO da prova, virava "não verificável", e a tela
+   * mandava tentar de novo em instantes — para sempre, porque tentar de novo
+   * nunca ressuscita um token revogado.
+   */
+  it('credencial do cliente revogada: a tela manda RECONECTAR, não "tente de novo"', async () => {
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url)
+      if (href.includes('/app/installations/555/access_tokens')) {
+        return new Response(
+          JSON.stringify({
+            token: 'ghs_install',
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          }),
+          { status: 201 }
+        )
+      }
+      if (href.startsWith('https://api.github.com/installation/repositories')) {
+        return new Response(
+          JSON.stringify({
+            total_count: 1,
+            repositories: [
+              {
+                id: 9,
+                name: 'api',
+                full_name: 'acme/api',
+                description: null,
+                private: true,
+                html_url: 'https://github.com/acme/api',
+              },
+            ],
+          }),
+          { status: 200 }
+        )
+      }
+      // A prova vai com o token do CLIENTE — e é ele que o GitHub rejeita.
+      return new Response(JSON.stringify({ message: 'Bad credentials' }), { status: 401 })
+    }) as unknown as typeof fetch
+
+    const res = await app.inject({ method: 'GET', url: '/api/v1/github/repos' })
+
+    expect(res.statusCode).toBe(401)
+    expect((res.json() as { code?: string }).code).toBe('GITHUB_TOKEN_EXPIRED')
+  })
+
+  /**
    * O caminho da instalação é o ÚNICO em que a prova por repositório na tela é
    * inevitável: a resposta de `/installation/repositories` também traz
    * `permissions`, mas é a permissão do APP naquele repositório, não a do

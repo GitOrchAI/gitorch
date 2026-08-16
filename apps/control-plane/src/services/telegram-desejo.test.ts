@@ -6,7 +6,10 @@ import {
   type ProjetoParaDesejo,
   type TelegramDesejoDeps,
 } from './telegram-bot.js'
-import { AcessoNaoVerificavelError } from './acesso-ao-repositorio.js'
+import {
+  AcessoNaoVerificavelError,
+  CredencialDoGithubInvalidaError,
+} from './acesso-ao-repositorio.js'
 
 describe('interpretarPedidoDeDesejo', () => {
   it('reconhece /desejo e devolve só o texto do pedido', () => {
@@ -222,6 +225,23 @@ describe('tratarPedidoDeDesejo', () => {
     const r = await tratarPedidoDeDesejo(d, updateComTexto('/desejo quero busca por cor'))
     expect(d.criarIssue).not.toHaveBeenCalled()
     expect(r?.text).toMatch(/agora|minutos|instantes/i)
+  })
+
+  /**
+   * A credencial revogada saía com a frase da indisponibilidade — "tente de
+   * novo em alguns minutos" —, e nenhuma tentativa ressuscita um token
+   * revogado. No chat, onde ninguém abre painel de erro, essa frase era a
+   * única informação que o dono tinha: ele repetiria o pedido para sempre.
+   */
+  it('credencial do GitHub revogada manda RECONECTAR, não esperar alguns minutos', async () => {
+    const d = deps({
+      confirmarAcesso: vi
+        .fn()
+        .mockRejectedValue(new CredencialDoGithubInvalidaError('HTTP 401 Bad credentials')),
+    })
+    const r = await tratarPedidoDeDesejo(d, updateComTexto('/desejo quero busca por cor'))
+    expect(d.criarIssue).not.toHaveBeenCalled()
+    expect(r?.text).toMatch(/reconect/i)
   })
 
   it('dono sem projeto nenhum é avisado, sem criar issue', async () => {

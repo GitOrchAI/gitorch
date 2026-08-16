@@ -265,6 +265,37 @@ describe('enviarDesejo — o pedido em linguagem de gente vira issue', () => {
     expect(r).toEqual({ ok: false, chaveDoErro })
   })
 
+  /**
+   * Dentro do 503 moram dois fatos diferentes, e o corpo da resposta os separa:
+   * "não consegui perguntar agora" (tentar de novo resolve) e "sua conexão com
+   * o GitHub morreu" (só reconectar resolve). Enquanto os dois falavam a mesma
+   * frase, quem teve a credencial revogada lia "tente de novo em instantes"
+   * para sempre, sem nunca saber que precisava reconectar.
+   */
+  it('503 com GITHUB_DESCONECTADO manda RECONECTAR, não tentar de novo', async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      okResponse(503, { error: 'x', code: 'GITHUB_DESCONECTADO' })
+    )
+
+    const r = await enviarDesejo(
+      { apiBaseUrl: 'http://api.test', projectId: 'p1', texto: 'oi' },
+      { fetchImpl }
+    )
+
+    expect(r).toEqual({ ok: false, chaveDoErro: 'dashboard.wishErrorGithubDisconnected' })
+  })
+
+  it('503 sem code continua sendo indisponibilidade (rota antiga, proxy no meio)', async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => okResponse(503, { error: 'x' }))
+
+    const r = await enviarDesejo(
+      { apiBaseUrl: 'http://api.test', projectId: 'p1', texto: 'oi' },
+      { fetchImpl }
+    )
+
+    expect(r).toEqual({ ok: false, chaveDoErro: 'dashboard.wishErrorRepoUnverified' })
+  })
+
   it('nunca repassa a mensagem crua do servidor para a tela', async () => {
     const fetchImpl = vi.fn<typeof fetch>(async () =>
       okResponse(502, { error: 'token ghp_segredo inválido' })

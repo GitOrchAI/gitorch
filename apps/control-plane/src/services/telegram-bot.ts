@@ -1,6 +1,7 @@
 import type { PrismaClient } from '@prisma/client'
 import { bindChatFromStart, telegramBotUsername, type DonoDoChat } from './telegram-link.js'
 import { autorLegivel, montarDesejo } from './desejo.js'
+import { CredencialDoGithubInvalidaError } from './acesso-ao-repositorio.js'
 import type { AgentQuestionService } from './agent-question.js'
 
 // A ponte HTTP com a API do Telegram: ouvir o bot e falar por ele.
@@ -786,6 +787,11 @@ const MENSAGENS_DE_DESEJO: Record<
     semAcessoAoRepositorio: (projeto: string) => string
     /** Não deu para confirmar o acesso agora — recusa TEMPORÁRIA. */
     acessoNaoVerificavel: string
+    /**
+     * O GitHub recusou a credencial do dono (expirada/revogada). Recusa igual à
+     * de cima, frase diferente: aqui esperar não resolve, só reconectar.
+     */
+    githubDesconectado: string
     /** Resposta a quem digitou só o comando: um exemplo, não um erro. */
     comoUsar: string
     /** `exemplo` é o endereço a digitar; `lista`, o que o dono reconhece. */
@@ -807,6 +813,8 @@ const MENSAGENS_DE_DESEJO: Record<
       `Você não tem mais acesso de escrita a ${projeto} no GitHub, então não posso registrar o pedido lá. Se isso for engano, peça de volta o acesso ao repositório e mande de novo.`,
     acessoNaoVerificavel:
       'Não consegui confirmar agora, no GitHub, que esse repositório ainda é seu. Tente de novo em alguns minutos.',
+    githubDesconectado:
+      'Sua conexão com o GitHub não vale mais, então não consigo conferir nem registrar nada. Abra o GitOrch e reconecte sua conta do GitHub — depois disso o pedido funciona de novo.',
     comoUsar:
       'Escreva o pedido junto com o comando, em linguagem de gente. Assim:\n\n/desejo quero que o site aceite avaliação com foto\n\nEu registro isso como uma tarefa no seu repositório.',
     qualProjeto: (exemplo, lista) =>
@@ -828,6 +836,8 @@ const MENSAGENS_DE_DESEJO: Record<
       `Ya no tienes acceso de escritura a ${projeto} en GitHub, así que no puedo registrar el pedido allí. Si es un error, pide de vuelta el acceso al repositorio y mándalo otra vez.`,
     acessoNaoVerificavel:
       'No pude confirmar ahora, en GitHub, que ese repositorio siga siendo tuyo. Inténtalo de nuevo en unos minutos.',
+    githubDesconectado:
+      'Tu conexión con GitHub ya no vale, así que no puedo verificar ni registrar nada. Abre GitOrch y reconecta tu cuenta de GitHub — después de eso el pedido vuelve a funcionar.',
     comoUsar:
       'Escribe el pedido junto con el comando, en lenguaje normal. Así:\n\n/desejo quiero que el sitio acepte reseñas con foto\n\nLo registro como una tarea en tu repositorio.',
     qualProjeto: (exemplo, lista) =>
@@ -849,6 +859,8 @@ const MENSAGENS_DE_DESEJO: Record<
       `You no longer have write access to ${projeto} on GitHub, so I can't record the request there. If that's a mistake, ask for repository access again and send it once more.`,
     acessoNaoVerificavel:
       "I couldn't confirm with GitHub right now that this repository is still yours. Please try again in a few minutes.",
+    githubDesconectado:
+      'Your GitHub connection is no longer valid, so I can neither check nor record anything. Open GitOrch and reconnect your GitHub account — after that the request works again.',
     comoUsar:
       'Write the request together with the command, in plain words. Like this:\n\n/desejo I want the site to accept reviews with photos\n\nI record that as a real task in your repository.',
     qualProjeto: (exemplo, lista) =>
@@ -939,6 +951,14 @@ export async function tratarPedidoDeDesejo(
     // Não conseguir conferir é recusa TEMPORÁRIA, com o nome certo — nunca
     // permissão. O detalhe vai para o log; o chat recebe o recado de gente.
     deps.registrarFalha?.(erro)
+    // Credencial recusada pelo GitHub vem ANTES do recado geral: "tente de
+    // novo em alguns minutos" é o único conselho que a indisponibilidade sabe
+    // dar, e ele nunca funcionaria aqui — token revogado não volta com
+    // espera. No chat isso é mais grave que na tela: não há painel de erro
+    // nenhum, essa frase é tudo o que o dono recebe.
+    if (erro instanceof CredencialDoGithubInvalidaError) {
+      return { chatId, text: textos.githubDesconectado }
+    }
     return { chatId, text: textos.acessoNaoVerificavel }
   }
 

@@ -48,7 +48,11 @@ import { nomeDeRepositorioValido } from './nome-de-repositorio.js'
  *    `AcessoNaoVerificavelError`, e quem chama transforma isso em recusa
  *    temporária com motivo claro. O 404 é o único "não" definitivo que a API
  *    dá: o GitHub esconde repositório privado inacessível atrás dele, então
- *    404 é recusa limpa, não erro.
+ *    404 é recusa limpa, não erro. Credencial que o GitHub recusa (401, e o
+ *    403 de SSO/escopo) é um caso ESPECIALIZADO desse mesmo "não sei"
+ *    (`CredencialDoGithubInvalidaError`): recusa igual, mensagem diferente —
+ *    "reconecte" em vez de "tente de novo", porque tentar de novo não
+ *    ressuscita token revogado.
  */
 
 /** Não deu para saber se o cliente escreve ali. Quem chama RECUSA — nunca aprova. */
@@ -58,6 +62,52 @@ export class AcessoNaoVerificavelError extends Error {
     this.name = 'AcessoNaoVerificavelError'
   }
 }
+
+/**
+ * A credencial do GitHub do cliente não vale mais (expirada, revogada, ou sem
+ * a autorização que a organização exige).
+ *
+ * É um AcessoNaoVerificavelError DE PROPÓSITO: quem só conhece o tipo geral
+ * continua recusando exatamente como antes — a porta não afrouxa um milímetro.
+ * O que muda é o que dá para DIZER a quem está do outro lado da tela.
+ *
+ * Sem esta distinção, credencial revogada saía com o rótulo de
+ * indisponibilidade, e o único conselho que a indisponibilidade sabe dar é
+ * "tente de novo em instantes" — conselho que nunca funcionaria, porque
+ * tentativa nenhuma ressuscita um token revogado. Quem tem instalação do App
+ * gravada nem passa mais pela listagem OAuth (onde o 401 era classificado):
+ * a credencial morta só aparece aqui dentro.
+ */
+export class CredencialDoGithubInvalidaError extends AcessoNaoVerificavelError {
+  constructor(motivo: string) {
+    super(motivo)
+    this.name = 'CredencialDoGithubInvalidaError'
+  }
+}
+
+/**
+ * Mensagens REAIS da API do GitHub para credencial que não vale mais. O 401
+ * dispensa mensagem (nesta API ele é sempre credencial); o 403 é ambíguo — o
+ * mesmo status carrega limite de uso, permissão do App e exigência de SSO —,
+ * então só vira "credencial" quando a mensagem diz isso.
+ *
+ * - 401 `{"message":"Bad credentials"}` — token expirado ou revogado.
+ * - 403 `"Resource protected by organization SAML enforcement. You must grant
+ *   your OAuth token access to this organization."` — o token existe, mas a
+ *   organização exige uma autorização que ele não tem: só reconectar resolve.
+ * - 403 `"... token has not been granted the required scopes ..."` — mesma
+ *   natureza: falta autorização no próprio token.
+ *
+ * Limite de uso (`rate limit`) NÃO entra: reconectar não devolveria cota
+ * nenhuma, e mandar o cliente refazer o login por causa disso seria trocar uma
+ * espera de minutos por uma volta inútil ao GitHub.
+ */
+const CREDENCIAL_INVALIDA_403 = [
+  /bad credentials/i,
+  /grant your .*token/i,
+  /not been granted the required scopes/i,
+  /token .*(expired|revoked)/i,
+] as const
 
 const API_GITHUB = 'https://api.github.com'
 const TIMEOUT_MS = 10_000
@@ -85,6 +135,30 @@ function cabecalhos(token: string): Record<string, string> {
     'User-Agent': 'gitorch-control-plane',
     'X-GitHub-Api-Version': '2022-11-28',
   }
+}
+
+/**
+ * O `message` da resposta de erro da API do GitHub, quando ele existe.
+ *
+ * Best-effort de propósito: um proxy no meio do caminho pode devolver HTML, e
+ * a classificação por status (401) não depende disto. Sem mensagem legível,
+ * volta vazio — nunca lança, para não trocar uma recusa clara por um erro de
+ * parsing.
+ */
+async function mensagemDeErroDoGithub(resposta: Response): Promise<string> {
+  const texto = await resposta.text().catch(() => '')
+  if (texto === '') return ''
+  try {
+    const corpo: unknown = JSON.parse(texto)
+    if (typeof corpo === 'object' && corpo !== null && !Array.isArray(corpo)) {
+      const mensagem = (corpo as { message?: unknown }).message
+      if (typeof mensagem === 'string') return mensagem
+    }
+  } catch {
+    // Corpo que não é JSON não descreve nada: o status já decide.
+    return ''
+  }
+  return ''
 }
 
 /**
@@ -126,6 +200,23 @@ export async function podeEscreverNoRepositorio(
   if (resposta.status === 404) return false
 
   if (!resposta.ok) {
+    // Credencial morta tem nome próprio — continua RECUSANDO (o erro é um
+    // AcessoNaoVerificavelError), só passa a poder dizer "reconecte" em vez de
+    // "tente de novo", que é o conselho que nunca funcionaria aqui.
+    if (resposta.status === 401 || resposta.status === 403) {
+      const mensagem = await mensagemDeErroDoGithub(resposta)
+      if (
+        resposta.status === 401 ||
+        CREDENCIAL_INVALIDA_403.some((padrao) => padrao.test(mensagem))
+      ) {
+        throw new CredencialDoGithubInvalidaError(
+          `o GitHub recusou a credencial do cliente (HTTP ${resposta.status}${mensagem ? `: ${mensagem}` : ''})`
+        )
+      }
+      throw new AcessoNaoVerificavelError(
+        `o GitHub respondeu HTTP ${resposta.status}${mensagem ? ` (${mensagem})` : ''}`
+      )
+    }
     throw new AcessoNaoVerificavelError(`o GitHub respondeu HTTP ${resposta.status}`)
   }
 

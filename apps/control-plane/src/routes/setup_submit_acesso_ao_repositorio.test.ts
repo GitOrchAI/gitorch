@@ -292,6 +292,25 @@ describe('POST /api/v1/setup/submit — o repositório declarado tem de ser do c
     expect(cenario.projetos).toHaveLength(0)
   })
 
+  /**
+   * Credencial revogada é um fato com solução — reconectar — e não podia
+   * chegar ao cliente com o rótulo de indisponibilidade, que só sabe pedir
+   * "tente de novo". A recusa continua exatamente a mesma; o que muda é o que
+   * a tela pode dizer a respeito.
+   */
+  it('credencial revogada: recusa dizendo RECONECTE, não "tente de novo em instantes"', async () => {
+    const cenario = await montarCenario()
+    global.fetch = vi.fn(
+      async () => new Response(JSON.stringify({ message: 'Bad credentials' }), { status: 401 })
+    ) as unknown as typeof fetch
+
+    const { statusCode, corpo } = await submeter(cenario, ['mallory/meu-repo'])
+
+    expect(statusCode).toBe(401)
+    expect(corpo.code).toBe('GITHUB_TOKEN_EXPIRED')
+    expect(cenario.projetos).toHaveLength(0)
+  })
+
   it('sem credencial do GitHub conectada não há como verificar: recusa em vez de criar', async () => {
     const cenario = await montarCenario()
     cenario.getRawGithubToken.mockResolvedValue(null)

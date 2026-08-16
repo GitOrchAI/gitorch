@@ -44,6 +44,12 @@ const ERRO_SESSAO = 'dashboard.wishErrorSession'
 // confirmar agora", que é indisponibilidade e pede só uma nova tentativa.
 const ERRO_ACESSO_AO_REPO = 'dashboard.wishErrorRepoAccess'
 const ERRO_REPO_NAO_VERIFICADO = 'dashboard.wishErrorRepoUnverified'
+// Terceiro fato que morava escondido dentro do "não consegui confirmar": a
+// conexão com o GitHub morreu (credencial expirada ou revogada). Tem conserto
+// — reconectar — e ele é o oposto do conselho da indisponibilidade: esperar
+// não devolve token nenhum, e quem lia "tente de novo em instantes" ficava
+// preso nisso para sempre.
+const ERRO_GITHUB_DESCONECTADO = 'dashboard.wishErrorGithubDisconnected'
 const ERRO_GITHUB = 'dashboard.wishErrorGithub'
 const ERRO_REDE = 'dashboard.wishErrorNetwork'
 
@@ -180,7 +186,13 @@ export async function enviarDesejo(
     return { ok: false, chaveDoErro: ERRO_REDE }
   }
 
-  if (!res.ok) return { ok: false, chaveDoErro: chaveDoStatus(res.status) }
+  if (!res.ok) {
+    // O `code` do corpo separa o que o status sozinho não separa (dois fatos
+    // moram no 503). Corpo ilegível ou rota antiga: `null`, e a decisão volta
+    // a ser só pelo status — comportamento de sempre.
+    const corpo: unknown = await res.json().catch(() => null)
+    return { ok: false, chaveDoErro: chaveDaRecusa(res.status, codigoDaRecusa(corpo)) }
+  }
 
   const json: unknown = await res.json().catch(() => null)
   const criada = json && typeof json === 'object' ? (json as Record<string, unknown>) : null
@@ -240,6 +252,22 @@ export function avisoAindaVale(
 // O 413 existe porque o teto também vale no servidor. Sem esta linha, um texto
 // grande vindo de um navegador sem o `maxLength` cairia no genérico "tente de
 // novo em instantes" — que é justamente o conselho impossível de cumprir.
+function codigoDaRecusa(corpo: unknown): string | null {
+  if (!corpo || typeof corpo !== 'object' || Array.isArray(corpo)) return null
+  const code = (corpo as { code?: unknown }).code
+  return typeof code === 'string' ? code : null
+}
+
+function chaveDaRecusa(status: number, code: string | null): string {
+  // O 503 carrega dois fatos DIFERENTES, e só o corpo os separa: "não
+  // consegui perguntar ao GitHub agora" (tentar de novo resolve) e "sua
+  // conexão com o GitHub morreu" (só reconectar resolve). Enquanto os dois
+  // falavam a mesma frase, quem teve a credencial revogada lia "tente de novo
+  // em instantes" para sempre.
+  if (status === 503 && code === 'GITHUB_DESCONECTADO') return ERRO_GITHUB_DESCONECTADO
+  return chaveDoStatus(status)
+}
+
 function chaveDoStatus(status: number): string {
   if (status === 400) return ERRO_VAZIO
   if (status === 401) return ERRO_SESSAO

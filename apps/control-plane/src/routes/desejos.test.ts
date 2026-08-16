@@ -2,7 +2,10 @@ import Fastify from 'fastify'
 import { describe, expect, it, vi } from 'vitest'
 import { desejosRoutes, type DependenciasDeDesejos } from './desejos.js'
 import { LIMITE_DO_TEXTO_DO_DESEJO } from '../services/desejo.js'
-import { AcessoNaoVerificavelError } from '../services/acesso-ao-repositorio.js'
+import {
+  AcessoNaoVerificavelError,
+  CredencialDoGithubInvalidaError,
+} from '../services/acesso-ao-repositorio.js'
 
 // Cada teste declara só a dependência que o caso realmente exercita; o resto
 // cai num padrão inofensivo. Sem isso, acrescentar uma dependência nova
@@ -139,6 +142,33 @@ describe('POST /api/v1/desejos', () => {
     })
     expect(r.statusCode).toBe(503)
     expect(r.json().code).toBe('REPO_NAO_VERIFICAVEL')
+    expect(criarIssue).not.toHaveBeenCalled()
+  })
+
+  /**
+   * Credencial revogada tem solução — reconectar — e vinha embrulhada como
+   * indisponibilidade, cujo único conselho é "tente de novo em instantes".
+   * Tentar de novo nunca ressuscita um token revogado, então o cliente ficava
+   * preso num aviso que não leva a lugar nenhum.
+   *
+   * A recusa não afrouxa: continua sem registrar o pedido.
+   */
+  it('credencial do GitHub revogada: recusa dizendo RECONECTE, não "tente de novo"', async () => {
+    const criarIssue = vi.fn()
+    const app = appDeTeste({
+      buscarProjeto: vi.fn().mockResolvedValue(projeto),
+      confirmarAcesso: vi
+        .fn()
+        .mockRejectedValue(new CredencialDoGithubInvalidaError('HTTP 401 Bad credentials')),
+      criarIssue,
+    })
+    const r = await app.inject({
+      method: 'POST',
+      url: '/api/v1/desejos',
+      payload: { projectId: 'p1', texto: 'quero busca por cor' },
+    })
+    expect(r.statusCode).toBe(503)
+    expect(r.json().code).toBe('GITHUB_DESCONECTADO')
     expect(criarIssue).not.toHaveBeenCalled()
   })
 

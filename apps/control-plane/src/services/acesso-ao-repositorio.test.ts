@@ -5,6 +5,7 @@ import {
   provaDeEscritaNoUso,
   escreveSegundoAListagem,
   AcessoNaoVerificavelError,
+  CredencialDoGithubInvalidaError,
 } from './acesso-ao-repositorio.js'
 
 /**
@@ -76,6 +77,65 @@ describe('podeEscreverNoRepositorio', () => {
     expect(String(chamada?.[0])).toBe('https://api.github.com/repos/GitOrchAI/gitorch')
     const headers = chamada?.[1]?.headers as Record<string, string>
     expect(headers['Authorization']).toBe('Bearer gho_do_cliente')
+  })
+
+  /**
+   * "Não verificável" e "sua credencial morreu" são coisas diferentes para
+   * quem está do outro lado da tela: a primeira pede uma nova tentativa, a
+   * segunda pede uma reconexão. Enquanto as duas saíam com o mesmo nome, quem
+   * teve o token revogado lia "tente de novo em instantes" para sempre.
+   *
+   * A distinção é de MENSAGEM, nunca de porta: a credencial inválida continua
+   * sendo recusa (por isso o erro é um AcessoNaoVerificavelError também — quem
+   * já trata o tipo geral não afrouxa nada).
+   */
+  it('401 Bad credentials é falha de CREDENCIAL — não "tente de novo"', async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response(JSON.stringify({ message: 'Bad credentials' }), { status: 401 })
+    ) as unknown as typeof fetch
+
+    const erro = await podeEscreverNoRepositorio('acme/api', {
+      githubToken: 'gho_revogado',
+      fetchImpl,
+    }).catch((e: unknown) => e)
+
+    expect(erro).toBeInstanceOf(CredencialDoGithubInvalidaError)
+    // Continua fechando a porta: quem só conhece o tipo geral segue recusando.
+    expect(erro).toBeInstanceOf(AcessoNaoVerificavelError)
+  })
+
+  it('403 de SSO da organização ("grant your OAuth token") também é falha de CREDENCIAL', async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            message:
+              'Resource protected by organization SAML enforcement. You must grant your OAuth token access to this organization.',
+          }),
+          { status: 403 }
+        )
+    ) as unknown as typeof fetch
+
+    await expect(
+      podeEscreverNoRepositorio('acme/api', { githubToken: 'gho', fetchImpl })
+    ).rejects.toBeInstanceOf(CredencialDoGithubInvalidaError)
+  })
+
+  it('403 de limite de uso NÃO é credencial: reconectar não resolveria nada', async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ message: 'API rate limit exceeded for 1.2.3.4.' }), {
+          status: 403,
+        })
+    ) as unknown as typeof fetch
+
+    const erro = await podeEscreverNoRepositorio('acme/api', {
+      githubToken: 'gho',
+      fetchImpl,
+    }).catch((e: unknown) => e)
+
+    expect(erro).toBeInstanceOf(AcessoNaoVerificavelError)
+    expect(erro).not.toBeInstanceOf(CredencialDoGithubInvalidaError)
   })
 
   it('5xx do GitHub NÃO vira aprovação: erro de "não verificável"', async () => {

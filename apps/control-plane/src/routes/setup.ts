@@ -27,6 +27,7 @@ import {
   repositoriosSemEscrita,
   escreveSegundoAListagem,
   AcessoNaoVerificavelError,
+  CredencialDoGithubInvalidaError,
 } from '../services/acesso-ao-repositorio.js'
 
 /**
@@ -409,6 +410,21 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
         mapGitHubRepos(await somenteOndeOClienteEscreve(candidatosDaInstalacao, githubToken))
       )
     } catch (err) {
+      // Credencial recusada pelo GitHub tem conserto — reconectar — e por isso
+      // vem ANTES: no ramo geral ela sairia como indisponibilidade, e o único
+      // conselho da indisponibilidade é "tente de novo em instantes", que
+      // nunca ressuscita um token revogado. Este é o code que o passo da tela
+      // já traduz no botão "entrar de novo no GitHub".
+      if (err instanceof CredencialDoGithubInvalidaError) {
+        app.log.warn(
+          { userId: request.user.id, error: err.message },
+          '[setup] listagem recusada: o GitHub não aceita mais a credencial do cliente'
+        )
+        return reply.code(setupErrorHttpStatus('GITHUB_TOKEN_EXPIRED')).send({
+          error: 'Sua conexão com o GitHub não vale mais — reconecte para continuar.',
+          code: 'GITHUB_TOKEN_EXPIRED',
+        })
+      }
       if (err instanceof AcessoNaoVerificavelError) {
         // Devolver a lista peneirada pela metade seria mentir por omissão: o
         // cliente leria "não tenho esses repositórios". Indisponibilidade se
@@ -716,6 +732,19 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
           })
         }
       } catch (err) {
+        // Mesma separação da listagem: credencial recusada pelo GitHub pede
+        // reconexão, não uma nova tentativa. A recusa é idêntica — o projeto
+        // não nasce —, só o que se diz ao cliente muda.
+        if (err instanceof CredencialDoGithubInvalidaError) {
+          app.log.warn(
+            { ownerId: owner.id, error: err.message },
+            '[setup] submit recusado: o GitHub não aceita mais a credencial do cliente'
+          )
+          return reply.code(setupErrorHttpStatus('GITHUB_TOKEN_EXPIRED')).send({
+            error: 'Sua conexão com o GitHub não vale mais — reconecte para continuar.',
+            code: 'GITHUB_TOKEN_EXPIRED',
+          })
+        }
         if (err instanceof AcessoNaoVerificavelError) {
           // Não conseguir conferir NÃO é permissão. Recusa com motivo claro e
           // convite a tentar de novo — nunca cria o projeto no escuro.
