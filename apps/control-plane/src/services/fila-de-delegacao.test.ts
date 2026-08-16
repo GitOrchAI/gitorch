@@ -15,6 +15,10 @@ function linha(over: Partial<LinhaDeSessao>): LinhaDeSessao {
     nudges: 0,
     lastProgressAt: null,
     stateCheckedAt: null,
+    pendingSince: null,
+    mergeCommitSha: null,
+    deployState: null,
+    deployCheckedAt: null,
     ...over,
   }
 }

@@ -571,6 +571,24 @@ model DevSession {
   closedAt     DateTime? @map("closed_at")
   closedReason String?   @map("closed_reason")
 
+  /// Desde quando esta entrega está com a verificação automática pendente —
+  /// nulo enquanto nunca esteve, ou depois que o juiz limpa a marca ao
+  /// julgar. É a partir dela que `decidirSobreVerificacao`
+  /// (vigia-da-verificacao.ts) conta o teto de espera antes de avisar o dono.
+  pendingSince DateTime? @map("pending_since")
+  /// SHA do commit de fato mesclado — a Tarefa 12 usa para casar a execução
+  /// de CD com a entrega certa (nunca declarar publicado um commit antigo).
+  mergeCommitSha String? @map("merge_commit_sha")
+  /// Último estado de publicação lido no ambiente do cliente (Tarefa 13).
+  deployState String? @map("deploy_state")
+  /// Quando `deployState` foi lido pela última vez (Tarefa 13).
+  deployCheckedAt DateTime? @map("deploy_checked_at")
+  /// Fracassos SEGUIDOS de mescla contra o commit atual (Tarefa 10) — zera
+  /// quando o commit muda. Não usado por esta migração, só criado por ela.
+  mergeFailures Int @default(0) @map("merge_failures") @db.SmallInt
+  /// Quando o último fracasso de mescla aconteceu (Tarefa 10).
+  mergeLastFailedAt DateTime? @map("merge_last_failed_at")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 

@@ -24,6 +24,10 @@ function linha(overrides: Partial<LinhaDeSessao> = {}): LinhaDeSessao {
     nudges: 0,
     lastProgressAt: agora,
     stateCheckedAt: null,
+    pendingSince: null,
+    mergeCommitSha: null,
+    deployState: null,
+    deployCheckedAt: null,
     ...overrides,
   }
 }

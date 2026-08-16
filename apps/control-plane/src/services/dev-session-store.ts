@@ -31,6 +31,23 @@ export interface LinhaDeSessao {
    * tivesse mudado desde a última olhada.
    */
   stateCheckedAt: Date | null
+  /**
+   * Desde quando esta entrega está com a verificação automática pendente —
+   * `null` enquanto nunca esteve, ou depois que `limparPendencia` apaga a
+   * marca. É a partir dela que `decidirSobreVerificacao`
+   * (vigia-da-verificacao.ts) conta o teto de espera antes de avisar o dono.
+   */
+  pendingSince: Date | null
+  /**
+   * SHA do commit que foi de fato mesclado — a Tarefa 12 usa para casar a
+   * execução de CD com a entrega certa (nunca declarar publicado um commit
+   * antigo).
+   */
+  mergeCommitSha: string | null
+  /** Último estado de publicação lido no ambiente do cliente (Tarefa 13). */
+  deployState: string | null
+  /** Quando `deployState` foi lido pela última vez (Tarefa 13). */
+  deployCheckedAt: Date | null
 }
 
 /** Por que a linha saiu da vigia. `merged` é o único caminho feliz. */
@@ -45,6 +62,8 @@ export interface PrismaDevSession {
   devSession: {
     upsert: (args: unknown) => Promise<unknown>
     update: (args: unknown) => Promise<unknown>
+    /** Só `registrarPendencia` usa — é o que permite gravar "primeiro avistamento" sem um read antes. */
+    updateMany: (args: unknown) => Promise<unknown>
     findMany: (args: unknown) => Promise<LinhaDeSessao[]>
   }
 }
@@ -248,5 +267,44 @@ export async function fecharSessao(deps: {
   await deps.prisma.devSession.update({
     where: { sessionName: deps.sessionName },
     data: { closedAt: deps.agora, closedReason: deps.motivo },
+  })
+}
+
+/**
+ * Marca que esta entrega está com a verificação automática pendente.
+ *
+ * Só grava se `pending_since` ainda for nulo — a marca é do PRIMEIRO
+ * avistamento, e é dela que o teto de espera (`TETO_DE_ESPERA_MS`,
+ * vigia-da-verificacao.ts) conta o tempo até avisar o dono. `updateMany` com
+ * o próprio campo nulo no `where` faz essa checagem de forma atômica, sem um
+ * read antes: chamar de novo a cada ciclo, enquanto a pendência continua, não
+ * regrava nada — sem isso o relógio reiniciaria a cada chamada e o aviso de
+ * demora nunca dispararia.
+ */
+export async function registrarPendencia(deps: {
+  prisma: PrismaDevSession
+  sessionName: string
+  agora: Date
+}): Promise<void> {
+  await deps.prisma.devSession.updateMany({
+    where: { sessionName: deps.sessionName, pendingSince: null },
+    data: { pendingSince: deps.agora },
+  })
+}
+
+/**
+ * Apaga a marca de pendência.
+ *
+ * Chamada de dentro do laço do juiz, no exato instante em que a decisão da
+ * verificação (`decidirSobreVerificacao`) devolve `julgar` — nunca por um
+ * gatilho externo, nunca por uma varredura própria desta função.
+ */
+export async function limparPendencia(deps: {
+  prisma: PrismaDevSession
+  sessionName: string
+}): Promise<void> {
+  await deps.prisma.devSession.update({
+    where: { sessionName: deps.sessionName },
+    data: { pendingSince: null },
   })
 }

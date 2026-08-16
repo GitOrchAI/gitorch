@@ -34,6 +34,7 @@ describe('MIGRATION_LEDGER', () => {
       'dev-session-migration.sql',
       'jules-plan-migration.sql',
       'repo-access-recheck-migration.sql',
+      'publicacao-migration.sql',
     ])
   })
 })

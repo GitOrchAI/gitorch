@@ -18,6 +18,7 @@ function prismaFalso(overrides: Record<string, unknown> = {}) {
       // sem isso o TypeScript infere uma tupla vazia e a asserção nao compila.
       upsert: vi.fn(async (_args: unknown) => undefined),
       update: vi.fn(async (_args: unknown) => undefined),
+      updateMany: vi.fn(async (_args: unknown) => undefined),
       findMany: vi.fn(async (_args: unknown) => []),
       ...overrides,
     },

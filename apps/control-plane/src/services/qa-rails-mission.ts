@@ -14,6 +14,7 @@ import { ehPrDelegado } from './pr-delegado.js'
 import type { LinhaDeSessao } from './dev-session-store.js'
 import { lerDiffDoPr, type ArquivoDoPr } from './diff-do-pr.js'
 import { mesclarPr, type ResultadoDoMerge } from './merge-do-pr.js'
+import { decidirSobreVerificacao, type EstadoDaVerificacao } from './vigia-da-verificacao.js'
 
 // Missão do QA nos TRILHOS (F3.6): acha a PR do Jules que precisa de julgamento,
 // monta o snapshot (diff + Verification Criteria da issue + estado do CI), o
@@ -78,6 +79,25 @@ export interface QaRailsMissionOptions {
    * módulo, que não sabe nada de banco.
    */
   aoMesclar?: (args: { numeroDoPr: number }) => Promise<void>
+  /**
+   * Tarefa 7: grava a PRIMEIRA vez que esta entrega é vista com a
+   * verificação pendente. Sem isto o teto de espera (`TETO_DE_ESPERA_MS`,
+   * vigia-da-verificacao.ts) não tem de onde contar — a decisão de esperar
+   * continua correta, só nunca amadurece para o aviso de demora.
+   */
+  registrarPendencia?: (args: { sessionName: string; agora: Date }) => Promise<void>
+  /**
+   * Tarefa 7: apaga a marca de pendência. Chamada de dentro deste mesmo laço
+   * (R2 do controlador), no instante em que a verificação deixa de estar
+   * pendente — nunca por um gatilho externo nem por uma varredura própria.
+   */
+  limparPendencia?: (args: { sessionName: string }) => Promise<void>
+  /**
+   * Avisa o dono quando a verificação de um PR fica parada além do teto de
+   * espera. MESMO caminho que `session-watch.ts` usa (`VigiaDeps.avisarDono`)
+   * — não é uma segunda campainha, é o mesmo aviso.
+   */
+  avisarDono?: (mensagem: string) => Promise<void>
   /**
    * Canal do aviso de degradação — antes hardcoded em `console.warn`,
    * invisível na observabilidade estruturada. Produção (scheduler.ts) sempre
@@ -266,10 +286,10 @@ export async function runQaMissionViaRails(
   }
 
   // O ESTADO da verificação vem logo após buscar a PR — ANTES de gastar
-  // chamadas com a issue vinculada e o diff — porque um dos dois estados
-  // abaixo (`pending`/`unknown`) faz a missão voltar sem julgar nada; não há
-  // por que buscar critérios e diff de um PR que não vai ser julgado agora.
-  let ciState = 'unknown'
+  // chamadas com a issue vinculada e o diff — porque a decisão da Tarefa 6
+  // (`decidirSobreVerificacao`, logo abaixo) pode mandar esperar; não há por
+  // que buscar critérios e diff de um PR que não vai ser julgado agora.
+  let ciState: EstadoDaVerificacao = 'unknown'
   if (pr.head?.sha) {
     const checks = (await gh(
       'GET',
@@ -283,40 +303,97 @@ export async function runQaMissionViaRails(
     else ciState = 'red'
   }
 
-  // Defeito real de produção (PR #97, 15/08/2026 16:42:22): o QA julgou este
-  // PR ENQUANTO a verificação ainda rodava (`ciState === 'pending'`),
-  // reprovou com "CI pending", e minutos depois a verificação terminou 100%
-  // verde (8 checks) — mas a reprovação ficou PRESA para sempre: o skip de
-  // "já julgado" (mais acima, mesmo head sha) nunca deixa o QA re-julgar o
-  // mesmo estado, então um motivo TRANSITÓRIO virou um bloqueio PERMANENTE.
-  // `pending` não é um veredito ("aprovado"/"reprovado") — é "ainda não
-  // sei", e julgar mesmo assim foi o erro. A correção: pular esta passagem
-  // (nenhuma review postada, nenhum comentário, nenhum merge) e deixar a
-  // PRÓXIMA execução do QA — o scheduler roda em ciclo — encontrar a
-  // verificação já resolvida.
+  // A linha da sessão desta entrega — usada AQUI pela decisão da verificação
+  // (precisa saber desde quando ela está pendente) e mais abaixo, no ramo de
+  // reprovação, para avisar o dev assíncrono. Calculada uma única vez.
   //
-  // `unknown` (não deu para ler check-runs porque o GitHub não devolveu o
-  // sha do head) entra no MESMO pulo, pelo MESMO motivo: julgar sem saber
-  // corre exatamente o mesmo risco de travar um PR para sempre com uma
-  // reprovação possivelmente incorreta — é o defeito do PR #97 por uma porta
-  // diferente. Isto é DIFERENTE de `no checks`: aquele é um estado ESTÁVEL
-  // (o repositório simplesmente não tem verificação nenhuma configurada, e
-  // não passa a ter uma só de o QA esperar), então continua sendo julgado e
-  // gerando a lacuna GITORCH-GAP (ver adiante). `unknown` não tem NENHUMA
-  // evidência sobre qual dos quatro estados é o real — errar para o lado de
-  // não agir agora é mais seguro que errar para o lado de uma reprovação
-  // permanente e talvez errada.
-  if (ciState === 'pending' || ciState === 'unknown') {
-    const motivo =
-      ciState === 'pending'
-        ? 'aguardando a verificação automática terminar'
-        : 'não julgado — não foi possível ler o estado da verificação automática (unknown)'
+  // A linha pode ainda não ter o PR gravado: quem grava é a vigia, e ela
+  // roda em outro ciclo. Medido em produção: o QA julgou o PR #97 pela
+  // delegação achada no recuo do corpo ("Fixes #74") porque a linha guardada
+  // ainda não tinha o PR, e a vigia só gravou `pullRequestNumber = 97`
+  // minutos depois — buscando só por PR, o `find` não acharia nada, o mesmo
+  // destino do PR #79 (5 dias parado sem aviso). A issue de origem o QA já
+  // conhece neste instante (`issueDaEntrega`, resolvida no laço de
+  // descoberta acima), então ela entra como SEGUNDA tentativa — não
+  // substitui a busca por PR, que é inequívoca (um PR só tem uma linha) e
+  // continua sendo a primeira. Quando `issueDaEntrega` é `null` (recuo por
+  // login do autor — `ehPrDelegado` não tem como saber a issue nesse recuo),
+  // só a busca por PR vale mesmo.
+  //
+  // `LinhaDeSessao` não expõe `closedAt` (só `dev-session-store.ts` grava; o
+  // tipo devolvido aqui é deliberadamente estreito), então não há como
+  // filtrar "só viva" dentro deste módulo. Em vez disso, `find` pega a
+  // PRIMEIRA linha da issue na ordem em que `options.sessoes` chegou —
+  // documentada acima como `createdAt` decrescente. O índice único parcial
+  // `dev_sessions_open_per_issue` garante no máximo UMA sessão viva por
+  // issue ao mesmo tempo, então a linha mais recente para essa issue É a
+  // viva (ou a única candidata, se todas já fecharam) — resolve "prefira a
+  // viva/mais recente" sem precisar do campo que o tipo não tem.
+  const linhaDaEntrega =
+    (options.sessoes ?? []).find((s) => s.pullRequestNumber === target.number) ??
+    (issueDaEntrega !== null
+      ? (options.sessoes ?? []).find((s) => s.issueNumber === issueDaEntrega)
+      : undefined)
+
+  // Defeito real de produção (PR #97): o QA julgou este PR ENQUANTO a
+  // verificação ainda rodava (`ciState === 'pending'`), reprovou com "CI
+  // pending", e minutos depois a verificação terminou 100% verde — mas a
+  // reprovação ficou PRESA para sempre: o skip de "já julgado" (mais acima,
+  // mesmo head sha) nunca deixa o QA re-julgar o mesmo estado, então um
+  // motivo TRANSITÓRIO virou um bloqueio PERMANENTE. `pending` (e `unknown`
+  // — não dá para ler check-runs sem o sha do head, e julgar sem saber
+  // arrisca a mesma reprovação permanente por uma porta diferente) não são
+  // veredito: são "ainda não sei".
+  //
+  // A correção original apenas pulava, calado, sempre — trocando um defeito
+  // por outro: uma verificação que nunca termina prendia a entrega do mesmo
+  // jeito, só que sem ninguém saber. `decidirSobreVerificacao` (Tarefa 6)
+  // substitui o pulo cego por uma decisão: julgar quando há evidência
+  // (`green`/`red`/`no checks` — este último é um estado ESTÁVEL, o
+  // repositório não tem verificação e não passa a ter uma só de esperar, por
+  // isso continua sendo julgado e virando a lacuna GITORCH-GAP, ver adiante),
+  // esperar enquanto pendente, e avisar o dono quando a espera passa do teto
+  // (`TETO_DE_ESPERA_MS`).
+  const agora = new Date()
+  const decisao = decidirSobreVerificacao({
+    estado: ciState,
+    primeiraVezVistoPendenteEm: linhaDaEntrega?.pendingSince ?? null,
+    agora,
+  })
+
+  if (decisao.acao !== 'julgar') {
+    // `esperar`: grava a PRIMEIRA vez que esta entrega foi vista pendente —
+    // sem isso o teto não tem de onde contar. Quem garante "só a primeira
+    // vez" é `registrarPendencia` (dev-session-store.ts): chamar de novo a
+    // cada ciclo, enquanto a pendência continua, não regrava nada.
+    if (decisao.acao === 'esperar' && linhaDaEntrega && options.registrarPendencia) {
+      await options.registrarPendencia({ sessionName: linhaDaEntrega.sessionName, agora })
+    }
+    // `avisar-demora`: o MESMO aviso que `session-watch.ts` usa para o dono —
+    // não uma segunda campainha. Best-effort: um aviso que falha não pode
+    // travar a missão, mesmo espírito do aviso à sessão do dev mais abaixo.
+    if (decisao.acao === 'avisar-demora' && options.avisarDono) {
+      await options
+        .avisarDono(
+          `GitOrch: a verificação automática do PR #${target.number} (${options.repository}) ` +
+            `está parada — ${decisao.motivo}.`
+        )
+        .catch(() => undefined)
+    }
     return {
       exitCode: 0,
-      output: `QA: PR #${target.number} ${motivo}.`,
+      output: `QA: PR #${target.number} não julgado — ${decisao.motivo}.`,
       stderr: '',
       noOp: true,
     }
+  }
+
+  // `julgar`: se esta entrega chegou a ficar marcada como pendente, a marca
+  // sai AQUI — dentro do próprio laço do juiz, no mesmo instante em que a
+  // decisão foi consultada. Nunca um gatilho externo, nunca uma varredura
+  // própria (resolução R2 do controlador).
+  if (linhaDaEntrega?.pendingSince && options.limparPendencia) {
+    await options.limparPendencia({ sessionName: linhaDaEntrega.sessionName })
   }
 
   // A issue vinculada vem PRIMEIRO da linha guardada (autoritativa); só cai
@@ -480,38 +557,10 @@ export async function runQaMissionViaRails(
     // Sem linha correspondente (PR de humano, ou anterior a esta mudança), a
     // missão segue sem avisar — não é falha.
     if (options.avisarSessao) {
-      // A linha pode ainda não ter o PR gravado: quem grava é a vigia, e ela
-      // roda em outro ciclo. Medido em produção (15/08/2026): o QA julgou o
-      // PR #97 às 16:42:22 (achou a delegação pelo recuo do corpo — "Fixes
-      // #74" — porque a linha guardada ainda não tinha o PR) e a vigia só
-      // gravou `pullRequestNumber = 97` às 16:45:01. Buscando só por PR, o
-      // `find` não achava nada e nada era enviado ao dev: as 14 atividades da
-      // sessão terminavam em "concluída" às 16:40:34, sem nenhum aviso nosso
-      // depois — o trabalho parava em silêncio, o mesmo destino do PR #79 (5
-      // dias parado), reproduzido ao vivo. A issue de origem o QA já conhece
-      // neste instante (`issueDaEntrega`, resolvida no laço de descoberta
-      // acima), então ela entra como SEGUNDA tentativa — não substitui a
-      // busca por PR, que é inequívoca (um PR só tem uma linha) e continua
-      // sendo a primeira. Quando `issueDaEntrega` é `null` (recuo por login
-      // do autor — `ehPrDelegado` não tem como saber a issue nesse recuo), só
-      // a busca por PR vale mesmo.
-      //
-      // `LinhaDeSessao` não expõe `closedAt` (só `dev-session-store.ts`
-      // grava; o tipo devolvido aqui é deliberadamente estreito), então não
-      // há como filtrar "só viva" dentro deste módulo. Em vez disso, `find`
-      // pega a PRIMEIRA linha da issue na ordem em que `options.sessoes`
-      // chegou — documentada acima como `createdAt` decrescente. O índice
-      // único parcial `dev_sessions_open_per_issue` garante no máximo UMA
-      // sessão viva por issue ao mesmo tempo, então a linha mais recente para
-      // essa issue É a viva (ou a única candidata, se todas já fecharam) —
-      // resolve "prefira a viva/mais recente" sem precisar do campo que o
-      // tipo não tem.
-      const linha =
-        (options.sessoes ?? []).find((s) => s.pullRequestNumber === target.number) ??
-        (issueDaEntrega !== null
-          ? (options.sessoes ?? []).find((s) => s.issueNumber === issueDaEntrega)
-          : undefined)
-      if (linha) {
+      // `linhaDaEntrega` já foi resolvida mais acima (mesma ordem de
+      // autoridade: PR primeiro, issue de origem como segunda tentativa) —
+      // reaproveitada aqui, não recalculada.
+      if (linhaDaEntrega) {
         const texto = [
           `GitOrch QA reviewed your pull request #${target.number} and it is NOT accepted yet.`,
           '',
@@ -530,13 +579,13 @@ export async function runQaMissionViaRails(
         // repetir o defeito que esta mudança existe para matar — por isso o
         // aviso sai mesmo quando `avisarSessao` rejeita ou lança.
         const avisou = await options
-          .avisarSessao({ sessionName: linha.sessionName, texto })
+          .avisarSessao({ sessionName: linhaDaEntrega.sessionName, texto })
           .catch(() => false)
         if (!avisou) {
           const avisar = options.onWarn ?? console.warn
           avisar(
             `[qa] veredito postado no PR #${target.number}, mas a sessão ` +
-              `${linha.sessionName} não foi avisada — o dev não vai retrabalhar sozinho`
+              `${linhaDaEntrega.sessionName} não foi avisada — o dev não vai retrabalhar sozinho`
           )
         }
       }

@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { runQaMissionViaRails, buildJulesReworkComment } from './qa-rails-mission.js'
 import { assertMissionDelivered } from './mission-outcome.js'
 import type { LinhaDeSessao } from './dev-session-store.js'
+import { TETO_DE_ESPERA_MS } from './vigia-da-verificacao.js'
 
 const RECON = JSON.stringify({
   ci: 'GitHub Actions (.github/workflows/ci.yml) — roda lint, typecheck e testes por workspace.',
@@ -61,6 +62,10 @@ function linha(over: Partial<LinhaDeSessao>): LinhaDeSessao {
     nudges: 0,
     lastProgressAt: null,
     stateCheckedAt: null,
+    pendingSince: null,
+    mergeCommitSha: null,
+    deployState: null,
+    deployCheckedAt: null,
     ...over,
   }
 }
@@ -523,16 +528,15 @@ describe('runQaMissionViaRails', () => {
     expect(r.output).not.toContain('GITORCH-GAP')
   })
 
-  // Defeito real de produção (15/08/2026, 16:42:22): o QA julgou o PR #97
-  // ENQUANTO a verificação automática ainda rodava — `QA judged PR #97:
-  // request_changes (CI pending)`. Minutos depois a verificação terminou
-  // 100% verde (8 checks), mas a reprovação ficou PRESA para sempre: o skip
-  // de "já julgado" (linha ~215, mesmo head sha) nunca deixa o QA re-julgar
-  // o mesmo estado, e um motivo TRANSITÓRIO (verificação ainda rodando)
-  // virou um bloqueio PERMANENTE. `pending` não é veredito — é "ainda não
-  // sei". A correção: pular esta passagem (sem postar review nenhuma) e
-  // deixar a PRÓXIMA execução do QA (o scheduler roda em ciclo) encontrar a
-  // verificação já resolvida.
+  // Defeito real de produção: o QA julgou o PR #97 ENQUANTO a verificação
+  // automática ainda rodava — `QA judged PR #97: request_changes (CI
+  // pending)`. Minutos depois a verificação terminou 100% verde, mas a
+  // reprovação ficou PRESA para sempre: o skip de "já julgado" (mesmo head
+  // sha) nunca deixa o QA re-julgar o mesmo estado, e um motivo TRANSITÓRIO
+  // (verificação ainda rodando) virou um bloqueio PERMANENTE. `pending` não
+  // é veredito — é "ainda não sei". Tarefa 7: a vigília ativa
+  // (`decidirSobreVerificacao`, Tarefa 6) decide `esperar` para este caso —
+  // sem postar review nenhuma — e a saída declara o motivo real da decisão.
   it('verificação PENDENTE (PR #97): não julga, não posta review nenhuma, e a saída avisa que está esperando', async () => {
     const f = fakeFetch([{ number: 97, user: 'jules[bot]' }], undefined, undefined, {
       checkRuns: [{ status: 'in_progress' }],
@@ -556,7 +560,8 @@ describe('runQaMissionViaRails', () => {
     expect(r.exitCode).toBe(0)
     expect(r.noOp).toBe(true)
     expect(r.output).toContain('PR #97')
-    expect(r.output).toMatch(/aguardando.*verifica/i)
+    expect(r.output).toContain('não julgado')
+    expect(r.output).toContain('verificação em pending')
   })
 
   it('verificação VERDE: continua julgando normalmente (não regrediu)', async () => {
@@ -1128,6 +1133,137 @@ describe('runQaMissionViaRails', () => {
     expect(r.noOp).toBe(true)
     expect(posted.reviews).toHaveLength(0)
     expect(posted.merges).toHaveLength(0)
+  })
+
+  // Tarefa 7 — a vigília ativa da verificação substitui o pulo passivo pela
+  // decisão de `decidirSobreVerificacao` (Tarefa 6). Os três casos abaixo são
+  // o Step 6 do brief: (a) pendente recente, (b) pendente além do teto,
+  // (c) verde depois de pendente — com a limpeza da marca PROVADA (R2 do
+  // controlador), não só o julgamento.
+  describe('Tarefa 7: a vigília da verificação', () => {
+    it('(a) pendente recente: não julga, e grava a marca de pendência (primeiro avistamento)', async () => {
+      const f = fakeFetch([{ number: 7, user: 'jules[bot]' }], undefined, undefined, {
+        checkRuns: [{ status: 'in_progress' }],
+      })
+      const posted = (f as unknown as { posted: { reviews: unknown[]; comments: unknown[] } })
+        .posted
+      const registradas: Array<{ sessionName: string; agora: Date }> = []
+      const r = await runQaMissionViaRails({
+        repository: 'o/r',
+        githubToken: 't',
+        execute: async () => {
+          throw new Error('não deveria julgar com verificação pendente')
+        },
+        // Nunca vista pendente antes (`pendingSince: null`) — é o PRIMEIRO
+        // avistamento, o que `registrarPendencia` precisa marcar.
+        sessoes: [linha({ issueNumber: 50, pullRequestNumber: 7, sessionName: 'sessions/pend-a' })],
+        registrarPendencia: async (args) => {
+          registradas.push(args)
+        },
+        fetchImpl: f,
+      })
+      expect(r.noOp).toBe(true)
+      expect(posted.reviews).toHaveLength(0)
+      expect(posted.comments).toHaveLength(0)
+      expect(registradas).toHaveLength(1)
+      expect(registradas[0]!.sessionName).toBe('sessions/pend-a')
+      expect(registradas[0]!.agora).toBeInstanceOf(Date)
+    })
+
+    it('(b) pendente além do teto: não julga, e avisa o dono UMA vez pelo mesmo canal do session-watch', async () => {
+      const f = fakeFetch([{ number: 8, user: 'jules[bot]' }], undefined, undefined, {
+        checkRuns: [{ status: 'in_progress' }],
+      })
+      const posted = (f as unknown as { posted: { reviews: unknown[]; comments: unknown[] } })
+        .posted
+      const avisos: string[] = []
+      const registradas: unknown[] = []
+      const r = await runQaMissionViaRails({
+        repository: 'o/r',
+        githubToken: 't',
+        execute: async () => {
+          throw new Error('não deveria julgar com verificação pendente')
+        },
+        // Vista pendente pela primeira vez bem além do teto de espera —
+        // tempo real decorrido, não um relógio injetado (esta missão não
+        // recebe `agora` de fora; a mesma folga de segundos que o teste leva
+        // para rodar é irrelevante contra um teto de 90 minutos).
+        sessoes: [
+          linha({
+            issueNumber: 51,
+            pullRequestNumber: 8,
+            sessionName: 'sessions/pend-b',
+            pendingSince: new Date(Date.now() - (TETO_DE_ESPERA_MS + 5 * 60 * 1000)),
+          }),
+        ],
+        avisarDono: async (mensagem) => {
+          avisos.push(mensagem)
+        },
+        registrarPendencia: async (args) => {
+          registradas.push(args)
+        },
+        fetchImpl: f,
+      })
+      expect(r.noOp).toBe(true)
+      expect(posted.reviews).toHaveLength(0)
+      expect(posted.comments).toHaveLength(0)
+      expect(avisos).toHaveLength(1)
+      expect(avisos[0]).toContain('#8')
+      // Depois do teto a ação é `avisar-demora`, não `esperar` — a marca já
+      // está gravada desde o primeiro avistamento; regravar não é o papel
+      // deste ramo.
+      expect(registradas).toHaveLength(0)
+    })
+
+    it('(c) verde depois de pendente: julga normalmente, e PROVA que limparPendencia foi chamada para esta sessão (R2)', async () => {
+      const f = fakeFetch([{ number: 9, user: 'jules[bot]' }]) // default: checkRuns 'success' -> ciState green
+      const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
+      const limpezas: Array<{ sessionName: string }> = []
+      const r = await runQaMissionViaRails({
+        repository: 'o/r',
+        githubToken: 't',
+        execute: async () => APPROVE,
+        // Esteve pendente antes (marca presente) — agora a verificação saiu
+        // verde, então a decisão é `julgar` e a marca tem que sair.
+        sessoes: [
+          linha({
+            issueNumber: 50,
+            pullRequestNumber: 9,
+            sessionName: 'sessions/pend-c',
+            pendingSince: new Date(Date.now() - 10 * 60 * 1000),
+          }),
+        ],
+        limparPendencia: async (args) => {
+          limpezas.push(args)
+        },
+        fetchImpl: f,
+      })
+      // Não basta ter julgado — R2 exige provar que a limpeza aconteceu PARA
+      // ESTA sessão, não só que o julgamento seguiu adiante.
+      expect(limpezas).toHaveLength(1)
+      expect(limpezas[0]!.sessionName).toBe('sessions/pend-c')
+      // E o julgamento de fato aconteceu (a limpeza não substitui o resto do
+      // fluxo, só acontece a caminho dele).
+      expect(r.noOp).toBeUndefined()
+      expect(posted.reviews[0]!.event).toBe('APPROVE')
+    })
+
+    it('verde sem NUNCA ter estado pendente: julga normalmente, e limparPendencia NÃO é chamada (nada para limpar)', async () => {
+      const f = fakeFetch([{ number: 10, user: 'jules[bot]' }])
+      const limpezas: unknown[] = []
+      const r = await runQaMissionViaRails({
+        repository: 'o/r',
+        githubToken: 't',
+        execute: async () => APPROVE,
+        sessoes: [linha({ issueNumber: 50, pullRequestNumber: 10, pendingSince: null })],
+        limparPendencia: async (args) => {
+          limpezas.push(args)
+        },
+        fetchImpl: f,
+      })
+      expect(r.noOp).toBeUndefined()
+      expect(limpezas).toHaveLength(0)
+    })
   })
 })
 
