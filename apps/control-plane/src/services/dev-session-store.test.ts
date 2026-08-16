@@ -8,6 +8,7 @@ import {
   registrarPr,
   fecharSessao,
   registrarPendencia,
+  registrarFracassoDeMerge,
 } from './dev-session-store.js'
 
 const agora = new Date('2026-01-01T00:00:00.000Z')
@@ -265,5 +266,29 @@ describe('registrarPendencia', () => {
     await registrarPendencia({ prisma, sessionName: 'sessions/1', agora: passagemSeguinte })
 
     expect(linha.pendingSince).toEqual(primeiroAvistamento)
+  })
+})
+
+describe('registrarFracassoDeMerge', () => {
+  it('grava o contador e a hora do fracasso — o número já vem pronto de quem chama', async () => {
+    const prisma = prismaFalso()
+
+    await registrarFracassoDeMerge({ prisma, sessionName: 'sessions/1', contador: 2, agora })
+
+    expect(prisma.devSession.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { sessionName: 'sessions/1' },
+        data: { mergeFailures: 2, mergeLastFailedAt: agora },
+      })
+    )
+  })
+
+  it('não toca em answeredHash — o teto de mescla tem estado próprio, não disputa campo com o aviso de demora', async () => {
+    const prisma = prismaFalso()
+
+    await registrarFracassoDeMerge({ prisma, sessionName: 'sessions/1', contador: 1, agora })
+
+    const chamada = prisma.devSession.update.mock.calls[0]?.[0] as { data: Record<string, unknown> }
+    expect(chamada.data).not.toHaveProperty('answeredHash')
   })
 })

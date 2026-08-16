@@ -28,6 +28,8 @@ function linha(overrides: Partial<LinhaDeSessao> = {}): LinhaDeSessao {
     mergeCommitSha: null,
     deployState: null,
     deployCheckedAt: null,
+    mergeFailures: 0,
+    mergeLastFailedAt: null,
     ...overrides,
   }
 }

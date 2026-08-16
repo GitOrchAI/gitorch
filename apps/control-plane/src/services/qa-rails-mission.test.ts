@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from 'vitest'
-import { runQaMissionViaRails, buildJulesReworkComment } from './qa-rails-mission.js'
+import {
+  runQaMissionViaRails,
+  buildJulesReworkComment,
+  MAX_TENTATIVAS_DE_MERGE,
+} from './qa-rails-mission.js'
 import { assertMissionDelivered } from './mission-outcome.js'
 import type { LinhaDeSessao } from './dev-session-store.js'
 import { TETO_DE_ESPERA_MS } from './vigia-da-verificacao.js'
@@ -66,6 +70,8 @@ function linha(over: Partial<LinhaDeSessao>): LinhaDeSessao {
     mergeCommitSha: null,
     deployState: null,
     deployCheckedAt: null,
+    mergeFailures: 0,
+    mergeLastFailedAt: null,
     ...over,
   }
 }
@@ -1149,6 +1155,179 @@ describe('runQaMissionViaRails', () => {
     expect(r.noOp).toBe(true)
     expect(posted.reviews).toHaveLength(0)
     expect(posted.merges).toHaveLength(0)
+  })
+
+  // Tarefa 10 (mescla recusada não prende a entrega para sempre): o C1 acima
+  // já garante que uma aprovação parada é REPROCESSADA em vez de pulada —
+  // mas sem teto, reprocessaria para sempre a cada tique do relógio, gerando
+  // review e tentativa de merge novas sem nunca avisar ninguém que existe um
+  // conflito real esperando um humano. Prova em TRÊS passagens seguidas
+  // contra o MESMO commit: a 1a e a 2a continuam retomando a mescla (o C1 de
+  // sempre, com o contador subindo); a 3a fecha `MAX_TENTATIVAS_DE_MERGE` e
+  // avisa o dono com o motivo real devolvido pelo GitHub.
+  describe('Tarefa 10: mescla recusada não prende a entrega para sempre', () => {
+    it('entrega aprovada mas com mescla recusada é retomada na passagem seguinte — no 3o fracasso seguido avisa o dono', async () => {
+      // A linha da sessão é a MESMA nas três passagens — como no banco real,
+      // onde `registrarFracassoDeMerge` grava e a próxima leitura já vê o
+      // contador atualizado. O teste simula essa persistência mutando o
+      // mesmo objeto que o mock de `registrarFracassoDeMerge` recebe.
+      const sessao = linha({ issueNumber: 50, pullRequestNumber: 7, sessionName: 'sessions/7' })
+      const avisos: string[] = []
+      const opcoesComuns = {
+        repository: 'o/r',
+        githubToken: 't',
+        execute: async () => APPROVE,
+        sessoes: [sessao],
+        registrarFracassoDeMerge: async (args: { contador: number }) => {
+          sessao.mergeFailures = args.contador
+        },
+        avisarDono: async (msg: string) => {
+          avisos.push(msg)
+        },
+      }
+
+      // 1a passagem: aprova, tenta mesclar, o GitHub recusa (fracasso #1).
+      const f1 = fakeFetch([{ number: 7, user: 'jules[bot]' }], undefined, undefined, {
+        mergeFalha: true,
+      })
+      const posted1 = (
+        f1 as unknown as { posted: { reviews: Array<{ body?: string }>; merges: unknown[] } }
+      ).posted
+      const r1 = await runQaMissionViaRails({ ...opcoesComuns, fetchImpl: f1 })
+      expect(r1.output).toContain('Merge: blocked')
+      expect(posted1.merges).toHaveLength(1)
+      expect(sessao.mergeFailures).toBe(1)
+      expect(avisos).toHaveLength(0) // ainda não bateu o teto
+
+      const corpoDaAprovacao = posted1.reviews[0]!.body as string
+
+      // 2a passagem: MESMO commit ('abc123', o padrão de `fakeFetch`), já com
+      // aprovação NOSSA marcada nele — não pode pular (o C1 continua
+      // valendo). GitHub recusa de novo (fracasso #2, ainda abaixo do teto).
+      const f2 = fakeFetch(
+        [
+          {
+            number: 7,
+            user: 'jules[bot]',
+            existingReviews: [{ body: corpoDaAprovacao, commit_id: 'abc123' }],
+          },
+        ],
+        undefined,
+        undefined,
+        { mergeFalha: true }
+      )
+      const posted2 = (f2 as unknown as { posted: { merges: unknown[] } }).posted
+      const r2 = await runQaMissionViaRails({ ...opcoesComuns, fetchImpl: f2 })
+      expect(r2.noOp).toBeFalsy() // NÃO pode ser pulado — é o defeito que esta tarefa fecha
+      expect(posted2.merges).toHaveLength(1)
+      expect(sessao.mergeFailures).toBe(2)
+      expect(avisos).toHaveLength(0)
+
+      // 3a passagem: mesmo commit, 3o fracasso seguido — bate
+      // MAX_TENTATIVAS_DE_MERGE. Avisa o dono com o motivo real do GitHub.
+      const f3 = fakeFetch(
+        [
+          {
+            number: 7,
+            user: 'jules[bot]',
+            existingReviews: [{ body: corpoDaAprovacao, commit_id: 'abc123' }],
+          },
+        ],
+        undefined,
+        undefined,
+        { mergeFalha: true }
+      )
+      const posted3 = (f3 as unknown as { posted: { merges: unknown[] } }).posted
+      const r3 = await runQaMissionViaRails({ ...opcoesComuns, fetchImpl: f3 })
+      expect(r3.noOp).toBeFalsy()
+      expect(posted3.merges).toHaveLength(1)
+      expect(sessao.mergeFailures).toBe(MAX_TENTATIVAS_DE_MERGE)
+      expect(avisos).toHaveLength(1)
+      expect(avisos[0]).toContain('#7')
+      expect(avisos[0]).toContain(`${MAX_TENTATIVAS_DE_MERGE} vezes seguidas`)
+      // O motivo é o texto REAL devolvido por `mesclarPr` (falha ao chamar o
+      // GitHub) — não um texto inventado pelo aviso.
+      expect(avisos[0]).toContain('pulls/7/merge failed (405)')
+
+      // 4a passagem: MESMO commit, teto já batido. "Para de tentar até o
+      // commit mudar" — nem posta review nova, nem chama merge de novo, e
+      // não avisa OUTRA vez (repetir o aviso a cada tique seria o mesmo spam
+      // que este produto já provou não fazer noutros avisos).
+      const f4 = fakeFetch(
+        [
+          {
+            number: 7,
+            user: 'jules[bot]',
+            existingReviews: [{ body: corpoDaAprovacao, commit_id: 'abc123' }],
+          },
+        ],
+        undefined,
+        undefined,
+        { mergeFalha: true }
+      )
+      const posted4 = (f4 as unknown as { posted: { reviews: unknown[]; merges: unknown[] } })
+        .posted
+      const r4 = await runQaMissionViaRails({ ...opcoesComuns, fetchImpl: f4 })
+      expect(r4.noOp).toBe(true)
+      expect(posted4.reviews).toHaveLength(0)
+      expect(posted4.merges).toHaveLength(0)
+      expect(sessao.mergeFailures).toBe(MAX_TENTATIVAS_DE_MERGE)
+      expect(avisos).toHaveLength(1) // não repetiu o aviso
+    })
+
+    it('commit novo (head sha mudou) zera o contador — é tentativa nova, não a mesma que já falhara 3x', async () => {
+      const sessao = linha({
+        issueNumber: 50,
+        pullRequestNumber: 7,
+        sessionName: 'sessions/7',
+        // Já tinha batido o teto no commit ANTERIOR ('abc123').
+        mergeFailures: MAX_TENTATIVAS_DE_MERGE,
+        mergeLastFailedAt: new Date('2026-01-01T00:00:00.000Z'),
+      })
+      const registrados: number[] = []
+
+      // A review antiga (aprovação do commit velho) continua no GitHub presa
+      // a 'abc123' — o head ATUAL já é outro ('def456': o dev empurrou de
+      // novo). `reviewMarcadaNesteHead` não bate mais neste sha, então o PR
+      // NÃO é mais "já julgado, retomando" — é julgamento fresco de um
+      // commit que nunca foi tentado antes.
+      const f = fakeFetch(
+        [
+          {
+            number: 7,
+            user: 'jules[bot]',
+            existingReviews: [
+              {
+                body: '<!-- gitorch:qa -->\nGitOrch QA verdict: APPROVE — criteria met, CI green.',
+                commit_id: 'abc123',
+              },
+            ],
+          },
+        ],
+        undefined,
+        undefined,
+        { mergeFalha: true, headSha: 'def456' }
+      )
+      const posted = (f as unknown as { posted: { reviews: unknown[]; merges: unknown[] } }).posted
+
+      const r = await runQaMissionViaRails({
+        repository: 'o/r',
+        githubToken: 't',
+        execute: async () => APPROVE,
+        sessoes: [sessao],
+        fetchImpl: f,
+        registrarFracassoDeMerge: async (args) => {
+          registrados.push(args.contador)
+        },
+      })
+
+      // Não foi pulado por "já bateu o teto" — é um commit que NUNCA falhou.
+      expect(r.noOp).toBeFalsy()
+      expect(posted.reviews).toHaveLength(1) // julgamento fresco: postou review nova
+      expect(posted.merges).toHaveLength(1) // tentou mesclar o commit NOVO
+      // Recomeçou do 1 — NÃO somou sobre o 3 que já estava gravado.
+      expect(registrados).toEqual([1])
+    })
   })
 
   // Tarefa 7 — a vigília ativa da verificação substitui o pulo passivo pela

@@ -48,6 +48,16 @@ export interface LinhaDeSessao {
   deployState: string | null
   /** Quando `deployState` foi lido pela última vez (Tarefa 13). */
   deployCheckedAt: Date | null
+  /**
+   * Fracassos SEGUIDOS de mescla contra o COMMIT ATUAL (Tarefa 10) — zera
+   * quando o commit muda. É o que decide, no laço de descoberta de
+   * `qa-rails-mission.ts`, se uma aprovação ainda sem mescla continua sendo
+   * reprocessada ou já bateu o teto (`MAX_TENTATIVAS_DE_MERGE`) e volta a
+   * ser pulada até o dev empurrar um commit novo.
+   */
+  mergeFailures: number
+  /** Quando o último fracasso de mescla aconteceu (Tarefa 10). */
+  mergeLastFailedAt: Date | null
 }
 
 /** Por que a linha saiu da vigia. `merged` é o único caminho feliz. */
@@ -338,5 +348,33 @@ export async function registrarAvisoDeDemora(deps: {
   await deps.prisma.devSession.update({
     where: { sessionName: deps.sessionName },
     data: { answeredHash: deps.hash },
+  })
+}
+
+/**
+ * Registra um fracasso de mescla contra o commit atual (Tarefa 10).
+ *
+ * `contador` já chega PRONTO de quem chama (`qa-rails-mission.ts`): é lá que
+ * mora a decisão de somar sobre o valor anterior (mesma tentativa, mesmo
+ * commit) ou recomeçar do 1 (o commit mudou desde o último fracasso) — esta
+ * função só persiste o número final, mesmo espírito de `registrarPr` (o dado
+ * já resolvido chega, o depósito não reinterpreta nada).
+ *
+ * Não reaproveita `answeredHash`: aquele campo já serve a dois controles
+ * diferentes (pergunta respondida e aviso de verificação parada) e um
+ * terceiro uso ali arriscaria um clobber entre guardas que hoje não colidem
+ * por sorte de janela temporal. `mergeFailures`/`mergeLastFailedAt` são
+ * colunas PRÓPRIAS — criadas pela Tarefa 7 exatamente para isto — então o
+ * teto de mescla tem seu próprio estado, sem disputar campo com ninguém.
+ */
+export async function registrarFracassoDeMerge(deps: {
+  prisma: PrismaDevSession
+  sessionName: string
+  contador: number
+  agora: Date
+}): Promise<void> {
+  await deps.prisma.devSession.update({
+    where: { sessionName: deps.sessionName },
+    data: { mergeFailures: deps.contador, mergeLastFailedAt: deps.agora },
   })
 }

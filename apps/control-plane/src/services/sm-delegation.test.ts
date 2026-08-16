@@ -104,6 +104,8 @@ describe('runSmDelegation', () => {
           mergeCommitSha: null,
           deployState: null,
           deployCheckedAt: null,
+          mergeFailures: 0,
+          mergeLastFailedAt: null,
         },
       ],
     })
@@ -367,6 +369,8 @@ describe('runSmDelegation: fila sai da linha da sessão, não da etiqueta', () =
           mergeCommitSha: null,
           deployState: null,
           deployCheckedAt: null,
+          mergeFailures: 0,
+          mergeLastFailedAt: null,
         },
       ],
       delegadasHoje: 0,

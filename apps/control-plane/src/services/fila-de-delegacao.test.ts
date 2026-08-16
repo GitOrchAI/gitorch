@@ -19,6 +19,8 @@ function linha(over: Partial<LinhaDeSessao>): LinhaDeSessao {
     mergeCommitSha: null,
     deployState: null,
     deployCheckedAt: null,
+    mergeFailures: 0,
+    mergeLastFailedAt: null,
     ...over,
   }
 }

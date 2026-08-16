@@ -34,6 +34,17 @@ const JULES_MARKER = '<!-- gitorch:qa -->'
  */
 const APPROVAL_VERDICT_MARKER = 'verdict: APPROVE'
 
+/**
+ * Tarefa 10: teto de tentativas de mescla SEGUIDAS contra o MESMO commit.
+ * Um conflito de código (ou uma regra de proteção do ramo) é trabalho para o
+ * dev resolver, não algo que o produto vai destravar tentando de novo a cada
+ * tique do relógio para sempre. No fracasso número `MAX_TENTATIVAS_DE_MERGE`
+ * o dono é avisado com o motivo que o GitHub devolveu, e a entrega para de
+ * ser reprocessada até o commit mudar (ver `retomandoAprovacaoMesmoCommit`
+ * mais abaixo).
+ */
+export const MAX_TENTATIVAS_DE_MERGE = 3
+
 export interface QaRailsMissionOptions {
   repository: string
   githubToken: string
@@ -109,6 +120,23 @@ export interface QaRailsMissionOptions {
    * `LinhaDeSessao`) e a mesma função de hash (`hashDaMensagem`).
    */
   registrarAvisoDeDemora?: (args: { sessionName: string; hash: string }) => Promise<void>
+  /**
+   * Tarefa 10: grava quantos fracassos de mescla SEGUIDOS já aconteceram
+   * contra o commit atual desta entrega. `contador` já vem PRONTO de quem
+   * chama — zerado e recomeçado em 1 se o commit mudou desde o último
+   * fracasso, somado ao anterior se é o mesmo commit tentando de novo — esta
+   * função só persiste o número final (mesmo espírito de `registrarPr`: o
+   * dado já resolvido chega, o depósito não reinterpreta nada).
+   *
+   * Sem isto o teto (`MAX_TENTATIVAS_DE_MERGE`) nunca teria de onde contar:
+   * a exceção do C1 (aprovação-ainda-aberta é reprocessada, não pulada)
+   * reprocessaria para sempre, sem nunca acionar o aviso ao dono.
+   */
+  registrarFracassoDeMerge?: (args: {
+    sessionName: string
+    contador: number
+    agora: Date
+  }) => Promise<void>
   /**
    * Canal do aviso de degradação — antes hardcoded em `console.warn`,
    * invisível na observabilidade estruturada. Produção (scheduler.ts) sempre
@@ -215,6 +243,12 @@ export async function runQaMissionViaRails(
   let target: (typeof prs)[number] | undefined
   let issueDaEntrega: number | null = null
   let delegado = false
+  // Tarefa 10: true quando o PR escolhido já tinha uma aprovação NOSSA
+  // marcada NESTE MESMO head — ou seja, esta passagem está RETOMANDO uma
+  // mescla que falhou antes, não abrindo julgamento novo. É o que diferencia
+  // "contar mais um fracasso sobre o mesmo commit" de "commit novo, começar
+  // do zero" na hora de gravar `mergeFailures` mais abaixo.
+  let retomandoAprovacaoMesmoCommit = false
   for (const p of Array.isArray(prs) ? prs : []) {
     if (p.draft) continue
 
@@ -276,11 +310,32 @@ export async function runQaMissionViaRails(
       reviewMarcadaNesteHead &&
       (reviewMarcadaNesteHead.body ?? '').includes(APPROVAL_VERDICT_MARKER)
     )
-    if (reviewMarcadaNesteHead && !(veredito.delegado && foiAprovacao)) continue
+
+    // Tarefa 10: a exceção do C1 acima (reprocessar aprovação-ainda-aberta em
+    // vez de pular) não pode reprocessar PARA SEMPRE — um conflito de código
+    // real nunca desaparece sozinho, e sem teto o produto tentaria mesclar a
+    // cada tique do relógio, gerando uma review nova e um PUT .../merge novo
+    // toda vez, sem nunca avisar ninguém. `mergeFailures` da linha da sessão
+    // (mesma que decide "delegado" acima) é o que sabia quantos fracassos
+    // SEGUIDOS já aconteceram contra o commit atual — acima do teto, a
+    // entrega volta a ser tratada como "já julgada" (pulada) até o dev
+    // empurrar um commit novo, que muda `p.head.sha` e derruba
+    // `reviewMarcadaNesteHead` de qualquer forma (ver comentário do achado
+    // acima sobre `head NOVO`).
+    const linhaCandidata =
+      (options.sessoes ?? []).find((s) => s.pullRequestNumber === p.number) ??
+      (veredito.issueNumber !== null
+        ? (options.sessoes ?? []).find((s) => s.issueNumber === veredito.issueNumber)
+        : undefined)
+    const aindaPodeTentarMesclar = (linhaCandidata?.mergeFailures ?? 0) < MAX_TENTATIVAS_DE_MERGE
+
+    if (reviewMarcadaNesteHead && !(veredito.delegado && foiAprovacao && aindaPodeTentarMesclar))
+      continue
 
     target = p
     issueDaEntrega = veredito.issueNumber
     delegado = veredito.delegado
+    retomandoAprovacaoMesmoCommit = Boolean(reviewMarcadaNesteHead && foiAprovacao)
     break
   }
   if (!target) {
@@ -612,6 +667,12 @@ export async function runQaMissionViaRails(
       // `mesclarPr` os reconfere de propósito: é o guarda final antes de
       // tocar no repositório do cliente, não uma confiança cega no que a
       // trava de cima já decidiu.
+      //
+      // Tarefa 10: só conta como "fracasso de mescla" (R3 do controlador)
+      // quando o GitHub de fato foi CHAMADO e recusou — nunca quando um dos
+      // cinco porteiros bloqueou antes disso (ex.: o sha mudou de novo nesta
+      // fresta). Um porteiro nosso não é uma recusa do GitHub.
+      let chamouOGithub = false
       resultadoDoMerge = await mesclarPr({
         numeroDoPr: target.number,
         ciState,
@@ -634,6 +695,7 @@ export async function runQaMissionViaRails(
           // com 409 se o head mudou desde então, e 409 já cai no caminho de
           // "merge recusado" (mesmo tratamento do C1), virando motivo
           // declarado em vez de mesclar às cegas.
+          chamouOGithub = true
           await gh('PUT', `/repos/${options.repository}/pulls/${target.number}/merge`, {
             merge_method: 'squash',
             sha: pr.head?.sha,
@@ -643,6 +705,39 @@ export async function runQaMissionViaRails(
       })
       if (resultadoDoMerge.mesclado && options.aoMesclar) {
         await options.aoMesclar({ numeroDoPr: target.number })
+      } else if (!resultadoDoMerge.mesclado && chamouOGithub && linhaDaEntrega) {
+        // Tarefa 10: o GitHub recusou de verdade (conflito, regra do
+        // repositório, pedido inválido, ou a chamada falhou por rede — R3 do
+        // controlador não distingue o motivo). Conta mais um fracasso contra
+        // este commit: soma sobre o que já existia se esta passagem estava
+        // RETOMANDO uma aprovação parada no MESMO head; recomeça do zero se é
+        // a primeira vez que este commit específico é aprovado (commit novo,
+        // tentativa nova — a zeragem da R3).
+        const fracassosAnteriores = retomandoAprovacaoMesmoCommit ? linhaDaEntrega.mergeFailures : 0
+        const fracassosAgora = fracassosAnteriores + 1
+        if (options.registrarFracassoDeMerge) {
+          await options.registrarFracassoDeMerge({
+            sessionName: linhaDaEntrega.sessionName,
+            contador: fracassosAgora,
+            agora,
+          })
+        }
+        // Bateu o teto: avisa o dono com o motivo REAL que o GitHub devolveu
+        // e para de tentar — a próxima passagem vai encontrar
+        // `mergeFailures >= MAX_TENTATIVAS_DE_MERGE` no laço de descoberta
+        // (mais acima) e pular esta entrega até o commit mudar. Best-effort,
+        // mesmo padrão dos outros avisos deste arquivo: falhar ao notificar
+        // não pode derrubar a missão.
+        if (fracassosAgora >= MAX_TENTATIVAS_DE_MERGE && options.avisarDono) {
+          await options
+            .avisarDono(
+              `GitOrch: o merge do PR #${target.number} (${options.repository}) falhou ` +
+                `${MAX_TENTATIVAS_DE_MERGE} vezes seguidas para o mesmo commit — ${resultadoDoMerge.motivo}. ` +
+                'GitOrch parou de tentar mesclar este commit; é preciso ação humana (ex.: ' +
+                'resolver o conflito) antes de uma nova tentativa.'
+            )
+            .catch(() => undefined)
+        }
       }
     }
   } else {
