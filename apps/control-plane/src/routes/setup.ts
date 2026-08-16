@@ -26,6 +26,7 @@ import { nomeDeRepositorioValido } from '../services/nome-de-repositorio.js'
 import {
   repositoriosSemAcesso,
   RepositoriosNaoVerificaveisError,
+  temEscrita,
 } from '../services/repositorios-do-usuario.js'
 
 interface GitHubRepo {
@@ -35,6 +36,12 @@ interface GitHubRepo {
   description: string | null
   private: boolean
   html_url: string
+  /**
+   * O que a pessoa PODE fazer neste repositório, como o GitHub responde em
+   * `GET /user/repos`. Opcional no tipo porque a listagem da instalação não o
+   * documenta — ver o uso em cada caminho, abaixo.
+   */
+  permissions?: { admin?: boolean; maintain?: boolean; push?: boolean }
 }
 
 // Sem `telegram` aqui, e não é esquecimento: o @username que o passo 8 mandava
@@ -301,7 +308,13 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
       return reply.code(500).send({ error: 'Failed to fetch repositories from GitHub' })
     }
 
-    return reply.send(mapGitHubRepos(repos))
+    // A tela só oferece o que o passo final vai aceitar. `GET /user/repos`
+    // devolve tudo que a pessoa ENXERGA (colaboradora só-leitura, membro da
+    // organização); a guarda do submit exige ESCRITA. Sem este filtro a tela
+    // ofereceria um repositório para o clique seguinte recusar — e, pior,
+    // sugeriria ao cliente que o repositório alheio é dele. A regra é a MESMA
+    // função dos dois lados, de propósito: divergir aqui é reabrir o buraco.
+    return reply.send(mapGitHubRepos(repos.filter((repo) => temEscrita(repo))))
   })
 
   // POST /api/v1/setup/environment - Nasce o ambiente isolado provisório do

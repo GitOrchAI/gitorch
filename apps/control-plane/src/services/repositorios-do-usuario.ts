@@ -23,6 +23,15 @@ import { mintInstallationToken } from './github-app-token.js'
  *    em `RepositoriosNaoVerificaveisError`, e quem chama recusa o pedido. O
  *    caminho contrário — deixar passar quando a checagem falha — é o mesmo
  *    buraco com outra roupa.
+ *
+ * 3. **Enxergar não é poder escrever.** No caminho OAuth, `GET /user/repos`
+ *    devolve por padrão (`affiliation` = `owner,collaborator,
+ *    organization_member`) tudo que a pessoa ALCANÇA, inclusive repositório
+ *    onde ela é colaboradora só-leitura ou simples membro da organização.
+ *    Aprovar por aparecer na lista era uma promoção de privilégio: logo em
+ *    seguida a esteira age com o token da INSTALAÇÃO, que ESCREVE. Por isso a
+ *    aprovação exige a permissão real de escrita que o próprio GitHub informa
+ *    em cada item (`permissions`, ver `temEscrita`).
  */
 
 /** Não deu para saber o que o cliente acessa. Quem chama RECUSA — nunca aprova. */
@@ -69,13 +78,44 @@ function cabecalhos(token: string): Record<string, string> {
   }
 }
 
-interface RepoDoGitHub {
+export interface RepoDoGitHub {
   full_name?: unknown
+  /**
+   * Bloco que o GitHub devolve em cada repositório de `GET /user/repos`
+   * (docs REST, "List repositories for the authenticated user"): `admin`,
+   * `maintain`, `push`, `triage`, `pull`. É ele — não a presença na lista —
+   * que diz o que a pessoa PODE fazer ali.
+   */
+  permissions?: unknown
+}
+
+/**
+ * O repositório é do cliente no sentido que importa aqui: ele pode ESCREVER.
+ *
+ * Os três papéis que escrevem, do mais forte ao mais fraco: `admin` (dono ou
+ * administrador), `maintain` (mantenedor) e `push` (colaborador de escrita).
+ * `triage` e `pull` só leem/organizam — e é exatamente o colaborador
+ * só-leitura, ou o membro da organização sem acesso, que este teste recusa.
+ *
+ * Formato inesperado (sem o bloco, ou com o bloco que não é objeto) responde
+ * `false`: não é "pode", é "não deu para provar" — e neste módulo isso sempre
+ * fecha a porta.
+ */
+export function temEscrita(repo: RepoDoGitHub): boolean {
+  const permissoes = repo.permissions
+  if (typeof permissoes !== 'object' || permissoes === null) return false
+  const p = permissoes as Record<string, unknown>
+  return p['admin'] === true || p['maintain'] === true || p['push'] === true
 }
 
 /**
  * Percorre uma listagem paginada do GitHub riscando da lista de pendentes cada
- * endereço encontrado.
+ * endereço encontrado QUE CONTA COMO ACESSO (`conta`).
+ *
+ * Um item que aparece mas não conta (colaborador só-leitura) não risca nada:
+ * segue pendente e, no fim, sai na lista de recusados. Também não encerra a
+ * varredura — parar ali faria a página seguinte, onde poderia estar o acesso
+ * de verdade, nunca ser pedida.
  *
  * Devolve `true` quando a varredura foi CONCLUSIVA — ou porque todos os
  * pendentes apareceram, ou porque a lista acabou (e o que sobrou de pendente
@@ -91,6 +131,8 @@ async function varrer(args: {
   url: (pagina: number) => string
   token: string
   extrair: (corpo: unknown) => RepoDoGitHub[] | null
+  /** O que, nesta fonte, conta como acesso suficiente para aprovar. */
+  conta: (repo: RepoDoGitHub) => boolean
   fetchImpl: typeof fetch
 }): Promise<boolean> {
   for (let pagina = 1; pagina <= TETO_DE_PAGINAS; pagina++) {
@@ -110,7 +152,7 @@ async function varrer(args: {
     if (itens === null) return false
 
     for (const item of itens) {
-      if (typeof item.full_name === 'string') {
+      if (typeof item.full_name === 'string' && args.conta(item)) {
         args.pendentes.delete(normalizar(item.full_name))
       }
     }
@@ -161,6 +203,11 @@ export async function repositoriosSemAcesso(
           const lista = (corpo as { repositories?: unknown })?.repositories
           return Array.isArray(lista) ? (lista as RepoDoGitHub[]) : null
         },
+        // Estar nesta lista JÁ É a autorização, e por isso não se pede
+        // `permissions` aqui (o endpoint sequer o documenta): entrar nela exige
+        // que quem ADMINISTRA a conta tenha marcado o repositório na tela de
+        // instalação do App. Exigir mais recusaria cliente legítimo.
+        conta: () => true,
         fetchImpl,
       })
       if (conclusiva) return [...pendentes.values()]
@@ -181,6 +228,10 @@ export async function repositoriosSemAcesso(
     url: (pagina) => `${API_GITHUB}/user/repos?per_page=${POR_PAGINA}&sort=updated&page=${pagina}`,
     token: deps.githubToken,
     extrair: (corpo) => (Array.isArray(corpo) ? (corpo as RepoDoGitHub[]) : null),
+    // Aqui a lista é ampla de propósito pelo GitHub (`affiliation` traz também
+    // colaborador e membro de organização), então aparecer não basta: só conta
+    // quem pode escrever.
+    conta: temEscrita,
     fetchImpl,
   })
   if (!conclusiva) {

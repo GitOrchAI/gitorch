@@ -21,9 +21,18 @@ import { encryptCredential } from '../lib/credential-crypto.js'
 function respostaDaListaDeRepos(url: unknown, doCliente: string[]): Response | null {
   const href = String(url)
   if (!href.includes('/user/repos') && !href.includes('/installation/repositories')) return null
-  return new Response(JSON.stringify(doCliente.map((full_name) => ({ full_name }))), {
-    status: 200,
-  })
+  // `permissions` de dono: a checagem do submit exige ESCRITA, não só o
+  // repositório aparecer na lista (é assim que o colaborador só-leitura é
+  // recusado). Estes cenários falam de repositórios do próprio cliente.
+  return new Response(
+    JSON.stringify(
+      doCliente.map((full_name) => ({
+        full_name,
+        permissions: { admin: true, maintain: true, push: true, triage: true, pull: true },
+      }))
+    ),
+    { status: 200 }
+  )
 }
 
 /** `global.fetch` que só sabe responder a listagem de repositórios do cliente. */
@@ -123,6 +132,46 @@ describe('GET /api/v1/github/repos', () => {
     expect(fetchCall).toBeDefined()
     const headers = fetchCall?.[1]?.headers as Record<string, string>
     expect(headers['Authorization']).toBe('Bearer gh_encrypted_roundtrip_token')
+  })
+
+  // A tela e o passo final têm de concordar. A listagem vinha crua de
+  // `GET /user/repos`, que por padrão inclui repositório de colaborador
+  // só-leitura e de membro da organização; o passo final passou a exigir
+  // escrita. Sem este filtro, a tela ofereceria um repositório para o clique
+  // seguinte recusar com "você não tem acesso" — e ainda daria ao cliente a
+  // impressão de que aquilo é dele.
+  it('não oferece na tela o repositório em que o cliente só pode LER', async () => {
+    global.fetch = vi.fn(async () => {
+      return new Response(
+        JSON.stringify([
+          {
+            id: 1,
+            name: 'repo',
+            full_name: 'octocat/repo',
+            description: null,
+            private: false,
+            html_url: 'https://github.com/octocat/repo',
+            permissions: { admin: true, maintain: true, push: true, triage: true, pull: true },
+          },
+          {
+            id: 2,
+            name: 'cofre',
+            full_name: 'vitima/cofre',
+            description: null,
+            private: true,
+            html_url: 'https://github.com/vitima/cofre',
+            permissions: { admin: false, maintain: false, push: false, triage: false, pull: true },
+          },
+        ]),
+        { status: 200 }
+      )
+    }) as unknown as typeof fetch
+
+    const res = await app.inject({ method: 'GET', url: '/api/v1/github/repos' })
+
+    expect(res.statusCode).toBe(200)
+    const lista = res.json() as Array<{ fullName: string }>
+    expect(lista.map((r) => r.fullName)).toEqual(['octocat/repo'])
   })
 
   it('returns 401 when the user has no connected github token', async () => {
@@ -303,6 +352,7 @@ describe('GET /api/v1/github/repos — via installation do GitHub App (F1 Onda 2
               description: null,
               private: false,
               html_url: 'https://github.com/octocat/repo',
+              permissions: { admin: true, maintain: true, push: true, triage: true, pull: true },
             },
           ]),
           { status: 200 }

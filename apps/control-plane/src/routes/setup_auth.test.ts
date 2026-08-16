@@ -20,10 +20,20 @@ describe('Setup and Auth Integration', () => {
   beforeEach(async () => {
     // O submit exige provar que "owner/repo" é do cliente antes de criar
     // qualquer coisa: sem a lista real do GitHub o pedido é recusado por não
-    // ser verificável.
+    // ser verificável. E não basta o repositório APARECER na lista — o GitHub
+    // devolve ali também o que a pessoa só consegue ler; a prova é o bloco de
+    // permissões dizer que ela escreve.
     global.fetch = vi.fn(async (url: string | URL | Request) => {
       if (String(url).includes('/user/repos')) {
-        return new Response(JSON.stringify([{ full_name: 'owner/repo' }]), { status: 200 })
+        return new Response(
+          JSON.stringify([
+            {
+              full_name: 'owner/repo',
+              permissions: { admin: true, maintain: true, push: true, triage: true, pull: true },
+            },
+          ]),
+          { status: 200 }
+        )
       }
       throw new Error(`chamada inesperada ao GitHub: ${String(url)}`)
     }) as unknown as typeof fetch

@@ -35,8 +35,16 @@ interface Cenario {
   getRawGithubToken: ReturnType<typeof vi.fn>
 }
 
+/**
+ * Permissões que o GitHub devolve em cada item de `GET /user/repos`. O default
+ * destes testes é o do DONO, que é o caso de quase todos eles; o teste do
+ * colaborador só-leitura passa o bloco explicitamente.
+ */
+const COMO_DONO = { admin: true, maintain: true, push: true, triage: true, pull: true }
+const SO_LEITURA = { admin: false, maintain: false, push: false, triage: false, pull: true }
+
 /** Uma página de resposta do GitHub para a listagem de repositórios do usuário. */
-function paginaDeRepos(nomes: string[]): Response {
+function paginaDeRepos(nomes: string[], permissoes: Record<string, boolean> = COMO_DONO): Response {
   return new Response(
     JSON.stringify(
       nomes.map((fullName, indice) => ({
@@ -46,6 +54,7 @@ function paginaDeRepos(nomes: string[]): Response {
         description: null,
         private: true,
         html_url: `https://github.com/${fullName}`,
+        permissions: permissoes,
       }))
     ),
     { status: 200, headers: { 'content-type': 'application/json' } }
@@ -160,6 +169,43 @@ describe('POST /api/v1/setup/submit — o repositório declarado tem de ser do c
     expect(cenario.projetos).toHaveLength(0)
     expect(cenario.chaves).toHaveLength(0)
     expect(cenario.missoes).toHaveLength(0)
+  })
+
+  it('ATAQUE: colaborador SÓ-LEITURA no repositório da vítima é recusado', async () => {
+    // Mallory enxerga "vitima/api" — foi adicionado como colaborador de
+    // leitura — e por isso o endereço APARECE em `GET /user/repos`. Se
+    // aparecer bastasse, o projeto nasceria e a esteira passaria a agir ali
+    // com o token da INSTALAÇÃO, que escreve: ler viraria escrever.
+    const cenario = await montarCenario()
+    global.fetch = vi.fn(async () =>
+      paginaDeRepos(['vitima/api'], SO_LEITURA)
+    ) as unknown as typeof fetch
+
+    const { statusCode, corpo } = await submeter(cenario, ['vitima/api'])
+
+    expect(statusCode).toBe(403)
+    expect(corpo.code).toBe('REPO_SEM_ACESSO')
+    expect(cenario.projetos).toHaveLength(0)
+    expect(cenario.chaves).toHaveLength(0)
+    expect(cenario.missoes).toHaveLength(0)
+  })
+
+  it('colaborador COM ESCRITA é aceito: a régua é poder escrever, não ser dono', async () => {
+    const cenario = await montarCenario()
+    global.fetch = vi.fn(async () =>
+      paginaDeRepos(['acme/api'], {
+        admin: false,
+        maintain: false,
+        push: true,
+        triage: true,
+        pull: true,
+      })
+    ) as unknown as typeof fetch
+
+    const { statusCode } = await submeter(cenario, ['acme/api'])
+
+    expect(statusCode).toBe(200)
+    expect(cenario.projetos).toHaveLength(1)
   })
 
   it('um repositório legítimo no meio do lote não salva o alheio: o submit inteiro é recusado', async () => {
