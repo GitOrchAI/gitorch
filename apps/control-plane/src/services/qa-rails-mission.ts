@@ -597,15 +597,29 @@ export async function runQaMissionViaRails(
     // antes dos três de sempre — sem prova de delegação, a missão nem tenta
     // mesclar. Uma entrega de humano aprovada pelo QA fica só com o parecer.
     if (delegado) {
-      // Os TRÊS porteiros (QA aprovou, CI verde, diff completo) já foram
-      // satisfeitos para chegar aqui — `mesclarPr` os reconfere de propósito:
-      // é o guarda final antes de tocar no repositório do cliente, não uma
-      // confiança cega no que a trava de cima já decidiu.
+      // Task 9: `shaAtual` tem de ser lido AGORA — nunca herdado de `pr`
+      // (passo 2, minutos atrás, antes do motor rodar). Reusar `pr.head.sha`
+      // aqui compararia o sha revisado contra ele mesmo e o portão não
+      // provaria nada; só uma chamada NOVA ao GitHub, feita bem na porta do
+      // merge, sabe se o dev empurrou algo depois da aprovação.
+      const entregaAgora = (await gh(
+        'GET',
+        `/repos/${options.repository}/pulls/${target.number}`
+      )) as { head?: { sha?: string } }
+
+      // Os CINCO porteiros (delegado, sha revisado = sha atual, QA aprovou,
+      // CI verde, diff completo) já foram satisfeitos para chegar aqui —
+      // `mesclarPr` os reconfere de propósito: é o guarda final antes de
+      // tocar no repositório do cliente, não uma confiança cega no que a
+      // trava de cima já decidiu.
       resultadoDoMerge = await mesclarPr({
         numeroDoPr: target.number,
         ciState,
         vereditoDoQa: effectiveVerdict,
         diffTruncado: truncado,
+        delegado,
+        shaRevisado: pr.head?.sha ?? '',
+        shaAtual: entregaAgora.head?.sha ?? '',
         merge: async () => {
           // Nunca seguir URL devolvida pelo GitHub: a rota é montada aqui, a
           // partir do NÚMERO do PR e do repositório que já temos — nunca de um
