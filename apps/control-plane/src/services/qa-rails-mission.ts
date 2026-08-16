@@ -128,6 +128,17 @@ export interface QaRailsMissionResult {
   output: string
   stderr: string
   noOp?: boolean
+  /**
+   * Task 8 (decisão do dono: "julga todos, mescla só o que delegou"):
+   * elegibilidade de merge da entrega julgada nesta chamada — espelha
+   * `ehPrDelegado`, INDEPENDENTE do veredito (aprovar ou não é uma pergunta;
+   * poder mesclar é outra). `undefined` quando nenhuma entrega foi julgada
+   * (no-op, recon, ou vigília ativa esperando a verificação). A Tarefa 9 usa
+   * este campo para travar o merge por fora deste módulo — separar "julgar"
+   * de "poder mesclar" em dois campos é exatamente o que evita repetir o
+   * quase-acidente do PR #99 (citação de issue confundida com entrega).
+   */
+  podeMesclar?: boolean
 }
 
 /** Comentário de rework estruturado (8 campos) mencionando @jules. */
@@ -179,10 +190,17 @@ export async function runQaMissionViaRails(
     return resp.json().catch(() => ({}))
   }
 
-  // 1) PRs abertas de dev assíncrono delegado (o gatilho do QA). O AUTOR não é
-  // sinal confiável — visto em produção: o Jules abre o PR pela conta do dono
-  // da instalação. O sinal nativo do GitOrch é o PR fechar uma issue com a
-  // label de delegação; o login com "jules" fica só como atalho.
+  // 1) PRs abertas do repositório (o gatilho do QA). Task 8 (decisão do
+  // dono: "julga todos, mescla só o que delegou"): o filtro que descartava
+  // aqui, na origem, qualquer PR que `ehPrDelegado` não reconhecesse como
+  // entrega do dev assíncrono SAIU — o QA agora examina toda PR aberta,
+  // delegada ou de humano, e carrega o veredito de `ehPrDelegado` como
+  // `delegado` para cada uma. O AUTOR não é sinal confiável — visto em
+  // produção: o Jules abre o PR pela conta do dono da instalação. O sinal
+  // nativo do GitOrch é o PR fechar uma issue com a label de delegação; o
+  // login com "jules" fica só como atalho. Quem decide se a entrega PODE ser
+  // mesclada não é mais este laço de descoberta — é o ponto do merge, mais
+  // abaixo, guardado por `delegado`.
   const delegateLabel = options.delegateLabel ?? 'jules'
   const prs = (await gh(
     'GET',
@@ -196,12 +214,13 @@ export async function runQaMissionViaRails(
   }>
   let target: (typeof prs)[number] | undefined
   let issueDaEntrega: number | null = null
+  let delegado = false
   for (const p of Array.isArray(prs) ? prs : []) {
     if (p.draft) continue
 
-    // A consulta à issue só acontece no recuo 3, e só quando há palavra de
-    // ligação — o caminho autoritativo (linha guardada) não gasta chamada
-    // nenhuma.
+    // A consulta à issue só acontece quando há palavra de ligação no corpo —
+    // o caminho autoritativo (linha guardada) não gasta chamada nenhuma, e
+    // uma PR de humano sem menção nenhuma também não gasta.
     const etiquetasPorIssue = new Map<number, boolean>()
     const ligada = (p.body ?? '').match(/\b(?:closes|fixes|resolves)\s+#(\d+)/i)?.[1]
     if (ligada) {
@@ -221,21 +240,28 @@ export async function runQaMissionViaRails(
       sessoes: options.sessoes ?? [],
       issueComEtiquetaDeDelegacao: (n) => etiquetasPorIssue.get(n) ?? false,
     })
-    if (!veredito.delegado) continue
 
     // Não re-julgar o MESMO estado a cada wake: se já há review nossa neste
-    // head, o dev ainda não retrabalhou — julgar de novo só faria spam.
+    // head, a entrega já recebeu parecer — julgar de novo só faria spam de
+    // opinião duplicada. Vale para QUALQUER entrega, delegada ou de humano.
     //
-    // C1 (revisão final): EXCETO quando essa review marcada é uma
-    // APROVAÇÃO. Aprovação postada + PR ainda ABERTO (este laço só olha PRs
-    // `state=open`) é PROVA de que o merge não aconteceu — o GitHub recusou
-    // (405, proteção de branch) ou o produto não pôde aprovar a própria PR
-    // e a review virou COMMENT. Tratar isso como "já julgado" era um beco
-    // sem saída permanente: a linha da sessão nunca fecha, a issue nunca
-    // volta à fila, e a vigia dispara o QA para sempre sem nunca reentar o
-    // merge — o defeito das 85 execuções cegas ressuscitado. Um PR
+    // C1 (revisão final): EXCETO quando a entrega é DELEGADA e essa review
+    // marcada é uma APROVAÇÃO. Aprovação postada + PR ainda ABERTO (este laço
+    // só olha PRs `state=open`) é PROVA de que o merge não aconteceu — o
+    // GitHub recusou (405, proteção de branch) ou o produto não pôde aprovar
+    // a própria PR e a review virou COMMENT. Tratar isso como "já julgado"
+    // era um beco sem saída permanente: a linha da sessão nunca fecha, a
+    // issue nunca volta à fila, e a vigia dispara o QA para sempre sem nunca
+    // reentar o merge — o defeito das 85 execuções cegas ressuscitado. Um PR
     // REPROVADO cujo dev ainda não retrabalhou continua pulado normalmente:
     // é o que evita spam de re-julgamento.
+    //
+    // Task 8: essa reexaminação por aprovação-ainda-aberta só faz sentido
+    // para quem PODE ser mesclado — uma entrega de humano "aprovada" pelo QA
+    // nunca vai ser mesclada por este produto, então ficaria aberta para
+    // sempre e seria reexaminada (e re-opinada) a cada ciclo, virando o
+    // mesmo spam que esta guarda existe para evitar. Para humano, qualquer
+    // review marcada — aprovação ou não — já é "julgado, ponto final".
     const reviews = (await gh(
       'GET',
       `/repos/${options.repository}/pulls/${p.number}/reviews?per_page=100`
@@ -250,10 +276,11 @@ export async function runQaMissionViaRails(
       reviewMarcadaNesteHead &&
       (reviewMarcadaNesteHead.body ?? '').includes(APPROVAL_VERDICT_MARKER)
     )
-    if (reviewMarcadaNesteHead && !foiAprovacao) continue
+    if (reviewMarcadaNesteHead && !(veredito.delegado && foiAprovacao)) continue
 
     target = p
     issueDaEntrega = veredito.issueNumber
+    delegado = veredito.delegado
     break
   }
   if (!target) {
@@ -530,92 +557,116 @@ export async function runQaMissionViaRails(
   // (mesclado ou não) sem repetir a variável.
   let resultadoDoMerge: ResultadoDoMerge | null = null
 
+  // Task 8: o parecer sobre uma entrega NÃO delegada carrega, em linguagem
+  // de negócio, a mesma frase que existe para não repetir o quase-acidente
+  // do PR #99 — o GitOrch opina, mas quem decide se mescla é a pessoa dona
+  // do PR. Igual nos dois vereditos (aprovar ou pedir mudanças): a pessoa
+  // que lê a review no GitHub precisa saber, sempre, que isto é uma opinião
+  // e não um convite a clicar em "merge" esperando o produto terminar.
+  const avisoDeNaoMesclar = delegado
+    ? ''
+    : '\n\nGitOrch analisou este PR e registrou o parecer acima, mas NÃO vai mesclá-lo: esta ' +
+      'entrega não foi encomendada pelo produto. A decisão de aceitar este código é sua, como ' +
+      'autor do PR.'
+
   if (effectiveVerdict === 'approve') {
     // Caminho resiliente (o GitHub decide se pode aprovar) + o campo do padrão
     // Shrimp: o resumo do veredito é o Goal.
     await postarReview(
       reviewEvent,
-      `${JULES_MARKER}\nGitOrch QA verdict: APPROVE — criteria met, CI green.\n\n${verdict.comment.goal}`
+      `${JULES_MARKER}\nGitOrch QA verdict: APPROVE — criteria met, CI green.\n\n${verdict.comment.goal}${avisoDeNaoMesclar}`
     )
 
-    // Os TRÊS porteiros (QA aprovou, CI verde, diff completo) já foram
-    // satisfeitos para chegar aqui — `mesclarPr` os reconfere de propósito:
-    // é o guarda final antes de tocar no repositório do cliente, não uma
-    // confiança cega no que a trava de cima já decidiu.
-    resultadoDoMerge = await mesclarPr({
-      numeroDoPr: target.number,
-      ciState,
-      vereditoDoQa: effectiveVerdict,
-      diffTruncado: truncado,
-      merge: async () => {
-        // Nunca seguir URL devolvida pelo GitHub: a rota é montada aqui, a
-        // partir do NÚMERO do PR e do repositório que já temos — nunca de um
-        // campo `url`/`html_url` vindo da resposta de outra chamada.
-        //
-        // I2 (revisão final): `sha` amarra o merge ao HEAD que foi de fato
-        // revisado — lido em `pr.head.sha` (passo 2, minutos antes de chegar
-        // aqui: o motor demora). Sem isto, um push do dev nessa janela (e é
-        // exatamente o que o QA pede ao reprovar: "Revise the SAME pull
-        // request") faz o produto mesclar código que ninguém leu nem
-        // verificou — furando os três porteiros por dentro. O GitHub recusa
-        // com 409 se o head mudou desde então, e 409 já cai no caminho de
-        // "merge recusado" (mesmo tratamento do C1), virando motivo
-        // declarado em vez de mesclar às cegas.
-        await gh('PUT', `/repos/${options.repository}/pulls/${target.number}/merge`, {
-          merge_method: 'squash',
-          sha: pr.head?.sha,
-        })
-        return true
-      },
-    })
-    if (resultadoDoMerge.mesclado && options.aoMesclar) {
-      await options.aoMesclar({ numeroDoPr: target.number })
+    // Task 8 ("julga todos, mescla só o que delegou"): o QUARTO porteiro,
+    // antes dos três de sempre — sem prova de delegação, a missão nem tenta
+    // mesclar. Uma entrega de humano aprovada pelo QA fica só com o parecer.
+    if (delegado) {
+      // Os TRÊS porteiros (QA aprovou, CI verde, diff completo) já foram
+      // satisfeitos para chegar aqui — `mesclarPr` os reconfere de propósito:
+      // é o guarda final antes de tocar no repositório do cliente, não uma
+      // confiança cega no que a trava de cima já decidiu.
+      resultadoDoMerge = await mesclarPr({
+        numeroDoPr: target.number,
+        ciState,
+        vereditoDoQa: effectiveVerdict,
+        diffTruncado: truncado,
+        merge: async () => {
+          // Nunca seguir URL devolvida pelo GitHub: a rota é montada aqui, a
+          // partir do NÚMERO do PR e do repositório que já temos — nunca de um
+          // campo `url`/`html_url` vindo da resposta de outra chamada.
+          //
+          // I2 (revisão final): `sha` amarra o merge ao HEAD que foi de fato
+          // revisado — lido em `pr.head.sha` (passo 2, minutos antes de chegar
+          // aqui: o motor demora). Sem isto, um push do dev nessa janela (e é
+          // exatamente o que o QA pede ao reprovar: "Revise the SAME pull
+          // request") faz o produto mesclar código que ninguém leu nem
+          // verificou — furando os três porteiros por dentro. O GitHub recusa
+          // com 409 se o head mudou desde então, e 409 já cai no caminho de
+          // "merge recusado" (mesmo tratamento do C1), virando motivo
+          // declarado em vez de mesclar às cegas.
+          await gh('PUT', `/repos/${options.repository}/pulls/${target.number}/merge`, {
+            merge_method: 'squash',
+            sha: pr.head?.sha,
+          })
+          return true
+        },
+      })
+      if (resultadoDoMerge.mesclado && options.aoMesclar) {
+        await options.aoMesclar({ numeroDoPr: target.number })
+      }
     }
   } else {
     await postarReview(
       reviewEvent,
-      `${JULES_MARKER}\nGitOrch QA verdict: REQUEST CHANGES (see comment).`
+      `${JULES_MARKER}\nGitOrch QA verdict: REQUEST CHANGES (see comment).${avisoDeNaoMesclar}`
     )
-    await gh('POST', `/repos/${options.repository}/issues/${target.number}/comments`, {
-      body: buildJulesReworkComment(verdict.comment),
-    })
 
-    // Task 10 (decisão do dono 14/08/2026): "tem que ter lógica entre jules e
-    // QA". O comentário acima morre no PR — o dev assíncrono não lê o PR
-    // dele. Entrega a MESMA reprovação na sessão viva para ele retrabalhar.
-    // Sem linha correspondente (PR de humano, ou anterior a esta mudança), a
-    // missão segue sem avisar — não é falha.
-    if (options.avisarSessao) {
-      // `linhaDaEntrega` já foi resolvida mais acima (mesma ordem de
-      // autoridade: PR primeiro, issue de origem como segunda tentativa) —
-      // reaproveitada aqui, não recalculada.
-      if (linhaDaEntrega) {
-        const texto = [
-          `GitOrch QA reviewed your pull request #${target.number} and it is NOT accepted yet.`,
-          '',
-          'What must change:',
-          verdict.comment.implementationGuide,
-          '',
-          'Verification Criteria that are still not met:',
-          verdict.comment.verificationCriteria,
-          '',
-          'Revise the SAME pull request. Do not open a new one, and do not change',
-          'anything outside the scope described above.',
-        ].join('\n')
+    // O comentário de rework menciona @jules e pede retrabalho NA MESMA PR —
+    // só faz sentido para a entrega que o produto delegou. Uma entrega de
+    // humano não tem dev assíncrono nenhum para retrabalhar; mencionar
+    // @jules na PR de outra pessoa seria ruído, não ajuda.
+    if (delegado) {
+      await gh('POST', `/repos/${options.repository}/issues/${target.number}/comments`, {
+        body: buildJulesReworkComment(verdict.comment),
+      })
 
-        // Best-effort e BARULHENTO: falhar ao avisar não pode derrubar a
-        // missão (o veredito já foi postado no PR), mas silenciar seria
-        // repetir o defeito que esta mudança existe para matar — por isso o
-        // aviso sai mesmo quando `avisarSessao` rejeita ou lança.
-        const avisou = await options
-          .avisarSessao({ sessionName: linhaDaEntrega.sessionName, texto })
-          .catch(() => false)
-        if (!avisou) {
-          const avisar = options.onWarn ?? console.warn
-          avisar(
-            `[qa] veredito postado no PR #${target.number}, mas a sessão ` +
-              `${linhaDaEntrega.sessionName} não foi avisada — o dev não vai retrabalhar sozinho`
-          )
+      // Task 10 (decisão do dono 14/08/2026): "tem que ter lógica entre jules e
+      // QA". O comentário acima morre no PR — o dev assíncrono não lê o PR
+      // dele. Entrega a MESMA reprovação na sessão viva para ele retrabalhar.
+      // Sem linha correspondente (PR de humano, ou anterior a esta mudança), a
+      // missão segue sem avisar — não é falha.
+      if (options.avisarSessao) {
+        // `linhaDaEntrega` já foi resolvida mais acima (mesma ordem de
+        // autoridade: PR primeiro, issue de origem como segunda tentativa) —
+        // reaproveitada aqui, não recalculada.
+        if (linhaDaEntrega) {
+          const texto = [
+            `GitOrch QA reviewed your pull request #${target.number} and it is NOT accepted yet.`,
+            '',
+            'What must change:',
+            verdict.comment.implementationGuide,
+            '',
+            'Verification Criteria that are still not met:',
+            verdict.comment.verificationCriteria,
+            '',
+            'Revise the SAME pull request. Do not open a new one, and do not change',
+            'anything outside the scope described above.',
+          ].join('\n')
+
+          // Best-effort e BARULHENTO: falhar ao avisar não pode derrubar a
+          // missão (o veredito já foi postado no PR), mas silenciar seria
+          // repetir o defeito que esta mudança existe para matar — por isso o
+          // aviso sai mesmo quando `avisarSessao` rejeita ou lança.
+          const avisou = await options
+            .avisarSessao({ sessionName: linhaDaEntrega.sessionName, texto })
+            .catch(() => false)
+          if (!avisou) {
+            const avisar = options.onWarn ?? console.warn
+            avisar(
+              `[qa] veredito postado no PR #${target.number}, mas a sessão ` +
+                `${linhaDaEntrega.sessionName} não foi avisada — o dev não vai retrabalhar sozinho`
+            )
+          }
         }
       }
     }
@@ -701,5 +752,8 @@ export async function runQaMissionViaRails(
     exitCode: 0,
     output: [resumo, ...lacunas].join('\n'),
     stderr: '',
+    // Task 8: espelha `delegado`, independente do veredito — a entrega foi
+    // julgada de qualquer forma; só quem o produto encomendou pode mesclar.
+    podeMesclar: delegado,
   }
 }
