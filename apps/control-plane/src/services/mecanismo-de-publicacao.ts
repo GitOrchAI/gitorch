@@ -42,11 +42,57 @@ export type Mecanismo =
 const PADRAO_AMBIENTE_EFEMERO = /PR #\d+/
 
 /**
- * Um workflow conta como publicação quando o nome OU o arquivo contêm uma
- * destas palavras inteiras — nunca por `ci`/`test`/`lint`/`check`, que
- * verificam código mas não o colocam no ar.
+ * `deploy`, `release` e `publish` são inequívocos: nenhuma palavra de
+ * verificação de código se escreve assim. Já `cd` é ambíguo por construção —
+ * é ao mesmo tempo a abreviação de "continuous deployment" E um token de
+ * duas letras que aparece dentro de nomes como `cd-lint-check` sem ligação
+ * nenhuma com publicação. Por isso ele é tratado à parte, abaixo.
  */
-const PADRAO_WORKFLOW_DE_PUBLICACAO = /\b(cd|deploy|release|publish)\b/i
+const PADRAO_PUBLICACAO_INEQUIVOCA = /\b(deploy|release|publish)\b/i
+
+/** O token ambíguo — só ele precisa do desempate por vocabulário de verificação. */
+const PADRAO_TOKEN_CD = /\bcd\b/i
+
+/**
+ * Vocabulário que, ao lado do token ambíguo `cd`, denuncia um workflow de
+ * VERIFICAÇÃO (testes, lint, CI) — não de publicação. Lista nomeada e
+ * exportada de propósito: quem precisar reconhecer mais um termo de
+ * verificação (ex.: `smoke`, `typecheck`) mexe só aqui.
+ */
+export const VOCABULARIO_DE_VERIFICACAO = [
+  'test',
+  'tests',
+  'lint',
+  'check',
+  'checks',
+  'ci',
+  'build',
+] as const
+
+const PADRAO_VOCABULARIO_DE_VERIFICACAO = new RegExp(
+  `\\b(${VOCABULARIO_DE_VERIFICACAO.join('|')})\\b`,
+  'i'
+)
+
+/**
+ * Decide se um texto (nome OU arquivo de um workflow) indica publicação.
+ *
+ * `deploy`/`release`/`publish` bastam sozinhos — palavra inteira, sem
+ * ambiguidade possível. Já o token `cd` só conta se o MESMO texto não
+ * carregar também vocabulário de verificação: `cd.yml` ou `CD` sozinho
+ * continuam reconhecidos (é o nome real mais comum), mas `cd-lint-check` ou
+ * `cd-tests` não — ali o `cd` é coincidência de nome, não o mecanismo de
+ * deployment contínuo.
+ */
+function textoIndicaPublicacao(texto: string): boolean {
+  if (PADRAO_PUBLICACAO_INEQUIVOCA.test(texto)) {
+    return true
+  }
+  if (!PADRAO_TOKEN_CD.test(texto)) {
+    return false
+  }
+  return !PADRAO_VOCABULARIO_DE_VERIFICACAO.test(texto)
+}
 
 function nomeDoArquivo(caminho: string): string {
   return caminho.split('/').pop() ?? caminho
@@ -66,9 +112,7 @@ export async function descobrirMecanismo(args: {
 
   const workflows = await args.listarWorkflows()
   const workflowDePublicacao = workflows.find(
-    (w) =>
-      w.ativo &&
-      (PADRAO_WORKFLOW_DE_PUBLICACAO.test(w.nome) || PADRAO_WORKFLOW_DE_PUBLICACAO.test(w.arquivo))
+    (w) => w.ativo && (textoIndicaPublicacao(w.nome) || textoIndicaPublicacao(w.arquivo))
   )
   if (workflowDePublicacao) {
     return {
