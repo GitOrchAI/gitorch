@@ -527,7 +527,23 @@ export async function runQaMissionViaRails(
   // força total e, se vier o 422, reposta como comentário — que é sempre
   // permitido. O veredito sai nos dois casos; o marcador continua valendo para
   // não re-julgar o mesmo estado.
-  const reviewEvent = effectiveVerdict === 'approve' ? 'APPROVE' : 'REQUEST_CHANGES'
+  //
+  // Achado A da revisão independente da Tarefa 8: aprovar FORMALMENTE
+  // (`event: APPROVE`) uma entrega que o produto não encomendou reabre, por
+  // outra porta, o mesmo risco que a regra do dono existe para fechar. Num
+  // repositório cuja proteção de branch exige "1 approving review", a nossa
+  // aprovação sozinha SATISFAZ essa exigência — o PR de humano vira mesclável
+  // por qualquer pessoa, ou por qualquer automação de auto-merge, sem que um
+  // humano de verdade tenha aprovado nada. Por isso a entrega NÃO delegada
+  // nunca recebe evento formal de aprovação/reprovação: sai sempre como
+  // COMMENT, com o parecer completo (e o aviso de "não vai mesclar",
+  // `avisoDeNaoMesclar` abaixo) no corpo. A entrega delegada mantém
+  // APPROVE/REQUEST_CHANGES exatamente como sempre foi.
+  const reviewEvent = !delegado
+    ? 'COMMENT'
+    : effectiveVerdict === 'approve'
+      ? 'APPROVE'
+      : 'REQUEST_CHANGES'
 
   const postarReview = async (evento: string, corpo: string): Promise<boolean> => {
     try {
@@ -676,7 +692,17 @@ export async function runQaMissionViaRails(
   // tirando quem estava com ela antes (ex.: gitorch:agent:jules, o dev
   // assíncrono que abriu o PR). Best-effort: aplicarLabelDoAgente nunca lança
   // — o veredito já foi postado acima, isso é só sinalização.
-  if (linkedIssue) {
+  //
+  // Achado B da revisão independente da Tarefa 8: `linkedIssue` sozinho NÃO é
+  // prova de autoria — para uma entrega não-delegada ele vem do mesmo recuo
+  // fraco (regex `closes|fixes|resolves #N` sobre o corpo da PR, sem sessão,
+  // sem etiqueta) que a doutrina do dono batizou de "citação de texto não é
+  // prova de entrega". Escrever no board do CLIENTE (label + card) por essa
+  // única evidência é o mesmo quase-acidente original, agora mirando a
+  // infraestrutura do cliente em vez do merge. Julgar e postar o parecer
+  // continuam para QUALQUER entrega — só a ESCRITA no board fica atrás do
+  // mesmo `delegado` que já trava o merge.
+  if (delegado && linkedIssue) {
     await aplicarLabelDoAgente({
       repository: options.repository,
       issueNumber: Number(linkedIssue),
@@ -699,8 +725,11 @@ export async function runQaMissionViaRails(
   // 5) O board acompanha o veredito: aprovado = pronto pelo padrão do GitOrch
   // (critérios atendidos + CI verde) → "done"; rework → volta a "inProgress".
   // Best-effort: board sem coluna/campo nunca derruba o julgamento já postado.
+  //
+  // Mesmo gate do Achado B acima: mover o card do cliente também é escrita em
+  // infraestrutura do cliente para trabalho que ele não encomendou.
   let cardNote = ''
-  if (options.moveCard && linkedIssue) {
+  if (delegado && options.moveCard && linkedIssue) {
     try {
       const moved = await options.moveCard(
         Number(linkedIssue),
