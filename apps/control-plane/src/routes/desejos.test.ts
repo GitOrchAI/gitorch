@@ -1,8 +1,19 @@
 import Fastify from 'fastify'
 import { describe, expect, it, vi } from 'vitest'
-import { desejosRoutes } from './desejos.js'
+import { desejosRoutes, type DependenciasDeDesejos } from './desejos.js'
+import { LIMITE_DO_TEXTO_DO_DESEJO } from '../services/desejo.js'
 
-function appDeTeste(deps: Parameters<typeof desejosRoutes>[1], linhas?: string[]) {
+// Cada teste declara só a dependência que o caso realmente exercita; o resto
+// cai num padrão inofensivo. Sem isso, acrescentar uma dependência nova
+// obrigaria a reescrever todos os testes já existentes por motivo nenhum.
+function appDeTeste(deps: Partial<DependenciasDeDesejos>, linhas?: string[]) {
+  const completas: DependenciasDeDesejos = {
+    buscarProjeto: async () => ({ id: 'p1', githubRepo: 'dono/repo' }),
+    listarProjetos: async () => [],
+    buscarAutor: async () => null,
+    criarIssue: async () => ({ numero: 1 }),
+    ...deps,
+  }
   const app = Fastify(
     linhas
       ? {
@@ -24,7 +35,7 @@ function appDeTeste(deps: Parameters<typeof desejosRoutes>[1], linhas?: string[]
     ;(req as unknown as { user: unknown }).user = { id: 'u1' }
     done()
   })
-  app.register(desejosRoutes, deps)
+  app.register(desejosRoutes, completas)
   return app
 }
 
@@ -110,5 +121,108 @@ describe('POST /api/v1/desejos', () => {
       payload: { projectId: 'p1', texto: 'oi' },
     })
     expect(linhas.join('\n')).toContain('repositório em formato inesperado')
+  })
+
+  // A issue é o registro OFICIAL, e ela sai daqui assinada. Enquanto esta porta
+  // assinava com o identificador interno do banco, o mesmo pedido nascia
+  // "Pedido por: Guilherme Souza (@guilherme)" pelo mensageiro e
+  // "Pedido por: clx3k9f0a0001abcd" pela tela — ilegível para quem vai ler, e,
+  // num repositório público, um dado interno do produto publicado à toa.
+  it('assina a issue com o nome de quem pediu, não com o identificador do banco', async () => {
+    const criarIssue = vi.fn().mockResolvedValue({ numero: 5 })
+    const app = appDeTeste({
+      buscarAutor: vi.fn().mockResolvedValue({ nome: 'Guilherme Souza', arroba: 'guilherme' }),
+      criarIssue,
+    })
+    await app.inject({
+      method: 'POST',
+      url: '/api/v1/desejos',
+      payload: { projectId: 'p1', texto: 'quero busca por cor' },
+    })
+    const corpo = criarIssue.mock.calls[0]?.[0].corpo as string
+    expect(corpo).toContain('Pedido por: Guilherme Souza (@guilherme)')
+    expect(corpo).not.toContain('u1')
+  })
+
+  it('sem nome nem usuário no cadastro, ainda assina com algo — nunca em branco', async () => {
+    const criarIssue = vi.fn().mockResolvedValue({ numero: 5 })
+    const app = appDeTeste({ buscarAutor: vi.fn().mockResolvedValue(null), criarIssue })
+    await app.inject({
+      method: 'POST',
+      url: '/api/v1/desejos',
+      payload: { projectId: 'p1', texto: 'quero busca por cor' },
+    })
+    expect(criarIssue.mock.calls[0]?.[0].corpo).toContain('Pedido por: u1')
+  })
+
+  // O teto vivia só no navegador. Qualquer outro cliente da API — ou o próprio
+  // painel com o `maxLength` removido pelo inspetor — mandava um texto acima do
+  // teto de 65.536 do corpo de uma issue: o GitHub recusava com 422, a rota
+  // devolvia 502, e a tela aconselhava "tente de novo em instantes" — conselho
+  // que NUNCA ia funcionar, por mais vezes que a pessoa tentasse.
+  it('recusa texto acima do teto do GitHub sem chamar o GitHub, dizendo o motivo real', async () => {
+    const criarIssue = vi.fn()
+    const app = appDeTeste({ criarIssue })
+    const r = await app.inject({
+      method: 'POST',
+      url: '/api/v1/desejos',
+      payload: { projectId: 'p1', texto: 'a'.repeat(LIMITE_DO_TEXTO_DO_DESEJO + 1) },
+    })
+    expect(r.statusCode).toBe(413)
+    expect(r.json().limite).toBe(LIMITE_DO_TEXTO_DO_DESEJO)
+    expect(criarIssue).not.toHaveBeenCalled()
+  })
+
+  it('texto exatamente no limite ainda é aceito', async () => {
+    const criarIssue = vi.fn().mockResolvedValue({ numero: 9 })
+    const app = appDeTeste({ criarIssue })
+    const r = await app.inject({
+      method: 'POST',
+      url: '/api/v1/desejos',
+      payload: { projectId: 'p1', texto: 'a'.repeat(LIMITE_DO_TEXTO_DO_DESEJO) },
+    })
+    expect(r.statusCode).toBe(201)
+    expect(criarIssue).toHaveBeenCalled()
+  })
+})
+
+// A tela precisa oferecer EXATAMENTE os projetos que o servidor aceita. Sem uma
+// rota própria, ela deduzia a lista da tela de setup (filtrada por dono e por
+// missão de setup, sem olhar se o projeto está ativo) enquanto o POST exigia
+// projeto ativo: a tela oferecia um projeto e, no clique, dizia que aquele
+// mesmo projeto "não está disponível" — e escondia projeto criado por outro
+// caminho, que o servidor teria aceitado.
+describe('GET /api/v1/desejos/projetos', () => {
+  it('devolve os projetos que aceitam pedido, pela MESMA regra do POST', async () => {
+    const listarProjetos = vi
+      .fn()
+      .mockResolvedValue([{ id: 'p1', nome: 'Loja', repo: 'dono/loja' }])
+    const app = appDeTeste({ listarProjetos })
+    const r = await app.inject({ method: 'GET', url: '/api/v1/desejos/projetos' })
+    expect(r.statusCode).toBe(200)
+    expect(r.json()).toEqual({ projetos: [{ id: 'p1', nome: 'Loja', repo: 'dono/loja' }] })
+    expect(listarProjetos).toHaveBeenCalledWith('u1')
+  })
+
+  it('dono sem projeto nenhum recebe lista vazia — que é um fato, não um erro', async () => {
+    const app = appDeTeste({ listarProjetos: vi.fn().mockResolvedValue([]) })
+    const r = await app.inject({ method: 'GET', url: '/api/v1/desejos/projetos' })
+    expect(r.statusCode).toBe(200)
+    expect(r.json()).toEqual({ projetos: [] })
+  })
+
+  it('sem sessão não lista projeto de ninguém', async () => {
+    const listarProjetos = vi.fn()
+    const app = Fastify()
+    app.decorateRequest('user', undefined)
+    app.register(desejosRoutes, {
+      buscarProjeto: async () => null,
+      listarProjetos,
+      buscarAutor: async () => null,
+      criarIssue: async () => ({ numero: 1 }),
+    })
+    const r = await app.inject({ method: 'GET', url: '/api/v1/desejos/projetos' })
+    expect(r.statusCode).toBe(401)
+    expect(listarProjetos).not.toHaveBeenCalled()
   })
 })

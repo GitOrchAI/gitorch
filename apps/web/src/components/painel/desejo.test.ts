@@ -27,14 +27,19 @@ const projeto = (overrides: Partial<ProjetoDoPainel> = {}): ProjetoDoPainel => (
 })
 
 describe('fetchProjetos — de onde a tela tira a lista de projetos do dono', () => {
-  it('lê os projetos do estado do setup, sem repetir o mesmo projeto', async () => {
+  // A tela tem de oferecer EXATAMENTE os projetos que o servidor aceita. Ela
+  // deduzia a lista da tela de setup, que filtra por dono e por missão de setup
+  // e NÃO olha se o projeto está ativo — enquanto o envio exige projeto ativo.
+  // Daí os dois erros opostos: oferecer um projeto e, no clique, dizer que
+  // aquele mesmo projeto "não está disponível"; e esconder projeto criado por
+  // outro caminho, que o servidor teria aceitado. A fonte agora é a rota que
+  // usa a MESMA regra do envio.
+  it('pergunta ao servidor quais projetos aceitam pedido — a mesma regra do envio', async () => {
     const fetchImpl = vi.fn<typeof fetch>(async () =>
       okResponse(200, {
-        status: 'completed',
-        missions: [
-          { projectId: 'p1', wingId: 'dono/repo', status: 'completed' },
-          { projectId: 'p2', wingId: 'dono/outro', status: 'running' },
-          { projectId: 'p1', wingId: 'dono/repo', status: 'completed' },
+        projetos: [
+          { id: 'p1', nome: 'Loja', repo: 'dono/repo' },
+          { id: 'p2', nome: 'Outro', repo: 'dono/outro' },
         ],
       })
     )
@@ -45,13 +50,29 @@ describe('fetchProjetos — de onde a tela tira a lista de projetos do dono', ()
       estado: 'ok',
       projetos: [projeto(), projeto({ id: 'p2', repo: 'dono/outro' })],
     })
-    expect(fetchImpl).toHaveBeenCalledWith('http://api.test/api/v1/setup/status', {
+    expect(fetchImpl).toHaveBeenCalledWith('http://api.test/api/v1/desejos/projetos', {
       credentials: 'include',
     })
   })
 
-  it('resposta REAL sem missão nenhuma é a única coisa que significa "não tem projeto"', async () => {
-    const fetchImpl = vi.fn<typeof fetch>(async () => okResponse(200, { missions: [] }))
+  it('não repete o mesmo projeto, venha ele repetido de onde vier', async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      okResponse(200, {
+        projetos: [
+          { id: 'p1', repo: 'dono/repo' },
+          { id: 'p1', repo: 'dono/repo' },
+        ],
+      })
+    )
+
+    await expect(fetchProjetos('http://api.test', { fetchImpl })).resolves.toEqual({
+      estado: 'ok',
+      projetos: [projeto()],
+    })
+  })
+
+  it('resposta REAL sem projeto nenhum é a única coisa que significa "não tem projeto"', async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => okResponse(200, { projetos: [] }))
 
     await expect(fetchProjetos('http://api.test', { fetchImpl })).resolves.toEqual({
       estado: 'ok',
@@ -65,7 +86,7 @@ describe('fetchProjetos — de onde a tela tira a lista de projetos do dono', ()
     ['excesso de chamadas', vi.fn<typeof fetch>(async () => okResponse(429, { error: 'x' }))],
     [
       'corpo fora do formato',
-      vi.fn<typeof fetch>(async () => okResponse(200, { missions: 'nada disso' })),
+      vi.fn<typeof fetch>(async () => okResponse(200, { projetos: 'nada disso' })),
     ],
     [
       'rede caída',
@@ -85,14 +106,10 @@ describe('fetchProjetos — de onde a tela tira a lista de projetos do dono', ()
     }
   )
 
-  it('descarta item sem projectId ou sem repositório em vez de perder a lista inteira', async () => {
+  it('descarta item sem id ou sem repositório em vez de perder a lista inteira', async () => {
     const fetchImpl = vi.fn<typeof fetch>(async () =>
       okResponse(200, {
-        missions: [
-          { projectId: 'p1', wingId: 'dono/repo' },
-          { projectId: null, wingId: 'dono/orfao' },
-          { projectId: 'p3' },
-        ],
+        projetos: [{ id: 'p1', repo: 'dono/repo' }, { id: null, repo: 'dono/orfao' }, { id: 'p3' }],
       })
     )
 
@@ -220,6 +237,10 @@ describe('enviarDesejo — o pedido em linguagem de gente vira issue', () => {
     [400, 'dashboard.wishErrorEmpty'],
     [401, 'dashboard.wishErrorSession'],
     [404, 'dashboard.wishErrorProject'],
+    // O servidor também tem o teto de tamanho, e recusa com 413. Sem esta
+    // linha, um texto grande vindo de um navegador sem o `maxLength` chegaria
+    // à tela como "tente de novo em instantes" — o conselho que nunca funciona.
+    [413, 'dashboard.wishErrorTooLong'],
     [502, 'dashboard.wishErrorGithub'],
     [500, 'dashboard.wishErrorGithub'],
   ])('recusa %s vira a chave de texto %s', async (status, chaveDoErro) => {

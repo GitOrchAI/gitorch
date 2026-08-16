@@ -1,6 +1,6 @@
 import type { PrismaClient } from '@prisma/client'
 import { bindChatFromStart, telegramBotUsername, type DonoDoChat } from './telegram-link.js'
-import { montarDesejo } from './desejo.js'
+import { autorLegivel, montarDesejo } from './desejo.js'
 import type { AgentQuestionService } from './agent-question.js'
 
 // A ponte HTTP com a API do Telegram: ouvir o bot e falar por ele.
@@ -115,21 +115,50 @@ function isStartCommand(text: string | undefined): boolean {
  * este bot"; o Telegram não diferencia maiúscula de minúscula em @username, e
  * aqui também não.
  */
+function casarComandoDeDesejo(
+  texto: string,
+  nomeDoBot: string
+): { nosso: false } | { nosso: true; pedido: string } {
+  const casado = /^\/(desejo|quero)(?:@([A-Za-z0-9_]+))?(?:\s+([\s\S]*))?$/i.exec(texto.trim())
+  if (!casado) return { nosso: false }
+
+  const enderecadoA = casado[2]
+  if (enderecadoA !== undefined && enderecadoA.toLowerCase() !== nomeDoBot.trim().toLowerCase()) {
+    return { nosso: false }
+  }
+
+  return { nosso: true, pedido: (casado[3] ?? '').trim() }
+}
+
 export function interpretarPedidoDeDesejo(
   texto: string,
   nomeDoBot: string = telegramBotUsername()
 ): { ehDesejo: boolean; texto: string } {
-  const casado = /^\/(desejo|quero)(?:@([A-Za-z0-9_]+))?(?:\s+([\s\S]*))?$/i.exec(texto.trim())
-  if (!casado) return { ehDesejo: false, texto: '' }
+  const comando = casarComandoDeDesejo(texto, nomeDoBot)
+  if (!comando.nosso || comando.pedido === '') return { ehDesejo: false, texto: '' }
+  return { ehDesejo: true, texto: comando.pedido }
+}
 
-  const enderecadoA = casado[2]
-  if (enderecadoA !== undefined && enderecadoA.toLowerCase() !== nomeDoBot.trim().toLowerCase()) {
-    return { ehDesejo: false, texto: '' }
-  }
-
-  const pedido = (casado[3] ?? '').trim()
-  if (pedido === '') return { ehDesejo: false, texto: '' }
-  return { ehDesejo: true, texto: pedido }
+/**
+ * É o NOSSO comando, digitado sem o pedido escrito?
+ *
+ * Os dois casos caíam no mesmo silêncio, e são fatos diferentes: "/desejos"
+ * (erro de digitação) e "/quero@OutroBot" não são assunto nosso e continuam sem
+ * resposta — responder seria falar por cima de comando alheio. Já "/desejo"
+ * sozinho é alguém PERGUNTANDO como o comando funciona, e o silêncio ali é
+ * indistinguível de "o bot está fora do ar": a pessoa desiste do recurso
+ * achando que ele não existe.
+ *
+ * Usa o mesmo casamento de `interpretarPedidoDeDesejo` de propósito: se o
+ * delimitador do comando morasse em dois lugares, um deles voltaria a aceitar
+ * "/desejos" e o pedido "s" nasceria de novo.
+ */
+export function ehPedidoDeDesejoSemTexto(
+  texto: string,
+  nomeDoBot: string = telegramBotUsername()
+): boolean {
+  const comando = casarComandoDeDesejo(texto, nomeDoBot)
+  return comando.nosso && comando.pedido === ''
 }
 
 /**
@@ -723,22 +752,19 @@ function rotularProjeto(p: ProjetoParaDesejo): string {
 }
 
 /**
- * Quem pediu, do jeito que uma PESSOA reconhece. O identificador da conta é o
- * que o banco usa — no corpo da issue ele não diz nada a ninguém, nem para o
- * analista que vai ler, nem para o próprio dono meses depois. O Telegram entrega
- * o nome e o @ junto com a mensagem; o identificador interno só sobra quando não
- * veio nada (mensagem sem remetente), e aí é melhor que uma linha vazia.
+ * Traduz o remetente do Telegram para a assinatura ÚNICA do desejo
+ * (`services/desejo.ts`). A regra de como a assinatura se parece vive lá, e é a
+ * mesma da porta HTTP; aqui só se diz de onde saem o nome e o @ nesta porta.
  */
-function autorLegivel(from: RemetenteDoTelegram | undefined, identificadorDaConta: string): string {
+function autorDoTelegram(
+  from: RemetenteDoTelegram | undefined,
+  identificadorDaConta: string
+): string {
   const nome = [from?.first_name, from?.last_name]
     .map((p) => (typeof p === 'string' ? p.trim() : ''))
     .filter((p) => p !== '')
     .join(' ')
-  const arroba = typeof from?.username === 'string' ? from.username.trim() : ''
-  if (nome !== '' && arroba !== '') return `${nome} (@${arroba})`
-  if (arroba !== '') return `@${arroba}`
-  if (nome !== '') return nome
-  return identificadorDaConta
+  return autorLegivel({ nome, arroba: from?.username ?? null }, identificadorDaConta)
 }
 
 const MENSAGENS_DE_DESEJO: Record<
@@ -749,6 +775,8 @@ const MENSAGENS_DE_DESEJO: Record<
     chatAmbiguo: string
     semProjeto: string
     falhou: string
+    /** Resposta a quem digitou só o comando: um exemplo, não um erro. */
+    comoUsar: string
     /** `exemplo` é o endereço a digitar; `lista`, o que o dono reconhece. */
     qualProjeto: (exemplo: string, lista: string[]) => string
     criado: (numero: number, endereco: string, projeto: string) => string
@@ -764,6 +792,8 @@ const MENSAGENS_DE_DESEJO: Record<
     semProjeto:
       'Você ainda não tem nenhum projeto no GitOrch. Cadastre um repositório e eu registro seus pedidos nele.',
     falhou: 'Não consegui registrar seu pedido agora. Tente de novo em alguns minutos.',
+    comoUsar:
+      'Escreva o pedido junto com o comando, em linguagem de gente. Assim:\n\n/desejo quero que o site aceite avaliação com foto\n\nEu registro isso como uma tarefa no seu repositório.',
     qualProjeto: (exemplo, lista) =>
       `Você tem mais de um projeto. Diga qual, assim: /desejo ${exemplo}: o que você quer.\n\nSeus projetos: ${lista.join(', ')}`,
     criado: (numero, endereco, projeto) =>
@@ -779,6 +809,8 @@ const MENSAGENS_DE_DESEJO: Record<
     semProjeto:
       'Aún no tienes ningún proyecto en GitOrch. Registra un repositorio y anotaré tus pedidos allí.',
     falhou: 'No conseguí registrar tu pedido ahora. Inténtalo de nuevo en unos minutos.',
+    comoUsar:
+      'Escribe el pedido junto con el comando, en lenguaje normal. Así:\n\n/desejo quiero que el sitio acepte reseñas con foto\n\nLo registro como una tarea en tu repositorio.',
     qualProjeto: (exemplo, lista) =>
       `Tienes más de un proyecto. Dime cuál, así: /desejo ${exemplo}: lo que quieres.\n\nTus proyectos: ${lista.join(', ')}`,
     criado: (numero, endereco, projeto) =>
@@ -794,6 +826,8 @@ const MENSAGENS_DE_DESEJO: Record<
     semProjeto:
       "You don't have any project in GitOrch yet. Add a repository and I'll record your requests there.",
     falhou: "I couldn't record your request right now. Please try again in a few minutes.",
+    comoUsar:
+      'Write the request together with the command, in plain words. Like this:\n\n/desejo I want the site to accept reviews with photos\n\nI record that as a real task in your repository.',
     qualProjeto: (exemplo, lista) =>
       `You have more than one project. Tell me which one, like this: /desejo ${exemplo}: what you want.\n\nYour projects: ${lista.join(', ')}`,
     criado: (numero, endereco, projeto) =>
@@ -830,14 +864,22 @@ export async function tratarPedidoDeDesejo(
   const rawChatId = message?.chat?.id
   if (rawChatId === undefined || rawChatId === null) return null
 
-  const pedido = interpretarPedidoDeDesejo(
-    message?.text ?? '',
-    deps.nomeDoBot ?? telegramBotUsername()
-  )
-  if (!pedido.ehDesejo) return null
+  const nomeDoBot = deps.nomeDoBot ?? telegramBotUsername()
+  const texto = message?.text ?? ''
+  const pedido = interpretarPedidoDeDesejo(texto, nomeDoBot)
+  // Comando nosso digitado sem o pedido escrito é PERGUNTA, não mensagem
+  // alheia: quem faz isso está tentando descobrir como o comando funciona.
+  const semTexto = !pedido.ehDesejo && ehPedidoDeDesejoSemTexto(texto, nomeDoBot)
+  if (!pedido.ehDesejo && !semTexto) return null
 
   const chatId = String(rawChatId)
   const textos = MENSAGENS_DE_DESEJO[pickLocale(message?.from?.language_code)]
+
+  // O exemplo vem antes de qualquer checagem de dono ou de vínculo porque ele
+  // não conta nada sobre a conta de ninguém — é a documentação do comando. Quem
+  // ainda nem se vinculou também precisa dele, e é o único caminho por onde a
+  // pessoa descobre que o pedido vai junto com o comando.
+  if (semTexto) return { chatId, text: textos.comoUsar }
 
   // A prova de que quem digitou é o dono: no chat privado o id da PESSOA é o
   // próprio id do chat. Em grupo os dois diferem (e o do grupo é negativo), em
@@ -863,7 +905,7 @@ export async function tratarPedidoDeDesejo(
 
   const desejo = montarDesejo({
     texto: alvo.texto,
-    autor: autorLegivel(message?.from, dono.userId),
+    autor: autorDoTelegram(message?.from, dono.userId),
   })
   try {
     const criada = await comPrazo(

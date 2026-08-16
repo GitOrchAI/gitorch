@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { montarDesejo } from './desejo.js'
+import { autorLegivel, LIMITE_DO_TEXTO_DO_DESEJO, montarDesejo } from './desejo.js'
 
 describe('montarDesejo', () => {
   it('usa a primeira frase como título e guarda o texto inteiro no corpo', () => {
@@ -49,5 +49,46 @@ describe('montarDesejo', () => {
     const linhaDoAutor = d.corpo.split('\n').filter((l) => l.startsWith('Pedido por: '))
     expect(linhaDoAutor).toHaveLength(1)
     expect(linhaDoAutor[0]).toBe('Pedido por: Fulano --- Pedido por: outro')
+  })
+})
+
+// Quem assina a issue é a PESSOA. As duas portas do pedido (a tela e o
+// mensageiro) escreviam essa assinatura cada uma do seu jeito: uma com o nome
+// de gente, a outra com o identificador interno do banco. O mesmo dono, o mesmo
+// pedido, e duas assinaturas diferentes — uma delas ilegível e, num repositório
+// público, um dado interno do produto exposto sem motivo.
+describe('autorLegivel — a assinatura que uma pessoa reconhece', () => {
+  it('com nome e usuário, escreve os dois', () => {
+    expect(autorLegivel({ nome: 'Guilherme Souza', arroba: 'guilherme' }, 'clx3k9')).toBe(
+      'Guilherme Souza (@guilherme)'
+    )
+  })
+
+  it('só com usuário, escreve o usuário', () => {
+    expect(autorLegivel({ nome: null, arroba: 'guilherme' }, 'clx3k9')).toBe('@guilherme')
+  })
+
+  it('só com nome, escreve o nome', () => {
+    expect(autorLegivel({ nome: 'Guilherme Souza', arroba: null }, 'clx3k9')).toBe(
+      'Guilherme Souza'
+    )
+  })
+
+  it('espaço em branco não conta como nome nem como usuário', () => {
+    expect(autorLegivel({ nome: '   ', arroba: '  ' }, 'clx3k9')).toBe('clx3k9')
+  })
+
+  it('sem nada que uma pessoa reconheça, sobra o identificador da conta', () => {
+    // Último recurso de propósito: uma linha "Pedido por:" vazia seria pior —
+    // ninguém saberia sequer que houve um pedido de alguém.
+    expect(autorLegivel({}, 'clx3k9')).toBe('clx3k9')
+  })
+})
+
+describe('LIMITE_DO_TEXTO_DO_DESEJO', () => {
+  it('fica abaixo do teto de corpo de issue do GitHub, com folga para o rodapé', () => {
+    // O corpo carrega o pedido MAIS o rodapé (quem pediu, de onde veio), e o
+    // texto ainda cresce ao ter os comandos de fechar issue neutralizados.
+    expect(LIMITE_DO_TEXTO_DO_DESEJO).toBeLessThan(65_536)
   })
 })

@@ -52,6 +52,11 @@ const ERRO_REDE = 'dashboard.wishErrorNetwork'
  * pediu, de onde veio) e o texto ainda cresce um pouco ao ter os comandos de
  * fechar issue neutralizados ("closes #42" vira "closes nº 42"), em
  * services/desejo.ts do control-plane.
+ *
+ * Este teto é CONVENIÊNCIA: ele poupa a viagem inútil. O teto que VALE é o do
+ * servidor (LIMITE_DO_TEXTO_DO_DESEJO em services/desejo.ts do control-plane,
+ * que recusa com 413) — este aqui some assim que alguém abre o inspetor, e a
+ * rota HTTP não tem como confiar nele.
  */
 export const LIMITE_DO_TEXTO_DO_DESEJO = 60_000
 
@@ -85,12 +90,18 @@ export function estadoDaTelaDePedir(r: ResultadoDosProjetos | null): EstadoDaTel
 }
 
 /**
- * Lista os projetos do dono autenticado.
+ * Lista os projetos do dono que ACEITAM pedido.
  *
- * A fonte é `GET /api/v1/setup/status`, que é a única rota do produto filtrada
- * pelo DONO da sessão (`/api/projects` filtra pela ala do GitHub, que nunca
- * casa com a ala do projeto — que guarda "dono/repo"). Um projeto aparece uma
- * vez só mesmo tendo várias missões de setup.
+ * A fonte é `GET /api/v1/desejos/projetos`, que devolve exatamente o que o
+ * envio aceita — a mesma regra, um lugar só (services/projetos-do-desejo.ts no
+ * control-plane).
+ *
+ * Antes a lista era deduzida da tela de setup (`/api/v1/setup/status`), que
+ * filtra por dono e por missão de setup e NÃO olha se o projeto está ativo,
+ * enquanto o envio exige projeto ativo. Isso dava os dois erros opostos: a tela
+ * oferecia no seletor um projeto que o servidor recusava no clique ("esse
+ * projeto não está disponível" para o único item que ela mesma ofereceu), e
+ * escondia projeto criado por outro caminho, que o servidor teria aceitado.
  *
  * NUNCA lança — mas também nunca disfarça: sessão ausente, backend fora, rede
  * caída ou corpo fora do formato voltam como `indisponivel`, para a tela dizer
@@ -102,7 +113,7 @@ export async function fetchProjetos(
 ): Promise<ResultadoDosProjetos> {
   const doFetch = deps.fetchImpl ?? fetch
   try {
-    const res = await doFetch(`${apiBaseUrl}/api/v1/setup/status`, { credentials: 'include' })
+    const res = await doFetch(`${apiBaseUrl}/api/v1/desejos/projetos`, { credentials: 'include' })
     if (!res.ok) return NAO_VERIFICADO
     const json: unknown = await res.json().catch(() => null)
     return extrairProjetos(json)
@@ -111,24 +122,24 @@ export async function fetchProjetos(
   }
 }
 
-// Anti-fachada: um corpo que não seja `{ missions: [...] }` é resposta que não
+// Anti-fachada: um corpo que não seja `{ projetos: [...] }` é resposta que não
 // dá para entender — não é prova de ausência de projeto, então volta como
 // não-verificado. Já um item torto DENTRO de uma lista boa é descartado
 // sozinho, sem derrubar os projetos que vieram inteiros.
 function extrairProjetos(json: unknown): ResultadoDosProjetos {
   if (!json || typeof json !== 'object') return NAO_VERIFICADO
-  const corpo = json as { missions?: unknown }
-  if (!Array.isArray(corpo.missions)) return NAO_VERIFICADO
+  const corpo = json as { projetos?: unknown }
+  if (!Array.isArray(corpo.projetos)) return NAO_VERIFICADO
 
   const vistos = new Set<string>()
   const projetos: ProjetoDoPainel[] = []
-  for (const bruto of corpo.missions) {
+  for (const bruto of corpo.projetos) {
     if (!bruto || typeof bruto !== 'object') continue
-    const m = bruto as Record<string, unknown>
-    if (typeof m['projectId'] !== 'string' || typeof m['wingId'] !== 'string') continue
-    if (vistos.has(m['projectId'])) continue
-    vistos.add(m['projectId'])
-    projetos.push({ id: m['projectId'], repo: m['wingId'] })
+    const p = bruto as Record<string, unknown>
+    if (typeof p['id'] !== 'string' || typeof p['repo'] !== 'string') continue
+    if (vistos.has(p['id'])) continue
+    vistos.add(p['id'])
+    projetos.push({ id: p['id'], repo: p['repo'] })
   }
   return { estado: 'ok', projetos }
 }
@@ -216,10 +227,16 @@ export function avisoAindaVale(
 
 // Cada recusa vira a explicação do que a PESSOA pode fazer a respeito: 401 é
 // sessão vencida (entrar de novo), 404 é projeto que não é dela ou está
-// desativado (escolher outro), o resto é falha do nosso lado (tentar de novo).
+// desativado (escolher outro), 413 é texto acima do que cabe numa issue
+// (encurtar), o resto é falha do nosso lado (tentar de novo).
+//
+// O 413 existe porque o teto também vale no servidor. Sem esta linha, um texto
+// grande vindo de um navegador sem o `maxLength` cairia no genérico "tente de
+// novo em instantes" — que é justamente o conselho impossível de cumprir.
 function chaveDoStatus(status: number): string {
   if (status === 400) return ERRO_VAZIO
   if (status === 401 || status === 403) return ERRO_SESSAO
   if (status === 404) return ERRO_PROJETO
+  if (status === 413) return ERRO_LONGO
   return ERRO_GITHUB
 }

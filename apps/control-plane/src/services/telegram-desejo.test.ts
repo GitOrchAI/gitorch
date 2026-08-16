@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  ehPedidoDeDesejoSemTexto,
   interpretarPedidoDeDesejo,
   tratarPedidoDeDesejo,
   type ProjetoParaDesejo,
@@ -63,6 +64,37 @@ describe('interpretarPedidoDeDesejo', () => {
   it('respeita o nome de bot informado, não só o do ambiente', () => {
     expect(interpretarPedidoDeDesejo('/desejo@meu_bot cafe', 'meu_bot').ehDesejo).toBe(true)
     expect(interpretarPedidoDeDesejo('/desejo@GitOrchAI_bot cafe', 'meu_bot').ehDesejo).toBe(false)
+  })
+})
+
+// "Não é o nosso comando" e "é o nosso comando, e a pessoa não escreveu o
+// pedido" são fatos DIFERENTES, e só o segundo merece resposta. Enquanto os
+// dois caíam no mesmo silêncio, quem digitava "/desejo" para descobrir como o
+// comando funciona não recebia nem exemplo nem erro.
+describe('ehPedidoDeDesejoSemTexto', () => {
+  it('reconhece o comando nosso sem pedido escrito', () => {
+    expect(ehPedidoDeDesejoSemTexto('/desejo', 'GitOrchAI_bot')).toBe(true)
+    expect(ehPedidoDeDesejoSemTexto('/quero   ', 'GitOrchAI_bot')).toBe(true)
+    expect(ehPedidoDeDesejoSemTexto('/desejo@GitOrchAI_bot', 'GitOrchAI_bot')).toBe(true)
+  })
+
+  it('comando COM pedido não é "sem texto"', () => {
+    expect(ehPedidoDeDesejoSemTexto('/desejo quero busca por cor', 'GitOrchAI_bot')).toBe(false)
+  })
+
+  it('erro de digitação não é o nosso comando, então não é "sem texto"', () => {
+    // O mesmo delimitador que impede "/desejos" de virar o pedido "s" impede
+    // que ele arranque uma resposta nossa.
+    expect(ehPedidoDeDesejoSemTexto('/desejos', 'GitOrchAI_bot')).toBe(false)
+    expect(ehPedidoDeDesejoSemTexto('/quero-relatorio', 'GitOrchAI_bot')).toBe(false)
+  })
+
+  it('comando de outro bot no grupo não é nosso nem para ensinar', () => {
+    expect(ehPedidoDeDesejoSemTexto('/desejo@OutroBot', 'GitOrchAI_bot')).toBe(false)
+  })
+
+  it('mensagem solta não é comando nenhum', () => {
+    expect(ehPedidoDeDesejoSemTexto('bom dia', 'GitOrchAI_bot')).toBe(false)
   })
 })
 
@@ -283,6 +315,46 @@ describe('tratarPedidoDeDesejo', () => {
     await tratarPedidoDeDesejo(d, updateComTexto('/desejo quero busca por cor'))
     const corpo = corpoDaIssueCriada(d)
     expect(corpo).toContain('user_a')
+  })
+
+  // Quem digita só "/desejo" está PERGUNTANDO como o comando funciona. Ficar
+  // calado é, do lado de quem usa, indistinguível de "o bot está fora do ar" —
+  // e a pessoa desiste do recurso achando que ele não existe.
+  it('/desejo sem texto ensina como usar, em vez de deixar a pessoa no vácuo', async () => {
+    const d = deps()
+    const r = await tratarPedidoDeDesejo(d, updateComTexto('/desejo'))
+    expect(r?.chatId).toBe('555')
+    expect(r?.text).toContain('/desejo ')
+    expect(d.criarIssue).not.toHaveBeenCalled()
+  })
+
+  it('/desejo só com espaço também ensina — espaço não é pedido', async () => {
+    const d = deps()
+    const r = await tratarPedidoDeDesejo(d, updateComTexto('/desejo    '))
+    expect(r?.text).toContain('/desejo ')
+    expect(d.criarIssue).not.toHaveBeenCalled()
+  })
+
+  it('/desejo@nosso_bot sem texto, no grupo, também ensina', async () => {
+    const d = deps({ nomeDoBot: 'GitOrchAI_bot' })
+    const r = await tratarPedidoDeDesejo(d, updateComTexto('/desejo@GitOrchAI_bot'))
+    expect(r?.text).toContain('/desejo ')
+    expect(d.criarIssue).not.toHaveBeenCalled()
+  })
+
+  // O erro de digitação continua não sendo o nosso comando: nem vira o pedido
+  // "s", nem provoca resposta nossa. Responder aqui ensinaria o bot a falar
+  // sozinho em cima de comando alheio.
+  it('/desejos (plural) continua não sendo assunto nosso — nem pedido, nem resposta', async () => {
+    const d = deps()
+    expect(await tratarPedidoDeDesejo(d, updateComTexto('/desejos'))).toBeNull()
+    expect(d.criarIssue).not.toHaveBeenCalled()
+  })
+
+  it('comando sem texto endereçado a OUTRO bot não é respondido por nós', async () => {
+    const d = deps({ nomeDoBot: 'GitOrchAI_bot' })
+    expect(await tratarPedidoDeDesejo(d, updateComTexto('/desejo@OutroBot'))).toBeNull()
+    expect(d.criarIssue).not.toHaveBeenCalled()
   })
 
   it('GitHub recusando não vaza detalhe interno para o chat', async () => {

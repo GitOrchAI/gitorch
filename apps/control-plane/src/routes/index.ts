@@ -13,7 +13,7 @@ import { billingRoutes } from './billing.js'
 import { diagnoseRoutes } from './diagnose.js'
 import { desejosRoutes } from './desejos.js'
 import { criarIssueDeDesejo } from '../services/desejo-no-github.js'
-import { projetoParaDesejo } from '../services/projetos-do-desejo.js'
+import { projetoParaDesejo, projetosParaDesejo } from '../services/projetos-do-desejo.js'
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   // Health and readiness endpoints
@@ -47,6 +47,22 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   // desativado e a outra dizia ao mesmo dono que ele não tinha projeto nenhum.
   await app.register(desejosRoutes, {
     buscarProjeto: ({ projectId, userId }) => projetoParaDesejo(app.prisma, { projectId, userId }),
+    // A lista que a TELA mostra sai da mesma regra do aceite acima. Antes ela
+    // era deduzida da tela de setup, que não olha se o projeto está ativo: a
+    // tela oferecia projeto que o envio recusava, e escondia projeto que o
+    // envio aceitaria.
+    listarProjetos: (userId) => projetosParaDesejo(app.prisma, userId),
+    // Quem assina a issue é a pessoa, com o que o cadastro tem de legível —
+    // nome e login do GitHub. O e-mail fica de fora de propósito: a issue pode
+    // nascer em repositório público, e publicar o e-mail de alguém não é
+    // assinatura, é vazamento.
+    buscarAutor: async (userId) => {
+      const dono = await app.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, githubLogin: true },
+      })
+      return dono ? { nome: dono.name, arroba: dono.githubLogin } : null
+    },
     // A escrita da issue mora no serviço porque o mensageiro (bot do Telegram)
     // registra o desejo pelo MESMO caminho — o pedido do dono nasce igual venha
     // da tela ou do celular.
