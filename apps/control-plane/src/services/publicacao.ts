@@ -109,6 +109,39 @@ export const JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS = 30 * 60_000
 export const TETO_DE_COMMIT_ERRADO_MS = 60 * 60_000
 
 /**
+ * Achado da revisão pós-Leva A ("o teto que criamos cobre UM estado; os
+ * vizinhos continuam sem saída"): teto ABSOLUTO da vigília pós-merge,
+ * medido desde a mescla — o backstop que fecha a CLASSE inteira de "estado
+ * que nunca sai sozinho", não mais um caso isolado por vez.
+ *
+ * `TETO_DE_COMMIT_ERRADO_MS` (uma hora) e
+ * `JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS` (trinta minutos) já fecham dois
+ * casos ESPECÍFICOS — mas pelo menos três vizinhos continuavam sem teto
+ * nenhum: `falhou` (um CD que falha e ninguém manda rodar de novo);
+ * `publicando` quando já existe EVIDÊNCIA real da publicação mas ela fica
+ * parada num estado como "waiting" do GitHub — um ambiente com regra de
+ * proteção esperando aprovador humano nunca é "zero evidência", então a
+ * janela de tolerância nunca se aplicava a ele; e uma leitura ao GitHub que
+ * falha PARA SEMPRE (instalação revogada, 403 permanente) — nesse último a
+ * sessão nem chega a produzir um veredito de `acompanharPublicacao`, então
+ * quem aplica este teto é sempre quem CHAMA esta função (scheduler.ts),
+ * nunca ela sozinha.
+ *
+ * Vinte e quatro horas: doze vezes o pior caso já coberto (o teto de
+ * `commit-errado`, 1h) — folga suficiente para um aprovador humano de
+ * verdade agir dentro do MESMO dia útil, ou até a manhã seguinte, sem que
+ * isso vire alarme falso contra um CD que está funcionando exatamente como
+ * configurado (é o próprio risco que motivou este valor maior, em vez de
+ * copiar a mesma ordem de grandeza dos tetos específicos). Curto o
+ * bastante para o dono nunca passar mais de um dia sem saber que uma
+ * entrega mesclada não teve a publicação confirmada. Os tetos por estado
+ * continuam dando o veredito mais rápido e mais específico quando se
+ * aplicam; este é só o BACKSTOP — entra quando nenhum dos outros resolveu
+ * a tempo.
+ */
+export const TETO_ABSOLUTO_DE_ACOMPANHAMENTO_MS = 24 * 60 * 60_000
+
+/**
  * `GET /repos/{o}/{r}/actions/workflows/{arquivo}/runs` — e também o formato
  * de `GET /repos/{o}/{r}/actions/runs/{id}`. Assinatura provada ao vivo
  * contra a API do GitHub.
@@ -176,6 +209,35 @@ export type VereditoDaPublicacao = {
    * `TETO_DE_COMMIT_ERRADO_MS`, não por esta janela).
    */
   semEvidenciaDeTodoAmbiente: boolean
+}
+
+/**
+ * Fecha, de forma uniforme, qualquer estado que `TETO_ABSOLUTO_DE_ACOMPANHAMENTO_MS`
+ * alcançou sem um veredito final — não importa se veio de `acompanharPublicacao`
+ * (`falhou`, `publicando`, `commit-errado`) ou de uma leitura ao GitHub que
+ * nunca chegou a funcionar (`ultimaObservacao` descreve em texto livre o que
+ * aconteceu, para os dois casos — é a "última coisa que vimos" que o dono lê).
+ *
+ * Sempre `sem-publicacao`: é o mesmo veredito FINAL que os outros dois
+ * caminhos de "não confirmamos" já usam (mecanismo inexistente, janela de
+ * zero evidência esgotada) — reaproveitar em vez de inventar um sexto estado
+ * evita espalhar mais um literal por `SEVERIDADE`, `ESTADOS_FINAIS`
+ * (pos-merge.ts) e todo switch que já trata `VereditoDaPublicacao['estado']`.
+ */
+export function fecharPorTetoAbsoluto(args: {
+  desdeAMescla: number
+  ultimaObservacao: string
+}): VereditoDaPublicacao {
+  const horas = Math.round(args.desdeAMescla / 3_600_000)
+  return {
+    estado: 'sem-publicacao',
+    etapas: [],
+    enderecos: [],
+    motivo:
+      `mesclamos e acompanhamos por ${horas}h sem conseguir confirmar que a publicação chegou ` +
+      `ao ar. Última coisa que vimos: ${args.ultimaObservacao}.`,
+    semEvidenciaDeTodoAmbiente: false,
+  }
 }
 
 /** Conclusões de etapa que representam um término normal (não é falha). */

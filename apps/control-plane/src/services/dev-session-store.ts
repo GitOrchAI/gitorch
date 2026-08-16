@@ -390,16 +390,31 @@ export async function registrarFracassoDeMerge(deps: {
  * chave que a vigília da publicação (`varrerPublicacoes`, scheduler.ts) usa
  * para achar a execução certa (Tarefa 13, `acompanharPublicacao`); quem
  * fecha é aquela vigília, quando há veredito.
+ *
+ * `numeroDoPr` também é gravado aqui (Leva B — "o quadro do cliente não pode
+ * dizer entregue antes da hora"): `varrerPublicacoes` precisa do número do
+ * PR para comentar/fechar a tarefa quando a publicação confirma, e o recuo
+ * pela issue de origem (Importante 4 da revisão final da branch) acha a
+ * linha SEM nunca ter passado por `registrarPr` — sem gravar aqui, de novo,
+ * a partir do próprio evento de merge (a fonte mais autoritativa que existe:
+ * é o número que o GitHub acabou de aceitar), a linha ficaria com
+ * `pullRequestNumber` nulo justamente na janela em que esse recuo era
+ * necessário.
  */
 export async function registrarMescla(deps: {
   prisma: PrismaDevSession
   sessionName: string
   mergeCommitSha: string
+  numeroDoPr: number
   agora: Date
 }): Promise<void> {
   await deps.prisma.devSession.update({
     where: { sessionName: deps.sessionName },
-    data: { mergeCommitSha: deps.mergeCommitSha, stateCheckedAt: deps.agora },
+    data: {
+      mergeCommitSha: deps.mergeCommitSha,
+      pullRequestNumber: deps.numeroDoPr,
+      stateCheckedAt: deps.agora,
+    },
   })
 }
 

@@ -65,11 +65,14 @@ import { sessoesParaAcompanharPublicacao } from '../services/pos-merge.js'
 import { descobrirMecanismo, type Mecanismo } from '../services/mecanismo-de-publicacao.js'
 import {
   acompanharPublicacao,
+  fecharPorTetoAbsoluto,
+  TETO_ABSOLUTO_DE_ACOMPANHAMENTO_MS,
   type ExecucaoDeWorkflow,
   type EtapaDaExecucao,
   type PublicacaoDeclarada,
   type EstadoDaPublicacao,
 } from '../services/publicacao.js'
+import { fecharTarefaEntregue } from '../services/fechar-tarefa.js'
 import { testarAmbiente, resolveCaminhosDeAmbiente } from '../services/qa-de-ambiente.js'
 import { buscarComGuarda } from '../services/endereco-seguro.js'
 import {
@@ -440,6 +443,7 @@ export async function aoMesclarUmaEntrega(args: {
     prisma: args.prisma,
     sessionName: linha.sessionName,
     mergeCommitSha: args.mergeCommitSha,
+    numeroDoPr: args.numeroDoPr,
     agora: args.agora,
   })
 }
@@ -2626,6 +2630,32 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     return resp.json()
   }
 
+  // Leva B — a mesma família de `ghGet`, para as DUAS escritas que
+  // `resolverEntregaDoBoard` precisa fazer (comentar e fechar a tarefa) sem
+  // depender de um cliente maior — mesmo formato que `qa-rails-mission.ts`
+  // já usa para as próprias chamadas.
+  const ghSend = async (
+    method: 'POST' | 'PATCH',
+    path: string,
+    githubToken: string,
+    body: unknown
+  ): Promise<unknown> => {
+    const resp = await fetch(`https://api.github.com${path}`, {
+      method,
+      headers: {
+        authorization: `token ${githubToken}`,
+        accept: 'application/vnd.github+json',
+        'content-type': 'application/json',
+        'user-agent': 'gitorch',
+      },
+      body: JSON.stringify(body),
+    })
+    if (!resp.ok) {
+      throw new Error(`GitHub ${method} ${path} failed (${resp.status})`)
+    }
+    return resp.json()
+  }
+
   // R6 do controlador: o mecanismo de publicação (Tarefa 12) muda raramente
   // mas NÃO é imutável — guardado em memória, por repositório, com validade
   // de uma hora. Sem coluna nova, sem migração: se o processo reinicia,
@@ -2692,6 +2722,183 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   }
 
   /**
+   * Leva B ("o quadro do cliente não pode dizer entregue antes da hora"): o
+   * ÚNICO lugar do produto que fecha a tarefa e move o card para "done" por
+   * uma entrega delegada — chamado uma vez por sessão, exatamente quando
+   * `varrerPublicacoes` chega a um veredito FINAL sobre a publicação. Antes,
+   * `qa-rails-mission.ts` fazia isso no instante do MERGE, sem saber se o
+   * código ia mesmo chegar ao ar; se a publicação falhasse depois, nada
+   * reabria — o quadro do cliente dizia "entregue" enquanto o site nunca
+   * recebeu a mudança, a mentira exata que este plano existe para acabar.
+   *
+   * `entregue: true` cobre os DOIS casos onde "mesclou" e "entregou" são a
+   * mesma coisa: publicação CONFIRMADA (`no-ar`) e repositório que
+   * PROVADAMENTE não publica (`mecanismo.tipo === 'nenhum'` — aqui o merge
+   * já É a entrega, por definição). `entregue: false` cobre publicação que
+   * falhou, ficou sem confirmação dentro do prazo, ou nem chegou a ser lida:
+   * a tarefa NUNCA fecha como entregue por este caminho — fica aberta (fechar
+   * por engano é pior que deixar aberta demais), ganha um comentário
+   * nomeando o motivo (o dono vê o PORQUÊ direto na issue, não só num aviso
+   * de chat que rola para longe) e o card volta para "review": o código está
+   * mesclado, mas a entrega ainda não está confirmada — "em revisão" é mais
+   * honesto que "pronto" e mais honesto que fingir que nada mudou.
+   *
+   * Duas saídas silenciosas, de propósito, ambas best-effort (nunca derrubam
+   * a varredura — o veredito de publicação já foi decidido e gravado antes
+   * de chegar aqui):
+   * - sem `pullRequestNumber` na linha: teoricamente impossível depois de
+   *   `registrarMescla` também gravar o número na hora do merge, mas
+   *   defensivo — sem ele não há como montar nem o comentário nem o
+   *   porteiro de `fecharTarefaEntregue` (os dois citam o PR).
+   * - sem `githubToken`: a MESMA falta de credencial que já teria impedido a
+   *   leitura de publicação — não há como escrever no GitHub.
+   */
+  const resolverEntregaDoBoard = async (args: {
+    projeto: NonNullable<Awaited<ReturnType<PrismaClient['project']['findUnique']>>>
+    sessao: LinhaDeSessao
+    githubToken: string | undefined
+    entregue: boolean
+    motivo: string
+  }): Promise<void> => {
+    const { projeto, sessao, githubToken, entregue, motivo } = args
+    if (!sessao.pullRequestNumber) return
+    if (!githubToken) {
+      app.log.warn(
+        `[Scheduler] sem credencial do GitHub para atualizar tarefa/card de #${sessao.issueNumber} (${projeto.wingId})`
+      )
+      return
+    }
+    const numeroDoPr = sessao.pullRequestNumber
+    const railsBoard = resolveRailsBoard(projeto)
+    const moveCard = railsBoard
+      ? createCardMover({
+          repository: projeto.wingId,
+          board: railsBoard,
+          token: githubToken,
+          columns: resolveBoardColumns(projeto.runtimeConfig),
+        })
+      : undefined
+
+    if (entregue) {
+      try {
+        await fecharTarefaEntregue({
+          numeroDoPr,
+          mesclado: true,
+          // `dev_sessions` só existe para trabalho delegado (a SM abre a
+          // linha na delegação) — nunca para PR de humano, então este
+          // caminho é sempre `delegado: true` por construção da tabela.
+          delegado: true,
+          lerEstadoDaTarefa: async () => {
+            const tarefa = (await ghGet(
+              `/repos/${projeto.wingId}/issues/${sessao.issueNumber}`,
+              githubToken
+            )) as { state?: string }
+            return tarefa.state === 'closed' ? 'closed' : 'open'
+          },
+          comentar: async (texto) => {
+            await ghSend(
+              'POST',
+              `/repos/${projeto.wingId}/issues/${sessao.issueNumber}/comments`,
+              githubToken,
+              { body: texto }
+            )
+          },
+          fechar: async () => {
+            await ghSend(
+              'PATCH',
+              `/repos/${projeto.wingId}/issues/${sessao.issueNumber}`,
+              githubToken,
+              {
+                state: 'closed',
+              }
+            )
+          },
+        })
+      } catch (err) {
+        app.log.warn(
+          err,
+          `[Scheduler] fechar a tarefa #${sessao.issueNumber} falhou depois da publicação confirmada`
+        )
+      }
+      if (moveCard) {
+        await moveCard(sessao.issueNumber, 'done').catch((err) =>
+          app.log.warn(err, `[Scheduler] mover card #${sessao.issueNumber} para done falhou`)
+        )
+      }
+    } else {
+      try {
+        await ghSend(
+          'POST',
+          `/repos/${projeto.wingId}/issues/${sessao.issueNumber}/comments`,
+          githubToken,
+          {
+            body:
+              `O GitOrch mesclou a entrega desta tarefa (PR #${numeroDoPr}), mas não conseguiu ` +
+              `confirmar que ela foi ao ar: ${motivo} A tarefa continua aberta até isso ser ` +
+              'confirmado ou resolvido manualmente.',
+          }
+        )
+      } catch (err) {
+        app.log.warn(
+          err,
+          `[Scheduler] comentário de publicação não confirmada falhou na tarefa #${sessao.issueNumber}`
+        )
+      }
+      if (moveCard) {
+        await moveCard(sessao.issueNumber, 'review').catch((err) =>
+          app.log.warn(err, `[Scheduler] mover card #${sessao.issueNumber} para review falhou`)
+        )
+      }
+    }
+  }
+
+  /**
+   * Item 1 da revisão pós-Leva A: fecha uma sessão que estourou o teto
+   * ABSOLUTO (`TETO_ABSOLUTO_DE_ACOMPANHAMENTO_MS`) sem chegar a um veredito
+   * final por nenhum dos caminhos específicos — usado tanto quando
+   * `acompanharPublicacao` rodou e devolveu um estado não-final preso
+   * (`falhou`, `publicando`, `commit-errado`) quanto quando nem uma leitura
+   * ao GitHub funcionou (sem credencial, ou uma exceção repetida). Sempre o
+   * mesmo pacote de efeitos: grava o veredito final, fecha a sessão, avisa o
+   * dono UMA vez com a última observação, e resolve o board como
+   * "não entregue" (nunca "done" — ver `resolverEntregaDoBoard`).
+   */
+  const fecharComTetoAbsoluto = async (args: {
+    projeto: NonNullable<Awaited<ReturnType<PrismaClient['project']['findUnique']>>>
+    sessao: LinhaDeSessao
+    agora: Date
+    desdeAMescla: number
+    ultimaObservacao: string
+    githubToken: string | undefined
+  }): Promise<void> => {
+    const { projeto, sessao, agora, desdeAMescla, ultimaObservacao, githubToken } = args
+    const veredito = fecharPorTetoAbsoluto({ desdeAMescla, ultimaObservacao })
+    await registrarEstadoDaPublicacao({
+      prisma: app.prisma as unknown as PrismaDevSession,
+      sessionName: sessao.sessionName,
+      estado: veredito.estado,
+      agora,
+    })
+    await fecharSessao({
+      prisma: app.prisma as unknown as PrismaDevSession,
+      sessionName: sessao.sessionName,
+      motivo: 'merged',
+      agora,
+    })
+    await avisarDonoDoProjeto(
+      projeto,
+      `GitOrch: a entrega de ${projeto.wingId} (commit ${sessao.mergeCommitSha}) foi mesclada. ${veredito.motivo}`
+    )
+    await resolverEntregaDoBoard({
+      projeto,
+      sessao,
+      githubToken,
+      entregue: false,
+      motivo: veredito.motivo,
+    })
+  }
+
+  /**
    * A sessão não encerra mais no merge (`aoMesclarUmaEntrega`, acima) —
    * encerra quando há VEREDITO sobre a publicação. Esta varredura é quem
    * chega até esse veredito: descobre como o repositório publica (Tarefa 12,
@@ -2717,6 +2924,19 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
    * acima), e o PR já mesclado sai da listagem de PRs abertos que alimenta o
    * laço de descoberta do QA. Sobrevive a qualquer reinício, sem coluna
    * nova.
+   *
+   * Item 1 da revisão pós-Leva A: além dos tetos específicos de cada estado
+   * (`JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS`, `TETO_DE_COMMIT_ERRADO_MS`,
+   * ambos dentro de `acompanharPublicacao`), esta varredura agora também
+   * mede `desdeAMescla` contra `TETO_ABSOLUTO_DE_ACOMPANHAMENTO_MS` — o
+   * BACKSTOP que fecha a sessão mesmo quando nenhum teto específico se
+   * aplicava ao estado em que ela ficou presa (`falhou` sem ninguém rodar o
+   * CD de novo; `publicando` represado esperando aprovação humana; ou uma
+   * leitura ao GitHub que nunca funciona). Ver `fecharComTetoAbsoluto`.
+   *
+   * Item 2/Leva B: o veredito final também decide o que acontece com a
+   * TAREFA e o CARD do board do cliente — nunca mais no merge
+   * (`qa-rails-mission.ts`, desenho antigo). Ver `resolverEntregaDoBoard`.
    */
   const varrerPublicacoes = async (): Promise<void> => {
     let sessoes: LinhaDeSessao[]
@@ -2737,9 +2957,36 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     const candidatas = sessoesParaAcompanharPublicacao(sessoes, agora)
 
     for (const sessao of candidatas) {
+      // Item 1 da revisão pós-Leva A: calculado ANTES do try — precisa
+      // valer tanto para o caminho onde a leitura funciona (estados presos
+      // que `acompanharPublicacao` devolve) quanto para os dois onde ela
+      // NUNCA funciona (sem credencial; exceção no meio do caminho), que
+      // levam ao `catch` mais abaixo, fora do escopo de qualquer `const`
+      // declarada dentro do try.
+      //
+      // Importante 5 (Leva A): a fonte é a LINHA (`stateCheckedAt`, gravado
+      // por `registrarMescla` no instante do merge), não um relógio em
+      // memória do processo — sobrevive a reinício. `stateCheckedAt`
+      // ausente (linha antiga de antes desta coluna existir) trata como
+      // "tempo desconhecido": nenhum teto (nem os específicos dentro de
+      // `acompanharPublicacao`, nem este absoluto) finaliza sozinho por
+      // dado faltando.
+      const desdeAMescla = sessao.stateCheckedAt
+        ? agora.getTime() - sessao.stateCheckedAt.getTime()
+        : undefined
+      const estourouTetoAbsoluto =
+        desdeAMescla !== undefined && desdeAMescla >= TETO_ABSOLUTO_DE_ACOMPANHAMENTO_MS
+
+      // Espelhos para o `catch` mais abaixo — fora do escopo dos `const`
+      // declarados dentro do try (que existem para preservar o
+      // estreitamento de tipo do TypeScript dentro dos fechamentos de
+      // leitura, `lerExecucoes` e companhia).
+      let projetoParaCatch: Awaited<ReturnType<PrismaClient['project']['findUnique']>> = null
+      let tokenParaCatch: string | undefined
       try {
         const projeto = await app.prisma.project.findUnique({ where: { id: sessao.projectId } })
         if (!projeto) continue
+        projetoParaCatch = projeto
 
         const githubToken =
           process.env['GITORCH_GITHUB_TOKEN'] ??
@@ -2749,7 +2996,25 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             onWarn: (m) => app.log.warn(m),
           })) ??
           undefined
+        tokenParaCatch = githubToken
         if (!githubToken) {
+          // Item 1: uma instalação revogada (ou um projeto suspenso) NUNCA
+          // volta a ter credencial sozinha — é exatamente a "leitura que
+          // falha para sempre" que o teto absoluto existe para fechar.
+          // Antes dele, comportamento de sempre: carimba a cadência e tenta
+          // de novo no próximo ciclo.
+          if (estourouTetoAbsoluto) {
+            await fecharComTetoAbsoluto({
+              projeto,
+              sessao,
+              agora,
+              desdeAMescla: desdeAMescla as number,
+              ultimaObservacao:
+                'perdemos a credencial do GitHub para este repositório e não conseguimos checar a publicação',
+              githubToken: undefined,
+            })
+            continue
+          }
           app.log.warn(
             `[Scheduler] varredura de publicações sem credencial do GitHub para ${projeto.wingId}; tenta no próximo ciclo`
           )
@@ -2773,20 +3038,6 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
 
         const mecanismo = await descobrirMecanismoComCache(projeto.wingId, githubToken, agora)
         const shaDaMescla = sessao.mergeCommitSha as string
-
-        // Importante 5: há quanto tempo o merge desta entrega aconteceu —
-        // fonte é a LINHA (`stateCheckedAt`, gravado por `registrarMescla`
-        // no instante do merge), não um relógio em memória do processo. É o
-        // mesmo valor que governa a janela de tolerância de zero evidência
-        // (`JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS`, os dois caminhos) e o
-        // teto de `commit-errado` (`TETO_DE_COMMIT_ERRADO_MS`, caminho de
-        // workflow) dentro de `acompanharPublicacao`. `stateCheckedAt`
-        // ausente (linha antiga de antes desta coluna existir) trata como
-        // "tempo desconhecido" — nunca finaliza sozinho por dado faltando,
-        // mesmo comportamento de quando o argumento é omitido.
-        const desdeAMescla = sessao.stateCheckedAt
-          ? agora.getTime() - sessao.stateCheckedAt.getTime()
-          : undefined
 
         const veredito = await acompanharPublicacao({
           mecanismo,
@@ -2821,6 +3072,31 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             return resp ?? []
           },
         })
+
+        // Item 1: qualquer estado NÃO-final que `acompanharPublicacao`
+        // devolveu ('falhou', 'publicando', 'commit-errado') mas que já
+        // passou do teto absoluto vira final AGORA — o backstop que fecha a
+        // sessão mesmo quando nenhum teto ESPECÍFICO se aplicava a este
+        // estado (um CD que falha e ninguém manda rodar de novo; uma
+        // publicação represada esperando aprovação humana, que nunca é
+        // "zero evidência" e por isso nunca entra na janela de tolerância;
+        // `commit-errado` também cai aqui só como rede de segurança — na
+        // prática o teto de 1h dele já resolve bem antes das 24h deste).
+        if (
+          veredito.estado !== 'no-ar' &&
+          veredito.estado !== 'sem-publicacao' &&
+          estourouTetoAbsoluto
+        ) {
+          await fecharComTetoAbsoluto({
+            projeto,
+            sessao,
+            agora,
+            desdeAMescla: desdeAMescla as number,
+            ultimaObservacao: `${veredito.estado} — ${veredito.motivo}`,
+            githubToken,
+          })
+          continue
+        }
 
         // Achado 2: o estado ANTERIOR (antes de `registrarEstadoDaPublicacao`
         // sobrescrever) é o que decide se o dono já foi avisado desta MESMA
@@ -2869,6 +3145,16 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             projeto,
             `GitOrch: a entrega de ${projeto.wingId} foi ao ar. ${veredito.motivo}${notaDeAmbiente}`
           )
+          // Item 2/Leva B: só AGORA — com a publicação confirmada — a
+          // tarefa fecha como entregue e o card vai para "done". Nunca no
+          // merge (desenho antigo, `qa-rails-mission.ts`).
+          await resolverEntregaDoBoard({
+            projeto,
+            sessao,
+            githubToken,
+            entregue: true,
+            motivo: veredito.motivo,
+          })
         } else if (veredito.estado === 'falhou' || veredito.estado === 'commit-errado') {
           // Não fecha: o CD pode ser retentado pelo cliente, e uma execução
           // presa na fila (commit-errado) pode ser sucedida pela certa —
@@ -2920,6 +3206,19 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             projeto,
             `GitOrch: a entrega de ${projeto.wingId} (commit ${shaDaMescla}) foi mesclada, mas ${motivoDeNegocio} ${veredito.motivo}`
           )
+          // Item 2/Leva B: "sem-publicacao" tem DOIS motivos honestos bem
+          // diferentes — o repositório PROVADAMENTE não publica (aqui o
+          // merge JÁ é a entrega: fecha como entregue, card vai para
+          // "done") ou esperamos e não apareceu nada dentro do prazo (aqui
+          // NÃO fecha como entregue — ver `resolverEntregaDoBoard`, card
+          // volta para "review", tarefa fica aberta com o motivo).
+          await resolverEntregaDoBoard({
+            projeto,
+            sessao,
+            githubToken,
+            entregue: mecanismo.tipo === 'nenhum',
+            motivo: veredito.motivo,
+          })
         }
         // 'publicando': nada a fazer agora — a próxima passagem (depois da
         // cadência) reexamina.
@@ -2928,6 +3227,29 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           err,
           `[Scheduler] varredura de publicação falhou na sessão ${sessao.sessionName}; tenta no próximo ciclo`
         )
+        // Item 1: a MESMA "leitura que nunca funciona" do ramo "sem
+        // credencial" mais acima, só que descoberta mais tarde (a
+        // credencial existia, mas uma chamada no meio do caminho falhou —
+        // 403 persistente, por exemplo). `projetoParaCatch` só fica
+        // preenchido se a falha aconteceu DEPOIS de resolver o projeto; sem
+        // ele não há como avisar o dono nem escrever no board, então cai no
+        // comportamento de sempre (só carimba a cadência).
+        if (estourouTetoAbsoluto && projetoParaCatch) {
+          await fecharComTetoAbsoluto({
+            projeto: projetoParaCatch,
+            sessao,
+            agora,
+            desdeAMescla: desdeAMescla as number,
+            ultimaObservacao: `a leitura do GitHub falhou repetidamente (${String(err).slice(0, 160)})`,
+            githubToken: tokenParaCatch,
+          }).catch((fecharErr) =>
+            app.log.warn(
+              fecharErr,
+              `[Scheduler] fechar por teto absoluto falhou para ${sessao.sessionName}`
+            )
+          )
+          continue
+        }
         // Importante 3 da revisão final: a cadência avança mesmo numa
         // exceção no meio do caminho (um 403 do GitHub, por exemplo) — sem
         // isto, uma falha PERSISTENTE reexamina a cada tique (~60s) em vez

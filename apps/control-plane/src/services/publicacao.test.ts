@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   acompanharPublicacao,
+  fecharPorTetoAbsoluto,
   JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS,
   TETO_DE_COMMIT_ERRADO_MS,
+  TETO_ABSOLUTO_DE_ACOMPANHAMENTO_MS,
 } from './publicacao.js'
 
 const mecanismoWorkflow = { tipo: 'workflow', arquivo: 'cd.yml', nome: 'CD' } as const
@@ -558,5 +560,39 @@ describe('acompanharPublicacao', () => {
       })
       expect(v.estado).toBe('commit-errado')
     })
+  })
+})
+
+// Item 1 da revisão pós-Leva A — o backstop que fecha a CLASSE inteira de
+// "estado que nunca sai sozinho" (não só um caso isolado). Testado aqui como
+// função pura; a integração com `varrerPublicacoes` (que decide QUANDO
+// chamá-la, para os três estados vizinhos que ficavam sem teto) é provada
+// pelo "real seam" em `scheduler-pos-merge-teto-absoluto.test.ts`.
+describe('fecharPorTetoAbsoluto', () => {
+  it('sempre "sem-publicacao" — não inventa um sexto estado', () => {
+    const v = fecharPorTetoAbsoluto({
+      desdeAMescla: TETO_ABSOLUTO_DE_ACOMPANHAMENTO_MS,
+      ultimaObservacao: 'falhou — a etapa "Deploy" terminou com "failure".',
+    })
+    expect(v.estado).toBe('sem-publicacao')
+  })
+
+  it('o motivo cita as horas de acompanhamento e a última observação — nunca um veredito genérico', () => {
+    const v = fecharPorTetoAbsoluto({
+      desdeAMescla: 25 * 60 * 60_000,
+      ultimaObservacao: 'publicando — a etapa "Publicação em production" ainda está "waiting".',
+    })
+    expect(v.motivo).toMatch(/25h/)
+    expect(v.motivo).toContain(
+      'publicando — a etapa "Publicação em production" ainda está "waiting".'
+    )
+  })
+
+  it('nunca é "zero evidência" — o teto absoluto fecha por TEMPO, não por ausência de dado', () => {
+    const v = fecharPorTetoAbsoluto({
+      desdeAMescla: TETO_ABSOLUTO_DE_ACOMPANHAMENTO_MS,
+      ultimaObservacao: 'a leitura do GitHub falhou repetidamente (403).',
+    })
+    expect(v.semEvidenciaDeTodoAmbiente).toBe(false)
   })
 })

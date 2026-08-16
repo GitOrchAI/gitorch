@@ -70,7 +70,7 @@ describe('aoMesclarUmaEntrega', () => {
     // (mesmo shape de dados), não uma cópia solta que só parece certa.
     expect(prisma.devSession.update).toHaveBeenCalledWith({
       where: { sessionName: 'sessions/abc' },
-      data: { mergeCommitSha: 'deadbeef', stateCheckedAt: agora },
+      data: { mergeCommitSha: 'deadbeef', pullRequestNumber: 7, stateCheckedAt: agora },
     })
     // A regressão desta tarefa: ANTES, este ponto fechava a sessão
     // (`closedAt`/`closedReason: 'merged'`) no instante do merge. Prova
@@ -146,7 +146,7 @@ describe('aoMesclarUmaEntrega — Importante 4 (recuo pela issue + aviso, nunca 
     })
     expect(prisma.devSession.update).toHaveBeenCalledWith({
       where: { sessionName: 'sessions/por-issue' },
-      data: { mergeCommitSha: 'deadbeef', stateCheckedAt: agora },
+      data: { mergeCommitSha: 'deadbeef', pullRequestNumber: 7, stateCheckedAt: agora },
     })
   })
 

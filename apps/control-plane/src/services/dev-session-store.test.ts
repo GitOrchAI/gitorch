@@ -301,15 +301,36 @@ describe('registrarMescla', () => {
   it('grava o commit mesclado e NÃO fecha a linha (Tarefa 17: a sessão só encerra com veredito de publicação)', async () => {
     const prisma = prismaFalso()
 
-    await registrarMescla({ prisma, sessionName: 'sessions/1', mergeCommitSha: 'deadbeef', agora })
+    await registrarMescla({
+      prisma,
+      sessionName: 'sessions/1',
+      mergeCommitSha: 'deadbeef',
+      numeroDoPr: 63,
+      agora,
+    })
 
     expect(prisma.devSession.update).toHaveBeenCalledWith({
       where: { sessionName: 'sessions/1' },
-      data: { mergeCommitSha: 'deadbeef', stateCheckedAt: agora },
+      data: { mergeCommitSha: 'deadbeef', pullRequestNumber: 63, stateCheckedAt: agora },
     })
     const chamada = prisma.devSession.update.mock.calls[0]?.[0] as { data: Record<string, unknown> }
     expect(chamada.data).not.toHaveProperty('closedAt')
     expect(chamada.data).not.toHaveProperty('closedReason')
+  })
+
+  it('grava o número do PR mesmo quando a linha foi achada pelo recuo da issue (Importante 4): a fonte é o evento do merge, não `registrarPr`', async () => {
+    const prisma = prismaFalso()
+
+    await registrarMescla({
+      prisma,
+      sessionName: 'sessions/2',
+      mergeCommitSha: 'cafef00d',
+      numeroDoPr: 97,
+      agora,
+    })
+
+    const chamada = prisma.devSession.update.mock.calls[0]?.[0] as { data: Record<string, unknown> }
+    expect(chamada.data['pullRequestNumber']).toBe(97)
   })
 })
 
