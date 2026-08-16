@@ -31,14 +31,20 @@ function ehIpv4Interno(host: string): boolean {
   if (partes.length !== 4) return false
   const numeros = partes.map((p) => Number(p))
   if (numeros.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false
-  const [a, b] = numeros as [number, number, number, number]
+  const [a, b, c] = numeros as [number, number, number, number]
   if (a === 0) return true // "esta rede" (RFC 5735)
   if (a === 127) return true // loopback
   if (a === 10) return true // RFC 1918
+  if (a === 100 && b >= 64 && b <= 127) return true // 100.64.0.0/10, NAT de operadora (RFC 6598) — nunca roteável na internet pública
   if (a === 172 && b >= 16 && b <= 31) return true // RFC 1918
   if (a === 192 && b === 168) return true // RFC 1918
+  if (a === 192 && b === 0 && c === 0) return true // 192.0.0.0/24, atribuições de protocolo IETF (RFC 6890)
+  if (a === 192 && b === 0 && c === 2) return true // 192.0.2.0/24, TEST-NET-1 — só existe em documentação (RFC 5737)
+  if (a === 198 && (b === 18 || b === 19)) return true // 198.18.0.0/15, faixa de benchmarking (RFC 2544)
+  if (a === 198 && b === 51 && c === 100) return true // 198.51.100.0/24, TEST-NET-2 — só existe em documentação (RFC 5737)
+  if (a === 203 && b === 0 && c === 113) return true // 203.0.113.0/24, TEST-NET-3 — só existe em documentação (RFC 5737)
   if (a === 169 && b === 254) return true // link-local, inclui o metadados de nuvem 169.254.169.254
-  if (a >= 224) return true // multicast (224-239) e reservado (240-255)
+  if (a >= 224) return true // multicast (224-239) e reservado (240-255), inclui a difusão limitada 255.255.255.255
   return false
 }
 
@@ -101,6 +107,11 @@ function ehIpv6Interno(host: string): boolean {
   if ((g0 & 0xffc0) === 0xfe80) return true // fe80::/10 (link-local)
   if ((g0 & 0xfe00) === 0xfc00) return true // fc00::/7 (rede local única)
   if ((g0 & 0xff00) === 0xff00) return true // ff00::/8 (multicast)
+  if ((g0 & 0xffc0) === 0xfec0) return true // fec0::/10, site-local depreciado (RFC 3879) — nunca reatribuído, segue não roteável apesar do desuso
+  if (g0 === 0x0100 && g1 === 0 && g2 === 0 && g3 === 0) return true // 100::/64, bloco "somente descarte" (RFC 6666)
+  if (g0 === 0x2001 && g1 === 0x0db8) return true // 2001:db8::/32, reservado para documentação (RFC 3849)
+  if (g0 === 0x3fff && (g1 & 0xf000) === 0) return true // 3fff::/20, reservado para documentação (RFC 9637)
+  if (g0 === 0x2001 && g1 === 0x0002 && g2 === 0) return true // 2001:2::/48, faixa de benchmarking (RFC 5180)
 
   // IPv4 mapeado (::ffff:a.b.c.d) ou compatível/depreciado (::a.b.c.d): os
   // últimos 32 bits carregam um IPv4 de verdade — julga pela regra de IPv4.
@@ -122,6 +133,14 @@ export function enderecoPermitido(url: string): { permitido: boolean; motivo: st
 
   if (!ESQUEMAS_PERMITIDOS.has(alvo.protocol)) {
     return { permitido: false, motivo: `esquema não permitido: ${alvo.protocol}` }
+  }
+
+  // Uma credencial já viajou, uma vez, para um endereço que não devia — é por
+  // isso que esta guarda existe. Hoje quem recusa `usuário:senha@host` é o
+  // fetch do runtime, não este código: é uma garantia emprestada, não nossa.
+  // Recusa aqui, na origem, antes de qualquer checagem de host.
+  if (alvo.username !== '' || alvo.password !== '') {
+    return { permitido: false, motivo: 'endereço com credencial embutida (usuário/senha)' }
   }
 
   // `URL` já normaliza caixa e desvios de codificação de IPv4 (decimal, octal,

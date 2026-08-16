@@ -7,41 +7,54 @@ describe('enderecoPermitido', () => {
   })
 
   it.each([
-    'http://127.0.0.1:3011',
-    'http://localhost:4011/',
-    'https://[::1]/',
-    'http://10.0.0.5/api',
-    'http://192.168.1.10/',
-    'http://172.16.4.4/',
-    'http://169.254.169.254/latest/meta-data/',
-    'http://algo.internal/',
-  ])('bloqueia rede interna: %s', (u) => {
-    expect(enderecoPermitido(u).permitido).toBe(false)
+    ['http://127.0.0.1:3011', 'endereço IPv4 de rede interna'],
+    ['http://localhost:4011/', 'aponta para a própria máquina ou nome de rede interna'],
+    ['https://[::1]/', 'endereço IPv6 de rede interna'],
+    ['http://10.0.0.5/api', 'endereço IPv4 de rede interna'],
+    ['http://192.168.1.10/', 'endereço IPv4 de rede interna'],
+    ['http://172.16.4.4/', 'endereço IPv4 de rede interna'],
+    ['http://169.254.169.254/latest/meta-data/', 'endereço IPv4 de rede interna'],
+    ['http://algo.internal/', 'nome de rede interna'],
+  ])('bloqueia rede interna: %s (motivo: %s)', (u, motivoEsperado) => {
+    const r = enderecoPermitido(u)
+    expect(r.permitido).toBe(false)
+    expect(r.motivo).toBe(motivoEsperado)
   })
 
   it.each(['file:///etc/passwd', 'ftp://x/y', 'gopher://x'])(
     'bloqueia esquema não-web: %s',
     (u) => {
-      expect(enderecoPermitido(u).permitido).toBe(false)
+      const esquema = new URL(u).protocol
+      const r = enderecoPermitido(u)
+      expect(r.permitido).toBe(false)
+      expect(r.motivo).toBe(`esquema não permitido: ${esquema}`)
     }
   )
 
   it('bloqueia domínio que apenas COMEÇA com um permitido', () => {
-    expect(enderecoPermitido('http://localhost.atacante.com/').permitido).toBe(false)
+    const r = enderecoPermitido('http://localhost.atacante.com/')
+    expect(r.permitido).toBe(false)
+    expect(r.motivo).toBe('aponta para a própria máquina ou nome de rede interna')
   })
 
   it('bloqueia texto que não é endereço', () => {
-    expect(enderecoPermitido('não é url').permitido).toBe(false)
+    const r = enderecoPermitido('não é url')
+    expect(r.permitido).toBe(false)
+    expect(r.motivo).toBe('não é um endereço válido')
   })
 
   // --- Casos além do brief: fechando desvios reais de SSRF ---
 
   it('bloqueia nome interno mesmo com maiúsculas (comparação normaliza caixa)', () => {
-    expect(enderecoPermitido('http://LOCALHOST/').permitido).toBe(false)
+    const r = enderecoPermitido('http://LOCALHOST/')
+    expect(r.permitido).toBe(false)
+    expect(r.motivo).toBe('aponta para a própria máquina ou nome de rede interna')
   })
 
   it('bloqueia domínio ".local" (mDNS/rede interna), mesmo formato de ".internal"', () => {
-    expect(enderecoPermitido('http://impressora.local/').permitido).toBe(false)
+    const r = enderecoPermitido('http://impressora.local/')
+    expect(r.permitido).toBe(false)
+    expect(r.motivo).toBe('nome de rede interna')
   })
 
   it('não bloqueia por falso positivo: nome que só CONTÉM "localhost" como substring', () => {
@@ -53,12 +66,16 @@ describe('enderecoPermitido', () => {
   it.each(['http://2130706433/', 'http://0x7f000001/', 'http://0177.0.0.1/', 'http://127.1/'])(
     'bloqueia loopback disfarçado por codificação alternativa de IPv4: %s',
     (u) => {
-      expect(enderecoPermitido(u).permitido).toBe(false)
+      const r = enderecoPermitido(u)
+      expect(r.permitido).toBe(false)
+      expect(r.motivo).toBe('endereço IPv4 de rede interna')
     }
   )
 
   it('bloqueia endereço "esta rede" 0.0.0.0', () => {
-    expect(enderecoPermitido('http://0.0.0.0/').permitido).toBe(false)
+    const r = enderecoPermitido('http://0.0.0.0/')
+    expect(r.permitido).toBe(false)
+    expect(r.motivo).toBe('endereço IPv4 de rede interna')
   })
 
   it.each([
@@ -66,31 +83,90 @@ describe('enderecoPermitido', () => {
     'http://[::ffff:10.0.0.5]/',
     'http://[::ffff:169.254.169.254]/',
   ])('bloqueia IPv4 interno mapeado em IPv6: %s', (u) => {
-    expect(enderecoPermitido(u).permitido).toBe(false)
+    const r = enderecoPermitido(u)
+    expect(r.permitido).toBe(false)
+    expect(r.motivo).toBe('endereço IPv6 de rede interna')
   })
 
   it('bloqueia link-local IPv6 fora do prefixo literal "fe80:" (fe80::/10 é uma faixa, não uma string)', () => {
     // fe81::/16 ainda está dentro de fe80::/10, mas não começa com a string
     // exata "fe80:" — uma checagem por prefixo de texto deixaria isso passar.
-    expect(enderecoPermitido('http://[fe81::1]/').permitido).toBe(false)
+    const r = enderecoPermitido('http://[fe81::1]/')
+    expect(r.permitido).toBe(false)
+    expect(r.motivo).toBe('endereço IPv6 de rede interna')
   })
 
   it('bloqueia rede local única IPv6 (fc00::/7)', () => {
-    expect(enderecoPermitido('http://[fd12:3456::1]/').permitido).toBe(false)
+    const r = enderecoPermitido('http://[fd12:3456::1]/')
+    expect(r.permitido).toBe(false)
+    expect(r.motivo).toBe('endereço IPv6 de rede interna')
   })
 
   it('bloqueia multicast IPv6 (ff00::/8)', () => {
-    expect(enderecoPermitido('http://[ff02::1]/').permitido).toBe(false)
+    const r = enderecoPermitido('http://[ff02::1]/')
+    expect(r.permitido).toBe(false)
+    expect(r.motivo).toBe('endereço IPv6 de rede interna')
   })
 
   it('bloqueia endereço IPv6 não especificado (::)', () => {
-    expect(enderecoPermitido('http://[::]/').permitido).toBe(false)
+    const r = enderecoPermitido('http://[::]/')
+    expect(r.permitido).toBe(false)
+    expect(r.motivo).toBe('endereço IPv6 de rede interna')
   })
 
-  it('devolve o motivo junto do veredito (não só o booleano)', () => {
+  it('devolve o motivo exato junto do veredito (não só um texto qualquer não vazio)', () => {
     const r = enderecoPermitido('http://127.0.0.1/')
     expect(r.permitido).toBe(false)
-    expect(r.motivo.length).toBeGreaterThan(0)
+    expect(r.motivo).toBe('endereço IPv4 de rede interna')
+  })
+
+  // --- Achados da revisão adversarial: faixas reservadas que ainda passavam ---
+
+  it('bloqueia site-local IPv6 depreciado (fec0::/10, RFC 3879) — faixa não coberta pelas outras máscaras de bits', () => {
+    const minusculo = enderecoPermitido('http://[fec0::1]/')
+    expect(minusculo.permitido).toBe(false)
+    expect(minusculo.motivo).toBe('endereço IPv6 de rede interna')
+
+    const maiusculo = enderecoPermitido('http://[FEC0::1]/')
+    expect(maiusculo.permitido).toBe(false)
+    expect(maiusculo.motivo).toBe('endereço IPv6 de rede interna')
+  })
+
+  it.each([
+    ['http://100.64.0.1/', 'endereço IPv4 de rede interna'], // 100.64.0.0/10, NAT de operadora (RFC 6598)
+    ['http://192.0.0.5/', 'endereço IPv4 de rede interna'], // 192.0.0.0/24, atribuições de protocolo IETF (RFC 6890)
+    ['http://192.0.2.10/', 'endereço IPv4 de rede interna'], // 192.0.2.0/24, TEST-NET-1 (RFC 5737)
+    ['http://198.18.0.5/', 'endereço IPv4 de rede interna'], // 198.18.0.0/15, benchmarking (RFC 2544)
+    ['http://198.51.100.7/', 'endereço IPv4 de rede interna'], // 198.51.100.0/24, TEST-NET-2 (RFC 5737)
+    ['http://203.0.113.9/', 'endereço IPv4 de rede interna'], // 203.0.113.0/24, TEST-NET-3 (RFC 5737)
+  ])('bloqueia faixa IPv4 reservada/não roteável: %s', (u, motivoEsperado) => {
+    const r = enderecoPermitido(u)
+    expect(r.permitido).toBe(false)
+    expect(r.motivo).toBe(motivoEsperado)
+  })
+
+  it.each([
+    'http://[100::1]/', // 100::/64, bloco "somente descarte" (RFC 6666)
+    'http://[2001:db8::1]/', // 2001:db8::/32, documentação (RFC 3849)
+    'http://[3fff::1]/', // 3fff::/20, documentação (RFC 9637)
+    'http://[2001:2::1]/', // 2001:2::/48, benchmarking (RFC 5180)
+  ])('bloqueia faixa IPv6 reservada/não roteável: %s', (u) => {
+    const r = enderecoPermitido(u)
+    expect(r.permitido).toBe(false)
+    expect(r.motivo).toBe('endereço IPv6 de rede interna')
+  })
+
+  it.each(['http://172.15.255.255/', 'http://172.32.0.0/'])(
+    'não bloqueia por falso positivo: borda de fora do RFC 1918 172.16.0.0/12: %s',
+    (u) => {
+      expect(enderecoPermitido(u).permitido).toBe(true)
+    }
+  )
+
+  it('bloqueia endereço com credencial embutida (usuário/senha) — proteção própria, não emprestada do fetch do runtime', () => {
+    const r = enderecoPermitido('http://usuario:senha@jardimdaspatinhas.com.br/')
+    expect(r.permitido).toBe(false)
+    expect(r.motivo).toBe('endereço com credencial embutida (usuário/senha)')
   })
 })
 
