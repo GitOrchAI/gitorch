@@ -89,7 +89,11 @@ function buildFakePrisma() {
       findMany: vi.fn(async () => []),
     },
     telegramLink: {
-      findUnique: vi.fn(async () => ({ status: 'unlinked', chatId: null })),
+      // Achado 3 da revisão: linkado (não 'unlinked'), para o aviso de
+      // fechamento por `sem-publicacao` ser observável de verdade pelo
+      // teste — sem isto `avisarDonoDoProjeto` retorna cedo (nenhum canal) e
+      // o teste não provaria nada sobre o aviso.
+      findUnique: vi.fn(async () => ({ status: 'linked', chatId: 'chat-do-dono' })),
     },
     _updateCalls: updateCalls,
   }
@@ -125,6 +129,9 @@ describe('varrerPublicacoes wiring em schedulerPlugin (real seam)', () => {
     // Bypassa mintInstallationToken (App do GitHub) — não é o que esta
     // tarefa testa.
     process.env['GITORCH_GITHUB_TOKEN'] = 'token-de-teste'
+    // Achado 3: canal de Telegram real (mockado na rede), para o aviso de
+    // fechamento por `sem-publicacao` disparar de verdade.
+    process.env['GITORCH_TELEGRAM_BOT_TOKEN'] = 'bot-token-de-teste'
   })
 
   afterEach(async () => {
@@ -138,7 +145,7 @@ describe('varrerPublicacoes wiring em schedulerPlugin (real seam)', () => {
     vi.restoreAllMocks()
   })
 
-  test('tick real fecha a sessão mesclada sem mecanismo de publicação (sem-publicacao) — a cadeia inteira roda sem reimplementação', async () => {
+  test('tick real fecha a sessão mesclada sem mecanismo de publicação (sem-publicacao) — a cadeia inteira roda sem reimplementação, e o dono é avisado (achado 3)', async () => {
     const fetchMock = vi.fn(async (url: Parameters<typeof fetch>[0]) => {
       const u = String(url)
       if (u.endsWith('/repos/acme/api/environments')) {
@@ -146,6 +153,9 @@ describe('varrerPublicacoes wiring em schedulerPlugin (real seam)', () => {
       }
       if (u.endsWith('/repos/acme/api/actions/workflows')) {
         return new Response(JSON.stringify({ workflows: [] }), { status: 200 })
+      }
+      if (u.startsWith('https://api.telegram.org/')) {
+        return new Response('{"ok":true}', { status: 200 })
       }
       return new Response('{}', { status: 200 })
     })
@@ -182,5 +192,23 @@ describe('varrerPublicacoes wiring em schedulerPlugin (real seam)', () => {
     const urls = fetchMock.mock.calls.map((c) => String(c[0]))
     expect(urls.some((u) => u.endsWith('/repos/acme/api/environments'))).toBe(true)
     expect(urls.some((u) => u.endsWith('/repos/acme/api/actions/workflows'))).toBe(true)
+
+    // Achado 3 da revisão: fechar `sem-publicacao` em silêncio era o
+    // caminho mais provável de esconder uma falha real. O dono precisa ser
+    // avisado UMA vez, em linguagem de negócio, dizendo que o repositório
+    // não tem mecanismo de publicação configurado (não que "algo falhou").
+    const chamadasDeTelegram = fetchMock.mock.calls.filter((c) =>
+      String(c[0]).startsWith('https://api.telegram.org/')
+    )
+    expect(chamadasDeTelegram).toHaveLength(1)
+    const chamadaDeTelegram = chamadasDeTelegram[0] as unknown as [string, RequestInit]
+    const corpo = JSON.parse(String(chamadaDeTelegram[1].body)) as {
+      chat_id: string
+      text: string
+    }
+    expect(corpo.chat_id).toBe('chat-do-dono')
+    expect(corpo.text).toContain('acme/api')
+    expect(corpo.text).toContain('mesclada')
+    expect(corpo.text).toMatch(/não identificamos.*como este repositório publica/)
   })
 })

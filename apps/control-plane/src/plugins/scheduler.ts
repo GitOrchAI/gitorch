@@ -2595,6 +2595,28 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     return mecanismo
   }
 
+  // Achado 1 da revisão da Tarefa 17: relógio de "desde quando esta sessão
+  // vem vendo ZERO evidência de publicação" (caminho de deployment) —
+  // `sessionName` -> hora (ms) da PRIMEIRA observação. Mesmo padrão de
+  // `cacheDeMecanismo` acima: em memória, sem coluna nova, sem migração. Se
+  // o processo reinicia, a janela recomeça — o pior caso é esperar mais um
+  // pouco antes de fechar, nunca fechar cedo demais (o mesmo custo aceito
+  // que o comentário do cache de mecanismo já documenta: "redescobre —
+  // custa uma consulta").
+  //
+  // NÃO reaproveita nenhuma coluna existente de propósito: `stateCheckedAt`
+  // seria o candidato óbvio (é gravado na hora do merge, por
+  // `aoMesclarUmaEntrega`), mas continua sendo escrito pela vigia de sessões
+  // do dev (`varrerSessoesDoDev`/`vigiarSessoes`) enquanto a linha segue
+  // aberta pós-merge — ela não para de examinar só porque a sessão já
+  // mesclou (filtra por `closedAt: null`, não por `mergeCommitSha`). Usar
+  // esse campo aqui mediria "desde a última vez que QUALQUER vigia tocou a
+  // linha", não "desde quando vemos zero evidência" — um relógio errado que
+  // nunca vence. `deployCheckedAt` também não serve: é sobrescrito a CADA
+  // varredura desta função (é o que dá a cadência de dez minutos), perdendo
+  // a primeira observação assim que a segunda acontece.
+  const primeiraObservacaoSemEvidencia = new Map<string, number>()
+
   // Avisa o dono do PROJETO — mesma resolução do resto do relógio
   // (varrerSessoesDoDev, reconferirAcessoDoRelogio): sem vínculo real de
   // Telegram, ninguém é avisado, e o projeto de um cliente nunca vira
@@ -2672,9 +2694,20 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         const mecanismo = await descobrirMecanismoComCache(projeto.wingId, githubToken, agora)
         const shaDaMescla = sessao.mergeCommitSha as string
 
+        // Achado 1: há quanto tempo esta sessão já vem vendo zero evidência
+        // de publicação (0 se esta é a primeira vez — `sessao.sessionName`
+        // ainda não está no relógio). É a mesma primeira observação para
+        // TODA sessão nova, e persiste entre ciclos enquanto o processo não
+        // reinicia (ver o comentário do relógio, acima).
+        const primeiraVezSemEvidencia = primeiraObservacaoSemEvidencia.get(sessao.sessionName)
+        const esperaSemEvidenciaMs = primeiraVezSemEvidencia
+          ? agora.getTime() - primeiraVezSemEvidencia
+          : 0
+
         const veredito = await acompanharPublicacao({
           mecanismo,
           shaDaMescla,
+          esperaSemEvidenciaMs,
           lerExecucoes: async (arquivo) => {
             const resp = (await ghGet(
               `/repos/${projeto.wingId}/actions/workflows/${arquivo}/runs?per_page=10`,
@@ -2704,6 +2737,28 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             return resp ?? []
           },
         })
+
+        // Achado 1: mantém o relógio de zero evidência SÓ enquanto a razão
+        // de "ainda publicando" continua sendo zero evidência — qualquer
+        // outro desfecho (evidência real apareceu, virou final dos dois
+        // lados) apaga a marca. Sem isto, uma sessão que eventualmente
+        // recebe evidência de verdade carregaria um relógio velho para
+        // sempre (inofensivo aqui, mas um vazamento de memória sem fim
+        // claro) — e uma sessão que fecha nunca mais seria lida de novo de
+        // qualquer forma.
+        if (veredito.estado === 'publicando' && veredito.semEvidenciaDeTodoAmbiente) {
+          if (!primeiraObservacaoSemEvidencia.has(sessao.sessionName)) {
+            primeiraObservacaoSemEvidencia.set(sessao.sessionName, agora.getTime())
+          }
+        } else {
+          primeiraObservacaoSemEvidencia.delete(sessao.sessionName)
+        }
+
+        // Achado 2: o estado ANTERIOR (antes de `registrarEstadoDaPublicacao`
+        // sobrescrever) é o que decide se o dono já foi avisado desta MESMA
+        // situação — "SPAM apaga sinal tanto quanto silêncio" (doutrina de
+        // `session-watch.ts`). Lido AQUI, antes da escrita.
+        const estadoAnterior = sessao.deployState
 
         await registrarEstadoDaPublicacao({
           prisma: app.prisma as unknown as PrismaDevSession,
@@ -2750,11 +2805,24 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           // Não fecha: o CD pode ser retentado pelo cliente, e uma execução
           // presa na fila (commit-errado) pode ser sucedida pela certa —
           // `sessoesParaAcompanharPublicacao` reexamina no próximo ciclo.
-          const etapasTexto = veredito.etapas.map((e) => `${e.nome}: ${e.resultado}`).join('; ')
-          await avisarDonoDoProjeto(
-            projeto,
-            `GitOrch: a publicação de ${projeto.wingId} (commit ${shaDaMescla}) precisa de atenção — ${veredito.motivo}${etapasTexto ? ` Etapas: ${etapasTexto}.` : ''}`
-          )
+          //
+          // Achado 2 da revisão: sem teto de mescla igual a Tarefa 10, esta
+          // varredura reexamina esta sessão a CADA cadência (dez em dez
+          // minutos) até o veredito virar outra coisa — e sem dedupe, cada
+          // reexame reenviava o MESMO aviso, para sempre. "SPAM apaga sinal
+          // tanto quanto silêncio" (doutrina de `session-watch.ts`). O
+          // dedupe é por TRANSIÇÃO DE ESTADO (`estadoAnterior`, lido acima,
+          // antes da escrita): mesma leitura de antes ('falhou' seguido de
+          // 'falhou', ou 'commit-errado' seguido de 'commit-errado') não
+          // reavisa; qualquer mudança real (inclusive a alternância entre os
+          // dois, ou a primeira vez) rearma o aviso.
+          if (estadoAnterior !== veredito.estado) {
+            const etapasTexto = veredito.etapas.map((e) => `${e.nome}: ${e.resultado}`).join('; ')
+            await avisarDonoDoProjeto(
+              projeto,
+              `GitOrch: a publicação de ${projeto.wingId} (commit ${shaDaMescla}) precisa de atenção — ${veredito.motivo}${etapasTexto ? ` Etapas: ${etapasTexto}.` : ''}`
+            )
+          }
         } else if (veredito.estado === 'sem-publicacao') {
           app.log.info(
             `[Scheduler] ${projeto.wingId} não publica (${veredito.motivo}) — encerrando ${sessao.sessionName}`
@@ -2765,6 +2833,25 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             motivo: 'merged',
             agora,
           })
+          // Achado 3 da revisão: fechar em silêncio era o caminho mais
+          // provável de esconder uma falha real (junto do achado 1 — zero
+          // evidência virando "não publica" cedo demais). O dono é avisado
+          // UMA vez, aqui mesmo, porque `sem-publicacao` é sempre um
+          // veredito FINAL (a sessão fecha e nunca mais é reexaminada) —
+          // este `avisarDonoDoProjeto` só roda uma vez por sessão por
+          // construção, sem precisar de dedupe. A mensagem diz em
+          // linguagem de negócio, sem jargão, qual dos dois motivos foi:
+          // repositório sem mecanismo de publicação nenhum (Tarefa 12 já
+          // sabia, na hora) ou janela de espera esgotada sem nada aparecer
+          // (achado 1).
+          const motivoDeNegocio =
+            mecanismo.tipo === 'nenhum'
+              ? 'não identificamos, no GitHub, como este repositório publica o código (nenhum ambiente ou fluxo de publicação configurado) — o código está mesclado, mas o GitOrch não tem como confirmar que ele foi ao ar.'
+              : 'esperamos, mas não apareceu nenhuma publicação para este commit dentro do tempo de espera — pode ser um CD que não roda para este tipo de mudança, ou algo que precisa de atenção manual.'
+          await avisarDonoDoProjeto(
+            projeto,
+            `GitOrch: a entrega de ${projeto.wingId} (commit ${shaDaMescla}) foi mesclada, mas ${motivoDeNegocio} ${veredito.motivo}`
+          )
         }
         // 'publicando': nada a fazer agora — a próxima passagem (depois da
         // cadência) reexamina.

@@ -48,6 +48,40 @@ import type { Mecanismo } from './mecanismo-de-publicacao.js'
 export const CADENCIA_DE_PUBLICACAO_MS = 10 * 60_000
 
 /**
+ * Achado 1 da revisão da Tarefa 17: o primeiro tique depois do merge não tem
+ * carência nenhuma (`deployCheckedAt` ainda nulo, a sessão é examinada de
+ * imediato). No caminho de DEPLOYMENT, quando o CD ainda não criou o objeto
+ * de publicação para o commit recém-mesclado, TODOS os ambientes respondem
+ * "zero evidência" — e sem esta janela isso virava, na hora, o veredito
+ * FINAL `sem-publicacao`: a sessão fechava em silêncio, sem avisar ninguém,
+ * dizendo "este repositório não publica" justamente enquanto a publicação
+ * estava começando. "Ainda não" e "nunca" são vereditos diferentes; esta
+ * janela é o que separa um do outro.
+ *
+ * Só o caminho de DEPLOYMENT usa esta janela (ver `esperaSemEvidenciaMs` em
+ * `acompanharPublicacao` e `semEvidenciaDeTodoAmbiente` em
+ * `VereditoDaPublicacao`). O caminho de WORKFLOW não precisa: quando existe
+ * QUALQUER execução no histórico do workflow de publicação (o caso comum —
+ * repositório que já publicou antes), a mais recente quase sempre é de
+ * OUTRO commit logo após um merge novo, o que já resolve em `commit-errado`
+ * (não-final, reexaminado na próxima cadência) — uma saída segura de graça.
+ * O caminho de deployment não tem essa saída: a leitura já vem filtrada pelo
+ * commit exato (`sha=` na consulta), então zero evidência é zero evidência
+ * mesmo com histórico normal de publicações anteriores.
+ *
+ * Trinta minutos = três ciclos de `CADENCIA_DE_PUBLICACAO_MS` (dez minutos
+ * cada — a cadência da própria vigília pós-merge, que também governa de
+ * quanto em quanto tempo a sessão é reexaminada): folgado o bastante para um
+ * pipeline de CD real (build → testes → imagem → deploy) registrar o
+ * primeiro objeto de deployment, algo que normalmente leva minutos, não
+ * dezenas de minutos, mesmo em pipelines lentos — e curto o bastante para o
+ * dono ainda saber no mesmo dia que algo não publicou, em vez de esperar
+ * indefinidamente (o dead end OPOSTO, que esta janela também existe para
+ * evitar: ver `semEvidenciaDeTodoAmbiente` e `acompanharPorDeployment`).
+ */
+export const JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS = 30 * 60_000
+
+/**
  * `GET /repos/{o}/{r}/actions/workflows/{arquivo}/runs` — e também o formato
  * de `GET /repos/{o}/{r}/actions/runs/{id}`. Assinatura provada ao vivo
  * contra a API do GitHub.
@@ -97,6 +131,21 @@ export type VereditoDaPublicacao = {
   etapas: Array<{ nome: string; resultado: string }>
   enderecos: string[]
   motivo: string
+  /**
+   * Achado 1 da revisão da Tarefa 17: `true` só quando o caminho de
+   * DEPLOYMENT não achou publicação NENHUMA (zero evidência, não apenas um
+   * resultado ruim) para o commit mesclado em NENHUM dos ambientes
+   * declarados. É o sinal que `varrerPublicacoes` (scheduler.ts) usa para
+   * saber quando começar — e quando parar — de contar a janela de
+   * tolerância (`JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS`).
+   *
+   * Sempre `false` no caminho de WORKFLOW (esta janela não se aplica lá, ver
+   * o comentário da constante). No caminho de deployment, `false` sempre que
+   * QUALQUER ambiente tiver alguma publicação encontrada — mesmo inativa ou
+   * em estado desconhecido, porque isso já é evidência real de que algo
+   * aconteceu, não "ainda não aconteceu nada".
+   */
+  semEvidenciaDeTodoAmbiente: boolean
 }
 
 /** Conclusões de etapa que representam um término normal (não é falha). */
@@ -173,8 +222,23 @@ export async function acompanharPublicacao(args: {
   lerPublicacoes: (ambiente: string, sha: string) => Promise<PublicacaoDeclarada[]>
   /** Lê os estados de uma publicação declarada, mais novo primeiro. */
   lerEstadosDaPublicacao: (idDaPublicacao: number) => Promise<EstadoDaPublicacao[]>
+  /**
+   * Achado 1 da revisão da Tarefa 17: há quanto tempo (ms) a vigília já vem
+   * observando ZERO evidência de publicação para esta sessão, contado desde
+   * a PRIMEIRA vez que isso foi visto — não desde o merge propriamente (na
+   * prática a diferença é desprezível: a primeira observação acontece no
+   * tique seguinte ao merge). Quem guarda esse relógio é quem chama esta
+   * função (scheduler.ts, em memória, mesmo padrão do cache de mecanismo);
+   * esta função só decide com base nele — nunca lê hora nem toca banco.
+   *
+   * Omitido (ou infinito): trata como se a janela já tivesse se esgotado —
+   * o comportamento de sempre, preservado para quem não passa este
+   * argumento (os testes deste arquivo que não exercem o achado 1).
+   */
+  esperaSemEvidenciaMs?: number
 }): Promise<VereditoDaPublicacao> {
   const { mecanismo, shaDaMescla } = args
+  const esperaSemEvidenciaMs = args.esperaSemEvidenciaMs ?? Number.POSITIVE_INFINITY
 
   if (mecanismo.tipo === 'nenhum') {
     return {
@@ -182,6 +246,7 @@ export async function acompanharPublicacao(args: {
       etapas: [],
       enderecos: [],
       motivo: 'este repositório não tem mecanismo de publicação declarado.',
+      semEvidenciaDeTodoAmbiente: false,
     }
   }
 
@@ -193,7 +258,8 @@ export async function acompanharPublicacao(args: {
     mecanismo,
     shaDaMescla,
     args.lerPublicacoes,
-    args.lerEstadosDaPublicacao
+    args.lerEstadosDaPublicacao,
+    esperaSemEvidenciaMs
   )
 }
 
@@ -216,6 +282,7 @@ async function acompanharPorWorkflow(
         etapas: [],
         enderecos: [],
         motivo: `nenhuma execução de "${mecanismo.nome}" foi encontrada ainda para o commit mesclado.`,
+        semEvidenciaDeTodoAmbiente: false,
       }
     }
     // A armadilha central desta tarefa: existe execução recente, mas de
@@ -227,6 +294,7 @@ async function acompanharPorWorkflow(
       etapas: [],
       enderecos: [],
       motivo: `a execução mais recente de "${mecanismo.nome}" é de outro commit (${execucaoMaisRecente.head_sha}), possivelmente uma versão antiga presa na fila — não do commit mesclado (${shaDaMescla}).`,
+      semEvidenciaDeTodoAmbiente: false,
     }
   }
 
@@ -246,6 +314,7 @@ async function acompanharPorWorkflow(
       etapas,
       enderecos: [],
       motivo: `a etapa "${etapaComFalha.name}" terminou com "${etapaComFalha.conclusion}".`,
+      semEvidenciaDeTodoAmbiente: false,
     }
   }
 
@@ -258,6 +327,7 @@ async function acompanharPorWorkflow(
       etapas,
       enderecos: [],
       motivo: `a etapa "${etapaEmAndamento.name}" ainda não terminou.`,
+      semEvidenciaDeTodoAmbiente: false,
     }
   }
 
@@ -271,6 +341,7 @@ async function acompanharPorWorkflow(
       etapas,
       enderecos: [],
       motivo: `a etapa "${jobDePublicacaoPulado.name}" publica e foi pulada — não há prova de que a publicação rodou para o commit mesclado.`,
+      semEvidenciaDeTodoAmbiente: false,
     }
   }
 
@@ -279,6 +350,7 @@ async function acompanharPorWorkflow(
     etapas,
     enderecos: [],
     motivo: `todas as etapas de "${mecanismo.nome}" terminaram (sucesso, ou pulo esperado de reversão).`,
+    semEvidenciaDeTodoAmbiente: false,
   }
 }
 
@@ -297,13 +369,25 @@ type ResultadoDoAmbiente = {
    * pior-vence geral, como antes).
    */
   producao: boolean
+  /**
+   * Achado 1 da revisão da Tarefa 17: `true` só na leitura mais crua
+   * possível — NENHUMA publicação declarada para este ambiente e commit
+   * (`publicacoes.length === 0`, depois do filtro de defesa pelo commit). É
+   * diferente de "publicação inativa" ou "estado desconhecido": nesses dois
+   * casos um objeto de deployment EXISTIU, o que já é evidência de que algo
+   * aconteceu. Aqui não existiu nada — pode ser "o CD ainda não chegou lá"
+   * (achado 1), e é isso que decide se o veredito deste ambiente pode virar
+   * FINAL agora ou precisa esperar a janela de tolerância.
+   */
+  evidenciaZero: boolean
 }
 
 async function acompanharPorDeployment(
   mecanismo: Extract<Mecanismo, { tipo: 'deployment' }>,
   shaDaMescla: string,
   lerPublicacoes: (ambiente: string, sha: string) => Promise<PublicacaoDeclarada[]>,
-  lerEstadosDaPublicacao: (idDaPublicacao: number) => Promise<EstadoDaPublicacao[]>
+  lerEstadosDaPublicacao: (idDaPublicacao: number) => Promise<EstadoDaPublicacao[]>,
+  esperaSemEvidenciaMs: number
 ): Promise<VereditoDaPublicacao> {
   const etapas: Array<{ nome: string; resultado: string }> = []
   const enderecos: string[] = []
@@ -324,6 +408,7 @@ async function acompanharPorDeployment(
         estado: 'sem-publicacao',
         motivo: `nenhuma publicação em "${ambiente}" para o commit mesclado.`,
         producao: false,
+        evidenciaZero: true,
       })
       continue
     }
@@ -342,6 +427,7 @@ async function acompanharPorDeployment(
         estado: 'publicando',
         motivo: `publicação em "${ambiente}" foi criada mas ainda não relatou estado.`,
         producao,
+        evidenciaZero: false,
       })
       continue
     }
@@ -352,33 +438,66 @@ async function acompanharPorDeployment(
       if (estadoMaisNovo.environment_url) {
         enderecos.push(estadoMaisNovo.environment_url)
       }
-      resultados.push({ estado: 'no-ar', motivo: `"${ambiente}" está no ar.`, producao })
+      resultados.push({
+        estado: 'no-ar',
+        motivo: `"${ambiente}" está no ar.`,
+        producao,
+        evidenciaZero: false,
+      })
     } else if (ESTADOS_DE_FALHA.has(estadoMaisNovo.state)) {
       resultados.push({
         estado: 'falhou',
         motivo: `publicação em "${ambiente}" terminou em "${estadoMaisNovo.state}".`,
         producao,
+        evidenciaZero: false,
       })
     } else if (ESTADOS_EM_ANDAMENTO.has(estadoMaisNovo.state)) {
       resultados.push({
         estado: 'publicando',
         motivo: `publicação em "${ambiente}" ainda está "${estadoMaisNovo.state}".`,
         producao,
+        evidenciaZero: false,
       })
     } else if (estadoMaisNovo.state === 'inactive') {
       // Uma publicação inativa foi substituída por outra mais nova — não é
-      // falha (nada deu errado), mas também não está mais no ar agora.
+      // falha (nada deu errado), mas também não está mais no ar agora. É
+      // evidência REAL de que algo aconteceu (nunca "zero evidência" — o
+      // achado 1 não se aplica aqui).
       resultados.push({
         estado: 'sem-publicacao',
         motivo: `publicação em "${ambiente}" ficou inativa — foi substituída por outra.`,
         producao,
+        evidenciaZero: false,
       })
     } else {
       resultados.push({
         estado: 'sem-publicacao',
         motivo: `publicação em "${ambiente}" está em estado desconhecido ("${estadoMaisNovo.state}").`,
         producao,
+        evidenciaZero: false,
       })
+    }
+  }
+
+  // Achado 1 da revisão da Tarefa 17: quando NENHUM ambiente tem publicação
+  // nenhuma para este commit (zero evidência em todos, não um resultado
+  // ruim), "ainda não" e "nunca" são o mesmo dado — só o tempo decorrido os
+  // separa. Dentro da janela de tolerância, o veredito honesto é "ainda
+  // publicando" (não-final, reexaminado na próxima cadência); esgotada a
+  // janela, cai para a agregação normal abaixo, que resolve em
+  // `sem-publicacao` (final) pelas mesmas regras de sempre.
+  const todosSemEvidencia = resultados.length > 0 && resultados.every((r) => r.evidenciaZero)
+  if (todosSemEvidencia && esperaSemEvidenciaMs < JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS) {
+    return {
+      estado: 'publicando',
+      etapas,
+      enderecos: [],
+      motivo:
+        `ainda não há publicação registrada para o commit mesclado (${shaDaMescla}) em ` +
+        `nenhum dos ambientes declarados (${mecanismo.ambientes.join(', ')}); aguardando ` +
+        `dentro da janela de tolerância (esperando há ${Math.round(esperaSemEvidenciaMs / 60_000)} ` +
+        `min de ${Math.round(JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS / 60_000)} min).`,
+      semEvidenciaDeTodoAmbiente: true,
     }
   }
 
@@ -408,5 +527,11 @@ async function acompanharPorDeployment(
     }
   }
 
-  return { estado: piorEstado ?? 'sem-publicacao', etapas, enderecos, motivo }
+  return {
+    estado: piorEstado ?? 'sem-publicacao',
+    etapas,
+    enderecos,
+    motivo,
+    semEvidenciaDeTodoAmbiente: todosSemEvidencia,
+  }
 }

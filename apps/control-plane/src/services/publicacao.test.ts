@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { acompanharPublicacao } from './publicacao.js'
+import { acompanharPublicacao, JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS } from './publicacao.js'
 
 const mecanismoWorkflow = { tipo: 'workflow', arquivo: 'cd.yml', nome: 'CD' } as const
 
@@ -327,5 +327,123 @@ describe('acompanharPublicacao', () => {
     })
     expect(v.estado).toBe('sem-publicacao')
     expect(v.enderecos).not.toContain('https://exemplo.test/')
+  })
+
+  // Achado 1 da revisão da Tarefa 17 — "ainda não" e "nunca" não podem
+  // colapsar no mesmo veredito. O primeiro tique depois do merge, no
+  // caminho de DEPLOYMENT, vê zero evidência (o CD ainda não criou o
+  // objeto de publicação) — isso não pode virar `sem-publicacao` (FINAL,
+  // fecha a sessão em silêncio) na hora.
+  describe('achado 1 — janela de tolerância antes de "zero evidência" virar final (caminho de deployment)', () => {
+    it('zero evidência ANTES da janela: ainda publicando, não fecha', async () => {
+      const v = await acompanharPublicacao({
+        mecanismo: { tipo: 'deployment', ambientes: ['github-pages'] },
+        shaDaMescla: 'abc123',
+        lerPublicacoes: vi.fn().mockResolvedValue([]),
+        lerEstadosDaPublicacao: vi.fn(),
+        lerExecucoes: vi.fn(),
+        lerEtapas: vi.fn(),
+        esperaSemEvidenciaMs: 0,
+      })
+      expect(v.estado).toBe('publicando')
+      expect(v.semEvidenciaDeTodoAmbiente).toBe(true)
+      expect(v.motivo).toMatch(/ainda não há publicação|janela de tolerância/i)
+    })
+
+    it('zero evidência bem no limite da janela: ainda dentro (limite é exclusivo, "<")', async () => {
+      const v = await acompanharPublicacao({
+        mecanismo: { tipo: 'deployment', ambientes: ['github-pages'] },
+        shaDaMescla: 'abc123',
+        lerPublicacoes: vi.fn().mockResolvedValue([]),
+        lerEstadosDaPublicacao: vi.fn(),
+        lerExecucoes: vi.fn(),
+        lerEtapas: vi.fn(),
+        esperaSemEvidenciaMs: JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS - 1,
+      })
+      expect(v.estado).toBe('publicando')
+    })
+
+    it('zero evidência DEPOIS da janela: sem-publicacao (final) — não espera para sempre', async () => {
+      const v = await acompanharPublicacao({
+        mecanismo: { tipo: 'deployment', ambientes: ['github-pages'] },
+        shaDaMescla: 'abc123',
+        lerPublicacoes: vi.fn().mockResolvedValue([]),
+        lerEstadosDaPublicacao: vi.fn(),
+        lerExecucoes: vi.fn(),
+        lerEtapas: vi.fn(),
+        esperaSemEvidenciaMs: JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS,
+      })
+      expect(v.estado).toBe('sem-publicacao')
+      expect(v.semEvidenciaDeTodoAmbiente).toBe(true)
+    })
+
+    it('bem depois da janela (uma hora): continua sem-publicacao — não fica esperando para sempre', async () => {
+      const v = await acompanharPublicacao({
+        mecanismo: { tipo: 'deployment', ambientes: ['github-pages'] },
+        shaDaMescla: 'abc123',
+        lerPublicacoes: vi.fn().mockResolvedValue([]),
+        lerEstadosDaPublicacao: vi.fn(),
+        lerExecucoes: vi.fn(),
+        lerEtapas: vi.fn(),
+        esperaSemEvidenciaMs: 60 * 60_000,
+      })
+      expect(v.estado).toBe('sem-publicacao')
+    })
+
+    it('sem informar esperaSemEvidenciaMs: comportamento de sempre (final na hora) — nenhum call site esquecido silenciosamente fica seguro', async () => {
+      const v = await acompanharPublicacao({
+        mecanismo: { tipo: 'deployment', ambientes: ['github-pages'] },
+        shaDaMescla: 'abc123',
+        lerPublicacoes: vi.fn().mockResolvedValue([]),
+        lerEstadosDaPublicacao: vi.fn(),
+        lerExecucoes: vi.fn(),
+        lerEtapas: vi.fn(),
+      })
+      expect(v.estado).toBe('sem-publicacao')
+    })
+
+    it('um ambiente tem zero evidência mas OUTRO já falhou de verdade: não é "zero evidência total" — decide na hora, mesmo dentro da janela', async () => {
+      const v = await acompanharPublicacao({
+        mecanismo: { tipo: 'deployment', ambientes: ['staging', 'production'] },
+        shaDaMescla: 'abc123',
+        lerPublicacoes: vi.fn().mockImplementation(async (ambiente: string) =>
+          ambiente === 'production'
+            ? []
+            : [
+                {
+                  id: 5,
+                  environment: 'staging',
+                  sha: 'abc123',
+                  production_environment: false,
+                  transient_environment: false,
+                },
+              ]
+        ),
+        lerEstadosDaPublicacao: vi
+          .fn()
+          .mockResolvedValue([
+            { state: 'failure', environment_url: '', created_at: '2026-08-16T10:00:00Z' },
+          ]),
+        lerExecucoes: vi.fn(),
+        lerEtapas: vi.fn(),
+        esperaSemEvidenciaMs: 0,
+      })
+      expect(v.estado).toBe('falhou')
+      expect(v.semEvidenciaDeTodoAmbiente).toBe(false)
+    })
+
+    it('mecanismo "nenhum": final na hora, nunca espera a janela (Tarefa 12 já sabe que este repositório não publica)', async () => {
+      const v = await acompanharPublicacao({
+        mecanismo: { tipo: 'nenhum' },
+        shaDaMescla: 'abc123',
+        lerPublicacoes: vi.fn(),
+        lerEstadosDaPublicacao: vi.fn(),
+        lerExecucoes: vi.fn(),
+        lerEtapas: vi.fn(),
+        esperaSemEvidenciaMs: 0,
+      })
+      expect(v.estado).toBe('sem-publicacao')
+      expect(v.semEvidenciaDeTodoAmbiente).toBe(false)
+    })
   })
 })
