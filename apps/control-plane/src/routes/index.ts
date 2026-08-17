@@ -15,6 +15,7 @@ import { desejosRoutes } from './desejos.js'
 import { criarIssueDeDesejo } from '../services/desejo-no-github.js'
 import { projetoParaDesejo, projetosParaDesejo } from '../services/projetos-do-desejo.js'
 import { provaDeEscritaNoUso } from '../services/acesso-ao-repositorio.js'
+import { fetchImplParaProvaDeAcesso } from '../services/fake-github-access.js'
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   // Health and readiness endpoints
@@ -70,7 +71,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     // repositório alheio — e o pedido daqui viraria escrita real lá dentro. A
     // MESMA prova roda no mensageiro (plugins/telegram.ts): uma pergunta, dois
     // lugares, nenhuma chance de divergirem.
-    confirmarAcesso: provaDeEscritaNoUso(app.engineConnections),
+    confirmarAcesso: provaDeEscritaNoUso(app.engineConnections, fetchImplParaProvaDeAcesso()),
     // A escrita da issue mora no serviço porque o mensageiro (bot do Telegram)
     // registra o desejo pelo MESMO caminho — o pedido do dono nasce igual venha
     // da tela ou do celular.

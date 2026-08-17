@@ -29,6 +29,7 @@ import {
   AcessoNaoVerificavelError,
   CredencialDoGithubInvalidaError,
 } from '../services/acesso-ao-repositorio.js'
+import { fetchImplParaProvaDeAcesso } from '../services/fake-github-access.js'
 
 /**
  * O que uma listagem do GitHub devolve por repositório, do pouco que a tela
@@ -277,11 +278,15 @@ async function somenteOndeOClienteEscreve(
   const comEndereco = candidatos
     .filter((repo) => typeof repo.full_name === 'string')
     .slice(0, TETO_DE_PROVAS_DA_TELA)
+  const fetchImpl = fetchImplParaProvaDeAcesso()
   const semEscrita = new Set(
     (
       await repositoriosSemEscrita(
         comEndereco.map((repo) => repo.full_name),
-        { githubToken }
+        {
+          githubToken,
+          ...(fetchImpl ? { fetchImpl } : {}),
+        }
       )
     ).map((nome) => nome.trim().toLowerCase())
   )
@@ -720,7 +725,11 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
         // A MESMA prova que a tela usou para montar a lista, repetida aqui: uma
         // chamada exata por repositório, com o token do PRÓPRIO cliente, onde
         // `push === true` é o que autoriza.
-        const semAcesso = await repositoriosSemEscrita(repos, { githubToken: githubTokenDoDono })
+        const fetchImplDaProva = fetchImplParaProvaDeAcesso()
+        const semAcesso = await repositoriosSemEscrita(repos, {
+          githubToken: githubTokenDoDono,
+          ...(fetchImplDaProva ? { fetchImpl: fetchImplDaProva } : {}),
+        })
         if (semAcesso.length > 0) {
           app.log.warn(
             { ownerId: owner.id, semAcesso },
