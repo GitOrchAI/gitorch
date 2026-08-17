@@ -352,8 +352,15 @@ test('o submit exige motor de IA conectado DE VERDADE (gate anti-fachada)', asyn
   // 2) Só com `github` conectado: a linha `github` nasce conectada no OAuth e
   // era ELA que fazia o passo 11 pintar ✓ (a tautologia). Ela NÃO é um motor de
   // IA e não pode abrir o portão.
-  await prisma.engineConnection.create({
-    data: { userId: cliente.id, runtime: 'github', status: 'connected' },
+  //
+  // `upsert` porque o cliente deste cenário já entra com o GitHub conectado
+  // (a prova de posse do repositório exige credencial), e a linha `github` é
+  // única por cliente. O que importa aqui não é criá-la, é que ela ESTEJA
+  // conectada e ainda assim não abra o portão.
+  await prisma.engineConnection.upsert({
+    where: { userId_runtime: { userId: cliente.id, runtime: 'github' } },
+    update: { status: 'connected' },
+    create: { userId: cliente.id, runtime: 'github', status: 'connected' },
   })
   const comGithub = await api<SubmitResponse>(cliente, 'POST', '/api/v1/setup/submit', {
     repos: [repo],
