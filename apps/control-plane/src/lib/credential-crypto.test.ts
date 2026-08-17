@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 import { randomBytes } from 'node:crypto'
 import {
   CredentialDecryptError,
+  CredentialEncryptError,
   decryptCredential,
   encryptCredential,
   hasCredentialKey,
@@ -114,5 +115,61 @@ describe('credential-crypto: falha ao CARREGAR a chave também é CredentialDecr
     }
     expect(mensagem).toMatch(/GITORCH_CREDENTIAL_KEY/)
     expect(mensagem).not.toContain('qualquer-coisa')
+  })
+})
+
+// Achado Médio 3 (revisão da Task 5/F8): a correção do achado Crítico 2
+// (acima) só reembalou a falha de loadKey() em decryptCredential —
+// encryptCredential continuou deixando o Error genérico atravessar cru.
+// Mesma causa-raiz, metade corrigida. Estes testes são o par simétrico
+// EXATO dos de "credential-crypto: falha ao CARREGAR a chave também é
+// CredentialDecryptError" acima, do lado de CIFRAR.
+describe('credential-crypto: falha ao CARREGAR a chave também é CredentialEncryptError do lado de CIFRAR (achado Médio 3)', () => {
+  const original = process.env['GITORCH_CREDENTIAL_KEY']
+  afterEach(() => {
+    if (original === undefined) delete process.env['GITORCH_CREDENTIAL_KEY']
+    else process.env['GITORCH_CREDENTIAL_KEY'] = original
+  })
+
+  test('GITORCH_CREDENTIAL_KEY ausente: encryptCredential lança CredentialEncryptError (não Error genérico)', () => {
+    delete process.env['GITORCH_CREDENTIAL_KEY']
+    let capturado: unknown
+    try {
+      encryptCredential('qualquer-coisa')
+    } catch (err) {
+      capturado = err
+    }
+    // `.name` além de `instanceof`/`toThrow(Classe)`: distingue de verdade
+    // um `Error` genérico ('Error') de `CredentialEncryptError`, sem
+    // depender só da referência de classe (que um import quebrado
+    // resolveria como `undefined` e degradaria `toThrow(undefined)` para
+    // "aceita qualquer erro" — o mesmo risco que a suíte de
+    // CredentialDecryptError já evita ao lado).
+    expect(capturado).toBeInstanceOf(CredentialEncryptError)
+    expect((capturado as Error)?.name).toBe('CredentialEncryptError')
+  })
+
+  test('GITORCH_CREDENTIAL_KEY com tamanho errado: encryptCredential lança CredentialEncryptError (não Error genérico)', () => {
+    process.env['GITORCH_CREDENTIAL_KEY'] = 'deadbeef'
+    let capturado: unknown
+    try {
+      encryptCredential('qualquer-coisa')
+    } catch (err) {
+      capturado = err
+    }
+    expect(capturado).toBeInstanceOf(CredentialEncryptError)
+    expect((capturado as Error)?.name).toBe('CredentialEncryptError')
+  })
+
+  test('a mensagem do CredentialEncryptError fala da chave do SERVIDOR, nunca do texto puro sendo cifrado', () => {
+    delete process.env['GITORCH_CREDENTIAL_KEY']
+    let mensagem = ''
+    try {
+      encryptCredential('segredo-em-texto-puro')
+    } catch (err) {
+      mensagem = (err as Error).message
+    }
+    expect(mensagem).toMatch(/GITORCH_CREDENTIAL_KEY/)
+    expect(mensagem).not.toContain('segredo-em-texto-puro')
   })
 })

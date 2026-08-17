@@ -387,10 +387,33 @@ export interface ResumoDaRenovacaoGithub {
  *  concentradas (ex.: todos os clientes logaram no mesmo lançamento e os
  *  tokens vencem juntos) serializaria N chamadas de rede num único tique,
  *  atrasando toda outra rotina que compartilha esse mesmo ciclo (varredura
- *  de sessões, delegação, etc.). O que sobra do teto fica para o PRÓXIMO
- *  tique: decidirAcaoGithub é pura e determinística, então a conexão
- *  continua elegível e é reavaliada de novo, sem se perder — só atrasa. */
+ *  de sessões, delegação, etc.).
+ *
+ *  O que sobra do teto fica para o PRÓXIMO tique — mas "sem se perder, só
+ *  atrasa" só é verdade DESDE a correção do achado Alto 1 (revisão da Task
+ *  5/F8): `deps.conexoes()` embrulha uma consulta SQL sem `ORDER BY`, cuja
+ *  ordem não é garantida estável entre chamadas. Cortar por posição
+ *  (`.slice(0, teto)`) direto em cima disso faz o corte pegar sempre o MESMO
+ *  prefixo posicional — com mais conexões que o teto, tudo depois da
+ *  posição N nunca era avaliado, nem para renovar nem para avisar que o
+ *  token morreu de vez. A garantia de que ninguém fica pra trás para sempre
+ *  não vem de `ORDER BY` nenhum (a consulta continua sem um, de propósito:
+ *  ordenar no banco não impediria um corte posicional fixo de repetir o
+ *  mesmo prefixo a cada tique) — vem de ORDENAR AQUI, por URGÊNCIA
+ *  (`expiresAt` crescente — ver `renovarTokensGithubVencendo`), ANTES de
+ *  cortar. Isso rotaciona sozinho: quem é renovado ganha um `expiresAt` novo
+ *  horas no futuro e cai pro fim da fila no tique seguinte, abrindo espaço
+ *  pra quem ficou de fora agora; quem NÃO foi avaliado mantém o `expiresAt`
+ *  antigo, então sobe na fila (fica mais urgente) a cada tique que passa,
+ *  até caber dentro do teto. */
 export const TETO_DE_RENOVACOES_POR_TIQUE = 25
+
+/** Tempo (em ms) de uma conexão sem `expiresAt` — não há como saber a
+ *  urgência dela, então ordena por último (não compete por vaga no teto
+ *  contra quem tem prazo conhecido). Usado só pela ordenação por urgência
+ *  logo abaixo, nunca por `decidirAcaoGithub` (que já trata `expiresAt` nulo
+ *  do jeito certo por tipo de conexão). */
+const SEM_URGENCIA_CONHECIDA = Number.POSITIVE_INFINITY
 
 /**
  * Roda a renovação de todas as conexões GitHub que precisam, sequencial
@@ -420,8 +443,19 @@ export async function renovarTokensGithubVencendo(
     return resumo
   }
 
-  // Teto de trabalho por passada (achado Médio 5) — ver TETO_DE_RENOVACOES_POR_TIQUE.
-  for (const conexao of conexoes.slice(0, teto)) {
+  // Ordena por URGÊNCIA (expiresAt crescente; sem expiresAt vai pro fim)
+  // ANTES de cortar pelo teto — achado Alto 1 (revisão da Task 5/F8). Ver o
+  // comentário de TETO_DE_RENOVACOES_POR_TIQUE para o porquê: é esta
+  // ordenação, e não a consulta SQL, que garante que ninguém fica de fora
+  // para sempre — só atrasado até a urgência dele subir o bastante para
+  // caber no teto de uma passada futura.
+  const porUrgencia = [...conexoes].sort((a, b) => {
+    const tempoA = a.expiresAt?.getTime() ?? SEM_URGENCIA_CONHECIDA
+    const tempoB = b.expiresAt?.getTime() ?? SEM_URGENCIA_CONHECIDA
+    return tempoA - tempoB
+  })
+
+  for (const conexao of porUrgencia.slice(0, teto)) {
     const acao = decidirAcaoGithub(conexao, agora)
     if (acao.tipo === 'nada') continue
 
@@ -431,10 +465,17 @@ export async function renovarTokensGithubVencendo(
       // que ainda funciona (materializeToHome/getRawGithubToken recusam
       // qualquer status que não seja 'connected'). O aviso é só
       // operacional/informativo, contado à parte, sem tocar no banco.
+      //
+      // Achado Baixo 5 (revisão da Task 5/F8): ANTES desta correção, esta
+      // linha chamava `deps.onWarn?.(...)` para CADA conexão legada, A CADA
+      // TIQUE — no primeiro tique após o deploy, toda a base cai aqui, e
+      // continua caindo até cada cliente reconectar (dias/semanas).
+      // Isso é log por CONEXÃO, sem dedupe, indefinidamente: pura poluição.
+      // `resumo.legadosSemAcao` já carrega essa contagem — quem liga isto ao
+      // relógio (scheduler.ts, `renovarTokensGithubDoRelogio`) é quem
+      // registra UMA linha por PASSADA a partir do resumo devolvido, não
+      // esta função por conexão.
       resumo.legadosSemAcao += 1
-      deps.onWarn?.(
-        `conexão GitHub de ${conexao.userId} é legada (sem renovação automática) mas o token de acesso ainda é válido — nenhuma ação tomada: ${acao.motivo}`
-      )
       continue
     }
 

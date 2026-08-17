@@ -1403,8 +1403,32 @@ export async function renovarTokensGithubDoRelogio(
       // callback é o jeito real de registrar quando o dono NÃO pôde ser
       // avisado, sem inventar mecanismo novo: reusa o mesmo `app.log.warn`
       // que todo outro aviso operacional deste arquivo já usa.
+      //
+      // Achado ⚠️ CRÍTICO A VERIFICAR (revisão do Baixo 6): a URL desta
+      // chamada embute o TOKEN DO BOT no próprio CAMINHO
+      // (`https://api.telegram.org/bot<token>/sendMessage` — buildTelegramNotifier,
+      // sm-watchdog.ts), não num header. Investigação real (não suposição):
+      // provoquei DNS falho, conexão recusada e timeout via AbortSignal
+      // contra URLs desse formato usando o `fetch` global deste runtime
+      // (Node 20 / undici) e inspecionei `.message`, `.cause`, `.stack` e as
+      // propriedades enumeráveis do erro produzido — em NENHUM caso a URL
+      // apareceu; o erro é sempre `TypeError: fetch failed` com uma `cause`
+      // que, no máximo, expõe o HOSTNAME (nunca o path com o token). Também
+      // repeti a checagem com o serializador de erro REAL do pino (a mesma
+      // versão deste projeto) — a linha de log resultante não contém o
+      // token. Mesmo assim, NADA garante isso para sempre: `fetchImpl` é
+      // injetável (todo teste deste arquivo já injeta um), e "algumas
+      // implementações de fetch" (a preocupação original do achado) de fato
+      // compõem a URL na mensagem de erro. Por isso o log AQUI nunca recebe
+      // o objeto de erro cru — só o NOME dele (`err.name`, que por
+      // construção nunca pode conter uma URL), suficiente para diferenciar
+      // timeout de falha de rede sem depender de nenhuma garantia do
+      // fetchImpl por trás.
       onDeliveryFailure: (err) =>
-        app.log.warn(err, `[Scheduler] aviso de reconexão GitHub não foi entregue para ${userId}`),
+        app.log.warn(
+          { erroDeEntrega: err instanceof Error ? err.name : typeof err },
+          `[Scheduler] aviso de reconexão GitHub não foi entregue para ${userId}`
+        ),
     })
     if (!notify) return
     await notify(
@@ -1414,7 +1438,7 @@ export async function renovarTokensGithubDoRelogio(
     )
   }
 
-  return renovarTokensGithubVencendo({
+  const resumo = await renovarTokensGithubVencendo({
     // A coluna no Prisma é `encryptedRefreshToken` (EngineConnection.encrypted_refresh_token);
     // `refreshTokenEncrypted` é o nome do campo no DTO `ConexaoGithubElegivel`
     // (services/github-token-refresh.ts) — nomes diferentes de propósito, o
@@ -1455,6 +1479,19 @@ export async function renovarTokensGithubDoRelogio(
         refreshToken: refreshTokenPlano,
         clientId,
         clientSecret,
+        // Achado Alto 2 (revisão da Task 5/F8): sem isto, um `fetch` cru
+        // (undici) que trava sem responder — nem sucesso, nem rejeição —
+        // pendura esta troca PARA SEMPRE, e com ela `tickEmAndamento`
+        // (mesma classe de incidente real documentada em sm-watchdog.ts,
+        // agora fechada aqui do mesmo jeito: `ghGet`/`ghSend`/o
+        // notificador do Telegram já usam `fetchComTeto`). Um estouro de
+        // teto rejeita o `fetch` interno de trocarRefreshTokenNoGithub, que
+        // já reembala QUALQUER rejeição do transporte (linha 209 do mesmo
+        // arquivo) em `FalhaTransitoriaNaTrocaComGithubError` — então o
+        // teto aqui automaticamente vira falha TRANSITÓRIA (conta em
+        // `resumo.falhasTransitorias`, nunca marca precisa-reconectar),
+        // sem precisar de nenhuma lógica nova.
+        fetchImpl: fetchComTeto(fetch),
         ...(agora ? { agora } : {}),
       })
     },
@@ -1471,6 +1508,29 @@ export async function renovarTokensGithubDoRelogio(
     ...(agora ? { agora } : {}),
     onWarn: (mensagem) => app.log.warn(`[Scheduler] ${mensagem}`),
   })
+
+  // Achado Baixo 5 (revisão da Task 5/F8): ANTES desta correção o chamador
+  // do relógio (tick(), mais abaixo) descartava este retorno inteiro
+  // (`await renovarTokensGithubDoRelogio(app)`, sem capturar nada) — a
+  // métrica que justifica NÃO avisar as conexões legadas ainda válidas
+  // (`resumo.legadosSemAcao`) não chegava a lugar nenhum. O único rastro que
+  // existia era um `onWarn` POR CONEXÃO legada, disparado a CADA TIQUE,
+  // enquanto ela seguir sem reconectar (dias/semanas) — sem dedupe, pura
+  // poluição de log (ver o comentário removido do ramo `legado-token-valido`
+  // em github-token-refresh.ts). Aqui vira UMA linha por PASSADA, e só
+  // quando há algo a reportar (nenhum contador zerado) — o resumo inteiro
+  // finalmente vira um rastro operacional útil, sem spam por conexão.
+  if (
+    resumo.renovados > 0 ||
+    resumo.precisamReconectar > 0 ||
+    resumo.falhasDeDecifragem > 0 ||
+    resumo.falhasTransitorias > 0 ||
+    resumo.legadosSemAcao > 0
+  ) {
+    app.log.info(resumo, '[Scheduler] renovação de token GitHub: resumo da passada')
+  }
+
+  return resumo
 }
 
 const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
@@ -3571,7 +3631,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // PRIMEIRO de tudo: um token do GitHub vencido no meio do tique derruba
     // qualquer missão que precise dele (materializeToHome recusa e a missão
     // sai sem GH_TOKEN). `renovarTokensGithubDoRelogio` nunca rejeita e só
-    // gasta uma chamada de rede por conexão cujo ciclo de renovação venceu.
+    // gasta uma chamada de rede por conexão cujo ciclo de renovação venceu
+    // — e (achado Baixo 5 da revisão da Task 5/F8) já registra o resumo da
+    // passada sozinha, então nada precisa ser feito com o retorno aqui.
     await renovarTokensGithubDoRelogio(app)
     // Só DEPOIS: quem perdeu o acesso ao repositório não pode ter o dia
     // começando com uma missão escrevendo lá. `reconferirAcessoDoRelogio`

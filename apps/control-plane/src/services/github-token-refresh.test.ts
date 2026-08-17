@@ -5,6 +5,7 @@ import {
   decryptCredential,
   encryptCredential,
 } from '../lib/credential-crypto.js'
+import { fetchComTeto } from './fetch-com-teto.js'
 import {
   MARGEM_DE_RENOVACAO_MS,
   RefreshTokenGithubInvalidoError,
@@ -243,6 +244,42 @@ describe('trocarRefreshTokenNoGithub', () => {
       capturado = err
     }
 
+    expect(capturado).toBeInstanceOf(FalhaTransitoriaNaTrocaComGithubError)
+    expect(capturado).not.toBeInstanceOf(RefreshTokenGithubInvalidoError)
+  })
+
+  // Achado Alto 2 (Task 5/F8): trocarRefreshTokenNoGithub usava `fetch` cru —
+  // uma chamada pendurada (socket travado, nunca resolve nem rejeita
+  // sozinho) prendia esta troca PARA SEMPRE e, com ela, `tickEmAndamento`
+  // (mesma classe de incidente documentada em sm-watchdog.ts, já fechada lá
+  // com `fetchComTeto`). O conserto (scheduler.ts) é montar
+  // `fetchImpl: fetchComTeto(fetch)` — este teste prova a COMPOSIÇÃO exata,
+  // com um teto BEM curto (mesmo padrão de fetch-com-teto.test.ts: o
+  // mecanismo é idêntico, só o valor muda, pra não esperar o teto real de
+  // produção).
+  it('achado Alto 2: fetchImpl pendurado envolvido em fetchComTeto (a composição que scheduler.ts monta) vira FalhaTransitoriaNaTrocaComGithubError, nunca fica pendurado', async () => {
+    const fetchQuePendura = vi.fn(
+      (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal!.reason))
+        })
+    )
+
+    let capturado: unknown
+    try {
+      await trocarRefreshTokenNoGithub({
+        refreshToken: 'gh_refresh_qualquer',
+        clientId: 'Iv23test',
+        clientSecret: 'segredo',
+        fetchImpl: fetchComTeto(fetchQuePendura as unknown as typeof fetch, 20),
+      })
+    } catch (err) {
+      capturado = err
+    }
+
+    // Prova por mutação em ação (igual fetch-com-teto.test.ts): sem o teto,
+    // este teste penduraria e estouraria o timeout padrão do vitest — a
+    // asserção abaixo só passa porque o abort de fato interrompeu a chamada.
     expect(capturado).toBeInstanceOf(FalhaTransitoriaNaTrocaComGithubError)
     expect(capturado).not.toBeInstanceOf(RefreshTokenGithubInvalidoError)
   })
@@ -499,6 +536,149 @@ describe('renovarTokensGithubVencendo', () => {
 
     expect(trocar).toHaveBeenCalledTimes(2)
     expect(resumo.renovados).toBe(2)
+  })
+
+  // Achado Alto 1 (revisão da Task 5/F8): `.slice(0, teto)` sozinho, sem
+  // ordenar por urgência antes, corta sempre a MESMA fatia — com mais
+  // conexões que o teto, tudo depois da posição N nunca é avaliado, em
+  // NENHUMA passada. O conserto ordena por `expiresAt` crescente (quem
+  // vence mais cedo primeiro) ANTES de cortar: isso rotaciona sozinho,
+  // porque quem é renovado ganha um `expiresAt` novo bem no futuro (cai pro
+  // fim da fila) e quem fica de fora mantém o `expiresAt` antigo (sobe na
+  // fila a cada passada). Este teste prova exatamente o cenário do achado:
+  // MAIS conexões que o teto, DUAS passadas seguidas, provando que a
+  // segunda alcança quem a primeira deixou de fora — com a ordem que
+  // `conexoes()` devolve deliberadamente a PIOR possível (a mais urgente
+  // por ÚLTIMO), para provar que quem ordena é a função, não sorte da
+  // consulta.
+  it('achado Alto 1: teto com ordenação por urgência garante que a 2ª passada alcança quem a 1ª deixou de fora (sem depender da ordem do banco)', async () => {
+    const trocar = vi.fn(async () => ({
+      accessToken: 'gh_novo',
+      refreshToken: 'gh_refresh_novo',
+      expiresAt: new Date(AGORA.getTime() + 8 * 60 * 60 * 1000), // renovado: vence só daqui 8h
+      refreshTokenExpiresAt: new Date(AGORA.getTime() + 180 * 24 * 60 * 60 * 1000),
+    }))
+    const processadosPorPassada: string[][] = []
+    const salvarSucesso = vi.fn(async (userId: string) => {
+      processadosPorPassada[processadosPorPassada.length - 1]!.push(userId)
+    })
+
+    // Passada 1: 3 conexões elegíveis, teto = 2, ordem de chegada é a PIOR
+    // (user_3, a MENOS urgente, primeiro; user_1, a MAIS urgente, por
+    // último) — um corte posicional puro processaria user_3/user_2 e nunca
+    // alcançaria user_1.
+    processadosPorPassada.push([])
+    const resumo1 = await renovarTokensGithubVencendo({
+      conexoes: async () => [
+        {
+          userId: 'user_3',
+          refreshTokenEncrypted: 'envelope',
+          expiresAt: new Date(AGORA.getTime() + 3 * 60 * 1000),
+          refreshTokenExpiresAt: null,
+        },
+        {
+          userId: 'user_2',
+          refreshTokenEncrypted: 'envelope',
+          expiresAt: new Date(AGORA.getTime() + 2 * 60 * 1000),
+          refreshTokenExpiresAt: null,
+        },
+        {
+          userId: 'user_1',
+          refreshTokenEncrypted: 'envelope',
+          expiresAt: new Date(AGORA.getTime() + 1 * 60 * 1000),
+          refreshTokenExpiresAt: null,
+        },
+      ],
+      trocar,
+      salvarSucesso,
+      marcarPrecisaReconectar: vi.fn(async () => undefined),
+      agora: AGORA,
+      tetoPorTique: 2,
+    })
+
+    expect(resumo1.renovados).toBe(2)
+    // As DUAS mais urgentes (user_1, user_2) — nunca user_3, a menos urgente.
+    expect(processadosPorPassada[0]).toEqual(expect.arrayContaining(['user_1', 'user_2']))
+    expect(processadosPorPassada[0]).not.toContain('user_3')
+
+    // Passada 2: simula o estado do banco DEPOIS da passada 1 — user_1 e
+    // user_2 renovados (expiresAt bem no futuro), user_3 SEM NENHUMA
+    // mudança (continua urgente, do jeito que decidirAcaoGithub o pura e
+    // deterministicamente reavalia). Se o teto não rotacionasse, user_3
+    // continuaria de fora para sempre.
+    processadosPorPassada.push([])
+    const resumo2 = await renovarTokensGithubVencendo({
+      conexoes: async () => [
+        {
+          userId: 'user_1',
+          refreshTokenEncrypted: 'envelope',
+          expiresAt: new Date(AGORA.getTime() + 8 * 60 * 60 * 1000),
+          refreshTokenExpiresAt: new Date(AGORA.getTime() + 180 * 24 * 60 * 60 * 1000),
+        },
+        {
+          userId: 'user_2',
+          refreshTokenEncrypted: 'envelope',
+          expiresAt: new Date(AGORA.getTime() + 8 * 60 * 60 * 1000),
+          refreshTokenExpiresAt: new Date(AGORA.getTime() + 180 * 24 * 60 * 60 * 1000),
+        },
+        {
+          userId: 'user_3',
+          refreshTokenEncrypted: 'envelope',
+          expiresAt: new Date(AGORA.getTime() + 3 * 60 * 1000),
+          refreshTokenExpiresAt: null,
+        },
+      ],
+      trocar,
+      salvarSucesso,
+      marcarPrecisaReconectar: vi.fn(async () => undefined),
+      agora: AGORA,
+      tetoPorTique: 2,
+    })
+
+    // user_1/user_2 renovados na passada 1 agora estão LONGE do vencimento
+    // (8h > margem de 15min) — decidirAcaoGithub devolve 'nada' pra eles
+    // nesta passada, então só user_3 (o único ainda dentro da margem)
+    // efetivamente renova. A prova do achado: user_3, deixado de fora na
+    // passada 1, é alcançado agora — porque continua sendo, disparado, o
+    // mais urgente da fila (é ordenado para o TOPO, dentro do teto de 2,
+    // mesmo com user_1/user_2 aparecendo primeiro na lista bruta).
+    expect(resumo2.renovados).toBe(1)
+    expect(processadosPorPassada[1]).toContain('user_3')
+  })
+
+  // Achado Baixo 5 (revisão da Task 5/F8): ANTES desta correção,
+  // `deps.onWarn?.(...)` era chamado para CADA conexão 'legado-token-valido'
+  // — e continuaria sendo chamado, a CADA TIQUE, enquanto o cliente não
+  // reconectasse (dias/semanas), sem dedupe nenhum. `resumo.legadosSemAcao`
+  // já carrega essa contagem; quem loga (uma linha por PASSADA) é quem liga
+  // isto ao relógio (scheduler.ts), não esta função por conexão.
+  it('achado Baixo 5: conexão legada com token ainda válido NUNCA chama onWarn (evitaria poluir o log a cada tique) — só soma em legadosSemAcao', async () => {
+    const onWarn = vi.fn()
+
+    const resumo = await renovarTokensGithubVencendo({
+      conexoes: async () => [
+        {
+          userId: 'user_legado_a',
+          refreshTokenEncrypted: null,
+          expiresAt: new Date(AGORA.getTime() + 6 * 60 * 60 * 1000),
+          refreshTokenExpiresAt: null,
+        },
+        {
+          userId: 'user_legado_b',
+          refreshTokenEncrypted: null,
+          expiresAt: null,
+          refreshTokenExpiresAt: null,
+        },
+      ],
+      trocar: vi.fn(),
+      salvarSucesso: vi.fn(),
+      marcarPrecisaReconectar: vi.fn(),
+      agora: AGORA,
+      onWarn,
+    })
+
+    expect(resumo.legadosSemAcao).toBe(2)
+    expect(onWarn).not.toHaveBeenCalled()
   })
 })
 

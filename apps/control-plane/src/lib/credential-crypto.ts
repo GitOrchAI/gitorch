@@ -21,6 +21,22 @@ export class CredentialDecryptError extends Error {
   }
 }
 
+/** Erro específico de falha ao CIFRAR (achado Médio 3, revisão da Task
+ *  5/F8): simétrico a `CredentialDecryptError`, mesma causa-raiz (a chave do
+ *  servidor, `GITORCH_CREDENTIAL_KEY`, ausente ou malformada). A correção
+ *  anterior (achado Crítico 2) só reembalou essa falha em `decryptCredential`
+ *  — `encryptCredential` continuou deixando o `Error` genérico de `loadKey()`
+ *  atravessar cru, metade da correção. Existe para quem chama poder
+ *  distinguir "a chave do servidor está com problema" (aqui) de qualquer
+ *  outra causa, do mesmo jeito que `CredentialDecryptError` já permite do
+ *  lado da leitura. */
+export class CredentialEncryptError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'CredentialEncryptError'
+  }
+}
+
 /** Formato aceito por GITORCH_CREDENTIAL_KEY: 32 bytes em hex[64] ou base64.
  *  Exportado para env.ts validar a mesma regra NO BOOT (achado Crítico 2 da
  *  Task 5/F8) — uma chave ausente ou malformada só aparecia tarde, no meio
@@ -48,9 +64,25 @@ function loadKey(): Buffer {
   return key
 }
 
-/** Cifra texto puro; retorna um envelope base64 (version|iv|authTag|ciphertext). */
+/** Cifra texto puro; retorna um envelope base64 (version|iv|authTag|ciphertext).
+ *  Lança `CredentialEncryptError` se a chave do servidor (GITORCH_CREDENTIAL_KEY)
+ *  estiver ausente ou com formato inválido (achado Médio 3, Task 5/F8 — a
+ *  metade desta correção que faltava; ver o comentário de decryptCredential
+ *  abaixo para a metade que já existia). */
 export function encryptCredential(plaintext: string): string {
-  const key = loadKey()
+  let key: Buffer
+  try {
+    key = loadKey()
+  } catch (err) {
+    // Mesma postura de decryptCredential: a mensagem de loadKey() já fala
+    // da CHAVE DO SERVIDOR, nunca do valor em texto puro sendo cifrado (que
+    // nem chega a este catch) — só reembalada no tipo certo.
+    throw new CredentialEncryptError(
+      `Falha ao carregar a chave do servidor para cifrar credencial: ${String(
+        (err as { message?: string })?.message ?? err
+      )}`
+    )
+  }
   const iv = randomBytes(IV_BYTES)
   const cipher = createCipheriv(ALGORITHM, key, iv)
   const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()])

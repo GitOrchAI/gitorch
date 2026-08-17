@@ -40,6 +40,39 @@ function fakeApp(args: {
   } as any
 }
 
+/** Busca recursiva por uma substring em QUALQUER propriedade (própria,
+ *  inclusive não-enumerável — message/stack de Error não são enumeráveis) de
+ *  um valor arbitrário, incluindo `.cause` encadeado. Usada pelo teste do
+ *  achado ⚠️ CRÍTICO: prova que o que chega em `app.log.warn` está limpo,
+ *  não só que `JSON.stringify` não mostra nada (Error.message/.stack
+ *  escapariam de um `JSON.stringify` ingênuo por não serem enumeráveis). */
+function algumaPropriedadeContemTexto(
+  valor: unknown,
+  agulha: string,
+  vistos = new Set<unknown>()
+): boolean {
+  if (valor === null || valor === undefined) return false
+  if (typeof valor === 'string') return valor.includes(agulha)
+  if (typeof valor !== 'object' && typeof valor !== 'function') return false
+  if (vistos.has(valor)) return false
+  vistos.add(valor)
+  for (const chave of Object.getOwnPropertyNames(valor)) {
+    if (chave === 'stack' || chave === 'message' || chave === 'cause') {
+      const sub = (valor as Record<string, unknown>)[chave]
+      if (algumaPropriedadeContemTexto(sub, agulha, vistos)) return true
+      continue
+    }
+    let sub: unknown
+    try {
+      sub = (valor as Record<string, unknown>)[chave]
+    } catch {
+      continue
+    }
+    if (algumaPropriedadeContemTexto(sub, agulha, vistos)) return true
+  }
+  return false
+}
+
 describe('renovarTokensGithubDoRelogio', () => {
   const originalFetch = global.fetch
   const originalEnv = { ...process.env }
@@ -364,5 +397,178 @@ describe('renovarTokensGithubDoRelogio', () => {
     expect(resumo.legadosSemAcao).toBe(1)
     expect(resumo.precisamReconectar).toBe(0)
     expect(updateMany).not.toHaveBeenCalled()
+  })
+
+  // Achado Alto 2 (Task 5/F8): ANTES desta correção, a troca com o GitHub
+  // não carregava NENHUM signal — uma chamada pendurada travava para
+  // sempre. Este teste prova o WIRING (que scheduler.ts monta
+  // `fetchImpl: fetchComTeto(fetch)`, não `fetch` cru): a chamada real ao
+  // GitHub tem que carregar um AbortSignal não abortado. O mecanismo de
+  // timeout em si (que um signal desse tipo de fato aborta dentro do teto)
+  // já está provado em fetch-com-teto.test.ts e na composição de
+  // services/github-token-refresh.test.ts — aqui só se prova que scheduler.ts
+  // de fato liga os dois.
+  it('achado Alto 2: a chamada real ao GitHub carrega um AbortSignal (fetchComTeto) — antes desta correção, nenhum signal era passado', async () => {
+    const refreshCifrado = encryptCredential('refresh_plano_abc')
+    let signalCapturado: AbortSignal | undefined
+    global.fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const href = typeof url === 'string' ? url : url.toString()
+      if (href === 'https://github.com/login/oauth/access_token') {
+        signalCapturado = init?.signal ?? undefined
+        return new Response(
+          JSON.stringify({
+            access_token: 'gh_novo_access',
+            refresh_token: 'gh_novo_refresh',
+            expires_in: 28800,
+            refresh_token_expires_in: 15897600,
+          }),
+          { status: 200 }
+        )
+      }
+      throw new Error(`fetch inesperado: ${href}`)
+    }) as unknown as typeof fetch
+
+    const app = fakeApp({
+      conexoes: [
+        {
+          userId: 'user_teto',
+          encryptedRefreshToken: refreshCifrado,
+          expiresAt: new Date(AGORA.getTime() + 10 * 60 * 1000),
+          refreshTokenExpiresAt: new Date(AGORA.getTime() + 180 * 24 * 60 * 60 * 1000),
+        },
+      ],
+    })
+
+    await renovarTokensGithubDoRelogio(app, AGORA)
+
+    expect(signalCapturado).toBeInstanceOf(AbortSignal)
+    expect(signalCapturado?.aborted).toBe(false)
+  })
+
+  // Achado ⚠️ CRÍTICO A VERIFICAR (revisão do Baixo 6): a URL desta
+  // notificação embute o TOKEN DO BOT no próprio caminho
+  // (`https://api.telegram.org/bot<token>/sendMessage`). Investigação real
+  // (Node 20 / undici, ver o comentário em scheduler.ts) não reproduziu a
+  // URL em nenhum campo do erro produzido hoje — mas este teste não confia
+  // nisso: simula o PIOR CASO deliberado, um fetchImpl cujo erro EMBUTE a
+  // URL completa (com o token) na própria mensagem — o jeito que "algumas
+  // implementações de fetch" fazem — e prova que, mesmo assim, nada do que
+  // chega em `app.log.warn` carrega o token nem o host do Telegram.
+  it('achado ⚠️ CRÍTICO: falha de entrega do Telegram com um erro que EMBUTIRIA a URL/token (pior caso) — o log nunca recebe o objeto de erro cru', async () => {
+    const refreshCifrado = encryptCredential('refresh_plano_revogado')
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = typeof url === 'string' ? url : url.toString()
+      if (href === 'https://github.com/login/oauth/access_token') {
+        return new Response(JSON.stringify({ error: 'bad_refresh_token' }), { status: 401 })
+      }
+      if (href.startsWith('https://api.telegram.org/bot')) {
+        throw new Error(`request to ${href} failed, reason: ECONNREFUSED`)
+      }
+      throw new Error(`fetch inesperado: ${href}`)
+    }) as unknown as typeof fetch
+
+    const updateMany = vi.fn(async () => ({ count: 1 }))
+    const app = fakeApp({
+      conexoes: [
+        {
+          userId: 'user_pior_caso',
+          encryptedRefreshToken: refreshCifrado,
+          expiresAt: new Date(AGORA.getTime() + 5 * 60 * 1000),
+          refreshTokenExpiresAt: new Date(AGORA.getTime() + 180 * 24 * 60 * 60 * 1000),
+        },
+      ],
+      updateMany,
+      telegramLink: { status: 'linked', chatId: 'chat_pior_caso' },
+    })
+
+    await renovarTokensGithubDoRelogio(app, AGORA)
+
+    const chamadaDeEntregaFalha = (app.log.warn as ReturnType<typeof vi.fn>).mock.calls.find(
+      (chamada: unknown[]) =>
+        typeof chamada[1] === 'string' &&
+        (chamada[1] as string).includes('aviso de reconexão GitHub não foi entregue')
+    )
+
+    expect(chamadaDeEntregaFalha).toBeDefined()
+    expect(algumaPropriedadeContemTexto(chamadaDeEntregaFalha![0], 'bot-token-teste')).toBe(false)
+    expect(algumaPropriedadeContemTexto(chamadaDeEntregaFalha![0], 'api.telegram.org')).toBe(false)
+  })
+
+  // Achado Baixo 5 (Task 5/F8): ANTES desta correção, o retorno de
+  // renovarTokensGithubDoRelogio era descartado pelo chamador (tick()) e o
+  // único rastro era um `onWarn` (app.log.warn) POR CONEXÃO legada, EM TODO
+  // TIQUE — com N conexões legadas ainda válidas, N linhas de log
+  // idênticas, sem dedupe, a cada minuto. Este teste prova as DUAS metades
+  // do conserto no wiring real: (1) app.log.warn NUNCA é chamado para essas
+  // conexões; (2) app.log.info é chamado exatamente UMA vez, com o resumo
+  // inteiro da passada (legadosSemAcao incluso) — não uma vez por conexão.
+  it('achado Baixo 5: várias conexões legadas ainda válidas numa passada geram UMA linha de resumo (app.log.info), nunca um aviso por conexão', async () => {
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      throw new Error(`fetch inesperado (não deveria chamar rede nenhuma): ${String(url)}`)
+    }) as unknown as typeof fetch
+
+    const updateMany = vi.fn(async () => ({ count: 1 }))
+    const app = fakeApp({
+      conexoes: [
+        {
+          userId: 'user_legado_1',
+          encryptedRefreshToken: null,
+          expiresAt: new Date(AGORA.getTime() + 6 * 60 * 60 * 1000),
+          refreshTokenExpiresAt: null,
+        },
+        {
+          userId: 'user_legado_2',
+          encryptedRefreshToken: null,
+          expiresAt: new Date(AGORA.getTime() + 7 * 60 * 60 * 1000),
+          refreshTokenExpiresAt: null,
+        },
+        {
+          userId: 'user_legado_3',
+          encryptedRefreshToken: null,
+          expiresAt: null,
+          refreshTokenExpiresAt: null,
+        },
+      ],
+      updateMany,
+    })
+
+    const resumo = await renovarTokensGithubDoRelogio(app, AGORA)
+
+    expect(resumo.legadosSemAcao).toBe(3)
+    expect(app.log.warn).not.toHaveBeenCalled()
+    expect(app.log.info).toHaveBeenCalledTimes(1)
+    expect(app.log.info).toHaveBeenCalledWith(
+      expect.objectContaining({ legadosSemAcao: 3 }),
+      expect.stringContaining('renovação de token GitHub')
+    )
+  })
+
+  it('achado Baixo 5: passada sem NENHUMA atividade (todos os contadores zerados) não gera linha de resumo nenhuma', async () => {
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      throw new Error(`fetch inesperado (não deveria chamar rede nenhuma): ${String(url)}`)
+    }) as unknown as typeof fetch
+
+    const app = fakeApp({
+      conexoes: [
+        {
+          userId: 'user_tranquilo',
+          encryptedRefreshToken: 'envelope-qualquer',
+          expiresAt: new Date(AGORA.getTime() + 6 * 60 * 60 * 1000), // longe do vencimento
+          refreshTokenExpiresAt: new Date(AGORA.getTime() + 180 * 24 * 60 * 60 * 1000),
+        },
+      ],
+    })
+
+    const resumo = await renovarTokensGithubDoRelogio(app, AGORA)
+
+    expect(resumo).toEqual({
+      renovados: 0,
+      precisamReconectar: 0,
+      falhasDeDecifragem: 0,
+      falhasTransitorias: 0,
+      legadosSemAcao: 0,
+    })
+    expect(app.log.info).not.toHaveBeenCalled()
+    expect(app.log.warn).not.toHaveBeenCalled()
   })
 })
