@@ -178,16 +178,16 @@ model EngineConnection {
   // pending | connected | error | revoked | awaiting_approval | expired |
   // stale | needs_reconnect. Só "connected" após validação real (ping
   // autenticado) — nunca fachada (spec setup-wizard-redesign §17.3/§17.4).
-  status String @default("pending")
+  status  String @default("pending")
 
-  encryptedCredential String? @map("encrypted_credential")
+  encryptedCredential   String?   @map("encrypted_credential")
   // 'file' (padrão): a credencial é um arquivo restaurado no HOME da missão
   // (ex.: .codex/auth.json, .gemini/.../antigravity-oauth-token).
   // 'env': a credencial é um valor único injetado como variável de ambiente
   // (ex.: Claude Code — CLAUDE_CODE_OAUTH_TOKEN — não existe como arquivo).
-  credentialKind String?   @default("file") @map("credential_kind")
-  envVarName     String?   @map("env_var_name")
-  expiresAt      DateTime? @map("expires_at")
+  credentialKind        String?   @default("file") @map("credential_kind")
+  envVarName            String?   @map("env_var_name")
+  expiresAt             DateTime? @map("expires_at")
   // Renovação automática do token do GitHub (F8): o login por GitHub App
   // expira o access_token a cada ~8h quando "User-to-server token
   // expiration" está ligado, e devolve um refresh_token junto. Cifrado com o
@@ -195,12 +195,12 @@ model EngineConnection {
   // NULL em toda conexão feita ANTES desta coluna existir (legado): a
   // rotina de renovação trata a ausência como "precisa reconectar uma vez",
   // nunca como "não expira".
-  refreshTokenEncrypted String?   @map("refresh_token_encrypted")
+  encryptedRefreshToken String?   @map("encrypted_refresh_token")
   refreshTokenExpiresAt DateTime? @map("refresh_token_expires_at")
-  models         Json? // catálogo de modelos descoberto no provider
-  modelsRefreshedAt   DateTime? @map("models_refreshed_at")
-  lastValidatedAt     DateTime? @map("last_validated_at")
-  lastError           String?   @map("last_error")
+  models                Json? // catálogo de modelos descoberto no provider
+  modelsRefreshedAt     DateTime? @map("models_refreshed_at")
+  lastValidatedAt       DateTime? @map("last_validated_at")
+  lastError             String?   @map("last_error")
 
   // Quota restante do provider (BYOK), lida best-effort junto com os modelos.
   // Alimenta o spend-guard: quota crítica bloqueia a missão (protege a conta do

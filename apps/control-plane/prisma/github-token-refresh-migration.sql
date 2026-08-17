@@ -11,5 +11,5 @@
 -- (services/github-token-refresh.ts) trata a ausência como "conexão legada,
 -- precisa reconectar uma vez", nunca como "não expira".
 ALTER TABLE "engine_connections"
-  ADD COLUMN IF NOT EXISTS "refresh_token_encrypted" TEXT,
+  ADD COLUMN IF NOT EXISTS "encrypted_refresh_token" TEXT,
   ADD COLUMN IF NOT EXISTS "refresh_token_expires_at" TIMESTAMP(3);
