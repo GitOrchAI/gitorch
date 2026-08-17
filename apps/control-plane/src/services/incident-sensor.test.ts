@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { runIncidentSensor, collectCiFailures } from './incident-sensor.js'
 
 function fakeFetch(opts: {
@@ -218,5 +218,45 @@ describe('runIncidentSensor', () => {
       expect(r.created).toHaveLength(1)
       expect(avisos.join(' ')).toContain('quadro')
     })
+  })
+})
+
+describe('teto de tempo (leva D)', () => {
+  it('collectCiFailures: a chamada carrega um AbortSignal não abortado', async () => {
+    const spy = vi.fn(
+      fakeFetch({
+        failures: [{ name: 'Deploy', html_url: 'u1', created_at: '2026-07-05T10:00:00Z' }],
+      })
+    )
+    await collectCiFailures({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: spy as unknown as typeof fetch,
+    })
+    expect(spy.mock.calls.length).toBeGreaterThan(0)
+    for (const call of spy.mock.calls) {
+      const init = call[1] as RequestInit | undefined
+      expect(init?.signal).toBeInstanceOf(AbortSignal)
+      expect(init?.signal?.aborted).toBe(false)
+    }
+  })
+
+  it('runIncidentSensor: toda chamada ao GitHub carrega um AbortSignal não abortado', async () => {
+    const spy = vi.fn(
+      fakeFetch({
+        failures: [{ name: 'Deploy', html_url: 'u1', created_at: '2026-07-05T10:00:00Z' }],
+      })
+    )
+    await runIncidentSensor({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: spy as unknown as typeof fetch,
+    })
+    expect(spy.mock.calls.length).toBeGreaterThan(0)
+    for (const call of spy.mock.calls) {
+      const init = call[1] as RequestInit | undefined
+      expect(init?.signal).toBeInstanceOf(AbortSignal)
+      expect(init?.signal?.aborted).toBe(false)
+    }
   })
 })

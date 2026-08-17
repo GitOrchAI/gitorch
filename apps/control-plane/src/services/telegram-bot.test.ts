@@ -50,6 +50,52 @@ function fakePrismaComToken(token: string, userId = 'user_a') {
   }
 }
 
+// Um chat que JÁ é de outra conta (linha `dono`) e um vínculo pendente
+// tentando tomá-lo (linha `novo`). O `updateMany` explode de propósito: se a
+// guarda falhar, o teste acusa a escrita em vez de passar em silêncio.
+function fakePrismaChatOcupado(token: string) {
+  const dono = {
+    id: 'tgl_dono',
+    userId: 'user_a',
+    status: 'linked',
+    token: null as string | null,
+    tokenExpiresAt: null as Date | null,
+    chatId: '555' as string | null,
+    linkedAt: new Date(),
+  }
+  const novo = {
+    id: 'tgl_novo',
+    userId: 'user_b',
+    status: 'pending',
+    token: token as string | null,
+    tokenExpiresAt: new Date(Date.now() + 60_000) as Date | null,
+    chatId: null as string | null,
+    linkedAt: null as Date | null,
+  }
+  const rows = [dono, novo]
+  const casa = (r: (typeof rows)[number], where: any): boolean => {
+    if (where.token !== undefined && r.token !== where.token) return false
+    if (where.userId !== undefined && r.userId !== where.userId) return false
+    if (where.status !== undefined && r.status !== where.status) return false
+    if (where.chatId !== undefined && r.chatId !== where.chatId) return false
+    if (where.NOT?.userId !== undefined && r.userId === where.NOT.userId) return false
+    return true
+  }
+  return {
+    dono,
+    novo,
+    telegramLink: {
+      findUnique: async ({ where }: any) => rows.find((r) => casa(r, where)) ?? null,
+      findFirst: async ({ where }: any) => rows.find((r) => casa(r, where)) ?? null,
+      findMany: async ({ where }: any = {}) => rows.filter((r) => casa(r, where ?? {})),
+      upsert: async () => novo,
+      updateMany: async () => {
+        throw new Error('não pode vincular: este chat já é de outra conta')
+      },
+    },
+  }
+}
+
 describe('parseStartToken — só o /start com token diz quem é a pessoa', () => {
   it('extrai o token do /start', () => {
     expect(parseStartToken('/start abc123')).toBe('abc123')
@@ -364,6 +410,27 @@ describe('handleTelegramUpdate — o Start do cliente vira vínculo real', () =>
   it('update sem chat não quebra o laço', async () => {
     const prisma = fakePrismaComToken('tok_valido')
     expect(await handleTelegramUpdate(prisma as any, { update_id: 5 })).toBeNull()
+  })
+
+  // Dois vínculos no mesmo chat deixariam a identidade daquele chat ambígua —
+  // e é a identidade do chat que autoriza escrever no repositório de alguém
+  // (/desejo). O segundo Start é recusado com a verdade, e nada é escrito.
+  it('chat que já é de outra conta não vincula, e o dono lê a verdade', async () => {
+    const prisma = fakePrismaChatOcupado('tok_de_outro')
+
+    const reply = await handleTelegramUpdate(prisma as any, {
+      update_id: 9,
+      message: {
+        chat: { id: 555 },
+        text: '/start tok_de_outro',
+        from: { id: 555, language_code: 'pt-br' },
+      },
+    })
+
+    expect(prisma.novo.status).toBe('pending')
+    expect(prisma.novo.chatId).toBeNull()
+    expect(reply?.text).toMatch(/outra conta/i)
+    expect(reply?.text).not.toContain(BOT)
   })
 })
 

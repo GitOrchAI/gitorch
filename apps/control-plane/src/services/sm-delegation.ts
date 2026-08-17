@@ -2,6 +2,7 @@ import { GithubExecutionError } from './github-backlog.js'
 import { aplicarLabelDoAgente } from './agent-label.js'
 import { escolherParaDelegar, type IssueCandidata } from './fila-de-delegacao.js'
 import type { LinhaDeSessao } from './dev-session-store.js'
+import { fetchComTeto } from './fetch-com-teto.js'
 
 // Delegação contínua do SM (F3.6 item 2): a cada wake, encontra as TASKS prontas
 // (label `gitorch:task`, sem sessão viva na tabela `dev_sessions`, com todos os
@@ -91,7 +92,9 @@ export function extractBlockers(body: string): number[] {
 }
 
 export async function runSmDelegation(options: SmDelegationOptions): Promise<SmDelegationResult> {
-  const f = options.fetchImpl ?? fetch
+  // IMPORTANTE (leva D): alcançável pelo tique (scheduler.ts, wake do SM)
+  // sob `tickEmAndamento` — mesma classe de defeito do Crítico.
+  const f = fetchComTeto(options.fetchImpl ?? fetch)
   const label = options.delegateLabel ?? 'jules'
   const cap = options.cap ?? 3
 

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { runSmWatchdog, buildTelegramNotifier } from './sm-watchdog.js'
 
 const JULES_FAIL =
@@ -185,5 +185,41 @@ describe('buildTelegramNotifier', () => {
     const notify = buildTelegramNotifier({ botToken: 'tok', chatId: '42', fetchImpl: f })!
     await notify('oi')
     expect(calls[0]).toContain('api.telegram.org/bottok/sendMessage')
+  })
+
+  it('a chamada carrega um AbortSignal não abortado', async () => {
+    const f = vi.fn(async () => new Response('{}', { status: 200 })) as unknown as typeof fetch
+    const notify = buildTelegramNotifier({ botToken: 'tok', chatId: '42', fetchImpl: f })!
+    await notify('oi')
+    const init = (f as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]?.[1] as
+      RequestInit | undefined
+    expect(init?.signal).toBeInstanceOf(AbortSignal)
+    expect(init?.signal?.aborted).toBe(false)
+  })
+
+  it('CRÍTICO (leva D): um socket do Telegram que nunca resolve nem rejeita não fica pendurado para sempre', async () => {
+    // Prova real do defeito do despacho: um fetch cujo socket travou (nem
+    // sucesso nem erro) — sem teto, `notify()` nunca se resolveria e
+    // prenderia `tickEmAndamento` (scheduler.ts) para sempre, junto com
+    // TODA varredura futura de TODO projeto. `.catch(() => undefined)`
+    // dentro de `notify` não é proteção nenhuma contra isso: um socket
+    // travado nunca REJEITA sozinho, só um `AbortSignal` o força a rejeitar.
+    const fetchQueNuncaResolve = vi.fn(
+      (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal!.reason))
+        })
+    ) as unknown as typeof fetch
+    // Teto curto só para o teste não esperar os 10s reais de produção — o
+    // mecanismo (`fetchComTeto`) é o mesmo.
+    const notify = buildTelegramNotifier({
+      botToken: 'tok',
+      chatId: '42',
+      fetchImpl: fetchQueNuncaResolve,
+      timeoutMs: 20,
+    })!
+    // `notify` engole o abort com `.catch(() => undefined)` — o que importa
+    // aqui é que a promise SE RESOLVE (não fica pendurada), não o valor.
+    await expect(notify('publicação confirmada')).resolves.toBeUndefined()
   })
 })

@@ -37,7 +37,10 @@ import { resolveMissionDelivery, type MissionPathKind } from '../services/missio
 import { ClientEnvironmentService } from '../services/environment.js'
 import { runPoMissionViaRails } from '../services/po-rails-mission.js'
 import { runRaMissionViaRails } from '../services/ra-rails-mission.js'
-import { runQaMissionViaRails } from '../services/qa-rails-mission.js'
+import {
+  runQaMissionViaRails,
+  type VigiliaDoJulgamentoOptions,
+} from '../services/qa-rails-mission.js'
 import { runSmDelegation } from '../services/sm-delegation.js'
 import { tetosDoPlanoDoDev } from '../services/plano-do-dev.js'
 import {
@@ -48,9 +51,34 @@ import {
   registrarPr,
   fecharSessao,
   registrarInvestigacao,
+  registrarPendencia,
+  limparPendencia,
+  registrarAvisoDeDemora,
+  registrarFracassoDeMerge,
+  registrarMescla,
+  registrarEstadoDaPublicacao,
+  registrarCadenciaDePublicacao,
   type PrismaDevSession,
   type LinhaDeSessao,
 } from '../services/dev-session-store.js'
+import { sessoesParaAcompanharPublicacao } from '../services/pos-merge.js'
+import { descobrirMecanismo, type Mecanismo } from '../services/mecanismo-de-publicacao.js'
+import {
+  acompanharPublicacao,
+  fecharPorTetoAbsoluto,
+  TETO_ABSOLUTO_DE_ACOMPANHAMENTO_MS,
+  type ExecucaoDeWorkflow,
+  type EtapaDaExecucao,
+  type PublicacaoDeclarada,
+  type EstadoDaPublicacao,
+} from '../services/publicacao.js'
+import { fecharTarefaEntregue } from '../services/fechar-tarefa.js'
+import {
+  testarAmbiente,
+  resolveCaminhosDeAmbiente,
+  resolveEnderecoDeAmbiente,
+} from '../services/qa-de-ambiente.js'
+import { buscarComGuarda } from '../services/endereco-seguro.js'
 import {
   criarSessaoJules,
   consultarSessaoJules,
@@ -68,6 +96,7 @@ import {
   resolveSprintDays,
   createCardMover,
 } from '../services/board-status.js'
+import { fetchComTeto } from '../services/fetch-com-teto.js'
 import {
   ensureAndPersistProjectBoard,
   ensureProjectBoard,
@@ -76,9 +105,21 @@ import {
   type ResolvedOwner,
 } from '../services/onboarding-board.js'
 import { lerCredencialDoProjeto } from '../services/project-credential.js'
+import { provaDeEscritaNoUso } from '../services/acesso-ao-repositorio.js'
+import {
+  reconferirAcessoDosProjetos,
+  projetoEstaSuspensoPorAcesso,
+  type ResumoDaReconferencia,
+} from '../services/reconferencia-de-acesso.js'
 import { ProjectV2Client } from '@gitorch/github-sync'
 import { RailsStepError, RailsExecutionError } from '../services/rails-runner.js'
 import { GithubExecutionError } from '../services/github-backlog.js'
+import {
+  ehCredencialExpirada,
+  ehFalhaDeCredencialCorroborada,
+  CredencialExpiradaError,
+  deveAvisarDeNovo,
+} from '../services/credencial-do-motor.js'
 import { canRunMission, shouldAlertForQuota } from '../lib/spend-guard.js'
 import { computeConsumption } from '../lib/consumption.js'
 import { pipelineCheckEnabled } from '../config/pipeline-check.js'
@@ -238,12 +279,19 @@ export function resolveRailsBoard(project: { runtimeConfig?: unknown }): string 
  * função a reconhece como falha de motor — sem depender de casar texto de
  * mensagem (proibido: um regex mais largo teria o mesmo furo pra qualquer
  * mensagem de erro de processo ainda não prevista).
+ *
+ * Tarefa 16 (credencial de motor expirada): `CredencialExpiradaError`
+ * (credencial-do-motor.ts) entra na mesma lista por TIPO, pelo mesmo motivo
+ * de `RailsExecutionError` acima — é igualmente falha de MOTOR (o próximo da
+ * cadeia pode ter credencial válida), e o reconhecimento por texto já
+ * aconteceu na origem (onde a saída crua do motor existe), não aqui.
  */
 export function isEngineFault(err: unknown, lastError: string): boolean {
   if (err instanceof GithubExecutionError) return false
   return (
     err instanceof RailsStepError ||
     err instanceof RailsExecutionError ||
+    err instanceof CredencialExpiradaError ||
     isFailoverError(lastError)
   )
 }
@@ -279,6 +327,133 @@ export function montarOpcoesDeDelegacao(args: {
 }
 
 /**
+ * Monta as opções da família `VigiliaDoJulgamentoOptions` (ver
+ * qa-rails-mission.ts) que o julgamento do QA recebe:
+ * `registrarPendencia`/`limparPendencia`/`registrarAvisoDeDemora`/
+ * `registrarFracassoDeMerge` ligadas ao Prisma real, e `avisarDono` quando
+ * um notificador foi montado.
+ *
+ * Achado 1 da revisão da Tarefa 7: as três primeiras foram ADICIONADAS à
+ * interface de `runQaMissionViaRails` mas nunca chegavam a este ponto de
+ * disparo — a lógica ficava correta e testada em isolamento
+ * (qa-rails-mission.test.ts) e inerte em produção (`pending_since` nunca era
+ * gravado, o teto de 90min nunca amadurecia, o dono nunca era avisado).
+ *
+ * Achado crítico da revisão da Tarefa 10: `registrarFracassoDeMerge` repetiu
+ * o MESMO furo — adicionada à interface, nunca ligada aqui. Corrigido no
+ * commit anterior; este commit fecha a CLASSE do defeito (ver guarda
+ * estrutural abaixo), para não haver uma terceira vez.
+ *
+ * Função pura EXPORTADA pelo mesmo motivo de `montarOpcoesDeDelegacao`
+ * (achado 2 da Tarefa 5): a montagem viveria só dentro de
+ * `executeMissionWithFailover`, fechamento não exportado, e uma regressão
+ * que voltasse a esquecer uma das opções no call site de
+ * `runQaMissionViaRails` não quebraria teste nenhum. Ver
+ * scheduler-julgamento-opcoes.test.ts.
+ *
+ * Guarda estrutural (pós-Tarefa 10, para a classe do defeito não se repetir
+ * uma TERCEIRA vez): o tipo de retorno abaixo não é uma lista de nomes
+ * copiada à mão — é `Required<Omit<VigiliaDoJulgamentoOptions, 'avisarDono'>>`,
+ * DERIVADO da interface em qa-rails-mission.ts. Uma opção nova adicionada
+ * àquela família fica, automaticamente, obrigatória neste retorno; esquecer
+ * de devolvê-la aqui agora quebra `pnpm --filter @gitorch/control-plane
+ * build` (erro "Property is missing"), em vez de compilar em silêncio como
+ * aconteceu nas Tarefas 7 e 10. `avisarDono` é a ÚNICA exceção — omitida de
+ * propósito quando não há notificador, por isso fica fora do `Required` e
+ * como `Pick` optativo, igual sempre foi.
+ */
+export function montarOpcoesDoJulgamento(args: {
+  prisma: PrismaDevSession
+  avisarDono?: ((mensagem: string) => Promise<void>) | undefined
+}): Required<Omit<VigiliaDoJulgamentoOptions, 'avisarDono'>> &
+  Pick<VigiliaDoJulgamentoOptions, 'avisarDono'> {
+  return {
+    registrarPendencia: (a) => registrarPendencia({ prisma: args.prisma, ...a }),
+    limparPendencia: (a) => limparPendencia({ prisma: args.prisma, ...a }),
+    registrarAvisoDeDemora: (a) => registrarAvisoDeDemora({ prisma: args.prisma, ...a }),
+    registrarFracassoDeMerge: (a) => registrarFracassoDeMerge({ prisma: args.prisma, ...a }),
+    ...(args.avisarDono ? { avisarDono: args.avisarDono } : {}),
+  }
+}
+
+/**
+ * O que acontece quando uma entrega é de fato mesclada (`aoMesclar`,
+ * runQaMissionViaRails/qa-rails-mission.ts).
+ *
+ * Tarefa 17: ANTES desta mudança, este ponto fechava a linha da vigia na
+ * hora (`fecharSessao` com `'merged'`) — a sessão "concluía" no instante do
+ * merge e o produto nunca soube se aquele código chegou ao ar. Agora só
+ * GRAVA o commit mesclado (`registrarMescla`, dev-session-store.ts); quem
+ * fecha é `varrerPublicacoes` (mais abaixo), quando há veredito sobre a
+ * publicação.
+ *
+ * Exportada e testável isoladamente pelo MESMO motivo de
+ * `montarOpcoesDoJulgamento` (Tarefas 7 e 10, ver o comentário acima): o
+ * call site real dentro de `executeMissionWithFailover` é um fechamento não
+ * exportado — uma regressão que voltasse a fechar a sessão aqui (ou
+ * esquecesse de gravar o commit mesclado) não quebraria teste nenhum se essa
+ * lógica só existisse dentro daquele fechamento. Ver
+ * scheduler-pos-merge-opcoes.test.ts.
+ *
+ * Importante 4 da revisão final da branch: buscava a linha SÓ pelo número do
+ * PR e desistia em silêncio numa falha. Mas o número do PR às vezes só é
+ * gravado minutos depois do merge — o MESMO atraso que `qa-rails-mission.ts`
+ * já documenta e resolve com um recuo pela issue de origem
+ * (`linhaDaEntrega`, ali). Nessa janela, `aoMesclarUmaEntrega` não achava a
+ * linha, `mergeCommitSha` nunca era gravado, a sessão nunca entrava na
+ * vigília de publicação e — como o PR já está mesclado (fechado no GitHub) —
+ * o juiz nunca mais veria essa entrega de novo: o capítulo pós-merge inteiro
+ * era pulado, calado, para aquela entrega.
+ */
+export async function aoMesclarUmaEntrega(args: {
+  prisma: PrismaDevSession
+  projectId: string
+  numeroDoPr: number
+  mergeCommitSha: string
+  agora: Date
+  /**
+   * A mesma issue de origem que `qa-rails-mission.ts` resolve
+   * (`issueDaEntrega`) e agora repassa em `aoMesclar`. `null` quando o
+   * recuo que achou a entrega (login do autor) não tem como saber a issue —
+   * nesse caso só a busca por PR vale, do mesmo jeito que em
+   * `qa-rails-mission.ts`.
+   */
+  issueNumber?: number | null
+  /**
+   * Chamado quando NENHUMA das duas buscas acha a linha — nunca em
+   * silêncio: sem isto, o capítulo inteiro do pós-merge é pulado para esta
+   * entrega e ninguém percebe (produção (achado real): PR mesclado, linha
+   * nunca encontrada, sessão nunca fechada).
+   */
+  onWarn?: (mensagem: string) => void
+}): Promise<void> {
+  const porNumeroDoPr = await args.prisma.devSession.findFirst({
+    where: { projectId: args.projectId, pullRequestNumber: args.numeroDoPr, closedAt: null },
+  })
+  let linha = porNumeroDoPr
+  if (!linha && args.issueNumber != null) {
+    linha = await args.prisma.devSession.findFirst({
+      where: { projectId: args.projectId, issueNumber: args.issueNumber, closedAt: null },
+    })
+  }
+  if (!linha) {
+    args.onWarn?.(
+      `merge do PR #${args.numeroDoPr} (commit ${args.mergeCommitSha}) não achou a linha da ` +
+        `sessão nem pelo número do PR nem pela issue #${args.issueNumber ?? '?'} — o capítulo ` +
+        `pós-merge (vigília de publicação) não vai rodar para esta entrega.`
+    )
+    return
+  }
+  await registrarMescla({
+    prisma: args.prisma,
+    sessionName: linha.sessionName,
+    mergeCommitSha: args.mergeCommitSha,
+    numeroDoPr: args.numeroDoPr,
+    agora: args.agora,
+  })
+}
+
+/**
  * O filtro das sessões que o julgamento precisa enxergar.
  *
  * Exportado para ser testável: é ele que decide se o QA acha ou não o PR do dev
@@ -306,6 +481,39 @@ export function filtroDeSessoesParaJulgamento(projectId: string): Prisma.DevSess
     projectId,
     OR: [{ closedAt: null }, { closedReason: { not: 'merged' }, pullRequestNumber: { not: null } }],
   }
+}
+
+/**
+ * O que sobra de `sessoesVivas` para a vigia PRÉ-merge (`varrerSessoesDoDev`
+ * / `vigiarSessoes`) examinar.
+ *
+ * Exportada pelo MESMO motivo de `montarOpcoesDeDelegacao` e
+ * `filtroDeSessoesParaJulgamento` acima: o call site real vive dentro do
+ * fechamento não exportado de `varrerSessoesDoDev`, e uma regressão que
+ * voltasse a passar a lista crua de `sessoesVivas` direto para
+ * `vigiarSessoes` não quebraria teste nenhum se este filtro só existisse ali
+ * dentro.
+ *
+ * `sessoesVivas` (dev-session-store.ts) continua trazendo TUDO que está
+ * `closedAt: null` — inclusive sessão já mesclada — de propósito: a fila de
+ * delegação (`montarOpcoesDeDelegacao`, acima, é o OUTRO chamador de
+ * `sessoesVivas`) precisa contar essas sessões como ocupadas, senão o SM
+ * re-delegaria a MESMA issue enquanto o veredito de publicação (Tarefa 17,
+ * `varrerPublicacoes`) ainda está em aberto. Mudar a semântica de
+ * `sessoesVivas` na fonte quebraria aquele outro chamador; o filtro por isso
+ * mora no CONSUMIDOR pré-merge, não na fonte.
+ *
+ * A partir do merge (`mergeCommitSha` gravado por `registrarMescla`), a
+ * sessão passa a ser propriedade EXCLUSIVA de `varrerPublicacoes` — é ela
+ * quem evolui e fecha a linha dali em diante. Sem este filtro, a vigia
+ * pré-merge (que só entende estado ANTES do merge, pela cadência própria de
+ * `CADENCIA_DE_EXAME_MS`) continuaria interrogando o serviço externo sobre
+ * uma entrega que já chegou lá: na melhor das hipóteses, cota gasta à toa;
+ * na pior, um `COMPLETED` com PR dispara `julgar` (missão de QA) contra um
+ * pull request que já foi mesclado.
+ */
+export function sessoesParaVigiaPreMerge(sessoes: LinhaDeSessao[]): LinhaDeSessao[] {
+  return sessoes.filter((sessao) => sessao.mergeCommitSha === null)
 }
 
 function buildWorkspaceProvider(app: FastifyInstance): WorkspaceProvider {
@@ -868,9 +1076,18 @@ export async function provisionSetupMission(
     const boardToken = appToken ?? githubToken
 
     if (boardToken && deps.prisma) {
+      // IMPORTANTE (leva D): achado nesta auditoria além da lista do
+      // despacho — mesma classe de defeito do Crítico. `provisionSetupMission`
+      // é chamada por `processSetupMissions` dentro de `tick()`, sob
+      // `tickEmAndamento`; o default aqui (sem `createProjectV2Client`
+      // injetado) caía num `ProjectV2Client` sem teto nenhum. O teto mora na
+      // PRÓPRIA função (não só no call site) para qualquer chamador futuro
+      // que esqueça de injetar `createProjectV2Client` herdar a proteção —
+      // mesma disciplina de `endereco-seguro.ts` ("a guarda mora aqui e não
+      // nos chamadores").
       const client = deps.createProjectV2Client
         ? deps.createProjectV2Client(boardToken)
-        : new ProjectV2Client({ token: boardToken })
+        : new ProjectV2Client({ token: boardToken, fetchImpl: fetchComTeto(fetch) })
       // Achado importante: sem passar o número já gravado, findProjectId
       // nunca rodava e todo provisionamento criava board NOVO — finalizar o
       // wizard 2x para o mesmo repositório duplicava o board. O número já
@@ -1020,6 +1237,90 @@ export async function runBootReaper(
   }
 }
 
+/**
+ * A reconferência PERIÓDICA de acesso, ligada ao relógio.
+ *
+ * A decisão em si é pura e mora em services/reconferencia-de-acesso.ts (com os
+ * casos: acesso ok, sem acesso, inverificável uma vez, inverificável várias
+ * vezes, recuperado). Aqui só se resolve DE ONDE vêm os projetos, COM QUAL
+ * credencial a pergunta é feita, ONDE o resultado é gravado e POR ONDE o dono
+ * é avisado.
+ *
+ * Exportada — e não escondida dentro do plugin — pelo mesmo motivo de
+ * `runBootReaper`: é o pedaço que só o wiring pode errar, e ele precisa ser
+ * testável sem subir o relógio inteiro.
+ *
+ * Roda a cada tique, mas NÃO pergunta a cada tique: `precisaReconferir` é que
+ * decide, projeto a projeto, se já é hora — uma prova por projeto por ciclo,
+ * nunca uma por missão.
+ */
+export async function reconferirAcessoDoRelogio(
+  app: FastifyInstance,
+  agora?: Date
+): Promise<ResumoDaReconferencia> {
+  const provarEscrita = provaDeEscritaNoUso(app.engineConnections)
+
+  return reconferirAcessoDosProjetos({
+    projetos: async () => {
+      const linhas = await app.prisma.project.findMany({
+        where: { isActive: true },
+        select: {
+          id: true,
+          wingId: true,
+          userId: true,
+          accessCheckedAt: true,
+          accessSuspendedAt: true,
+          accessSuspendedReason: true,
+          accessCheckFailures: true,
+        },
+      })
+      return linhas.map((linha) => ({
+        id: linha.id,
+        repo: linha.wingId,
+        ownerId: linha.userId,
+        estado: {
+          conferidoEm: linha.accessCheckedAt,
+          suspensoEm: linha.accessSuspendedAt,
+          motivoDaSuspensao: linha.accessSuspendedReason,
+          falhasSeguidas: linha.accessCheckFailures,
+        },
+      }))
+    },
+    provarEscrita,
+    salvar: async (projectId, estado) => {
+      await app.prisma.project.update({
+        where: { id: projectId },
+        data: {
+          accessCheckedAt: estado.conferidoEm,
+          accessSuspendedAt: estado.suspensoEm,
+          accessSuspendedReason: estado.motivoDaSuspensao,
+          accessCheckFailures: estado.falhasSeguidas,
+        },
+      })
+    },
+    // O aviso é do DONO daquele projeto — mesma resolução do resto do
+    // scheduler: sem vínculo real (telegram_links, nascido do /start dele),
+    // ninguém é avisado, e o projeto de um cliente nunca vira mensagem no chat
+    // de outro. Sem vínculo o trabalho segue igual: a suspensão vale mesmo sem
+    // aviso.
+    avisarDono: async (projectId, texto) => {
+      const projeto = await app.prisma.project.findUnique({ where: { id: projectId } })
+      if (!projeto) return
+      const chatId = await resolveNotifyChatId(app.prisma, projeto, {
+        instanceOwnerEmail: process.env['GITORCH_OWNER_EMAIL'],
+        instanceChatId: process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
+      })
+      const notify = buildTelegramNotifier({
+        botToken: process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
+        ...(chatId ? { chatId } : {}),
+      })
+      if (notify) await notify(texto)
+    },
+    ...(agora ? { agora } : {}),
+    onWarn: (mensagem) => app.log.warn(`[Scheduler] ${mensagem}`),
+  })
+}
+
 const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // Modo INERTE do health pré-switch da esteira (F2.3/P1-2): sai ANTES de tocar
   // prisma/engineConnections/cortex — a instância de verificação aponta pro
@@ -1101,6 +1402,27 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // concorrência e a criação da missão (dois POST simultâneos criariam duas).
   let triggerChain: Promise<TriggerResult> = Promise.resolve({ triggered: false, reason: 'init' })
 
+  // Dedup de "credencial expirada" (Tarefa 16): uma vez por dono+motor por
+  // dia — ver deveAvisarDeNovo em credencial-do-motor.ts. Em memória do
+  // processo, de propósito (não é coluna de banco): o pior caso é um aviso
+  // extra logo após um restart do control-plane, nunca silêncio além de 24h
+  // dentro do mesmo processo vivo.
+  //
+  // Achado (finding 3 da revisão da Tarefa 16, documentado honestamente, não
+  // resolvido — decisão deliberada, não coluna de banco): este Map é POR
+  // PROCESSO. Hoje a esteira roda como UM control-plane numa única VM, então
+  // isto é o comportamento real: um aviso por dono+motor por dia. Se um dia
+  // existirem N processos do control-plane ao mesmo tempo (ex.: deploy
+  // blue-green sobrepondo dois processos, ou horizontal scaling), CADA
+  // processo tem o seu próprio Map e decide "ainda não avisei hoje"
+  // independentemente — o dono receberia até N avisos idênticos no mesmo
+  // dia, não um só. Não é um bug funcional NESTE deployment (não é o que
+  // está no ar), mas fica registrado aqui para quem for escalar horizontalmente
+  // não redescobrir isto em produção: a dedup real multi-processo exigiria um
+  // estado compartilhado (ex.: coluna em EngineConnection ou tabela própria),
+  // fora do escopo desta tarefa.
+  const avisosDeCredencialExpirada = new Map<string, number>()
+
   const runTrigger = async (
     role: F6AgentRole,
     projectId?: string,
@@ -1141,7 +1463,10 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           include: { user: { include: { plan: true } } },
         })
       : await app.prisma.project.findFirst({
-          where: { isActive: true },
+          // Projeto suspenso por falta de acesso não entra na fila: sem este
+          // filtro, o rodízio escolheria justamente ele e a instância ficaria
+          // parada em cima de um projeto que não pode escrever em lugar nenhum.
+          where: { isActive: true, accessSuspendedAt: null },
           // Fila prioritária: projetos de donos em planos mais altos (tierRank
           // maior) rodam antes. Empate → mais antigo primeiro (fairness).
           orderBy: [{ user: { plan: { tierRank: 'desc' } } }, { createdAt: 'asc' }],
@@ -1150,6 +1475,26 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     if (!project) {
       app.log.warn('[Scheduler] No active project found to trigger mission')
       return { triggered: false, reason: 'no-project' }
+    }
+
+    // O ÚNICO ponto por onde uma missão nasce — e por isso é aqui que a
+    // suspensão por perda de acesso segura o freio, valendo para o relógio e
+    // para qualquer disparo sob demanda (rota admin, QA).
+    //
+    // O acesso era provado uma vez, no cadastro, e nunca mais: removido do
+    // repositório depois, o dono continuava com o relógio escrevendo lá com a
+    // credencial da INSTALAÇÃO, que continua legítima. Quem devolve o projeto
+    // ao ar é a própria reconferência, sozinha, quando o acesso volta
+    // (services/reconferencia-de-acesso.ts) — ninguém precisa mexer em nada.
+    //
+    // Não é reason "retentável" de propósito: repetir a janela a cada minuto
+    // não muda nada enquanto o acesso não voltar.
+    if (projetoEstaSuspensoPorAcesso(project)) {
+      app.log.warn(
+        { projectId: project.id, motivo: project.accessSuspendedReason },
+        '[Scheduler] projeto suspenso por falta de acesso ao repositório; nenhuma missão é disparada'
+      )
+      return { triggered: false, reason: 'acesso-suspenso' }
     }
 
     // Orçamento do plano: total de missões do dia somando TODOS os projetos do
@@ -1360,12 +1705,19 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             },
             prisma: app.prisma as never,
             mintInstallationToken,
-            createProjectV2Client: (token: string) => new ProjectV2Client({ token }),
+            // IMPORTANTE (leva D): as duas fábricas abaixo caíam em `new
+            // ProjectV2Client({ token })` sem `fetchImpl` nenhum — achado
+            // nesta auditoria além da lista do despacho, mesma classe de
+            // defeito, mesmo caminho (`runTrigger` → `tick()`, sob
+            // `tickEmAndamento`, wake do PO tentando garantir o board).
+            createProjectV2Client: (token: string) =>
+              new ProjectV2Client({ token, fetchImpl: fetchComTetoParaOBoard }),
             resolveOwner: resolveGithubOwnerId,
             resolveRepositoryId: resolveGithubRepositoryId,
             lerClientToken: () =>
               lerCredencialDoProjeto({ prisma: app.prisma as never, projectId: project.id }),
-            criarClienteAlternativo: (token: string) => new ProjectV2Client({ token }),
+            criarClienteAlternativo: (token: string) =>
+              new ProjectV2Client({ token, fetchImpl: fetchComTetoParaOBoard }),
             onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
           })
           if (railsBoard) {
@@ -1556,6 +1908,48 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               cwd: stepDir,
               timeoutMs: 10 * 60 * 1000,
             })
+            // Tarefa 16: checado ANTES do exitCode != 0 de propósito — o bug
+            // real é o motor saindo com código 0 (sucesso) enquanto o texto
+            // é um pedido de login novo. Sem este corte aqui, a saída cai no
+            // runFormStep de baixo, que gasta as tentativas de reparo à toa
+            // (repetir o PROMPT não conserta um token expirado) e o texto
+            // real do motor se perde atrás de um RailsStepError genérico
+            // ("no JSON object found") — exatamente o silêncio que esta
+            // tarefa existe para fechar. Ver credencial-do-motor.ts.
+            //
+            // Correção 2 (corroboração) — decisão deliberada de NÃO estender
+            // aqui: `resolveMissionDelivery` (mission-outcome.ts) só avalia
+            // entregável de verdade no `pathKind === 'classic'`; em
+            // `'rails'` ele devolve `{ delivered: true }` TRIVIALMENTE, por
+            // construção (é o próprio desenho do contrato — ver o comentário
+            // no topo de mission-outcome.ts). Usar esse resultado aqui
+            // faria `entrega.delivered` ser SEMPRE true para todo passo de
+            // trilhos, o que apagaria PARA SEMPRE a detecção de credencial
+            // expirada no caminho que originou esta tarefa (o bug real de
+            // produção, chain=codex>antigravity, foi observado exatamente
+            // AQUI — saída sem JSON de um passo de trilhos, não no caminho
+            // clássico). Não existe, hoje, uma segunda noção JÁ EXISTENTE de
+            // "este passo de trilhos não produziu nada" para reaproveitar
+            // sem inventar uma (o candidato mais próximo, `runFormStep`
+            // conseguir extrair um JSON válido de `step.output`, é um
+            // mecanismo DIFERENTE — rails-runner.ts — não o contrato de
+            // entregável por papel que esta correção foi instruída a
+            // reaproveitar). Por isso este ponto de checagem permanece só
+            // com os dois níveis de confiança de `ehCredencialExpirada`,
+            // sem corroboração — risco residual documentado no relatório da
+            // tarefa (ADENDO 2), não resolvido aqui de propósito.
+            if (
+              ehCredencialExpirada({
+                stdout: step.output,
+                stderr: step.stderr,
+                exitCode: step.exitCode,
+              })
+            ) {
+              throw new CredencialExpiradaError(
+                `motor ${sel.runtime} pediu novo login: ${(step.stderr || step.output).slice(0, 300)}`,
+                sel.runtime
+              )
+            }
             if (step.exitCode !== 0) {
               // O PROCESSO do motor falhou (crash, binário ausente, timeout do
               // processo etc.) — o motor nem chegou a responder, então não há
@@ -1598,6 +1992,24 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             // Colunas do board: config POR PROJETO (runtimeConfig.board.columns),
             // com default nativo — o cliente personaliza, o backend acompanha.
             const boardColumns = resolveBoardColumns(project.runtimeConfig)
+            // Tarefa 7 (achado 1 da revisão): o aviso de verificação parada é
+            // do DONO do projeto — mesma resolução usada pelo watchdog do SM
+            // (acima) e pela vigia da esteira (varrerSessoesDoDev, mais
+            // abaixo). Construído só para o QA: PO e RA não julgam
+            // verificação, não precisam deste notificador.
+            let avisarDono: ((mensagem: string) => Promise<void>) | undefined
+            if (qaRails) {
+              const notifyChatId = await resolveNotifyChatId(app.prisma, project, {
+                instanceOwnerEmail: process.env['GITORCH_OWNER_EMAIL'],
+                instanceChatId:
+                  process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
+              })
+              avisarDono = buildTelegramNotifier({
+                botToken:
+                  process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
+                ...(notifyChatId ? { chatId: notifyChatId } : {}),
+              })
+            }
             result = raRails
               ? await runRaMissionViaRails({
                   repository: project.wingId,
@@ -1627,6 +2039,16 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                     sessoes: await app.prisma.devSession.findMany({
                       where: filtroDeSessoesParaJulgamento(project.id),
                       orderBy: { createdAt: 'desc' },
+                    }),
+                    // Tarefa 7 (achado 1 da revisão): registrarPendencia,
+                    // limparPendencia, registrarAvisoDeDemora e avisarDono —
+                    // sem isto a vigília da verificação fica correta e
+                    // testada em isolamento, e inerte aqui: pending_since
+                    // nunca é gravado, o teto de 90min nunca amadurece, o
+                    // dono nunca é avisado.
+                    ...montarOpcoesDoJulgamento({
+                      prisma: app.prisma as unknown as PrismaDevSession,
+                      avisarDono,
                     }),
                     // Fase 1 do QA (Reconhecimento): só entra quando este QA foi
                     // acordado pela cascata de onboarding (Task 10) — hoje o
@@ -1658,30 +2080,25 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                       }),
                     // Task 11 (decisão do dono D7): o produto mescla sozinho,
                     // sem confirmação humana. `mesclarPr` já fez o merge de
-                    // verdade quando este callback dispara — aqui só fecha a
-                    // linha da vigia (`fecharSessao` com 'merged'), que é o
-                    // que tira a sessão de `filtroDeSessoesParaJulgamento` e
-                    // impede o QA de procurar veredito para um PR que já foi
-                    // mesclado. Sem linha correspondente (PR de humano, ou
-                    // sessão fechada por outro motivo), não há o que fechar —
-                    // não é falha.
-                    aoMesclar: async ({ numeroDoPr }) => {
-                      const linha = await app.prisma.devSession.findFirst({
-                        where: {
-                          projectId: project.id,
-                          pullRequestNumber: numeroDoPr,
-                          closedAt: null,
-                        },
-                      })
-                      if (linha) {
-                        await fecharSessao({
-                          prisma: app.prisma as unknown as PrismaDevSession,
-                          sessionName: linha.sessionName,
-                          motivo: 'merged',
-                          agora: new Date(),
-                        })
-                      }
-                    },
+                    // verdade quando este callback dispara. Tarefa 17: NÃO
+                    // fecha mais a linha da vigia aqui — só grava o commit
+                    // mesclado (`aoMesclarUmaEntrega`, acima). Quem fecha é
+                    // `varrerPublicacoes` (mais abaixo), quando há veredito
+                    // sobre a publicação; até lá a sessão continua fora de
+                    // `filtroDeSessoesParaJulgamento` na prática, porque o PR
+                    // já mesclado sai da listagem de PRs ABERTOS do GitHub
+                    // que alimenta o laço de descoberta do QA — não porque a
+                    // linha esteja fechada.
+                    aoMesclar: async ({ numeroDoPr, mergeCommitSha, issueNumber }) =>
+                      aoMesclarUmaEntrega({
+                        prisma: app.prisma as unknown as PrismaDevSession,
+                        projectId: project.id,
+                        numeroDoPr,
+                        mergeCommitSha,
+                        issueNumber,
+                        agora: new Date(),
+                        onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+                      }),
                     onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
                     execute,
                   })
@@ -1704,6 +2121,40 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             userId: project.userId ?? 'scheduler-user',
             timeoutMs: STALE_RUNNING_MS,
           })
+          // Tarefa 16: só faz sentido AQUI, no caminho clássico — é o único
+          // ramo deste if/else-if/else onde `result.output` é saída CRUA do
+          // motor. Nos trilhos o sinal já foi checado dentro de `execute()`
+          // (mais acima) contra a saída crua real, antes do runFormStep
+          // sintetizar outra coisa; no smRails (delegação/watchdog/sensor)
+          // não há chamada de motor nenhuma para checar.
+          //
+          // Correção 2 (corroboração): calcula o entregável do papel ANTES
+          // do sinal textual, sobre a MESMA saída — é o único ponto de
+          // checagem de credencial expirada onde o contrato de entregável
+          // por papel (`resolveMissionDelivery`, mission-outcome.ts, commit
+          // 87806ea) se aplica de verdade (pathKind='classic' sempre, aqui).
+          // Sem isto, uma missão de documentação/análise que só MENCIONA
+          // `invalid_grant`/`401 unauthorized` de passagem — mas entregou o
+          // relatório de verdade — disparava o aviso falso (medido na
+          // segunda revisão). Puro e independente de exitCode: mesmo um
+          // motor que saiu != 0 pode ter tentado escrever algo real antes de
+          // cair, e o contrato só olha o TEXTO.
+          const entregaParaCorroboracao = resolveMissionDelivery(role, result.output, 'classic')
+          if (
+            ehFalhaDeCredencialCorroborada(
+              {
+                stdout: result.output,
+                stderr: result.stderr,
+                exitCode: result.exitCode,
+              },
+              entregaParaCorroboracao
+            )
+          ) {
+            throw new CredencialExpiradaError(
+              `motor ${sel.runtime} pediu novo login: ${(result.stderr || result.output).slice(0, 300)}`,
+              sel.runtime
+            )
+          }
         }
 
         // Achado crítico da revisão pós-merge: o contrato de entregável só
@@ -1860,6 +2311,43 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           app.log.error(err, `[Scheduler] erro de execução no GitHub; sem failover`)
           break
         }
+        // Tarefa 16: credencial expirada é falha de motor (cai para a
+        // reserva via isEngineFault, abaixo, exatamente como qualquer outra)
+        // — mas É DIFERENTE de qualquer outra porque só o DONO resolve
+        // (refazendo o login). Sem isto, a esteira segue funcionando pela
+        // reserva e ninguém percebe que um motor ficou pra trás, como
+        // aconteceu de verdade em produção. Avisa uma vez por dono+motor por
+        // dia (deveAvisarDeNovo) — SPAM apaga sinal tanto quanto silêncio,
+        // mesma disciplina de session-watch.ts.
+        if (err instanceof CredencialExpiradaError) {
+          const chaveDoAviso = `${project.userId ?? project.id}:${err.runtime}`
+          if (deveAvisarDeNovo(avisosDeCredencialExpirada, chaveDoAviso, Date.now())) {
+            avisosDeCredencialExpirada.set(chaveDoAviso, Date.now())
+            const notifyChatId = await resolveNotifyChatId(app.prisma, project, {
+              instanceOwnerEmail: process.env['GITORCH_OWNER_EMAIL'],
+              instanceChatId:
+                process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
+            })
+            const avisar = buildTelegramNotifier({
+              botToken:
+                process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
+              ...(notifyChatId ? { chatId: notifyChatId } : {}),
+            })
+            if (avisar) {
+              // Correção 2: mesmo corroborada, isto é uma INFERÊNCIA (texto +
+              // ausência de entregável), não um fato observado — o produto
+              // nunca viu a credencial em si, só concluiu a partir da saída.
+              // A mensagem não afirma "a credencial expirou" como certeza;
+              // descreve o que foi observado (terminou sem entregar, saída
+              // parece pedido de login) e pede para o dono CONFERIR.
+              await avisar(
+                `GitOrch: o motor ${err.runtime} terminou sem entregar nada no projeto ` +
+                  `${project.wingId}, e a saída lembra um pedido de login expirado — vale conferir ` +
+                  `a conexão desse motor. Até lá, a reserva da cadeia assume o trabalho.`
+              ).catch(() => undefined)
+            }
+          }
+        }
         const engineFault = isEngineFault(err, lastError)
         if (!isLast && engineFault) {
           app.log.warn(err, `[Scheduler] erro recuperável em ${sel.runtime}; próximo motor`)
@@ -1975,9 +2463,16 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       const githubToken = mission.project.userId
         ? await app.engineConnections.getRawGithubToken(mission.project.userId)
         : null
+      // IMPORTANTE (leva D): `provisionSetupMission` cai no PRÓPRIO default
+      // (`new ProjectV2Client({ token: boardToken })`, sem teto nenhum)
+      // quando `createProjectV2Client` não é injetado — achado nesta
+      // auditoria além da lista do despacho, mesma classe de defeito, mesmo
+      // caminho (`processSetupMissions` → `tick()`, sob `tickEmAndamento`).
       const outcome = await provisionSetupMission(mission, activeStack, githubToken ?? undefined, {
         prisma: app.prisma,
         log: app.log,
+        createProjectV2Client: (token) =>
+          new ProjectV2Client({ token, fetchImpl: fetchComTetoParaOBoard }),
       })
       await app.prisma.mission.update({
         where: { id: mission.id },
@@ -2088,7 +2583,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         })
         const julesApiKey = process.env['JULES_API_KEY']
         const vigiaOut = await vigiarSessoes({
-          sessoes: sessoesDoProjeto,
+          sessoes: sessoesParaVigiaPreMerge(sessoesDoProjeto),
           consultarSessao: (sessionName) =>
             consultarSessaoJules({
               apiKey: julesApiKey,
@@ -2143,9 +2638,798 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     }
   }
 
+  // Tarefa 17 — a esteira acompanha a publicação e só encerra a sessão com
+  // veredito.
+  //
+  // Leitura mínima do GitHub (GET simples, token no header) — o mesmo
+  // formato que `qa-rails-mission.ts`/`sm-delegation.ts` usam para as
+  // próprias chamadas, sem depender de nenhum cliente maior.
+  //
+  // Item 7 (leva B2) + Crítico 1 (leva C): teto explícito, mesmo valor que
+  // as outras chamadas ao GitHub deste repositório já usam
+  // (`desejo-no-github.ts`, `github-app-token.ts`) — hoje compartilhado por
+  // `ghGet` (leitura) E `ghSend` (escrita), abaixo. Sem isto, uma chamada
+  // que nunca resolve (rede pendurada, não um erro — um erro já cai no
+  // `catch` de `varrerPublicacoes` normalmente) prendia `tickEmAndamento`
+  // (a trava contra sobreposição, Importante 8) para SEMPRE: a trava que
+  // existe para não deixar duas varreduras rodarem ao mesmo tempo virava,
+  // ela mesma, um jeito de travar TODAS as varreduras futuras, sem log
+  // nenhum explicando por quê. Com o teto, o pior caso é limitado e
+  // provável — o tique eventualmente falha, o `catch` trata, e o próximo
+  // tique do relógio (1 min) volta a rodar.
+  const TIMEOUT_DE_CHAMADA_GITHUB_MS = 10_000
+
+  const ghGet = async (path: string, githubToken: string): Promise<unknown> => {
+    const resp = await fetch(`https://api.github.com${path}`, {
+      headers: {
+        authorization: `token ${githubToken}`,
+        accept: 'application/vnd.github+json',
+        'user-agent': 'gitorch',
+      },
+      signal: AbortSignal.timeout(TIMEOUT_DE_CHAMADA_GITHUB_MS),
+    })
+    if (!resp.ok) {
+      throw new Error(`GitHub GET ${path} failed (${resp.status})`)
+    }
+    return resp.json()
+  }
+
+  // Leva B — a mesma família de `ghGet`, para as DUAS escritas que
+  // `resolverEntregaDoBoard` precisa fazer (comentar e fechar a tarefa) sem
+  // depender de um cliente maior — mesmo formato que `qa-rails-mission.ts`
+  // já usa para as próprias chamadas.
+  //
+  // Crítico 1 (leva C): `ghGet` ganhou teto explícito na leva B2 (Item 7)
+  // exatamente para não prender `tickEmAndamento` para sempre — mas o
+  // teto ficou só na LEITURA. `ghSend` é chamado de dentro da MESMA
+  // varredura (`resolverEntregaDoBoard`, dentro do laço de
+  // `varrerPublicacoes`), e uma escrita pendurada (POST/PATCH que nunca
+  // resolve — rede parada, não um erro HTTP) prende a MESMA trava, pela
+  // MESMA classe de defeito que a leitura já tinha: o projeto inteiro para
+  // de reexaminar QUALQUER sessão, de QUALQUER projeto, sem log nenhum
+  // explicando por quê. Reaproveita o MESMO teto que `ghGet` já usa —
+  // nenhum motivo para a escrita esperar mais ou menos que a leitura.
+  const ghSend = async (
+    method: 'POST' | 'PATCH',
+    path: string,
+    githubToken: string,
+    body: unknown
+  ): Promise<unknown> => {
+    const resp = await fetch(`https://api.github.com${path}`, {
+      method,
+      headers: {
+        authorization: `token ${githubToken}`,
+        accept: 'application/vnd.github+json',
+        'content-type': 'application/json',
+        'user-agent': 'gitorch',
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(TIMEOUT_DE_CHAMADA_GITHUB_MS),
+    })
+    if (!resp.ok) {
+      throw new Error(`GitHub ${method} ${path} failed (${resp.status})`)
+    }
+    return resp.json()
+  }
+
+  // Crítico 1 (leva C), continuação: auditoria de TODA chamada de rede
+  // alcançável pelo tique através da varredura de publicações. `ghGet` e
+  // `buscarComGuarda` (teste de ambiente, endereco-seguro.ts) já tinham
+  // teto; `buscarComGuarda` usa o próprio (`TIMEOUT_PADRAO_MS`, 15s),
+  // pensado para o mundo externo do cliente, não do GitHub — não mexido
+  // aqui. Uma TERCEIRA chamada sem teto nenhum foi encontrada:
+  // `createCardMover` (board-status.ts), instanciado logo abaixo dentro de
+  // `resolverEntregaDoBoard` e chamado tanto no caminho `entregue: true`
+  // quanto no `entregue: false` — ou seja, em TODO veredito final. Sem
+  // `fetchImpl`, ele cai no `fetch` cru, sem `AbortSignal` nenhum: uma
+  // chamada pendurada ali prenderia `tickEmAndamento` pela MESMA classe de
+  // defeito que `ghSend` tinha. `createCardMover` já aceita `fetchImpl`
+  // como injeção — só faltava usá-la, com o mesmo teto de `ghGet`/`ghSend`.
+  //
+  // Minor 1 (leva D): a forma antiga daqui era `init?.signal ??
+  // AbortSignal.timeout(...)` — o `??` faz o teto nunca ser criado quando
+  // já existe um `signal` no `init` do chamador, apagando o piso sempre que
+  // alguém passasse um. Nenhum chamador faz isso hoje (latente, não um bug
+  // vivo), mas é barato fechar: `fetchComTeto` (fetch-com-teto.ts) combina
+  // os dois com `AbortSignal.any` em vez de escolher um. `board-status.ts`
+  // (leva D) também passou a embrulhar por conta própria — este wrapper
+  // aqui é redundante para `createCardMover`, mas mantido pelo mesmo motivo
+  // de `ghGet`/`ghSend`: teto explícito na PRÓPRIA chamada, não só confiado
+  // à porta de saída de um módulo vizinho.
+  const fetchComTetoParaOBoard = fetchComTeto(fetch, TIMEOUT_DE_CHAMADA_GITHUB_MS)
+
+  // R6 do controlador: o mecanismo de publicação (Tarefa 12) muda raramente
+  // mas NÃO é imutável — guardado em memória, por repositório, com validade
+  // de uma hora. Sem coluna nova, sem migração: se o processo reinicia,
+  // redescobre — custa uma consulta. Vive DENTRO do plugin (não em escopo de
+  // módulo) para cada instância do relógio ter o próprio cache, isolado
+  // entre testes que registram o plugin mais de uma vez.
+  const VALIDADE_DO_CACHE_DE_MECANISMO_MS = 60 * 60_000
+  const cacheDeMecanismo = new Map<string, { mecanismo: Mecanismo; expiraEm: number }>()
+
+  const descobrirMecanismoComCache = async (
+    repository: string,
+    githubToken: string,
+    agora: Date
+  ): Promise<Mecanismo> => {
+    const emCache = cacheDeMecanismo.get(repository)
+    if (emCache && emCache.expiraEm > agora.getTime()) {
+      return emCache.mecanismo
+    }
+    const mecanismo = await descobrirMecanismo({
+      listarAmbientes: async () => {
+        const resp = (await ghGet(`/repos/${repository}/environments`, githubToken)) as {
+          environments?: Array<{ name: string }>
+        }
+        return (resp.environments ?? []).map((e) => e.name)
+      },
+      listarWorkflows: async () => {
+        const resp = (await ghGet(`/repos/${repository}/actions/workflows`, githubToken)) as {
+          workflows?: Array<{ name: string; path: string; state: string }>
+        }
+        return (resp.workflows ?? []).map((w) => ({
+          nome: w.name,
+          arquivo: w.path,
+          ativo: w.state === 'active',
+        }))
+      },
+    })
+    cacheDeMecanismo.set(repository, {
+      mecanismo,
+      expiraEm: agora.getTime() + VALIDADE_DO_CACHE_DE_MECANISMO_MS,
+    })
+    return mecanismo
+  }
+
+  // Avisa o dono do PROJETO — mesma resolução do resto do relógio
+  // (varrerSessoesDoDev, reconferirAcessoDoRelogio): sem vínculo real de
+  // Telegram, ninguém é avisado, e o projeto de um cliente nunca vira
+  // mensagem no chat de outro.
+  const avisarDonoDoProjeto = async (
+    projeto: NonNullable<Awaited<ReturnType<PrismaClient['project']['findUnique']>>>,
+    texto: string
+  ): Promise<void> => {
+    const notifyChatId = await resolveNotifyChatId(app.prisma, projeto, {
+      instanceOwnerEmail: process.env['GITORCH_OWNER_EMAIL'],
+      instanceChatId: process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
+    })
+    const notify = buildTelegramNotifier({
+      botToken: process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
+      ...(notifyChatId ? { chatId: notifyChatId } : {}),
+    })
+    if (!notify) return
+    await notify(texto).catch((err) =>
+      app.log.warn(err, `[Scheduler] aviso de publicação falhou para ${projeto.wingId}`)
+    )
+  }
+
+  /**
+   * Leva B ("o quadro do cliente não pode dizer entregue antes da hora"): o
+   * ÚNICO lugar do produto que fecha a tarefa e move o card para "done" por
+   * uma entrega delegada — chamado uma vez por sessão, exatamente quando
+   * `varrerPublicacoes` chega a um veredito FINAL sobre a publicação. Antes,
+   * `qa-rails-mission.ts` fazia isso no instante do MERGE, sem saber se o
+   * código ia mesmo chegar ao ar; se a publicação falhasse depois, nada
+   * reabria — o quadro do cliente dizia "entregue" enquanto o site nunca
+   * recebeu a mudança, a mentira exata que este plano existe para acabar.
+   *
+   * `entregue: true` cobre os DOIS casos onde "mesclou" e "entregou" são a
+   * mesma coisa: publicação CONFIRMADA (`no-ar`) e repositório que
+   * PROVADAMENTE não publica (`mecanismo.tipo === 'nenhum'` — aqui o merge
+   * já É a entrega, por definição). `entregue: false` cobre publicação que
+   * falhou, ficou sem confirmação dentro do prazo, ou nem chegou a ser lida:
+   * a tarefa NUNCA fecha como entregue por este caminho — fica aberta (fechar
+   * por engano é pior que deixar aberta demais), ganha um comentário
+   * nomeando o motivo (o dono vê o PORQUÊ direto na issue, não só num aviso
+   * de chat que rola para longe) e o card volta para "review": o código está
+   * mesclado, mas a entrega ainda não está confirmada — "em revisão" é mais
+   * honesto que "pronto" e mais honesto que fingir que nada mudou.
+   *
+   * Duas saídas silenciosas, de propósito, ambas best-effort (nunca derrubam
+   * a varredura — o veredito de publicação já foi decidido e gravado antes
+   * de chegar aqui):
+   * - sem `pullRequestNumber` na linha: teoricamente impossível depois de
+   *   `registrarMescla` também gravar o número na hora do merge, mas
+   *   defensivo — sem ele não há como montar nem o comentário nem o
+   *   porteiro de `fecharTarefaEntregue` (os dois citam o PR).
+   * - sem `githubToken`: a MESMA falta de credencial que já teria impedido a
+   *   leitura de publicação — não há como escrever no GitHub.
+   */
+  const resolverEntregaDoBoard = async (args: {
+    projeto: NonNullable<Awaited<ReturnType<PrismaClient['project']['findUnique']>>>
+    sessao: LinhaDeSessao
+    githubToken: string | undefined
+    entregue: boolean
+    motivo: string
+  }): Promise<void> => {
+    const { projeto, sessao, githubToken, entregue, motivo } = args
+    if (!sessao.pullRequestNumber) {
+      // Importante 4 (leva C): o irmão de baixo (sem credencial) sempre
+      // avisou; este ramo saía em silêncio, sem log nenhum. Sessões
+      // mescladas ANTES desta mudança existir (achadas pelo recuo pela
+      // issue de origem) podem ter `pullRequestNumber` nulo — tarefa e card
+      // ficam intocados, sem NENHUM rastro de que isso aconteceu ou por quê.
+      app.log.warn(
+        `[Scheduler] sem número do PR na sessão ${sessao.sessionName} — não dá para atualizar tarefa/card de #${sessao.issueNumber} (${projeto.wingId})`
+      )
+      return
+    }
+    if (!githubToken) {
+      app.log.warn(
+        `[Scheduler] sem credencial do GitHub para atualizar tarefa/card de #${sessao.issueNumber} (${projeto.wingId})`
+      )
+      return
+    }
+    const numeroDoPr = sessao.pullRequestNumber
+    const railsBoard = resolveRailsBoard(projeto)
+    const moveCard = railsBoard
+      ? createCardMover({
+          repository: projeto.wingId,
+          board: railsBoard,
+          token: githubToken,
+          columns: resolveBoardColumns(projeto.runtimeConfig),
+          fetchImpl: fetchComTetoParaOBoard,
+        })
+      : undefined
+
+    if (entregue) {
+      try {
+        await fecharTarefaEntregue({
+          numeroDoPr,
+          mesclado: true,
+          // `dev_sessions` só existe para trabalho delegado (a SM abre a
+          // linha na delegação) — nunca para PR de humano, então este
+          // caminho é sempre `delegado: true` por construção da tabela.
+          delegado: true,
+          lerEstadoDaTarefa: async () => {
+            const tarefa = (await ghGet(
+              `/repos/${projeto.wingId}/issues/${sessao.issueNumber}`,
+              githubToken
+            )) as { state?: string }
+            return tarefa.state === 'closed' ? 'closed' : 'open'
+          },
+          comentar: async (texto) => {
+            await ghSend(
+              'POST',
+              `/repos/${projeto.wingId}/issues/${sessao.issueNumber}/comments`,
+              githubToken,
+              { body: texto }
+            )
+          },
+          fechar: async () => {
+            await ghSend(
+              'PATCH',
+              `/repos/${projeto.wingId}/issues/${sessao.issueNumber}`,
+              githubToken,
+              {
+                state: 'closed',
+              }
+            )
+          },
+        })
+      } catch (err) {
+        app.log.warn(
+          err,
+          `[Scheduler] fechar a tarefa #${sessao.issueNumber} falhou depois da publicação confirmada`
+        )
+      }
+      if (moveCard) {
+        await moveCard(sessao.issueNumber, 'done').catch((err) =>
+          app.log.warn(err, `[Scheduler] mover card #${sessao.issueNumber} para done falhou`)
+        )
+      }
+    } else {
+      try {
+        await ghSend(
+          'POST',
+          `/repos/${projeto.wingId}/issues/${sessao.issueNumber}/comments`,
+          githubToken,
+          {
+            body:
+              `O GitOrch mesclou a entrega desta tarefa (PR #${numeroDoPr}), mas não conseguiu ` +
+              `confirmar que ela foi ao ar: ${motivo} A tarefa continua aberta até isso ser ` +
+              'confirmado ou resolvido manualmente.',
+          }
+        )
+      } catch (err) {
+        app.log.warn(
+          err,
+          `[Scheduler] comentário de publicação não confirmada falhou na tarefa #${sessao.issueNumber}`
+        )
+      }
+      if (moveCard) {
+        await moveCard(sessao.issueNumber, 'review').catch((err) =>
+          app.log.warn(err, `[Scheduler] mover card #${sessao.issueNumber} para review falhou`)
+        )
+      }
+    }
+  }
+
+  /**
+   * Item 1 da revisão pós-Leva A: fecha uma sessão que estourou o teto
+   * ABSOLUTO (`TETO_ABSOLUTO_DE_ACOMPANHAMENTO_MS`) sem chegar a um veredito
+   * final por nenhum dos caminhos específicos — usado tanto quando
+   * `acompanharPublicacao` rodou e devolveu um estado não-final preso
+   * (`falhou`, `publicando`, `commit-errado`) quanto quando nem uma leitura
+   * ao GitHub funcionou (sem credencial, ou uma exceção repetida). Sempre o
+   * mesmo pacote de efeitos: grava o veredito final, fecha a sessão, avisa o
+   * dono UMA vez com a última observação, e resolve o board como
+   * "não entregue" (nunca "done" — ver `resolverEntregaDoBoard`).
+   */
+  const fecharComTetoAbsoluto = async (args: {
+    projeto: NonNullable<Awaited<ReturnType<PrismaClient['project']['findUnique']>>>
+    sessao: LinhaDeSessao
+    agora: Date
+    desdeAMescla: number
+    ultimaObservacao: string
+    githubToken: string | undefined
+  }): Promise<void> => {
+    const { projeto, sessao, agora, desdeAMescla, ultimaObservacao, githubToken } = args
+    const veredito = fecharPorTetoAbsoluto({ desdeAMescla, ultimaObservacao })
+    await registrarEstadoDaPublicacao({
+      prisma: app.prisma as unknown as PrismaDevSession,
+      sessionName: sessao.sessionName,
+      estado: veredito.estado,
+      agora,
+    })
+    await fecharSessao({
+      prisma: app.prisma as unknown as PrismaDevSession,
+      sessionName: sessao.sessionName,
+      motivo: 'merged',
+      agora,
+    })
+    await avisarDonoDoProjeto(
+      projeto,
+      `GitOrch: a entrega de ${projeto.wingId} (commit ${sessao.mergeCommitSha}) foi mesclada. ${veredito.motivo}`
+    )
+    await resolverEntregaDoBoard({
+      projeto,
+      sessao,
+      githubToken,
+      entregue: false,
+      motivo: veredito.motivo,
+    })
+  }
+
+  /**
+   * A sessão não encerra mais no merge (`aoMesclarUmaEntrega`, acima) —
+   * encerra quando há VEREDITO sobre a publicação. Esta varredura é quem
+   * chega até esse veredito: descobre como o repositório publica (Tarefa 12,
+   * com cache de uma hora), acompanha se o commit mesclado foi ao ar (Tarefa
+   * 13), testa o endereço quando ele sobe (Tarefa 14), e só então fecha a
+   * linha — carregando SEMPRE o motivo (Tarefa 13/14) no aviso ao dono, não
+   * só o veredito cru: é o `motivo` que registra, por exemplo, um endereço
+   * excluído pela guarda de rede (Tarefa 11) antes de qualquer chamada.
+   *
+   * Cadência de 10 minutos por sessão (`sessoesParaAcompanharPublicacao`,
+   * pos-merge.ts) — nunca reexamina quem já tem veredito final, para não
+   * gastar a quota do GitHub do cliente à toa.
+   *
+   * Importante 5 da revisão final da branch: o relógio de "desde quando
+   * esta sessão vem vendo zero evidência" já foi um Map em memória, dentro
+   * deste fechamento — reiniciar o processo (e este produto se reimplanta)
+   * zerava a janela de tolerância, e um restart mais frequente que ela fazia
+   * o veredito nunca chegar a final. Hoje `desdeAMescla` (abaixo, dentro do
+   * laço) é lido de `sessao.stateCheckedAt`: gravado no EXATO instante do
+   * merge por `registrarMescla` (dev-session-store.ts) e, depois do merge,
+   * ninguém mais escreve nele — a vigia pré-merge para de examinar a sessão
+   * assim que `mergeCommitSha` é gravado (`sessoesParaVigiaPreMerge`,
+   * acima), e o PR já mesclado sai da listagem de PRs abertos que alimenta o
+   * laço de descoberta do QA. Sobrevive a qualquer reinício, sem coluna
+   * nova.
+   *
+   * Item 1 da revisão pós-Leva A: além dos tetos específicos de cada estado
+   * (`JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS`, `TETO_DE_COMMIT_ERRADO_MS`,
+   * ambos dentro de `acompanharPublicacao`), esta varredura agora também
+   * mede `desdeAMescla` contra `TETO_ABSOLUTO_DE_ACOMPANHAMENTO_MS` — o
+   * BACKSTOP que fecha a sessão mesmo quando nenhum teto específico se
+   * aplicava ao estado em que ela ficou presa (`falhou` sem ninguém rodar o
+   * CD de novo; `publicando` represado esperando aprovação humana; ou uma
+   * leitura ao GitHub que nunca funciona). Ver `fecharComTetoAbsoluto`.
+   *
+   * Item 2/Leva B: o veredito final também decide o que acontece com a
+   * TAREFA e o CARD do board do cliente — nunca mais no merge
+   * (`qa-rails-mission.ts`, desenho antigo). Ver `resolverEntregaDoBoard`.
+   */
+  /**
+   * Quantas execuções recentes `lerExecucoes` pede por página (Menor 10 da
+   * revisão final). Era 10 — folgado demais num repositório movimentado: CI,
+   * CD e rotinas agendadas todas registram execuções na MESMA lista, e a
+   * nossa (a que casa com `shaDaMescla`) pode cair fora da primeira página
+   * antes de a próxima varredura rodar. Quando isso acontece,
+   * `acompanharPorWorkflow` só enxerga a execução MAIS RECENTE (de outro
+   * fluxo) e o veredito vira `commit-errado` por engano — alimentando
+   * diretamente o Crítico 1 que este mesmo pacote de correções fechou.
+   *
+   * 50: cinco vezes mais folga, sem chegar ao teto de 100 da API — o custo
+   * de cota do GitHub é POR CHAMADA, não por item devolvido (continua sendo
+   * UMA leitura por sessão por cadência), então subir `per_page` não
+   * consome quota extra; só reduz o tamanho da resposta que ainda cabe
+   * folgado num único GET.
+   */
+  const TAMANHO_DA_PAGINA_DE_EXECUCOES = 50
+
+  const varrerPublicacoes = async (): Promise<void> => {
+    let sessoes: LinhaDeSessao[]
+    try {
+      sessoes = await app.prisma.devSession.findMany({
+        where: { closedAt: null, mergeCommitSha: { not: null } },
+      })
+    } catch (err) {
+      app.log.error(
+        err,
+        '[Scheduler] varredura de publicações não conseguiu listar sessões mescladas'
+      )
+      return
+    }
+    if (sessoes.length === 0) return
+
+    const agora = new Date()
+    const candidatas = sessoesParaAcompanharPublicacao(sessoes, agora)
+
+    for (const sessao of candidatas) {
+      // Item 1 da revisão pós-Leva A: calculado ANTES do try — precisa
+      // valer tanto para o caminho onde a leitura funciona (estados presos
+      // que `acompanharPublicacao` devolve) quanto para os dois onde ela
+      // NUNCA funciona (sem credencial; exceção no meio do caminho), que
+      // levam ao `catch` mais abaixo, fora do escopo de qualquer `const`
+      // declarada dentro do try.
+      //
+      // Importante 5 (Leva A): a fonte é a LINHA (`stateCheckedAt`, gravado
+      // por `registrarMescla` no instante do merge), não um relógio em
+      // memória do processo — sobrevive a reinício.
+      //
+      // Item 7 (leva B2) — invariante e por que `undefined` agora FECHA em
+      // vez de nunca fechar: `registrarMescla` (dev-session-store.ts) é o
+      // ÚNICO escritor de `mergeCommitSha`, e grava `stateCheckedAt` na
+      // MESMA chamada — uma linha que chega até aqui (já filtrada por
+      // `mergeCommitSha` não-nulo, na consulta acima) tem, hoje, SEMPRE
+      // `stateCheckedAt` preenchido. `undefined` não deveria acontecer.
+      // Antes desta correção, se acontecesse mesmo assim (edição manual do
+      // banco, uma migração futura que desacople os dois campos), o código
+      // tratava "não sei há quanto tempo" como "tempo desconhecido, então
+      // nenhum teto dispara" — a ÚNICA direção que reabre o beco sem saída
+      // que este teto absoluto existe para fechar (a sessão presa para
+      // sempre, sem aviso, é sempre pior do que fechar cedo demais com
+      // aviso). Por isso `undefined` agora conta como "já estourou o teto".
+      const desdeAMescla = sessao.stateCheckedAt
+        ? agora.getTime() - sessao.stateCheckedAt.getTime()
+        : undefined
+      const estourouTetoAbsoluto =
+        desdeAMescla === undefined || desdeAMescla >= TETO_ABSOLUTO_DE_ACOMPANHAMENTO_MS
+
+      // Espelhos para o `catch` mais abaixo — fora do escopo dos `const`
+      // declarados dentro do try (que existem para preservar o
+      // estreitamento de tipo do TypeScript dentro dos fechamentos de
+      // leitura, `lerExecucoes` e companhia).
+      let projetoParaCatch: Awaited<ReturnType<PrismaClient['project']['findUnique']>> = null
+      let tokenParaCatch: string | undefined
+      try {
+        const projeto = await app.prisma.project.findUnique({ where: { id: sessao.projectId } })
+        if (!projeto) continue
+        projetoParaCatch = projeto
+
+        const githubToken =
+          process.env['GITORCH_GITHUB_TOKEN'] ??
+          (await mintInstallationToken({
+            repository: projeto.wingId,
+            onError: (m) => app.log.error(m),
+            onWarn: (m) => app.log.warn(m),
+          })) ??
+          undefined
+        tokenParaCatch = githubToken
+        if (!githubToken) {
+          // Item 1: uma instalação revogada (ou um projeto suspenso) NUNCA
+          // volta a ter credencial sozinha — é exatamente a "leitura que
+          // falha para sempre" que o teto absoluto existe para fechar.
+          // Antes dele, comportamento de sempre: carimba a cadência e tenta
+          // de novo no próximo ciclo.
+          if (estourouTetoAbsoluto) {
+            await fecharComTetoAbsoluto({
+              projeto,
+              sessao,
+              agora,
+              desdeAMescla: desdeAMescla ?? TETO_ABSOLUTO_DE_ACOMPANHAMENTO_MS,
+              ultimaObservacao:
+                'perdemos a credencial do GitHub para este repositório e não conseguimos checar a publicação',
+              githubToken: undefined,
+            })
+            continue
+          }
+          app.log.warn(
+            `[Scheduler] varredura de publicações sem credencial do GitHub para ${projeto.wingId}; tenta no próximo ciclo`
+          )
+          // Importante 3 da revisão final: mesmo sem conseguir ler nada, a
+          // cadência avança — senão uma instalação revogada ou um projeto
+          // suspenso (credencial que nunca volta sozinha) vira reexame a
+          // cada tique (~60s) em vez de dez em dez minutos, e sob limite de
+          // taxa do GitHub o próprio laço alimenta o limite que o derrubou.
+          await registrarCadenciaDePublicacao({
+            prisma: app.prisma as unknown as PrismaDevSession,
+            sessionName: sessao.sessionName,
+            agora,
+          }).catch((cadenciaErr) =>
+            app.log.warn(
+              cadenciaErr,
+              `[Scheduler] falha ao carimbar cadência de publicação para ${sessao.sessionName}`
+            )
+          )
+          continue
+        }
+
+        const mecanismo = await descobrirMecanismoComCache(projeto.wingId, githubToken, agora)
+        const shaDaMescla = sessao.mergeCommitSha as string
+
+        const veredito = await acompanharPublicacao({
+          mecanismo,
+          shaDaMescla,
+          ...(desdeAMescla !== undefined ? { desdeAMescla } : {}),
+          lerExecucoes: async (arquivo) => {
+            const resp = (await ghGet(
+              `/repos/${projeto.wingId}/actions/workflows/${arquivo}/runs?per_page=${TAMANHO_DA_PAGINA_DE_EXECUCOES}`,
+              githubToken
+            )) as { workflow_runs?: ExecucaoDeWorkflow[] }
+            return resp.workflow_runs ?? []
+          },
+          lerEtapas: async (idDaExecucao) => {
+            const resp = (await ghGet(
+              `/repos/${projeto.wingId}/actions/runs/${idDaExecucao}/jobs`,
+              githubToken
+            )) as { jobs?: EtapaDaExecucao[] }
+            return resp.jobs ?? []
+          },
+          lerPublicacoes: async (ambiente, sha) => {
+            const resp = (await ghGet(
+              `/repos/${projeto.wingId}/deployments?environment=${encodeURIComponent(ambiente)}&sha=${encodeURIComponent(sha)}`,
+              githubToken
+            )) as PublicacaoDeclarada[]
+            return resp ?? []
+          },
+          lerEstadosDaPublicacao: async (idDaPublicacao) => {
+            const resp = (await ghGet(
+              `/repos/${projeto.wingId}/deployments/${idDaPublicacao}/statuses`,
+              githubToken
+            )) as EstadoDaPublicacao[]
+            return resp ?? []
+          },
+        })
+
+        // Item 1: qualquer estado NÃO-final que `acompanharPublicacao`
+        // devolveu ('falhou', 'publicando', 'commit-errado') mas que já
+        // passou do teto absoluto vira final AGORA — o backstop que fecha a
+        // sessão mesmo quando nenhum teto ESPECÍFICO se aplicava a este
+        // estado (um CD que falha e ninguém manda rodar de novo; uma
+        // publicação represada esperando aprovação humana, que nunca é
+        // "zero evidência" e por isso nunca entra na janela de tolerância;
+        // `commit-errado` também cai aqui só como rede de segurança — na
+        // prática o teto de 1h dele já resolve bem antes das 24h deste).
+        if (
+          veredito.estado !== 'no-ar' &&
+          veredito.estado !== 'sem-publicacao' &&
+          estourouTetoAbsoluto
+        ) {
+          await fecharComTetoAbsoluto({
+            projeto,
+            sessao,
+            agora,
+            desdeAMescla: desdeAMescla ?? TETO_ABSOLUTO_DE_ACOMPANHAMENTO_MS,
+            ultimaObservacao: `${veredito.estado} — ${veredito.motivo}`,
+            githubToken,
+          })
+          continue
+        }
+
+        // Achado 2: o estado ANTERIOR (antes de `registrarEstadoDaPublicacao`
+        // sobrescrever) é o que decide se o dono já foi avisado desta MESMA
+        // situação — "SPAM apaga sinal tanto quanto silêncio" (doutrina de
+        // `session-watch.ts`). Lido AQUI, antes da escrita.
+        const estadoAnterior = sessao.deployState
+
+        await registrarEstadoDaPublicacao({
+          prisma: app.prisma as unknown as PrismaDevSession,
+          sessionName: sessao.sessionName,
+          estado: veredito.estado,
+          agora,
+        })
+
+        if (veredito.estado === 'no-ar') {
+          // A publicação PROVOU que é deste commit — agora o juiz abre o
+          // endereço de verdade. O ensaio não decide se a sessão fecha (a
+          // publicação já aconteceu, isso é fato consumado); é informação
+          // ADICIONAL para o dono, sempre carregando o `motivo` (Tarefa 14),
+          // nunca só o veredito — é ali que mora, por exemplo, o aviso de um
+          // endereço recusado pela guarda antes de qualquer chamada.
+          //
+          // Menor 9 da revisão final da branch: no caminho de DEPLOYMENT o
+          // GitHub entrega o endereço DE GRAÇA (`environment_url`,
+          // `veredito.enderecos`, já comprovado do commit exato pela Tarefa
+          // 13). No caminho de WORKFLOW não existe esse presente — nenhuma
+          // leitura usada por `acompanharPorWorkflow` devolve URL — então
+          // `veredito.enderecos` sai SEMPRE vazio ali, e sem isto o ensaio
+          // ficava inerte (`sem-endereco`) para todo repositório que publica
+          // por workflow, inclusive um projeto real do cliente. O endereço,
+          // quando existe, só pode vir da CONFIGURAÇÃO do próprio projeto
+          // (`runtimeConfig.ambientes.endereco`, irmã de `ambientes.caminhos`
+          // — Tarefa 17). Sem essa configuração o comportamento honesto de
+          // sempre se mantém: `testarAmbiente` responde `sem-endereco`,
+          // visível ao dono na mesma nota que já acompanha todo veredito —
+          // nunca um endereço inventado, e sempre pela guarda de rede
+          // (`enderecoPermitido`/`buscarComGuarda`), exatamente como o
+          // caminho de deployment.
+          const enderecoConfigurado =
+            mecanismo.tipo === 'workflow' ? resolveEnderecoDeAmbiente(projeto.runtimeConfig) : null
+          const enderecosParaTestar =
+            veredito.enderecos.length > 0
+              ? veredito.enderecos
+              : enderecoConfigurado
+                ? [enderecoConfigurado]
+                : veredito.enderecos
+          const relatorio = await testarAmbiente({
+            enderecos: enderecosParaTestar,
+            // Configuração POR PROJETO (`runtimeConfig.ambientes.caminhos`,
+            // Tarefa 14/17) — nunca chuta rota de cliente; sem config, testa
+            // só a raiz.
+            caminhos: resolveCaminhosDeAmbiente(projeto.runtimeConfig),
+            buscar: buscarComGuarda,
+          }).catch((err) => {
+            app.log.warn(err, `[Scheduler] QA de ambiente falhou para ${sessao.sessionName}`)
+            return null
+          })
+          const notaDeAmbiente = relatorio
+            ? ` Ensaio do ambiente: ${relatorio.veredito} — ${relatorio.motivo}`
+            : ''
+          app.log.info(
+            `[Scheduler] publicação confirmada para ${sessao.sessionName} (${veredito.motivo}).${notaDeAmbiente}`
+          )
+          await fecharSessao({
+            prisma: app.prisma as unknown as PrismaDevSession,
+            sessionName: sessao.sessionName,
+            motivo: 'merged',
+            agora,
+          })
+          await avisarDonoDoProjeto(
+            projeto,
+            `GitOrch: a entrega de ${projeto.wingId} foi ao ar. ${veredito.motivo}${notaDeAmbiente}`
+          )
+          // Item 2/Leva B: só AGORA — com a publicação confirmada — a
+          // tarefa fecha como entregue e o card vai para "done". Nunca no
+          // merge (desenho antigo, `qa-rails-mission.ts`).
+          await resolverEntregaDoBoard({
+            projeto,
+            sessao,
+            githubToken,
+            entregue: true,
+            motivo: veredito.motivo,
+          })
+        } else if (veredito.estado === 'falhou' || veredito.estado === 'commit-errado') {
+          // Não fecha: o CD pode ser retentado pelo cliente, e uma execução
+          // presa na fila (commit-errado) pode ser sucedida pela certa —
+          // `sessoesParaAcompanharPublicacao` reexamina no próximo ciclo.
+          //
+          // Achado 2 da revisão: sem teto de mescla igual a Tarefa 10, esta
+          // varredura reexamina esta sessão a CADA cadência (dez em dez
+          // minutos) até o veredito virar outra coisa — e sem dedupe, cada
+          // reexame reenviava o MESMO aviso, para sempre. "SPAM apaga sinal
+          // tanto quanto silêncio" (doutrina de `session-watch.ts`). O
+          // dedupe é por TRANSIÇÃO DE ESTADO (`estadoAnterior`, lido acima,
+          // antes da escrita): mesma leitura de antes ('falhou' seguido de
+          // 'falhou', ou 'commit-errado' seguido de 'commit-errado') não
+          // reavisa; qualquer mudança real (inclusive a alternância entre os
+          // dois, ou a primeira vez) rearma o aviso.
+          if (estadoAnterior !== veredito.estado) {
+            const etapasTexto = veredito.etapas.map((e) => `${e.nome}: ${e.resultado}`).join('; ')
+            await avisarDonoDoProjeto(
+              projeto,
+              `GitOrch: a publicação de ${projeto.wingId} (commit ${shaDaMescla}) precisa de atenção — ${veredito.motivo}${etapasTexto ? ` Etapas: ${etapasTexto}.` : ''}`
+            )
+          }
+        } else if (veredito.estado === 'sem-publicacao') {
+          app.log.info(
+            `[Scheduler] ${projeto.wingId} não publica (${veredito.motivo}) — encerrando ${sessao.sessionName}`
+          )
+          await fecharSessao({
+            prisma: app.prisma as unknown as PrismaDevSession,
+            sessionName: sessao.sessionName,
+            motivo: 'merged',
+            agora,
+          })
+          // Achado 3 da revisão: fechar em silêncio era o caminho mais
+          // provável de esconder uma falha real (junto do achado 1 — zero
+          // evidência virando "não publica" cedo demais). O dono é avisado
+          // UMA vez, aqui mesmo, porque `sem-publicacao` é sempre um
+          // veredito FINAL (a sessão fecha e nunca mais é reexaminada) —
+          // este `avisarDonoDoProjeto` só roda uma vez por sessão por
+          // construção, sem precisar de dedupe. A mensagem diz em
+          // linguagem de negócio, sem jargão, qual dos dois motivos foi:
+          // repositório sem mecanismo de publicação nenhum (Tarefa 12 já
+          // sabia, na hora) ou janela de espera esgotada sem nada aparecer
+          // (achado 1).
+          const motivoDeNegocio =
+            mecanismo.tipo === 'nenhum'
+              ? 'não identificamos, no GitHub, como este repositório publica o código (nenhum ambiente ou fluxo de publicação configurado) — o código está mesclado, mas o GitOrch não tem como confirmar que ele foi ao ar.'
+              : 'esperamos, mas não apareceu nenhuma publicação para este commit dentro do tempo de espera — pode ser um CD que não roda para este tipo de mudança, ou algo que precisa de atenção manual.'
+          await avisarDonoDoProjeto(
+            projeto,
+            `GitOrch: a entrega de ${projeto.wingId} (commit ${shaDaMescla}) foi mesclada, mas ${motivoDeNegocio} ${veredito.motivo}`
+          )
+          // Item 2/Leva B: "sem-publicacao" tem DOIS motivos honestos bem
+          // diferentes — o repositório PROVADAMENTE não publica (aqui o
+          // merge JÁ é a entrega: fecha como entregue, card vai para
+          // "done") ou esperamos e não apareceu nada dentro do prazo (aqui
+          // NÃO fecha como entregue — ver `resolverEntregaDoBoard`, card
+          // volta para "review", tarefa fica aberta com o motivo).
+          await resolverEntregaDoBoard({
+            projeto,
+            sessao,
+            githubToken,
+            entregue: mecanismo.tipo === 'nenhum',
+            motivo: veredito.motivo,
+          })
+        }
+        // 'publicando': nada a fazer agora — a próxima passagem (depois da
+        // cadência) reexamina.
+      } catch (err) {
+        app.log.warn(
+          err,
+          `[Scheduler] varredura de publicação falhou na sessão ${sessao.sessionName}; tenta no próximo ciclo`
+        )
+        // Item 1: a MESMA "leitura que nunca funciona" do ramo "sem
+        // credencial" mais acima, só que descoberta mais tarde (a
+        // credencial existia, mas uma chamada no meio do caminho falhou —
+        // 403 persistente, por exemplo). `projetoParaCatch` só fica
+        // preenchido se a falha aconteceu DEPOIS de resolver o projeto; sem
+        // ele não há como avisar o dono nem escrever no board, então cai no
+        // comportamento de sempre (só carimba a cadência).
+        if (estourouTetoAbsoluto && projetoParaCatch) {
+          await fecharComTetoAbsoluto({
+            projeto: projetoParaCatch,
+            sessao,
+            agora,
+            desdeAMescla: desdeAMescla ?? TETO_ABSOLUTO_DE_ACOMPANHAMENTO_MS,
+            ultimaObservacao: `a leitura do GitHub falhou repetidamente (${String(err).slice(0, 160)})`,
+            githubToken: tokenParaCatch,
+          }).catch((fecharErr) =>
+            app.log.warn(
+              fecharErr,
+              `[Scheduler] fechar por teto absoluto falhou para ${sessao.sessionName}`
+            )
+          )
+          continue
+        }
+        // Importante 3 da revisão final: a cadência avança mesmo numa
+        // exceção no meio do caminho (um 403 do GitHub, por exemplo) — sem
+        // isto, uma falha PERSISTENTE reexamina a cada tique (~60s) em vez
+        // de dez em dez minutos, e sob limite de taxa do GitHub o próprio
+        // laço alimenta o limite que o derrubou.
+        await registrarCadenciaDePublicacao({
+          prisma: app.prisma as unknown as PrismaDevSession,
+          sessionName: sessao.sessionName,
+          agora,
+        }).catch((cadenciaErr) =>
+          app.log.warn(
+            cadenciaErr,
+            `[Scheduler] falha ao carimbar cadência de publicação para ${sessao.sessionName}`
+          )
+        )
+      }
+    }
+  }
+
   const tick = async () => {
+    // ANTES de qualquer disparo: quem perdeu o acesso ao repositório não pode
+    // ter o dia começando com uma missão escrevendo lá. `reconferirAcessoDoRelogio`
+    // nunca rejeita e só pergunta ao GitHub sobre os projetos cujo ciclo
+    // venceu — não é uma chamada por tique nem por missão.
+    await reconferirAcessoDoRelogio(app)
     await processSetupMissions()
     await varrerSessoesDoDev()
+    // Tarefa 17: falha aqui não pode derrubar o tick — o próprio
+    // `varrerPublicacoes` já isola cada sessão em try/catch; este é só o
+    // último cinto de segurança (mesmo padrão de `sweepExpiredEnvironments`
+    // logo abaixo).
+    await varrerPublicacoes().catch((err) =>
+      app.log.error(err, '[Scheduler] varredura de publicações falhou; tenta no próximo tick')
+    )
     await sweepExpiredEnvironments()
     const now = new Date()
     let schedules
@@ -2208,12 +3492,35 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // disparar missão real contra o Prisma de teste (paridade com
   // under-pressure). A execução é envolvida para nunca propagar rejeição (o
   // processo não cai).
+  // Importante 8 da revisão final da branch: `tick` faz I/O de rede
+  // sequencial através de vários projetos — um tique pode, sozinho, demorar
+  // mais que o próprio intervalo do relógio. Sem uma trava de "já em
+  // andamento", dois `tick()` corriam sobre a MESMA linha de sessão ao mesmo
+  // tempo; o dedupe de aviso em `varrerPublicacoes` (`estadoAnterior`, lido
+  // antes de escrever) é ler-depois-escrever, não atômico, então os dois
+  // avisariam o dono e fechariam a sessão em duplicidade. A trava é
+  // deliberadamente simples: um `boolean` no fechamento do plugin, marcado
+  // antes de chamar `tick()` e liberado no `finally`, para um disparo do
+  // `setInterval` que encontra o anterior ainda rodando simplesmente pular
+  // este tique (a próxima janela tenta de novo).
+  let tickEmAndamento = false
   const intervalId =
     process.env['NODE_ENV'] === 'test'
       ? undefined
       : setInterval(
           () => {
-            void tick().catch((err) => app.log.error(err, '[Scheduler] tick rejeitou'))
+            if (tickEmAndamento) {
+              app.log.warn(
+                '[Scheduler] tick anterior ainda em andamento; pulando este disparo do relógio'
+              )
+              return
+            }
+            tickEmAndamento = true
+            void tick()
+              .catch((err) => app.log.error(err, '[Scheduler] tick rejeitou'))
+              .finally(() => {
+                tickEmAndamento = false
+              })
           },
           Number(process.env['GITORCH_SCHEDULER_TICK_MS'] ?? 60 * 1000)
         )

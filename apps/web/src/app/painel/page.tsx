@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { useLanguage } from '../../LanguageContext'
 import Header from '../../components/Header'
-import { Terminal, Activity, FolderGit2, LogIn, HelpCircle } from 'lucide-react'
+import { Terminal, Activity, FolderGit2, LogIn, HelpCircle, Sparkles } from 'lucide-react'
 import { motion } from 'framer-motion'
 import Link from 'next/link'
 import { API_BASE_URL } from '../../lib/api'
@@ -13,11 +13,23 @@ import {
   statusLabel,
   type AgentQuestionView,
 } from '../../components/painel/agent-questions'
+import {
+  avisoAindaVale,
+  enviarDesejo,
+  estadoDaTelaDePedir,
+  fetchProjetos,
+  LIMITE_DO_TEXTO_DO_DESEJO,
+  type DesejoRegistrado,
+  type ResultadoDosProjetos,
+} from '../../components/painel/desejo'
 
-// Painel READ-ONLY (Fase 4, épico 4.3): mostra o GitHub/missões do cliente
-// organizados — NUNCA opera agentes (eles são autônomos) e NUNCA inventa
-// número. Sem sessão → convite honesto para conectar. Com sessão → dados
-// reais da API, com estado vazio honesto.
+// Painel: mostra o GitHub/missões do cliente organizados — NUNCA opera agentes
+// (eles são autônomos) e NUNCA inventa número. Sem sessão → convite honesto
+// para conectar. Com sessão → dados reais da API, com estado vazio honesto.
+//
+// A única coisa que a pessoa OPERA aqui é o pedido: o formulário de desejo
+// abaixo é a porta de entrada em linguagem de gente. Ele não manda em agente
+// nenhum — só registra a issue oficial, que é de onde a esteira parte.
 
 interface Mission {
   id: string
@@ -64,6 +76,20 @@ export default function Dashboard() {
   // continua sendo pelo Telegram. Falha na busca não derruba o painel, a
   // seção só fica vazia (fetchAgentQuestions nunca lança).
   const [questions, setQuestions] = useState<AgentQuestionView[]>([])
+  // Formulário de desejo. `null` = a lista de projetos ainda não voltou, e aí a
+  // tela não afirma nada sobre ela — do mesmo jeito que `authenticated === null`
+  // não afirma nada sobre a sessão. Falha na busca volta como `indisponivel`, e
+  // só uma resposta REAL e vazia autoriza dizer "conclua o setup": mandar
+  // refazer um setup já concluído seria o painel afirmando o que não sabe.
+  const [projetos, setProjetos] = useState<ResultadoDosProjetos | null>(null)
+  const [projetoEscolhido, setProjetoEscolhido] = useState('')
+  const [textoDoDesejo, setTextoDoDesejo] = useState('')
+  const [enviandoDesejo, setEnviandoDesejo] = useState(false)
+  // O aviso guarda a QUAL projeto ele pertence: sem isso ele não tem como dizer
+  // onde o pedido foi registrado, nem como saber que deixou de valer quando a
+  // tela mudou (ver `avisoAindaVale`).
+  const [desejoCriado, setDesejoCriado] = useState<DesejoRegistrado | null>(null)
+  const [erroDoDesejo, setErroDoDesejo] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -121,6 +147,61 @@ export default function Dashboard() {
     }
   }, [authenticated])
 
+  // Fica em useCallback porque o botão de "tentar de novo" precisa refazer
+  // exatamente esta busca: quando a rota falha, a pessoa tem uma saída na tela
+  // em vez de ficar com uma mensagem parada até recarregar a página.
+  const carregarProjetos = useCallback(async () => {
+    // Volta para "carregando" antes de reconsultar: enquanto a nova resposta
+    // não chega, a tela não deve seguir afirmando o resultado velho.
+    setProjetos(null)
+    const r = await fetchProjetos(API_BASE_URL)
+    setProjetos(r)
+    // Um projeto só: já vem escolhido, e o seletor nem aparece — não faz
+    // sentido obrigar a escolher quando não há escolha.
+    if (r.estado === 'ok' && r.projetos.length === 1 && r.projetos[0]) {
+      setProjetoEscolhido(r.projetos[0].id)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!authenticated) return
+    // Fora do corpo síncrono do effect (mesma regra react-hooks já respeitada
+    // pelo load das missões). fetchProjetos nunca lança — a falha vem como
+    // `indisponivel` dentro do resultado —, então não há rejeição a tratar.
+    queueMicrotask(() => void carregarProjetos())
+  }, [authenticated, carregarProjetos])
+
+  const pedirDesejo = useCallback(async () => {
+    setEnviandoDesejo(true)
+    setErroDoDesejo(null)
+    setDesejoCriado(null)
+    // O repositório é resolvido ANTES do envio: é ele que o aviso mostra, e a
+    // lista pode ser recarregada enquanto o pedido está no ar.
+    const escolhido =
+      projetos?.estado === 'ok'
+        ? projetos.projetos.find((p) => p.id === projetoEscolhido)
+        : undefined
+    const r = await enviarDesejo({
+      apiBaseUrl: API_BASE_URL,
+      projectId: projetoEscolhido,
+      texto: textoDoDesejo,
+    })
+    if (r.ok) {
+      setDesejoCriado({
+        numero: r.numero,
+        endereco: r.endereco,
+        projectId: projetoEscolhido,
+        repo: escolhido?.repo ?? '',
+      })
+      // Limpa a caixa só no sucesso: em erro, o texto que a pessoa escreveu
+      // continua ali para ela reenviar sem redigitar.
+      setTextoDoDesejo('')
+    } else {
+      setErroDoDesejo(r.chaveDoErro)
+    }
+    setEnviandoDesejo(false)
+  }, [projetos, projetoEscolhido, textoDoDesejo])
+
   // Ainda checando a sessão: nem afirma nem nega login, só não mostra nada
   // definitivo ainda — evita o flash de "conecte-se" pra quem já está logado.
   if (authenticated === null) {
@@ -161,10 +242,149 @@ export default function Dashboard() {
 
   const stats = data?.stats
   const missions = data?.missions ?? []
+  // O que a área de pedido tem direito de dizer sobre os projetos (a decisão
+  // mora em desejo.ts, onde dá para testá-la; aqui só se desenha o resultado).
+  const estadoDoPedido = estadoDaTelaDePedir(projetos)
+  const listaDeProjetos = projetos?.estado === 'ok' ? projetos.projetos : []
+  // O aviso de "registrado" é DERIVADO, nunca um resíduo: assim que a tela
+  // deixa de mostrar o estado em que aquele pedido foi feito (trocou de projeto,
+  // ou já se está escrevendo o próximo), ele some sozinho — sem effect e sem
+  // depender de o próximo envio começar para limpá-lo.
+  const avisoDeSucesso = avisoAindaVale(desejoCriado, {
+    projectId: projetoEscolhido,
+    texto: textoDoDesejo,
+  })
+    ? desejoCriado
+    : null
 
   return (
     <main className="min-h-screen flex flex-col bg-[var(--bg-deep)]">
       <Header />
+
+      {/* A tela de pedir: a porta de entrada do desejo em linguagem de gente.
+          Fica no topo porque é a única coisa que a pessoa FAZ aqui — o resto
+          do painel é leitura. */}
+      <div className="container mx-auto px-8 pt-8">
+        <div className="glass-panel p-6">
+          <h2 className="text-xl font-bold mb-2 flex items-center gap-2">
+            <Sparkles className="text-[#7c3aed]" size={20} />
+            {t('dashboard.wishTitle')}
+          </h2>
+          <p className="text-[var(--text-secondary)] mb-4">{t('dashboard.wishHint')}</p>
+
+          {/* Três coisas diferentes, três frases diferentes: ainda não sei,
+              não consegui saber, e realmente não há projeto. */}
+          {estadoDoPedido === 'carregando' && (
+            <p className="text-[var(--text-secondary)]">{t('dashboard.wishLoadingProjects')}</p>
+          )}
+
+          {estadoDoPedido === 'indisponivel' && (
+            <div className="flex flex-wrap items-center gap-4">
+              <p className="text-[var(--text-secondary)]">
+                {t('dashboard.wishProjectsUnavailable')}
+              </p>
+              <button
+                type="button"
+                onClick={() => void carregarProjetos()}
+                className="border border-[var(--glass-border)] px-6 py-2 rounded-full font-bold text-white transition-transform hover:scale-105"
+              >
+                {t('dashboard.wishProjectsRetry')}
+              </button>
+            </div>
+          )}
+
+          {estadoDoPedido === 'semProjeto' && (
+            <p className="text-[var(--text-secondary)]">{t('dashboard.wishNoProjects')}</p>
+          )}
+
+          {estadoDoPedido === 'pronto' && (
+            <div className="space-y-4">
+              {/* Seletor só quando há mais de um projeto: com um só, escolher
+                  não é decisão, é obstáculo. */}
+              {listaDeProjetos.length > 1 && (
+                <label className="block">
+                  <span className="block text-sm text-[var(--text-secondary)] mb-1">
+                    {t('dashboard.wishProjectLabel')}
+                  </span>
+                  <select
+                    value={projetoEscolhido}
+                    onChange={(e) => setProjetoEscolhido(e.target.value)}
+                    className="w-full bg-[var(--bg-surface-elevated)] border border-[var(--glass-border)] rounded-xl px-4 py-3 text-white"
+                  >
+                    <option value="">—</option>
+                    {listaDeProjetos.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.repo}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+
+              {/* `maxLength` impede que o texto passe do que cabe numa issue do
+                  GitHub; a validação do envio (desejo.ts) explica o motivo se
+                  ele passar mesmo assim. O contador só aparece perto do teto —
+                  antes disso é ruído, e ali é a única pista de que um texto
+                  colado foi cortado. */}
+              <textarea
+                value={textoDoDesejo}
+                onChange={(e) => setTextoDoDesejo(e.target.value)}
+                placeholder={t('dashboard.wishPlaceholder')}
+                rows={4}
+                maxLength={LIMITE_DO_TEXTO_DO_DESEJO}
+                className="w-full bg-[var(--bg-surface-elevated)] border border-[var(--glass-border)] rounded-xl px-4 py-3 text-white placeholder:text-[var(--text-secondary)] resize-y"
+              />
+
+              {textoDoDesejo.length > LIMITE_DO_TEXTO_DO_DESEJO * 0.9 && (
+                <p className="text-sm text-[var(--text-secondary)] text-right">
+                  {textoDoDesejo.length.toLocaleString()} /{' '}
+                  {LIMITE_DO_TEXTO_DO_DESEJO.toLocaleString()}
+                </p>
+              )}
+
+              <div className="flex flex-wrap items-center gap-4">
+                <button
+                  type="button"
+                  onClick={() => void pedirDesejo()}
+                  disabled={enviandoDesejo}
+                  className="bg-white text-black px-8 py-3 rounded-full font-bold transition-transform hover:scale-105 disabled:opacity-50 disabled:hover:scale-100 disabled:cursor-not-allowed"
+                >
+                  {enviandoDesejo ? t('dashboard.wishSending') : t('dashboard.wishSubmit')}
+                </button>
+
+                {avisoDeSucesso && (
+                  <span className="text-[#10b981]">
+                    {/* Sem o endereço do repositório em mãos, o aviso diz menos
+                        em vez de mostrar um buraco no meio da frase. */}
+                    {t(
+                      avisoDeSucesso.repo ? 'dashboard.wishSuccess' : 'dashboard.wishSuccessNoRepo',
+                      { numero: avisoDeSucesso.numero, repo: avisoDeSucesso.repo }
+                    )}{' '}
+                    {avisoDeSucesso.endereco && (
+                      <a
+                        href={avisoDeSucesso.endereco}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="underline"
+                      >
+                        {t('dashboard.wishSuccessLink')}
+                      </a>
+                    )}
+                  </span>
+                )}
+
+                {/* `limite` viaja sempre: as chaves que não usam a variável a
+                    ignoram, e a de texto longo precisa dizer o número real. */}
+                {erroDoDesejo && (
+                  <span className="text-[#ef4444]">
+                    {t(erroDoDesejo, { limite: LIMITE_DO_TEXTO_DO_DESEJO.toLocaleString() })}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
 
       <div className="flex-1 container mx-auto px-8 py-8 flex flex-col lg:flex-row gap-8">
         {/* Coluna esquerda: números REAIS */}

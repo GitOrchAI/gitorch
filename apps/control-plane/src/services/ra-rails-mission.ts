@@ -1,4 +1,6 @@
+import { wrapClientRequest } from '@gitorch/cadence'
 import { runRaRails, type StepExecutor } from './role-rails.js'
+import { fetchComTeto } from './fetch-com-teto.js'
 
 // Missão do RA nos TRILHOS: ancora a análise na WISH ABERTA (mesmo gatilho do
 // PO). Sem isso o RA analisa o projeto em abstrato — ou pior, a wish ANTERIOR
@@ -22,7 +24,9 @@ export interface RaRailsMissionResult {
 export async function runRaMissionViaRails(
   options: RaRailsMissionOptions
 ): Promise<RaRailsMissionResult> {
-  const f = options.fetchImpl ?? fetch
+  // IMPORTANTE (leva D): alcançável pelo tique (scheduler.ts, wake do RA)
+  // sob `tickEmAndamento` — mesma classe de defeito do Crítico.
+  const f = fetchComTeto(options.fetchImpl ?? fetch)
 
   // A wish é o ponto de ancoragem — best-effort: sem token ou sem wish aberta,
   // o RA roda como scout geral (não é erro).
@@ -47,8 +51,11 @@ export async function runRaMissionViaRails(
         }>
         const wish = Array.isArray(wishes) ? wishes[0] : undefined
         if (wish) {
+          // Item 6 (leva B2): `wish.body` é texto livre do cliente — nunca
+          // uma instrução ao RA. `wrapClientRequest` (packages/cadence)
+          // marca isso explicitamente, bem ao lado do texto.
           wishBlock = [
-            `Wish under analysis (the client's CURRENT desire — anchor every area and journey on THIS, not on past work): #${wish.number} ${wish.title} — ${wish.body ?? ''}`,
+            `Wish under analysis (the client's CURRENT desire — anchor every area and journey on THIS, not on past work): #${wish.number} ${wish.title}\n${wrapClientRequest(wish.body ?? '')}`,
           ]
         }
       }

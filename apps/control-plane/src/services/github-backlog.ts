@@ -2,6 +2,7 @@ import { ProjectV2Client } from '@gitorch/github-sync'
 import type { BacklogGitHub, IssueRef } from './backlog-executor.js'
 import { GithubExecutionError } from './github-errors.js'
 import { createBoardStatus, type BoardColumns } from './board-status.js'
+import { fetchComTeto } from './fetch-com-teto.js'
 
 // Adapter GitHub REAL do backlog-executor: implementa a superfície BacklogGitHub
 // com REST (issues/labels/busca) + ProjectV2Client (árvore, board, sprint).
@@ -37,10 +38,14 @@ export interface GithubBacklogOptions {
 }
 
 export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHub {
-  const f = options.fetchImpl ?? fetch
+  // IMPORTANTE (leva D): alcançável pelo tique (scheduler.ts, wake do PO,
+  // via `runPoMissionViaRails`) sob `tickEmAndamento` — mesma classe de
+  // defeito do Crítico. `fetchImpl: f` (não `options.fetchImpl` cru) —
+  // `ProjectV2Client` não tem teto próprio.
+  const f = fetchComTeto(options.fetchImpl ?? fetch)
   const client = new ProjectV2Client({
     token: options.token,
-    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+    fetchImpl: f,
   })
   const sprintField = options.sprintFieldName ?? 'Sprint'
 

@@ -1,0 +1,610 @@
+import { describe, expect, it, vi } from 'vitest'
+import {
+  acompanharPublicacao,
+  fecharPorTetoAbsoluto,
+  JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS,
+  TETO_DE_COMMIT_ERRADO_MS,
+  TETO_ABSOLUTO_DE_ACOMPANHAMENTO_MS,
+} from './publicacao.js'
+
+const mecanismoWorkflow = { tipo: 'workflow', arquivo: 'cd.yml', nome: 'CD' } as const
+
+describe('acompanharPublicacao', () => {
+  it('mescla sem publicação nenhuma: diz que não há, e não inventa', async () => {
+    const v = await acompanharPublicacao({
+      mecanismo: { tipo: 'nenhum' },
+      shaDaMescla: 'abc123',
+      lerExecucoes: vi.fn(),
+      lerEtapas: vi.fn(),
+      lerPublicacoes: vi.fn(),
+      lerEstadosDaPublicacao: vi.fn(),
+    })
+    expect(v.estado).toBe('sem-publicacao')
+  })
+
+  it('a publicação é de OUTRO commit: acusa, não diz que está no ar', async () => {
+    const v = await acompanharPublicacao({
+      mecanismo: mecanismoWorkflow,
+      shaDaMescla: 'abc123',
+      lerExecucoes: vi
+        .fn()
+        .mockResolvedValue([
+          { id: 9, head_sha: 'antigo99', status: 'completed', conclusion: 'success' },
+        ]),
+      lerEtapas: vi.fn(),
+      lerPublicacoes: vi.fn(),
+      lerEstadosDaPublicacao: vi.fn(),
+      // Item 7 (leva B2): `desdeAMescla` explícito e bem abaixo do teto —
+      // este teste prova a detecção de commit errado em si, não a fronteira
+      // do teto (coberta à parte, mais abaixo). Sem passar nada aqui,
+      // `desdeAMescla` fica `undefined`, e o `undefined` agora fecha
+      // imediatamente por segurança (ver "Item 7" mais abaixo).
+      desdeAMescla: 0,
+    })
+    expect(v.estado).toBe('commit-errado')
+    expect(v.motivo).toMatch(/outro commit|antigo/i)
+  })
+
+  it('ainda rodando: publicando', async () => {
+    const v = await acompanharPublicacao({
+      mecanismo: mecanismoWorkflow,
+      shaDaMescla: 'abc123',
+      lerExecucoes: vi
+        .fn()
+        .mockResolvedValue([
+          { id: 9, head_sha: 'abc123', status: 'in_progress', conclusion: null },
+        ]),
+      lerEtapas: vi.fn().mockResolvedValue([
+        { name: 'Deploy staging', status: 'completed', conclusion: 'success' },
+        { name: 'Deploy backend prod', status: 'in_progress', conclusion: null },
+      ]),
+      lerPublicacoes: vi.fn(),
+      lerEstadosDaPublicacao: vi.fn(),
+    })
+    expect(v.estado).toBe('publicando')
+  })
+
+  it('terminou com sucesso: no ar, com as etapas na ordem', async () => {
+    const v = await acompanharPublicacao({
+      mecanismo: mecanismoWorkflow,
+      shaDaMescla: 'abc123',
+      lerExecucoes: vi
+        .fn()
+        .mockResolvedValue([
+          { id: 9, head_sha: 'abc123', status: 'completed', conclusion: 'success' },
+        ]),
+      lerEtapas: vi.fn().mockResolvedValue([
+        { name: 'Deploy staging', status: 'completed', conclusion: 'success' },
+        { name: 'Smoke staging', status: 'completed', conclusion: 'success' },
+        { name: 'Deploy frontend prod', status: 'completed', conclusion: 'success' },
+        { name: 'Smoke gate produção', status: 'completed', conclusion: 'success' },
+        { name: 'Rollback backend', status: 'completed', conclusion: 'skipped' },
+      ]),
+      lerPublicacoes: vi.fn(),
+      lerEstadosDaPublicacao: vi.fn(),
+    })
+    expect(v.estado).toBe('no-ar')
+    expect(v.etapas.map((e) => e.nome)).toContain('Smoke gate produção')
+  })
+
+  it('uma etapa de publicação falhou: falhou, mesmo com o conjunto verde', async () => {
+    const v = await acompanharPublicacao({
+      mecanismo: mecanismoWorkflow,
+      shaDaMescla: 'abc123',
+      lerExecucoes: vi
+        .fn()
+        .mockResolvedValue([
+          { id: 9, head_sha: 'abc123', status: 'completed', conclusion: 'success' },
+        ]),
+      lerEtapas: vi.fn().mockResolvedValue([
+        { name: 'Deploy staging', status: 'completed', conclusion: 'success' },
+        { name: 'Deploy backend prod', status: 'completed', conclusion: 'failure' },
+      ]),
+      lerPublicacoes: vi.fn(),
+      lerEstadosDaPublicacao: vi.fn(),
+    })
+    expect(v.estado).toBe('falhou')
+  })
+
+  it('pelo mecanismo de deployment: usa o estado mais novo e traz o endereço', async () => {
+    const v = await acompanharPublicacao({
+      mecanismo: { tipo: 'deployment', ambientes: ['github-pages'] },
+      shaDaMescla: 'abc123',
+      lerPublicacoes: vi
+        .fn()
+        .mockResolvedValue([{ id: 5, environment: 'github-pages', sha: 'abc123' }]),
+      lerEstadosDaPublicacao: vi.fn().mockResolvedValue([
+        {
+          state: 'success',
+          environment_url: 'https://exemplo.test/',
+          created_at: '2026-08-16T10:00:00Z',
+        },
+        { state: 'in_progress', environment_url: '', created_at: '2026-08-16T09:59:00Z' },
+      ]),
+      lerExecucoes: vi.fn(),
+      lerEtapas: vi.fn(),
+    })
+    expect(v.estado).toBe('no-ar')
+    expect(v.enderecos).toContain('https://exemplo.test/')
+  })
+
+  it('publicação que virou inativa não conta como no ar', async () => {
+    const v = await acompanharPublicacao({
+      mecanismo: { tipo: 'deployment', ambientes: ['github-pages'] },
+      shaDaMescla: 'abc123',
+      lerPublicacoes: vi
+        .fn()
+        .mockResolvedValue([{ id: 5, environment: 'github-pages', sha: 'abc123' }]),
+      lerEstadosDaPublicacao: vi
+        .fn()
+        .mockResolvedValue([
+          { state: 'inactive', environment_url: '', created_at: '2026-08-16T10:00:00Z' },
+        ]),
+      lerExecucoes: vi.fn(),
+      lerEtapas: vi.fn(),
+    })
+    expect(v.estado).not.toBe('no-ar')
+  })
+
+  // FINDING 1 — o veredito segue produção, não o pior estado entre todos os
+  // ambientes: um staging vermelho não pode esconder uma produção no ar, e
+  // uma produção vermelha não pode ser escondida por um staging verde.
+  it('produção no ar com staging falhando: no ar, e a falha do staging continua visível', async () => {
+    const v = await acompanharPublicacao({
+      mecanismo: { tipo: 'deployment', ambientes: ['staging', 'production'] },
+      shaDaMescla: 'abc123',
+      lerPublicacoes: vi.fn().mockImplementation(async (ambiente: string) =>
+        ambiente === 'production'
+          ? [
+              {
+                id: 6,
+                environment: 'production',
+                sha: 'abc123',
+                production_environment: true,
+                transient_environment: false,
+              },
+            ]
+          : [
+              {
+                id: 5,
+                environment: 'staging',
+                sha: 'abc123',
+                production_environment: false,
+                transient_environment: false,
+              },
+            ]
+      ),
+      lerEstadosDaPublicacao: vi.fn().mockImplementation(async (id: number) =>
+        id === 6
+          ? [
+              {
+                state: 'success',
+                environment_url: 'https://prod.exemplo.test/',
+                created_at: '2026-08-16T10:00:00Z',
+              },
+            ]
+          : [{ state: 'failure', environment_url: '', created_at: '2026-08-16T09:55:00Z' }]
+      ),
+      lerExecucoes: vi.fn(),
+      lerEtapas: vi.fn(),
+    })
+    expect(v.estado).toBe('no-ar')
+    expect(v.enderecos).toContain('https://prod.exemplo.test/')
+    const etapaDoStaging = v.etapas.find((e) => e.nome === 'Publicação em staging')
+    expect(etapaDoStaging?.resultado).toBe('failure')
+  })
+
+  it('produção falhando com staging no ar: falhou (o inverso não pode ser escondido)', async () => {
+    const v = await acompanharPublicacao({
+      mecanismo: { tipo: 'deployment', ambientes: ['staging', 'production'] },
+      shaDaMescla: 'abc123',
+      lerPublicacoes: vi.fn().mockImplementation(async (ambiente: string) =>
+        ambiente === 'production'
+          ? [
+              {
+                id: 6,
+                environment: 'production',
+                sha: 'abc123',
+                production_environment: true,
+                transient_environment: false,
+              },
+            ]
+          : [
+              {
+                id: 5,
+                environment: 'staging',
+                sha: 'abc123',
+                production_environment: false,
+                transient_environment: false,
+              },
+            ]
+      ),
+      lerEstadosDaPublicacao: vi.fn().mockImplementation(async (id: number) =>
+        id === 6
+          ? [{ state: 'failure', environment_url: '', created_at: '2026-08-16T10:00:00Z' }]
+          : [
+              {
+                state: 'success',
+                environment_url: 'https://staging.exemplo.test/',
+                created_at: '2026-08-16T09:55:00Z',
+              },
+            ]
+      ),
+      lerExecucoes: vi.fn(),
+      lerEtapas: vi.fn(),
+    })
+    expect(v.estado).toBe('falhou')
+  })
+
+  it('sem informação de qual ambiente é produção: pior-vence entre todos, sem mudança', async () => {
+    const v = await acompanharPublicacao({
+      mecanismo: { tipo: 'deployment', ambientes: ['staging', 'preview'] },
+      shaDaMescla: 'abc123',
+      // Nenhuma das duas publicações declara `production_environment: true`
+      // — não dá para saber qual ambiente é produção, então o comportamento
+      // antigo (pior-vence geral) deve continuar valendo.
+      lerPublicacoes: vi.fn().mockImplementation(async (ambiente: string) => [
+        {
+          id: ambiente === 'staging' ? 5 : 7,
+          environment: ambiente,
+          sha: 'abc123',
+          production_environment: false,
+          transient_environment: false,
+        },
+      ]),
+      lerEstadosDaPublicacao: vi.fn().mockImplementation(async (id: number) =>
+        id === 5
+          ? [{ state: 'failure', environment_url: '', created_at: '2026-08-16T10:00:00Z' }]
+          : [
+              {
+                state: 'success',
+                environment_url: 'https://preview.exemplo.test/',
+                created_at: '2026-08-16T09:55:00Z',
+              },
+            ]
+      ),
+      lerExecucoes: vi.fn(),
+      lerEtapas: vi.fn(),
+    })
+    expect(v.estado).toBe('falhou')
+  })
+
+  // FINDING 2 — um job cujo NOME diz que publica, voltando "skipped", não é
+  // prova de publicação — mesmo com o resto do conjunto verde.
+  it('job que publica veio "skipped": sem prova de publicação, mesmo com o resto verde', async () => {
+    const v = await acompanharPublicacao({
+      mecanismo: mecanismoWorkflow,
+      shaDaMescla: 'abc123',
+      lerExecucoes: vi
+        .fn()
+        .mockResolvedValue([
+          { id: 9, head_sha: 'abc123', status: 'completed', conclusion: 'success' },
+        ]),
+      lerEtapas: vi.fn().mockResolvedValue([
+        { name: 'Build', status: 'completed', conclusion: 'success' },
+        { name: 'Deploy backend prod', status: 'completed', conclusion: 'skipped' },
+      ]),
+      lerPublicacoes: vi.fn(),
+      lerEstadosDaPublicacao: vi.fn(),
+    })
+    expect(v.estado).toBe('sem-publicacao')
+    expect(v.motivo).toMatch(/pulad|publicação/i)
+  })
+
+  it('job de reversão pulado com "deploy" no nome continua benigno: no ar', async () => {
+    const v = await acompanharPublicacao({
+      mecanismo: mecanismoWorkflow,
+      shaDaMescla: 'abc123',
+      lerExecucoes: vi
+        .fn()
+        .mockResolvedValue([
+          { id: 9, head_sha: 'abc123', status: 'completed', conclusion: 'success' },
+        ]),
+      lerEtapas: vi.fn().mockResolvedValue([
+        { name: 'Deploy backend prod', status: 'completed', conclusion: 'success' },
+        { name: 'Rollback do deploy', status: 'completed', conclusion: 'skipped' },
+      ]),
+      lerPublicacoes: vi.fn(),
+      lerEstadosDaPublicacao: vi.fn(),
+    })
+    expect(v.estado).toBe('no-ar')
+  })
+
+  // FINDING 3 — o filtro de defesa depois da leitura (a leitura real já
+  // filtra por commit, mas o código revalida): sem ele, uma leitura injetada
+  // que devolvesse o commit errado seria aceita como se fosse do commit
+  // certo.
+  it('a leitura de publicações devolve o commit errado: o filtro de defesa barra, não conta como no ar', async () => {
+    const v = await acompanharPublicacao({
+      mecanismo: { tipo: 'deployment', ambientes: ['github-pages'] },
+      shaDaMescla: 'abc123',
+      lerPublicacoes: vi.fn().mockResolvedValue([
+        {
+          id: 5,
+          environment: 'github-pages',
+          sha: 'outro456',
+          production_environment: true,
+          transient_environment: false,
+        },
+      ]),
+      lerEstadosDaPublicacao: vi.fn().mockResolvedValue([
+        {
+          state: 'success',
+          environment_url: 'https://exemplo.test/',
+          created_at: '2026-08-16T10:00:00Z',
+        },
+      ]),
+      lerExecucoes: vi.fn(),
+      lerEtapas: vi.fn(),
+    })
+    expect(v.estado).toBe('sem-publicacao')
+    expect(v.enderecos).not.toContain('https://exemplo.test/')
+  })
+
+  // Achado 1 da revisão da Tarefa 17 — "ainda não" e "nunca" não podem
+  // colapsar no mesmo veredito. O primeiro tique depois do merge, no
+  // caminho de DEPLOYMENT, vê zero evidência (o CD ainda não criou o
+  // objeto de publicação) — isso não pode virar `sem-publicacao` (FINAL,
+  // fecha a sessão em silêncio) na hora.
+  describe('achado 1 — janela de tolerância antes de "zero evidência" virar final (caminho de deployment)', () => {
+    it('zero evidência ANTES da janela: ainda publicando, não fecha', async () => {
+      const v = await acompanharPublicacao({
+        mecanismo: { tipo: 'deployment', ambientes: ['github-pages'] },
+        shaDaMescla: 'abc123',
+        lerPublicacoes: vi.fn().mockResolvedValue([]),
+        lerEstadosDaPublicacao: vi.fn(),
+        lerExecucoes: vi.fn(),
+        lerEtapas: vi.fn(),
+        desdeAMescla: 0,
+      })
+      expect(v.estado).toBe('publicando')
+      expect(v.semEvidenciaDeTodoAmbiente).toBe(true)
+      expect(v.motivo).toMatch(/ainda não há publicação|janela de tolerância/i)
+    })
+
+    it('zero evidência bem no limite da janela: ainda dentro (limite é exclusivo, "<")', async () => {
+      const v = await acompanharPublicacao({
+        mecanismo: { tipo: 'deployment', ambientes: ['github-pages'] },
+        shaDaMescla: 'abc123',
+        lerPublicacoes: vi.fn().mockResolvedValue([]),
+        lerEstadosDaPublicacao: vi.fn(),
+        lerExecucoes: vi.fn(),
+        lerEtapas: vi.fn(),
+        desdeAMescla: JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS - 1,
+      })
+      expect(v.estado).toBe('publicando')
+    })
+
+    it('zero evidência DEPOIS da janela: sem-publicacao (final) — não espera para sempre', async () => {
+      const v = await acompanharPublicacao({
+        mecanismo: { tipo: 'deployment', ambientes: ['github-pages'] },
+        shaDaMescla: 'abc123',
+        lerPublicacoes: vi.fn().mockResolvedValue([]),
+        lerEstadosDaPublicacao: vi.fn(),
+        lerExecucoes: vi.fn(),
+        lerEtapas: vi.fn(),
+        desdeAMescla: JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS,
+      })
+      expect(v.estado).toBe('sem-publicacao')
+      expect(v.semEvidenciaDeTodoAmbiente).toBe(true)
+    })
+
+    it('bem depois da janela (uma hora): continua sem-publicacao — não fica esperando para sempre', async () => {
+      const v = await acompanharPublicacao({
+        mecanismo: { tipo: 'deployment', ambientes: ['github-pages'] },
+        shaDaMescla: 'abc123',
+        lerPublicacoes: vi.fn().mockResolvedValue([]),
+        lerEstadosDaPublicacao: vi.fn(),
+        lerExecucoes: vi.fn(),
+        lerEtapas: vi.fn(),
+        desdeAMescla: 60 * 60_000,
+      })
+      expect(v.estado).toBe('sem-publicacao')
+    })
+
+    it('sem informar desdeAMescla: comportamento de sempre (final na hora) — nenhum call site esquecido silenciosamente fica seguro', async () => {
+      const v = await acompanharPublicacao({
+        mecanismo: { tipo: 'deployment', ambientes: ['github-pages'] },
+        shaDaMescla: 'abc123',
+        lerPublicacoes: vi.fn().mockResolvedValue([]),
+        lerEstadosDaPublicacao: vi.fn(),
+        lerExecucoes: vi.fn(),
+        lerEtapas: vi.fn(),
+      })
+      expect(v.estado).toBe('sem-publicacao')
+    })
+
+    it('um ambiente tem zero evidência mas OUTRO já falhou de verdade: não é "zero evidência total" — decide na hora, mesmo dentro da janela', async () => {
+      const v = await acompanharPublicacao({
+        mecanismo: { tipo: 'deployment', ambientes: ['staging', 'production'] },
+        shaDaMescla: 'abc123',
+        lerPublicacoes: vi.fn().mockImplementation(async (ambiente: string) =>
+          ambiente === 'production'
+            ? []
+            : [
+                {
+                  id: 5,
+                  environment: 'staging',
+                  sha: 'abc123',
+                  production_environment: false,
+                  transient_environment: false,
+                },
+              ]
+        ),
+        lerEstadosDaPublicacao: vi
+          .fn()
+          .mockResolvedValue([
+            { state: 'failure', environment_url: '', created_at: '2026-08-16T10:00:00Z' },
+          ]),
+        lerExecucoes: vi.fn(),
+        lerEtapas: vi.fn(),
+        desdeAMescla: 0,
+      })
+      expect(v.estado).toBe('falhou')
+      expect(v.semEvidenciaDeTodoAmbiente).toBe(false)
+    })
+
+    it('mecanismo "nenhum": final na hora, nunca espera a janela (Tarefa 12 já sabe que este repositório não publica)', async () => {
+      const v = await acompanharPublicacao({
+        mecanismo: { tipo: 'nenhum' },
+        shaDaMescla: 'abc123',
+        lerPublicacoes: vi.fn(),
+        lerEstadosDaPublicacao: vi.fn(),
+        lerExecucoes: vi.fn(),
+        lerEtapas: vi.fn(),
+        desdeAMescla: 0,
+      })
+      expect(v.estado).toBe('sem-publicacao')
+      expect(v.semEvidenciaDeTodoAmbiente).toBe(false)
+    })
+  })
+
+  // CRÍTICO 2 da revisão final da branch — "não lê como nunca": o histórico
+  // do workflow de publicação pode estar VAZIO logo após o merge (repositório
+  // que acabou de ganhar o workflow), e sem esta janela isso virava
+  // `sem-publicacao` FINAL no primeiro tique, ~1 minuto depois de mesclar,
+  // fechando a sessão em silêncio bem no momento em que a publicação estava
+  // começando.
+  describe('crítico 2 — janela de tolerância também no caminho de WORKFLOW (histórico vazio)', () => {
+    it('histórico vazio ANTES da janela: ainda publicando, não fecha', async () => {
+      const v = await acompanharPublicacao({
+        mecanismo: mecanismoWorkflow,
+        shaDaMescla: 'abc123',
+        lerExecucoes: vi.fn().mockResolvedValue([]),
+        lerEtapas: vi.fn(),
+        lerPublicacoes: vi.fn(),
+        lerEstadosDaPublicacao: vi.fn(),
+        desdeAMescla: 0,
+      })
+      expect(v.estado).toBe('publicando')
+      expect(v.semEvidenciaDeTodoAmbiente).toBe(true)
+      expect(v.motivo).toMatch(/nenhuma execução|janela de tolerância/i)
+    })
+
+    it('histórico vazio DEPOIS da janela: sem-publicacao (final) — não espera para sempre', async () => {
+      const v = await acompanharPublicacao({
+        mecanismo: mecanismoWorkflow,
+        shaDaMescla: 'abc123',
+        lerExecucoes: vi.fn().mockResolvedValue([]),
+        lerEtapas: vi.fn(),
+        lerPublicacoes: vi.fn(),
+        lerEstadosDaPublicacao: vi.fn(),
+        desdeAMescla: JANELA_DE_TOLERANCIA_SEM_EVIDENCIA_MS,
+      })
+      expect(v.estado).toBe('sem-publicacao')
+      expect(v.semEvidenciaDeTodoAmbiente).toBe(true)
+    })
+
+    it('sem informar desdeAMescla: comportamento de sempre (final na hora) — nenhum call site esquecido silenciosamente fica seguro', async () => {
+      const v = await acompanharPublicacao({
+        mecanismo: mecanismoWorkflow,
+        shaDaMescla: 'abc123',
+        lerExecucoes: vi.fn().mockResolvedValue([]),
+        lerEtapas: vi.fn(),
+        lerPublicacoes: vi.fn(),
+        lerEstadosDaPublicacao: vi.fn(),
+      })
+      expect(v.estado).toBe('sem-publicacao')
+    })
+  })
+
+  // CRÍTICO 1 da revisão final da branch — o beco sem saída voltou por outra
+  // porta: sem teto, `commit-errado` nunca vira final e a sessão fica aberta
+  // para sempre, consultando o GitHub a cada dez minutos.
+  describe('crítico 1 — teto para "commit-errado" no caminho de WORKFLOW', () => {
+    it('commit errado ANTES do teto: continua commit-errado (não-final, reexaminado)', async () => {
+      const v = await acompanharPublicacao({
+        mecanismo: mecanismoWorkflow,
+        shaDaMescla: 'abc123',
+        lerExecucoes: vi
+          .fn()
+          .mockResolvedValue([
+            { id: 9, head_sha: 'antigo99', status: 'completed', conclusion: 'success' },
+          ]),
+        lerEtapas: vi.fn(),
+        lerPublicacoes: vi.fn(),
+        lerEstadosDaPublicacao: vi.fn(),
+        desdeAMescla: TETO_DE_COMMIT_ERRADO_MS - 1,
+      })
+      expect(v.estado).toBe('commit-errado')
+    })
+
+    it('commit errado DEPOIS do teto: vira sem-publicacao (final) — a sessão finalmente fecha', async () => {
+      const v = await acompanharPublicacao({
+        mecanismo: mecanismoWorkflow,
+        shaDaMescla: 'abc123',
+        lerExecucoes: vi
+          .fn()
+          .mockResolvedValue([
+            { id: 9, head_sha: 'antigo99', status: 'completed', conclusion: 'success' },
+          ]),
+        lerEtapas: vi.fn(),
+        lerPublicacoes: vi.fn(),
+        lerEstadosDaPublicacao: vi.fn(),
+        desdeAMescla: TETO_DE_COMMIT_ERRADO_MS,
+      })
+      expect(v.estado).toBe('sem-publicacao')
+      // "aqui está o que vimos": o motivo carrega o commit errado encontrado,
+      // não um veredito genérico — é o que o dono lê na mensagem final.
+      expect(v.motivo).toMatch(/antigo99/)
+      // Não é "zero evidência" — houve execução, só que do commit errado.
+      expect(v.semEvidenciaDeTodoAmbiente).toBe(false)
+    })
+
+    it('Item 7 (leva B2): sem informar desdeAMescla, FALHA PARA O LADO SEGURO — fecha como sem-publicacao, nunca mais "nunca finaliza sozinho"', async () => {
+      const v = await acompanharPublicacao({
+        mecanismo: mecanismoWorkflow,
+        shaDaMescla: 'abc123',
+        lerExecucoes: vi
+          .fn()
+          .mockResolvedValue([
+            { id: 9, head_sha: 'antigo99', status: 'completed', conclusion: 'success' },
+          ]),
+        lerEtapas: vi.fn(),
+        lerPublicacoes: vi.fn(),
+        lerEstadosDaPublicacao: vi.fn(),
+      })
+      // Antes do Item 7: `commit-errado` (não-final) — sem `desdeAMescla`, o
+      // teto nunca disparava e a sessão ficava presa para sempre se o dado
+      // faltasse. Agora: fecha, sem inventar um tempo de espera que não
+      // temos (e sem produzir "NaN min" no motivo).
+      expect(v.estado).toBe('sem-publicacao')
+      expect(v.motivo).not.toMatch(/NaN/)
+      expect(v.motivo).toMatch(/não sabemos há quanto tempo/)
+    })
+  })
+})
+
+// Item 1 da revisão pós-Leva A — o backstop que fecha a CLASSE inteira de
+// "estado que nunca sai sozinho" (não só um caso isolado). Testado aqui como
+// função pura; a integração com `varrerPublicacoes` (que decide QUANDO
+// chamá-la, para os três estados vizinhos que ficavam sem teto) é provada
+// pelo "real seam" em `scheduler-pos-merge-teto-absoluto.test.ts`.
+describe('fecharPorTetoAbsoluto', () => {
+  it('sempre "sem-publicacao" — não inventa um sexto estado', () => {
+    const v = fecharPorTetoAbsoluto({
+      desdeAMescla: TETO_ABSOLUTO_DE_ACOMPANHAMENTO_MS,
+      ultimaObservacao: 'falhou — a etapa "Deploy" terminou com "failure".',
+    })
+    expect(v.estado).toBe('sem-publicacao')
+  })
+
+  it('o motivo cita as horas de acompanhamento e a última observação — nunca um veredito genérico', () => {
+    const v = fecharPorTetoAbsoluto({
+      desdeAMescla: 25 * 60 * 60_000,
+      ultimaObservacao: 'publicando — a etapa "Publicação em production" ainda está "waiting".',
+    })
+    expect(v.motivo).toMatch(/25h/)
+    expect(v.motivo).toContain(
+      'publicando — a etapa "Publicação em production" ainda está "waiting".'
+    )
+  })
+
+  it('nunca é "zero evidência" — o teto absoluto fecha por TEMPO, não por ausência de dado', () => {
+    const v = fecharPorTetoAbsoluto({
+      desdeAMescla: TETO_ABSOLUTO_DE_ACOMPANHAMENTO_MS,
+      ultimaObservacao: 'a leitura do GitHub falhou repetidamente (403).',
+    })
+    expect(v.semEvidenciaDeTodoAmbiente).toBe(false)
+  })
+})

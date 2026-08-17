@@ -1,5 +1,6 @@
 import { GithubExecutionError } from './github-errors.js'
 import type { CardMover } from './board-status.js'
+import { fetchComTeto } from './fetch-com-teto.js'
 
 // SENSOR de incidentes (os "olhos" do GitOrch): coleta erros REAIS do projeto
 // e os transforma em issues `gitorch:incident` — tipo próprio, fora da árvore
@@ -54,7 +55,10 @@ const incidentMarker = (fingerprint: string): string => `gitorch:incident:${fing
 export async function collectCiFailures(
   options: Pick<IncidentSensorOptions, 'repository' | 'githubToken' | 'fetchImpl'>
 ): Promise<SensorFinding[]> {
-  const f = options.fetchImpl ?? fetch
+  // IMPORTANTE (leva D): alcançável pelo tique (scheduler.ts, wake do SM,
+  // sensor de incidentes) sob `tickEmAndamento` — mesma classe de defeito
+  // do Crítico.
+  const f = fetchComTeto(options.fetchImpl ?? fetch)
   const resp = await f(
     `https://api.github.com/repos/${options.repository}/actions/runs?branch=main&status=failure&per_page=20`,
     {
@@ -92,7 +96,8 @@ export async function collectCiFailures(
 export async function runIncidentSensor(
   options: IncidentSensorOptions
 ): Promise<IncidentSensorResult> {
-  const f = options.fetchImpl ?? fetch
+  // IMPORTANTE (leva D): mesma classe de defeito do Crítico.
+  const f = fetchComTeto(options.fetchImpl ?? fetch)
   const cap = options.cap ?? 3
 
   const gh = async (method: string, path: string, body?: unknown): Promise<unknown> => {

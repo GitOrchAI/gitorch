@@ -7,8 +7,17 @@ import {
   handleTelegramQuestionReply,
   sendTelegramMessage,
   sendTelegramQuestion,
+  tratarPedidoDeDesejo,
+  type TelegramDesejoDeps,
 } from '../services/telegram-bot.js'
-import { resolveNotifyChatId } from '../services/telegram-link.js'
+import { criarIssueDeDesejo } from '../services/desejo-no-github.js'
+import { projetosParaDesejo } from '../services/projetos-do-desejo.js'
+import { provaDeEscritaNoUso } from '../services/acesso-ao-repositorio.js'
+import {
+  resolveNotifyChatId,
+  resolveDonoDoChat,
+  telegramBotUsername,
+} from '../services/telegram-link.js'
 import { AgentQuestionService, type AgentQuestionRecord } from '../services/agent-question.js'
 import { pipelineCheckEnabled } from '../config/pipeline-check.js'
 
@@ -93,6 +102,39 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
     return
   }
 
+  // A porta do desejo pelo mensageiro. O pedido em linguagem de gente vira a
+  // MESMA issue oficial que a tela cria (ver routes/index.ts) — quem escreve é
+  // o serviço compartilhado, então o registro nasce igual venha de onde vier.
+  const desejoDeps: TelegramDesejoDeps = {
+    // O chat só vale como identidade quando está vinculado a UMA conta: é o
+    // vínculo que diz de QUEM ele é, e portanto em qual repositório o pedido
+    // pode ser escrito. Chat com duas contas volta `ambiguo` e o pedido é
+    // recusado — jamais escrito num repositório sorteado.
+    donoDoChat: (chatId) => resolveDonoDoChat(app.prisma, chatId),
+    // A MESMA regra da porta HTTP (services/projetos-do-desejo.ts): enquanto
+    // cada porta escreveu o próprio filtro, elas divergiram sobre projeto
+    // desativado e o dono recebia duas respostas para o mesmo fato.
+    projetosDoDono: (userId) => projetosParaDesejo(app.prisma, userId),
+    // Defesa em profundidade, e a MESMA função que a porta HTTP usa
+    // (routes/index.ts): o acesso ao repositório foi provado uma vez, no
+    // wizard, e o endereço virou `project.wingId` para sempre. Removido da
+    // organização depois, o dono continuaria mandando pedido daqui e o produto
+    // escreveria no repositório alheio com a credencial da instalação.
+    confirmarAcesso: provaDeEscritaNoUso(app.engineConnections),
+    // Comando endereçado a outro bot do grupo não é nosso. O nome sai da mesma
+    // fonte que monta o deep link do wizard.
+    nomeDoBot: telegramBotUsername(),
+    criarIssue: ({ repo, titulo, corpo, etiquetas }) =>
+      criarIssueDeDesejo({
+        repo,
+        titulo,
+        corpo,
+        etiquetas,
+        log: { onError: (m) => app.log.error(m), onWarn: (m) => app.log.warn(m) },
+      }),
+    registrarFalha: (erro) => app.log.error(erro, '[Telegram] falha ao registrar o desejo'),
+  }
+
   let stopped = false
   const controller = new AbortController()
   let offset: number | undefined
@@ -146,6 +188,20 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
           )
           if (handledAsAnswer) continue
 
+          // `/desejo` (ou `/quero`): o pedido do dono em linguagem natural.
+          // Vem depois do reply porque uma resposta a uma dúvida do agente é
+          // outra conversa, e antes do /start porque mensagem solta que não é
+          // desejo continua caindo no fluxo normal.
+          const desejo = await tratarPedidoDeDesejo(desejoDeps, update)
+          if (desejo) {
+            await sendTelegramMessage({ botToken, chatId: desejo.chatId, text: desejo.text })
+            continue
+          }
+
+          // `/wishlist` continua com a resposta de orientação que já existia na
+          // linha principal. Fica DEPOIS do desejo porque são coisas diferentes:
+          // aqui só se explica a sintaxe, enquanto `/desejo` e `/quero` abrem o
+          // pedido de verdade.
           if (update.message?.text?.trim().startsWith('/wishlist')) {
             const chatId = update.message?.chat?.id
             if (chatId !== undefined && chatId !== null) {

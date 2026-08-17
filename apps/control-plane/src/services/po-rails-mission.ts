@@ -8,6 +8,7 @@ import { GithubExecutionError } from './github-errors.js'
 import { aplicarLabelDoAgente } from './agent-label.js'
 import type { BoardColumns } from './board-status.js'
 import type { StepExecutor } from './role-rails.js'
+import { fetchComTeto } from './fetch-com-teto.js'
 
 // Missão do PO nos TRILHOS (produção): acha a wish aberta, roda o roteiro de 4
 // passos (a LLM só preenche formulários) e o executor aplica a árvore
@@ -167,7 +168,9 @@ async function triageIncidents(args: {
 export async function runPoMissionViaRails(
   options: PoRailsMissionOptions
 ): Promise<PoRailsMissionResult> {
-  const f = options.fetchImpl ?? fetch
+  // IMPORTANTE (leva D): alcançável pelo tique (scheduler.ts, wake do PO)
+  // sob `tickEmAndamento` — mesma classe de defeito do Crítico.
+  const f = fetchComTeto(options.fetchImpl ?? fetch)
 
   // 0) Config validada ANTES de gastar qualquer passo de LLM: um board mal
   // configurado falharia só depois dos 4 passos, queimando tokens a cada wake.
@@ -273,10 +276,12 @@ export async function runPoMissionViaRails(
     journeysCount: countJourneysInContext(options.contextBlocks),
   })
 
-  // 3) Executor determinístico aplica no GitHub.
+  // 3) Executor determinístico aplica no GitHub. `fetchImpl: f` (não
+  // `options.fetchImpl` cru) — leva D: `ProjectV2Client` não tem teto
+  // próprio, então quem for embrulhado aqui precisa já vir com um.
   const client = new ProjectV2Client({
     token: options.githubToken,
-    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+    fetchImpl: f,
   })
   // Board de usuário primeiro (piloto); org é o destino do produto (F4).
   const projectId = semQuadro

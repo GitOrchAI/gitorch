@@ -250,6 +250,18 @@ model Project {
   // é usada só onde o App não chega, nunca como atalho geral.
   encryptedClientToken String? @map("encrypted_client_token")
 
+  // Reconferência PERIÓDICA do acesso do dono ao repositório (o acesso era
+  // provado uma vez, no cadastro, e o caminho automático nunca mais perguntava
+  // nada — ver services/reconferencia-de-acesso.ts).
+  // Nulo = nunca conferido: entra no primeiro ciclo depois do deploy.
+  accessCheckedAt   DateTime? @map("access_checked_at")
+  // Preenchido = projeto SUSPENSO: não dispara missão até o acesso voltar.
+  accessSuspendedAt DateTime? @map("access_suspended_at")
+  accessSuspendedReason String? @map("access_suspended_reason")
+  // Conferências seguidas que não concluíram nada. NUNCA suspendem — só
+  // encurtam o intervalo da próxima tentativa e, no limite, avisam o dono.
+  accessCheckFailures Int @default(0) @map("access_check_failures")
+
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
@@ -558,6 +570,24 @@ model DevSession {
   /// Preenchidos quando a linha sai da vigia: merged, abandoned ou failed_final.
   closedAt     DateTime? @map("closed_at")
   closedReason String?   @map("closed_reason")
+
+  /// Desde quando esta entrega está com a verificação automática pendente —
+  /// nulo enquanto nunca esteve, ou depois que o juiz limpa a marca ao
+  /// julgar. É a partir dela que `decidirSobreVerificacao`
+  /// (vigia-da-verificacao.ts) conta o teto de espera antes de avisar o dono.
+  pendingSince DateTime? @map("pending_since")
+  /// SHA do commit de fato mesclado — a Tarefa 12 usa para casar a execução
+  /// de CD com a entrega certa (nunca declarar publicado um commit antigo).
+  mergeCommitSha String? @map("merge_commit_sha")
+  /// Último estado de publicação lido no ambiente do cliente (Tarefa 13).
+  deployState String? @map("deploy_state")
+  /// Quando `deployState` foi lido pela última vez (Tarefa 13).
+  deployCheckedAt DateTime? @map("deploy_checked_at")
+  /// Fracassos SEGUIDOS de mescla contra o commit atual (Tarefa 10) — zera
+  /// quando o commit muda. Não usado por esta migração, só criado por ela.
+  mergeFailures Int @default(0) @map("merge_failures") @db.SmallInt
+  /// Quando o último fracasso de mescla aconteceu (Tarefa 10).
+  mergeLastFailedAt DateTime? @map("merge_last_failed_at")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
