@@ -286,6 +286,29 @@ describe('resolverEntregaDoBoard (Item 2 — o board só diz "entregue" quando o
     // "Done" do board fake, nunca "In Review".
     const moveu = graphqlCalls.find((c) => c.query.includes('UpdateProjectV2SingleSelectField'))
     expect(moveu?.variables['optionId']).toBe('O_DONE')
+
+    // Crítico 1 (leva C): as DUAS escritas que `ghSend` faz aqui (comentar,
+    // fechar) e a chamada de GraphQL que o movedor de card faz (achado
+    // adicional da mesma auditoria — `createCardMover` não tinha teto
+    // nenhum) agora carregam um `AbortSignal`. Sem isso, uma chamada
+    // pendurada em QUALQUER uma das três prenderia `tickEmAndamento` (a
+    // trava contra sobreposição de tique) para sempre — a mesma classe de
+    // defeito que já tinha sido fechada no lado da LEITURA (`ghGet`, leva
+    // B2).
+    const chamadasFeitas = (impl as unknown as { mock: { calls: Array<[unknown, unknown]> } }).mock
+      .calls
+    const chamadaDeComentario = chamadasFeitas.find(
+      ([u, i]) => String(u).endsWith('/issues/5/comments') && (i as RequestInit)?.method === 'POST'
+    )
+    const chamadaDeFechamento = chamadasFeitas.find(
+      ([u, i]) => String(u).endsWith('/issues/5') && (i as RequestInit)?.method === 'PATCH'
+    )
+    const chamadaDeGraphql = chamadasFeitas.find(([u]) => String(u).endsWith('/graphql'))
+    for (const chamada of [chamadaDeComentario, chamadaDeFechamento, chamadaDeGraphql]) {
+      const init = chamada?.[1] as RequestInit | undefined
+      expect(init?.signal).toBeInstanceOf(AbortSignal)
+      expect(init?.signal?.aborted).toBe(false)
+    }
   })
 
   test('publicação SEM confirmação dentro do prazo (sem-publicacao por timeout): NÃO fecha a tarefa como entregue — comenta e volta o card para "review"', async () => {

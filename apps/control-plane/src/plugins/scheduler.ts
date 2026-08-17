@@ -2621,18 +2621,19 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // formato que `qa-rails-mission.ts`/`sm-delegation.ts` usam para as
   // próprias chamadas, sem depender de nenhum cliente maior.
   //
-  // Item 7 (leva B2): teto explícito, mesmo valor que as outras chamadas ao
-  // GitHub deste repositório já usam (`desejo-no-github.ts`,
-  // `github-app-token.ts`). Sem isto, uma chamada que nunca resolve (rede
-  // pendurada, não um erro — um erro já cai no `catch` de
-  // `varrerPublicacoes` normalmente) prendia `tickEmAndamento` (a trava
-  // contra sobreposição, Importante 8) para SEMPRE: a trava que existe para
-  // não deixar duas varreduras rodarem ao mesmo tempo virava, ela mesma, um
-  // jeito de travar TODAS as varreduras futuras, sem log nenhum explicando
-  // por quê. Com o teto, o pior caso é limitado e provável — o tique
-  // eventualmente falha, o `catch` trata, e o próximo tique do relógio (1
-  // min) volta a rodar.
-  const TIMEOUT_DE_LEITURA_GITHUB_MS = 10_000
+  // Item 7 (leva B2) + Crítico 1 (leva C): teto explícito, mesmo valor que
+  // as outras chamadas ao GitHub deste repositório já usam
+  // (`desejo-no-github.ts`, `github-app-token.ts`) — hoje compartilhado por
+  // `ghGet` (leitura) E `ghSend` (escrita), abaixo. Sem isto, uma chamada
+  // que nunca resolve (rede pendurada, não um erro — um erro já cai no
+  // `catch` de `varrerPublicacoes` normalmente) prendia `tickEmAndamento`
+  // (a trava contra sobreposição, Importante 8) para SEMPRE: a trava que
+  // existe para não deixar duas varreduras rodarem ao mesmo tempo virava,
+  // ela mesma, um jeito de travar TODAS as varreduras futuras, sem log
+  // nenhum explicando por quê. Com o teto, o pior caso é limitado e
+  // provável — o tique eventualmente falha, o `catch` trata, e o próximo
+  // tique do relógio (1 min) volta a rodar.
+  const TIMEOUT_DE_CHAMADA_GITHUB_MS = 10_000
 
   const ghGet = async (path: string, githubToken: string): Promise<unknown> => {
     const resp = await fetch(`https://api.github.com${path}`, {
@@ -2641,7 +2642,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         accept: 'application/vnd.github+json',
         'user-agent': 'gitorch',
       },
-      signal: AbortSignal.timeout(TIMEOUT_DE_LEITURA_GITHUB_MS),
+      signal: AbortSignal.timeout(TIMEOUT_DE_CHAMADA_GITHUB_MS),
     })
     if (!resp.ok) {
       throw new Error(`GitHub GET ${path} failed (${resp.status})`)
@@ -2653,6 +2654,17 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // `resolverEntregaDoBoard` precisa fazer (comentar e fechar a tarefa) sem
   // depender de um cliente maior — mesmo formato que `qa-rails-mission.ts`
   // já usa para as próprias chamadas.
+  //
+  // Crítico 1 (leva C): `ghGet` ganhou teto explícito na leva B2 (Item 7)
+  // exatamente para não prender `tickEmAndamento` para sempre — mas o
+  // teto ficou só na LEITURA. `ghSend` é chamado de dentro da MESMA
+  // varredura (`resolverEntregaDoBoard`, dentro do laço de
+  // `varrerPublicacoes`), e uma escrita pendurada (POST/PATCH que nunca
+  // resolve — rede parada, não um erro HTTP) prende a MESMA trava, pela
+  // MESMA classe de defeito que a leitura já tinha: o projeto inteiro para
+  // de reexaminar QUALQUER sessão, de QUALQUER projeto, sem log nenhum
+  // explicando por quê. Reaproveita o MESMO teto que `ghGet` já usa —
+  // nenhum motivo para a escrita esperar mais ou menos que a leitura.
   const ghSend = async (
     method: 'POST' | 'PATCH',
     path: string,
@@ -2668,12 +2680,32 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         'user-agent': 'gitorch',
       },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(TIMEOUT_DE_CHAMADA_GITHUB_MS),
     })
     if (!resp.ok) {
       throw new Error(`GitHub ${method} ${path} failed (${resp.status})`)
     }
     return resp.json()
   }
+
+  // Crítico 1 (leva C), continuação: auditoria de TODA chamada de rede
+  // alcançável pelo tique através da varredura de publicações. `ghGet` e
+  // `buscarComGuarda` (teste de ambiente, endereco-seguro.ts) já tinham
+  // teto; `buscarComGuarda` usa o próprio (`TIMEOUT_PADRAO_MS`, 15s),
+  // pensado para o mundo externo do cliente, não do GitHub — não mexido
+  // aqui. Uma TERCEIRA chamada sem teto nenhum foi encontrada:
+  // `createCardMover` (board-status.ts), instanciado logo abaixo dentro de
+  // `resolverEntregaDoBoard` e chamado tanto no caminho `entregue: true`
+  // quanto no `entregue: false` — ou seja, em TODO veredito final. Sem
+  // `fetchImpl`, ele cai no `fetch` cru, sem `AbortSignal` nenhum: uma
+  // chamada pendurada ali prenderia `tickEmAndamento` pela MESMA classe de
+  // defeito que `ghSend` tinha. `createCardMover` já aceita `fetchImpl`
+  // como injeção — só faltava usá-la, com o mesmo teto de `ghGet`/`ghSend`.
+  const fetchComTetoParaOBoard: typeof fetch = (input, init) =>
+    fetch(input, {
+      ...init,
+      signal: init?.signal ?? AbortSignal.timeout(TIMEOUT_DE_CHAMADA_GITHUB_MS),
+    })
 
   // R6 do controlador: o mecanismo de publicação (Tarefa 12) muda raramente
   // mas NÃO é imutável — guardado em memória, por repositório, com validade
@@ -2780,7 +2812,17 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     motivo: string
   }): Promise<void> => {
     const { projeto, sessao, githubToken, entregue, motivo } = args
-    if (!sessao.pullRequestNumber) return
+    if (!sessao.pullRequestNumber) {
+      // Importante 4 (leva C): o irmão de baixo (sem credencial) sempre
+      // avisou; este ramo saía em silêncio, sem log nenhum. Sessões
+      // mescladas ANTES desta mudança existir (achadas pelo recuo pela
+      // issue de origem) podem ter `pullRequestNumber` nulo — tarefa e card
+      // ficam intocados, sem NENHUM rastro de que isso aconteceu ou por quê.
+      app.log.warn(
+        `[Scheduler] sem número do PR na sessão ${sessao.sessionName} — não dá para atualizar tarefa/card de #${sessao.issueNumber} (${projeto.wingId})`
+      )
+      return
+    }
     if (!githubToken) {
       app.log.warn(
         `[Scheduler] sem credencial do GitHub para atualizar tarefa/card de #${sessao.issueNumber} (${projeto.wingId})`
@@ -2795,6 +2837,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           board: railsBoard,
           token: githubToken,
           columns: resolveBoardColumns(projeto.runtimeConfig),
+          fetchImpl: fetchComTetoParaOBoard,
         })
       : undefined
 
