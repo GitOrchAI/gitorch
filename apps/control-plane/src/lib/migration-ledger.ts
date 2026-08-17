@@ -34,6 +34,7 @@ export const MIGRATION_LEDGER = [
   'jules-plan-migration.sql',
   'repo-access-recheck-migration.sql',
   'publicacao-migration.sql',
+  'github-token-refresh-migration.sql',
 ] as const
 
 /**

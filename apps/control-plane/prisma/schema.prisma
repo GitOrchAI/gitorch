@@ -188,6 +188,15 @@ model EngineConnection {
   credentialKind String?   @default("file") @map("credential_kind")
   envVarName     String?   @map("env_var_name")
   expiresAt      DateTime? @map("expires_at")
+  // Renovação automática do token do GitHub (F8): o login por GitHub App
+  // expira o access_token a cada ~8h quando "User-to-server token
+  // expiration" está ligado, e devolve um refresh_token junto. Cifrado com o
+  // MESMO envelope AES-256-GCM de encryptedCredential — nunca texto puro.
+  // NULL em toda conexão feita ANTES desta coluna existir (legado): a
+  // rotina de renovação trata a ausência como "precisa reconectar uma vez",
+  // nunca como "não expira".
+  refreshTokenEncrypted String?   @map("refresh_token_encrypted")
+  refreshTokenExpiresAt DateTime? @map("refresh_token_expires_at")
   models         Json? // catálogo de modelos descoberto no provider
   modelsRefreshedAt   DateTime? @map("models_refreshed_at")
   lastValidatedAt     DateTime? @map("last_validated_at")
