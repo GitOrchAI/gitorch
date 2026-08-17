@@ -111,6 +111,13 @@ import {
   projetoEstaSuspensoPorAcesso,
   type ResumoDaReconferencia,
 } from '../services/reconferencia-de-acesso.js'
+import {
+  renovarTokensGithubVencendo,
+  trocarRefreshTokenNoGithub,
+  type ResumoDaRenovacaoGithub,
+} from '../services/github-token-refresh.js'
+import { decryptCredential } from '../lib/credential-crypto.js'
+import { getEnv } from '../config/env.js'
 import { ProjectV2Client } from '@gitorch/github-sync'
 import { RailsStepError, RailsExecutionError } from '../services/rails-runner.js'
 import { GithubExecutionError } from '../services/github-backlog.js'
@@ -1316,6 +1323,139 @@ export async function reconferirAcessoDoRelogio(
       })
       if (notify) await notify(texto)
     },
+    ...(agora ? { agora } : {}),
+    onWarn: (mensagem) => app.log.warn(`[Scheduler] ${mensagem}`),
+  })
+}
+
+/**
+ * A renovação AUTOMÁTICA do token do GitHub, ligada ao relógio (F8).
+ *
+ * O login por GitHub App (client_id Iv23..., "User-to-server token
+ * expiration" ligado) expira o access_token a cada ~8h. Sem esta rotina, a
+ * credencial materializada em cada missão (materializeToHome, runtime
+ * 'github') morre sozinha 8h depois do último login — e ninguém renova.
+ *
+ * Roda ANTES de qualquer coisa que possa disparar missão no mesmo tique
+ * (processSetupMissions, varrerSessoesDoDev): uma missão que nasce logo
+ * depois do tique precisa encontrar o token já fresco, não descobrir no
+ * meio da execução que ele morreu.
+ *
+ * Decisão pura em services/github-token-refresh.ts (decidirAcaoGithub); aqui
+ * só se resolve DE ONDE vem a lista de conexões, COM QUAL client_id/secret a
+ * troca é feita, ONDE o novo par é gravado (reusando connectGitHubToken —
+ * mesmo caminho de cifragem de sempre, nunca duplicado) e POR ONDE o dono é
+ * avisado quando a conexão precisa ser refeita.
+ */
+export async function renovarTokensGithubDoRelogio(
+  app: FastifyInstance,
+  agora?: Date
+): Promise<ResumoDaRenovacaoGithub> {
+  const env = getEnv()
+  if (!env.GITHUB_CLIENT_ID || !env.GITHUB_CLIENT_SECRET) {
+    app.log.warn(
+      '[Scheduler] GITHUB_CLIENT_ID/GITHUB_CLIENT_SECRET ausentes; renovação automática do token do GitHub desligada'
+    )
+    return { renovados: 0, precisamReconectar: 0, falhasDeDecifragem: 0 }
+  }
+  const clientId = env.GITHUB_CLIENT_ID
+  const clientSecret = env.GITHUB_CLIENT_SECRET
+
+  // Marca a conexão como precisando de login novo e avisa o dono — mas só na
+  // VIRADA (status ainda não era 'needs_reconnect'): sem isto, uma conexão
+  // parada seria reavisada a cada tique (a cada minuto) para sempre.
+  const marcarPrecisaReconectar = async (userId: string, motivo: string): Promise<void> => {
+    const atual = await app.prisma.engineConnection.findUnique({
+      where: { userId_runtime: { userId, runtime: 'github' } },
+      select: { status: true },
+    })
+    const jaAvisado = atual?.status === 'needs_reconnect'
+    await app.prisma.engineConnection.updateMany({
+      where: { userId, runtime: 'github' },
+      data: { status: 'needs_reconnect', lastError: motivo },
+    })
+    if (jaAvisado) return
+
+    const dono = await app.prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true },
+    })
+    const notifyChatId = await resolveNotifyChatId(
+      app.prisma,
+      { userId, user: dono },
+      {
+        instanceOwnerEmail: process.env['GITORCH_OWNER_EMAIL'],
+        instanceChatId: process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
+      }
+    )
+    const notify = buildTelegramNotifier({
+      botToken: process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
+      ...(notifyChatId ? { chatId: notifyChatId } : {}),
+    })
+    if (!notify) return
+    await notify(
+      'Sua conexão com o GitHub no GitOrch precisa ser refeita ' +
+        `(${motivo}). Abra o GitOrch e faça login com o GitHub de novo — as tarefas ` +
+        'automáticas ficam paradas até você reconectar.'
+    ).catch((err) =>
+      app.log.warn(err, `[Scheduler] aviso de reconexão GitHub falhou para ${userId}`)
+    )
+  }
+
+  return renovarTokensGithubVencendo({
+    // A coluna no Prisma é `encryptedRefreshToken` (EngineConnection.encrypted_refresh_token);
+    // `refreshTokenEncrypted` é o nome do campo no DTO `ConexaoGithubElegivel`
+    // (services/github-token-refresh.ts) — nomes diferentes de propósito, o
+    // mapeamento abaixo é o único lugar que precisa saber dos dois.
+    conexoes: async () => {
+      const linhas = await app.prisma.engineConnection.findMany({
+        where: { runtime: 'github', status: 'connected' },
+        select: {
+          userId: true,
+          encryptedRefreshToken: true,
+          expiresAt: true,
+          refreshTokenExpiresAt: true,
+        },
+      })
+      return linhas.map((linha) => ({
+        userId: linha.userId,
+        refreshTokenEncrypted: linha.encryptedRefreshToken,
+        expiresAt: linha.expiresAt,
+        refreshTokenExpiresAt: linha.refreshTokenExpiresAt,
+      }))
+    },
+    // Composição desta Task: o valor que `conexoes()` devolve em
+    // `refreshTokenEncrypted` chega aqui CIFRADO e opaco (ver o comentário no
+    // topo de github-token-refresh.ts) — decifrar é responsabilidade de quem
+    // liga isto ao relógio, não da orquestração pura. `decryptCredential`
+    // lança `CredentialDecryptError` de propósito quando a chave do servidor
+    // mudou ou o dado corrompeu; esse erro é deixado atravessar SEM
+    // capturar/reembalar, para `renovarTokensGithubVencendo` conseguir
+    // distinguir "não consegui LER o que está guardado" (problema nosso, vira
+    // `falhasDeDecifragem`) de "o GitHub recusou o cartão"
+    // (RefreshTokenGithubInvalidoError, lançado só por trocarRefreshTokenNoGithub
+    // — problema do cliente, vira `precisamReconectar`). Reembalar as duas no
+    // mesmo tipo faria o produto culpar o cliente por uma falha de
+    // infraestrutura nossa.
+    trocar: async (refreshTokenEncrypted) => {
+      const refreshTokenPlano = decryptCredential(refreshTokenEncrypted)
+      return trocarRefreshTokenNoGithub({
+        refreshToken: refreshTokenPlano,
+        clientId,
+        clientSecret,
+        ...(agora ? { agora } : {}),
+      })
+    },
+    salvarSucesso: async (userId, resultado) => {
+      await app.engineConnections.connectGitHubToken(userId, resultado.accessToken, {
+        refreshToken: resultado.refreshToken,
+        expiresAt: resultado.expiresAt,
+        ...(resultado.refreshTokenExpiresAt
+          ? { refreshTokenExpiresAt: resultado.refreshTokenExpiresAt }
+          : {}),
+      })
+    },
+    marcarPrecisaReconectar,
     ...(agora ? { agora } : {}),
     onWarn: (mensagem) => app.log.warn(`[Scheduler] ${mensagem}`),
   })
@@ -3416,8 +3556,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   }
 
   const tick = async () => {
-    // ANTES de qualquer disparo: quem perdeu o acesso ao repositório não pode
-    // ter o dia começando com uma missão escrevendo lá. `reconferirAcessoDoRelogio`
+    // PRIMEIRO de tudo: um token do GitHub vencido no meio do tique derruba
+    // qualquer missão que precise dele (materializeToHome recusa e a missão
+    // sai sem GH_TOKEN). `renovarTokensGithubDoRelogio` nunca rejeita e só
+    // gasta uma chamada de rede por conexão cujo ciclo de renovação venceu.
+    await renovarTokensGithubDoRelogio(app)
+    // Só DEPOIS: quem perdeu o acesso ao repositório não pode ter o dia
+    // começando com uma missão escrevendo lá. `reconferirAcessoDoRelogio`
     // nunca rejeita e só pergunta ao GitHub sobre os projetos cujo ciclo
     // venceu — não é uma chamada por tique nem por missão.
     await reconferirAcessoDoRelogio(app)
