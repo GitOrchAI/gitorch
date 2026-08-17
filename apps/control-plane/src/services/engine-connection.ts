@@ -139,7 +139,17 @@ export class EngineConnectionService {
     userId: string,
     runtime: string,
     homeDir: string,
-    extra?: { credentialKind?: 'file' | 'env'; envVarName?: string; expiresAt?: Date }
+    extra?: {
+      credentialKind?: 'file' | 'env'
+      envVarName?: string
+      expiresAt?: Date
+      // Renovação automática do GitHub (F8): o refresh token é um segredo
+      // separado do arquivo materializado (nunca vai para o HOME de uma
+      // missão) — cifrado com o MESMO envelope AES-256-GCM, guardado numa
+      // coluna própria.
+      refreshToken?: string
+      refreshTokenExpiresAt?: Date
+    }
   ): Promise<ConnectionStatus> {
     const relPaths = Object.hasOwn(ENGINE_CREDENTIAL_PATHS, runtime)
       ? ENGINE_CREDENTIAL_PATHS[runtime]
@@ -158,6 +168,12 @@ export class EngineConnectionService {
       ...(extra?.credentialKind ? { credentialKind: extra.credentialKind } : {}),
       ...(extra?.envVarName ? { envVarName: extra.envVarName } : {}),
       ...(extra?.expiresAt ? { expiresAt: extra.expiresAt } : {}),
+      ...(extra?.refreshToken
+        ? { encryptedRefreshToken: encryptCredential(extra.refreshToken) }
+        : {}),
+      ...(extra?.refreshTokenExpiresAt
+        ? { refreshTokenExpiresAt: extra.refreshTokenExpiresAt }
+        : {}),
     }
 
     // Validação viva (anti-fachada): prova que o motor está autenticado rodando
@@ -189,12 +205,23 @@ export class EngineConnectionService {
   }
 
   /**
-   * Conecta o GitHub do usuário a partir de um token (fine-grained PAT). O
-   * token vira o arquivo `.gitorch/gh-token` num HOME temporário e segue o
-   * MESMO caminho de qualquer credencial (cifra → EngineConnection) — nenhuma
-   * rota especial de armazenamento.
+   * Conecta o GitHub do usuário a partir de um token (fine-grained PAT ou
+   * access_token de GitHub App). O token vira o arquivo `.gitorch/gh-token`
+   * num HOME temporário e segue o MESMO caminho de qualquer credencial
+   * (cifra → EngineConnection) — nenhuma rota especial de armazenamento.
+   *
+   * `extra` carrega o par de renovação (F8): quando o GitHub devolveu
+   * refresh_token/expires_in no login (ou na própria renovação — Task 4/5),
+   * passa aqui para ser cifrado e guardado junto. Ausência preserva o
+   * comportamento anterior (token sem prazo, nunca marcado para renovar) —
+   * é o caso de um OAuth App clássico ou de um GitHub App sem "expiring user
+   * tokens" ligado.
    */
-  async connectGitHubToken(userId: string, token: string): Promise<ConnectionStatus> {
+  async connectGitHubToken(
+    userId: string,
+    token: string,
+    extra?: { refreshToken?: string; expiresAt?: Date; refreshTokenExpiresAt?: Date }
+  ): Promise<ConnectionStatus> {
     const trimmed = token.trim()
     // Formato de token do GitHub: um único token não vazio, sem espaços/quebras
     // (cobre github_pat_*, ghp_* e tokens de App). Não logamos o valor nunca.
@@ -203,7 +230,7 @@ export class EngineConnectionService {
     }
     return this.withTempHome('gh', '.gitorch', async (home) => {
       await fs.writeFile(path.join(home, '.gitorch', 'gh-token'), trimmed, { mode: 0o600 })
-      return await this.captureFromHome(userId, 'github', home)
+      return await this.captureFromHome(userId, 'github', home, extra)
     })
   }
 
