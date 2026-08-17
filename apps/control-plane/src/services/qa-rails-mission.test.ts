@@ -1370,6 +1370,119 @@ describe('runQaMissionViaRails', () => {
     })
   })
 
+  // Item 2 (leva B2): um re-julgamento sem fim, mais estreito que o da
+  // Tarefa 10 mas real — a verificação vira vermelha no MESMO commit depois
+  // de uma aprovação nossa já postada. A trava determinística baixa o
+  // veredito para "pedir mudanças" sem NUNCA chamar o GitHub para mesclar —
+  // e o contador de fracasso de mescla só anda quando o GitHub É chamado
+  // (Tarefa 10). Sem a correção, `.find` (reviews mais antigas primeiro)
+  // sempre re-achava a aprovação ORIGINAL, e a entrega era reprocessada a
+  // cada passagem: motor acionado, review nova e comentário de retrabalho
+  // postados no PR do cliente, para sempre.
+  describe('Item 2: verificação vira vermelha no MESMO commit depois de aprovado — o laço termina', () => {
+    it('2a passagem (CI vermelho): reprova sem tentar mesclar; 3a passagem (mesmo par de reviews): já julgado, PARA de reprocessar', async () => {
+      const sessao = linha({ issueNumber: 50, pullRequestNumber: 7, sessionName: 'sessions/7' })
+      const opcoesComuns = {
+        repository: 'o/r',
+        githubToken: 't',
+        sessoes: [sessao],
+        registrarFracassoDeMerge: async (args: { contador: number }) => {
+          sessao.mergeFailures = args.contador
+        },
+      }
+
+      // 1a passagem: CI verde, aprova, tenta mesclar — o GitHub recusa
+      // (fracasso #1, abaixo do teto). Mesmo ponto de partida do teste da
+      // Tarefa 10: precisa de uma aprovação JÁ POSTADA no head atual.
+      const f1 = fakeFetch([{ number: 7, user: 'jules[bot]' }], undefined, undefined, {
+        mergeFalha: true,
+      })
+      const posted1 = (f1 as unknown as { posted: { reviews: Array<{ body?: string }> } }).posted
+      const r1 = await runQaMissionViaRails({
+        ...opcoesComuns,
+        execute: async () => APPROVE,
+        fetchImpl: f1,
+      })
+      expect(r1.noOp).toBeFalsy()
+      expect(sessao.mergeFailures).toBe(1)
+      const corpoDaAprovacao = posted1.reviews[0]!.body as string
+
+      // 2a passagem: MESMO commit ('abc123'), mas a verificação virou
+      // VERMELHA (sem push novo do dev). `aindaPodeTentarMesclar` continua
+      // `true` (1 fracasso < teto), então a entrega É reprocessada — mas a
+      // trava determinística baixa o veredito para "pedir mudanças" porque
+      // `ciState !== 'green'`, então o caminho de aprovação/merge nunca é
+      // alcançado: nenhuma tentativa de merge, nenhum fracasso novo contado.
+      const f2 = fakeFetch(
+        [
+          {
+            number: 7,
+            user: 'jules[bot]',
+            existingReviews: [{ body: corpoDaAprovacao, commit_id: 'abc123' }],
+          },
+        ],
+        undefined,
+        undefined,
+        { checkRuns: [{ conclusion: 'failure', status: 'completed' }] }
+      )
+      const posted2 = (
+        f2 as unknown as { posted: { reviews: Array<{ body?: string }>; merges: unknown[] } }
+      ).posted
+      const r2 = await runQaMissionViaRails({
+        ...opcoesComuns,
+        execute: async () => APPROVE,
+        fetchImpl: f2,
+      })
+      expect(r2.noOp).toBeFalsy() // foi reprocessada — o C1 da Tarefa 8 continua valendo
+      expect(posted2.reviews).toHaveLength(1) // postou o "pedir mudanças" desta passagem
+      expect(posted2.merges).toHaveLength(0) // NUNCA tentou mesclar com CI vermelho
+      expect(sessao.mergeFailures).toBe(1) // o contador de MERGE não andou — não é essa a falha
+      const corpoDaReprovacao = posted2.reviews[0]!.body as string
+
+      // 3a passagem: o GitHub agora tem DUAS reviews nossas no MESMO commit
+      // ('abc123') — a aprovação original E a reprovação da passagem
+      // anterior, nesta ordem (a API sempre devolve mais antiga primeiro).
+      // CI continua vermelho. SEM a correção, a busca pela review marcada
+      // (mais antiga primeiro) reencontra a APROVAÇÃO original, trata a
+      // entrega como "aprovação parada" e reprocessa de novo — motor
+      // acionado, mais uma review e mais um comentário postados, para
+      // sempre, sem nunca contar como fracasso de merge. COM a correção, a
+      // review MAIS RECENTE (a reprovação) é a que conta: a entrega já foi
+      // julgada, e a passagem é pulada — o mesmo desfecho de qualquer outra
+      // reprovação normal.
+      const f3 = fakeFetch(
+        [
+          {
+            number: 7,
+            user: 'jules[bot]',
+            existingReviews: [
+              { body: corpoDaAprovacao, commit_id: 'abc123' },
+              { body: corpoDaReprovacao, commit_id: 'abc123' },
+            ],
+          },
+        ],
+        undefined,
+        undefined,
+        { checkRuns: [{ conclusion: 'failure', status: 'completed' }] }
+      )
+      const posted3 = (
+        f3 as unknown as { posted: { reviews: unknown[]; comments: unknown[]; merges: unknown[] } }
+      ).posted
+      const r3 = await runQaMissionViaRails({
+        ...opcoesComuns,
+        execute: async () => {
+          throw new Error('não deveria julgar de novo: a review mais recente já é reprovação')
+        },
+        fetchImpl: f3,
+      })
+      expect(r3.noOp).toBe(true) // já julgado — o laço TERMINA
+      expect(posted3.reviews).toHaveLength(0)
+      expect(posted3.comments).toHaveLength(0)
+      expect(posted3.merges).toHaveLength(0)
+      expect(sessao.mergeFailures).toBe(1) // continua o mesmo — nada mudou
+    })
+  })
+
   // Tarefa 7 — a vigília ativa da verificação substitui o pulo passivo pela
   // decisão de `decidirSobreVerificacao` (Tarefa 6). Os três casos abaixo são
   // o Step 6 do brief: (a) pendente recente, (b) pendente além do teto,

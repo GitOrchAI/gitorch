@@ -348,12 +348,39 @@ export async function runQaMissionViaRails(
       'GET',
       `/repos/${options.repository}/pulls/${p.number}/reviews?per_page=100`
     )) as Array<{ body?: string; commit_id?: string }>
-    const reviewMarcadaNesteHead = Array.isArray(reviews)
-      ? reviews.find(
-          (r) =>
-            (r.body ?? '').includes(JULES_MARKER) && (!p.head?.sha || r.commit_id === p.head.sha)
-        )
-      : undefined
+    // Item 2 (leva B2): a API devolve as reviews da MAIS ANTIGA para a MAIS
+    // NOVA — por isso a busca varre de trás para frente, para achar a ÚLTIMA
+    // review nossa marcada neste head, nunca a primeira. Mais de uma review
+    // nossa pode existir no MESMO head sem push novo: uma aprovação seguida,
+    // dias depois, de um "pedir mudanças" quando a verificação vira vermelha
+    // no MESMO commit (a trava determinística, mais abaixo, baixa o veredito
+    // para `request_changes` sem nunca chamar o GitHub para mesclar). Com
+    // `.find` (mais antiga primeiro) isto era um beco sem saída: a review
+    // encontrada continuava sendo a aprovação ORIGINAL, `foiAprovacao` ficava
+    // `true` para sempre, e a entrega era reprocessada a cada tique —
+    // motor acionado, duas postagens no PR do cliente — sem NUNCA chamar o
+    // GitHub para mesclar (a verificação vermelha impede isso por desenho), e
+    // por isso sem NUNCA avançar `mergeFailures` (que só conta fracasso
+    // quando o GitHub é de fato chamado, Tarefa 10) — o teto de
+    // `MAX_TENTATIVAS_DE_MERGE` nunca era alcançado. Lendo a review MAIS
+    // RECENTE, a segunda passagem já vê o "pedir mudanças" como o estado
+    // atual, `foiAprovacao` vira `false`, e a entrega passa a ser tratada
+    // como "já julgada" (pulada) — o mesmo desfecho de qualquer outra
+    // reprovação, sem laço sem fim.
+    let reviewMarcadaNesteHead: (typeof reviews)[number] | undefined
+    if (Array.isArray(reviews)) {
+      for (let i = reviews.length - 1; i >= 0; i--) {
+        const candidata = reviews[i]
+        if (
+          candidata &&
+          (candidata.body ?? '').includes(JULES_MARKER) &&
+          (!p.head?.sha || candidata.commit_id === p.head.sha)
+        ) {
+          reviewMarcadaNesteHead = candidata
+          break
+        }
+      }
+    }
     const foiAprovacao = Boolean(
       reviewMarcadaNesteHead &&
       (reviewMarcadaNesteHead.body ?? '').includes(APPROVAL_VERDICT_MARKER)
