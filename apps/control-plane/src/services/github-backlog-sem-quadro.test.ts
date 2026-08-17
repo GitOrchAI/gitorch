@@ -83,3 +83,36 @@ describe('backlog sem quadro', () => {
     expect(chamadas.join(' ')).toContain('PVT_1')
   })
 })
+
+describe('teto de tempo (leva D)', () => {
+  it('REST direto (createIssue) e via ProjectV2Client (addToBoard) carregam um AbortSignal não abortado', async () => {
+    const fetchImpl = vi.fn(
+      async (url: string | URL | Request, _init?: RequestInit): Promise<Response> => {
+        const endereco = String(url)
+        if (endereco.includes('/graphql')) {
+          return new Response(
+            JSON.stringify({ data: { addProjectV2ItemById: { item: { id: 'PVTI_9' } } } }),
+            { status: 200 }
+          )
+        }
+        return new Response(JSON.stringify({ number: 1, node_id: 'I_1' }), { status: 201 })
+      }
+    )
+
+    const backlog = createGithubBacklog({
+      token: 't',
+      repository: 'dono/repo',
+      projectId: 'PVT_1',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    await backlog.createIssue({ title: 't', body: 'b' })
+    await backlog.addToBoard('I_1')
+
+    expect(fetchImpl.mock.calls.length).toBeGreaterThan(0)
+    for (const call of fetchImpl.mock.calls) {
+      const init = call[1] as RequestInit | undefined
+      expect(init?.signal).toBeInstanceOf(AbortSignal)
+      expect(init?.signal?.aborted).toBe(false)
+    }
+  })
+})

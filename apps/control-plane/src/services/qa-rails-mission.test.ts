@@ -2074,3 +2074,23 @@ describe('QA: veredito sem depender de "quem sou eu"', () => {
 // pura, inalterada) e para os testes de `varrerPublicacoes` em
 // `scheduler.ts` (Leva B: o NOVO ponto de disparo, que só fecha a tarefa
 // quando a publicação confirma a entrega — ver `resolverEntregaDoBoard`).
+
+describe('teto de tempo (leva D)', () => {
+  it('toda chamada ao GitHub (review, merge incluídos) carrega um AbortSignal não abortado', async () => {
+    const base = fakeFetch([{ number: 7, user: 'google-labs-jules[bot]' }])
+    const spy = vi.fn(base)
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: spy as unknown as typeof fetch,
+    })
+    expect(r.exitCode).toBe(0)
+    expect(spy.mock.calls.length).toBeGreaterThan(0)
+    for (const call of spy.mock.calls) {
+      const init = call[1] as RequestInit | undefined
+      expect(init?.signal).toBeInstanceOf(AbortSignal)
+      expect(init?.signal?.aborted).toBe(false)
+    }
+  })
+})

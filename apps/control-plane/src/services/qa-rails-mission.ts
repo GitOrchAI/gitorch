@@ -16,6 +16,7 @@ import { lerDiffDoPr, type ArquivoDoPr } from './diff-do-pr.js'
 import { mesclarPr, type ResultadoDoMerge } from './merge-do-pr.js'
 import { decidirSobreVerificacao, type EstadoDaVerificacao } from './vigia-da-verificacao.js'
 import { hashDaMensagem } from './session-watch.js'
+import { fetchComTeto } from './fetch-com-teto.js'
 
 // Missão do QA nos TRILHOS (F3.6): acha a PR do Jules que precisa de julgamento,
 // monta o snapshot (diff + Verification Criteria da issue + estado do CI), o
@@ -243,7 +244,11 @@ export function buildJulesReworkComment(comment: QaVerdictForm['comment']): stri
 export async function runQaMissionViaRails(
   options: QaRailsMissionOptions
 ): Promise<QaRailsMissionResult> {
-  const f = options.fetchImpl ?? fetch
+  // IMPORTANTE (leva D): alcançável pelo tique (scheduler.ts, wake do QA)
+  // sob `tickEmAndamento` — mesma classe de defeito do Crítico. `mesclarPr`
+  // e `lerDiffDoPr` recebem esta MESMA `gh` injetada (ver mais abaixo), então
+  // ganham o teto de graça, sem precisar de mudança própria.
+  const f = fetchComTeto(options.fetchImpl ?? fetch)
   const gh = async (method: string, path: string, body?: unknown): Promise<unknown> => {
     const resp = await f(`https://api.github.com${path}`, {
       method,

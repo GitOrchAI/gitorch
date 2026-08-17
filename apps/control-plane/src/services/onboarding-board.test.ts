@@ -611,3 +611,39 @@ describe('ensureProjectBoard — sem poder verificar exclusividade', () => {
     expect(c.createProjectV2).toHaveBeenCalled()
   })
 })
+
+describe('teto de tempo (leva D)', () => {
+  it('resolveGithubOwnerId: a chamada carrega um AbortSignal não abortado', async () => {
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ node_id: 'U_dono', type: 'User' }),
+    }))
+    await resolveGithubOwnerId('dono-exemplo', 'tok', {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    expect(fetchImpl.mock.calls.length).toBeGreaterThan(0)
+    for (const call of fetchImpl.mock.calls) {
+      const init = call[1] as RequestInit | undefined
+      expect(init?.signal).toBeInstanceOf(AbortSignal)
+      expect(init?.signal?.aborted).toBe(false)
+    }
+  })
+
+  it('resolveGithubRepositoryId: a chamada carrega um AbortSignal não abortado', async () => {
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ node_id: 'R_gitorch' }),
+    }))
+    await resolveGithubRepositoryId('GitOrchAI/gitorch', 'tok', {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    expect(fetchImpl.mock.calls.length).toBeGreaterThan(0)
+    for (const call of fetchImpl.mock.calls) {
+      const init = call[1] as RequestInit | undefined
+      expect(init?.signal).toBeInstanceOf(AbortSignal)
+      expect(init?.signal?.aborted).toBe(false)
+    }
+  })
+})

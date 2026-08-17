@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { runRaMissionViaRails } from './ra-rails-mission.js'
 
 const RA_REPLIES: Record<string, string> = {
@@ -143,5 +143,33 @@ describe('runRaMissionViaRails', () => {
     })
     expect(r.exitCode).toBe(0)
     expect(r.output).toContain('RA analysis')
+  })
+})
+
+describe('teto de tempo (leva D)', () => {
+  it('a busca da wish carrega um AbortSignal não abortado', async () => {
+    const spy = vi.fn(
+      async (url: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]) => {
+        if (String(url).includes('labels=wishlist')) {
+          return new Response(JSON.stringify([{ number: 77, title: 'T', body: 'b' }]), {
+            status: 200,
+          })
+        }
+        return new Response('[]', { status: 200 })
+      }
+    )
+    await runRaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: executeFor([]),
+      contextBlocks: [],
+      fetchImpl: spy as unknown as typeof fetch,
+    })
+    expect(spy.mock.calls.length).toBeGreaterThan(0)
+    for (const call of spy.mock.calls) {
+      const init = call[1] as RequestInit | undefined
+      expect(init?.signal).toBeInstanceOf(AbortSignal)
+      expect(init?.signal?.aborted).toBe(false)
+    }
   })
 })

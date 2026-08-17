@@ -1,4 +1,5 @@
 import type { ProjectV2Client } from '@gitorch/github-sync'
+import { fetchComTeto } from './fetch-com-teto.js'
 
 // A mesa de trabalho do PRÓPRIO projeto (Task 9). Antes disto o board vinha de
 // um env GLOBAL (GITORCH_PROJECT_BOARD), o que fazia todo projeto novo apontar
@@ -299,7 +300,10 @@ export async function resolveGithubOwnerId(
     )
   }
 
-  const f = deps.fetchImpl ?? fetch
+  // IMPORTANTE (leva D): alcançável pelo tique (scheduler.ts, wake do PO,
+  // criação do board próprio) sob `tickEmAndamento` — mesma classe de
+  // defeito do Crítico.
+  const f = fetchComTeto(deps.fetchImpl ?? fetch)
   const headers = {
     Authorization: `Bearer ${token}`,
     Accept: 'application/vnd.github+json',
@@ -344,7 +348,8 @@ export async function resolveGithubRepositoryId(
     )
   }
 
-  const f = deps.fetchImpl ?? fetch
+  // IMPORTANTE (leva D): mesma classe de defeito do Crítico.
+  const f = fetchComTeto(deps.fetchImpl ?? fetch)
   const headers = {
     Authorization: `Bearer ${token}`,
     Accept: 'application/vnd.github+json',

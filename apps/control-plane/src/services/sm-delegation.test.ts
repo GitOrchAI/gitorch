@@ -382,3 +382,23 @@ describe('runSmDelegation: fila sai da linha da sessão, não da etiqueta', () =
     expect(r.delegated).toEqual([])
   })
 })
+
+describe('teto de tempo (leva D)', () => {
+  it('toda chamada ao GitHub carrega um AbortSignal não abortado', async () => {
+    const fetchImpl = vi.fn(
+      async (_url: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]) =>
+        new Response(JSON.stringify([]), { status: 200 })
+    )
+    await runSmDelegation({
+      repository: 'acme/api',
+      githubToken: 't',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    expect(fetchImpl.mock.calls.length).toBeGreaterThan(0)
+    for (const call of fetchImpl.mock.calls) {
+      const init = call[1] as RequestInit | undefined
+      expect(init?.signal).toBeInstanceOf(AbortSignal)
+      expect(init?.signal?.aborted).toBe(false)
+    }
+  })
+})

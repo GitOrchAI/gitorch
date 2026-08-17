@@ -358,6 +358,59 @@ describe('provisionSetupMission', () => {
       },
     })
   })
+
+  // IMPORTANTE (leva D): SEM `createProjectV2Client` injetado (o caso real de
+  // produção, quando o call site de `processSetupMissions` deixasse de
+  // passá-lo), o default caía num `ProjectV2Client` sem teto — alcançável
+  // pelo tique (`processSetupMissions` → `tick()`) sob `tickEmAndamento`,
+  // mesma classe de defeito do Crítico.
+  test('SEM createProjectV2Client injetado, o ProjectV2Client default ainda carrega um AbortSignal não abortado', async () => {
+    const stack = fakeStack(vi.fn().mockResolvedValue({ path: '/workspace/x' }))
+    const chamadas: Array<{ init: RequestInit | undefined }> = []
+    const original = global.fetch
+    global.fetch = vi.fn(async (url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      chamadas.push({ init })
+      const u = String(url)
+      const json = (d: unknown) => new Response(JSON.stringify(d), { status: 200 })
+      if (u.endsWith('/graphql')) {
+        const body = JSON.parse(String(init?.body)) as { query: string }
+        if (body.query.includes('GetProjectId') || body.query.includes('projectV2(number')) {
+          return json({ data: { user: { projectV2: null } } })
+        }
+        if (body.query.includes('createProjectV2')) {
+          return json({
+            data: { createProjectV2: { projectV2: { id: 'PVT_default', number: 1 } } },
+          })
+        }
+        return json({ data: {} })
+      }
+      return json({})
+    }) as unknown as typeof fetch
+
+    try {
+      const outcome = await provisionSetupMission(
+        {
+          id: 'mission_sem_client_injetado',
+          project: { id: 'proj_default', wingId: 'GitOrchAI/gitorch', userId: 'user_1' },
+        },
+        stack,
+        'gh_owner_token',
+        {
+          prisma: { project: { update: vi.fn().mockResolvedValue({}) } } as never,
+          resolveOwner: async () => ({ id: 'O_org', type: 'organization' }),
+        }
+      )
+      expect(outcome.status).toBe('completed')
+    } finally {
+      global.fetch = original
+    }
+
+    expect(chamadas.length).toBeGreaterThan(0)
+    for (const { init } of chamadas) {
+      expect(init?.signal).toBeInstanceOf(AbortSignal)
+      expect(init?.signal?.aborted).toBe(false)
+    }
+  })
 })
 
 // O teto de concorrência (MAX_CONCURRENT_MISSIONS) passa a cobrir TAMBÉM o

@@ -96,6 +96,7 @@ import {
   resolveSprintDays,
   createCardMover,
 } from '../services/board-status.js'
+import { fetchComTeto } from '../services/fetch-com-teto.js'
 import {
   ensureAndPersistProjectBoard,
   ensureProjectBoard,
@@ -1075,9 +1076,18 @@ export async function provisionSetupMission(
     const boardToken = appToken ?? githubToken
 
     if (boardToken && deps.prisma) {
+      // IMPORTANTE (leva D): achado nesta auditoria além da lista do
+      // despacho — mesma classe de defeito do Crítico. `provisionSetupMission`
+      // é chamada por `processSetupMissions` dentro de `tick()`, sob
+      // `tickEmAndamento`; o default aqui (sem `createProjectV2Client`
+      // injetado) caía num `ProjectV2Client` sem teto nenhum. O teto mora na
+      // PRÓPRIA função (não só no call site) para qualquer chamador futuro
+      // que esqueça de injetar `createProjectV2Client` herdar a proteção —
+      // mesma disciplina de `endereco-seguro.ts` ("a guarda mora aqui e não
+      // nos chamadores").
       const client = deps.createProjectV2Client
         ? deps.createProjectV2Client(boardToken)
-        : new ProjectV2Client({ token: boardToken })
+        : new ProjectV2Client({ token: boardToken, fetchImpl: fetchComTeto(fetch) })
       // Achado importante: sem passar o número já gravado, findProjectId
       // nunca rodava e todo provisionamento criava board NOVO — finalizar o
       // wizard 2x para o mesmo repositório duplicava o board. O número já
@@ -1695,12 +1705,19 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             },
             prisma: app.prisma as never,
             mintInstallationToken,
-            createProjectV2Client: (token: string) => new ProjectV2Client({ token }),
+            // IMPORTANTE (leva D): as duas fábricas abaixo caíam em `new
+            // ProjectV2Client({ token })` sem `fetchImpl` nenhum — achado
+            // nesta auditoria além da lista do despacho, mesma classe de
+            // defeito, mesmo caminho (`runTrigger` → `tick()`, sob
+            // `tickEmAndamento`, wake do PO tentando garantir o board).
+            createProjectV2Client: (token: string) =>
+              new ProjectV2Client({ token, fetchImpl: fetchComTetoParaOBoard }),
             resolveOwner: resolveGithubOwnerId,
             resolveRepositoryId: resolveGithubRepositoryId,
             lerClientToken: () =>
               lerCredencialDoProjeto({ prisma: app.prisma as never, projectId: project.id }),
-            criarClienteAlternativo: (token: string) => new ProjectV2Client({ token }),
+            criarClienteAlternativo: (token: string) =>
+              new ProjectV2Client({ token, fetchImpl: fetchComTetoParaOBoard }),
             onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
           })
           if (railsBoard) {
@@ -2446,9 +2463,16 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       const githubToken = mission.project.userId
         ? await app.engineConnections.getRawGithubToken(mission.project.userId)
         : null
+      // IMPORTANTE (leva D): `provisionSetupMission` cai no PRÓPRIO default
+      // (`new ProjectV2Client({ token: boardToken })`, sem teto nenhum)
+      // quando `createProjectV2Client` não é injetado — achado nesta
+      // auditoria além da lista do despacho, mesma classe de defeito, mesmo
+      // caminho (`processSetupMissions` → `tick()`, sob `tickEmAndamento`).
       const outcome = await provisionSetupMission(mission, activeStack, githubToken ?? undefined, {
         prisma: app.prisma,
         log: app.log,
+        createProjectV2Client: (token) =>
+          new ProjectV2Client({ token, fetchImpl: fetchComTetoParaOBoard }),
       })
       await app.prisma.mission.update({
         where: { id: mission.id },
@@ -2701,11 +2725,18 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // chamada pendurada ali prenderia `tickEmAndamento` pela MESMA classe de
   // defeito que `ghSend` tinha. `createCardMover` já aceita `fetchImpl`
   // como injeção — só faltava usá-la, com o mesmo teto de `ghGet`/`ghSend`.
-  const fetchComTetoParaOBoard: typeof fetch = (input, init) =>
-    fetch(input, {
-      ...init,
-      signal: init?.signal ?? AbortSignal.timeout(TIMEOUT_DE_CHAMADA_GITHUB_MS),
-    })
+  //
+  // Minor 1 (leva D): a forma antiga daqui era `init?.signal ??
+  // AbortSignal.timeout(...)` — o `??` faz o teto nunca ser criado quando
+  // já existe um `signal` no `init` do chamador, apagando o piso sempre que
+  // alguém passasse um. Nenhum chamador faz isso hoje (latente, não um bug
+  // vivo), mas é barato fechar: `fetchComTeto` (fetch-com-teto.ts) combina
+  // os dois com `AbortSignal.any` em vez de escolher um. `board-status.ts`
+  // (leva D) também passou a embrulhar por conta própria — este wrapper
+  // aqui é redundante para `createCardMover`, mas mantido pelo mesmo motivo
+  // de `ghGet`/`ghSend`: teto explícito na PRÓPRIA chamada, não só confiado
+  // à porta de saída de um módulo vizinho.
+  const fetchComTetoParaOBoard = fetchComTeto(fetch, TIMEOUT_DE_CHAMADA_GITHUB_MS)
 
   // R6 do controlador: o mecanismo de publicação (Tarefa 12) muda raramente
   // mas NÃO é imutável — guardado em memória, por repositório, com validade
