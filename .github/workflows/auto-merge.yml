@@ -179,7 +179,7 @@ jobs:
           # Buckets do gh: pass | skipping | pending | fail | cancel
           for i in $(seq 1 30); do
             CHECKS=$(gh pr checks "$PR_NUM" --repo "$REPO" --json name,bucket 2>/dev/null || true)
-            if [ -z "$CHECKS" ]; then
+            if ! echo "$CHECKS" | jq . >/dev/null 2>&1; then
               CHECKS="[]"
             fi
             OTHERS=$(echo "$CHECKS" | jq --arg self "$SELF_CHECK_NAME" '[.[] | select(.name != $self)]')
