@@ -126,6 +126,56 @@ describe('descobrirMecanismo', () => {
     expect(m).toEqual({ tipo: 'workflow', arquivo: 'deploy-tests.yml', nome: 'deploy-tests' })
   })
 
+  it('"continuous-deployment" é reconhecido como publicação — "deployment" não é só "deploy" com sufixo para a fronteira de palavra do regex', async () => {
+    const m = await descobrirMecanismo({
+      listarAmbientes: vi.fn().mockResolvedValue([]),
+      listarWorkflows: vi.fn().mockResolvedValue([
+        {
+          nome: 'continuous-deployment',
+          arquivo: '.github/workflows/continuous-deployment.yml',
+          ativo: true,
+        },
+      ]),
+    })
+    expect(m).toEqual({
+      tipo: 'workflow',
+      arquivo: 'continuous-deployment.yml',
+      nome: 'continuous-deployment',
+    })
+  })
+
+  it('a ampliação para "deployment" não reabre a guarda contra "cd" ambíguo — "cd-lint-check" e afins continuam de fora', async () => {
+    const m1 = await descobrirMecanismo({
+      listarAmbientes: vi.fn().mockResolvedValue([]),
+      listarWorkflows: vi
+        .fn()
+        .mockResolvedValue([
+          { nome: 'cd-lint-check', arquivo: '.github/workflows/cd-lint-check.yml', ativo: true },
+        ]),
+    })
+    expect(m1).toEqual({ tipo: 'nenhum' })
+
+    const m2 = await descobrirMecanismo({
+      listarAmbientes: vi.fn().mockResolvedValue([]),
+      listarWorkflows: vi
+        .fn()
+        .mockResolvedValue([
+          { nome: 'cd-tests', arquivo: '.github/workflows/cd-tests.yml', ativo: true },
+        ]),
+    })
+    expect(m2).toEqual({ tipo: 'nenhum' })
+
+    const m3 = await descobrirMecanismo({
+      listarAmbientes: vi.fn().mockResolvedValue([]),
+      listarWorkflows: vi
+        .fn()
+        .mockResolvedValue([
+          { nome: 'cd_build', arquivo: '.github/workflows/cd_build.yml', ativo: true },
+        ]),
+    })
+    expect(m3).toEqual({ tipo: 'nenhum' })
+  })
+
   it('desempate: entre vários workflows ativos que casam, vence o primeiro da lista devolvida (comportamento atual, fixado por teste)', async () => {
     const m = await descobrirMecanismo({
       listarAmbientes: vi.fn().mockResolvedValue([]),

@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import { testarAmbiente, resolveCaminhosDeAmbiente } from './qa-de-ambiente.js'
+import {
+  testarAmbiente,
+  resolveCaminhosDeAmbiente,
+  resolveEnderecoDeAmbiente,
+} from './qa-de-ambiente.js'
 
 describe('testarAmbiente', () => {
   it('sem endereço nenhum: diz que não tem, não inventa veredito', async () => {
@@ -79,5 +83,49 @@ describe('resolveCaminhosDeAmbiente', () => {
     expect(
       resolveCaminhosDeAmbiente({ ambientes: { caminhos: ['/produtos', 42, null, ''] } })
     ).toEqual(['/produtos'])
+  })
+})
+
+// Item 1/Leva B2 (Menor 9 da revisão final): a metade que faltava de
+// `resolveCaminhosDeAmbiente` — o endereço BASE do ambiente, não os
+// caminhos dentro dele. Sem isto, o caminho de publicação por WORKFLOW nunca
+// tinha o que testar (o GitHub não entrega endereço nenhum ali, ao contrário
+// do caminho de deployment).
+describe('resolveEnderecoDeAmbiente', () => {
+  it('sem runtimeConfig nenhum: sem endereço, nunca inventa', () => {
+    expect(resolveEnderecoDeAmbiente(null)).toBeNull()
+    expect(resolveEnderecoDeAmbiente(undefined)).toBeNull()
+  })
+
+  it('runtimeConfig sem a chave ambientes.endereco: sem endereço', () => {
+    expect(resolveEnderecoDeAmbiente({})).toBeNull()
+    expect(resolveEnderecoDeAmbiente({ ambientes: { caminhos: ['/'] } })).toBeNull()
+  })
+
+  it('lê o endereço declarado pelo projeto', () => {
+    expect(resolveEnderecoDeAmbiente({ ambientes: { endereco: 'https://loja.exemplo.com' } })).toBe(
+      'https://loja.exemplo.com'
+    )
+  })
+
+  it('descarta espaço em volta, mas não inventa nada além do que foi declarado', () => {
+    expect(
+      resolveEnderecoDeAmbiente({ ambientes: { endereco: '  https://loja.exemplo.com  ' } })
+    ).toBe('https://loja.exemplo.com')
+  })
+
+  it('endereço malformado (não é texto, ou string vazia/só espaço): sem endereço, nunca chuta', () => {
+    expect(resolveEnderecoDeAmbiente({ ambientes: { endereco: 42 } })).toBeNull()
+    expect(resolveEnderecoDeAmbiente({ ambientes: { endereco: null } })).toBeNull()
+    expect(resolveEnderecoDeAmbiente({ ambientes: { endereco: '' } })).toBeNull()
+    expect(resolveEnderecoDeAmbiente({ ambientes: { endereco: '   ' } })).toBeNull()
+  })
+
+  it('caminhos e endereço convivem no mesmo bloco de configuração, cada um lido pela sua função', () => {
+    const runtimeConfig = {
+      ambientes: { endereco: 'https://loja.exemplo.com', caminhos: ['/', '/checkout'] },
+    }
+    expect(resolveEnderecoDeAmbiente(runtimeConfig)).toBe('https://loja.exemplo.com')
+    expect(resolveCaminhosDeAmbiente(runtimeConfig)).toEqual(['/', '/checkout'])
   })
 })

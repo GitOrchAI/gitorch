@@ -204,7 +204,14 @@ describe('achados da revisão da Tarefa 17 — pelo seam real', () => {
       attempts: 1,
       nudges: 0,
       lastProgressAt: null,
-      stateCheckedAt: null,
+      // Item 7 (leva B2): dado real de produção, igual à fixture da achado
+      // 1 acima — `registrarMescla` grava `stateCheckedAt` na MESMA escrita
+      // que grava `mergeCommitSha` (invariante documentada em
+      // scheduler.ts), então uma sessão mesclada NUNCA tem um sem o outro.
+      // `null` aqui virou, depois da correção do teto absoluto, "já
+      // estourou o teto" — fecharia a sessão na hora e quebraria o cenário
+      // de dedupe que estes testes provam.
+      stateCheckedAt: new Date(),
       pendingSince: null,
       mergeCommitSha: 'deadbeef',
       // O estado gravado pela varredura ANTERIOR — é o que decide o dedupe
@@ -347,5 +354,38 @@ describe('achados da revisão da Tarefa 17 — pelo seam real', () => {
       String(c[0]).startsWith('https://api.telegram.org/')
     )
     expect(chamadasDeTelegram).toHaveLength(1)
+  })
+
+  // Menor 10 da revisão final da branch: `per_page=10` era folgado demais
+  // para um repositório movimentado — a execução do commit mesclado podia
+  // cair fora da primeira página antes da próxima varredura rodar, o que
+  // alimenta o Crítico 1 (publicação lida como "de outro commit" por engano).
+  // Prova pelo seam real: a URL que o relógio de fato chama pede mais que 10.
+  test('a leitura de execuções do workflow pede mais que as 10 antigas — não fica escondida atrás de uma cadeia de includes()', async () => {
+    const fetchMock = fetchMockPublicacaoQueFalhou()
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    const prisma = buildFakePrisma(fixturePublicacaoQueFalhou(null))
+    app = Fastify({ logger: false })
+    app.decorate('prisma', prisma as never)
+    await app.register(schedulerPlugin)
+
+    await vi.waitFor(
+      () => {
+        const chamou = fetchMock.mock.calls.some((c) =>
+          String(c[0]).includes('/repos/acme/api/actions/workflows/cd.yml/runs')
+        )
+        expect(chamou).toBe(true)
+      },
+      { timeout: 3000, interval: 10 }
+    )
+
+    const urlDaListagem = fetchMock.mock.calls
+      .map((c) => String(c[0]))
+      .find((u) => u.includes('/repos/acme/api/actions/workflows/cd.yml/runs'))
+    expect(urlDaListagem).toBeDefined()
+    const perPage = Number(new URL(urlDaListagem as string).searchParams.get('per_page'))
+    expect(perPage).toBeGreaterThan(10)
+    expect(perPage).toBeLessThanOrEqual(100) // teto da própria API do GitHub
   })
 })

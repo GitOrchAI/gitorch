@@ -146,19 +146,22 @@ describe('varrerPublicacoes wiring em schedulerPlugin (real seam)', () => {
   })
 
   test('tick real fecha a sessão mesclada sem mecanismo de publicação (sem-publicacao) — a cadeia inteira roda sem reimplementação, e o dono é avisado (achado 3)', async () => {
-    const fetchMock = vi.fn(async (url: Parameters<typeof fetch>[0]) => {
-      const u = String(url)
-      if (u.endsWith('/repos/acme/api/environments')) {
-        return new Response(JSON.stringify({ environments: [] }), { status: 200 })
+    const fetchMock = vi.fn(
+      async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        const u = String(url)
+        if (u.endsWith('/repos/acme/api/environments')) {
+          return new Response(JSON.stringify({ environments: [] }), { status: 200 })
+        }
+        if (u.endsWith('/repos/acme/api/actions/workflows')) {
+          return new Response(JSON.stringify({ workflows: [] }), { status: 200 })
+        }
+        if (u.startsWith('https://api.telegram.org/')) {
+          return new Response('{"ok":true}', { status: 200 })
+        }
+        void init
+        return new Response('{}', { status: 200 })
       }
-      if (u.endsWith('/repos/acme/api/actions/workflows')) {
-        return new Response(JSON.stringify({ workflows: [] }), { status: 200 })
-      }
-      if (u.startsWith('https://api.telegram.org/')) {
-        return new Response('{"ok":true}', { status: 200 })
-      }
-      return new Response('{}', { status: 200 })
-    })
+    )
     global.fetch = fetchMock as unknown as typeof fetch
 
     const prisma = buildFakePrisma()
@@ -192,6 +195,17 @@ describe('varrerPublicacoes wiring em schedulerPlugin (real seam)', () => {
     const urls = fetchMock.mock.calls.map((c) => String(c[0]))
     expect(urls.some((u) => u.endsWith('/repos/acme/api/environments'))).toBe(true)
     expect(urls.some((u) => u.endsWith('/repos/acme/api/actions/workflows'))).toBe(true)
+
+    // Item 7 (leva B2): a chamada real de `ghGet` carrega um sinal de
+    // aborto — sem ele, uma chamada pendurada prenderia `tickEmAndamento`
+    // (a trava contra sobreposição) para sempre, e nenhum tique futuro
+    // rodaria de novo.
+    const chamadaAoGithub = fetchMock.mock.calls.find(([u]) =>
+      String(u).endsWith('/repos/acme/api/environments')
+    )
+    const initDoGithub = chamadaAoGithub?.[1] as RequestInit | undefined
+    expect(initDoGithub?.signal).toBeInstanceOf(AbortSignal)
+    expect(initDoGithub?.signal?.aborted).toBe(false)
 
     // Achado 3 da revisão: fechar `sem-publicacao` em silêncio era o
     // caminho mais provável de esconder uma falha real. O dono precisa ser

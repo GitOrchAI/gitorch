@@ -73,7 +73,11 @@ import {
   type EstadoDaPublicacao,
 } from '../services/publicacao.js'
 import { fecharTarefaEntregue } from '../services/fechar-tarefa.js'
-import { testarAmbiente, resolveCaminhosDeAmbiente } from '../services/qa-de-ambiente.js'
+import {
+  testarAmbiente,
+  resolveCaminhosDeAmbiente,
+  resolveEnderecoDeAmbiente,
+} from '../services/qa-de-ambiente.js'
 import { buscarComGuarda } from '../services/endereco-seguro.js'
 import {
   criarSessaoJules,
@@ -2616,6 +2620,20 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // Leitura mínima do GitHub (GET simples, token no header) — o mesmo
   // formato que `qa-rails-mission.ts`/`sm-delegation.ts` usam para as
   // próprias chamadas, sem depender de nenhum cliente maior.
+  //
+  // Item 7 (leva B2): teto explícito, mesmo valor que as outras chamadas ao
+  // GitHub deste repositório já usam (`desejo-no-github.ts`,
+  // `github-app-token.ts`). Sem isto, uma chamada que nunca resolve (rede
+  // pendurada, não um erro — um erro já cai no `catch` de
+  // `varrerPublicacoes` normalmente) prendia `tickEmAndamento` (a trava
+  // contra sobreposição, Importante 8) para SEMPRE: a trava que existe para
+  // não deixar duas varreduras rodarem ao mesmo tempo virava, ela mesma, um
+  // jeito de travar TODAS as varreduras futuras, sem log nenhum explicando
+  // por quê. Com o teto, o pior caso é limitado e provável — o tique
+  // eventualmente falha, o `catch` trata, e o próximo tique do relógio (1
+  // min) volta a rodar.
+  const TIMEOUT_DE_LEITURA_GITHUB_MS = 10_000
+
   const ghGet = async (path: string, githubToken: string): Promise<unknown> => {
     const resp = await fetch(`https://api.github.com${path}`, {
       headers: {
@@ -2623,6 +2641,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         accept: 'application/vnd.github+json',
         'user-agent': 'gitorch',
       },
+      signal: AbortSignal.timeout(TIMEOUT_DE_LEITURA_GITHUB_MS),
     })
     if (!resp.ok) {
       throw new Error(`GitHub GET ${path} failed (${resp.status})`)
@@ -2938,6 +2957,24 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
    * TAREFA e o CARD do board do cliente — nunca mais no merge
    * (`qa-rails-mission.ts`, desenho antigo). Ver `resolverEntregaDoBoard`.
    */
+  /**
+   * Quantas execuções recentes `lerExecucoes` pede por página (Menor 10 da
+   * revisão final). Era 10 — folgado demais num repositório movimentado: CI,
+   * CD e rotinas agendadas todas registram execuções na MESMA lista, e a
+   * nossa (a que casa com `shaDaMescla`) pode cair fora da primeira página
+   * antes de a próxima varredura rodar. Quando isso acontece,
+   * `acompanharPorWorkflow` só enxerga a execução MAIS RECENTE (de outro
+   * fluxo) e o veredito vira `commit-errado` por engano — alimentando
+   * diretamente o Crítico 1 que este mesmo pacote de correções fechou.
+   *
+   * 50: cinco vezes mais folga, sem chegar ao teto de 100 da API — o custo
+   * de cota do GitHub é POR CHAMADA, não por item devolvido (continua sendo
+   * UMA leitura por sessão por cadência), então subir `per_page` não
+   * consome quota extra; só reduz o tamanho da resposta que ainda cabe
+   * folgado num único GET.
+   */
+  const TAMANHO_DA_PAGINA_DE_EXECUCOES = 50
+
   const varrerPublicacoes = async (): Promise<void> => {
     let sessoes: LinhaDeSessao[]
     try {
@@ -2966,16 +3003,26 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       //
       // Importante 5 (Leva A): a fonte é a LINHA (`stateCheckedAt`, gravado
       // por `registrarMescla` no instante do merge), não um relógio em
-      // memória do processo — sobrevive a reinício. `stateCheckedAt`
-      // ausente (linha antiga de antes desta coluna existir) trata como
-      // "tempo desconhecido": nenhum teto (nem os específicos dentro de
-      // `acompanharPublicacao`, nem este absoluto) finaliza sozinho por
-      // dado faltando.
+      // memória do processo — sobrevive a reinício.
+      //
+      // Item 7 (leva B2) — invariante e por que `undefined` agora FECHA em
+      // vez de nunca fechar: `registrarMescla` (dev-session-store.ts) é o
+      // ÚNICO escritor de `mergeCommitSha`, e grava `stateCheckedAt` na
+      // MESMA chamada — uma linha que chega até aqui (já filtrada por
+      // `mergeCommitSha` não-nulo, na consulta acima) tem, hoje, SEMPRE
+      // `stateCheckedAt` preenchido. `undefined` não deveria acontecer.
+      // Antes desta correção, se acontecesse mesmo assim (edição manual do
+      // banco, uma migração futura que desacople os dois campos), o código
+      // tratava "não sei há quanto tempo" como "tempo desconhecido, então
+      // nenhum teto dispara" — a ÚNICA direção que reabre o beco sem saída
+      // que este teto absoluto existe para fechar (a sessão presa para
+      // sempre, sem aviso, é sempre pior do que fechar cedo demais com
+      // aviso). Por isso `undefined` agora conta como "já estourou o teto".
       const desdeAMescla = sessao.stateCheckedAt
         ? agora.getTime() - sessao.stateCheckedAt.getTime()
         : undefined
       const estourouTetoAbsoluto =
-        desdeAMescla !== undefined && desdeAMescla >= TETO_ABSOLUTO_DE_ACOMPANHAMENTO_MS
+        desdeAMescla === undefined || desdeAMescla >= TETO_ABSOLUTO_DE_ACOMPANHAMENTO_MS
 
       // Espelhos para o `catch` mais abaixo — fora do escopo dos `const`
       // declarados dentro do try (que existem para preservar o
@@ -3008,7 +3055,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               projeto,
               sessao,
               agora,
-              desdeAMescla: desdeAMescla as number,
+              desdeAMescla: desdeAMescla ?? TETO_ABSOLUTO_DE_ACOMPANHAMENTO_MS,
               ultimaObservacao:
                 'perdemos a credencial do GitHub para este repositório e não conseguimos checar a publicação',
               githubToken: undefined,
@@ -3045,7 +3092,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           ...(desdeAMescla !== undefined ? { desdeAMescla } : {}),
           lerExecucoes: async (arquivo) => {
             const resp = (await ghGet(
-              `/repos/${projeto.wingId}/actions/workflows/${arquivo}/runs?per_page=10`,
+              `/repos/${projeto.wingId}/actions/workflows/${arquivo}/runs?per_page=${TAMANHO_DA_PAGINA_DE_EXECUCOES}`,
               githubToken
             )) as { workflow_runs?: ExecucaoDeWorkflow[] }
             return resp.workflow_runs ?? []
@@ -3091,7 +3138,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             projeto,
             sessao,
             agora,
-            desdeAMescla: desdeAMescla as number,
+            desdeAMescla: desdeAMescla ?? TETO_ABSOLUTO_DE_ACOMPANHAMENTO_MS,
             ultimaObservacao: `${veredito.estado} — ${veredito.motivo}`,
             githubToken,
           })
@@ -3118,8 +3165,33 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           // ADICIONAL para o dono, sempre carregando o `motivo` (Tarefa 14),
           // nunca só o veredito — é ali que mora, por exemplo, o aviso de um
           // endereço recusado pela guarda antes de qualquer chamada.
+          //
+          // Menor 9 da revisão final da branch: no caminho de DEPLOYMENT o
+          // GitHub entrega o endereço DE GRAÇA (`environment_url`,
+          // `veredito.enderecos`, já comprovado do commit exato pela Tarefa
+          // 13). No caminho de WORKFLOW não existe esse presente — nenhuma
+          // leitura usada por `acompanharPorWorkflow` devolve URL — então
+          // `veredito.enderecos` sai SEMPRE vazio ali, e sem isto o ensaio
+          // ficava inerte (`sem-endereco`) para todo repositório que publica
+          // por workflow, inclusive um projeto real do cliente. O endereço,
+          // quando existe, só pode vir da CONFIGURAÇÃO do próprio projeto
+          // (`runtimeConfig.ambientes.endereco`, irmã de `ambientes.caminhos`
+          // — Tarefa 17). Sem essa configuração o comportamento honesto de
+          // sempre se mantém: `testarAmbiente` responde `sem-endereco`,
+          // visível ao dono na mesma nota que já acompanha todo veredito —
+          // nunca um endereço inventado, e sempre pela guarda de rede
+          // (`enderecoPermitido`/`buscarComGuarda`), exatamente como o
+          // caminho de deployment.
+          const enderecoConfigurado =
+            mecanismo.tipo === 'workflow' ? resolveEnderecoDeAmbiente(projeto.runtimeConfig) : null
+          const enderecosParaTestar =
+            veredito.enderecos.length > 0
+              ? veredito.enderecos
+              : enderecoConfigurado
+                ? [enderecoConfigurado]
+                : veredito.enderecos
           const relatorio = await testarAmbiente({
-            enderecos: veredito.enderecos,
+            enderecos: enderecosParaTestar,
             // Configuração POR PROJETO (`runtimeConfig.ambientes.caminhos`,
             // Tarefa 14/17) — nunca chuta rota de cliente; sem config, testa
             // só a raiz.
@@ -3239,7 +3311,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             projeto: projetoParaCatch,
             sessao,
             agora,
-            desdeAMescla: desdeAMescla as number,
+            desdeAMescla: desdeAMescla ?? TETO_ABSOLUTO_DE_ACOMPANHAMENTO_MS,
             ultimaObservacao: `a leitura do GitHub falhou repetidamente (${String(err).slice(0, 160)})`,
             githubToken: tokenParaCatch,
           }).catch((fecharErr) =>

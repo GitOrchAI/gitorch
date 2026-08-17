@@ -42,13 +42,19 @@ export type Mecanismo =
 const PADRAO_AMBIENTE_EFEMERO = /PR #\d+/
 
 /**
- * `deploy`, `release` e `publish` são inequívocos: nenhuma palavra de
- * verificação de código se escreve assim. Já `cd` é ambíguo por construção —
- * é ao mesmo tempo a abreviação de "continuous deployment" E um token de
- * duas letras que aparece dentro de nomes como `cd-lint-check` sem ligação
- * nenhuma com publicação. Por isso ele é tratado à parte, abaixo.
+ * `deploy`, `deployment`, `release` e `publish` são inequívocos: nenhuma
+ * palavra de verificação de código se escreve assim. `deployment` entra como
+ * alternativa PRÓPRIA (não só um sufixo de `deploy`) porque `\bdeploy\b`
+ * exige fronteira de palavra nos dois lados — e depois de "deploy" vem "ment"
+ * (letra-letra, sem fronteira), então `continuous-deployment` não casava:
+ * lacuna real, achada na revisão final da branch, que fazia o produto
+ * declarar "não publica" para um repositório que publica por esse nome. Já
+ * `cd` é ambíguo por construção — é ao mesmo tempo a abreviação de
+ * "continuous deployment" E um token de duas letras que aparece dentro de
+ * nomes como `cd-lint-check` sem ligação nenhuma com publicação. Por isso ele
+ * é tratado à parte, abaixo.
  */
-const PADRAO_PUBLICACAO_INEQUIVOCA = /\b(deploy|release|publish)\b/i
+const PADRAO_PUBLICACAO_INEQUIVOCA = /\b(deploy|deployment|release|publish)\b/i
 
 /** O token ambíguo — só ele precisa do desempate por vocabulário de verificação. */
 const PADRAO_TOKEN_CD = /\bcd\b/i

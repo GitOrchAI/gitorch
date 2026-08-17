@@ -34,6 +34,12 @@ describe('acompanharPublicacao', () => {
       lerEtapas: vi.fn(),
       lerPublicacoes: vi.fn(),
       lerEstadosDaPublicacao: vi.fn(),
+      // Item 7 (leva B2): `desdeAMescla` explícito e bem abaixo do teto —
+      // este teste prova a detecção de commit errado em si, não a fronteira
+      // do teto (coberta à parte, mais abaixo). Sem passar nada aqui,
+      // `desdeAMescla` fica `undefined`, e o `undefined` agora fecha
+      // imediatamente por segurança (ver "Item 7" mais abaixo).
+      desdeAMescla: 0,
     })
     expect(v.estado).toBe('commit-errado')
     expect(v.motivo).toMatch(/outro commit|antigo/i)
@@ -545,7 +551,7 @@ describe('acompanharPublicacao', () => {
       expect(v.semEvidenciaDeTodoAmbiente).toBe(false)
     })
 
-    it('sem informar desdeAMescla: comportamento de sempre (nunca finaliza sozinho) — nenhum call site esquecido silenciosamente fica seguro', async () => {
+    it('Item 7 (leva B2): sem informar desdeAMescla, FALHA PARA O LADO SEGURO — fecha como sem-publicacao, nunca mais "nunca finaliza sozinho"', async () => {
       const v = await acompanharPublicacao({
         mecanismo: mecanismoWorkflow,
         shaDaMescla: 'abc123',
@@ -558,7 +564,13 @@ describe('acompanharPublicacao', () => {
         lerPublicacoes: vi.fn(),
         lerEstadosDaPublicacao: vi.fn(),
       })
-      expect(v.estado).toBe('commit-errado')
+      // Antes do Item 7: `commit-errado` (não-final) — sem `desdeAMescla`, o
+      // teto nunca disparava e a sessão ficava presa para sempre se o dado
+      // faltasse. Agora: fecha, sem inventar um tempo de espera que não
+      // temos (e sem produzir "NaN min" no motivo).
+      expect(v.estado).toBe('sem-publicacao')
+      expect(v.motivo).not.toMatch(/NaN/)
+      expect(v.motivo).toMatch(/não sabemos há quanto tempo/)
     })
   })
 })

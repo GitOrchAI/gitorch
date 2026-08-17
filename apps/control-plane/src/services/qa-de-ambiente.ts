@@ -39,6 +39,38 @@ export function resolveCaminhosDeAmbiente(runtimeConfig: unknown): string[] {
   return validos.length > 0 ? validos : ['/']
 }
 
+/**
+ * O endereço BASE do ambiente — irmão de `resolveCaminhosDeAmbiente`, mas
+ * para a metade que faltava (Menor 9 da revisão final da branch).
+ *
+ * No caminho de DEPLOYMENT, o endereço vem de GRAÇA do GitHub
+ * (`environment_url`, publicacao.ts) — a plataforma prova, por construção,
+ * que aquele endereço é do commit mesclado. No caminho de WORKFLOW não existe
+ * esse presente: nenhuma chamada usada por `acompanharPorWorkflow` devolve
+ * URL nenhuma, então `veredito.enderecos` sai SEMPRE vazio ali — e sem este
+ * campo, `testarAmbiente` sempre recebia `enderecos: []` e respondia
+ * `sem-endereco` para TODO repositório que publica por workflow, inclusive
+ * um projeto real do cliente. A Tarefa 14 (o ensaio do ambiente) ficava
+ * inerte para metade dos mecanismos reconhecidos — não por bug na lógica do
+ * ensaio, mas por nunca receber endereço nenhum para testar.
+ *
+ * A fonte só pode ser a CONFIGURAÇÃO do projeto — `runtimeConfig.ambientes.endereco`,
+ * ao lado de `ambientes.caminhos` (mesmo bloco, Tarefa 17). Nunca inventa: sem
+ * este campo (ausente, vazio, ou não é uma string), devolve `null` — o
+ * chamador mantém o comportamento honesto de sempre (`sem-endereco`,
+ * visível ao dono na mesma nota que já acompanha todo veredito de
+ * publicação). A validação de FORMATO do endereço (esquema, rede interna)
+ * continua sendo só da guarda (`enderecoPermitido`, endereco-seguro.ts) — este
+ * resolvedor não reimplementa nenhuma checagem de segurança, só lê config.
+ */
+export function resolveEnderecoDeAmbiente(runtimeConfig: unknown): string | null {
+  const endereco = (runtimeConfig as { ambientes?: { endereco?: unknown } } | null)?.ambientes
+    ?.endereco
+  if (typeof endereco !== 'string') return null
+  const limpo = endereco.trim()
+  return limpo.length > 0 ? limpo : null
+}
+
 export type RelatorioDeAmbiente = {
   veredito: 'passou' | 'falhou' | 'inalcancavel' | 'sem-endereco'
   testes: Array<{ caminho: string; status: number | null; ok: boolean }>

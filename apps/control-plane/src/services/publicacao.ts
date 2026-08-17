@@ -411,7 +411,23 @@ async function acompanharPorWorkflow(
     // `paths`, dispara só por tag, ou a execução certa nunca cai na primeira
     // página consultada, a execução mais recente NUNCA vai casar — sem
     // teto, a sessão ficava aberta e o GitHub era consultado para sempre.
-    if (desdeAMescla !== undefined && desdeAMescla >= TETO_DE_COMMIT_ERRADO_MS) {
+    //
+    // Item 7 (leva B2) — invariante e por que o `undefined` FALHA PARA O
+    // LADO SEGURO: `desdeAMescla` só chega aqui vindo de `sessao.stateCheckedAt`
+    // (scheduler.ts), e `stateCheckedAt` só é escrito por `registrarMescla`
+    // (dev-session-store.ts) — o ÚNICO escritor de `mergeCommitSha` — na
+    // MESMA chamada que grava `mergeCommitSha`. Uma sessão que chega até
+    // aqui (já filtrada por `mergeCommitSha` não-nulo) tem, hoje, SEMPRE
+    // `stateCheckedAt` preenchido: `undefined` não deveria acontecer.
+    // Mas antes desta correção, se acontecesse mesmo assim (edição manual do
+    // banco, uma migração futura que desacople os dois campos), a leitura
+    // `!== undefined` tratava "não sei há quanto tempo" como "então nunca
+    // estourou" — reabrindo, por essa porta, a MESMA classe de beco sem
+    // saída que este teto existe para fechar. `undefined` agora conta como
+    // "já estourou": a direção que TERMINA é sempre mais segura que a que
+    // TRAVA.
+    if (desdeAMescla === undefined || desdeAMescla >= TETO_DE_COMMIT_ERRADO_MS) {
+      const minutosDeEspera = desdeAMescla !== undefined ? Math.round(desdeAMescla / 60_000) : null
       return {
         estado: 'sem-publicacao',
         etapas: [],
@@ -419,8 +435,11 @@ async function acompanharPorWorkflow(
         motivo:
           `mesclamos, e não conseguimos confirmar a publicação deste commit: a execução mais ` +
           `recente de "${mecanismo.nome}" continua sendo de outro commit ` +
-          `(${execucaoMaisRecente.head_sha}) depois de ${Math.round(desdeAMescla / 60_000)} min ` +
-          `de espera — pode ser um filtro de caminho no CD, um gatilho só por tag, ou o ` +
+          `(${execucaoMaisRecente.head_sha})` +
+          (minutosDeEspera !== null
+            ? ` depois de ${minutosDeEspera} min de espera`
+            : ', e não sabemos há quanto tempo (instante da mescla não registrado)') +
+          ` — pode ser um filtro de caminho no CD, um gatilho só por tag, ou o ` +
           `repositório ter execuções demais para a nossa aparecer na primeira página consultada.`,
         semEvidenciaDeTodoAmbiente: false,
       }

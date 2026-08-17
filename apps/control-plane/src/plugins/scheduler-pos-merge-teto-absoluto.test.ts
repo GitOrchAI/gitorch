@@ -328,6 +328,98 @@ describe('teto absoluto (Item 1) — nenhum estado sobrevive a TETO_ABSOLUTO_DE_
     expect(corpoDoAviso).toMatch(/leitura do GitHub falhou/)
   })
 
+  // Item 7 (leva B2): a invariante documentada em `scheduler.ts` diz que
+  // `stateCheckedAt` NUNCA fica nulo numa linha que já tem `mergeCommitSha`
+  // (os dois são gravados juntos por `registrarMescla`, o único escritor de
+  // `mergeCommitSha`) — mas se essa invariante fosse quebrada por algum
+  // motivo (edição manual do banco, uma migração futura que desacople os
+  // campos), o código ANTES desta correção tratava "não sei há quanto
+  // tempo" como "então nenhum teto dispara": a sessão ficava presa para
+  // sempre, sem NUNCA fechar e sem avisar o dono, mesmo estando em `falhou`
+  // — o estado que este arquivo inteiro existe para não deixar sem saída.
+  test('Item 7 — stateCheckedAt ausente (dado impossível hoje, mas se acontecesse) FALHA PARA O LADO SEGURO: fecha por teto absoluto em vez de nunca fechar', async () => {
+    process.env['GITORCH_GITHUB_TOKEN'] = 'token-de-teste'
+    const fetchMock = vi.fn(
+      async (url: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]) => {
+        const u = String(url)
+        if (u.endsWith('/repos/acme/api/environments')) {
+          return new Response(JSON.stringify({ environments: [] }), { status: 200 })
+        }
+        if (u.endsWith('/repos/acme/api/actions/workflows')) {
+          return new Response(
+            JSON.stringify({
+              workflows: [{ name: 'CD', path: '.github/workflows/cd.yml', state: 'active' }],
+            }),
+            { status: 200 }
+          )
+        }
+        if (u.includes('/repos/acme/api/actions/workflows/cd.yml/runs')) {
+          return new Response(
+            JSON.stringify({
+              workflow_runs: [
+                {
+                  id: 99,
+                  name: 'CD',
+                  event: 'push',
+                  status: 'completed',
+                  conclusion: 'failure',
+                  head_branch: 'main',
+                  head_sha: 'deadbeef',
+                  run_started_at: '2026-08-16T10:00:00Z',
+                },
+              ],
+            }),
+            { status: 200 }
+          )
+        }
+        if (u.endsWith('/repos/acme/api/actions/runs/99/jobs')) {
+          return new Response(
+            JSON.stringify({
+              jobs: [{ name: 'Deploy backend prod', status: 'completed', conclusion: 'failure' }],
+            }),
+            { status: 200 }
+          )
+        }
+        if (u.startsWith('https://api.telegram.org/')) {
+          return new Response('{"ok":true}', { status: 200 })
+        }
+        return new Response('{}', { status: 200 })
+      }
+    )
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    const prisma = buildFakePrisma(
+      sessaoBase({ sessionName: 'sessions/sem-instante-da-mescla', stateCheckedAt: null })
+    )
+    app = Fastify({ logger: false })
+    app.decorate('prisma', prisma as never)
+    await app.register(schedulerPlugin)
+
+    await vi.waitFor(
+      () => {
+        const fechou = prisma._updateCalls.some(
+          (c) => c.data['closedAt'] !== undefined && c.data['closedReason'] === 'merged'
+        )
+        expect(fechou).toBe(true)
+      },
+      { timeout: 3000, interval: 10 }
+    )
+
+    const chamadaDeEstado = prisma._updateCalls.find((c) => c.data['deployState'] !== undefined)
+    expect(chamadaDeEstado?.data).toMatchObject({ deployState: 'sem-publicacao' })
+
+    // O aviso ao dono não trava numa divisão por dado ausente ("NaN horas")
+    // — a mensagem continua legível mesmo sem saber há quanto tempo foi.
+    const chamadasDeTelegram = fetchMock.mock.calls.filter((c) =>
+      String(c[0]).startsWith('https://api.telegram.org/')
+    )
+    expect(chamadasDeTelegram.length).toBeGreaterThanOrEqual(1)
+    const corpoDoAviso = String(
+      (chamadasDeTelegram[0]?.[1] as { body?: string } | undefined)?.body ?? ''
+    )
+    expect(corpoDoAviso).not.toMatch(/NaN/)
+  })
+
   test('ANTES do teto absoluto: os três estados NÃO fecham sozinhos (comportamento de sempre preservado)', async () => {
     process.env['GITORCH_GITHUB_TOKEN'] = 'token-de-teste'
     const fetchMock = vi.fn(
