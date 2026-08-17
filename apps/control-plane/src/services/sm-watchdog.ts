@@ -1,4 +1,5 @@
 import { GithubExecutionError } from './github-backlog.js'
+import { fetchComTeto } from './fetch-com-teto.js'
 
 // Watchdog do SM (F3.6): o SM é o dono da esteira — quando o dev assíncrono
 // (Jules) falha, é o SM que destrava. Tudo determinístico (a Lei: julgamento
@@ -55,7 +56,10 @@ interface IssueComment {
 }
 
 export async function runSmWatchdog(options: SmWatchdogOptions): Promise<SmWatchdogResult> {
-  const f = options.fetchImpl ?? fetch
+  // IMPORTANTE (leva D): mesma classe de defeito do Crítico —
+  // `fetchComTeto` fecha o teto que faltava nesta closure `gh`, alcançável
+  // pelo tique sob `tickEmAndamento` (scheduler.ts, wake do SM).
+  const f = fetchComTeto(options.fetchImpl ?? fetch)
   const label = options.delegateLabel ?? 'jules'
   const maxRetries = options.maxRetries ?? 3
 
@@ -167,15 +171,32 @@ export async function runSmWatchdog(options: SmWatchdogOptions): Promise<SmWatch
  * DONO daquele projeto — o bot só alcança quem apertou Start nele. Sem chat
  * resolvido → undefined → o watchdog simplesmente não notifica (nunca despeja o
  * evento de um cliente num chat que não é o dele).
+ *
+ * CRÍTICO (leva D): o `fetch` daqui não carregava teto NENHUM — nem
+ * `signal`, nem timeout de nenhum tipo. `avisarDonoDoProjeto` (scheduler.ts)
+ * e o watchdog do SM (`runSmWatchdog`, acima) esperam (`await`) o resultado
+ * desta função DENTRO da varredura pós-merge (`varrerPublicacoes`), sob a
+ * MESMA trava `tickEmAndamento` que o Crítico 1 da leva C já fechou para
+ * `ghGet`/`ghSend`/`createCardMover`. Um socket do Telegram que trava (não
+ * um erro HTTP — esse já cai no `.catch(() => undefined)` de quem chama)
+ * nunca rejeita sozinho: prende `tickEmAndamento` para SEMPRE, e com ela
+ * TODA varredura futura, de TODO projeto — provado ao vivo numa cópia: uma
+ * chamada ao Telegram que nunca resolve produziu exatamente UMA varredura
+ * em toda a execução e mais de trinta tiques consecutivos pulados, sem log
+ * nenhum explicando por quê. `fetchComTeto` fecha isso com o mesmo padrão
+ * já usado em `ghGet`/`ghSend`. `timeoutMs` é injetável só para teste — em
+ * produção nenhum chamador o passa, e o padrão (`TIMEOUT_PADRAO_DE_CHAMADA_MS`,
+ * 10s) vale.
  */
 export function buildTelegramNotifier(env: {
   botToken?: string | undefined
   chatId?: string | undefined
   fetchImpl?: typeof fetch
+  timeoutMs?: number
 }): ((message: string) => Promise<void>) | undefined {
   const { botToken, chatId } = env
   if (!botToken || !chatId) return undefined
-  const f = env.fetchImpl ?? fetch
+  const f = fetchComTeto(env.fetchImpl ?? fetch, env.timeoutMs)
   return async (message: string) => {
     await f(`https://api.telegram.org/bot${botToken}/sendMessage`, {
       method: 'POST',
