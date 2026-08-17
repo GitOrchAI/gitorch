@@ -217,6 +217,27 @@ describe('EngineConnectionService', () => {
     await fs.rm(home, { recursive: true, force: true })
   })
 
+  test('revoke() limpa o cartão de renovação junto com a credencial (refresh token não sobrevive à revogação)', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+
+    await svc.connectGitHubToken('user_revoke_refresh', 'gh_access_velho', {
+      refreshToken: 'gh_refresh_velho',
+      refreshTokenExpiresAt: new Date('2027-02-13T12:00:00Z'),
+    })
+    await svc.revoke('user_revoke_refresh', 'github')
+
+    // Cenário real: o cliente reconecta colando só um access token novo, sem
+    // cartão de renovação (connectGitHubToken usa spread condicional — sem
+    // este teste, o refresh token ANTIGO sobreviveria à revogação e a
+    // renovação periódica tentaria usá-lo, órfão, contra um access token
+    // que não tem nenhuma relação com ele).
+    const stored = prisma.store.get('user_revoke_refresh:github')
+    expect(stored?.['encryptedRefreshToken']).toBeNull()
+    expect(stored?.['refreshTokenExpiresAt']).toBeNull()
+  })
+
   test('materializeToHome recusa uma conexão marcada needs_reconnect, mesmo com expiresAt no futuro', async () => {
     const prisma = fakePrisma()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

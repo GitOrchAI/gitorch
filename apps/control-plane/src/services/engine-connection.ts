@@ -440,7 +440,21 @@ export class EngineConnectionService {
   async revoke(userId: string, runtime: string): Promise<void> {
     await this.prisma.engineConnection.updateMany({
       where: { userId, runtime },
-      data: { status: 'revoked', encryptedCredential: null },
+      // Os três campos zeram JUNTOS, na mesma escrita: encryptedCredential é
+      // o token de acesso; encryptedRefreshToken/refreshTokenExpiresAt são o
+      // cartão de renovação DELE (F8). Se só a credencial fosse limpa, um
+      // reconnect futuro que cola apenas um access token novo (connectGitHubToken
+      // usa spread condicional — não sobrescreve o que não veio no `extra`)
+      // ressuscitaria o refresh token ANTIGO, órfão, sem nenhuma relação com o
+      // token novo. A renovação periódica (Task 5) leria esse par e tentaria
+      // renovar com ele — o GitHub recusaria e uma conexão boa seria marcada
+      // para reconectar sem motivo real.
+      data: {
+        status: 'revoked',
+        encryptedCredential: null,
+        encryptedRefreshToken: null,
+        refreshTokenExpiresAt: null,
+      },
     })
   }
 }
