@@ -2,6 +2,7 @@ import {
   RAILS_SCHEMAS,
   buildStepPrompt,
   formatRaDeliverable,
+  wrapClientRequest,
   type RaAreasForm,
   type RaJourneysForm,
   type RaBriefForm,
@@ -104,7 +105,14 @@ const TASK_WRITING_RULES = [
  * verdade, não um saco de tasks.
  */
 export async function runPoRails(execute: StepExecutor, input: PoRailsInput): Promise<BacklogPlan> {
-  const base = [`Wish (the client's desire): ${input.wishText}`, ...input.contextBlocks]
+  // Item 6 (leva B2): `input.wishText` carrega o texto livre do cliente
+  // (título+corpo da issue do desejo) — nunca uma instrução ao PO.
+  // `wrapClientRequest` marca isso explicitamente, no MESMO bloco que todo
+  // passo do PO recebe (`base`, abaixo).
+  const base = [
+    `Wish (the client's desire): ${wrapClientRequest(input.wishText)}`,
+    ...input.contextBlocks,
+  ]
 
   const phases = (await runFormStep({
     schema: RAILS_SCHEMAS.poPhases,

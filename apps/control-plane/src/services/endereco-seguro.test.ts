@@ -218,6 +218,31 @@ describe('buscarComGuarda', () => {
     expect(chamada).toHaveBeenCalledTimes(1)
   })
 
+  // Item 5 (leva B2): as duas metades de "desvio para endereço com
+  // credencial embutida" já eram provadas em isolamento — o desvio para
+  // rede interna (acima) e a recusa de usuário/senha (`enderecoPermitido`,
+  // acima) — mas nunca as DUAS JUNTAS: um endereço PÚBLICO que redireciona
+  // para uma URL com `usuário:senha@` embutida. A revisão final da branch
+  // provou esse caminho uma vez, com uma sonda avulsa fora da suíte; sem um
+  // teste guardado aqui, uma reforma futura do laço de redirecionamento
+  // poderia regredir isso sem ninguém perceber. Mesmo formato do teste
+  // "desvio para endereço interno" acima — só a URL do desvio muda.
+  it('desvio que CAI numa URL com credencial embutida é recusado, sem seguir o redirecionamento', async () => {
+    const chamada = vi.fn().mockResolvedValue(
+      new Response(null, {
+        status: 302,
+        headers: { location: 'https://usuario:senha@jardimdaspatinhas.com.br/painel-interno' },
+      })
+    )
+    vi.stubGlobal('fetch', chamada)
+
+    await expect(
+      buscarComGuarda('https://jardimdaspatinhas.com.br/vai-redirecionar')
+    ).rejects.toThrow(/credencial|recus/i)
+    // Só a chamada INICIAL — o desvio nunca é seguido.
+    expect(chamada).toHaveBeenCalledTimes(1)
+  })
+
   it('segue desvio público normalmente e chega ao destino final', async () => {
     const chamada = vi
       .fn()

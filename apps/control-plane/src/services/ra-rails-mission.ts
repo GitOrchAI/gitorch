@@ -1,3 +1,4 @@
+import { wrapClientRequest } from '@gitorch/cadence'
 import { runRaRails, type StepExecutor } from './role-rails.js'
 
 // Missão do RA nos TRILHOS: ancora a análise na WISH ABERTA (mesmo gatilho do
@@ -47,8 +48,11 @@ export async function runRaMissionViaRails(
         }>
         const wish = Array.isArray(wishes) ? wishes[0] : undefined
         if (wish) {
+          // Item 6 (leva B2): `wish.body` é texto livre do cliente — nunca
+          // uma instrução ao RA. `wrapClientRequest` (packages/cadence)
+          // marca isso explicitamente, bem ao lado do texto.
           wishBlock = [
-            `Wish under analysis (the client's CURRENT desire — anchor every area and journey on THIS, not on past work): #${wish.number} ${wish.title} — ${wish.body ?? ''}`,
+            `Wish under analysis (the client's CURRENT desire — anchor every area and journey on THIS, not on past work): #${wish.number} ${wish.title}\n${wrapClientRequest(wish.body ?? '')}`,
           ]
         }
       }
