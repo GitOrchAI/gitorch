@@ -91,8 +91,8 @@ function repositorioValido(repository: string): boolean {
 // rótulo correspondente em naoVerificado, nunca derruba a coleta (comentário
 // acima do bloco try/catch). Mas sem tempo-limite uma conexão pendurada
 // (nunca falha, nunca responde) travaria essa mesma chamada indefinidamente
-// numa rota síncrona do wizard — e esta função soma até ~13 chamadas
-// sequenciais no pior caso (3 checagens fixas + até 10 páginas de alertas).
+// numa rota síncrona do wizard — e esta função soma até ~11 chamadas
+// sequenciais no pior caso (1 checagem fixa + até 10 páginas de alertas).
 // 8s por chamada é generoso o bastante para uma resposta lenta da API REST
 // do GitHub (latência típica bem abaixo de 1s) sem deixar uma única rota
 // travada segurar o retrato inteiro por tempo desproporcional.
@@ -116,24 +116,21 @@ export interface AlertaDeSeguranca {
 }
 
 export interface DividaDeSeguranca {
-  /** Nulo quando a credencial não alcançou a resposta. */
-  vigilanciaLigada: boolean | null
-  correcaoAutomaticaLigada: boolean | null
   temConfiguracao: boolean
   alertas: AlertaDeSeguranca[]
   porSeveridade: Record<Severidade, number>
   /** O que não deu para verificar, para o aviso poder ser honesto. Rótulos
-   *  possíveis: 'vigilancia', 'correcao-automatica', 'configuracao',
-   *  'alertas' (a coleta parou antes do fim — status inesperado ou falha de
-   *  rede), 'alertas-parcial' (o teto de páginas foi atingido com mais
-   *  restando), 'alertas-link-suspeito' (o cabeçalho Link da resposta
-   *  apontava para um host diferente do da API do GitHub — a paginação foi
-   *  interrompida ANTES de mandar a credencial do cliente para lá; ver
-   *  `apontaParaApiDoGithub`), 'severidade-desconhecida' (a API devolveu uma
-   *  severidade fora das quatro conhecidas — tratada como 'critical' por
-   *  segurança) e 'repositorio-invalido' (o valor de `repository` não tem o
-   *  formato `dono/repo` que o GitHub aceita — nenhuma chamada de rede é
-   *  feita nesse caso). */
+   *  possíveis: 'configuracao', 'alertas' (a coleta parou antes do fim —
+   *  status inesperado ou falha de rede), 'alertas-parcial' (o teto de
+   *  páginas foi atingido com mais restando), 'alertas-link-suspeito' (o
+   *  cabeçalho Link da resposta apontava para um host diferente do da API
+   *  do GitHub — a paginação foi interrompida ANTES de mandar a credencial
+   *  do cliente para lá; ver `apontaParaApiDoGithub`),
+   *  'severidade-desconhecida' (a API devolveu uma severidade fora das
+   *  quatro conhecidas — tratada como 'critical' por segurança) e
+   *  'repositorio-invalido' (o valor de `repository` não tem o formato
+   *  `dono/repo` que o GitHub aceita — nenhuma chamada de rede é feita
+   *  nesse caso). */
   naoVerificado: string[]
 }
 
@@ -168,8 +165,6 @@ export async function coletarDividaDeSeguranca(deps: {
   if (!repositorioValido(deps.repository)) {
     naoVerificado.push('repositorio-invalido')
     return {
-      vigilanciaLigada: null,
-      correcaoAutomaticaLigada: null,
       temConfiguracao: false,
       alertas: [],
       porSeveridade: { critical: 0, high: 0, medium: 0, low: 0 },
@@ -191,34 +186,6 @@ export async function coletarDividaDeSeguranca(deps: {
   // `pedirUrlSegura` (a porta única, ver comentário lá) — não repetida aqui.
   const pedirUrl = (url: string): Promise<Response> => pedirUrlSegura(url, f, cabecalhos, timeoutMs)
   const pedir = (caminho: string): Promise<Response> => pedirUrl(`${GITHUB_API}${caminho}`)
-
-  // Cada rota é independente: uma falhar (status inesperado OU exceção de
-  // rede — timeout, DNS, conexão resetada, o caso comum em produção) nunca
-  // pode derrubar a coleta inteira e jogar fora o que já foi verificado.
-  // 204 = ligado, 404 = desligado, qualquer outra coisa = não consegui olhar.
-  let vigilanciaLigada: boolean | null = null
-  try {
-    const vigilancia = await pedir(`/repos/${deps.repository}/vulnerability-alerts`)
-    if (vigilancia.status === 204) vigilanciaLigada = true
-    else if (vigilancia.status === 404) vigilanciaLigada = false
-    else naoVerificado.push('vigilancia')
-  } catch {
-    naoVerificado.push('vigilancia')
-  }
-
-  let correcaoAutomaticaLigada: boolean | null = null
-  try {
-    const correcao = await pedir(`/repos/${deps.repository}/automated-security-fixes`)
-    if (correcao.status === 200) {
-      correcaoAutomaticaLigada = ((await correcao.json()) as { enabled?: boolean }).enabled === true
-    } else if (correcao.status === 404) {
-      correcaoAutomaticaLigada = false
-    } else {
-      naoVerificado.push('correcao-automatica')
-    }
-  } catch {
-    naoVerificado.push('correcao-automatica')
-  }
 
   // 200 = tem, 404 = não tem, qualquer outra coisa = não consegui olhar —
   // igual à vigilância. Um 403 aqui NÃO é "sem configuração": é a
@@ -304,8 +271,6 @@ export async function coletarDividaDeSeguranca(deps: {
   for (const a of alertas) porSeveridade[a.severidade] += 1
 
   return {
-    vigilanciaLigada,
-    correcaoAutomaticaLigada,
     temConfiguracao,
     alertas,
     porSeveridade,

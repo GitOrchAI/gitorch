@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { coletarDividaDeSeguranca, pedirUrlSegura } from './security-debt-collector.js'
 import { restDeMentira as githubDeMentira } from '../test/rest-fake.js'
 
@@ -18,11 +18,6 @@ const ALERTA_BRUTO = {
 describe('coletarDividaDeSeguranca', () => {
   it('traduz o alerta bruto para o que a esteira precisa saber', async () => {
     const fetchImpl = githubDeMentira({
-      '/repos/dono/repo/vulnerability-alerts': { status: 204 },
-      '/repos/dono/repo/automated-security-fixes': {
-        status: 200,
-        corpo: { enabled: true, paused: false },
-      },
       '/repos/dono/repo/contents/.github/dependabot.yml': {
         status: 200,
         corpo: { name: 'dependabot.yml' },
@@ -35,8 +30,6 @@ describe('coletarDividaDeSeguranca', () => {
 
     const d = await coletarDividaDeSeguranca({ repository: 'dono/repo', token: 't', fetchImpl })
 
-    expect(d.vigilanciaLigada).toBe(true)
-    expect(d.correcaoAutomaticaLigada).toBe(true)
     expect(d.temConfiguracao).toBe(true)
     expect(d.alertas).toEqual([
       {
@@ -52,12 +45,17 @@ describe('coletarDividaDeSeguranca', () => {
       },
     ])
     expect(d.porSeveridade).toEqual({ critical: 0, high: 0, medium: 1, low: 0 })
+
+    const chamadas = (fetchImpl as unknown as { mock: { calls: unknown[][] } }).mock.calls.map(
+      (c) => String(c[0])
+    )
+    expect(chamadas.some((u) => u.includes('vulnerability-alerts'))).toBe(false)
+    expect(chamadas.some((u) => u.includes('automated-security-fixes'))).toBe(false)
+    expect(chamadas).toHaveLength(2)
   })
 
-  it('vigilância desligada é fato conhecido, não falha', async () => {
+  it('sem configuração é fato conhecido, não falha', async () => {
     const fetchImpl = githubDeMentira({
-      '/repos/dono/repo/vulnerability-alerts': { status: 404 },
-      '/repos/dono/repo/automated-security-fixes': { status: 404 },
       '/repos/dono/repo/contents/.github/dependabot.yml': { status: 404 },
       '/repos/dono/repo/dependabot/alerts?state=open&per_page=100': {
         status: 200,
@@ -67,7 +65,6 @@ describe('coletarDividaDeSeguranca', () => {
 
     const d = await coletarDividaDeSeguranca({ repository: 'dono/repo', token: 't', fetchImpl })
 
-    expect(d.vigilanciaLigada).toBe(false)
     expect(d.temConfiguracao).toBe(false)
     expect(d.alertas).toEqual([])
     expect(d.naoVerificado).toEqual([])
@@ -78,18 +75,14 @@ describe('coletarDividaDeSeguranca', () => {
   // está limpo quando ninguém olhou.
   it('sem alcance para a rota, registra que não verificou — nunca finge zero', async () => {
     const fetchImpl = githubDeMentira({
-      '/repos/dono/repo/vulnerability-alerts': { status: 403 },
-      '/repos/dono/repo/automated-security-fixes': { status: 403 },
       '/repos/dono/repo/contents/.github/dependabot.yml': { status: 200, corpo: { name: 'x' } },
       '/repos/dono/repo/dependabot/alerts?state=open&per_page=100': { status: 403 },
     })
 
     const d = await coletarDividaDeSeguranca({ repository: 'dono/repo', token: 't', fetchImpl })
 
-    expect(d.vigilanciaLigada).toBeNull()
     expect(d.alertas).toEqual([])
-    expect(d.naoVerificado).toContain('alertas')
-    expect(d.naoVerificado).toContain('vigilancia')
+    expect(d.naoVerificado).toEqual(['alertas'])
   })
 
   // GitHub pagina esta rota por CURSOR, não por número (ver teste seguinte).
@@ -100,11 +93,6 @@ describe('coletarDividaDeSeguranca', () => {
     const proximaPagina =
       'https://api.github.com/repos/dono/repo/dependabot/alerts?state=open&per_page=100&after=cursor-1'
     const fetchImpl = githubDeMentira({
-      '/repos/dono/repo/vulnerability-alerts': { status: 204 },
-      '/repos/dono/repo/automated-security-fixes': {
-        status: 200,
-        corpo: { enabled: false, paused: false },
-      },
       '/repos/dono/repo/contents/.github/dependabot.yml': { status: 404 },
       '/repos/dono/repo/dependabot/alerts?state=open&per_page=100': {
         status: 200,
@@ -135,8 +123,6 @@ describe('coletarDividaDeSeguranca', () => {
   // bug que a prova contra a API real encontrou.
   it('não pagina os alertas por número — a rota recusa o parâmetro page', async () => {
     const fetchImpl = githubDeMentira({
-      '/repos/dono/repo/vulnerability-alerts': { status: 204 },
-      '/repos/dono/repo/automated-security-fixes': { status: 404 },
       '/repos/dono/repo/contents/.github/dependabot.yml': { status: 404 },
       '/repos/dono/repo/dependabot/alerts?state=open&per_page=100': { status: 200, corpo: [] },
     })
@@ -157,8 +143,6 @@ describe('coletarDividaDeSeguranca', () => {
   // verificado com sucesso.
   it('falha de rede numa rota não derruba a coleta inteira — preserva o que já foi verificado', async () => {
     const base = githubDeMentira({
-      '/repos/dono/repo/vulnerability-alerts': { status: 204 },
-      '/repos/dono/repo/automated-security-fixes': { status: 404 },
       '/repos/dono/repo/contents/.github/dependabot.yml': { status: 404 },
     })
     const fetchImpl = vi.fn(async (url: string | URL) => {
@@ -170,7 +154,6 @@ describe('coletarDividaDeSeguranca', () => {
 
     const d = await coletarDividaDeSeguranca({ repository: 'dono/repo', token: 't', fetchImpl })
 
-    expect(d.vigilanciaLigada).toBe(true)
     expect(d.alertas).toEqual([])
     expect(d.naoVerificado).toContain('alertas')
   })
@@ -178,24 +161,26 @@ describe('coletarDividaDeSeguranca', () => {
   // Mesmo raciocínio do teste de "falha de rede" acima, mas para o caso em
   // que a conexão fica pendurada em vez de recusar na hora: sem
   // tempo-limite, uma rota que nunca responde trava a coleta inteira (até
-  // ~13 chamadas sequenciais neste fluxo) numa rota síncrona do wizard. O
+  // ~11 chamadas sequenciais neste fluxo) numa rota síncrona do wizard. O
   // fake honra o `signal` recebido e rejeita com o mesmo TimeoutError que
   // `AbortSignal.timeout` produz de verdade (confirmado contra o fetch
   // nativo do Node) — é o mesmo catch genérico do teste acima que já sabe
   // tratar isso, só falta a chamada carregar um tempo-limite.
   it('rota que não responde a tempo entra em naoVerificado — não trava a coleta inteira', async () => {
     const base = githubDeMentira({
-      '/repos/dono/repo/automated-security-fixes': { status: 404 },
-      '/repos/dono/repo/contents/.github/dependabot.yml': { status: 404 },
       '/repos/dono/repo/dependabot/alerts?state=open&per_page=100': { status: 200, corpo: [] },
     })
-    const fetchImpl = vi.fn(async (url: string | URL, init?: { signal?: AbortSignal }) => {
-      if (String(url).includes('/vulnerability-alerts')) {
-        return new Promise<Response>((_resolve, reject) => {
-          init?.signal?.addEventListener('abort', () => reject(init.signal!.reason as Error))
+    const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      if (String(url).includes('/contents/.github/dependabot.yml')) {
+        return new Promise<Response>((_, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            const err = new Error('The operation was aborted')
+            err.name = 'TimeoutError'
+            reject(err)
+          })
         })
       }
-      return base(url)
+      return base(url, init)
     }) as unknown as typeof fetch
 
     const d = await coletarDividaDeSeguranca({
@@ -205,8 +190,8 @@ describe('coletarDividaDeSeguranca', () => {
       timeoutMs: 5,
     })
 
-    expect(d.vigilanciaLigada).toBeNull()
-    expect(d.naoVerificado).toContain('vigilancia')
+    expect(d.temConfiguracao).toBe(false)
+    expect(d.naoVerificado).toContain('configuracao')
   })
 
   // 403 na config é "não consegui olhar", não "não existe". Confundir os
@@ -214,8 +199,6 @@ describe('coletarDividaDeSeguranca', () => {
   // repositório que já tem uma — só que o token não alcançava.
   it('sem alcance na configuração (403) registra naoVerificado — nunca vira "sem configuração"', async () => {
     const fetchImpl = githubDeMentira({
-      '/repos/dono/repo/vulnerability-alerts': { status: 204 },
-      '/repos/dono/repo/automated-security-fixes': { status: 404 },
       '/repos/dono/repo/contents/.github/dependabot.yml': { status: 403 },
       '/repos/dono/repo/dependabot/alerts?state=open&per_page=100': { status: 200, corpo: [] },
     })
@@ -232,8 +215,6 @@ describe('coletarDividaDeSeguranca', () => {
       security_advisory: { severity: 'CRITICAL', summary: 'x' },
     }
     const fetchImpl = githubDeMentira({
-      '/repos/dono/repo/vulnerability-alerts': { status: 204 },
-      '/repos/dono/repo/automated-security-fixes': { status: 404 },
       '/repos/dono/repo/contents/.github/dependabot.yml': { status: 404 },
       '/repos/dono/repo/dependabot/alerts?state=open&per_page=100': {
         status: 200,
@@ -257,8 +238,6 @@ describe('coletarDividaDeSeguranca', () => {
       security_advisory: { severity: 'banana', summary: 'x' },
     }
     const fetchImpl = githubDeMentira({
-      '/repos/dono/repo/vulnerability-alerts': { status: 204 },
-      '/repos/dono/repo/automated-security-fixes': { status: 404 },
       '/repos/dono/repo/contents/.github/dependabot.yml': { status: 404 },
       '/repos/dono/repo/dependabot/alerts?state=open&per_page=100': {
         status: 200,
@@ -281,8 +260,6 @@ describe('coletarDividaDeSeguranca', () => {
       string,
       { status: number; corpo?: unknown; headers?: Record<string, string> }
     > = {
-      '/repos/dono/repo/vulnerability-alerts': { status: 204 },
-      '/repos/dono/repo/automated-security-fixes': { status: 404 },
       '/repos/dono/repo/contents/.github/dependabot.yml': { status: 404 },
     }
     const caminhoBase = '/repos/dono/repo/dependabot/alerts?state=open&per_page=100'
@@ -314,8 +291,6 @@ describe('coletarDividaDeSeguranca', () => {
     const proximaPagina =
       'https://api.github.com/repos/dono/repo/dependabot/alerts?state=open&per_page=100&after=cursor-x'
     const fetchImpl = githubDeMentira({
-      '/repos/dono/repo/vulnerability-alerts': { status: 204 },
-      '/repos/dono/repo/automated-security-fixes': { status: 404 },
       '/repos/dono/repo/contents/.github/dependabot.yml': { status: 404 },
       '/repos/dono/repo/dependabot/alerts?state=open&per_page=100': {
         status: 200,
@@ -336,8 +311,6 @@ describe('coletarDividaDeSeguranca', () => {
     const proximaPagina =
       'https://api.github.com/repos/dono/repo/dependabot/alerts?state=open&per_page=100&after=cursor-y'
     const fetchImpl = githubDeMentira({
-      '/repos/dono/repo/vulnerability-alerts': { status: 204 },
-      '/repos/dono/repo/automated-security-fixes': { status: 404 },
       '/repos/dono/repo/contents/.github/dependabot.yml': { status: 404 },
       '/repos/dono/repo/dependabot/alerts?state=open&per_page=100': {
         status: 200,
@@ -364,8 +337,6 @@ describe('coletarDividaDeSeguranca', () => {
   describe('recusa seguir paginação para fora do host da API do GitHub — nunca vaza a credencial', () => {
     it('link aponta para outro host inteiramente', async () => {
       const fetchImpl = githubDeMentira({
-        '/repos/dono/repo/vulnerability-alerts': { status: 204 },
-        '/repos/dono/repo/automated-security-fixes': { status: 404 },
         '/repos/dono/repo/contents/.github/dependabot.yml': { status: 404 },
         '/repos/dono/repo/dependabot/alerts?state=open&per_page=100': {
           status: 200,
@@ -386,8 +357,6 @@ describe('coletarDividaDeSeguranca', () => {
 
     it('link aponta para host que só parece o do GitHub (sufixo, não igualdade)', async () => {
       const fetchImpl = githubDeMentira({
-        '/repos/dono/repo/vulnerability-alerts': { status: 204 },
-        '/repos/dono/repo/automated-security-fixes': { status: 404 },
         '/repos/dono/repo/contents/.github/dependabot.yml': { status: 404 },
         '/repos/dono/repo/dependabot/alerts?state=open&per_page=100': {
           status: 200,
@@ -410,8 +379,6 @@ describe('coletarDividaDeSeguranca', () => {
 
     it('link com URL malformada é recusado, não estoura exceção', async () => {
       const fetchImpl = githubDeMentira({
-        '/repos/dono/repo/vulnerability-alerts': { status: 204 },
-        '/repos/dono/repo/automated-security-fixes': { status: 404 },
         '/repos/dono/repo/contents/.github/dependabot.yml': { status: 404 },
         '/repos/dono/repo/dependabot/alerts?state=open&per_page=100': {
           status: 200,
@@ -486,7 +453,7 @@ describe('coletarDividaDeSeguranca', () => {
       const fetchImpl = vi.fn(async () => resposta) as unknown as typeof fetch
 
       const r = await pedirUrlSegura(
-        'https://api.github.com/repos/dono/repo/vulnerability-alerts',
+        'https://api.github.com/repos/dono/repo/contents/.github/dependabot.yml',
         fetchImpl,
         { Authorization: 'Bearer t' },
         1000
@@ -500,8 +467,6 @@ describe('coletarDividaDeSeguranca', () => {
   it('alerta sem versão corrigida não vira string vazia', async () => {
     const semCorrecao = { ...ALERTA_BRUTO, security_vulnerability: {} }
     const fetchImpl = githubDeMentira({
-      '/repos/dono/repo/vulnerability-alerts': { status: 204 },
-      '/repos/dono/repo/automated-security-fixes': { status: 404 },
       '/repos/dono/repo/contents/.github/dependabot.yml': { status: 404 },
       '/repos/dono/repo/dependabot/alerts?state=open&per_page=100': {
         status: 200,
@@ -538,8 +503,6 @@ describe('coletarDividaDeSeguranca', () => {
         expect(fetchImpl).not.toHaveBeenCalled()
         expect(d.naoVerificado).toContain('repositorio-invalido')
         expect(d.alertas).toEqual([])
-        expect(d.vigilanciaLigada).toBeNull()
-        expect(d.correcaoAutomaticaLigada).toBeNull()
         expect(d.temConfiguracao).toBe(false)
       })
     }
