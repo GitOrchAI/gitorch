@@ -1,4 +1,5 @@
 import { vi } from 'vitest'
+import { randomBytes } from 'node:crypto'
 
 // Mock pino
 vi.mock('pino', () => ({
@@ -214,6 +215,15 @@ const testEnv: Record<string, string> = {
   PROMETHEUS_PORT: '9464',
   GITHUB_WEBHOOK_SECRET: 'test-secret',
   SSE_HEARTBEAT_INTERVAL_MS: '30000',
+  // Achado da revisão da Task 5/F8: GITORCH_CREDENTIAL_KEY passou a ser
+  // obrigatória no schema de env (config/env.ts) para falhar no BOOT, não
+  // no meio de uma renovação em produção. Sem este default global, qualquer
+  // teste que passe por getEnv() (fora dos arquivos que já setam a própria
+  // chave em beforeEach, ex.: credential-crypto.test.ts) quebraria por um
+  // motivo que não tem nada a ver com o que o teste quer provar. Gerada
+  // (não hardcoded) para nunca parecer um segredo real no repositório
+  // público.
+  GITORCH_CREDENTIAL_KEY: randomBytes(32).toString('hex'),
 }
 
 Object.entries(testEnv).forEach(([key, value]) => {

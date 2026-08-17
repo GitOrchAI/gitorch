@@ -90,6 +90,13 @@ describe('OAuth: state assinado + retorno para a origem de quem entrou', () => {
     expect(decoded.returnTo).toBe(PAGES)
   })
 
+  it('a URL de autorização não leva &scope= (GitHub App ignora; permissão vem do próprio App)', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/v1/auth/github' })
+    const location = res.headers.location as string
+    expect(location).not.toContain('scope=')
+    expect(location).toContain('https://github.com/login/oauth/authorize?client_id=test-client-id')
+  })
+
   it('carrega no state a origem de quem entrou (same-origin) e devolve para lá', async () => {
     const ida = await app.inject({
       method: 'GET',

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { formatoDeChaveValido } from '../lib/credential-crypto.js'
 
 export const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
@@ -64,6 +65,32 @@ export const envSchema = z.object({
   // Base pública da API para o redirect_uri do OAuth (produção/funnel). Sem
   // ela, deriva do request — que em dev preserva a porta via request.host.
   GITORCH_PUBLIC_URL: z.string().url().optional(),
+
+  // Chave de cifragem de credenciais de motor em repouso (AES-256-GCM,
+  // lib/credential-crypto.ts) — já era, de fato, obrigatória desde que
+  // engine-connection.ts/project-credential.ts passaram a cifrar credencial
+  // de cliente; só não estava aqui (achado da revisão da Task 5/F8:
+  // "GITORCH_CREDENTIAL_KEY está no schema de validação de ambiente?").
+  // ANTES desta linha, uma chave ausente ou com tamanho errado só aparecia
+  // tarde — no meio de uma renovação automática em produção, quando
+  // decryptCredential finalmente tentava usá-la — em vez de derrubar o
+  // processo já na subida, com uma mensagem clara. `.refine` reusa a MESMA
+  // regra de formato que loadKey() aplica (credential-crypto.ts,
+  // formatoDeChaveValido) — uma só fonte de verdade para "o que é uma
+  // GITORCH_CREDENTIAL_KEY válida", nunca duas implementações do mesmo
+  // parse divergindo com o tempo. A mensagem de erro nunca inclui o valor
+  // recebido — só diz que o formato está errado.
+  GITORCH_CREDENTIAL_KEY: z
+    .string({
+      // zod v4: `error` substitui o antigo `required_error`/`invalid_type_error`
+      // de v3 — dispara tanto para a variável ausente quanto para um valor
+      // que não é string.
+      error:
+        'GITORCH_CREDENTIAL_KEY ausente: necessária para cifrar/decifrar credenciais de motor (32 bytes em hex ou base64)',
+    })
+    .refine(formatoDeChaveValido, {
+      message: 'GITORCH_CREDENTIAL_KEY inválida: esperados 32 bytes em hex[64] ou base64',
+    }),
 })
 
 export type Env = z.infer<typeof envSchema>

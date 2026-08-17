@@ -120,6 +120,52 @@ describe('GitHub OAuth callback', () => {
     expect(connectGitHubToken).toHaveBeenCalledWith('dbuser_cuid_123', 'gh_raw_token')
   })
 
+  it('GitHub devolve refresh_token/expires_in: connectGitHubToken recebe o par de renovação calculado', async () => {
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = typeof url === 'string' ? url : url.toString()
+      if (href.includes('github.com/login/oauth/access_token')) {
+        return new Response(
+          JSON.stringify({
+            access_token: 'gh_raw_token',
+            refresh_token: 'gh_refresh_token',
+            expires_in: 28800,
+            refresh_token_expires_in: 15897600,
+          }),
+          { status: 200 }
+        )
+      }
+      if (href.includes('api.github.com/user')) {
+        return new Response(
+          JSON.stringify({ id: 42, login: 'octocat', email: 'octocat@example.test' }),
+          { status: 200 }
+        )
+      }
+      throw new Error(`unexpected fetch ${href}`)
+    }) as unknown as typeof fetch
+
+    const antes = Date.now()
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/v1/auth/github/callback?code=abc123',
+    })
+    const depois = Date.now()
+    expect(res.statusCode).toBe(302)
+
+    expect(connectGitHubToken).toHaveBeenCalledTimes(1)
+    const [userIdChamado, tokenChamado, extra] = connectGitHubToken.mock.calls[0] as [
+      string,
+      string,
+      { refreshToken: string; expiresAt: Date; refreshTokenExpiresAt: Date },
+    ]
+    expect(userIdChamado).toBe('dbuser_cuid_123')
+    expect(tokenChamado).toBe('gh_raw_token')
+    expect(extra.refreshToken).toBe('gh_refresh_token')
+    expect(extra.expiresAt.getTime()).toBeGreaterThanOrEqual(antes + 28800 * 1000)
+    expect(extra.expiresAt.getTime()).toBeLessThanOrEqual(depois + 28800 * 1000)
+    expect(extra.refreshTokenExpiresAt.getTime()).toBeGreaterThanOrEqual(antes + 15897600 * 1000)
+    expect(extra.refreshTokenExpiresAt.getTime()).toBeLessThanOrEqual(depois + 15897600 * 1000)
+  })
+
   it('keeps SameSite=Lax without Secure in local dev (http, same-site ports)', async () => {
     // env é lido (getEnv) no momento em que authRoutes(app) registra a rota —
     // por isso este teste monta seu PRÓPRIO app, com NODE_ENV=development

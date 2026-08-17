@@ -187,12 +187,23 @@ export async function runSmWatchdog(options: SmWatchdogOptions): Promise<SmWatch
  * já usado em `ghGet`/`ghSend`. `timeoutMs` é injetável só para teste — em
  * produção nenhum chamador o passa, e o padrão (`TIMEOUT_PADRAO_DE_CHAMADA_MS`,
  * 10s) vale.
+ *
+ * A função devolvida NUNCA rejeita (todo chamador deste arquivo depende
+ * disso — "Nunca deve derrubar o watchdog"), então uma falha de ENTREGA
+ * real (bot inválido, destino apagado, timeout) fica muda por padrão: sem
+ * `onDeliveryFailure`, ela desaparece sem deixar rastro nenhum — um
+ * `.catch(...)` em volta de `notify(...)`, em qualquer chamador, NUNCA
+ * dispara (achado Baixo 6 da revisão da Task 5/F8: era código morto).
+ * `onDeliveryFailure` é o jeito de um chamador OPTAR por não deixar a falha
+ * sumir (ex.: registrar num log), sem mudar o contrato "nunca rejeita" para
+ * quem não passa o callback.
  */
 export function buildTelegramNotifier(env: {
   botToken?: string | undefined
   chatId?: string | undefined
   fetchImpl?: typeof fetch
   timeoutMs?: number
+  onDeliveryFailure?: (err: unknown) => void
 }): ((message: string) => Promise<void>) | undefined {
   const { botToken, chatId } = env
   if (!botToken || !chatId) return undefined
@@ -202,6 +213,8 @@ export function buildTelegramNotifier(env: {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ chat_id: chatId, text: message }),
-    }).catch(() => undefined)
+    }).catch((err: unknown) => {
+      env.onDeliveryFailure?.(err)
+    })
   }
 }
