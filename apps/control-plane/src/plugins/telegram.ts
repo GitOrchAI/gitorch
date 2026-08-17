@@ -198,6 +198,22 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
             continue
           }
 
+          // `/wishlist` continua com a resposta de orientação que já existia na
+          // linha principal. Fica DEPOIS do desejo porque são coisas diferentes:
+          // aqui só se explica a sintaxe, enquanto `/desejo` e `/quero` abrem o
+          // pedido de verdade.
+          if (update.message?.text?.trim().startsWith('/wishlist')) {
+            const chatId = update.message?.chat?.id
+            if (chatId !== undefined && chatId !== null) {
+              await sendTelegramMessage({
+                botToken,
+                chatId: String(chatId),
+                text: 'Use /wishlist add <item>',
+              })
+            }
+            continue
+          }
+
           const reply = await handleTelegramUpdate(app.prisma, update)
           if (!reply) continue
           await sendTelegramMessage({ botToken, chatId: reply.chatId, text: reply.text })

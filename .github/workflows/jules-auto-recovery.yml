@@ -19,7 +19,7 @@ jobs:
         env:
           SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
         with:
-          github-token: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.SECURITY_PAT || github.token }}
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
