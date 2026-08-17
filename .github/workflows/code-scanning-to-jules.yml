@@ -30,7 +30,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.SECURITY_PAT }}
+          token: ${{ secrets.SECURITY_PAT || github.token }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -44,7 +44,7 @@ jobs:
       - name: Determine Alerts to Process
         id: alerts
         env:
-          GITHUB_TOKEN: ${{ secrets.SECURITY_PAT }}
+          GITHUB_TOKEN: ${{ secrets.SECURITY_PAT || github.token }}
         run: |
           if [ -n "${{ github.event.inputs.alert_numbers }}" ]; then
             ALERTS_JSON="[${{ github.event.inputs.alert_numbers }}]"
@@ -62,8 +62,8 @@ jobs:
       - name: Process Each Alert
         if: steps.alerts.outputs.alerts != '[]'
         env:
-          GITHUB_TOKEN: ${{ secrets.SECURITY_PAT }}
-          SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
+          GITHUB_TOKEN: ${{ secrets.SECURITY_PAT || github.token }}
+          SECURITY_PAT: ${{ secrets.SECURITY_PAT || github.token }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_FREE_MODEL: openrouter/free
           REPO_OWNER: ${{ github.repository_owner }}
