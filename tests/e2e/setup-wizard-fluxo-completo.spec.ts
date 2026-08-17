@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { PrismaClient } from '@prisma/client'
 import jwt from 'jsonwebtoken'
+import { EngineConnectionService } from '../../apps/control-plane/src/services/engine-connection.js'
 
 /**
  * E2E do FLUXO COMPLETO do setup wizard: submit -> projeto+missão no banco ->
@@ -103,6 +104,17 @@ async function createOwner(slug: string, engine?: string): Promise<Owner> {
       data: { userId: user.id, runtime: engine, status: 'connected', lastValidatedAt: new Date() },
     })
   }
+
+  // GitHub "conectado" com uma credencial de mentira. O passo final do cadastro
+  // exige provar, com a credencial do PRÓPRIO cliente, que ele pode escrever no
+  // repositório declarado — sem credencial nenhuma o produto recusa antes mesmo
+  // de perguntar, e é o certo: "não sei" nunca pode virar "pode".
+  //
+  // O valor em si nunca importa aqui: este cenário roda com o fio de mentira da
+  // prova ligado no workflow (as duas travas), então a pergunta nunca sai para o
+  // GitHub de verdade. O que faltava era o cliente ter uma credencial.
+  const engineConnections = new EngineConnectionService(prisma as never)
+  await engineConnections.connectGitHubToken(user.id, `fake-github-token-${slug}`)
   // A sessão é forjada porque o OAuth do GitHub exige um humano (ver cabeçalho).
   // O `wingId` do JWT é o LOGIN — nunca o repositório: é essa distinção que o
   // painel confundia.
@@ -340,8 +352,15 @@ test('o submit exige motor de IA conectado DE VERDADE (gate anti-fachada)', asyn
   // 2) Só com `github` conectado: a linha `github` nasce conectada no OAuth e
   // era ELA que fazia o passo 11 pintar ✓ (a tautologia). Ela NÃO é um motor de
   // IA e não pode abrir o portão.
-  await prisma.engineConnection.create({
-    data: { userId: cliente.id, runtime: 'github', status: 'connected' },
+  //
+  // `upsert` porque o cliente deste cenário já entra com o GitHub conectado
+  // (a prova de posse do repositório exige credencial), e a linha `github` é
+  // única por cliente. O que importa aqui não é criá-la, é que ela ESTEJA
+  // conectada e ainda assim não abra o portão.
+  await prisma.engineConnection.upsert({
+    where: { userId_runtime: { userId: cliente.id, runtime: 'github' } },
+    update: { status: 'connected' },
+    create: { userId: cliente.id, runtime: 'github', status: 'connected' },
   })
   const comGithub = await api<SubmitResponse>(cliente, 'POST', '/api/v1/setup/submit', {
     repos: [repo],
