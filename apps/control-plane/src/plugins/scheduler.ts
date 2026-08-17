@@ -1356,7 +1356,13 @@ export async function renovarTokensGithubDoRelogio(
     app.log.warn(
       '[Scheduler] GITHUB_CLIENT_ID/GITHUB_CLIENT_SECRET ausentes; renovação automática do token do GitHub desligada'
     )
-    return { renovados: 0, precisamReconectar: 0, falhasDeDecifragem: 0 }
+    return {
+      renovados: 0,
+      precisamReconectar: 0,
+      falhasDeDecifragem: 0,
+      falhasTransitorias: 0,
+      legadosSemAcao: 0,
+    }
   }
   const clientId = env.GITHUB_CLIENT_ID
   const clientSecret = env.GITHUB_CLIENT_SECRET
@@ -1391,14 +1397,20 @@ export async function renovarTokensGithubDoRelogio(
     const notify = buildTelegramNotifier({
       botToken: process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
       ...(notifyChatId ? { chatId: notifyChatId } : {}),
+      // Achado Baixo 6: buildTelegramNotifier já engole a falha de entrega
+      // internamente (a função devolvida nunca rejeita) — um `.catch(...)`
+      // aqui embaixo, em volta de `notify(...)`, nunca dispararia. Este
+      // callback é o jeito real de registrar quando o dono NÃO pôde ser
+      // avisado, sem inventar mecanismo novo: reusa o mesmo `app.log.warn`
+      // que todo outro aviso operacional deste arquivo já usa.
+      onDeliveryFailure: (err) =>
+        app.log.warn(err, `[Scheduler] aviso de reconexão GitHub não foi entregue para ${userId}`),
     })
     if (!notify) return
     await notify(
       'Sua conexão com o GitHub no GitOrch precisa ser refeita ' +
         `(${motivo}). Abra o GitOrch e faça login com o GitHub de novo — as tarefas ` +
         'automáticas ficam paradas até você reconectar.'
-    ).catch((err) =>
-      app.log.warn(err, `[Scheduler] aviso de reconexão GitHub falhou para ${userId}`)
     )
   }
 

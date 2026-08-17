@@ -71,6 +71,20 @@ import { CredentialDecryptError } from '../lib/credential-crypto.js'
  * atravessar sem reembalar (nunca capturar e relançar como
  * RefreshTokenGithubInvalidoError ou Error genérico) — senão ela cai aqui
  * como se o GitHub tivesse recusado, por engano.
+ *
+ * (Revisão da Task 5) NA VERDADE SÃO TRÊS CAUSAS, NÃO DUAS: além das duas
+ * acima, existe FalhaTransitoriaNaTrocaComGithubError ("nem cheguei a
+ * perguntar pro GitHub" — rede caiu ou resposta não era JSON). Mesma
+ * postura da segunda causa (problema nosso/transitório, nunca
+ * marcarPrecisaReconectar), só que contada à parte (`resumo.falhasTransitorias`)
+ * por ser um motivo operacional diferente. E uma CONEXÃO LEGADA (sem
+ * refresh token guardado) só é tratada como "precisa reconectar" quando o
+ * access_token dela JÁ venceu — enquanto ainda funciona, cai em
+ * `legado-token-valido` (decidirAcaoGithub) e NUNCA muda o status: a coluna
+ * de refresh token é nova, e no primeiro tique após o deploy desta fase
+ * toda conexão existente ainda não tem refresh token guardado — tratar
+ * "sem refresh token" como "precisa reconectar" sem olhar o prazo cortaria
+ * o acesso de toda a base no deploy.
  */
 
 /** Renova com folga: 15 min antes do access_token vencer, nunca em cima da hora. */
@@ -87,6 +101,29 @@ export class RefreshTokenGithubInvalidoError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'RefreshTokenGithubInvalidoError'
+  }
+}
+
+/**
+ * A chamada não chegou a produzir uma resposta AVALIÁVEL do GitHub — a rede
+ * caiu antes de qualquer resposta chegar (fetchImpl rejeitou), ou a
+ * resposta chegou mas não é o JSON esperado (ex.: uma página de erro HTML
+ * de um balanceador durante uma instabilidade do GitHub). Diferente de
+ * RefreshTokenGithubInvalidoError, que só é lançado depois de LER um corpo
+ * JSON válido e ver, no conteúdo, que o GitHub recusou o cartão — aqui o
+ * GitHub nunca chegou a "opinar" sobre o refresh token.
+ *
+ * Tratada como TRANSITÓRIA por quem chama (renovarTokensGithubVencendo,
+ * achado Alto 3 da Task 5/F8): nunca marca a conexão como "precisa
+ * reconectar" (o refresh token do cliente pode continuar perfeitamente
+ * bom), só conta à parte e tenta de novo no próximo tique — a mesma
+ * postura que este arquivo já toma para CredentialDecryptError (ver a nota
+ * "DUAS CAUSAS DIFERENTES" no topo do arquivo; esta é uma terceira).
+ */
+export class FalhaTransitoriaNaTrocaComGithubError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'FalhaTransitoriaNaTrocaComGithubError'
   }
 }
 
@@ -152,24 +189,47 @@ export async function trocarRefreshTokenNoGithub(deps: {
     )
   }
 
-  const response = await fetchImpl(URL_TROCA_GITHUB, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({
-      client_id: deps.clientId,
-      client_secret: deps.clientSecret,
-      grant_type: 'refresh_token',
-      refresh_token: deps.refreshToken,
-    }),
-  })
+  // Rede caiu antes de qualquer resposta chegar (achado Alto 3): a exceção
+  // aqui não vem do GitHub, vem do transporte — não é "o cartão foi
+  // recusado", é "nem cheguei a perguntar". Reembalada em
+  // FalhaTransitoriaNaTrocaComGithubError para quem chama (
+  // renovarTokensGithubVencendo) NUNCA confundir com recusa do cliente.
+  let response: Response
+  try {
+    response = await fetchImpl(URL_TROCA_GITHUB, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({
+        client_id: deps.clientId,
+        client_secret: deps.clientSecret,
+        grant_type: 'refresh_token',
+        refresh_token: deps.refreshToken,
+      }),
+    })
+  } catch (err) {
+    throw new FalhaTransitoriaNaTrocaComGithubError(
+      `não foi possível alcançar o GitHub para renovar o token: ${textoDoErro(err)}`
+    )
+  }
 
-  const data = (await response.json()) as {
+  // Resposta chegou, mas não é o JSON esperado (achado Alto 3) — ex.: uma
+  // página de erro HTML de um balanceador numa instabilidade do GitHub.
+  // Mesma classificação da rede caindo: não é o GitHub OPINANDO sobre o
+  // refresh token, é a chamada não tendo produzido nada avaliável.
+  let data: {
     access_token?: string
     error?: string
     error_description?: string
     refresh_token?: string
     expires_in?: number
     refresh_token_expires_in?: number
+  }
+  try {
+    data = (await response.json()) as typeof data
+  } catch (err) {
+    throw new FalhaTransitoriaNaTrocaComGithubError(
+      `resposta do GitHub não é JSON válido (provável instabilidade transitória): ${textoDoErro(err)}`
+    )
   }
 
   if (
@@ -195,7 +255,10 @@ export async function trocarRefreshTokenNoGithub(deps: {
 }
 
 export type AcaoDeRenovacaoGithub =
-  { tipo: 'nada' } | { tipo: 'renovar' } | { tipo: 'avisar-legado'; motivo: string }
+  | { tipo: 'nada' }
+  | { tipo: 'renovar' }
+  | { tipo: 'avisar-legado'; motivo: string }
+  | { tipo: 'legado-token-valido'; motivo: string }
 
 /** Uma conexão GitHub, do jeito que a renovação precisa dela. */
 export interface ConexaoGithubElegivel {
@@ -222,10 +285,34 @@ export function decidirAcaoGithub(
   agora: Date
 ): AcaoDeRenovacaoGithub {
   if (!conexao.refreshTokenEncrypted) {
+    // CONEXÃO LEGADA (achado Crítico 1, Task 5/F8): esta coluna é NOVA — no
+    // primeiro tique depois do deploy desta fase, TODA conexão existente
+    // cai aqui, porque nenhuma delas guardou refresh token ainda (ele só
+    // passou a ser capturado a partir desta fase). "Sem refresh token" NÃO
+    // é o mesmo que "token morto": o access_token que o cliente já tem pode
+    // muito bem continuar bom por horas. Só o GitHub sabendo COM CERTEZA
+    // que o cartão morreu (aqui: o próprio access_token já vencido, já que
+    // não há refresh token pra checar) justifica marcar a conexão como
+    // "precisa reconectar" — que é DESTRUTIVO (materializeToHome e
+    // getRawGithubToken, engine-connection.ts, recusam qualquer conexão que
+    // não esteja 'connected'). A checagem de prazo entra AQUI, e não antes:
+    // é a única informação que resta para avaliar uma conexão sem refresh
+    // token — o `expiresAt` do access_token atual.
+    if (conexao.expiresAt && conexao.expiresAt.getTime() <= agora.getTime()) {
+      return {
+        tipo: 'avisar-legado',
+        motivo:
+          'esta conexão foi feita antes da renovação automática existir, e o token de acesso já venceu — não há refresh token para renovar sozinho',
+      }
+    }
+    // expiresAt no futuro, OU desconhecido (null) e nada indica falha: o
+    // cliente continua 'connected' e trabalhando normalmente — o aviso
+    // sobre reconectar para ganhar renovação automática é informativo, não
+    // muda o status (ver o tratamento deste tipo em renovarTokensGithubVencendo).
     return {
-      tipo: 'avisar-legado',
+      tipo: 'legado-token-valido',
       motivo:
-        'esta conexão foi feita antes da renovação automática existir — não guarda refresh token',
+        'conexão anterior à renovação automática — o token de acesso atual ainda funciona, mas ninguém vai renová-lo sozinho quando vencer; reconectar no GitHub liga a renovação automática',
     }
   }
   if (conexao.refreshTokenExpiresAt && conexao.refreshTokenExpiresAt.getTime() <= agora.getTime()) {
@@ -264,6 +351,10 @@ export interface DependenciasDaRenovacaoGithub {
   /** Marca a conexão como precisando de login novo e avisa o dono. */
   marcarPrecisaReconectar: (userId: string, motivo: string) => Promise<void>
   agora?: Date
+  /** Teto de conexões processadas nesta passada (achado Médio 5, Task 5/F8)
+   *  — default TETO_DE_RENOVACOES_POR_TIQUE. Existe só para o teste
+   *  exercitar um teto pequeno sem montar centenas de conexões falsas. */
+  tetoPorTique?: number
   onWarn?: (mensagem: string) => void
 }
 
@@ -276,7 +367,30 @@ export interface ResumoDaRenovacaoGithub {
    *  trocada ou dado corrompido) — problema NOSSO; reconectar no GitHub não
    *  resolve, então essas conexões NUNCA entram em `precisamReconectar`. */
   falhasDeDecifragem: number
+  /** A troca não chegou a produzir resposta avaliável do GitHub — rede
+   *  caiu, ou o corpo não era JSON (achado Alto 3). TRANSITÓRIO: a próxima
+   *  tentativa (tique seguinte) pode simplesmente funcionar, então também
+   *  NUNCA entra em `precisamReconectar`. */
+  falhasTransitorias: number
+  /** Conexão LEGADA (sem refresh token guardado, coluna anterior a esta
+   *  fase) cujo token de acesso atual ainda funciona (achado Crítico 1):
+   *  nenhuma ação foi tomada, o status continua 'connected'. Só existe para
+   *  o dono medir quantos clientes ainda não reconectaram para ganhar
+   *  renovação automática — não é uma falha. */
+  legadosSemAcao: number
 }
+
+/** Teto de conexões processadas por PASSADA (achado Médio 5, Task 5/F8): a
+ *  busca de conexões não tinha limite, e a renovação é sequencial — uma
+ *  chamada de rede ao GitHub por conexão —, tudo sob a trava de tique único
+ *  do relógio (scheduler.ts, `tickEmAndamento`). Uma leva de expirações
+ *  concentradas (ex.: todos os clientes logaram no mesmo lançamento e os
+ *  tokens vencem juntos) serializaria N chamadas de rede num único tique,
+ *  atrasando toda outra rotina que compartilha esse mesmo ciclo (varredura
+ *  de sessões, delegação, etc.). O que sobra do teto fica para o PRÓXIMO
+ *  tique: decidirAcaoGithub é pura e determinística, então a conexão
+ *  continua elegível e é reavaliada de novo, sem se perder — só atrasa. */
+export const TETO_DE_RENOVACOES_POR_TIQUE = 25
 
 /**
  * Roda a renovação de todas as conexões GitHub que precisam, sequencial
@@ -289,10 +403,13 @@ export async function renovarTokensGithubVencendo(
   deps: DependenciasDaRenovacaoGithub
 ): Promise<ResumoDaRenovacaoGithub> {
   const agora = deps.agora ?? new Date()
+  const teto = deps.tetoPorTique ?? TETO_DE_RENOVACOES_POR_TIQUE
   const resumo: ResumoDaRenovacaoGithub = {
     renovados: 0,
     precisamReconectar: 0,
     falhasDeDecifragem: 0,
+    falhasTransitorias: 0,
+    legadosSemAcao: 0,
   }
 
   let conexoes: ConexaoGithubElegivel[]
@@ -303,9 +420,23 @@ export async function renovarTokensGithubVencendo(
     return resumo
   }
 
-  for (const conexao of conexoes) {
+  // Teto de trabalho por passada (achado Médio 5) — ver TETO_DE_RENOVACOES_POR_TIQUE.
+  for (const conexao of conexoes.slice(0, teto)) {
     const acao = decidirAcaoGithub(conexao, agora)
     if (acao.tipo === 'nada') continue
+
+    if (acao.tipo === 'legado-token-valido') {
+      // Achado Crítico 1: NUNCA chama marcarPrecisaReconectar aqui — isso
+      // mudaria o status para 'needs_reconnect' e derrubaria uma conexão
+      // que ainda funciona (materializeToHome/getRawGithubToken recusam
+      // qualquer status que não seja 'connected'). O aviso é só
+      // operacional/informativo, contado à parte, sem tocar no banco.
+      resumo.legadosSemAcao += 1
+      deps.onWarn?.(
+        `conexão GitHub de ${conexao.userId} é legada (sem renovação automática) mas o token de acesso ainda é válido — nenhuma ação tomada: ${acao.motivo}`
+      )
+      continue
+    }
 
     if (acao.tipo === 'avisar-legado') {
       resumo.precisamReconectar += 1
@@ -350,6 +481,20 @@ export async function renovarTokensGithubVencendo(
         deps.onWarn?.(
           `renovação do token GitHub falhou para ${conexao.userId} por falha de DECIFRAGEM ` +
             `(problema nosso, reconectar não ajuda): ${textoDoErro(err)}`
+        )
+        continue
+      }
+      // Achado Alto 3: mesma lógica de CredentialDecryptError acima — uma
+      // instabilidade de rede/resposta não é o GitHub recusando o cartão do
+      // CLIENTE, é a chamada não tendo completado. Marcar como
+      // precisa-reconectar aqui dispararia avisos falsos em massa numa
+      // instabilidade transitória do GitHub. NUNCA chama marcarPrecisaReconectar;
+      // tenta de novo no próximo tique.
+      if (err instanceof FalhaTransitoriaNaTrocaComGithubError) {
+        resumo.falhasTransitorias += 1
+        deps.onWarn?.(
+          `renovação do token GitHub falhou para ${conexao.userId} por instabilidade TRANSITÓRIA ` +
+            `(tenta de novo no próximo tique, não é culpa do cliente): ${textoDoErro(err)}`
         )
         continue
       }

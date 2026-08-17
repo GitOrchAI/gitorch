@@ -21,6 +21,17 @@ export class CredentialDecryptError extends Error {
   }
 }
 
+/** Formato aceito por GITORCH_CREDENTIAL_KEY: 32 bytes em hex[64] ou base64.
+ *  Exportado para env.ts validar a mesma regra NO BOOT (achado Crítico 2 da
+ *  Task 5/F8) — uma chave ausente ou malformada só aparecia tarde, no meio
+ *  de uma renovação em produção, em vez de derrubar o processo já na
+ *  subida. Única fonte da regra: env.ts não reimplementa o parse, só chama
+ *  isto. */
+export function formatoDeChaveValido(raw: string): boolean {
+  const key = /^[0-9a-fA-F]{64}$/.test(raw) ? Buffer.from(raw, 'hex') : Buffer.from(raw, 'base64')
+  return key.length === KEY_BYTES
+}
+
 function loadKey(): Buffer {
   const raw = process.env['GITORCH_CREDENTIAL_KEY']
   if (!raw) {
@@ -28,12 +39,7 @@ function loadKey(): Buffer {
       'GITORCH_CREDENTIAL_KEY ausente: necessária para cifrar credenciais de motor (32 bytes em hex ou base64)'
     )
   }
-  let key: Buffer
-  if (/^[0-9a-fA-F]{64}$/.test(raw)) {
-    key = Buffer.from(raw, 'hex')
-  } else {
-    key = Buffer.from(raw, 'base64')
-  }
+  const key = /^[0-9a-fA-F]{64}$/.test(raw) ? Buffer.from(raw, 'hex') : Buffer.from(raw, 'base64')
   if (key.length !== KEY_BYTES) {
     throw new Error(
       `GITORCH_CREDENTIAL_KEY inválida: esperados ${KEY_BYTES} bytes, recebidos ${key.length}`
@@ -53,9 +59,36 @@ export function encryptCredential(plaintext: string): string {
 }
 
 /** Decifra um envelope produzido por encryptCredential. Lança
- *  CredentialDecryptError se adulterado, chave errada ou versão desconhecida. */
+ *  CredentialDecryptError se adulterado, chave errada, versão desconhecida
+ *  OU a própria chave do servidor (GITORCH_CREDENTIAL_KEY) estiver ausente
+ *  ou com formato inválido (achado Crítico 2, Task 5/F8).
+ *
+ *  ANTES desta correção, `loadKey()` lançava `Error` genérico para os dois
+ *  casos acima, e isso acontecia ANTES do try/catch abaixo — ou seja,
+ *  passava por cima da distinção inteira que este arquivo existe para
+ *  garantir. Numa rotação de chave com propagação incompleta (o cenário
+ *  real que FORMAT_VERSION existe para suportar), a leitura chegava ao
+ *  chamador (renovarTokensGithubVencendo, github-token-refresh.ts) como
+ *  `Error` comum: `instanceof CredentialDecryptError` dava `false`, e o
+ *  cliente era marcado como "precisa reconectar" por uma falha de
+ *  INFRAESTRUTURA NOSSA — exatamente o que a task inteira existe para
+ *  evitar. O try/catch abaixo agora cobre `loadKey()` também, não só o
+ *  `decipher.final()`. */
 export function decryptCredential(envelope: string): string {
-  const key = loadKey()
+  let key: Buffer
+  try {
+    key = loadKey()
+  } catch (err) {
+    // A mensagem de loadKey() já deixa claro que o problema é a CHAVE DO
+    // SERVIDOR (nunca o valor da credencial em si — loadKey() não tem
+    // acesso ao envelope aqui, só ao GITORCH_CREDENTIAL_KEY) — repassada
+    // tal qual, só reembalada no tipo certo.
+    throw new CredentialDecryptError(
+      `Falha ao carregar a chave do servidor para decifrar credencial: ${String(
+        (err as { message?: string })?.message ?? err
+      )}`
+    )
+  }
   const buf = Buffer.from(envelope, 'base64')
   const version = buf[0]
   if (version !== FORMAT_VERSION) {

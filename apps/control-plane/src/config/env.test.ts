@@ -1,12 +1,17 @@
 import { describe, it, expect } from 'vitest'
+import { randomBytes } from 'node:crypto'
 import { envSchema } from './env.js'
 
 // Campos sem default no schema — precisam estar presentes pra parse() não
 // falhar por outro motivo que não o que este teste quer provar.
+// GITORCH_CREDENTIAL_KEY entrou como obrigatória na revisão da Task 5/F8
+// (achado Crítico 2: validar no BOOT, não só quando decryptCredential
+// finalmente precisar da chave em produção).
 const REQUIRED = {
   DATABASE_URL: 'postgresql://user:pass@localhost:5432/gitorch',
   REDIS_URL: 'redis://localhost:6379',
   JWT_SECRET: 'x'.repeat(32),
+  GITORCH_CREDENTIAL_KEY: randomBytes(32).toString('hex'),
 }
 
 function parseTrustProxy(raw: string | undefined): boolean {

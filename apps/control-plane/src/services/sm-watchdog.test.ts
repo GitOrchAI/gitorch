@@ -222,4 +222,53 @@ describe('buildTelegramNotifier', () => {
     // aqui é que a promise SE RESOLVE (não fica pendurada), não o valor.
     await expect(notify('publicação confirmada')).resolves.toBeUndefined()
   })
+
+  // Achado Baixo 6 (Task 5/F8): a função devolvida NUNCA rejeita — por isso
+  // um `.catch(...)` em volta de `notify(...)`, em QUALQUER chamador, nunca
+  // dispara (era código morto em scheduler.ts). `onDeliveryFailure` é o
+  // jeito de um chamador optar por não deixar essa falha desaparecer sem
+  // rastro, sem mudar esse contrato "nunca rejeita" pra quem não passa o
+  // callback.
+  it('achado Baixo 6: falha de entrega chama onDeliveryFailure, e notify() continua nunca rejeitando', async () => {
+    const erroDeEntrega = new Error('Telegram: bot inválido ou destino apagado')
+    const f = vi.fn(async () => {
+      throw erroDeEntrega
+    }) as unknown as typeof fetch
+    const onDeliveryFailure = vi.fn()
+
+    const notify = buildTelegramNotifier({
+      botToken: 'tok',
+      chatId: '42',
+      fetchImpl: f,
+      onDeliveryFailure,
+    })!
+
+    await expect(notify('aviso que não vai chegar')).resolves.toBeUndefined()
+    expect(onDeliveryFailure).toHaveBeenCalledWith(erroDeEntrega)
+  })
+
+  it('sem onDeliveryFailure: comportamento de sempre — falha de entrega segue muda, sem lançar', async () => {
+    const f = vi.fn(async () => {
+      throw new Error('Telegram: bot inválido')
+    }) as unknown as typeof fetch
+
+    const notify = buildTelegramNotifier({ botToken: 'tok', chatId: '42', fetchImpl: f })!
+
+    await expect(notify('aviso')).resolves.toBeUndefined()
+  })
+
+  it('entrega com sucesso: onDeliveryFailure NUNCA é chamado', async () => {
+    const f = vi.fn(async () => new Response('{}', { status: 200 })) as unknown as typeof fetch
+    const onDeliveryFailure = vi.fn()
+
+    const notify = buildTelegramNotifier({
+      botToken: 'tok',
+      chatId: '42',
+      fetchImpl: f,
+      onDeliveryFailure,
+    })!
+
+    await notify('aviso que chega')
+    expect(onDeliveryFailure).not.toHaveBeenCalled()
+  })
 })

@@ -1,19 +1,69 @@
-import { describe, expect, it, vi } from 'vitest'
-import { CredentialDecryptError } from '../lib/credential-crypto.js'
+import { describe, expect, it, vi, afterEach } from 'vitest'
+import { randomBytes } from 'node:crypto'
+import {
+  CredentialDecryptError,
+  decryptCredential,
+  encryptCredential,
+} from '../lib/credential-crypto.js'
 import {
   MARGEM_DE_RENOVACAO_MS,
   RefreshTokenGithubInvalidoError,
+  FalhaTransitoriaNaTrocaComGithubError,
   decidirAcaoGithub,
   trocarRefreshTokenNoGithub,
   renovarTokensGithubVencendo,
 } from './github-token-refresh.js'
 
+/** Base do resumo com os contadores adicionados na revisão da Task 5/F8
+ *  (falhasTransitorias — Alto 3; legadosSemAcao — Crítico 1), para os
+ *  testes que só querem afirmar sobre um contador específico não precisarem
+ *  listar os outros toda vez. */
+const RESUMO_ZERADO = {
+  renovados: 0,
+  precisamReconectar: 0,
+  falhasDeDecifragem: 0,
+  falhasTransitorias: 0,
+  legadosSemAcao: 0,
+}
+
 const AGORA = new Date('2026-08-17T12:00:00Z')
 
 describe('decidirAcaoGithub', () => {
-  it('sem refreshTokenEncrypted: avisa que é conexão legada, não tenta renovar', () => {
+  // Achado Crítico 1 (Task 5/F8): a coluna de refresh token é NOVA — no
+  // primeiro tique depois do deploy desta fase, TODA conexão existente cai
+  // no ramo "sem refreshTokenEncrypted" abaixo. Tratar isso como
+  // "avisar-legado" (que renovarTokensGithubVencendo usa para marcar
+  // 'needs_reconnect') SEM olhar o prazo cortaria o acesso de toda a base
+  // no deploy — inclusive de quem tinha token perfeitamente válido. Os dois
+  // testes abaixo (prazo no futuro/desconhecido vs. prazo vencido) são
+  // exatamente o par que a revisão pediu para cobrir.
+  it('sem refreshTokenEncrypted, mas o access_token atual ainda é válido: NÃO pede reconexão (legado informativo)', () => {
+    const acao = decidirAcaoGithub(
+      {
+        refreshTokenEncrypted: null,
+        expiresAt: new Date(AGORA.getTime() + 6 * 60 * 60 * 1000),
+        refreshTokenExpiresAt: null,
+      },
+      AGORA
+    )
+    expect(acao.tipo).toBe('legado-token-valido')
+  })
+
+  it('sem refreshTokenEncrypted, e expiresAt desconhecido (null): também NÃO pede reconexão — nada indica falha', () => {
     const acao = decidirAcaoGithub(
       { refreshTokenEncrypted: null, expiresAt: null, refreshTokenExpiresAt: null },
+      AGORA
+    )
+    expect(acao.tipo).toBe('legado-token-valido')
+  })
+
+  it('sem refreshTokenEncrypted, e o access_token JÁ venceu: aí sim pede reconexão', () => {
+    const acao = decidirAcaoGithub(
+      {
+        refreshTokenEncrypted: null,
+        expiresAt: new Date(AGORA.getTime() - 1000),
+        refreshTokenExpiresAt: null,
+      },
       AGORA
     )
     expect(acao.tipo).toBe('avisar-legado')
@@ -143,6 +193,59 @@ describe('trocarRefreshTokenNoGithub', () => {
       })
     ).rejects.toThrow(RefreshTokenGithubInvalidoError)
   })
+
+  // Achado Alto 3 (Task 5/F8): nem toda exceção aqui é "o GitHub recusou o
+  // cartão do cliente" — a rede pode cair antes de qualquer resposta
+  // chegar, ou a resposta pode não ser o JSON esperado (instabilidade do
+  // GitHub, não recusa do refresh token). Os dois testes abaixo provam que
+  // NENHUM dos dois casos lança RefreshTokenGithubInvalidoError — ambos têm
+  // que virar FalhaTransitoriaNaTrocaComGithubError, para
+  // renovarTokensGithubVencendo nunca culpar o cliente por isso.
+  it('rede cai (fetchImpl rejeita): lança FalhaTransitoriaNaTrocaComGithubError, NUNCA RefreshTokenGithubInvalidoError', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new TypeError('fetch failed')
+    }) as unknown as typeof fetch
+
+    let capturado: unknown
+    try {
+      await trocarRefreshTokenNoGithub({
+        refreshToken: 'gh_refresh_qualquer',
+        clientId: 'Iv23test',
+        clientSecret: 'segredo',
+        fetchImpl,
+      })
+    } catch (err) {
+      capturado = err
+    }
+
+    // toBeInstanceOf (não toThrow(Classe)): checagem de TIPO de verdade — se
+    // FalhaTransitoriaNaTrocaComGithubError não existisse, `toThrow(undefined)`
+    // aceitaria QUALQUER erro lançado (o comportamento antigo, sem distinção
+    // nenhuma, passaria escondido por baixo do teste).
+    expect(capturado).toBeInstanceOf(FalhaTransitoriaNaTrocaComGithubError)
+    expect(capturado).not.toBeInstanceOf(RefreshTokenGithubInvalidoError)
+  })
+
+  it('resposta não é JSON (página de erro HTML numa instabilidade): lança FalhaTransitoriaNaTrocaComGithubError, NUNCA RefreshTokenGithubInvalidoError', async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response('<html>502 Bad Gateway</html>', { status: 502 })
+    ) as unknown as typeof fetch
+
+    let capturado: unknown
+    try {
+      await trocarRefreshTokenNoGithub({
+        refreshToken: 'gh_refresh_qualquer',
+        clientId: 'Iv23test',
+        clientSecret: 'segredo',
+        fetchImpl,
+      })
+    } catch (err) {
+      capturado = err
+    }
+
+    expect(capturado).toBeInstanceOf(FalhaTransitoriaNaTrocaComGithubError)
+    expect(capturado).not.toBeInstanceOf(RefreshTokenGithubInvalidoError)
+  })
 })
 
 describe('renovarTokensGithubVencendo', () => {
@@ -271,16 +374,45 @@ describe('renovarTokensGithubVencendo', () => {
     expect(marcarPrecisaReconectar).not.toHaveBeenCalled()
   })
 
-  it('conexão legada (sem refresh token): marca precisa-reconectar, nunca chama trocar', async () => {
+  // Achado Crítico 1 (Task 5/F8) na ORQUESTRAÇÃO (não só na decisão pura
+  // acima): o deploy desta fase não pode mudar o status de NENHUMA conexão
+  // que ainda tenha um access_token válido, mesmo sem refresh token
+  // guardado — senão corta o acesso ao GitHub de toda a base existente.
+  it('conexão legada (sem refresh token) com access_token AINDA válido: NÃO marca precisa-reconectar, nunca chama trocar, conta em legadosSemAcao', async () => {
     const trocar = vi.fn()
     const marcarPrecisaReconectar = vi.fn(async () => undefined)
 
     const resumo = await renovarTokensGithubVencendo({
       conexoes: async () => [
         {
-          userId: 'user_legado',
+          userId: 'user_legado_valido',
           refreshTokenEncrypted: null,
-          expiresAt: null,
+          expiresAt: new Date(AGORA.getTime() + 6 * 60 * 60 * 1000),
+          refreshTokenExpiresAt: null,
+        },
+      ],
+      trocar,
+      salvarSucesso: vi.fn(),
+      marcarPrecisaReconectar,
+      agora: AGORA,
+    })
+
+    expect(resumo.legadosSemAcao).toBe(1)
+    expect(resumo.precisamReconectar).toBe(0)
+    expect(trocar).not.toHaveBeenCalled()
+    expect(marcarPrecisaReconectar).not.toHaveBeenCalled()
+  })
+
+  it('conexão legada (sem refresh token) com access_token JÁ vencido: marca precisa-reconectar, nunca chama trocar', async () => {
+    const trocar = vi.fn()
+    const marcarPrecisaReconectar = vi.fn(async () => undefined)
+
+    const resumo = await renovarTokensGithubVencendo({
+      conexoes: async () => [
+        {
+          userId: 'user_legado_vencido',
+          refreshTokenEncrypted: null,
+          expiresAt: new Date(AGORA.getTime() - 1000),
           refreshTokenExpiresAt: null,
         },
       ],
@@ -291,8 +423,38 @@ describe('renovarTokensGithubVencendo', () => {
     })
 
     expect(resumo.precisamReconectar).toBe(1)
+    expect(resumo.legadosSemAcao).toBe(0)
     expect(trocar).not.toHaveBeenCalled()
     expect(marcarPrecisaReconectar).toHaveBeenCalledTimes(1)
+  })
+
+  // Achado Alto 3, na orquestração: uma instabilidade transitória (rede
+  // caiu, resposta não era JSON) nunca pode marcar a conexão como
+  // "precisa reconectar" — só o GitHub RECUSANDO o cartão (
+  // RefreshTokenGithubInvalidoError) faz isso.
+  it('troca falha (instabilidade transitória): conta em falhasTransitorias, NUNCA marca precisa-reconectar', async () => {
+    const marcarPrecisaReconectar = vi.fn(async () => undefined)
+
+    const resumo = await renovarTokensGithubVencendo({
+      conexoes: async () => [
+        {
+          userId: 'user_instavel',
+          refreshTokenEncrypted: 'envelope',
+          expiresAt: new Date(AGORA.getTime() + 60 * 1000),
+          refreshTokenExpiresAt: new Date(AGORA.getTime() + 180 * 24 * 60 * 60 * 1000),
+        },
+      ],
+      trocar: async () => {
+        throw new FalhaTransitoriaNaTrocaComGithubError('não foi possível alcançar o GitHub')
+      },
+      salvarSucesso: vi.fn(),
+      marcarPrecisaReconectar,
+      agora: AGORA,
+    })
+
+    expect(resumo.falhasTransitorias).toBe(1)
+    expect(resumo.precisamReconectar).toBe(0)
+    expect(marcarPrecisaReconectar).not.toHaveBeenCalled()
   })
 
   it('listar conexões falha: não lança, devolve resumo zerado', async () => {
@@ -305,6 +467,177 @@ describe('renovarTokensGithubVencendo', () => {
       marcarPrecisaReconectar: vi.fn(),
       agora: AGORA,
     })
-    expect(resumo).toEqual({ renovados: 0, precisamReconectar: 0, falhasDeDecifragem: 0 })
+    expect(resumo).toEqual(RESUMO_ZERADO)
+  })
+
+  // Achado Médio 5: sem teto, uma leva de expirações concentradas
+  // serializaria N chamadas de rede num único tique. `tetoPorTique` existe
+  // só para o teste exercitar isto sem montar centenas de conexões falsas
+  // — em produção vale o default (TETO_DE_RENOVACOES_POR_TIQUE).
+  it('teto por tique: processa só as N primeiras, o resto fica para o próximo tique', async () => {
+    const trocar = vi.fn(async () => ({
+      accessToken: 'gh_novo',
+      refreshToken: 'gh_refresh_novo',
+      expiresAt: new Date(AGORA.getTime() + 28800 * 1000),
+      refreshTokenExpiresAt: new Date(AGORA.getTime() + 15897600 * 1000),
+    }))
+    const conexoes = Array.from({ length: 5 }, (_, i) => ({
+      userId: `user_${i}`,
+      refreshTokenEncrypted: 'envelope',
+      expiresAt: new Date(AGORA.getTime() + 60 * 1000),
+      refreshTokenExpiresAt: new Date(AGORA.getTime() + 180 * 24 * 60 * 60 * 1000),
+    }))
+
+    const resumo = await renovarTokensGithubVencendo({
+      conexoes: async () => conexoes,
+      trocar,
+      salvarSucesso: vi.fn(async () => undefined),
+      marcarPrecisaReconectar: vi.fn(async () => undefined),
+      agora: AGORA,
+      tetoPorTique: 2,
+    })
+
+    expect(trocar).toHaveBeenCalledTimes(2)
+    expect(resumo.renovados).toBe(2)
+  })
+})
+
+// Achado Alto 4 (Task 5/F8): "Nenhum teste exercita uma falha de decifragem
+// REAL através da composição de verdade (decryptCredential real +
+// trocarRefreshTokenNoGithub)". Toda a cobertura acima usa um `trocar`
+// MOCADO lançando CredentialDecryptError direto — prova o agrupamento, mas
+// não prova que a composição de verdade (o que scheduler.ts de fato monta:
+// `trocar = async (enc) => trocarRefreshTokenNoGithub({ refreshToken:
+// decryptCredential(enc), ... })`) PRODUZ esse erro. Os dois achados
+// CRÍTICOS (1 e 2) passariam por todos os testes acima sem serem notados
+// exatamente por essa lacuna. Este bloco compõe as funções REAIS — sem
+// mockar trocar, sem mockar decryptCredential — igual ao que
+// renovarTokensGithubDoRelogio (scheduler.ts) monta.
+describe('renovarTokensGithubVencendo com a composição REAL (achado Alto 4)', () => {
+  const originalKey = process.env['GITORCH_CREDENTIAL_KEY']
+  afterEach(() => {
+    if (originalKey === undefined) delete process.env['GITORCH_CREDENTIAL_KEY']
+    else process.env['GITORCH_CREDENTIAL_KEY'] = originalKey
+  })
+
+  /** A MESMA composição que scheduler.ts monta em renovarTokensGithubDoRelogio
+   *  — decifra de verdade, depois troca com o GitHub de verdade (fetchImpl
+   *  injetado só para não bater na rede real). */
+  function trocarComposicaoReal(fetchImpl: typeof fetch) {
+    return async (refreshTokenEncrypted: string) => {
+      const refreshTokenPlano = decryptCredential(refreshTokenEncrypted)
+      return trocarRefreshTokenNoGithub({
+        refreshToken: refreshTokenPlano,
+        clientId: 'Iv23test',
+        clientSecret: 'segredo',
+        fetchImpl,
+        agora: AGORA,
+      })
+    }
+  }
+
+  it('GITORCH_CREDENTIAL_KEY ausente no momento da renovação: a falha atravessa como CredentialDecryptError e conta em falhasDeDecifragem, NUNCA marca precisa-reconectar', async () => {
+    // A chave existia quando a conexão foi cifrada — mas SUMIU antes deste
+    // tique rodar (achado Crítico 2: loadKey() lançava Error genérico aqui,
+    // ANTES do try/catch de decryptCredential, e o erro chegava a este
+    // catch como se o GitHub tivesse recusado o cartão).
+    process.env['GITORCH_CREDENTIAL_KEY'] = randomBytes(32).toString('hex')
+    const refreshCifrado = encryptCredential('refresh_plano_abc')
+    delete process.env['GITORCH_CREDENTIAL_KEY']
+
+    const marcarPrecisaReconectar = vi.fn(async () => undefined)
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('não deveria chamar o GitHub — a decifragem falha antes')
+    }) as unknown as typeof fetch
+
+    const resumo = await renovarTokensGithubVencendo({
+      conexoes: async () => [
+        {
+          userId: 'user_chave_ausente',
+          refreshTokenEncrypted: refreshCifrado,
+          expiresAt: new Date(AGORA.getTime() + 60 * 1000),
+          refreshTokenExpiresAt: new Date(AGORA.getTime() + 180 * 24 * 60 * 60 * 1000),
+        },
+      ],
+      trocar: trocarComposicaoReal(fetchImpl),
+      salvarSucesso: vi.fn(),
+      marcarPrecisaReconectar,
+      agora: AGORA,
+    })
+
+    expect(resumo.falhasDeDecifragem).toBe(1)
+    expect(resumo.precisamReconectar).toBe(0)
+    expect(marcarPrecisaReconectar).not.toHaveBeenCalled()
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('GITORCH_CREDENTIAL_KEY com tamanho errado no momento da renovação: mesma classificação — falhasDeDecifragem, NUNCA precisa-reconectar', async () => {
+    process.env['GITORCH_CREDENTIAL_KEY'] = randomBytes(32).toString('hex')
+    const refreshCifrado = encryptCredential('refresh_plano_abc')
+    process.env['GITORCH_CREDENTIAL_KEY'] = 'deadbeef' // formato inválido
+
+    const marcarPrecisaReconectar = vi.fn(async () => undefined)
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('não deveria chamar o GitHub — a decifragem falha antes')
+    }) as unknown as typeof fetch
+
+    const resumo = await renovarTokensGithubVencendo({
+      conexoes: async () => [
+        {
+          userId: 'user_chave_malformada',
+          refreshTokenEncrypted: refreshCifrado,
+          expiresAt: new Date(AGORA.getTime() + 60 * 1000),
+          refreshTokenExpiresAt: new Date(AGORA.getTime() + 180 * 24 * 60 * 60 * 1000),
+        },
+      ],
+      trocar: trocarComposicaoReal(fetchImpl),
+      salvarSucesso: vi.fn(),
+      marcarPrecisaReconectar,
+      agora: AGORA,
+    })
+
+    expect(resumo.falhasDeDecifragem).toBe(1)
+    expect(resumo.precisamReconectar).toBe(0)
+    expect(marcarPrecisaReconectar).not.toHaveBeenCalled()
+  })
+
+  it('chave presente e a troca com o GitHub sucede de verdade: composição real completa funciona ponta a ponta (controle positivo)', async () => {
+    process.env['GITORCH_CREDENTIAL_KEY'] = randomBytes(32).toString('hex')
+    const refreshCifrado = encryptCredential('refresh_plano_bom')
+
+    const salvarSucesso = vi.fn(async () => undefined)
+    const fetchImpl = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          access_token: 'gh_novo',
+          refresh_token: 'gh_refresh_novo',
+          expires_in: 28800,
+          refresh_token_expires_in: 15897600,
+        }),
+        { status: 200 }
+      )
+    }) as unknown as typeof fetch
+
+    const resumo = await renovarTokensGithubVencendo({
+      conexoes: async () => [
+        {
+          userId: 'user_composicao_ok',
+          refreshTokenEncrypted: refreshCifrado,
+          expiresAt: new Date(AGORA.getTime() + 60 * 1000),
+          refreshTokenExpiresAt: new Date(AGORA.getTime() + 180 * 24 * 60 * 60 * 1000),
+        },
+      ],
+      trocar: trocarComposicaoReal(fetchImpl),
+      salvarSucesso,
+      marcarPrecisaReconectar: vi.fn(),
+      agora: AGORA,
+    })
+
+    expect(resumo.renovados).toBe(1)
+    expect(resumo.falhasDeDecifragem).toBe(0)
+    expect(salvarSucesso).toHaveBeenCalledWith(
+      'user_composicao_ok',
+      expect.objectContaining({ accessToken: 'gh_novo', refreshToken: 'gh_refresh_novo' })
+    )
   })
 })

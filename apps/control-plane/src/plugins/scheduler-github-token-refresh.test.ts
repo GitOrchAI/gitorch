@@ -145,7 +145,55 @@ describe('renovarTokensGithubDoRelogio', () => {
     expect(telegramCalls[0]).toContain('chat_123')
   })
 
-  it('conexão legada sem refresh token guardado: avisa o dono, sem tentar renovar', async () => {
+  // Achado Baixo 6 (Task 5/F8): o `.catch(...)` que existia em volta de
+  // `notify(...)` era código morto — buildTelegramNotifier já engolia a
+  // falha de entrega internamente, então o dono nunca sabia que o aviso de
+  // reconexão não chegou. Prova, no wiring real, que uma falha de entrega
+  // (aqui: o Telegram responde erro) agora deixa rastro em app.log.warn.
+  it('GitHub recusa a renovação, e a entrega do aviso por Telegram FALHA: a falha de entrega fica registrada em log, não some', async () => {
+    const refreshCifrado = encryptCredential('refresh_plano_revogado')
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = typeof url === 'string' ? url : url.toString()
+      if (href === 'https://github.com/login/oauth/access_token') {
+        return new Response(JSON.stringify({ error: 'bad_refresh_token' }), { status: 401 })
+      }
+      if (href.startsWith('https://api.telegram.org/bot')) {
+        // A REJEIÇÃO (não um status HTTP de erro — buildTelegramNotifier não
+        // olha response.ok) é a falha de entrega real que ela engolia por
+        // dentro: rede caída, DNS falhou, etc.
+        throw new Error('ECONNREFUSED: rede indisponível para o Telegram')
+      }
+      throw new Error(`fetch inesperado: ${href}`)
+    }) as unknown as typeof fetch
+
+    const updateMany = vi.fn(async () => ({ count: 1 }))
+    const app = fakeApp({
+      conexoes: [
+        {
+          userId: 'user_telegram_falha',
+          encryptedRefreshToken: refreshCifrado,
+          expiresAt: new Date(AGORA.getTime() + 5 * 60 * 1000),
+          refreshTokenExpiresAt: new Date(AGORA.getTime() + 180 * 24 * 60 * 60 * 1000),
+        },
+      ],
+      updateMany,
+      telegramLink: { status: 'linked', chatId: 'chat_falha' },
+    })
+
+    await renovarTokensGithubDoRelogio(app, AGORA)
+
+    expect(app.log.warn).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining('aviso de reconexão GitHub não foi entregue')
+    )
+  })
+
+  it('conexão legada sem refresh token guardado E com access_token já vencido: avisa o dono, sem tentar renovar', async () => {
+    // Achado Crítico 1 (Task 5/F8): "sem refresh token" só justifica avisar
+    // o dono quando o access_token atual JÁ venceu — sem isso não há como
+    // renovar sozinho de verdade. expiresAt no passado é o que torna este
+    // caso genuinamente "precisa reconectar" (ver o par de testes em
+    // github-token-refresh.test.ts para o caso "ainda válido").
     global.fetch = vi.fn(async (url: string | URL | Request) => {
       const href = typeof url === 'string' ? url : url.toString()
       if (href.startsWith('https://api.telegram.org/bot')) {
@@ -160,7 +208,7 @@ describe('renovarTokensGithubDoRelogio', () => {
         {
           userId: 'user_legado',
           encryptedRefreshToken: null,
-          expiresAt: null,
+          expiresAt: new Date(AGORA.getTime() - 1000),
           refreshTokenExpiresAt: null,
         },
       ],
@@ -196,7 +244,7 @@ describe('renovarTokensGithubDoRelogio', () => {
         {
           userId: 'user_ja_avisado',
           encryptedRefreshToken: null,
-          expiresAt: null,
+          expiresAt: new Date(AGORA.getTime() - 1000),
           refreshTokenExpiresAt: null,
         },
       ],
@@ -223,12 +271,98 @@ describe('renovarTokensGithubDoRelogio', () => {
 
     const resumo = await renovarTokensGithubDoRelogio(app, AGORA)
 
-    // `falhasDeDecifragem` foi acrescentado à interface ResumoDaRenovacaoGithub
-    // depois deste teste ter sido redigido (fix "distingue falha de
-    // decifragem de recusa do GitHub") — o campo é obrigatório (sem `?`) e
-    // precisa aparecer aqui zerado, senão o objeto retornado nunca bateria
-    // com o tipo real de retorno da função.
-    expect(resumo).toEqual({ renovados: 0, precisamReconectar: 0, falhasDeDecifragem: 0 })
+    // `falhasDeDecifragem`/`falhasTransitorias`/`legadosSemAcao` foram
+    // acrescentados à interface ResumoDaRenovacaoGithub pelas correções da
+    // revisão da Task 5/F8 — todos obrigatórios (sem `?`), precisam
+    // aparecer aqui zerados, senão o objeto retornado nunca bateria com o
+    // tipo real de retorno da função.
+    expect(resumo).toEqual({
+      renovados: 0,
+      precisamReconectar: 0,
+      falhasDeDecifragem: 0,
+      falhasTransitorias: 0,
+      legadosSemAcao: 0,
+    })
     expect(findMany).not.toHaveBeenCalled()
+  })
+
+  // Achado Crítico 2 + Alto 4 (Task 5/F8), no WIRING completo (scheduler.ts):
+  // prova que a composição real (decryptCredential de verdade +
+  // trocarRefreshTokenNoGithub, do jeito que renovarTokensGithubDoRelogio de
+  // fato monta em produção — Prisma/Telegram mockados, cripto e decisão
+  // reais) classifica uma falha de decifragem como problema NOSSO, nunca
+  // como "cliente precisa reconectar". O caso específico de
+  // GITORCH_CREDENTIAL_KEY ausente/malformada (o bug exato do loadKey() do
+  // achado Crítico 2) tem teste dedicado e mais preciso em
+  // github-token-refresh.test.ts ("composição real, sem depender do
+  // wiring") — aqui não dá para simular "chave ausente" sem também derrubar
+  // o processo em getEnv(), já que GITORCH_CREDENTIAL_KEY virou obrigatória
+  // no schema de env (config/env.ts). Este teste cobre a variante que É
+  // segura de simular no wiring completo: uma instância já rodando com a
+  // chave NOVA (rotação com propagação incompleta) tentando ler um dado
+  // cifrado com a chave ANTIGA.
+  it('composição REAL (decrypt de verdade): chave trocada na rotação faz o dado não decifrar — conta como falhasDeDecifragem, NUNCA marca needs_reconnect nem notifica', async () => {
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = typeof url === 'string' ? url : url.toString()
+      throw new Error(`fetch inesperado (não deveria chamar rede nenhuma): ${href}`)
+    }) as unknown as typeof fetch
+
+    const refreshCifradoComChaveAntiga = encryptCredential('refresh_plano_antigo')
+    // Troca a chave DEPOIS de cifrar (chave nova, formato válido, valor
+    // diferente) — a mesma situação de uma instância que já recebeu a
+    // rotação enquanto o dado no banco ainda foi cifrado com a antiga.
+    process.env['GITORCH_CREDENTIAL_KEY'] = randomBytes(32).toString('hex')
+    resetEnvCache()
+
+    const updateMany = vi.fn(async () => ({ count: 1 }))
+    const app = fakeApp({
+      conexoes: [
+        {
+          userId: 'user_chave_rotacionada',
+          encryptedRefreshToken: refreshCifradoComChaveAntiga,
+          expiresAt: new Date(AGORA.getTime() + 5 * 60 * 1000),
+          refreshTokenExpiresAt: new Date(AGORA.getTime() + 180 * 24 * 60 * 60 * 1000),
+        },
+      ],
+      updateMany,
+      telegramLink: { status: 'linked', chatId: 'chat_chave_rotacionada' },
+    })
+
+    const resumo = await renovarTokensGithubDoRelogio(app, AGORA)
+
+    expect(resumo.falhasDeDecifragem).toBe(1)
+    expect(resumo.precisamReconectar).toBe(0)
+    expect(updateMany).not.toHaveBeenCalled()
+  })
+
+  // Achado Crítico 1, na composição real: o deploy desta fase não pode
+  // derrubar conexões existentes só porque a coluna de refresh token é
+  // nova. Prova, através do wiring de verdade (não só a função pura), que
+  // uma conexão legada com token ainda válido não é tocada.
+  it('conexão legada sem refresh token, mas com access_token ainda válido: NÃO marca needs_reconnect, NÃO notifica, e não chama o GitHub', async () => {
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = typeof url === 'string' ? url : url.toString()
+      throw new Error(`fetch inesperado (não deveria chamar rede nenhuma): ${href}`)
+    }) as unknown as typeof fetch
+
+    const updateMany = vi.fn(async () => ({ count: 1 }))
+    const app = fakeApp({
+      conexoes: [
+        {
+          userId: 'user_legado_ainda_bom',
+          encryptedRefreshToken: null,
+          expiresAt: new Date(AGORA.getTime() + 6 * 60 * 60 * 1000),
+          refreshTokenExpiresAt: null,
+        },
+      ],
+      updateMany,
+      telegramLink: { status: 'linked', chatId: 'chat_legado_bom' },
+    })
+
+    const resumo = await renovarTokensGithubDoRelogio(app, AGORA)
+
+    expect(resumo.legadosSemAcao).toBe(1)
+    expect(resumo.precisamReconectar).toBe(0)
+    expect(updateMany).not.toHaveBeenCalled()
   })
 })

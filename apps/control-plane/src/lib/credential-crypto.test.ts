@@ -75,3 +75,44 @@ describe('credential-crypto v2 (versão + erro tipado)', () => {
     expect(() => decryptCredential(env)).toThrow(CredentialDecryptError)
   })
 })
+
+// Achado Crítico 2 (revisão da Task 5/F8): loadKey() lançava `Error`
+// genérico — não `CredentialDecryptError` — quando GITORCH_CREDENTIAL_KEY
+// está ausente ou com tamanho errado, e isso rodava ANTES do try/catch de
+// decryptCredential (que só embrulhava falha de decipher.final()/tag).
+// Numa rotação de chave com propagação incompleta (cenário real: é
+// exatamente para isto que FORMAT_VERSION existe), o erro chegava como
+// `Error` comum — `instanceof CredentialDecryptError` dava `false` — e o
+// chamador (renovarTokensGithubVencendo, github-token-refresh.ts) marcava o
+// cliente como "precisa reconectar" por uma falha de infraestrutura NOSSA.
+describe('credential-crypto: falha ao CARREGAR a chave também é CredentialDecryptError (achado Crítico 2)', () => {
+  const original = process.env['GITORCH_CREDENTIAL_KEY']
+  afterEach(() => {
+    if (original === undefined) delete process.env['GITORCH_CREDENTIAL_KEY']
+    else process.env['GITORCH_CREDENTIAL_KEY'] = original
+  })
+
+  test('GITORCH_CREDENTIAL_KEY ausente: decryptCredential lança CredentialDecryptError (não Error genérico)', () => {
+    delete process.env['GITORCH_CREDENTIAL_KEY']
+    // O envelope em si é irrelevante — loadKey() falha ANTES de ler o
+    // envelope, então qualquer string chega a exercitar o caminho.
+    expect(() => decryptCredential('qualquer-coisa')).toThrow(CredentialDecryptError)
+  })
+
+  test('GITORCH_CREDENTIAL_KEY com tamanho errado: decryptCredential lança CredentialDecryptError (não Error genérico)', () => {
+    process.env['GITORCH_CREDENTIAL_KEY'] = 'deadbeef'
+    expect(() => decryptCredential('qualquer-coisa')).toThrow(CredentialDecryptError)
+  })
+
+  test('a mensagem do CredentialDecryptError fala da chave do SERVIDOR, nunca de um valor de credencial', () => {
+    delete process.env['GITORCH_CREDENTIAL_KEY']
+    let mensagem = ''
+    try {
+      decryptCredential('qualquer-coisa')
+    } catch (err) {
+      mensagem = (err as Error).message
+    }
+    expect(mensagem).toMatch(/GITORCH_CREDENTIAL_KEY/)
+    expect(mensagem).not.toContain('qualquer-coisa')
+  })
+})
