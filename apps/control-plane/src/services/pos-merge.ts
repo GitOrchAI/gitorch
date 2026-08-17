@@ -19,15 +19,20 @@
 import { CADENCIA_DE_PUBLICACAO_MS } from './publicacao.js'
 
 /**
- * Só os quatro campos que a decisão precisa — não a `LinhaDeSessao` inteira,
+ * Só os cinco campos que a decisão precisa — não a `LinhaDeSessao` inteira,
  * para não acoplar este módulo ao shape completo do Prisma. Uma linha real
  * (dev-session-store.ts) satisfaz esta forma por estrutura.
+ *
+ * `closedAt` (Crítico 2, leva C): antes deste campo, esta decisão confiava
+ * cegamente que "veredito final" e "linha fechada" eram a mesma coisa — não
+ * são. Ver a checagem abaixo.
  */
 export interface SessaoParaVarredura {
   id: string
   mergeCommitSha: string | null
   deployState: string | null
   deployCheckedAt: Date | null
+  closedAt: Date | null
 }
 
 /**
@@ -42,7 +47,7 @@ const ESTADOS_FINAIS = new Set(['no-ar', 'sem-publicacao'])
  * Genérica sobre `T` (em vez de fixa em `SessaoParaVarredura`) para que quem
  * chama com uma `LinhaDeSessao[]` real (scheduler.ts) receba de volta linhas
  * completas — com `sessionName`/`projectId`, que a varredura precisa para
- * agir — não apenas os quatro campos que ESTA decisão examina.
+ * agir — não apenas os cinco campos que ESTA decisão examina.
  */
 export function sessoesParaAcompanharPublicacao<T extends SessaoParaVarredura>(
   sessoes: T[],
@@ -50,7 +55,25 @@ export function sessoesParaAcompanharPublicacao<T extends SessaoParaVarredura>(
 ): T[] {
   return sessoes.filter((sessao) => {
     if (!sessao.mergeCommitSha) return false
-    if (sessao.deployState !== null && ESTADOS_FINAIS.has(sessao.deployState)) return false
+    // Crítico 2 (leva C): uma sessão órfã — `scheduler.ts` grava o veredito
+    // FINAL (`registrarEstadoDaPublicacao`) e o processo morre (restart do
+    // control-plane) antes de conseguir fechar a linha (`fecharSessao`,
+    // depois de `testarAmbiente`, uma chamada HTTP real de ~10s). Sem esta
+    // ressalva, um veredito final bastava para excluir a sessão desta lista
+    // PARA SEMPRE — mesmo com `closedAt` ainda nulo — e o índice único de
+    // sessão aberta por issue bloqueava qualquer nova delegação para a
+    // mesma issue, sem ninguém nunca mais tentar fechar a linha de verdade.
+    // Só trata "veredito final" como "pode pular" quando a linha está DE
+    // FATO fechada (`closedAt` não-nulo) — nunca só pelo veredito. Uma linha
+    // órfã (final + `closedAt` nulo) cai para a checagem de cadência abaixo,
+    // como qualquer sessão ainda em aberto, e volta a ser examinada na
+    // próxima janela — dessa vez terminando de verdade.
+    if (
+      sessao.deployState !== null &&
+      ESTADOS_FINAIS.has(sessao.deployState) &&
+      sessao.closedAt !== null
+    )
+      return false
     if (!sessao.deployCheckedAt) return true
     return agora.getTime() - sessao.deployCheckedAt.getTime() >= CADENCIA_DE_PUBLICACAO_MS
   })

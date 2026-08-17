@@ -58,6 +58,16 @@ export interface LinhaDeSessao {
   mergeFailures: number
   /** Quando o último fracasso de mescla aconteceu (Tarefa 10). */
   mergeLastFailedAt: Date | null
+  /**
+   * Quando a linha foi de fato encerrada (`fecharSessao`) — `null` enquanto
+   * viva. Crítico 2 (leva C, `pos-merge.ts`): `sessoesParaAcompanharPublicacao`
+   * usa este campo para distinguir "veredito final registrado" de "linha
+   * fechada de verdade" — as duas coisas normalmente acontecem juntas, mas
+   * um restart entre `registrarEstadoDaPublicacao` e `fecharSessao` pode
+   * deixar a primeira sem a segunda, e sem este campo a sessão órfã ficava
+   * invisível para a vigília para sempre.
+   */
+  closedAt: Date | null
 }
 
 /** Por que a linha saiu da vigia. `merged` é o único caminho feliz. */

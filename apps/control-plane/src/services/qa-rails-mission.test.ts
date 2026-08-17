@@ -72,6 +72,7 @@ function linha(over: Partial<LinhaDeSessao>): LinhaDeSessao {
     deployCheckedAt: null,
     mergeFailures: 0,
     mergeLastFailedAt: null,
+    closedAt: null,
     ...over,
   }
 }
