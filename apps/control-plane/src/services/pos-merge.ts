@@ -72,8 +72,9 @@ export function sessoesParaAcompanharPublicacao<T extends SessaoParaVarredura>(
       sessao.deployState !== null &&
       ESTADOS_FINAIS.has(sessao.deployState) &&
       sessao.closedAt !== null
-    )
+    ) {
       return false
+    }
     if (!sessao.deployCheckedAt) return true
     return agora.getTime() - sessao.deployCheckedAt.getTime() >= CADENCIA_DE_PUBLICACAO_MS
   })

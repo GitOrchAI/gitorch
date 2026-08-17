@@ -565,6 +565,17 @@ const ROLE_TITLES: Record<CadenceRole, string> = {
   qa: 'Quality Assurance',
 }
 
+// Troca todo `<`/`>` do texto do cliente por entidade — nenhuma tag (a de
+// fechamento real, ou qualquer variação de caixa/espaço que um texto
+// malicioso tente forjar, incluindo uma tentativa de REABRIR
+// `<client_request>`) sobrevive dentro do bloco. Só afeta o texto ENTRE as
+// tags reais, que este módulo escreve — a issue no GitHub
+// (`services/desejo.ts`) continua recebendo o texto original, sem
+// escapes: a marcação é só para o PROMPT, nunca para o que uma pessoa lê.
+function neutralizarDelimitador(texto: string): string {
+  return texto.replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
 /**
  * Delimita o texto LIVRE do cliente (o desejo, `services/desejo.ts`) dentro
  * de um bloco de contexto de PROMPT — nunca do corpo da issue no GitHub, que
@@ -599,17 +610,6 @@ const ROLE_TITLES: Record<CadenceRole, string> = {
  * prompt. É o desvio clássico de delimitador, e derrota exatamente a
  * proteção que esta função existe para dar.
  */
-function neutralizarDelimitador(texto: string): string {
-  // Troca todo `<`/`>` do texto do cliente por entidade — nenhuma tag (a de
-  // fechamento real, ou qualquer variação de caixa/espaço que um texto
-  // malicioso tente forjar, incluindo uma tentativa de REABRIR
-  // `<client_request>`) sobrevive dentro do bloco. Só afeta o texto ENTRE as
-  // tags reais, que este módulo escreve — a issue no GitHub
-  // (`services/desejo.ts`) continua recebendo o texto original, sem
-  // escapes: a marcação é só para o PROMPT, nunca para o que uma pessoa lê.
-  return texto.replace(/</g, '&lt;').replace(/>/g, '&gt;')
-}
-
 export function wrapClientRequest(texto: string): string {
   return [
     '<client_request>',
