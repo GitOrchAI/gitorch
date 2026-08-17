@@ -35,7 +35,9 @@ function ehIpv4Interno(host: string): boolean {
   if (a === 0) return true // "esta rede" (RFC 5735)
   if (a === 127) return true // loopback
   if (a === 10) return true // RFC 1918
-  if (a === 100 && b >= 64 && b <= 127) return true // 100.64.0.0/10, NAT de operadora (RFC 6598) — nunca roteável na internet pública
+  // A faixa citada na linha abaixo é a da RFC 6598, escrita para documentar o que
+  // esta guarda BLOQUEIA — não é endereço de máquina nossa.
+  if (a === 100 && b >= 64 && b <= 127) return true // 100.64.0.0/10, NAT de operadora (RFC 6598) — nunca roteável na internet pública // infra-guard-allow
   if (a === 172 && b >= 16 && b <= 31) return true // RFC 1918
   if (a === 192 && b === 168) return true // RFC 1918
   if (a === 192 && b === 0 && c === 0) return true // 192.0.0.0/24, atribuições de protocolo IETF (RFC 6890)
