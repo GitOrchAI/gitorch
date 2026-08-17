@@ -1,3 +1,5 @@
+import { CredentialDecryptError } from '../lib/credential-crypto.js'
+
 /**
  * Renovação automática do token do GitHub (F8).
  *
@@ -22,7 +24,12 @@
  * (credential-crypto.ts) e chama trocarRefreshTokenNoGithub. Decifrar é um
  * efeito com segredo próprio (a chave de cifragem), do mesmo jeito que
  * `provarEscrita` é quem sabe montar a credencial em reconferencia-de-acesso.ts
- * — a orquestração daqui não precisa, e não deve, saber como.
+ * — a orquestração daqui não precisa, e não deve, saber como. O import de
+ * `CredentialDecryptError` abaixo não quebra essa regra: é só o tipo do erro
+ * que `trocar` pode lançar, usado para DISTINGUIR causas (ver o catch em
+ * `renovarTokensGithubVencendo`), do mesmo jeito que reconferencia-de-acesso.ts
+ * importa `CredencialDoGithubInvalidaError`/`AcessoNaoVerificavelError` de
+ * acesso-ao-repositorio.ts sem fazer a chamada de rede ela mesma.
  *
  * A ARMADILHA DESTA FASE — por que a ordem trocar → salvarSucesso importa:
  * o GitHub invalida o par antigo (access_token E refresh_token) NO INSTANTE
@@ -47,6 +54,23 @@
  *      invalidou. O par novo, nesse caso, se perde de verdade — não há como
  *      reobtê-lo sem um login novo —, mas o ESTADO gravado nunca mente sobre
  *      isso.
+ *
+ * DUAS CAUSAS DIFERENTES ATRÁS DE `trocar`, TRATADAS DIFERENTE: "o GitHub
+ * recusou o cartão" (RefreshTokenGithubInvalidoError — o refresh token
+ * morreu/foi revogado) e "não consegui LER o que está cifrado no banco"
+ * (CredentialDecryptError — a chave de cifra do servidor mudou, ou o dado
+ * corrompeu) são operacionalmente opostas: a primeira é problema do
+ * CLIENTE (só resolve reconectando no GitHub); a segunda é problema NOSSO
+ * (reconectar não resolve nada — o refresh token do cliente continua bom).
+ * Confundir as duas faz o produto culpar o cliente por uma falha de
+ * infraestrutura nossa. Por isso `renovarTokensGithubVencendo` só chama
+ * `marcarPrecisaReconectar` (o "precisa reconectar" citado acima) para a
+ * primeira causa; a segunda vira `resumo.falhasDeDecifragem`, sem tocar no
+ * status da conexão. Quando a Task 5 compuser `trocar` = decrypt +
+ * trocarRefreshTokenNoGithub, ela PRECISA deixar `CredentialDecryptError`
+ * atravessar sem reembalar (nunca capturar e relançar como
+ * RefreshTokenGithubInvalidoError ou Error genérico) — senão ela cai aqui
+ * como se o GitHub tivesse recusado, por engano.
  */
 
 /** Renova com folga: 15 min antes do access_token vencer, nunca em cima da hora. */
@@ -223,6 +247,14 @@ export interface DependenciasDaRenovacaoGithub {
    * decryptCredential, credential-crypto.ts) é responsabilidade de quem
    * implementa esta função, não desta orquestração. Quem liga isto ao
    * relógio compõe: decifrar → trocarRefreshTokenNoGithub.
+   *
+   * IMPORTANTE PARA QUEM MONTA ISTO (Task 5): se `decryptCredential` lançar
+   * `CredentialDecryptError`, deixe o erro atravessar sem capturar/reembalar.
+   * `renovarTokensGithubVencendo` trata esse erro DIFERENTE de
+   * `RefreshTokenGithubInvalidoError` (ver DUAS CAUSAS DIFERENTES no topo do
+   * arquivo) — reembalar os dois no mesmo tipo de erro apaga a distinção e
+   * faz um problema nosso (chave/dado) virar um "reconecte sua conta" para
+   * o cliente, que não resolve nada.
    */
   trocar: (refreshTokenArmazenado: string) => Promise<ResultadoDaTrocaComGithub>
   /** Persiste o novo par — o chamador reusa connectGitHubToken. Chamado
@@ -237,7 +269,13 @@ export interface DependenciasDaRenovacaoGithub {
 
 export interface ResumoDaRenovacaoGithub {
   renovados: number
+  /** GitHub recusou a troca (ou a gravação falhou depois de aceita) —
+   *  problema do CLIENTE, só resolve reconectando. */
   precisamReconectar: number
+  /** Não foi possível DECIFRAR o refresh token guardado (chave do servidor
+   *  trocada ou dado corrompido) — problema NOSSO; reconectar no GitHub não
+   *  resolve, então essas conexões NUNCA entram em `precisamReconectar`. */
+  falhasDeDecifragem: number
 }
 
 /**
@@ -251,7 +289,11 @@ export async function renovarTokensGithubVencendo(
   deps: DependenciasDaRenovacaoGithub
 ): Promise<ResumoDaRenovacaoGithub> {
   const agora = deps.agora ?? new Date()
-  const resumo: ResumoDaRenovacaoGithub = { renovados: 0, precisamReconectar: 0 }
+  const resumo: ResumoDaRenovacaoGithub = {
+    renovados: 0,
+    precisamReconectar: 0,
+    falhasDeDecifragem: 0,
+  }
 
   let conexoes: ConexaoGithubElegivel[]
   try {
@@ -295,6 +337,22 @@ export async function renovarTokensGithubVencendo(
       await deps.salvarSucesso(conexao.userId, resultado)
       resumo.renovados += 1
     } catch (err) {
+      // CredentialDecryptError é a exceção à regra "qualquer falha aqui vira
+      // precisa-reconectar": significa que não conseguimos LER o refresh
+      // token cifrado (chave do servidor mudou ou o dado corrompeu) — o
+      // refresh token do cliente no GitHub continua bom, só não conseguimos
+      // decifrar o que está guardado. Reconectar não resolve nada nesse
+      // caso, então NUNCA chama marcarPrecisaReconectar aqui (ver DUAS
+      // CAUSAS DIFERENTES no topo do arquivo); fica só como alerta
+      // operacional, contado à parte.
+      if (err instanceof CredentialDecryptError) {
+        resumo.falhasDeDecifragem += 1
+        deps.onWarn?.(
+          `renovação do token GitHub falhou para ${conexao.userId} por falha de DECIFRAGEM ` +
+            `(problema nosso, reconectar não ajuda): ${textoDoErro(err)}`
+        )
+        continue
+      }
       resumo.precisamReconectar += 1
       deps.onWarn?.(`renovação do token GitHub falhou para ${conexao.userId}: ${textoDoErro(err)}`)
       await marcarComAviso(deps, conexao.userId, textoDoErro(err))
