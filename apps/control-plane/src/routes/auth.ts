@@ -93,10 +93,18 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
         expiresIn: OAUTH_STATE_LIFETIME,
       })
 
+      // Sem `&scope=`: GITHUB_CLIENT_ID é um GitHub App (client_id Iv23...)
+      // — Apps IGNORAM o parâmetro `scope` da URL de autorização (achado
+      // F8). As permissões de um GitHub App vêm de outro lugar: "Account
+      // permissions" configuradas na própria página do App no GitHub
+      // (email, etc.) e as permissões de REPOSITÓRIO da instalação (ver
+      // routes/github-app-install.ts). O `scope=read:user user:email repo`
+      // que existia aqui parecia controlar algo — não controlava nada; só
+      // confundia quem lesse o código achando que dava para restringir
+      // acesso por esta URL.
       const githubAuthUrl =
         `https://github.com/login/oauth/authorize?client_id=${clientId}` +
         `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-        `&scope=read:user%20user:email%20repo` +
         `&state=${encodeURIComponent(state)}`
 
       return reply.redirect(githubAuthUrl)
@@ -155,12 +163,42 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
         }),
       })
 
-      const tokenData = (await tokenResponse.json()) as { access_token?: string; error?: string }
+      // F8: GitHub Apps com "User-to-server token expiration" LIGADO (o
+      // nosso caso) devolvem, junto do access_token, um refresh_token e o
+      // tempo de vida de cada um (expires_in ~8h, refresh_token_expires_in
+      // ~6 meses). Antes desta task esses três campos eram lidos e
+      // IGNORADOS — o token expirava sozinho em ~8h e nada renovava.
+      const tokenData = (await tokenResponse.json()) as {
+        access_token?: string
+        error?: string
+        refresh_token?: string
+        expires_in?: number
+        refresh_token_expires_in?: number
+      }
       if (tokenData.error || !tokenData.access_token) {
         return reply.code(400).send({ error: tokenData.error || 'Failed to exchange OAuth code' })
       }
 
       const githubToken = tokenData.access_token
+      const agoraDoLogin = new Date()
+      // undefined quando o App não tem token expirável ligado (ou é um
+      // OAuth App clássico) — connectGitHubToken grava expiresAt/refreshToken
+      // só quando presentes; ausência aqui preserva o comportamento anterior
+      // (token sem prazo, nunca marcado para renovar).
+      const refreshInfo =
+        tokenData.refresh_token && typeof tokenData.expires_in === 'number'
+          ? {
+              refreshToken: tokenData.refresh_token,
+              expiresAt: new Date(agoraDoLogin.getTime() + tokenData.expires_in * 1000),
+              ...(typeof tokenData.refresh_token_expires_in === 'number'
+                ? {
+                    refreshTokenExpiresAt: new Date(
+                      agoraDoLogin.getTime() + tokenData.refresh_token_expires_in * 1000
+                    ),
+                  }
+                : {}),
+            }
+          : undefined
 
       // Fetch user details from GitHub
       const userResponse = await fetch('https://api.github.com/user', {
@@ -291,7 +329,13 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
       // Persiste o token do GitHub cifrado por usuário (se o serviço estiver
       // disponível — ausente apenas em testes de rota isolados).
       if (app.engineConnections) {
-        await app.engineConnections.connectGitHubToken(userId, githubToken)
+        // Conjunto de argumentos DIFERENTE conforme haja ou não par de
+        // renovação — nunca um 3º argumento `undefined` explícito, que
+        // teria arity 3 e quebraria qualquer chamador que espera
+        // exatamente `(userId, token)`.
+        await (refreshInfo
+          ? app.engineConnections.connectGitHubToken(userId, githubToken, refreshInfo)
+          : app.engineConnections.connectGitHubToken(userId, githubToken))
       }
 
       // Front (GitHub Pages/NEXT_PUBLIC_API_URL) e control-plane vivem em
