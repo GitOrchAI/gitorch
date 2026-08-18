@@ -192,7 +192,7 @@ describe('EngineConnectionService', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const svc = new EngineConnectionService(prisma as any)
 
-    const expiresAt = new Date('2026-08-17T20:00:00Z')
+    const expiresAt = new Date(Date.now() + 8 * 3600 * 1000)
     const refreshTokenExpiresAt = new Date('2027-02-13T12:00:00Z')
     await svc.connectGitHubToken('user_refresh', 'gh_access_novo', {
       refreshToken: 'gh_refresh_novo',
