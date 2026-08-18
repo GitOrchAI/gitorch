@@ -115,6 +115,14 @@ describe('rememberRepoContext (ponte GitHub → Cortex)', () => {
       ],
       porSeveridade: { critical: 1, high: 0, medium: 0, low: 0 },
       naoVerificado: [],
+      vigilanciaLigada: true,
+      correcaoAutomaticaLigada: null,
+      codeScanningHabilitado: null,
+      codeScanningMensagem: null,
+      alertasDeCodigo: [],
+      secretScanningHabilitado: null,
+      secretScanningMensagem: null,
+      alertasDeSegredo: [],
     }
     const context: CollectedRepoContext = {
       board: { id: 'PVT_1', number: 5, created: false },
@@ -140,6 +148,14 @@ describe('rememberRepoContext (ponte GitHub → Cortex)', () => {
       alertas: [],
       porSeveridade: { critical: 0, high: 0, medium: 0, low: 0 },
       naoVerificado: ['configuracao', 'alertas'],
+      vigilanciaLigada: null,
+      correcaoAutomaticaLigada: null,
+      codeScanningHabilitado: null,
+      codeScanningMensagem: null,
+      alertasDeCodigo: [],
+      secretScanningHabilitado: null,
+      secretScanningMensagem: null,
+      alertasDeSegredo: [],
     }
     const context: CollectedRepoContext = {
       board: { id: 'PVT_1', number: 5, created: false },

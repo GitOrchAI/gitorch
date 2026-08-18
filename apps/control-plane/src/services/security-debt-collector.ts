@@ -2,9 +2,14 @@
 // assume o trabalho. É o que transforma "atualizar dependência" de intenção
 // vaga em tarefa com pacote, versão e gravidade.
 //
-// Todas as rotas usadas aqui recusam a credencial do produto (403) e exigem a
-// credencial do cliente. Por isso "não consegui olhar" é um estado de primeira
-// classe: dizer zero alertas quando ninguém olhou seria mentir sobre segurança.
+// A vigilância do Dependabot (vigilanciaLigada) é inferida da PRÓPRIA resposta
+// de /dependabot/alerts — sem chamar /vulnerability-alerts ou
+// /automated-security-fixes que exigem permissões de Administração. Um 200
+// confirma que a vigilância está ativa; um 403 com a mensagem literal do GitHub
+// confirma que está desligada; qualquer outra situação vira naoVerificado.
+//
+// Por isso "não consegui olhar" é um estado de primeira classe: dizer zero
+// alertas quando ninguém olhou seria mentir sobre segurança.
 
 const GITHUB_API = 'https://api.github.com'
 
@@ -127,11 +132,43 @@ export interface DividaDeSeguranca {
    *  do GitHub — a paginação foi interrompida ANTES de mandar a credencial
    *  do cliente para lá; ver `apontaParaApiDoGithub`),
    *  'severidade-desconhecida' (a API devolveu uma severidade fora das
-   *  quatro conhecidas — tratada como 'critical' por segurança) e
+   *  quatro conhecidas — tratada como 'critical' por segurança),
    *  'repositorio-invalido' (o valor de `repository` não tem o formato
    *  `dono/repo` que o GitHub aceita — nenhuma chamada de rede é feita
-   *  nesse caso). */
+   *  nesse caso) e 'vigilancia' (não foi possível determinar se o
+   *  Dependabot está ativo — 403 sem a mensagem de desligado). */
   naoVerificado: string[]
+  /** true=vigilância ativa (rota respondeu 200); false=desligada (403 com
+   *  mensagem literal do GitHub); null=não consegui determinar. */
+  vigilanciaLigada: boolean | null
+  /** Sempre null — a rota exige Administração, por decisão do dono não
+   *  chamamos /automated-security-fixes. */
+  correcaoAutomaticaLigada: boolean | null
+  /** true=Advanced Security ligado e coletado; false=fato conhecido;
+   *  null=não consegui determinar. (Task 2 vai preencher.) */
+  codeScanningHabilitado: boolean | null
+  codeScanningMensagem: string | null
+  alertasDeCodigo: AlertaDeCodigo[]
+  secretScanningHabilitado: boolean | null
+  secretScanningMensagem: string | null
+  alertasDeSegredo: AlertaDeSegredo[]
+}
+
+export interface AlertaDeCodigo {
+  numero: number
+  regra: string
+  severidade: string
+  arquivo: string
+  url: string
+  criadoEm: string
+}
+
+export interface AlertaDeSegredo {
+  numero: number
+  tipoDeSegredo: string
+  publicamenteVazado: boolean
+  url: string
+  criadoEm: string
 }
 
 interface AlertaBruto {
@@ -169,6 +206,14 @@ export async function coletarDividaDeSeguranca(deps: {
       alertas: [],
       porSeveridade: { critical: 0, high: 0, medium: 0, low: 0 },
       naoVerificado,
+      vigilanciaLigada: null,
+      correcaoAutomaticaLigada: null,
+      codeScanningHabilitado: null,
+      codeScanningMensagem: null,
+      alertasDeCodigo: [],
+      secretScanningHabilitado: null,
+      secretScanningMensagem: null,
+      alertasDeSegredo: [],
     }
   }
 
@@ -203,21 +248,51 @@ export async function coletarDividaDeSeguranca(deps: {
 
   const alertas: AlertaDeSeguranca[] = []
   let severidadeDesconhecida = false
+  let vigilanciaLigada: boolean | null = null
+  // Nenhuma chamada para /vulnerability-alerts ou /automated-security-fixes:
+  // ambas exigem permissões de Administrador. A vigilância é inferida da
+  // PRÓPRIA resposta de /dependabot/alerts:
+  //   • 200 → vigilância ativa
+  //   • 403 com a mensagem literal do GitHub → desligada (fato conhecido,
+  //     não vai para naoVerificado)
+  //   • qualquer outro 403 ou erro → null + naoVerificado['vigilancia','alertas']
   // Esta rota pagina por CURSOR, não por número: `?page=N` é recusado com 400
   // ("Pagination using the `page` parameter is not supported"). A URL da
   // próxima página vem pronta no cabeçalho Link (rel="next") — segui-lo é a
   // única forma correta de avançar; ausência dele é a última página.
   let proximaUrl: string | null =
     `${GITHUB_API}/repos/${deps.repository}/dependabot/alerts?state=open&per_page=100`
+  const MSG_DESLIGADO = 'Dependabot alerts are disabled for this repository.'
   for (let pagina = 1; pagina <= 10 && proximaUrl !== null; pagina++) {
     let lote: AlertaBruto[]
     let linkHeader: string | null
     try {
       const resp = await pedirUrl(proximaUrl)
       if (!resp.ok) {
-        naoVerificado.push('alertas')
+        if (resp.status === 403) {
+          // Tenta ler o corpo para distinguir "desligado" de "sem permissão"
+          let msgRecebida: string | undefined
+          try {
+            const corpo = (await resp.json()) as { message?: string }
+            msgRecebida = corpo.message
+          } catch {
+            /* body ilegível — trata como sem mensagem */
+          }
+          if (msgRecebida === MSG_DESLIGADO) {
+            // Fato conhecido: vigilância está desligada. Não vai para naoVerificado.
+            vigilanciaLigada = false
+          } else {
+            // 403 com outra mensagem = não conseguimos determinar o estado.
+            naoVerificado.push('vigilancia')
+            naoVerificado.push('alertas')
+          }
+        } else {
+          naoVerificado.push('alertas')
+        }
         break
       }
+      // 200 na primeira página = vigilância ativa (confirmado pela rota de alertas)
+      if (pagina === 1) vigilanciaLigada = true
       lote = (await resp.json()) as AlertaBruto[]
       linkHeader = resp.headers.get('link')
     } catch {
@@ -275,6 +350,14 @@ export async function coletarDividaDeSeguranca(deps: {
     alertas,
     porSeveridade,
     naoVerificado,
+    vigilanciaLigada,
+    correcaoAutomaticaLigada: null,
+    codeScanningHabilitado: null,
+    codeScanningMensagem: null,
+    alertasDeCodigo: [],
+    secretScanningHabilitado: null,
+    secretScanningMensagem: null,
+    alertasDeSegredo: [],
   }
 }
 

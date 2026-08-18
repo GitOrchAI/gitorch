@@ -71,9 +71,9 @@ describe('coletarDividaDeSeguranca', () => {
   })
 
   // Credencial sem alcance responde 403. Isso NÃO é "zero alertas": é "não
-  // consegui olhar". Confundir os dois faria a esteira jurar que o repositório
-  // está limpo quando ninguém olhou.
-  it('sem alcance para a rota, registra que não verificou — nunca finge zero', async () => {
+  // consegui olhar". 403 sem a mensagem literal de desligado resulta em
+  // naoVerificado com 'vigilancia' e 'alertas' — nunca finge zero.
+  it('sem alcance para a rota, registra vigilancia e alertas como nao verificados', async () => {
     const fetchImpl = githubDeMentira({
       '/repos/dono/repo/contents/.github/dependabot.yml': { status: 200, corpo: { name: 'x' } },
       '/repos/dono/repo/dependabot/alerts?state=open&per_page=100': { status: 403 },
@@ -82,7 +82,9 @@ describe('coletarDividaDeSeguranca', () => {
     const d = await coletarDividaDeSeguranca({ repository: 'dono/repo', token: 't', fetchImpl })
 
     expect(d.alertas).toEqual([])
-    expect(d.naoVerificado).toEqual(['alertas'])
+    expect(d.naoVerificado).toContain('vigilancia')
+    expect(d.naoVerificado).toContain('alertas')
+    expect(d.vigilanciaLigada).toBeNull()
   })
 
   // GitHub pagina esta rota por CURSOR, não por número (ver teste seguinte).
@@ -506,5 +508,64 @@ describe('coletarDividaDeSeguranca', () => {
         expect(d.temConfiguracao).toBe(false)
       })
     }
+  })
+  // --- TASK 1 DA FASE 10 ---
+  // vigilanciaLigada deve ser inferida da PROPRIA rota de alertas.
+
+  it('nunca chama as rotas que exigem Administracao - vigilancia vem da propria rota de alertas', async () => {
+    const fetchImpl = githubDeMentira({
+      '/repos/dono/repo/contents/.github/dependabot.yml': { status: 404 },
+      '/repos/dono/repo/dependabot/alerts?state=open&per_page=100': { status: 200, corpo: [] },
+    })
+    const d = await coletarDividaDeSeguranca({ repository: 'dono/repo', token: 't', fetchImpl })
+    const chamadas = (fetchImpl as unknown as { mock: { calls: unknown[][] } }).mock.calls.map(
+      (c) => String(c[0])
+    )
+    expect(chamadas.some((u) => u.includes('/vulnerability-alerts'))).toBe(false)
+    expect(chamadas.some((u) => u.includes('/automated-security-fixes'))).toBe(false)
+    expect(d.vigilanciaLigada).toBe(true)
+    expect(d.correcaoAutomaticaLigada).toBeNull()
+  })
+
+  it('vigilancia desligada e inferida da PROPRIA resposta de alertas (403 com mensagem literal do GitHub)', async () => {
+    const fetchImpl = githubDeMentira({
+      '/repos/dono/repo/contents/.github/dependabot.yml': { status: 404 },
+      '/repos/dono/repo/dependabot/alerts?state=open&per_page=100': {
+        status: 403,
+        corpo: { message: 'Dependabot alerts are disabled for this repository.' },
+      },
+    })
+    const d = await coletarDividaDeSeguranca({ repository: 'dono/repo', token: 't', fetchImpl })
+    expect(d.vigilanciaLigada).toBe(false)
+    expect(d.alertas).toEqual([])
+    expect(d.naoVerificado).toEqual([])
+  })
+
+  it('403 SEM a mensagem de desligado e naoVerificado - nunca vira desligado por adivinhacao', async () => {
+    const fetchImpl = githubDeMentira({
+      '/repos/dono/repo/contents/.github/dependabot.yml': { status: 404 },
+      '/repos/dono/repo/dependabot/alerts?state=open&per_page=100': {
+        status: 403,
+        corpo: { message: 'Resource not accessible by integration' },
+      },
+    })
+    const d = await coletarDividaDeSeguranca({ repository: 'dono/repo', token: 't', fetchImpl })
+    expect(d.vigilanciaLigada).toBeNull()
+    expect(d.naoVerificado).toContain('vigilancia')
+    expect(d.naoVerificado).toContain('alertas')
+  })
+
+  it('retorna os campos de esqueleto de code e secret scanning com valores neutros', async () => {
+    const fetchImpl = githubDeMentira({
+      '/repos/dono/repo/contents/.github/dependabot.yml': { status: 404 },
+      '/repos/dono/repo/dependabot/alerts?state=open&per_page=100': { status: 200, corpo: [] },
+    })
+    const d = await coletarDividaDeSeguranca({ repository: 'dono/repo', token: 't', fetchImpl })
+    expect(d.codeScanningHabilitado).toBeNull()
+    expect(d.codeScanningMensagem).toBeNull()
+    expect(d.alertasDeCodigo).toEqual([])
+    expect(d.secretScanningHabilitado).toBeNull()
+    expect(d.secretScanningMensagem).toBeNull()
+    expect(d.alertasDeSegredo).toEqual([])
   })
 })
