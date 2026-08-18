@@ -4,7 +4,6 @@ import { generateKeyPairSync, randomBytes } from 'node:crypto'
 import { setupRoutes, TETO_DE_PROVAS_DA_TELA } from './setup.js'
 import type { EngineConnectionService } from '../services/engine-connection.js'
 import { resetAppTokenCache } from '../services/github-app-token.js'
-import { encryptCredential } from '../lib/credential-crypto.js'
 
 /** Permissões do portador do token, como o GitHub as devolve. */
 const PODE_ESCREVER = { admin: true, maintain: true, push: true, triage: true, pull: true }
@@ -992,154 +991,6 @@ describe('POST /api/v1/setup/submit — coleta de contexto: board Projects V2 n�
   })
 })
 
-// A leitura da credencial do cliente (lerCredencialDoProjeto, chamada pela
-// coleta de contexto) é por repositório — uma chave rotacionada ou um
-// envelope corrompido num repo não pode custar o board/PRs/issues de outro
-// repo no MESMO submit. Antes desta suíte a chamada não tinha proteção
-// própria e a exceção abortava o laço inteiro.
-describe('POST /api/v1/setup/submit — leitura de credencial de um repo não derruba a coleta dos demais', () => {
-  let app: ReturnType<typeof Fastify>
-  const originalFetch = global.fetch
-  let byWingId: Map<string, { id: string; wingId: string; name: string; runtimeConfig: unknown }>
-  let cortexWriteDrawer: ReturnType<typeof vi.fn>
-
-  // Só GraphQL — sem credencial do cliente resolvida (throw ou null), as
-  // rotas REST de segurança nem são chamadas (repo-context-collector.ts:
-  // sem clientToken, coletarDividaDeSeguranca é pulado).
-  function stubGithubGraphQL(): typeof fetch {
-    return vi.fn(async (url: string, init: { body: string }) => {
-      const lista = respostaDaListaDeRepos(url, ['octocat/repo1', 'octocat/repo2'])
-      if (lista) return lista
-      const body = JSON.parse(init.body) as { query: string }
-      if (body.query.includes('RepoOwner')) {
-        return new Response(
-          JSON.stringify({
-            data: { repository: { owner: { id: 'U_owner', __typename: 'User' } } },
-          }),
-          { status: 200 }
-        )
-      }
-      if (body.query.includes('CreateProjectV2')) {
-        return new Response(
-          JSON.stringify({
-            data: { createProjectV2: { projectV2: { id: 'PVT_created', number: 42 } } },
-          }),
-          { status: 200 }
-        )
-      }
-      if (body.query.includes('RepoContext')) {
-        return new Response(
-          JSON.stringify({
-            data: { repository: { pullRequests: { nodes: [] }, issues: { nodes: [] } } },
-          }),
-          { status: 200 }
-        )
-      }
-      throw new Error(`stub sem handler para a query:\n${body.query}`)
-    }) as unknown as typeof fetch
-  }
-
-  beforeEach(async () => {
-    byWingId = new Map()
-    let nextId = 1
-    cortexWriteDrawer = vi.fn().mockResolvedValue(undefined)
-
-    app = Fastify()
-    app.decorate('cortex', { writeDrawer: cortexWriteDrawer } as never)
-    app.decorate('engineConnections', {
-      list: async () => [
-        {
-          runtime: 'claude',
-          status: 'connected',
-          modelsRefreshedAt: null,
-          lastValidatedAt: null,
-          lastError: null,
-        },
-      ],
-      getRawGithubToken: async () => 'gh_test_token',
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any)
-    app.decorate('prisma', {
-      user: {
-        findUnique: vi
-          .fn()
-          .mockResolvedValue({ id: 'owner_1', email: 'octocat@example.test', plan: null }),
-      },
-      plan: { findUnique: vi.fn().mockResolvedValue({ id: 'pro', maxProjects: 2 }) },
-      project: {
-        count: vi.fn().mockResolvedValue(0),
-        findFirst: vi.fn(async ({ where }: { where: { wingId: string } }) => {
-          return byWingId.get(where.wingId) ?? null
-        }),
-        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
-          const rec = {
-            id: `proj_${nextId++}`,
-            wingId: data['wingId'] as string,
-            name: data['name'] as string,
-            runtimeConfig: data['runtimeConfig'],
-          }
-          byWingId.set(rec.wingId, rec)
-          return rec
-        }),
-        update: vi.fn(
-          async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
-            const rec = [...byWingId.values()].find((p) => p.id === where.id)
-            if (rec) Object.assign(rec, data)
-            return rec
-          }
-        ),
-        // repo1: a leitura da credencial lança (chave rotacionada / envelope
-        // corrompido — cenário real). repo2: sem credencial guardada (null).
-        // O que a suíte prova não é o valor devolvido, é que a exceção do
-        // repo1 não impede o repo2 de ser processado.
-        findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
-          const rec = [...byWingId.values()].find((p) => p.id === where.id)
-          if (rec?.wingId === 'octocat/repo1') {
-            throw new Error('credencial ilegível: envelope corrompido')
-          }
-          return null
-        }),
-      },
-      apiKey: { create: vi.fn().mockResolvedValue({}) },
-      mission: { create: vi.fn().mockResolvedValue({}) },
-      projectSchedule: {
-        findMany: vi.fn().mockResolvedValue([]),
-        count: vi.fn().mockResolvedValue(0),
-        create: vi.fn().mockResolvedValue({}),
-      },
-      clientEnvironment: {
-        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-        findMany: vi.fn().mockResolvedValue([]),
-        findFirst: vi.fn().mockResolvedValue(null),
-      },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any)
-    app.addHook('preHandler', async (request: FastifyRequest) => {
-      request.user = { id: 'owner_1', wingId: 'octocat', email: 'octocat@example.test' }
-    })
-    await setupRoutes(app)
-    await app.ready()
-  })
-
-  afterEach(() => {
-    global.fetch = originalFetch
-  })
-
-  it('repo1 com credencial ilegível: repo2 ainda ganha board/PRs/issues na memória', async () => {
-    global.fetch = stubGithubGraphQL()
-
-    const res = await app.inject({
-      method: 'POST',
-      url: '/api/v1/setup/submit',
-      payload: { repos: ['octocat/repo1', 'octocat/repo2'], engines: ['claude-code'], plan: 'pro' },
-    })
-
-    expect(res.statusCode).toBe(200)
-    const drawerIds = cortexWriteDrawer.mock.calls.map((c) => (c[0] as { id: string }).id)
-    expect(drawerIds).toContain('github:octocat/repo2:board')
-  })
-})
-
 describe('POST /api/v1/setup/submit — plano autoritativo (paid-intent, ainda não pago)', () => {
   let app: ReturnType<typeof Fastify>
   const originalFetch = global.fetch
@@ -1590,21 +1441,16 @@ describe('POST /api/v1/setup/credencial-do-cliente', () => {
   })
 })
 
-// A dívida de segurança só é alcançável com a credencial do CLIENTE (o App do
-// produto leva 403 nessas rotas) — sem repassar o que
-// /setup/credencial-do-cliente guardou até collectAndRememberRepoContext, ela
-// nunca é coletada de verdade.
-describe('POST /api/v1/setup/submit — coleta de contexto usa a credencial do cliente guardada', () => {
+describe('POST /api/v1/setup/submit — coleta de contexto usa a instalação do App no repositório', () => {
   let app: ReturnType<typeof Fastify>
   const originalFetch = global.fetch
   const originalKey = process.env['GITORCH_CREDENTIAL_KEY']
+  const originalAppId = process.env['GITHUB_APP_ID']
+  const originalAppKey = process.env['GITHUB_APP_PRIVATE_KEY']
   let cortexWriteDrawer: ReturnType<typeof vi.fn>
-  let projectFindUnique: ReturnType<typeof vi.fn>
 
-  // Igual ao stubGithubGraphQL usado na suíte de idempotência do board, mas
-  // também roteia as chamadas REST (sem corpo JSON) que
-  // coletarDividaDeSeguranca faz contra as rotas de segurança.
-  function stubGithubGraphQLAndRest(): typeof fetch {
+  function stubGithubGraphQLAndRest(opts: { installationId?: number } = {}): typeof fetch {
+    const installationId = opts.installationId ?? 555
     return vi.fn(async (url: string, init?: { body?: string }) => {
       const lista = respostaDaListaDeRepos(url, ['octocat/repo'])
       if (lista) return lista
@@ -1634,12 +1480,23 @@ describe('POST /api/v1/setup/submit — coleta de contexto usa a credencial do c
             { status: 200 }
           )
         }
-        throw new Error(`stub sem handler para a query GraphQL:\n${body.query}`)
+        throw new Error(`stub sem handler para a query GraphQL:
+${body.query}`)
       }
       const caminho = String(url).replace('https://api.github.com', '')
+      if (caminho === '/repos/octocat/repo/installation') {
+        return new Response(JSON.stringify({ id: installationId }), { status: 200 })
+      }
+      if (caminho === `/app/installations/${installationId}/access_tokens`) {
+        return new Response(
+          JSON.stringify({
+            token: 'ghs_installation_token',
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          }),
+          { status: 200 }
+        )
+      }
       const mapa: Record<string, { status: number; corpo?: unknown }> = {
-        '/repos/octocat/repo/vulnerability-alerts': { status: 204 },
-        '/repos/octocat/repo/automated-security-fixes': { status: 404 },
         '/repos/octocat/repo/contents/.github/dependabot.yml': { status: 404 },
         '/repos/octocat/repo/dependabot/alerts?state=open&per_page=100': { status: 200, corpo: [] },
       }
@@ -1652,12 +1509,15 @@ describe('POST /api/v1/setup/submit — coleta de contexto usa a credencial do c
 
   beforeEach(async () => {
     process.env['GITORCH_CREDENTIAL_KEY'] = randomBytes(32).toString('hex')
+    const { privateKey } = generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    })
+    process.env['GITHUB_APP_ID'] = '999'
+    process.env['GITHUB_APP_PRIVATE_KEY'] = privateKey
+    resetAppTokenCache()
     cortexWriteDrawer = vi.fn().mockResolvedValue(undefined)
-    // Devolve uma credencial de cliente guardada por padrão; os testes
-    // individuais sobrescrevem para o caso "sem credencial".
-    projectFindUnique = vi
-      .fn()
-      .mockResolvedValue({ encryptedClientToken: encryptCredential('tok-cliente-guardado') })
 
     app = Fastify()
     app.decorate('cortex', { writeDrawer: cortexWriteDrawer } as never)
@@ -1691,7 +1551,6 @@ describe('POST /api/v1/setup/submit — coleta de contexto usa a credencial do c
           runtimeConfig: data['runtimeConfig'],
         })),
         update: vi.fn().mockResolvedValue({}),
-        findUnique: projectFindUnique,
       },
       apiKey: { create: vi.fn().mockResolvedValue({}) },
       mission: { create: vi.fn().mockResolvedValue({}) },
@@ -1718,9 +1577,13 @@ describe('POST /api/v1/setup/submit — coleta de contexto usa a credencial do c
     global.fetch = originalFetch
     if (originalKey === undefined) delete process.env['GITORCH_CREDENTIAL_KEY']
     else process.env['GITORCH_CREDENTIAL_KEY'] = originalKey
+    if (originalAppId === undefined) delete process.env['GITHUB_APP_ID']
+    else process.env['GITHUB_APP_ID'] = originalAppId
+    if (originalAppKey === undefined) delete process.env['GITHUB_APP_PRIVATE_KEY']
+    else process.env['GITHUB_APP_PRIVATE_KEY'] = originalAppKey
   })
 
-  it('projeto com credencial do cliente guardada: a dívida de segurança é coletada e vira gaveta', async () => {
+  it('com o App instalado no repositório: a dívida de segurança é coletada e vira gaveta', async () => {
     global.fetch = stubGithubGraphQLAndRest()
 
     const res = await app.inject({
@@ -1734,9 +1597,14 @@ describe('POST /api/v1/setup/submit — coleta de contexto usa a credencial do c
     expect(drawerIds).toContain('github:octocat/repo:divida-de-seguranca')
   })
 
-  it('projeto sem credencial do cliente guardada: submit continua funcionando, sem gaveta de dívida', async () => {
-    projectFindUnique.mockResolvedValue({ encryptedClientToken: null })
-    global.fetch = stubGithubGraphQLAndRest()
+  it('sem o App instalado no repositório (404 ao resolver a instalação): submit continua funcionando, sem gaveta de dívida', async () => {
+    const base = stubGithubGraphQLAndRest()
+    global.fetch = vi.fn(async (url: string, init?: { body?: string }) => {
+      if (String(url).endsWith('/repos/octocat/repo/installation')) {
+        return new Response(null, { status: 404 })
+      }
+      return (base as unknown as (u: string, i?: unknown) => Promise<Response>)(url, init)
+    }) as unknown as typeof fetch
 
     const res = await app.inject({
       method: 'POST',

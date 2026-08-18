@@ -10,7 +10,6 @@ import { collectAndRememberRepoContext } from '../services/repo-context-cortex.j
 import {
   verificarCredencial,
   guardarCredencialDoProjeto,
-  lerCredencialDoProjeto,
   VerificacaoIndisponivelError,
 } from '../services/project-credential.js'
 import { startTelegramLink, readTelegramLink } from '../services/telegram-link.js'
@@ -908,32 +907,16 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
           for (const repoFullName of repos) {
             const project = projectsByRepo.get(repoFullName)
             const boardNumber = readKnownBoardNumber(project?.runtimeConfig)
-            // Sem isto a dívida de segurança NUNCA é coletada em produção: o
-            // App do produto (githubToken acima) leva 403 nessas rotas, só a
-            // credencial que o cliente forneceu em /setup/credencial-do-cliente
-            // alcança. Ausente (cliente ainda não passou por lá) é um estado
-            // válido — collect() já sabe sair sem a dívida nesse caso.
-            // O .catch é próprio: sem ele, uma credencial ilegível (chave
-            // rotacionada, envelope corrompido) neste repositório derruba o
-            // laço inteiro e outros repositórios do mesmo submit perdem
-            // board/PRs/issues também, sem ter problema nenhum — mesmo
-            // padrão best-effort aplicado à leitura equivalente em
-            // onboarding-board.ts.
-            const clientToken = project
-              ? await lerCredencialDoProjeto({ prisma: app.prisma, projectId: project.id }).catch(
-                  (err) => {
-                    app.log.warn(
-                      `[setup] nao foi possivel ler a credencial do cliente para ${repoFullName}, seguindo sem ela: ${(err as Error).message}`
-                    )
-                    return null
-                  }
-                )
-              : null
+            // A dívida de segurança resolve a PRÓPRIA credencial (installation
+            // token do App, por repositório) dentro de
+            // collectAndRememberRepoContext → RepoContextCollector.collect() —
+            // prova ao vivo em 17/08 mostrou que o App alcança essas rotas.
+            // Não depende mais de nenhuma credencial lida aqui (ver
+            // services/security-debt-collector.ts, comentário do topo).
             const result = await collectAndRememberRepoContext({
               token: githubToken,
               wingId: repoFullName,
               cortex: app.cortex,
-              clientToken,
               ...(boardNumber !== undefined ? { boardNumber } : {}),
             })
             if (!result.collected) {
