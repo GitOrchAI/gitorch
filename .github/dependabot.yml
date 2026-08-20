@@ -4,12 +4,10 @@ version: 2
 # Vulnerabilidade vira alerta → pipeline dependabot-to-jules → Jules conserta.
 # Aqui ficam só as atualizações de versão de rotina (patch/minor).
 updates:
-  # Ecossistema Node do monorepo. O valor VÁLIDO é "npm" — ele cobre npm, yarn E
-  # pnpm (o Dependabot lê o pnpm-lock.yaml por baixo). "pnpm" NÃO é um
-  # package-ecosystem aceito: o arquivo era rejeitado na validação
-  # ("did not match one of the following values"), e o erro só aparecia quando
-  # algo mexia no arquivo e forçava o re-parse.
-  - package-ecosystem: "npm"
+  # Ecossistema Node do monorepo.
+  # Dependabot is now configured to use native pnpm support (package-ecosystem: "pnpm")
+  # for the root directory dependencies.
+  - package-ecosystem: "pnpm"
     directory: "/"
     schedule:
       interval: "daily"
@@ -34,6 +32,31 @@ updates:
     # typecheck estrito do CI). Major é MIGRAÇÃO deliberada, com plano e teste —
     # não atualização de rotina. Isto alinha a config ao que o comentário do topo
     # deste arquivo já prometia: aqui só rotina (patch/minor).
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+
+  # Ecossistema Node do projeto de scripts do GitHub Actions.
+  # The separate .github/scripts project must be configured independently using "npm"
+  - package-ecosystem: "npm"
+    directory: "/.github/scripts"
+    schedule:
+      interval: "daily"
+    labels:
+      - "dependabot"
+      - "dependencies"
+    groups:
+      production-dependencies:
+        dependency-type: "production"
+        update-types:
+          - "patch"
+          - "minor"
+      development-dependencies:
+        dependency-type: "development"
+        update-types:
+          - "patch"
+          - "minor"
     ignore:
       - dependency-name: "*"
         update-types:
