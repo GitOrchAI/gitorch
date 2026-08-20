@@ -1686,9 +1686,26 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
 
     // Failsafe da instância (não por tenant): teto global de missões/dia para
     // proteger a VM inteira. O limite por tenant é o do plano (abaixo).
-    const instanceToday = await app.prisma.mission.count({
+    // DUAS contagens e uma subtração, não um NOT sobre campo JSON: em SQL,
+    // `NOT (result->>'falhaDeCredencial' = 'true')` avalia NULL para toda
+    // missão com `result` nulo — que é a maioria — e NULL não é TRUE, então
+    // o filtro as excluiria TODAS e o teto nunca seria atingido. Medido no
+    // banco de produção antes de escolher: das 24 missões de 20/08, 13 têm
+    // `result` nulo. `equals: true` só casa o que foi marcado de propósito,
+    // e a subtração é imune ao problema.
+    const totalHoje = await app.prisma.mission.count({
       where: { createdAt: { gte: startOfDay } },
     })
+    // Decisão do dono (20/08): uma missão que morreu pedindo login nem
+    // chegou a usar o motor — cobrar dela uma das vagas do dia foi o que
+    // transformou uma credencial vencida em três dias de esteira parada.
+    const mortasPorCredencial = await app.prisma.mission.count({
+      where: {
+        createdAt: { gte: startOfDay },
+        result: { path: ['falhaDeCredencial'], equals: true },
+      },
+    })
+    const instanceToday = totalHoje - mortasPorCredencial
     if (instanceToday >= MAX_MISSIONS_PER_DAY) {
       app.log.warn(
         `[Scheduler] Failsafe da instância atingido (${instanceToday}/${MAX_MISSIONS_PER_DAY}); pulando ${role}`
@@ -1740,12 +1757,26 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // dono (o limite do plano é por usuário, não por projeto).
     const plan = project.user?.plan
     if (project.userId && plan) {
-      const ownerToday = await app.prisma.mission.count({
+      // Mesmo furo do failsafe da instância, e aqui é pior: esta é a vaga
+      // que o CLIENTE paga. Cobrar do plano dele uma missão que morreu
+      // pedindo login — sem nunca ter usado o motor — é cobrar por trabalho
+      // que não aconteceu. Mesma técnica: duas contagens e subtração, nunca
+      // um NOT sobre campo JSON (que excluiria toda missão com `result`
+      // nulo, ou seja, quase todas).
+      const ownerTotalHoje = await app.prisma.mission.count({
         where: {
           createdAt: { gte: startOfDay },
           project: { userId: project.userId },
         },
       })
+      const ownerMortasPorCredencial = await app.prisma.mission.count({
+        where: {
+          createdAt: { gte: startOfDay },
+          project: { userId: project.userId },
+          result: { path: ['falhaDeCredencial'], equals: true },
+        },
+      })
+      const ownerToday = ownerTotalHoje - ownerMortasPorCredencial
       if (ownerToday >= plan.maxMissionsPerDay) {
         app.log.warn(
           `[Scheduler] Orçamento do plano ${plan.id} atingido para o usuário ${project.userId} (${ownerToday}/${plan.maxMissionsPerDay}); pulando`
@@ -1874,6 +1905,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // corre o risco de rotear uma missão paga para fora da nossa VM.
     const activeStack = selectRuntimeStack(planId, localStack, remoteStack)
     let lastError = 'nenhum motor executou'
+    // Marca durável de "morreu pedindo login": CredencialExpiradaError só
+    // existe em tempo de execução e some quando a missão vira linha no banco.
+    // Sem isto, o teto diário não teria como distinguir uma missão que fez
+    // trabalho e falhou de uma que nem chegou a usar o motor.
+    let falhaDeCredencial = false
     for (let i = 0; i < chain.length; i++) {
       const sel = chain[i] as { runtime: string; model?: string }
       const model = sel.model ?? MODEL_BY_ROLE[role]
@@ -2559,6 +2595,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         // dia (deveAvisarDeNovo) — SPAM apaga sinal tanto quanto silêncio,
         // mesma disciplina de session-watch.ts.
         if (err instanceof CredencialExpiradaError) {
+          falhaDeCredencial = true
           const chaveDoAviso = `${project.userId ?? project.id}:${err.runtime}`
           if (deveAvisarDeNovo(avisosDeCredencialExpirada, chaveDoAviso, Date.now())) {
             avisosDeCredencialExpirada.set(chaveDoAviso, Date.now())
@@ -2600,7 +2637,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     try {
       await app.prisma.mission.updateMany({
         where: { id: missionId, status: 'running' },
-        data: { status: 'failed', completedAt: new Date(), error: lastError.slice(0, 4000) },
+        data: {
+          status: 'failed',
+          completedAt: new Date(),
+          error: lastError.slice(0, 4000),
+          // A missão CONTINUA registrada como falha — o histórico não pode
+          // mentir. O que a marca muda é só uma coisa: ela não ocupa vaga do
+          // teto diário (ver o cálculo de instanceToday em runTrigger).
+          ...(falhaDeCredencial ? { result: { falhaDeCredencial: true } } : {}),
+        },
       })
     } catch (persistErr) {
       app.log.error(persistErr, `[Scheduler] Falha ao persistir falha de ${missionId}`)
