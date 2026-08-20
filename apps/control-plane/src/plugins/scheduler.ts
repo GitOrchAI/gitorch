@@ -608,7 +608,7 @@ export async function resolveEngineBinDir(
  * recursos instalados), cai no binário do host com log claro (`log`).
  */
 export function createLocalCredentialRunner(
-  engineConnections: Pick<EngineConnectionService, 'materializeToHome'>,
+  engineConnections: Pick<EngineConnectionService, 'materializeToHome' | 'captureFromHome'>,
   innerRunner: RuntimeCommandRunner = realRuntimeCommandRunner,
   environments?: EnvironmentLookup,
   log?: { info: (msg: string) => void; warn: (msg: string) => void }
@@ -620,9 +620,11 @@ export function createLocalCredentialRunner(
 
     const dir = path.join(os.tmpdir(), `gitorch-local-cred-${randomUUID()}`)
     await fs.mkdir(dir, { recursive: true, mode: 0o700 })
+    let materializou = false
     try {
       const ok = await engineConnections.materializeToHome(ownerUserId, runtime, dir)
       if (!ok) return await innerRunner(request)
+      materializou = true
 
       // Espelha o loop genérico do entrypoint.sh (infra/agent-image/ no repo
       // privado de infra, movido de scripts/infra/agent-image/ na task t8):
@@ -659,6 +661,31 @@ export function createLocalCredentialRunner(
 
       return await innerRunner({ ...request, env: { ...request.env, ...envAdditions } })
     } finally {
+      // A AMNÉSIA DE RENOVAÇÃO, consertada aqui. Os CLIs dos três motores
+      // renovam o próprio token sozinhos quando são chamados — provado ao
+      // vivo em 20/08/2026: um `agy -p` no host fez o arquivo de credencial
+      // saltar de 20/07 para 20/08. Só que aqui o motor roda num HOME
+      // temporário que a linha seguinte apaga, então a renovação morria
+      // junto e o cofre continuava servindo o token vencido em toda missão,
+      // até o refresh_token vencer de vez. Foi assim que a esteira ficou
+      // parada de 17/08 a 20/08 sem ninguém perceber.
+      //
+      // No FINALLY de propósito, não no caminho de sucesso: uma missão que
+      // falhou no TRABALHO pode ter renovado a credencial antes de falhar, e
+      // jogar isso fora é perder de graça uma credencial boa.
+      //
+      // Nunca derruba a missão: falha ao capturar vira aviso. O trabalho já
+      // foi feito; perder o resultado por causa do cofre seria trocar um
+      // problema por outro pior.
+      if (materializou) {
+        await engineConnections
+          .captureFromHome(ownerUserId, runtime, dir)
+          .catch((err: unknown) =>
+            log?.warn(
+              `[Scheduler] não consegui devolver ao cofre a credencial de ${runtime} do dono ${ownerUserId}: ${(err as Error).message}`
+            )
+          )
+      }
       await fs.rm(dir, { recursive: true, force: true })
     }
   }
