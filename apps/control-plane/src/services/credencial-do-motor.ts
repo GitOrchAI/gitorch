@@ -84,7 +84,29 @@ import type { MissionDeliveryCheck } from './mission-outcome.js'
 // nenhum dispara o aviso) mas não SUFICIENTE (ainda precisa do sinal
 // textual, nos mesmos dois níveis de confiança acima) — as duas defesas se
 // somam, não se substituem.
-const SINAIS_FORTES: readonly string[] = ['access token could not be refreshed', 'invalid_grant']
+// Achado da TERCEIRA revisão, medido em produção (20/08/2026): o banner do
+// antigravity/Google NÃO tinha nenhum sinal forte e caía no caminho fraco —
+// onde o gate de terseness o descartava. As 13 missões que pararam a esteira
+// entre 17/08 e 20/08 traziam `authentication required` (fraco) numa saída de
+// 946 a 1068 caracteres. O que estoura o limite não é ruído removível: é a
+// própria URL de OAuth do Google (client_id + code_challenge + scopes +
+// state, sozinha acima de 350 chars) somada ao stack trace que o Node anexa
+// ao RailsExecutionError. Os dois banners que calibraram LIMITE_SAIDA_TERSE_
+// CHARS eram do codex (63 e 134 chars) e não carregam nem URL nem stack —
+// por isso nenhum limiar de tamanho alcança este caso, e mexer no limiar
+// reabriria os falsos-positivos que as revisões anteriores fecharam.
+//
+// `please visit the url to log in` é a frase com que um CLI manda o humano
+// até uma página de autorização. Não é vocabulário de missão: análise de
+// código, review de autenticação e trace de curl falam SOBRE autenticação,
+// não mandam ninguém visitar uma URL para entrar. Como todo sinal forte,
+// dispensa terseness — e segue coberto pela corroboração de entregável em
+// `ehFalhaDeCredencialCorroborada`, que é o critério de produção.
+const SINAIS_FORTES: readonly string[] = [
+  'access token could not be refreshed',
+  'invalid_grant',
+  'please visit the url to log in',
+]
 
 const SINAIS_FRACOS: readonly string[] = [
   'log out and sign in',
