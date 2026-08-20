@@ -91,6 +91,49 @@ describe('ehCredencialExpirada', () => {
     expect(saidaLonga.length).toBeGreaterThan(200)
     expect(ehCredencialExpirada({ exitCode: 0, stdout: saidaLonga, stderr: '' })).toBe(true)
   })
+
+  // A FALHA REAL que parou a esteira de 17/08 a 20/08 (13 missões mortas, o
+  // dono nunca avisado). O banner do antigravity/Google traz "authentication
+  // required" — sinal FRACO — e sinal fraco só vale quando a saída INTEIRA
+  // cabe em LIMITE_SAIDA_TERSE_CHARS. Só que aqui a saída inteira mede ~946
+  // caracteres, e por DOIS motivos independentes que nenhum limiar alcança:
+  // a URL de OAuth do Google (client_id + code_challenge + scopes + state,
+  // sozinha passa de 350 chars) e o stack trace que o Node anexa ao
+  // RailsExecutionError. Os banners que calibraram o limiar de 200 eram do
+  // codex (63 e 134 chars, medidos no Step 1 do brief) — nenhum deles carrega
+  // URL nem stack. Por isso a correção certa é um sinal FORTE novo, não um
+  // limiar mais frouxo: subir o limite reabriria os 4 falsos-positivos que a
+  // primeira revisão mediu.
+  //
+  // "please visit the url to log in" é vocabulário de banner de pedido de
+  // login, não de narrativa de missão: o motor está mandando o humano até uma
+  // página de autorização, coisa que nenhuma análise de código, review de
+  // auth ou trace de curl tem motivo para dizer.
+  it('banner de login do antigravity/Google é reconhecido apesar de a URL de OAuth e o stack trace estourarem o limite de terseness', () => {
+    const bannerDoAntigravity =
+      'RailsExecutionError: rails step 1 failed: Authentication required. Please visit the URL to log in:\n' +
+      '  https://accounts.google.com/o/oauth2/auth?access_type=offline' +
+      '&client_id=000000000000-exemplodeidentificadordocliente.apps.googleusercontent.com' +
+      '&code_challenge=EXEMPLO-DE-DESAFIO-PKCE-EM-BASE64URL-COM-43-CHARS' +
+      '&code_challenge_method=S256&prompt=consent' +
+      '&redirect_uri=http%3A%2F%2Flocalhost%3A45289' +
+      '&response_type=code' +
+      '&scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fuserinfo.email' +
+      '&state=EXEMPLO-DE-ESTADO-ANTI-CSRF\n' +
+      '    at Object.execute (file:///opt/gitorch/apps/control-plane/dist/plugins/scheduler.js:1720:35)\n' +
+      '    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)\n' +
+      '    at async runFormStep (file:///opt/gitorch/apps/control-plane/dist/services/rails-runner.js:92:24)\n' +
+      '    at async runQaMissionViaRails (file:///opt/gitorch/apps/control-plane/dist/services/qa-rails-mission.js:391:22)\n' +
+      '    at async executeMissionWithFailover (file:///opt/gitorch/apps/control-plane/dist/plugins/scheduler.js:1782:35)'
+
+    // Prova de que este caso NÃO pode depender do caminho de sinal fraco: a
+    // saída real medida em produção tinha 946 chars, ~4,7x o limiar.
+    expect(bannerDoAntigravity.length).toBeGreaterThan(900)
+
+    expect(ehCredencialExpirada({ exitCode: 1, stdout: '', stderr: bannerDoAntigravity })).toBe(
+      true
+    )
+  })
 })
 
 // Achado CRÍTICO da revisão (finding 1): a versão anterior casava os sinais
