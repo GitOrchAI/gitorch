@@ -73,6 +73,18 @@ export function resolveEnderecoDeAmbiente(runtimeConfig: unknown): string | null
 
 export type RelatorioDeAmbiente = {
   veredito: 'passou' | 'falhou' | 'inalcancavel' | 'sem-endereco'
+  /**
+   * `true` quando NENHUMA tentativa de rede chegou a acontecer porque a
+   * guarda recusou todos os endereços publicados antes do primeiro `fetch`.
+   *
+   * Separa as DUAS causas que "inalcancavel" juntava numa palavra só, e que
+   * pedem tratamentos opostos: um cliente cujo ambiente vive numa rede
+   * interna nunca vai ser alcançado a partir daqui — isso é limitação de
+   * alcance, não defeito de código, e não pode virar tarefa no quadro dele;
+   * já "tentamos e nada respondeu" pode ser o ambiente fora do ar, e aí a
+   * repetição da leitura é o que separa defeito de queda momentânea.
+   */
+  recusadoPelaGuarda: boolean
   testes: Array<{ caminho: string; status: number | null; ok: boolean }>
   motivo: string
 }
@@ -100,6 +112,7 @@ export async function testarAmbiente(args: {
   if (enderecos.length === 0) {
     return {
       veredito: 'sem-endereco',
+      recusadoPelaGuarda: false,
       testes: [],
       motivo: 'nenhum endereço de ambiente foi publicado ainda — nada para testar.',
     }
@@ -121,6 +134,7 @@ export async function testarAmbiente(args: {
   if (enderecosAlcancaveis.length === 0) {
     return {
       veredito: 'inalcancavel',
+      recusadoPelaGuarda: true,
       testes: [],
       motivo: `endereço fora do alcance da rede a partir daqui, recusado antes de qualquer chamada: ${motivosDeRecusa.join('; ')}.`,
     }
@@ -155,6 +169,7 @@ export async function testarAmbiente(args: {
   if (!algumaRespostaChegou) {
     return {
       veredito: 'inalcancavel',
+      recusadoPelaGuarda: false,
       testes,
       motivo: `nenhuma resposta chegou de nenhum endereço publicado — rede inalcançável a partir daqui (erro de conexão ou tempo esgotado em todas as tentativas).${notaDeRecusa}`,
     }
@@ -164,6 +179,7 @@ export async function testarAmbiente(args: {
   if (falhas.length === 0) {
     return {
       veredito: 'passou',
+      recusadoPelaGuarda: false,
       testes,
       motivo: `todas as ${testes.length} tela(s) testada(s) responderam normalmente (status entre 200 e 399).${notaDeRecusa}`,
     }
@@ -171,6 +187,7 @@ export async function testarAmbiente(args: {
 
   return {
     veredito: 'falhou',
+    recusadoPelaGuarda: false,
     testes,
     motivo: `${falhas.length} de ${testes.length} tela(s) testada(s) não respondeu(ram) bem: ${falhas.map((f) => f.caminho).join(', ')}.${notaDeRecusa}`,
   }

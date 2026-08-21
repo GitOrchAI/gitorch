@@ -36,6 +36,7 @@ describe('MIGRATION_LEDGER', () => {
       'repo-access-recheck-migration.sql',
       'publicacao-migration.sql',
       'github-token-refresh-migration.sql',
+      'conserto-de-publicacao-migration.sql',
     ])
   })
 })
