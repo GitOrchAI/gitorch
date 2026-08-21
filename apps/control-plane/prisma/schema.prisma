@@ -601,6 +601,12 @@ model DevSession {
   /// (`gitorch:conserto:<origem>:<commit>`) — o dedup que impede a vigília de
   /// abrir uma issue por tique no repositório do cliente.
   deployFixKey String? @map("deploy_fix_key")
+  /// O pedido de retrabalho que o QA emitiu e que NÃO chegou ao dev — guardado
+  /// inteiro, porque reentregar recado vazio não faz ninguém retrabalhar.
+  reworkNoticePending String? @map("rework_notice_pending")
+  /// Quantas vezes já tentamos reentregar esse pedido. Tem teto: um serviço
+  /// fora do ar não pode virar laço infinito.
+  reworkNoticeAttempts Int @default(0) @map("rework_notice_attempts") @db.SmallInt
   /// Veredito da última leitura do ambiente publicado — só existe para exigir
   /// repetição antes de abrir tarefa por ambiente inalcançável.
   envLastVerdict String? @map("env_last_verdict")

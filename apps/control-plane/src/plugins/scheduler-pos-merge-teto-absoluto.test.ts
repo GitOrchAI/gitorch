@@ -89,6 +89,8 @@ function sessaoBase(over: Record<string, unknown> = {}) {
     nudges: 0,
     lastProgressAt: null,
     stateCheckedAt: new Date(Date.now() - DESDE_A_MESCLA_ALEM_DO_TETO),
+    reworkNoticePending: null,
+    reworkNoticeAttempts: 0,
     pendingSince: null,
     mergeCommitSha: 'deadbeef',
     deployState: null,

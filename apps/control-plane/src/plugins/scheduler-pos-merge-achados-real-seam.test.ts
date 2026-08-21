@@ -127,6 +127,8 @@ describe('achados da revisão da Tarefa 17 — pelo seam real', () => {
       // `registrarMescla` no instante do merge) que agora mede "desde
       // quando" para a janela de tolerância, não mais um relógio em memória.
       stateCheckedAt: new Date(),
+      reworkNoticePending: null,
+      reworkNoticeAttempts: 0,
       pendingSince: null,
       mergeCommitSha: 'deadbeef',
       deployState: null,
@@ -212,6 +214,8 @@ describe('achados da revisão da Tarefa 17 — pelo seam real', () => {
       // estourou o teto" — fecharia a sessão na hora e quebraria o cenário
       // de dedupe que estes testes provam.
       stateCheckedAt: new Date(),
+      reworkNoticePending: null,
+      reworkNoticeAttempts: 0,
       pendingSince: null,
       mergeCommitSha: 'deadbeef',
       // O estado gravado pela varredura ANTERIOR — é o que decide o dedupe

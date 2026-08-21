@@ -26,6 +26,13 @@ import { decidirRespostaDaSessao } from './jules-session-loop.js'
  */
 export const CADENCIA_DE_EXAME_MS = 10 * 60 * 1000
 
+/**
+ * Quantas vezes reentregar um pedido de retrabalho antes de desistir e chamar
+ * gente. Sem teto, um serviço fora do ar viraria laço infinito contra a API do
+ * cliente; com teto, o silêncio tem prazo e alguém fica sabendo.
+ */
+export const MAX_TENTATIVAS_DE_AVISO = 5
+
 export interface EstadoLido {
   estado: string
   numeroDoPr: number | null
@@ -54,6 +61,12 @@ export interface VigiaDeps {
     agora: Date
   }) => Promise<void>
   registrarPr: (args: { sessionName: string; numeroDoPr: number; agora: Date }) => Promise<void>
+  /** Reentrega o pedido de retrabalho que ficou pendente. */
+  reentregarAviso?: (args: { sessionName: string; texto: string }) => Promise<boolean>
+  /** Apaga a pendência quando o recado finalmente chega. */
+  limparAvisoPendente?: (args: { sessionName: string }) => Promise<void>
+  /** Conta mais uma tentativa fracassada. */
+  contarTentativaDeAviso?: (args: { sessionName: string }) => Promise<void>
   fecharSessao: (args: {
     sessionName: string
     motivo: MotivoDeFechamento
@@ -116,12 +129,107 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
   let insistidas = 0
   let abandonadas = 0
   let falhas = 0
+  let avisosReentregues = 0
 
   for (const linha of deps.sessoes) {
     // Cadência por sessão: pula quem foi examinada há menos de 10 minutos.
     if (linha.stateCheckedAt) {
       const desdeOUltimoExame = deps.agora.getTime() - linha.stateCheckedAt.getTime()
       if (desdeOUltimoExame < CADENCIA_DE_EXAME_MS) continue
+    }
+
+    // ANTES de qualquer outra decisão desta sessão: se ficou um pedido de
+    // retrabalho sem entregar, ele vem primeiro. Enquanto o dev não recebe o
+    // recado, nada mais que a gente decida sobre esta entrega faz sentido —
+    // ela está parada esperando exatamente isso.
+    if (linha.reworkNoticePending && deps.reentregarAviso) {
+      // ACHADO 1 DA LENTE: o teto tem que ser medido em TEMPO, não em número de
+      // passagens. `stateCheckedAt` só avança quando o exame da sessão dá certo
+      // — e num erro de rede ele NÃO dá. Sem carimbar aqui, a reentrega roda a
+      // cada tique (1 min) e cinco tentativas queimam em cinco minutos: o
+      // apagão de oito minutos que motivou esta feature esgotaria o teto e
+      // apagaria o recado ANTES de o serviço voltar. Carimbamos em todo
+      // desfecho deste ramo, para a próxima tentativa respeitar a cadência.
+      const carimbarCadencia = async () => {
+        await deps
+          .registrarEstado({
+            sessionName: linha.sessionName,
+            estado: linha.state,
+            agora: deps.agora,
+          })
+          .catch(() => undefined)
+      }
+
+      if (linha.reworkNoticeAttempts >= MAX_TENTATIVAS_DE_AVISO) {
+        // ACHADO 2: o recado só sai do banco se alguém FOI de fato avisado.
+        // Apagar sem avisar destruiria justamente a evidência que esta feature
+        // veio preservar — o defeito original de volta, e pior.
+        let donoAvisado = false
+        if (deps.avisarDono) {
+          donoAvisado = await deps
+            .avisarDono(
+              // Escrito para GENTE, não para máquina. O identificador da
+              // sessão fica no log (quem depura precisa dele) e FORA daqui
+              // (quem decide, não). O recado nomeia o trabalho pelo número que
+              // aparece no quadro e diz a AÇÃO — sem isso vira só um alarme.
+              `GitOrch: pedi ${MAX_TENTATIVAS_DE_AVISO} vezes para o dev refazer a tarefa ` +
+                `#${linha.issueNumber} e o recado não chegou.` +
+                (linha.pullRequestNumber
+                  ? ` O que ele precisa mudar está escrito no pull request #${linha.pullRequestNumber}.`
+                  : '') +
+                ' Ele não vai refazer sozinho: alguém precisa avisá-lo à mão, ou a entrega fica parada.'
+            )
+            .then(() => true)
+            .catch(() => false)
+        }
+        if (donoAvisado && deps.limparAvisoPendente) {
+          await deps.limparAvisoPendente({ sessionName: linha.sessionName }).catch(() => undefined)
+          warn(
+            `[vigia] desisti de reentregar o pedido de retrabalho de ${linha.sessionName} ` +
+              `após ${MAX_TENTATIVAS_DE_AVISO} tentativas; dono avisado`
+          )
+        } else {
+          warn(
+            `[vigia] teto de reentrega estourado em ${linha.sessionName} e NÃO consegui avisar o dono; ` +
+              'o pedido de retrabalho fica guardado — apagar sem avisar seria perder a evidência'
+          )
+        }
+        await carimbarCadencia()
+        continue
+      }
+
+      const entregue = await deps
+        .reentregarAviso({ sessionName: linha.sessionName, texto: linha.reworkNoticePending })
+        .catch(() => false)
+
+      if (entregue) {
+        let limpou = false
+        if (deps.limparAvisoPendente) {
+          limpou = await deps
+            .limparAvisoPendente({ sessionName: linha.sessionName })
+            .then(() => true)
+            .catch(() => false)
+        }
+        if (limpou) {
+          avisosReentregues += 1
+        } else if (deps.contarTentativaDeAviso) {
+          // ACHADO 3: entregou mas não conseguiu apagar a marca. Sem contar
+          // aqui, uma escrita que falha de forma persistente reenviaria o mesmo
+          // texto ao dev a cada passagem, para sempre, sem teto nenhum.
+          warn(
+            `[vigia] reentreguei o pedido de retrabalho de ${linha.sessionName} mas não consegui ` +
+              'apagar a marca; contando a tentativa para não reenviar sem fim'
+          )
+          await deps
+            .contarTentativaDeAviso({ sessionName: linha.sessionName })
+            .catch(() => undefined)
+        }
+      } else if (deps.contarTentativaDeAviso) {
+        await deps.contarTentativaDeAviso({ sessionName: linha.sessionName }).catch(() => undefined)
+      }
+      await carimbarCadencia()
+      // Segue o exame normal da sessão no MESMO ciclo: reentregar o recado não
+      // substitui olhar o estado dela.
     }
 
     try {
@@ -349,6 +457,14 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
   if (insistidas > 0) partes.push(pluralizar(insistidas, 'insistência', 'insistências'))
   if (abandonadas > 0) partes.push(pluralizar(abandonadas, 'abandonada', 'abandonadas'))
   if (falhas > 0) partes.push(pluralizar(falhas, 'falha', 'falhas'))
+  if (avisosReentregues > 0)
+    partes.push(
+      pluralizar(
+        avisosReentregues,
+        'pedido de retrabalho reentregue',
+        'pedidos de retrabalho reentregues'
+      )
+    )
 
   const resumo = partes.length > 0 ? partes.join(', ') : 'nada novo'
   return `vigia: ${pluralizar(deps.sessoes.length, 'sessão', 'sessões')}, ${resumo}.`

@@ -66,6 +66,8 @@ function linha(over: Partial<LinhaDeSessao>): LinhaDeSessao {
     nudges: 0,
     lastProgressAt: null,
     stateCheckedAt: null,
+    reworkNoticePending: null,
+    reworkNoticeAttempts: 0,
     pendingSince: null,
     mergeCommitSha: null,
     deployState: null,
@@ -800,6 +802,62 @@ describe('runQaMissionViaRails', () => {
     })
     expect(r.exitCode).toBe(0)
     expect(enviadas).toHaveLength(0)
+  })
+
+  // ACHADO 6 DA LENTE (21/08/2026): a metade que GUARDA o recado não tinha
+  // teste nenhum. Como `registrarAvisoPendente` é opcional, remover a fiação
+  // não quebraria tsc nem teste — a feature morreria em silêncio, e o defeito
+  // que ela conserta (429 passageiro encalhando a entrega para sempre) voltaria
+  // sem ninguém perceber.
+  it('aviso que NÃO chega ao dev vira pendência guardada, com o texto inteiro', async () => {
+    const f = fakeFetch([{ number: 79, user: 'jules[bot]' }])
+    const guardadas: Array<{ sessionName: string; texto: string }> = []
+    const enviadas: Array<{ sessionName: string; texto: string }> = []
+
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      sessoes: [linha({ issueNumber: 74, pullRequestNumber: 79, sessionName: 'sessions/guardar' })],
+      // Canal próprio: sem ele o aviso cairia no console e contaminaria a
+      // contagem dos testes vizinhos que espiam `console.warn`.
+      onWarn: () => undefined,
+      // O serviço externo recusa — foi o HTTP 429 medido em produção.
+      avisarSessao: async (a) => {
+        enviadas.push(a)
+        return false
+      },
+      registrarAvisoPendente: async (a) => {
+        guardadas.push(a)
+      },
+      fetchImpl: f,
+    })
+
+    expect(r.exitCode).toBe(0)
+    expect(enviadas).toHaveLength(1)
+    // O recado tem que ser GUARDADO, e guardado INTEIRO: a reentrega precisa do
+    // texto, não de um sinal de que existiu um texto.
+    expect(guardadas).toHaveLength(1)
+    expect(guardadas[0]!.sessionName).toBe(enviadas[0]!.sessionName)
+    expect(guardadas[0]!.texto).toBe(enviadas[0]!.texto)
+  })
+
+  it('aviso que CHEGA não guarda pendência nenhuma', async () => {
+    const f = fakeFetch([{ number: 79, user: 'jules[bot]' }])
+    const guardadas: unknown[] = []
+    await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      sessoes: [linha({ issueNumber: 74, pullRequestNumber: 79, sessionName: 'sessions/guardar' })],
+      onWarn: () => undefined,
+      avisarSessao: async () => true,
+      registrarAvisoPendente: async (a) => {
+        guardadas.push(a)
+      },
+      fetchImpl: f,
+    })
+    expect(guardadas).toHaveLength(0)
   })
 
   it('sem avisarSessao (opção ausente): comportamento clássico preservado, sem quebrar', async () => {
@@ -1544,6 +1602,8 @@ describe('runQaMissionViaRails', () => {
             issueNumber: 51,
             pullRequestNumber: 8,
             sessionName: 'sessions/pend-b',
+            reworkNoticePending: null,
+            reworkNoticeAttempts: 0,
             pendingSince: new Date(Date.now() - (TETO_DE_ESPERA_MS + 5 * 60 * 1000)),
           }),
         ],
@@ -1720,6 +1780,8 @@ describe('runQaMissionViaRails', () => {
             issueNumber: 50,
             pullRequestNumber: 9,
             sessionName: 'sessions/pend-c',
+            reworkNoticePending: null,
+            reworkNoticeAttempts: 0,
             pendingSince: new Date(Date.now() - 10 * 60 * 1000),
           }),
         ],

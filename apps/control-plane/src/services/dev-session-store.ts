@@ -32,6 +32,14 @@ export interface LinhaDeSessao {
    */
   stateCheckedAt: Date | null
   /**
+   * O pedido de retrabalho que o QA emitiu e que NÃO chegou ao dev. Guardado
+   * INTEIRO de propósito: reentregar um recado vazio não faz ninguém
+   * retrabalhar, e um booleano só diria que existiu um recado.
+   */
+  reworkNoticePending: string | null
+  /** Quantas vezes já tentamos reentregar esse pedido — o teto vive aqui. */
+  reworkNoticeAttempts: number
+  /**
    * Desde quando esta entrega está com a verificação automática pendente —
    * `null` enquanto nunca esteve, ou depois que `limparPendencia` apaga a
    * marca. É a partir dela que `decidirSobreVerificacao`
@@ -332,6 +340,57 @@ export async function fecharSessao(deps: {
   await deps.prisma.devSession.update({
     where: { sessionName: deps.sessionName },
     data: { closedAt: deps.agora, closedReason: deps.motivo },
+  })
+}
+
+/**
+ * Guarda o pedido de retrabalho que não chegou ao dev.
+ *
+ * Existe por um caso medido: 21/08/2026, o QA reprovou o PR #157 e a entrega
+ * da reprovação na sessão falhou com um 429 passageiro. O produto avisou no
+ * log e parou — e o encalhe virou permanente, porque o parecer JÁ estava
+ * postado e o laço de descoberta passa a pular a entrega como "já julgada".
+ * Reenviado à mão minutos depois, o MESMO recado foi aceito na hora. Uma
+ * repetição teria resolvido; o que faltava era lembrar dele.
+ */
+export async function registrarAvisoDeRetrabalhoPendente(deps: {
+  prisma: PrismaDevSession
+  sessionName: string
+  texto: string
+}): Promise<void> {
+  await deps.prisma.devSession.update({
+    where: { sessionName: deps.sessionName },
+    // O contador ZERA junto: recado NOVO merece o teto cheio. Sem isto ele
+    // herdaria as tentativas do recado anterior e poderia nascer já esgotado.
+    data: { reworkNoticePending: deps.texto, reworkNoticeAttempts: 0 },
+  })
+}
+
+/** O recado chegou: apaga a pendência e zera o contador de tentativas. */
+export async function limparAvisoDeRetrabalho(deps: {
+  prisma: PrismaDevSession
+  sessionName: string
+}): Promise<void> {
+  await deps.prisma.devSession.update({
+    where: { sessionName: deps.sessionName },
+    data: { reworkNoticePending: null, reworkNoticeAttempts: 0 },
+  })
+}
+
+/**
+ * Conta mais uma tentativa fracassada de reentrega.
+ *
+ * `increment` e não leitura-e-escrita: duas passagens da vigília no mesmo
+ * instante contariam a mesma tentativa duas vezes de um jeito, e nenhuma do
+ * outro. O banco resolve isso melhor que nós.
+ */
+export async function contarTentativaDeAviso(deps: {
+  prisma: PrismaDevSession
+  sessionName: string
+}): Promise<void> {
+  await deps.prisma.devSession.update({
+    where: { sessionName: deps.sessionName },
+    data: { reworkNoticeAttempts: { increment: 1 } },
   })
 }
 

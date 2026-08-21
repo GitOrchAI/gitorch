@@ -57,6 +57,9 @@ import {
   registrarEstado,
   registrarResposta,
   registrarPr,
+  registrarAvisoDeRetrabalhoPendente,
+  limparAvisoDeRetrabalho,
+  contarTentativaDeAviso,
   fecharSessao,
   type MotivoDeFechamento,
   registrarInvestigacao,
@@ -2519,6 +2522,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                     // PR (medido: PR #79, 5 dias parado, 12 reprovações, zero
                     // retrabalho). A API não tem retomada; `sendMessage` é o
                     // único caminho, por isso `responderSessaoJules` mesmo.
+                    registrarAvisoPendente: ({ sessionName, texto }) =>
+                      registrarAvisoDeRetrabalhoPendente({
+                        prisma: app.prisma as unknown as PrismaDevSession,
+                        sessionName,
+                        texto,
+                      }),
                     avisarSessao: async ({ sessionName, texto }) =>
                       responderSessaoJules({
                         apiKey: process.env['JULES_API_KEY'],
@@ -3147,6 +3156,25 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             registrarResposta({ prisma: app.prisma as unknown as PrismaDevSession, ...args }),
           registrarPr: (args) =>
             registrarPr({ prisma: app.prisma as unknown as PrismaDevSession, ...args }),
+          // A reentrega do pedido de retrabalho usa o MESMO canal do aviso
+          // original — `sendMessage`, o único que a API oferece.
+          reentregarAviso: ({ sessionName, texto }) =>
+            responderSessaoJules({
+              apiKey: julesApiKey,
+              sessionName,
+              texto,
+              onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+            }),
+          limparAvisoPendente: ({ sessionName }) =>
+            limparAvisoDeRetrabalho({
+              prisma: app.prisma as unknown as PrismaDevSession,
+              sessionName,
+            }),
+          contarTentativaDeAviso: ({ sessionName }) =>
+            contarTentativaDeAviso({
+              prisma: app.prisma as unknown as PrismaDevSession,
+              sessionName,
+            }),
           fecharSessao: (args) => fecharSessaoEArquivar(args),
           registrarInvestigacao: (args) =>
             registrarInvestigacao({ prisma: app.prisma as unknown as PrismaDevSession, ...args }),

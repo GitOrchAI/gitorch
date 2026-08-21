@@ -163,6 +163,13 @@ export interface QaRailsMissionOptions extends VigiliaDoJulgamentoOptions {
    */
   avisarSessao?: (args: { sessionName: string; texto: string }) => Promise<boolean>
   /**
+   * Guarda o pedido de retrabalho que NÃO chegou ao dev, para a vigília
+   * reentregar. Sem isto, um erro passageiro do serviço externo encalha a
+   * entrega para sempre — o parecer já foi postado, então a passagem seguinte
+   * pula a entrega como "já julgada" e ninguém nunca mais tenta.
+   */
+  registrarAvisoPendente?: (args: { sessionName: string; texto: string }) => Promise<void>
+  /**
    * Avisa que o PR foi mesclado de verdade — com o SHA do commit que o
    * GitHub de fato criou (`sha` da resposta de `PUT .../merge`, capturado
    * abaixo, NUNCA `pr.head.sha`: depois de um squash, o head da PR nunca
@@ -886,8 +893,22 @@ export async function runQaMissionViaRails(
             const avisar = options.onWarn ?? console.warn
             avisar(
               `[qa] veredito postado no PR #${target.number}, mas a sessão ` +
-                `${linhaDaEntrega.sessionName} não foi avisada — o dev não vai retrabalhar sozinho`
+                `${linhaDaEntrega.sessionName} não foi avisada — guardando para reentregar`
             )
+            // O recado fica GUARDADO, não só gritado. Medido em 21/08: um 429
+            // passageiro encalhou a entrega em definitivo, porque o parecer já
+            // estava postado e a passagem seguinte pula quem "já foi julgado".
+            // O mesmo texto, reenviado minutos depois, foi aceito na hora.
+            if (options.registrarAvisoPendente) {
+              await options
+                .registrarAvisoPendente({ sessionName: linhaDaEntrega.sessionName, texto })
+                .catch((err) =>
+                  avisar(
+                    `[qa] não consegui nem guardar o pedido de retrabalho de ` +
+                      `${linhaDaEntrega.sessionName}: ${(err as Error).message}`
+                  )
+                )
+            }
           }
         }
       }
