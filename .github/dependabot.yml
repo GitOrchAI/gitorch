@@ -39,6 +39,31 @@ updates:
         update-types:
           - "version-update:semver-major"
 
+  # Automação CI/CD (Node.js) em .github/scripts
+  - package-ecosystem: "npm"
+    directory: "/.github/scripts"
+    schedule:
+      interval: "daily"
+    labels:
+      - "dependabot"
+      - "dependencies"
+      - "scripts"
+    groups:
+      production-dependencies:
+        dependency-type: "production"
+        update-types:
+          - "patch"
+          - "minor"
+      development-dependencies:
+        dependency-type: "development"
+        update-types:
+          - "patch"
+          - "minor"
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-major"
+
   # Configuração de atualizações do ecossistema GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"
