@@ -420,8 +420,12 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
               { deliveryId, event, role, projectId: project.id },
               'Webhook acorda missão'
             )
+            // Origem 'aviso-do-github': este disparo FURA o descanso pós-acordada-
+            // vazia (descanso-apos-vazia.ts). O aviso fala de um pull request
+            // específico que acabou de mudar de estado — é informação nova, não
+            // o relógio batendo de novo, e calá-lo seria calar o julgamento.
             void app
-              .triggerAgentMission(role, project.id)
+              .triggerAgentMission(role, project.id, undefined, 'aviso-do-github')
               .catch((err) => app.log.error({ err, role }, 'Falha ao disparar missão via webhook'))
           }
 

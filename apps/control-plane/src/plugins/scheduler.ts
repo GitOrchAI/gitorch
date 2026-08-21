@@ -45,6 +45,7 @@ import {
 } from '../services/qa-rails-mission.js'
 import { runSmDelegation } from '../services/sm-delegation.js'
 import { criarFilaDeJulgamento } from '../services/fila-de-julgamento.js'
+import { criarRegistroDeDescanso, type OrigemDoDisparo } from '../services/descanso-apos-vazia.js'
 import { tetosDoPlanoDoDev } from '../services/plano-do-dev.js'
 import {
   abrirSessao,
@@ -163,6 +164,24 @@ const MAX_MISSIONS_PER_DAY = Number(process.env['GITORCH_MAX_MISSIONS_PER_DAY'] 
 // GITORCH_MAX_CONCURRENT=2 (ver .env.example), cada missão sob
 // GITORCH_EXEC_LIMITS (execution-limits.ts); sobe mais na VM-MT-SaaS (32GB).
 const MAX_CONCURRENT_MISSIONS = Number(process.env['GITORCH_MAX_CONCURRENT'] ?? '1')
+
+/**
+ * Quanto tempo um papel fica sem ser acordado, num projeto, depois de uma
+ * acordada que voltou VAZIA (`noOp`).
+ *
+ * O padrão de 30 minutos sai do número medido no banco em 21/08/2026: ~13
+ * acordadas vazias de julgamento por hora, empurradas pela vigília de sessão,
+ * que reexamina cada sessão viva a cada ~10 minutos. Um descanso menor que
+ * esses 10 minutos não cortaria nada; 30 minutos derruba o pior caso de ~13/h
+ * para no máximo 2/h por (projeto, papel), sem nunca segurar mais que meia
+ * hora uma acordada de relógio.
+ *
+ * Zero desliga o descanso por completo — a válvula de escape para voltar ao
+ * comportamento antigo sem deploy de código.
+ */
+const DESCANSO_APOS_VAZIA_MS = Number(
+  process.env['GITORCH_DESCANSO_APOS_VAZIA_MS'] ?? String(30 * 60_000)
+)
 const STALE_RUNNING_MS = Number(
   process.env['GITORCH_STALE_RUNNING_MS'] ?? String(2 * 60 * 60 * 1000)
 )
@@ -1681,10 +1700,18 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
    */
   const filaDeJulgamento = criarFilaDeJulgamento()
 
+  /**
+   * Quem já provou não ter o que fazer descansa um pouco antes de ser acordado
+   * de novo. A regra (o que fura o descanso, por quanto tempo, quando ele é
+   * apagado) vive em descanso-apos-vazia.ts, testada fora do relógio.
+   */
+  const descansoAposVazia = criarRegistroDeDescanso(DESCANSO_APOS_VAZIA_MS)
+
   const runTrigger = async (
     role: F6AgentRole,
     projectId?: string,
-    onboardingSequence?: F6AgentRole[]
+    onboardingSequence?: F6AgentRole[],
+    origem: OrigemDoDisparo = 'agenda'
   ): Promise<TriggerResult> => {
     await failStuckMissions()
 
@@ -1774,6 +1801,25 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         '[Scheduler] projeto suspenso por falta de acesso ao repositório; nenhuma missão é disparada'
       )
       return { triggered: false, reason: 'acesso-suspenso' }
+    }
+
+    // Descanso depois de uma acordada vazia. Vem DEPOIS de o projeto ser
+    // escolhido (o descanso é por projeto E papel) e ANTES de qualquer
+    // trabalho caro — contêiner, quota, criação da missão.
+    //
+    // Nunca é um pulo mudo: o log diz o motivo e até quando. Alto na primeira
+    // vez, baixo nas repetições — o relógio consulta a cada minuto, e repetir
+    // o mesmo aviso sessenta vezes por hora apagaria o sinal tanto quanto o
+    // silêncio.
+    const descanso = descansoAposVazia.consultar({ projectId: project.id, role, origem })
+    if (descanso.pular) {
+      const mensagem =
+        `[Scheduler] ${role} de ${project.wingId} em descanso até ` +
+        `${descanso.ate?.toISOString()} (a última acordada voltou vazia, origem '${origem}'); ` +
+        'aviso do GitHub e fila do SM continuam furando o descanso'
+      if (descanso.primeiraVez) app.log.info(mensagem)
+      else app.log.debug(mensagem)
+      return { triggered: false, reason: 'descanso' }
     }
 
     // Orçamento do plano: total de missões do dia somando TODOS os projetos do
@@ -1874,7 +1920,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         quotaBefore,
         payload: {
           role,
-          triggeredBy: onboardingSequence !== undefined ? 'onboarding' : 'scheduler',
+          // A origem REAL, não mais 'scheduler' para todo mundo: enquanto o
+          // relógio, o aviso do GitHub e a vigília se registravam com o mesmo
+          // nome, era impossível medir no banco quem estava gerando a rajada
+          // de acordadas vazias — foi preciso deduzir pela cadência.
+          triggeredBy: onboardingSequence !== undefined ? 'onboarding' : origem,
           ...(onboardingSequence !== undefined ? { onboardingSequence } : {}),
           runtime: primary.runtime,
           model: primary.model ?? MODEL_BY_ROLE[role],
@@ -2509,6 +2559,20 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           // O entregável vira memória tipada do projeto — exceto no-ops (ex.:
           // "sem wishlist"), que poluiriam o recall e expulsariam o brief do RA.
           const isNoOp = (result as { noOp?: boolean }).noOp === true
+          // O elo que faltava: `noOp` era produzida por meio mundo de serviço
+          // e ninguém a consumia. Acordada vazia manda o papel descansar;
+          // acordada que fez trabalho apaga o descanso na hora.
+          if (isNoOp) {
+            const ate = descansoAposVazia.registrarAcordadaVazia({
+              projectId: project.id,
+              role,
+            })
+            app.log.info(
+              `[Scheduler] ${role} de ${project.wingId} voltou vazio; descansa até ${ate.toISOString()}`
+            )
+          } else {
+            descansoAposVazia.registrarAcordadaProdutiva({ projectId: project.id, role })
+          }
           if (!isNoOp) {
             await persistMissionMemory(app.cortex, {
               projectId: project.id,
@@ -2695,13 +2759,14 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   const triggerAgentMission = async (
     role: F6AgentRole,
     projectId?: string,
-    onboardingSequence?: F6AgentRole[]
+    onboardingSequence?: F6AgentRole[],
+    origem: OrigemDoDisparo = 'agenda'
   ): Promise<TriggerResult> => {
-    app.log.info(`[Scheduler] Triggering agent mission for role: ${role}`)
+    app.log.info(`[Scheduler] Triggering agent mission for role: ${role} (origem: ${origem})`)
     // Encadeia os disparos para que nunca rodem concorrentes (guard sem corrida).
     const result = triggerChain.then(
-      () => runTrigger(role, projectId, onboardingSequence),
-      () => runTrigger(role, projectId, onboardingSequence)
+      () => runTrigger(role, projectId, onboardingSequence, origem),
+      () => runTrigger(role, projectId, onboardingSequence, origem)
     )
     triggerChain = result.catch(() => ({ triggered: false, reason: 'error' }))
     try {
@@ -2723,6 +2788,10 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     'token-budget',
     'error',
     'init',
+    // Descanso é temporário POR DEFINIÇÃO: a janela do cron é devolvida para
+    // ser reprocessada. Queimá-la faria uma acordada vazia às 08:00 custar a
+    // janela inteira das 08:00 — a próxima só às 16:00.
+    'descanso',
   ])
 
   /**
@@ -2747,7 +2816,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     const projectId = filaDeJulgamento.proxima()
     if (!projectId) return
 
-    const resultado = await triggerAgentMission('qa', projectId)
+    const resultado = await triggerAgentMission('qa', projectId, undefined, 'fila-do-sm')
     if (!resultado.triggered && resultado.reason && RETRYABLE_REASONS.has(resultado.reason)) {
       // Recusa temporária DEVOLVE a vez, pelo mesmo motivo que a janela do
       // cron é devolvida: perder a vez por "estou ocupado agora" é
@@ -2858,7 +2927,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           void triggerAgentMission(
             nextRole as F6AgentRole,
             mission.projectId,
-            remaining as F6AgentRole[]
+            remaining as F6AgentRole[],
+            'onboarding'
           )
         }
       }
@@ -2974,7 +3044,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           // concorrência, orçamento diário por plano e guarda de gasto que
           // o resto do scheduler usa — é o `triggerAgentMission` de sempre.
           dispararMissao: async (papel, projectIdDaMissao) => {
-            void triggerAgentMission(papel, projectIdDaMissao)
+            void triggerAgentMission(papel, projectIdDaMissao, undefined, 'vigia')
           },
           registrarEstado: (args) =>
             registrarEstado({ prisma: app.prisma as unknown as PrismaDevSession, ...args }),
@@ -4113,7 +4183,8 @@ declare module 'fastify' {
     triggerAgentMission: (
       role: F6AgentRole,
       projectId?: string,
-      onboardingSequence?: F6AgentRole[]
+      onboardingSequence?: F6AgentRole[],
+      origem?: OrigemDoDisparo
     ) => Promise<TriggerResult>
   }
 }

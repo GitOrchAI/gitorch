@@ -86,7 +86,9 @@ describe('Mission and Event Routes', () => {
 
     expect(res.statusCode).toBe(202)
     expect(res.json()).toEqual({ triggered: true, role: 'ra', missionId: 'mission_9' })
-    expect(trigger).toHaveBeenCalledWith('ra')
+    // Origem 'sob-demanda': pedido explícito de gente fura o descanso
+    // pós-acordada-vazia (descanso-apos-vazia.ts).
+    expect(trigger).toHaveBeenCalledWith('ra', undefined, undefined, 'sob-demanda')
   })
 
   test('POST /api/missions/agent-run returns 409 when the scheduler skips (busy/budget)', async () => {

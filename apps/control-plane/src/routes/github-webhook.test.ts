@@ -140,6 +140,43 @@ describe('GitHub Webhook Routes', () => {
       })
     )
   })
+
+  // O aviso do GitHub fala de um pull request específico que acabou de mudar
+  // de estado. Ele PRECISA furar o descanso pós-acordada-vazia
+  // (descanso-apos-vazia.ts) — se entrasse como 'agenda', meia hora de
+  // descanso calaria o julgamento justamente quando há informação nova, e a
+  // decisão D25 do dono (o QA nunca fica mudo) morreria em silêncio.
+  test('acorda o QA com origem que FURA o descanso pós-acordada-vazia', async () => {
+    app.prisma.webhookDelivery.create = vi.fn().mockResolvedValue({})
+    app.prisma.webhookDelivery.updateMany = vi.fn().mockResolvedValue({})
+    app.prisma.project.findFirst = vi.fn().mockResolvedValue({ id: 'proj_123', wingId: 'wing_123' })
+    app.prisma.project.update = vi.fn().mockResolvedValue({})
+    const trigger = vi.fn().mockResolvedValue({ triggered: true, missionId: 'm1' })
+    app.triggerAgentMission = trigger
+
+    const corpo = {
+      action: 'completed',
+      repository: { id: 123 },
+      check_suite: { pull_requests: [{ number: 97 }] },
+    }
+    const signature =
+      'sha256=' +
+      crypto.createHmac('sha256', 'test-secret').update(JSON.stringify(corpo)).digest('hex')
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: {
+        'x-hub-signature-256': signature,
+        'x-github-event': 'check_suite',
+        'x-github-delivery': 'delivery_ci',
+      },
+      payload: corpo,
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(trigger).toHaveBeenCalledWith('qa', 'proj_123', undefined, 'aviso-do-github')
+  })
 })
 
 // Isolado num describe próprio (achados I1/M2): request.ip via app.inject()

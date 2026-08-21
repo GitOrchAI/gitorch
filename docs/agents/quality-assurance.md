@@ -76,6 +76,37 @@ A fila vive em memória de propósito: o critério é o estado do GitHub, não u
 toda acordada do SM a redescobre inteira e reiniciar o processo não perde nada. O webhook e a
 vigília continuam existindo — este caminho é o que cobre a entrega que nenhum dos dois enxerga.
 
+### 2.4. Descanso depois de uma acordada vazia — ATUAL (21/08/2026)
+
+Medido no banco de produção em 21/08: **203 missões de julgamento no dia, 143 delas devolvendo "no
+delegated PR awaiting judgment"** — ~13 por hora, o dia inteiro. Nenhuma chegou a chamar o motor (o
+julgamento devolve `noOp` antes de qualquer passo de LLM), então não é cota do cliente queimada; é
+contêiner subindo à toa, chamada de API e ruído na tabela de missões.
+
+A causa não era o webhook: era a **vigília de sessão**, que reexamina cada sessão viva a cada ~10
+minutos e pede julgamento para toda sessão que já tem pull request — e a sessão só fecha quando a
+publicação é confirmada. Entrega cujo PR JÁ tem parecer continuava pedindo julgamento para sempre.
+Ficou visível agora porque o julgamento saiu do teto diário (D25); antes o teto de 24 mascarava a
+rajada.
+
+**O conserto:** `apps/control-plane/src/services/descanso-apos-vazia.ts`. Toda missão que volta com
+`noOp` põe aquele **(projeto, papel)** em descanso por `GITORCH_DESCANSO_APOS_VAZIA_MS` (padrão 30
+min — maior que os 10 min da vigília, senão não cortaria nada). Vale para todo papel que produz
+`noOp`, não só o QA.
+
+O que o descanso **não** faz:
+
+- **Não cala o julgamento.** Aviso do GitHub sobre um pull request específico e fila levantada pelo
+  SM (§2.3) **furam** o descanso — trazem informação nova. Só relógio e vigília descansam.
+- **Não pula calado.** O log diz o papel, o projeto, a origem e até quando; alto na primeira vez,
+  baixo nas repetições, para não virar spam de minuto em minuto.
+- **Não queima a janela do cron.** `descanso` é motivo retentável: a janela é devolvida.
+- **Não é permanente.** Uma acordada que fez trabalho apaga o descanso na hora.
+
+O campo `triggeredBy` do payload da missão passou a registrar a **origem real** (`agenda`, `vigia`,
+`aviso-do-github`, `fila-do-sm`, `sob-demanda`, `onboarding`) em vez de `scheduler` para todo mundo —
+enquanto eram todos o mesmo nome, era impossível medir no banco quem gerava a rajada.
+
 ## 3. Como o QA decide o que julgar — ATUAL
 
 `runQaMissionViaRails` busca as PRs abertas do repositório (até 20, mais recentes primeiro) e usa
