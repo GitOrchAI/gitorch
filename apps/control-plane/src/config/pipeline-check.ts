@@ -9,3 +9,53 @@
 export function pipelineCheckEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env['GITORCH_PIPELINE_CHECK'] === '1'
 }
+
+export interface PipelineErrorMetadata {
+  step: string
+  reason: string
+  mitigationAction: string
+  requiresAction: boolean
+}
+
+export function parsePipelineError(
+  error: unknown,
+  context: { step?: string } = {}
+): PipelineErrorMetadata {
+  const message = error instanceof Error ? error.message : String(error)
+  const step = context.step || 'unknown'
+  const lowerMsg = message.toLowerCase()
+
+  if (lowerMsg.includes('lint')) {
+    return {
+      step,
+      reason: 'Falha de Linting',
+      mitigationAction: 'Revisar erros de linting e corrigir estilo de código',
+      requiresAction: true,
+    }
+  }
+
+  if (lowerMsg.includes('test')) {
+    return {
+      step,
+      reason: 'Falha de Teste',
+      mitigationAction: 'Revisar falhas nos testes e corrigir regressões',
+      requiresAction: true,
+    }
+  }
+
+  if (lowerMsg.includes('build')) {
+    return {
+      step,
+      reason: 'Falha de Build',
+      mitigationAction: 'Verificar logs de compilação/build',
+      requiresAction: true,
+    }
+  }
+
+  return {
+    step,
+    reason: 'Erro Técnico Desconhecido',
+    mitigationAction: 'Analisar stack trace e logs brutamente',
+    requiresAction: true,
+  }
+}
