@@ -26,7 +26,11 @@ import {
   type WorkspaceProvider,
 } from '@gitorch/agents'
 import type { EngineConnectionService } from '../services/engine-connection.js'
-import { tetoDiarioBloqueia, TIPO_DE_MISSAO_ISENTO_DO_TETO } from '../services/teto-diario.js'
+import {
+  tetoDiarioBloqueia,
+  tetoDiarioSeguraOPapel,
+  TIPO_DE_MISSAO_ISENTO_DO_TETO,
+} from '../services/teto-diario.js'
 import { ensureDefaultSchedules } from '../lib/project-defaults.js'
 import {
   LocalWorkspaceProvider,
@@ -1755,6 +1759,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     const mortasPorCredencial = await app.prisma.mission.count({
       where: {
         createdAt: { gte: startOfDay },
+        // MESMO filtro do total, e isto não é detalhe: sem ele a subtração
+        // desconta missões que o total nunca somou. Medido em produção uma
+        // hora depois de eu introduzir o furo: total sem o papel isento = 17,
+        // vazias contadas SEM o filtro = 174 → 17 - 174 = -157. O teto do dia
+        // simplesmente deixou de existir, em silêncio, e o log passaria a
+        // imprimir número negativo.
+        type: { not: TIPO_DE_MISSAO_ISENTO_DO_TETO },
         result: { path: ['falhaDeCredencial'], equals: true },
       },
     })
@@ -1771,14 +1782,19 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     const acordadasEmFalso = await app.prisma.mission.count({
       where: {
         createdAt: { gte: startOfDay },
+        // Ver o comentário da contagem acima: subtrair de um total filtrado
+        // exige o mesmo filtro dos dois lados.
+        type: { not: TIPO_DE_MISSAO_ISENTO_DO_TETO },
         result: { path: ['noOp'], equals: true },
       },
     })
     const instanceToday = totalHoje - mortasPorCredencial - acordadasEmFalso
     // O julgamento NÃO é segurado por este teto (D25 do dono, 21/08/2026): ver
     // services/teto-diario.ts para o porquê e para o que continua valendo.
-    // A missão de qa segue SOMANDO em `instanceToday` — ela existe e gasta
-    // recurso, e continua empurrando o teto dos outros papéis.
+    // A missão do papel isento NÃO soma mais em `instanceToday`: quem o teto
+    // não pode barrar não gasta o teto dos outros. As três contagens acima
+    // usam o MESMO filtro de tipo, senão a subtração desconta o que o total
+    // nunca somou.
     if (tetoDiarioBloqueia({ role, usadasHoje: instanceToday, teto: MAX_MISSIONS_PER_DAY })) {
       app.log.warn(
         `[Scheduler] Failsafe da instância atingido (${instanceToday}/${MAX_MISSIONS_PER_DAY}); pulando ${role}`
@@ -1850,7 +1866,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     const plan = project.user?.plan
     // Mesma regra do failsafe acima, e pelo mesmo motivo: a vaga que o cliente
     // paga não pode ser o que impede a entrega dele de ser julgada e mesclada.
-    if (project.userId && plan && role !== 'qa') {
+    if (project.userId && plan && tetoDiarioSeguraOPapel(role)) {
       // Mesmo furo do failsafe da instância, e aqui é pior: esta é a vaga
       // que o CLIENTE paga. Cobrar do plano dele uma missão que morreu
       // pedindo login — sem nunca ter usado o motor — é cobrar por trabalho
@@ -1873,6 +1889,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         where: {
           createdAt: { gte: startOfDay },
           project: { userId: project.userId },
+          // Mesmo filtro do total do dono, pelo mesmo motivo da instância.
+          type: { not: TIPO_DE_MISSAO_ISENTO_DO_TETO },
           result: { path: ['falhaDeCredencial'], equals: true },
         },
       })
@@ -1882,6 +1900,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         where: {
           createdAt: { gte: startOfDay },
           project: { userId: project.userId },
+          type: { not: TIPO_DE_MISSAO_ISENTO_DO_TETO },
           result: { path: ['noOp'], equals: true },
         },
       })
@@ -3882,6 +3901,25 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             ) {
               app.log.warn(
                 `[Scheduler] ambiente de ${projeto.wingId} não respondeu na primeira leitura de ${sessao.sessionName}; confirmando na próxima janela antes de decidir`
+              )
+              // A cadência TEM que ser carimbada antes de sair por aqui. Sem
+              // isto o `continue` pula o carimbo lá do fim do laço, a sessão é
+              // reexaminada a cada tique (~60s) em vez de a cada dez minutos,
+              // e a "segunda leitura" chega um MINUTO depois da primeira. Uma
+              // queda de rede de trinta segundos passaria a produzir duas
+              // leituras seguidas de 'inalcancavel' e abriria issue falsa no
+              // repositório do CLIENTE — exatamente o que a regra das duas
+              // leituras existe para impedir. Todos os outros `continue` deste
+              // laço carimbam antes de sair; este era o único que não.
+              await registrarCadenciaDePublicacao({
+                prisma: app.prisma as unknown as PrismaDevSession,
+                sessionName: sessao.sessionName,
+                agora,
+              }).catch((cadenciaErr) =>
+                app.log.warn(
+                  cadenciaErr,
+                  `[Scheduler] falha ao carimbar cadência de publicação para ${sessao.sessionName}`
+                )
               )
               continue
             }
