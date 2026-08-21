@@ -1857,10 +1857,16 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       // que não aconteceu. Mesma técnica: duas contagens e subtração, nunca
       // um NOT sobre campo JSON (que excluiria toda missão com `result`
       // nulo, ou seja, quase todas).
+      // A MESMA regra do failsafe da instância, pelo mesmo motivo — e aqui
+      // doeria mais, porque a vaga é paga: o papel isento do bloqueio não
+      // entra na contagem. Contar quem não pode ser barrado transfere o custo
+      // para quem pode, e foi assim que em 21/08 um dia de 220 julgamentos
+      // consumiu o plano inteiro do dono e travou o analista.
       const ownerTotalHoje = await app.prisma.mission.count({
         where: {
           createdAt: { gte: startOfDay },
           project: { userId: project.userId },
+          type: { not: TIPO_DE_MISSAO_ISENTO_DO_TETO },
         },
       })
       const ownerMortasPorCredencial = await app.prisma.mission.count({
@@ -1870,7 +1876,16 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           result: { path: ['falhaDeCredencial'], equals: true },
         },
       })
-      const ownerToday = ownerTotalHoje - ownerMortasPorCredencial
+      // Acordada em falso também não é cobrada do cliente: ela retorna antes
+      // de chamar o motor, então não gastou nada do que ele paga.
+      const ownerAcordadasEmFalso = await app.prisma.mission.count({
+        where: {
+          createdAt: { gte: startOfDay },
+          project: { userId: project.userId },
+          result: { path: ['noOp'], equals: true },
+        },
+      })
+      const ownerToday = ownerTotalHoje - ownerMortasPorCredencial - ownerAcordadasEmFalso
       if (ownerToday >= plan.maxMissionsPerDay) {
         app.log.warn(
           `[Scheduler] Orçamento do plano ${plan.id} atingido para o usuário ${project.userId} (${ownerToday}/${plan.maxMissionsPerDay}); pulando`

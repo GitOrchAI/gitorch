@@ -195,6 +195,19 @@ describe('teto do dia × acordada em falso (incidente de 21/08/2026)', () => {
     expect(resultado.triggered).toBe(true)
   })
 
+  test('o teto do PLANO segue a mesma regra — a vaga paga não é cobrada por quem é isento', async () => {
+    // Plano Pro do dono: 90 missões por dia. Em 21/08 houve 225 missões, 220
+    // de julgamento. Contando tudo, o plano estourava e o analista morria em
+    // 'plan-budget' mesmo depois de o failsafe da instância ter sido consertado
+    // — o mesmo erro, uma camada abaixo, e nesta doeria mais: a vaga é paga.
+    const fake = buildFakePrisma({ total: 225, vazias: 157, semOIsento: 5 })
+
+    const resultado = await tentarDisparar(fake)
+
+    expect(resultado.triggered).toBe(true)
+    expect(resultado.reason).not.toBe('plan-budget')
+  })
+
   test('trabalho de verdade continua barrando, como sempre barrou', async () => {
     // Mesmas 30 missões, nenhuma em falso: o teto tem que segurar. É a guarda
     // contra "consertar" o incidente afrouxando a proteção.
