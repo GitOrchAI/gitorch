@@ -445,8 +445,8 @@ async function main() {
 
   // 2. Obter diff do git (comparando com commit anterior)
   // Caso seja o primeiro commit ou não tenha HEAD~1, faz diff vazia ou com o próprio commit
-  let changedFilesRaw = runGitCommand('git diff --name-status HEAD~1 HEAD')
-  let gitDiff = runGitCommand('git diff HEAD~1 HEAD')
+  let changedFilesRaw = runGitCommand('git diff --name-status HEAD~1 HEAD 2>/dev/null || true')
+  let gitDiff = runGitCommand('git diff HEAD~1 HEAD 2>/dev/null || true')
 
   if (!changedFilesRaw) {
     console.log('Não foi possível obter diff com HEAD~1, tentando git show para o commit atual...')
@@ -467,7 +467,7 @@ async function main() {
   // Vamos ler também a versão do version.json no commit anterior (para saber se o usuário mudou o Major no commit atual)
   let lastMajor = 1
   try {
-    const prevVersionStr = runGitCommand('git show HEAD~1:version.json')
+    const prevVersionStr = runGitCommand('git show HEAD~1:version.json 2>/dev/null || true')
     if (prevVersionStr) {
       const prevVer = JSON.parse(prevVersionStr) as VersionInfo
       const prevParts = prevVer.version.split('.').map(Number)
