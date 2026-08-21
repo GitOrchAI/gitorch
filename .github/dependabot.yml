@@ -4,10 +4,12 @@ version: 2
 # Vulnerabilidade vira alerta → pipeline dependabot-to-jules → Jules conserta.
 # Aqui ficam só as atualizações de versão de rotina (patch/minor).
 updates:
-  # Ecossistema Node do monorepo.
-  # Dependabot is now configured to use native pnpm support (package-ecosystem: "pnpm")
-  # for the root directory dependencies.
-  - package-ecosystem: "pnpm"
+  # Ecossistema Node do monorepo. O valor VÁLIDO é "npm" — ele cobre npm, yarn E
+  # pnpm (o Dependabot lê o pnpm-lock.yaml por baixo). "pnpm" NÃO é um
+  # package-ecosystem aceito: o arquivo era rejeitado na validação
+  # ("did not match one of the following values"), e o erro só aparecia quando
+  # algo mexia no arquivo e forçava o re-parse.
+  - package-ecosystem: "npm"
     directory: "/"
     schedule:
       interval: "daily"
