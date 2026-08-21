@@ -1,5 +1,6 @@
 import { FastifyPluginAsync } from 'fastify'
 import client from 'prom-client'
+import { PipelineErrorMetadata } from '../config/pipeline-check.js'
 
 // Create a Registry to register metrics
 export const metricsRegistry = new client.Registry()
@@ -40,6 +41,9 @@ declare module 'fastify' {
   interface FastifyRequest {
     startTime?: bigint
   }
+  interface FastifyInstance {
+    logPipelineFailure(metadata: PipelineErrorMetadata, error?: unknown, wingId?: string): void
+  }
 }
 
 let defaultMetricsInterval: ReturnType<typeof client.collectDefaultMetrics> | undefined
@@ -79,5 +83,19 @@ export const telemetryPlugin: FastifyPluginAsync = async (app) => {
     }
     metricsRegistry.clear()
   })
+
+  app.decorate(
+    'logPipelineFailure',
+    (metadata: PipelineErrorMetadata, error?: unknown, wingId?: string) => {
+      app.log.error(
+        { metadata, err: error },
+        `[Pipeline Failure] ${metadata.step}: ${metadata.reason}`
+      )
+
+      if (wingId && app.broadcastEvent) {
+        app.broadcastEvent(wingId, 'pipeline.error', metadata)
+      }
+    }
+  )
 }
 Object.assign(telemetryPlugin, { [Symbol.for('skip-override')]: true })
