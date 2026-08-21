@@ -38,12 +38,25 @@ describe('ensureDefaultSchedules', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const count = await ensureDefaultSchedules(prisma as any, 'proj_1')
 
+    expect(count).toBe(2)
+    expect(prisma.created.map((d) => d['agentRole'])).toEqual(['sm', 'qa'])
+  })
+
+  test('projeto antigo, criado antes de o QA ter agenda, ganha a agenda que falta', async () => {
+    // O caso REAL desta VM: os dois projetos em produção nasceram quando a
+    // agenda padrão tinha só ra/po/sm. Sem esta idempotência por papel, a
+    // correção do QA só valeria para projeto novo — ou seja, para ninguém.
+    const prisma = fakePrisma(['ra', 'po', 'sm'])
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const count = await ensureDefaultSchedules(prisma as any, 'proj_1')
+
     expect(count).toBe(1)
-    expect(prisma.created.map((d) => d['agentRole'])).toEqual(['sm'])
+    expect(prisma.created.map((d) => d['agentRole'])).toEqual(['qa'])
   })
 
   test('não cria nada quando todas as agendas já existem', async () => {
-    const prisma = fakePrisma(['ra', 'po', 'sm'])
+    const prisma = fakePrisma(['ra', 'po', 'sm', 'qa'])
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const count = await ensureDefaultSchedules(prisma as any, 'proj_1')
@@ -58,5 +71,25 @@ describe('DEFAULT_SCHEDULES', () => {
     const raSchedule = DEFAULT_SCHEDULES.find((s) => s.agentRole === 'ra')
     expect(raSchedule).toBeDefined()
     expect(raSchedule?.cron).toBe('0 6,18 * * *')
+  })
+
+  test('QA tem agenda própria, de 8 em 8 horas', () => {
+    // Sem isto o QA só acorda por acaso — aviso de verificação do GitHub ou
+    // entrega ainda aberta — e um pull request verde de dias atrás nunca é
+    // julgado. docs/agents/quality-assurance.md §4.3 manda 8h.
+    const qa = DEFAULT_SCHEDULES.find((s) => s.agentRole === 'qa')
+    expect(qa).toBeDefined()
+    expect(qa?.cron).toBe('0 0,8,16 * * *')
+  })
+
+  test('nenhum papel colide de horário com outro', () => {
+    const horas = (cron: string) => (cron.split(' ')[1] ?? '').split(',')
+    const vistos = new Map<string, string>()
+    for (const s of DEFAULT_SCHEDULES) {
+      for (const h of horas(s.cron)) {
+        expect(vistos.has(h)).toBe(false)
+        vistos.set(h, s.agentRole)
+      }
+    }
   })
 })

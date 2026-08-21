@@ -1,4 +1,5 @@
 import { sign } from 'node:crypto'
+import { nomeDeRepositorioValido } from './nome-de-repositorio.js'
 
 /**
  * Emite installation tokens de vida curta do GitHub App do gitorch (`gitorch-ai`),
@@ -107,6 +108,21 @@ export async function mintInstallationToken(deps: AppTokenDeps = {}): Promise<st
 
   const fetchImpl = deps.fetchImpl ?? fetch
   const nowMs = deps.now ? deps.now() : Date.now()
+
+  // O repositório entra cru em `/repos/${repository}/installation`, e essa
+  // chamada leva o JWT do App. Sem conferir o formato aqui — na porta, antes
+  // de assinar qualquer coisa — um texto com `..` ou `?` troca o endereço de
+  // destino e a credencial vai para o endpoint que o texto escolher. Segue o
+  // contrato do módulo: devolve null com aviso, nunca lança.
+  if (deps.repository !== undefined && !nomeDeRepositorioValido(deps.repository)) {
+    const warn = deps.onWarn ?? ((message: string) => console.warn(message))
+    warn(
+      `[github-app-token] repositório em formato inválido, não é "dono/repositorio" — nada é chamado no GitHub: ${JSON.stringify(
+        deps.repository
+      ).slice(0, 80)}`
+    )
+    return null
+  }
 
   // Resolve o ID sem tocar rede quando possível: explícito, o já descoberto
   // para ESTE repositório, ou (só no caminho sem repositório) o global.

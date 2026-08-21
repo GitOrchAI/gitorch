@@ -407,6 +407,32 @@ describe('mintInstallationToken com repositório', () => {
     expect(calls[0]!.url).toContain('/repos/GitOrchAI/gitorch/installation')
   })
 
+  it('repositório com formato inválido não vira endereço: nega antes de tocar rede', async () => {
+    // `repository` entra CRU em `/repos/${repository}/installation`, e essa
+    // chamada leva o JWT do App. Sem conferir o formato, quem escolhe o texto
+    // escolhe qual endpoint recebe a credencial ("../app/installations?" cai
+    // na listagem de TODAS as instalações do App).
+    const { privateKey } = makeKeypair()
+    const fetchImpl = (async () => {
+      throw new Error('não deveria tocar a rede com repositório inválido')
+    }) as unknown as typeof fetch
+
+    for (const repository of ['a/b/../../../user/repos', '../app/installations?', 'a/b/c', 'a/']) {
+      const avisos: string[] = []
+      // Contrato do módulo: degradação graciosa — devolve null, nunca lança.
+      expect(
+        await mintInstallationToken({
+          appId: '1',
+          privateKey,
+          repository,
+          fetchImpl,
+          onWarn: (m) => avisos.push(m),
+        })
+      ).toBeNull()
+      expect(avisos.join(' ')).toMatch(/repositório/i)
+    }
+  })
+
   it('não serve a um repositório o token cacheado de outro', async () => {
     const { privateKey } = makeKeypair()
     const primeiro = await mintInstallationToken({

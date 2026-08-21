@@ -187,6 +187,74 @@ describe('EngineConnectionService', () => {
     await fs.rm(home, { recursive: true, force: true })
   })
 
+  test('connectGitHubToken com refresh token: guarda encryptedRefreshToken cifrado (nunca texto puro) e expiresAt', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+
+    const expiresAt = new Date(Date.now() + 8 * 3600 * 1000)
+    const refreshTokenExpiresAt = new Date('2027-02-13T12:00:00Z')
+    await svc.connectGitHubToken('user_refresh', 'gh_access_novo', {
+      refreshToken: 'gh_refresh_novo',
+      expiresAt,
+      refreshTokenExpiresAt,
+    })
+
+    const stored = prisma.store.get('user_refresh:github')
+    expect(stored?.['expiresAt']).toEqual(expiresAt)
+    expect(stored?.['refreshTokenExpiresAt']).toEqual(refreshTokenExpiresAt)
+    expect(String(stored?.['encryptedRefreshToken'])).not.toBe('gh_refresh_novo')
+    expect(String(stored?.['encryptedRefreshToken']).length).toBeGreaterThan(0)
+
+    // o restaurado na missão continua sendo SÓ o access token — o refresh
+    // token nunca vai para o HOME de uma missão.
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-ghrefresh-'))
+    expect(await svc.materializeToHome('user_refresh', 'github', home)).toBe(true)
+    expect((await fs.readFile(path.join(home, '.gitorch', 'gh-token'), 'utf8')).trim()).toBe(
+      'gh_access_novo'
+    )
+    await expect(fs.stat(path.join(home, '.gitorch', 'refresh-token'))).rejects.toThrow()
+    await fs.rm(home, { recursive: true, force: true })
+  })
+
+  test('revoke() limpa o cartão de renovação junto com a credencial (refresh token não sobrevive à revogação)', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+
+    await svc.connectGitHubToken('user_revoke_refresh', 'gh_access_velho', {
+      refreshToken: 'gh_refresh_velho',
+      refreshTokenExpiresAt: new Date('2027-02-13T12:00:00Z'),
+    })
+    await svc.revoke('user_revoke_refresh', 'github')
+
+    // Cenário real: o cliente reconecta colando só um access token novo, sem
+    // cartão de renovação (connectGitHubToken usa spread condicional — sem
+    // este teste, o refresh token ANTIGO sobreviveria à revogação e a
+    // renovação periódica tentaria usá-lo, órfão, contra um access token
+    // que não tem nenhuma relação com ele).
+    const stored = prisma.store.get('user_revoke_refresh:github')
+    expect(stored?.['encryptedRefreshToken']).toBeNull()
+    expect(stored?.['refreshTokenExpiresAt']).toBeNull()
+  })
+
+  test('materializeToHome recusa uma conexão marcada needs_reconnect, mesmo com expiresAt no futuro', async () => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any)
+    await svc.connectGitHubToken('user_stuck', 'gh_access_velho')
+    // renovação falhou no GitHub: o status vira needs_reconnect (mesma
+    // gravação que scheduler.ts faz em marcarPrecisaReconectar, Task 5)
+    await prisma.engineConnection.updateMany({
+      where: { userId: 'user_stuck', runtime: 'github' },
+      data: { status: 'needs_reconnect', lastError: 'refresh token revogado' },
+    })
+
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-ghstuck-'))
+    expect(await svc.materializeToHome('user_stuck', 'github', home)).toBe(false)
+    await fs.rm(home, { recursive: true, force: true })
+  })
+
   test('connectGitHubToken rejeita token vazio ou com formato estranho', async () => {
     const prisma = fakePrisma()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

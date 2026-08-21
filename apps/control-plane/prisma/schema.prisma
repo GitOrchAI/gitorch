@@ -178,20 +178,29 @@ model EngineConnection {
   // pending | connected | error | revoked | awaiting_approval | expired |
   // stale | needs_reconnect. Só "connected" após validação real (ping
   // autenticado) — nunca fachada (spec setup-wizard-redesign §17.3/§17.4).
-  status String @default("pending")
+  status  String @default("pending")
 
-  encryptedCredential String? @map("encrypted_credential")
+  encryptedCredential   String?   @map("encrypted_credential")
   // 'file' (padrão): a credencial é um arquivo restaurado no HOME da missão
   // (ex.: .codex/auth.json, .gemini/.../antigravity-oauth-token).
   // 'env': a credencial é um valor único injetado como variável de ambiente
   // (ex.: Claude Code — CLAUDE_CODE_OAUTH_TOKEN — não existe como arquivo).
-  credentialKind String?   @default("file") @map("credential_kind")
-  envVarName     String?   @map("env_var_name")
-  expiresAt      DateTime? @map("expires_at")
-  models         Json? // catálogo de modelos descoberto no provider
-  modelsRefreshedAt   DateTime? @map("models_refreshed_at")
-  lastValidatedAt     DateTime? @map("last_validated_at")
-  lastError           String?   @map("last_error")
+  credentialKind        String?   @default("file") @map("credential_kind")
+  envVarName            String?   @map("env_var_name")
+  expiresAt             DateTime? @map("expires_at")
+  // Renovação automática do token do GitHub (F8): o login por GitHub App
+  // expira o access_token a cada ~8h quando "User-to-server token
+  // expiration" está ligado, e devolve um refresh_token junto. Cifrado com o
+  // MESMO envelope AES-256-GCM de encryptedCredential — nunca texto puro.
+  // NULL em toda conexão feita ANTES desta coluna existir (legado): a
+  // rotina de renovação trata a ausência como "precisa reconectar uma vez",
+  // nunca como "não expira".
+  encryptedRefreshToken String?   @map("encrypted_refresh_token")
+  refreshTokenExpiresAt DateTime? @map("refresh_token_expires_at")
+  models                Json? // catálogo de modelos descoberto no provider
+  modelsRefreshedAt     DateTime? @map("models_refreshed_at")
+  lastValidatedAt       DateTime? @map("last_validated_at")
+  lastError             String?   @map("last_error")
 
   // Quota restante do provider (BYOK), lida best-effort junto com os modelos.
   // Alimenta o spend-guard: quota crítica bloqueia a missão (protege a conta do
@@ -238,6 +247,10 @@ model Project {
 
   runtimeConfig Json?    @map("runtime_config")
 
+  // Plano do dev assíncrono declarado pelo dono: 'free' | 'pro' | 'ultra'.
+  // A API do serviço não oferece consulta de cota, então o teto é declarado.
+  devPlan String? @map("dev_plan")
+
   githubInstallationId Int?   @unique @map("github_installation_id")
   githubRepoId        BigInt? @unique @map("github_repo_id")
 
@@ -245,6 +258,18 @@ model Project {
   // produto não alcança quadro de conta pessoal nem rota de segurança nenhuma:
   // é usada só onde o App não chega, nunca como atalho geral.
   encryptedClientToken String? @map("encrypted_client_token")
+
+  // Reconferência PERIÓDICA do acesso do dono ao repositório (o acesso era
+  // provado uma vez, no cadastro, e o caminho automático nunca mais perguntava
+  // nada — ver services/reconferencia-de-acesso.ts).
+  // Nulo = nunca conferido: entra no primeiro ciclo depois do deploy.
+  accessCheckedAt   DateTime? @map("access_checked_at")
+  // Preenchido = projeto SUSPENSO: não dispara missão até o acesso voltar.
+  accessSuspendedAt DateTime? @map("access_suspended_at")
+  accessSuspendedReason String? @map("access_suspended_reason")
+  // Conferências seguidas que não concluíram nada. NUNCA suspendem — só
+  // encurtam o intervalo da próxima tentativa e, no limite, avisam o dono.
+  accessCheckFailures Int @default(0) @map("access_check_failures")
 
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
@@ -255,6 +280,7 @@ model Project {
   webhookDeliveries WebhookDelivery[]
   schedules   ProjectSchedule[]
   agentQuestions AgentQuestion[]
+  devSessions DevSession[]
 
   // Um repo, um projeto, POR DONO. É o banco garantindo o que a rota de setup
   // passou a exigir — mesmo repo em dois clientes = dois projetos distintos.
@@ -521,4 +547,69 @@ model AgentQuestion {
   // projetos e entre uma pergunta aberta e a respondida antiga).
   @@index([dedupKey])
   @@map("agent_questions")
+}
+/// A ligação entre a issue, a sessão do dev assíncrono e o PR que ela produz.
+/// Existe porque essa ligação vivia só no texto de saída da missão e evaporava
+/// com o log — e sem ela o PR entregue nunca era reconhecido para julgamento.
+model DevSession {
+  id          String @id @default(cuid())
+  projectId   String @map("project_id")
+  issueNumber Int    @map("issue_number")
+
+  /// Identificador da sessão no serviço do dev assíncrono ("sessions/<id>").
+  sessionName String @unique @map("session_name")
+
+  state          String    @default("QUEUED")
+  stateCheckedAt DateTime? @map("state_checked_at")
+  /// Última vez que a sessão deu sinal de avanço. É o que separa "trabalhando"
+  /// de "parada": a API não tem estado para isso e não oferece retomada.
+  lastProgressAt DateTime? @map("last_progress_at")
+
+  /// Hash da última pergunta já respondida, para não responder duas vezes
+  /// enquanto o dev ainda processa a resposta anterior.
+  answeredHash String? @map("answered_hash")
+
+  /// Só o NÚMERO. A URL vem de serviço externo e nunca é desreferenciada.
+  pullRequestNumber Int? @map("pull_request_number")
+
+  /// Tetos, para nada girar para sempre gastando cota.
+  attempts Int @default(1)
+  nudges   Int @default(0)
+
+  /// Preenchidos quando a linha sai da vigia: merged, abandoned ou failed_final.
+  closedAt     DateTime? @map("closed_at")
+  closedReason String?   @map("closed_reason")
+
+  /// Desde quando esta entrega está com a verificação automática pendente —
+  /// nulo enquanto nunca esteve, ou depois que o juiz limpa a marca ao
+  /// julgar. É a partir dela que `decidirSobreVerificacao`
+  /// (vigia-da-verificacao.ts) conta o teto de espera antes de avisar o dono.
+  pendingSince DateTime? @map("pending_since")
+  /// SHA do commit de fato mesclado — a Tarefa 12 usa para casar a execução
+  /// de CD com a entrega certa (nunca declarar publicado um commit antigo).
+  mergeCommitSha String? @map("merge_commit_sha")
+  /// Último estado de publicação lido no ambiente do cliente (Tarefa 13).
+  deployState String? @map("deploy_state")
+  /// Quando `deployState` foi lido pela última vez (Tarefa 13).
+  deployCheckedAt DateTime? @map("deploy_checked_at")
+  /// Fracassos SEGUIDOS de mescla contra o commit atual (Tarefa 10) — zera
+  /// quando o commit muda. Não usado por esta migração, só criado por ela.
+  mergeFailures Int @default(0) @map("merge_failures") @db.SmallInt
+  /// Quando o último fracasso de mescla aconteceu (Tarefa 10).
+  mergeLastFailedAt DateTime? @map("merge_last_failed_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+
+  /// Sem índices aqui de propósito: os dois que esta tabela usa
+  /// (dev_sessions_open_idx e o único parcial dev_sessions_open_per_issue)
+  /// são PARCIAIS (WHERE closed_at IS NULL) e vivem só em
+  /// prisma/dev-session-migration.sql — o Prisma não representa índice
+  /// parcial sem preview feature. Declarar `@@index([closedAt])` aqui criaria
+  /// um índice full-table REDUNDANTE em cima do parcial no baseline de banco
+  /// virgem (scripts/db-migrate.sh via `prisma migrate diff --from-empty`),
+  /// puro custo em todo insert/update para sempre.
+  @@map("dev_sessions")
 }

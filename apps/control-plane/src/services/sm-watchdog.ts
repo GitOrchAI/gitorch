@@ -1,13 +1,25 @@
 import { GithubExecutionError } from './github-backlog.js'
+import { fetchComTeto } from './fetch-com-teto.js'
 
 // Watchdog do SM (F3.6): o SM é o dono da esteira — quando o dev assíncrono
 // (Jules) falha, é o SM que destrava. Tudo determinístico (a Lei: julgamento
-// mecânico é código, não LLM). O estado vive no próprio GitHub: comentários de
-// falha do Jules disparam o retry oficial (remover e re-aplicar a label) e
-// markers nossos nos comentários contam as tentativas. Estourou o limite →
-// `gitorch:stuck` + aviso humano (Telegram, se configurado).
+// mecânico é código, não LLM).
+//
+// Já teve um retry oficial aqui (remover e re-aplicar a label de delegação).
+// Aposentado: era inerte desde sempre — a fila de delegação escolhia
+// justamente as issues SEM a label, então reaplicá-la numa issue que já a
+// tinha nunca a devolvia à fila. A cobrança real mudou para a linha da
+// sessão em `dev_sessions` (ver `fila-de-delegacao.ts`): sessão fechada sem
+// merge devolve a issue para a fila sozinha, no ciclo seguinte.
+//
+// O que sobra aqui é só a escalação: os markers `RETRY_MARKER` já gravados
+// no histórico de comentários (de antes desta aposentadoria) ainda contam as
+// tentativas para o teto — estourou o limite → `gitorch:stuck` + aviso
+// humano (Telegram, se configurado).
 
 const TASK_LABEL = 'gitorch:task'
+// Não é mais escrito por este arquivo (o retry que o gravava foi aposentado) —
+// só lido, para contar tentativas já registradas antes da aposentadoria.
 const RETRY_MARKER = '<!-- gitorch:sm-retry -->'
 const STUCK_MARKER = '<!-- gitorch:sm-stuck -->'
 const STUCK_LABEL = 'gitorch:stuck'
@@ -35,7 +47,6 @@ export interface SmWatchdogResult {
   output: string
   stderr: string
   noOp?: boolean
-  retried: number[]
   stuck: number[]
 }
 
@@ -45,7 +56,10 @@ interface IssueComment {
 }
 
 export async function runSmWatchdog(options: SmWatchdogOptions): Promise<SmWatchdogResult> {
-  const f = options.fetchImpl ?? fetch
+  // IMPORTANTE (leva D): mesma classe de defeito do Crítico —
+  // `fetchComTeto` fecha o teto que faltava nesta closure `gh`, alcançável
+  // pelo tique sob `tickEmAndamento` (scheduler.ts, wake do SM).
+  const f = fetchComTeto(options.fetchImpl ?? fetch)
   const label = options.delegateLabel ?? 'jules'
   const maxRetries = options.maxRetries ?? 3
 
@@ -74,7 +88,6 @@ export async function runSmWatchdog(options: SmWatchdogOptions): Promise<SmWatch
     )}&per_page=100`
   )) as Array<{ number: number; labels: Array<{ name: string }> }>
 
-  const retried: number[] = []
   const stuck: number[] = []
 
   for (const issue of Array.isArray(issues) ? issues : []) {
@@ -134,29 +147,20 @@ export async function runSmWatchdog(options: SmWatchdogOptions): Promise<SmWatch
       continue
     }
 
-    // Retry oficial do Jules: remover e re-aplicar a label de delegação.
-    await gh(
-      'DELETE',
-      `/repos/${options.repository}/issues/${issue.number}/labels/${encodeURIComponent(label)}`
-    )
-    await gh('POST', `/repos/${options.repository}/issues/${issue.number}/labels`, {
-      labels: [label],
-    })
-    await gh('POST', `/repos/${options.repository}/issues/${issue.number}/comments`, {
-      body: `${RETRY_MARKER}\nGitOrch SM: falha do dev assíncrono detectada — retentativa ${retryCount + 1}/${maxRetries} (label re-aplicada).`,
-    })
-    retried.push(issue.number)
+    // O retentar NÃO mora mais aqui. Reaplicar a etiqueta era inerte: a fila de
+    // delegação escolhia justamente as issues SEM a etiqueta, então a issue
+    // reaplicada nunca voltava a ser escolhida. A cobrança agora é a linha da
+    // sessão (`fila-de-delegacao.ts`): sessão fechada sem merge devolve a issue
+    // para a fila no ciclo seguinte, sozinha.
   }
 
   const parts: string[] = []
-  if (retried.length > 0) parts.push(`retried ${retried.map((n) => `#${n}`).join(', ')}`)
   if (stuck.length > 0) parts.push(`escalated ${stuck.map((n) => `#${n}`).join(', ')}`)
   return {
     exitCode: 0,
     output: parts.length > 0 ? `SM watchdog: ${parts.join('; ')}.` : 'SM watchdog: all quiet.',
     stderr: '',
     noOp: parts.length === 0,
-    retried,
     stuck,
   }
 }
@@ -167,20 +171,50 @@ export async function runSmWatchdog(options: SmWatchdogOptions): Promise<SmWatch
  * DONO daquele projeto — o bot só alcança quem apertou Start nele. Sem chat
  * resolvido → undefined → o watchdog simplesmente não notifica (nunca despeja o
  * evento de um cliente num chat que não é o dele).
+ *
+ * CRÍTICO (leva D): o `fetch` daqui não carregava teto NENHUM — nem
+ * `signal`, nem timeout de nenhum tipo. `avisarDonoDoProjeto` (scheduler.ts)
+ * e o watchdog do SM (`runSmWatchdog`, acima) esperam (`await`) o resultado
+ * desta função DENTRO da varredura pós-merge (`varrerPublicacoes`), sob a
+ * MESMA trava `tickEmAndamento` que o Crítico 1 da leva C já fechou para
+ * `ghGet`/`ghSend`/`createCardMover`. Um socket do Telegram que trava (não
+ * um erro HTTP — esse já cai no `.catch(() => undefined)` de quem chama)
+ * nunca rejeita sozinho: prende `tickEmAndamento` para SEMPRE, e com ela
+ * TODA varredura futura, de TODO projeto — provado ao vivo numa cópia: uma
+ * chamada ao Telegram que nunca resolve produziu exatamente UMA varredura
+ * em toda a execução e mais de trinta tiques consecutivos pulados, sem log
+ * nenhum explicando por quê. `fetchComTeto` fecha isso com o mesmo padrão
+ * já usado em `ghGet`/`ghSend`. `timeoutMs` é injetável só para teste — em
+ * produção nenhum chamador o passa, e o padrão (`TIMEOUT_PADRAO_DE_CHAMADA_MS`,
+ * 10s) vale.
+ *
+ * A função devolvida NUNCA rejeita (todo chamador deste arquivo depende
+ * disso — "Nunca deve derrubar o watchdog"), então uma falha de ENTREGA
+ * real (bot inválido, destino apagado, timeout) fica muda por padrão: sem
+ * `onDeliveryFailure`, ela desaparece sem deixar rastro nenhum — um
+ * `.catch(...)` em volta de `notify(...)`, em qualquer chamador, NUNCA
+ * dispara (achado Baixo 6 da revisão da Task 5/F8: era código morto).
+ * `onDeliveryFailure` é o jeito de um chamador OPTAR por não deixar a falha
+ * sumir (ex.: registrar num log), sem mudar o contrato "nunca rejeita" para
+ * quem não passa o callback.
  */
 export function buildTelegramNotifier(env: {
   botToken?: string | undefined
   chatId?: string | undefined
   fetchImpl?: typeof fetch
+  timeoutMs?: number
+  onDeliveryFailure?: (err: unknown) => void
 }): ((message: string) => Promise<void>) | undefined {
   const { botToken, chatId } = env
   if (!botToken || !chatId) return undefined
-  const f = env.fetchImpl ?? fetch
+  const f = fetchComTeto(env.fetchImpl ?? fetch, env.timeoutMs)
   return async (message: string) => {
     await f(`https://api.telegram.org/bot${botToken}/sendMessage`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ chat_id: chatId, text: message }),
-    }).catch(() => undefined)
+    }).catch((err: unknown) => {
+      env.onDeliveryFailure?.(err)
+    })
   }
 }

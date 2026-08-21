@@ -4,6 +4,11 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { createLocalCredentialRunner } from './scheduler.js'
 
+// Casos que não são sobre a devolução ao cofre: a captura existe (o tipo a
+// exige, para o compilador impedir que produção esqueça dela), mas o que
+// eles verificam é outra coisa.
+const capturaIgnorada = (async () => ({})) as never
+
 describe('createLocalCredentialRunner', () => {
   const tmpDirs: string[] = []
 
@@ -31,7 +36,10 @@ describe('createLocalCredentialRunner', () => {
       capturedEnv: request.env,
     }))
 
-    const runner = createLocalCredentialRunner({ materializeToHome }, inner as never)
+    const runner = createLocalCredentialRunner(
+      { materializeToHome, captureFromHome: capturaIgnorada },
+      inner as never
+    )
     const result = (await runner({
       binary: 'claude',
       args: [],
@@ -47,7 +55,10 @@ describe('createLocalCredentialRunner', () => {
   test('sem GITORCH_RUNTIME/GITORCH_OWNER_USER_ID, chama o runner interno sem tocar credenciais', async () => {
     const materializeToHome = vi.fn()
     const inner = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '', durationMs: 1 }))
-    const runner = createLocalCredentialRunner({ materializeToHome }, inner as never)
+    const runner = createLocalCredentialRunner(
+      { materializeToHome, captureFromHome: capturaIgnorada },
+      inner as never
+    )
 
     await runner({ binary: 'codex', args: [], env: {} })
 
@@ -58,7 +69,10 @@ describe('createLocalCredentialRunner', () => {
   test('sem conexão do motor (materializeToHome retorna false), roda sem credencial ao invés de travar a missão', async () => {
     const materializeToHome = vi.fn().mockResolvedValue(false)
     const inner = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '', durationMs: 1 }))
-    const runner = createLocalCredentialRunner({ materializeToHome }, inner as never)
+    const runner = createLocalCredentialRunner(
+      { materializeToHome, captureFromHome: capturaIgnorada },
+      inner as never
+    )
 
     await runner({
       binary: 'codex',
@@ -82,7 +96,10 @@ describe('createLocalCredentialRunner', () => {
     const inner = vi.fn(async () => {
       throw new Error('boom')
     })
-    const runner = createLocalCredentialRunner({ materializeToHome }, inner as never)
+    const runner = createLocalCredentialRunner(
+      { materializeToHome, captureFromHome: capturaIgnorada },
+      inner as never
+    )
 
     await expect(
       runner({
@@ -132,7 +149,7 @@ describe('createLocalCredentialRunner', () => {
       const log = { info: vi.fn(), warn: vi.fn() }
 
       const runner = createLocalCredentialRunner(
-        { materializeToHome },
+        { materializeToHome, captureFromHome: capturaIgnorada },
         inner as never,
         environments,
         log
@@ -165,7 +182,7 @@ describe('createLocalCredentialRunner', () => {
       const log = { info: vi.fn(), warn: vi.fn() }
 
       const runner = createLocalCredentialRunner(
-        { materializeToHome },
+        { materializeToHome, captureFromHome: capturaIgnorada },
         inner as never,
         environments,
         log
@@ -210,7 +227,7 @@ describe('createLocalCredentialRunner', () => {
       const log = { info: vi.fn(), warn: vi.fn() }
 
       const runner = createLocalCredentialRunner(
-        { materializeToHome },
+        { materializeToHome, captureFromHome: capturaIgnorada },
         inner as never,
         environments,
         log
@@ -255,7 +272,7 @@ describe('createLocalCredentialRunner', () => {
       const log = { info: vi.fn(), warn: vi.fn() }
 
       const runner = createLocalCredentialRunner(
-        { materializeToHome },
+        { materializeToHome, captureFromHome: capturaIgnorada },
         inner as never,
         environments,
         log
@@ -283,7 +300,10 @@ describe('createLocalCredentialRunner', () => {
         capturedEnv: request.env,
       }))
 
-      const runner = createLocalCredentialRunner({ materializeToHome }, inner as never)
+      const runner = createLocalCredentialRunner(
+        { materializeToHome, captureFromHome: capturaIgnorada },
+        inner as never
+      )
       const result = (await runner({
         binary: 'claude',
         args: [],
@@ -291,6 +311,138 @@ describe('createLocalCredentialRunner', () => {
       })) as unknown as { capturedEnv: Record<string, string> }
 
       expect(result.capturedEnv['PATH']).toBeUndefined()
+    })
+  })
+
+  // A AMNÉSIA DE RENOVAÇÃO — o defeito que fez a esteira parar de 17/08 a
+  // 20/08 e que sustenta o requisito do dono ("conectar uma vez e nunca
+  // mais"). Provado ao vivo em 20/08: rodar `agy -p` no HOME do host fez o
+  // CLI renovar o próprio token sozinho (arquivo saltou de 20/07 para
+  // 20/08). Ou seja, o motor SABE se renovar — mas aqui ele roda num HOME
+  // temporário que é apagado no finally logo abaixo, e o cofre nunca fica
+  // sabendo. Toda missão partia do mesmo token vencido de 17/08, até o
+  // refresh_token vencer de vez.
+  describe('captura de volta a credencial renovada (conectar uma vez e nunca mais)', () => {
+    test('depois da missão, devolve ao cofre o que o motor renovou no HOME temporário', async () => {
+      const materializeToHome = vi.fn(async (_u: string, _r: string, dir: string) => {
+        tmpDirs.push(dir)
+        await fs.mkdir(path.join(dir, '.gemini', 'antigravity-cli'), { recursive: true })
+        await fs.writeFile(
+          path.join(dir, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'),
+          'token-velho'
+        )
+        return true
+      })
+      // O motor renova o próprio token enquanto roda — é o que o CLI faz de verdade.
+      const inner = vi.fn(async (request: { env: Record<string, string> }) => {
+        const home = request.env['HOME'] as string
+        await fs.writeFile(
+          path.join(home, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'),
+          'token-renovado'
+        )
+        return { exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1 }
+      })
+      // Lê o arquivo no momento da captura: prova que a captura acontece
+      // ANTES do finally apagar o diretório, e que pega o valor NOVO.
+      let vistoNaCaptura: string | null = null
+      const captureFromHome = vi.fn(async (_u: string, _r: string, dir: string) => {
+        vistoNaCaptura = await fs.readFile(
+          path.join(dir, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'),
+          'utf8'
+        )
+        return {} as never
+      })
+
+      const runner = createLocalCredentialRunner(
+        { materializeToHome, captureFromHome },
+        inner as never
+      )
+      await runner({
+        binary: 'agy',
+        args: [],
+        env: { GITORCH_RUNTIME: 'antigravity', GITORCH_OWNER_USER_ID: 'user_1' },
+      })
+
+      expect(captureFromHome).toHaveBeenCalledWith('user_1', 'antigravity', expect.any(String))
+      expect(vistoNaCaptura).toBe('token-renovado')
+      // Mesmo HOME dos dois lados: capturar de um diretório diferente do que
+      // foi materializado guardaria a credencial errada no cofre.
+      expect(captureFromHome.mock.calls[0]?.[2]).toBe(materializeToHome.mock.calls[0]?.[2])
+    })
+
+    test('missão que FALHA também devolve a renovação — o motor pode ter renovado antes de falhar', async () => {
+      const materializeToHome = vi.fn(async (_u: string, _r: string, dir: string) => {
+        tmpDirs.push(dir)
+        return true
+      })
+      const inner = vi.fn(async () => {
+        throw new Error('rails step 2 failed: o trabalho da missão quebrou')
+      })
+      const captureFromHome = vi.fn(async () => ({}) as never)
+
+      const runner = createLocalCredentialRunner(
+        { materializeToHome, captureFromHome },
+        inner as never
+      )
+
+      await expect(
+        runner({
+          binary: 'agy',
+          args: [],
+          env: { GITORCH_RUNTIME: 'antigravity', GITORCH_OWNER_USER_ID: 'user_2' },
+        })
+      ).rejects.toThrow('rails step 2 failed')
+
+      // Jogar fora a renovação só porque o TRABALHO falhou é perder de graça
+      // uma credencial boa — e é assim que a esteira voltaria a morrer.
+      expect(captureFromHome).toHaveBeenCalledWith('user_2', 'antigravity', expect.any(String))
+    })
+
+    test('falha ao capturar NÃO derruba a missão que já deu certo', async () => {
+      const materializeToHome = vi.fn(async (_u: string, _r: string, dir: string) => {
+        tmpDirs.push(dir)
+        return true
+      })
+      const inner = vi.fn(async () => ({
+        exitCode: 0,
+        stdout: 'entregue',
+        stderr: '',
+        durationMs: 1,
+      }))
+      const captureFromHome = vi.fn(async () => {
+        throw new Error('cofre indisponível')
+      })
+
+      const runner = createLocalCredentialRunner(
+        { materializeToHome, captureFromHome },
+        inner as never
+      )
+      const result = (await runner({
+        binary: 'agy',
+        args: [],
+        env: { GITORCH_RUNTIME: 'antigravity', GITORCH_OWNER_USER_ID: 'user_3' },
+      })) as unknown as { stdout: string }
+
+      expect(result.stdout).toBe('entregue')
+    })
+
+    test('sem credencial materializada, não há o que capturar', async () => {
+      const materializeToHome = vi.fn().mockResolvedValue(false)
+      const inner = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '', durationMs: 1 }))
+      const captureFromHome = vi.fn(async () => ({}) as never)
+
+      const runner = createLocalCredentialRunner(
+        { materializeToHome, captureFromHome },
+        inner as never
+      )
+      await runner({
+        binary: 'codex',
+        args: [],
+        env: { GITORCH_RUNTIME: 'codex', GITORCH_OWNER_USER_ID: 'user_4' },
+      })
+
+      // Capturar aqui gravaria um cofre vazio por cima de uma conexão boa.
+      expect(captureFromHome).not.toHaveBeenCalled()
     })
   })
 })

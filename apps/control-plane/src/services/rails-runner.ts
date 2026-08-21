@@ -16,6 +16,30 @@ export class RailsStepError extends Error {
   }
 }
 
+// Irmão de RailsStepError para um caso DIFERENTE: aqui o motor nem chegou a
+// responder — o PROCESSO (o executável do CLI do motor) saiu com exitCode
+// != 0 (crash, binário ausente, timeout do processo etc.), antes de haver
+// qualquer texto para extrair/validar. RailsStepError é "o motor respondeu,
+// mas o formulário nunca validou"; RailsExecutionError é "o motor nem
+// respondeu". Os dois são falha de MOTOR — o próximo motor da cadeia pode
+// conseguir onde este falhou — e por isso o chamador (scheduler.ts,
+// isEngineFault) trata ambos como `engineFault`, disparando failover.
+//
+// Bug real de produção (loureng/patinhas-3d-crafts, chain=codex>antigravity,
+// falhas diárias desde 12/08): o passo de trilhos lançava um `Error`
+// genérico neste caso, que não batia nem em RailsStepError nem no regex de
+// cota/auth (isFailoverError) — a missão morria sem NUNCA tentar o motor de
+// reserva. Este tipo fecha essa lacuna sem depender de casar texto de erro.
+export class RailsExecutionError extends Error {
+  constructor(
+    message: string,
+    public readonly exitCode: number
+  ) {
+    super(message)
+    this.name = 'RailsExecutionError'
+  }
+}
+
 /**
  * Extrai o PRIMEIRO objeto JSON balanceado de um texto de motor (que pode vir
  * com prosa em volta e cercas de markdown). Ignora chaves dentro de strings.

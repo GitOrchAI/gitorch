@@ -67,18 +67,35 @@ describe('Minimatch Security (ReDoS)', () => {
 describe('Brace Expansion Security (CVE-2026-14257)', () => {
   it('should handle large brace expansion safely without causing process crash (OOM)', () => {
     // Input that used to crash vulnerable versions (< 5.0.8) with an uncatchable Out-Of-Memory error
-    const input = '{a,b}'.repeat(1500)
+    const N = 1500
+    const input = '{a,b}'.repeat(N)
 
-    const start = performance.now()
-    // In version 5.0.8, the maxLength option limits the total length of the expanded output
-    // and returns a truncated/bounded array rather than crashing the process.
+    // Fixed in 5.0.8 with TWO caps, not one. `EXPANSION_MAX` (100_000
+    // results) alone is not the fix: 100_000 results of ~1_500 characters
+    // each is still enough memory to lose control before the final
+    // truncation — the exact gap CVE-2026-14257 closes. The second cap,
+    // `EXPANSION_MAX_LENGTH` (4_000_000 accumulated characters), is what
+    // actually stops THIS input, and it stops it far below the 100_000
+    // count cap. Asserting on the OUTPUT (below) proves both caps are live;
+    // asserting on WALL-CLOCK TIME does not — measured 0/10 failures idle
+    // and 10/10 failures under 4x CPU load on a shared CI runner (the
+    // instrument was flaky, not the fix). The size of the result does not
+    // change with machine load.
     const result = expand(input)
-    const duration = performance.now() - start
 
     expect(Array.isArray(result)).toBe(true)
-    // The result should be truncated/bounded
+    // The original security guarantee — untouched, still the ceiling that
+    // must never be crossed regardless of which cap enforces it.
     expect(result.length).toBeLessThanOrEqual(100000)
-    // Verify that it completed safely and in reasonable time
-    expect(duration).toBeLessThan(1500) // generous timeout for slow CI environments
+    // Tighter and load-independent: proves the CHARACTER-length cap is what
+    // actually bounded this specific input, not just the count cap. A "fix"
+    // that kept only `EXPANSION_MAX` (count) and dropped
+    // `EXPANSION_MAX_LENGTH` would still pass the assertion above (it would
+    // produce exactly 100_000 results) but fails this one.
+    expect(result.length).toBeLessThan(10_000)
+    // Every surviving result is a COMPLETE expansion (one character kept per
+    // repeated group) — the cut is in how MANY results survive, never in
+    // truncating a result mid-string.
+    expect(result.every((s) => s.length === N)).toBe(true)
   })
 })

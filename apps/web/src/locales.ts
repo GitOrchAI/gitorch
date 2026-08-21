@@ -71,6 +71,35 @@ export const locales = {
       cognitiveLogs: 'Cognitive Log (Synapse Engine)',
       blastRadius: 'Blast Radius & Affected Files',
       relaunchBtn: 'Trigger Agent Mission',
+      wishTitle: 'What do you want the project to do?',
+      wishHint:
+        'Describe it in your own words. We turn it into the official request and the agents take it from there.',
+      wishPlaceholder: 'Example: the site should accept reviews with photos.',
+      wishProjectLabel: 'Project',
+      wishSubmit: 'Send request',
+      wishSending: 'Sending…',
+      wishSuccess: 'Request registered in {{repo}} as #{{numero}}.',
+      wishSuccessNoRepo: 'Request registered as #{{numero}}.',
+      wishSuccessLink: 'Open on GitHub',
+      wishLoadingProjects: 'Loading your projects…',
+      wishProjectsUnavailable:
+        'We could not check your projects right now. This says nothing about your setup — try again.',
+      wishProjectsRetry: 'Try again',
+      wishNoProjects: 'No project connected yet. Finish the setup to send a request.',
+      wishErrorEmpty: 'Write what you want before sending.',
+      wishErrorTooLong:
+        'This request is too long for a GitHub issue ({{limite}} characters max). Trim it or split it into two requests — trying again will not help.',
+      wishErrorNoProject: 'Pick which project this request is for.',
+      wishErrorProject: 'That project is not available for requests. Pick another one.',
+      wishErrorSession: 'Your session expired. Sign in again and resend.',
+      wishErrorRepoAccess:
+        "You no longer have write access to this project's repository on GitHub, so the request can't be recorded there. Ask for access again and resend.",
+      wishErrorRepoUnverified:
+        "We couldn't confirm with GitHub that this repository is still yours. Try again in a moment.",
+      wishErrorGithubDisconnected:
+        'Your GitHub connection is no longer valid, so we cannot record the request. Reconnect your GitHub account and send it again — trying again will not help.',
+      wishErrorGithub: 'We could not register the request right now. Try again in a moment.',
+      wishErrorNetwork: 'We could not reach GitOrch. Check your connection and try again.',
     },
     setup: {
       begin: 'Get started',
@@ -392,6 +421,35 @@ export const locales = {
       cognitiveLogs: 'Log Cognitivo (Synapse Engine)',
       blastRadius: 'Blast Radius e Arquivos Afetados',
       relaunchBtn: 'Disparar Missão do Agente',
+      wishTitle: 'O que você quer que o projeto faça?',
+      wishHint:
+        'Escreva com suas palavras. A gente transforma isso no pedido oficial e os agentes seguem daí.',
+      wishPlaceholder: 'Exemplo: o site precisa aceitar avaliação com foto.',
+      wishProjectLabel: 'Projeto',
+      wishSubmit: 'Enviar pedido',
+      wishSending: 'Enviando…',
+      wishSuccess: 'Pedido registrado em {{repo}} como #{{numero}}.',
+      wishSuccessNoRepo: 'Pedido registrado como #{{numero}}.',
+      wishSuccessLink: 'Abrir no GitHub',
+      wishLoadingProjects: 'Carregando seus projetos…',
+      wishProjectsUnavailable:
+        'Não deu para verificar seus projetos agora. Isso não diz nada sobre o seu setup — tente de novo.',
+      wishProjectsRetry: 'Tentar de novo',
+      wishNoProjects: 'Nenhum projeto conectado ainda. Conclua o setup para poder pedir.',
+      wishErrorEmpty: 'Escreva o que você quer antes de enviar.',
+      wishErrorTooLong:
+        'Este pedido é longo demais para uma issue do GitHub (limite de {{limite}} caracteres). Encurte ou divida em dois pedidos — tentar de novo não vai resolver.',
+      wishErrorNoProject: 'Escolha para qual projeto é este pedido.',
+      wishErrorProject: 'Esse projeto não está disponível para pedidos. Escolha outro.',
+      wishErrorSession: 'Sua sessão expirou. Entre de novo e mande outra vez.',
+      wishErrorRepoAccess:
+        'Você não tem mais acesso de escrita ao repositório deste projeto no GitHub, então o pedido não pode ser registrado lá. Peça o acesso de volta e mande outra vez.',
+      wishErrorRepoUnverified:
+        'Não deu para confirmar no GitHub que esse repositório ainda é seu. Tente de novo em instantes.',
+      wishErrorGithubDisconnected:
+        'Sua conexão com o GitHub não vale mais, então o pedido não pode ser registrado. Reconecte sua conta do GitHub e mande outra vez — tentar de novo não vai resolver.',
+      wishErrorGithub: 'Não deu para registrar o pedido agora. Tente de novo em instantes.',
+      wishErrorNetwork: 'Não deu para falar com o GitOrch. Verifique sua conexão e tente de novo.',
     },
     setup: {
       begin: 'Começar',
@@ -715,6 +773,35 @@ export const locales = {
       cognitiveLogs: 'Log Cognitivo (Synapse Engine)',
       blastRadius: 'Blast Radius y Archivos Afectados',
       relaunchBtn: 'Disparar Misión del Agente',
+      wishTitle: '¿Qué quieres que haga el proyecto?',
+      wishHint:
+        'Descríbelo con tus palabras. Lo convertimos en el pedido oficial y los agentes siguen desde ahí.',
+      wishPlaceholder: 'Ejemplo: el sitio necesita aceptar reseñas con foto.',
+      wishProjectLabel: 'Proyecto',
+      wishSubmit: 'Enviar pedido',
+      wishSending: 'Enviando…',
+      wishSuccess: 'Pedido registrado en {{repo}} como #{{numero}}.',
+      wishSuccessNoRepo: 'Pedido registrado como #{{numero}}.',
+      wishSuccessLink: 'Abrir en GitHub',
+      wishLoadingProjects: 'Cargando tus proyectos…',
+      wishProjectsUnavailable:
+        'No pudimos verificar tus proyectos ahora. Esto no dice nada sobre tu setup — inténtalo de nuevo.',
+      wishProjectsRetry: 'Intentar de nuevo',
+      wishNoProjects: 'Aún no hay proyecto conectado. Termina el setup para poder pedir.',
+      wishErrorEmpty: 'Escribe lo que quieres antes de enviar.',
+      wishErrorTooLong:
+        'Este pedido es demasiado largo para un issue de GitHub (límite de {{limite}} caracteres). Acórtalo o divídelo en dos — intentar de nuevo no lo va a resolver.',
+      wishErrorNoProject: 'Elige para qué proyecto es este pedido.',
+      wishErrorProject: 'Ese proyecto no está disponible para pedidos. Elige otro.',
+      wishErrorSession: 'Tu sesión expiró. Inicia sesión de nuevo y envíalo otra vez.',
+      wishErrorRepoAccess:
+        'Ya no tienes acceso de escritura al repositorio de este proyecto en GitHub, así que el pedido no puede registrarse allí. Pide el acceso de vuelta y envíalo otra vez.',
+      wishErrorRepoUnverified:
+        'No pudimos confirmar en GitHub que ese repositorio siga siendo tuyo. Inténtalo de nuevo en un momento.',
+      wishErrorGithubDisconnected:
+        'Tu conexión con GitHub ya no vale, así que el pedido no puede registrarse. Reconecta tu cuenta de GitHub y envíalo otra vez — intentar de nuevo no lo va a resolver.',
+      wishErrorGithub: 'No pudimos registrar el pedido ahora. Inténtalo de nuevo en un momento.',
+      wishErrorNetwork: 'No pudimos contactar a GitOrch. Revisa tu conexión e inténtalo de nuevo.',
     },
     setup: {
       begin: 'Empezar',

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { runSmDelegation, extractBlockers } from './sm-delegation.js'
 
 describe('extractBlockers', () => {
@@ -73,14 +73,43 @@ function fakeFetch(issues: FakeIssue[], closed: number[] = []) {
 }
 
 describe('runSmDelegation', () => {
-  it('delega tasks prontas: sem bloqueio, sem jules', async () => {
+  it('delega task pronta; NÃO delega task com sessão viva', async () => {
+    // #11 já carrega a etiqueta `jules`, mas isso sozinho não a tira da fila
+    // (é exatamente o defeito que fazia #46/#47/#48 morrerem em silêncio). O
+    // que a tira da fila é ter uma linha viva em `sessoesVivas`.
     const f = fakeFetch([
       { number: 10, labels: ['gitorch:task'], body: 'sem bloqueio' },
-      { number: 11, labels: ['gitorch:task', 'jules'], body: 'já delegada' },
+      { number: 11, labels: ['gitorch:task', 'jules'], body: 'sessão em andamento' },
     ])
     const labeled = (f as unknown as { labeled: Array<{ number: number; labels: string[] }> })
       .labeled
-    const r = await runSmDelegation({ repository: 'o/r', githubToken: 't', fetchImpl: f })
+    const r = await runSmDelegation({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: f,
+      sessoesVivas: [
+        {
+          id: 'x',
+          projectId: 'p',
+          issueNumber: 11,
+          sessionName: 's',
+          state: 'IN_PROGRESS',
+          answeredHash: null,
+          pullRequestNumber: null,
+          attempts: 1,
+          nudges: 0,
+          lastProgressAt: null,
+          stateCheckedAt: null,
+          pendingSince: null,
+          mergeCommitSha: null,
+          deployState: null,
+          deployCheckedAt: null,
+          mergeFailures: 0,
+          mergeLastFailedAt: null,
+          closedAt: null,
+        },
+      ],
+    })
     const delegateCalls = labeled.filter((l) => l.labels.includes('jules'))
     expect(delegateCalls.map((l) => l.number)).toEqual([10])
     expect(r.delegated).toEqual([10])
@@ -167,6 +196,93 @@ describe('runSmDelegation: aciona o dev assíncrono', () => {
     expect(r.output).toContain('sessions/xyz')
   })
 
+  it('guarda a ligação issue → sessão assim que a sessão nasce', async () => {
+    const impl = fakeFetch([taskPronta()])
+    const guardadas: Array<{ issueNumber: number; sessionName: string }> = []
+
+    await runSmDelegation({
+      repository: 'GitOrchAI/gitorch',
+      githubToken: 't',
+      fetchImpl: impl,
+      criarSessaoDev: async () => 'sessions/xyz',
+      aoCriarSessao: async (d) => {
+        guardadas.push(d)
+      },
+    })
+
+    expect(guardadas).toEqual([{ issueNumber: 42, sessionName: 'sessions/xyz' }])
+  })
+
+  it('falha ao guardar a ligação não derruba a delegação das outras tasks', async () => {
+    const impl = fakeFetch([taskPronta()])
+
+    const r = await runSmDelegation({
+      repository: 'GitOrchAI/gitorch',
+      githubToken: 't',
+      fetchImpl: impl,
+      criarSessaoDev: async () => 'sessions/xyz',
+      aoCriarSessao: async () => {
+        throw new Error('banco fora do ar')
+      },
+    })
+
+    expect(r.delegated).toEqual([42])
+  })
+
+  // I4 (achado importante da revisão final): este é EXATAMENTE o caso em
+  // que "o julgamento não vai encontrar este PR" — a sessão nasceu no dev
+  // assíncrono mas a ligação issue↔sessão não pôde ser guardada. Sem canal
+  // injetado, o aviso saía por `console.warn` cru, invisível no logger
+  // estruturado (pino). Mesmo padrão já aplicado no QA (commit 5477a3e) e
+  // em `github-app-token.ts`: `onWarn` opcional, default `console.warn`.
+  it('o aviso sai pelo canal injetado, não pelo console — é ele que aparece no log estruturado', async () => {
+    const impl = fakeFetch([taskPronta()])
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    // `console.warn` já é um `vi.fn()` global (mock de `src/test/setup.ts`)
+    // compartilhado entre testes deste arquivo — `spyOn` nele devolve a MESMA
+    // instância, sem limpar chamadas de testes anteriores (ex.: "falha ao
+    // guardar a ligação..." acima, que aciona o mesmo caminho SEM `onWarn`).
+    // Limpa aqui para a asserção `not.toHaveBeenCalled()` medir só ESTA
+    // chamada, não o histórico acumulado do arquivo.
+    warnSpy.mockClear()
+    const avisos: string[] = []
+
+    const r = await runSmDelegation({
+      repository: 'GitOrchAI/gitorch',
+      githubToken: 't',
+      fetchImpl: impl,
+      criarSessaoDev: async () => 'sessions/xyz',
+      aoCriarSessao: async () => {
+        throw new Error('banco fora do ar')
+      },
+      onWarn: (m) => avisos.push(m),
+    })
+
+    expect(r.delegated).toEqual([42])
+    expect(avisos).toHaveLength(1)
+    expect(avisos[0]).toContain('#42')
+    expect(avisos[0]).toContain('banco fora do ar')
+    expect(warnSpy).not.toHaveBeenCalled()
+    warnSpy.mockRestore()
+  })
+
+  it('sem sessão criada, não há ligação para guardar', async () => {
+    const impl = fakeFetch([taskPronta()])
+    const guardadas: Array<{ issueNumber: number; sessionName: string }> = []
+
+    await runSmDelegation({
+      repository: 'GitOrchAI/gitorch',
+      githubToken: 't',
+      fetchImpl: impl,
+      criarSessaoDev: async () => null,
+      aoCriarSessao: async (d) => {
+        guardadas.push(d)
+      },
+    })
+
+    expect(guardadas).toEqual([])
+  })
+
   it('dev assíncrono indisponível: a delegação continua valendo (label aplicado)', async () => {
     const impl = fakeFetch([taskPronta()])
     const labeled = (impl as unknown as { labeled: Array<{ number: number; labels: string[] }> })
@@ -182,5 +298,107 @@ describe('runSmDelegation: aciona o dev assíncrono', () => {
     expect(r.delegated).toEqual([42])
     expect(labeled.some((l) => l.labels.includes('jules'))).toBe(true)
     expect(r.output).toContain('#42')
+  })
+})
+
+// Desejo do dono: a fila deixa de ser "issue sem a etiqueta" e passa a ser a
+// linha viva em `dev_sessions`. Medido em produção: #46, #47 e #48 foram
+// delegadas, o trabalho morreu na sessão, e como as três carregavam a
+// etiqueta nunca mais voltaram para a fila — morreram em silêncio.
+describe('runSmDelegation: fila sai da linha da sessão, não da etiqueta', () => {
+  it('redelega issue que já tem a etiqueta mas cuja sessão morreu', async () => {
+    const fetchImpl = (async (url: string) => {
+      if (String(url).includes('/issues?state=open')) {
+        return new Response(
+          JSON.stringify([
+            {
+              number: 46,
+              title: 'morta',
+              labels: [{ name: 'gitorch:task' }, { name: 'jules' }],
+              body: '',
+            },
+          ]),
+          { status: 200 }
+        )
+      }
+      return new Response(JSON.stringify({}), { status: 200 })
+    }) as unknown as typeof fetch
+
+    const r = await runSmDelegation({
+      repository: 'acme/api',
+      githubToken: 't',
+      fetchImpl,
+      sessoesVivas: [],
+      delegadasHoje: 0,
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+    })
+    expect(r.delegated).toEqual([46])
+  })
+
+  it('não delega issue que já tem sessão viva', async () => {
+    const fetchImpl = (async (url: string) => {
+      if (String(url).includes('/issues?state=open')) {
+        return new Response(
+          JSON.stringify([
+            { number: 46, title: 'em trabalho', labels: [{ name: 'gitorch:task' }], body: '' },
+          ]),
+          { status: 200 }
+        )
+      }
+      return new Response(JSON.stringify({}), { status: 200 })
+    }) as unknown as typeof fetch
+
+    const r = await runSmDelegation({
+      repository: 'acme/api',
+      githubToken: 't',
+      fetchImpl,
+      sessoesVivas: [
+        {
+          id: 'x',
+          projectId: 'p',
+          issueNumber: 46,
+          sessionName: 's',
+          state: 'IN_PROGRESS',
+          answeredHash: null,
+          pullRequestNumber: null,
+          attempts: 1,
+          nudges: 0,
+          lastProgressAt: null,
+          stateCheckedAt: null,
+          pendingSince: null,
+          mergeCommitSha: null,
+          deployState: null,
+          deployCheckedAt: null,
+          mergeFailures: 0,
+          mergeLastFailedAt: null,
+          closedAt: null,
+        },
+      ],
+      delegadasHoje: 0,
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+    })
+    expect(r.delegated).toEqual([])
+  })
+})
+
+describe('teto de tempo (leva D)', () => {
+  it('toda chamada ao GitHub carrega um AbortSignal não abortado', async () => {
+    const fetchImpl = vi.fn(
+      async (_url: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]) =>
+        new Response(JSON.stringify([]), { status: 200 })
+    )
+    await runSmDelegation({
+      repository: 'acme/api',
+      githubToken: 't',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    expect(fetchImpl.mock.calls.length).toBeGreaterThan(0)
+    for (const call of fetchImpl.mock.calls) {
+      const init = call[1] as RequestInit | undefined
+      expect(init?.signal).toBeInstanceOf(AbortSignal)
+      expect(init?.signal?.aborted).toBe(false)
+    }
   })
 })

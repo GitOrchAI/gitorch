@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { runPoMissionViaRails } from './po-rails-mission.js'
 import { FREE_TEXT_OPTION_VALUE } from './telegram-bot.js'
 
@@ -276,5 +276,28 @@ describe('runPoMissionViaRails', () => {
     // fase + épico + feature + task = 4 issues
     expect(r.output).toContain('created=4')
     expect(r.output).toContain('Roadmap: 1 sprint(s)')
+  })
+})
+
+describe('teto de tempo (leva D)', () => {
+  it('toda chamada ao GitHub (REST direto e via ProjectV2Client) carrega um AbortSignal não abortado', async () => {
+    const spy = vi.fn(fakeFetch())
+    await runPoMissionViaRails({
+      repository: 'o/r',
+      board: 'o/9',
+      githubToken: 't',
+      contextBlocks: ['ctx'],
+      fetchImpl: spy as unknown as typeof fetch,
+      execute: async (prompt) => {
+        const step = prompt.match(/Step: po-(\w+)/)?.[1] ?? '?'
+        return PO_REPLIES[step] ?? '{}'
+      },
+    })
+    expect(spy.mock.calls.length).toBeGreaterThan(0)
+    for (const call of spy.mock.calls) {
+      const init = call[1] as RequestInit | undefined
+      expect(init?.signal).toBeInstanceOf(AbortSignal)
+      expect(init?.signal?.aborted).toBe(false)
+    }
   })
 })

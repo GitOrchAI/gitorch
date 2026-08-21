@@ -1,7 +1,13 @@
-// A credencial que o cliente fornece é a única chave que alcança o que o App
-// do produto não alcança: quadro de conta pessoal e qualquer rota de
-// segurança. Antes de guardá-la, conferir que ela serve — descobrir isso na
-// hora de usar significaria descobrir com o cliente já fora da tela.
+// A credencial que o cliente fornece é a única chave que cria quadro
+// (Projects V2) em CONTA PESSOAL — a única rota onde o App do produto não
+// alcança (prova ao vivo: "does not have permission to create projects on
+// ownerId ..." só em conta pessoal; em organização o App funciona — ver
+// onboarding-board.ts:229-240). Até 08/08 este comentário também citava
+// "qualquer rota de segurança"; provado falso em 17/08 — o App alcança
+// essas rotas com o installation token dele (ver
+// security-debt-collector.ts). Antes de guardá-la, conferir que ela serve —
+// descobrir isso na hora de usar significaria descobrir com o cliente já
+// fora da tela.
 
 import { decryptCredential, encryptCredential } from '../lib/credential-crypto.js'
 

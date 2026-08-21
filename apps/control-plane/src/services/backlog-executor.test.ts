@@ -194,13 +194,15 @@ describe('applyBacklog', () => {
     expect(epicBody).toContain('Covers journeys')
   })
 
-  it('delega SÓ tasks da sprint 1 sem bloqueio; task com blocker publica "Blocked by"', async () => {
-    const { gh, created, labels } = fakeGitHub()
-    await applyBacklog({ github: gh, plan: plan(), delegateLabel: 'jules' })
+  it('task com blocker publica "Blocked by"; tasks nascem com a label de tipo p/ delegação contínua do SM', async () => {
+    // Antes: este teste também afirmava que o PO delegava (labels via
+    // addLabels). Decisão do dono (14/08/2026) tirou isso do PO — quem decide
+    // delegar agora é só o SM (sm-delegation.ts), então as asserções de
+    // delegação saíram daqui e viraram o teste "não aplica a etiqueta de
+    // delegação" logo abaixo.
+    const { gh, created } = fakeGitHub()
+    await applyBacklog({ github: gh, plan: plan() })
 
-    // task 0 (sprint 1, livre) delegada; task 1 (sprint 2 + bloqueada) não
-    expect(labels).toHaveLength(1)
-    expect(labels[0]!.labels).toEqual(['jules'])
     const task2 = created[4]!
     expect(task2.body).toContain('Blocked by #204')
     // tasks nascem com a label de tipo p/ delegação contínua do SM
@@ -234,5 +236,21 @@ describe('applyBacklog', () => {
     await applyBacklog({ github: gh, plan: plan() })
     expect(goals[0]).toContain('Filtrar por material')
     expect(goals[0]).toContain('Sprint 1 of 2 planned')
+  })
+
+  it('não aplica a etiqueta de delegação — quem delega é o SM', async () => {
+    // Decisão do dono (14/08/2026): só o SM delega (sm-delegation.ts). Mesmo
+    // recebendo delegateLabel, o PO monta o plano e para.
+    const { gh, created, labels } = fakeGitHub()
+    await applyBacklog({ github: gh, plan: plan(), delegateLabel: 'jules' })
+
+    // toda label enviada por qualquer caminho: nascimento da issue (createIssue)
+    // e chamada avulsa (addLabels) — 'jules' não pode aparecer em nenhum dos dois.
+    const labelsAplicadas = [
+      ...created.flatMap((c) => c.labels ?? []),
+      ...labels.flatMap((l) => l.labels),
+    ]
+    expect(labelsAplicadas).not.toContain('jules')
+    expect(labelsAplicadas).toContain('gitorch:task')
   })
 })

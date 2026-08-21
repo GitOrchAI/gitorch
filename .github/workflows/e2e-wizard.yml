@@ -56,6 +56,19 @@ jobs:
       GITORCH_EXECUTOR: local-process
       E2E_BASE_URL: http://127.0.0.1:4010
       E2E_GITHUB_TEST_TOKEN: ${{ secrets.E2E_GITHUB_TEST_TOKEN }}
+      # O passo final do funil passou a exigir prova, com a credencial do
+      # próprio cliente, de que ele pode ESCREVER no repositório declarado — a
+      # guarda que nasceu do incidente de aceitar repositório alheio. Este
+      # cenário nunca teve credencial de GitHub de verdade (o segredo acima não
+      # existe no repositório), então a prova não conseguia confirmar nada e o
+      # cadastro era recusado.
+      #
+      # A guarda NÃO é afrouxada: mesma pergunta, mesma régua, em produção. O
+      # que muda é só o fio que ela usa para perguntar, e só com os DOIS
+      # cadeados abertos (esta flag explícita E ambiente diferente de
+      # produção). O arranque do serviço anuncia quando está neste modo — ver
+      # services/fake-github-access.ts.
+      GITORCH_FAKE_GITHUB_ACCESS: '1'
     steps:
       - uses: actions/checkout@v4
         with:

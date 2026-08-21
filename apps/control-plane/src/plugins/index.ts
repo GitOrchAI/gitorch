@@ -26,6 +26,7 @@ import {
   FAKE_LIVENESS_DEPS,
   fakeRunDeviceLogin,
 } from '../services/fake-engines.js'
+import { fakeGithubAccessEnabled, FAKE_GITHUB_ACCESS_FLAG } from '../services/fake-github-access.js'
 
 import rateLimit from '@fastify/rate-limit'
 
@@ -149,6 +150,17 @@ export async function registerPlugins(app: FastifyInstance, env: Env): Promise<v
   if (fakeEnginesEnabled()) {
     app.log.warn(
       '[boot] GITORCH_FAKE_ENGINES=1: login assistido e liveness dos motores são FAKES determinísticos — nunca use isto em produção'
+    )
+  }
+
+  // O par do aviso acima, para a OUTRA mentira possível: a prova de que o
+  // cliente pode escrever no repositório declarado. Sem este aviso não havia
+  // como saber, olhando o registro do processo, se aquela porta estava no fio
+  // real ou no de mentira — e uma porta de segurança que não se anuncia é
+  // exatamente o tipo de coisa que passa despercebida por meses.
+  if (fakeGithubAccessEnabled()) {
+    app.log.warn(
+      `[boot] ${FAKE_GITHUB_ACCESS_FLAG}=1: a prova de posse do repositório responde SEMPRE "pode escrever" — nunca use isto em produção`
     )
   }
   await app.register(

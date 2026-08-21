@@ -7,13 +7,25 @@ declare module 'fastify' {
   }
 }
 
+/**
+ * `githubInstallationId` e `githubRepoId` NÃO estão aqui de propósito.
+ *
+ * Eles são a identidade do projeto no GitHub: é por eles que o webhook decide
+ * de quem é cada entrega (github-webhook.ts monta um OR com os dois) e é por
+ * `users.github_installation_id` que o wizard decide de quem é cada
+ * repositório. Aceitá-los do corpo da requisição dava a qualquer cliente logado
+ * o poder de carimbar no próprio projeto a instalação/repositório de outra
+ * pessoa — a mesma classe de envenenamento que o callback de instalação sofria,
+ * só que por outra porta.
+ *
+ * A fonte legítima é uma só: o payload do webhook, assinado por HMAC pelo
+ * próprio GitHub, que preenche esses campos na auto-cura.
+ */
 interface CreateProjectBody {
   name: string
   description?: string
   avatarUrl?: string
   defaultBranch?: string
-  githubInstallationId?: number
-  githubRepoId?: bigint
 }
 
 interface UpdateProjectBody {
@@ -22,8 +34,6 @@ interface UpdateProjectBody {
   avatarUrl?: string
   defaultBranch?: string
   isActive?: boolean
-  githubInstallationId?: number
-  githubRepoId?: bigint
   runtimeConfig?: Prisma.InputJsonValue
 }
 
@@ -38,6 +48,21 @@ interface PaginationQuery {
 
 function toNullable<T>(value: T | undefined): T | null {
   return value ?? null
+}
+
+/**
+ * Campos que o cliente não pode escrever nem por engano. Recusar em voz alta
+ * (400) em vez de descartar em silêncio: quem manda merece saber que não
+ * gravou — descarte mudo é como um envenenamento passaria despercebido.
+ */
+const CAMPOS_SO_DO_GITHUB = ['githubInstallationId', 'githubRepoId'] as const
+
+function campoProibidoNoCorpo(body: unknown): string | null {
+  if (typeof body !== 'object' || body === null) return null
+  for (const campo of CAMPOS_SO_DO_GITHUB) {
+    if (campo in (body as Record<string, unknown>)) return campo
+  }
+  return null
 }
 
 export const projectRoutes = async (app: FastifyInstance): Promise<void> => {
@@ -98,8 +123,16 @@ export const projectRoutes = async (app: FastifyInstance): Promise<void> => {
     '/api/projects',
     async (request: FastifyRequest<{ Body: CreateProjectBody }>, reply: FastifyReply) => {
       const wingId = request.wingId!
-      const { name, description, avatarUrl, defaultBranch, githubInstallationId, githubRepoId } =
-        request.body
+
+      const proibido = campoProibidoNoCorpo(request.body)
+      if (proibido) {
+        return reply.code(400).send({
+          error: `O campo ${proibido} é definido pelo GitHub, não pelo cliente.`,
+          code: 'CAMPO_NAO_ACEITO',
+        })
+      }
+
+      const { name, description, avatarUrl, defaultBranch } = request.body
 
       // Check for duplicate name within wing
       const existing = await app.prisma.project.findFirst({
@@ -116,8 +149,6 @@ export const projectRoutes = async (app: FastifyInstance): Promise<void> => {
           description: toNullable(description),
           avatarUrl: toNullable(avatarUrl),
           defaultBranch: defaultBranch || 'main',
-          githubInstallationId: toNullable(githubInstallationId),
-          githubRepoId: toNullable(githubRepoId),
         },
         select: {
           id: true,
@@ -182,16 +213,16 @@ export const projectRoutes = async (app: FastifyInstance): Promise<void> => {
     ) => {
       const wingId = request.wingId!
       const { id } = request.params
-      const {
-        name,
-        description,
-        avatarUrl,
-        defaultBranch,
-        isActive,
-        githubInstallationId,
-        githubRepoId,
-        runtimeConfig,
-      } = request.body
+
+      const proibido = campoProibidoNoCorpo(request.body)
+      if (proibido) {
+        return reply.code(400).send({
+          error: `O campo ${proibido} é definido pelo GitHub, não pelo cliente.`,
+          code: 'CAMPO_NAO_ACEITO',
+        })
+      }
+
+      const { name, description, avatarUrl, defaultBranch, isActive, runtimeConfig } = request.body
 
       // Check if project exists and belongs to wing
       const existing = await app.prisma.project.findFirst({
@@ -218,8 +249,6 @@ export const projectRoutes = async (app: FastifyInstance): Promise<void> => {
       if (avatarUrl !== undefined) updateData.avatarUrl = avatarUrl
       if (defaultBranch !== undefined) updateData.defaultBranch = defaultBranch
       if (isActive !== undefined) updateData.isActive = isActive
-      if (githubInstallationId !== undefined) updateData.githubInstallationId = githubInstallationId
-      if (githubRepoId !== undefined) updateData.githubRepoId = githubRepoId
       if (runtimeConfig !== undefined) updateData.runtimeConfig = runtimeConfig
 
       const project = await app.prisma.project.update({

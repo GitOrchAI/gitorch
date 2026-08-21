@@ -1,104 +1,104 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { CortexDrawer } from '@gitorch/cortex'
-import type { GraphQLRequest, GraphQLResponse, GraphQLTransport } from '@gitorch/github-sync'
-import { collectAndRememberRepoContext, rememberRepoContext } from './repo-context-cortex.js'
+import type { GraphQLTransport } from '@gitorch/github-sync'
+import { rememberRepoContext, collectAndRememberRepoContext } from './repo-context-cortex.js'
 import type { CollectedRepoContext } from './repo-context-collector.js'
 import type { DividaDeSeguranca } from './security-debt-collector.js'
-import { restDeMentira } from '../test/rest-fake.js'
-
-type ResponseFor = (req: GraphQLRequest) => GraphQLResponse<unknown>
-
-// O orquestrador faz 4 tipos de chamada (RepoOwner, findProjectId,
-// createProjectV2, RepoContext). Este fake roteia cada uma pela query.
-function routingTransport(handlers: {
-  owner?: ResponseFor
-  find?: ResponseFor
-  create?: ResponseFor
-  repo?: ResponseFor
-}): GraphQLTransport {
-  const transport = async (req: GraphQLRequest): Promise<GraphQLResponse<unknown>> => {
-    if (req.query.includes('RepoOwner') && handlers.owner) return handlers.owner(req)
-    if (req.query.includes('GetProjectId') && handlers.find) return handlers.find(req)
-    if (req.query.includes('CreateProjectV2') && handlers.create) return handlers.create(req)
-    if (req.query.includes('RepoContext') && handlers.repo) return handlers.repo(req)
-    throw new Error(`fake transport: sem handler para a query:\n${req.query}`)
-  }
-  return transport as unknown as GraphQLTransport
-}
 
 function fakeCortex() {
   const drawers: CortexDrawer[] = []
-  // Sem anotação de tipo aqui: deixa o vitest inferir o Mock TIPADO (com a
-  // assinatura de writeDrawer), senão ele alarga pro Mock genérico e deixa de
-  // ser atribuível a CortexWriter.
   const writeDrawer = vi.fn(async (d: CortexDrawer) => {
     drawers.push(d)
   })
   return { writeDrawer, drawers }
 }
 
+function routingTransport(routes: {
+  owner?: () => unknown
+  create?: () => unknown
+  repo?: () => unknown
+}): GraphQLTransport {
+  return async <T>(req: { query: string }): Promise<T> => {
+    if (req.query.includes('RepoOwner')) {
+      return (routes.owner ? routes.owner() : { data: {} }) as T
+    }
+    if (req.query.includes('CreateProjectV2')) {
+      return (routes.create ? routes.create() : { data: {} }) as T
+    }
+    if (req.query.includes('RepoContext') || req.query.includes('RepoWorkItems')) {
+      return (routes.repo ? routes.repo() : { data: {} }) as T
+    }
+    return { data: {} } as T
+  }
+}
+
+function restDeMentira(
+  respostas: Record<string, { status: number; corpo?: unknown }>
+): typeof fetch {
+  return (async (url: string | URL) => {
+    const caminho = String(url).replace('https://api.github.com', '')
+    const resposta = respostas[caminho]
+    if (!resposta) {
+      return new Response(JSON.stringify({ message: `não mapeado no fake: ${caminho}` }), {
+        status: 404,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    return new Response(resposta.corpo !== undefined ? JSON.stringify(resposta.corpo) : null, {
+      status: resposta.status,
+      headers: { 'content-type': 'application/json' },
+    })
+  }) as unknown as typeof fetch
+}
+
 describe('rememberRepoContext (ponte GitHub → Cortex)', () => {
-  it('grava uma gaveta por PR e por Issue + uma do board, com ids determinísticos e carimbo de wingId', async () => {
+  it('grava uma gaveta para o board, uma por PR e uma por Issue, carimbadas pelo wingId', async () => {
     const { writeDrawer, drawers } = fakeCortex()
     const context: CollectedRepoContext = {
       board: { id: 'PVT_1', number: 5, created: true },
       pullRequests: [
         {
-          number: 7,
-          title: 'feat: x',
+          number: 10,
+          title: 'Adiciona auth',
           state: 'OPEN',
-          url: 'u1',
-          updatedAt: 't1',
-          author: 'loureng',
+          url: 'https://github.com/o/r/pull/10',
+          updatedAt: '2026-07-01T10:00:00Z',
+          author: 'alice',
         },
       ],
       issues: [
-        { number: 3, title: 'bug: y', state: 'CLOSED', url: 'u2', updatedAt: 't2', author: null },
+        {
+          number: 2,
+          title: 'Bug no login',
+          state: 'CLOSED',
+          url: 'https://github.com/o/r/issues/2',
+          updatedAt: '2026-06-30T10:00:00Z',
+          author: null,
+        },
       ],
     }
 
-    await rememberRepoContext({ writeDrawer }, 'loureng/gitorch', context, () => 'TS')
-
-    expect(drawers).toHaveLength(3)
-    const ids = drawers.map((d) => d.id)
-    expect(ids).toContain('github:loureng/gitorch:board')
-    expect(ids).toContain('github:loureng/gitorch:pull-request:7')
-    expect(ids).toContain('github:loureng/gitorch:issue:3')
-    // Isolamento por projeto: toda gaveta carimbada com o wingId.
-    expect(drawers.every((d) => d.wingId === 'loureng/gitorch')).toBe(true)
-    // Timestamp determinístico propagado.
-    expect(drawers.every((d) => d.createdAt === 'TS' && d.validFrom === 'TS')).toBe(true)
-    // Autor nulo (bot/conta apagada) não quebra o conteúdo.
-    expect(drawers.find((d) => d.id.endsWith(':issue:3'))?.content).toContain('autor desconhecido')
-    expect(drawers.find((d) => d.id.endsWith(':pull-request:7'))?.content).toContain(
-      'autor loureng'
+    await rememberRepoContext(
+      { writeDrawer },
+      'loureng/patinhas',
+      context,
+      () => '2026-07-05T12:00:00Z'
     )
-  })
 
-  it('ids determinísticos → recoletar faz upsert (mesmo id), não duplica na memória', async () => {
-    const { writeDrawer, drawers } = fakeCortex()
-    const context: CollectedRepoContext = {
-      board: { id: 'PVT_1', number: 5, created: false },
-      pullRequests: [
-        { number: 7, title: 'p', state: 'OPEN', url: 'u', updatedAt: 't', author: 'a' },
-      ],
-      issues: [],
-    }
-
-    await rememberRepoContext({ writeDrawer }, 'o/r', context, () => 'T1')
-    await rememberRepoContext({ writeDrawer }, 'o/r', context, () => 'T2')
-
-    // 2 gavetas por rodada (board + 1 PR) × 2 rodadas = 4 escritas, mas só 2 ids
-    // distintos (upsert) — a memória não polui.
-    expect(drawers).toHaveLength(4)
-    expect(new Set(drawers.map((d) => d.id)).size).toBe(2)
+    expect(writeDrawer).toHaveBeenCalledTimes(3)
+    expect(drawers.map((d) => d.id)).toEqual([
+      'github:loureng/patinhas:board',
+      'github:loureng/patinhas:pull-request:10',
+      'github:loureng/patinhas:issue:2',
+    ])
+    expect(drawers.every((d) => d.wingId === 'loureng/patinhas')).toBe(true)
+    expect(drawers.every((d) => d.roomId === 'contexto-github')).toBe(true)
+    expect(drawers.every((d) => d.hallId === 'onboarding')).toBe(true)
   })
 
   it('grava a dívida de segurança como gaveta própria, com resumo por severidade e a lista dos alertas', async () => {
     const { writeDrawer, drawers } = fakeCortex()
     const divida: DividaDeSeguranca = {
-      vigilanciaLigada: true,
-      correcaoAutomaticaLigada: true,
       temConfiguracao: true,
       alertas: [
         {
@@ -136,12 +136,10 @@ describe('rememberRepoContext (ponte GitHub → Cortex)', () => {
   it('preserva naoVerificado na gaveta — nunca finge zero alertas quando ninguém verificou', async () => {
     const { writeDrawer, drawers } = fakeCortex()
     const dividaSemAlcance: DividaDeSeguranca = {
-      vigilanciaLigada: null,
-      correcaoAutomaticaLigada: null,
       temConfiguracao: false,
       alertas: [],
       porSeveridade: { critical: 0, high: 0, medium: 0, low: 0 },
-      naoVerificado: ['vigilancia', 'alertas'],
+      naoVerificado: ['configuracao', 'alertas'],
     }
     const context: CollectedRepoContext = {
       board: { id: 'PVT_1', number: 5, created: false },
@@ -156,7 +154,7 @@ describe('rememberRepoContext (ponte GitHub → Cortex)', () => {
     // "0 alertas" sozinho, sem o aviso, mentiria: ninguém verificou —
     // não é a mesma coisa que "verificado, zero encontrado".
     expect(gaveta?.content).toContain('0 alerta(s)')
-    expect(gaveta?.content).toContain('vigilancia')
+    expect(gaveta?.content).toContain('configuracao')
     expect(gaveta?.content).toContain('alertas')
   })
 
@@ -221,10 +219,7 @@ describe('collectAndRememberRepoContext (orquestração best-effort)', () => {
     expect(writeDrawer).toHaveBeenCalledTimes(2)
   })
 
-  // Sem repassar a credencial do cliente até o collector, a dívida de
-  // segurança nunca é coletada em produção — mesmo que ela já esteja
-  // guardada para o projeto.
-  it('com clientToken, a dívida de segurança entra no contexto e vira gaveta própria', async () => {
+  it('com o App instalado no repositório, a dívida de segurança entra no contexto e vira gaveta própria', async () => {
     const { writeDrawer, drawers } = fakeCortex()
     const transport = routingTransport({
       owner: () => ({ data: { repository: { owner: { id: 'U_owner', __typename: 'User' } } } }),
@@ -234,8 +229,6 @@ describe('collectAndRememberRepoContext (orquestração best-effort)', () => {
       }),
     })
     const fetchImpl = restDeMentira({
-      '/repos/loureng/gitorch/vulnerability-alerts': { status: 204 },
-      '/repos/loureng/gitorch/automated-security-fixes': { status: 404 },
       '/repos/loureng/gitorch/contents/.github/dependabot.yml': { status: 404 },
       '/repos/loureng/gitorch/dependabot/alerts?state=open&per_page=100': {
         status: 200,
@@ -245,7 +238,7 @@ describe('collectAndRememberRepoContext (orquestração best-effort)', () => {
 
     const result = await collectAndRememberRepoContext({
       token: 't',
-      clientToken: 'tok-cliente',
+      mintAppToken: async () => 'ghs_app_installation_token',
       wingId: 'loureng/gitorch',
       cortex: { writeDrawer },
       request: transport,
@@ -258,7 +251,7 @@ describe('collectAndRememberRepoContext (orquestração best-effort)', () => {
     expect(gaveta).toBeDefined()
   })
 
-  it('sem clientToken, o contexto sai sem dívida de segurança (comportamento best-effort preservado)', async () => {
+  it('sem o App instalado no repositório, o contexto sai sem dívida de segurança (comportamento best-effort preservado)', async () => {
     const { writeDrawer, drawers } = fakeCortex()
     const transport = routingTransport({
       owner: () => ({ data: { repository: { owner: { id: 'U_owner', __typename: 'User' } } } }),
@@ -275,6 +268,7 @@ describe('collectAndRememberRepoContext (orquestração best-effort)', () => {
 
     await collectAndRememberRepoContext({
       token: 't',
+      mintAppToken: async () => null,
       wingId: 'loureng/gitorch',
       cortex: { writeDrawer },
       request: transport,

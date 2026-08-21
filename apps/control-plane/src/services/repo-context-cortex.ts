@@ -1,3 +1,9 @@
+// Ponte entre a coleta de contexto do repositório no GitHub e a memória do
+// produto (Cortex): pega o board Projects V2, os PRs e as Issues recentes e a
+// dívida de segurança (installation token do App do produto, por
+// repositório — sem depender de credencial do cliente) e os transforma em
+// gavetas (drawers) persistidas no banco.
+
 import type { CortexClient, CortexDrawer } from '@gitorch/cortex'
 import type { GraphQLTransport } from '@gitorch/github-sync'
 import {
@@ -18,10 +24,11 @@ export interface CollectAndRememberDeps {
   cortex: CortexWriter
   /** número do board GitOrch já conhecido (evita criar 2x); ausente → cria. */
   boardNumber?: number
-  /** Credencial do cliente — só ela alcança as rotas de segurança (o App do
-   *  produto recebe 403). Ausente/null: o retrato sai sem a dívida de
-   *  segurança, sem falhar (mesmo contrato best-effort do collector). */
-  clientToken?: string | null
+  /** Emite o installation token do App do produto, por repositório — repassado
+   *  ao collector para a coleta da dívida de segurança (ver
+   *  repo-context-collector.ts). Injetável nos testes; produção usa
+   *  `mintInstallationToken` sem alterações (default do collector). */
+  mintAppToken?: (deps: { repository: string }) => Promise<string | null>
   /** transporte GraphQL injetável (testes). */
   request?: GraphQLTransport
   fetchImpl?: typeof fetch
@@ -41,8 +48,9 @@ export interface CollectAndRememberResult {
 
 /**
  * Ponte GitHub → memória: no aceite final do wizard, coleta o contexto do repo
- * (board Projects V2, criando se ausente, + PRs + Issues) e o grava no Cortex
- * como gavetas (drawers) carimbadas pelo wingId do projeto.
+ * (board Projects V2, criando se ausente, + PRs + Issues + dívida de
+ * segurança via installation token do App) e o grava no Cortex como gavetas
+ * (drawers) carimbadas pelo wingId do projeto.
  *
  * BEST-EFFORT por contrato: NUNCA lança. O aceite final não pode quebrar por
  * causa de contexto — se o token não tem escopo de project, a API falha, ou o
@@ -72,14 +80,18 @@ export async function collectAndRememberRepoContext(
     // transporte GraphQL padrão): é ele quem coletarDividaDeSeguranca usa
     // para as chamadas REST das rotas de segurança — sem repassar, um
     // fetchImpl de teste nunca alcançaria essa parte da coleta.
-    const collector = new RepoContextCollector({ token: deps.token, request, fetchImpl })
+    const collector = new RepoContextCollector({
+      token: deps.token,
+      request,
+      fetchImpl,
+      ...(deps.mintAppToken ? { mintAppToken: deps.mintAppToken } : {}),
+    })
     const context = await collector.collect({
       owner,
       repo,
       ownerType: ownerInfo.ownerType,
       ownerId: ownerInfo.ownerId,
       ...(deps.boardNumber !== undefined ? { boardNumber: deps.boardNumber } : {}),
-      clientToken: deps.clientToken ?? null,
     })
 
     await rememberRepoContext(deps.cortex, deps.wingId, context, now)
@@ -120,9 +132,9 @@ export async function rememberRepoContext(
     }),
     ...context.pullRequests.map((pr) => workItemDrawer(wingId, ts, 'pull-request', 'PR', pr)),
     ...context.issues.map((issue) => workItemDrawer(wingId, ts, 'issue', 'Issue', issue)),
-    // Ausente quando o contexto não trouxe dívida de segurança (sem
-    // credencial do cliente) — a gaveta só existe quando há retrato de
-    // verdade pra guardar.
+    // Ausente quando o contexto não trouxe dívida de segurança (sem o App
+    // instalado no repo) — a gaveta só existe quando há retrato de verdade
+    // pra guardar.
     ...(context.dividaDeSeguranca
       ? [securityDebtDrawer(wingId, ts, context.dividaDeSeguranca)]
       : []),

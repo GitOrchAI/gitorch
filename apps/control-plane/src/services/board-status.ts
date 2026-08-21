@@ -1,5 +1,6 @@
 import { ProjectV2Client } from '@gitorch/github-sync'
 import { GithubExecutionError } from './github-errors.js'
+import { fetchComTeto } from './fetch-com-teto.js'
 
 // Status do card no board (Projects v2) — o board é a interface do cliente.
 // As COLUNAS são configuração POR PROJETO (runtimeConfig.board.columns), nunca
@@ -63,12 +64,19 @@ export interface BoardStatusClient {
 }
 
 export function createBoardStatus(options: BoardStatusOptions): BoardStatusClient {
-  const f = options.fetchImpl ?? fetch
+  // IMPORTANTE (leva D): o teto entra AQUI — na porta, não nos chamadores —
+  // exatamente como `endereco-seguro.ts` já faz para a guarda de rede:
+  // chamador esquece, porta não. Fecha para SEMPRE os dois call sites de
+  // `createCardMover` em scheduler.ts (~1855, ~2044) que nunca passavam
+  // `fetchImpl`, sem precisar tocar em cada um deles.
+  const f = fetchComTeto(options.fetchImpl ?? fetch)
   const fieldName = options.statusFieldName ?? 'Status'
   const columns = options.columns ?? DEFAULT_BOARD_COLUMNS
+  // `fetchImpl: f` (não `options.fetchImpl` cru) — `ProjectV2Client` não tem
+  // teto próprio, então quem for embrulhado aqui precisa já vir com um.
   const client = new ProjectV2Client({
     token: options.token,
-    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+    fetchImpl: f,
   })
 
   const gql = async <T>(query: string, variables: Record<string, unknown>): Promise<T> => {
@@ -149,10 +157,15 @@ export type CardMover = (issueNumber: number, column: BoardColumnKey) => Promise
  * toleram board sem o campo/coluna com resultado textual honesto.
  */
 export function createCardMover(options: CardMoverOptions): CardMover {
-  const f = options.fetchImpl ?? fetch
+  // IMPORTANTE (leva D): mesma classe de defeito do Crítico — os dois
+  // fetches diretos abaixo (busca da issue, fallback de GraphQL) e o
+  // `ProjectV2Client` (sem teto próprio) ficavam sem NENHUM teto sempre que
+  // o chamador não passava `fetchImpl` — o caso dos dois call sites de
+  // `createCardMover` em scheduler.ts (~1855, ~2044).
+  const f = fetchComTeto(options.fetchImpl ?? fetch)
   const client = new ProjectV2Client({
     token: options.token,
-    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+    fetchImpl: f,
   })
 
   let projectIdPromise: Promise<string> | undefined

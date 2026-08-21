@@ -177,6 +177,19 @@ jobs:
       # engines.ts) — sem eles o passo 7 tentaria abrir um container podman
       # de verdade e o job travaria/falharia por falta de imagem de agente.
       GITORCH_FAKE_ENGINES: '1'
+      # O par do anterior, para o ÚNICO ponto em que o wizard fala de verdade
+      # com o GitHub: a prova de que o cliente pode ESCREVER no repositório
+      # declarado. Este E2E "conecta" o GitHub com um token FAKE, então a
+      # prova recebe 401 do GitHub real e o passo final do funil é recusado —
+      # corretamente, do ponto de vista da guarda.
+      #
+      # A guarda NÃO é afrouxada: ela continua fazendo a mesma pergunta, com a
+      # mesma régua, em qualquer ambiente. O que muda é só o fio que ela usa
+      # para perguntar, e só com os DOIS cadeados abertos (esta flag explícita
+      # E NODE_ENV diferente de produção). Flag própria de propósito: ligar os
+      # motores fake não pode, de brinde, desligar a prova de posse do
+      # repositório — ver services/fake-github-access.ts.
+      GITORCH_FAKE_GITHUB_ACCESS: '1'
       # O scheduler processa clone_and_start_engines a cada tick (default
       # 60s) — rápido demais pra esperar num job de PR. 2s é suficiente pra
       # missão (clone da fixture pública, minúscula) processar em segundos.
@@ -265,8 +278,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: npm

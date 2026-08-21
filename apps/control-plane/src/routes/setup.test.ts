@@ -1,10 +1,54 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import Fastify, { FastifyRequest } from 'fastify'
 import { generateKeyPairSync, randomBytes } from 'node:crypto'
-import { setupRoutes } from './setup.js'
+import { setupRoutes, TETO_DE_PROVAS_DA_TELA } from './setup.js'
 import type { EngineConnectionService } from '../services/engine-connection.js'
 import { resetAppTokenCache } from '../services/github-app-token.js'
-import { encryptCredential } from '../lib/credential-crypto.js'
+
+/** Permissões do portador do token, como o GitHub as devolve. */
+const PODE_ESCREVER = { admin: true, maintain: true, push: true, triage: true, pull: true }
+
+/**
+ * O que o GitHub responde sobre os repositórios do cliente.
+ *
+ * Duas perguntas diferentes, e a distinção é o que a rodada de conserto
+ * introduziu:
+ * - a LISTAGEM (`/user/repos`, `/installation/repositories`) só monta a tela;
+ * - a PROVA (`/repos/{dono}/{repo}`, com o token do próprio cliente) é o que
+ *   AUTORIZA — `permissions.push` decide, e 404 é o "não" do GitHub.
+ *
+ * Por isso todo cenário de submit precisa dizer o que o cliente ESCREVE: sem
+ * resposta, o pedido é recusado por não ser verificável, que é o comportamento
+ * correto.
+ *
+ * Devolve `null` para qualquer outra chamada, para as suítes que já roteiam
+ * GraphQL/REST continuarem tratando o resto como antes.
+ */
+function respostaDaListaDeRepos(url: unknown, doCliente: string[]): Response | null {
+  const href = String(url)
+  if (href.includes('/user/repos') || href.includes('/installation/repositories')) {
+    return new Response(JSON.stringify(doCliente.map((full_name) => ({ full_name }))), {
+      status: 200,
+    })
+  }
+  const prova = /^https:\/\/api\.github\.com\/repos\/([^/]+\/[^/?#]+)$/.exec(href)
+  if (!prova) return null
+  const nome = prova[1] ?? ''
+  const alcanca = doCliente.some((r) => r.toLowerCase() === nome.toLowerCase())
+  if (!alcanca) return new Response(JSON.stringify({ message: 'Not Found' }), { status: 404 })
+  return new Response(JSON.stringify({ full_name: nome, permissions: PODE_ESCREVER }), {
+    status: 200,
+  })
+}
+
+/** `global.fetch` que só sabe responder sobre os repositórios do cliente. */
+function fetchSoDaListaDeRepos(doCliente: string[]): typeof fetch {
+  return vi.fn(async (url: string | URL | Request) => {
+    const lista = respostaDaListaDeRepos(url, doCliente)
+    if (lista) return lista
+    throw new Error(`chamada inesperada ao GitHub neste cenário: ${String(url)}`)
+  }) as unknown as typeof fetch
+}
 
 describe('GET /api/v1/github/repos', () => {
   let app: ReturnType<typeof Fastify>
@@ -70,30 +114,161 @@ describe('GET /api/v1/github/repos', () => {
   })
 
   it('fetches repos using the token decrypted from the user vault, not the session', async () => {
-    global.fetch = vi.fn(async () => {
-      return new Response(
-        JSON.stringify([
-          {
-            id: 1,
-            name: 'repo',
-            full_name: 'octocat/repo',
-            description: null,
-            private: false,
-            html_url: 'https://github.com/octocat/repo',
-          },
-        ]),
-        { status: 200 }
-      )
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url)
+      if (href.startsWith('https://api.github.com/user/repos')) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: 1,
+              name: 'repo',
+              full_name: 'octocat/repo',
+              description: null,
+              private: false,
+              html_url: 'https://github.com/octocat/repo',
+              permissions: PODE_ESCREVER,
+            },
+          ]),
+          { status: 200 }
+        )
+      }
+      throw new Error('chamada inesperada ao GitHub neste cenário: ' + href)
     }) as unknown as typeof fetch
 
     const res = await app.inject({ method: 'GET', url: '/api/v1/github/repos' })
 
     expect(res.statusCode).toBe(200)
     expect(getRawGithubToken).toHaveBeenCalledWith('user_1')
-    const fetchCall = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0]
-    expect(fetchCall).toBeDefined()
-    const headers = fetchCall?.[1]?.headers as Record<string, string>
-    expect(headers['Authorization']).toBe('Bearer gh_encrypted_roundtrip_token')
+    const chamadas = (global.fetch as ReturnType<typeof vi.fn>).mock.calls
+    // A listagem vai com o token do CLIENTE, nunca com a chave do App.
+    for (const chamada of chamadas) {
+      const headers = chamada?.[1]?.headers as Record<string, string>
+      expect(headers['Authorization']).toBe('Bearer gh_encrypted_roundtrip_token')
+    }
+  })
+
+  /**
+   * Montar a tela custava 1 + N: a listagem, e depois uma prova por candidato.
+   * Um cliente com cem repositórios gastava até 101 chamadas da cota DELE — a
+   * mesma cota do clone, do diagnóstico e da coleta de contexto — só para ver
+   * a lista.
+   *
+   * A resposta de `GET /user/repos` já traz, em cada item, o bloco
+   * `permissions` do PORTADOR DO TOKEN. Para MONTAR a oferta isso basta, e
+   * pelo mesmo critério do passo final (`push`), então a tela continua não
+   * oferecendo o que o submit vai recusar.
+   */
+  it('a tela sai de UMA chamada: a listagem do próprio cliente já traz permissions', async () => {
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url)
+      if (href.startsWith('https://api.github.com/user/repos')) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: 1,
+              name: 'a',
+              full_name: 'octocat/a',
+              description: null,
+              private: false,
+              html_url: 'https://github.com/octocat/a',
+              permissions: PODE_ESCREVER,
+            },
+            {
+              id: 2,
+              name: 'b',
+              full_name: 'octocat/b',
+              description: null,
+              private: false,
+              html_url: 'https://github.com/octocat/b',
+              permissions: PODE_ESCREVER,
+            },
+            {
+              id: 3,
+              name: 'c',
+              full_name: 'octocat/c',
+              description: null,
+              private: false,
+              html_url: 'https://github.com/octocat/c',
+              permissions: PODE_ESCREVER,
+            },
+          ]),
+          { status: 200 }
+        )
+      }
+      throw new Error('a tela não deve provar repositório um a um: ' + href)
+    }) as unknown as typeof fetch
+
+    const res = await app.inject({ method: 'GET', url: '/api/v1/github/repos' })
+
+    expect(res.statusCode).toBe(200)
+    expect((res.json() as Array<{ fullName: string }>).map((r) => r.fullName)).toEqual([
+      'octocat/a',
+      'octocat/b',
+      'octocat/c',
+    ])
+    expect((global.fetch as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1)
+  })
+
+  // A tela e o passo final têm de concordar. A listagem vinha crua de
+  // `GET /user/repos`, que por padrão inclui repositório de colaborador
+  // só-leitura e de membro da organização; o passo final passou a exigir
+  // escrita. Sem este filtro, a tela ofereceria um repositório para o clique
+  // seguinte recusar com "você não tem acesso" — e ainda daria ao cliente a
+  // impressão de que aquilo é dele.
+  it('não oferece na tela o repositório em que o cliente só pode LER', async () => {
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url)
+      if (href.startsWith('https://api.github.com/user/repos')) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: 1,
+              name: 'repo',
+              full_name: 'octocat/repo',
+              description: null,
+              private: false,
+              html_url: 'https://github.com/octocat/repo',
+              permissions: PODE_ESCREVER,
+            },
+            {
+              id: 2,
+              name: 'cofre',
+              full_name: 'vitima/cofre',
+              description: null,
+              private: true,
+              html_url: 'https://github.com/vitima/cofre',
+              // Só leitura: aparece na listagem (o GitHub lista o que a pessoa
+              // ENXERGA), mas não pode ser oferecido.
+              permissions: {
+                admin: false,
+                maintain: false,
+                push: false,
+                triage: false,
+                pull: true,
+              },
+            },
+            {
+              id: 3,
+              name: 'antigo',
+              full_name: 'vitima/antigo',
+              description: null,
+              private: true,
+              html_url: 'https://github.com/vitima/antigo',
+              // Listagem sem o bloco `permissions` (resposta truncada, versão
+              // antiga da API): sem prova de escrita não se oferece nada.
+            },
+          ]),
+          { status: 200 }
+        )
+      }
+      throw new Error('a tela não deve provar repositório um a um: ' + href)
+    }) as unknown as typeof fetch
+
+    const res = await app.inject({ method: 'GET', url: '/api/v1/github/repos' })
+
+    expect(res.statusCode).toBe(200)
+    const lista = res.json() as Array<{ fullName: string }>
+    expect(lista.map((r) => r.fullName)).toEqual(['octocat/repo'])
   })
 
   it('returns 401 when the user has no connected github token', async () => {
@@ -209,7 +384,7 @@ describe('GET /api/v1/github/repos — via installation do GitHub App (F1 Onda 2
     delete process.env['GITHUB_APP_PRIVATE_KEY']
   })
 
-  it('usuário com githubInstallationId: lista via GET /installation/repositories, nunca toca o caminho OAuth', async () => {
+  it('usuário com githubInstallationId: os CANDIDATOS vêm da instalação, sem passar pelo /user/repos', async () => {
     global.fetch = vi.fn(async (url: string | URL | Request) => {
       const href = String(url)
       if (href.includes('/app/installations/555/access_tokens')) {
@@ -239,6 +414,12 @@ describe('GET /api/v1/github/repos — via installation do GitHub App (F1 Onda 2
           { status: 200 }
         )
       }
+      if (href === 'https://api.github.com/repos/octocat/privado') {
+        return new Response(
+          JSON.stringify({ full_name: 'octocat/privado', permissions: PODE_ESCREVER }),
+          { status: 200 }
+        )
+      }
       throw new Error('URL inesperada no teste: ' + href)
     }) as unknown as typeof fetch
 
@@ -255,7 +436,12 @@ describe('GET /api/v1/github/repos — via installation do GitHub App (F1 Onda 2
         url: 'https://github.com/octocat/privado',
       },
     ])
-    expect(getRawGithubToken).not.toHaveBeenCalled()
+    // O token do cliente É lido — e tem de ser: a instalação diz o que PODE
+    // aparecer, mas quem autoriza é a prova por repositório, e ela pergunta
+    // com a credencial dele. A listagem ampla do OAuth é que não acontece.
+    expect(getRawGithubToken).toHaveBeenCalledWith('user_1')
+    const chamadas = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]))
+    expect(chamadas.some((u) => u.startsWith('https://api.github.com/user/repos'))).toBe(false)
   })
 
   it('installation token indisponível (App não configurado/acessível): cai pro OAuth clássico, sem quebrar o wizard', async () => {
@@ -265,6 +451,8 @@ describe('GET /api/v1/github/repos — via installation do GitHub App (F1 Onda 2
         return new Response(JSON.stringify({}), { status: 401 })
       }
       if (href.startsWith('https://api.github.com/user/repos')) {
+        // Listagem do PRÓPRIO cliente: o `permissions` daqui é dele, e é o que
+        // monta a oferta neste caminho — sem prova extra por repositório.
         return new Response(
           JSON.stringify([
             {
@@ -274,6 +462,7 @@ describe('GET /api/v1/github/repos — via installation do GitHub App (F1 Onda 2
               description: null,
               private: false,
               html_url: 'https://github.com/octocat/repo',
+              permissions: PODE_ESCREVER,
             },
           ]),
           { status: 200 }
@@ -298,6 +487,183 @@ describe('GET /api/v1/github/repos — via installation do GitHub App (F1 Onda 2
     ])
   })
 
+  /**
+   * A tela não pode oferecer o que o passo final vai recusar — nem, pior,
+   * sugerir ao cliente que o repositório alheio é dele.
+   *
+   * `GET /installation/repositories` é do APP e devolve TODA a instalação: numa
+   * organização, isso inclui repositório que aquele cliente não alcança. A
+   * listagem serve para MONTAR a tela; quem AUTORIZA é a prova por repositório
+   * com o token do próprio cliente.
+   */
+  it('a tela só oferece o que o CLIENTE escreve, mesmo que a instalação cubra mais', async () => {
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url)
+      if (href.includes('/app/installations/555/access_tokens')) {
+        return new Response(
+          JSON.stringify({
+            token: 'ghs_install',
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          }),
+          { status: 201 }
+        )
+      }
+      if (href.startsWith('https://api.github.com/installation/repositories')) {
+        return new Response(
+          JSON.stringify({
+            total_count: 2,
+            repositories: [
+              {
+                id: 9,
+                name: 'api',
+                full_name: 'acme/api',
+                description: null,
+                private: true,
+                html_url: 'https://github.com/acme/api',
+              },
+              {
+                id: 10,
+                name: 'segredos',
+                full_name: 'acme/segredos',
+                description: null,
+                private: true,
+                html_url: 'https://github.com/acme/segredos',
+              },
+            ],
+          }),
+          { status: 200 }
+        )
+      }
+      if (href === 'https://api.github.com/repos/acme/api') {
+        return new Response(
+          JSON.stringify({
+            full_name: 'acme/api',
+            permissions: { admin: false, maintain: false, push: true, triage: true, pull: true },
+          }),
+          { status: 200 }
+        )
+      }
+      if (href === 'https://api.github.com/repos/acme/segredos') {
+        // O cliente não alcança este: o GitHub esconde com 404.
+        return new Response(JSON.stringify({ message: 'Not Found' }), { status: 404 })
+      }
+      throw new Error('URL inesperada no teste: ' + href)
+    }) as unknown as typeof fetch
+
+    const res = await app.inject({ method: 'GET', url: '/api/v1/github/repos' })
+
+    expect(res.statusCode).toBe(200)
+    const lista = res.json() as Array<{ fullName: string }>
+    expect(lista.map((r) => r.fullName)).toEqual(['acme/api'])
+  })
+
+  /**
+   * Quem tem instalação gravada não passa mais pela listagem OAuth — e era
+   * ali que o 401 do GitHub virava "reconecte o GitHub". Com a listagem
+   * saindo da chave do App (que continua válida), a credencial morta do
+   * cliente só aparecia DENTRO da prova, virava "não verificável", e a tela
+   * mandava tentar de novo em instantes — para sempre, porque tentar de novo
+   * nunca ressuscita um token revogado.
+   */
+  it('credencial do cliente revogada: a tela manda RECONECTAR, não "tente de novo"', async () => {
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url)
+      if (href.includes('/app/installations/555/access_tokens')) {
+        return new Response(
+          JSON.stringify({
+            token: 'ghs_install',
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          }),
+          { status: 201 }
+        )
+      }
+      if (href.startsWith('https://api.github.com/installation/repositories')) {
+        return new Response(
+          JSON.stringify({
+            total_count: 1,
+            repositories: [
+              {
+                id: 9,
+                name: 'api',
+                full_name: 'acme/api',
+                description: null,
+                private: true,
+                html_url: 'https://github.com/acme/api',
+              },
+            ],
+          }),
+          { status: 200 }
+        )
+      }
+      // A prova vai com o token do CLIENTE — e é ele que o GitHub rejeita.
+      return new Response(JSON.stringify({ message: 'Bad credentials' }), { status: 401 })
+    }) as unknown as typeof fetch
+
+    const res = await app.inject({ method: 'GET', url: '/api/v1/github/repos' })
+
+    expect(res.statusCode).toBe(401)
+    expect((res.json() as { code?: string }).code).toBe('GITHUB_TOKEN_EXPIRED')
+  })
+
+  /**
+   * O caminho da instalação é o ÚNICO em que a prova por repositório na tela é
+   * inevitável: a resposta de `/installation/repositories` também traz
+   * `permissions`, mas é a permissão do APP naquele repositório, não a do
+   * cliente — foi exatamente ler esse bloco como se fosse dele que deixava a
+   * colaboradora de um repositório enxergar o vizinho.
+   *
+   * Como cada prova custa uma chamada da cota do cliente, o número delas tem
+   * teto. Acima dele a tela oferece menos do que a instalação cobre, e isso
+   * fica no log — melhor uma oferta menor do que uma tela que gasta a cota do
+   * cliente inteira toda vez que ele a abre.
+   */
+  it('instalação enorme: a tela prova no máximo o teto de candidatos, não um por repositório', async () => {
+    const cobertos = Array.from({ length: TETO_DE_PROVAS_DA_TELA + 7 }, (_, i) => ({
+      id: i + 1,
+      name: `repo${i}`,
+      full_name: `acme/repo${i}`,
+      description: null,
+      private: true,
+      html_url: `https://github.com/acme/repo${i}`,
+    }))
+    global.fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url)
+      if (href.includes('/app/installations/555/access_tokens')) {
+        return new Response(
+          JSON.stringify({
+            token: 'ghs_install',
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          }),
+          { status: 201 }
+        )
+      }
+      if (href.startsWith('https://api.github.com/installation/repositories')) {
+        return new Response(
+          JSON.stringify({ total_count: cobertos.length, repositories: cobertos }),
+          {
+            status: 200,
+          }
+        )
+      }
+      const prova = /^https:\/\/api\.github\.com\/repos\/(acme\/repo\d+)$/.exec(href)
+      if (prova) {
+        return new Response(JSON.stringify({ full_name: prova[1], permissions: PODE_ESCREVER }), {
+          status: 200,
+        })
+      }
+      throw new Error('URL inesperada no teste: ' + href)
+    }) as unknown as typeof fetch
+
+    const res = await app.inject({ method: 'GET', url: '/api/v1/github/repos' })
+
+    expect(res.statusCode).toBe(200)
+    const provas = (global.fetch as ReturnType<typeof vi.fn>).mock.calls
+      .map((c) => String(c[0]))
+      .filter((u) => /^https:\/\/api\.github\.com\/repos\//.test(u))
+    expect(provas).toHaveLength(TETO_DE_PROVAS_DA_TELA)
+    expect(res.json() as unknown[]).toHaveLength(TETO_DE_PROVAS_DA_TELA)
+  })
+
   it('usuário sem githubInstallationId: nem tenta mintar token do App — vai direto pro OAuth', async () => {
     userFindUnique.mockResolvedValue({ githubInstallationId: null })
     global.fetch = vi.fn(async (url: string | URL | Request) => {
@@ -317,11 +683,17 @@ describe('GET /api/v1/github/repos — via installation do GitHub App (F1 Onda 2
 
 describe('POST /api/v1/setup/submit — runtime wiring', () => {
   let app: ReturnType<typeof Fastify>
+  const originalFetch = global.fetch
   let projectCreate: ReturnType<typeof vi.fn>
   let engineConnectionFindMany: ReturnType<typeof vi.fn> &
     ((userId: string) => Promise<Array<{ runtime: string; status: string }>>)
 
+  afterEach(() => {
+    global.fetch = originalFetch
+  })
+
   beforeEach(async () => {
+    global.fetch = fetchSoDaListaDeRepos(['octocat/repo'])
     projectCreate = vi.fn().mockImplementation(async ({ data }) => ({
       id: 'proj_1',
       wingId: data.wingId,
@@ -348,6 +720,7 @@ describe('POST /api/v1/setup/submit — runtime wiring', () => {
           lastError: null,
         }))
       },
+      getRawGithubToken: async () => 'gh_test_token',
     } as unknown as EngineConnectionService)
     app.decorate('prisma', {
       user: {
@@ -446,7 +819,11 @@ describe('POST /api/v1/setup/submit — coleta de contexto: board Projects V2 n�
   // então é o único jeito de exercitar o fluxo INTEIRO (rota → collector →
   // GraphQL) sem bater na rede real.
   function stubGithubGraphQL(handlers: { boardNumberCreated: number }): typeof fetch {
-    return vi.fn(async (_url: string, init: { body: string }) => {
+    return vi.fn(async (url: string, init: { body: string }) => {
+      // A prova de que o repositório é do cliente vem antes de qualquer
+      // GraphQL — sem ela o submit nem chega na coleta de contexto.
+      const lista = respostaDaListaDeRepos(url, ['octocat/repo'])
+      if (lista) return lista
       const body = JSON.parse(init.body) as { query: string }
       if (body.query.includes('RepoOwner')) {
         return new Response(
@@ -582,8 +959,15 @@ describe('POST /api/v1/setup/submit — coleta de contexto: board Projects V2 n�
     const first = await app.inject({ method: 'POST', url: '/api/v1/setup/submit', payload })
     expect(first.statusCode).toBe(200)
 
+    // Só as chamadas GraphQL têm corpo — a listagem de repositórios do cliente
+    // (a prova de que o repo é dele) é um GET sem corpo.
+    const soGraphQL = (chamadas: unknown[][]): string[] =>
+      chamadas
+        .filter((c) => (c[1] as { body?: string } | undefined)?.body)
+        .map((c) => (JSON.parse((c[1] as { body: string }).body) as { query: string }).query)
+
     const fetchCalls1 = (global.fetch as ReturnType<typeof vi.fn>).mock.calls
-    const queriesRound1 = fetchCalls1.map((c) => (JSON.parse(c[1].body) as { query: string }).query)
+    const queriesRound1 = soGraphQL(fetchCalls1)
     expect(queriesRound1.some((q) => q.includes('CreateProjectV2'))).toBe(true)
     expect(queriesRound1.some((q) => q.includes('GetProjectId'))).toBe(false)
 
@@ -598,7 +982,7 @@ describe('POST /api/v1/setup/submit — coleta de contexto: board Projects V2 n�
     expect(second.statusCode).toBe(200)
 
     const fetchCalls2 = (global.fetch as ReturnType<typeof vi.fn>).mock.calls
-    const queriesRound2 = fetchCalls2.map((c) => (JSON.parse(c[1].body) as { query: string }).query)
+    const queriesRound2 = soGraphQL(fetchCalls2)
     expect(queriesRound2.some((q) => q.includes('GetProjectId'))).toBe(true)
     expect(queriesRound2.some((q) => q.includes('CreateProjectV2'))).toBe(false)
 
@@ -607,158 +991,18 @@ describe('POST /api/v1/setup/submit — coleta de contexto: board Projects V2 n�
   })
 })
 
-// A leitura da credencial do cliente (lerCredencialDoProjeto, chamada pela
-// coleta de contexto) é por repositório — uma chave rotacionada ou um
-// envelope corrompido num repo não pode custar o board/PRs/issues de outro
-// repo no MESMO submit. Antes desta suíte a chamada não tinha proteção
-// própria e a exceção abortava o laço inteiro.
-describe('POST /api/v1/setup/submit — leitura de credencial de um repo não derruba a coleta dos demais', () => {
+describe('POST /api/v1/setup/submit — plano autoritativo (paid-intent, ainda não pago)', () => {
   let app: ReturnType<typeof Fastify>
   const originalFetch = global.fetch
-  let byWingId: Map<string, { id: string; wingId: string; name: string; runtimeConfig: unknown }>
-  let cortexWriteDrawer: ReturnType<typeof vi.fn>
-
-  // Só GraphQL — sem credencial do cliente resolvida (throw ou null), as
-  // rotas REST de segurança nem são chamadas (repo-context-collector.ts:
-  // sem clientToken, coletarDividaDeSeguranca é pulado).
-  function stubGithubGraphQL(): typeof fetch {
-    return vi.fn(async (_url: string, init: { body: string }) => {
-      const body = JSON.parse(init.body) as { query: string }
-      if (body.query.includes('RepoOwner')) {
-        return new Response(
-          JSON.stringify({
-            data: { repository: { owner: { id: 'U_owner', __typename: 'User' } } },
-          }),
-          { status: 200 }
-        )
-      }
-      if (body.query.includes('CreateProjectV2')) {
-        return new Response(
-          JSON.stringify({
-            data: { createProjectV2: { projectV2: { id: 'PVT_created', number: 42 } } },
-          }),
-          { status: 200 }
-        )
-      }
-      if (body.query.includes('RepoContext')) {
-        return new Response(
-          JSON.stringify({
-            data: { repository: { pullRequests: { nodes: [] }, issues: { nodes: [] } } },
-          }),
-          { status: 200 }
-        )
-      }
-      throw new Error(`stub sem handler para a query:\n${body.query}`)
-    }) as unknown as typeof fetch
-  }
-
-  beforeEach(async () => {
-    byWingId = new Map()
-    let nextId = 1
-    cortexWriteDrawer = vi.fn().mockResolvedValue(undefined)
-
-    app = Fastify()
-    app.decorate('cortex', { writeDrawer: cortexWriteDrawer } as never)
-    app.decorate('engineConnections', {
-      list: async () => [
-        {
-          runtime: 'claude',
-          status: 'connected',
-          modelsRefreshedAt: null,
-          lastValidatedAt: null,
-          lastError: null,
-        },
-      ],
-      getRawGithubToken: async () => 'gh_test_token',
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any)
-    app.decorate('prisma', {
-      user: {
-        findUnique: vi
-          .fn()
-          .mockResolvedValue({ id: 'owner_1', email: 'octocat@example.test', plan: null }),
-      },
-      plan: { findUnique: vi.fn().mockResolvedValue({ id: 'pro', maxProjects: 2 }) },
-      project: {
-        count: vi.fn().mockResolvedValue(0),
-        findFirst: vi.fn(async ({ where }: { where: { wingId: string } }) => {
-          return byWingId.get(where.wingId) ?? null
-        }),
-        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
-          const rec = {
-            id: `proj_${nextId++}`,
-            wingId: data['wingId'] as string,
-            name: data['name'] as string,
-            runtimeConfig: data['runtimeConfig'],
-          }
-          byWingId.set(rec.wingId, rec)
-          return rec
-        }),
-        update: vi.fn(
-          async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
-            const rec = [...byWingId.values()].find((p) => p.id === where.id)
-            if (rec) Object.assign(rec, data)
-            return rec
-          }
-        ),
-        // repo1: a leitura da credencial lança (chave rotacionada / envelope
-        // corrompido — cenário real). repo2: sem credencial guardada (null).
-        // O que a suíte prova não é o valor devolvido, é que a exceção do
-        // repo1 não impede o repo2 de ser processado.
-        findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
-          const rec = [...byWingId.values()].find((p) => p.id === where.id)
-          if (rec?.wingId === 'octocat/repo1') {
-            throw new Error('credencial ilegível: envelope corrompido')
-          }
-          return null
-        }),
-      },
-      apiKey: { create: vi.fn().mockResolvedValue({}) },
-      mission: { create: vi.fn().mockResolvedValue({}) },
-      projectSchedule: {
-        findMany: vi.fn().mockResolvedValue([]),
-        count: vi.fn().mockResolvedValue(0),
-        create: vi.fn().mockResolvedValue({}),
-      },
-      clientEnvironment: {
-        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-        findMany: vi.fn().mockResolvedValue([]),
-        findFirst: vi.fn().mockResolvedValue(null),
-      },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any)
-    app.addHook('preHandler', async (request: FastifyRequest) => {
-      request.user = { id: 'owner_1', wingId: 'octocat', email: 'octocat@example.test' }
-    })
-    await setupRoutes(app)
-    await app.ready()
-  })
+  let projectCreate: ReturnType<typeof vi.fn>
+  let planFindUnique: ReturnType<typeof vi.fn>
 
   afterEach(() => {
     global.fetch = originalFetch
   })
 
-  it('repo1 com credencial ilegível: repo2 ainda ganha board/PRs/issues na memória', async () => {
-    global.fetch = stubGithubGraphQL()
-
-    const res = await app.inject({
-      method: 'POST',
-      url: '/api/v1/setup/submit',
-      payload: { repos: ['octocat/repo1', 'octocat/repo2'], engines: ['claude-code'], plan: 'pro' },
-    })
-
-    expect(res.statusCode).toBe(200)
-    const drawerIds = cortexWriteDrawer.mock.calls.map((c) => (c[0] as { id: string }).id)
-    expect(drawerIds).toContain('github:octocat/repo2:board')
-  })
-})
-
-describe('POST /api/v1/setup/submit — plano autoritativo (paid-intent, ainda não pago)', () => {
-  let app: ReturnType<typeof Fastify>
-  let projectCreate: ReturnType<typeof vi.fn>
-  let planFindUnique: ReturnType<typeof vi.fn>
-
   beforeEach(async () => {
+    global.fetch = fetchSoDaListaDeRepos(['octocat/repo1', 'octocat/repo2', 'octocat/repo3'])
     projectCreate = vi.fn().mockImplementation(async ({ data }) => ({
       id: 'proj_1',
       wingId: data.wingId,
@@ -778,6 +1022,7 @@ describe('POST /api/v1/setup/submit — plano autoritativo (paid-intent, ainda n
     app = Fastify()
     app.decorate('engineConnections', {
       list: async () => [{ runtime: 'claude', status: 'connected' }],
+      getRawGithubToken: async () => 'gh_test_token',
     } as unknown as EngineConnectionService)
     app.decorate('prisma', {
       user: {
@@ -884,8 +1129,17 @@ describe('POST /api/v1/setup/submit — isolamento entre clientes (o projeto é 
   }>
   let apiKeys: Array<{ projectId: string }>
   let owners: Record<string, { id: string; email: string }>
+  const originalFetch = global.fetch
+
+  afterEach(() => {
+    global.fetch = originalFetch
+  })
 
   beforeEach(async () => {
+    // Ana e Bob são os dois colaboradores REAIS de "acme/api" — o repositório
+    // aparece na lista dos dois, e é exatamente por isso que o cenário do
+    // vazamento continua válido depois da guarda de acesso.
+    global.fetch = fetchSoDaListaDeRepos(['acme/api'])
     projects = []
     apiKeys = []
     let nextId = 1
@@ -898,6 +1152,7 @@ describe('POST /api/v1/setup/submit — isolamento entre clientes (o projeto é 
     app = Fastify()
     app.decorate('engineConnections', {
       list: async () => [{ runtime: 'claude', status: 'connected' }],
+      getRawGithubToken: async () => 'gh_test_token',
     } as unknown as EngineConnectionService)
     app.decorate('prisma', {
       user: {
@@ -1014,6 +1269,26 @@ describe('POST /api/v1/setup/submit — isolamento entre clientes (o projeto é 
   it('todo projeto nasce COM dono (nunca no limbo global de onde o próximo cliente o acha)', async () => {
     await submit()
     expect(projects[0]!.userId).toBe('user_ana')
+  })
+
+  /**
+   * As duas colunas de identidade do GitHub são ÚNICAS no banco. Se o cadastro
+   * as escrevesse, quem chegasse primeiro tomaria o identificador do
+   * repositório e o dono de verdade não conseguiria mais se cadastrar — a
+   * unicidade já estaria ocupada e o erro chegaria como falha crua.
+   *
+   * A defesa é não escrever: o cadastro guarda só o endereço declarado. Quem
+   * preenche a identidade é o fluxo autenticado do GitHub, e sob as condições
+   * de routes/github-webhook.ts.
+   */
+  it('o projeto nasce SEM a identidade do GitHub: ela não faz parte do cadastro', async () => {
+    await submit()
+
+    const chamadas = (app.prisma.project.create as unknown as ReturnType<typeof vi.fn>).mock.calls
+    expect(chamadas).toHaveLength(1)
+    const dados = (chamadas[0]![0] as { data: Record<string, unknown> }).data
+    expect(dados).not.toHaveProperty('githubRepoId')
+    expect(dados).not.toHaveProperty('githubInstallationId')
   })
 
   it('401 quando o dono da sessão não é resolvível (sem dono não há a quem pertencer o projeto)', async () => {
@@ -1166,22 +1441,19 @@ describe('POST /api/v1/setup/credencial-do-cliente', () => {
   })
 })
 
-// A dívida de segurança só é alcançável com a credencial do CLIENTE (o App do
-// produto leva 403 nessas rotas) — sem repassar o que
-// /setup/credencial-do-cliente guardou até collectAndRememberRepoContext, ela
-// nunca é coletada de verdade.
-describe('POST /api/v1/setup/submit — coleta de contexto usa a credencial do cliente guardada', () => {
+describe('POST /api/v1/setup/submit — coleta de contexto usa a instalação do App no repositório', () => {
   let app: ReturnType<typeof Fastify>
   const originalFetch = global.fetch
   const originalKey = process.env['GITORCH_CREDENTIAL_KEY']
+  const originalAppId = process.env['GITHUB_APP_ID']
+  const originalAppKey = process.env['GITHUB_APP_PRIVATE_KEY']
   let cortexWriteDrawer: ReturnType<typeof vi.fn>
-  let projectFindUnique: ReturnType<typeof vi.fn>
 
-  // Igual ao stubGithubGraphQL usado na suíte de idempotência do board, mas
-  // também roteia as chamadas REST (sem corpo JSON) que
-  // coletarDividaDeSeguranca faz contra as rotas de segurança.
-  function stubGithubGraphQLAndRest(): typeof fetch {
+  function stubGithubGraphQLAndRest(opts: { installationId?: number } = {}): typeof fetch {
+    const installationId = opts.installationId ?? 555
     return vi.fn(async (url: string, init?: { body?: string }) => {
+      const lista = respostaDaListaDeRepos(url, ['octocat/repo'])
+      if (lista) return lista
       if (init?.body) {
         const body = JSON.parse(init.body) as { query: string }
         if (body.query.includes('RepoOwner')) {
@@ -1208,12 +1480,23 @@ describe('POST /api/v1/setup/submit — coleta de contexto usa a credencial do c
             { status: 200 }
           )
         }
-        throw new Error(`stub sem handler para a query GraphQL:\n${body.query}`)
+        throw new Error(`stub sem handler para a query GraphQL:
+${body.query}`)
       }
       const caminho = String(url).replace('https://api.github.com', '')
+      if (caminho === '/repos/octocat/repo/installation') {
+        return new Response(JSON.stringify({ id: installationId }), { status: 200 })
+      }
+      if (caminho === `/app/installations/${installationId}/access_tokens`) {
+        return new Response(
+          JSON.stringify({
+            token: 'ghs_installation_token',
+            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+          }),
+          { status: 200 }
+        )
+      }
       const mapa: Record<string, { status: number; corpo?: unknown }> = {
-        '/repos/octocat/repo/vulnerability-alerts': { status: 204 },
-        '/repos/octocat/repo/automated-security-fixes': { status: 404 },
         '/repos/octocat/repo/contents/.github/dependabot.yml': { status: 404 },
         '/repos/octocat/repo/dependabot/alerts?state=open&per_page=100': { status: 200, corpo: [] },
       }
@@ -1226,12 +1509,15 @@ describe('POST /api/v1/setup/submit — coleta de contexto usa a credencial do c
 
   beforeEach(async () => {
     process.env['GITORCH_CREDENTIAL_KEY'] = randomBytes(32).toString('hex')
+    const { privateKey } = generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    })
+    process.env['GITHUB_APP_ID'] = '999'
+    process.env['GITHUB_APP_PRIVATE_KEY'] = privateKey
+    resetAppTokenCache()
     cortexWriteDrawer = vi.fn().mockResolvedValue(undefined)
-    // Devolve uma credencial de cliente guardada por padrão; os testes
-    // individuais sobrescrevem para o caso "sem credencial".
-    projectFindUnique = vi
-      .fn()
-      .mockResolvedValue({ encryptedClientToken: encryptCredential('tok-cliente-guardado') })
 
     app = Fastify()
     app.decorate('cortex', { writeDrawer: cortexWriteDrawer } as never)
@@ -1265,7 +1551,6 @@ describe('POST /api/v1/setup/submit — coleta de contexto usa a credencial do c
           runtimeConfig: data['runtimeConfig'],
         })),
         update: vi.fn().mockResolvedValue({}),
-        findUnique: projectFindUnique,
       },
       apiKey: { create: vi.fn().mockResolvedValue({}) },
       mission: { create: vi.fn().mockResolvedValue({}) },
@@ -1292,9 +1577,13 @@ describe('POST /api/v1/setup/submit — coleta de contexto usa a credencial do c
     global.fetch = originalFetch
     if (originalKey === undefined) delete process.env['GITORCH_CREDENTIAL_KEY']
     else process.env['GITORCH_CREDENTIAL_KEY'] = originalKey
+    if (originalAppId === undefined) delete process.env['GITHUB_APP_ID']
+    else process.env['GITHUB_APP_ID'] = originalAppId
+    if (originalAppKey === undefined) delete process.env['GITHUB_APP_PRIVATE_KEY']
+    else process.env['GITHUB_APP_PRIVATE_KEY'] = originalAppKey
   })
 
-  it('projeto com credencial do cliente guardada: a dívida de segurança é coletada e vira gaveta', async () => {
+  it('com o App instalado no repositório: a dívida de segurança é coletada e vira gaveta', async () => {
     global.fetch = stubGithubGraphQLAndRest()
 
     const res = await app.inject({
@@ -1308,9 +1597,14 @@ describe('POST /api/v1/setup/submit — coleta de contexto usa a credencial do c
     expect(drawerIds).toContain('github:octocat/repo:divida-de-seguranca')
   })
 
-  it('projeto sem credencial do cliente guardada: submit continua funcionando, sem gaveta de dívida', async () => {
-    projectFindUnique.mockResolvedValue({ encryptedClientToken: null })
-    global.fetch = stubGithubGraphQLAndRest()
+  it('sem o App instalado no repositório (404 ao resolver a instalação): submit continua funcionando, sem gaveta de dívida', async () => {
+    const base = stubGithubGraphQLAndRest()
+    global.fetch = vi.fn(async (url: string, init?: { body?: string }) => {
+      if (String(url).endsWith('/repos/octocat/repo/installation')) {
+        return new Response(null, { status: 404 })
+      }
+      return (base as unknown as (u: string, i?: unknown) => Promise<Response>)(url, init)
+    }) as unknown as typeof fetch
 
     const res = await app.inject({
       method: 'POST',

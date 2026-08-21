@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { runSmWatchdog, buildTelegramNotifier } from './sm-watchdog.js'
 
 const JULES_FAIL =
@@ -66,7 +66,13 @@ function actionsOf(f: typeof fetch) {
 }
 
 describe('runSmWatchdog', () => {
-  it('falha nova do Jules → remove e re-aplica a label + comenta a retentativa', async () => {
+  it('falha nova do Jules NÃO reaplica a label — a cobrança mora na linha da sessão', async () => {
+    // Comportamento antigo (removido): esta mesma falha disparava
+    // unlabel+label+comment de retentativa. Provado inerte — a fila de
+    // delegação escolhia justamente as issues SEM a label ('jules'), então
+    // reaplicá-la numa issue que já a tem nunca a devolvia à fila. Quem
+    // cobra agora é a linha da sessão em dev_sessions (fila-de-delegacao.ts):
+    // sessão fechada sem merge devolve a issue sozinha, sem tocar em labels.
     const f = fakeFetch([
       {
         number: 10,
@@ -75,11 +81,8 @@ describe('runSmWatchdog', () => {
       },
     ])
     const r = await runSmWatchdog({ repository: 'o/r', githubToken: 't', fetchImpl: f })
-    const a = actionsOf(f)
-    expect(a.map((x) => x.kind)).toEqual(['unlabel', 'label', 'comment'])
-    expect(a[0]!.detail).toBe('jules')
-    expect(a[2]!.detail).toContain('1/3')
-    expect(r.retried).toEqual([10])
+    expect(actionsOf(f)).toEqual([])
+    expect(r.noOp).toBe(true)
   })
 
   it('falha ANTERIOR à última retentativa não dispara de novo (no-op)', async () => {
@@ -182,5 +185,90 @@ describe('buildTelegramNotifier', () => {
     const notify = buildTelegramNotifier({ botToken: 'tok', chatId: '42', fetchImpl: f })!
     await notify('oi')
     expect(calls[0]).toContain('api.telegram.org/bottok/sendMessage')
+  })
+
+  it('a chamada carrega um AbortSignal não abortado', async () => {
+    const f = vi.fn(async () => new Response('{}', { status: 200 })) as unknown as typeof fetch
+    const notify = buildTelegramNotifier({ botToken: 'tok', chatId: '42', fetchImpl: f })!
+    await notify('oi')
+    const init = (f as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]?.[1] as
+      RequestInit | undefined
+    expect(init?.signal).toBeInstanceOf(AbortSignal)
+    expect(init?.signal?.aborted).toBe(false)
+  })
+
+  it('CRÍTICO (leva D): um socket do Telegram que nunca resolve nem rejeita não fica pendurado para sempre', async () => {
+    // Prova real do defeito do despacho: um fetch cujo socket travou (nem
+    // sucesso nem erro) — sem teto, `notify()` nunca se resolveria e
+    // prenderia `tickEmAndamento` (scheduler.ts) para sempre, junto com
+    // TODA varredura futura de TODO projeto. `.catch(() => undefined)`
+    // dentro de `notify` não é proteção nenhuma contra isso: um socket
+    // travado nunca REJEITA sozinho, só um `AbortSignal` o força a rejeitar.
+    const fetchQueNuncaResolve = vi.fn(
+      (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal!.reason))
+        })
+    ) as unknown as typeof fetch
+    // Teto curto só para o teste não esperar os 10s reais de produção — o
+    // mecanismo (`fetchComTeto`) é o mesmo.
+    const notify = buildTelegramNotifier({
+      botToken: 'tok',
+      chatId: '42',
+      fetchImpl: fetchQueNuncaResolve,
+      timeoutMs: 20,
+    })!
+    // `notify` engole o abort com `.catch(() => undefined)` — o que importa
+    // aqui é que a promise SE RESOLVE (não fica pendurada), não o valor.
+    await expect(notify('publicação confirmada')).resolves.toBeUndefined()
+  })
+
+  // Achado Baixo 6 (Task 5/F8): a função devolvida NUNCA rejeita — por isso
+  // um `.catch(...)` em volta de `notify(...)`, em QUALQUER chamador, nunca
+  // dispara (era código morto em scheduler.ts). `onDeliveryFailure` é o
+  // jeito de um chamador optar por não deixar essa falha desaparecer sem
+  // rastro, sem mudar esse contrato "nunca rejeita" pra quem não passa o
+  // callback.
+  it('achado Baixo 6: falha de entrega chama onDeliveryFailure, e notify() continua nunca rejeitando', async () => {
+    const erroDeEntrega = new Error('Telegram: bot inválido ou destino apagado')
+    const f = vi.fn(async () => {
+      throw erroDeEntrega
+    }) as unknown as typeof fetch
+    const onDeliveryFailure = vi.fn()
+
+    const notify = buildTelegramNotifier({
+      botToken: 'tok',
+      chatId: '42',
+      fetchImpl: f,
+      onDeliveryFailure,
+    })!
+
+    await expect(notify('aviso que não vai chegar')).resolves.toBeUndefined()
+    expect(onDeliveryFailure).toHaveBeenCalledWith(erroDeEntrega)
+  })
+
+  it('sem onDeliveryFailure: comportamento de sempre — falha de entrega segue muda, sem lançar', async () => {
+    const f = vi.fn(async () => {
+      throw new Error('Telegram: bot inválido')
+    }) as unknown as typeof fetch
+
+    const notify = buildTelegramNotifier({ botToken: 'tok', chatId: '42', fetchImpl: f })!
+
+    await expect(notify('aviso')).resolves.toBeUndefined()
+  })
+
+  it('entrega com sucesso: onDeliveryFailure NUNCA é chamado', async () => {
+    const f = vi.fn(async () => new Response('{}', { status: 200 })) as unknown as typeof fetch
+    const onDeliveryFailure = vi.fn()
+
+    const notify = buildTelegramNotifier({
+      botToken: 'tok',
+      chatId: '42',
+      fetchImpl: f,
+      onDeliveryFailure,
+    })!
+
+    await notify('aviso que chega')
+    expect(onDeliveryFailure).not.toHaveBeenCalled()
   })
 })
