@@ -1,5 +1,45 @@
-#!/bin/sh
-. "$(dirname "$0")/_/husky.sh"
+#!/usr/bin/env sh
+#
+# Portao de pre-commit (tolerancia zero).
+#
+# Este arquivo e o portao de verdade. O git chega ate ele por `core.hooksPath`,
+# que aponta para `.husky/_` — um diretorio GERADO pelo script `prepare`
+# (husky) e que NAO nasce com um `git worktree add`. Por isso `.husky/_/h` e
+# `.husky/_/pre-commit` sao versionados: sem eles, em worktree nova o git nao
+# encontra hook nenhum e o commit passa em silencio, sem lint, sem typecheck e
+# sem teste.
+#
+# Regra: se o portao nao tem como rodar, ele GRITA e barra o commit. Nunca
+# deixa passar calado, e nao mascara erro de jeito nenhum.
+
+set -e
+
+barrar() {
+  echo ""
+  echo "⛔ PORTAO DE PRE-COMMIT BLOQUEADO — $1"
+  echo ""
+  echo "   Este commit foi barrado de proposito: o portao nao tem como rodar"
+  echo "   lint/typecheck/teste, e passar sem verificar e pior do que parar."
+  echo ""
+  echo "   Se voce esta numa worktree recem-criada, ela nasce SEM node_modules."
+  echo "   Ligue os do checkout principal antes de commitar:"
+  echo ""
+  echo "     M=\$(git worktree list --porcelain | head -1 | cut -d\" \" -f2)"
+  echo "     for d in . apps/control-plane apps/web packages/cadence \\"
+  echo "              packages/agents packages/cgc packages/github-sync \\"
+  echo "              .github/scripts; do"
+  echo "       [ -d \"\$M/\$d/node_modules\" ] && [ ! -e \"\$d/node_modules\" ] \\"
+  echo "         && ln -s \"\$M/\$d/node_modules\" \"\$d/node_modules\";"
+  echo "     done"
+  echo ""
+  echo "   No checkout principal, o equivalente e: pnpm install"
+  echo ""
+  exit 1
+}
+
+command -v pnpm >/dev/null 2>&1 || barrar "pnpm nao esta no PATH"
+[ -d node_modules ] || barrar "node_modules nao existe em $(pwd)"
+[ -x node_modules/.bin/eslint ] || barrar "node_modules incompleto (eslint ausente)"
 
 echo "🧪 Iniciando Validações Estritas de Pre-Commit (Tolerância Zero)..."
 

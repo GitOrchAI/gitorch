@@ -44,6 +44,15 @@ limpo, build passando.** Não existe exceção nem `continue-on-error`. Se o CI 
 problema é real — rode `pnpm run typecheck:strict` e `pnpm run lint:ci` localmente para
 reproduzir antes de tentar corrigir.
 
+### O portão local (pre-commit)
+
+`.husky/pre-commit` roda `lint-staged` → `typecheck:strict` → `test` antes de cada commit.
+Ele funciona igual no checkout principal e em worktree: `.husky/_/h` e `.husky/_/pre-commit`
+são versionados de propósito, porque `git worktree add` não gera esse diretório e sem eles o
+commit passava sem verificação nenhuma, em silêncio. Se o portão não tiver como rodar (sem
+`pnpm`, sem `node_modules`), ele **barra o commit** e explica o que fazer. Detalhes e o passo
+de ligar `node_modules` numa worktree nova estão em [`CLAUDE.md`](./CLAUDE.md).
+
 ## Convenção de commits e PRs
 
 Mensagens de commit no padrão `tipo: descrição` (`fix:`, `feat:`, `security:`, `chore:`).
