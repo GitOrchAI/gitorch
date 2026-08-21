@@ -26,7 +26,7 @@ import {
   type WorkspaceProvider,
 } from '@gitorch/agents'
 import type { EngineConnectionService } from '../services/engine-connection.js'
-import { tetoDiarioBloqueia } from '../services/teto-diario.js'
+import { tetoDiarioBloqueia, TIPO_DE_MISSAO_ISENTO_DO_TETO } from '../services/teto-diario.js'
 import { ensureDefaultSchedules } from '../lib/project-defaults.js'
 import {
   LocalWorkspaceProvider,
@@ -1739,8 +1739,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // banco de produção antes de escolher: das 24 missões de 20/08, 13 têm
     // `result` nulo. `equals: true` só casa o que foi marcado de propósito,
     // e a subtração é imune ao problema.
+    // O papel isento do bloqueio também não entra na contagem: quem o teto não
+    // pode barrar não gasta o teto dos outros (ver teto-diario.ts). Excluir na
+    // ORIGEM, e não por subtração, porque aqui não há o problema de NULL que
+    // obriga as duas contagens abaixo — `type` é coluna, nunca campo JSON.
     const totalHoje = await app.prisma.mission.count({
-      where: { createdAt: { gte: startOfDay } },
+      where: {
+        createdAt: { gte: startOfDay },
+        type: { not: TIPO_DE_MISSAO_ISENTO_DO_TETO },
+      },
     })
     // Decisão do dono (20/08): uma missão que morreu pedindo login nem
     // chegou a usar o motor — cobrar dela uma das vagas do dia foi o que
