@@ -1,5 +1,8 @@
 # .gitignore
-node_modules/
+# Sem a barra no fim de proposito: em worktree os node_modules entram como
+# SYMLINK para os do checkout principal, e `node_modules/` (com barra) so casa
+# com diretorio de verdade — o symlink aparecia como arquivo nao rastreado.
+node_modules
 .next/
 dist/
 .turbo/
@@ -35,3 +38,13 @@ graphify-out/
 # mandavam adicionar o proprio relatorio ao git.
 .superpowers/
 .superpowers-arquivo/
+
+# Portao de pre-commit: o `.husky/_` e gerado por `husky` (script `prepare`) e
+# NAO nasce com um `git worktree add`. Como `core.hooksPath` aponta para ele, um
+# commit em worktree nova passava SEM lint, SEM typecheck e SEM teste, em
+# silencio — foi assim que 2 erros de prettier derrubaram o CI do PR #135.
+# Por isso os DOIS arquivos que o git precisa para achar o portao sao
+# versionados de proposito; o resto do diretorio segue ignorado.
+.husky/_/*
+!.husky/_/h
+!.husky/_/pre-commit
