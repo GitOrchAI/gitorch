@@ -3,6 +3,7 @@ import { aplicarLabelDoAgente } from './agent-label.js'
 import { escolherParaDelegar, type IssueCandidata } from './fila-de-delegacao.js'
 import type { LinhaDeSessao } from './dev-session-store.js'
 import { fetchComTeto } from './fetch-com-teto.js'
+import { acharParecerNesteHead } from './parecer-do-qa.js'
 
 // Delegação contínua do SM (F3.6 item 2): a cada wake, encontra as TASKS prontas
 // (label `gitorch:task`, sem sessão viva na tabela `dev_sessions`, com todos os
@@ -19,6 +20,71 @@ import { fetchComTeto } from './fetch-com-teto.js'
 
 const TASK_LABEL = 'gitorch:task'
 
+/**
+ * Quantas entregas o SM manda julgar por acordada.
+ *
+ * MESMO desenho (e mesmo número) do cap de delegação logo abaixo, e pelo
+ * mesmo motivo: fluxo sustentável, não rajada. O teto de concorrência do
+ * relógio já impede duas missões ao mesmo tempo, mas ele segura DEPOIS de a
+ * missão ser pedida — sem um cap aqui, um repositório com trinta entregas
+ * paradas encheria a fila do relógio de uma vez e empurraria todo o resto do
+ * dia para trás.
+ */
+export const CAP_PADRAO_DE_JULGAMENTO = 3
+
+/** Quantas entregas abertas o SM olha por acordada (mesma página do julgamento). */
+const PRS_POR_PAGINA = 20
+
+/**
+ * As entregas abertas que AINDA NÃO TÊM parecer nosso no commit de agora.
+ *
+ * Por que isto existe: o julgamento só acordava por aviso do GitHub (CI
+ * concluído, pull request aberto) ou pela vigília de uma sessão viva. Uma
+ * entrega cuja verificação terminou dias atrás e cuja sessão já encerrou não
+ * tem quem chame o QA — foi assim que o #97 ficou parado desde 15/08 com a
+ * verificação verde. `docs/agents/quality-assurance.md` §3.1 já mandava que o
+ * SM fosse o orquestrador do julgamento; o código é que não fazia.
+ *
+ * A leitura é a MESMA do laço de descoberta do julgamento
+ * (`acharParecerNesteHead`, parecer-do-qa.ts) — de propósito, e não uma
+ * segunda cópia da regra: o que o SM enfileira aqui é um subconjunto estrito
+ * do que o julgamento aceita julgar, então nenhuma acordada pedida por este
+ * caminho chega lá para descobrir que não tinha nada a fazer.
+ *
+ * Não decide NADA sobre mesclagem: quem pode ser mesclado continua sendo
+ * decidido no ponto do merge, dentro do julgamento.
+ */
+export async function listarPrsSemParecer(args: {
+  repository: string
+  gh: (method: string, path: string) => Promise<unknown>
+  cap: number
+}): Promise<number[]> {
+  if (args.cap <= 0) return []
+
+  const prs = (await args.gh(
+    'GET',
+    `/repos/${args.repository}/pulls?state=open&sort=created&direction=desc&per_page=${PRS_POR_PAGINA}`
+  )) as Array<{ number: number; draft?: boolean; head?: { sha?: string } }>
+
+  const semParecer: number[] = []
+  for (const p of Array.isArray(prs) ? prs : []) {
+    // Rascunho não é entrega — o julgamento também o pula.
+    if (p.draft) continue
+    // O cap corta ANTES da leitura das reviews: uma entrega que não caberia
+    // nesta acordada não vale uma chamada à API do GitHub.
+    if (semParecer.length >= args.cap) break
+
+    const reviews = (await args.gh(
+      'GET',
+      `/repos/${args.repository}/pulls/${p.number}/reviews?per_page=100`
+    )) as Array<{ body?: string; commit_id?: string }>
+
+    if (acharParecerNesteHead(reviews, p.head?.sha)) continue
+    semParecer.push(p.number)
+  }
+  return semParecer
+}
+
 export interface SmDelegationOptions {
   repository: string
   githubToken: string
@@ -26,6 +92,23 @@ export interface SmDelegationOptions {
   delegateLabel?: string
   /** Máximo de delegações por ciclo (fluxo sustentável; padrão 3). */
   cap?: number
+  /**
+   * Máximo de julgamentos pedidos por ciclo. Padrão: o mesmo cap da
+   * delegação — o SM não abre a torneira de um lado mais do que do outro.
+   */
+  capJulgamento?: number
+  /**
+   * Põe na fila do julgamento as entregas abertas que ainda não têm parecer
+   * nosso no commit de agora.
+   *
+   * Recebe os NÚMEROS só para o registro honesto no log: quem escolhe o que
+   * julgar continua sendo o próprio julgamento, que refaz a descoberta ao
+   * acordar. O que o SM faz aqui é garantir que alguém o acorde — sem isso,
+   * uma entrega sem sessão viva e sem CI rodando não tem quem a chame.
+   *
+   * Ausente: o SM segue só delegando, exatamente como antes.
+   */
+  pedirJulgamento?: (prsSemParecer: number[]) => Promise<void> | void
   /**
    * Aciona o dev assíncrono de verdade e devolve o identificador da sessão.
    *
@@ -82,6 +165,8 @@ export interface SmDelegationResult {
   stderr: string
   noOp?: boolean
   delegated: number[]
+  /** Entregas abertas sem parecer nosso que este ciclo mandou julgar. */
+  paraJulgar: number[]
 }
 
 /** Extrai os números de "Blocked by #N, #M" do corpo da issue. */
@@ -217,15 +302,56 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
     }
   }
 
+  // O SM é o orquestrador do julgamento (docs/agents/quality-assurance.md
+  // §3.1), não só o delegador. Roda DEPOIS da delegação de propósito: se o
+  // GitHub falhar aqui, as delegações que já aconteceram acima não podem ser
+  // perdidas junto.
+  //
+  // A falha é isolada e DITA — no aviso estruturado e na saída da missão —
+  // pelo mesmo motivo do sensor de incidentes (scheduler.ts): quem lê o
+  // resultado desta acordada precisa saber que a fila do julgamento não foi
+  // levantada, em vez de ler "nada a julgar" e acreditar.
+  let paraJulgar: number[] = []
+  let falhaAoEnfileirar = ''
+  if (options.pedirJulgamento) {
+    try {
+      paraJulgar = await listarPrsSemParecer({
+        repository: options.repository,
+        gh: (method, path) => gh(method, path),
+        cap: options.capJulgamento ?? CAP_PADRAO_DE_JULGAMENTO,
+      })
+      if (paraJulgar.length > 0) await options.pedirJulgamento(paraJulgar)
+    } catch (err) {
+      paraJulgar = []
+      falhaAoEnfileirar = (err as Error).message
+      const avisar = options.onWarn ?? console.warn
+      avisar(
+        `[sm] não consegui levantar a fila de julgamento de ${options.repository}; ` +
+          `entrega sem parecer pode ficar parada até a próxima acordada: ${falhaAoEnfileirar}`
+      )
+    }
+  }
+
+  const linhaDaDelegacao =
+    delegated.length > 0
+      ? `SM delegated ${delegated.length} ready task(s): ${delegated.map((n) => `#${n}`).join(', ')}.` +
+        (sessoes.length > 0 ? ` Dev sessions: ${sessoes.join(', ')}.` : '')
+      : 'SM: no newly-ready task to delegate.'
+  const linhaDoJulgamento = falhaAoEnfileirar
+    ? `SM: judgment queue FAILED to build (${falhaAoEnfileirar}).`
+    : paraJulgar.length > 0
+      ? `SM queued ${paraJulgar.length} PR(s) for judgment: ${paraJulgar.map((n) => `#${n}`).join(', ')}.`
+      : ''
+
   return {
     exitCode: 0,
-    output:
-      delegated.length > 0
-        ? `SM delegated ${delegated.length} ready task(s): ${delegated.map((n) => `#${n}`).join(', ')}.` +
-          (sessoes.length > 0 ? ` Dev sessions: ${sessoes.join(', ')}.` : '')
-        : 'SM: no newly-ready task to delegate.',
+    output: linhaDoJulgamento ? `${linhaDaDelegacao} ${linhaDoJulgamento}` : linhaDaDelegacao,
     stderr: '',
-    noOp: delegated.length === 0,
+    // Acordada que encheu a fila do julgamento NÃO é vazia: mandar julgar é
+    // trabalho, e tratá-la como no-op faria o descanso pós-acordada-vazia
+    // (descanso-apos-vazia.ts) calar justamente o ciclo que destrava entrega.
+    noOp: delegated.length === 0 && paraJulgar.length === 0 && !falhaAoEnfileirar,
     delegated,
+    paraJulgar,
   }
 }

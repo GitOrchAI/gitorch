@@ -47,14 +47,34 @@ Saúde" descrita em versões antigas deste documento (achados de segurança/qual
 vulnerabilidades em `[MEMORY key="qa-health-<data>"]`) **não existe no código hoje** — é
 comportamento de ROADMAP, não real.
 
-### 2.3. O que a versão antiga errava (§3.1)
+### 2.3. O SM também aciona o QA — ATUAL (21/08/2026)
 
-*"O SM é o orquestrador do QA — não um webhook, não um trigger automático direto"* — o código faz
-exatamente o oposto: é webhook + cron. O SM não chama o QA em nenhum ponto do código
-(`apps/control-plane/src/services/sm-watchdog.ts` só escala issues travadas, ver
-`docs/agents/scrum-master.md`). Isto é um **furo real** apontado pelo dono, não uma preferência de
-documentação: um PR sem CI rodando e sem sessão registrada ainda pode ficar sem quem chame o QA entre
-janelas de cron — virou item de acompanhamento separado, não resolvido por este documento.
+A versão antiga deste documento (§3.1) dizia *"O SM é o orquestrador do QA — não um webhook, não um
+trigger automático direto"*, e por muito tempo o código fazia o oposto: só webhook + cron. O furo era
+real e foi medido — o PR #97 ficou parado desde 15/08 com a verificação verde, porque a verificação
+tinha terminado dias antes (nenhum aviso novo do GitHub) e a sessão do dev já havia encerrado
+(nenhuma vigília para acordar o QA).
+
+**O que existe hoje:** a cada acordar do SM, `runSmDelegation`
+(`apps/control-plane/src/services/sm-delegation.ts`) lista as PRs abertas e separa as que **não têm
+parecer nosso no head atual** — a MESMA leitura que o laço de descoberta do QA usa
+(`apps/control-plane/src/services/parecer-do-qa.ts`, importado pelos dois). Cada uma vira uma vez na
+fila de julgamento (`apps/control-plane/src/services/fila-de-julgamento.ts`), e o tique do relógio
+drena **uma por minuto** (`drenarFilaDeJulgamento` em `apps/control-plane/src/plugins/scheduler.ts`).
+
+Três guardas contra virar rajada:
+
+1. **Cap por ciclo** (`CAP_PADRAO_DE_JULGAMENTO`, hoje 3) — mesmo desenho e mesmo número do cap de
+   delegação do SM.
+2. **Uma por tique**, com rodízio entre projetos — o teto de concorrência do relógio (hoje 1) já
+   seguraria, mas segurar depois de pedir só geraria recusas por ocupado.
+3. **Subconjunto estrito do que o QA aceita julgar** — o SM só enfileira PR sem NENHUM parecer no
+   head atual, então nenhuma acordada pedida por este caminho chega lá para descobrir que não tinha
+   nada a fazer.
+
+A fila vive em memória de propósito: o critério é o estado do GitHub, não uma anotação nossa, então
+toda acordada do SM a redescobre inteira e reiniciar o processo não perde nada. O webhook e a
+vigília continuam existindo — este caminho é o que cobre a entrega que nenhum dos dois enxerga.
 
 ## 3. Como o QA decide o que julgar — ATUAL
 

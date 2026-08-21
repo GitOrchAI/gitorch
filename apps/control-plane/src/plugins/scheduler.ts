@@ -44,6 +44,7 @@ import {
   type VigiliaDoJulgamentoOptions,
 } from '../services/qa-rails-mission.js'
 import { runSmDelegation } from '../services/sm-delegation.js'
+import { criarFilaDeJulgamento } from '../services/fila-de-julgamento.js'
 import { tetosDoPlanoDoDev } from '../services/plano-do-dev.js'
 import {
   abrirSessao,
@@ -1673,6 +1674,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // fora do escopo desta tarefa.
   const avisosDeCredencialExpirada = new Map<string, number>()
 
+  /**
+   * A fila de acordadas de julgamento que o SM levanta a cada ciclo. A regra
+   * (rodízio, `max` em vez de soma, devolução da vez recusada) vive em
+   * fila-de-julgamento.ts, testada fora do relógio.
+   */
+  const filaDeJulgamento = criarFilaDeJulgamento()
+
   const runTrigger = async (
     role: F6AgentRole,
     projectId?: string,
@@ -2116,6 +2124,21 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 },
               }),
             }),
+            // O SM é o orquestrador do julgamento (docs/agents/quality-assurance.md
+            // §3.1). Até aqui o julgamento só era acordado por aviso do
+            // GitHub ou pela vigília de uma sessão viva — uma entrega cuja
+            // verificação terminou dias atrás e cuja sessão já encerrou não
+            // tinha quem chamasse o QA (o #97, parado desde 15/08 com a
+            // verificação verde). Enfileira; quem dispara é o tique
+            // (`drenarFilaDeJulgamento`), um por minuto.
+            pedirJulgamento: (prsSemParecer) => {
+              filaDeJulgamento.enfileirar(project.id, prsSemParecer.length)
+              app.log.info(
+                `[Scheduler] SM enfileirou julgamento de ${prsSemParecer.length} entrega(s) sem ` +
+                  `parecer em ${project.wingId}: ${prsSemParecer.map((n) => `#${n}`).join(', ')} ` +
+                  `(fila do projeto: ${filaDeJulgamento.pendentes(project.id)})`
+              )
+            },
             // I4 (revisão final): antes hardcoded em `console.warn` dentro de
             // `sm-delegation.ts`, invisível no logger estruturado — mesmo
             // padrão já aplicado em `runQaMissionViaRails` (commit 5477a3e).
@@ -2701,6 +2724,41 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     'error',
     'init',
   ])
+
+  /**
+   * Tira UMA acordada de julgamento da fila do SM por tique.
+   *
+   * Um por tique, não a fila inteira: com o teto de concorrência em 1, pedir
+   * três de uma vez só produziria dois `busy` e dois avisos de recusa. Uma
+   * por minuto drena três entregas em três minutos — mais rápido que o
+   * relógio próprio do julgamento (0 0,8,16) e sem tempestade nenhuma.
+   *
+   * Recusa temporária DEVOLVE a vez à fila, pelo mesmo motivo que a janela do
+   * cron é devolvida quando `triggerAgentMission` recusa: perder a vez por
+   * "estou ocupado agora" é justamente o defeito que deixou entrega parada.
+   */
+  /**
+   * Tira UMA acordada de julgamento da fila do SM por tique.
+   *
+   * Uma por minuto drena três entregas em três minutos — mais rápido que o
+   * relógio próprio do julgamento (0 0,8,16) e sem tempestade nenhuma.
+   */
+  const drenarFilaDeJulgamento = async (): Promise<void> => {
+    const projectId = filaDeJulgamento.proxima()
+    if (!projectId) return
+
+    const resultado = await triggerAgentMission('qa', projectId)
+    if (!resultado.triggered && resultado.reason && RETRYABLE_REASONS.has(resultado.reason)) {
+      // Recusa temporária DEVOLVE a vez, pelo mesmo motivo que a janela do
+      // cron é devolvida: perder a vez por "estou ocupado agora" é
+      // exatamente o defeito que deixou entrega parada por dias.
+      filaDeJulgamento.devolver(projectId)
+      app.log.warn(
+        `[Scheduler] julgamento pedido pelo SM para ${projectId} recusado (${resultado.reason}); ` +
+          'a vez volta para a fila e o próximo tique tenta de novo'
+      )
+    }
+  }
 
   // Processa as missões `clone_and_start_engines` que o wizard cria ao
   // finalizar o cadastro — sem isto elas ficavam órfãs (spec §17.3). Roda a
@@ -3931,6 +3989,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     await reconferirAcessoDoRelogio(app)
     await processSetupMissions()
     await varrerSessoesDoDev()
+    // A fila que o acordar do SM levantou: entrega aberta sem parecer nosso no
+    // commit de agora. Nunca rejeita — `triggerAgentMission` já trata os
+    // próprios erros e devolve `reason`.
+    await drenarFilaDeJulgamento().catch((err) =>
+      app.log.error(err, '[Scheduler] dreno da fila de julgamento falhou; tenta no próximo tick')
+    )
     // Tarefa 17: falha aqui não pode derrubar o tick — o próprio
     // `varrerPublicacoes` já isola cada sessão em try/catch; este é só o
     // último cinto de segurança (mesmo padrão de `sweepExpiredEnvironments`
