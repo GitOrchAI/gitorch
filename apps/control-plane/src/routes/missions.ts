@@ -85,7 +85,9 @@ export const missionRoutes = async (app: FastifyInstance): Promise<void> => {
 
       // Reflete o resultado real: 202 quando a missão iniciou, 409 quando o
       // scheduler pulou (ocupado, orçamento, sem projeto). Nunca mascarar skip.
-      const result = await app.triggerAgentMission(role)
+      // Pedido explícito de gente: fura o descanso pós-acordada-vazia — quem
+      // clicou quer ver o papel rodar AGORA, não daqui a meia hora.
+      const result = await app.triggerAgentMission(role, undefined, undefined, 'sob-demanda')
       if (!result.triggered) {
         return reply.code(409).send({ triggered: false, role, reason: result.reason })
       }

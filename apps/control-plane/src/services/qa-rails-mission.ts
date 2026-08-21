@@ -17,23 +17,25 @@ import { mesclarPr, type ResultadoDoMerge } from './merge-do-pr.js'
 import { decidirSobreVerificacao, type EstadoDaVerificacao } from './vigia-da-verificacao.js'
 import { hashDaMensagem } from './session-watch.js'
 import { fetchComTeto } from './fetch-com-teto.js'
+import {
+  acharParecerNesteHead,
+  ehAprovacao,
+  MARCA_DE_APROVACAO,
+  MARCA_DO_PARECER,
+} from './parecer-do-qa.js'
 
 // Missão do QA nos TRILHOS (F3.6): acha a PR do Jules que precisa de julgamento,
 // monta o snapshot (diff + Verification Criteria da issue + estado do CI), o
 // motor preenche UM formulário de veredito, e o SISTEMA posta a review e — se
 // for rework — o comentário mencionando @jules. A LLM nunca toca no GitHub.
 
-const JULES_MARKER = '<!-- gitorch:qa -->'
-/**
- * Substring EXATA do texto que a review de APROVAÇÃO posta (ver a montagem
- * do corpo mais abaixo, no ramo `effectiveVerdict === 'approve'`). É o que
- * permite ao laço de descoberta (C1, revisão final) diferenciar, entre as
- * reviews MARCADAS (com `JULES_MARKER`) já postadas no mesmo head, uma
- * aprovação de uma reprovação — sem isto as duas ficam indistinguíveis e um
- * PR aprovado cujo merge o GitHub recusou fica pulado para sempre, do mesmo
- * jeito que um PR reprovado esperando rework.
- */
-const APPROVAL_VERDICT_MARKER = 'verdict: APPROVE'
+// As duas marcas e a leitura de "já tem parecer neste head" mudaram de casa
+// (parecer-do-qa.ts) quando o acordar do SM passou a precisar EXATAMENTE da
+// mesma regra para levantar a fila de julgamento. Duas cópias divergiriam, e
+// a divergência apareceria como missão de julgamento acordada para uma
+// entrega que este laço vai pular. Os nomes locais continuam por serem os
+// usados no resto do arquivo.
+const JULES_MARKER = MARCA_DO_PARECER
 
 /**
  * Tarefa 10: teto de tentativas de mescla SEGUIDAS contra o MESMO commit.
@@ -372,24 +374,8 @@ export async function runQaMissionViaRails(
     // atual, `foiAprovacao` vira `false`, e a entrega passa a ser tratada
     // como "já julgada" (pulada) — o mesmo desfecho de qualquer outra
     // reprovação, sem laço sem fim.
-    let reviewMarcadaNesteHead: (typeof reviews)[number] | undefined
-    if (Array.isArray(reviews)) {
-      for (let i = reviews.length - 1; i >= 0; i--) {
-        const candidata = reviews[i]
-        if (
-          candidata &&
-          (candidata.body ?? '').includes(JULES_MARKER) &&
-          (!p.head?.sha || candidata.commit_id === p.head.sha)
-        ) {
-          reviewMarcadaNesteHead = candidata
-          break
-        }
-      }
-    }
-    const foiAprovacao = Boolean(
-      reviewMarcadaNesteHead &&
-      (reviewMarcadaNesteHead.body ?? '').includes(APPROVAL_VERDICT_MARKER)
-    )
+    const reviewMarcadaNesteHead = acharParecerNesteHead(reviews, p.head?.sha)
+    const foiAprovacao = ehAprovacao(reviewMarcadaNesteHead)
 
     // Tarefa 10: a exceção do C1 acima (reprocessar aprovação-ainda-aberta em
     // vez de pular) não pode reprocessar PARA SEMPRE — um conflito de código
@@ -725,7 +711,12 @@ export async function runQaMissionViaRails(
     // Shrimp: o resumo do veredito é o Goal.
     await postarReview(
       reviewEvent,
-      `${JULES_MARKER}\nGitOrch QA verdict: APPROVE — criteria met, CI green.\n\n${verdict.comment.goal}${avisoDeNaoMesclar}`
+      // O texto da aprovação usa a MARCA como pedaço do corpo, e não uma
+      // cópia à mão de "verdict: APPROVE": é essa mesma marca que a leitura
+      // de "já tem parecer" procura depois para distinguir aprovação de
+      // reprovação. Enquanto eram duas cadeias iguais por coincidência,
+      // mexer no texto aqui deixaria a leitura cega sem quebrar teste nenhum.
+      `${JULES_MARKER}\nGitOrch QA ${MARCA_DE_APROVACAO} — criteria met, CI green.\n\n${verdict.comment.goal}${avisoDeNaoMesclar}`
     )
 
     // Task 8 ("julga todos, mescla só o que delegou"): o QUARTO porteiro,
