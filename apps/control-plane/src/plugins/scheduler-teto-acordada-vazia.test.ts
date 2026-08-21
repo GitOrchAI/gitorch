@@ -67,15 +67,26 @@ const PROJETO = {
  * separa "total do dia" de "quantas foram acordada em falso". Um `count` que
  * devolve sempre o mesmo número não distinguiria o conserto do defeito.
  */
-function buildFakePrisma(opcoes: { total: number; vazias: number; credencial?: number }) {
+function buildFakePrisma(opcoes: {
+  total: number
+  vazias: number
+  credencial?: number
+  /** Quantas sobram quando as missões do papel isento são excluídas na origem. */
+  semOIsento?: number
+}) {
   let missionCounter = 0
   const count = vi.fn(
-    async (args?: { where?: { result?: { path?: string[] }; status?: unknown } }) => {
+    async (args?: {
+      where?: { result?: { path?: string[] }; status?: unknown; type?: unknown }
+    }) => {
       // A pergunta "quantas estão rodando AGORA" (teto de concorrência) filtra
       // por `status` e nada tem a ver com o total do dia. Responder o total aqui
       // faria toda tentativa morrer como 'busy' antes de o teto diário ser
       // sequer consultado — e o teste passaria a medir a coisa errada.
       if (args?.where?.status !== undefined) return 0
+      // A contagem do dia agora EXCLUI na origem o tipo de missão do papel
+      // isento — quem o teto não pode barrar não gasta o teto dos outros.
+      if (args?.where?.type !== undefined) return opcoes.semOIsento ?? opcoes.total
       const caminho = args?.where?.result?.path?.[0]
       if (caminho === 'noOp') return opcoes.vazias
       if (caminho === 'falhaDeCredencial') return opcoes.credencial ?? 0
@@ -151,6 +162,27 @@ describe('teto do dia × acordada em falso (incidente de 21/08/2026)', () => {
     )
     expect(filtros).toContain('noOp')
     expect(filtros).toContain('falhaDeCredencial')
+  })
+
+  test('o dia real do incidente: julgamento isento não gasta o teto de quem inicia trabalho', async () => {
+    // Números medidos em 21/08: 225 missões no dia, 220 delas de julgamento
+    // (65 de trabalho real, o resto acordada em falso). Descontar só as vazias
+    // deixava 68 — ainda acima de 24, e ra/po/sm seguiam calados. Excluindo o
+    // papel isento na origem sobram 5: as missões de quem de fato inicia
+    // trabalho. É a diferença entre "o teto me protege" e "o teto me cala".
+    const fake = buildFakePrisma({ total: 225, vazias: 157, semOIsento: 5 })
+
+    const resultado = await tentarDisparar(fake)
+
+    expect(resultado.triggered).toBe(true)
+
+    // A exclusão tem que acontecer na CONSULTA, não por subtração: `type` é
+    // coluna, e filtrar na origem evita o problema de NULL que obriga as duas
+    // contagens do caso JSON.
+    const filtrouPorTipo = fake.count.mock.calls.some(
+      (c) => (c[0] as { where?: { type?: unknown } })?.where?.type !== undefined
+    )
+    expect(filtrouPorTipo).toBe(true)
   })
 
   test('rajada de acordadas em falso NÃO cala os outros papéis', async () => {
