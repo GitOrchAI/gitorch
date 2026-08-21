@@ -109,8 +109,6 @@ describe('casarPrComSessao', () => {
   })
 
   it('lista de sessões vazia não quebra', () => {
-    expect(
-      casarPrComSessao({ headRefName: 'jules-1-a', corpo: '', sessoes: [] })
-    ).toBeNull()
+    expect(casarPrComSessao({ headRefName: 'jules-1-a', corpo: '', sessoes: [] })).toBeNull()
   })
 })

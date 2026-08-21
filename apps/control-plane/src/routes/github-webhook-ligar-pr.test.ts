@@ -92,7 +92,11 @@ describe('ligarPrDaEntrega', () => {
       event: 'pull_request',
       payload: {
         action: 'opened',
-        pull_request: { number: 99, body: 'Corrige o rodapé. Fixes #74', head: { ref: 'fix/rodape' } },
+        pull_request: {
+          number: 99,
+          body: 'Corrige o rodapé. Fixes #74',
+          head: { ref: 'fix/rodape' },
+        },
       },
     })
     expect(r).toBeNull()
