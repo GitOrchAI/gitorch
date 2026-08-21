@@ -71,6 +71,19 @@ const PAPEL_QUE_NAO_E_SEGURADO: F6AgentRole = 'qa'
  */
 export const TIPO_DE_MISSAO_ISENTO_DO_TETO = `agent-run-${PAPEL_QUE_NAO_E_SEGURADO}`
 
+/**
+ * "Este papel é segurado pelo teto do dia?" — a pergunta que o teto do PLANO
+ * também precisa fazer.
+ *
+ * Existe porque a guarda do plano repetia `role !== 'qa'` à mão. Dois lugares
+ * decidindo a mesma coisa por caminhos diferentes divergem em silêncio: mudar
+ * o papel isento aqui deixaria o plano cobrando de quem a instância isenta,
+ * sem quebrar teste nenhum.
+ */
+export function tetoDiarioSeguraOPapel(role: F6AgentRole): boolean {
+  return role !== PAPEL_QUE_NAO_E_SEGURADO
+}
+
 export function tetoDiarioBloqueia(args: {
   role: F6AgentRole
   /** Missões que já contaram no dia (já descontadas as falhas de credencial). */

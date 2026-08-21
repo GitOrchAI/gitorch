@@ -73,6 +73,13 @@ function buildFakePrisma(opcoes: {
   credencial?: number
   /** Quantas sobram quando as missões do papel isento são excluídas na origem. */
   semOIsento?: number
+  /**
+   * Quantas acordadas em falso existem CONTANDO as do papel isento. Existe para
+   * pegar o furo real de 21/08: se a subtração não usar o mesmo filtro de tipo
+   * do total, ela desconta o que o total nunca somou e o teto vira número
+   * negativo — some sem avisar.
+   */
+  vaziasContandoOIsento?: number
 }) {
   let missionCounter = 0
   const count = vi.fn(
@@ -86,10 +93,25 @@ function buildFakePrisma(opcoes: {
       if (args?.where?.status !== undefined) return 0
       // A contagem do dia agora EXCLUI na origem o tipo de missão do papel
       // isento — quem o teto não pode barrar não gasta o teto dos outros.
-      if (args?.where?.type !== undefined) return opcoes.semOIsento ?? opcoes.total
+      // A ORDEM importa: depois do conserto as contagens de subtração TAMBÉM
+      // levam filtro de tipo, então perguntar por `type` primeiro responderia
+      // o total para uma pergunta que era sobre `noOp`. Desempata pelo campo
+      // mais específico.
       const caminho = args?.where?.result?.path?.[0]
-      if (caminho === 'noOp') return opcoes.vazias
+      if (caminho === 'noOp') {
+        // O banco de verdade responde MAIS quando o filtro de tipo não está
+        // presente. Reproduzir isso é o que separa a conta certa da errada.
+        const temFiltroDeTipo = (args?.where as { type?: unknown } | undefined)?.type !== undefined
+        if (!temFiltroDeTipo && opcoes.vaziasContandoOIsento !== undefined) {
+          return opcoes.vaziasContandoOIsento
+        }
+        return opcoes.vazias
+      }
       if (caminho === 'falhaDeCredencial') return opcoes.credencial ?? 0
+      // Só depois de descartar as perguntas sobre `result` é que sobra a
+      // pergunta pelo total do dia — que é a única com filtro de tipo e sem
+      // caminho de JSON.
+      if (args?.where?.type !== undefined) return opcoes.semOIsento ?? opcoes.total
       return opcoes.total
     }
   )
@@ -206,6 +228,28 @@ describe('teto do dia × acordada em falso (incidente de 21/08/2026)', () => {
 
     expect(resultado.triggered).toBe(true)
     expect(resultado.reason).not.toBe('plan-budget')
+  })
+
+  test('a subtração usa o MESMO filtro do total — senão o teto vira número negativo', async () => {
+    // O furo real de 21/08, com a forma exata: o total passou a excluir o papel
+    // isento, mas as subtrações continuaram contando TUDO. Medido em produção
+    // uma hora depois: 17 - 0 - 174 = -157, e o teto do dia simplesmente
+    // deixou de existir, em silêncio.
+    //
+    // Números escolhidos para que a conta CERTA barre e a ERRADA deixe passar:
+    // certo  = 30 - 2   = 28  -> acima do teto de 24, barra
+    // errado = 30 - 100 = -70 -> abaixo de tudo, passa
+    const fake = buildFakePrisma({
+      total: 30,
+      vazias: 2,
+      vaziasContandoOIsento: 100,
+      semOIsento: 30,
+    })
+
+    const resultado = await tentarDisparar(fake)
+
+    expect(resultado.triggered).toBe(false)
+    expect(resultado.reason).toBe('instance-failsafe')
   })
 
   test('trabalho de verdade continua barrando, como sempre barrou', async () => {
