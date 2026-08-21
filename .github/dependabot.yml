@@ -39,8 +39,12 @@ updates:
         update-types:
           - "version-update:semver-major"
 
+<<<<<<< HEAD
   # Ecossistema Node do projeto de scripts do GitHub Actions.
   # The separate .github/scripts project must be configured independently using "npm"
+=======
+  # Automação CI/CD (Node.js) em .github/scripts
+>>>>>>> origin/main
   - package-ecosystem: "npm"
     directory: "/.github/scripts"
     schedule:
@@ -48,6 +52,10 @@ updates:
     labels:
       - "dependabot"
       - "dependencies"
+<<<<<<< HEAD
+=======
+      - "scripts"
+>>>>>>> origin/main
     groups:
       production-dependencies:
         dependency-type: "production"

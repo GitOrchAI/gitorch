@@ -9,6 +9,8 @@ import {
 } from '@gitorch/github-sync'
 
 import type { F6AgentRole } from '@gitorch/agents'
+import { casarPrComSessao } from '../services/casar-pr-com-sessao.js'
+import { registrarPr, sessoesVivas, type PrismaDevSession } from '../services/dev-session-store.js'
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -64,6 +66,60 @@ export function missionRoleForEvent(
     return prsDoEvento.length > 0 ? 'qa' : null
   }
   return null
+}
+
+/**
+ * Liga o pull request recém-nascido à tarefa que o produto delegou — AGORA.
+ *
+ * Antes disto a ligação só era gravada quando o dev externo reportava que
+ * tinha terminado, e o número do PR vinha de um campo que ele preenche quando
+ * quer. Medido em produção (20/08/2026): PR #132 aberto às 16:58, ligação
+ * gravada às 23:28 — seis horas e meia. Dentro dessa janela o QA acorda pelo
+ * aviso do CI, não encontra a linha, e julga a própria entrega do produto como
+ * obra de terceiro: o parecer sai como comentário e leva junto a frase "esta
+ * entrega não foi encomendada pelo produto", escrita no repositório do
+ * CLIENTE. A mesclagem, que exige aprovação formal, nunca acontece.
+ *
+ * O aviso de "pull request aberto" chega no segundo zero e já traz o
+ * identificador da sessão no branch. Gravar aqui fecha a janela.
+ *
+ * Devolve o que foi ligado, ou `null` quando não havia o que ligar — que é o
+ * caso normal de um pull request de humano.
+ */
+export async function ligarPrDaEntrega(deps: {
+  prisma: PrismaDevSession
+  projectId: string
+  event: string | undefined
+  payload: {
+    action?: string
+    pull_request?: { number?: number; body?: string; head?: { ref?: string } }
+  }
+  agora?: Date
+}): Promise<{ sessionName: string; numeroDoPr: number } | null> {
+  if (deps.event !== 'pull_request') return null
+  if (deps.payload.action !== 'opened' && deps.payload.action !== 'reopened') return null
+
+  const numeroDoPr = deps.payload.pull_request?.number
+  if (typeof numeroDoPr !== 'number') return null
+
+  const sessoes = await sessoesVivas({ prisma: deps.prisma, projectId: deps.projectId })
+  if (sessoes.length === 0) return null
+
+  const casamento = casarPrComSessao({
+    headRefName: deps.payload.pull_request?.head?.ref,
+    corpo: deps.payload.pull_request?.body,
+    numeroDoPr,
+    sessoes,
+  })
+  if (!casamento) return null
+
+  await registrarPr({
+    prisma: deps.prisma,
+    sessionName: casamento.sessionName,
+    numeroDoPr,
+    agora: deps.agora ?? new Date(),
+  })
+  return { sessionName: casamento.sessionName, numeroDoPr }
 }
 
 // Map GitHub event header to supported event names
@@ -330,6 +386,29 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
               { eventId: syncEvent.id, reason: ingestResult.reason },
               'GitHub event deduplicated'
             )
+          }
+
+          // A ligação PR↔tarefa nasce ANTES de qualquer missão acordar. Se o
+          // QA acordasse primeiro, julgaria a entrega do próprio produto como
+          // obra de terceiro — e o parecer sairia sem poder de mesclagem.
+          // Awaited de propósito: é uma leitura e uma escrita, e a ordem aqui é
+          // o conserto inteiro. Falha não derruba o webhook: o caminho antigo
+          // (o dev reportar) continua existindo como rede de segurança.
+          try {
+            const ligado = await ligarPrDaEntrega({
+              prisma: app.prisma as unknown as PrismaDevSession,
+              projectId: project.id,
+              event,
+              payload: parsedPayload,
+            })
+            if (ligado) {
+              app.log.info(
+                { projectId: project.id, ...ligado },
+                'Entrega do dev reconhecida no ato: PR ligado à tarefa'
+              )
+            }
+          } catch (err) {
+            app.log.error({ err, projectId: project.id }, 'Falha ao ligar PR à tarefa delegada')
           }
 
           // Sistema nervoso do loop: acorda o agente do papel certo. Fire-and-

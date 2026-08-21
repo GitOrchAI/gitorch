@@ -26,6 +26,8 @@ import {
   type WorkspaceProvider,
 } from '@gitorch/agents'
 import type { EngineConnectionService } from '../services/engine-connection.js'
+import { tetoDiarioBloqueia } from '../services/teto-diario.js'
+import { ensureDefaultSchedules } from '../lib/project-defaults.js'
 import {
   LocalWorkspaceProvider,
   WorkspaceManager,
@@ -1706,7 +1708,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       },
     })
     const instanceToday = totalHoje - mortasPorCredencial
-    if (instanceToday >= MAX_MISSIONS_PER_DAY) {
+    // O julgamento NÃO é segurado por este teto (D25 do dono, 21/08/2026): ver
+    // services/teto-diario.ts para o porquê e para o que continua valendo.
+    // A missão de qa segue SOMANDO em `instanceToday` — ela existe e gasta
+    // recurso, e continua empurrando o teto dos outros papéis.
+    if (tetoDiarioBloqueia({ role, usadasHoje: instanceToday, teto: MAX_MISSIONS_PER_DAY })) {
       app.log.warn(
         `[Scheduler] Failsafe da instância atingido (${instanceToday}/${MAX_MISSIONS_PER_DAY}); pulando ${role}`
       )
@@ -1756,7 +1762,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // Orçamento do plano: total de missões do dia somando TODOS os projetos do
     // dono (o limite do plano é por usuário, não por projeto).
     const plan = project.user?.plan
-    if (project.userId && plan) {
+    // Mesma regra do failsafe acima, e pelo mesmo motivo: a vaga que o cliente
+    // paga não pode ser o que impede a entrega dele de ser julgada e mesclada.
+    if (project.userId && plan && role !== 'qa') {
       // Mesmo furo do failsafe da instância, e aqui é pior: esta é a vaga
       // que o CLIENTE paga. Cobrar do plano dele uma missão que morreu
       // pedindo login — sem nunca ter usado o motor — é cobrar por trabalho
@@ -3699,6 +3707,38 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     }
   }
 
+  // A agenda padrão vale para TODO projeto ativo, não só para os que nasceram
+  // depois de ela existir.
+  //
+  // `ensureDefaultSchedules` só era chamada na criação do projeto. Quando um
+  // papel novo entra na agenda padrão — foi o caso do `qa` — os projetos que
+  // já existiam ficavam para trás em silêncio, e a correção não valia para
+  // ninguém em produção. Roda UMA vez por processo, é idempotente por papel, e
+  // um erro aqui não fica gravado como "já feito": a marca só é assumida
+  // depois do sucesso, então o próximo tique tenta de novo.
+  let agendasCompletadas = false
+  const completarAgendasDosProjetos = async () => {
+    if (agendasCompletadas) return
+    try {
+      const projetos = await app.prisma.project.findMany({
+        where: { isActive: true },
+        select: { id: true },
+      })
+      let criadas = 0
+      for (const projeto of projetos) {
+        criadas += await ensureDefaultSchedules(app.prisma, projeto.id)
+      }
+      agendasCompletadas = true
+      if (criadas > 0) {
+        app.log.info(
+          `[Scheduler] agenda padrão completada: ${criadas} entrada(s) criada(s) em ${projetos.length} projeto(s)`
+        )
+      }
+    } catch (err) {
+      app.log.error(err, '[Scheduler] falha ao completar a agenda padrão; tenta no próximo tique')
+    }
+  }
+
   const tick = async () => {
     // PRIMEIRO de tudo: um token do GitHub vencido no meio do tique derruba
     // qualquer missão que precise dele (materializeToHome recusa e a missão
@@ -3706,6 +3746,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // gasta uma chamada de rede por conexão cujo ciclo de renovação venceu
     // — e (achado Baixo 5 da revisão da Task 5/F8) já registra o resumo da
     // passada sozinha, então nada precisa ser feito com o retorno aqui.
+    await completarAgendasDosProjetos()
     await renovarTokensGithubDoRelogio(app)
     // Só DEPOIS: quem perdeu o acesso ao repositório não pode ter o dia
     // começando com uma missão escrevendo lá. `reconferirAcessoDoRelogio`
