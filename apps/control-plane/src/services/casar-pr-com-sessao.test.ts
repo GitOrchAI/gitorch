@@ -12,6 +12,41 @@ const SESSAO_DO_132 = { sessionName: 'sessions/12112302527133030906', pullReques
 const SESSAO_DO_133 = { sessionName: 'sessions/2393879608896482841', pullRequestNumber: null }
 
 describe('casarPrComSessao', () => {
+  // Os CINCO nomes de branch reais que o dev assíncrono produziu neste
+  // repositório (lidos da API do GitHub em 21/08/2026). Ele usa DOIS padrões,
+  // e o segundo é o mais comum — o identificador vai no FIM, sem prefixo:
+  //   #132  jules-12112302527133030906-e9d57552
+  //   #133  fix-dependabot-pnpm-config-2393879608896482841
+  //   #97   fix/jules-pr-ci-failure-fallback-2772598213435248562
+  //   #79   fix/ci-failure-fallback-token-18033236850476632477
+  //   #75   fix-jules-apology-handler-token-6237721600950278679
+  it.each([
+    ['jules-12112302527133030906-e9d57552', '12112302527133030906'],
+    ['fix-dependabot-pnpm-config-2393879608896482841', '2393879608896482841'],
+    ['fix/jules-pr-ci-failure-fallback-2772598213435248562', '2772598213435248562'],
+    ['fix/ci-failure-fallback-token-18033236850476632477', '18033236850476632477'],
+    ['fix-jules-apology-handler-token-6237721600950278679', '6237721600950278679'],
+  ])('reconhece o branch real %s', (branch, id) => {
+    const r = casarPrComSessao({
+      headRefName: branch,
+      corpo: '',
+      sessoes: [{ sessionName: `sessions/${id}`, pullRequestNumber: null }],
+    })
+    expect(r).toEqual({ sessionName: `sessions/${id}` })
+  })
+
+  it('número curto no fim do branch não é identificador de sessão', () => {
+    // `fix/issue-123` é nome de branch de gente. Os identificadores do dev têm
+    // dezenove ou vinte dígitos; exigir comprimento evita sequer procurar.
+    expect(
+      casarPrComSessao({
+        headRefName: 'fix/issue-123',
+        corpo: '',
+        sessoes: [{ sessionName: 'sessions/123', pullRequestNumber: null }],
+      })
+    ).toBeNull()
+  })
+
   it('casa pelo branch do dev assíncrono — o sinal que chega primeiro', () => {
     const r = casarPrComSessao({
       headRefName: 'jules-12112302527133030906-e9d57552',
