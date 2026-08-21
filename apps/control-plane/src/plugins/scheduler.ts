@@ -26,6 +26,7 @@ import {
   type WorkspaceProvider,
 } from '@gitorch/agents'
 import type { EngineConnectionService } from '../services/engine-connection.js'
+import { tetoDiarioBloqueia } from '../services/teto-diario.js'
 import {
   LocalWorkspaceProvider,
   WorkspaceManager,
@@ -1706,7 +1707,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       },
     })
     const instanceToday = totalHoje - mortasPorCredencial
-    if (instanceToday >= MAX_MISSIONS_PER_DAY) {
+    // O julgamento NÃO é segurado por este teto (D25 do dono, 21/08/2026): ver
+    // services/teto-diario.ts para o porquê e para o que continua valendo.
+    // A missão de qa segue SOMANDO em `instanceToday` — ela existe e gasta
+    // recurso, e continua empurrando o teto dos outros papéis.
+    if (tetoDiarioBloqueia({ role, usadasHoje: instanceToday, teto: MAX_MISSIONS_PER_DAY })) {
       app.log.warn(
         `[Scheduler] Failsafe da instância atingido (${instanceToday}/${MAX_MISSIONS_PER_DAY}); pulando ${role}`
       )
@@ -1756,7 +1761,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // Orçamento do plano: total de missões do dia somando TODOS os projetos do
     // dono (o limite do plano é por usuário, não por projeto).
     const plan = project.user?.plan
-    if (project.userId && plan) {
+    // Mesma regra do failsafe acima, e pelo mesmo motivo: a vaga que o cliente
+    // paga não pode ser o que impede a entrega dele de ser julgada e mesclada.
+    if (project.userId && plan && role !== 'qa') {
       // Mesmo furo do failsafe da instância, e aqui é pior: esta é a vaga
       // que o CLIENTE paga. Cobrar do plano dele uma missão que morreu
       // pedindo login — sem nunca ter usado o motor — é cobrar por trabalho
