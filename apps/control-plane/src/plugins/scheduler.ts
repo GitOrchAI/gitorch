@@ -1751,7 +1751,23 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         result: { path: ['falhaDeCredencial'], equals: true },
       },
     })
-    const instanceToday = totalHoje - mortasPorCredencial
+    // Mesma lógica, outra causa: a missão que acordou e não achou nada para
+    // fazer devolve `noOp` e RETORNA ANTES de chamar o motor (medido: 12,1s
+    // contra 25,4s de um julgamento real). Cobrar dela uma vaga do dia é
+    // cobrar por trabalho que não houve — e foi o que estourou o teto em
+    // 21/08, bloqueando ra, po e sm com "Failsafe da instância (220/24)"
+    // enquanto o desejo #141 esperava alguém acordar.
+    //
+    // DUAS contagens e uma subtração, de novo pelo mesmo motivo explicado
+    // acima: `NOT (result->>'noOp' = 'true')` avaliaria NULL para toda missão
+    // sem `result`, e NULL não é TRUE — o filtro excluiria todas.
+    const acordadasEmFalso = await app.prisma.mission.count({
+      where: {
+        createdAt: { gte: startOfDay },
+        result: { path: ['noOp'], equals: true },
+      },
+    })
+    const instanceToday = totalHoje - mortasPorCredencial - acordadasEmFalso
     // O julgamento NÃO é segurado por este teto (D25 do dono, 21/08/2026): ver
     // services/teto-diario.ts para o porquê e para o que continua valendo.
     // A missão de qa segue SOMANDO em `instanceToday` — ela existe e gasta
@@ -2588,7 +2604,19 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               status: 'completed',
               completedAt: new Date(),
               error: null,
-              result: { output: result.output, stderr: result.stderr, runtime: sel.runtime },
+              result: {
+                output: result.output,
+                stderr: result.stderr,
+                runtime: sel.runtime,
+                // A marca de "acordei e não havia nada para fazer" precisa
+                // SOBREVIVER à missão. Ela já existia em memória — mandava o
+                // papel descansar — e morria aqui, sem nunca chegar ao banco.
+                // Sem ela gravada, o teto do dia não tem como distinguir
+                // trabalho de acordada em falso, e foi exatamente isso que
+                // parou a esteira em 21/08: 220 missões contadas, 143 delas
+                // sem ter chamado motor nenhum.
+                ...(isNoOp ? { noOp: true } : {}),
+              },
             },
           })
           if (updated.count === 0) {

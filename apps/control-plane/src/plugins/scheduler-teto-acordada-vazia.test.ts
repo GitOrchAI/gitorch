@@ -1,0 +1,185 @@
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+import Fastify from 'fastify'
+import type { BuildAgentMissionInput, RuntimeExecutionResult } from '@gitorch/agents'
+
+// INCIDENTE DE 21/08/2026, e por que este arquivo existe.
+//
+// A decisão do dono (D25) tirou o julgamento de ser BLOQUEADO pelo teto do dia,
+// mas deixou a missão de julgamento CONTANDO no total — de propósito, com o
+// argumento de que "ela existe e gasta recurso". O argumento vale para trabalho.
+// Não valia para acordada em falso.
+//
+// O que aconteceu: 220 missões no dia, 143 delas devolvendo "não havia nada para
+// julgar" — retorno que acontece ANTES de qualquer chamada ao motor (12,1s de
+// média contra 25,4s de um julgamento real). O contador enxergou 220 contra um
+// teto de 24 e passou a barrar ra, po e sm: "Failsafe da instância atingido
+// (220/24); pulando sm". O ciclo inteiro parou, com um desejo recém registrado
+// esperando o analista acordar.
+//
+// O conserto reusa o mecanismo que já existia para as falhas de credencial:
+// duas contagens e uma subtração. Este teste prende esse comportamento pelo
+// caminho REAL (`app.triggerAgentMission` → `runTrigger`), não por
+// reimplementação — foi reimplementação de laço que deixou um bloco inteiro ser
+// apagado sem quebrar teste nenhum neste mesmo arquivo de produção.
+const resultadoDoMotor = vi.hoisted(() => ({
+  atual: null as RuntimeExecutionResult | null,
+}))
+
+vi.mock('@gitorch/agents', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@gitorch/agents')>()
+  return {
+    ...actual,
+    AgentOrchestrator: class {
+      constructor(_options: unknown) {}
+      async runMission(_input: BuildAgentMissionInput): Promise<RuntimeExecutionResult> {
+        return (
+          resultadoDoMotor.atual ?? {
+            missionId: 'irrelevante',
+            runtime: 'antigravity',
+            exitCode: 0,
+            durationMs: 1,
+            output: 'saída qualquer',
+            stderr: '',
+          }
+        )
+      }
+    },
+  }
+})
+
+const { schedulerPlugin } = await import('./scheduler.js')
+
+const PROJETO = {
+  id: 'proj_1',
+  wingId: 'acme/api',
+  name: 'Acme API',
+  userId: 'user_1',
+  runtimeConfig: null,
+  devPlan: null,
+  accessSuspendedAt: null,
+  accessSuspendedReason: null,
+  isActive: true,
+  user: null,
+} as const
+
+/**
+ * Banco de mentira que responde à contagem CONFORME O FILTRO — é isso que
+ * separa "total do dia" de "quantas foram acordada em falso". Um `count` que
+ * devolve sempre o mesmo número não distinguiria o conserto do defeito.
+ */
+function buildFakePrisma(opcoes: { total: number; vazias: number; credencial?: number }) {
+  let missionCounter = 0
+  const count = vi.fn(
+    async (args?: { where?: { result?: { path?: string[] }; status?: unknown } }) => {
+      // A pergunta "quantas estão rodando AGORA" (teto de concorrência) filtra
+      // por `status` e nada tem a ver com o total do dia. Responder o total aqui
+      // faria toda tentativa morrer como 'busy' antes de o teto diário ser
+      // sequer consultado — e o teste passaria a medir a coisa errada.
+      if (args?.where?.status !== undefined) return 0
+      const caminho = args?.where?.result?.path?.[0]
+      if (caminho === 'noOp') return opcoes.vazias
+      if (caminho === 'falhaDeCredencial') return opcoes.credencial ?? 0
+      return opcoes.total
+    }
+  )
+  return {
+    prisma: {
+      mission: {
+        updateMany: vi.fn(async () => ({ count: 1 })),
+        count,
+        create: vi.fn(async () => {
+          missionCounter += 1
+          return { id: `mission_${missionCounter}` }
+        }),
+      },
+      project: { findFirst: vi.fn(async () => PROJETO) },
+      telegramLink: { findUnique: vi.fn(async () => ({ status: 'unlinked', chatId: null })) },
+    },
+    count,
+  }
+}
+
+async function tentarDisparar(fake: ReturnType<typeof buildFakePrisma>) {
+  const app = Fastify({ logger: false })
+  app.decorate('prisma', fake.prisma as never)
+  await app.register(schedulerPlugin)
+  return app.triggerAgentMission('ra', 'proj_1')
+}
+
+const ENV_KEYS = [
+  'GITORCH_MAX_MISSIONS_PER_DAY',
+  'GITORCH_TELEGRAM_BOT_TOKEN',
+  'TELEGRAM_BOT_TOKEN',
+]
+
+describe('teto do dia × acordada em falso (incidente de 21/08/2026)', () => {
+  const originalEnv: Record<string, string | undefined> = {}
+
+  beforeEach(() => {
+    for (const key of ENV_KEYS) {
+      originalEnv[key] = process.env[key]
+      delete process.env[key]
+    }
+    process.env['GITORCH_MAX_MISSIONS_PER_DAY'] = '24'
+    resultadoDoMotor.atual = null
+  })
+
+  afterEach(() => {
+    for (const key of ENV_KEYS) {
+      if (originalEnv[key] === undefined) delete process.env[key]
+      else process.env[key] = originalEnv[key]
+    }
+    vi.restoreAllMocks()
+  })
+
+  test('o número exato do incidente: 220 no dia, 143 em falso — o analista VOLTA a ser disparado', async () => {
+    const fake = buildFakePrisma({ total: 220, vazias: 143 })
+
+    const resultado = await tentarDisparar(fake)
+
+    // 220 - 143 = 77. Ainda acima de 24, então continua barrado — e ESTÁ CERTO:
+    // as 77 restantes foram trabalho de verdade. O conserto não é passar a
+    // deixar tudo entrar; é parar de cobrar pelo que não aconteceu.
+    expect(resultado.triggered).toBe(false)
+    expect(resultado.reason).toBe('instance-failsafe')
+
+    // O que importa provar aqui é que a subtração ACONTECE: o filtro por `noOp`
+    // foi consultado. Sem esta consulta, o número seria 220 e a causa do
+    // incidente continuaria de pé.
+    const filtros = fake.count.mock.calls.map(
+      (c) => (c[0] as { where?: { result?: { path?: string[] } } })?.where?.result?.path?.[0]
+    )
+    expect(filtros).toContain('noOp')
+    expect(filtros).toContain('falhaDeCredencial')
+  })
+
+  test('rajada de acordadas em falso NÃO cala os outros papéis', async () => {
+    // 30 missões no dia, 28 delas acordadas em falso: sobram 2 de trabalho real,
+    // bem abaixo do teto de 24. Antes do conserto o contador via 30 e barrava.
+    const fake = buildFakePrisma({ total: 30, vazias: 28 })
+
+    const resultado = await tentarDisparar(fake)
+
+    expect(resultado.triggered).toBe(true)
+  })
+
+  test('trabalho de verdade continua barrando, como sempre barrou', async () => {
+    // Mesmas 30 missões, nenhuma em falso: o teto tem que segurar. É a guarda
+    // contra "consertar" o incidente afrouxando a proteção.
+    const fake = buildFakePrisma({ total: 30, vazias: 0 })
+
+    const resultado = await tentarDisparar(fake)
+
+    expect(resultado.triggered).toBe(false)
+    expect(resultado.reason).toBe('instance-failsafe')
+  })
+
+  test('falha de credencial e acordada em falso somam na subtração, sem dupla contagem', async () => {
+    // 30 no dia: 10 morreram pedindo login, 18 acordaram em falso. Sobram 2.
+    const fake = buildFakePrisma({ total: 30, vazias: 18, credencial: 10 })
+
+    const resultado = await tentarDisparar(fake)
+
+    expect(resultado.triggered).toBe(true)
+  })
+})
