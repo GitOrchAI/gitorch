@@ -167,7 +167,12 @@ function buildFetchMock(opcoes: {
     if (u === 'https://api.github.com/repos/acme/api/issues' && init?.method === 'POST') {
       return new Response(JSON.stringify({ number: opcoes.issueCriada ?? 321 }), { status: 201 })
     }
-    if (u.startsWith('https://loja.exemplo.com')) {
+    // Comparação EXATA de origem, nunca `startsWith`: um prefixo sem barra
+    // final também casa com `https://loja.exemplo.com.dominio-alheio.com`.
+    // É o mesmo padrão que já produziu alerta de severidade alta neste
+    // repositório; num teste não há risco, mas o portão é zero-tolerância e
+    // a regra é boa — o hábito é que protege o código de produção.
+    if (origemDe(u) === 'https://loja.exemplo.com') {
       const ambiente = opcoes.ambiente ?? { status: 200 }
       if ('erro' in ambiente) throw new Error('conexão recusada')
       return new Response('ok', { status: ambiente.status })
@@ -177,6 +182,15 @@ function buildFetchMock(opcoes: {
     }
     return new Response('{}', { status: 200 })
   })
+}
+
+/** Origem do endereço, ou string vazia quando não é um endereço absoluto. */
+function origemDe(url: string): string {
+  try {
+    return new URL(url).origin
+  } catch {
+    return ''
+  }
 }
 
 function issuesCriadas(fetchMock: ReturnType<typeof buildFetchMock>): Array<{
