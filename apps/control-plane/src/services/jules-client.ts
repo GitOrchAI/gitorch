@@ -185,7 +185,7 @@ export async function consultarSessaoJules(deps: {
 async function chamarMetodoDaSessao(deps: {
   apiKey?: string | undefined
   sessionName: string
-  metodo: 'sendMessage' | 'approvePlan'
+  metodo: 'sendMessage' | 'approvePlan' | 'archive'
   corpo: Record<string, unknown>
   fetchImpl?: typeof fetch
   onWarn?: (message: string) => void
@@ -225,6 +225,30 @@ export async function responderSessaoJules(deps: {
   onWarn?: (message: string) => void
 }): Promise<boolean> {
   return chamarMetodoDaSessao({ ...deps, metodo: 'sendMessage', corpo: { prompt: deps.texto } })
+}
+
+/**
+ * Encerra a sessão do lado do fornecedor, liberando a vaga.
+ *
+ * Existe porque a falta dele estava matando a delegação. O produto criava
+ * sessão e nunca encerrava nenhuma: `fecharSessao` só apagava a linha da
+ * vigília AQUI, e lá fora a conversa seguia viva para sempre, segurando uma
+ * vaga. Medido em 21/08/2026: onze recusas de criação com
+ * `FAILED_PRECONDITION` e as dezoito vagas ativas do fornecedor ocupadas —
+ * todas em "esperando resposta". Cada delegação consumia uma vaga em
+ * definitivo, então a esteira tinha prazo de validade.
+ *
+ * `:archive` foi encontrado testando a API de verdade: `:cancel` e
+ * `:complete` respondem 404, `:archive` responde 200 e a sessão passa a
+ * `state=PAUSED`, `archived=true`.
+ */
+export async function arquivarSessaoJules(deps: {
+  apiKey?: string | undefined
+  sessionName: string
+  fetchImpl?: typeof fetch
+  onWarn?: (message: string) => void
+}): Promise<boolean> {
+  return chamarMetodoDaSessao({ ...deps, metodo: 'archive', corpo: {} })
 }
 
 /** Aprova o plano da sessão, sem gastar motor: o contrato já está na issue. */

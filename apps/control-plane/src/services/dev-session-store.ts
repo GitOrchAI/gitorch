@@ -300,7 +300,35 @@ export async function fecharSessao(deps: {
   sessionName: string
   motivo: MotivoDeFechamento
   agora: Date
+  /**
+   * Encerra a conversa no fornecedor, liberando a vaga. Opcional só para os
+   * testes que não se importam com isso — em produção é sempre injetado.
+   */
+  arquivarNoFornecedor?: (sessionName: string) => Promise<boolean>
+  onWarn?: (mensagem: string) => void
 }): Promise<void> {
+  // A ORDEM importa: arquivar ANTES de fechar a linha. Fechar primeiro e
+  // falhar no arquivamento deixaria a vaga presa sem NINGUÉM sabendo que ela
+  // existiu — a linha some daqui e a conversa continua viva lá fora.
+  //
+  // Foi essa falta que quase matou a delegação: o produto criava sessão e
+  // nunca encerrava, e em 21/08/2026 as dezoito vagas do fornecedor estavam
+  // ocupadas, com onze recusas de criação por `FAILED_PRECONDITION`.
+  if (deps.arquivarNoFornecedor) {
+    const arquivou = await deps.arquivarNoFornecedor(deps.sessionName).catch(() => false)
+    if (!arquivou) {
+      // BARULHENTO de propósito, e com o nome da sessão no texto: é por ele
+      // que a varredura de reconciliação (e uma pessoa, se precisar) acha a
+      // vaga presa. Não segura o fechamento da linha — a entrega de fato
+      // terminou, e represar o registro só faria o quadro mentir ao contrário.
+      const avisar = deps.onWarn ?? console.warn
+      avisar(
+        `[jules] a sessão ${deps.sessionName} NÃO foi arquivada no fornecedor — a vaga ` +
+          'segue presa até a varredura de reconciliação passar'
+      )
+    }
+  }
+
   await deps.prisma.devSession.update({
     where: { sessionName: deps.sessionName },
     data: { closedAt: deps.agora, closedReason: deps.motivo },
