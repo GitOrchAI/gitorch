@@ -20,10 +20,22 @@ import type { F6AgentRole } from '@gitorch/agents'
 //
 // 1. Não remove o teto. Os papéis que INICIAM trabalho novo continuam presos a
 //    ele — a proteção segue inteira do lado que importa.
-// 2. Não some com a missão da contagem. Uma missão de julgamento existe e gasta
-//    recurso, então continua somando no total do dia e continua empurrando o
-//    teto para os outros papéis. O que muda é só que ela não é BLOQUEADA por
-//    ele. Mascarar a contagem seria mentir para o próprio failsafe.
+// 2. Não some com a missão da contagem. Uma missão de julgamento que FEZ
+//    TRABALHO existe e gasta recurso, então continua somando no total do dia e
+//    continua empurrando o teto para os outros papéis. O que muda é só que ela
+//    não é BLOQUEADA por ele. Mascarar a contagem seria mentir para o próprio
+//    failsafe.
+//
+//    RESSALVA APRENDIDA DA PIOR FORMA (21/08/2026, poucas horas depois): esta
+//    regra vale para trabalho, não para acordada em falso. Com o julgamento
+//    fora do bloqueio mas dentro da contagem, uma rajada de acordadas vazias
+//    — 220 missões no dia, 143 delas sem ter chamado motor nenhum — estourou
+//    o teto e calou ra, po e sm. O ciclo parou inteiro com um desejo recém
+//    registrado esperando alguém acordar. A missão que volta `noOp` retorna
+//    ANTES de chamar o motor (12,1s contra 25,4s de um julgamento real), e por
+//    isso é subtraída da contagem no scheduler, pelo mesmo mecanismo das
+//    falhas de credencial. Não é mascarar: é não cobrar por trabalho que não
+//    houve. Trabalho de verdade continua contando para todo mundo.
 // 3. Não mexe no teto de CONCORRÊNCIA. Quantas missões rodam ao mesmo tempo é
 //    a proteção de memória da máquina, e ela continua valendo para o
 //    julgamento como para todo mundo.
