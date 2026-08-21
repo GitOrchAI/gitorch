@@ -58,6 +58,7 @@ import {
   registrarResposta,
   registrarPr,
   fecharSessao,
+  type MotivoDeFechamento,
   registrarInvestigacao,
   registrarPendencia,
   limparPendencia,
@@ -100,6 +101,7 @@ import {
   criarSessaoJules,
   consultarSessaoJules,
   responderSessaoJules,
+  arquivarSessaoJules,
   aprovarPlanoJules,
   ultimaMensagemDoDevJules,
 } from '../services/jules-client.js'
@@ -1711,6 +1713,30 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
    */
   const descansoAposVazia = criarRegistroDeDescanso(DESCANSO_APOS_VAZIA_MS)
 
+  /**
+   * Fecha a linha da vigília E encerra a conversa no fornecedor.
+   *
+   * Existe como ponto ÚNICO porque são cinco chamadores, e a lente de revisão
+   * de hoje já me pegou três vezes no mesmo erro: acrescentar algo num caminho
+   * do par e esquecer no irmão. Com um só ponto não há irmão para esquecer.
+   */
+  const fecharSessaoEArquivar = async (args: {
+    sessionName: string
+    motivo: MotivoDeFechamento
+    agora: Date
+  }): Promise<void> =>
+    fecharSessao({
+      prisma: app.prisma as unknown as PrismaDevSession,
+      ...args,
+      arquivarNoFornecedor: (sessionName) =>
+        arquivarSessaoJules({
+          apiKey: process.env['JULES_API_KEY'],
+          sessionName,
+          onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+        }),
+      onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+    })
+
   const runTrigger = async (
     role: F6AgentRole,
     projectId?: string,
@@ -3121,8 +3147,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             registrarResposta({ prisma: app.prisma as unknown as PrismaDevSession, ...args }),
           registrarPr: (args) =>
             registrarPr({ prisma: app.prisma as unknown as PrismaDevSession, ...args }),
-          fecharSessao: (args) =>
-            fecharSessao({ prisma: app.prisma as unknown as PrismaDevSession, ...args }),
+          fecharSessao: (args) => fecharSessaoEArquivar(args),
           registrarInvestigacao: (args) =>
             registrarInvestigacao({ prisma: app.prisma as unknown as PrismaDevSession, ...args }),
           ...(notify ? { avisarDono: notify } : {}),
@@ -3470,8 +3495,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       estado: veredito.estado,
       agora,
     })
-    await fecharSessao({
-      prisma: app.prisma as unknown as PrismaDevSession,
+    await fecharSessaoEArquivar({
       sessionName: sessao.sessionName,
       motivo: 'merged',
       agora,
@@ -3943,8 +3967,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           app.log.info(
             `[Scheduler] publicação confirmada para ${sessao.sessionName} (${veredito.motivo}).${notaDeAmbiente}`
           )
-          await fecharSessao({
-            prisma: app.prisma as unknown as PrismaDevSession,
+          await fecharSessaoEArquivar({
             sessionName: sessao.sessionName,
             motivo: 'merged',
             agora,
@@ -4011,8 +4034,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           app.log.info(
             `[Scheduler] ${projeto.wingId} não publica (${veredito.motivo}) — encerrando ${sessao.sessionName}`
           )
-          await fecharSessao({
-            prisma: app.prisma as unknown as PrismaDevSession,
+          await fecharSessaoEArquivar({
             sessionName: sessao.sessionName,
             motivo: 'merged',
             agora,
