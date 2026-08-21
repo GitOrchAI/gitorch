@@ -27,6 +27,7 @@ import {
 } from '@gitorch/agents'
 import type { EngineConnectionService } from '../services/engine-connection.js'
 import { tetoDiarioBloqueia } from '../services/teto-diario.js'
+import { ensureDefaultSchedules } from '../lib/project-defaults.js'
 import {
   LocalWorkspaceProvider,
   WorkspaceManager,
@@ -3706,6 +3707,38 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     }
   }
 
+  // A agenda padrão vale para TODO projeto ativo, não só para os que nasceram
+  // depois de ela existir.
+  //
+  // `ensureDefaultSchedules` só era chamada na criação do projeto. Quando um
+  // papel novo entra na agenda padrão — foi o caso do `qa` — os projetos que
+  // já existiam ficavam para trás em silêncio, e a correção não valia para
+  // ninguém em produção. Roda UMA vez por processo, é idempotente por papel, e
+  // um erro aqui não fica gravado como "já feito": a marca só é assumida
+  // depois do sucesso, então o próximo tique tenta de novo.
+  let agendasCompletadas = false
+  const completarAgendasDosProjetos = async () => {
+    if (agendasCompletadas) return
+    try {
+      const projetos = await app.prisma.project.findMany({
+        where: { isActive: true },
+        select: { id: true },
+      })
+      let criadas = 0
+      for (const projeto of projetos) {
+        criadas += await ensureDefaultSchedules(app.prisma, projeto.id)
+      }
+      agendasCompletadas = true
+      if (criadas > 0) {
+        app.log.info(
+          `[Scheduler] agenda padrão completada: ${criadas} entrada(s) criada(s) em ${projetos.length} projeto(s)`
+        )
+      }
+    } catch (err) {
+      app.log.error(err, '[Scheduler] falha ao completar a agenda padrão; tenta no próximo tique')
+    }
+  }
+
   const tick = async () => {
     // PRIMEIRO de tudo: um token do GitHub vencido no meio do tique derruba
     // qualquer missão que precise dele (materializeToHome recusa e a missão
@@ -3713,6 +3746,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // gasta uma chamada de rede por conexão cujo ciclo de renovação venceu
     // — e (achado Baixo 5 da revisão da Task 5/F8) já registra o resumo da
     // passada sozinha, então nada precisa ser feito com o retorno aqui.
+    await completarAgendasDosProjetos()
     await renovarTokensGithubDoRelogio(app)
     // Só DEPOIS: quem perdeu o acesso ao repositório não pode ter o dia
     // começando com uma missão escrevendo lá. `reconferirAcessoDoRelogio`
