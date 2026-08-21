@@ -31,6 +31,8 @@ function linha(overrides: Partial<LinhaDeSessao> = {}): LinhaDeSessao {
     deployCheckedAt: null,
     mergeFailures: 0,
     mergeLastFailedAt: null,
+    deployFixKey: null,
+    envLastVerdict: null,
     closedAt: null,
     ...overrides,
   }

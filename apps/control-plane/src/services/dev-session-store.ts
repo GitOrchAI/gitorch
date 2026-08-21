@@ -59,6 +59,21 @@ export interface LinhaDeSessao {
   /** Quando o último fracasso de mescla aconteceu (Tarefa 10). */
   mergeLastFailedAt: Date | null
   /**
+   * Marca da tarefa de conserto já aberta para esta sessão
+   * (`gitorch:conserto:<origem>:<commit>`, `conserto-de-publicacao.ts`).
+   * `null` enquanto nenhuma foi aberta. É o dedup que impede a vigília de
+   * abrir uma issue por tique no repositório do CLIENTE: uma publicação que
+   * falha é reexaminada a cada varredura, para sempre, até virar outra coisa.
+   */
+  deployFixKey: string | null
+  /**
+   * Veredito da ÚLTIMA leitura do ambiente publicado (`testarAmbiente`).
+   * `null` enquanto nunca foi lido. Só existe para exigir repetição antes de
+   * abrir tarefa por ambiente inalcançável — uma leitura só não separa
+   * serviço fora do ar de queda de rede momentânea.
+   */
+  envLastVerdict: string | null
+  /**
    * Quando a linha foi de fato encerrada (`fecharSessao`) — `null` enquanto
    * viva. Crítico 2 (leva C, `pos-merge.ts`): `sessoesParaAcompanharPublicacao`
    * usa este campo para distinguir "veredito final registrado" de "linha
@@ -477,5 +492,47 @@ export async function registrarCadenciaDePublicacao(deps: {
   await deps.prisma.devSession.update({
     where: { sessionName: deps.sessionName },
     data: { deployCheckedAt: deps.agora },
+  })
+}
+
+/**
+ * Grava a marca da tarefa de conserto recém-aberta para esta sessão.
+ *
+ * Escrita DEPOIS de a issue existir de verdade no repositório do cliente, e
+ * não antes: gravar primeiro e falhar na escrita da issue deixaria a sessão
+ * marcada como "já consertada" sem nenhuma tarefa existir — silêncio, que é
+ * a falha exata que este mecanismo veio acabar. A ordem inversa deixa uma
+ * janela estreita (issue criada, marca não gravada) em que a varredura
+ * seguinte abriria uma segunda issue; por isso o corpo da issue também
+ * carrega a mesma chave como marcador, e a falha desta gravação é registrada
+ * como erro, nunca engolida.
+ */
+export async function registrarConsertoDePublicacao(deps: {
+  prisma: PrismaDevSession
+  sessionName: string
+  chave: string
+}): Promise<void> {
+  await deps.prisma.devSession.update({
+    where: { sessionName: deps.sessionName },
+    data: { deployFixKey: deps.chave },
+  })
+}
+
+/**
+ * Grava o veredito da leitura mais recente do ambiente publicado.
+ *
+ * Não carimba cadência nem toca em `deployState`: o estado da PUBLICAÇÃO e o
+ * do AMBIENTE são coisas diferentes (a publicação pode estar confirmada e o
+ * site fora do ar — foi assim que o buraco apareceu), e misturá-los quebraria
+ * tanto o dedupe de aviso por transição quanto a lista de estados finais.
+ */
+export async function registrarVereditoDeAmbiente(deps: {
+  prisma: PrismaDevSession
+  sessionName: string
+  veredito: string
+}): Promise<void> {
+  await deps.prisma.devSession.update({
+    where: { sessionName: deps.sessionName },
+    data: { envLastVerdict: deps.veredito },
   })
 }

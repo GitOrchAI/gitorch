@@ -597,6 +597,13 @@ model DevSession {
   mergeFailures Int @default(0) @map("merge_failures") @db.SmallInt
   /// Quando o último fracasso de mescla aconteceu (Tarefa 10).
   mergeLastFailedAt DateTime? @map("merge_last_failed_at")
+  /// Marca da tarefa de conserto já aberta para esta sessão
+  /// (`gitorch:conserto:<origem>:<commit>`) — o dedup que impede a vigília de
+  /// abrir uma issue por tique no repositório do cliente.
+  deployFixKey String? @map("deploy_fix_key")
+  /// Veredito da última leitura do ambiente publicado — só existe para exigir
+  /// repetição antes de abrir tarefa por ambiente inalcançável.
+  envLastVerdict String? @map("env_last_verdict")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")

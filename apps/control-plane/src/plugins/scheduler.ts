@@ -60,9 +60,18 @@ import {
   registrarMescla,
   registrarEstadoDaPublicacao,
   registrarCadenciaDePublicacao,
+  registrarConsertoDePublicacao,
+  registrarVereditoDeAmbiente,
   type PrismaDevSession,
   type LinhaDeSessao,
 } from '../services/dev-session-store.js'
+import {
+  aguardaSegundaLeituraDoAmbiente,
+  decidirConsertoDePublicacao,
+  notaDeConserto,
+  type EvidenciaDeConserto,
+} from '../services/conserto-de-publicacao.js'
+import { criarIssueDeDesejo } from '../services/desejo-no-github.js'
 import { sessoesParaAcompanharPublicacao } from '../services/pos-merge.js'
 import { descobrirMecanismo, type Mecanismo } from '../services/mecanismo-de-publicacao.js'
 import {
@@ -3339,6 +3348,88 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
    * consome quota extra; só reduz o tamanho da resposta que ainda cabe
    * folgado num único GET.
    */
+  /**
+   * A entrega que não chegou ao ar VOLTA ATRÁS: vira tarefa de conserto no
+   * repositório do cliente.
+   *
+   * Este é o elo que faltava depois da mescla. A vigília já sabia distinguir
+   * publicação confirmada de publicação que falhou, e já sabia fechar a
+   * entrega no caso feliz — mas na falha ninguém agia: nenhuma issue, nenhum
+   * conserto, nenhum trabalho novo. A entrega ficava pendurada e o cliente
+   * ficava sem a mudança no ar, em silêncio.
+   *
+   * Devolve o NÚMERO da issue criada, ou `null` quando não havia o que abrir
+   * (decisão da função pura) ou quando a escrita no GitHub não funcionou.
+   * Nunca lança: um repositório fora de alcance não pode derrubar a varredura
+   * das outras sessões — mas a falha vira erro no log, nunca silêncio.
+   */
+  const abrirConsertoDePublicacao = async (args: {
+    projeto: NonNullable<Awaited<ReturnType<PrismaClient['project']['findUnique']>>>
+    sessao: LinhaDeSessao
+    evidencia: EvidenciaDeConserto
+  }): Promise<number | null> => {
+    const decisao = decidirConsertoDePublicacao({
+      repositorio: args.projeto.wingId,
+      shaDaMescla: args.sessao.mergeCommitSha ?? '',
+      numeroDoPr: args.sessao.pullRequestNumber,
+      issueDaEntrega: args.sessao.issueNumber,
+      marcaAnterior: args.sessao.deployFixKey,
+      evidencia: args.evidencia,
+    })
+    if (!decisao.abrir) {
+      app.log.info(
+        `[Scheduler] sem tarefa de conserto para ${args.sessao.sessionName}: ${decisao.motivo}`
+      )
+      return null
+    }
+
+    let numero: number
+    try {
+      // Caminho ÚNICO de escrita de issue no repositório do cliente. Uma
+      // segunda cópia desta chamada divergiria em silêncio da primeira, e o
+      // cliente descobriria pela issue errada.
+      const criada = await criarIssueDeDesejo({
+        repo: args.projeto.wingId,
+        titulo: decisao.titulo,
+        corpo: decisao.corpo,
+        etiquetas: decisao.etiquetas,
+        log: {
+          onError: (m) => app.log.error(m),
+          onWarn: (m) => app.log.warn(m),
+        },
+      })
+      numero = criada.numero
+    } catch (err) {
+      app.log.error(
+        err,
+        `[Scheduler] não foi possível abrir a tarefa de conserto de ${args.projeto.wingId} para ${args.sessao.sessionName}`
+      )
+      return null
+    }
+
+    // A marca é gravada DEPOIS de a issue existir de verdade. Gravar antes e
+    // falhar a escrita deixaria a sessão marcada como "já consertada" sem
+    // tarefa nenhuma — o silêncio exato que este mecanismo veio acabar. A
+    // ordem escolhida deixa uma janela estreita no sentido oposto (issue
+    // criada, marca não gravada, segunda issue na varredura seguinte); por
+    // isso o corpo da issue carrega a mesma chave como marcador, e a falha
+    // desta gravação vira ERRO no log, nunca silêncio.
+    await registrarConsertoDePublicacao({
+      prisma: app.prisma as unknown as PrismaDevSession,
+      sessionName: args.sessao.sessionName,
+      chave: decisao.chave,
+    }).catch((err) =>
+      app.log.error(
+        err,
+        `[Scheduler] tarefa de conserto #${numero} criada em ${args.projeto.wingId}, mas a marca de controle não pôde ser gravada em ${args.sessao.sessionName}`
+      )
+    )
+    app.log.info(
+      `[Scheduler] tarefa de conserto #${numero} aberta em ${args.projeto.wingId} para ${args.sessao.sessionName} (marca ${decisao.chave})`
+    )
+    return numero
+  }
+
   const TAMANHO_DA_PAGINA_DE_EXECUCOES = 50
 
   const varrerPublicacoes = async (): Promise<void> => {
@@ -3570,6 +3661,69 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           const notaDeAmbiente = relatorio
             ? ` Ensaio do ambiente: ${relatorio.veredito} — ${relatorio.motivo}`
             : ''
+
+          // O ensaio do ambiente REPROVADO também volta atrás: o produto
+          // enxergava a tela não responder e a coisa morria num aviso de
+          // chat. Agora vira tarefa de conserto, pelo MESMO serviço que
+          // trata a publicação que falhou — só a evidência muda (a tela e o
+          // código HTTP, no lugar das etapas do fluxo de publicação).
+          //
+          // Um ambiente INALCANÇÁVEL na primeira leitura é a exceção: pode
+          // ser uma queda de rede de trinta segundos do lado de cá, e abrir
+          // tarefa por isso é fabricar ruído no quadro do CLIENTE. Nesse
+          // caso a entrega não fecha ainda — a próxima janela da vigília lê
+          // de novo e decide com duas leituras na mão. Adia no MÁXIMO uma
+          // janela: na segunda leitura o fecho acontece dando no que der.
+          let numeroDoConserto: number | null = null
+          if (relatorio) {
+            const vereditoAnterior = sessao.envLastVerdict
+            const observacoesSeguidas = vereditoAnterior === relatorio.veredito ? 2 : 1
+            const marcou = await registrarVereditoDeAmbiente({
+              prisma: app.prisma as unknown as PrismaDevSession,
+              sessionName: sessao.sessionName,
+              veredito: relatorio.veredito,
+            })
+              .then(() => true)
+              .catch((err) => {
+                app.log.warn(
+                  err,
+                  `[Scheduler] veredito do ambiente não pôde ser gravado para ${sessao.sessionName}`
+                )
+                return false
+              })
+
+            // Só adia quando a marca FOI gravada: sem ela a próxima leitura
+            // recomeçaria a contagem do zero, e a entrega nunca fecharia.
+            if (
+              marcou &&
+              aguardaSegundaLeituraDoAmbiente({
+                veredito: relatorio.veredito,
+                observacoesSeguidas,
+                recusadoPelaGuarda: relatorio.recusadoPelaGuarda,
+              })
+            ) {
+              app.log.warn(
+                `[Scheduler] ambiente de ${projeto.wingId} não respondeu na primeira leitura de ${sessao.sessionName}; confirmando na próxima janela antes de decidir`
+              )
+              continue
+            }
+
+            numeroDoConserto = await abrirConsertoDePublicacao({
+              projeto,
+              sessao,
+              evidencia: {
+                origem: 'ambiente',
+                veredito: relatorio.veredito,
+                motivo: relatorio.motivo,
+                enderecos: enderecosParaTestar,
+                recusadoPelaGuarda: relatorio.recusadoPelaGuarda,
+                testes: relatorio.testes,
+                observacoesSeguidas,
+              },
+            })
+          }
+          const notaDoConserto = numeroDoConserto === null ? '' : notaDeConserto(numeroDoConserto)
+
           app.log.info(
             `[Scheduler] publicação confirmada para ${sessao.sessionName} (${veredito.motivo}).${notaDeAmbiente}`
           )
@@ -3581,7 +3735,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           })
           await avisarDonoDoProjeto(
             projeto,
-            `GitOrch: a entrega de ${projeto.wingId} foi ao ar. ${veredito.motivo}${notaDeAmbiente}`
+            `GitOrch: a entrega de ${projeto.wingId} foi ao ar. ${veredito.motivo}${notaDeAmbiente}${notaDoConserto}`
           )
           // Item 2/Leva B: só AGORA — com a publicação confirmada — a
           // tarefa fecha como entregue e o card vai para "done". Nunca no
@@ -3608,11 +3762,33 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           // 'falhou', ou 'commit-errado' seguido de 'commit-errado') não
           // reavisa; qualquer mudança real (inclusive a alternância entre os
           // dois, ou a primeira vez) rearma o aviso.
-          if (estadoAnterior !== veredito.estado) {
+          //
+          // O que faltava: além de AVISAR, agir. Uma publicação que falhou
+          // volta atrás como tarefa de conserto no repositório do cliente,
+          // no padrão que o Scrum Master exige para poder delegá-la — fora
+          // do padrão ela nasceria morta. A sessão NÃO fecha aqui: a entrega
+          // continua sem estar no ar, e fechá-la seria mentir para o quadro.
+          // O dedup vive na própria linha da sessão (`deployFixKey`), por
+          // commit: sem ele, cada varredura abriria mais uma issue no
+          // repositório do CLIENTE, para sempre.
+          const numeroDoConserto = await abrirConsertoDePublicacao({
+            projeto,
+            sessao,
+            evidencia: {
+              origem: 'publicacao',
+              estado: veredito.estado,
+              motivo: veredito.motivo,
+              etapas: veredito.etapas,
+            },
+          })
+          // UM aviso, não dois: o aviso reabre quando o estado muda (a
+          // leitura é nova) ou quando o conserto acabou de virar tarefa (o
+          // dono precisa do número da issue) — nunca a cada varredura.
+          if (estadoAnterior !== veredito.estado || numeroDoConserto !== null) {
             const etapasTexto = veredito.etapas.map((e) => `${e.nome}: ${e.resultado}`).join('; ')
             await avisarDonoDoProjeto(
               projeto,
-              `GitOrch: a publicação de ${projeto.wingId} (commit ${shaDaMescla}) precisa de atenção — ${veredito.motivo}${etapasTexto ? ` Etapas: ${etapasTexto}.` : ''}`
+              `GitOrch: a publicação de ${projeto.wingId} (commit ${shaDaMescla}) precisa de atenção — ${veredito.motivo}${etapasTexto ? ` Etapas: ${etapasTexto}.` : ''}${numeroDoConserto === null ? '' : notaDeConserto(numeroDoConserto)}`
             )
           }
         } else if (veredito.estado === 'sem-publicacao') {
