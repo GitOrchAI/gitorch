@@ -200,6 +200,30 @@ export async function sessoesVivas(deps: {
 }
 
 /**
+ * Os NOMES de todas as sessões vivas desta instalação, de todos os projetos.
+ *
+ * Sim, isto contraria o fail-closed de `sessoesVivas` logo acima — de
+ * propósito, e o comentário de lá dizia que não havia caso de uso legítimo
+ * para uma varredura entre projetos. Agora há exatamente um, e é o oposto de
+ * agir sobre os projetos alheios: a reconciliação de vagas precisa saber tudo
+ * o que está vivo AQUI justamente para não arquivar lá fora o trabalho de
+ * ninguém. Cruzar a lista completa do fornecedor contra as sessões vivas de um
+ * projeto só marcaria como órfão o trabalho em andamento de todos os outros.
+ *
+ * Devolve só os nomes, nunca as linhas: quem varre não tem o que fazer com
+ * dados de projeto alheio, e o tipo estreito garante que não vai ter.
+ */
+export async function nomesDeSessoesVivasDaInstancia(deps: {
+  prisma: PrismaDevSession
+}): Promise<string[]> {
+  const linhas = await deps.prisma.devSession.findMany({
+    where: { closedAt: null },
+    select: { sessionName: true },
+  })
+  return linhas.map((l) => l.sessionName)
+}
+
+/**
  * Anota o estado lido e quando foi lido.
  *
  * `progrediu` move a marca de progresso, e só ela. A API do serviço não tem

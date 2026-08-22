@@ -63,6 +63,7 @@ import {
   fecharSessao,
   type MotivoDeFechamento,
   registrarInvestigacao,
+  nomesDeSessoesVivasDaInstancia,
   registrarPendencia,
   limparPendencia,
   registrarAvisoDeDemora,
@@ -102,6 +103,7 @@ import {
 import { buscarComGuarda } from '../services/endereco-seguro.js'
 import {
   criarSessaoJules,
+  listarSessoesJules,
   consultarSessaoJules,
   responderSessaoJules,
   arquivarSessaoJules,
@@ -109,8 +111,9 @@ import {
   ultimaMensagemDoDevJules,
 } from '../services/jules-client.js'
 import { vigiarSessoes } from '../services/session-watch.js'
+import { varrerVagasVazadas } from '../services/reconciliar-vagas.js'
 import { runSmWatchdog, buildTelegramNotifier } from '../services/sm-watchdog.js'
-import { resolveNotifyChatId } from '../services/telegram-link.js'
+import { resolveNotifyChatId, type NotifiableProject } from '../services/telegram-link.js'
 import { runIncidentSensor } from '../services/incident-sensor.js'
 import { mintInstallationToken } from '../services/github-app-token.js'
 import {
@@ -2205,6 +2208,22 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             // Delegar de verdade: além do label, abrir a sessão de trabalho no
             // dev assíncrono. Sem chave configurada, `criarSessaoJules`
             // devolve null e o label continua sendo o plano B.
+            // Quando o dev RECUSA a delegação, a issue fica sem etiqueta e o
+            // dono precisa saber: uma tarefa parada na fila sem ninguém nela é
+            // notícia de negócio, não de infraestrutura. O canal é o mesmo do
+            // resto do projeto — sem vínculo, ninguém é avisado, e o projeto
+            // de um cliente nunca vira mensagem no chat de outro.
+            avisarDono: (texto) => avisarDonoDoProjeto(project, texto),
+            // Sessão que nasceu lá fora e não pôde ser registrada aqui é
+            // desfeita na hora: sem linha, ninguém a acompanha, e deixá-la de
+            // pé só trocaria uma delegação perdida por uma vaga presa.
+            desfazerSessao: async (sessionName) => {
+              await arquivarSessaoJules({
+                apiKey: process.env['JULES_API_KEY'],
+                sessionName,
+                onWarn: (m) => app.log.warn(m),
+              })
+            },
             criarSessaoDev: async ({ repository, titulo, prompt }) =>
               criarSessaoJules({
                 apiKey: process.env['JULES_API_KEY'],
@@ -3074,6 +3093,62 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   //
   // Escopada por construção: só varre PROJETOS QUE TÊM sessão viva. Sem sessão
   // viva em lugar nenhum, não há uma única chamada ao serviço externo.
+  // Reconciliação de vagas: devolver ao dev externo o que ninguém aqui reclama.
+  //
+  // O fechamento já arquiva do lado de fora desde o PR #160, e isso só estanca
+  // o vazamento NOVO. O que já vazou antes daquele conserto — ou porque a
+  // gravação da linha falhou depois de a sessão nascer — continua vivo lá
+  // fora, ocupando uma vaga, sem ninguém para soltá-la. Medido em 22/08/2026:
+  // vinte e uma linhas abertas neste banco, a mais velha de 15/08.
+  //
+  // Cadência de HORA, não de tique: é uma limpeza de acúmulo, não uma vigília.
+  // A lista do fornecedor é uma chamada paginada, e pedi-la a cada minuto
+  // seria gastar cota para descobrir que nada mudou.
+  const CADENCIA_DA_RECONCILIACAO_MS = 60 * 60 * 1000
+  // A primeira varredura NÃO sai no primeiro tique.
+  //
+  // Duas razões, e a segunda foi encontrada por um teste que quebrou: (1)
+  // logo depois de subir, o processo ainda está assentando e uma listagem do
+  // fornecedor ali só gasta cota; (2) disparar no tique zero fazia a vigília
+  // pré-merge — que promete não tocar o fornecedor quando não tem o que
+  // perguntar — passar a tocar, por carona nesta varredura.
+  //
+  // Cinco minutos, e não uma hora, porque um serviço que reinicia com
+  // frequência nunca chegaria à primeira varredura se a espera inicial fosse
+  // o intervalo inteiro — a limpeza jamais aconteceria, que é exatamente o
+  // problema que ela veio resolver.
+  const ESPERA_ANTES_DA_PRIMEIRA_VARREDURA_MS = 5 * 60 * 1000
+  let ultimaReconciliacao =
+    Date.now() - (CADENCIA_DA_RECONCILIACAO_MS - ESPERA_ANTES_DA_PRIMEIRA_VARREDURA_MS)
+  const reconciliarVagasDoDev = async (): Promise<void> => {
+    const agora = new Date()
+    if (agora.getTime() - ultimaReconciliacao < CADENCIA_DA_RECONCILIACAO_MS) return
+    ultimaReconciliacao = agora.getTime()
+
+    const apiKey = process.env['JULES_API_KEY']
+    if (!apiKey) return
+
+    const relatorio = await varrerVagasVazadas({
+      listarNoFornecedor: () => listarSessoesJules({ apiKey, onWarn: (m) => app.log.warn(m) }),
+      // Da INSTÂNCIA INTEIRA, e é justamente por isso que é seguro: cruzar a
+      // lista completa do fornecedor contra as sessões de um projeto só
+      // marcaria como órfão o trabalho em andamento de todos os outros.
+      vivasNoBanco: () =>
+        nomesDeSessoesVivasDaInstancia({ prisma: app.prisma as unknown as PrismaDevSession }),
+      arquivarNoFornecedor: (sessionName) =>
+        arquivarSessaoJules({ apiKey, sessionName, onWarn: (m) => app.log.warn(m) }),
+      agora,
+      onWarn: (m) => app.log.warn(m),
+    })
+
+    if (relatorio.arquivadas > 0 || relatorio.orfas > 0) {
+      app.log.info(
+        `[Scheduler] reconciliação de vagas: ${relatorio.examinadas} ativas no fornecedor, ` +
+          `${relatorio.orfas} sem dono aqui, ${relatorio.arquivadas} devolvidas`
+      )
+    }
+  }
+
   const varrerSessoesDoDev = async (): Promise<void> => {
     let projetosComSessao: Array<{ projectId: string }>
     try {
@@ -3336,8 +3411,19 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // (varrerSessoesDoDev, reconferirAcessoDoRelogio): sem vínculo real de
   // Telegram, ninguém é avisado, e o projeto de um cliente nunca vira
   // mensagem no chat de outro.
+  /**
+   * O tipo pede só o que este helper de fato usa — `NotifiableProject` para
+   * resolver o destino, e `wingId` para o aviso de falha dizer de qual projeto
+   * se trata.
+   *
+   * Era o registro INTEIRO do Prisma antes de 22/08/2026, e isso o trancava
+   * nos poucos pontos que carregam o projeto completo: o acordar do SM, que
+   * trabalha com uma projeção enxuta, não conseguia chamá-lo e a alternativa
+   * virava reconstruir o notificador à mão ali — a duplicação que este helper
+   * existe para não ter.
+   */
   const avisarDonoDoProjeto = async (
-    projeto: NonNullable<Awaited<ReturnType<PrismaClient['project']['findUnique']>>>,
+    projeto: NotifiableProject & { wingId: string },
     texto: string
   ): Promise<void> => {
     const notifyChatId = await resolveNotifyChatId(app.prisma, projeto, {
@@ -4197,6 +4283,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     await reconferirAcessoDoRelogio(app)
     await processSetupMissions()
     await varrerSessoesDoDev()
+    // Nunca derruba o tique: a varredura já isola cada arquivamento, este é o
+    // último cinto de segurança, igual às vizinhas.
+    await reconciliarVagasDoDev().catch((err) =>
+      app.log.error(err, '[Scheduler] reconciliação de vagas falhou; tenta na próxima hora')
+    )
     // A fila que o acordar do SM levantou: entrega aberta sem parecer nosso no
     // commit de agora. Nunca rejeita — `triggerAgentMission` já trata os
     // próprios erros e devolve `reason`.

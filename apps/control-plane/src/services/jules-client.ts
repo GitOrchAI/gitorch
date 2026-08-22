@@ -14,6 +14,8 @@
 // repositório conectado ou com o serviço fora, devolve `null` com aviso e o
 // caminho do label continua valendo como plano B.
 
+import type { ResultadoDoAcionamentoDoDev } from './sm-delegation.js'
+
 const JULES_API = 'https://jules.googleapis.com/v1alpha'
 const TIMEOUT_MS = 15_000
 
@@ -39,17 +41,25 @@ export interface CriarSessaoDeps {
 }
 
 /**
- * Cria a sessão de trabalho e devolve o identificador dela (`sessions/...`),
- * ou `null` quando não foi possível — sempre com aviso explicando o quê.
+ * Cria a sessão de trabalho e diz, com todas as letras, o que aconteceu.
+ *
+ * Devolvia `string | null` até 22/08/2026, e esse `null` juntava duas coisas
+ * que precisam ficar separadas: "não configurado" e "o dev recusou". Quem
+ * chamava não conseguia distinguir e seguia como se tivesse delegado nos dois
+ * casos — foi assim que onze issues ficaram marcadas como em andamento sem
+ * nunca ter começado. Agora o motivo real volta junto.
  */
-export async function criarSessaoJules(deps: CriarSessaoDeps): Promise<string | null> {
+export async function criarSessaoJules(
+  deps: CriarSessaoDeps
+): Promise<ResultadoDoAcionamentoDoDev> {
   const warn = deps.onWarn ?? (() => undefined)
-  if (!deps.apiKey) return null
+  if (!deps.apiKey) return { situacao: 'desligado' }
 
   const source = julesSourceName(deps.repository)
   if (!source) {
-    warn(`[jules] repositório em formato inesperado: '${deps.repository}'`)
-    return null
+    const motivo = `repositório em formato inesperado: '${deps.repository}'`
+    warn(`[jules] ${motivo}`)
+    return { situacao: 'falhou', motivo }
   }
 
   const f = deps.fetchImpl ?? fetch
@@ -80,28 +90,26 @@ export async function criarSessaoJules(deps: CriarSessaoDeps): Promise<string | 
         .then((b: unknown) => JSON.stringify(b).slice(0, 200))
         .catch(() => '')
       // 404 no source é o caso comum e tem conserto conhecido — dizer qual.
-      if (resp.status === 404) {
-        warn(
-          `[jules] o repositório ${deps.repository} não está conectado na conta do dev assíncrono — ` +
+      const motivo =
+        resp.status === 404
+          ? `o repositório ${deps.repository} não está conectado na conta do dev assíncrono — ` +
             `conecte-o para que a delegação crie sessão de trabalho (HTTP 404: ${detalhe})`
-        )
-      } else {
-        warn(
-          `[jules] não foi possível criar a sessão para ${deps.repository} (HTTP ${resp.status}: ${detalhe})`
-        )
-      }
-      return null
+          : `HTTP ${resp.status}: ${detalhe}`
+      warn(`[jules] ${motivo}`)
+      return { situacao: 'falhou', motivo }
     }
 
     const body = (await resp.json().catch(() => ({}))) as { name?: string }
     if (!body.name) {
-      warn(`[jules] sessão criada para ${deps.repository} mas sem identificador na resposta`)
-      return null
+      const motivo = `sessão criada para ${deps.repository} mas sem identificador na resposta`
+      warn(`[jules] ${motivo}`)
+      return { situacao: 'falhou', motivo }
     }
-    return body.name
+    return { situacao: 'criada', sessionName: body.name }
   } catch (err) {
-    warn(`[jules] falha ao acionar o dev assíncrono: ${(err as Error).message}`)
-    return null
+    const motivo = (err as Error).message
+    warn(`[jules] falha ao acionar o dev assíncrono: ${motivo}`)
+    return { situacao: 'falhou', motivo }
   }
 }
 
@@ -177,6 +185,116 @@ export async function consultarSessaoJules(deps: {
     }
   } catch (err) {
     warn(`[jules] falha ao ler a sessão ${deps.sessionName}: ${(err as Error).message}`)
+    return null
+  }
+}
+
+/**
+ * Uma sessão como o fornecedor a descreve na listagem.
+ *
+ * Deliberadamente magro: só o que a reconciliação de vagas precisa decidir.
+ */
+export interface SessaoListada {
+  sessionName: string
+  archived: boolean
+  criadaEm: string | null
+}
+
+/** Teto de páginas da listagem — ver o comentário em `listarSessoesJules`. */
+const MAX_PAGINAS_DA_LISTAGEM = 20
+
+/**
+ * Lista as sessões que existem no fornecedor, paginando até o fim.
+ *
+ * Existe para a varredura de reconciliação poder responder "o que está aberto
+ * lá fora que ninguém aqui reconhece". Sem esta pergunta, as vagas que já
+ * vazaram ficam presas para sempre: o produto só sabe fechar aquilo que ele
+ * mesmo tem registrado.
+ *
+ * DUAS DECISÕES QUE PARECEM DETALHE E NÃO SÃO:
+ *
+ * 1. Falha devolve `null`, nunca lista vazia. Lista vazia é uma AFIRMAÇÃO
+ *    ("não há nada ativo lá fora") e faria a varredura concluir que o
+ *    fornecedor está limpo toda vez que a rede caísse. `null` é a resposta
+ *    honesta: não consegui perguntar.
+ *
+ * 2. Teto de páginas. Um `nextPageToken` que se repete — bug do fornecedor,
+ *    resposta em cache, o que for — prenderia a vigília num laço para sempre.
+ *    Vinte páginas cobrem qualquer volume real com folga larga; passar disso,
+ *    devolve o que já leu em vez de travar o processo.
+ */
+export async function listarSessoesJules(deps: {
+  apiKey?: string | undefined
+  /** Tamanho da página; padrão 100. */
+  pageSize?: number | undefined
+  fetchImpl?: typeof fetch
+  onWarn?: (message: string) => void
+}): Promise<SessaoListada[] | null> {
+  const warn = deps.onWarn ?? (() => undefined)
+  if (!deps.apiKey) return null
+  const f = deps.fetchImpl ?? fetch
+  const pageSize = deps.pageSize ?? 100
+
+  const sessoes: SessaoListada[] = []
+  const nomesJaVistos = new Set<string>()
+  // Tokens já usados. O teto de páginas sozinho não bastava: um
+  // `nextPageToken` que se repete faz o laço reler A MESMA página até bater no
+  // teto, e a lista sai com vinte cópias de cada sessão. Rio abaixo isso é
+  // grave — a reconciliação tem teto de dez arquivamentos por varredura, e dez
+  // cópias de uma sessão gastariam o teto inteiro devolvendo UMA vaga, com o
+  // relatório afirmando que havia vinte vezes mais órfãs do que existia.
+  const tokensJaUsados = new Set<string>()
+  let pageToken: string | undefined
+  try {
+    for (let pagina = 0; pagina < MAX_PAGINAS_DA_LISTAGEM; pagina += 1) {
+      const url =
+        `${JULES_API}/sessions?pageSize=${pageSize}` +
+        (pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '')
+      const resp = await f(url, {
+        headers: { 'X-Goog-Api-Key': deps.apiKey },
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      })
+      if (!resp.ok) {
+        warn(`[jules] não foi possível listar as sessões (HTTP ${resp.status})`)
+        return null
+      }
+      const body = (await resp.json().catch(() => ({}))) as {
+        sessions?: Array<{ name?: string; archived?: boolean; createTime?: string }>
+        nextPageToken?: string
+      }
+      for (const s of body.sessions ?? []) {
+        // Sem nome não há o que arquivar depois — descartar é melhor que
+        // carregar uma entrada quebrada até a hora de usá-la.
+        if (!s.name) continue
+        // Segunda linha de defesa contra a mesma classe de problema: mesmo com
+        // tokens bem-comportados, uma sessão repetida entre páginas nunca pode
+        // virar duas entradas.
+        if (nomesJaVistos.has(s.name)) continue
+        nomesJaVistos.add(s.name)
+        sessoes.push({
+          sessionName: s.name,
+          archived: s.archived === true,
+          criadaEm: s.createTime ?? null,
+        })
+      }
+      if (!body.nextPageToken) return sessoes
+      if (tokensJaUsados.has(body.nextPageToken)) {
+        warn(
+          `[jules] a listagem devolveu um cursor repetido; parando com ` +
+            `${sessoes.length} sessões lidas em vez de girar em falso`
+        )
+        return sessoes
+      }
+      tokensJaUsados.add(body.nextPageToken)
+      pageToken = body.nextPageToken
+    }
+    warn(
+      `[jules] listagem de sessões parou no teto de ${MAX_PAGINAS_DA_LISTAGEM} páginas; ` +
+        `seguindo com as ${sessoes.length} já lidas`
+    )
+    return sessoes
+  } catch (err) {
+    warn(`[jules] falha ao listar as sessões: ${(err as Error).message}`)
     return null
   }
 }

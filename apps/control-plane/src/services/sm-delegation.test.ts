@@ -189,7 +189,7 @@ describe('runSmDelegation: aciona o dev assíncrono', () => {
       fetchImpl: impl,
       criarSessaoDev: async (args) => {
         pedidos.push(args)
-        return 'sessions/xyz'
+        return { situacao: 'criada' as const, sessionName: 'sessions/xyz' }
       },
     })
 
@@ -208,7 +208,7 @@ describe('runSmDelegation: aciona o dev assíncrono', () => {
       repository: 'GitOrchAI/gitorch',
       githubToken: 't',
       fetchImpl: impl,
-      criarSessaoDev: async () => 'sessions/xyz',
+      criarSessaoDev: async () => ({ situacao: 'criada', sessionName: 'sessions/xyz' }),
       aoCriarSessao: async (d) => {
         guardadas.push(d)
       },
@@ -217,20 +217,39 @@ describe('runSmDelegation: aciona o dev assíncrono', () => {
     expect(guardadas).toEqual([{ issueNumber: 42, sessionName: 'sessions/xyz' }])
   })
 
-  it('falha ao guardar a ligação não derruba a delegação das outras tasks', async () => {
+  // INVERTIDO EM 22/08/2026, e a inversão é o conserto.
+  //
+  // Este teste prendia `delegated === [42]` quando a ligação não podia ser
+  // guardada: a issue era marcada como delegada mesmo sem ninguém conseguir
+  // acompanhar a sessão. Aquilo era tolerável enquanto ninguém varria as vagas
+  // — passou a ser destrutivo no instante em que a reconciliação entrou no ar,
+  // porque uma sessão viva sem linha no banco é EXATAMENTE o que ela arquiva
+  // dez minutos depois. O produto marcaria a tarefa como em andamento e, em
+  // seguida, mataria o trabalho que tinha acabado de encomendar.
+  //
+  // Agora a sessão órfã é desfeita na hora e a issue continua por fazer.
+  it('falha ao guardar a ligação desfaz a sessão e NÃO conta como delegada', async () => {
     const impl = fakeFetch([taskPronta()])
+    const desfeitas: string[] = []
 
     const r = await runSmDelegation({
       repository: 'GitOrchAI/gitorch',
       githubToken: 't',
       fetchImpl: impl,
-      criarSessaoDev: async () => 'sessions/xyz',
+      criarSessaoDev: async () => ({ situacao: 'criada', sessionName: 'sessions/xyz' }),
       aoCriarSessao: async () => {
         throw new Error('banco fora do ar')
       },
+      desfazerSessao: async (nome) => {
+        desfeitas.push(nome)
+      },
     })
 
-    expect(r.delegated).toEqual([42])
+    expect(r.delegated).toEqual([])
+    expect(desfeitas).toEqual(['sessions/xyz'])
+    // O ciclo segue de pé: quem falha é a delegação daquela issue, não a
+    // missão inteira.
+    expect(r.exitCode).toBe(0)
   })
 
   // I4 (achado importante da revisão final): este é EXATAMENTE o caso em
@@ -255,17 +274,18 @@ describe('runSmDelegation: aciona o dev assíncrono', () => {
       repository: 'GitOrchAI/gitorch',
       githubToken: 't',
       fetchImpl: impl,
-      criarSessaoDev: async () => 'sessions/xyz',
+      criarSessaoDev: async () => ({ situacao: 'criada', sessionName: 'sessions/xyz' }),
       aoCriarSessao: async () => {
         throw new Error('banco fora do ar')
       },
       onWarn: (m) => avisos.push(m),
     })
 
-    expect(r.delegated).toEqual([42])
-    expect(avisos).toHaveLength(1)
-    expect(avisos[0]).toContain('#42')
-    expect(avisos[0]).toContain('banco fora do ar')
+    // A issue não fica marcada como delegada (ver o teste acima), e o aviso
+    // continua saindo pelo canal injetado — que é o ponto deste teste.
+    expect(r.delegated).toEqual([])
+    expect(avisos.join(' ')).toContain('#42')
+    expect(avisos.join(' ')).toContain('banco fora do ar')
     expect(warnSpy).not.toHaveBeenCalled()
     warnSpy.mockRestore()
   })
@@ -278,7 +298,7 @@ describe('runSmDelegation: aciona o dev assíncrono', () => {
       repository: 'GitOrchAI/gitorch',
       githubToken: 't',
       fetchImpl: impl,
-      criarSessaoDev: async () => null,
+      criarSessaoDev: async () => ({ situacao: 'desligado' }),
       aoCriarSessao: async (d) => {
         guardadas.push(d)
       },
@@ -287,7 +307,11 @@ describe('runSmDelegation: aciona o dev assíncrono', () => {
     expect(guardadas).toEqual([])
   })
 
-  it('dev assíncrono indisponível: a delegação continua valendo (label aplicado)', async () => {
+  // Renomeado em 22/08/2026: 'indisponível' juntava dois casos que agora são
+  // distintos. DESLIGADO (sem chave) mantém a etiqueta como plano B, que é o
+  // que este teste prende. RECUSADO tem comportamento oposto e teste próprio,
+  // em delegacao-que-falha.test.ts.
+  it('dev assíncrono DESLIGADO: a delegação continua valendo (label aplicado)', async () => {
     const impl = fakeFetch([taskPronta()])
     const labeled = (impl as unknown as { labeled: Array<{ number: number; labels: string[] }> })
       .labeled
@@ -296,7 +320,7 @@ describe('runSmDelegation: aciona o dev assíncrono', () => {
       repository: 'GitOrchAI/gitorch',
       githubToken: 't',
       fetchImpl: impl,
-      criarSessaoDev: async () => null,
+      criarSessaoDev: async () => ({ situacao: 'desligado' }),
     })
 
     expect(r.delegated).toEqual([42])
