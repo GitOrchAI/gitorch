@@ -23,6 +23,37 @@ export const MARCA_DO_PARECER = '<!-- gitorch:qa -->'
  */
 export const MARCA_DE_APROVACAO = 'verdict: APPROVE'
 
+/**
+ * Marca invisível que só o parecer de uma entrega NÃO DELEGADA carrega.
+ *
+ * Existe para desfazer um beco sem saída. Durante a janela cega — entre a
+ * abertura do pull request e a gravação da ligação issue↔sessão — o
+ * julgamento não encontrava a linha da sessão e concluía que a entrega era de
+ * terceiro: opinava por comentário em vez de aprovar formalmente. Quando a
+ * ligação chegava depois, o laço de descoberta já tratava aquele parecer como
+ * "julgado, ponto final" e pulava a entrega PARA SEMPRE. O pull request ficava
+ * aberto, com verificação verde, esperando uma aprovação formal que nunca
+ * viria porque o produto acreditava já ter opinado.
+ *
+ * A marca é o que permite a um ciclo futuro reconhecer que aquele parecer foi
+ * emitido sob premissa errada. Ela vive no CORPO da review, e não na memória
+ * do processo, justamente porque quem precisa lê-la é um ciclo que ainda não
+ * existia quando o parecer saiu.
+ */
+export const MARCA_SEM_PODER_DE_MESCLAR = '<!-- gitorch:qa:sem-poder-de-mesclar -->'
+
+/**
+ * A frase que o produto publicou, antes de a marca existir, em todo parecer
+ * sobre entrega não delegada.
+ *
+ * Serve de reconhecimento para os pareceres LEGADOS. Sem ela, os pull requests
+ * que motivaram este conserto — os que já levaram parecer na janela cega —
+ * continuariam presos no beco, e o conserto chegaria tarde demais justamente
+ * para eles. É um trecho estável e distintivo, e some sozinho conforme esses
+ * pull requests vão sendo fechados.
+ */
+export const AVISO_LEGADO_DE_NAO_MESCLAR = 'esta entrega não foi encomendada pelo produto'
+
 export interface ReviewDoGithub {
   body?: string
   commit_id?: string
@@ -57,6 +88,19 @@ export function acharParecerNesteHead(
     return candidata
   }
   return undefined
+}
+
+/**
+ * Diz se este parecer foi emitido por quem NÃO podia mesclar.
+ *
+ * Exige a marca do parecer em todos os caminhos: sem ela, um humano que
+ * colasse o texto do aviso num comentário faria o produto tratar a opinião de
+ * um terceiro como se fosse a sua.
+ */
+export function ehParecerSemPoderDeMesclar(review: ReviewDoGithub | undefined): boolean {
+  const corpo = review?.body ?? ''
+  if (!corpo.includes(MARCA_DO_PARECER)) return false
+  return corpo.includes(MARCA_SEM_PODER_DE_MESCLAR) || corpo.includes(AVISO_LEGADO_DE_NAO_MESCLAR)
 }
 
 /** O parecer encontrado é uma aprovação? */

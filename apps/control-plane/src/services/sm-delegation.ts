@@ -3,7 +3,7 @@ import { aplicarLabelDoAgente } from './agent-label.js'
 import { escolherParaDelegar, type IssueCandidata } from './fila-de-delegacao.js'
 import type { LinhaDeSessao } from './dev-session-store.js'
 import { fetchComTeto } from './fetch-com-teto.js'
-import { acharParecerNesteHead } from './parecer-do-qa.js'
+import { acharParecerNesteHead, ehParecerSemPoderDeMesclar } from './parecer-do-qa.js'
 
 // Delegação contínua do SM (F3.6 item 2): a cada wake, encontra as TASKS prontas
 // (label `gitorch:task`, sem sessão viva na tabela `dev_sessions`, com todos os
@@ -79,25 +79,27 @@ export async function listarPrsSemParecer(args: {
       `/repos/${args.repository}/pulls/${p.number}/reviews?per_page=100`
     )) as Array<{ body?: string; commit_id?: string }>
 
-    if (acharParecerNesteHead(reviews, p.head?.sha)) continue
+    // Um parecer marcado neste head normalmente significa "já julgado" — e a
+    // entrega sai da fila. A EXCEÇÃO é o parecer emitido por quem, naquele
+    // instante, não sabia que a entrega era do produto: esse foi escrito sob
+    // premissa errada e o julgamento agora o refaz (ver a exceção da premissa
+    // errada em qa-rails-mission.ts).
+    //
+    // Sem esta linha, esta fila deixaria de ser o que o comentário do topo
+    // deste arquivo promete: um subconjunto estrito do que o julgamento
+    // aceita julgar. Na prática o conserto só dispararia pelo relógio próprio
+    // do QA, e a entrega presa dependeria de o laço chegar nela antes de
+    // parar num pull request mais novo.
+    const parecer = acharParecerNesteHead(reviews, p.head?.sha)
+    if (parecer && !ehParecerSemPoderDeMesclar(parecer)) continue
     semParecer.push(p.number)
   }
   return semParecer
 }
 
-/**
- * O que o acionamento do dev assíncrono devolve.
- *
- * Os três casos precisam ser DISTINTOS, e essa é a lição de 21/08/2026:
- * enquanto "não configurado" e "recusou" voltavam os dois como `null`, o
- * chamador não tinha como saber se devia seguir com o plano B (a etiqueta) ou
- * dar meia-volta. Ele seguia sempre — e marcava como delegada uma tarefa que
- * o dev tinha acabado de recusar.
- *
- * - `criada`: a sessão existe lá fora e tem identificador.
- * - `desligado`: recurso não configurado. NÃO é erro; a etiqueta é o plano B.
- * - `falhou`: o dev foi chamado e recusou. A issue não pode parecer delegada.
- */
+/** Marcador oculto que impede o comentário de recusa de se repetir. */
+export const MARCA_DE_RECUSA = '<!-- gitorch:delegacao-recusada -->'
+
 /**
  * Traduz a recusa do dev para uma frase que pode ser publicada.
  *
@@ -110,9 +112,6 @@ export async function listarPrsSemParecer(args: {
  * A tradução também é melhor para quem lê: "limite de sessões simultâneas
  * atingido" diz o que fazer; `FAILED_PRECONDITION` não diz nada a ninguém.
  */
-/** Marcador oculto que impede o comentário de recusa de se repetir. */
-export const MARCA_DE_RECUSA = '<!-- gitorch:delegacao-recusada -->'
-
 export function motivoPublicavel(motivo: string): string {
   const m = motivo.toUpperCase()
   if (m.includes('FAILED_PRECONDITION') || m.includes('RESOURCE_EXHAUSTED')) {
@@ -130,6 +129,19 @@ export function motivoPublicavel(motivo: string): string {
   return 'o serviço do dev recusou abrir a sessão de trabalho'
 }
 
+/**
+ * O que o acionamento do dev assíncrono devolve.
+ *
+ * Os três casos precisam ser DISTINTOS, e essa é a lição de 21/08/2026:
+ * enquanto "não configurado" e "recusou" voltavam os dois como `null`, o
+ * chamador não tinha como saber se devia seguir com o plano B (a etiqueta) ou
+ * dar meia-volta. Ele seguia sempre — e marcava como delegada uma tarefa que
+ * o dev tinha acabado de recusar.
+ *
+ * - `criada`: a sessão existe lá fora e tem identificador.
+ * - `desligado`: recurso não configurado. NÃO é erro; a etiqueta é o plano B.
+ * - `falhou`: o dev foi chamado e recusou. A issue não pode parecer delegada.
+ */
 export type ResultadoDoAcionamentoDoDev =
   | { situacao: 'criada'; sessionName: string }
   | { situacao: 'desligado' }

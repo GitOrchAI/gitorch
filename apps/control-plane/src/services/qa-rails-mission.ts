@@ -20,6 +20,8 @@ import { fetchComTeto } from './fetch-com-teto.js'
 import {
   acharParecerNesteHead,
   ehAprovacao,
+  ehParecerSemPoderDeMesclar,
+  MARCA_SEM_PODER_DE_MESCLAR,
   MARCA_DE_APROVACAO,
   MARCA_DO_PARECER,
 } from './parecer-do-qa.js'
@@ -402,8 +404,50 @@ export async function runQaMissionViaRails(
         : undefined)
     const aindaPodeTentarMesclar = (linhaCandidata?.mergeFailures ?? 0) < MAX_TENTATIVAS_DE_MERGE
 
-    if (reviewMarcadaNesteHead && !(veredito.delegado && foiAprovacao && aindaPodeTentarMesclar))
-      continue
+    // A SEGUNDA exceção ao skip, e ela desfaz um beco sem saída PERMANENTE.
+    //
+    // O parecer emitido na janela cega saiu como comentário porque, naquele
+    // instante, o produto não sabia que a entrega era sua. Se a ligação chegou
+    // DEPOIS — e com o reconhecimento em quatro segundos ela chega —, aquele
+    // parecer foi emitido sob premissa errada: dizia, no pull request do
+    // cliente, que a entrega "não foi encomendada pelo produto", sobre um
+    // trabalho que o produto encomendou.
+    //
+    // Sem esta linha, o laço trata aquele parecer como julgamento final e pula
+    // a entrega para sempre. O pull request fica aberto, com verificação
+    // verde, esperando uma aprovação formal que nunca vem — e o portão do
+    // repositório, que exige APPROVED, segura o merge indefinidamente sem
+    // nunca ficar vermelho. Ninguém percebe.
+    //
+    // O teto de tentativas continua valendo: rejulgar sob premissa corrigida é
+    // legítimo uma vez, não é licença para tentar mesclar a cada tique.
+    // A LIGAÇÃO tem que ser a de VERDADE: a linha da sessão apontando para
+    // ESTE pull request. `veredito.delegado` sozinho não serve aqui, e a
+    // diferença é grave.
+    //
+    // `ehPrDelegado` tem um ramo mais frouxo que aceita "corpo cita Fixes #N +
+    // issue etiquetada + existe ALGUMA sessão para aquela issue". Para
+    // decidir se vale opinar, isso basta. Para REABRIR um parecer já
+    // publicado, não: um humano que abrisse um PR citando `Fixes #74` como
+    // referência receberia o parecer com a promessa escrita — "NÃO vou
+    // mesclá-lo, a decisão é sua" — e, assim que o SM delegasse a issue #74 a
+    // sério, o produto rejulgaria o PR DELE, aprovaria formalmente e chamaria
+    // o merge. Mesclaria o pull request que prometeu publicamente não
+    // mesclar, no repositório do cliente.
+    //
+    // Exigir `pullRequestNumber === p.number` é justamente o que dá nome a
+    // este conserto: a ligação que chegou depois é a sessão apontando para o
+    // PR, não um palpite pelo corpo.
+    const ligacaoApontaParaEstePr = linhaCandidata?.pullRequestNumber === p.number
+    const parecerSobPremissaErrada =
+      veredito.delegado &&
+      ligacaoApontaParaEstePr &&
+      ehParecerSemPoderDeMesclar(reviewMarcadaNesteHead)
+
+    const deveRejulgar =
+      veredito.delegado && aindaPodeTentarMesclar && (foiAprovacao || parecerSobPremissaErrada)
+
+    if (reviewMarcadaNesteHead && !deveRejulgar) continue
 
     target = p
     issueDaEntrega = veredito.issueNumber
@@ -709,7 +753,8 @@ export async function runQaMissionViaRails(
   // e não um convite a clicar em "merge" esperando o produto terminar.
   const avisoDeNaoMesclar = delegado
     ? ''
-    : '\n\nGitOrch analisou este PR e registrou o parecer acima, mas NÃO vai mesclá-lo: esta ' +
+    : `\n\n${MARCA_SEM_PODER_DE_MESCLAR}\n` +
+      'GitOrch analisou este PR e registrou o parecer acima, mas NÃO vai mesclá-lo: esta ' +
       'entrega não foi encomendada pelo produto. A decisão de aceitar este código é sua, como ' +
       'autor do PR.'
 
