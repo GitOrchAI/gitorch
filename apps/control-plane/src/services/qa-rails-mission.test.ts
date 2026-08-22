@@ -2158,3 +2158,268 @@ describe('teto de tempo (leva D)', () => {
     }
   })
 })
+
+// ── O beco sem saída da janela cega (22/08/2026) ───────────────────────────
+//
+// Entre a abertura do pull request e a gravação da ligação issue↔sessão houve
+// uma janela de seis horas e meia (medida no PR #132, 20/08). Dentro dela o
+// julgamento não achava a linha da sessão e concluía que a entrega era de
+// terceiro.
+//
+// Para uma APROVAÇÃO isso já tinha saída: a exceção C1 reexamina aprovação
+// com PR ainda aberto. Para uma REPROVAÇÃO não tinha nenhuma, e é aí que o
+// estrago era permanente e mudo:
+//
+//   1. o parecer sai como reprovação, com o aviso de que o produto não vai
+//      mesclar — escrito no pull request do CLIENTE, sobre trabalho que o
+//      produto encomendou;
+//   2. o pedido de retrabalho ao dev NÃO é enviado, porque esse envio é
+//      reservado a entregas delegadas — e naquele instante o produto achava
+//      que esta não era;
+//   3. no ciclo seguinte, `foiAprovacao` é falso, a entrega é tratada como
+//      julgada e é pulada PARA SEMPRE.
+//
+// Resultado: pull request reprovado, dev que nunca soube que precisava
+// retrabalhar, e ninguém para reabrir o caso. Sem erro em log nenhum.
+describe('reprovação emitida sob premissa errada é REFEITA quando a ligação chega', () => {
+  const reprovacaoSemPoderDeMesclar =
+    '<!-- gitorch:qa -->\nGitOrch QA verdict: REQUEST CHANGES (see comment).\n\n' +
+    '<!-- gitorch:qa:sem-poder-de-mesclar -->\n' +
+    'GitOrch analisou este PR e registrou o parecer acima, mas NÃO vai mesclá-lo: esta ' +
+    'entrega não foi encomendada pelo produto. A decisão de aceitar este código é sua, como ' +
+    'autor do PR.'
+
+  function prReprovadoNaJanelaCega(corpoDaReview: string) {
+    return fakeFetch(
+      [
+        {
+          number: 7,
+          user: 'loureng',
+          body: 'sem palavra de ligação nenhuma',
+          existingReviews: [{ body: corpoDaReview, commit_id: 'abc123' }],
+        },
+      ],
+      ['jules', 'gitorch:task'],
+      50
+    )
+  }
+
+  it('volta a ser julgada, e agora o dev É avisado do retrabalho', async () => {
+    const f = prReprovadoNaJanelaCega(reprovacaoSemPoderDeMesclar)
+    const posted = (
+      f as unknown as { posted: { reviews: Array<{ event?: string }>; comments: unknown[] } }
+    ).posted
+    const avisosAoDev: Array<{ sessionName: string; texto: string }> = []
+
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      fetchImpl: f,
+      // A LIGAÇÃO CHEGOU: é isto que muda a premissa.
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 7, sessionName: 'sessions/9' })],
+      avisarSessao: async (a) => {
+        avisosAoDev.push(a)
+        return true
+      },
+    })
+
+    expect(r.noOp).toBeFalsy()
+    expect(posted.reviews).toHaveLength(1)
+    // O que estava faltando e ninguém via: o pedido de retrabalho chegando ao
+    // dev. Sem a ligação, ele nunca era enviado — e o PR ficava esperando um
+    // retrabalho que ninguém tinha pedido.
+    expect(avisosAoDev).toHaveLength(1)
+    expect(avisosAoDev[0]!.sessionName).toBe('sessions/9')
+    expect(posted.comments.length).toBeGreaterThan(0)
+  })
+
+  it('o parecer novo NÃO repete o aviso de que não vai mesclar', async () => {
+    // Se repetisse, o cliente leria duas vezes, no mesmo pull request, que a
+    // entrega dele não foi encomendada — e a segunda vez seria falsa.
+    const f = prReprovadoNaJanelaCega(reprovacaoSemPoderDeMesclar)
+    const posted = (f as unknown as { posted: { reviews: Array<{ body?: string }> } }).posted
+
+    await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      fetchImpl: f,
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 7 })],
+    })
+
+    expect(posted.reviews[0]!.body).not.toContain('não foi encomendada pelo produto')
+    expect(posted.reviews[0]!.body).not.toContain('sem-poder-de-mesclar')
+  })
+
+  it('SEM a ligação, continua pulado — a premissa não mudou, não há o que refazer', async () => {
+    // A guarda contra transformar o conserto em spam: o parecer sobre entrega
+    // de humano continua sendo julgamento final, como sempre foi.
+    const f = fakeFetch([
+      {
+        number: 9,
+        user: 'loureng',
+        body: 'PR de humano',
+        existingReviews: [{ body: reprovacaoSemPoderDeMesclar, commit_id: 'abc123' }],
+      },
+    ])
+    const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
+
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      fetchImpl: f,
+    })
+
+    expect(r.noOp).toBe(true)
+    expect(posted.reviews).toHaveLength(0)
+  })
+
+  it('reprovação de entrega JÁ delegada continua pulada — o dev ainda não retrabalhou', async () => {
+    // A outra metade da guarda, e a mais importante: a reprovação normal (sem
+    // a marca) segue sendo julgamento final no mesmo commit. Refazer aqui
+    // seria opinar de novo sobre um código que não mudou.
+    const f = prReprovadoNaJanelaCega(
+      '<!-- gitorch:qa -->\nGitOrch QA verdict: REQUEST CHANGES (see comment).'
+    )
+    const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
+
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      fetchImpl: f,
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 7 })],
+    })
+
+    expect(r.noOp).toBe(true)
+    expect(posted.reviews).toHaveLength(0)
+  })
+
+  it('o teto de tentativas de merge continua valendo — refazer não é licença para insistir', async () => {
+    const f = prReprovadoNaJanelaCega(reprovacaoSemPoderDeMesclar)
+    const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
+
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      fetchImpl: f,
+      sessoes: [
+        linha({ issueNumber: 50, pullRequestNumber: 7, mergeFailures: MAX_TENTATIVAS_DE_MERGE }),
+      ],
+    })
+
+    expect(r.noOp).toBe(true)
+    expect(posted.reviews).toHaveLength(0)
+  })
+
+  it('LEGADO: o parecer publicado ANTES da marca também destrava', async () => {
+    // Os pareceres que motivaram esta tarefa não têm marcador — só a frase em
+    // português. Ignorá-los deixaria presos exatamente os pull requests que o
+    // conserto existe para soltar.
+    const f = prReprovadoNaJanelaCega(
+      '<!-- gitorch:qa -->\nGitOrch QA verdict: REQUEST CHANGES (see comment).\n\n' +
+        'GitOrch analisou este PR e registrou o parecer acima, mas NÃO vai mesclá-lo: esta ' +
+        'entrega não foi encomendada pelo produto. A decisão de aceitar este código é sua, ' +
+        'como autor do PR.'
+    )
+    const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
+
+    await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      fetchImpl: f,
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 7 })],
+    })
+
+    expect(posted.reviews).toHaveLength(1)
+  })
+})
+
+// ── O achado ALTO da lente (22/08/2026) ────────────────────────────────────
+//
+// O rejulgamento por premissa errada quase virou uma escalada de privilégio.
+// `ehPrDelegado` tem um ramo frouxo — "o corpo cita Fixes #N + a issue está
+// etiquetada + existe ALGUMA sessão para aquela issue" — que basta para
+// decidir se vale opinar, mas NÃO para reabrir um parecer já publicado.
+//
+// A sequência concreta: um humano abre o pull request citando `Fixes #74`
+// como referência; o produto opina e escreve, no PR dele, "NÃO vou mesclá-lo,
+// a decisão é sua"; depois o SM delega a issue #74 de verdade e cria a linha
+// de sessão. No ciclo seguinte, sem esta guarda, o produto rejulgaria o PR do
+// HUMANO, aprovaria formalmente e chamaria o merge — mesclando o pull request
+// que prometeu publicamente não mesclar, no repositório do cliente.
+//
+// A ligação que autoriza refazer é a sessão apontando para ESTE pull request,
+// não um palpite pelo corpo.
+describe('rejulgar não pode virar licença para mesclar PR de humano', () => {
+  it('sessão existe para a issue, mas aponta para OUTRO PR: continua pulado', async () => {
+    const parecerPublicado =
+      '<!-- gitorch:qa -->\nGitOrch QA verdict: REQUEST CHANGES (see comment).\n\n' +
+      '<!-- gitorch:qa:sem-poder-de-mesclar -->\n' +
+      'GitOrch analisou este PR e registrou o parecer acima, mas NÃO vai mesclá-lo: esta ' +
+      'entrega não foi encomendada pelo produto.'
+
+    const f = fakeFetch(
+      [
+        {
+          number: 99,
+          user: 'loureng',
+          body: 'Fixes #50 — referência, não entrega delegada',
+          existingReviews: [{ body: parecerPublicado, commit_id: 'abc123' }],
+        },
+      ],
+      ['jules', 'gitorch:task'],
+      50
+    )
+    const posted = (f as unknown as { posted: { reviews: unknown[]; merges: unknown[] } }).posted
+
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+      // A sessão existe para a issue #50 — mas foi aberta para o PR #7, não
+      // para o #99 deste humano.
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 7 })],
+    })
+
+    expect(r.noOp).toBe(true)
+    expect(posted.reviews).toHaveLength(0)
+    expect(posted.merges).toHaveLength(0)
+  })
+
+  it('sessão SEM pull request nenhum ainda: também continua pulado', async () => {
+    const parecerPublicado =
+      '<!-- gitorch:qa -->\nGitOrch QA verdict: REQUEST CHANGES (see comment).\n\n' +
+      '<!-- gitorch:qa:sem-poder-de-mesclar -->\nnão foi encomendada pelo produto.'
+
+    const f = fakeFetch(
+      [
+        {
+          number: 99,
+          user: 'loureng',
+          body: 'Fixes #50',
+          existingReviews: [{ body: parecerPublicado, commit_id: 'abc123' }],
+        },
+      ],
+      ['jules', 'gitorch:task'],
+      50
+    )
+    const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
+
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: null })],
+    })
+
+    expect(r.noOp).toBe(true)
+    expect(posted.reviews).toHaveLength(0)
+  })
+})
