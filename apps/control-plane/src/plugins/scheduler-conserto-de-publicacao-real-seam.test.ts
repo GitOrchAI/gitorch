@@ -51,6 +51,8 @@ function linhaDeSessao(extras: Record<string, unknown> = {}): Record<string, unk
     // Recente: sem isto o teto absoluto (24h) fecharia a sessão antes de a
     // decisão de conserto ser sequer alcançada.
     stateCheckedAt: new Date(),
+    reworkNoticePending: null,
+    reworkNoticeAttempts: 0,
     pendingSince: null,
     mergeCommitSha: SHA,
     deployState: null,

@@ -86,6 +86,8 @@ function sessaoSemPr(over: Record<string, unknown> = {}) {
     nudges: 0,
     lastProgressAt: null,
     stateCheckedAt: new Date(),
+    reworkNoticePending: null,
+    reworkNoticeAttempts: 0,
     pendingSince: null,
     mergeCommitSha: 'deadbeef',
     deployState: null,

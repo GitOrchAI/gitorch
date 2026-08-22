@@ -59,6 +59,8 @@ const SESSAO_MESCLADA = {
   // mascarar o defeito por acaso — com null, TODO tick que a vigia enxergar
   // esta linha vai examiná-la de novo.
   stateCheckedAt: null,
+  reworkNoticePending: null,
+  reworkNoticeAttempts: 0,
   pendingSince: null,
   mergeCommitSha: 'deadbeef19',
   deployState: null,
@@ -80,6 +82,8 @@ const SESSAO_ABERTA = {
   nudges: 0,
   lastProgressAt: null,
   stateCheckedAt: null,
+  reworkNoticePending: null,
+  reworkNoticeAttempts: 0,
   pendingSince: null,
   mergeCommitSha: null,
   deployState: null,

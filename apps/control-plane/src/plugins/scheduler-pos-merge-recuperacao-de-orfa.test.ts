@@ -107,6 +107,8 @@ function sessaoOrfa(over: Record<string, unknown> = {}) {
     nudges: 0,
     lastProgressAt: null,
     stateCheckedAt: new Date(Date.now() - 60 * 60_000),
+    reworkNoticePending: null,
+    reworkNoticeAttempts: 0,
     pendingSince: null,
     mergeCommitSha: 'deadbeef',
     deployState: 'no-ar',

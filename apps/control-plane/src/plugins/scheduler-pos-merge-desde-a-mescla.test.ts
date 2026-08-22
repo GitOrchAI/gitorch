@@ -122,6 +122,8 @@ describe('varrerPublicacoes — Importante 5 (o relógio da carência sobrevive 
       // primeira vez neste teste) não tem NENHUM estado em memória sobre
       // esta sessão; só o que está na linha.
       stateCheckedAt: quarentaMinutosAtras,
+      reworkNoticePending: null,
+      reworkNoticeAttempts: 0,
       pendingSince: null,
       mergeCommitSha: 'deadbeef',
       deployState: null,

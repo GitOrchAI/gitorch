@@ -25,6 +25,8 @@ function linha(overrides: Partial<LinhaDeSessao> = {}): LinhaDeSessao {
     nudges: 0,
     lastProgressAt: null,
     stateCheckedAt: null,
+    reworkNoticePending: null,
+    reworkNoticeAttempts: 0,
     pendingSince: null,
     mergeCommitSha: null,
     deployState: null,
