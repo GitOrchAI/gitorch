@@ -55,7 +55,7 @@ describe('criarSessaoJules', () => {
 
     const sessao = await criarSessaoJules({ ...base, fetchImpl: impl })
 
-    expect(sessao).toBe('sessions/abc123')
+    expect(sessao).toEqual({ situacao: 'criada', sessionName: 'sessions/abc123' })
     const req = chamadas[0]!
     expect(req.url).toContain('/v1alpha/sessions')
     expect((req.init!.headers as Record<string, string>)['X-Goog-Api-Key']).toBe('chave')
@@ -67,11 +67,14 @@ describe('criarSessaoJules', () => {
     expect(corpo.title).toContain('Corrigir emissão de token')
   })
 
-  it('sem chave configurada: não toca a rede e devolve null (o label segue como plano B)', async () => {
+  it('sem chave configurada: DESLIGADO, não é falha — o label segue como plano B', async () => {
+    // A distinção é o conserto de 22/08/2026: 'desligado' e 'falhou' não podem
+    // voltar iguais. Quem chama precisa saber se segue com o plano B ou se dá
+    // meia-volta e deixa a issue por fazer.
     const { impl, chamadas } = fetchFake([{ ok: true, status: 200, body: {} }])
     const sessao = await criarSessaoJules({ ...base, apiKey: undefined, fetchImpl: impl })
 
-    expect(sessao).toBeNull()
+    expect(sessao).toEqual({ situacao: 'desligado' })
     expect(chamadas).toHaveLength(0)
   })
 
@@ -87,7 +90,10 @@ describe('criarSessaoJules', () => {
       onWarn: (m) => avisos.push(m),
     })
 
-    expect(sessao).toBeNull()
+    expect(sessao.situacao).toBe('falhou')
+    // O motivo VOLTA junto, não só no log: é ele que vai parar no comentário
+    // da issue para quem cuida do quadro entender por que ela não andou.
+    expect(sessao).toMatchObject({ motivo: expect.stringContaining('GitOrchAI/gitorch') })
     expect(avisos.join(' ')).toContain('GitOrchAI/gitorch')
     expect(avisos.join(' ').toLowerCase()).toContain('conect')
   })
@@ -98,9 +104,12 @@ describe('criarSessaoJules', () => {
       throw new Error('rede caiu')
     }) as unknown as typeof fetch
 
-    await expect(
-      criarSessaoJules({ ...base, fetchImpl: impl, onWarn: (m) => avisos.push(m) })
-    ).resolves.toBeNull()
+    const sessao = await criarSessaoJules({
+      ...base,
+      fetchImpl: impl,
+      onWarn: (m) => avisos.push(m),
+    })
+    expect(sessao).toEqual({ situacao: 'falhou', motivo: 'rede caiu' })
     expect(avisos.length).toBeGreaterThan(0)
   })
 })

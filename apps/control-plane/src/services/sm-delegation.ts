@@ -85,6 +85,56 @@ export async function listarPrsSemParecer(args: {
   return semParecer
 }
 
+/**
+ * O que o acionamento do dev assíncrono devolve.
+ *
+ * Os três casos precisam ser DISTINTOS, e essa é a lição de 21/08/2026:
+ * enquanto "não configurado" e "recusou" voltavam os dois como `null`, o
+ * chamador não tinha como saber se devia seguir com o plano B (a etiqueta) ou
+ * dar meia-volta. Ele seguia sempre — e marcava como delegada uma tarefa que
+ * o dev tinha acabado de recusar.
+ *
+ * - `criada`: a sessão existe lá fora e tem identificador.
+ * - `desligado`: recurso não configurado. NÃO é erro; a etiqueta é o plano B.
+ * - `falhou`: o dev foi chamado e recusou. A issue não pode parecer delegada.
+ */
+/**
+ * Traduz a recusa do dev para uma frase que pode ser publicada.
+ *
+ * O motivo cru é útil e NÃO é publicável: são até duzentos caracteres do corpo
+ * de erro do fornecedor, ou a mensagem de uma exceção de rede, e qualquer um
+ * dos dois pode carregar host interno, endereço de IP ou trecho de payload.
+ * Esse texto ia parar num comentário no repositório do CLIENTE, que muitas
+ * vezes é público. O cru continua indo para o log estruturado, onde já ia.
+ *
+ * A tradução também é melhor para quem lê: "limite de sessões simultâneas
+ * atingido" diz o que fazer; `FAILED_PRECONDITION` não diz nada a ninguém.
+ */
+/** Marcador oculto que impede o comentário de recusa de se repetir. */
+export const MARCA_DE_RECUSA = '<!-- gitorch:delegacao-recusada -->'
+
+export function motivoPublicavel(motivo: string): string {
+  const m = motivo.toUpperCase()
+  if (m.includes('FAILED_PRECONDITION') || m.includes('RESOURCE_EXHAUSTED')) {
+    return 'o dev está com todas as sessões de trabalho ocupadas no momento'
+  }
+  if (m.includes('HTTP 404') || m.includes('NÃO ESTÁ CONECTADO')) {
+    return 'o repositório não está conectado na conta do dev'
+  }
+  if (m.includes('HTTP 401') || m.includes('HTTP 403')) {
+    return 'a credencial do dev foi recusada'
+  }
+  if (m.includes('HTTP 429')) {
+    return 'o dev está recusando pedidos por excesso de chamadas'
+  }
+  return 'o serviço do dev recusou abrir a sessão de trabalho'
+}
+
+export type ResultadoDoAcionamentoDoDev =
+  | { situacao: 'criada'; sessionName: string }
+  | { situacao: 'desligado' }
+  | { situacao: 'falhou'; motivo: string }
+
 export interface SmDelegationOptions {
   repository: string
   githubToken: string
@@ -121,7 +171,7 @@ export interface SmDelegationOptions {
     repository: string
     titulo: string
     prompt: string
-  }) => Promise<string | null>
+  }) => Promise<ResultadoDoAcionamentoDoDev>
   /**
    * Guarda a ligação entre a issue e a sessão que acabou de nascer.
    *
@@ -156,6 +206,21 @@ export interface SmDelegationOptions {
    * ligação, o QA não reconhece o PR que chegar depois. Mesmo motivo já
    * registrado em `github-app-token.ts` e `qa-rails-mission.ts`.
    */
+  /**
+   * Fala com o dono quando a delegação é RECUSADA pelo dev.
+   *
+   * O log estruturado não basta aqui: a falha deixa uma tarefa parada na fila
+   * sem ninguém trabalhando nela, e isso é notícia de negócio, não de
+   * infraestrutura. Best-effort — um notificador fora do ar nunca derruba o
+   * ciclo.
+   */
+  /**
+   * Encerra no fornecedor uma sessão que nasceu mas não pôde ser registrada
+   * aqui. Sem isto, cada falha de gravação vira uma vaga presa para sempre —
+   * exatamente o vazamento que a outra metade desta mudança veio estancar.
+   */
+  desfazerSessao?: (sessionName: string) => Promise<void>
+  avisarDono?: (mensagem: string) => Promise<void>
   onWarn?: (message: string) => void
 }
 
@@ -234,9 +299,141 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
   const delegated: number[] = []
   // Identificadores das sessões abertas no dev assíncrono, para o watchdog cobrar.
   const sessoes: string[] = []
+  // Quem foi escolhida, tentada e recusada pelo dev — com o motivo.
+  const recusadas: Array<{ numero: number; motivo: string }> = []
+
   for (const numero of escolhidas) {
     const task = porNumero.get(numero)
     if (!task) continue
+
+    // ACIONAR PRIMEIRO, PROMETER DEPOIS.
+    //
+    // Até 21/08/2026 a ordem era a inversa: a etiqueta ia para a issue e só
+    // então o dev era acionado. Quando o acionamento falhava — e falhou onze
+    // vezes num único dia, com as vagas do fornecedor esgotadas —, a issue
+    // ficava marcada como delegada e nada acontecia. O quadro mostrava uma
+    // tarefa em andamento que nunca começou, e nenhum sinal dizia o contrário.
+    //
+    // Marcar antes é prometer em nome de alguém que ainda não respondeu.
+    let resultado: ResultadoDoAcionamentoDoDev = options.criarSessaoDev
+      ? await options.criarSessaoDev({
+          repository: options.repository,
+          titulo: `#${task.number} ${task.title ?? ''}`.trim(),
+          prompt: [
+            `Work on issue #${task.number} of ${options.repository}.`,
+            '',
+            task.body ?? '',
+            '',
+            'Deliver a pull request that closes the issue and satisfies every item',
+            'under "Verification Criteria". Do not change anything outside the scope',
+            'described above.',
+          ].join('\n'),
+        })
+      : ({ situacao: 'desligado' } as const)
+
+    // A LIGAÇÃO É GRAVADA ANTES DA ETIQUETA — e antes de qualquer outra coisa
+    // que possa falhar.
+    //
+    // Enquanto a etiqueta vinha primeiro, uma recusa do GitHub (403, 422, cota)
+    // derrubava a função INTEIRA com a sessão já viva lá fora e nenhuma linha
+    // aqui. Dez minutos depois a reconciliação de vagas encontrava exatamente
+    // isso — sessão ativa sem dono — e arquivava um trabalho que tinha acabado
+    // de começar. O conserto de uma frente estava armando a outra.
+    //
+    // Se a gravação falhar, a sessão é DESFEITA na hora: criamos a conversa,
+    // não conseguimos acompanhá-la, e deixá-la de pé só transformaria a
+    // delegação perdida numa vaga vazada.
+    if (resultado.situacao === 'criada' && options.aoCriarSessao) {
+      try {
+        await options.aoCriarSessao({
+          issueNumber: task.number,
+          sessionName: resultado.sessionName,
+        })
+      } catch (err) {
+        const avisar = options.onWarn ?? console.warn
+        avisar(
+          `[sm] sessão ${resultado.sessionName} criada para #${task.number} mas a ligação não ` +
+            `pôde ser guardada: ${(err as Error).message}`
+        )
+        if (options.desfazerSessao) {
+          try {
+            await options.desfazerSessao(resultado.sessionName)
+          } catch (erroAoDesfazer) {
+            avisar(
+              `[sm] a sessão ${resultado.sessionName} ficou de pé sem dono e não pôde ser ` +
+                `desfeita: ${(erroAoDesfazer as Error).message}`
+            )
+          }
+        }
+        resultado = {
+          situacao: 'falhou',
+          motivo: `a ligação com a sessão não pôde ser guardada: ${(err as Error).message}`,
+        }
+      }
+    }
+
+    if (resultado.situacao === 'falhou') {
+      recusadas.push({ numero: task.number, motivo: resultado.motivo })
+      const avisar = options.onWarn ?? console.warn
+      // O motivo cru vai para o log, e SÓ para o log. Ver `motivoPublicavel`.
+      avisar(`[sm] delegação de #${task.number} recusada pelo dev: ${resultado.motivo}`)
+
+      // UM comentário por issue, nunca um por ciclo.
+      //
+      // A issue recusada continua na fila e é reescolhida a cada acordada do
+      // SM — a fila lê linhas de sessão, não etiquetas. Sem esta guarda, uma
+      // indisponibilidade de dois dias empilharia dezenas de comentários
+      // idênticos no repositório do cliente. Spam apaga sinal tanto quanto
+      // silêncio, e é a mesma disciplina que a vigília já aplica aos avisos
+      // de sessão parada.
+      //
+      // O marcador é oculto no HTML: quem lê a issue vê só o recado.
+      let comentouAgora = false
+      try {
+        const anteriores = (await gh(
+          'GET',
+          `/repos/${options.repository}/issues/${task.number}/comments?per_page=100`
+        )) as Array<{ body?: string }>
+        const jaAvisado =
+          Array.isArray(anteriores) &&
+          anteriores.some((c) => (c.body ?? '').includes(MARCA_DE_RECUSA))
+
+        if (!jaAvisado) {
+          await gh('POST', `/repos/${options.repository}/issues/${task.number}/comments`, {
+            body:
+              `${MARCA_DE_RECUSA}\n` +
+              `**Delegação não aconteceu.** O dev não abriu a sessão de trabalho para esta ` +
+              `tarefa, então ela continua por fazer — sem etiqueta de delegada, de propósito, ` +
+              `para o quadro não dizer que há alguém trabalhando nela.\n\n` +
+              `Motivo: ${motivoPublicavel(resultado.motivo)}.\n\n` +
+              `A esteira tenta de novo sozinha nos próximos ciclos.`,
+          })
+          comentouAgora = true
+        }
+      } catch (err) {
+        avisar(
+          `[sm] a delegação de #${task.number} falhou e o motivo não pôde ser escrito na ` +
+            `issue: ${(err as Error).message}`
+        )
+      }
+
+      // O dono é avisado NA MESMA CADÊNCIA do comentário — uma vez por issue.
+      // Um recado por ciclo transformaria o Telegram dele em ruído, e ruído é
+      // como o aviso importante seguinte passa despercebido.
+      if (options.avisarDono && comentouAgora) {
+        try {
+          await options.avisarDono(
+            `GitOrch: não consegui passar a tarefa #${task.number} de ${options.repository} para ` +
+              `o dev, então ela continua na fila sem ninguém trabalhando nela. ` +
+              `Motivo: ${motivoPublicavel(resultado.motivo)}.`
+          )
+        } catch (err) {
+          avisar(`[sm] aviso ao dono não chegou: ${(err as Error).message}`)
+        }
+      }
+      continue
+    }
+
     await gh('POST', `/repos/${options.repository}/issues/${task.number}/labels`, {
       labels: [label],
     })
@@ -264,41 +461,8 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
 
     delegated.push(task.number)
 
-    // O label marca a issue; a sessão é quem efetivamente põe o dev a
-    // trabalhar. Guardamos o identificador na saída da missão para o watchdog
-    // ter o que cobrar depois.
-    if (options.criarSessaoDev) {
-      const sessao = await options.criarSessaoDev({
-        repository: options.repository,
-        titulo: `#${task.number} ${task.title ?? ''}`.trim(),
-        prompt: [
-          `Work on issue #${task.number} of ${options.repository}.`,
-          '',
-          task.body ?? '',
-          '',
-          'Deliver a pull request that closes the issue and satisfies every item',
-          'under "Verification Criteria". Do not change anything outside the scope',
-          'described above.',
-        ].join('\n'),
-      })
-      if (sessao) {
-        sessoes.push(`#${task.number}→${sessao}`)
-        // A ligação tem de ser GUARDADA aqui, não só impressa: é ela que o
-        // julgamento consulta depois. O try/catch é deliberado — falhar ao
-        // guardar não pode derrubar a delegação das outras tasks, e o aviso
-        // diz exatamente o que ficou para trás.
-        if (options.aoCriarSessao) {
-          try {
-            await options.aoCriarSessao({ issueNumber: task.number, sessionName: sessao })
-          } catch (err) {
-            const avisar = options.onWarn ?? console.warn
-            avisar(
-              `[sm] sessão criada para #${task.number} mas a ligação não pôde ser guardada; ` +
-                `o julgamento não vai encontrar este PR: ${(err as Error).message}`
-            )
-          }
-        }
-      }
+    if (resultado.situacao === 'criada') {
+      sessoes.push(`#${task.number}→${resultado.sessionName}`)
     }
   }
 
@@ -332,6 +496,16 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
     }
   }
 
+  // A recusa aparece na saída da missão, e não como silêncio. Relatar uma
+  // acordada que tentou e foi recusada como "nada a delegar" seria a mentira
+  // mais cara aqui: o descanso pós-acordada-vazia calaria justamente o ciclo
+  // que precisa tentar de novo.
+  const linhaDaRecusa =
+    recusadas.length > 0
+      ? `SM: ${recusadas.length} delegation(s) REFUSED by the dev, left unlabelled: ` +
+        `${recusadas.map((r) => `#${r.numero} (${r.motivo})`).join('; ')}.`
+      : ''
+
   const linhaDaDelegacao =
     delegated.length > 0
       ? `SM delegated ${delegated.length} ready task(s): ${delegated.map((n) => `#${n}`).join(', ')}.` +
@@ -345,12 +519,18 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
 
   return {
     exitCode: 0,
-    output: linhaDoJulgamento ? `${linhaDaDelegacao} ${linhaDoJulgamento}` : linhaDaDelegacao,
+    output: [linhaDaDelegacao, linhaDaRecusa, linhaDoJulgamento].filter(Boolean).join(' '),
     stderr: '',
     // Acordada que encheu a fila do julgamento NÃO é vazia: mandar julgar é
     // trabalho, e tratá-la como no-op faria o descanso pós-acordada-vazia
     // (descanso-apos-vazia.ts) calar justamente o ciclo que destrava entrega.
-    noOp: delegated.length === 0 && paraJulgar.length === 0 && !falhaAoEnfileirar,
+    // Tentar e ser recusado NÃO é acordada vazia: houve trabalho, houve
+    // decisão, e há motivo para acordar de novo em breve.
+    noOp:
+      delegated.length === 0 &&
+      paraJulgar.length === 0 &&
+      recusadas.length === 0 &&
+      !falhaAoEnfileirar,
     delegated,
     paraJulgar,
   }
