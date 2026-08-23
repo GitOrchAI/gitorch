@@ -2626,3 +2626,113 @@ describe('diff grande demais continua sendo reprovação FINAL', () => {
     expect(posted.reviews).toHaveLength(0)
   })
 })
+
+// ── O caminho que eu tinha deixado de fora ────────────────────────────────
+//
+// Eu marcava só o REBAIXAMENTO: motor aprova, trava derruba por CI não-verde.
+// Ler o comentário REAL que o julgamento deixou no PR #3768 mostrou que esse é
+// o caminho MENOS comum:
+//
+//   "Resolve the CI failures by identifying the root cause of the red status
+//    (...) The current CI status is reported as red."
+//
+// O motor leu o vermelho e reprovou SOZINHO. Não houve rebaixamento, e a marca
+// nunca seria escrita. E é o que acontece quase sempre, porque o prompt do
+// julgamento manda "You MUST NOT approve when CI is not green".
+//
+// Marcar o ESTADO em vez da ORIGEM cobre os dois.
+describe('o motor reprovando sozinho com CI vermelho também volta atrás', () => {
+  it('review nasce marcada com o estado da verificação', async () => {
+    const f = fakeFetch([{ number: 7, user: 'jules[bot]' }], ['jules', 'gitorch:task'], 50, {
+      checkRuns: [{ status: 'completed', conclusion: 'failure' }],
+    })
+    const posted = (f as unknown as { posted: { reviews: Array<{ body?: string }> } }).posted
+
+    await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      // O MOTOR reprova por conta própria — sem rebaixamento nenhum.
+      execute: async () => REQUEST_CHANGES,
+      fetchImpl: f,
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 7 })],
+    })
+
+    expect(posted.reviews).toHaveLength(1)
+    expect(posted.reviews[0]!.body).toContain('ci-vermelho-no-julgamento')
+  })
+
+  it('e com o CI verde depois, a entrega volta a ser julgada', async () => {
+    const marcada =
+      '<!-- gitorch:qa -->\n<!-- gitorch:qa:ci-vermelho-no-julgamento -->\n' +
+      'GitOrch QA verdict: REQUEST CHANGES (see comment).'
+    const f = fakeFetch(
+      [
+        {
+          number: 7,
+          user: 'jules[bot]',
+          existingReviews: [{ body: marcada, commit_id: 'abc123' }],
+        },
+      ],
+      ['jules', 'gitorch:task'],
+      50
+    )
+    const posted = (f as unknown as { posted: { merges: unknown[] } }).posted
+
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 7 })],
+    })
+
+    expect(r.noOp).toBeFalsy()
+    expect(posted.merges).toHaveLength(1)
+  })
+
+  it('a marca ANTIGA do portão continua valendo — nada preso entre um conserto e outro', async () => {
+    const antiga =
+      '<!-- gitorch:qa -->\n<!-- gitorch:qa:reprovado-pelo-portao -->\n' +
+      'GitOrch QA verdict: REQUEST CHANGES (see comment).'
+    const f = fakeFetch(
+      [
+        {
+          number: 7,
+          user: 'jules[bot]',
+          existingReviews: [{ body: antiga, commit_id: 'abc123' }],
+        },
+      ],
+      ['jules', 'gitorch:task'],
+      50
+    )
+    const posted = (f as unknown as { posted: { merges: unknown[] } }).posted
+
+    await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 7 })],
+    })
+
+    expect(posted.merges).toHaveLength(1)
+  })
+
+  it('reprovação com CI VERDE não ganha marca — o problema era o código', async () => {
+    // A guarda que separa. Se o CI estava verde e mesmo assim reprovou, quem
+    // reprovou foi o julgamento do código, e isso é final.
+    const f = fakeFetch([{ number: 7, user: 'jules[bot]' }], ['jules', 'gitorch:task'], 50)
+    const posted = (f as unknown as { posted: { reviews: Array<{ body?: string }> } }).posted
+
+    await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      fetchImpl: f,
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 7 })],
+    })
+
+    expect(posted.reviews).toHaveLength(1)
+    expect(posted.reviews[0]!.body).not.toContain('ci-vermelho-no-julgamento')
+  })
+})

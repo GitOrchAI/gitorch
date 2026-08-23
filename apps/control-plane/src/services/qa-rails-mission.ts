@@ -22,9 +22,10 @@ import {
   acharParecerNesteHead,
   ehAprovacao,
   ehParecerSemPoderDeMesclar,
-  ehReprovacaoCondicional,
+  foiJulgadoComCiVermelho,
   MARCA_SEM_PODER_DE_MESCLAR,
   MARCA_DE_REPROVACAO_CONDICIONAL,
+  MARCA_JULGADO_COM_CI_VERMELHO,
   MARCA_DE_APROVACAO,
   MARCA_DO_PARECER,
 } from './parecer-do-qa.js'
@@ -470,7 +471,7 @@ export async function runQaMissionViaRails(
     if (
       veredito.delegado &&
       aindaPodeTentarMesclar &&
-      ehReprovacaoCondicional(reviewMarcadaNesteHead) &&
+      foiJulgadoComCiVermelho(reviewMarcadaNesteHead) &&
       p.head?.sha
     ) {
       try {
@@ -769,8 +770,32 @@ export async function runQaMissionViaRails(
   // Diff grande demais continua sendo reprovação FINAL: o dev tem o que fazer
   // — dividir a entrega. Verificação vermelha não: ali o dev não tem o que
   // consertar, e é por isso que só ela merece a volta.
+  // A marca registra o ESTADO DA VERIFICAÇÃO, não quem decidiu.
+  //
+  // A versão anterior marcava só o REBAIXAMENTO — o caso em que o motor
+  // aprovava e a trava determinística derrubava o veredito. Ler a saída real
+  // mostrou que esse é o caminho MENOS comum: o comentário do julgamento no PR
+  // #3768 diz "Resolve the CI failures (...) The current CI status is reported
+  // as red", ou seja, o motor leu o vermelho e reprovou sozinho. E é o que
+  // acontece quase sempre, porque o próprio prompt manda "You MUST NOT approve
+  // when CI is not green" — ele obedece antes de a trava precisar agir.
+  //
+  // Marcando o estado, os dois caminhos ficam cobertos: não importa quem
+  // decidiu, importa que a verificação estava vermelha naquele instante.
+  //
+  // `truncado` fica de fora de propósito. Diff que não coube é determinístico
+  // para o mesmo commit, então reabrir por causa dele repetiria a mesma
+  // reprovação para sempre — e o teto de tentativas não seguraria, porque ele
+  // só avança quando o merge é de fato chamado. Diff grande continua sendo
+  // reprovação final: ali o dev tem o que fazer, que é dividir a entrega.
+  const julgadoComCiVermelho =
+    effectiveVerdict === 'request_changes' && ciState === 'red' && !truncado
   const rebaixadoSoPeloCi = verdict.verdict === 'approve' && ciState !== 'green' && !truncado
-  const marcaDoPortao = rebaixadoSoPeloCi ? `\n${MARCA_DE_REPROVACAO_CONDICIONAL}` : ''
+  const marcaDoPortao = julgadoComCiVermelho
+    ? `\n${MARCA_JULGADO_COM_CI_VERMELHO}`
+    : rebaixadoSoPeloCi
+      ? `\n${MARCA_DE_REPROVACAO_CONDICIONAL}`
+      : ''
 
   // 4) Executor determinístico posta o veredito. O GitHub PROÍBE
   // aprovar/pedir-mudanças no PRÓPRIO PR (422) — e o Jules abre o PR pela

@@ -78,6 +78,31 @@ export const AVISO_LEGADO_DE_NAO_MESCLAR = 'esta entrega não foi encomendada pe
  */
 export const MARCA_DE_REPROVACAO_CONDICIONAL = '<!-- gitorch:qa:reprovado-pelo-portao -->'
 
+/**
+ * Marca invisível que registra: esta review foi emitida com a verificação
+ * VERMELHA.
+ *
+ * Substitui e generaliza a marca acima, e a diferença veio de ler a saída real
+ * em vez do código. Eu tinha assumido que "reprovado por causa do CI" vinha
+ * sempre da trava determinística — o motor aprova, o CI não está verde, o
+ * sistema rebaixa. Marquei o rebaixamento.
+ *
+ * O comentário que o julgamento deixou no PR #3768 mostrou o contrário:
+ *
+ *     "Resolve the CI failures by identifying the root cause of the red
+ *      status (...) The current CI status is reported as red."
+ *
+ * O MOTOR leu o CI vermelho e reprovou sozinho. Não houve rebaixamento nenhum,
+ * e a marca do portão nunca seria escrita. E esse é o caminho que acontece na
+ * prática, porque o próprio prompt do julgamento manda "You MUST NOT approve
+ * when CI is not green" — o motor obedece antes de a trava precisar agir.
+ *
+ * Registrar o ESTADO em vez da ORIGEM cobre os dois caminhos: não importa quem
+ * decidiu, importa que a verificação estava vermelha naquele instante. Se ela
+ * ficar verde depois no mesmo commit, o motivo caiu.
+ */
+export const MARCA_JULGADO_COM_CI_VERMELHO = '<!-- gitorch:qa:ci-vermelho-no-julgamento -->'
+
 export interface ReviewDoGithub {
   body?: string
   commit_id?: string
@@ -136,6 +161,24 @@ export function ehParecerSemPoderDeMesclar(review: ReviewDoGithub | undefined): 
 export function ehReprovacaoCondicional(review: ReviewDoGithub | undefined): boolean {
   const corpo = review?.body ?? ''
   return corpo.includes(MARCA_DO_PARECER) && corpo.includes(MARCA_DE_REPROVACAO_CONDICIONAL)
+}
+
+/**
+ * Esta review foi emitida enquanto a verificação estava vermelha?
+ *
+ * Aceita também a marca antiga do portão: ela é um caso particular deste — o
+ * rebaixamento só acontecia quando o CI não estava verde. Reconhecer as duas
+ * evita deixar preso o que foi marcado nas horas entre um conserto e outro.
+ *
+ * Exige a marca do parecer: sem ela, um humano que colasse o texto num
+ * comentário faria o produto reabrir um julgamento que não é seu.
+ */
+export function foiJulgadoComCiVermelho(review: ReviewDoGithub | undefined): boolean {
+  const corpo = review?.body ?? ''
+  if (!corpo.includes(MARCA_DO_PARECER)) return false
+  return (
+    corpo.includes(MARCA_JULGADO_COM_CI_VERMELHO) || corpo.includes(MARCA_DE_REPROVACAO_CONDICIONAL)
+  )
 }
 
 /** O parecer encontrado é uma aprovação? */
