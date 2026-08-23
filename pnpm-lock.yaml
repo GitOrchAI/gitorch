@@ -67,9 +67,6 @@ importers:
       prom-client:
         specifier: ^15.1.3
         version: 15.1.3
-      supermemory:
-        specifier: ^4.25.4
-        version: 4.25.4
       tar:
         specifier: 7.5.21
         version: 7.5.21(patch_hash=62r345he4blwzfxy25gr4kl7zm)
@@ -3098,6 +3095,7 @@ packages:
   eslint@9.39.4:
     resolution: {integrity: sha512-XoMjdBOwe/esVgEvLmNsD3IRHkm7fbKIUGvrleloJXUZgDHig2IPWNniv+GwjyJXzuNqVjlr5+4yVUZjycJwfQ==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+    deprecated: This version is no longer supported. Please see https://eslint.org/version-support for other options.
     hasBin: true
     peerDependencies:
       jiti: '*'
@@ -4951,10 +4949,6 @@ packages:
         optional: true
       babel-plugin-macros:
         optional: true
-
-  supermemory@4.25.4:
-    resolution: {integrity: sha512-97ME3rlmu7OmsXJTb9OgXOD+3VUv4Wej0ZX9xezG+LKkMwrzi4xeeAZaOJFcr0oI/QQjcHG2WOzm+und1e7MFA==}
-    hasBin: true
 
   supports-color@7.2.0:
     resolution: {integrity: sha512-qpCAvRl9stuOHveKsn7HncJRvv501qIacKzQlO/+Lwxc9+0q2wLyv4Dfvt80/DPn2pqOBsJdDiogXGR9+OvwRw==}
@@ -10432,8 +10426,6 @@ snapshots:
       react: 19.2.8
     optionalDependencies:
       '@babel/core': 7.29.7
-
-  supermemory@4.25.4: {}
 
   supports-color@7.2.0:
     dependencies:
