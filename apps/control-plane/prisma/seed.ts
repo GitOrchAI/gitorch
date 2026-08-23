@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client'
 import { ensureDefaultSchedules } from '../src/lib/project-defaults.js'
+import { tetoDoAmbiente } from '../src/lib/teto-do-ambiente.js'
 
 // Seed idempotente: cria os planos base e, fora do modo --plans-only, garante
 // o usuário dono da instância e migra dados legados (projetos sem dono e
@@ -91,18 +92,33 @@ const DEFAULT_PLANS = [
 
 async function main(): Promise<void> {
   for (const plan of DEFAULT_PLANS) {
+    // O AMBIENTE pode sobrepor os tetos deste plano — e só ele.
+    //
+    // Este seed roda a CADA deploy, de propósito, e faz upsert dos quatro
+    // planos. Quando alguém sobe um teto à mão no banco para destravar algo, o
+    // próximo deploy apagava a mudança EM SILÊNCIO e a esteira voltava a
+    // travar sem ninguém entender por quê. Aconteceu em 23/08/2026, no meio da
+    // prova ponta a ponta.
+    //
+    // Os números aqui continuam sendo o PRODUTO — o que se vende ao cliente. A
+    // sobreposição é de ambiente: vale onde a variável existe, e em lugar
+    // nenhum além disso.
+    const limites = tetoDoAmbiente(plan.id, {
+      maxMissionsPerDay: plan.maxMissionsPerDay,
+      maxConcurrentMissions: plan.maxConcurrentMissions,
+    })
     await prisma.plan.upsert({
       where: { id: plan.id },
       update: {
         name: plan.name,
         maxProjects: plan.maxProjects,
-        maxMissionsPerDay: plan.maxMissionsPerDay,
+        maxMissionsPerDay: limites.maxMissionsPerDay,
         tierRank: plan.tierRank,
-        maxConcurrentMissions: plan.maxConcurrentMissions,
+        maxConcurrentMissions: limites.maxConcurrentMissions,
         seats: plan.seats,
         features: plan.features,
       },
-      create: plan,
+      create: { ...plan, ...limites },
     })
   }
 
