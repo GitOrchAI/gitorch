@@ -8,6 +8,7 @@ import {
 } from '@gitorch/cadence'
 import { runFormStep } from './rails-runner.js'
 import { GithubExecutionError } from './github-errors.js'
+import { lerSecaoDaIssue } from './secao-da-issue.js'
 import { aplicarLabelDoAgente } from './agent-label.js'
 import type { CardMover } from './board-status.js'
 import { ehPrDelegado } from './pr-delegado.js'
@@ -641,10 +642,13 @@ export async function runQaMissionViaRails(
     linkedIssueLabels = (issue.labels ?? [])
       .map((l) => l.name)
       .filter((name): name is string => Boolean(name))
-    const found = (issue.body ?? '').match(
-      /##\s*Verification Criteria\s*\n+([\s\S]*?)(?:\n##\s|$)/i
-    )
-    if (found?.[1]) criteria = found[1].trim()
+    // A MESMA leitura que a fila de delegação usa para "Related Files" — uma
+    // regra de parsing, um lugar só. Enquanto isto era uma expressão regular
+    // solta aqui dentro, precisar dela para outro cabeçalho produziria uma
+    // segunda cópia, e duas cópias divergem na primeira vez que o formato
+    // muda.
+    const achado = lerSecaoDaIssue(issue.body, 'Verification Criteria')
+    if (achado) criteria = achado
   }
   const { diff, arquivos, truncado } = await lerDiffDoPr({
     buscarPagina: async (pagina) =>
