@@ -158,8 +158,14 @@ describe('o teto de páginas depois da medição de 22/08', () => {
     // A produção bateu o teto antigo na PRIMEIRA varredura: "parou no teto de
     // 20 páginas; seguindo com as 2000 já lidas". Truncar deixa a
     // reconciliação cega para o que está além — ela não erra, só nunca fica
-    // sabendo. Arquivar não remove a sessão da listagem, então o número só
-    // cresce.
+    // sabendo.
+    //
+    // CORREÇÃO (23/08): a versão anterior deste comentário dizia que arquivar
+    // não remove a sessão da listagem. Está errado — ela encolhe exatamente
+    // pelo tanto arquivado (1982, 1972, 1962, dez por rodada). O que sustenta
+    // o teto maior é outra coisa: a leitura ficou PRESA em 2000 por várias
+    // rodadas antes de cair, e ficar presa no teto é a assinatura de que o
+    // total real era maior que ele.
     let pagina = 0
     const lista = await listarSessoesJules({
       apiKey: 'chave-de-teste',

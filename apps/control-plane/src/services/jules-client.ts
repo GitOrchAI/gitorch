@@ -208,10 +208,17 @@ export interface SessaoListada {
  * já lidas". Truncar aqui deixa a reconciliação cega para tudo o que está além
  * — ela não erra, ela simplesmente nunca fica sabendo.
  *
- * O arquivamento não remove a sessão da listagem (ela volta com
- * `archived: true` e é filtrada deste lado), então o número só cresce com o
- * tempo. Cem páginas cobrem dez mil sessões: cinco vezes o volume medido, com
- * folga para meses de uso.
+ * CORREÇÃO (23/08/2026): a versão anterior deste comentário afirmava que
+ * arquivar NÃO remove a sessão da listagem e que por isso o número só cresce.
+ * Está errado, e a medição em produção é direta — a listagem encolhe
+ * exatamente pelo tanto que se arquiva, dez por rodada: 1982, depois 1972,
+ * depois 1962. O fornecedor para de devolver a sessão arquivada.
+ *
+ * O número cem, porém, continua justificado, e por um motivo melhor: a leitura
+ * ficou PRESA em exatamente 2000 por várias rodadas seguidas antes de começar
+ * a cair. Ficar presa no teto é a assinatura de que o total real era MAIOR que
+ * ele — só não dava para saber quanto maior. Cem páginas cobrem dez mil
+ * sessões e tiram essa cegueira.
  *
  * O teto continua existindo — um cursor defeituoso não pode prender a vigília
  * num laço —, e o aviso ao batê-lo continua saindo, para que este mesmo número
