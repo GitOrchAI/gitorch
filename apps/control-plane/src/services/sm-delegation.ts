@@ -4,6 +4,7 @@ import { escolherParaDelegar, type IssueCandidata } from './fila-de-delegacao.js
 import type { LinhaDeSessao } from './dev-session-store.js'
 import { fetchComTeto } from './fetch-com-teto.js'
 import { acharParecerNesteHead, ehParecerSemPoderDeMesclar } from './parecer-do-qa.js'
+import { arquivosDeclarados } from './secao-da-issue.js'
 
 // Delegação contínua do SM (F3.6 item 2): a cada wake, encontra as TASKS prontas
 // (label `gitorch:task`, sem sessão viva na tabela `dev_sessions`, com todos os
@@ -286,8 +287,16 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
   // chamada em issue que já está em trabalho.
   const comSessaoViva = new Set((options.sessoesVivas ?? []).map((s) => s.issueNumber))
   const candidatas: IssueCandidata[] = []
+  // Os arquivos de quem JÁ está em trabalho. Quem tem sessão viva é filtrado
+  // das candidatas na linha seguinte, então sem esta coleta os arquivos dele
+  // sumiriam da reserva e uma tarefa nova poderia ser delegada para o mesmo
+  // arquivo — o conflito fabricado outra vez, agora entre dois ciclos.
+  const arquivosEmTrabalho = new Set<string>()
   for (const t of abertas) {
-    if (comSessaoViva.has(t.number)) continue
+    if (comSessaoViva.has(t.number)) {
+      for (const arquivo of arquivosDeclarados(t.body)) arquivosEmTrabalho.add(arquivo)
+      continue
+    }
     let abertosCount = 0
     for (const b of extractBlockers(t.body ?? '')) {
       const blocker = (await gh('GET', `/repos/${options.repository}/issues/${b}`)) as {
@@ -295,11 +304,19 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
       }
       if (blocker.state !== 'closed') abertosCount += 1
     }
-    candidatas.push({ number: t.number, bloqueadoresAbertos: abertosCount })
+    // Os arquivos vêm do MESMO corpo que já está em mãos (`t.body`, do
+    // `GET /issues` acima) — nenhuma chamada extra ao GitHub. É a seção
+    // "Related Files" que o PO preenche com caminhos reais do repositório.
+    candidatas.push({
+      number: t.number,
+      bloqueadoresAbertos: abertosCount,
+      arquivos: arquivosDeclarados(t.body),
+    })
   }
 
   const escolhidas = escolherParaDelegar({
     candidatas,
+    arquivosEmTrabalho: [...arquivosEmTrabalho],
     sessoesVivas: options.sessoesVivas ?? [],
     delegadasHoje: options.delegadasHoje ?? 0,
     tetoConcorrentes: options.tetoConcorrentes ?? 3,

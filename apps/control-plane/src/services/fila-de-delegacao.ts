@@ -19,11 +19,33 @@ export interface IssueCandidata {
   number: number
   /** Quantos "Blocked by" desta issue ainda estão abertos. */
   bloqueadoresAbertos: number
+  /**
+   * Os arquivos que a tarefa declarou que vai mexer (seção "Related Files" do
+   * corpo da issue, lida por `arquivosDeclarados`).
+   *
+   * OPCIONAL e, quando ausente ou vazia, significa "NÃO SEI" — nunca "nenhum
+   * arquivo". A distinção é a guarda central desta mudança: quem não declarou
+   * arquivo jamais pode ser barrado por colisão de arquivo, senão a fila para
+   * de andar por falta de informação, que é pior que o defeito original.
+   */
+  arquivos?: string[]
 }
 
 export function escolherParaDelegar(args: {
   /** Na ordem da sprint — a ordem recebida é a prioridade. */
   candidatas: IssueCandidata[]
+  /**
+   * Arquivos das tarefas que JÁ estão sendo trabalhadas agora.
+   *
+   * Sem isto, a proteção contra colisão só valeria dentro de UM ciclo, e o
+   * defeito voltaria espalhado em dois: a tarefa A é delegada hoje mexendo em
+   * `src/x.ts` e fica dias rodando; amanhã a tarefa B, que também declara
+   * `src/x.ts`, é delegada numa acordada em que A nem aparece entre as
+   * candidatas — porque quem tem sessão viva é filtrado antes de chegar aqui.
+   * As duas mexem no mesmo arquivo ao mesmo tempo e o conflito de merge é
+   * fabricado de novo, só que mais difícil de enxergar.
+   */
+  arquivosEmTrabalho?: string[]
   /** Linhas abertas deste projeto (`sessoesVivas`). */
   sessoesVivas: LinhaDeSessao[]
   /** Sessões abertas neste projeto nas últimas 24h. */
@@ -41,11 +63,31 @@ export function escolherParaDelegar(args: {
   if (limite <= 0) return []
 
   const escolhidas: number[] = []
+  // Arquivos já reservados por uma candidata escolhida NESTE ciclo.
+  //
+  // O produto chegou a delegar duas tarefas que tocavam o mesmo arquivo e
+  // fabricou o próprio conflito de merge — depois gastou ciclos tentando
+  // resolver um problema que ele mesmo criou. A dependência declarada
+  // ("Blocked by #N") não pega isso: as duas tarefas estavam prontas e
+  // desbloqueadas, e ninguém escreveu que uma dependia da outra.
+  //
+  // A reserva vale só para o ciclo. A candidata barrada não é descartada: no
+  // ciclo seguinte, com a primeira já tendo sessão viva, ela entra
+  // normalmente. Barrar para sempre seria trocar um defeito por outro.
+  // Começa já reservando o que está em trabalho — ver `arquivosEmTrabalho`.
+  const arquivosReservados = new Set<string>(args.arquivosEmTrabalho ?? [])
+
   for (const c of args.candidatas) {
     if (escolhidas.length >= limite) break
     if (c.bloqueadoresAbertos > 0) continue
     if (comSessaoViva.has(c.number)) continue
+
+    const declarados = c.arquivos ?? []
+    // Lista vazia = "não sei" = nunca barra. Ver o comentário do campo.
+    if (declarados.some((arquivo) => arquivosReservados.has(arquivo))) continue
+
     escolhidas.push(c.number)
+    for (const arquivo of declarados) arquivosReservados.add(arquivo)
   }
   return escolhidas
 }
