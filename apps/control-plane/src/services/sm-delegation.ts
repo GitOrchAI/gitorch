@@ -5,6 +5,7 @@ import type { LinhaDeSessao } from './dev-session-store.js'
 import { fetchComTeto } from './fetch-com-teto.js'
 import { acharParecerNesteHead, ehParecerSemPoderDeMesclar } from './parecer-do-qa.js'
 import { arquivosDeclarados } from './secao-da-issue.js'
+import { montarPedidoAoDev } from './pedido-ao-dev.js'
 
 // Delegação contínua do SM (F3.6 item 2): a cada wake, encontra as TASKS prontas
 // (label `gitorch:task`, sem sessão viva na tabela `dev_sessions`, com todos os
@@ -348,15 +349,17 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
       ? await options.criarSessaoDev({
           repository: options.repository,
           titulo: `#${task.number} ${task.title ?? ''}`.trim(),
-          prompt: [
-            `Work on issue #${task.number} of ${options.repository}.`,
-            '',
-            task.body ?? '',
-            '',
-            'Deliver a pull request that closes the issue and satisfies every item',
-            'under "Verification Criteria". Do not change anything outside the scope',
-            'described above.',
-          ].join('\n'),
+          // O texto do pedido mora em `pedido-ao-dev.ts`, testado sozinho.
+          // Ele era montado aqui à mão e não repetia os passos do guia, não
+          // pedia conferência antes de abrir a entrega, e não dizia o que
+          // fazer ao travar — foi assim que o #157 entregou três dos quatro
+          // passos e depois ficou 44 horas em silêncio.
+          prompt: montarPedidoAoDev({
+            numero: task.number,
+            repositorio: options.repository,
+            titulo: task.title ?? '',
+            corpo: task.body ?? '',
+          }),
         })
       : ({ situacao: 'desligado' } as const)
 
