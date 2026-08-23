@@ -112,6 +112,7 @@ import {
 } from '../services/jules-client.js'
 import { vigiarSessoes } from '../services/session-watch.js'
 import { varrerVagasVazadas } from '../services/reconciliar-vagas.js'
+import { medirRetrospectiva, escolherAMelhoria } from '../services/retrospectiva.js'
 import { runSmWatchdog, buildTelegramNotifier } from '../services/sm-watchdog.js'
 import { resolveNotifyChatId, type NotifiableProject } from '../services/telegram-link.js'
 import { runIncidentSensor } from '../services/incident-sensor.js'
@@ -3210,6 +3211,141 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     }
   }
 
+  // A RETROSPECTIVA — a única parte do método que olha para trás.
+  //
+  // O evento já estava escrito e nunca tinha sido ligado: o playbook
+  // `packages/cadence/playbooks/events/sprint-retro.md` existe completo, o
+  // tipo `CadenceEvent` já inclui 'sprint-retro', e o playbook nomeia as
+  // medidas certas. Mas `loadEventPlaybook('sprint-retro')` só era chamado num
+  // teste, e a agenda padrão de um projeto só tinha ra, po, sm e qa.
+  //
+  // O efeito é que o ciclo só olhava para frente. Uma entrega falhava, o QA
+  // reprovava, e nada daquilo mudava o ciclo seguinte — nem o pedido ao dev,
+  // nem o critério de aceitação, nem a cadência. Cada falha morria isolada, e
+  // os números pioravam sem ninguém olhar.
+  //
+  // POR QUE ROTINA DO RELÓGIO E NÃO UM QUINTO PAPEL: a retrospectiva não
+  // decide nada que precise de julgamento — ela CONTA. Transformá-la em agente
+  // traria motor, cota e a chance de alucinar um número; como rotina ela é
+  // determinística, reproduzível e não gasta vaga do teto do dia. A decisão de
+  // COMO consertar continua com quem já a toma; o que a cerimônia entrega é o
+  // número.
+  //
+  // POR PROJETO, e não da instância inteira: sprint é de um projeto, e o dono
+  // que precisa ouvir o resultado é o dono daquele projeto. É também o que as
+  // tabelas já modelam — missão e evento pertencem a um projeto.
+  //
+  // Semanal: uma cerimônia que reclama todo dia vira ruído que ninguém lê.
+  const CADENCIA_DA_RETROSPECTIVA_MS = 7 * 24 * 60 * 60 * 1000
+  const TETO_DE_LINHAS_DA_RETROSPECTIVA = 5000
+  const TIPO_DA_RETROSPECTIVA = 'ceremony-retro'
+
+  const rodarRetrospectiva = async (): Promise<void> => {
+    const agora = new Date()
+    const desde = new Date(agora.getTime() - CADENCIA_DA_RETROSPECTIVA_MS)
+
+    const projetos = await app.prisma.project.findMany({
+      where: { isActive: true },
+      select: { id: true, wingId: true, userId: true, user: { select: { email: true } } },
+    })
+
+    for (const projeto of projetos) {
+      // QUANDO FOI A ÚLTIMA? A resposta vem do BANCO, não da memória do
+      // processo.
+      //
+      // A primeira versão guardava a data numa variável inicializada no
+      // registro do plugin. Com cadência semanal e um serviço que reinicia
+      // várias vezes por dia — quatro vezes só hoje —, o relógio zerava antes
+      // de a semana passar e a cerimônia NUNCA rodaria: compilando, com teste
+      // verde, e sem executar uma vez sequer. Retroagir a inicialização, que
+      // foi o conserto na reconciliação de vagas, aqui trocaria "nunca" por
+      // "a cada reinício", igualmente inútil numa cerimônia semanal.
+      const ultima = await app.prisma.event.findFirst({
+        where: { projectId: projeto.id, type: TIPO_DA_RETROSPECTIVA },
+        orderBy: { createdAt: 'desc' },
+        select: { createdAt: true },
+      })
+      if (ultima && agora.getTime() - ultima.createdAt.getTime() < CADENCIA_DA_RETROSPECTIVA_MS) {
+        continue
+      }
+
+      const [sessoes, missoes] = await Promise.all([
+        app.prisma.devSession.findMany({
+          // A janela pega quem NASCEU ou quem FECHOU dentro dela.
+          //
+          // Filtrar só por nascimento deixava invisível para sempre a sessão
+          // que atravessa a virada da semana — e são justamente as demoradas,
+          // as que mais precisaram de empurrão, que atravessam. O retrato
+          // ficaria sistematicamente mais bonito que a realidade, excluindo os
+          // piores casos por acidente de calendário.
+          where: {
+            projectId: projeto.id,
+            OR: [{ createdAt: { gte: desde } }, { closedAt: { gte: desde } }],
+          },
+          select: { closedReason: true, nudges: true, createdAt: true, closedAt: true },
+          take: TETO_DE_LINHAS_DA_RETROSPECTIVA,
+        }),
+        app.prisma.mission.findMany({
+          where: { projectId: projeto.id, createdAt: { gte: desde } },
+          select: { type: true, result: true },
+          // Medido: 762 missões por semana neste banco. O teto é folga de seis
+          // vezes e existe para o dia em que a esteira acelerar — ler a semana
+          // inteira sem limite é o tipo de consulta que cresce em silêncio até
+          // derrubar o processo.
+          take: TETO_DE_LINHAS_DA_RETROSPECTIVA,
+        }),
+      ])
+
+      const retrato = medirRetrospectiva({
+        sessoes: sessoes as unknown as Parameters<typeof medirRetrospectiva>[0]['sessoes'],
+        missoes: missoes.map((m: { type: string; result: unknown }) => ({
+          type: m.type,
+          noOp: (m.result as { noOp?: boolean } | null)?.noOp === true,
+        })),
+        fim: agora,
+      })
+
+      const melhoria = escolherAMelhoria(retrato)
+
+      // A marca é gravada nos DOIS desfechos: uma semana sem dados também é
+      // uma semana em que a cerimônia aconteceu. Sem isso, um período vazio
+      // faria a retrospectiva tentar de novo a cada tique.
+      await app.prisma.event.create({
+        data: {
+          projectId: projeto.id,
+          type: TIPO_DA_RETROSPECTIVA,
+          payload: retrato as unknown as object,
+          ...(melhoria ? { metadata: melhoria as unknown as object } : {}),
+        },
+      })
+
+      if (retrato.semDados) {
+        app.log.info(
+          `[Scheduler] retrospectiva de ${projeto.wingId}: sem dados no período; nada a relatar`
+        )
+        continue
+      }
+
+      app.log.info(
+        `[Scheduler] retrospectiva de ${projeto.wingId}: ${retrato.entregasMescladas} entregues, ` +
+          `${retrato.entregasAbandonadas} abandonadas, ` +
+          `${retrato.sessoesQuePrecisaramDeEmpurrao} precisaram de empurrão` +
+          (melhoria ? ` — melhoria escolhida: ${melhoria.area}` : ' — nada a melhorar')
+      )
+
+      // Período saudável não vira recado. Inventar melhoria quando está tudo
+      // bem é o jeito mais rápido de a cerimônia virar ruído.
+      if (!melhoria) continue
+
+      await avisarDonoDoProjeto(
+        projeto,
+        `GitOrch — retrospectiva da semana em ${projeto.wingId}: ` +
+          `${retrato.entregasMescladas} entregas chegaram e ${retrato.entregasAbandonadas} foram ` +
+          `abandonadas. O que mais atrapalhou foi ${melhoria.area}. ${melhoria.porque}`
+      )
+    }
+  }
+
   const varrerSessoesDoDev = async (): Promise<void> => {
     let projetosComSessao: Array<{ projectId: string }>
     try {
@@ -4348,6 +4484,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // último cinto de segurança, igual às vizinhas.
     await reconciliarVagasDoDev().catch((err) =>
       app.log.error(err, '[Scheduler] reconciliação de vagas falhou; tenta na próxima hora')
+    )
+    // A cerimônia semanal. Nunca derruba o tique: uma retrospectiva que falha
+    // não pode calar o resto do relógio.
+    await rodarRetrospectiva().catch((err) =>
+      app.log.error(err, '[Scheduler] retrospectiva falhou; tenta na semana que vem')
     )
     // A fila que o acordar do SM levantou: entrega aberta sem parecer nosso no
     // commit de agora. Nunca rejeita — `triggerAgentMission` já trata os
