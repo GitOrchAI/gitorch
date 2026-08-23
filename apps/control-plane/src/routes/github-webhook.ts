@@ -12,6 +12,7 @@ import type { F6AgentRole } from '@gitorch/agents'
 import { casarPrComSessao } from '../services/casar-pr-com-sessao.js'
 import { mintInstallationToken } from '../services/github-app-token.js'
 import { nomeDeRepositorioValido } from '../services/nome-de-repositorio.js'
+import { enderecoPermitido } from '../services/endereco-seguro.js'
 import { registrarPr, sessoesVivas, type PrismaDevSession } from '../services/dev-session-store.js'
 
 declare module 'fastify' {
@@ -489,22 +490,41 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
             // `github-app-token.ts` já barra na porta dele. Commit é
             // hexadecimal: o que não for, não é commit.
             const repoValido = nomeDeRepositorioValido(project.wingId)
+            const [dono = '', repo = ''] = project.wingId.split('/')
             const headValido = typeof head === 'string' && /^[0-9a-f]{7,40}$/i.test(head)
             const token =
               repoValido && headValido
                 ? await mintInstallationToken({ repository: project.wingId }).catch(() => null)
                 : null
             if (head && token && repoValido && headValido) {
-              const terminou = await fetch(
-                `https://api.github.com/repos/${project.wingId}/commits/${head}/check-runs`,
-                {
-                  headers: {
-                    authorization: `token ${token}`,
-                    accept: 'application/vnd.github+json',
-                    'user-agent': 'gitorch',
-                  },
-                }
+              // A URL é MONTADA por `URL` com base fixa e segmentos escapados,
+              // e depois passa pela guarda de saída de rede do projeto.
+              //
+              // Interpolar direto numa template string é o que já custou um
+              // achado crítico de request-forgery aqui: o nome do repositório
+              // e o commit vêm do aviso, que é dado de fora, e a chamada leva
+              // credencial. Validar por expressão regular não basta — a guarda
+              // tem que ficar na PORTA DE SAÍDA, com o host comparado por
+              // igualdade exata, senão `api.github.com.alheio` passa.
+              const alvo = new URL(
+                `repos/${encodeURIComponent(dono)}/${encodeURIComponent(repo)}/commits/${encodeURIComponent(head)}/check-runs`,
+                'https://api.github.com/'
               )
+              const veredito = enderecoPermitido(alvo.toString())
+              if (!veredito.permitido) {
+                app.log.warn(
+                  { deliveryId, motivo: veredito.motivo },
+                  'Webhook: endereço recusado pela guarda de saída; não consulto a verificação'
+                )
+                return
+              }
+              const terminou = await fetch(alvo.toString(), {
+                headers: {
+                  authorization: `token ${token}`,
+                  accept: 'application/vnd.github+json',
+                  'user-agent': 'gitorch',
+                },
+              })
                 .then((r) => (r.ok ? r.json() : null))
                 .then((b) =>
                   verificacaoTerminou(
