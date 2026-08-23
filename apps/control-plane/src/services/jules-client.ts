@@ -200,8 +200,24 @@ export interface SessaoListada {
   criadaEm: string | null
 }
 
-/** Teto de páginas da listagem — ver o comentário em `listarSessoesJules`. */
-const MAX_PAGINAS_DA_LISTAGEM = 20
+/**
+ * Teto de páginas da listagem.
+ *
+ * Eram vinte, e a primeira varredura em produção (22/08/2026, 23:02) BATEU
+ * nele: "listagem de sessões parou no teto de 20 páginas; seguindo com as 2000
+ * já lidas". Truncar aqui deixa a reconciliação cega para tudo o que está além
+ * — ela não erra, ela simplesmente nunca fica sabendo.
+ *
+ * O arquivamento não remove a sessão da listagem (ela volta com
+ * `archived: true` e é filtrada deste lado), então o número só cresce com o
+ * tempo. Cem páginas cobrem dez mil sessões: cinco vezes o volume medido, com
+ * folga para meses de uso.
+ *
+ * O teto continua existindo — um cursor defeituoso não pode prender a vigília
+ * num laço —, e o aviso ao batê-lo continua saindo, para que este mesmo número
+ * volte a ser revisto com medição, e não com palpite.
+ */
+const MAX_PAGINAS_DA_LISTAGEM = 100
 
 /**
  * Lista as sessões que existem no fornecedor, paginando até o fim.

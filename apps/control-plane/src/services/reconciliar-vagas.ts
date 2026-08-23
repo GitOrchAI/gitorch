@@ -79,8 +79,34 @@ export function vagasOrfas(args: ArgumentosDaReconciliacao): string[] {
   return orfas
 }
 
-/** Teto de arquivamentos por varredura — ver `varrerVagasVazadas`. */
-export const TETO_PADRAO_POR_VARREDURA = 10
+/**
+ * Teto de arquivamentos por varredura.
+ *
+ * Era dez, calibrado para o cenário que o plano descrevia: cinco vagas presas.
+ * A primeira varredura em produção (22/08/2026, 23:02) mediu o número real e
+ * ele é de outra ordem de grandeza — "2000 ativas no fornecedor, 1978 sem dono
+ * aqui" —, com o aviso de que a listagem tinha parado no teto de páginas, ou
+ * seja, há MAIS de duas mil e não se sabe quantas.
+ *
+ * A dez por hora, drenar só as primeiras duas mil levaria mais de oito dias,
+ * enquanto o acúmulo continua crescendo. Duzentos, com a cadência acelerada
+ * enquanto houver fila (ver `atingiuOTeto`), esvazia o mesmo acúmulo em menos
+ * de uma hora.
+ *
+ * Continua sendo VÁLVULA, e é por isso que não virou "sem limite": um erro de
+ * lógica aqui ainda não pode arquivar milhares numa tacada sem ninguém ver.
+ * O que mudou foi a calibragem, sustentada por número medido — nenhuma das
+ * três guardas de segurança foi tocada.
+ *
+ * CUSTO CONHECIDO, dito e não escondido: duzentos arquivamentos são duzentas
+ * chamadas SEQUENCIAIS, e a listagem paginada soma até mais cem. Tudo isso
+ * roda dentro de um tique do relógio, e o tique não se sobrepõe — então uma
+ * rodada demorada atrasa as outras tarefas do mesmo tique enquanto dura. É
+ * aceitável para esvaziar um acúmulo em poucas rodadas, e vira dívida se o
+ * teto subir de novo: antes disso, medir quanto tempo uma rodada de duzentos
+ * leva de verdade e paralelizar com limite de concorrência.
+ */
+export const TETO_PADRAO_POR_VARREDURA = 200
 
 export interface DepsDaVarredura {
   /** Lista o que o fornecedor diz estar ativo. `null` = não consegui perguntar. */
@@ -102,6 +128,20 @@ export interface RelatorioDaVarredura {
   arquivadas: number
   /** `true` quando não deu para perguntar ao fornecedor ou ao banco. */
   naoConsultado: boolean
+  /**
+   * `true` quando havia MAIS órfãs do que o teto permitiu arquivar nesta
+   * rodada — ou seja, sobrou fila.
+   *
+   * Existe para quem chama poder acelerar a próxima varredura em vez de
+   * esperar a hora cheia. Sem este sinal, "acabou" e "parou no meio" chegam
+   * iguais do outro lado, e as milhares de vagas restantes esperam uma hora
+   * cada duzentas.
+   *
+   * NUNCA é `true` numa varredura abortada: abortar é o oposto de "tem mais
+   * fila" — não sabemos nada. Acelerar ali seria martelar um fornecedor ou um
+   * banco que já não está respondendo.
+   */
+  atingiuOTeto: boolean
 }
 
 /**
@@ -132,6 +172,7 @@ export async function varrerVagasVazadas(deps: DepsDaVarredura): Promise<Relator
     orfas: 0,
     arquivadas: 0,
     naoConsultado: true,
+    atingiuOTeto: false,
   }
 
   let ativas: SessaoDoFornecedor[] | null
@@ -162,7 +203,13 @@ export async function varrerVagasVazadas(deps: DepsDaVarredura): Promise<Relator
         `nenhuma. Isso pode ser vazamento total ou banco errado, e daqui não dá para saber — ` +
         `varredura interrompida sem arquivar nada.`
     )
-    return { examinadas: ativas.length, orfas: 0, arquivadas: 0, naoConsultado: true }
+    return {
+      examinadas: ativas.length,
+      orfas: 0,
+      arquivadas: 0,
+      naoConsultado: true,
+      atingiuOTeto: false,
+    }
   }
 
   const orfas = vagasOrfas({
@@ -172,8 +219,9 @@ export async function varrerVagasVazadas(deps: DepsDaVarredura): Promise<Relator
     idadeMinimaMs: deps.idadeMinimaMs,
   })
 
+  const teto = deps.teto ?? TETO_PADRAO_POR_VARREDURA
   let arquivadas = 0
-  for (const nome of orfas.slice(0, deps.teto ?? TETO_PADRAO_POR_VARREDURA)) {
+  for (const nome of orfas.slice(0, teto)) {
     try {
       if (await deps.arquivarNoFornecedor(nome)) {
         arquivadas += 1
@@ -187,5 +235,11 @@ export async function varrerVagasVazadas(deps: DepsDaVarredura): Promise<Relator
     }
   }
 
-  return { examinadas: ativas.length, orfas: orfas.length, arquivadas, naoConsultado: false }
+  return {
+    examinadas: ativas.length,
+    orfas: orfas.length,
+    arquivadas,
+    naoConsultado: false,
+    atingiuOTeto: orfas.length > teto,
+  }
 }
