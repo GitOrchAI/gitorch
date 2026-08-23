@@ -2423,3 +2423,206 @@ describe('rejulgar não pode virar licença para mesclar PR de humano', () => {
     expect(posted.reviews).toHaveLength(0)
   })
 })
+
+// ── A reprovação que veio do PORTÃO, não do código (23/08/2026) ────────────
+//
+// O produto tem uma trava determinística: motor diz "aprovar", verificação não
+// está verde, veredito é rebaixado para "pedir mudanças". A trava está certa —
+// aprovar com CI vermelho seria mesclar no escuro.
+//
+// O que faltava era a VOLTA. Essa reprovação não diz nada sobre a qualidade da
+// entrega: diz que, naquele instante, o portão estava fechado. Quando a
+// verificação fica verde depois no MESMO commit — reexecução, teste instável
+// que passou na segunda, conserto de infraestrutura —, o motivo deixou de
+// existir e ninguém voltava atrás.
+//
+// ISSO TRAVOU UM PROJETO INTEIRO. Medido no banco: loureng/patinhas-3d-crafts
+// com ZERO entregas mescladas em treze sessões, contra sete de dezoito no
+// gitorch, com as missões rodando igual nos dois. O PR #3768 estava CLEAN, com
+// a verificação inteira verde, e a única review nossa no head atual era um
+// "pedir mudanças" emitido quando o CI ainda estava vermelho.
+describe('reprovação pelo PORTÃO volta a ser julgada quando o CI fica verde', () => {
+  const reprovadoPeloPortao =
+    '<!-- gitorch:qa -->\n<!-- gitorch:qa:reprovado-pelo-portao -->\n' +
+    'GitOrch QA verdict: REQUEST CHANGES (see comment).'
+
+  const reprovadoPeloCodigo =
+    '<!-- gitorch:qa -->\nGitOrch QA verdict: REQUEST CHANGES (see comment).'
+
+  it('CI VERDE agora: a entrega volta a ser julgada e é mesclada', async () => {
+    const f = fakeFetch(
+      [
+        {
+          number: 7,
+          user: 'jules[bot]',
+          existingReviews: [{ body: reprovadoPeloPortao, commit_id: 'abc123' }],
+        },
+      ],
+      ['jules', 'gitorch:task'],
+      50
+    )
+    const posted = (f as unknown as { posted: { merges: unknown[]; reviews: unknown[] } }).posted
+
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 7 })],
+    })
+
+    expect(r.noOp).toBeFalsy()
+    expect(posted.reviews).toHaveLength(1)
+    expect(posted.merges).toHaveLength(1)
+  })
+
+  it('CI ainda VERMELHO: NÃO rejulga — senão vira opinião repetida a cada ciclo', async () => {
+    // A guarda que impede o laço. Sem ela, o rejulgamento produziria a mesma
+    // reprovação e postaria outra review no pull request do cliente, sem fim.
+    const f = fakeFetch(
+      [
+        {
+          number: 7,
+          user: 'jules[bot]',
+          existingReviews: [{ body: reprovadoPeloPortao, commit_id: 'abc123' }],
+        },
+      ],
+      ['jules', 'gitorch:task'],
+      50,
+      { checkRuns: [{ status: 'completed', conclusion: 'failure' }] }
+    )
+    const posted = (f as unknown as { posted: { reviews: unknown[]; merges: unknown[] } }).posted
+
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 7 })],
+    })
+
+    expect(r.noOp).toBe(true)
+    expect(posted.reviews).toHaveLength(0)
+    expect(posted.merges).toHaveLength(0)
+  })
+
+  it('reprovação de CÓDIGO continua sendo final — o dev é que tem de agir', async () => {
+    // A metade mais importante da guarda: só a reprovação do PORTÃO volta.
+    // Reabrir reprovação de código seria opinar de novo sobre um diff que não
+    // mudou.
+    const f = fakeFetch(
+      [
+        {
+          number: 9,
+          user: 'jules[bot]',
+          existingReviews: [{ body: reprovadoPeloCodigo, commit_id: 'abc123' }],
+        },
+      ],
+      ['jules', 'gitorch:task'],
+      50
+    )
+    const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
+
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 9 })],
+    })
+
+    expect(r.noOp).toBe(true)
+    expect(posted.reviews).toHaveLength(0)
+  })
+
+  it('o teto de tentativas de merge continua valendo', async () => {
+    const f = fakeFetch(
+      [
+        {
+          number: 7,
+          user: 'jules[bot]',
+          existingReviews: [{ body: reprovadoPeloPortao, commit_id: 'abc123' }],
+        },
+      ],
+      ['jules', 'gitorch:task'],
+      50
+    )
+    const posted = (f as unknown as { posted: { merges: unknown[] } }).posted
+
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+      sessoes: [
+        linha({ issueNumber: 50, pullRequestNumber: 7, mergeFailures: MAX_TENTATIVAS_DE_MERGE }),
+      ],
+    })
+
+    expect(r.noOp).toBe(true)
+    expect(posted.merges).toHaveLength(0)
+  })
+})
+
+// ── O achado ALTO da lente: diff truncado NÃO pode reabrir ────────────────
+//
+// O rebaixamento tem duas causas: verificação não-verde e diff que não coube.
+// Marcar as duas igual criaria um laço sem fim, porque `truncado` é
+// determinístico para o mesmo commit — mesmos arquivos, mesmo resultado,
+// sempre. O ciclo seria: rejulga porque o CI ficou verde → o motor aprova →
+// truncado continua verdadeiro → rebaixa de novo → posta outra review →
+// rejulga de novo, para sempre.
+//
+// E o teto de tentativas NÃO fecharia esse laço: `mergeFailures` só avança
+// quando o GitHub é chamado para mesclar, e isso nunca acontece enquanto o
+// veredito é rebaixado. Seria opinião repetida no pull request do cliente, a
+// cada tique, sem nada para segurar.
+describe('diff grande demais continua sendo reprovação FINAL', () => {
+  it('rebaixamento por diff truncado NÃO ganha a marca do portão', async () => {
+    // Sem isto, o próximo ciclo reabriria e o laço começaria.
+    const f = fakeFetch([{ number: 7, user: 'jules[bot]' }], ['jules', 'gitorch:task'], 50, {
+      patchArquivoUnico: 'x'.repeat(200_000),
+    })
+    const posted = (f as unknown as { posted: { reviews: Array<{ body?: string }> } }).posted
+
+    await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 7 })],
+    })
+
+    expect(posted.reviews).toHaveLength(1)
+    expect(posted.reviews[0]!.body).not.toContain('reprovado-pelo-portao')
+  })
+
+  it('e por isso o ciclo seguinte NÃO reabre a entrega', async () => {
+    // A prova do laço que não acontece: uma reprovação sem a marca é final,
+    // mesmo com o CI verde.
+    const semMarca = '<!-- gitorch:qa -->\nGitOrch QA verdict: REQUEST CHANGES (see comment).'
+    const f = fakeFetch(
+      [
+        {
+          number: 7,
+          user: 'jules[bot]',
+          existingReviews: [{ body: semMarca, commit_id: 'abc123' }],
+        },
+      ],
+      ['jules', 'gitorch:task'],
+      50
+    )
+    const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
+
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 7 })],
+    })
+
+    expect(r.noOp).toBe(true)
+    expect(posted.reviews).toHaveLength(0)
+  })
+})

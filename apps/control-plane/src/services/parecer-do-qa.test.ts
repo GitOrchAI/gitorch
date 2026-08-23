@@ -4,6 +4,8 @@ import {
   ehAprovacao,
   MARCA_DO_PARECER,
   MARCA_DE_APROVACAO,
+  ehReprovacaoCondicional,
+  MARCA_DE_REPROVACAO_CONDICIONAL,
 } from './parecer-do-qa.js'
 
 const marcada = (extra = '', commit = 'sha1') => ({
@@ -40,5 +42,27 @@ describe('acharParecerNesteHead', () => {
 
   it('reconhece aprovação', () => {
     expect(ehAprovacao(marcada(MARCA_DE_APROVACAO))).toBe(true)
+  })
+})
+
+describe('ehReprovacaoCondicional', () => {
+  it('reconhece a reprovação que veio do portão', () => {
+    const corpo = `${MARCA_DO_PARECER}\n${MARCA_DE_REPROVACAO_CONDICIONAL}\nREQUEST CHANGES`
+    expect(ehReprovacaoCondicional({ body: corpo })).toBe(true)
+  })
+
+  it('reprovação de CÓDIGO não é confundida com ela', () => {
+    expect(ehReprovacaoCondicional({ body: `${MARCA_DO_PARECER}\nREQUEST CHANGES` })).toBe(false)
+  })
+
+  it('comentário de humano com a marca colada NÃO conta sem a nossa assinatura', () => {
+    // Sem esta guarda, alguém colando o texto reabriria um julgamento que não
+    // é nosso — mesma proteção que as funções irmãs deste arquivo já têm.
+    expect(ehReprovacaoCondicional({ body: MARCA_DE_REPROVACAO_CONDICIONAL })).toBe(false)
+  })
+
+  it('review ausente ou sem corpo não é reprovação de nada', () => {
+    expect(ehReprovacaoCondicional(undefined)).toBe(false)
+    expect(ehReprovacaoCondicional({})).toBe(false)
   })
 })
