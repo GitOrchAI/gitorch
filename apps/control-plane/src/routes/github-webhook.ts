@@ -10,6 +10,7 @@ import {
 
 import type { F6AgentRole } from '@gitorch/agents'
 import { casarPrComSessao } from '../services/casar-pr-com-sessao.js'
+import { decidirSobreEntrega } from './entrega-repetida.js'
 import { mintInstallationToken } from '../services/github-app-token.js'
 import { nomeDeRepositorioValido } from '../services/nome-de-repositorio.js'
 import { enderecoPermitido } from '../services/endereco-seguro.js'
@@ -396,16 +397,58 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
           }
         }
 
-        // Persist webhook delivery for idempotency/retry tracking
-        await app.prisma.webhookDelivery.create({
-          data: {
-            projectId: project.id,
-            githubDeliveryId: deliveryId || crypto.randomUUID(),
-            eventType: event || 'unknown',
-            payload: parsedPayload,
-            processed: false,
-          },
+        // Registro da entrega, para idempotência e rastreio de reenvio.
+        //
+        // Isto usava `create`, que LANÇA em duplicata — e o comentário original
+        // já dizia "for idempotency". O mecanismo escrito para tolerar reenvio
+        // era exatamente o que derrubava a rota, com HTTP 500. E o GitHub
+        // reenvia toda entrega que devolve 500, então o erro se realimentava.
+        //
+        // Flagrado ao vivo em 23/08/2026, um segundo depois de um desejo do
+        // dono virar issue: rajada de POSTs repetidos, todos morrendo aqui,
+        // ZERO missões criadas, e o analista nunca acordou. Do ponto de vista
+        // de quem tinha acabado de pedir, o pedido simplesmente evaporou.
+        const idDaEntrega = deliveryId || crypto.randomUUID()
+        const jaRegistrada = await app.prisma.webhookDelivery.findUnique({
+          where: { githubDeliveryId: idDaEntrega },
+          select: { processed: true },
         })
+        const decisao = decidirSobreEntrega(jaRegistrada)
+
+        if (decisao.acao === 'ignorar') {
+          app.log.info(
+            { deliveryId: idDaEntrega, event, motivo: decisao.motivo },
+            'Webhook: entrega repetida ignorada'
+          )
+          return reply.code(200).send({ ok: true, repetida: true })
+        }
+
+        if (decisao.acao === 'retomar') {
+          // NÃO ignorar aqui é o ponto. A linha é gravada ANTES de o papel ser
+          // acordado; se a tentativa anterior morreu nesse intervalo, ignorar
+          // o reenvio perderia a missão para sempre e em silêncio.
+          app.log.warn(
+            { deliveryId: idDaEntrega, event, motivo: decisao.motivo },
+            'Webhook: retomando entrega que ficou pela metade'
+          )
+        } else {
+          // `createMany` com `skipDuplicates` porque duas entregas iguais podem
+          // estar em voo ao mesmo tempo: entre a consulta acima e esta escrita
+          // cabe a outra. Sem isso a corrida traria de volta o mesmo 500 que
+          // este conserto existe para matar.
+          await app.prisma.webhookDelivery.createMany({
+            data: [
+              {
+                projectId: project.id,
+                githubDeliveryId: idDaEntrega,
+                eventType: event || 'unknown',
+                payload: parsedPayload,
+                processed: false,
+              },
+            ],
+            skipDuplicates: true,
+          })
+        }
 
         // Process webhook via @gitorch/github-sync
         try {
