@@ -54,6 +54,30 @@ export const MARCA_SEM_PODER_DE_MESCLAR = '<!-- gitorch:qa:sem-poder-de-mesclar 
  */
 export const AVISO_LEGADO_DE_NAO_MESCLAR = 'esta entrega não foi encomendada pelo produto'
 
+/**
+ * Marca invisível de uma reprovação que NÃO é sobre o código.
+ *
+ * O produto tem uma trava determinística: quando o motor diz "aprovar" mas a
+ * verificação não está verde (ou o diff não coube por inteiro), o veredito é
+ * REBAIXADO para "pedir mudanças". A trava está certa e não muda — aprovar com
+ * verificação vermelha seria mesclar no escuro.
+ *
+ * O que faltava era a VOLTA. Uma reprovação dessas não diz nada sobre a
+ * qualidade da entrega: diz que, naquele instante, o portão estava fechado. Se
+ * a verificação fica verde depois no MESMO commit — reexecução do CI, teste
+ * instável que passou na segunda, conserto de infraestrutura no repositório —,
+ * o motivo da reprovação deixou de existir e ninguém voltava atrás. O laço de
+ * descoberta tratava a reprovação como julgamento final e pulava para sempre.
+ *
+ * Foi isso que travou um projeto inteiro: medido em 23/08/2026, o repositório
+ * loureng/patinhas-3d-crafts tinha ZERO entregas mescladas em treze sessões,
+ * com pull requests de verificação verde parados esperando um veredito que
+ * nunca vinha. O PR #3768 estava CLEAN, com o CI inteiro verde, e a única
+ * review nossa no head atual era um "pedir mudanças" emitido quando o CI ainda
+ * estava vermelho.
+ */
+export const MARCA_DE_REPROVACAO_CONDICIONAL = '<!-- gitorch:qa:reprovado-pelo-portao -->'
+
 export interface ReviewDoGithub {
   body?: string
   commit_id?: string
@@ -101,6 +125,17 @@ export function ehParecerSemPoderDeMesclar(review: ReviewDoGithub | undefined): 
   const corpo = review?.body ?? ''
   if (!corpo.includes(MARCA_DO_PARECER)) return false
   return corpo.includes(MARCA_SEM_PODER_DE_MESCLAR) || corpo.includes(AVISO_LEGADO_DE_NAO_MESCLAR)
+}
+
+/**
+ * Esta reprovação foi por causa do PORTÃO, e não do código?
+ *
+ * Exige a marca do parecer: sem ela, um humano que colasse o texto num
+ * comentário faria o produto reabrir um julgamento que não é seu.
+ */
+export function ehReprovacaoCondicional(review: ReviewDoGithub | undefined): boolean {
+  const corpo = review?.body ?? ''
+  return corpo.includes(MARCA_DO_PARECER) && corpo.includes(MARCA_DE_REPROVACAO_CONDICIONAL)
 }
 
 /** O parecer encontrado é uma aprovação? */

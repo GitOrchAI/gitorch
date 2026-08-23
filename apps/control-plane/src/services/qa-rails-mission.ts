@@ -22,7 +22,9 @@ import {
   acharParecerNesteHead,
   ehAprovacao,
   ehParecerSemPoderDeMesclar,
+  ehReprovacaoCondicional,
   MARCA_SEM_PODER_DE_MESCLAR,
+  MARCA_DE_REPROVACAO_CONDICIONAL,
   MARCA_DE_APROVACAO,
   MARCA_DO_PARECER,
 } from './parecer-do-qa.js'
@@ -445,15 +447,68 @@ export async function runQaMissionViaRails(
       ligacaoApontaParaEstePr &&
       ehParecerSemPoderDeMesclar(reviewMarcadaNesteHead)
 
+    // A TERCEIRA exceção: a reprovação que veio do PORTÃO, não do código.
+    //
+    // Quando o motor aprova mas a verificação não está verde, a trava
+    // determinística rebaixa o veredito para "pedir mudanças". A trava está
+    // certa. O que faltava era a VOLTA: se a verificação fica verde depois no
+    // MESMO commit — reexecução, teste instável que passou na segunda,
+    // conserto de infraestrutura —, o motivo da reprovação deixou de existir e
+    // ninguém voltava atrás.
+    //
+    // Isso travou um projeto inteiro. Medido em 23/08/2026: zero entregas
+    // mescladas em treze sessões no loureng/patinhas-3d-crafts, com pull
+    // requests de CI verde parados. O #3768 estava CLEAN, verificação inteira
+    // verde, e a única review nossa no head era um "pedir mudanças" emitido
+    // quando o CI ainda estava vermelho.
+    //
+    // A CONDIÇÃO É O CI ESTAR VERDE AGORA, e é ela que impede o laço: com a
+    // verificação ainda vermelha, o rejulgamento produziria a mesma reprovação
+    // e postaria outra review no pull request do cliente, a cada ciclo. Custa
+    // uma chamada por entrega nesta situação — poucas, e só enquanto durar.
+    let reprovadoPeloPortaoComCiVerdeAgora = false
+    if (
+      veredito.delegado &&
+      aindaPodeTentarMesclar &&
+      ehReprovacaoCondicional(reviewMarcadaNesteHead) &&
+      p.head?.sha
+    ) {
+      try {
+        const checks = (await gh(
+          'GET',
+          `/repos/${options.repository}/commits/${p.head.sha}/check-runs`
+        )) as { check_runs?: Array<{ conclusion?: string; status?: string }> }
+        const runs = checks.check_runs ?? []
+        reprovadoPeloPortaoComCiVerdeAgora =
+          runs.length > 0 &&
+          runs.every((r) => r.status === 'completed') &&
+          runs.every((r) => r.conclusion === 'success' || r.conclusion === 'neutral')
+      } catch {
+        // Não deu para saber o estado da verificação. Na dúvida, NÃO
+        // rejulgar: reabrir um veredito sem saber se o motivo caiu seria
+        // opinar duas vezes no pull request do cliente sem base.
+        reprovadoPeloPortaoComCiVerdeAgora = false
+      }
+    }
+
     const deveRejulgar =
-      veredito.delegado && aindaPodeTentarMesclar && (foiAprovacao || parecerSobPremissaErrada)
+      veredito.delegado &&
+      aindaPodeTentarMesclar &&
+      (foiAprovacao || parecerSobPremissaErrada || reprovadoPeloPortaoComCiVerdeAgora)
 
     if (reviewMarcadaNesteHead && !deveRejulgar) continue
 
     target = p
     issueDaEntrega = veredito.issueNumber
     delegado = veredito.delegado
-    retomandoAprovacaoMesmoCommit = Boolean(reviewMarcadaNesteHead && foiAprovacao)
+    // Inclui a entrada pela reprovação do portão. Hoje `mergeFailures` está
+    // garantidamente em zero quando esse caminho dispara — a marca do portão
+    // só existe quando nenhum merge chegou a ser tentado naquele head —, então
+    // é um no-op. Mas a invariante é frágil: bastaria mudar quando o merge é
+    // tentado para isto virar subcontagem real de fracassos.
+    retomandoAprovacaoMesmoCommit = Boolean(
+      reviewMarcadaNesteHead && (foiAprovacao || reprovadoPeloPortaoComCiVerdeAgora)
+    )
     break
   }
   if (!target) {
@@ -683,10 +738,39 @@ export async function runQaMissionViaRails(
   // `no checks` SAIU da lista de estados aceitáveis: ausência de verificação
   // não é aprovação. Ela vira lacuna registrada na memória do projeto (ver
   // adiante neste arquivo), para o RA fundamentar e o PO transformar em tarefa.
-  const effectiveVerdict =
-    verdict.verdict === 'approve' && (ciState !== 'green' || truncado)
-      ? 'request_changes'
-      : verdict.verdict
+  const rebaixadoPeloPortao = verdict.verdict === 'approve' && (ciState !== 'green' || truncado)
+  const effectiveVerdict = rebaixadoPeloPortao ? 'request_changes' : verdict.verdict
+
+  // A reprovação que veio do PORTÃO carrega marca própria.
+  //
+  // Ela não diz nada sobre a qualidade da entrega: diz que, naquele instante,
+  // a verificação não estava verde ou o diff não coube. Sem distinguir isso de
+  // uma reprovação de código, o laço de descoberta trata as duas como
+  // julgamento final e pula para sempre — e a entrega fica presa mesmo depois
+  // de a verificação ficar verde no MESMO commit.
+  //
+  // Foi o que travou um projeto inteiro: zero entregas mescladas em treze
+  // sessões, com pull requests de CI verde esperando um veredito que nunca
+  // vinha.
+  // A marca só sai quando a causa do rebaixamento foi EXCLUSIVAMENTE o CI.
+  //
+  // O rebaixamento tem duas causas — verificação não-verde e diff que não
+  // coube. Marcar as duas igual criaria um laço sem fim, e a revisão pegou:
+  // `truncado` é determinístico para o mesmo commit (mesmos arquivos, mesmo
+  // resultado, sempre). Então o ciclo seria: rejulga porque o CI ficou verde →
+  // o motor aprova → `truncado` continua verdadeiro → rebaixa de novo → posta
+  // outra review → rejulga de novo, para sempre.
+  //
+  // E o teto de tentativas NÃO fecharia esse laço: `mergeFailures` só avança
+  // quando o GitHub é de fato chamado para mesclar, o que nunca acontece
+  // enquanto o veredito é rebaixado. Seria opinião repetida no pull request do
+  // cliente, a cada tique, sem nada para segurar.
+  //
+  // Diff grande demais continua sendo reprovação FINAL: o dev tem o que fazer
+  // — dividir a entrega. Verificação vermelha não: ali o dev não tem o que
+  // consertar, e é por isso que só ela merece a volta.
+  const rebaixadoSoPeloCi = verdict.verdict === 'approve' && ciState !== 'green' && !truncado
+  const marcaDoPortao = rebaixadoSoPeloCi ? `\n${MARCA_DE_REPROVACAO_CONDICIONAL}` : ''
 
   // 4) Executor determinístico posta o veredito. O GitHub PROÍBE
   // aprovar/pedir-mudanças no PRÓPRIO PR (422) — e o Jules abre o PR pela
@@ -896,7 +980,7 @@ export async function runQaMissionViaRails(
   } else {
     await postarReview(
       reviewEvent,
-      `${JULES_MARKER}\nGitOrch QA verdict: REQUEST CHANGES (see comment).${avisoDeNaoMesclar}`
+      `${JULES_MARKER}${marcaDoPortao}\nGitOrch QA verdict: REQUEST CHANGES (see comment).${avisoDeNaoMesclar}`
     )
 
     // O comentário de rework menciona @jules e pede retrabalho NA MESMA PR —
