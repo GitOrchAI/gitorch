@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { vagasOrfas, varrerVagasVazadas, IDADE_MINIMA_PADRAO_MS } from './reconciliar-vagas.js'
+import {
+  vagasOrfas,
+  varrerVagasVazadas,
+  IDADE_MINIMA_PADRAO_MS,
+  TETO_PADRAO_POR_VARREDURA,
+} from './reconciliar-vagas.js'
 
 // POR QUE ESTE ARQUIVO EXISTE — a segunda metade do vazamento de vagas.
 //
@@ -306,5 +311,104 @@ describe('a guarda do banco vazio (achado das lentes)', () => {
       agora: AGORA,
     })
     expect(arquivadas).toEqual(['sessions/orfa'])
+  })
+})
+
+// ── A calibragem medida ao vivo (22/08/2026 23:02) ─────────────────────────
+//
+// A primeira varredura em produção devolveu o número real, e ele não era o do
+// plano: "2000 ativas no fornecedor, 1978 sem dono aqui, 10 devolvidas" — mais
+// o aviso de que a listagem parou no teto de 20 páginas, ou seja, há MAIS de
+// duas mil lá fora e não sabemos quantas.
+//
+// O plano falava em CINCO vagas presas. Os tetos foram calibrados para esse
+// cenário, e com 1978 o de dez por varredura leva mais de oito dias só para as
+// primeiras duas mil, enquanto o acúmulo cresce.
+//
+// A varredura em si está provada: 22 sessões vivas antes e depois, a do PR
+// #157 intacta, zero erros. Então o que muda aqui é o NÚMERO, nunca a guarda.
+describe('a varredura avisa quando ainda há fila', () => {
+  it('bateu o teto: diz que sobrou trabalho para a próxima', async () => {
+    // Sem este sinal, quem chama não tem como saber a diferença entre "acabou"
+    // e "parou no meio" — e trataria as duas do mesmo jeito, esperando a hora
+    // cheia enquanto milhares de vagas seguem presas.
+    const muitas = Array.from({ length: 50 }, (_, i) => sessao(`sessions/${i}`, 120))
+    const r = await varrerVagasVazadas({
+      listarNoFornecedor: async () => [...muitas, sessao('sessions/com-dono', 120)],
+      vivasNoBanco: async () => ['sessions/com-dono'],
+      arquivarNoFornecedor: async () => true,
+      agora: AGORA,
+      teto: 5,
+    })
+    expect(r).toMatchObject({ orfas: 50, arquivadas: 5, atingiuOTeto: true })
+  })
+
+  it('coube tudo: diz que a fila acabou', async () => {
+    const r = await varrerVagasVazadas({
+      listarNoFornecedor: async () => [sessao('sessions/orfa', 120), sessao('sessions/dono', 120)],
+      vivasNoBanco: async () => ['sessions/dono'],
+      arquivarNoFornecedor: async () => true,
+      agora: AGORA,
+      teto: 5,
+    })
+    expect(r).toMatchObject({ orfas: 1, arquivadas: 1, atingiuOTeto: false })
+  })
+
+  it('varredura abortada nunca diz que bateu o teto', async () => {
+    // Abortar é o oposto de "tem mais fila": não sabemos nada. Confundir os
+    // dois faria a cadência acelerar justamente quando o fornecedor ou o banco
+    // estão fora do ar — martelando um serviço que já não responde.
+    const r = await varrerVagasVazadas({
+      listarNoFornecedor: async () => null,
+      vivasNoBanco: async () => [],
+      arquivarNoFornecedor: async () => true,
+      agora: AGORA,
+    })
+    expect(r).toMatchObject({ naoConsultado: true, atingiuOTeto: false })
+  })
+
+  it('a guarda do banco vazio também não acelera nada', async () => {
+    const r = await varrerVagasVazadas({
+      listarNoFornecedor: async () => [sessao('sessions/a', 120)],
+      vivasNoBanco: async () => [],
+      arquivarNoFornecedor: async () => true,
+      agora: AGORA,
+    })
+    expect(r).toMatchObject({ naoConsultado: true, atingiuOTeto: false })
+  })
+
+  it('o teto padrão dá conta do acúmulo medido em produção', async () => {
+    // 1978 órfãs, medidas. Com o teto antigo de dez por hora seriam mais de
+    // oito dias. O teto novo tem que drenar isso em poucas rodadas — e é por
+    // isso que ele é um número medido, não um chute.
+    expect(TETO_PADRAO_POR_VARREDURA).toBeGreaterThanOrEqual(100)
+    // E continua sendo uma VÁLVULA: um erro de lógica não pode virar
+    // arquivamento ilimitado numa tacada.
+    expect(TETO_PADRAO_POR_VARREDURA).toBeLessThan(1000)
+  })
+
+  it('as três guardas continuam de pé depois da recalibragem', async () => {
+    // A guarda contra o pior desfecho possível desta tarefa: subir os números
+    // e, sem perceber, afrouxar o que impede arquivar trabalho vivo.
+    const arquivadas: string[] = []
+    const deps = {
+      vivasNoBanco: async () => ['sessions/dono'],
+      arquivarNoFornecedor: async (n: string) => {
+        arquivadas.push(n)
+        return true
+      },
+      agora: AGORA,
+    }
+    await varrerVagasVazadas({
+      ...deps,
+      listarNoFornecedor: async () => [
+        sessao('sessions/dono', 500),
+        sessao('sessions/bebe', 0.5),
+        { sessionName: 'sessions/sem-data', archived: false, criadaEm: null },
+        sessao('sessions/arquivada', 500, { archived: true }),
+        sessao('sessions/legitima', 500),
+      ],
+    })
+    expect(arquivadas).toEqual(['sessions/legitima'])
   })
 })

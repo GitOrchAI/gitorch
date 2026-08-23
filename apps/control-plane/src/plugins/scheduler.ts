@@ -3104,25 +3104,79 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // Cadência de HORA, não de tique: é uma limpeza de acúmulo, não uma vigília.
   // A lista do fornecedor é uma chamada paginada, e pedi-la a cada minuto
   // seria gastar cota para descobrir que nada mudou.
-  const CADENCIA_DA_RECONCILIACAO_MS = 60 * 60 * 1000
-  // A primeira varredura NÃO sai no primeiro tique.
-  //
-  // Duas razões, e a segunda foi encontrada por um teste que quebrou: (1)
-  // logo depois de subir, o processo ainda está assentando e uma listagem do
-  // fornecedor ali só gasta cota; (2) disparar no tique zero fazia a vigília
-  // pré-merge — que promete não tocar o fornecedor quando não tem o que
-  // perguntar — passar a tocar, por carona nesta varredura.
-  //
-  // Cinco minutos, e não uma hora, porque um serviço que reinicia com
-  // frequência nunca chegaria à primeira varredura se a espera inicial fosse
-  // o intervalo inteiro — a limpeza jamais aconteceria, que é exatamente o
-  // problema que ela veio resolver.
-  const ESPERA_ANTES_DA_PRIMEIRA_VARREDURA_MS = 5 * 60 * 1000
+  /**
+   * Cadência da reconciliação de vagas, e o ÚNICO botão desta engrenagem.
+   *
+   * Uma hora por padrão: é limpeza de acúmulo, não vigília. A lista do
+   * fornecedor é uma chamada paginada, e pedi-la a cada minuto seria gastar
+   * cota para descobrir que nada mudou.
+   *
+   * As outras duas medidas são DERIVADAS desta, de propósito — três botões
+   * independentes seria convite para ficarem incoerentes entre si.
+   */
+  const CADENCIA_PADRAO_DA_RECONCILIACAO_MS = 60 * 60 * 1000
+  const CADENCIA_DA_RECONCILIACAO_MS = (() => {
+    const bruto = process.env['GITORCH_RECONCILIACAO_CADENCIA_MS']
+    if (bruto === undefined) return CADENCIA_PADRAO_DA_RECONCILIACAO_MS
+    const lido = Number(bruto)
+    // `Number(x) ?? padrão` NÃO protege nada: o `??` só age em null/undefined,
+    // e string vazia vira 0, texto vira NaN, e negativo passa inteiro. Qualquer
+    // um dos três faz a comparação de cadência (`agora - ultima < cadência`)
+    // ser SEMPRE falsa — porque nada é menor que NaN, e o tempo decorrido nunca
+    // é menor que zero. A varredura passaria a rodar a CADA TIQUE do relógio,
+    // um minuto por padrão, para sempre: até cem páginas de listagem e duzentos
+    // arquivamentos contra o fornecedor, de minuto em minuto, por causa de um
+    // erro de digitação numa variável de ambiente.
+    if (!Number.isFinite(lido) || lido <= 0) {
+      app.log.warn(
+        `[Scheduler] GITORCH_RECONCILIACAO_CADENCIA_MS inválido ('${bruto}'); ` +
+          `usando o padrão de ${CADENCIA_PADRAO_DA_RECONCILIACAO_MS}ms`
+      )
+      return CADENCIA_PADRAO_DA_RECONCILIACAO_MS
+    }
+    return lido
+  })()
+
+  /**
+   * Enquanto SOBRAR fila, a próxima varredura sai num doze avos da cadência —
+   * cinco minutos, no padrão de uma hora.
+   *
+   * Medido em 22/08/2026: mil novecentas e setenta e oito vagas sem dono. Na
+   * hora cheia, mesmo com o teto novo de duzentas por rodada, esvaziar isso
+   * levaria dez horas. Acelerando enquanto há fila, leva menos de uma — e,
+   * assim que a fila acaba, a cadência volta sozinha, sem ninguém desligar
+   * nada.
+   *
+   * Só acelera quando a varredura AFIRMA que sobrou fila. Varredura abortada
+   * (fornecedor mudo, banco mudo, banco vazio suspeito) nunca acelera: ali não
+   * se sabe nada, e insistir de cinco em cinco minutos seria martelar um
+   * serviço que já não está respondendo.
+   */
+  const CADENCIA_COM_FILA_MS = Math.max(1, Math.floor(CADENCIA_DA_RECONCILIACAO_MS / 12))
+
+  /**
+   * A primeira varredura não sai no tique zero: espera o mesmo intervalo da
+   * cadência acelerada.
+   *
+   * Duas razões, e a segunda foi encontrada por um teste que quebrou: logo
+   * depois de subir, o processo ainda está assentando e uma listagem ali só
+   * gasta cota; e disparar no tique zero fazia a vigília pré-merge — que
+   * promete não tocar o fornecedor quando não tem o que perguntar — passar a
+   * tocar, por carona nesta varredura.
+   *
+   * Derivar da cadência acelerada, em vez de fixar cinco minutos, resolve o
+   * outro extremo: um serviço que reinicia com frequência nunca chegaria à
+   * primeira varredura se a espera fosse o intervalo inteiro — a limpeza
+   * jamais aconteceria, que é o problema que ela veio resolver.
+   */
+  const ESPERA_ANTES_DA_PRIMEIRA_VARREDURA_MS = CADENCIA_COM_FILA_MS
+
   let ultimaReconciliacao =
     Date.now() - (CADENCIA_DA_RECONCILIACAO_MS - ESPERA_ANTES_DA_PRIMEIRA_VARREDURA_MS)
+  let cadenciaDaReconciliacao = CADENCIA_DA_RECONCILIACAO_MS
   const reconciliarVagasDoDev = async (): Promise<void> => {
     const agora = new Date()
-    if (agora.getTime() - ultimaReconciliacao < CADENCIA_DA_RECONCILIACAO_MS) return
+    if (agora.getTime() - ultimaReconciliacao < cadenciaDaReconciliacao) return
     ultimaReconciliacao = agora.getTime()
 
     const apiKey = process.env['JULES_API_KEY']
@@ -3141,10 +3195,17 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       onWarn: (m) => app.log.warn(m),
     })
 
+    // Sobrou fila: volta em cinco minutos. Acabou (ou não deu para saber):
+    // volta à hora cheia.
+    cadenciaDaReconciliacao = relatorio.atingiuOTeto
+      ? CADENCIA_COM_FILA_MS
+      : CADENCIA_DA_RECONCILIACAO_MS
+
     if (relatorio.arquivadas > 0 || relatorio.orfas > 0) {
       app.log.info(
         `[Scheduler] reconciliação de vagas: ${relatorio.examinadas} ativas no fornecedor, ` +
-          `${relatorio.orfas} sem dono aqui, ${relatorio.arquivadas} devolvidas`
+          `${relatorio.orfas} sem dono aqui, ${relatorio.arquivadas} devolvidas` +
+          (relatorio.atingiuOTeto ? ' — ainda há fila, volto em 5 min' : '')
       )
     }
   }

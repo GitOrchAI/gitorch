@@ -152,3 +152,38 @@ describe('listarSessoesJules', () => {
     expect(lista?.map((s) => s.sessionName)).toEqual(['sessions/ok'])
   })
 })
+
+describe('o teto de páginas depois da medição de 22/08', () => {
+  it('lê muito além das 20 páginas antigas, que a produção já estourou', async () => {
+    // A produção bateu o teto antigo na PRIMEIRA varredura: "parou no teto de
+    // 20 páginas; seguindo com as 2000 já lidas". Truncar deixa a
+    // reconciliação cega para o que está além — ela não erra, só nunca fica
+    // sabendo. Arquivar não remove a sessão da listagem, então o número só
+    // cresce.
+    let pagina = 0
+    const lista = await listarSessoesJules({
+      apiKey: 'chave-de-teste',
+      pageSize: 1,
+      fetchImpl: (async () => {
+        pagina += 1
+        const corpo: Record<string, unknown> = { sessions: [{ name: `sessions/${pagina}` }] }
+        if (pagina < 60) corpo['nextPageToken'] = `p${pagina + 1}`
+        return resposta(corpo)
+      }) as unknown as typeof fetch,
+    })
+    expect(lista).toHaveLength(60)
+  })
+
+  it('mas o teto CONTINUA existindo — cursor defeituoso não prende a vigília', async () => {
+    let pagina = 0
+    const lista = await listarSessoesJules({
+      apiKey: 'chave-de-teste',
+      fetchImpl: (async () => {
+        pagina += 1
+        return resposta({ sessions: [{ name: `sessions/${pagina}` }], nextPageToken: `p${pagina}` })
+      }) as unknown as typeof fetch,
+    })
+    expect(pagina).toBeLessThanOrEqual(100)
+    expect(lista).not.toBeNull()
+  })
+})
