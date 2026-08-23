@@ -11,6 +11,7 @@ import {
 import type { F6AgentRole } from '@gitorch/agents'
 import { casarPrComSessao } from '../services/casar-pr-com-sessao.js'
 import { mintInstallationToken } from '../services/github-app-token.js'
+import { nomeDeRepositorioValido } from '../services/nome-de-repositorio.js'
 import { registrarPr, sessoesVivas, type PrismaDevSession } from '../services/dev-session-store.js'
 
 declare module 'fastify' {
@@ -481,10 +482,19 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
           // parecer, e isso é muito pior.
           if (role === 'qa' && precisaConferirSeOCiTerminou(event, parsedPayload)) {
             const head = headDoAvisoDeVerificacao(parsedPayload)
-            const token = await mintInstallationToken({ repository: project.wingId }).catch(
-              () => null
-            )
-            if (head && token) {
+            // O nome do repositório e o commit vêm do AVISO, que é dado de
+            // fora, e entrariam crus numa URL que leva credencial. Sem validar
+            // aqui, um texto com `..` ou `?` troca o endereço de destino e o
+            // token vai para onde o texto mandar — mesma classe de furo que
+            // `github-app-token.ts` já barra na porta dele. Commit é
+            // hexadecimal: o que não for, não é commit.
+            const repoValido = nomeDeRepositorioValido(project.wingId)
+            const headValido = typeof head === 'string' && /^[0-9a-f]{7,40}$/i.test(head)
+            const token =
+              repoValido && headValido
+                ? await mintInstallationToken({ repository: project.wingId }).catch(() => null)
+                : null
+            if (head && token && repoValido && headValido) {
               const terminou = await fetch(
                 `https://api.github.com/repos/${project.wingId}/commits/${head}/check-runs`,
                 {
