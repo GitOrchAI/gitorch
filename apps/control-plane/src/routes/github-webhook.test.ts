@@ -63,7 +63,12 @@ describe('GitHub Webhook Routes', () => {
   })
 
   test('POST /api/webhooks/github processes valid webhook', async () => {
+    // O registro da entrega passou a ser "consultar, depois gravar sem
+    // duplicar" — antes era um `create` que estourava em reenvio e derrubava a
+    // rota com 500. Os dublês seguem o contrato novo.
     app.prisma.webhookDelivery.create = vi.fn().mockResolvedValue({})
+    app.prisma.webhookDelivery.findUnique = vi.fn().mockResolvedValue(null)
+    app.prisma.webhookDelivery.createMany = vi.fn().mockResolvedValue({ count: 1 })
     app.prisma.webhookDelivery.updateMany = vi.fn().mockResolvedValue({})
     app.prisma.project.findFirst = vi.fn().mockResolvedValue({ id: 'proj_123', wingId: 'wing_123' })
     app.prisma.project.update = vi.fn().mockResolvedValue({})
@@ -89,7 +94,12 @@ describe('GitHub Webhook Routes', () => {
   })
 
   test('POST /api/webhooks/github resolves project by repository.full_name and backfills numeric IDs', async () => {
+    // O registro da entrega passou a ser "consultar, depois gravar sem
+    // duplicar" — antes era um `create` que estourava em reenvio e derrubava a
+    // rota com 500. Os dublês seguem o contrato novo.
     app.prisma.webhookDelivery.create = vi.fn().mockResolvedValue({})
+    app.prisma.webhookDelivery.findUnique = vi.fn().mockResolvedValue(null)
+    app.prisma.webhookDelivery.createMany = vi.fn().mockResolvedValue({ count: 1 })
     app.prisma.webhookDelivery.updateMany = vi.fn().mockResolvedValue({})
     // Nenhum projeto carrega ainda o id numérico do repositório — é justamente
     // o caso em que o casamento cai no endereço declarado e a cura entra.
@@ -147,7 +157,12 @@ describe('GitHub Webhook Routes', () => {
   // descanso calaria o julgamento justamente quando há informação nova, e a
   // decisão D25 do dono (o QA nunca fica mudo) morreria em silêncio.
   test('acorda o QA com origem que FURA o descanso pós-acordada-vazia', async () => {
+    // O registro da entrega passou a ser "consultar, depois gravar sem
+    // duplicar" — antes era um `create` que estourava em reenvio e derrubava a
+    // rota com 500. Os dublês seguem o contrato novo.
     app.prisma.webhookDelivery.create = vi.fn().mockResolvedValue({})
+    app.prisma.webhookDelivery.findUnique = vi.fn().mockResolvedValue(null)
+    app.prisma.webhookDelivery.createMany = vi.fn().mockResolvedValue({ count: 1 })
     app.prisma.webhookDelivery.updateMany = vi.fn().mockResolvedValue({})
     app.prisma.project.findFirst = vi.fn().mockResolvedValue({ id: 'proj_123', wingId: 'wing_123' })
     app.prisma.project.update = vi.fn().mockResolvedValue({})
@@ -216,7 +231,12 @@ describe('GitHub Webhook Routes — rate limit (allowlist vazia, como em produç
   })
 
   test('POST /api/webhooks/github is rate limited', async () => {
+    // O registro da entrega passou a ser "consultar, depois gravar sem
+    // duplicar" — antes era um `create` que estourava em reenvio e derrubava a
+    // rota com 500. Os dublês seguem o contrato novo.
     app.prisma.webhookDelivery.create = vi.fn().mockResolvedValue({})
+    app.prisma.webhookDelivery.findUnique = vi.fn().mockResolvedValue(null)
+    app.prisma.webhookDelivery.createMany = vi.fn().mockResolvedValue({ count: 1 })
     app.prisma.webhookDelivery.updateMany = vi.fn().mockResolvedValue({})
     app.prisma.project.findFirst = vi.fn().mockResolvedValue({ id: 'proj_123', wingId: 'wing_123' })
     app.prisma.project.update = vi.fn().mockResolvedValue({})

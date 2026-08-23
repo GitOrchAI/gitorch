@@ -111,7 +111,12 @@ describe('webhook do GitHub — a quem a entrega pertence', () => {
     })
     await app.ready()
 
+    // O registro da entrega passou a ser "consultar, depois gravar sem
+    // duplicar" — antes era um `create` que estourava em reenvio e derrubava a
+    // rota com 500. Os dublês seguem o contrato novo.
     app.prisma.webhookDelivery.create = vi.fn().mockResolvedValue({})
+    app.prisma.webhookDelivery.findUnique = vi.fn().mockResolvedValue(null)
+    app.prisma.webhookDelivery.createMany = vi.fn().mockResolvedValue({ count: 1 })
     app.prisma.webhookDelivery.updateMany = vi.fn().mockResolvedValue({})
     app.prisma.project.update = vi.fn().mockResolvedValue({})
     comProjetos([])
@@ -144,7 +149,7 @@ describe('webhook do GitHub — a quem a entrega pertence', () => {
     )
 
     expect(res.statusCode).toBe(404)
-    expect(app.prisma.webhookDelivery.create).not.toHaveBeenCalled()
+    expect(app.prisma.webhookDelivery.createMany).not.toHaveBeenCalled()
   })
 
   it('a auto-cura NUNCA adota a instalação: casou pelo endereço, grava só o id do repositório', async () => {
@@ -302,6 +307,6 @@ describe('webhook do GitHub — a quem a entrega pertence', () => {
     )
 
     expect(res.statusCode).toBe(200)
-    expect(app.prisma.webhookDelivery.create).toHaveBeenCalled()
+    expect(app.prisma.webhookDelivery.createMany).toHaveBeenCalled()
   })
 })
