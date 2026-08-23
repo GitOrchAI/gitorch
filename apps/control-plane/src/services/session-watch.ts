@@ -379,18 +379,54 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
         }
 
         case 'julgar': {
-          // `temPr` já garantiu `consulta.numeroDoPr !== null` para chegar
-          // aqui; o guard é só para o TypeScript, não muda o caminho.
-          if (consulta.numeroDoPr !== null) {
+          // PEDIR JULGAMENTO SÓ QUANDO ALGO MUDOU.
+          //
+          // Este ramo pedia julgamento a cada exame — dez em dez minutos, para
+          // toda sessão viva com pull request, até a publicação ser
+          // confirmada. Como a entrega já julgada continua viva até lá, o
+          // pedido se repetia para sempre. Medido em 23/08/2026: das 48
+          // acordadas de julgamento vindas da vigília naquele dia, as 48
+          // voltaram vazias, e o motivo era sempre o mesmo — "no delegated PR
+          // awaiting judgment", 140 vezes em dois dias.
+          //
+          // O descanso pós-acordada-vazia não estava quebrado: ele disparou 73
+          // vezes no mesmo dia, exatamente como desenhado. Ele segurava o que
+          // foi feito para segurar. O que ninguém tinha atacado era a raiz —
+          // PERGUNTAR sem saber se há resposta.
+          //
+          // POR QUE ISTO NÃO DEIXA ENTREGA SEM PARECER, que seria um desfecho
+          // muito pior: o pedido não some, só para de se repetir sem motivo. O
+          // primeiro avistamento do pull request continua pedindo, um pull
+          // request NOVO na mesma sessão continua pedindo, e continuam
+          // existindo três outros caminhos independentes que acordam o
+          // julgamento quando algo de fato acontece — o aviso do GitHub
+          // (verificação concluída), a fila que o SM levanta, e a agenda
+          // própria do QA.
+          const ehPrNovo =
+            consulta.numeroDoPr !== null && linha.pullRequestNumber !== consulta.numeroDoPr
+
+          if (ehPrNovo) {
             await deps.registrarPr({
               sessionName: linha.sessionName,
-              numeroDoPr: consulta.numeroDoPr,
+              numeroDoPr: consulta.numeroDoPr!,
               agora: deps.agora,
             })
             prsCapturados += 1
+            // A linha só fecha na publicação — Fase 3.
+            await deps.dispararMissao('qa', linha.projectId)
+            break
           }
-          // O QA julga a entrega. A linha só fecha no merge — Fase 3.
-          await deps.dispararMissao('qa', linha.projectId)
+
+          // Nada novo. Carimbar o exame mesmo assim é OBRIGATÓRIO: a cadência
+          // de dez minutos é medida por `stateCheckedAt`, e sair daqui sem
+          // gravar faria esta sessão ser reexaminada a cada tique do relógio —
+          // trocando um laço de dez minutos por um de um. É a mesma armadilha
+          // que o ramo de investigação acima já documenta.
+          await deps.registrarEstado({
+            sessionName: linha.sessionName,
+            estado: estadoBruto,
+            agora: deps.agora,
+          })
           break
         }
 

@@ -81,7 +81,15 @@ describe('a varredura acelera enquanto há fila — e só enquanto há fila', ()
     // primeira varredura sai em 100ms e a acelerada também — é assim que este
     // teste consegue observar o comportamento REAL do plugin, sem esperar
     // cinco minutos de relógio nem reimplementar a regra.
-    process.env['GITORCH_RECONCILIACAO_CADENCIA_MS'] = '1200'
+    // 6000ms: a acelerada vira 500ms (um doze avos) e a normal fica em 6000.
+    //
+    // Era 1200/100, e a banda de 700ms entre as duas ficou APERTADA DEMAIS —
+    // rodando a suíte inteira em paralelo, a segunda varredura às vezes não
+    // terminava a tempo e o teste piscava. Teste que pisca é pior que teste
+    // que falta: ensina a ignorar vermelho. A banda agora é de 500ms a 6000ms,
+    // com folga de sobra para carga, e continua discriminando exatamente a
+    // mesma coisa.
+    process.env['GITORCH_RECONCILIACAO_CADENCIA_MS'] = '6000'
   })
 
   afterEach(async () => {
@@ -128,8 +136,8 @@ describe('a varredura acelera enquanto há fila — e só enquanto há fila', ()
     // ENTRE a cadência acelerada (100ms, um doze avos) e a normal (1200ms),
     // igual às duas irmãs abaixo. Sem aceleração, este `waitFor` estoura.
     await vi.waitFor(() => expect(arquivadas.length).toBeGreaterThan(200), {
-      timeout: 700,
-      interval: 10,
+      timeout: 3000,
+      interval: 20,
     })
   }, 30000)
 
@@ -161,11 +169,11 @@ describe('a varredura acelera enquanto há fila — e só enquanto há fila', ()
       interval: 20,
     })
 
-    // A janela é deliberada: 600ms passa MUITO da cadência acelerada (100ms,
-    // um doze avos de 1200) e fica bem abaixo da cadência normal (1200ms). Se
-    // a varredura tivesse acelerado, teria voltado várias vezes aqui dentro.
+    // A janela é deliberada: 3000ms passa MUITO da cadência acelerada (500ms,
+    // um doze avos de 6000) e fica bem abaixo da normal (6000ms). Se a
+    // varredura tivesse acelerado, teria voltado várias vezes aqui dentro.
     // Não voltou nenhuma.
-    await new Promise((r) => setTimeout(r, 600))
+    await new Promise((r) => setTimeout(r, 3000))
     expect(listagens).toBe(1)
     expect(arquivadas).toEqual([])
   }, 30000)
@@ -194,7 +202,7 @@ describe('a varredura acelera enquanto há fila — e só enquanto há fila', ()
     await vi.waitFor(() => expect(arquivadas.length).toBe(3), { timeout: 8000, interval: 20 })
     // Mesma janela do teste acima, pelo mesmo motivo: acima da cadência
     // acelerada, abaixo da normal.
-    await new Promise((r) => setTimeout(r, 600))
+    await new Promise((r) => setTimeout(r, 3000))
     expect(listagens).toBe(1)
     expect(arquivadas).toHaveLength(3)
   }, 30000)
@@ -223,7 +231,7 @@ describe('a varredura acelera enquanto há fila — e só enquanto há fila', ()
     // Com o padrão de uma hora, a espera inicial é de cinco minutos: nada pode
     // acontecer nesta janela. Se o valor inválido tivesse virado 0 ou NaN, a
     // varredura já teria rodado várias vezes aqui dentro.
-    await new Promise((r) => setTimeout(r, 800))
+    await new Promise((r) => setTimeout(r, 1500))
     expect(listagens).toBe(0)
   }, 30000)
 
@@ -243,7 +251,7 @@ describe('a varredura acelera enquanto há fila — e só enquanto há fila', ()
     app.decorate('prisma', buildFakePrisma(['sessions/viva']) as never)
     await app.register(schedulerPlugin)
 
-    await new Promise((r) => setTimeout(r, 800))
+    await new Promise((r) => setTimeout(r, 1500))
     expect(listagens).toBe(0)
   }, 30000)
 })
