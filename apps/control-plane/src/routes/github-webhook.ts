@@ -10,6 +10,9 @@ import {
 
 import type { F6AgentRole } from '@gitorch/agents'
 import { casarPrComSessao } from '../services/casar-pr-com-sessao.js'
+import { mintInstallationToken } from '../services/github-app-token.js'
+import { nomeDeRepositorioValido } from '../services/nome-de-repositorio.js'
+import { enderecoPermitido } from '../services/endereco-seguro.js'
 import { registrarPr, sessoesVivas, type PrismaDevSession } from '../services/dev-session-store.js'
 
 declare module 'fastify' {
@@ -66,6 +69,52 @@ export function missionRoleForEvent(
     return prsDoEvento.length > 0 ? 'qa' : null
   }
   return null
+}
+
+/**
+ * Este aviso exige conferir se a verificação INTEIRA terminou antes de acordar?
+ *
+ * Um repositório com oito workflows dispara oito avisos de conclusão para o
+ * mesmo commit — um por workflow que termina. O julgamento acordava em todos,
+ * encontrava a entrega, via que ainda havia verificação rodando, e voltava
+ * vazio. Medido em 23/08/2026: das trinta e quatro acordadas por aviso do
+ * GitHub, vinte e seis devolveram "verificação em pending", e havia sondagens
+ * do MESMO pull request separadas por quinze segundos.
+ *
+ * Só o ÚLTIMO desses avisos tem informação nova. Os outros sete são o mesmo
+ * commit num estado que ainda não dá para julgar.
+ *
+ * A conferência custa uma chamada de API por aviso — barata perto de subir um
+ * contêiner e gastar cota do motor do cliente, que é o que acontecia antes.
+ */
+export function precisaConferirSeOCiTerminou(
+  event: string | undefined,
+  payload: { action?: string }
+): boolean {
+  return (event === 'check_suite' || event === 'workflow_run') && payload.action === 'completed'
+}
+
+/** O commit que o aviso de verificação está falando. */
+export function headDoAvisoDeVerificacao(payload: {
+  check_suite?: { head_sha?: string }
+  workflow_run?: { head_sha?: string }
+}): string | null {
+  return payload.check_suite?.head_sha ?? payload.workflow_run?.head_sha ?? null
+}
+
+/**
+ * A verificação daquele commit terminou por inteiro?
+ *
+ * `null` quando não deu para saber — e quem chama trata isso como "pode
+ * acordar". Na dúvida, acordar de menos é pior que acordar à toa: uma entrega
+ * sem parecer fica parada para sempre, uma acordada em falso custa um
+ * contêiner.
+ */
+export function verificacaoTerminou(
+  runs: Array<{ status?: string }> | undefined | null
+): boolean | null {
+  if (!Array.isArray(runs) || runs.length === 0) return null
+  return runs.every((r) => r.status === 'completed')
 }
 
 /**
@@ -414,7 +463,86 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
           // Sistema nervoso do loop: acorda o agente do papel certo. Fire-and-
           // forget — a missão leva minutos e o GitHub exige resposta rápida; o
           // guard de missão ativa do scheduler evita duplicatas em paralelo.
-          const role = missionRoleForEvent(event, parsedPayload)
+          let role = missionRoleForEvent(event, parsedPayload)
+
+          // NÃO ACORDAR ENQUANTO A VERIFICAÇÃO AINDA RODA.
+          //
+          // Um repositório com oito workflows dispara oito avisos de conclusão
+          // para o mesmo commit. O julgamento acordava em todos, encontrava a
+          // entrega, via que ainda havia verificação rodando e voltava vazio —
+          // vinte e seis de trinta e quatro acordadas em 23/08/2026, com
+          // sondagens do mesmo pull request separadas por quinze segundos.
+          //
+          // Só o ÚLTIMO aviso tem informação nova. A conferência custa uma
+          // chamada de API; o que ela evita é subir contêiner e gastar cota do
+          // motor do cliente para não julgar nada.
+          //
+          // NA DÚVIDA, ACORDA: se não der para consultar (sem credencial, erro
+          // do GitHub, resposta estranha), o disparo acontece do mesmo jeito.
+          // Acordar à toa custa um contêiner; não acordar deixa a entrega sem
+          // parecer, e isso é muito pior.
+          if (role === 'qa' && precisaConferirSeOCiTerminou(event, parsedPayload)) {
+            const head = headDoAvisoDeVerificacao(parsedPayload)
+            // O nome do repositório e o commit vêm do AVISO, que é dado de
+            // fora, e entrariam crus numa URL que leva credencial. Sem validar
+            // aqui, um texto com `..` ou `?` troca o endereço de destino e o
+            // token vai para onde o texto mandar — mesma classe de furo que
+            // `github-app-token.ts` já barra na porta dele. Commit é
+            // hexadecimal: o que não for, não é commit.
+            const repoValido = nomeDeRepositorioValido(project.wingId)
+            const [dono = '', repo = ''] = project.wingId.split('/')
+            const headValido = typeof head === 'string' && /^[0-9a-f]{7,40}$/i.test(head)
+            const token =
+              repoValido && headValido
+                ? await mintInstallationToken({ repository: project.wingId }).catch(() => null)
+                : null
+            if (head && token && repoValido && headValido) {
+              // A URL é MONTADA por `URL` com base fixa e segmentos escapados,
+              // e depois passa pela guarda de saída de rede do projeto.
+              //
+              // Interpolar direto numa template string é o que já custou um
+              // achado crítico de request-forgery aqui: o nome do repositório
+              // e o commit vêm do aviso, que é dado de fora, e a chamada leva
+              // credencial. Validar por expressão regular não basta — a guarda
+              // tem que ficar na PORTA DE SAÍDA, com o host comparado por
+              // igualdade exata, senão `api.github.com.alheio` passa.
+              const alvo = new URL(
+                `repos/${encodeURIComponent(dono)}/${encodeURIComponent(repo)}/commits/${encodeURIComponent(head)}/check-runs`,
+                'https://api.github.com/'
+              )
+              const veredito = enderecoPermitido(alvo.toString())
+              if (!veredito.permitido) {
+                app.log.warn(
+                  { deliveryId, motivo: veredito.motivo },
+                  'Webhook: endereço recusado pela guarda de saída; não consulto a verificação'
+                )
+                return
+              }
+              const terminou = await fetch(alvo.toString(), {
+                headers: {
+                  authorization: `token ${token}`,
+                  accept: 'application/vnd.github+json',
+                  'user-agent': 'gitorch',
+                },
+              })
+                .then((r) => (r.ok ? r.json() : null))
+                .then((b) =>
+                  verificacaoTerminou(
+                    (b as { check_runs?: Array<{ status?: string }> } | null)?.check_runs
+                  )
+                )
+                .catch(() => null)
+
+              if (terminou === false) {
+                app.log.info(
+                  { deliveryId, event, head, projectId: project.id },
+                  'Webhook NÃO acorda o julgamento: a verificação deste commit ainda está rodando'
+                )
+                role = null
+              }
+            }
+          }
+
           if (role && app.triggerAgentMission) {
             app.log.info(
               { deliveryId, event, role, projectId: project.id },
