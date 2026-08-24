@@ -29,6 +29,12 @@ import {
   MARCA_DE_APROVACAO,
   MARCA_DO_PARECER,
 } from './parecer-do-qa.js'
+import {
+  decidirSobreOProjeto,
+  pedidoDeDividirAEntrega,
+  MARCA_DE_ENTREGA_GRANDE_DEMAIS,
+  type EntregaJulgada,
+} from './reprovacao-que-ensina.js'
 import { ciTerminouVerde, estadoDoCi } from './estado-da-verificacao-do-github.js'
 
 // Missão do QA nos TRILHOS (F3.6): acha a PR do Jules que precisa de julgamento,
@@ -99,6 +105,14 @@ export interface VigiliaDoJulgamentoOptions {
    * (Telegram) configurado, não há para onde avisar — omitida de propósito,
    * por isso fica de fora do `Required<Omit<...>>` do retorno da função.
    */
+  /**
+   * Os julgamentos anteriores deste repositório, do mais recente para o mais
+   * antigo. Alimenta a decisão de "este projeto está travado". Ausente = a
+   * escalada não acontece, e o comportamento é o de sempre.
+   */
+  lerHistoricoDoProjeto?: (repositorio: string) => Promise<EntregaJulgada[]>
+  /** Guarda ESTE julgamento para as próximas contas. */
+  registrarJulgamento?: (args: { repositorio: string; peloPortao: boolean }) => Promise<void>
   avisarDono?: (mensagem: string) => Promise<void>
   /**
    * Achado 2 da revisão da Tarefa 7: grava que o dono já foi avisado desta
@@ -783,11 +797,25 @@ export async function runQaMissionViaRails(
   const julgadoComCiVermelho =
     effectiveVerdict === 'request_changes' && ciState === 'red' && !truncado
   const rebaixadoSoPeloCi = verdict.verdict === 'approve' && ciState !== 'green' && !truncado
-  const marcaDoPortao = julgadoComCiVermelho
-    ? `\n${MARCA_JULGADO_COM_CI_VERMELHO}`
-    : rebaixadoSoPeloCi
-      ? `\n${MARCA_DE_REPROVACAO_CONDICIONAL}`
-      : ''
+  // Reprovação por TAMANHO ganha marca própria. Sem ela, quem lê o histórico
+  // do repositório não distingue "esta entrega tem defeito" de "esta entrega
+  // não coube" — e é essa distinção que faz a contagem de projeto travado
+  // significar alguma coisa.
+  const barradoPorTamanho = effectiveVerdict === 'request_changes' && truncado
+  const marcaDoPortao = barradoPorTamanho
+    ? `\n${MARCA_DE_ENTREGA_GRANDE_DEMAIS}`
+    : julgadoComCiVermelho
+      ? `\n${MARCA_JULGADO_COM_CI_VERMELHO}`
+      : rebaixadoSoPeloCi
+        ? `\n${MARCA_DE_REPROVACAO_CONDICIONAL}`
+        : ''
+
+  // O parecer que o dev consegue atender. Antes, a reprovação por tamanho saía
+  // com "approval was blocked" e nada mais: ele procurava o defeito no código
+  // dele e não achava, porque não havia.
+  const explicacaoDoTamanho = barradoPorTamanho
+    ? `\n\n${pedidoDeDividirAEntrega(target.number, arquivos)}`
+    : ''
 
   // 4) Executor determinístico posta o veredito. O GitHub PROÍBE
   // aprovar/pedir-mudanças no PRÓPRIO PR (422) — e o Jules abre o PR pela
@@ -997,14 +1025,77 @@ export async function runQaMissionViaRails(
   } else {
     await postarReview(
       reviewEvent,
-      `${JULES_MARKER}${marcaDoPortao}\nGitOrch QA verdict: REQUEST CHANGES (see comment).${avisoDeNaoMesclar}`
+      `${JULES_MARKER}${marcaDoPortao}\nGitOrch QA verdict: REQUEST CHANGES (see comment).${explicacaoDoTamanho}${avisoDeNaoMesclar}`
     )
+
+    // Este julgamento entra na conta do repositório ANTES de decidir se pede
+    // retrabalho: a reprovação da vez faz parte da sequência que está sendo
+    // medida. Best-effort — não conseguir guardar não pode impedir o parecer
+    // de existir, que é o que o dev lê.
+    // A aproximação conhecida: `julgadoComCiVermelho` é o motor reprovando com
+    // o CI vermelho, e dali não se sabe se ele reprovou POR causa do CI ou se
+    // achou um defeito de verdade no mesmo instante. Contar como portão é o
+    // lado seguro para a ESCALADA (o dev tem o que fazer nos dois casos:
+    // consertar o CI), mas estreitaria o caminho de volta se ele fosse só a
+    // reprovação de código. Por isso o caminho de volta não depende só dela:
+    // uma APROVAÇÃO também zera a conta, e ela é prova direta de que a esteira
+    // consegue levar uma entrega deste projeto até o fim.
+    const peloPortao = barradoPorTamanho || julgadoComCiVermelho || rebaixadoSoPeloCi
+    if (options.registrarJulgamento) {
+      await options
+        .registrarJulgamento({ repositorio: options.repository, peloPortao })
+        .catch(() => undefined)
+    }
+
+    // O projeto está com defeito próprio, ou foi só esta entrega? Dez
+    // reprovações seguidas pelo mesmo obstáculo não são dez entregas ruins, e
+    // redelegar de novo produz a mesma parada — só que sem ninguém saber.
+    let projetoTravado = false
+    if (options.lerHistoricoDoProjeto) {
+      try {
+        const historico = await options.lerHistoricoDoProjeto(options.repository)
+        const decisao = decidirSobreOProjeto(historico, options.repository)
+        if (decisao.acao === 'escalar') {
+          // Travar o projeto só vale se o dono FICAR SABENDO. Sem aviso
+          // entregue, o dev não é chamado, o commit não muda, o skip de "já
+          // julgado" nunca reabre a entrega e ninguém percebe — mordaça
+          // completa. Aviso que falha volta ao ciclo de sempre: repetir é ruim,
+          // emudecer é pior.
+          const avisado = options.avisarDono
+            ? await options
+                .avisarDono(`GitOrch: ${decisao.diagnostico}`)
+                .then(() => true)
+                .catch(() => false)
+            : false
+          projetoTravado = avisado
+          if (!avisado) {
+            options.onWarn?.(
+              `[qa] ${options.repository} bateu o teto de barradas seguidas, mas o aviso ao ` +
+                'dono não saiu — seguindo com o retrabalho para não emudecer a entrega'
+            )
+          }
+        }
+      } catch (err) {
+        // Não conseguir ler o histórico é "não sei", e "não sei" NUNCA barra:
+        // barrar por ignorância travaria um projeto saudável.
+        options.onWarn?.(
+          `[qa] não deu para ler o histórico de ${options.repository}: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        )
+      }
+    }
 
     // O comentário de rework menciona @jules e pede retrabalho NA MESMA PR —
     // só faz sentido para a entrega que o produto delegou. Uma entrega de
     // humano não tem dev assíncrono nenhum para retrabalhar; mencionar
     // @jules na PR de outra pessoa seria ruído, não ajuda.
-    if (delegado) {
+    //
+    // E não faz sentido nenhum quando o projeto está travado: pedir retrabalho
+    // ali é mandar o dev consertar um obstáculo que não é dele. O dono já foi
+    // avisado com o diagnóstico; o caminho de volta é uma entrega ser julgada
+    // pelo conteúdo.
+    if (delegado && !projetoTravado) {
       await gh('POST', `/repos/${options.repository}/issues/${target.number}/comments`, {
         body: buildJulesReworkComment(verdict.comment),
       })

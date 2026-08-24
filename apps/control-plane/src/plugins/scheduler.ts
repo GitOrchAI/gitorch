@@ -77,6 +77,11 @@ import {
   type LinhaDeSessao,
 } from '../services/dev-session-store.js'
 import {
+  lerHistoricoDoProjeto,
+  registrarJulgamento,
+  type PrismaDoHistorico,
+} from '../services/historico-de-julgamento.js'
+import {
   aguardaSegundaLeituraDoAmbiente,
   decidirConsertoDePublicacao,
   notaDeConserto,
@@ -415,6 +420,13 @@ export function montarOpcoesDeDelegacao(args: {
  */
 export function montarOpcoesDoJulgamento(args: {
   prisma: PrismaDevSession
+  /**
+   * O projeto DESTA iteração. Vem pronto porque só quem itera sabe de quem é o
+   * repositório: `wingId` não é único global (dois clientes podem cadastrar o
+   * mesmo endereço), então procurar o projeto por endereço aqui dentro
+   * contaria a reprovação de um dono na conta do outro.
+   */
+  projectId: string
   avisarDono?: ((mensagem: string) => Promise<void>) | undefined
 }): Required<Omit<VigiliaDoJulgamentoOptions, 'avisarDono'>> &
   Pick<VigiliaDoJulgamentoOptions, 'avisarDono'> {
@@ -423,6 +435,20 @@ export function montarOpcoesDoJulgamento(args: {
     limparPendencia: (a) => limparPendencia({ prisma: args.prisma, ...a }),
     registrarAvisoDeDemora: (a) => registrarAvisoDeDemora({ prisma: args.prisma, ...a }),
     registrarFracassoDeMerge: (a) => registrarFracassoDeMerge({ prisma: args.prisma, ...a }),
+    // A conta de "este projeto está travado" é sobre DIAS — o patinhas
+    // acumulou dez reprovações seguidas em quatro dias, e nesse intervalo o
+    // serviço reiniciou dezenas de vezes. Por isso vive no banco.
+    registrarJulgamento: (a) =>
+      registrarJulgamento({
+        prisma: args.prisma as unknown as PrismaDoHistorico,
+        projectId: args.projectId,
+        peloPortao: a.peloPortao,
+      }),
+    lerHistoricoDoProjeto: () =>
+      lerHistoricoDoProjeto({
+        prisma: args.prisma as unknown as PrismaDoHistorico,
+        projectId: args.projectId,
+      }),
     ...(args.avisarDono ? { avisarDono: args.avisarDono } : {}),
   }
 }
@@ -2519,6 +2545,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                     // dono nunca é avisado.
                     ...montarOpcoesDoJulgamento({
                       prisma: app.prisma as unknown as PrismaDevSession,
+                      projectId: project.id,
                       avisarDono,
                     }),
                     // Fase 1 do QA (Reconhecimento): só entra quando este QA foi
