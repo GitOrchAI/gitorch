@@ -2,12 +2,6 @@
   "name": "gitorch",
   "version": "0.1.0",
   "private": true,
-  "workspaces": [
-    "packages/*",
-    "apps/*",
-    "runtime/*",
-    "db"
-  ],
   "packageManager": "pnpm@9.4.0",
   "scripts": {
     "build": "turbo run build",
