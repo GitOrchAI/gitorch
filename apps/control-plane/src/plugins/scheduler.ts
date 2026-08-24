@@ -77,6 +77,11 @@ import {
   type LinhaDeSessao,
 } from '../services/dev-session-store.js'
 import {
+  lerHistoricoDoProjeto,
+  registrarJulgamento,
+  type PrismaDoHistorico,
+} from '../services/historico-de-julgamento.js'
+import {
   aguardaSegundaLeituraDoAmbiente,
   decidirConsertoDePublicacao,
   notaDeConserto,
@@ -423,6 +428,19 @@ export function montarOpcoesDoJulgamento(args: {
     limparPendencia: (a) => limparPendencia({ prisma: args.prisma, ...a }),
     registrarAvisoDeDemora: (a) => registrarAvisoDeDemora({ prisma: args.prisma, ...a }),
     registrarFracassoDeMerge: (a) => registrarFracassoDeMerge({ prisma: args.prisma, ...a }),
+    // A conta de "este projeto está travado" é sobre DIAS — o patinhas
+    // acumulou dez reprovações seguidas em quatro dias, e nesse intervalo o
+    // serviço reiniciou dezenas de vezes. Por isso vive no banco.
+    registrarJulgamento: (a) =>
+      registrarJulgamento({
+        prisma: args.prisma as unknown as PrismaDoHistorico,
+        ...a,
+      }),
+    lerHistoricoDoProjeto: (repositorio) =>
+      lerHistoricoDoProjeto({
+        prisma: args.prisma as unknown as PrismaDoHistorico,
+        repositorio,
+      }),
     ...(args.avisarDono ? { avisarDono: args.avisarDono } : {}),
   }
 }
