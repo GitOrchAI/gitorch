@@ -3,4 +3,3 @@ packages:
   - 'apps/control-plane'
   - 'apps/web'
   - 'runtime/*'
-  - 'db'
