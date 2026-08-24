@@ -12,6 +12,7 @@ import {
   collapseTelegramQuestion,
   buildFreeTextOption,
   FREE_TEXT_OPTION_VALUE,
+  acharProjeto,
 } from './telegram-bot.js'
 
 // A ponte com a API do Telegram. Aqui mora o único jeito de o bot descobrir o
@@ -995,5 +996,81 @@ describe('handleTelegramQuestionReply — resposta em TEXTO LIVRE casada por rep
       callback_query: { id: 'cbq_x', data: 'q:x:0' },
     })
     expect(handled).toBe(false)
+  })
+})
+
+// ── D33: o bot entende o apelido do projeto (23/08/2026) ──────────────────
+//
+// O dono tentou TRÊS vezes registrar um desejo e as três foram recusadas.
+// Textos reais, colados do chat dele:
+//
+//   /desejo quando uma entrega minha falhar na hora de ir para o ar, ...
+//   /desejo no patinhas quando uma entrega minha falhar ...
+//   /desejo no patinhas-3d-crafts quando uma entrega minha falhar ...
+//
+// O casador exigia '<projeto>: <pedido>' com DOIS-PONTOS. Sem eles nada casava,
+// e 'no patinhas' virava texto comum. A resposta do bot mostrava o formato
+// certo, mas ninguém escreve assim — ele bateu na parede três vezes.
+//
+// A rigidez do DESEMPATE continua certa e o comentário do código explica: nome
+// não é único, e sortear mandaria o pedido para o repositório errado. O que
+// muda é a ENTRADA.
+describe('D33: o apelido do projeto é entendido', () => {
+  const dois = [
+    { id: 'p1', nome: 'gitorch', repo: 'GitOrchAI/gitorch' },
+    { id: 'p2', nome: 'patinhas-3d-crafts', repo: 'loureng/patinhas-3d-crafts' },
+  ]
+
+  it('"no patinhas ..." identifica o projeto por parte do nome', () => {
+    const r = acharProjeto(dois, 'no patinhas quando uma entrega minha falhar na hora de ir ao ar')
+    expect(r?.projeto.repo).toBe('loureng/patinhas-3d-crafts')
+    expect(r?.texto).toBe('quando uma entrega minha falhar na hora de ir ao ar')
+  })
+
+  it('"no patinhas-3d-crafts ..." também', () => {
+    const r = acharProjeto(dois, 'no patinhas-3d-crafts quando uma entrega falhar')
+    expect(r?.projeto.repo).toBe('loureng/patinhas-3d-crafts')
+    expect(r?.texto).toBe('quando uma entrega falhar')
+  })
+
+  it('sem preposição: "patinhas ..." funciona igual', () => {
+    const r = acharProjeto(dois, 'patinhas quero um aviso quando quebrar')
+    expect(r?.projeto.repo).toBe('loureng/patinhas-3d-crafts')
+  })
+
+  it('o formato antigo com dois-pontos CONTINUA valendo', () => {
+    const r = acharProjeto(dois, 'loureng/patinhas-3d-crafts: quero um aviso')
+    expect(r?.projeto.repo).toBe('loureng/patinhas-3d-crafts')
+    expect(r?.texto).toBe('quero um aviso')
+  })
+
+  it('sem nenhum projeto no texto, PERGUNTA — nunca sorteia', () => {
+    expect(acharProjeto(dois, 'quando uma entrega minha falhar quero um aviso')).toBeNull()
+  })
+
+  it('AMBIGUIDADE pergunta em vez de escolher', () => {
+    // A guarda central: se o apelido casa com mais de um, o produto não pode
+    // adivinhar — o pedido cairia no repositório errado sem ninguém perceber.
+    const tres = [...dois, { id: 'p3', nome: 'patinhas-loja', repo: 'loureng/patinhas-loja' }]
+    expect(acharProjeto(tres, 'no patinhas quero um aviso')).toBeNull()
+  })
+
+  it('o apelido só vale no COMEÇO — citar o projeto no meio da frase não conta', () => {
+    // "quero avisar o time do patinhas" não é escolher projeto, é texto do
+    // pedido. Casar em qualquer posição roubaria palavras do desejo.
+    const r = acharProjeto(dois, 'quero avisar o time do patinhas quando quebrar')
+    expect(r).toBeNull()
+  })
+
+  it('com UM projeto só, nada muda: o texto inteiro é o pedido', () => {
+    const um = [dois[1]!]
+    const r = acharProjeto(um, 'no patinhas quero um aviso')
+    expect(r?.projeto.repo).toBe('loureng/patinhas-3d-crafts')
+    expect(r?.texto).toBe('no patinhas quero um aviso')
+  })
+
+  it('apelido sem pedido nenhum não vira desejo vazio', () => {
+    expect(acharProjeto(dois, 'patinhas')).toBeNull()
+    expect(acharProjeto(dois, 'no patinhas')).toBeNull()
   })
 })
