@@ -61,6 +61,7 @@ import {
   limparAvisoDeRetrabalho,
   contarTentativaDeAviso,
   fecharSessao,
+  linhasVivasParaJulgarAbandono,
   type MotivoDeFechamento,
   registrarInvestigacao,
   nomesDeSessoesVivasDaInstancia,
@@ -117,6 +118,7 @@ import {
 } from '../services/jules-client.js'
 import { vigiarSessoes } from '../services/session-watch.js'
 import { varrerVagasVazadas } from '../services/reconciliar-vagas.js'
+import { sessoesAbandonadas } from '../services/sessao-abandonada.js'
 import { medirRetrospectiva, escolherAMelhoria } from '../services/retrospectiva.js'
 import { runSmWatchdog, buildTelegramNotifier } from '../services/sm-watchdog.js'
 import { resolveNotifyChatId, type NotifiableProject } from '../services/telegram-link.js'
@@ -3238,6 +3240,59 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     }
   }
 
+  /**
+   * A vaga que o dev externo levou e nunca devolveu.
+   *
+   * Medido em 24/08: dezenove linhas vivas, SETE paradas havia noventa horas,
+   * contra um teto de quinze simultâneas. A folga ia a zero e o SM respondia
+   * "voltou vazio" com dezenas de tarefas prontas esperando — a esteira
+   * inteira parada por vaga ocupada por trabalho já morto.
+   *
+   * Roda junto da reconciliação de vagas porque são defeitos irmãos e
+   * correções diferentes: lá a vaga não tem sessão nenhuma do outro lado; aqui
+   * a sessão existe, e o dev é que nunca a conclui.
+   */
+  const devolverVagasDeSessaoAbandonada = async (): Promise<void> => {
+    const agora = new Date()
+    const linhas = await linhasVivasParaJulgarAbandono({
+      prisma: app.prisma as unknown as PrismaDevSession,
+    })
+    const abandonadas = sessoesAbandonadas({ linhas, agora })
+    if (abandonadas.length === 0) return
+
+    const apiKey = process.env['JULES_API_KEY']
+    for (const linha of abandonadas) {
+      try {
+        await fecharSessao({
+          prisma: app.prisma as unknown as PrismaDevSession,
+          sessionName: linha.sessionName,
+          motivo: 'abandoned',
+          agora,
+          // Arquivar no fornecedor é o que devolve a vaga LÁ. Sem chave, a
+          // linha ainda fecha: a vaga daqui volta, que é o que trava o SM.
+          ...(apiKey
+            ? {
+                arquivarNoFornecedor: (sessionName: string) =>
+                  arquivarSessaoJules({ apiKey, sessionName, onWarn: (m) => app.log.warn(m) }),
+              }
+            : {}),
+          onWarn: (m) => app.log.warn(m),
+        })
+        app.log.info(
+          `[Scheduler] sessão abandonada devolvida: ${linha.sessionName} (issue #${linha.issueNumber}) ` +
+            'sem progresso além do teto — a vaga voltou para a fila'
+        )
+      } catch (err) {
+        // Uma que não fecha não pode impedir as outras: cada vaga devolvida já
+        // destrava a esteira sozinha.
+        app.log.warn(
+          err,
+          `[Scheduler] não deu para devolver a vaga de ${linha.sessionName}; tenta no próximo ciclo`
+        )
+      }
+    }
+  }
+
   // A RETROSPECTIVA — a única parte do método que olha para trás.
   //
   // O evento já estava escrito e nunca tinha sido ligado: o playbook
@@ -4509,6 +4564,14 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     await varrerSessoesDoDev()
     // Nunca derruba o tique: a varredura já isola cada arquivamento, este é o
     // último cinto de segurança, igual às vizinhas.
+    // Antes da reconciliação de vagas de propósito: esta é a que devolve a
+    // vaga presa por sessão que existe e não anda, o caso que trava o SM.
+    await devolverVagasDeSessaoAbandonada().catch((err) =>
+      app.log.warn(
+        err,
+        '[Scheduler] varredura de sessões abandonadas falhou; tenta no próximo ciclo'
+      )
+    )
     await reconciliarVagasDoDev().catch((err) =>
       app.log.error(err, '[Scheduler] reconciliação de vagas falhou; tenta na próxima hora')
     )

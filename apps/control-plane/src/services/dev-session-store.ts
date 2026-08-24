@@ -224,6 +224,43 @@ export async function nomesDeSessoesVivasDaInstancia(deps: {
 }
 
 /**
+ * As linhas vivas da INSTÂNCIA com o que a decisão de abandono precisa.
+ *
+ * Da instância inteira, e não de um projeto: a vaga que trava a esteira é
+ * contada por instância, e uma varredura por projeto deixaria zumbi de outro
+ * projeto segurando a mesma fila.
+ */
+export async function linhasVivasParaJulgarAbandono(deps: { prisma: PrismaDevSession }): Promise<
+  Array<{
+    sessionName: string
+    issueNumber: number
+    state: string
+    lastProgressAt: Date | null
+    createdAt: Date | null
+    closedAt: Date | null
+  }>
+> {
+  return (await deps.prisma.devSession.findMany({
+    where: { closedAt: null },
+    select: {
+      sessionName: true,
+      issueNumber: true,
+      state: true,
+      lastProgressAt: true,
+      createdAt: true,
+      closedAt: true,
+    },
+  })) as unknown as Array<{
+    sessionName: string
+    issueNumber: number
+    state: string
+    lastProgressAt: Date | null
+    createdAt: Date | null
+    closedAt: Date | null
+  }>
+}
+
+/**
  * Anota o estado lido e quando foi lido.
  *
  * `progrediu` move a marca de progresso, e só ela. A API do serviço não tem
