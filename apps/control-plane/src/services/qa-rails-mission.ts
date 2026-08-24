@@ -29,6 +29,7 @@ import {
   MARCA_DE_APROVACAO,
   MARCA_DO_PARECER,
 } from './parecer-do-qa.js'
+import { ciTerminouVerde, estadoDoCi } from './estado-da-verificacao-do-github.js'
 
 // Missão do QA nos TRILHOS (F3.6): acha a PR do Jules que precisa de julgamento,
 // monta o snapshot (diff + Verification Criteria da issue + estado do CI), o
@@ -479,11 +480,7 @@ export async function runQaMissionViaRails(
           'GET',
           `/repos/${options.repository}/commits/${p.head.sha}/check-runs`
         )) as { check_runs?: Array<{ conclusion?: string; status?: string }> }
-        const runs = checks.check_runs ?? []
-        reprovadoPeloPortaoComCiVerdeAgora =
-          runs.length > 0 &&
-          runs.every((r) => r.status === 'completed') &&
-          runs.every((r) => r.conclusion === 'success' || r.conclusion === 'neutral')
+        reprovadoPeloPortaoComCiVerdeAgora = ciTerminouVerde(checks.check_runs ?? [])
       } catch {
         // Não deu para saber o estado da verificação. Na dúvida, NÃO
         // rejulgar: reabrir um veredito sem saber se o motivo caiu seria
@@ -562,12 +559,7 @@ export async function runQaMissionViaRails(
       'GET',
       `/repos/${options.repository}/commits/${pr.head.sha}/check-runs`
     )) as { check_runs?: Array<{ conclusion?: string; status?: string }> }
-    const runs = checks.check_runs ?? []
-    if (runs.length === 0) ciState = 'no checks'
-    else if (runs.some((r) => r.status !== 'completed')) ciState = 'pending'
-    else if (runs.every((r) => r.conclusion === 'success' || r.conclusion === 'neutral'))
-      ciState = 'green'
-    else ciState = 'red'
+    ciState = estadoDoCi(checks.check_runs ?? [])
   }
 
   // A linha da sessão desta entrega — usada AQUI pela decisão da verificação
