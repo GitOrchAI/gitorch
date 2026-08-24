@@ -8,6 +8,8 @@ import {
   sendTelegramMessage,
   sendTelegramQuestion,
   tratarPedidoDeDesejo,
+  tratarCliqueDeProjeto,
+  answerTelegramCallback,
   type TelegramDesejoDeps,
 } from '../services/telegram-bot.js'
 import { criarIssueDeDesejo } from '../services/desejo-no-github.js'
@@ -132,6 +134,37 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
         etiquetas,
         log: { onError: (m) => app.log.error(m), onWarn: (m) => app.log.warn(m) },
       }),
+    // O pedido que ainda não sabe o projeto vive no BANCO, nunca na memória
+    // do processo: entre a pergunta e o toque no botão o serviço reinicia
+    // várias vezes por dia, e o dono clicaria no vazio.
+    guardarPendente: ({ userId, chatId, texto }) =>
+      app.prisma.pedidoDeDesejoPendente.create({
+        data: { userId, chatId, texto },
+        select: { id: true },
+      }),
+    lerPendente: (id) =>
+      app.prisma.pedidoDeDesejoPendente.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          userId: true,
+          chatId: true,
+          texto: true,
+          usadoEm: true,
+          createdAt: true,
+        },
+      }),
+    // Só carimba o que AINDA não foi usado. Assim duas entregas do mesmo
+    // clique disputando entre si só deixam uma passar.
+    marcarPendenteUsado: async (id) => {
+      const alterados = await app.prisma.pedidoDeDesejoPendente.updateMany({
+        where: { id, usadoEm: null },
+        data: { usadoEm: new Date() },
+      })
+      if (alterados.count === 0) {
+        throw new Error('pedido pendente já usado')
+      }
+    },
     registrarFalha: (erro) => app.log.error(erro, '[Telegram] falha ao registrar o desejo'),
   }
 
@@ -166,6 +199,22 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
 
         for (const update of result.updates) {
           if (update.callback_query) {
+            // O toque no botão de PROJETO vem primeiro porque ele reconhece o
+            // que é seu pelo prefixo e devolve `null` para todo o resto — a
+            // dúvida do PO, que viaja no mesmo canal, segue intacta logo abaixo.
+            const escolha = await tratarCliqueDeProjeto(desejoDeps, update)
+            if (escolha) {
+              // Tirar o "reloginho" do botão vem antes da resposta: é o único
+              // sinal de que o toque foi recebido, e o registro da issue leva
+              // segundos.
+              await answerTelegramCallback({ botToken, callbackQueryId: escolha.callbackQueryId })
+              // Texto vazio é a reentrega do mesmo clique: a primeira já
+              // respondeu, e repetir seria falar duas vezes com o dono.
+              if (escolha.text !== '') {
+                await sendTelegramMessage({ botToken, chatId: escolha.chatId, text: escolha.text })
+              }
+              continue
+            }
             // Clique num botão de AgentQuestion (épico W3.3) — roteamento
             // próprio, com guard anti cross-tenant embutido em
             // handleTelegramCallback. Nunca é também um /start: são tipos de
@@ -194,7 +243,12 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
           // desejo continua caindo no fluxo normal.
           const desejo = await tratarPedidoDeDesejo(desejoDeps, update)
           if (desejo) {
-            await sendTelegramMessage({ botToken, chatId: desejo.chatId, text: desejo.text })
+            await sendTelegramMessage({
+              botToken,
+              chatId: desejo.chatId,
+              text: desejo.text,
+              ...(desejo.teclado ? { teclado: desejo.teclado } : {}),
+            })
             continue
           }
 

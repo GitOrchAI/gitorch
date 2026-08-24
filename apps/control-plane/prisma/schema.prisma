@@ -626,3 +626,37 @@ model DevSession {
   /// puro custo em todo insert/update para sempre.
   @@map("dev_sessions")
 }
+
+/// O pedido de desejo que ficou ESPERANDO o dono dizer a qual projeto ele
+/// pertence. Existe porque a escolha agora é um BOTÃO no Telegram: entre a
+/// pergunta e o toque passa tempo de gente, e o serviço reinicia várias vezes
+/// por dia. Guardar isso na memória do processo faria o pedido evaporar antes
+/// do clique — a pessoa tocaria no botão e receberia silêncio.
+model PedidoDeDesejoPendente {
+  id String @id @default(cuid())
+
+  /// O dono que escreveu o pedido. A lista de projetos do botão é recalculada
+  /// por ele no momento do clique — nunca congelada aqui, senão um projeto
+  /// removido no meio do caminho ainda apareceria como opção válida.
+  userId String @map("user_id")
+
+  /// A conversa onde responder. É o mesmo id da pessoa no privado, que é o
+  /// único lugar onde o /desejo é aceito.
+  chatId String @map("chat_id")
+
+  /// O pedido em linguagem de gente, exatamente como foi escrito. É isto que
+  /// não pode se perder: sem ele, o clique no botão não tem o que registrar.
+  texto String
+
+  /// Nulo enquanto espera. Preenchido no instante em que o pedido vira issue,
+  /// para que uma reentrega do mesmo clique pelo Telegram não abra duas.
+  usadoEm DateTime? @map("usado_em")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  /// A busca quente é "o pendente deste dono nesta conversa", e a varredura de
+  /// vencidos anda por data.
+  @@index([userId, chatId])
+  @@index([createdAt])
+  @@map("pedidos_de_desejo_pendentes")
+}

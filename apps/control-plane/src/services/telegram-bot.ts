@@ -1,6 +1,13 @@
 import type { PrismaClient } from '@prisma/client'
 import { bindChatFromStart, telegramBotUsername, type DonoDoChat } from './telegram-link.js'
 import { autorLegivel, montarDesejo } from './desejo.js'
+import {
+  decidirSobrePendente,
+  lerCliqueDeProjeto,
+  montarTecladoDeProjetos,
+  TETO_DE_BOTOES,
+  type PendenteGuardado,
+} from './desejo-pendente.js'
 import { CredencialDoGithubInvalidaError } from './acesso-ao-repositorio.js'
 import type { AgentQuestionService } from './agent-question.js'
 
@@ -62,7 +69,9 @@ export interface TelegramUpdate {
   /** Clique num botão inline (ver `sendTelegramQuestion`/`handleTelegramCallback`). */
   callback_query?: {
     id: string
-    from?: { id?: number | string }
+    // O mesmo formato de remetente da mensagem: o clique também precisa dizer
+    // em que idioma responder, e de quem é a assinatura do pedido.
+    from?: RemetenteDoTelegram
     /** A mensagem QUE TINHA o teclado — é dela que colapsamos os botões. */
     message?: { message_id?: number; chat?: { id?: number | string } }
     /** Formato esperado: `q:<questionId>:<optionIndex>` — ver `parseQuestionCallbackData`. */
@@ -210,6 +219,8 @@ export async function sendTelegramMessage(input: {
   botToken: string
   chatId: string
   text: string
+  /** Teclado de botões. Ausente = mensagem simples, como sempre foi. */
+  teclado?: unknown
   fetchImpl?: typeof fetch
 }): Promise<boolean> {
   const f = input.fetchImpl ?? fetch
@@ -217,7 +228,11 @@ export async function sendTelegramMessage(input: {
     const resp = await f(`${API}/bot${input.botToken}/sendMessage`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ chat_id: input.chatId, text: input.text }),
+      body: JSON.stringify({
+        chat_id: input.chatId,
+        text: input.text,
+        ...(input.teclado ? { reply_markup: input.teclado } : {}),
+      }),
     })
     return resp.ok
   } catch {
@@ -666,6 +681,24 @@ export interface TelegramDesejoDeps {
     corpo: string
     etiquetas: string[]
   }) => Promise<{ numero: number }>
+  /**
+   * Guarda o pedido que ainda não sabe a qual projeto pertence e devolve o id
+   * que viaja dentro do botão. DURÁVEL por obrigação: entre a pergunta e o
+   * toque o serviço reinicia, e um pendente em memória deixaria o dono clicando
+   * no vazio.
+   */
+  guardarPendente?: (args: {
+    userId: string
+    chatId: string
+    texto: string
+  }) => Promise<{ id: string }>
+  /** Lê o pendente do clique. `null` quando não existe mais. */
+  lerPendente?: (id: string) => Promise<PendenteGuardado | null>
+  /**
+   * Carimba o pendente como usado ANTES de a issue nascer. É o que impede a
+   * reentrega do mesmo clique pelo Telegram de abrir duas tarefas iguais.
+   */
+  marcarPendenteUsado?: (id: string) => Promise<void>
   /** Onde a falha é registrada. Nunca vai para o chat: pode conter credencial. */
   registrarFalha?: (erro: unknown) => void
   /** Prazo do registro no GitHub. Só os testes mexem; ver `PRAZO_DA_ISSUE_MS`. */
@@ -852,6 +885,10 @@ const MENSAGENS_DE_DESEJO: Record<
     comoUsar: string
     /** `exemplo` é o endereço a digitar; `lista`, o que o dono reconhece. */
     qualProjeto: (exemplo: string, lista: string[]) => string
+    escolhaNoBotao: string
+    pedidoSumiu: string
+    pedidoVencido: string
+    escolhido: (projeto: string) => string
     criado: (numero: number, endereco: string, projeto: string) => string
   }
 > = {
@@ -875,6 +912,12 @@ const MENSAGENS_DE_DESEJO: Record<
       'Escreva o pedido junto com o comando, em linguagem de gente. Assim:\n\n/desejo quero que o site aceite avaliação com foto\n\nEu registro isso como uma tarefa no seu repositório.',
     qualProjeto: (exemplo, lista) =>
       `Você tem mais de um projeto. Diga qual, assim: /desejo ${exemplo}: o que você quer.\n\nSeus projetos: ${lista.join(', ')}`,
+    escolhaNoBotao: 'Você tem mais de um projeto. Em qual eu registro este pedido?',
+    pedidoSumiu:
+      'Não achei mais o pedido deste botão. Mande o /desejo de novo, com o texto do que você quer.',
+    pedidoVencido:
+      'Este pedido é de mais de um dia atrás, então não registrei nada. Se ainda quer, mande o /desejo de novo.',
+    escolhido: (projeto) => `Registrando em ${projeto}...`,
     criado: (numero, endereco, projeto) =>
       `Anotado! ✅ Registrei seu pedido em ${projeto} como o item nº ${numero}.\n${endereco}`,
   },
@@ -898,6 +941,12 @@ const MENSAGENS_DE_DESEJO: Record<
       'Escribe el pedido junto con el comando, en lenguaje normal. Así:\n\n/desejo quiero que el sitio acepte reseñas con foto\n\nLo registro como una tarea en tu repositorio.',
     qualProjeto: (exemplo, lista) =>
       `Tienes más de un proyecto. Dime cuál, así: /desejo ${exemplo}: lo que quieres.\n\nTus proyectos: ${lista.join(', ')}`,
+    escolhaNoBotao: 'Tienes más de un proyecto. ¿En cuál registro este pedido?',
+    pedidoSumiu:
+      'Ya no encuentro el pedido de este botón. Manda el /desejo otra vez, con el texto de lo que quieres.',
+    pedidoVencido:
+      'Este pedido es de hace más de un día, así que no registré nada. Si aún lo quieres, manda el /desejo otra vez.',
+    escolhido: (projeto) => `Registrando en ${projeto}...`,
     criado: (numero, endereco, projeto) =>
       `¡Anotado! ✅ Registré tu pedido en ${projeto} como el ítem nº ${numero}.\n${endereco}`,
   },
@@ -921,6 +970,12 @@ const MENSAGENS_DE_DESEJO: Record<
       'Write the request together with the command, in plain words. Like this:\n\n/desejo I want the site to accept reviews with photos\n\nI record that as a real task in your repository.',
     qualProjeto: (exemplo, lista) =>
       `You have more than one project. Tell me which one, like this: /desejo ${exemplo}: what you want.\n\nYour projects: ${lista.join(', ')}`,
+    escolhaNoBotao: 'You have more than one project. Which one should I record this request in?',
+    pedidoSumiu:
+      "I can't find this button's request any more. Send /desejo again, with the text of what you want.",
+    pedidoVencido:
+      'This request is more than a day old, so I recorded nothing. If you still want it, send /desejo again.',
+    escolhido: (projeto) => `Recording in ${projeto}...`,
     criado: (numero, endereco, projeto) =>
       `Got it! ✅ I recorded your request in ${projeto} as item #${numero}.\n${endereco}`,
   },
@@ -947,10 +1002,17 @@ const MENSAGENS_DE_DESEJO: Record<
  * ser escrito. Chat solto — ou conectado a duas contas — não escreve em
  * repositório nenhum.
  */
+export interface RespostaDoDesejo {
+  chatId: string
+  text: string
+  /** Presente só quando a resposta é uma escolha de projeto por botão. */
+  teclado?: unknown
+}
+
 export async function tratarPedidoDeDesejo(
   deps: TelegramDesejoDeps,
   update: TelegramUpdate
-): Promise<{ chatId: string; text: string } | null> {
+): Promise<RespostaDoDesejo | null> {
   const message = update.message
   const rawChatId = message?.chat?.id
   if (rawChatId === undefined || rawChatId === null) return null
@@ -990,9 +1052,65 @@ export async function tratarPedidoDeDesejo(
 
   const alvo = acharProjeto(projetos, pedido.texto)
   if (!alvo) {
+    // O dono não disse onde. Em vez de mandar reescrever tudo com o endereço
+    // do repositório na frente — o que ele tentou três vezes e foi recusado —
+    // a pergunta vira BOTÃO. Guardar o pedido é a condição para isso: entre a
+    // pergunta e o toque o serviço reinicia, e um pendente em memória deixaria
+    // o clique sem nada para registrar.
+    const cabeNoTeclado = projetos.length <= TETO_DE_BOTOES
+    if (deps.guardarPendente && cabeNoTeclado) {
+      try {
+        const guardado = await deps.guardarPendente({
+          userId: dono.userId,
+          chatId,
+          texto: pedido.texto,
+        })
+        return {
+          chatId,
+          text: textos.escolhaNoBotao,
+          teclado: montarTecladoDeProjetos(
+            projetos.map((proj) => ({ rotulo: rotularProjeto(proj), repo: proj.repo })),
+            guardado.id
+          ),
+        }
+      } catch (erro) {
+        // Não conseguir guardar não pode engolir o pedido: cai no texto de
+        // sempre, que ainda leva o dono ao registro (só dá mais trabalho).
+        deps.registrarFalha?.(erro)
+      }
+    }
     const exemplo = projetos[0]?.repo ?? ''
     return { chatId, text: textos.qualProjeto(exemplo, projetos.map(rotularProjeto)) }
   }
+
+  return registrarDesejoEmProjeto(deps, {
+    projeto: alvo.projeto,
+    texto: alvo.texto,
+    userId: dono.userId,
+    autor: autorDoTelegram(message?.from, dono.userId),
+    chatId,
+    textos,
+  })
+}
+
+/**
+ * Do projeto escolhido até a issue nascer. É o MESMO caminho para os dois
+ * jeitos de escolher — escrevendo o apelido junto com o pedido, ou tocando no
+ * botão depois. Uma segunda cópia disto seria a porta para o botão ganhar
+ * menos conferência de acesso que o texto.
+ */
+async function registrarDesejoEmProjeto(
+  deps: TelegramDesejoDeps,
+  args: {
+    projeto: ProjetoParaDesejo
+    texto: string
+    userId: string
+    autor: string
+    chatId: string
+    textos: (typeof MENSAGENS_DE_DESEJO)['pt']
+  }
+): Promise<RespostaDoDesejo> {
+  const { projeto, texto, userId, autor, chatId, textos } = args
 
   // O acesso foi provado no cadastro — e só. Daquele momento em diante o
   // endereço virou `wingId` do projeto e ninguém mais perguntou nada. Removido
@@ -1000,8 +1118,8 @@ export async function tratarPedidoDeDesejo(
   // escreveria no repositório alheio com a credencial da INSTALAÇÃO. A mesma
   // prova da porta HTTP é refeita aqui, na hora de usar.
   try {
-    if (!(await deps.confirmarAcesso(alvo.projeto.repo, dono.userId))) {
-      return { chatId, text: textos.semAcessoAoRepositorio(rotularProjeto(alvo.projeto)) }
+    if (!(await deps.confirmarAcesso(projeto.repo, userId))) {
+      return { chatId, text: textos.semAcessoAoRepositorio(rotularProjeto(projeto)) }
     }
   } catch (erro) {
     // Não conseguir conferir é recusa TEMPORÁRIA, com o nome certo — nunca
@@ -1018,28 +1136,105 @@ export async function tratarPedidoDeDesejo(
     return { chatId, text: textos.acessoNaoVerificavel }
   }
 
-  const desejo = montarDesejo({
-    texto: alvo.texto,
-    autor: autorDoTelegram(message?.from, dono.userId),
-  })
+  const desejo = montarDesejo({ texto, autor })
   try {
     const criada = await comPrazo(
       deps.criarIssue({
-        repo: alvo.projeto.repo,
+        repo: projeto.repo,
         titulo: desejo.titulo,
         corpo: desejo.corpo,
         etiquetas: desejo.etiquetas,
       }),
       deps.prazoDaIssueMs ?? PRAZO_DA_ISSUE_MS
     )
-    const endereco = `https://github.com/${alvo.projeto.repo}/issues/${criada.numero}`
-    return { chatId, text: textos.criado(criada.numero, endereco, alvo.projeto.nome) }
+    const endereco = `https://github.com/${projeto.repo}/issues/${criada.numero}`
+    return { chatId, text: textos.criado(criada.numero, endereco, projeto.nome) }
   } catch (erro) {
     // A falha do GitHub pode trazer credencial no texto; o chat recebe só o
     // recado de gente, e o detalhe vai para o log.
     deps.registrarFalha?.(erro)
     return { chatId, text: textos.falhou }
   }
+}
+
+/**
+ * O toque no botão de projeto.
+ *
+ * Devolve `null` para qualquer clique que não seja nosso — o mesmo
+ * `callback_query` também traz as respostas de dúvida do PO, e responder por
+ * cima delas deixaria o dono sem resposta nos dois lados.
+ *
+ * A lista de projetos é RECALCULADA aqui, nunca lida de dentro do botão: entre
+ * a pergunta e o toque o dono pode ter perdido acesso a um repositório, e o
+ * índice congelado apontaria para um destino que já não é dele.
+ */
+export async function tratarCliqueDeProjeto(
+  deps: TelegramDesejoDeps,
+  update: TelegramUpdate,
+  agora: Date = new Date()
+): Promise<(RespostaDoDesejo & { callbackQueryId: string }) | null> {
+  const cq = update.callback_query
+  if (!cq) return null
+
+  const clique = lerCliqueDeProjeto(cq.data)
+  if (!clique) return null
+  if (!deps.lerPendente || !deps.marcarPendenteUsado) return null
+
+  const rawChatId = cq.message?.chat?.id
+  if (rawChatId === undefined || rawChatId === null) return null
+  const chatId = String(rawChatId)
+  const textos = MENSAGENS_DE_DESEJO[pickLocale(cq.from?.language_code)]
+  const responder = (text: string) => ({ chatId, text, callbackQueryId: cq.id })
+
+  const pendente = await deps.lerPendente(clique.pendenteId)
+
+  // O pendente guarda de QUEM é o pedido. Um clique vindo de outra conversa,
+  // com um id de pendente que não é dela, não registra nada — o botão não pode
+  // virar a porta por onde um pedido alheio nasce no repositório errado.
+  if (pendente && pendente.chatId !== chatId) return responder(textos.pedidoSumiu)
+
+  const decisao = decidirSobrePendente(pendente, agora)
+  if (decisao.acao === 'sumiu') return responder(textos.pedidoSumiu)
+  if (decisao.acao === 'vencido') return responder(textos.pedidoVencido)
+  // Reentrega do mesmo clique. A primeira já registrou; calar é o certo, e o
+  // silêncio aqui é do PRODUTO, não do dono: ele já recebeu a confirmação.
+  if (decisao.acao === 'ja-usado') return { chatId, text: '', callbackQueryId: cq.id }
+
+  const dono = await deps.donoDoChat(chatId)
+  if (dono.tipo === 'ambiguo') return responder(textos.chatAmbiguo)
+  if (dono.tipo === 'nenhum') return responder(textos.semVinculo)
+  // Quem escreveu o pedido tem que ser quem está clicando. Sem isto, um
+  // pendente de outra conta registrado neste chat viraria issue no lugar errado.
+  if (pendente && pendente.userId !== dono.userId) return responder(textos.pedidoSumiu)
+
+  const projetos = await deps.projetosDoDono(dono.userId)
+  if (projetos.length === 0) return responder(textos.semProjeto)
+
+  const projeto = projetos[clique.indice]
+  // Índice fora da lista de AGORA: o projeto saiu do ar entre a pergunta e o
+  // toque. Recusar é o único caminho honesto — o de baixo na lista não é "o
+  // mais parecido", é outro repositório.
+  if (!projeto)
+    return responder(textos.qualProjeto(projetos[0]?.repo ?? '', projetos.map(rotularProjeto)))
+
+  // Carimba ANTES de criar a issue. Na ordem inversa, uma reentrega do clique
+  // durante a chamada ao GitHub abriria a segunda tarefa.
+  try {
+    await deps.marcarPendenteUsado(clique.pendenteId)
+  } catch (erro) {
+    deps.registrarFalha?.(erro)
+    return responder(textos.falhou)
+  }
+
+  const resposta = await registrarDesejoEmProjeto(deps, {
+    projeto,
+    texto: decisao.texto,
+    userId: dono.userId,
+    autor: autorDoTelegram(cq.from, dono.userId),
+    chatId,
+    textos,
+  })
+  return { ...resposta, callbackQueryId: cq.id }
 }
 
 /**
