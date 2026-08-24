@@ -9,3 +9,28 @@
 export function pipelineCheckEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env['GITORCH_PIPELINE_CHECK'] === '1'
 }
+
+export interface PipelineErrorMetadata {
+  step: string
+  reason: string
+  mitigationAction: string
+  requiresAction: boolean
+}
+
+export function parsePipelineError(error: unknown, stepContext: string): PipelineErrorMetadata {
+  let reason = 'Unknown pipeline error'
+  if (error instanceof Error) {
+    reason = error.message
+  } else if (typeof error === 'string') {
+    reason = error
+  } else if (error !== null && typeof error === 'object') {
+    reason = JSON.stringify(error)
+  }
+
+  return {
+    step: stepContext || 'unknown',
+    reason,
+    mitigationAction: 'Manual operator intervention required',
+    requiresAction: true,
+  }
+}
