@@ -10,9 +10,17 @@ import type { EntregaJulgada } from './reprovacao-que-ensina.js'
  * vezes. Em memória, a conta nunca passaria de um.
  */
 
-/** Só o que estas funções usam do Prisma — permite injetar um fake nos testes. */
+/**
+ * Só o que estas funções usam do Prisma — permite injetar um fake nos testes.
+ *
+ * Não há `project` aqui de propósito. A primeira versão procurava o projeto por
+ * `wingId` (o endereço do repositório) e a revisão pegou: `wingId` NÃO é único
+ * global — o schema tem `@@unique([userId, wingId])` justamente porque dois
+ * clientes podem cadastrar o mesmo repositório. `findFirst` por endereço podia
+ * devolver o projeto do OUTRO dono, e a reprovação de um seria contada na conta
+ * do outro. O projeto vem pronto de quem chama, que já sabe de quem é.
+ */
 export interface PrismaDoHistorico {
-  project: { findFirst: (args: unknown) => Promise<{ id: string } | null> }
   event: {
     create: (args: unknown) => Promise<unknown>
     findMany: (args: unknown) => Promise<Array<{ payload: unknown; createdAt: Date }>>
@@ -32,20 +40,12 @@ export const JANELA_DE_JULGAMENTOS = 20
 
 export async function registrarJulgamento(deps: {
   prisma: PrismaDoHistorico
-  repositorio: string
+  projectId: string
   peloPortao: boolean
 }): Promise<void> {
-  const projeto = await deps.prisma.project.findFirst({
-    where: { wingId: deps.repositorio },
-    select: { id: true },
-  })
-  // Repositório que não é projeto nosso não tem histórico para contar, e
-  // inventar um projeto para pendurar o evento seria pior.
-  if (!projeto) return
-
   await deps.prisma.event.create({
     data: {
-      projectId: projeto.id,
+      projectId: deps.projectId,
       type: TIPO_DO_EVENTO,
       payload: { peloPortao: deps.peloPortao },
     },
@@ -54,16 +54,10 @@ export async function registrarJulgamento(deps: {
 
 export async function lerHistoricoDoProjeto(deps: {
   prisma: PrismaDoHistorico
-  repositorio: string
+  projectId: string
 }): Promise<EntregaJulgada[]> {
-  const projeto = await deps.prisma.project.findFirst({
-    where: { wingId: deps.repositorio },
-    select: { id: true },
-  })
-  if (!projeto) return []
-
   const eventos = await deps.prisma.event.findMany({
-    where: { projectId: projeto.id, type: TIPO_DO_EVENTO },
+    where: { projectId: deps.projectId, type: TIPO_DO_EVENTO },
     orderBy: { createdAt: 'desc' },
     take: JANELA_DE_JULGAMENTOS,
   })

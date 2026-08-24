@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from 'vitest'
+import { describe, expect, test, vi, type Mock } from 'vitest'
 import { montarOpcoesDoJulgamento } from './scheduler.js'
 import type { PrismaDevSession } from '../services/dev-session-store.js'
 
@@ -44,13 +44,24 @@ function prismaFalso() {
       updateMany: vi.fn(async (_args: unknown) => undefined),
       findMany: vi.fn(async (_args: unknown) => []),
     },
+    // O histórico de julgamentos do projeto vive em `event` (ver
+    // historico-de-julgamento.ts).
+    event: {
+      create: vi.fn(async (_args: unknown) => undefined),
+      findMany: vi.fn(async (_args: unknown) => []),
+    },
   } as unknown as PrismaDevSession
+}
+
+/** O `event` do fake, para conferir o que foi de fato gravado/lido. */
+function eventoDe(prisma: PrismaDevSession) {
+  return (prisma as unknown as { event: { create: Mock; findMany: Mock } }).event
 }
 
 describe('montarOpcoesDoJulgamento', () => {
   test('registrarPendencia devolvido chama updateMany no Prisma real (não um stub desconectado)', async () => {
     const prisma = prismaFalso()
-    const opcoes = montarOpcoesDoJulgamento({ prisma })
+    const opcoes = montarOpcoesDoJulgamento({ prisma, projectId: 'proj_1' })
 
     const agora = new Date('2026-01-01T00:00:00.000Z')
     // As quatro funções são sempre devolvidas (só `avisarDono` é condicional)
@@ -71,7 +82,7 @@ describe('montarOpcoesDoJulgamento', () => {
 
   test('limparPendencia devolvido chama update no Prisma real', async () => {
     const prisma = prismaFalso()
-    const opcoes = montarOpcoesDoJulgamento({ prisma })
+    const opcoes = montarOpcoesDoJulgamento({ prisma, projectId: 'proj_1' })
 
     expect(opcoes.limparPendencia).toBeDefined()
     await opcoes.limparPendencia!({ sessionName: 'sessions/abc' })
@@ -84,7 +95,7 @@ describe('montarOpcoesDoJulgamento', () => {
 
   test('registrarAvisoDeDemora devolvido chama update no Prisma real', async () => {
     const prisma = prismaFalso()
-    const opcoes = montarOpcoesDoJulgamento({ prisma })
+    const opcoes = montarOpcoesDoJulgamento({ prisma, projectId: 'proj_1' })
 
     expect(opcoes.registrarAvisoDeDemora).toBeDefined()
     await opcoes.registrarAvisoDeDemora!({ sessionName: 'sessions/abc', hash: 'h1' })
@@ -103,7 +114,7 @@ describe('montarOpcoesDoJulgamento', () => {
   // pegado o furo antes do merge.
   test('registrarFracassoDeMerge devolvido chama update no Prisma real (não um stub desconectado)', async () => {
     const prisma = prismaFalso()
-    const opcoes = montarOpcoesDoJulgamento({ prisma })
+    const opcoes = montarOpcoesDoJulgamento({ prisma, projectId: 'proj_1' })
 
     const agora = new Date('2026-01-01T00:00:00.000Z')
     expect(opcoes.registrarFracassoDeMerge).toBeDefined()
@@ -118,15 +129,70 @@ describe('montarOpcoesDoJulgamento', () => {
     })
   })
 
+  // A guarda estrutural `Required<Omit<...>>` obriga a propriedade a EXISTIR,
+  // não a estar ligada à função certa com os argumentos certos. É essa
+  // diferença que já deixou a lógica "correta, testada em isolamento e inerte
+  // na esteira" duas vezes neste arquivo.
+  test('registrarJulgamento devolvido grava o evento no PROJETO recebido', async () => {
+    const prisma = prismaFalso()
+    const opcoes = montarOpcoesDoJulgamento({ prisma, projectId: 'proj_do_cliente_a' })
+
+    expect(opcoes.registrarJulgamento).toBeDefined()
+    await opcoes.registrarJulgamento!({ repositorio: 'acme/api', peloPortao: true })
+
+    // O `projectId` vem de QUEM CHAMA, nunca de uma busca por endereço:
+    // `wingId` não é único global, e dois clientes podem cadastrar `acme/api`.
+    expect(eventoDe(prisma).create).toHaveBeenCalledWith({
+      data: {
+        projectId: 'proj_do_cliente_a',
+        type: 'qa_judgment',
+        payload: { peloPortao: true },
+      },
+    })
+  })
+
+  test('registrarJulgamento leva peloPortao=false sem inverter', async () => {
+    const prisma = prismaFalso()
+    const opcoes = montarOpcoesDoJulgamento({ prisma, projectId: 'proj_1' })
+    await opcoes.registrarJulgamento!({ repositorio: 'acme/api', peloPortao: false })
+
+    expect(eventoDe(prisma).create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ payload: { peloPortao: false } }),
+      })
+    )
+  })
+
+  test('lerHistoricoDoProjeto devolvido lê SÓ o projeto recebido', async () => {
+    const prisma = prismaFalso()
+    const opcoes = montarOpcoesDoJulgamento({ prisma, projectId: 'proj_do_cliente_a' })
+
+    expect(opcoes.lerHistoricoDoProjeto).toBeDefined()
+    await opcoes.lerHistoricoDoProjeto!('acme/api')
+
+    // O endereço do repositório NÃO entra no filtro: se entrasse, o histórico
+    // de um cliente cairia na conta do outro no mesmo repositório.
+    expect(eventoDe(prisma).findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { projectId: 'proj_do_cliente_a', type: 'qa_judgment' },
+        orderBy: { createdAt: 'desc' },
+      })
+    )
+  })
+
   test('avisarDono presente no objeto devolvido quando um notificador foi construído', () => {
     const notify = vi.fn(async (_mensagem: string) => undefined)
-    const opcoes = montarOpcoesDoJulgamento({ prisma: prismaFalso(), avisarDono: notify })
+    const opcoes = montarOpcoesDoJulgamento({
+      prisma: prismaFalso(),
+      projectId: 'proj_1',
+      avisarDono: notify,
+    })
 
     expect(opcoes.avisarDono).toBe(notify)
   })
 
   test('avisarDono AUSENTE (não presente-com-undefined) sem notificador — mesma disciplina do resto do scheduler', () => {
-    const opcoes = montarOpcoesDoJulgamento({ prisma: prismaFalso() })
+    const opcoes = montarOpcoesDoJulgamento({ prisma: prismaFalso(), projectId: 'proj_1' })
 
     // `in` e não `toBeUndefined()`: a regressão que este teste pega é a
     // chave existir com valor `undefined` (o que `runQaMissionViaRails`

@@ -1032,6 +1032,14 @@ export async function runQaMissionViaRails(
     // retrabalho: a reprovação da vez faz parte da sequência que está sendo
     // medida. Best-effort — não conseguir guardar não pode impedir o parecer
     // de existir, que é o que o dev lê.
+    // A aproximação conhecida: `julgadoComCiVermelho` é o motor reprovando com
+    // o CI vermelho, e dali não se sabe se ele reprovou POR causa do CI ou se
+    // achou um defeito de verdade no mesmo instante. Contar como portão é o
+    // lado seguro para a ESCALADA (o dev tem o que fazer nos dois casos:
+    // consertar o CI), mas estreitaria o caminho de volta se ele fosse só a
+    // reprovação de código. Por isso o caminho de volta não depende só dela:
+    // uma APROVAÇÃO também zera a conta, e ela é prova direta de que a esteira
+    // consegue levar uma entrega deste projeto até o fim.
     const peloPortao = barradoPorTamanho || julgadoComCiVermelho || rebaixadoSoPeloCi
     if (options.registrarJulgamento) {
       await options
@@ -1048,9 +1056,23 @@ export async function runQaMissionViaRails(
         const historico = await options.lerHistoricoDoProjeto(options.repository)
         const decisao = decidirSobreOProjeto(historico, options.repository)
         if (decisao.acao === 'escalar') {
-          projetoTravado = true
-          if (options.avisarDono) {
-            await options.avisarDono(`GitOrch: ${decisao.diagnostico}`).catch(() => undefined)
+          // Travar o projeto só vale se o dono FICAR SABENDO. Sem aviso
+          // entregue, o dev não é chamado, o commit não muda, o skip de "já
+          // julgado" nunca reabre a entrega e ninguém percebe — mordaça
+          // completa. Aviso que falha volta ao ciclo de sempre: repetir é ruim,
+          // emudecer é pior.
+          const avisado = options.avisarDono
+            ? await options
+                .avisarDono(`GitOrch: ${decisao.diagnostico}`)
+                .then(() => true)
+                .catch(() => false)
+            : false
+          projetoTravado = avisado
+          if (!avisado) {
+            options.onWarn?.(
+              `[qa] ${options.repository} bateu o teto de barradas seguidas, mas o aviso ao ` +
+                'dono não saiu — seguindo com o retrabalho para não emudecer a entrega'
+            )
           }
         }
       } catch (err) {

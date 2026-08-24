@@ -420,6 +420,13 @@ export function montarOpcoesDeDelegacao(args: {
  */
 export function montarOpcoesDoJulgamento(args: {
   prisma: PrismaDevSession
+  /**
+   * O projeto DESTA iteração. Vem pronto porque só quem itera sabe de quem é o
+   * repositório: `wingId` não é único global (dois clientes podem cadastrar o
+   * mesmo endereço), então procurar o projeto por endereço aqui dentro
+   * contaria a reprovação de um dono na conta do outro.
+   */
+  projectId: string
   avisarDono?: ((mensagem: string) => Promise<void>) | undefined
 }): Required<Omit<VigiliaDoJulgamentoOptions, 'avisarDono'>> &
   Pick<VigiliaDoJulgamentoOptions, 'avisarDono'> {
@@ -434,12 +441,13 @@ export function montarOpcoesDoJulgamento(args: {
     registrarJulgamento: (a) =>
       registrarJulgamento({
         prisma: args.prisma as unknown as PrismaDoHistorico,
-        ...a,
+        projectId: args.projectId,
+        peloPortao: a.peloPortao,
       }),
-    lerHistoricoDoProjeto: (repositorio) =>
+    lerHistoricoDoProjeto: () =>
       lerHistoricoDoProjeto({
         prisma: args.prisma as unknown as PrismaDoHistorico,
-        repositorio,
+        projectId: args.projectId,
       }),
     ...(args.avisarDono ? { avisarDono: args.avisarDono } : {}),
   }
@@ -2537,6 +2545,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                     // dono nunca é avisado.
                     ...montarOpcoesDoJulgamento({
                       prisma: app.prisma as unknown as PrismaDevSession,
+                      projectId: project.id,
                       avisarDono,
                     }),
                     // Fase 1 do QA (Reconhecimento): só entra quando este QA foi

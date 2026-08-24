@@ -9,20 +9,15 @@ import {
 
 function prismaFake(over: Partial<PrismaDoHistorico> = {}): PrismaDoHistorico {
   return {
-    project: { findFirst: vi.fn().mockResolvedValue({ id: 'proj_1' }) },
     event: { create: vi.fn().mockResolvedValue({}), findMany: vi.fn().mockResolvedValue([]) },
     ...over,
   } as PrismaDoHistorico
 }
 
 describe('registrarJulgamento', () => {
-  it('guarda o julgamento no projeto do repositório', async () => {
+  it('guarda o julgamento no projeto', async () => {
     const prisma = prismaFake()
-    await registrarJulgamento({
-      prisma,
-      repositorio: 'loureng/patinhas-3d-crafts',
-      peloPortao: true,
-    })
+    await registrarJulgamento({ prisma, projectId: 'proj_1', peloPortao: true })
     expect(prisma.event.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -34,11 +29,18 @@ describe('registrarJulgamento', () => {
     )
   })
 
-  // Inventar um projeto para pendurar o evento seria pior que não guardar.
-  it('repositório que não é projeto nosso não vira evento', async () => {
-    const prisma = prismaFake({ project: { findFirst: vi.fn().mockResolvedValue(null) } })
-    await registrarJulgamento({ prisma, repositorio: 'estranho/repo', peloPortao: true })
-    expect(prisma.event.create).not.toHaveBeenCalled()
+  // `wingId` NÃO é único global (o schema tem @@unique([userId, wingId])):
+  // dois clientes podem cadastrar o mesmo repositório. Procurar o projeto por
+  // endereço aqui dentro contaria a reprovação de um dono na conta do outro.
+  // Por isso o projeto vem PRONTO de quem chama, que já sabe de quem é.
+  it('grava no projeto que recebeu, sem procurar por endereço de repositório', async () => {
+    const prisma = prismaFake()
+    await registrarJulgamento({ prisma, projectId: 'proj_do_cliente_b', peloPortao: false })
+    expect(prisma.event.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ projectId: 'proj_do_cliente_b' }),
+      })
+    )
   })
 })
 
@@ -53,7 +55,7 @@ describe('lerHistoricoDoProjeto', () => {
         ]),
       },
     })
-    const h = await lerHistoricoDoProjeto({ prisma, repositorio: 'dono/r' })
+    const h = await lerHistoricoDoProjeto({ prisma, projectId: 'proj_1' })
     expect(h).toHaveLength(2)
     expect(h[0]?.peloPortao).toBe(true)
     expect(h[1]?.peloPortao).toBe(false)
@@ -77,12 +79,22 @@ describe('lerHistoricoDoProjeto', () => {
         ]),
       },
     })
-    const h = await lerHistoricoDoProjeto({ prisma, repositorio: 'dono/r' })
+    const h = await lerHistoricoDoProjeto({ prisma, projectId: 'proj_1' })
     expect(h.every((e) => e.peloPortao === false)).toBe(true)
   })
 
-  it('projeto desconhecido tem histórico vazio, não erro', async () => {
-    const prisma = prismaFake({ project: { findFirst: vi.fn().mockResolvedValue(null) } })
-    expect(await lerHistoricoDoProjeto({ prisma, repositorio: 'x/y' })).toEqual([])
+  it('projeto sem julgamento nenhum tem histórico vazio, não erro', async () => {
+    const prisma = prismaFake()
+    expect(await lerHistoricoDoProjeto({ prisma, projectId: 'proj_novo' })).toEqual([])
+  })
+
+  // Lê SÓ deste projeto. Sem o filtro, o histórico de um cliente entraria na
+  // conta do outro no mesmo repositório.
+  it('filtra pelo projeto que recebeu', async () => {
+    const prisma = prismaFake()
+    await lerHistoricoDoProjeto({ prisma, projectId: 'proj_a' })
+    expect((prisma.event.findMany as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toMatchObject({
+      where: { projectId: 'proj_a', type: TIPO_DO_EVENTO },
+    })
   })
 })
