@@ -88,9 +88,9 @@ jobs:
             # Dedup: já existe issue para este alerta CodeQL?
             RAW_EXISTING=$(gh api \
               -H "Accept: application/vnd.github+json" \
-              "/repos/${{ github.repository }}/issues?state=all&per_page=100&labels=jules" 2>/dev/null || echo "")
-            if ! echo "$RAW_EXISTING" | jq . >/dev/null 2>&1; then
-              echo "::warning::Retorno de issues não é um JSON válido. Assumindo que não existe issue."
+              "/repos/${{ github.repository }}/issues?state=all&per_page=100&labels=jules" 2>/dev/null || true)
+            if [ "$(echo "$RAW_EXISTING" | jq -r 'type' 2>/dev/null)" != "array" ]; then
+              echo "::warning::Retorno de issues não é um array (pode ser erro 404/403). Assumindo que não existe issue."
               EXISTING=""
             else
               EXISTING=$(echo "$RAW_EXISTING" | jq ".[] | select(.body | contains(\"codeql-alert-number: $ALERT_NUM\")) | .number" 2>/dev/null || echo "")
@@ -126,8 +126,8 @@ jobs:
                 "/repos/${{ github.repository }}/issues" \
                 --input "$REQUEST_FILE" 2>/dev/null || true)
               rm -f "$REQUEST_FILE"
-              if ! echo "$RAW_ISSUE_OUTPUT" | jq . >/dev/null 2>&1; then
-                echo "::error::Retorno de criação de issue não é um JSON válido. Falha ao criar issue para o alerta CodeQL #$ALERT_NUM"
+              if [ "$(echo "$RAW_ISSUE_OUTPUT" | jq -r 'type' 2>/dev/null)" != "object" ]; then
+                echo "::error::Retorno de criação de issue não é um objeto JSON. Falha ao criar issue para o alerta CodeQL #$ALERT_NUM"
                 echo "$RAW_ISSUE_OUTPUT"
                 exit 1
               fi
