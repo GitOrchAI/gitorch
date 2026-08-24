@@ -5,8 +5,7 @@
   "workspaces": [
     "packages/*",
     "apps/*",
-    "runtime/*",
-    "db"
+    "runtime/*"
   ],
   "packageManager": "pnpm@9.4.0",
   "scripts": {
