@@ -727,7 +727,7 @@ const PREFIXO_DO_PROJETO = /^([^:\n]{1,80}):\s*([\s\S]+)$/
  * projeto só. Empatou, o bot pergunta de novo (listando os endereços) em vez de
  * sortear.
  */
-function acharProjeto(
+export function acharProjeto(
   projetos: ProjetoParaDesejo[],
   pedido: string
 ): { projeto: ProjetoParaDesejo; texto: string } | null {
@@ -735,17 +735,73 @@ function acharProjeto(
   if (projetos.length === 1 && primeiro) return { projeto: primeiro, texto: pedido }
 
   const casado = PREFIXO_DO_PROJETO.exec(pedido)
-  if (!casado) return null
-  const escolha = (casado[1] ?? '').trim().toLowerCase()
-  const resto = (casado[2] ?? '').trim()
+  if (casado) {
+    const escolha = (casado[1] ?? '').trim().toLowerCase()
+    const resto = (casado[2] ?? '').trim()
+    if (resto !== '') {
+      const porRepo = projetos.find((p) => p.repo.trim().toLowerCase() === escolha)
+      if (porRepo) return { projeto: porRepo, texto: resto }
+
+      const porNome = projetos.filter((p) => p.nome.trim().toLowerCase() === escolha)
+      const unico = porNome.length === 1 ? porNome[0] : undefined
+      if (unico) return { projeto: unico, texto: resto }
+    }
+  }
+
+  return porApelidoNoComeco(projetos, pedido)
+}
+
+/** Palavras que só ligam a frase e não nomeiam projeto nenhum. */
+const PREPOSICOES = new Set(['no', 'na', 'em', 'do', 'da', 'para', 'pro', 'pra'])
+
+/**
+ * O projeto dito com o APELIDO, nas primeiras palavras — decisão D33 do dono.
+ *
+ * Ele tentou três vezes e foi recusado nas três, escrevendo "no patinhas" e
+ * "no patinhas-3d-crafts". O casador exigia dois-pontos, e sem eles nada
+ * casava. A resposta do bot mostrava o formato certo, mas ninguém escreve
+ * assim.
+ *
+ * DUAS RESTRIÇÕES, e as duas existem para o pedido nunca cair no repositório
+ * errado:
+ *
+ * 1. SÓ NO COMEÇO. "quero avisar o time do patinhas" não é escolher projeto, é
+ *    texto do pedido — casar em qualquer posição roubaria palavras do desejo.
+ * 2. SÓ QUANDO UM ÚNICO projeto casa. Empatou, devolve nulo e o bot pergunta.
+ *    Sortear mandaria o desejo para o repositório errado sem ninguém perceber,
+ *    que é pior que recusar.
+ */
+function porApelidoNoComeco(
+  projetos: ProjetoParaDesejo[],
+  pedido: string
+): { projeto: ProjetoParaDesejo; texto: string } | null {
+  const palavras = pedido.trim().split(/\s+/)
+  let i = 0
+  while (i < palavras.length && PREPOSICOES.has((palavras[i] ?? '').toLowerCase())) i += 1
+  const candidata = (palavras[i] ?? '').toLowerCase().replace(/[.,;:]+$/, '')
+  if (candidata === '') return null
+
+  const resto = palavras
+    .slice(i + 1)
+    .join(' ')
+    .trim()
+  // Apelido sem pedido nenhum não vira desejo vazio.
   if (resto === '') return null
 
-  const porRepo = projetos.find((p) => p.repo.trim().toLowerCase() === escolha)
-  if (porRepo) return { projeto: porRepo, texto: resto }
+  const casam = projetos.filter((p) => {
+    const nome = p.nome.trim().toLowerCase()
+    const repo = p.repo.trim().toLowerCase()
+    const so = repo.split('/').pop() ?? ''
+    return (
+      nome === candidata ||
+      repo === candidata ||
+      so === candidata ||
+      nome.includes(candidata) ||
+      so.includes(candidata)
+    )
+  })
 
-  const porNome = projetos.filter((p) => p.nome.trim().toLowerCase() === escolha)
-  const unico = porNome.length === 1 ? porNome[0] : undefined
-  return unico ? { projeto: unico, texto: resto } : null
+  return casam.length === 1 ? { projeto: casam[0]!, texto: resto } : null
 }
 
 /**
