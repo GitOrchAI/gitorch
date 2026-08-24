@@ -4,7 +4,8 @@
   "private": true,
   "workspaces": [
     "packages/*",
-    "apps/*",
+    "apps/control-plane",
+    "apps/web",
     "runtime/*",
     "db"
   ],
