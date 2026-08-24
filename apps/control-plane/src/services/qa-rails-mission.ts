@@ -26,6 +26,8 @@ import {
   MARCA_SEM_PODER_DE_MESCLAR,
   MARCA_DE_REPROVACAO_CONDICIONAL,
   MARCA_JULGADO_COM_CI_VERMELHO,
+  MARCA_DE_LEGADO_REJULGADO,
+  temMarcaDeRejulgamentoDeLegado,
   MARCA_DE_APROVACAO,
   MARCA_DO_PARECER,
 } from './parecer-do-qa.js'
@@ -36,6 +38,7 @@ import {
   type EntregaJulgada,
 } from './reprovacao-que-ensina.js'
 import { ciTerminouVerde, estadoDoCi } from './estado-da-verificacao-do-github.js'
+import { decidirSobreLegado } from './rejulgar-legados.js'
 
 // Missão do QA nos TRILHOS (F3.6): acha a PR do Jules que precisa de julgamento,
 // monta o snapshot (diff + Verification Criteria da issue + estado do CI), o
@@ -271,6 +274,14 @@ export function buildJulesReworkComment(comment: QaVerdictForm['comment']): stri
   ].join('\n\n')
 }
 
+/** Quando a review foi publicada. `null` quando o GitHub não disse. */
+function dataDaReview(review?: { submitted_at?: string } | null): Date | null {
+  const cru = review?.submitted_at
+  if (!cru) return null
+  const d = new Date(cru)
+  return Number.isFinite(d.getTime()) ? d : null
+}
+
 export async function runQaMissionViaRails(
   options: QaRailsMissionOptions
 ): Promise<QaRailsMissionResult> {
@@ -332,6 +343,8 @@ export async function runQaMissionViaRails(
   // "contar mais um fracasso sobre o mesmo commit" de "commit novo, começar
   // do zero" na hora de gravar `mergeFailures` mais abaixo.
   let retomandoAprovacaoMesmoCommit = false
+  /** Este ciclo é o rejulgamento único de uma entrega presa por régua velha. */
+  let retomouLegado = false
   for (const p of Array.isArray(prs) ? prs : []) {
     if (p.draft) continue
 
@@ -503,10 +516,57 @@ export async function runQaMissionViaRails(
       }
     }
 
+    // O LEGADO: reprovação escrita ANTES de o produto passar a aceitar job
+    // `skipped` como parte de um CI verde. Ela não tem — nem podia ter — a
+    // marca do portão, porque a marca nasceu depois; e o corpo de uma
+    // reprovação de CÓDIGO é idêntico ao de uma do portão, então ler o texto
+    // não distingue as duas. A evidência é outra: mesmo commit, e verde pela
+    // régua de HOJE. Uma vez só, e nunca depois do corte — senão isto viraria
+    // segunda chance permanente, que é a trava que ninguém pode afrouxar.
+    let legadoMereceUmaChance = false
+    if (
+      veredito.delegado &&
+      aindaPodeTentarMesclar &&
+      reviewMarcadaNesteHead &&
+      !reprovadoPeloPortaoComCiVerdeAgora &&
+      !foiAprovacao &&
+      p.head?.sha
+    ) {
+      const decisao = decidirSobreLegado({
+        numero: p.number,
+        headAtual: p.head.sha,
+        headJulgado: reviewMarcadaNesteHead.commit_id ?? null,
+        reprovadaEm: dataDaReview(reviewMarcadaNesteHead),
+        ciHoje: await (async () => {
+          try {
+            const checks = (await gh(
+              'GET',
+              `/repos/${options.repository}/commits/${p.head?.sha}/check-runs`
+            )) as { check_runs?: Array<{ conclusion?: string; status?: string }> }
+            return estadoDoCi(checks.check_runs ?? [])
+          } catch {
+            // Não saber o estado é "não sei", e "não sei" nunca destrava.
+            return 'unknown' as const
+          }
+        })(),
+        delegada: veredito.delegado,
+        jaRejulgada: temMarcaDeRejulgamentoDeLegado(reviewMarcadaNesteHead),
+      })
+      legadoMereceUmaChance = decisao.acao === 'rejulgar'
+      if (legadoMereceUmaChance) {
+        options.onWarn?.(
+          `[qa] PR #${p.number}: ${decisao.motivo} — dando o rejulgamento único do legado`
+        )
+      }
+    }
+
     const deveRejulgar =
       veredito.delegado &&
       aindaPodeTentarMesclar &&
-      (foiAprovacao || parecerSobPremissaErrada || reprovadoPeloPortaoComCiVerdeAgora)
+      (foiAprovacao ||
+        parecerSobPremissaErrada ||
+        reprovadoPeloPortaoComCiVerdeAgora ||
+        legadoMereceUmaChance)
 
     if (reviewMarcadaNesteHead && !deveRejulgar) continue
 
@@ -518,9 +578,15 @@ export async function runQaMissionViaRails(
     // só existe quando nenhum merge chegou a ser tentado naquele head —, então
     // é um no-op. Mas a invariante é frágil: bastaria mudar quando o merge é
     // tentado para isto virar subcontagem real de fracassos.
+    // O legado entra aqui pelo MESMO motivo que a reprovação do portão: mesmo
+    // commit, e nenhum merge chegou a ser tentado naquele ciclo. Deixá-lo de
+    // fora zeraria o contador de fracassos e afrouxaria o teto de tentativas
+    // justamente para os PRs mais antigos.
     retomandoAprovacaoMesmoCommit = Boolean(
-      reviewMarcadaNesteHead && (foiAprovacao || reprovadoPeloPortaoComCiVerdeAgora)
+      reviewMarcadaNesteHead &&
+        (foiAprovacao || reprovadoPeloPortaoComCiVerdeAgora || legadoMereceUmaChance)
     )
+    retomouLegado = legadoMereceUmaChance
     break
   }
   if (!target) {
@@ -801,6 +867,9 @@ export async function runQaMissionViaRails(
   // do repositório não distingue "esta entrega tem defeito" de "esta entrega
   // não coube" — e é essa distinção que faz a contagem de projeto travado
   // significar alguma coisa.
+  // Carimba que o legado já teve a chance dele, para não voltar a cada
+  // varredura. Vai no parecer NOVO, que é onde a próxima leitura procura.
+  const marcaDoLegado = retomouLegado ? `\n${MARCA_DE_LEGADO_REJULGADO}` : ''
   const barradoPorTamanho = effectiveVerdict === 'request_changes' && truncado
   const marcaDoPortao = barradoPorTamanho
     ? `\n${MARCA_DE_ENTREGA_GRANDE_DEMAIS}`
@@ -901,7 +970,7 @@ export async function runQaMissionViaRails(
       // de "já tem parecer" procura depois para distinguir aprovação de
       // reprovação. Enquanto eram duas cadeias iguais por coincidência,
       // mexer no texto aqui deixaria a leitura cega sem quebrar teste nenhum.
-      `${JULES_MARKER}\nGitOrch QA ${MARCA_DE_APROVACAO} — criteria met, CI green.\n\n${verdict.comment.goal}${avisoDeNaoMesclar}`
+      `${JULES_MARKER}${marcaDoLegado}\nGitOrch QA ${MARCA_DE_APROVACAO} — criteria met, CI green.\n\n${verdict.comment.goal}${avisoDeNaoMesclar}`
     )
 
     // Task 8 ("julga todos, mescla só o que delegou"): o QUARTO porteiro,
@@ -1025,7 +1094,7 @@ export async function runQaMissionViaRails(
   } else {
     await postarReview(
       reviewEvent,
-      `${JULES_MARKER}${marcaDoPortao}\nGitOrch QA verdict: REQUEST CHANGES (see comment).${explicacaoDoTamanho}${avisoDeNaoMesclar}`
+      `${JULES_MARKER}${marcaDoPortao}${marcaDoLegado}\nGitOrch QA verdict: REQUEST CHANGES (see comment).${explicacaoDoTamanho}${avisoDeNaoMesclar}`
     )
 
     // Este julgamento entra na conta do repositório ANTES de decidir se pede
