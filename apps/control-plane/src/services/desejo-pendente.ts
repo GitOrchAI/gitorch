@@ -31,6 +31,9 @@ export const PRAZO_DO_PENDENTE_MS = 24 * 60 * 60 * 1000
  */
 export const TETO_DE_BOTOES = 12
 
+/** Teto do `callback_data` no Telegram. Acima disso o botão é recusado por lá. */
+export const TETO_DO_CALLBACK_DATA_BYTES = 64
+
 export interface PendenteGuardado {
   id: string
   userId: string
@@ -72,8 +75,8 @@ export function decidirSobrePendente(
 export interface ProjetoDoBotao {
   /** O que a pessoa lê no botão. */
   rotulo: string
-  /** O endereço real do repositório — a resposta que o clique carrega. */
-  repo: string
+  /** A identidade ESTÁVEL do projeto — é ela que o clique carrega. */
+  id: string
 }
 
 export interface TecladoDeProjetos {
@@ -85,27 +88,34 @@ export interface TecladoDeProjetos {
  * é longo: lado a lado o Telegram corta o nome e dois projetos parecidos ficam
  * indistinguíveis — exatamente o erro que o botão existe para evitar.
  *
- * O botão carrega o ÍNDICE, nunca o endereço: `callback_data` tem teto de 64
- * bytes e `dono/repositorio-com-nome-comprido` estoura. O índice é resolvido
- * contra a lista RECALCULADA no clique, então um projeto que saiu do ar no meio
- * do caminho não vira destino válido.
+ * O botão carrega a IDENTIDADE do projeto, nunca a POSIÇÃO dele na lista. A
+ * posição parece bastar e não basta: entre a pergunta e o toque cabe um dia
+ * inteiro, e um projeto desativado no meio do caminho encurta a lista. Quem
+ * tinha `[A,B,C,D]` e clicou no terceiro botão encontraria D no lugar de C com
+ * o A fora — dentro dos limites, sem erro nenhum, e o pedido nasceria calado no
+ * repositório errado. Endereço também não serve: `callback_data` tem teto de 64
+ * bytes e `dono/repositorio-com-nome-comprido` estoura.
+ *
+ * Devolve `null` quando a identidade não cabe no teto — aí o chamador usa o
+ * texto de sempre, que dá mais trabalho mas nunca erra o destino.
  */
 export function montarTecladoDeProjetos(
   projetos: ProjetoDoBotao[],
   pendenteId: string
-): TecladoDeProjetos {
-  return {
-    inline_keyboard: projetos
-      .slice(0, TETO_DE_BOTOES)
-      .map((p, i) => [
-        { text: p.rotulo, callback_data: `${PREFIXO_DO_BOTAO_DE_PROJETO}:${pendenteId}:${i}` },
-      ]),
+): TecladoDeProjetos | null {
+  const linhas: { text: string; callback_data: string }[][] = []
+  for (const p of projetos.slice(0, TETO_DE_BOTOES)) {
+    const dado = `${PREFIXO_DO_BOTAO_DE_PROJETO}:${pendenteId}:${p.id}`
+    if (Buffer.byteLength(dado, 'utf8') > TETO_DO_CALLBACK_DATA_BYTES) return null
+    linhas.push([{ text: p.rotulo, callback_data: dado }])
   }
+  return linhas.length === 0 ? null : { inline_keyboard: linhas }
 }
 
 export interface CliqueDeProjeto {
   pendenteId: string
-  indice: number
+  /** A identidade do projeto escolhido, conferida contra a lista de AGORA. */
+  projetoId: string
 }
 
 /**
@@ -122,12 +132,8 @@ export function lerCliqueDeProjeto(data: string | undefined | null): CliqueDePro
   const pendenteId = partes[1]
   if (!pendenteId) return null
 
-  // Só dígitos: `Number('1e3')` daria 1000 e `Number(' 2')` daria 2. Índice
-  // vem de botão nosso e é sempre um inteiro escrito por extenso.
-  const cru = partes[2]
-  if (!cru || !/^\d+$/.test(cru)) return null
-  const indice = Number(cru)
-  if (!Number.isSafeInteger(indice)) return null
+  const projetoId = partes[2]
+  if (!projetoId) return null
 
-  return { pendenteId, indice }
+  return { pendenteId, projetoId }
 }

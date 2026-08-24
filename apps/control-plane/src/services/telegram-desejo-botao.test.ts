@@ -37,7 +37,7 @@ function deps(over: Partial<TelegramDesejoDeps> = {}): TelegramDesejoDeps {
     criarIssue: vi.fn().mockResolvedValue({ numero: 4242 }),
     guardarPendente: vi.fn().mockResolvedValue({ id: 'pnd_1' }),
     lerPendente: vi.fn().mockResolvedValue(pendenteGuardado()),
-    marcarPendenteUsado: vi.fn().mockResolvedValue(undefined),
+    marcarPendenteUsado: vi.fn().mockResolvedValue(true),
     ...over,
   }
 }
@@ -75,6 +75,7 @@ describe('a pergunta vira BOTÃO', () => {
     expect(linhas).toHaveLength(2)
     expect(linhas[0]?.[0]?.text).toContain('GitOrchAI/gitorch')
     expect(linhas[1]?.[0]?.text).toContain('loureng/patinhas-3d-crafts')
+    expect(linhas[1]?.[0]?.callback_data).toBe('desejo:pnd_1:p2')
     expect(r?.text).not.toMatch(/Diga qual/i)
   })
 
@@ -110,7 +111,7 @@ describe('a pergunta vira BOTÃO', () => {
 describe('o toque no botão registra o pedido', () => {
   it('toca no patinhas e a issue nasce no patinhas, com o texto original', async () => {
     const d = deps()
-    const r = await tratarCliqueDeProjeto(d, clique('desejo:pnd_1:1'), AGORA)
+    const r = await tratarCliqueDeProjeto(d, clique('desejo:pnd_1:p2'), AGORA)
     expect(d.criarIssue).toHaveBeenCalledWith(
       expect.objectContaining({ repo: 'loureng/patinhas-3d-crafts' })
     )
@@ -132,7 +133,7 @@ describe('o toque no botão registra o pedido', () => {
     const d = deps({
       lerPendente: vi.fn().mockResolvedValue(pendenteGuardado({ usadoEm: new Date() })),
     })
-    const r = await tratarCliqueDeProjeto(d, clique('desejo:pnd_1:0'), AGORA)
+    const r = await tratarCliqueDeProjeto(d, clique('desejo:pnd_1:p1'), AGORA)
     expect(d.criarIssue).not.toHaveBeenCalled()
     expect(r?.text).toBe('')
   })
@@ -142,21 +143,22 @@ describe('o toque no botão registra o pedido', () => {
     const d = deps({
       marcarPendenteUsado: vi.fn().mockImplementation(async () => {
         ordem.push('carimbo')
+        return true
       }),
       criarIssue: vi.fn().mockImplementation(async () => {
         ordem.push('github')
         return { numero: 1 }
       }),
     })
-    await tratarCliqueDeProjeto(d, clique('desejo:pnd_1:0'), AGORA)
+    await tratarCliqueDeProjeto(d, clique('desejo:pnd_1:p1'), AGORA)
     expect(ordem).toEqual(['carimbo', 'github'])
   })
 
-  it('carimbo que falha não deixa a issue nascer', async () => {
+  it('carimbo que explode não deixa a issue nascer', async () => {
     const d = deps({
-      marcarPendenteUsado: vi.fn().mockRejectedValue(new Error('já usado')),
+      marcarPendenteUsado: vi.fn().mockRejectedValue(new Error('banco fora')),
     })
-    const r = await tratarCliqueDeProjeto(d, clique('desejo:pnd_1:0'), AGORA)
+    const r = await tratarCliqueDeProjeto(d, clique('desejo:pnd_1:p1'), AGORA)
     expect(d.criarIssue).not.toHaveBeenCalled()
     expect(r?.text).toMatch(/não consegui/i)
   })
@@ -169,14 +171,14 @@ describe('o toque no botão registra o pedido', () => {
           pendenteGuardado({ createdAt: new Date(AGORA.getTime() - PRAZO_DO_PENDENTE_MS - 1) })
         ),
     })
-    const r = await tratarCliqueDeProjeto(d, clique('desejo:pnd_1:0'), AGORA)
+    const r = await tratarCliqueDeProjeto(d, clique('desejo:pnd_1:p1'), AGORA)
     expect(d.criarIssue).not.toHaveBeenCalled()
     expect(r?.text).toMatch(/mais de um dia/i)
   })
 
   it('pendente que sumiu recebe recado próprio, não "venceu"', async () => {
     const d = deps({ lerPendente: vi.fn().mockResolvedValue(null) })
-    const r = await tratarCliqueDeProjeto(d, clique('desejo:sumiu:0'), AGORA)
+    const r = await tratarCliqueDeProjeto(d, clique('desejo:sumiu:p1'), AGORA)
     expect(r?.text).toMatch(/não achei mais/i)
   })
 
@@ -184,7 +186,7 @@ describe('o toque no botão registra o pedido', () => {
   // repositório errado.
   it('clique de OUTRA conversa com id de pendente alheio não registra nada', async () => {
     const d = deps()
-    const r = await tratarCliqueDeProjeto(d, clique('desejo:pnd_1:1', 999888), AGORA)
+    const r = await tratarCliqueDeProjeto(d, clique('desejo:pnd_1:p2', 999888), AGORA)
     expect(d.criarIssue).not.toHaveBeenCalled()
     expect(r?.text).toMatch(/não achei mais/i)
   })
@@ -193,23 +195,68 @@ describe('o toque no botão registra o pedido', () => {
     const d = deps({
       lerPendente: vi.fn().mockResolvedValue(pendenteGuardado({ userId: 'outro_dono' })),
     })
-    const r = await tratarCliqueDeProjeto(d, clique('desejo:pnd_1:1'), AGORA)
+    const r = await tratarCliqueDeProjeto(d, clique('desejo:pnd_1:p2'), AGORA)
     expect(d.criarIssue).not.toHaveBeenCalled()
     expect(r?.text).toMatch(/não achei mais/i)
   })
 
   // Entre a pergunta e o toque o projeto pode ter saído do ar. O de baixo na
   // lista NÃO é "o mais parecido" — é outro repositório.
-  it('índice fora da lista de agora não escorrega para o projeto vizinho', async () => {
+  it('projeto que saiu do ar não escorrega para o vizinho', async () => {
     const d = deps({ projetosDoDono: vi.fn().mockResolvedValue([GITORCH]) })
-    const r = await tratarCliqueDeProjeto(d, clique('desejo:pnd_1:1'), AGORA)
+    const r = await tratarCliqueDeProjeto(d, clique('desejo:pnd_1:p2'), AGORA)
     expect(d.criarIssue).not.toHaveBeenCalled()
     expect(r?.text).toMatch(/Diga qual/i)
   })
 
+  // ESTE é o caso que a posição no botão deixava passar calado: com um projeto
+  // ANTERIOR removido, a lista encurta e a mesma posição vira OUTRO
+  // repositório — dentro dos limites, sem erro nenhum.
+  it('projeto removido ANTES do escolhido não desloca o destino do pedido', async () => {
+    // Na pergunta a lista era [p0, GITORCH, PATINHAS, p3] e o dono clicou no
+    // TERCEIRO botão, o patinhas. Depois disso o p0 foi desativado, então a
+    // lista de agora é [GITORCH, PATINHAS, p3]: pela POSIÇÃO, o terceiro item
+    // passou a ser o p3 — outro repositório, dentro dos limites, sem erro
+    // nenhum. Pela IDENTIDADE, continua sendo o patinhas.
+    const P3: ProjetoParaDesejo = { id: 'p3', nome: 'terceiro', repo: 'dono/terceiro' }
+    const d = deps({ projetosDoDono: vi.fn().mockResolvedValue([GITORCH, PATINHAS, P3]) })
+    const r = await tratarCliqueDeProjeto(d, clique('desejo:pnd_1:p2'), AGORA)
+    expect(d.criarIssue).toHaveBeenCalledWith(
+      expect.objectContaining({ repo: 'loureng/patinhas-3d-crafts' })
+    )
+    expect(d.criarIssue).not.toHaveBeenCalledWith(
+      expect.objectContaining({ repo: 'dono/terceiro' })
+    )
+    expect(r?.text).toContain('4242')
+  })
+
+  // Perder a disputa de dois cliques NÃO é falha: o outro registrou. Dizer
+  // "não consegui" seria mentir sobre uma issue que existe.
+  it('quem perde a corrida do carimbo cala, não mente que falhou', async () => {
+    const d = deps({ marcarPendenteUsado: vi.fn().mockResolvedValue(false) })
+    const r = await tratarCliqueDeProjeto(d, clique('desejo:pnd_1:p2'), AGORA)
+    expect(d.criarIssue).not.toHaveBeenCalled()
+    expect(r?.text).toBe('')
+  })
+
+  // O laço de escuta é único e o offset já avançou: uma exceção aqui deixaria
+  // o dono sem resposta E descartaria os updates que vieram atrás no lote.
+  it('banco fora do ar vira recado, nunca exceção que sobe pro laço', async () => {
+    const d = deps({ lerPendente: vi.fn().mockRejectedValue(new Error('sem banco')) })
+    const r = await tratarCliqueDeProjeto(d, clique('desejo:pnd_1:p2'), AGORA)
+    expect(r?.text).toMatch(/não consegui/i)
+    expect(d.criarIssue).not.toHaveBeenCalled()
+  })
+
+  it('dono ilegível no meio do clique também vira recado', async () => {
+    const d = deps({ donoDoChat: vi.fn().mockRejectedValue(new Error('sem banco')) })
+    const r = await tratarCliqueDeProjeto(d, clique('desejo:pnd_1:p2'), AGORA)
+    expect(r?.text).toMatch(/não consegui/i)
+  })
+
   it('acesso perdido ao repositório barra o clique', async () => {
     const d = deps({ confirmarAcesso: vi.fn().mockResolvedValue(false) })
-    const r = await tratarCliqueDeProjeto(d, clique('desejo:pnd_1:1'), AGORA)
+    const r = await tratarCliqueDeProjeto(d, clique('desejo:pnd_1:p2'), AGORA)
     expect(d.criarIssue).not.toHaveBeenCalled()
     expect(r?.text).toMatch(/não tem mais acesso/i)
   })

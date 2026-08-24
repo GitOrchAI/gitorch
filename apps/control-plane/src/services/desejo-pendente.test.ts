@@ -5,6 +5,7 @@ import {
   lerCliqueDeProjeto,
   PRAZO_DO_PENDENTE_MS,
   TETO_DE_BOTOES,
+  TETO_DO_CALLBACK_DATA_BYTES,
   type PendenteGuardado,
 } from './desejo-pendente.js'
 
@@ -58,46 +59,60 @@ describe('decidirSobrePendente', () => {
 
 describe('montarTecladoDeProjetos', () => {
   const projetos = [
-    { rotulo: 'gitorch (GitOrchAI/gitorch)', repo: 'GitOrchAI/gitorch' },
-    {
-      rotulo: 'patinhas-3d-crafts (loureng/patinhas-3d-crafts)',
-      repo: 'loureng/patinhas-3d-crafts',
-    },
+    { rotulo: 'GitOrchAI/gitorch (gitorch)', id: 'proj_gitorch' },
+    { rotulo: 'loureng/patinhas-3d-crafts', id: 'proj_patinhas' },
   ]
 
   it('um projeto por linha, para nome comprido não ser cortado', () => {
     const t = montarTecladoDeProjetos(projetos, 'pnd_1')
-    expect(t.inline_keyboard).toHaveLength(2)
-    expect(t.inline_keyboard.every((linha) => linha.length === 1)).toBe(true)
-    expect(t.inline_keyboard[0]?.[0]?.text).toBe('gitorch (GitOrchAI/gitorch)')
+    expect(t?.inline_keyboard).toHaveLength(2)
+    expect(t?.inline_keyboard.every((linha) => linha.length === 1)).toBe(true)
+    expect(t?.inline_keyboard[0]?.[0]?.text).toBe('GitOrchAI/gitorch (gitorch)')
   })
 
-  it('o botão carrega o ÍNDICE, nunca o endereço — 64 bytes é o teto do Telegram', () => {
-    const comprido = [
-      {
-        rotulo: 'x',
-        repo: 'uma-organizacao-com-nome-muito-comprido/um-repositorio-com-nome-ainda-maior',
-      },
-    ]
-    const t = montarTecladoDeProjetos(comprido, 'cl9x0000qwertyuiopasdfghj')
-    const dado = t.inline_keyboard[0]?.[0]?.callback_data ?? ''
-    expect(dado).toBe('desejo:cl9x0000qwertyuiopasdfghj:0')
-    expect(Buffer.byteLength(dado, 'utf8')).toBeLessThanOrEqual(64)
-    expect(dado).not.toContain('uma-organizacao')
+  // A POSIÇÃO parece bastar e não basta: um projeto desativado entre a
+  // pergunta e o toque encurta a lista, e o terceiro botão passaria a apontar
+  // para outro repositório sem estourar limite nenhum.
+  it('o botão carrega a IDENTIDADE do projeto, não a posição dele na lista', () => {
+    const t = montarTecladoDeProjetos(projetos, 'pnd_1')
+    expect(t?.inline_keyboard[1]?.[0]?.callback_data).toBe('desejo:pnd_1:proj_patinhas')
+  })
+
+  it('cabe no teto de 64 bytes do Telegram', () => {
+    const t = montarTecladoDeProjetos(projetos, 'cl9x0000qwertyuiopasdfghj')
+    for (const linha of t?.inline_keyboard ?? []) {
+      expect(Buffer.byteLength(linha[0]?.callback_data ?? '', 'utf8')).toBeLessThanOrEqual(
+        TETO_DO_CALLBACK_DATA_BYTES
+      )
+    }
+  })
+
+  // Botão que o Telegram recusaria seria um botão morto. Devolver nulo manda o
+  // chamador para o texto de sempre, que dá mais trabalho e nunca erra.
+  it('identidade que não cabe no teto não vira botão calado: devolve nulo', () => {
+    const gigante = [{ rotulo: 'x', id: 'i'.repeat(80) }]
+    expect(montarTecladoDeProjetos(gigante, 'pnd_1')).toBeNull()
+  })
+
+  it('sem projeto nenhum não há teclado', () => {
+    expect(montarTecladoDeProjetos([], 'pnd_1')).toBeNull()
   })
 
   it('acima do teto o teclado para de crescer — parede de botões não é escolha', () => {
     const muitos = Array.from({ length: TETO_DE_BOTOES + 5 }, (_, i) => ({
       rotulo: `p${i}`,
-      repo: `dono/p${i}`,
+      id: `proj_${i}`,
     }))
-    expect(montarTecladoDeProjetos(muitos, 'pnd_1').inline_keyboard).toHaveLength(TETO_DE_BOTOES)
+    expect(montarTecladoDeProjetos(muitos, 'pnd_1')?.inline_keyboard).toHaveLength(TETO_DE_BOTOES)
   })
 })
 
 describe('lerCliqueDeProjeto', () => {
   it('lê o clique nosso', () => {
-    expect(lerCliqueDeProjeto('desejo:pnd_1:2')).toEqual({ pendenteId: 'pnd_1', indice: 2 })
+    expect(lerCliqueDeProjeto('desejo:pnd_1:proj_a')).toEqual({
+      pendenteId: 'pnd_1',
+      projetoId: 'proj_a',
+    })
   })
 
   it('NÃO rouba o clique da dúvida do PO, que viaja no mesmo canal', () => {
@@ -110,14 +125,17 @@ describe('lerCliqueDeProjeto', () => {
     expect(lerCliqueDeProjeto(undefined)).toBeNull()
     expect(lerCliqueDeProjeto('')).toBeNull()
     expect(lerCliqueDeProjeto('desejo:pnd_1')).toBeNull()
-    expect(lerCliqueDeProjeto('desejo::0')).toBeNull()
-    expect(lerCliqueDeProjeto('desejo:pnd_1:0:1')).toBeNull()
+    expect(lerCliqueDeProjeto('desejo::proj_a')).toBeNull()
+    expect(lerCliqueDeProjeto('desejo:pnd_1:')).toBeNull()
+    expect(lerCliqueDeProjeto('desejo:pnd_1:proj_a:extra')).toBeNull()
   })
 
-  it('índice tem que ser dígito puro: "1e3" viraria o projeto 1000', () => {
-    expect(lerCliqueDeProjeto('desejo:pnd_1:1e3')).toBeNull()
-    expect(lerCliqueDeProjeto('desejo:pnd_1: 2')).toBeNull()
-    expect(lerCliqueDeProjeto('desejo:pnd_1:-1')).toBeNull()
-    expect(lerCliqueDeProjeto('desejo:pnd_1:abc')).toBeNull()
+  // Ler o id não é o mesmo que confiar nele: quem decide se aquele projeto é
+  // do dono é `tratarCliqueDeProjeto`, contra a lista recalculada no clique.
+  it('id desconhecido é lido, e recusado depois pela lista de projetos', () => {
+    expect(lerCliqueDeProjeto('desejo:pnd_1:proj_de_outra_pessoa')).toEqual({
+      pendenteId: 'pnd_1',
+      projetoId: 'proj_de_outra_pessoa',
+    })
   })
 })
