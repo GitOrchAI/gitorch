@@ -50,11 +50,16 @@ jobs:
             ALERTS_JSON="[${{ github.event.inputs.alert_numbers }}]"
           else
             echo "Buscando todos os alertas de code scanning abertos..."
-            ALERT_NUMS=$(gh api \
+            RAW_OUTPUT=$(gh api \
               -H "Accept: application/vnd.github+json" \
-              "/repos/${{ github.repository }}/code-scanning/alerts?state=open&per_page=100" \
-              --jq '.[].number' | tr '\n' ',' | sed 's/,$//')
-            if [ -n "$ALERT_NUMS" ]; then ALERTS_JSON="[$ALERT_NUMS]"; else ALERTS_JSON="[]"; fi
+              "/repos/${{ github.repository }}/code-scanning/alerts?state=open&per_page=100" 2>/dev/null || true)
+            if [ "$(echo "$RAW_OUTPUT" | jq -r 'type' 2>/dev/null)" != "array" ]; then
+              echo "::warning::Retorno da API não é um array (pode ser erro 404/403). Retornando array vazio."
+              ALERTS_JSON="[]"
+            else
+              ALERT_NUMS=$(echo "$RAW_OUTPUT" | jq '.[].number' | tr '\n' ',' | sed 's/,$//')
+              if [ -n "$ALERT_NUMS" ]; then ALERTS_JSON="[$ALERT_NUMS]"; else ALERTS_JSON="[]"; fi
+            fi
           fi
           echo "alerts=$ALERTS_JSON" >> "$GITHUB_OUTPUT"
           echo "Alertas a processar: $ALERTS_JSON"
@@ -81,10 +86,15 @@ jobs:
             echo "==== CodeQL alerta #$ALERT_NUM ($((i+1))/$COUNT) ===="
 
             # Dedup: já existe issue para este alerta CodeQL?
-            EXISTING=$(gh api \
+            RAW_EXISTING=$(gh api \
               -H "Accept: application/vnd.github+json" \
-              "/repos/${{ github.repository }}/issues?state=all&per_page=100&labels=jules" \
-              --jq ".[] | select(.body | contains(\"codeql-alert-number: $ALERT_NUM\")) | .number" 2>/dev/null || echo "")
+              "/repos/${{ github.repository }}/issues?state=all&per_page=100&labels=jules" 2>/dev/null || echo "")
+            if ! echo "$RAW_EXISTING" | jq . >/dev/null 2>&1; then
+              echo "::warning::Retorno de issues não é um JSON válido. Assumindo que não existe issue."
+              EXISTING=""
+            else
+              EXISTING=$(echo "$RAW_EXISTING" | jq ".[] | select(.body | contains(\"codeql-alert-number: $ALERT_NUM\")) | .number" 2>/dev/null || echo "")
+            fi
 
             if [ -n "$EXISTING" ]; then
               echo "Já existe issue #$EXISTING para o alerta CodeQL #$ALERT_NUM. Pulando."
@@ -111,16 +121,21 @@ jobs:
                 --arg body "$BODY" \
                 --argjson labels "$(echo "$LABELS" | jq -R 'split(",")')" \
                 '{title: $title, body: $body, labels: $labels}' > "$REQUEST_FILE"
-              ISSUE_OUTPUT=$(gh api --method POST \
+              RAW_ISSUE_OUTPUT=$(gh api --method POST \
                 -H "Accept: application/vnd.github+json" \
                 "/repos/${{ github.repository }}/issues" \
-                --input "$REQUEST_FILE")
+                --input "$REQUEST_FILE" 2>/dev/null || true)
               rm -f "$REQUEST_FILE"
-              ISSUE_NUM=$(echo "$ISSUE_OUTPUT" | jq -r '.number // empty')
+              if ! echo "$RAW_ISSUE_OUTPUT" | jq . >/dev/null 2>&1; then
+                echo "::error::Retorno de criação de issue não é um JSON válido. Falha ao criar issue para o alerta CodeQL #$ALERT_NUM"
+                echo "$RAW_ISSUE_OUTPUT"
+                exit 1
+              fi
+              ISSUE_NUM=$(echo "$RAW_ISSUE_OUTPUT" | jq -r '.number // empty')
 
               if [ -z "$ISSUE_NUM" ]; then
                 echo "::error::Falha ao criar issue para o alerta CodeQL #$ALERT_NUM"
-                echo "$ISSUE_OUTPUT"
+                echo "$RAW_ISSUE_OUTPUT"
                 exit 1
               fi
               echo "Criada issue #$ISSUE_NUM"
@@ -131,7 +146,7 @@ jobs:
               gh api --method POST \
                 -H "Accept: application/vnd.github+json" \
                 "/repos/${{ github.repository }}/issues/$ISSUE_NUM/labels" \
-                --input "$LABEL_FILE" > /dev/null
+                --input "$LABEL_FILE" 2>/dev/null || true
               rm -f "$LABEL_FILE"
               echo "Label 'jules' adicionada à issue #$ISSUE_NUM"
             fi
