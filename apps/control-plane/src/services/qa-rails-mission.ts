@@ -584,7 +584,7 @@ export async function runQaMissionViaRails(
     // justamente para os PRs mais antigos.
     retomandoAprovacaoMesmoCommit = Boolean(
       reviewMarcadaNesteHead &&
-        (foiAprovacao || reprovadoPeloPortaoComCiVerdeAgora || legadoMereceUmaChance)
+      (foiAprovacao || reprovadoPeloPortaoComCiVerdeAgora || legadoMereceUmaChance)
     )
     retomouLegado = legadoMereceUmaChance
     break
