@@ -103,9 +103,25 @@ export const MARCA_DE_REPROVACAO_CONDICIONAL = '<!-- gitorch:qa:reprovado-pelo-p
  */
 export const MARCA_JULGADO_COM_CI_VERMELHO = '<!-- gitorch:qa:ci-vermelho-no-julgamento -->'
 
+/**
+ * Este parecer é o rejulgamento único dado a uma entrega presa por uma
+ * reprovação escrita antes de o produto corrigir a leitura do CI.
+ *
+ * Existe para a cortesia acontecer UMA vez: sem o carimbo, cada varredura
+ * reabriria o mesmo PR e viraria opinião repetida no pull request do cliente.
+ */
+export const MARCA_DE_LEGADO_REJULGADO = '<!-- gitorch:qa:legado-rejulgado -->'
+
+/** Este parecer já é o rejulgamento do legado? */
+export function temMarcaDeRejulgamentoDeLegado(review?: ReviewDoGithub | null): boolean {
+  return Boolean(review?.body?.includes(MARCA_DE_LEGADO_REJULGADO))
+}
+
 export interface ReviewDoGithub {
   body?: string
   commit_id?: string
+  /** Quando o parecer foi publicado — usado para separar o legado do novo. */
+  submitted_at?: string
 }
 
 /**
