@@ -38,6 +38,7 @@ describe('MIGRATION_LEDGER', () => {
       'github-token-refresh-migration.sql',
       'conserto-de-publicacao-migration.sql',
       'aviso-de-retrabalho-migration.sql',
+      'desejo-pendente-migration.sql',
     ])
   })
 })
