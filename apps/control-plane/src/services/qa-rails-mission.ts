@@ -1106,7 +1106,22 @@ export async function runQaMissionViaRails(
         // (mais acima) e pular esta entrega até o commit mudar. Best-effort,
         // mesmo padrão dos outros avisos deste arquivo: falhar ao notificar
         // não pode derrubar a missão.
-        if (fracassosAgora >= MAX_TENTATIVAS_DE_MERGE && options.avisarDono) {
+        // UM aviso por commit, e não um por tentativa.
+        //
+        // O dono recebeu a MESMA mensagem duas vezes sobre o PR #3762, no
+        // mesmo minuto. A condição era `>=`, e o contador só cresce: cada
+        // tentativa acima do teto avisava de novo. Três, quatro, cinco
+        // fracassos viravam três, quatro, cinco mensagens iguais.
+        //
+        // `=== ` resolve o caso comum e é o corte certo aqui: o contador sobe
+        // de um em um, gravado a cada fracasso, então o instante em que ele
+        // ATINGE o teto acontece uma vez só por commit. E o laço de descoberta
+        // já pula esta entrega enquanto `mergeFailures >= MAX` e o commit não
+        // muda, então nem há segunda passagem para contar.
+        //
+        // Commit novo zera o contador e o aviso volta — situação nova merece
+        // recado novo.
+        if (fracassosAgora === MAX_TENTATIVAS_DE_MERGE && options.avisarDono) {
           await options
             .avisarDono(
               `GitOrch: o merge do PR #${target.number} (${options.repository}) falhou ` +

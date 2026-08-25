@@ -1,6 +1,11 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createHash } from 'node:crypto'
-import { vigiarSessoes, type VigiaDeps, type EstadoLido } from './session-watch.js'
+import {
+  ESTADO_AGUARDANDO_QA,
+  vigiarSessoes,
+  type VigiaDeps,
+  type EstadoLido,
+} from './session-watch.js'
 import type { LinhaDeSessao } from './dev-session-store.js'
 import { MAX_NUDGES } from './jules-session-loop.js'
 
@@ -632,6 +637,51 @@ describe('vigiarSessoes', () => {
       await vigiarSessoes(deps)
       expect(deps.registrarResposta).toHaveBeenCalledWith(
         expect.objectContaining({ sessionName: 'sessions/semrede' })
+      )
+    })
+  })
+
+  describe('"PR entregue e aguardando QA" — o terceiro desfecho', () => {
+    // O dev externo devolve COMPLETED tanto para a entrega que produziu pull
+    // request quanto para a que terminou sem nada. Quem olha o quadro via as
+    // duas iguais, e o dono pediu para saber em que pé está cada entrega.
+    it('entrega com PR novo fica marcada como aguardando QA', async () => {
+      const deps = depsFalso({
+        sessoes: [linha({ sessionName: 'sessions/entregou', pullRequestNumber: null })],
+        consultarSessao: vi.fn(async () => ({
+          estado: 'COMPLETED',
+          numeroDoPr: 4242,
+          ultimaAtualizacao: agora.toISOString(),
+        })),
+      })
+      await vigiarSessoes(deps)
+
+      expect(deps.registrarPr).toHaveBeenCalledWith(expect.objectContaining({ numeroDoPr: 4242 }))
+      expect(deps.registrarEstado).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionName: 'sessions/entregou',
+          estado: ESTADO_AGUARDANDO_QA,
+        })
+      )
+      // E o juiz é acordado, que é a outra metade da ordem do dono.
+      expect(deps.dispararMissao).toHaveBeenCalledWith('qa', 'proj1')
+    })
+
+    // Entrega que terminou sem produzir nada continua sendo o que é: não pode
+    // aparecer no quadro como se estivesse esperando julgamento.
+    it('entrega concluída SEM pull request não vira aguardando QA', async () => {
+      const deps = depsFalso({
+        sessoes: [linha({ sessionName: 'sessions/vazia', pullRequestNumber: null })],
+        consultarSessao: vi.fn(async () => ({
+          estado: 'COMPLETED',
+          numeroDoPr: null,
+          ultimaAtualizacao: agora.toISOString(),
+        })),
+      })
+      await vigiarSessoes(deps)
+
+      expect(deps.registrarEstado).not.toHaveBeenCalledWith(
+        expect.objectContaining({ estado: ESTADO_AGUARDANDO_QA })
       )
     })
   })

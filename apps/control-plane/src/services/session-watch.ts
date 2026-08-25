@@ -27,6 +27,16 @@ import { decidirRespostaDaSessao, MAX_NUDGES } from './jules-session-loop.js'
 export const CADENCIA_DE_EXAME_MS = 10 * 60 * 1000
 
 /**
+ * O estado da entrega que já produziu pull request e espera julgamento.
+ *
+ * O dev externo devolve `COMPLETED` tanto para a sessão que entregou um pull
+ * request quanto para a que terminou sem produzir nada — quem olha o quadro vê
+ * as duas iguais. Este estado separa as duas, porque o dono pediu para saber em
+ * que pé está cada entrega, e "concluída" sem dizer o quê não responde isso.
+ */
+export const ESTADO_AGUARDANDO_QA = 'PR_ENTREGUE_AGUARDANDO_QA'
+
+/**
  * Quantas vezes reentregar um pedido de retrabalho antes de desistir e chamar
  * gente. Sem teto, um serviço fora do ar viraria laço infinito contra a API do
  * cliente; com teto, o silêncio tem prazo e alguém fica sabendo.
@@ -447,6 +457,21 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
               agora: deps.agora,
             })
             prsCapturados += 1
+            // "PR entregue e aguardando QA" — ordem do dono, 25/08: "Se o Dev
+            // assincrono entregar o PR é ajustado para PR entregue e aguardando
+            // QA entao o QA é acordado".
+            //
+            // O estado que o dev externo devolve é COMPLETED, e ele não
+            // distingue a entrega que produziu pull request da que não
+            // produziu nada. Quem olha o quadro via as duas iguais, e o dono
+            // pediu para saber em que pé está cada entrega. O carimbo de cima
+            // gravaria o COMPLETED cru; aqui ele é substituído pelo estado que
+            // conta a verdade do momento.
+            await deps.registrarEstado({
+              sessionName: linha.sessionName,
+              estado: ESTADO_AGUARDANDO_QA,
+              agora: deps.agora,
+            })
             // A linha só fecha na publicação — Fase 3.
             await deps.dispararMissao('qa', linha.projectId)
             break

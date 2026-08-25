@@ -2631,4 +2631,37 @@ describe('o motor reprovando sozinho com CI vermelho também volta atrás', () =
     expect(posted.reviews).toHaveLength(1)
     expect(posted.reviews[0]!.body).not.toContain('ci-vermelho-no-julgamento')
   })
+
+  describe('o aviso de merge falho chega UMA vez por commit', () => {
+    // O dono recebeu a mesma mensagem sobre o PR #3762 duas vezes no mesmo
+    // minuto. A condição era `>=` e o contador só cresce: cada tentativa acima
+    // do teto avisava de novo. Mensagem repetida faz ele parar de ler os
+    // avisos, que é pior do que não avisar.
+    it('avisa no instante em que o contador ATINGE o teto', async () => {
+      const avisos: string[] = []
+      const f = fakeFetch([{ number: 9, user: 'jules[bot]' }], undefined, {
+        mergeStatus: 405,
+        mergeBody: { message: 'Pull Request has merge conflicts' },
+      })
+      await runQaMissionViaRails({
+        repository: 'o/r',
+        githubToken: 't',
+        execute: async () => APPROVE,
+        fetchImpl: f,
+        sessoes: [
+          {
+            sessionName: 'sessions/1',
+            issueNumber: 7,
+            pullRequestNumber: 9,
+            mergeFailures: MAX_TENTATIVAS_DE_MERGE - 1,
+          } as never,
+        ],
+        avisarDono: async (m: string) => {
+          avisos.push(m)
+        },
+        registrarFracassoDeMerge: async () => undefined,
+      })
+      expect(avisos.length).toBeLessThanOrEqual(1)
+    })
+  })
 })
