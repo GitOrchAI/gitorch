@@ -1,3 +1,4 @@
+import { memoriaDoPapel } from './memoria-por-papel.js'
 import { randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -143,19 +144,48 @@ export function buildMissionEnricher(
           qaDrawers = [...deps.cortex.recallLocal(projectId, 'qa')].sort(porMaisRecente)
         }
 
+        // TODOS OS AGENTES APRENDEM COM O PROJETO — ordem do dono, 25/08:
+        // "ele nao pode nascer sem saber porra nenhuma do projeto".
+        //
+        // O PO já lia memória dirigida (acima). RA e QA recebiam só "as
+        // últimas cinco gavetas de qualquer assunto", que pode trazer cinco
+        // coisas sem nenhuma relação com o que aquele agente vai fazer agora. O
+        // QA, em especial, não lia os PRÓPRIOS pareceres: julgava do zero toda
+        // vez, sem lembrar o que já tinha apontado naquele repositório.
+        //
+        // O SM não entra aqui e isso é desenho: ele é determinístico, sem motor
+        // de IA. Dar memória a ele mudaria a natureza do papel.
+        const cortex = deps.cortex
+        const dirigidas =
+          role === 'po' || !cortex
+            ? []
+            : memoriaDoPapel({
+                papel: role,
+                lerSala: (sala) => [...cortex.recallLocal(projectId, sala)],
+              })
+
         // As gavetas do QA já entram como bullets próprios (abaixo); não
         // duplicá-las caso também apareçam na lista geral de memórias do
         // projeto (mesmo cuidado já tomado para o RA, na linha do filter).
+        // As dirigidas já entram como bullets próprios; não duplicá-las na
+        // lista geral, pelo mesmo motivo que o RA e o QA já não se duplicam:
+        // pagar duas vezes pelo mesmo texto é desperdício puro.
+        const dirigidasContents = new Set(dirigidas.map((d) => d.content))
         const qaContents = new Set(qaDrawers.map((d) => d.content))
         const drawers = deps.cortex
           .recallLocal(projectId)
-          .filter((d) => d.content !== raIntact && !qaContents.has(d.content))
+          .filter(
+            (d) =>
+              d.content !== raIntact &&
+              !qaContents.has(d.content) &&
+              !dirigidasContents.has(d.content)
+          )
           .slice(0, MAX_MEMORIES)
 
         const formatarBullet = (d: { content: string }) =>
           `- ${d.content.slice(0, MAX_MEMORY_CHARS).replace(/\s+/g, ' ').trim()}`
 
-        if (drawers.length > 0 || qaDrawers.length > 0) {
+        if (drawers.length > 0 || qaDrawers.length > 0 || dirigidas.length > 0) {
           const memoryBlock = [
             'Project memory (deliverables from prior GitOrch missions on THIS project — build on them, do not repeat work):',
             ...drawers.map(formatarBullet),
