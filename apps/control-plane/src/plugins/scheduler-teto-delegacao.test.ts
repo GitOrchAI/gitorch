@@ -29,6 +29,7 @@ describe('montarOpcoesDeDelegacao', () => {
       sessoesVivas: [],
       delegadasHoje: 0,
       entregasDoProjeto: [],
+      vivasNaConta: 0,
     })
     expect(opcoes.tetoConcorrentes).toBe(15)
     expect(opcoes.tetoDiario).toBe(100)
@@ -40,6 +41,7 @@ describe('montarOpcoesDeDelegacao', () => {
       sessoesVivas: [],
       delegadasHoje: 0,
       entregasDoProjeto: [],
+      vivasNaConta: 0,
     })
     expect(opcoes.tetoConcorrentes).toBe(3)
     expect(opcoes.tetoDiario).toBe(15)
@@ -52,6 +54,7 @@ describe('montarOpcoesDeDelegacao', () => {
         sessoesVivas: [],
         delegadasHoje: 0,
         entregasDoProjeto: [],
+        vivasNaConta: 0,
       })
     ).toMatchObject({ tetoConcorrentes: 3, tetoDiario: 15 })
     expect(
@@ -60,6 +63,7 @@ describe('montarOpcoesDeDelegacao', () => {
         sessoesVivas: [],
         delegadasHoje: 0,
         entregasDoProjeto: [],
+        vivasNaConta: 0,
       })
     ).toMatchObject({ tetoConcorrentes: 3, tetoDiario: 15 })
   })
@@ -70,6 +74,7 @@ describe('montarOpcoesDeDelegacao', () => {
       sessoesVivas: [],
       delegadasHoje: 0,
       entregasDoProjeto: [],
+      vivasNaConta: 0,
     })
     expect(opcoes.tetoConcorrentes).toBe(3)
     expect(opcoes.tetoDiario).toBe(15)
@@ -82,6 +87,7 @@ describe('montarOpcoesDeDelegacao', () => {
       sessoesVivas: sessoesVivasArg,
       delegadasHoje: 7,
       entregasDoProjeto: [],
+      vivasNaConta: 0,
     })
     // Mesma referência: prova que a função não clona nem filtra a fila.
     expect(opcoes.sessoesVivas).toBe(sessoesVivasArg)
