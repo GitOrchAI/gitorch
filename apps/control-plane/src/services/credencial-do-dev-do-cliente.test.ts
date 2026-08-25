@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest'
 import {
   identidadeDaConta,
   resolverCredencialDoDev,
-  filtroDaMesmaConta,
   ERRO_CREDENCIAL_ILEGIVEL,
 } from './credencial-do-dev-do-cliente.js'
 import { CONTA_DA_INSTANCIA } from './conta-do-dev-externo.js'
@@ -97,23 +96,5 @@ describe('resolverCredencialDoDev', () => {
       decifrar: () => 'nunca',
     })
     expect(r.ok).toBe(false)
-  })
-})
-
-describe('filtroDaMesmaConta', () => {
-  it('quem trouxe a própria conta soma só com os projetos daquela conta', () => {
-    expect(filtroDaMesmaConta('conta-abc')).toEqual({ devAccountId: 'conta-abc' })
-  })
-
-  it('quem não trouxe divide a conta da instância — e só com quem também não trouxe', () => {
-    expect(filtroDaMesmaConta(null)).toEqual({ devAccountId: null })
-    expect(filtroDaMesmaConta(undefined)).toEqual({ devAccountId: null })
-    // Espaço em branco no banco não pode virar uma conta própria fantasma, que
-    // daria a esse projeto um teto inteiro só dele.
-    expect(filtroDaMesmaConta('   ')).toEqual({ devAccountId: null })
-  })
-
-  it('contas diferentes nunca se cruzam', () => {
-    expect(filtroDaMesmaConta('conta-a')).not.toEqual(filtroDaMesmaConta('conta-b'))
   })
 })

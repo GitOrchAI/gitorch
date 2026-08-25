@@ -83,22 +83,3 @@ export function recadoDaRecusa(motivo: string): string {
     ? 'a conta do dev assíncrono deste projeto não pôde ser lida — reconecte a conta nas configurações do projeto'
     : 'nenhuma conta de dev assíncrono conectada — conecte a sua no wizard para este projeto delegar'
 }
-
-/**
- * Quais projetos dividem a cota deste aqui.
- *
- * Existe como função (e não como consulta escrita à mão em cada ponto) porque
- * errar esta condição é caro dos dois lados: larga demais, um cliente come o
- * teto do outro; estreita demais, o produto se acha com o dobro do teto que
- * tem e as delegações voltam recusadas — foi o que produziu mais de cem
- * recusas num dia só.
- *
- * Sem conta própria, o projeto divide a conta da instância com os OUTROS que
- * também não trouxeram a sua: `null` casa com `null`, e nunca com quem trouxe.
- */
-export function filtroDaMesmaConta(devAccountId: string | null | undefined): {
-  devAccountId: string | null
-} {
-  const id = devAccountId?.trim()
-  return { devAccountId: id ? id : null }
-}
