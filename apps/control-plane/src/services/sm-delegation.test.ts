@@ -434,3 +434,80 @@ describe('teto de tempo (leva D)', () => {
     }
   })
 })
+
+describe('a reserva acontece ANTES de gastar cota do dev externo', () => {
+  const tarefaPronta = [{ number: 153, labels: [{ name: 'gitorch:task' }], body: '' }]
+
+  function fetchDeIssues(tarefas: unknown[]) {
+    return (async () =>
+      new Response(JSON.stringify(tarefas), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })) as unknown as typeof fetch
+  }
+
+  // O caso medido: 39 das 100 sessoes diarias nasceram no dev externo e foram
+  // desfeitas em seguida porque a issue ja tinha dono. Desfazer devolve a
+  // vaga, mas NAO devolve a cota.
+  it('issue que ja tem dono nao chega a acionar o dev externo', async () => {
+    const criar = vi.fn()
+    await runSmDelegation({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: fetchDeIssues(tarefaPronta),
+      reservarLugarDaIssue: async () => false,
+      criarSessaoDev: criar as never,
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+    })
+    expect(criar).not.toHaveBeenCalled()
+  })
+
+  it('ganhando a reserva, o dev externo e acionado normalmente', async () => {
+    const criar = vi.fn(async () => ({ situacao: 'criada' as const, sessionName: 'sessions/1' }))
+    await runSmDelegation({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: fetchDeIssues(tarefaPronta),
+      reservarLugarDaIssue: async () => true,
+      aoCriarSessao: async () => undefined,
+      criarSessaoDev: criar as never,
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+    })
+    expect(criar).toHaveBeenCalledTimes(1)
+  })
+
+  // Sem devolver o lugar, a issue ficaria presa para sempre num dono que nao
+  // existe — trocando um desperdicio por uma trava permanente.
+  it('dev externo que recusa devolve o lugar reservado', async () => {
+    const liberar = vi.fn(async () => undefined)
+    await runSmDelegation({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: fetchDeIssues(tarefaPronta),
+      reservarLugarDaIssue: async () => true,
+      liberarLugarDaIssue: liberar,
+      criarSessaoDev: (async () => ({ situacao: 'falhou', motivo: 'sem vaga' })) as never,
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+    })
+    expect(liberar).toHaveBeenCalledWith(153)
+  })
+
+  // Sem a reserva ligada, o comportamento e o antigo: chamadores que ainda nao
+  // passam a funcao seguem funcionando.
+  it('sem reserva configurada, aciona o dev como antes', async () => {
+    const criar = vi.fn(async () => ({ situacao: 'criada' as const, sessionName: 'sessions/1' }))
+    await runSmDelegation({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: fetchDeIssues(tarefaPronta),
+      aoCriarSessao: async () => undefined,
+      criarSessaoDev: criar as never,
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+    })
+    expect(criar).toHaveBeenCalledTimes(1)
+  })
+})

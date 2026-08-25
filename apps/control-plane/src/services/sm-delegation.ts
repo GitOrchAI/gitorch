@@ -197,6 +197,22 @@ export interface SmDelegationOptions {
    * como trabalho delegado.
    */
   aoCriarSessao?: (dados: { issueNumber: number; sessionName: string }) => Promise<void>
+  /**
+   * Reserva o lugar da issue ANTES de acionar o dev externo. Devolve `false`
+   * quando outro já reservou.
+   *
+   * Existe porque a ordem inversa QUEIMAVA COTA. Medido em 24 horas: 39 das
+   * 100 sessões diárias do plano nasceram no dev externo e foram desfeitas em
+   * seguida, porque o banco recusava a ligação com "já existe sessão viva para
+   * a issue". Desfazer devolve a vaga, mas NÃO devolve a cota — a sessão
+   * contou no teto de 24 horas do mesmo jeito, sem uma linha de trabalho ter
+   * saído dela.
+   *
+   * Com a reserva antes, a issue já delegada nem chega a virar chamada ao dev.
+   */
+  reservarLugarDaIssue?: (issueNumber: number) => Promise<boolean>
+  /** Devolve a reserva quando o dev externo recusa criar a sessão. */
+  liberarLugarDaIssue?: (issueNumber: number) => Promise<void>
   fetchImpl?: typeof fetch
   /**
    * Linhas de sessão abertas deste projeto. É a fila real: issue com linha viva
@@ -367,6 +383,20 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
     // tarefa em andamento que nunca começou, e nenhum sinal dizia o contrário.
     //
     // Marcar antes é prometer em nome de alguém que ainda não respondeu.
+    // RESERVA ANTES DE GASTAR. A ordem importa e custou caro: acionar o dev
+    // primeiro e descobrir depois que a issue já tinha dono queimou 39 das 100
+    // sessões diárias em 24 horas. Desfazer a sessão devolve a vaga, mas a
+    // cota do dia já foi consumida — ela conta no instante em que a sessão
+    // nasce, não quando ela morre.
+    if (options.reservarLugarDaIssue) {
+      const ganhou = await options.reservarLugarDaIssue(task.number)
+      if (!ganhou) {
+        // Outro ciclo (ou outra instância) já pegou esta issue. Não é falha:
+        // é a reserva funcionando. Sair aqui não gasta nada.
+        continue
+      }
+    }
+
     let resultado: ResultadoDoAcionamentoDoDev = options.criarSessaoDev
       ? await options.criarSessaoDev({
           repository: options.repository,
@@ -427,6 +457,12 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
     }
 
     if (resultado.situacao === 'falhou') {
+      // O dev externo recusou depois de a reserva ter sido ganha: devolver o
+      // lugar é obrigatório, senão a issue fica presa para sempre num dono que
+      // não existe.
+      if (options.liberarLugarDaIssue) {
+        await options.liberarLugarDaIssue(task.number).catch(() => undefined)
+      }
       recusadas.push({ numero: task.number, motivo: resultado.motivo })
       const avisar = options.onWarn ?? console.warn
       // O motivo cru vai para o log, e SÓ para o log. Ver `motivoPublicavel`.
