@@ -230,6 +230,14 @@ export interface QaRailsMissionOptions extends VigiliaDoJulgamentoOptions {
    * escapa do logger, o silêncio volta pela porta dos fundos. Mesmo motivo já
    * registrado em `github-app-token.ts`.
    */
+  /**
+   * Voltar a julgar (e comentar em) entrega que o produto NÃO encomendou.
+   *
+   * Desligado por decisão do dono em 25/08/2026, que supersede a regra antiga
+   * de "julga todos, mescla só o delegado". Fica aqui para a volta ser uma
+   * linha de configuração, e não uma arqueologia de código apagado.
+   */
+  julgarEntregaDeTerceiro?: boolean | undefined
   onWarn?: (message: string) => void
 }
 
@@ -370,6 +378,25 @@ export async function runQaMissionViaRails(
       sessoes: options.sessoes ?? [],
       issueComEtiquetaDeDelegacao: (n) => etiquetasPorIssue.get(n) ?? false,
     })
+
+    // ENTREGA QUE O PRODUTO NÃO ENCOMENDOU SAI AQUI — decisão do dono
+    // (25/08/2026), palavras dele: "QA tem que acordar apenas naquilo que o
+    // Gitorch esta trabalhando... nao tem pq o QA comentar num PR que nao
+    // esta sendo atuado".
+    //
+    // Antes o QA julgava TODA entrega aberta do repositório e ainda comentava
+    // na de terceiro, avisando que não ia mesclar. Medido: 662 acordadas em
+    // pouco mais de um dia, 87% voltando vazias — boa parte varrendo entrega
+    // alheia. Isso é opinião não pedida no pull request de outra pessoa, e
+    // custo de motor por cada uma.
+    //
+    // O corte fica ANTES de ler as reviews de propósito: é a chamada mais
+    // cara do laço, e a entrega de terceiro não precisa dela para nada.
+    //
+    // O dono disse "pode ser que mude depois", então o caminho antigo não foi
+    // apagado — vive atrás de `julgarEntregaDeTerceiro`, e volta com uma
+    // linha de configuração.
+    if (!veredito.delegado && !options.julgarEntregaDeTerceiro) continue
 
     // Não re-julgar o MESMO estado a cada wake: se já há review nossa neste
     // head, a entrega já recebeu parecer — julgar de novo só faria spam de
