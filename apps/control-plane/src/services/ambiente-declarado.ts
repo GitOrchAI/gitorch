@@ -53,6 +53,46 @@ export function ambientesDeclaradosPeloProjeto(runtimeConfig: unknown): string[]
 }
 
 /**
+ * Os ambientes que valem: o que o projeto declarou, CRUZADO com o que existe
+ * de verdade no repositório.
+ *
+ * A primeira versão substituía a leitura pela declaração e nem listava o
+ * repositório. A revisão pegou dois buracos nisso, e os dois calam:
+ * - Declaração com nome errado (ou de um ambiente que não existe) travava a
+ *   entrega para sempre: a leitura devolvia vazio e o produto ficava dizendo
+ *   "nunca publicou" para uma publicação que estava acontecendo.
+ * - E o produto perdia a chance de perceber que existe um ambiente de produção
+ *   que o projeto esqueceu de declarar.
+ *
+ * Cruzando, a declaração vira um FILTRO sobre o que é real. `naoEncontrados`
+ * existe para quem chama poder avisar em vez de sumir com o problema — nome
+ * declarado que não existe no repositório é erro de configuração, e erro de
+ * configuração calado é o que produziu as 992 recusas.
+ */
+export function ambientesQueValem(args: {
+  declarados: string[]
+  /** Os ambientes que o repositório realmente tem. */
+  reaisDoRepositorio: string[]
+}): { ambientes: string[]; naoEncontrados: string[]; naoDeclarados: string[] } {
+  const reais = new Set(args.reaisDoRepositorio)
+  const ambientes: string[] = []
+  const naoEncontrados: string[] = []
+  for (const nome of args.declarados) {
+    if (reais.has(nome)) ambientes.push(nome)
+    else naoEncontrados.push(nome)
+  }
+  const declaradosSet = new Set(args.declarados)
+  return {
+    ambientes,
+    naoEncontrados,
+    // O que existe no repositório e ficou de fora da declaração. Não entra no
+    // veredito — mas quem chama precisa poder dizer ao dono que existe um
+    // ambiente que ele não declarou, para não esconder produção por descuido.
+    naoDeclarados: args.reaisDoRepositorio.filter((n) => !declaradosSet.has(n)),
+  }
+}
+
+/**
  * O projeto declarou onde publica?
  *
  * Separado da leitura porque a diferença importa: uma lista vazia por falta de
@@ -67,7 +107,23 @@ export function projetoDeclarouOndePublica(runtimeConfig: unknown): boolean {
 export interface LinhaComMescla {
   issueNumber: number
   mergeCommitSha?: string | null | undefined
+  /** Quando a linha mexeu pela última vez — o relógio da janela. */
+  updatedAt?: Date | null | undefined
 }
+
+/**
+ * Por quanto tempo uma entrega mesclada barra a redelegação.
+ *
+ * NÃO é para sempre, e a revisão pegou isso: barrando para sempre, uma issue
+ * REABERTA de verdade — o conserto não resolveu, o defeito voltou — nunca mais
+ * seria candidata, e o dono foi explícito em exigir que ela pudesse voltar.
+ *
+ * A janela resolve os dois lados: dentro dela, o produto não paga de novo pelo
+ * trabalho que acabou de fazer (que é o desperdício medido); passada ela, uma
+ * issue que voltou a ser aberta volta a ser tratada como trabalho de verdade.
+ * Vinte e quatro horas é a mesma janela que o teto de delegação já usa.
+ */
+export const JANELA_DA_ENTREGA_RECENTE_MS = 24 * 60 * 60 * 1000
 
 /**
  * As tarefas cuja entrega JÁ FOI MESCLADA.
@@ -84,14 +140,27 @@ export interface LinhaComMescla {
  * Não substitui o fechamento da tarefa: a issue continua tendo que fechar, e o
  * quadro do cliente continua tendo que ficar limpo. Isto só impede o gasto.
  */
-export function tarefasComEntregaMesclada(linhas: LinhaComMescla[]): Set<number> {
+export function tarefasComEntregaMesclada(
+  linhas: LinhaComMescla[],
+  agora: Date = new Date(),
+  janelaMs: number = JANELA_DA_ENTREGA_RECENTE_MS
+): Set<number> {
   const entregues = new Set<number>()
   for (const linha of linhas) {
     // String vazia é "não mesclado" tanto quanto nulo — o campo só ganha
     // conteúdo quando o merge de fato aconteceu.
-    if (typeof linha.mergeCommitSha === 'string' && linha.mergeCommitSha.trim() !== '') {
-      entregues.add(linha.issueNumber)
-    }
+    if (typeof linha.mergeCommitSha !== 'string' || linha.mergeCommitSha.trim() === '') continue
+
+    // Sem data não dá para saber se é recente. Barrar sem saber prenderia a
+    // issue para sempre, que é justamente o defeito a evitar.
+    const quando = linha.updatedAt?.getTime()
+    if (quando === undefined || !Number.isFinite(quando)) continue
+
+    // Data no futuro é "acabou de acontecer", nunca "muito tempo atrás".
+    const idade = agora.getTime() - quando
+    if (idade > janelaMs) continue
+
+    entregues.add(linha.issueNumber)
   }
   return entregues
 }
