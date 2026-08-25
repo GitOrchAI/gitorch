@@ -375,6 +375,8 @@ export function montarOpcoesDeDelegacao(args: {
   devPlan: string | null | undefined
   sessoesVivas: LinhaDeSessao[]
   delegadasHoje: number
+  /** Sessões vivas na CONTA inteira — o teto de simultâneas é dela. */
+  vivasNaConta: number
   /**
    * TODAS as linhas do projeto, vivas e fechadas — a prova de que uma tarefa
    * já foi entregue. `sessoesVivas` não serve aqui: a linha de uma entrega
@@ -385,6 +387,7 @@ export function montarOpcoesDeDelegacao(args: {
 }): {
   sessoesVivas: LinhaDeSessao[]
   delegadasHoje: number
+  vivasNaConta: number
   entregasDoProjeto: Array<{ issueNumber: number; mergeCommitSha?: string | null }>
   tetoConcorrentes: number
   tetoDiario: number
@@ -392,6 +395,7 @@ export function montarOpcoesDeDelegacao(args: {
   return {
     sessoesVivas: args.sessoesVivas,
     delegadasHoje: args.delegadasHoje,
+    vivasNaConta: args.vivasNaConta,
     entregasDoProjeto: args.entregasDoProjeto,
     ...tetosDoPlanoDoDev(args.devPlan),
   }
@@ -2310,15 +2314,33 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               // A fila real: issue com linha viva já está sendo trabalhada;
               // sem linha viva está por delegar, mesmo que já tenha sido
               // delegada antes e a sessão tenha morrido (fila-de-delegacao.ts).
+              // A fila REAL deste projeto — é ela que diz quais issues já
+              // estão em trabalho aqui.
               sessoesVivas: await sessoesVivas({
                 prisma: app.prisma as unknown as PrismaDevSession,
                 projectId: project.id,
               }),
+              // Mas o TETO é da CONTA, não do projeto: no Pro são 100 sessões
+              // em 24h e 15 ao mesmo tempo divididas entre TODOS os
+              // repositórios daquela conta. Contando por projeto, dois
+              // projetos "pro" se achavam com 200/dia e 30 simultâneas contra
+              // um teto real de 100 e 15 — e foi isso que produziu mais de cem
+              // delegações recusadas num único dia.
+              //
+              // `idsDaMesmaConta` resolve hoje para todos os projetos (só
+              // existe a conta da instância) e, com BYOK, para os projetos que
+              // dividem a credencial daquele cliente.
               delegadasHoje: await app.prisma.devSession.count({
                 where: {
-                  projectId: project.id,
+                  projectId: { in: await idsDaMesmaConta(project) },
                   createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
                 },
+              }),
+              // Vivas da CONTA inteira, pelo mesmo motivo. São dois contadores
+              // diferentes: a vaga libera quando a sessão termina; a cota de
+              // 24h só devolve cada sessão 24h depois de ela ter começado.
+              vivasNaConta: await app.prisma.devSession.count({
+                where: { projectId: { in: await idsDaMesmaConta(project) }, closedAt: null },
               }),
               // Sem filtro de linha viva de propósito: a entrega mesclada
               // costuma ter a linha JÁ FECHADA, e é ela que precisa barrar a
@@ -3686,6 +3708,21 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // entre testes que registram o plugin mais de uma vez.
   const VALIDADE_DO_CACHE_DE_MECANISMO_MS = 60 * 60_000
   const cacheDeMecanismo = new Map<string, { mecanismo: Mecanismo; expiraEm: number }>()
+
+  /**
+   * Os projetos que consomem a MESMA cota do dev externo que este.
+   *
+   * Hoje há uma conta só, a da instância, então são todos. Com BYOK cada
+   * cliente traz a dele e a lista encolhe para os projetos daquele cliente —
+   * é por isso que a pergunta existe como função, e não como constante.
+   */
+  const idsDaMesmaConta = async (projeto: { id: string }): Promise<string[]> => {
+    const todos = await app.prisma.project.findMany({ select: { id: true } })
+    const daConta = todos.map((p) => p.id)
+    // Nunca devolve vazio: o próprio projeto sempre conta, mesmo que a leitura
+    // volte vazia por algum motivo — contar zero liberaria delegação sem teto.
+    return daConta.length > 0 ? daConta : [projeto.id]
+  }
 
   const descobrirMecanismoComCache = async (
     repository: string,
