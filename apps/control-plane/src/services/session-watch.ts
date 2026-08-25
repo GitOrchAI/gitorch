@@ -276,14 +276,34 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
         nudges: linha.nudges,
       })
 
+      // REGISTRA O QUE VIU, ANTES de decidir o que fazer.
+      //
+      // Cada ramo carimbava por conta própria, e bastava um esquecer para a
+      // linha congelar no banco. Foi o que aconteceu com `responder`: quando a
+      // pergunta é a MESMA de antes, ele sai por um `break` sem registrar — e
+      // como `registrarEstado` é quem move `stateCheckedAt`, a sessão ficava
+      // parada para sempre no último estado conhecido.
+      //
+      // Medido em 25/08: seis sessões que o dev externo dava como
+      // AWAITING_USER_FEEDBACK estavam gravadas aqui como IN_PROGRESS, com o
+      // relógio de exame parado havia NOVE HORAS, enquanto as outras vinte
+      // tinham sido examinadas havia sete minutos. Seis das quinze vagas do
+      // plano presas assim — e vaga presa é delegação recusada.
+      //
+      // O ramo `aprovar-plano` já tinha levado esse mesmo remédio (commit
+      // 0193bd8, ramo `investigar`), duas vezes, cada uma depois de o defeito
+      // aparecer em produção. Registrar ANTES do `switch` mata a classe
+      // inteira: nenhum ramo novo pode esquecer o que não precisa lembrar.
+      await deps.registrarEstado({
+        sessionName: linha.sessionName,
+        estado: estadoBruto,
+        agora: deps.agora,
+        ...(progrediu ? { progrediu: true } : {}),
+      })
+
       switch (decisao.acao) {
         case 'aguardar': {
-          await deps.registrarEstado({
-            sessionName: linha.sessionName,
-            estado: estadoBruto,
-            agora: deps.agora,
-            ...(progrediu ? { progrediu: true } : {}),
-          })
+          // Já registrado acima.
           break
         }
 
@@ -294,16 +314,7 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
           } else {
             warn(`[vigia] não foi possível aprovar o plano de ${linha.sessionName}`)
           }
-          // Marca o exame SEMPRE, aprovando ou não — mesmo remédio do
-          // commit 0193bd8 (ramo `investigar`). Sem isto `stateCheckedAt`
-          // nunca avança neste ramo e, como a cadência de dez minutos é
-          // medida por ele, uma sessão em AWAITING_PLAN_APPROVAL seria
-          // reexaminada a cada tick (um minuto) em vez de a cada dez.
-          await deps.registrarEstado({
-            sessionName: linha.sessionName,
-            estado: estadoBruto,
-            agora: deps.agora,
-          })
+          // O exame já foi marcado antes do `switch`, aprovando ou não.
           break
         }
 
@@ -359,18 +370,12 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
                 .catch(() => undefined)
             }
           }
-          // Marca o exame SEMPRE, avisando ou não. Sem isto `stateCheckedAt`
-          // nunca avança neste ramo — e como a cadência de dez minutos é
-          // medida por ele, uma sessão presa em FAILED seria reexaminada a
-          // cada tick (um minuto), acionando o SM sessenta vezes por hora e
-          // queimando a cota do motor do cliente. O `registrarInvestigacao`
-          // acima não serve para isso: ele só grava o hash, e só na primeira
-          // vez.
-          await deps.registrarEstado({
-            sessionName: linha.sessionName,
-            estado: estadoBruto,
-            agora: deps.agora,
-          })
+          // O exame já foi marcado antes do `switch`. Sem isso, uma sessão
+          // presa em FAILED seria reexaminada a cada tique em vez de a cada
+          // dez minutos, acionando o SM sessenta vezes por hora e queimando a
+          // cota do motor do cliente. O `registrarInvestigacao` acima não
+          // serve para isso: ele só grava o hash, e só na primeira vez.
+          //
           // Regra D5 do dono: o SM investiga o impedimento. Isso não muda —
           // o aviso acima é ADICIONAL, nunca substitui o SM.
           await deps.dispararMissao('sm', linha.projectId)
@@ -417,16 +422,9 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
             break
           }
 
-          // Nada novo. Carimbar o exame mesmo assim é OBRIGATÓRIO: a cadência
-          // de dez minutos é medida por `stateCheckedAt`, e sair daqui sem
-          // gravar faria esta sessão ser reexaminada a cada tique do relógio —
-          // trocando um laço de dez minutos por um de um. É a mesma armadilha
-          // que o ramo de investigação acima já documenta.
-          await deps.registrarEstado({
-            sessionName: linha.sessionName,
-            estado: estadoBruto,
-            agora: deps.agora,
-          })
+          // Nada novo. O exame já foi carimbado antes do `switch` — sem isso,
+          // esta sessão seria reexaminada a cada tique do relógio em vez de a
+          // cada dez minutos.
           break
         }
 

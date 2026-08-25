@@ -518,4 +518,74 @@ describe('vigiarSessoes', () => {
     expect(resultado).toContain('1 PR capturado')
     expect(resultado).toContain('1 investigação')
   })
+
+  describe('a vigia REGISTRA o que viu, mesmo quando não há o que fazer', () => {
+    // O defeito medido em 25/08: quando a pergunta é a MESMA de antes, o ramo
+    // de resposta saía por um `break` sem registrar. Como `registrarEstado` é
+    // quem move `stateCheckedAt`, a sessão congelava no último estado
+    // conhecido. Seis sessões que o dev externo dava como esperando resposta
+    // estavam gravadas como "trabalhando", com o relógio parado havia NOVE
+    // HORAS — seis das quinze vagas do plano presas assim.
+    it('mesma pergunta de antes: não responde de novo, mas registra o estado', async () => {
+      const mensagem = 'Devo usar bcrypt ou argon2?'
+      const consultarSessao = vi.fn(async () => ({
+        estado: 'AWAITING_USER_FEEDBACK',
+        numeroDoPr: null,
+        ultimaAtualizacao: agora.toISOString(),
+      }))
+      const primeiro = depsFalso({
+        sessoes: [linha({ sessionName: 'sessions/mesma', answeredHash: null })],
+        consultarSessao,
+        ultimaMensagem: vi.fn(async () => mensagem),
+      })
+      await vigiarSessoes(primeiro)
+      const hashGravado = (
+        primeiro.registrarResposta as unknown as {
+          mock: { calls: Array<[{ hashDaPergunta: string }]> }
+        }
+      ).mock.calls[0]?.[0]?.hashDaPergunta
+
+      const segundo = depsFalso({
+        sessoes: [
+          linha({
+            sessionName: 'sessions/mesma',
+            answeredHash: hashGravado ?? '',
+            stateCheckedAt: new Date(agora.getTime() - 30 * 60 * 1000),
+          }),
+        ],
+        consultarSessao,
+        ultimaMensagem: vi.fn(async () => mensagem),
+      })
+      await vigiarSessoes(segundo)
+
+      // Não responde de novo — esse guard está certo e continua.
+      expect(segundo.registrarResposta).not.toHaveBeenCalled()
+      // Mas REGISTRA o que viu: sem isto a linha congela e a vaga fica presa.
+      expect(segundo.registrarEstado).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionName: 'sessions/mesma',
+          estado: 'AWAITING_USER_FEEDBACK',
+        })
+      )
+    })
+
+    // A classe inteira do defeito: qualquer estado que o dev externo devolva
+    // tem de acabar gravado aqui, senão o relógio de exame para e a cadência
+    // de dez minutos vira um laço de um minuto.
+    it.each(['AWAITING_USER_FEEDBACK', 'IN_PROGRESS', 'FAILED', 'COMPLETED'])(
+      'estado "%s" do dev externo sempre é registrado',
+      async (estado) => {
+        const deps = depsFalso({
+          sessoes: [linha({ sessionName: 'sessions/x', stateCheckedAt: null })],
+          consultarSessao: vi.fn(async () => ({
+            estado,
+            numeroDoPr: null,
+            ultimaAtualizacao: agora.toISOString(),
+          })),
+        })
+        await vigiarSessoes(deps)
+        expect(deps.registrarEstado).toHaveBeenCalledWith(expect.objectContaining({ estado }))
+      }
+    )
+  })
 })
