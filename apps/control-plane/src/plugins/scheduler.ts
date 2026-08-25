@@ -97,6 +97,7 @@ import {
 } from '../services/ambiente-declarado.js'
 import { duvidaSobreComoPublica } from '../services/duvidas-do-projeto.js'
 import type { AgentQuestionService } from '../services/agent-question.js'
+import { nomeDaReserva, PREFIXO_DA_RESERVA, semAsReservas } from '../services/reserva-de-vaga.js'
 import {
   acompanharPublicacao,
   fecharPorTetoAbsoluto,
@@ -611,6 +612,11 @@ export function filtroDeSessoesParaJulgamento(projectId: string): Prisma.DevSess
  * pull request que já foi mesclado.
  */
 export function sessoesParaVigiaPreMerge(sessoes: LinhaDeSessao[]): LinhaDeSessao[] {
+  // A RESERVA não existe no dev externo, então perguntar por ela é uma chamada
+  // que sempre falha. Pior: a falha não carimba o relógio de exame, então a
+  // linha era reconsultada a cada tique — não a cada dez minutos — até a
+  // varredura de abandono fechá-la horas depois. Ela sai daqui antes de tudo.
+  sessoes = semAsReservas(sessoes)
   return sessoes.filter((sessao) => sessao.mergeCommitSha === null)
 }
 
@@ -2300,7 +2306,47 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             // para que o try/catch de `runSmDelegation` (sm-delegation.ts)
             // registre o aviso do jeito de sempre, sem derrubar as outras
             // delegações do ciclo.
+            // A RESERVA, antes de gastar cota. O índice único parcial do
+            // banco (uma issue, uma sessão viva) é quem decide o vencedor —
+            // por isso a reserva é uma linha de verdade, com um nome
+            // provisório, e não uma marca à parte que duas instâncias
+            // poderiam gravar ao mesmo tempo.
+            reservarLugarDaIssue: async (issueNumber) => {
+              const r = await abrirSessao({
+                prisma: app.prisma as unknown as PrismaDevSession,
+                projectId: project.id,
+                issueNumber,
+                sessionName: nomeDaReserva(project.id, issueNumber),
+                agora: new Date(),
+              })
+              return r.ok
+            },
+            // Devolve o lugar quando o dev externo recusa: sem isto a issue
+            // ficaria presa para sempre num dono que não existe.
+            liberarLugarDaIssue: async (issueNumber) => {
+              await app.prisma.devSession.updateMany({
+                where: {
+                  projectId: project.id,
+                  issueNumber,
+                  sessionName: { startsWith: PREFIXO_DA_RESERVA },
+                  closedAt: null,
+                },
+                data: { closedAt: new Date(), closedReason: 'failed_final' },
+              })
+            },
             aoCriarSessao: async ({ issueNumber, sessionName }) => {
+              // A reserva já ganhou o lugar: aqui só se troca o nome
+              // provisório pelo nome real da sessão do dev externo.
+              const trocou = await app.prisma.devSession.updateMany({
+                where: {
+                  projectId: project.id,
+                  issueNumber,
+                  sessionName: { startsWith: PREFIXO_DA_RESERVA },
+                  closedAt: null,
+                },
+                data: { sessionName },
+              })
+              if (trocou.count > 0) return
               const resultado = await abrirSessao({
                 prisma: app.prisma as unknown as PrismaDevSession,
                 projectId: project.id,

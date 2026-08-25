@@ -22,6 +22,7 @@ const FIM = new Date('2026-08-23T00:00:00Z')
 
 function sessao(over: Partial<Parameters<typeof medirRetrospectiva>[0]['sessoes'][number]> = {}) {
   return {
+    sessionName: 'sessions/1',
     closedReason: 'merged' as string | null,
     nudges: 0,
     createdAt: new Date('2026-08-20T00:00:00Z'),
@@ -165,5 +166,36 @@ describe('escolherAMelhoria', () => {
     })
     const escolha = escolherAMelhoria(r)
     expect(escolha!.porque).toMatch(/90/)
+  })
+})
+
+describe('a reserva de vaga não envenena a medida', () => {
+  // A reserva nasce e morre em segundos quando o dev externo recusa, sem nunca
+  // ter sido tocada. Contá-la como entrega abandonada inflaria a taxa de
+  // abandono justamente porque o produto passou a recusar CEDO.
+  it('reserva recusada não conta como entrega abandonada', () => {
+    const r = medirRetrospectiva({
+      sessoes: [
+        sessao({ closedReason: 'merged' }),
+        sessao({ sessionName: 'reserva/proj/153', closedReason: 'failed_final' }),
+        sessao({ sessionName: 'reserva/proj/155', closedReason: 'failed_final' }),
+      ],
+      missoes: [],
+      fim: FIM,
+    })
+    expect(r.entregasAbandonadas).toBe(0)
+    expect(r.entregasMescladas).toBe(1)
+  })
+
+  it('trabalho abandonado de verdade continua contando', () => {
+    const r = medirRetrospectiva({
+      sessoes: [
+        sessao({ sessionName: 'sessions/999', closedReason: 'abandoned' }),
+        sessao({ sessionName: 'reserva/proj/1', closedReason: 'failed_final' }),
+      ],
+      missoes: [],
+      fim: FIM,
+    })
+    expect(r.entregasAbandonadas).toBe(1)
   })
 })
