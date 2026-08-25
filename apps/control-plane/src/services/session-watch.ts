@@ -16,7 +16,7 @@
 
 import { createHash } from 'node:crypto'
 import type { LinhaDeSessao, MotivoDeFechamento } from './dev-session-store.js'
-import { decidirRespostaDaSessao } from './jules-session-loop.js'
+import { decidirRespostaDaSessao, MAX_NUDGES } from './jules-session-loop.js'
 
 /**
  * Cadência mínima entre dois exames da MESMA sessão. Sem ela, cada tick do
@@ -376,6 +376,36 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
           // cota do motor do cliente. O `registrarInvestigacao` acima não
           // serve para isso: ele só grava o hash, e só na primeira vez.
           //
+          // "falhou? manda continuar" — ordem do dono, 25/08. Acionar o SM
+          // para investigar não destrava a sessão: ela continua parada lá,
+          // ocupando uma das quinze vagas do plano, e vaga presa é delegação
+          // recusada. Medido no mesmo dia: seis sessões falhadas vivas sem
+          // ninguém pedir retomada.
+          //
+          // O pedido é uma MENSAGEM, não uma chamada de "continuar": esse
+          // endpoint não existe na API do dev externo (sempre respondeu 404) e
+          // há um teste no repositório que impede alguém de recriá-lo.
+          //
+          // Com o MESMO teto do ramo `insistir`, e pelo mesmo motivo: pedir
+          // sem parar a uma sessão que não sai do lugar queima cota e enche o
+          // dev de mensagem. Passado o teto, quem decide é o abandono.
+          if (linha.nudges < MAX_NUDGES) {
+            const pediu = await deps.pedirParaContinuar(linha.sessionName)
+            // Conta a tentativa nos DOIS casos, sucesso ou falha de envio: o
+            // teto mede quantas vezes TENTAMOS, não quantas chegaram. Contar
+            // só o sucesso faria uma falha persistente de rede girar para
+            // sempre sem nunca alcançar o teto — o mesmo padrão de falha
+            // silenciosa que este arquivo já corrigiu três vezes.
+            await deps.registrarResposta({
+              sessionName: linha.sessionName,
+              hashDaPergunta: linha.answeredHash ?? '',
+              agora: deps.agora,
+            })
+            if (!pediu) {
+              warn(`[vigia] não foi possível pedir retomada a ${linha.sessionName}`)
+            }
+          }
+
           // Regra D5 do dono: o SM investiga o impedimento. Isso não muda —
           // o aviso acima é ADICIONAL, nunca substitui o SM.
           await deps.dispararMissao('sm', linha.projectId)

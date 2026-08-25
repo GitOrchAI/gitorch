@@ -587,5 +587,52 @@ describe('vigiarSessoes', () => {
         expect(deps.registrarEstado).toHaveBeenCalledWith(expect.objectContaining({ estado }))
       }
     )
+  describe('"falhou? manda continuar" — ordem do dono', () => {
+    const falhada = vi.fn(async () => ({
+      estado: 'FAILED',
+      numeroDoPr: null,
+      ultimaAtualizacao: agora.toISOString(),
+    }))
+
+    // Acionar o SM para investigar NÃO destrava a sessão: ela continua parada
+    // no dev externo, ocupando uma das quinze vagas do plano. Medido em 25/08:
+    // seis sessões falhadas vivas sem ninguém pedir retomada.
+    it('sessão falhada recebe pedido de retomada, além do SM', async () => {
+      const deps = depsFalso({
+        sessoes: [linha({ sessionName: 'sessions/falha', nudges: 0 })],
+        consultarSessao: falhada,
+      })
+      await vigiarSessoes(deps)
+      expect(deps.pedirParaContinuar).toHaveBeenCalledWith('sessions/falha')
+      // A regra D5 não muda: o SM continua sendo acionado.
+      expect(deps.dispararMissao).toHaveBeenCalledWith('sm', 'proj1')
+    })
+
+    // Pedir sem parar a uma sessão que não sai do lugar queima cota e enche o
+    // dev de mensagem. Passado o teto, quem decide é o abandono.
+    it('passado o teto, para de pedir e deixa o abandono decidir', async () => {
+      const deps = depsFalso({
+        sessoes: [linha({ sessionName: 'sessions/teimosa', nudges: MAX_NUDGES })],
+        consultarSessao: falhada,
+      })
+      await vigiarSessoes(deps)
+      expect(deps.pedirParaContinuar).not.toHaveBeenCalled()
+      expect(deps.dispararMissao).toHaveBeenCalledWith('sm', 'proj1')
+    })
+
+    // O teto mede quantas vezes TENTAMOS, não quantas chegaram. Contar só o
+    // sucesso faria uma falha persistente de rede girar para sempre sem nunca
+    // alcançar o teto.
+    it('falha de envio conta a tentativa do mesmo jeito', async () => {
+      const deps = depsFalso({
+        sessoes: [linha({ sessionName: 'sessions/semrede', nudges: 0 })],
+        consultarSessao: falhada,
+        pedirParaContinuar: vi.fn(async () => false),
+      })
+      await vigiarSessoes(deps)
+      expect(deps.registrarResposta).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionName: 'sessions/semrede' })
+      )
+    })
   })
 })
