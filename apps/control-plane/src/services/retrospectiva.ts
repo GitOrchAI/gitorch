@@ -1,3 +1,5 @@
+import { semAsReservas } from './reserva-de-vaga.js'
+
 // A retrospectiva do Scrum — a única parte do método que olha para TRÁS.
 //
 // O evento já estava escrito e nunca tinha sido ligado. O playbook
@@ -20,6 +22,12 @@
 
 /** Uma sessão de trabalho, com só o que a medida precisa. */
 export interface SessaoMedida {
+  /**
+   * O nome da sessão. Entra na medida só para distinguir trabalho de RESERVA:
+   * a reserva de vaga é uma linha real no banco, mas não é trabalho, e contá-la
+   * como entrega abandonada envenenaria a taxa de abandono.
+   */
+  sessionName: string
   /** `merged`, `abandoned`, `failed_final`... ou `null` se ainda está aberta. */
   closedReason: string | null
   /** Quantas vezes foi preciso empurrar para ela não travar esperando resposta. */
@@ -75,7 +83,15 @@ function mediana(valores: number[]): number | null {
 
 /** O retrato do período, só com o que foi de fato medido. */
 export function medirRetrospectiva(args: ArgumentosDaMedida): Retrato {
-  const fechadas = args.sessoes.filter((s) => s.closedAt !== null)
+  // A RESERVA de vaga não é trabalho e não entra na medida.
+  //
+  // Ela nasce e morre em segundos quando o dev externo recusa, sem nunca ter
+  // sido tocada. Contá-la como entrega abandonada inflaria a taxa de abandono
+  // justamente porque o produto passou a recusar CEDO — que era o objetivo da
+  // mudança que a criou. Esta medida dirige decisão humana de processo;
+  // alimentá-la com isso é ruído travestido de número.
+  const trabalhoReal = semAsReservas(args.sessoes)
+  const fechadas = trabalhoReal.filter((s) => s.closedAt !== null)
   const mescladas = fechadas.filter((s) => s.closedReason === 'merged').length
   // Só o que fechou SEM ter sido entregue conta como abandono. Sessão ainda
   // aberta é trabalho em andamento, e contá-la aqui seria condenar quem ainda
@@ -88,7 +104,7 @@ export function medirRetrospectiva(args: ArgumentosDaMedida): Retrato {
   // importa para a medida é ter fechado sem entregar; o motivo é detalhe.
   const abandonadas = fechadas.filter((s) => s.closedReason !== 'merged').length
 
-  const comEmpurrao = args.sessoes.filter((s) => s.nudges > 0).length
+  const comEmpurrao = trabalhoReal.filter((s) => s.nudges > 0).length
 
   const horas = fechadas
     .map((s) => (s.closedAt!.getTime() - s.createdAt.getTime()) / 3_600_000)
@@ -107,12 +123,12 @@ export function medirRetrospectiva(args: ArgumentosDaMedida): Retrato {
   }
 
   return {
-    semDados: args.sessoes.length === 0 && args.missoes.length === 0,
+    semDados: trabalhoReal.length === 0 && args.missoes.length === 0,
     entregasMescladas: mescladas,
     entregasAbandonadas: abandonadas,
     taxaDeAbandono: fechadas.length > 0 ? abandonadas / fechadas.length : null,
     sessoesQuePrecisaramDeEmpurrao: comEmpurrao,
-    taxaDeEmpurrao: args.sessoes.length > 0 ? comEmpurrao / args.sessoes.length : null,
+    taxaDeEmpurrao: trabalhoReal.length > 0 ? comEmpurrao / trabalhoReal.length : null,
     horasMedianasAteFechar: mediana(horas),
     acordadasEmFalsoPorPapel: porPapel,
     fim: args.fim,

@@ -97,6 +97,7 @@ import {
 } from '../services/ambiente-declarado.js'
 import { duvidaSobreComoPublica } from '../services/duvidas-do-projeto.js'
 import type { AgentQuestionService } from '../services/agent-question.js'
+import { nomeDaReserva, PREFIXO_DA_RESERVA, semAsReservas } from '../services/reserva-de-vaga.js'
 import {
   acompanharPublicacao,
   fecharPorTetoAbsoluto,
@@ -611,6 +612,11 @@ export function filtroDeSessoesParaJulgamento(projectId: string): Prisma.DevSess
  * pull request que já foi mesclado.
  */
 export function sessoesParaVigiaPreMerge(sessoes: LinhaDeSessao[]): LinhaDeSessao[] {
+  // A RESERVA não existe no dev externo, então perguntar por ela é uma chamada
+  // que sempre falha. Pior: a falha não carimba o relógio de exame, então a
+  // linha era reconsultada a cada tique — não a cada dez minutos — até a
+  // varredura de abandono fechá-la horas depois. Ela sai daqui antes de tudo.
+  sessoes = semAsReservas(sessoes)
   return sessoes.filter((sessao) => sessao.mergeCommitSha === null)
 }
 
@@ -2310,7 +2316,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 prisma: app.prisma as unknown as PrismaDevSession,
                 projectId: project.id,
                 issueNumber,
-                sessionName: `reserva/${project.id}/${issueNumber}`,
+                sessionName: nomeDaReserva(project.id, issueNumber),
                 agora: new Date(),
               })
               return r.ok
@@ -2322,7 +2328,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 where: {
                   projectId: project.id,
                   issueNumber,
-                  sessionName: { startsWith: 'reserva/' },
+                  sessionName: { startsWith: PREFIXO_DA_RESERVA },
                   closedAt: null,
                 },
                 data: { closedAt: new Date(), closedReason: 'failed_final' },
@@ -2335,7 +2341,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 where: {
                   projectId: project.id,
                   issueNumber,
-                  sessionName: { startsWith: 'reserva/' },
+                  sessionName: { startsWith: PREFIXO_DA_RESERVA },
                   closedAt: null,
                 },
                 data: { sessionName },
