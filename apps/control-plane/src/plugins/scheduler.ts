@@ -150,6 +150,11 @@ import {
   type ResolvedOwner,
 } from '../services/onboarding-board.js'
 import { lerCredencialDoProjeto } from '../services/project-credential.js'
+import {
+  resolverCredencialDoDev,
+  recadoDaRecusa,
+  filtroDaMesmaConta,
+} from '../services/credencial-do-dev-do-cliente.js'
 import { provaDeEscritaNoUso } from '../services/acesso-ao-repositorio.js'
 import {
   reconferirAcessoDosProjetos,
@@ -2107,6 +2112,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     userId: string | null
     runtimeConfig?: unknown
     devPlan?: string | null
+    /** BYOK: a impressão digital da conta do dev assíncrono deste cliente. */
+    devAccountId?: string | null
   }
 
   // Tenta a cadeia de motores em ordem; sucesso encerra; erro de cota/auth cai
@@ -2285,14 +2292,18 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             // pé só trocaria uma delegação perdida por uma vaga presa.
             desfazerSessao: async (sessionName) => {
               await arquivarSessaoJules({
-                apiKey: process.env['JULES_API_KEY'],
+                // A mesma conta que abriu a sessão precisa ser a que a desfaz:
+                // com a chave errada o desfazer volta 404 e a vaga fica presa
+                // na conta do cliente até a vigília expirar.
+                apiKey: (await chaveDoDevDoProjeto(project.id)) ?? undefined,
                 sessionName,
                 onWarn: (m) => app.log.warn(m),
               })
             },
             criarSessaoDev: async ({ repository, titulo, prompt }) =>
               criarSessaoJules({
-                apiKey: process.env['JULES_API_KEY'],
+                // BYOK (D34): a conta DO CLIENTE quando ele trouxe a dele.
+                apiKey: (await chaveDoDevDoProjeto(project.id)) ?? undefined,
                 repository,
                 startingBranch: process.env['GITORCH_DEV_BASE_BRANCH'] ?? 'main',
                 titulo,
@@ -3795,12 +3806,46 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
    * cliente traz a dele e a lista encolhe para os projetos daquele cliente —
    * é por isso que a pergunta existe como função, e não como constante.
    */
-  const idsDaMesmaConta = async (projeto: { id: string }): Promise<string[]> => {
-    const todos = await app.prisma.project.findMany({ select: { id: true } })
-    const daConta = todos.map((p) => p.id)
+  const idsDaMesmaConta = async (projeto: {
+    id: string
+    devAccountId?: string | null
+  }): Promise<string[]> => {
+    // BYOK (D34): quem trouxe a própria conta soma só com os projetos que
+    // dividem a MESMA conta — dois clientes diferentes deixam de disputar um
+    // teto único, e é isso que faz a escala virar linear em vez de dividida.
+    // A comparação é pela impressão digital da conta, nunca pela credencial:
+    // contar não precisa decifrar segredo nenhum.
+    const daConta = await app.prisma.project.findMany({
+      where: filtroDaMesmaConta(projeto.devAccountId),
+      select: { id: true },
+    })
+    const ids = daConta.map((p) => p.id)
     // Nunca devolve vazio: o próprio projeto sempre conta, mesmo que a leitura
     // volte vazia por algum motivo — contar zero liberaria delegação sem teto.
-    return daConta.length > 0 ? daConta : [projeto.id]
+    return ids.length > 0 ? ids : [projeto.id]
+  }
+
+  /**
+   * A chave do dev assíncrono que ESTE projeto usa (BYOK, D34).
+   *
+   * Decifrada no instante do uso e devolvida por valor, nunca guardada em
+   * arquivo nem escrita em log — mesma regra das credenciais dos motores.
+   * Recusa em vez de cair calada na conta do dono: gastar a conta de quem não
+   * pediu é dinheiro dos outros.
+   */
+  const chaveDoDevDoProjeto = async (projetoId: string): Promise<string | null> => {
+    const registro = await app.prisma.project.findUnique({
+      where: { id: projetoId },
+      select: { encryptedDevApiKey: true },
+    })
+    const resolvida = resolverCredencialDoDev({
+      credencialCifrada: registro?.encryptedDevApiKey ?? null,
+      chaveDaInstancia: process.env['JULES_API_KEY'],
+      decifrar: decryptCredential,
+    })
+    if (resolvida.ok) return resolvida.chave
+    app.log.warn(`[Scheduler] projeto ${projetoId}: ${recadoDaRecusa(resolvida.motivo)}`)
+    return null
   }
 
   /**
