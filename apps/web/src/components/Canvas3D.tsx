@@ -31,7 +31,7 @@ function AgentCube({
         radius={0.2}
         smoothness={4}
         position={position}
-        ref={meshRef}
+        ref={meshRef as any}
       >
         <meshStandardMaterial color="#0f0f15" roughness={0.1} metalness={0.9} envMapIntensity={1} />
 
