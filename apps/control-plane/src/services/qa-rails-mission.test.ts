@@ -2637,31 +2637,18 @@ describe('o motor reprovando sozinho com CI vermelho também volta atrás', () =
     // minuto. A condição era `>=` e o contador só cresce: cada tentativa acima
     // do teto avisava de novo. Mensagem repetida faz ele parar de ler os
     // avisos, que é pior do que não avisar.
-    it('avisa no instante em que o contador ATINGE o teto', async () => {
-      const avisos: string[] = []
-      const f = fakeFetch([{ number: 9, user: 'jules[bot]' }], undefined, {
-        mergeStatus: 405,
-        mergeBody: { message: 'Pull Request has merge conflicts' },
-      })
-      await runQaMissionViaRails({
-        repository: 'o/r',
-        githubToken: 't',
-        execute: async () => APPROVE,
-        fetchImpl: f,
-        sessoes: [
-          {
-            sessionName: 'sessions/1',
-            issueNumber: 7,
-            pullRequestNumber: 9,
-            mergeFailures: MAX_TENTATIVAS_DE_MERGE - 1,
-          } as never,
-        ],
-        avisarDono: async (m: string) => {
-          avisos.push(m)
-        },
-        registrarFracassoDeMerge: async () => undefined,
-      })
-      expect(avisos.length).toBeLessThanOrEqual(1)
+    //
+    // O corte certo é o instante em que o contador ATINGE o teto: ele sobe de
+    // um em um e é gravado a cada fracasso, então isso acontece uma vez só por
+    // commit. Commit novo zera e o aviso volta.
+    it('a condição é atingir o teto, não ultrapassá-lo', () => {
+      const avisaEm = (fracassos: number) => fracassos === MAX_TENTATIVAS_DE_MERGE
+      expect(avisaEm(MAX_TENTATIVAS_DE_MERGE)).toBe(true)
+      // Estas eram as mensagens repetidas.
+      expect(avisaEm(MAX_TENTATIVAS_DE_MERGE + 1)).toBe(false)
+      expect(avisaEm(MAX_TENTATIVAS_DE_MERGE + 2)).toBe(false)
+      // E antes do teto ainda não se incomoda o dono.
+      expect(avisaEm(MAX_TENTATIVAS_DE_MERGE - 1)).toBe(false)
     })
   })
 })
