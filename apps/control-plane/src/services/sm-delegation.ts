@@ -1,6 +1,7 @@
 import { GithubExecutionError } from './github-backlog.js'
 import { aplicarLabelDoAgente } from './agent-label.js'
 import { escolherParaDelegar, type IssueCandidata } from './fila-de-delegacao.js'
+import { tarefasComEntregaMesclada } from './ambiente-declarado.js'
 import type { LinhaDeSessao } from './dev-session-store.js'
 import { fetchComTeto } from './fetch-com-teto.js'
 import { acharParecerNesteHead, ehParecerSemPoderDeMesclar } from './parecer-do-qa.js'
@@ -203,6 +204,12 @@ export interface SmDelegationOptions {
    * já tenha sido delegada antes e a sessão tenha morrido.
    */
   sessoesVivas?: LinhaDeSessao[]
+  /**
+   * TODAS as linhas deste projeto, vivas e fechadas — é entre elas que mora a
+   * prova de que uma tarefa já foi entregue. `sessoesVivas` não serve: a linha
+   * de uma entrega mesclada pode já ter sido fechada.
+   */
+  entregasDoProjeto?: Array<{ issueNumber: number; mergeCommitSha?: string | null }>
   /** Sessões abertas neste projeto nas últimas 24h, para o teto diário. */
   delegadasHoje?: number
   /** Do plano declarado pelo dono. Padrão: Free, que é o mais restritivo. */
@@ -287,6 +294,18 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
   // Bloqueadores só para quem ainda não tem sessão viva — não adianta gastar
   // chamada em issue que já está em trabalho.
   const comSessaoViva = new Set((options.sessoesVivas ?? []).map((s) => s.issueNumber))
+  // Tarefa cuja entrega JÁ FOI MESCLADA não vira sessão nova, mesmo que a
+  // issue continue aberta no GitHub.
+  //
+  // A issue só fecha quando a publicação confirma. Quando essa confirmação
+  // emperra — e emperrou: 992 leituras recusadas em 24h por um ambiente que o
+  // aplicativo não pode ler —, a issue fica aberta com a etiqueta de tarefa e
+  // volta para cá como se nada tivesse sido feito. Foi assim que a #110 ganhou
+  // DOIS pull requests mesclados.
+  //
+  // Isto NÃO substitui o fechamento da tarefa: o quadro do cliente continua
+  // tendo que ficar limpo. Isto impede o GASTO de refazer o que já está pronto.
+  const jaEntregues = tarefasComEntregaMesclada(options.entregasDoProjeto ?? [])
   const candidatas: IssueCandidata[] = []
   // Os arquivos de quem JÁ está em trabalho. Quem tem sessão viva é filtrado
   // das candidatas na linha seguinte, então sem esta coleta os arquivos dele
@@ -294,6 +313,9 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
   // arquivo — o conflito fabricado outra vez, agora entre dois ciclos.
   const arquivosEmTrabalho = new Set<string>()
   for (const t of abertas) {
+    // Entrega mesclada sai da lista ANTES de qualquer outra conta: não gasta
+    // chamada de bloqueador, não reserva arquivo, não ocupa vaga.
+    if (jaEntregues.has(t.number)) continue
     if (comSessaoViva.has(t.number)) {
       for (const arquivo of arquivosDeclarados(t.body)) arquivosEmTrabalho.add(arquivo)
       continue

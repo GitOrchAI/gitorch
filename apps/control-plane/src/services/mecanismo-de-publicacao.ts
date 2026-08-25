@@ -109,7 +109,23 @@ export async function descobrirMecanismo(args: {
   listarAmbientes: () => Promise<NomeDoAmbiente[]>
   /** Lê `GET /repos/{o}/{r}/actions/workflows`. */
   listarWorkflows: () => Promise<WorkflowDoRepositorio[]>
+  /**
+   * O que o PROJETO declarou como ambiente de publicação dele. Quando existe,
+   * GANHA da descoberta — e ganha sem nem listar os ambientes do repositório.
+   *
+   * A descoberta olha o repositório inteiro e filtra o que parece efêmero, e
+   * num caso real isso trouxe um ambiente de outra ferramenta (`copilot`) que
+   * o aplicativo não tem permissão de ler: 992 leituras recusadas em 24 horas,
+   * a publicação nunca confirmando, e seis entregas mescladas presas sem
+   * fechar a tarefa. Adivinhar em repositório alheio não é confiável; o dono
+   * do projeto sabe onde publica.
+   */
+  ambientesDeclarados?: string[] | undefined
 }): Promise<Mecanismo> {
+  if (args.ambientesDeclarados && args.ambientesDeclarados.length > 0) {
+    return { tipo: 'deployment', ambientes: [...args.ambientesDeclarados] }
+  }
+
   const ambientes = await args.listarAmbientes()
   const ambientesDeclarados = ambientes.filter((a) => !PADRAO_AMBIENTE_EFEMERO.test(a))
   if (ambientesDeclarados.length > 0) {
