@@ -71,7 +71,7 @@ jobs:
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_FREE_MODEL: openrouter/free
-          SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
+          SECURITY_PAT: ${{ secrets.SECURITY_PAT || github.token }}
           GH_TOKEN: ${{ secrets.SECURITY_PAT || github.token }}
           GITHUB_TOKEN: ${{ secrets.SECURITY_PAT || github.token }}
           REPO_OWNER: ${{ github.repository_owner }}
