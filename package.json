@@ -5,6 +5,7 @@
   "workspaces": [
     "packages/*",
     "apps/control-plane",
+    "apps/landing",
     "apps/web"
   ],
   "packageManager": "pnpm@9.4.0",
