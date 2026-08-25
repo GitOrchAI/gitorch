@@ -95,6 +95,8 @@ import {
   ambientesDeclaradosPeloProjeto,
   JANELA_DA_ENTREGA_RECENTE_MS,
 } from '../services/ambiente-declarado.js'
+import { duvidaSobreComoPublica } from '../services/duvidas-do-projeto.js'
+import type { AgentQuestionService } from '../services/agent-question.js'
 import {
   acompanharPublicacao,
   fecharPorTetoAbsoluto,
@@ -4538,6 +4540,35 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             projeto,
             `GitOrch: a entrega de ${projeto.wingId} (commit ${shaDaMescla}) foi mesclada, mas ${motivoDeNegocio} ${veredito.motivo}`
           )
+
+          // E PERGUNTA, em vez de só avisar — ordem do dono (D47): "se os
+          // agentes do gitorch tem duvidas sobre o projeto, deve-se usar sempre
+          // o askquestions SEMPRE, nao podem achar nada".
+          //
+          // O aviso acima conta o que aconteceu; ele não resolve nada sozinho,
+          // porque o produto continua sem saber como aquele projeto vai ao ar.
+          // Medido no patinhas: nenhum ambiente do repositório se declara
+          // produção, porque a publicação real acontece nas VMs do dono — e
+          // isso o GitHub nunca vai contar. Adivinhando, o produto ficou 992
+          // vezes em 24 horas batendo num 403.
+          //
+          // `ask` deduplica pela chave: respondida uma vez para aquele
+          // repositório, a pergunta não volta. É a segunda metade do pedido do
+          // dono, "para que nunca mais questione o usuario".
+          // O serviço é decorado pelo plugin do Telegram (plugins/telegram.ts):
+          // a MESMA instância que cria a pergunta e a entrega com botões.
+          // Ausente quando o Telegram não está ligado — aí o produto segue com
+          // o aviso acima, que é o que ele consegue.
+          const perguntador = (app as unknown as { agentQuestionService?: AgentQuestionService })
+            .agentQuestionService
+          if (perguntador && projeto.userId) {
+            const duvida = duvidaSobreComoPublica(projeto.wingId)
+            await perguntador.ask(projeto.userId, projeto.id, duvida).catch((err: unknown) =>
+              // Best-effort por contrato: a pergunta que falha não pode
+              // derrubar a varredura, e o aviso acima já saiu.
+              app.log.warn(err, `[Scheduler] não deu para perguntar ao dono de ${projeto.wingId}`)
+            )
+          }
           // Item 2/Leva B: "sem-publicacao" tem DOIS motivos honestos bem
           // diferentes — o repositório PROVADAMENTE não publica (aqui o
           // merge JÁ é a entrega: fecha como entregue, card vai para
