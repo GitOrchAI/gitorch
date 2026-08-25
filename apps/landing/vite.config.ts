@@ -14,10 +14,16 @@ export default defineConfig({
     sourcemap: true,
     rollupOptions: {
       output: {
-        manualChunks: {
-          three: ['three', '@react-three/fiber', '@react-three/drei'],
-          i18n: ['i18next', 'react-i18next', 'i18next-browser-languagedetector'],
-          vendor: ['react', 'react-dom', 'react-router-dom'],
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            if (id.includes('three') || id.includes('@react-three')) {
+              return 'three';
+            }
+            if (id.includes('i18n')) {
+              return 'i18n';
+            }
+            return 'vendor';
+          }
         },
       },
     },
