@@ -2903,7 +2903,19 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           if (!isNoOp) {
             try {
               await app.saveMissionMemory({
-                wingId: project.wingId,
+                // A chave é o ID do projeto, não o endereço do repositório.
+                //
+                // Esta gravação usava `project.wingId` — "dono/repositorio" —
+                // que NÃO é único entre clientes: o schema declara
+                // `@@unique([userId, wingId])` justamente porque dois clientes
+                // podem cadastrar o mesmo repositório. Nada lia por essa chave,
+                // então a gaveta era escrita e nunca aberta; mas no dia em que
+                // alguém lesse, misturaria a memória de dois clientes.
+                //
+                // Com o `projectId`, esta gravação passa a cair na MESMA
+                // prateleira que `persistMissionMemory` já usa e que os agentes
+                // leem de verdade — a gaveta deixa de ser morta.
+                wingId: project.id,
                 missionId,
                 agentRole: role,
                 content: result.output,
