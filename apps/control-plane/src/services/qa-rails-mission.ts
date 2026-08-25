@@ -38,6 +38,7 @@ import {
   type EntregaJulgada,
 } from './reprovacao-que-ensina.js'
 import { ciTerminouVerde, estadoDoCi } from './estado-da-verificacao-do-github.js'
+import { decidirQuemResolve } from './conflito-de-merge.js'
 import { decidirSobreLegado } from './rejulgar-legados.js'
 
 // Missão do QA nos TRILHOS (F3.6): acha a PR do Jules que precisa de julgamento,
@@ -1106,6 +1107,37 @@ export async function runQaMissionViaRails(
         // (mais acima) e pular esta entrega até o commit mudar. Best-effort,
         // mesmo padrão dos outros avisos deste arquivo: falhar ao notificar
         // não pode derrubar a missão.
+        // CONFLITO É TRABALHO DO DEV, NÃO DO DONO.
+        //
+        // O dono recebeu "é preciso ação humana (ex.: resolver o conflito)"
+        // sobre o PR #3762. Mas resolver conflito é exatamente o que o dev
+        // assíncrono sabe fazer: ele tem o repositório, o contexto da tarefa e
+        // uma sessão aberta. Chamar o dono para isso é devolver a ele o
+        // trabalho que o produto existe para tirar das costas dele.
+        //
+        // Nem toda recusa de merge é assim — proteção de branch, permissão que
+        // falta, check obrigatório vermelho. `decidirQuemResolve` separa, e
+        // manda ao dono só o que ninguém do produto resolve.
+        const quemResolve = decidirQuemResolve({
+          motivo: resultadoDoMerge.motivo,
+          temSessaoViva: Boolean(linhaDaEntrega) && options.avisarSessao !== undefined,
+          pedidosDeRebase: Math.max(0, fracassosAgora - 1),
+          numeroDoPr: target.number,
+        })
+
+        if (quemResolve.quem === 'dev' && linhaDaEntrega && options.avisarSessao) {
+          const pediu = await options
+            .avisarSessao({ sessionName: linhaDaEntrega.sessionName, texto: quemResolve.pedido })
+            .catch(() => false)
+          options.onWarn?.(
+            pediu
+              ? `[qa] conflito no PR #${target.number}: pedido de rebase enviado ao dev`
+              : `[qa] conflito no PR #${target.number}: não deu para pedir rebase ao dev`
+          )
+        }
+
+        // O dono só é chamado quando ninguém do produto resolve — e aí sim
+        // UMA vez por commit.
         // UM aviso por commit, e não um por tentativa.
         //
         // O dono recebeu a MESMA mensagem duas vezes sobre o PR #3762, no
@@ -1121,7 +1153,11 @@ export async function runQaMissionViaRails(
         //
         // Commit novo zera o contador e o aviso volta — situação nova merece
         // recado novo.
-        if (fracassosAgora === MAX_TENTATIVAS_DE_MERGE && options.avisarDono) {
+        if (
+          quemResolve.quem === 'dono' &&
+          fracassosAgora === MAX_TENTATIVAS_DE_MERGE &&
+          options.avisarDono
+        ) {
           await options
             .avisarDono(
               `GitOrch: o merge do PR #${target.number} (${options.repository}) falhou ` +
