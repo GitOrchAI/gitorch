@@ -102,7 +102,16 @@ export type MotivoDeFechamento = 'merged' | 'abandoned' | 'failed_final'
  * que aqui só se mexe em `devSession`.
  */
 export interface PrismaDevSession {
+  /**
+   * Roda tudo dentro da mesma transação. Só `reservarVagaNaConta` usa — é o
+   * que impede duas delegações de furarem o teto da conta ao mesmo tempo.
+   */
+  $transaction?: <T>(
+    fn: (tx: PrismaDevSession) => Promise<T>,
+    opcoes?: { isolationLevel?: string }
+  ) => Promise<T>
   devSession: {
+    count?: (args: unknown) => Promise<number>
     upsert: (args: unknown) => Promise<unknown>
     update: (args: unknown) => Promise<unknown>
     /** Só `registrarPendencia` usa — é o que permite gravar "primeiro avistamento" sem um read antes. */
@@ -683,4 +692,69 @@ export async function registrarVereditoDeAmbiente(deps: {
     where: { sessionName: deps.sessionName },
     data: { envLastVerdict: deps.veredito },
   })
+}
+
+/** Por que a vaga não foi reservada. */
+export type MotivoDeRecusaDaVaga = 'sem-vaga-na-conta' | 'ja-existe-sessao-viva'
+
+export type ResultadoDaReserva = { ok: true } | { ok: false; motivo: MotivoDeRecusaDaVaga }
+
+/**
+ * Reserva uma vaga da CONTA e abre a linha, no MESMO comando.
+ *
+ * O produto contava as vagas e criava a sessão em dois passos. Entre um e
+ * outro cabe outra delegação: com um processo só isso já é uma corrida fraca
+ * (duas delegações do mesmo tique, projetos diferentes, correndo em paralelo);
+ * com mais de uma instância do control-plane vira garantido. O próprio
+ * scheduler já documenta essa classe de defeito num comentário sobre outro
+ * mecanismo: "se um dia existirem N processos... CADA processo tem o seu
+ * próprio Map".
+ *
+ * Não adianta mover o mutex para o banco — o que resolve é contar e criar
+ * dentro da mesma transação, com isolamento que impede duas leituras
+ * concorrentes de verem o mesmo total e ambas acharem que cabe.
+ *
+ * `serializable` é o nível certo aqui, e não um exagero: o problema é
+ * exatamente uma leitura que deixa de valer por causa de uma escrita que
+ * aconteceu depois dela. O custo é uma transação que pode ser recusada e
+ * precisa ser tentada de novo — e recusar é o comportamento desejado, porque
+ * significa que o teto foi respeitado.
+ */
+export async function reservarVagaNaConta(deps: {
+  prisma: PrismaDevSession
+  /** Os projetos que dividem a mesma conta do dev externo. */
+  projectIdsDaConta: string[]
+  projectId: string
+  issueNumber: number
+  sessionName: string
+  tetoConcorrentes: number
+  agora: Date
+}): Promise<ResultadoDaReserva> {
+  const executar = async (tx: PrismaDevSession): Promise<ResultadoDaReserva> => {
+    // Sem `count` disponível não há como conferir o teto. Abrir sem conferir
+    // seria pior que recusar: o produto voltaria a pedir mais do que a conta
+    // tem, que é o defeito que isto existe para matar.
+    if (!tx.devSession.count) {
+      return { ok: false, motivo: 'sem-vaga-na-conta' }
+    }
+    const vivas = await tx.devSession.count({
+      where: { projectId: { in: deps.projectIdsDaConta }, closedAt: null },
+    })
+    if (vivas >= deps.tetoConcorrentes) {
+      return { ok: false, motivo: 'sem-vaga-na-conta' }
+    }
+    return abrirSessao({
+      prisma: tx,
+      projectId: deps.projectId,
+      issueNumber: deps.issueNumber,
+      sessionName: deps.sessionName,
+      agora: deps.agora,
+    })
+  }
+
+  // Sem suporte a transação (um fake de teste, por exemplo), roda direto: o
+  // comportamento é o de antes, e é melhor que não funcionar.
+  if (!deps.prisma.$transaction) return executar(deps.prisma)
+
+  return deps.prisma.$transaction(executar, { isolationLevel: 'Serializable' })
 }
