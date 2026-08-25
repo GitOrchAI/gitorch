@@ -2631,4 +2631,24 @@ describe('o motor reprovando sozinho com CI vermelho também volta atrás', () =
     expect(posted.reviews).toHaveLength(1)
     expect(posted.reviews[0]!.body).not.toContain('ci-vermelho-no-julgamento')
   })
+
+  describe('o aviso de merge falho chega UMA vez por commit', () => {
+    // O dono recebeu a mesma mensagem sobre o PR #3762 duas vezes no mesmo
+    // minuto. A condição era `>=` e o contador só cresce: cada tentativa acima
+    // do teto avisava de novo. Mensagem repetida faz ele parar de ler os
+    // avisos, que é pior do que não avisar.
+    //
+    // O corte certo é o instante em que o contador ATINGE o teto: ele sobe de
+    // um em um e é gravado a cada fracasso, então isso acontece uma vez só por
+    // commit. Commit novo zera e o aviso volta.
+    it('a condição é atingir o teto, não ultrapassá-lo', () => {
+      const avisaEm = (fracassos: number) => fracassos === MAX_TENTATIVAS_DE_MERGE
+      expect(avisaEm(MAX_TENTATIVAS_DE_MERGE)).toBe(true)
+      // Estas eram as mensagens repetidas.
+      expect(avisaEm(MAX_TENTATIVAS_DE_MERGE + 1)).toBe(false)
+      expect(avisaEm(MAX_TENTATIVAS_DE_MERGE + 2)).toBe(false)
+      // E antes do teto ainda não se incomoda o dono.
+      expect(avisaEm(MAX_TENTATIVAS_DE_MERGE - 1)).toBe(false)
+    })
+  })
 })

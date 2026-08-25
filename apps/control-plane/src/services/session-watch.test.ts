@@ -1,6 +1,11 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createHash } from 'node:crypto'
-import { vigiarSessoes, type VigiaDeps, type EstadoLido } from './session-watch.js'
+import {
+  ESTADO_AGUARDANDO_QA,
+  vigiarSessoes,
+  type VigiaDeps,
+  type EstadoLido,
+} from './session-watch.js'
 import type { LinhaDeSessao } from './dev-session-store.js'
 import { MAX_NUDGES } from './jules-session-loop.js'
 
@@ -587,5 +592,98 @@ describe('vigiarSessoes', () => {
         expect(deps.registrarEstado).toHaveBeenCalledWith(expect.objectContaining({ estado }))
       }
     )
+    describe('"falhou? manda continuar" — ordem do dono', () => {
+      const falhada = vi.fn(async () => ({
+        estado: 'FAILED',
+        numeroDoPr: null,
+        ultimaAtualizacao: agora.toISOString(),
+      }))
+
+      // Acionar o SM para investigar NÃO destrava a sessão: ela continua parada
+      // no dev externo, ocupando uma das quinze vagas do plano. Medido em 25/08:
+      // seis sessões falhadas vivas sem ninguém pedir retomada.
+      it('sessão falhada recebe pedido de retomada, além do SM', async () => {
+        const deps = depsFalso({
+          sessoes: [linha({ sessionName: 'sessions/falha', nudges: 0 })],
+          consultarSessao: falhada,
+        })
+        await vigiarSessoes(deps)
+        expect(deps.pedirParaContinuar).toHaveBeenCalledWith('sessions/falha')
+        // A regra D5 não muda: o SM continua sendo acionado.
+        expect(deps.dispararMissao).toHaveBeenCalledWith('sm', 'proj1')
+      })
+
+      // Pedir sem parar a uma sessão que não sai do lugar queima cota e enche o
+      // dev de mensagem. Passado o teto, quem decide é o abandono.
+      it('passado o teto, para de pedir e deixa o abandono decidir', async () => {
+        const deps = depsFalso({
+          sessoes: [linha({ sessionName: 'sessions/teimosa', nudges: MAX_NUDGES })],
+          consultarSessao: falhada,
+        })
+        await vigiarSessoes(deps)
+        expect(deps.pedirParaContinuar).not.toHaveBeenCalled()
+        expect(deps.dispararMissao).toHaveBeenCalledWith('sm', 'proj1')
+      })
+
+      // O teto mede quantas vezes TENTAMOS, não quantas chegaram. Contar só o
+      // sucesso faria uma falha persistente de rede girar para sempre sem nunca
+      // alcançar o teto.
+      it('falha de envio conta a tentativa do mesmo jeito', async () => {
+        const deps = depsFalso({
+          sessoes: [linha({ sessionName: 'sessions/semrede', nudges: 0 })],
+          consultarSessao: falhada,
+          pedirParaContinuar: vi.fn(async () => false),
+        })
+        await vigiarSessoes(deps)
+        expect(deps.registrarResposta).toHaveBeenCalledWith(
+          expect.objectContaining({ sessionName: 'sessions/semrede' })
+        )
+      })
+    })
+
+    describe('"PR entregue e aguardando QA" — o terceiro desfecho', () => {
+      // O dev externo devolve COMPLETED tanto para a entrega que produziu pull
+      // request quanto para a que terminou sem nada. Quem olha o quadro via as
+      // duas iguais, e o dono pediu para saber em que pé está cada entrega.
+      it('entrega com PR novo fica marcada como aguardando QA', async () => {
+        const deps = depsFalso({
+          sessoes: [linha({ sessionName: 'sessions/entregou', pullRequestNumber: null })],
+          consultarSessao: vi.fn(async () => ({
+            estado: 'COMPLETED',
+            numeroDoPr: 4242,
+            ultimaAtualizacao: agora.toISOString(),
+          })),
+        })
+        await vigiarSessoes(deps)
+
+        expect(deps.registrarPr).toHaveBeenCalledWith(expect.objectContaining({ numeroDoPr: 4242 }))
+        expect(deps.registrarEstado).toHaveBeenCalledWith(
+          expect.objectContaining({
+            sessionName: 'sessions/entregou',
+            estado: ESTADO_AGUARDANDO_QA,
+          })
+        )
+        // E o juiz é acordado, que é a outra metade da ordem do dono.
+        expect(deps.dispararMissao).toHaveBeenCalledWith('qa', 'proj1')
+      })
+
+      // Entrega que terminou sem produzir nada continua sendo o que é: não pode
+      // aparecer no quadro como se estivesse esperando julgamento.
+      it('entrega concluída SEM pull request não vira aguardando QA', async () => {
+        const deps = depsFalso({
+          sessoes: [linha({ sessionName: 'sessions/vazia', pullRequestNumber: null })],
+          consultarSessao: vi.fn(async () => ({
+            estado: 'COMPLETED',
+            numeroDoPr: null,
+            ultimaAtualizacao: agora.toISOString(),
+          })),
+        })
+        await vigiarSessoes(deps)
+
+        expect(deps.registrarEstado).not.toHaveBeenCalledWith(
+          expect.objectContaining({ estado: ESTADO_AGUARDANDO_QA })
+        )
+      })
+    })
   })
 })

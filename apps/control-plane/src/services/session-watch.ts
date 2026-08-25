@@ -16,7 +16,7 @@
 
 import { createHash } from 'node:crypto'
 import type { LinhaDeSessao, MotivoDeFechamento } from './dev-session-store.js'
-import { decidirRespostaDaSessao } from './jules-session-loop.js'
+import { decidirRespostaDaSessao, MAX_NUDGES } from './jules-session-loop.js'
 
 /**
  * Cadência mínima entre dois exames da MESMA sessão. Sem ela, cada tick do
@@ -25,6 +25,16 @@ import { decidirRespostaDaSessao } from './jules-session-loop.js'
  * que nada tivesse mudado desde a última olhada.
  */
 export const CADENCIA_DE_EXAME_MS = 10 * 60 * 1000
+
+/**
+ * O estado da entrega que já produziu pull request e espera julgamento.
+ *
+ * O dev externo devolve `COMPLETED` tanto para a sessão que entregou um pull
+ * request quanto para a que terminou sem produzir nada — quem olha o quadro vê
+ * as duas iguais. Este estado separa as duas, porque o dono pediu para saber em
+ * que pé está cada entrega, e "concluída" sem dizer o quê não responde isso.
+ */
+export const ESTADO_AGUARDANDO_QA = 'PR_ENTREGUE_AGUARDANDO_QA'
 
 /**
  * Quantas vezes reentregar um pedido de retrabalho antes de desistir e chamar
@@ -376,6 +386,36 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
           // cota do motor do cliente. O `registrarInvestigacao` acima não
           // serve para isso: ele só grava o hash, e só na primeira vez.
           //
+          // "falhou? manda continuar" — ordem do dono, 25/08. Acionar o SM
+          // para investigar não destrava a sessão: ela continua parada lá,
+          // ocupando uma das quinze vagas do plano, e vaga presa é delegação
+          // recusada. Medido no mesmo dia: seis sessões falhadas vivas sem
+          // ninguém pedir retomada.
+          //
+          // O pedido é uma MENSAGEM, não uma chamada de "continuar": esse
+          // endpoint não existe na API do dev externo (sempre respondeu 404) e
+          // há um teste no repositório que impede alguém de recriá-lo.
+          //
+          // Com o MESMO teto do ramo `insistir`, e pelo mesmo motivo: pedir
+          // sem parar a uma sessão que não sai do lugar queima cota e enche o
+          // dev de mensagem. Passado o teto, quem decide é o abandono.
+          if (linha.nudges < MAX_NUDGES) {
+            const pediu = await deps.pedirParaContinuar(linha.sessionName)
+            // Conta a tentativa nos DOIS casos, sucesso ou falha de envio: o
+            // teto mede quantas vezes TENTAMOS, não quantas chegaram. Contar
+            // só o sucesso faria uma falha persistente de rede girar para
+            // sempre sem nunca alcançar o teto — o mesmo padrão de falha
+            // silenciosa que este arquivo já corrigiu três vezes.
+            await deps.registrarResposta({
+              sessionName: linha.sessionName,
+              hashDaPergunta: linha.answeredHash ?? '',
+              agora: deps.agora,
+            })
+            if (!pediu) {
+              warn(`[vigia] não foi possível pedir retomada a ${linha.sessionName}`)
+            }
+          }
+
           // Regra D5 do dono: o SM investiga o impedimento. Isso não muda —
           // o aviso acima é ADICIONAL, nunca substitui o SM.
           await deps.dispararMissao('sm', linha.projectId)
@@ -417,6 +457,21 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
               agora: deps.agora,
             })
             prsCapturados += 1
+            // "PR entregue e aguardando QA" — ordem do dono, 25/08: "Se o Dev
+            // assincrono entregar o PR é ajustado para PR entregue e aguardando
+            // QA entao o QA é acordado".
+            //
+            // O estado que o dev externo devolve é COMPLETED, e ele não
+            // distingue a entrega que produziu pull request da que não
+            // produziu nada. Quem olha o quadro via as duas iguais, e o dono
+            // pediu para saber em que pé está cada entrega. O carimbo de cima
+            // gravaria o COMPLETED cru; aqui ele é substituído pelo estado que
+            // conta a verdade do momento.
+            await deps.registrarEstado({
+              sessionName: linha.sessionName,
+              estado: ESTADO_AGUARDANDO_QA,
+              agora: deps.agora,
+            })
             // A linha só fecha na publicação — Fase 3.
             await deps.dispararMissao('qa', linha.projectId)
             break
