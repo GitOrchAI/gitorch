@@ -2080,7 +2080,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       role,
       chain,
       plan?.id,
-      onboardingSequence !== undefined
+      onboardingSequence !== undefined,
+      origem
     )
 
     return { triggered: true, missionId: mission.id }
@@ -2108,7 +2109,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // QA — o projeto não tem agenda de QA própria em project_schedules. Sem
     // este sinal, o QA nos trilhos sempre cairia no julgamento clássico de PR
     // e, sem PR aberta, terminaria em no-op (ver qa-rails-mission.ts).
-    isOnboarding = false
+    isOnboarding = false,
+    /**
+     * De onde veio o disparo. O RA usa para separar os dois trabalhos dele:
+     * pelo aviso de desejo novo ele analisa AQUELE desejo; pela agenda ele
+     * explora o projeto.
+     */
+    origem: OrigemDoDisparo = 'agenda'
   ): Promise<void> => {
     // Isolamento por tier: grátis roda no stack remoto (MT-SaaS) quando
     // configurado; qualquer outro caso usa o stack local de sempre — nunca
@@ -2572,6 +2579,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                   githubToken: railsToken,
                   execute,
                   contextBlocks,
+                  // Separa os dois trabalhos do RA: pelo aviso de desejo novo
+                  // ele analisa AQUELE desejo; pela agenda ele EXPLORA o
+                  // projeto. Ancorar de novo num desejo já analisado é refazer
+                  // a mesma análise duas vezes por dia em vez de aprender mais
+                  // sobre o repositório — e é o explorador quem alimenta a
+                  // memória que os outros agentes leem.
+                  pelaAgenda: origem === 'agenda',
                 })
               : poRails
                 ? await runPoMissionViaRails({
