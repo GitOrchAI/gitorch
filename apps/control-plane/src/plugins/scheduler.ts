@@ -92,6 +92,10 @@ import { criarIssueDeDesejo } from '../services/desejo-no-github.js'
 import { sessoesParaAcompanharPublicacao } from '../services/pos-merge.js'
 import { descobrirMecanismo, type Mecanismo } from '../services/mecanismo-de-publicacao.js'
 import {
+  ambientesDeclaradosPeloProjeto,
+  JANELA_DA_ENTREGA_RECENTE_MS,
+} from '../services/ambiente-declarado.js'
+import {
   acompanharPublicacao,
   fecharPorTetoAbsoluto,
   TETO_ABSOLUTO_DE_ACOMPANHAMENTO_MS,
@@ -371,15 +375,24 @@ export function montarOpcoesDeDelegacao(args: {
   devPlan: string | null | undefined
   sessoesVivas: LinhaDeSessao[]
   delegadasHoje: number
+  /**
+   * TODAS as linhas do projeto, vivas e fechadas — a prova de que uma tarefa
+   * já foi entregue. `sessoesVivas` não serve aqui: a linha de uma entrega
+   * mesclada pode já ter sido fechada, e é justamente essa que precisa barrar
+   * a redelegação.
+   */
+  entregasDoProjeto: Array<{ issueNumber: number; mergeCommitSha?: string | null }>
 }): {
   sessoesVivas: LinhaDeSessao[]
   delegadasHoje: number
+  entregasDoProjeto: Array<{ issueNumber: number; mergeCommitSha?: string | null }>
   tetoConcorrentes: number
   tetoDiario: number
 } {
   return {
     sessoesVivas: args.sessoesVivas,
     delegadasHoje: args.delegadasHoje,
+    entregasDoProjeto: args.entregasDoProjeto,
     ...tetosDoPlanoDoDev(args.devPlan),
   }
 }
@@ -2307,6 +2320,28 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                   createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
                 },
               }),
+              // Sem filtro de linha viva de propósito: a entrega mesclada
+              // costuma ter a linha JÁ FECHADA, e é ela que precisa barrar a
+              // redelegação. Só as que têm commit de merge interessam.
+              // Só as entregas RECENTES, e com teto. Varrer o histórico
+              // inteiro a cada acordada do SM cresceria sem limite num projeto
+              // de operação longa — e não serve para nada: entrega antiga não
+              // barra redelegação, justamente para a issue reaberta poder
+              // voltar.
+              entregasDoProjeto: (await app.prisma.devSession.findMany({
+                where: {
+                  projectId: project.id,
+                  mergeCommitSha: { not: null },
+                  updatedAt: { gte: new Date(Date.now() - JANELA_DA_ENTREGA_RECENTE_MS) },
+                },
+                select: { issueNumber: true, mergeCommitSha: true, updatedAt: true },
+                orderBy: { updatedAt: 'desc' },
+                take: 200,
+              })) as Array<{
+                issueNumber: number
+                mergeCommitSha: string | null
+                updatedAt: Date
+              }>,
             }),
             // O SM é o orquestrador do julgamento (docs/agents/quality-assurance.md
             // §3.1). Até aqui o julgamento só era acordado por aviso do
@@ -3655,13 +3690,23 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   const descobrirMecanismoComCache = async (
     repository: string,
     githubToken: string,
-    agora: Date
+    agora: Date,
+    /** O que o projeto declarou. Quando existe, ganha da descoberta. */
+    runtimeConfig?: unknown
   ): Promise<Mecanismo> => {
-    const emCache = cacheDeMecanismo.get(repository)
+    // A chave inclui a DECLARAÇÃO: `wingId` não é único entre clientes
+    // (o schema tem @@unique([userId, wingId])), e desde que o mecanismo passou
+    // a depender da configuração do projeto, guardar só por repositório fazia
+    // a declaração de um cliente valer para o outro por até uma hora.
+    const declarados = ambientesDeclaradosPeloProjeto(runtimeConfig)
+    const chaveDoCache = `${repository}::${declarados.join(',')}`
+    const emCache = cacheDeMecanismo.get(chaveDoCache)
     if (emCache && emCache.expiraEm > agora.getTime()) {
       return emCache.mecanismo
     }
     const mecanismo = await descobrirMecanismo({
+      onWarn: (m) => app.log.warn(`[Scheduler] publicação de ${repository}: ${m}`),
+      ...(declarados.length > 0 ? { ambientesDeclarados: declarados } : {}),
       listarAmbientes: async () => {
         const resp = (await ghGet(`/repos/${repository}/environments`, githubToken)) as {
           environments?: Array<{ name: string }>
@@ -3679,7 +3724,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         }))
       },
     })
-    cacheDeMecanismo.set(repository, {
+    cacheDeMecanismo.set(chaveDoCache, {
       mecanismo,
       expiraEm: agora.getTime() + VALIDADE_DO_CACHE_DE_MECANISMO_MS,
     })
@@ -4154,7 +4199,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           continue
         }
 
-        const mecanismo = await descobrirMecanismoComCache(projeto.wingId, githubToken, agora)
+        const mecanismo = await descobrirMecanismoComCache(
+          projeto.wingId,
+          githubToken,
+          agora,
+          projeto.runtimeConfig
+        )
         const shaDaMescla = sessao.mergeCommitSha as string
 
         const veredito = await acompanharPublicacao({

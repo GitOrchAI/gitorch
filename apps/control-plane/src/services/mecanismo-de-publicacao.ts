@@ -104,13 +104,56 @@ function nomeDoArquivo(caminho: string): string {
   return caminho.split('/').pop() ?? caminho
 }
 
+import { ambientesQueValem } from './ambiente-declarado.js'
+
 export async function descobrirMecanismo(args: {
   /** Lê `GET /repos/{o}/{r}/environments`, devolvendo os nomes. */
   listarAmbientes: () => Promise<NomeDoAmbiente[]>
   /** Lê `GET /repos/{o}/{r}/actions/workflows`. */
   listarWorkflows: () => Promise<WorkflowDoRepositorio[]>
+  /**
+   * O que o PROJETO declarou como ambiente de publicação dele. Quando existe,
+   * GANHA da descoberta — e ganha sem nem listar os ambientes do repositório.
+   *
+   * A descoberta olha o repositório inteiro e filtra o que parece efêmero, e
+   * num caso real isso trouxe um ambiente de outra ferramenta (`copilot`) que
+   * o aplicativo não tem permissão de ler: 992 leituras recusadas em 24 horas,
+   * a publicação nunca confirmando, e seis entregas mescladas presas sem
+   * fechar a tarefa. Adivinhar em repositório alheio não é confiável; o dono
+   * do projeto sabe onde publica.
+   */
+  ambientesDeclarados?: string[] | undefined
+  /** Onde o descompasso entre o declarado e o real é registrado. */
+  onWarn?: ((mensagem: string) => void) | undefined
 }): Promise<Mecanismo> {
   const ambientes = await args.listarAmbientes()
+
+  // A declaração FILTRA o que é real — nunca substitui a leitura. Substituir
+  // tinha dois buracos calados: nome declarado que não existe travava a
+  // entrega para sempre ("nunca publicou" para uma publicação real), e o
+  // produto perdia a chance de perceber um ambiente de produção esquecido.
+  if (args.ambientesDeclarados && args.ambientesDeclarados.length > 0) {
+    const cruzado = ambientesQueValem({
+      declarados: args.ambientesDeclarados,
+      reaisDoRepositorio: ambientes,
+    })
+    if (cruzado.naoEncontrados.length > 0) {
+      args.onWarn?.(
+        `ambiente declarado que não existe no repositório: ${cruzado.naoEncontrados.join(', ')}`
+      )
+    }
+    if (cruzado.naoDeclarados.length > 0) {
+      args.onWarn?.(
+        `ambiente do repositório fora da declaração (não entra no veredito): ${cruzado.naoDeclarados.join(', ')}`
+      )
+    }
+    // Nada do que foi declarado existe: a declaração está errada, e seguir com
+    // ela deixaria a entrega presa para sempre. Cai na descoberta, que é o
+    // comportamento de antes — pior que declarar, melhor que travar.
+    if (cruzado.ambientes.length > 0) {
+      return { tipo: 'deployment', ambientes: cruzado.ambientes }
+    }
+  }
   const ambientesDeclarados = ambientes.filter((a) => !PADRAO_AMBIENTE_EFEMERO.test(a))
   if (ambientesDeclarados.length > 0) {
     return { tipo: 'deployment', ambientes: ambientesDeclarados }

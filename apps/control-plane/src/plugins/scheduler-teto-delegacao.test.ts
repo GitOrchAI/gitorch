@@ -28,6 +28,7 @@ describe('montarOpcoesDeDelegacao', () => {
       devPlan: 'pro',
       sessoesVivas: [],
       delegadasHoje: 0,
+      entregasDoProjeto: [],
     })
     expect(opcoes.tetoConcorrentes).toBe(15)
     expect(opcoes.tetoDiario).toBe(100)
@@ -38,6 +39,7 @@ describe('montarOpcoesDeDelegacao', () => {
       devPlan: 'free',
       sessoesVivas: [],
       delegadasHoje: 0,
+      entregasDoProjeto: [],
     })
     expect(opcoes.tetoConcorrentes).toBe(3)
     expect(opcoes.tetoDiario).toBe(15)
@@ -45,10 +47,20 @@ describe('montarOpcoesDeDelegacao', () => {
 
   test('devPlan nulo/ausente cai no padrão restritivo (3/15)', () => {
     expect(
-      montarOpcoesDeDelegacao({ devPlan: null, sessoesVivas: [], delegadasHoje: 0 })
+      montarOpcoesDeDelegacao({
+        devPlan: null,
+        sessoesVivas: [],
+        delegadasHoje: 0,
+        entregasDoProjeto: [],
+      })
     ).toMatchObject({ tetoConcorrentes: 3, tetoDiario: 15 })
     expect(
-      montarOpcoesDeDelegacao({ devPlan: undefined, sessoesVivas: [], delegadasHoje: 0 })
+      montarOpcoesDeDelegacao({
+        devPlan: undefined,
+        sessoesVivas: [],
+        delegadasHoje: 0,
+        entregasDoProjeto: [],
+      })
     ).toMatchObject({ tetoConcorrentes: 3, tetoDiario: 15 })
   })
 
@@ -57,6 +69,7 @@ describe('montarOpcoesDeDelegacao', () => {
       devPlan: 'enterprise',
       sessoesVivas: [],
       delegadasHoje: 0,
+      entregasDoProjeto: [],
     })
     expect(opcoes.tetoConcorrentes).toBe(3)
     expect(opcoes.tetoDiario).toBe(15)
@@ -68,6 +81,7 @@ describe('montarOpcoesDeDelegacao', () => {
       devPlan: 'pro',
       sessoesVivas: sessoesVivasArg,
       delegadasHoje: 7,
+      entregasDoProjeto: [],
     })
     // Mesma referência: prova que a função não clona nem filtra a fila.
     expect(opcoes.sessoesVivas).toBe(sessoesVivasArg)
