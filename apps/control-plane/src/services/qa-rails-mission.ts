@@ -44,6 +44,7 @@ import {
   decidirResgateDaTravada,
   pedidoDeResgate,
 } from './entrega-travada-no-teto.js'
+import { comecarPeloMaisAntigo, ordemDoJulgamento } from './ordem-do-julgamento.js'
 import { decidirSobreLegado } from './rejulgar-legados.js'
 
 // Missão do QA nos TRILHOS (F3.6): acha a PR do Jules que precisa de julgamento,
@@ -346,16 +347,46 @@ export async function runQaMissionViaRails(
   // mesclada não é mais este laço de descoberta — é o ponto do merge, mais
   // abaixo, guardado por `delegado`.
   const delegateLabel = options.delegateLabel ?? 'jules'
-  const prs = (await gh(
-    'GET',
-    `/repos/${options.repository}/pulls?state=open&sort=created&direction=desc&per_page=20`
-  )) as Array<{
+  // AS DUAS PONTAS da fila, e não só uma.
+  //
+  // A busca era só `direction=desc` — do mais novo para o mais antigo — com
+  // `per_page=20`. Num repositório com muitos pull requests abertos, o antigo
+  // não entrava nem na página: ele não perdia a vez, ele nem era visto. E,
+  // mesmo entrando, o laço parava no primeiro que precisava julgar, então todo
+  // recém-chegado passava na frente de quem esperava há dias (#3758 e #3747,
+  // desde 21 e 15/08).
+  //
+  // Buscar as duas ordens custa uma chamada a mais e garante que o mais antigo
+  // e o mais novo estejam SEMPRE na lista. Quem alterna entre eles é
+  // `ordemDoJulgamento`.
+  type PrAberto = {
     number: number
     user?: { login?: string }
     draft?: boolean
     body?: string
     head?: { sha?: string }
-  }>
+  }
+  const [maisNovos, maisAntigos] = await Promise.all([
+    gh(
+      'GET',
+      `/repos/${options.repository}/pulls?state=open&sort=created&direction=desc&per_page=20`
+    ) as Promise<PrAberto[]>,
+    gh(
+      'GET',
+      `/repos/${options.repository}/pulls?state=open&sort=created&direction=asc&per_page=20`
+    ).catch(() => [] as PrAberto[]) as Promise<PrAberto[]>,
+  ])
+
+  // Do mais ANTIGO ao mais novo, sem repetir ninguém — é o formato que
+  // `ordemDoJulgamento` espera. A leitura dos mais antigos é best-effort: se
+  // ela falhar, o produto segue com o comportamento de antes em vez de parar
+  // de julgar.
+  const porNumero = new Map<number, PrAberto>()
+  for (const p of [...maisAntigos, ...maisNovos]) porNumero.set(p.number, p)
+  const prs = ordemDoJulgamento(
+    [...porNumero.values()].sort((a, b) => a.number - b.number),
+    comecarPeloMaisAntigo(new Date())
+  )
   let target: (typeof prs)[number] | undefined
   let issueDaEntrega: number | null = null
   let delegado = false
