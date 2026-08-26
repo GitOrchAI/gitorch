@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { etiquetaDeSegredo } from '../lib/credential-crypto.js'
 import { CONTA_DA_INSTANCIA } from './conta-do-dev-externo.js'
 
 /**
@@ -35,9 +35,14 @@ export const ERRO_SEM_CREDENCIAL = 'sem-credencial-do-dev'
  * a mesma chave guardada em dois projetos do mesmo cliente produz dois
  * envelopes diferentes, e usar o envelope faria o produto achar que são dois
  * clientes, dando ao cliente o dobro do teto que ele tem.
+ *
+ * A etiqueta é HMAC com a chave do servidor, não um resumo simples: um resumo
+ * simples de um segredo é barato de tentar em massa, e quem pusesse a mão na
+ * etiqueta poderia chegar de volta à chave por força bruta (achado do CodeQL,
+ * severidade alta). Ver `etiquetaDeSegredo`.
  */
 export function identidadeDaConta(chave: string): string {
-  return `conta-${createHash('sha256').update(chave).digest('hex').slice(0, 16)}`
+  return `conta-${etiquetaDeSegredo('conta-do-dev', chave)}`
 }
 
 export type CredencialDoDev =

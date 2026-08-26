@@ -98,3 +98,26 @@ describe('resolverCredencialDoDev', () => {
     expect(r.ok).toBe(false)
   })
 })
+
+describe('a etiqueta da conta não leva de volta à chave', () => {
+  it('muda quando a chave do servidor muda — etiqueta velha não sobrevive a giro de chave', () => {
+    const original = process.env['GITORCH_CREDENTIAL_KEY']
+    try {
+      process.env['GITORCH_CREDENTIAL_KEY'] = 'a'.repeat(64)
+      const comUmaChave = identidadeDaConta('mesma-chave-do-cliente')
+      process.env['GITORCH_CREDENTIAL_KEY'] = 'b'.repeat(64)
+      const comOutra = identidadeDaConta('mesma-chave-do-cliente')
+      expect(comUmaChave).not.toBe(comOutra)
+    } finally {
+      if (original === undefined) delete process.env['GITORCH_CREDENTIAL_KEY']
+      else process.env['GITORCH_CREDENTIAL_KEY'] = original
+    }
+  })
+
+  it('NÃO é um resumo simples da chave: quem só tem a etiqueta não consegue recalculá-la sozinho', async () => {
+    const { createHash } = await import('node:crypto')
+    const chave = 'chave-do-cliente-abc'
+    const resumoSimples = `conta-${createHash('sha256').update(chave).digest('hex').slice(0, 16)}`
+    expect(identidadeDaConta(chave)).not.toBe(resumoSimples)
+  })
+})

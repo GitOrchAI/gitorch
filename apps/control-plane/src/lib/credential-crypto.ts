@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
+import { createCipheriv, createDecipheriv, createHmac, randomBytes } from 'node:crypto'
 
 // Cifragem de credenciais de motor em repouso (AES-256-GCM autenticado).
 // A chave vem de GITORCH_CREDENTIAL_KEY (32 bytes em hex[64] ou base64). Sem
@@ -150,4 +150,28 @@ export function hasCredentialKey(): boolean {
   } catch {
     return false
   }
+}
+
+/**
+ * Uma etiqueta estável para um segredo, sem que a etiqueta possa levar de
+ * volta ao segredo.
+ *
+ * Existe para o BYOK: o produto precisa dizer "estas duas coisas são da mesma
+ * conta" sem guardar nem exibir a credencial. A primeira versão usava sha256
+ * puro sobre a chave, e o CodeQL apontou com razão (`js/insufficient-password-hash`,
+ * severidade alta): sha256 sozinho é barato de tentar em massa, então quem
+ * pusesse a mão na etiqueta poderia, com um espaço de chaves pequeno,
+ * descobrir o segredo por força bruta.
+ *
+ * Com HMAC a etiqueta passa a depender também da chave do servidor: sem ela,
+ * não há como gerar candidatos para comparar. É a mesma chave que já cifra as
+ * credenciais em repouso — girar essa chave muda todas as etiquetas, que é o
+ * comportamento certo (uma etiqueta antiga não deve continuar valendo depois
+ * de a chave do cofre trocar).
+ *
+ * `dominio` separa universos de etiqueta: duas coisas diferentes etiquetadas
+ * com o mesmo segredo não podem colidir só porque o segredo é o mesmo.
+ */
+export function etiquetaDeSegredo(dominio: string, segredo: string): string {
+  return createHmac('sha256', loadKey()).update(`${dominio}:${segredo}`).digest('hex').slice(0, 16)
 }
