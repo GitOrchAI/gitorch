@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHmac, randomBytes } from 'node:crypto'
+import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto'
 
 // Cifragem de credenciais de motor em repouso (AES-256-GCM autenticado).
 // A chave vem de GITORCH_CREDENTIAL_KEY (32 bytes em hex[64] ou base64). Sem
@@ -157,21 +157,27 @@ export function hasCredentialKey(): boolean {
  * volta ao segredo.
  *
  * Existe para o BYOK: o produto precisa dizer "estas duas coisas são da mesma
- * conta" sem guardar nem exibir a credencial. A primeira versão usava sha256
- * puro sobre a chave, e o CodeQL apontou com razão (`js/insufficient-password-hash`,
- * severidade alta): sha256 sozinho é barato de tentar em massa, então quem
- * pusesse a mão na etiqueta poderia, com um espaço de chaves pequeno,
- * descobrir o segredo por força bruta.
+ * conta" sem guardar nem exibir a credencial.
  *
- * Com HMAC a etiqueta passa a depender também da chave do servidor: sem ela,
- * não há como gerar candidatos para comparar. É a mesma chave que já cifra as
- * credenciais em repouso — girar essa chave muda todas as etiquetas, que é o
- * comportamento certo (uma etiqueta antiga não deve continuar valendo depois
- * de a chave do cofre trocar).
+ * Duas versões anteriores foram recusadas, as duas com razão:
+ * - sha256 puro sobre a chave (CodeQL `js/insufficient-password-hash`, alto):
+ *   um resumo simples de segredo é barato de tentar em massa;
+ * - HMAC com a chave do servidor: melhor, mas ainda uma função rápida sobre um
+ *   segredo, e o scanner continuou apontando — com razão, porque a defesa
+ *   passava a depender inteiramente de a chave do servidor nunca vazar, e é
+ *   justamente contra o dia do vazamento que se endurece um derivado.
  *
- * `dominio` separa universos de etiqueta: duas coisas diferentes etiquetadas
- * com o mesmo segredo não podem colidir só porque o segredo é o mesmo.
+ * `scrypt` é a resposta certa: derivação DELIBERADAMENTE cara, que torna a
+ * força bruta inviável mesmo para quem tiver tudo em mãos. O custo é aceitável
+ * porque a etiqueta é calculada uma vez, quando o cliente conecta a conta —
+ * NUNCA no caminho quente de cada delegação (ver o comentário de
+ * `resolverCredencialDoDev`, que de propósito não a calcula).
+ *
+ * `dominio` entra como sal: separa universos de etiqueta, para que duas coisas
+ * diferentes etiquetadas com o mesmo segredo não colidam.
  */
 export function etiquetaDeSegredo(dominio: string, segredo: string): string {
-  return createHmac('sha256', loadKey()).update(`${dominio}:${segredo}`).digest('hex').slice(0, 16)
+  // N=16384 é o padrão recomendado para uso interativo: caro o bastante para
+  // matar força bruta, rápido o bastante (~50ms) para uma chamada de rota.
+  return scryptSync(segredo, `gitorch:${dominio}`, 8, { N: 16384, r: 8, p: 1 }).toString('hex')
 }

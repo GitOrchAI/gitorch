@@ -4,7 +4,6 @@ import {
   resolverCredencialDoDev,
   ERRO_CREDENCIAL_ILEGIVEL,
 } from './credencial-do-dev-do-cliente.js'
-import { CONTA_DA_INSTANCIA } from './conta-do-dev-externo.js'
 
 describe('identidadeDaConta', () => {
   it('a mesma chave dá sempre a mesma identidade — é o que faz dois projetos do mesmo cliente somarem cota', () => {
@@ -37,7 +36,7 @@ describe('resolverCredencialDoDev', () => {
     expect(r.ok).toBe(true)
     if (!r.ok) return
     expect(r.chave).toBe('chave-do-dono')
-    expect(r.conta).toBe(CONTA_DA_INSTANCIA)
+    expect(r.propria).toBe(false)
   })
 
   it('com credencial própria, usa a chave DO CLIENTE e uma conta própria', () => {
@@ -49,11 +48,13 @@ describe('resolverCredencialDoDev', () => {
     expect(r.ok).toBe(true)
     if (!r.ok) return
     expect(r.chave).toBe('chave-do-cliente')
-    expect(r.conta).toBe(identidadeDaConta('chave-do-cliente'))
-    expect(r.conta).not.toBe(CONTA_DA_INSTANCIA)
+    expect(r.propria).toBe(true)
   })
 
   it('dois projetos do MESMO cliente caem na mesma conta mesmo com envelopes diferentes', () => {
+    // A conta sai da CHAVE, nunca do envelope (que tem sal aleatório): é isso
+    // que impede o mesmo cliente de virar dois clientes com o dobro do teto.
+    expect(identidadeDaConta('mesma-chave')).toBe(identidadeDaConta('mesma-chave'))
     const um = resolverCredencialDoDev({
       credencialCifrada: 'envelope-1',
       chaveDaInstancia: 'x',
@@ -64,7 +65,7 @@ describe('resolverCredencialDoDev', () => {
       chaveDaInstancia: 'x',
       decifrar: () => 'mesma-chave',
     })
-    expect(um.ok && dois.ok && um.conta === dois.conta).toBe(true)
+    expect(um.ok && dois.ok && um.chave === dois.chave).toBe(true)
   })
 
   it('credencial ilegível RECUSA — nunca cai calada na conta do dono, que é dinheiro dele', () => {
@@ -100,20 +101,6 @@ describe('resolverCredencialDoDev', () => {
 })
 
 describe('a etiqueta da conta não leva de volta à chave', () => {
-  it('muda quando a chave do servidor muda — etiqueta velha não sobrevive a giro de chave', () => {
-    const original = process.env['GITORCH_CREDENTIAL_KEY']
-    try {
-      process.env['GITORCH_CREDENTIAL_KEY'] = 'a'.repeat(64)
-      const comUmaChave = identidadeDaConta('mesma-chave-do-cliente')
-      process.env['GITORCH_CREDENTIAL_KEY'] = 'b'.repeat(64)
-      const comOutra = identidadeDaConta('mesma-chave-do-cliente')
-      expect(comUmaChave).not.toBe(comOutra)
-    } finally {
-      if (original === undefined) delete process.env['GITORCH_CREDENTIAL_KEY']
-      else process.env['GITORCH_CREDENTIAL_KEY'] = original
-    }
-  })
-
   it('NÃO é um resumo simples da chave: quem só tem a etiqueta não consegue recalculá-la sozinho', async () => {
     const { createHash } = await import('node:crypto')
     const chave = 'chave-do-cliente-abc'

@@ -1,5 +1,4 @@
 import { etiquetaDeSegredo } from '../lib/credential-crypto.js'
-import { CONTA_DA_INSTANCIA } from './conta-do-dev-externo.js'
 
 /**
  * BYOK — cada cliente traz a própria conta do dev assíncrono (D34).
@@ -36,17 +35,26 @@ export const ERRO_SEM_CREDENCIAL = 'sem-credencial-do-dev'
  * envelopes diferentes, e usar o envelope faria o produto achar que são dois
  * clientes, dando ao cliente o dobro do teto que ele tem.
  *
- * A etiqueta é HMAC com a chave do servidor, não um resumo simples: um resumo
- * simples de um segredo é barato de tentar em massa, e quem pusesse a mão na
- * etiqueta poderia chegar de volta à chave por força bruta (achado do CodeQL,
- * severidade alta). Ver `etiquetaDeSegredo`.
+ * A etiqueta vem de uma derivação DELIBERADAMENTE cara (`etiquetaDeSegredo`,
+ * scrypt), não de um resumo simples: resumo simples de segredo é barato de
+ * tentar em massa, e quem pusesse a mão na etiqueta chegaria de volta à chave
+ * por força bruta (achado do CodeQL, severidade alta).
+ *
+ * Por ser cara, ela é calculada UMA VEZ, quando o cliente conecta a conta —
+ * nunca no caminho de cada delegação, que lê a etiqueta já guardada no banco.
  */
 export function identidadeDaConta(chave: string): string {
   return `conta-${etiquetaDeSegredo('conta-do-dev', chave)}`
 }
 
 export type CredencialDoDev =
-  | { ok: true; chave: string; conta: string; propria: boolean }
+  /**
+   * `conta` NÃO vem aqui de propósito: calcular a etiqueta custa caro (scrypt)
+   * e isto roda a cada delegação, a cada olhada da vigília e a cada
+   * arquivamento. Quem precisa da conta lê a que está guardada no banco, que é
+   * onde ela foi gravada quando o cliente conectou.
+   */
+  | { ok: true; chave: string; propria: boolean }
   | { ok: false; motivo: typeof ERRO_CREDENCIAL_ILEGIVEL | typeof ERRO_SEM_CREDENCIAL }
 
 /**
@@ -74,12 +82,12 @@ export function resolverCredencialDoDev(args: {
       return { ok: false, motivo: ERRO_CREDENCIAL_ILEGIVEL }
     }
     if (aberta === '') return { ok: false, motivo: ERRO_CREDENCIAL_ILEGIVEL }
-    return { ok: true, chave: aberta, conta: identidadeDaConta(aberta), propria: true }
+    return { ok: true, chave: aberta, propria: true }
   }
 
   const daInstancia = args.chaveDaInstancia?.trim()
   if (!daInstancia) return { ok: false, motivo: ERRO_SEM_CREDENCIAL }
-  return { ok: true, chave: daInstancia, conta: CONTA_DA_INSTANCIA, propria: false }
+  return { ok: true, chave: daInstancia, propria: false }
 }
 
 /** Recado ao dono/cliente, em linguagem de gente, para cada recusa. */
