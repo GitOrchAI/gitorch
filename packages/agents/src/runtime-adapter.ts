@@ -358,11 +358,13 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
           stderr: result.stderr,
           exitCode: result.exitCode,
           durationMs: result.durationMs,
-          ...(failed ? {
-            failedStep: 'execute-runner',
-            errorDetails: result.stderr,
-            recoveryAction: 'none'
-          } : {})
+          ...(failed
+            ? {
+                failedStep: 'execute-runner',
+                errorDetails: result.stderr,
+                recoveryAction: 'none',
+              }
+            : {}),
         }
       } catch (error: unknown) {
         return {

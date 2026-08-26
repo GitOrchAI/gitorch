@@ -123,11 +123,7 @@ export class AgentOrchestrator {
       }
     } catch (err: unknown) {
       if ('handleRuntimeFailure' in this.workspace) {
-        ;(this.workspace as any).handleRuntimeFailure(
-          String(err),
-          'run-mission',
-          false
-        )
+        ;(this.workspace as any).handleRuntimeFailure(String(err), 'run-mission', false)
       }
       throw err
     } finally {
