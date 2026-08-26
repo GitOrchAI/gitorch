@@ -50,6 +50,7 @@ import {
 import { runSmDelegation } from '../services/sm-delegation.js'
 import { criarFilaDeJulgamento } from '../services/fila-de-julgamento.js'
 import { criarPassagemDeBastao } from '../services/passar-o-bastao.js'
+import { criarRegistroDeMotorMorto } from '../services/motor-em-pausa.js'
 import { criarRegistroDeDescanso, type OrigemDoDisparo } from '../services/descanso-apos-vazia.js'
 import { tetosDoPlanoDoDev } from '../services/plano-do-dev.js'
 import {
@@ -1804,6 +1805,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   const passagemDeBastao = criarPassagemDeBastao()
 
   /**
+   * O motor que morreu pedindo login descansa (D2 do dono, 20/08).
+   *
+   * Insistir num motor deslogado não produz nada: treze falhas assim queimaram
+   * metade da cota de um dia, o failsafe travou, e a esteira ficou parada de
+   * 17 a 20/08. A pausa se desfaz sozinha — por sucesso ou por tempo.
+   */
+  const motorEmPausa = criarRegistroDeMotorMorto()
+
+  /**
    * Quem já provou não ter o que fazer descansa um pouco antes de ser acordado
    * de novo. A regra (o que fura o descanso, por quanto tempo, quando ele é
    * apagado) vive em descanso-apos-vazia.ts, testada fora do relógio.
@@ -2154,7 +2164,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     missionId: string,
     project: ChainProject,
     role: F6AgentRole,
-    chain: Array<{ runtime: string; model?: string }>,
+    chainOriginal: Array<{ runtime: string; model?: string }>,
     planId?: string,
     // A cascata de onboarding (Task 10) é hoje o ÚNICO caminho que acorda o
     // QA — o projeto não tem agenda de QA própria em project_schedules. Sem
@@ -2178,6 +2188,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // Sem isto, o teto diário não teria como distinguir uma missão que fez
     // trabalho e falhou de uma que nem chegou a usar o motor.
     let falhaDeCredencial = false
+    // Tira da cadeia o motor que morreu pedindo login. Ele volta sozinho — por
+    // sucesso ou por tempo — e a cadeia inteira em pausa passa mesmo assim,
+    // porque ficar sem motor nenhum seria trocar desperdício por paralisação.
+    const chain = motorEmPausa.filtrarCadeia(chainOriginal, new Date())
+    if (chain.length < chainOriginal.length) {
+      app.log.info(
+        `[Scheduler] ${chainOriginal.length - chain.length} motor(es) fora do rodízio por credencial morta`
+      )
+    }
     for (let i = 0; i < chain.length; i++) {
       const sel = chain[i] as { runtime: string; model?: string }
       const model = sel.model ?? MODEL_BY_ROLE[role]
@@ -2941,6 +2960,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             return
           }
           app.log.info(`[Scheduler] Mission ${missionId} completed via ${sel.runtime}`)
+          // Sucesso prova que o motor está vivo: se ele estava de fora por
+          // credencial morta, volta ao rodízio na hora.
+          motorEmPausa.marcarVivo(sel.runtime)
 
           // PASSA O BASTÃO. Sem isto a esteira anda em soluços: cada papel
           // roda pela agenda e ninguém chama o seguinte, então o trabalho que
@@ -4547,146 +4569,167 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     execute: StepExecutor
     contextBlocks: string[]
   }): Promise<void> => {
-    const esperando = await app.prisma.devSession.findFirst({
+    // TODAS as que esperam, não só a mais antiga.
+    //
+    // Pegar só a primeira criava fome: se a mais antiga já tinha sido
+    // respondida, a função saía e as outras nunca tinham vez. Medido ao vivo
+    // em 26/08 — oito sessões esperando resposta na API do fornecedor, com
+    // quarenta e oito acordadas do QA no mesmo período e apenas duas respostas,
+    // as duas para a MESMA sessão.
+    //
+    // Responde UMA por acordada, mas a que de fato precisa: percorre até achar
+    // quem ainda não foi respondida. Uma por vez porque cada resposta custa um
+    // passo de motor, e a acordada seguinte pega a próxima.
+    const candidatas = await app.prisma.devSession.findMany({
       where: { projectId: args.projectId, state: 'AWAITING_USER_FEEDBACK', closedAt: null },
       orderBy: { createdAt: 'asc' },
       select: { sessionName: true, issueNumber: true, answeredHash: true },
+      take: 20,
     })
-    if (!esperando) return
+    if (candidatas.length === 0) return
 
-    const apiKey = await chaveDaSessao(esperando.sessionName)
-    const pergunta = await ultimaMensagemDoDevJules({
-      apiKey,
-      sessionName: esperando.sessionName,
-      onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
-    })
-    if (!pergunta || pergunta.trim() === '') {
-      app.log.warn(
-        `[Scheduler] ${esperando.sessionName} está esperando resposta, mas não deu para ler a pergunta`
-      )
-      return
-    }
-
-    // JÁ RESPONDIDA? Sai antes de gastar motor.
-    //
-    // Sem esta trava, a mesma pergunta seria lida e respondida a cada acordada
-    // do QA — e são várias por hora, pela agenda, pela fila do SM e pela
-    // própria vigília. O dev receberia a mesma resposta em rajada, o dono
-    // receberia o mesmo aviso em rajada, e uma segunda sessão esperando nunca
-    // teria vez, porque a busca sempre pega a mais antiga. Trocar silêncio por
-    // spam não é conserto.
-    const hashDaPergunta = hashDaMensagem(pergunta)
-    const decisao = decidirSobreAPergunta({
-      hashDaPergunta,
-      marca: esperando.answeredHash,
-    })
-    if (decisao.acao === 'nada') return
-
-    if (decisao.acao === 'desistir') {
-      // Bateu o teto com a mesma pergunta ainda na mesa. Parar de tentar é
-      // certo — não vira laço queimando motor. Parar em SILÊNCIO não: é
-      // trabalho parado que ninguém mais destrava sozinho.
-      //
-      // A desistência é marcada com escrita CONDICIONAL, como a reserva: sem
-      // isso, duas acordadas na mesma janela mandariam o mesmo aviso duas
-      // vezes ao dono. Um aviso, uma vez.
-      const primeiro = await app.prisma.devSession
-        .updateMany({
-          where: { sessionName: esperando.sessionName, answeredHash: esperando.answeredHash },
-          data: { answeredHash: marcarDesistencia(hashDaPergunta, decisao.tentativas) },
-        })
-        .catch(() => ({ count: 0 }))
-      if (primeiro.count === 0) return
-
-      const projetoDaDesistencia = await app.prisma.project.findUnique({
-        where: { id: args.projectId },
+    for (const esperando of candidatas) {
+      const apiKey = await chaveDaSessao(esperando.sessionName)
+      const pergunta = await ultimaMensagemDoDevJules({
+        apiKey,
+        sessionName: esperando.sessionName,
+        onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
       })
-      if (projetoDaDesistencia) {
-        await avisarDonoDoProjeto(
-          projetoDaDesistencia,
-          `GitOrch: o dev parou na tarefa #${esperando.issueNumber} de ${args.repository} e eu ` +
-            `tentei responder ${decisao.tentativas} vezes sem conseguir. O trabalho está parado ` +
-            `esperando essa resposta.`
+      if (!pergunta || pergunta.trim() === '') {
+        app.log.warn(
+          `[Scheduler] ${esperando.sessionName} está esperando resposta, mas não deu para ler a pergunta`
+        )
+        continue
+      }
+
+      // JÁ RESPONDIDA? Sai antes de gastar motor.
+      //
+      // Sem esta trava, a mesma pergunta seria lida e respondida a cada acordada
+      // do QA — e são várias por hora, pela agenda, pela fila do SM e pela
+      // própria vigília. O dev receberia a mesma resposta em rajada, o dono
+      // receberia o mesmo aviso em rajada, e uma segunda sessão esperando nunca
+      // teria vez, porque a busca sempre pega a mais antiga. Trocar silêncio por
+      // spam não é conserto.
+      const hashDaPergunta = hashDaMensagem(pergunta)
+      const decisao = decidirSobreAPergunta({
+        hashDaPergunta,
+        marca: esperando.answeredHash,
+      })
+      // Já respondida, ou já desistimos dela: passa para a próxima em vez de
+      // sair. Sair aqui era a fome — a mais antiga já resolvida fazia todas as
+      // outras esperarem para sempre.
+      if (decisao.acao === 'nada') continue
+
+      if (decisao.acao === 'desistir') {
+        // Bateu o teto com a mesma pergunta ainda na mesa. Parar de tentar é
+        // certo — não vira laço queimando motor. Parar em SILÊNCIO não: é
+        // trabalho parado que ninguém mais destrava sozinho.
+        //
+        // A desistência é marcada com escrita CONDICIONAL, como a reserva: sem
+        // isso, duas acordadas na mesma janela mandariam o mesmo aviso duas
+        // vezes ao dono. Um aviso, uma vez.
+        const primeiro = await app.prisma.devSession
+          .updateMany({
+            where: { sessionName: esperando.sessionName, answeredHash: esperando.answeredHash },
+            data: { answeredHash: marcarDesistencia(hashDaPergunta, decisao.tentativas) },
+          })
+          .catch(() => ({ count: 0 }))
+        // Outra acordada já marcou a desistência desta: segue para a próxima.
+        if (primeiro.count === 0) continue
+
+        const projetoDaDesistencia = await app.prisma.project.findUnique({
+          where: { id: args.projectId },
+        })
+        if (projetoDaDesistencia) {
+          await avisarDonoDoProjeto(
+            projetoDaDesistencia,
+            `GitOrch: o dev parou na tarefa #${esperando.issueNumber} de ${args.repository} e eu ` +
+              `tentei responder ${decisao.tentativas} vezes sem conseguir. O trabalho está parado ` +
+              `esperando essa resposta.`
+          )
+        }
+        return
+      }
+
+      // RESERVA antes de gastar motor. Duas acordadas do QA na mesma janela liam
+      // a mesma marca, as duas passavam pela conferência e as duas escreviam na
+      // sessão — o dev recebeu a mesma resposta duas vezes no mesmo minuto, e o
+      // produto pagou o motor em dobro. A escrita é condicional à marca lida:
+      // quem não escreve nenhuma linha perdeu a corrida e sai calado.
+      const minha = await reservarAResposta({
+        prisma: app.prisma as unknown as PrismaParaReserva,
+        sessionName: esperando.sessionName,
+        hashDaPergunta,
+        tentativa: decisao.tentativa,
+        marcaLida: esperando.answeredHash,
+        agora: new Date(),
+      })
+      // Outra acordada pegou esta: tenta a próxima em vez de desistir da vez.
+      if (!minha) continue
+
+      const { destino, mensagemParaODev } = await runDuvidaMissionViaRails({
+        pergunta,
+        repository: args.repository,
+        issueNumber: esperando.issueNumber,
+        execute: args.execute,
+        contextBlocks: args.contextBlocks,
+      })
+
+      if (destino.tipo === 'perguntar-ao-dono' || !mensagemParaODev) {
+        // Sobe para quem pode decidir. Sem chat ligado não há a quem perguntar:
+        // fica o registro no log, que é o que sobra — nunca uma resposta
+        // inventada mandada ao dev.
+        const motivo = destino.tipo === 'perguntar-ao-dono' ? destino.motivo : 'sem resposta útil'
+        app.log.info(
+          `[Scheduler] a dúvida do dev na tarefa #${esperando.issueNumber} de ${args.repository} sobe para o dono: ${motivo}`
+        )
+        // O aviso ao dono também é marcado: sem isto, o MESMO aviso chegaria ao
+        // chat dele a cada acordada do QA enquanto a sessão continuasse parada.
+        await registrarResposta({
+          prisma: app.prisma as unknown as PrismaDevSession,
+          sessionName: esperando.sessionName,
+          hashDaPergunta: marcarRespondida(hashDaPergunta),
+          agora: new Date(),
+        }).catch(() => undefined)
+        const projeto = await app.prisma.project.findUnique({ where: { id: args.projectId } })
+        if (projeto) {
+          await avisarDonoDoProjeto(
+            projeto,
+            `GitOrch: o dev parou na tarefa #${esperando.issueNumber} de ${args.repository} e ` +
+              `perguntou algo que eu não devo responder sozinho — ${motivo}\n\nA pergunta dele:\n` +
+              pergunta.slice(0, 900)
+          )
+        }
+        return
+      }
+
+      const saiu = await responderSessaoJules({
+        apiKey,
+        sessionName: esperando.sessionName,
+        texto: mensagemParaODev,
+        onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+      })
+      if (saiu) {
+        // A marca de RESPONDIDA só é gravada quando a mensagem de fato chegou —
+        // é a diferença entre "tentei" e "respondi", e foi confundir as duas que
+        // deixou treze sessões presas por até sete dias.
+        await registrarResposta({
+          prisma: app.prisma as unknown as PrismaDevSession,
+          sessionName: esperando.sessionName,
+          hashDaPergunta: marcarRespondida(hashDaPergunta),
+          agora: new Date(),
+        }).catch((err: unknown) =>
+          app.log.warn(err, `[Scheduler] não deu para marcar a dúvida como respondida`)
         )
       }
-      return
-    }
-
-    // RESERVA antes de gastar motor. Duas acordadas do QA na mesma janela liam
-    // a mesma marca, as duas passavam pela conferência e as duas escreviam na
-    // sessão — o dev recebeu a mesma resposta duas vezes no mesmo minuto, e o
-    // produto pagou o motor em dobro. A escrita é condicional à marca lida:
-    // quem não escreve nenhuma linha perdeu a corrida e sai calado.
-    const minha = await reservarAResposta({
-      prisma: app.prisma as unknown as PrismaParaReserva,
-      sessionName: esperando.sessionName,
-      hashDaPergunta,
-      tentativa: decisao.tentativa,
-      marcaLida: esperando.answeredHash,
-      agora: new Date(),
-    })
-    if (!minha) return
-
-    const { destino, mensagemParaODev } = await runDuvidaMissionViaRails({
-      pergunta,
-      repository: args.repository,
-      issueNumber: esperando.issueNumber,
-      execute: args.execute,
-      contextBlocks: args.contextBlocks,
-    })
-
-    if (destino.tipo === 'perguntar-ao-dono' || !mensagemParaODev) {
-      // Sobe para quem pode decidir. Sem chat ligado não há a quem perguntar:
-      // fica o registro no log, que é o que sobra — nunca uma resposta
-      // inventada mandada ao dev.
-      const motivo = destino.tipo === 'perguntar-ao-dono' ? destino.motivo : 'sem resposta útil'
       app.log.info(
-        `[Scheduler] a dúvida do dev na tarefa #${esperando.issueNumber} de ${args.repository} sobe para o dono: ${motivo}`
+        saiu
+          ? `[Scheduler] respondi a dúvida do dev na tarefa #${esperando.issueNumber} de ${args.repository}`
+          : `[Scheduler] a resposta para ${esperando.sessionName} NÃO chegou ao dev`
       )
-      // O aviso ao dono também é marcado: sem isto, o MESMO aviso chegaria ao
-      // chat dele a cada acordada do QA enquanto a sessão continuasse parada.
-      await registrarResposta({
-        prisma: app.prisma as unknown as PrismaDevSession,
-        sessionName: esperando.sessionName,
-        hashDaPergunta: marcarRespondida(hashDaPergunta),
-        agora: new Date(),
-      }).catch(() => undefined)
-      const projeto = await app.prisma.project.findUnique({ where: { id: args.projectId } })
-      if (projeto) {
-        await avisarDonoDoProjeto(
-          projeto,
-          `GitOrch: o dev parou na tarefa #${esperando.issueNumber} de ${args.repository} e ` +
-            `perguntou algo que eu não devo responder sozinho — ${motivo}\n\nA pergunta dele:\n` +
-            pergunta.slice(0, 900)
-        )
-      }
+      // Respondeu (ou escalou) uma: a próxima acordada pega a seguinte.
       return
     }
-
-    const saiu = await responderSessaoJules({
-      apiKey,
-      sessionName: esperando.sessionName,
-      texto: mensagemParaODev,
-      onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
-    })
-    if (saiu) {
-      // A marca de RESPONDIDA só é gravada quando a mensagem de fato chegou —
-      // é a diferença entre "tentei" e "respondi", e foi confundir as duas que
-      // deixou treze sessões presas por até sete dias.
-      await registrarResposta({
-        prisma: app.prisma as unknown as PrismaDevSession,
-        sessionName: esperando.sessionName,
-        hashDaPergunta: marcarRespondida(hashDaPergunta),
-        agora: new Date(),
-      }).catch((err: unknown) =>
-        app.log.warn(err, `[Scheduler] não deu para marcar a dúvida como respondida`)
-      )
-    }
-    app.log.info(
-      saiu
-        ? `[Scheduler] respondi a dúvida do dev na tarefa #${esperando.issueNumber} de ${args.repository}`
-        : `[Scheduler] a resposta para ${esperando.sessionName} NÃO chegou ao dev`
-    )
   }
 
   const abrirConsertoDePublicacao = async (args: {
