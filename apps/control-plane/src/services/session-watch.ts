@@ -17,6 +17,7 @@
 import { createHash } from 'node:crypto'
 import type { LinhaDeSessao, MotivoDeFechamento } from './dev-session-store.js'
 import { decidirRespostaDaSessao, MAX_NUDGES } from './jules-session-loop.js'
+import { deveTentarResponderDeNovo } from './pergunta-sem-resposta.js'
 
 /**
  * Cadência mínima entre dois exames da MESMA sessão. Sem ela, cada tick do
@@ -330,10 +331,28 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
 
         case 'responder': {
           const hash = hashDaMensagem(ultimaMensagem)
-          if (hash === linha.answeredHash) {
-            // Mesma pergunta de antes: a sessão pode levar mais de um ciclo
-            // para sair de AWAITING_USER_FEEDBACK depois de receber a
-            // resposta. Disparar de novo gastaria motor à toa.
+          // A marca NÃO significa "já respondi" — significa "já TENTEI
+          // responder esta pergunta". A diferença custou treze sessões presas,
+          // a mais antiga havia sete dias: a marca era gravada antes de a
+          // resposta existir, a missão que responde falhava, e a pergunta
+          // ficava marcada para sempre. Ver `pergunta-sem-resposta.ts`.
+          if (!deveTentarResponderDeNovo({ hashDaPergunta: hash, ...linha })) {
+            // Teto batido com a MESMA pergunta ainda na mesa: parar de tentar
+            // é certo (não vira laço infinito), mas parar em silêncio não —
+            // é trabalho parado que ninguém mais vai destravar sozinho.
+            const hashDoSilencio = hashDaMensagem(`sem-resposta:${hash}`)
+            if (hashDoSilencio !== linha.answeredHash) {
+              await deps.registrarResposta({
+                sessionName: linha.sessionName,
+                hashDaPergunta: hashDoSilencio,
+                agora: deps.agora,
+              })
+              await deps.avisarDono?.(
+                `GitOrch: o dev perguntou algo na entrega da tarefa #${linha.issueNumber} e eu ` +
+                  `tentei responder ${MAX_NUDGES} vezes sem conseguir. O trabalho está parado ` +
+                  `esperando essa resposta.`
+              )
+            }
             break
           }
           await deps.registrarResposta({
