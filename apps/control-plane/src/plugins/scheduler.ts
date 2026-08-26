@@ -89,6 +89,10 @@ import {
   type EvidenciaDeConserto,
 } from '../services/conserto-de-publicacao.js'
 import { criarIssueDeDesejo } from '../services/desejo-no-github.js'
+import { runDuvidaMissionViaRails } from '../services/duvida-rails-mission.js'
+import { lerMarca, marcarRespondida } from '../services/pergunta-sem-resposta.js'
+import { hashDaMensagem } from '../services/session-watch.js'
+import type { StepExecutor } from '../services/role-rails.js'
 import {
   corpoDoPedidoDeAviso,
   decidirPedirOAviso,
@@ -2677,89 +2681,107 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                     userId: project.userId ?? undefined,
                     agentQuestionService: app.agentQuestionService,
                   })
-                : await runQaMissionViaRails({
-                    repository: project.wingId,
-                    githubToken: railsToken as string,
-                    contextBlocks,
-                    // Vivas + fechadas com PR pendente (não mescladas), sem
-                    // teto — ver filtroDeSessoesParaJulgamento.
-                    sessoes: await app.prisma.devSession.findMany({
-                      where: filtroDeSessoesParaJulgamento(project.id),
-                      orderBy: { createdAt: 'desc' },
-                    }),
-                    // Tarefa 7 (achado 1 da revisão): registrarPendencia,
-                    // limparPendencia, registrarAvisoDeDemora e avisarDono —
-                    // sem isto a vigília da verificação fica correta e
-                    // testada em isolamento, e inerte aqui: pending_since
-                    // nunca é gravado, o teto de 90min nunca amadurece, o
-                    // dono nunca é avisado.
-                    ...montarOpcoesDoJulgamento({
-                      prisma: app.prisma as unknown as PrismaDevSession,
+                : await (async () => {
+                    // ANTES de julgar PR: o dev está parado esperando resposta?
+                    // Best-effort — uma pergunta que não dá para responder não
+                    // pode impedir o julgamento, que é o outro trabalho do QA.
+                    // A trava de "já respondida" vive dentro da função: sem
+                    // ela, a mesma resposta sairia a cada acordada.
+                    await responderDuvidaPendente({
                       projectId: project.id,
-                      avisarDono,
-                    }),
-                    // Fase 1 do QA (Reconhecimento): só entra quando este QA foi
-                    // acordado pela cascata de onboarding (Task 10) — hoje o
-                    // único jeito de o QA rodar, já que o projeto não tem
-                    // agenda de QA própria em project_schedules.
-                    ...(isOnboarding ? { mode: 'recon' as const } : {}),
-                    // O QA move o card da issue conforme o veredito (se há board).
-                    ...(railsBoard
-                      ? {
-                          moveCard: createCardMover({
-                            repository: project.wingId,
-                            board: railsBoard,
-                            token: railsToken as string,
-                            columns: boardColumns,
-                          }),
-                        }
-                      : {}),
-                    // Task 10: a reprovação volta para a sessão do dev
-                    // assíncrono — sem isto o veredito morre no comentário do
-                    // PR (medido: PR #79, 5 dias parado, 12 reprovações, zero
-                    // retrabalho). A API não tem retomada; `sendMessage` é o
-                    // único caminho, por isso `responderSessaoJules` mesmo.
-                    registrarAvisoPendente: ({ sessionName, texto }) =>
-                      registrarAvisoDeRetrabalhoPendente({
-                        prisma: app.prisma as unknown as PrismaDevSession,
-                        sessionName,
-                        texto,
+                      repository: project.wingId,
+                      execute,
+                      contextBlocks,
+                    }).catch((err: unknown) =>
+                      app.log.warn(
+                        err,
+                        `[Scheduler] não deu para responder a dúvida do dev em ${project.wingId}`
+                      )
+                    )
+                    return runQaMissionViaRails({
+                      repository: project.wingId,
+                      githubToken: railsToken as string,
+                      contextBlocks,
+                      // Vivas + fechadas com PR pendente (não mescladas), sem
+                      // teto — ver filtroDeSessoesParaJulgamento.
+                      sessoes: await app.prisma.devSession.findMany({
+                        where: filtroDeSessoesParaJulgamento(project.id),
+                        orderBy: { createdAt: 'desc' },
                       }),
-                    avisarSessao: async ({ sessionName, texto }) =>
-                      responderSessaoJules({
-                        // BYOK (D34): o pedido de retrabalho tem que chegar na
-                        // conta em que a sessão nasceu, senão o veredito do QA
-                        // morre no comentário do PR — exatamente o defeito do
-                        // #79, que voltaria só para os clientes com conta própria.
-                        apiKey: await chaveDaSessao(sessionName),
-                        sessionName,
-                        texto,
-                        onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
-                      }),
-                    // Task 11 (decisão do dono D7): o produto mescla sozinho,
-                    // sem confirmação humana. `mesclarPr` já fez o merge de
-                    // verdade quando este callback dispara. Tarefa 17: NÃO
-                    // fecha mais a linha da vigia aqui — só grava o commit
-                    // mesclado (`aoMesclarUmaEntrega`, acima). Quem fecha é
-                    // `varrerPublicacoes` (mais abaixo), quando há veredito
-                    // sobre a publicação; até lá a sessão continua fora de
-                    // `filtroDeSessoesParaJulgamento` na prática, porque o PR
-                    // já mesclado sai da listagem de PRs ABERTOS do GitHub
-                    // que alimenta o laço de descoberta do QA — não porque a
-                    // linha esteja fechada.
-                    aoMesclar: async ({ numeroDoPr, mergeCommitSha, issueNumber }) =>
-                      aoMesclarUmaEntrega({
+                      // Tarefa 7 (achado 1 da revisão): registrarPendencia,
+                      // limparPendencia, registrarAvisoDeDemora e avisarDono —
+                      // sem isto a vigília da verificação fica correta e
+                      // testada em isolamento, e inerte aqui: pending_since
+                      // nunca é gravado, o teto de 90min nunca amadurece, o
+                      // dono nunca é avisado.
+                      ...montarOpcoesDoJulgamento({
                         prisma: app.prisma as unknown as PrismaDevSession,
                         projectId: project.id,
-                        numeroDoPr,
-                        mergeCommitSha,
-                        issueNumber,
-                        agora: new Date(),
-                        onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+                        avisarDono,
                       }),
-                    onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
-                    execute,
-                  })
+                      // Fase 1 do QA (Reconhecimento): só entra quando este QA foi
+                      // acordado pela cascata de onboarding (Task 10) — hoje o
+                      // único jeito de o QA rodar, já que o projeto não tem
+                      // agenda de QA própria em project_schedules.
+                      ...(isOnboarding ? { mode: 'recon' as const } : {}),
+                      // O QA move o card da issue conforme o veredito (se há board).
+                      ...(railsBoard
+                        ? {
+                            moveCard: createCardMover({
+                              repository: project.wingId,
+                              board: railsBoard,
+                              token: railsToken as string,
+                              columns: boardColumns,
+                            }),
+                          }
+                        : {}),
+                      // Task 10: a reprovação volta para a sessão do dev
+                      // assíncrono — sem isto o veredito morre no comentário do
+                      // PR (medido: PR #79, 5 dias parado, 12 reprovações, zero
+                      // retrabalho). A API não tem retomada; `sendMessage` é o
+                      // único caminho, por isso `responderSessaoJules` mesmo.
+                      registrarAvisoPendente: ({ sessionName, texto }) =>
+                        registrarAvisoDeRetrabalhoPendente({
+                          prisma: app.prisma as unknown as PrismaDevSession,
+                          sessionName,
+                          texto,
+                        }),
+                      avisarSessao: async ({ sessionName, texto }) =>
+                        responderSessaoJules({
+                          // BYOK (D34): o pedido de retrabalho tem que chegar na
+                          // conta em que a sessão nasceu, senão o veredito do QA
+                          // morre no comentário do PR — exatamente o defeito do
+                          // #79, que voltaria só para os clientes com conta própria.
+                          apiKey: await chaveDaSessao(sessionName),
+                          sessionName,
+                          texto,
+                          onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+                        }),
+                      // Task 11 (decisão do dono D7): o produto mescla sozinho,
+                      // sem confirmação humana. `mesclarPr` já fez o merge de
+                      // verdade quando este callback dispara. Tarefa 17: NÃO
+                      // fecha mais a linha da vigia aqui — só grava o commit
+                      // mesclado (`aoMesclarUmaEntrega`, acima). Quem fecha é
+                      // `varrerPublicacoes` (mais abaixo), quando há veredito
+                      // sobre a publicação; até lá a sessão continua fora de
+                      // `filtroDeSessoesParaJulgamento` na prática, porque o PR
+                      // já mesclado sai da listagem de PRs ABERTOS do GitHub
+                      // que alimenta o laço de descoberta do QA — não porque a
+                      // linha esteja fechada.
+                      aoMesclar: async ({ numeroDoPr, mergeCommitSha, issueNumber }) =>
+                        aoMesclarUmaEntrega({
+                          prisma: app.prisma as unknown as PrismaDevSession,
+                          projectId: project.id,
+                          numeroDoPr,
+                          mergeCommitSha,
+                          issueNumber,
+                          agora: new Date(),
+                          onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+                        }),
+                      onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+                      execute,
+                    })
+                  })()
           } finally {
             await fs.rm(stepDir, { recursive: true, force: true }).catch(() => undefined)
           }
@@ -4445,6 +4467,123 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         `[Scheduler] não foi possível pedir o aviso de publicação a ${projeto.wingId}`
       )
     }
+  }
+
+  /**
+   * A pergunta do dev que está esperando resposta — respondida de verdade.
+   *
+   * O dono pediu com todas as letras: "esta com duvidas ? responde !". O que
+   * existia era decorativo: a vigília acordava o QA e contava a linha como
+   * respondida, e a missão de QA só julga pull request. Aqui a pergunta é
+   * LIDA, respondida pelo motor lendo o repositório, e a resposta é ESCRITA
+   * na sessão — o único caminho que a API do serviço oferece (`sendMessage`).
+   *
+   * Uma pergunta por vez, a mais antiga: são poucas por projeto, e responder
+   * em rajada gastaria motor sem necessidade — a próxima acordada pega a
+   * seguinte.
+   *
+   * A lei continua: o agente NÃO INVENTA. Decisão de negócio, ou resposta que
+   * ele não soube dar, sobem para o dono em vez de virar mensagem — quem
+   * decide isso é código determinístico (`duvida-do-dev.ts`), nunca o modelo.
+   */
+  const responderDuvidaPendente = async (args: {
+    projectId: string
+    repository: string
+    execute: StepExecutor
+    contextBlocks: string[]
+  }): Promise<void> => {
+    const esperando = await app.prisma.devSession.findFirst({
+      where: { projectId: args.projectId, state: 'AWAITING_USER_FEEDBACK', closedAt: null },
+      orderBy: { createdAt: 'asc' },
+      select: { sessionName: true, issueNumber: true, answeredHash: true },
+    })
+    if (!esperando) return
+
+    const apiKey = await chaveDaSessao(esperando.sessionName)
+    const pergunta = await ultimaMensagemDoDevJules({
+      apiKey,
+      sessionName: esperando.sessionName,
+      onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+    })
+    if (!pergunta || pergunta.trim() === '') {
+      app.log.warn(
+        `[Scheduler] ${esperando.sessionName} está esperando resposta, mas não deu para ler a pergunta`
+      )
+      return
+    }
+
+    // JÁ RESPONDIDA? Sai antes de gastar motor.
+    //
+    // Sem esta trava, a mesma pergunta seria lida e respondida a cada acordada
+    // do QA — e são várias por hora, pela agenda, pela fila do SM e pela
+    // própria vigília. O dev receberia a mesma resposta em rajada, o dono
+    // receberia o mesmo aviso em rajada, e uma segunda sessão esperando nunca
+    // teria vez, porque a busca sempre pega a mais antiga. Trocar silêncio por
+    // spam não é conserto.
+    const hashDaPergunta = hashDaMensagem(pergunta)
+    const marca = lerMarca(esperando.answeredHash)
+    if (marca?.hash === hashDaPergunta && marca.situacao !== 'tentando') return
+
+    const { destino, mensagemParaODev } = await runDuvidaMissionViaRails({
+      pergunta,
+      repository: args.repository,
+      issueNumber: esperando.issueNumber,
+      execute: args.execute,
+      contextBlocks: args.contextBlocks,
+    })
+
+    if (destino.tipo === 'perguntar-ao-dono' || !mensagemParaODev) {
+      // Sobe para quem pode decidir. Sem chat ligado não há a quem perguntar:
+      // fica o registro no log, que é o que sobra — nunca uma resposta
+      // inventada mandada ao dev.
+      const motivo = destino.tipo === 'perguntar-ao-dono' ? destino.motivo : 'sem resposta útil'
+      app.log.info(
+        `[Scheduler] a dúvida do dev na tarefa #${esperando.issueNumber} de ${args.repository} sobe para o dono: ${motivo}`
+      )
+      // O aviso ao dono também é marcado: sem isto, o MESMO aviso chegaria ao
+      // chat dele a cada acordada do QA enquanto a sessão continuasse parada.
+      await registrarResposta({
+        prisma: app.prisma as unknown as PrismaDevSession,
+        sessionName: esperando.sessionName,
+        hashDaPergunta: marcarRespondida(hashDaPergunta),
+        agora: new Date(),
+      }).catch(() => undefined)
+      const projeto = await app.prisma.project.findUnique({ where: { id: args.projectId } })
+      if (projeto) {
+        await avisarDonoDoProjeto(
+          projeto,
+          `GitOrch: o dev parou na tarefa #${esperando.issueNumber} de ${args.repository} e ` +
+            `perguntou algo que eu não devo responder sozinho — ${motivo}\n\nA pergunta dele:\n` +
+            pergunta.slice(0, 900)
+        )
+      }
+      return
+    }
+
+    const saiu = await responderSessaoJules({
+      apiKey,
+      sessionName: esperando.sessionName,
+      texto: mensagemParaODev,
+      onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+    })
+    if (saiu) {
+      // A marca de RESPONDIDA só é gravada quando a mensagem de fato chegou —
+      // é a diferença entre "tentei" e "respondi", e foi confundir as duas que
+      // deixou treze sessões presas por até sete dias.
+      await registrarResposta({
+        prisma: app.prisma as unknown as PrismaDevSession,
+        sessionName: esperando.sessionName,
+        hashDaPergunta: marcarRespondida(hashDaPergunta),
+        agora: new Date(),
+      }).catch((err: unknown) =>
+        app.log.warn(err, `[Scheduler] não deu para marcar a dúvida como respondida`)
+      )
+    }
+    app.log.info(
+      saiu
+        ? `[Scheduler] respondi a dúvida do dev na tarefa #${esperando.issueNumber} de ${args.repository}`
+        : `[Scheduler] a resposta para ${esperando.sessionName} NÃO chegou ao dev`
+    )
   }
 
   const abrirConsertoDePublicacao = async (args: {

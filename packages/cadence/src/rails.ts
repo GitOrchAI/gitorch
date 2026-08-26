@@ -239,6 +239,23 @@ const DOD_FIELDS_SCHEMA: MiniSchema = {
 }
 
 export const RAILS_SCHEMAS = {
+  // A DUVIDA DO DEV assincrono. O dev para e pergunta; alguem tem que
+  // responder, senao a sessao congela uma vaga para sempre (medido: treze
+  // sessoes presas, a mais antiga havia sete dias). Dois campos e so:
+  // `precisaDoDono` separa o que o agente pode resolver lendo o repositorio do
+  // que e decisao de negocio — e decisao de negocio nao se adivinha;
+  // `resposta` e o texto que vai para a sessao, ou a explicacao de por que o
+  // dono precisa entrar. O codigo determinista decide o destino
+  // (services/duvida-do-dev.ts), nunca o modelo.
+  devQuestion: {
+    type: 'object',
+    required: ['precisaDoDono', 'resposta'],
+    properties: {
+      precisaDoDono: { type: 'boolean' },
+      resposta: { type: 'string' },
+    },
+  } as MiniSchema,
+
   // RA passo 1 — ONDE o pedido toca o sistema. Cada área cita arquivos REAIS
   // do codegraph; integrações existentes são minas de oportunidade (ex.: o
   // produto já vende no marketplace → avaliações reais já existem lá).

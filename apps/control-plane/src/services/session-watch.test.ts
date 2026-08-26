@@ -8,6 +8,11 @@ import {
 } from './session-watch.js'
 import type { LinhaDeSessao } from './dev-session-store.js'
 import { MAX_NUDGES } from './jules-session-loop.js'
+import {
+  marcarDesistencia,
+  marcarTentativa,
+  MAX_TENTATIVAS_DE_RESPOSTA,
+} from './pergunta-sem-resposta.js'
 
 // Fase 2 da esteira que fecha o ciclo: a Fase 1 (dev-session-store) só guarda
 // a ligação issue↔sessão↔PR. Sem alguém lendo essa ligação de volta e agindo,
@@ -203,10 +208,12 @@ describe('vigiarSessoes', () => {
 
     await vigiarSessoes(deps)
 
+    // A marca carrega a SITUAÇÃO, a contagem e a pergunta — é ela que impede
+    // tanto o silêncio eterno quanto a oscilação entre tentar e desistir.
     expect(deps.registrarResposta).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionName: 'sessions/pergunta',
-        hashDaPergunta: hashDe(mensagem),
+        hashDaPergunta: marcarTentativa(hashDe(mensagem), 1),
       })
     )
     expect(deps.dispararMissao).toHaveBeenCalledWith('qa', 'proj1')
@@ -244,8 +251,7 @@ describe('vigiarSessoes', () => {
         linha({
           sessionName: 'sessions/desistiu',
           issueNumber: 42,
-          answeredHash: hashDe(mensagem),
-          nudges: MAX_NUDGES,
+          answeredHash: marcarTentativa(hashDe(mensagem), MAX_TENTATIVAS_DE_RESPOSTA),
         }),
       ],
       consultarSessao: vi.fn(async () => ({
@@ -268,13 +274,12 @@ describe('vigiarSessoes', () => {
 
   it('e o aviso do teto não se repete a cada ciclo', async () => {
     const mensagem = 'Devo usar bcrypt ou argon2 para o hash de senha?'
-    const hashDoSilencio = hashDe(`sem-resposta:${hashDe(mensagem)}`)
+    const hashDoSilencio = marcarDesistencia(hashDe(mensagem), MAX_TENTATIVAS_DE_RESPOSTA)
     const deps = depsFalso({
       sessoes: [
         linha({
           sessionName: 'sessions/ja-avisou',
           answeredHash: hashDoSilencio,
-          nudges: MAX_NUDGES,
         }),
       ],
       consultarSessao: vi.fn(async () => ({

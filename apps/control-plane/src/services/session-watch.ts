@@ -17,7 +17,11 @@
 import { createHash } from 'node:crypto'
 import type { LinhaDeSessao, MotivoDeFechamento } from './dev-session-store.js'
 import { decidirRespostaDaSessao, MAX_NUDGES } from './jules-session-loop.js'
-import { deveTentarResponderDeNovo } from './pergunta-sem-resposta.js'
+import {
+  decidirSobreAPergunta,
+  marcarDesistencia,
+  marcarTentativa,
+} from './pergunta-sem-resposta.js'
 
 /**
  * Cadência mínima entre dois exames da MESMA sessão. Sem ela, cada tick do
@@ -331,33 +335,41 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
 
         case 'responder': {
           const hash = hashDaMensagem(ultimaMensagem)
-          // A marca NÃO significa "já respondi" — significa "já TENTEI
-          // responder esta pergunta". A diferença custou treze sessões presas,
-          // a mais antiga havia sete dias: a marca era gravada antes de a
-          // resposta existir, a missão que responde falhava, e a pergunta
-          // ficava marcada para sempre. Ver `pergunta-sem-resposta.ts`.
-          if (!deveTentarResponderDeNovo({ hashDaPergunta: hash, ...linha })) {
-            // Teto batido com a MESMA pergunta ainda na mesa: parar de tentar
-            // é certo (não vira laço infinito), mas parar em silêncio não —
-            // é trabalho parado que ninguém mais vai destravar sozinho.
-            const hashDoSilencio = hashDaMensagem(`sem-resposta:${hash}`)
-            if (hashDoSilencio !== linha.answeredHash) {
-              await deps.registrarResposta({
-                sessionName: linha.sessionName,
-                hashDaPergunta: hashDoSilencio,
-                agora: deps.agora,
-              })
-              await deps.avisarDono?.(
-                `GitOrch: o dev perguntou algo na entrega da tarefa #${linha.issueNumber} e eu ` +
-                  `tentei responder ${MAX_NUDGES} vezes sem conseguir. O trabalho está parado ` +
-                  `esperando essa resposta.`
-              )
-            }
+          // TUDO sai da marca: o que aconteceu, com qual pergunta, e quantas
+          // vezes se tentou ESTA. Nenhum contador emprestado de outro ramo —
+          // era assim antes, e o orçamento de uma pergunta acabava consumido
+          // por uma sessão travada sem relação nenhuma, fazendo o produto
+          // avisar o dono de "três tentativas" que nunca aconteceram.
+          const decisao = decidirSobreAPergunta({ hashDaPergunta: hash, marca: linha.answeredHash })
+
+          if (decisao.acao === 'nada') break
+
+          if (decisao.acao === 'desistir') {
+            // Uma vez só. A marca carrega a pergunta dentro, então o ciclo
+            // seguinte reconhece "já desisti DESTA" em vez de achar que é
+            // pergunta nova — que era a oscilação que queimava motor para
+            // sempre e repetia o aviso a cada dois ciclos.
+            await deps.registrarResposta({
+              sessionName: linha.sessionName,
+              hashDaPergunta: marcarDesistencia(hash, decisao.tentativas),
+              agora: deps.agora,
+            })
+            await deps.avisarDono?.(
+              `GitOrch: o dev perguntou algo na entrega da tarefa #${linha.issueNumber} e eu ` +
+                `tentei responder ${decisao.tentativas} vezes sem conseguir. O trabalho está ` +
+                `parado esperando essa resposta.`
+            )
             break
           }
+
+          // Marca a TENTATIVA com o número desta pergunta. Quem responde de
+          // verdade é a missão de QA (ela roda com o motor e o repositório em
+          // mãos) e é ela que grava a marca de RESPONDIDA quando a mensagem
+          // chega ao dev — a diferença entre "tentei" e "respondi" é o que
+          // impede tanto o silêncio eterno quanto a rajada.
           await deps.registrarResposta({
             sessionName: linha.sessionName,
-            hashDaPergunta: hash,
+            hashDaPergunta: marcarTentativa(hash, decisao.tentativa),
             agora: deps.agora,
           })
           await deps.dispararMissao('qa', linha.projectId)
