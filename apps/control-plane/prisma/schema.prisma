@@ -354,6 +354,9 @@ model Mission {
   quotaAfter  Int?      @map("quota_after")
   tokensUsed  Int?      @map("tokens_used")
 
+  waitingStatus String? @map("waiting_status")
+  waitingReason String? @map("waiting_reason")
+
   startedAt   DateTime? @map("started_at")
   completedAt DateTime? @map("completed_at")
   createdAt   DateTime @default(now()) @map("created_at")
