@@ -2053,7 +2053,36 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // Cadeia de motores escolhida pela config do projeto (por agente), com queda
     // para o padrão da instância. Nada de motor hardcoded; a cadeia é a base do
     // failover (tenta o próximo motor do cliente se o primeiro esgotar cota/errar).
-    const chain = resolveRuntimeChain(role, project.runtimeConfig, RESOLVER_DEFAULTS)
+    // Os motores que o cliente TEM conectados entram como última reserva.
+    //
+    // Sem isto, um projeto que escolheu um motor só fica sem para onde ir no
+    // dia em que ele estoura a cota — medido ao vivo em 26/08: "Individual
+    // quota reached... Resets in 18h43m26s", e os quatro papéis parados por
+    // dezoito horas com outro motor conectado e ocioso ao lado.
+    //
+    // Best-effort: se a leitura falhar, a cadeia sai como antes em vez de a
+    // missão não sair.
+    let motoresConectados: string[] = []
+    if (project.userId) {
+      try {
+        const linhas = await app.prisma.engineConnection.findMany({
+          where: { userId: project.userId, status: 'connected' },
+          select: { runtime: true },
+        })
+        motoresConectados = linhas.map((l) => l.runtime)
+      } catch (err) {
+        // Best-effort de verdade: `try` e não `.catch()` da promessa, porque a
+        // leitura pode falhar ANTES de virar promessa. Sem reserva a cadeia
+        // sai como antes — pior que ter reserva, melhor que a missão não sair.
+        app.log.warn(err, '[Scheduler] não deu para ler os motores conectados; cadeia sem reserva')
+      }
+    }
+    const chain = resolveRuntimeChain(
+      role,
+      project.runtimeConfig,
+      RESOLVER_DEFAULTS,
+      motoresConectados
+    )
     const primary = chain[0] as { runtime: string; model?: string }
 
     // Controle de gasto (BYOK): a missão roda no LLM do cliente. Antes de
