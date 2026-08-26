@@ -215,6 +215,7 @@ import {
   deveAvisarDeNovo,
 } from '../services/credencial-do-motor.js'
 import { marcaDePedidoDeLogin } from '../services/motor-que-pede-login.js'
+import { umaAcordadaPorCiclo } from '../services/uma-acordada-por-ciclo.js'
 import { canRunMission, shouldAlertForQuota } from '../lib/spend-guard.js'
 import { computeConsumption } from '../lib/consumption.js'
 import { pipelineCheckEnabled } from '../config/pipeline-check.js'
@@ -3933,9 +3934,19 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           // Nunca chama motor direto: passa pelo MESMO portão de
           // concorrência, orçamento diário por plano e guarda de gasto que
           // o resto do scheduler usa — é o `triggerAgentMission` de sempre.
-          dispararMissao: async (papel, projectIdDaMissao) => {
+          // UMA acordada por papel e projeto nesta passada. A vigília percorre
+          // sessão por sessão e chamava isto de dentro do laço: com N sessões
+          // trazendo novidade saíam N missões de QA idênticas — medido em
+          // 26/08, duas por passada e num tique QUATRO, todas devolvendo o
+          // mesmo "no delegated PR awaiting judgment". A missão de QA não é por
+          // sessão: ela já recebe todas as sessões do projeto e julga o
+          // conjunto. Além do motor pago em dobro, duas missões simultâneas
+          // materializam a MESMA credencial, e com refresh token de uso único
+          // (Codex) uma queima a da outra — era o produto derrubando o motor do
+          // próprio cliente.
+          dispararMissao: umaAcordadaPorCiclo(async (papel, projectIdDaMissao) => {
             void triggerAgentMission(papel, projectIdDaMissao, undefined, 'vigia')
-          },
+          }),
           registrarEstado: (args) =>
             registrarEstado({ prisma: app.prisma as unknown as PrismaDevSession, ...args }),
           registrarResposta: (args) =>
