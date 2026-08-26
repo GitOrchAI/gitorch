@@ -9,8 +9,13 @@ describe('KuzuClient', () => {
     client = new KuzuClient(':memory:')
   })
 
-  afterAll(() => {
-    client.close()
+  // `close()` devolve promessa e fecha um banco NATIVO. Sem o await, o fork do
+  // vitest terminava enquanto o fechamento ainda estava em curso, e o addon
+  // nativo derrubava o processo: "Worker exited unexpectedly" com os 37 testes
+  // passando. Intermitente, e por isso lido como flaky por varias rodadas —
+  // reprovou o CI de tres PRs diferentes em 25 e 26/08.
+  afterAll(async () => {
+    await client.close()
   })
 
   it('should connect to in-memory database', () => {
@@ -51,10 +56,12 @@ describe('KuzuClient', () => {
     expect(results.map((r: any) => r.value)).toEqual([1, 2, 3, 42, 100])
   })
 
-  it('should close connection properly', () => {
+  it('should close connection properly', async () => {
     const newClient = new KuzuClient(':memory:')
-    newClient.close()
-    // Should not throw
-    expect(true).toBe(true)
+    await newClient.close()
+    // O await tambem faz o teste provar o que promete: sem ele, uma falha
+    // dentro do fechamento viraria rejeicao nao capturada, e o teste passaria
+    // do mesmo jeito.
+    expect(newClient.isClosed()).toBe(true)
   })
 })
