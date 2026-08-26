@@ -14,6 +14,8 @@ import {
   isProvisionTerminal,
   isManualAccordionVisible,
   looksLikeAuthCode,
+  estadoDoMotorDaLista,
+  STATUS_PRECISA_RELIGAR,
 } from './engine-status'
 
 const CLAUDE_USAGE_LABELS = { session: 'Session', week: 'Week', used: 'used', resets: 'resets' }
@@ -725,7 +727,62 @@ describe('guarda: StepConnectEngine mostra os NOMES dos modelos e a quota REAL d
 
   it('o refetch de /engines repassa a LISTA de modelos, não mais só o tamanho', () => {
     const step = source()
-    expect(step).toContain('models: Array.isArray(eng.models) ? eng.models : undefined')
+    // 26/08: a montagem do estado saiu do componente e virou função PURA
+    // (estadoDoMotorDaLista) — mesma garantia, agora travada por
+    // COMPORTAMENTO logo abaixo, não por texto de source. O que se guarda aqui
+    // é que o componente delega em vez de reescrever a decisão à mão: foi
+    // exatamente a decisão duplicada dentro do componente que deixou a tela
+    // mentir "Conectado" sobre um motor morto.
+    expect(step).toContain('estadoDoMotorDaLista(')
     expect(step).not.toContain('eng.models.length')
+    // Regressão: o filtro cru que ignorava qualquer motor não-conectado.
+    expect(step).not.toContain("e.status === 'connected'")
+  })
+
+  it('a função pura devolve a LISTA de nomes, e nunca uma contagem', () => {
+    const estado = estadoDoMotorDaLista({
+      runtime: 'codex',
+      status: 'connected',
+      models: ['GPT-5.5', 'GPT-5.4-Mini'],
+    })
+    expect(estado).toMatchObject({ models: ['GPT-5.5', 'GPT-5.4-Mini'] })
+  })
+})
+
+describe('estadoDoMotorDaLista — o card para de mentir', () => {
+  it('motor que pede login NÃO aparece como conectado (o print do dono, 26/08)', () => {
+    // A regressão exata: card verde "Conectado" com os modelos listados,
+    // enquanto toda missão morria por credencial vencida.
+    const estado = estadoDoMotorDaLista({
+      runtime: 'codex',
+      status: STATUS_PRECISA_RELIGAR,
+      models: ['GPT-5.5', 'GPT-5.4-Mini', 'Codex Auto Review'],
+    })
+    expect(estado).toEqual({ phase: 'precisa_religar' })
+  })
+
+  it('motor conectado continua mostrando os NOMES dos modelos e a cota', () => {
+    expect(
+      estadoDoMotorDaLista({
+        runtime: 'codex',
+        status: 'connected',
+        models: ['GPT-5.5'],
+        quotaRemaining: 42,
+      })
+    ).toEqual({ phase: 'connected', models: ['GPT-5.5'], quota: 42 })
+  })
+
+  it('motor nunca conectado não vira estado nenhum — o card segue em idle', () => {
+    expect(estadoDoMotorDaLista(undefined)).toBeNull()
+    expect(estadoDoMotorDaLista({ runtime: 'claude', status: 'error' })).toBeNull()
+  })
+
+  it('"precisa religar" não é "error": não abre as dicas de token', () => {
+    // error nasce de uma TENTATIVA de conectar que falhou agora (e por isso o
+    // card abre colagem manual). Aqui não houve tentativa: uma conexão que
+    // funcionava venceu sozinha.
+    const estado = estadoDoMotorDaLista({ runtime: 'codex', status: STATUS_PRECISA_RELIGAR })
+    expect(estado?.phase).not.toBe('error')
+    expect(estado).not.toHaveProperty('message')
   })
 })

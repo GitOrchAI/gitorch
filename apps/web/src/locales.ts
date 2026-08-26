@@ -245,6 +245,10 @@ export const locales = {
       connectBtn: 'Connect',
       connecting: 'Checking...',
       connectedLabel: 'Connected',
+      connectNeedsReloginLabel: 'Needs reconnecting',
+      connectNeedsReloginDesc:
+        'This engine\u2019s sign-in expired and the automatic renewal could not fix it. Connect again \u2014 same path as the first time.',
+      connectRelinkBtn: 'Reconnect',
       connectModelsLabel: 'models',
       connectQuotaLabel: 'quota',
       // 21/07: Claude's real usage (Anthropic API rate-limit headers) — %
@@ -597,6 +601,10 @@ export const locales = {
       connectBtn: 'Conectar',
       connecting: 'Verificando...',
       connectedLabel: 'Conectado',
+      connectNeedsReloginLabel: 'Precisa religar',
+      connectNeedsReloginDesc:
+        'O login deste motor venceu e a renova\u00e7\u00e3o autom\u00e1tica n\u00e3o deu conta. Conecte de novo \u2014 \u00e9 o mesmo caminho do primeiro login.',
+      connectRelinkBtn: 'Religar',
       connectModelsLabel: 'modelos',
       connectQuotaLabel: 'cota',
       // 21/07: quota REAL do Claude (headers de rate limit da API da
@@ -951,6 +959,10 @@ export const locales = {
       connectBtn: 'Conectar',
       connecting: 'Verificando...',
       connectedLabel: 'Conectado',
+      connectNeedsReloginLabel: 'Necesita reconexi\u00f3n',
+      connectNeedsReloginDesc:
+        'El inicio de sesi\u00f3n de este motor caduc\u00f3 y la renovaci\u00f3n autom\u00e1tica no pudo resolverlo. Con\u00e9ctalo de nuevo \u2014 es el mismo camino del primer inicio de sesi\u00f3n.',
+      connectRelinkBtn: 'Reconectar',
       connectModelsLabel: 'modelos',
       connectQuotaLabel: 'cuota',
       // 21/07: cuota REAL de Claude (headers de rate limit de la API de
