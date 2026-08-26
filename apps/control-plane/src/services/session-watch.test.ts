@@ -212,10 +212,18 @@ describe('vigiarSessoes', () => {
     expect(deps.dispararMissao).toHaveBeenCalledWith('qa', 'proj1')
   })
 
-  it('pergunta REPETIDA (mesmo hash já gravado) NÃO dispara de novo', async () => {
+  it('pergunta REPETIDA e ainda sem resposta: TENTA DE NOVO — era aqui que a sessão morria', async () => {
+    // O defeito real, medido em 26/08: a marca era gravada ANTES de a resposta
+    // existir. Quando a missão que responde falhava, a pergunta ficava marcada
+    // como respondida para sempre e a vigília nunca mais tentava. Treze
+    // sessões presas assim, a mais antiga havia SETE DIAS — e cada uma
+    // congelando uma vaga, até o teto de simultâneas estourar e parar a
+    // esteira inteira.
     const mensagem = 'Devo usar bcrypt ou argon2 para o hash de senha?'
     const deps = depsFalso({
-      sessoes: [linha({ sessionName: 'sessions/repetida', answeredHash: hashDe(mensagem) })],
+      sessoes: [
+        linha({ sessionName: 'sessions/repetida', answeredHash: hashDe(mensagem), nudges: 1 }),
+      ],
       consultarSessao: vi.fn(async () => ({
         estado: 'AWAITING_USER_FEEDBACK',
         numeroDoPr: null,
@@ -226,8 +234,60 @@ describe('vigiarSessoes', () => {
 
     await vigiarSessoes(deps)
 
-    expect(deps.registrarResposta).not.toHaveBeenCalled()
-    expect(deps.dispararMissao).not.toHaveBeenCalled()
+    expect(deps.dispararMissao).toHaveBeenCalledWith('qa', 'proj1')
+  })
+
+  it('mesma pergunta no TETO: para de tentar, mas avisa o dono em vez de morrer calada', async () => {
+    const mensagem = 'Devo usar bcrypt ou argon2 para o hash de senha?'
+    const deps = depsFalso({
+      sessoes: [
+        linha({
+          sessionName: 'sessions/desistiu',
+          issueNumber: 42,
+          answeredHash: hashDe(mensagem),
+          nudges: MAX_NUDGES,
+        }),
+      ],
+      consultarSessao: vi.fn(async () => ({
+        estado: 'AWAITING_USER_FEEDBACK',
+        numeroDoPr: null,
+        ultimaAtualizacao: agora.toISOString(),
+      })),
+      ultimaMensagem: vi.fn(async () => mensagem),
+    })
+
+    await vigiarSessoes(deps)
+
+    // Não vira laço infinito gastando motor...
+    expect(deps.dispararMissao).not.toHaveBeenCalledWith('qa', 'proj1')
+    // ...e não morre em silêncio: trabalho parado que ninguém mais destrava
+    // sozinho tem que chegar a alguém.
+    expect(deps.avisarDono).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(deps.avisarDono!).mock.calls[0]![0]).toMatch(/#42/)
+  })
+
+  it('e o aviso do teto não se repete a cada ciclo', async () => {
+    const mensagem = 'Devo usar bcrypt ou argon2 para o hash de senha?'
+    const hashDoSilencio = hashDe(`sem-resposta:${hashDe(mensagem)}`)
+    const deps = depsFalso({
+      sessoes: [
+        linha({
+          sessionName: 'sessions/ja-avisou',
+          answeredHash: hashDoSilencio,
+          nudges: MAX_NUDGES,
+        }),
+      ],
+      consultarSessao: vi.fn(async () => ({
+        estado: 'AWAITING_USER_FEEDBACK',
+        numeroDoPr: null,
+        ultimaAtualizacao: agora.toISOString(),
+      })),
+      ultimaMensagem: vi.fn(async () => mensagem),
+    })
+
+    await vigiarSessoes(deps)
+
+    expect(deps.avisarDono).not.toHaveBeenCalled()
   })
 
   it('AWAITING_PLAN_APPROVAL aprova o plano direto, sem gastar motor', async () => {
@@ -531,7 +591,7 @@ describe('vigiarSessoes', () => {
     // conhecido. Seis sessões que o dev externo dava como esperando resposta
     // estavam gravadas como "trabalhando", com o relógio parado havia NOVE
     // HORAS — seis das quinze vagas do plano presas assim.
-    it('mesma pergunta de antes: não responde de novo, mas registra o estado', async () => {
+    it('mesma pergunta de antes: tenta de novo (sob o teto) E registra o estado', async () => {
       const mensagem = 'Devo usar bcrypt ou argon2?'
       const consultarSessao = vi.fn(async () => ({
         estado: 'AWAITING_USER_FEEDBACK',
@@ -563,8 +623,10 @@ describe('vigiarSessoes', () => {
       })
       await vigiarSessoes(segundo)
 
-      // Não responde de novo — esse guard está certo e continua.
-      expect(segundo.registrarResposta).not.toHaveBeenCalled()
+      // Tenta de novo enquanto houver teto: a marca significa "já TENTEI
+      // responder", não "já respondi". Sem isto, uma tentativa que falha
+      // congela a sessão para sempre — foi o que prendeu treze delas.
+      expect(segundo.registrarResposta).toHaveBeenCalled()
       // Mas REGISTRA o que viu: sem isto a linha congela e a vaga fica presa.
       expect(segundo.registrarEstado).toHaveBeenCalledWith(
         expect.objectContaining({
