@@ -89,8 +89,35 @@ import {
   type EvidenciaDeConserto,
 } from '../services/conserto-de-publicacao.js'
 import { criarIssueDeDesejo } from '../services/desejo-no-github.js'
+import { runDuvidaMissionViaRails } from '../services/duvida-rails-mission.js'
+import {
+  decidirSobreAPergunta,
+  marcarDesistencia,
+  marcarRespondida,
+} from '../services/pergunta-sem-resposta.js'
+import { reservarAResposta, type PrismaParaReserva } from '../services/reservar-a-resposta.js'
+import { hashDaMensagem } from '../services/session-watch.js'
+import type { StepExecutor } from '../services/role-rails.js'
+import {
+  corpoDoPedidoDeAviso,
+  decidirPedirOAviso,
+  jaExisteOPedido,
+} from '../services/instalar-aviso-de-publicacao.js'
+import { TASK_LABEL } from '../services/sm-delegation.js'
 import { sessoesParaAcompanharPublicacao } from '../services/pos-merge.js'
 import { descobrirMecanismo, type Mecanismo } from '../services/mecanismo-de-publicacao.js'
+import {
+  ambientesDeclaradosPeloProjeto,
+  JANELA_DA_ENTREGA_RECENTE_MS,
+} from '../services/ambiente-declarado.js'
+import { duvidaSobreComoPublica } from '../services/duvidas-do-projeto.js'
+import {
+  comoPublicaDeclarado,
+  desfechoDaPublicacao,
+  dispensaOlharORepositorio,
+} from '../services/como-o-projeto-publica.js'
+import type { AgentQuestionService } from '../services/agent-question.js'
+import { nomeDaReserva, PREFIXO_DA_RESERVA, semAsReservas } from '../services/reserva-de-vaga.js'
 import {
   acompanharPublicacao,
   fecharPorTetoAbsoluto,
@@ -138,6 +165,10 @@ import {
   type ResolvedOwner,
 } from '../services/onboarding-board.js'
 import { lerCredencialDoProjeto } from '../services/project-credential.js'
+import {
+  resolverCredencialDoDev,
+  recadoDaRecusa,
+} from '../services/credencial-do-dev-do-cliente.js'
 import { provaDeEscritaNoUso } from '../services/acesso-ao-repositorio.js'
 import {
   reconferirAcessoDosProjetos,
@@ -371,15 +402,28 @@ export function montarOpcoesDeDelegacao(args: {
   devPlan: string | null | undefined
   sessoesVivas: LinhaDeSessao[]
   delegadasHoje: number
+  /** Sessões vivas na CONTA inteira — o teto de simultâneas é dela. */
+  vivasNaConta: number
+  /**
+   * TODAS as linhas do projeto, vivas e fechadas — a prova de que uma tarefa
+   * já foi entregue. `sessoesVivas` não serve aqui: a linha de uma entrega
+   * mesclada pode já ter sido fechada, e é justamente essa que precisa barrar
+   * a redelegação.
+   */
+  entregasDoProjeto: Array<{ issueNumber: number; mergeCommitSha?: string | null }>
 }): {
   sessoesVivas: LinhaDeSessao[]
   delegadasHoje: number
+  vivasNaConta: number
+  entregasDoProjeto: Array<{ issueNumber: number; mergeCommitSha?: string | null }>
   tetoConcorrentes: number
   tetoDiario: number
 } {
   return {
     sessoesVivas: args.sessoesVivas,
     delegadasHoje: args.delegadasHoje,
+    vivasNaConta: args.vivasNaConta,
+    entregasDoProjeto: args.entregasDoProjeto,
     ...tetosDoPlanoDoDev(args.devPlan),
   }
 }
@@ -437,6 +481,9 @@ export function montarOpcoesDoJulgamento(args: {
     limparPendencia: (a) => limparPendencia({ prisma: args.prisma, ...a }),
     registrarAvisoDeDemora: (a) => registrarAvisoDeDemora({ prisma: args.prisma, ...a }),
     registrarFracassoDeMerge: (a) => registrarFracassoDeMerge({ prisma: args.prisma, ...a }),
+    // Mesma marca do conserto: as duas respondem "já pedi isto para esta
+    // entrega neste commit?", e duas separadas divergiriam em silêncio.
+    registrarConserto: (a) => registrarConsertoDePublicacao({ prisma: args.prisma, ...a }),
     // A conta de "este projeto está travado" é sobre DIAS — o patinhas
     // acumulou dez reprovações seguidas em quatro dias, e nesse intervalo o
     // serviço reiniciou dezenas de vezes. Por isso vive no banco.
@@ -592,6 +639,11 @@ export function filtroDeSessoesParaJulgamento(projectId: string): Prisma.DevSess
  * pull request que já foi mesclado.
  */
 export function sessoesParaVigiaPreMerge(sessoes: LinhaDeSessao[]): LinhaDeSessao[] {
+  // A RESERVA não existe no dev externo, então perguntar por ela é uma chamada
+  // que sempre falha. Pior: a falha não carimba o relógio de exame, então a
+  // linha era reconsultada a cada tique — não a cada dez minutos — até a
+  // varredura de abandono fechá-la horas depois. Ela sai daqui antes de tudo.
+  sessoes = semAsReservas(sessoes)
   return sessoes.filter((sessao) => sessao.mergeCommitSha === null)
 }
 
@@ -1763,9 +1815,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     fecharSessao({
       prisma: app.prisma as unknown as PrismaDevSession,
       ...args,
-      arquivarNoFornecedor: (sessionName) =>
+      arquivarNoFornecedor: async (sessionName) =>
         arquivarSessaoJules({
-          apiKey: process.env['JULES_API_KEY'],
+          // A chave da conta em que a sessão NASCEU (BYOK, D34): com a chave
+          // errada o arquivamento volta 404, a linha local fecha assim mesmo
+          // (por desenho, para o registro não travar) e a vaga real fica presa
+          // na conta do cliente sem nada para reconciliá-la depois.
+          apiKey: await chaveDaSessao(sessionName),
           sessionName,
           onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
         }),
@@ -2063,7 +2119,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       role,
       chain,
       plan?.id,
-      onboardingSequence !== undefined
+      onboardingSequence !== undefined,
+      origem
     )
 
     return { triggered: true, missionId: mission.id }
@@ -2076,6 +2133,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     userId: string | null
     runtimeConfig?: unknown
     devPlan?: string | null
+    /** BYOK: a impressão digital da conta do dev assíncrono deste cliente. */
+    devAccountId?: string | null
   }
 
   // Tenta a cadeia de motores em ordem; sucesso encerra; erro de cota/auth cai
@@ -2091,7 +2150,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // QA — o projeto não tem agenda de QA própria em project_schedules. Sem
     // este sinal, o QA nos trilhos sempre cairia no julgamento clássico de PR
     // e, sem PR aberta, terminaria em no-op (ver qa-rails-mission.ts).
-    isOnboarding = false
+    isOnboarding = false,
+    /**
+     * De onde veio o disparo. O RA usa para separar os dois trabalhos dele:
+     * pelo aviso de desejo novo ele analisa AQUELE desejo; pela agenda ele
+     * explora o projeto.
+     */
+    origem: OrigemDoDisparo = 'agenda'
   ): Promise<void> => {
     // Isolamento por tier: grátis roda no stack remoto (MT-SaaS) quando
     // configurado; qualquer outro caso usa o stack local de sempre — nunca
@@ -2248,14 +2313,18 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             // pé só trocaria uma delegação perdida por uma vaga presa.
             desfazerSessao: async (sessionName) => {
               await arquivarSessaoJules({
-                apiKey: process.env['JULES_API_KEY'],
+                // A mesma conta que abriu a sessão precisa ser a que a desfaz:
+                // com a chave errada o desfazer volta 404 e a vaga fica presa
+                // na conta do cliente até a vigília expirar.
+                apiKey: (await chaveDoDevDoProjeto(project.id)) ?? undefined,
                 sessionName,
                 onWarn: (m) => app.log.warn(m),
               })
             },
             criarSessaoDev: async ({ repository, titulo, prompt }) =>
               criarSessaoJules({
-                apiKey: process.env['JULES_API_KEY'],
+                // BYOK (D34): a conta DO CLIENTE quando ele trouxe a dele.
+                apiKey: (await chaveDoDevDoProjeto(project.id)) ?? undefined,
                 repository,
                 startingBranch: process.env['GITORCH_DEV_BASE_BRANCH'] ?? 'main',
                 titulo,
@@ -2274,7 +2343,47 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             // para que o try/catch de `runSmDelegation` (sm-delegation.ts)
             // registre o aviso do jeito de sempre, sem derrubar as outras
             // delegações do ciclo.
+            // A RESERVA, antes de gastar cota. O índice único parcial do
+            // banco (uma issue, uma sessão viva) é quem decide o vencedor —
+            // por isso a reserva é uma linha de verdade, com um nome
+            // provisório, e não uma marca à parte que duas instâncias
+            // poderiam gravar ao mesmo tempo.
+            reservarLugarDaIssue: async (issueNumber) => {
+              const r = await abrirSessao({
+                prisma: app.prisma as unknown as PrismaDevSession,
+                projectId: project.id,
+                issueNumber,
+                sessionName: nomeDaReserva(project.id, issueNumber),
+                agora: new Date(),
+              })
+              return r.ok
+            },
+            // Devolve o lugar quando o dev externo recusa: sem isto a issue
+            // ficaria presa para sempre num dono que não existe.
+            liberarLugarDaIssue: async (issueNumber) => {
+              await app.prisma.devSession.updateMany({
+                where: {
+                  projectId: project.id,
+                  issueNumber,
+                  sessionName: { startsWith: PREFIXO_DA_RESERVA },
+                  closedAt: null,
+                },
+                data: { closedAt: new Date(), closedReason: 'failed_final' },
+              })
+            },
             aoCriarSessao: async ({ issueNumber, sessionName }) => {
+              // A reserva já ganhou o lugar: aqui só se troca o nome
+              // provisório pelo nome real da sessão do dev externo.
+              const trocou = await app.prisma.devSession.updateMany({
+                where: {
+                  projectId: project.id,
+                  issueNumber,
+                  sessionName: { startsWith: PREFIXO_DA_RESERVA },
+                  closedAt: null,
+                },
+                data: { sessionName },
+              })
+              if (trocou.count > 0) return
               const resultado = await abrirSessao({
                 prisma: app.prisma as unknown as PrismaDevSession,
                 projectId: project.id,
@@ -2297,16 +2406,60 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               // A fila real: issue com linha viva já está sendo trabalhada;
               // sem linha viva está por delegar, mesmo que já tenha sido
               // delegada antes e a sessão tenha morrido (fila-de-delegacao.ts).
+              // A fila REAL deste projeto — é ela que diz quais issues já
+              // estão em trabalho aqui.
               sessoesVivas: await sessoesVivas({
                 prisma: app.prisma as unknown as PrismaDevSession,
                 projectId: project.id,
               }),
+              // Mas o TETO é da CONTA, não do projeto: no Pro são 100 sessões
+              // em 24h e 15 ao mesmo tempo divididas entre TODOS os
+              // repositórios daquela conta. Contando por projeto, dois
+              // projetos "pro" se achavam com 200/dia e 30 simultâneas contra
+              // um teto real de 100 e 15 — e foi isso que produziu mais de cem
+              // delegações recusadas num único dia.
+              //
               delegadasHoje: await app.prisma.devSession.count({
                 where: {
-                  projectId: project.id,
+                  // Pela CONTA QUE ABRIU cada sessão, não pelos projetos que
+                  // hoje dividem a conta: um projeto que acabou de conectar a
+                  // conta própria carrega as sessões que abriu na conta do
+                  // dono, e contá-las faria o teto novo do cliente nascer
+                  // consumido por trabalho que nunca tocou a conta dele — e,
+                  // na desconexão, faria essas sessões roubarem vaga de todo
+                  // mundo que divide a conta da instância.
+                  devAccountId: project.devAccountId ?? null,
                   createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
                 },
               }),
+              // Vivas da CONTA inteira, pelo mesmo motivo. São dois contadores
+              // diferentes: a vaga libera quando a sessão termina; a cota de
+              // 24h só devolve cada sessão 24h depois de ela ter começado.
+              vivasNaConta: await app.prisma.devSession.count({
+                where: { devAccountId: project.devAccountId ?? null, closedAt: null },
+              }),
+              // Sem filtro de linha viva de propósito: a entrega mesclada
+              // costuma ter a linha JÁ FECHADA, e é ela que precisa barrar a
+              // redelegação. Só as que têm commit de merge interessam.
+              // Só as entregas RECENTES, e com teto. Varrer o histórico
+              // inteiro a cada acordada do SM cresceria sem limite num projeto
+              // de operação longa — e não serve para nada: entrega antiga não
+              // barra redelegação, justamente para a issue reaberta poder
+              // voltar.
+              entregasDoProjeto: (await app.prisma.devSession.findMany({
+                where: {
+                  projectId: project.id,
+                  mergeCommitSha: { not: null },
+                  updatedAt: { gte: new Date(Date.now() - JANELA_DA_ENTREGA_RECENTE_MS) },
+                },
+                select: { issueNumber: true, mergeCommitSha: true, updatedAt: true },
+                orderBy: { updatedAt: 'desc' },
+                take: 200,
+              })) as Array<{
+                issueNumber: number
+                mergeCommitSha: string | null
+                updatedAt: Date
+              }>,
             }),
             // O SM é o orquestrador do julgamento (docs/agents/quality-assurance.md
             // §3.1). Até aqui o julgamento só era acordado por aviso do
@@ -2515,6 +2668,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                   githubToken: railsToken,
                   execute,
                   contextBlocks,
+                  // Separa os dois trabalhos do RA: pelo aviso de desejo novo
+                  // ele analisa AQUELE desejo; pela agenda ele EXPLORA o
+                  // projeto. Ancorar de novo num desejo já analisado é refazer
+                  // a mesma análise duas vezes por dia em vez de aprender mais
+                  // sobre o repositório — e é o explorador quem alimenta a
+                  // memória que os outros agentes leem.
+                  pelaAgenda: origem === 'agenda',
                 })
               : poRails
                 ? await runPoMissionViaRails({
@@ -2529,85 +2689,107 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                     userId: project.userId ?? undefined,
                     agentQuestionService: app.agentQuestionService,
                   })
-                : await runQaMissionViaRails({
-                    repository: project.wingId,
-                    githubToken: railsToken as string,
-                    contextBlocks,
-                    // Vivas + fechadas com PR pendente (não mescladas), sem
-                    // teto — ver filtroDeSessoesParaJulgamento.
-                    sessoes: await app.prisma.devSession.findMany({
-                      where: filtroDeSessoesParaJulgamento(project.id),
-                      orderBy: { createdAt: 'desc' },
-                    }),
-                    // Tarefa 7 (achado 1 da revisão): registrarPendencia,
-                    // limparPendencia, registrarAvisoDeDemora e avisarDono —
-                    // sem isto a vigília da verificação fica correta e
-                    // testada em isolamento, e inerte aqui: pending_since
-                    // nunca é gravado, o teto de 90min nunca amadurece, o
-                    // dono nunca é avisado.
-                    ...montarOpcoesDoJulgamento({
-                      prisma: app.prisma as unknown as PrismaDevSession,
+                : await (async () => {
+                    // ANTES de julgar PR: o dev está parado esperando resposta?
+                    // Best-effort — uma pergunta que não dá para responder não
+                    // pode impedir o julgamento, que é o outro trabalho do QA.
+                    // A trava de "já respondida" vive dentro da função: sem
+                    // ela, a mesma resposta sairia a cada acordada.
+                    await responderDuvidaPendente({
                       projectId: project.id,
-                      avisarDono,
-                    }),
-                    // Fase 1 do QA (Reconhecimento): só entra quando este QA foi
-                    // acordado pela cascata de onboarding (Task 10) — hoje o
-                    // único jeito de o QA rodar, já que o projeto não tem
-                    // agenda de QA própria em project_schedules.
-                    ...(isOnboarding ? { mode: 'recon' as const } : {}),
-                    // O QA move o card da issue conforme o veredito (se há board).
-                    ...(railsBoard
-                      ? {
-                          moveCard: createCardMover({
-                            repository: project.wingId,
-                            board: railsBoard,
-                            token: railsToken as string,
-                            columns: boardColumns,
-                          }),
-                        }
-                      : {}),
-                    // Task 10: a reprovação volta para a sessão do dev
-                    // assíncrono — sem isto o veredito morre no comentário do
-                    // PR (medido: PR #79, 5 dias parado, 12 reprovações, zero
-                    // retrabalho). A API não tem retomada; `sendMessage` é o
-                    // único caminho, por isso `responderSessaoJules` mesmo.
-                    registrarAvisoPendente: ({ sessionName, texto }) =>
-                      registrarAvisoDeRetrabalhoPendente({
-                        prisma: app.prisma as unknown as PrismaDevSession,
-                        sessionName,
-                        texto,
+                      repository: project.wingId,
+                      execute,
+                      contextBlocks,
+                    }).catch((err: unknown) =>
+                      app.log.warn(
+                        err,
+                        `[Scheduler] não deu para responder a dúvida do dev em ${project.wingId}`
+                      )
+                    )
+                    return runQaMissionViaRails({
+                      repository: project.wingId,
+                      githubToken: railsToken as string,
+                      contextBlocks,
+                      // Vivas + fechadas com PR pendente (não mescladas), sem
+                      // teto — ver filtroDeSessoesParaJulgamento.
+                      sessoes: await app.prisma.devSession.findMany({
+                        where: filtroDeSessoesParaJulgamento(project.id),
+                        orderBy: { createdAt: 'desc' },
                       }),
-                    avisarSessao: async ({ sessionName, texto }) =>
-                      responderSessaoJules({
-                        apiKey: process.env['JULES_API_KEY'],
-                        sessionName,
-                        texto,
-                        onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
-                      }),
-                    // Task 11 (decisão do dono D7): o produto mescla sozinho,
-                    // sem confirmação humana. `mesclarPr` já fez o merge de
-                    // verdade quando este callback dispara. Tarefa 17: NÃO
-                    // fecha mais a linha da vigia aqui — só grava o commit
-                    // mesclado (`aoMesclarUmaEntrega`, acima). Quem fecha é
-                    // `varrerPublicacoes` (mais abaixo), quando há veredito
-                    // sobre a publicação; até lá a sessão continua fora de
-                    // `filtroDeSessoesParaJulgamento` na prática, porque o PR
-                    // já mesclado sai da listagem de PRs ABERTOS do GitHub
-                    // que alimenta o laço de descoberta do QA — não porque a
-                    // linha esteja fechada.
-                    aoMesclar: async ({ numeroDoPr, mergeCommitSha, issueNumber }) =>
-                      aoMesclarUmaEntrega({
+                      // Tarefa 7 (achado 1 da revisão): registrarPendencia,
+                      // limparPendencia, registrarAvisoDeDemora e avisarDono —
+                      // sem isto a vigília da verificação fica correta e
+                      // testada em isolamento, e inerte aqui: pending_since
+                      // nunca é gravado, o teto de 90min nunca amadurece, o
+                      // dono nunca é avisado.
+                      ...montarOpcoesDoJulgamento({
                         prisma: app.prisma as unknown as PrismaDevSession,
                         projectId: project.id,
-                        numeroDoPr,
-                        mergeCommitSha,
-                        issueNumber,
-                        agora: new Date(),
-                        onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+                        avisarDono,
                       }),
-                    onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
-                    execute,
-                  })
+                      // Fase 1 do QA (Reconhecimento): só entra quando este QA foi
+                      // acordado pela cascata de onboarding (Task 10) — hoje o
+                      // único jeito de o QA rodar, já que o projeto não tem
+                      // agenda de QA própria em project_schedules.
+                      ...(isOnboarding ? { mode: 'recon' as const } : {}),
+                      // O QA move o card da issue conforme o veredito (se há board).
+                      ...(railsBoard
+                        ? {
+                            moveCard: createCardMover({
+                              repository: project.wingId,
+                              board: railsBoard,
+                              token: railsToken as string,
+                              columns: boardColumns,
+                            }),
+                          }
+                        : {}),
+                      // Task 10: a reprovação volta para a sessão do dev
+                      // assíncrono — sem isto o veredito morre no comentário do
+                      // PR (medido: PR #79, 5 dias parado, 12 reprovações, zero
+                      // retrabalho). A API não tem retomada; `sendMessage` é o
+                      // único caminho, por isso `responderSessaoJules` mesmo.
+                      registrarAvisoPendente: ({ sessionName, texto }) =>
+                        registrarAvisoDeRetrabalhoPendente({
+                          prisma: app.prisma as unknown as PrismaDevSession,
+                          sessionName,
+                          texto,
+                        }),
+                      avisarSessao: async ({ sessionName, texto }) =>
+                        responderSessaoJules({
+                          // BYOK (D34): o pedido de retrabalho tem que chegar na
+                          // conta em que a sessão nasceu, senão o veredito do QA
+                          // morre no comentário do PR — exatamente o defeito do
+                          // #79, que voltaria só para os clientes com conta própria.
+                          apiKey: await chaveDaSessao(sessionName),
+                          sessionName,
+                          texto,
+                          onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+                        }),
+                      // Task 11 (decisão do dono D7): o produto mescla sozinho,
+                      // sem confirmação humana. `mesclarPr` já fez o merge de
+                      // verdade quando este callback dispara. Tarefa 17: NÃO
+                      // fecha mais a linha da vigia aqui — só grava o commit
+                      // mesclado (`aoMesclarUmaEntrega`, acima). Quem fecha é
+                      // `varrerPublicacoes` (mais abaixo), quando há veredito
+                      // sobre a publicação; até lá a sessão continua fora de
+                      // `filtroDeSessoesParaJulgamento` na prática, porque o PR
+                      // já mesclado sai da listagem de PRs ABERTOS do GitHub
+                      // que alimenta o laço de descoberta do QA — não porque a
+                      // linha esteja fechada.
+                      aoMesclar: async ({ numeroDoPr, mergeCommitSha, issueNumber }) =>
+                        aoMesclarUmaEntrega({
+                          prisma: app.prisma as unknown as PrismaDevSession,
+                          projectId: project.id,
+                          numeroDoPr,
+                          mergeCommitSha,
+                          issueNumber,
+                          agora: new Date(),
+                          onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+                        }),
+                      onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+                      execute,
+                    })
+                  })()
           } finally {
             await fs.rm(stepDir, { recursive: true, force: true }).catch(() => undefined)
           }
@@ -2784,7 +2966,19 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           if (!isNoOp) {
             try {
               await app.saveMissionMemory({
-                wingId: project.wingId,
+                // A chave é o ID do projeto, não o endereço do repositório.
+                //
+                // Esta gravação usava `project.wingId` — "dono/repositorio" —
+                // que NÃO é único entre clientes: o schema declara
+                // `@@unique([userId, wingId])` justamente porque dois clientes
+                // podem cadastrar o mesmo repositório. Nada lia por essa chave,
+                // então a gaveta era escrita e nunca aberta; mas no dia em que
+                // alguém lesse, misturaria a memória de dois clientes.
+                //
+                // Com o `projectId`, esta gravação passa a cair na MESMA
+                // prateleira que `persistMissionMemory` já usa e que os agentes
+                // leem de verdade — a gaveta deixa de ser morta.
+                wingId: project.id,
                 missionId,
                 agentRole: role,
                 content: result.output,
@@ -3209,35 +3403,63 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     if (agora.getTime() - ultimaReconciliacao < cadenciaDaReconciliacao) return
     ultimaReconciliacao = agora.getTime()
 
-    const apiKey = process.env['JULES_API_KEY']
-    if (!apiKey) return
+    // Uma varredura POR CONTA (BYOK, D34): cada conta do fornecedor enxerga só
+    // as próprias sessões, então cruzar a lista de uma conta contra as linhas
+    // vivas de todas marcaria como órfã a sessão viva de outro cliente — e a
+    // arquivaria, matando trabalho em andamento que alguém está pagando.
+    // A conta da instância (`null`) entra sempre; as dos clientes, quando
+    // existem, vêm do banco.
+    const contas: Array<string | null> = [null, ...(await contasDeClienteComCredencial())]
 
-    const relatorio = await varrerVagasVazadas({
-      listarNoFornecedor: () => listarSessoesJules({ apiKey, onWarn: (m) => app.log.warn(m) }),
-      // Da INSTÂNCIA INTEIRA, e é justamente por isso que é seguro: cruzar a
-      // lista completa do fornecedor contra as sessões de um projeto só
-      // marcaria como órfão o trabalho em andamento de todos os outros.
-      vivasNoBanco: () =>
-        nomesDeSessoesVivasDaInstancia({ prisma: app.prisma as unknown as PrismaDevSession }),
-      arquivarNoFornecedor: (sessionName) =>
-        arquivarSessaoJules({ apiKey, sessionName, onWarn: (m) => app.log.warn(m) }),
-      agora,
-      onWarn: (m) => app.log.warn(m),
-    })
+    let sobrouFila = false
+    for (const conta of contas) {
+      const apiKey = await chaveDaConta(conta)
+      if (!apiKey) continue
 
-    // Sobrou fila: volta em cinco minutos. Acabou (ou não deu para saber):
-    // volta à hora cheia.
-    cadenciaDaReconciliacao = relatorio.atingiuOTeto
-      ? CADENCIA_COM_FILA_MS
-      : CADENCIA_DA_RECONCILIACAO_MS
+      const relatorio = await varrerVagasVazadas({
+        listarNoFornecedor: () => listarSessoesJules({ apiKey, onWarn: (m) => app.log.warn(m) }),
+        vivasNoBanco: () =>
+          nomesDeSessoesVivasDaInstancia({
+            prisma: app.prisma as unknown as PrismaDevSession,
+            devAccountId: conta,
+          }),
+        arquivarNoFornecedor: (sessionName) =>
+          arquivarSessaoJules({ apiKey, sessionName, onWarn: (m) => app.log.warn(m) }),
+        agora,
+        onWarn: (m) => app.log.warn(m),
+      })
 
-    if (relatorio.arquivadas > 0 || relatorio.orfas > 0) {
-      app.log.info(
-        `[Scheduler] reconciliação de vagas: ${relatorio.examinadas} ativas no fornecedor, ` +
-          `${relatorio.orfas} sem dono aqui, ${relatorio.arquivadas} devolvidas` +
-          (relatorio.atingiuOTeto ? ' — ainda há fila, volto em 5 min' : '')
-      )
+      if (relatorio.atingiuOTeto) sobrouFila = true
+
+      if (relatorio.arquivadas > 0 || relatorio.orfas > 0) {
+        app.log.info(
+          `[Scheduler] reconciliação de vagas (${conta ?? 'conta da instância'}): ` +
+            `${relatorio.examinadas} ativas no fornecedor, ` +
+            `${relatorio.orfas} sem dono aqui, ${relatorio.arquivadas} devolvidas` +
+            (relatorio.atingiuOTeto ? ' — ainda há fila, volto em 5 min' : '')
+        )
+      }
     }
+
+    // Sobrou fila em qualquer conta: volta em cinco minutos. Acabou (ou não deu
+    // para saber): volta à hora cheia.
+    cadenciaDaReconciliacao = sobrouFila ? CADENCIA_COM_FILA_MS : CADENCIA_DA_RECONCILIACAO_MS
+  }
+
+  /**
+   * As contas de cliente que têm credencial utilizável agora.
+   *
+   * Conta sem credencial fica de fora de propósito: sem chave não há o que
+   * consultar nem o que arquivar naquela conta, e insistir só produziria
+   * chamada que volta 401 a cada hora.
+   */
+  const contasDeClienteComCredencial = async (): Promise<string[]> => {
+    const linhas = await app.prisma.project.findMany({
+      where: { devAccountId: { not: null }, encryptedDevApiKey: { not: null } },
+      select: { devAccountId: true },
+      distinct: ['devAccountId'],
+    })
+    return linhas.map((l) => l.devAccountId).filter((c): c is string => typeof c === 'string')
   }
 
   /**
@@ -3260,9 +3482,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     const abandonadas = sessoesAbandonadas({ linhas, agora })
     if (abandonadas.length === 0) return
 
-    const apiKey = process.env['JULES_API_KEY']
     for (const linha of abandonadas) {
       try {
+        // A chave é da conta em que a sessão NASCEU (BYOK, D34), lida linha a
+        // linha: uma varredura só, com a chave do dono, arquivaria errado toda
+        // sessão de cliente com conta própria.
+        const apiKey = await chaveDaSessao(linha.sessionName)
         await fecharSessao({
           prisma: app.prisma as unknown as PrismaDevSession,
           sessionName: linha.sessionName,
@@ -3468,30 +3693,42 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           prisma: app.prisma as unknown as PrismaDevSession,
           projectId,
         })
-        const julesApiKey = process.env['JULES_API_KEY']
+        // BYOK (D34): a chave é da conta em que CADA sessão nasceu, e não uma
+        // chave só fixada para o loop inteiro. Uma conta só faria toda consulta,
+        // aprovação de plano e pedido de retomada de cliente com conta própria
+        // voltar 404: a vigília leria "sem avanço" numa sessão que está
+        // progredindo e a trataria como abandonada.
+        //
+        // A conta vem das linhas JÁ lidas acima — nada de uma consulta por
+        // callback, que multiplicaria idas ao banco por sessão e por tique.
+        const contaDaSessao = new Map(
+          sessoesDoProjeto.map((linha) => [linha.sessionName, linha.devAccountId ?? null])
+        )
+        const chaveDaLinha = (sessionName: string): Promise<string | undefined> =>
+          chaveDaConta(contaDaSessao.get(sessionName) ?? null)
         const vigiaOut = await vigiarSessoes({
           sessoes: sessoesParaVigiaPreMerge(sessoesDoProjeto),
-          consultarSessao: (sessionName) =>
+          consultarSessao: async (sessionName) =>
             consultarSessaoJules({
-              apiKey: julesApiKey,
+              apiKey: await chaveDaLinha(sessionName),
               sessionName,
               onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
             }),
-          ultimaMensagem: (sessionName) =>
+          ultimaMensagem: async (sessionName) =>
             ultimaMensagemDoDevJules({
-              apiKey: julesApiKey,
+              apiKey: await chaveDaLinha(sessionName),
               sessionName,
               onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
             }),
-          aprovarPlano: (sessionName) =>
+          aprovarPlano: async (sessionName) =>
             aprovarPlanoJules({
-              apiKey: julesApiKey,
+              apiKey: await chaveDaLinha(sessionName),
               sessionName,
               onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
             }),
-          pedirParaContinuar: (sessionName) =>
+          pedirParaContinuar: async (sessionName) =>
             responderSessaoJules({
-              apiKey: julesApiKey,
+              apiKey: await chaveDaLinha(sessionName),
               sessionName,
               texto:
                 'Please continue working on this task from where you left off. If you are ' +
@@ -3512,9 +3749,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             registrarPr({ prisma: app.prisma as unknown as PrismaDevSession, ...args }),
           // A reentrega do pedido de retrabalho usa o MESMO canal do aviso
           // original — `sendMessage`, o único que a API oferece.
-          reentregarAviso: ({ sessionName, texto }) =>
+          reentregarAviso: async ({ sessionName, texto }) =>
             responderSessaoJules({
-              apiKey: julesApiKey,
+              apiKey: await chaveDaLinha(sessionName),
               sessionName,
               texto,
               onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
@@ -3652,16 +3889,139 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   const VALIDADE_DO_CACHE_DE_MECANISMO_MS = 60 * 60_000
   const cacheDeMecanismo = new Map<string, { mecanismo: Mecanismo; expiraEm: number }>()
 
+  /**
+   * A chave do dev assíncrono que ESTE projeto usa (BYOK, D34).
+   *
+   * Decifrada no instante do uso e devolvida por valor, nunca guardada em
+   * arquivo nem escrita em log — mesma regra das credenciais dos motores.
+   * Recusa em vez de cair calada na conta do dono: gastar a conta de quem não
+   * pediu é dinheiro dos outros.
+   */
+  const chaveDoDevDoProjeto = async (projetoId: string): Promise<string | undefined> => {
+    const registro = await app.prisma.project.findUnique({
+      where: { id: projetoId },
+      select: { encryptedDevApiKey: true },
+    })
+    const resolvida = resolverCredencialDoDev({
+      credencialCifrada: registro?.encryptedDevApiKey ?? null,
+      chaveDaInstancia: process.env['JULES_API_KEY'],
+      decifrar: decryptCredential,
+    })
+    if (resolvida.ok) return resolvida.chave
+    app.log.warn(`[Scheduler] projeto ${projetoId}: ${recadoDaRecusa(resolvida.motivo)}`)
+    return undefined
+  }
+
+  /**
+   * A chave de uma CONTA específica (BYOK, D34).
+   *
+   * Sem cair na conta da instância quando a conta é de cliente: uma sessão que
+   * nasceu na conta do cliente só pode ser consultada, avisada ou arquivada com
+   * a chave DELE. Tentar com a do dono devolve 404 no fornecedor — a vigília
+   * passaria a ler "sem avanço" numa sessão que está progredindo, e o
+   * arquivamento nunca devolveria a vaga, que ficaria presa para sempre na
+   * conta que o cliente paga.
+   */
+  const chaveDaConta = async (
+    devAccountId: string | null | undefined
+  ): Promise<string | undefined> => {
+    // Conta da instância: é a do dono, no ambiente.
+    if (!devAccountId) return process.env['JULES_API_KEY']
+
+    const dono = await app.prisma.project.findFirst({
+      where: { devAccountId, encryptedDevApiKey: { not: null } },
+      select: { encryptedDevApiKey: true },
+    })
+    const resolvida = resolverCredencialDoDev({
+      credencialCifrada: dono?.encryptedDevApiKey ?? null,
+      // De propósito sem recuo para a chave da instância.
+      chaveDaInstancia: null,
+      decifrar: decryptCredential,
+    })
+    if (resolvida.ok) return resolvida.chave
+    app.log.warn(
+      `[Scheduler] conta ${devAccountId} do dev assíncrono sem credencial utilizável: ` +
+        `${recadoDaRecusa(resolvida.motivo)} — as sessões abertas nela ficam sem acompanhamento até religar`
+    )
+    return undefined
+  }
+
+  /**
+   * A chave da conta em que ESTA sessão nasceu.
+   *
+   * A conta do PROJETO não serve aqui: ela muda quando o cliente conecta,
+   * troca ou desconecta a dele, e a sessão continua existindo lá fora na conta
+   * antiga. Quem manda é o carimbo da linha.
+   */
+  const chaveDaSessao = async (sessionName: string): Promise<string | undefined> => {
+    let linha: { devAccountId: string | null } | null
+    try {
+      linha = await app.prisma.devSession.findUnique({
+        where: { sessionName },
+        select: { devAccountId: true },
+      })
+    } catch (err) {
+      // Não saber de qual conta é a sessão NÃO autoriza usar a do dono: seria
+      // mexer com a chave errada numa sessão que pode ser de um cliente, e o
+      // fornecedor devolveria 404 de qualquer jeito. Sem chave, quem chama
+      // avisa e segue — falha aberta, nunca falha silenciosa na conta errada.
+      app.log.warn(
+        `[Scheduler] não deu para descobrir a conta da sessão ${sessionName}: ${String(err)}`
+      )
+      return undefined
+    }
+    return chaveDaConta(linha?.devAccountId ?? null)
+  }
+
+  /**
+   * "Como este projeto vai ao ar?" — a pergunta ao dono (D47).
+   *
+   * Existe como função porque agora tem DOIS chamadores: a varredura que
+   * descobriu que não há publicação nenhuma para ler, e o desfecho novo dos
+   * cinco caminhos, quando o produto não sabe e se recusa a adivinhar.
+   *
+   * `ask` deduplica pela chave: respondida uma vez para aquele repositório, a
+   * pergunta não volta — é a segunda metade do pedido do dono, "para que nunca
+   * mais questione o usuario". O serviço é decorado pelo plugin do Telegram, e
+   * quando o Telegram não está ligado não há a quem perguntar: segue em
+   * silêncio, porque uma pergunta que ninguém recebe não pode derrubar a
+   * varredura.
+   */
+  const perguntarComoPublica = async (projeto: {
+    id: string
+    wingId: string
+    userId: string | null
+  }): Promise<void> => {
+    const perguntador = (app as unknown as { agentQuestionService?: AgentQuestionService })
+      .agentQuestionService
+    if (!perguntador || !projeto.userId) return
+    await perguntador
+      .ask(projeto.userId, projeto.id, duvidaSobreComoPublica(projeto.wingId))
+      .catch((err: unknown) =>
+        app.log.warn(err, `[Scheduler] não deu para perguntar ao dono de ${projeto.wingId}`)
+      )
+  }
+
   const descobrirMecanismoComCache = async (
     repository: string,
     githubToken: string,
-    agora: Date
+    agora: Date,
+    /** O que o projeto declarou. Quando existe, ganha da descoberta. */
+    runtimeConfig?: unknown
   ): Promise<Mecanismo> => {
-    const emCache = cacheDeMecanismo.get(repository)
+    // A chave inclui a DECLARAÇÃO: `wingId` não é único entre clientes
+    // (o schema tem @@unique([userId, wingId])), e desde que o mecanismo passou
+    // a depender da configuração do projeto, guardar só por repositório fazia
+    // a declaração de um cliente valer para o outro por até uma hora.
+    const declarados = ambientesDeclaradosPeloProjeto(runtimeConfig)
+    const chaveDoCache = `${repository}::${declarados.join(',')}`
+    const emCache = cacheDeMecanismo.get(chaveDoCache)
     if (emCache && emCache.expiraEm > agora.getTime()) {
       return emCache.mecanismo
     }
     const mecanismo = await descobrirMecanismo({
+      onWarn: (m) => app.log.warn(`[Scheduler] publicação de ${repository}: ${m}`),
+      ...(declarados.length > 0 ? { ambientesDeclarados: declarados } : {}),
       listarAmbientes: async () => {
         const resp = (await ghGet(`/repos/${repository}/environments`, githubToken)) as {
           environments?: Array<{ name: string }>
@@ -3679,7 +4039,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         }))
       },
     })
-    cacheDeMecanismo.set(repository, {
+    cacheDeMecanismo.set(chaveDoCache, {
       mecanismo,
       expiraEm: agora.getTime() + VALIDADE_DO_CACHE_DE_MECANISMO_MS,
     })
@@ -3872,6 +4232,57 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
    * dono UMA vez com a última observação, e resolve o board como
    * "não entregue" (nunca "done" — ver `resolverEntregaDoBoard`).
    */
+  /**
+   * Encerra uma entrega com um veredito e um motivo DITOS POR EXTENSO.
+   *
+   * Existe porque `fecharComTetoAbsoluto` embrulha tudo na frase "mesclamos e
+   * acompanhamos por Xh sem conseguir confirmar" e sempre marca o board como
+   * NÃO entregue. Isso é certo quando o prazo estourou — e errado nos dois
+   * desfechos novos dos cinco caminhos (D49):
+   *
+   * - o projeto que publica na mão: aqui o merge É a entrega, e marcar "não
+   *   entregue" deixaria um comentário na issue do cliente dizendo que a
+   *   tarefa continua aberta "até isso ser confirmado" — uma confirmação que,
+   *   por definição, nunca vai existir. Card preso em revisão para sempre;
+   * - o aviso que CHEGOU: dizer "acompanhamos 24h e o aviso não chegou" seria
+   *   simplesmente falso.
+   */
+  const encerrarEntrega = async (args: {
+    projeto: NonNullable<Awaited<ReturnType<PrismaClient['project']['findUnique']>>>
+    sessao: LinhaDeSessao
+    agora: Date
+    /** O veredito que fica gravado na linha. */
+    estado: 'no-ar' | 'falhou' | 'sem-publicacao'
+    /** Se o board pode dizer "done". */
+    entregue: boolean
+    motivo: string
+    githubToken: string | undefined
+  }): Promise<void> => {
+    await registrarEstadoDaPublicacao({
+      prisma: app.prisma as unknown as PrismaDevSession,
+      sessionName: args.sessao.sessionName,
+      estado: args.estado,
+      agora: args.agora,
+    })
+    await fecharSessaoEArquivar({
+      sessionName: args.sessao.sessionName,
+      motivo: 'merged',
+      agora: args.agora,
+    })
+    await avisarDonoDoProjeto(
+      args.projeto,
+      `GitOrch: a entrega de ${args.projeto.wingId} (commit ${args.sessao.mergeCommitSha}) foi ` +
+        `mesclada. ${args.motivo}`
+    )
+    await resolverEntregaDoBoard({
+      projeto: args.projeto,
+      sessao: args.sessao,
+      githubToken: args.githubToken,
+      entregue: args.entregue,
+      motivo: args.motivo,
+    })
+  }
+
   const fecharComTetoAbsoluto = async (args: {
     projeto: NonNullable<Awaited<ReturnType<PrismaClient['project']['findUnique']>>>
     sessao: LinhaDeSessao
@@ -3977,6 +4388,260 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
    * Nunca lança: um repositório fora de alcance não pode derrubar a varredura
    * das outras sessões — mas a falha vira erro no log, nunca silêncio.
    */
+  /**
+   * O produto pede ao CD do cliente que avise quando a versão sobe (D50).
+   *
+   * Ordem do dono, 26/08: "o gitorch decide isso, um dos agentes tem que pensar
+   * como fazer isso!". Ele recusou que um humano pusesse a chamada na mão — e
+   * com razão: remendado na mão, o produto continua incapaz e o próximo cliente
+   * cai no mesmo buraco. Aqui o produto abre a tarefa no repositório do cliente
+   * e o dev assíncrono a executa, como qualquer outro trabalho.
+   *
+   * Nunca lança: um repositório fora de alcance não pode derrubar a varredura
+   * das outras sessões — mas a falha vira erro no log, nunca silêncio.
+   */
+  const pedirOAvisoDePublicacao = async (
+    projeto: NonNullable<Awaited<ReturnType<PrismaClient['project']['findUnique']>>>
+  ): Promise<void> => {
+    const decisao = decidirPedirOAviso({
+      repositorio: projeto.wingId,
+      projectId: projeto.id,
+      declarado: comoPublicaDeclarado(projeto.runtimeConfig),
+      jaInstalado: projeto.deployNoticeInstalledAt !== null,
+      marcaAnterior: projeto.deployNoticeAskedKey,
+    })
+    if (!decisao.abrir) return
+
+    const endereco = process.env['GITORCH_PUBLIC_URL']
+    if (!endereco) {
+      // Sem saber o próprio endereço, a instrução sairia com um lugar errado
+      // para o CD chamar — pior que não pedir nada.
+      app.log.warn(
+        `[Scheduler] não sei meu endereço público (GITORCH_PUBLIC_URL); não dá para pedir o aviso de publicação a ${projeto.wingId}`
+      )
+      return
+    }
+
+    try {
+      // Fecha a janela que a marca no banco não fecha: issue criada e marca
+      // NÃO gravada (falha entre as duas) faria a varredura seguinte pedir de
+      // novo, e o cliente ganharia uma tarefa duplicada no quadro dele. O
+      // corpo da issue carrega a chave como marcador justamente para isto —
+      // reconhecer a tarefa pelo que ela é, não só pelo que anotamos.
+      const token = process.env['GITORCH_GITHUB_TOKEN']
+      if (token) {
+        const abertas = (await ghGet(
+          `/repos/${projeto.wingId}/issues?state=open&labels=${encodeURIComponent(TASK_LABEL)}&per_page=100`,
+          token
+        )) as Array<{ body?: string | null; title?: string | null }>
+        if (jaExisteOPedido(abertas ?? [])) {
+          // Grava a marca que faltava, para não repetir esta leitura a cada tique.
+          await app.prisma.project.update({
+            where: { id: projeto.id },
+            data: { deployNoticeAskedKey: decisao.chave },
+          })
+          app.log.info(
+            `[Scheduler] o pedido de aviso já está aberto em ${projeto.wingId}; só marquei aqui`
+          )
+          return
+        }
+      }
+
+      // Caminho ÚNICO de escrita de issue no repositório do cliente.
+      const criada = await criarIssueDeDesejo({
+        repo: projeto.wingId,
+        titulo: decisao.titulo,
+        corpo: corpoDoPedidoDeAviso({
+          repositorio: projeto.wingId,
+          projectId: projeto.id,
+          endereco,
+        }),
+        etiquetas: decisao.etiquetas,
+        log: { onError: (m) => app.log.error(m), onWarn: (m) => app.log.warn(m) },
+      })
+      // A marca é gravada DEPOIS de a issue existir de verdade: gravar antes e
+      // falhar a escrita deixaria o projeto marcado como "já pedido" sem tarefa
+      // nenhuma — o silêncio exato que isto veio acabar.
+      await app.prisma.project.update({
+        where: { id: projeto.id },
+        data: { deployNoticeAskedKey: decisao.chave },
+      })
+      app.log.info(
+        `[Scheduler] pedi ao ${projeto.wingId} que o CD dele avise quando sobe ao ar (issue #${criada.numero})`
+      )
+    } catch (err) {
+      app.log.error(
+        err,
+        `[Scheduler] não foi possível pedir o aviso de publicação a ${projeto.wingId}`
+      )
+    }
+  }
+
+  /**
+   * A pergunta do dev que está esperando resposta — respondida de verdade.
+   *
+   * O dono pediu com todas as letras: "esta com duvidas ? responde !". O que
+   * existia era decorativo: a vigília acordava o QA e contava a linha como
+   * respondida, e a missão de QA só julga pull request. Aqui a pergunta é
+   * LIDA, respondida pelo motor lendo o repositório, e a resposta é ESCRITA
+   * na sessão — o único caminho que a API do serviço oferece (`sendMessage`).
+   *
+   * Uma pergunta por vez, a mais antiga: são poucas por projeto, e responder
+   * em rajada gastaria motor sem necessidade — a próxima acordada pega a
+   * seguinte.
+   *
+   * A lei continua: o agente NÃO INVENTA. Decisão de negócio, ou resposta que
+   * ele não soube dar, sobem para o dono em vez de virar mensagem — quem
+   * decide isso é código determinístico (`duvida-do-dev.ts`), nunca o modelo.
+   */
+  const responderDuvidaPendente = async (args: {
+    projectId: string
+    repository: string
+    execute: StepExecutor
+    contextBlocks: string[]
+  }): Promise<void> => {
+    const esperando = await app.prisma.devSession.findFirst({
+      where: { projectId: args.projectId, state: 'AWAITING_USER_FEEDBACK', closedAt: null },
+      orderBy: { createdAt: 'asc' },
+      select: { sessionName: true, issueNumber: true, answeredHash: true },
+    })
+    if (!esperando) return
+
+    const apiKey = await chaveDaSessao(esperando.sessionName)
+    const pergunta = await ultimaMensagemDoDevJules({
+      apiKey,
+      sessionName: esperando.sessionName,
+      onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+    })
+    if (!pergunta || pergunta.trim() === '') {
+      app.log.warn(
+        `[Scheduler] ${esperando.sessionName} está esperando resposta, mas não deu para ler a pergunta`
+      )
+      return
+    }
+
+    // JÁ RESPONDIDA? Sai antes de gastar motor.
+    //
+    // Sem esta trava, a mesma pergunta seria lida e respondida a cada acordada
+    // do QA — e são várias por hora, pela agenda, pela fila do SM e pela
+    // própria vigília. O dev receberia a mesma resposta em rajada, o dono
+    // receberia o mesmo aviso em rajada, e uma segunda sessão esperando nunca
+    // teria vez, porque a busca sempre pega a mais antiga. Trocar silêncio por
+    // spam não é conserto.
+    const hashDaPergunta = hashDaMensagem(pergunta)
+    const decisao = decidirSobreAPergunta({
+      hashDaPergunta,
+      marca: esperando.answeredHash,
+    })
+    if (decisao.acao === 'nada') return
+
+    if (decisao.acao === 'desistir') {
+      // Bateu o teto com a mesma pergunta ainda na mesa. Parar de tentar é
+      // certo — não vira laço queimando motor. Parar em SILÊNCIO não: é
+      // trabalho parado que ninguém mais destrava sozinho.
+      //
+      // A desistência é marcada com escrita CONDICIONAL, como a reserva: sem
+      // isso, duas acordadas na mesma janela mandariam o mesmo aviso duas
+      // vezes ao dono. Um aviso, uma vez.
+      const primeiro = await app.prisma.devSession
+        .updateMany({
+          where: { sessionName: esperando.sessionName, answeredHash: esperando.answeredHash },
+          data: { answeredHash: marcarDesistencia(hashDaPergunta, decisao.tentativas) },
+        })
+        .catch(() => ({ count: 0 }))
+      if (primeiro.count === 0) return
+
+      const projetoDaDesistencia = await app.prisma.project.findUnique({
+        where: { id: args.projectId },
+      })
+      if (projetoDaDesistencia) {
+        await avisarDonoDoProjeto(
+          projetoDaDesistencia,
+          `GitOrch: o dev parou na tarefa #${esperando.issueNumber} de ${args.repository} e eu ` +
+            `tentei responder ${decisao.tentativas} vezes sem conseguir. O trabalho está parado ` +
+            `esperando essa resposta.`
+        )
+      }
+      return
+    }
+
+    // RESERVA antes de gastar motor. Duas acordadas do QA na mesma janela liam
+    // a mesma marca, as duas passavam pela conferência e as duas escreviam na
+    // sessão — o dev recebeu a mesma resposta duas vezes no mesmo minuto, e o
+    // produto pagou o motor em dobro. A escrita é condicional à marca lida:
+    // quem não escreve nenhuma linha perdeu a corrida e sai calado.
+    const minha = await reservarAResposta({
+      prisma: app.prisma as unknown as PrismaParaReserva,
+      sessionName: esperando.sessionName,
+      hashDaPergunta,
+      tentativa: decisao.tentativa,
+      marcaLida: esperando.answeredHash,
+      agora: new Date(),
+    })
+    if (!minha) return
+
+    const { destino, mensagemParaODev } = await runDuvidaMissionViaRails({
+      pergunta,
+      repository: args.repository,
+      issueNumber: esperando.issueNumber,
+      execute: args.execute,
+      contextBlocks: args.contextBlocks,
+    })
+
+    if (destino.tipo === 'perguntar-ao-dono' || !mensagemParaODev) {
+      // Sobe para quem pode decidir. Sem chat ligado não há a quem perguntar:
+      // fica o registro no log, que é o que sobra — nunca uma resposta
+      // inventada mandada ao dev.
+      const motivo = destino.tipo === 'perguntar-ao-dono' ? destino.motivo : 'sem resposta útil'
+      app.log.info(
+        `[Scheduler] a dúvida do dev na tarefa #${esperando.issueNumber} de ${args.repository} sobe para o dono: ${motivo}`
+      )
+      // O aviso ao dono também é marcado: sem isto, o MESMO aviso chegaria ao
+      // chat dele a cada acordada do QA enquanto a sessão continuasse parada.
+      await registrarResposta({
+        prisma: app.prisma as unknown as PrismaDevSession,
+        sessionName: esperando.sessionName,
+        hashDaPergunta: marcarRespondida(hashDaPergunta),
+        agora: new Date(),
+      }).catch(() => undefined)
+      const projeto = await app.prisma.project.findUnique({ where: { id: args.projectId } })
+      if (projeto) {
+        await avisarDonoDoProjeto(
+          projeto,
+          `GitOrch: o dev parou na tarefa #${esperando.issueNumber} de ${args.repository} e ` +
+            `perguntou algo que eu não devo responder sozinho — ${motivo}\n\nA pergunta dele:\n` +
+            pergunta.slice(0, 900)
+        )
+      }
+      return
+    }
+
+    const saiu = await responderSessaoJules({
+      apiKey,
+      sessionName: esperando.sessionName,
+      texto: mensagemParaODev,
+      onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+    })
+    if (saiu) {
+      // A marca de RESPONDIDA só é gravada quando a mensagem de fato chegou —
+      // é a diferença entre "tentei" e "respondi", e foi confundir as duas que
+      // deixou treze sessões presas por até sete dias.
+      await registrarResposta({
+        prisma: app.prisma as unknown as PrismaDevSession,
+        sessionName: esperando.sessionName,
+        hashDaPergunta: marcarRespondida(hashDaPergunta),
+        agora: new Date(),
+      }).catch((err: unknown) =>
+        app.log.warn(err, `[Scheduler] não deu para marcar a dúvida como respondida`)
+      )
+    }
+    app.log.info(
+      saiu
+        ? `[Scheduler] respondi a dúvida do dev na tarefa #${esperando.issueNumber} de ${args.repository}`
+        : `[Scheduler] a resposta para ${esperando.sessionName} NÃO chegou ao dev`
+    )
+  }
+
   const abrirConsertoDePublicacao = async (args: {
     projeto: NonNullable<Awaited<ReturnType<PrismaClient['project']['findUnique']>>>
     sessao: LinhaDeSessao
@@ -4154,8 +4819,122 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           continue
         }
 
-        const mecanismo = await descobrirMecanismoComCache(projeto.wingId, githubToken, agora)
+        const declarado = comoPublicaDeclarado(projeto.runtimeConfig)
+
+        // Quem publica na própria VM ou na mão nem chega a olhar o
+        // repositório: era ESSA leitura que produzia os 403 em série (196 em
+        // 24h na última contagem), porque a descoberta encontrava um ambiente
+        // de outra ferramenta e passava a bater nele a cada tique. Descobrir o
+        // mecanismo custa leitura no GitHub, e aqui não há o que achar.
+        const mecanismo = dispensaOlharORepositorio(declarado)
+          ? ({ tipo: 'nenhum' } as const)
+          : await descobrirMecanismoComCache(
+              projeto.wingId,
+              githubToken,
+              agora,
+              projeto.runtimeConfig
+            )
         const shaDaMescla = sessao.mergeCommitSha as string
+
+        // Os CINCO caminhos de publicação (D49). Antes daqui o produto só
+        // sabia observar o GitHub, e para quem publica fora dele — VM privada,
+        // serviço externo sem registro, publicação na mão — isso significava
+        // ficar 24 horas lendo o que não existe antes de desistir. Seis
+        // entregas presas assim, medidas em 25/08.
+        //
+        // Só age quando o DONO declarou por onde publica. Sem declaração, o
+        // caminho de sempre continua valendo inteiro: ele descobre pelo
+        // repositório e, quando não acha nada, já fecha honestamente E
+        // pergunta ao dono. Curto-circuitar ali só trocaria um desfecho bom
+        // por outro pior — e faria a pergunta virar rotina.
+        const desfecho = declarado
+          ? desfechoDaPublicacao({ declarado, mecanismo })
+          : { tipo: 'acompanhar-no-github' as const }
+
+        if (desfecho.tipo === 'encerrar-sem-rastreio') {
+          // Encerra JÁ, dizendo a verdade, em vez de esperar o teto de 24h por
+          // uma confirmação impossível. O dono já disse que aqui não há o que
+          // observar; insistir seria fingir que ainda vai descobrir.
+          //
+          // `entregue: true` de propósito: aqui o MERGE é a entrega — é a
+          // mesma regra que o caminho de "o repositório provadamente não
+          // publica" já aplica. Marcar "não entregue" deixaria na issue do
+          // cliente um recado dizendo que a tarefa segue aberta até a
+          // publicação ser confirmada, e essa confirmação nunca vai existir:
+          // o card ficaria preso em revisão para sempre.
+          await encerrarEntrega({
+            projeto,
+            sessao,
+            agora,
+            estado: 'sem-publicacao',
+            entregue: true,
+            motivo: desfecho.motivo,
+            githubToken,
+          })
+          continue
+        }
+
+        if (desfecho.tipo === 'esperar-aviso') {
+          // Antes de qualquer coisa: o CD deste cliente sabe avisar? Se não
+          // souber, esperar é esperar para sempre — então o produto abre a
+          // tarefa que instala a chamada lá (D50). A decisão é deduplicada,
+          // então isto não vira uma issue por tique.
+          await pedirOAvisoDePublicacao(projeto)
+
+          // O aviso JÁ CHEGOU? A rota de aviso grava o veredito na linha, mas
+          // quem encerra a entrega (fecha a sessão, avisa o dono, resolve o
+          // card) é esta varredura — como em todos os outros caminhos. Sem
+          // esta checagem a entrega ficava viva mesmo confirmada, e no fim das
+          // 24 horas encerrava dizendo "o aviso não chegou", que era mentira:
+          // ele tinha chegado horas antes e estava gravado ali do lado.
+          if (sessao.deployState === 'no-ar' || sessao.deployState === 'falhou') {
+            const chegouNoAr = sessao.deployState === 'no-ar'
+            await encerrarEntrega({
+              projeto,
+              sessao,
+              agora,
+              estado: sessao.deployState,
+              entregue: chegouNoAr,
+              motivo: chegouNoAr
+                ? 'quem publica avisou que esta versão subiu — entrega confirmada.'
+                : 'quem publica avisou que a publicação desta versão FALHOU.',
+              githubToken,
+            })
+            continue
+          }
+
+          // Publica fora do alcance do GitHub: nada a ler daqui. Quem confirma
+          // é o CD do próprio cliente, pela rota de aviso de publicação
+          // (`POST /api/projects/:id/publicado`). Só carimba a cadência para
+          // não reexaminar a cada tique — e o teto absoluto continua valendo:
+          // se o aviso nunca vier, a entrega encerra dizendo exatamente isso,
+          // em vez de ficar aberta para sempre.
+          if (estourouTetoAbsoluto) {
+            await fecharComTetoAbsoluto({
+              projeto,
+              sessao,
+              agora,
+              desdeAMescla: desdeAMescla ?? TETO_ABSOLUTO_DE_ACOMPANHAMENTO_MS,
+              ultimaObservacao: `${desfecho.motivo} — e esse aviso não chegou`,
+              githubToken,
+            })
+          } else {
+            await registrarCadenciaDePublicacao({
+              prisma: app.prisma as unknown as PrismaDevSession,
+              sessionName: sessao.sessionName,
+              agora,
+            }).catch((err) =>
+              // Nunca em silêncio: sem a cadência carimbada esta entrega volta
+              // a ser examinada a cada tique, e é justamente esse desperdício
+              // que este ramo existe para evitar.
+              app.log.warn(
+                err,
+                `[Scheduler] falha ao carimbar cadência de publicação para ${sessao.sessionName}`
+              )
+            )
+          }
+          continue
+        }
 
         const veredito = await acompanharPublicacao({
           mecanismo,
@@ -4451,6 +5230,26 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             projeto,
             `GitOrch: a entrega de ${projeto.wingId} (commit ${shaDaMescla}) foi mesclada, mas ${motivoDeNegocio} ${veredito.motivo}`
           )
+
+          // E PERGUNTA, em vez de só avisar — ordem do dono (D47): "se os
+          // agentes do gitorch tem duvidas sobre o projeto, deve-se usar sempre
+          // o askquestions SEMPRE, nao podem achar nada".
+          //
+          // O aviso acima conta o que aconteceu; ele não resolve nada sozinho,
+          // porque o produto continua sem saber como aquele projeto vai ao ar.
+          // Medido no patinhas: nenhum ambiente do repositório se declara
+          // produção, porque a publicação real acontece nas VMs do dono — e
+          // isso o GitHub nunca vai contar. Adivinhando, o produto ficou 992
+          // vezes em 24 horas batendo num 403.
+          //
+          // `ask` deduplica pela chave: respondida uma vez para aquele
+          // repositório, a pergunta não volta. É a segunda metade do pedido do
+          // dono, "para que nunca mais questione o usuario".
+          // O serviço é decorado pelo plugin do Telegram (plugins/telegram.ts):
+          // a MESMA instância que cria a pergunta e a entrega com botões.
+          // Ausente quando o Telegram não está ligado — aí o produto segue com
+          // o aviso acima, que é o que ele consegue.
+          await perguntarComoPublica(projeto)
           // Item 2/Leva B: "sem-publicacao" tem DOIS motivos honestos bem
           // diferentes — o repositório PROVADAMENTE não publica (aqui o
           // merge JÁ é a entrega: fecha como entregue, card vai para

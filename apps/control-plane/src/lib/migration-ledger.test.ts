@@ -39,6 +39,8 @@ describe('MIGRATION_LEDGER', () => {
       'conserto-de-publicacao-migration.sql',
       'aviso-de-retrabalho-migration.sql',
       'desejo-pendente-migration.sql',
+      'byok-conta-do-dev-migration.sql',
+      'aviso-de-publicacao-migration.sql',
     ])
   })
 })

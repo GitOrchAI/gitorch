@@ -26,6 +26,8 @@ import {
   MARCA_SEM_PODER_DE_MESCLAR,
   MARCA_DE_REPROVACAO_CONDICIONAL,
   MARCA_JULGADO_COM_CI_VERMELHO,
+  MARCA_DE_LEGADO_REJULGADO,
+  temMarcaDeRejulgamentoDeLegado,
   MARCA_DE_APROVACAO,
   MARCA_DO_PARECER,
 } from './parecer-do-qa.js'
@@ -36,6 +38,13 @@ import {
   type EntregaJulgada,
 } from './reprovacao-que-ensina.js'
 import { ciTerminouVerde, estadoDoCi } from './estado-da-verificacao-do-github.js'
+import { decidirQuemResolve } from './conflito-de-merge.js'
+import {
+  chaveDoResgate,
+  decidirResgateDaTravada,
+  pedidoDeResgate,
+} from './entrega-travada-no-teto.js'
+import { decidirSobreLegado } from './rejulgar-legados.js'
 
 // Missão do QA nos TRILHOS (F3.6): acha a PR do Jules que precisa de julgamento,
 // monta o snapshot (diff + Verification Criteria da issue + estado do CI), o
@@ -141,6 +150,14 @@ export interface VigiliaDoJulgamentoOptions {
     contador: number
     agora: Date
   }) => Promise<void>
+  /**
+   * Grava a marca do RESGATE de uma entrega travada no teto de mescla.
+   *
+   * Reaproveita o mesmo campo da marca de conserto: as duas respondem à mesma
+   * pergunta — "já pedi isto para esta entrega neste commit?" — e duas marcas
+   * separadas divergiriam em silêncio.
+   */
+  registrarConserto?: (args: { sessionName: string; chave: string; agora: Date }) => Promise<void>
 }
 
 export interface QaRailsMissionOptions extends VigiliaDoJulgamentoOptions {
@@ -227,6 +244,14 @@ export interface QaRailsMissionOptions extends VigiliaDoJulgamentoOptions {
    * escapa do logger, o silêncio volta pela porta dos fundos. Mesmo motivo já
    * registrado em `github-app-token.ts`.
    */
+  /**
+   * Voltar a julgar (e comentar em) entrega que o produto NÃO encomendou.
+   *
+   * Desligado por decisão do dono em 25/08/2026, que supersede a regra antiga
+   * de "julga todos, mescla só o delegado". Fica aqui para a volta ser uma
+   * linha de configuração, e não uma arqueologia de código apagado.
+   */
+  julgarEntregaDeTerceiro?: boolean | undefined
   onWarn?: (message: string) => void
 }
 
@@ -269,6 +294,14 @@ export function buildJulesReworkComment(comment: QaVerdictForm['comment']): stri
     '',
     ...sections,
   ].join('\n\n')
+}
+
+/** Quando a review foi publicada. `null` quando o GitHub não disse. */
+function dataDaReview(review?: { submitted_at?: string } | null): Date | null {
+  const cru = review?.submitted_at
+  if (!cru) return null
+  const d = new Date(cru)
+  return Number.isFinite(d.getTime()) ? d : null
 }
 
 export async function runQaMissionViaRails(
@@ -332,6 +365,15 @@ export async function runQaMissionViaRails(
   // "contar mais um fracasso sobre o mesmo commit" de "commit novo, começar
   // do zero" na hora de gravar `mergeFailures` mais abaixo.
   let retomandoAprovacaoMesmoCommit = false
+  /** Este ciclo é o rejulgamento único de uma entrega presa por régua velha. */
+  let retomouLegado = false
+  /** Entregas nossas que bateram o teto de mescla — resgatadas depois do laço. */
+  const travadasNoTeto: Array<{
+    numeroDoPr: number
+    linha: { sessionName: string; mergeFailures: number; deployFixKey: string | null }
+    headAtual: string | null
+  }> = []
+
   for (const p of Array.isArray(prs) ? prs : []) {
     if (p.draft) continue
 
@@ -357,6 +399,25 @@ export async function runQaMissionViaRails(
       sessoes: options.sessoes ?? [],
       issueComEtiquetaDeDelegacao: (n) => etiquetasPorIssue.get(n) ?? false,
     })
+
+    // ENTREGA QUE O PRODUTO NÃO ENCOMENDOU SAI AQUI — decisão do dono
+    // (25/08/2026), palavras dele: "QA tem que acordar apenas naquilo que o
+    // Gitorch esta trabalhando... nao tem pq o QA comentar num PR que nao
+    // esta sendo atuado".
+    //
+    // Antes o QA julgava TODA entrega aberta do repositório e ainda comentava
+    // na de terceiro, avisando que não ia mesclar. Medido: 662 acordadas em
+    // pouco mais de um dia, 87% voltando vazias — boa parte varrendo entrega
+    // alheia. Isso é opinião não pedida no pull request de outra pessoa, e
+    // custo de motor por cada uma.
+    //
+    // O corte fica ANTES de ler as reviews de propósito: é a chamada mais
+    // cara do laço, e a entrega de terceiro não precisa dela para nada.
+    //
+    // O dono disse "pode ser que mude depois", então o caminho antigo não foi
+    // apagado — vive atrás de `julgarEntregaDeTerceiro`, e volta com uma
+    // linha de configuração.
+    if (!veredito.delegado && !options.julgarEntregaDeTerceiro) continue
 
     // Não re-julgar o MESMO estado a cada wake: se já há review nossa neste
     // head, a entrega já recebeu parecer — julgar de novo só faria spam de
@@ -503,10 +564,73 @@ export async function runQaMissionViaRails(
       }
     }
 
+    // O LEGADO: reprovação escrita ANTES de o produto passar a aceitar job
+    // `skipped` como parte de um CI verde. Ela não tem — nem podia ter — a
+    // marca do portão, porque a marca nasceu depois; e o corpo de uma
+    // reprovação de CÓDIGO é idêntico ao de uma do portão, então ler o texto
+    // não distingue as duas. A evidência é outra: mesmo commit, e verde pela
+    // régua de HOJE. Uma vez só, e nunca depois do corte — senão isto viraria
+    // segunda chance permanente, que é a trava que ninguém pode afrouxar.
+    let legadoMereceUmaChance = false
+    if (
+      veredito.delegado &&
+      aindaPodeTentarMesclar &&
+      reviewMarcadaNesteHead &&
+      !reprovadoPeloPortaoComCiVerdeAgora &&
+      !foiAprovacao &&
+      p.head?.sha
+    ) {
+      const decisao = decidirSobreLegado({
+        numero: p.number,
+        headAtual: p.head.sha,
+        headJulgado: reviewMarcadaNesteHead.commit_id ?? null,
+        reprovadaEm: dataDaReview(reviewMarcadaNesteHead),
+        ciHoje: await (async () => {
+          try {
+            const checks = (await gh(
+              'GET',
+              `/repos/${options.repository}/commits/${p.head?.sha}/check-runs`
+            )) as { check_runs?: Array<{ conclusion?: string; status?: string }> }
+            return estadoDoCi(checks.check_runs ?? [])
+          } catch {
+            // Não saber o estado é "não sei", e "não sei" nunca destrava.
+            return 'unknown' as const
+          }
+        })(),
+        delegada: veredito.delegado,
+        jaRejulgada: temMarcaDeRejulgamentoDeLegado(reviewMarcadaNesteHead),
+      })
+      legadoMereceUmaChance = decisao.acao === 'rejulgar'
+      if (legadoMereceUmaChance) {
+        options.onWarn?.(
+          `[qa] PR #${p.number}: ${decisao.motivo} — dando o rejulgamento único do legado`
+        )
+      }
+    }
+
     const deveRejulgar =
       veredito.delegado &&
       aindaPodeTentarMesclar &&
-      (foiAprovacao || parecerSobPremissaErrada || reprovadoPeloPortaoComCiVerdeAgora)
+      (foiAprovacao ||
+        parecerSobPremissaErrada ||
+        reprovadoPeloPortaoComCiVerdeAgora ||
+        legadoMereceUmaChance)
+
+    // A entrega que TRAVOU no teto de tentativas de mescla.
+    //
+    // Ela é pulada aqui de propósito — o teto existe para o produto parar de
+    // martelar um conflito a cada tique. Mas o pedido de rebase ao dev só
+    // acontece DENTRO da tentativa de mescla, que nunca mais roda: ninguém
+    // pede, o dev não empurra commit novo, o commit não muda, o teto não zera.
+    // Beco sem saída permanente, medido ao vivo: #213 e #194, aprovados pelo
+    // QA e parados desde 15 e 21/08. Guarda para o resgate depois do laço.
+    if (veredito.delegado && !aindaPodeTentarMesclar && linhaCandidata) {
+      travadasNoTeto.push({
+        numeroDoPr: p.number,
+        linha: linhaCandidata,
+        headAtual: p.head?.sha ?? null,
+      })
+    }
 
     if (reviewMarcadaNesteHead && !deveRejulgar) continue
 
@@ -518,11 +642,80 @@ export async function runQaMissionViaRails(
     // só existe quando nenhum merge chegou a ser tentado naquele head —, então
     // é um no-op. Mas a invariante é frágil: bastaria mudar quando o merge é
     // tentado para isto virar subcontagem real de fracassos.
+    // O legado entra aqui pelo MESMO motivo que a reprovação do portão: mesmo
+    // commit, e nenhum merge chegou a ser tentado naquele ciclo. Deixá-lo de
+    // fora zeraria o contador de fracassos e afrouxaria o teto de tentativas
+    // justamente para os PRs mais antigos.
     retomandoAprovacaoMesmoCommit = Boolean(
-      reviewMarcadaNesteHead && (foiAprovacao || reprovadoPeloPortaoComCiVerdeAgora)
+      reviewMarcadaNesteHead &&
+      (foiAprovacao || reprovadoPeloPortaoComCiVerdeAgora || legadoMereceUmaChance)
     )
+    retomouLegado = legadoMereceUmaChance
     break
   }
+  // O RESGATE das entregas que travaram no teto de mescla.
+  //
+  // Acontece ANTES do "não há PR a julgar" de propósito: elas são justamente
+  // as que o laço acima pula, e por isso nunca chegariam a lugar nenhum. O
+  // pedido de rebase ao dev só existe DENTRO da tentativa de mescla, que para
+  // elas não roda mais — ninguém pede, o dev não empurra commit novo, o commit
+  // não muda, o teto não zera. Beco sem saída permanente, medido ao vivo:
+  // #213 e #194, aprovados pelo QA e parados desde 15 e 21/08.
+  const agoraDoResgate = new Date()
+  for (const travada of travadasNoTeto) {
+    const decisao = decidirResgateDaTravada({
+      delegado: true,
+      mergeFailures: travada.linha.mergeFailures,
+      temSessaoViva: options.avisarSessao !== undefined,
+      jaPediuNesteHead: travada.linha.deployFixKey === chaveDoResgate(travada.headAtual),
+    })
+
+    if (decisao.resgatar && options.avisarSessao) {
+      const pediu = await options
+        .avisarSessao({
+          sessionName: travada.linha.sessionName,
+          texto: pedidoDeResgate(travada.numeroDoPr),
+        })
+        .catch(() => false)
+      if (pediu && options.registrarConserto) {
+        // A marca leva o COMMIT: se o dev empurrar um novo, ela deixa de casar
+        // e o resgate volta a valer — que é exatamente o que se quer, porque
+        // aí o conflito é outro.
+        await options
+          .registrarConserto({
+            sessionName: travada.linha.sessionName,
+            chave: chaveDoResgate(travada.headAtual),
+            agora: agoraDoResgate,
+          })
+          .catch(() => undefined)
+      }
+      options.onWarn?.(
+        pediu
+          ? `[qa] PR #${travada.numeroDoPr} travado no teto de mescla: pedi ao dev para resolver`
+          : `[qa] PR #${travada.numeroDoPr} travado no teto e o pedido ao dev NÃO chegou`
+      )
+    } else if (!decisao.resgatar && decisao.avisarDono) {
+      // O aviso ao dono também é marcado por commit. Sem isso ele chegaria a
+      // cada acordada do QA enquanto a entrega continuasse travada — e o
+      // caminho normal do teto já avisou uma vez quando o teto bateu.
+      options.onWarn?.(`[qa] PR #${travada.numeroDoPr}: ${decisao.motivo}`)
+      if (options.registrarConserto) {
+        await options
+          .registrarConserto({
+            sessionName: travada.linha.sessionName,
+            chave: chaveDoResgate(travada.headAtual),
+            agora: agoraDoResgate,
+          })
+          .catch(() => undefined)
+        await options
+          .avisarDono?.(
+            `GitOrch: a entrega do pull request #${travada.numeroDoPr} travou — ${decisao.motivo}.`
+          )
+          .catch(() => undefined)
+      }
+    }
+  }
+
   if (!target) {
     // Fase 1 — Reconhecimento: projeto novo, sem PR aberta ainda. Sem este
     // modo, a esteira de onboarding terminaria num no-op ("QA: no delegated
@@ -801,6 +994,9 @@ export async function runQaMissionViaRails(
   // do repositório não distingue "esta entrega tem defeito" de "esta entrega
   // não coube" — e é essa distinção que faz a contagem de projeto travado
   // significar alguma coisa.
+  // Carimba que o legado já teve a chance dele, para não voltar a cada
+  // varredura. Vai no parecer NOVO, que é onde a próxima leitura procura.
+  const marcaDoLegado = retomouLegado ? `\n${MARCA_DE_LEGADO_REJULGADO}` : ''
   const barradoPorTamanho = effectiveVerdict === 'request_changes' && truncado
   const marcaDoPortao = barradoPorTamanho
     ? `\n${MARCA_DE_ENTREGA_GRANDE_DEMAIS}`
@@ -901,7 +1097,7 @@ export async function runQaMissionViaRails(
       // de "já tem parecer" procura depois para distinguir aprovação de
       // reprovação. Enquanto eram duas cadeias iguais por coincidência,
       // mexer no texto aqui deixaria a leitura cega sem quebrar teste nenhum.
-      `${JULES_MARKER}\nGitOrch QA ${MARCA_DE_APROVACAO} — criteria met, CI green.\n\n${verdict.comment.goal}${avisoDeNaoMesclar}`
+      `${JULES_MARKER}${marcaDoLegado}\nGitOrch QA ${MARCA_DE_APROVACAO} — criteria met, CI green.\n\n${verdict.comment.goal}${avisoDeNaoMesclar}`
     )
 
     // Task 8 ("julga todos, mescla só o que delegou"): o QUARTO porteiro,
@@ -1010,7 +1206,57 @@ export async function runQaMissionViaRails(
         // (mais acima) e pular esta entrega até o commit mudar. Best-effort,
         // mesmo padrão dos outros avisos deste arquivo: falhar ao notificar
         // não pode derrubar a missão.
-        if (fracassosAgora >= MAX_TENTATIVAS_DE_MERGE && options.avisarDono) {
+        // CONFLITO É TRABALHO DO DEV, NÃO DO DONO.
+        //
+        // O dono recebeu "é preciso ação humana (ex.: resolver o conflito)"
+        // sobre o PR #3762. Mas resolver conflito é exatamente o que o dev
+        // assíncrono sabe fazer: ele tem o repositório, o contexto da tarefa e
+        // uma sessão aberta. Chamar o dono para isso é devolver a ele o
+        // trabalho que o produto existe para tirar das costas dele.
+        //
+        // Nem toda recusa de merge é assim — proteção de branch, permissão que
+        // falta, check obrigatório vermelho. `decidirQuemResolve` separa, e
+        // manda ao dono só o que ninguém do produto resolve.
+        const quemResolve = decidirQuemResolve({
+          motivo: resultadoDoMerge.motivo,
+          temSessaoViva: Boolean(linhaDaEntrega) && options.avisarSessao !== undefined,
+          pedidosDeRebase: Math.max(0, fracassosAgora - 1),
+          numeroDoPr: target.number,
+        })
+
+        if (quemResolve.quem === 'dev' && linhaDaEntrega && options.avisarSessao) {
+          const pediu = await options
+            .avisarSessao({ sessionName: linhaDaEntrega.sessionName, texto: quemResolve.pedido })
+            .catch(() => false)
+          options.onWarn?.(
+            pediu
+              ? `[qa] conflito no PR #${target.number}: pedido de rebase enviado ao dev`
+              : `[qa] conflito no PR #${target.number}: não deu para pedir rebase ao dev`
+          )
+        }
+
+        // O dono só é chamado quando ninguém do produto resolve — e aí sim
+        // UMA vez por commit.
+        // UM aviso por commit, e não um por tentativa.
+        //
+        // O dono recebeu a MESMA mensagem duas vezes sobre o PR #3762, no
+        // mesmo minuto. A condição era `>=`, e o contador só cresce: cada
+        // tentativa acima do teto avisava de novo. Três, quatro, cinco
+        // fracassos viravam três, quatro, cinco mensagens iguais.
+        //
+        // `=== ` resolve o caso comum e é o corte certo aqui: o contador sobe
+        // de um em um, gravado a cada fracasso, então o instante em que ele
+        // ATINGE o teto acontece uma vez só por commit. E o laço de descoberta
+        // já pula esta entrega enquanto `mergeFailures >= MAX` e o commit não
+        // muda, então nem há segunda passagem para contar.
+        //
+        // Commit novo zera o contador e o aviso volta — situação nova merece
+        // recado novo.
+        if (
+          quemResolve.quem === 'dono' &&
+          fracassosAgora === MAX_TENTATIVAS_DE_MERGE &&
+          options.avisarDono
+        ) {
           await options
             .avisarDono(
               `GitOrch: o merge do PR #${target.number} (${options.repository}) falhou ` +
@@ -1025,7 +1271,7 @@ export async function runQaMissionViaRails(
   } else {
     await postarReview(
       reviewEvent,
-      `${JULES_MARKER}${marcaDoPortao}\nGitOrch QA verdict: REQUEST CHANGES (see comment).${explicacaoDoTamanho}${avisoDeNaoMesclar}`
+      `${JULES_MARKER}${marcaDoPortao}${marcaDoLegado}\nGitOrch QA verdict: REQUEST CHANGES (see comment).${explicacaoDoTamanho}${avisoDeNaoMesclar}`
     )
 
     // Este julgamento entra na conta do repositório ANTES de decidir se pede

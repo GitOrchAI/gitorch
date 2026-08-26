@@ -259,6 +259,26 @@ model Project {
   // é usada só onde o App não chega, nunca como atalho geral.
   encryptedClientToken String? @map("encrypted_client_token")
 
+  // BYOK (D34): a conta do dev assíncrono DO CLIENTE, cifrada com a mesma
+  // chave e o mesmo caminho das credenciais dos motores de IA. Ausente = este
+  // projeto usa a conta da instância (a do dono) e divide o teto dela.
+  encryptedDevApiKey String? @map("encrypted_dev_api_key")
+  // A impressão digital da conta acima — NUNCA o segredo. É por ela que o
+  // produto soma o teto dos projetos do MESMO cliente sem precisar decifrar
+  // credencial nenhuma para contar (services/credencial-do-dev-do-cliente.ts).
+  devAccountId       String? @map("dev_account_id")
+
+  // D50: o aviso de publicação do CD do cliente.
+  //
+  // `deployNoticeInstalledAt` é a PROVA de que a chamada existe e funciona —
+  // gravado na primeira vez que um aviso chega pela rota. Vem do comportamento
+  // real, não de uma intenção registrada, e por isso vale mais que qualquer
+  // marca nossa.
+  // `deployNoticeAskedKey` é o dedup do PEDIDO: sem ele o produto abriria uma
+  // issue por tique no repositório do cliente.
+  deployNoticeInstalledAt DateTime? @map("deploy_notice_installed_at")
+  deployNoticeAskedKey    String?   @map("deploy_notice_asked_key")
+
   // Reconferência PERIÓDICA do acesso do dono ao repositório (o acesso era
   // provado uma vez, no cadastro, e o caminho automático nunca mais perguntava
   // nada — ver services/reconferencia-de-acesso.ts).
@@ -291,6 +311,7 @@ model Project {
   // full_name do repositório (o wizard não preenche os ids numéricos).
   @@index([wingId])
   @@index([userId])
+  @@index([devAccountId])
   @@map("projects")
 }
 
@@ -610,6 +631,15 @@ model DevSession {
   /// Veredito da última leitura do ambiente publicado — só existe para exigir
   /// repetição antes de abrir tarefa por ambiente inalcançável.
   envLastVerdict String? @map("env_last_verdict")
+  /// BYOK (D34): a conta do dev assíncrono que ABRIU esta sessão. Fica na
+  /// linha, e não só no projeto, porque a conta do projeto muda (o cliente
+  /// conecta, troca ou desconecta a dele) e a sessão continua existindo lá
+  /// fora na conta antiga: consultar, avisar ou arquivar com a chave da conta
+  /// nova volta 404 e a vaga fica presa na conta que a pessoa paga. É também
+  /// o que faz o teto contar certo — sessão aberta na conta do dono não pode
+  /// consumir o teto novo do cliente, nem o contrário.
+  /// Nulo = aberta pela conta da instância (todas as sessões anteriores ao BYOK).
+  devAccountId String? @map("dev_account_id")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -624,6 +654,11 @@ model DevSession {
   /// um índice full-table REDUNDANTE em cima do parcial no baseline de banco
   /// virgem (scripts/db-migrate.sh via `prisma migrate diff --from-empty`),
   /// puro custo em todo insert/update para sempre.
+  ///
+  /// O de conta é a exceção, e por isso fica: ele NÃO é parcial (a contagem do
+  /// teto precisa das linhas fechadas também, porque a janela de 24h conta a
+  /// sessão pelo início dela), então não há índice parcial para duplicar.
+  @@index([devAccountId])
   @@map("dev_sessions")
 }
 

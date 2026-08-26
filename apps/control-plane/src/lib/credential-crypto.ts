@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
+import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto'
 
 // Cifragem de credenciais de motor em repouso (AES-256-GCM autenticado).
 // A chave vem de GITORCH_CREDENTIAL_KEY (32 bytes em hex[64] ou base64). Sem
@@ -150,4 +150,34 @@ export function hasCredentialKey(): boolean {
   } catch {
     return false
   }
+}
+
+/**
+ * Uma etiqueta estável para um segredo, sem que a etiqueta possa levar de
+ * volta ao segredo.
+ *
+ * Existe para o BYOK: o produto precisa dizer "estas duas coisas são da mesma
+ * conta" sem guardar nem exibir a credencial.
+ *
+ * Duas versões anteriores foram recusadas, as duas com razão:
+ * - sha256 puro sobre a chave (CodeQL `js/insufficient-password-hash`, alto):
+ *   um resumo simples de segredo é barato de tentar em massa;
+ * - HMAC com a chave do servidor: melhor, mas ainda uma função rápida sobre um
+ *   segredo, e o scanner continuou apontando — com razão, porque a defesa
+ *   passava a depender inteiramente de a chave do servidor nunca vazar, e é
+ *   justamente contra o dia do vazamento que se endurece um derivado.
+ *
+ * `scrypt` é a resposta certa: derivação DELIBERADAMENTE cara, que torna a
+ * força bruta inviável mesmo para quem tiver tudo em mãos. O custo é aceitável
+ * porque a etiqueta é calculada uma vez, quando o cliente conecta a conta —
+ * NUNCA no caminho quente de cada delegação (ver o comentário de
+ * `resolverCredencialDoDev`, que de propósito não a calcula).
+ *
+ * `dominio` entra como sal: separa universos de etiqueta, para que duas coisas
+ * diferentes etiquetadas com o mesmo segredo não colidam.
+ */
+export function etiquetaDeSegredo(dominio: string, segredo: string): string {
+  // N=16384 é o padrão recomendado para uso interativo: caro o bastante para
+  // matar força bruta, rápido o bastante (~50ms) para uma chamada de rota.
+  return scryptSync(segredo, `gitorch:${dominio}`, 8, { N: 16384, r: 8, p: 1 }).toString('hex')
 }

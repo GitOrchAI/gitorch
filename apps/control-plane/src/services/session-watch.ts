@@ -16,7 +16,7 @@
 
 import { createHash } from 'node:crypto'
 import type { LinhaDeSessao, MotivoDeFechamento } from './dev-session-store.js'
-import { decidirRespostaDaSessao } from './jules-session-loop.js'
+import { decidirRespostaDaSessao, MAX_NUDGES } from './jules-session-loop.js'
 
 /**
  * Cadência mínima entre dois exames da MESMA sessão. Sem ela, cada tick do
@@ -25,6 +25,16 @@ import { decidirRespostaDaSessao } from './jules-session-loop.js'
  * que nada tivesse mudado desde a última olhada.
  */
 export const CADENCIA_DE_EXAME_MS = 10 * 60 * 1000
+
+/**
+ * O estado da entrega que já produziu pull request e espera julgamento.
+ *
+ * O dev externo devolve `COMPLETED` tanto para a sessão que entregou um pull
+ * request quanto para a que terminou sem produzir nada — quem olha o quadro vê
+ * as duas iguais. Este estado separa as duas, porque o dono pediu para saber em
+ * que pé está cada entrega, e "concluída" sem dizer o quê não responde isso.
+ */
+export const ESTADO_AGUARDANDO_QA = 'PR_ENTREGUE_AGUARDANDO_QA'
 
 /**
  * Quantas vezes reentregar um pedido de retrabalho antes de desistir e chamar
@@ -276,14 +286,34 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
         nudges: linha.nudges,
       })
 
+      // REGISTRA O QUE VIU, ANTES de decidir o que fazer.
+      //
+      // Cada ramo carimbava por conta própria, e bastava um esquecer para a
+      // linha congelar no banco. Foi o que aconteceu com `responder`: quando a
+      // pergunta é a MESMA de antes, ele sai por um `break` sem registrar — e
+      // como `registrarEstado` é quem move `stateCheckedAt`, a sessão ficava
+      // parada para sempre no último estado conhecido.
+      //
+      // Medido em 25/08: seis sessões que o dev externo dava como
+      // AWAITING_USER_FEEDBACK estavam gravadas aqui como IN_PROGRESS, com o
+      // relógio de exame parado havia NOVE HORAS, enquanto as outras vinte
+      // tinham sido examinadas havia sete minutos. Seis das quinze vagas do
+      // plano presas assim — e vaga presa é delegação recusada.
+      //
+      // O ramo `aprovar-plano` já tinha levado esse mesmo remédio (commit
+      // 0193bd8, ramo `investigar`), duas vezes, cada uma depois de o defeito
+      // aparecer em produção. Registrar ANTES do `switch` mata a classe
+      // inteira: nenhum ramo novo pode esquecer o que não precisa lembrar.
+      await deps.registrarEstado({
+        sessionName: linha.sessionName,
+        estado: estadoBruto,
+        agora: deps.agora,
+        ...(progrediu ? { progrediu: true } : {}),
+      })
+
       switch (decisao.acao) {
         case 'aguardar': {
-          await deps.registrarEstado({
-            sessionName: linha.sessionName,
-            estado: estadoBruto,
-            agora: deps.agora,
-            ...(progrediu ? { progrediu: true } : {}),
-          })
+          // Já registrado acima.
           break
         }
 
@@ -294,32 +324,17 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
           } else {
             warn(`[vigia] não foi possível aprovar o plano de ${linha.sessionName}`)
           }
-          // Marca o exame SEMPRE, aprovando ou não — mesmo remédio do
-          // commit 0193bd8 (ramo `investigar`). Sem isto `stateCheckedAt`
-          // nunca avança neste ramo e, como a cadência de dez minutos é
-          // medida por ele, uma sessão em AWAITING_PLAN_APPROVAL seria
-          // reexaminada a cada tick (um minuto) em vez de a cada dez.
-          await deps.registrarEstado({
-            sessionName: linha.sessionName,
-            estado: estadoBruto,
-            agora: deps.agora,
-          })
+          // O exame já foi marcado antes do `switch`, aprovando ou não.
           break
         }
 
         case 'responder': {
-          const hash = hashDaMensagem(ultimaMensagem)
-          if (hash === linha.answeredHash) {
-            // Mesma pergunta de antes: a sessão pode levar mais de um ciclo
-            // para sair de AWAITING_USER_FEEDBACK depois de receber a
-            // resposta. Disparar de novo gastaria motor à toa.
-            break
-          }
-          await deps.registrarResposta({
-            sessionName: linha.sessionName,
-            hashDaPergunta: hash,
-            agora: deps.agora,
-          })
+          // A vigília DETECTA e chama quem responde. Ela não conta tentativa
+          // nem avisa o dono: quem faz isso é o caminho que de fato age (a
+          // missão de QA, em `responderDuvidaPendente`). Enquanto os dois
+          // marcavam, o teto de uma pergunta era consumido em dobro — duas
+          // marcas por tentativa real — e a pergunta era abandonada na metade
+          // do caminho. Uma coisa, um dono.
           await deps.dispararMissao('qa', linha.projectId)
           respondidas += 1
           break
@@ -359,18 +374,42 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
                 .catch(() => undefined)
             }
           }
-          // Marca o exame SEMPRE, avisando ou não. Sem isto `stateCheckedAt`
-          // nunca avança neste ramo — e como a cadência de dez minutos é
-          // medida por ele, uma sessão presa em FAILED seria reexaminada a
-          // cada tick (um minuto), acionando o SM sessenta vezes por hora e
-          // queimando a cota do motor do cliente. O `registrarInvestigacao`
-          // acima não serve para isso: ele só grava o hash, e só na primeira
-          // vez.
-          await deps.registrarEstado({
-            sessionName: linha.sessionName,
-            estado: estadoBruto,
-            agora: deps.agora,
-          })
+          // O exame já foi marcado antes do `switch`. Sem isso, uma sessão
+          // presa em FAILED seria reexaminada a cada tique em vez de a cada
+          // dez minutos, acionando o SM sessenta vezes por hora e queimando a
+          // cota do motor do cliente. O `registrarInvestigacao` acima não
+          // serve para isso: ele só grava o hash, e só na primeira vez.
+          //
+          // "falhou? manda continuar" — ordem do dono, 25/08. Acionar o SM
+          // para investigar não destrava a sessão: ela continua parada lá,
+          // ocupando uma das quinze vagas do plano, e vaga presa é delegação
+          // recusada. Medido no mesmo dia: seis sessões falhadas vivas sem
+          // ninguém pedir retomada.
+          //
+          // O pedido é uma MENSAGEM, não uma chamada de "continuar": esse
+          // endpoint não existe na API do dev externo (sempre respondeu 404) e
+          // há um teste no repositório que impede alguém de recriá-lo.
+          //
+          // Com o MESMO teto do ramo `insistir`, e pelo mesmo motivo: pedir
+          // sem parar a uma sessão que não sai do lugar queima cota e enche o
+          // dev de mensagem. Passado o teto, quem decide é o abandono.
+          if (linha.nudges < MAX_NUDGES) {
+            const pediu = await deps.pedirParaContinuar(linha.sessionName)
+            // Conta a tentativa nos DOIS casos, sucesso ou falha de envio: o
+            // teto mede quantas vezes TENTAMOS, não quantas chegaram. Contar
+            // só o sucesso faria uma falha persistente de rede girar para
+            // sempre sem nunca alcançar o teto — o mesmo padrão de falha
+            // silenciosa que este arquivo já corrigiu três vezes.
+            await deps.registrarResposta({
+              sessionName: linha.sessionName,
+              hashDaPergunta: linha.answeredHash ?? '',
+              agora: deps.agora,
+            })
+            if (!pediu) {
+              warn(`[vigia] não foi possível pedir retomada a ${linha.sessionName}`)
+            }
+          }
+
           // Regra D5 do dono: o SM investiga o impedimento. Isso não muda —
           // o aviso acima é ADICIONAL, nunca substitui o SM.
           await deps.dispararMissao('sm', linha.projectId)
@@ -412,21 +451,29 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
               agora: deps.agora,
             })
             prsCapturados += 1
+            // "PR entregue e aguardando QA" — ordem do dono, 25/08: "Se o Dev
+            // assincrono entregar o PR é ajustado para PR entregue e aguardando
+            // QA entao o QA é acordado".
+            //
+            // O estado que o dev externo devolve é COMPLETED, e ele não
+            // distingue a entrega que produziu pull request da que não
+            // produziu nada. Quem olha o quadro via as duas iguais, e o dono
+            // pediu para saber em que pé está cada entrega. O carimbo de cima
+            // gravaria o COMPLETED cru; aqui ele é substituído pelo estado que
+            // conta a verdade do momento.
+            await deps.registrarEstado({
+              sessionName: linha.sessionName,
+              estado: ESTADO_AGUARDANDO_QA,
+              agora: deps.agora,
+            })
             // A linha só fecha na publicação — Fase 3.
             await deps.dispararMissao('qa', linha.projectId)
             break
           }
 
-          // Nada novo. Carimbar o exame mesmo assim é OBRIGATÓRIO: a cadência
-          // de dez minutos é medida por `stateCheckedAt`, e sair daqui sem
-          // gravar faria esta sessão ser reexaminada a cada tique do relógio —
-          // trocando um laço de dez minutos por um de um. É a mesma armadilha
-          // que o ramo de investigação acima já documenta.
-          await deps.registrarEstado({
-            sessionName: linha.sessionName,
-            estado: estadoBruto,
-            agora: deps.agora,
-          })
+          // Nada novo. O exame já foi carimbado antes do `switch` — sem isso,
+          // esta sessão seria reexaminada a cada tique do relógio em vez de a
+          // cada dez minutos.
           break
         }
 

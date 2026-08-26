@@ -1,6 +1,7 @@
 import { GithubExecutionError } from './github-backlog.js'
 import { aplicarLabelDoAgente } from './agent-label.js'
 import { escolherParaDelegar, type IssueCandidata } from './fila-de-delegacao.js'
+import { tarefasComEntregaMesclada } from './ambiente-declarado.js'
 import type { LinhaDeSessao } from './dev-session-store.js'
 import { fetchComTeto } from './fetch-com-teto.js'
 import { acharParecerNesteHead, ehParecerSemPoderDeMesclar } from './parecer-do-qa.js'
@@ -20,7 +21,15 @@ import { montarPedidoAoDev } from './pedido-ao-dev.js'
 // morrerem em silêncio — delegadas, a sessão caiu, e como carregavam a
 // etiqueta nunca voltaram a ser candidatas.
 
-const TASK_LABEL = 'gitorch:task'
+/**
+ * A etiqueta com que o Scrum Master ENCONTRA trabalho para delegar.
+ *
+ * Exportada porque quem CRIA tarefa precisa usar exatamente esta — e uma cópia
+ * escrita à mão do outro lado já custou um defeito: a tarefa nascia com a
+ * etiqueta do agente sozinha, nunca aparecia nesta busca, e ficava órfã para
+ * sempre no repositório do cliente.
+ */
+export const TASK_LABEL = 'gitorch:task'
 
 /**
  * Quantas entregas o SM manda julgar por acordada.
@@ -196,6 +205,22 @@ export interface SmDelegationOptions {
    * como trabalho delegado.
    */
   aoCriarSessao?: (dados: { issueNumber: number; sessionName: string }) => Promise<void>
+  /**
+   * Reserva o lugar da issue ANTES de acionar o dev externo. Devolve `false`
+   * quando outro já reservou.
+   *
+   * Existe porque a ordem inversa QUEIMAVA COTA. Medido em 24 horas: 39 das
+   * 100 sessões diárias do plano nasceram no dev externo e foram desfeitas em
+   * seguida, porque o banco recusava a ligação com "já existe sessão viva para
+   * a issue". Desfazer devolve a vaga, mas NÃO devolve a cota — a sessão
+   * contou no teto de 24 horas do mesmo jeito, sem uma linha de trabalho ter
+   * saído dela.
+   *
+   * Com a reserva antes, a issue já delegada nem chega a virar chamada ao dev.
+   */
+  reservarLugarDaIssue?: (issueNumber: number) => Promise<boolean>
+  /** Devolve a reserva quando o dev externo recusa criar a sessão. */
+  liberarLugarDaIssue?: (issueNumber: number) => Promise<void>
   fetchImpl?: typeof fetch
   /**
    * Linhas de sessão abertas deste projeto. É a fila real: issue com linha viva
@@ -203,6 +228,12 @@ export interface SmDelegationOptions {
    * já tenha sido delegada antes e a sessão tenha morrido.
    */
   sessoesVivas?: LinhaDeSessao[]
+  /**
+   * TODAS as linhas deste projeto, vivas e fechadas — é entre elas que mora a
+   * prova de que uma tarefa já foi entregue. `sessoesVivas` não serve: a linha
+   * de uma entrega mesclada pode já ter sido fechada.
+   */
+  entregasDoProjeto?: Array<{ issueNumber: number; mergeCommitSha?: string | null }>
   /** Sessões abertas neste projeto nas últimas 24h, para o teto diário. */
   delegadasHoje?: number
   /** Do plano declarado pelo dono. Padrão: Free, que é o mais restritivo. */
@@ -287,6 +318,18 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
   // Bloqueadores só para quem ainda não tem sessão viva — não adianta gastar
   // chamada em issue que já está em trabalho.
   const comSessaoViva = new Set((options.sessoesVivas ?? []).map((s) => s.issueNumber))
+  // Tarefa cuja entrega JÁ FOI MESCLADA não vira sessão nova, mesmo que a
+  // issue continue aberta no GitHub.
+  //
+  // A issue só fecha quando a publicação confirma. Quando essa confirmação
+  // emperra — e emperrou: 992 leituras recusadas em 24h por um ambiente que o
+  // aplicativo não pode ler —, a issue fica aberta com a etiqueta de tarefa e
+  // volta para cá como se nada tivesse sido feito. Foi assim que a #110 ganhou
+  // DOIS pull requests mesclados.
+  //
+  // Isto NÃO substitui o fechamento da tarefa: o quadro do cliente continua
+  // tendo que ficar limpo. Isto impede o GASTO de refazer o que já está pronto.
+  const jaEntregues = tarefasComEntregaMesclada(options.entregasDoProjeto ?? [])
   const candidatas: IssueCandidata[] = []
   // Os arquivos de quem JÁ está em trabalho. Quem tem sessão viva é filtrado
   // das candidatas na linha seguinte, então sem esta coleta os arquivos dele
@@ -294,6 +337,9 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
   // arquivo — o conflito fabricado outra vez, agora entre dois ciclos.
   const arquivosEmTrabalho = new Set<string>()
   for (const t of abertas) {
+    // Entrega mesclada sai da lista ANTES de qualquer outra conta: não gasta
+    // chamada de bloqueador, não reserva arquivo, não ocupa vaga.
+    if (jaEntregues.has(t.number)) continue
     if (comSessaoViva.has(t.number)) {
       for (const arquivo of arquivosDeclarados(t.body)) arquivosEmTrabalho.add(arquivo)
       continue
@@ -345,6 +391,20 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
     // tarefa em andamento que nunca começou, e nenhum sinal dizia o contrário.
     //
     // Marcar antes é prometer em nome de alguém que ainda não respondeu.
+    // RESERVA ANTES DE GASTAR. A ordem importa e custou caro: acionar o dev
+    // primeiro e descobrir depois que a issue já tinha dono queimou 39 das 100
+    // sessões diárias em 24 horas. Desfazer a sessão devolve a vaga, mas a
+    // cota do dia já foi consumida — ela conta no instante em que a sessão
+    // nasce, não quando ela morre.
+    if (options.reservarLugarDaIssue) {
+      const ganhou = await options.reservarLugarDaIssue(task.number)
+      if (!ganhou) {
+        // Outro ciclo (ou outra instância) já pegou esta issue. Não é falha:
+        // é a reserva funcionando. Sair aqui não gasta nada.
+        continue
+      }
+    }
+
     let resultado: ResultadoDoAcionamentoDoDev = options.criarSessaoDev
       ? await options.criarSessaoDev({
           repository: options.repository,
@@ -405,6 +465,12 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
     }
 
     if (resultado.situacao === 'falhou') {
+      // O dev externo recusou depois de a reserva ter sido ganha: devolver o
+      // lugar é obrigatório, senão a issue fica presa para sempre num dono que
+      // não existe.
+      if (options.liberarLugarDaIssue) {
+        await options.liberarLugarDaIssue(task.number).catch(() => undefined)
+      }
       recusadas.push({ numero: task.number, motivo: resultado.motivo })
       const avisar = options.onWarn ?? console.warn
       // O motivo cru vai para o log, e SÓ para o log. Ver `motivoPublicavel`.

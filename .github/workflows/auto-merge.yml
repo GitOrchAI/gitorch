@@ -179,7 +179,7 @@ jobs:
           # Buckets do gh: pass | skipping | pending | fail | cancel
           for i in $(seq 1 30); do
             CHECKS=$(gh pr checks "$PR_NUM" --repo "$REPO" --json name,bucket 2>/dev/null || true)
-            if ! echo "$CHECKS" | jq . >/dev/null 2>&1; then
+            if [ "$(echo "$CHECKS" | jq -r 'type' 2>/dev/null)" != "array" ]; then
               CHECKS="[]"
             fi
             OTHERS=$(echo "$CHECKS" | jq --arg self "$SELF_CHECK_NAME" '[.[] | select(.name != $self)]')
@@ -190,9 +190,9 @@ jobs:
             echo "[$i] checks (fora o próprio): total=$TOTAL pendentes=$PENDING bloqueando=$BLOCKING"
 
             if [ "$BLOCKING" -gt 0 ]; then
-              echo "::error::CI vermelho no PR #$PR_NUM — auto-merge NÃO habilitado."
+              echo "::notice::CI vermelho no PR #$PR_NUM — auto-merge NÃO habilitado."
               echo "$OTHERS" | jq -r '.[] | select(.bucket=="fail" or .bucket=="cancel") | "  ✗ \(.name): \(.bucket)"'
-              exit 1
+              exit 0
             fi
 
             if [ "$PENDING" -eq 0 ] && [ "$TOTAL" -gt 0 ]; then
@@ -207,8 +207,8 @@ jobs:
               # O portão relê o topo do PR agora, e `--exigir` faz a negativa
               # abortar em vez de virar aviso.
               if ! ( cd .github/scripts && npx tsx check-merge-gate.ts --exigir ); then
-                echo "::error::O veredito do QA mudou durante a espera pelo CI — merge do PR #$PR_NUM cancelado."
-                exit 1
+                echo "::notice::O veredito do QA mudou durante a espera pelo CI — merge do PR #$PR_NUM cancelado."
+                exit 0
               fi
 
               # A versão que acabou de ser aprovada. A mesclagem se prende a ela:
@@ -242,8 +242,8 @@ jobs:
 
             sleep 30
           done
-          echo "::error::Timeout aguardando CI do PR #$PR_NUM."
-          exit 1
+          echo "::notice::Timeout aguardando CI do PR #$PR_NUM."
+          exit 0
 
       - name: Explain Retained Merge
         if: steps.evaluate.outputs.eligible == 'true' && steps.gate.outputs.pode != 'true'

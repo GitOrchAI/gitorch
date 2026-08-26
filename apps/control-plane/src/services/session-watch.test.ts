@@ -1,6 +1,11 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createHash } from 'node:crypto'
-import { vigiarSessoes, type VigiaDeps, type EstadoLido } from './session-watch.js'
+import {
+  ESTADO_AGUARDANDO_QA,
+  vigiarSessoes,
+  type VigiaDeps,
+  type EstadoLido,
+} from './session-watch.js'
 import type { LinhaDeSessao } from './dev-session-store.js'
 import { MAX_NUDGES } from './jules-session-loop.js'
 
@@ -198,19 +203,25 @@ describe('vigiarSessoes', () => {
 
     await vigiarSessoes(deps)
 
-    expect(deps.registrarResposta).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionName: 'sessions/pergunta',
-        hashDaPergunta: hashDe(mensagem),
-      })
-    )
+    // A vigília DETECTA e chama quem responde. A contagem de tentativas e o
+    // aviso ao dono são de quem age (a missão de QA) — enquanto os dois
+    // marcavam, o teto era consumido em dobro e a pergunta abandonada na
+    // metade do caminho.
     expect(deps.dispararMissao).toHaveBeenCalledWith('qa', 'proj1')
   })
 
-  it('pergunta REPETIDA (mesmo hash já gravado) NÃO dispara de novo', async () => {
+  it('pergunta REPETIDA e ainda sem resposta: TENTA DE NOVO — era aqui que a sessão morria', async () => {
+    // O defeito real, medido em 26/08: a marca era gravada ANTES de a resposta
+    // existir. Quando a missão que responde falhava, a pergunta ficava marcada
+    // como respondida para sempre e a vigília nunca mais tentava. Treze
+    // sessões presas assim, a mais antiga havia SETE DIAS — e cada uma
+    // congelando uma vaga, até o teto de simultâneas estourar e parar a
+    // esteira inteira.
     const mensagem = 'Devo usar bcrypt ou argon2 para o hash de senha?'
     const deps = depsFalso({
-      sessoes: [linha({ sessionName: 'sessions/repetida', answeredHash: hashDe(mensagem) })],
+      sessoes: [
+        linha({ sessionName: 'sessions/repetida', answeredHash: hashDe(mensagem), nudges: 1 }),
+      ],
       consultarSessao: vi.fn(async () => ({
         estado: 'AWAITING_USER_FEEDBACK',
         numeroDoPr: null,
@@ -221,8 +232,7 @@ describe('vigiarSessoes', () => {
 
     await vigiarSessoes(deps)
 
-    expect(deps.registrarResposta).not.toHaveBeenCalled()
-    expect(deps.dispararMissao).not.toHaveBeenCalled()
+    expect(deps.dispararMissao).toHaveBeenCalledWith('qa', 'proj1')
   })
 
   it('AWAITING_PLAN_APPROVAL aprova o plano direto, sem gastar motor', async () => {
@@ -517,5 +527,170 @@ describe('vigiarSessoes', () => {
     expect(resultado).toContain('2 sessões')
     expect(resultado).toContain('1 PR capturado')
     expect(resultado).toContain('1 investigação')
+  })
+
+  describe('a vigia REGISTRA o que viu, mesmo quando não há o que fazer', () => {
+    // O defeito medido em 25/08: quando a pergunta é a MESMA de antes, o ramo
+    // de resposta saía por um `break` sem registrar. Como `registrarEstado` é
+    // quem move `stateCheckedAt`, a sessão congelava no último estado
+    // conhecido. Seis sessões que o dev externo dava como esperando resposta
+    // estavam gravadas como "trabalhando", com o relógio parado havia NOVE
+    // HORAS — seis das quinze vagas do plano presas assim.
+    it('mesma pergunta de antes: tenta de novo (sob o teto) E registra o estado', async () => {
+      const mensagem = 'Devo usar bcrypt ou argon2?'
+      const consultarSessao = vi.fn(async () => ({
+        estado: 'AWAITING_USER_FEEDBACK',
+        numeroDoPr: null,
+        ultimaAtualizacao: agora.toISOString(),
+      }))
+      const primeiro = depsFalso({
+        sessoes: [linha({ sessionName: 'sessions/mesma', answeredHash: null })],
+        consultarSessao,
+        ultimaMensagem: vi.fn(async () => mensagem),
+      })
+      await vigiarSessoes(primeiro)
+      const hashGravado = (
+        primeiro.registrarResposta as unknown as {
+          mock: { calls: Array<[{ hashDaPergunta: string }]> }
+        }
+      ).mock.calls[0]?.[0]?.hashDaPergunta
+
+      const segundo = depsFalso({
+        sessoes: [
+          linha({
+            sessionName: 'sessions/mesma',
+            answeredHash: hashGravado ?? '',
+            stateCheckedAt: new Date(agora.getTime() - 30 * 60 * 1000),
+          }),
+        ],
+        consultarSessao,
+        ultimaMensagem: vi.fn(async () => mensagem),
+      })
+      await vigiarSessoes(segundo)
+
+      // A vigília chama quem responde toda vez que vê a sessão esperando —
+      // quem decide se ainda cabe tentativa, e quem conta, é o caminho que
+      // age. Aqui só se prova que ela não desiste sozinha nem congela a linha.
+      expect(segundo.dispararMissao).toHaveBeenCalledWith('qa', 'proj1')
+      // Mas REGISTRA o que viu: sem isto a linha congela e a vaga fica presa.
+      expect(segundo.registrarEstado).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionName: 'sessions/mesma',
+          estado: 'AWAITING_USER_FEEDBACK',
+        })
+      )
+    })
+
+    // A classe inteira do defeito: qualquer estado que o dev externo devolva
+    // tem de acabar gravado aqui, senão o relógio de exame para e a cadência
+    // de dez minutos vira um laço de um minuto.
+    it.each(['AWAITING_USER_FEEDBACK', 'IN_PROGRESS', 'FAILED', 'COMPLETED'])(
+      'estado "%s" do dev externo sempre é registrado',
+      async (estado) => {
+        const deps = depsFalso({
+          sessoes: [linha({ sessionName: 'sessions/x', stateCheckedAt: null })],
+          consultarSessao: vi.fn(async () => ({
+            estado,
+            numeroDoPr: null,
+            ultimaAtualizacao: agora.toISOString(),
+          })),
+        })
+        await vigiarSessoes(deps)
+        expect(deps.registrarEstado).toHaveBeenCalledWith(expect.objectContaining({ estado }))
+      }
+    )
+    describe('"falhou? manda continuar" — ordem do dono', () => {
+      const falhada = vi.fn(async () => ({
+        estado: 'FAILED',
+        numeroDoPr: null,
+        ultimaAtualizacao: agora.toISOString(),
+      }))
+
+      // Acionar o SM para investigar NÃO destrava a sessão: ela continua parada
+      // no dev externo, ocupando uma das quinze vagas do plano. Medido em 25/08:
+      // seis sessões falhadas vivas sem ninguém pedir retomada.
+      it('sessão falhada recebe pedido de retomada, além do SM', async () => {
+        const deps = depsFalso({
+          sessoes: [linha({ sessionName: 'sessions/falha', nudges: 0 })],
+          consultarSessao: falhada,
+        })
+        await vigiarSessoes(deps)
+        expect(deps.pedirParaContinuar).toHaveBeenCalledWith('sessions/falha')
+        // A regra D5 não muda: o SM continua sendo acionado.
+        expect(deps.dispararMissao).toHaveBeenCalledWith('sm', 'proj1')
+      })
+
+      // Pedir sem parar a uma sessão que não sai do lugar queima cota e enche o
+      // dev de mensagem. Passado o teto, quem decide é o abandono.
+      it('passado o teto, para de pedir e deixa o abandono decidir', async () => {
+        const deps = depsFalso({
+          sessoes: [linha({ sessionName: 'sessions/teimosa', nudges: MAX_NUDGES })],
+          consultarSessao: falhada,
+        })
+        await vigiarSessoes(deps)
+        expect(deps.pedirParaContinuar).not.toHaveBeenCalled()
+        expect(deps.dispararMissao).toHaveBeenCalledWith('sm', 'proj1')
+      })
+
+      // O teto mede quantas vezes TENTAMOS, não quantas chegaram. Contar só o
+      // sucesso faria uma falha persistente de rede girar para sempre sem nunca
+      // alcançar o teto.
+      it('falha de envio conta a tentativa do mesmo jeito', async () => {
+        const deps = depsFalso({
+          sessoes: [linha({ sessionName: 'sessions/semrede', nudges: 0 })],
+          consultarSessao: falhada,
+          pedirParaContinuar: vi.fn(async () => false),
+        })
+        await vigiarSessoes(deps)
+        expect(deps.registrarResposta).toHaveBeenCalledWith(
+          expect.objectContaining({ sessionName: 'sessions/semrede' })
+        )
+      })
+    })
+
+    describe('"PR entregue e aguardando QA" — o terceiro desfecho', () => {
+      // O dev externo devolve COMPLETED tanto para a entrega que produziu pull
+      // request quanto para a que terminou sem nada. Quem olha o quadro via as
+      // duas iguais, e o dono pediu para saber em que pé está cada entrega.
+      it('entrega com PR novo fica marcada como aguardando QA', async () => {
+        const deps = depsFalso({
+          sessoes: [linha({ sessionName: 'sessions/entregou', pullRequestNumber: null })],
+          consultarSessao: vi.fn(async () => ({
+            estado: 'COMPLETED',
+            numeroDoPr: 4242,
+            ultimaAtualizacao: agora.toISOString(),
+          })),
+        })
+        await vigiarSessoes(deps)
+
+        expect(deps.registrarPr).toHaveBeenCalledWith(expect.objectContaining({ numeroDoPr: 4242 }))
+        expect(deps.registrarEstado).toHaveBeenCalledWith(
+          expect.objectContaining({
+            sessionName: 'sessions/entregou',
+            estado: ESTADO_AGUARDANDO_QA,
+          })
+        )
+        // E o juiz é acordado, que é a outra metade da ordem do dono.
+        expect(deps.dispararMissao).toHaveBeenCalledWith('qa', 'proj1')
+      })
+
+      // Entrega que terminou sem produzir nada continua sendo o que é: não pode
+      // aparecer no quadro como se estivesse esperando julgamento.
+      it('entrega concluída SEM pull request não vira aguardando QA', async () => {
+        const deps = depsFalso({
+          sessoes: [linha({ sessionName: 'sessions/vazia', pullRequestNumber: null })],
+          consultarSessao: vi.fn(async () => ({
+            estado: 'COMPLETED',
+            numeroDoPr: null,
+            ultimaAtualizacao: agora.toISOString(),
+          })),
+        })
+        await vigiarSessoes(deps)
+
+        expect(deps.registrarEstado).not.toHaveBeenCalledWith(
+          expect.objectContaining({ estado: ESTADO_AGUARDANDO_QA })
+        )
+      })
+    })
   })
 })

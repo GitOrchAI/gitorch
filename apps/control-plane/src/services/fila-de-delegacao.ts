@@ -52,12 +52,22 @@ export function escolherParaDelegar(args: {
   delegadasHoje: number
   tetoConcorrentes: number
   tetoDiario: number
+  /**
+   * Sessões vivas na CONTA inteira — todos os projetos que dividem a mesma
+   * credencial do dev externo. Ausente resolve nas vivas deste projeto, que é
+   * o comportamento antigo (e errado quando há mais de um projeto na conta).
+   */
+  vivasNaConta?: number | undefined
   /** Freio de fluxo por ciclo, independente do plano. */
   capPorCiclo: number
 }): number[] {
   const comSessaoViva = new Set(args.sessoesVivas.map((s) => s.issueNumber))
 
-  const folgaConcorrentes = args.tetoConcorrentes - args.sessoesVivas.length
+  // As vagas são da CONTA, não deste projeto: no Pro são 15 simultâneas
+  // divididas entre todos os repositórios daquela conta. Usar só as vivas
+  // DAQUI faria dois projetos se acharem com 15 cada, contra 15 no total.
+  const vivasQueContam = args.vivasNaConta ?? args.sessoesVivas.length
+  const folgaConcorrentes = args.tetoConcorrentes - vivasQueContam
   const folgaDiaria = args.tetoDiario - args.delegadasHoje
   const limite = Math.min(folgaConcorrentes, folgaDiaria, args.capPorCiclo)
   if (limite <= 0) return []

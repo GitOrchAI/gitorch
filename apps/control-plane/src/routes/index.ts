@@ -6,6 +6,8 @@ import { projectRoutes } from './projects.js'
 import { missionRoutes } from './missions.js'
 import { eventRoutes } from './events.js'
 import { runtimeConfigRoutes } from './runtime-config.js'
+import { avisoDePublicacaoRoutes } from './aviso-de-publicacao.js'
+import { contaDoDevRoutes } from './conta-do-dev.js'
 import { authRoutes } from './auth.js'
 import { githubAppInstallRoutes } from './github-app-install.js'
 import { setupRoutes } from './setup.js'
@@ -87,6 +89,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
   // Runtime Config endpoint
   await runtimeConfigRoutes(app)
+  await avisoDePublicacaoRoutes(app)
+  await contaDoDevRoutes(app)
 
   // Billing: pricing geo, checkout, webhook Stripe, waitlist
   await billingRoutes(app)

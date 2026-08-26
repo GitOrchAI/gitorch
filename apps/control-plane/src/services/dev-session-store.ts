@@ -40,6 +40,14 @@ export interface LinhaDeSessao {
   /** Quantas vezes já tentamos reentregar esse pedido — o teto vive aqui. */
   reworkNoticeAttempts: number
   /**
+   * BYOK (D34): a conta do dev assíncrono em que esta sessão NASCEU. É por ela
+   * que a vigília sabe com qual chave falar sobre esta sessão — a conta do
+   * projeto não serve, porque ela muda quando o cliente conecta, troca ou
+   * desconecta a dele, e a sessão continua viva lá fora na conta antiga.
+   * Nulo = conta da instância.
+   */
+  devAccountId?: string | null
+  /**
    * Desde quando esta entrega está com a verificação automática pendente —
    * `null` enquanto nunca esteve, ou depois que `limparPendencia` apaga a
    * marca. É a partir dela que `decidirSobreVerificacao`
@@ -102,7 +110,16 @@ export type MotivoDeFechamento = 'merged' | 'abandoned' | 'failed_final'
  * que aqui só se mexe em `devSession`.
  */
 export interface PrismaDevSession {
+  /**
+   * Roda tudo dentro da mesma transação. Só `reservarVagaNaConta` usa — é o
+   * que impede duas delegações de furarem o teto da conta ao mesmo tempo.
+   */
+  $transaction?: <T>(
+    fn: (tx: PrismaDevSession) => Promise<T>,
+    opcoes?: { isolationLevel?: string }
+  ) => Promise<T>
   devSession: {
+    count?: (args: unknown) => Promise<number>
     upsert: (args: unknown) => Promise<unknown>
     update: (args: unknown) => Promise<unknown>
     /** Só `registrarPendencia` usa — é o que permite gravar "primeiro avistamento" sem um read antes. */
@@ -144,6 +161,15 @@ export async function abrirSessao(deps: {
   issueNumber: number
   sessionName: string
   agora: Date
+  /**
+   * BYOK (D34): a conta do dev assíncrono que está abrindo esta sessão. Fica
+   * GRAVADA na linha porque a conta do projeto muda depois (o cliente conecta,
+   * troca ou desconecta a dele) e a sessão continua viva lá fora na conta
+   * antiga: consultar, avisar ou arquivar com a chave da conta nova volta 404
+   * e a vaga fica presa na conta que a pessoa paga. Ausente = conta da
+   * instância.
+   */
+  devAccountId?: string | null
 }): Promise<ResultadoDeAbrirSessao> {
   try {
     await deps.prisma.devSession.upsert({
@@ -154,6 +180,7 @@ export async function abrirSessao(deps: {
         sessionName: deps.sessionName,
         state: 'QUEUED',
         stateCheckedAt: deps.agora,
+        devAccountId: deps.devAccountId ?? null,
         // Nasce com progresso marcado: sem isto a vigia leria "sem avanço
         // desde sempre" e trataria como parada uma sessão que acabou de
         // começar.
@@ -164,6 +191,9 @@ export async function abrirSessao(deps: {
         closedAt: null,
         closedReason: null,
         stateCheckedAt: deps.agora,
+        // A retomada pode acontecer depois de o cliente ter trocado de conta:
+        // quem reabre a linha é quem passa a responder por ela.
+        devAccountId: deps.devAccountId ?? null,
       },
     })
     return { ok: true }
@@ -215,9 +245,21 @@ export async function sessoesVivas(deps: {
  */
 export async function nomesDeSessoesVivasDaInstancia(deps: {
   prisma: PrismaDevSession
+  /**
+   * BYOK (D34): restringe à conta indicada (`null` = conta da instância).
+   * Omitir devolve TODAS as contas, que é o certo para quem só quer saber o
+   * que está vivo aqui dentro — mas ERRADO para cruzar contra a lista de um
+   * fornecedor, porque cada conta enxerga só as próprias sessões: sem o
+   * filtro, a reconciliação de uma conta acharia órfã a sessão viva de outra
+   * e arquivaria trabalho em andamento alheio.
+   */
+  devAccountId?: string | null
 }): Promise<string[]> {
   const linhas = await deps.prisma.devSession.findMany({
-    where: { closedAt: null },
+    where:
+      deps.devAccountId === undefined
+        ? { closedAt: null }
+        : { closedAt: null, devAccountId: deps.devAccountId },
     select: { sessionName: true },
   })
   return linhas.map((l) => l.sessionName)
@@ -683,4 +725,79 @@ export async function registrarVereditoDeAmbiente(deps: {
     where: { sessionName: deps.sessionName },
     data: { envLastVerdict: deps.veredito },
   })
+}
+
+/** Por que a vaga não foi reservada. */
+export type MotivoDeRecusaDaVaga = 'sem-vaga-na-conta' | 'ja-existe-sessao-viva'
+
+export type ResultadoDaReserva = { ok: true } | { ok: false; motivo: MotivoDeRecusaDaVaga }
+
+/**
+ * Reserva uma vaga da CONTA e abre a linha, no MESMO comando.
+ *
+ * O produto contava as vagas e criava a sessão em dois passos. Entre um e
+ * outro cabe outra delegação: com um processo só isso já é uma corrida fraca
+ * (duas delegações do mesmo tique, projetos diferentes, correndo em paralelo);
+ * com mais de uma instância do control-plane vira garantido. O próprio
+ * scheduler já documenta essa classe de defeito num comentário sobre outro
+ * mecanismo: "se um dia existirem N processos... CADA processo tem o seu
+ * próprio Map".
+ *
+ * Não adianta mover o mutex para o banco — o que resolve é contar e criar
+ * dentro da mesma transação, com isolamento que impede duas leituras
+ * concorrentes de verem o mesmo total e ambas acharem que cabe.
+ *
+ * `serializable` é o nível certo aqui, e não um exagero: o problema é
+ * exatamente uma leitura que deixa de valer por causa de uma escrita que
+ * aconteceu depois dela. O custo é uma transação que pode ser recusada e
+ * precisa ser tentada de novo — e recusar é o comportamento desejado, porque
+ * significa que o teto foi respeitado.
+ */
+export async function reservarVagaNaConta(deps: {
+  prisma: PrismaDevSession
+  /**
+   * BYOK (D34): a conta cujo teto está sendo conferido. A contagem é pela
+   * CONTA QUE ABRIU cada sessão, e não pelos projetos que hoje dividem a
+   * conta: um projeto que acabou de conectar a conta própria carrega consigo
+   * as sessões que abriu na conta do dono, e contá-las faria o teto novo do
+   * cliente nascer consumido por trabalho que nunca tocou a conta dele — e,
+   * na desconexão, faria essas sessões roubarem vaga de todo mundo que divide
+   * a conta da instância. Nulo = conta da instância.
+   */
+  devAccountId?: string | null
+  projectId: string
+  issueNumber: number
+  sessionName: string
+  tetoConcorrentes: number
+  agora: Date
+}): Promise<ResultadoDaReserva> {
+  const conta = deps.devAccountId ?? null
+  const executar = async (tx: PrismaDevSession): Promise<ResultadoDaReserva> => {
+    // Sem `count` disponível não há como conferir o teto. Abrir sem conferir
+    // seria pior que recusar: o produto voltaria a pedir mais do que a conta
+    // tem, que é o defeito que isto existe para matar.
+    if (!tx.devSession.count) {
+      return { ok: false, motivo: 'sem-vaga-na-conta' }
+    }
+    const vivas = await tx.devSession.count({
+      where: { devAccountId: conta, closedAt: null },
+    })
+    if (vivas >= deps.tetoConcorrentes) {
+      return { ok: false, motivo: 'sem-vaga-na-conta' }
+    }
+    return abrirSessao({
+      prisma: tx,
+      projectId: deps.projectId,
+      issueNumber: deps.issueNumber,
+      sessionName: deps.sessionName,
+      agora: deps.agora,
+      devAccountId: conta,
+    })
+  }
+
+  // Sem suporte a transação (um fake de teste, por exemplo), roda direto: o
+  // comportamento é o de antes, e é melhor que não funcionar.
+  if (!deps.prisma.$transaction) return executar(deps.prisma)
+
+  return deps.prisma.$transaction(executar, { isolationLevel: 'Serializable' })
 }

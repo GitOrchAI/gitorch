@@ -324,3 +324,51 @@ describe('escolherParaDelegar: arquivo já EM TRABALHO também é reservado', ()
     expect(escolhidas).toEqual([7])
   })
 })
+
+describe('o teto de simultâneas é da CONTA, não do projeto', () => {
+  const candidata = (n: number) => ({ number: n, bloqueadoresAbertos: 0 })
+
+  // O caso medido em 25/08: dois projetos "pro", cada um se achando com 15
+  // vagas, contra 15 no total da conta. Foi assim que o produto pediu mais do
+  // que existia e levou mais de cem recusas num dia.
+  it('vagas ocupadas por OUTRO projeto da mesma conta travam este', () => {
+    const escolhidas = escolherParaDelegar({
+      candidatas: [candidata(1), candidata(2)],
+      sessoesVivas: [],
+      // Nenhuma sessão viva NESTE projeto, mas a conta já está cheia.
+      vivasNaConta: 15,
+      delegadasHoje: 0,
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+      capPorCiclo: 3,
+    })
+    expect(escolhidas).toEqual([])
+  })
+
+  it('com a conta com folga, delega normalmente', () => {
+    const escolhidas = escolherParaDelegar({
+      candidatas: [candidata(1), candidata(2)],
+      sessoesVivas: [],
+      vivasNaConta: 13,
+      delegadasHoje: 0,
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+      capPorCiclo: 3,
+    })
+    expect(escolhidas).toEqual([1, 2])
+  })
+
+  // Sem o número da conta, o comportamento é o antigo — o que mantém os
+  // chamadores que ainda não passam a informação funcionando como antes.
+  it('sem o número da conta, cai nas vivas deste projeto', () => {
+    const escolhidas = escolherParaDelegar({
+      candidatas: [candidata(1)],
+      sessoesVivas: [],
+      delegadasHoje: 0,
+      tetoConcorrentes: 1,
+      tetoDiario: 100,
+      capPorCiclo: 3,
+    })
+    expect(escolhidas).toEqual([1])
+  })
+})

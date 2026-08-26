@@ -1,9 +1,12 @@
 import type { Prisma, PrismaClient } from '@prisma/client'
 import type { CortexClient, CortexDrawer } from '@gitorch/cortex'
+import { configuracaoAPartirDaResposta } from './como-o-projeto-publica.js'
 
 // Só o que o serviço usa do Prisma — permite injetar um fake nos testes
 // (mesmo padrão de environment.ts/engine-connection.ts), nunca banco real.
-type PrismaLike = Pick<PrismaClient, 'agentQuestion' | 'event'>
+// `project` entrou aqui quando a resposta do dono passou a virar
+// configuração do projeto (D49) — antes ela morria na tabela de dúvidas.
+type PrismaLike = Pick<PrismaClient, 'agentQuestion' | 'event' | 'project'>
 
 // Só o que answer() usa do Cortex — permite injetar um fake nos testes (mesmo
 // padrão de repo-context-cortex.ts).
@@ -169,6 +172,42 @@ export class AgentQuestionService {
       data: { answer: value, answeredAt: now, answeredVia: via, status: 'answered' },
     })
     const question = updated as unknown as AgentQuestionRecord
+
+    // A resposta vira CONFIGURAÇÃO do projeto, não só uma linha na tabela de
+    // dúvidas (D49). Sem isto o produto perguntava "como este projeto vai ao
+    // ar?", guardava a resposta e continuava adivinhando na hora de decidir —
+    // gastando a paciência do dono sem mudar nada.
+    const configuracao = configuracaoAPartirDaResposta({
+      // `dedupKey` nulo é dúvida antiga, de antes da chave existir: não casa
+      // com nenhuma pergunta do catálogo, e é isso que a string vazia diz.
+      dedupKey: existing.dedupKey ?? '',
+      repositorio: existing.project.wingId,
+      resposta: value,
+    })
+    if (configuracao) {
+      try {
+        const projeto = await this.prisma.project.findUnique({
+          where: { id: existing.projectId },
+          select: { runtimeConfig: true },
+        })
+        // Mescla rasa, e nunca substituição: o `runtimeConfig` carrega a
+        // configuração inteira do projeto (motores, ambientes, plano), e
+        // sobrescrever apagaria tudo o que não é publicação.
+        const atual = (projeto?.runtimeConfig ?? {}) as Record<string, unknown>
+        await this.prisma.project.update({
+          where: { id: existing.projectId },
+          data: { runtimeConfig: { ...atual, ...configuracao } },
+        })
+      } catch (err) {
+        // Best-effort, como a gravação na memória logo abaixo: a resposta já
+        // está no banco e o dono não pode ver o botão falhar por causa disto.
+        // A próxima resposta (ou o painel) grava de novo.
+        console.warn('[agent-question] não deu para aplicar a resposta na configuração', {
+          questionId,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
 
     if (this.deps.cortex) {
       try {

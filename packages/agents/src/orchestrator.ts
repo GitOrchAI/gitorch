@@ -31,6 +31,7 @@ export interface WorkspaceProvider {
     options?: { repository?: string; token?: string }
   ): Promise<WorkspaceAllocation | unknown>
   hibernateWorkspace(userId: string, projectId: string): Promise<unknown>
+  handleRuntimeFailure?(errorDetails: string, stepName: string, rollback: boolean): void
 }
 
 export interface AgentOrchestratorOptions {
@@ -111,6 +112,21 @@ export class AgentOrchestrator {
         cwd: allocation?.path,
         timeoutMs: input.timeoutMs,
       })
+
+      if (result.exitCode !== 0 || result.failedStep) {
+        if (this.workspace.handleRuntimeFailure) {
+          this.workspace.handleRuntimeFailure(
+            result.errorDetails || result.stderr || 'Unknown runtime error',
+            result.failedStep || 'run-mission',
+            false
+          )
+        }
+      }
+    } catch (err: unknown) {
+      if (this.workspace.handleRuntimeFailure) {
+        this.workspace.handleRuntimeFailure(String(err), 'run-mission', false)
+      }
+      throw err
     } finally {
       await this.workspace.hibernateWorkspace(userId, mission.projectId)
     }

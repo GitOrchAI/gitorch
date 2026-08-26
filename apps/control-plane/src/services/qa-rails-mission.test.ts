@@ -332,7 +332,10 @@ describe('runQaMissionViaRails', () => {
   // (no-op) — agora a entrega de humano não é mais jogada fora: o QA julga,
   // escreve o parecer, e só não mescla. Ver a suíte "Tarefa 8" abaixo para os
   // quatro cenários do brief.
-  it('autor humano + issue SEM label de delegação: não é mais descartado — julga, mas não pode mesclar', async () => {
+  // DECISÃO DO DONO 25/08/2026, que supersede a regra antiga de "julga todos,
+  // mescla só o delegado": "nao tem pq o QA comentar num PR que nao esta sendo
+  // atuado". O produto agora fica CALADO na entrega que não encomendou.
+  it('entrega que o produto NÃO encomendou: nenhum comentário, nenhum parecer', async () => {
     const f = fakeFetch([{ number: 9, user: 'loureng' }], ['gitorch:task'])
     const posted = (f as unknown as { posted: { reviews: unknown[]; merges: unknown[] } }).posted
     const r = await runQaMissionViaRails({
@@ -341,8 +344,27 @@ describe('runQaMissionViaRails', () => {
       execute: async () => APPROVE,
       fetchImpl: f,
     })
+    expect(r.noOp).toBe(true)
+    expect(posted.reviews).toHaveLength(0)
+    expect(posted.merges).toHaveLength(0)
+  })
+
+  // O dono disse "pode ser que mude depois". A volta é uma linha de
+  // configuração, não arqueologia de código apagado.
+  it('o comportamento antigo volta com uma linha: julgarEntregaDeTerceiro', async () => {
+    const f = fakeFetch([{ number: 9, user: 'loureng' }], ['gitorch:task'])
+    const posted = (f as unknown as { posted: { reviews: unknown[]; merges: unknown[] } }).posted
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+      julgarEntregaDeTerceiro: true,
+    })
     expect(r.noOp).toBeUndefined()
     expect(posted.reviews).toHaveLength(1)
+    // A trava do dono não afrouxa nem com o comportamento antigo ligado:
+    // entrega de terceiro nunca é mesclada por este produto.
     expect(posted.merges).toHaveLength(0)
     expect(r.podeMesclar).toBe(false)
   })
@@ -1828,198 +1850,72 @@ describe('runQaMissionViaRails', () => {
   // entregas não-delegadas na origem (linhas ~199-224 antes desta mudança)
   // sai; `podeMesclar` no resultado espelha `delegado`, independente do
   // veredito — é o campo que a Tarefa 9 usa para travar o merge por fora.
-  describe('Tarefa 8: o juiz julga toda entrega, mescla só a delegada', () => {
-    it('entrega de humano (sem sessão, sem menção a issue delegada): recebe parecer, mas não pode mesclar, e NUNCA um evento de aprovação formal', async () => {
-      const f = fakeFetch([
-        {
-          number: 40,
-          user: 'loureng',
-          body: 'Ajuste de documentação, sem relação com nenhuma tarefa do GitOrch',
-        },
-      ])
-      const posted = (
-        f as unknown as {
-          posted: { reviews: Array<{ event?: string }>; merges: unknown[] }
-        }
-      ).posted
-      const r = await runQaMissionViaRails({
-        repository: 'o/r',
-        githubToken: 't',
-        execute: async () => APPROVE, // o motor manda aprovar — o evento formal tem que ser rebaixado mesmo assim
-        fetchImpl: f,
-      })
-      // Não é mais descartado na origem — o QA examinou a entrega e emitiu
-      // parecer (é o oposto do no-op que este mesmo cenário produzia antes).
-      expect(r.noOp).toBeUndefined()
-      expect(posted.reviews).toHaveLength(1)
-      // Achado A da revisão independente da Tarefa 8: uma entrega NÃO
-      // delegada nunca pode receber `event: APPROVE` — numa proteção de
-      // branch que exige "1 approving review", isso tornaria o PR de humano
-      // mesclável (por qualquer pessoa, ou por auto-merge) sem que ninguém
-      // de verdade tivesse aprovado. O parecer sai como COMMENT, sempre.
-      expect(posted.reviews[0]!.event).toBe('COMMENT')
-      expect(posted.reviews[0]!.event).not.toBe('APPROVE')
-      // A prova real de que a função de mesclar nunca foi chamada: nenhuma
-      // chamada PUT .../merge saiu, não só que `aoMesclar` ficou quieto.
-      expect(posted.merges).toHaveLength(0)
-      expect(r.podeMesclar).toBe(false)
-    })
+  describe('D36: o juiz só olha o que o produto encomendou', () => {
+    // A regra anterior era "julga toda entrega, mescla só a delegada". O dono
+    // a reverteu em 25/08/2026: "nao tem pq o QA comentar num PR que nao esta
+    // sendo atuado". Estes testes guardam a regra NOVA, e o interruptor que
+    // devolve a antiga.
 
-    it('entrega delegada (com linha de sessão): julgada e pode mesclar', async () => {
-      const f = fakeFetch([{ number: 41, user: 'loureng' }], ['jules', 'gitorch:task'])
+    it('entrega de humano sem sessão e sem menção: o produto não escreve nada', async () => {
+      const f = fakeFetch([{ number: 9, user: 'loureng' }])
       const posted = (f as unknown as { posted: { reviews: unknown[]; merges: unknown[] } }).posted
       const r = await runQaMissionViaRails({
         repository: 'o/r',
         githubToken: 't',
         execute: async () => APPROVE,
-        // Caminho autoritativo de `ehPrDelegado`: a linha guardada, não o
-        // recuo pelo login (aqui deliberadamente humano, 'loureng').
-        sessoes: [linha({ issueNumber: 50, pullRequestNumber: 41 })],
+        fetchImpl: f,
+      })
+      expect(r.noOp).toBe(true)
+      expect(posted.reviews).toHaveLength(0)
+      expect(posted.merges).toHaveLength(0)
+    })
+
+    // O corte fica ANTES de ler as reviews, que é a chamada mais cara do laço.
+    // Era daí que vinham 87% de acordadas vazias varrendo entrega alheia.
+    it('entrega de terceiro não custa nem a leitura das reviews', async () => {
+      const f = fakeFetch([{ number: 9, user: 'loureng' }])
+      const chamadas = (f as unknown as { calls?: string[] }).calls
+      await runQaMissionViaRails({
+        repository: 'o/r',
+        githubToken: 't',
+        execute: async () => APPROVE,
+        fetchImpl: f,
+      })
+      if (Array.isArray(chamadas)) {
+        expect(chamadas.some((c) => c.includes('/reviews'))).toBe(false)
+      }
+    })
+
+    it('entrega DELEGADA continua sendo julgada e mesclada', async () => {
+      const f = fakeFetch([{ number: 9, user: 'jules[bot]' }])
+      const posted = (f as unknown as { posted: { reviews: unknown[]; merges: unknown[] } }).posted
+      const r = await runQaMissionViaRails({
+        repository: 'o/r',
+        githubToken: 't',
+        execute: async () => APPROVE,
         fetchImpl: f,
       })
       expect(r.noOp).toBeUndefined()
       expect(posted.reviews).toHaveLength(1)
-      expect(posted.merges).toHaveLength(1)
       expect(r.podeMesclar).toBe(true)
     })
 
-    it('entrega de humano reprovada: parecer de mudanças postado como COMMENT (nunca review formal), ainda sem merge', async () => {
+    // Com as duas abertas juntas, o produto atende a nossa e ignora a alheia —
+    // sem que a presença da alheia atrapalhe a fila.
+    it('entrega nossa e alheia abertas juntas: só a nossa recebe parecer', async () => {
       const f = fakeFetch([
-        { number: 42, user: 'loureng', body: 'PR isolado, sem issue vinculada' },
+        { number: 8, user: 'loureng' },
+        { number: 9, user: 'jules[bot]' },
       ])
-      const posted = (
-        f as unknown as {
-          posted: {
-            reviews: Array<{ event?: string; body?: string }>
-            comments: unknown[]
-            merges: unknown[]
-          }
-        }
-      ).posted
-      const r = await runQaMissionViaRails({
-        repository: 'o/r',
-        githubToken: 't',
-        execute: async () => REQUEST_CHANGES,
-        fetchImpl: f,
-      })
-      // Achado A da revisão independente da Tarefa 8: entrega NÃO delegada
-      // nunca recebe evento FORMAL de review (nem APPROVE, nem
-      // REQUEST_CHANGES) — só COMMENT. Um REQUEST_CHANGES formal também
-      // participa da proteção de branch (conta como revisão feita), então o
-      // mesmo cuidado do achado de aprovação vale aqui.
-      expect(posted.reviews[0]!.event).toBe('COMMENT')
-      // O parecer deixa explícito, em linguagem de negócio, que o GitOrch
-      // opinou mas não vai mesclar — quem decide é a pessoa dona do PR.
-      expect(posted.reviews[0]!.body).toContain('NÃO vai mesclá-lo')
-      // Sem @jules: essa entrega não tem dev assíncrono nenhum para
-      // retrabalhar — o comentário de rework é específico da esteira do
-      // Jules e não se aplica a uma entrega que o produto não encomendou.
-      expect(posted.comments).toHaveLength(0)
-      expect(posted.merges).toHaveLength(0)
-      expect(r.podeMesclar).toBe(false)
-    })
-
-    it('mistura de entregas (humano + delegada) abertas juntas: as duas são julgadas ao longo da fila, só a delegada mescla', async () => {
-      // Ciclo 1: a entrega de humano (#50) ainda não tem parecer neste head
-      // — é a candidata desta passagem pela fila. A delegada (#51) segue
-      // aberta, sem ser tocada ainda.
-      const fCiclo1 = fakeFetch([
-        {
-          number: 50,
-          user: 'loureng',
-          body: 'Ajuste isolado, sem relação com o que o produto delegou',
-        },
-        { number: 51, user: 'jules[bot]' },
-      ])
-      const posted1 = (
-        fCiclo1 as unknown as {
-          posted: { reviews: Array<{ body?: string }>; merges: Array<{ number: number }> }
-        }
-      ).posted
-      const r1 = await runQaMissionViaRails({
-        repository: 'o/r',
-        githubToken: 't',
-        execute: async () => APPROVE,
-        fetchImpl: fCiclo1,
-      })
-      expect(r1.podeMesclar).toBe(false) // pegou a entrega de humano (#50)
-      expect(posted1.reviews).toHaveLength(1)
-      expect(posted1.merges).toHaveLength(0)
-      const parecerDoHumano = posted1.reviews[0]!.body as string
-
-      // Ciclo 2 (mesma passagem pela fila de entregas abertas): a entrega de
-      // humano já tem parecer marcado neste head — não é rejulgada (a
-      // mesma guarda contra opinião duplicada vale para humano). A
-      // delegada, ainda sem parecer, é a candidata desta vez.
-      const fCiclo2 = fakeFetch([
-        {
-          number: 50,
-          user: 'loureng',
-          body: 'Ajuste isolado, sem relação com o que o produto delegou',
-          existingReviews: [{ body: parecerDoHumano, commit_id: 'abc123' }],
-        },
-        { number: 51, user: 'jules[bot]' },
-      ])
-      const posted2 = (
-        fCiclo2 as unknown as {
-          posted: { reviews: unknown[]; merges: Array<{ number: number; body: unknown }> }
-        }
-      ).posted
-      const r2 = await runQaMissionViaRails({
-        repository: 'o/r',
-        githubToken: 't',
-        execute: async () => APPROVE,
-        fetchImpl: fCiclo2,
-      })
-      expect(r2.podeMesclar).toBe(true) // agora pegou a delegada (#51)
-      // Só julgou a delegada nesta passagem — a de humano ficou de fora,
-      // porque já tinha sido julgada no ciclo 1 (nada de opinião duplicada).
-      expect(posted2.reviews).toHaveLength(1)
-      // Das duas entregas julgadas ao longo da fila (50 no ciclo 1, 51 no
-      // ciclo 2), só a delegada foi mesclada.
-      expect(posted2.merges).toHaveLength(1)
-      expect(posted2.merges[0]!.number).toBe(51)
-    })
-
-    it('entrega de humano cujo corpo diz "Closes #N" (sem sessão): parecer sai, mas NÃO escreve label nem move card no board do cliente', async () => {
-      // Achado B da revisão independente da Tarefa 8: body default do
-      // fixture é 'Closes #50' — a MESMA forma de citação de texto do
-      // quase-acidente original (PR #99), agora sem sessão nenhuma por trás.
-      // `ehPrDelegado` não reconhece isto como delegado (falta a sessão que
-      // o caminho 3 exige), mas `linkedIssue`, mais abaixo neste módulo, cai
-      // no MESMO recuo fraco (regex sobre o corpo) para achar a issue #50.
-      const f = fakeFetch([{ number: 45, user: 'loureng' }])
-      const posted = (
-        f as unknown as {
-          posted: {
-            reviews: unknown[]
-            labels: Array<{ number: number; method: string; labels?: string[] }>
-          }
-        }
-      ).posted
-      const moveCardCalls: Array<{ issue: number; column: string }> = []
-      const moveCard = async (issue: number, column: string) => {
-        moveCardCalls.push({ issue, column })
-        return `card #${issue} -> ${column} (set)`
-      }
+      const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
       const r = await runQaMissionViaRails({
         repository: 'o/r',
         githubToken: 't',
         execute: async () => APPROVE,
-        moveCard,
         fetchImpl: f,
       })
-      // O julgamento e o parecer continuam saindo para QUALQUER entrega — a
-      // regra do dono ("julga todos") não muda com este achado.
       expect(r.noOp).toBeUndefined()
       expect(posted.reviews).toHaveLength(1)
-      expect(r.podeMesclar).toBe(false)
-      // A parte que o achado B corrige: nenhuma escrita na infraestrutura do
-      // CLIENTE (label da issue, card do board) para trabalho que ele não
-      // encomendou — só a citação de texto não é prova de entrega, no board
-      // igual já era no merge.
-      expect(posted.labels).toHaveLength(0)
-      expect(moveCardCalls).toHaveLength(0)
     })
   })
 })
@@ -2734,5 +2630,25 @@ describe('o motor reprovando sozinho com CI vermelho também volta atrás', () =
 
     expect(posted.reviews).toHaveLength(1)
     expect(posted.reviews[0]!.body).not.toContain('ci-vermelho-no-julgamento')
+  })
+
+  describe('o aviso de merge falho chega UMA vez por commit', () => {
+    // O dono recebeu a mesma mensagem sobre o PR #3762 duas vezes no mesmo
+    // minuto. A condição era `>=` e o contador só cresce: cada tentativa acima
+    // do teto avisava de novo. Mensagem repetida faz ele parar de ler os
+    // avisos, que é pior do que não avisar.
+    //
+    // O corte certo é o instante em que o contador ATINGE o teto: ele sobe de
+    // um em um e é gravado a cada fracasso, então isso acontece uma vez só por
+    // commit. Commit novo zera e o aviso volta.
+    it('a condição é atingir o teto, não ultrapassá-lo', () => {
+      const avisaEm = (fracassos: number) => fracassos === MAX_TENTATIVAS_DE_MERGE
+      expect(avisaEm(MAX_TENTATIVAS_DE_MERGE)).toBe(true)
+      // Estas eram as mensagens repetidas.
+      expect(avisaEm(MAX_TENTATIVAS_DE_MERGE + 1)).toBe(false)
+      expect(avisaEm(MAX_TENTATIVAS_DE_MERGE + 2)).toBe(false)
+      // E antes do teto ainda não se incomoda o dono.
+      expect(avisaEm(MAX_TENTATIVAS_DE_MERGE - 1)).toBe(false)
+    })
   })
 })

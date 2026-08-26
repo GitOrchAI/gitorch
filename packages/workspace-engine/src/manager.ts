@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
+import { EventEmitter } from 'node:events'
 
 const execFileAsync = promisify(execFile)
 
@@ -15,8 +16,20 @@ export interface WorkspaceInfo {
   config?: any
 }
 
-export class WorkspaceManager {
+export class WorkspaceManager extends EventEmitter {
   private baseDir = '/var/lib/gitorch/workspaces'
+
+  constructor() {
+    super()
+  }
+
+  handleRuntimeFailure(errorDetails: string, stepName: string, rollback: boolean) {
+    this.emit('workspace-error', {
+      failedStep: stepName,
+      errorDetails,
+      recoveryAction: rollback ? 'auto-rollback' : 'none',
+    })
+  }
 
   private validateInput(value: string): void {
     const regex = /^[a-zA-Z0-9_-]+$/
@@ -72,32 +85,42 @@ export class WorkspaceManager {
     const workspaceId = `ws:${userId}:${projectId}`
     const workspacePath = this.getWorkspacePath(userId, projectId)
 
-    await fs.mkdir(workspacePath, { recursive: true })
+    try {
+      await fs.mkdir(workspacePath, { recursive: true })
 
-    const jailerId = workspaceId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 64)
+      const jailerId = workspaceId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 64)
 
-    await execFileAsync('jailer', [
-      '--id',
-      jailerId,
-      '--node',
-      '0',
-      '--exec-file',
-      '/usr/local/bin/firecracker',
-      '--uid',
-      '1000',
-      '--gid',
-      '1000',
-      '--chroot-base-dir',
-      workspacePath,
-    ])
+      await execFileAsync('jailer', [
+        '--id',
+        jailerId,
+        '--node',
+        '0',
+        '--exec-file',
+        '/usr/local/bin/firecracker',
+        '--uid',
+        '1000',
+        '--gid',
+        '1000',
+        '--chroot-base-dir',
+        workspacePath,
+      ])
 
-    return {
-      id: workspaceId,
-      userId,
-      projectId,
-      path: workspacePath,
-      status: 'active',
-      config,
+      return {
+        id: workspaceId,
+        userId,
+        projectId,
+        path: workspacePath,
+        status: 'active',
+        config,
+      }
+    } catch (err) {
+      this.emit('workspace-error', {
+        failedStep: 'allocateWorkspace',
+        errorDetails: String(err),
+        recoveryAction: 'auto-rollback',
+      })
+      await fs.rm(workspacePath, { recursive: true, force: true }).catch(() => {})
+      throw err
     }
   }
 
@@ -111,24 +134,33 @@ export class WorkspaceManager {
 
     const jailerId = workspaceId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 64)
 
-    await execFileAsync('curl', [
-      '--unix-socket',
-      socketPath,
-      '-X',
-      'PUT',
-      'http://localhost/snapshot/create',
-      '-H',
-      'Content-Type: application/json',
-      '-d',
-      JSON.stringify({ snapshot_path: snapshotPath, mem_file_path: memPath }),
-    ])
-
     try {
-      await execFileAsync('pkill', ['-f', `firecracker.*${jailerId}`])
-    } catch (err) {
-      if ((err as { code?: unknown }).code !== 1) {
-        throw err
+      await execFileAsync('curl', [
+        '--unix-socket',
+        socketPath,
+        '-X',
+        'PUT',
+        'http://localhost/snapshot/create',
+        '-H',
+        'Content-Type: application/json',
+        '-d',
+        JSON.stringify({ snapshot_path: snapshotPath, mem_file_path: memPath }),
+      ])
+
+      try {
+        await execFileAsync('pkill', ['-f', `firecracker.*${jailerId}`])
+      } catch (err) {
+        if ((err as { code?: unknown }).code !== 1) {
+          throw err
+        }
       }
+    } catch (err) {
+      this.emit('workspace-error', {
+        failedStep: 'hibernateWorkspace',
+        errorDetails: String(err),
+        recoveryAction: 'none',
+      })
+      throw err
     }
   }
 
@@ -142,9 +174,18 @@ export class WorkspaceManager {
 
     const workspacePath = this.getWorkspacePath(userId, projectId)
 
-    for (const repo of repos) {
-      this.validateRepo(repo)
-      await execFileAsync('git', ['clone', '--', repo, path.posix.join(workspacePath, 'src')])
+    try {
+      for (const repo of repos) {
+        this.validateRepo(repo)
+        await execFileAsync('git', ['clone', '--', repo, path.posix.join(workspacePath, 'src')])
+      }
+    } catch (err) {
+      this.emit('workspace-error', {
+        failedStep: 'cloneRepositories',
+        errorDetails: String(err),
+        recoveryAction: 'none',
+      })
+      throw err
     }
   }
 
@@ -158,9 +199,18 @@ export class WorkspaceManager {
 
     const workspacePath = this.getWorkspacePath(userId, projectId)
 
-    for (const runtime of runtimes) {
-      this.validateRuntime(runtime)
-      await execFileAsync('chroot', [workspacePath, 'apt-get', 'install', '-y', '--', runtime])
+    try {
+      for (const runtime of runtimes) {
+        this.validateRuntime(runtime)
+        await execFileAsync('chroot', [workspacePath, 'apt-get', 'install', '-y', '--', runtime])
+      }
+    } catch (err) {
+      this.emit('workspace-error', {
+        failedStep: 'installRuntimes',
+        errorDetails: String(err),
+        recoveryAction: 'none',
+      })
+      throw err
     }
   }
 }
