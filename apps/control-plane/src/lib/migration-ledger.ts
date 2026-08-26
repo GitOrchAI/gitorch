@@ -40,6 +40,7 @@ export const MIGRATION_LEDGER = [
   'desejo-pendente-migration.sql',
   'byok-conta-do-dev-migration.sql',
   'aviso-de-publicacao-migration.sql',
+  'waiting-status-migration.sql',
 ] as const
 
 /**
