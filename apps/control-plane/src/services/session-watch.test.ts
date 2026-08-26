@@ -8,11 +8,6 @@ import {
 } from './session-watch.js'
 import type { LinhaDeSessao } from './dev-session-store.js'
 import { MAX_NUDGES } from './jules-session-loop.js'
-import {
-  marcarDesistencia,
-  marcarTentativa,
-  MAX_TENTATIVAS_DE_RESPOSTA,
-} from './pergunta-sem-resposta.js'
 
 // Fase 2 da esteira que fecha o ciclo: a Fase 1 (dev-session-store) só guarda
 // a ligação issue↔sessão↔PR. Sem alguém lendo essa ligação de volta e agindo,
@@ -208,14 +203,10 @@ describe('vigiarSessoes', () => {
 
     await vigiarSessoes(deps)
 
-    // A marca carrega a SITUAÇÃO, a contagem e a pergunta — é ela que impede
-    // tanto o silêncio eterno quanto a oscilação entre tentar e desistir.
-    expect(deps.registrarResposta).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionName: 'sessions/pergunta',
-        hashDaPergunta: marcarTentativa(hashDe(mensagem), 1),
-      })
-    )
+    // A vigília DETECTA e chama quem responde. A contagem de tentativas e o
+    // aviso ao dono são de quem age (a missão de QA) — enquanto os dois
+    // marcavam, o teto era consumido em dobro e a pergunta abandonada na
+    // metade do caminho.
     expect(deps.dispararMissao).toHaveBeenCalledWith('qa', 'proj1')
   })
 
@@ -242,57 +233,6 @@ describe('vigiarSessoes', () => {
     await vigiarSessoes(deps)
 
     expect(deps.dispararMissao).toHaveBeenCalledWith('qa', 'proj1')
-  })
-
-  it('mesma pergunta no TETO: para de tentar, mas avisa o dono em vez de morrer calada', async () => {
-    const mensagem = 'Devo usar bcrypt ou argon2 para o hash de senha?'
-    const deps = depsFalso({
-      sessoes: [
-        linha({
-          sessionName: 'sessions/desistiu',
-          issueNumber: 42,
-          answeredHash: marcarTentativa(hashDe(mensagem), MAX_TENTATIVAS_DE_RESPOSTA),
-        }),
-      ],
-      consultarSessao: vi.fn(async () => ({
-        estado: 'AWAITING_USER_FEEDBACK',
-        numeroDoPr: null,
-        ultimaAtualizacao: agora.toISOString(),
-      })),
-      ultimaMensagem: vi.fn(async () => mensagem),
-    })
-
-    await vigiarSessoes(deps)
-
-    // Não vira laço infinito gastando motor...
-    expect(deps.dispararMissao).not.toHaveBeenCalledWith('qa', 'proj1')
-    // ...e não morre em silêncio: trabalho parado que ninguém mais destrava
-    // sozinho tem que chegar a alguém.
-    expect(deps.avisarDono).toHaveBeenCalledTimes(1)
-    expect(vi.mocked(deps.avisarDono!).mock.calls[0]![0]).toMatch(/#42/)
-  })
-
-  it('e o aviso do teto não se repete a cada ciclo', async () => {
-    const mensagem = 'Devo usar bcrypt ou argon2 para o hash de senha?'
-    const hashDoSilencio = marcarDesistencia(hashDe(mensagem), MAX_TENTATIVAS_DE_RESPOSTA)
-    const deps = depsFalso({
-      sessoes: [
-        linha({
-          sessionName: 'sessions/ja-avisou',
-          answeredHash: hashDoSilencio,
-        }),
-      ],
-      consultarSessao: vi.fn(async () => ({
-        estado: 'AWAITING_USER_FEEDBACK',
-        numeroDoPr: null,
-        ultimaAtualizacao: agora.toISOString(),
-      })),
-      ultimaMensagem: vi.fn(async () => mensagem),
-    })
-
-    await vigiarSessoes(deps)
-
-    expect(deps.avisarDono).not.toHaveBeenCalled()
   })
 
   it('AWAITING_PLAN_APPROVAL aprova o plano direto, sem gastar motor', async () => {
@@ -628,10 +568,10 @@ describe('vigiarSessoes', () => {
       })
       await vigiarSessoes(segundo)
 
-      // Tenta de novo enquanto houver teto: a marca significa "já TENTEI
-      // responder", não "já respondi". Sem isto, uma tentativa que falha
-      // congela a sessão para sempre — foi o que prendeu treze delas.
-      expect(segundo.registrarResposta).toHaveBeenCalled()
+      // A vigília chama quem responde toda vez que vê a sessão esperando —
+      // quem decide se ainda cabe tentativa, e quem conta, é o caminho que
+      // age. Aqui só se prova que ela não desiste sozinha nem congela a linha.
+      expect(segundo.dispararMissao).toHaveBeenCalledWith('qa', 'proj1')
       // Mas REGISTRA o que viu: sem isto a linha congela e a vaga fica presa.
       expect(segundo.registrarEstado).toHaveBeenCalledWith(
         expect.objectContaining({

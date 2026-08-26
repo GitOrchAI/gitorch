@@ -17,11 +17,6 @@
 import { createHash } from 'node:crypto'
 import type { LinhaDeSessao, MotivoDeFechamento } from './dev-session-store.js'
 import { decidirRespostaDaSessao, MAX_NUDGES } from './jules-session-loop.js'
-import {
-  decidirSobreAPergunta,
-  marcarDesistencia,
-  marcarTentativa,
-} from './pergunta-sem-resposta.js'
 
 /**
  * Cadência mínima entre dois exames da MESMA sessão. Sem ela, cada tick do
@@ -334,44 +329,12 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
         }
 
         case 'responder': {
-          const hash = hashDaMensagem(ultimaMensagem)
-          // TUDO sai da marca: o que aconteceu, com qual pergunta, e quantas
-          // vezes se tentou ESTA. Nenhum contador emprestado de outro ramo —
-          // era assim antes, e o orçamento de uma pergunta acabava consumido
-          // por uma sessão travada sem relação nenhuma, fazendo o produto
-          // avisar o dono de "três tentativas" que nunca aconteceram.
-          const decisao = decidirSobreAPergunta({ hashDaPergunta: hash, marca: linha.answeredHash })
-
-          if (decisao.acao === 'nada') break
-
-          if (decisao.acao === 'desistir') {
-            // Uma vez só. A marca carrega a pergunta dentro, então o ciclo
-            // seguinte reconhece "já desisti DESTA" em vez de achar que é
-            // pergunta nova — que era a oscilação que queimava motor para
-            // sempre e repetia o aviso a cada dois ciclos.
-            await deps.registrarResposta({
-              sessionName: linha.sessionName,
-              hashDaPergunta: marcarDesistencia(hash, decisao.tentativas),
-              agora: deps.agora,
-            })
-            await deps.avisarDono?.(
-              `GitOrch: o dev perguntou algo na entrega da tarefa #${linha.issueNumber} e eu ` +
-                `tentei responder ${decisao.tentativas} vezes sem conseguir. O trabalho está ` +
-                `parado esperando essa resposta.`
-            )
-            break
-          }
-
-          // Marca a TENTATIVA com o número desta pergunta. Quem responde de
-          // verdade é a missão de QA (ela roda com o motor e o repositório em
-          // mãos) e é ela que grava a marca de RESPONDIDA quando a mensagem
-          // chega ao dev — a diferença entre "tentei" e "respondi" é o que
-          // impede tanto o silêncio eterno quanto a rajada.
-          await deps.registrarResposta({
-            sessionName: linha.sessionName,
-            hashDaPergunta: marcarTentativa(hash, decisao.tentativa),
-            agora: deps.agora,
-          })
+          // A vigília DETECTA e chama quem responde. Ela não conta tentativa
+          // nem avisa o dono: quem faz isso é o caminho que de fato age (a
+          // missão de QA, em `responderDuvidaPendente`). Enquanto os dois
+          // marcavam, o teto de uma pergunta era consumido em dobro — duas
+          // marcas por tentativa real — e a pergunta era abandonada na metade
+          // do caminho. Uma coisa, um dono.
           await deps.dispararMissao('qa', linha.projectId)
           respondidas += 1
           break
