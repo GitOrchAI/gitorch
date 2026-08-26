@@ -210,6 +210,7 @@ import {
   CredencialExpiradaError,
   deveAvisarDeNovo,
 } from '../services/credencial-do-motor.js'
+import { marcaDePedidoDeLogin } from '../services/motor-que-pede-login.js'
 import { canRunMission, shouldAlertForQuota } from '../lib/spend-guard.js'
 import { computeConsumption } from '../lib/consumption.js'
 import { pipelineCheckEnabled } from '../config/pipeline-check.js'
@@ -3183,6 +3184,34 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         // mesma disciplina de session-watch.ts.
         if (err instanceof CredencialExpiradaError) {
           falhaDeCredencial = true
+          // A TELA PARA DE MENTIR. Antes disto, este caminho marcava a falha no
+          // RESULTADO DA MISSÃO e mandava o recado — mas nunca tocava na linha
+          // da conexão, que seguia dizendo 'connected' para sempre. O dono
+          // mandou o print (26/08): card do Codex verde, "Conectado", com os
+          // modelos listados, no mesmo minuto em que toda missão morria por
+          // credencial. Uma tela verde não oferece nada para clicar; era a
+          // própria mentira que tirava dele o caminho de religar.
+          //
+          // Fora do `deveAvisarDeNovo` de propósito: o RECADO é uma vez por dia
+          // (spam apaga sinal), mas o ESTADO precisa ficar certo na hora —
+          // senão a tela continuaria verde pelas outras vinte e três horas.
+          //
+          // A credencial cifrada NÃO é apagada: se a renovação voltar a
+          // funcionar, `captureFromHome` regrava 'connected' sozinho na
+          // primeira missão que der certo, e a marca se desfaz sem ninguém
+          // limpar nada na mão.
+          if (project.userId) {
+            await app.prisma.engineConnection
+              .updateMany({
+                where: { userId: project.userId, runtime: err.runtime },
+                data: marcaDePedidoDeLogin(err.runtime),
+              })
+              .catch((e: unknown) =>
+                app.log.warn(
+                  `[Scheduler] não consegui marcar ${err.runtime} como precisando de login: ${(e as Error).message}`
+                )
+              )
+          }
           const chaveDoAviso = `${project.userId ?? project.id}:${err.runtime}`
           if (deveAvisarDeNovo(avisosDeCredencialExpirada, chaveDoAviso, Date.now())) {
             avisosDeCredencialExpirada.set(chaveDoAviso, Date.now())

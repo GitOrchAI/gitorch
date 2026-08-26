@@ -82,6 +82,12 @@ function buildFakePrisma(chatId: string | null) {
         chatId ? { status: 'linked', chatId } : { status: 'unlinked', chatId: null }
       ),
     },
+    // 26/08: além do recado, o produto agora marca a CONEXÃO como precisando de
+    // login novo. Sem isto a linha do banco seguia dizendo 'connected' e o
+    // assistente mostrava o motor verde com ele morto (print do dono).
+    engineConnection: {
+      updateMany: vi.fn(async () => ({ count: 1 })),
+    },
   }
 }
 
@@ -134,7 +140,8 @@ describe('Tarefa 16 (achado 2 da revisão) — aviso de credencial expirada pelo
     global.fetch = fetchMock as unknown as typeof fetch
 
     const app = Fastify({ logger: false })
-    app.decorate('prisma', buildFakePrisma('chat-do-dono') as never)
+    const prismaDoAviso = buildFakePrisma('chat-do-dono')
+    app.decorate('prisma', prismaDoAviso as never)
     await app.register(schedulerPlugin)
 
     const resultado = await app.triggerAgentMission('qa', 'proj_1')
@@ -165,6 +172,25 @@ describe('Tarefa 16 (achado 2 da revisão) — aviso de credencial expirada pelo
     // frase de recado) — o aviso ao DONO é sempre a mensagem sintetizada do
     // produto, nunca stderr/output relatado.
     expect(corpo.text).not.toContain('access token could not be refreshed')
+
+    // 26/08 — A TELA PARA DE MENTIR. Não basta avisar: a linha da conexão tem
+    // de deixar de dizer 'connected' no mesmo instante. Enquanto isto não
+    // existia, o assistente mostrava o card do motor VERDE, "Conectado", com
+    // os modelos listados, no minuto em que toda missão morria por credencial
+    // — e uma tela verde não oferece nada para clicar (print do dono).
+    await vi.waitFor(() => expect(prismaDoAviso.engineConnection.updateMany).toHaveBeenCalled(), {
+      timeout: 2000,
+    })
+    const marca = prismaDoAviso.engineConnection.updateMany.mock.calls[0] as unknown as [
+      { where: { userId: string; runtime: string }; data: { status: string; lastError: string } },
+    ]
+    expect(marca[0].where).toEqual({ userId: 'user_1', runtime: 'antigravity' })
+    expect(marca[0].data.status).toBe('needs_reconnect')
+    expect(marca[0].data.status).not.toBe('connected')
+    // A credencial cifrada NUNCA é apagada aqui (isso é papel de revoke): uma
+    // renovação posterior ainda pode ressuscitá-la, e captureFromHome regrava
+    // 'connected' sozinho na primeira missão que der certo.
+    expect(marca[0].data).not.toHaveProperty('encryptedCredential')
 
     await app.close()
   })
