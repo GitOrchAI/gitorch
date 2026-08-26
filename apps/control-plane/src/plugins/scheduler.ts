@@ -49,6 +49,7 @@ import {
 } from '../services/qa-rails-mission.js'
 import { runSmDelegation } from '../services/sm-delegation.js'
 import { criarFilaDeJulgamento } from '../services/fila-de-julgamento.js'
+import { criarPassagemDeBastao } from '../services/passar-o-bastao.js'
 import { criarRegistroDeDescanso, type OrigemDoDisparo } from '../services/descanso-apos-vazia.js'
 import { tetosDoPlanoDoDev } from '../services/plano-do-dev.js'
 import {
@@ -1794,6 +1795,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   const filaDeJulgamento = criarFilaDeJulgamento()
 
   /**
+   * A esteira não para entre um papel e o outro.
+   *
+   * Mesmo desenho da fila de julgamento, que já resolveu o problema gêmeo
+   * entre o SM e o QA: quem termina enfileira o seguinte, e o relógio drena
+   * com os tetos de sempre.
+   */
+  const passagemDeBastao = criarPassagemDeBastao()
+
+  /**
    * Quem já provou não ter o que fazer descansa um pouco antes de ser acordado
    * de novo. A regra (o que fura o descanso, por quanto tempo, quando ele é
    * apagado) vive em descanso-apos-vazia.ts, testada fora do relógio.
@@ -2932,6 +2942,17 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           }
           app.log.info(`[Scheduler] Mission ${missionId} completed via ${sel.runtime}`)
 
+          // PASSA O BASTÃO. Sem isto a esteira anda em soluços: cada papel
+          // roda pela agenda e ninguém chama o seguinte, então o trabalho que
+          // o RA acabou de deixar pronto espera o próximo agendamento do PO —
+          // medido na corrida de 26/08, um desejo chegava ao dev só porque eu
+          // acordei PO e SM na mão.
+          //
+          // Acordada em falso NÃO passa o bastão: se o papel não achou nada
+          // para fazer, não há trabalho novo esperando o seguinte, e acordá-lo
+          // seria gastar motor para ouvir o mesmo silêncio.
+          if (!isNoOp) passagemDeBastao.passar(role, project.id)
+
           // Medição de consumo (ideia do owner): refresca a quota do motor que
           // rodou e grava a diferença antes−depois na missão. Best-effort: nunca
           // quebra a conclusão. Só funciona quando o provider expõe quota.
@@ -3159,6 +3180,32 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
    * Uma por minuto drena três entregas em três minutos — mais rápido que o
    * relógio próprio do julgamento (0 0,8,16) e sem tempestade nenhuma.
    */
+  /**
+   * Acorda quem recebeu o bastão do papel anterior.
+   *
+   * Uma vez por tique, como a fila de julgamento: a esteira anda sem
+   * tempestade, e a recusa temporária devolve a vez em vez de perder o
+   * trabalho — perder a vez por "estou ocupado agora" é justamente o defeito
+   * que deixou entrega parada por dias.
+   */
+  const drenarPassagemDeBastao = async (): Promise<void> => {
+    const vez = passagemDeBastao.proxima()
+    if (!vez) return
+
+    const resultado = await triggerAgentMission(vez.papel, vez.projectId, undefined, 'esteira')
+    if (!resultado.triggered && resultado.reason && RETRYABLE_REASONS.has(resultado.reason)) {
+      passagemDeBastao.devolver(vez)
+      app.log.warn(
+        `[Scheduler] ${vez.papel} chamado pela esteira em ${vez.projectId} recusado ` +
+          `(${resultado.reason}); a vez volta para a fila`
+      )
+      return
+    }
+    if (resultado.triggered) {
+      app.log.info(`[Scheduler] a esteira passou o bastão para ${vez.papel} em ${vez.projectId}`)
+    }
+  }
+
   const drenarFilaDeJulgamento = async (): Promise<void> => {
     const projectId = filaDeJulgamento.proxima()
     if (!projectId) return
@@ -5382,6 +5429,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // A fila que o acordar do SM levantou: entrega aberta sem parecer nosso no
     // commit de agora. Nunca rejeita — `triggerAgentMission` já trata os
     // próprios erros e devolve `reason`.
+    await drenarPassagemDeBastao().catch((err) =>
+      app.log.error(err, '[Scheduler] a passagem de bastão falhou; tenta no próximo tique')
+    )
     await drenarFilaDeJulgamento().catch((err) =>
       app.log.error(err, '[Scheduler] dreno da fila de julgamento falhou; tenta no próximo tick')
     )
