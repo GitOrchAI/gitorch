@@ -56,6 +56,12 @@ import {
   ehRevogacaoDefinitiva,
 } from '../services/renovar-motores.js'
 import { motoresComProvaDeVida } from '../services/prova-de-vida.js'
+import {
+  pegarATrava,
+  soltarATrava,
+  VALIDADE_DA_TRAVA_MS,
+  type PrismaParaTrava,
+} from '../services/trava-de-renovacao.js'
 import { criarPassagemDeBastao } from '../services/passar-o-bastao.js'
 import { criarRegistroDeMotorMorto } from '../services/motor-em-pausa.js'
 import { criarRegistroDeDescanso, type OrigemDoDisparo } from '../services/descanso-apos-vazia.js'
@@ -744,7 +750,13 @@ export function createLocalCredentialRunner(
   engineConnections: Pick<EngineConnectionService, 'materializeToHome' | 'captureFromHome'>,
   innerRunner: RuntimeCommandRunner = realRuntimeCommandRunner,
   environments?: EnvironmentLookup,
-  log?: { info: (msg: string) => void; warn: (msg: string) => void }
+  log?: { info: (msg: string) => void; warn: (msg: string) => void },
+  /**
+   * Só para a trava de renovação. Opcional porque este runner é usado em
+   * testes sem banco: sem ele, o comportamento é o de antes (captura sempre) —
+   * pior que ter trava, melhor que não capturar.
+   */
+  prismaDaTrava?: PrismaParaTrava
 ): RuntimeCommandRunner {
   return async (request) => {
     const runtime = request.env['GITORCH_RUNTIME']
@@ -811,13 +823,41 @@ export function createLocalCredentialRunner(
       // foi feito; perder o resultado por causa do cofre seria trocar um
       // problema por outro pior.
       if (materializou) {
-        await engineConnections
-          .captureFromHome(ownerUserId, runtime, dir)
-          .catch((err: unknown) =>
-            log?.warn(
-              `[Scheduler] não consegui devolver ao cofre a credencial de ${runtime} do dono ${ownerUserId}: ${(err as Error).message}`
-            )
-          )
+        // UMA RENOVAÇÃO POR VEZ. O refresh token de alguns provedores é de uso
+        // único: se a vigília horária estiver renovando esta mesma conta agora,
+        // capturar aqui queima o token e derruba a credencial do cliente —
+        // medido em 26/08 com o codex ("Your refresh token has already been
+        // used"). Sem a trava, saímos calados: a próxima missão captura.
+        const minhaVez = prismaDaTrava
+          ? await pegarATrava({
+              prisma: prismaDaTrava,
+              userId: ownerUserId,
+              runtime,
+              agora: new Date(),
+            }).catch(() => true)
+          : true
+        if (minhaVez) {
+          try {
+            await engineConnections
+              .captureFromHome(ownerUserId, runtime, dir)
+              .catch((err: unknown) =>
+                log?.warn(
+                  `[Scheduler] não consegui devolver ao cofre a credencial de ${runtime} do dono ${ownerUserId}: ${(err as Error).message}`
+                )
+              )
+          } finally {
+            // Solta assim que termina: deixar vencer sozinha funcionaria, mas
+            // faria a próxima renovação legítima esperar dois minutos à toa.
+            if (prismaDaTrava) {
+              await soltarATrava({
+                prisma: prismaDaTrava,
+                userId: ownerUserId,
+                runtime,
+                agora: new Date(Date.now() + VALIDADE_DA_TRAVA_MS),
+              }).catch(() => undefined)
+            }
+          }
+        }
       }
       await fs.rm(dir, { recursive: true, force: true })
     }
@@ -843,7 +883,13 @@ export function buildMissionRunner(
     // Regra do dono, literal: "nunca existe agente solto sem trava". Mesmo
     // gate do container, adaptado pro host (ver host-plugin-gate.ts).
     return wrapWithHostGitorchPluginGate(
-      createLocalCredentialRunner(app.engineConnections, undefined, environments, app.log)
+      createLocalCredentialRunner(
+        app.engineConnections,
+        undefined,
+        environments,
+        app.log,
+        app.prisma as unknown as PrismaParaTrava
+      )
     )
   }
 
@@ -5498,6 +5544,22 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     userId: string,
     runtime: string
   ): Promise<{ ok: boolean; saida: string }> => {
+    // UMA RENOVAÇÃO POR VEZ, e a trava vale contra o OUTRO caminho também: a
+    // captura que roda depois de cada missão. O refresh token de alguns
+    // provedores é de uso único, e duas renovações simultâneas fazem a segunda
+    // queimar o token — derrubando a credencial do cliente por culpa nossa.
+    // Medido em 26/08 com o codex: "Your refresh token has already been used".
+    const minhaVez = await pegarATrava({
+      prisma: app.prisma as unknown as PrismaParaTrava,
+      userId,
+      runtime,
+      agora: new Date(),
+    }).catch(() => false)
+    if (!minhaVez) {
+      // Não é erro: alguém está renovando agora. A próxima passada tenta.
+      return { ok: true, saida: 'outra renovação desta conta já está em curso' }
+    }
+
     const dir = path.join(os.tmpdir(), `gitorch-renova-${randomUUID()}`)
     await fs.mkdir(dir, { recursive: true, mode: 0o700 })
     try {
@@ -5538,6 +5600,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       return { ok: execucao.exitCode === 0, saida }
     } finally {
       await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined)
+      await soltarATrava({
+        prisma: app.prisma as unknown as PrismaParaTrava,
+        userId,
+        runtime,
+        agora: new Date(Date.now() + VALIDADE_DA_TRAVA_MS),
+      }).catch(() => undefined)
     }
   }
 

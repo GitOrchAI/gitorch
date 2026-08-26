@@ -1,0 +1,22 @@
+-- Trava de renovação por conta de motor — ADITIVA e não-destrutiva.
+--
+-- POR QUÊ: o refresh token de alguns provedores é de USO ÚNICO. Quem usa
+-- recebe um novo e o antigo morre na hora. O produto tem TRÊS caminhos capazes
+-- de renovar a mesma conta — a vigília de hora em hora, a captura depois de
+-- cada missão, e o login assistido — e sem trava entre eles, duas renovações
+-- simultâneas fazem a segunda usar um token já queimado. A conta do cliente
+-- cai, e o produto ainda avisa que "o motor pediu novo login", jogando a culpa
+-- num deslogamento que nunca aconteceu.
+--
+-- Medido ao vivo em 26/08 com o codex: "Failed to refresh token: 401
+-- Unauthorized: Your refresh token has already been used to generate a new
+-- access token."
+--
+-- É uma DATA, e não um booleano, para a trava se soltar sozinha: um processo
+-- que morre no meio da renovação não pode deixar a conta travada para sempre.
+--
+-- COMO APLICAR: a partir de apps/control-plane, com DATABASE_URL no ambiente:
+--   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f prisma/trava-de-renovacao-migration.sql
+-- (ou via apps/control-plane/scripts/db-migrate.sh, que reconcilia o ledger inteiro)
+
+ALTER TABLE "engine_connections" ADD COLUMN IF NOT EXISTS "renewal_locked_until" TIMESTAMP(3);
