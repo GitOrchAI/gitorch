@@ -46,6 +46,12 @@ export type OrigemDoDisparo =
   | 'aviso-do-github'
   /** Fila que o acordar do SM levantou: entrega aberta sem parecer nosso. */
   | 'fila-do-sm'
+  /**
+   * O papel ANTERIOR terminou e deixou trabalho pronto. É a esteira andando
+   * sem esperar o próximo agendamento — medido em 26/08: sem isto, o desejo
+   * do dono parava entre o RA e o PO até alguém acordar o PO na mão.
+   */
+  | 'esteira'
   /** Rota administrativa / disparo manual. */
   | 'sob-demanda'
   /** Cascata de onboarding de um projeto novo. */
@@ -62,6 +68,11 @@ export type OrigemDoDisparo =
 const ORIGENS_QUE_FURAM: ReadonlySet<OrigemDoDisparo> = new Set<OrigemDoDisparo>([
   'aviso-do-github',
   'fila-do-sm',
+  // Pelo MESMO motivo do `fila-do-sm`: o bastão só é passado quando o papel
+  // anterior de fato produziu algo (acordada em falso não passa). É
+  // informação nova, e o descanso não pode engolir justamente o conserto que
+  // faz a esteira ser contínua.
+  'esteira',
   'sob-demanda',
   'onboarding',
 ])
