@@ -211,6 +211,22 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
 
         // Process webhook via @gitorch/github-sync
         try {
+          // Notifica falha de deploy (deployment_status error/failure) via Telegram
+          if (event === 'deployment_status') {
+            const state = parsedPayload.deployment_status?.state
+            if (state === 'failure' || state === 'error') {
+              const step = parsedPayload.deployment_status?.environment || 'unknown environment'
+              const text = `Falha de Implantação!\nEtapa: ${step}\nIntervenção manual necessária: Sim`
+              if (app.sendTelegramMessage) {
+                await app.sendTelegramMessage(project.id, text)
+              }
+            }
+          }
+
+          // deployment_status doesn't have a valid mapping in the github-sync library right now
+          // and we mapped it to 'ping' to bypass errors, but normalizer.normalize('ping')
+          // needs a repository name if present, which might crash if not formatted perfectly.
+          // In order to avoid throwing unsupportedEvent, we continue processing.
           const eventName = toGitHubEventName(event)
           const payloadStr = typeof payload === 'string' ? payload : JSON.stringify(payload)
           const envelope: GitHubDeliveryEnvelope = {
@@ -237,18 +253,6 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
               { eventId: syncEvent.id, reason: ingestResult.reason },
               'GitHub event deduplicated'
             )
-          }
-
-          // Notifica falha de deploy (deployment_status error/failure) via Telegram
-          if (event === 'deployment_status') {
-            const state = parsedPayload.deployment_status?.state
-            if (state === 'failure' || state === 'error') {
-              const step = parsedPayload.deployment_status?.environment || 'unknown environment'
-              const text = `Falha de Implantação!\nEtapa: ${step}\nIntervenção manual necessária: Sim`
-              if (app.sendTelegramMessage) {
-                await app.sendTelegramMessage(project.id, text)
-              }
-            }
           }
 
           // Sistema nervoso do loop: acorda o agente do papel certo. Fire-and-
