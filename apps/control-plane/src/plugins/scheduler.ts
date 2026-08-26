@@ -49,6 +49,10 @@ import {
 } from '../services/qa-rails-mission.js'
 import { runSmDelegation } from '../services/sm-delegation.js'
 import { criarFilaDeJulgamento } from '../services/fila-de-julgamento.js'
+import {
+  deveAvisarSobreOMotor,
+  recadoDeMotorRevogado,
+} from '../services/recado-de-motor-revogado.js'
 import { livenessCommandFor } from '../services/engine-liveness.js'
 import {
   agruparPorProvedor,
@@ -5654,16 +5658,45 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             continue
           }
           if (ehRevogacaoDefinitiva(resultado.saida)) {
-            // A ÚNICA exceção à promessa de conectar uma vez e nunca mais.
+            // A ÚNICA exceção à promessa de conectar uma vez e nunca mais — e
+            // exceção significa AVISAR, não marcar em silêncio. Antes disto o
+            // aviso ia só para o log, que ninguém lê, e o dono só descobria
+            // quando a esteira parava. Pergunta dele, textual: "pq não recebo
+            // informação via telegram pra fazer renew?".
             app.log.warn(
               `[Scheduler] motor ${conexao.runtime} do dono ${conexao.userId} foi REVOGADO; o cliente precisa reconectar`
             )
+            const jaEstavaCaido = !deveAvisarSobreOMotor(conexao.status)
             await app.prisma.engineConnection
               .updateMany({
                 where: { userId: conexao.userId, runtime: conexao.runtime },
                 data: { status: 'needs_reconnect' },
               })
               .catch(() => undefined)
+
+            // Só na VIRADA: a vigília roda de hora em hora, e sem isto o mesmo
+            // recado chegaria vinte e quatro vezes por dia. Spam apaga sinal
+            // tanto quanto silêncio.
+            if (!jaEstavaCaido) {
+              const dono = await app.prisma.user
+                .findUnique({ where: { id: conexao.userId }, select: { email: true } })
+                .catch(() => null)
+              const chatId = await resolveNotifyChatId(
+                app.prisma,
+                { userId: conexao.userId, user: dono },
+                {
+                  instanceOwnerEmail: process.env['GITORCH_OWNER_EMAIL'],
+                  instanceChatId:
+                    process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
+                }
+              ).catch(() => null)
+              const avisar = buildTelegramNotifier({
+                botToken:
+                  process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
+                ...(chatId ? { chatId } : {}),
+              })
+              if (avisar) await avisar(recadoDeMotorRevogado(conexao.runtime))
+            }
             continue
           }
           // Transitório: tenta de novo na próxima passada, calado. Marcar como
