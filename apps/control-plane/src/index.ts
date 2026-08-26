@@ -5,6 +5,28 @@ import { loadEnv } from './config/env.js'
 import { registerPlugins } from './plugins/index.js'
 import { registerRoutes } from './routes/index.js'
 import { webStaticPlugin } from './plugins/web-static.js'
+import { conferirBancoNoArranque, type PrismaParaConferencia } from './services/banco-atrasado.js'
+import { buildTelegramNotifier } from './services/sm-watchdog.js'
+
+/**
+ * O canal para falar com o dono da INSTÂNCIA, ou `null` se não houver.
+ *
+ * Vai direto no chat da instância, sem passar por `resolveNotifyChatId`: aquele
+ * caminho resolve o chat de um PROJETO (parte do userId dele), e um banco
+ * atrasado não é problema de projeto nenhum — é da instância inteira, e no
+ * arranque ainda não há projeto em mãos.
+ *
+ * Nunca lança: sem chat ligado o aviso fica só no log, que é o que sobra, e é
+ * melhor que derrubar o arranque por falta de mensageiro.
+ */
+function notificadorDaInstancia(): ((texto: string) => Promise<void>) | null {
+  const chatId = process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID']
+  const avisar = buildTelegramNotifier({
+    botToken: process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
+    ...(chatId ? { chatId } : {}),
+  })
+  return avisar ?? null
+}
 
 export async function buildApp(): Promise<FastifyInstance> {
   const env = loadEnv()
@@ -57,6 +79,17 @@ async function start(): Promise<void> {
   try {
     await app.listen({ port: env.PORT, host: env.HOST })
     app.log.info(`Server listening on ${env.HOST}:${env.PORT}`)
+    // O banco está em dia com o código? Em 26/08 uma migração não aplicada
+    // deixou a esteira 80 minutos morta, com o erro estourando de minuto em
+    // minuto num journal que ninguém lê. Best-effort e nunca derruba o
+    // arranque: subir calado foi o defeito, subir gritando é o conserto —
+    // recusar subir trocaria uma falha silenciosa por uma queda total (a API,
+    // os webhooks e o assistente funcionam mesmo com uma coluna faltando).
+    void conferirBancoNoArranque({
+      prisma: app.prisma as unknown as PrismaParaConferencia,
+      avisar: notificadorDaInstancia(),
+      log: { warn: (m) => app.log.warn(m), info: (m) => app.log.info(m) },
+    }).catch(() => undefined)
     app.log.info(`Documentation available at http://${env.HOST}:${env.PORT}/docs`)
   } catch (err) {
     app.log.error(err)
