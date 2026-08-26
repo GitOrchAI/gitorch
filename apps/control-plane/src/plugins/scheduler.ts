@@ -476,6 +476,9 @@ export function montarOpcoesDoJulgamento(args: {
     limparPendencia: (a) => limparPendencia({ prisma: args.prisma, ...a }),
     registrarAvisoDeDemora: (a) => registrarAvisoDeDemora({ prisma: args.prisma, ...a }),
     registrarFracassoDeMerge: (a) => registrarFracassoDeMerge({ prisma: args.prisma, ...a }),
+    // Mesma marca do conserto: as duas respondem "já pedi isto para esta
+    // entrega neste commit?", e duas separadas divergiriam em silêncio.
+    registrarConserto: (a) => registrarConsertoDePublicacao({ prisma: args.prisma, ...a }),
     // A conta de "este projeto está travado" é sobre DIAS — o patinhas
     // acumulou dez reprovações seguidas em quatro dias, e nesse intervalo o
     // serviço reiniciou dezenas de vezes. Por isso vive no banco.

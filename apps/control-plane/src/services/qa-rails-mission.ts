@@ -39,6 +39,11 @@ import {
 } from './reprovacao-que-ensina.js'
 import { ciTerminouVerde, estadoDoCi } from './estado-da-verificacao-do-github.js'
 import { decidirQuemResolve } from './conflito-de-merge.js'
+import {
+  chaveDoResgate,
+  decidirResgateDaTravada,
+  pedidoDeResgate,
+} from './entrega-travada-no-teto.js'
 import { decidirSobreLegado } from './rejulgar-legados.js'
 
 // Missão do QA nos TRILHOS (F3.6): acha a PR do Jules que precisa de julgamento,
@@ -145,6 +150,14 @@ export interface VigiliaDoJulgamentoOptions {
     contador: number
     agora: Date
   }) => Promise<void>
+  /**
+   * Grava a marca do RESGATE de uma entrega travada no teto de mescla.
+   *
+   * Reaproveita o mesmo campo da marca de conserto: as duas respondem à mesma
+   * pergunta — "já pedi isto para esta entrega neste commit?" — e duas marcas
+   * separadas divergiriam em silêncio.
+   */
+  registrarConserto?: (args: { sessionName: string; chave: string; agora: Date }) => Promise<void>
 }
 
 export interface QaRailsMissionOptions extends VigiliaDoJulgamentoOptions {
@@ -354,6 +367,13 @@ export async function runQaMissionViaRails(
   let retomandoAprovacaoMesmoCommit = false
   /** Este ciclo é o rejulgamento único de uma entrega presa por régua velha. */
   let retomouLegado = false
+  /** Entregas nossas que bateram o teto de mescla — resgatadas depois do laço. */
+  const travadasNoTeto: Array<{
+    numeroDoPr: number
+    linha: { sessionName: string; mergeFailures: number; deployFixKey: string | null }
+    headAtual: string | null
+  }> = []
+
   for (const p of Array.isArray(prs) ? prs : []) {
     if (p.draft) continue
 
@@ -596,6 +616,22 @@ export async function runQaMissionViaRails(
         reprovadoPeloPortaoComCiVerdeAgora ||
         legadoMereceUmaChance)
 
+    // A entrega que TRAVOU no teto de tentativas de mescla.
+    //
+    // Ela é pulada aqui de propósito — o teto existe para o produto parar de
+    // martelar um conflito a cada tique. Mas o pedido de rebase ao dev só
+    // acontece DENTRO da tentativa de mescla, que nunca mais roda: ninguém
+    // pede, o dev não empurra commit novo, o commit não muda, o teto não zera.
+    // Beco sem saída permanente, medido ao vivo: #213 e #194, aprovados pelo
+    // QA e parados desde 15 e 21/08. Guarda para o resgate depois do laço.
+    if (veredito.delegado && !aindaPodeTentarMesclar && linhaCandidata) {
+      travadasNoTeto.push({
+        numeroDoPr: p.number,
+        linha: linhaCandidata,
+        headAtual: p.head?.sha ?? null,
+      })
+    }
+
     if (reviewMarcadaNesteHead && !deveRejulgar) continue
 
     target = p
@@ -617,6 +653,69 @@ export async function runQaMissionViaRails(
     retomouLegado = legadoMereceUmaChance
     break
   }
+  // O RESGATE das entregas que travaram no teto de mescla.
+  //
+  // Acontece ANTES do "não há PR a julgar" de propósito: elas são justamente
+  // as que o laço acima pula, e por isso nunca chegariam a lugar nenhum. O
+  // pedido de rebase ao dev só existe DENTRO da tentativa de mescla, que para
+  // elas não roda mais — ninguém pede, o dev não empurra commit novo, o commit
+  // não muda, o teto não zera. Beco sem saída permanente, medido ao vivo:
+  // #213 e #194, aprovados pelo QA e parados desde 15 e 21/08.
+  const agoraDoResgate = new Date()
+  for (const travada of travadasNoTeto) {
+    const decisao = decidirResgateDaTravada({
+      delegado: true,
+      mergeFailures: travada.linha.mergeFailures,
+      temSessaoViva: options.avisarSessao !== undefined,
+      jaPediuNesteHead: travada.linha.deployFixKey === chaveDoResgate(travada.headAtual),
+    })
+
+    if (decisao.resgatar && options.avisarSessao) {
+      const pediu = await options
+        .avisarSessao({
+          sessionName: travada.linha.sessionName,
+          texto: pedidoDeResgate(travada.numeroDoPr),
+        })
+        .catch(() => false)
+      if (pediu && options.registrarConserto) {
+        // A marca leva o COMMIT: se o dev empurrar um novo, ela deixa de casar
+        // e o resgate volta a valer — que é exatamente o que se quer, porque
+        // aí o conflito é outro.
+        await options
+          .registrarConserto({
+            sessionName: travada.linha.sessionName,
+            chave: chaveDoResgate(travada.headAtual),
+            agora: agoraDoResgate,
+          })
+          .catch(() => undefined)
+      }
+      options.onWarn?.(
+        pediu
+          ? `[qa] PR #${travada.numeroDoPr} travado no teto de mescla: pedi ao dev para resolver`
+          : `[qa] PR #${travada.numeroDoPr} travado no teto e o pedido ao dev NÃO chegou`
+      )
+    } else if (!decisao.resgatar && decisao.avisarDono) {
+      // O aviso ao dono também é marcado por commit. Sem isso ele chegaria a
+      // cada acordada do QA enquanto a entrega continuasse travada — e o
+      // caminho normal do teto já avisou uma vez quando o teto bateu.
+      options.onWarn?.(`[qa] PR #${travada.numeroDoPr}: ${decisao.motivo}`)
+      if (options.registrarConserto) {
+        await options
+          .registrarConserto({
+            sessionName: travada.linha.sessionName,
+            chave: chaveDoResgate(travada.headAtual),
+            agora: agoraDoResgate,
+          })
+          .catch(() => undefined)
+        await options
+          .avisarDono?.(
+            `GitOrch: a entrega do pull request #${travada.numeroDoPr} travou — ${decisao.motivo}.`
+          )
+          .catch(() => undefined)
+      }
+    }
+  }
+
   if (!target) {
     // Fase 1 — Reconhecimento: projeto novo, sem PR aberta ainda. Sem este
     // modo, a esteira de onboarding terminaria num no-op ("QA: no delegated
