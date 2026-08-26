@@ -200,6 +200,19 @@ model EngineConnection {
   models                Json? // catálogo de modelos descoberto no provider
   modelsRefreshedAt     DateTime? @map("models_refreshed_at")
   lastValidatedAt       DateTime? @map("last_validated_at")
+  /// Ate quando esta conta esta RESERVADA para uma renovacao em curso.
+  ///
+  /// O refresh token de alguns provedores e de USO UNICO: quem usa recebe um
+  /// novo e o antigo morre na hora. Com tres caminhos nossos capazes de
+  /// renovar a mesma conta (a vigia de hora em hora, a captura depois de cada
+  /// missao, e o login assistido), duas renovacoes simultaneas fazem a segunda
+  /// usar um token ja queimado — e a conta do cliente cai por culpa nossa.
+  /// Medido em 26/08 com o codex: "Your refresh token has already been used".
+  ///
+  /// E uma DATA, e nao um booleano, para a trava se soltar sozinha: um
+  /// processo que morre no meio da renovacao nao pode deixar a conta travada
+  /// para sempre.
+  renewalLockedUntil    DateTime? @map("renewal_locked_until")
   lastError             String?   @map("last_error")
 
   // Quota restante do provider (BYOK), lida best-effort junto com os modelos.
