@@ -55,6 +55,7 @@ import {
   decidirRenovacaoDoMotor,
   ehRevogacaoDefinitiva,
 } from '../services/renovar-motores.js'
+import { motoresComProvaDeVida } from '../services/prova-de-vida.js'
 import { criarPassagemDeBastao } from '../services/passar-o-bastao.js'
 import { criarRegistroDeMotorMorto } from '../services/motor-em-pausa.js'
 import { criarRegistroDeDescanso, type OrigemDoDisparo } from '../services/descanso-apos-vazia.js'
@@ -2073,9 +2074,16 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       try {
         const linhas = await app.prisma.engineConnection.findMany({
           where: { userId: project.userId, status: 'connected' },
-          select: { runtime: true },
+          select: { runtime: true, status: true, lastValidatedAt: true },
         })
-        motoresConectados = linhas.map((l) => l.runtime)
+        // Só quem PROVOU estar vivo entra como reserva.
+        //
+        // O banco dizer 'connected' não basta: é a terceira vez que o projeto
+        // tropeça aqui. Medido hoje — a linha do antigravity dizia 'connected'
+        // com a última prova de vida de 06/08, vinte dias antes. Foi essa
+        // mentira que fez o produto trocar um motor morto por outro igualmente
+        // morto e gastar treze tentativas que não podiam dar certo.
+        motoresConectados = motoresComProvaDeVida(linhas, new Date()).map((l) => l.runtime)
       } catch (err) {
         // Best-effort de verdade: `try` e não `.catch()` da promessa, porque a
         // leitura pode falhar ANTES de virar promessa. Sem reserva a cadeia
