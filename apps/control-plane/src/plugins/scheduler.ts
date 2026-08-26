@@ -96,6 +96,11 @@ import {
   JANELA_DA_ENTREGA_RECENTE_MS,
 } from '../services/ambiente-declarado.js'
 import { duvidaSobreComoPublica } from '../services/duvidas-do-projeto.js'
+import {
+  comoPublicaDeclarado,
+  desfechoDaPublicacao,
+  dispensaOlharORepositorio,
+} from '../services/como-o-projeto-publica.js'
 import type { AgentQuestionService } from '../services/agent-question.js'
 import { nomeDaReserva, PREFIXO_DA_RESERVA, semAsReservas } from '../services/reserva-de-vaga.js'
 import {
@@ -3798,6 +3803,35 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     return daConta.length > 0 ? daConta : [projeto.id]
   }
 
+  /**
+   * "Como este projeto vai ao ar?" — a pergunta ao dono (D47).
+   *
+   * Existe como função porque agora tem DOIS chamadores: a varredura que
+   * descobriu que não há publicação nenhuma para ler, e o desfecho novo dos
+   * cinco caminhos, quando o produto não sabe e se recusa a adivinhar.
+   *
+   * `ask` deduplica pela chave: respondida uma vez para aquele repositório, a
+   * pergunta não volta — é a segunda metade do pedido do dono, "para que nunca
+   * mais questione o usuario". O serviço é decorado pelo plugin do Telegram, e
+   * quando o Telegram não está ligado não há a quem perguntar: segue em
+   * silêncio, porque uma pergunta que ninguém recebe não pode derrubar a
+   * varredura.
+   */
+  const perguntarComoPublica = async (projeto: {
+    id: string
+    wingId: string
+    userId: string | null
+  }): Promise<void> => {
+    const perguntador = (app as unknown as { agentQuestionService?: AgentQuestionService })
+      .agentQuestionService
+    if (!perguntador || !projeto.userId) return
+    await perguntador
+      .ask(projeto.userId, projeto.id, duvidaSobreComoPublica(projeto.wingId))
+      .catch((err: unknown) =>
+        app.log.warn(err, `[Scheduler] não deu para perguntar ao dono de ${projeto.wingId}`)
+      )
+  }
+
   const descobrirMecanismoComCache = async (
     repository: string,
     githubToken: string,
@@ -4028,6 +4062,57 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
    * dono UMA vez com a última observação, e resolve o board como
    * "não entregue" (nunca "done" — ver `resolverEntregaDoBoard`).
    */
+  /**
+   * Encerra uma entrega com um veredito e um motivo DITOS POR EXTENSO.
+   *
+   * Existe porque `fecharComTetoAbsoluto` embrulha tudo na frase "mesclamos e
+   * acompanhamos por Xh sem conseguir confirmar" e sempre marca o board como
+   * NÃO entregue. Isso é certo quando o prazo estourou — e errado nos dois
+   * desfechos novos dos cinco caminhos (D49):
+   *
+   * - o projeto que publica na mão: aqui o merge É a entrega, e marcar "não
+   *   entregue" deixaria um comentário na issue do cliente dizendo que a
+   *   tarefa continua aberta "até isso ser confirmado" — uma confirmação que,
+   *   por definição, nunca vai existir. Card preso em revisão para sempre;
+   * - o aviso que CHEGOU: dizer "acompanhamos 24h e o aviso não chegou" seria
+   *   simplesmente falso.
+   */
+  const encerrarEntrega = async (args: {
+    projeto: NonNullable<Awaited<ReturnType<PrismaClient['project']['findUnique']>>>
+    sessao: LinhaDeSessao
+    agora: Date
+    /** O veredito que fica gravado na linha. */
+    estado: 'no-ar' | 'falhou' | 'sem-publicacao'
+    /** Se o board pode dizer "done". */
+    entregue: boolean
+    motivo: string
+    githubToken: string | undefined
+  }): Promise<void> => {
+    await registrarEstadoDaPublicacao({
+      prisma: app.prisma as unknown as PrismaDevSession,
+      sessionName: args.sessao.sessionName,
+      estado: args.estado,
+      agora: args.agora,
+    })
+    await fecharSessaoEArquivar({
+      sessionName: args.sessao.sessionName,
+      motivo: 'merged',
+      agora: args.agora,
+    })
+    await avisarDonoDoProjeto(
+      args.projeto,
+      `GitOrch: a entrega de ${args.projeto.wingId} (commit ${args.sessao.mergeCommitSha}) foi ` +
+        `mesclada. ${args.motivo}`
+    )
+    await resolverEntregaDoBoard({
+      projeto: args.projeto,
+      sessao: args.sessao,
+      githubToken: args.githubToken,
+      entregue: args.entregue,
+      motivo: args.motivo,
+    })
+  }
+
   const fecharComTetoAbsoluto = async (args: {
     projeto: NonNullable<Awaited<ReturnType<PrismaClient['project']['findUnique']>>>
     sessao: LinhaDeSessao
@@ -4310,13 +4395,116 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           continue
         }
 
-        const mecanismo = await descobrirMecanismoComCache(
-          projeto.wingId,
-          githubToken,
-          agora,
-          projeto.runtimeConfig
-        )
+        const declarado = comoPublicaDeclarado(projeto.runtimeConfig)
+
+        // Quem publica na própria VM ou na mão nem chega a olhar o
+        // repositório: era ESSA leitura que produzia os 403 em série (196 em
+        // 24h na última contagem), porque a descoberta encontrava um ambiente
+        // de outra ferramenta e passava a bater nele a cada tique. Descobrir o
+        // mecanismo custa leitura no GitHub, e aqui não há o que achar.
+        const mecanismo = dispensaOlharORepositorio(declarado)
+          ? ({ tipo: 'nenhum' } as const)
+          : await descobrirMecanismoComCache(
+              projeto.wingId,
+              githubToken,
+              agora,
+              projeto.runtimeConfig
+            )
         const shaDaMescla = sessao.mergeCommitSha as string
+
+        // Os CINCO caminhos de publicação (D49). Antes daqui o produto só
+        // sabia observar o GitHub, e para quem publica fora dele — VM privada,
+        // serviço externo sem registro, publicação na mão — isso significava
+        // ficar 24 horas lendo o que não existe antes de desistir. Seis
+        // entregas presas assim, medidas em 25/08.
+        //
+        // Só age quando o DONO declarou por onde publica. Sem declaração, o
+        // caminho de sempre continua valendo inteiro: ele descobre pelo
+        // repositório e, quando não acha nada, já fecha honestamente E
+        // pergunta ao dono. Curto-circuitar ali só trocaria um desfecho bom
+        // por outro pior — e faria a pergunta virar rotina.
+        const desfecho = declarado
+          ? desfechoDaPublicacao({ declarado, mecanismo })
+          : { tipo: 'acompanhar-no-github' as const }
+
+        if (desfecho.tipo === 'encerrar-sem-rastreio') {
+          // Encerra JÁ, dizendo a verdade, em vez de esperar o teto de 24h por
+          // uma confirmação impossível. O dono já disse que aqui não há o que
+          // observar; insistir seria fingir que ainda vai descobrir.
+          //
+          // `entregue: true` de propósito: aqui o MERGE é a entrega — é a
+          // mesma regra que o caminho de "o repositório provadamente não
+          // publica" já aplica. Marcar "não entregue" deixaria na issue do
+          // cliente um recado dizendo que a tarefa segue aberta até a
+          // publicação ser confirmada, e essa confirmação nunca vai existir:
+          // o card ficaria preso em revisão para sempre.
+          await encerrarEntrega({
+            projeto,
+            sessao,
+            agora,
+            estado: 'sem-publicacao',
+            entregue: true,
+            motivo: desfecho.motivo,
+            githubToken,
+          })
+          continue
+        }
+
+        if (desfecho.tipo === 'esperar-aviso') {
+          // O aviso JÁ CHEGOU? A rota de aviso grava o veredito na linha, mas
+          // quem encerra a entrega (fecha a sessão, avisa o dono, resolve o
+          // card) é esta varredura — como em todos os outros caminhos. Sem
+          // esta checagem a entrega ficava viva mesmo confirmada, e no fim das
+          // 24 horas encerrava dizendo "o aviso não chegou", que era mentira:
+          // ele tinha chegado horas antes e estava gravado ali do lado.
+          if (sessao.deployState === 'no-ar' || sessao.deployState === 'falhou') {
+            const chegouNoAr = sessao.deployState === 'no-ar'
+            await encerrarEntrega({
+              projeto,
+              sessao,
+              agora,
+              estado: sessao.deployState,
+              entregue: chegouNoAr,
+              motivo: chegouNoAr
+                ? 'quem publica avisou que esta versão subiu — entrega confirmada.'
+                : 'quem publica avisou que a publicação desta versão FALHOU.',
+              githubToken,
+            })
+            continue
+          }
+
+          // Publica fora do alcance do GitHub: nada a ler daqui. Quem confirma
+          // é o CD do próprio cliente, pela rota de aviso de publicação
+          // (`POST /api/projects/:id/publicado`). Só carimba a cadência para
+          // não reexaminar a cada tique — e o teto absoluto continua valendo:
+          // se o aviso nunca vier, a entrega encerra dizendo exatamente isso,
+          // em vez de ficar aberta para sempre.
+          if (estourouTetoAbsoluto) {
+            await fecharComTetoAbsoluto({
+              projeto,
+              sessao,
+              agora,
+              desdeAMescla: desdeAMescla ?? TETO_ABSOLUTO_DE_ACOMPANHAMENTO_MS,
+              ultimaObservacao: `${desfecho.motivo} — e esse aviso não chegou`,
+              githubToken,
+            })
+          } else {
+            await registrarCadenciaDePublicacao({
+              prisma: app.prisma as unknown as PrismaDevSession,
+              sessionName: sessao.sessionName,
+              agora,
+            }).catch((err) =>
+              // Nunca em silêncio: sem a cadência carimbada esta entrega volta
+              // a ser examinada a cada tique, e é justamente esse desperdício
+              // que este ramo existe para evitar.
+              app.log.warn(
+                err,
+                `[Scheduler] falha ao carimbar cadência de publicação para ${sessao.sessionName}`
+              )
+            )
+          }
+          continue
+        }
 
         const veredito = await acompanharPublicacao({
           mecanismo,
@@ -4631,16 +4819,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           // a MESMA instância que cria a pergunta e a entrega com botões.
           // Ausente quando o Telegram não está ligado — aí o produto segue com
           // o aviso acima, que é o que ele consegue.
-          const perguntador = (app as unknown as { agentQuestionService?: AgentQuestionService })
-            .agentQuestionService
-          if (perguntador && projeto.userId) {
-            const duvida = duvidaSobreComoPublica(projeto.wingId)
-            await perguntador.ask(projeto.userId, projeto.id, duvida).catch((err: unknown) =>
-              // Best-effort por contrato: a pergunta que falha não pode
-              // derrubar a varredura, e o aviso acima já saiu.
-              app.log.warn(err, `[Scheduler] não deu para perguntar ao dono de ${projeto.wingId}`)
-            )
-          }
+          await perguntarComoPublica(projeto)
           // Item 2/Leva B: "sem-publicacao" tem DOIS motivos honestos bem
           // diferentes — o repositório PROVADAMENTE não publica (aqui o
           // merge JÁ é a entrega: fecha como entregue, card vai para

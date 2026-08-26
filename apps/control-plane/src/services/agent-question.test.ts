@@ -1,6 +1,8 @@
 import { describe, expect, test, vi } from 'vitest'
 import type { CortexDrawer } from '@gitorch/cortex'
 import { AgentQuestionService } from './agent-question.js'
+import { chaveDaDuvida } from './duvidas-do-projeto.js'
+import { comoPublicaDeclarado } from './como-o-projeto-publica.js'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // Fake do Prisma para agent_questions + events: store em memória com os
@@ -69,6 +71,16 @@ function fakePrisma() {
       create: vi.fn(async ({ data }: any) => {
         const rec = { id: `e_${++seq}`, createdAt: new Date(), metadata: null, ...data }
         events.push(rec)
+        return rec
+      }),
+    },
+    // A resposta do dono vira configuração do projeto (D49) — antes ela
+    // morria na tabela de dúvidas e ninguém a lia de volta.
+    project: {
+      findUnique: vi.fn(async ({ where }: any) => projects.get(where.id) ?? null),
+      update: vi.fn(async ({ where, data }: any) => {
+        const rec = { ...projects.get(where.id), ...data }
+        projects.set(where.id, rec as any)
         return rec
       }),
     },
@@ -426,5 +438,47 @@ describe('AgentQuestionService.listForUser / listOpen (W3.2.3)', () => {
     const result = await svc.listOpen('proj_1')
 
     expect(result.map((q) => q.id)).toEqual(['q_open'])
+  })
+})
+
+describe('a resposta do dono vira configuração do projeto (D49)', () => {
+  test('responder "publico em VM própria" grava a declaração no projeto', async () => {
+    const prisma = fakePrisma()
+    prisma.projects.set('p1', {
+      id: 'p1',
+      wingId: 'acme/api',
+      runtimeConfig: { motores: { principal: 'claude' } },
+    } as any)
+    const svc = new AgentQuestionService(prisma as any)
+
+    const { question } = await svc.ask('u1', 'p1', {
+      dedupKey: chaveDaDuvida('como-publica', 'acme/api'),
+      text: 'Como o acme/api chega ao ar?',
+      context: '',
+      options: [{ label: 'Servidor meu', value: 'publica-em-vm-propria' }],
+    })
+
+    await svc.answer(question.id, 'publica-em-vm-propria', 'telegram')
+
+    const projeto = prisma.projects.get('p1') as any
+    expect(comoPublicaDeclarado(projeto.runtimeConfig)).toBe('publica-em-vm-propria')
+    // O resto da configuração continua de pé: mesclar, nunca substituir.
+    expect(projeto.runtimeConfig.motores).toEqual({ principal: 'claude' })
+  })
+
+  test('a resposta de outra dúvida não mexe na configuração do projeto', async () => {
+    const prisma = fakePrisma()
+    prisma.projects.set('p1', { id: 'p1', wingId: 'acme/api', runtimeConfig: {} } as any)
+    const svc = new AgentQuestionService(prisma as any)
+
+    const { question } = await svc.ask('u1', 'p1', {
+      dedupKey: chaveDaDuvida('sem-verificacao', 'acme/api'),
+      text: 'E a verificação?',
+      context: '',
+      options: [{ label: 'Vai ganhar', value: 'vai-ganhar-verificacao' }],
+    })
+    await svc.answer(question.id, 'vai-ganhar-verificacao', 'telegram')
+
+    expect(prisma.project.update).not.toHaveBeenCalled()
   })
 })

@@ -63,6 +63,16 @@ class MockPrismaClient {
     update: vi.fn(),
   }
   user = { findUnique: vi.fn() }
+  // A linha da entrega do dev assíncrono. Entrou aqui quando a rota de aviso
+  // de publicação (D49, cenário da VM privada) passou a precisar dela.
+  devSession = {
+    findFirst: vi.fn().mockResolvedValue(null),
+    findUnique: vi.fn().mockResolvedValue(null),
+    findMany: vi.fn().mockResolvedValue([]),
+    update: vi.fn().mockResolvedValue({}),
+    updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+    count: vi.fn().mockResolvedValue(0),
+  }
   projectSchedule = {
     findMany: vi.fn().mockResolvedValue([]),
     count: vi.fn().mockResolvedValue(0),
@@ -115,6 +125,8 @@ vi.mock('@prisma/client', () => ({
           { name: 'DiagnosisJob', fields: [{ name: 'userId' }] },
           { name: 'Subscription', fields: [{ name: 'userId' }] },
           { name: 'Mission', fields: [{ name: 'id' }] },
+          // Escopada pelo projeto (projectId), como Mission — sem dono nem repo próprios.
+          { name: 'DevSession', fields: [{ name: 'id' }] },
           { name: 'WebhookDelivery', fields: [{ name: 'id' }] },
           { name: 'Plan', fields: [{ name: 'id' }] },
         ],
