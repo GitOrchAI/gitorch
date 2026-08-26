@@ -268,6 +268,17 @@ model Project {
   // credencial nenhuma para contar (services/credencial-do-dev-do-cliente.ts).
   devAccountId       String? @map("dev_account_id")
 
+  // D50: o aviso de publicação do CD do cliente.
+  //
+  // `deployNoticeInstalledAt` é a PROVA de que a chamada existe e funciona —
+  // gravado na primeira vez que um aviso chega pela rota. Vem do comportamento
+  // real, não de uma intenção registrada, e por isso vale mais que qualquer
+  // marca nossa.
+  // `deployNoticeAskedKey` é o dedup do PEDIDO: sem ele o produto abriria uma
+  // issue por tique no repositório do cliente.
+  deployNoticeInstalledAt DateTime? @map("deploy_notice_installed_at")
+  deployNoticeAskedKey    String?   @map("deploy_notice_asked_key")
+
   // Reconferência PERIÓDICA do acesso do dono ao repositório (o acesso era
   // provado uma vez, no cadastro, e o caminho automático nunca mais perguntava
   // nada — ver services/reconferencia-de-acesso.ts).

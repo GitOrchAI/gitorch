@@ -58,6 +58,9 @@ class MockPrismaClient {
     findUnique: vi.fn(),
     findFirst: vi.fn(),
     findMany: vi.fn(),
+    // Entrou quando a rota de aviso passou a marcar que o CD do cliente já
+    // sabe avisar (D50) — sem isso o produto pediria eternamente algo já feito.
+    updateMany: vi.fn().mockResolvedValue({ count: 0 }),
     count: vi.fn(),
     create: vi.fn(),
     update: vi.fn(),

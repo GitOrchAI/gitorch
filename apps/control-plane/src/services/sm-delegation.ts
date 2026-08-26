@@ -21,7 +21,15 @@ import { montarPedidoAoDev } from './pedido-ao-dev.js'
 // morrerem em silêncio — delegadas, a sessão caiu, e como carregavam a
 // etiqueta nunca voltaram a ser candidatas.
 
-const TASK_LABEL = 'gitorch:task'
+/**
+ * A etiqueta com que o Scrum Master ENCONTRA trabalho para delegar.
+ *
+ * Exportada porque quem CRIA tarefa precisa usar exatamente esta — e uma cópia
+ * escrita à mão do outro lado já custou um defeito: a tarefa nascia com a
+ * etiqueta do agente sozinha, nunca aparecia nesta busca, e ficava órfã para
+ * sempre no repositório do cliente.
+ */
+export const TASK_LABEL = 'gitorch:task'
 
 /**
  * Quantas entregas o SM manda julgar por acordada.

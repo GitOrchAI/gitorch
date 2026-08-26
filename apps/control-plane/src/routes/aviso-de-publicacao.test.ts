@@ -154,4 +154,49 @@ describe('quem publica em VM própria avisa o produto (D49)', () => {
     expect(res.json().registrado).toBe(false)
     expect(update).not.toHaveBeenCalled()
   })
+
+  test('o primeiro aviso marca que o CD deste cliente JÁ sabe avisar (D50)', async () => {
+    app.prisma.project.findFirst = vi.fn().mockResolvedValue({ id: 'proj_1' })
+    app.prisma.devSession.findFirst = vi.fn().mockResolvedValue({
+      sessionName: 'sessions/1',
+      mergeCommitSha: 'abc123',
+      closedAt: null,
+    })
+    app.prisma.devSession.update = vi.fn().mockResolvedValue({})
+    const marcar = vi.fn().mockResolvedValue({ count: 1 })
+    app.prisma.project.updateMany = marcar
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/projects/proj_1/publicado',
+      headers: authHeaders,
+      payload: { commit: 'abc123' },
+    })
+
+    const chamada = marcar.mock.calls[0]![0]
+    // Só marca quem ainda não estava marcado: a data do PRIMEIRO aviso é a que
+    // interessa, e reescrevê-la a cada deploy apagaria essa informação.
+    expect(chamada.where).toEqual({ id: 'proj_1', deployNoticeInstalledAt: null })
+    expect(chamada.data.deployNoticeInstalledAt).toBeInstanceOf(Date)
+  })
+
+  test('a marca que falha NÃO derruba a confirmação da entrega', async () => {
+    app.prisma.project.findFirst = vi.fn().mockResolvedValue({ id: 'proj_1' })
+    app.prisma.devSession.findFirst = vi.fn().mockResolvedValue({
+      sessionName: 'sessions/1',
+      mergeCommitSha: 'abc123',
+      closedAt: null,
+    })
+    app.prisma.devSession.update = vi.fn().mockResolvedValue({})
+    app.prisma.project.updateMany = vi.fn().mockRejectedValue(new Error('banco fora do ar'))
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/projects/proj_1/publicado',
+      headers: authHeaders,
+      payload: { commit: 'abc123' },
+    })
+
+    expect(res.json()).toEqual({ registrado: true, estado: 'no-ar' })
+  })
 })

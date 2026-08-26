@@ -93,6 +93,25 @@ export const avisoDePublicacaoRoutes = async (app: FastifyInstance): Promise<voi
         agora: new Date(),
       })
 
+      // A PROVA de que a chamada existe e funciona (D50) — gravada DEPOIS do
+      // efeito real, nunca antes. Gravar antes e falhar no registro da entrega
+      // deixaria o pior estado possível: o cliente recebendo erro, a entrega
+      // sem veredito, e o produto convencido de que o aviso "já está
+      // instalado e funcionando" — encerrando 24h depois com a frase "o aviso
+      // não chegou", que seria falsa. É a mesma ordem que a tarefa de conserto
+      // já usa, e pelo mesmo motivo.
+      await app.prisma.project
+        .updateMany({
+          where: { id: projeto.id, deployNoticeInstalledAt: null },
+          data: { deployNoticeInstalledAt: new Date() },
+        })
+        .catch((err: unknown) =>
+          // Best-effort: a confirmação da entrega já aconteceu e não pode ser
+          // desfeita por causa desta marca. Mas nunca em silêncio — sem ela o
+          // produto volta a pedir ao cliente o que ele já fez.
+          app.log.warn(err, `[Publicação] não deu para marcar o aviso como instalado`)
+        )
+
       app.log.info(
         `[Publicação] ${projeto.id} avisou que o commit ${commit} ${
           decisao.estado === 'no-ar' ? 'subiu' : 'falhou ao subir'

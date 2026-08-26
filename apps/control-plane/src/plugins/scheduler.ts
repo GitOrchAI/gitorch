@@ -89,6 +89,12 @@ import {
   type EvidenciaDeConserto,
 } from '../services/conserto-de-publicacao.js'
 import { criarIssueDeDesejo } from '../services/desejo-no-github.js'
+import {
+  corpoDoPedidoDeAviso,
+  decidirPedirOAviso,
+  jaExisteOPedido,
+} from '../services/instalar-aviso-de-publicacao.js'
+import { TASK_LABEL } from '../services/sm-delegation.js'
 import { sessoesParaAcompanharPublicacao } from '../services/pos-merge.js'
 import { descobrirMecanismo, type Mecanismo } from '../services/mecanismo-de-publicacao.js'
 import {
@@ -4352,6 +4358,95 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
    * Nunca lança: um repositório fora de alcance não pode derrubar a varredura
    * das outras sessões — mas a falha vira erro no log, nunca silêncio.
    */
+  /**
+   * O produto pede ao CD do cliente que avise quando a versão sobe (D50).
+   *
+   * Ordem do dono, 26/08: "o gitorch decide isso, um dos agentes tem que pensar
+   * como fazer isso!". Ele recusou que um humano pusesse a chamada na mão — e
+   * com razão: remendado na mão, o produto continua incapaz e o próximo cliente
+   * cai no mesmo buraco. Aqui o produto abre a tarefa no repositório do cliente
+   * e o dev assíncrono a executa, como qualquer outro trabalho.
+   *
+   * Nunca lança: um repositório fora de alcance não pode derrubar a varredura
+   * das outras sessões — mas a falha vira erro no log, nunca silêncio.
+   */
+  const pedirOAvisoDePublicacao = async (
+    projeto: NonNullable<Awaited<ReturnType<PrismaClient['project']['findUnique']>>>
+  ): Promise<void> => {
+    const decisao = decidirPedirOAviso({
+      repositorio: projeto.wingId,
+      projectId: projeto.id,
+      declarado: comoPublicaDeclarado(projeto.runtimeConfig),
+      jaInstalado: projeto.deployNoticeInstalledAt !== null,
+      marcaAnterior: projeto.deployNoticeAskedKey,
+    })
+    if (!decisao.abrir) return
+
+    const endereco = process.env['GITORCH_PUBLIC_URL']
+    if (!endereco) {
+      // Sem saber o próprio endereço, a instrução sairia com um lugar errado
+      // para o CD chamar — pior que não pedir nada.
+      app.log.warn(
+        `[Scheduler] não sei meu endereço público (GITORCH_PUBLIC_URL); não dá para pedir o aviso de publicação a ${projeto.wingId}`
+      )
+      return
+    }
+
+    try {
+      // Fecha a janela que a marca no banco não fecha: issue criada e marca
+      // NÃO gravada (falha entre as duas) faria a varredura seguinte pedir de
+      // novo, e o cliente ganharia uma tarefa duplicada no quadro dele. O
+      // corpo da issue carrega a chave como marcador justamente para isto —
+      // reconhecer a tarefa pelo que ela é, não só pelo que anotamos.
+      const token = process.env['GITORCH_GITHUB_TOKEN']
+      if (token) {
+        const abertas = (await ghGet(
+          `/repos/${projeto.wingId}/issues?state=open&labels=${encodeURIComponent(TASK_LABEL)}&per_page=100`,
+          token
+        )) as Array<{ body?: string | null; title?: string | null }>
+        if (jaExisteOPedido(abertas ?? [])) {
+          // Grava a marca que faltava, para não repetir esta leitura a cada tique.
+          await app.prisma.project.update({
+            where: { id: projeto.id },
+            data: { deployNoticeAskedKey: decisao.chave },
+          })
+          app.log.info(
+            `[Scheduler] o pedido de aviso já está aberto em ${projeto.wingId}; só marquei aqui`
+          )
+          return
+        }
+      }
+
+      // Caminho ÚNICO de escrita de issue no repositório do cliente.
+      const criada = await criarIssueDeDesejo({
+        repo: projeto.wingId,
+        titulo: decisao.titulo,
+        corpo: corpoDoPedidoDeAviso({
+          repositorio: projeto.wingId,
+          projectId: projeto.id,
+          endereco,
+        }),
+        etiquetas: decisao.etiquetas,
+        log: { onError: (m) => app.log.error(m), onWarn: (m) => app.log.warn(m) },
+      })
+      // A marca é gravada DEPOIS de a issue existir de verdade: gravar antes e
+      // falhar a escrita deixaria o projeto marcado como "já pedido" sem tarefa
+      // nenhuma — o silêncio exato que isto veio acabar.
+      await app.prisma.project.update({
+        where: { id: projeto.id },
+        data: { deployNoticeAskedKey: decisao.chave },
+      })
+      app.log.info(
+        `[Scheduler] pedi ao ${projeto.wingId} que o CD dele avise quando sobe ao ar (issue #${criada.numero})`
+      )
+    } catch (err) {
+      app.log.error(
+        err,
+        `[Scheduler] não foi possível pedir o aviso de publicação a ${projeto.wingId}`
+      )
+    }
+  }
+
   const abrirConsertoDePublicacao = async (args: {
     projeto: NonNullable<Awaited<ReturnType<PrismaClient['project']['findUnique']>>>
     sessao: LinhaDeSessao
@@ -4585,6 +4680,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         }
 
         if (desfecho.tipo === 'esperar-aviso') {
+          // Antes de qualquer coisa: o CD deste cliente sabe avisar? Se não
+          // souber, esperar é esperar para sempre — então o produto abre a
+          // tarefa que instala a chamada lá (D50). A decisão é deduplicada,
+          // então isto não vira uma issue por tique.
+          await pedirOAvisoDePublicacao(projeto)
+
           // O aviso JÁ CHEGOU? A rota de aviso grava o veredito na linha, mas
           // quem encerra a entrega (fecha a sessão, avisa o dono, resolve o
           // card) é esta varredura — como em todos os outros caminhos. Sem
