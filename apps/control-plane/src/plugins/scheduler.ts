@@ -114,7 +114,11 @@ import {
   marcarDesistencia,
   marcarRespondida,
 } from '../services/pergunta-sem-resposta.js'
-import { reservarAResposta, type PrismaParaReserva } from '../services/reservar-a-resposta.js'
+import {
+  reservarAResposta,
+  devolverAReserva,
+  type PrismaParaReserva,
+} from '../services/reservar-a-resposta.js'
 import { hashDaMensagem } from '../services/session-watch.js'
 import type { StepExecutor } from '../services/role-rails.js'
 import {
@@ -4789,13 +4793,40 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       // Outra acordada pegou esta: tenta a próxima em vez de desistir da vez.
       if (!minha) continue
 
-      const { destino, mensagemParaODev } = await runDuvidaMissionViaRails({
-        pergunta,
-        repository: args.repository,
-        issueNumber: esperando.issueNumber,
-        execute: args.execute,
-        contextBlocks: args.contextBlocks,
-      })
+      // Se quem falhar for o MOTOR, a tentativa é DEVOLVIDA. O dono recebeu
+      // (26/08 21:49): "tentei responder 3 vezes sem conseguir" na tarefa #246 —
+      // e as três mortes foram `Individual quota reached`, nenhuma tinha a ver
+      // com a pergunta. Como `desisti` não tem volta, algumas horas sem cota
+      // condenavam a pergunta para sempre: o motor voltaria e ninguém tentaria
+      // de novo. Uma tentativa é "formulei uma resposta e ela não serviu";
+      // motor sem cota não formulou nada.
+      let resultadoDaDuvida: Awaited<ReturnType<typeof runDuvidaMissionViaRails>>
+      try {
+        resultadoDaDuvida = await runDuvidaMissionViaRails({
+          pergunta,
+          repository: args.repository,
+          issueNumber: esperando.issueNumber,
+          execute: args.execute,
+          contextBlocks: args.contextBlocks,
+        })
+      } catch (err) {
+        if (!isEngineFault(err, err instanceof Error ? err.message : String(err))) throw err
+        await devolverAReserva({
+          prisma: app.prisma as unknown as PrismaParaReserva,
+          sessionName: esperando.sessionName,
+          hashDaPergunta,
+          tentativa: decisao.tentativa,
+          marcaAnterior: esperando.answeredHash,
+          agora: new Date(),
+        }).catch(() => false)
+        app.log.warn(
+          err,
+          `[Scheduler] o motor não deu conta de responder a dúvida da tarefa #${esperando.issueNumber} ` +
+            `de ${args.repository}; a tentativa foi devolvida e a pergunta continua na fila`
+        )
+        return
+      }
+      const { destino, mensagemParaODev } = resultadoDaDuvida
 
       if (destino.tipo === 'perguntar-ao-dono' || !mensagemParaODev) {
         // Sobe para quem pode decidir. Sem chat ligado não há a quem perguntar:
