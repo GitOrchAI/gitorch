@@ -45,6 +45,9 @@ export interface RuntimeExecutionResult {
   stderr: string
   exitCode: number
   durationMs: number
+  failedStep?: string
+  errorDetails?: string
+  recoveryAction?: 'auto-rollback' | 'none'
 }
 
 export interface RuntimeCommandRequest {
@@ -337,22 +340,42 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
           ? []
           : [...(options.promptSeparator ? [options.promptSeparator] : []), effectivePrompt]
 
-      const result = await runner({
-        binary: options.binary,
-        args: [...baseArgs, ...modelArgs, ...workspaceArgs, ...promptArgs],
-        env,
-        cwd: request.cwd,
-        timeoutMs: request.timeoutMs,
-        ...(options.promptViaStdin && !options.promptArgName ? { stdin: request.prompt } : {}),
-      })
+      try {
+        const result = await runner({
+          binary: options.binary,
+          args: [...baseArgs, ...modelArgs, ...workspaceArgs, ...promptArgs],
+          env,
+          cwd: request.cwd,
+          timeoutMs: request.timeoutMs,
+          ...(options.promptViaStdin && !options.promptArgName ? { stdin: request.prompt } : {}),
+        })
 
-      return {
-        missionId: request.missionId,
-        runtime: options.runtime,
-        output: result.stdout,
-        stderr: result.stderr,
-        exitCode: result.exitCode,
-        durationMs: result.durationMs,
+        const failed = result.exitCode !== 0
+        return {
+          missionId: request.missionId,
+          runtime: options.runtime,
+          output: result.stdout,
+          stderr: result.stderr,
+          exitCode: result.exitCode,
+          durationMs: result.durationMs,
+          ...(failed ? {
+            failedStep: 'execute-runner',
+            errorDetails: result.stderr,
+            recoveryAction: 'none'
+          } : {})
+        }
+      } catch (error: unknown) {
+        return {
+          missionId: request.missionId,
+          runtime: options.runtime,
+          output: '',
+          stderr: String(error),
+          exitCode: 1,
+          durationMs: 0,
+          failedStep: 'execute-runner',
+          errorDetails: String(error),
+          recoveryAction: 'none',
+        }
       }
     },
   }
@@ -441,6 +464,9 @@ export function createPythonSdkRuntimeAdapter(
           stderr: err.stderr || err.message || String(error),
           exitCode: timedOut ? 124 : normalizeExitCode(err.code),
           durationMs: Date.now() - start,
+          failedStep: 'execute-python-script',
+          errorDetails: err.message || String(error),
+          recoveryAction: 'none',
         }
       }
     },

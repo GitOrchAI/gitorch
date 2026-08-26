@@ -111,6 +111,25 @@ export class AgentOrchestrator {
         cwd: allocation?.path,
         timeoutMs: input.timeoutMs,
       })
+
+      if (result.exitCode !== 0 || result.failedStep) {
+        if ('handleRuntimeFailure' in this.workspace) {
+          ;(this.workspace as any).handleRuntimeFailure(
+            result.errorDetails || result.stderr || 'Unknown runtime error',
+            result.failedStep || 'run-mission',
+            false
+          )
+        }
+      }
+    } catch (err: unknown) {
+      if ('handleRuntimeFailure' in this.workspace) {
+        ;(this.workspace as any).handleRuntimeFailure(
+          String(err),
+          'run-mission',
+          false
+        )
+      }
+      throw err
     } finally {
       await this.workspace.hibernateWorkspace(userId, mission.projectId)
     }

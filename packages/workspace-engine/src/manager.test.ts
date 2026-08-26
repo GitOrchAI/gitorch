@@ -21,6 +21,7 @@ vi.mock('node:child_process', () => {
 vi.mock('node:fs/promises', () => {
   return {
     mkdir: vi.fn().mockResolvedValue(undefined),
+    rm: vi.fn().mockResolvedValue(undefined),
   }
 })
 
@@ -55,6 +56,54 @@ describe('WorkspaceManager', () => {
     expect(jailerCall).toBeDefined()
     expect(jailerCall![1]).toContain('wsuser123projectabc')
     expect(jailerCall![1]).toContain('/var/lib/gitorch/workspaces/user-123/project-abc')
+  })
+
+  it('should handle allocation failure, rollback, and emit workspace-error', async () => {
+    const error = new Error('Jailer failed')
+    vi.mocked(execFile).mockImplementationOnce((file, args, options, cb) => {
+      const callback =
+        typeof cb === 'function' ? cb : typeof options === 'function' ? options : null
+      if (callback) {
+        callback(error, { stdout: '', stderr: '' })
+      }
+      return {}
+    })
+
+    const onWorkspaceError = vi.fn()
+    manager.on('workspace-error', onWorkspaceError)
+
+    const userId = 'user-fail'
+    const projectId = 'project-fail'
+    await expect(manager.allocateWorkspace(userId, projectId)).rejects.toThrow('Jailer failed')
+
+    expect(onWorkspaceError).toHaveBeenCalledWith({
+      failedStep: 'allocateWorkspace',
+      errorDetails: String(error),
+      recoveryAction: 'auto-rollback',
+    })
+    expect(fs.rm).toHaveBeenCalledWith(`/var/lib/gitorch/workspaces/${userId}/${projectId}`, {
+      recursive: true,
+      force: true,
+    })
+  })
+
+  it('should handle runtime failure explicitly via handleRuntimeFailure', () => {
+    const onWorkspaceError = vi.fn()
+    manager.on('workspace-error', onWorkspaceError)
+
+    manager.handleRuntimeFailure('Error from runner', 'run-mission', false)
+    expect(onWorkspaceError).toHaveBeenCalledWith({
+      failedStep: 'run-mission',
+      errorDetails: 'Error from runner',
+      recoveryAction: 'none',
+    })
+
+    manager.handleRuntimeFailure('Critical error', 'some-step', true)
+    expect(onWorkspaceError).toHaveBeenCalledWith({
+      failedStep: 'some-step',
+      errorDetails: 'Critical error',
+      recoveryAction: 'auto-rollback',
+    })
   })
 
   it('should hibernate a workspace', async () => {
