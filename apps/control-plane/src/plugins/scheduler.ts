@@ -49,6 +49,12 @@ import {
 } from '../services/qa-rails-mission.js'
 import { runSmDelegation } from '../services/sm-delegation.js'
 import { criarFilaDeJulgamento } from '../services/fila-de-julgamento.js'
+import { livenessCommandFor } from '../services/engine-liveness.js'
+import {
+  agruparPorProvedor,
+  decidirRenovacaoDoMotor,
+  ehRevogacaoDefinitiva,
+} from '../services/renovar-motores.js'
 import { criarPassagemDeBastao } from '../services/passar-o-bastao.js'
 import { criarRegistroDeMotorMorto } from '../services/motor-em-pausa.js'
 import { criarRegistroDeDescanso, type OrigemDoDisparo } from '../services/descanso-apos-vazia.js'
@@ -5464,6 +5470,137 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     }
   }
 
+  /** De hora em hora, como o vigia do GitHub. */
+  const CADENCIA_DA_RENOVACAO_DE_MOTORES_MS = 60 * 60_000
+  let ultimaRenovacaoDeMotores = 0
+
+  /**
+   * Renova UM motor: materializa a credencial num HOME temporário, chama o CLI
+   * e devolve ao cofre o que ele renovou.
+   *
+   * É o caminho já provado do executor local, e a prova de que funciona é de
+   * 20/08: rodar o CLI no HOME do usuário fez o token pular de 20/07 para
+   * 20/08. O refresh token ainda valia; o que faltava era chamar o CLI.
+   *
+   * O prompt é o menor possível de propósito — a renovação é efeito colateral
+   * de o CLI subir, não do que ele responde. Gastar contexto aqui seria pagar
+   * duas vezes pelo mesmo efeito.
+   */
+  const renovarUmMotor = async (
+    userId: string,
+    runtime: string
+  ): Promise<{ ok: boolean; saida: string }> => {
+    const dir = path.join(os.tmpdir(), `gitorch-renova-${randomUUID()}`)
+    await fs.mkdir(dir, { recursive: true, mode: 0o700 })
+    try {
+      const materializou = await app.engineConnections.materializeToHome(userId, runtime, dir)
+      if (!materializou) return { ok: false, saida: 'sem credencial no cofre' }
+
+      // O MESMO comando da checagem de vida, e não um prompt: subir o CLI já
+      // basta para ele renovar o token, e um comando barato de listar/status
+      // não gasta cota nem contexto do cliente. Reaproveitado de
+      // engine-liveness.ts para não existirem dois mapas de binário.
+      const comando = livenessCommandFor(runtime)
+      if (!comando) return { ok: false, saida: `motor ${runtime} sem comando conhecido` }
+
+      const execucao = await Promise.resolve(
+        realRuntimeCommandRunner({
+          binary: comando.bin,
+          args: comando.args,
+          cwd: dir,
+          env: { ...process.env, HOME: dir } as Record<string, string>,
+          timeoutMs: 120_000,
+        })
+      ).catch((err: unknown) => ({
+        exitCode: 1,
+        stdout: '',
+        stderr: err instanceof Error ? err.message : String(err),
+      }))
+
+      // No FINALLY do try, não no caminho de sucesso: mesmo uma chamada que
+      // termina mal pode ter renovado a credencial antes de terminar, e jogar
+      // isso fora é perder de graça uma credencial boa.
+      await app.engineConnections
+        .captureFromHome(userId, runtime, dir)
+        .catch((err: unknown) =>
+          app.log.warn(`[Scheduler] não deu para devolver ${runtime} ao cofre: ${String(err)}`)
+        )
+
+      const saida = `${execucao.stdout ?? ''}\n${execucao.stderr ?? ''}`
+      return { ok: execucao.exitCode === 0, saida }
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined)
+    }
+  }
+
+  /**
+   * O vigia que mantém os MOTORES vivos (promessa do dono: "conectar uma vez e
+   * nunca mais").
+   *
+   * O motor que roda missão se renova de tabela — o CLI renova sozinho quando é
+   * chamado, provado ao vivo em 20/08. O que morre é o motor que fica dias
+   * PARADO: foi assim que o codex venceu em 29/07 sem ninguém notar e a esteira
+   * ficou parada de 17 a 20/08.
+   *
+   * Renovar aqui é chamar o CLI num HOME temporário e devolver ao cofre o que
+   * ele renovou — o mesmo caminho já provado do executor local, que
+   * materializa, roda e captura de volta.
+   *
+   * Contas do MESMO provedor vão em SÉRIE: em alguns provedores o refresh token
+   * é rotativo, e renovar duas contas do mesmo provedor em paralelo perde uma
+   * delas. Provedores diferentes correm juntos, que não têm esse risco.
+   *
+   * Nunca rejeita: falha aqui não pode derrubar o tique.
+   */
+  const renovarMotoresDoRelogio = async (): Promise<void> => {
+    if (Date.now() - ultimaRenovacaoDeMotores < CADENCIA_DA_RENOVACAO_DE_MOTORES_MS) return
+    ultimaRenovacaoDeMotores = Date.now()
+
+    const agora = new Date()
+    const conexoes = await app.prisma.engineConnection.findMany({
+      where: { runtime: { not: 'github' } },
+      select: { userId: true, runtime: true, status: true, expiresAt: true, updatedAt: true },
+    })
+
+    const aRenovar = conexoes.filter((c) => decidirRenovacaoDoMotor(c, agora).tipo === 'renovar')
+    if (aRenovar.length === 0) return
+
+    // Um grupo por provedor; dentro do grupo, um de cada vez.
+    await Promise.all(
+      agruparPorProvedor(aRenovar).map(async (grupo) => {
+        for (const conexao of grupo) {
+          const motivo = decidirRenovacaoDoMotor(conexao, agora).motivo
+          const resultado = await renovarUmMotor(conexao.userId, conexao.runtime)
+          if (resultado.ok) {
+            app.log.info(
+              `[Scheduler] motor ${conexao.runtime} do dono ${conexao.userId} renovado (${motivo})`
+            )
+            continue
+          }
+          if (ehRevogacaoDefinitiva(resultado.saida)) {
+            // A ÚNICA exceção à promessa de conectar uma vez e nunca mais.
+            app.log.warn(
+              `[Scheduler] motor ${conexao.runtime} do dono ${conexao.userId} foi REVOGADO; o cliente precisa reconectar`
+            )
+            await app.prisma.engineConnection
+              .updateMany({
+                where: { userId: conexao.userId, runtime: conexao.runtime },
+                data: { status: 'needs_reconnect' },
+              })
+              .catch(() => undefined)
+            continue
+          }
+          // Transitório: tenta de novo na próxima passada, calado. Marcar como
+          // revogado por causa de uma queda de rede seria tirar o acesso do
+          // cliente por um problema nosso.
+          app.log.warn(
+            `[Scheduler] não deu para renovar ${conexao.runtime} do dono ${conexao.userId} agora; tenta na próxima hora`
+          )
+        }
+      })
+    )
+  }
+
   const tick = async () => {
     // PRIMEIRO de tudo: um token do GitHub vencido no meio do tique derruba
     // qualquer missão que precise dele (materializeToHome recusa e a missão
@@ -5473,6 +5610,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // passada sozinha, então nada precisa ser feito com o retorno aqui.
     await completarAgendasDosProjetos()
     await renovarTokensGithubDoRelogio(app)
+    // Os MOTORES pelo mesmo motivo do GitHub, e com a mesma disciplina: o que
+    // fica parado vence sozinho, e vencer em silêncio já parou a esteira por
+    // três dias. Nunca rejeita.
+    await renovarMotoresDoRelogio().catch((err) =>
+      app.log.error(err, '[Scheduler] a renovação de motores falhou; tenta na próxima hora')
+    )
     // Só DEPOIS: quem perdeu o acesso ao repositório não pode ter o dia
     // começando com uma missão escrevendo lá. `reconferirAcessoDoRelogio`
     // nunca rejeita e só pergunta ao GitHub sobre os projetos cujo ciclo
