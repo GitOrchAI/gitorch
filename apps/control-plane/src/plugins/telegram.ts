@@ -77,6 +77,23 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
   })
   app.decorate('agentQuestionService', agentQuestionService)
 
+  // Dispara uma mensagem simples para o dono de um projeto.
+  // Usado para notificar falhas de implantação e outros alertas que não exigem input.
+  const sendMessage = botToken
+    ? async (projectId: string, text: string): Promise<void> => {
+        const project = await app.prisma.project.findUnique({
+          where: { id: projectId },
+          include: { user: true },
+        })
+        if (!project) return
+        const chatId = await resolveNotifyChatId(app.prisma, project)
+        if (!chatId) return
+
+        await sendTelegramMessage({ botToken, chatId, text })
+      }
+    : async (): Promise<void> => {}
+  app.decorate('sendTelegramMessage', sendMessage)
+
   // Em teste não se abre laço nem socket (paridade com o scheduler): a lógica
   // toda é testada nos serviços, sem rede. Em modo pipeline-check (F2.3/P1-2)
   // também não: a instância de verificação escutando o MESMO bot que a prod
@@ -182,6 +199,10 @@ declare module 'fastify' {
      * "mudo" (sem notify) por engano.
      */
     agentQuestionService?: AgentQuestionService
+    /**
+     * Envia uma mensagem arbitrária para o dono de um projeto via Telegram.
+     */
+    sendTelegramMessage?: (projectId: string, text: string) => Promise<void>
   }
 }
 

@@ -78,6 +78,8 @@ function toGitHubEventName(event: string | undefined): GitHubWebhookEventName {
     'projects_v2_item',
     'projects_v2_status_update',
   ]
+  // Fallback seguro: se não for suportado pelo sync engine, passamos como ping.
+  // deployment_status não é suportado pelo pacote interno, então será 'ping'.
   return supported.includes(event as GitHubWebhookEventName)
     ? (event as GitHubWebhookEventName)
     : 'ping'
@@ -235,6 +237,18 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
               { eventId: syncEvent.id, reason: ingestResult.reason },
               'GitHub event deduplicated'
             )
+          }
+
+          // Notifica falha de deploy (deployment_status error/failure) via Telegram
+          if (event === 'deployment_status') {
+            const state = parsedPayload.deployment_status?.state
+            if (state === 'failure' || state === 'error') {
+              const step = parsedPayload.deployment_status?.environment || 'unknown environment'
+              const text = `Falha de Implantação!\nEtapa: ${step}\nIntervenção manual necessária: Sim`
+              if (app.sendTelegramMessage) {
+                await app.sendTelegramMessage(project.id, text)
+              }
+            }
           }
 
           // Sistema nervoso do loop: acorda o agente do papel certo. Fire-and-

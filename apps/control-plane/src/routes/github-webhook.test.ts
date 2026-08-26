@@ -139,6 +139,45 @@ describe('GitHub Webhook Routes', () => {
       })
     )
   })
+
+  test('POST /api/webhooks/github envia mensagem no Telegram em falha de deploy (deployment_status error/failure)', async () => {
+    app.prisma.webhookDelivery.create = vi.fn().mockResolvedValue({})
+    app.prisma.webhookDelivery.updateMany = vi.fn().mockResolvedValue({})
+    app.prisma.project.findFirst = vi
+      .fn()
+      .mockResolvedValue({ id: 'proj_deploy', wingId: 'wing_deploy' })
+    app.prisma.project.update = vi.fn().mockResolvedValue({})
+
+    // Mock o decorator adicionado pelo plugin
+    app.sendTelegramMessage = vi.fn().mockResolvedValue(undefined)
+
+    const payloadStr = JSON.stringify({
+      deployment_status: { state: 'failure', environment: 'produção' },
+      repository: { id: 123 },
+    })
+    const signature =
+      'sha256=' + crypto.createHmac('sha256', 'test-secret').update(payloadStr).digest('hex')
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: {
+        'x-hub-signature-256': signature,
+        'x-github-event': 'deployment_status',
+        'x-github-delivery': 'delivery_deploy',
+      },
+      payload: {
+        deployment_status: { state: 'failure', environment: 'produção' },
+        repository: { id: 123 },
+      },
+    })
+
+    expect(res.statusCode).toBe(200)
+    expect(app.sendTelegramMessage).toHaveBeenCalledWith(
+      'proj_deploy',
+      'Falha de Implantação!\nEtapa: produção\nIntervenção manual necessária: Sim'
+    )
+  })
 })
 
 // Isolado num describe próprio (achados I1/M2): request.ip via app.inject()
