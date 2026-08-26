@@ -90,7 +90,12 @@ import {
 } from '../services/conserto-de-publicacao.js'
 import { criarIssueDeDesejo } from '../services/desejo-no-github.js'
 import { runDuvidaMissionViaRails } from '../services/duvida-rails-mission.js'
-import { lerMarca, marcarRespondida } from '../services/pergunta-sem-resposta.js'
+import {
+  decidirSobreAPergunta,
+  marcarDesistencia,
+  marcarRespondida,
+} from '../services/pergunta-sem-resposta.js'
+import { reservarAResposta, type PrismaParaReserva } from '../services/reservar-a-resposta.js'
 import { hashDaMensagem } from '../services/session-watch.js'
 import type { StepExecutor } from '../services/role-rails.js'
 import {
@@ -4521,8 +4526,56 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // teria vez, porque a busca sempre pega a mais antiga. Trocar silêncio por
     // spam não é conserto.
     const hashDaPergunta = hashDaMensagem(pergunta)
-    const marca = lerMarca(esperando.answeredHash)
-    if (marca?.hash === hashDaPergunta && marca.situacao !== 'tentando') return
+    const decisao = decidirSobreAPergunta({
+      hashDaPergunta,
+      marca: esperando.answeredHash,
+    })
+    if (decisao.acao === 'nada') return
+
+    if (decisao.acao === 'desistir') {
+      // Bateu o teto com a mesma pergunta ainda na mesa. Parar de tentar é
+      // certo — não vira laço queimando motor. Parar em SILÊNCIO não: é
+      // trabalho parado que ninguém mais destrava sozinho.
+      //
+      // A desistência é marcada com escrita CONDICIONAL, como a reserva: sem
+      // isso, duas acordadas na mesma janela mandariam o mesmo aviso duas
+      // vezes ao dono. Um aviso, uma vez.
+      const primeiro = await app.prisma.devSession
+        .updateMany({
+          where: { sessionName: esperando.sessionName, answeredHash: esperando.answeredHash },
+          data: { answeredHash: marcarDesistencia(hashDaPergunta, decisao.tentativas) },
+        })
+        .catch(() => ({ count: 0 }))
+      if (primeiro.count === 0) return
+
+      const projetoDaDesistencia = await app.prisma.project.findUnique({
+        where: { id: args.projectId },
+      })
+      if (projetoDaDesistencia) {
+        await avisarDonoDoProjeto(
+          projetoDaDesistencia,
+          `GitOrch: o dev parou na tarefa #${esperando.issueNumber} de ${args.repository} e eu ` +
+            `tentei responder ${decisao.tentativas} vezes sem conseguir. O trabalho está parado ` +
+            `esperando essa resposta.`
+        )
+      }
+      return
+    }
+
+    // RESERVA antes de gastar motor. Duas acordadas do QA na mesma janela liam
+    // a mesma marca, as duas passavam pela conferência e as duas escreviam na
+    // sessão — o dev recebeu a mesma resposta duas vezes no mesmo minuto, e o
+    // produto pagou o motor em dobro. A escrita é condicional à marca lida:
+    // quem não escreve nenhuma linha perdeu a corrida e sai calado.
+    const minha = await reservarAResposta({
+      prisma: app.prisma as unknown as PrismaParaReserva,
+      sessionName: esperando.sessionName,
+      hashDaPergunta,
+      tentativa: decisao.tentativa,
+      marcaLida: esperando.answeredHash,
+      agora: new Date(),
+    })
+    if (!minha) return
 
     const { destino, mensagemParaODev } = await runDuvidaMissionViaRails({
       pergunta,
