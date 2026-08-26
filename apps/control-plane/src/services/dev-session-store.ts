@@ -40,6 +40,14 @@ export interface LinhaDeSessao {
   /** Quantas vezes já tentamos reentregar esse pedido — o teto vive aqui. */
   reworkNoticeAttempts: number
   /**
+   * BYOK (D34): a conta do dev assíncrono em que esta sessão NASCEU. É por ela
+   * que a vigília sabe com qual chave falar sobre esta sessão — a conta do
+   * projeto não serve, porque ela muda quando o cliente conecta, troca ou
+   * desconecta a dele, e a sessão continua viva lá fora na conta antiga.
+   * Nulo = conta da instância.
+   */
+  devAccountId?: string | null
+  /**
    * Desde quando esta entrega está com a verificação automática pendente —
    * `null` enquanto nunca esteve, ou depois que `limparPendencia` apaga a
    * marca. É a partir dela que `decidirSobreVerificacao`
@@ -153,6 +161,15 @@ export async function abrirSessao(deps: {
   issueNumber: number
   sessionName: string
   agora: Date
+  /**
+   * BYOK (D34): a conta do dev assíncrono que está abrindo esta sessão. Fica
+   * GRAVADA na linha porque a conta do projeto muda depois (o cliente conecta,
+   * troca ou desconecta a dele) e a sessão continua viva lá fora na conta
+   * antiga: consultar, avisar ou arquivar com a chave da conta nova volta 404
+   * e a vaga fica presa na conta que a pessoa paga. Ausente = conta da
+   * instância.
+   */
+  devAccountId?: string | null
 }): Promise<ResultadoDeAbrirSessao> {
   try {
     await deps.prisma.devSession.upsert({
@@ -163,6 +180,7 @@ export async function abrirSessao(deps: {
         sessionName: deps.sessionName,
         state: 'QUEUED',
         stateCheckedAt: deps.agora,
+        devAccountId: deps.devAccountId ?? null,
         // Nasce com progresso marcado: sem isto a vigia leria "sem avanço
         // desde sempre" e trataria como parada uma sessão que acabou de
         // começar.
@@ -173,6 +191,9 @@ export async function abrirSessao(deps: {
         closedAt: null,
         closedReason: null,
         stateCheckedAt: deps.agora,
+        // A retomada pode acontecer depois de o cliente ter trocado de conta:
+        // quem reabre a linha é quem passa a responder por ela.
+        devAccountId: deps.devAccountId ?? null,
       },
     })
     return { ok: true }
@@ -224,9 +245,21 @@ export async function sessoesVivas(deps: {
  */
 export async function nomesDeSessoesVivasDaInstancia(deps: {
   prisma: PrismaDevSession
+  /**
+   * BYOK (D34): restringe à conta indicada (`null` = conta da instância).
+   * Omitir devolve TODAS as contas, que é o certo para quem só quer saber o
+   * que está vivo aqui dentro — mas ERRADO para cruzar contra a lista de um
+   * fornecedor, porque cada conta enxerga só as próprias sessões: sem o
+   * filtro, a reconciliação de uma conta acharia órfã a sessão viva de outra
+   * e arquivaria trabalho em andamento alheio.
+   */
+  devAccountId?: string | null
 }): Promise<string[]> {
   const linhas = await deps.prisma.devSession.findMany({
-    where: { closedAt: null },
+    where:
+      deps.devAccountId === undefined
+        ? { closedAt: null }
+        : { closedAt: null, devAccountId: deps.devAccountId },
     select: { sessionName: true },
   })
   return linhas.map((l) => l.sessionName)
@@ -722,14 +755,23 @@ export type ResultadoDaReserva = { ok: true } | { ok: false; motivo: MotivoDeRec
  */
 export async function reservarVagaNaConta(deps: {
   prisma: PrismaDevSession
-  /** Os projetos que dividem a mesma conta do dev externo. */
-  projectIdsDaConta: string[]
+  /**
+   * BYOK (D34): a conta cujo teto está sendo conferido. A contagem é pela
+   * CONTA QUE ABRIU cada sessão, e não pelos projetos que hoje dividem a
+   * conta: um projeto que acabou de conectar a conta própria carrega consigo
+   * as sessões que abriu na conta do dono, e contá-las faria o teto novo do
+   * cliente nascer consumido por trabalho que nunca tocou a conta dele — e,
+   * na desconexão, faria essas sessões roubarem vaga de todo mundo que divide
+   * a conta da instância. Nulo = conta da instância.
+   */
+  devAccountId?: string | null
   projectId: string
   issueNumber: number
   sessionName: string
   tetoConcorrentes: number
   agora: Date
 }): Promise<ResultadoDaReserva> {
+  const conta = deps.devAccountId ?? null
   const executar = async (tx: PrismaDevSession): Promise<ResultadoDaReserva> => {
     // Sem `count` disponível não há como conferir o teto. Abrir sem conferir
     // seria pior que recusar: o produto voltaria a pedir mais do que a conta
@@ -738,7 +780,7 @@ export async function reservarVagaNaConta(deps: {
       return { ok: false, motivo: 'sem-vaga-na-conta' }
     }
     const vivas = await tx.devSession.count({
-      where: { projectId: { in: deps.projectIdsDaConta }, closedAt: null },
+      where: { devAccountId: conta, closedAt: null },
     })
     if (vivas >= deps.tetoConcorrentes) {
       return { ok: false, motivo: 'sem-vaga-na-conta' }
@@ -749,6 +791,7 @@ export async function reservarVagaNaConta(deps: {
       issueNumber: deps.issueNumber,
       sessionName: deps.sessionName,
       agora: deps.agora,
+      devAccountId: conta,
     })
   }
 

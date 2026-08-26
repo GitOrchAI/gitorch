@@ -48,7 +48,7 @@ function bancoFalso(vivasIniciais: number, serializa = true) {
 
 describe('reservarVagaNaConta', () => {
   const comum = {
-    projectIdsDaConta: ['p1', 'p2'],
+    devAccountId: null,
     projectId: 'p1',
     tetoConcorrentes: 15,
     agora: new Date('2026-08-25T22:00:00Z'),
@@ -133,5 +133,57 @@ describe('reservarVagaNaConta', () => {
       sessionName: 'reserva/p1/9',
     })
     expect(r.ok).toBe(false)
+  })
+})
+
+describe('BYOK: a contagem é pela conta que ABRIU a sessão (D34)', () => {
+  it('conta pela conta, nunca pelos projetos que hoje dividem a conta', async () => {
+    const banco = bancoFalso(0)
+    await reservarVagaNaConta({
+      prisma: banco,
+      devAccountId: 'conta-do-cliente',
+      projectId: 'p1',
+      issueNumber: 7,
+      sessionName: 's/7',
+      tetoConcorrentes: 15,
+      agora: new Date(),
+    })
+    // A pergunta feita ao banco tem que ser "quantas vivas NESTA conta".
+    expect(banco.devSession.count).toHaveBeenCalledWith({
+      where: { devAccountId: 'conta-do-cliente', closedAt: null },
+    })
+  })
+
+  it('a sessão nasce carimbada com a conta — é o que permite fechá-la com a chave certa depois', async () => {
+    const banco = bancoFalso(0)
+    await reservarVagaNaConta({
+      prisma: banco,
+      devAccountId: 'conta-do-cliente',
+      projectId: 'p1',
+      issueNumber: 7,
+      sessionName: 's/7',
+      tetoConcorrentes: 15,
+      agora: new Date(),
+    })
+    const chamada = (banco.devSession.upsert as ReturnType<typeof vi.fn>).mock.calls[0]![0]
+    expect(chamada.create.devAccountId).toBe('conta-do-cliente')
+    expect(chamada.update.devAccountId).toBe('conta-do-cliente')
+  })
+
+  it('sem conta própria, a sessão fica na conta da instância (null) e conta com as outras de lá', async () => {
+    const banco = bancoFalso(0)
+    await reservarVagaNaConta({
+      prisma: banco,
+      projectId: 'p1',
+      issueNumber: 7,
+      sessionName: 's/7',
+      tetoConcorrentes: 15,
+      agora: new Date(),
+    })
+    expect(banco.devSession.count).toHaveBeenCalledWith({
+      where: { devAccountId: null, closedAt: null },
+    })
+    const chamada = (banco.devSession.upsert as ReturnType<typeof vi.fn>).mock.calls[0]![0]
+    expect(chamada.create.devAccountId).toBeNull()
   })
 })

@@ -150,6 +150,10 @@ import {
   type ResolvedOwner,
 } from '../services/onboarding-board.js'
 import { lerCredencialDoProjeto } from '../services/project-credential.js'
+import {
+  resolverCredencialDoDev,
+  recadoDaRecusa,
+} from '../services/credencial-do-dev-do-cliente.js'
 import { provaDeEscritaNoUso } from '../services/acesso-ao-repositorio.js'
 import {
   reconferirAcessoDosProjetos,
@@ -1793,9 +1797,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     fecharSessao({
       prisma: app.prisma as unknown as PrismaDevSession,
       ...args,
-      arquivarNoFornecedor: (sessionName) =>
+      arquivarNoFornecedor: async (sessionName) =>
         arquivarSessaoJules({
-          apiKey: process.env['JULES_API_KEY'],
+          // A chave da conta em que a sessão NASCEU (BYOK, D34): com a chave
+          // errada o arquivamento volta 404, a linha local fecha assim mesmo
+          // (por desenho, para o registro não travar) e a vaga real fica presa
+          // na conta do cliente sem nada para reconciliá-la depois.
+          apiKey: await chaveDaSessao(sessionName),
           sessionName,
           onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
         }),
@@ -2107,6 +2115,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     userId: string | null
     runtimeConfig?: unknown
     devPlan?: string | null
+    /** BYOK: a impressão digital da conta do dev assíncrono deste cliente. */
+    devAccountId?: string | null
   }
 
   // Tenta a cadeia de motores em ordem; sucesso encerra; erro de cota/auth cai
@@ -2285,14 +2295,18 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             // pé só trocaria uma delegação perdida por uma vaga presa.
             desfazerSessao: async (sessionName) => {
               await arquivarSessaoJules({
-                apiKey: process.env['JULES_API_KEY'],
+                // A mesma conta que abriu a sessão precisa ser a que a desfaz:
+                // com a chave errada o desfazer volta 404 e a vaga fica presa
+                // na conta do cliente até a vigília expirar.
+                apiKey: (await chaveDoDevDoProjeto(project.id)) ?? undefined,
                 sessionName,
                 onWarn: (m) => app.log.warn(m),
               })
             },
             criarSessaoDev: async ({ repository, titulo, prompt }) =>
               criarSessaoJules({
-                apiKey: process.env['JULES_API_KEY'],
+                // BYOK (D34): a conta DO CLIENTE quando ele trouxe a dele.
+                apiKey: (await chaveDoDevDoProjeto(project.id)) ?? undefined,
                 repository,
                 startingBranch: process.env['GITORCH_DEV_BASE_BRANCH'] ?? 'main',
                 titulo,
@@ -2387,12 +2401,16 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               // um teto real de 100 e 15 — e foi isso que produziu mais de cem
               // delegações recusadas num único dia.
               //
-              // `idsDaMesmaConta` resolve hoje para todos os projetos (só
-              // existe a conta da instância) e, com BYOK, para os projetos que
-              // dividem a credencial daquele cliente.
               delegadasHoje: await app.prisma.devSession.count({
                 where: {
-                  projectId: { in: await idsDaMesmaConta(project) },
+                  // Pela CONTA QUE ABRIU cada sessão, não pelos projetos que
+                  // hoje dividem a conta: um projeto que acabou de conectar a
+                  // conta própria carrega as sessões que abriu na conta do
+                  // dono, e contá-las faria o teto novo do cliente nascer
+                  // consumido por trabalho que nunca tocou a conta dele — e,
+                  // na desconexão, faria essas sessões roubarem vaga de todo
+                  // mundo que divide a conta da instância.
+                  devAccountId: project.devAccountId ?? null,
                   createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
                 },
               }),
@@ -2400,7 +2418,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               // diferentes: a vaga libera quando a sessão termina; a cota de
               // 24h só devolve cada sessão 24h depois de ela ter começado.
               vivasNaConta: await app.prisma.devSession.count({
-                where: { projectId: { in: await idsDaMesmaConta(project) }, closedAt: null },
+                where: { devAccountId: project.devAccountId ?? null, closedAt: null },
               }),
               // Sem filtro de linha viva de propósito: a entrega mesclada
               // costuma ter a linha JÁ FECHADA, e é ela que precisa barrar a
@@ -2703,7 +2721,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                       }),
                     avisarSessao: async ({ sessionName, texto }) =>
                       responderSessaoJules({
-                        apiKey: process.env['JULES_API_KEY'],
+                        // BYOK (D34): o pedido de retrabalho tem que chegar na
+                        // conta em que a sessão nasceu, senão o veredito do QA
+                        // morre no comentário do PR — exatamente o defeito do
+                        // #79, que voltaria só para os clientes com conta própria.
+                        apiKey: await chaveDaSessao(sessionName),
                         sessionName,
                         texto,
                         onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
@@ -3345,35 +3367,63 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     if (agora.getTime() - ultimaReconciliacao < cadenciaDaReconciliacao) return
     ultimaReconciliacao = agora.getTime()
 
-    const apiKey = process.env['JULES_API_KEY']
-    if (!apiKey) return
+    // Uma varredura POR CONTA (BYOK, D34): cada conta do fornecedor enxerga só
+    // as próprias sessões, então cruzar a lista de uma conta contra as linhas
+    // vivas de todas marcaria como órfã a sessão viva de outro cliente — e a
+    // arquivaria, matando trabalho em andamento que alguém está pagando.
+    // A conta da instância (`null`) entra sempre; as dos clientes, quando
+    // existem, vêm do banco.
+    const contas: Array<string | null> = [null, ...(await contasDeClienteComCredencial())]
 
-    const relatorio = await varrerVagasVazadas({
-      listarNoFornecedor: () => listarSessoesJules({ apiKey, onWarn: (m) => app.log.warn(m) }),
-      // Da INSTÂNCIA INTEIRA, e é justamente por isso que é seguro: cruzar a
-      // lista completa do fornecedor contra as sessões de um projeto só
-      // marcaria como órfão o trabalho em andamento de todos os outros.
-      vivasNoBanco: () =>
-        nomesDeSessoesVivasDaInstancia({ prisma: app.prisma as unknown as PrismaDevSession }),
-      arquivarNoFornecedor: (sessionName) =>
-        arquivarSessaoJules({ apiKey, sessionName, onWarn: (m) => app.log.warn(m) }),
-      agora,
-      onWarn: (m) => app.log.warn(m),
-    })
+    let sobrouFila = false
+    for (const conta of contas) {
+      const apiKey = await chaveDaConta(conta)
+      if (!apiKey) continue
 
-    // Sobrou fila: volta em cinco minutos. Acabou (ou não deu para saber):
-    // volta à hora cheia.
-    cadenciaDaReconciliacao = relatorio.atingiuOTeto
-      ? CADENCIA_COM_FILA_MS
-      : CADENCIA_DA_RECONCILIACAO_MS
+      const relatorio = await varrerVagasVazadas({
+        listarNoFornecedor: () => listarSessoesJules({ apiKey, onWarn: (m) => app.log.warn(m) }),
+        vivasNoBanco: () =>
+          nomesDeSessoesVivasDaInstancia({
+            prisma: app.prisma as unknown as PrismaDevSession,
+            devAccountId: conta,
+          }),
+        arquivarNoFornecedor: (sessionName) =>
+          arquivarSessaoJules({ apiKey, sessionName, onWarn: (m) => app.log.warn(m) }),
+        agora,
+        onWarn: (m) => app.log.warn(m),
+      })
 
-    if (relatorio.arquivadas > 0 || relatorio.orfas > 0) {
-      app.log.info(
-        `[Scheduler] reconciliação de vagas: ${relatorio.examinadas} ativas no fornecedor, ` +
-          `${relatorio.orfas} sem dono aqui, ${relatorio.arquivadas} devolvidas` +
-          (relatorio.atingiuOTeto ? ' — ainda há fila, volto em 5 min' : '')
-      )
+      if (relatorio.atingiuOTeto) sobrouFila = true
+
+      if (relatorio.arquivadas > 0 || relatorio.orfas > 0) {
+        app.log.info(
+          `[Scheduler] reconciliação de vagas (${conta ?? 'conta da instância'}): ` +
+            `${relatorio.examinadas} ativas no fornecedor, ` +
+            `${relatorio.orfas} sem dono aqui, ${relatorio.arquivadas} devolvidas` +
+            (relatorio.atingiuOTeto ? ' — ainda há fila, volto em 5 min' : '')
+        )
+      }
     }
+
+    // Sobrou fila em qualquer conta: volta em cinco minutos. Acabou (ou não deu
+    // para saber): volta à hora cheia.
+    cadenciaDaReconciliacao = sobrouFila ? CADENCIA_COM_FILA_MS : CADENCIA_DA_RECONCILIACAO_MS
+  }
+
+  /**
+   * As contas de cliente que têm credencial utilizável agora.
+   *
+   * Conta sem credencial fica de fora de propósito: sem chave não há o que
+   * consultar nem o que arquivar naquela conta, e insistir só produziria
+   * chamada que volta 401 a cada hora.
+   */
+  const contasDeClienteComCredencial = async (): Promise<string[]> => {
+    const linhas = await app.prisma.project.findMany({
+      where: { devAccountId: { not: null }, encryptedDevApiKey: { not: null } },
+      select: { devAccountId: true },
+      distinct: ['devAccountId'],
+    })
+    return linhas.map((l) => l.devAccountId).filter((c): c is string => typeof c === 'string')
   }
 
   /**
@@ -3396,9 +3446,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     const abandonadas = sessoesAbandonadas({ linhas, agora })
     if (abandonadas.length === 0) return
 
-    const apiKey = process.env['JULES_API_KEY']
     for (const linha of abandonadas) {
       try {
+        // A chave é da conta em que a sessão NASCEU (BYOK, D34), lida linha a
+        // linha: uma varredura só, com a chave do dono, arquivaria errado toda
+        // sessão de cliente com conta própria.
+        const apiKey = await chaveDaSessao(linha.sessionName)
         await fecharSessao({
           prisma: app.prisma as unknown as PrismaDevSession,
           sessionName: linha.sessionName,
@@ -3604,30 +3657,42 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           prisma: app.prisma as unknown as PrismaDevSession,
           projectId,
         })
-        const julesApiKey = process.env['JULES_API_KEY']
+        // BYOK (D34): a chave é da conta em que CADA sessão nasceu, e não uma
+        // chave só fixada para o loop inteiro. Uma conta só faria toda consulta,
+        // aprovação de plano e pedido de retomada de cliente com conta própria
+        // voltar 404: a vigília leria "sem avanço" numa sessão que está
+        // progredindo e a trataria como abandonada.
+        //
+        // A conta vem das linhas JÁ lidas acima — nada de uma consulta por
+        // callback, que multiplicaria idas ao banco por sessão e por tique.
+        const contaDaSessao = new Map(
+          sessoesDoProjeto.map((linha) => [linha.sessionName, linha.devAccountId ?? null])
+        )
+        const chaveDaLinha = (sessionName: string): Promise<string | undefined> =>
+          chaveDaConta(contaDaSessao.get(sessionName) ?? null)
         const vigiaOut = await vigiarSessoes({
           sessoes: sessoesParaVigiaPreMerge(sessoesDoProjeto),
-          consultarSessao: (sessionName) =>
+          consultarSessao: async (sessionName) =>
             consultarSessaoJules({
-              apiKey: julesApiKey,
+              apiKey: await chaveDaLinha(sessionName),
               sessionName,
               onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
             }),
-          ultimaMensagem: (sessionName) =>
+          ultimaMensagem: async (sessionName) =>
             ultimaMensagemDoDevJules({
-              apiKey: julesApiKey,
+              apiKey: await chaveDaLinha(sessionName),
               sessionName,
               onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
             }),
-          aprovarPlano: (sessionName) =>
+          aprovarPlano: async (sessionName) =>
             aprovarPlanoJules({
-              apiKey: julesApiKey,
+              apiKey: await chaveDaLinha(sessionName),
               sessionName,
               onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
             }),
-          pedirParaContinuar: (sessionName) =>
+          pedirParaContinuar: async (sessionName) =>
             responderSessaoJules({
-              apiKey: julesApiKey,
+              apiKey: await chaveDaLinha(sessionName),
               sessionName,
               texto:
                 'Please continue working on this task from where you left off. If you are ' +
@@ -3648,9 +3713,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             registrarPr({ prisma: app.prisma as unknown as PrismaDevSession, ...args }),
           // A reentrega do pedido de retrabalho usa o MESMO canal do aviso
           // original — `sendMessage`, o único que a API oferece.
-          reentregarAviso: ({ sessionName, texto }) =>
+          reentregarAviso: async ({ sessionName, texto }) =>
             responderSessaoJules({
-              apiKey: julesApiKey,
+              apiKey: await chaveDaLinha(sessionName),
               sessionName,
               texto,
               onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
@@ -3789,18 +3854,87 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   const cacheDeMecanismo = new Map<string, { mecanismo: Mecanismo; expiraEm: number }>()
 
   /**
-   * Os projetos que consomem a MESMA cota do dev externo que este.
+   * A chave do dev assíncrono que ESTE projeto usa (BYOK, D34).
    *
-   * Hoje há uma conta só, a da instância, então são todos. Com BYOK cada
-   * cliente traz a dele e a lista encolhe para os projetos daquele cliente —
-   * é por isso que a pergunta existe como função, e não como constante.
+   * Decifrada no instante do uso e devolvida por valor, nunca guardada em
+   * arquivo nem escrita em log — mesma regra das credenciais dos motores.
+   * Recusa em vez de cair calada na conta do dono: gastar a conta de quem não
+   * pediu é dinheiro dos outros.
    */
-  const idsDaMesmaConta = async (projeto: { id: string }): Promise<string[]> => {
-    const todos = await app.prisma.project.findMany({ select: { id: true } })
-    const daConta = todos.map((p) => p.id)
-    // Nunca devolve vazio: o próprio projeto sempre conta, mesmo que a leitura
-    // volte vazia por algum motivo — contar zero liberaria delegação sem teto.
-    return daConta.length > 0 ? daConta : [projeto.id]
+  const chaveDoDevDoProjeto = async (projetoId: string): Promise<string | undefined> => {
+    const registro = await app.prisma.project.findUnique({
+      where: { id: projetoId },
+      select: { encryptedDevApiKey: true },
+    })
+    const resolvida = resolverCredencialDoDev({
+      credencialCifrada: registro?.encryptedDevApiKey ?? null,
+      chaveDaInstancia: process.env['JULES_API_KEY'],
+      decifrar: decryptCredential,
+    })
+    if (resolvida.ok) return resolvida.chave
+    app.log.warn(`[Scheduler] projeto ${projetoId}: ${recadoDaRecusa(resolvida.motivo)}`)
+    return undefined
+  }
+
+  /**
+   * A chave de uma CONTA específica (BYOK, D34).
+   *
+   * Sem cair na conta da instância quando a conta é de cliente: uma sessão que
+   * nasceu na conta do cliente só pode ser consultada, avisada ou arquivada com
+   * a chave DELE. Tentar com a do dono devolve 404 no fornecedor — a vigília
+   * passaria a ler "sem avanço" numa sessão que está progredindo, e o
+   * arquivamento nunca devolveria a vaga, que ficaria presa para sempre na
+   * conta que o cliente paga.
+   */
+  const chaveDaConta = async (
+    devAccountId: string | null | undefined
+  ): Promise<string | undefined> => {
+    // Conta da instância: é a do dono, no ambiente.
+    if (!devAccountId) return process.env['JULES_API_KEY']
+
+    const dono = await app.prisma.project.findFirst({
+      where: { devAccountId, encryptedDevApiKey: { not: null } },
+      select: { encryptedDevApiKey: true },
+    })
+    const resolvida = resolverCredencialDoDev({
+      credencialCifrada: dono?.encryptedDevApiKey ?? null,
+      // De propósito sem recuo para a chave da instância.
+      chaveDaInstancia: null,
+      decifrar: decryptCredential,
+    })
+    if (resolvida.ok) return resolvida.chave
+    app.log.warn(
+      `[Scheduler] conta ${devAccountId} do dev assíncrono sem credencial utilizável: ` +
+        `${recadoDaRecusa(resolvida.motivo)} — as sessões abertas nela ficam sem acompanhamento até religar`
+    )
+    return undefined
+  }
+
+  /**
+   * A chave da conta em que ESTA sessão nasceu.
+   *
+   * A conta do PROJETO não serve aqui: ela muda quando o cliente conecta,
+   * troca ou desconecta a dele, e a sessão continua existindo lá fora na conta
+   * antiga. Quem manda é o carimbo da linha.
+   */
+  const chaveDaSessao = async (sessionName: string): Promise<string | undefined> => {
+    let linha: { devAccountId: string | null } | null
+    try {
+      linha = await app.prisma.devSession.findUnique({
+        where: { sessionName },
+        select: { devAccountId: true },
+      })
+    } catch (err) {
+      // Não saber de qual conta é a sessão NÃO autoriza usar a do dono: seria
+      // mexer com a chave errada numa sessão que pode ser de um cliente, e o
+      // fornecedor devolveria 404 de qualquer jeito. Sem chave, quem chama
+      // avisa e segue — falha aberta, nunca falha silenciosa na conta errada.
+      app.log.warn(
+        `[Scheduler] não deu para descobrir a conta da sessão ${sessionName}: ${String(err)}`
+      )
+      return undefined
+    }
+    return chaveDaConta(linha?.devAccountId ?? null)
   }
 
   /**
