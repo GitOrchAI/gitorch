@@ -133,12 +133,8 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}
           persist-credentials: false
-
-      - name: Setup Node
+      - uses: ./.github/actions/setup-pnpm
         if: steps.evaluate.outputs.eligible == 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
 
       # `npm ci` e não `install`: instala exatamente o que está no lockfile
       # versionado. Este passo roda com token de escrita e acesso a secrets, então
