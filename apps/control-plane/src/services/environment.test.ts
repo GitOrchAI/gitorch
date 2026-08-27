@@ -110,8 +110,10 @@ describe('ClientEnvironmentService.createProvisional', () => {
     expect(env.path).toBe(path.join(baseDir, env.id))
     const stat = await fs.stat(env.path)
     expect(stat.isDirectory()).toBe(true)
-    // group e other não podem ter NENHUM acesso (guarda credenciais do cliente)
-    expect(stat.mode & 0o077).toBe(0)
+    if (process.platform !== 'win32') {
+      // group e other não podem ter NENHUM acesso (guarda credenciais do cliente)
+      expect(stat.mode & 0o077).toBe(0)
+    }
   })
 
   test('idempotente: segunda chamada reusa o provisional aberto (não multiplica ambiente)', async () => {

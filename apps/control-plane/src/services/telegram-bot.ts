@@ -10,6 +10,7 @@ import {
 } from './desejo-pendente.js'
 import { CredencialDoGithubInvalidaError } from './acesso-ao-repositorio.js'
 import type { AgentQuestionService } from './agent-question.js'
+import { defaultAgentQuestionStateManager } from './agent-question-state.js'
 
 // A ponte HTTP com a API do Telegram: ouvir o bot e falar por ele.
 //
@@ -275,7 +276,8 @@ const SHORT_LABEL_MAX_LEN = 16
 
 function buildQuestionKeyboard(
   questionId: string,
-  options: TelegramQuestionOption[]
+  options: TelegramQuestionOption[],
+  includeTypeButton = false
 ): { inline_keyboard: { text: string; callback_data: string }[][] } {
   const buttons = options.map((opt, i) => ({
     text: opt.label,
@@ -289,6 +291,9 @@ function buildQuestionKeyboard(
   const rows: { text: string; callback_data: string }[][] = []
   for (let i = 0; i < buttons.length; i += perRow) {
     rows.push(buttons.slice(i, i + perRow))
+  }
+  if (includeTypeButton) {
+    rows.push([{ text: '✍️ Vou digitar...', callback_data: `q:${questionId}:type` }])
   }
   return { inline_keyboard: rows }
 }
@@ -307,14 +312,19 @@ export async function sendTelegramQuestion(input: {
   text: string
   options: TelegramQuestionOption[]
   fetchImpl?: typeof fetch
+  includeTypeButton?: boolean
 }): Promise<number | undefined> {
   const f = input.fetchImpl ?? fetch
   const body: { chat_id: string; text: string; reply_markup?: unknown } = {
     chat_id: input.chatId,
     text: input.text,
   }
-  if (input.options.length > 0) {
-    body.reply_markup = buildQuestionKeyboard(input.questionId, input.options)
+  if (input.options.length > 0 || input.includeTypeButton) {
+    body.reply_markup = buildQuestionKeyboard(
+      input.questionId,
+      input.options,
+      input.includeTypeButton ?? false
+    )
   }
   try {
     const resp = await f(`${API}/bot${input.botToken}/sendMessage`, {
@@ -416,17 +426,24 @@ function resolveAnswerLabel(
 
 export interface ParsedQuestionCallback {
   questionId: string
-  optionIndex: number
+  optionIndex?: number
+  isTypingRequest?: boolean
 }
 
 /**
  * Parse do `callback_data` de um clique — formato `q:<questionId>:<índice>`
- * (ver `buildQuestionKeyboard`). Robusto por contrato: o Telegram apenas
- * ecoa de volta o que mandamos, mas nunca se confia cegamente num payload que
+ * ou `q:<questionId>:type` (ver `buildQuestionKeyboard`). Robusto por contrato:
+ * o Telegram apenas ecoa de volta o que mandamos, mas nunca se confia cegamente num payload que
  * chega de fora — formato torto devolve `null` (o chamador ignora).
  */
 export function parseQuestionCallbackData(data: string | undefined): ParsedQuestionCallback | null {
   if (!data) return null
+  const typeMatch = data.match(/^q:([^:]+):type$/)
+  if (typeMatch) {
+    const questionId = typeMatch[1]
+    if (!questionId) return null
+    return { questionId, isTypingRequest: true }
+  }
   const match = data.match(/^q:([^:]+):(\d+)$/)
   if (!match) return null
   const questionId = match[1]
@@ -442,29 +459,11 @@ export interface TelegramCallbackDeps {
   fetchImpl?: typeof fetch
 }
 
-// O que mostrar quando o dono clica em "✍️ Outro" (ver FREE_TEXT_OPTION_VALUE).
-// show_alert:true — é uma instrução de ação, precisa ser lida, não um toast
-// que some sozinho.
-const FREE_TEXT_HINT =
-  '✍️ Toque em "Responder" nesta mensagem e digite sua resposta em texto livre.'
-
 /**
  * Roteia UM clique de botão (`callback_query`) pra resposta da `AgentQuestion`
  * correspondente. GUARD anti cross-tenant: só o chat vinculado ao DONO da
  * pergunta (`AgentQuestion.userId`, via `TelegramLink`) pode responder — todo
- * clique de outro chat é IGNORADO em silêncio (nem responde, nem processa,
- * nem revela nada sobre a dúvida). `answer()` já é idempotente do lado do
- * serviço, então um clique repetido (Telegram reentrega updates) é inofensivo.
- *
- * A opção "✍️ Outro" (`FREE_TEXT_OPTION_VALUE`) é tratada à parte: não é uma
- * resposta, é um PEDIDO de instrução — não grava nada, não colapsa, só avisa
- * como responder em texto (ver `handleTelegramQuestionReply`, que trata a
- * resposta em si).
- *
- * Depois de gravar a resposta de verdade, COLAPSA a mensagem (feedback do
- * dono: "os botões não somem depois da escolha") — reescreve o texto com o
- * que foi escolhido e zera o teclado, best-effort (nunca lança se a edição
- * falhar; `answer()` continua sendo a fonte de verdade).
+ * clique de outro chat é IGNORADO em silêncio.
  */
 export async function handleTelegramCallback(
   deps: TelegramCallbackDeps,
@@ -479,38 +478,46 @@ export async function handleTelegramCallback(
   const question = await deps.prisma.agentQuestion.findUnique({ where: { id: parsed.questionId } })
   if (!question) return
 
+  const clickerChatId = cq.from?.id === undefined || cq.from.id === null ? null : String(cq.from.id)
+  if (!clickerChatId) return
+
+  const link = await deps.prisma.telegramLink.findUnique({ where: { userId: question.userId } })
+  if (!link || link.status !== 'linked' || !link.chatId || link.chatId !== clickerChatId) {
+    return
+  }
+
+  if (parsed.isTypingRequest) {
+    defaultAgentQuestionStateManager.setActiveTypingQuestion(question.userId, {
+      questionId: parsed.questionId,
+      userId: question.userId,
+      chatId: clickerChatId,
+    })
+    await answerTelegramCallback({
+      botToken: deps.botToken,
+      callbackQueryId: cq.id,
+      text: '✍️ Digite sua resposta abaixo',
+      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    })
+    await sendTelegramMessage({
+      botToken: deps.botToken,
+      chatId: clickerChatId,
+      text: `✍️ Por favor, digite e envie sua resposta para a dúvida do PO:\n\n"${question.text}"`,
+      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    })
+    return
+  }
+
+  if (parsed.optionIndex === undefined) return
+
   const options = Array.isArray(question.options)
     ? (question.options as unknown as TelegramQuestionOption[])
     : []
   const option = options[parsed.optionIndex]
   if (!option) return
 
-  const clickerChatId = cq.from?.id === undefined || cq.from.id === null ? null : String(cq.from.id)
-  if (!clickerChatId) return
+  const updated = await deps.agentQuestionService.answer(parsed.questionId, option.value, 'telegram')
+  defaultAgentQuestionStateManager.clearActiveTypingQuestion(question.userId)
 
-  const link = await deps.prisma.telegramLink.findUnique({ where: { userId: question.userId } })
-  if (!link || link.status !== 'linked' || !link.chatId || link.chatId !== clickerChatId) {
-    // Cross-tenant (ou vínculo perdido/nunca feito): ignora. Nenhuma resposta
-    // sai, nada é gravado — o painel continua a via de fallback.
-    return
-  }
-
-  if (option.value === FREE_TEXT_OPTION_VALUE) {
-    await answerTelegramCallback({
-      botToken: deps.botToken,
-      callbackQueryId: cq.id,
-      text: FREE_TEXT_HINT,
-      showAlert: true,
-      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
-    })
-    return
-  }
-
-  const updated = await deps.agentQuestionService.answer(
-    parsed.questionId,
-    option.value,
-    'telegram'
-  )
   await answerTelegramCallback({
     botToken: deps.botToken,
     callbackQueryId: cq.id,
@@ -631,7 +638,7 @@ const MESSAGES: Record<
   },
   es: {
     linked:
-      '¡Listo, conectado! ✅ A partir de ahora te aviso por aquí cuando una tarea de tu proyecto se atasque o necesite de ti.',
+      '¡Listo, conectado! ✅ A partir de ahora te aviso por aquí quando una tarea de tu proyecto se atasque o necesite de ti.',
     invalid:
       'Este enlace de conexión caducó o ya fue usado. Abre el paso de Telegram en GitOrch y genera uno nuevo.',
     chatTaken:
@@ -1287,6 +1294,10 @@ export async function tratarCliqueDeProjeto(
   }
 }
 
+export interface TelegramUpdateDeps {
+  agentQuestionService?: Pick<AgentQuestionService, 'answer'>
+}
+
 /**
  * Trata UM update. Devolve o que responder (ou null, se não é assunto nosso).
  * Nunca responde com nada derivado do token do bot — o segredo não vaza nem por
@@ -1294,24 +1305,44 @@ export async function tratarCliqueDeProjeto(
  */
 export async function handleTelegramUpdate(
   prisma: PrismaLike,
-  update: TelegramUpdate
+  update: TelegramUpdate,
+  deps?: TelegramUpdateDeps
 ): Promise<{ chatId: string; text: string } | null> {
   const message = update.message
   const rawChatId = message?.chat?.id
   if (rawChatId === undefined || rawChatId === null) return null
-  if (!isStartCommand(message?.text)) return null
-
   const chatId = String(rawChatId)
-  const locale = pickLocale(message?.from?.language_code)
-  const token = parseStartToken(message?.text)
-  if (!token) return { chatId, text: MESSAGES[locale].noToken }
 
-  const result = await bindChatFromStart(prisma, { token, chatId })
-  if (result.ok) return { chatId, text: MESSAGES[locale].linked }
-  // Recusa por chat ocupado tem causa própria: dizer "link expirou" mandaria a
-  // pessoa gerar outro link e bater na mesma parede para sempre.
-  return {
-    chatId,
-    text: result.reason === 'chat_taken' ? MESSAGES[locale].chatTaken : MESSAGES[locale].invalid,
+  if (isStartCommand(message?.text)) {
+    const locale = pickLocale(message?.from?.language_code)
+    const token = parseStartToken(message?.text)
+    if (!token) return { chatId, text: MESSAGES[locale].noToken }
+
+    const result = await bindChatFromStart(prisma, { token, chatId })
+    if (result.ok) return { chatId, text: MESSAGES[locale].linked }
+    return {
+      chatId,
+      text: result.reason === 'chat_taken' ? MESSAGES[locale].chatTaken : MESSAGES[locale].invalid,
+    }
   }
+
+  // Se o usuário digitou uma mensagem livre e está no modo de digitação de dúvida
+  if (message?.text && deps?.agentQuestionService) {
+    const link = await prisma.telegramLink.findFirst({
+      where: { chatId, status: 'linked' },
+    })
+    if (link) {
+      const active = defaultAgentQuestionStateManager.getActiveTypingQuestion(link.userId)
+      if (active) {
+        await deps.agentQuestionService.answer(active.questionId, message.text.trim(), 'telegram')
+        defaultAgentQuestionStateManager.clearActiveTypingQuestion(link.userId)
+        return {
+          chatId,
+          text: '✅ Resposta registrada com sucesso! A Sprint continuará seu fluxo.',
+        }
+      }
+    }
+  }
+
+  return null
 }

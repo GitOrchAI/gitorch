@@ -302,7 +302,7 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
             continue
           }
 
-          const reply = await handleTelegramUpdate(app.prisma, update)
+          const reply = await handleTelegramUpdate(app.prisma, update, { agentQuestionService })
           if (!reply) continue
           await sendTelegramMessage({ botToken, chatId: reply.chatId, text: reply.text })
         }

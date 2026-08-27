@@ -40,14 +40,23 @@ export async function resolvePricing(
     where: { tier },
     include: { plan: true },
   })
-  const plans = rows.map((r) => ({
-    planId: r.planId,
-    name: r.plan.name,
-    tier: r.tier as PricingTier,
-    currency: r.currency,
-    unitAmount: r.unitAmount,
-    stripePriceId: r.stripePriceId,
-  }))
+  const plans = rows.map(
+    (r: {
+      planId: string
+      plan: { name: string }
+      tier: string
+      currency: string
+      unitAmount: number
+      stripePriceId: string
+    }) => ({
+      planId: r.planId,
+      name: r.plan.name,
+      tier: r.tier as PricingTier,
+      currency: r.currency,
+      unitAmount: r.unitAmount,
+      stripePriceId: r.stripePriceId,
+    })
+  )
   return { tier, plans }
 }
 

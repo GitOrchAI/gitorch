@@ -161,7 +161,7 @@ describe('createLocalCredentialRunner', () => {
       })) as unknown as { capturedEnv: Record<string, string> }
 
       expect(environments.current).toHaveBeenCalledWith('user_env')
-      expect(result.capturedEnv['PATH']).toMatch(new RegExp(`^${binDir}:`))
+      expect(result.capturedEnv['PATH']?.startsWith(binDir)).toBe(true)
       expect(log.info).toHaveBeenCalledWith(expect.stringContaining(binDir))
       expect(log.warn).not.toHaveBeenCalled()
     })

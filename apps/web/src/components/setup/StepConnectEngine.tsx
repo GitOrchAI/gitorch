@@ -99,8 +99,9 @@ export default function StepConnectEngine({
 
   // Fecha os EventSource abertos ao desmontar (troca de passo do wizard).
   useEffect(() => {
+    const activeSources = sources.current
     return () => {
-      for (const src of Object.values(sources.current)) src.close()
+      for (const src of Object.values(activeSources)) src.close()
     }
   }, [])
 
