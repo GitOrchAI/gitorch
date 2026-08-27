@@ -130,7 +130,10 @@ describe('Tarefa 16 (achado 2 da revisão) — aviso de credencial expirada pelo
   test('motor mente sucesso (exitCode 0) pedindo login novo: o dono recebe o aviso de VERDADE no Telegram', async () => {
     resultadoDoMotor.atual = {
       missionId: 'irrelevante-aqui',
-      runtime: 'antigravity',
+      // 'codex' é o primeiro da cadeia canônica (codex > antigravity > claude,
+      // DEFAULT_AGENT_RUNTIME_ASSIGNMENTS) e portanto o runtime selecionado para
+      // o role 'qa' — é ele que o CredencialExpiradaError e a mensagem nomeiam.
+      runtime: 'codex',
       exitCode: 0,
       durationMs: 1,
       output: 'ERROR: Your access token could not be refreshed. Please log out and sign in again.',
@@ -157,7 +160,7 @@ describe('Tarefa 16 (achado 2 da revisão) — aviso de credencial expirada pelo
     expect(url).toBe('https://api.telegram.org/botbot-token-de-teste/sendMessage')
     const corpo = JSON.parse(String(init.body)) as { chat_id: string; text: string }
     expect(corpo.chat_id).toBe('chat-do-dono')
-    expect(corpo.text).toContain('antigravity')
+    expect(corpo.text).toContain('codex')
     expect(corpo.text).toContain('acme/api')
     // Correção 2 (segunda revisão): a mensagem não afirma "a credencial
     // expirou" como fato — é uma inferência (sinal textual + ausência de
@@ -184,7 +187,7 @@ describe('Tarefa 16 (achado 2 da revisão) — aviso de credencial expirada pelo
     const marca = prismaDoAviso.engineConnection.updateMany.mock.calls[0] as unknown as [
       { where: { userId: string; runtime: string }; data: { status: string; lastError: string } },
     ]
-    expect(marca[0].where).toEqual({ userId: 'user_1', runtime: 'antigravity' })
+    expect(marca[0].where).toEqual({ userId: 'user_1', runtime: 'codex' })
     expect(marca[0].data.status).toBe('needs_reconnect')
     expect(marca[0].data.status).not.toBe('connected')
     // A credencial cifrada NUNCA é apagada aqui (isso é papel de revoke): uma
