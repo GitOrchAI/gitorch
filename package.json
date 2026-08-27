@@ -85,7 +85,7 @@
       "uuid": "11.1.1",
       "launch-editor": "2.14.1",
       "protobufjs": "7.6.5",
-      "fast-uri@^3.0.0": "3.1.4",
+
       "fast-uri@^4.0.0": "4.1.1"
     },
     "patchedDependencies": {
