@@ -17,7 +17,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.SECURITY_PAT }}
+          token: ${{ secrets.SECURITY_PAT || github.token }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -37,7 +37,7 @@ jobs:
 
       - name: Run SLA Tracker
         env:
-          SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
+          SECURITY_PAT: ${{ secrets.SECURITY_PAT || github.token }}
           REPO_OWNER: ${{ github.repository_owner }}
           REPO_NAME: ${{ github.event.repository.name }}
           SLA_BUSINESS_DAYS: ${{ env.SLA_BUSINESS_DAYS || '1' }}

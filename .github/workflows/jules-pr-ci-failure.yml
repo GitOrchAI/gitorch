@@ -28,7 +28,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.SECURITY_PAT || github.token }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -41,8 +41,8 @@ jobs:
 
       - name: Analyze CI Failure
         env:
-          SECURITY_PAT: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
-          GH_TOKEN: ${{ secrets.SECURITY_PAT || secrets.GITHUB_TOKEN }}
+          SECURITY_PAT: ${{ secrets.SECURITY_PAT || github.token }}
+          GH_TOKEN: ${{ secrets.SECURITY_PAT || github.token }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_FREE_MODEL: openrouter/free
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}

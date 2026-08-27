@@ -46,7 +46,7 @@ jobs:
       # todo PR do repositorio, inclusive os que nada tem a ver com o Jules.
       # Ausencia de credencial e "nao configurado", nao "quebrado": os passos
       # sao pulados e o job termina limpo. Cadastre SECURITY_PAT para ligar.
-      SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
+      SECURITY_PAT: ${{ secrets.SECURITY_PAT || github.token }}
     steps:
       - name: Verificar se a automacao esta configurada
         id: preflight
@@ -63,7 +63,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.SECURITY_PAT }}
+          token: ${{ secrets.SECURITY_PAT || github.token }}
 
       - name: Setup Node
         if: steps.preflight.outputs.configurada == 'true'
@@ -79,7 +79,7 @@ jobs:
       - name: Analyze Merge Conflicts
         if: steps.preflight.outputs.configurada == 'true'
         env:
-          SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
+          SECURITY_PAT: ${{ secrets.SECURITY_PAT || github.token }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           OPENROUTER_FREE_MODEL: openrouter/free
           REPO_OWNER: ${{ github.repository_owner }}
@@ -108,8 +108,8 @@ jobs:
           success() && github.event_name == 'pull_request_target' &&
           github.event.action == 'synchronize'
         env:
-          GH_TOKEN: ${{ secrets.SECURITY_PAT }}
-          SECURITY_PAT: ${{ secrets.SECURITY_PAT }}
+          GH_TOKEN: ${{ secrets.SECURITY_PAT || github.token }}
+          SECURITY_PAT: ${{ secrets.SECURITY_PAT || github.token }}
         run: |
           PR_NUM="${{ github.event.pull_request.number }}"
           # Check if PR is now mergeable (conflicts resolved)
