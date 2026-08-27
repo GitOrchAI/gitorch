@@ -4,7 +4,6 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import {
   knownClaudeModels,
-  discoverCodexModels,
   makeAntigravityDiscoverer,
   makeCodexDiscoverer,
   makeClaudeModelDiscoverer,
@@ -28,8 +27,52 @@ describe('model-catalog', () => {
       path.join(home, '.codex', 'models_cache.json'),
       JSON.stringify({ models: [{ slug: 'gpt-5.5', display_name: 'GPT-5.5' }, { slug: 'o4' }] })
     )
-    expect(await discoverCodexModels(home)).toEqual(['GPT-5.5', 'o4'])
+    // Aquecimento FAKE de propósito: desde que a coleta de cota passou a
+    // disparar o aquecimento periodicamente, este HOME (sem arquivo de cota)
+    // faria o discoverer real tentar subir o binário `codex` — que não existe
+    // em CI e travaria o teste. O que este teste mede é a LEITURA do cache.
+    const discover = makeCodexDiscoverer('codex-fake-bin', async () => undefined)
+    expect(await discover(home)).toEqual(['GPT-5.5', 'o4'])
     await fs.rm(home, { recursive: true, force: true })
+  })
+
+  // A CAUSA da cota sempre nula (medida em produção 27/08): o aquecimento era
+  // disparado só quando `models_cache.json` estava AUSENTE — e esse arquivo
+  // vive no cofre e volta a cada missão, então nunca estava ausente. O
+  // aquecimento nunca rodava e o arquivo de cota nunca era escrito.
+  describe('codex: a cota também dispara o aquecimento', () => {
+    test('cache PRESENTE mas cota nunca coletada -> aquece assim mesmo', async () => {
+      const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-codex-cota-'))
+      await fs.mkdir(path.join(home, '.codex'), { recursive: true })
+      await fs.writeFile(
+        path.join(home, '.codex', 'models_cache.json'),
+        JSON.stringify({ models: [{ slug: 'gpt-5.5' }] })
+      )
+      let aqueceu = 0
+      const discover = makeCodexDiscoverer('codex-fake-bin', async () => {
+        aqueceu++
+      })
+      expect(await discover(home)).toEqual(['gpt-5.5'])
+      expect(aqueceu).toBe(1)
+      await fs.rm(home, { recursive: true, force: true })
+    })
+
+    test('cota coletada agora há pouco -> NÃO aquece (não queima a cota do cliente)', async () => {
+      const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-codex-cota-nova-'))
+      await fs.mkdir(path.join(home, '.codex'), { recursive: true })
+      await fs.writeFile(
+        path.join(home, '.codex', 'models_cache.json'),
+        JSON.stringify({ models: [{ slug: 'gpt-5.5' }] })
+      )
+      await fs.writeFile(path.join(home, '.codex', 'gitorch-quota.json'), '{}')
+      let aqueceu = 0
+      const discover = makeCodexDiscoverer('codex-fake-bin', async () => {
+        aqueceu++
+      })
+      expect(await discover(home)).toEqual(['gpt-5.5'])
+      expect(aqueceu).toBe(0)
+      await fs.rm(home, { recursive: true, force: true })
+    })
   })
 
   // Regressão do bug real (2026-07-20): `codex login`/`codex login status` NÃO

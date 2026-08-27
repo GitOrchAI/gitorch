@@ -9,7 +9,12 @@ import {
   CLAUDE_API_TIMEOUT_MS,
   claudeApiHeaders,
 } from './claude-token.js'
-import { parseCodexRateLimitsFromJsonl, writeCodexQuotaFile } from './quota-reader.js'
+import {
+  codexQuotaFilePath,
+  parseCodexRateLimitsFromJsonl,
+  writeCodexQuotaFile,
+} from './quota-reader.js'
+import { estaNaHoraDeColetarCota } from './quando-coletar-cota.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -65,16 +70,39 @@ export function makeCodexDiscoverer(
   return async (homeDir: string) => {
     const file = path.join(homeDir, '.codex', 'models_cache.json')
     let raw = await fs.readFile(file, 'utf8').catch(() => null)
-    if (!raw) {
+
+    // A COTA TAMBÉM PEDE O AQUECIMENTO, e é por isso que ela era sempre nula.
+    //
+    // O evento de limites do Codex só nasce como efeito colateral do
+    // aquecimento. Só que o gatilho era "models_cache.json está ausente" — e
+    // esse arquivo vive no cofre e volta a cada missão, então NUNCA está
+    // ausente. O aquecimento nunca rodava, o arquivo de cota nunca era
+    // escrito, e o banco ficava com nulo para sempre (medido: as quatro
+    // colunas de cota vazias em 100% das missões).
+    //
+    // Não reaquecer a cada missão continua certo — reaquecer sempre gastaria a
+    // cota do cliente à toa. A saída é separar a pergunta da frequência: de
+    // seis em seis horas, quatro chamadas por dia em vez de uma por missão.
+    const arquivoDeCota = codexQuotaFilePath(homeDir)
+    const idadeDaCota = await fs
+      .stat(arquivoDeCota)
+      .then((st) => st.mtime)
+      .catch(() => null)
+    const cotaVencida = estaNaHoraDeColetarCota(idadeDaCota, new Date())
+
+    if (!raw || cotaVencida) {
       // NUNCA engolir em silêncio (achado 21/07): o dono viu "conectado, 0
       // modelos" sem NENHUMA pista do porquê — este catch escondia o erro
       // real (timeout, provider fora do ar, etc.) atrás de um simples `[]`.
       // O connect continua honesto (lista vazia é melhor que quebrar), mas
       // agora o motivo fica visível pra investigar de verdade, não adivinhar.
       await warmUp(codexBin, homeDir).catch((err) => {
-        console.warn('[model-catalog] aquecimento do Codex falhou — 0 modelos', {
-          error: err instanceof Error ? err.message : String(err),
-        })
+        console.warn(
+          raw
+            ? '[model-catalog] aquecimento do Codex para coletar a cota falhou — cota segue nula'
+            : '[model-catalog] aquecimento do Codex falhou — 0 modelos',
+          { error: err instanceof Error ? err.message : String(err) }
+        )
       })
       raw = await fs.readFile(file, 'utf8').catch(() => null)
     }
