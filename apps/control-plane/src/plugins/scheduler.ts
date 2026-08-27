@@ -116,6 +116,10 @@ import {
 } from '../services/pergunta-sem-resposta.js'
 import { esperarAVezDeDevolver } from '../services/devolucao-de-credencial.js'
 import { varrerArvoreDoPlano } from '../services/fechar-o-pai.js'
+import {
+  entregasQueMerecemConferencia,
+  recadoDeTarefaJaEntregue,
+} from '../services/tarefa-entregue-continua-aberta.js'
 import { agentLabel } from '../services/agent-label.js'
 import {
   reservarAResposta,
@@ -5011,6 +5015,115 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   const TAMANHO_DA_PAGINA_DE_EXECUCOES = 50
 
   /**
+   * A tarefa fecha quando a entrega dela entra — não importa QUEM mesclou.
+   *
+   * O dono diagnosticou melhor que eu (27/08): "já vi PRs merged com issue
+   * open". Medido no banco: 16 tarefas do gitorch e 9 do patinhas abertas com
+   * a entrega já mesclada, e o produto SABIA — o commit do merge estava
+   * gravado na linha da entrega. A #128 chegou a ter CINCO entregas, porque
+   * tarefa aberta volta para a fila do gerente e é delegada de novo; a entrega
+   * nova nasce em conflito com a que já entrou.
+   *
+   * `fecharTarefaEntregue` só rodava dentro da missão de QA, logo depois de o
+   * produto mesclar com as próprias mãos. Auto-merge do repositório ou clique
+   * de gente não fechavam nada. Aqui é a MESMA regra, aplicada também nesses
+   * casos.
+   */
+  const varrerTarefasEntregues = async (): Promise<void> => {
+    let linhas: Array<{
+      issueNumber: number
+      pullRequestNumber: number | null
+      mergeCommitSha: string | null
+      projectId: string
+      updatedAt: Date
+    }>
+    try {
+      linhas = await app.prisma.devSession.findMany({
+        where: { mergeCommitSha: { not: null } },
+        orderBy: { createdAt: 'asc' },
+        select: {
+          issueNumber: true,
+          pullRequestNumber: true,
+          mergeCommitSha: true,
+          projectId: true,
+          updatedAt: true,
+        },
+      })
+    } catch (err) {
+      app.log.error(err, '[Scheduler] varredura de tarefas entregues não conseguiu ler as entregas')
+      return
+    }
+
+    const porProjeto = new Map<string, typeof linhas>()
+    for (const l of entregasQueMerecemConferencia(linhas, new Date())) {
+      const lista = porProjeto.get(l.projectId) ?? []
+      lista.push(l)
+      porProjeto.set(l.projectId, lista)
+    }
+
+    for (const [projectId, entregas] of porProjeto) {
+      const projeto = await app.prisma.project
+        .findUnique({ where: { id: projectId }, select: { wingId: true, isActive: true } })
+        .catch(() => null)
+      if (!projeto?.isActive) continue
+
+      const githubToken =
+        process.env['GITORCH_GITHUB_TOKEN'] ??
+        (await mintInstallationToken({
+          repository: projeto.wingId,
+          onError: (m) => app.log.error(m),
+          onWarn: (m) => app.log.warn(m),
+        })) ??
+        undefined
+      if (!githubToken) continue
+
+      const rest = async (metodo: string, caminho: string, corpo?: unknown): Promise<unknown> => {
+        const r = await fetch(`https://api.github.com${caminho}`, {
+          method: metodo,
+          headers: {
+            authorization: `Bearer ${githubToken}`,
+            accept: 'application/vnd.github+json',
+            ...(corpo ? { 'content-type': 'application/json' } : {}),
+          },
+          ...(corpo ? { body: JSON.stringify(corpo) } : {}),
+        })
+        if (!r.ok) throw new Error(`GitHub ${metodo} ${caminho} falhou (${r.status})`)
+        return r.json()
+      }
+
+      for (const entrega of entregas) {
+        try {
+          const issue = (await rest(
+            'GET',
+            `/repos/${projeto.wingId}/issues/${entrega.issueNumber}`
+          )) as { state?: string }
+          if (issue.state !== 'open') continue
+
+          const recado = recadoDeTarefaJaEntregue({
+            pullRequestNumber: entrega.pullRequestNumber,
+            mergeCommitSha: entrega.mergeCommitSha as string,
+          })
+          await rest('POST', `/repos/${projeto.wingId}/issues/${entrega.issueNumber}/comments`, {
+            body: recado,
+          })
+          await rest('PATCH', `/repos/${projeto.wingId}/issues/${entrega.issueNumber}`, {
+            state: 'closed',
+          })
+          app.log.info(
+            `[Scheduler] ${projeto.wingId}: tarefa #${entrega.issueNumber} encerrada — a entrega dela já estava mesclada`
+          )
+        } catch (err) {
+          // Best-effort por tarefa: uma issue apagada ou sem permissão não
+          // pode deixar as outras abertas para sempre.
+          app.log.warn(
+            `[Scheduler] ${projeto.wingId}: não consegui conferir a tarefa #${entrega.issueNumber}: ${(err as Error).message}`
+          )
+        }
+      }
+    }
+  }
+
+  /**
    * A árvore do plano se encerra sozinha quando o trabalho dela acaba.
    *
    * O PO monta fase > épico > feature > tarefa e pendura uma na outra pelo
@@ -5976,6 +6089,14 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // A árvore do plano ANTES das publicações: fechar um nível de estrutura é
     // barato (uma leitura por projeto) e evita que o quadro do cliente cresça
     // sem parar enquanto o resto do tique faz trabalho pesado.
+    // ANTES da árvore, de propósito: fechar a tarefa é o que permite a
+    // feature dela fechar em seguida, na mesma passada.
+    await varrerTarefasEntregues().catch((err) =>
+      app.log.error(
+        err,
+        '[Scheduler] varredura de tarefas entregues falhou; tenta no próximo ciclo'
+      )
+    )
     await varrerArvoreDosPlanos().catch((err) =>
       app.log.error(err, '[Scheduler] varredura da árvore do plano falhou; tenta no próximo ciclo')
     )
