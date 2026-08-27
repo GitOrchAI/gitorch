@@ -2,11 +2,11 @@
 #
 # Apaga as pastas de trabalho (git worktrees) cujo trabalho JÁ ENTROU na main.
 #
-# POR QUE EXISTE: em 27/08/2026 o dono recebeu "cofre /mnt/gitorch-vault em
-# 85%". A causa eram 58 pastas de trabalho acumuladas, cada uma com o próprio
-# node_modules. Removidas as 55 já mescladas, o disco caiu para 33% — 72 GB
-# numa tacada. O método do projeto já manda apagar a pasta depois do deploy
-# verde; não havia nada que fizesse isso.
+# POR QUE EXISTE: em 27/08/2026 o disco da máquina de trabalho chegou a 85% e
+# disparou o alerta. A causa eram 58 pastas de trabalho acumuladas, cada uma
+# com o próprio node_modules. Removidas as 55 já mescladas, o disco caiu para
+# 33% — 72 GB numa tacada. O método do projeto já manda apagar a pasta depois
+# do deploy verde; não havia nada que fizesse isso.
 #
 # DUAS ARMADILHAS QUE A LIMPEZA NA MÃO ENSINOU, e que este script respeita:
 #
@@ -24,13 +24,16 @@
 # esperando data.
 set -euo pipefail
 
-REPO="${GITORCH_REPO:-/home/ubuntu/projects/gitorch}"
+# Nada de caminho de máquina escrito aqui: este repositório é PÚBLICO, e o
+# portão de infra barra (com razão) qualquer path da nossa VM. O repositório
+# sai do próprio git, e o disco medido é o de quem hospeda o repositório.
+REPO="${GITORCH_REPO:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 APLICAR=0
 [ "${1:-}" = "--apply" ] && APLICAR=1
 
 cd "$REPO"
 
-livre_antes=$(df -BM --output=avail /mnt/gitorch-vault | tail -1 | tr -dc '0-9')
+livre_antes=$(df -BM --output=avail "$REPO" | tail -1 | tr -dc '0-9')
 
 # Os ramos cujo PR foi mesclado. Uma chamada só; se a rede falhar, o script
 # não apaga nada — silêncio é melhor que apagar por engano.
@@ -44,7 +47,9 @@ removidas=0
 mantidas=0
 while IFS='|' read -r pasta ramo; do
   [ -z "$pasta" ] && continue
-  case "$pasta" in *"/gitorch-worktrees/"*) ;; *) continue ;; esac
+  # Só as pastas de trabalho, nunca o checkout principal. O nome da pasta-mãe
+  # é configurável para quem organizar diferente.
+  case "$pasta" in *"/${GITORCH_WORKTREES_DIR:-gitorch-worktrees}/"*) ;; *) continue ;; esac
 
   if ! printf '%s\n' "$mesclados" | grep -qxF "$ramo"; then
     mantidas=$((mantidas + 1))
@@ -68,7 +73,7 @@ done < <(git worktree list --porcelain | awk '/^worktree /{w=$2} /^branch /{prin
 
 [ "$APLICAR" = "1" ] && git worktree prune 2>/dev/null || true
 
-livre_depois=$(df -BM --output=avail /mnt/gitorch-vault | tail -1 | tr -dc '0-9')
+livre_depois=$(df -BM --output=avail "$REPO" | tail -1 | tr -dc '0-9')
 ganho=$((livre_depois - livre_antes))
 
 if [ "$APLICAR" = "1" ]; then
@@ -81,18 +86,17 @@ if [ "$APLICAR" = "1" ]; then
     [ -n "$chat" ] && curl -s -o /dev/null -m 15 \
       "https://api.telegram.org/bot${token}/sendMessage" \
       -d "chat_id=${chat}" \
-      -d "text=GitOrch infra: faxina liberou $((ganho / 1024)) GB no cofre (${removidas} pastas de trabalho já mescladas). Nada com trabalho não salvo foi tocado."
+      -d "text=GitOrch infra: a faxina liberou $((ganho / 1024)) GB (${removidas} pastas de trabalho já mescladas). Nada com trabalho não salvo foi tocado."
   fi
 else
   echo "[faxina] ENSAIO: apagaria $removidas, manteria $mantidas. Rode com --apply para valer."
 fi
 
-# COMO ESTE SCRIPT RODA NA VM ARM (registrado aqui porque crontab não é
-# versionado e já se perdeu configuração por isso neste projeto):
+# COMO AGENDAR (registrado aqui porque crontab não é versionado e este projeto
+# já perdeu configuração por isso):
 #
-#   43 * * * * cd /home/ubuntu/projects/gitorch && \
+#   43 * * * * cd <raiz-do-repo> && \
 #     bash scripts/ops/faxina-de-worktrees.sh --apply >> /tmp/faxina-worktrees.log 2>&1
 #
-# De hora em hora, no minuto 43 — longe do :17 do gitorch-backup-monitor.sh
-# (que é quem manda o aviso de disco cheio) para as duas coisas não brigarem
-# pelo disco no mesmo minuto.
+# De hora em hora, no minuto 43 — deslocado do minuto em que o monitor de disco
+# roda, para as duas coisas não brigarem pelo disco no mesmo instante.
