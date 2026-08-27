@@ -1,5 +1,4 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify'
-import { Prisma } from '@prisma/client'
 import { getEnv } from '../config/env.js'
 import jwt from 'jsonwebtoken'
 
@@ -300,7 +299,12 @@ export const authRoutes = async (app: FastifyInstance): Promise<void> => {
           // propósito (mantém este resgate idêntico ao de antes) — ele
           // fecha sozinho no PRÓXIMO login, quando o e-mail já bate e o
           // upsert normal acima roda sem colidir.
-          if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+          if (
+            typeof err === 'object' &&
+            err !== null &&
+            'code' in err &&
+            (err as { code: string }).code === 'P2002'
+          ) {
             dbUser = await app.prisma.user.update({
               where: { githubLogin: userData.login },
               data: { email },

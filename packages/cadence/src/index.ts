@@ -49,3 +49,4 @@ export function loadEventPlaybook(event: CadenceEvent): string {
 // Cadence Rails: formulários por passo + validação determinística (a Lei
 // "LLM decide, sistema executa" — docs/agents/cadence-execution-model.md).
 export * from './rails'
+export * from './skill-destillations'

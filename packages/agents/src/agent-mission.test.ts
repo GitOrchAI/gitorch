@@ -11,14 +11,14 @@ test('builds a PO mission with default runtime and credential reference', () => 
     goal: 'Normalize externally created issue #42',
     context: ['GitHub is the source of truth', 'Classify issue as Epic, Feature, or Task'],
     credentialRef: {
-      connectionId: 'conn-antigravity',
+      connectionId: 'conn-codex',
       ownerScope: 'organization',
-      runtime: 'antigravity',
+      runtime: 'codex',
       providedSecrets: [],
     },
   })
 
-  expect(mission.runtime).toEqual({ runtime: 'antigravity' })
+  expect(mission.runtime).toEqual({ runtime: 'codex' })
   expect(mission.prompt).toContain('Role: po')
   expect(mission.prompt).toContain('Repository: owner/repo')
   expect(mission.prompt).toContain('Normalize externally created issue #42')
@@ -35,13 +35,13 @@ test('rejects credential/runtime mismatch before execution', () => {
       goal: 'Read project docs',
       context: [],
       credentialRef: {
-        connectionId: 'conn-codex',
+        connectionId: 'conn-claude',
         ownerScope: 'organization',
-        runtime: 'codex',
-        providedSecrets: ['OPENAI_API_KEY'],
+        runtime: 'claude',
+        providedSecrets: ['ANTHROPIC_API_KEY'],
       },
     })
-  ).toThrow('Credential runtime codex does not match selected runtime antigravity')
+  ).toThrow('Credential runtime claude does not match selected runtime codex')
 })
 
 test('defaults evidence refs and supports matching explicit runtime override', () => {
@@ -67,9 +67,9 @@ test('defaults evidence refs and supports matching explicit runtime override', (
 
 test('keeps credential reference immutable from caller mutations after mission creation', () => {
   const credentialRef: RuntimeCredentialRef = {
-    connectionId: 'conn-antigravity',
+    connectionId: 'conn-codex',
     ownerScope: 'project',
-    runtime: 'antigravity',
+    runtime: 'codex',
     providedSecrets: [],
   }
 
@@ -87,9 +87,9 @@ test('keeps credential reference immutable from caller mutations after mission c
   credentialRef.runtime = 'claude'
 
   expect(mission.credentialRef).toEqual({
-    connectionId: 'conn-antigravity',
+    connectionId: 'conn-codex',
     ownerScope: 'project',
-    runtime: 'antigravity',
+    runtime: 'codex',
     providedSecrets: [],
   })
 })
@@ -103,9 +103,9 @@ test('propagates userId to buildAgentMission output if provided', () => {
     goal: 'Test user ID propagation',
     context: [],
     credentialRef: {
-      connectionId: 'conn-antigravity',
+      connectionId: 'conn-codex',
       ownerScope: 'project',
-      runtime: 'antigravity',
+      runtime: 'codex',
       providedSecrets: [],
     },
     userId: 'user-123',

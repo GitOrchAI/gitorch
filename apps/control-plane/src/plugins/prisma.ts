@@ -25,13 +25,23 @@ function getCurrentUserId(): string | undefined {
 // schema e derrubava qualquer escrita em modelos sem a coluna (ex.:
 // WebhookDelivery) dentro de um wingIdContext.
 export const MODELS_WITH_WING: ReadonlySet<string> = new Set(
-  Prisma.dmmf.datamodel.models
+  (
+    Prisma.dmmf.datamodel.models as ReadonlyArray<{
+      name: string
+      fields: ReadonlyArray<{ name: string }>
+    }>
+  )
     .filter((m) => m.fields.some((f) => f.name === 'wingId'))
     .map((m) => m.name)
 )
 
 export const MODELS_WITH_USER: ReadonlySet<string> = new Set(
-  Prisma.dmmf.datamodel.models
+  (
+    Prisma.dmmf.datamodel.models as ReadonlyArray<{
+      name: string
+      fields: ReadonlyArray<{ name: string }>
+    }>
+  )
     .filter((m) => m.fields.some((f) => f.name === 'userId'))
     .map((m) => m.name)
 )

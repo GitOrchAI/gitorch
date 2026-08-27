@@ -132,9 +132,9 @@ export class WorkspaceManager extends EventEmitter {
     const workspaceId = `ws:${userId}:${projectId}`
     const workspacePath = this.getWorkspacePath(userId, projectId)
 
-    const socketPath = path.posix.join(workspacePath, 'firecracker.socket')
-    const snapshotPath = path.posix.join(workspacePath, 'snapshot.bin')
-    const memPath = path.posix.join(workspacePath, 'mem.bin')
+    const socketPath = path.join(workspacePath, 'firecracker.socket')
+    const snapshotPath = path.join(workspacePath, 'snapshot.bin')
+    const memPath = path.join(workspacePath, 'mem.bin')
 
     const jailerId = workspaceId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 64)
 

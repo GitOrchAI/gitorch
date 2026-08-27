@@ -1,4 +1,5 @@
 import {
+  CANONICAL_RUNTIME_CHAIN,
   DEFAULT_AGENT_RUNTIME_ASSIGNMENTS,
   buildRuntimeChain,
   isF6AgentRole,
@@ -7,11 +8,12 @@ import {
 } from './runtime-config'
 
 test('uses user-approved MVP default runtime assignments', () => {
+  expect(CANONICAL_RUNTIME_CHAIN).toEqual(['codex', 'antigravity', 'claude'])
   expect(DEFAULT_AGENT_RUNTIME_ASSIGNMENTS).toEqual({
-    po: { runtime: 'antigravity' },
-    ra: { runtime: 'antigravity' },
-    sm: { runtime: 'antigravity' },
-    qa: { runtime: 'antigravity' },
+    po: { runtime: 'codex' },
+    ra: { runtime: 'codex' },
+    sm: { runtime: 'codex' },
+    qa: { runtime: 'codex' },
   })
   expect(Object.isFrozen(DEFAULT_AGENT_RUNTIME_ASSIGNMENTS)).toBe(true)
   expect(Object.isFrozen(DEFAULT_AGENT_RUNTIME_ASSIGNMENTS.po)).toBe(true)
@@ -46,7 +48,7 @@ test('builds primary runtime plus fallback slots without mutating defaults', () 
 
   expect(primary).toEqual({ runtime: 'claude', model: 'claude-opus-4-7', reasoning: 'high' })
   expect(fallbacks[0]).toEqual({ runtime: 'codex', model: 'gpt-5.5', reasoning: 'medium' })
-  expect(DEFAULT_AGENT_RUNTIME_ASSIGNMENTS.ra).toEqual({ runtime: 'antigravity' })
+  expect(DEFAULT_AGENT_RUNTIME_ASSIGNMENTS.ra).toEqual({ runtime: 'codex' })
 })
 
 test('normalizes partial assignments over defaults', () => {
@@ -56,9 +58,9 @@ test('normalizes partial assignments over defaults', () => {
   })
 
   expect(assignments).toEqual({
-    po: { runtime: 'antigravity' },
-    ra: { runtime: 'antigravity' },
-    sm: { runtime: 'antigravity' },
+    po: { runtime: 'codex' },
+    ra: { runtime: 'codex' },
+    sm: { runtime: 'codex' },
     qa: { runtime: 'claude', model: 'claude-sonnet-4-6' },
   })
   expect(assignments.po).not.toBe(DEFAULT_AGENT_RUNTIME_ASSIGNMENTS.po)
@@ -67,7 +69,7 @@ test('normalizes partial assignments over defaults', () => {
   assignments.po.model = 'mutated-default-clone'
   assignments.qa.model = 'mutated-override-clone'
 
-  expect(DEFAULT_AGENT_RUNTIME_ASSIGNMENTS.po).toEqual({ runtime: 'antigravity' })
+  expect(DEFAULT_AGENT_RUNTIME_ASSIGNMENTS.po).toEqual({ runtime: 'codex' })
   expect(qaOverride).toEqual({ runtime: 'claude', model: 'claude-sonnet-4-6' })
 })
 

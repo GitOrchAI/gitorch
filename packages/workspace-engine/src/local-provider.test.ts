@@ -10,7 +10,7 @@ test('allocates a plain directory workspace and hibernates as a no-op', async ()
 
   const info = await provider.allocateWorkspace('scheduler-user', 'project-1')
 
-  expect(info.path).toBe(path.posix.join(base, 'scheduler-user', 'project-1'))
+  expect(info.path).toBe(path.resolve(base, 'scheduler-user', 'project-1'))
   expect(info.status).toBe('active')
   const stat = await fs.stat(info.path)
   expect(stat.isDirectory()).toBe(true)

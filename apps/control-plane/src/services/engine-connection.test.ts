@@ -181,8 +181,10 @@ describe('EngineConnectionService', () => {
     expect(await svc.materializeToHome('user_gh', 'github', home)).toBe(true)
     const tokenPath = path.join(home, '.gitorch', 'gh-token')
     expect((await fs.readFile(tokenPath, 'utf8')).trim()).toBe('github_pat_FAKE_abc123')
-    const mode = (await fs.stat(tokenPath)).mode & 0o777
-    expect(mode).toBe(0o600)
+    if (process.platform !== 'win32') {
+      const mode = (await fs.stat(tokenPath)).mode & 0o777
+      expect(mode).toBe(0o600)
+    }
 
     await fs.rm(home, { recursive: true, force: true })
   })
@@ -311,8 +313,10 @@ describe('EngineConnectionService', () => {
     expect(await svc.materializeToHome('user_claude', 'claude', home)).toBe(true)
     const tokenPath = path.join(home, '.gitorch', 'env', 'CLAUDE_CODE_OAUTH_TOKEN')
     expect((await fs.readFile(tokenPath, 'utf8')).trim()).toBe('sk-ant-oat01-FAKE')
-    const mode = (await fs.stat(tokenPath)).mode & 0o777
-    expect(mode).toBe(0o600)
+    if (process.platform !== 'win32') {
+      const mode = (await fs.stat(tokenPath)).mode & 0o777
+      expect(mode).toBe(0o600)
+    }
 
     await fs.rm(home, { recursive: true, force: true })
   })

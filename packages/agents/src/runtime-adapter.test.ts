@@ -187,8 +187,8 @@ test('promptArgName entrega o prompt como valor da flag, sempre por último, e s
 
 test('realRuntimeCommandRunner writes request.stdin to the child stdin', async () => {
   const result = await realRuntimeCommandRunner({
-    binary: 'cat',
-    args: [],
+    binary: process.execPath,
+    args: ['-e', 'process.stdin.pipe(process.stdout)'],
     env: {},
     stdin: 'piped-in-content',
   })
@@ -198,8 +198,8 @@ test('realRuntimeCommandRunner writes request.stdin to the child stdin', async (
 
 test('realRuntimeCommandRunner runs a local command successfully', async () => {
   const request: RuntimeCommandRequest = {
-    binary: 'echo',
-    args: ['hello world'],
+    binary: process.execPath,
+    args: ['-e', "console.log('hello world')"],
     env: { TEST_VAR: 'test_value' },
   }
   const result = await realRuntimeCommandRunner(request)
@@ -210,8 +210,8 @@ test('realRuntimeCommandRunner runs a local command successfully', async () => {
 test('creates cli runtime adapter using realRuntimeCommandRunner by default', async () => {
   const adapter = createCliRuntimeAdapter({
     runtime: 'codex',
-    binary: 'echo',
-    args: ['hello from adapter'],
+    binary: process.execPath,
+    args: ['-e', "console.log('hello from adapter')"],
   })
 
   const result = await adapter.run({
@@ -256,8 +256,8 @@ test('buildChildProcessEnv nunca vaza segredos do control plane para o agente', 
 
 test('runner reporta timeout como exitCode 124, nunca sucesso', async () => {
   const result = await realRuntimeCommandRunner({
-    binary: 'sleep',
-    args: ['5'],
+    binary: process.execPath,
+    args: ['-e', 'setTimeout(() => {}, 5000)'],
     env: {},
     timeoutMs: 200,
   })
@@ -317,6 +317,7 @@ describe('realRuntimeCommandRunner respeita GITORCH_EXEC_LIMITS', () => {
   })
 
   test('modo systemd com systemd-run no PATH prefixa a execução com o wrapper de limites', async () => {
+    if (process.platform === 'win32') return
     dir = mkdtempSync(join(tmpdir(), 'gitorch-systemd-run-'))
     writeFileSync(join(dir, 'systemd-run'), '#!/bin/sh\necho "SYSTEMD_ARGS:$@"\n')
     chmodSync(join(dir, 'systemd-run'), 0o755)
@@ -333,6 +334,7 @@ describe('realRuntimeCommandRunner respeita GITORCH_EXEC_LIMITS', () => {
   })
 
   test('sem a flag (default), o comando roda cru — systemd-run nem existe no PATH de teste', async () => {
+    if (process.platform === 'win32') return
     delete process.env.GITORCH_EXEC_LIMITS
 
     const result = await realRuntimeCommandRunner({ binary: 'echo', args: ['hi'], env: {} })

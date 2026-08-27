@@ -174,7 +174,7 @@ test('uses an injected workspace provider instead of the default Firecracker man
   })
   const registry = new RuntimeRegistry()
   registry.register(
-    createCliRuntimeAdapter({ runtime: 'antigravity', binary: 'agy', args: ['--print'], runner })
+    createCliRuntimeAdapter({ runtime: 'codex', binary: 'codex', args: ['--print'], runner })
   )
   const orchestrator = new AgentOrchestrator({
     registry,
@@ -190,9 +190,9 @@ test('uses an injected workspace provider instead of the default Firecracker man
     goal: 'Analyze repository',
     context: [],
     credentialRef: {
-      connectionId: 'conn-antigravity',
+      connectionId: 'conn-codex',
       ownerScope: 'project',
-      runtime: 'antigravity',
+      runtime: 'codex',
       providedSecrets: [],
     },
     userId: 'scheduler-user',

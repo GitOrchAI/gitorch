@@ -1430,7 +1430,7 @@ export async function provisionSetupMission(
  * ficam de fora — sem "furar a fila" processando uma mais nova antes de uma
  * mais velha só porque ela coube por acaso.
  */
-export function selectClaimableSetupMissions<T>(
+export function selectClaimableSetupMissions<T extends { id: string }>(
   pendingFifo: T[],
   otherActiveCount: number,
   maxConcurrent: number
