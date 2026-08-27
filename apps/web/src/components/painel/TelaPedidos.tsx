@@ -40,14 +40,22 @@ export function TelaPedidos() {
     vazio: (d) => d.length === 0,
   })
 
+  const lista = projetos.estado === 'ok' && projetos.dados ? projetos.dados : []
+
   const enviar = async () => {
     if (!texto.trim()) {
       setAviso({ erro: 'Escreva o que precisa acontecer antes de pedir.' })
       return
     }
+    // Com um projeto só, ele já vem escolhido. Com vários, o dono precisa
+    // escolher — nunca cair no primeiro em silêncio (issue no repo errado).
+    const alvo = lista.length === 1 ? lista[0].id : repo
+    if (!alvo) {
+      setAviso({ erro: 'Escolha em qual projeto o pedido deve entrar.' })
+      return
+    }
     setEnviando(true)
     setAviso(null)
-    const alvo = repo || (projetos.estado === 'ok' && projetos.dados?.[0]?.id) || ''
     const r = await enviarPedido({ projectId: alvo, texto })
     setEnviando(false)
     if (r.ok) {

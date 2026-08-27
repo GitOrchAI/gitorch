@@ -10,8 +10,11 @@ import { painelRoutes } from './painel.js'
 // Fake Prisma injetado (padrão dos testes do control-plane — nunca banco real).
 // resolveOwnerId não toca no Prisma quando a sessão não tem e-mail (JWT de
 // teste), então basta cobrir event/mission/agentQuestion.
+// O dono 'owner_1' tem 1 projeto por padrão (as rotas resolvem os ids do dono
+// antes de consultar Event/Mission por `projectId: { in }`).
 function fakePrisma(over: Record<string, any> = {}) {
   return {
+    project: { findMany: vi.fn().mockResolvedValue([{ id: 'proj_1' }]) },
     event: { findFirst: vi.fn().mockResolvedValue(null) },
     mission: {
       findFirst: vi.fn().mockResolvedValue(null),
@@ -91,20 +94,35 @@ describe('Rotas do painel do owner', () => {
       expect((await getPulso()).json().quente).toBe(false)
     })
 
-    test('escopo por dono: a consulta filtra por project.userId, nunca por wingId', async () => {
-      const prisma = await build()
+    test('escopo por dono: resolve os projetos do dono e filtra por projectId, nunca wingId', async () => {
+      const prisma = await build(
+        fakePrisma({
+          project: { findMany: vi.fn().mockResolvedValue([{ id: 'p1' }, { id: 'p2' }]) },
+        })
+      )
       await getPulso()
-      const chamada = prisma.event.findFirst.mock.calls[0]
-      expect(chamada).toBeDefined()
-      expect(chamada[0].where).toEqual({ project: { userId: 'owner_1' } })
+      expect(prisma.project.findMany.mock.calls[0][0].where).toEqual({ userId: 'owner_1' })
+      expect(prisma.event.findFirst.mock.calls[0][0].where).toEqual({
+        projectId: { in: ['p1', 'p2'] },
+      })
       expect(JSON.stringify(prisma.mission.findFirst.mock.calls[0][0].where)).not.toContain(
         'octocat'
       )
+    })
+
+    test('dono sem projeto → campos nulos sem tocar Event/Mission', async () => {
+      const prisma = await build(
+        fakePrisma({ project: { findMany: vi.fn().mockResolvedValue([]) } })
+      )
+      const body = (await getPulso()).json()
+      expect(body.ultimo_sinal_em).toBeNull()
+      expect(prisma.event.findFirst).not.toHaveBeenCalled()
     })
   })
 
   describe('GET /api/v1/painel/agentes', () => {
     const comMissoes = (rows: any[]) => ({
+      project: { findMany: vi.fn().mockResolvedValue([{ id: 'proj_1' }]) },
       mission: {
         findMany: vi.fn().mockResolvedValue(rows),
         findFirst: vi.fn().mockResolvedValue(null),
@@ -194,11 +212,16 @@ describe('Rotas do painel do owner', () => {
       expect((await getAgentes()).json().motores).toEqual(motores)
     })
 
-    test('escopo por dono: findMany filtra project.userId + status running/pending', async () => {
-      const prisma = await build()
+    test('escopo por dono: findMany filtra projectId dos projetos do dono + status running/pending', async () => {
+      const prisma = await build(
+        fakePrisma({
+          project: { findMany: vi.fn().mockResolvedValue([{ id: 'p1' }]) },
+          mission: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn() },
+        })
+      )
       await getAgentes()
       const where = prisma.mission.findMany.mock.calls[0][0].where
-      expect(where.project).toEqual({ userId: 'owner_1' })
+      expect(where.projectId).toEqual({ in: ['p1'] })
       expect(where.status).toEqual({ in: ['running', 'pending'] })
     })
   })

@@ -70,13 +70,29 @@ export function usePainelBusca<T = unknown, Bruto = unknown>(
       : { estado: 'carregando', dados: null }
   )
 
+  // Contador de sequência: uma busca lenta que volta depois de uma mais nova
+  // (comum com `intervalo`) NÃO pode sobrescrever o resultado mais recente,
+  // nem chamar setState depois do unmount.
+  const seq = useRef(0)
+  const montado = useRef(true)
+  useEffect(() => {
+    montado.current = true
+    return () => {
+      montado.current = false
+    }
+  }, [])
+
   const rodar = useCallback(async () => {
     const o = opts.current
+    const meu = ++seq.current
+    const aplicar = (novo: Resultado<T>) => {
+      if (montado.current && meu === seq.current) setR(novo)
+    }
     // Modo demo global OU tela da leva 2 ainda desligada: mostra o exemplo com
     // selo sem tentar a rota (nada de 404 no console). O selo some sozinho
     // quando NEXT_PUBLIC_PAINEL_LEVA2 ligar.
     if ((PAINEL_DEMO || (o.exemploQuandoAusente && !PAINEL_LEVA2)) && o.demo !== undefined) {
-      setR({ estado: 'ok', dados: o.demo, demo: true })
+      aplicar({ estado: 'ok', dados: o.demo, demo: true })
       return
     }
     setR((a) => (a.estado === 'ok' ? a : { estado: 'carregando', dados: null }))
@@ -84,13 +100,13 @@ export function usePainelBusca<T = unknown, Bruto = unknown>(
       const bruto = await buscar<Bruto>(caminho)
       const dados = (o.mapear ? o.mapear(bruto) : (bruto as unknown as T)) as T
       const c = classificar({ bruto: dados, vazio: o.vazio })
-      setR({ estado: c.estado, dados: c.dados })
+      aplicar({ estado: c.estado, dados: c.dados })
     } catch (e) {
       if (o.exemploQuandoAusente && o.demo !== undefined && rotaAusente(e)) {
-        setR({ estado: 'ok', dados: o.demo, demo: true })
+        aplicar({ estado: 'ok', dados: o.demo, demo: true })
         return
       }
-      setR({ estado: 'indisponivel', dados: null, erro: erroPara(e).erro })
+      aplicar({ estado: 'indisponivel', dados: null, erro: erroPara(e).erro })
     }
   }, [caminho])
 

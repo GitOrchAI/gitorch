@@ -121,6 +121,13 @@ export function Tecnico({
   )
 }
 
+/** Uma opção de resposta. `value` é o que o agente entende (e o que o painel
+ *  envia); `label` é o texto do botão. Numa dúvida de exemplo os dois coincidem. */
+export interface OpcaoDecisao {
+  label: string
+  value: string
+}
+
 export interface DecisaoView {
   id: string
   q: string
@@ -129,7 +136,7 @@ export interface DecisaoView {
   quando: string
   /** número do pedido de origem, quando conhecido */
   pedido?: number
-  op: string[]
+  op: OpcaoDecisao[]
   st: 'pendente' | 'respondida'
   resposta?: string
   tec?: string
@@ -146,6 +153,9 @@ export function Decisao({
 }) {
   const [texto, setTexto] = useState('')
   const [livre, setLivre] = useState(false)
+  // A resposta gravada é o `value`; para mostrar, volta ao rótulo do botão
+  // quando bate (mesma regra do Telegram). Texto livre não tem rótulo.
+  const rotuloDaResposta = d.op.find((o) => o.value === d.resposta)?.label ?? d.resposta
   return (
     <article className="ad-ask">
       <p className="q">{d.q}</p>
@@ -159,18 +169,18 @@ export function Decisao({
           <span className="ad-label" style={{ color: 'var(--gl-accent-ink)', marginBottom: 4 }}>
             Sua resposta
           </span>
-          <span style={{ fontSize: 14 }}>{d.resposta}</span>
+          <span style={{ fontSize: 14 }}>{rotuloDaResposta}</span>
         </div>
       ) : (
         <>
           <div className="ad-qb">
             {d.op.map((o, i) => (
               <button
-                key={o}
+                key={o.value}
                 className={'ad-q' + (i === 0 ? ' p' : '')}
-                onClick={() => responder(d.id, o)}
+                onClick={() => responder(d.id, o.value)}
               >
-                {o}
+                {o.label}
               </button>
             ))}
             <button className="ad-q" onClick={() => setLivre(!livre)}>

@@ -5,12 +5,21 @@
 import { DEMO, DIAS } from './painel-demo'
 import { ROTAS } from './painel-api'
 import { usePainelBusca } from './usePainelBusca'
-import { usePulsoAoVivo } from './usePulsoAoVivo'
 import { Ad } from './PainelIcons'
 import { Card, Kpi, Estado, Barra, Decisao, Cabeca, type DecisaoView } from './PainelUI'
 import { Estados, SeloDemo } from './PainelEstados'
 import type { TelaId } from './painel-nav'
-import type { AgentesPayload } from './painel-tipos'
+import type { AgentesPayload, PulsoPayload } from './painel-tipos'
+
+function fraseDeTempo(haSegundos: number | null): string | null {
+  if (haSegundos == null) return null
+  if (haSegundos < 60) return 'agora'
+  const min = Math.floor(haSegundos / 60)
+  if (min < 60) return `há ${min} min`
+  const h = Math.floor(min / 60)
+  if (h < 24) return `há ${h} h`
+  return `há ${Math.floor(h / 24)} dia(s)`
+}
 
 // Estado de exemplo ('go'/'wait'/'block'/'idle') → o enum do servidor.
 const ESTADO_DEMO: Record<string, AgentesPayload['atuando'][number]['estado']> = {
@@ -100,10 +109,12 @@ function Ritmo() {
 }
 
 function Pulso() {
-  // Estado inicial pela rota /painel/pulso (nova); o SSE de /api/events mantém
-  // a faixa viva a cada evento novo.
-  const p = usePulsoAoVivo()
-  if (!p || !p.ultimo) {
+  // /painel/pulso, re-consultada a cada 20s. É escopada pelo DONO (resolveOwnerId).
+  // Não usamos o SSE de /api/events aqui: ele é filtrado por wingId, e num wing
+  // com mais de um dono a faixa mostraria atividade alheia — quebra o escopo.
+  const r = usePainelBusca<PulsoPayload>(ROTAS.pulso, { intervalo: 20000 })
+  const p = r.estado === 'ok' && r.dados ? r.dados : null
+  if (!p || p.ultimo_sinal_em == null) {
     return (
       <div className="ad-pulse cold">
         <span className="ad-d idle" />
@@ -117,8 +128,8 @@ function Pulso() {
     <div className={'ad-pulse' + (p.quente ? '' : ' cold')}>
       <span className="ad-live" />
       <span>
-        <b>{p.quente ? 'Andando agora.' : 'Sem sinal recente.'}</b> Último sinal {p.ultimo}:{' '}
-        {p.o_que}.
+        <b>{p.quente ? 'Andando agora.' : 'Sem sinal recente.'}</b> Último sinal{' '}
+        {fraseDeTempo(p.ha_segundos)}: {p.descricao}.
       </span>
     </div>
   )
@@ -143,7 +154,7 @@ function Atuando({ ir }: { ir: (id: TelaId) => void }) {
       <Estados r={r} o_que="o estado dos agentes" vazio="Nenhum agente com tarefa agora.">
         {(d) =>
           d.atuando.map((a) => (
-            <div key={a.nome} className="ad-row static">
+            <div key={a.id} className="ad-row static">
               <span
                 className={'ad-d ' + estadoParaClasse(a.estado)}
                 style={{ marginTop: 6, alignSelf: 'flex-start' }}

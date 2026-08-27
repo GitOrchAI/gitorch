@@ -54,7 +54,9 @@ function tempoRelativo(iso: string): string {
 
 // AgentQuestionView (rota que já existe) → o que a tela de decisões desenha.
 // Campos que a dúvida não carrega (papel, número do pedido) ficam de fora —
-// nunca inventados.
+// nunca inventados. `op` mantém {label, value}: o painel ENVIA o `value` (o
+// que o agente entende), igual ao Telegram — mandar o label quebraria o
+// mapeamento resposta→configuração do projeto.
 function paraDecisao(q: AgentQuestionView): DecisaoView {
   return {
     id: q.id,
@@ -62,7 +64,7 @@ function paraDecisao(q: AgentQuestionView): DecisaoView {
     ctx: q.context ?? undefined,
     agente: 'Um agente',
     quando: tempoRelativo(q.createdAt),
-    op: q.options.map((o) => o.label),
+    op: q.options.map((o) => ({ label: o.label, value: o.value })),
     st: q.status === 'answered' ? 'respondida' : 'pendente',
     resposta: q.answer ?? undefined,
   }

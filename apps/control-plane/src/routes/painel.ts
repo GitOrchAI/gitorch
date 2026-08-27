@@ -75,6 +75,17 @@ export const painelRoutes = async (
   const isoOuNulo = (d: Date | string | null | undefined): string | null =>
     d == null ? null : d instanceof Date ? d.toISOString() : d
 
+  /** Ids dos projetos do dono — filtrar por `projectId: { in }` usa o índice
+   *  `[projectId, createdAt]` de Event/Mission; `where: { project: { userId } }`
+   *  força um semi-join + sort sem índice utilizável no caminho quente do pulso. */
+  const projetosDoDono = async (ownerId: string): Promise<string[]> => {
+    const ps = await app.prisma.project.findMany({
+      where: { userId: ownerId },
+      select: { id: true },
+    })
+    return ps.map((p) => p.id)
+  }
+
   // GET /api/v1/painel/pulso — o último sinal de qualquer projeto do dono, com
   // a hora REAL do evento. (API.md §2.2: /api/projects/:id/status devolve
   // lastActivity = new Date() — a hora da consulta, não a do evento; ligado ao
@@ -85,15 +96,25 @@ export const painelRoutes = async (
     async (request: FastifyRequest, reply: FastifyReply) => {
       if (!request.user) return reply.code(401).send(NAO_LOGADO)
       const ownerId = await resolveOwnerId(app.prisma, request.user)
+      const ids = await projetosDoDono(ownerId)
+      if (ids.length === 0) {
+        return reply.send({
+          ultimo_sinal_em: null,
+          ha_segundos: null,
+          descricao: null,
+          quente: false,
+          limite_frio_segundos: LIMITE_FRIO_SEGUNDOS,
+        })
+      }
 
       const [evento, missao] = await Promise.all([
         app.prisma.event.findFirst({
-          where: { project: { userId: ownerId } },
+          where: { projectId: { in: ids } },
           orderBy: { createdAt: 'desc' },
           select: { type: true, payload: true, createdAt: true },
         }),
         app.prisma.mission.findFirst({
-          where: { project: { userId: ownerId } },
+          where: { projectId: { in: ids } },
           orderBy: { createdAt: 'desc' },
           select: { type: true, payload: true, createdAt: true, startedAt: true },
         }),
@@ -143,22 +164,25 @@ export const painelRoutes = async (
     async (request: FastifyRequest, reply: FastifyReply) => {
       if (!request.user) return reply.code(401).send(NAO_LOGADO)
       const ownerId = await resolveOwnerId(app.prisma, request.user)
+      const ids = await projetosDoDono(ownerId)
 
-      const missoes = await app.prisma.mission.findMany({
-        where: { project: { userId: ownerId }, status: { in: ['running', 'pending'] } },
-        orderBy: { startedAt: 'desc' },
-        take: 12,
-        select: {
-          id: true,
-          type: true,
-          payload: true,
-          status: true,
-          waitingStatus: true,
-          startedAt: true,
-          createdAt: true,
-          project: { select: { name: true } },
-        },
-      })
+      const missoes = ids.length
+        ? await app.prisma.mission.findMany({
+            where: { projectId: { in: ids }, status: { in: ['running', 'pending'] } },
+            orderBy: { startedAt: 'desc' },
+            take: 12,
+            select: {
+              id: true,
+              type: true,
+              payload: true,
+              status: true,
+              waitingStatus: true,
+              startedAt: true,
+              createdAt: true,
+              project: { select: { name: true } },
+            },
+          })
+        : []
 
       const atuando = missoes.map((m) => ({
         id: m.id,

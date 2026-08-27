@@ -57,6 +57,18 @@ function toNullable<T>(value: T | undefined): T | null {
  */
 const CAMPOS_SO_DO_GITHUB = ['githubInstallationId', 'githubRepoId'] as const
 
+/**
+ * `githubRepoId` é BigInt no schema (ids de repo do GitHub estouram Number).
+ * Fastify não serializa BigInt — sem esta conversão, qualquer projeto com o
+ * campo preenchido (via webhook) faz o endpoint devolver 500 "Do not know how
+ * to serialize a BigInt". Aplicar em TODA resposta que devolve um Project.
+ */
+function serializavel<T extends { githubRepoId?: bigint | null }>(
+  p: T
+): Omit<T, 'githubRepoId'> & { githubRepoId: string | null } {
+  return { ...p, githubRepoId: p.githubRepoId == null ? null : p.githubRepoId.toString() }
+}
+
 function campoProibidoNoCorpo(body: unknown): string | null {
   if (typeof body !== 'object' || body === null) return null
   for (const campo of CAMPOS_SO_DO_GITHUB) {
@@ -106,17 +118,8 @@ export const projectRoutes = async (app: FastifyInstance): Promise<void> => {
         app.prisma.project.count({ where: { wingId } }),
       ])
 
-      // `githubRepoId` é BigInt no schema (ids de repo do GitHub estouram
-      // Number). Fastify não serializa BigInt — sem esta conversão o GET
-      // devolve 500 "Do not know how to serialize a BigInt" para qualquer
-      // projeto que tenha o campo preenchido.
-      const data = projects.map((p) => ({
-        ...p,
-        githubRepoId: p.githubRepoId == null ? null : p.githubRepoId.toString(),
-      }))
-
       return reply.send({
-        data,
+        data: projects.map(serializavel),
         pagination: {
           page,
           pageSize,
@@ -174,7 +177,7 @@ export const projectRoutes = async (app: FastifyInstance): Promise<void> => {
         },
       })
 
-      return reply.code(201).send(project)
+      return reply.code(201).send(serializavel(project))
     }
   )
 
@@ -209,7 +212,7 @@ export const projectRoutes = async (app: FastifyInstance): Promise<void> => {
         return reply.code(404).send({ error: 'Project not found' })
       }
 
-      return project
+      return serializavel(project)
     }
   )
 
@@ -278,7 +281,7 @@ export const projectRoutes = async (app: FastifyInstance): Promise<void> => {
         },
       })
 
-      return project
+      return serializavel(project)
     }
   )
 
