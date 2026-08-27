@@ -4721,7 +4721,14 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     const candidatas = await app.prisma.devSession.findMany({
       where: { projectId: args.projectId, state: 'AWAITING_USER_FEEDBACK', closedAt: null },
       orderBy: { createdAt: 'asc' },
-      select: { sessionName: true, issueNumber: true, answeredHash: true },
+      select: {
+        sessionName: true,
+        issueNumber: true,
+        answeredHash: true,
+        // O carimbo da reserva: e ele que separa "alguem esta tentando agora"
+        // de "a tentativa terminou e falhou". Ja era gravado; nao era lido.
+        stateCheckedAt: true,
+      },
       take: 20,
     })
     if (candidatas.length === 0) return
@@ -4752,6 +4759,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       const decisao = decidirSobreAPergunta({
         hashDaPergunta,
         marca: esperando.answeredHash,
+        // O carimbo da reserva. Sem ele, uma acordada que chegasse no meio da
+        // tentativa de outra a contava como tentativa JÁ GASTA e subia o
+        // contador — e a devolução da primeira, condicional à marca dela, não
+        // valia mais. Foi assim que as tarefas #248 e #3799 chegaram a
+        // `desisti` mesmo com a devolução funcionando.
+        marcadaEm: esperando.stateCheckedAt,
+        agora: new Date(),
       })
       // Já respondida, ou já desistimos dela: passa para a próxima em vez de
       // sair. Sair aqui era a fome — a mais antiga já resolvida fazia todas as
