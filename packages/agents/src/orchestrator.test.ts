@@ -125,12 +125,9 @@ test('bubbles up step-level failure and recovery status to the workspace provide
   const hibernate = vi.fn().mockResolvedValue(undefined)
   const handleRuntimeFailure = vi.fn()
 
-  const runner: RuntimeCommandRunner = async () => ({
-    exitCode: 124,
-    stdout: '',
-    stderr: 'Timeout or crash in execution',
-    durationMs: 5000,
-  })
+  const runner: RuntimeCommandRunner = async () => {
+    throw new Error('Adapter explosion')
+  }
 
   const registry = new RuntimeRegistry()
   registry.register(
@@ -160,7 +157,7 @@ test('bubbles up step-level failure and recovery status to the workspace provide
   })
 
   expect(handleRuntimeFailure).toHaveBeenCalledWith(
-    'Timeout or crash in execution',
+    'Adapter explosion',
     'execute-runner',
     false
   )

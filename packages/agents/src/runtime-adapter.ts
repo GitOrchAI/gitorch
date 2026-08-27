@@ -55,7 +55,7 @@ export interface RuntimeExecutionResult {
  */
 export async function wrapExecutionStep<T>(
   stepName: string,
-  fn: () => Promise<T>
+  fn: () => Promise<T> | T
 ): Promise<{ result?: T; error?: Error; failedStep?: string }> {
   try {
     const result = await fn()
