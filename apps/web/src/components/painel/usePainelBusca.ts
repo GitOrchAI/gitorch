@@ -10,6 +10,9 @@ import { buscar } from './painel-api'
 import { classificar, erroPara } from './painel-estados'
 
 export const PAINEL_DEMO = process.env.NEXT_PUBLIC_PAINEL_DEMO === '1'
+/** Liga as telas da leva 2 (ritmo/entregas/histórico). Sem isto elas ficam no
+ *  exemplo com selo e NÃO tentam a rota (evita 404 no console). */
+export const PAINEL_LEVA2 = process.env.NEXT_PUBLIC_PAINEL_LEVA2 === '1'
 
 /** Erro de rota que ainda não existe no servidor (leva 2). 404 e 501. */
 function rotaAusente(e: unknown): boolean {
@@ -59,15 +62,20 @@ export function usePainelBusca<T = unknown, Bruto = unknown>(
     opts.current = opcoes
   })
 
+  const mostraExemplo =
+    demo !== undefined && (PAINEL_DEMO || (opcoes.exemploQuandoAusente && !PAINEL_LEVA2))
   const [r, setR] = useState<Resultado<T>>(
-    PAINEL_DEMO && demo !== undefined
+    mostraExemplo
       ? { estado: 'ok', dados: demo as T, demo: true }
       : { estado: 'carregando', dados: null }
   )
 
   const rodar = useCallback(async () => {
     const o = opts.current
-    if (PAINEL_DEMO && o.demo !== undefined) {
+    // Modo demo global OU tela da leva 2 ainda desligada: mostra o exemplo com
+    // selo sem tentar a rota (nada de 404 no console). O selo some sozinho
+    // quando NEXT_PUBLIC_PAINEL_LEVA2 ligar.
+    if ((PAINEL_DEMO || (o.exemploQuandoAusente && !PAINEL_LEVA2)) && o.demo !== undefined) {
       setR({ estado: 'ok', dados: o.demo, demo: true })
       return
     }

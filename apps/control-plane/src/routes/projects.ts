@@ -106,8 +106,17 @@ export const projectRoutes = async (app: FastifyInstance): Promise<void> => {
         app.prisma.project.count({ where: { wingId } }),
       ])
 
+      // `githubRepoId` é BigInt no schema (ids de repo do GitHub estouram
+      // Number). Fastify não serializa BigInt — sem esta conversão o GET
+      // devolve 500 "Do not know how to serialize a BigInt" para qualquer
+      // projeto que tenha o campo preenchido.
+      const data = projects.map((p) => ({
+        ...p,
+        githubRepoId: p.githubRepoId == null ? null : p.githubRepoId.toString(),
+      }))
+
       return reply.send({
-        data: projects,
+        data,
         pagination: {
           page,
           pageSize,
