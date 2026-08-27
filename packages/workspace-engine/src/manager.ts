@@ -24,11 +24,15 @@ export class WorkspaceManager extends EventEmitter {
   }
 
   handleRuntimeFailure(errorDetails: string, stepName: string, rollback: boolean) {
-    this.emit('workspace-error', {
+    const payload = {
       failedStep: stepName,
       errorDetails,
       recoveryAction: rollback ? 'auto-rollback' : 'none',
-    })
+    }
+    console.error(
+      `[WorkspaceManager] Step failed: ${payload.failedStep}. Recovery action: ${payload.recoveryAction}. Details: ${payload.errorDetails}`
+    )
+    this.emit('workspace-error', payload)
   }
 
   private validateInput(value: string): void {

@@ -187,7 +187,7 @@ jobs:
 
             if [ "$BLOCKING" -gt 0 ]; then
               echo "::notice::CI vermelho no PR #$PR_NUM — auto-merge NÃO habilitado."
-              echo "$OTHERS" | jq -r '.[] | select(.bucket=="fail" or .bucket=="cancel") | "  ✗ \(.name): \(.bucket)"'
+              echo "$OTHERS" | jq -r '.[] | select(.bucket=="fail" or .bucket=="cancel") | "  ✗ \(.name): \(.bucket)"' || true
               exit 0
             fi
 

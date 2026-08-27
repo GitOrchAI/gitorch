@@ -1,5 +1,12 @@
 packages:
-  - 'packages/*'
+  - 'packages/agents'
+  - 'packages/cadence'
+  - 'packages/cgc'
+  - 'packages/cortex'
+  - 'packages/github-sync'
+  - 'packages/graph-rag'
+  - 'packages/synapse'
+  - 'packages/workspace-engine'
   - 'apps/control-plane'
   - 'apps/web'
   - 'apps/landing'
