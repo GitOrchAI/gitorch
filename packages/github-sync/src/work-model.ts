@@ -1,5 +1,10 @@
 import type { AvailabilityDecision, GitHubIssueType, GitHubWorkItem } from './types'
 
+export interface WorkItemTimestamps {
+  wishCreatedAt?: string
+  mergedAt?: string
+}
+
 export class GitHubWorkModel {
   issueTypeFor(item: GitHubWorkItem): GitHubIssueType {
     return item.type
