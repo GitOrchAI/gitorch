@@ -114,6 +114,7 @@ import {
   marcarDesistencia,
   marcarRespondida,
 } from '../services/pergunta-sem-resposta.js'
+import { esperarAVezDeDevolver } from '../services/devolucao-de-credencial.js'
 import {
   reservarAResposta,
   devolverAReserva,
@@ -839,15 +840,42 @@ export function createLocalCredentialRunner(
         // capturar aqui queima o token e derruba a credencial do cliente —
         // medido em 26/08 com o codex ("Your refresh token has already been
         // used"). Sem a trava, saímos calados: a próxima missão captura.
+        // ESPERA a vez em vez de desistir dela. O código anterior PULAVA a
+        // devolução quando a trava estava ocupada, com o comentário "a próxima
+        // missão captura" — e para token rotativo isso é o contrário do certo.
+        //
+        // O refresh token do Codex é de USO ÚNICO: o CLI renova sozinho ao ser
+        // chamado, então este HOME termina com a credencial NOVA e o cofre com
+        // a VELHA, que o provedor já invalidou. Pular a devolução mandava a
+        // nova para o lixo junto com o HOME (o `fs.rm` logo abaixo) e deixava
+        // o cofre servindo um token morto. A missão seguinte levava 401, e não
+        // havia volta: a conexão do cliente morria de vez.
+        //
+        // Foi isto que fez o dono religar o Codex duas vezes num dia, textual:
+        // "precisa urgentemente resolver esse problema de perder conexão".
+        //
+        // Estourar a espera NÃO cancela a devolução: perder o único token
+        // válido é pior que uma escrita concorrente, que no máximo regrava o
+        // mesmo valor.
         const minhaVez = prismaDaTrava
-          ? await pegarATrava({
-              prisma: prismaDaTrava,
-              userId: ownerUserId,
-              runtime,
-              agora: new Date(),
-            }).catch(() => true)
+          ? await esperarAVezDeDevolver({
+              pegar: () =>
+                pegarATrava({
+                  prisma: prismaDaTrava,
+                  userId: ownerUserId,
+                  runtime,
+                  agora: new Date(),
+                }).catch(() => true),
+              esperar: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
+              agora: () => Date.now(),
+            })
           : true
-        if (minhaVez) {
+        if (!minhaVez) {
+          log?.warn(
+            `[Scheduler] a trava de ${runtime} não abriu a tempo; devolvendo a credencial assim mesmo — perder uma renovação é pior`
+          )
+        }
+        {
           try {
             await engineConnections
               .captureFromHome(ownerUserId, runtime, dir)
