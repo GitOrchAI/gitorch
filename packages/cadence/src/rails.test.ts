@@ -111,13 +111,14 @@ describe('validateForm (validador minimal por schema)', () => {
       bottlenecks: ['Instalação de binários nativos no Windows requer atenção de plataforma'],
       concreteImprovement: {
         titulo: '[Melhoria] CI estrito multi-plataforma',
-        description: 'Padronizar separadores de caminho com path.resolve.',
-        notes: 'Garante execução idêntica no Linux e Windows.',
+        goal: 'Garantir execução idêntica no Linux e Windows.',
+        taskDetails: 'Divergências detectadas em caminhos no Windows.',
+        taskDescription: 'Padronizar separadores de caminho com path.resolve.',
         implementationGuide: '1. Revisar pacotes; 2. Rodar vitest.',
         verificationCriteria: '100% testes verdes.',
-        summary: 'Resiliência multiplataforma.',
-        analysisResult: 'Divergências detectadas em caminhos no Windows.',
+        dependencies: 'none',
         relatedFiles: 'packages/workspace-engine/src/manager.ts',
+        notes: 'Garante execução idêntica no Linux e Windows.',
       },
     })
     expect(valid.ok).toBe(true)
