@@ -13,13 +13,13 @@ import { JulesClient } from './lib/jules-client.js'
 import { z } from 'zod'
 
 // Types
-const CIFailureAnalysisSchema = z.object({
+const _CIFailureAnalysisSchema = z.object({
   rootCause: z.string(),
   fixInstructions: z.string(),
   comment: z.string(),
 })
 
-export type CIFailureAnalysis = z.infer<typeof CIFailureAnalysisSchema>
+export type CIFailureAnalysis = z.infer<typeof _CIFailureAnalysisSchema>
 
 /**
  * Checks if a date is more than N business days ago

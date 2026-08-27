@@ -10,7 +10,7 @@ import { Octokit } from '@octokit/rest'
 import { z } from 'zod'
 
 // Types
-const SLAAlertSchema = z.object({
+const _SLAAlertSchema = z.object({
   alertNumber: z.number(),
   ghsaId: z.string().optional(),
   cveId: z.string().optional(),
@@ -25,7 +25,7 @@ const SLAAlertSchema = z.object({
   status: z.enum(['open', 'in-progress', 'breached', 'resolved']),
 })
 
-export type SLAAlert = z.infer<typeof SLAAlertSchema>
+export type SLAAlert = z.infer<typeof _SLAAlertSchema>
 
 /**
  * Calculates business days between two dates (excludes weekends)

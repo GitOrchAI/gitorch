@@ -26,14 +26,14 @@ const ConflictFileSchema = z.object({
   description: z.string(),
 })
 
-const ConflictAnalysisSchema = z.object({
+const _ConflictAnalysisSchema = z.object({
   conflicts: z.array(ConflictFileSchema),
   comment: z.string(),
   hasConflicts: z.boolean(),
 })
 
 export type ConflictFile = z.infer<typeof ConflictFileSchema>
-export type ConflictAnalysis = z.infer<typeof ConflictAnalysisSchema>
+export type ConflictAnalysis = z.infer<typeof _ConflictAnalysisSchema>
 
 // Configuration
 const MAX_DIFF_SIZE = 12000

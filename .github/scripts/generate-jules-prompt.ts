@@ -96,13 +96,13 @@ const DependabotAlertSchema = z.object({
 
 export type DependabotAlert = z.infer<typeof DependabotAlertSchema>
 
-const GeneratedPromptSchema = z.object({
+const _GeneratedPromptSchema = z.object({
   title: z.string(),
   body: z.string(),
   labels: z.array(z.string()),
 })
 
-export type GeneratedPrompt = z.infer<typeof GeneratedPromptSchema>
+export type GeneratedPrompt = z.infer<typeof _GeneratedPromptSchema>
 
 /**
  * Fetches a Dependabot alert by number
