@@ -120,6 +120,52 @@ test('records Synapse execution as blocked when the mission fails (exitCode != 0
   expect(completedEvent?.payload.status).toBe('blocked')
 })
 
+test('bubbles up step-level failure and recovery status to the workspace provider when the runtime adapter fails', async () => {
+  const allocate = vi.fn().mockResolvedValue({ path: '/tmp/ws' })
+  const hibernate = vi.fn().mockResolvedValue(undefined)
+  const handleRuntimeFailure = vi.fn()
+
+  const runner: RuntimeCommandRunner = async () => ({
+    exitCode: 124,
+    stdout: '',
+    stderr: 'Timeout or crash in execution',
+    durationMs: 5000,
+  })
+
+  const registry = new RuntimeRegistry()
+  registry.register(
+    createCliRuntimeAdapter({ runtime: 'antigravity', binary: 'agy', args: ['--print'], runner })
+  )
+
+  const orchestrator = new AgentOrchestrator({
+    registry,
+    synapse: new SynapseClient(),
+    workspace: { allocateWorkspace: allocate, hibernateWorkspace: hibernate, handleRuntimeFailure },
+  })
+
+  await orchestrator.runMission({
+    id: 'mission-failed-deploy',
+    projectId: 'project-1',
+    repository: 'owner/repo',
+    role: 'qa',
+    goal: 'Test deployment failure',
+    context: [],
+    credentialRef: {
+      connectionId: 'conn-agy',
+      ownerScope: 'project',
+      runtime: 'antigravity',
+      providedSecrets: [],
+    },
+    userId: 'qa-user',
+  })
+
+  expect(handleRuntimeFailure).toHaveBeenCalledWith(
+    'Timeout or crash in execution',
+    'execute-runner',
+    false
+  )
+})
+
 test('uses an injected workspace provider instead of the default Firecracker manager', async () => {
   mockAllocateWorkspace.mockClear()
   mockHibernateWorkspace.mockClear()
