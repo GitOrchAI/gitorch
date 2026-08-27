@@ -236,8 +236,8 @@ jobs:
                 echo "Tentativa de merge $t falhou, repetindo em 10s..."
                 sleep 10
               done
-              echo "::warning::Falha ao mesclar o PR #$PR_NUM após 3 tentativas."
-              exit 0
+              echo "::error::Falha ao mesclar o PR #$PR_NUM após 3 tentativas."
+              exit 1
             fi
 
             sleep 30
