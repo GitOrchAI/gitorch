@@ -222,6 +222,11 @@ import {
   deveAvisarDeNovo,
 } from '../services/credencial-do-motor.js'
 import { marcaDePedidoDeLogin } from '../services/motor-que-pede-login.js'
+import {
+  ehTetoDeUsoDaConta,
+  quandoACotaVolta,
+  recadoDeTetoDeUso,
+} from '../services/teto-de-uso-da-conta.js'
 import { umaAcordadaPorCiclo } from '../services/uma-acordada-por-ciclo.js'
 import { relogioDaAgenda } from '../services/espalhar-agendas.js'
 import { canRunMission, shouldAlertForQuota } from '../lib/spend-guard.js'
@@ -3222,6 +3227,36 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         // aconteceu de verdade em produção. Avisa uma vez por dono+motor por
         // dia (deveAvisarDeNovo) — SPAM apaga sinal tanto quanto silêncio,
         // mesma disciplina de session-watch.ts.
+        // ACABOU A COTA não é LOGIN VENCIDO, e confundir os dois custou caro:
+        // em 27/08 o dono religou o Codex DUAS VEZES no mesmo dia por um
+        // diagnóstico errado. A resposta literal do provedor, capturada
+        // rodando o CLI na mão, era "You've hit your usage limit" — conta no
+        // teto, que só o tempo resolve. Antes disto esse caso não produzia
+        // aviso NENHUM: o dono só percebia quando as coisas paravam de andar.
+        if (!falhaDeCredencial && ehTetoDeUsoDaConta(lastError)) {
+          const chaveDoTeto = `teto:${project.userId ?? project.id}:${sel.runtime}`
+          if (deveAvisarDeNovo(avisosDeCredencialExpirada, chaveDoTeto, Date.now())) {
+            avisosDeCredencialExpirada.set(chaveDoTeto, Date.now())
+            const chatDoTeto = await resolveNotifyChatId(app.prisma, project, {
+              instanceOwnerEmail: process.env['GITORCH_OWNER_EMAIL'],
+              instanceChatId:
+                process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
+            }).catch(() => null)
+            const avisarDoTeto = buildTelegramNotifier({
+              botToken:
+                process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
+              ...(chatDoTeto ? { chatId: chatDoTeto } : {}),
+            })
+            if (avisarDoTeto) {
+              await avisarDoTeto(
+                recadoDeTetoDeUso({
+                  runtime: sel.runtime,
+                  volta: quandoACotaVolta(lastError),
+                })
+              ).catch(() => undefined)
+            }
+          }
+        }
         if (err instanceof CredencialExpiradaError) {
           falhaDeCredencial = true
           // A TELA PARA DE MENTIR. Antes disto, este caminho marcava a falha no

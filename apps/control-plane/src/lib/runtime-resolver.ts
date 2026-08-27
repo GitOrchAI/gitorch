@@ -101,8 +101,14 @@ export function resolvePrimaryRuntime(
 // prompt em runtime-adapter.ts (capPromptForArgv) — o teto reduz a chance de
 // E2BIG acontecer; isFailoverError cobre o que ainda passar (ex.: um
 // argumento de outra origem, ou um SO com ARG_MAX menor).
+// "usage limit" entrou em 27/08 depois de uma medição na mão: o Codex diz
+// "You've hit your usage limit", que NÃO casava com nenhum dos padrões acima —
+// nem "quota", nem "rate limit", nem 429. O Antigravity, que diz "Individual
+// quota reached", casava. A mesma situação era tratada de dois jeitos por
+// acaso de vocabulário, e no caso do Codex a troca de motor nem era tentada
+// pelo texto (só pelo tipo do erro, quando havia um).
 const FAILOVER_PATTERN =
-  /quota|rate.?limit|429|exhaust|insufficient|unauthor|forbidden|\b401\b|\b403\b|invalid.?api.?key|e2big|argument list too long/i
+  /quota|rate.?limit|429|exhaust|insufficient|unauthor|forbidden|\b401\b|\b403\b|invalid.?api.?key|e2big|argument list too long|usage limit/i
 
 export function isFailoverError(message: string): boolean {
   return FAILOVER_PATTERN.test(message)
