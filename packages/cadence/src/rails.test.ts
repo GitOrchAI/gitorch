@@ -16,12 +16,18 @@ describe('RAILS_SCHEMAS', () => {
       'raAreas',
       'raJourneys',
       'raBrief',
+      'raSecurityAudit',
+      'raBenchmark',
       'poPhases',
       'poEpics',
       'poFeatures',
       'poTasks',
       'poRoadmap',
+      'poStrategicQuestion',
       'qaVerdict',
+      'qaVisualAudit',
+      'smRetro',
+      'smJudgment',
     ]) {
       expect(RAILS_SCHEMAS[key as keyof typeof RAILS_SCHEMAS]).toBeTruthy()
     }
@@ -49,6 +55,72 @@ describe('validateForm (validador minimal por schema)', () => {
     const r = validateForm(RAILS_SCHEMAS.poPhases, { phases: [{ title: 'Fase 1' }] })
     expect(r.ok).toBe(false)
     expect(r.errors.join(' ')).toContain('goal')
+  })
+
+  it('valida PoStrategicQuestion com opções comparativas e recomendação', () => {
+    const valid = validateForm(RAILS_SCHEMAS.poStrategicQuestion, {
+      question: 'Qual provedor de banco utilizar para o grafo de dependências?',
+      rationale: 'O Kùzu DB oferece performance embedded superior a instâncias remotas.',
+      options: [
+        {
+          id: 'kuzu',
+          text: 'Kùzu DB Embedded',
+          impact: 'Zero latência de rede e isolamento por workspace',
+        },
+        {
+          id: 'neo4j',
+          text: 'Neo4j Server',
+          impact: 'Requer provisionamento de infraestrutura adicional',
+        },
+      ],
+      recommendation: 'kuzu',
+    })
+    expect(valid.ok).toBe(true)
+
+    const invalid = validateForm(RAILS_SCHEMAS.poStrategicQuestion, {
+      question: 'Qual provedor?',
+      rationale: 'Racional',
+      options: [{ id: 'kuzu', text: 'Kùzu', impact: 'Impacto' }],
+      recommendation: 'kuzu',
+    })
+    expect(invalid.ok).toBe(false)
+    expect(invalid.errors.join(' ')).toContain('at least 2')
+  })
+
+  it('valida RaSecurityAudit com modelo de ameaças e findings classificados', () => {
+    const valid = validateForm(RAILS_SCHEMAS.raSecurityAudit, {
+      threatModel: 'STRIDE / OWASP Top 10',
+      findings: [
+        {
+          severity: 'HIGH',
+          category: 'Injection',
+          description: 'Comando execFile sem escape em argumento de repositório',
+          fileLocation: 'packages/workspace-engine/src/manager.ts:145',
+          remediation: 'Utilizar array de argumentos com flag -- separadora',
+        },
+      ],
+      passedChecks: ['Secret scan limpo', 'Nenhum token gravado em disco'],
+    })
+    expect(valid.ok).toBe(true)
+  })
+
+  it('valida SmRetro com 8 campos no concreteImprovement', () => {
+    const valid = validateForm(RAILS_SCHEMAS.smRetro, {
+      sprintOutcome: 'SUCCESS',
+      velocityNotes: 'Todas as 5 tasks completadas no prazo com 100% de testes passando.',
+      bottlenecks: ['Instalação de binários nativos no Windows requer atenção de plataforma'],
+      concreteImprovement: {
+        titulo: '[Melhoria] CI estrito multi-plataforma',
+        description: 'Padronizar separadores de caminho com path.resolve.',
+        notes: 'Garante execução idêntica no Linux e Windows.',
+        implementationGuide: '1. Revisar pacotes; 2. Rodar vitest.',
+        verificationCriteria: '100% testes verdes.',
+        summary: 'Resiliência multiplataforma.',
+        analysisResult: 'Divergências detectadas em caminhos no Windows.',
+        relatedFiles: 'packages/workspace-engine/src/manager.ts',
+      },
+    })
+    expect(valid.ok).toBe(true)
   })
 
   it('rejeita enum inválido no QaVerdict', () => {

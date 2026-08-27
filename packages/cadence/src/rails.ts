@@ -168,6 +168,54 @@ export interface PoTriageForm {
   releaseNow: boolean
 }
 
+export interface PoStrategicQuestionForm {
+  question: string
+  rationale: string
+  options: Array<{ id: string; text: string; impact: string }>
+  recommendation: string
+}
+
+export interface RaSecurityAuditForm {
+  threatModel: string
+  findings: Array<{
+    severity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW'
+    category: string
+    description: string
+    fileLocation?: string
+    remediation: string
+  }>
+  passedChecks: string[]
+}
+
+export interface RaBenchmarkForm {
+  metrics: Record<string, string | number>
+  regressions: string[]
+  recommendations: string[]
+}
+
+export interface QaVisualAuditForm {
+  route: string
+  viewportsTested: string[]
+  visualDefects: Array<{
+    element: string
+    expected: string
+    observed: string
+    screenshotRef?: string
+  }>
+  criteriaResults: Array<{
+    criterion: string
+    status: 'MET' | 'NOT_MET' | 'CANNOT_VERIFY'
+    evidence: string
+  }>
+}
+
+export interface SmRetroForm {
+  sprintOutcome: 'SUCCESS' | 'PARTIAL' | 'FAILED'
+  velocityNotes: string
+  bottlenecks: string[]
+  concreteImprovement: DoDFields
+}
+
 export interface QaVerdictForm {
   verdict: 'approve' | 'request_changes'
   comment: DoDFields
@@ -472,6 +520,110 @@ export const RAILS_SCHEMAS = {
       testSuites: { type: 'array', items: { type: 'string' }, minItems: 1 },
       coverageExpectation: { type: 'string' },
       criticalPaths: { type: 'array', items: { type: 'string' }, minItems: 1 },
+    },
+  } as MiniSchema,
+
+  poStrategicQuestion: {
+    type: 'object',
+    required: ['question', 'rationale', 'options', 'recommendation'],
+    properties: {
+      question: { type: 'string' },
+      rationale: { type: 'string' },
+      options: {
+        type: 'array',
+        minItems: 2,
+        items: {
+          type: 'object',
+          required: ['id', 'text', 'impact'],
+          properties: {
+            id: { type: 'string' },
+            text: { type: 'string' },
+            impact: { type: 'string' },
+          },
+        },
+      },
+      recommendation: { type: 'string' },
+    },
+  } as MiniSchema,
+
+  raSecurityAudit: {
+    type: 'object',
+    required: ['threatModel', 'findings', 'passedChecks'],
+    properties: {
+      threatModel: { type: 'string' },
+      findings: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['severity', 'category', 'description', 'remediation'],
+          properties: {
+            severity: { type: 'string', enum: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'] },
+            category: { type: 'string' },
+            description: { type: 'string' },
+            fileLocation: { type: 'string' },
+            remediation: { type: 'string' },
+          },
+        },
+      },
+      passedChecks: {
+        type: 'array',
+        items: { type: 'string' },
+      },
+    },
+  } as MiniSchema,
+
+  raBenchmark: {
+    type: 'object',
+    required: ['metrics', 'regressions', 'recommendations'],
+    properties: {
+      metrics: { type: 'object' },
+      regressions: { type: 'array', items: { type: 'string' } },
+      recommendations: { type: 'array', items: { type: 'string' } },
+    },
+  } as MiniSchema,
+
+  qaVisualAudit: {
+    type: 'object',
+    required: ['route', 'viewportsTested', 'visualDefects', 'criteriaResults'],
+    properties: {
+      route: { type: 'string' },
+      viewportsTested: { type: 'array', items: { type: 'string' }, minItems: 1 },
+      visualDefects: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['element', 'expected', 'observed'],
+          properties: {
+            element: { type: 'string' },
+            expected: { type: 'string' },
+            observed: { type: 'string' },
+            screenshotRef: { type: 'string' },
+          },
+        },
+      },
+      criteriaResults: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['criterion', 'status', 'evidence'],
+          properties: {
+            criterion: { type: 'string' },
+            status: { type: 'string', enum: ['MET', 'NOT_MET', 'CANNOT_VERIFY'] },
+            evidence: { type: 'string' },
+          },
+        },
+      },
+    },
+  } as MiniSchema,
+
+  smRetro: {
+    type: 'object',
+    required: ['sprintOutcome', 'velocityNotes', 'bottlenecks', 'concreteImprovement'],
+    properties: {
+      sprintOutcome: { type: 'string', enum: ['SUCCESS', 'PARTIAL', 'FAILED'] },
+      velocityNotes: { type: 'string' },
+      bottlenecks: { type: 'array', items: { type: 'string' } },
+      concreteImprovement: DOD_FIELDS_SCHEMA,
     },
   } as MiniSchema,
 

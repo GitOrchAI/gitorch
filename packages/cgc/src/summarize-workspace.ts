@@ -109,7 +109,8 @@ export function collectSourceFiles(
         const language = EXT_LANG[extname(entry).toLowerCase()]
         if (!language) continue
         if (st.size > maxFileBytes) continue
-        candidates.push({ relPath: relative(root, full), language, full })
+        const relPath = relative(root, full).replace(/\\/g, '/')
+        candidates.push({ relPath, language, full })
       }
     }
   }

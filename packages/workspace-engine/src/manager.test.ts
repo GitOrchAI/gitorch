@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { WorkspaceManager } from './manager.js'
 import { execFile } from 'node:child_process'
 import * as fs from 'node:fs/promises'
+import * as path from 'node:path'
 
 // Mocar child_process.execFile
 vi.mock('node:child_process', () => {
@@ -36,16 +37,17 @@ describe('WorkspaceManager', () => {
   it('should allocate a workspace correctly mapping to the isolated path', async () => {
     const userId = 'user-123'
     const projectId = 'project-abc'
+    const expectedPath = path.resolve('/var/lib/gitorch/workspaces', userId, projectId)
     const info = await manager.allocateWorkspace(userId, projectId)
 
     expect(info.id).toBe('ws:user-123:project-abc')
     expect(info.userId).toBe(userId)
     expect(info.projectId).toBe(projectId)
-    expect(info.path).toBe(`/var/lib/gitorch/workspaces/${userId}/${projectId}`)
+    expect(info.path).toBe(expectedPath)
     expect(info.status).toBe('active')
 
     // Verificar se o mkdir foi chamado com o caminho correto
-    expect(fs.mkdir).toHaveBeenCalledWith(`/var/lib/gitorch/workspaces/${userId}/${projectId}`, {
+    expect(fs.mkdir).toHaveBeenCalledWith(expectedPath, {
       recursive: true,
     })
 
@@ -55,7 +57,7 @@ describe('WorkspaceManager', () => {
     const jailerCall = calls.find((call) => call[0] === 'jailer')
     expect(jailerCall).toBeDefined()
     expect(jailerCall![1]).toContain('wsuser123projectabc')
-    expect(jailerCall![1]).toContain('/var/lib/gitorch/workspaces/user-123/project-abc')
+    expect(jailerCall![1]).toContain(expectedPath)
   })
 
   it('should handle allocation failure, rollback, and emit workspace-error', async () => {
@@ -109,6 +111,10 @@ describe('WorkspaceManager', () => {
   it('should hibernate a workspace', async () => {
     const userId = 'user-123'
     const projectId = 'project-abc'
+    const expectedSocketPath = path.join(
+      path.resolve('/var/lib/gitorch/workspaces', userId, projectId),
+      'firecracker.socket'
+    )
     await manager.hibernateWorkspace(userId, projectId)
 
     expect(execFile).toHaveBeenCalled()
@@ -116,9 +122,7 @@ describe('WorkspaceManager', () => {
 
     // Verificar se chamou curl para o socket do Firecracker
     const curlCall = calls.find(
-      (call) =>
-        call[0] === 'curl' &&
-        call[1]?.includes('/var/lib/gitorch/workspaces/user-123/project-abc/firecracker.socket')
+      (call) => call[0] === 'curl' && call[1]?.includes(expectedSocketPath)
     )
     expect(curlCall).toBeDefined()
 
@@ -131,6 +135,10 @@ describe('WorkspaceManager', () => {
 
   it('should clone repositories into workspace', async () => {
     const workspaceId = 'ws:user-123:project-abc'
+    const expectedSrcPath = path.join(
+      path.resolve('/var/lib/gitorch/workspaces', 'user-123', 'project-abc'),
+      'src'
+    )
     const repos = ['https://github.com/foo/bar.git']
     await manager.cloneRepositories(workspaceId, repos)
 
@@ -143,13 +151,14 @@ describe('WorkspaceManager', () => {
         call[0] === 'git' &&
         call[1]?.[0] === 'clone' &&
         call[1]?.[1] === '--' &&
-        call[1]?.[3] === '/var/lib/gitorch/workspaces/user-123/project-abc/src'
+        call[1]?.[3] === expectedSrcPath
     )
     expect(cloneCall).toBeDefined()
   })
 
   it('should install runtimes in the workspace', async () => {
     const workspaceId = 'ws:user-123:project-abc'
+    const expectedPath = path.resolve('/var/lib/gitorch/workspaces', 'user-123', 'project-abc')
     const runtimes = ['nodejs20', 'python3']
     await manager.installRuntimes(workspaceId, runtimes)
 
@@ -160,14 +169,14 @@ describe('WorkspaceManager', () => {
     const nodejsCall = calls.find(
       (call) =>
         call[0] === 'chroot' &&
-        call[1]?.[0] === '/var/lib/gitorch/workspaces/user-123/project-abc' &&
+        call[1]?.[0] === expectedPath &&
         call[1]?.includes('--') &&
         call[1]?.includes('nodejs20')
     )
     const pythonCall = calls.find(
       (call) =>
         call[0] === 'chroot' &&
-        call[1]?.[0] === '/var/lib/gitorch/workspaces/user-123/project-abc' &&
+        call[1]?.[0] === expectedPath &&
         call[1]?.includes('--') &&
         call[1]?.includes('python3')
     )
