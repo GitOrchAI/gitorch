@@ -115,6 +115,8 @@ import {
   marcarRespondida,
 } from '../services/pergunta-sem-resposta.js'
 import { esperarAVezDeDevolver } from '../services/devolucao-de-credencial.js'
+import { varrerArvoreDoPlano } from '../services/fechar-o-pai.js'
+import { agentLabel } from '../services/agent-label.js'
 import {
   reservarAResposta,
   devolverAReserva,
@@ -5008,6 +5010,100 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
 
   const TAMANHO_DA_PAGINA_DE_EXECUCOES = 50
 
+  /**
+   * A árvore do plano se encerra sozinha quando o trabalho dela acaba.
+   *
+   * O PO monta fase > épico > feature > tarefa e pendura uma na outra pelo
+   * mecanismo nativo de sub-issue. Só a TAREFA fechava; o resto ficava aberto
+   * para sempre. Medido em 27/08 no gitorch: 11 fases, 15 épicos e 19 features
+   * abertas — 45 issues de pura estrutura contra 20 tarefas de verdade. Foi o
+   * que fez o dono perguntar por que o repositório tem tanta issue "mesmo com
+   * PR merged": a maior parte não era trabalho pendente, era esqueleto.
+   */
+  const varrerArvoreDosPlanos = async (): Promise<void> => {
+    let projetos: Array<{ id: string; wingId: string }>
+    try {
+      projetos = await app.prisma.project.findMany({
+        where: { isActive: true, accessSuspendedAt: null },
+        select: { id: true, wingId: true },
+      })
+    } catch (err) {
+      app.log.error(err, '[Scheduler] varredura da árvore não conseguiu listar projetos')
+      return
+    }
+
+    for (const projeto of projetos) {
+      const githubToken =
+        process.env['GITORCH_GITHUB_TOKEN'] ??
+        (await mintInstallationToken({
+          repository: projeto.wingId,
+          onError: (m) => app.log.error(m),
+          onWarn: (m) => app.log.warn(m),
+        })) ??
+        undefined
+      if (!githubToken) continue
+
+      const rest = async (metodo: string, caminho: string, corpo?: unknown): Promise<unknown> => {
+        const resposta = await fetch(`https://api.github.com${caminho}`, {
+          method: metodo,
+          headers: {
+            authorization: `Bearer ${githubToken}`,
+            accept: 'application/vnd.github+json',
+            ...(corpo ? { 'content-type': 'application/json' } : {}),
+          },
+          ...(corpo ? { body: JSON.stringify(corpo) } : {}),
+        })
+        if (!resposta.ok) {
+          throw new Error(`GitHub ${metodo} ${caminho} falhou (${resposta.status})`)
+        }
+        return resposta.json()
+      }
+
+      // Uma leitura só das issues abertas do plano, reaproveitada pelos três
+      // níveis: sem isto seriam três varreduras idênticas contra a API.
+      let abertasDoPlano: Array<{ number: number; node_id: string; body?: string | null }> = []
+      try {
+        abertasDoPlano = (await rest(
+          'GET',
+          `/repos/${projeto.wingId}/issues?state=open&labels=${encodeURIComponent(agentLabel('po'))}&per_page=100`
+        )) as typeof abertasDoPlano
+      } catch (err) {
+        app.log.warn(`[Scheduler] árvore de ${projeto.wingId}: ${(err as Error).message}`)
+        continue
+      }
+
+      const cliente = new ProjectV2Client({ token: githubToken })
+      const resultado = await varrerArvoreDoPlano({
+        porta: {
+          listarPaisAbertos: async (nivel) =>
+            abertasDoPlano
+              .filter((i) => new RegExp(`gitorch:node:\\d+:${nivel}:`).test(i.body ?? ''))
+              .map((i) => ({ number: i.number, nodeId: i.node_id })),
+          filhosDe: async (nodeId) =>
+            (await cliente.listSubIssues(nodeId)).map((f) => ({
+              number: f.number,
+              aberto: !f.closed,
+            })),
+          fechar: async (numero, recado) => {
+            await rest('POST', `/repos/${projeto.wingId}/issues/${numero}/comments`, {
+              body: recado,
+            })
+            await rest('PATCH', `/repos/${projeto.wingId}/issues/${numero}`, { state: 'closed' })
+          },
+        },
+        log: {
+          info: (m) => app.log.info(`[Scheduler] ${projeto.wingId} ${m}`),
+          warn: (m) => app.log.warn(`[Scheduler] ${projeto.wingId} ${m}`),
+        },
+      })
+      if (resultado.fechados.length > 0) {
+        app.log.info(
+          `[Scheduler] árvore de ${projeto.wingId}: encerrei ${resultado.fechados.length} item(ns) de estrutura (${resultado.fechados.map((n) => `#${n}`).join(', ')})`
+        )
+      }
+    }
+  }
+
   const varrerPublicacoes = async (): Promise<void> => {
     let sessoes: LinhaDeSessao[]
     try {
@@ -5877,6 +5973,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // `varrerPublicacoes` já isola cada sessão em try/catch; este é só o
     // último cinto de segurança (mesmo padrão de `sweepExpiredEnvironments`
     // logo abaixo).
+    // A árvore do plano ANTES das publicações: fechar um nível de estrutura é
+    // barato (uma leitura por projeto) e evita que o quadro do cliente cresça
+    // sem parar enquanto o resto do tique faz trabalho pesado.
+    await varrerArvoreDosPlanos().catch((err) =>
+      app.log.error(err, '[Scheduler] varredura da árvore do plano falhou; tenta no próximo ciclo')
+    )
     await varrerPublicacoes().catch((err) =>
       app.log.error(err, '[Scheduler] varredura de publicações falhou; tenta no próximo tick')
     )

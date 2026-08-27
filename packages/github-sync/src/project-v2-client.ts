@@ -681,6 +681,42 @@ export class ProjectV2Client {
 
     return unwrap(response).addSubIssue.issue.id
   }
+
+  /**
+   * Os filhos de uma issue — o outro lado de `addSubIssue`.
+   *
+   * Existe para que fase, épico e feature possam FECHAR quando o trabalho
+   * pendurado neles acaba. Antes disto o produto só sabia pendurar filho e
+   * nunca perguntava se eles tinham terminado, então o esqueleto do plano
+   * ficava aberto para sempre: medido em 27/08 no gitorch, 45 issues de pura
+   * estrutura contra 20 tarefas de verdade.
+   *
+   * Uma página de cem basta e sobra: uma feature com mais de cem tarefas seria
+   * um problema de planejamento muito antes de ser um de paginação. Se um dia
+   * for, o `pageInfo` está aqui para quem precisar continuar.
+   */
+  async listSubIssues(issueNodeId: string): Promise<Array<{ number: number; closed: boolean }>> {
+    const response = await this.request<{
+      node: { subIssues?: { nodes: Array<{ number: number; closed: boolean }> } } | null
+    }>(
+      {
+        query: `
+          query SubIssues($issueId: ID!) {
+            node(id: $issueId) {
+              ... on Issue {
+                subIssues(first: 100) {
+                  nodes { number closed }
+                }
+              }
+            }
+          }
+        `,
+        variables: { issueId: issueNodeId },
+      },
+      this.token
+    )
+    return unwrap(response).node?.subIssues?.nodes ?? []
+  }
 }
 
 async function defaultGraphQLTransport<TData>(
