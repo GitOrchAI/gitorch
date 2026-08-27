@@ -202,4 +202,120 @@ describe('Rotas do painel do owner', () => {
       expect(where.status).toEqual({ in: ['running', 'pending'] })
     })
   })
+
+  describe('POST /api/v1/painel/decisoes/:id/responder', () => {
+    const pergunta = (over: Record<string, any> = {}) => ({
+      id: 'd1',
+      userId: 'owner_1',
+      status: 'open',
+      answer: null,
+      answeredVia: null,
+      answeredAt: null,
+      ...over,
+    })
+    const responder = (payload: any) =>
+      app.inject({
+        method: 'POST',
+        url: '/api/v1/painel/decisoes/d1/responder',
+        headers: authHeaders,
+        payload,
+      })
+
+    test('sem sessão → 401', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/painel/decisoes/d1/responder',
+        payload: { resposta: 'x' },
+      })
+      expect(res.statusCode).toBe(401)
+    })
+
+    test('resposta vazia → 400', async () => {
+      await build(
+        fakePrisma({ agentQuestion: { findUnique: vi.fn().mockResolvedValue(pergunta()) } })
+      )
+      expect((await responder({ resposta: '   ' })).statusCode).toBe(400)
+      expect((await responder({})).statusCode).toBe(400)
+    })
+
+    test('pergunta de outra conta → 404 (mesma frase de inexistente)', async () => {
+      await build(
+        fakePrisma({
+          agentQuestion: { findUnique: vi.fn().mockResolvedValue(pergunta({ userId: 'outro' })) },
+        })
+      )
+      const res = await responder({ resposta: 'x' })
+      expect(res.statusCode).toBe(404)
+      expect(res.json()).toEqual({ error: 'Decisão não encontrada.' })
+    })
+
+    test('pergunta inexistente → 404 (mesma frase)', async () => {
+      await build(fakePrisma({ agentQuestion: { findUnique: vi.fn().mockResolvedValue(null) } }))
+      const res = await responder({ resposta: 'x' })
+      expect(res.statusCode).toBe(404)
+      expect(res.json()).toEqual({ error: 'Decisão não encontrada.' })
+    })
+
+    test('já respondida → 409 com a resposta que existe', async () => {
+      await build(
+        fakePrisma({
+          agentQuestion: {
+            findUnique: vi.fn().mockResolvedValue(
+              pergunta({
+                status: 'answered',
+                answer: 'Separado',
+                answeredVia: 'telegram',
+                answeredAt: new Date('2026-08-27T12:00:00Z'),
+              })
+            ),
+          },
+        })
+      )
+      const res = await responder({ resposta: 'Junto' })
+      expect(res.statusCode).toBe(409)
+      expect(res.json()).toMatchObject({
+        code: 'JA_RESPONDIDA',
+        answer: 'Separado',
+        answeredVia: 'telegram',
+        answeredAt: '2026-08-27T12:00:00.000Z',
+      })
+    })
+
+    test('ok → 200, answeredVia panel, sem campo interno vazando', async () => {
+      const answerImpl = vi.fn().mockResolvedValue({
+        id: 'd1',
+        answer: 'Junto',
+        answeredAt: new Date('2026-08-27T12:00:00Z'),
+        answeredVia: 'panel',
+        status: 'answered',
+      })
+      await build(
+        fakePrisma({ agentQuestion: { findUnique: vi.fn().mockResolvedValue(pergunta()) } }),
+        { answerImpl }
+      )
+      const res = await responder({ resposta: 'Junto' })
+      expect(res.statusCode).toBe(200)
+      const body = res.json()
+      expect(body).toEqual({
+        id: 'd1',
+        status: 'answered',
+        answer: 'Junto',
+        answeredAt: '2026-08-27T12:00:00.000Z',
+        answeredVia: 'panel',
+      })
+      expect(body).not.toHaveProperty('userId')
+      expect(body).not.toHaveProperty('dedupKey')
+      expect(body).not.toHaveProperty('telegramMessageId')
+      expect(body).not.toHaveProperty('projectId')
+      expect(answerImpl).toHaveBeenCalledWith('d1', 'Junto', 'panel')
+    })
+
+    test('corrida: some entre findUnique e answer → 404', async () => {
+      await build(
+        fakePrisma({ agentQuestion: { findUnique: vi.fn().mockResolvedValue(pergunta()) } }),
+        { answerImpl: vi.fn().mockResolvedValue(null) }
+      )
+      expect((await responder({ resposta: 'x' })).statusCode).toBe(404)
+    })
+  })
 })

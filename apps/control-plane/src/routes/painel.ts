@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { resolveOwnerId } from '../lib/resolve-owner-id.js'
 import { descreverEvento, papelDoAgente, estadoDoAgente } from '../services/descrever-evento.js'
+import type { AgentQuestionRecord } from '../services/agent-question.js'
 
 // Rotas do painel do owner (ui_kits/painel-owner/API.md do handoff GitOrch
 // Design System). Nesta leva: pulso, agentes e responder-decisão ao vivo.
@@ -34,6 +35,16 @@ export interface MotorCota {
  */
 export interface PainelRoutesOpts {
   lerCotas?: (ownerId: string) => Promise<MotorCota[]>
+  /**
+   * Grava a resposta de uma decisão. Default: `app.agentQuestionService.answer`
+   * — a MESMA função que o Telegram chama (services/telegram-bot.ts). Injetável
+   * só nos testes. Idempotente e devolve `null` se a pergunta sumiu.
+   */
+  answerImpl?: (
+    id: string,
+    valor: string,
+    via: 'telegram' | 'panel'
+  ) => Promise<AgentQuestionRecord | null>
 }
 
 function nomeDoMotor(payload: unknown): string {
@@ -51,6 +62,18 @@ export const painelRoutes = async (
   opts: PainelRoutesOpts = {}
 ): Promise<void> => {
   const lerCotas = opts.lerCotas ?? (async () => [] as MotorCota[])
+  const answer =
+    opts.answerImpl ??
+    ((id: string, valor: string, via: 'telegram' | 'panel') => {
+      // Decorado SEMPRE pelo telegramPlugin (mesmo sem bot token, mesmo em
+      // teste) — é a MESMA instância que o Telegram usa, com Cortex ligado.
+      const svc = app.agentQuestionService
+      if (!svc) throw new Error('agentQuestionService não registrado (telegramPlugin ausente)')
+      return svc.answer(id, valor, via)
+    })
+
+  const isoOuNulo = (d: Date | string | null | undefined): string | null =>
+    d == null ? null : d instanceof Date ? d.toISOString() : d
 
   // GET /api/v1/painel/pulso — o último sinal de qualquer projeto do dono, com
   // a hora REAL do evento. (API.md §2.2: /api/projects/:id/status devolve
@@ -163,6 +186,57 @@ export const painelRoutes = async (
       }
 
       return reply.send({ atuando, motores })
+    }
+  )
+
+  // POST /api/v1/painel/decisoes/:id/responder — responder uma decisão PELO
+  // PAINEL (API.md §2.4). Você escolheu responder nos DOIS lugares; o schema
+  // já tinha `answeredVia` porque duas portas eram previstas. O trabalho é a
+  // rota — `answer()` (o mesmo que o Telegram usa) aplica a config, grava no
+  // Cortex e é idempotente. Paridade painel↔Telegram é este `answer(...,'panel')`.
+  app.post<{ Params: { id: string }; Body: { resposta?: string } }>(
+    '/api/v1/painel/decisoes/:id/responder',
+    { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      if (!request.user) return reply.code(401).send(NAO_LOGADO)
+      const { id } = request.params
+      const resposta = (request.body?.resposta ?? '').trim()
+      if (!resposta) return reply.code(400).send({ error: 'Escreva a resposta.' })
+
+      const ownerId = await resolveOwnerId(app.prisma, request.user)
+      const pergunta = await app.prisma.agentQuestion.findUnique({ where: { id } })
+
+      // Inexistente e "de outra conta" devolvem a MESMA frase — a resposta não
+      // revela que a pergunta existe para outro dono (anti-vazamento).
+      if (!pergunta || pergunta.userId !== ownerId) {
+        return reply.code(404).send({ error: 'Decisão não encontrada.' })
+      }
+
+      // Já respondida (ex.: pelo Telegram): devolve a resposta que existe para a
+      // tela mostrar, em vez de sumir com o clique.
+      if (pergunta.status === 'answered') {
+        return reply.code(409).send({
+          code: 'JA_RESPONDIDA',
+          answer: pergunta.answer,
+          answeredVia: pergunta.answeredVia,
+          answeredAt: isoOuNulo(pergunta.answeredAt),
+        })
+      }
+
+      const atualizada = await answer(id, resposta, 'panel')
+      if (!atualizada) {
+        // Corrida rara: sumiu entre o findUnique e o answer.
+        return reply.code(404).send({ error: 'Decisão não encontrada.' })
+      }
+
+      // Nunca vaza userId, dedupKey, telegramMessageId nem projectId.
+      return reply.send({
+        id: atualizada.id,
+        status: 'answered',
+        answer: atualizada.answer,
+        answeredAt: isoOuNulo(atualizada.answeredAt),
+        answeredVia: atualizada.answeredVia,
+      })
     }
   )
 }
