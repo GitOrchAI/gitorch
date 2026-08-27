@@ -617,6 +617,10 @@ model DevSession {
   closedAt     DateTime? @map("closed_at")
   closedReason String?   @map("closed_reason")
 
+  /// Data de criação da demanda (issue) e data do merge real (PR).
+  wishCreatedAt DateTime? @map("wish_created_at")
+  mergedAt      DateTime? @map("merged_at")
+
   /// Desde quando esta entrega está com a verificação automática pendente —
   /// nulo enquanto nunca esteve, ou depois que o juiz limpa a marca ao
   /// julgar. É a partir dela que `decidirSobreVerificacao`
