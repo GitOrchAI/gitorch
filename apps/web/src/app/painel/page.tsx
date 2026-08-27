@@ -1,537 +1,341 @@
 'use client'
-
-import React, { useState, useEffect, useCallback } from 'react'
-import { useLanguage } from '../../LanguageContext'
-import Header from '../../components/Header'
-import { Terminal, Activity, FolderGit2, LogIn, HelpCircle, Sparkles } from 'lucide-react'
-import { motion } from 'framer-motion'
+// Painel do owner — o shell. Substitui o painel antigo do cliente. Porte de
+// ui_kits/painel-owner/app.jsx do handoff GitOrch Design System.
+//
+// Vive dentro do escopo `.gl` (camada clara, mesmos tokens da landing) com o
+// tema no wrapper via `data-theme`, persistido em localStorage. Nunca mistura
+// o glass violeta/ciano do painel antigo. Copy PT-BR fixa nesta leva (o i18n
+// do /painel volta numa leva seguinte).
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { API_BASE_URL } from '../../lib/api'
 import {
+  NAV,
+  TABS,
+  TAB_META,
+  telasDaFolha,
+  tituloDaTela,
+  type TelaId,
+} from '../../components/painel/painel-nav'
+import { lerTema, salvarTema, proximoTema, type Tema } from '../../components/painel/painel-tema'
+import {
   fetchAgentQuestions,
-  sortQuestions,
-  statusLabel,
   type AgentQuestionView,
 } from '../../components/painel/agent-questions'
-import {
-  avisoAindaVale,
-  enviarDesejo,
-  estadoDaTelaDePedir,
-  fetchProjetos,
-  LIMITE_DO_TEXTO_DO_DESEJO,
-  type DesejoRegistrado,
-  type ResultadoDosProjetos,
-} from '../../components/painel/desejo'
+import { responderDecisao } from '../../components/painel/painel-api'
+import { Ad, AdMark } from '../../components/painel/PainelIcons'
+import type { DecisaoView } from '../../components/painel/PainelUI'
+import { TelaVisaoGeral } from '../../components/painel/TelaVisaoGeral'
+import { TelaPedidos } from '../../components/painel/TelaPedidos'
+import { TelaDecisoes } from '../../components/painel/TelaDecisoes'
+import { TelaEntregas } from '../../components/painel/TelaEntregas'
+import { TelaCustos } from '../../components/painel/TelaCustos'
+import { TelaProjetos } from '../../components/painel/TelaProjetos'
+import { TelaRegras } from '../../components/painel/TelaRegras'
+import { TelaHistorico } from '../../components/painel/TelaHistorico'
+import { TelaConfig } from '../../components/painel/TelaConfig'
 
-// Painel: mostra o GitHub/missões do cliente organizados — NUNCA opera agentes
-// (eles são autônomos) e NUNCA inventa número. Sem sessão → convite honesto
-// para conectar. Com sessão → dados reais da API, com estado vazio honesto.
-//
-// A única coisa que a pessoa OPERA aqui é o pedido: o formulário de desejo
-// abaixo é a porta de entrada em linguagem de gente. Ele não manda em agente
-// nenhum — só registra a issue oficial, que é de onde a esteira parte.
-
-interface Mission {
-  id: string
-  type: string
-  status: string
-  error?: string | null
-  result?: { output?: string } | null
-  createdAt: string
-  completedAt?: string | null
+function tempoRelativo(iso: string): string {
+  if (!iso) return ''
+  const ms = Date.now() - new Date(iso).getTime()
+  const min = Math.floor(ms / 60000)
+  if (min < 1) return 'agora'
+  if (min < 60) return `há ${min} min`
+  const h = Math.floor(min / 60)
+  if (h < 24) return `há ${h} h`
+  return `há ${Math.floor(h / 24)} dia(s)`
 }
 
-interface MissionsResponse {
-  missions: Mission[]
-  stats: { active: number; completed: number; failed: number }
+// AgentQuestionView (rota que já existe) → o que a tela de decisões desenha.
+// Campos que a dúvida não carrega (papel, número do pedido) ficam de fora —
+// nunca inventados.
+function paraDecisao(q: AgentQuestionView): DecisaoView {
+  return {
+    id: q.id,
+    q: q.text,
+    ctx: q.context ?? undefined,
+    agente: 'Um agente',
+    quando: tempoRelativo(q.createdAt),
+    op: q.options.map((o) => o.label),
+    st: q.status === 'answered' ? 'respondida' : 'pendente',
+    resposta: q.answer ?? undefined,
+  }
 }
 
-const STATUS_COLORS: Record<string, string> = {
-  completed: '#10b981',
-  running: '#06b6d4',
-  pending: '#f59e0b',
-  failed: '#ef4444',
-}
+export default function PainelOwner() {
+  // `null` = ainda checando (não pisca a tela de conectar para quem já está
+  // logado); `false` = não logado; `true` = painel.
+  const [autenticado, setAutenticado] = useState<boolean | null>(null)
+  const [checkFalhou, setCheckFalhou] = useState(false)
 
-// Cores do badge de status das dúvidas dos agentes (W3.4.2) — mesma paleta
-// semântica dos status de missão acima (âmbar=espera, verde=resolvido).
-const QUESTION_STATUS_COLORS: Record<string, string> = {
-  open: '#f59e0b',
-  answered: '#10b981',
-  expired: '#6b7280',
-}
+  const [tela, setTela] = useState<TelaId>('visao')
+  // Tema lido do localStorage já no primeiro render do client (o server sempre
+  // renderiza 'light'; o wrapper leva suppressHydrationWarning porque só o
+  // atributo data-theme pode divergir, e o client corrige na hidratação).
+  const [tema, setTema] = useState<Tema>(() =>
+    typeof window !== 'undefined' ? lerTema(window.localStorage) : 'light'
+  )
+  const [sheet, setSheet] = useState(false)
+  const [foco, setFoco] = useState<string | null>(null)
 
-export default function Dashboard() {
-  const { t } = useLanguage()
-  // Sessão via cookie httpOnly (não lido por JS) — o painel checa no
-  // servidor se está autenticado, nunca lê um token local (spec §17.4).
-  // `null` = ainda checando (evita piscar a tela de "conectar" pra quem já
-  // está logado); `checkFailed` distingue "não logado" de "não deu pra
-  // checar" (rede/CORS/5xx), que senão viravam a mesma tela sem explicação.
-  const [authenticated, setAuthenticated] = useState<boolean | null>(null)
-  const [checkFailed, setCheckFailed] = useState(false)
-  const [data, setData] = useState<MissionsResponse | null>(null)
-  const [error, setError] = useState(false)
-  // Dúvidas dos agentes (W3.4.2) — READ-ONLY: o painel só EXIBE, responder
-  // continua sendo pelo Telegram. Falha na busca não derruba o painel, a
-  // seção só fica vazia (fetchAgentQuestions nunca lança).
-  const [questions, setQuestions] = useState<AgentQuestionView[]>([])
-  // Formulário de desejo. `null` = a lista de projetos ainda não voltou, e aí a
-  // tela não afirma nada sobre ela — do mesmo jeito que `authenticated === null`
-  // não afirma nada sobre a sessão. Falha na busca volta como `indisponivel`, e
-  // só uma resposta REAL e vazia autoriza dizer "conclua o setup": mandar
-  // refazer um setup já concluído seria o painel afirmando o que não sabe.
-  const [projetos, setProjetos] = useState<ResultadoDosProjetos | null>(null)
-  const [projetoEscolhido, setProjetoEscolhido] = useState('')
-  const [textoDoDesejo, setTextoDoDesejo] = useState('')
-  const [enviandoDesejo, setEnviandoDesejo] = useState(false)
-  // O aviso guarda a QUAL projeto ele pertence: sem isso ele não tem como dizer
-  // onde o pedido foi registrado, nem como saber que deixou de valer quando a
-  // tela mudou (ver `avisoAindaVale`).
-  const [desejoCriado, setDesejoCriado] = useState<DesejoRegistrado | null>(null)
-  const [erroDoDesejo, setErroDoDesejo] = useState<string | null>(null)
+  const [decisoes, setDecisoes] = useState<DecisaoView[]>([])
+  const [avisoDecisao, setAvisoDecisao] = useState<string | null>(null)
 
   useEffect(() => {
-    let cancelled = false
+    salvarTema(typeof window !== 'undefined' ? window.localStorage : null, tema)
+  }, [tema])
+
+  useEffect(() => {
+    let vivo = true
     fetch(`${API_BASE_URL}/api/v1/auth/me`, { credentials: 'include' })
       .then((res) => {
-        if (!cancelled) setAuthenticated(res.ok)
+        if (vivo) setAutenticado(res.ok)
       })
       .catch(() => {
-        if (!cancelled) {
-          setAuthenticated(false)
-          setCheckFailed(true)
+        if (vivo) {
+          setAutenticado(false)
+          setCheckFalhou(true)
         }
       })
     return () => {
-      cancelled = true
-    }
-  }, [])
-
-  const load = useCallback(async () => {
-    if (!authenticated) return
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/missions`, {
-        credentials: 'include',
-      })
-      if (!res.ok) throw new Error(`${res.status}`)
-      setData((await res.json()) as MissionsResponse)
-      setError(false)
-    } catch {
-      setError(true)
-    }
-  }, [authenticated])
-
-  useEffect(() => {
-    if (!authenticated) return
-    // Primeiro load fora do corpo síncrono do effect (regra react-hooks).
-    queueMicrotask(() => void load())
-    // Ao vivo de verdade: atualiza a cada 15s enquanto a aba está aberta.
-    const interval = setInterval(() => void load(), 15_000)
-    return () => clearInterval(interval)
-  }, [authenticated, load])
-
-  useEffect(() => {
-    if (!authenticated) return
-    let cancelled = false
-    fetchAgentQuestions(API_BASE_URL)
-      .then((qs) => {
-        if (!cancelled) setQuestions(qs)
-      })
-      .catch(() => {
-        // fetchAgentQuestions já nunca lança, mas por contrato: falha aqui
-        // nunca derruba o painel, só mantém a seção vazia.
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [authenticated])
-
-  // Fica em useCallback porque o botão de "tentar de novo" precisa refazer
-  // exatamente esta busca: quando a rota falha, a pessoa tem uma saída na tela
-  // em vez de ficar com uma mensagem parada até recarregar a página.
-  const carregarProjetos = useCallback(async () => {
-    // Volta para "carregando" antes de reconsultar: enquanto a nova resposta
-    // não chega, a tela não deve seguir afirmando o resultado velho.
-    setProjetos(null)
-    const r = await fetchProjetos(API_BASE_URL)
-    setProjetos(r)
-    // Um projeto só: já vem escolhido, e o seletor nem aparece — não faz
-    // sentido obrigar a escolher quando não há escolha.
-    if (r.estado === 'ok' && r.projetos.length === 1 && r.projetos[0]) {
-      setProjetoEscolhido(r.projetos[0].id)
+      vivo = false
     }
   }, [])
 
   useEffect(() => {
-    if (!authenticated) return
-    // Fora do corpo síncrono do effect (mesma regra react-hooks já respeitada
-    // pelo load das missões). fetchProjetos nunca lança — a falha vem como
-    // `indisponivel` dentro do resultado —, então não há rejeição a tratar.
-    queueMicrotask(() => void carregarProjetos())
-  }, [authenticated, carregarProjetos])
-
-  const pedirDesejo = useCallback(async () => {
-    setEnviandoDesejo(true)
-    setErroDoDesejo(null)
-    setDesejoCriado(null)
-    // O repositório é resolvido ANTES do envio: é ele que o aviso mostra, e a
-    // lista pode ser recarregada enquanto o pedido está no ar.
-    const escolhido =
-      projetos?.estado === 'ok'
-        ? projetos.projetos.find((p) => p.id === projetoEscolhido)
-        : undefined
-    const r = await enviarDesejo({
-      apiBaseUrl: API_BASE_URL,
-      projectId: projetoEscolhido,
-      texto: textoDoDesejo,
+    if (!autenticado) return
+    let vivo = true
+    fetchAgentQuestions(API_BASE_URL).then((qs) => {
+      if (vivo) setDecisoes(qs.map(paraDecisao))
     })
-    if (r.ok) {
-      setDesejoCriado({
-        numero: r.numero,
-        endereco: r.endereco,
-        projectId: projetoEscolhido,
-        repo: escolhido?.repo ?? '',
-      })
-      // Limpa a caixa só no sucesso: em erro, o texto que a pessoa escreveu
-      // continua ali para ela reenviar sem redigitar.
-      setTextoDoDesejo('')
-    } else {
-      setErroDoDesejo(r.chaveDoErro)
+    return () => {
+      vivo = false
     }
-    setEnviandoDesejo(false)
-  }, [projetos, projetoEscolhido, textoDoDesejo])
+  }, [autenticado])
 
-  // Ainda checando a sessão: nem afirma nem nega login, só não mostra nada
-  // definitivo ainda — evita o flash de "conecte-se" pra quem já está logado.
-  if (authenticated === null) {
+  const pendentes = useMemo(() => decisoes.filter((d) => d.st === 'pendente'), [decisoes])
+
+  const ir = useCallback((id: TelaId) => {
+    setTela(id)
+    setSheet(false)
+    if (typeof window !== 'undefined') window.scrollTo(0, 0)
+  }, [])
+
+  // Responder: chama a rota real; 409 = já respondida pelo Telegram (mostra a
+  // resposta que existe em vez de sumir com o clique).
+  const responder = useCallback(async (id: string, resposta: string) => {
+    setAvisoDecisao(null)
+    const r = await responderDecisao(id, resposta)
+    if (r.ok) {
+      setDecisoes((ds) =>
+        ds.map((d) => (d.id === id ? { ...d, st: 'respondida', resposta: r.resposta } : d))
+      )
+      return
+    }
+    if (r.jaRespondida) {
+      const ja = r.jaRespondida
+      setDecisoes((ds) =>
+        ds.map((d) => (d.id === id ? { ...d, st: 'respondida', resposta: ja } : d))
+      )
+    }
+    setAvisoDecisao(r.erro)
+  }, [])
+
+  if (autenticado === null) {
     return (
-      <main className="min-h-screen flex flex-col bg-[var(--bg-deep)]">
-        <Header />
-        <div className="flex-1 flex items-center justify-center px-8">
-          <p className="text-[var(--text-secondary)]">{t('dashboard.checkingSession')}</p>
+      <div className="gl" data-theme={tema} suppressHydrationWarning>
+        <div className="ad-scroll" style={{ alignItems: 'center', justifyContent: 'center' }}>
+          <p style={{ color: 'var(--gl-faint)' }}>Verificando sessão…</p>
         </div>
-      </main>
+      </div>
     )
   }
 
-  if (!authenticated) {
+  if (!autenticado) {
     return (
-      <main className="min-h-screen flex flex-col bg-[var(--bg-deep)]">
-        <Header />
-        <div className="flex-1 flex items-center justify-center px-8">
-          <div className="glass-panel p-10 text-center max-w-md">
-            <div className="w-16 h-16 mx-auto bg-[rgba(124,58,237,0.1)] text-[#7c3aed] rounded-full flex items-center justify-center mb-6">
-              <LogIn size={28} />
-            </div>
-            <h2 className="text-2xl font-bold mb-3">{t('dashboard.connectTitle')}</h2>
-            <p className="text-[var(--text-secondary)] mb-8">
-              {checkFailed ? t('dashboard.connectCheckError') : t('dashboard.connectDesc')}
-            </p>
-            <Link
-              href="/setup"
-              className="inline-block bg-white text-black px-8 py-3 rounded-full font-bold hover:scale-105 transition-transform"
+      <div className="gl" data-theme={tema} suppressHydrationWarning>
+        <div
+          className="ad-scroll"
+          style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}
+        >
+          <div className="ad-card ad-pad" style={{ maxWidth: 420 }}>
+            <span className="ad-mark" style={{ margin: '0 auto 14px' }}>
+              <AdMark />
+            </span>
+            <h1
+              style={{ fontSize: 22, fontWeight: 600, margin: '0 0 8px', letterSpacing: '-.03em' }}
             >
-              {t('dashboard.connectBtn')}
+              Conecte sua conta
+            </h1>
+            <p style={{ color: 'var(--gl-muted)', margin: '0 0 20px' }}>
+              {checkFalhou
+                ? 'Não consegui confirmar sua sessão agora. Tente conectar de novo.'
+                : 'Ligue seu GitHub para ver o ritmo dos seus pedidos, as decisões e as entregas.'}
+            </p>
+            <Link href="/setup" className="ad-btn a" style={{ textDecoration: 'none' }}>
+              Conectar
             </Link>
           </div>
         </div>
-      </main>
+      </div>
     )
   }
 
-  const stats = data?.stats
-  const missions = data?.missions ?? []
-  // O que a área de pedido tem direito de dizer sobre os projetos (a decisão
-  // mora em desejo.ts, onde dá para testá-la; aqui só se desenha o resultado).
-  const estadoDoPedido = estadoDaTelaDePedir(projetos)
-  const listaDeProjetos = projetos?.estado === 'ok' ? projetos.projetos : []
-  // O aviso de "registrado" é DERIVADO, nunca um resíduo: assim que a tela
-  // deixa de mostrar o estado em que aquele pedido foi feito (trocou de projeto,
-  // ou já se está escrevendo o próximo), ele some sozinho — sem effect e sem
-  // depender de o próximo envio começar para limpá-lo.
-  const avisoDeSucesso = avisoAindaVale(desejoCriado, {
-    projectId: projetoEscolhido,
-    texto: textoDoDesejo,
-  })
-    ? desejoCriado
-    : null
+  const renderTela = (id: TelaId) => {
+    switch (id) {
+      case 'visao':
+        return <TelaVisaoGeral ir={ir} decisoesPendentes={pendentes} responder={responder} />
+      case 'pedidos':
+        return <TelaPedidos />
+      case 'decisoes':
+        return (
+          <TelaDecisoes
+            decisoes={decisoes}
+            responder={responder}
+            aviso={avisoDecisao}
+            foco={foco}
+            setFoco={setFoco}
+          />
+        )
+      case 'entregas':
+        return <TelaEntregas />
+      case 'custos':
+        return <TelaCustos />
+      case 'projetos':
+        return <TelaProjetos />
+      case 'regras':
+        return <TelaRegras />
+      case 'historico':
+        return <TelaHistorico />
+      case 'config':
+        return <TelaConfig tema={tema} setTema={setTema} />
+    }
+  }
 
   return (
-    <main className="min-h-screen flex flex-col bg-[var(--bg-deep)]">
-      <Header />
+    <div className="gl" data-theme={tema} suppressHydrationWarning>
+      <div className="ad">
+        <aside className="ad-side">
+          <div className="ad-side-brand">
+            <span className="ad-mark">
+              <AdMark />
+            </span>
+            GitOrch
+          </div>
+          <nav aria-label="Seções do painel">
+            {NAV.map((s) => (
+              <div key={s.g}>
+                <div className="ad-grp">{s.g}</div>
+                {s.itens.map((i) => (
+                  <button
+                    key={i.id}
+                    className="ad-nav"
+                    aria-current={tela === i.id ? 'page' : undefined}
+                    onClick={() => ir(i.id)}
+                  >
+                    <Ad n={i.i} s={17} />
+                    {i.l}
+                    {i.badge && pendentes.length > 0 ? (
+                      <span className="b num">{pendentes.length}</span>
+                    ) : null}
+                  </button>
+                ))}
+              </div>
+            ))}
+          </nav>
+        </aside>
 
-      {/* A tela de pedir: a porta de entrada do desejo em linguagem de gente.
-          Fica no topo porque é a única coisa que a pessoa FAZ aqui — o resto
-          do painel é leitura. */}
-      <div className="container mx-auto px-8 pt-8">
-        <div className="glass-panel p-6">
-          <h2 className="text-xl font-bold mb-2 flex items-center gap-2">
-            <Sparkles className="text-[#7c3aed]" size={20} />
-            {t('dashboard.wishTitle')}
-          </h2>
-          <p className="text-[var(--text-secondary)] mb-4">{t('dashboard.wishHint')}</p>
+        <div className="ad-main">
+          <header className="ad-top">
+            <span className="ad-brand">
+              <span className="ad-mark">
+                <AdMark />
+              </span>
+              GitOrch
+            </span>
+            <span className="ad-crumb">
+              Painel / <b>{tituloDaTela(tela)}</b>
+            </span>
+            <span className="ad-sp" />
+            <button
+              className="ad-ico"
+              onClick={() => setTema((t) => proximoTema(t))}
+              aria-label="Alternar tema claro e escuro"
+              title="Tema"
+            >
+              <Ad n={tema === 'dark' ? 'sun' : 'moon'} s={16} />
+            </button>
+            <button
+              className="ad-ico"
+              onClick={() => ir('decisoes')}
+              aria-label="Decisões pendentes"
+              style={{ position: 'relative' }}
+            >
+              <Ad n="bell" s={16} />
+              {pendentes.length > 0 && <span className="c num">{pendentes.length}</span>}
+            </button>
+            <button className="ad-btn" onClick={() => ir('pedidos')}>
+              <Ad n="plus" s={15} />
+              Pedir
+            </button>
+          </header>
 
-          {/* Três coisas diferentes, três frases diferentes: ainda não sei,
-              não consegui saber, e realmente não há projeto. */}
-          {estadoDoPedido === 'carregando' && (
-            <p className="text-[var(--text-secondary)]">{t('dashboard.wishLoadingProjects')}</p>
-          )}
+          <div className="ad-scroll">{renderTela(tela)}</div>
+        </div>
 
-          {estadoDoPedido === 'indisponivel' && (
-            <div className="flex flex-wrap items-center gap-4">
-              <p className="text-[var(--text-secondary)]">
-                {t('dashboard.wishProjectsUnavailable')}
-              </p>
+        <nav className="ad-tabs" role="tablist">
+          {TABS.map((id) => {
+            const meta = TAB_META[id]
+            const sel = id === 'mais' ? sheet : tela === id && !sheet
+            return (
               <button
-                type="button"
-                onClick={() => void carregarProjetos()}
-                className="border border-[var(--glass-border)] px-6 py-2 rounded-full font-bold text-white transition-transform hover:scale-105"
+                key={id}
+                role="tab"
+                aria-selected={sel}
+                className="ad-tab"
+                onClick={() => (id === 'mais' ? setSheet(true) : ir(id as TelaId))}
               >
-                {t('dashboard.wishProjectsRetry')}
+                <Ad n={meta.i} s={19} />
+                {meta.l}
+                {id === 'decisoes' && pendentes.length > 0 ? (
+                  <span className="b num">{pendentes.length}</span>
+                ) : null}
+              </button>
+            )
+          })}
+        </nav>
+
+        {sheet && (
+          <div className="ad-sheet" onClick={() => setSheet(false)}>
+            <div className="ad-sheet-b" onClick={(e) => e.stopPropagation()}>
+              <div style={{ padding: '10px 18px 14px' }}>
+                <p className="ad-eyebrow">Mais</p>
+              </div>
+              {telasDaFolha().map((i) => (
+                <button key={i.id} className="ad-row" onClick={() => ir(i.id)}>
+                  <Ad n={i.i} s={18} style={{ color: 'var(--gl-muted)', flex: 'none' }} />
+                  <span className="ad-grow ad-rt">{i.l}</span>
+                  <Ad n="chev" s={15} style={{ color: 'var(--gl-faint)', flex: 'none' }} />
+                </button>
+              ))}
+              <button
+                className="ad-row"
+                onClick={() => {
+                  setTema((t) => proximoTema(t))
+                  setSheet(false)
+                }}
+              >
+                <Ad
+                  n={tema === 'dark' ? 'sun' : 'moon'}
+                  s={18}
+                  style={{ color: 'var(--gl-muted)', flex: 'none' }}
+                />
+                <span className="ad-grow ad-rt">Tema {tema === 'dark' ? 'claro' : 'escuro'}</span>
               </button>
             </div>
-          )}
-
-          {estadoDoPedido === 'semProjeto' && (
-            <p className="text-[var(--text-secondary)]">{t('dashboard.wishNoProjects')}</p>
-          )}
-
-          {estadoDoPedido === 'pronto' && (
-            <div className="space-y-4">
-              {/* Seletor só quando há mais de um projeto: com um só, escolher
-                  não é decisão, é obstáculo. */}
-              {listaDeProjetos.length > 1 && (
-                <label className="block">
-                  <span className="block text-sm text-[var(--text-secondary)] mb-1">
-                    {t('dashboard.wishProjectLabel')}
-                  </span>
-                  <select
-                    value={projetoEscolhido}
-                    onChange={(e) => setProjetoEscolhido(e.target.value)}
-                    className="w-full bg-[var(--bg-surface-elevated)] border border-[var(--glass-border)] rounded-xl px-4 py-3 text-white"
-                  >
-                    <option value="">—</option>
-                    {listaDeProjetos.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.repo}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              )}
-
-              {/* `maxLength` impede que o texto passe do que cabe numa issue do
-                  GitHub; a validação do envio (desejo.ts) explica o motivo se
-                  ele passar mesmo assim. O contador só aparece perto do teto —
-                  antes disso é ruído, e ali é a única pista de que um texto
-                  colado foi cortado. */}
-              <textarea
-                value={textoDoDesejo}
-                onChange={(e) => setTextoDoDesejo(e.target.value)}
-                placeholder={t('dashboard.wishPlaceholder')}
-                rows={4}
-                maxLength={LIMITE_DO_TEXTO_DO_DESEJO}
-                className="w-full bg-[var(--bg-surface-elevated)] border border-[var(--glass-border)] rounded-xl px-4 py-3 text-white placeholder:text-[var(--text-secondary)] resize-y"
-              />
-
-              {textoDoDesejo.length > LIMITE_DO_TEXTO_DO_DESEJO * 0.9 && (
-                <p className="text-sm text-[var(--text-secondary)] text-right">
-                  {textoDoDesejo.length.toLocaleString()} /{' '}
-                  {LIMITE_DO_TEXTO_DO_DESEJO.toLocaleString()}
-                </p>
-              )}
-
-              <div className="flex flex-wrap items-center gap-4">
-                <button
-                  type="button"
-                  onClick={() => void pedirDesejo()}
-                  disabled={enviandoDesejo}
-                  className="bg-white text-black px-8 py-3 rounded-full font-bold transition-transform hover:scale-105 disabled:opacity-50 disabled:hover:scale-100 disabled:cursor-not-allowed"
-                >
-                  {enviandoDesejo ? t('dashboard.wishSending') : t('dashboard.wishSubmit')}
-                </button>
-
-                {avisoDeSucesso && (
-                  <span className="text-[#10b981]">
-                    {/* Sem o endereço do repositório em mãos, o aviso diz menos
-                        em vez de mostrar um buraco no meio da frase. */}
-                    {t(
-                      avisoDeSucesso.repo ? 'dashboard.wishSuccess' : 'dashboard.wishSuccessNoRepo',
-                      { numero: avisoDeSucesso.numero, repo: avisoDeSucesso.repo }
-                    )}{' '}
-                    {avisoDeSucesso.endereco && (
-                      <a
-                        href={avisoDeSucesso.endereco}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="underline"
-                      >
-                        {t('dashboard.wishSuccessLink')}
-                      </a>
-                    )}
-                  </span>
-                )}
-
-                {/* `limite` viaja sempre: as chaves que não usam a variável a
-                    ignoram, e a de texto longo precisa dizer o número real. */}
-                {erroDoDesejo && (
-                  <span className="text-[#ef4444]">
-                    {t(erroDoDesejo, { limite: LIMITE_DO_TEXTO_DO_DESEJO.toLocaleString() })}
-                  </span>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
-
-      <div className="flex-1 container mx-auto px-8 py-8 flex flex-col lg:flex-row gap-8">
-        {/* Coluna esquerda: números REAIS */}
-        <div className="lg:w-1/3 flex flex-col gap-6">
-          <div className="glass-panel p-6">
-            <h2 className="text-xl font-bold mb-6 flex items-center gap-2">
-              <Activity className="text-[#06b6d4]" />
-              {t('dashboard.title')}
-            </h2>
-
-            <div className="space-y-4">
-              <div className="bg-[var(--bg-surface-elevated)] p-4 rounded-xl border border-[var(--glass-border)] flex justify-between items-center">
-                <span className="text-[var(--text-secondary)]">
-                  {t('dashboard.activeMissions')}
-                </span>
-                <span className="font-bold text-xl text-white">{stats ? stats.active : '—'}</span>
-              </div>
-              <div className="bg-[var(--bg-surface-elevated)] p-4 rounded-xl border border-[var(--glass-border)] flex justify-between items-center">
-                <span className="text-[var(--text-secondary)]">
-                  {t('dashboard.statsCompleted')}
-                </span>
-                <span className="font-bold text-xl text-[#10b981]">
-                  {stats ? stats.completed : '—'}
-                </span>
-              </div>
-              <div className="bg-[var(--bg-surface-elevated)] p-4 rounded-xl border border-[var(--glass-border)] flex justify-between items-center">
-                <span className="text-[var(--text-secondary)]">{t('dashboard.statsFailed')}</span>
-                <span className="font-bold text-xl text-[#ef4444]">
-                  {stats ? stats.failed : '—'}
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Coluna direita: missões recentes reais */}
-        <div className="lg:w-2/3 glass-panel p-6 flex flex-col">
-          <div className="flex items-center justify-between mb-4 border-b border-[var(--glass-border)] pb-4">
-            <h3 className="font-bold flex items-center gap-2">
-              <Terminal className="text-[#f472b6]" size={18} />
-              {t('dashboard.recentMissions')}
-            </h3>
-          </div>
-
-          <div className="flex-1 bg-[var(--bg-deep)] rounded-xl p-4 font-mono text-sm overflow-y-auto border border-[var(--glass-border)] relative">
-            <div className="absolute top-0 right-0 p-4 opacity-10">
-              <FolderGit2 size={120} />
-            </div>
-
-            {error && <div className="text-[#ef4444]">{t('dashboard.loadError')}</div>}
-
-            {!error && missions.length === 0 && (
-              <div className="text-[var(--text-secondary)]">{t('dashboard.noMissions')}</div>
-            )}
-
-            {missions.map((m) => (
-              <motion.div
-                initial={{ opacity: 0, x: -10 }}
-                animate={{ opacity: 1, x: 0 }}
-                key={m.id}
-                className="mb-3 text-[var(--text-secondary)]"
-              >
-                <span className="text-[#06b6d4] mr-2">
-                  [{new Date(m.createdAt).toLocaleString()}]
-                </span>
-                <span
-                  className="mr-2 font-bold"
-                  style={{ color: STATUS_COLORS[m.status] ?? '#9ca3af' }}
-                >
-                  {m.status.toUpperCase()}
-                </span>
-                <span className="text-white mr-2">{m.type}</span>
-                {m.result?.output && (
-                  <span className="block pl-4 text-xs opacity-80 whitespace-pre-wrap">
-                    {m.result.output.split('\n')[0]?.slice(0, 160)}
-                  </span>
-                )}
-                {m.error && (
-                  <span className="block pl-4 text-xs text-[#ef4444] opacity-90">
-                    {m.error.slice(0, 160)}
-                  </span>
-                )}
-              </motion.div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Dúvidas dos agentes (W3.4.2) — READ-ONLY: só exibe. Responder é pelo
-          Telegram (o clique-a-clique fica pra próxima fase). */}
-      <div className="container mx-auto px-8 pb-8">
-        <div className="glass-panel p-6">
-          <div className="flex items-center justify-between mb-4 border-b border-[var(--glass-border)] pb-4">
-            <h3 className="font-bold flex items-center gap-2">
-              <HelpCircle className="text-[#f59e0b]" size={18} />
-              Dúvidas dos agentes
-            </h3>
-          </div>
-
-          {questions.length === 0 && (
-            <div className="text-[var(--text-secondary)]">Nenhuma dúvida no momento.</div>
-          )}
-
-          <div className="space-y-4">
-            {sortQuestions(questions).map((q) => (
-              <div
-                key={q.id}
-                className="bg-[var(--bg-surface-elevated)] p-4 rounded-xl border border-[var(--glass-border)]"
-              >
-                <div className="flex items-start justify-between gap-3 mb-2">
-                  <span className="text-white font-medium">{q.text}</span>
-                  <span
-                    className="text-xs font-bold px-2 py-1 rounded-full whitespace-nowrap"
-                    style={{
-                      color: QUESTION_STATUS_COLORS[q.status] ?? '#9ca3af',
-                      backgroundColor: 'rgba(255,255,255,0.05)',
-                    }}
-                  >
-                    {statusLabel(q.status)}
-                  </span>
-                </div>
-
-                {q.context && (
-                  <p className="text-sm text-[var(--text-secondary)] mb-2">{q.context}</p>
-                )}
-
-                {q.options.length > 0 && (
-                  <div className="flex flex-wrap gap-2 mb-2">
-                    {q.options.map((opt) => (
-                      <span
-                        key={opt.value}
-                        className="text-xs px-3 py-1 rounded-full border border-[var(--glass-border)] text-[var(--text-secondary)]"
-                      >
-                        {opt.label}
-                      </span>
-                    ))}
-                  </div>
-                )}
-
-                {q.status === 'answered' && q.answer && (
-                  <p className="text-sm text-[#10b981]">Resposta: {q.answer}</p>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    </main>
+    </div>
   )
 }

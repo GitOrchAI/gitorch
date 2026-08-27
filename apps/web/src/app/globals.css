@@ -2634,7 +2634,7 @@ body {
     background: var(--gl-surface-2);
     color: var(--gl-ink);
   }
-  .gl .ad-nav[aria-selected='true'] {
+  .gl .ad-nav[aria-current='page'] {
     background: var(--gl-accent-soft);
     color: var(--gl-accent-ink);
     font-weight: 600;

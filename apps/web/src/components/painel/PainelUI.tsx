@@ -127,7 +127,8 @@ export interface DecisaoView {
   ctx?: string
   agente: string
   quando: string
-  pedido: number
+  /** número do pedido de origem, quando conhecido */
+  pedido?: number
   op: string[]
   st: 'pendente' | 'respondida'
   resposta?: string
@@ -150,7 +151,8 @@ export function Decisao({
       <p className="q">{d.q}</p>
       {!compacta && d.ctx && <p className="ctx">{d.ctx}</p>}
       <div className="who">
-        {d.agente} · {d.quando} · pedido #{d.pedido}
+        {d.agente} · {d.quando}
+        {d.pedido ? ` · pedido #${d.pedido}` : ''}
       </div>
       {d.st === 'respondida' ? (
         <div className="ad-answered">
