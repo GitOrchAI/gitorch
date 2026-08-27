@@ -216,6 +216,7 @@ import {
 } from '../services/credencial-do-motor.js'
 import { marcaDePedidoDeLogin } from '../services/motor-que-pede-login.js'
 import { umaAcordadaPorCiclo } from '../services/uma-acordada-por-ciclo.js'
+import { relogioDaAgenda } from '../services/espalhar-agendas.js'
 import { canRunMission, shouldAlertForQuota } from '../lib/spend-guard.js'
 import { computeConsumption } from '../lib/consumption.js'
 import { pipelineCheckEnabled } from '../config/pipeline-check.js'
@@ -5861,7 +5862,18 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
 
       let due = false
       try {
-        due = isScheduleDue(schedule.cron, schedule.lastTriggeredAt, now)
+        // O relógio DESTA agenda, e não o do tique. Os dois projetos tinham os
+        // quatro papéis no mesmo horário e o carimbo do último disparo era
+        // idêntico até os milissegundos (os dois RA às 18:01:00.339) — e a
+        // conta de motores é do DONO, não do projeto, então eles disputavam o
+        // mesmo motor no mesmo segundo. Recuar o relógio em N minutos adianta
+        // a agenda em N sem tocar no cron, que segue em hora redonda: é o que
+        // o dono lê e edita, e o desvio é decisão nossa, não dado dele.
+        due = isScheduleDue(
+          schedule.cron,
+          schedule.lastTriggeredAt,
+          relogioDaAgenda(now, schedule.projectId, schedule.agentRole)
+        )
       } catch (err) {
         app.log.warn(
           `[Scheduler] Agenda ${schedule.id} com cron inválido '${schedule.cron}': ${String(err)}`
