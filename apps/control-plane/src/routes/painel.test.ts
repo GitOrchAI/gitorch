@@ -31,12 +31,12 @@ describe('Rotas do painel do owner', () => {
   let app: ReturnType<typeof Fastify>
   let authHeaders: { authorization: string }
 
-  async function build(prisma: any = fakePrisma()) {
+  async function build(prisma: any = fakePrisma(), opts: any = {}) {
     app = Fastify()
     const env = loadEnv()
     await registerPlugins(app, env)
     ;(app as any).prisma = prisma
-    await painelRoutes(app)
+    await painelRoutes(app, opts)
     const token = jwt.sign({ userId: 'owner_1', wingId: 'octocat' }, env.JWT_SECRET)
     authHeaders = { authorization: `Bearer ${token}` }
     await app.ready()
@@ -45,6 +45,8 @@ describe('Rotas do painel do owner', () => {
 
   const getPulso = () =>
     app.inject({ method: 'GET', url: '/api/v1/painel/pulso', headers: authHeaders })
+  const getAgentes = () =>
+    app.inject({ method: 'GET', url: '/api/v1/painel/agentes', headers: authHeaders })
 
   beforeEach(async () => {
     await build()
@@ -98,6 +100,106 @@ describe('Rotas do painel do owner', () => {
       expect(JSON.stringify(prisma.mission.findFirst.mock.calls[0][0].where)).not.toContain(
         'octocat'
       )
+    })
+  })
+
+  describe('GET /api/v1/painel/agentes', () => {
+    const comMissoes = (rows: any[]) => ({
+      mission: {
+        findMany: vi.fn().mockResolvedValue(rows),
+        findFirst: vi.fn().mockResolvedValue(null),
+      },
+    })
+
+    test('sem sessão → 401', async () => {
+      const res = await app.inject({ method: 'GET', url: '/api/v1/painel/agentes' })
+      expect(res.statusCode).toBe(401)
+    })
+
+    test('sem missão rodando → atuando vazio, motores vazio', async () => {
+      const res = await getAgentes()
+      expect(res.statusCode).toBe(200)
+      expect(res.json()).toEqual({ atuando: [], motores: [] })
+    })
+
+    test('missão running → estado trabalhando e progresso SEMPRE null', async () => {
+      const t0 = new Date(Date.now() - 60_000)
+      await build(
+        fakePrisma(
+          comMissoes([
+            {
+              id: 'm1',
+              type: 'agent-run-qa',
+              payload: { engine: 'Jules' },
+              status: 'running',
+              waitingStatus: null,
+              startedAt: t0,
+              createdAt: t0,
+              project: { name: 'Checkout' },
+            },
+          ])
+        )
+      )
+      const [a] = (await getAgentes()).json().atuando
+      expect(a.estado).toBe('trabalhando')
+      expect(a.progresso).toBeNull()
+      expect(a.nome).toBe('Jules')
+      expect(a.papel).toBe('Qualidade')
+      expect(a.projeto).toBe('Checkout')
+      expect(a.desde).toBe(t0.toISOString())
+    })
+
+    test('missão com waitingStatus → esperando_voce', async () => {
+      const t0 = new Date()
+      await build(
+        fakePrisma(
+          comMissoes([
+            {
+              id: 'm2',
+              type: 'agent-run-ra',
+              payload: {},
+              status: 'running',
+              waitingStatus: 'awaiting_user',
+              startedAt: t0,
+              createdAt: t0,
+              project: { name: 'Checkout' },
+            },
+          ])
+        )
+      )
+      expect((await getAgentes()).json().atuando[0].estado).toBe('esperando_voce')
+    })
+
+    test('lerCotas que rejeita → motores:[] (nunca 500)', async () => {
+      await build(fakePrisma(), {
+        lerCotas: vi.fn().mockRejectedValue(new Error('sem store de cota')),
+      })
+      const res = await getAgentes()
+      expect(res.statusCode).toBe(200)
+      expect(res.json().motores).toEqual([])
+    })
+
+    test('lerCotas que responde → motores repassados', async () => {
+      const motores = [
+        {
+          id: 'jules',
+          nome: 'Jules',
+          usado: 14,
+          limite: 20,
+          janela: '24h',
+          limite_conhecido: true,
+        },
+      ]
+      await build(fakePrisma(), { lerCotas: vi.fn().mockResolvedValue(motores) })
+      expect((await getAgentes()).json().motores).toEqual(motores)
+    })
+
+    test('escopo por dono: findMany filtra project.userId + status running/pending', async () => {
+      const prisma = await build()
+      await getAgentes()
+      const where = prisma.mission.findMany.mock.calls[0][0].where
+      expect(where.project).toEqual({ userId: 'owner_1' })
+      expect(where.status).toEqual({ in: ['running', 'pending'] })
     })
   })
 })
