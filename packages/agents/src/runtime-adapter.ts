@@ -47,6 +47,24 @@ export interface RuntimeExecutionResult {
   durationMs: number
 }
 
+/**
+ * Executes a function representing a step and annotates errors with the step name.
+ */
+export async function wrapExecutionStep<T>(
+  stepName: string,
+  fn: () => Promise<T> | T
+): Promise<{ result?: T; error?: Error; failedStep?: string }> {
+  try {
+    const result = await fn()
+    return { result }
+  } catch (err: unknown) {
+    return {
+      error: err instanceof Error ? err : new Error(String(err)),
+      failedStep: stepName,
+    }
+  }
+}
+
 export interface RuntimeCommandRequest {
   binary: string
   args: string[]
@@ -337,23 +355,51 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
           ? []
           : [...(options.promptSeparator ? [options.promptSeparator] : []), effectivePrompt]
 
-      const result = await runner({
-        binary: options.binary,
-        args: [...baseArgs, ...modelArgs, ...workspaceArgs, ...promptArgs],
-        env,
-        cwd: request.cwd,
-        timeoutMs: request.timeoutMs,
-        ...(options.promptViaStdin && !options.promptArgName ? { stdin: request.prompt } : {}),
-      })
+      const { result, error, failedStep } = await wrapExecutionStep('execute-runner', () =>
+        runner({
+          binary: options.binary,
+          args: [...baseArgs, ...modelArgs, ...workspaceArgs, ...promptArgs],
+          env,
+          cwd: request.cwd,
+          timeoutMs: request.timeoutMs,
+          ...(options.promptViaStdin && !options.promptArgName ? { stdin: request.prompt } : {}),
+        })
+      )
 
-      return {
-        missionId: request.missionId,
-        runtime: options.runtime,
-        output: result.stdout,
-        stderr: result.stderr,
-        exitCode: result.exitCode,
-        durationMs: result.durationMs,
+      if (error) {
+        return {
+          missionId: request.missionId,
+          runtime: options.runtime,
+          output: '',
+          stderr: String(error.message),
+          exitCode: 1,
+          durationMs: 0,
+          failedStep: failedStep ?? 'execute-runner',
+          errorDetails: String(error.message),
+          recoveryAction: 'none',
+        }
       }
+
+      if (result) {
+        const failed = result.exitCode !== 0
+        return {
+          missionId: request.missionId,
+          runtime: options.runtime,
+          output: result.stdout,
+          stderr: result.stderr,
+          exitCode: result.exitCode,
+          durationMs: result.durationMs,
+          ...(failed
+            ? {
+                failedStep: 'execute-runner',
+                errorDetails: result.stderr,
+                recoveryAction: 'none',
+              }
+            : {}),
+        }
+      }
+
+      throw new Error('Unexpected execution flow in runtime adapter')
     },
   }
 }

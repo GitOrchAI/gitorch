@@ -18,6 +18,18 @@ export interface WorkspaceInfo {
 export class WorkspaceManager {
   private baseDir = '/var/lib/gitorch/workspaces'
 
+  constructor() {}
+
+  handleRuntimeFailure(errorDetails: string, stepName: string, rollback: boolean) {
+    const payload = {
+      failedStep: stepName,
+      errorDetails,
+      recoveryAction: rollback ? 'auto-rollback' : 'none',
+    }
+    console.error(
+      `[WorkspaceManager] Step failed: ${payload.failedStep}. Recovery action: ${payload.recoveryAction}. Details: ${payload.errorDetails}`
+    )
+  }
   private validateInput(value: string): void {
     const regex = /^[a-zA-Z0-9_-]+$/
     if (!regex.test(value)) {
