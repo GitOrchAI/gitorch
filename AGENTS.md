@@ -53,6 +53,16 @@ commit passava sem verificação nenhuma, em silêncio. Se o portão não tiver 
 `pnpm`, sem `node_modules`), ele **barra o commit** e explica o que fazer. Detalhes e o passo
 de ligar `node_modules` numa worktree nova estão em [`CLAUDE.md`](./CLAUDE.md).
 
+## Critério de Conclusão ("Done") — Deploy e Teste Real Obrigatórios
+
+**Regra Absoluta de Conclusão:** O agente NUNCA deve declarar uma tarefa, objetivo ou feature como "Done" / concluída apenas por passar em testes locais. O encerramento real e oficial só ocorre após:
+1. Push da branch e abertura do PR no GitHub.
+2. Aprovação no CI `zero-tolerance`.
+3. Merge para a `main`.
+4. Deploy / sincronização na VM ARM (`100.77.141.44` / `/home/ubuntu/projects/gitorch`).
+5. Execução de testes reais e validação prática direto na VM ARM comprovando o funcionamento.
+Sem deploy e validação no ambiente de execução real, o status permanece em andamento.
+
 ## Convenção de commits e PRs
 
 Mensagens de commit no padrão `tipo: descrição` (`fix:`, `feat:`, `security:`, `chore:`).
