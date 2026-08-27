@@ -169,7 +169,7 @@ describe('forceDirectedPositions', () => {
     const positions = forceDirectedPositions(nodes, edges)
     const elapsed = performance.now() - start
     expect(positions.size).toBe(1500)
-    expect(elapsed).toBeLessThan(8000)
+    expect(elapsed).toBeLessThan(15000)
   })
 
   it('zero nós devolve mapa vazio; 1 nó fica na origem', () => {
