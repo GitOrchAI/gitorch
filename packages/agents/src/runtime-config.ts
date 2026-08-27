@@ -11,13 +11,19 @@ type DefaultAgentRuntimeAssignments = Readonly<{
   [Role in F6AgentRole]: Readonly<AgentRuntimeSelection>
 }>
 
-// Runtime padrão de cada agente quando o projeto não define o seu.
+export const CANONICAL_RUNTIME_CHAIN: readonly F6AgentRuntime[] = Object.freeze([
+  'codex',
+  'antigravity',
+  'claude',
+] as const)
+
+// Runtime padrão de cada agente quando o projeto não define o seu (decisão canônica: codex > antigravity > claude).
 // Sobrescrevível por projeto via runtime-config (PATCH /api/projects/:id/runtime-config).
 export const DEFAULT_AGENT_RUNTIME_ASSIGNMENTS: DefaultAgentRuntimeAssignments = Object.freeze({
-  po: Object.freeze({ runtime: 'antigravity' }),
-  ra: Object.freeze({ runtime: 'antigravity' }),
-  sm: Object.freeze({ runtime: 'antigravity' }),
-  qa: Object.freeze({ runtime: 'antigravity' }),
+  po: Object.freeze({ runtime: 'codex' }),
+  ra: Object.freeze({ runtime: 'codex' }),
+  sm: Object.freeze({ runtime: 'codex' }),
+  qa: Object.freeze({ runtime: 'codex' }),
 } satisfies AgentRuntimeAssignments)
 
 function cloneSelection(selection: Readonly<AgentRuntimeSelection>): AgentRuntimeSelection {
