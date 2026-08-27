@@ -62,7 +62,7 @@ jobs:
       - name: Install Dependencies
         if: steps.triage.outputs.act == 'true' && steps.triage.outputs.alreadyTried == 'false' && steps.triage.outputs.sessionId != ''
         working-directory: .github/scripts
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Orientar Jules (1ª tentativa)
         if: steps.triage.outputs.act == 'true' && steps.triage.outputs.alreadyTried == 'false' && steps.triage.outputs.sessionId != ''

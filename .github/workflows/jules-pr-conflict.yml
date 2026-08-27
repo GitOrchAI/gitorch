@@ -74,7 +74,7 @@ jobs:
       - name: Install Dependencies
         if: steps.preflight.outputs.configurada == 'true'
         working-directory: .github/scripts
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Analyze Merge Conflicts
         if: steps.preflight.outputs.configurada == 'true'

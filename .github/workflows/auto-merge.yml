@@ -147,7 +147,7 @@ jobs:
       - name: Install Script Dependencies
         if: steps.evaluate.outputs.eligible == 'true'
         working-directory: .github/scripts
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: QA Verdict Gate
         id: gate
