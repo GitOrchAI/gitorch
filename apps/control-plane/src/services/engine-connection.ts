@@ -6,7 +6,8 @@ import type { PrismaClient } from '@prisma/client'
 import { decryptCredential, encryptCredential } from '../lib/credential-crypto.js'
 import { archivePaths, readArchiveEntry, restoreDirectory } from '../lib/credential-archive.js'
 import { MODEL_DISCOVERERS } from './model-catalog.js'
-import { QUOTA_READERS, type QuotaReading } from './quota-reader.js'
+import { QUOTA_READERS } from './quota-reader.js'
+import { carimboDaLeitura, lerCotaDoMotor } from './leitura-de-cota.js'
 import { checkLiveness, type LivenessResult } from './engine-liveness.js'
 import { validatePastedCredential } from './credential-validator.js'
 
@@ -397,8 +398,14 @@ export class EngineConnectionService {
         // Junto com os modelos, lê a quota restante do provider (best-effort): o
         // spend-guard usa isso para não estourar a conta do cliente (BYOK).
         const readQuota = Object.hasOwn(QUOTA_READERS, runtime) ? QUOTA_READERS[runtime] : undefined
-        const emptyQuota: QuotaReading = { remaining: null, total: null }
-        const quota = readQuota ? await readQuota(home).catch(() => emptyQuota) : emptyQuota
+        // Sem engolir o motivo. O `.catch(() => emptyQuota)` que estava aqui
+        // transformava toda falha em nulo mudo — e em 26/08 os DOIS motores
+        // tinham as quatro colunas de cota vazias, com `quota_refreshed_at`
+        // recente, sem ninguém saber por quê. Continua best-effort: falhar a
+        // cota nunca derruba a descoberta de modelos nem a conexão.
+        const cota = await lerCotaDoMotor({ runtime, ler: readQuota, home })
+        const quota = cota.leitura
+        if (cota.motivo) console.warn(`[engine-connection] ${cota.motivo}`)
         // Rearquiva a credencial: a descoberta pode ter criado/atualizado
         // arquivos no HOME materializado (ex.: o aquecimento do Codex grava
         // `.codex/models_cache.json` na 1ª vez que o cache está ausente — ver
@@ -418,7 +425,11 @@ export class EngineConnectionService {
             lastError: null,
             quotaRemaining: quota.remaining,
             quotaTotal: quota.total,
-            quotaRefreshedAt: new Date(),
+            // O carimbo só entra quando ALGUM número veio. Carimbar mesmo sem
+            // leitura fazia a linha afirmar "li a cota agora" tendo lido nada:
+            // quem investigasse veria um horário recente e concluiria que a
+            // coleta funcionava. Mentira no dado é pior que dado ausente.
+            ...carimboDaLeitura(cota, new Date()),
             // Claude e Codex (ver QuotaReading) — undefined pro Antigravity
             // vira `null` na coluna nullable, mesmo efeito de "sem essa janela".
             sessionPercentUsed: quota.sessionPercentUsed ?? null,

@@ -216,6 +216,7 @@ import {
 } from '../services/credencial-do-motor.js'
 import { marcaDePedidoDeLogin } from '../services/motor-que-pede-login.js'
 import { umaAcordadaPorCiclo } from '../services/uma-acordada-por-ciclo.js'
+import { relogioDaAgenda } from '../services/espalhar-agendas.js'
 import { canRunMission, shouldAlertForQuota } from '../lib/spend-guard.js'
 import { computeConsumption } from '../lib/consumption.js'
 import { pipelineCheckEnabled } from '../config/pipeline-check.js'
@@ -4720,7 +4721,14 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     const candidatas = await app.prisma.devSession.findMany({
       where: { projectId: args.projectId, state: 'AWAITING_USER_FEEDBACK', closedAt: null },
       orderBy: { createdAt: 'asc' },
-      select: { sessionName: true, issueNumber: true, answeredHash: true },
+      select: {
+        sessionName: true,
+        issueNumber: true,
+        answeredHash: true,
+        // O carimbo da reserva: e ele que separa "alguem esta tentando agora"
+        // de "a tentativa terminou e falhou". Ja era gravado; nao era lido.
+        stateCheckedAt: true,
+      },
       take: 20,
     })
     if (candidatas.length === 0) return
@@ -4751,6 +4759,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       const decisao = decidirSobreAPergunta({
         hashDaPergunta,
         marca: esperando.answeredHash,
+        // O carimbo da reserva. Sem ele, uma acordada que chegasse no meio da
+        // tentativa de outra a contava como tentativa JÁ GASTA e subia o
+        // contador — e a devolução da primeira, condicional à marca dela, não
+        // valia mais. Foi assim que as tarefas #248 e #3799 chegaram a
+        // `desisti` mesmo com a devolução funcionando.
+        marcadaEm: esperando.stateCheckedAt,
+        agora: new Date(),
       })
       // Já respondida, ou já desistimos dela: passa para a próxima em vez de
       // sair. Sair aqui era a fome — a mais antiga já resolvida fazia todas as
@@ -5861,7 +5876,18 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
 
       let due = false
       try {
-        due = isScheduleDue(schedule.cron, schedule.lastTriggeredAt, now)
+        // O relógio DESTA agenda, e não o do tique. Os dois projetos tinham os
+        // quatro papéis no mesmo horário e o carimbo do último disparo era
+        // idêntico até os milissegundos (os dois RA às 18:01:00.339) — e a
+        // conta de motores é do DONO, não do projeto, então eles disputavam o
+        // mesmo motor no mesmo segundo. Recuar o relógio em N minutos adianta
+        // a agenda em N sem tocar no cron, que segue em hora redonda: é o que
+        // o dono lê e edita, e o desvio é decisão nossa, não dado dele.
+        due = isScheduleDue(
+          schedule.cron,
+          schedule.lastTriggeredAt,
+          relogioDaAgenda(now, schedule.projectId, schedule.agentRole)
+        )
       } catch (err) {
         app.log.warn(
           `[Scheduler] Agenda ${schedule.id} com cron inválido '${schedule.cron}': ${String(err)}`

@@ -38,6 +38,17 @@
  */
 export const MAX_TENTATIVAS_DE_RESPOSTA = 3
 
+/**
+ * Por quanto tempo uma reserva conta como "em voo".
+ *
+ * Quinze minutos: as missões de QA medidas em produção levam de trinta
+ * segundos a poucos minutos, então quinze cobre com folga a mais lenta sem
+ * deixar uma reserva órfã (ciclo morto no meio) travando a pergunta por muito
+ * tempo. Curto demais reabre a corrida; longo demais prende trabalho vivo
+ * atrás de um fantasma.
+ */
+export const JANELA_DE_TENTATIVA_EM_VOO_MS = 15 * 60_000
+
 type Situacao = 'tentando' | 'respondida' | 'desisti'
 
 interface MarcaLida {
@@ -104,6 +115,12 @@ export type DecisaoSobreAPergunta =
 export function decidirSobreAPergunta(args: {
   hashDaPergunta: string
   marca: string | null
+  /**
+   * Quando a marca foi escrita (`stateCheckedAt`, carimbado pela reserva).
+   * Ausente = comportamento de antes, para quem ainda não passa o dado.
+   */
+  marcadaEm?: Date | null | undefined
+  agora?: Date | undefined
 }): DecisaoSobreAPergunta {
   const lida = lerMarca(args.marca)
 
@@ -120,6 +137,36 @@ export function decidirSobreAPergunta(args: {
   }
   if (lida.situacao === 'desisti') {
     return { acao: 'nada', motivo: 'já desistimos desta pergunta e o dono já foi avisado' }
+  }
+
+  // ALGUÉM ESTÁ TENTANDO AGORA — não some por cima.
+  //
+  // MEDIDO AO VIVO em 27/08, com a devolução de tentativa (PR #277) já no ar e
+  // funcionando (66 devoluções em duas horas): as tarefas #248 e #3799 mesmo
+  // assim chegaram a `desisti:3`. A corrida:
+  //
+  //   1. O ciclo A lê a marca, decide a tentativa 1 e grava `tentando:1`.
+  //   2. O ciclo A chama o motor — que demora, e vai falhar por cota.
+  //   3. O ciclo B acorda no meio, lê `tentando:1` e conclui que a tentativa 1
+  //      JÁ ACONTECEU: sobe para 2 e grava `tentando:2`. A escrita condicional
+  //      dele é válida, porque `tentando:1` de fato ainda estava lá.
+  //   4. O ciclo A falha e vai devolver a vez — mas a devolução é condicional a
+  //      `tentando:1`, que já não existe. Não escreve nada, e a tentativa
+  //      morreu gasta.
+  //
+  // A raiz é a marca não distinguir "alguém está tentando AGORA" de "a
+  // tentativa N terminou e falhou". Com o carimbo da reserva na mão, dá para
+  // separar os dois — e o carimbo já era gravado, só não era lido.
+  //
+  // Marca VELHA continua subindo o contador de propósito: é o ciclo que morreu
+  // sem devolver (processo reiniciado no meio, por exemplo). Sem isso a
+  // pergunta ficaria presa para sempre atrás de uma reserva fantasma, que é
+  // trocar um jeito de perder trabalho por outro.
+  if (args.marcadaEm && args.agora) {
+    const idade = args.agora.getTime() - args.marcadaEm.getTime()
+    if (idade >= 0 && idade < JANELA_DE_TENTATIVA_EM_VOO_MS) {
+      return { acao: 'nada', motivo: 'já tem uma tentativa em voo para esta pergunta' }
+    }
   }
 
   const proxima = lida.tentativas + 1

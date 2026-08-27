@@ -6,6 +6,7 @@ import {
   marcarRespondida,
   marcarTentativa,
   MAX_TENTATIVAS_DE_RESPOSTA,
+  JANELA_DE_TENTATIVA_EM_VOO_MS,
 } from './pergunta-sem-resposta.js'
 
 /**
@@ -132,5 +133,87 @@ describe('lerMarca', () => {
 
   it('hash com dois-pontos dentro sobrevive à ida e volta', () => {
     expect(lerMarca(marcarTentativa('a:b:c', 1))?.hash).toBe('a:b:c')
+  })
+})
+
+describe('reserva EM VOO não é tentativa gasta', () => {
+  const HASH = 'abc123'
+  const AGORA = new Date('2026-08-27T01:00:00Z')
+
+  it('a corrida real das tarefas #248 e #3799: o segundo ciclo NÃO sobe o contador', () => {
+    // O ciclo A gravou `tentando:1` há trinta segundos e ainda está no motor.
+    // Antes, o ciclo B lia isso como "a tentativa 1 já aconteceu" e subia para
+    // 2 — e aí a devolução do ciclo A, condicional à marca dele, não valia.
+    const decisao = decidirSobreAPergunta({
+      hashDaPergunta: HASH,
+      marca: marcarTentativa(HASH, 1),
+      marcadaEm: new Date(AGORA.getTime() - 30_000),
+      agora: AGORA,
+    })
+    expect(decisao).toEqual({
+      acao: 'nada',
+      motivo: 'já tem uma tentativa em voo para esta pergunta',
+    })
+  })
+
+  it('reserva VELHA volta a subir o contador — senão a pergunta trava para sempre', () => {
+    // Ciclo que morreu sem devolver (processo reiniciado no meio). Sem isto,
+    // trocaríamos um jeito de perder trabalho por outro.
+    const decisao = decidirSobreAPergunta({
+      hashDaPergunta: HASH,
+      marca: marcarTentativa(HASH, 1),
+      marcadaEm: new Date(AGORA.getTime() - JANELA_DE_TENTATIVA_EM_VOO_MS - 1_000),
+      agora: AGORA,
+    })
+    expect(decisao).toEqual({ acao: 'responder', tentativa: 2 })
+  })
+
+  it('mesmo em voo, uma pergunta NOVA sempre é atendida do zero', () => {
+    // O teto nunca é herdado entre perguntas diferentes — a guarda de voo não
+    // pode virar um jeito de calar um diálogo legítimo.
+    const decisao = decidirSobreAPergunta({
+      hashDaPergunta: 'pergunta-nova',
+      marca: marcarTentativa(HASH, 1),
+      marcadaEm: new Date(AGORA.getTime() - 30_000),
+      agora: AGORA,
+    })
+    expect(decisao).toEqual({ acao: 'responder', tentativa: 1 })
+  })
+
+  it('sem o carimbo, o comportamento é o de antes (compatível com quem não passa o dado)', () => {
+    expect(
+      decidirSobreAPergunta({ hashDaPergunta: HASH, marca: marcarTentativa(HASH, 1) })
+    ).toEqual({ acao: 'responder', tentativa: 2 })
+  })
+
+  it('carimbo no futuro (relógio torto) não trava a pergunta', () => {
+    const decisao = decidirSobreAPergunta({
+      hashDaPergunta: HASH,
+      marca: marcarTentativa(HASH, 1),
+      marcadaEm: new Date(AGORA.getTime() + 60_000),
+      agora: AGORA,
+    })
+    expect(decisao).toEqual({ acao: 'responder', tentativa: 2 })
+  })
+
+  it('com motor caído, três ciclos em voo NUNCA chegam a desistir', () => {
+    // A aceitação em uma linha: enquanto nenhuma tentativa se CONCLUI, o teto
+    // não anda. Antes, três acordadas sobrepostas gastavam as três em minutos.
+    let marca: string | null = null
+    let marcadaEm: Date | null = null
+    for (let i = 0; i < 3; i += 1) {
+      const d = decidirSobreAPergunta({
+        hashDaPergunta: HASH,
+        marca,
+        marcadaEm,
+        agora: new Date(AGORA.getTime() + i * 1_000),
+      })
+      if (d.acao === 'responder') {
+        marca = marcarTentativa(HASH, d.tentativa)
+        marcadaEm = new Date(AGORA.getTime() + i * 1_000)
+      }
+      expect(d.acao).not.toBe('desistir')
+    }
+    expect(marca).toBe(marcarTentativa(HASH, 1))
   })
 })
