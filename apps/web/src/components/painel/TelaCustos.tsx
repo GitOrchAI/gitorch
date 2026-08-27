@@ -24,16 +24,12 @@ export function TelaCustos() {
         cada cota já foi gasto, para nenhum motor travar no meio de uma entrega.
       </Cabeca>
 
+      <p className="ad-eyebrow">
+        Resumo do mês
+        <SeloDemo mostrar />
+      </p>
       <div className="ad-kpis">
-        <Kpi
-          l="Tarefas hoje"
-          v={55}
-          n={
-            <>
-              somando todos os motores <SeloDemo mostrar />
-            </>
-          }
-        />
+        <Kpi l="Tarefas hoje" v={55} n="somando todos os motores" />
         <Kpi l="Motor mais perto do teto" v="95%" n="Antigravity · 38 de 40" tone="w" destaque />
         <Kpi l="Entregas no mês" v={16} n="média de 4 por semana" tone="g" />
         <Kpi l="Repositórios ativos" v={3} n="do teto de 5 do seu plano" />

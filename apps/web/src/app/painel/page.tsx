@@ -6,7 +6,7 @@
 // tema no wrapper via `data-theme`, persistido em localStorage. Nunca mistura
 // o glass violeta/ciano do painel antigo. Copy PT-BR fixa nesta leva (o i18n
 // do /painel volta numa leva seguinte).
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import Link from 'next/link'
 import { API_BASE_URL } from '../../lib/api'
 import {
@@ -17,7 +17,13 @@ import {
   tituloDaTela,
   type TelaId,
 } from '../../components/painel/painel-nav'
-import { lerTema, salvarTema, proximoTema, type Tema } from '../../components/painel/painel-tema'
+import {
+  assinarTema,
+  temaAtual,
+  temaNoServidor,
+  definirTema,
+  proximoTema,
+} from '../../components/painel/painel-tema'
 import {
   fetchAgentQuestions,
   type AgentQuestionView,
@@ -69,21 +75,16 @@ export default function PainelOwner() {
   const [checkFalhou, setCheckFalhou] = useState(false)
 
   const [tela, setTela] = useState<TelaId>('visao')
-  // Tema lido do localStorage já no primeiro render do client (o server sempre
-  // renderiza 'light'; o wrapper leva suppressHydrationWarning porque só o
-  // atributo data-theme pode divergir, e o client corrige na hidratação).
-  const [tema, setTema] = useState<Tema>(() =>
-    typeof window !== 'undefined' ? lerTema(window.localStorage) : 'light'
-  )
+  // Tema por store externa (useSyncExternalStore): o server renderiza 'light'
+  // e o client corrige na hidratação, sem effect de setState. O wrapper leva
+  // suppressHydrationWarning porque só o atributo data-theme pode divergir.
+  const tema = useSyncExternalStore(assinarTema, temaAtual, temaNoServidor)
+  const setTema = definirTema
   const [sheet, setSheet] = useState(false)
   const [foco, setFoco] = useState<string | null>(null)
 
   const [decisoes, setDecisoes] = useState<DecisaoView[]>([])
   const [avisoDecisao, setAvisoDecisao] = useState<string | null>(null)
-
-  useEffect(() => {
-    salvarTema(typeof window !== 'undefined' ? window.localStorage : null, tema)
-  }, [tema])
 
   useEffect(() => {
     let vivo = true
@@ -259,7 +260,7 @@ export default function PainelOwner() {
             <span className="ad-sp" />
             <button
               className="ad-ico"
-              onClick={() => setTema((t) => proximoTema(t))}
+              onClick={() => setTema(proximoTema(tema))}
               aria-label="Alternar tema claro e escuro"
               title="Tema"
             >
@@ -321,7 +322,7 @@ export default function PainelOwner() {
               <button
                 className="ad-row"
                 onClick={() => {
-                  setTema((t) => proximoTema(t))
+                  setTema(proximoTema(tema))
                   setSheet(false)
                 }}
               >

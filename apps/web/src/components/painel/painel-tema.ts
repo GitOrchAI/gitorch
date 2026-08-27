@@ -36,3 +36,40 @@ export function salvarTema(store: Pick<Storage, 'setItem'> | null, t: Tema): voi
 export function proximoTema(t: Tema): Tema {
   return t === 'dark' ? 'light' : 'dark'
 }
+
+// --- store para useSyncExternalStore (o shell lê o tema por aqui) ------------
+// O evento 'storage' do navegador não dispara na MESMA aba que escreveu, então
+// mantemos a lista de assinantes à mão e notificamos no `definirTema`.
+
+type Ouvinte = () => void
+const ouvintes = new Set<Ouvinte>()
+
+function store(): Pick<Storage, 'getItem' | 'setItem'> | null {
+  return typeof window !== 'undefined' ? window.localStorage : null
+}
+
+/** Assina mudanças de tema (mesma aba via `definirTema`, outras abas via `storage`). */
+export function assinarTema(ouvinte: Ouvinte): () => void {
+  ouvintes.add(ouvinte)
+  if (typeof window !== 'undefined') window.addEventListener('storage', ouvinte)
+  return () => {
+    ouvintes.delete(ouvinte)
+    if (typeof window !== 'undefined') window.removeEventListener('storage', ouvinte)
+  }
+}
+
+/** Snapshot do tema atual (client). */
+export function temaAtual(): Tema {
+  return lerTema(store())
+}
+
+/** Snapshot para o SSR — sempre 'light' (o client corrige na hidratação). */
+export function temaNoServidor(): Tema {
+  return 'light'
+}
+
+/** Define o tema: grava e notifica os assinantes. */
+export function definirTema(t: Tema): void {
+  salvarTema(store(), t)
+  ouvintes.forEach((o) => o())
+}

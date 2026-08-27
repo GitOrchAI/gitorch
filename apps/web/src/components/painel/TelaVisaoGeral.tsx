@@ -100,8 +100,9 @@ function Ritmo() {
 }
 
 function Pulso() {
-  // Sinal de vida AO VIVO pelo SSE que já existe (/api/events).
-  const p = usePulsoAoVivo(null)
+  // Estado inicial pela rota /painel/pulso (nova); o SSE de /api/events mantém
+  // a faixa viva a cada evento novo.
+  const p = usePulsoAoVivo()
   if (!p || !p.ultimo) {
     return (
       <div className="ad-pulse cold">

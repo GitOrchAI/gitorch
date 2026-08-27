@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest'
-import { lerTema, salvarTema, proximoTema, CHAVE_TEMA } from './painel-tema'
+import {
+  lerTema,
+  salvarTema,
+  proximoTema,
+  CHAVE_TEMA,
+  assinarTema,
+  temaAtual,
+  temaNoServidor,
+  definirTema,
+} from './painel-tema'
 
 const fakeStore = (init: Record<string, string> = {}) => {
   const m = new Map(Object.entries(init))
@@ -34,5 +43,27 @@ describe('painel-tema', () => {
   })
   it('salvarTema com store nulo não lança', () => {
     expect(() => salvarTema(null, 'dark')).not.toThrow()
+  })
+
+  it('temaNoServidor é sempre light', () => {
+    expect(temaNoServidor()).toBe('light')
+  })
+
+  it('definirTema notifica os assinantes na mesma "aba"', () => {
+    let chamou = 0
+    const parar = assinarTema(() => {
+      chamou += 1
+    })
+    definirTema('dark')
+    definirTema('light')
+    expect(chamou).toBe(2)
+    parar()
+    definirTema('dark')
+    expect(chamou).toBe(2) // não notifica depois de parar
+  })
+
+  it('temaAtual sem window devolve light (SSR)', () => {
+    // no ambiente de teste (node) não há window
+    expect(temaAtual()).toBe('light')
   })
 })

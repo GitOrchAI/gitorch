@@ -6,6 +6,7 @@
 import { useState } from 'react'
 import { DEMO } from './painel-demo'
 import { Cabeca, Card } from './PainelUI'
+import { SeloDemo } from './PainelEstados'
 
 function Interruptor({
   on,
@@ -89,7 +90,7 @@ export function TelaRegras() {
         ))}
       </Card>
 
-      <Card titulo="Autonomia dos agentes">
+      <Card titulo="Autonomia dos agentes" sub={<SeloDemo mostrar />}>
         <p
           style={{ margin: '0 0 18px', fontSize: 13.5, color: 'var(--gl-muted)', maxWidth: '62ch' }}
         >
