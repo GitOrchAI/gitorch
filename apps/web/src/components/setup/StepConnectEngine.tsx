@@ -11,6 +11,7 @@ import {
   formatClaudeUsage,
   looksLikeAuthCode,
   type LoginState,
+  estadoDoMotorDaLista,
 } from './engine-status'
 
 interface StepConnectEngineProps {
@@ -77,33 +78,15 @@ export default function StepConnectEngine({
           if (cancelled || !data?.engines) return
           const connected: Record<string, LoginState> = {}
           for (const card of ENGINES) {
-            const eng = data.engines.find(
-              (e) => e.runtime === card.runtime && e.status === 'connected'
+            // A decisão mora em estadoDoMotorDaLista (engine-status.ts), pura e
+            // testada: era AQUI que a tela mentia. O filtro antigo era
+            // `status === 'connected'` e mais nada — motor que só volta com
+            // login novo simplesmente não aparecia, e o card ficava com o
+            // 'connected' que já estava na tela desde a montagem anterior.
+            const estado = estadoDoMotorDaLista(
+              data.engines.find((e) => e.runtime === card.runtime)
             )
-            if (eng) {
-              // A LISTA de nomes, não o tamanho — o refetch chega com o mesmo
-              // formato do evento SSE ao vivo (engine-connection.ts já manda
-              // string[] real); truncar aqui era exatamente o bug que o dono
-              // reclamou ("mostra os modelos? mostra as quotas?").
-              connected[card.id] = {
-                phase: 'connected',
-                models: Array.isArray(eng.models) ? eng.models : undefined,
-                quota: eng.quotaRemaining ?? null,
-                // Claude: % usado real de sessão/semana (ver quota-reader.ts
-                // no control-plane) — `null` explícito não vira número
-                // inventado, só entra quando o backend de fato tem o dado.
-                ...(typeof eng.sessionPercentUsed === 'number'
-                  ? { sessionPercentUsed: eng.sessionPercentUsed }
-                  : {}),
-                ...(typeof eng.sessionResetsAt === 'string'
-                  ? { sessionResetsAt: eng.sessionResetsAt }
-                  : {}),
-                ...(typeof eng.weekPercentUsed === 'number'
-                  ? { weekPercentUsed: eng.weekPercentUsed }
-                  : {}),
-                ...(typeof eng.weekResetsAt === 'string' ? { weekResetsAt: eng.weekResetsAt } : {}),
-              }
-            }
+            if (estado) connected[card.id] = estado
           }
           setStates((prev) => ({ ...connected, ...prev }))
         }
@@ -294,6 +277,25 @@ export default function StepConnectEngine({
                 <button className="wz-btn wz-btn-primary" onClick={() => connect(id, runtime)}>
                   {t('setup.connectBtn')}
                 </button>
+              )}
+
+              {/* O motor ESTAVA conectado e venceu. Print do dono (26/08): o
+                  card mostrava "Conectado" em verde enquanto toda missão morria
+                  por credencial — e uma tela verde não oferece nada para
+                  clicar. Aqui ele vê o que houve e religa no mesmo lugar, pelo
+                  MESMO botão do primeiro login. Sem dicas de token: não houve
+                  tentativa de conectar que tenha falhado; uma conexão boa
+                  simplesmente venceu. */}
+              {state.phase === 'precisa_religar' && (
+                <div className="space-y-2">
+                  <p className="wz-err">{t('setup.connectNeedsReloginLabel')}</p>
+                  <p className="wz-opt-desc" style={{ fontSize: '0.78rem' }}>
+                    {t('setup.connectNeedsReloginDesc')}
+                  </p>
+                  <button className="wz-btn wz-btn-primary" onClick={() => connect(id, runtime)}>
+                    {t('setup.connectRelinkBtn')}
+                  </button>
+                </div>
               )}
 
               {state.phase === 'starting' && (

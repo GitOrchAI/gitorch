@@ -37,7 +37,22 @@ function readAgentsConfig(runtimeConfig: unknown): Record<string, AgentRuntimePr
 export function resolveRuntimeChain(
   role: F6AgentRole,
   runtimeConfig: unknown,
-  defaults: ResolverDefaults
+  defaults: ResolverDefaults,
+  /**
+   * Os motores que o cliente TEM conectados agora, como última reserva.
+   *
+   * MEDIDO AO VIVO em 26/08: numa corrida real, o RA morreu com "Individual
+   * quota reached... Resets in 18h43m26s" e a esteira parou ali. Havia outro
+   * motor conectado e ocioso ao lado — mas a cadeia tinha um só, então o
+   * failover que já existe não tinha para onde ir. A cota de um motor derrubou
+   * os quatro papéis por dezoito horas.
+   *
+   * Entram DEPOIS da escolha do cliente e dos fallbacks dele: quem escolheu um
+   * motor de propósito continua com ele em primeiro lugar. A reserva não muda
+   * a preferência de ninguém — ela só existe para o dia em que a preferência
+   * não pode rodar.
+   */
+  motoresConectados: readonly string[] = []
 ): RuntimeSelection[] {
   const pref = readAgentsConfig(runtimeConfig)[role] ?? {}
   const chain: RuntimeSelection[] = []
@@ -53,6 +68,10 @@ export function resolveRuntimeChain(
 
   // Garante o motor padrão do papel na cadeia (nunca fica vazia).
   push(defaults.runtimeByRole[role], defaults.modelByRole[role])
+
+  // E, por último, o que o cliente tem conectado. Sem isto, um projeto que
+  // escolheu um motor só fica sem reserva no dia em que ele estoura a cota.
+  for (const runtime of motoresConectados) push(runtime)
 
   // Preenche o modelo padrão quando a preferência não trouxe um.
   return chain.map((sel) =>

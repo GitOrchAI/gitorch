@@ -49,6 +49,25 @@ import {
 } from '../services/qa-rails-mission.js'
 import { runSmDelegation } from '../services/sm-delegation.js'
 import { criarFilaDeJulgamento } from '../services/fila-de-julgamento.js'
+import {
+  deveAvisarSobreOMotor,
+  recadoDeMotorRevogado,
+} from '../services/recado-de-motor-revogado.js'
+import { livenessCommandFor } from '../services/engine-liveness.js'
+import {
+  agruparPorProvedor,
+  decidirRenovacaoDoMotor,
+  ehRevogacaoDefinitiva,
+} from '../services/renovar-motores.js'
+import { motoresComProvaDeVida } from '../services/prova-de-vida.js'
+import {
+  pegarATrava,
+  soltarATrava,
+  VALIDADE_DA_TRAVA_MS,
+  type PrismaParaTrava,
+} from '../services/trava-de-renovacao.js'
+import { criarPassagemDeBastao } from '../services/passar-o-bastao.js'
+import { criarRegistroDeMotorMorto } from '../services/motor-em-pausa.js'
 import { criarRegistroDeDescanso, type OrigemDoDisparo } from '../services/descanso-apos-vazia.js'
 import { tetosDoPlanoDoDev } from '../services/plano-do-dev.js'
 import {
@@ -95,7 +114,11 @@ import {
   marcarDesistencia,
   marcarRespondida,
 } from '../services/pergunta-sem-resposta.js'
-import { reservarAResposta, type PrismaParaReserva } from '../services/reservar-a-resposta.js'
+import {
+  reservarAResposta,
+  devolverAReserva,
+  type PrismaParaReserva,
+} from '../services/reservar-a-resposta.js'
 import { hashDaMensagem } from '../services/session-watch.js'
 import type { StepExecutor } from '../services/role-rails.js'
 import {
@@ -191,6 +214,9 @@ import {
   CredencialExpiradaError,
   deveAvisarDeNovo,
 } from '../services/credencial-do-motor.js'
+import { marcaDePedidoDeLogin } from '../services/motor-que-pede-login.js'
+import { umaAcordadaPorCiclo } from '../services/uma-acordada-por-ciclo.js'
+import { relogioDaAgenda } from '../services/espalhar-agendas.js'
 import { canRunMission, shouldAlertForQuota } from '../lib/spend-guard.js'
 import { computeConsumption } from '../lib/consumption.js'
 import { pipelineCheckEnabled } from '../config/pipeline-check.js'
@@ -735,7 +761,13 @@ export function createLocalCredentialRunner(
   engineConnections: Pick<EngineConnectionService, 'materializeToHome' | 'captureFromHome'>,
   innerRunner: RuntimeCommandRunner = realRuntimeCommandRunner,
   environments?: EnvironmentLookup,
-  log?: { info: (msg: string) => void; warn: (msg: string) => void }
+  log?: { info: (msg: string) => void; warn: (msg: string) => void },
+  /**
+   * Só para a trava de renovação. Opcional porque este runner é usado em
+   * testes sem banco: sem ele, o comportamento é o de antes (captura sempre) —
+   * pior que ter trava, melhor que não capturar.
+   */
+  prismaDaTrava?: PrismaParaTrava
 ): RuntimeCommandRunner {
   return async (request) => {
     const runtime = request.env['GITORCH_RUNTIME']
@@ -802,13 +834,41 @@ export function createLocalCredentialRunner(
       // foi feito; perder o resultado por causa do cofre seria trocar um
       // problema por outro pior.
       if (materializou) {
-        await engineConnections
-          .captureFromHome(ownerUserId, runtime, dir)
-          .catch((err: unknown) =>
-            log?.warn(
-              `[Scheduler] não consegui devolver ao cofre a credencial de ${runtime} do dono ${ownerUserId}: ${(err as Error).message}`
-            )
-          )
+        // UMA RENOVAÇÃO POR VEZ. O refresh token de alguns provedores é de uso
+        // único: se a vigília horária estiver renovando esta mesma conta agora,
+        // capturar aqui queima o token e derruba a credencial do cliente —
+        // medido em 26/08 com o codex ("Your refresh token has already been
+        // used"). Sem a trava, saímos calados: a próxima missão captura.
+        const minhaVez = prismaDaTrava
+          ? await pegarATrava({
+              prisma: prismaDaTrava,
+              userId: ownerUserId,
+              runtime,
+              agora: new Date(),
+            }).catch(() => true)
+          : true
+        if (minhaVez) {
+          try {
+            await engineConnections
+              .captureFromHome(ownerUserId, runtime, dir)
+              .catch((err: unknown) =>
+                log?.warn(
+                  `[Scheduler] não consegui devolver ao cofre a credencial de ${runtime} do dono ${ownerUserId}: ${(err as Error).message}`
+                )
+              )
+          } finally {
+            // Solta assim que termina: deixar vencer sozinha funcionaria, mas
+            // faria a próxima renovação legítima esperar dois minutos à toa.
+            if (prismaDaTrava) {
+              await soltarATrava({
+                prisma: prismaDaTrava,
+                userId: ownerUserId,
+                runtime,
+                agora: new Date(Date.now() + VALIDADE_DA_TRAVA_MS),
+              }).catch(() => undefined)
+            }
+          }
+        }
       }
       await fs.rm(dir, { recursive: true, force: true })
     }
@@ -834,7 +894,13 @@ export function buildMissionRunner(
     // Regra do dono, literal: "nunca existe agente solto sem trava". Mesmo
     // gate do container, adaptado pro host (ver host-plugin-gate.ts).
     return wrapWithHostGitorchPluginGate(
-      createLocalCredentialRunner(app.engineConnections, undefined, environments, app.log)
+      createLocalCredentialRunner(
+        app.engineConnections,
+        undefined,
+        environments,
+        app.log,
+        app.prisma as unknown as PrismaParaTrava
+      )
     )
   }
 
@@ -1794,6 +1860,24 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   const filaDeJulgamento = criarFilaDeJulgamento()
 
   /**
+   * A esteira não para entre um papel e o outro.
+   *
+   * Mesmo desenho da fila de julgamento, que já resolveu o problema gêmeo
+   * entre o SM e o QA: quem termina enfileira o seguinte, e o relógio drena
+   * com os tetos de sempre.
+   */
+  const passagemDeBastao = criarPassagemDeBastao()
+
+  /**
+   * O motor que morreu pedindo login descansa (D2 do dono, 20/08).
+   *
+   * Insistir num motor deslogado não produz nada: treze falhas assim queimaram
+   * metade da cota de um dia, o failsafe travou, e a esteira ficou parada de
+   * 17 a 20/08. A pausa se desfaz sozinha — por sucesso ou por tempo.
+   */
+  const motorEmPausa = criarRegistroDeMotorMorto()
+
+  /**
    * Quem já provou não ter o que fazer descansa um pouco antes de ser acordado
    * de novo. A regra (o que fura o descanso, por quanto tempo, quando ele é
    * apagado) vive em descanso-apos-vazia.ts, testada fora do relógio.
@@ -2033,7 +2117,43 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // Cadeia de motores escolhida pela config do projeto (por agente), com queda
     // para o padrão da instância. Nada de motor hardcoded; a cadeia é a base do
     // failover (tenta o próximo motor do cliente se o primeiro esgotar cota/errar).
-    const chain = resolveRuntimeChain(role, project.runtimeConfig, RESOLVER_DEFAULTS)
+    // Os motores que o cliente TEM conectados entram como última reserva.
+    //
+    // Sem isto, um projeto que escolheu um motor só fica sem para onde ir no
+    // dia em que ele estoura a cota — medido ao vivo em 26/08: "Individual
+    // quota reached... Resets in 18h43m26s", e os quatro papéis parados por
+    // dezoito horas com outro motor conectado e ocioso ao lado.
+    //
+    // Best-effort: se a leitura falhar, a cadeia sai como antes em vez de a
+    // missão não sair.
+    let motoresConectados: string[] = []
+    if (project.userId) {
+      try {
+        const linhas = await app.prisma.engineConnection.findMany({
+          where: { userId: project.userId, status: 'connected' },
+          select: { runtime: true, status: true, lastValidatedAt: true },
+        })
+        // Só quem PROVOU estar vivo entra como reserva.
+        //
+        // O banco dizer 'connected' não basta: é a terceira vez que o projeto
+        // tropeça aqui. Medido hoje — a linha do antigravity dizia 'connected'
+        // com a última prova de vida de 06/08, vinte dias antes. Foi essa
+        // mentira que fez o produto trocar um motor morto por outro igualmente
+        // morto e gastar treze tentativas que não podiam dar certo.
+        motoresConectados = motoresComProvaDeVida(linhas, new Date()).map((l) => l.runtime)
+      } catch (err) {
+        // Best-effort de verdade: `try` e não `.catch()` da promessa, porque a
+        // leitura pode falhar ANTES de virar promessa. Sem reserva a cadeia
+        // sai como antes — pior que ter reserva, melhor que a missão não sair.
+        app.log.warn(err, '[Scheduler] não deu para ler os motores conectados; cadeia sem reserva')
+      }
+    }
+    const chain = resolveRuntimeChain(
+      role,
+      project.runtimeConfig,
+      RESOLVER_DEFAULTS,
+      motoresConectados
+    )
     const primary = chain[0] as { runtime: string; model?: string }
 
     // Controle de gasto (BYOK): a missão roda no LLM do cliente. Antes de
@@ -2144,7 +2264,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     missionId: string,
     project: ChainProject,
     role: F6AgentRole,
-    chain: Array<{ runtime: string; model?: string }>,
+    chainOriginal: Array<{ runtime: string; model?: string }>,
     planId?: string,
     // A cascata de onboarding (Task 10) é hoje o ÚNICO caminho que acorda o
     // QA — o projeto não tem agenda de QA própria em project_schedules. Sem
@@ -2168,6 +2288,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // Sem isto, o teto diário não teria como distinguir uma missão que fez
     // trabalho e falhou de uma que nem chegou a usar o motor.
     let falhaDeCredencial = false
+    // Tira da cadeia o motor que morreu pedindo login. Ele volta sozinho — por
+    // sucesso ou por tempo — e a cadeia inteira em pausa passa mesmo assim,
+    // porque ficar sem motor nenhum seria trocar desperdício por paralisação.
+    const chain = motorEmPausa.filtrarCadeia(chainOriginal, new Date())
+    if (chain.length < chainOriginal.length) {
+      app.log.info(
+        `[Scheduler] ${chainOriginal.length - chain.length} motor(es) fora do rodízio por credencial morta`
+      )
+    }
     for (let i = 0; i < chain.length; i++) {
       const sel = chain[i] as { runtime: string; model?: string }
       const model = sel.model ?? MODEL_BY_ROLE[role]
@@ -2931,6 +3060,20 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             return
           }
           app.log.info(`[Scheduler] Mission ${missionId} completed via ${sel.runtime}`)
+          // Sucesso prova que o motor está vivo: se ele estava de fora por
+          // credencial morta, volta ao rodízio na hora.
+          motorEmPausa.marcarVivo(sel.runtime)
+
+          // PASSA O BASTÃO. Sem isto a esteira anda em soluços: cada papel
+          // roda pela agenda e ninguém chama o seguinte, então o trabalho que
+          // o RA acabou de deixar pronto espera o próximo agendamento do PO —
+          // medido na corrida de 26/08, um desejo chegava ao dev só porque eu
+          // acordei PO e SM na mão.
+          //
+          // Acordada em falso NÃO passa o bastão: se o papel não achou nada
+          // para fazer, não há trabalho novo esperando o seguinte, e acordá-lo
+          // seria gastar motor para ouvir o mesmo silêncio.
+          if (!isNoOp) passagemDeBastao.passar(role, project.id)
 
           // Medição de consumo (ideia do owner): refresca a quota do motor que
           // rodou e grava a diferença antes−depois na missão. Best-effort: nunca
@@ -3047,6 +3190,34 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         // mesma disciplina de session-watch.ts.
         if (err instanceof CredencialExpiradaError) {
           falhaDeCredencial = true
+          // A TELA PARA DE MENTIR. Antes disto, este caminho marcava a falha no
+          // RESULTADO DA MISSÃO e mandava o recado — mas nunca tocava na linha
+          // da conexão, que seguia dizendo 'connected' para sempre. O dono
+          // mandou o print (26/08): card do Codex verde, "Conectado", com os
+          // modelos listados, no mesmo minuto em que toda missão morria por
+          // credencial. Uma tela verde não oferece nada para clicar; era a
+          // própria mentira que tirava dele o caminho de religar.
+          //
+          // Fora do `deveAvisarDeNovo` de propósito: o RECADO é uma vez por dia
+          // (spam apaga sinal), mas o ESTADO precisa ficar certo na hora —
+          // senão a tela continuaria verde pelas outras vinte e três horas.
+          //
+          // A credencial cifrada NÃO é apagada: se a renovação voltar a
+          // funcionar, `captureFromHome` regrava 'connected' sozinho na
+          // primeira missão que der certo, e a marca se desfaz sem ninguém
+          // limpar nada na mão.
+          if (project.userId) {
+            await app.prisma.engineConnection
+              .updateMany({
+                where: { userId: project.userId, runtime: err.runtime },
+                data: marcaDePedidoDeLogin(err.runtime),
+              })
+              .catch((e: unknown) =>
+                app.log.warn(
+                  `[Scheduler] não consegui marcar ${err.runtime} como precisando de login: ${(e as Error).message}`
+                )
+              )
+          }
           const chaveDoAviso = `${project.userId ?? project.id}:${err.runtime}`
           if (deveAvisarDeNovo(avisosDeCredencialExpirada, chaveDoAviso, Date.now())) {
             avisosDeCredencialExpirada.set(chaveDoAviso, Date.now())
@@ -3159,6 +3330,32 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
    * Uma por minuto drena três entregas em três minutos — mais rápido que o
    * relógio próprio do julgamento (0 0,8,16) e sem tempestade nenhuma.
    */
+  /**
+   * Acorda quem recebeu o bastão do papel anterior.
+   *
+   * Uma vez por tique, como a fila de julgamento: a esteira anda sem
+   * tempestade, e a recusa temporária devolve a vez em vez de perder o
+   * trabalho — perder a vez por "estou ocupado agora" é justamente o defeito
+   * que deixou entrega parada por dias.
+   */
+  const drenarPassagemDeBastao = async (): Promise<void> => {
+    const vez = passagemDeBastao.proxima()
+    if (!vez) return
+
+    const resultado = await triggerAgentMission(vez.papel, vez.projectId, undefined, 'esteira')
+    if (!resultado.triggered && resultado.reason && RETRYABLE_REASONS.has(resultado.reason)) {
+      passagemDeBastao.devolver(vez)
+      app.log.warn(
+        `[Scheduler] ${vez.papel} chamado pela esteira em ${vez.projectId} recusado ` +
+          `(${resultado.reason}); a vez volta para a fila`
+      )
+      return
+    }
+    if (resultado.triggered) {
+      app.log.info(`[Scheduler] a esteira passou o bastão para ${vez.papel} em ${vez.projectId}`)
+    }
+  }
+
   const drenarFilaDeJulgamento = async (): Promise<void> => {
     const projectId = filaDeJulgamento.proxima()
     if (!projectId) return
@@ -3738,9 +3935,19 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           // Nunca chama motor direto: passa pelo MESMO portão de
           // concorrência, orçamento diário por plano e guarda de gasto que
           // o resto do scheduler usa — é o `triggerAgentMission` de sempre.
-          dispararMissao: async (papel, projectIdDaMissao) => {
+          // UMA acordada por papel e projeto nesta passada. A vigília percorre
+          // sessão por sessão e chamava isto de dentro do laço: com N sessões
+          // trazendo novidade saíam N missões de QA idênticas — medido em
+          // 26/08, duas por passada e num tique QUATRO, todas devolvendo o
+          // mesmo "no delegated PR awaiting judgment". A missão de QA não é por
+          // sessão: ela já recebe todas as sessões do projeto e julga o
+          // conjunto. Além do motor pago em dobro, duas missões simultâneas
+          // materializam a MESMA credencial, e com refresh token de uso único
+          // (Codex) uma queima a da outra — era o produto derrubando o motor do
+          // próprio cliente.
+          dispararMissao: umaAcordadaPorCiclo(async (papel, projectIdDaMissao) => {
             void triggerAgentMission(papel, projectIdDaMissao, undefined, 'vigia')
-          },
+          }),
           registrarEstado: (args) =>
             registrarEstado({ prisma: app.prisma as unknown as PrismaDevSession, ...args }),
           registrarResposta: (args) =>
@@ -4500,146 +4707,208 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     execute: StepExecutor
     contextBlocks: string[]
   }): Promise<void> => {
-    const esperando = await app.prisma.devSession.findFirst({
+    // TODAS as que esperam, não só a mais antiga.
+    //
+    // Pegar só a primeira criava fome: se a mais antiga já tinha sido
+    // respondida, a função saía e as outras nunca tinham vez. Medido ao vivo
+    // em 26/08 — oito sessões esperando resposta na API do fornecedor, com
+    // quarenta e oito acordadas do QA no mesmo período e apenas duas respostas,
+    // as duas para a MESMA sessão.
+    //
+    // Responde UMA por acordada, mas a que de fato precisa: percorre até achar
+    // quem ainda não foi respondida. Uma por vez porque cada resposta custa um
+    // passo de motor, e a acordada seguinte pega a próxima.
+    const candidatas = await app.prisma.devSession.findMany({
       where: { projectId: args.projectId, state: 'AWAITING_USER_FEEDBACK', closedAt: null },
       orderBy: { createdAt: 'asc' },
-      select: { sessionName: true, issueNumber: true, answeredHash: true },
+      select: {
+        sessionName: true,
+        issueNumber: true,
+        answeredHash: true,
+        // O carimbo da reserva: e ele que separa "alguem esta tentando agora"
+        // de "a tentativa terminou e falhou". Ja era gravado; nao era lido.
+        stateCheckedAt: true,
+      },
+      take: 20,
     })
-    if (!esperando) return
+    if (candidatas.length === 0) return
 
-    const apiKey = await chaveDaSessao(esperando.sessionName)
-    const pergunta = await ultimaMensagemDoDevJules({
-      apiKey,
-      sessionName: esperando.sessionName,
-      onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
-    })
-    if (!pergunta || pergunta.trim() === '') {
-      app.log.warn(
-        `[Scheduler] ${esperando.sessionName} está esperando resposta, mas não deu para ler a pergunta`
-      )
-      return
-    }
-
-    // JÁ RESPONDIDA? Sai antes de gastar motor.
-    //
-    // Sem esta trava, a mesma pergunta seria lida e respondida a cada acordada
-    // do QA — e são várias por hora, pela agenda, pela fila do SM e pela
-    // própria vigília. O dev receberia a mesma resposta em rajada, o dono
-    // receberia o mesmo aviso em rajada, e uma segunda sessão esperando nunca
-    // teria vez, porque a busca sempre pega a mais antiga. Trocar silêncio por
-    // spam não é conserto.
-    const hashDaPergunta = hashDaMensagem(pergunta)
-    const decisao = decidirSobreAPergunta({
-      hashDaPergunta,
-      marca: esperando.answeredHash,
-    })
-    if (decisao.acao === 'nada') return
-
-    if (decisao.acao === 'desistir') {
-      // Bateu o teto com a mesma pergunta ainda na mesa. Parar de tentar é
-      // certo — não vira laço queimando motor. Parar em SILÊNCIO não: é
-      // trabalho parado que ninguém mais destrava sozinho.
-      //
-      // A desistência é marcada com escrita CONDICIONAL, como a reserva: sem
-      // isso, duas acordadas na mesma janela mandariam o mesmo aviso duas
-      // vezes ao dono. Um aviso, uma vez.
-      const primeiro = await app.prisma.devSession
-        .updateMany({
-          where: { sessionName: esperando.sessionName, answeredHash: esperando.answeredHash },
-          data: { answeredHash: marcarDesistencia(hashDaPergunta, decisao.tentativas) },
-        })
-        .catch(() => ({ count: 0 }))
-      if (primeiro.count === 0) return
-
-      const projetoDaDesistencia = await app.prisma.project.findUnique({
-        where: { id: args.projectId },
+    for (const esperando of candidatas) {
+      const apiKey = await chaveDaSessao(esperando.sessionName)
+      const pergunta = await ultimaMensagemDoDevJules({
+        apiKey,
+        sessionName: esperando.sessionName,
+        onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
       })
-      if (projetoDaDesistencia) {
-        await avisarDonoDoProjeto(
-          projetoDaDesistencia,
-          `GitOrch: o dev parou na tarefa #${esperando.issueNumber} de ${args.repository} e eu ` +
-            `tentei responder ${decisao.tentativas} vezes sem conseguir. O trabalho está parado ` +
-            `esperando essa resposta.`
+      if (!pergunta || pergunta.trim() === '') {
+        app.log.warn(
+          `[Scheduler] ${esperando.sessionName} está esperando resposta, mas não deu para ler a pergunta`
+        )
+        continue
+      }
+
+      // JÁ RESPONDIDA? Sai antes de gastar motor.
+      //
+      // Sem esta trava, a mesma pergunta seria lida e respondida a cada acordada
+      // do QA — e são várias por hora, pela agenda, pela fila do SM e pela
+      // própria vigília. O dev receberia a mesma resposta em rajada, o dono
+      // receberia o mesmo aviso em rajada, e uma segunda sessão esperando nunca
+      // teria vez, porque a busca sempre pega a mais antiga. Trocar silêncio por
+      // spam não é conserto.
+      const hashDaPergunta = hashDaMensagem(pergunta)
+      const decisao = decidirSobreAPergunta({
+        hashDaPergunta,
+        marca: esperando.answeredHash,
+        // O carimbo da reserva. Sem ele, uma acordada que chegasse no meio da
+        // tentativa de outra a contava como tentativa JÁ GASTA e subia o
+        // contador — e a devolução da primeira, condicional à marca dela, não
+        // valia mais. Foi assim que as tarefas #248 e #3799 chegaram a
+        // `desisti` mesmo com a devolução funcionando.
+        marcadaEm: esperando.stateCheckedAt,
+        agora: new Date(),
+      })
+      // Já respondida, ou já desistimos dela: passa para a próxima em vez de
+      // sair. Sair aqui era a fome — a mais antiga já resolvida fazia todas as
+      // outras esperarem para sempre.
+      if (decisao.acao === 'nada') continue
+
+      if (decisao.acao === 'desistir') {
+        // Bateu o teto com a mesma pergunta ainda na mesa. Parar de tentar é
+        // certo — não vira laço queimando motor. Parar em SILÊNCIO não: é
+        // trabalho parado que ninguém mais destrava sozinho.
+        //
+        // A desistência é marcada com escrita CONDICIONAL, como a reserva: sem
+        // isso, duas acordadas na mesma janela mandariam o mesmo aviso duas
+        // vezes ao dono. Um aviso, uma vez.
+        const primeiro = await app.prisma.devSession
+          .updateMany({
+            where: { sessionName: esperando.sessionName, answeredHash: esperando.answeredHash },
+            data: { answeredHash: marcarDesistencia(hashDaPergunta, decisao.tentativas) },
+          })
+          .catch(() => ({ count: 0 }))
+        // Outra acordada já marcou a desistência desta: segue para a próxima.
+        if (primeiro.count === 0) continue
+
+        const projetoDaDesistencia = await app.prisma.project.findUnique({
+          where: { id: args.projectId },
+        })
+        if (projetoDaDesistencia) {
+          await avisarDonoDoProjeto(
+            projetoDaDesistencia,
+            `GitOrch: o dev parou na tarefa #${esperando.issueNumber} de ${args.repository} e eu ` +
+              `tentei responder ${decisao.tentativas} vezes sem conseguir. O trabalho está parado ` +
+              `esperando essa resposta.`
+          )
+        }
+        return
+      }
+
+      // RESERVA antes de gastar motor. Duas acordadas do QA na mesma janela liam
+      // a mesma marca, as duas passavam pela conferência e as duas escreviam na
+      // sessão — o dev recebeu a mesma resposta duas vezes no mesmo minuto, e o
+      // produto pagou o motor em dobro. A escrita é condicional à marca lida:
+      // quem não escreve nenhuma linha perdeu a corrida e sai calado.
+      const minha = await reservarAResposta({
+        prisma: app.prisma as unknown as PrismaParaReserva,
+        sessionName: esperando.sessionName,
+        hashDaPergunta,
+        tentativa: decisao.tentativa,
+        marcaLida: esperando.answeredHash,
+        agora: new Date(),
+      })
+      // Outra acordada pegou esta: tenta a próxima em vez de desistir da vez.
+      if (!minha) continue
+
+      // Se quem falhar for o MOTOR, a tentativa é DEVOLVIDA. O dono recebeu
+      // (26/08 21:49): "tentei responder 3 vezes sem conseguir" na tarefa #246 —
+      // e as três mortes foram `Individual quota reached`, nenhuma tinha a ver
+      // com a pergunta. Como `desisti` não tem volta, algumas horas sem cota
+      // condenavam a pergunta para sempre: o motor voltaria e ninguém tentaria
+      // de novo. Uma tentativa é "formulei uma resposta e ela não serviu";
+      // motor sem cota não formulou nada.
+      let resultadoDaDuvida: Awaited<ReturnType<typeof runDuvidaMissionViaRails>>
+      try {
+        resultadoDaDuvida = await runDuvidaMissionViaRails({
+          pergunta,
+          repository: args.repository,
+          issueNumber: esperando.issueNumber,
+          execute: args.execute,
+          contextBlocks: args.contextBlocks,
+        })
+      } catch (err) {
+        if (!isEngineFault(err, err instanceof Error ? err.message : String(err))) throw err
+        await devolverAReserva({
+          prisma: app.prisma as unknown as PrismaParaReserva,
+          sessionName: esperando.sessionName,
+          hashDaPergunta,
+          tentativa: decisao.tentativa,
+          marcaAnterior: esperando.answeredHash,
+          agora: new Date(),
+        }).catch(() => false)
+        app.log.warn(
+          err,
+          `[Scheduler] o motor não deu conta de responder a dúvida da tarefa #${esperando.issueNumber} ` +
+            `de ${args.repository}; a tentativa foi devolvida e a pergunta continua na fila`
+        )
+        return
+      }
+      const { destino, mensagemParaODev } = resultadoDaDuvida
+
+      if (destino.tipo === 'perguntar-ao-dono' || !mensagemParaODev) {
+        // Sobe para quem pode decidir. Sem chat ligado não há a quem perguntar:
+        // fica o registro no log, que é o que sobra — nunca uma resposta
+        // inventada mandada ao dev.
+        const motivo = destino.tipo === 'perguntar-ao-dono' ? destino.motivo : 'sem resposta útil'
+        app.log.info(
+          `[Scheduler] a dúvida do dev na tarefa #${esperando.issueNumber} de ${args.repository} sobe para o dono: ${motivo}`
+        )
+        // O aviso ao dono também é marcado: sem isto, o MESMO aviso chegaria ao
+        // chat dele a cada acordada do QA enquanto a sessão continuasse parada.
+        await registrarResposta({
+          prisma: app.prisma as unknown as PrismaDevSession,
+          sessionName: esperando.sessionName,
+          hashDaPergunta: marcarRespondida(hashDaPergunta),
+          agora: new Date(),
+        }).catch(() => undefined)
+        const projeto = await app.prisma.project.findUnique({ where: { id: args.projectId } })
+        if (projeto) {
+          await avisarDonoDoProjeto(
+            projeto,
+            `GitOrch: o dev parou na tarefa #${esperando.issueNumber} de ${args.repository} e ` +
+              `perguntou algo que eu não devo responder sozinho — ${motivo}\n\nA pergunta dele:\n` +
+              pergunta.slice(0, 900)
+          )
+        }
+        return
+      }
+
+      const saiu = await responderSessaoJules({
+        apiKey,
+        sessionName: esperando.sessionName,
+        texto: mensagemParaODev,
+        onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+      })
+      if (saiu) {
+        // A marca de RESPONDIDA só é gravada quando a mensagem de fato chegou —
+        // é a diferença entre "tentei" e "respondi", e foi confundir as duas que
+        // deixou treze sessões presas por até sete dias.
+        await registrarResposta({
+          prisma: app.prisma as unknown as PrismaDevSession,
+          sessionName: esperando.sessionName,
+          hashDaPergunta: marcarRespondida(hashDaPergunta),
+          agora: new Date(),
+        }).catch((err: unknown) =>
+          app.log.warn(err, `[Scheduler] não deu para marcar a dúvida como respondida`)
         )
       }
-      return
-    }
-
-    // RESERVA antes de gastar motor. Duas acordadas do QA na mesma janela liam
-    // a mesma marca, as duas passavam pela conferência e as duas escreviam na
-    // sessão — o dev recebeu a mesma resposta duas vezes no mesmo minuto, e o
-    // produto pagou o motor em dobro. A escrita é condicional à marca lida:
-    // quem não escreve nenhuma linha perdeu a corrida e sai calado.
-    const minha = await reservarAResposta({
-      prisma: app.prisma as unknown as PrismaParaReserva,
-      sessionName: esperando.sessionName,
-      hashDaPergunta,
-      tentativa: decisao.tentativa,
-      marcaLida: esperando.answeredHash,
-      agora: new Date(),
-    })
-    if (!minha) return
-
-    const { destino, mensagemParaODev } = await runDuvidaMissionViaRails({
-      pergunta,
-      repository: args.repository,
-      issueNumber: esperando.issueNumber,
-      execute: args.execute,
-      contextBlocks: args.contextBlocks,
-    })
-
-    if (destino.tipo === 'perguntar-ao-dono' || !mensagemParaODev) {
-      // Sobe para quem pode decidir. Sem chat ligado não há a quem perguntar:
-      // fica o registro no log, que é o que sobra — nunca uma resposta
-      // inventada mandada ao dev.
-      const motivo = destino.tipo === 'perguntar-ao-dono' ? destino.motivo : 'sem resposta útil'
       app.log.info(
-        `[Scheduler] a dúvida do dev na tarefa #${esperando.issueNumber} de ${args.repository} sobe para o dono: ${motivo}`
+        saiu
+          ? `[Scheduler] respondi a dúvida do dev na tarefa #${esperando.issueNumber} de ${args.repository}`
+          : `[Scheduler] a resposta para ${esperando.sessionName} NÃO chegou ao dev`
       )
-      // O aviso ao dono também é marcado: sem isto, o MESMO aviso chegaria ao
-      // chat dele a cada acordada do QA enquanto a sessão continuasse parada.
-      await registrarResposta({
-        prisma: app.prisma as unknown as PrismaDevSession,
-        sessionName: esperando.sessionName,
-        hashDaPergunta: marcarRespondida(hashDaPergunta),
-        agora: new Date(),
-      }).catch(() => undefined)
-      const projeto = await app.prisma.project.findUnique({ where: { id: args.projectId } })
-      if (projeto) {
-        await avisarDonoDoProjeto(
-          projeto,
-          `GitOrch: o dev parou na tarefa #${esperando.issueNumber} de ${args.repository} e ` +
-            `perguntou algo que eu não devo responder sozinho — ${motivo}\n\nA pergunta dele:\n` +
-            pergunta.slice(0, 900)
-        )
-      }
+      // Respondeu (ou escalou) uma: a próxima acordada pega a seguinte.
       return
     }
-
-    const saiu = await responderSessaoJules({
-      apiKey,
-      sessionName: esperando.sessionName,
-      texto: mensagemParaODev,
-      onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
-    })
-    if (saiu) {
-      // A marca de RESPONDIDA só é gravada quando a mensagem de fato chegou —
-      // é a diferença entre "tentei" e "respondi", e foi confundir as duas que
-      // deixou treze sessões presas por até sete dias.
-      await registrarResposta({
-        prisma: app.prisma as unknown as PrismaDevSession,
-        sessionName: esperando.sessionName,
-        hashDaPergunta: marcarRespondida(hashDaPergunta),
-        agora: new Date(),
-      }).catch((err: unknown) =>
-        app.log.warn(err, `[Scheduler] não deu para marcar a dúvida como respondida`)
-      )
-    }
-    app.log.info(
-      saiu
-        ? `[Scheduler] respondi a dúvida do dev na tarefa #${esperando.issueNumber} de ${args.repository}`
-        : `[Scheduler] a resposta para ${esperando.sessionName} NÃO chegou ao dev`
-    )
   }
 
   const abrirConsertoDePublicacao = async (args: {
@@ -5345,6 +5614,188 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     }
   }
 
+  /** De hora em hora, como o vigia do GitHub. */
+  const CADENCIA_DA_RENOVACAO_DE_MOTORES_MS = 60 * 60_000
+  let ultimaRenovacaoDeMotores = 0
+
+  /**
+   * Renova UM motor: materializa a credencial num HOME temporário, chama o CLI
+   * e devolve ao cofre o que ele renovou.
+   *
+   * É o caminho já provado do executor local, e a prova de que funciona é de
+   * 20/08: rodar o CLI no HOME do usuário fez o token pular de 20/07 para
+   * 20/08. O refresh token ainda valia; o que faltava era chamar o CLI.
+   *
+   * O prompt é o menor possível de propósito — a renovação é efeito colateral
+   * de o CLI subir, não do que ele responde. Gastar contexto aqui seria pagar
+   * duas vezes pelo mesmo efeito.
+   */
+  const renovarUmMotor = async (
+    userId: string,
+    runtime: string
+  ): Promise<{ ok: boolean; saida: string }> => {
+    // UMA RENOVAÇÃO POR VEZ, e a trava vale contra o OUTRO caminho também: a
+    // captura que roda depois de cada missão. O refresh token de alguns
+    // provedores é de uso único, e duas renovações simultâneas fazem a segunda
+    // queimar o token — derrubando a credencial do cliente por culpa nossa.
+    // Medido em 26/08 com o codex: "Your refresh token has already been used".
+    const minhaVez = await pegarATrava({
+      prisma: app.prisma as unknown as PrismaParaTrava,
+      userId,
+      runtime,
+      agora: new Date(),
+    }).catch(() => false)
+    if (!minhaVez) {
+      // Não é erro: alguém está renovando agora. A próxima passada tenta.
+      return { ok: true, saida: 'outra renovação desta conta já está em curso' }
+    }
+
+    const dir = path.join(os.tmpdir(), `gitorch-renova-${randomUUID()}`)
+    await fs.mkdir(dir, { recursive: true, mode: 0o700 })
+    try {
+      const materializou = await app.engineConnections.materializeToHome(userId, runtime, dir)
+      if (!materializou) return { ok: false, saida: 'sem credencial no cofre' }
+
+      // O MESMO comando da checagem de vida, e não um prompt: subir o CLI já
+      // basta para ele renovar o token, e um comando barato de listar/status
+      // não gasta cota nem contexto do cliente. Reaproveitado de
+      // engine-liveness.ts para não existirem dois mapas de binário.
+      const comando = livenessCommandFor(runtime)
+      if (!comando) return { ok: false, saida: `motor ${runtime} sem comando conhecido` }
+
+      const execucao = await Promise.resolve(
+        realRuntimeCommandRunner({
+          binary: comando.bin,
+          args: comando.args,
+          cwd: dir,
+          env: { ...process.env, HOME: dir } as Record<string, string>,
+          timeoutMs: 120_000,
+        })
+      ).catch((err: unknown) => ({
+        exitCode: 1,
+        stdout: '',
+        stderr: err instanceof Error ? err.message : String(err),
+      }))
+
+      // No FINALLY do try, não no caminho de sucesso: mesmo uma chamada que
+      // termina mal pode ter renovado a credencial antes de terminar, e jogar
+      // isso fora é perder de graça uma credencial boa.
+      await app.engineConnections
+        .captureFromHome(userId, runtime, dir)
+        .catch((err: unknown) =>
+          app.log.warn(`[Scheduler] não deu para devolver ${runtime} ao cofre: ${String(err)}`)
+        )
+
+      const saida = `${execucao.stdout ?? ''}\n${execucao.stderr ?? ''}`
+      return { ok: execucao.exitCode === 0, saida }
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined)
+      await soltarATrava({
+        prisma: app.prisma as unknown as PrismaParaTrava,
+        userId,
+        runtime,
+        agora: new Date(Date.now() + VALIDADE_DA_TRAVA_MS),
+      }).catch(() => undefined)
+    }
+  }
+
+  /**
+   * O vigia que mantém os MOTORES vivos (promessa do dono: "conectar uma vez e
+   * nunca mais").
+   *
+   * O motor que roda missão se renova de tabela — o CLI renova sozinho quando é
+   * chamado, provado ao vivo em 20/08. O que morre é o motor que fica dias
+   * PARADO: foi assim que o codex venceu em 29/07 sem ninguém notar e a esteira
+   * ficou parada de 17 a 20/08.
+   *
+   * Renovar aqui é chamar o CLI num HOME temporário e devolver ao cofre o que
+   * ele renovou — o mesmo caminho já provado do executor local, que
+   * materializa, roda e captura de volta.
+   *
+   * Contas do MESMO provedor vão em SÉRIE: em alguns provedores o refresh token
+   * é rotativo, e renovar duas contas do mesmo provedor em paralelo perde uma
+   * delas. Provedores diferentes correm juntos, que não têm esse risco.
+   *
+   * Nunca rejeita: falha aqui não pode derrubar o tique.
+   */
+  const renovarMotoresDoRelogio = async (): Promise<void> => {
+    if (Date.now() - ultimaRenovacaoDeMotores < CADENCIA_DA_RENOVACAO_DE_MOTORES_MS) return
+    ultimaRenovacaoDeMotores = Date.now()
+
+    const agora = new Date()
+    const conexoes = await app.prisma.engineConnection.findMany({
+      where: { runtime: { not: 'github' } },
+      select: { userId: true, runtime: true, status: true, expiresAt: true, updatedAt: true },
+    })
+
+    const aRenovar = conexoes.filter((c) => decidirRenovacaoDoMotor(c, agora).tipo === 'renovar')
+    if (aRenovar.length === 0) return
+
+    // Um grupo por provedor; dentro do grupo, um de cada vez.
+    await Promise.all(
+      agruparPorProvedor(aRenovar).map(async (grupo) => {
+        for (const conexao of grupo) {
+          const motivo = decidirRenovacaoDoMotor(conexao, agora).motivo
+          const resultado = await renovarUmMotor(conexao.userId, conexao.runtime)
+          if (resultado.ok) {
+            app.log.info(
+              `[Scheduler] motor ${conexao.runtime} do dono ${conexao.userId} renovado (${motivo})`
+            )
+            continue
+          }
+          if (ehRevogacaoDefinitiva(resultado.saida)) {
+            // A ÚNICA exceção à promessa de conectar uma vez e nunca mais — e
+            // exceção significa AVISAR, não marcar em silêncio. Antes disto o
+            // aviso ia só para o log, que ninguém lê, e o dono só descobria
+            // quando a esteira parava. Pergunta dele, textual: "pq não recebo
+            // informação via telegram pra fazer renew?".
+            app.log.warn(
+              `[Scheduler] motor ${conexao.runtime} do dono ${conexao.userId} foi REVOGADO; o cliente precisa reconectar`
+            )
+            const jaEstavaCaido = !deveAvisarSobreOMotor(conexao.status)
+            await app.prisma.engineConnection
+              .updateMany({
+                where: { userId: conexao.userId, runtime: conexao.runtime },
+                data: { status: 'needs_reconnect' },
+              })
+              .catch(() => undefined)
+
+            // Só na VIRADA: a vigília roda de hora em hora, e sem isto o mesmo
+            // recado chegaria vinte e quatro vezes por dia. Spam apaga sinal
+            // tanto quanto silêncio.
+            if (!jaEstavaCaido) {
+              const dono = await app.prisma.user
+                .findUnique({ where: { id: conexao.userId }, select: { email: true } })
+                .catch(() => null)
+              const chatId = await resolveNotifyChatId(
+                app.prisma,
+                { userId: conexao.userId, user: dono },
+                {
+                  instanceOwnerEmail: process.env['GITORCH_OWNER_EMAIL'],
+                  instanceChatId:
+                    process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
+                }
+              ).catch(() => null)
+              const avisar = buildTelegramNotifier({
+                botToken:
+                  process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
+                ...(chatId ? { chatId } : {}),
+              })
+              if (avisar) await avisar(recadoDeMotorRevogado(conexao.runtime))
+            }
+            continue
+          }
+          // Transitório: tenta de novo na próxima passada, calado. Marcar como
+          // revogado por causa de uma queda de rede seria tirar o acesso do
+          // cliente por um problema nosso.
+          app.log.warn(
+            `[Scheduler] não deu para renovar ${conexao.runtime} do dono ${conexao.userId} agora; tenta na próxima hora`
+          )
+        }
+      })
+    )
+  }
+
   const tick = async () => {
     // PRIMEIRO de tudo: um token do GitHub vencido no meio do tique derruba
     // qualquer missão que precise dele (materializeToHome recusa e a missão
@@ -5354,6 +5805,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // passada sozinha, então nada precisa ser feito com o retorno aqui.
     await completarAgendasDosProjetos()
     await renovarTokensGithubDoRelogio(app)
+    // Os MOTORES pelo mesmo motivo do GitHub, e com a mesma disciplina: o que
+    // fica parado vence sozinho, e vencer em silêncio já parou a esteira por
+    // três dias. Nunca rejeita.
+    await renovarMotoresDoRelogio().catch((err) =>
+      app.log.error(err, '[Scheduler] a renovação de motores falhou; tenta na próxima hora')
+    )
     // Só DEPOIS: quem perdeu o acesso ao repositório não pode ter o dia
     // começando com uma missão escrevendo lá. `reconferirAcessoDoRelogio`
     // nunca rejeita e só pergunta ao GitHub sobre os projetos cujo ciclo
@@ -5382,6 +5839,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // A fila que o acordar do SM levantou: entrega aberta sem parecer nosso no
     // commit de agora. Nunca rejeita — `triggerAgentMission` já trata os
     // próprios erros e devolve `reason`.
+    await drenarPassagemDeBastao().catch((err) =>
+      app.log.error(err, '[Scheduler] a passagem de bastão falhou; tenta no próximo tique')
+    )
     await drenarFilaDeJulgamento().catch((err) =>
       app.log.error(err, '[Scheduler] dreno da fila de julgamento falhou; tenta no próximo tick')
     )
@@ -5416,7 +5876,18 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
 
       let due = false
       try {
-        due = isScheduleDue(schedule.cron, schedule.lastTriggeredAt, now)
+        // O relógio DESTA agenda, e não o do tique. Os dois projetos tinham os
+        // quatro papéis no mesmo horário e o carimbo do último disparo era
+        // idêntico até os milissegundos (os dois RA às 18:01:00.339) — e a
+        // conta de motores é do DONO, não do projeto, então eles disputavam o
+        // mesmo motor no mesmo segundo. Recuar o relógio em N minutos adianta
+        // a agenda em N sem tocar no cron, que segue em hora redonda: é o que
+        // o dono lê e edita, e o desvio é decisão nossa, não dado dele.
+        due = isScheduleDue(
+          schedule.cron,
+          schedule.lastTriggeredAt,
+          relogioDaAgenda(now, schedule.projectId, schedule.agentRole)
+        )
       } catch (err) {
         app.log.warn(
           `[Scheduler] Agenda ${schedule.id} com cron inválido '${schedule.cron}': ${String(err)}`

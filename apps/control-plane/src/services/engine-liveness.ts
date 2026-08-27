@@ -81,7 +81,7 @@ interface LivenessCommand {
 
 /** Comando de liveness por runtime, com o bin sobrescrevível por ambiente. Lido a
  *  cada chamada para respeitar overrides de GITORCH_*_BIN sem redeploy. */
-function livenessCommandFor(runtime: string): LivenessCommand | undefined {
+export function livenessCommandFor(runtime: string): LivenessCommand | undefined {
   switch (runtime) {
     case 'antigravity':
       return { bin: process.env['GITORCH_AGY_BIN'] ?? 'agy', args: ['models'] }

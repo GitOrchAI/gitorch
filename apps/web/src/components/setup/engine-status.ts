@@ -27,6 +27,22 @@ export type LoginState =
       weekResetsAt?: string | null
     }
   | { phase: 'error'; message: string }
+  /**
+   * O motor ESTAVA conectado e parou de valer: só volta com login novo.
+   *
+   * Nasceu do print do dono (26/08): este card mostrava o Codex verde,
+   * "Conectado", com os modelos listados, enquanto TODA missão morria por
+   * credencial vencida. A tela não era a culpada — ela repetia fielmente a
+   * coluna `status` do banco, que ninguém atualizava quando a missão caía.
+   * Corrigido o backend (motor-que-pede-login.ts), a tela ganha o estado que
+   * faltava.
+   *
+   * É DIFERENTE de `error`: `error` é uma tentativa de conectar que deu errado
+   * agora, e por isso o card abre dicas de token e colagem manual. Aqui não
+   * houve tentativa nenhuma — uma conexão que funcionava venceu sozinha, e a
+   * única coisa a oferecer é religar.
+   */
+  | { phase: 'precisa_religar' }
 
 // 20/07: substitui o antigo `modelCount`, que reduzia a lista de modelos a um
 // NÚMERO. O dono reclamou direto olhando a tela ("mostra os modelos? mostra
@@ -39,6 +55,54 @@ export type LoginState =
 export function normalizeModelNames(models: unknown): string[] | undefined {
   if (!Array.isArray(models)) return undefined
   return models.filter((m): m is string => typeof m === 'string')
+}
+
+/**
+ * O status que o backend grava quando um motor só volta com login novo.
+ * Espelha `STATUS_PRECISA_RELIGAR` do control-plane (motor-que-pede-login.ts);
+ * é o MESMO valor que a renovação do GitHub já usava.
+ */
+export const STATUS_PRECISA_RELIGAR = 'needs_reconnect'
+
+/** Uma linha de motor como `GET /api/v1/engines` devolve. */
+export interface MotorDaLista {
+  runtime: string
+  status: string
+  models?: unknown
+  quotaRemaining?: number | null
+  sessionPercentUsed?: number | null
+  sessionResetsAt?: string | null
+  weekPercentUsed?: number | null
+  weekResetsAt?: string | null
+}
+
+/**
+ * O estado do card a partir da linha do servidor — ou `null` quando não há o
+ * que dizer (motor nunca conectado), e o card segue em `idle`.
+ *
+ * Existe como função PURA, fora do React, pelo mesmo motivo do resto deste
+ * arquivo: o app web não tem jsdom, e esta é justamente a decisão que estava
+ * errada em produção. O teste dela é o print do dono virado em regressão.
+ *
+ * Anti-fachada, agora nos DOIS sentidos: 'connected' só com o backend dizendo
+ * `connected` (como antes), e o que NÃO está conectado deixa de sumir do card
+ * como se nunca tivesse existido.
+ */
+export function estadoDoMotorDaLista(eng: MotorDaLista | undefined): LoginState | null {
+  if (!eng) return null
+  if (eng.status === STATUS_PRECISA_RELIGAR) return { phase: 'precisa_religar' }
+  if (eng.status !== 'connected') return null
+  return {
+    phase: 'connected',
+    ...(normalizeModelNames(eng.models) ? { models: normalizeModelNames(eng.models) } : {}),
+    quota: eng.quotaRemaining ?? null,
+    ...(typeof eng.sessionPercentUsed === 'number'
+      ? { sessionPercentUsed: eng.sessionPercentUsed }
+      : {}),
+    ...(typeof eng.sessionResetsAt === 'string' ? { sessionResetsAt: eng.sessionResetsAt } : {}),
+    ...(typeof eng.weekPercentUsed === 'number' ? { weekPercentUsed: eng.weekPercentUsed } : {}),
+    ...(typeof eng.weekResetsAt === 'string' ? { weekResetsAt: eng.weekResetsAt } : {}),
+  }
 }
 
 // Resposta de POST /api/v1/engines/:runtime/token -> LoginState do card.
