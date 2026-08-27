@@ -29,7 +29,9 @@ export class WorkspaceManager extends EventEmitter {
       errorDetails,
       recoveryAction: rollback ? 'auto-rollback' : 'none',
     }
-    console.error(`[WorkspaceManager] Step failed: ${payload.failedStep}. Recovery action: ${payload.recoveryAction}. Details: ${payload.errorDetails}`)
+    console.error(
+      `[WorkspaceManager] Step failed: ${payload.failedStep}. Recovery action: ${payload.recoveryAction}. Details: ${payload.errorDetails}`
+    )
     this.emit('workspace-error', payload)
   }
 

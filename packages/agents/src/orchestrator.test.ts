@@ -156,11 +156,7 @@ test('bubbles up step-level failure and recovery status to the workspace provide
     userId: 'qa-user',
   })
 
-  expect(handleRuntimeFailure).toHaveBeenCalledWith(
-    'Adapter explosion',
-    'execute-runner',
-    false
-  )
+  expect(handleRuntimeFailure).toHaveBeenCalledWith('Adapter explosion', 'execute-runner', false)
 })
 
 test('uses an injected workspace provider instead of the default Firecracker manager', async () => {
