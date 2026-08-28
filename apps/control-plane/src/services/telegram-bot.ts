@@ -515,7 +515,27 @@ export async function handleTelegramCallback(
   const option = options[parsed.optionIndex]
   if (!option) return
 
-  const updated = await deps.agentQuestionService.answer(parsed.questionId, option.value, 'telegram')
+  if (option.value === FREE_TEXT_OPTION_VALUE) {
+    defaultAgentQuestionStateManager.setActiveTypingQuestion(question.userId, {
+      questionId: parsed.questionId,
+      userId: question.userId,
+      chatId: clickerChatId,
+    })
+    await answerTelegramCallback({
+      botToken: deps.botToken,
+      callbackQueryId: cq.id,
+      text: '✍️ Digite sua resposta em uma mensagem para o bot',
+      showAlert: true,
+      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    })
+    return
+  }
+
+  const updated = await deps.agentQuestionService.answer(
+    parsed.questionId,
+    option.value,
+    'telegram'
+  )
   defaultAgentQuestionStateManager.clearActiveTypingQuestion(question.userId)
 
   await answerTelegramCallback({

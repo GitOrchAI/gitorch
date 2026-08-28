@@ -1891,6 +1891,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // fora do escopo desta tarefa.
   const avisosDeCredencialExpirada = new Map<string, number>()
 
+  // Exportado apenas para testes, nunca chamado em runtime real.
+  if (!app.hasDecorator('resetSchedulerState')) {
+    app.decorate('resetSchedulerState', () => {
+      avisosDeCredencialExpirada.clear()
+    })
+  }
+
   /**
    * A fila de acordadas de julgamento que o SM levanta a cada ciclo. A regra
    * (rodízio, `max` em vez de soma, devolução da vez recusada) vive em

@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { PrismaClient } from '@prisma/client'
 import jwt from 'jsonwebtoken'
-import { EngineConnectionService } from '../../apps/control-plane/src/services/engine-connection.js'
+import { EngineConnectionService } from '../../apps/control-plane/dist/services/engine-connection.js'
 
 /**
  * E2E do FLUXO COMPLETO do setup wizard: submit -> projeto+missão no banco ->
