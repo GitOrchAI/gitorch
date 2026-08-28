@@ -1361,16 +1361,19 @@ describe('runQaMissionViaRails', () => {
         { mergeFalha: true }
       )
       const posted3 = (f3 as unknown as { posted: { merges: unknown[] } }).posted
-      const r3 = await runQaMissionViaRails({ ...opcoesComuns, fetchImpl: f3 })
+      const warnings: string[] = []
+      const r3 = await runQaMissionViaRails({
+        ...opcoesComuns,
+        fetchImpl: f3,
+        onWarn: (w) => warnings.push(w),
+      })
       expect(r3.noOp).toBeFalsy()
       expect(posted3.merges).toHaveLength(1)
       expect(sessao.mergeFailures).toBe(MAX_TENTATIVAS_DE_MERGE)
-      expect(avisos).toHaveLength(1)
-      expect(avisos[0]).toContain('#7')
-      expect(avisos[0]).toContain(`${MAX_TENTATIVAS_DE_MERGE} vezes seguidas`)
-      // O motivo é o texto REAL devolvido por `mesclarPr` (falha ao chamar o
-      // GitHub) — não um texto inventado pelo aviso.
-      expect(avisos[0]).toContain('pulls/7/merge failed (405)')
+      expect(avisos).toHaveLength(0)
+      expect(warnings.some((w) => w.includes(`${MAX_TENTATIVAS_DE_MERGE} vezes seguidas`))).toBe(
+        true
+      )
 
       // 4a passagem: MESMO commit, teto já batido. "Para de tentar até o
       // commit mudar" — nem posta review nova, nem chama merge de novo, e
@@ -1395,7 +1398,7 @@ describe('runQaMissionViaRails', () => {
       expect(posted4.reviews).toHaveLength(0)
       expect(posted4.merges).toHaveLength(0)
       expect(sessao.mergeFailures).toBe(MAX_TENTATIVAS_DE_MERGE)
-      expect(avisos).toHaveLength(1) // não repetiu o aviso
+      expect(avisos).toHaveLength(0) // silenciado no Telegram
     })
 
     it('commit novo (head sha mudou) zera o contador — é tentativa nova, não a mesma que já falhara 3x', async () => {
@@ -1608,6 +1611,7 @@ describe('runQaMissionViaRails', () => {
       const posted = (f as unknown as { posted: { reviews: unknown[]; comments: unknown[] } })
         .posted
       const avisos: string[] = []
+      const marcas: Array<{ sessionName: string; hash: string }> = []
       const registradas: unknown[] = []
       const r = await runQaMissionViaRails({
         repository: 'o/r',
@@ -1635,13 +1639,17 @@ describe('runQaMissionViaRails', () => {
         registrarPendencia: async (args) => {
           registradas.push(args)
         },
+        registrarAvisoDeDemora: async (args) => {
+          marcas.push(args)
+        },
         fetchImpl: f,
       })
       expect(r.noOp).toBe(true)
       expect(posted.reviews).toHaveLength(0)
       expect(posted.comments).toHaveLength(0)
-      expect(avisos).toHaveLength(1)
-      expect(avisos[0]).toContain('#8')
+      expect(avisos).toHaveLength(0)
+      expect(marcas).toHaveLength(1)
+      expect(marcas[0]!.sessionName).toBe('sessions/pend-b')
       // Depois do teto a ação é `avisar-demora`, não `esperar` — a marca já
       // está gravada desde o primeiro avistamento; regravar não é o papel
       // deste ramo.
@@ -1651,14 +1659,11 @@ describe('runQaMissionViaRails', () => {
     // Achado 2 da revisão da Tarefa 7: sem idempotência, `avisar-demora`
     // dispararia a cada tick do scheduler (~1min) — o dono seria avisado a
     // cada minuto, para sempre, depois do teto. A correção reaproveita
-    // `answeredHash`/`hashDaMensagem`, a MESMA disciplina que
-    // `session-watch.ts` já usa para o ramo `investigar`
-    // ("SPAM apaga sinal tanto quanto silêncio").
-    it('avisar-demora consecutivo para o MESMO commit parado NÃO avisa de novo', async () => {
+    // `answeredHash`/`hashDaMensagem`.
+    it('avisar-demora consecutivo para o MESMO commit parado NÃO marca de novo', async () => {
       const pendingSince = new Date(Date.now() - (TETO_DE_ESPERA_MS + 5 * 60 * 1000))
 
-      // Primeira passagem: nunca avisado (answeredHash: null) — avisa e
-      // grava o hash amarrado ao commit parado.
+      // Primeira passagem: nunca avisado (answeredHash: null) — grava o hash amarrado ao commit parado.
       const f1 = fakeFetch([{ number: 11, user: 'jules[bot]' }], undefined, undefined, {
         checkRuns: [{ status: 'in_progress' }],
         headSha: 'commit-parado',
@@ -1688,7 +1693,7 @@ describe('runQaMissionViaRails', () => {
         },
         fetchImpl: f1,
       })
-      expect(avisos1).toHaveLength(1)
+      expect(avisos1).toHaveLength(0)
       expect(marcas).toHaveLength(1)
       expect(marcas[0]!.sessionName).toBe('sessions/pend-d')
 
@@ -1700,6 +1705,7 @@ describe('runQaMissionViaRails', () => {
         headSha: 'commit-parado',
       })
       const avisos2: string[] = []
+      const marcas2: Array<{ sessionName: string; hash: string }> = []
       await runQaMissionViaRails({
         repository: 'o/r',
         githubToken: 't',
@@ -1718,12 +1724,16 @@ describe('runQaMissionViaRails', () => {
         avisarDono: async (mensagem) => {
           avisos2.push(mensagem)
         },
+        registrarAvisoDeDemora: async (args) => {
+          marcas2.push(args)
+        },
         fetchImpl: f2,
       })
       expect(avisos2).toHaveLength(0)
+      expect(marcas2).toHaveLength(0)
     })
 
-    it('novo push (commit muda) enquanto a verificação segue parada: avisa de novo — a situação mudou de verdade', async () => {
+    it('novo push (commit muda) enquanto a verificação segue parada: atualiza marca — a situação mudou de verdade', async () => {
       const pendingSince = new Date(Date.now() - (TETO_DE_ESPERA_MS + 5 * 60 * 1000))
 
       const f1 = fakeFetch([{ number: 12, user: 'jules[bot]' }], undefined, undefined, {
@@ -1755,7 +1765,8 @@ describe('runQaMissionViaRails', () => {
         },
         fetchImpl: f1,
       })
-      expect(avisos1).toHaveLength(1)
+      expect(avisos1).toHaveLength(0)
+      expect(marcas).toHaveLength(1)
 
       // O dev empurrou algo novo enquanto a verificação seguia pendente: o
       // head mudou. O hash amarrado ao commit ANTERIOR não bate mais.
@@ -1764,6 +1775,7 @@ describe('runQaMissionViaRails', () => {
         headSha: 'commit-2',
       })
       const avisos2: string[] = []
+      const marcas2: Array<{ sessionName: string; hash: string }> = []
       await runQaMissionViaRails({
         repository: 'o/r',
         githubToken: 't',
@@ -1782,9 +1794,13 @@ describe('runQaMissionViaRails', () => {
         avisarDono: async (mensagem) => {
           avisos2.push(mensagem)
         },
+        registrarAvisoDeDemora: async (args) => {
+          marcas2.push(args)
+        },
         fetchImpl: f2,
       })
-      expect(avisos2).toHaveLength(1)
+      expect(avisos2).toHaveLength(0)
+      expect(marcas2).toHaveLength(1)
     })
 
     it('(c) verde depois de pendente: julga normalmente, e PROVA que limparPendencia foi chamada para esta sessão (R2)', async () => {

@@ -738,11 +738,6 @@ export async function runQaMissionViaRails(
             agora: agoraDoResgate,
           })
           .catch(() => undefined)
-        await options
-          .avisarDono?.(
-            `GitOrch: a entrega do pull request #${travada.numeroDoPr} travou — ${decisao.motivo}.`
-          )
-          .catch(() => undefined)
       }
     }
   }
@@ -880,13 +875,10 @@ export async function runQaMissionViaRails(
     if (decisao.acao === 'avisar-demora') {
       const hashDoAviso = hashDaMensagem(`avisar-demora:${pr.head?.sha ?? ''}`)
       const jaAvisado = linhaDaEntrega?.answeredHash === hashDoAviso
-      if (!jaAvisado && options.avisarDono) {
-        await options
-          .avisarDono(
-            `GitOrch: a verificação automática do PR #${target.number} (${options.repository}) ` +
-              `está parada — ${decisao.motivo}.`
-          )
-          .catch(() => undefined)
+      if (!jaAvisado) {
+        options.onWarn?.(
+          `[qa] a verificação automática do PR #${target.number} (${options.repository}) está parada — ${decisao.motivo}.`
+        )
         if (linhaDaEntrega && options.registrarAvisoDeDemora) {
           await options.registrarAvisoDeDemora({
             sessionName: linhaDaEntrega.sessionName,
@@ -1283,19 +1275,12 @@ export async function runQaMissionViaRails(
         //
         // Commit novo zera o contador e o aviso volta — situação nova merece
         // recado novo.
-        if (
-          quemResolve.quem === 'dono' &&
-          fracassosAgora === MAX_TENTATIVAS_DE_MERGE &&
-          options.avisarDono
-        ) {
-          await options
-            .avisarDono(
-              `GitOrch: o merge do PR #${target.number} (${options.repository}) falhou ` +
-                `${MAX_TENTATIVAS_DE_MERGE} vezes seguidas para o mesmo commit — ${resultadoDoMerge.motivo}. ` +
-                'GitOrch parou de tentar mesclar este commit; é preciso ação humana (ex.: ' +
-                'resolver o conflito) antes de uma nova tentativa.'
-            )
-            .catch(() => undefined)
+        if (quemResolve.quem === 'dono' && fracassosAgora === MAX_TENTATIVAS_DE_MERGE) {
+          options.onWarn?.(
+            `[qa] o merge do PR #${target.number} (${options.repository}) falhou ` +
+              `${MAX_TENTATIVAS_DE_MERGE} vezes seguidas para o mesmo commit — ${resultadoDoMerge.motivo}. ` +
+              'GitOrch parou de tentar mesclar este commit.'
+          )
         }
       }
     }
@@ -1333,24 +1318,10 @@ export async function runQaMissionViaRails(
         const historico = await options.lerHistoricoDoProjeto(options.repository)
         const decisao = decidirSobreOProjeto(historico, options.repository)
         if (decisao.acao === 'escalar') {
-          // Travar o projeto só vale se o dono FICAR SABENDO. Sem aviso
-          // entregue, o dev não é chamado, o commit não muda, o skip de "já
-          // julgado" nunca reabre a entrega e ninguém percebe — mordaça
-          // completa. Aviso que falha volta ao ciclo de sempre: repetir é ruim,
-          // emudecer é pior.
-          const avisado = options.avisarDono
-            ? await options
-                .avisarDono(`GitOrch: ${decisao.diagnostico}`)
-                .then(() => true)
-                .catch(() => false)
-            : false
-          projetoTravado = avisado
-          if (!avisado) {
-            options.onWarn?.(
-              `[qa] ${options.repository} bateu o teto de barradas seguidas, mas o aviso ao ` +
-                'dono não saiu — seguindo com o retrabalho para não emudecer a entrega'
-            )
-          }
+          projetoTravado = true
+          options.onWarn?.(
+            `[qa] ${options.repository} bateu o teto de barradas seguidas (${decisao.seguidas}): ${decisao.diagnostico}`
+          )
         }
       } catch (err) {
         // Não conseguir ler o histórico é "não sei", e "não sei" NUNCA barra:

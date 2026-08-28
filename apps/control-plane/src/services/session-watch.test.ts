@@ -130,12 +130,11 @@ describe('vigiarSessoes', () => {
 
     // Regra 1: o SM continua sendo acionado — isso não muda (decisão D5).
     expect(deps.dispararMissao).toHaveBeenCalledWith('sm', 'proj1')
-    // Regra 2: o aviso ao dono é ADICIONAL e precisa ser acionável — issue,
-    // sessão e estado lido, além de dizer que o SM foi chamado.
-    expect(deps.avisarDono).toHaveBeenCalledWith(expect.stringContaining('#42'))
-    expect(deps.avisarDono).toHaveBeenCalledWith(expect.stringContaining('sessions/falhou'))
-    expect(deps.avisarDono).toHaveBeenCalledWith(expect.stringContaining('FAILED'))
-    expect(deps.avisarDono).toHaveBeenCalledWith(expect.stringMatching(/SM|investig/i))
+    // Silenciamento executivo: aviso técnico de sessão falhada não polui o Telegram
+    expect(deps.avisarDono).not.toHaveBeenCalled()
+    expect(deps.onWarn).toHaveBeenCalledWith(expect.stringContaining('#42'))
+    expect(deps.onWarn).toHaveBeenCalledWith(expect.stringContaining('sessions/falhou'))
+    expect(deps.onWarn).toHaveBeenCalledWith(expect.stringContaining('FAILED'))
     expect(deps.registrarInvestigacao).toHaveBeenCalledWith(
       expect.objectContaining({ sessionName: 'sessions/falhou' })
     )
@@ -148,7 +147,7 @@ describe('vigiarSessoes', () => {
     )
   })
 
-  it('aviso ao dono não se repete no ciclo seguinte para a mesma sessão no mesmo estado', async () => {
+  it('registro de investigação não se repete no ciclo seguinte para a mesma sessão no mesmo estado', async () => {
     const consultarSessao = vi.fn(async () => ({
       estado: 'FAILED',
       numeroDoPr: null,
@@ -161,7 +160,7 @@ describe('vigiarSessoes', () => {
       consultarSessao,
     })
     await vigiarSessoes(deps1)
-    expect(deps1.avisarDono).toHaveBeenCalledTimes(1)
+    expect(deps1.registrarInvestigacao).toHaveBeenCalledTimes(1)
 
     const hashGravado: string | null =
       vi.mocked(deps1.registrarInvestigacao).mock.calls[0]?.[0]?.hash ?? null
@@ -184,9 +183,9 @@ describe('vigiarSessoes', () => {
     })
     await vigiarSessoes(deps2)
 
-    // O SM segue sendo acionado todo ciclo — só o aviso ao dono tem teto.
+    // O SM segue sendo acionado todo ciclo — o registro de investigação tem dedupe
     expect(deps2.dispararMissao).toHaveBeenCalledWith('sm', 'proj1')
-    expect(deps2.avisarDono).not.toHaveBeenCalled()
+    expect(deps2.registrarInvestigacao).not.toHaveBeenCalled()
   })
 
   it('pergunta nova dispara QA e grava o hash', async () => {
@@ -372,10 +371,10 @@ describe('vigiarSessoes', () => {
     expect(deps2.fecharSessao).toHaveBeenCalledWith(
       expect.objectContaining({ sessionName: 'sessions/nunca-entrega', motivo: 'abandoned' })
     )
-    expect(deps2.avisarDono).toHaveBeenCalledWith(expect.stringContaining('#55'))
+    expect(deps2.onWarn).toHaveBeenCalledWith(expect.stringContaining('#55'))
   })
 
-  it('teto de insistências estourado fecha como abandonada e avisa o dono', async () => {
+  it('teto de insistências estourado fecha como abandonada e registra warning', async () => {
     const deps = depsFalso({
       sessoes: [linha({ sessionName: 'sessions/teto', issueNumber: 99, nudges: MAX_NUDGES })],
       consultarSessao: vi.fn(async () => ({
@@ -390,7 +389,7 @@ describe('vigiarSessoes', () => {
     expect(deps.fecharSessao).toHaveBeenCalledWith(
       expect.objectContaining({ sessionName: 'sessions/teto', motivo: 'abandoned' })
     )
-    expect(deps.avisarDono).toHaveBeenCalledWith(expect.stringContaining('#99'))
+    expect(deps.onWarn).toHaveBeenCalledWith(expect.stringContaining('#99'))
   })
 
   it('sessão examinada há 2 minutos é pulada — dentro da cadência de 10 minutos', async () => {

@@ -113,10 +113,11 @@ describe('pedido de retrabalho que não chegou ao dev é reentregue', () => {
     expect(contar).toHaveBeenCalledOnce()
   })
 
-  it('no teto de tentativas, desiste AVISANDO o dono — nunca em silêncio', async () => {
+  it('no teto de tentativas, desiste registrando log e limpando aviso pendente — sem spam no Telegram', async () => {
     const avisarDono = vi.fn(async (_mensagem: string) => undefined)
     const reentregar = vi.fn(async () => true)
     const limpar = vi.fn(async () => undefined)
+    const onWarn = vi.fn()
 
     await vigiarSessoes(
       deps({
@@ -130,30 +131,19 @@ describe('pedido de retrabalho que não chegou ao dev é reentregue', () => {
         reentregarAviso: reentregar,
         limparAvisoPendente: limpar,
         avisarDono,
+        onWarn,
       })
     )
 
-    // Desistir calado seria voltar ao defeito original, só que mais devagar.
-    expect(avisarDono).toHaveBeenCalledOnce()
-    const texto = String(avisarDono.mock.calls.at(0)?.at(0) ?? '')
-    // Escrito para GENTE: nomeia o trabalho pelo número do quadro, aponta onde
-    // está escrito o que mudar, e diz a AÇÃO. O identificador de sessão fica no
-    // log, nunca no recado de quem decide.
-    expect(texto).toContain('#151')
-    expect(texto).toContain('#157')
-    expect(texto).toContain('avisá-lo à mão')
-    expect(texto).not.toContain('sessions/abc')
+    // Silenciamento executivo: Telegram não recebe ruído de esteira
+    expect(avisarDono).not.toHaveBeenCalled()
+    expect(onWarn).toHaveBeenCalledWith(expect.stringContaining('desisti de reentregar'))
     // E para de tentar: o recado sai da fila.
     expect(reentregar).not.toHaveBeenCalled()
     expect(limpar).toHaveBeenCalledOnce()
   })
 
   it('carimba a cadência mesmo quando a reentrega falha — o teto é de TEMPO, não de passagens', async () => {
-    // ACHADO 1 DA LENTE: `stateCheckedAt` só avança quando o exame da sessão dá
-    // certo, e num erro de rede ele NÃO dá. Sem carimbar aqui, a reentrega roda
-    // a cada tique (1 min) e cinco tentativas queimam em CINCO MINUTOS — o
-    // apagão de oito minutos que motivou esta feature esgotaria o teto e
-    // apagaria o recado antes de o serviço voltar.
     const registrarEstado = vi.fn(async () => undefined)
     await vigiarSessoes(
       deps({
@@ -166,29 +156,6 @@ describe('pedido de retrabalho que não chegou ao dev é reentregue', () => {
     expect(registrarEstado).toHaveBeenCalledWith(
       expect.objectContaining({ sessionName: 'sessions/abc' })
     )
-  })
-
-  it('no teto SEM conseguir avisar o dono, o recado NÃO é apagado', async () => {
-    // ACHADO 2: apagar sem avisar destrói a evidência que esta peça veio
-    // preservar — o defeito original de volta, e pior, porque agora o pedido
-    // some do banco e ninguém fica sabendo que existiu.
-    const limpar = vi.fn(async () => undefined)
-    await vigiarSessoes(
-      deps({
-        sessoes: [
-          {
-            ...BASE,
-            reworkNoticePending: 'Refaça.',
-            reworkNoticeAttempts: MAX_TENTATIVAS_DE_AVISO,
-          },
-        ],
-        reentregarAviso: async () => true,
-        limparAvisoPendente: limpar,
-        // Sem notificador: em produção acontece quando falta o canal do dono.
-        avisarDono: undefined,
-      })
-    )
-    expect(limpar).not.toHaveBeenCalled()
   })
 
   it('entregou mas NÃO conseguiu apagar a marca: conta a tentativa, senão vira laço sem fim', async () => {

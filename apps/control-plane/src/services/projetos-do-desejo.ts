@@ -44,7 +44,11 @@ export async function projetosParaDesejo(
     select: { id: true, name: true, wingId: true },
     orderBy: { createdAt: 'asc' },
   })
-  return projetos.map((p) => ({ id: p.id, nome: p.name, repo: p.wingId }))
+  return projetos.map((p: { id: string; name: string; wingId: string }) => ({
+    id: p.id,
+    nome: p.name,
+    repo: p.wingId,
+  }))
 }
 
 /**

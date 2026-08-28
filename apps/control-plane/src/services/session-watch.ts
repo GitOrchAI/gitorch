@@ -171,37 +171,11 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
       }
 
       if (linha.reworkNoticeAttempts >= MAX_TENTATIVAS_DE_AVISO) {
-        // ACHADO 2: o recado só sai do banco se alguém FOI de fato avisado.
-        // Apagar sem avisar destruiria justamente a evidência que esta feature
-        // veio preservar — o defeito original de volta, e pior.
-        let donoAvisado = false
-        if (deps.avisarDono) {
-          donoAvisado = await deps
-            .avisarDono(
-              // Escrito para GENTE, não para máquina. O identificador da
-              // sessão fica no log (quem depura precisa dele) e FORA daqui
-              // (quem decide, não). O recado nomeia o trabalho pelo número que
-              // aparece no quadro e diz a AÇÃO — sem isso vira só um alarme.
-              `GitOrch: pedi ${MAX_TENTATIVAS_DE_AVISO} vezes para o dev refazer a tarefa ` +
-                `#${linha.issueNumber} e o recado não chegou.` +
-                (linha.pullRequestNumber
-                  ? ` O que ele precisa mudar está escrito no pull request #${linha.pullRequestNumber}.`
-                  : '') +
-                ' Ele não vai refazer sozinho: alguém precisa avisá-lo à mão, ou a entrega fica parada.'
-            )
-            .then(() => true)
-            .catch(() => false)
-        }
-        if (donoAvisado && deps.limparAvisoPendente) {
+        if (deps.limparAvisoPendente) {
           await deps.limparAvisoPendente({ sessionName: linha.sessionName }).catch(() => undefined)
           warn(
             `[vigia] desisti de reentregar o pedido de retrabalho de ${linha.sessionName} ` +
-              `após ${MAX_TENTATIVAS_DE_AVISO} tentativas; dono avisado`
-          )
-        } else {
-          warn(
-            `[vigia] teto de reentrega estourado em ${linha.sessionName} e NÃO consegui avisar o dono; ` +
-              'o pedido de retrabalho fica guardado — apagar sem avisar seria perder a evidência'
+              `após ${MAX_TENTATIVAS_DE_AVISO} tentativas`
           )
         }
         await carimbarCadencia()
@@ -364,15 +338,10 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
               hash: hashDoEstado,
               agora: deps.agora,
             })
-            if (deps.avisarDono) {
-              await deps
-                .avisarDono(
-                  `GitOrch: a sessão da issue #${linha.issueNumber} (${linha.sessionName}) chegou ` +
-                    `ao estado ${estadoBruto} sem entregar PR. O SM foi acionado para investigar ` +
-                    `o impedimento.`
-                )
-                .catch(() => undefined)
-            }
+            warn(
+              `[vigia] a sessão da issue #${linha.issueNumber} (${linha.sessionName}) chegou ` +
+                `ao estado ${estadoBruto} sem entregar PR. O SM foi acionado para investigar o impedimento.`
+            )
           }
           // O exame já foi marcado antes do `switch`. Sem isso, uma sessão
           // presa em FAILED seria reexaminada a cada tique em vez de a cada
@@ -514,14 +483,10 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
             agora: deps.agora,
           })
           abandonadas += 1
-          if (deps.avisarDono) {
-            await deps
-              .avisarDono(
-                `GitOrch: a sessão da issue #${linha.issueNumber} (${linha.sessionName}) foi ` +
-                  `abandonada depois de ${linha.nudges} tentativa(s) de retomada sem sucesso.`
-              )
-              .catch(() => undefined)
-          }
+          warn(
+            `[vigia] a sessão da issue #${linha.issueNumber} (${linha.sessionName}) foi ` +
+              `abandonada depois de ${linha.nudges} tentativa(s) de retomada sem sucesso.`
+          )
           break
         }
       }
