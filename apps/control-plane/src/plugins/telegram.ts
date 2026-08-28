@@ -23,7 +23,7 @@ import {
   telegramBotUsername,
 } from '../services/telegram-link.js'
 import { AgentQuestionService, type AgentQuestionRecord } from '../services/agent-question.js'
-import { pipelineCheckEnabled } from '../config/pipeline-check.js'
+import { pipelineCheckEnabled, type PipelineErrorMetadata } from '../config/pipeline-check.js'
 
 // O ouvido do bot. Sem ele, o deep link do passo 8 abriria o Telegram, o cliente
 // apertaria Start... e ninguém estaria escutando — o `chat_id` (a única coisa
@@ -89,6 +89,39 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
     cortex: app.cortex,
   })
   app.decorate('agentQuestionService', agentQuestionService)
+
+  if (app.emitter) {
+    app.emitter.on('pipeline.error', async (metadata: PipelineErrorMetadata) => {
+      if (!botToken) return
+
+      const ownerEmail = process.env['GITORCH_OWNER_EMAIL']
+      if (!ownerEmail) return
+
+      const ownerUser = await app.prisma.user.findUnique({
+        where: { email: ownerEmail },
+      })
+      if (!ownerUser) return
+
+      const chatId = await resolveNotifyChatId(
+        app.prisma,
+        {
+          userId: ownerUser.id,
+          user: { email: ownerUser.email },
+        },
+        {
+          instanceOwnerEmail: ownerEmail,
+          instanceChatId:
+            process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'] ?? '',
+        }
+      )
+
+      if (!chatId) return
+
+      const msg = `🚨 *Falha na Pipeline!*\n*Passo:* ${metadata.step}\n*Causa:* ${metadata.reason}\n*Sistema fez:* ${metadata.mitigationAction}\n*Precisa agir?* ${metadata.requiresAction ? 'Sim' : 'Não'}`
+
+      await sendTelegramMessage({ botToken, chatId, text: msg })
+    })
+  }
 
   // Em teste não se abre laço nem socket (paridade com o scheduler): a lógica
   // toda é testada nos serviços, sem rede. Em modo pipeline-check (F2.3/P1-2)

@@ -1,5 +1,12 @@
 import { FastifyInstance } from 'fastify'
+import { EventEmitter } from 'node:events'
 import fastifyCookie from '@fastify/cookie'
+
+declare module 'fastify' {
+  interface FastifyInstance {
+    emitter: EventEmitter
+  }
+}
 import fastifyHelmet from '@fastify/helmet'
 import fastifySwagger from '@fastify/swagger'
 import fastifySwaggerUi from '@fastify/swagger-ui'
@@ -101,6 +108,8 @@ export async function registerPlugins(app: FastifyInstance, env: Env): Promise<v
     },
     staticCSP: true,
   })
+
+  app.decorate('emitter', new EventEmitter())
 
   // Register custom plugins
   await app.register(telemetryPlugin)
