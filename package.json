@@ -29,7 +29,7 @@
     "e2e": "pnpm exec tsx scripts/ci/e2e-playwright.ts",
     "dev": "turbo run dev --parallel",
     "prepare": "husky",
-    "postinstall": "node patch_tar.js"
+    "postinstall": "node scripts/patch_tar.js"
   },
   "devDependencies": {
     "@playwright/test": "1.62.1",
