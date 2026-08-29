@@ -236,6 +236,14 @@ export interface SmDelegationOptions {
   entregasDoProjeto?: Array<{ issueNumber: number; mergeCommitSha?: string | null }>
   /** Sessões abertas neste projeto nas últimas 24h, para o teto diário. */
   delegadasHoje?: number
+  /** Linhas abertas na CONTA inteira — só para diagnóstico/log. */
+  vivasNaConta?: number
+  /**
+   * Sessões da CONTA inteira que OCUPAM uma vaga simultânea AGORA (só os
+   * estados que o Jules ainda está tocando). É o número certo para o teto de
+   * concorrência: uma linha aberta em COMPLETED/FAILED já liberou a vaga lá.
+   */
+  ocupamVagaNaConta?: number
   /** Do plano declarado pelo dono. Padrão: Free, que é o mais restritivo. */
   tetoConcorrentes?: number
   tetoDiario?: number
@@ -366,6 +374,14 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
     arquivosEmTrabalho: [...arquivosEmTrabalho],
     sessoesVivas: options.sessoesVivas ?? [],
     delegadasHoje: options.delegadasHoje ?? 0,
+    // O teto de simultâneas é da CONTA e só conta quem ainda ocupa vaga no
+    // Jules. Sem este número o cálculo caía no `sessoesVivas.length` DESTE
+    // projeto — e 15 linhas COMPLETED abertas no gitorch zeravam a folga e
+    // paravam a delegação (medido 29/08).
+    ...(options.ocupamVagaNaConta !== undefined
+      ? { ocupamVagaNaConta: options.ocupamVagaNaConta }
+      : {}),
+    ...(options.vivasNaConta !== undefined ? { vivasNaConta: options.vivasNaConta } : {}),
     tetoConcorrentes: options.tetoConcorrentes ?? 3,
     tetoDiario: options.tetoDiario ?? 15,
     capPorCiclo: cap,

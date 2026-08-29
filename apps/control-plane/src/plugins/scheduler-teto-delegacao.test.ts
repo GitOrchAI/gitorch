@@ -30,6 +30,7 @@ describe('montarOpcoesDeDelegacao', () => {
       delegadasHoje: 0,
       entregasDoProjeto: [],
       vivasNaConta: 0,
+      ocupamVagaNaConta: 0,
     })
     expect(opcoes.tetoConcorrentes).toBe(15)
     expect(opcoes.tetoDiario).toBe(100)
@@ -42,6 +43,7 @@ describe('montarOpcoesDeDelegacao', () => {
       delegadasHoje: 0,
       entregasDoProjeto: [],
       vivasNaConta: 0,
+      ocupamVagaNaConta: 0,
     })
     expect(opcoes.tetoConcorrentes).toBe(3)
     expect(opcoes.tetoDiario).toBe(15)
@@ -55,6 +57,7 @@ describe('montarOpcoesDeDelegacao', () => {
         delegadasHoje: 0,
         entregasDoProjeto: [],
         vivasNaConta: 0,
+        ocupamVagaNaConta: 0,
       })
     ).toMatchObject({ tetoConcorrentes: 3, tetoDiario: 15 })
     expect(
@@ -64,6 +67,7 @@ describe('montarOpcoesDeDelegacao', () => {
         delegadasHoje: 0,
         entregasDoProjeto: [],
         vivasNaConta: 0,
+        ocupamVagaNaConta: 0,
       })
     ).toMatchObject({ tetoConcorrentes: 3, tetoDiario: 15 })
   })
@@ -75,6 +79,7 @@ describe('montarOpcoesDeDelegacao', () => {
       delegadasHoje: 0,
       entregasDoProjeto: [],
       vivasNaConta: 0,
+      ocupamVagaNaConta: 0,
     })
     expect(opcoes.tetoConcorrentes).toBe(3)
     expect(opcoes.tetoDiario).toBe(15)
@@ -88,9 +93,25 @@ describe('montarOpcoesDeDelegacao', () => {
       delegadasHoje: 7,
       entregasDoProjeto: [],
       vivasNaConta: 0,
+      ocupamVagaNaConta: 0,
     })
     // Mesma referência: prova que a função não clona nem filtra a fila.
     expect(opcoes.sessoesVivas).toBe(sessoesVivasArg)
     expect(opcoes.delegadasHoje).toBe(7)
+  })
+
+  test('ocupamVagaNaConta é repassado — é ele que o teto de simultâneas usa', () => {
+    const opcoes = montarOpcoesDeDelegacao({
+      devPlan: 'pro',
+      sessoesVivas: [],
+      delegadasHoje: 0,
+      entregasDoProjeto: [],
+      vivasNaConta: 23,
+      ocupamVagaNaConta: 2,
+    })
+    // vivasNaConta (23, incluindo as COMPLETED) fica só para log; quem conta
+    // contra o teto de simultâneas é ocupamVagaNaConta (2).
+    expect(opcoes.vivasNaConta).toBe(23)
+    expect(opcoes.ocupamVagaNaConta).toBe(2)
   })
 })
