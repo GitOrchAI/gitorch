@@ -172,8 +172,12 @@ export function TelaConfig({ tema, setTema }: { tema: Tema; setTema: (t: Tema) =
             ]}
           />
         </Linha>
+        {/* Idioma NÃO é um Chips: com uma opção só, o chip continuaria sendo um
+            botão clicável que não faz nada — o mesmo defeito que esta tela está
+            corrigindo. Vira informação, e volta a ser controle quando existir um
+            segundo idioma. */}
         <Linha titulo="Idioma" desc="Por enquanto o painel fala só português.">
-          <Chips valor="pt" onChange={() => {}} opcoes={[['pt', 'Português']]} />
+          <span className="pn-tag">Português</span>
         </Linha>
       </Card>
 
