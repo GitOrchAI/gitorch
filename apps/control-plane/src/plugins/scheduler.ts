@@ -2679,11 +2679,14 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             // delegado; sem ela, Dependabot e PR de humano entravam na fila do
             // julgamento e no log ("SM queued #337, #338"), escondendo o estado
             // real. Sem janela de tempo de propósito: um PR do dev pode ficar
-            // aberto por semanas e ainda precisa ser reconhecido. `take` limita.
+            // aberto por semanas e ainda precisa ser reconhecido. `take` é só
+            // um backstop defensivo (não uma janela funcional) — alto o
+            // bastante para que nenhum projeto real acumule tantas sessões
+            // com PR mais recentes que uma entrega antiga ainda aberta.
             sessoesParaReconhecerPr: (await app.prisma.devSession.findMany({
               where: { projectId: project.id, pullRequestNumber: { not: null } },
               orderBy: { updatedAt: 'desc' },
-              take: 300,
+              take: 3000,
             })) as unknown as LinhaDeSessao[],
             // D51: issues que falharam 2× esperam a análise antes da 3ª —
             // não são redelegadas até o RA entender o porquê. E, para as que
