@@ -37,7 +37,7 @@ jobs:
       # lockfile, e era este o único fora do padrão.
       - name: Install Dependencies
         working-directory: .github/scripts
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile --ignore-workspace
 
       - name: Run SLA Tracker
         env:
