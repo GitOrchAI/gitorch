@@ -4,7 +4,7 @@
 // atuando e a prévia de pedidos. Ainda de exemplo (com selo): o Ritmo da
 // semana e o Consumo de hoje — os dois esperam rota própria.
 import { useSyncExternalStore } from 'react'
-import { DEMO, DIAS } from './painel-demo'
+import { DEMO } from './painel-demo'
 import { assinarProjeto, projetoAtual, projetoNoServidor, filtroDeProjeto } from './painel-projeto'
 
 /** O que a Visão Geral usa de um pedido (subconjunto de PedidoDoPainel). */
@@ -59,65 +59,90 @@ interface MissoesStats {
   stats?: { active: number; completed: number; failed: number }
 }
 
-function Ritmo() {
-  // /painel/ritmo é leva 2 — mostra o exemplo com selo enquanto a rota não existe.
-  const r = usePainelBusca<typeof DEMO.semana>(ROTAS.ritmo, {
-    demo: DEMO.semana,
-    exemploQuandoAusente: true,
+/** A sprint que está valendo agora, como a rota devolve. */
+interface SprintView {
+  projeto: string
+  titulo: string
+  inicio: string
+  fim: string
+  dias: number
+}
+
+/** "27 ago" — o dono lê dia e mês, não ISO. */
+function diaEMes(iso: string): string {
+  if (!iso) return ''
+  const d = new Date(`${iso}T00:00:00Z`)
+  const meses = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez']
+  return `${d.getUTCDate()} ${meses[d.getUTCMonth()]}`
+}
+
+/**
+ * Sprint atual — substitui o "Ritmo da semana" do desenho original.
+ *
+ * O dono trocou semana por sprint: "quais sprints estão atuais e o que está
+ * atuando". A sprint vive no quadro do cliente (campo de iteração do Projects
+ * V2), e o painel lê de lá.
+ *
+ * Quando não há sprint, a tela DIZ isso. Antes ela desenhava uma semana com
+ * meta inventada; um número que ninguém definiu é pior que número nenhum.
+ */
+function SprintAtual() {
+  const projeto = useSyncExternalStore(assinarProjeto, projetoAtual, projetoNoServidor)
+  const r = usePainelBusca<
+    { sprints: SprintView[]; configurados: number },
+    { sprints?: SprintView[]; configurados?: number }
+  >(ROTAS.sprint + filtroDeProjeto(projeto), {
+    mapear: (b) => ({ sprints: b.sprints ?? [], configurados: b.configurados ?? 0 }),
     intervalo: 60000,
   })
+
   if (r.estado !== 'ok' || !r.dados) {
     return (
       <Card>
-        <Estados r={r} o_que="o ritmo da semana">
+        <Estados r={r} o_que="a sprint atual">
           {() => null}
         </Estados>
       </Card>
     )
   }
-  const s = r.dados
-  const ok = s.verdito === 'no ritmo'
-  const pct = Math.round((s.entregue / s.meta) * 100)
+
+  const { sprints, configurados } = r.dados
+
+  if (sprints.length === 0) {
+    // Duas situações diferentes, ditas de jeitos diferentes: nunca teve sprint,
+    // ou tem sprint e hoje caiu no intervalo entre dois ciclos.
+    return (
+      <Card titulo="Sprint atual">
+        <p style={{ margin: 0, fontSize: 13.5, color: 'var(--gl-muted)' }}>
+          {configurados > 0
+            ? 'Nenhum ciclo em andamento agora — o próximo começa em breve.'
+            : 'Seus projetos ainda não têm sprint configurada. Assim que tiverem, o andamento aparece aqui.'}
+        </p>
+      </Card>
+    )
+  }
+
   return (
-    <div className="pn-pace">
-      <div className="pn-pace-t">
-        <div>
-          <p className="pn-eyebrow">
-            Ritmo da semana · {s.rotulo}
-            <SeloDemo mostrar={!!r.demo} />
-          </p>
-          <div className="pn-pace-v num" style={{ marginTop: 10 }}>
-            {s.entregue}
-            <span> / {s.meta} entregas</span>
-          </div>
-          <p className="pn-pace-l">{s.verditoNota}</p>
-        </div>
-        <span className={'pn-verdict ' + (ok ? 'ok' : 'warn')}>
-          <Ad n={ok ? 'check' : 'alert'} s={15} />
-          {ok ? 'No ritmo' : 'Atrasado'}
-        </span>
-      </div>
-      <div className="pn-track">
-        {s.porDia.map((n, i) => (
-          <i
-            key={i}
-            className={n > 0 ? 'done' : i === s.hojeIndex ? 'today' : ''}
-            title={n + ' entrega(s)'}
-          />
-        ))}
-      </div>
-      <div className="pn-track-l">
-        {DIAS.map((d, i) => (
-          <span key={d} className={i === s.hojeIndex ? 'on' : ''}>
-            {d}
+    <Card flush titulo={sprints.length > 1 ? 'Sprints em andamento' : 'Sprint atual'}>
+      {sprints.map((s) => (
+        <div key={`${s.projeto}-${s.titulo}`} className="pn-row static">
+          <span className="pn-grow">
+            <span className="pn-rt" style={{ display: 'block' }}>
+              {s.titulo}
+            </span>
+            <span className="pn-rs">
+              {s.projeto} · {diaEMes(s.inicio)} a {diaEMes(s.fim)}
+            </span>
           </span>
-        ))}
-      </div>
-      <div style={{ marginTop: 14, fontSize: 12.5, color: 'var(--gl-faint)' }}>
-        {pct}% da meta cumprida · cada bloco é um dia, preenchido quando houve entrega
-      </div>
-    </div>
+          <span className="pn-tag">{s.dias} dias</span>
+        </div>
+      ))}
+    </Card>
   )
+}
+
+interface MissoesStats {
+  stats?: { active: number; completed: number; failed: number }
 }
 
 function Pulso() {
@@ -327,7 +352,7 @@ export function TelaVisaoGeral({
         o que espera uma decisão sua.
       </Cabeca>
 
-      <Ritmo />
+      <SprintAtual />
       <Pulso />
 
       <Kpis decisoesPendentes={decisoesPendentes.length} />

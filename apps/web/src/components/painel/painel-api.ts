@@ -32,6 +32,7 @@ export const ROTAS = {
   agentes: '/api/v1/painel/agentes', // NOVA nesta leva
   responder: (id: string): string => `/api/v1/painel/decisoes/${id}/responder`, // NOVA nesta leva
   pedidos: '/api/v1/painel/pedidos', // NOVA (leva 2, bloco 2) — a árvore dos desejos
+  sprint: '/api/v1/painel/sprint', // NOVA (leva 2, bloco 3) — a sprint corrente
   ritmo: '/api/v1/painel/ritmo', // FALTA — leva 2
   entregas: '/api/v1/painel/entregas', // FALTA — leva 2
   historico: '/api/v1/painel/historico', // FALTA — leva 2
