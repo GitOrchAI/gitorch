@@ -34,7 +34,7 @@ export function TelaDecisoes({
       </Cabeca>
 
       {aviso && (
-        <div className="ad-pulse cold">
+        <div className="pn-pulse cold">
           <Ad n="alert" s={16} />
           <span>{aviso}</span>
         </div>
@@ -50,23 +50,23 @@ export function TelaDecisoes({
         ]}
       />
 
-      <div className="ad-md">
+      <div className="pn-md">
         <Card flush>
           {lista.length === 0 ? (
-            <div className="ad-empty">
+            <div className="pn-empty">
               {filtro === 'pendente' ? 'Nada esperando por você agora.' : 'Nada por aqui.'}
             </div>
           ) : (
             lista.map((d) => (
               <button
                 key={d.id}
-                className={'ad-row' + (sel && sel.id === d.id ? ' on' : '')}
+                className={'pn-row' + (sel && sel.id === d.id ? ' on' : '')}
                 style={{ alignItems: 'flex-start' }}
                 onClick={() => setFoco(d.id)}
               >
-                <span className="ad-grow">
+                <span className="pn-grow">
                   <span
-                    className="ad-rt"
+                    className="pn-rt"
                     style={{
                       display: 'block',
                       whiteSpace: 'normal',
@@ -75,12 +75,12 @@ export function TelaDecisoes({
                   >
                     {d.q}
                   </span>
-                  <span className="ad-rs">
+                  <span className="pn-rs">
                     {d.agente} · {d.quando}
                   </span>
                 </span>
                 {d.st === 'pendente' ? (
-                  <span className="ad-d wait" style={{ marginTop: 6 }} />
+                  <span className="pn-d wait" style={{ marginTop: 6 }} />
                 ) : (
                   <span style={{ color: 'var(--gl-accent-ink)', flex: 'none', marginTop: 2 }}>
                     <Ad n="check" s={15} />
@@ -93,7 +93,7 @@ export function TelaDecisoes({
 
         <Card flush>
           {!sel ? (
-            <div className="ad-empty">Escolha uma decisão.</div>
+            <div className="pn-empty">Escolha uma decisão.</div>
           ) : (
             <Decisao d={sel} responder={responder} />
           )}

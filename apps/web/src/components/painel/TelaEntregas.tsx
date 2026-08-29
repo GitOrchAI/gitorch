@@ -53,7 +53,7 @@ export function TelaEntregas() {
               {g.itens.map((i) => (
                 <div
                   key={i.t}
-                  className="ad-row static"
+                  className="pn-row static"
                   style={{
                     alignItems: 'flex-start',
                     flexDirection: 'column',
@@ -64,10 +64,10 @@ export function TelaEntregas() {
                   <div
                     style={{ display: 'flex', gap: 12, width: '100%', alignItems: 'flex-start' }}
                   >
-                    <span className="ad-d done" style={{ marginTop: 7 }} />
-                    <span className="ad-grow">
+                    <span className="pn-d done" style={{ marginTop: 7 }} />
+                    <span className="pn-grow">
                       <span
-                        className="ad-rt"
+                        className="pn-rt"
                         style={{ display: 'block', whiteSpace: 'normal', fontSize: 14.5 }}
                       >
                         {i.t}
@@ -85,7 +85,7 @@ export function TelaEntregas() {
                           {i.ganho}
                         </span>
                       ) : null}
-                      <span className="ad-rs">
+                      <span className="pn-rs">
                         {i.repo} · {i.quando} · {i.resp}
                       </span>
                     </span>

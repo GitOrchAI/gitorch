@@ -63,7 +63,7 @@ export function TelaProjetos() {
         vazio="Nenhum projeto ligado ainda. Conclua o setup para ligar o primeiro."
       >
         {(lista) => (
-          <div className="ad-3">
+          <div className="pn-3">
             {lista.map((p) => (
               <Card key={p.id}>
                 <div
@@ -87,19 +87,19 @@ export function TelaProjetos() {
 
                 <div style={{ display: 'flex', gap: 22, marginTop: 18 }}>
                   <div>
-                    <span className="ad-label">Tarefas no total</span>
+                    <span className="pn-label">Tarefas no total</span>
                     <div className="num" style={{ fontSize: 22, fontWeight: 600 }}>
                       {p.tarefas}
                     </div>
                   </div>
                   <div>
-                    <span className="ad-label">Última atividade</span>
+                    <span className="pn-label">Última atividade</span>
                     <div style={{ fontSize: 14, fontWeight: 500, paddingTop: 3 }}>{p.ultima}</div>
                   </div>
                 </div>
 
                 <div style={{ display: 'flex', gap: 10, marginTop: 20 }}>
-                  <button className="ad-btn g sm">
+                  <button className="pn-btn g sm">
                     Abrir no GitHub <Ad n="ext" s={13} />
                   </button>
                 </div>
@@ -114,7 +114,7 @@ export function TelaProjetos() {
           Seu plano permite até 5 projetos na nuvem. Para um repositório de organização, o app do
           GitHub precisa ser instalado na conta dona do repositório.
         </p>
-        <button className="ad-btn a" style={{ marginTop: 16 }}>
+        <button className="pn-btn a" style={{ marginTop: 16 }}>
           <Ad n="plus" s={15} />
           Ligar outro projeto
         </button>

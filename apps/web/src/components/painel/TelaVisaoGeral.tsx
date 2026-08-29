@@ -67,25 +67,25 @@ function Ritmo() {
   const ok = s.verdito === 'no ritmo'
   const pct = Math.round((s.entregue / s.meta) * 100)
   return (
-    <div className="ad-pace">
-      <div className="ad-pace-t">
+    <div className="pn-pace">
+      <div className="pn-pace-t">
         <div>
-          <p className="ad-eyebrow">
+          <p className="pn-eyebrow">
             Ritmo da semana · {s.rotulo}
             <SeloDemo mostrar={!!r.demo} />
           </p>
-          <div className="ad-pace-v num" style={{ marginTop: 10 }}>
+          <div className="pn-pace-v num" style={{ marginTop: 10 }}>
             {s.entregue}
             <span> / {s.meta} entregas</span>
           </div>
-          <p className="ad-pace-l">{s.verditoNota}</p>
+          <p className="pn-pace-l">{s.verditoNota}</p>
         </div>
-        <span className={'ad-verdict ' + (ok ? 'ok' : 'warn')}>
+        <span className={'pn-verdict ' + (ok ? 'ok' : 'warn')}>
           <Ad n={ok ? 'check' : 'alert'} s={15} />
           {ok ? 'No ritmo' : 'Atrasado'}
         </span>
       </div>
-      <div className="ad-track">
+      <div className="pn-track">
         {s.porDia.map((n, i) => (
           <i
             key={i}
@@ -94,7 +94,7 @@ function Ritmo() {
           />
         ))}
       </div>
-      <div className="ad-track-l">
+      <div className="pn-track-l">
         {DIAS.map((d, i) => (
           <span key={d} className={i === s.hojeIndex ? 'on' : ''}>
             {d}
@@ -116,8 +116,8 @@ function Pulso() {
   const p = r.estado === 'ok' && r.dados ? r.dados : null
   if (!p || p.ultimo_sinal_em == null) {
     return (
-      <div className="ad-pulse cold">
-        <span className="ad-d idle" />
+      <div className="pn-pulse cold">
+        <span className="pn-d idle" />
         <span>
           <b>Nenhum sinal ainda.</b> Assim que um agente se mexer, aparece aqui.
         </span>
@@ -125,8 +125,8 @@ function Pulso() {
     )
   }
   return (
-    <div className={'ad-pulse' + (p.quente ? '' : ' cold')}>
-      <span className="ad-live" />
+    <div className={'pn-pulse' + (p.quente ? '' : ' cold')}>
+      <span className="pn-live" />
       <span>
         <b>{p.quente ? 'Andando agora.' : 'Sem sinal recente.'}</b> Último sinal{' '}
         {fraseDeTempo(p.ha_segundos)}: {p.descricao}.
@@ -146,7 +146,7 @@ function Atuando({ ir }: { ir: (id: TelaId) => void }) {
       titulo="Quem está trabalhando agora"
       sub={r.demo ? 'exemplo' : null}
       acao={
-        <button className="ad-link" onClick={() => ir('projetos')}>
+        <button className="pn-link" onClick={() => ir('projetos')}>
           Por projeto <Ad n="arrow" s={13} />
         </button>
       }
@@ -154,25 +154,25 @@ function Atuando({ ir }: { ir: (id: TelaId) => void }) {
       <Estados r={r} o_que="o estado dos agentes" vazio="Nenhum agente com tarefa agora.">
         {(d) =>
           d.atuando.map((a) => (
-            <div key={a.id} className="ad-row static">
+            <div key={a.id} className="pn-row static">
               <span
-                className={'ad-d ' + estadoParaClasse(a.estado)}
+                className={'pn-d ' + estadoParaClasse(a.estado)}
                 style={{ marginTop: 6, alignSelf: 'flex-start' }}
               />
-              <span className="ad-grow">
-                <span className="ad-rt" style={{ display: 'block' }}>
+              <span className="pn-grow">
+                <span className="pn-rt" style={{ display: 'block' }}>
                   {a.nome}
                 </span>
-                <span className="ad-rs">{a.descricao}</span>
+                <span className="pn-rs">{a.descricao}</span>
                 {a.progresso != null && (
-                  <span className="ad-bar" style={{ maxWidth: 210 }}>
+                  <span className="pn-bar" style={{ maxWidth: 210 }}>
                     <i style={{ width: a.progresso + '%' }} />
                   </span>
                 )}
               </span>
               <span style={{ flex: 'none', textAlign: 'right' }}>
-                <span className="ad-tag">{a.papel}</span>
-                <span className="ad-rs" style={{ display: 'block' }}>
+                <span className="pn-tag">{a.papel}</span>
+                <span className="pn-rs" style={{ display: 'block' }}>
                   {a.desde}
                 </span>
               </span>
@@ -224,7 +224,7 @@ function Kpis({ decisoesPendentes }: { decisoesPendentes: number }) {
     },
   ]
   return (
-    <div className="ad-kpis">
+    <div className="pn-kpis">
       {kpis.map((k) => (
         <Kpi key={k.l} {...k} />
       ))}
@@ -253,18 +253,18 @@ export function TelaVisaoGeral({
 
       <Kpis decisoesPendentes={decisoesPendentes.length} />
 
-      <div className="ad-2">
+      <div className="pn-2">
         <Card
           flush
           titulo="Seus pedidos"
           sub={<SeloDemo mostrar />}
           acao={
-            <button className="ad-link" onClick={() => ir('pedidos')}>
+            <button className="pn-link" onClick={() => ir('pedidos')}>
               Ver todos <Ad n="arrow" s={13} />
             </button>
           }
         >
-          <div className="ad-tw">
+          <div className="pn-tw">
             <table>
               <thead>
                 <tr>
@@ -283,11 +283,11 @@ export function TelaVisaoGeral({
                         {p.repo} · pedido {p.quando}
                       </div>
                     </td>
-                    <td className="ad-nowrap">
+                    <td className="pn-nowrap">
                       <Estado d={p.d}>{p.sit}</Estado>
                     </td>
-                    <td className="ad-nowrap">{p.resp}</td>
-                    <td className="ad-nowrap" style={{ color: 'var(--gl-muted)' }}>
+                    <td className="pn-nowrap">{p.resp}</td>
+                    <td className="pn-nowrap" style={{ color: 'var(--gl-muted)' }}>
                       {p.prev}
                     </td>
                   </tr>
@@ -303,13 +303,13 @@ export function TelaVisaoGeral({
             titulo="Precisa de você"
             sub={decisoesPendentes.length > 0 ? decisoesPendentes.length : null}
             acao={
-              <button className="ad-link" onClick={() => ir('decisoes')}>
+              <button className="pn-link" onClick={() => ir('decisoes')}>
                 Todas <Ad n="arrow" s={13} />
               </button>
             }
           >
             {decisoesPendentes.length === 0 ? (
-              <div className="ad-empty">Nada esperando por você agora.</div>
+              <div className="pn-empty">Nada esperando por você agora.</div>
             ) : (
               decisoesPendentes
                 .slice(0, 2)
@@ -321,7 +321,7 @@ export function TelaVisaoGeral({
             titulo="Consumo de hoje"
             sub={<SeloDemo mostrar />}
             acao={
-              <button className="ad-link" onClick={() => ir('custos')}>
+              <button className="pn-link" onClick={() => ir('custos')}>
                 Detalhar <Ad n="arrow" s={13} />
               </button>
             }

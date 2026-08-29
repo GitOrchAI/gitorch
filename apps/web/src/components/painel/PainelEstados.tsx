@@ -4,7 +4,7 @@ import type { ReactNode } from 'react'
 import { Ad } from './PainelIcons'
 
 export function Carregando({ o_que = 'Carregando' }: { o_que?: string }) {
-  return <div className="ad-empty">{o_que}…</div>
+  return <div className="pn-empty">{o_que}…</div>
 }
 
 // "Não consegui saber" é diferente de "não tem nada": esta tem botão de saída.
@@ -16,10 +16,10 @@ export function Indisponivel({
   onTentar?: () => void
 }) {
   return (
-    <div className="ad-empty">
+    <div className="pn-empty">
       <p style={{ margin: '0 0 14px' }}>Não deu para carregar {o_que} agora.</p>
       {onTentar && (
-        <button className="ad-btn g sm" onClick={onTentar}>
+        <button className="pn-btn g sm" onClick={onTentar}>
           <Ad n="refresh" s={14} />
           Tentar de novo
         </button>
@@ -29,7 +29,7 @@ export function Indisponivel({
 }
 
 export function Vazio({ children }: { children: ReactNode }) {
-  return <div className="ad-empty">{children}</div>
+  return <div className="pn-empty">{children}</div>
 }
 
 export interface ResultadoDeBusca<T> {
@@ -67,7 +67,7 @@ export function SeloDemo({
   if (!mostrar) return null
   return (
     <span
-      className="ad-tag"
+      className="pn-tag"
       title="Esta tela ainda não está ligada à API"
       style={{ marginLeft: 8 }}
     >

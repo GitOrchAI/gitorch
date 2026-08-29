@@ -147,7 +147,7 @@ export default function PainelOwner() {
   if (autenticado === null) {
     return (
       <div className="gl" data-theme={tema} suppressHydrationWarning>
-        <div className="ad-scroll" style={{ alignItems: 'center', justifyContent: 'center' }}>
+        <div className="pn-scroll" style={{ alignItems: 'center', justifyContent: 'center' }}>
           <p style={{ color: 'var(--gl-faint)' }}>Verificando sessão…</p>
         </div>
       </div>
@@ -158,11 +158,11 @@ export default function PainelOwner() {
     return (
       <div className="gl" data-theme={tema} suppressHydrationWarning>
         <div
-          className="ad-scroll"
+          className="pn-scroll"
           style={{ alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}
         >
-          <div className="ad-card ad-pad" style={{ maxWidth: 420 }}>
-            <span className="ad-mark" style={{ margin: '0 auto 14px' }}>
+          <div className="pn-card pn-pad" style={{ maxWidth: 420 }}>
+            <span className="pn-mark" style={{ margin: '0 auto 14px' }}>
               <AdMark />
             </span>
             <h1
@@ -175,7 +175,7 @@ export default function PainelOwner() {
                 ? 'Não consegui confirmar sua sessão agora. Tente conectar de novo.'
                 : 'Ligue seu GitHub para ver o ritmo dos seus pedidos, as decisões e as entregas.'}
             </p>
-            <Link href="/setup" className="ad-btn a" style={{ textDecoration: 'none' }}>
+            <Link href="/setup" className="pn-btn a" style={{ textDecoration: 'none' }}>
               Conectar
             </Link>
           </div>
@@ -218,9 +218,9 @@ export default function PainelOwner() {
   return (
     <div className="gl" data-theme={tema} suppressHydrationWarning>
       <div className="ad">
-        <aside className="ad-side">
-          <div className="ad-side-brand">
-            <span className="ad-mark">
+        <aside className="pn-side">
+          <div className="pn-side-brand">
+            <span className="pn-mark">
               <AdMark />
             </span>
             GitOrch
@@ -228,11 +228,11 @@ export default function PainelOwner() {
           <nav aria-label="Seções do painel">
             {NAV.map((s) => (
               <div key={s.g}>
-                <div className="ad-grp">{s.g}</div>
+                <div className="pn-grp">{s.g}</div>
                 {s.itens.map((i) => (
                   <button
                     key={i.id}
-                    className="ad-nav"
+                    className="pn-nav"
                     aria-current={tela === i.id ? 'page' : undefined}
                     onClick={() => ir(i.id)}
                   >
@@ -248,20 +248,20 @@ export default function PainelOwner() {
           </nav>
         </aside>
 
-        <div className="ad-main">
-          <header className="ad-top">
-            <span className="ad-brand">
-              <span className="ad-mark">
+        <div className="pn-main">
+          <header className="pn-top">
+            <span className="pn-brand">
+              <span className="pn-mark">
                 <AdMark />
               </span>
               GitOrch
             </span>
-            <span className="ad-crumb">
+            <span className="pn-crumb">
               Painel / <b>{tituloDaTela(tela)}</b>
             </span>
-            <span className="ad-sp" />
+            <span className="pn-sp" />
             <button
-              className="ad-ico"
+              className="pn-ico"
               onClick={() => setTema(proximoTema(tema))}
               aria-label="Alternar tema claro e escuro"
               title="Tema"
@@ -269,7 +269,7 @@ export default function PainelOwner() {
               <Ad n={tema === 'dark' ? 'sun' : 'moon'} s={16} />
             </button>
             <button
-              className="ad-ico"
+              className="pn-ico"
               onClick={() => ir('decisoes')}
               aria-label="Decisões pendentes"
               style={{ position: 'relative' }}
@@ -277,16 +277,16 @@ export default function PainelOwner() {
               <Ad n="bell" s={16} />
               {pendentes.length > 0 && <span className="c num">{pendentes.length}</span>}
             </button>
-            <button className="ad-btn" onClick={() => ir('pedidos')}>
+            <button className="pn-btn" onClick={() => ir('pedidos')}>
               <Ad n="plus" s={15} />
               Pedir
             </button>
           </header>
 
-          <div className="ad-scroll">{renderTela(tela)}</div>
+          <div className="pn-scroll">{renderTela(tela)}</div>
         </div>
 
-        <nav className="ad-tabs" role="tablist">
+        <nav className="pn-tabs" role="tablist">
           {TABS.map((id) => {
             const meta = TAB_META[id]
             const sel = id === 'mais' ? sheet : tela === id && !sheet
@@ -295,7 +295,7 @@ export default function PainelOwner() {
                 key={id}
                 role="tab"
                 aria-selected={sel}
-                className="ad-tab"
+                className="pn-tab"
                 onClick={() => (id === 'mais' ? setSheet(true) : ir(id as TelaId))}
               >
                 <Ad n={meta.i} s={19} />
@@ -309,20 +309,20 @@ export default function PainelOwner() {
         </nav>
 
         {sheet && (
-          <div className="ad-sheet" onClick={() => setSheet(false)}>
-            <div className="ad-sheet-b" onClick={(e) => e.stopPropagation()}>
+          <div className="pn-sheet" onClick={() => setSheet(false)}>
+            <div className="pn-sheet-b" onClick={(e) => e.stopPropagation()}>
               <div style={{ padding: '10px 18px 14px' }}>
-                <p className="ad-eyebrow">Mais</p>
+                <p className="pn-eyebrow">Mais</p>
               </div>
               {telasDaFolha().map((i) => (
-                <button key={i.id} className="ad-row" onClick={() => ir(i.id)}>
+                <button key={i.id} className="pn-row" onClick={() => ir(i.id)}>
                   <Ad n={i.i} s={18} style={{ color: 'var(--gl-muted)', flex: 'none' }} />
-                  <span className="ad-grow ad-rt">{i.l}</span>
+                  <span className="pn-grow pn-rt">{i.l}</span>
                   <Ad n="chev" s={15} style={{ color: 'var(--gl-faint)', flex: 'none' }} />
                 </button>
               ))}
               <button
-                className="ad-row"
+                className="pn-row"
                 onClick={() => {
                   setTema(proximoTema(tema))
                   setSheet(false)
@@ -333,7 +333,7 @@ export default function PainelOwner() {
                   s={18}
                   style={{ color: 'var(--gl-muted)', flex: 'none' }}
                 />
-                <span className="ad-grow ad-rt">Tema {tema === 'dark' ? 'claro' : 'escuro'}</span>
+                <span className="pn-grow pn-rt">Tema {tema === 'dark' ? 'claro' : 'escuro'}</span>
               </button>
             </div>
           </div>
