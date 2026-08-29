@@ -125,6 +125,9 @@ export interface LinhaDeSessao {
  *  - `pr-descartado`            : o PR foi fechado sem mesclar.
  *  - `pr-rejeitado-sem-retomada`: PR aberto, reprovado por nós, e o Jules
  *                                 (terminal) não vai empurrar commit novo.
+ *  - `pergunta-sem-resposta`    : o Jules ficou em AWAITING_USER_FEEDBACK, a
+ *                                 pergunta já foi respondida e mesmo assim
+ *                                 nada andou por 24h.
  */
 export type MotivoDeFechamento =
   | 'merged'
@@ -134,6 +137,7 @@ export type MotivoDeFechamento =
   | 'dev-falhou'
   | 'pr-descartado'
   | 'pr-rejeitado-sem-retomada'
+  | 'pergunta-sem-resposta'
 
 /** Os motivos que devolvem a issue para a fila — ela será redelegada. */
 export const MOTIVOS_QUE_REDELEGAM: ReadonlySet<MotivoDeFechamento> = new Set([
@@ -141,6 +145,7 @@ export const MOTIVOS_QUE_REDELEGAM: ReadonlySet<MotivoDeFechamento> = new Set([
   'dev-falhou',
   'pr-descartado',
   'pr-rejeitado-sem-retomada',
+  'pergunta-sem-resposta',
 ])
 
 /**

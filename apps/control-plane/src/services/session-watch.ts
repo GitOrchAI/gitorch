@@ -17,6 +17,14 @@
 import { createHash } from 'node:crypto'
 import type { LinhaDeSessao, MotivoDeFechamento } from './dev-session-store.js'
 import { decidirRespostaDaSessao, MAX_NUDGES } from './jules-session-loop.js'
+import { decidirSessaoTerminal } from './sessao-terminal.js'
+
+/**
+ * A pergunta do Jules (AWAITING_USER_FEEDBACK) já foi respondida e mesmo assim
+ * a sessão ficou parada por este tempo → a resposta não destravou; fecha e a
+ * issue volta para a fila (D52).
+ */
+export const HORAS_ATE_TIMEOUT_PERGUNTA_MS = 24 * 60 * 60 * 1000
 
 /**
  * Cadência mínima entre dois exames da MESMA sessão. Sem ela, cada tick do
@@ -83,6 +91,12 @@ export interface VigiaDeps {
     agora: Date
   }) => Promise<void>
   /**
+   * A 2ª falha da mesma issue pede a análise de "por que" antes da 3ª tentativa
+   * (D51). A vigia só DETECTA e chama — a missão real é do scheduler (T4).
+   * Opcional: sem ele, a issue ainda volta para a fila (o motivo redelega).
+   */
+  pedirAnalise?: (args: { linha: LinhaDeSessao }) => Promise<void>
+  /**
    * Grava que já avisamos o dono sobre este estado de falha ('investigar'),
    * para não repetir o aviso a cada ciclo enquanto a sessão continua parada
    * no mesmo estado. NÃO mexe em `nudges` — ver `registrarInvestigacao` em
@@ -138,6 +152,7 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
   let aprovacoes = 0
   let insistidas = 0
   let abandonadas = 0
+  let fechadasTerminal = 0
   let falhas = 0
   let avisosReentregues = 0
 
@@ -329,6 +344,28 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
         }
 
         case 'responder': {
+          // PRAZO DA PERGUNTA (D52): se a pergunta JÁ foi respondida (há
+          // `answeredHash`) e mesmo assim a sessão está parada em
+          // AWAITING_USER_FEEDBACK há mais de 24h, o Jules não vai andar — a
+          // resposta não destravou. Fecha e a issue volta para a fila (D51).
+          const jaRespondida = Boolean(linha.answeredHash)
+          if (jaRespondida && paradoHaMs >= HORAS_ATE_TIMEOUT_PERGUNTA_MS) {
+            await deps.fecharSessao({
+              sessionName: linha.sessionName,
+              motivo: 'pergunta-sem-resposta',
+              agora: deps.agora,
+            })
+            fechadasTerminal += 1
+            if (deps.avisarDono) {
+              await deps
+                .avisarDono(
+                  `GitOrch: a issue #${linha.issueNumber} ficou 24h parada esperando o dev depois ` +
+                    'de a dúvida já ter sido respondida. Fechei a sessão — a esteira vai tentar de novo.'
+                )
+                .catch(() => undefined)
+            }
+            break
+          }
           // A vigília DETECTA e chama quem responde. Ela não conta tentativa
           // nem avisa o dono: quem faz isso é o caminho que de fato age (a
           // missão de QA, em `responderDuvidaPendente`). Enquanto os dois
@@ -337,6 +374,39 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
           // do caminho. Uma coisa, um dono.
           await deps.dispararMissao('qa', linha.projectId)
           respondidas += 1
+          break
+        }
+
+        case 'fechar-terminal': {
+          // O Jules terminou (COMPLETED sem PR, ou FAILED/CANCELLED) e não vai
+          // andar sozinho. Até 29/08 isto ia para 'investigar', que acionava o
+          // SM em loop e NUNCA fechava a linha — 21 de 23 sessões presas assim.
+          //
+          // COM PR: a vigia não tem token de GitHub para saber se mesclou, foi
+          // descartado ou está reprovado — deixa para o ciclo terminal do
+          // scheduler (`varrerCicloTerminalDaSessao`, T2), que tem. Aqui só o
+          // caso SEM PR, que é decidível sem rede.
+          if (consulta.numeroDoPr !== null) {
+            // Já registrado antes do switch — o scheduler pega no próximo ciclo.
+            break
+          }
+          const decisaoTerminal = decidirSessaoTerminal({
+            estado: estadoBruto,
+            situacaoDoPr: 'sem-pr',
+            requeueCount: linha.requeueCount ?? 0,
+            analiseJaFeita: (linha.analysisDoneAt ?? null) !== null,
+            horasNoTerminal: paradoHaMs / (60 * 60 * 1000),
+          })
+          if (decisaoTerminal.acao === 'manter') break
+          await deps.fecharSessao({
+            sessionName: linha.sessionName,
+            motivo: decisaoTerminal.acao === 'fechar-concluido' ? 'merged' : decisaoTerminal.motivo,
+            agora: deps.agora,
+          })
+          fechadasTerminal += 1
+          if (decisaoTerminal.acao === 'fechar-e-analisar' && deps.pedirAnalise) {
+            await deps.pedirAnalise({ linha }).catch(() => undefined)
+          }
           break
         }
 
@@ -539,6 +609,8 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
   if (aprovacoes > 0) partes.push(pluralizar(aprovacoes, 'plano aprovado', 'planos aprovados'))
   if (insistidas > 0) partes.push(pluralizar(insistidas, 'insistência', 'insistências'))
   if (abandonadas > 0) partes.push(pluralizar(abandonadas, 'abandonada', 'abandonadas'))
+  if (fechadasTerminal > 0)
+    partes.push(pluralizar(fechadasTerminal, 'sessão encerrada', 'sessões encerradas'))
   if (falhas > 0) partes.push(pluralizar(falhas, 'falha', 'falhas'))
   if (avisosReentregues > 0)
     partes.push(
