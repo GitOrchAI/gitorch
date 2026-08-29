@@ -139,6 +139,7 @@ describe('runSmWatchdog', () => {
       fetchImpl: f,
       notify: async (m) => {
         notified.push(m)
+        return true
       },
     })
     const a = actionsOf(f)
@@ -183,7 +184,7 @@ describe('buildTelegramNotifier', () => {
       return new Response('{}', { status: 200 })
     }) as typeof fetch
     const notify = buildTelegramNotifier({ botToken: 'tok', chatId: '42', fetchImpl: f })!
-    await notify('oi')
+    expect(await notify('oi')).toBe(true)
     expect(calls[0]).toContain('api.telegram.org/bottok/sendMessage')
   })
 
@@ -201,9 +202,9 @@ describe('buildTelegramNotifier', () => {
     // Prova real do defeito do despacho: um fetch cujo socket travou (nem
     // sucesso nem erro) — sem teto, `notify()` nunca se resolveria e
     // prenderia `tickEmAndamento` (scheduler.ts) para sempre, junto com
-    // TODA varredura futura de TODO projeto. `.catch(() => undefined)`
-    // dentro de `notify` não é proteção nenhuma contra isso: um socket
-    // travado nunca REJEITA sozinho, só um `AbortSignal` o força a rejeitar.
+    // TODA varredura futura de TODO projeto. `.catch(() => false)` dentro de
+    // `notify` não é proteção nenhuma contra isso: um socket travado nunca
+    // REJEITA sozinho, só um `AbortSignal` o força a rejeitar.
     const fetchQueNuncaResolve = vi.fn(
       (_url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) =>
         new Promise<Response>((_resolve, reject) => {
@@ -218,18 +219,21 @@ describe('buildTelegramNotifier', () => {
       fetchImpl: fetchQueNuncaResolve,
       timeoutMs: 20,
     })!
-    // `notify` engole o abort com `.catch(() => undefined)` — o que importa
-    // aqui é que a promise SE RESOLVE (não fica pendurada), não o valor.
-    await expect(notify('publicação confirmada')).resolves.toBeUndefined()
+    // `notify` engole o abort — o que importa aqui é que a promise SE
+    // RESOLVE (não fica pendurada); o valor `false` diz que a entrega falhou.
+    await expect(notify('publicação confirmada')).resolves.toBe(false)
   })
 
-  // Achado Baixo 6 (Task 5/F8): a função devolvida NUNCA rejeita — por isso
-  // um `.catch(...)` em volta de `notify(...)`, em QUALQUER chamador, nunca
-  // dispara (era código morto em scheduler.ts). `onDeliveryFailure` é o
-  // jeito de um chamador optar por não deixar essa falha desaparecer sem
-  // rastro, sem mudar esse contrato "nunca rejeita" pra quem não passa o
-  // callback.
-  it('achado Baixo 6: falha de entrega chama onDeliveryFailure, e notify() continua nunca rejeitando', async () => {
+  // Achado Baixo 6 (Task 5/F8) + correção (fix/telegram-notifier-propaga-falha):
+  // a função devolvida NUNCA rejeita — um `.catch(...)` em volta de
+  // `notify(...)`, em QUALQUER chamador, continua nunca disparando. O que
+  // MUDOU: o VALOR resolvido agora carrega o resultado real (`false` na
+  // falha, `true` no sucesso), então um chamador que precisa saber se a
+  // entrega chegou lê o retorno em vez de depender de `.then/.catch` (que
+  // nunca detectava nada — era o bug real: o `avisado` do QA sempre `true`).
+  // `onDeliveryFailure` continua existindo, à parte, só para quem quer LOGAR
+  // sem mudar o fluxo.
+  it('achado Baixo 6: falha de entrega chama onDeliveryFailure, resolve false, e notify() continua nunca rejeitando', async () => {
     const erroDeEntrega = new Error('Telegram: bot inválido ou destino apagado')
     const f = vi.fn(async () => {
       throw erroDeEntrega
@@ -243,21 +247,44 @@ describe('buildTelegramNotifier', () => {
       onDeliveryFailure,
     })!
 
-    await expect(notify('aviso que não vai chegar')).resolves.toBeUndefined()
+    await expect(notify('aviso que não vai chegar')).resolves.toBe(false)
     expect(onDeliveryFailure).toHaveBeenCalledWith(erroDeEntrega)
   })
 
-  it('sem onDeliveryFailure: comportamento de sempre — falha de entrega segue muda, sem lançar', async () => {
+  it('sem onDeliveryFailure: falha de entrega segue sem lançar, mas resolve false (não mais undefined)', async () => {
     const f = vi.fn(async () => {
       throw new Error('Telegram: bot inválido')
     }) as unknown as typeof fetch
 
     const notify = buildTelegramNotifier({ botToken: 'tok', chatId: '42', fetchImpl: f })!
 
-    await expect(notify('aviso')).resolves.toBeUndefined()
+    await expect(notify('aviso')).resolves.toBe(false)
   })
 
-  it('entrega com sucesso: onDeliveryFailure NUNCA é chamado', async () => {
+  // `fetch` só rejeita em falha de REDE — bot token revogado, bot bloqueado
+  // pelo destino ou chat apagado são o cenário mais comum na vida real
+  // ("bot inválido, destino apagado" do comentário acima) e o Telegram
+  // responde com um HTTP de erro (401/403/400), NÃO com uma rejeição.
+  it('Telegram responde HTTP de erro (bot inválido/destino apagado): resolve false, chama onDeliveryFailure, nunca rejeita', async () => {
+    const f = vi.fn(
+      async () => new Response('{"ok":false}', { status: 401 })
+    ) as unknown as typeof fetch
+    const onDeliveryFailure = vi.fn()
+
+    const notify = buildTelegramNotifier({
+      botToken: 'tok-revogado',
+      chatId: '42',
+      fetchImpl: f,
+      onDeliveryFailure,
+    })!
+
+    await expect(notify('aviso que a API rejeitou')).resolves.toBe(false)
+    expect(onDeliveryFailure).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('401') })
+    )
+  })
+
+  it('entrega com sucesso: resolve true, onDeliveryFailure NUNCA é chamado', async () => {
     const f = vi.fn(async () => new Response('{}', { status: 200 })) as unknown as typeof fetch
     const onDeliveryFailure = vi.fn()
 
@@ -268,7 +295,7 @@ describe('buildTelegramNotifier', () => {
       onDeliveryFailure,
     })!
 
-    await notify('aviso que chega')
+    await expect(notify('aviso que chega')).resolves.toBe(true)
     expect(onDeliveryFailure).not.toHaveBeenCalled()
   })
 })

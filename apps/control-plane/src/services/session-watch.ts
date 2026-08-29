@@ -103,9 +103,16 @@ export interface VigiaDeps {
    * dev-session-store.ts para o porquê.
    */
   registrarInvestigacao: (args: { sessionName: string; hash: string; agora: Date }) => Promise<void>
-  /** Avisa o dono quando a sessão é abandonada por teto estourado, ou quando
-   *  a falha entra em 'investigar' pela primeira vez (ver o ramo abaixo). */
-  avisarDono?: (mensagem: string) => Promise<void>
+  /**
+   * Avisa o dono quando a sessão é abandonada por teto estourado, ou quando
+   * a falha entra em 'investigar' pela primeira vez (ver o ramo abaixo).
+   *
+   * fix/telegram-notifier-propaga-falha: `Promise<boolean>` (não `Promise<void>`
+   * como as outras cópias da família `avisarDono`) porque o ramo de reentrega
+   * de aviso (abaixo) precisa saber de verdade se a entrega chegou — ler o
+   * retorno é o único jeito, já que `buildTelegramNotifier` nunca rejeita.
+   */
+  avisarDono?: (mensagem: string) => Promise<boolean>
   agora: Date
   onWarn?: (m: string) => void
 }
@@ -191,21 +198,18 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
         // veio preservar — o defeito original de volta, e pior.
         let donoAvisado = false
         if (deps.avisarDono) {
-          donoAvisado = await deps
-            .avisarDono(
-              // Escrito para GENTE, não para máquina. O identificador da
-              // sessão fica no log (quem depura precisa dele) e FORA daqui
-              // (quem decide, não). O recado nomeia o trabalho pelo número que
-              // aparece no quadro e diz a AÇÃO — sem isso vira só um alarme.
-              `GitOrch: pedi ${MAX_TENTATIVAS_DE_AVISO} vezes para o dev refazer a tarefa ` +
-                `#${linha.issueNumber} e o recado não chegou.` +
-                (linha.pullRequestNumber
-                  ? ` O que ele precisa mudar está escrito no pull request #${linha.pullRequestNumber}.`
-                  : '') +
-                ' Ele não vai refazer sozinho: alguém precisa avisá-lo à mão, ou a entrega fica parada.'
-            )
-            .then(() => true)
-            .catch(() => false)
+          donoAvisado = await deps.avisarDono(
+            // Escrito para GENTE, não para máquina. O identificador da
+            // sessão fica no log (quem depura precisa dele) e FORA daqui
+            // (quem decide, não). O recado nomeia o trabalho pelo número que
+            // aparece no quadro e diz a AÇÃO — sem isso vira só um alarme.
+            `GitOrch: pedi ${MAX_TENTATIVAS_DE_AVISO} vezes para o dev refazer a tarefa ` +
+              `#${linha.issueNumber} e o recado não chegou.` +
+              (linha.pullRequestNumber
+                ? ` O que ele precisa mudar está escrito no pull request #${linha.pullRequestNumber}.`
+                : '') +
+              ' Ele não vai refazer sozinho: alguém precisa avisá-lo à mão, ou a entrega fica parada.'
+          )
         }
         if (donoAvisado && deps.limparAvisoPendente) {
           await deps.limparAvisoPendente({ sessionName: linha.sessionName }).catch(() => undefined)
