@@ -43,7 +43,7 @@ jobs:
 
       - name: Install Dependencies
         working-directory: .github/scripts
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile --ignore-workspace
 
       - name: Determine Alerts to Process
         id: alerts
