@@ -2,8 +2,11 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   registrarJulgamento,
   lerHistoricoDoProjeto,
+  lerJanelaDeBarradas,
+  registrarJanelaDeBarradas,
   JANELA_DE_JULGAMENTOS,
   TIPO_DO_EVENTO,
+  TIPO_DO_AVISO_DE_BARRADAS,
   type PrismaDoHistorico,
 } from './historico-de-julgamento.js'
 
@@ -95,6 +98,86 @@ describe('lerHistoricoDoProjeto', () => {
     await lerHistoricoDoProjeto({ prisma, projectId: 'proj_a' })
     expect((prisma.event.findMany as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toMatchObject({
       where: { projectId: 'proj_a', type: TIPO_DO_EVENTO },
+    })
+  })
+})
+
+// ESTEIRA-T15 — dedupe do aviso de "N entregas barradas" (mesmo mecanismo do
+// T11: EstadoDaJanela / aviso-por-janela.ts).
+describe('lerJanelaDeBarradas / registrarJanelaDeBarradas', () => {
+  it('sem marca nenhuma: janela limpa', async () => {
+    const prisma = prismaFake()
+    expect(await lerJanelaDeBarradas({ prisma, projectId: 'proj_1' })).toEqual({
+      desde: null,
+      avisado: false,
+    })
+  })
+
+  it('última marca diz avisado: true', async () => {
+    const prisma = prismaFake({
+      event: {
+        create: vi.fn(),
+        findMany: vi
+          .fn()
+          .mockResolvedValue([
+            { payload: { desde: '2026-08-29T09:00:00Z', avisado: true }, createdAt: new Date() },
+          ]),
+      },
+    })
+    expect(await lerJanelaDeBarradas({ prisma, projectId: 'proj_1' })).toEqual({
+      desde: new Date('2026-08-29T09:00:00Z'),
+      avisado: true,
+    })
+  })
+
+  it('última marca diz que já limpou (false), mesmo com uma marca "true" mais antiga', async () => {
+    const prisma = prismaFake({
+      event: {
+        create: vi.fn(),
+        findMany: vi.fn().mockResolvedValue([
+          {
+            payload: { desde: null, avisado: false },
+            createdAt: new Date('2026-08-29T10:00:00Z'),
+          },
+          {
+            payload: { desde: '2026-08-29T08:00:00Z', avisado: true },
+            createdAt: new Date('2026-08-29T09:00:00Z'),
+          },
+        ]),
+      },
+    })
+    expect(await lerJanelaDeBarradas({ prisma, projectId: 'proj_1' })).toEqual({
+      desde: null,
+      avisado: false,
+    })
+  })
+
+  it('grava a marca com o tipo e o projeto certos', async () => {
+    const prisma = prismaFake()
+    await registrarJanelaDeBarradas({
+      prisma,
+      projectId: 'proj_1',
+      estado: { desde: new Date('2026-08-29T09:00:00Z'), avisado: true },
+    })
+    expect(prisma.event.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: {
+          projectId: 'proj_1',
+          type: TIPO_DO_AVISO_DE_BARRADAS,
+          payload: { desde: '2026-08-29T09:00:00.000Z', avisado: true },
+        },
+      })
+    )
+  })
+
+  it('filtra pelo projeto e pelo tipo certo ao ler', async () => {
+    const findMany = vi.fn().mockResolvedValue([])
+    const prisma = prismaFake({ event: { create: vi.fn(), findMany } })
+    await lerJanelaDeBarradas({ prisma, projectId: 'proj_x' })
+    expect(findMany.mock.calls[0]?.[0]).toMatchObject({
+      where: { projectId: 'proj_x', type: TIPO_DO_AVISO_DE_BARRADAS },
+      orderBy: { createdAt: 'desc' },
+      take: 1,
     })
   })
 })

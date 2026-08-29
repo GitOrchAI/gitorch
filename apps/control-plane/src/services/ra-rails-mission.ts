@@ -1,8 +1,10 @@
-import { wrapClientRequest } from '@gitorch/cadence'
+import { wrapClientRequest, RAILS_SCHEMAS, buildStepPrompt } from '@gitorch/cadence'
 import { fetchSemPermissao } from './guarda-de-autonomia.js'
 import { runRaRails, type StepExecutor } from './role-rails.js'
 import { fetchComTeto } from './fetch-com-teto.js'
 import { decidirTrabalhoDoRa, marcarComoAnalisado } from './wish-ja-analisada.js'
+import { runFormStep } from './rails-runner.js'
+import { destinoAposRa, textoDaRespostaAoDev, type DestinoDaDuvida } from './duvida-do-dev.js'
 
 // Missão do RA nos TRILHOS: ancora a análise na WISH ABERTA (mesmo gatilho do
 // PO). Sem isso o RA analisa o projeto em abstrato — ou pior, a wish ANTERIOR
@@ -109,4 +111,80 @@ export async function runRaMissionViaRails(
 
   const ra = await runRaRails(options.execute, [...wishBlock, ...options.contextBlocks])
   return { exitCode: 0, output: ra.text, stderr: '' }
+}
+
+// ESTEIRA-T14 (decisão do dono 29/08): quando o QA não consegue responder uma
+// dúvida técnica do dev assíncrono, ela NUNCA sobe direto ao dono — o RA tenta
+// primeiro, com mais tempo e o mesmo contexto de codegraph que o QA já tinha.
+// Caso real que motivou: Jules perguntou algo técnico (sync do MercadoLivre,
+// upsert do Prisma) na tarefa #3884 do patinhas, e o GitOrch escalou ao dono
+// via Telegram — "se o gitorch me entrega decisões técnicas, eu mesmo faria".
+
+export interface DuvidaTecnicaViaRaOptions {
+  /** O que o dev perguntou, na íntegra. */
+  pergunta: string
+  repository: string
+  /** Número da tarefa que o dev está executando, para dar contexto. */
+  issueNumber: number
+  /** Por que o QA não conseguiu responder — vai no prompt do RA, não é enfeite. */
+  motivoDaEscalada: string
+  execute: StepExecutor
+  contextBlocks: string[]
+}
+
+export interface DuvidaTecnicaViaRaResult {
+  destino: DestinoDaDuvida
+  /** Pronto para `responderSessaoJules` — só existe quando o destino é o dev. */
+  mensagemParaODev: string | null
+  /**
+   * A resposta do RA, quando útil — vira aprendizado (memoria-do-jules,
+   * origem 'resposta-tecnica') para o QA responder sozinho da próxima vez que
+   * o mesmo tema aparecer. Nulo quando o RA também não soube.
+   */
+  aprendizadoParaGravar: string | null
+}
+
+interface FormularioDaDuvida {
+  precisaDoDono: boolean
+  resposta: string
+}
+
+/**
+ * O RA tenta a dúvida técnica que o QA não conseguiu responder.
+ *
+ * Reusa `RAILS_SCHEMAS.devQuestion` (o mesmo formulário do QA) — o campo
+ * `precisaDoDono` é ignorado aqui de propósito: já sabemos que não é decisão
+ * de negócio, foi assim que a dúvida chegou até o RA.
+ */
+export async function runDuvidaTecnicaViaRa(
+  options: DuvidaTecnicaViaRaOptions
+): Promise<DuvidaTecnicaViaRaResult> {
+  const formulario = (await runFormStep({
+    schema: RAILS_SCHEMAS.devQuestion,
+    prompt: buildStepPrompt('ra', 'ra-duvida-tecnica', RAILS_SCHEMAS.devQuestion, [
+      ...options.contextBlocks,
+      `O QA já tentou responder a dúvida técnica do dev assíncrono na tarefa ` +
+        `#${options.issueNumber} de ${options.repository} e não conseguiu (${options.motivoDaEscalada}). ` +
+        'Você é o RA: tem mais tempo e deve ir mais fundo no repositório (o resumo do codegraph ' +
+        'está no contexto acima) antes de decidir que ninguém sabe.',
+      '',
+      options.pergunta,
+      '',
+      'Responda citando arquivo/função/símbolo real, lido do codegraph acima — nunca invente. ' +
+        'Se depois de examinar o codegraph você genuinamente não souber, diga isso claramente em ' +
+        '`resposta` (a pergunta sobe para o dono). Ignore o campo precisaDoDono — já sabemos que ' +
+        'isto não é decisão de negócio.',
+    ]),
+    execute: options.execute,
+  })) as FormularioDaDuvida
+
+  const destino = destinoAposRa(formulario.resposta)
+  if (destino.tipo !== 'responder-o-dev') {
+    return { destino, mensagemParaODev: null, aprendizadoParaGravar: null }
+  }
+  return {
+    destino,
+    mensagemParaODev: textoDaRespostaAoDev(destino.resposta),
+    aprendizadoParaGravar: destino.resposta,
+  }
 }

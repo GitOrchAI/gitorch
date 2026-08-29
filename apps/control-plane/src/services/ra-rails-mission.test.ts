@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { runRaMissionViaRails } from './ra-rails-mission.js'
+import { runRaMissionViaRails, runDuvidaTecnicaViaRa } from './ra-rails-mission.js'
 
 const RA_REPLIES: Record<string, string> = {
   areas: JSON.stringify({
@@ -171,5 +171,60 @@ describe('teto de tempo (leva D)', () => {
       expect(init?.signal).toBeInstanceOf(AbortSignal)
       expect(init?.signal?.aborted).toBe(false)
     }
+  })
+})
+
+// ESTEIRA-T14 — o RA tenta a dúvida técnica que o QA não conseguiu responder.
+describe('runDuvidaTecnicaViaRa', () => {
+  const BASE = {
+    pergunta: 'Devo usar upsert ou transação para sincronizar o item do MercadoLivre?',
+    repository: 'loureng/patinhas-3d-crafts',
+    issueNumber: 3884,
+    motivoDaEscalada: 'o QA não conseguiu responder lendo o repositório',
+    contextBlocks: ['codegraph aqui'],
+  }
+
+  it('RA responde de verdade: vira mensagem pronta + aprendizado para gravar', async () => {
+    const execute = vi.fn(async () =>
+      JSON.stringify({
+        precisaDoDono: false,
+        resposta: 'Use upsert — já é o padrão em src/services/mercadoLivreService.ts.',
+      })
+    )
+
+    const r = await runDuvidaTecnicaViaRa({ ...BASE, execute })
+
+    expect(r.destino.tipo).toBe('responder-o-dev')
+    expect(r.mensagemParaODev).toContain('upsert')
+    expect(r.aprendizadoParaGravar).toContain('mercadoLivreService.ts')
+  })
+
+  it('nem o RA soube: sobe para o dono, nada de aprendizado, nada para o dev', async () => {
+    const execute = vi.fn(async () =>
+      JSON.stringify({ precisaDoDono: false, resposta: 'Não sei responder isso.' })
+    )
+
+    const r = await runDuvidaTecnicaViaRa({ ...BASE, execute })
+
+    expect(r.destino.tipo).toBe('perguntar-ao-dono')
+    expect(r.mensagemParaODev).toBeNull()
+    expect(r.aprendizadoParaGravar).toBeNull()
+  })
+
+  it('o prompt cita o motivo da escalada e a pergunta inteira', async () => {
+    const prompts: string[] = []
+    const execute = vi.fn(async (prompt: string) => {
+      prompts.push(prompt)
+      return JSON.stringify({
+        precisaDoDono: false,
+        resposta: 'Use upsert — já é o padrão em src/services/mercadoLivreService.ts.',
+      })
+    })
+
+    await runDuvidaTecnicaViaRa({ ...BASE, execute })
+
+    expect(prompts[0]).toContain(BASE.pergunta)
+    expect(prompts[0]).toContain(BASE.motivoDaEscalada)
+    expect(prompts[0]).toContain('#3884')
   })
 })

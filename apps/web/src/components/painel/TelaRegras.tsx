@@ -8,9 +8,12 @@
 // controle que não persiste é pior que controle nenhum. Volta a ser
 // interativo junto com a rota de governança (leva 2). Portado de
 // TelaGovernanca.jsx.
+import { useState } from 'react'
 import { DEMO } from './painel-demo'
-import { Cabeca, Card } from './PainelUI'
-import { SeloDemo } from './PainelEstados'
+import { ROTAS, salvarDuvidaConfig } from './painel-api'
+import { usePainelBusca } from './usePainelBusca'
+import { Cabeca, Card, Chips } from './PainelUI'
+import { SeloDemo, Estados } from './PainelEstados'
 
 /** Motivo dos interruptores desabilitados, visível no hover. */
 const INERTE = 'Ainda não salva — ligar regras de verdade entra numa próxima leva.'
@@ -58,6 +61,116 @@ interface RegraView {
   trava: boolean
 }
 
+// ESTEIRA-T14 (decisão do dono 29/08) — quando o QA não sabe responder uma
+// dúvida técnica do dev assíncrono, quanto o dono quer ver disso no chat. AO
+// VIVO nesta leva: lê e grava runtimeConfig.perguntasAoDono de verdade (POST
+// /api/v1/painel/duvida-config) — por isso NÃO leva SeloDemo nem Interruptor
+// desabilitado, ao contrário do resto desta tela.
+const OPCOES_PERGUNTAS_AO_DONO: [string, string][] = [
+  ['so-executivo', 'Só decisão de negócio'],
+  ['executivo-e-tecnico-bloqueante', 'Negócio + bloqueio técnico'],
+  ['tudo', 'Tudo'],
+]
+
+const DESC_POR_OPCAO: Record<string, string> = {
+  'so-executivo':
+    'Você só vê pergunta que é decisão SUA. O time (QA e RA) resolve tudo que é técnico sozinho.',
+  'executivo-e-tecnico-bloqueante':
+    'Além da decisão sua, você também vê na hora todo bloqueio técnico — antes mesmo do RA tentar.',
+  tudo: 'Você vê tudo, inclusive as dúvidas técnicas que o time já resolveu sozinho (sem bloquear nada).',
+}
+
+interface ProjetoBruto {
+  id: string
+  name: string
+  description?: string | null
+  runtimeConfig?: { perguntasAoDono?: string } | null
+}
+interface ProjetoDuvidaView {
+  id: string
+  nome: string
+  perguntasAoDono: string
+}
+
+function politicaAtual(runtimeConfig: ProjetoBruto['runtimeConfig']): string {
+  const v = runtimeConfig?.perguntasAoDono
+  return v === 'executivo-e-tecnico-bloqueante' || v === 'tudo' ? v : 'so-executivo'
+}
+
+function CardDuvidasDoDev() {
+  const r = usePainelBusca<ProjetoDuvidaView[], { data?: ProjetoBruto[] }>(ROTAS.repos, {
+    mapear: (b) =>
+      (b.data ?? []).map((p) => ({
+        id: p.id,
+        nome: p.description || p.name,
+        perguntasAoDono: politicaAtual(p.runtimeConfig),
+      })),
+    vazio: (d) => d.length === 0,
+  })
+  // Estado local por projeto: valor otimista (a tela muda na hora do clique,
+  // não espera o servidor) + o que está salvando + o erro, se a gravação
+  // falhar (aí volta pro valor de antes — nunca deixa a tela mentir).
+  const [valores, setValores] = useState<Record<string, string>>({})
+  const [salvando, setSalvando] = useState<Record<string, boolean>>({})
+  const [erros, setErros] = useState<Record<string, string>>({})
+
+  const valorDe = (p: ProjetoDuvidaView): string => valores[p.id] ?? p.perguntasAoDono
+
+  async function mudar(p: ProjetoDuvidaView, novo: string) {
+    const anterior = valorDe(p)
+    if (novo === anterior) return
+    setValores((v) => ({ ...v, [p.id]: novo }))
+    setErros((e) => ({ ...e, [p.id]: '' }))
+    setSalvando((s) => ({ ...s, [p.id]: true }))
+    const resultado = await salvarDuvidaConfig(p.id, novo)
+    setSalvando((s) => ({ ...s, [p.id]: false }))
+    if (!resultado.ok) {
+      // Falhou: volta pro valor de antes — o controle nunca fica mostrando
+      // algo que não foi salvo de verdade.
+      setValores((v) => ({ ...v, [p.id]: anterior }))
+      setErros((e) => ({ ...e, [p.id]: resultado.erro }))
+    }
+  }
+
+  return (
+    <Card flush titulo="Dúvidas do dev assíncrono" sub="Ao vivo">
+      <p style={{ margin: '0 0 18px', fontSize: 13.5, color: 'var(--gl-muted)', maxWidth: '62ch' }}>
+        Quando o Jules trava numa pergunta, o QA responde o que é técnico e só sobe a você o que é
+        decisão de negócio. Escolha, por projeto, o quanto disso você quer ver no chat.
+      </p>
+      <Estados r={r} o_que="os projetos" vazio="Nenhum projeto ligado ainda.">
+        {(projetos) => (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+            {projetos.map((p) => (
+              <div key={p.id} className="pn-row static" style={{ alignItems: 'flex-start' }}>
+                <span className="pn-grow">
+                  <span className="pn-rt" style={{ display: 'block', whiteSpace: 'normal' }}>
+                    {p.nome}
+                  </span>
+                  <span className="pn-rs" style={{ lineHeight: 1.5 }}>
+                    {DESC_POR_OPCAO[valorDe(p)]}
+                    {salvando[p.id] && ' · Salvando…'}
+                  </span>
+                  {erros[p.id] && (
+                    <span className="pn-rs" style={{ color: 'var(--gl-danger, #c0392b)' }}>
+                      {erros[p.id]}
+                    </span>
+                  )}
+                </span>
+                <Chips
+                  valor={valorDe(p)}
+                  onChange={(v) => void mudar(p, v)}
+                  opcoes={OPCOES_PERGUNTAS_AO_DONO}
+                />
+              </div>
+            ))}
+          </div>
+        )}
+      </Estados>
+    </Card>
+  )
+}
+
 export function TelaRegras() {
   const regras: readonly RegraView[] = DEMO.regras
 
@@ -67,6 +180,8 @@ export function TelaRegras() {
         Os limites que os agentes respeitam. Duas delas não podem ser desligadas — são o que garante
         que nada entre em produção sem verificação.
       </Cabeca>
+
+      <CardDuvidasDoDev />
 
       <Card flush titulo="Em vigor" sub={<SeloDemo mostrar />}>
         {regras.map((r) => (

@@ -37,6 +37,8 @@ export const ROTAS = {
   ritmo: '/api/v1/painel/ritmo', // FALTA — leva 2
   entregas: '/api/v1/painel/entregas', // FALTA — leva 2
   historico: '/api/v1/painel/historico', // FALTA — leva 2
+  duvidaConfig: '/api/v1/painel/duvida-config', // NOVA (T14) — POST
+  timeline: '/api/v1/painel/timeline', // NOVA (T15) — auditoria que não vira spam no Telegram
 } as const
 
 /**
@@ -170,6 +172,36 @@ export async function responderDecisao(
     }
     if (erro.status === 404) return { ok: false, erro: 'Essa decisão não existe mais.' }
     return { ok: false, erro: 'Não consegui enviar a resposta agora.' }
+  }
+}
+
+export type SalvarDuvidaConfigResultado = { ok: true } | { ok: false; erro: string }
+
+/**
+ * Grava quanto o dono quer ver sobre dúvidas do dev assíncrono NESTE projeto
+ * (POST /api/v1/painel/duvida-config, ESTEIRA-T14).
+ */
+export async function salvarDuvidaConfig(
+  projectId: string,
+  perguntasAoDono: string,
+  deps: PedirDeps = {}
+): Promise<SalvarDuvidaConfigResultado> {
+  try {
+    await pedir(
+      ROTAS.duvidaConfig,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId, perguntasAoDono }),
+      },
+      deps
+    )
+    return { ok: true }
+  } catch (e) {
+    const erro = e as ErroDaApi
+    if (erro.status === 404) return { ok: false, erro: 'Este projeto não existe mais.' }
+    if (erro.status === 400) return { ok: false, erro: 'Escolha uma das opções antes de salvar.' }
+    return { ok: false, erro: 'Não consegui salvar agora. Tente de novo.' }
   }
 }
 

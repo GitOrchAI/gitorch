@@ -16,8 +16,15 @@ import { ArvoreIndisponivelError } from '../services/arvore-de-pedidos.js'
 // antes de consultar Event/Mission por `projectId: { in }`).
 function fakePrisma(over: Record<string, any> = {}) {
   return {
-    project: { findMany: vi.fn().mockResolvedValue([{ id: 'proj_1' }]) },
-    event: { findFirst: vi.fn().mockResolvedValue(null) },
+    project: {
+      findMany: vi.fn().mockResolvedValue([{ id: 'proj_1' }]),
+      findFirst: vi.fn().mockResolvedValue(null),
+      update: vi.fn().mockResolvedValue({}),
+    },
+    event: {
+      findFirst: vi.fn().mockResolvedValue(null),
+      findMany: vi.fn().mockResolvedValue([]),
+    },
     mission: {
       findFirst: vi.fn().mockResolvedValue(null),
       findMany: vi.fn().mockResolvedValue([]),
@@ -596,6 +603,158 @@ describe('Rotas do painel do owner', () => {
         { answerImpl: vi.fn().mockResolvedValue(null) }
       )
       expect((await responder({ resposta: 'x' })).statusCode).toBe(404)
+    })
+  })
+
+  // ESTEIRA-T14 — config por projeto de quanto o dono quer ver sobre dúvidas
+  // do dev assíncrono. Sem GET dedicado: GET /api/projects já devolve
+  // runtimeConfig por projeto (ROTAS.repos) — só o POST é novo aqui.
+  describe('POST /api/v1/painel/duvida-config', () => {
+    const postConfig = (body: Record<string, unknown>) =>
+      app.inject({
+        method: 'POST',
+        url: '/api/v1/painel/duvida-config',
+        headers: authHeaders,
+        payload: body,
+      })
+
+    test('sem sessão → 401', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/painel/duvida-config',
+        payload: { projectId: 'p1', perguntasAoDono: 'tudo' },
+      })
+      expect(res.statusCode).toBe(401)
+    })
+
+    test('sem projectId → 400', async () => {
+      await build()
+      expect((await postConfig({ perguntasAoDono: 'tudo' })).statusCode).toBe(400)
+    })
+
+    test('valor inválido → 400, nunca grava lixo', async () => {
+      const update = vi.fn()
+      await build(
+        fakePrisma({
+          project: {
+            findFirst: vi.fn().mockResolvedValue({ id: 'p1', runtimeConfig: null }),
+            update,
+          },
+        })
+      )
+      expect(
+        (await postConfig({ projectId: 'p1', perguntasAoDono: 'qualquer-coisa' })).statusCode
+      ).toBe(400)
+      expect(update).not.toHaveBeenCalled()
+    })
+
+    test('projeto de outro dono (ou inexistente) → 404, mesma frase das duas situações', async () => {
+      await build(fakePrisma({ project: { findFirst: vi.fn().mockResolvedValue(null) } }))
+      const res = await postConfig({ projectId: 'p1', perguntasAoDono: 'tudo' })
+      expect(res.statusCode).toBe(404)
+    })
+
+    test('consulta o projeto escopado ao dono por id, nunca de outro', async () => {
+      const findFirst = vi.fn().mockResolvedValue(null)
+      await build(fakePrisma({ project: { findFirst } }))
+      await postConfig({ projectId: 'p1', perguntasAoDono: 'tudo' })
+      expect(findFirst.mock.calls[0]![0].where).toEqual({ id: 'p1', userId: 'owner_1' })
+    })
+
+    test('grava a política SEM apagar o resto do runtimeConfig (merge de uma chave)', async () => {
+      const update = vi.fn().mockResolvedValue({})
+      await build(
+        fakePrisma({
+          project: {
+            findFirst: vi
+              .fn()
+              .mockResolvedValue({ id: 'p1', runtimeConfig: { board: { sprintDays: 10 } } }),
+            update,
+          },
+        })
+      )
+      const res = await postConfig({
+        projectId: 'p1',
+        perguntasAoDono: 'executivo-e-tecnico-bloqueante',
+      })
+      expect(res.statusCode).toBe(200)
+      expect(res.json()).toEqual({ perguntasAoDono: 'executivo-e-tecnico-bloqueante' })
+      expect(update.mock.calls[0]![0]).toEqual({
+        where: { id: 'p1' },
+        data: {
+          runtimeConfig: {
+            board: { sprintDays: 10 },
+            perguntasAoDono: 'executivo-e-tecnico-bloqueante',
+          },
+        },
+      })
+    })
+  })
+
+  // ESTEIRA-T15 — a auditoria que não é mais spam no Telegram.
+  describe('GET /api/v1/painel/timeline', () => {
+    const getTimeline = () =>
+      app.inject({ method: 'GET', url: '/api/v1/painel/timeline', headers: authHeaders })
+
+    test('sem sessão → 401', async () => {
+      const res = await app.inject({ method: 'GET', url: '/api/v1/painel/timeline' })
+      expect(res.statusCode).toBe(401)
+    })
+
+    test('dono sem projeto → lista vazia, sem tocar Event', async () => {
+      const prisma = await build(
+        fakePrisma({ project: { findMany: vi.fn().mockResolvedValue([]) } })
+      )
+      expect((await getTimeline()).json()).toEqual({ eventos: [] })
+      expect(prisma.event.findMany).not.toHaveBeenCalled()
+    })
+
+    test('devolve os eventos de auditoria, mais recente primeiro', async () => {
+      const quando = new Date('2026-08-29T09:43:00Z')
+      await build(
+        fakePrisma({
+          event: {
+            findFirst: vi.fn().mockResolvedValue(null),
+            findMany: vi
+              .fn()
+              .mockResolvedValue([
+                { payload: { texto: 'GitOrch: 3 entregas barradas...' }, createdAt: quando },
+              ]),
+          },
+        })
+      )
+      expect((await getTimeline()).json()).toEqual({
+        eventos: [{ texto: 'GitOrch: 3 entregas barradas...', quando: quando.toISOString() }],
+      })
+    })
+
+    test('só busca eventos type=audit, dos projetos do dono, teto de 10', async () => {
+      const findMany = vi.fn().mockResolvedValue([])
+      const prisma = await build(
+        fakePrisma({
+          project: { findMany: vi.fn().mockResolvedValue([{ id: 'p1' }, { id: 'p2' }]) },
+          event: { findFirst: vi.fn().mockResolvedValue(null), findMany },
+        })
+      )
+      await getTimeline()
+      expect(findMany.mock.calls[0]?.[0]).toMatchObject({
+        where: { projectId: { in: ['p1', 'p2'] }, type: 'audit' },
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+      })
+      void prisma
+    })
+
+    test('payload sem texto (evento inesperado) não inventa conteúdo — string vazia', async () => {
+      await build(
+        fakePrisma({
+          event: {
+            findFirst: vi.fn().mockResolvedValue(null),
+            findMany: vi.fn().mockResolvedValue([{ payload: {}, createdAt: new Date() }]),
+          },
+        })
+      )
+      expect((await getTimeline()).json().eventos[0].texto).toBe('')
     })
   })
 })

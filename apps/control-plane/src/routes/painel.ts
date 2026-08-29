@@ -15,6 +15,7 @@ import {
   LeituraIndisponivelError,
   type LeituraDeProjeto,
 } from '../services/leitura-do-repositorio.js'
+import type { PoliticaDePerguntasAoDono } from '../services/duvida-do-dev.js'
 
 // Rotas do painel do owner (ui_kits/painel-owner/API.md do handoff GitOrch
 // Design System). Nesta leva: pulso, agentes e responder-decisão ao vivo.
@@ -471,4 +472,94 @@ export const painelRoutes = async (
       })
     }
   )
+
+  // POST /api/v1/painel/duvida-config — ESTEIRA-T14. Grava quanto o dono quer
+  // ver no chat sobre dúvidas do dev assíncrono NESTE projeto
+  // (runtimeConfig.perguntasAoDono). Sem GET dedicado: `GET /api/projects`
+  // (ROTAS.repos) já devolve `runtimeConfig` por projeto — criar uma segunda
+  // rota só para ler o mesmo dado seria duplicar, não servir.
+  //
+  // Por `projectId` (o cuid interno), não por `wingId`: a lista de /api/projects
+  // devolve `id` de verdade, e `name` ali NÃO é o endereço do repositório — foi
+  // exatamente essa confusão que escondia projetos do dono até o PR #367.
+  // Nunca sobrescreve o resto do runtimeConfig (board.columns,
+  // board.sprintDays...): lê o que já existe e faz merge de UMA chave.
+  app.post<{ Body: { projectId?: string; perguntasAoDono?: string } }>(
+    '/api/v1/painel/duvida-config',
+    { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      if (!request.user) return reply.code(401).send(NAO_LOGADO)
+      const projectId = request.body?.projectId?.trim()
+      if (!projectId) return reply.code(400).send({ error: 'Informe o projeto.' })
+      const valores: PoliticaDePerguntasAoDono[] = [
+        'so-executivo',
+        'executivo-e-tecnico-bloqueante',
+        'tudo',
+      ]
+      const politica = request.body?.perguntasAoDono
+      if (!valores.includes(politica as PoliticaDePerguntasAoDono)) {
+        return reply
+          .code(400)
+          .send({ error: `perguntasAoDono precisa ser um de: ${valores.join(', ')}` })
+      }
+
+      const ownerId = await resolveOwnerId(app.prisma, request.user)
+      const row = await app.prisma.project.findFirst({
+        where: { id: projectId, userId: ownerId },
+        select: { id: true, runtimeConfig: true },
+      })
+      // Inexistente e "de outro dono" devolvem a MESMA frase — mesmo
+      // anti-vazamento de /decisoes/:id/responder.
+      if (!row) return reply.code(404).send({ error: 'Projeto não encontrado.' })
+
+      const configAtual = (row.runtimeConfig as Record<string, unknown> | null) ?? {}
+      await app.prisma.project.update({
+        where: { id: row.id },
+        data: { runtimeConfig: { ...configAtual, perguntasAoDono: politica } },
+      })
+
+      return reply.send({ perguntasAoDono: politica })
+    }
+  )
+
+  // GET /api/v1/painel/timeline — ESTEIRA-T15. Os últimos 10 eventos de
+  // AUDITORIA/PROGRESSO ("N entregas barradas", "issue voltou pra fila"...)
+  // que antes viravam spam no Telegram (rajada real de 29/08: 4 mensagens em
+  // 5 minutos, nenhuma decisão pra tomar). Não somem — mudam de canal.
+  app.get(
+    '/api/v1/painel/timeline',
+    RATE_LIMIT_POLLING,
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      if (!request.user) return reply.code(401).send(NAO_LOGADO)
+      const ownerId = await resolveOwnerId(app.prisma, request.user)
+      const ids = await projetosDoDono(ownerId)
+      if (ids.length === 0) return reply.send({ eventos: [] })
+
+      const eventos = await app.prisma.event.findMany({
+        where: { projectId: { in: ids }, type: 'audit' },
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+        select: { payload: true, createdAt: true },
+      })
+
+      return reply.send({
+        eventos: eventos.map((e) => ({
+          texto: textoDoEventoDeAuditoria(e.payload),
+          quando: e.createdAt.toISOString(),
+        })),
+      })
+    }
+  )
+}
+
+/** Payload sem `texto` é evento antigo/inesperado — nunca inventa conteúdo. */
+function textoDoEventoDeAuditoria(payload: unknown): string {
+  if (
+    payload &&
+    typeof payload === 'object' &&
+    typeof (payload as { texto?: unknown }).texto === 'string'
+  ) {
+    return (payload as { texto: string }).texto
+  }
+  return ''
 }

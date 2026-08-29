@@ -7,6 +7,7 @@ import {
 import { assertMissionDelivered } from './mission-outcome.js'
 import type { LinhaDeSessao } from './dev-session-store.js'
 import { TETO_DE_ESPERA_MS } from './vigia-da-verificacao.js'
+import type { EstadoDaJanela } from './aviso-por-janela.js'
 
 const RECON = JSON.stringify({
   ci: 'GitHub Actions (.github/workflows/ci.yml) — roda lint, typecheck e testes por workspace.',
@@ -2650,5 +2651,110 @@ describe('o motor reprovando sozinho com CI vermelho também volta atrás', () =
       // E antes do teto ainda não se incomoda o dono.
       expect(avisaEm(MAX_TENTATIVAS_DE_MERGE - 1)).toBe(false)
     })
+  })
+})
+
+// ESTEIRA-T15 — real-seam: 5 acordadas com o projeto barrado avisam o dono
+// UMA vez, não cinco. A rajada real de 29/08: "3 entregas barradas", "4", "5"
+// em 5 minutos.
+describe('ESTEIRA-T15: dedupe do aviso de entregas barradas', () => {
+  it('5 wakes seguidos com o mesmo projeto barrado -> 1 aviso ao dono, não 5', async () => {
+    const avisos: string[] = []
+    // simula o registro em `events` sobrevivendo entre wakes (EstadoDaJanela)
+    let estadoNoBanco: EstadoDaJanela = { desde: null, avisado: false }
+
+    const opcoes = {
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      fetchImpl: fakeFetch([{ number: 7, user: 'jules[bot]' }]),
+      // 3 barradas seguidas — decidirSobreOProjeto já decide 'escalar' em
+      // TODOS os 5 wakes, exatamente como o bug real (o contador nunca some).
+      lerHistoricoDoProjeto: async () => [
+        { peloPortao: true, quando: new Date() },
+        { peloPortao: true, quando: new Date() },
+        { peloPortao: true, quando: new Date() },
+      ],
+      avisarDono: async (msg: string) => {
+        avisos.push(msg)
+      },
+      lerJanelaDeBarradas: async () => estadoNoBanco,
+      registrarJanelaDeBarradas: async (estado: EstadoDaJanela) => {
+        estadoNoBanco = estado
+      },
+    }
+
+    for (let i = 0; i < 5; i++) {
+      await runQaMissionViaRails(opcoes)
+    }
+
+    expect(avisos).toHaveLength(1)
+    expect(avisos[0]).toContain('entregas seguidas barradas')
+  })
+
+  it('depois de avisar, o projeto volta a andar (aprovação) -> a marca limpa e a PRÓXIMA sequência avisa de novo', async () => {
+    const avisos: string[] = []
+    let estadoNoBanco: EstadoDaJanela = { desde: null, avisado: false }
+
+    const opcoesBarrado = {
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      fetchImpl: fakeFetch([{ number: 7, user: 'jules[bot]' }]),
+      lerHistoricoDoProjeto: async () => [
+        { peloPortao: true, quando: new Date() },
+        { peloPortao: true, quando: new Date() },
+        { peloPortao: true, quando: new Date() },
+      ],
+      avisarDono: async (msg: string) => {
+        avisos.push(msg)
+      },
+      lerJanelaDeBarradas: async () => estadoNoBanco,
+      registrarJanelaDeBarradas: async (estado: EstadoDaJanela) => {
+        estadoNoBanco = estado
+      },
+    }
+
+    // 1º wake: bate o teto, avisa, marca = true.
+    await runQaMissionViaRails(opcoesBarrado)
+    expect(avisos).toHaveLength(1)
+    expect(estadoNoBanco.avisado).toBe(true)
+
+    // 2º wake: outra reprovação, mas desta vez o HISTÓRICO já mostra que uma
+    // entrega foi julgada pelo CONTEÚDO entre as duas (uma aprovação real
+    // aconteceu no meio) — decidirSobreOProjeto volta 'seguir'. A checagem de
+    // histórico só roda no caminho de reprovação (é aqui, não numa aprovação
+    // isolada, que o produto de fato relê o histórico); a marca limpa.
+    await runQaMissionViaRails({
+      ...opcoesBarrado,
+      lerHistoricoDoProjeto: async () => [{ peloPortao: false, quando: new Date() }],
+    })
+    expect(estadoNoBanco.avisado).toBe(false)
+    expect(avisos).toHaveLength(1) // 'seguir' não avisa
+
+    // 3º wake: barrado de novo — é uma sequência NOVA, avisa de novo.
+    await runQaMissionViaRails(opcoesBarrado)
+    expect(avisos).toHaveLength(2)
+  })
+
+  it('sem lerJanelaDeBarradas/registrarJanelaDeBarradas configurados: comportamento de sempre (avisa toda vez)', async () => {
+    const avisos: string[] = []
+    const opcoes = {
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      fetchImpl: fakeFetch([{ number: 7, user: 'jules[bot]' }]),
+      lerHistoricoDoProjeto: async () => [
+        { peloPortao: true, quando: new Date() },
+        { peloPortao: true, quando: new Date() },
+        { peloPortao: true, quando: new Date() },
+      ],
+      avisarDono: async (msg: string) => {
+        avisos.push(msg)
+      },
+    }
+    await runQaMissionViaRails(opcoes)
+    await runQaMissionViaRails(opcoes)
+    expect(avisos).toHaveLength(2)
   })
 })
