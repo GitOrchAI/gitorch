@@ -1,6 +1,8 @@
 # Dependabot + Jules Automation System
 
-A complete GitHub Actions automation pipeline for handling Dependabot security alerts using Google's Jules AI agent, with full lifecycle management: alert → issue → Jules PR → conflict resolution → CI auto-fix + fallback → auto-merge.
+A complete GitHub Actions automation pipeline for handling Dependabot security alerts using Google's Jules AI agent, with full lifecycle management: alert → issue → Jules PR → conflict resolution → CI auto-fix + fallback.
+
+**29/08/2026 (decisão do dono, D54):** o `auto-merge.yml` deste repositório foi removido. O merge de PR passou a ser o veredito do QA do GitOrch (`gh pr merge` pelo control-plane), não mais um workflow de Actions cego em "qualifying PRs" — dois porteiros (CI + QA) viraram um só sistema, dentro do produto.
 
 ## Architecture Overview
 
@@ -21,9 +23,9 @@ A complete GitHub Actions automation pipeline for handling Dependabot security a
                                                          │
                                                          ▼
                                                 ┌─────────────────┐
-                                                │ Auto-Merge      │
-                                                │ (Dependabot +   │
-                                                │  Jules PRs)     │
+                                                │ QA do GitOrch   │
+                                                │ julga e mescla  │
+                                                │ (control-plane) │
                                                 └─────────────────┘
 ```
 
@@ -50,13 +52,7 @@ A complete GitHub Actions automation pipeline for handling Dependabot security a
 - **LLM Analysis**: Generates root cause and fix instructions for `@jules`
 - **Built-in**: Jules has auto-fix (since Feb 2026), this is a safety net
 
-### 4. Auto-Merge (`auto-merge.yml`)
-- **Triggers**: `pull_request_target` on qualifying PRs + `check_suite` completion
-- **Qualifying PRs**: Dependabot PRs OR Jules PRs (resolving 'jules' issues)
-- **Process**: Waits for CI to pass, approves PR, enables auto-merge (squash)
-- **Requirements**: Repo setting `allow_auto_merge=true`, SECURITY_PAT
-
-### 5. SLA Tracker (`sla-tracker.yml`)
+### 4. SLA Tracker (`sla-tracker.yml`)
 - **Schedule**: Every 4 hours
 - **Process**: Calculates business days from alert creation to resolution
 - **Breach**: Creates `sla-breach` issue with P0 priority when >1 business day
@@ -125,8 +121,9 @@ Sem isso, issues nasciam com corpo `User Safety: safe` (bug histórico — ex.: 
 | `jules-pr-conflict.yml` | Detecta e resolve conflitos de merge (comenta @jules) |
 | `jules-pr-ci-failure.yml` | Fallback de falha de CI (após 1 dia útil) |
 | `jules-auto-recovery.yml` | Recupera "failed to create a task" (retry em ciclos) |
-| `auto-merge.yml` | Auto-merge de PRs qualificadas (Dependabot/Jules) com CI verde |
 | `sla-tracker.yml` | Monitora SLA e abre alerta de breach |
+
+Merge de PR: julgado e mesclado pelo control-plane do GitOrch (QA + `gh pr merge`), não por um workflow deste repositório.
 
 ## Scripts
 
