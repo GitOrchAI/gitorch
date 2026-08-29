@@ -174,8 +174,11 @@ export async function runPoRails(execute: StepExecutor, input: PoRailsInput): Pr
     execute,
   })) as PoTasksForm
 
+  // O PESO entra no bloco que alimenta o roadmap: distribuir sprint sem saber
+  // o tamanho de cada task é chutar. Coletar o peso e não usar seria pior que
+  // não coletar.
   const tasksBlock = `Tasks you decided:\n${tasks.tasks
-    .map((t, i) => `${i}. [feature ${t.featureIndex}] ${t.fields.titulo}`)
+    .map((t, i) => `${i}. [feature ${t.featureIndex}] (weight ${t.weight}) ${t.fields.titulo}`)
     .join('\n')}`
 
   const roadmap = (await runFormStep({
@@ -184,7 +187,7 @@ export async function runPoRails(execute: StepExecutor, input: PoRailsInput): Pr
       ...base,
       phasesBlock,
       tasksBlock,
-      'ROADMAP: assign EVERY task above to a numbered sprint (1..N) respecting dependencies (a task never lands before its blockers). Sprint 1 is what starts now — write its Sprint Goal as ONE sentence of client-visible outcome. The client will see this as dated milestones.',
+      'ROADMAP: assign EVERY task above to a numbered sprint (1..N) respecting dependencies (a task never lands before its blockers) AND the weight shown next to each task — do not stack a sprint with far more weight than the others. Sprint 1 is what starts now — write its Sprint Goal as ONE sentence of client-visible outcome. The client will see this as dated milestones.',
     ]),
     execute,
   })) as PoRoadmapForm

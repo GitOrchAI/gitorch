@@ -3,13 +3,16 @@ import { runPoMissionViaRails } from './po-rails-mission.js'
 import { FREE_TEXT_OPTION_VALUE } from './telegram-bot.js'
 
 const PO_REPLIES: Record<string, string> = {
-  phases: '{"phases":[{"title":"Fase 1","goal":"g","rationale":"r"}]}',
+  phases:
+    '{"phases":[{"title":"Fase 1","goal":"g","rationale":"r","usableOutcome":"O dono conclui o fluxo ponta a ponta."}]}',
   epics: '{"epics":[{"phaseIndex":0,"title":"Épico A","description":"d","journeyIndexes":[]}]}',
   features: '{"features":[{"epicIndex":0,"title":"[Feature] F","description":"d"}]}',
   tasks: JSON.stringify({
     tasks: [
       {
         featureIndex: 0,
+        weight: 2,
+        weightRationale: 'Mudança pequena, padrão conhecido.',
         fields: {
           titulo: '[Task] t',
           goal: 'g',

@@ -34,6 +34,35 @@ describe('playbooks por papel', () => {
     expect(po).toMatch(/Sprint Goal/i)
   })
 
+  // A régua do bloco 1 da leva 2. Sem âncora por valor, cada motor inventa a
+  // própria escala e os três discordam — o teste trava as âncoras no lugar.
+  test('PO: a escala de peso vem com âncora em cada valor e teto em 13', () => {
+    const po = loadPlaybook('po')
+    expect(po).toMatch(/1, 2, 3, 5, 8, 13/)
+    for (const valor of ['**1**', '**2**', '**3**', '**5**', '**8**', '**13**']) {
+      expect(po).toContain(valor)
+    }
+    expect(po).toMatch(/above 13 does not exist/i)
+    expect(po).toMatch(/weightRationale/)
+  })
+
+  test('PO: fase é fatia usável, com exemplo bom e ruim', () => {
+    const po = loadPlaybook('po')
+    expect(po).toMatch(/usableOutcome/)
+    expect(po).toMatch(/usable slice/i)
+    // O exemplo ruim é o do nosso próprio quadro — camada técnica com nome de fase.
+    expect(po).toMatch(/Foundation/)
+    expect(po).toMatch(/BAD:/)
+    expect(po).toMatch(/GOOD:/)
+  })
+
+  test('RA: entrega ao PO o que sustenta o peso (arquivo, padrão, incerteza)', () => {
+    const ra = loadPlaybook('ra')
+    expect(ra).toMatch(/weight/i)
+    expect(ra).toMatch(/uncertain/i)
+    expect(ra).toMatch(/pattern already exists/i)
+  })
+
   test('SM: DoD mecânico é do código; delega jules/humano só desbloqueado', () => {
     const sm = loadPlaybook('sm')
     expect(sm).toMatch(/jules/i)

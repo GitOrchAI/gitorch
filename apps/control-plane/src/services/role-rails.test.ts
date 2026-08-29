@@ -71,7 +71,14 @@ const RA_REPLIES: Record<string, string> = {
 
 const PO_REPLIES: Record<string, string> = {
   phases: JSON.stringify({
-    phases: [{ title: 'Fase 1 — Dados', goal: 'estruturar', rationale: 'base' }],
+    phases: [
+      {
+        title: 'Fase 1 — Dados',
+        goal: 'estruturar',
+        rationale: 'base',
+        usableOutcome: 'O dono filtra os produtos por material e vê o resultado certo.',
+      },
+    ],
   }),
   epics: JSON.stringify({
     epics: [{ phaseIndex: 0, title: 'Épico: material', description: 'd', journeyIndexes: [0, 1] }],
@@ -83,6 +90,8 @@ const PO_REPLIES: Record<string, string> = {
     tasks: [
       {
         featureIndex: 0,
+        weight: 3,
+        weightRationale: 'Uma coluna nova e um filtro; o padrão já existe no schema.',
         fields: {
           titulo: '[Task] coluna material',
           goal: 'g',
