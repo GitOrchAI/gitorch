@@ -23,6 +23,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          check-latest: false
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9.4.0
 
       # `npm ci` e não `install`: instala exatamente o que está no lockfile
       # versionado. Este passo roda no mesmo trabalho que recebe o token de

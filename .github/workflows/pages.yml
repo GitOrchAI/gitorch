@@ -24,6 +24,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          check-latest: false
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9.4.0
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Build static site

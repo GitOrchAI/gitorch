@@ -58,6 +58,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          check-latest: false
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9.4.0
 
       - name: Install Dependencies
         if: steps.triage.outputs.act == 'true' && steps.triage.outputs.alreadyTried == 'false' && steps.triage.outputs.sessionId != ''
