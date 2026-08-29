@@ -1,6 +1,10 @@
 import { expect, test } from 'vitest'
 
-import { ProjectV2Client, type GraphQLRequest } from './project-v2-client'
+import {
+  ProjectV2Client,
+  type GraphQLRequest,
+  CampoDeIteracaoAusenteError,
+} from './project-v2-client'
 
 test('sends addProjectV2ItemById with deterministic variables', async () => {
   const calls: GraphQLRequest[] = []
@@ -608,4 +612,125 @@ test('detalharQuadro respeita um teto de páginas de itens', async () => {
   await client.detalharQuadro({ projectId: 'PVT_a', repositorio: 'dono/repo', maxPaginas: 3 })
 
   expect(chamadas).toBe(3)
+})
+
+// As duas mutações abaixo ESCREVEM no quadro real do cliente e eram as únicas
+// do arquivo sem teste nenhum — a operação mais perigosa era a menos coberta.
+
+test('criarCampoDeIteracao manda nome, duração e início, e devolve o campo criado', async () => {
+  const calls: GraphQLRequest[] = []
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async (request) => {
+      calls.push(request)
+      return {
+        data: {
+          createProjectV2Field: { projectV2Field: { id: 'F_novo', name: 'Sprint' } },
+        },
+      }
+    },
+  })
+
+  const campo = await client.criarCampoDeIteracao({
+    projectId: 'PVT_1',
+    fieldName: 'Sprint',
+    duracaoEmDias: 3,
+    inicio: '2026-08-29',
+  })
+
+  expect(campo).toEqual({ fieldId: 'F_novo', name: 'Sprint' })
+  expect(calls[0]?.variables).toEqual({
+    projectId: 'PVT_1',
+    name: 'Sprint',
+    duration: 3,
+    startDate: '2026-08-29',
+  })
+  // Sem dataType ITERATION o GitHub cria um campo de texto chamado "Sprint" —
+  // parece certo na tela e o Roadmap continua sem eixo de tempo.
+  expect(calls[0]?.query).toContain('dataType: ITERATION')
+  expect(calls[0]?.query).toContain('iterationConfiguration: { duration: $duration')
+})
+
+test('configurarCampoDeIteracao ATUALIZA o campo existente, sem recriar', async () => {
+  const calls: GraphQLRequest[] = []
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async (request) => {
+      calls.push(request)
+      return { data: { updateProjectV2Field: { projectV2Field: { id: 'F_9' } } } }
+    },
+  })
+
+  const fieldId = await client.configurarCampoDeIteracao({
+    projectId: 'PVT_9',
+    fieldId: 'F_9',
+    fieldName: 'Sprint',
+    duracaoEmDias: 3,
+    inicio: '2026-08-29',
+  })
+
+  expect(fieldId).toBe('F_9')
+  // updateProjectV2Field preserva o vínculo dos itens que já apontam para o
+  // campo; createProjectV2Field os deixaria órfãos.
+  expect(calls[0]?.query).toContain('updateProjectV2Field')
+  expect(calls[0]?.query).not.toContain('createProjectV2Field')
+  expect(calls[0]?.variables).toMatchObject({ fieldId: 'F_9', duration: 3 })
+})
+
+test('erro do GraphQL na criação SOBE — não vira sucesso silencioso', async () => {
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async () => ({ errors: [{ message: 'Resource not accessible by integration' }] }),
+  })
+
+  await expect(
+    client.criarCampoDeIteracao({
+      projectId: 'PVT_1',
+      fieldName: 'Sprint',
+      duracaoEmDias: 3,
+      inicio: '2026-08-29',
+    })
+  ).rejects.toThrow('not accessible')
+})
+
+test('campo de iteração ausente lança o erro TIPADO, não um Error qualquer', async () => {
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async () => ({
+      data: { node: { fields: { nodes: [{ id: 'F_1', name: 'Status' }] } } },
+    }),
+  })
+
+  // Quem chama trata a ausência criando o campo. Se um erro de rede chegasse
+  // como o mesmo tipo, o produto criaria um segundo campo Sprint por engano.
+  await expect(
+    client.getIterationField({ projectId: 'PVT_1', fieldName: 'Sprint' })
+  ).rejects.toBeInstanceOf(CampoDeIteracaoAusenteError)
+})
+
+test('o quadro traz `closed`, que é o que barra quadro arquivado', async () => {
+  // O consumidor (decidirQuadro) descarta arquivado antes de qualquer regra.
+  // Sem `closed` chegando de verdade, essa promessa não vale nada.
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async () => ({
+      data: {
+        repository: {
+          projectsV2: {
+            nodes: [
+              { id: 'PVT_vivo', number: 2, title: 'dono/repo', closed: false },
+              { id: 'PVT_morto', number: 3, title: 'antigo', closed: true },
+            ],
+          },
+        },
+      },
+    }),
+  })
+
+  const quadros = await client.listarQuadrosDoRepositorio({ owner: 'dono', repo: 'repo' })
+
+  expect(quadros).toEqual([
+    { id: 'PVT_vivo', number: 2, title: 'dono/repo', closed: false },
+    { id: 'PVT_morto', number: 3, title: 'antigo', closed: true },
+  ])
 })

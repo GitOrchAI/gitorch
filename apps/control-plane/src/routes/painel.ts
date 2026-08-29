@@ -9,6 +9,7 @@ import {
   type PedidoDoPainel,
   type ProjetoDoDono,
 } from '../services/arvore-de-pedidos.js'
+import { sprintCorrente, type Iteracao, hojeNoFuso } from '../services/garantir-sprint.js'
 
 // Rotas do painel do owner (ui_kits/painel-owner/API.md do handoff GitOrch
 // Design System). Nesta leva: pulso, agentes e responder-decisão ao vivo.
@@ -60,6 +61,16 @@ export interface PainelRoutesOpts {
     ownerId: string
     projeto?: string | undefined
   }) => Promise<PedidoDoPainel[]>
+  /**
+   * Lê as sprints configuradas nos quadros do dono. Default: ainda não há
+   * caminho ligado (o quadro do cliente é configurado no passo de execução do
+   * bloco 3), então devolve lista vazia e a tela diz honestamente que não há
+   * sprint — nunca inventa uma. Injetável nos testes.
+   */
+  lerSprints?: (args: {
+    ownerId: string
+    projeto?: string | undefined
+  }) => Promise<Array<{ projeto: string; iteracoes: Iteracao[] }>>
 }
 
 function nomeDoMotor(payload: unknown): string {
@@ -108,6 +119,11 @@ export const painelRoutes = async (
         },
         args
       ))
+
+  // Sem caminho ligado ainda: o quadro do cliente só ganha sprint no passo de
+  // execução do bloco 3. Lista vazia faz a tela dizer que não há sprint
+  // configurada — que é a verdade — em vez de desenhar uma semana inventada.
+  const lerSprints = opts.lerSprints ?? (async () => [])
 
   const isoOuNulo = (d: Date | string | null | undefined): string | null =>
     d == null ? null : d instanceof Date ? d.toISOString() : d
@@ -280,6 +296,51 @@ export const painelRoutes = async (
         }
         throw err
       }
+    }
+  )
+
+  // GET /api/v1/painel/sprint — a sprint que está valendo AGORA.
+  //
+  // Substitui o "ritmo da semana" do desenho original: o dono trocou semana
+  // por sprint ("quais sprints estão atuais e o que está atuando"), e a sprint
+  // do GitOrch é o campo de iteração do quadro do cliente.
+  //
+  // O GitHub entrega a lista de ciclos e NÃO marca qual está correndo — a
+  // conta é nossa (services/garantir-sprint.ts, `sprintCorrente`). Dia fora de
+  // qualquer ciclo devolve nada, porque é o intervalo entre sprints e dizer
+  // que alguma corre ali seria inventar.
+  app.get<{ Querystring: { projeto?: string } }>(
+    '/api/v1/painel/sprint',
+    RATE_LIMIT_POLLING,
+    async (request, reply) => {
+      if (!request.user) return reply.code(401).send(NAO_LOGADO)
+      const ownerId = await resolveOwnerId(app.prisma, request.user)
+      const projeto = request.query.projeto?.trim() || undefined
+      const hoje = hojeNoFuso()
+
+      const quadros = await lerSprints({ ownerId, projeto })
+      const sprints = quadros
+        .map((q) => {
+          const atual = sprintCorrente(q.iteracoes, hoje)
+          if (!atual) return null
+          const fim = new Date(
+            new Date(`${atual.startDate}T00:00:00Z`).getTime() + atual.duration * 86400000
+          )
+          return {
+            projeto: q.projeto,
+            titulo: atual.title,
+            inicio: atual.startDate,
+            // Fim EXCLUSIVO vira o último dia do ciclo, que é o que o dono lê.
+            fim: new Date(fim.getTime() - 86400000).toISOString().slice(0, 10),
+            dias: atual.duration,
+          }
+        })
+        .filter((s): s is NonNullable<typeof s> => s !== null)
+
+      // `configurados` separa "nenhum quadro tem sprint" de "tem sprint mas
+      // hoje está no intervalo entre dois ciclos" — duas coisas diferentes que
+      // a tela precisa dizer de jeitos diferentes.
+      return reply.send({ sprints, configurados: quadros.length })
     }
   )
 

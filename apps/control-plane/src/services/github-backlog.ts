@@ -1,4 +1,4 @@
-import { ProjectV2Client } from '@gitorch/github-sync'
+import { ProjectV2Client, CampoDeIteracaoAusenteError } from '@gitorch/github-sync'
 import type { BacklogGitHub, IssueRef } from './backlog-executor.js'
 import { GithubExecutionError } from './github-errors.js'
 import { createBoardStatus, type BoardColumns } from './board-status.js'
@@ -148,7 +148,11 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
       // Só a AUSÊNCIA do campo Sprint é tolerada (board sem iteração configurada).
       // Qualquer outra falha (FORBIDDEN, rede) é real e deve subir — engolir aqui
       // perderia o Sprint Planning inteiro em silêncio.
-      if (!String(error).includes('not found')) {
+      //
+      // Era comparação por TEXTO da mensagem ('not found'), que é frágil: a
+      // mensagem do GitHub muda e um erro de permissão pode conter as mesmas
+      // palavras. Agora é um tipo próprio de erro.
+      if (!(error instanceof CampoDeIteracaoAusenteError)) {
         throw error instanceof GithubExecutionError
           ? error
           : new GithubExecutionError(`resolveSprint failed: ${String(error).slice(0, 200)}`)

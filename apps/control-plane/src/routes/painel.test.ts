@@ -53,6 +53,8 @@ describe('Rotas do painel do owner', () => {
     app.inject({ method: 'GET', url: '/api/v1/painel/agentes', headers: authHeaders })
   const getPedidos = (qs = '') =>
     app.inject({ method: 'GET', url: `/api/v1/painel/pedidos${qs}`, headers: authHeaders })
+  const getSprint = (qs = '') =>
+    app.inject({ method: 'GET', url: `/api/v1/painel/sprint${qs}`, headers: authHeaders })
 
   beforeEach(async () => {
     await build()
@@ -309,6 +311,104 @@ describe('Rotas do painel do owner', () => {
       const corpo = (await getPedidos()).body
       expect(corpo).not.toContain('proj_1')
       expect(corpo).not.toContain('owner_1')
+    })
+  })
+
+  describe('GET /api/v1/painel/sprint', () => {
+    // O ciclo de hoje precisa conter a data de execução do teste, senão o teste
+    // passa hoje e quebra amanhã. Ancorar no "agora" é o que mantém honesto.
+    const hoje = new Date().toISOString().slice(0, 10)
+    const ontem = new Date(Date.now() - 86400000).toISOString().slice(0, 10)
+    const mesPassado = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10)
+
+    test('sem sessão → 401', async () => {
+      const res = await app.inject({ method: 'GET', url: '/api/v1/painel/sprint' })
+      expect(res.statusCode).toBe(401)
+    })
+
+    test('devolve a sprint que está valendo agora', async () => {
+      await build(fakePrisma(), {
+        lerSprints: async () => [
+          {
+            projeto: 'gitorch',
+            iteracoes: [{ id: 'it', title: 'Sprint 12', startDate: ontem, duration: 3 }],
+          },
+        ],
+      })
+      const res = await getSprint()
+      expect(res.statusCode).toBe(200)
+      const body = res.json()
+      expect(body.sprints).toHaveLength(1)
+      expect(body.sprints[0]).toMatchObject({
+        projeto: 'gitorch',
+        titulo: 'Sprint 12',
+        inicio: ontem,
+        dias: 3,
+      })
+    })
+
+    test('nenhum quadro com sprint: lista vazia E configurados 0 — a tela sabe o que dizer', async () => {
+      await build(fakePrisma(), { lerSprints: async () => [] })
+      const body = (await getSprint()).json()
+      expect(body).toEqual({ sprints: [], configurados: 0 })
+    })
+
+    test('tem sprint configurada mas hoje está ENTRE ciclos: sprints vazio e configurados 1', async () => {
+      // Duas situações diferentes que davam a mesma tela vazia: "nunca teve
+      // sprint" e "está no intervalo". `configurados` separa as duas.
+      await build(fakePrisma(), {
+        lerSprints: async () => [
+          {
+            projeto: 'gitorch',
+            iteracoes: [{ id: 'velha', title: 'Sprint 1', startDate: mesPassado, duration: 3 }],
+          },
+        ],
+      })
+      const body = (await getSprint()).json()
+      expect(body.sprints).toEqual([])
+      expect(body.configurados).toBe(1)
+    })
+
+    test('consolida os projetos e respeita o filtro', async () => {
+      const vistos: Array<{ projeto?: string }> = []
+      await build(fakePrisma(), {
+        lerSprints: async (args: { ownerId: string; projeto?: string }) => {
+          vistos.push(args)
+          return [
+            {
+              projeto: 'gitorch',
+              iteracoes: [{ id: 'a', title: 'S1', startDate: hoje, duration: 3 }],
+            },
+            {
+              projeto: 'patinhas-3d-crafts',
+              iteracoes: [{ id: 'b', title: 'S7', startDate: hoje, duration: 3 }],
+            },
+          ]
+        },
+      })
+      const body = (await getSprint()).json()
+      expect(body.sprints.map((s: { projeto: string }) => s.projeto)).toEqual([
+        'gitorch',
+        'patinhas-3d-crafts',
+      ])
+      await getSprint('?projeto=gitorch')
+      expect(vistos[1]?.projeto).toBe('gitorch')
+    })
+
+    test('o fim é o ÚLTIMO dia do ciclo, não o dia seguinte', async () => {
+      await build(fakePrisma(), {
+        lerSprints: async () => [
+          {
+            projeto: 'gitorch',
+            iteracoes: [{ id: 'it', title: 'S', startDate: hoje, duration: 3 }],
+          },
+        ],
+      })
+      const s = (await getSprint()).json().sprints[0]
+      const esperado = new Date(new Date(`${hoje}T00:00:00Z`).getTime() + 2 * 86400000)
+        .toISOString()
+        .slice(0, 10)
+      expect(s.fim).toBe(esperado)
     })
   })
 

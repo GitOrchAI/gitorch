@@ -68,6 +68,21 @@ export interface GetIterationFieldInput {
   fieldName: string
 }
 
+export interface ConfigurarIteracaoInput {
+  projectId: string
+  /** Nome do campo. O padrão do GitOrch é "Sprint". */
+  fieldName: string
+  /** Duração de cada sprint em dias. Padrão do produto: 3 (decisão do dono). */
+  duracaoEmDias: number
+  /** Primeiro dia da primeira sprint (YYYY-MM-DD). */
+  inicio: string
+}
+
+export interface CampoDeIteracaoCriado {
+  fieldId: string
+  name: string
+}
+
 export interface SetIterationFieldInput {
   projectId: string
   itemId: string
@@ -103,6 +118,13 @@ export interface QuadroListado {
   id: string
   number: number
   title: string
+  /**
+   * Quadro fechado (arquivado). Precisa vir na listagem: sem isso o produto
+   * adota um quadro morto e passa a escrever sprint nele. Acontece de verdade
+   * — a organização do gitorch tem dois quadros fechados convivendo com o
+   * ativo (medido em 29/08).
+   */
+  closed: boolean
 }
 
 export interface ListarQuadrosDoRepositorioInput {
@@ -117,7 +139,6 @@ export interface ListarQuadrosDaContaInput {
 
 /** Um quadro alcançado a partir das issues do repositório. */
 export interface QuadroDescoberto extends QuadroListado {
-  closed: boolean
   /** Quantas issues deste repositório já estão dentro dele. */
   issuesDesteRepo: number
 }
@@ -176,6 +197,26 @@ interface PaginaDeIssues {
       } | null> | null
     } | null
   } | null
+}
+
+/**
+ * O campo de iteração pedido NÃO existe no quadro.
+ *
+ * Precisa ser um tipo próprio, e não um Error qualquer: quem chama trata a
+ * AUSÊNCIA criando o campo. Se uma falha de rede, um 502 do GraphQL ou um
+ * token que perdeu a autorização de quadros chegasse como o mesmo Error, o
+ * produto leria "não existe" e CRIARIA um segundo campo Sprint por cima de um
+ * que já está rodando — os itens ligados ao campo antigo ficariam órfãos.
+ * Distinguir por texto da mensagem não serve: a mensagem do GitHub muda.
+ */
+export class CampoDeIteracaoAusenteError extends Error {
+  constructor(
+    readonly fieldName: string,
+    readonly projectId: string
+  ) {
+    super(`Iteration field "${fieldName}" not found on project ${projectId}.`)
+    this.name = 'CampoDeIteracaoAusenteError'
+  }
 }
 
 export class ProjectV2Client {
@@ -351,7 +392,7 @@ export class ProjectV2Client {
         query: `
           query ListarQuadrosDoRepositorio($owner: String!, $repo: String!) {
             repository(owner: $owner, name: $repo) {
-              projectsV2(first: 50) { nodes { id number title } }
+              projectsV2(first: 50) { nodes { id number title closed } }
             }
           }
         `,
@@ -381,7 +422,7 @@ export class ProjectV2Client {
         query: `
           query ListarQuadrosDaConta($login: String!) {
             ${campo}(login: $login) {
-              projectsV2(first: 50) { nodes { id number title } }
+              projectsV2(first: 50) { nodes { id number title closed } }
             }
           }
         `,
@@ -620,9 +661,7 @@ export class ProjectV2Client {
     const nodes = unwrap(response).node?.fields?.nodes ?? []
     const field = nodes.find((node) => node.name === input.fieldName && node.configuration)
     if (!field || !field.configuration) {
-      throw new Error(
-        `Iteration field "${input.fieldName}" not found on project ${input.projectId}.`
-      )
+      throw new CampoDeIteracaoAusenteError(input.fieldName, input.projectId)
     }
     return { fieldId: field.id, iterations: field.configuration.iterations }
   }
@@ -659,6 +698,99 @@ export class ProjectV2Client {
     )
 
     return unwrap(response).updateProjectV2ItemFieldValue.projectV2Item.id
+  }
+
+  /**
+   * Cria o campo de iteração (Sprint) no quadro.
+   *
+   * É o que dá eixo de tempo à visão Roadmap do GitHub: sem campo de iteração
+   * ela abre com "Dates: none" e não desenha nada. Houve época em que a
+   * comunidade dizia que criar iteração por API era impossível; hoje o enum
+   * `ProjectV2CustomFieldType` inclui ITERATION e `CreateProjectV2FieldInput`
+   * aceita `iterationConfiguration` — conferido por introspection em 29/08
+   * antes de escrever isto.
+   */
+  async criarCampoDeIteracao(input: ConfigurarIteracaoInput): Promise<CampoDeIteracaoCriado> {
+    const response = await this.request<{
+      createProjectV2Field: { projectV2Field: { id: string; name: string } }
+    }>(
+      {
+        query: `
+          mutation CriarCampoDeIteracao(
+            $projectId: ID!
+            $name: String!
+            $duration: Int!
+            $startDate: Date!
+          ) {
+            createProjectV2Field(
+              input: {
+                projectId: $projectId
+                dataType: ITERATION
+                name: $name
+                iterationConfiguration: { duration: $duration, startDate: $startDate }
+              }
+            ) {
+              projectV2Field {
+                ... on ProjectV2IterationField { id name }
+              }
+            }
+          }
+        `,
+        variables: {
+          projectId: input.projectId,
+          name: input.fieldName,
+          duration: input.duracaoEmDias,
+          startDate: input.inicio,
+        },
+      },
+      this.token
+    )
+    const campo = unwrap(response).createProjectV2Field.projectV2Field
+    return { fieldId: campo.id, name: campo.name }
+  }
+
+  /**
+   * Configura um campo de iteração que JÁ EXISTE mas está vazio.
+   *
+   * Caso real: o quadro "GitOrch — Jardim das Patinhas" tem o campo Sprint
+   * criado, com duração 0 e nenhuma iteração — existe e não funciona. Recriar
+   * o campo perderia o vínculo dos itens que já apontam para ele; por isso a
+   * operação é de atualização.
+   */
+  async configurarCampoDeIteracao(
+    input: ConfigurarIteracaoInput & { fieldId: string }
+  ): Promise<string> {
+    const response = await this.request<{
+      updateProjectV2Field: { projectV2Field: { id: string } }
+    }>(
+      {
+        query: `
+          mutation ConfigurarCampoDeIteracao(
+            $fieldId: ID!
+            $duration: Int!
+            $startDate: Date!
+          ) {
+            updateProjectV2Field(
+              input: {
+                fieldId: $fieldId
+                iterationConfiguration: { duration: $duration, startDate: $startDate }
+              }
+            ) {
+              projectV2Field {
+                ... on ProjectV2IterationField { id }
+              }
+            }
+          }
+        `,
+        variables: {
+          fieldId: input.fieldId,
+          duration: input.duracaoEmDias,
+          startDate: input.inicio,
+        },
+      },
+      this.token
+    )
+    return unwrap(response).updateProjectV2Field.projectV2Field.id
   }
 
   // Liga uma issue-filha à issue-pai: é o mecanismo NATIVO do GitHub para a
