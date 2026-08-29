@@ -314,6 +314,7 @@ model Project {
   schedules   ProjectSchedule[]
   agentQuestions AgentQuestion[]
   devSessions DevSession[]
+  infraIncidents InfraIncident[]
 
   // Um repo, um projeto, POR DONO. É o banco garantindo o que a rota de setup
   // passou a exigir — mesmo repo em dois clientes = dois projetos distintos.
@@ -657,6 +658,16 @@ model DevSession {
   /// Nulo = aberta pela conta da instância (todas as sessões anteriores ao BYOK).
   devAccountId String? @map("dev_account_id")
 
+  /// Quantas vezes ESTA issue já foi redelegada por entrega que não mesclou
+  /// (concluiu sem PR, falhou, PR descartado). Carregado adiante em abrirSessao
+  /// a partir da sessão anterior da mesma issue. NUNCA vira abandono — a esteira
+  /// sempre tenta de novo (D51); na 2ª vez roda a análise antes da 3ª.
+  requeueCount Int @default(0) @map("requeue_count") @db.SmallInt
+  /// Quando a análise de "por que o Jules falhou nesta issue" rodou pela última
+  /// vez. Nulo = nunca rodou. É o que impede a 3ª tentativa de re-disparar a
+  /// análise que acabou de acontecer.
+  analysisDoneAt DateTime? @map("analysis_done_at")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -676,6 +687,42 @@ model DevSession {
   /// sessão pelo início dela), então não há índice parcial para duplicar.
   @@index([devAccountId])
   @@map("dev_sessions")
+}
+
+/// Um problema de CI/CD do repositório do cliente que o GitOrch está cuidando.
+/// Rastreado pela IDENTIDADE ESTÁVEL do workflow (`wf:<workflow_id>`) — nunca
+/// pelo nome de exibição, que o Dependabot muda a cada rodada ("- Update #N").
+/// Um incidente = uma linha = no máximo uma issue e um PR em curso. `clearedAt`
+/// quando a última rodada do workflow fica verde ou o PR mescla; `escalatedAt`
+/// quando resistiu a 3 PRs e foi levado ao dono.
+model InfraIncident {
+  id        String @id @default(cuid())
+  projectId String @map("project_id")
+
+  /// ci-do-cliente | config-de-actions | dependabot-travado | alerta-de-seguranca
+  /// | scaffolding-do-gitorch | workflow-morto
+  classe String
+  /// wf:<workflow_id> | dep:config | sec:<ghsa-id>
+  identidadeEstavel String @map("identidade_estavel")
+
+  issueNumber Int? @map("issue_number")
+  prNumber    Int? @map("pr_number")
+  /// Quantos PRs já fracassaram em resolver este incidente. Ao 3º, escala.
+  prAttempts Int @default(0) @map("pr_attempts") @db.SmallInt
+
+  firstSeenAt DateTime  @default(now()) @map("first_seen_at")
+  lastSeenAt  DateTime  @default(now()) @map("last_seen_at")
+  clearedAt   DateTime? @map("cleared_at")
+  escalatedAt DateTime? @map("escalated_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+
+  @@unique([projectId, identidadeEstavel], map: "infra_incidents_project_identidade_key")
+  @@index([projectId, clearedAt])
+  @@map("infra_incidents")
 }
 
 /// O pedido de desejo que ficou ESPERANDO o dono dizer a qual projeto ele

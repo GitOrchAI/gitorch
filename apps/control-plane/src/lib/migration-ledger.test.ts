@@ -43,6 +43,7 @@ describe('MIGRATION_LEDGER', () => {
       'aviso-de-publicacao-migration.sql',
       'trava-de-renovacao-migration.sql',
       'waiting-status-migration.sql',
+      'esteira-terminal-migration.sql',
     ])
   })
 })

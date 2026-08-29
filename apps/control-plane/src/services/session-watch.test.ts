@@ -56,6 +56,7 @@ function depsFalso(overrides: Partial<VigiaDeps> = {}): VigiaDeps {
     registrarResposta: vi.fn(async (_args: unknown) => undefined),
     registrarPr: vi.fn(async (_args: unknown) => undefined),
     fecharSessao: vi.fn(async (_args: unknown) => undefined),
+    pedirAnalise: vi.fn(async (_args: unknown) => undefined),
     registrarInvestigacao: vi.fn(async (_args: unknown) => undefined),
     avisarDono: vi.fn(async (_mensagem: string) => undefined),
     agora,
@@ -100,7 +101,9 @@ describe('vigiarSessoes', () => {
     expect(deps.fecharSessao).not.toHaveBeenCalled()
   })
 
-  it('concluída sem PR dispara SM — trabalho morreu dentro da sessão, quem trata impedimento é o SM', async () => {
+  it('concluída SEM PR → fecha a linha (dev-concluiu-sem-entrega) e a issue volta à fila — D51', async () => {
+    // Até 29/08 isto acionava o SM em loop e a linha NUNCA fechava (21 de 23
+    // sessões presas assim, enchendo as 15 vagas e parando a esteira).
     const deps = depsFalso({
       sessoes: [linha({ sessionName: 'sessions/sem-pr' })],
       consultarSessao: vi.fn(async () => ({
@@ -112,11 +115,17 @@ describe('vigiarSessoes', () => {
 
     await vigiarSessoes(deps)
 
-    expect(deps.dispararMissao).toHaveBeenCalledWith('sm', 'proj1')
+    expect(deps.fecharSessao).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionName: 'sessions/sem-pr',
+        motivo: 'dev-concluiu-sem-entrega',
+      })
+    )
+    expect(deps.dispararMissao).not.toHaveBeenCalledWith('sm', 'proj1')
     expect(deps.registrarPr).not.toHaveBeenCalled()
   })
 
-  it('estado FAILED aciona o SM E avisa o dono — a lacuna que deixava a falha em silêncio', async () => {
+  it('FAILED sem PR → fecha a linha (dev-falhou); NÃO pede retomada nem aciona o SM em loop', async () => {
     const deps = depsFalso({
       sessoes: [linha({ sessionName: 'sessions/falhou', issueNumber: 42 })],
       consultarSessao: vi.fn(async () => ({
@@ -128,65 +137,35 @@ describe('vigiarSessoes', () => {
 
     await vigiarSessoes(deps)
 
-    // Regra 1: o SM continua sendo acionado — isso não muda (decisão D5).
-    expect(deps.dispararMissao).toHaveBeenCalledWith('sm', 'proj1')
-    // Regra 2: o aviso ao dono é ADICIONAL e precisa ser acionável — issue,
-    // sessão e estado lido, além de dizer que o SM foi chamado.
-    expect(deps.avisarDono).toHaveBeenCalledWith(expect.stringContaining('#42'))
-    expect(deps.avisarDono).toHaveBeenCalledWith(expect.stringContaining('sessions/falhou'))
-    expect(deps.avisarDono).toHaveBeenCalledWith(expect.stringContaining('FAILED'))
-    expect(deps.avisarDono).toHaveBeenCalledWith(expect.stringMatching(/SM|investig/i))
-    expect(deps.registrarInvestigacao).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionName: 'sessions/falhou' })
+    expect(deps.fecharSessao).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionName: 'sessions/falhou', motivo: 'dev-falhou' })
     )
-    // Regra 3: o exame TEM de ser marcado, avisando ou não. A cadência de dez
-    // minutos é medida por `stateCheckedAt`; sem esta marca, a sessão presa em
-    // FAILED seria reexaminada a cada tick (um minuto) e o SM acionado sessenta
-    // vezes por hora, queimando a cota do motor do cliente.
+    // D51: nada de pedir retomada a uma sessão que o Jules já deu como FAILED
+    // (verificado: :sendMessage não retoma sessão terminal).
+    expect(deps.pedirParaContinuar).not.toHaveBeenCalled()
+    // O exame continua sendo marcado antes do switch (cadência de 10 min).
     expect(deps.registrarEstado).toHaveBeenCalledWith(
       expect.objectContaining({ sessionName: 'sessions/falhou', estado: 'FAILED' })
     )
   })
 
-  it('aviso ao dono não se repete no ciclo seguinte para a mesma sessão no mesmo estado', async () => {
-    const consultarSessao = vi.fn(async () => ({
-      estado: 'FAILED',
-      numeroDoPr: null,
-      ultimaAtualizacao: agora.toISOString(),
-    }))
-
-    // Ciclo 1: primeira vez que a vigia vê esta sessão em FAILED.
-    const deps1 = depsFalso({
-      sessoes: [linha({ sessionName: 'sessions/repete', issueNumber: 7 })],
-      consultarSessao,
+  it('FAILED COM PR → a vigia NÃO fecha (deixa para o ciclo terminal do scheduler, que tem token do GitHub)', async () => {
+    const deps = depsFalso({
+      sessoes: [linha({ sessionName: 'sessions/falhou-pr', issueNumber: 7 })],
+      consultarSessao: vi.fn(async () => ({
+        estado: 'FAILED',
+        numeroDoPr: 99,
+        ultimaAtualizacao: agora.toISOString(),
+      })),
     })
-    await vigiarSessoes(deps1)
-    expect(deps1.avisarDono).toHaveBeenCalledTimes(1)
 
-    const hashGravado: string | null =
-      vi.mocked(deps1.registrarInvestigacao).mock.calls[0]?.[0]?.hash ?? null
-    expect(hashGravado).toBeTruthy()
+    await vigiarSessoes(deps)
 
-    // Ciclo 2: mesma sessão, mesmo estado FAILED, e o hash já gravado no
-    // ciclo anterior — exatamente o que a leitura seguinte da linha traria.
-    // Fora da cadência de 10 min para garantir que o exame realmente acontece
-    // (o que se testa aqui é o dedupe do AVISO, não o corte de cadência).
-    const deps2 = depsFalso({
-      sessoes: [
-        linha({
-          sessionName: 'sessions/repete',
-          issueNumber: 7,
-          answeredHash: hashGravado,
-          stateCheckedAt: new Date(agora.getTime() - 30 * 60 * 1000),
-        }),
-      ],
-      consultarSessao,
-    })
-    await vigiarSessoes(deps2)
-
-    // O SM segue sendo acionado todo ciclo — só o aviso ao dono tem teto.
-    expect(deps2.dispararMissao).toHaveBeenCalledWith('sm', 'proj1')
-    expect(deps2.avisarDono).not.toHaveBeenCalled()
+    expect(deps.fecharSessao).not.toHaveBeenCalled()
+    // Mas registra o estado — o scheduler pega no próximo ciclo.
+    expect(deps.registrarEstado).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionName: 'sessions/falhou-pr', estado: 'FAILED' })
+    )
   })
 
   it('pergunta nova dispara QA e grava o hash', async () => {
@@ -232,6 +211,62 @@ describe('vigiarSessoes', () => {
 
     await vigiarSessoes(deps)
 
+    expect(deps.dispararMissao).toHaveBeenCalledWith('qa', 'proj1')
+  })
+
+  it('pergunta JÁ respondida e a sessão parada há 24h → fecha e a issue volta à fila (D52)', async () => {
+    const mensagem = 'Devo usar bcrypt ou argon2?'
+    const deps = depsFalso({
+      sessoes: [
+        linha({
+          sessionName: 'sessions/timeout',
+          issueNumber: 88,
+          answeredHash: hashDe(mensagem),
+          // último avanço há 25h — passou do prazo de 24h.
+          lastProgressAt: new Date(agora.getTime() - 25 * 60 * 60 * 1000),
+          stateCheckedAt: new Date(agora.getTime() - 30 * 60 * 1000),
+        }),
+      ],
+      consultarSessao: vi.fn(async () => ({
+        estado: 'AWAITING_USER_FEEDBACK',
+        numeroDoPr: null,
+        ultimaAtualizacao: new Date(agora.getTime() - 25 * 60 * 60 * 1000).toISOString(),
+      })),
+      ultimaMensagem: vi.fn(async () => mensagem),
+    })
+
+    await vigiarSessoes(deps)
+
+    expect(deps.fecharSessao).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionName: 'sessions/timeout', motivo: 'pergunta-sem-resposta' })
+    )
+    expect(deps.avisarDono).toHaveBeenCalledWith(expect.stringContaining('#88'))
+    // NÃO disparou QA de novo — a resposta já foi dada e não adiantou.
+    expect(deps.dispararMissao).not.toHaveBeenCalledWith('qa', 'proj1')
+  })
+
+  it('pergunta respondida mas AINDA dentro das 24h → continua chamando o QA, não fecha', async () => {
+    const mensagem = 'x?'
+    const deps = depsFalso({
+      sessoes: [
+        linha({
+          sessionName: 'sessions/ainda',
+          answeredHash: hashDe(mensagem),
+          lastProgressAt: new Date(agora.getTime() - 2 * 60 * 60 * 1000),
+          stateCheckedAt: new Date(agora.getTime() - 30 * 60 * 1000),
+        }),
+      ],
+      consultarSessao: vi.fn(async () => ({
+        estado: 'AWAITING_USER_FEEDBACK',
+        numeroDoPr: null,
+        ultimaAtualizacao: new Date(agora.getTime() - 2 * 60 * 60 * 1000).toISOString(),
+      })),
+      ultimaMensagem: vi.fn(async () => mensagem),
+    })
+
+    await vigiarSessoes(deps)
+
+    expect(deps.fecharSessao).not.toHaveBeenCalled()
     expect(deps.dispararMissao).toHaveBeenCalledWith('qa', 'proj1')
   })
 
@@ -526,7 +561,7 @@ describe('vigiarSessoes', () => {
 
     expect(resultado).toContain('2 sessões')
     expect(resultado).toContain('1 PR capturado')
-    expect(resultado).toContain('1 investigação')
+    expect(resultado).toContain('1 sessão encerrada')
   })
 
   describe('a vigia REGISTRA o que viu, mesmo quando não há o que fazer', () => {
@@ -599,51 +634,49 @@ describe('vigiarSessoes', () => {
         expect(deps.registrarEstado).toHaveBeenCalledWith(expect.objectContaining({ estado }))
       }
     )
-    describe('"falhou? manda continuar" — ordem do dono', () => {
+    describe('FAILED sem PR: a vigia fecha (D51 substitui o antigo "manda continuar")', () => {
       const falhada = vi.fn(async () => ({
         estado: 'FAILED',
         numeroDoPr: null,
         ultimaAtualizacao: agora.toISOString(),
       }))
 
-      // Acionar o SM para investigar NÃO destrava a sessão: ela continua parada
-      // no dev externo, ocupando uma das quinze vagas do plano. Medido em 25/08:
-      // seis sessões falhadas vivas sem ninguém pedir retomada.
-      it('sessão falhada recebe pedido de retomada, além do SM', async () => {
+      // Até 29/08 a vigia pedia retomada a uma sessão FAILED e acionava o SM em
+      // loop, sem NUNCA fechar a linha — a vaga ficava presa. D51: a sessão
+      // morta fecha e a issue volta para a fila; a esteira redelega.
+      it('FAILED sem PR fecha a linha, sem pedir retomada nem acionar o SM', async () => {
         const deps = depsFalso({
           sessoes: [linha({ sessionName: 'sessions/falha', nudges: 0 })],
           consultarSessao: falhada,
         })
         await vigiarSessoes(deps)
-        expect(deps.pedirParaContinuar).toHaveBeenCalledWith('sessions/falha')
-        // A regra D5 não muda: o SM continua sendo acionado.
-        expect(deps.dispararMissao).toHaveBeenCalledWith('sm', 'proj1')
-      })
-
-      // Pedir sem parar a uma sessão que não sai do lugar queima cota e enche o
-      // dev de mensagem. Passado o teto, quem decide é o abandono.
-      it('passado o teto, para de pedir e deixa o abandono decidir', async () => {
-        const deps = depsFalso({
-          sessoes: [linha({ sessionName: 'sessions/teimosa', nudges: MAX_NUDGES })],
-          consultarSessao: falhada,
-        })
-        await vigiarSessoes(deps)
+        expect(deps.fecharSessao).toHaveBeenCalledWith(
+          expect.objectContaining({ sessionName: 'sessions/falha', motivo: 'dev-falhou' })
+        )
         expect(deps.pedirParaContinuar).not.toHaveBeenCalled()
-        expect(deps.dispararMissao).toHaveBeenCalledWith('sm', 'proj1')
+        expect(deps.dispararMissao).not.toHaveBeenCalledWith('sm', 'proj1')
       })
 
-      // O teto mede quantas vezes TENTAMOS, não quantas chegaram. Contar só o
-      // sucesso faria uma falha persistente de rede girar para sempre sem nunca
-      // alcançar o teto.
-      it('falha de envio conta a tentativa do mesmo jeito', async () => {
+      // 2ª falha da MESMA issue (requeueCount 2, sem análise): fecha E pede a
+      // análise de "por que" antes da 3ª tentativa (D51).
+      it('2ª falha da mesma issue → fecha e pede análise', async () => {
         const deps = depsFalso({
-          sessoes: [linha({ sessionName: 'sessions/semrede', nudges: 0 })],
+          sessoes: [
+            linha({
+              sessionName: 'sessions/2x',
+              issueNumber: 9,
+              requeueCount: 2,
+              analysisDoneAt: null,
+            }),
+          ],
           consultarSessao: falhada,
-          pedirParaContinuar: vi.fn(async () => false),
         })
         await vigiarSessoes(deps)
-        expect(deps.registrarResposta).toHaveBeenCalledWith(
-          expect.objectContaining({ sessionName: 'sessions/semrede' })
+        expect(deps.fecharSessao).toHaveBeenCalledWith(
+          expect.objectContaining({ sessionName: 'sessions/2x', motivo: 'dev-falhou' })
+        )
+        expect(deps.pedirAnalise).toHaveBeenCalledWith(
+          expect.objectContaining({ linha: expect.objectContaining({ issueNumber: 9 }) })
         )
       })
     })

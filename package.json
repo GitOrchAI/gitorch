@@ -28,8 +28,7 @@
     "audit:secrets": "pnpm exec tsx scripts/ci/secret-scan.ts",
     "e2e": "pnpm exec tsx scripts/ci/e2e-playwright.ts",
     "dev": "turbo run dev --parallel",
-    "prepare": "husky",
-    "postinstall": "patch-package"
+    "prepare": "husky"
   },
   "devDependencies": {
     "@playwright/test": "1.62.1",
@@ -44,7 +43,6 @@
     "husky": "^9.1.7",
     "jsonwebtoken": "^9.0.3",
     "lint-staged": "^17.3.0",
-    "patch-package": "^8.0.1",
     "prettier": "^3.9.6",
     "tsx": "4.23.12",
     "turbo": "^2.10.11",
@@ -88,6 +86,9 @@
       "launch-editor": "2.14.1",
       "protobufjs": "7.6.5",
       "fast-uri": "4.1.1"
+    },
+    "patchedDependencies": {
+      "tar@7.5.21": "patches/tar@7.5.21.patch"
     }
   },
   "lint-staged": {

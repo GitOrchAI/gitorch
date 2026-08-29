@@ -22,7 +22,18 @@ export interface ContextoDaTask {
 
 export interface DecisaoDaSessao {
   acao:
-    'aguardar' | 'responder' | 'aprovar-plano' | 'julgar' | 'investigar' | 'insistir' | 'abandonar'
+    | 'aguardar'
+    | 'responder'
+    | 'aprovar-plano'
+    | 'julgar'
+    | 'investigar'
+    | 'insistir'
+    | 'abandonar'
+    // O Jules terminou (COMPLETED sem PR, ou FAILED/CANCELLED) e não vai andar
+    // sozinho: a vigia FECHA a linha e a issue volta para a fila (D51 — nunca
+    // abandona de vez). O motivo exato e a situação do PR ficam com o ciclo
+    // terminal (sessao-terminal.ts), acionado pela vigia via injeção.
+    | 'fechar-terminal'
   /** Só quando a ação é responder: o que o motor precisa saber para redigir. */
   contextoParaOMotor?: string
 }
@@ -62,13 +73,18 @@ export function decidirRespostaDaSessao(args: {
   const estado = args.estado.toUpperCase()
 
   if (estado === 'COMPLETED') {
-    // Concluída sem entrega NÃO é sucesso: o trabalho morreu dentro da sessão.
-    // Quem trata impedimento é o SM — é o papel dele no framework.
-    return args.temPr ? { acao: 'julgar' } : { acao: 'investigar' }
+    // COM PR → julgar (o QA cuida). SEM PR → concluiu sem entregar nada: o
+    // trabalho morreu dentro da sessão e ela NÃO vai andar sozinha. Até 29/08
+    // isto ia para 'investigar', que acionava o SM em loop e NUNCA fechava a
+    // linha — a vaga ficava presa para sempre (medido: 21 de 23 sessões assim).
+    // Agora fecha e a issue volta para a fila (D51).
+    return args.temPr ? { acao: 'julgar' } : { acao: 'fechar-terminal' }
   }
 
   if (estado === 'FAILED' || estado === 'CANCELLED') {
-    return { acao: 'investigar' }
+    // Mesma coisa: falhou e não retoma por mensagem (verificado — COMPLETED/
+    // FAILED não aceitam :sendMessage de retomada). Fecha e redelega.
+    return { acao: 'fechar-terminal' }
   }
 
   if (estado === 'AWAITING_PLAN_APPROVAL') {

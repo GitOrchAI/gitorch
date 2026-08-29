@@ -14,6 +14,7 @@
 // de cota (verificado: não existe endpoint de quota).
 
 import type { LinhaDeSessao } from './dev-session-store.js'
+import { ocupaVaga } from './estados-de-sessao.js'
 
 export interface IssueCandidata {
   number: number
@@ -56,17 +57,43 @@ export function escolherParaDelegar(args: {
    * Sessões vivas na CONTA inteira — todos os projetos que dividem a mesma
    * credencial do dev externo. Ausente resolve nas vivas deste projeto, que é
    * o comportamento antigo (e errado quando há mais de um projeto na conta).
+   *
+   * PREFIRA `ocupamVagaNaConta`: `vivasNaConta` conta TODA linha aberta,
+   * inclusive as que o Jules já deu como COMPLETED/FAILED — e essas já
+   * devolveram a vaga lá. Foi essa contagem inflada que parou a esteira dos
+   * dois projetos em 29/08 (15 linhas COMPLETED abertas = teto batido).
    */
   vivasNaConta?: number | undefined
+  /**
+   * Sessões da CONTA inteira que OCUPAM uma vaga de concorrência AGORA — só os
+   * estados que o Jules ainda está tocando (`ocupaVaga`). É o número certo para
+   * o teto de simultâneas; uma sessão terminada no fornecedor não conta.
+   */
+  ocupamVagaNaConta?: number | undefined
+  /**
+   * Issues que já falharam 2× e estão ESPERANDO a análise de "por que" antes da
+   * 3ª tentativa (D51). Enquanto estão aqui não são redelegadas — a análise
+   * (RA) roda, grava o aprendizado e libera a issue com o pedido revisado.
+   */
+  issuesComAnalisePendente?: number[]
   /** Freio de fluxo por ciclo, independente do plano. */
   capPorCiclo: number
 }): number[] {
   const comSessaoViva = new Set(args.sessoesVivas.map((s) => s.issueNumber))
+  const analisePendente = new Set(args.issuesComAnalisePendente ?? [])
 
   // As vagas são da CONTA, não deste projeto: no Pro são 15 simultâneas
   // divididas entre todos os repositórios daquela conta. Usar só as vivas
   // DAQUI faria dois projetos se acharem com 15 cada, contra 15 no total.
-  const vivasQueContam = args.vivasNaConta ?? args.sessoesVivas.length
+  //
+  // E só conta quem OCUPA vaga de verdade: uma sessão COMPLETED/FAILED já
+  // liberou a vaga no Jules — contá-la aqui zerava a folga e o SM parava de
+  // delegar em TODOS os projetos da conta (medido ao vivo 29/08). O fallback
+  // filtra por `ocupaVaga` para quem chama sem o número pré-calculado.
+  const vivasQueContam =
+    args.ocupamVagaNaConta ??
+    args.vivasNaConta ??
+    args.sessoesVivas.filter((s) => ocupaVaga(s.state)).length
   const folgaConcorrentes = args.tetoConcorrentes - vivasQueContam
   const folgaDiaria = args.tetoDiario - args.delegadasHoje
   const limite = Math.min(folgaConcorrentes, folgaDiaria, args.capPorCiclo)
@@ -91,6 +118,9 @@ export function escolherParaDelegar(args: {
     if (escolhidas.length >= limite) break
     if (c.bloqueadoresAbertos > 0) continue
     if (comSessaoViva.has(c.number)) continue
+    // Falhou 2× e a análise ainda não rodou: NÃO redelega — o RA vai entender
+    // o porquê e liberar a issue com o pedido revisado (D51).
+    if (analisePendente.has(c.number)) continue
 
     const declarados = c.arquivos ?? []
     // Lista vazia = "não sei" = nunca barra. Ver o comentário do campo.

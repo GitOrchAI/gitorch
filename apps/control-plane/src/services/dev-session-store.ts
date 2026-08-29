@@ -99,10 +99,54 @@ export interface LinhaDeSessao {
    * invisível para a vigília para sempre.
    */
   closedAt: Date | null
+  /**
+   * Quantas vezes ESTA issue já foi redelegada por entrega que não mesclou.
+   * Carregado em `abrirSessao` a partir das linhas fechadas anteriores da
+   * mesma issue. É o que `decidirSessaoTerminal` usa para decidir "tenta de
+   * novo" vs. "entende por que antes da 3ª" (D51). Opcional como `devAccountId`:
+   * o dado real (Prisma) sempre traz, os fakes de teste nem sempre.
+   */
+  requeueCount?: number
+  /**
+   * Quando a análise de "por que o Jules falhou nesta issue" rodou. `null` =
+   * nunca. Também carregado adiante em `abrirSessao`, para a 3ª tentativa não
+   * re-disparar a análise que acabou de acontecer.
+   */
+  analysisDoneAt?: Date | null
 }
 
-/** Por que a linha saiu da vigia. `merged` é o único caminho feliz. */
-export type MotivoDeFechamento = 'merged' | 'abandoned' | 'failed_final'
+/**
+ * Por que a linha saiu da vigia. `merged` é o único caminho feliz.
+ *
+ * Os quatro últimos são do ciclo TERMINAL (D51, sessao-terminal.ts): a sessão
+ * fechou mas a issue VOLTA para a fila — a esteira nunca abandona de vez.
+ *  - `dev-concluiu-sem-entrega` : o Jules deu COMPLETED sem abrir PR.
+ *  - `dev-falhou`               : o Jules deu FAILED/CANCELLED.
+ *  - `pr-descartado`            : o PR foi fechado sem mesclar.
+ *  - `pr-rejeitado-sem-retomada`: PR aberto, reprovado por nós, e o Jules
+ *                                 (terminal) não vai empurrar commit novo.
+ *  - `pergunta-sem-resposta`    : o Jules ficou em AWAITING_USER_FEEDBACK, a
+ *                                 pergunta já foi respondida e mesmo assim
+ *                                 nada andou por 24h.
+ */
+export type MotivoDeFechamento =
+  | 'merged'
+  | 'abandoned'
+  | 'failed_final'
+  | 'dev-concluiu-sem-entrega'
+  | 'dev-falhou'
+  | 'pr-descartado'
+  | 'pr-rejeitado-sem-retomada'
+  | 'pergunta-sem-resposta'
+
+/** Os motivos que devolvem a issue para a fila — ela será redelegada. */
+export const MOTIVOS_QUE_REDELEGAM: ReadonlySet<MotivoDeFechamento> = new Set([
+  'dev-concluiu-sem-entrega',
+  'dev-falhou',
+  'pr-descartado',
+  'pr-rejeitado-sem-retomada',
+  'pergunta-sem-resposta',
+])
 
 /**
  * O mínimo do client do Prisma que este módulo usa. Interface estreita em vez
@@ -171,6 +215,29 @@ export async function abrirSessao(deps: {
    */
   devAccountId?: string | null
 }): Promise<ResultadoDeAbrirSessao> {
+  // Carrega o histórico da issue para a linha nova (ciclo terminal, D51): quantas
+  // vezes esta issue já foi redelegada por entrega que não mesclou, e se a
+  // análise de "por que o Jules falhou" já rodou. É por esses números que
+  // `decidirSessaoTerminal` decide "redelegar de novo" vs. "entender antes da
+  // 3ª". Best-effort: falha aqui não pode barrar a delegação — cai no zero.
+  let requeueCount = 0
+  let analysisDoneAt: Date | null = null
+  try {
+    const anteriores = (await deps.prisma.devSession.findMany({
+      where: {
+        projectId: deps.projectId,
+        issueNumber: deps.issueNumber,
+        closedReason: { in: [...MOTIVOS_QUE_REDELEGAM] },
+      },
+      select: { analysisDoneAt: true },
+      orderBy: { closedAt: 'desc' },
+    })) as unknown as Array<{ analysisDoneAt: Date | null }>
+    requeueCount = anteriores.length
+    analysisDoneAt = anteriores[0]?.analysisDoneAt ?? null
+  } catch {
+    // sem histórico utilizável — a linha nasce do zero
+  }
+
   try {
     await deps.prisma.devSession.upsert({
       where: { sessionName: deps.sessionName },
@@ -181,6 +248,8 @@ export async function abrirSessao(deps: {
         state: 'QUEUED',
         stateCheckedAt: deps.agora,
         devAccountId: deps.devAccountId ?? null,
+        requeueCount,
+        analysisDoneAt,
         // Nasce com progresso marcado: sem isto a vigia leria "sem avanço
         // desde sempre" e trataria como parada uma sessão que acabou de
         // começar.
@@ -300,6 +369,99 @@ export async function linhasVivasParaJulgarAbandono(deps: { prisma: PrismaDevSes
     createdAt: Date | null
     closedAt: Date | null
   }>
+}
+
+/** O que a decisão do ciclo TERMINAL precisa de cada linha viva (sessao-terminal.ts). */
+export interface LinhaParaCicloTerminal {
+  sessionName: string
+  projectId: string
+  issueNumber: number
+  state: string
+  pullRequestNumber: number | null
+  lastProgressAt: Date | null
+  requeueCount: number
+  analysisDoneAt: Date | null
+  devAccountId: string | null
+}
+
+/**
+ * As linhas vivas da INSTÂNCIA com o que a decisão terminal precisa.
+ *
+ * Da instância inteira pelo MESMO motivo de `linhasVivasParaJulgarAbandono`: a
+ * vaga que trava a esteira é contada por instância. São funções irmãs — esta
+ * trata COMPLETED/FAILED (o Jules terminou), aquela trata a sessão que ficou
+ * parada sem terminar.
+ */
+export async function linhasVivasParaCicloTerminal(deps: {
+  prisma: PrismaDevSession
+}): Promise<LinhaParaCicloTerminal[]> {
+  return (await deps.prisma.devSession.findMany({
+    where: { closedAt: null },
+    select: {
+      sessionName: true,
+      projectId: true,
+      issueNumber: true,
+      state: true,
+      pullRequestNumber: true,
+      lastProgressAt: true,
+      requeueCount: true,
+      analysisDoneAt: true,
+      devAccountId: true,
+    },
+  })) as unknown as LinhaParaCicloTerminal[]
+}
+
+/**
+ * Marca que a análise de "por que o Jules falhou nesta issue" rodou para esta
+ * sessão. É o que impede a 3ª tentativa de re-disparar a análise, e o que
+ * `abrirSessao` carrega para a linha seguinte.
+ */
+export async function marcarAnaliseFeita(deps: {
+  prisma: PrismaDevSession
+  sessionName: string
+  agora: Date
+}): Promise<void> {
+  await deps.prisma.devSession.update({
+    where: { sessionName: deps.sessionName },
+    data: { analysisDoneAt: deps.agora },
+  })
+}
+
+/**
+ * Marca a análise como feita para TODAS as linhas (fechadas) de uma issue — é
+ * o que `abrirSessao` vai carregar para a próxima sessão. Chamado pela missão
+ * de análise (analisar-falhas-pendentes.ts) depois de entender o porquê.
+ */
+export async function marcarAnaliseFeitaDaIssue(deps: {
+  prisma: PrismaDevSession
+  projectId: string
+  issueNumber: number
+  agora: Date
+}): Promise<void> {
+  await deps.prisma.devSession.updateMany({
+    where: { projectId: deps.projectId, issueNumber: deps.issueNumber },
+    data: { analysisDoneAt: deps.agora },
+  })
+}
+
+/**
+ * As issues que já falharam 2× (`requeue_count >= 2`) e cuja análise ainda NÃO
+ * rodou (`analysis_done_at IS NULL`). Enquanto uma issue está nesta lista, o SM
+ * NÃO a redelega — espera a análise (D51). Escopado por projeto.
+ */
+export async function issuesComAnalisePendente(deps: {
+  prisma: PrismaDevSession
+  projectId: string
+}): Promise<number[]> {
+  const linhas = (await deps.prisma.devSession.findMany({
+    where: {
+      projectId: deps.projectId,
+      requeueCount: { gte: 2 },
+      analysisDoneAt: null,
+    },
+    select: { issueNumber: true },
+  })) as unknown as Array<{ issueNumber: number }>
+  return [...new Set(linhas.map((l) => l.issueNumber))]
 }
 
 /**

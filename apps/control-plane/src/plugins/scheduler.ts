@@ -70,6 +70,16 @@ import { criarPassagemDeBastao } from '../services/passar-o-bastao.js'
 import { criarRegistroDeMotorMorto } from '../services/motor-em-pausa.js'
 import { criarRegistroDeDescanso, type OrigemDoDisparo } from '../services/descanso-apos-vazia.js'
 import { tetosDoPlanoDoDev } from '../services/plano-do-dev.js'
+import { ESTADOS_TERMINAIS } from '../services/estados-de-sessao.js'
+import { executarCicloTerminal } from '../services/executar-ciclo-terminal.js'
+import {
+  lerAprendizados,
+  registrarAprendizado,
+  blocoDeContextoDoJules,
+  type PrismaEventoDoJules,
+} from '../services/memoria-do-jules.js'
+import { analisarFalhasPendentes } from '../services/analisar-falhas-pendentes.js'
+import { runAnaliseDeFalha, type SessaoMorta } from '../services/analise-de-falha-do-dev.js'
 import {
   abrirSessao,
   sessoesVivas,
@@ -81,6 +91,9 @@ import {
   contarTentativaDeAviso,
   fecharSessao,
   linhasVivasParaJulgarAbandono,
+  linhasVivasParaCicloTerminal,
+  issuesComAnalisePendente,
+  marcarAnaliseFeitaDaIssue,
   type MotivoDeFechamento,
   registrarInvestigacao,
   nomesDeSessoesVivasDaInstancia,
@@ -440,8 +453,14 @@ export function montarOpcoesDeDelegacao(args: {
   devPlan: string | null | undefined
   sessoesVivas: LinhaDeSessao[]
   delegadasHoje: number
-  /** Sessões vivas na CONTA inteira — o teto de simultâneas é dela. */
+  /** Sessões vivas na CONTA inteira — usado só para diagnóstico/log. */
   vivasNaConta: number
+  /**
+   * O que de fato OCUPA uma vaga simultânea na CONTA inteira: só os estados que
+   * o Jules ainda está tocando. É este que o teto de simultâneas usa — uma
+   * linha aberta em COMPLETED/FAILED já devolveu a vaga no fornecedor.
+   */
+  ocupamVagaNaConta: number
   /**
    * TODAS as linhas do projeto, vivas e fechadas — a prova de que uma tarefa
    * já foi entregue. `sessoesVivas` não serve aqui: a linha de uma entrega
@@ -453,6 +472,7 @@ export function montarOpcoesDeDelegacao(args: {
   sessoesVivas: LinhaDeSessao[]
   delegadasHoje: number
   vivasNaConta: number
+  ocupamVagaNaConta: number
   entregasDoProjeto: Array<{ issueNumber: number; mergeCommitSha?: string | null }>
   tetoConcorrentes: number
   tetoDiario: number
@@ -461,6 +481,7 @@ export function montarOpcoesDeDelegacao(args: {
     sessoesVivas: args.sessoesVivas,
     delegadasHoje: args.delegadasHoje,
     vivasNaConta: args.vivasNaConta,
+    ocupamVagaNaConta: args.ocupamVagaNaConta,
     entregasDoProjeto: args.entregasDoProjeto,
     ...tetosDoPlanoDoDev(args.devPlan),
   }
@@ -2606,6 +2627,19 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               vivasNaConta: await app.prisma.devSession.count({
                 where: { devAccountId: project.devAccountId ?? null, closedAt: null },
               }),
+              // O que de fato OCUPA uma das 15 vagas simultâneas: só os estados
+              // que o Jules ainda está tocando. Uma linha aberta em COMPLETED/
+              // FAILED já devolveu a vaga no fornecedor — contá-la contra o teto
+              // parou a esteira dos dois projetos em 29/08 (`ESTADOS_TERMINAIS`
+              // em estados-de-sessao.ts). `notIn` cobre o fail-closed: estado
+              // desconhecido conta como ocupando.
+              ocupamVagaNaConta: await app.prisma.devSession.count({
+                where: {
+                  devAccountId: project.devAccountId ?? null,
+                  closedAt: null,
+                  state: { notIn: [...ESTADOS_TERMINAIS] },
+                },
+              }),
               // Sem filtro de linha viva de propósito: a entrega mesclada
               // costuma ter a linha JÁ FECHADA, e é ela que precisa barrar a
               // redelegação. Só as que têm commit de merge interessam.
@@ -2629,6 +2663,29 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 updatedAt: Date
               }>,
             }),
+            // D51: issues que falharam 2× esperam a análise antes da 3ª —
+            // não são redelegadas até o RA entender o porquê. E, para as que
+            // já têm a análise feita, o pedido revisado vai no topo do prompt.
+            issuesComAnalisePendente: await issuesComAnalisePendente({
+              prisma: app.prisma as unknown as PrismaDevSession,
+              projectId: project.id,
+            }),
+            aprendizadoPorIssue: await (async () => {
+              const mapa = new Map<number, string>()
+              try {
+                const aprendizados = await lerAprendizados({
+                  prisma: app.prisma as unknown as PrismaEventoDoJules,
+                  projectId: project.id,
+                  onWarn: (m) => app.log.warn(m),
+                })
+                for (const a of aprendizados) {
+                  if (a.issueNumber && a.pedidoRevisado) mapa.set(a.issueNumber, a.pedidoRevisado)
+                }
+              } catch (err) {
+                app.log.warn(err, '[Scheduler] não deu para ler os aprendizados do Jules')
+              }
+              return mapa
+            })(),
             // O SM é o orquestrador do julgamento (docs/agents/quality-assurance.md
             // §3.1). Até aqui o julgamento só era acordado por aviso do
             // GitHub ou pela vigília de uma sessão viva — uma entrega cuja
@@ -2809,6 +2866,17 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               role,
               ...(workspacePath ? { workspacePath } : {}),
             })
+            // D51: quem ESCREVE issue para o dev assíncrono (RA e PO) leva o
+            // guia curado do jules-awesome-list + o que já aprendemos sobre
+            // como o Jules falha NESTE projeto.
+            if (poRails || raRails) {
+              const blocoJules = await blocoDeContextoDoJules({
+                prisma: app.prisma as unknown as PrismaEventoDoJules,
+                projectId: project.id,
+                onWarn: (m) => app.log.warn(m),
+              })
+              if (blocoJules.trim()) contextBlocks.push(blocoJules)
+            }
             // Colunas do board: config POR PROJETO (runtimeConfig.board.columns),
             // com default nativo — o cliente personaliza, o backend acompanha.
             const boardColumns = resolveBoardColumns(project.runtimeConfig)
@@ -2831,19 +2899,39 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               })
             }
             result = raRails
-              ? await runRaMissionViaRails({
-                  repository: project.wingId,
-                  githubToken: railsToken,
-                  execute,
-                  contextBlocks,
-                  // Separa os dois trabalhos do RA: pelo aviso de desejo novo
-                  // ele analisa AQUELE desejo; pela agenda ele EXPLORA o
-                  // projeto. Ancorar de novo num desejo já analisado é refazer
-                  // a mesma análise duas vezes por dia em vez de aprender mais
-                  // sobre o repositório — e é o explorador quem alimenta a
-                  // memória que os outros agentes leem.
-                  pelaAgenda: origem === 'agenda',
-                })
+              ? await (async () => {
+                  const raResult = await runRaMissionViaRails({
+                    repository: project.wingId,
+                    githubToken: railsToken,
+                    execute,
+                    contextBlocks,
+                    // Separa os dois trabalhos do RA: pelo aviso de desejo novo
+                    // ele analisa AQUELE desejo; pela agenda ele EXPLORA o
+                    // projeto. Ancorar de novo num desejo já analisado é refazer
+                    // a mesma análise duas vezes por dia em vez de aprender mais
+                    // sobre o repositório — e é o explorador quem alimenta a
+                    // memória que os outros agentes leem.
+                    pelaAgenda: origem === 'agenda',
+                  })
+                  // D51: junto do trabalho de explorador, o RA entende POR QUE
+                  // uma issue falhou 2× — antes da 3ª tentativa. O aprendizado
+                  // vai para a memória dos agentes e o pedido revisado para o
+                  // prompt da próxima delegação.
+                  const analiseOut = await rodarAnaliseDeFalhasDoRa(
+                    project,
+                    railsToken,
+                    execute
+                  ).catch((err) => {
+                    app.log.warn(
+                      err,
+                      `[Scheduler] análise de falhas do RA falhou em ${project.wingId}`
+                    )
+                    return ''
+                  })
+                  return analiseOut
+                    ? { ...raResult, output: `${raResult.output}\n${analiseOut}` }
+                    : raResult
+                })()
               : poRails
                 ? await runPoMissionViaRails({
                     repository: project.wingId,
@@ -3781,6 +3869,283 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           `[Scheduler] não deu para devolver a vaga de ${linha.sessionName}; tenta no próximo ciclo`
         )
       }
+    }
+  }
+
+  /**
+   * O CICLO TERMINAL: fecha a sessão que o Jules já CONCLUIU ou FALHOU e cuja
+   * linha nunca fechou, devolvendo a issue para a fila (D51 — nunca abandona de
+   * vez). Irmã de `devolverVagasDeSessaoAbandonada` (que trata a sessão parada
+   * sem terminar). Foi a falta desta que encheu as 15 vagas do gitorch e parou
+   * a esteira em 29/08 — 21 de 23 sessões estavam em COMPLETED/FAILED.
+   */
+  /**
+   * A análise de "por que o Jules falhou 2× nesta issue" (D51). Roda junto do
+   * RA na agenda. Best-effort: nunca lança para fora — o RA tem outro trabalho.
+   */
+  const rodarAnaliseDeFalhasDoRa = async (
+    project: { id: string; wingId: string },
+    railsToken: string | undefined,
+    execute: StepExecutor
+  ): Promise<string> => {
+    if (!railsToken) return ''
+    const agora = new Date()
+    const gh = async (path: string): Promise<unknown> => {
+      const resp = await fetch(`https://api.github.com${path}`, {
+        headers: {
+          authorization: `token ${railsToken}`,
+          accept: 'application/vnd.github+json',
+          'user-agent': 'gitorch',
+        },
+      })
+      if (!resp.ok) throw new Error(`GitHub GET ${path} → ${resp.status}`)
+      return resp.json()
+    }
+
+    const r = await analisarFalhasPendentes({
+      listarPendentes: () =>
+        issuesComAnalisePendente({
+          prisma: app.prisma as unknown as PrismaDevSession,
+          projectId: project.id,
+        }),
+      dadosDaIssue: async (issueNumber) => {
+        const issue = (await gh(`/repos/${project.wingId}/issues/${issueNumber}`)) as {
+          title?: string
+          body?: string
+        }
+        const mortas = (await app.prisma.devSession.findMany({
+          where: {
+            projectId: project.id,
+            issueNumber,
+            closedReason: {
+              in: [
+                'dev-concluiu-sem-entrega',
+                'dev-falhou',
+                'pr-descartado',
+                'pr-rejeitado-sem-retomada',
+              ],
+            },
+          },
+          select: { sessionName: true, state: true, closedReason: true, pullRequestNumber: true },
+          orderBy: { closedAt: 'desc' },
+          take: 4,
+        })) as Array<{
+          sessionName: string
+          state: string
+          closedReason: string | null
+          pullRequestNumber: number | null
+        }>
+        const sessoesMortas: SessaoMorta[] = []
+        const comentariosDeQa: string[] = []
+        for (const m of mortas) {
+          let ultimaAtividade = `closed as ${m.closedReason}`
+          try {
+            const apiKey = await chaveDaSessao(m.sessionName)
+            if (apiKey) {
+              const msg = await ultimaMensagemDoDevJules({ apiKey, sessionName: m.sessionName })
+              if (msg) ultimaAtividade = msg.slice(0, 600)
+            }
+          } catch {
+            /* fica com o closedReason */
+          }
+          sessoesMortas.push({ sessionName: m.sessionName, estado: m.state, ultimaAtividade })
+          if (m.pullRequestNumber && comentariosDeQa.length < 3) {
+            try {
+              const comments = (await gh(
+                `/repos/${project.wingId}/issues/${m.pullRequestNumber}/comments?per_page=100`
+              )) as Array<{ body?: string }>
+              for (const c of comments) {
+                if (
+                  (c.body ?? '').includes('gitorch:qa') ||
+                  (c.body ?? '').includes('needs changes')
+                ) {
+                  comentariosDeQa.push((c.body ?? '').slice(0, 800))
+                }
+              }
+            } catch {
+              /* sem comentário */
+            }
+          }
+        }
+        return {
+          issueNumber,
+          tituloDaIssue: issue.title ?? `#${issueNumber}`,
+          corpoDaIssue: issue.body ?? '',
+          sessoesMortas,
+          comentariosDeQa: comentariosDeQa.slice(0, 3),
+        }
+      },
+      analisar: (entrada) => runAnaliseDeFalha(execute, entrada),
+      gravarAprendizado: ({ issueNumber, analise }) =>
+        registrarAprendizado({
+          prisma: app.prisma as unknown as PrismaEventoDoJules,
+          projectId: project.id,
+          aprendizado: {
+            padrao: analise.padraoDoJules,
+            origem: 'analise-2-falhas',
+            issueNumber,
+            pedidoRevisado: analise.pedidoRevisado,
+          },
+          onWarn: (m) => app.log.warn(m),
+        }),
+      marcarFeita: (issueNumber) =>
+        marcarAnaliseFeitaDaIssue({
+          prisma: app.prisma as unknown as PrismaDevSession,
+          projectId: project.id,
+          issueNumber,
+          agora,
+        }),
+      onInfo: (m) => app.log.info(`[Scheduler] ${m}`),
+      onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+    })
+
+    if (r.analisadas.length === 0) return ''
+    // UM aviso ao dono por passada, consolidado.
+    await avisarDonoDoProjeto(
+      project as NotifiableProject & { wingId: string },
+      `GitOrch: ${r.analisadas.length === 1 ? 'a issue' : 'as issues'} ${r.analisadas
+        .map((n) => `#${n}`)
+        .join(', ')} falharam 2× — entendi o porquê e a 3ª tentativa vai com o pedido corrigido. ` +
+        `Padrão aprendido: ${r.padroes[0]?.padrao ?? ''}`
+    ).catch(() => undefined)
+    return `RA: analisei ${r.analisadas.length} falha(s) repetida(s): ${r.analisadas
+      .map((n) => `#${n}`)
+      .join(', ')}.`
+  }
+
+  const varrerCicloTerminalDaSessao = async (): Promise<void> => {
+    const agora = new Date()
+    const linhas = await linhasVivasParaCicloTerminal({
+      prisma: app.prisma as unknown as PrismaDevSession,
+    })
+    if (linhas.length === 0) return
+
+    // Token de GitHub por PROJETO, resolvido uma vez — `situacaoDoPr` pode ser
+    // chamado várias vezes para o mesmo projeto.
+    const projetosPorId = new Map(
+      (
+        await app.prisma.project.findMany({
+          where: { id: { in: [...new Set(linhas.map((l) => l.projectId))] } },
+          select: { id: true, wingId: true, name: true, userId: true },
+        })
+      ).map((p) => [p.id, p])
+    )
+    const tokenPorProjeto = new Map<string, string | undefined>()
+    const tokenDoProjeto = async (projectId: string): Promise<string | undefined> => {
+      if (tokenPorProjeto.has(projectId)) return tokenPorProjeto.get(projectId)
+      const proj = projetosPorId.get(projectId)
+      const t = proj
+        ? (process.env['GITORCH_GITHUB_TOKEN'] ??
+          (await mintInstallationToken({
+            repository: proj.wingId,
+            onError: (m) => app.log.error(m),
+            onWarn: (m) => app.log.warn(m),
+          })) ??
+          undefined)
+        : undefined
+      tokenPorProjeto.set(projectId, t)
+      return t
+    }
+
+    const projetoDaIssue = (n: number): string | undefined =>
+      linhas.find((l) => l.issueNumber === n)?.projectId
+
+    const resultado = await executarCicloTerminal({
+      listarLinhas: async () => linhas,
+      situacaoDoPr: async ({ linha, numeroDoPr }) => {
+        if (numeroDoPr === null) return 'sem-pr'
+        const proj = projetosPorId.get(linha.projectId)
+        const token = await tokenDoProjeto(linha.projectId)
+        if (!proj || !token) return null // sem como ler — fica para o próximo ciclo
+        const gh = async (path: string): Promise<unknown> => {
+          const resp = await fetch(`https://api.github.com${path}`, {
+            headers: {
+              authorization: `token ${token}`,
+              accept: 'application/vnd.github+json',
+              'user-agent': 'gitorch',
+            },
+          })
+          if (!resp.ok) throw new Error(`GitHub GET ${path} → ${resp.status}`)
+          return resp.json()
+        }
+        const pr = (await gh(`/repos/${proj.wingId}/pulls/${numeroDoPr}`)) as {
+          state?: string
+          merged?: boolean
+          merged_at?: string | null
+        }
+        if (pr.merged || pr.merged_at) return 'mesclado'
+        if (pr.state === 'closed') return 'fechado-sem-merge'
+        // Aberto: reprovado por nós? A régua de tempo é de `decidirSessaoTerminal`.
+        const reviews = (await gh(
+          `/repos/${proj.wingId}/pulls/${numeroDoPr}/reviews?per_page=100`
+        )) as Array<{ state?: string; user?: { login?: string } }>
+        const reprovadoPorNos = reviews.some(
+          (rev) =>
+            rev.state === 'CHANGES_REQUESTED' &&
+            (rev.user?.login ?? '').toLowerCase().includes('gitorch')
+        )
+        return reprovadoPorNos ? 'aberto-rejeitado-parado' : 'aberto-vivo'
+      },
+      fecharSessao: async ({ linha, motivo }) => {
+        const apiKey = await chaveDaSessao(linha.sessionName)
+        await fecharSessao({
+          prisma: app.prisma as unknown as PrismaDevSession,
+          sessionName: linha.sessionName,
+          motivo,
+          agora,
+          ...(apiKey
+            ? {
+                arquivarNoFornecedor: (sessionName: string) =>
+                  arquivarSessaoJules({ apiKey, sessionName, onWarn: (m) => app.log.warn(m) }),
+              }
+            : {}),
+          onWarn: (m) => app.log.warn(m),
+        })
+      },
+      pedirAnalise: async ({ linha }) => {
+        // T4 liga a missão real (`ra-analise-falha`) + `marcarAnaliseFeita`.
+        // Por enquanto: a issue já volta para a fila (o motivo redelega); só
+        // registra que uma análise deveria ter rodado.
+        app.log.info(
+          `[Scheduler] ciclo-terminal: issue #${linha.issueNumber} de ${linha.projectId} ` +
+            'falhou 2x — análise pendente (T4)'
+        )
+      },
+      agora,
+      onInfo: (m) => app.log.info(`[Scheduler] ${m}`),
+      onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+    })
+
+    // UM aviso por projeto, nunca um por sessão (o dono já reclamou de spam).
+    const todasAsIssues = [...resultado.issuesRedelegadas, ...resultado.issuesEmAnalise]
+    const porProjeto = new Map<string, number[]>()
+    for (const n of todasAsIssues) {
+      const pid = projetoDaIssue(n)
+      if (pid) porProjeto.set(pid, [...(porProjeto.get(pid) ?? []), n])
+    }
+    for (const [projectId, issues] of porProjeto) {
+      const proj = projetosPorId.get(projectId)
+      if (!proj || issues.length === 0) continue
+      const lista = issues.map((n) => `#${n}`).join(', ')
+      await avisarDonoDoProjeto(
+        proj as NotifiableProject & { wingId: string },
+        issues.length === 1
+          ? `GitOrch: a entrega da issue ${lista} voltou para a fila — o dev concluiu ou falhou sem uma entrega que mesclasse. A esteira vai tentar de novo.`
+          : `GitOrch: ${issues.length} entregas voltaram para a fila (${lista}) — o dev concluiu ou falhou sem entrega que mesclasse. A esteira vai tentar de novo.`
+      ).catch(() => undefined)
+    }
+
+    const total =
+      resultado.fechadasConcluidas +
+      resultado.issuesRedelegadas.length +
+      resultado.issuesEmAnalise.length
+    if (total > 0) {
+      app.log.info(
+        `[Scheduler] ciclo-terminal: ${resultado.fechadasConcluidas} mescladas, ` +
+          `${resultado.issuesRedelegadas.length} de volta à fila, ` +
+          `${resultado.issuesEmAnalise.length} para análise, ` +
+          `${resultado.mantidas} mantidas, ${resultado.ilegiveis} ilegíveis`
+      )
     }
   }
 
@@ -6099,6 +6464,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         err,
         '[Scheduler] varredura de sessões abandonadas falhou; tenta no próximo ciclo'
       )
+    )
+    // Irmã da de cima: fecha a sessão que o Jules já CONCLUIU ou FALHOU e cuja
+    // linha nunca fechou — a que encheu as vagas e parou a esteira em 29/08.
+    await varrerCicloTerminalDaSessao().catch((err) =>
+      app.log.warn(err, '[Scheduler] varredura do ciclo terminal falhou; tenta no próximo ciclo')
     )
     await reconciliarVagasDoDev().catch((err) =>
       app.log.error(err, '[Scheduler] reconciliação de vagas falhou; tenta na próxima hora')
