@@ -573,3 +573,48 @@ describe('a reserva acontece ANTES de gastar cota do dev externo', () => {
     expect(criar).toHaveBeenCalledTimes(1)
   })
 })
+
+// ESTEIRA-T9: um incidente = uma issue = UM PR.
+describe('runSmDelegation: incidente de infra já coberto por um PR', () => {
+  const fetchDeIssues = (tarefas: unknown[]) =>
+    (async () =>
+      new Response(JSON.stringify(tarefas), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })) as unknown as typeof fetch
+
+  it('issue de incidente com PR aberto NÃO vira sessão nova; comenta 1x', async () => {
+    const criar = vi.fn(async () => ({ situacao: 'criada' as const, sessionName: 's/1' }))
+    const comentar = vi.fn(async () => undefined)
+    const r = await runSmDelegation({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: fetchDeIssues([{ number: 200, labels: [{ name: 'gitorch:task' }], body: '' }]),
+      criarSessaoDev: criar as never,
+      aoCriarSessao: async () => undefined,
+      issuesComPrDeIncidente: new Map([[200, 314]]),
+      comentarCoberturaDeIncidente: comentar,
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+    })
+    expect(criar).not.toHaveBeenCalled()
+    expect(r.delegated).toEqual([])
+    expect(comentar).toHaveBeenCalledWith({ issueNumber: 200, prNumber: 314 })
+  })
+
+  it('issue de incidente SEM PR ainda é delegada normalmente', async () => {
+    const criar = vi.fn(async () => ({ situacao: 'criada' as const, sessionName: 's/2' }))
+    const r = await runSmDelegation({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: fetchDeIssues([{ number: 201, labels: [{ name: 'gitorch:task' }], body: '' }]),
+      criarSessaoDev: criar as never,
+      aoCriarSessao: async () => undefined,
+      issuesComPrDeIncidente: new Map([[200, 314]]),
+      comentarCoberturaDeIncidente: vi.fn(async () => undefined),
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+    })
+    expect(r.delegated).toEqual([201])
+  })
+})
