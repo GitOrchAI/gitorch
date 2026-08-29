@@ -50,6 +50,7 @@ describe('conferirBancoNoArranque', () => {
       },
       avisar: async (texto) => {
         avisos.push(texto)
+        return true
       },
       log: { warn: (m) => warns.push(m), info: () => undefined },
     })
@@ -67,6 +68,7 @@ describe('conferirBancoNoArranque', () => {
       prisma: { $queryRawUnsafe: async () => MIGRATION_LEDGER.map((name) => ({ name })) },
       avisar: async (t) => {
         avisos.push(t)
+        return true
       },
       log: { warn: () => undefined, info: () => undefined },
     })
@@ -85,7 +87,7 @@ describe('conferirBancoNoArranque', () => {
           throw new Error('relation "gitorch_schema_migrations" does not exist')
         },
       },
-      avisar: async () => undefined,
+      avisar: async () => true,
       log: { warn: (m) => warns.push(m), info: () => undefined },
     })
     expect(estado).toBeNull()

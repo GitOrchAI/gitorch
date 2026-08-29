@@ -114,7 +114,7 @@ describe('pedido de retrabalho que não chegou ao dev é reentregue', () => {
   })
 
   it('no teto de tentativas, desiste AVISANDO o dono — nunca em silêncio', async () => {
-    const avisarDono = vi.fn(async (_mensagem: string) => undefined)
+    const avisarDono = vi.fn(async (_mensagem: string) => true)
     const reentregar = vi.fn(async () => true)
     const limpar = vi.fn(async () => undefined)
 

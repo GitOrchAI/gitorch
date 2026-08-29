@@ -547,7 +547,7 @@ export function montarOpcoesDoJulgamento(args: {
    * contaria a reprovação de um dono na conta do outro.
    */
   projectId: string
-  avisarDono?: ((mensagem: string) => Promise<void>) | undefined
+  avisarDono?: ((mensagem: string) => Promise<boolean>) | undefined
 }): Required<Omit<VigiliaDoJulgamentoOptions, 'avisarDono'>> &
   Pick<VigiliaDoJulgamentoOptions, 'avisarDono'> {
   return {
@@ -1577,32 +1577,46 @@ export async function runBootReaper(
  * então não enxerga o closure de lá — sem este helper compartilhado, a
  * classificação teria que ser reimplementada nos dois lugares e podia
  * divergir em silêncio.
+ *
+ * Devolve `true`/`false` conforme o aviso realmente saiu (gravou a
+ * auditoria, ou o Telegram entregou) — fix/telegram-notifier-propaga-falha:
+ * antes retornava `Promise<void>` sempre resolvido, e quem tentava saber se
+ * o dono FOI avisado de verdade (qa-rails-mission.ts) nunca conseguia.
  */
 async function avisarOuAuditar(
   app: FastifyInstance,
   projeto: NotifiableProject & { id: string; wingId: string },
   texto: string
-): Promise<void> {
+): Promise<boolean> {
   if (classificarAviso(texto) === 'auditoria') {
-    await app.prisma.event
+    return app.prisma.event
       .create({ data: { projectId: projeto.id, type: 'audit', payload: { texto } } })
-      .catch((err) =>
+      .then(() => true)
+      .catch((err) => {
         app.log.warn(err, `[Scheduler] não deu para gravar a auditoria de ${projeto.wingId}`)
-      )
-    return
+        return false
+      })
   }
   const notifyChatId = await resolveNotifyChatId(app.prisma, projeto, {
     instanceOwnerEmail: process.env['GITORCH_OWNER_EMAIL'],
     instanceChatId: process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
   })
+  // `onDeliveryFailure` só loga `err.name`, nunca o erro cru: a URL desta
+  // chamada embute o TOKEN DO BOT no caminho (buildTelegramNotifier), e
+  // "algumas implementações de fetch" compõem a URL na mensagem de erro —
+  // mesma cautela já aplicada em `reconferirAcessoDoRelogio` (achado
+  // ⚠️ CRÍTICO A VERIFICAR da revisão do Baixo 6, ver comentário lá).
   const notify = buildTelegramNotifier({
     botToken: process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
     ...(notifyChatId ? { chatId: notifyChatId } : {}),
+    onDeliveryFailure: (err) =>
+      app.log.warn(
+        { erroDeEntrega: err instanceof Error ? err.name : typeof err },
+        `[Scheduler] aviso de publicação falhou para ${projeto.wingId}`
+      ),
   })
-  if (!notify) return
-  await notify(texto).catch((err) =>
-    app.log.warn(err, `[Scheduler] aviso de publicação falhou para ${projeto.wingId}`)
-  )
+  if (!notify) return false
+  return notify(texto)
 }
 
 export async function reconferirAcessoDoRelogio(
@@ -2559,7 +2573,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             // notícia de negócio, não de infraestrutura. O canal é o mesmo do
             // resto do projeto — sem vínculo, ninguém é avisado, e o projeto
             // de um cliente nunca vira mensagem no chat de outro.
-            avisarDono: (texto) => avisarDonoDoProjeto(project, texto),
+            avisarDono: async (texto) => {
+              await avisarDonoDoProjeto(project, texto)
+            },
             // Sessão que nasceu lá fora e não pôde ser registrada aqui é
             // desfeita na hora: sem linha, ninguém a acompanha, e deixá-la de
             // pé só trocaria uma delegação perdida por uma vaga presa.
@@ -3054,7 +3070,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             // ESTEIRA-T15: passa por avisarDonoDoProjeto (não um notificador
             // Telegram cru) — é o chokepoint que classifica executivo vs
             // auditoria antes de decidir o canal.
-            const avisarDono: ((mensagem: string) => Promise<void>) | undefined = qaRails
+            const avisarDono: ((mensagem: string) => Promise<boolean>) | undefined = qaRails
               ? (texto) => avisarDonoDoProjeto(project, texto)
               : undefined
             result = raRails
@@ -4313,7 +4329,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           ['gitorch:task', agentLabel('po'), 'gitorch:scaffolding']
         )
       },
-      avisarDono: (texto) => avisarDonoDoProjeto(project, texto),
+      avisarDono: async (texto) => {
+        await avisarDonoDoProjeto(project, texto)
+      },
       registrarIncidente: async ({ classe, identidadeEstavel, issueNumber, titulo }) => {
         await app.prisma.infraIncident.upsert({
           where: {
@@ -5402,7 +5420,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   const avisarDonoDoProjeto = async (
     projeto: NotifiableProject & { id: string; wingId: string },
     texto: string
-  ): Promise<void> => avisarOuAuditar(app, projeto, texto)
+  ): Promise<boolean> => avisarOuAuditar(app, projeto, texto)
 
   /**
    * Leva B ("o quadro do cliente não pode dizer entregue antes da hora"): o

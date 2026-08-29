@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import {
   ESTADO_AGUARDANDO_QA,
   vigiarSessoes,
+  MAX_TENTATIVAS_DE_AVISO,
   type VigiaDeps,
   type EstadoLido,
 } from './session-watch.js'
@@ -58,7 +59,7 @@ function depsFalso(overrides: Partial<VigiaDeps> = {}): VigiaDeps {
     fecharSessao: vi.fn(async (_args: unknown) => undefined),
     pedirAnalise: vi.fn(async (_args: unknown) => undefined),
     registrarInvestigacao: vi.fn(async (_args: unknown) => undefined),
-    avisarDono: vi.fn(async (_mensagem: string) => undefined),
+    avisarDono: vi.fn(async (_mensagem: string) => true),
     agora,
     onWarn: vi.fn(),
     ...overrides,
@@ -724,6 +725,64 @@ describe('vigiarSessoes', () => {
           expect.objectContaining({ estado: ESTADO_AGUARDANDO_QA })
         )
       })
+    })
+  })
+
+  // fix/telegram-notifier-propaga-falha: até este fix, `donoAvisado` vinha de
+  // `.avisarDono(...).then(() => true).catch(() => false)` — código morto,
+  // porque `avisarDono` (via buildTelegramNotifier) nunca rejeitava. O recado
+  // de retrabalho era apagado do banco como "dono avisado" mesmo quando o
+  // Telegram nunca entregou nada (achado 2 do comentário original: "apagar
+  // sem avisar destruiria a evidência que esta feature veio preservar").
+  describe('teto de reentrega estourado (MAX_TENTATIVAS_DE_AVISO)', () => {
+    it('avisarDono entrega (true) -> limpa o recado pendente e registra "dono avisado"', async () => {
+      const avisos: string[] = []
+      const deps = depsFalso({
+        sessoes: [
+          linha({
+            sessionName: 'sessions/teto-ok',
+            issueNumber: 77,
+            reworkNoticePending: 'conserte o teste X',
+            reworkNoticeAttempts: MAX_TENTATIVAS_DE_AVISO,
+          }),
+        ],
+        reentregarAviso: vi.fn(async () => true),
+        limparAvisoPendente: vi.fn(async () => undefined),
+        avisarDono: vi.fn(async (msg: string) => {
+          avisos.push(msg)
+          return true
+        }),
+      })
+
+      await vigiarSessoes(deps)
+
+      expect(avisos).toHaveLength(1)
+      expect(deps.limparAvisoPendente).toHaveBeenCalledWith({ sessionName: 'sessions/teto-ok' })
+    })
+
+    it('avisarDono falha (false, Telegram fora do ar) -> NÃO limpa o recado — a evidência fica guardada', async () => {
+      const avisos: string[] = []
+      const deps = depsFalso({
+        sessoes: [
+          linha({
+            sessionName: 'sessions/teto-falha',
+            issueNumber: 78,
+            reworkNoticePending: 'conserte o teste Y',
+            reworkNoticeAttempts: MAX_TENTATIVAS_DE_AVISO,
+          }),
+        ],
+        reentregarAviso: vi.fn(async () => true),
+        limparAvisoPendente: vi.fn(async () => undefined),
+        avisarDono: vi.fn(async (msg: string) => {
+          avisos.push(msg)
+          return false
+        }),
+      })
+
+      await vigiarSessoes(deps)
+
+      expect(avisos).toHaveLength(1)
+      expect(deps.limparAvisoPendente).not.toHaveBeenCalled()
     })
   })
 })

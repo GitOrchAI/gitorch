@@ -1307,6 +1307,7 @@ describe('runQaMissionViaRails', () => {
         },
         avisarDono: async (msg: string) => {
           avisos.push(msg)
+          return true
         },
       }
 
@@ -1632,6 +1633,7 @@ describe('runQaMissionViaRails', () => {
         ],
         avisarDono: async (mensagem) => {
           avisos.push(mensagem)
+          return true
         },
         registrarPendencia: async (args) => {
           registradas.push(args)
@@ -1683,6 +1685,7 @@ describe('runQaMissionViaRails', () => {
         ],
         avisarDono: async (mensagem) => {
           avisos1.push(mensagem)
+          return true
         },
         registrarAvisoDeDemora: async (args) => {
           marcas.push(args)
@@ -1718,6 +1721,7 @@ describe('runQaMissionViaRails', () => {
         ],
         avisarDono: async (mensagem) => {
           avisos2.push(mensagem)
+          return true
         },
         fetchImpl: f2,
       })
@@ -1750,6 +1754,7 @@ describe('runQaMissionViaRails', () => {
         ],
         avisarDono: async (mensagem) => {
           avisos1.push(mensagem)
+          return true
         },
         registrarAvisoDeDemora: async (args) => {
           marcas.push(args)
@@ -1782,6 +1787,7 @@ describe('runQaMissionViaRails', () => {
         ],
         avisarDono: async (mensagem) => {
           avisos2.push(mensagem)
+          return true
         },
         fetchImpl: f2,
       })
@@ -2677,6 +2683,7 @@ describe('ESTEIRA-T15: dedupe do aviso de entregas barradas', () => {
       ],
       avisarDono: async (msg: string) => {
         avisos.push(msg)
+        return true
       },
       lerJanelaDeBarradas: async () => estadoNoBanco,
       registrarJanelaDeBarradas: async (estado: EstadoDaJanela) => {
@@ -2690,6 +2697,55 @@ describe('ESTEIRA-T15: dedupe do aviso de entregas barradas', () => {
 
     expect(avisos).toHaveLength(1)
     expect(avisos[0]).toContain('entregas seguidas barradas')
+  })
+
+  // fix/telegram-notifier-propaga-falha: antes deste fix, buildTelegramNotifier
+  // nunca rejeitava e o `.then(() => true).catch(() => false)` morto fazia
+  // `avisado` ser sempre `true` — mesmo com o Telegram fora do ar, o projeto
+  // era travado e a janela marcada como avisada, emudecendo o dono para
+  // sempre. Agora `avisarDono` devolve o boolean real da entrega.
+  it('avisarDono resolve false (Telegram fora do ar) -> projeto NÃO trava e a janela NÃO é marcada como avisada', async () => {
+    const avisos: string[] = []
+    let estadoNoBanco: EstadoDaJanela = { desde: null, avisado: false }
+    const avisos1: string[] = []
+
+    const opcoes = {
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      fetchImpl: fakeFetch([{ number: 7, user: 'jules[bot]' }]),
+      lerHistoricoDoProjeto: async () => [
+        { peloPortao: true, quando: new Date() },
+        { peloPortao: true, quando: new Date() },
+        { peloPortao: true, quando: new Date() },
+      ],
+      avisarDono: async (msg: string) => {
+        avisos.push(msg)
+        return false
+      },
+      lerJanelaDeBarradas: async () => estadoNoBanco,
+      registrarJanelaDeBarradas: async (estado: EstadoDaJanela) => {
+        estadoNoBanco = estado
+      },
+    }
+
+    await runQaMissionViaRails(opcoes)
+
+    // Tentou avisar (a mensagem foi construída e chamada) mas a entrega
+    // falhou — nada disso pode ficar marcado como "resolvido".
+    expect(avisos).toHaveLength(1)
+    expect(estadoNoBanco).toEqual({ desde: null, avisado: false })
+
+    // Próximo wake: como a janela nunca foi marcada, tenta avisar de novo —
+    // "aviso que falha volta ao ciclo de sempre", não emudece a entrega.
+    await runQaMissionViaRails({
+      ...opcoes,
+      avisarDono: async (msg: string) => {
+        avisos1.push(msg)
+        return false
+      },
+    })
+    expect(avisos1).toHaveLength(1)
   })
 
   it('depois de avisar, o projeto volta a andar (aprovação) -> a marca limpa e a PRÓXIMA sequência avisa de novo', async () => {
@@ -2708,6 +2764,7 @@ describe('ESTEIRA-T15: dedupe do aviso de entregas barradas', () => {
       ],
       avisarDono: async (msg: string) => {
         avisos.push(msg)
+        return true
       },
       lerJanelaDeBarradas: async () => estadoNoBanco,
       registrarJanelaDeBarradas: async (estado: EstadoDaJanela) => {
@@ -2751,6 +2808,7 @@ describe('ESTEIRA-T15: dedupe do aviso de entregas barradas', () => {
       ],
       avisarDono: async (msg: string) => {
         avisos.push(msg)
+        return true
       },
     }
     await runQaMissionViaRails(opcoes)
