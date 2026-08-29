@@ -234,6 +234,16 @@ export const locales = {
       confirmReposLabel: 'Repositories',
       confirmRemove: 'Remove',
       confirmFreePlan: 'Free plan',
+      autonomiaTitle: 'How far can GitOrch go?',
+      autonomiaDesc:
+        'Connecting the repository is not permission to write in it. You decide, and you can change this later.',
+      autonomiaSoOlhar: 'Just look',
+      autonomiaSoOlharDesc: 'I read and show you what I find. I never write in your repository.',
+      autonomiaSugerir: 'Suggest',
+      autonomiaSugerirDesc:
+        'I organize the board and open work for you to review, but I never merge anything.',
+      autonomiaCuidar: 'Take care of it',
+      autonomiaCuidarDesc: 'I close the cycle on my own, merging included.',
       confirmSubmit: 'Finish & clone',
       confirmSubmitting: 'Cloning & starting...',
       confirmPayNext:
@@ -590,6 +600,17 @@ export const locales = {
       confirmReposLabel: 'Repositórios',
       confirmRemove: 'Remover',
       confirmFreePlan: 'Plano Grátis',
+      autonomiaTitle: 'Até onde o GitOrch pode ir?',
+      autonomiaDesc:
+        'Ligar o repositório não é permissão para escrever nele. Quem decide é você, e dá para mudar depois.',
+      autonomiaSoOlhar: 'Só olhar',
+      autonomiaSoOlharDesc:
+        'Eu leio e mostro o que encontrar. Não escrevo nada no seu repositório.',
+      autonomiaSugerir: 'Sugerir',
+      autonomiaSugerirDesc:
+        'Eu organizo o quadro e proponho trabalho para você revisar, mas não mesclo nada.',
+      autonomiaCuidar: 'Cuidar',
+      autonomiaCuidarDesc: 'Eu fecho o ciclo sozinho, mesclando inclusive.',
       confirmSubmit: 'Finalizar e clonar',
       confirmSubmitting: 'Clonando e iniciando...',
       confirmPayNext:
@@ -948,6 +969,16 @@ export const locales = {
       confirmReposLabel: 'Repositorios',
       confirmRemove: 'Eliminar',
       confirmFreePlan: 'Plan Gratis',
+      autonomiaTitle: '¿Hasta dónde puede llegar GitOrch?',
+      autonomiaDesc:
+        'Conectar el repositorio no es permiso para escribir en él. Usted decide, y puede cambiarlo después.',
+      autonomiaSoOlhar: 'Solo mirar',
+      autonomiaSoOlharDesc: 'Leo y le muestro lo que encuentre. No escribo nada en su repositorio.',
+      autonomiaSugerir: 'Sugerir',
+      autonomiaSugerirDesc:
+        'Organizo el tablero y propongo trabajo para que usted revise, pero no fusiono nada.',
+      autonomiaCuidar: 'Encargarse',
+      autonomiaCuidarDesc: 'Cierro el ciclo por mi cuenta, fusionando incluido.',
       confirmSubmit: 'Finalizar y clonar',
       confirmSubmitting: 'Clonando e iniciando...',
       confirmPayNext:

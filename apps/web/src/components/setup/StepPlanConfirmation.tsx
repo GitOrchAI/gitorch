@@ -3,6 +3,17 @@ import { ChevronRight, Loader2, AlertCircle } from 'lucide-react'
 import { useLanguage } from '../../LanguageContext'
 import { isPaidPlan, submitSetup, type CreatedProject } from './submit-flow'
 
+/**
+ * Os três níveis, na ordem do mais restrito para o mais solto — a mesma ordem
+ * e os mesmos valores de packages/cadence/src/autonomia.ts, que é quem decide
+ * o que cada um permite. Aqui só se pergunta; quem julga é a regra.
+ */
+const NIVEIS = [
+  { valor: 'so_olhar', titulo: 'setup.autonomiaSoOlhar', desc: 'setup.autonomiaSoOlharDesc' },
+  { valor: 'sugerir', titulo: 'setup.autonomiaSugerir', desc: 'setup.autonomiaSugerirDesc' },
+  { valor: 'cuidar', titulo: 'setup.autonomiaCuidar', desc: 'setup.autonomiaCuidarDesc' },
+] as const
+
 interface StepPlanConfirmationProps {
   apiBaseUrl: string
   plan: string
@@ -25,6 +36,11 @@ export default function StepPlanConfirmation({
   const { t } = useLanguage()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Nasce SEM escolha, de propósito. Pré-selecionar qualquer nível seria
+  // decidir pelo cliente exatamente a pergunta que este passo existe para
+  // fazer — e o servidor não teria como distinguir "ele escolheu" de "veio o
+  // padrão da tela".
+  const [autonomia, setAutonomia] = useState<string | null>(null)
 
   const isPaid = isPaidPlan(plan)
   const isFree = !isPaid
@@ -59,6 +75,7 @@ export default function StepPlanConfirmation({
           plan,
           repos: selectedRepos,
           engines: selectedEngines,
+          ...(autonomia ? { autonomia } : {}),
         },
         { fallbackError: t('setup.reposError') }
       )
@@ -154,6 +171,45 @@ export default function StepPlanConfirmation({
           </div>
         </div>
 
+        {/* A PERGUNTA que autoriza tudo o que vem depois. Decisão do dono
+            (29/08): plugar o repositório não é, sozinho, permissão para
+            escrever nele — quem escolhe é o cliente, aqui, sabendo o que está
+            autorizando. Sem escolha, o botão não avança: um silêncio não pode
+            ser lido como um sim. */}
+        <div
+          className="space-y-3 rounded-2xl p-5"
+          style={{ background: 'var(--gl-canvas)', border: '1px solid var(--gl-hair)' }}
+        >
+          <div>
+            <span className="wz-opt-title">{t('setup.autonomiaTitle')}</span>
+            <p className="wz-opt-desc" style={{ marginTop: 4 }}>
+              {t('setup.autonomiaDesc')}
+            </p>
+          </div>
+
+          {NIVEIS.map((n) => (
+            <button
+              key={n.valor}
+              type="button"
+              onClick={() => setAutonomia(n.valor)}
+              aria-pressed={autonomia === n.valor}
+              className="flex w-full items-start gap-3 rounded-xl p-4 text-left"
+              style={{
+                background: 'var(--gl-surface-2)',
+                border:
+                  autonomia === n.valor ? '1px solid var(--gl-accent)' : '1px solid var(--gl-hair)',
+              }}
+            >
+              <div>
+                <span className="wz-opt-title">{t(n.titulo)}</span>
+                <p className="wz-opt-desc" style={{ marginTop: 2 }}>
+                  {t(n.desc)}
+                </p>
+              </div>
+            </button>
+          ))}
+        </div>
+
         {/* Plano pago: diz na cara a ordem do que vem — primeiro a chave, depois o
             pagamento. Ninguém é jogado num checkout sem aviso. */}
         {isPaid && <p className="wz-opt-desc">{t('setup.confirmPayNext')}</p>}
@@ -167,7 +223,7 @@ export default function StepPlanConfirmation({
         </button>
         <button
           onClick={handleSubmit}
-          disabled={loading || isOverlimit}
+          disabled={loading || isOverlimit || autonomia === null}
           className="wz-btn wz-btn-primary"
         >
           {loading ? (
