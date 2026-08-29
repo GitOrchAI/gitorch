@@ -191,6 +191,10 @@ export default function StepPlanConfirmation({
             <button
               key={n.valor}
               type="button"
+              // Identificador estável: o rótulo muda com o idioma (o funil do
+              // E2E roda em inglês, e um seletor pelo texto em português não
+              // acha nada), então o teste ancora aqui.
+              data-testid={`autonomia-${n.valor}`}
               onClick={() => setAutonomia(n.valor)}
               aria-pressed={autonomia === n.valor}
               className="flex w-full items-start gap-3 rounded-xl p-4 text-left"

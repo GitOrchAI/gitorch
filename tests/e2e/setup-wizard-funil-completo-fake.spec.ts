@@ -257,7 +257,9 @@ test('funil completo do setup wizard: login → termos → repo → diagnóstico
     await expect(primaryButton(page)).toBeDisabled()
 
     // "Cuidar" porque este funil vai até o fim, criando quadro e tudo.
-    await page.getByRole('button', { name: /Cuidar/i }).click()
+    // Ancorado no data-testid, não no texto: o funil roda em inglês e o rótulo
+    // ali é "Take care of it".
+    await page.getByTestId('autonomia-cuidar').click()
     await expect(primaryButton(page)).toBeEnabled()
 
     const submitResponsePromise = page.waitForResponse(
