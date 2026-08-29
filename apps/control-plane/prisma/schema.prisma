@@ -281,6 +281,16 @@ model Project {
   // credencial nenhuma para contar (services/credencial-do-dev-do-cliente.ts).
   devAccountId       String? @map("dev_account_id")
 
+  // Até onde o GitOrch pode ir NESTE repositório: 'so_olhar' | 'sugerir' |
+  // 'cuidar' (packages/cadence/src/autonomia.ts é quem decide o que cada um
+  // permite). O padrão é o mais restrito porque a premissa do dono é pedir
+  // permissão a mais — projeto que nunca escolheu não é projeto liberado.
+  // `autonomiaEscolhidaEm` nulo separa "está no padrão" de "o dono escolheu
+  // isto": sem essa diferença o painel diria "você escolheu só olhar" a quem
+  // nunca escolheu nada.
+  autonomia            String    @default("so_olhar")
+  autonomiaEscolhidaEm DateTime? @map("autonomia_escolhida_em")
+
   // D50: o aviso de publicação do CD do cliente.
   //
   // `deployNoticeInstalledAt` é a PROVA de que a chamada existe e funciona —

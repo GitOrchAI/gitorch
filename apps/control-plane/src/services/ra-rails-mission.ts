@@ -1,4 +1,5 @@
 import { wrapClientRequest } from '@gitorch/cadence'
+import { fetchSemPermissao } from './guarda-de-autonomia.js'
 import { runRaRails, type StepExecutor } from './role-rails.js'
 import { fetchComTeto } from './fetch-com-teto.js'
 import { decidirTrabalhoDoRa, marcarComoAnalisado } from './wish-ja-analisada.js'
@@ -36,7 +37,10 @@ export async function runRaMissionViaRails(
 ): Promise<RaRailsMissionResult> {
   // IMPORTANTE (leva D): alcançável pelo tique (scheduler.ts, wake do RA)
   // sob `tickEmAndamento` — mesma classe de defeito do Crítico.
-  const f = fetchComTeto(options.fetchImpl ?? fetch)
+  // `fetchSemPermissao` e nao `fetch` cru: quem chama sem passar um fetch com
+  // a autonomia do projeto tem que falhar FECHADO. Com `?? fetch` o
+  // esquecimento escrevia no repositorio do cliente sem guarda nenhuma.
+  const f = fetchComTeto(options.fetchImpl ?? fetchSemPermissao())
 
   // A wish é o ponto de ancoragem — best-effort: sem token ou sem wish aberta,
   // o RA roda como scout geral (não é erro).

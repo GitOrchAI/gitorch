@@ -1,4 +1,5 @@
 import { mintInstallationToken } from './github-app-token.js'
+import { fetchSemPermissao } from './guarda-de-autonomia.js'
 import { GithubExecutionError } from './github-errors.js'
 import { nomeDeRepositorioValido } from './nome-de-repositorio.js'
 
@@ -44,7 +45,10 @@ export async function criarIssueDeDesejo(args: {
 }): Promise<{ numero: number }> {
   const log = args.log ?? {}
   const obter = args.obterToken ?? ((repo: string) => tokenDoRepositorio(repo, log))
-  const f = args.fetchImpl ?? fetch
+  // `fetchSemPermissao` e nao `fetch` cru: quem chama sem passar um fetch com
+  // a autonomia do projeto tem que falhar FECHADO. Com `?? fetch` o
+  // esquecimento escrevia no repositorio do cliente sem guarda nenhuma.
+  const f = args.fetchImpl ?? fetchSemPermissao()
 
   // Primeira coisa que acontece aqui, antes de existir credencial em memória:
   // o repositório vai colado numa URL que carrega o token, então um texto

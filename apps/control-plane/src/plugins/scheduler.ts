@@ -210,6 +210,7 @@ import {
   resolveSprintDays,
   createCardMover,
 } from '../services/board-status.js'
+import { fetchDoRepositorio } from '../services/guarda-de-autonomia.js'
 import { fetchComTeto } from '../services/fetch-com-teto.js'
 import {
   ensureAndPersistProjectBoard,
@@ -2326,6 +2327,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     devPlan?: string | null
     /** BYOK: a impressão digital da conta do dev assíncrono deste cliente. */
     devAccountId?: string | null
+    /**
+     * Até onde o GitOrch pode ir no repositório DESTE cliente. Precisa viajar
+     * junto com o projeto por toda a cadeia: é o que a guarda lê na hora de
+     * cada escrita. Opcional porque projeto legado tem nulo — e nulo cai no
+     * nível mais restrito, que é o lado seguro.
+     */
+    autonomia?: string | null
   }
 
   // Tenta a cadeia de motores em ordem; sucesso encerra; erro de cota/auth cai
@@ -2444,13 +2452,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             // defeito, mesmo caminho (`runTrigger` → `tick()`, sob
             // `tickEmAndamento`, wake do PO tentando garantir o board).
             createProjectV2Client: (token: string) =>
-              new ProjectV2Client({ token, fetchImpl: fetchComTetoParaOBoard }),
+              new ProjectV2Client({ token, fetchImpl: fetchDoQuadro(project) }),
             resolveOwner: resolveGithubOwnerId,
             resolveRepositoryId: resolveGithubRepositoryId,
             lerClientToken: () =>
               lerCredencialDoProjeto({ prisma: app.prisma as never, projectId: project.id }),
             criarClienteAlternativo: (token: string) =>
-              new ProjectV2Client({ token, fetchImpl: fetchComTetoParaOBoard }),
+              new ProjectV2Client({ token, fetchImpl: fetchDoQuadro(project) }),
             onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
           })
           if (railsBoard) {
@@ -3729,7 +3737,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         prisma: app.prisma,
         log: app.log,
         createProjectV2Client: (token) =>
-          new ProjectV2Client({ token, fetchImpl: fetchComTetoParaOBoard }),
+          new ProjectV2Client({ token, fetchImpl: fetchDoQuadro(mission.project) }),
       })
       await app.prisma.mission.update({
         where: { id: mission.id },
@@ -5170,7 +5178,18 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // aqui é redundante para `createCardMover`, mas mantido pelo mesmo motivo
   // de `ghGet`/`ghSend`: teto explícito na PRÓPRIA chamada, não só confiado
   // à porta de saída de um módulo vizinho.
-  const fetchComTetoParaOBoard = fetchComTeto(fetch, TIMEOUT_DE_CHAMADA_GITHUB_MS)
+  // Era um `fetch` ÚNICO, compartilhado por todos os projetos. Não pode mais
+  // ser: a autonomia é POR PROJETO, e um `fetch` só não tem como saber de quem
+  // é a chamada que está passando por ele. Virou fábrica — quem vai escrever no
+  // quadro de um cliente pede o `fetch` DAQUELE cliente.
+  //
+  // O nível vai como função e não como valor: o dono pode mudá-lo pelo painel
+  // no meio de uma varredura, e a decisão tem que ser a do momento da chamada.
+  const fetchDoQuadro = (projetoDaVez: { autonomia?: string | null }) =>
+    fetchDoRepositorio({
+      nivel: () => projetoDaVez.autonomia,
+      timeoutMs: TIMEOUT_DE_CHAMADA_GITHUB_MS,
+    })
 
   // R6 do controlador: o mecanismo de publicação (Tarefa 12) muda raramente
   // mas NÃO é imutável — guardado em memória, por repositório, com validade
@@ -5436,7 +5455,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           board: railsBoard,
           token: githubToken,
           columns: resolveBoardColumns(projeto.runtimeConfig),
-          fetchImpl: fetchComTetoParaOBoard,
+          fetchImpl: fetchDoQuadro(projeto),
         })
       : undefined
 
@@ -6041,6 +6060,10 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         titulo: decisao.titulo,
         corpo: decisao.corpo,
         etiquetas: decisao.etiquetas,
+        // Abrir issue no repositório do cliente é escrita: passa pela guarda de
+        // autonomia com o nível DESTE projeto. Sem isto a chamada cairia no
+        // padrão que recusa, e a tarefa de conserto nunca seria aberta.
+        fetchImpl: fetchDoRepositorio({ nivel: () => args.projeto.autonomia }),
         log: {
           onError: (m) => app.log.error(m),
           onWarn: (m) => app.log.warn(m),

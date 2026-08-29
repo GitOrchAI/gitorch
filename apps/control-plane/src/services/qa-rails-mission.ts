@@ -1,3 +1,4 @@
+import { fetchSemPermissao } from './guarda-de-autonomia.js'
 import {
   RAILS_SCHEMAS,
   buildStepPrompt,
@@ -312,7 +313,10 @@ export async function runQaMissionViaRails(
   // sob `tickEmAndamento` — mesma classe de defeito do Crítico. `mesclarPr`
   // e `lerDiffDoPr` recebem esta MESMA `gh` injetada (ver mais abaixo), então
   // ganham o teto de graça, sem precisar de mudança própria.
-  const f = fetchComTeto(options.fetchImpl ?? fetch)
+  // `fetchSemPermissao` e nao `fetch` cru: quem chama sem passar um fetch com
+  // a autonomia do projeto tem que falhar FECHADO. Com `?? fetch` o
+  // esquecimento escrevia no repositorio do cliente sem guarda nenhuma.
+  const f = fetchComTeto(options.fetchImpl ?? fetchSemPermissao())
   const gh = async (method: string, path: string, body?: unknown): Promise<unknown> => {
     const resp = await f(`https://api.github.com${path}`, {
       method,
