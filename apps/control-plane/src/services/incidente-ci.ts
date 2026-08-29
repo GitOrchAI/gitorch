@@ -12,6 +12,7 @@
 //     se recuperado, e o sensor ficava "vendo" um incêndio já apagado.
 
 import { fetchComTeto } from './fetch-com-teto.js'
+import { fetchSemPermissao } from './guarda-de-autonomia.js'
 import { GithubExecutionError } from './github-errors.js'
 import {
   classificarFalhaDeInfra,
@@ -270,7 +271,9 @@ export async function coletarAchadosDeInfra(
     warn(`incidente-ci: repository inválido (${opts.repository})`)
     return []
   }
-  const f = fetchComTeto(opts.fetchImpl ?? fetch)
+  // `fetchSemPermissao` mesmo aqui, que hoje só lê: leitura passa, e no dia em
+  // que alguém acrescentar uma escrita neste arquivo ela já nasce barrada.
+  const f = fetchComTeto(opts.fetchImpl ?? fetchSemPermissao())
   const token = opts.githubToken
   const teto = opts.teto ?? TETO_DE_ACHADOS_POR_VARREDURA
   const achados: AchadoDeInfra[] = []

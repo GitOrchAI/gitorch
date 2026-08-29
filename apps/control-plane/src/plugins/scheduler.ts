@@ -210,7 +210,7 @@ import {
   resolveSprintDays,
   createCardMover,
 } from '../services/board-status.js'
-import { fetchDoRepositorio } from '../services/guarda-de-autonomia.js'
+import { fetchDoRepositorio, guardaPorRepositorio } from '../services/guarda-de-autonomia.js'
 import { fetchComTeto } from '../services/fetch-com-teto.js'
 import {
   ensureAndPersistProjectBoard,
@@ -1823,6 +1823,34 @@ export async function renovarTokensGithubDoRelogio(
 }
 
 const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
+  /**
+   * O `fetch` de TODA escrita REST no repositório de um cliente.
+   *
+   * A auditoria de segurança do bloco 4 achou ONZE chamadas cruas dentro deste
+   * arquivo — abrindo, comentando e fechando issue no repositório do cliente,
+   * no tique, sem supervisão. Ligar o nível de autonomia em cada uma exigiria
+   * mudar tipo, consulta e assinatura em onze lugares, e UM esquecimento
+   * reabriria o furo inteiro.
+   *
+   * Esta porta descobre o dono pelo próprio endereço da chamada: o repositório
+   * já está na URL. Quem escreve não precisa saber de autonomia nenhuma.
+   */
+  const ghComGuarda = fetchComTeto(
+    guardaPorRepositorio(fetch, {
+      nivelDoRepositorio: async (repo: string) => {
+        const linha = await app.prisma.project.findFirst({
+          where: { wingId: repo, isActive: true },
+          select: { autonomia: true },
+        })
+        return linha?.autonomia ?? null
+      },
+      nossosRepositorios: new Set([process.env['GITORCH_SELF_REPO'] ?? 'GitOrchAI/gitorch']),
+    }),
+    // Mesmo teto de `ghGet`/`ghSend` (a constante em si é declarada mais
+    // abaixo, junto das outras chamadas curtas do relógio).
+    10_000
+  )
+
   // Modo INERTE do health pré-switch da esteira (F2.3/P1-2): sai ANTES de tocar
   // prisma/engineConnections/cortex — a instância de verificação aponta pro
   // banco de PROD e não pode varrer mission-creds, disparar tick nem disputar
@@ -2751,7 +2779,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             comentarCoberturaDeIncidente: async ({ issueNumber, prNumber }) => {
               const marcador = '<!-- gitorch:incidente-coberto-por-pr -->'
               const gh = async (method: string, path: string, body?: unknown): Promise<unknown> => {
-                const resp = await fetch(`https://api.github.com${path}`, {
+                const resp = await ghComGuarda(`https://api.github.com${path}`, {
                   method,
                   headers: {
                     authorization: `token ${railsToken as string}`,
@@ -3132,6 +3160,10 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                               board: railsBoard,
                               token: railsToken as string,
                               columns: boardColumns,
+                              // Mover card é escrita no quadro do cliente. Sem
+                              // isto a chamada caía no `?? fetch` de
+                              // board-status.ts, fora da guarda.
+                              fetchImpl: fetchDoQuadro(project),
                             }),
                           }
                         : {}),
@@ -4027,7 +4059,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     if (!railsToken) return ''
     const agora = new Date()
     const gh = async (path: string): Promise<unknown> => {
-      const resp = await fetch(`https://api.github.com${path}`, {
+      const resp = await ghComGuarda(`https://api.github.com${path}`, {
         headers: {
           authorization: `token ${railsToken}`,
           accept: 'application/vnd.github+json',
@@ -4196,7 +4228,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repo)) {
         throw new Error(`ghIssue: repositório fora do formato dono/repo (${repo})`)
       }
-      const resp = await fetch(`https://api.github.com/repos/${repo}/issues`, {
+      const resp = await ghComGuarda(`https://api.github.com/repos/${repo}/issues`, {
         method: 'POST',
         headers: {
           authorization: `token ${token}`,
@@ -4331,7 +4363,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   ): Promise<string> => {
     if (!railsToken) return ''
     const gh = async (path: string): Promise<unknown> => {
-      const resp = await fetch(`https://api.github.com${path}`, {
+      const resp = await ghComGuarda(`https://api.github.com${path}`, {
         headers: {
           authorization: `token ${railsToken}`,
           accept: 'application/vnd.github+json',
@@ -4439,7 +4471,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   ): Promise<string> => {
     if (!railsToken) return ''
     const gh = async (path: string): Promise<unknown> => {
-      const resp = await fetch(`https://api.github.com${path}`, {
+      const resp = await ghComGuarda(`https://api.github.com${path}`, {
         headers: {
           authorization: `token ${railsToken}`,
           accept: 'application/vnd.github+json',
@@ -4450,7 +4482,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       return resp.json()
     }
     const ghPatch = async (path: string, body: unknown): Promise<void> => {
-      const resp = await fetch(`https://api.github.com${path}`, {
+      const resp = await ghComGuarda(`https://api.github.com${path}`, {
         method: 'PATCH',
         headers: {
           authorization: `token ${railsToken}`,
@@ -4717,7 +4749,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         const token = await tokenDoProjeto(linha.projectId)
         if (!proj || !token) return null // sem como ler — fica para o próximo ciclo
         const gh = async (path: string): Promise<unknown> => {
-          const resp = await fetch(`https://api.github.com${path}`, {
+          const resp = await ghComGuarda(`https://api.github.com${path}`, {
             headers: {
               authorization: `token ${token}`,
               accept: 'application/vnd.github+json',
@@ -5102,7 +5134,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   const TIMEOUT_DE_CHAMADA_GITHUB_MS = 10_000
 
   const ghGet = async (path: string, githubToken: string): Promise<unknown> => {
-    const resp = await fetch(`https://api.github.com${path}`, {
+    const resp = await ghComGuarda(`https://api.github.com${path}`, {
       headers: {
         authorization: `token ${githubToken}`,
         accept: 'application/vnd.github+json',
@@ -5137,7 +5169,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     githubToken: string,
     body: unknown
   ): Promise<unknown> => {
-    const resp = await fetch(`https://api.github.com${path}`, {
+    const resp = await ghComGuarda(`https://api.github.com${path}`, {
       method,
       headers: {
         authorization: `token ${githubToken}`,
@@ -6167,7 +6199,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       if (!githubToken) continue
 
       const rest = async (metodo: string, caminho: string, corpo?: unknown): Promise<unknown> => {
-        const r = await fetch(`https://api.github.com${caminho}`, {
+        const r = await ghComGuarda(`https://api.github.com${caminho}`, {
           method: metodo,
           headers: {
             authorization: `Bearer ${githubToken}`,
@@ -6246,7 +6278,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       if (!githubToken) continue
 
       const rest = async (metodo: string, caminho: string, corpo?: unknown): Promise<unknown> => {
-        const resposta = await fetch(`https://api.github.com${caminho}`, {
+        const resposta = await ghComGuarda(`https://api.github.com${caminho}`, {
           method: metodo,
           headers: {
             authorization: `Bearer ${githubToken}`,

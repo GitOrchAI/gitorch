@@ -1,6 +1,13 @@
 import { describe, it, expect, vi } from 'vitest'
 import { EscritaNaoAutorizadaError } from '@gitorch/cadence'
-import { guardaDeAutonomia, classificarRequisicao, vaiParaOGithub } from './guarda-de-autonomia.js'
+import {
+  guardaDeAutonomia,
+  guardaPorRepositorio,
+  repositorioDaUrl,
+  classificarRequisicao,
+  vaiParaOGithub,
+  type DonoDoRepositorio,
+} from './guarda-de-autonomia.js'
 
 const GRAPHQL = 'https://api.github.com/graphql'
 const REPO = 'https://api.github.com/repos/dono/repo'
@@ -77,6 +84,31 @@ describe('classificarRequisicao — o que cada chamada representa', () => {
     expect(classificarRequisicao({ url: 'https://api.github.com/orgs/acme', metodo: 'GET' })).toBe(
       'ler'
     )
+  })
+
+  it('corpo ILEGÍVEL no GraphQL cai no desconhecido, não em leitura', () => {
+    // A auditoria pegou isto: a versão anterior devolvia 'ler' quando o corpo
+    // não era string. Bastava um Request com corpo em fluxo para uma mutation
+    // atravessar a porta classificada como leitura.
+    expect(classificarRequisicao({ url: GRAPHQL, metodo: 'POST', corpo: null })).toBe('mesclar')
+    expect(classificarRequisicao({ url: GRAPHQL, metodo: 'POST' })).toBe('mesclar')
+  })
+
+  it('a forma /repositories/{id}/ também é o repositório do cliente', () => {
+    // A API do GitHub aceita as duas formas. Cobrir só /repos/ deixava esta
+    // cair em 'ler' — escrita passando como leitura.
+    expect(
+      classificarRequisicao({
+        url: 'https://api.github.com/repositories/1319993284/issues',
+        metodo: 'POST',
+      })
+    ).toBe('propor')
+    expect(
+      classificarRequisicao({
+        url: 'https://api.github.com/repositories/1319993284/pulls/7/merge',
+        metodo: 'PUT',
+      })
+    ).toBe('mesclar')
   })
 
   it('escrita DESCONHECIDA cai no degrau mais alto, nunca no mais baixo', () => {
@@ -192,5 +224,111 @@ describe('guardaDeAutonomia — a escrita é BARRADA na porta', () => {
       guardado(new Request(`${REPO}/issues`, { method: 'POST', body: '{}' }))
     ).rejects.toThrow(EscritaNaoAutorizadaError)
     expect(f).not.toHaveBeenCalled()
+  })
+})
+
+describe('guardaPorRepositorio — a porta descobre o dono pelo endereço', () => {
+  function dono(over: Partial<DonoDoRepositorio> = {}): DonoDoRepositorio {
+    return {
+      nivelDoRepositorio: vi.fn(async (r: string) =>
+        r === 'cliente/api' ? 'sugerir' : r === 'cliente/livre' ? 'cuidar' : null
+      ),
+      nossosRepositorios: new Set(['GitOrchAI/gitorch']),
+      ...over,
+    }
+  }
+
+  it('usa o nível DAQUELE repositório, não um nível global', async () => {
+    const f = fetchFalso()
+    const g = guardaPorRepositorio(f, dono())
+    // 'sugerir' propõe...
+    await g('https://api.github.com/repos/cliente/api/issues', { method: 'POST', body: '{}' })
+    expect(f).toHaveBeenCalledTimes(1)
+    // ...mas não mescla.
+    await expect(
+      g('https://api.github.com/repos/cliente/api/pulls/1/merge', { method: 'PUT' })
+    ).rejects.toThrow(EscritaNaoAutorizadaError)
+    // O mesmo produto, no MESMO instante, mescla no repositório que autorizou.
+    await g('https://api.github.com/repos/cliente/livre/pulls/1/merge', { method: 'PUT' })
+    expect(f).toHaveBeenCalledTimes(2)
+  })
+
+  it('o repositório do PRÓPRIO produto passa — é a nossa casa', async () => {
+    const f = fetchFalso()
+    const g = guardaPorRepositorio(f, dono())
+    await g('https://api.github.com/repos/GitOrchAI/gitorch/issues', {
+      method: 'POST',
+      body: '{}',
+    })
+    expect(f).toHaveBeenCalledTimes(1)
+  })
+
+  it('repositório que não é projeto nem nosso: RECUSA (fail closed)', async () => {
+    const f = fetchFalso()
+    const g = guardaPorRepositorio(f, dono())
+    await expect(
+      g('https://api.github.com/repos/estranho/repo/issues', { method: 'POST', body: '{}' })
+    ).rejects.toThrow(EscritaNaoAutorizadaError)
+    expect(f).not.toHaveBeenCalled()
+  })
+
+  it('leitura passa sem sequer consultar quem é o dono', async () => {
+    const f = fetchFalso()
+    const d = dono()
+    const g = guardaPorRepositorio(f, d)
+    await g('https://api.github.com/repos/estranho/repo/issues', { method: 'GET' })
+    expect(f).toHaveBeenCalledTimes(1)
+    expect(d.nivelDoRepositorio).not.toHaveBeenCalled()
+  })
+
+  it('escrita no GraphQL é recusada aqui — esta porta não descobre o quadro', async () => {
+    // A mutation nomeia o quadro por id, não o repositório. Quem escreve no
+    // quadro usa `fetchDoRepositorio`, com o nível em mãos. Inventar um dono
+    // aqui seria pior que recusar.
+    const f = fetchFalso()
+    const g = guardaPorRepositorio(f, dono())
+    await expect(
+      g('https://api.github.com/graphql', {
+        method: 'POST',
+        body: JSON.stringify({ query: 'mutation X { createProjectV2Field(input:{}){id} }' }),
+      })
+    ).rejects.toThrow(EscritaNaoAutorizadaError)
+    expect(f).not.toHaveBeenCalled()
+  })
+
+  it('consulta ao GraphQL continua passando', async () => {
+    const f = fetchFalso()
+    const g = guardaPorRepositorio(f, dono())
+    await g('https://api.github.com/graphql', {
+      method: 'POST',
+      body: JSON.stringify({ query: 'query Q { repository { id } }' }),
+    })
+    expect(f).toHaveBeenCalledTimes(1)
+  })
+
+  it('o cache evita consulta repetida, mas expira', async () => {
+    const f = fetchFalso()
+    const d = dono()
+    const g = guardaPorRepositorio(f, d, { cacheMs: 0 })
+    await g('https://api.github.com/repos/cliente/api/issues', { method: 'POST', body: '{}' })
+    await g('https://api.github.com/repos/cliente/api/issues', { method: 'POST', body: '{}' })
+    // Com validade zero, a segunda escrita consulta de novo — é o que garante
+    // que mudar o nível no painel vale rápido.
+    expect(d.nivelDoRepositorio).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('repositorioDaUrl', () => {
+  it('acha dono/nome', () => {
+    expect(repositorioDaUrl('https://api.github.com/repos/a/b/issues/1/comments')).toBe('a/b')
+  })
+
+  it('a forma por id numérico devolve null — não dá para saber de quem é', () => {
+    expect(repositorioDaUrl('https://api.github.com/repositories/123/issues')).toBeNull()
+  })
+
+  it('caminho que não é de repositório devolve null', () => {
+    expect(repositorioDaUrl('https://api.github.com/graphql')).toBeNull()
+    expect(repositorioDaUrl('nao-e-url')).toBeNull()
   })
 })

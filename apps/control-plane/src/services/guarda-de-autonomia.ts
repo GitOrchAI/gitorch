@@ -1,5 +1,6 @@
 import {
   exigirPermissao,
+  EscritaNaoAutorizadaError,
   NIVEL_PADRAO,
   type AcaoNoRepositorio,
   type NivelDeAutonomia,
@@ -24,6 +25,12 @@ import { fetchComTeto } from './fetch-com-teto.js'
 
 /** Só o que sai para o GitHub interessa; o resto passa direto. */
 const HOSTS_DO_GITHUB = new Set(['api.github.com'])
+
+/**
+ * As duas formas de endereçar um repositório na API do GitHub: pelo par
+ * dono/nome e pelo id numérico. As duas escrevem no mesmo lugar.
+ */
+const CAMINHO_DE_REPOSITORIO = /^\/(repos|repositories)\//
 
 /** Métodos que só leem. Qualquer outro é escrita até prova em contrário. */
 const METODOS_DE_LEITURA = new Set(['GET', 'HEAD', 'OPTIONS'])
@@ -95,19 +102,29 @@ export function classificarRequisicao(input: {
   // como qualquer mutation, então olhar só o método classificaria toda leitura
   // do quadro como escrita.
   if (caminho === '/graphql') {
-    const corpo = input.corpo ?? ''
-    if (!pareceMutation(corpo)) return 'ler'
-    const casada = ACAO_DA_MUTATION.find((m) => m.operacao.test(corpo))
+    // Sem corpo LEGÍVEL não dá para saber se é leitura ou escrita, e o
+    // desconhecido cai no degrau mais alto. A versão anterior devolvia 'ler'
+    // aqui — o contrário do que o comentário logo abaixo promete, e a auditoria
+    // pegou: bastaria um corpo em fluxo (Request com stream, FormData) para uma
+    // mutation atravessar a porta classificada como leitura.
+    if (input.corpo == null) return ACAO_DO_DESCONHECIDO
+    if (!pareceMutation(input.corpo)) return 'ler'
+    const casada = ACAO_DA_MUTATION.find((m) => m.operacao.test(input.corpo!))
     return casada?.acao ?? ACAO_DO_DESCONHECIDO
   }
 
   // Esta guarda governa o REPOSITÓRIO do cliente, e só ele. O que não é
-  // /repos/... não é escrita no repositório dele: emitir token de instalação
+  // caminho de repositório não é escrita nele: emitir token de instalação
   // (`POST /app/installations/N/access_tokens`), trocar código por token no
   // login, consultar conta ou organização. Tratar isso como escrita
   // desconhecida quebraria a emissão de credencial do produto inteiro — o
   // caminho por onde TUDO passa, inclusive a leitura.
-  if (!/^\/repos\//.test(caminho)) return 'ler'
+  //
+  // SÃO DUAS FORMAS, e a auditoria pegou que só uma estava coberta: além de
+  // `/repos/dono/nome/...`, a API do GitHub aceita `/repositories/{id}/...`
+  // pelo id numérico. Cobrir só a primeira deixava a segunda cair em 'ler' —
+  // escrita passando pela porta como se fosse leitura.
+  if (!CAMINHO_DE_REPOSITORIO.test(caminho)) return 'ler'
 
   const casada = ACAO_DA_ROTA.find((r) => r.caminho.test(caminho))
   return casada?.acao ?? ACAO_DO_DESCONHECIDO
@@ -233,4 +250,112 @@ export function fetchDoRepositorio(args: {
  */
 export function fetchSemPermissao(fetchImpl: typeof fetch = fetch): typeof fetch {
   return guardaDeAutonomia(fetchImpl, () => NIVEL_PADRAO)
+}
+
+/**
+ * O repositório que a URL está endereçando, ou `null` se não for um caminho de
+ * repositório.
+ *
+ * Só resolve a forma `dono/nome`. A forma por id numérico
+ * (`/repositories/{id}/...`) chega aqui como `null` de propósito: não dá para
+ * descobrir de quem é o repositório sem uma consulta a mais, e um `null` cai no
+ * caminho de recusa em vez de num palpite.
+ */
+export function repositorioDaUrl(url: string): string | null {
+  try {
+    const p = new URL(url).pathname
+    const m = /^\/repos\/([^/]+)\/([^/]+)/.exec(p)
+    return m ? `${m[1]}/${m[2]}` : null
+  } catch {
+    return null
+  }
+}
+
+/** Quem responde qual é o nível de um repositório. */
+export interface DonoDoRepositorio {
+  /** Nível do projeto com este endereço, ou `null` se não houver projeto. */
+  nivelDoRepositorio: (repo: string) => Promise<NivelDeAutonomia | string | null>
+  /** Repositórios do PRÓPRIO produto — não são de cliente e não são governados. */
+  nossosRepositorios: ReadonlySet<string>
+}
+
+/**
+ * A guarda que DESCOBRE o dono pelo endereço, em vez de esperar que quem chama
+ * passe o nível.
+ *
+ * É a diferença entre uma guarda que funciona onde alguém lembrou de ligá-la e
+ * uma que funciona em todo lugar. A auditoria do bloco 4 achou ONZE chamadas
+ * cruas dentro do relógio — algumas em funções que nem carregam o projeto
+ * inteiro, só `{ id, wingId }` — e ligar o nível em cada uma exigiria mudar
+ * tipo, consulta e assinatura em onze lugares, com um esquecimento bastando
+ * para reabrir o furo.
+ *
+ * Aqui o endereço do repositório JÁ ESTÁ na URL. Quem escreve não precisa saber
+ * de autonomia nenhuma; a porta descobre.
+ *
+ * O que acontece com cada caso:
+ *   repositório é de um projeto  → vale o nível daquele projeto
+ *   repositório é NOSSO          → passa (é a nossa casa, não a do cliente)
+ *   repositório desconhecido     → RECUSA. Fail closed: escrever num
+ *                                  repositório que não é projeto nosso nem de
+ *                                  cliente é sempre defeito em algum lugar.
+ */
+export function guardaPorRepositorio(
+  fetchImpl: typeof fetch,
+  dono: DonoDoRepositorio,
+  opcoes: { cacheMs?: number } = {}
+): typeof fetch {
+  // Cache curto: sem ele toda escrita vira uma consulta a mais no caminho do
+  // relógio. Curto de propósito — o dono muda o nível pelo painel e a mudança
+  // não pode demorar um ciclo inteiro para valer.
+  const cacheMs = opcoes.cacheMs ?? 30_000
+  const cache = new Map<string, { nivel: string | null; ate: number }>()
+
+  return (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    const url = urlDe(input)
+    if (!vaiParaOGithub(url)) return fetchImpl(input, init)
+
+    const metodo = (init?.method ?? metodoDe(input) ?? 'GET').toUpperCase()
+    const acao = classificarRequisicao({ url, metodo, corpo: corpoDe(init) })
+    if (acao === 'ler') return fetchImpl(input, init)
+
+    const repo = repositorioDaUrl(url)
+
+    // GraphQL não carrega o repositório na URL — a mutation nomeia o quadro por
+    // id. Quem escreve no quadro tem que usar `fetchDoRepositorio`, com o nível
+    // do projeto em mãos; esta porta não tem como descobrir sozinha e não
+    // inventa.
+    if (!repo) {
+      throw new EscritaNaoAutorizadaError(
+        acao,
+        NIVEL_PADRAO,
+        'cuidar',
+        'Não consigo dizer de quem é este repositório a partir do endereço, então não escrevo nele.'
+      )
+    }
+
+    if (dono.nossosRepositorios.has(repo)) return fetchImpl(input, init)
+
+    const agora = Date.now()
+    const guardado = cache.get(repo)
+    let nivel: string | null
+    if (guardado && guardado.ate > agora) {
+      nivel = guardado.nivel
+    } else {
+      nivel = await dono.nivelDoRepositorio(repo)
+      cache.set(repo, { nivel, ate: agora + cacheMs })
+    }
+
+    if (nivel === null) {
+      throw new EscritaNaoAutorizadaError(
+        acao,
+        NIVEL_PADRAO,
+        'cuidar',
+        `${repo} não é um projeto cadastrado nem um repositório nosso — não escrevo em repositório que ninguém me confiou.`
+      )
+    }
+
+    exigirPermissao(nivel, acao)
+    return fetchImpl(input, init)
+  }) as typeof fetch
 }

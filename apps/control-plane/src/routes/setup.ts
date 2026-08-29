@@ -8,6 +8,8 @@ import { resolveOwnerId as resolveOwnerIdCanonico } from '../lib/resolve-owner-i
 import { resolveEngineId } from '../services/engine-connection.js'
 import { ClientEnvironmentService } from '../services/environment.js'
 import { collectAndRememberRepoContext } from '../services/repo-context-cortex.js'
+import { fetchDoRepositorio } from '../services/guarda-de-autonomia.js'
+import { normalizarNivel, NIVEIS_DE_AUTONOMIA } from '@gitorch/cadence'
 import {
   verificarCredencial,
   guardarCredencialDoProjeto,
@@ -62,6 +64,16 @@ interface SetupSubmitBody {
   engines: string[]
   plan: string
   envConfig?: Record<string, unknown>
+  /**
+   * Até onde o cliente deixa o GitOrch ir no repositório dele.
+   *
+   * Decisão do dono (29/08): a pergunta é feita AQUI, no único momento em que
+   * o cliente está presente e decidindo. Plugar o repositório não é, sozinho,
+   * autorização para escrever nele — a autorização é ele escolher.
+   *
+   * Ausente = ninguém escolheu, e o projeto fica no nível mais restrito.
+   */
+  autonomia?: string
 }
 
 // Lê o número do board GitHub Projects V2 já criado pra este repo, se algum
@@ -586,7 +598,17 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
         return reply.code(401).send({ error: 'UNAUTHORIZED: User session required' })
       }
 
-      const { repos, engines, plan, envConfig } = request.body as SetupSubmitBody
+      const { repos, engines, plan, envConfig, autonomia } = request.body as SetupSubmitBody
+      // Normaliza aqui, na porta: um valor desconhecido (escrito à mão, de uma
+      // versão futura do painel) NUNCA pode virar permissão. `normalizarNivel`
+      // devolve o nível mais restrito para tudo que não reconhece.
+      const nivelEscolhido = normalizarNivel(autonomia)
+      // A diferença entre "o cliente escolheu isto" e "está no padrão porque
+      // ninguém escolheu". O painel precisa dela para não afirmar que ele
+      // decidiu algo que não decidiu.
+      const clienteEscolheuNivel = NIVEIS_DE_AUTONOMIA.includes(
+        autonomia as (typeof NIVEIS_DE_AUTONOMIA)[number]
+      )
 
       if (!repos || repos.length === 0) {
         return reply.code(400).send({ error: 'At least one repository must be selected' })
@@ -801,6 +823,11 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
               description: `Project for ${repoFullName}`,
               // O projeto nasce sempre COM dono — nunca no limbo global.
               userId: owner.id,
+              // O nível que o cliente escolheu no assistente, com a data.
+              // Sem escolha, fica o padrão da coluna (o mais restrito) e a
+              // data continua nula — que é o que diz "ninguém escolheu".
+              autonomia: nivelEscolhido,
+              ...(clienteEscolheuNivel ? { autonomiaEscolhidaEm: new Date() } : {}),
               // O token do GitHub NÃO é duplicado aqui em texto puro — já foi
               // persistido cifrado por usuário no callback OAuth
               // (EngineConnection, runtime 'github'); a missão o materializa
@@ -919,6 +946,11 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
               wingId: repoFullName,
               cortex: app.cortex,
               ...(boardNumber !== undefined ? { boardNumber } : {}),
+              // A coleta LÊ sempre; CRIAR quadro é escrita, e passa pelo nível
+              // que o cliente acabou de escolher. Em "só olhar" a leitura
+              // acontece e o quadro não é criado — não é erro, é a escolha
+              // dele valendo. O assistente completa e o painel diz "sem quadro".
+              fetchImpl: fetchDoRepositorio({ nivel: () => nivelEscolhido }),
             })
             if (!result.collected) {
               app.log.warn(

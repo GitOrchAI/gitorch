@@ -1,4 +1,5 @@
 import { ProjectV2Client } from '@gitorch/github-sync'
+import { fetchSemPermissao } from './guarda-de-autonomia.js'
 import type { GraphQLRequest, GraphQLResponse, GraphQLTransport } from '@gitorch/github-sync'
 import { coletarDividaDeSeguranca, type DividaDeSeguranca } from './security-debt-collector.js'
 import { mintInstallationToken } from './github-app-token.js'
@@ -69,7 +70,11 @@ export class RepoContextCollector {
 
   constructor(options: RepoContextCollectorOptions) {
     this.token = options.token
-    this.fetchImpl = options.fetchImpl ?? fetch
+    // `fetchSemPermissao` e não `fetch` cru: este coletor CRIA quadro no
+    // repositório do cliente (createProjectV2). Com o `?? fetch` de antes, o
+    // caminho de produção — que não passa fetchImpl — escrevia sem guarda
+    // nenhuma. Quem quer escrever passa um fetch com a autonomia do projeto.
+    this.fetchImpl = options.fetchImpl ?? fetchSemPermissao()
     this.request = options.request ?? buildGithubGraphQLTransport(this.fetchImpl)
     this.mintAppToken =
       options.mintAppToken ??

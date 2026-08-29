@@ -1,4 +1,5 @@
 import { ProjectV2Client } from '@gitorch/github-sync'
+import { fetchSemPermissao } from './guarda-de-autonomia.js'
 import { GithubExecutionError } from './github-errors.js'
 import { fetchComTeto } from './fetch-com-teto.js'
 
@@ -69,7 +70,7 @@ export function createBoardStatus(options: BoardStatusOptions): BoardStatusClien
   // chamador esquece, porta não. Fecha para SEMPRE os dois call sites de
   // `createCardMover` em scheduler.ts (~1855, ~2044) que nunca passavam
   // `fetchImpl`, sem precisar tocar em cada um deles.
-  const f = fetchComTeto(options.fetchImpl ?? fetch)
+  const f = fetchComTeto(options.fetchImpl ?? fetchSemPermissao())
   const fieldName = options.statusFieldName ?? 'Status'
   const columns = options.columns ?? DEFAULT_BOARD_COLUMNS
   // `fetchImpl: f` (não `options.fetchImpl` cru) — `ProjectV2Client` não tem
@@ -162,7 +163,7 @@ export function createCardMover(options: CardMoverOptions): CardMover {
   // `ProjectV2Client` (sem teto próprio) ficavam sem NENHUM teto sempre que
   // o chamador não passava `fetchImpl` — o caso dos dois call sites de
   // `createCardMover` em scheduler.ts (~1855, ~2044).
-  const f = fetchComTeto(options.fetchImpl ?? fetch)
+  const f = fetchComTeto(options.fetchImpl ?? fetchSemPermissao())
   const client = new ProjectV2Client({
     token: options.token,
     fetchImpl: f,

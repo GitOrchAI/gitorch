@@ -126,7 +126,11 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
         projectId: quadro,
         ...(options.statusFieldName ? { statusFieldName: options.statusFieldName } : {}),
         ...(options.statusColumns ? { columns: options.statusColumns } : {}),
-        ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+        // O `f` DESTE arquivo, e não `options.fetchImpl`: em produção o
+        // chamador não passa fetchImpl nenhum, então repassar o cru deixava o
+        // movimento de card no quadro do cliente sair sem teto de tempo E sem
+        // a guarda de autonomia. `f` já carrega os dois.
+        fetchImpl: f,
       })
     : null
 
