@@ -1,3 +1,5 @@
+import { CampoDeIteracaoAusenteError } from '@gitorch/github-sync'
+
 // Garante que o quadro do cliente tenha uma sprint de verdade.
 //
 // A sprint do GitOrch é o campo de ITERAÇÃO do Projects V2. Sem ele, a visão
@@ -16,6 +18,26 @@ export const DIAS_DE_SPRINT_PADRAO = 3
 
 /** Nome do campo de iteração no quadro do cliente. */
 export const CAMPO_DE_SPRINT = 'Sprint'
+
+/** Fuso em que o dia é contado. O servidor roda em UTC; o dono vive em UTC-3. */
+export const FUSO_DO_PRODUTO = 'America/Sao_Paulo'
+
+/**
+ * Que dia é hoje para quem está olhando o painel.
+ *
+ * Usar a data UTC do servidor encurta o ciclo: entre 21h e a meia-noite no
+ * horário de Brasília o relógio UTC já virou, e uma sprint de 3 dias apareceria
+ * encerrada até 3 horas antes — 4% do ciclo.
+ */
+export function hojeNoFuso(agora: Date = new Date(), fuso: string = FUSO_DO_PRODUTO): string {
+  // en-CA formata como YYYY-MM-DD, que é exatamente o formato do GitHub.
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: fuso,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(agora)
+}
 
 export interface Iteracao {
   id: string
@@ -76,9 +98,16 @@ export async function garantirSprintNoQuadro(
       projectId: args.projectId,
       fieldName: CAMPO_DE_SPRINT,
     })
-  } catch {
-    // O cliente lança quando o campo não existe — é o caminho normal do quadro
-    // que nunca teve sprint, não um erro de verdade.
+  } catch (erro) {
+    // SÓ a ausência do campo é tolerada — esse é o caminho normal do quadro que
+    // nunca teve sprint. Qualquer outra falha (rede, 502 do GraphQL, token sem
+    // a autorização de quadros) SOBE.
+    //
+    // Engolir tudo aqui seria o pior defeito possível deste arquivo: uma falha
+    // passageira viraria "o campo não existe" e o passo seguinte criaria um
+    // SEGUNDO campo Sprint no quadro real do cliente, deixando órfãos os itens
+    // que apontavam para o primeiro.
+    if (!ausenciaDeCampo(erro)) throw erro
     campo = null
   }
 
@@ -136,4 +165,16 @@ export function sprintCorrente(iteracoes: readonly Iteracao[], hoje: string): It
     if (dia >= inicio && dia < fim) return it
   }
   return null
+}
+
+/**
+ * A falha foi "o campo não existe" (e não rede, permissão ou 502)?
+ *
+ * `instanceof` primeiro; o teste pelo `name` cobre o caso de o pacote ter sido
+ * carregado por dois caminhos diferentes, em que duas classes iguais deixam de
+ * ser a mesma classe.
+ */
+function ausenciaDeCampo(erro: unknown): boolean {
+  if (erro instanceof CampoDeIteracaoAusenteError) return true
+  return erro instanceof Error && erro.name === 'CampoDeIteracaoAusenteError'
 }

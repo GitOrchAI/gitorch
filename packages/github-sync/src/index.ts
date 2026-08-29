@@ -1,6 +1,6 @@
 export * from './types'
 export { GitHubWebhookVerifier, parseGitHubDeliveryHeaders } from './github-webhook'
-export { ProjectV2Client } from './project-v2-client'
+export { ProjectV2Client, CampoDeIteracaoAusenteError } from './project-v2-client'
 export type {
   AddProjectItemInput,
   ArchiveProjectItemInput,

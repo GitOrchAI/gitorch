@@ -199,6 +199,26 @@ interface PaginaDeIssues {
   } | null
 }
 
+/**
+ * O campo de iteração pedido NÃO existe no quadro.
+ *
+ * Precisa ser um tipo próprio, e não um Error qualquer: quem chama trata a
+ * AUSÊNCIA criando o campo. Se uma falha de rede, um 502 do GraphQL ou um
+ * token que perdeu a autorização de quadros chegasse como o mesmo Error, o
+ * produto leria "não existe" e CRIARIA um segundo campo Sprint por cima de um
+ * que já está rodando — os itens ligados ao campo antigo ficariam órfãos.
+ * Distinguir por texto da mensagem não serve: a mensagem do GitHub muda.
+ */
+export class CampoDeIteracaoAusenteError extends Error {
+  constructor(
+    readonly fieldName: string,
+    readonly projectId: string
+  ) {
+    super(`Iteration field "${fieldName}" not found on project ${projectId}.`)
+    this.name = 'CampoDeIteracaoAusenteError'
+  }
+}
+
 export class ProjectV2Client {
   private readonly token: string
   private readonly request: GraphQLTransport
@@ -641,9 +661,7 @@ export class ProjectV2Client {
     const nodes = unwrap(response).node?.fields?.nodes ?? []
     const field = nodes.find((node) => node.name === input.fieldName && node.configuration)
     if (!field || !field.configuration) {
-      throw new Error(
-        `Iteration field "${input.fieldName}" not found on project ${input.projectId}.`
-      )
+      throw new CampoDeIteracaoAusenteError(input.fieldName, input.projectId)
     }
     return { fieldId: field.id, iterations: field.configuration.iterations }
   }

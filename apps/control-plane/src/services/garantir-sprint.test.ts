@@ -1,9 +1,12 @@
 import { describe, it, expect, vi } from 'vitest'
+import { CampoDeIteracaoAusenteError } from '@gitorch/github-sync'
 import {
   garantirSprintNoQuadro,
   sprintCorrente,
+  hojeNoFuso,
   DIAS_DE_SPRINT_PADRAO,
   CAMPO_DE_SPRINT,
+  FUSO_DO_PRODUTO,
   type ClienteDeQuadro,
   type Iteracao,
 } from './garantir-sprint.js'
@@ -15,7 +18,9 @@ import {
 
 function cliente(over: Partial<ClienteDeQuadro> = {}): ClienteDeQuadro {
   return {
-    getIterationField: vi.fn().mockRejectedValue(new Error('Iteration field not found')),
+    getIterationField: vi
+      .fn()
+      .mockRejectedValue(new CampoDeIteracaoAusenteError('Sprint', 'PVT_1')),
     criarCampoDeIteracao: vi.fn().mockResolvedValue({ fieldId: 'F_novo', name: 'Sprint' }),
     configurarCampoDeIteracao: vi.fn().mockResolvedValue('F_existente'),
     ...over,
@@ -93,6 +98,62 @@ describe('garantirSprintNoQuadro', () => {
 
   it('o padrão do produto é 3 dias', () => {
     expect(DIAS_DE_SPRINT_PADRAO).toBe(3)
+  })
+
+  // O defeito mais caro que este arquivo poderia ter: uma falha passageira de
+  // rede lida como "o campo não existe" faria o produto criar um SEGUNDO campo
+  // Sprint no quadro REAL do cliente, deixando órfãos os itens ligados ao
+  // primeiro. Só a ausência é tolerada; o resto sobe.
+  it('falha de REDE não vira "campo não existe" — o erro sobe e nada é criado', async () => {
+    const c = cliente({
+      getIterationField: vi.fn().mockRejectedValue(new Error('fetch failed: ECONNRESET')),
+    })
+    await expect(
+      garantirSprintNoQuadro(c, { projectId: 'PVT_1', hoje: '2026-08-29' })
+    ).rejects.toThrow('ECONNRESET')
+    expect(c.criarCampoDeIteracao).not.toHaveBeenCalled()
+    expect(c.configurarCampoDeIteracao).not.toHaveBeenCalled()
+  })
+
+  it('token sem autorização de quadros também sobe — não cria campo por engano', async () => {
+    const c = cliente({
+      getIterationField: vi
+        .fn()
+        .mockRejectedValue(
+          new Error('GitHub GraphQL request failed: Resource not accessible by integration')
+        ),
+    })
+    await expect(
+      garantirSprintNoQuadro(c, { projectId: 'PVT_1', hoje: '2026-08-29' })
+    ).rejects.toThrow('not accessible')
+    expect(c.criarCampoDeIteracao).not.toHaveBeenCalled()
+  })
+
+  it('erro de ausência vindo de outra cópia do pacote ainda é reconhecido', async () => {
+    // Dois caminhos de carga fazem duas classes iguais deixarem de ser a mesma
+    // classe, e o `instanceof` falha. O nome é a rede de segurança.
+    const gemeo = new Error('Iteration field "Sprint" not found on project PVT_1.')
+    gemeo.name = 'CampoDeIteracaoAusenteError'
+    const c = cliente({ getIterationField: vi.fn().mockRejectedValue(gemeo) })
+    const r = await garantirSprintNoQuadro(c, { projectId: 'PVT_1', hoje: '2026-08-29' })
+    expect(r.estado).toBe('criado')
+  })
+})
+
+describe('hojeNoFuso — o dia é o do dono, não o do servidor', () => {
+  it('23h no horário de Brasília ainda é HOJE, embora em UTC já seja amanhã', () => {
+    // 2026-08-29T23:30 em Brasília = 2026-08-30T02:30Z.
+    const instante = new Date('2026-08-30T02:30:00Z')
+    expect(hojeNoFuso(instante)).toBe('2026-08-29')
+    expect(instante.toISOString().slice(0, 10)).toBe('2026-08-30') // o jeito antigo
+  })
+
+  it('formata sempre YYYY-MM-DD, o mesmo formato do GitHub', () => {
+    expect(hojeNoFuso(new Date('2026-01-05T15:00:00Z'))).toBe('2026-01-05')
+  })
+
+  it('o fuso do produto é o do dono', () => {
+    expect(FUSO_DO_PRODUTO).toBe('America/Sao_Paulo')
   })
 })
 

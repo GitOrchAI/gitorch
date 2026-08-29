@@ -9,7 +9,7 @@ import {
   type PedidoDoPainel,
   type ProjetoDoDono,
 } from '../services/arvore-de-pedidos.js'
-import { sprintCorrente, type Iteracao } from '../services/garantir-sprint.js'
+import { sprintCorrente, type Iteracao, hojeNoFuso } from '../services/garantir-sprint.js'
 
 // Rotas do painel do owner (ui_kits/painel-owner/API.md do handoff GitOrch
 // Design System). Nesta leva: pulso, agentes e responder-decisão ao vivo.
@@ -316,7 +316,7 @@ export const painelRoutes = async (
       if (!request.user) return reply.code(401).send(NAO_LOGADO)
       const ownerId = await resolveOwnerId(app.prisma, request.user)
       const projeto = request.query.projeto?.trim() || undefined
-      const hoje = new Date().toISOString().slice(0, 10)
+      const hoje = hojeNoFuso()
 
       const quadros = await lerSprints({ ownerId, projeto })
       const sprints = quadros
