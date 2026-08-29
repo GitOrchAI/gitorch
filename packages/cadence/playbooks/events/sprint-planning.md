@@ -9,7 +9,7 @@ A new sprint is starting. As the Product Owner, plan it end to end:
 3. Define ONE **Sprint Goal**: a single sentence describing the outcome the
    sprint delivers (not a list of tasks). Record it in the project (status
    update / description).
-4. Set the sprint **iteration** field on every selected item in Projects v2
-   (`gh api graphql`).
-5. Deliverable: the Sprint Goal + the list of selected issues (numbers) + what
-   was deliberately left out and why.
+4. Say which sprint each selected item belongs to. You DECIDE the assignment;
+   GitOrch writes the iteration field on the board. Never run tooling yourself.
+5. Deliverable: the Sprint Goal + the list of selected issues (numbers) + the
+   sprint you assigned each one to + what was deliberately left out and why.
