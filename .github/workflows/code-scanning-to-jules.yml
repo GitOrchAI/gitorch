@@ -33,9 +33,9 @@ jobs:
           token: ${{ secrets.SECURITY_PAT || github.token }}
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: ./.github/actions/setup-pnpm
         with:
-          node-version: '20'
+          node-version: 20
           check-latest: false
       - uses: pnpm/action-setup@v3
         with:
@@ -43,7 +43,7 @@ jobs:
 
       - name: Install Dependencies
         working-directory: .github/scripts
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Determine Alerts to Process
         id: alerts
