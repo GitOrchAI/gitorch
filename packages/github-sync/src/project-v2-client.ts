@@ -103,6 +103,13 @@ export interface QuadroListado {
   id: string
   number: number
   title: string
+  /**
+   * Quadro fechado (arquivado). Precisa vir na listagem: sem isso o produto
+   * adota um quadro morto e passa a escrever sprint nele. Acontece de verdade
+   * — a organização do gitorch tem dois quadros fechados convivendo com o
+   * ativo (medido em 29/08).
+   */
+  closed: boolean
 }
 
 export interface ListarQuadrosDoRepositorioInput {
@@ -117,7 +124,6 @@ export interface ListarQuadrosDaContaInput {
 
 /** Um quadro alcançado a partir das issues do repositório. */
 export interface QuadroDescoberto extends QuadroListado {
-  closed: boolean
   /** Quantas issues deste repositório já estão dentro dele. */
   issuesDesteRepo: number
 }
@@ -351,7 +357,7 @@ export class ProjectV2Client {
         query: `
           query ListarQuadrosDoRepositorio($owner: String!, $repo: String!) {
             repository(owner: $owner, name: $repo) {
-              projectsV2(first: 50) { nodes { id number title } }
+              projectsV2(first: 50) { nodes { id number title closed } }
             }
           }
         `,
@@ -381,7 +387,7 @@ export class ProjectV2Client {
         query: `
           query ListarQuadrosDaConta($login: String!) {
             ${campo}(login: $login) {
-              projectsV2(first: 50) { nodes { id number title } }
+              projectsV2(first: 50) { nodes { id number title closed } }
             }
           }
         `,
