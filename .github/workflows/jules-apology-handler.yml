@@ -56,8 +56,6 @@ jobs:
       - name: Setup Node
         if: steps.triage.outputs.act == 'true' && steps.triage.outputs.alreadyTried == 'false' && steps.triage.outputs.sessionId != ''
         uses: ./.github/actions/setup-pnpm
-        with:
-          node-version: '20'
 
       - name: Install Dependencies
         if: steps.triage.outputs.act == 'true' && steps.triage.outputs.alreadyTried == 'false' && steps.triage.outputs.sessionId != ''

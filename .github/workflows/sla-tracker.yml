@@ -21,8 +21,6 @@ jobs:
 
       - name: Setup Node
         uses: ./.github/actions/setup-pnpm
-        with:
-          node-version: '20'
 
       # `npm ci` e não `install`: instala exatamente o que está no lockfile
       # versionado. Este passo roda no mesmo trabalho que recebe o token de

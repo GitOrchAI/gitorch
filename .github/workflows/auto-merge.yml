@@ -137,8 +137,6 @@ jobs:
       - name: Setup Node
         if: steps.evaluate.outputs.eligible == 'true'
         uses: ./.github/actions/setup-pnpm
-        with:
-          node-version: '20'
 
       # `npm ci` e não `install`: instala exatamente o que está no lockfile
       # versionado. Este passo roda com token de escrita e acesso a secrets, então

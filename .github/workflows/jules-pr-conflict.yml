@@ -68,8 +68,6 @@ jobs:
       - name: Setup Node
         if: steps.preflight.outputs.configurada == 'true'
         uses: ./.github/actions/setup-pnpm
-        with:
-          node-version: '20'
 
       - name: Install Dependencies
         if: steps.preflight.outputs.configurada == 'true'

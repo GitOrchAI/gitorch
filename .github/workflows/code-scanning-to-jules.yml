@@ -34,8 +34,6 @@ jobs:
 
       - name: Setup Node
         uses: ./.github/actions/setup-pnpm
-        with:
-          node-version: '20'
 
       - name: Install Dependencies
         working-directory: .github/scripts
