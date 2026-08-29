@@ -2866,10 +2866,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               role,
               ...(workspacePath ? { workspacePath } : {}),
             })
-            // D51: quem ESCREVE issue para o dev assíncrono (RA e PO) leva o
-            // guia curado do jules-awesome-list + o que já aprendemos sobre
-            // como o Jules falha NESTE projeto.
-            if (poRails || raRails) {
+            // D51/D52: quem FALA com o dev assíncrono — o RA e o PO ao escrever
+            // a issue, e o QA ao responder uma dúvida — leva o guia curado do
+            // jules-awesome-list + o que já aprendemos sobre como o Jules falha
+            // NESTE projeto. É o que deixa a resposta à dúvida ancorada e a
+            // próxima issue melhor.
+            if (poRails || raRails || qaRails) {
               const blocoJules = await blocoDeContextoDoJules({
                 prisma: app.prisma as unknown as PrismaEventoDoJules,
                 projectId: project.id,
@@ -5334,6 +5336,21 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         }).catch((err: unknown) =>
           app.log.warn(err, `[Scheduler] não deu para marcar a dúvida como respondida`)
         )
+        // D52 + D51: o dev PRECISOU perguntar — sinal de que a issue faltou
+        // contexto. Vira aprendizado para o PO/RA escreverem issues melhores.
+        await registrarAprendizado({
+          prisma: app.prisma as unknown as PrismaEventoDoJules,
+          projectId: args.projectId,
+          aprendizado: {
+            padrao:
+              `O dev precisou perguntar na issue #${esperando.issueNumber} — a issue faltou ` +
+              `contexto: "${pergunta.replace(/\s+/g, ' ').trim().slice(0, 180)}". ` +
+              'Incluir isso no corpo de issues parecidas.',
+            origem: 'duvida-do-dev',
+            issueNumber: esperando.issueNumber,
+          },
+          onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+        }).catch(() => undefined)
       }
       app.log.info(
         saiu
