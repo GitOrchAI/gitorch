@@ -73,6 +73,14 @@ import { tetosDoPlanoDoDev } from '../services/plano-do-dev.js'
 import { ESTADOS_TERMINAIS } from '../services/estados-de-sessao.js'
 import { executarCicloTerminal } from '../services/executar-ciclo-terminal.js'
 import {
+  lerAprendizados,
+  registrarAprendizado,
+  blocoDeContextoDoJules,
+  type PrismaEventoDoJules,
+} from '../services/memoria-do-jules.js'
+import { analisarFalhasPendentes } from '../services/analisar-falhas-pendentes.js'
+import { runAnaliseDeFalha, type SessaoMorta } from '../services/analise-de-falha-do-dev.js'
+import {
   abrirSessao,
   sessoesVivas,
   registrarEstado,
@@ -84,6 +92,8 @@ import {
   fecharSessao,
   linhasVivasParaJulgarAbandono,
   linhasVivasParaCicloTerminal,
+  issuesComAnalisePendente,
+  marcarAnaliseFeitaDaIssue,
   type MotivoDeFechamento,
   registrarInvestigacao,
   nomesDeSessoesVivasDaInstancia,
@@ -2653,6 +2663,29 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 updatedAt: Date
               }>,
             }),
+            // D51: issues que falharam 2× esperam a análise antes da 3ª —
+            // não são redelegadas até o RA entender o porquê. E, para as que
+            // já têm a análise feita, o pedido revisado vai no topo do prompt.
+            issuesComAnalisePendente: await issuesComAnalisePendente({
+              prisma: app.prisma as unknown as PrismaDevSession,
+              projectId: project.id,
+            }),
+            aprendizadoPorIssue: await (async () => {
+              const mapa = new Map<number, string>()
+              try {
+                const aprendizados = await lerAprendizados({
+                  prisma: app.prisma as unknown as PrismaEventoDoJules,
+                  projectId: project.id,
+                  onWarn: (m) => app.log.warn(m),
+                })
+                for (const a of aprendizados) {
+                  if (a.issueNumber && a.pedidoRevisado) mapa.set(a.issueNumber, a.pedidoRevisado)
+                }
+              } catch (err) {
+                app.log.warn(err, '[Scheduler] não deu para ler os aprendizados do Jules')
+              }
+              return mapa
+            })(),
             // O SM é o orquestrador do julgamento (docs/agents/quality-assurance.md
             // §3.1). Até aqui o julgamento só era acordado por aviso do
             // GitHub ou pela vigília de uma sessão viva — uma entrega cuja
@@ -2833,6 +2866,17 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               role,
               ...(workspacePath ? { workspacePath } : {}),
             })
+            // D51: quem ESCREVE issue para o dev assíncrono (RA e PO) leva o
+            // guia curado do jules-awesome-list + o que já aprendemos sobre
+            // como o Jules falha NESTE projeto.
+            if (poRails || raRails) {
+              const blocoJules = await blocoDeContextoDoJules({
+                prisma: app.prisma as unknown as PrismaEventoDoJules,
+                projectId: project.id,
+                onWarn: (m) => app.log.warn(m),
+              })
+              if (blocoJules.trim()) contextBlocks.push(blocoJules)
+            }
             // Colunas do board: config POR PROJETO (runtimeConfig.board.columns),
             // com default nativo — o cliente personaliza, o backend acompanha.
             const boardColumns = resolveBoardColumns(project.runtimeConfig)
@@ -2855,19 +2899,39 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               })
             }
             result = raRails
-              ? await runRaMissionViaRails({
-                  repository: project.wingId,
-                  githubToken: railsToken,
-                  execute,
-                  contextBlocks,
-                  // Separa os dois trabalhos do RA: pelo aviso de desejo novo
-                  // ele analisa AQUELE desejo; pela agenda ele EXPLORA o
-                  // projeto. Ancorar de novo num desejo já analisado é refazer
-                  // a mesma análise duas vezes por dia em vez de aprender mais
-                  // sobre o repositório — e é o explorador quem alimenta a
-                  // memória que os outros agentes leem.
-                  pelaAgenda: origem === 'agenda',
-                })
+              ? await (async () => {
+                  const raResult = await runRaMissionViaRails({
+                    repository: project.wingId,
+                    githubToken: railsToken,
+                    execute,
+                    contextBlocks,
+                    // Separa os dois trabalhos do RA: pelo aviso de desejo novo
+                    // ele analisa AQUELE desejo; pela agenda ele EXPLORA o
+                    // projeto. Ancorar de novo num desejo já analisado é refazer
+                    // a mesma análise duas vezes por dia em vez de aprender mais
+                    // sobre o repositório — e é o explorador quem alimenta a
+                    // memória que os outros agentes leem.
+                    pelaAgenda: origem === 'agenda',
+                  })
+                  // D51: junto do trabalho de explorador, o RA entende POR QUE
+                  // uma issue falhou 2× — antes da 3ª tentativa. O aprendizado
+                  // vai para a memória dos agentes e o pedido revisado para o
+                  // prompt da próxima delegação.
+                  const analiseOut = await rodarAnaliseDeFalhasDoRa(
+                    project,
+                    railsToken,
+                    execute
+                  ).catch((err) => {
+                    app.log.warn(
+                      err,
+                      `[Scheduler] análise de falhas do RA falhou em ${project.wingId}`
+                    )
+                    return ''
+                  })
+                  return analiseOut
+                    ? { ...raResult, output: `${raResult.output}\n${analiseOut}` }
+                    : raResult
+                })()
               : poRails
                 ? await runPoMissionViaRails({
                     repository: project.wingId,
@@ -3815,6 +3879,140 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
    * sem terminar). Foi a falta desta que encheu as 15 vagas do gitorch e parou
    * a esteira em 29/08 — 21 de 23 sessões estavam em COMPLETED/FAILED.
    */
+  /**
+   * A análise de "por que o Jules falhou 2× nesta issue" (D51). Roda junto do
+   * RA na agenda. Best-effort: nunca lança para fora — o RA tem outro trabalho.
+   */
+  const rodarAnaliseDeFalhasDoRa = async (
+    project: { id: string; wingId: string },
+    railsToken: string | undefined,
+    execute: StepExecutor
+  ): Promise<string> => {
+    if (!railsToken) return ''
+    const agora = new Date()
+    const gh = async (path: string): Promise<unknown> => {
+      const resp = await fetch(`https://api.github.com${path}`, {
+        headers: {
+          authorization: `token ${railsToken}`,
+          accept: 'application/vnd.github+json',
+          'user-agent': 'gitorch',
+        },
+      })
+      if (!resp.ok) throw new Error(`GitHub GET ${path} → ${resp.status}`)
+      return resp.json()
+    }
+
+    const r = await analisarFalhasPendentes({
+      listarPendentes: () =>
+        issuesComAnalisePendente({
+          prisma: app.prisma as unknown as PrismaDevSession,
+          projectId: project.id,
+        }),
+      dadosDaIssue: async (issueNumber) => {
+        const issue = (await gh(`/repos/${project.wingId}/issues/${issueNumber}`)) as {
+          title?: string
+          body?: string
+        }
+        const mortas = (await app.prisma.devSession.findMany({
+          where: {
+            projectId: project.id,
+            issueNumber,
+            closedReason: {
+              in: [
+                'dev-concluiu-sem-entrega',
+                'dev-falhou',
+                'pr-descartado',
+                'pr-rejeitado-sem-retomada',
+              ],
+            },
+          },
+          select: { sessionName: true, state: true, closedReason: true, pullRequestNumber: true },
+          orderBy: { closedAt: 'desc' },
+          take: 4,
+        })) as Array<{
+          sessionName: string
+          state: string
+          closedReason: string | null
+          pullRequestNumber: number | null
+        }>
+        const sessoesMortas: SessaoMorta[] = []
+        const comentariosDeQa: string[] = []
+        for (const m of mortas) {
+          let ultimaAtividade = `closed as ${m.closedReason}`
+          try {
+            const apiKey = await chaveDaSessao(m.sessionName)
+            if (apiKey) {
+              const msg = await ultimaMensagemDoDevJules({ apiKey, sessionName: m.sessionName })
+              if (msg) ultimaAtividade = msg.slice(0, 600)
+            }
+          } catch {
+            /* fica com o closedReason */
+          }
+          sessoesMortas.push({ sessionName: m.sessionName, estado: m.state, ultimaAtividade })
+          if (m.pullRequestNumber && comentariosDeQa.length < 3) {
+            try {
+              const comments = (await gh(
+                `/repos/${project.wingId}/issues/${m.pullRequestNumber}/comments?per_page=100`
+              )) as Array<{ body?: string }>
+              for (const c of comments) {
+                if (
+                  (c.body ?? '').includes('gitorch:qa') ||
+                  (c.body ?? '').includes('needs changes')
+                ) {
+                  comentariosDeQa.push((c.body ?? '').slice(0, 800))
+                }
+              }
+            } catch {
+              /* sem comentário */
+            }
+          }
+        }
+        return {
+          issueNumber,
+          tituloDaIssue: issue.title ?? `#${issueNumber}`,
+          corpoDaIssue: issue.body ?? '',
+          sessoesMortas,
+          comentariosDeQa: comentariosDeQa.slice(0, 3),
+        }
+      },
+      analisar: (entrada) => runAnaliseDeFalha(execute, entrada),
+      gravarAprendizado: ({ issueNumber, analise }) =>
+        registrarAprendizado({
+          prisma: app.prisma as unknown as PrismaEventoDoJules,
+          projectId: project.id,
+          aprendizado: {
+            padrao: analise.padraoDoJules,
+            origem: 'analise-2-falhas',
+            issueNumber,
+            pedidoRevisado: analise.pedidoRevisado,
+          },
+          onWarn: (m) => app.log.warn(m),
+        }),
+      marcarFeita: (issueNumber) =>
+        marcarAnaliseFeitaDaIssue({
+          prisma: app.prisma as unknown as PrismaDevSession,
+          projectId: project.id,
+          issueNumber,
+          agora,
+        }),
+      onInfo: (m) => app.log.info(`[Scheduler] ${m}`),
+      onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+    })
+
+    if (r.analisadas.length === 0) return ''
+    // UM aviso ao dono por passada, consolidado.
+    await avisarDonoDoProjeto(
+      project as NotifiableProject & { wingId: string },
+      `GitOrch: ${r.analisadas.length === 1 ? 'a issue' : 'as issues'} ${r.analisadas
+        .map((n) => `#${n}`)
+        .join(', ')} falharam 2× — entendi o porquê e a 3ª tentativa vai com o pedido corrigido. ` +
+        `Padrão aprendido: ${r.padroes[0]?.padrao ?? ''}`
+    ).catch(() => undefined)
+    return `RA: analisei ${r.analisadas.length} falha(s) repetida(s): ${r.analisadas
+      .map((n) => `#${n}`)
+      .join(', ')}.`
+  }
+
   const varrerCicloTerminalDaSessao = async (): Promise<void> => {
     const agora = new Date()
     const linhas = await linhasVivasParaCicloTerminal({

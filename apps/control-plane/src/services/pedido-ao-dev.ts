@@ -32,6 +32,13 @@ export interface IssueParaODev {
   repositorio: string
   titulo: string
   corpo: string
+  /**
+   * O aprendizado da 2ª falha (D51): quando esta issue já falhou duas vezes e a
+   * análise entendeu o porquê, o `pedidoRevisado` entra AQUI, no TOPO do pedido
+   * da 3ª tentativa — antes do corpo da issue, para o agente ler primeiro.
+   * Ausente = 1ª ou 2ª tentativa.
+   */
+  aprendizado?: string
 }
 
 /**
@@ -66,6 +73,9 @@ export function montarPedidoAoDev(issue: IssueParaODev): string {
   const partes = [
     `Work on issue #${issue.numero} of ${issue.repositorio}.`,
     '',
+    ...(issue.aprendizado && issue.aprendizado.trim()
+      ? ['## What went wrong the last two times (read this FIRST)', issue.aprendizado.trim(), '']
+      : []),
     issue.corpo,
     '',
     'Deliver a pull request that closes the issue and satisfies every item',
