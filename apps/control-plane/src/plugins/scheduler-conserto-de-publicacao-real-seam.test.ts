@@ -23,6 +23,11 @@ const PROJETO_SEM_AMBIENTE = {
   userId: 'user_1',
   runtimeConfig: null,
   isActive: true,
+  // Projeto que JÁ opera com o ciclo fechado — é o estado em que a migração
+  // deixa todo projeto que já existia. Sem isto a guarda de autonomia recusa a
+  // abertura da tarefa de conserto, e com razão: no nível padrão o produto não
+  // escreve no repositório de ninguém.
+  autonomia: 'cuidar',
 } as const
 
 const PROJETO_COM_AMBIENTE = {
@@ -262,6 +267,47 @@ describe('a publicação que falha volta atrás como tarefa de conserto (real se
     await app.register(schedulerPlugin)
     await vi.waitFor(ate, { timeout: 3000, interval: 10 })
   }
+
+  // A prova central da autonomia, no seam REAL (relógio -> serviço -> fetch):
+  // no nível "só olhar" a escrita é BARRADA NA PORTA. Não é "o código não
+  // chamou" — é a chamada existir, chegar na saída de rede e ser recusada.
+  test('no nível "só olhar", a tarefa de conserto NÃO é aberta no repositório do cliente', async () => {
+    const prisma = buildFakePrisma(
+      { ...PROJETO_SEM_AMBIENTE, autonomia: 'so_olhar' },
+      linhaDeSessao()
+    )
+    const fetchMock = buildFetchMock({ etapas: ETAPAS_QUE_FALHAM, issueCriada: 321 })
+
+    global.fetch = fetchMock as unknown as typeof fetch
+    app = Fastify({ logger: false })
+    app.decorate('prisma', prisma as never)
+    await app.register(schedulerPlugin)
+
+    // Espera o tique atravessar por inteiro: o mesmo tempo que o caminho
+    // autorizado leva para abrir a issue. Se em algum momento aparecesse uma,
+    // este teste falharia — e é isso que ele existe para vigiar.
+    await new Promise((r) => setTimeout(r, 300))
+
+    expect(issuesCriadas(fetchMock)).toHaveLength(0)
+    // E a marca de dedup NÃO pode ter sido gravada: gravar sem a issue existir
+    // deixaria a sessão marcada como "já consertada" para sempre, e o conserto
+    // nunca mais seria tentado.
+    const atualizacoes = (prisma['devSession'] as { update: { mock: { calls: unknown[][] } } })
+      .update.mock.calls
+    expect(atualizacoes.some((c) => JSON.stringify(c).includes('deployNotice'))).toBe(false)
+  })
+
+  test('o MESMO cenário no nível "cuidar" abre a tarefa — a diferença é só a autorização', async () => {
+    const prisma = buildFakePrisma(
+      { ...PROJETO_SEM_AMBIENTE, autonomia: 'cuidar' },
+      linhaDeSessao()
+    )
+    const fetchMock = buildFetchMock({ etapas: ETAPAS_QUE_FALHAM, issueCriada: 321 })
+
+    await rodarTique(prisma, fetchMock, () => {
+      expect(issuesCriadas(fetchMock)).toHaveLength(1)
+    })
+  })
 
   test('publicação que falhou abre UMA tarefa de conserto no padrão Shrimp, marca o dedup e NÃO fecha a entrega', async () => {
     const prisma = buildFakePrisma(PROJETO_SEM_AMBIENTE, linhaDeSessao())

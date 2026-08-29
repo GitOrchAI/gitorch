@@ -1,4 +1,5 @@
 import { ProjectV2Client } from '@gitorch/github-sync'
+import { fetchSemPermissao } from './guarda-de-autonomia.js'
 import { RAILS_SCHEMAS, buildStepPrompt, type PoTriageForm } from '@gitorch/cadence'
 import { runPoRails } from './role-rails.js'
 import { runFormStep } from './rails-runner.js'
@@ -170,7 +171,10 @@ export async function runPoMissionViaRails(
 ): Promise<PoRailsMissionResult> {
   // IMPORTANTE (leva D): alcançável pelo tique (scheduler.ts, wake do PO)
   // sob `tickEmAndamento` — mesma classe de defeito do Crítico.
-  const f = fetchComTeto(options.fetchImpl ?? fetch)
+  // `fetchSemPermissao` e nao `fetch` cru: quem chama sem passar um fetch com
+  // a autonomia do projeto tem que falhar FECHADO. Com `?? fetch` o
+  // esquecimento escrevia no repositorio do cliente sem guarda nenhuma.
+  const f = fetchComTeto(options.fetchImpl ?? fetchSemPermissao())
 
   // 0) Config validada ANTES de gastar qualquer passo de LLM: um board mal
   // configurado falharia só depois dos 4 passos, queimando tokens a cada wake.

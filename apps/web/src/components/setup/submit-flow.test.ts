@@ -58,6 +58,38 @@ const SUBMIT_INPUT = {
   engines: ['claude-code'],
 }
 
+describe('submitSetup — o nível de autonomia chega ao servidor', () => {
+  // Decisão do dono (29/08): plugar o repositório não é, sozinho, autorização
+  // para escrever nele. O nível é escolhido no assistente e vem no corpo.
+  it('o nível escolhido vai no corpo', async () => {
+    const { seen, fetchImpl } = recorder({
+      '/api/v1/setup/submit': () => jsonResponse(200, { projects: PROJECTS }),
+    })
+
+    await submitSetup(
+      { ...SUBMIT_INPUT, plan: 'pro', autonomia: 'sugerir' },
+      { fetchImpl, fallbackError: 'falhou' }
+    )
+
+    const corpo = JSON.parse(seen[0]!.body) as { autonomia?: string }
+    expect(corpo.autonomia).toBe('sugerir')
+  })
+
+  it('sem escolha, o campo NÃO vai — e isso não é a mesma coisa que "só olhar"', async () => {
+    // Mandar um padrão daqui apagaria a diferença entre "ele escolheu só
+    // olhar" e "ele não escolheu nada". O servidor precisa dessa diferença
+    // para saber se pergunta a ele ou não.
+    const { seen, fetchImpl } = recorder({
+      '/api/v1/setup/submit': () => jsonResponse(200, { projects: PROJECTS }),
+    })
+
+    await submitSetup({ ...SUBMIT_INPUT, plan: 'pro' }, { fetchImpl, fallbackError: 'falhou' })
+
+    const corpo = JSON.parse(seen[0]!.body) as Record<string, unknown>
+    expect('autonomia' in corpo).toBe(false)
+  })
+})
+
 describe('submitSetup — a chave chega a quem pediu, pago ou grátis', () => {
   it('plano PAGO: devolve a chave e não navega pra lugar nenhum', async () => {
     const { seen, fetchImpl } = recorder({

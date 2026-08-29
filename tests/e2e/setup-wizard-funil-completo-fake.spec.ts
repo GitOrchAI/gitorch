@@ -247,8 +247,21 @@ test('funil completo do setup wizard: login → termos → repo → diagnóstico
   })
 
   let projectId: string | undefined
-  await test.step('passo 10: confirmação + submit', async () => {
+  await test.step('passo 10: confirmação + escolha da autonomia + submit', async () => {
     await expect(page.getByText(FIXTURE_REPO)).toBeVisible({ timeout: 10000 })
+
+    // A ESCOLHA DA AUTONOMIA é obrigatória (decisão do dono, 29/08): plugar o
+    // repositório não é, sozinho, autorização para escrever nele. Enquanto
+    // ninguém escolhe, o botão de finalizar fica desabilitado — este teste
+    // provou isso de verdade ao quebrar quando a tela entrou.
+    await expect(primaryButton(page)).toBeDisabled()
+
+    // "Cuidar" porque este funil vai até o fim, criando quadro e tudo.
+    // Ancorado no data-testid, não no texto: o funil roda em inglês e o rótulo
+    // ali é "Take care of it".
+    await page.getByTestId('autonomia-cuidar').click()
+    await expect(primaryButton(page)).toBeEnabled()
+
     const submitResponsePromise = page.waitForResponse(
       (resp) => new URL(resp.url()).pathname === '/api/v1/setup/submit',
       { timeout: 30_000 }

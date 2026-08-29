@@ -1,4 +1,5 @@
 import type { ProjectV2Client } from '@gitorch/github-sync'
+import { fetchSemPermissao } from './guarda-de-autonomia.js'
 import { fetchComTeto } from './fetch-com-teto.js'
 
 // A mesa de trabalho do PRÓPRIO projeto (Task 9). Antes disto o board vinha de
@@ -303,7 +304,10 @@ export async function resolveGithubOwnerId(
   // IMPORTANTE (leva D): alcançável pelo tique (scheduler.ts, wake do PO,
   // criação do board próprio) sob `tickEmAndamento` — mesma classe de
   // defeito do Crítico.
-  const f = fetchComTeto(deps.fetchImpl ?? fetch)
+  // `fetchSemPermissao` e nao `fetch` cru: quem chama sem passar um fetch com
+  // a autonomia do projeto tem que falhar FECHADO. Com `?? fetch` o
+  // esquecimento escrevia no repositorio do cliente sem guarda nenhuma.
+  const f = fetchComTeto(deps.fetchImpl ?? fetchSemPermissao())
   const headers = {
     Authorization: `Bearer ${token}`,
     Accept: 'application/vnd.github+json',
@@ -349,7 +353,10 @@ export async function resolveGithubRepositoryId(
   }
 
   // IMPORTANTE (leva D): mesma classe de defeito do Crítico.
-  const f = fetchComTeto(deps.fetchImpl ?? fetch)
+  // `fetchSemPermissao` e nao `fetch` cru: quem chama sem passar um fetch com
+  // a autonomia do projeto tem que falhar FECHADO. Com `?? fetch` o
+  // esquecimento escrevia no repositorio do cliente sem guarda nenhuma.
+  const f = fetchComTeto(deps.fetchImpl ?? fetchSemPermissao())
   const headers = {
     Authorization: `Bearer ${token}`,
     Accept: 'application/vnd.github+json',

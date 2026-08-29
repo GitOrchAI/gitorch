@@ -10,6 +10,11 @@ import {
   type ProjetoDoDono,
 } from '../services/arvore-de-pedidos.js'
 import { sprintCorrente, type Iteracao, hojeNoFuso } from '../services/garantir-sprint.js'
+import {
+  lerRepositorios,
+  LeituraIndisponivelError,
+  type LeituraDeProjeto,
+} from '../services/leitura-do-repositorio.js'
 import type { PoliticaDePerguntasAoDono } from '../services/duvida-do-dev.js'
 
 // Rotas do painel do owner (ui_kits/painel-owner/API.md do handoff GitOrch
@@ -72,6 +77,14 @@ export interface PainelRoutesOpts {
     ownerId: string
     projeto?: string | undefined
   }) => Promise<Array<{ projeto: string; iteracoes: Iteracao[] }>>
+  /**
+   * Lê o que existe nos repositórios do dono. Default: o serviço real, com a
+   * credencial dele. Injetável só nos testes.
+   */
+  lerLeituras?: (args: {
+    ownerId: string
+    projeto?: string | undefined
+  }) => Promise<LeituraDeProjeto[]>
 }
 
 function nomeDoMotor(payload: unknown): string {
@@ -125,6 +138,35 @@ export const painelRoutes = async (
   // execução do bloco 3. Lista vazia faz a tela dizer que não há sprint
   // configurada — que é a verdade — em vez de desenhar uma semana inventada.
   const lerSprints = opts.lerSprints ?? (async () => [])
+
+  // Os repositórios do dono, do mesmo jeito que a árvore de pedidos os lê —
+  // `projetoDaLinha` carrega a regra de qual campo é o ENDEREÇO do repositório
+  // (o par name/wingId já custou um 503 em produção). Nome diferente do
+  // `projetosDoDono` logo abaixo de propósito: aquele devolve ids, para
+  // filtrar consulta de banco; este devolve endereços, para falar com o
+  // GitHub. Dois nomes iguais para coisas diferentes é como se troca um pelo
+  // outro sem perceber.
+  const repositoriosDoDono = async (ownerId: string): Promise<ProjetoDoDono[]> => {
+    const ps = await app.prisma.project.findMany({
+      where: { userId: ownerId, isActive: true },
+      select: { name: true, wingId: true },
+    })
+    return ps.map(projetoDaLinha)
+  }
+
+  const lerLeituras =
+    opts.lerLeituras ??
+    ((args: { ownerId: string; projeto?: string | undefined }) =>
+      lerRepositorios(
+        {
+          listarProjetos: repositoriosDoDono,
+          // A credencial do DONO: o repositório é dele, e é a permissão dele
+          // que decide o que dá para ver.
+          lerToken: async (ownerId: string) =>
+            (await app.engineConnections?.getRawGithubToken(ownerId)) ?? null,
+        },
+        args
+      ))
 
   const isoOuNulo = (d: Date | string | null | undefined): string | null =>
     d == null ? null : d instanceof Date ? d.toISOString() : d
@@ -294,6 +336,41 @@ export const painelRoutes = async (
           // não pediu nada". Devolver lista vazia aqui seria mentir.
           app.log.warn(`[painel/pedidos] árvore indisponível: ${err.message}`)
           return reply.code(503).send({ error: 'PEDIDOS_INDISPONIVEIS' })
+        }
+        throw err
+      }
+    }
+  )
+
+  // GET /api/v1/painel/leitura — o que o GitOrch enxerga em cada repositório.
+  //
+  // Resposta à pergunta do dono: "o cliente acabou de por repositório no
+  // gitorch, o gitorch começa a ler sobre — como vai ser feito esse
+  // pensamento?" Esta rota CONTA o que está lá; não julga, não dá nota, não
+  // estima. Cada número vem da API do GitHub ou não aparece.
+  //
+  // Um repositório que não responde entra na lista como indisponível, com o
+  // motivo em português — nunca como zero, que faria o dono achar que ele está
+  // vazio. Só quando NENHUM responde a rota devolve 503.
+  app.get<{ Querystring: { projeto?: string } }>(
+    '/api/v1/painel/leitura',
+    RATE_LIMIT_POLLING,
+    async (request, reply) => {
+      if (!request.user) return reply.code(401).send(NAO_LOGADO)
+      const ownerId = await resolveOwnerId(app.prisma, request.user)
+      const projeto = request.query.projeto?.trim() || undefined
+      try {
+        const leituras = await lerLeituras({ ownerId, projeto })
+        return reply.send({
+          leituras,
+          // Separa "li e não achei nada" de "não consegui ler". A tela precisa
+          // dos dois para não dizer a frase errada.
+          lidos: leituras.filter((l) => l.disponivel).length,
+        })
+      } catch (err) {
+        if (err instanceof LeituraIndisponivelError) {
+          app.log.warn(`[painel/leitura] leitura indisponível: ${err.message}`)
+          return reply.code(503).send({ error: 'LEITURA_INDISPONIVEL' })
         }
         throw err
       }

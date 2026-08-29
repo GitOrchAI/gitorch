@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
+import { fetchDoRepositorio } from './guarda-de-autonomia.js'
 import {
   resolveBoardColumns,
   createBoardStatus,
@@ -146,16 +147,87 @@ describe('teto de tempo (leva D)', () => {
       if (u.includes('/issues/')) return json({ node_id: 'I_node' })
       return json({})
     }) as unknown as typeof fetch
+    // O CONTRATO MUDOU (bloco 4): sem um `fetch` com permissão, mover card no
+    // quadro do cliente não é mais "sai com teto de tempo" — é RECUSADO. O
+    // default deixou de ser o `fetch` cru e passou a ser `fetchSemPermissao()`,
+    // que representa o nível mais restrito.
+    //
+    // Este teste guardava o comportamento antigo, e por isso foi reescrito em
+    // vez de removido: os dois call sites de scheduler.ts que "nunca passavam"
+    // fetchImpl agora passam, e o que precisa de guarda aqui é o esquecimento
+    // FUTURO — que tem que falhar fechado, não sair calado.
+    let recusa: unknown
     try {
       const move = createCardMover({ repository: 'o/r', board: 'o/9', token: 't' })
-      await move(42, 'done')
+      await move(42, 'done').catch((e: unknown) => {
+        recusa = e
+      })
     } finally {
       global.fetch = original
     }
-    expect(chamadas.length).toBeGreaterThan(0)
+
+    expect((recusa as Error | undefined)?.name).toBe('EscritaNaoAutorizadaError')
+
+    // E o teto de tempo continua valendo em tudo que chegou a sair: a leitura
+    // do quadro acontece antes da escrita e passa normalmente.
     for (const { init } of chamadas) {
       expect(init?.signal).toBeInstanceOf(AbortSignal)
       expect(init?.signal?.aborted).toBe(false)
+    }
+  })
+
+  it('COM um fetch autorizado, o card é movido e o teto continua em cada chamada', async () => {
+    // O par do teste acima: prova que a recusa vem da autonomia e não de o
+    // caminho ter quebrado.
+    const json = (d: unknown) => new Response(JSON.stringify(d), { status: 200 })
+    const chamadas: Array<{ init: RequestInit | undefined }> = []
+    const fetchAutorizado = (async (u: string, init?: RequestInit) => {
+      chamadas.push({ init })
+      const body = init?.body ? (JSON.parse(String(init.body)) as { query: string }) : { query: '' }
+      if (String(u).includes('/graphql')) {
+        // A ORDEM importa: 'UpdateProjectV2SingleSelectField' CONTÉM
+        // 'ProjectV2SingleSelectField'. Testar o genérico primeiro faz o ramo
+        // de leitura engolir a mutation — e o teste falha por um erro que não
+        // existe no código de verdade.
+        if (body.query.includes('UpdateProjectV2SingleSelectField')) {
+          return json({
+            data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: 'IT1' } } },
+          })
+        }
+        if (body.query.includes('addProjectV2ItemById')) {
+          return json({ data: { addProjectV2ItemById: { item: { id: 'IT1' } } } })
+        }
+        if (body.query.includes('GetProjectId') || body.query.includes('projectV2(number')) {
+          return json({ data: { user: { projectV2: { id: 'P1' } } } })
+        }
+        if (body.query.includes('fields(')) {
+          return json({
+            data: {
+              node: {
+                fields: {
+                  nodes: [{ id: 'F1', name: 'Status', options: [{ id: 'O2', name: 'Done' }] }],
+                },
+              },
+            },
+          })
+        }
+        return json({ data: {} })
+      }
+      if (String(u).includes('/issues/')) return json({ node_id: 'I_node' })
+      return json({})
+    }) as unknown as typeof fetch
+
+    const move = createCardMover({
+      repository: 'o/r',
+      board: 'o/9',
+      token: 't',
+      fetchImpl: fetchDoRepositorio({ nivel: () => 'cuidar', fetchImpl: fetchAutorizado }),
+    })
+    await move(42, 'done')
+
+    expect(chamadas.length).toBeGreaterThan(0)
+    for (const { init } of chamadas) {
+      expect(init?.signal).toBeInstanceOf(AbortSignal)
     }
   })
 })

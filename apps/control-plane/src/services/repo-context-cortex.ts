@@ -5,6 +5,7 @@
 // gavetas (drawers) persistidas no banco.
 
 import type { CortexClient, CortexDrawer } from '@gitorch/cortex'
+import { fetchSemPermissao } from './guarda-de-autonomia.js'
 import type { GraphQLTransport } from '@gitorch/github-sync'
 import {
   RepoContextCollector,
@@ -64,7 +65,7 @@ export async function collectAndRememberRepoContext(
   if (!owner || !repo) {
     return { collected: false, reason: `wingId inválido (esperado "owner/repo"): ${deps.wingId}` }
   }
-  const fetchImpl = deps.fetchImpl ?? fetch
+  const fetchImpl = deps.fetchImpl ?? fetchSemPermissao()
   const request = deps.request ?? buildGithubGraphQLTransport(fetchImpl)
   const now = deps.now ?? (() => new Date().toISOString())
 

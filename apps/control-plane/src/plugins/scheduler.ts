@@ -214,6 +214,7 @@ import {
   resolveSprintDays,
   createCardMover,
 } from '../services/board-status.js'
+import { fetchDoRepositorio, guardaPorRepositorio } from '../services/guarda-de-autonomia.js'
 import { fetchComTeto } from '../services/fetch-com-teto.js'
 import {
   ensureAndPersistProjectBoard,
@@ -1888,6 +1889,34 @@ export async function renovarTokensGithubDoRelogio(
 }
 
 const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
+  /**
+   * O `fetch` de TODA escrita REST no repositório de um cliente.
+   *
+   * A auditoria de segurança do bloco 4 achou ONZE chamadas cruas dentro deste
+   * arquivo — abrindo, comentando e fechando issue no repositório do cliente,
+   * no tique, sem supervisão. Ligar o nível de autonomia em cada uma exigiria
+   * mudar tipo, consulta e assinatura em onze lugares, e UM esquecimento
+   * reabriria o furo inteiro.
+   *
+   * Esta porta descobre o dono pelo próprio endereço da chamada: o repositório
+   * já está na URL. Quem escreve não precisa saber de autonomia nenhuma.
+   */
+  const ghComGuarda = fetchComTeto(
+    guardaPorRepositorio(fetch, {
+      nivelDoRepositorio: async (repo: string) => {
+        const linha = await app.prisma.project.findFirst({
+          where: { wingId: repo, isActive: true },
+          select: { autonomia: true },
+        })
+        return linha?.autonomia ?? null
+      },
+      nossosRepositorios: new Set([process.env['GITORCH_SELF_REPO'] ?? 'GitOrchAI/gitorch']),
+    }),
+    // Mesmo teto de `ghGet`/`ghSend` (a constante em si é declarada mais
+    // abaixo, junto das outras chamadas curtas do relógio).
+    10_000
+  )
+
   // Modo INERTE do health pré-switch da esteira (F2.3/P1-2): sai ANTES de tocar
   // prisma/engineConnections/cortex — a instância de verificação aponta pro
   // banco de PROD e não pode varrer mission-creds, disparar tick nem disputar
@@ -2392,6 +2421,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     devPlan?: string | null
     /** BYOK: a impressão digital da conta do dev assíncrono deste cliente. */
     devAccountId?: string | null
+    /**
+     * Até onde o GitOrch pode ir no repositório DESTE cliente. Precisa viajar
+     * junto com o projeto por toda a cadeia: é o que a guarda lê na hora de
+     * cada escrita. Opcional porque projeto legado tem nulo — e nulo cai no
+     * nível mais restrito, que é o lado seguro.
+     */
+    autonomia?: string | null
   }
 
   // Tenta a cadeia de motores em ordem; sucesso encerra; erro de cota/auth cai
@@ -2510,13 +2546,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             // defeito, mesmo caminho (`runTrigger` → `tick()`, sob
             // `tickEmAndamento`, wake do PO tentando garantir o board).
             createProjectV2Client: (token: string) =>
-              new ProjectV2Client({ token, fetchImpl: fetchComTetoParaOBoard }),
+              new ProjectV2Client({ token, fetchImpl: fetchDoQuadro(project) }),
             resolveOwner: resolveGithubOwnerId,
             resolveRepositoryId: resolveGithubRepositoryId,
             lerClientToken: () =>
               lerCredencialDoProjeto({ prisma: app.prisma as never, projectId: project.id }),
             criarClienteAlternativo: (token: string) =>
-              new ProjectV2Client({ token, fetchImpl: fetchComTetoParaOBoard }),
+              new ProjectV2Client({ token, fetchImpl: fetchDoQuadro(project) }),
             onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
           })
           if (railsBoard) {
@@ -2811,7 +2847,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             comentarCoberturaDeIncidente: async ({ issueNumber, prNumber }) => {
               const marcador = '<!-- gitorch:incidente-coberto-por-pr -->'
               const gh = async (method: string, path: string, body?: unknown): Promise<unknown> => {
-                const resp = await fetch(`https://api.github.com${path}`, {
+                const resp = await ghComGuarda(`https://api.github.com${path}`, {
                   method,
                   headers: {
                     authorization: `token ${railsToken as string}`,
@@ -3186,6 +3222,10 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                               board: railsBoard,
                               token: railsToken as string,
                               columns: boardColumns,
+                              // Mover card é escrita no quadro do cliente. Sem
+                              // isto a chamada caía no `?? fetch` de
+                              // board-status.ts, fora da guarda.
+                              fetchImpl: fetchDoQuadro(project),
                             }),
                           }
                         : {}),
@@ -3791,7 +3831,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         prisma: app.prisma,
         log: app.log,
         createProjectV2Client: (token) =>
-          new ProjectV2Client({ token, fetchImpl: fetchComTetoParaOBoard }),
+          new ProjectV2Client({ token, fetchImpl: fetchDoQuadro(mission.project) }),
       })
       await app.prisma.mission.update({
         where: { id: mission.id },
@@ -4081,7 +4121,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     if (!railsToken) return ''
     const agora = new Date()
     const gh = async (path: string): Promise<unknown> => {
-      const resp = await fetch(`https://api.github.com${path}`, {
+      const resp = await ghComGuarda(`https://api.github.com${path}`, {
         headers: {
           authorization: `token ${railsToken}`,
           accept: 'application/vnd.github+json',
@@ -4250,7 +4290,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repo)) {
         throw new Error(`ghIssue: repositório fora do formato dono/repo (${repo})`)
       }
-      const resp = await fetch(`https://api.github.com/repos/${repo}/issues`, {
+      const resp = await ghComGuarda(`https://api.github.com/repos/${repo}/issues`, {
         method: 'POST',
         headers: {
           authorization: `token ${token}`,
@@ -4387,7 +4427,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   ): Promise<string> => {
     if (!railsToken) return ''
     const gh = async (path: string): Promise<unknown> => {
-      const resp = await fetch(`https://api.github.com${path}`, {
+      const resp = await ghComGuarda(`https://api.github.com${path}`, {
         headers: {
           authorization: `token ${railsToken}`,
           accept: 'application/vnd.github+json',
@@ -4495,7 +4535,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   ): Promise<string> => {
     if (!railsToken) return ''
     const gh = async (path: string): Promise<unknown> => {
-      const resp = await fetch(`https://api.github.com${path}`, {
+      const resp = await ghComGuarda(`https://api.github.com${path}`, {
         headers: {
           authorization: `token ${railsToken}`,
           accept: 'application/vnd.github+json',
@@ -4506,7 +4546,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       return resp.json()
     }
     const ghPatch = async (path: string, body: unknown): Promise<void> => {
-      const resp = await fetch(`https://api.github.com${path}`, {
+      const resp = await ghComGuarda(`https://api.github.com${path}`, {
         method: 'PATCH',
         headers: {
           authorization: `token ${railsToken}`,
@@ -4773,7 +4813,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         const token = await tokenDoProjeto(linha.projectId)
         if (!proj || !token) return null // sem como ler — fica para o próximo ciclo
         const gh = async (path: string): Promise<unknown> => {
-          const resp = await fetch(`https://api.github.com${path}`, {
+          const resp = await ghComGuarda(`https://api.github.com${path}`, {
             headers: {
               authorization: `token ${token}`,
               accept: 'application/vnd.github+json',
@@ -5158,7 +5198,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   const TIMEOUT_DE_CHAMADA_GITHUB_MS = 10_000
 
   const ghGet = async (path: string, githubToken: string): Promise<unknown> => {
-    const resp = await fetch(`https://api.github.com${path}`, {
+    const resp = await ghComGuarda(`https://api.github.com${path}`, {
       headers: {
         authorization: `token ${githubToken}`,
         accept: 'application/vnd.github+json',
@@ -5193,7 +5233,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     githubToken: string,
     body: unknown
   ): Promise<unknown> => {
-    const resp = await fetch(`https://api.github.com${path}`, {
+    const resp = await ghComGuarda(`https://api.github.com${path}`, {
       method,
       headers: {
         authorization: `token ${githubToken}`,
@@ -5234,7 +5274,18 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // aqui é redundante para `createCardMover`, mas mantido pelo mesmo motivo
   // de `ghGet`/`ghSend`: teto explícito na PRÓPRIA chamada, não só confiado
   // à porta de saída de um módulo vizinho.
-  const fetchComTetoParaOBoard = fetchComTeto(fetch, TIMEOUT_DE_CHAMADA_GITHUB_MS)
+  // Era um `fetch` ÚNICO, compartilhado por todos os projetos. Não pode mais
+  // ser: a autonomia é POR PROJETO, e um `fetch` só não tem como saber de quem
+  // é a chamada que está passando por ele. Virou fábrica — quem vai escrever no
+  // quadro de um cliente pede o `fetch` DAQUELE cliente.
+  //
+  // O nível vai como função e não como valor: o dono pode mudá-lo pelo painel
+  // no meio de uma varredura, e a decisão tem que ser a do momento da chamada.
+  const fetchDoQuadro = (projetoDaVez: { autonomia?: string | null }) =>
+    fetchDoRepositorio({
+      nivel: () => projetoDaVez.autonomia,
+      timeoutMs: TIMEOUT_DE_CHAMADA_GITHUB_MS,
+    })
 
   // R6 do controlador: o mecanismo de publicação (Tarefa 12) muda raramente
   // mas NÃO é imutável — guardado em memória, por repositório, com validade
@@ -5487,7 +5538,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           board: railsBoard,
           token: githubToken,
           columns: resolveBoardColumns(projeto.runtimeConfig),
-          fetchImpl: fetchComTetoParaOBoard,
+          fetchImpl: fetchDoQuadro(projeto),
         })
       : undefined
 
@@ -6161,6 +6212,10 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         titulo: decisao.titulo,
         corpo: decisao.corpo,
         etiquetas: decisao.etiquetas,
+        // Abrir issue no repositório do cliente é escrita: passa pela guarda de
+        // autonomia com o nível DESTE projeto. Sem isto a chamada cairia no
+        // padrão que recusa, e a tarefa de conserto nunca seria aberta.
+        fetchImpl: fetchDoRepositorio({ nivel: () => args.projeto.autonomia }),
         log: {
           onError: (m) => app.log.error(m),
           onWarn: (m) => app.log.warn(m),
@@ -6264,7 +6319,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       if (!githubToken) continue
 
       const rest = async (metodo: string, caminho: string, corpo?: unknown): Promise<unknown> => {
-        const r = await fetch(`https://api.github.com${caminho}`, {
+        const r = await ghComGuarda(`https://api.github.com${caminho}`, {
           method: metodo,
           headers: {
             authorization: `Bearer ${githubToken}`,
@@ -6343,7 +6398,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       if (!githubToken) continue
 
       const rest = async (metodo: string, caminho: string, corpo?: unknown): Promise<unknown> => {
-        const resposta = await fetch(`https://api.github.com${caminho}`, {
+        const resposta = await ghComGuarda(`https://api.github.com${caminho}`, {
           method: metodo,
           headers: {
             authorization: `Bearer ${githubToken}`,

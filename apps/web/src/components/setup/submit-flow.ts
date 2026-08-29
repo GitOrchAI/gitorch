@@ -69,6 +69,15 @@ export interface SubmitInput {
   plan: string
   repos: string[]
   engines: string[]
+  /**
+   * Até onde o cliente deixa o GitOrch ir no repositório dele:
+   * 'so_olhar' | 'sugerir' | 'cuidar'.
+   *
+   * Decisão do dono (29/08): a pergunta é feita AQUI, no assistente — plugar o
+   * repositório não é, sozinho, autorização para escrever nele. Ausente, o
+   * servidor usa o nível mais restrito.
+   */
+  autonomia?: string
 }
 
 export interface SubmitDeps {
@@ -95,6 +104,11 @@ export async function submitSetup(input: SubmitInput, deps: SubmitDeps): Promise
       repos: input.repos,
       engines: input.engines,
       plan: input.plan,
+      // Só vai quando o cliente escolheu. Mandar um valor "padrão" daqui
+      // apagaria a diferença entre "ele escolheu só olhar" e "ele não
+      // escolheu nada" — e o servidor precisa dessa diferença para saber se
+      // pergunta a ele ou não.
+      ...(input.autonomia ? { autonomia: input.autonomia } : {}),
     }),
   })
 

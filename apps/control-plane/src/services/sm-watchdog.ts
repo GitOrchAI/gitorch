@@ -1,4 +1,5 @@
 import { GithubExecutionError } from './github-backlog.js'
+import { fetchSemPermissao } from './guarda-de-autonomia.js'
 import { fetchComTeto } from './fetch-com-teto.js'
 
 // Watchdog do SM (F3.6): o SM é o dono da esteira — quando o dev assíncrono
@@ -59,7 +60,10 @@ export async function runSmWatchdog(options: SmWatchdogOptions): Promise<SmWatch
   // IMPORTANTE (leva D): mesma classe de defeito do Crítico —
   // `fetchComTeto` fecha o teto que faltava nesta closure `gh`, alcançável
   // pelo tique sob `tickEmAndamento` (scheduler.ts, wake do SM).
-  const f = fetchComTeto(options.fetchImpl ?? fetch)
+  // `fetchSemPermissao` e nao `fetch` cru: quem chama sem passar um fetch com
+  // a autonomia do projeto tem que falhar FECHADO. Com `?? fetch` o
+  // esquecimento escrevia no repositorio do cliente sem guarda nenhuma.
+  const f = fetchComTeto(options.fetchImpl ?? fetchSemPermissao())
   const label = options.delegateLabel ?? 'jules'
   const maxRetries = options.maxRetries ?? 3
 
@@ -211,7 +215,15 @@ export function buildTelegramNotifier(env: {
 }): ((message: string) => Promise<boolean>) | undefined {
   const { botToken, chatId } = env
   if (!botToken || !chatId) return undefined
-  const f = fetchComTeto(env.fetchImpl ?? fetch, env.timeoutMs)
+  // Os dois lados: o retorno `Promise<boolean>` do #377 (que propaga falha
+  // REAL de entrega) e o padrão que falha fechado.
+  //
+  // Aqui a chamada é para o Telegram, não para o GitHub — a guarda deixaria
+  // passar de qualquer jeito. `fetchSemPermissao` fica mesmo assim porque este
+  // arquivo TAMBÉM fala com o GitHub em outro ponto, e ter um `?? fetch` cru
+  // no meio dele é justamente o que o teste de varredura proíbe: um dia
+  // alguém copia a linha de cima para a chamada de baixo.
+  const f = fetchComTeto(env.fetchImpl ?? fetchSemPermissao(), env.timeoutMs)
   return async (message: string): Promise<boolean> => {
     return f(`https://api.telegram.org/bot${botToken}/sendMessage`, {
       method: 'POST',

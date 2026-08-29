@@ -1,4 +1,5 @@
 import { ProjectV2Client, CampoDeIteracaoAusenteError } from '@gitorch/github-sync'
+import { fetchSemPermissao } from './guarda-de-autonomia.js'
 import type { BacklogGitHub, IssueRef } from './backlog-executor.js'
 import { GithubExecutionError } from './github-errors.js'
 import { createBoardStatus, type BoardColumns } from './board-status.js'
@@ -42,7 +43,10 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
   // via `runPoMissionViaRails`) sob `tickEmAndamento` — mesma classe de
   // defeito do Crítico. `fetchImpl: f` (não `options.fetchImpl` cru) —
   // `ProjectV2Client` não tem teto próprio.
-  const f = fetchComTeto(options.fetchImpl ?? fetch)
+  // `fetchSemPermissao` e nao `fetch` cru: quem chama sem passar um fetch com
+  // a autonomia do projeto tem que falhar FECHADO. Com `?? fetch` o
+  // esquecimento escrevia no repositorio do cliente sem guarda nenhuma.
+  const f = fetchComTeto(options.fetchImpl ?? fetchSemPermissao())
   const client = new ProjectV2Client({
     token: options.token,
     fetchImpl: f,
@@ -122,7 +126,11 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
         projectId: quadro,
         ...(options.statusFieldName ? { statusFieldName: options.statusFieldName } : {}),
         ...(options.statusColumns ? { columns: options.statusColumns } : {}),
-        ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+        // O `f` DESTE arquivo, e não `options.fetchImpl`: em produção o
+        // chamador não passa fetchImpl nenhum, então repassar o cru deixava o
+        // movimento de card no quadro do cliente sair sem teto de tempo E sem
+        // a guarda de autonomia. `f` já carrega os dois.
+        fetchImpl: f,
       })
     : null
 

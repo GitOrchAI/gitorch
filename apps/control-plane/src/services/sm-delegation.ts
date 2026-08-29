@@ -1,4 +1,5 @@
 import { GithubExecutionError } from './github-backlog.js'
+import { fetchSemPermissao } from './guarda-de-autonomia.js'
 import { aplicarLabelDoAgente } from './agent-label.js'
 import { escolherParaDelegar, type IssueCandidata } from './fila-de-delegacao.js'
 import { tarefasComEntregaMesclada } from './ambiente-declarado.js'
@@ -366,7 +367,10 @@ export function extractBlockers(body: string): number[] {
 export async function runSmDelegation(options: SmDelegationOptions): Promise<SmDelegationResult> {
   // IMPORTANTE (leva D): alcançável pelo tique (scheduler.ts, wake do SM)
   // sob `tickEmAndamento` — mesma classe de defeito do Crítico.
-  const f = fetchComTeto(options.fetchImpl ?? fetch)
+  // `fetchSemPermissao` e nao `fetch` cru: quem chama sem passar um fetch com
+  // a autonomia do projeto tem que falhar FECHADO. Com `?? fetch` o
+  // esquecimento escrevia no repositorio do cliente sem guarda nenhuma.
+  const f = fetchComTeto(options.fetchImpl ?? fetchSemPermissao())
   const label = options.delegateLabel ?? 'jules'
   const cap = options.cap ?? 3
 

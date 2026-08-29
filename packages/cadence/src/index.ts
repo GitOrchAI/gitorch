@@ -49,4 +49,6 @@ export function loadEventPlaybook(event: CadenceEvent): string {
 // Cadence Rails: formulários por passo + validação determinística (a Lei
 // "LLM decide, sistema executa" — docs/agents/cadence-execution-model.md).
 export * from './rails'
+// Até onde o GitOrch pode ir no repositório do cliente (os 3 níveis).
+export * from './autonomia'
 export * from './skill-destillations'

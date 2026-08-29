@@ -61,6 +61,10 @@ function buildFakePrisma(sessaoInicial: Record<string, unknown>) {
     project: {
       findUnique: vi.fn(async () => PROJETO),
       findMany: vi.fn(async () => []),
+      // A guarda de autonomia descobre o dono do repositório por aqui, na hora
+      // de cada escrita REST. Sem esta linha o fake responde "não é projeto
+      // nenhum" e a escrita é recusada — corretamente.
+      findFirst: vi.fn(async () => PROJETO),
     },
     devSession: {
       // Mesmo filtro que a query real (`scheduler.ts`, `varrerPublicacoes`):

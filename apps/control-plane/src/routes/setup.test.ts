@@ -810,7 +810,17 @@ describe('POST /api/v1/setup/submit — runtime wiring', () => {
 describe('POST /api/v1/setup/submit — coleta de contexto: board Projects V2 não duplica em re-submit', () => {
   let app: ReturnType<typeof Fastify>
   const originalFetch = global.fetch
-  let byWingId: Map<string, { id: string; wingId: string; name: string; runtimeConfig: unknown }>
+  let byWingId: Map<
+    string,
+    {
+      id: string
+      wingId: string
+      name: string
+      runtimeConfig: unknown
+      autonomia?: string | undefined
+      autonomiaEscolhidaEm?: Date | undefined
+    }
+  >
   let cortexWriteDrawer: ReturnType<typeof vi.fn>
 
   // Roteia o `fetch` GraphQL pelo conteúdo da query — mesma técnica usada nos
@@ -905,6 +915,11 @@ describe('POST /api/v1/setup/submit — coleta de contexto: board Projects V2 n�
             wingId: data['wingId'] as string,
             name: data['name'] as string,
             runtimeConfig: data['runtimeConfig'],
+            // O nível escolhido no assistente e a data da escolha: é o que
+            // separa "o cliente decidiu" de "está no padrão porque ninguém
+            // decidiu". Sem guardar aqui, o teste não consegue conferir.
+            autonomia: data['autonomia'] as string | undefined,
+            autonomiaEscolhidaEm: data['autonomiaEscolhidaEm'] as Date | undefined,
           }
           byWingId.set(rec.wingId, rec)
           return rec
@@ -954,7 +969,15 @@ describe('POST /api/v1/setup/submit — coleta de contexto: board Projects V2 n�
   it('2 submits do mesmo repo: só o 1º cria o board GitHub; o 2º reusa via runtimeConfig persistido', async () => {
     global.fetch = stubGithubGraphQL({ boardNumberCreated: 42 })
 
-    const payload = { repos: ['octocat/repo'], engines: ['claude-code'], plan: 'pro' }
+    // `autonomia: 'cuidar'` porque este teste é sobre CRIAR o quadro, e criar
+    // quadro é escrita no repositório do cliente. Decisão do dono (29/08): o
+    // nível é escolhido no assistente, e sem escolha o produto não escreve.
+    const payload = {
+      repos: ['octocat/repo'],
+      engines: ['claude-code'],
+      plan: 'pro',
+      autonomia: 'cuidar',
+    }
 
     const first = await app.inject({ method: 'POST', url: '/api/v1/setup/submit', payload })
     expect(first.statusCode).toBe(200)
@@ -988,6 +1011,85 @@ describe('POST /api/v1/setup/submit — coleta de contexto: board Projects V2 n�
 
     // Só 1 Project foi criado no total (2ª submissão reusou o registro).
     expect(byWingId.size).toBe(1)
+  })
+
+  // O OUTRO LADO da mesma decisão (dono, 29/08): quem escolhe "só olhar" — ou
+  // não escolhe nada — NÃO tem quadro criado no repositório dele. O assistente
+  // completa mesmo assim; não é erro, é a escolha valendo.
+  it('sem escolher o nível, o assistente completa e NÃO cria quadro no repositório', async () => {
+    global.fetch = stubGithubGraphQL({ boardNumberCreated: 42 })
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/setup/submit',
+      // Sem `autonomia`: é o cliente que não escolheu. O padrão é o mais
+      // restrito, e o produto não escreve no repositório de quem não autorizou.
+      payload: { repos: ['octocat/repo'], engines: ['claude-code'], plan: 'pro' },
+    })
+
+    // O assistente termina normalmente — a recusa não vira erro para o cliente.
+    expect(res.statusCode).toBe(200)
+
+    const queries = (global.fetch as ReturnType<typeof vi.fn>).mock.calls
+      .filter((c) => (c[1] as { body?: string } | undefined)?.body)
+      .map((c) => (JSON.parse((c[1] as { body: string }).body) as { query: string }).query)
+
+    // Nenhum quadro foi criado.
+    expect(queries.some((q) => q.includes('CreateProjectV2'))).toBe(false)
+    // E nada de número de quadro gravado no projeto.
+    const project = byWingId.get('octocat/repo')
+    expect(
+      (project?.runtimeConfig as { githubBoardNumber?: number })?.githubBoardNumber
+    ).toBeUndefined()
+    // O projeto nasceu no nível mais restrito, e sem data de escolha — porque
+    // ninguém escolheu.
+    expect((project as { autonomia?: string })?.autonomia).toBe('so_olhar')
+    expect((project as { autonomiaEscolhidaEm?: Date })?.autonomiaEscolhidaEm).toBeUndefined()
+  })
+
+  it('escolher "só olhar" explicitamente carimba a data — é diferente de não escolher', async () => {
+    global.fetch = stubGithubGraphQL({ boardNumberCreated: 42 })
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/v1/setup/submit',
+      payload: {
+        repos: ['octocat/repo'],
+        engines: ['claude-code'],
+        plan: 'pro',
+        autonomia: 'so_olhar',
+      },
+    })
+
+    const project = byWingId.get('octocat/repo')
+    expect((project as { autonomia?: string })?.autonomia).toBe('so_olhar')
+    // A data é o que separa "ele decidiu isto" de "está no padrão". Sem essa
+    // diferença o painel diria "você escolheu só olhar" a quem nunca escolheu.
+    expect((project as { autonomiaEscolhidaEm?: Date })?.autonomiaEscolhidaEm).toBeInstanceOf(Date)
+  })
+
+  it('nível inventado NÃO vira permissão — cai no mais restrito', async () => {
+    global.fetch = stubGithubGraphQL({ boardNumberCreated: 42 })
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/v1/setup/submit',
+      payload: {
+        repos: ['octocat/repo'],
+        engines: ['claude-code'],
+        plan: 'pro',
+        autonomia: 'administrador-total',
+      },
+    })
+
+    const project = byWingId.get('octocat/repo')
+    expect((project as { autonomia?: string })?.autonomia).toBe('so_olhar')
+    // E não carimba data: um valor que ninguém reconhece não é uma escolha.
+    expect((project as { autonomiaEscolhidaEm?: Date })?.autonomiaEscolhidaEm).toBeUndefined()
+    const queries = (global.fetch as ReturnType<typeof vi.fn>).mock.calls
+      .filter((c) => (c[1] as { body?: string } | undefined)?.body)
+      .map((c) => (JSON.parse((c[1] as { body: string }).body) as { query: string }).query)
+    expect(queries.some((q) => q.includes('CreateProjectV2'))).toBe(false)
   })
 })
 
@@ -1589,7 +1691,14 @@ ${body.query}`)
     const res = await app.inject({
       method: 'POST',
       url: '/api/v1/setup/submit',
-      payload: { repos: ['octocat/repo'], engines: ['claude-code'], plan: 'pro' },
+      payload: {
+        repos: ['octocat/repo'],
+        engines: ['claude-code'],
+        plan: 'pro',
+        // A coleta da dívida atravessa o mesmo caminho que cria o quadro, e
+        // criar quadro é escrita no repositório do cliente.
+        autonomia: 'cuidar',
+      },
     })
 
     expect(res.statusCode).toBe(200)
@@ -1609,7 +1718,13 @@ ${body.query}`)
     const res = await app.inject({
       method: 'POST',
       url: '/api/v1/setup/submit',
-      payload: { repos: ['octocat/repo'], engines: ['claude-code'], plan: 'pro' },
+      payload: {
+        repos: ['octocat/repo'],
+        engines: ['claude-code'],
+        plan: 'pro',
+        // A coleta atravessa o mesmo caminho que cria o quadro.
+        autonomia: 'cuidar',
+      },
     })
 
     expect(res.statusCode).toBe(200)

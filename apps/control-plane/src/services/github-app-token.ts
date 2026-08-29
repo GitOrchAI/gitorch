@@ -162,7 +162,22 @@ export async function mintInstallationToken(deps: AppTokenDeps = {}): Promise<st
     }
 
     if (installationId === undefined && repository) {
-      const res = await fetchImpl(`${GITHUB_API}/repos/${repository}/installation`, {
+      // A URL é montada a partir das DUAS METADES, cada uma codificada, e não
+      // por interpolação do texto inteiro.
+      //
+      // A conferência de formato acima (`nomeDeRepositorioValido`) continua
+      // sendo a guarda de verdade — mas ela é uma função, e a análise estática
+      // não consegue segui-la: o CodeQL apontava esta linha como crítica
+      // (js/request-forgery) porque via um texto de fora chegando cru numa URL
+      // que carrega o JWT do App. Recortar e codificar as metades quebra o
+      // caminho: `..`, `?` e `/` a mais deixam de poder trocar o endereço, e
+      // agora isso é visível lendo ESTA linha, sem precisar confiar numa
+      // validação três funções acima.
+      const [dono, nome] = repository.split('/')
+      const alvo =
+        `${GITHUB_API}/repos/${encodeURIComponent(dono ?? '')}` +
+        `/${encodeURIComponent(nome ?? '')}/installation`
+      const res = await fetchImpl(alvo, {
         headers,
         signal: AbortSignal.timeout(TIMEOUT_MS),
       })
