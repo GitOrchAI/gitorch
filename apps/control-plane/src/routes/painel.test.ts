@@ -20,7 +20,10 @@ function fakePrisma(over: Record<string, any> = {}) {
       findFirst: vi.fn().mockResolvedValue(null),
       update: vi.fn().mockResolvedValue({}),
     },
-    event: { findFirst: vi.fn().mockResolvedValue(null) },
+    event: {
+      findFirst: vi.fn().mockResolvedValue(null),
+      findMany: vi.fn().mockResolvedValue([]),
+    },
     mission: {
       findFirst: vi.fn().mockResolvedValue(null),
       findMany: vi.fn().mockResolvedValue([]),
@@ -614,6 +617,73 @@ describe('Rotas do painel do owner', () => {
           },
         },
       })
+    })
+  })
+
+  // ESTEIRA-T15 — a auditoria que não é mais spam no Telegram.
+  describe('GET /api/v1/painel/timeline', () => {
+    const getTimeline = () =>
+      app.inject({ method: 'GET', url: '/api/v1/painel/timeline', headers: authHeaders })
+
+    test('sem sessão → 401', async () => {
+      const res = await app.inject({ method: 'GET', url: '/api/v1/painel/timeline' })
+      expect(res.statusCode).toBe(401)
+    })
+
+    test('dono sem projeto → lista vazia, sem tocar Event', async () => {
+      const prisma = await build(
+        fakePrisma({ project: { findMany: vi.fn().mockResolvedValue([]) } })
+      )
+      expect((await getTimeline()).json()).toEqual({ eventos: [] })
+      expect(prisma.event.findMany).not.toHaveBeenCalled()
+    })
+
+    test('devolve os eventos de auditoria, mais recente primeiro', async () => {
+      const quando = new Date('2026-08-29T09:43:00Z')
+      await build(
+        fakePrisma({
+          event: {
+            findFirst: vi.fn().mockResolvedValue(null),
+            findMany: vi
+              .fn()
+              .mockResolvedValue([
+                { payload: { texto: 'GitOrch: 3 entregas barradas...' }, createdAt: quando },
+              ]),
+          },
+        })
+      )
+      expect((await getTimeline()).json()).toEqual({
+        eventos: [{ texto: 'GitOrch: 3 entregas barradas...', quando: quando.toISOString() }],
+      })
+    })
+
+    test('só busca eventos type=audit, dos projetos do dono, teto de 10', async () => {
+      const findMany = vi.fn().mockResolvedValue([])
+      const prisma = await build(
+        fakePrisma({
+          project: { findMany: vi.fn().mockResolvedValue([{ id: 'p1' }, { id: 'p2' }]) },
+          event: { findFirst: vi.fn().mockResolvedValue(null), findMany },
+        })
+      )
+      await getTimeline()
+      expect(findMany.mock.calls[0]?.[0]).toMatchObject({
+        where: { projectId: { in: ['p1', 'p2'] }, type: 'audit' },
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+      })
+      void prisma
+    })
+
+    test('payload sem texto (evento inesperado) não inventa conteúdo — string vazia', async () => {
+      await build(
+        fakePrisma({
+          event: {
+            findFirst: vi.fn().mockResolvedValue(null),
+            findMany: vi.fn().mockResolvedValue([{ payload: {}, createdAt: new Date() }]),
+          },
+        })
+      )
+      expect((await getTimeline()).json().eventos[0].texto).toBe('')
     })
   })
 })

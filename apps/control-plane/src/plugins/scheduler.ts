@@ -86,6 +86,7 @@ import { processarAchadosDeInfra } from '../services/processar-achados-de-infra.
 import { varrerIncidentesResolvidos } from '../services/fechar-incidente-resolvido.js'
 import { runRetroDeInfra } from '../services/retro-de-infra.js'
 import { decidirAvisoPorJanela, type EstadoDaJanela } from '../services/aviso-por-janela.js'
+import { classificarAviso } from '../services/classe-do-aviso.js'
 
 /** ESTEIRA-T11: minutos que a esteira pode ficar travada por vaga antes de avisar. */
 const MINUTOS_ATE_ALERTAR_VAGA = 20
@@ -124,6 +125,8 @@ import {
 import {
   lerHistoricoDoProjeto,
   registrarJulgamento,
+  lerJanelaDeBarradas,
+  registrarJanelaDeBarradas,
   type PrismaDoHistorico,
 } from '../services/historico-de-julgamento.js'
 import {
@@ -568,6 +571,21 @@ export function montarOpcoesDoJulgamento(args: {
       lerHistoricoDoProjeto({
         prisma: args.prisma as unknown as PrismaDoHistorico,
         projectId: args.projectId,
+      }),
+    // ESTEIRA-T15: dedupe do aviso de "N entregas barradas" — sem isto,
+    // decidirSobreOProjeto recalcula a contagem a cada julgamento e cada
+    // valor novo (3, 4, 5...) virava um aviso novo no Telegram. Mesmo
+    // mecanismo do T11 (aviso-por-janela.ts).
+    lerJanelaDeBarradas: () =>
+      lerJanelaDeBarradas({
+        prisma: args.prisma as unknown as PrismaDoHistorico,
+        projectId: args.projectId,
+      }),
+    registrarJanelaDeBarradas: (estado) =>
+      registrarJanelaDeBarradas({
+        prisma: args.prisma as unknown as PrismaDoHistorico,
+        projectId: args.projectId,
+        estado,
       }),
     ...(args.avisarDono ? { avisarDono: args.avisarDono } : {}),
   }
@@ -1550,6 +1568,43 @@ export async function runBootReaper(
  * decide, projeto a projeto, se já é hora — uma prova por projeto por ciclo,
  * nunca uma por missão.
  */
+/**
+ * ESTEIRA-T15: classifica o texto e decide o canal — auditoria vira linha em
+ * `events` (timeline do Painel), executivo vai para o Telegram do dono.
+ *
+ * Módulo-level (não fecha sobre `schedulerPlugin`) de propósito:
+ * `reconferirAcessoDoRelogio` é função exportada e testável fora do plugin,
+ * então não enxerga o closure de lá — sem este helper compartilhado, a
+ * classificação teria que ser reimplementada nos dois lugares e podia
+ * divergir em silêncio.
+ */
+async function avisarOuAuditar(
+  app: FastifyInstance,
+  projeto: NotifiableProject & { id: string; wingId: string },
+  texto: string
+): Promise<void> {
+  if (classificarAviso(texto) === 'auditoria') {
+    await app.prisma.event
+      .create({ data: { projectId: projeto.id, type: 'audit', payload: { texto } } })
+      .catch((err) =>
+        app.log.warn(err, `[Scheduler] não deu para gravar a auditoria de ${projeto.wingId}`)
+      )
+    return
+  }
+  const notifyChatId = await resolveNotifyChatId(app.prisma, projeto, {
+    instanceOwnerEmail: process.env['GITORCH_OWNER_EMAIL'],
+    instanceChatId: process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
+  })
+  const notify = buildTelegramNotifier({
+    botToken: process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
+    ...(notifyChatId ? { chatId: notifyChatId } : {}),
+  })
+  if (!notify) return
+  await notify(texto).catch((err) =>
+    app.log.warn(err, `[Scheduler] aviso de publicação falhou para ${projeto.wingId}`)
+  )
+}
+
 export async function reconferirAcessoDoRelogio(
   app: FastifyInstance,
   agora?: Date
@@ -1602,15 +1657,11 @@ export async function reconferirAcessoDoRelogio(
     avisarDono: async (projectId, texto) => {
       const projeto = await app.prisma.project.findUnique({ where: { id: projectId } })
       if (!projeto) return
-      const chatId = await resolveNotifyChatId(app.prisma, projeto, {
-        instanceOwnerEmail: process.env['GITORCH_OWNER_EMAIL'],
-        instanceChatId: process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
-      })
-      const notify = buildTelegramNotifier({
-        botToken: process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
-        ...(chatId ? { chatId } : {}),
-      })
-      if (notify) await notify(texto)
+      await avisarOuAuditar(
+        app,
+        projeto as NotifiableProject & { id: string; wingId: string },
+        texto
+      )
     },
     ...(agora ? { agora } : {}),
     onWarn: (mensagem) => app.log.warn(`[Scheduler] ${mensagem}`),
@@ -3000,19 +3051,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             // (acima) e pela vigia da esteira (varrerSessoesDoDev, mais
             // abaixo). Construído só para o QA: PO e RA não julgam
             // verificação, não precisam deste notificador.
-            let avisarDono: ((mensagem: string) => Promise<void>) | undefined
-            if (qaRails) {
-              const notifyChatId = await resolveNotifyChatId(app.prisma, project, {
-                instanceOwnerEmail: process.env['GITORCH_OWNER_EMAIL'],
-                instanceChatId:
-                  process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
-              })
-              avisarDono = buildTelegramNotifier({
-                botToken:
-                  process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
-                ...(notifyChatId ? { chatId: notifyChatId } : {}),
-              })
-            }
+            // ESTEIRA-T15: passa por avisarDonoDoProjeto (não um notificador
+            // Telegram cru) — é o chokepoint que classifica executivo vs
+            // auditoria antes de decidir o canal.
+            const avisarDono: ((mensagem: string) => Promise<void>) | undefined = qaRails
+              ? (texto) => avisarDonoDoProjeto(project, texto)
+              : undefined
             result = raRails
               ? await (async () => {
                   const raResult = await runRaMissionViaRails({
@@ -4132,7 +4176,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     if (r.analisadas.length === 0) return ''
     // UM aviso ao dono por passada, consolidado.
     await avisarDonoDoProjeto(
-      project as NotifiableProject & { wingId: string },
+      project as NotifiableProject & { id: string; wingId: string },
       `GitOrch: ${r.analisadas.length === 1 ? 'a issue' : 'as issues'} ${r.analisadas
         .map((n) => `#${n}`)
         .join(', ')} falharam 2× — entendi o porquê e a 3ª tentativa vai com o pedido corrigido. ` +
@@ -4588,7 +4632,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       escalar: async ({ id, issueNumber, motivo }) => {
         await app.prisma.infraIncident.update({ where: { id }, data: { escalatedAt: new Date() } })
         await avisarDonoDoProjeto(
-          project as NotifiableProject & { wingId: string },
+          project as NotifiableProject & { id: string; wingId: string },
           `GitOrch: parei de insistir no incidente de infra${issueNumber ? ` (issue #${issueNumber})` : ''} de ${project.wingId} — ${motivo}. O RA vai fazer um retro para achar a raiz; volta a andar quando isso mudar.`
         ).catch(() => undefined)
       },
@@ -4660,7 +4704,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
 
     if (decisao.deveAvisar) {
       await avisarDonoDoProjeto(
-        project as NotifiableProject & { wingId: string },
+        project as NotifiableProject & { id: string; wingId: string },
         `GitOrch: a esteira de ${project.wingId} está parada há ${decisao.minutosNoProblema} min — há tarefas prontas, mas a conta do dev assíncrono está com todas as vagas ocupadas. Volta a andar sozinha quando uma sessão terminar; se for urgente, dá para subir o teto ou encerrar uma sessão travada.`
       ).catch(() => undefined)
     }
@@ -4781,7 +4825,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       if (!proj || issues.length === 0) continue
       const lista = issues.map((n) => `#${n}`).join(', ')
       await avisarDonoDoProjeto(
-        proj as NotifiableProject & { wingId: string },
+        proj as NotifiableProject & { id: string; wingId: string },
         issues.length === 1
           ? `GitOrch: a entrega da issue ${lista} voltou para a fila — o dev concluiu ou falhou sem uma entrega que mesclasse. A esteira vai tentar de novo.`
           : `GitOrch: ${issues.length} entregas voltaram para a fila (${lista}) — o dev concluiu ou falhou sem entrega que mesclasse. A esteira vai tentar de novo.`
@@ -5356,22 +5400,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
    * existe para não ter.
    */
   const avisarDonoDoProjeto = async (
-    projeto: NotifiableProject & { wingId: string },
+    projeto: NotifiableProject & { id: string; wingId: string },
     texto: string
-  ): Promise<void> => {
-    const notifyChatId = await resolveNotifyChatId(app.prisma, projeto, {
-      instanceOwnerEmail: process.env['GITORCH_OWNER_EMAIL'],
-      instanceChatId: process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
-    })
-    const notify = buildTelegramNotifier({
-      botToken: process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
-      ...(notifyChatId ? { chatId: notifyChatId } : {}),
-    })
-    if (!notify) return
-    await notify(texto).catch((err) =>
-      app.log.warn(err, `[Scheduler] aviso de publicação falhou para ${projeto.wingId}`)
-    )
-  }
+  ): Promise<void> => avisarOuAuditar(app, projeto, texto)
 
   /**
    * Leva B ("o quadro do cliente não pode dizer entregue antes da hora"): o

@@ -444,4 +444,45 @@ export const painelRoutes = async (
       return reply.send({ perguntasAoDono: politica })
     }
   )
+
+  // GET /api/v1/painel/timeline — ESTEIRA-T15. Os últimos 10 eventos de
+  // AUDITORIA/PROGRESSO ("N entregas barradas", "issue voltou pra fila"...)
+  // que antes viravam spam no Telegram (rajada real de 29/08: 4 mensagens em
+  // 5 minutos, nenhuma decisão pra tomar). Não somem — mudam de canal.
+  app.get(
+    '/api/v1/painel/timeline',
+    RATE_LIMIT_POLLING,
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      if (!request.user) return reply.code(401).send(NAO_LOGADO)
+      const ownerId = await resolveOwnerId(app.prisma, request.user)
+      const ids = await projetosDoDono(ownerId)
+      if (ids.length === 0) return reply.send({ eventos: [] })
+
+      const eventos = await app.prisma.event.findMany({
+        where: { projectId: { in: ids }, type: 'audit' },
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+        select: { payload: true, createdAt: true },
+      })
+
+      return reply.send({
+        eventos: eventos.map((e) => ({
+          texto: textoDoEventoDeAuditoria(e.payload),
+          quando: e.createdAt.toISOString(),
+        })),
+      })
+    }
+  )
+}
+
+/** Payload sem `texto` é evento antigo/inesperado — nunca inventa conteúdo. */
+function textoDoEventoDeAuditoria(payload: unknown): string {
+  if (
+    payload &&
+    typeof payload === 'object' &&
+    typeof (payload as { texto?: unknown }).texto === 'string'
+  ) {
+    return (payload as { texto: string }).texto
+  }
+  return ''
 }

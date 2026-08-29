@@ -230,6 +230,49 @@ function estadoParaClasse(estado: string): string {
   )
 }
 
+interface TimelinePayload {
+  eventos: { texto: string; quando: string }[]
+}
+
+/**
+ * Linha do tempo da auditoria (T15) — o que antes virava mensagem solta no
+ * Telegram ("N entregas barradas", "voltou para a fila"...) agora fica
+ * registrado aqui. O dono só recebe Telegram para o que é executivo de
+ * verdade; o resto vira histórico consultável.
+ */
+function LinhaDoTempo() {
+  const r = usePainelBusca<TimelinePayload>(ROTAS.timeline, {
+    vazio: (d) => d.eventos.length === 0,
+    intervalo: 30000,
+  })
+  return (
+    <Card flush titulo="Linha do tempo">
+      <Estados r={r} o_que="a linha do tempo" vazio="Nada de auditoria registrado ainda.">
+        {(d) =>
+          d.eventos.map((e, i) => (
+            <div key={i} className="pn-row static">
+              <span className="pn-grow">
+                <span className="pn-rt" style={{ display: 'block' }}>
+                  {e.texto}
+                </span>
+              </span>
+              <span className="pn-rs" style={{ flex: 'none' }}>
+                {fraseDeTempo(haQuantoTempo(e.quando))}
+              </span>
+            </div>
+          ))
+        }
+      </Estados>
+    </Card>
+  )
+}
+
+function haQuantoTempo(iso: string): number | null {
+  const t = new Date(iso).getTime()
+  if (Number.isNaN(t)) return null
+  return Math.max(0, Math.floor((Date.now() - t) / 1000))
+}
+
 function Kpis({ decisoesPendentes }: { decisoesPendentes: number }) {
   const m = usePainelBusca<MissoesStats>(ROTAS.missoes, { intervalo: 15000 })
   const stats = m.estado === 'ok' && m.dados ? m.dados.stats : null
@@ -399,6 +442,7 @@ export function TelaVisaoGeral({
       </div>
 
       <Atuando ir={ir} />
+      <LinhaDoTempo />
     </>
   )
 }

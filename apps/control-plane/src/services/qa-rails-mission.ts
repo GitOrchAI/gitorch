@@ -8,6 +8,7 @@ import {
 } from '@gitorch/cadence'
 import { runFormStep } from './rails-runner.js'
 import { GithubExecutionError } from './github-errors.js'
+import { decidirAvisoPorJanela, JANELA_LIMPA, type EstadoDaJanela } from './aviso-por-janela.js'
 import { lerSecaoDaIssue } from './secao-da-issue.js'
 import { aplicarLabelDoAgente } from './agent-label.js'
 import type { CardMover } from './board-status.js'
@@ -124,6 +125,23 @@ export interface VigiliaDoJulgamentoOptions {
   /** Guarda ESTE julgamento para as próximas contas. */
   registrarJulgamento?: (args: { repositorio: string; peloPortao: boolean }) => Promise<void>
   avisarDono?: (mensagem: string) => Promise<void>
+  /**
+   * ESTEIRA-T15: o dono já foi avisado desta SEQUÊNCIA de barradas? Sem isto,
+   * `decidirSobreOProjeto` recalcula `seguidas` (3, 4, 5...) a cada julgamento
+   * e cada valor novo virava um aviso novo — foi a rajada real de 29/08 ("3
+   * entregas barradas", "4", "5" em 5 minutos). Ausente = comportamento de
+   * sempre (avisa toda vez que escalar, sem dedupe). Mesmo mecanismo do T11
+   * (`aviso-por-janela.ts` / `EstadoDaJanela`) — chamado com
+   * `minutosAteAlertar=0` porque o gatilho aqui é o julgamento, não o relógio.
+   */
+  lerJanelaDeBarradas?: () => Promise<EstadoDaJanela>
+  /**
+   * Grava o novo estado da janela: `avisado=true` ao avisar com sucesso (não
+   * avisa mais NESTA sequência); `avisado=false` quando o projeto volta a
+   * andar (uma entrega foi julgada pelo conteúdo) — a próxima sequência de
+   * barradas é um aviso novo.
+   */
+  registrarJanelaDeBarradas?: (estado: EstadoDaJanela) => Promise<void>
   /**
    * Achado 2 da revisão da Tarefa 7: grava que o dono já foi avisado desta
    * verificação parada, PARA ESTE COMMIT. Sem isto, `avisarDono` dispara a
@@ -1332,25 +1350,68 @@ export async function runQaMissionViaRails(
       try {
         const historico = await options.lerHistoricoDoProjeto(options.repository)
         const decisao = decidirSobreOProjeto(historico, options.repository)
+        const estadoAnterior = options.lerJanelaDeBarradas
+          ? await options.lerJanelaDeBarradas()
+          : JANELA_LIMPA
+        // minutosAteAlertar=0: o gatilho aqui é o julgamento que cruza o teto
+        // de barradas, não o relógio — bem diferente do T11 (aviso-vaga-travada),
+        // que espera minutos de persistência antes de avisar.
+        const decisaoJanela = decidirAvisoPorJanela(
+          estadoAnterior,
+          decisao.acao === 'escalar',
+          new Date(),
+          0
+        )
         if (decisao.acao === 'escalar') {
-          // Travar o projeto só vale se o dono FICAR SABENDO. Sem aviso
-          // entregue, o dev não é chamado, o commit não muda, o skip de "já
-          // julgado" nunca reabre a entrega e ninguém percebe — mordaça
-          // completa. Aviso que falha volta ao ciclo de sempre: repetir é ruim,
-          // emudecer é pior.
-          const avisado = options.avisarDono
-            ? await options
-                .avisarDono(`GitOrch: ${decisao.diagnostico}`)
-                .then(() => true)
-                .catch(() => false)
-            : false
-          projetoTravado = avisado
-          if (!avisado) {
-            options.onWarn?.(
-              `[qa] ${options.repository} bateu o teto de barradas seguidas, mas o aviso ao ` +
-                'dono não saiu — seguindo com o retrabalho para não emudecer a entrega'
-            )
+          if (!decisaoJanela.deveAvisar) {
+            // ESTEIRA-T15: já contamos ao dono nesta sequência — fica
+            // travado (nunca redelega às cegas) e QUIETO, sem reavisar a
+            // cada julgamento com o contador subindo.
+            projetoTravado = true
+          } else {
+            // Travar o projeto só vale se o dono FICAR SABENDO. Sem aviso
+            // entregue, o dev não é chamado, o commit não muda, o skip de "já
+            // julgado" nunca reabre a entrega e ninguém percebe — mordaça
+            // completa. Aviso que falha volta ao ciclo de sempre: repetir é ruim,
+            // emudecer é pior.
+            const avisado = options.avisarDono
+              ? await options
+                  .avisarDono(`GitOrch: ${decisao.diagnostico}`)
+                  .then(() => true)
+                  .catch(() => false)
+              : false
+            projetoTravado = avisado
+            if (avisado && options.registrarJanelaDeBarradas) {
+              await options
+                .registrarJanelaDeBarradas(decisaoJanela.novoEstado)
+                .catch((err) =>
+                  options.onWarn?.(
+                    `[qa] não deu para gravar a janela de avisos de ${options.repository}: ${
+                      err instanceof Error ? err.message : String(err)
+                    }`
+                  )
+                )
+            }
+            if (!avisado) {
+              options.onWarn?.(
+                `[qa] ${options.repository} bateu o teto de barradas seguidas, mas o aviso ao ` +
+                  'dono não saiu — seguindo com o retrabalho para não emudecer a entrega'
+              )
+            }
           }
+        } else if (estadoAnterior.avisado && options.registrarJanelaDeBarradas) {
+          // O projeto voltou a andar (uma entrega foi julgada pelo conteúdo,
+          // decidirSobreOProjeto zera a conta) — limpa a marca: a PRÓXIMA
+          // sequência de barradas é um aviso novo, não uma continuação.
+          await options
+            .registrarJanelaDeBarradas(decisaoJanela.novoEstado)
+            .catch((err) =>
+              options.onWarn?.(
+                `[qa] não deu para limpar a janela de avisos de ${options.repository}: ${
+                  err instanceof Error ? err.message : String(err)
+                }`
+              )
+            )
         }
       } catch (err) {
         // Não conseguir ler o histórico é "não sei", e "não sei" NUNCA barra:

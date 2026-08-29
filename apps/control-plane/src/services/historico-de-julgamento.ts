@@ -1,4 +1,5 @@
 import type { EntregaJulgada } from './reprovacao-que-ensina.js'
+import { JANELA_LIMPA, type EstadoDaJanela } from './aviso-por-janela.js'
 
 /**
  * O histórico de julgamentos de um repositório, guardado como `Event` do
@@ -75,4 +76,49 @@ function lerPeloPortao(payload: unknown): boolean {
   if (payload === null || typeof payload !== 'object') return false
   const valor = (payload as { peloPortao?: unknown }).peloPortao
   return valor === true
+}
+
+/**
+ * ESTEIRA-T15: o dono já foi avisado desta SEQUÊNCIA de barradas?
+ *
+ * `decidirSobreOProjeto` recalcula `seguidas` (3, 4, 5...) a cada julgamento
+ * — sem esta marca, cada valor novo virava um aviso novo no Telegram. Foi a
+ * rajada real de 29/08: "3 entregas barradas... Parei de reencaminhar", "4
+ * entregas barradas", "5" — quatro mensagens em cinco minutos.
+ *
+ * Mesmo mecanismo do T11 (`aviso-por-janela.ts`: "avisa o dono UMA vez por
+ * janela") — aqui não há espera por minutos (o gatilho é o julgamento que
+ * cruza o teto, não o relógio), então quem chama usa `minutosAteAlertar=0`.
+ */
+export const TIPO_DO_AVISO_DE_BARRADAS = 'aviso-entregas-barradas'
+
+export async function lerJanelaDeBarradas(deps: {
+  prisma: PrismaDoHistorico
+  projectId: string
+}): Promise<EstadoDaJanela> {
+  const [ultimo] = await deps.prisma.event.findMany({
+    where: { projectId: deps.projectId, type: TIPO_DO_AVISO_DE_BARRADAS },
+    orderBy: { createdAt: 'desc' },
+    take: 1,
+  })
+  const payload = ultimo?.payload as { desde?: string | null; avisado?: unknown } | undefined
+  if (!payload) return JANELA_LIMPA
+  return {
+    desde: payload.desde ? new Date(payload.desde) : null,
+    avisado: payload.avisado === true,
+  }
+}
+
+export async function registrarJanelaDeBarradas(deps: {
+  prisma: PrismaDoHistorico
+  projectId: string
+  estado: EstadoDaJanela
+}): Promise<void> {
+  await deps.prisma.event.create({
+    data: {
+      projectId: deps.projectId,
+      type: TIPO_DO_AVISO_DE_BARRADAS,
+      payload: { desde: deps.estado.desde?.toISOString() ?? null, avisado: deps.estado.avisado },
+    },
+  })
 }
