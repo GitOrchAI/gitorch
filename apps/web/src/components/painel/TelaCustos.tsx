@@ -24,11 +24,11 @@ export function TelaCustos() {
         cada cota já foi gasto, para nenhum motor travar no meio de uma entrega.
       </Cabeca>
 
-      <p className="ad-eyebrow">
+      <p className="pn-eyebrow">
         Resumo do mês
         <SeloDemo mostrar />
       </p>
-      <div className="ad-kpis">
+      <div className="pn-kpis">
         <Kpi l="Tarefas hoje" v={55} n="somando todos os motores" />
         <Kpi l="Motor mais perto do teto" v="95%" n="Antigravity · 38 de 40" tone="w" destaque />
         <Kpi l="Entregas no mês" v={16} n="média de 4 por semana" tone="g" />
@@ -50,11 +50,11 @@ export function TelaCustos() {
           vazio="Nenhum motor com cota conhecida ainda. Assim que um motor reportar consumo, aparece aqui."
         >
           {(d) => (
-            <div className="ad-3">
+            <div className="pn-3">
               {d.map((m) =>
                 m.limite == null ? (
                   <div key={m.nome}>
-                    <div className="ad-brow">
+                    <div className="pn-brow">
                       <b>{m.nome}</b>
                       <span className="num">{m.usado}</span>
                     </div>
@@ -72,7 +72,7 @@ export function TelaCustos() {
       </Card>
 
       <Card flush titulo="Onde o esforço foi este mês" sub={<SeloDemo mostrar />}>
-        <div className="ad-tw">
+        <div className="pn-tw">
           <table>
             <thead>
               <tr>
@@ -88,16 +88,16 @@ export function TelaCustos() {
                   <td>
                     <b>{r.repo}</b>
                   </td>
-                  <td className="num ad-nowrap">{r.tarefas}</td>
+                  <td className="num pn-nowrap">{r.tarefas}</td>
                   <td style={{ minWidth: 200 }}>
-                    <div className="ad-brow">
+                    <div className="pn-brow">
                       <span className="num">{r.pct}%</span>
                     </div>
-                    <div className="ad-bar" style={{ marginTop: 4 }}>
+                    <div className="pn-bar" style={{ marginTop: 4 }}>
                       <i style={{ width: r.pct + '%' }} />
                     </div>
                   </td>
-                  <td className="num ad-nowrap">{r.entregas}</td>
+                  <td className="num pn-nowrap">{r.entregas}</td>
                 </tr>
               ))}
             </tbody>
@@ -108,7 +108,7 @@ export function TelaCustos() {
       <Card titulo="Seu plano" sub={<SeloDemo mostrar />}>
         <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'flex-start' }}>
           <div style={{ minWidth: 200 }}>
-            <span className="ad-label">Plano atual</span>
+            <span className="pn-label">Plano atual</span>
             <div style={{ fontSize: 20, fontWeight: 600, letterSpacing: '-.03em' }}>
               {DEMO.plano}
             </div>
@@ -117,7 +117,7 @@ export function TelaCustos() {
             </div>
           </div>
           <div style={{ minWidth: 200 }}>
-            <span className="ad-label">Cobrança deste mês</span>
+            <span className="pn-label">Cobrança deste mês</span>
             <div className="num" style={{ fontSize: 20, fontWeight: 600, letterSpacing: '-.03em' }}>
               R$ 747
             </div>
@@ -126,8 +126,8 @@ export function TelaCustos() {
             </div>
           </div>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 10 }}>
-            <button className="ad-btn g">Ver faturas</button>
-            <button className="ad-btn">Mudar de plano</button>
+            <button className="pn-btn g">Ver faturas</button>
+            <button className="pn-btn">Mudar de plano</button>
           </div>
         </div>
       </Card>

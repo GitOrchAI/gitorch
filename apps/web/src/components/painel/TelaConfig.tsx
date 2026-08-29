@@ -60,12 +60,12 @@ function Linha({
   children: ReactNode
 }) {
   return (
-    <div className="ad-row static" style={{ alignItems: 'flex-start' }}>
-      <span className="ad-grow">
-        <span className="ad-rt" style={{ display: 'block', whiteSpace: 'normal' }}>
+    <div className="pn-row static" style={{ alignItems: 'flex-start' }}>
+      <span className="pn-grow">
+        <span className="pn-rt" style={{ display: 'block', whiteSpace: 'normal' }}>
           {titulo}
         </span>
-        <span className="ad-rs" style={{ lineHeight: 1.5 }}>
+        <span className="pn-rs" style={{ lineHeight: 1.5 }}>
           {desc}
         </span>
       </span>
@@ -86,16 +86,16 @@ export function TelaConfig({ tema, setTema }: { tema: Tema; setTema: (t: Tema) =
 
       <Card flush titulo="Conta">
         <Linha titulo={DEMO.conta} desc={`Plano ${DEMO.plano} · 3 projetos ativos`}>
-          <button className="ad-btn g sm">Gerenciar</button>
+          <button className="pn-btn g sm">Gerenciar</button>
         </Linha>
         <Linha titulo="GitHub conectado" desc="Instalado em acme · autorizado por você">
-          <span className="ad-tag on">Ativo</span>
+          <span className="pn-tag on">Ativo</span>
         </Linha>
         <Linha
           titulo="Sócios com acesso"
           desc="Duas pessoas veem o painel, sem permissão de configurar"
         >
-          <button className="ad-btn g sm">Convidar</button>
+          <button className="pn-btn g sm">Convidar</button>
         </Linha>
       </Card>
 
@@ -138,7 +138,7 @@ export function TelaConfig({ tema, setTema }: { tema: Tema; setTema: (t: Tema) =
       <Card flush titulo="Motores conectados">
         {DEMO.motores.map((m) => (
           <Linha key={m.nome} titulo={m.nome} desc={`${m.tipo} · ${m.nota}`}>
-            <span className="ad-tag on">Conectado</span>
+            <span className="pn-tag on">Conectado</span>
           </Linha>
         ))}
       </Card>

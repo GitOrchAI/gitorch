@@ -21,9 +21,9 @@ export function Card({
   className?: string
 }) {
   return (
-    <section className={'ad-card ' + className}>
+    <section className={'pn-card ' + className}>
       {(titulo || acao) && (
-        <header className="ad-ch">
+        <header className="pn-ch">
           <h3>
             {titulo}
             {sub != null ? (
@@ -35,7 +35,7 @@ export function Card({
           {acao}
         </header>
       )}
-      {flush ? children : <div className="ad-pad">{children}</div>}
+      {flush ? children : <div className="pn-pad">{children}</div>}
     </section>
   )
 }
@@ -54,7 +54,7 @@ export function Kpi({
   destaque?: boolean
 }) {
   return (
-    <div className={'ad-kpi' + (destaque ? ' act' : '')}>
+    <div className={'pn-kpi' + (destaque ? ' act' : '')}>
       <div className="l">{l}</div>
       <div className="v num">{v == null ? '—' : v}</div>
       <div className={'n ' + (tone || '')}>{n}</div>
@@ -64,8 +64,8 @@ export function Kpi({
 
 export function Estado({ d, children }: { d: string; children: ReactNode }) {
   return (
-    <span className="ad-st">
-      <span className={'ad-d ' + d} />
+    <span className="pn-st">
+      <span className={'pn-d ' + d} />
       {children}
     </span>
   )
@@ -86,13 +86,13 @@ export function Barra({
   const tone = pct >= 90 ? 'b' : pct >= 75 ? 'w' : ''
   return (
     <div>
-      <div className="ad-brow">
+      <div className="pn-brow">
         <b>{nome}</b>
         <span className="num">
           {usado} / {limite}
         </span>
       </div>
-      <div className="ad-bar">
+      <div className="pn-bar">
         <i className={tone} style={{ width: pct + '%' }} />
       </div>
       {nota && <div style={{ marginTop: 8, fontSize: 12.5, color: 'var(--gl-faint)' }}>{nota}</div>}
@@ -112,11 +112,11 @@ export function Tecnico({
   if (!children) return null
   return (
     <div>
-      <button className="ad-more" onClick={() => setAb(!ab)} aria-expanded={ab}>
+      <button className="pn-more" onClick={() => setAb(!ab)} aria-expanded={ab}>
         <Ad n={ab ? 'chevU' : 'chevD'} s={14} />
         {ab ? 'Esconder detalhes técnicos' : rotulo}
       </button>
-      {ab && <div className="ad-tech">{children}</div>}
+      {ab && <div className="pn-tech">{children}</div>}
     </div>
   )
 }
@@ -157,7 +157,7 @@ export function Decisao({
   // quando bate (mesma regra do Telegram). Texto livre não tem rótulo.
   const rotuloDaResposta = d.op.find((o) => o.value === d.resposta)?.label ?? d.resposta
   return (
-    <article className="ad-ask">
+    <article className="pn-ask">
       <p className="q">{d.q}</p>
       {!compacta && d.ctx && <p className="ctx">{d.ctx}</p>}
       <div className="who">
@@ -165,39 +165,39 @@ export function Decisao({
         {d.pedido ? ` · pedido #${d.pedido}` : ''}
       </div>
       {d.st === 'respondida' ? (
-        <div className="ad-answered">
-          <span className="ad-label" style={{ color: 'var(--gl-accent-ink)', marginBottom: 4 }}>
+        <div className="pn-answered">
+          <span className="pn-label" style={{ color: 'var(--gl-accent-ink)', marginBottom: 4 }}>
             Sua resposta
           </span>
           <span style={{ fontSize: 14 }}>{rotuloDaResposta}</span>
         </div>
       ) : (
         <>
-          <div className="ad-qb">
+          <div className="pn-qb">
             {d.op.map((o, i) => (
               <button
                 key={o.value}
-                className={'ad-q' + (i === 0 ? ' p' : '')}
+                className={'pn-q' + (i === 0 ? ' p' : '')}
                 onClick={() => responder(d.id, o.value)}
               >
                 {o.label}
               </button>
             ))}
-            <button className="ad-q" onClick={() => setLivre(!livre)}>
+            <button className="pn-q" onClick={() => setLivre(!livre)}>
               Escrever
             </button>
           </div>
           {livre && (
             <div style={{ marginTop: 12 }}>
               <textarea
-                className="ad-field"
+                className="pn-field"
                 rows={3}
                 value={texto}
                 onChange={(e) => setTexto(e.target.value)}
                 placeholder="Explique a decisão em uma frase. O agente retoma de onde parou."
               />
               <button
-                className="ad-btn a sm"
+                className="pn-btn a sm"
                 style={{ marginTop: 10 }}
                 disabled={!texto.trim()}
                 onClick={() => responder(d.id, texto.trim())}
@@ -216,7 +216,7 @@ export function Decisao({
 
 export function Cabeca({ titulo, children }: { titulo: ReactNode; children: ReactNode }) {
   return (
-    <div className="ad-head">
+    <div className="pn-head">
       <h1>{titulo}</h1>
       <p>{children}</p>
     </div>
@@ -233,11 +233,11 @@ export function Chips<K extends string>({
   onChange: (k: K) => void
 }) {
   return (
-    <div className="ad-chips">
+    <div className="pn-chips">
       {opcoes.map(([k, l]) => (
         <button
           key={k}
-          className={'ad-chip' + (valor === k ? ' on' : '')}
+          className={'pn-chip' + (valor === k ? ' on' : '')}
           onClick={() => onChange(k)}
         >
           {l}

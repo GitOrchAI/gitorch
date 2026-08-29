@@ -71,16 +71,16 @@ export function TelaRegras() {
 
       <Card flush titulo="Em vigor">
         {regras.map((r, i) => (
-          <div key={r.t} className="ad-row static" style={{ alignItems: 'flex-start' }}>
-            <span className="ad-grow">
-              <span className="ad-rt" style={{ display: 'block', whiteSpace: 'normal' }}>
+          <div key={r.t} className="pn-row static" style={{ alignItems: 'flex-start' }}>
+            <span className="pn-grow">
+              <span className="pn-rt" style={{ display: 'block', whiteSpace: 'normal' }}>
                 {r.t}
               </span>
-              <span className="ad-rs" style={{ lineHeight: 1.5 }}>
+              <span className="pn-rs" style={{ lineHeight: 1.5 }}>
                 {r.d}
               </span>
               {r.trava && (
-                <span className="ad-tag" style={{ marginTop: 8 }}>
+                <span className="pn-tag" style={{ marginTop: 8 }}>
                   Obrigatória
                 </span>
               )}
@@ -107,11 +107,11 @@ export function TelaRegras() {
             ] as [string, string, number][]
           ).map(([n, d, v]) => (
             <div key={n}>
-              <div className="ad-brow">
+              <div className="pn-brow">
                 <b>{n}</b>
                 <span className="num">{v}%</span>
               </div>
-              <div className="ad-bar">
+              <div className="pn-bar">
                 <i style={{ width: v + '%' }} />
               </div>
               <div style={{ marginTop: 7, fontSize: 12.5, color: 'var(--gl-faint)' }}>{d}</div>

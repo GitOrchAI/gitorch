@@ -84,7 +84,7 @@ export function TelaPedidos() {
 
       <Card titulo="Novo pedido">
         <textarea
-          className="ad-field"
+          className="pn-field"
           rows={3}
           value={texto}
           maxLength={60000}
@@ -96,7 +96,7 @@ export function TelaPedidos() {
         />
         <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', marginTop: 18 }}>
           <div style={{ minWidth: 210, flex: 1 }}>
-            <span className="ad-label">Onde</span>
+            <span className="pn-label">Onde</span>
             <Estados
               r={projetos}
               o_que="a lista de projetos"
@@ -104,12 +104,12 @@ export function TelaPedidos() {
             >
               {(lista) =>
                 lista.length === 1 ? (
-                  <div className="ad-field" style={{ color: 'var(--gl-muted)' }}>
+                  <div className="pn-field" style={{ color: 'var(--gl-muted)' }}>
                     {lista[0].nome}
                   </div>
                 ) : (
                   <select
-                    className="ad-field"
+                    className="pn-field"
                     value={repo}
                     onChange={(e) => setRepo(e.target.value)}
                   >
@@ -125,7 +125,7 @@ export function TelaPedidos() {
             </Estados>
           </div>
           <div>
-            <span className="ad-label">Urgência</span>
+            <span className="pn-label">Urgência</span>
             <Chips
               valor={pri}
               onChange={setPri}
@@ -146,7 +146,7 @@ export function TelaPedidos() {
             marginTop: 20,
           }}
         >
-          <button className="ad-btn a" onClick={() => void enviar()} disabled={enviando}>
+          <button className="pn-btn a" onClick={() => void enviar()} disabled={enviando}>
             <Ad n="spark" s={16} />
             {enviando ? 'Registrando…' : 'Pedir'}
           </button>
@@ -187,9 +187,9 @@ export function TelaPedidos() {
         }
       >
         {vis.length === 0 ? (
-          <div className="ad-empty">Nenhum pedido com essa situação.</div>
+          <div className="pn-empty">Nenhum pedido com essa situação.</div>
         ) : (
-          <div className="ad-tw">
+          <div className="pn-tw">
             <table>
               <thead>
                 <tr>
@@ -211,13 +211,13 @@ export function TelaPedidos() {
                       <Tecnico>{p.tec}</Tecnico>
                     </td>
                     <td>
-                      <span className={'ad-tag ' + p.pri.toLowerCase()}>{p.pri}</span>
+                      <span className={'pn-tag ' + p.pri.toLowerCase()}>{p.pri}</span>
                     </td>
-                    <td className="ad-nowrap">
+                    <td className="pn-nowrap">
                       <Estado d={p.d}>{p.sit}</Estado>
                     </td>
-                    <td className="ad-nowrap">{p.resp}</td>
-                    <td className="ad-nowrap" style={{ color: 'var(--gl-muted)' }}>
+                    <td className="pn-nowrap">{p.resp}</td>
+                    <td className="pn-nowrap" style={{ color: 'var(--gl-muted)' }}>
                       {p.prev}
                     </td>
                   </tr>

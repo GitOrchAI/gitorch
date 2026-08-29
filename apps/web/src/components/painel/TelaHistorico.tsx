@@ -68,7 +68,7 @@ export function TelaHistorico() {
       >
         <Estados r={r} o_que="o histórico" vazio="Nada registrado ainda.">
           {() => (
-            <div className="ad-tw">
+            <div className="pn-tw">
               <table>
                 <thead>
                   <tr>
@@ -81,10 +81,10 @@ export function TelaHistorico() {
                 <tbody>
                   {lista.map((a, i) => (
                     <tr key={i}>
-                      <td className="ad-nowrap tt" style={{ color: 'var(--gl-faint)' }}>
+                      <td className="pn-nowrap tt" style={{ color: 'var(--gl-faint)' }}>
                         {a.quando}
                       </td>
-                      <td className="ad-nowrap">
+                      <td className="pn-nowrap">
                         <b style={{ display: 'inline' }}>{a.quem}</b>
                       </td>
                       <td>
