@@ -7,6 +7,7 @@ import { fetchComTeto } from './fetch-com-teto.js'
 import { acharParecerNesteHead, ehParecerSemPoderDeMesclar } from './parecer-do-qa.js'
 import { arquivosDeclarados } from './secao-da-issue.js'
 import { montarPedidoAoDev } from './pedido-ao-dev.js'
+import { ehPrDelegado } from './pr-delegado.js'
 
 // Delegação contínua do SM (F3.6 item 2): a cada wake, encontra as TASKS prontas
 // (label `gitorch:task`, sem sessão viva na tabela `dev_sessions`, com todos os
@@ -64,23 +65,56 @@ const PRS_POR_PAGINA = 20
  *
  * Não decide NADA sobre mesclagem: quem pode ser mesclado continua sendo
  * decidido no ponto do merge, dentro do julgamento.
+ *
+ * ESTEIRA-T12: só entra PR que o julgamento de fato aceita julgar — aberto,
+ * DELEGADO (`ehPrDelegado`) e sem parecer nosso neste head. Sem o filtro de
+ * delegação, um PR do Dependabot ou de humano aparecia na fila e no log ("SM
+ * queued #337, #338"), escondendo o estado real: o QA acorda, vê que não é
+ * entrega do produto e devolve vazio. `sessoes` ausente = comportamento antigo
+ * (sem filtro) — só o scheduler passa a lista.
  */
 export async function listarPrsSemParecer(args: {
   repository: string
   gh: (method: string, path: string) => Promise<unknown>
   cap: number
+  /**
+   * Linhas de sessão deste projeto (vivas e recém-fechadas) que carregam um
+   * `pullRequestNumber` — a prova de que o PR é trabalho delegado. Ausente:
+   * nenhum filtro de delegação (compatível com quem chamava antes do T12).
+   */
+  sessoes?: LinhaDeSessao[]
 }): Promise<number[]> {
   if (args.cap <= 0) return []
 
   const prs = (await args.gh(
     'GET',
     `/repos/${args.repository}/pulls?state=open&sort=created&direction=desc&per_page=${PRS_POR_PAGINA}`
-  )) as Array<{ number: number; draft?: boolean; head?: { sha?: string } }>
+  )) as Array<{
+    number: number
+    draft?: boolean
+    head?: { sha?: string }
+    user?: { login?: string }
+    body?: string
+  }>
 
   const semParecer: number[] = []
   for (const p of Array.isArray(prs) ? prs : []) {
     // Rascunho não é entrega — o julgamento também o pula.
     if (p.draft) continue
+    // ESTEIRA-T12: PR que não é trabalho delegado (Dependabot, humano) não é
+    // julgado — não polui a fila nem o log. O recuo por etiqueta na issue
+    // (`ehPrDelegado` #3) fica de fora aqui: o SM não carrega labels por issue
+    // neste ponto, e o PR real do dev já casa pela linha da sessão (#1).
+    if (args.sessoes) {
+      const { delegado } = ehPrDelegado({
+        numeroDoPr: p.number,
+        autor: p.user?.login,
+        corpo: p.body,
+        sessoes: args.sessoes,
+        issueComEtiquetaDeDelegacao: () => false,
+      })
+      if (!delegado) continue
+    }
     // O cap corta ANTES da leitura das reviews: uma entrega que não caberia
     // nesta acordada não vale uma chamada à API do GitHub.
     if (semParecer.length >= args.cap) break
@@ -228,6 +262,13 @@ export interface SmDelegationOptions {
    * já tenha sido delegada antes e a sessão tenha morrido.
    */
   sessoesVivas?: LinhaDeSessao[]
+  /**
+   * ESTEIRA-T12: linhas deste projeto (vivas e recém-fechadas) que carregam um
+   * `pullRequestNumber` — usadas para reconhecer quais PRs abertos são trabalho
+   * delegado antes de mandá-los para o julgamento. Ausente: o SM cai em
+   * `sessoesVivas`; ausentes as duas, nenhum filtro (comportamento pré-T12).
+   */
+  sessoesParaReconhecerPr?: LinhaDeSessao[]
   /**
    * TODAS as linhas deste projeto, vivas e fechadas — é entre elas que mora a
    * prova de que uma tarefa já foi entregue. `sessoesVivas` não serve: a linha
@@ -655,10 +696,15 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
   let falhaAoEnfileirar = ''
   if (options.pedirJulgamento) {
     try {
+      // ESTEIRA-T12: só PR delegado entra na fila. As linhas com PR (vivas e
+      // recém-fechadas) são a prova; sem a lista, o SM cai no comportamento
+      // antigo (sem filtro de delegação).
+      const sessoesParaReconhecer = options.sessoesParaReconhecerPr ?? options.sessoesVivas
       paraJulgar = await listarPrsSemParecer({
         repository: options.repository,
         gh: (method, path) => gh(method, path),
         cap: options.capJulgamento ?? CAP_PADRAO_DE_JULGAMENTO,
+        ...(sessoesParaReconhecer ? { sessoes: sessoesParaReconhecer } : {}),
       })
       if (paraJulgar.length > 0) await options.pedirJulgamento(paraJulgar)
     } catch (err) {
@@ -687,10 +733,12 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
       ? `SM delegated ${delegated.length} ready task(s): ${delegated.map((n) => `#${n}`).join(', ')}.` +
         (sessoes.length > 0 ? ` Dev sessions: ${sessoes.join(', ')}.` : '')
       : 'SM: no newly-ready task to delegate.'
+  // ESTEIRA-T12: só PR delegado, aberto e sem parecer entra em `paraJulgar` —
+  // Dependabot, PR de humano e PR já mesclado ficam de fora e não são citados.
   const linhaDoJulgamento = falhaAoEnfileirar
     ? `SM: judgment queue FAILED to build (${falhaAoEnfileirar}).`
     : paraJulgar.length > 0
-      ? `SM queued ${paraJulgar.length} PR(s) for judgment: ${paraJulgar.map((n) => `#${n}`).join(', ')}.`
+      ? `SM queued ${paraJulgar.length} delegated PR(s) for judgment: ${paraJulgar.map((n) => `#${n}`).join(', ')}.`
       : ''
 
   return {

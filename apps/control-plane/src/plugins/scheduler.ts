@@ -2674,6 +2674,17 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 updatedAt: Date
               }>,
             }),
+            // ESTEIRA-T12: as linhas deste projeto que carregam um PR — vivas
+            // ou já fechadas. É a prova de que um PR aberto é trabalho
+            // delegado; sem ela, Dependabot e PR de humano entravam na fila do
+            // julgamento e no log ("SM queued #337, #338"), escondendo o estado
+            // real. Sem janela de tempo de propósito: um PR do dev pode ficar
+            // aberto por semanas e ainda precisa ser reconhecido. `take` limita.
+            sessoesParaReconhecerPr: (await app.prisma.devSession.findMany({
+              where: { projectId: project.id, pullRequestNumber: { not: null } },
+              orderBy: { updatedAt: 'desc' },
+              take: 300,
+            })) as unknown as LinhaDeSessao[],
             // D51: issues que falharam 2× esperam a análise antes da 3ª —
             // não são redelegadas até o RA entender o porquê. E, para as que
             // já têm a análise feita, o pedido revisado vai no topo do prompt.

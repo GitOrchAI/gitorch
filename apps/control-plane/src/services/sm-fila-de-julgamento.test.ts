@@ -8,6 +8,8 @@ interface FakePr {
   draft?: boolean
   /** commit do parecer nosso já postado, se houver */
   parecerNoCommit?: string
+  autor?: string
+  corpo?: string
 }
 
 function ghFake(prs: FakePr[]) {
@@ -19,6 +21,8 @@ function ghFake(prs: FakePr[]) {
         number: p.number,
         draft: p.draft ?? false,
         head: { sha: p.sha },
+        user: { login: p.autor ?? 'app/gitorch' },
+        body: p.corpo ?? '',
       }))
     }
     const m = path.match(/\/pulls\/(\d+)\/reviews/)
@@ -88,6 +92,69 @@ describe('listarPrsSemParecer', () => {
     expect(await listarPrsSemParecer({ repository: 'o/r', gh, cap: 0 })).toEqual([])
     expect(chamadas).toHaveLength(0)
   })
+
+  // ESTEIRA-T12: com a lista de sessões, só PR delegado entra.
+  const sessao = (issueNumber: number, pullRequestNumber: number) =>
+    ({ issueNumber, pullRequestNumber, sessionName: `sessions/${pullRequestNumber}` }) as never
+
+  it('sem `sessoes`, comportamento antigo: todo PR aberto sem parecer entra', async () => {
+    const { gh } = ghFake([
+      { number: 337, sha: 'a', autor: 'app/dependabot' },
+      { number: 340, sha: 'b' },
+    ])
+    expect(await listarPrsSemParecer({ repository: 'o/r', gh, cap: 3 })).toEqual([337, 340])
+  })
+
+  it('com `sessoes`: PR do Dependabot (sem linha, autor não-jules) fica de fora', async () => {
+    const { gh } = ghFake([
+      { number: 337, sha: 'a', autor: 'app/dependabot' },
+      { number: 340, sha: 'b' },
+    ])
+    const out = await listarPrsSemParecer({
+      repository: 'o/r',
+      gh,
+      cap: 3,
+      sessoes: [sessao(318, 340)],
+    })
+    expect(out).toEqual([340])
+  })
+
+  it('com `sessoes`: PR reconhecido pelo login "jules" no autor entra mesmo sem linha', async () => {
+    const { gh } = ghFake([{ number: 401, sha: 'a', autor: 'jules-bot' }])
+    const out = await listarPrsSemParecer({
+      repository: 'o/r',
+      gh,
+      cap: 3,
+      sessoes: [],
+    })
+    expect(out).toEqual([401])
+  })
+
+  it('com `sessoes`: nenhum PR aberto é delegado → fila vazia, não pergunta review', async () => {
+    const { gh, chamadas } = ghFake([
+      { number: 337, sha: 'a', autor: 'app/dependabot' },
+      { number: 338, sha: 'b', autor: 'app/renovate' },
+    ])
+    const out = await listarPrsSemParecer({
+      repository: 'o/r',
+      gh,
+      cap: 3,
+      sessoes: [sessao(1, 999)],
+    })
+    expect(out).toEqual([])
+    expect(chamadas.filter((c) => c.includes('/reviews'))).toHaveLength(0)
+  })
+
+  it('com `sessoes`: PR delegado JÁ julgado neste head continua fora', async () => {
+    const { gh } = ghFake([{ number: 340, sha: 'x', parecerNoCommit: 'x' }])
+    const out = await listarPrsSemParecer({
+      repository: 'o/r',
+      gh,
+      cap: 3,
+      sessoes: [sessao(318, 340)],
+    })
+    expect(out).toEqual([])
+  })
 })
 
 /**
@@ -102,7 +169,15 @@ function fetchDoCiclo(prs: FakePr[], falharNoPulls = false) {
     if (u.includes('/issues?')) return json([])
     if (u.includes('/pulls?')) {
       if (falharNoPulls) return new Response('boom', { status: 502 })
-      return json(prs.map((p) => ({ number: p.number, draft: false, head: { sha: p.sha } })))
+      return json(
+        prs.map((p) => ({
+          number: p.number,
+          draft: false,
+          head: { sha: p.sha },
+          user: { login: p.autor ?? 'app/gitorch' },
+          body: p.corpo ?? '',
+        }))
+      )
     }
     if (/\/pulls\/\d+\/reviews/.test(u)) {
       const n = Number(u.match(/\/pulls\/(\d+)\/reviews/)![1])
@@ -154,6 +229,25 @@ describe('runSmDelegation — o SM aciona o julgamento', () => {
     })
     expect(r.paraJulgar).toEqual([])
     expect(r.output).toBe('SM: no newly-ready task to delegate.')
+  })
+
+  it('ESTEIRA-T12: PR do Dependabot não vai para o julgamento nem para o log', async () => {
+    const pedirJulgamento = vi.fn()
+    const r = await runSmDelegation({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: fetchDoCiclo([
+        { number: 337, sha: 'a', autor: 'app/dependabot' },
+        { number: 340, sha: 'b' },
+      ]),
+      pedirJulgamento,
+      sessoesParaReconhecerPr: [{ issueNumber: 318, pullRequestNumber: 340 } as never],
+    })
+    expect(pedirJulgamento).toHaveBeenCalledWith([340])
+    expect(r.paraJulgar).toEqual([340])
+    expect(r.output).toContain('#340')
+    expect(r.output).not.toContain('#337')
+    expect(r.output).toContain('delegated PR(s)')
   })
 
   it('GitHub fora do ar na leitura das entregas: DIZ a falha, não a engole', async () => {
