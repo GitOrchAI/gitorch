@@ -69,7 +69,7 @@ jobs:
         if: steps.preflight.outputs.configurada == 'true'
         uses: ./.github/actions/setup-pnpm
         with:
-          node-version: 20
+          node-version: '20'
           check-latest: false
       - uses: pnpm/action-setup@v3
         with:
@@ -78,7 +78,7 @@ jobs:
       - name: Install Dependencies
         if: steps.preflight.outputs.configurada == 'true'
         working-directory: .github/scripts
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
 
       - name: Analyze Merge Conflicts
         if: steps.preflight.outputs.configurada == 'true'

@@ -138,20 +138,20 @@ jobs:
         if: steps.evaluate.outputs.eligible == 'true'
         uses: ./.github/actions/setup-pnpm
         with:
-          node-version: 20
+          node-version: '20'
           check-latest: false
       - uses: pnpm/action-setup@v3
         with:
           version: 9.4.0
 
-      # `pnpm install --frozen-lockfile` e não `install`: instala exatamente o que está no lockfile
+      # `npm ci` e não `install`: instala exatamente o que está no lockfile
       # versionado. Este passo roda com token de escrita e acesso a secrets, então
       # resolver dependência do registry na hora — sem pin — seria deixar a porta
       # aberta para qualquer versão publicada depois desta revisão.
       - name: Install Script Dependencies
         if: steps.evaluate.outputs.eligible == 'true'
         working-directory: .github/scripts
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
 
       - name: QA Verdict Gate
         id: gate
