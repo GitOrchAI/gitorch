@@ -76,10 +76,15 @@ import {
   lerAprendizados,
   registrarAprendizado,
   blocoDeContextoDoJules,
+  guiaCuradoDoJules,
   type PrismaEventoDoJules,
 } from '../services/memoria-do-jules.js'
 import { analisarFalhasPendentes } from '../services/analisar-falhas-pendentes.js'
 import { runAnaliseDeFalha, type SessaoMorta } from '../services/analise-de-falha-do-dev.js'
+import { processarAchadosDeInfra } from '../services/processar-achados-de-infra.js'
+import type { AchadoDeInfra } from '../services/incidente-ci.js'
+import { renderIssueBody } from '../services/backlog-executor.js'
+import type { DoDFields } from '@gitorch/cadence'
 import {
   abrirSessao,
   sessoesVivas,
@@ -2929,9 +2934,23 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                     )
                     return ''
                   })
-                  return analiseOut
-                    ? { ...raResult, output: `${raResult.output}\n${analiseOut}` }
-                    : raResult
+                  // D54: entre o sensor e a delegação existe SEMPRE análise —
+                  // o RA entende a causa de cada falha de infra e o PO escreve
+                  // a issue padrão Shrimp, no repo certo (cliente vs produto).
+                  const achadosOut = await rodarProcessamentoDeAchados(
+                    project as NotifiableProject & { id: string; wingId: string },
+                    railsToken,
+                    execute,
+                    contextBlocks
+                  ).catch((err) => {
+                    app.log.warn(
+                      err,
+                      `[Scheduler] processamento de achados de infra falhou em ${project.wingId}`
+                    )
+                    return ''
+                  })
+                  const extra = [analiseOut, achadosOut].filter(Boolean).join('\n')
+                  return extra ? { ...raResult, output: `${raResult.output}\n${extra}` } : raResult
                 })()
               : poRails
                 ? await runPoMissionViaRails({
@@ -4012,6 +4031,155 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     return `RA: analisei ${r.analisadas.length} falha(s) repetida(s): ${r.analisadas
       .map((n) => `#${n}`)
       .join(', ')}.`
+  }
+
+  /** Repo do produto — onde nascem as issues de encanamento do GitOrch. */
+  const REPO_DO_PRODUTO = process.env['GITORCH_SELF_REPO'] ?? 'GitOrchAI/gitorch'
+
+  /**
+   * ESTEIRA-T8 (D54): entre o sensor e a delegação existe SEMPRE análise. Roda
+   * junto do RA na agenda: varre a infra (Actions/Dependabot), e para cada
+   * achado NOVO o RA entende a causa e o PO escreve a issue padrão Shrimp — no
+   * repo do cliente (CI/config do cliente) ou em `GitOrchAI/gitorch` +
+   * Telegram ao dono (encanamento nosso), NUNCA misturado. Best-effort: nunca
+   * lança para fora — o RA tem outro trabalho.
+   */
+  const rodarProcessamentoDeAchados = async (
+    project: NotifiableProject & { id: string; wingId: string },
+    railsToken: string | undefined,
+    execute: StepExecutor,
+    contextBlocks: string[]
+  ): Promise<string> => {
+    if (!railsToken) return ''
+
+    let achados: AchadoDeInfra[] = []
+    try {
+      const sensor = await acharIncidentesDeInfra({
+        repository: project.wingId,
+        githubToken: railsToken,
+        onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+      })
+      achados = sensor.achados
+    } catch (err) {
+      app.log.warn(err, `[Scheduler] sensor de infra falhou em ${project.wingId}`)
+      return ''
+    }
+    if (achados.length === 0) return ''
+
+    const ghIssue = async (
+      repo: string,
+      token: string,
+      fields: DoDFields,
+      marker: string,
+      labels: string[]
+    ): Promise<number> => {
+      const resp = await fetch(`https://api.github.com/repos/${repo}/issues`, {
+        method: 'POST',
+        headers: {
+          authorization: `token ${token}`,
+          accept: 'application/vnd.github+json',
+          'user-agent': 'gitorch',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          title: fields.titulo,
+          body: renderIssueBody(fields, marker),
+          labels,
+        }),
+      })
+      if (!resp.ok) {
+        const detail = await resp.text().catch(() => '')
+        throw new Error(`POST /repos/${repo}/issues → ${resp.status}: ${detail.slice(0, 150)}`)
+      }
+      const issue = (await resp.json()) as { number?: number }
+      if (!issue.number) throw new Error(`issue criada em ${repo} sem número`)
+      return issue.number
+    }
+
+    const guiaDoDev = guiaCuradoDoJules()
+    const aprendidos = await lerAprendizados({
+      prisma: app.prisma as unknown as PrismaEventoDoJules,
+      projectId: project.id,
+      onWarn: (m) => app.log.warn(m),
+    }).catch(() => [])
+    const aprendizados =
+      aprendidos.length > 0
+        ? `O que já aprendemos sobre como o dev assíncrono falha NESTE projeto:\n${aprendidos
+            .map((a) => `- ${a.padrao}`)
+            .join('\n')}`
+        : ''
+
+    // Token do repo do produto — separado do token do cliente.
+    const tokenDoProduto =
+      process.env['GITORCH_GITHUB_TOKEN'] ??
+      (await mintInstallationToken({
+        repository: REPO_DO_PRODUTO,
+        onError: (m) => app.log.error(m),
+        onWarn: (m) => app.log.warn(m),
+      })) ??
+      undefined
+
+    const res = await processarAchadosDeInfra({
+      achados,
+      projectId: project.id,
+      repository: project.wingId,
+      execute,
+      contextBlocks,
+      guiaDoDev,
+      ...(aprendizados ? { aprendizados } : {}),
+      incidentesAbertos: async () =>
+        (await app.prisma.infraIncident.findMany({
+          where: { projectId: project.id, clearedAt: null },
+          select: { identidadeEstavel: true, issueNumber: true },
+        })) as Array<{ identidadeEstavel: string; issueNumber: number | null }>,
+      criarIssueNoCliente: (fields, achado) =>
+        ghIssue(
+          project.wingId,
+          railsToken,
+          fields,
+          `gitorch:incident:${achado.identidadeEstavel}`,
+          ['gitorch:task', agentLabel('po')]
+        ),
+      criarIssueNoProduto: (fields, achado) => {
+        if (!tokenDoProduto) {
+          throw new Error(`sem token para ${REPO_DO_PRODUTO} — issue de encanamento não criada`)
+        }
+        return ghIssue(
+          REPO_DO_PRODUTO,
+          tokenDoProduto,
+          fields,
+          `gitorch:scaffolding:${project.id}:${achado.identidadeEstavel}`,
+          ['gitorch:task', agentLabel('po'), 'gitorch:scaffolding']
+        )
+      },
+      avisarDono: (texto) => avisarDonoDoProjeto(project, texto),
+      registrarIncidente: async ({ classe, identidadeEstavel, issueNumber, titulo }) => {
+        await app.prisma.infraIncident.upsert({
+          where: {
+            projectId_identidadeEstavel: { projectId: project.id, identidadeEstavel },
+          },
+          create: {
+            projectId: project.id,
+            classe,
+            identidadeEstavel,
+            issueNumber,
+          },
+          update: { issueNumber, lastSeenAt: new Date(), classe },
+        })
+        app.log.info(
+          `[Scheduler] infra_incidents: ${identidadeEstavel} → issue #${issueNumber} (${titulo})`
+        )
+      },
+      onInfo: (m) => app.log.info(`[Scheduler] ${m}`),
+      onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+    })
+
+    const total = res.issuesNoCliente.length + res.issuesNoProduto.length
+    if (total === 0) return ''
+    return (
+      `RA: ${total} issue(s) de infra escrita(s) — ` +
+      `${res.issuesNoCliente.length} no repo do cliente, ${res.issuesNoProduto.length} de encanamento.`
+    )
   }
 
   const varrerCicloTerminalDaSessao = async (): Promise<void> => {

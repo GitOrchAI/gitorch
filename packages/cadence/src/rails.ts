@@ -79,6 +79,25 @@ export interface RaBriefForm {
   openQuestionsForPo: string[]
 }
 
+/**
+ * ESTEIRA-T8 — a CAUSA de uma falha de infra do repositório do cliente, na voz
+ * do RA. O sensor (`incidente-ci.ts`) já classificou e juntou a evidência; o RA
+ * entende a raiz ANTES de o PO escrever a issue padrão (D54: nunca "falhou →
+ * issue crua → Jules → loop sem análise").
+ */
+export interface RaCausaDeInfraForm {
+  causaRaiz: string
+  arquivosAfetados: string
+  criterioDeVerificacao: string
+  escopo: string
+  riscoDeRegressao: string
+}
+
+/** ESTEIRA-T8 — a issue padrão Shrimp (8 campos do DoD) que o PO escreve. */
+export interface InfraIssueForm {
+  fields: DoDFields
+}
+
 /** Entregável completo do RA (3 passos): o que o PO recebe como contexto. */
 export interface RaDeliverable {
   areas: RaAreasForm['areas']
@@ -381,6 +400,35 @@ export const RAILS_SCHEMAS = {
       improvementOpportunities: { type: 'array', items: { type: 'string' } },
       openQuestionsForPo: { type: 'array', items: { type: 'string' } },
     },
+  } as MiniSchema,
+
+  // ESTEIRA-T8 (D54): o RA entende a CAUSA de uma falha de infra ANTES de o PO
+  // escrever a issue. Cinco campos, todos texto — sem árvore de fase/épico, que
+  // é para transformar um DESEJO em backlog, não para consertar um workflow.
+  raCausaDeInfra: {
+    type: 'object',
+    required: [
+      'causaRaiz',
+      'arquivosAfetados',
+      'criterioDeVerificacao',
+      'escopo',
+      'riscoDeRegressao',
+    ],
+    properties: {
+      causaRaiz: { type: 'string' },
+      arquivosAfetados: { type: 'string' },
+      criterioDeVerificacao: { type: 'string' },
+      escopo: { type: 'string' },
+      riscoDeRegressao: { type: 'string' },
+    },
+  } as MiniSchema,
+
+  // ESTEIRA-T8: a issue padrão Shrimp — os 8 campos do DoD, na voz do PO,
+  // construída em cima do brief do RA sobre a falha de infra.
+  infraIssue: {
+    type: 'object',
+    required: ['fields'],
+    properties: { fields: DOD_FIELDS_SCHEMA },
   } as MiniSchema,
 
   poPhases: {
