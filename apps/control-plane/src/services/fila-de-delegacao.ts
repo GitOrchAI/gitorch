@@ -78,9 +78,25 @@ export function escolherParaDelegar(args: {
   issuesComAnalisePendente?: number[]
   /** Freio de fluxo por ciclo, independente do plano. */
   capPorCiclo: number
+  /**
+   * ESTEIRA-T11: recebe o diagnóstico de por que a fila "voltou vazia". Só
+   * `travadaPorVaga: true` — fila com trabalho pronto, folga diária, mas a
+   * conta do dev externo lotada de sessões vivas — é notícia para o dono.
+   */
+  onDiagnostico?: (d: { travadaPorVaga: boolean }) => void
 }): number[] {
   const comSessaoViva = new Set(args.sessoesVivas.map((s) => s.issueNumber))
   const analisePendente = new Set(args.issuesComAnalisePendente ?? [])
+
+  // "Pronta" = seria delegável se houvesse vaga: sem bloqueador aberto, sem
+  // sessão viva e não presa na análise das 2 falhas. É a MESMA regra do laço
+  // de escolha abaixo (menos a reserva de arquivo, que é só do ciclo) — e é o
+  // que o diagnóstico do T11 precisa: "há trabalho pronto parado?" não é "há
+  // candidata na lista?" (uma issue bloqueada por dependência não está pronta,
+  // e avisar o dono que a esteira travou por vaga nesse caso é o falso alarme
+  // que o T11 existe para não dar).
+  const estaPronta = (c: IssueCandidata): boolean =>
+    c.bloqueadoresAbertos === 0 && !comSessaoViva.has(c.number) && !analisePendente.has(c.number)
 
   // As vagas são da CONTA, não deste projeto: no Pro são 15 simultâneas
   // divididas entre todos os repositórios daquela conta. Usar só as vivas
@@ -97,6 +113,14 @@ export function escolherParaDelegar(args: {
   const folgaConcorrentes = args.tetoConcorrentes - vivasQueContam
   const folgaDiaria = args.tetoDiario - args.delegadasHoje
   const limite = Math.min(folgaConcorrentes, folgaDiaria, args.capPorCiclo)
+
+  // ESTEIRA-T11: a esteira está travada ESPECIFICAMENTE por vaga (não por fila
+  // vazia nem pelo teto diário)? Há candidata pronta, a folga diária não é o
+  // problema, mas a conta está lotada de sessões vivas no dev externo.
+  args.onDiagnostico?.({
+    travadaPorVaga: args.candidatas.some(estaPronta) && folgaConcorrentes <= 0 && folgaDiaria > 0,
+  })
+
   if (limite <= 0) return []
 
   const escolhidas: number[] = []
@@ -116,11 +140,9 @@ export function escolherParaDelegar(args: {
 
   for (const c of args.candidatas) {
     if (escolhidas.length >= limite) break
-    if (c.bloqueadoresAbertos > 0) continue
-    if (comSessaoViva.has(c.number)) continue
-    // Falhou 2× e a análise ainda não rodou: NÃO redelega — o RA vai entender
-    // o porquê e liberar a issue com o pedido revisado (D51).
-    if (analisePendente.has(c.number)) continue
+    // Bloqueada por dependência, com sessão viva, ou presa na análise das 2
+    // falhas (D51 — o RA entende o porquê e libera com o pedido revisado).
+    if (!estaPronta(c)) continue
 
     const declarados = c.arquivos ?? []
     // Lista vazia = "não sei" = nunca barra. Ver o comentário do campo.

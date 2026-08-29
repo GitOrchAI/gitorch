@@ -14,6 +14,52 @@ export interface IncidenteAberto {
   issueNumber: number | null
   prNumber: number | null
   clearedAt: Date | null
+  /** ESTEIRA-T10: quantos PRs já fracassaram em resolver este incidente. */
+  prAttempts?: number
+  /** ESTEIRA-T10: quando o incidente foi escalado (parou de insistir). */
+  escalatedAt?: Date | null
+}
+
+// --- ESTEIRA-T10: incidente que resiste a 3 PRs ---------------------------
+
+/** Ao 3º PR fracassado sem resolver, o GitOrch para de insistir e escala. */
+export const TENTATIVAS_ATE_ESCALAR = 3
+
+export interface DecisaoDeEscalonamento {
+  /** Um PR fracassou (fechado sem merge / rejeitado) — conta +1 tentativa. */
+  incrementarTentativa: boolean
+  /** Atingiu o teto: seta `escalated_at`, para de delegar, roda o retro. */
+  escalar: boolean
+  motivo: string
+}
+
+/**
+ * Regra pura. `prFalhou` = o PR ligado ao incidente foi fechado sem merge (ou
+ * rejeitado no julgamento). Ao chegar em `TENTATIVAS_ATE_ESCALAR` sem
+ * `cleared_at`, escala uma vez (não re-escala).
+ */
+export function decidirEscalonamento(
+  inc: Pick<IncidenteAberto, 'clearedAt' | 'escalatedAt'> & { prAttempts?: number },
+  prFalhou: boolean
+): DecisaoDeEscalonamento {
+  if (inc.clearedAt) {
+    return { incrementarTentativa: false, escalar: false, motivo: 'incidente já resolvido' }
+  }
+  if (inc.escalatedAt) {
+    return { incrementarTentativa: false, escalar: false, motivo: 'já escalado' }
+  }
+  if (!prFalhou) {
+    return { incrementarTentativa: false, escalar: false, motivo: 'PR ainda vivo ou mesclado' }
+  }
+  const tentativasDepois = (inc.prAttempts ?? 0) + 1
+  return {
+    incrementarTentativa: true,
+    escalar: tentativasDepois >= TENTATIVAS_ATE_ESCALAR,
+    motivo:
+      tentativasDepois >= TENTATIVAS_ATE_ESCALAR
+        ? `${tentativasDepois} PRs fracassados — o obstáculo é o mesmo toda vez`
+        : `${tentativasDepois}º PR fracassado`,
+  }
 }
 
 /** Situação atual da causa, relida do GitHub na varredura. */
@@ -24,6 +70,11 @@ export interface SituacaoDoIncidente {
   rodouDepoisDoPr: boolean
   /** O PR ligado ao incidente foi mesclado? */
   prMesclado: boolean
+  /**
+   * ESTEIRA-T10: o PR ligado foi FECHADO sem merge (ou o julgamento reprovou).
+   * É o sinal de "mais um PR fracassou" — conta +1 tentativa.
+   */
+  prFechadoSemMerge?: boolean
 }
 
 export interface DecisaoDeFechamento {
@@ -117,12 +168,40 @@ export function agruparPorCausa(achados: AchadoParaAgrupar[]): Map<string, strin
 
 export interface VarrerIncidentesResolvidosDeps {
   listarAbertos: () => Promise<IncidenteAberto[]>
+  /**
+   * ESTEIRA-T9/T10 (elo que faltava): liga o incidente ao PR que a delegação
+   * abriu. O `pr_number` NÃO nasce com o incidente (não há PR ainda) e não era
+   * gravado em nenhum outro ponto — sem esta ligação, `situacaoDoIncidente`
+   * nunca via o PR e T9 (fechar sozinho) / T10 (contar tentativa, escalar)
+   * ficavam inertes. O número mora em `dev_sessions.pull_request_number` da
+   * sessão que trabalhou a issue. Devolve o número (e o persiste em
+   * `infra_incidents.pr_number`) ou `null`. Só é chamada para incidente ainda
+   * sem `prNumber`.
+   */
+  descobrirPrDoIncidente?: (inc: IncidenteAberto) => Promise<number | null>
   /** Relê o GitHub: última run do workflow + estado do PR. */
   situacaoDoIncidente: (inc: IncidenteAberto) => Promise<SituacaoDoIncidente>
   /** Fecha a issue no GitHub (best-effort). */
   fecharIssue: (issueNumber: number, comentario: string) => Promise<void>
-  /** Marca `infra_incidents.cleared_at = now`. */
+  /** Marca `infra_incidents.cleared_at = now` — o incidente acabou. */
   limparIncidente: (id: string) => Promise<void>
+  /**
+   * ESTEIRA-T10: `infra_incidents.pr_attempts += 1` — mais um PR fracassou.
+   * O chamador zera `pr_number` junto para uma nova tentativa poder nascer.
+   */
+  incrementarTentativa?: (id: string) => Promise<void>
+  /**
+   * ESTEIRA-T10: atingiu 3 PRs fracassados — seta `escalated_at`, para de
+   * insistir e avisa o dono UMA vez (só o MARCO, nunca o detalhe técnico).
+   */
+  escalar?: (args: { id: string; issueNumber: number | null; motivo: string }) => Promise<void>
+  /** Grava o aprendizado quando um incidente é RESOLVIDO (classe + como sarou). */
+  registrarResolucao?: (args: {
+    projectId: string
+    classe: string
+    identidadeEstavel: string
+    comoSarou: string
+  }) => Promise<void>
   teto?: number
   onInfo?: (m: string) => void
   onWarn?: (m: string) => void
@@ -130,6 +209,7 @@ export interface VarrerIncidentesResolvidosDeps {
 
 export interface VarrerIncidentesResolvidosResultado {
   fechados: string[]
+  escalados: string[]
   aindaAbertos: number
 }
 
@@ -141,7 +221,7 @@ export async function varrerIncidentesResolvidos(
   const info = deps.onInfo ?? (() => undefined)
   const warn = deps.onWarn ?? (() => undefined)
   const teto = deps.teto ?? TETO_DE_INCIDENTES_POR_VARREDURA
-  const res: VarrerIncidentesResolvidosResultado = { fechados: [], aindaAbertos: 0 }
+  const res: VarrerIncidentesResolvidosResultado = { fechados: [], escalados: [], aindaAbertos: 0 }
 
   let abertos: IncidenteAberto[]
   try {
@@ -153,21 +233,52 @@ export async function varrerIncidentesResolvidos(
 
   for (const inc of abertos) {
     try {
+      // Liga o incidente ao PR da delegação ANTES de decidir — sem isto o
+      // resto da varredura enxerga `prNumber: null` e nada fecha nem escala.
+      if (inc.prNumber == null && inc.issueNumber !== null && deps.descobrirPrDoIncidente) {
+        try {
+          const pr = await deps.descobrirPrDoIncidente(inc)
+          if (pr != null) inc.prNumber = pr
+        } catch (err) {
+          warn(
+            `varrer-incidentes: não liguei ${inc.identidadeEstavel} a um PR (${String(err).slice(0, 120)})`
+          )
+        }
+      }
+
       const sit = await deps.situacaoDoIncidente(inc)
       const decisao = decidirFechamentoDeIncidente(inc, sit)
-      if (!decisao.limparIncidente) {
-        res.aindaAbertos += 1
+      if (decisao.limparIncidente) {
+        if (decisao.fecharIssue && inc.issueNumber !== null) {
+          await deps.fecharIssue(
+            inc.issueNumber,
+            `Incidente de infra resolvido (${decisao.motivo}) — fechado automaticamente pelo GitOrch.`
+          )
+        }
+        await deps.limparIncidente(inc.id)
+        await deps
+          .registrarResolucao?.({
+            projectId: inc.projectId,
+            classe: inc.classe,
+            identidadeEstavel: inc.identidadeEstavel,
+            comoSarou: decisao.motivo,
+          })
+          .catch(() => undefined)
+        res.fechados.push(inc.identidadeEstavel)
+        info(`varrer-incidentes: ${inc.identidadeEstavel} resolvido (${decisao.motivo})`)
         continue
       }
-      if (decisao.fecharIssue && inc.issueNumber !== null) {
-        await deps.fecharIssue(
-          inc.issueNumber,
-          `Incidente de infra resolvido (${decisao.motivo}) — fechado automaticamente pelo GitOrch.`
-        )
+
+      // ESTEIRA-T10: não resolveu — mais um PR fracassou? conta a tentativa, e
+      // ao 3º escala (para de insistir + avisa o dono uma vez).
+      res.aindaAbertos += 1
+      const esc = decidirEscalonamento(inc, sit.prFechadoSemMerge === true)
+      if (esc.incrementarTentativa) await deps.incrementarTentativa?.(inc.id)
+      if (esc.escalar) {
+        await deps.escalar?.({ id: inc.id, issueNumber: inc.issueNumber, motivo: esc.motivo })
+        res.escalados.push(inc.identidadeEstavel)
+        info(`varrer-incidentes: ${inc.identidadeEstavel} escalado (${esc.motivo})`)
       }
-      await deps.limparIncidente(inc.id)
-      res.fechados.push(inc.identidadeEstavel)
-      info(`varrer-incidentes: ${inc.identidadeEstavel} resolvido (${decisao.motivo})`)
     } catch (err) {
       warn(`varrer-incidentes: ${inc.identidadeEstavel} falhou (${String(err).slice(0, 120)})`)
       res.aindaAbertos += 1

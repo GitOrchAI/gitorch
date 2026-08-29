@@ -259,6 +259,12 @@ export interface SmDelegationOptions {
    * callback é responsável pela idempotência (marcador no comentário).
    */
   comentarCoberturaDeIncidente?: (args: { issueNumber: number; prNumber: number }) => Promise<void>
+  /**
+   * ESTEIRA-T10: issues de incidente ESCALADO (`infra_incidents.escalated_at`)
+   * — 3 PRs fracassaram, o GitOrch parou de insistir. Não delega mais até o RA
+   * fazer o retro. Silencioso (a escalada já avisou o dono).
+   */
+  issuesDeIncidenteEscalado?: number[]
   /** Do plano declarado pelo dono. Padrão: Free, que é o mais restritivo. */
   tetoConcorrentes?: number
   tetoDiario?: number
@@ -300,6 +306,13 @@ export interface SmDelegationResult {
   delegated: number[]
   /** Entregas abertas sem parecer nosso que este ciclo mandou julgar. */
   paraJulgar: number[]
+  /**
+   * ESTEIRA-T11: a esteira voltou vazia ESPECIFICAMENTE por falta de vaga de
+   * concorrência no dev externo — há trabalho pronto, folga diária, mas a
+   * conta está lotada de sessões vivas. O scheduler mede quanto tempo isso
+   * persiste e avisa o dono uma vez.
+   */
+  travadaPorVaga: boolean
 }
 
 /** Extrai os números de "Blocked by #N, #M" do corpo da issue. */
@@ -356,6 +369,8 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
   // ESTEIRA-T9: issue de incidente que já tem um PR aberto cobrindo a causa não
   // vira sessão nova — um incidente = uma issue = UM PR. Comenta uma vez.
   const comPrDeIncidente = options.issuesComPrDeIncidente ?? new Map<number, number>()
+  // ESTEIRA-T10: incidente escalado (3 PRs sem resolver) não é redelegado.
+  const escaladas = new Set(options.issuesDeIncidenteEscalado ?? [])
   const candidatas: IssueCandidata[] = []
   // Os arquivos de quem JÁ está em trabalho. Quem tem sessão viva é filtrado
   // das candidatas na linha seguinte, então sem esta coleta os arquivos dele
@@ -366,6 +381,8 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
     // Entrega mesclada sai da lista ANTES de qualquer outra conta: não gasta
     // chamada de bloqueador, não reserva arquivo, não ocupa vaga.
     if (jaEntregues.has(t.number)) continue
+    // Incidente escalado: o GitOrch parou de insistir. Sai da fila em silêncio.
+    if (escaladas.has(t.number)) continue
     // Incidente de infra já coberto por um PR aberto: não delega de novo.
     const prDoIncidente = comPrDeIncidente.get(t.number)
     if (prDoIncidente !== undefined) {
@@ -401,11 +418,15 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
     })
   }
 
+  let travadaPorVaga = false
   const escolhidas = escolherParaDelegar({
     candidatas,
     arquivosEmTrabalho: [...arquivosEmTrabalho],
     sessoesVivas: options.sessoesVivas ?? [],
     delegadasHoje: options.delegadasHoje ?? 0,
+    onDiagnostico: (d) => {
+      travadaPorVaga = d.travadaPorVaga
+    },
     // O teto de simultâneas é da CONTA e só conta quem ainda ocupa vaga no
     // Jules. Sem este número o cálculo caía no `sessoesVivas.length` DESTE
     // projeto — e 15 linhas COMPLETED abertas no gitorch zeravam a folga e
@@ -688,5 +709,6 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
       !falhaAoEnfileirar,
     delegated,
     paraJulgar,
+    travadaPorVaga,
   }
 }
