@@ -144,6 +144,7 @@ test('bubbles up step-level failure and recovery status to the workspace provide
     id: 'mission-failed-deploy',
     projectId: 'project-1',
     repository: 'owner/repo',
+    runtime: { runtime: 'antigravity' },
     role: 'qa',
     goal: 'Test deployment failure',
     context: [],
