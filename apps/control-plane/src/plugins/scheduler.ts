@@ -192,7 +192,7 @@ import { sessoesAbandonadas } from '../services/sessao-abandonada.js'
 import { medirRetrospectiva, escolherAMelhoria } from '../services/retrospectiva.js'
 import { runSmWatchdog, buildTelegramNotifier } from '../services/sm-watchdog.js'
 import { resolveNotifyChatId, type NotifiableProject } from '../services/telegram-link.js'
-import { runIncidentSensor } from '../services/incident-sensor.js'
+import { acharIncidentesDeInfra } from '../services/incident-sensor.js'
 import { mintInstallationToken } from '../services/github-app-token.js'
 import {
   resolveBoardColumns,
@@ -2729,38 +2729,37 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             githubToken: railsToken as string,
             ...(notify ? { notify } : {}),
           })
-          // Sensor de incidentes (os "olhos"): idempotente por fingerprint —
-          // rodar a cada wake do SM não duplica nada. Best-effort.
-          //
-          // O incidente entra no quadro do projeto (coluna inicial) quando há
-          // board próprio configurado — mesma injeção `moveCard` que o QA já
-          // usa. `railsBoard` aqui é só o LIDO de runtimeConfig (SM não cria
-          // board; quem cria/recupera é o wake do PO, acima); sem board
-          // configurado o incidente ainda é registrado (comportamento de
-          // hoje), só fica fora do quadro — o sensor avisa via onWarn.
+          // Sensor de infra (os "olhos"): varre Actions/Dependabot e levanta
+          // ACHADOS TIPADOS — NÃO abre issue (D54, 29/08). Antes ele criava
+          // uma issue por run que já falhou uma vez, misturava cinco classes
+          // de problema e abriu ~20 duplicadas sem análise de RA/PO. Agora o
+          // RA entende a causa e o PO escreve a issue padrão (ESTEIRA-T8).
+          // Best-effort: nunca derruba o wake do SM.
           let sensorOut = ''
           let sensorNoOp = true
           try {
-            const sensor = await runIncidentSensor({
+            const sensor = await acharIncidentesDeInfra({
               repository: project.wingId,
               githubToken: railsToken as string,
-              ...(railsBoard
-                ? {
-                    moveCard: createCardMover({
-                      repository: project.wingId,
-                      board: railsBoard,
-                      token: railsToken as string,
-                      columns: resolveBoardColumns(project.runtimeConfig),
-                    }),
-                  }
-                : {}),
               onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
             })
             sensorOut = sensor.output
             sensorNoOp = sensor.noOp === true
+            if (sensor.achados.length > 0) {
+              app.log.info(
+                {
+                  achados: sensor.achados.map((a) => ({
+                    id: a.identidadeEstavel,
+                    classe: a.classe,
+                  })),
+                },
+                `[Scheduler] sensor de infra em ${project.wingId}: ${sensor.achados.length} achado(s) ` +
+                  `— aguardando análise do RA (ESTEIRA-T8)`
+              )
+            }
           } catch (sensorErr) {
-            app.log.warn(sensorErr, '[Scheduler] sensor de incidentes falhou')
-            sensorOut = 'sensor: failed (see logs).'
+            app.log.warn(sensorErr, '[Scheduler] sensor de infra falhou')
+            sensorOut = 'sensor de infra: falhou (ver logs).'
           }
 
           result = {

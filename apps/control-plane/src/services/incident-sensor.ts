@@ -1,208 +1,109 @@
-import { GithubExecutionError } from './github-errors.js'
-import type { CardMover } from './board-status.js'
-import { fetchComTeto } from './fetch-com-teto.js'
-
-// SENSOR de incidentes (os "olhos" do GitOrch): coleta erros REAIS do projeto
-// e os transforma em issues `gitorch:incident` — tipo próprio, fora da árvore
-// de wish/épicos. O sensor NUNCA prioriza nem delega: quem tria a criticidade
-// (P0..P3) e decide furar a fila da sprint é o PO. 100% determinístico e
-// idempotente por fingerprint (re-rodar não duplica).
+// SENSOR de infra (os "olhos" do GitOrch): coleta erros REAIS do Actions /
+// Dependabot do repositório do cliente e os devolve como ACHADOS TIPADOS.
 //
-// Fontes plugáveis; a primeira é falha de workflow na branch principal do
-// cliente (disponível com o token existente). Sentry/logs entram como novas
-// fontes quando o projeto fornecer credencial.
+// MUDANÇA DE CONTRATO (D54, 29/08): o sensor NÃO abre mais issue. Medido em
+// produção — ele tratava toda run que já falhou uma vez como incidente novo,
+// misturava cinco coisas diferentes (CI do cliente, config de Actions,
+// Dependabot travado, encanamento do GitOrch, workflow morto) e abriu ~20
+// issues duplicadas sem nenhuma análise confiável de RA/PO no meio.
+//
+// Agora: o sensor levanta o ACHADO; o RA entende a causa (ESTEIRA-T8); o PO
+// escreve a issue padrão Shrimp ANTES de qualquer delegação. A coleta e a
+// classificação vivem em `incidente-ci.ts` / `classificar-falha-de-infra.ts`.
 
+import {
+  coletarAchadosDeInfra,
+  type AchadoDeInfra,
+  type ColetarAchadosDeInfraOpts,
+} from './incidente-ci.js'
+
+/** Label das issues de incidente que o PO (T8) vai abrir a partir dos achados. */
 export const INCIDENT_LABEL = 'gitorch:incident'
 
-export interface SensorFinding {
-  /** Identidade estável do problema (dedup) — ex.: "ci:Nome do Workflow". */
-  fingerprint: string
-  title: string
-  /** Evidência legível (o PO tria com base nisso). */
-  evidence: string
-  source: string
-}
-
-export interface IncidentSensorOptions {
+export interface AcharIncidentesDeInfraOptions {
   repository: string
   githubToken: string
-  /** Máximo de incidentes novos por varredura (proteção contra tempestade). */
-  cap?: number
+  /** Contextos exigidos pela proteção do branch (se já conhecidos). */
+  contextosQueTravamMerge?: string[]
+  /** Teto de achados por varredura — proteção contra tempestade. */
+  teto?: number
   fetchImpl?: typeof fetch
-  /**
-   * Move o card recém-criado para o quadro (issueNumber, coluna) — mesma
-   * injeção que o QA já usa (qa-rails-mission.ts), construída pelo chamador
-   * via createCardMover (board-status.ts) quando o projeto tem board próprio
-   * configurado (Project.runtimeConfig.envConfig.GITORCH_PROJECT_BOARD).
-   * Achado em produção: sem isto a issue de incidente nascia fora do quadro
-   * — best-effort (nunca derruba o incidente já criado, só avisa).
-   */
-  moveCard?: CardMover
   onWarn?: (message: string) => void
 }
 
-export interface IncidentSensorResult {
+export interface AcharIncidentesDeInfraResult {
   exitCode: number
   output: string
   stderr: string
-  noOp?: boolean
-  created: number[]
+  noOp: boolean
+  achados: AchadoDeInfra[]
 }
 
-const incidentMarker = (fingerprint: string): string => `gitorch:incident:${fingerprint}`
-
-/** Fonte 1 — falhas de workflow na branch principal (agrupadas por workflow). */
-export async function collectCiFailures(
-  options: Pick<IncidentSensorOptions, 'repository' | 'githubToken' | 'fetchImpl'>
-): Promise<SensorFinding[]> {
-  // IMPORTANTE (leva D): alcançável pelo tique (scheduler.ts, wake do SM,
-  // sensor de incidentes) sob `tickEmAndamento` — mesma classe de defeito
-  // do Crítico.
-  const f = fetchComTeto(options.fetchImpl ?? fetch)
-  const resp = await f(
-    `https://api.github.com/repos/${options.repository}/actions/runs?branch=main&status=failure&per_page=20`,
-    {
-      headers: {
-        authorization: `token ${options.githubToken}`,
-        accept: 'application/vnd.github+json',
-        'user-agent': 'gitorch',
-      },
-    }
+function resumoDosAchados(achados: AchadoDeInfra[]): string {
+  if (achados.length === 0) return 'sensor de infra: nada quebrado.'
+  const porClasse = new Map<string, number>()
+  for (const a of achados) porClasse.set(a.classe, (porClasse.get(a.classe) ?? 0) + 1)
+  const partes = [...porClasse.entries()].map(([classe, n]) => `${n} ${classe}`)
+  return (
+    `sensor de infra: ${achados.length} achado(s) — ${partes.join(', ')}. ` +
+    `RA vai analisar a causa e o PO escreve a issue padrão (nenhuma issue aberta aqui).`
   )
-  if (!resp.ok) {
-    throw new GithubExecutionError(`sensor: workflow runs lookup failed (${resp.status})`)
-  }
-  const data = (await resp.json()) as {
-    workflow_runs?: Array<{ name?: string; html_url?: string; created_at?: string }>
-  }
-  const byWorkflow = new Map<string, Array<{ url: string; at: string }>>()
-  for (const run of data.workflow_runs ?? []) {
-    const name = run.name ?? 'unknown workflow'
-    const list = byWorkflow.get(name) ?? []
-    list.push({ url: run.html_url ?? '', at: (run.created_at ?? '').slice(0, 10) })
-    byWorkflow.set(name, list)
-  }
-  return [...byWorkflow.entries()].map(([name, runs]) => ({
-    fingerprint: `ci:${name}`,
-    title: `[Incident] CI failing on main: ${name}`,
-    evidence: [
-      `Workflow "${name}" is FAILING on the main branch (${runs.length} recent failure(s)).`,
-      ...runs.slice(0, 5).map((r) => `- ${r.at}: ${r.url}`),
-    ].join('\n'),
-    source: 'github-actions',
-  }))
 }
 
-export async function runIncidentSensor(
-  options: IncidentSensorOptions
-): Promise<IncidentSensorResult> {
-  // IMPORTANTE (leva D): mesma classe de defeito do Crítico.
-  const f = fetchComTeto(options.fetchImpl ?? fetch)
-  const cap = options.cap ?? 3
-
-  const gh = async (method: string, path: string, body?: unknown): Promise<unknown> => {
-    const resp = await f(`https://api.github.com${path}`, {
-      method,
-      headers: {
-        authorization: `token ${options.githubToken}`,
-        accept: 'application/vnd.github+json',
-        'user-agent': 'gitorch',
-        ...(body ? { 'content-type': 'application/json' } : {}),
-      },
-      ...(body ? { body: JSON.stringify(body) } : {}),
-    })
-    if (!resp.ok) {
-      const detail = await resp.text().catch(() => '')
-      throw new GithubExecutionError(
-        `GitHub ${method} ${path} failed (${resp.status}): ${detail.slice(0, 150)}`
-      )
-    }
-    return resp.json().catch(() => ({}))
+/**
+ * Varre a infra do repositório e devolve os achados tipados. Best-effort:
+ * uma rota que falha vira `onWarn`, nunca joga.
+ */
+export async function acharIncidentesDeInfra(
+  options: AcharIncidentesDeInfraOptions
+): Promise<AcharIncidentesDeInfraResult> {
+  const opts: ColetarAchadosDeInfraOpts = {
+    repository: options.repository,
+    githubToken: options.githubToken,
+    ...(options.contextosQueTravamMerge
+      ? { contextosQueTravamMerge: options.contextosQueTravamMerge }
+      : {}),
+    ...(options.teto !== undefined ? { teto: options.teto } : {}),
+    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+    ...(options.onWarn ? { onWarn: options.onWarn } : {}),
   }
 
-  const findings = await collectCiFailures(options)
-  if (findings.length === 0) {
-    return { exitCode: 0, output: 'sensor: no findings.', stderr: '', noOp: true, created: [] }
-  }
-
-  // Dedup por fingerprint: lista issues ABERTAS com o label do sensor.
-  //
-  // Achado em produção: a versão anterior usava `GET /search/issues`, cuja
-  // indexação é ASSÍNCRONA — uma issue criada há pouco pode ainda não estar
-  // indexada, então uma varredura seguinte recriaria o MESMO incidente. A
-  // listagem por label é consistente NA HORA (não depende de índice) —
-  // reflete o estado real das issues do repositório. O marcador no corpo
-  // continua o mesmo, então issues já criadas pela versão antiga seguem
-  // reconhecidas.
-  const existing = (await gh(
-    'GET',
-    `/repos/${options.repository}/issues?labels=${encodeURIComponent(INCIDENT_LABEL)}&state=open&per_page=100`
-  )) as Array<{ body?: string }>
-  const openMarkers = new Set(
-    (Array.isArray(existing) ? existing : [])
-      // Segundo achado, ao vivo (#20 e #25 duplicavam o mesmo incidente "CI
-      // failing on main: Sincronizar Atualizações na Wiki Pública"): o
-      // fingerprint carrega o NOME do workflow, texto livre que quase sempre
-      // tem espaço — `[^\s>]+` parava no primeiro espaço e truncava o
-      // marcador ("...ci:Sincronizar"), então NUNCA batia com o marcador
-      // completo do finding novo e o incidente era recriado em TODA
-      // varredura em que o workflow continuasse falhando. `.+?` (não-guloso)
-      // até o `-->` captura o marcador inteiro, espaços inclusos.
-      .map((i) => i.body?.match(/<!--\s*(gitorch:incident:.+?)\s*-->/)?.[1])
-      .filter((m): m is string => Boolean(m))
-  )
-
-  const warn = options.onWarn ?? (() => undefined)
-
-  const created: number[] = []
-  for (const finding of findings) {
-    if (created.length >= cap) break
-    const marker = incidentMarker(finding.fingerprint)
-    if (openMarkers.has(marker)) continue
-    const issue = (await gh('POST', `/repos/${options.repository}/issues`, {
-      title: finding.title,
-      labels: [INCIDENT_LABEL],
-      body: [
-        `<!-- ${marker} -->`,
-        `## Evidence`,
-        finding.evidence,
-        '',
-        `## Source`,
-        `Sensor: ${finding.source} (detected automatically by GitOrch).`,
-        '',
-        '_Aguardando triagem do PO (P0–P3). Este incidente não entra em sprint até o PO liberar._',
-      ].join('\n'),
-    })) as { number?: number }
-    if (!issue.number) continue
-    created.push(issue.number)
-
-    // Achado em produção: a issue nascia fora do quadro Projects v2 do
-    // projeto — o sensor criava e parava. Best-effort: falha ao mover NUNCA
-    // desfaz o incidente já registrado (a issue é o que importa; o card no
-    // quadro é acessório).
-    if (options.moveCard) {
-      try {
-        await options.moveCard(issue.number, 'todo')
-      } catch (err) {
-        warn(
-          `incidente #${issue.number} criado mas não entrou no quadro: ${String(err).slice(0, 150)}`
-        )
-      }
-    } else {
-      warn(
-        `incidente #${issue.number} criado sem quadro configurado para ${options.repository}; card fica fora do quadro`
-      )
-    }
+  let achados: AchadoDeInfra[] = []
+  try {
+    achados = await coletarAchadosDeInfra(opts)
+  } catch (err) {
+    const msg = `sensor de infra: falhou (${String(err).slice(0, 150)}).`
+    options.onWarn?.(msg)
+    return { exitCode: 0, output: msg, stderr: '', noOp: true, achados: [] }
   }
 
   return {
     exitCode: 0,
-    output:
-      created.length > 0
-        ? `sensor: opened ${created.length} incident(s): ${created.map((n) => `#${n}`).join(', ')}.`
-        : 'sensor: findings already tracked (no new incident).',
+    output: resumoDosAchados(achados),
     stderr: '',
-    noOp: created.length === 0,
-    created,
+    noOp: achados.length === 0,
+    achados,
   }
+}
+
+/**
+ * @deprecated Use `acharIncidentesDeInfra`. Mantido só para o call-site do
+ * scheduler não quebrar durante a transição (ESTEIRA-T7→T8). NUNCA cria
+ * issue — `created` é sempre `[]`.
+ */
+export async function runIncidentSensor(options: {
+  repository: string
+  githubToken: string
+  cap?: number
+  fetchImpl?: typeof fetch
+  onWarn?: (message: string) => void
+}): Promise<AcharIncidentesDeInfraResult & { created: number[] }> {
+  const r = await acharIncidentesDeInfra({
+    repository: options.repository,
+    githubToken: options.githubToken,
+    ...(options.cap !== undefined ? { teto: options.cap } : {}),
+    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+    ...(options.onWarn ? { onWarn: options.onWarn } : {}),
+  })
+  return { ...r, created: [] }
 }
