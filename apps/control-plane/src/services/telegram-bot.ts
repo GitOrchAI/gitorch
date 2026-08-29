@@ -515,7 +515,11 @@ export async function handleTelegramCallback(
   const option = options[parsed.optionIndex]
   if (!option) return
 
-  const updated = await deps.agentQuestionService.answer(parsed.questionId, option.value, 'telegram')
+  const updated = await deps.agentQuestionService.answer(
+    parsed.questionId,
+    option.value,
+    'telegram'
+  )
   defaultAgentQuestionStateManager.clearActiveTypingQuestion(question.userId)
 
   await answerTelegramCallback({
