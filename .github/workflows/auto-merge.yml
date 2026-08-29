@@ -136,9 +136,13 @@ jobs:
 
       - name: Setup Node
         if: steps.evaluate.outputs.eligible == 'true'
-        uses: actions/setup-node@v4
+        uses: ./.github/actions/setup-pnpm
         with:
           node-version: '20'
+          check-latest: false
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9.4.0
 
       # `npm ci` e não `install`: instala exatamente o que está no lockfile
       # versionado. Este passo roda com token de escrita e acesso a secrets, então
@@ -147,7 +151,7 @@ jobs:
       - name: Install Script Dependencies
         if: steps.evaluate.outputs.eligible == 'true'
         working-directory: .github/scripts
-        run: npm ci
+        run: pnpm install --no-frozen-lockfile
 
       - name: QA Verdict Gate
         id: gate

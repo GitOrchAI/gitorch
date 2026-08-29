@@ -67,14 +67,18 @@ jobs:
 
       - name: Setup Node
         if: steps.preflight.outputs.configurada == 'true'
-        uses: actions/setup-node@v4
+        uses: ./.github/actions/setup-pnpm
         with:
           node-version: '20'
+          check-latest: false
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9.4.0
 
       - name: Install Dependencies
         if: steps.preflight.outputs.configurada == 'true'
         working-directory: .github/scripts
-        run: npm ci
+        run: pnpm install --no-frozen-lockfile
 
       - name: Analyze Merge Conflicts
         if: steps.preflight.outputs.configurada == 'true'
