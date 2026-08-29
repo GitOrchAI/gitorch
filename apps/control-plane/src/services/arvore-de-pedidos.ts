@@ -40,6 +40,20 @@ export interface ProjetoDoDono {
   repo: string
 }
 
+/**
+ * Traduz a linha do banco para o que a leitura da árvore precisa.
+ *
+ * ATENÇÃO ao par de campos — já custou um 503 em produção (29/08):
+ *   `wingId` = "owner/repo", o ENDEREÇO do repositório no GitHub.
+ *   `name`   = o nome curto que o dono vê ("gitorch").
+ * O comentário do schema que diz "owner/repo" fica logo acima de `wingId`;
+ * quem lê rápido acha que é do `name` e manda "gitorch" para a API — sem
+ * barra, a consulta nunca resolve e TODOS os projetos falham de uma vez.
+ */
+export function projetoDaLinha(linha: { name: string; wingId: string }): ProjetoDoDono {
+  return { nome: linha.name, repo: linha.wingId }
+}
+
 export interface DepsDaArvoreDePedidos {
   /** Projetos do dono, já filtrados por userId. */
   listarProjetos: (ownerId: string) => Promise<ProjetoDoDono[]>
