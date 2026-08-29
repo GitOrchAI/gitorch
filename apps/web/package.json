@@ -22,13 +22,13 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
-    "@types/node": "^26",
+    "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/three": "^0.185.4",
     "eslint": "^9",
-    "eslint-config-next": "16.3.2",
-    "puppeteer": "^25.8.0",
+    "eslint-config-next": "16.3.3",
+    "puppeteer": "^25.9.0",
     "tailwindcss": "^4",
     "typescript": "^5"
   }
