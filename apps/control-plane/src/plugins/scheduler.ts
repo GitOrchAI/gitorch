@@ -83,6 +83,7 @@ import { analisarFalhasPendentes } from '../services/analisar-falhas-pendentes.j
 import { runAnaliseDeFalha, type SessaoMorta } from '../services/analise-de-falha-do-dev.js'
 import { processarAchadosDeInfra } from '../services/processar-achados-de-infra.js'
 import { varrerIncidentesResolvidos } from '../services/fechar-incidente-resolvido.js'
+import { runRetroDeInfra } from '../services/retro-de-infra.js'
 import type { AchadoDeInfra } from '../services/incidente-ci.js'
 import { renderIssueBody } from '../services/backlog-executor.js'
 import type { DoDFields } from '@gitorch/cadence'
@@ -2695,22 +2696,32 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             // ESTEIRA-T9: issue de incidente de infra que já tem um PR aberto
             // cobrindo a causa (`infra_incidents.pr_number`) não vira sessão
             // nova — um incidente = uma issue = UM PR.
-            issuesComPrDeIncidente: await (async () => {
+            ...(await (async () => {
               const mapa = new Map<number, number>()
+              const escaladas: number[] = []
               try {
                 const rows = (await app.prisma.infraIncident.findMany({
-                  where: { projectId: project.id, clearedAt: null, prNumber: { not: null } },
-                  select: { issueNumber: true, prNumber: true },
-                })) as Array<{ issueNumber: number | null; prNumber: number | null }>
+                  where: {
+                    projectId: project.id,
+                    clearedAt: null,
+                    OR: [{ prNumber: { not: null } }, { escalatedAt: { not: null } }],
+                  },
+                  select: { issueNumber: true, prNumber: true, escalatedAt: true },
+                })) as Array<{
+                  issueNumber: number | null
+                  prNumber: number | null
+                  escalatedAt: Date | null
+                }>
                 for (const r of rows) {
-                  if (r.issueNumber !== null && r.prNumber !== null)
-                    mapa.set(r.issueNumber, r.prNumber)
+                  if (r.issueNumber === null) continue
+                  if (r.escalatedAt !== null) escaladas.push(r.issueNumber)
+                  else if (r.prNumber !== null) mapa.set(r.issueNumber, r.prNumber)
                 }
               } catch (err) {
-                app.log.warn(err, '[Scheduler] não deu para ler os incidentes com PR aberto')
+                app.log.warn(err, '[Scheduler] não deu para ler os incidentes com PR/escalada')
               }
-              return mapa
-            })(),
+              return { issuesComPrDeIncidente: mapa, issuesDeIncidenteEscalado: escaladas }
+            })()),
             comentarCoberturaDeIncidente: async ({ issueNumber, prNumber }) => {
               const marcador = '<!-- gitorch:incidente-coberto-por-pr -->'
               const gh = async (method: string, path: string, body?: unknown): Promise<unknown> => {
@@ -4250,12 +4261,133 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
     })
 
-    const total = res.issuesNoCliente.length + res.issuesNoProduto.length
-    if (total === 0) return ''
-    return (
-      `RA: ${total} issue(s) de infra escrita(s) — ` +
-      `${res.issuesNoCliente.length} no repo do cliente, ${res.issuesNoProduto.length} de encanamento.`
+    // ESTEIRA-T10: incidentes que escalaram (3 PRs sem resolver) e ainda não
+    // tiveram retro — o RA faz um retro blameless para achar a raiz do
+    // retrabalho e gravar a regra de coding para o dev.
+    const retroOut = await rodarRetroDeIncidentesEscalados(project, railsToken, execute).catch(
+      (err) => {
+        app.log.warn(err, `[Scheduler] retro de incidentes escalados falhou em ${project.wingId}`)
+        return ''
+      }
     )
+
+    const total = res.issuesNoCliente.length + res.issuesNoProduto.length
+    const base =
+      total === 0
+        ? ''
+        : `RA: ${total} issue(s) de infra escrita(s) — ` +
+          `${res.issuesNoCliente.length} no repo do cliente, ${res.issuesNoProduto.length} de encanamento.`
+    return [base, retroOut].filter(Boolean).join('\n')
+  }
+
+  /**
+   * ESTEIRA-T10 (decisão do dono 29/08): incidente que resistiu a 3 PRs → o RA
+   * roda um RETRO blameless (não para culpar, para consertar o processo): a
+   * issue do PO faltou algo? a análise do RA foi rasa? o critério do QA foi
+   * vago? a tarefa era grande demais? A conclusão vira aprendizado + uma regra
+   * de coding que o dev passa a receber. Um retro por incidente (marca em
+   * `events`, tipo `retro-de-infra`).
+   */
+  const rodarRetroDeIncidentesEscalados = async (
+    project: { id: string; wingId: string },
+    railsToken: string | undefined,
+    execute: StepExecutor
+  ): Promise<string> => {
+    if (!railsToken) return ''
+    const gh = async (path: string): Promise<unknown> => {
+      const resp = await fetch(`https://api.github.com${path}`, {
+        headers: {
+          authorization: `token ${railsToken}`,
+          accept: 'application/vnd.github+json',
+          'user-agent': 'gitorch',
+        },
+      })
+      if (!resp.ok) throw new Error(`GitHub GET ${path} → ${resp.status}`)
+      return resp.json()
+    }
+
+    const escalados = (await app.prisma.infraIncident.findMany({
+      where: { projectId: project.id, clearedAt: null, escalatedAt: { not: null } },
+      select: { id: true, issueNumber: true, classe: true, identidadeEstavel: true },
+    })) as Array<{
+      id: string
+      issueNumber: number | null
+      classe: string
+      identidadeEstavel: string
+    }>
+    if (escalados.length === 0) return ''
+
+    let feitos = 0
+    for (const inc of escalados.slice(0, 2)) {
+      try {
+        const jaTemRetro = await app.prisma.event.findFirst({
+          where: {
+            projectId: project.id,
+            type: 'retro-de-infra',
+            payload: { path: ['incidenteId'], equals: inc.id },
+          },
+        })
+        if (jaTemRetro || inc.issueNumber === null) continue
+
+        const issue = (await gh(`/repos/${project.wingId}/issues/${inc.issueNumber}`)) as {
+          title?: string
+          body?: string
+        }
+        const aprendizados = await lerAprendizados({
+          prisma: app.prisma as unknown as PrismaEventoDoJules,
+          projectId: project.id,
+          issueNumber: inc.issueNumber,
+          onWarn: (m) => app.log.warn(m),
+        }).catch(() => [])
+        const briefDoRa = aprendizados.map((a) => a.padrao).join('\n')
+
+        const retro = await runRetroDeInfra(execute, {
+          issueNumber: inc.issueNumber,
+          tituloDaIssue: issue.title ?? `#${inc.issueNumber}`,
+          corpoDaIssue: issue.body ?? '',
+          briefDoRa,
+          prsFracassados: [
+            {
+              numero: 0,
+              motivo: 'histórico',
+              evidencia: `classe ${inc.classe}, 3 PRs sem resolver`,
+            },
+          ],
+        })
+
+        await registrarAprendizado({
+          prisma: app.prisma as unknown as PrismaEventoDoJules,
+          projectId: project.id,
+          aprendizado: {
+            padrao: `${retro.padraoParaMemoria} (raiz: ${retro.raizDoRetrabalho})`,
+            origem: 'retro-de-infra',
+            issueNumber: inc.issueNumber,
+            pedidoRevisado: retro.regraDeCodingParaODev,
+          },
+          onWarn: (m) => app.log.warn(m),
+        }).catch(() => undefined)
+
+        await app.prisma.event.create({
+          data: {
+            projectId: project.id,
+            type: 'retro-de-infra',
+            payload: {
+              incidenteId: inc.id,
+              raiz: retro.raizDoRetrabalho,
+              ajuste: retro.ajusteRecomendado,
+              regra: retro.regraDeCodingParaODev,
+            },
+          },
+        })
+        feitos += 1
+        app.log.info(
+          `[Scheduler] retro do incidente #${inc.issueNumber}: raiz=${retro.raizDoRetrabalho}`
+        )
+      } catch (err) {
+        app.log.warn(err, `[Scheduler] retro do incidente ${inc.identidadeEstavel} falhou`)
+      }
+    }
+    return feitos > 0 ? `RA: ${feitos} retro(s) de incidente escalado.` : ''
   }
 
   /**
@@ -4307,6 +4439,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             issueNumber: true,
             prNumber: true,
             clearedAt: true,
+            prAttempts: true,
+            escalatedAt: true,
           },
         })) as Array<{
           id: string
@@ -4316,18 +4450,23 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           issueNumber: number | null
           prNumber: number | null
           clearedAt: Date | null
+          prAttempts: number
+          escalatedAt: Date | null
         }>,
       situacaoDoIncidente: async (inc) => {
         let prMesclado = false
+        let prFechadoSemMerge = false
         let mergedAt: string | null = null
         if (inc.prNumber !== null) {
           try {
             const pr = (await gh(`/repos/${project.wingId}/pulls/${inc.prNumber}`)) as {
               merged?: boolean
               merged_at?: string | null
+              state?: string
             }
             prMesclado = pr.merged === true
             mergedAt = pr.merged_at ?? null
+            prFechadoSemMerge = pr.state === 'closed' && pr.merged !== true
           } catch {
             /* PR ilegível: trata como não mesclado */
           }
@@ -4359,7 +4498,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             /* runs ilegíveis */
           }
         }
-        return { ultimaRunVerde, rodouDepoisDoPr, prMesclado }
+        return { ultimaRunVerde, rodouDepoisDoPr, prMesclado, prFechadoSemMerge }
       },
       fecharIssue: async (issueNumber, comentario) => {
         await ghPatch(`/repos/${project.wingId}/issues/${issueNumber}`, {
@@ -4386,12 +4525,44 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           data: { clearedAt: new Date() },
         })
       },
+      // ESTEIRA-T10: mais um PR fracassou — conta a tentativa e libera o
+      // pr_number para uma nova nascer (a menos que escale abaixo).
+      incrementarTentativa: async (id) => {
+        await app.prisma.infraIncident.update({
+          where: { id },
+          data: { prAttempts: { increment: 1 }, prNumber: null },
+        })
+      },
+      // 3º PR fracassado: para de insistir + avisa o dono UMA vez (só o marco).
+      escalar: async ({ id, issueNumber, motivo }) => {
+        await app.prisma.infraIncident.update({ where: { id }, data: { escalatedAt: new Date() } })
+        await avisarDonoDoProjeto(
+          project as NotifiableProject & { wingId: string },
+          `GitOrch: parei de insistir no incidente de infra${issueNumber ? ` (issue #${issueNumber})` : ''} de ${project.wingId} — ${motivo}. O RA vai fazer um retro para achar a raiz; volta a andar quando isso mudar.`
+        ).catch(() => undefined)
+      },
+      // Incidente RESOLVIDO → vira aprendizado (classe + como sarou) para o
+      // RA/PO escreverem incidentes melhores da próxima.
+      registrarResolucao: async ({ classe, identidadeEstavel, comoSarou }) => {
+        await registrarAprendizado({
+          prisma: app.prisma as unknown as PrismaEventoDoJules,
+          projectId: project.id,
+          aprendizado: {
+            padrao: `Incidente de infra (${classe}, ${identidadeEstavel}) resolvido: ${comoSarou}`,
+            origem: 'incidente-resolvido',
+          },
+          onWarn: (mm) => app.log.warn(mm),
+        }).catch(() => undefined)
+      },
       onInfo: (mm) => app.log.info(`[Scheduler] ${mm}`),
       onWarn: (mm) => app.log.warn(`[Scheduler] ${mm}`),
     })
-    return r.fechados.length > 0
-      ? `SM: ${r.fechados.length} incidente(s) de infra resolvido(s) e fechado(s).`
-      : ''
+    const partes: string[] = []
+    if (r.fechados.length > 0)
+      partes.push(`${r.fechados.length} incidente(s) de infra resolvido(s) e fechado(s)`)
+    if (r.escalados.length > 0)
+      partes.push(`${r.escalados.length} incidente(s) escalado(s) (3 PRs sem resolver)`)
+    return partes.length > 0 ? `SM: ${partes.join('; ')}.` : ''
   }
 
   const varrerCicloTerminalDaSessao = async (): Promise<void> => {

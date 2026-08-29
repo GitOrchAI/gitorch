@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
   decidirFechamentoDeIncidente,
+  decidirEscalonamento,
   mesmaCausa,
   agruparPorCausa,
   varrerIncidentesResolvidos,
@@ -165,5 +166,91 @@ describe('varrerIncidentesResolvidos', () => {
     })
     expect(r.fechados).toEqual(['wf:2'])
     expect(r.aindaAbertos).toBe(1)
+  })
+
+  it('resolvido → registrarResolucao com a classe', async () => {
+    const registrarResolucao = vi.fn(async () => undefined)
+    await varrerIncidentesResolvidos({
+      listarAbertos: async () => [inc({ classe: 'ci-do-cliente' })],
+      situacaoDoIncidente: async () => ({
+        ultimaRunVerde: true,
+        rodouDepoisDoPr: true,
+        prMesclado: true,
+      }),
+      fecharIssue: vi.fn(async () => undefined),
+      limparIncidente: vi.fn(async () => undefined),
+      registrarResolucao,
+    })
+    expect(registrarResolucao).toHaveBeenCalledWith(
+      expect.objectContaining({ classe: 'ci-do-cliente', identidadeEstavel: 'wf:11' })
+    )
+  })
+})
+
+describe('decidirEscalonamento (ESTEIRA-T10)', () => {
+  const base = { clearedAt: null, escalatedAt: null }
+  it('1º PR fracassado → conta, não escala', () => {
+    expect(decidirEscalonamento({ ...base, prAttempts: 0 }, true)).toMatchObject({
+      incrementarTentativa: true,
+      escalar: false,
+    })
+  })
+  it('3º PR fracassado → conta e ESCALA', () => {
+    expect(decidirEscalonamento({ ...base, prAttempts: 2 }, true)).toMatchObject({
+      incrementarTentativa: true,
+      escalar: true,
+    })
+  })
+  it('PR ainda vivo → nada', () => {
+    expect(decidirEscalonamento({ ...base, prAttempts: 2 }, false)).toMatchObject({
+      incrementarTentativa: false,
+      escalar: false,
+    })
+  })
+  it('já escalado → não re-escala', () => {
+    expect(
+      decidirEscalonamento({ clearedAt: null, escalatedAt: new Date(), prAttempts: 5 }, true)
+    ).toMatchObject({ incrementarTentativa: false, escalar: false })
+  })
+})
+
+describe('varrerIncidentesResolvidos: escalonamento', () => {
+  it('3º PR fechado sem merge → incrementa e escala 1x', async () => {
+    const incrementarTentativa = vi.fn(async () => undefined)
+    const escalar = vi.fn(async () => undefined)
+    const r = await varrerIncidentesResolvidos({
+      listarAbertos: async () => [inc({ prAttempts: 2, escalatedAt: null })],
+      situacaoDoIncidente: async () => ({
+        ultimaRunVerde: false,
+        rodouDepoisDoPr: false,
+        prMesclado: false,
+        prFechadoSemMerge: true,
+      }),
+      fecharIssue: vi.fn(async () => undefined),
+      limparIncidente: vi.fn(async () => undefined),
+      incrementarTentativa,
+      escalar,
+    })
+    expect(incrementarTentativa).toHaveBeenCalledWith('i1')
+    expect(escalar).toHaveBeenCalledWith(expect.objectContaining({ id: 'i1', issueNumber: 50 }))
+    expect(r.escalados).toEqual(['wf:11'])
+  })
+
+  it('PR vivo → não conta tentativa', async () => {
+    const incrementarTentativa = vi.fn(async () => undefined)
+    await varrerIncidentesResolvidos({
+      listarAbertos: async () => [inc({ prAttempts: 2 })],
+      situacaoDoIncidente: async () => ({
+        ultimaRunVerde: false,
+        rodouDepoisDoPr: false,
+        prMesclado: false,
+        prFechadoSemMerge: false,
+      }),
+      fecharIssue: vi.fn(async () => undefined),
+      limparIncidente: vi.fn(async () => undefined),
+      incrementarTentativa,
+      escalar: vi.fn(async () => undefined),
+    })
+    expect(incrementarTentativa).not.toHaveBeenCalled()
   })
 })
