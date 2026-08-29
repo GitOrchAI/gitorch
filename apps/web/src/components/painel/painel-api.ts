@@ -33,6 +33,7 @@ export const ROTAS = {
   responder: (id: string): string => `/api/v1/painel/decisoes/${id}/responder`, // NOVA nesta leva
   pedidos: '/api/v1/painel/pedidos', // NOVA (leva 2, bloco 2) — a árvore dos desejos
   sprint: '/api/v1/painel/sprint', // NOVA (leva 2, bloco 3) — a sprint corrente
+  leitura: '/api/v1/painel/leitura', // NOVA (leva 2, bloco 4) — o que já li do repositório
   ritmo: '/api/v1/painel/ritmo', // FALTA — leva 2
   entregas: '/api/v1/painel/entregas', // FALTA — leva 2
   historico: '/api/v1/painel/historico', // FALTA — leva 2

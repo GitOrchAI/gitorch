@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken'
 import { loadEnv } from '../config/env.js'
 import { registerPlugins } from '../plugins/index.js'
 import { painelRoutes } from './painel.js'
+import { LeituraIndisponivelError } from '../services/leitura-do-repositorio.js'
 import { ArvoreIndisponivelError } from '../services/arvore-de-pedidos.js'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -55,6 +56,8 @@ describe('Rotas do painel do owner', () => {
     app.inject({ method: 'GET', url: `/api/v1/painel/pedidos${qs}`, headers: authHeaders })
   const getSprint = (qs = '') =>
     app.inject({ method: 'GET', url: `/api/v1/painel/sprint${qs}`, headers: authHeaders })
+  const getLeitura = (qs = '') =>
+    app.inject({ method: 'GET', url: `/api/v1/painel/leitura${qs}`, headers: authHeaders })
 
   beforeEach(async () => {
     await build()
@@ -311,6 +314,74 @@ describe('Rotas do painel do owner', () => {
       const corpo = (await getPedidos()).body
       expect(corpo).not.toContain('proj_1')
       expect(corpo).not.toContain('owner_1')
+    })
+  })
+
+  describe('GET /api/v1/painel/leitura', () => {
+    const LIDO = {
+      projeto: 'gitorch',
+      repo: 'GitOrchAI/gitorch',
+      disponivel: true,
+      privado: false,
+      linguagem: 'TypeScript',
+      pedidosAbertos: 72,
+      entregasAbertas: 19,
+      quadros: { total: 1, vivos: 1, comSprint: 0 },
+      ramoPrincipal: 'main',
+      temVerificacao: true,
+      ultimoCommit: '2026-08-29T18:36:49Z',
+    }
+
+    test('sem sessão, 401', async () => {
+      const res = await app.inject({ method: 'GET', url: '/api/v1/painel/leitura' })
+      expect(res.statusCode).toBe(401)
+    })
+
+    test('devolve a leitura e quantos foram lidos', async () => {
+      await build(fakePrisma(), { lerLeituras: async () => [LIDO] })
+      const res = await getLeitura()
+      expect(res.statusCode).toBe(200)
+      expect(res.json()).toEqual({ leituras: [LIDO], lidos: 1 })
+    })
+
+    test('repositório indisponível NÃO conta como lido', async () => {
+      // A diferença que impede a tela de dizer "li tudo e não achei nada"
+      // quando na verdade não conseguiu abrir o repositório.
+      const fora = {
+        projeto: 'sumido',
+        repo: 'd/sumido',
+        disponivel: false,
+        motivo: 'não consegui abrir',
+      }
+      await build(fakePrisma(), { lerLeituras: async () => [LIDO, fora] })
+      const corpo = (await getLeitura()).json()
+      expect(corpo.leituras).toHaveLength(2)
+      expect(corpo.lidos).toBe(1)
+    })
+
+    test('quando NENHUM responde, 503 — nunca lista vazia', async () => {
+      await build(fakePrisma(), {
+        lerLeituras: async () => {
+          throw new LeituraIndisponivelError('nenhum repositório respondeu')
+        },
+      })
+      const res = await getLeitura()
+      expect(res.statusCode).toBe(503)
+      expect(res.json()).toEqual({ error: 'LEITURA_INDISPONIVEL' })
+    })
+
+    test('repassa o filtro de projeto', async () => {
+      const espia = vi.fn().mockResolvedValue([])
+      await build(fakePrisma(), { lerLeituras: espia })
+      await getLeitura('?projeto=gitorch')
+      expect(espia).toHaveBeenCalledWith(expect.objectContaining({ projeto: 'gitorch' }))
+    })
+
+    test('dono sem projeto: lista vazia com lidos 0, e isso é 200, não erro', async () => {
+      await build(fakePrisma(), { lerLeituras: async () => [] })
+      const res = await getLeitura()
+      expect(res.statusCode).toBe(200)
+      expect(res.json()).toEqual({ leituras: [], lidos: 0 })
     })
   })
 
