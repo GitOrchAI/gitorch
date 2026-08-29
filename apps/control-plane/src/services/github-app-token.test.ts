@@ -452,3 +452,46 @@ describe('mintInstallationToken com repositório', () => {
     expect(segundo).toBe('ghs_inst_888')
   })
 })
+
+describe('a URL da instalação é montada por metades codificadas', () => {
+  const { privateKey: CHAVE_DE_TESTE } = makeKeypair()
+
+  // CodeQL apontava a linha como js/request-forgery (crítico): um texto de
+  // fora chegando cru numa URL que carrega o JWT do App. A conferência de
+  // formato continua sendo a guarda; codificar as metades é o que torna isso
+  // visível na própria linha, sem depender de seguir uma função três níveis
+  // acima.
+  it('recorta dono e nome e codifica cada um', async () => {
+    const chamadas: string[] = []
+    const fetchImpl = (async (url: string) => {
+      chamadas.push(String(url))
+      return new Response(JSON.stringify({ id: 7 }), { status: 200 })
+    }) as unknown as typeof fetch
+
+    await mintInstallationToken({
+      repository: 'dono/repo',
+      fetchImpl,
+      appId: '1',
+      privateKey: CHAVE_DE_TESTE,
+      onWarn: () => undefined,
+    }).catch(() => undefined)
+
+    expect(chamadas[0]).toContain('/repos/dono/repo/installation')
+  })
+
+  it('nome fora do formato NÃO chega a virar chamada nenhuma', async () => {
+    const fetchImpl = (async () => {
+      throw new Error('não deveria ter chamado o GitHub')
+    }) as unknown as typeof fetch
+
+    const r = await mintInstallationToken({
+      repository: '../../outro/lugar',
+      fetchImpl,
+      appId: '1',
+      privateKey: CHAVE_DE_TESTE,
+      onWarn: () => undefined,
+    })
+
+    expect(r).toBeNull()
+  })
+})
