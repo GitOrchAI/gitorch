@@ -70,10 +70,17 @@ export function escolherParaDelegar(args: {
    * o teto de simultâneas; uma sessão terminada no fornecedor não conta.
    */
   ocupamVagaNaConta?: number | undefined
+  /**
+   * Issues que já falharam 2× e estão ESPERANDO a análise de "por que" antes da
+   * 3ª tentativa (D51). Enquanto estão aqui não são redelegadas — a análise
+   * (RA) roda, grava o aprendizado e libera a issue com o pedido revisado.
+   */
+  issuesComAnalisePendente?: number[]
   /** Freio de fluxo por ciclo, independente do plano. */
   capPorCiclo: number
 }): number[] {
   const comSessaoViva = new Set(args.sessoesVivas.map((s) => s.issueNumber))
+  const analisePendente = new Set(args.issuesComAnalisePendente ?? [])
 
   // As vagas são da CONTA, não deste projeto: no Pro são 15 simultâneas
   // divididas entre todos os repositórios daquela conta. Usar só as vivas
@@ -111,6 +118,9 @@ export function escolherParaDelegar(args: {
     if (escolhidas.length >= limite) break
     if (c.bloqueadoresAbertos > 0) continue
     if (comSessaoViva.has(c.number)) continue
+    // Falhou 2× e a análise ainda não rodou: NÃO redelega — o RA vai entender
+    // o porquê e liberar a issue com o pedido revisado (D51).
+    if (analisePendente.has(c.number)) continue
 
     const declarados = c.arquivos ?? []
     // Lista vazia = "não sei" = nunca barra. Ver o comentário do campo.

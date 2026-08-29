@@ -428,6 +428,43 @@ export async function marcarAnaliseFeita(deps: {
 }
 
 /**
+ * Marca a análise como feita para TODAS as linhas (fechadas) de uma issue — é
+ * o que `abrirSessao` vai carregar para a próxima sessão. Chamado pela missão
+ * de análise (analisar-falhas-pendentes.ts) depois de entender o porquê.
+ */
+export async function marcarAnaliseFeitaDaIssue(deps: {
+  prisma: PrismaDevSession
+  projectId: string
+  issueNumber: number
+  agora: Date
+}): Promise<void> {
+  await deps.prisma.devSession.updateMany({
+    where: { projectId: deps.projectId, issueNumber: deps.issueNumber },
+    data: { analysisDoneAt: deps.agora },
+  })
+}
+
+/**
+ * As issues que já falharam 2× (`requeue_count >= 2`) e cuja análise ainda NÃO
+ * rodou (`analysis_done_at IS NULL`). Enquanto uma issue está nesta lista, o SM
+ * NÃO a redelega — espera a análise (D51). Escopado por projeto.
+ */
+export async function issuesComAnalisePendente(deps: {
+  prisma: PrismaDevSession
+  projectId: string
+}): Promise<number[]> {
+  const linhas = (await deps.prisma.devSession.findMany({
+    where: {
+      projectId: deps.projectId,
+      requeueCount: { gte: 2 },
+      analysisDoneAt: null,
+    },
+    select: { issueNumber: true },
+  })) as unknown as Array<{ issueNumber: number }>
+  return [...new Set(linhas.map((l) => l.issueNumber))]
+}
+
+/**
  * Anota o estado lido e quando foi lido.
  *
  * `progrediu` move a marca de progresso, e só ela. A API do serviço não tem
