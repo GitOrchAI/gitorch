@@ -37,6 +37,7 @@ export const ROTAS = {
   entregas: '/api/v1/painel/entregas', // FALTA — leva 2
   historico: '/api/v1/painel/historico', // FALTA — leva 2
   duvidaConfig: '/api/v1/painel/duvida-config', // NOVA (T14) — POST
+  timeline: '/api/v1/painel/timeline', // NOVA (T15) — auditoria que não vira spam no Telegram
 } as const
 
 /**
