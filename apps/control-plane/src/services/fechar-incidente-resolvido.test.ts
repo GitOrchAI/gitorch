@@ -168,6 +168,60 @@ describe('varrerIncidentesResolvidos', () => {
     expect(r.aindaAbertos).toBe(1)
   })
 
+  it('incidente sem prNumber → descobre o PR da sessão ANTES de decidir', async () => {
+    // O elo que faltava: sem esta ligação, situacaoDoIncidente enxerga
+    // prNumber:null para sempre e T9/T10 ficam inertes.
+    const descobrirPrDoIncidente = vi.fn(async () => 500)
+    let incVisto: IncidenteAberto | undefined
+    const r = await varrerIncidentesResolvidos({
+      listarAbertos: async () => [inc({ prNumber: null })],
+      descobrirPrDoIncidente,
+      situacaoDoIncidente: async (i) => {
+        incVisto = i
+        return { ultimaRunVerde: true, rodouDepoisDoPr: true, prMesclado: true }
+      },
+      fecharIssue: vi.fn(async () => undefined),
+      limparIncidente: vi.fn(async () => undefined),
+    })
+    expect(descobrirPrDoIncidente).toHaveBeenCalledOnce()
+    // situacaoDoIncidente recebe o incidente JÁ com o PR ligado.
+    expect(incVisto).toMatchObject({ prNumber: 500 })
+    expect(r.fechados).toEqual(['wf:11'])
+  })
+
+  it('incidente que JÁ tem prNumber → nem chama descobrirPrDoIncidente', async () => {
+    const descobrirPrDoIncidente = vi.fn(async () => 999)
+    await varrerIncidentesResolvidos({
+      listarAbertos: async () => [inc({ prNumber: 90 })],
+      descobrirPrDoIncidente,
+      situacaoDoIncidente: async () => ({
+        ultimaRunVerde: false,
+        rodouDepoisDoPr: false,
+        prMesclado: false,
+      }),
+      fecharIssue: vi.fn(async () => undefined),
+      limparIncidente: vi.fn(async () => undefined),
+    })
+    expect(descobrirPrDoIncidente).not.toHaveBeenCalled()
+  })
+
+  it('descobrirPrDoIncidente que falha → não derruba a varredura', async () => {
+    const r = await varrerIncidentesResolvidos({
+      listarAbertos: async () => [inc({ prNumber: null })],
+      descobrirPrDoIncidente: async () => {
+        throw new Error('db timeout')
+      },
+      situacaoDoIncidente: async () => ({
+        ultimaRunVerde: false,
+        rodouDepoisDoPr: false,
+        prMesclado: false,
+      }),
+      fecharIssue: vi.fn(async () => undefined),
+      limparIncidente: vi.fn(async () => undefined),
+    })
+    expect(r.aindaAbertos).toBe(1)
+  })
+
   it('resolvido → registrarResolucao com a classe', async () => {
     const registrarResolucao = vi.fn(async () => undefined)
     await varrerIncidentesResolvidos({

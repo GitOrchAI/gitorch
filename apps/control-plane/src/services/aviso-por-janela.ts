@@ -12,7 +12,12 @@ export interface EstadoDaJanela {
   avisado: boolean
 }
 
-export const JANELA_LIMPA: EstadoDaJanela = { desde: null, avisado: false }
+/**
+ * Estado "sem problema". CONGELADO: é devolvido para consumidores que só leem
+ * (`decidirAvisoPorJanela` devolve uma cópia nova, não esta referência) e uma
+ * mutação acidental aqui contaminaria toda chamada seguinte do módulo.
+ */
+export const JANELA_LIMPA: Readonly<EstadoDaJanela> = Object.freeze({ desde: null, avisado: false })
 
 export interface DecisaoDeAviso {
   novoEstado: EstadoDaJanela
@@ -28,7 +33,8 @@ export function decidirAvisoPorJanela(
   minutosAteAlertar: number
 ): DecisaoDeAviso {
   if (!problemaAgora) {
-    return { novoEstado: JANELA_LIMPA, deveAvisar: false, minutosNoProblema: 0 }
+    // Cópia nova a cada chamada — nunca a referência de `JANELA_LIMPA`.
+    return { novoEstado: { desde: null, avisado: false }, deveAvisar: false, minutosNoProblema: 0 }
   }
   const desde = estado.desde ?? agora
   const minutosNoProblema = Math.floor((agora.getTime() - desde.getTime()) / 60_000)

@@ -168,6 +168,17 @@ export function agruparPorCausa(achados: AchadoParaAgrupar[]): Map<string, strin
 
 export interface VarrerIncidentesResolvidosDeps {
   listarAbertos: () => Promise<IncidenteAberto[]>
+  /**
+   * ESTEIRA-T9/T10 (elo que faltava): liga o incidente ao PR que a delegação
+   * abriu. O `pr_number` NÃO nasce com o incidente (não há PR ainda) e não era
+   * gravado em nenhum outro ponto — sem esta ligação, `situacaoDoIncidente`
+   * nunca via o PR e T9 (fechar sozinho) / T10 (contar tentativa, escalar)
+   * ficavam inertes. O número mora em `dev_sessions.pull_request_number` da
+   * sessão que trabalhou a issue. Devolve o número (e o persiste em
+   * `infra_incidents.pr_number`) ou `null`. Só é chamada para incidente ainda
+   * sem `prNumber`.
+   */
+  descobrirPrDoIncidente?: (inc: IncidenteAberto) => Promise<number | null>
   /** Relê o GitHub: última run do workflow + estado do PR. */
   situacaoDoIncidente: (inc: IncidenteAberto) => Promise<SituacaoDoIncidente>
   /** Fecha a issue no GitHub (best-effort). */
@@ -222,6 +233,19 @@ export async function varrerIncidentesResolvidos(
 
   for (const inc of abertos) {
     try {
+      // Liga o incidente ao PR da delegação ANTES de decidir — sem isto o
+      // resto da varredura enxerga `prNumber: null` e nada fecha nem escala.
+      if (inc.prNumber == null && inc.issueNumber !== null && deps.descobrirPrDoIncidente) {
+        try {
+          const pr = await deps.descobrirPrDoIncidente(inc)
+          if (pr != null) inc.prNumber = pr
+        } catch (err) {
+          warn(
+            `varrer-incidentes: não liguei ${inc.identidadeEstavel} a um PR (${String(err).slice(0, 120)})`
+          )
+        }
+      }
+
       const sit = await deps.situacaoDoIncidente(inc)
       const decisao = decidirFechamentoDeIncidente(inc, sit)
       if (decisao.limparIncidente) {

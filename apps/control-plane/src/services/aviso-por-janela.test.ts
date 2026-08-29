@@ -32,6 +32,20 @@ describe('decidirAvisoPorJanela', () => {
     expect(d.novoEstado).toEqual(JANELA_LIMPA)
   })
 
+  it('o estado limpo devolvido é uma cópia mutável, não a constante congelada', () => {
+    const d = decidirAvisoPorJanela({ desde: t(0), avisado: true }, false, t(30), 20)
+    expect(d.novoEstado).not.toBe(JANELA_LIMPA)
+    expect(() => {
+      d.novoEstado.avisado = true
+    }).not.toThrow()
+    // e a constante do módulo continua intacta para a próxima chamada
+    expect(JANELA_LIMPA).toEqual({ desde: null, avisado: false })
+  })
+
+  it('JANELA_LIMPA é congelada — mutação acidental não passa despercebida', () => {
+    expect(Object.isFrozen(JANELA_LIMPA)).toBe(true)
+  })
+
   it('3 ciclos cobrindo 21 min → exatamente 1 aviso', () => {
     let estado = JANELA_LIMPA
     const avisos: number[] = []

@@ -4467,6 +4467,27 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           prAttempts: number
           escalatedAt: Date | null
         }>,
+      // ESTEIRA-T9/T10 (elo que faltava): o número do PR mora na linha da
+      // sessão que trabalhou a issue (`dev_sessions.pull_request_number`).
+      // Copia para `infra_incidents.pr_number` — sem isto, `situacaoDoIncidente`
+      // nunca vê o PR e nada fecha nem escala.
+      descobrirPrDoIncidente: async (inc) => {
+        if (inc.issueNumber === null) return null
+        const sessao = (await app.prisma.devSession.findFirst({
+          where: {
+            projectId: project.id,
+            issueNumber: inc.issueNumber,
+            pullRequestNumber: { not: null },
+          },
+          orderBy: { createdAt: 'desc' },
+          select: { pullRequestNumber: true },
+        })) as { pullRequestNumber: number | null } | null
+        const pr = sessao?.pullRequestNumber ?? null
+        if (pr !== null) {
+          await app.prisma.infraIncident.update({ where: { id: inc.id }, data: { prNumber: pr } })
+        }
+        return pr
+      },
       situacaoDoIncidente: async (inc) => {
         let prMesclado = false
         let prFechadoSemMerge = false

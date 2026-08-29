@@ -406,6 +406,68 @@ describe('o teto de simultâneas é da CONTA, não do projeto', () => {
     expect(d?.travadaPorVaga).toBe(true)
   })
 
+  it('candidatas existem mas TODAS bloqueadas por dependência → travadaPorVaga: false', () => {
+    // O falso alarme que o T11 não pode dar: backlog com "Blocked by #N"
+    // aberto é a norma (o sprint cria a árvore inteira de uma vez). Nada está
+    // pronto — a conta cheia não é o obstáculo, e avisar o dono para "subir o
+    // teto ou encerrar uma sessão" não destravaria nada.
+    let d: { travadaPorVaga: boolean } | undefined
+    escolherParaDelegar({
+      candidatas: [
+        { number: 1, bloqueadoresAbertos: 2 },
+        { number: 2, bloqueadoresAbertos: 1 },
+      ],
+      sessoesVivas: [],
+      ocupamVagaNaConta: 15,
+      delegadasHoje: 3,
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+      capPorCiclo: 3,
+      onDiagnostico: (x) => {
+        d = x
+      },
+    })
+    expect(d?.travadaPorVaga).toBe(false)
+  })
+
+  it('candidatas todas presas na análise das 2 falhas → travadaPorVaga: false', () => {
+    let d: { travadaPorVaga: boolean } | undefined
+    escolherParaDelegar({
+      candidatas: [candidata(1), candidata(2)],
+      sessoesVivas: [],
+      issuesComAnalisePendente: [1, 2],
+      ocupamVagaNaConta: 15,
+      delegadasHoje: 3,
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+      capPorCiclo: 3,
+      onDiagnostico: (x) => {
+        d = x
+      },
+    })
+    expect(d?.travadaPorVaga).toBe(false)
+  })
+
+  it('uma pronta no meio de bloqueadas + conta cheia → travadaPorVaga: true', () => {
+    let d: { travadaPorVaga: boolean } | undefined
+    escolherParaDelegar({
+      candidatas: [
+        { number: 1, bloqueadoresAbertos: 2 },
+        { number: 2, bloqueadoresAbertos: 0 },
+      ],
+      sessoesVivas: [],
+      ocupamVagaNaConta: 15,
+      delegadasHoje: 3,
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+      capPorCiclo: 3,
+      onDiagnostico: (x) => {
+        d = x
+      },
+    })
+    expect(d?.travadaPorVaga).toBe(true)
+  })
+
   it('fila vazia → travadaPorVaga: false (não é notícia)', () => {
     let d: { travadaPorVaga: boolean } | undefined
     escolherParaDelegar({
