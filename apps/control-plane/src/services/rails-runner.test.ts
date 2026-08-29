@@ -32,7 +32,7 @@ describe('runFormStep', () => {
       prompt: 'p1',
       execute: async (prompt) => {
         calls.push(prompt)
-        return '{"phases":[{"title":"F1","goal":"g","rationale":"r"}]}'
+        return '{"phases":[{"title":"F1","goal":"g","rationale":"r","usableOutcome":"O dono usa o fluxo inteiro."}]}'
       },
     })
     expect(calls).toHaveLength(1)
@@ -50,7 +50,7 @@ describe('runFormStep', () => {
         n += 1
         return n === 1
           ? '{"phases":[{"title":"F1"}]}' // faltam goal/rationale
-          : '{"phases":[{"title":"F1","goal":"g","rationale":"r"}]}'
+          : '{"phases":[{"title":"F1","goal":"g","rationale":"r","usableOutcome":"O dono usa o fluxo inteiro."}]}'
       },
     })
     expect(n).toBe(2)

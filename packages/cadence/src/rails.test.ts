@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   DOD_FIELD_MAP,
+  ESCALA_DE_PESO,
+  PESO_MAXIMO_DE_SPRINT,
   RAILS_SCHEMAS,
   buildStepPrompt,
   formatRaJourneys,
@@ -9,6 +11,20 @@ import {
   wrapClientRequest,
   type PoTasksForm,
 } from './rails'
+
+/** Task válida no padrão Shrimp (8 campos), com o peso que o teste quiser. */
+function tarefaComPeso(weight: number): Record<string, unknown> {
+  return {
+    featureIndex: 0,
+    weight,
+    weightRationale: 'Duas telas e uma rota nova; padrão já existe em desejos.ts.',
+    fields: Object.fromEntries(
+      [['titulo', 'Salvar o item da lista'] as [string, string]].concat(
+        DOD_FIELD_MAP.map((f) => [f.key, 'conteúdo'] as [string, string])
+      )
+    ),
+  }
+}
 
 describe('RAILS_SCHEMAS', () => {
   it('cobre os formulários dos papéis', () => {
@@ -44,9 +60,71 @@ describe('RAILS_SCHEMAS', () => {
 })
 
 describe('validateForm (validador minimal por schema)', () => {
+  // A RÉGUA (bloco 1 da leva 2). Motivo medido no banco em 29/08: o Produto
+  // falha 28,3% das execuções e o Analista 20,8% — os dois papéis que criam a
+  // árvore são os que mais erram, e as issues saem rasas. A validação vive
+  // aqui, no código, e não no prompt: é o que faz a regra valer igual nos três
+  // motores, com modelos diferentes.
+
+  it('rejeita fase sem o resultado usável — camada técnica não é fase', () => {
+    const r = validateForm(RAILS_SCHEMAS.poPhases, {
+      phases: [{ title: 'Foundation', goal: 'Preparar a base', rationale: 'Precisa vir antes' }],
+    })
+    expect(r.ok).toBe(false)
+    expect(r.errors.join(' ')).toContain('usableOutcome')
+  })
+
+  it('aceita task com peso na escala', () => {
+    const r = validateForm(RAILS_SCHEMAS.poTasks, { tasks: [tarefaComPeso(5)] })
+    expect(r.ok).toBe(true)
+  })
+
+  it('rejeita peso fora da escala — 21 não existe, quebra ou investiga', () => {
+    const r = validateForm(RAILS_SCHEMAS.poTasks, { tasks: [tarefaComPeso(21)] })
+    expect(r.ok).toBe(false)
+    expect(r.errors.join(' ')).toContain('weight')
+  })
+
+  it('rejeita peso que não está na escala mesmo sendo pequeno (7 não existe)', () => {
+    const r = validateForm(RAILS_SCHEMAS.poTasks, { tasks: [tarefaComPeso(7)] })
+    expect(r.ok).toBe(false)
+  })
+
+  it('rejeita task sem peso', () => {
+    const semPeso = tarefaComPeso(3) as Record<string, unknown>
+    delete semPeso['weight']
+    const r = validateForm(RAILS_SCHEMAS.poTasks, { tasks: [semPeso] })
+    expect(r.ok).toBe(false)
+    expect(r.errors.join(' ')).toContain('weight')
+  })
+
+  it('rejeita peso sem a justificativa que cita a evidência', () => {
+    const semPorque = tarefaComPeso(8) as Record<string, unknown>
+    delete semPorque['weightRationale']
+    const r = validateForm(RAILS_SCHEMAS.poTasks, { tasks: [semPorque] })
+    expect(r.ok).toBe(false)
+    expect(r.errors.join(' ')).toContain('weightRationale')
+  })
+
+  it('a escala tem buraco de propósito e o teto é 13', () => {
+    expect([...ESCALA_DE_PESO]).toEqual([1, 2, 3, 5, 8, 13])
+    expect(PESO_MAXIMO_DE_SPRINT).toBe(13)
+    expect(ESCALA_DE_PESO).not.toContain(4)
+    for (const peso of ESCALA_DE_PESO) {
+      expect(validateForm(RAILS_SCHEMAS.poTasks, { tasks: [tarefaComPeso(peso)] }).ok).toBe(true)
+    }
+  })
+
   it('aceita PoPhases válido', () => {
     const r = validateForm(RAILS_SCHEMAS.poPhases, {
-      phases: [{ title: 'Fase 1', goal: 'Estruturar dados', rationale: 'Base de tudo' }],
+      phases: [
+        {
+          title: 'Fase 1',
+          goal: 'Estruturar dados',
+          rationale: 'Base de tudo',
+          usableOutcome: 'O dono adiciona um item pela conversa e vê salvo.',
+        },
+      ],
     })
     expect(r.ok).toBe(true)
   })

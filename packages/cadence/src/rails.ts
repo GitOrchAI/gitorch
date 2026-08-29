@@ -149,8 +149,31 @@ export function formatRaDeliverable(d: RaDeliverable): string {
   return lines.join('\n')
 }
 
+/**
+ * A escala de peso do Scrum. Os buracos são de propósito: se a discussão não
+ * consegue separar 8 de 13, a incerteza está alta demais e o item precisa ser
+ * quebrado ou investigado antes de virar sprint. Acima de 13 não entra —
+ * `PESO_MAXIMO_DE_SPRINT` é esse teto.
+ */
+export const ESCALA_DE_PESO = [1, 2, 3, 5, 8, 13] as const
+export type PesoDeTask = (typeof ESCALA_DE_PESO)[number]
+export const PESO_MAXIMO_DE_SPRINT = 13
+
 export interface PoPhasesForm {
-  phases: Array<{ title: string; goal: string; rationale: string }>
+  phases: Array<{
+    title: string
+    goal: string
+    rationale: string
+    /**
+     * O que o DONO passa a conseguir fazer quando esta fase termina, na voz
+     * dele. É o campo que impede camada técnica virar fase: "Foundation" e
+     * "Data Persistence" não respondem isto; "o dono adiciona um item pela
+     * conversa e vê salvo" responde. O Scrum Guide é explícito — uma fase só
+     * conta como incremento se for uma fatia usável, e "backend pronto, tela
+     * na próxima" não é.
+     */
+    usableOutcome: string
+  }>
 }
 
 export interface PoEpicsForm {
@@ -172,6 +195,14 @@ export interface PoTasksForm {
     featureIndex: number
     fields: DoDFields
     blockedByTaskIndexes?: number[]
+    /**
+     * Tamanho relativo da task na ESCALA_DE_PESO. Não é hora: é esforço mais
+     * complexidade mais incerteza mais risco. É o único nível que recebe peso
+     * — fase, épico e feature são checkpoints e somam os filhos.
+     */
+    weight: PesoDeTask
+    /** Por que este tamanho, citando a evidência que sustenta (arquivo, área, jornada). */
+    weightRationale: string
   }>
 }
 
@@ -288,6 +319,14 @@ export interface MiniSchema {
   properties?: Record<string, MiniSchema>
   items?: MiniSchema
   enum?: string[]
+  /**
+   * Valores numéricos aceitos. Existe por causa do PESO da task: a escala do
+   * Scrum tem BURACO de propósito (1,2,3,5,8,13) — se ninguém consegue decidir
+   * entre 8 e 13, a incerteza está alta demais e o item precisa ser quebrado
+   * antes de entrar numa sprint. Um `number` solto aceitaria 7, 40, 0.5 e a
+   * escala perderia o sentido.
+   */
+  enumNumbers?: number[]
   /** Mínimo de itens (arrays): é como o CÓDIGO força profundidade de análise. */
   minItems?: number
 }
@@ -431,6 +470,9 @@ export const RAILS_SCHEMAS = {
     properties: { fields: DOD_FIELDS_SCHEMA },
   } as MiniSchema,
 
+  // Fases. `usableOutcome` é obrigatório e é o que separa fase de camada
+  // técnica: sem uma frase do que o dono passa a conseguir fazer, a fase não
+  // é fatia usável e não pode contar como evolução do pedido.
   poPhases: {
     type: 'object',
     required: ['phases'],
@@ -439,11 +481,12 @@ export const RAILS_SCHEMAS = {
         type: 'array',
         items: {
           type: 'object',
-          required: ['title', 'goal', 'rationale'],
+          required: ['title', 'goal', 'rationale', 'usableOutcome'],
           properties: {
             title: { type: 'string' },
             goal: { type: 'string' },
             rationale: { type: 'string' },
+            usableOutcome: { type: 'string' },
           },
         },
       },
@@ -504,11 +547,13 @@ export const RAILS_SCHEMAS = {
         minItems: 1,
         items: {
           type: 'object',
-          required: ['featureIndex', 'fields'],
+          required: ['featureIndex', 'fields', 'weight', 'weightRationale'],
           properties: {
             featureIndex: { type: 'number' },
             fields: DOD_FIELDS_SCHEMA,
             blockedByTaskIndexes: { type: 'array', items: { type: 'number' } },
+            weight: { type: 'number', enumNumbers: [...ESCALA_DE_PESO] },
+            weightRationale: { type: 'string' },
           },
         },
       },
@@ -739,8 +784,12 @@ function walk(schema: MiniSchema, value: unknown, path: string, errors: string[]
     }
     return
   }
-  if (schema.type === 'number' && typeof value !== 'number') {
-    errors.push(`${path}: expected number`)
+  if (schema.type === 'number') {
+    if (typeof value !== 'number') {
+      errors.push(`${path}: expected number`)
+    } else if (schema.enumNumbers && !schema.enumNumbers.includes(value)) {
+      errors.push(`${path}: expected one of [${schema.enumNumbers.join(', ')}]`)
+    }
     return
   }
   if (schema.type === 'boolean' && typeof value !== 'boolean') {
