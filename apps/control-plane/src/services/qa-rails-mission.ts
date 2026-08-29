@@ -125,7 +125,14 @@ export interface VigiliaDoJulgamentoOptions {
   lerHistoricoDoProjeto?: (repositorio: string) => Promise<EntregaJulgada[]>
   /** Guarda ESTE julgamento para as próximas contas. */
   registrarJulgamento?: (args: { repositorio: string; peloPortao: boolean }) => Promise<void>
-  avisarDono?: (mensagem: string) => Promise<void>
+  /**
+   * fix/telegram-notifier-propaga-falha: devolve `Promise<boolean>` (não
+   * `Promise<void>` como as outras cópias de `avisarDono` da família) porque
+   * o bloco de escalada abaixo precisa saber de verdade se a entrega
+   * chegou — não dá para confiar em `.then/.catch` (buildTelegramNotifier
+   * nunca rejeita por design; ver sm-watchdog.ts).
+   */
+  avisarDono?: (mensagem: string) => Promise<boolean>
   /**
    * ESTEIRA-T15: o dono já foi avisado desta SEQUÊNCIA de barradas? Sem isto,
    * `decidirSobreOProjeto` recalcula `seguidas` (3, 4, 5...) a cada julgamento
@@ -903,13 +910,17 @@ export async function runQaMissionViaRails(
       const hashDoAviso = hashDaMensagem(`avisar-demora:${pr.head?.sha ?? ''}`)
       const jaAvisado = linhaDaEntrega?.answeredHash === hashDoAviso
       if (!jaAvisado && options.avisarDono) {
-        await options
+        // fix/telegram-notifier-propaga-falha: só marca o hash (idempotência)
+        // se a entrega REALMENTE chegou — marcar numa falha de Telegram
+        // emudecia o dono até o próximo push mudar o head, o mesmo defeito
+        // que este aviso existe para evitar.
+        const entregue = await options
           .avisarDono(
             `GitOrch: a verificação automática do PR #${target.number} (${options.repository}) ` +
               `está parada — ${decisao.motivo}.`
           )
-          .catch(() => undefined)
-        if (linhaDaEntrega && options.registrarAvisoDeDemora) {
+          .catch(() => false)
+        if (entregue && linhaDaEntrega && options.registrarAvisoDeDemora) {
           await options.registrarAvisoDeDemora({
             sessionName: linhaDaEntrega.sessionName,
             hash: hashDoAviso,
@@ -1379,10 +1390,7 @@ export async function runQaMissionViaRails(
             // completa. Aviso que falha volta ao ciclo de sempre: repetir é ruim,
             // emudecer é pior.
             const avisado = options.avisarDono
-              ? await options
-                  .avisarDono(`GitOrch: ${decisao.diagnostico}`)
-                  .then(() => true)
-                  .catch(() => false)
+              ? await options.avisarDono(`GitOrch: ${decisao.diagnostico}`)
               : false
             projetoTravado = avisado
             if (avisado && options.registrarJanelaDeBarradas) {

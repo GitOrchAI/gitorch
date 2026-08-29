@@ -181,7 +181,7 @@ describe('montarOpcoesDoJulgamento', () => {
   })
 
   test('avisarDono presente no objeto devolvido quando um notificador foi construído', () => {
-    const notify = vi.fn(async (_mensagem: string) => undefined)
+    const notify = vi.fn(async (_mensagem: string) => true)
     const opcoes = montarOpcoesDoJulgamento({
       prisma: prismaFalso(),
       projectId: 'proj_1',

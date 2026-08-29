@@ -72,7 +72,7 @@ export interface PrismaParaConferencia {
  */
 export async function conferirBancoNoArranque(args: {
   prisma: PrismaParaConferencia
-  avisar: ((texto: string) => Promise<void>) | null
+  avisar: ((texto: string) => Promise<boolean>) | null
   log: { warn: (msg: string) => void; info: (msg: string) => void }
 }): Promise<EstadoDoBanco | null> {
   let aplicadas: string[]

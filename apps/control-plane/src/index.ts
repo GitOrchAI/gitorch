@@ -19,7 +19,7 @@ import { buildTelegramNotifier } from './services/sm-watchdog.js'
  * Nunca lança: sem chat ligado o aviso fica só no log, que é o que sobra, e é
  * melhor que derrubar o arranque por falta de mensageiro.
  */
-function notificadorDaInstancia(): ((texto: string) => Promise<void>) | null {
+function notificadorDaInstancia(): ((texto: string) => Promise<boolean>) | null {
   const chatId = process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID']
   const avisar = buildTelegramNotifier({
     botToken: process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],

@@ -39,7 +39,7 @@ export interface SmWatchdogOptions {
   /** Máximo de retentativas por issue antes de escalar (padrão 3). */
   maxRetries?: number
   /** Aviso humano ao escalar (ex.: Telegram). Nunca deve derrubar o watchdog. */
-  notify?: (message: string) => Promise<void>
+  notify?: (message: string) => Promise<boolean>
   fetchImpl?: typeof fetch
 }
 
@@ -193,14 +193,18 @@ export async function runSmWatchdog(options: SmWatchdogOptions): Promise<SmWatch
  * 10s) vale.
  *
  * A função devolvida NUNCA rejeita (todo chamador deste arquivo depende
- * disso — "Nunca deve derrubar o watchdog"), então uma falha de ENTREGA
- * real (bot inválido, destino apagado, timeout) fica muda por padrão: sem
- * `onDeliveryFailure`, ela desaparece sem deixar rastro nenhum — um
- * `.catch(...)` em volta de `notify(...)`, em qualquer chamador, NUNCA
- * dispara (achado Baixo 6 da revisão da Task 5/F8: era código morto).
- * `onDeliveryFailure` é o jeito de um chamador OPTAR por não deixar a falha
- * sumir (ex.: registrar num log), sem mudar o contrato "nunca rejeita" para
- * quem não passa o callback.
+ * disso — "Nunca deve derrubar o watchdog"): um `.catch(...)` em volta de
+ * `notify(...)`, em qualquer chamador, NUNCA dispara (achado Baixo 6 da
+ * revisão da Task 5/F8). Por isso o RESULTADO da entrega vem pelo VALOR
+ * resolvido — `true` entregue, `false` falhou (bot inválido, destino
+ * apagado, timeout) — nunca por rejeição. Fix (branch
+ * fix/telegram-notifier-propaga-falha): antes o retorno era `Promise<void>`
+ * e uma falha real de entrega ficava muda por padrão sem
+ * `onDeliveryFailure`, incluindo para quem tentava ler o resultado via
+ * `.then/.catch` (nunca disparava — era o bug real por trás do "avisado"
+ * do QA ficar sempre `true` mesmo com o Telegram fora do ar).
+ * `onDeliveryFailure` continua existindo à parte, só para quem quer LOGAR a
+ * falha sem mudar o fluxo (ex.: um aviso fire-and-forget).
  */
 export function buildTelegramNotifier(env: {
   botToken?: string | undefined
@@ -208,20 +212,39 @@ export function buildTelegramNotifier(env: {
   fetchImpl?: typeof fetch
   timeoutMs?: number
   onDeliveryFailure?: (err: unknown) => void
-}): ((message: string) => Promise<void>) | undefined {
+}): ((message: string) => Promise<boolean>) | undefined {
   const { botToken, chatId } = env
   if (!botToken || !chatId) return undefined
-  // `fetchSemPermissao` e nao `fetch` cru: quem chama sem passar um fetch com
-  // a autonomia do projeto tem que falhar FECHADO. Com `?? fetch` o
-  // esquecimento escrevia no repositorio do cliente sem guarda nenhuma.
+  // Os dois lados: o retorno `Promise<boolean>` do #377 (que propaga falha
+  // REAL de entrega) e o padrão que falha fechado.
+  //
+  // Aqui a chamada é para o Telegram, não para o GitHub — a guarda deixaria
+  // passar de qualquer jeito. `fetchSemPermissao` fica mesmo assim porque este
+  // arquivo TAMBÉM fala com o GitHub em outro ponto, e ter um `?? fetch` cru
+  // no meio dele é justamente o que o teste de varredura proíbe: um dia
+  // alguém copia a linha de cima para a chamada de baixo.
   const f = fetchComTeto(env.fetchImpl ?? fetchSemPermissao(), env.timeoutMs)
-  return async (message: string) => {
-    await f(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+  return async (message: string): Promise<boolean> => {
+    return f(`https://api.telegram.org/bot${botToken}/sendMessage`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ chat_id: chatId, text: message }),
-    }).catch((err: unknown) => {
-      env.onDeliveryFailure?.(err)
     })
+      .then((res) => {
+        // Bot token revogado, bot bloqueado pelo destino, chat apagado — a API
+        // do Telegram devolve 4xx/5xx, e `fetch` NÃO trata status de erro como
+        // rejeição. Sem este check, exatamente os casos que motivaram o
+        // Promise<boolean> ("bot inválido, destino apagado") resolveriam
+        // `true` do mesmo jeito, porque o `fetch` em si teve sucesso.
+        if (!res.ok) {
+          env.onDeliveryFailure?.(new Error(`Telegram respondeu ${res.status}`))
+          return false
+        }
+        return true
+      })
+      .catch((err: unknown) => {
+        env.onDeliveryFailure?.(err)
+        return false
+      })
   }
 }
