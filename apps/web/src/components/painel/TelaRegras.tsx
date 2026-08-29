@@ -1,28 +1,29 @@
 'use client'
-// Regras: os limites que os agentes respeitam. Duas não podem ser desligadas.
-// VISUAL nesta leva: os interruptores desenham e guardam o estado localmente;
-// ligar de verdade na governança do backend é leva 2. Portado de
+// Regras: os limites que os agentes respeitam.
+//
+// TUDO nesta tela é EXEMPLO nesta leva — não existe rota de governança ainda.
+// Por isso os dois cards levam o selo "dado de exemplo" e os interruptores
+// vêm DESABILITADOS: antes eles ligavam e desligavam na tela sem salvar nada,
+// o que fazia o dono acreditar que tinha mudado uma regra de produção. Um
+// controle que não persiste é pior que controle nenhum. Volta a ser
+// interativo junto com a rota de governança (leva 2). Portado de
 // TelaGovernanca.jsx.
-import { useState } from 'react'
 import { DEMO } from './painel-demo'
 import { Cabeca, Card } from './PainelUI'
 import { SeloDemo } from './PainelEstados'
 
-function Interruptor({
-  on,
-  trava,
-  onToggle,
-}: {
-  on: boolean
-  trava?: boolean
-  onToggle?: () => void
-}) {
+/** Motivo dos interruptores desabilitados, visível no hover. */
+const INERTE = 'Ainda não salva — ligar regras de verdade entra numa próxima leva.'
+
+function Interruptor({ on, trava, rotulo }: { on: boolean; trava?: boolean; rotulo: string }) {
   return (
     <button
-      onClick={trava ? undefined : onToggle}
-      disabled={trava}
+      disabled
       aria-pressed={on}
+      aria-label={rotulo}
+      title={trava ? 'Obrigatória: não pode ser desligada.' : INERTE}
       style={{
+        opacity: trava ? 1 : 0.45,
         flex: 'none',
         width: 42,
         height: 24,
@@ -30,7 +31,7 @@ function Interruptor({
         border: '1px solid ' + (on ? 'var(--gl-accent)' : 'var(--gl-hair-strong)'),
         background: on ? 'var(--gl-accent)' : 'var(--gl-surface-2)',
         position: 'relative',
-        cursor: trava ? 'not-allowed' : 'pointer',
+        cursor: 'not-allowed',
         transition: 'all .2s',
       }}
     >
@@ -58,9 +59,7 @@ interface RegraView {
 }
 
 export function TelaRegras() {
-  const [regras, setRegras] = useState<RegraView[]>(DEMO.regras.map((r) => ({ ...r })))
-  const alternar = (i: number) =>
-    setRegras((rs) => rs.map((r, k) => (k === i ? { ...r, on: !r.on } : r)))
+  const regras: readonly RegraView[] = DEMO.regras
 
   return (
     <>
@@ -69,8 +68,8 @@ export function TelaRegras() {
         que nada entre em produção sem verificação.
       </Cabeca>
 
-      <Card flush titulo="Em vigor">
-        {regras.map((r, i) => (
+      <Card flush titulo="Em vigor" sub={<SeloDemo mostrar />}>
+        {regras.map((r) => (
           <div key={r.t} className="pn-row static" style={{ alignItems: 'flex-start' }}>
             <span className="pn-grow">
               <span className="pn-rt" style={{ display: 'block', whiteSpace: 'normal' }}>
@@ -85,7 +84,7 @@ export function TelaRegras() {
                 </span>
               )}
             </span>
-            <Interruptor on={r.on} trava={r.trava} onToggle={() => alternar(i)} />
+            <Interruptor on={r.on} trava={r.trava} rotulo={r.t} />
           </div>
         ))}
       </Card>
