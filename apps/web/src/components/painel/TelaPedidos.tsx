@@ -1,15 +1,53 @@
 'use client'
-// Pedidos: escrever em português o que precisa acontecer. O composer é AO VIVO
-// (POST /api/v1/desejos, com as 7 frases de erro do produto); a lista de
-// pedidos fica de exemplo nesta leva (não há rota para listar os desejos).
+// Pedidos: escrever em português o que precisa acontecer, e acompanhar o que
+// já foi pedido. Os DOIS lados são ao vivo agora: o composer manda
+// (POST /api/v1/desejos, com as 7 frases de erro do produto) e a lista lê de
+// volta (GET /api/v1/painel/pedidos), com a árvore que o Produto pendurou.
+//
+// A tabela mostra SÓ o que existe de verdade. O desenho original tinha colunas
+// de urgência, responsável e previsão; nenhuma delas tem fonte hoje, e coluna
+// inventada é pior que coluna faltando. Elas voltam quando houver de onde ler.
 // Portado de TelaPedidos.jsx.
-import { useState } from 'react'
-import { DEMO } from './painel-demo'
+import { useState, useSyncExternalStore } from 'react'
 import { ROTAS, enviarPedido } from './painel-api'
 import { usePainelBusca } from './usePainelBusca'
+import { assinarProjeto, projetoAtual, projetoNoServidor, filtroDeProjeto } from './painel-projeto'
 import { Ad } from './PainelIcons'
-import { Card, Estado, Chips, Tecnico, Cabeca } from './PainelUI'
-import { Estados, SeloDemo } from './PainelEstados'
+import { Card, Estado, Chips, Cabeca } from './PainelUI'
+import { Estados } from './PainelEstados'
+
+/** Um pedido como a rota devolve (espelha PedidoDoPainel do control-plane). */
+interface PedidoView {
+  numero: number
+  titulo: string
+  situacao: 'andando' | 'entregue'
+  projeto: string
+  quando: string
+  endereco: string
+  partes: { total: number; concluidas: number }
+}
+
+/** "há 3 dias" a partir do ISO — o dono lê tempo, não data. */
+function quandoLegivel(iso: string): string {
+  if (!iso) return ''
+  const dias = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000)
+  if (dias < 1) return 'hoje'
+  if (dias === 1) return 'ontem'
+  if (dias < 30) return `há ${dias} dias`
+  const meses = Math.floor(dias / 30)
+  return meses === 1 ? 'há 1 mês' : `há ${meses} meses`
+}
+
+/**
+ * O andamento em palavras. Um desejo com 0 partes NÃO está em 0% — ele ainda
+ * não foi quebrado em fases, e dizer "0%" faria o dono achar que o trabalho
+ * está parado quando na verdade nem começou a ser planejado.
+ */
+function andamentoLegivel(p: PedidoView): string {
+  if (p.situacao === 'entregue') return 'entregue'
+  if (p.partes.total === 0) return 'ainda sendo planejado'
+  return `${p.partes.concluidas} de ${p.partes.total} partes prontas`
+}
 
 interface Projeto {
   id: string
@@ -18,7 +56,7 @@ interface Projeto {
 }
 
 type Prioridade = 'P0' | 'P1' | 'P2'
-type Filtro = 'todos' | 'Em desenvolvimento' | 'Esperando você' | 'Travado' | 'Em produção'
+type Filtro = 'todos' | 'andando' | 'entregue'
 
 export function TelaPedidos() {
   const [texto, setTexto] = useState('')
@@ -66,14 +104,21 @@ export function TelaPedidos() {
     }
   }
 
+  // Só os estados que a fonte realmente distingue. Um filtro que nunca casa é
+  // pior que filtro nenhum: o dono clica e a lista some sem explicação.
   const filtros: [Filtro, string][] = [
     ['todos', 'Todos'],
-    ['Em desenvolvimento', 'Em desenvolvimento'],
-    ['Esperando você', 'Esperando você'],
-    ['Travado', 'Travado'],
-    ['Em produção', 'Em produção'],
+    ['andando', 'Andando'],
+    ['entregue', 'Entregues'],
   ]
-  const vis = filtro === 'todos' ? DEMO.pedidos : DEMO.pedidos.filter((p) => p.sit === filtro)
+  // O projeto escolhido no topo vale aqui: o dono vê todos os projetos ou um.
+  const projeto = useSyncExternalStore(assinarProjeto, projetoAtual, projetoNoServidor)
+  const r = usePainelBusca<PedidoView[], { pedidos?: PedidoView[] }>(
+    ROTAS.pedidos + filtroDeProjeto(projeto),
+    { mapear: (b) => b.pedidos ?? [], vazio: (d) => d.length === 0 }
+  )
+  const todos = r.estado === 'ok' && r.dados ? r.dados : []
+  const vis = filtro === 'todos' ? todos : todos.filter((p) => p.situacao === filtro)
 
   return (
     <>
@@ -179,53 +224,51 @@ export function TelaPedidos() {
       <Card
         flush
         titulo="Todos os pedidos"
-        sub={
-          <>
-            {vis.length} de {DEMO.pedidos.length}
-            <SeloDemo mostrar />
-          </>
-        }
+        sub={r.estado === 'ok' ? `${vis.length} de ${todos.length}` : null}
       >
-        {vis.length === 0 ? (
-          <div className="pn-empty">Nenhum pedido com essa situação.</div>
-        ) : (
-          <div className="pn-tw">
-            <table>
-              <thead>
-                <tr>
-                  <th>Pedido</th>
-                  <th>Urgência</th>
-                  <th>Situação</th>
-                  <th>Responsável</th>
-                  <th>Previsão</th>
-                </tr>
-              </thead>
-              <tbody>
-                {vis.map((p) => (
-                  <tr key={p.id}>
-                    <td>
-                      <b>{p.t}</b>
-                      <div className="m">
-                        #{p.id} · {p.repo} · pedido {p.quando}
-                      </div>
-                      <Tecnico>{p.tec}</Tecnico>
-                    </td>
-                    <td>
-                      <span className={'pn-tag ' + p.pri.toLowerCase()}>{p.pri}</span>
-                    </td>
-                    <td className="pn-nowrap">
-                      <Estado d={p.d}>{p.sit}</Estado>
-                    </td>
-                    <td className="pn-nowrap">{p.resp}</td>
-                    <td className="pn-nowrap" style={{ color: 'var(--gl-muted)' }}>
-                      {p.prev}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <Estados
+          r={r}
+          o_que="seus pedidos"
+          vazio="Você ainda não fez nenhum pedido. Escreva um aí em cima."
+        >
+          {() =>
+            vis.length === 0 ? (
+              <div className="pn-empty">Nenhum pedido nessa situação.</div>
+            ) : (
+              <div className="pn-tw">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Pedido</th>
+                      <th>Situação</th>
+                      <th>Andamento</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {vis.map((p) => (
+                      <tr key={`${p.projeto}#${p.numero}`}>
+                        <td>
+                          <b>{p.titulo}</b>
+                          <div className="m">
+                            {p.projeto} · pedido {quandoLegivel(p.quando)}
+                          </div>
+                        </td>
+                        <td className="pn-nowrap">
+                          <Estado d={p.situacao === 'entregue' ? 'g' : ''}>
+                            {p.situacao === 'entregue' ? 'Entregue' : 'Andando'}
+                          </Estado>
+                        </td>
+                        <td className="pn-nowrap" style={{ color: 'var(--gl-muted)' }}>
+                          {andamentoLegivel(p)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )
+          }
+        </Estados>
       </Card>
     </>
   )

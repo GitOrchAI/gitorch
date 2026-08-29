@@ -1,8 +1,20 @@
 'use client'
 // Visão geral: responde "estamos no ritmo?" e mata a dúvida de "está parado?".
-// Portado de TelaVisaoGeral.jsx. Nesta leva: Pulso e os KPIs de missão são
-// AO VIVO; Ritmo e a prévia de pedidos ficam de exemplo (selo).
+// Portado de TelaVisaoGeral.jsx. AO VIVO: Pulso, os KPIs de missão, quem está
+// atuando e a prévia de pedidos. Ainda de exemplo (com selo): o Ritmo da
+// semana e o Consumo de hoje — os dois esperam rota própria.
+import { useSyncExternalStore } from 'react'
 import { DEMO, DIAS } from './painel-demo'
+import { assinarProjeto, projetoAtual, projetoNoServidor, filtroDeProjeto } from './painel-projeto'
+
+/** O que a Visão Geral usa de um pedido (subconjunto de PedidoDoPainel). */
+interface PedidoResumo {
+  numero: number
+  titulo: string
+  situacao: 'andando' | 'entregue'
+  projeto: string
+  partes: { total: number; concluidas: number }
+}
 import { ROTAS } from './painel-api'
 import { usePainelBusca } from './usePainelBusca'
 import { Ad } from './PainelIcons'
@@ -232,6 +244,73 @@ function Kpis({ decisoesPendentes }: { decisoesPendentes: number }) {
   )
 }
 
+/**
+ * Os 5 pedidos mais recentes, ao vivo (GET /api/v1/painel/pedidos).
+ *
+ * Era exemplo até a rota existir. Deixar exemplo aqui e dado real na tela de
+ * Pedidos mostraria a MESMA informação de dois jeitos diferentes — o dono
+ * compararia as duas e não saberia em qual acreditar.
+ *
+ * As colunas de responsável e previsão saíram: não têm fonte. Entram de volta
+ * quando houver de onde ler.
+ */
+function PedidosRecentes({ ir }: { ir: (id: TelaId) => void }) {
+  const projeto = useSyncExternalStore(assinarProjeto, projetoAtual, projetoNoServidor)
+  const r = usePainelBusca<PedidoResumo[], { pedidos?: PedidoResumo[] }>(
+    ROTAS.pedidos + filtroDeProjeto(projeto),
+    { mapear: (b) => (b.pedidos ?? []).slice(0, 5), vazio: (d) => d.length === 0 }
+  )
+  return (
+    <Card
+      flush
+      titulo="Seus pedidos"
+      acao={
+        <button className="pn-link" onClick={() => ir('pedidos')}>
+          Ver todos <Ad n="arrow" s={13} />
+        </button>
+      }
+    >
+      <Estados r={r} o_que="seus pedidos" vazio="Você ainda não fez nenhum pedido.">
+        {(pedidos) => (
+          <div className="pn-tw">
+            <table>
+              <thead>
+                <tr>
+                  <th>Pedido</th>
+                  <th>Situação</th>
+                  <th>Andamento</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pedidos.map((p) => (
+                  <tr key={`${p.projeto}#${p.numero}`}>
+                    <td>
+                      <b>{p.titulo}</b>
+                      <div className="m">{p.projeto}</div>
+                    </td>
+                    <td className="pn-nowrap">
+                      <Estado d={p.situacao === 'entregue' ? 'g' : ''}>
+                        {p.situacao === 'entregue' ? 'Entregue' : 'Andando'}
+                      </Estado>
+                    </td>
+                    <td className="pn-nowrap" style={{ color: 'var(--gl-muted)' }}>
+                      {p.situacao === 'entregue'
+                        ? 'entregue'
+                        : p.partes.total === 0
+                          ? 'ainda sendo planejado'
+                          : `${p.partes.concluidas} de ${p.partes.total} partes`}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Estados>
+    </Card>
+  )
+}
+
 export function TelaVisaoGeral({
   ir,
   decisoesPendentes,
@@ -254,48 +333,7 @@ export function TelaVisaoGeral({
       <Kpis decisoesPendentes={decisoesPendentes.length} />
 
       <div className="pn-2">
-        <Card
-          flush
-          titulo="Seus pedidos"
-          sub={<SeloDemo mostrar />}
-          acao={
-            <button className="pn-link" onClick={() => ir('pedidos')}>
-              Ver todos <Ad n="arrow" s={13} />
-            </button>
-          }
-        >
-          <div className="pn-tw">
-            <table>
-              <thead>
-                <tr>
-                  <th>Pedido</th>
-                  <th>Situação</th>
-                  <th>Responsável</th>
-                  <th>Previsão</th>
-                </tr>
-              </thead>
-              <tbody>
-                {DEMO.pedidos.slice(0, 5).map((p) => (
-                  <tr key={p.id}>
-                    <td>
-                      <b>{p.t}</b>
-                      <div className="m">
-                        {p.repo} · pedido {p.quando}
-                      </div>
-                    </td>
-                    <td className="pn-nowrap">
-                      <Estado d={p.d}>{p.sit}</Estado>
-                    </td>
-                    <td className="pn-nowrap">{p.resp}</td>
-                    <td className="pn-nowrap" style={{ color: 'var(--gl-muted)' }}>
-                      {p.prev}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Card>
+        <PedidosRecentes ir={ir} />
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <Card
