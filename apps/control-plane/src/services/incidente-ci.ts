@@ -29,6 +29,18 @@ const CONCLUSOES_DE_FALHA = new Set(['failure', 'timed_out', 'startup_failure'])
 /** Teto de achados por varredura — proteção contra tempestade. */
 export const TETO_DE_ACHADOS_POR_VARREDURA = 20
 
+/**
+ * Teto de workflows cuja última run é conferida por varredura. Esta função é
+ * alcançável pelo tique do relógio (wake do RA) sob `tickEmAndamento` — sem
+ * teto, um repo com dezenas de workflows numa rede lenta prenderia a trava
+ * (mesma classe de defeito que motivou `fetchComTeto`). Repos reais têm bem
+ * menos que isto; o corte só protege o caso patológico.
+ */
+export const MAX_WORKFLOWS_POR_VARREDURA = 40
+
+/** Quantas checagens de "última run" correm em paralelo (limita o relógio). */
+const LOTE_DE_CHECAGEM_DE_RUN = 6
+
 /** Quantos caracteres do fim do log entram na evidência. */
 const CHARS_DE_LOG_NA_EVIDENCIA = 1_400
 /** Quantos caracteres do YAML do workflow entram na evidência. */
@@ -289,26 +301,49 @@ export async function coletarAchadosDeInfra(
     warn(`incidente-ci: lista de workflows falhou (${String(err).slice(0, 120)})`)
   }
 
-  for (const wf of workflows) {
-    if (achados.length >= teto) break
-    // Workflows implícitos do GitHub (pages-build-deployment, Dependabot
-    // Updates) não têm arquivo — o job do Dependabot é tratado à parte.
-    if (!wf.path || !wf.path.startsWith('.github/workflows/')) continue
+  // Workflows implícitos do GitHub (pages-build-deployment, Dependabot Updates)
+  // não têm arquivo — o job do Dependabot é tratado à parte.
+  const workflowsComArquivo = workflows
+    .filter((wf) => wf.path && wf.path.startsWith('.github/workflows/'))
+    .slice(0, MAX_WORKFLOWS_POR_VARREDURA)
+  if (workflows.length > MAX_WORKFLOWS_POR_VARREDURA) {
+    warn(
+      `incidente-ci: ${workflows.length} workflows em ${opts.repository}; conferindo os primeiros ${MAX_WORKFLOWS_POR_VARREDURA}`
+    )
+  }
 
-    let ultima: RunDaApi | undefined
-    try {
-      const dados = await pedirJson<{ workflow_runs?: RunDaApi[] }>(
-        f,
-        token,
-        `/repos/${opts.repository}/actions/workflows/${wf.id}/runs?branch=${encodeURIComponent(
-          branch
-        )}&per_page=1`
-      )
-      ultima = dados.workflow_runs?.[0]
-    } catch (err) {
-      warn(`incidente-ci: runs de ${wf.path} falharam (${String(err).slice(0, 120)})`)
-      continue
-    }
+  // A checagem da "última run" de cada workflow é uma chamada independente por
+  // workflow. Sequencial, num repo com dezenas de workflows e rede lenta, isso
+  // prenderia a trava do tique (`fetchComTeto` já dá teto de 10s por chamada,
+  // mas 30×10s ainda é muito). Em lotes paralelos o relógio fica limitado a
+  // ~ceil(N/LOTE)×10s no pior caso.
+  const ultimaRunPorWorkflow = new Map<number, RunDaApi | undefined>()
+  for (let i = 0; i < workflowsComArquivo.length; i += LOTE_DE_CHECAGEM_DE_RUN) {
+    const lote = workflowsComArquivo.slice(i, i + LOTE_DE_CHECAGEM_DE_RUN)
+    const resultados = await Promise.all(
+      lote.map(async (wf) => {
+        try {
+          const dados = await pedirJson<{ workflow_runs?: RunDaApi[] }>(
+            f,
+            token,
+            `/repos/${opts.repository}/actions/workflows/${wf.id}/runs?branch=${encodeURIComponent(
+              branch
+            )}&per_page=1`
+          )
+          return [wf.id, dados.workflow_runs?.[0]] as const
+        } catch (err) {
+          warn(`incidente-ci: runs de ${wf.path} falharam (${String(err).slice(0, 120)})`)
+          return [wf.id, undefined] as const
+        }
+      })
+    )
+    for (const [id, run] of resultados) ultimaRunPorWorkflow.set(id, run)
+  }
+
+  for (const wf of workflowsComArquivo) {
+    if (achados.length >= teto) break
+
+    const ultima = ultimaRunPorWorkflow.get(wf.id)
     if (!ultima) continue
     if (ultima.status !== 'completed') continue
     if (!CONCLUSOES_DE_FALHA.has(ultima.conclusion ?? '')) continue

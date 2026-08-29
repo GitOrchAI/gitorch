@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { coletarAchadosDeInfra } from './incidente-ci.js'
+import { coletarAchadosDeInfra, MAX_WORKFLOWS_POR_VARREDURA } from './incidente-ci.js'
 
 /** Monta um `fetch` fake roteado por trecho de caminho (mais específico primeiro). */
 function fakeFetch(rotas: Record<string, unknown>, espia?: (url: string) => void): typeof fetch {
@@ -237,5 +237,47 @@ describe('coletarAchadosDeInfra', () => {
     })
     expect(achados).toEqual([])
     expect(f).not.toHaveBeenCalled()
+  })
+
+  // Endurecimento (ESTEIRA-T8): a função é alcançável pelo tique sob
+  // tickEmAndamento. Um repo com dezenas de workflows não pode virar dezenas
+  // de chamadas sequenciais — corta em MAX_WORKFLOWS_POR_VARREDURA e roda as
+  // checagens de "última run" em lotes paralelos.
+  it('workflows acima do teto não são conferidos (protege o tique)', async () => {
+    const workflows = Array.from({ length: MAX_WORKFLOWS_POR_VARREDURA + 15 }, (_, i) => ({
+      id: 1000 + i,
+      name: `WF ${i}`,
+      path: `.github/workflows/wf-${i}.yml`,
+      state: 'active',
+    }))
+    const conferidos = new Set<number>()
+    const f = (async (input: string | URL | Request) => {
+      const url = typeof input === 'string' ? input : input.toString()
+      if (new URL(url).pathname === `/repos/${REPO}`) {
+        return new Response(JSON.stringify({ default_branch: 'main' }), { status: 200 })
+      }
+      if (url.includes('/actions/workflows?per_page=100')) {
+        return new Response(JSON.stringify({ workflows }), { status: 200 })
+      }
+      const m = url.match(/\/actions\/workflows\/(\d+)\/runs/)
+      if (m) {
+        conferidos.add(Number(m[1]))
+        return new Response(
+          JSON.stringify({
+            workflow_runs: [
+              { id: 1, name: 'x', event: 'push', status: 'completed', conclusion: 'success' },
+            ],
+          }),
+          { status: 200 }
+        )
+      }
+      if (url.includes('/actions/runs?per_page=30')) {
+        return new Response(JSON.stringify({ workflow_runs: [] }), { status: 200 })
+      }
+      return new Response('{}', { status: 200 })
+    }) as typeof fetch
+
+    await coletarAchadosDeInfra({ repository: REPO, githubToken: 't', fetchImpl: f })
+    expect(conferidos.size).toBe(MAX_WORKFLOWS_POR_VARREDURA)
   })
 })
