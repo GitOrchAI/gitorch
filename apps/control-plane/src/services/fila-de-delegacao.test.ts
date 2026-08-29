@@ -388,6 +388,60 @@ describe('o teto de simultâneas é da CONTA, não do projeto', () => {
 
   // Sem o número da conta, o comportamento é o antigo — o que mantém os
   // chamadores que ainda não passam a informação funcionando como antes.
+  // ESTEIRA-T11: o diagnóstico de "voltou vazia por VAGA".
+  it('conta lotada + fila pronta + folga diária → travadaPorVaga: true', () => {
+    let d: { travadaPorVaga: boolean } | undefined
+    escolherParaDelegar({
+      candidatas: [candidata(1), candidata(2)],
+      sessoesVivas: [],
+      ocupamVagaNaConta: 15,
+      delegadasHoje: 3,
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+      capPorCiclo: 3,
+      onDiagnostico: (x) => {
+        d = x
+      },
+    })
+    expect(d?.travadaPorVaga).toBe(true)
+  })
+
+  it('fila vazia → travadaPorVaga: false (não é notícia)', () => {
+    let d: { travadaPorVaga: boolean } | undefined
+    escolherParaDelegar({
+      candidatas: [],
+      sessoesVivas: [],
+      ocupamVagaNaConta: 15,
+      delegadasHoje: 3,
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+      capPorCiclo: 3,
+      onDiagnostico: (x) => {
+        d = x
+      },
+    })
+    expect(d?.travadaPorVaga).toBe(false)
+  })
+
+  it('teto DIÁRIO batido (não vaga) → travadaPorVaga: false', () => {
+    let d: { travadaPorVaga: boolean } | undefined
+    escolherParaDelegar({
+      candidatas: [candidata(1)],
+      sessoesVivas: [],
+      ocupamVagaNaConta: 2,
+      delegadasHoje: 100,
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+      capPorCiclo: 3,
+      onDiagnostico: (x) => {
+        d = x
+      },
+    })
+    expect(d?.travadaPorVaga).toBe(false)
+  })
+
+  // Sem o número da conta, o comportamento é o antigo — o que mantém os
+  // chamadores que ainda não passam a informação funcionando como antes.
   it('sem o número da conta, cai nas vivas deste projeto', () => {
     const escolhidas = escolherParaDelegar({
       candidatas: [candidata(1)],

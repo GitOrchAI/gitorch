@@ -78,6 +78,12 @@ export function escolherParaDelegar(args: {
   issuesComAnalisePendente?: number[]
   /** Freio de fluxo por ciclo, independente do plano. */
   capPorCiclo: number
+  /**
+   * ESTEIRA-T11: recebe o diagnóstico de por que a fila "voltou vazia". Só
+   * `travadaPorVaga: true` — fila com trabalho pronto, folga diária, mas a
+   * conta do dev externo lotada de sessões vivas — é notícia para o dono.
+   */
+  onDiagnostico?: (d: { travadaPorVaga: boolean }) => void
 }): number[] {
   const comSessaoViva = new Set(args.sessoesVivas.map((s) => s.issueNumber))
   const analisePendente = new Set(args.issuesComAnalisePendente ?? [])
@@ -97,6 +103,14 @@ export function escolherParaDelegar(args: {
   const folgaConcorrentes = args.tetoConcorrentes - vivasQueContam
   const folgaDiaria = args.tetoDiario - args.delegadasHoje
   const limite = Math.min(folgaConcorrentes, folgaDiaria, args.capPorCiclo)
+
+  // ESTEIRA-T11: a esteira está travada ESPECIFICAMENTE por vaga (não por fila
+  // vazia nem pelo teto diário)? Há candidata pronta, a folga diária não é o
+  // problema, mas a conta está lotada de sessões vivas no dev externo.
+  args.onDiagnostico?.({
+    travadaPorVaga: args.candidatas.length > 0 && folgaConcorrentes <= 0 && folgaDiaria > 0,
+  })
+
   if (limite <= 0) return []
 
   const escolhidas: number[] = []

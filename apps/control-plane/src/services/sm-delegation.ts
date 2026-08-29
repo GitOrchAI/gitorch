@@ -306,6 +306,13 @@ export interface SmDelegationResult {
   delegated: number[]
   /** Entregas abertas sem parecer nosso que este ciclo mandou julgar. */
   paraJulgar: number[]
+  /**
+   * ESTEIRA-T11: a esteira voltou vazia ESPECIFICAMENTE por falta de vaga de
+   * concorrência no dev externo — há trabalho pronto, folga diária, mas a
+   * conta está lotada de sessões vivas. O scheduler mede quanto tempo isso
+   * persiste e avisa o dono uma vez.
+   */
+  travadaPorVaga: boolean
 }
 
 /** Extrai os números de "Blocked by #N, #M" do corpo da issue. */
@@ -411,11 +418,15 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
     })
   }
 
+  let travadaPorVaga = false
   const escolhidas = escolherParaDelegar({
     candidatas,
     arquivosEmTrabalho: [...arquivosEmTrabalho],
     sessoesVivas: options.sessoesVivas ?? [],
     delegadasHoje: options.delegadasHoje ?? 0,
+    onDiagnostico: (d) => {
+      travadaPorVaga = d.travadaPorVaga
+    },
     // O teto de simultâneas é da CONTA e só conta quem ainda ocupa vaga no
     // Jules. Sem este número o cálculo caía no `sessoesVivas.length` DESTE
     // projeto — e 15 linhas COMPLETED abertas no gitorch zeravam a folga e
@@ -698,5 +709,6 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
       !falhaAoEnfileirar,
     delegated,
     paraJulgar,
+    travadaPorVaga,
   }
 }

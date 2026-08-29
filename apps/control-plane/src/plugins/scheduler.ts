@@ -84,6 +84,10 @@ import { runAnaliseDeFalha, type SessaoMorta } from '../services/analise-de-falh
 import { processarAchadosDeInfra } from '../services/processar-achados-de-infra.js'
 import { varrerIncidentesResolvidos } from '../services/fechar-incidente-resolvido.js'
 import { runRetroDeInfra } from '../services/retro-de-infra.js'
+import { decidirAvisoPorJanela, type EstadoDaJanela } from '../services/aviso-por-janela.js'
+
+/** ESTEIRA-T11: minutos que a esteira pode ficar travada por vaga antes de avisar. */
+const MINUTOS_ATE_ALERTAR_VAGA = 20
 import type { AchadoDeInfra } from '../services/incidente-ci.js'
 import { renderIssueBody } from '../services/backlog-executor.js'
 import type { DoDFields } from '@gitorch/cadence'
@@ -2841,6 +2845,16 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             app.log.warn(incErr, '[Scheduler] varredura de incidentes resolvidos falhou')
           }
 
+          // ESTEIRA-T11: a esteira voltou vazia porque a conta do dev externo
+          // está lotada de sessões vivas, com trabalho pronto esperando? Se
+          // isso persiste além do prazo, o dono precisa saber — UMA vez por
+          // janela (marca em `events`), nunca a cada acordada.
+          try {
+            await avisarSeTravadaPorVaga(project, delegation.travadaPorVaga)
+          } catch (vagaErr) {
+            app.log.warn(vagaErr, '[Scheduler] aviso de esteira travada por vaga falhou')
+          }
+
           result = {
             exitCode: 0,
             output: [delegation.output, watchdog.output, sensorOut, incidentesOut]
@@ -4563,6 +4577,56 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     if (r.escalados.length > 0)
       partes.push(`${r.escalados.length} incidente(s) escalado(s) (3 PRs sem resolver)`)
     return partes.length > 0 ? `SM: ${partes.join('; ')}.` : ''
+  }
+
+  /**
+   * ESTEIRA-T11: a esteira voltou vazia SÓ porque a conta do dev externo está
+   * lotada (trabalho pronto, folga diária, mas nenhuma vaga simultânea). Se
+   * isso persiste > `MINUTOS_ATE_ALERTAR_VAGA`, avisa o dono UMA vez por
+   * janela — o estado da janela mora em `events` (tipo `aviso-vaga-travada`),
+   * sobrevive a redeploy, e some quando a esteira volta a andar.
+   */
+  const avisarSeTravadaPorVaga = async (
+    project: NotifiableProject & { id: string; wingId: string },
+    travadaAgora: boolean
+  ): Promise<void> => {
+    const ultimo = (await app.prisma.event.findFirst({
+      where: { projectId: project.id, type: 'aviso-vaga-travada' },
+      orderBy: { createdAt: 'desc' },
+    })) as { payload: unknown } | null
+    const p = (ultimo?.payload ?? {}) as { desde?: string | null; avisado?: boolean }
+    const estado: EstadoDaJanela = {
+      desde: p.desde ? new Date(p.desde) : null,
+      avisado: p.avisado === true,
+    }
+
+    const agora = new Date()
+    const decisao = decidirAvisoPorJanela(estado, travadaAgora, agora, MINUTOS_ATE_ALERTAR_VAGA)
+
+    // Só grava quando o estado MUDA (começou / avisou / limpou) — não a cada
+    // acordada. Assim `events` não cresce à toa.
+    const mudou =
+      (estado.desde?.toISOString() ?? null) !== (decisao.novoEstado.desde?.toISOString() ?? null) ||
+      estado.avisado !== decisao.novoEstado.avisado
+    if (mudou) {
+      await app.prisma.event.create({
+        data: {
+          projectId: project.id,
+          type: 'aviso-vaga-travada',
+          payload: {
+            desde: decisao.novoEstado.desde?.toISOString() ?? null,
+            avisado: decisao.novoEstado.avisado,
+          },
+        },
+      })
+    }
+
+    if (decisao.deveAvisar) {
+      await avisarDonoDoProjeto(
+        project as NotifiableProject & { wingId: string },
+        `GitOrch: a esteira de ${project.wingId} está parada há ${decisao.minutosNoProblema} min — há tarefas prontas, mas a conta do dev assíncrono está com todas as vagas ocupadas. Volta a andar sozinha quando uma sessão terminar; se for urgente, dá para subir o teto ou encerrar uma sessão travada.`
+      ).catch(() => undefined)
+    }
   }
 
   const varrerCicloTerminalDaSessao = async (): Promise<void> => {
