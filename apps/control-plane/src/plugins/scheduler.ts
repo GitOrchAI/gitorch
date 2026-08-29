@@ -71,6 +71,7 @@ import { criarRegistroDeMotorMorto } from '../services/motor-em-pausa.js'
 import { criarRegistroDeDescanso, type OrigemDoDisparo } from '../services/descanso-apos-vazia.js'
 import { tetosDoPlanoDoDev } from '../services/plano-do-dev.js'
 import { ESTADOS_TERMINAIS } from '../services/estados-de-sessao.js'
+import { executarCicloTerminal } from '../services/executar-ciclo-terminal.js'
 import {
   abrirSessao,
   sessoesVivas,
@@ -82,6 +83,7 @@ import {
   contarTentativaDeAviso,
   fecharSessao,
   linhasVivasParaJulgarAbandono,
+  linhasVivasParaCicloTerminal,
   type MotivoDeFechamento,
   registrarInvestigacao,
   nomesDeSessoesVivasDaInstancia,
@@ -3806,6 +3808,149 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     }
   }
 
+  /**
+   * O CICLO TERMINAL: fecha a sessão que o Jules já CONCLUIU ou FALHOU e cuja
+   * linha nunca fechou, devolvendo a issue para a fila (D51 — nunca abandona de
+   * vez). Irmã de `devolverVagasDeSessaoAbandonada` (que trata a sessão parada
+   * sem terminar). Foi a falta desta que encheu as 15 vagas do gitorch e parou
+   * a esteira em 29/08 — 21 de 23 sessões estavam em COMPLETED/FAILED.
+   */
+  const varrerCicloTerminalDaSessao = async (): Promise<void> => {
+    const agora = new Date()
+    const linhas = await linhasVivasParaCicloTerminal({
+      prisma: app.prisma as unknown as PrismaDevSession,
+    })
+    if (linhas.length === 0) return
+
+    // Token de GitHub por PROJETO, resolvido uma vez — `situacaoDoPr` pode ser
+    // chamado várias vezes para o mesmo projeto.
+    const projetosPorId = new Map(
+      (
+        await app.prisma.project.findMany({
+          where: { id: { in: [...new Set(linhas.map((l) => l.projectId))] } },
+          select: { id: true, wingId: true, name: true, userId: true },
+        })
+      ).map((p) => [p.id, p])
+    )
+    const tokenPorProjeto = new Map<string, string | undefined>()
+    const tokenDoProjeto = async (projectId: string): Promise<string | undefined> => {
+      if (tokenPorProjeto.has(projectId)) return tokenPorProjeto.get(projectId)
+      const proj = projetosPorId.get(projectId)
+      const t = proj
+        ? (process.env['GITORCH_GITHUB_TOKEN'] ??
+          (await mintInstallationToken({
+            repository: proj.wingId,
+            onError: (m) => app.log.error(m),
+            onWarn: (m) => app.log.warn(m),
+          })) ??
+          undefined)
+        : undefined
+      tokenPorProjeto.set(projectId, t)
+      return t
+    }
+
+    const projetoDaIssue = (n: number): string | undefined =>
+      linhas.find((l) => l.issueNumber === n)?.projectId
+
+    const resultado = await executarCicloTerminal({
+      listarLinhas: async () => linhas,
+      situacaoDoPr: async ({ linha, numeroDoPr }) => {
+        if (numeroDoPr === null) return 'sem-pr'
+        const proj = projetosPorId.get(linha.projectId)
+        const token = await tokenDoProjeto(linha.projectId)
+        if (!proj || !token) return null // sem como ler — fica para o próximo ciclo
+        const gh = async (path: string): Promise<unknown> => {
+          const resp = await fetch(`https://api.github.com${path}`, {
+            headers: {
+              authorization: `token ${token}`,
+              accept: 'application/vnd.github+json',
+              'user-agent': 'gitorch',
+            },
+          })
+          if (!resp.ok) throw new Error(`GitHub GET ${path} → ${resp.status}`)
+          return resp.json()
+        }
+        const pr = (await gh(`/repos/${proj.wingId}/pulls/${numeroDoPr}`)) as {
+          state?: string
+          merged?: boolean
+          merged_at?: string | null
+        }
+        if (pr.merged || pr.merged_at) return 'mesclado'
+        if (pr.state === 'closed') return 'fechado-sem-merge'
+        // Aberto: reprovado por nós? A régua de tempo é de `decidirSessaoTerminal`.
+        const reviews = (await gh(
+          `/repos/${proj.wingId}/pulls/${numeroDoPr}/reviews?per_page=100`
+        )) as Array<{ state?: string; user?: { login?: string } }>
+        const reprovadoPorNos = reviews.some(
+          (rev) =>
+            rev.state === 'CHANGES_REQUESTED' &&
+            (rev.user?.login ?? '').toLowerCase().includes('gitorch')
+        )
+        return reprovadoPorNos ? 'aberto-rejeitado-parado' : 'aberto-vivo'
+      },
+      fecharSessao: async ({ linha, motivo }) => {
+        const apiKey = await chaveDaSessao(linha.sessionName)
+        await fecharSessao({
+          prisma: app.prisma as unknown as PrismaDevSession,
+          sessionName: linha.sessionName,
+          motivo,
+          agora,
+          ...(apiKey
+            ? {
+                arquivarNoFornecedor: (sessionName: string) =>
+                  arquivarSessaoJules({ apiKey, sessionName, onWarn: (m) => app.log.warn(m) }),
+              }
+            : {}),
+          onWarn: (m) => app.log.warn(m),
+        })
+      },
+      pedirAnalise: async ({ linha }) => {
+        // T4 liga a missão real (`ra-analise-falha`) + `marcarAnaliseFeita`.
+        // Por enquanto: a issue já volta para a fila (o motivo redelega); só
+        // registra que uma análise deveria ter rodado.
+        app.log.info(
+          `[Scheduler] ciclo-terminal: issue #${linha.issueNumber} de ${linha.projectId} ` +
+            'falhou 2x — análise pendente (T4)'
+        )
+      },
+      agora,
+      onInfo: (m) => app.log.info(`[Scheduler] ${m}`),
+      onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+    })
+
+    // UM aviso por projeto, nunca um por sessão (o dono já reclamou de spam).
+    const todasAsIssues = [...resultado.issuesRedelegadas, ...resultado.issuesEmAnalise]
+    const porProjeto = new Map<string, number[]>()
+    for (const n of todasAsIssues) {
+      const pid = projetoDaIssue(n)
+      if (pid) porProjeto.set(pid, [...(porProjeto.get(pid) ?? []), n])
+    }
+    for (const [projectId, issues] of porProjeto) {
+      const proj = projetosPorId.get(projectId)
+      if (!proj || issues.length === 0) continue
+      const lista = issues.map((n) => `#${n}`).join(', ')
+      await avisarDonoDoProjeto(
+        proj as NotifiableProject & { wingId: string },
+        issues.length === 1
+          ? `GitOrch: a entrega da issue ${lista} voltou para a fila — o dev concluiu ou falhou sem uma entrega que mesclasse. A esteira vai tentar de novo.`
+          : `GitOrch: ${issues.length} entregas voltaram para a fila (${lista}) — o dev concluiu ou falhou sem entrega que mesclasse. A esteira vai tentar de novo.`
+      ).catch(() => undefined)
+    }
+
+    const total =
+      resultado.fechadasConcluidas +
+      resultado.issuesRedelegadas.length +
+      resultado.issuesEmAnalise.length
+    if (total > 0) {
+      app.log.info(
+        `[Scheduler] ciclo-terminal: ${resultado.fechadasConcluidas} mescladas, ` +
+          `${resultado.issuesRedelegadas.length} de volta à fila, ` +
+          `${resultado.issuesEmAnalise.length} para análise, ` +
+          `${resultado.mantidas} mantidas, ${resultado.ilegiveis} ilegíveis`
+      )
+    }
+  }
+
   // A RETROSPECTIVA — a única parte do método que olha para trás.
   //
   // O evento já estava escrito e nunca tinha sido ligado: o playbook
@@ -6121,6 +6266,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         err,
         '[Scheduler] varredura de sessões abandonadas falhou; tenta no próximo ciclo'
       )
+    )
+    // Irmã da de cima: fecha a sessão que o Jules já CONCLUIU ou FALHOU e cuja
+    // linha nunca fechou — a que encheu as vagas e parou a esteira em 29/08.
+    await varrerCicloTerminalDaSessao().catch((err) =>
+      app.log.warn(err, '[Scheduler] varredura do ciclo terminal falhou; tenta no próximo ciclo')
     )
     await reconciliarVagasDoDev().catch((err) =>
       app.log.error(err, '[Scheduler] reconciliação de vagas falhou; tenta na próxima hora')
