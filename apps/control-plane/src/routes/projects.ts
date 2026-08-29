@@ -85,16 +85,25 @@ export const projectRoutes = async (app: FastifyInstance): Promise<void> => {
   app.get<{ Querystring: PaginationQuery }>(
     '/api/projects',
     async (request: FastifyRequest<{ Querystring: PaginationQuery }>, reply: FastifyReply) => {
-      const wingId = request.wingId!
       const page = Math.max(1, parseInt(request.query.page || '1', 10))
       const pageSize = Math.min(
         MAX_PAGE_SIZE,
         Math.max(1, parseInt(request.query.pageSize || String(DEFAULT_PAGE_SIZE), 10))
       )
 
+      // ISOLAMENTO: quem separa um cliente do outro é o middleware do Prisma
+      // (plugins/prisma.ts, applyTenantScope), que injeta `userId` no where de
+      // toda consulta dentro do tenantContext aberto em plugins/auth.ts.
+      //
+      // Filtrar por `wingId` aqui NÃO isolava — escondia. Na sessão do dono o
+      // wingId é o LOGIN do GitHub ("loureng", ver routes/auth.ts "Default
+      // wingId is their username"), enquanto `Project.wingId` é o ENDEREÇO do
+      // repositório ("GitOrchAI/gitorch"). Os dois nunca casavam, e a rota
+      // devolvia lista vazia para quem tinha projeto (achado no painel logado
+      // em 29/08: `data: []` com dois projetos no banco).
       const [projects, total] = await Promise.all([
         app.prisma.project.findMany({
-          where: { wingId },
+          where: {},
           skip: (page - 1) * pageSize,
           take: pageSize,
           orderBy: { createdAt: 'desc' },
@@ -115,7 +124,7 @@ export const projectRoutes = async (app: FastifyInstance): Promise<void> => {
             },
           },
         }),
-        app.prisma.project.count({ where: { wingId } }),
+        app.prisma.project.count({ where: {} }),
       ])
 
       return reply.send({
@@ -185,11 +194,10 @@ export const projectRoutes = async (app: FastifyInstance): Promise<void> => {
   app.get<{ Params: ProjectParams }>(
     '/api/projects/:id',
     async (request: FastifyRequest<{ Params: ProjectParams }>, reply: FastifyReply) => {
-      const wingId = request.wingId!
       const { id } = request.params
 
       const project = await app.prisma.project.findFirst({
-        where: { id, wingId },
+        where: { id },
         select: {
           id: true,
           name: true,
@@ -238,7 +246,7 @@ export const projectRoutes = async (app: FastifyInstance): Promise<void> => {
 
       // Check if project exists and belongs to wing
       const existing = await app.prisma.project.findFirst({
-        where: { id, wingId },
+        where: { id },
       })
       if (!existing) {
         return reply.code(404).send({ error: 'Project not found' })
@@ -289,11 +297,10 @@ export const projectRoutes = async (app: FastifyInstance): Promise<void> => {
   app.delete<{ Params: ProjectParams }>(
     '/api/projects/:id',
     async (request: FastifyRequest<{ Params: ProjectParams }>, reply: FastifyReply) => {
-      const wingId = request.wingId!
       const { id } = request.params
 
       const existing = await app.prisma.project.findFirst({
-        where: { id, wingId },
+        where: { id },
       })
       if (!existing) {
         return reply.code(404).send({ error: 'Project not found' })
@@ -311,11 +318,10 @@ export const projectRoutes = async (app: FastifyInstance): Promise<void> => {
   app.get<{ Params: ProjectParams }>(
     '/api/projects/:id/status',
     async (request: FastifyRequest<{ Params: ProjectParams }>, reply: FastifyReply) => {
-      const wingId = request.wingId!
       const { id } = request.params
 
       const project = await app.prisma.project.findFirst({
-        where: { id, wingId },
+        where: { id },
         select: { id: true, name: true, isActive: true },
       })
       if (!project) {

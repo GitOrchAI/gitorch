@@ -35,6 +35,68 @@ describe('Project Routes', () => {
     expect(res.json().data).toHaveLength(1)
   })
 
+  // A rota devolvia lista VAZIA para quem tinha projeto. Ela filtrava por
+  // `wingId`, mas na sessão o wingId é o LOGIN do GitHub ("loureng") e
+  // `Project.wingId` é o ENDEREÇO do repositório ("GitOrchAI/gitorch") — os
+  // dois nunca casam. Quem isola de verdade é o middleware do Prisma, por
+  // `userId`. Achado no painel logado do dono em 29/08.
+  describe('a listagem não filtra por wingId — quem isola é o middleware', () => {
+    test('GET /api/projects não manda wingId no where', async () => {
+      const findMany = vi.fn().mockResolvedValue([])
+      app.prisma.project.findMany = findMany
+      app.prisma.project.count = vi.fn().mockResolvedValue(0)
+
+      await app.inject({ method: 'GET', url: '/api/projects', headers: authHeaders })
+
+      const where = findMany.mock.calls[0]?.[0]?.where ?? {}
+      expect(where).not.toHaveProperty('wingId')
+    })
+
+    test('a contagem também não filtra por wingId', async () => {
+      app.prisma.project.findMany = vi.fn().mockResolvedValue([])
+      const count = vi.fn().mockResolvedValue(0)
+      app.prisma.project.count = count
+
+      await app.inject({ method: 'GET', url: '/api/projects', headers: authHeaders })
+
+      expect(count.mock.calls[0]?.[0]?.where ?? {}).not.toHaveProperty('wingId')
+    })
+
+    test('buscar um projeto por id também não filtra por wingId', async () => {
+      const findFirst = vi.fn().mockResolvedValue(null)
+      app.prisma.project.findFirst = findFirst
+
+      await app.inject({
+        method: 'GET',
+        url: '/api/projects/proj_456',
+        headers: authHeaders,
+      })
+
+      const where = findFirst.mock.calls[0]?.[0]?.where ?? {}
+      expect(where).toHaveProperty('id')
+      expect(where).not.toHaveProperty('wingId')
+    })
+
+    test('o dono com projetos vê os projetos — o caso que estava quebrado', async () => {
+      // Exatamente as duas linhas do banco real: name curto, wingId com o
+      // endereço. Antes, a rota comparava o wingId da sessão com esses valores
+      // e não achava nada.
+      app.prisma.project.findMany = vi.fn().mockResolvedValue([
+        { id: 'p1', name: 'gitorch', wingId: 'GitOrchAI/gitorch' },
+        { id: 'p2', name: 'patinhas-3d-crafts', wingId: 'loureng/patinhas-3d-crafts' },
+      ])
+      app.prisma.project.count = vi.fn().mockResolvedValue(2)
+
+      const res = await app.inject({ method: 'GET', url: '/api/projects', headers: authHeaders })
+
+      expect(res.statusCode).toBe(200)
+      expect(res.json().data.map((p: { name: string }) => p.name)).toEqual([
+        'gitorch',
+        'patinhas-3d-crafts',
+      ])
+    })
+  })
+
   test('PATCH /api/projects/:id/runtime-config updates config', async () => {
     app.prisma.project.findFirst = vi.fn().mockResolvedValue({ id: 'proj_456', wingId: 'wing_123' })
     app.prisma.project.update = vi.fn().mockResolvedValue({
