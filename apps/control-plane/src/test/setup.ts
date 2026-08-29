@@ -76,6 +76,19 @@ class MockPrismaClient {
     updateMany: vi.fn().mockResolvedValue({ count: 0 }),
     count: vi.fn().mockResolvedValue(0),
   }
+  // Rastreio de incidentes de CI/CD do repositório do cliente (subsistema de
+  // sustentabilidade, D54). Entrou com esteira-terminal-migration.sql.
+  infraIncident = {
+    findFirst: vi.fn().mockResolvedValue(null),
+    findUnique: vi.fn().mockResolvedValue(null),
+    findMany: vi.fn().mockResolvedValue([]),
+    create: vi.fn().mockResolvedValue({}),
+    update: vi.fn().mockResolvedValue({}),
+    updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+    upsert: vi.fn().mockResolvedValue({}),
+    count: vi.fn().mockResolvedValue(0),
+    delete: vi.fn().mockResolvedValue({}),
+  }
   projectSchedule = {
     findMany: vi.fn().mockResolvedValue([]),
     count: vi.fn().mockResolvedValue(0),
@@ -130,6 +143,7 @@ vi.mock('@prisma/client', () => ({
           { name: 'Mission', fields: [{ name: 'id' }] },
           // Escopada pelo projeto (projectId), como Mission — sem dono nem repo próprios.
           { name: 'DevSession', fields: [{ name: 'id' }] },
+          { name: 'InfraIncident', fields: [{ name: 'id' }] },
           { name: 'WebhookDelivery', fields: [{ name: 'id' }] },
           { name: 'Plan', fields: [{ name: 'id' }] },
         ],

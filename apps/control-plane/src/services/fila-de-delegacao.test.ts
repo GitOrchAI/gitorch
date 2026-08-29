@@ -110,6 +110,34 @@ describe('escolherParaDelegar', () => {
     ).toEqual([10, 11])
   })
 
+  it('sessão COMPLETED/FAILED não consome vaga de concorrência (a vaga já liberou no Jules)', () => {
+    // O defeito de 29/08: 15 linhas COMPLETED abertas na conta = teto batido,
+    // folga negativa, zero delegação. O fallback filtra por ocupaVaga.
+    const quinzeCompletas = Array.from({ length: 15 }, (_, i) =>
+      linha({ issueNumber: 100 + i, state: 'COMPLETED' })
+    )
+    expect(
+      escolherParaDelegar({
+        ...base,
+        candidatas: [issue({ number: 10 }), issue({ number: 11 })],
+        sessoesVivas: quinzeCompletas,
+        tetoConcorrentes: 15,
+      })
+    ).toEqual([10, 11])
+  })
+
+  it('usa ocupamVagaNaConta quando vem pré-calculado (o número da conta inteira, não deste projeto)', () => {
+    expect(
+      escolherParaDelegar({
+        ...base,
+        candidatas: [issue({ number: 10 }), issue({ number: 11 })],
+        sessoesVivas: [], // este projeto está vazio…
+        ocupamVagaNaConta: 15, // …mas a conta já está no teto por outro projeto
+        tetoConcorrentes: 15,
+      })
+    ).toEqual([])
+  })
+
   it('respeita o teto por ciclo mesmo com folga de plano', () => {
     expect(
       escolherParaDelegar({

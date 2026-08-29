@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { runSmDelegation, extractBlockers } from './sm-delegation.js'
+import type { LinhaDeSessao } from './dev-session-store.js'
 
 describe('extractBlockers', () => {
   it('lê "Blocked by #N, #M" do corpo', () => {
@@ -161,6 +162,67 @@ describe('runSmDelegation', () => {
       true
     )
     expect(removed).toEqual([{ number: 30, label: 'gitorch:agent:po' }])
+  })
+
+  // CAUSA RAIZ 29/08: a esteira do gitorch parou porque as 15 linhas abertas
+  // do projeto estavam TODAS em COMPLETED (o Jules já tinha entregue) e o
+  // contador de concorrência as somava contra o teto de 15 → folga zero → o SM
+  // não delegava mais nada, com dezenas de tasks prontas esperando.
+  it('sessão COMPLETED não trava a delegação — a vaga já liberou no Jules', async () => {
+    const quinzeCompletas: LinhaDeSessao[] = Array.from({ length: 15 }, (_, i) => ({
+      id: `s${i}`,
+      projectId: 'p',
+      issueNumber: 900 + i,
+      sessionName: `sessions/completa-${i}`,
+      state: 'COMPLETED',
+      answeredHash: null,
+      pullRequestNumber: null,
+      attempts: 1,
+      nudges: 0,
+      lastProgressAt: null,
+      stateCheckedAt: null,
+      reworkNoticePending: null,
+      reworkNoticeAttempts: 0,
+      pendingSince: null,
+      mergeCommitSha: null,
+      deployState: null,
+      deployCheckedAt: null,
+      mergeFailures: 0,
+      mergeLastFailedAt: null,
+      deployFixKey: null,
+      envLastVerdict: null,
+      closedAt: null,
+    }))
+    const f = fakeFetch([{ number: 51, labels: ['gitorch:task'], body: 'pronta' }])
+    const labeled = (f as unknown as { labeled: Array<{ number: number; labels: string[] }> })
+      .labeled
+    const r = await runSmDelegation({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: f,
+      sessoesVivas: quinzeCompletas,
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+    })
+    expect(r.delegated).toEqual([51])
+    expect(labeled.filter((l) => l.labels.includes('jules')).map((l) => l.number)).toEqual([51])
+  })
+
+  it('ocupamVagaNaConta no teto: a conta cheia por OUTRO projeto barra a delegação aqui', async () => {
+    const f = fakeFetch([{ number: 52, labels: ['gitorch:task'], body: 'pronta' }])
+    const labeled = (f as unknown as { labeled: Array<{ number: number; labels: string[] }> })
+      .labeled
+    const r = await runSmDelegation({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: f,
+      sessoesVivas: [], // este projeto está vazio…
+      ocupamVagaNaConta: 15, // …mas a conta já está no teto por outro projeto
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+    })
+    expect(r.delegated).toEqual([])
+    expect(labeled.filter((l) => l.labels.includes('jules'))).toEqual([])
   })
 })
 

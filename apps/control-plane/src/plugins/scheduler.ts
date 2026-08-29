@@ -70,6 +70,7 @@ import { criarPassagemDeBastao } from '../services/passar-o-bastao.js'
 import { criarRegistroDeMotorMorto } from '../services/motor-em-pausa.js'
 import { criarRegistroDeDescanso, type OrigemDoDisparo } from '../services/descanso-apos-vazia.js'
 import { tetosDoPlanoDoDev } from '../services/plano-do-dev.js'
+import { ESTADOS_TERMINAIS } from '../services/estados-de-sessao.js'
 import {
   abrirSessao,
   sessoesVivas,
@@ -440,8 +441,14 @@ export function montarOpcoesDeDelegacao(args: {
   devPlan: string | null | undefined
   sessoesVivas: LinhaDeSessao[]
   delegadasHoje: number
-  /** Sessões vivas na CONTA inteira — o teto de simultâneas é dela. */
+  /** Sessões vivas na CONTA inteira — usado só para diagnóstico/log. */
   vivasNaConta: number
+  /**
+   * O que de fato OCUPA uma vaga simultânea na CONTA inteira: só os estados que
+   * o Jules ainda está tocando. É este que o teto de simultâneas usa — uma
+   * linha aberta em COMPLETED/FAILED já devolveu a vaga no fornecedor.
+   */
+  ocupamVagaNaConta: number
   /**
    * TODAS as linhas do projeto, vivas e fechadas — a prova de que uma tarefa
    * já foi entregue. `sessoesVivas` não serve aqui: a linha de uma entrega
@@ -453,6 +460,7 @@ export function montarOpcoesDeDelegacao(args: {
   sessoesVivas: LinhaDeSessao[]
   delegadasHoje: number
   vivasNaConta: number
+  ocupamVagaNaConta: number
   entregasDoProjeto: Array<{ issueNumber: number; mergeCommitSha?: string | null }>
   tetoConcorrentes: number
   tetoDiario: number
@@ -461,6 +469,7 @@ export function montarOpcoesDeDelegacao(args: {
     sessoesVivas: args.sessoesVivas,
     delegadasHoje: args.delegadasHoje,
     vivasNaConta: args.vivasNaConta,
+    ocupamVagaNaConta: args.ocupamVagaNaConta,
     entregasDoProjeto: args.entregasDoProjeto,
     ...tetosDoPlanoDoDev(args.devPlan),
   }
@@ -2605,6 +2614,19 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               // 24h só devolve cada sessão 24h depois de ela ter começado.
               vivasNaConta: await app.prisma.devSession.count({
                 where: { devAccountId: project.devAccountId ?? null, closedAt: null },
+              }),
+              // O que de fato OCUPA uma das 15 vagas simultâneas: só os estados
+              // que o Jules ainda está tocando. Uma linha aberta em COMPLETED/
+              // FAILED já devolveu a vaga no fornecedor — contá-la contra o teto
+              // parou a esteira dos dois projetos em 29/08 (`ESTADOS_TERMINAIS`
+              // em estados-de-sessao.ts). `notIn` cobre o fail-closed: estado
+              // desconhecido conta como ocupando.
+              ocupamVagaNaConta: await app.prisma.devSession.count({
+                where: {
+                  devAccountId: project.devAccountId ?? null,
+                  closedAt: null,
+                  state: { notIn: [...ESTADOS_TERMINAIS] },
+                },
               }),
               // Sem filtro de linha viva de propósito: a entrega mesclada
               // costuma ter a linha JÁ FECHADA, e é ela que precisa barrar a
