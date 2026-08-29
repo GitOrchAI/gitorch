@@ -82,6 +82,7 @@ import {
 import { analisarFalhasPendentes } from '../services/analisar-falhas-pendentes.js'
 import { runAnaliseDeFalha, type SessaoMorta } from '../services/analise-de-falha-do-dev.js'
 import { processarAchadosDeInfra } from '../services/processar-achados-de-infra.js'
+import { varrerIncidentesResolvidos } from '../services/fechar-incidente-resolvido.js'
 import type { AchadoDeInfra } from '../services/incidente-ci.js'
 import { renderIssueBody } from '../services/backlog-executor.js'
 import type { DoDFields } from '@gitorch/cadence'
@@ -2691,6 +2692,56 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               }
               return mapa
             })(),
+            // ESTEIRA-T9: issue de incidente de infra que já tem um PR aberto
+            // cobrindo a causa (`infra_incidents.pr_number`) não vira sessão
+            // nova — um incidente = uma issue = UM PR.
+            issuesComPrDeIncidente: await (async () => {
+              const mapa = new Map<number, number>()
+              try {
+                const rows = (await app.prisma.infraIncident.findMany({
+                  where: { projectId: project.id, clearedAt: null, prNumber: { not: null } },
+                  select: { issueNumber: true, prNumber: true },
+                })) as Array<{ issueNumber: number | null; prNumber: number | null }>
+                for (const r of rows) {
+                  if (r.issueNumber !== null && r.prNumber !== null)
+                    mapa.set(r.issueNumber, r.prNumber)
+                }
+              } catch (err) {
+                app.log.warn(err, '[Scheduler] não deu para ler os incidentes com PR aberto')
+              }
+              return mapa
+            })(),
+            comentarCoberturaDeIncidente: async ({ issueNumber, prNumber }) => {
+              const marcador = '<!-- gitorch:incidente-coberto-por-pr -->'
+              const gh = async (method: string, path: string, body?: unknown): Promise<unknown> => {
+                const resp = await fetch(`https://api.github.com${path}`, {
+                  method,
+                  headers: {
+                    authorization: `token ${railsToken as string}`,
+                    accept: 'application/vnd.github+json',
+                    'user-agent': 'gitorch',
+                    ...(body ? { 'content-type': 'application/json' } : {}),
+                  },
+                  ...(body ? { body: JSON.stringify(body) } : {}),
+                })
+                if (!resp.ok) throw new Error(`GitHub ${method} ${path} → ${resp.status}`)
+                return resp.json().catch(() => ({}))
+              }
+              const existentes = (await gh(
+                'GET',
+                `/repos/${project.wingId}/issues/${issueNumber}/comments?per_page=100`
+              )) as Array<{ body?: string }>
+              if (
+                (Array.isArray(existentes) ? existentes : []).some((c) =>
+                  (c.body ?? '').includes(marcador)
+                )
+              ) {
+                return
+              }
+              await gh('POST', `/repos/${project.wingId}/issues/${issueNumber}/comments`, {
+                body: `${marcador}\nCoberto pelo PR #${prNumber} — o GitOrch não abre uma segunda sessão para o mesmo incidente de infra.`,
+              })
+            },
             // O SM é o orquestrador do julgamento (docs/agents/quality-assurance.md
             // §3.1). Até aqui o julgamento só era acordado por aviso do
             // GitHub ou pela vigília de uma sessão viva — uma entrega cuja
@@ -2767,11 +2818,29 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             sensorOut = 'sensor de infra: falhou (ver logs).'
           }
 
+          // ESTEIRA-T9: na mesma cadência, fecha os incidentes que sararam —
+          // um incidente = uma issue = UM PR, e some sozinho quando fica verde.
+          let incidentesOut = ''
+          try {
+            incidentesOut = await varrerIncidentesDeInfraResolvidos(
+              { id: project.id, wingId: project.wingId },
+              railsToken as string
+            )
+          } catch (incErr) {
+            app.log.warn(incErr, '[Scheduler] varredura de incidentes resolvidos falhou')
+          }
+
           result = {
             exitCode: 0,
-            output: [delegation.output, watchdog.output, sensorOut].join('\n'),
+            output: [delegation.output, watchdog.output, sensorOut, incidentesOut]
+              .filter(Boolean)
+              .join('\n'),
             stderr: '',
-            noOp: delegation.noOp === true && watchdog.noOp === true && sensorNoOp,
+            noOp:
+              delegation.noOp === true &&
+              watchdog.noOp === true &&
+              sensorNoOp &&
+              incidentesOut === '',
           }
         } else if (poRails || qaRails || raRails) {
           const stepDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-rails-'))
@@ -4073,6 +4142,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       marker: string,
       labels: string[]
     ): Promise<number> => {
+      // Defesa em profundidade (revisão de segurança do T8): `repo` já vem de
+      // um slug validado (project.wingId / REPO_DO_PRODUTO), mas a credencial
+      // vai no cabeçalho — conferir o formato ANTES de montar a URL fecha a
+      // porta para um valor que atravesse diretório ou troque de host.
+      if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repo)) {
+        throw new Error(`ghIssue: repositório fora do formato dono/repo (${repo})`)
+      }
       const resp = await fetch(`https://api.github.com/repos/${repo}/issues`, {
         method: 'POST',
         headers: {
@@ -4180,6 +4256,142 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       `RA: ${total} issue(s) de infra escrita(s) — ` +
       `${res.issuesNoCliente.length} no repo do cliente, ${res.issuesNoProduto.length} de encanamento.`
     )
+  }
+
+  /**
+   * ESTEIRA-T9: um incidente = uma issue = UM PR, e fecha sozinho. Roda na
+   * cadência do sensor (wake do SM): para cada `infra_incidents` aberto, relê a
+   * ÚLTIMA run do workflow (identidade `wf:<id>`) e o estado do PR; se o
+   * workflow ficou verde DEPOIS do conserto (ou o PR do Dependabot mesclou),
+   * fecha a issue e marca `cleared_at`. Best-effort — nunca derruba o wake.
+   */
+  const varrerIncidentesDeInfraResolvidos = async (
+    project: { id: string; wingId: string },
+    railsToken: string | undefined
+  ): Promise<string> => {
+    if (!railsToken) return ''
+    const gh = async (path: string): Promise<unknown> => {
+      const resp = await fetch(`https://api.github.com${path}`, {
+        headers: {
+          authorization: `token ${railsToken}`,
+          accept: 'application/vnd.github+json',
+          'user-agent': 'gitorch',
+        },
+      })
+      if (!resp.ok) throw new Error(`GitHub GET ${path} → ${resp.status}`)
+      return resp.json()
+    }
+    const ghPatch = async (path: string, body: unknown): Promise<void> => {
+      const resp = await fetch(`https://api.github.com${path}`, {
+        method: 'PATCH',
+        headers: {
+          authorization: `token ${railsToken}`,
+          accept: 'application/vnd.github+json',
+          'user-agent': 'gitorch',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      })
+      if (!resp.ok) throw new Error(`GitHub PATCH ${path} → ${resp.status}`)
+    }
+
+    const r = await varrerIncidentesResolvidos({
+      listarAbertos: async () =>
+        (await app.prisma.infraIncident.findMany({
+          where: { projectId: project.id, clearedAt: null },
+          select: {
+            id: true,
+            projectId: true,
+            classe: true,
+            identidadeEstavel: true,
+            issueNumber: true,
+            prNumber: true,
+            clearedAt: true,
+          },
+        })) as Array<{
+          id: string
+          projectId: string
+          classe: string
+          identidadeEstavel: string
+          issueNumber: number | null
+          prNumber: number | null
+          clearedAt: Date | null
+        }>,
+      situacaoDoIncidente: async (inc) => {
+        let prMesclado = false
+        let mergedAt: string | null = null
+        if (inc.prNumber !== null) {
+          try {
+            const pr = (await gh(`/repos/${project.wingId}/pulls/${inc.prNumber}`)) as {
+              merged?: boolean
+              merged_at?: string | null
+            }
+            prMesclado = pr.merged === true
+            mergedAt = pr.merged_at ?? null
+          } catch {
+            /* PR ilegível: trata como não mesclado */
+          }
+        }
+        // Identidade `wf:<id>` → última run desse workflow na branch default.
+        let ultimaRunVerde = false
+        let rodouDepoisDoPr = false
+        const m = inc.identidadeEstavel.match(/^wf:(\d+)$/)
+        if (m) {
+          try {
+            const repo = (await gh(`/repos/${project.wingId}`)) as { default_branch?: string }
+            const branch = repo.default_branch ?? 'main'
+            const runs = (await gh(
+              `/repos/${project.wingId}/actions/workflows/${m[1]}/runs?branch=${encodeURIComponent(branch)}&per_page=1`
+            )) as {
+              workflow_runs?: Array<{
+                conclusion?: string
+                run_started_at?: string
+                created_at?: string
+              }>
+            }
+            const run = runs.workflow_runs?.[0]
+            if (run) {
+              ultimaRunVerde = run.conclusion === 'success'
+              const runEm = run.run_started_at ?? run.created_at
+              rodouDepoisDoPr = Boolean(mergedAt && runEm && runEm > mergedAt)
+            }
+          } catch {
+            /* runs ilegíveis */
+          }
+        }
+        return { ultimaRunVerde, rodouDepoisDoPr, prMesclado }
+      },
+      fecharIssue: async (issueNumber, comentario) => {
+        await ghPatch(`/repos/${project.wingId}/issues/${issueNumber}`, {
+          state: 'closed',
+          state_reason: 'completed',
+        })
+        await fetch(
+          `https://api.github.com/repos/${project.wingId}/issues/${issueNumber}/comments`,
+          {
+            method: 'POST',
+            headers: {
+              authorization: `token ${railsToken}`,
+              accept: 'application/vnd.github+json',
+              'user-agent': 'gitorch',
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({ body: comentario }),
+          }
+        ).catch(() => undefined)
+      },
+      limparIncidente: async (id) => {
+        await app.prisma.infraIncident.update({
+          where: { id },
+          data: { clearedAt: new Date() },
+        })
+      },
+      onInfo: (mm) => app.log.info(`[Scheduler] ${mm}`),
+      onWarn: (mm) => app.log.warn(`[Scheduler] ${mm}`),
+    })
+    return r.fechados.length > 0
+      ? `SM: ${r.fechados.length} incidente(s) de infra resolvido(s) e fechado(s).`
+      : ''
   }
 
   const varrerCicloTerminalDaSessao = async (): Promise<void> => {

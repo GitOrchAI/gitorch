@@ -248,6 +248,17 @@ export interface SmDelegationOptions {
   issuesComAnalisePendente?: number[]
   /** issueNumber → pedido revisado da análise, para o prompt da 3ª tentativa. */
   aprendizadoPorIssue?: Map<number, string>
+  /**
+   * ESTEIRA-T9: issues de incidente de infra que JÁ têm um PR aberto cobrindo
+   * a causa (`infra_incidents.pr_number`). Um incidente = uma issue = UM PR:
+   * o SM não delega uma segunda sessão para o mesmo bug. issueNumber → prNumber.
+   */
+  issuesComPrDeIncidente?: Map<number, number>
+  /**
+   * Comenta na issue "coberto por #PR" — UMA vez. Best-effort; o próprio
+   * callback é responsável pela idempotência (marcador no comentário).
+   */
+  comentarCoberturaDeIncidente?: (args: { issueNumber: number; prNumber: number }) => Promise<void>
   /** Do plano declarado pelo dono. Padrão: Free, que é o mais restritivo. */
   tetoConcorrentes?: number
   tetoDiario?: number
@@ -342,6 +353,9 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
   // Isto NÃO substitui o fechamento da tarefa: o quadro do cliente continua
   // tendo que ficar limpo. Isto impede o GASTO de refazer o que já está pronto.
   const jaEntregues = tarefasComEntregaMesclada(options.entregasDoProjeto ?? [])
+  // ESTEIRA-T9: issue de incidente que já tem um PR aberto cobrindo a causa não
+  // vira sessão nova — um incidente = uma issue = UM PR. Comenta uma vez.
+  const comPrDeIncidente = options.issuesComPrDeIncidente ?? new Map<number, number>()
   const candidatas: IssueCandidata[] = []
   // Os arquivos de quem JÁ está em trabalho. Quem tem sessão viva é filtrado
   // das candidatas na linha seguinte, então sem esta coleta os arquivos dele
@@ -352,6 +366,20 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
     // Entrega mesclada sai da lista ANTES de qualquer outra conta: não gasta
     // chamada de bloqueador, não reserva arquivo, não ocupa vaga.
     if (jaEntregues.has(t.number)) continue
+    // Incidente de infra já coberto por um PR aberto: não delega de novo.
+    const prDoIncidente = comPrDeIncidente.get(t.number)
+    if (prDoIncidente !== undefined) {
+      if (options.comentarCoberturaDeIncidente) {
+        await options
+          .comentarCoberturaDeIncidente({ issueNumber: t.number, prNumber: prDoIncidente })
+          .catch((err) =>
+            (options.onWarn ?? console.warn)(
+              `sm-delegation: comentário de cobertura da #${t.number} falhou: ${String(err).slice(0, 120)}`
+            )
+          )
+      }
+      continue
+    }
     if (comSessaoViva.has(t.number)) {
       for (const arquivo of arquivosDeclarados(t.body)) arquivosEmTrabalho.add(arquivo)
       continue
