@@ -798,6 +798,45 @@ function walk(schema: MiniSchema, value: unknown, path: string, errors: string[]
 }
 
 /**
+ * Verbos do CLI do GitHub. A lista existe para a checagem casar o COMANDO e não
+ * a sílaba: `gh` sozinho é ambíguo em inglês.
+ */
+const VERBOS_DE_TOOLING = [
+  'issue',
+  'pr',
+  'api',
+  'repo',
+  'project',
+  'auth',
+  'run',
+  'workflow',
+  'release',
+  'secret',
+  'gist',
+  'label',
+  'search',
+] as const
+
+/**
+ * A lei "LLM decide, sistema executa": o playbook forma o JULGAMENTO do agente
+ * e nunca manda executar ferramenta — quem age é o control plane.
+ *
+ * A checagem anterior era `texto.includes('gh ')` e tinha DOIS defeitos. Casava
+ * qualquer palavra inglesa terminada em "gh" — "through ", "high ", "rough ",
+ * "enough " — o que obrigou a reescrever frases inocentes no playbook do
+ * Produto. E, pior, só era aplicada ao playbook do Produto: deixou passar por
+ * muito tempo um `gh api graphql` de verdade no playbook de sprint planning.
+ *
+ * Agora casa o comando (verbo do CLI logo depois de `gh`, com fronteira antes)
+ * e vale para TODOS os playbooks — os 4 papéis e os 4 eventos.
+ */
+export function citaTooling(texto: string): boolean {
+  return new RegExp(String.raw`(^|[\s\`("'])gh\s+(${VERBOS_DE_TOOLING.join('|')})\b`, 'i').test(
+    texto
+  )
+}
+
+/**
  * DoD dos 8 campos, POR CÓDIGO (decisão do owner): todo campo presente e
  * não-vazio; Verification Criteria precisa conter ao menos um critério de
  * verdade (linha com conteúdo). A LLM nunca é gasta com esta conferência.

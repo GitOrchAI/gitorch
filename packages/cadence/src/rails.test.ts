@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest'
+import { loadEventPlaybook, loadPlaybook } from './index'
 import {
   DOD_FIELD_MAP,
   ESCALA_DE_PESO,
   PESO_MAXIMO_DE_SPRINT,
   RAILS_SCHEMAS,
   buildStepPrompt,
+  citaTooling,
   formatRaJourneys,
   validateDoD,
   validateForm,
@@ -257,8 +259,49 @@ describe('buildStepPrompt', () => {
     expect(p).toContain('ONLY with a single JSON object')
     expect(p).toContain('"phases"')
     // NUNCA instruir ação direta no GitHub
-    expect(p.toLowerCase()).not.toContain('gh ')
+    expect(citaTooling(p)).toBe(false)
     expect(p.toLowerCase()).not.toContain('create the issue')
+  })
+})
+
+describe('citaTooling: a lei "LLM decide, sistema executa"', () => {
+  // A checagem antiga era `includes('gh ')` e errava dos dois lados: barrava
+  // inglês normal e, por só ser aplicada ao playbook do Produto, deixou passar
+  // um `gh api graphql` de verdade no playbook de sprint planning.
+
+  it('deixa passar inglês normal terminado em gh', () => {
+    for (const frase of [
+      'the owner adds an item through the chat',
+      'uncertainty is too high, split the Task',
+      'each with expected benefit and rough effort',
+      'there is not enough context to size it',
+      'though it works, it is fragile',
+      'highlight the main risk',
+      'graphql is fine as a noun',
+    ]) {
+      expect(citaTooling(frase)).toBe(false)
+    }
+  })
+
+  it('barra o comando de verdade, em qualquer pontuação', () => {
+    for (const frase of [
+      'gh issue create --title x',
+      'run `gh api graphql` to set the field',
+      'gh pr merge --squash',
+      '(gh repo clone owner/name)',
+      'GH ISSUE LIST',
+    ]) {
+      expect(citaTooling(frase)).toBe(true)
+    }
+  })
+
+  it('NENHUM playbook manda executar ferramenta — os 4 papéis e os 4 eventos', () => {
+    for (const role of ['ra', 'po', 'sm', 'qa'] as const) {
+      expect(citaTooling(loadPlaybook(role)), `playbook do papel ${role}`).toBe(false)
+    }
+    for (const evento of ['sprint-planning', 'daily', 'sprint-review', 'sprint-retro'] as const) {
+      expect(citaTooling(loadEventPlaybook(evento)), `playbook do evento ${evento}`).toBe(false)
+    }
   })
 })
 
