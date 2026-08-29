@@ -4,6 +4,7 @@ import { descreverEvento, papelDoAgente, estadoDoAgente } from '../services/desc
 import type { AgentQuestionRecord } from '../services/agent-question.js'
 import {
   lerArvoreDePedidos,
+  projetoDaLinha,
   ArvoreIndisponivelError,
   type PedidoDoPainel,
   type ProjetoDoDono,
@@ -91,16 +92,14 @@ export const painelRoutes = async (
     ((args: { ownerId: string; projeto?: string | undefined }) =>
       lerArvoreDePedidos(
         {
-          // `Project.name` É o "owner/repo" (o schema é explícito: é o
-          // endereço do repositório, não a chave do tenant). Por isso o nome
-          // que o dono vê e o endereço são o mesmo valor — a interface separa
-          // os dois para o dia em que existir um apelido amigável.
+          // `projetoDaLinha` carrega a regra de qual campo é o endereço do
+          // repositório — e o porquê. Ela é testada; este default só a aplica.
           listarProjetos: async (ownerId: string): Promise<ProjetoDoDono[]> => {
             const ps = await app.prisma.project.findMany({
               where: { userId: ownerId, isActive: true },
-              select: { name: true },
+              select: { name: true, wingId: true },
             })
-            return ps.map((p) => ({ nome: p.name, repo: p.name }))
+            return ps.map(projetoDaLinha)
           },
           // A credencial do DONO, não a da instalação: os pedidos vivem no
           // repositório dele, e é a permissão dele que vale.

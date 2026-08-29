@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   lerArvoreDePedidos,
+  projetoDaLinha,
   ArvoreIndisponivelError,
   type DepsDaArvoreDePedidos,
 } from './arvore-de-pedidos.js'
@@ -249,5 +250,35 @@ describe('lerArvoreDePedidos', () => {
     )
     expect(visto.headers?.['authorization']).toBe('token token-do-dono')
     expect(visto.body).toContain('wishlist')
+  })
+})
+
+describe('projetoDaLinha — qual campo é o endereço do repositório', () => {
+  // Existe por causa de um 503 REAL em produção (29/08): o código mandava
+  // `name` como endereço, mas name é o nome curto e quem carrega "owner/repo"
+  // é o `wingId`. Sem barra, a consulta nunca resolve e TODOS os projetos
+  // falham de uma vez — a tela inteira cai junto.
+
+  it('o endereço vem do wingId; o nome que o dono vê vem do name', () => {
+    expect(projetoDaLinha({ name: 'gitorch', wingId: 'GitOrchAI/gitorch' })).toEqual({
+      nome: 'gitorch',
+      repo: 'GitOrchAI/gitorch',
+    })
+  })
+
+  it('o endereço sempre tem barra — é o que a consulta ao GitHub exige', () => {
+    // Os dois projetos reais do banco, exatamente como estão lá.
+    const linhas = [
+      { name: 'gitorch', wingId: 'GitOrchAI/gitorch' },
+      { name: 'patinhas-3d-crafts', wingId: 'loureng/patinhas-3d-crafts' },
+    ]
+    for (const p of linhas) expect(projetoDaLinha(p).repo).toContain('/')
+  })
+
+  it('trocar os campos quebraria: o name não tem barra', () => {
+    // A prova do erro que aconteceu, escrita para nunca mais passar batido.
+    expect(projetoDaLinha({ name: 'gitorch', wingId: 'GitOrchAI/gitorch' }).repo).not.toBe(
+      'gitorch'
+    )
   })
 })
