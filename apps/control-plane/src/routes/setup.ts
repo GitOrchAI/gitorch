@@ -4,6 +4,7 @@ import bcryptjs from 'bcryptjs'
 import { Prisma } from '@prisma/client'
 import { F6_AGENT_ROLES, isF6AgentRuntime, type F6AgentRuntime } from '@gitorch/agents'
 import { ensureDefaultSchedules } from '../lib/project-defaults.js'
+import { resolveOwnerId as resolveOwnerIdCanonico } from '../lib/resolve-owner-id.js'
 import { resolveEngineId } from '../services/engine-connection.js'
 import { ClientEnvironmentService } from '../services/environment.js'
 import { collectAndRememberRepoContext } from '../services/repo-context-cortex.js'
@@ -959,12 +960,11 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
 
   // Dono canônico da sessão: EngineConnection e Project são gravados sob o id
   // resolvido por e-mail (ver submit acima e plugins/engines.ts). Sem e-mail
-  // (legado single-tenant), o id da sessão é o melhor que existe.
-  const resolveOwnerId = async (user: { id: string; email?: string }): Promise<string> => {
-    if (!user.email) return user.id
-    const owner = await app.prisma.user.findUnique({ where: { email: user.email } })
-    return owner?.id ?? user.id
-  }
+  // (legado single-tenant), o id da sessão é o melhor que existe. A regra mora
+  // em lib/resolve-owner-id.ts — fonte única com o painel do owner
+  // (routes/painel.ts), que precisa do MESMO escopo de dono.
+  const resolveOwnerId = (user: { id: string; email?: string }): Promise<string> =>
+    resolveOwnerIdCanonico(app.prisma, user)
 
   // POST /api/v1/setup/credencial-do-cliente — a porta de entrada da
   // credencial PRÓPRIA do cliente. O App do produto é recusado com 403 tanto

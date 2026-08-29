@@ -515,7 +515,34 @@ export async function handleTelegramCallback(
   const option = options[parsed.optionIndex]
   if (!option) return
 
-  const updated = await deps.agentQuestionService.answer(parsed.questionId, option.value, 'telegram')
+  // A opção "✍️ Outro (respondo por texto)" é o escape hatch: o sentinel
+  // FREE_TEXT_OPTION_VALUE NUNCA vira resposta gravada — clicar nele arma o
+  // estado de "aguardando texto livre" e instrui o dono num popup modal.
+  // A pergunta NÃO colapsa: segue aberta esperando a mensagem de texto, que
+  // `handleTelegramQuestionReply` (ou o state manager de digitação) casa de
+  // volta com esta dúvida. Sem esta guarda, o clique gravava o sentinel como
+  // se fosse a decisão do dono (regressão do free-typing state machine).
+  if (option.value === FREE_TEXT_OPTION_VALUE) {
+    defaultAgentQuestionStateManager.setActiveTypingQuestion(question.userId, {
+      questionId: parsed.questionId,
+      userId: question.userId,
+      chatId: clickerChatId,
+    })
+    await answerTelegramCallback({
+      botToken: deps.botToken,
+      callbackQueryId: cq.id,
+      text: 'Responda por texto: envie sua resposta como uma mensagem normal aqui no chat e o agente retoma de onde parou.',
+      showAlert: true,
+      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    })
+    return
+  }
+
+  const updated = await deps.agentQuestionService.answer(
+    parsed.questionId,
+    option.value,
+    'telegram'
+  )
   defaultAgentQuestionStateManager.clearActiveTypingQuestion(question.userId)
 
   await answerTelegramCallback({

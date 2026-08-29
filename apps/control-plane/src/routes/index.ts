@@ -4,6 +4,7 @@ import { metricsRoutes } from './metrics.js'
 import { githubWebhookRoutes } from './github-webhook.js'
 import { projectRoutes } from './projects.js'
 import { missionRoutes } from './missions.js'
+import { painelRoutes } from './painel.js'
 import { eventRoutes } from './events.js'
 import { runtimeConfigRoutes } from './runtime-config.js'
 import { avisoDePublicacaoRoutes } from './aviso-de-publicacao.js'
@@ -42,6 +43,10 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
   // Missions trigger and status endpoints
   await missionRoutes(app)
+
+  // Painel do owner: pulso, quem está atuando e responder decisão (leva 1 do
+  // porte do handoff GitOrch Design System). Escopo por dono; sem migração.
+  await painelRoutes(app)
 
   // Porta do desejo: pedido em linguagem natural vira a issue oficial.
   //

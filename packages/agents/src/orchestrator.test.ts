@@ -131,7 +131,7 @@ test('bubbles up step-level failure and recovery status to the workspace provide
 
   const registry = new RuntimeRegistry()
   registry.register(
-    createCliRuntimeAdapter({ runtime: 'antigravity', binary: 'agy', args: ['--print'], runner })
+    createCliRuntimeAdapter({ runtime: 'codex', binary: 'codex', args: ['--print'], runner })
   )
 
   const orchestrator = new AgentOrchestrator({
@@ -148,9 +148,9 @@ test('bubbles up step-level failure and recovery status to the workspace provide
     goal: 'Test deployment failure',
     context: [],
     credentialRef: {
-      connectionId: 'conn-agy',
+      connectionId: 'conn-codex',
       ownerScope: 'project',
-      runtime: 'antigravity',
+      runtime: 'codex',
       providedSecrets: [],
     },
     userId: 'qa-user',
