@@ -42,7 +42,8 @@ import { buildMissionEnricher, persistMissionMemory } from '../services/mission-
 import { resolveMissionDelivery, type MissionPathKind } from '../services/mission-outcome.js'
 import { ClientEnvironmentService } from '../services/environment.js'
 import { runPoMissionViaRails } from '../services/po-rails-mission.js'
-import { runRaMissionViaRails } from '../services/ra-rails-mission.js'
+import { runRaMissionViaRails, runDuvidaTecnicaViaRa } from '../services/ra-rails-mission.js'
+import { resolvePoliticaDePerguntasAoDono } from '../services/duvida-do-dev.js'
 import {
   runQaMissionViaRails,
   type VigiliaDoJulgamentoOptions,
@@ -3084,6 +3085,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                       repository: project.wingId,
                       execute,
                       contextBlocks,
+                      runtimeConfig: project.runtimeConfig,
                     }).catch((err: unknown) =>
                       app.log.warn(
                         err,
@@ -5791,6 +5793,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     repository: string
     execute: StepExecutor
     contextBlocks: string[]
+    /** ESTEIRA-T14: runtimeConfig.perguntasAoDono decide se o RA tenta antes do dono. */
+    runtimeConfig: unknown
   }): Promise<void> => {
     // TODAS as que esperam, não só a mais antiga.
     //
@@ -5937,7 +5941,59 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         )
         return
       }
-      const { destino, mensagemParaODev } = resultadoDaDuvida
+      let { destino, mensagemParaODev } = resultadoDaDuvida
+      // ESTEIRA-T14: o QA não conseguiu responder tecnicamente. Por padrão
+      // (so-executivo), o RA tenta ANTES de incomodar o dono — o dono não
+      // deveria ver uma pergunta técnica que o produto ainda nem tentou
+      // resolver a sério. As outras políticas pulam o RA de propósito (quem
+      // configurou quer o humano vendo todo bloqueio técnico na hora).
+      const politica = resolvePoliticaDePerguntasAoDono(args.runtimeConfig)
+      let respostaVeioDoRa = false
+      if (destino.tipo === 'escalar-ao-ra') {
+        if (politica === 'so-executivo') {
+          const resultadoRa = await runDuvidaTecnicaViaRa({
+            pergunta,
+            repository: args.repository,
+            issueNumber: esperando.issueNumber,
+            motivoDaEscalada: destino.motivo,
+            execute: args.execute,
+            contextBlocks: args.contextBlocks,
+          })
+          if (resultadoRa.aprendizadoParaGravar) {
+            // O acerto do RA vira aprendizado do QA — é o coração do T14: da
+            // próxima vez que o mesmo tema aparecer, o QA responde sozinho
+            // (blocoDeContextoDoJules já injeta estes aprendizados no prompt
+            // dele, sem nenhuma outra mudança de encanamento).
+            await registrarAprendizado({
+              prisma: app.prisma as unknown as PrismaEventoDoJules,
+              projectId: args.projectId,
+              aprendizado: {
+                padrao:
+                  `Pergunta técnica na issue #${esperando.issueNumber} — "` +
+                  `${pergunta.replace(/\s+/g, ' ').trim().slice(0, 160)}" -> resposta: ` +
+                  resultadoRa.aprendizadoParaGravar.replace(/\s+/g, ' ').trim().slice(0, 300),
+                origem: 'resposta-tecnica',
+                issueNumber: esperando.issueNumber,
+              },
+              onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+            }).catch(() => undefined)
+          }
+          destino = resultadoRa.destino
+          mensagemParaODev = resultadoRa.mensagemParaODev
+          respostaVeioDoRa = true
+        } else {
+          // executivo-e-tecnico-bloqueante | tudo: pula o RA, o bloqueio
+          // técnico vai direto ao dono. Motivo PRÓPRIO desta política — o
+          // texto de destinoDaDuvida fala em "o RA tenta", e aqui o RA nunca
+          // chega a rodar; usar aquele motivo mentiria sobre o que aconteceu.
+          destino = {
+            tipo: 'perguntar-ao-dono',
+            motivo:
+              'é bloqueio técnico e a configuração deste projeto pede visibilidade imediata ' +
+              '(sem esperar o RA tentar).',
+          }
+        }
+      }
 
       if (destino.tipo === 'perguntar-ao-dono' || !mensagemParaODev) {
         // Sobe para quem pode decidir. Sem chat ligado não há a quem perguntar:
@@ -5973,6 +6029,21 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         texto: mensagemParaODev,
         onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
       })
+      // ESTEIRA-T14, política 'tudo': visibilidade total — o dono também vê
+      // as dúvidas técnicas que o produto resolveu sozinho. NUNCA bloqueante:
+      // é aviso, o dev já foi respondido antes desta linha rodar.
+      if (saiu && politica === 'tudo') {
+        const projetoParaAviso = await app.prisma.project.findUnique({
+          where: { id: args.projectId },
+        })
+        if (projetoParaAviso) {
+          await avisarDonoDoProjeto(
+            projetoParaAviso,
+            `GitOrch: o dev perguntou algo técnico na tarefa #${esperando.issueNumber} de ` +
+              `${args.repository} e ${respostaVeioDoRa ? 'o RA' : 'o QA'} já respondeu — nada bloqueado.`
+          ).catch(() => undefined)
+        }
+      }
       if (saiu) {
         // A marca de RESPONDIDA só é gravada quando a mensagem de fato chegou —
         // é a diferença entre "tentei" e "respondi", e foi confundir as duas que

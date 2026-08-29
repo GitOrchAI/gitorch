@@ -40,14 +40,14 @@ describe('runDuvidaMissionViaRails', () => {
     expect(r.mensagemParaODev).toBeNull()
   })
 
-  it('agente que não soube: nada é mandado ao dev, mesmo dizendo que não precisa do dono', async () => {
+  it('agente que não soube: nada é mandado ao dev, e escala ao RA (T14), não direto ao dono', async () => {
     const execute = vi.fn(async () =>
       JSON.stringify({ precisaDoDono: false, resposta: 'Não sei responder isso.' })
     )
 
     const r = await runDuvidaMissionViaRails({ ...BASE, execute })
 
-    expect(r.destino.tipo).toBe('perguntar-ao-dono')
+    expect(r.destino.tipo).toBe('escalar-ao-ra')
     expect(r.mensagemParaODev).toBeNull()
   })
 

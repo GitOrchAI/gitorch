@@ -10,6 +10,7 @@ import {
   type ProjetoDoDono,
 } from '../services/arvore-de-pedidos.js'
 import { sprintCorrente, type Iteracao, hojeNoFuso } from '../services/garantir-sprint.js'
+import type { PoliticaDePerguntasAoDono } from '../services/duvida-do-dev.js'
 
 // Rotas do painel do owner (ui_kits/painel-owner/API.md do handoff GitOrch
 // Design System). Nesta leva: pulso, agentes e responder-decisão ao vivo.
@@ -392,6 +393,55 @@ export const painelRoutes = async (
         answeredAt: isoOuNulo(atualizada.answeredAt),
         answeredVia: atualizada.answeredVia,
       })
+    }
+  )
+
+  // POST /api/v1/painel/duvida-config — ESTEIRA-T14. Grava quanto o dono quer
+  // ver no chat sobre dúvidas do dev assíncrono NESTE projeto
+  // (runtimeConfig.perguntasAoDono). Sem GET dedicado: `GET /api/projects`
+  // (ROTAS.repos) já devolve `runtimeConfig` por projeto — criar uma segunda
+  // rota só para ler o mesmo dado seria duplicar, não servir.
+  //
+  // Por `projectId` (o cuid interno), não por `wingId`: a lista de /api/projects
+  // devolve `id` de verdade, e `name` ali NÃO é o endereço do repositório — foi
+  // exatamente essa confusão que escondia projetos do dono até o PR #367.
+  // Nunca sobrescreve o resto do runtimeConfig (board.columns,
+  // board.sprintDays...): lê o que já existe e faz merge de UMA chave.
+  app.post<{ Body: { projectId?: string; perguntasAoDono?: string } }>(
+    '/api/v1/painel/duvida-config',
+    { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      if (!request.user) return reply.code(401).send(NAO_LOGADO)
+      const projectId = request.body?.projectId?.trim()
+      if (!projectId) return reply.code(400).send({ error: 'Informe o projeto.' })
+      const valores: PoliticaDePerguntasAoDono[] = [
+        'so-executivo',
+        'executivo-e-tecnico-bloqueante',
+        'tudo',
+      ]
+      const politica = request.body?.perguntasAoDono
+      if (!valores.includes(politica as PoliticaDePerguntasAoDono)) {
+        return reply
+          .code(400)
+          .send({ error: `perguntasAoDono precisa ser um de: ${valores.join(', ')}` })
+      }
+
+      const ownerId = await resolveOwnerId(app.prisma, request.user)
+      const row = await app.prisma.project.findFirst({
+        where: { id: projectId, userId: ownerId },
+        select: { id: true, runtimeConfig: true },
+      })
+      // Inexistente e "de outro dono" devolvem a MESMA frase — mesmo
+      // anti-vazamento de /decisoes/:id/responder.
+      if (!row) return reply.code(404).send({ error: 'Projeto não encontrado.' })
+
+      const configAtual = (row.runtimeConfig as Record<string, unknown> | null) ?? {}
+      await app.prisma.project.update({
+        where: { id: row.id },
+        data: { runtimeConfig: { ...configAtual, perguntasAoDono: politica } },
+      })
+
+      return reply.send({ perguntasAoDono: politica })
     }
   )
 }
