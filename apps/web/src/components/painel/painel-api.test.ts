@@ -3,6 +3,7 @@ import {
   fraseDoErroDePedido,
   enviarPedido,
   responderDecisao,
+  salvarDuvidaConfig,
   descreverEventoSSE,
   ROTAS,
 } from './painel-api'
@@ -98,6 +99,25 @@ describe('responderDecisao', () => {
   it('outro erro cai no fallback', async () => {
     const r = await responderDecisao('d1', 'Sim', { fetchImpl: fetchQueRetorna(500, {}) })
     expect(r).toEqual({ ok: false, erro: 'Não consegui enviar a resposta agora.' })
+  })
+})
+
+describe('salvarDuvidaConfig (ESTEIRA-T14)', () => {
+  it('200 devolve ok', async () => {
+    const r = await salvarDuvidaConfig('p1', 'tudo', { fetchImpl: fetchQueRetorna(200, {}) })
+    expect(r).toEqual({ ok: true })
+  })
+  it('404 diz que o projeto sumiu', async () => {
+    const r = await salvarDuvidaConfig('p1', 'tudo', { fetchImpl: fetchQueRetorna(404, {}) })
+    expect(r).toEqual({ ok: false, erro: 'Este projeto não existe mais.' })
+  })
+  it('400 pede para escolher uma opção', async () => {
+    const r = await salvarDuvidaConfig('p1', 'lixo', { fetchImpl: fetchQueRetorna(400, {}) })
+    expect(r).toEqual({ ok: false, erro: 'Escolha uma das opções antes de salvar.' })
+  })
+  it('outro erro cai no fallback', async () => {
+    const r = await salvarDuvidaConfig('p1', 'tudo', { fetchImpl: fetchQueRetorna(500, {}) })
+    expect(r).toEqual({ ok: false, erro: 'Não consegui salvar agora. Tente de novo.' })
   })
 })
 

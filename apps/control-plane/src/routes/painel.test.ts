@@ -15,7 +15,11 @@ import { ArvoreIndisponivelError } from '../services/arvore-de-pedidos.js'
 // antes de consultar Event/Mission por `projectId: { in }`).
 function fakePrisma(over: Record<string, any> = {}) {
   return {
-    project: { findMany: vi.fn().mockResolvedValue([{ id: 'proj_1' }]) },
+    project: {
+      findMany: vi.fn().mockResolvedValue([{ id: 'proj_1' }]),
+      findFirst: vi.fn().mockResolvedValue(null),
+      update: vi.fn().mockResolvedValue({}),
+    },
     event: { findFirst: vi.fn().mockResolvedValue(null) },
     mission: {
       findFirst: vi.fn().mockResolvedValue(null),
@@ -525,6 +529,91 @@ describe('Rotas do painel do owner', () => {
         { answerImpl: vi.fn().mockResolvedValue(null) }
       )
       expect((await responder({ resposta: 'x' })).statusCode).toBe(404)
+    })
+  })
+
+  // ESTEIRA-T14 — config por projeto de quanto o dono quer ver sobre dúvidas
+  // do dev assíncrono. Sem GET dedicado: GET /api/projects já devolve
+  // runtimeConfig por projeto (ROTAS.repos) — só o POST é novo aqui.
+  describe('POST /api/v1/painel/duvida-config', () => {
+    const postConfig = (body: Record<string, unknown>) =>
+      app.inject({
+        method: 'POST',
+        url: '/api/v1/painel/duvida-config',
+        headers: authHeaders,
+        payload: body,
+      })
+
+    test('sem sessão → 401', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/painel/duvida-config',
+        payload: { projectId: 'p1', perguntasAoDono: 'tudo' },
+      })
+      expect(res.statusCode).toBe(401)
+    })
+
+    test('sem projectId → 400', async () => {
+      await build()
+      expect((await postConfig({ perguntasAoDono: 'tudo' })).statusCode).toBe(400)
+    })
+
+    test('valor inválido → 400, nunca grava lixo', async () => {
+      const update = vi.fn()
+      await build(
+        fakePrisma({
+          project: {
+            findFirst: vi.fn().mockResolvedValue({ id: 'p1', runtimeConfig: null }),
+            update,
+          },
+        })
+      )
+      expect(
+        (await postConfig({ projectId: 'p1', perguntasAoDono: 'qualquer-coisa' })).statusCode
+      ).toBe(400)
+      expect(update).not.toHaveBeenCalled()
+    })
+
+    test('projeto de outro dono (ou inexistente) → 404, mesma frase das duas situações', async () => {
+      await build(fakePrisma({ project: { findFirst: vi.fn().mockResolvedValue(null) } }))
+      const res = await postConfig({ projectId: 'p1', perguntasAoDono: 'tudo' })
+      expect(res.statusCode).toBe(404)
+    })
+
+    test('consulta o projeto escopado ao dono por id, nunca de outro', async () => {
+      const findFirst = vi.fn().mockResolvedValue(null)
+      await build(fakePrisma({ project: { findFirst } }))
+      await postConfig({ projectId: 'p1', perguntasAoDono: 'tudo' })
+      expect(findFirst.mock.calls[0]![0].where).toEqual({ id: 'p1', userId: 'owner_1' })
+    })
+
+    test('grava a política SEM apagar o resto do runtimeConfig (merge de uma chave)', async () => {
+      const update = vi.fn().mockResolvedValue({})
+      await build(
+        fakePrisma({
+          project: {
+            findFirst: vi
+              .fn()
+              .mockResolvedValue({ id: 'p1', runtimeConfig: { board: { sprintDays: 10 } } }),
+            update,
+          },
+        })
+      )
+      const res = await postConfig({
+        projectId: 'p1',
+        perguntasAoDono: 'executivo-e-tecnico-bloqueante',
+      })
+      expect(res.statusCode).toBe(200)
+      expect(res.json()).toEqual({ perguntasAoDono: 'executivo-e-tecnico-bloqueante' })
+      expect(update.mock.calls[0]![0]).toEqual({
+        where: { id: 'p1' },
+        data: {
+          runtimeConfig: {
+            board: { sprintDays: 10 },
+            perguntasAoDono: 'executivo-e-tecnico-bloqueante',
+          },
+        },
+      })
     })
   })
 })

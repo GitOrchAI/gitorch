@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest'
 import {
   ehRespostaUtil,
   destinoDaDuvida,
+  destinoAposRa,
+  resolvePoliticaDePerguntasAoDono,
   textoDaRespostaAoDev,
   MIN_CARACTERES_DE_RESPOSTA,
 } from './duvida-do-dev.js'
@@ -52,16 +54,50 @@ describe('destinoDaDuvida — quem responde o quê', () => {
     expect(d.tipo).toBe('perguntar-ao-dono')
   })
 
-  it('dúvida técnica com resposta ruim: NÃO manda nada — vai para o dono', () => {
+  it('dúvida técnica com resposta ruim: NÃO manda nada — vai para o RA antes do dono (T14)', () => {
     // A lei do dono: nunca inventar. Uma resposta vazia mandada ao dev é uma
-    // mentira educada — ele volta a perguntar e a vaga segue presa.
+    // mentira educada — ele volta a perguntar e a vaga segue presa. E como
+    // isto NÃO é decisão de negócio, o RA tenta primeiro — nunca direto ao dono.
     const d = destinoDaDuvida({ precisaDoDono: false, resposta: 'Não sei.' })
-    expect(d.tipo).toBe('perguntar-ao-dono')
+    expect(d.tipo).toBe('escalar-ao-ra')
   })
 
-  it('mesmo dizendo que não precisa do dono, resposta vazia não vira mensagem', () => {
+  it('mesmo dizendo que não precisa do dono, resposta vazia escala ao RA, não ao dono direto', () => {
     const d = destinoDaDuvida({ precisaDoDono: false, resposta: '   ' })
+    expect(d.tipo).toBe('escalar-ao-ra')
+  })
+})
+
+describe('destinoAposRa — depois que o RA também tentou (T14)', () => {
+  it('RA respondeu de verdade: vai para o dev', () => {
+    const d = destinoAposRa('Use upsert do Prisma aqui — já é o padrão em src/lib/sync-ml.ts.')
+    expect(d.tipo).toBe('responder-o-dev')
+  })
+
+  it('nem o RA soube: agora sim é o dono, sem mais nenhuma porta técnica', () => {
+    const d = destinoAposRa('Não sei responder isso.')
     expect(d.tipo).toBe('perguntar-ao-dono')
+  })
+})
+
+describe('resolvePoliticaDePerguntasAoDono — config por projeto (T14)', () => {
+  it('sem config: default é so-executivo', () => {
+    expect(resolvePoliticaDePerguntasAoDono(null)).toBe('so-executivo')
+    expect(resolvePoliticaDePerguntasAoDono(undefined)).toBe('so-executivo')
+    expect(resolvePoliticaDePerguntasAoDono({})).toBe('so-executivo')
+  })
+
+  it('lê o valor configurado quando é válido', () => {
+    expect(
+      resolvePoliticaDePerguntasAoDono({ perguntasAoDono: 'executivo-e-tecnico-bloqueante' })
+    ).toBe('executivo-e-tecnico-bloqueante')
+    expect(resolvePoliticaDePerguntasAoDono({ perguntasAoDono: 'tudo' })).toBe('tudo')
+  })
+
+  it('valor inválido cai no default seguro', () => {
+    expect(resolvePoliticaDePerguntasAoDono({ perguntasAoDono: 'qualquer-coisa' })).toBe(
+      'so-executivo'
+    )
   })
 })
 

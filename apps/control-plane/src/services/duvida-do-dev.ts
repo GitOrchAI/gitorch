@@ -90,16 +90,27 @@ export function ehRespostaUtil(resposta: string): boolean {
 export type DestinoDaDuvida =
   /** O agente sabe: a resposta vai para a sessão do dev. */
   | { tipo: 'responder-o-dev'; resposta: string }
-  /** Decisão de negócio, ou o agente não soube: quem responde é o dono. */
+  /**
+   * ESTEIRA-T14 (decisão do dono 29/08): o QA não soube responder, mas isto
+   * NÃO é decisão de negócio — antes de incomodar o dono, o RA tenta com mais
+   * profundidade (codegraph) e, se acertar, o acerto vira aprendizado para o
+   * QA responder sozinho da próxima. Caso real que motivou: o Jules perguntou
+   * algo técnico (sync do MercadoLivre, upsert do Prisma) na tarefa #3884 do
+   * patinhas e o GitOrch escalou direto ao dono — "se o gitorch me entrega
+   * decisões técnicas, eu mesmo faria".
+   */
+  | { tipo: 'escalar-ao-ra'; motivo: string }
+  /** Decisão de NEGÓCIO de verdade — nunca se adivinha — ou nem o RA soube. */
   | { tipo: 'perguntar-ao-dono'; motivo: string }
 
 /**
- * Para onde vai a dúvida.
+ * Para onde vai a dúvida, na primeira passada (QA).
  *
- * Duas portas, e o caminho para o dono é o padrão seguro: qualquer coisa que
- * não seja uma resposta técnica boa sobe para quem pode decidir. Errar para
- * este lado custa uma pergunta a mais no chat do dono; errar para o outro
- * custa uma resposta inventada dentro do trabalho dele.
+ * Três portas. `precisaDoDono` é o único jeito de chegar direto ao dono aqui
+ * — é a declaração do próprio agente de que é decisão de negócio, e decisão
+ * de negócio não se adivinha. Qualquer coisa técnica que o QA não conseguiu
+ * resolver vai para o RA antes, nunca direto para o dono: o dono não deveria
+ * receber uma pergunta que o produto ainda nem tentou resolver a sério.
  */
 export function destinoDaDuvida(args: {
   /** O próprio agente declarou que isto é decisão de negócio. */
@@ -115,13 +126,60 @@ export function destinoDaDuvida(args: {
   }
   if (!ehRespostaUtil(args.resposta)) {
     return {
-      tipo: 'perguntar-ao-dono',
+      tipo: 'escalar-ao-ra',
       motivo:
-        'não consegui responder olhando o repositório, e mandar uma resposta vazia ao dev ' +
-        'só faria ele perguntar de novo.',
+        'o QA não conseguiu responder lendo o repositório — é técnico, então o RA tenta com ' +
+        'mais profundidade antes de subir ao dono.',
     }
   }
   return { tipo: 'responder-o-dev', resposta: args.resposta.trim() }
+}
+
+/**
+ * Para onde vai a dúvida DEPOIS que o RA também tentou.
+ *
+ * Aqui não existe mais escalar-ao-ra: ou o RA respondeu de verdade, ou
+ * ninguém no produto soube — e aí sim é o dono, porque as duas tentativas
+ * técnicas se esgotaram.
+ */
+export function destinoAposRa(resposta: string): DestinoDaDuvida {
+  if (!ehRespostaUtil(resposta)) {
+    return {
+      tipo: 'perguntar-ao-dono',
+      motivo: 'nem o QA nem o RA conseguiram responder lendo o repositório.',
+    }
+  }
+  return { tipo: 'responder-o-dev', resposta: resposta.trim() }
+}
+
+/**
+ * ESTEIRA-T14 — config por projeto de quanto o dono quer ver no chat sobre
+ * dúvidas do dev assíncrono (`runtimeConfig.perguntasAoDono`):
+ *
+ * - `so-executivo` (default): só decisão de negócio real, ou o caso raro em
+ *   que QA E RA tentaram e nenhum soube.
+ * - `executivo-e-tecnico-bloqueante`: além disso, todo bloqueio técnico vai
+ *   direto ao dono (pula o RA) — para quem quer o humano vendo todo travamento.
+ * - `tudo`: mesmo comportamento de escalada de `executivo-e-tecnico-bloqueante`,
+ *   e AINDA avisa o dono (sem bloquear nada) quando o QA respondeu sozinho —
+ *   visibilidade total.
+ */
+export type PoliticaDePerguntasAoDono = 'so-executivo' | 'executivo-e-tecnico-bloqueante' | 'tudo'
+
+const POLITICAS_VALIDAS = new Set<PoliticaDePerguntasAoDono>([
+  'so-executivo',
+  'executivo-e-tecnico-bloqueante',
+  'tudo',
+])
+
+/** Lê `runtimeConfig.perguntasAoDono`, com o default seguro (`so-executivo`). */
+export function resolvePoliticaDePerguntasAoDono(
+  runtimeConfig: unknown
+): PoliticaDePerguntasAoDono {
+  const valor = (runtimeConfig as { perguntasAoDono?: string } | null)?.perguntasAoDono
+  return POLITICAS_VALIDAS.has(valor as PoliticaDePerguntasAoDono)
+    ? (valor as PoliticaDePerguntasAoDono)
+    : 'so-executivo'
 }
 
 /**
