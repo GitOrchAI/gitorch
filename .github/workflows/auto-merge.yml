@@ -136,7 +136,7 @@ jobs:
 
       - name: Setup Node
         if: steps.evaluate.outputs.eligible == 'true'
-        uses: actions/setup-node@v4
+        uses: ./.github/actions/setup-pnpm
         with:
           node-version: '20'
 
@@ -147,7 +147,7 @@ jobs:
       - name: Install Script Dependencies
         if: steps.evaluate.outputs.eligible == 'true'
         working-directory: .github/scripts
-        run: npm ci
+        run: pnpm install --ignore-workspace
 
       - name: QA Verdict Gate
         id: gate

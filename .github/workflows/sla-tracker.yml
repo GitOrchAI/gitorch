@@ -20,7 +20,7 @@ jobs:
           token: ${{ secrets.SECURITY_PAT || github.token }}
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: ./.github/actions/setup-pnpm
         with:
           node-version: '20'
 
@@ -33,7 +33,7 @@ jobs:
       # lockfile, e era este o único fora do padrão.
       - name: Install Dependencies
         working-directory: .github/scripts
-        run: npm ci
+        run: pnpm install --ignore-workspace
 
       - name: Run SLA Tracker
         env:

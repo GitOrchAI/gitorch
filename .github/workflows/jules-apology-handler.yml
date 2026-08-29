@@ -55,14 +55,14 @@ jobs:
 
       - name: Setup Node
         if: steps.triage.outputs.act == 'true' && steps.triage.outputs.alreadyTried == 'false' && steps.triage.outputs.sessionId != ''
-        uses: actions/setup-node@v4
+        uses: ./.github/actions/setup-pnpm
         with:
           node-version: '20'
 
       - name: Install Dependencies
         if: steps.triage.outputs.act == 'true' && steps.triage.outputs.alreadyTried == 'false' && steps.triage.outputs.sessionId != ''
         working-directory: .github/scripts
-        run: npm ci
+        run: pnpm install --ignore-workspace
 
       - name: Orientar Jules (1ª tentativa)
         if: steps.triage.outputs.act == 'true' && steps.triage.outputs.alreadyTried == 'false' && steps.triage.outputs.sessionId != ''
