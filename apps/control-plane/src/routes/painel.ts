@@ -2,6 +2,12 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { resolveOwnerId } from '../lib/resolve-owner-id.js'
 import { descreverEvento, papelDoAgente, estadoDoAgente } from '../services/descrever-evento.js'
 import type { AgentQuestionRecord } from '../services/agent-question.js'
+import {
+  lerArvoreDePedidos,
+  ArvoreIndisponivelError,
+  type PedidoDoPainel,
+  type ProjetoDoDono,
+} from '../services/arvore-de-pedidos.js'
 
 // Rotas do painel do owner (ui_kits/painel-owner/API.md do handoff GitOrch
 // Design System). Nesta leva: pulso, agentes e responder-decisão ao vivo.
@@ -45,6 +51,14 @@ export interface PainelRoutesOpts {
     valor: string,
     via: 'telegram' | 'panel'
   ) => Promise<AgentQuestionRecord | null>
+  /**
+   * Lê a árvore dos pedidos no GitHub. Default: o serviço real, com os
+   * projetos do dono e a credencial dele. Injetável só nos testes.
+   */
+  lerPedidos?: (args: {
+    ownerId: string
+    projeto?: string | undefined
+  }) => Promise<PedidoDoPainel[]>
 }
 
 function nomeDoMotor(payload: unknown): string {
@@ -71,6 +85,30 @@ export const painelRoutes = async (
       if (!svc) throw new Error('agentQuestionService não registrado (telegramPlugin ausente)')
       return svc.answer(id, valor, via)
     })
+
+  const lerPedidos =
+    opts.lerPedidos ??
+    ((args: { ownerId: string; projeto?: string | undefined }) =>
+      lerArvoreDePedidos(
+        {
+          // `Project.name` É o "owner/repo" (o schema é explícito: é o
+          // endereço do repositório, não a chave do tenant). Por isso o nome
+          // que o dono vê e o endereço são o mesmo valor — a interface separa
+          // os dois para o dia em que existir um apelido amigável.
+          listarProjetos: async (ownerId: string): Promise<ProjetoDoDono[]> => {
+            const ps = await app.prisma.project.findMany({
+              where: { userId: ownerId, isActive: true },
+              select: { name: true },
+            })
+            return ps.map((p) => ({ nome: p.name, repo: p.name }))
+          },
+          // A credencial do DONO, não a da instalação: os pedidos vivem no
+          // repositório dele, e é a permissão dele que vale.
+          lerToken: async (ownerId: string) =>
+            (await app.engineConnections?.getRawGithubToken(ownerId)) ?? null,
+        },
+        args
+      ))
 
   const isoOuNulo = (d: Date | string | null | undefined): string | null =>
     d == null ? null : d instanceof Date ? d.toISOString() : d
@@ -210,6 +248,39 @@ export const painelRoutes = async (
       }
 
       return reply.send({ atuando, motores })
+    }
+  )
+
+  // GET /api/v1/painel/pedidos — os desejos do dono, com a árvore que o
+  // Produto pendurou embaixo de cada um.
+  //
+  // Nada aqui é inventado: o desejo é a issue com a etiqueta `wishlist`
+  // (services/desejo.ts) e o andamento vem de `subIssuesSummary`, que o
+  // próprio GitHub calcula. Consulta disparada de verdade antes de existir
+  // esta rota (29/08): 5 pedidos, um em 1 de 3 partes, outro em 0 de 0.
+  //
+  // `?projeto=` filtra por um projeto; sem ele vêm os de TODOS — o painel é
+  // multi-projeto por natureza, porque o cliente tem de 1 a 10 repositórios
+  // conosco e o executivo precisa ver como flui cada um.
+  app.get<{ Querystring: { projeto?: string } }>(
+    '/api/v1/painel/pedidos',
+    RATE_LIMIT_POLLING,
+    async (request, reply) => {
+      if (!request.user) return reply.code(401).send(NAO_LOGADO)
+      const ownerId = await resolveOwnerId(app.prisma, request.user)
+      const projeto = request.query.projeto?.trim() || undefined
+      try {
+        const pedidos = await lerPedidos({ ownerId, projeto })
+        return reply.send({ pedidos })
+      } catch (err) {
+        if (err instanceof ArvoreIndisponivelError) {
+          // 503 e não 500: a tela distingue "não consegui ler agora" de "você
+          // não pediu nada". Devolver lista vazia aqui seria mentir.
+          app.log.warn(`[painel/pedidos] árvore indisponível: ${err.message}`)
+          return reply.code(503).send({ error: 'PEDIDOS_INDISPONIVEIS' })
+        }
+        throw err
+      }
     }
   )
 

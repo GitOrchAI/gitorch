@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken'
 import { loadEnv } from '../config/env.js'
 import { registerPlugins } from '../plugins/index.js'
 import { painelRoutes } from './painel.js'
+import { ArvoreIndisponivelError } from '../services/arvore-de-pedidos.js'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -50,6 +51,8 @@ describe('Rotas do painel do owner', () => {
     app.inject({ method: 'GET', url: '/api/v1/painel/pulso', headers: authHeaders })
   const getAgentes = () =>
     app.inject({ method: 'GET', url: '/api/v1/painel/agentes', headers: authHeaders })
+  const getPedidos = (qs = '') =>
+    app.inject({ method: 'GET', url: `/api/v1/painel/pedidos${qs}`, headers: authHeaders })
 
   beforeEach(async () => {
     await build()
@@ -223,6 +226,89 @@ describe('Rotas do painel do owner', () => {
       const where = prisma.mission.findMany.mock.calls[0][0].where
       expect(where.projectId).toEqual({ in: ['p1'] })
       expect(where.status).toEqual({ in: ['running', 'pending'] })
+    })
+  })
+
+  describe('GET /api/v1/painel/pedidos', () => {
+    const umPedido = {
+      numero: 30,
+      titulo: 'Conseguir solicitar wishlist via telegram',
+      situacao: 'andando' as const,
+      projeto: 'gitorch',
+      quando: '2026-08-06T12:00:00Z',
+      endereco: 'https://github.com/GitOrchAI/gitorch/issues/30',
+      partes: { total: 3, concluidas: 1 },
+    }
+
+    test('sem sessão → 401', async () => {
+      const res = await app.inject({ method: 'GET', url: '/api/v1/painel/pedidos' })
+      expect(res.statusCode).toBe(401)
+    })
+
+    test('devolve os pedidos com a árvore', async () => {
+      await build(fakePrisma(), { lerPedidos: async () => [umPedido] })
+      const res = await getPedidos()
+      expect(res.statusCode).toBe(200)
+      expect(res.json()).toEqual({ pedidos: [umPedido] })
+    })
+
+    test('sem pedido nenhum → lista vazia, não erro', async () => {
+      await build(fakePrisma(), { lerPedidos: async () => [] })
+      const res = await getPedidos()
+      expect(res.statusCode).toBe(200)
+      expect(res.json()).toEqual({ pedidos: [] })
+    })
+
+    test('?projeto= chega ao serviço', async () => {
+      const vistos: Array<{ ownerId: string; projeto?: string }> = []
+      await build(fakePrisma(), {
+        lerPedidos: async (args: { ownerId: string; projeto?: string }) => {
+          vistos.push(args)
+          return []
+        },
+      })
+      await getPedidos('?projeto=patinhas')
+      expect(vistos[0]?.projeto).toBe('patinhas')
+    })
+
+    test('projeto vazio na querystring vira "todos", não filtro por string vazia', async () => {
+      const vistos: Array<{ projeto?: string }> = []
+      await build(fakePrisma(), {
+        lerPedidos: async (args: { ownerId: string; projeto?: string }) => {
+          vistos.push(args)
+          return []
+        },
+      })
+      await getPedidos('?projeto=%20%20')
+      expect(vistos[0]?.projeto).toBeUndefined()
+    })
+
+    test('árvore indisponível → 503, e NUNCA lista vazia (não mentir que não há pedido)', async () => {
+      await build(fakePrisma(), {
+        lerPedidos: async () => {
+          throw new ArvoreIndisponivelError('nenhum projeto respondeu')
+        },
+      })
+      const res = await getPedidos()
+      expect(res.statusCode).toBe(503)
+      expect(res.json()).toEqual({ error: 'PEDIDOS_INDISPONIVEIS' })
+    })
+
+    test('erro inesperado não vira 503 disfarçado', async () => {
+      await build(fakePrisma(), {
+        lerPedidos: async () => {
+          throw new Error('bug de verdade')
+        },
+      })
+      const res = await getPedidos()
+      expect(res.statusCode).toBe(500)
+    })
+
+    test('a resposta não carrega id de projeto nem de usuário', async () => {
+      await build(fakePrisma(), { lerPedidos: async () => [umPedido] })
+      const corpo = (await getPedidos()).body
+      expect(corpo).not.toContain('proj_1')
+      expect(corpo).not.toContain('owner_1')
     })
   })
 

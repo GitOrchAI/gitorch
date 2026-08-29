@@ -18,6 +18,14 @@ import {
   type TelaId,
 } from '../../components/painel/painel-nav'
 import {
+  assinarProjeto,
+  projetoAtual,
+  projetoNoServidor,
+  definirProjeto,
+  rotuloDoProjeto,
+  type ProjetoEscolhido,
+} from '../../components/painel/painel-projeto'
+import {
   assinarTema,
   temaAtual,
   temaNoServidor,
@@ -28,7 +36,8 @@ import {
   fetchAgentQuestions,
   type AgentQuestionView,
 } from '../../components/painel/agent-questions'
-import { responderDecisao } from '../../components/painel/painel-api'
+import { ROTAS, responderDecisao } from '../../components/painel/painel-api'
+import { usePainelBusca } from '../../components/painel/usePainelBusca'
 import { Ad, AdMark } from '../../components/painel/PainelIcons'
 import type { DecisaoView } from '../../components/painel/PainelUI'
 import { TelaVisaoGeral } from '../../components/painel/TelaVisaoGeral'
@@ -70,6 +79,47 @@ function paraDecisao(q: AgentQuestionView): DecisaoView {
   }
 }
 
+/**
+ * Escolher entre todos os projetos e um só. Fica no topo, ao lado do rastro —
+ * decisão do dono (29/08): o GitOrch cuida dos repositórios do cliente, e um
+ * cliente tem de 1 a 10; o executivo precisa ver como flui cada um.
+ *
+ * Some quando o dono tem um projeto só: escolher entre "todos" e o único não
+ * é escolha, é ruído.
+ */
+function SeletorDeProjeto({
+  valor,
+  onChange,
+}: {
+  valor: ProjetoEscolhido
+  onChange: (p: ProjetoEscolhido) => void
+}) {
+  const r = usePainelBusca<string[], { data?: Array<{ name?: string }> }>(ROTAS.repos, {
+    mapear: (b) => (b.data ?? []).map((p) => p.name ?? '').filter(Boolean),
+    vazio: (d) => d.length === 0,
+  })
+  const projetos = r.estado === 'ok' && r.dados ? r.dados : []
+  if (projetos.length < 2) return null
+
+  return (
+    <select
+      className="pn-chip"
+      value={valor ?? ''}
+      onChange={(e) => onChange(e.target.value || null)}
+      aria-label="Escolher projeto"
+      title="Ver todos os projetos ou um por vez"
+      style={{ marginLeft: 10, maxWidth: 220 }}
+    >
+      <option value="">{rotuloDoProjeto(null)}</option>
+      {projetos.map((p) => (
+        <option key={p} value={p}>
+          {p}
+        </option>
+      ))}
+    </select>
+  )
+}
+
 export default function PainelOwner() {
   // `null` = ainda checando (não pisca a tela de conectar para quem já está
   // logado); `false` = não logado; `true` = painel.
@@ -82,6 +132,9 @@ export default function PainelOwner() {
   // suppressHydrationWarning porque só o atributo data-theme pode divergir.
   const tema = useSyncExternalStore(assinarTema, temaAtual, temaNoServidor)
   const setTema = definirTema
+  // Qual projeto o painel está mostrando. `null` = todos. Mesma mecânica do
+  // tema: store externa, persistida, corrigida na hidratação.
+  const projeto = useSyncExternalStore(assinarProjeto, projetoAtual, projetoNoServidor)
   const [sheet, setSheet] = useState(false)
   const [foco, setFoco] = useState<string | null>(null)
 
@@ -259,6 +312,7 @@ export default function PainelOwner() {
             <span className="pn-crumb">
               Painel / <b>{tituloDaTela(tela)}</b>
             </span>
+            <SeletorDeProjeto valor={projeto} onChange={definirProjeto} />
             <span className="pn-sp" />
             <button
               className="pn-ico"
