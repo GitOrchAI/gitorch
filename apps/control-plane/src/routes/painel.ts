@@ -16,6 +16,7 @@ import {
   type LeituraDeProjeto,
 } from '../services/leitura-do-repositorio.js'
 import { paraTela, type EntregaDoPainel } from '../services/incremento.js'
+import { medirCiclo } from '../services/medicao-do-ciclo.js'
 import {
   avaliarPronto,
   normalizarRegua,
@@ -614,6 +615,48 @@ export const painelRoutes = async (
       })
 
       return reply.send({ entregas, prontas: entregas.filter((e) => e.pronto).length })
+    }
+  )
+
+  // GET /api/v1/painel/ciclo — quanto o nosso ciclo custa, contando o retrabalho.
+  //
+  // O raciocínio do dono: "se o modelo é 20x melhor que humano, mas teve 5
+  // retrabalhos, o ganho real não é 20x". A conta desconta o retrabalho.
+  //
+  // MEDIANA E P90, NUNCA SÓ MÉDIA. Medido no banco dele em 30/08: a média de
+  // cutucadas dá 5,0 e a mediana dá 1 — a média está sendo puxada por uma
+  // entrega que levou 65. Quem lê a média conclui que tudo é ruim; quem lê as
+  // duas vê que o caso típico é tranquilo e a dor está na cauda.
+  //
+  // E o número é do NOSSO banco. Multiplicador importado de fora ("IA é 10x
+  // mais rápida") é marketing de outra empresa, não medição nossa.
+  app.get<{ Querystring: { projeto?: string } }>(
+    '/api/v1/painel/ciclo',
+    RATE_LIMIT_POLLING,
+    async (request, reply) => {
+      if (!request.user) return reply.code(401).send(NAO_LOGADO)
+      const ownerId = await resolveOwnerId(app.prisma, request.user)
+      const projeto = request.query.projeto?.trim() || undefined
+
+      const projetos = await app.prisma.project.findMany({
+        where: { userId: ownerId, isActive: true, ...(projeto ? { name: projeto } : {}) },
+        select: { id: true },
+      })
+      if (projetos.length === 0) return reply.send(medirCiclo([]))
+
+      const fatos = await app.prisma.devSession.findMany({
+        where: { projectId: { in: projetos.map((p) => p.id) } },
+        select: {
+          attempts: true,
+          nudges: true,
+          requeueCount: true,
+          mergeFailures: true,
+          createdAt: true,
+          closedAt: true,
+        },
+      })
+
+      return reply.send(medirCiclo(fatos))
     }
   )
 

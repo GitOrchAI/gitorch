@@ -392,3 +392,51 @@ describe('makeAntigravityQuotaReaderPty (reader com PTY fake — nunca sobe o ag
     expect(reading.weekPercentUsed).toBeCloseTo(95, 2) // 100 - 5 (pior entre 90 e 95)
   })
 })
+
+describe('a tela do agy 1.1.22 — o rótulo ganhou "Remaining"', () => {
+  // CAPTURADA AO VIVO em 30/08/2026, rodando o próprio caminho de produção
+  // contra o binário instalado. Não é fixture inventada: é o que a tela
+  // desenhou. O formato anterior ("Weekly Limit", sem "Remaining") continua
+  // coberto pelos testes acima — os dois convivem.
+  //
+  // E há um segundo achado honesto aqui: nesta versão/plano NÃO EXISTE mais a
+  // janela de 5 horas. Só a semanal, por grupo de modelo. O número de sessão
+  // vai continuar nulo depois do conserto, e isso é a verdade, não defeito.
+  const TELA_REAL = [
+    '└ Models & Quota',
+    '  Account: guizinsouza6@gmail.com',
+    'GEMINI MODELS',
+    '  Models within this group: Gemini Flash, Gemini Pro',
+    '  Weekly Limit Remaining',
+    '    [░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 0.06%',
+    '    0% remaining · Refreshes in 160h 53m',
+    'CLAUDE AND GPT MODELS',
+    '  Models within this group: Claude Opus, Claude Sonnet, GPT-OSS',
+    '  Weekly Limit Remaining',
+    '    [█████████████████████████████████████████████████░] 98.56%',
+    '    99% remaining · Refreshes in 161h 31m',
+  ].join('\n')
+
+  it('reconhece as DUAS janelas — antes reconhecia zero', () => {
+    const janelas = parseAntigravityUsageWindows(TELA_REAL)
+    expect(janelas).toHaveLength(2)
+    expect(janelas.every((j) => j.kind === 'weekly')).toBe(true)
+  })
+
+  it('a cota semanal PIOR é a que vale: o Gemini está 99,94% gasto', () => {
+    // O produto não pode dizer "está tudo bem" porque UM grupo tem folga: se
+    // um grupo acabou, o trabalho que depende dele para.
+    const leitura = antigravityUsageScreenToQuotaReading(TELA_REAL)
+    expect(leitura.weekPercentUsed).toBeCloseTo(99.94, 1)
+  })
+
+  it('a janela de 5 horas some — e nulo aqui é a verdade, não defeito', () => {
+    const leitura = antigravityUsageScreenToQuotaReading(TELA_REAL)
+    expect(leitura.sessionPercentUsed).toBeNull()
+  })
+
+  it('o formato ANTIGO continua funcionando — o conserto é retrocompatível', () => {
+    const antiga = ['  Weekly Limit', '    [████░░] 40.00%', '    Refreshes in 10h'].join('\n')
+    expect(parseAntigravityUsageWindows(antiga)).toHaveLength(1)
+  })
+})

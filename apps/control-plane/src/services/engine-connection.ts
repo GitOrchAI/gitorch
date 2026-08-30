@@ -7,7 +7,7 @@ import { decryptCredential, encryptCredential } from '../lib/credential-crypto.j
 import { archivePaths, readArchiveEntry, restoreDirectory } from '../lib/credential-archive.js'
 import { MODEL_DISCOVERERS } from './model-catalog.js'
 import { QUOTA_READERS } from './quota-reader.js'
-import { carimboDaLeitura, lerCotaDoMotor } from './leitura-de-cota.js'
+import { carimboDaLeitura, lerCotaDoMotor, percentualAindaVale } from './leitura-de-cota.js'
 import { checkLiveness, type LivenessResult } from './engine-liveness.js'
 import { validatePastedCredential } from './credential-validator.js'
 
@@ -493,9 +493,15 @@ function toStatus(record: {
     models: Array.isArray(record.models) ? (record.models as string[]) : [],
     quotaRemaining: record.quotaRemaining ?? null,
     quotaTotal: record.quotaTotal ?? null,
-    sessionPercentUsed: record.sessionPercentUsed ?? null,
+    // Percentual de janela JÁ VIRADA não é servido: vira null.
+    //
+    // Medido em 30/08: a linha do Claude dizia "semana 99% usada", lida 45
+    // horas antes, com as duas janelas já vencidas — e a leitura na hora deu
+    // 24%. Um erro de 75 pontos, com cara de fato. Enquanto isso existir, o
+    // painel é MENOS confiável que um campo vazio.
+    sessionPercentUsed: percentualAindaVale(record.sessionPercentUsed, record.sessionResetsAt),
     sessionResetsAt: record.sessionResetsAt ?? null,
-    weekPercentUsed: record.weekPercentUsed ?? null,
+    weekPercentUsed: percentualAindaVale(record.weekPercentUsed, record.weekResetsAt),
     weekResetsAt: record.weekResetsAt ?? null,
   }
 }

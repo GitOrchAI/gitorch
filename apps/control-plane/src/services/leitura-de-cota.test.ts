@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { carimboDaLeitura, lerCotaDoMotor, temNumeroDeCota } from './leitura-de-cota.js'
+import {
+  carimboDaLeitura,
+  lerCotaDoMotor,
+  temNumeroDeCota,
+  percentualAindaVale,
+} from './leitura-de-cota.js'
 
 describe('leitura de cota', () => {
   it('leitor que devolve tudo nulo NÃO passa por leitura feita (o caso real dos 2 motores)', async () => {
@@ -68,5 +73,39 @@ describe('leitura de cota', () => {
       const cota = await lerCotaDoMotor({ runtime: 'codex', ler, home: '/tmp/x' })
       if (!cota.temNumero) expect(cota.motivo).toBeTruthy()
     }
+  })
+})
+
+describe('percentualAindaVale — número de janela vencida é desconhecido, não fato', () => {
+  // MEDIDO em 30/08: o banco guardava "semana 99% usada" para o Claude, lido 45
+  // horas antes, com as duas janelas já viradas. A leitura feita na hora deu
+  // 24%. Erro de 75 pontos percentuais, exibido com cara de fato.
+  const agora = new Date('2026-08-30T00:00:00Z')
+
+  it('janela que ainda vale devolve o número', () => {
+    expect(percentualAindaVale(24, '2026-09-05T06:00:00Z', agora)).toBe(24)
+  })
+
+  it('janela JÁ VIRADA devolve null — o número morreu junto com ela', () => {
+    expect(percentualAindaVale(99, '2026-08-29T06:00:00Z', agora)).toBeNull()
+  })
+
+  it('sem horário de virada NÃO dá para afirmar que ainda vale', () => {
+    // Não é pessimismo: sem a virada, não há como saber se o número
+    // sobreviveu. Servir mesmo assim é apostar.
+    expect(percentualAindaVale(50, null, agora)).toBeNull()
+  })
+
+  it('percentual ausente continua ausente', () => {
+    expect(percentualAindaVale(null, '2026-09-05T06:00:00Z', agora)).toBeNull()
+  })
+
+  it('data ilegível não vira número válido', () => {
+    expect(percentualAindaVale(50, 'ontem', agora)).toBeNull()
+  })
+
+  it('zero por cento é um número de verdade, não ausência', () => {
+    // 0% usado é informação: a janela acabou de virar e está limpa.
+    expect(percentualAindaVale(0, '2026-09-05T06:00:00Z', agora)).toBe(0)
   })
 })
