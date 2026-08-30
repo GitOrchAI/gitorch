@@ -1309,6 +1309,13 @@ describe('runQaMissionViaRails', () => {
           avisos.push(msg)
           return true
         },
+        // Presente porque em produção este campo é Required
+        // (montarOpcoesDoJulgamento, scheduler.ts) — sem ele o laço de
+        // resgate (travadasNoTeto) nem chega a rodar, e este teste não
+        // exercitaria o caminho real que a passagem 4 abaixo mede.
+        registrarConserto: async (args: { sessionName: string; chave: string }) => {
+          sessao.deployFixKey = args.chave
+        },
       }
 
       // 1a passagem: aprova, tenta mesclar, o GitHub recusa (fracasso #1).
@@ -1375,9 +1382,15 @@ describe('runQaMissionViaRails', () => {
       expect(avisos[0]).toContain('pulls/7/merge failed (405)')
 
       // 4a passagem: MESMO commit, teto já batido. "Para de tentar até o
-      // commit mudar" — nem posta review nova, nem chama merge de novo, e
-      // não avisa OUTRA vez (repetir o aviso a cada tique seria o mesmo spam
-      // que este produto já provou não fazer noutros avisos).
+      // commit mudar" — nem posta review nova, nem chama merge de novo. UM
+      // segundo aviso chega — mas não é o mesmo caminho repetindo: é o laço
+      // de RESGATE (travadasNoTeto/decidirResgateDaTravada,
+      // entrega-travada-no-teto.ts) que passa a examinar esta entrega assim
+      // que ela sai do caminho normal, sem sessão do dev viva
+      // (avisarSessao ausente aqui) para pedir rebase. `jaPediuNesteHead`
+      // (a marca de `registrarConserto`, gravada só porque avisarDono
+      // resolveu `true`) é o que impede um TERCEIRO aviso na próxima
+      // passagem — ver o teste dedicado logo abaixo.
       const f4 = fakeFetch(
         [
           {
@@ -1397,7 +1410,196 @@ describe('runQaMissionViaRails', () => {
       expect(posted4.reviews).toHaveLength(0)
       expect(posted4.merges).toHaveLength(0)
       expect(sessao.mergeFailures).toBe(MAX_TENTATIVAS_DE_MERGE)
-      expect(avisos).toHaveLength(1) // não repetiu o aviso
+      expect(avisos).toHaveLength(2) // o laço de resgate avisou de novo (sem sessão viva)
+      expect(avisos[1]).toContain('#7')
+      expect(avisos[1]).toContain('travou')
+      expect(sessao.deployFixKey).not.toBeNull() // marcado só porque a entrega chegou
+
+      // 5a passagem: MESMO commit, resgate já pedido — não repete (a marca
+      // gravada na passagem 4 faz `jaPediuNesteHead` ser `true`).
+      const f5 = fakeFetch(
+        [
+          {
+            number: 7,
+            user: 'jules[bot]',
+            existingReviews: [{ body: corpoDaAprovacao, commit_id: 'abc123' }],
+          },
+        ],
+        undefined,
+        undefined,
+        { mergeFalha: true }
+      )
+      await runQaMissionViaRails({ ...opcoesComuns, fetchImpl: f5 })
+      expect(avisos).toHaveLength(2) // não repetiu o resgate
+    })
+
+    // fix/resgate-merge-retenta-aviso: antes deste fix, o laço de resgate
+    // gravava `registrarConserto` incondicionalmente (só checava a função
+    // existir) — uma falha real de Telegram bem no instante do resgate
+    // calava o dono para sempre, porque `jaPediuNesteHead` ficava `true` sem
+    // a entrega ter chegado. Agora a marca só grava quando `avisarDono`
+    // resolve `true`.
+    // As três "laço de resgate" abaixo precisam ISOLAR o laço de resgate do
+    // pipeline normal de julgamento/merge — sem `existingReviews` casando
+    // com o head ('abc123', o default de `fakeFetch`), `reviewMarcadaNesteHead`
+    // fica `undefined`, o guard C1 (linha ~695) não pula, e o PR também vira
+    // `target` do pipeline normal (aprova, posta review, tenta mesclar) NA
+    // MESMA passagem — em produção isso não acontece (bater o teto SEMPRE
+    // deixa uma review marcada naquele head), mas no teste mascararia o que
+    // está sendo provado. `existingReviews` com `commit_id: 'abc123'` fecha
+    // o guard C1 (o conteúdo do parecer não importa aqui: `aindaPodeTentarMesclar`
+    // já é `false`, então `deveRejulgar` é `false` de qualquer jeito) — e as
+    // asserções de `posted.reviews`/`posted.merges` provam que só o resgate rodou.
+    const parecerAnteriorNoHead = [
+      {
+        body: '<!-- gitorch:qa -->\nGitOrch QA verdict: REQUEST CHANGES (see comment).',
+        commit_id: 'abc123',
+      },
+    ]
+
+    it('laço de resgate: avisarDono falha (Telegram fora do ar) -> NÃO marca, e tenta de novo na PRÓXIMA acordada', async () => {
+      const sessao = linha({
+        issueNumber: 60,
+        pullRequestNumber: 8,
+        sessionName: 'sessions/8',
+        mergeFailures: MAX_TENTATIVAS_DE_MERGE,
+      })
+      const avisos: string[] = []
+      const registros: Array<{ sessionName: string; chave: string }> = []
+      const opcoesComFalha = {
+        repository: 'o/r',
+        githubToken: 't',
+        execute: async () => APPROVE,
+        sessoes: [sessao],
+        // Sem avisarSessao: temSessaoViva=false, decidirResgateDaTravada cai
+        // direto na branch do dono (a que este fix corrige).
+        avisarDono: async (msg: string) => {
+          avisos.push(msg)
+          return false
+        },
+        registrarConserto: async (args: { sessionName: string; chave: string }) => {
+          registros.push(args)
+          sessao.deployFixKey = args.chave
+        },
+      }
+
+      const f1 = fakeFetch([
+        { number: 8, user: 'jules[bot]', existingReviews: parecerAnteriorNoHead },
+      ])
+      const posted1 = (f1 as unknown as { posted: { reviews: unknown[]; merges: unknown[] } })
+        .posted
+      const r1 = await runQaMissionViaRails({ ...opcoesComFalha, fetchImpl: f1 })
+      expect(r1.noOp).toBe(true) // só o resgate rodou — nada de julgamento novo
+      expect(posted1.reviews).toHaveLength(0)
+      expect(posted1.merges).toHaveLength(0)
+      expect(avisos).toHaveLength(1) // tentou avisar
+      expect(registros).toHaveLength(0) // mas NÃO marcou — a entrega falhou
+      expect(sessao.deployFixKey).toBeNull()
+
+      // Próxima acordada, MESMO commit: `jaPediuNesteHead` continua `false`
+      // (nada foi marcado), então decidirResgateDaTravada tenta de novo —
+      // "aviso que falha volta ao ciclo de sempre", não emudece a entrega.
+      const f2 = fakeFetch([
+        { number: 8, user: 'jules[bot]', existingReviews: parecerAnteriorNoHead },
+      ])
+      await runQaMissionViaRails({ ...opcoesComFalha, fetchImpl: f2 })
+      expect(avisos).toHaveLength(2)
+      expect(registros).toHaveLength(0)
+    })
+
+    it('laço de resgate: avisarDono entrega -> marca, e a PRÓXIMA acordada não repete', async () => {
+      const sessao = linha({
+        issueNumber: 61,
+        pullRequestNumber: 9,
+        sessionName: 'sessions/9',
+        mergeFailures: MAX_TENTATIVAS_DE_MERGE,
+      })
+      const avisos: string[] = []
+      const registros: Array<{ sessionName: string; chave: string }> = []
+      const opcoesComSucesso = {
+        repository: 'o/r',
+        githubToken: 't',
+        execute: async () => APPROVE,
+        sessoes: [sessao],
+        avisarDono: async (msg: string) => {
+          avisos.push(msg)
+          return true
+        },
+        registrarConserto: async (args: { sessionName: string; chave: string }) => {
+          registros.push(args)
+          sessao.deployFixKey = args.chave
+        },
+      }
+
+      const f1 = fakeFetch([
+        { number: 9, user: 'jules[bot]', existingReviews: parecerAnteriorNoHead },
+      ])
+      const posted1 = (f1 as unknown as { posted: { reviews: unknown[]; merges: unknown[] } })
+        .posted
+      const r1 = await runQaMissionViaRails({ ...opcoesComSucesso, fetchImpl: f1 })
+      expect(r1.noOp).toBe(true)
+      expect(posted1.reviews).toHaveLength(0)
+      expect(posted1.merges).toHaveLength(0)
+      expect(avisos).toHaveLength(1)
+      expect(registros).toHaveLength(1) // a entrega chegou — marca de verdade
+      expect(sessao.deployFixKey).not.toBeNull()
+
+      // Próxima acordada, MESMO commit: `jaPediuNesteHead` agora é `true` —
+      // não repete (spam apaga sinal tanto quanto silêncio).
+      const f2 = fakeFetch([
+        { number: 9, user: 'jules[bot]', existingReviews: parecerAnteriorNoHead },
+      ])
+      await runQaMissionViaRails({ ...opcoesComSucesso, fetchImpl: f2 })
+      expect(avisos).toHaveLength(1)
+      expect(registros).toHaveLength(1)
+    })
+
+    // Achado do /code-review: `options.avisarDono?.(...)` some por inteiro
+    // quando `avisarDono` está ausente (a ÚNICA ausência legítima da família
+    // — sem notificador configurado, não há a quem avisar). Sem este teste, a
+    // marca (`registrarConserto`) ficaria presa em `false` para sempre nesse
+    // caso, e o laço de resgate reprocessaria a mesma entrega travada a cada
+    // tique, pra sempre, sem propósito nenhum — o comportamento de ANTES
+    // deste fix (que gravava a marca sempre que `registrarConserto` existia,
+    // independente de `avisarDono`) tem que continuar valendo aqui.
+    it('laço de resgate: SEM avisarDono configurado (nenhum notificador) -> marca mesmo assim, não fica reprocessando à toa', async () => {
+      const sessao = linha({
+        issueNumber: 62,
+        pullRequestNumber: 10,
+        sessionName: 'sessions/10',
+        mergeFailures: MAX_TENTATIVAS_DE_MERGE,
+      })
+      const registros: Array<{ sessionName: string; chave: string }> = []
+      const opcoesSemNotificador = {
+        repository: 'o/r',
+        githubToken: 't',
+        execute: async () => APPROVE,
+        sessoes: [sessao],
+        // avisarDono ausente de propósito — nenhum notificador configurado.
+        registrarConserto: async (args: { sessionName: string; chave: string }) => {
+          registros.push(args)
+          sessao.deployFixKey = args.chave
+        },
+      }
+
+      const f1 = fakeFetch([
+        { number: 10, user: 'jules[bot]', existingReviews: parecerAnteriorNoHead },
+      ])
+      const posted1 = (f1 as unknown as { posted: { reviews: unknown[]; merges: unknown[] } })
+        .posted
+      const r1 = await runQaMissionViaRails({ ...opcoesSemNotificador, fetchImpl: f1 })
+      expect(r1.noOp).toBe(true)
+      expect(posted1.reviews).toHaveLength(0)
+      expect(posted1.merges).toHaveLength(0)
+      expect(registros).toHaveLength(1) // sem canal, marca de qualquer jeito
+      expect(sessao.deployFixKey).not.toBeNull()
+
+      // Próxima acordada: jaPediuNesteHead já é true — não regrava.
+      const f2 = fakeFetch([
+        { number: 10, user: 'jules[bot]', existingReviews: parecerAnteriorNoHead },
+      ])
+      await runQaMissionViaRails({ ...opcoesSemNotificador, fetchImpl: f2 })
+      expect(registros).toHaveLength(1)
     })
 
     it('commit novo (head sha mudou) zera o contador — é tentativa nova, não a mesma que já falhara 3x', async () => {

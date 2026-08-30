@@ -758,19 +758,42 @@ export async function runQaMissionViaRails(
       // O aviso ao dono também é marcado por commit. Sem isso ele chegaria a
       // cada acordada do QA enquanto a entrega continuasse travada — e o
       // caminho normal do teto já avisou uma vez quando o teto bateu.
-      options.onWarn?.(`[qa] PR #${travada.numeroDoPr}: ${decisao.motivo}`)
-      if (options.registrarConserto) {
+      //
+      // fix/resgate-merge-retenta-aviso: a marca só é gravada quando a
+      // entrega REALMENTE chegou (ou quando não há para onde entregar —
+      // ver abaixo) — mesmo padrão da branch irmã acima (`pediu &&
+      // options.registrarConserto`). Antes gravava incondicional (só
+      // checava a função existir), então uma falha de Telegram bem no
+      // instante do resgate calava o dono para sempre: `jaPediuNesteHead`
+      // ficava `true` e `decidirResgateDaTravada` nunca mais tentava de novo
+      // até um commit novo — o mesmo defeito que o dedupe de "N entregas
+      // barradas" (T15) e o teto de reentrega de retrabalho já corrigiram.
+      //
+      // `avisarDono` ausente é a ÚNICA ausência legítima da família (ver o
+      // comentário do campo em `VigiliaDoJulgamentoOptions`: sem notificador
+      // configurado, não há a quem avisar) — nesse caso a marca AINDA grava:
+      // sem canal nenhum, não há o que retentar, e reprocessar esta entrega
+      // a cada tique pra sempre seria desperdício sem propósito. Só quando
+      // HÁ um `avisarDono` e a ENTREGA falha é que a marca fica pendente.
+      const entregue = options.avisarDono
+        ? await options
+            .avisarDono(
+              `GitOrch: a entrega do pull request #${travada.numeroDoPr} travou — ${decisao.motivo}.`
+            )
+            .catch(() => false)
+        : true
+      options.onWarn?.(
+        entregue
+          ? `[qa] PR #${travada.numeroDoPr}: ${decisao.motivo}`
+          : `[qa] PR #${travada.numeroDoPr}: ${decisao.motivo} — e o aviso ao dono NÃO chegou`
+      )
+      if (entregue && options.registrarConserto) {
         await options
           .registrarConserto({
             sessionName: travada.linha.sessionName,
             chave: chaveDoResgate(travada.headAtual),
             agora: agoraDoResgate,
           })
-          .catch(() => undefined)
-        await options
-          .avisarDono?.(
-            `GitOrch: a entrega do pull request #${travada.numeroDoPr} travou — ${decisao.motivo}.`
-          )
           .catch(() => undefined)
       }
     }
