@@ -274,6 +274,7 @@ import {
 } from '../services/teto-de-uso-da-conta.js'
 import { umaAcordadaPorCiclo } from '../services/uma-acordada-por-ciclo.js'
 import { relogioDaAgenda } from '../services/espalhar-agendas.js'
+import { cotasAReler } from '../services/cotas-a-reler.js'
 import { canRunMission, shouldAlertForQuota } from '../lib/spend-guard.js'
 import { computeConsumption } from '../lib/consumption.js'
 import { pipelineCheckEnabled } from '../config/pipeline-check.js'
@@ -7349,6 +7350,41 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     )
   }
 
+  /**
+   * Relê a cota dos motores pelo RELÓGIO, não por missão completada.
+   *
+   * O caminho antigo (`refreshModels` depois de cada missão) tinha dois nós
+   * cegos medidos em 30/08: só rodava depois de uma missão COMPLETAR, e saía
+   * antes se o catálogo de modelos viesse vazio. Motor parado um dia = painel
+   * do dono sem número novo — e número velho de cota é pior que número
+   * ausente, porque parece verdade.
+   *
+   * Nunca rejeita: uma conexão que falha não pode derrubar o tique inteiro.
+   */
+  const varrerCotasDosMotores = async () => {
+    const conexoes = await app.prisma.engineConnection.findMany({
+      select: { userId: true, runtime: true, status: true, quotaRefreshedAt: true },
+    })
+    const vencidas = cotasAReler(conexoes, new Date())
+    if (vencidas.length === 0) return
+    for (const conexao of vencidas) {
+      // Em série de propósito: cada leitura materializa a credencial num HOME
+      // temporário e roda o binário do motor. Em paralelo, dois motores do
+      // mesmo dono disputariam o mesmo refresh token de uso único — o defeito
+      // que derrubou a conta do Codex em 26/08.
+      try {
+        const leu = await app.engineConnections.refreshQuota(conexao.userId, conexao.runtime)
+        if (!leu) {
+          app.log.debug(
+            `[Scheduler] cota do ${conexao.runtime} não veio nesta passada; o painel segue sem número em vez de mostrar o antigo`
+          )
+        }
+      } catch (err) {
+        app.log.warn(err, `[Scheduler] falhou ao reler a cota do ${conexao.runtime}`)
+      }
+    }
+  }
+
   const tick = async () => {
     // PRIMEIRO de tudo: um token do GitHub vencido no meio do tique derruba
     // qualquer missão que precise dele (materializeToHome recusa e a missão
@@ -7423,6 +7459,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     )
     await varrerPublicacoes().catch((err) =>
       app.log.error(err, '[Scheduler] varredura de publicações falhou; tenta no próximo tick')
+    )
+    // Depois das publicações e antes das missões: a cota manda no que o
+    // relógio pode disparar, então é melhor decidir a leva de hoje com o
+    // número de agora do que com o da última missão.
+    await varrerCotasDosMotores().catch((err) =>
+      app.log.error(err, '[Scheduler] varredura de cotas falhou; tenta no próximo tick')
     )
     await sweepExpiredEnvironments()
     const now = new Date()

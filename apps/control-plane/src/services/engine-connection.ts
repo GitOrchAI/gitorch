@@ -375,6 +375,53 @@ export class EngineConnectionService {
    * o guarda em EngineConnection.models. Roda num HOME temporário isolado.
    * Retorna a lista descoberta (vazia se não há descoberta para o runtime).
    */
+  /**
+   * Lê SÓ a cota de um motor e grava.
+   *
+   * Existe porque a cota estava presa ao catálogo de modelos: só era relida
+   * dentro de `refreshModels`, que só roda depois de uma missão COMPLETAR, e
+   * que sai antes se o catálogo vier vazio. Medido em 30/08: o Claude rodou 2
+   * missões em 3 dias e o número congelou por 45 horas — o banco dizia "semana
+   * 99% usada" quando a verdade era 24%.
+   *
+   * Aqui a cota não depende de missão nem de catálogo. Falhar não derruba
+   * nada: devolve `false` e o motivo fica registrado, nunca vira nulo mudo.
+   */
+  async refreshQuota(userId: string, runtime: string): Promise<boolean> {
+    const readQuota = Object.hasOwn(QUOTA_READERS, runtime) ? QUOTA_READERS[runtime] : undefined
+    if (!readQuota) return false
+
+    return this.withTempHome('quota', '.', async (home) => {
+      try {
+        const materialized = await this.materializeToHome(userId, runtime, home)
+        if (!materialized) return false
+
+        const cota = await lerCotaDoMotor({ runtime, ler: readQuota, home })
+        if (cota.motivo) console.warn(`[engine-connection] ${cota.motivo}`)
+        const quota = cota.leitura
+
+        await this.prisma.engineConnection.updateMany({
+          where: { userId, runtime },
+          data: {
+            quotaRemaining: quota.remaining,
+            quotaTotal: quota.total,
+            // Mesmo carimbo honesto de `refreshModels`: só entra quando algum
+            // número veio de verdade.
+            ...carimboDaLeitura(cota, new Date()),
+            sessionPercentUsed: quota.sessionPercentUsed ?? null,
+            sessionResetsAt: quota.sessionResetsAt ?? null,
+            weekPercentUsed: quota.weekPercentUsed ?? null,
+            weekResetsAt: quota.weekResetsAt ?? null,
+          },
+        })
+        return cota.temNumero
+      } catch {
+        // Best-effort de verdade: ler cota nunca pode derrubar o relógio.
+        return false
+      }
+    })
+  }
+
   async refreshModels(userId: string, runtime: string): Promise<string[]> {
     const discover = Object.hasOwn(MODEL_DISCOVERERS, runtime)
       ? MODEL_DISCOVERERS[runtime]
