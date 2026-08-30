@@ -49,24 +49,43 @@ describe('a guarda de autonomia vem PRIMEIRO', () => {
 })
 
 describe('a ordem sai como o cliente pediu', () => {
-  it('aplica de TRÁS para frente, ancorando em quem já está no lugar', async () => {
-    // Do começo para o fim, cada movimento embaralharia os que ainda não foram
-    // tratados. De trás para frente, a âncora sempre já está certa.
+  it('aplica DO COMEÇO PARA O FIM, ancorando em quem já foi posicionado', async () => {
+    // ESTE TESTE NASCEU DE UM DEFEITO PEGO EM PRODUÇÃO. A versão anterior ia
+    // de trás para frente, com o argumento certo aplicado ao contrário: o
+    // segundo item era ancorado no primeiro ANTES de o primeiro se mover, e
+    // depois o primeiro se movia sem o segundo acompanhar.
+    //
+    // Medido no quadro do dono, de [36,37,38] pedindo [38,36,37]:
+    //   de trás para frente -> [38, 37, 36]   ERRADO
+    //   do começo para o fim -> [38, 36, 37]  certo
     const d = deps()
     await aplicarOrdemDosPedidos(d, { projectId: 'PVT_1', pedidos: PEDIDOS })
     expect(movimentos(d)).toEqual([
-      { projectId: 'PVT_1', itemId: 'IT_38', depoisDe: 'IT_37' },
-      { projectId: 'PVT_1', itemId: 'IT_37', depoisDe: 'IT_36' },
       { projectId: 'PVT_1', itemId: 'IT_36' },
+      { projectId: 'PVT_1', itemId: 'IT_37', depoisDe: 'IT_36' },
+      { projectId: 'PVT_1', itemId: 'IT_38', depoisDe: 'IT_37' },
     ])
   })
 
   it('o PRIMEIRO vai para o topo — sem âncora, que é como o GitHub diz "primeiro"', async () => {
     const d = deps()
     await aplicarOrdemDosPedidos(d, { projectId: 'PVT_1', pedidos: PEDIDOS })
-    const ultimo = movimentos(d)[movimentos(d).length - 1]
-    expect(ultimo.itemId).toBe('IT_36')
-    expect('depoisDe' in ultimo).toBe(false)
+    const primeiro = movimentos(d)[0]
+    expect(primeiro.itemId).toBe('IT_36')
+    expect('depoisDe' in primeiro).toBe(false)
+  })
+
+  it('cada item é ancorado no ANTERIOR da lista, nunca no seguinte', async () => {
+    // A regra que o defeito violava: a âncora tem que ser alguém que já foi
+    // colocado nesta mesma passagem.
+    const d = deps()
+    await aplicarOrdemDosPedidos(d, { projectId: 'PVT_1', pedidos: PEDIDOS })
+    const ms = movimentos(d)
+    const jaPostos = new Set<string>()
+    for (const m of ms) {
+      if (m.depoisDe) expect(jaPostos.has(m.depoisDe)).toBe(true)
+      jaPostos.add(m.itemId)
+    }
   })
 
   it('um pedido só também funciona: vai para o topo', async () => {

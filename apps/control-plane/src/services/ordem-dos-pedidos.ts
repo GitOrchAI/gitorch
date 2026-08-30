@@ -52,10 +52,20 @@ export interface DepsDaOrdem {
  * movido três itens deixaria o quadro dele meio arrumado, que é pior que não
  * ter mexido.
  *
- * A ordem é aplicada de trás para frente. Movendo o último primeiro, cada
- * `moverItemDoQuadro` usa como âncora um item que JÁ está no lugar certo —
- * fazendo do começo para o fim, cada movimento embaralharia os que ainda não
- * foram tratados.
+ * A ordem é aplicada DO COMEÇO PARA O FIM, e isto foi corrigido depois de a
+ * prova em produção mostrar o resultado errado.
+ *
+ * Eu tinha escrito de trás para frente com o argumento certo — "ancorar em
+ * quem já está no lugar" — mas aplicado ao contrário. De trás para frente, o
+ * segundo item é ancorado no primeiro ANTES de o primeiro ter se movido; o
+ * primeiro se move depois e o segundo não o acompanha.
+ *
+ * Medido no quadro do dono, partindo de [36, 37, 38] e pedindo [38, 36, 37]:
+ *   de trás para frente -> [38, 37, 36]   ERRADO
+ *   do começo para o fim -> [38, 36, 37]  certo
+ *
+ * Do começo para o fim, cada item é posto depois de um que JÁ foi posicionado
+ * nesta mesma passagem, e a âncora nunca se mexe de novo.
  */
 export async function aplicarOrdemDosPedidos(
   deps: DepsDaOrdem,
@@ -70,9 +80,9 @@ export async function aplicarOrdemDosPedidos(
     throw new Error('ORDEM_VAZIA: não há pedido nenhum para ordenar.')
   }
 
-  // De trás para frente: o penúltimo vai para depois do último, e assim por
-  // diante, até o primeiro ir para o topo.
-  for (let i = args.pedidos.length - 1; i >= 0; i--) {
+  // Do começo para o fim: o primeiro vai para o topo, e cada seguinte vai
+  // logo depois do anterior, que já está no lugar certo.
+  for (let i = 0; i < args.pedidos.length; i++) {
     const atual = args.pedidos[i]!
     const anterior = i > 0 ? args.pedidos[i - 1] : undefined
     await deps.quadro.moverItemDoQuadro({
