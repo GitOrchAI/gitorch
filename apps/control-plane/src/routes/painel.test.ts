@@ -6,6 +6,7 @@ import { registerPlugins } from '../plugins/index.js'
 import { painelRoutes } from './painel.js'
 import { LeituraIndisponivelError } from '../services/leitura-do-repositorio.js'
 import { ArvoreIndisponivelError } from '../services/arvore-de-pedidos.js'
+import { hojeNoFuso } from '../services/garantir-sprint.js'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -394,10 +395,15 @@ describe('Rotas do painel do owner', () => {
 
   describe('GET /api/v1/painel/sprint', () => {
     // O ciclo de hoje precisa conter a data de execução do teste, senão o teste
-    // passa hoje e quebra amanhã. Ancorar no "agora" é o que mantém honesto.
-    const hoje = new Date().toISOString().slice(0, 10)
-    const ontem = new Date(Date.now() - 86400000).toISOString().slice(0, 10)
-    const mesPassado = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10)
+    // passa hoje e quebra amanhã. Ancorar no "agora" é o que mantém honesto —
+    // mas tem que ser o MESMO "hoje" que a rota usa (hojeNoFuso, fuso do
+    // produto), não o dia UTC cru: entre 00h e 03h UTC os dois discordam (é
+    // ainda o dia anterior em America/Sao_Paulo), e o teste falhava
+    // exatamente nessa janela, todo dia — bug real, medido ao vivo em
+    // 30/08/2026 às 00h07 UTC.
+    const hoje = hojeNoFuso()
+    const ontem = hojeNoFuso(new Date(Date.now() - 86400000))
+    const mesPassado = hojeNoFuso(new Date(Date.now() - 30 * 86400000))
 
     test('sem sessão → 401', async () => {
       const res = await app.inject({ method: 'GET', url: '/api/v1/painel/sprint' })
