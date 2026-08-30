@@ -215,6 +215,7 @@ import {
   createCardMover,
 } from '../services/board-status.js'
 import { fetchDoRepositorio, guardaPorRepositorio } from '../services/guarda-de-autonomia.js'
+import { registrarSePronto } from '../services/incremento.js'
 import { fetchComTeto } from '../services/fetch-com-teto.js'
 import {
   ensureAndPersistProjectBoard,
@@ -5652,9 +5653,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     motivo: string
     githubToken: string | undefined
   }): Promise<void> => {
-    await registrarEstadoDaPublicacao({
-      prisma: app.prisma as unknown as PrismaDevSession,
-      sessionName: args.sessao.sessionName,
+    await registrarPublicacaoEIncremento({
+      sessao: args.sessao,
       estado: args.estado,
       agora: args.agora,
     })
@@ -5677,6 +5677,76 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     })
   }
 
+  /**
+   * Grava o estado da publicação E passa a entrega pela régua de pronto.
+   *
+   * Os dois juntos porque é EXATAMENTE aqui que a entrega pode ter acabado de
+   * ficar pronta: `deployState` é o último fato que a régua padrão espera. Em
+   * qualquer outro lugar, o registro do Incremento chegaria atrasado — o
+   * painel diria "ainda não" numa entrega que já estava no ar.
+   *
+   * Falha ao registrar o Incremento NÃO derruba o fechamento da sessão: o
+   * estado da publicação é o fato principal e já foi gravado. O Incremento é o
+   * registro que o painel lê, e uma volta seguinte do relógio o grava.
+   */
+  const registrarPublicacaoEIncremento = async (args: {
+    sessao: LinhaDeSessao
+    estado: string
+    agora: Date
+  }): Promise<void> => {
+    await registrarEstadoDaPublicacao({
+      prisma: app.prisma as unknown as PrismaDevSession,
+      sessionName: args.sessao.sessionName,
+      estado: args.estado,
+      agora: args.agora,
+    })
+
+    try {
+      await registrarSePronto(
+        {
+          lerRegua: async (projectId: string) =>
+            (
+              await app.prisma.project.findUnique({
+                where: { id: projectId },
+                select: { reguaDePronto: true },
+              })
+            )?.reguaDePronto ?? null,
+          jaRegistrado: async (projectId: string, issueNumber: number) =>
+            (await app.prisma.increment.findUnique({
+              where: { projectId_issueNumber: { projectId, issueNumber } },
+            })) !== null,
+          gravar: async (dados) => {
+            await app.prisma.increment.create({
+              data: {
+                projectId: dados.projectId,
+                issueNumber: dados.issueNumber,
+                pullRequestNumber: dados.pullRequestNumber,
+                mergeCommitSha: dados.mergeCommitSha,
+                reguaAplicada: dados.reguaAplicada,
+                criterios: dados.criterios,
+              },
+            })
+          },
+        },
+        {
+          projectId: args.sessao.projectId,
+          issueNumber: args.sessao.issueNumber,
+          pullRequestNumber: args.sessao.pullRequestNumber ?? null,
+          mergeCommitSha: args.sessao.mergeCommitSha ?? null,
+          // O estado que ACABOU de ser gravado, não o que a linha trazia: a
+          // linha em memória é anterior à escrita.
+          deployState: args.estado,
+          envLastVerdict: args.sessao.envLastVerdict ?? null,
+        }
+      )
+    } catch (err) {
+      app.log.warn(
+        err,
+        `[Scheduler] não consegui registrar o incremento de ${args.sessao.sessionName} — o estado da publicação foi gravado`
+      )
+    }
+  }
+
   const fecharComTetoAbsoluto = async (args: {
     projeto: NonNullable<Awaited<ReturnType<PrismaClient['project']['findUnique']>>>
     sessao: LinhaDeSessao
@@ -5687,12 +5757,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   }): Promise<void> => {
     const { projeto, sessao, agora, desdeAMescla, ultimaObservacao, githubToken } = args
     const veredito = fecharPorTetoAbsoluto({ desdeAMescla, ultimaObservacao })
-    await registrarEstadoDaPublicacao({
-      prisma: app.prisma as unknown as PrismaDevSession,
-      sessionName: sessao.sessionName,
-      estado: veredito.estado,
-      agora,
-    })
+    await registrarPublicacaoEIncremento({ sessao, estado: veredito.estado, agora })
     await fecharSessaoEArquivar({
       sessionName: sessao.sessionName,
       motivo: 'merged',
@@ -6748,12 +6813,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         // `session-watch.ts`). Lido AQUI, antes da escrita.
         const estadoAnterior = sessao.deployState
 
-        await registrarEstadoDaPublicacao({
-          prisma: app.prisma as unknown as PrismaDevSession,
-          sessionName: sessao.sessionName,
-          estado: veredito.estado,
-          agora,
-        })
+        await registrarPublicacaoEIncremento({ sessao, estado: veredito.estado, agora })
 
         if (veredito.estado === 'no-ar') {
           // A publicação PROVOU que é deste commit — agora o juiz abre o

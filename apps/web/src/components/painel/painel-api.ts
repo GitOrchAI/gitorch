@@ -35,7 +35,8 @@ export const ROTAS = {
   sprint: '/api/v1/painel/sprint', // NOVA (leva 2, bloco 3) — a sprint corrente
   leitura: '/api/v1/painel/leitura', // NOVA (leva 2, bloco 4) — o que já li do repositório
   ritmo: '/api/v1/painel/ritmo', // FALTA — leva 2
-  entregas: '/api/v1/painel/entregas', // FALTA — leva 2
+  entregas: '/api/v1/painel/entregas', // NOVA (leva 2, bloco 5) — o que ficou pronto
+  regua: '/api/v1/painel/regua', // NOVA (leva 2, bloco 5) — a régua de pronto do cliente
   historico: '/api/v1/painel/historico', // FALTA — leva 2
   duvidaConfig: '/api/v1/painel/duvida-config', // NOVA (T14) — POST
   timeline: '/api/v1/painel/timeline', // NOVA (T15) — auditoria que não vira spam no Telegram

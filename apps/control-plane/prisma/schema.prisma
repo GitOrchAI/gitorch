@@ -239,6 +239,41 @@ model EngineConnection {
   @@map("engine_connections")
 }
 
+/// O Incremento: o registro de que uma entrega ficou PRONTA, pela régua que
+/// estava valendo naquele momento. Scrum 2020 — o Incremento nasce quando um
+/// item atende à Definição de Pronto.
+model Increment {
+  id        String @id @default(cuid())
+  projectId String @map("project_id")
+
+  /// O PEDIDO do cliente (a issue). É por ele que o painel liga a entrega ao
+  /// que o dono pediu, nunca por um id interno que ele nunca viu.
+  issueNumber Int @map("issue_number")
+
+  pullRequestNumber Int?    @map("pull_request_number")
+  mergeCommitSha    String? @map("merge_commit_sha")
+
+  /// Quando ficou pronto. É a data que o painel mostra.
+  prontoEm DateTime @default(now()) @map("pronto_em")
+
+  /// A régua que valia NAQUELE momento, copiada. Sem isto, mudar a régua hoje
+  /// reescreveria a história: uma entrega de ontem passaria a parecer que
+  /// atendeu critérios que ninguém exigia dela.
+  reguaAplicada Json @map("regua_aplicada")
+  /// Os critérios que passaram, na ordem da régua.
+  criterios     Json
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  project Project @relation(fields: [projectId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+
+  /// Um pedido vira Incremento UMA vez. Sem isto o relógio gravaria outro
+  /// registro a cada volta e o painel contaria a mesma entrega várias vezes.
+  @@unique([projectId, issueNumber])
+  @@index([projectId, prontoEm])
+  @@map("increments")
+}
+
 model Project {
   id          String   @id @default(cuid())
   // "owner/repo" — o endereço do REPOSITÓRIO (o scheduler clona a partir dele e
@@ -291,6 +326,13 @@ model Project {
   autonomia            String    @default("so_olhar")
   autonomiaEscolhidaEm DateTime? @map("autonomia_escolhida_em")
 
+  // A régua de pronto DESTE cliente (packages/cadence/src/incremento.ts diz o
+  // que cada critério exige). NULO = ainda não configurou e vale o padrão do
+  // produto — guardar uma cópia do padrão aqui apagaria a diferença entre "ele
+  // escolheu isto" e "ninguém escolheu".
+  reguaDePronto      Json?     @map("regua_de_pronto")
+  reguaEscolhidaEm   DateTime? @map("regua_escolhida_em")
+
   // D50: o aviso de publicação do CD do cliente.
   //
   // `deployNoticeInstalledAt` é a PROVA de que a chamada existe e funciona —
@@ -325,6 +367,7 @@ model Project {
   agentQuestions AgentQuestion[]
   devSessions DevSession[]
   infraIncidents InfraIncident[]
+  increments     Increment[]
 
   // Um repo, um projeto, POR DONO. É o banco garantindo o que a rota de setup
   // passou a exigir — mesmo repo em dois clientes = dois projetos distintos.
