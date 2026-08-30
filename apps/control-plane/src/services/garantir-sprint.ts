@@ -1,4 +1,4 @@
-import { CampoDeIteracaoAusenteError } from '@gitorch/github-sync'
+import { CampoDeIteracaoAusenteError, NomeDeCampoEmConflitoError } from '@gitorch/github-sync'
 
 // Garante que o quadro do cliente tenha uma sprint de verdade.
 //
@@ -86,6 +86,12 @@ export type ResultadoDaSprint =
   | { estado: 'criado'; fieldId: string; motivo: string }
   | { estado: 'configurado'; fieldId: string; motivo: string }
   | { estado: 'ja_pronto'; fieldId: string; iteracoes: number; motivo: string }
+  /**
+   * O quadro já tem um campo com esse nome que NÃO é de ciclo. Só o dono
+   * resolve (renomeando ou removendo), então o produto para de tentar e diz o
+   * que fazer — em vez de repetir uma criação recusada a cada tique.
+   */
+  | { estado: 'conflito_de_nome'; motivo: string }
 
 /**
  * Garante o campo Sprint no quadro. Idempotente: rodar de novo não duplica
@@ -122,6 +128,12 @@ export async function garantirSprintNoQuadro(
     // passageira viraria "o campo não existe" e o passo seguinte criaria um
     // SEGUNDO campo Sprint no quadro real do cliente, deixando órfãos os itens
     // que apontavam para o primeiro.
+    // Conflito de nome NÃO é ausência: o nome está tomado por um campo de outro
+    // tipo, e tentar criar dá "Name has already been taken" para sempre.
+    // Aconteceu de verdade no quadro do Jardim das Patinhas (30/08/2026).
+    if (erro instanceof NomeDeCampoEmConflitoError) {
+      return { estado: 'conflito_de_nome', motivo: erro.message }
+    }
     if (!ausenciaDeCampo(erro)) throw erro
     campo = null
   }

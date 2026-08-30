@@ -7543,6 +7543,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         app.log.info(`[Scheduler] sprint no quadro de ${r.repo}: ${r.estado} — ${r.motivo}`)
       } else if (r.estado === 'falhou') {
         app.log.warn(`[Scheduler] sprint de ${r.repo} não deu nesta passada: ${r.motivo}`)
+      } else if (r.estado === 'conflito_de_nome' || r.estado === 'sem_credencial') {
+        // Estados que só o DONO resolve. Precisam aparecer: um projeto preso
+        // aqui fica sem sprint para sempre, e sem log ninguém descobre por quê
+        // — o mesmo silêncio que esta leva veio acabar. Não é `warn` de defeito
+        // nosso; é aviso de que falta uma ação dele.
+        app.log.info(`[Scheduler] sprint de ${r.repo} depende de você: ${r.motivo}`)
       }
     }
   }

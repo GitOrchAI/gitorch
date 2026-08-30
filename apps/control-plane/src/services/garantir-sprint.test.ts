@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { CampoDeIteracaoAusenteError } from '@gitorch/github-sync'
+import { CampoDeIteracaoAusenteError, NomeDeCampoEmConflitoError } from '@gitorch/github-sync'
 import {
   garantirSprintNoQuadro,
   sprintCorrente,
@@ -181,5 +181,28 @@ describe('sprintCorrente — o GitHub não marca qual está valendo', () => {
 
   it('lista vazia devolve null', () => {
     expect(sprintCorrente([], '2026-08-29')).toBeNull()
+  })
+
+  it('nome tomado por campo de OUTRO TIPO não vira tentativa de criar', async () => {
+    // Caso real do quadro "Jardim das Patinhas" (30/08/2026): existia um campo
+    // de TEXTO chamado "Sprint". A leitura de iteração não o via, o produto
+    // concluía "não existe" e tentava criar — e o GitHub recusava com "Name has
+    // already been taken", a cada tique, para sempre.
+    const criar = vi.fn()
+    const cliente = {
+      getIterationField: vi
+        .fn()
+        .mockRejectedValue(new NomeDeCampoEmConflitoError('Sprint', 'PVT_1', 'ProjectV2Field')),
+      criarCampoDeIteracao: criar,
+      configurarCampoDeIteracao: vi.fn(),
+    }
+
+    const r = await garantirSprintNoQuadro(cliente as never, { projectId: 'PVT_1' })
+
+    expect(r.estado).toBe('conflito_de_nome')
+    // O que importa: NÃO tentou criar. Insistir é o que produzia o laço.
+    expect(criar).not.toHaveBeenCalled()
+    // E o motivo diz ao dono o que fazer, não só que deu errado.
+    expect(r.motivo).toContain('Renomeie ou remova')
   })
 })
