@@ -19,22 +19,16 @@ jobs:
         with:
           token: ${{ secrets.SECURITY_PAT || github.token }}
 
-      - name: Setup Node
-        uses: ./.github/actions/setup-pnpm
-        with:
-          node-version: '20'
-          check-latest: false
-      - uses: pnpm/action-setup@v3
+      - uses: pnpm/action-setup@v4
         with:
           version: 9.4.0
 
-      # `npm ci` e não `install`: instala exatamente o que está no lockfile
-      # versionado. Este passo roda no mesmo trabalho que recebe o token de
-      # segurança, então resolver dependência do registry na hora — sem pin —
-      # deixaria qualquer versão nova de dependência transitiva entrar sem
-      # revisão, ao alcance desse token. O runtime também deixa de ser um
-      # detalhe: os outros robôs desta automação já rodam em Node com o mesmo
-      # lockfile, e era este o único fora do padrão.
+      - name: Setup Node
+        uses: ./.github/actions/setup-pnpm
+        with:
+          node-version: '22'
+          check-latest: false
+
       - name: Install Dependencies
         working-directory: .github/scripts
         run: pnpm install --frozen-lockfile --ignore-workspace
