@@ -85,11 +85,26 @@ import { runAnaliseDeFalha, type SessaoMorta } from '../services/analise-de-falh
 import { processarAchadosDeInfra } from '../services/processar-achados-de-infra.js'
 import { varrerIncidentesResolvidos } from '../services/fechar-incidente-resolvido.js'
 import { runRetroDeInfra } from '../services/retro-de-infra.js'
-import { decidirAvisoPorJanela, type EstadoDaJanela } from '../services/aviso-por-janela.js'
+import {
+  decidirAvisoPorJanela,
+  JANELA_LIMPA,
+  type EstadoDaJanela,
+} from '../services/aviso-por-janela.js'
+import { decidirAvisoDeTickQuebrado } from '../services/aviso-de-tick-quebrado.js'
+import { notificadorDaInstancia } from '../services/banco-atrasado.js'
 import { classificarAviso } from '../services/classe-do-aviso.js'
 
 /** ESTEIRA-T11: minutos que a esteira pode ficar travada por vaga antes de avisar. */
 const MINUTOS_ATE_ALERTAR_VAGA = 20
+
+/**
+ * Minutos que o relógio interno pode ficar rejeitando tique antes de avisar o
+ * dono da instância. Bem mais curto que `MINUTOS_ATE_ALERTAR_VAGA`: uma vaga
+ * travada é degradação parcial (outros projetos seguem andando); um tique que
+ * rejeita é o relógio INTEIRO parado — nenhuma tarefa automática roda, de
+ * nenhum projeto, até resolver.
+ */
+const MINUTOS_ATE_ALERTAR_TICK_QUEBRADO = 5
 import type { AchadoDeInfra } from '../services/incidente-ci.js'
 import { renderIssueBody } from '../services/backlog-executor.js'
 import type { DoDFields } from '@gitorch/cadence'
@@ -7494,6 +7509,17 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // `setInterval` que encontra o anterior ainda rodando simplesmente pular
   // este tique (a próxima janela tenta de novo).
   let tickEmAndamento = false
+
+  // INCIDENTE DE 26/08/2026: um tique que rejeita repetidamente (ex.: P2022 de
+  // coluna inexistente, propagado por processSetupMissions) não crasha o
+  // processo (NRestarts não sobe) nem grava linha em `missions` (o watchdog
+  // externo de "missões falhadas" não pega) — só vira log, tique após tique,
+  // e ninguém é avisado. `conferirBancoNoArranque` fecha o caso do BOOT; isto
+  // aqui fecha o resto: falha recorrente DEPOIS que o processo já subiu. Sem
+  // persistir em `events` de propósito — ver aviso-de-tick-quebrado.ts.
+  let estadoDoTickQuebrado: EstadoDaJanela = JANELA_LIMPA
+  const avisarInstanciaDoTick = notificadorDaInstancia()
+
   const intervalId =
     process.env['NODE_ENV'] === 'test'
       ? undefined
@@ -7507,7 +7533,32 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             }
             tickEmAndamento = true
             void tick()
-              .catch((err) => app.log.error(err, '[Scheduler] tick rejeitou'))
+              .then(() => {
+                estadoDoTickQuebrado = decidirAvisoDeTickQuebrado(
+                  estadoDoTickQuebrado,
+                  false,
+                  new Date(),
+                  MINUTOS_ATE_ALERTAR_TICK_QUEBRADO,
+                  null
+                ).novoEstado
+              })
+              .catch((err) => {
+                app.log.error(err, '[Scheduler] tick rejeitou')
+                const motivo = err instanceof Error ? err.message : String(err)
+                const decisao = decidirAvisoDeTickQuebrado(
+                  estadoDoTickQuebrado,
+                  true,
+                  new Date(),
+                  MINUTOS_ATE_ALERTAR_TICK_QUEBRADO,
+                  motivo
+                )
+                estadoDoTickQuebrado = decisao.novoEstado
+                if (decisao.mensagem && avisarInstanciaDoTick) {
+                  avisarInstanciaDoTick(decisao.mensagem).catch((avisoErr) =>
+                    app.log.error(avisoErr, '[Scheduler] não consegui avisar sobre tique quebrado')
+                  )
+                }
+              })
               .finally(() => {
                 tickEmAndamento = false
               })

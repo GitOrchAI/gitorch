@@ -1,3 +1,17 @@
+# Este arquivo estava desatualizado em relação à unit real de produção (achado
+# de /code-review nesta mudança, confirmado ao vivo com `systemctl cat
+# gitorch-control-plane` na VM ARM): `Type=notify` (o processo nunca chama
+# sd_notify — a unit real é `Type=simple`), `WorkingDirectory=/opt/gitorch/...`
+# (o checkout real fica em outro caminho, ajuste abaixo por host) e segredos
+# via `Environment=...=${VAR}` — systemd NÃO expande `${VAR}` dentro de um
+# valor de `Environment=`; isso ficava lá como texto literal, nunca funcionou.
+# Corrigido para o que roda de verdade: `EnvironmentFile=` (um .env real) no
+# lugar de segredo inline, e `Type=simple`.
+#
+# ExecStartPre aplica o ledger de migração ANTES de subir o processo — ver
+# scripts/ops/gitorch-control-plane-migrate.conf para o porquê e para o
+# drop-in que aplica o mesmo em uma unit JÁ instalada num host, sem reescrever
+# este arquivo por cima de customizações locais.
 [Unit]
 Description=GitOrch Control Plane API (Fastify)
 Documentation=https://github.com/loureng/gitorch
@@ -5,16 +19,13 @@ After=network.target postgresql.service redis.service
 Wants=postgresql.service redis.service
 
 [Service]
-Type=notify
+Type=simple
 User=ubuntu
 Group=ubuntu
+# Ajuste para o caminho absoluto do checkout no seu host.
 WorkingDirectory=/opt/gitorch/apps/control-plane
-Environment=NODE_ENV=production
-Environment=PORT=4000
-Environment=DATABASE_URL=postgresql://gitorch:${DB_PASSWORD}@localhost:5432/gitorch
-Environment=REDIS_URL=redis://localhost:6379
-Environment=LOG_LEVEL=info
-Environment=GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
+EnvironmentFile=/opt/gitorch/apps/control-plane/.env
+ExecStartPre=/usr/bin/bash scripts/db-migrate.sh
 ExecStart=/usr/bin/node dist/index.js
 ExecReload=/bin/kill -HUP $MAINPID
 KillMode=mixed

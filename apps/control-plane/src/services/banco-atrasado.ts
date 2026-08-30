@@ -1,4 +1,5 @@
 import { computePending } from '../lib/migration-ledger.js'
+import { buildTelegramNotifier } from './sm-watchdog.js'
 
 /**
  * O banco está atrás do código — e alguém precisa ficar sabendo.
@@ -55,6 +56,32 @@ export function recadoDeBancoAtrasado(pendentes: string[]): string {
     'Para resolver, rode na máquina do GitOrch:',
     '  cd apps/control-plane && bash scripts/db-migrate.sh',
   ].join('\n')
+}
+
+/**
+ * O canal para falar com o dono da INSTÂNCIA, ou `null` se não houver.
+ *
+ * Vai direto no chat da instância, sem passar por `resolveNotifyChatId`: aquele
+ * caminho resolve o chat de um PROJETO (parte do userId dele), e um problema de
+ * infra (banco atrasado, relógio interno quebrado) não é problema de projeto
+ * nenhum — é da instância inteira, e às vezes ainda não há projeto em mãos
+ * (arranque) nem tarefa em andamento (relógio parado).
+ *
+ * Nunca lança: sem chat ligado o aviso fica só no log, que é o que sobra, e é
+ * melhor que derrubar o arranque ou o relógio por falta de mensageiro.
+ *
+ * Movida de index.ts (era função local, uso único) para cá quando o relógio
+ * interno (scheduler.ts) passou a precisar do MESMO canal para avisar de tique
+ * quebrado repetido — dois consumidores merecem um lugar canônico, não duas
+ * cópias divergindo.
+ */
+export function notificadorDaInstancia(): ((texto: string) => Promise<boolean>) | null {
+  const chatId = process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID']
+  const avisar = buildTelegramNotifier({
+    botToken: process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
+    ...(chatId ? { chatId } : {}),
+  })
+  return avisar ?? null
 }
 
 /** O mínimo de banco que a conferência precisa. */
