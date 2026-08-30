@@ -61,7 +61,7 @@ describe('lerRepositorios — conta o que está lá, sem julgar', () => {
       linguagem: 'TypeScript',
       pedidosAbertos: 72,
       entregasAbertas: 19,
-      quadros: { total: 1, vivos: 1, comSprint: 0 },
+      quadros: { total: 1, vivos: 1, comSprint: 0, naoConsigoVer: false },
       ramoPrincipal: 'main',
       temVerificacao: true,
       ultimoCommit: '2026-08-29T18:36:49Z',
@@ -188,7 +188,7 @@ describe('contarQuadros — arquivado não vale, e sprint precisa de ciclo', () 
         { closed: true, fields: { nodes: [] } },
         { closed: false, fields: { nodes: [] } },
       ])
-    ).toEqual({ total: 2, vivos: 1, comSprint: 0 })
+    ).toEqual({ total: 2, vivos: 1, comSprint: 0, naoConsigoVer: false })
   })
 
   it('campo de sprint VAZIO não conta como sprint', () => {
@@ -203,7 +203,7 @@ describe('contarQuadros — arquivado não vale, e sprint precisa de ciclo', () 
           },
         },
       ])
-    ).toEqual({ total: 1, vivos: 1, comSprint: 0 })
+    ).toEqual({ total: 1, vivos: 1, comSprint: 0, naoConsigoVer: false })
   })
 
   it('campo de sprint COM ciclo conta', () => {
@@ -222,7 +222,12 @@ describe('contarQuadros — arquivado não vale, e sprint precisa de ciclo', () 
   })
 
   it('lista vazia é zero em tudo', () => {
-    expect(contarQuadros([])).toEqual({ total: 0, vivos: 0, comSprint: 0 })
+    expect(contarQuadros([])).toEqual({
+      total: 0,
+      vivos: 0,
+      comSprint: 0,
+      naoConsigoVer: false,
+    })
   })
 })
 
@@ -247,5 +252,80 @@ describe('paraLeitura — o que falta vira null, nunca chute', () => {
       { nome: 'x', repo: 'd/x' }
     )
     expect(semExecucao.temVerificacao).toBe(false)
+  })
+})
+
+describe('erro PARCIAL do GitHub não derruba a leitura inteira', () => {
+  // MEDIDO com a credencial real do dono em 30/08: loureng/patinhas-3d-crafts
+  // responde 200 com o repositório PRESENTE — 97 pedidos, 6 entregas, 2
+  // quadros — e dois `errors` FORBIDDEN só nos NÓS dos quadros, porque o App
+  // não enxerga Projects V2 de conta pessoal.
+  //
+  // A versão anterior derrubava tudo e mostrava "não consegui ler" para um
+  // repositório de onde 97 pedidos tinham acabado de chegar.
+  const PARCIAL = {
+    data: {
+      repository: {
+        isPrivate: true,
+        primaryLanguage: { name: 'G-code' },
+        issues: { totalCount: 97 },
+        pullRequests: { totalCount: 6 },
+        // O GitHub DIZ que há 2 e manda os nós nulos.
+        projectsV2: { totalCount: 2, nodes: [null, null] },
+        defaultBranchRef: { name: 'main', target: { checkSuites: { totalCount: 4 } } },
+      },
+    },
+    errors: [
+      { type: 'FORBIDDEN', message: 'Resource not accessible by integration' },
+      { type: 'FORBIDDEN', message: 'Resource not accessible by integration' },
+    ],
+  }
+
+  it('usa o que VEIO: 97 pedidos não são jogados fora por causa dos quadros', async () => {
+    const f = vi.fn(async () => new Response(JSON.stringify(PARCIAL)))
+    const [l] = await lerRepositorios(deps({ fetchImpl: f }), { ownerId: 'u1' })
+    expect(l!.disponivel).toBe(true)
+    if (l!.disponivel) {
+      expect(l!.pedidosAbertos).toBe(97)
+      expect(l!.entregasAbertas).toBe(6)
+      expect(l!.linguagem).toBe('G-code')
+    }
+  })
+
+  it('NÃO diz "zero quadros" para quem tem dois que eu não consigo ver', async () => {
+    const f = vi.fn(async () => new Response(JSON.stringify(PARCIAL)))
+    const [l] = await lerRepositorios(deps({ fetchImpl: f }), { ownerId: 'u1' })
+    if (l!.disponivel) {
+      expect(l!.quadros.total).toBe(2)
+      expect(l!.quadros.naoConsigoVer).toBe(true)
+    }
+  })
+
+  it('repositório AUSENTE continua sendo indisponível', async () => {
+    // O conserto não pode ter afrouxado o caso de verdade: sem repository, a
+    // leitura falhou mesmo.
+    let n = 0
+    const f = vi.fn(async () => {
+      n++
+      return n === 1
+        ? new Response(JSON.stringify({ data: { repository: null }, errors: [{}] }))
+        : new Response(JSON.stringify({ data: { repository: GITORCH_REAL } }))
+    })
+    const [l] = await lerRepositorios(
+      deps({
+        listarProjetos: vi.fn().mockResolvedValue([
+          { nome: 'sumido', repo: 'd/sumido' },
+          { nome: 'gitorch', repo: 'GitOrchAI/gitorch' },
+        ]),
+        fetchImpl: f,
+      }),
+      { ownerId: 'u1' }
+    )
+    expect(l!.disponivel).toBe(false)
+  })
+
+  it('quando tudo veio, naoConsigoVer é falso', async () => {
+    const [l] = await lerRepositorios(deps(), { ownerId: 'u1' })
+    if (l!.disponivel) expect(l!.quadros.naoConsigoVer).toBe(false)
   })
 })

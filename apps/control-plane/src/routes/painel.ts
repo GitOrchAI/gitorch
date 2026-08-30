@@ -9,7 +9,13 @@ import {
   type PedidoDoPainel,
   type ProjetoDoDono,
 } from '../services/arvore-de-pedidos.js'
-import { sprintCorrente, type Iteracao, hojeNoFuso } from '../services/garantir-sprint.js'
+import {
+  sprintCorrente,
+  hojeNoFuso,
+  CAMPO_DE_SPRINT,
+  type Iteracao,
+} from '../services/garantir-sprint.js'
+import { decidirQuadro } from '../services/resolver-quadro.js'
 import {
   lerRepositorios,
   LeituraIndisponivelError,
@@ -20,7 +26,7 @@ import { medirCiclo } from '../services/medicao-do-ciclo.js'
 import { aplicarOrdemDosPedidos } from '../services/ordem-dos-pedidos.js'
 import { exigirPermissao } from '@gitorch/cadence'
 import { ProjectV2Client } from '@gitorch/github-sync'
-import { fetchDoRepositorio } from '../services/guarda-de-autonomia.js'
+import { fetchDoRepositorio, fetchSemPermissao } from '../services/guarda-de-autonomia.js'
 import {
   avaliarPronto,
   normalizarRegua,
@@ -147,10 +153,65 @@ export const painelRoutes = async (
         args
       ))
 
-  // Sem caminho ligado ainda: o quadro do cliente só ganha sprint no passo de
-  // execução do bloco 3. Lista vazia faz a tela dizer que não há sprint
-  // configurada — que é a verdade — em vez de desenhar uma semana inventada.
-  const lerSprints = opts.lerSprints ?? (async () => [])
+  // A sprint LIDA DE VERDADE do quadro de cada projeto.
+  //
+  // Isto ficou como lista vazia desde o bloco 3, e a tela do dono dizia "ainda
+  // não têm sprint configurada" para sempre — uma funcionalidade inteira parada
+  // a um fio de ser ligada.
+  //
+  // SÓ LEITURA. Criar ou configurar a sprint escreve no quadro do cliente e
+  // passa pela guarda de autonomia; continua fora daqui de propósito.
+  //
+  // Um projeto que falha não derruba os outros — mesmo padrão da árvore de
+  // pedidos. Um quadro sem campo de iteração devolve zero ciclos, e a tela diz
+  // honestamente que não há sprint.
+  const lerSprints =
+    opts.lerSprints ??
+    (async (args: { ownerId: string; projeto?: string | undefined }) => {
+      const todos = await repositoriosDoDono(args.ownerId)
+      const projetos = args.projeto ? todos.filter((p) => p.nome === args.projeto) : todos
+      if (projetos.length === 0) return []
+
+      const token = (await app.engineConnections?.getRawGithubToken(args.ownerId)) ?? null
+      if (!token) return []
+
+      const cliente = new ProjectV2Client({
+        token,
+        // Leitura passa em qualquer nível; o embrulho está aqui porque é a
+        // porta única, não porque esta chamada precise de permissão.
+        fetchImpl: fetchSemPermissao(),
+      })
+
+      const saida: Array<{ projeto: string; iteracoes: Iteracao[] }> = []
+      for (const projeto of projetos) {
+        try {
+          const quadros = await cliente.listarQuadrosDoRepositorio(partirEndereco(projeto.repo))
+          // `repository.projectsV2` só traz quadros ANUNCIADOS naquele
+          // repositório — então `linkado` é verdadeiro por construção, e dizer
+          // isso aqui é mais honesto que deixar o campo faltando e a decisão
+          // achar que nenhum está ligado.
+          const decisao = decidirQuadro({
+            candidatos: quadros.map((q) => ({ ...q, linkado: true })),
+          })
+          // Só o caso 'usar' tem um quadro certo. 'criar', 'escolher' e
+          // 'sem_acesso' são respostas legítimas que NÃO dão uma sprint — e
+          // inventar uma aqui seria pior que não mostrar nenhuma.
+          if (decisao.acao !== 'usar') continue
+
+          const campo = await cliente.getIterationField({
+            projectId: decisao.quadro.id,
+            fieldName: CAMPO_DE_SPRINT,
+          })
+          saida.push({ projeto: projeto.nome, iteracoes: campo.iterations })
+        } catch (err) {
+          // Quadro sem campo de sprint é o caminho NORMAL de quem nunca
+          // configurou, não um erro — e qualquer outra falha também não pode
+          // derrubar os outros projetos.
+          app.log.debug(`[painel/sprint] ${projeto.repo}: ${String(err).slice(0, 120)}`)
+        }
+      }
+      return saida
+    })
 
   // Os repositórios do dono, do mesmo jeito que a árvore de pedidos os lê —
   // `projetoDaLinha` carrega a regra de qual campo é o ENDEREÇO do repositório
@@ -888,6 +949,12 @@ export function resolveQuadroDoProjeto(
   if (!login || !numeroTexto || resto.length > 0) return null
   const numero = Number(numeroTexto)
   return Number.isInteger(numero) && numero > 0 ? { login, numero } : null
+}
+
+/** "dono/repo" nas duas metades que a API do GitHub pede. */
+function partirEndereco(repo: string): { owner: string; repo: string } {
+  const [owner, nome] = repo.split('/')
+  return { owner: owner ?? '', repo: nome ?? '' }
 }
 
 /** Payload sem `texto` é evento antigo/inesperado — nunca inventa conteúdo. */
