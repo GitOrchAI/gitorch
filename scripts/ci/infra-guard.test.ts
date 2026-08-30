@@ -11,6 +11,13 @@ function runGuard(diffText: string) {
   })
 }
 
+function runGuardEnv(env: Record<string, string>) {
+  return spawnSync('bash', ['scripts/ci/infra-guard.sh'], {
+    env: { ...process.env, ...env },
+    encoding: 'utf8',
+  })
+}
+
 function runGuardAll() {
   return spawnSync('bash', ['scripts/ci/infra-guard.sh', '--all'], {
     encoding: 'utf8',
@@ -52,6 +59,20 @@ index 111..222 100644
 `
   const result = runGuard(diff)
   expect(result.status).not.toBe(0)
+})
+
+test('INFRA_GUARD_BASE com SHA zerado (0000000000000000000000000000000000000000) executa sem erro', () => {
+  const result = runGuardEnv({
+    INFRA_GUARD_BASE: '0000000000000000000000000000000000000000',
+  })
+  expect(result.status).toBe(0)
+})
+
+test('INFRA_GUARD_BASE com ref inexistente faz fallback gracioso', () => {
+  const result = runGuardEnv({
+    INFRA_GUARD_BASE: 'nonexistent_ref_12345',
+  })
+  expect(result.status).toBe(0)
 })
 
 test('linha adicionada com token fake AKIA (AWS) é barrada', () => {

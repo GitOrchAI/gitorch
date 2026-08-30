@@ -60,6 +60,9 @@ set -euo pipefail
 
 MODE="diff"
 BASE_REF="${INFRA_GUARD_BASE:-origin/main}"
+if [[ "$BASE_REF" =~ ^0+$ ]]; then
+  BASE_REF="origin/main"
+fi
 DIFF_FILE=""
 for arg in "$@"; do
   case "$arg" in
@@ -133,16 +136,35 @@ EXCLUDES=(
 
 ALLOW_MARK='infra-guard-allow'
 
+# Executa o git diff tentando base...HEAD (triplo-ponto), base..HEAD (duplo-ponto),
+# e fallbacks seguros para evitar falha do pipefail se a base não puder ser diffed.
+run_git_diff() {
+  local base="$1"
+  shift
+  if git diff --unified=0 "${base}...HEAD" "$@" 2>/dev/null; then
+    return 0
+  fi
+  if git diff --unified=0 "${base}..HEAD" "$@" 2>/dev/null; then
+    return 0
+  fi
+  local fallback
+  fallback="$(git rev-parse --verify --quiet 'HEAD~1^{commit}' || git rev-parse HEAD)"
+  if git diff --unified=0 "${fallback}...HEAD" "$@" 2>/dev/null; then
+    return 0
+  fi
+  git diff --unified=0 HEAD "$@" 2>/dev/null || true
+}
+
 # Emite `arquivo:linha:conteúdo` para cada LINHA ADICIONADA no diff vs a base.
 scan_diff() {
   if [[ -n "$DIFF_FILE" ]]; then
     if [[ "$DIFF_FILE" == "-" ]]; then printf '%s\n' "$STDIN_DIFF"; else cat "$DIFF_FILE"; fi
   else
     local base="$BASE_REF"
-    if ! git rev-parse --verify --quiet "${base}^{commit}" >/dev/null 2>&1; then
+    if [[ "$base" =~ ^0+$ ]] || ! git rev-parse --verify --quiet "${base}^{commit}" >/dev/null 2>&1; then
       base="$(git rev-parse --verify --quiet 'HEAD~1^{commit}' || git rev-parse HEAD)"
     fi
-    git diff --unified=0 "${base}...HEAD" -- . "${EXCLUDES[@]}"
+    run_git_diff "$base" -- . "${EXCLUDES[@]}"
   fi | awk '
     /^\+\+\+ b\// { file = substr($0, 7); next }
     /^\+\+\+ /    { file = "";            next }
@@ -177,10 +199,10 @@ scan_paths() {
     if [[ "$DIFF_FILE" == "-" ]]; then printf '%s\n' "$STDIN_DIFF"; else cat "$DIFF_FILE"; fi
   else
     local base="$BASE_REF"
-    if ! git rev-parse --verify --quiet "${base}^{commit}" >/dev/null 2>&1; then
+    if [[ "$base" =~ ^0+$ ]] || ! git rev-parse --verify --quiet "${base}^{commit}" >/dev/null 2>&1; then
       base="$(git rev-parse --verify --quiet 'HEAD~1^{commit}' || git rev-parse HEAD)"
     fi
-    git diff --unified=0 "${base}...HEAD" -- .
+    run_git_diff "$base" -- .
   fi | grep -E '^\+\+\+ b/' | sed -E 's#^\+\+\+ b/##'
 }
 
