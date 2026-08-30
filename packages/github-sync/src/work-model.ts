@@ -9,6 +9,14 @@ export class GitHubWorkModel {
     return [...item.subIssueNodeIds]
   }
 
+  wishCreatedAtFor(item: GitHubWorkItem): string | undefined {
+    return item.wishCreatedAt
+  }
+
+  mergedAtFor(item: GitHubWorkItem): string | undefined {
+    return item.mergedAt
+  }
+
   availabilityFor(item: GitHubWorkItem, dependencyItems: GitHubWorkItem[]): AvailabilityDecision {
     const dependencyById = new Map(
       dependencyItems.map((dependency) => [dependency.nodeId, dependency])
