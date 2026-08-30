@@ -5,6 +5,7 @@ import { loadEnv } from '../config/env.js'
 import { registerPlugins } from '../plugins/index.js'
 import { painelRoutes } from './painel.js'
 import { LeituraIndisponivelError } from '../services/leitura-do-repositorio.js'
+import { hojeNoFuso } from '../services/garantir-sprint.js'
 import { ArvoreIndisponivelError } from '../services/arvore-de-pedidos.js'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -65,6 +66,10 @@ describe('Rotas do painel do owner', () => {
     app.inject({ method: 'GET', url: `/api/v1/painel/sprint${qs}`, headers: authHeaders })
   const getLeitura = (qs = '') =>
     app.inject({ method: 'GET', url: `/api/v1/painel/leitura${qs}`, headers: authHeaders })
+  const getEntregas = (qs = '') =>
+    app.inject({ method: 'GET', url: `/api/v1/painel/entregas${qs}`, headers: authHeaders })
+  const getRegua = (qs = '') =>
+    app.inject({ method: 'GET', url: `/api/v1/painel/regua${qs}`, headers: authHeaders })
 
   beforeEach(async () => {
     await build()
@@ -324,6 +329,146 @@ describe('Rotas do painel do owner', () => {
     })
   })
 
+  describe('GET /api/v1/painel/entregas — o que ficou pronto, e o que falta', () => {
+    // Os estados são os que `dev_sessions` grava de verdade: deployState é
+    // 'no-ar' | 'falhou' | 'publicando' | 'sem-publicacao' | 'commit-errado'.
+    const PROJETOS = [{ id: 'p1', name: 'gitorch', reguaDePronto: null }]
+    const sessao = (over: Record<string, unknown> = {}) => ({
+      projectId: 'p1',
+      issueNumber: 42,
+      pullRequestNumber: 7,
+      mergeCommitSha: 'deadbeef',
+      deployState: 'no-ar',
+      envLastVerdict: 'no-ar',
+      updatedAt: new Date('2026-08-29T23:00:00Z'),
+      ...over,
+    })
+
+    const prismaCom = (projetos: unknown[], sessoes: unknown[]) =>
+      fakePrisma({
+        project: { findMany: vi.fn().mockResolvedValue(projetos) },
+        devSession: { findMany: vi.fn().mockResolvedValue(sessoes) },
+      })
+
+    test('sem sessão, 401', async () => {
+      const res = await app.inject({ method: 'GET', url: '/api/v1/painel/entregas' })
+      expect(res.statusCode).toBe(401)
+    })
+
+    test('entrega completa aparece como pronta, com a data', async () => {
+      await build(prismaCom(PROJETOS, [sessao()]))
+      const corpo = (await getEntregas()).json()
+      expect(corpo.prontas).toBe(1)
+      expect(corpo.entregas[0]).toMatchObject({
+        projeto: 'gitorch',
+        pedido: 42,
+        entrega: 7,
+        pronto: true,
+        prontoEm: '2026-08-29T23:00:00.000Z',
+        porQueNaoFechou: [],
+      })
+    })
+
+    test('mesclada mas não no ar: NÃO conta como pronta e diz por quê', async () => {
+      await build(prismaCom(PROJETOS, [sessao({ deployState: 'sem-publicacao' })]))
+      const corpo = (await getEntregas()).json()
+      expect(corpo.prontas).toBe(0)
+      expect(corpo.entregas[0].pronto).toBe(false)
+      expect(corpo.entregas[0].porQueNaoFechou).toEqual([
+        'foi mesclada, mas ainda não chegou ao ar',
+      ])
+    })
+
+    test('entrega que não fechou tem data NULA — não usa a última mexida', async () => {
+      // Mostrar `updatedAt` como se fosse a data da entrega diria que ficou
+      // pronto num dia em que não ficou.
+      await build(prismaCom(PROJETOS, [sessao({ deployState: 'falhou' })]))
+      const corpo = (await getEntregas()).json()
+      expect(corpo.entregas[0].prontoEm).toBeNull()
+    })
+
+    test('a régua do projeto muda o resultado da MESMA entrega', async () => {
+      const semAr = [sessao({ deployState: 'sem-publicacao' })]
+      await build(
+        prismaCom([{ id: 'p1', name: 'gitorch', reguaDePronto: { no_ar: false } }], semAr)
+      )
+      const corpo = (await getEntregas()).json()
+      expect(corpo.prontas).toBe(1)
+    })
+
+    test('dono sem projeto: lista vazia e 200, não erro', async () => {
+      await build(prismaCom([], []))
+      const res = await getEntregas()
+      expect(res.statusCode).toBe(200)
+      expect(res.json()).toEqual({ entregas: [], prontas: 0 })
+    })
+  })
+
+  describe('a régua é do cliente', () => {
+    test('GET devolve a régua, os critérios e se ele escolheu', async () => {
+      await build(
+        fakePrisma({
+          project: {
+            findFirst: vi.fn().mockResolvedValue({ reguaDePronto: null, reguaEscolhidaEm: null }),
+          },
+        })
+      )
+      const corpo = (await getRegua('?projeto=gitorch')).json()
+      expect(corpo.regua.no_ar).toBe(true)
+      // Separa "ele escolheu" de "está no padrão porque ninguém escolheu".
+      expect(corpo.escolhida).toBe(false)
+      expect(corpo.criterios.map((c: { chave: string }) => c.chave)).toContain('no_ar')
+    })
+
+    test('POST grava e carimba a escolha', async () => {
+      const update = vi.fn().mockResolvedValue({})
+      await build(
+        fakePrisma({
+          project: { findFirst: vi.fn().mockResolvedValue({ id: 'p1' }), update },
+        })
+      )
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/painel/regua',
+        headers: authHeaders,
+        payload: { projeto: 'gitorch', regua: { no_ar: false } },
+      })
+      expect(res.statusCode).toBe(200)
+      const dados = update.mock.calls[0]![0].data
+      expect(dados.reguaDePronto.no_ar).toBe(false)
+      expect(dados.reguaEscolhidaEm).toBeInstanceOf(Date)
+    })
+
+    test('POST descarta o que não reconhece — não vira régua', async () => {
+      const update = vi.fn().mockResolvedValue({})
+      await build(
+        fakePrisma({ project: { findFirst: vi.fn().mockResolvedValue({ id: 'p1' }), update } })
+      )
+      await app.inject({
+        method: 'POST',
+        url: '/api/v1/painel/regua',
+        headers: authHeaders,
+        payload: { projeto: 'gitorch', regua: { inventado: true, no_ar: 'sim' } },
+      })
+      const gravada = update.mock.calls[0]![0].data.reguaDePronto
+      expect('inventado' in gravada).toBe(false)
+      // 'sim' não é booleano: o critério fica no padrão, ligado.
+      expect(gravada.no_ar).toBe(true)
+    })
+
+    test('projeto de OUTRO dono devolve a mesma frase de inexistente', async () => {
+      await build(fakePrisma({ project: { findFirst: vi.fn().mockResolvedValue(null) } }))
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/painel/regua',
+        headers: authHeaders,
+        payload: { projeto: 'de-outro', regua: {} },
+      })
+      expect(res.statusCode).toBe(404)
+      expect(res.json()).toEqual({ error: 'Projeto não encontrado.' })
+    })
+  })
+
   describe('GET /api/v1/painel/leitura', () => {
     const LIDO = {
       projeto: 'gitorch',
@@ -395,9 +540,16 @@ describe('Rotas do painel do owner', () => {
   describe('GET /api/v1/painel/sprint', () => {
     // O ciclo de hoje precisa conter a data de execução do teste, senão o teste
     // passa hoje e quebra amanhã. Ancorar no "agora" é o que mantém honesto.
-    const hoje = new Date().toISOString().slice(0, 10)
-    const ontem = new Date(Date.now() - 86400000).toISOString().slice(0, 10)
-    const mesPassado = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10)
+    //
+    // E o "hoje" tem que ser o MESMO que a rota usa: `hojeNoFuso()`, em
+    // America/Sao_Paulo. Estes testes calculavam a data em UTC, e entre 21h e
+    // a meia-noite de Brasília os dois discordam — o teste montava uma sprint
+    // começando "amanhã" e cobrava que ela estivesse correndo. Quebrou às
+    // 00:04 UTC, exatamente nessa janela.
+    const hoje = hojeNoFuso()
+    const diasAtras = (n: number) => hojeNoFuso(new Date(Date.now() - n * 86400000))
+    const ontem = diasAtras(1)
+    const mesPassado = diasAtras(30)
 
     test('sem sessão → 401', async () => {
       const res = await app.inject({ method: 'GET', url: '/api/v1/painel/sprint' })

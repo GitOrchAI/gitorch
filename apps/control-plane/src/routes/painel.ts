@@ -15,6 +15,14 @@ import {
   LeituraIndisponivelError,
   type LeituraDeProjeto,
 } from '../services/leitura-do-repositorio.js'
+import { paraTela, type EntregaDoPainel } from '../services/incremento.js'
+import {
+  avaliarPronto,
+  normalizarRegua,
+  CRITERIOS_DE_PRONTO,
+  O_QUE_O_CRITERIO_EXIGE,
+  REGUA_PADRAO,
+} from '@gitorch/cadence'
 import type { PoliticaDePerguntasAoDono } from '../services/duvida-do-dev.js'
 
 // Rotas do painel do owner (ui_kits/painel-owner/API.md do handoff GitOrch
@@ -548,6 +556,122 @@ export const painelRoutes = async (
           quando: e.createdAt.toISOString(),
         })),
       })
+    }
+  )
+
+  // GET /api/v1/painel/entregas — o que ficou pronto, e o que ainda não.
+  //
+  // Scrum 2020: o Incremento nasce quando um item atende à Definição de Pronto.
+  // A régua é do CLIENTE, e o que falta vem escrito — uma entrega parada sem
+  // ninguém dizer por quê é o silêncio que este bloco veio acabar.
+  //
+  // Os fatos vêm de `dev_sessions`, que o caminho que já roda grava. Nenhum
+  // rastreio novo: uma segunda fonte da verdade sobre "isto ficou pronto"
+  // divergiria da primeira, e o dono descobriria pelo número errado.
+  app.get<{ Querystring: { projeto?: string } }>(
+    '/api/v1/painel/entregas',
+    RATE_LIMIT_POLLING,
+    async (request, reply) => {
+      if (!request.user) return reply.code(401).send(NAO_LOGADO)
+      const ownerId = await resolveOwnerId(app.prisma, request.user)
+      const projeto = request.query.projeto?.trim() || undefined
+
+      const projetos = await app.prisma.project.findMany({
+        where: { userId: ownerId, isActive: true, ...(projeto ? { name: projeto } : {}) },
+        select: { id: true, name: true, reguaDePronto: true },
+      })
+      if (projetos.length === 0) return reply.send({ entregas: [], prontas: 0 })
+
+      const porId = new Map(projetos.map((p) => [p.id, p]))
+      const sessoes = await app.prisma.devSession.findMany({
+        where: { projectId: { in: projetos.map((p) => p.id) } },
+        select: {
+          projectId: true,
+          issueNumber: true,
+          pullRequestNumber: true,
+          mergeCommitSha: true,
+          deployState: true,
+          envLastVerdict: true,
+          updatedAt: true,
+        },
+        orderBy: { updatedAt: 'desc' },
+        take: 50,
+      })
+
+      const entregas: EntregaDoPainel[] = sessoes.map((s) => {
+        const proj = porId.get(s.projectId)
+        const veredito = avaliarPronto(s, normalizarRegua(proj?.reguaDePronto))
+        return paraTela({
+          projeto: proj?.name ?? '',
+          pedido: s.issueNumber,
+          entrega: s.pullRequestNumber,
+          veredito,
+          // A data só existe quando fechou. Mostrar a última mexida como se
+          // fosse a data da entrega diria que ficou pronto num dia em que não
+          // ficou.
+          prontoEm: veredito.pronto ? s.updatedAt : null,
+        })
+      })
+
+      return reply.send({ entregas, prontas: entregas.filter((e) => e.pronto).length })
+    }
+  )
+
+  // GET /api/v1/painel/regua — a régua deste projeto, e o que cada critério exige.
+  app.get<{ Querystring: { projeto?: string } }>(
+    '/api/v1/painel/regua',
+    RATE_LIMIT_POLLING,
+    async (request, reply) => {
+      if (!request.user) return reply.code(401).send(NAO_LOGADO)
+      const ownerId = await resolveOwnerId(app.prisma, request.user)
+      const projeto = request.query.projeto?.trim()
+      if (!projeto) return reply.code(400).send({ error: 'Informe o projeto.' })
+
+      const row = await app.prisma.project.findFirst({
+        where: { name: projeto, userId: ownerId, isActive: true },
+        select: { reguaDePronto: true, reguaEscolhidaEm: true },
+      })
+      if (!row) return reply.code(404).send({ error: 'Projeto não encontrado.' })
+
+      return reply.send({
+        regua: normalizarRegua(row.reguaDePronto),
+        // Separa "ele escolheu isto" de "está no padrão porque ninguém
+        // escolheu" — sem isso a tela afirmaria uma decisão que não houve.
+        escolhida: row.reguaEscolhidaEm !== null,
+        criterios: CRITERIOS_DE_PRONTO.map((c) => ({ chave: c, exige: O_QUE_O_CRITERIO_EXIGE[c] })),
+        padrao: REGUA_PADRAO,
+      })
+    }
+  )
+
+  // POST /api/v1/painel/regua — o cliente muda a régua.
+  app.post<{ Body: { projeto?: string; regua?: Record<string, unknown> } }>(
+    '/api/v1/painel/regua',
+    { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      if (!request.user) return reply.code(401).send(NAO_LOGADO)
+      const projeto = request.body?.projeto?.trim()
+      if (!projeto) return reply.code(400).send({ error: 'Informe o projeto.' })
+
+      const ownerId = await resolveOwnerId(app.prisma, request.user)
+      const row = await app.prisma.project.findFirst({
+        where: { name: projeto, userId: ownerId, isActive: true },
+        select: { id: true },
+      })
+      // Inexistente e "de outro dono" devolvem a MESMA frase — mesmo
+      // anti-vazamento das outras rotas do painel.
+      if (!row) return reply.code(404).send({ error: 'Projeto não encontrado.' })
+
+      // Normaliza na porta: chave desconhecida é descartada e valor que não é
+      // booleano é ignorado. O que o produto não reconhece nunca vira régua.
+      const regua = normalizarRegua(request.body?.regua)
+
+      await app.prisma.project.update({
+        where: { id: row.id },
+        data: { reguaDePronto: regua, reguaEscolhidaEm: new Date() },
+      })
+
+      return reply.send({ regua, escolhida: true })
     }
   )
 }

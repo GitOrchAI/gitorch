@@ -51,4 +51,6 @@ export function loadEventPlaybook(event: CadenceEvent): string {
 export * from './rails'
 // Até onde o GitOrch pode ir no repositório do cliente (os 3 níveis).
 export * from './autonomia'
+// Quando uma entrega vira ENTREGA: a regua de pronto, configuravel pelo cliente.
+export * from './incremento'
 export * from './skill-destillations'
