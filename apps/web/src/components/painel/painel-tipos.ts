@@ -51,19 +51,33 @@ export interface AgenteAtuando {
   progresso: number | null
 }
 
+/** Estado do motor do ponto de vista de quem vai usá-lo agora. */
+export type EstadoDoMotor = 'ligado' | 'precisa_religar' | 'nao_conectado'
+
 export interface MotorCota {
+  /** runtime, como o banco guarda: claude | codex | antigravity | github. */
   id: string
   nome: string
-  usado: number
-  /** null quando o motor não reporta teto (`limite_conhecido: false`). */
-  limite: number | null
-  janela: string
-  limite_conhecido: boolean
+  estado: EstadoDoMotor
+  /** % JÁ USADO da janela de sessão. `null` = não sei (nunca zero). */
+  sessao: number | null
+  /** % JÁ USADO da janela da semana. `null` = não sei. */
+  semana: number | null
+  /** quando a cota foi lida, ISO. `null` = nunca foi lida. */
+  lidoEm: string | null
+  precisaReligar: boolean
 }
 
 export interface AgentesPayload {
   atuando: AgenteAtuando[]
   motores: MotorCota[]
+  /**
+   * `false` = o produto NÃO conseguiu ler a cota. Sem isto, "falhei ao ler" e
+   * "você não tem motor" davam a mesma tela vazia, e a falha virava silêncio.
+   */
+  cotaLida: boolean
+  /** por que não deu, em linguagem de negócio. `null` quando leu. */
+  motivoDaCota: string | null
 }
 
 // --- /api/v1/painel/entregas (API.md §2.5) — FALTA (leva 2) --------------

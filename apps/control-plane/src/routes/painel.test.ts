@@ -32,6 +32,11 @@ function fakePrisma(over: Record<string, any> = {}) {
     },
     agentQuestion: { findUnique: vi.fn().mockResolvedValue(null) },
     user: { findUnique: vi.fn().mockResolvedValue(null) },
+    // Dono sem motor conectado — o caso mais comum nos testes das outras
+    // rotas. Precisa existir: a rota /agentes lê a cota do banco por padrão,
+    // e um fake sem esta tabela faria a leitura estourar e a resposta dizer
+    // "não consegui ler" quando o certo é "não há motor".
+    engineConnection: { findMany: vi.fn().mockResolvedValue([]) },
     ...over,
   }
 }
@@ -156,10 +161,83 @@ describe('Rotas do painel do owner', () => {
       expect(res.statusCode).toBe(401)
     })
 
-    test('sem missão rodando → atuando vazio, motores vazio', async () => {
+    test('dono sem motor nenhum → lista vazia, mas dizendo que LEU', async () => {
+      // Este teste já existiu afirmando `{atuando: [], motores: []}` como o
+      // certo — e passava verde porque o default da rota devolvia vazio, não
+      // porque o produto tivesse lido alguma coisa. Era um teste concordando
+      // com o código em vez de com a realidade. Agora ele exige `cotaLida`.
       const res = await getAgentes()
       expect(res.statusCode).toBe(200)
-      expect(res.json()).toEqual({ atuando: [], motores: [] })
+      expect(res.json()).toEqual({
+        atuando: [],
+        motores: [],
+        cotaLida: true,
+        motivoDaCota: null,
+      })
+    })
+
+    test('os motores do banco CHEGAM na resposta (o defeito de 30/08)', async () => {
+      // O painel dizia "Nenhum motor conectado ainda." com o banco cheio:
+      // `painelRoutes(app)` era registrada sem opts e caía num default que
+      // devolvia []. Este teste confere o RESULTADO — se o default voltar a
+      // ser vazio, ele reprova.
+      await build(
+        fakePrisma({
+          ...comMissoes([]),
+          engineConnection: {
+            findMany: vi.fn().mockResolvedValue([
+              {
+                runtime: 'antigravity',
+                status: 'connected',
+                sessionPercentUsed: 0,
+                weekPercentUsed: 56,
+                quotaRefreshedAt: new Date('2026-08-30T17:01:29.323Z'),
+              },
+              {
+                runtime: 'codex',
+                status: 'needs_reconnect',
+                sessionPercentUsed: null,
+                weekPercentUsed: null,
+                quotaRefreshedAt: null,
+              },
+            ]),
+          },
+        })
+      )
+
+      const body = getAgentes ? (await getAgentes()).json() : null
+      expect(body.cotaLida).toBe(true)
+      expect(body.motores).toHaveLength(2)
+      expect(body.motores[0]).toMatchObject({
+        id: 'antigravity',
+        nome: 'Antigravity',
+        estado: 'ligado',
+        semana: 56,
+        precisaReligar: false,
+      })
+      // O motor caído aparece DITO — o assistente já mostrou "Conectado" com
+      // o motor morto havia uma hora, e quem descobriu foi o dono.
+      expect(body.motores[1]).toMatchObject({
+        id: 'codex',
+        estado: 'precisa_religar',
+        precisaReligar: true,
+        semana: null,
+      })
+    })
+
+    test('falha ao ler cota NÃO se disfarça de "nenhum motor"', async () => {
+      // Os dois davam a mesma tela vazia. Agora a resposta separa o fato
+      // ("você não tem motor") do não-saber ("não consegui ler").
+      await build(fakePrisma(comMissoes([])), {
+        lerCotas: async () => {
+          throw new Error('banco fora do ar')
+        },
+      })
+
+      const body = (await getAgentes()).json()
+      expect(body.motores).toEqual([])
+      expect(body.cotaLida).toBe(false)
+      expect(body.motivoDaCota).toBeTruthy()
     })
 
     test('missão running → estado trabalhando e progresso SEMPRE null', async () => {

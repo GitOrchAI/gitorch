@@ -16,6 +16,7 @@ import {
   type Iteracao,
 } from '../services/garantir-sprint.js'
 import { decidirQuadro } from '../services/resolver-quadro.js'
+import { lerCotasDosMotores, type MotorCota } from '../services/cotas-dos-motores.js'
 import {
   lerRepositorios,
   LeituraIndisponivelError,
@@ -48,23 +49,23 @@ const RATE_LIMIT_POLLING = { config: { rateLimit: { max: 60, timeWindow: '1 minu
 const NAO_LOGADO = { error: 'UNAUTHORIZED: session required' }
 const LIMITE_FRIO_SEGUNDOS = 3600
 
-/** Cota de um motor (espelha o tipo do front — painel-tipos.ts). */
-export interface MotorCota {
-  id: string
-  nome: string
-  usado: number
-  /** null quando o motor não reporta teto. */
-  limite: number | null
-  janela: string
-  limite_conhecido: boolean
-}
-
 /**
  * Injeções opcionais (testes). Em produção os defaults são usados.
- * `lerCotas`: leitura das cotas dos motores do dono. Best-effort — sem uma
- * store de consumo persistida (há tarefa aberta no quadro: "a cota dos motores
- * não é gravada em lugar nenhum"), o default devolve `[]` e a tela degrada
- * com honestidade ("Nenhum motor conectado ainda."). Nunca inventa um `usado`.
+ *
+ * `lerCotas`: leitura das cotas dos motores do dono. O default LÊ O BANCO —
+ * e isso é uma correção de 30/08/2026, não um detalhe. Antes o default era
+ * `async () => []`, com o comentário (então verdadeiro) de que a cota não era
+ * gravada em lugar nenhum. O PR #381 passou a gravá-la pelo relógio e ninguém
+ * voltou aqui: como `painelRoutes(app)` é registrada sem opts, a rota caía no
+ * default e o painel dizia "Nenhum motor conectado ainda." com o banco cheio
+ * (antigravity 56%, claude 27%, lidos no mesmo dia).
+ *
+ * A lição, que vale além deste arquivo: um default que devolve VAZIO é tão
+ * perigoso quanto um que devolve credencial crua — vazio é um estado plausível,
+ * então a mentira passa por comportamento normal. É a mesma família do
+ * `options.fetchImpl ?? fetch` que o bloco 4 trocou por `fetchSemPermissao()`.
+ * Aqui o conserto é o simétrico: o default faz a COISA CERTA, e quem quiser
+ * outro comportamento injeta de propósito.
  */
 export interface PainelRoutesOpts {
   lerCotas?: (ownerId: string) => Promise<MotorCota[]>
@@ -120,7 +121,7 @@ export const painelRoutes = async (
   app: FastifyInstance,
   opts: PainelRoutesOpts = {}
 ): Promise<void> => {
-  const lerCotas = opts.lerCotas ?? (async () => [] as MotorCota[])
+  const lerCotas = opts.lerCotas ?? ((ownerId: string) => lerCotasDosMotores(app.prisma, ownerId))
   const answer =
     opts.answerImpl ??
     ((id: string, valor: string, via: 'telegram' | 'panel') => {
@@ -365,21 +366,29 @@ export const painelRoutes = async (
         progresso: null,
       }))
 
+      // Três estados, não dois. "Não consegui ler a cota" e "este dono não tem
+      // motor nenhum" davam a MESMA tela vazia, e é assim que uma falha vira
+      // silêncio: o dono lê "nenhum motor conectado" e acredita. `cotaLida`
+      // separa os dois — lista vazia com `cotaLida: true` é um fato; com
+      // `false`, é o produto dizendo que não sabe, e por quê.
       let motores: MotorCota[] = []
+      let cotaLida = true
+      let motivoDaCota: string | null = null
       try {
         motores = await lerCotas(ownerId)
       } catch (err) {
-        // Best-effort: sem cota, a tela mostra "Nenhum motor conectado ainda."
-        // em vez de um número inventado. Loga a causa, nunca o conteúdo.
+        cotaLida = false
+        motivoDaCota = 'não consegui ler a cota dos seus motores agora'
+        // Loga a causa técnica; a resposta leva só a frase de negócio.
         app.log.warn(
-          `[painel/agentes] leitura de cota falhou (best-effort): ${
+          `[painel/agentes] leitura de cota falhou: ${
             err instanceof Error ? err.message : String(err)
           }`
         )
         motores = []
       }
 
-      return reply.send({ atuando, motores })
+      return reply.send({ atuando, motores, cotaLida, motivoDaCota })
     }
   )
 
