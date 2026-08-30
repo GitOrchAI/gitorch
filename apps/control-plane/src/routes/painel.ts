@@ -17,6 +17,10 @@ import {
 } from '../services/leitura-do-repositorio.js'
 import { paraTela, type EntregaDoPainel } from '../services/incremento.js'
 import { medirCiclo } from '../services/medicao-do-ciclo.js'
+import { aplicarOrdemDosPedidos } from '../services/ordem-dos-pedidos.js'
+import { exigirPermissao } from '@gitorch/cadence'
+import { ProjectV2Client } from '@gitorch/github-sync'
+import { fetchDoRepositorio } from '../services/guarda-de-autonomia.js'
 import {
   avaliarPronto,
   normalizarRegua,
@@ -660,6 +664,121 @@ export const painelRoutes = async (
     }
   )
 
+  // POST /api/v1/painel/ordem — o cliente reordena os pedidos, e o QUADRO DELE
+  // no GitHub acompanha.
+  //
+  // Decisão do dono (5.1): "o cliente só vai acessar o nosso painel, ajusta
+  // pelo painel e isso ajusta automaticamente nas outras plataformas".
+  //
+  // É a PRIMEIRA rota do painel que ESCREVE no repositório do cliente, e veio
+  // por último de propósito. Passa pela guarda de autonomia antes de mover
+  // qualquer coisa, e registra o que fez para ele poder ver depois.
+  app.post<{ Body: { projeto?: string; pedidos?: number[] } }>(
+    '/api/v1/painel/ordem',
+    { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      if (!request.user) return reply.code(401).send(NAO_LOGADO)
+
+      const projeto = request.body?.projeto?.trim()
+      if (!projeto) return reply.code(400).send({ error: 'Informe o projeto.' })
+
+      // O painel manda NÚMEROS de pedido — o que o dono reconhece —, nunca ids
+      // internos do quadro. A tradução acontece aqui embaixo; expor id de
+      // quadro na tela seria vazar encanamento para quem só quer arrastar um
+      // card.
+      const numeros = (request.body?.pedidos ?? []).filter(
+        (n): n is number => typeof n === 'number' && Number.isInteger(n)
+      )
+      if (numeros.length === 0) {
+        return reply.code(400).send({ error: 'Informe os pedidos na ordem que você quer.' })
+      }
+
+      const ownerId = await resolveOwnerId(app.prisma, request.user)
+      const row = await app.prisma.project.findFirst({
+        where: { name: projeto, userId: ownerId, isActive: true },
+        select: { id: true, wingId: true, autonomia: true, runtimeConfig: true },
+      })
+      // Inexistente e "de outro dono" devolvem a MESMA frase — mesmo
+      // anti-vazamento das outras rotas do painel.
+      if (!row) return reply.code(404).send({ error: 'Projeto não encontrado.' })
+
+      const quadroId = resolveQuadroDoProjeto(row.runtimeConfig)
+      if (!quadroId) {
+        return reply
+          .code(409)
+          .send({ error: 'Este projeto ainda não tem quadro no GitHub para reordenar.' })
+      }
+
+      // A PERMISSÃO É CONFERIDA ANTES DA CREDENCIAL, e a ordem importa.
+      //
+      // Pedir credencial primeiro fazia um projeto em "só olhar" e sem
+      // credencial receber "indisponível" — a mensagem errada. Quem disse que
+      // não quer que o produto escreva merece ouvir exatamente isso, e não uma
+      // falha de infraestrutura que não tem nada a ver com a decisão dele.
+      try {
+        exigirPermissao(row.autonomia, 'organizar')
+      } catch (err) {
+        return reply.code(403).send({ error: (err as Error).message })
+      }
+
+      const token = (await app.engineConnections?.getRawGithubToken(ownerId)) ?? null
+      if (!token) return reply.code(503).send({ error: 'ORDEM_INDISPONIVEL' })
+
+      try {
+        const cliente = new ProjectV2Client({
+          token,
+          fetchImpl: fetchDoRepositorio({ nivel: () => row.autonomia }),
+        })
+
+        // Traduz número de pedido para item do quadro. Um número que NÃO está
+        // no quadro é descartado com aviso, e não inventa item: mover algo que
+        // não existe ali daria erro do GitHub no meio da fila, deixando a
+        // ordem pela metade.
+        const itens = await cliente.listarItensDoQuadro(quadroId)
+        const porNumero = new Map(itens.map((i) => [i.pedido, i.itemId]))
+        const pedidos = numeros
+          .filter((n) => porNumero.has(n))
+          .map((n) => ({ pedido: n, itemId: porNumero.get(n)! }))
+        const foraDoQuadro = numeros.filter((n) => !porNumero.has(n))
+
+        if (pedidos.length === 0) {
+          return reply
+            .code(409)
+            .send({ error: 'Nenhum desses pedidos está no seu quadro para ser reordenado.' })
+        }
+
+        const registro = await aplicarOrdemDosPedidos(
+          {
+            quadro: cliente,
+            nivel: () => row.autonomia,
+            registrar: async (r) => {
+              await app.prisma.event.create({
+                data: {
+                  projectId: row.id,
+                  type: 'painel_escreveu',
+                  payload: { texto: r.oQueFiz, ordem: r.ordem, quando: r.quando },
+                },
+              })
+            },
+          },
+          { projectId: quadroId, pedidos }
+        )
+        // O que ficou de fora vai DITO na resposta. Aplicar cinco de sete e
+        // responder "pronto" faria o dono achar que a ordem inteira valeu.
+        return reply.send({ ...registro, foraDoQuadro })
+      } catch (err) {
+        // A recusa da autonomia NÃO é erro do produto: é a escolha do cliente
+        // valendo. Vira 403 com o motivo que a própria regra escreveu, para a
+        // tela poder dizer o que fazer.
+        if ((err as Error)?.name === 'EscritaNaoAutorizadaError') {
+          return reply.code(403).send({ error: (err as Error).message })
+        }
+        app.log.error(err, `[painel/ordem] não consegui reordenar ${row.wingId}`)
+        return reply.code(502).send({ error: 'Não consegui falar com o GitHub agora.' })
+      }
+    }
+  )
+
   // GET /api/v1/painel/regua — a régua deste projeto, e o que cada critério exige.
   app.get<{ Querystring: { projeto?: string } }>(
     '/api/v1/painel/regua',
@@ -717,6 +836,28 @@ export const painelRoutes = async (
       return reply.send({ regua, escolhida: true })
     }
   )
+}
+
+/**
+ * O id do quadro deste projeto, guardado no `runtimeConfig`.
+ *
+ * `null` quando não há: reordenar um quadro que não existe não é erro do
+ * cliente, é um passo que ainda não aconteceu — e a rota diz isso em vez de
+ * estourar.
+ */
+function resolveQuadroDoProjeto(runtimeConfig: unknown): string | null {
+  if (!runtimeConfig || typeof runtimeConfig !== 'object' || Array.isArray(runtimeConfig)) {
+    return null
+  }
+  const cfg = runtimeConfig as Record<string, unknown>
+  const direto = cfg['githubBoardId']
+  if (typeof direto === 'string' && direto) return direto
+  const env = cfg['envConfig']
+  if (env && typeof env === 'object' && !Array.isArray(env)) {
+    const doEnv = (env as Record<string, unknown>)['GITORCH_PROJECT_BOARD_ID']
+    if (typeof doEnv === 'string' && doEnv) return doEnv
+  }
+  return null
 }
 
 /** Payload sem `texto` é evento antigo/inesperado — nunca inventa conteúdo. */

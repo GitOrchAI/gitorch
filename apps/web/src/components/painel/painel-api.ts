@@ -36,6 +36,7 @@ export const ROTAS = {
   leitura: '/api/v1/painel/leitura', // NOVA (leva 2, bloco 4) — o que já li do repositório
   ritmo: '/api/v1/painel/ritmo', // FALTA — leva 2
   entregas: '/api/v1/painel/entregas', // NOVA (leva 2, bloco 5) — o que ficou pronto
+  ordem: '/api/v1/painel/ordem', // NOVA (leva 2, bloco 7) — escreve a ordem no quadro
   ciclo: '/api/v1/painel/ciclo', // NOVA (leva 2, bloco 6) — o retrabalho medido
   regua: '/api/v1/painel/regua', // NOVA (leva 2, bloco 5) — a régua de pronto do cliente
   historico: '/api/v1/painel/historico', // FALTA — leva 2

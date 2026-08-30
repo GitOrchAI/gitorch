@@ -9,7 +9,7 @@
 // inventada é pior que coluna faltando. Elas voltam quando houver de onde ler.
 // Portado de TelaPedidos.jsx.
 import { useState, useSyncExternalStore } from 'react'
-import { ROTAS, enviarPedido } from './painel-api'
+import { ROTAS, enviarPedido, pedir } from './painel-api'
 import { usePainelBusca } from './usePainelBusca'
 import { assinarProjeto, projetoAtual, projetoNoServidor, filtroDeProjeto } from './painel-projeto'
 import { Ad } from './PainelIcons'
@@ -63,6 +63,13 @@ export function TelaPedidos() {
   const [repo, setRepo] = useState('')
   const [pri, setPri] = useState<Prioridade>('P1')
   const [enviando, setEnviando] = useState(false)
+  // A ordem que o dono está montando na tela. `null` enquanto ele não mexeu —
+  // e é essa diferença que impede o painel de mandar uma ordem que ninguém
+  // pediu só porque a tela desenhou uma.
+  const [ordem, setOrdem] = useState<number[] | null>(null)
+  const [salvandoOrdem, setSalvandoOrdem] = useState(false)
+  const [avisoDaOrdem, setAvisoDaOrdem] = useState<string | null>(null)
+
   const [aviso, setAviso] = useState<{ numero?: number; endereco?: string; erro?: string } | null>(
     null
   )
@@ -118,7 +125,61 @@ export function TelaPedidos() {
     { mapear: (b) => b.pedidos ?? [], vazio: (d) => d.length === 0 }
   )
   const todos = r.estado === 'ok' && r.dados ? r.dados : []
-  const vis = filtro === 'todos' ? todos : todos.filter((p) => p.situacao === filtro)
+  const filtrados = filtro === 'todos' ? todos : todos.filter((p) => p.situacao === filtro)
+
+  // Se o dono já mexeu na ordem, a tela mostra a ordem DELE. Enquanto não
+  // mexeu, mostra a que veio do servidor.
+  const vis =
+    ordem === null
+      ? filtrados
+      : [...filtrados].sort((a, b) => {
+          const ia = ordem.indexOf(a.numero)
+          const ib = ordem.indexOf(b.numero)
+          // Pedido que não está na ordem montada fica no fim, na ordem que veio
+          // — nunca some da tela por causa de uma reordenação.
+          return (ia < 0 ? Number.MAX_SAFE_INTEGER : ia) - (ib < 0 ? Number.MAX_SAFE_INTEGER : ib)
+        })
+
+  /** Sobe ou desce um pedido na ordem que o dono está montando. */
+  const mover = (numero: number, passo: -1 | 1) => {
+    const base = (ordem ?? vis.map((p) => p.numero)).slice()
+    const i = base.indexOf(numero)
+    const destino = i + passo
+    if (i < 0 || destino < 0 || destino >= base.length) return
+    ;[base[i], base[destino]] = [base[destino]!, base[i]!]
+    setOrdem(base)
+    setAvisoDaOrdem(null)
+  }
+
+  /** Manda a ordem para o GitHub. Só o projeto escolhido — a ordem é DO quadro. */
+  const salvarOrdem = async () => {
+    if (!ordem || !projeto) return
+    setSalvandoOrdem(true)
+    try {
+      const r2 = await pedir<{ oQueFiz: string; foraDoQuadro?: number[] }>(ROTAS.ordem, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projeto, pedidos: ordem }),
+      })
+      // O que ficou de fora vai DITO. "Pronto" com cinco de sete aplicados
+      // faria o dono achar que a ordem inteira valeu.
+      const sobra = r2.foraDoQuadro?.length
+        ? ` ${r2.foraDoQuadro.length} pedido(s) não estão no quadro e ficaram como estavam.`
+        : ''
+      setAvisoDaOrdem(r2.oQueFiz + sobra)
+      setOrdem(null)
+      r.recarregar()
+    } catch (e) {
+      const erro = e as { status?: number; message?: string }
+      setAvisoDaOrdem(
+        erro.status === 403
+          ? (erro.message ?? 'Você não me autorizou a mexer no seu quadro.')
+          : 'Não consegui salvar a ordem. Nada mudou no seu quadro.'
+      )
+    } finally {
+      setSalvandoOrdem(false)
+    }
+  }
 
   return (
     <>
@@ -237,11 +298,42 @@ export function TelaPedidos() {
             ) : (
               <div className="pn-tw">
                 <table>
+                  <caption style={{ captionSide: 'top', textAlign: 'left', padding: '0 0 10px' }}>
+                    {ordem !== null && (
+                      <>
+                        <button
+                          className="pn-btn a sm"
+                          data-testid="salvar-ordem"
+                          disabled={salvandoOrdem}
+                          onClick={() => void salvarOrdem()}
+                        >
+                          {salvandoOrdem ? 'Salvando…' : 'Salvar esta ordem no seu quadro'}
+                        </button>{' '}
+                        <button
+                          className="pn-btn g sm"
+                          disabled={salvandoOrdem}
+                          onClick={() => {
+                            setOrdem(null)
+                            setAvisoDaOrdem(null)
+                          }}
+                        >
+                          Desfazer
+                        </button>
+                      </>
+                    )}
+                    {avisoDaOrdem && (
+                      <span style={{ fontSize: 13, color: 'var(--gl-muted)' }}>{avisoDaOrdem}</span>
+                    )}
+                  </caption>
                   <thead>
                     <tr>
                       <th>Pedido</th>
                       <th>Situação</th>
                       <th>Andamento</th>
+                      {/* A ordem é DO quadro de um projeto. Com "todos os
+                          projetos" não há um quadro para reordenar, e a coluna
+                          não aparece em vez de aparecer sem funcionar. */}
+                      {projeto && <th>Ordem</th>}
                     </tr>
                   </thead>
                   <tbody>
@@ -261,6 +353,28 @@ export function TelaPedidos() {
                         <td className="pn-nowrap" style={{ color: 'var(--gl-muted)' }}>
                           {andamentoLegivel(p)}
                         </td>
+                        {projeto && (
+                          <td className="pn-nowrap">
+                            <button
+                              className="pn-btn g sm"
+                              aria-label={`Subir o pedido ${p.numero}`}
+                              data-testid={`subir-${p.numero}`}
+                              disabled={salvandoOrdem}
+                              onClick={() => mover(p.numero, -1)}
+                            >
+                              ↑
+                            </button>{' '}
+                            <button
+                              className="pn-btn g sm"
+                              aria-label={`Descer o pedido ${p.numero}`}
+                              data-testid={`descer-${p.numero}`}
+                              disabled={salvandoOrdem}
+                              onClick={() => mover(p.numero, 1)}
+                            >
+                              ↓
+                            </button>
+                          </td>
+                        )}
                       </tr>
                     ))}
                   </tbody>
