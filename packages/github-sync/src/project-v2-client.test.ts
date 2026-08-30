@@ -639,16 +639,30 @@ test('criarCampoDeIteracao manda nome, duração e início, e devolve o campo cr
   })
 
   expect(campo).toEqual({ fieldId: 'F_novo', name: 'Sprint' })
+  // `iterations` é OBRIGATÓRIO, e a falta dele passou despercebida por aqui.
+  //
+  // Este teste já existiu afirmando só as quatro primeiras variáveis, e passava
+  // verde — contra um fake que aceita qualquer coisa. A API real recusa:
+  // "Argument 'iterations' on InputObject
+  // 'ProjectV2IterationFieldConfigurationInput' is required". Ou seja, a
+  // mutation NUNCA funcionou em produção e o verde daqui dizia o contrário.
+  // Introspection contra a API de produção (30/08/2026): os três campos são
+  // NON_NULL — startDate, duration e iterations.
   expect(calls[0]?.variables).toEqual({
     projectId: 'PVT_1',
     name: 'Sprint',
     duration: 3,
     startDate: '2026-08-29',
+    iterations: [{ startDate: '2026-08-29', duration: 3, title: 'Sprint 1' }],
   })
   // Sem dataType ITERATION o GitHub cria um campo de texto chamado "Sprint" —
   // parece certo na tela e o Roadmap continua sem eixo de tempo.
   expect(calls[0]?.query).toContain('dataType: ITERATION')
-  expect(calls[0]?.query).toContain('iterationConfiguration: { duration: $duration')
+  // Os três argumentos da configuração, cada um conferido por si: assim, tirar
+  // qualquer um deles reprova aqui em vez de só na chamada real.
+  expect(calls[0]?.query).toContain('duration: $duration')
+  expect(calls[0]?.query).toContain('startDate: $startDate')
+  expect(calls[0]?.query).toContain('iterations: $iterations')
 })
 
 test('configurarCampoDeIteracao ATUALIZA o campo existente, sem recriar', async () => {

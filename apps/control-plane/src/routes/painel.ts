@@ -13,9 +13,13 @@ import {
   sprintCorrente,
   hojeNoFuso,
   CAMPO_DE_SPRINT,
+  DIAS_DE_SPRINT_PADRAO,
+  MINIMO_DE_DIAS_DA_SPRINT,
+  MAXIMO_DE_DIAS_DA_SPRINT,
   type Iteracao,
 } from '../services/garantir-sprint.js'
 import { decidirQuadro } from '../services/resolver-quadro.js'
+import { lerCotasDosMotores, type MotorCota } from '../services/cotas-dos-motores.js'
 import {
   lerRepositorios,
   LeituraIndisponivelError,
@@ -48,23 +52,23 @@ const RATE_LIMIT_POLLING = { config: { rateLimit: { max: 60, timeWindow: '1 minu
 const NAO_LOGADO = { error: 'UNAUTHORIZED: session required' }
 const LIMITE_FRIO_SEGUNDOS = 3600
 
-/** Cota de um motor (espelha o tipo do front — painel-tipos.ts). */
-export interface MotorCota {
-  id: string
-  nome: string
-  usado: number
-  /** null quando o motor não reporta teto. */
-  limite: number | null
-  janela: string
-  limite_conhecido: boolean
-}
-
 /**
  * Injeções opcionais (testes). Em produção os defaults são usados.
- * `lerCotas`: leitura das cotas dos motores do dono. Best-effort — sem uma
- * store de consumo persistida (há tarefa aberta no quadro: "a cota dos motores
- * não é gravada em lugar nenhum"), o default devolve `[]` e a tela degrada
- * com honestidade ("Nenhum motor conectado ainda."). Nunca inventa um `usado`.
+ *
+ * `lerCotas`: leitura das cotas dos motores do dono. O default LÊ O BANCO —
+ * e isso é uma correção de 30/08/2026, não um detalhe. Antes o default era
+ * `async () => []`, com o comentário (então verdadeiro) de que a cota não era
+ * gravada em lugar nenhum. O PR #381 passou a gravá-la pelo relógio e ninguém
+ * voltou aqui: como `painelRoutes(app)` é registrada sem opts, a rota caía no
+ * default e o painel dizia "Nenhum motor conectado ainda." com o banco cheio
+ * (antigravity 56%, claude 27%, lidos no mesmo dia).
+ *
+ * A lição, que vale além deste arquivo: um default que devolve VAZIO é tão
+ * perigoso quanto um que devolve credencial crua — vazio é um estado plausível,
+ * então a mentira passa por comportamento normal. É a mesma família do
+ * `options.fetchImpl ?? fetch` que o bloco 4 trocou por `fetchSemPermissao()`.
+ * Aqui o conserto é o simétrico: o default faz a COISA CERTA, e quem quiser
+ * outro comportamento injeta de propósito.
  */
 export interface PainelRoutesOpts {
   lerCotas?: (ownerId: string) => Promise<MotorCota[]>
@@ -120,7 +124,7 @@ export const painelRoutes = async (
   app: FastifyInstance,
   opts: PainelRoutesOpts = {}
 ): Promise<void> => {
-  const lerCotas = opts.lerCotas ?? (async () => [] as MotorCota[])
+  const lerCotas = opts.lerCotas ?? ((ownerId: string) => lerCotasDosMotores(app.prisma, ownerId))
   const answer =
     opts.answerImpl ??
     ((id: string, valor: string, via: 'telegram' | 'panel') => {
@@ -365,21 +369,29 @@ export const painelRoutes = async (
         progresso: null,
       }))
 
+      // Três estados, não dois. "Não consegui ler a cota" e "este dono não tem
+      // motor nenhum" davam a MESMA tela vazia, e é assim que uma falha vira
+      // silêncio: o dono lê "nenhum motor conectado" e acredita. `cotaLida`
+      // separa os dois — lista vazia com `cotaLida: true` é um fato; com
+      // `false`, é o produto dizendo que não sabe, e por quê.
       let motores: MotorCota[] = []
+      let cotaLida = true
+      let motivoDaCota: string | null = null
       try {
         motores = await lerCotas(ownerId)
       } catch (err) {
-        // Best-effort: sem cota, a tela mostra "Nenhum motor conectado ainda."
-        // em vez de um número inventado. Loga a causa, nunca o conteúdo.
+        cotaLida = false
+        motivoDaCota = 'não consegui ler a cota dos seus motores agora'
+        // Loga a causa técnica; a resposta leva só a frase de negócio.
         app.log.warn(
-          `[painel/agentes] leitura de cota falhou (best-effort): ${
+          `[painel/agentes] leitura de cota falhou: ${
             err instanceof Error ? err.message : String(err)
           }`
         )
         motores = []
       }
 
-      return reply.send({ atuando, motores })
+      return reply.send({ atuando, motores, cotaLida, motivoDaCota })
     }
   )
 
@@ -859,6 +871,83 @@ export const painelRoutes = async (
         app.log.error(err, `[painel/ordem] não consegui reordenar ${row.wingId}`)
         return reply.code(502).send({ error: 'Não consegui falar com o GitHub agora.' })
       }
+    }
+  )
+
+  // GET /api/v1/painel/sprint-dias — de quantos dias é a sprint deste projeto.
+  //
+  // Decisão do dono (30/08/2026): "nosso projeto de desenvolvimento 3 dias mas
+  // pra clientes no painel eles decidem de quantos dias". Enquanto a duração era
+  // papel, uma constante servia. A partir do momento em que o produto CRIA o
+  // campo de iteração no quadro do cliente, o número passa a valer no quadro
+  // DELE — e aí não é mais decisão nossa.
+  app.get<{ Querystring: { projeto?: string } }>(
+    '/api/v1/painel/sprint-dias',
+    RATE_LIMIT_POLLING,
+    async (request, reply) => {
+      if (!request.user) return reply.code(401).send(NAO_LOGADO)
+      const ownerId = await resolveOwnerId(app.prisma, request.user)
+      const projeto = request.query.projeto?.trim()
+      if (!projeto) return reply.code(400).send({ error: 'Informe o projeto.' })
+
+      const row = await app.prisma.project.findFirst({
+        where: { name: projeto, userId: ownerId, isActive: true },
+        select: { sprintDias: true, sprintDiasEscolhidoEm: true },
+      })
+      if (!row) return reply.code(404).send({ error: 'Projeto não encontrado.' })
+
+      return reply.send({
+        dias: row.sprintDias ?? DIAS_DE_SPRINT_PADRAO,
+        // Separa "ele escolheu isto" de "está no padrão porque ninguém
+        // escolheu" — mesma distinção da régua e da autonomia.
+        escolhido: row.sprintDiasEscolhidoEm !== null,
+        padrao: DIAS_DE_SPRINT_PADRAO,
+        minimo: MINIMO_DE_DIAS_DA_SPRINT,
+        maximo: MAXIMO_DE_DIAS_DA_SPRINT,
+      })
+    }
+  )
+
+  // POST /api/v1/painel/sprint-dias — o cliente escolhe a duração.
+  app.post<{ Body: { projeto?: string; dias?: unknown } }>(
+    '/api/v1/painel/sprint-dias',
+    { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      if (!request.user) return reply.code(401).send(NAO_LOGADO)
+      const projeto = request.body?.projeto?.trim()
+      if (!projeto) return reply.code(400).send({ error: 'Informe o projeto.' })
+
+      // Validar ANTES de tocar no banco. Uma duração de 0 dias cria um ciclo
+      // que nunca fecha e uma de 3650 transforma "sprint" num nome bonito para
+      // "sem prazo": as duas quebram a promessa do quadro em vez de
+      // configurá-lo. Inteiro, porque o GitHub conta iteração em dias.
+      const dias = request.body?.dias
+      if (
+        typeof dias !== 'number' ||
+        !Number.isInteger(dias) ||
+        dias < MINIMO_DE_DIAS_DA_SPRINT ||
+        dias > MAXIMO_DE_DIAS_DA_SPRINT
+      ) {
+        return reply.code(400).send({
+          error: `A sprint precisa ter de ${MINIMO_DE_DIAS_DA_SPRINT} a ${MAXIMO_DE_DIAS_DA_SPRINT} dias.`,
+        })
+      }
+
+      const ownerId = await resolveOwnerId(app.prisma, request.user)
+      const row = await app.prisma.project.findFirst({
+        where: { name: projeto, userId: ownerId, isActive: true },
+        select: { id: true },
+      })
+      // Inexistente e "de outro dono" devolvem a MESMA frase — mesmo
+      // anti-vazamento das outras rotas do painel.
+      if (!row) return reply.code(404).send({ error: 'Projeto não encontrado.' })
+
+      await app.prisma.project.update({
+        where: { id: row.id },
+        data: { sprintDias: dias, sprintDiasEscolhidoEm: new Date() },
+      })
+
+      return reply.send({ dias, escolhido: true })
     }
   )
 

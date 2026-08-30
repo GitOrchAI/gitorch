@@ -333,6 +333,14 @@ model Project {
   reguaDePronto      Json?     @map("regua_de_pronto")
   reguaEscolhidaEm   DateTime? @map("regua_escolhida_em")
 
+  // Duração da sprint DESTE cliente, em dias. NULO = ninguém escolheu e vale
+  // DIAS_DE_SPRINT_PADRAO (3). Decisão do dono (30/08): "nosso projeto de
+  // desenvolvimento 3 dias mas pra clientes no painel eles decidem de quantos
+  // dias" — o número deixa de ser constante nossa no instante em que o produto
+  // passa a CRIAR o campo de iteração no quadro do cliente.
+  sprintDias            Int?      @map("sprint_dias")
+  sprintDiasEscolhidoEm DateTime? @map("sprint_dias_escolhido_em")
+
   // D50: o aviso de publicação do CD do cliente.
   //
   // `deployNoticeInstalledAt` é a PROVA de que a chamada existe e funciona —

@@ -1,9 +1,15 @@
 'use client'
 // Custos e limites: você usa a sua própria assinatura de cada ferramenta. O
-// que o painel controla é quanto de cada cota já foi gasto. A cota dos motores
-// é AO VIVO (best-effort — sem store de consumo persistida a tela degrada com
-// honestidade); os KPIs de topo, o esforço por projeto e o plano ficam de
-// exemplo (leva 2). Portado de TelaCustos.jsx.
+// que o painel controla é quanto de cada cota já foi gasto.
+//
+// A cota dos motores é AO VIVO, lida de engine_connections pelo relógio. Até
+// 30/08/2026 esta tela dizia "Nenhum motor conectado ainda." com o banco
+// cheio: a rota caía num default que devolvia lista vazia, e vazio é um estado
+// plausível demais para alguém desconfiar. Agora a resposta separa "não há
+// motor" de "não consegui ler", e a tela mostra os dois de forma diferente.
+//
+// Os KPIs de topo, o esforço por projeto e o plano seguem de exemplo (leva 2).
+// Portado de TelaCustos.jsx.
 import { useSyncExternalStore } from 'react'
 import { DEMO } from './painel-demo'
 import { ROTAS } from './painel-api'
@@ -26,6 +32,105 @@ interface CicloView {
   falhasDeMerge: Distribuicao
   horasAteFechar: Distribuicao | null
   naoMedido: string[]
+}
+
+/** Quando a cota foi lida, em linguagem de gente. */
+function quandoFoiLido(iso: string | null): string {
+  if (!iso) return 'nunca foi lida'
+  const min = Math.round((Date.now() - new Date(iso).getTime()) / 60000)
+  if (min < 2) return 'lida agora'
+  if (min < 60) return `lida há ${min} min`
+  const h = Math.round(min / 60)
+  if (h < 24) return `lida há ${h} h`
+  return `lida há ${Math.round(h / 24)} d`
+}
+
+/**
+ * Um motor, com o estado que foi MEDIDO.
+ *
+ * Duas regras que este card existe para cumprir:
+ * 1. `null` não vira 0. "Não sei quanto foi usado" exibido como 0% faria o dono
+ *    achar que tem a cota inteira — o oposto da verdade.
+ * 2. Motor caído aparece dito. O assistente já mostrou "Codex Conectado" com o
+ *    motor morto havia uma hora, e quem descobriu foi o dono, não o produto.
+ */
+function MotorCard({ m }: { m: MotorCota }) {
+  const semNumero = m.sessao == null && m.semana == null
+  // TRÊS estados, não dois. Um motor com a conexão revogada, expirada ou com
+  // erro cai em `nao_conectado` — e a versão anterior desta tela o desenhava
+  // igual a um motor saudável que só não mede consumo. Era o "Codex Conectado
+  // com o motor morto" de novo, com outra roupa.
+  const fora = m.precisaReligar || m.estado === 'nao_conectado'
+  const rotulo = m.precisaReligar ? 'precisa religar' : 'não está conectado'
+  const explicacao = m.precisaReligar
+    ? 'a credencial venceu e a renovação automática não deu conta'
+    : 'este motor não está conectado agora'
+
+  return (
+    <div>
+      <div className="pn-brow">
+        <b>{m.nome}</b>
+        {fora ? (
+          // `--gl-sev` é o token de severidade do painel. A versão anterior
+          // usava `var(--gl-bad, #A32C22)`, e `--gl-bad` não existe em lugar
+          // nenhum: caía sempre no literal, fixo nos dois temas, com contraste
+          // insuficiente no escuro — o aviso mais importante da tela era o
+          // texto menos legível dela.
+          <span className="num" style={{ color: 'var(--gl-sev)' }}>
+            {rotulo}
+          </span>
+        ) : null}
+      </div>
+
+      {fora ? (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize: 12.5, color: 'var(--gl-faint)' }}>{explicacao}</div>
+          {/*
+            O caminho para religar SEM tocar em SSH.
+
+            Quem terminou o assistente ficava sem saída: o único lugar que
+            conecta motor é o passo do assistente, e o painel não falava de
+            motor em lugar nenhum. O dono descobria pela missão que morria.
+
+            O rótulo diz "no assistente" porque é isso que acontece — o botão
+            leva à tela que já roda o login dentro do container. Prometer a ação
+            e entregar uma navegação seria a mesma família de mentira que esta
+            leva veio consertar.
+          */}
+          <a
+            href="/setup"
+            className="pn-btn a sm"
+            style={{ display: 'inline-block', marginTop: 10 }}
+          >
+            Religar no assistente
+          </a>
+        </div>
+      ) : semNumero ? (
+        <div style={{ marginTop: 8, fontSize: 12.5, color: 'var(--gl-faint)' }}>
+          {/*
+            "não consegui ler" e não "não reporta consumo": são fatos
+            diferentes, com causas e ações opostas. O tipo diz `null = não sei`,
+            e traduzir isso numa afirmação sobre a CAPACIDADE do motor seria
+            afirmar o que o produto não sabe.
+          */}
+          não consegui ler a cota deste motor — {quandoFoiLido(m.lidoEm)}
+        </div>
+      ) : (
+        <div style={{ marginTop: 8, display: 'grid', gap: 10 }}>
+          {/* O rótulo carrega o "%" — a barra sozinha desenhava "27 / 100", que
+              o dono lê como "27 de 100 coisas". O denominador 100 é nosso, não
+              de um teto que algum motor tenha informado. */}
+          {m.sessao != null ? (
+            <Barra usado={m.sessao} limite={100} nome={`sessão · ${m.sessao}% usado`} />
+          ) : null}
+          {m.semana != null ? (
+            <Barra usado={m.semana} limite={100} nome={`semana · ${m.semana}% usado`} />
+          ) : null}
+          <div style={{ fontSize: 12.5, color: 'var(--gl-faint)' }}>{quandoFoiLido(m.lidoEm)}</div>
+        </div>
+      )}
+    </div>
+  )
 }
 
 /** Um número medido, com a mediana em destaque e a cauda ao lado. */
@@ -117,10 +222,27 @@ function ONossoCiclo() {
   )
 }
 
+interface CotaView {
+  motores: MotorCota[]
+  cotaLida: boolean
+  motivoDaCota: string | null
+}
+
 export function TelaCustos() {
-  const motores = usePainelBusca<MotorCota[], { motores?: MotorCota[] }>(ROTAS.agentes, {
-    mapear: (b) => b.motores ?? [],
-    vazio: (d) => d.length === 0,
+  const motores = usePainelBusca<
+    CotaView,
+    { motores?: MotorCota[]; cotaLida?: boolean; motivoDaCota?: string | null }
+  >(ROTAS.agentes, {
+    mapear: (b) => ({
+      motores: b.motores ?? [],
+      // Ausente = resposta antiga: trata como não-lida em vez de afirmar que
+      // leu. Nunca supor que a leitura aconteceu.
+      cotaLida: b.cotaLida ?? false,
+      motivoDaCota: b.motivoDaCota ?? null,
+    }),
+    // "Vazio" só quando o produto REALMENTE leu e não achou motor. Se não
+    // conseguiu ler, isso não é vazio — é não saber, e tem tela própria.
+    vazio: (d) => d.cotaLida && d.motores.length === 0,
   })
 
   return (
@@ -143,39 +265,34 @@ export function TelaCustos() {
         <Kpi l="Repositórios ativos" v={3} n="do teto de 5 do seu plano" />
       </div>
 
-      <Card
-        titulo="Cota de cada motor"
-        sub={
-          <>
-            últimas 24 horas
-            <SeloDemo mostrar={!!motores.demo} />
-          </>
-        }
-      >
-        <Estados
-          r={motores}
-          o_que="as cotas dos motores"
-          vazio="Nenhum motor com cota conhecida ainda. Assim que um motor reportar consumo, aparece aqui."
-        >
-          {(d) => (
-            <div className="pn-3">
-              {d.map((m) =>
-                m.limite == null ? (
-                  <div key={m.nome}>
-                    <div className="pn-brow">
-                      <b>{m.nome}</b>
-                      <span className="num">{m.usado}</span>
-                    </div>
-                    <div style={{ marginTop: 8, fontSize: 12.5, color: 'var(--gl-faint)' }}>
-                      sem teto informado por este motor
-                    </div>
-                  </div>
-                ) : (
-                  <Barra key={m.nome} usado={m.usado} limite={m.limite} nome={m.nome} />
-                )
-              )}
-            </div>
-          )}
+      <Card titulo="Cota de cada motor" sub="quanto já foi usado da sessão de agora e da semana">
+        <Estados r={motores} o_que="as cotas dos motores" vazio="Nenhum motor conectado ainda.">
+          {(d) =>
+            !d.cotaLida ? (
+              // Não é a mesma coisa que "não há motor", e não pode parecer.
+              // E tem saída: a regra escrita do painel é que "não consegui
+              // saber" oferece botão, ao contrário de "não tem nada".
+              <div style={{ fontSize: 13, color: 'var(--gl-muted)' }}>
+                <p style={{ margin: 0 }}>
+                  {d.motivoDaCota ?? 'Não consegui ler a cota dos seus motores agora'}. Prefiro
+                  dizer que não sei a mostrar um número que pode estar errado.
+                </p>
+                <button
+                  className="pn-btn a sm"
+                  style={{ marginTop: 10 }}
+                  onClick={() => motores.recarregar()}
+                >
+                  Tentar de novo
+                </button>
+              </div>
+            ) : (
+              <div className="pn-3">
+                {d.motores.map((m) => (
+                  <MotorCard key={m.id} m={m} />
+                ))}
+              </div>
+            )
+          }
         </Estados>
       </Card>
 

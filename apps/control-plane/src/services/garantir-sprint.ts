@@ -13,8 +13,23 @@ import { CampoDeIteracaoAusenteError } from '@gitorch/github-sync'
 //   campo pronto   → NÃO TOCAR      (mexer apagaria a sprint em andamento)
 
 /** Duração padrão da sprint, em dias. Decisão do dono (29/08): trabalhamos
- *  100% com IA, então o ciclo é curto. O cliente pode mudar. */
+ *  100% com IA, então o ciclo é curto.
+ *
+ *  O cliente muda a dele pelo painel (coluna `sprint_dias` em `projects`,
+ *  decisão do dono de 30/08: "nosso projeto de desenvolvimento 3 dias mas pra
+ *  clientes no painel eles decidem de quantos dias"). Este número é o padrão
+ *  de quem nunca escolheu — nunca uma imposição. */
 export const DIAS_DE_SPRINT_PADRAO = 3
+
+/** Os limites do que é uma sprint de verdade.
+ *
+ *  Abaixo de 1 dia o ciclo nunca fecha; acima de 60, "sprint" vira um nome
+ *  bonito para "sem prazo". Os dois extremos quebram a promessa do quadro em
+ *  vez de configurá-lo, então são recusados na porta da rota E no banco
+ *  (CHECK em `projects`) — quem escrever por outro caminho encontra a mesma
+ *  regra. */
+export const MINIMO_DE_DIAS_DA_SPRINT = 1
+export const MAXIMO_DE_DIAS_DA_SPRINT = 60
 
 /** Nome do campo de iteração no quadro do cliente. */
 export const CAMPO_DE_SPRINT = 'Sprint'
@@ -112,6 +127,24 @@ export async function garantirSprintNoQuadro(
   }
 
   if (!campo) {
+    // JANELA CONHECIDA E NÃO FECHADA (dita aqui para não ser descoberta depois):
+    // entre a leitura acima e a criação abaixo existe um intervalo em que uma
+    // SEGUNDA execução para o mesmo projeto também leria "não existe" e também
+    // criaria. O resultado seriam dois campos "Sprint" no quadro do cliente, e
+    // `getIterationField` passa a enxergar só o primeiro da lista — o outro
+    // vira lixo permanente, sem detecção nem conserto automático.
+    //
+    // O que protege hoje, e até onde: a varredura roda em série dentro do tique,
+    // e `tickEmAndamento` impede dois tiques no MESMO processo. O que NÃO
+    // protege: duas instâncias do control-plane ao mesmo tempo — a trava é um
+    // booleano em memória de processo. Na prática isso significa a janela de
+    // sobreposição de um deploy/restart.
+    //
+    // O que fecharia de verdade: um lock por projeto no banco (SELECT ... FOR
+    // UPDATE) em volta deste bloco, ou idempotência pelo id do campo já gravado
+    // em vez de por nome. Não foi feito nesta rodada porque não dá para provar
+    // sem arriscar criar a duplicata no quadro real do dono — e proteção não
+    // testada é pior que janela conhecida.
     const criado = await cliente.criarCampoDeIteracao({
       projectId: args.projectId,
       fieldName: CAMPO_DE_SPRINT,

@@ -32,6 +32,11 @@ function fakePrisma(over: Record<string, any> = {}) {
     },
     agentQuestion: { findUnique: vi.fn().mockResolvedValue(null) },
     user: { findUnique: vi.fn().mockResolvedValue(null) },
+    // Dono sem motor conectado — o caso mais comum nos testes das outras
+    // rotas. Precisa existir: a rota /agentes lê a cota do banco por padrão,
+    // e um fake sem esta tabela faria a leitura estourar e a resposta dizer
+    // "não consegui ler" quando o certo é "não há motor".
+    engineConnection: { findMany: vi.fn().mockResolvedValue([]) },
     ...over,
   }
 }
@@ -156,10 +161,90 @@ describe('Rotas do painel do owner', () => {
       expect(res.statusCode).toBe(401)
     })
 
-    test('sem missão rodando → atuando vazio, motores vazio', async () => {
+    test('dono sem motor nenhum → lista vazia, mas dizendo que LEU', async () => {
+      // Este teste já existiu afirmando `{atuando: [], motores: []}` como o
+      // certo — e passava verde porque o default da rota devolvia vazio, não
+      // porque o produto tivesse lido alguma coisa. Era um teste concordando
+      // com o código em vez de com a realidade. Agora ele exige `cotaLida`.
       const res = await getAgentes()
       expect(res.statusCode).toBe(200)
-      expect(res.json()).toEqual({ atuando: [], motores: [] })
+      expect(res.json()).toEqual({
+        atuando: [],
+        motores: [],
+        cotaLida: true,
+        motivoDaCota: null,
+      })
+    })
+
+    test('os motores do banco CHEGAM na resposta (o defeito de 30/08)', async () => {
+      // O painel dizia "Nenhum motor conectado ainda." com o banco cheio:
+      // `painelRoutes(app)` era registrada sem opts e caía num default que
+      // devolvia []. Este teste confere o RESULTADO — se o default voltar a
+      // ser vazio, ele reprova.
+      await build(
+        fakePrisma({
+          ...comMissoes([]),
+          engineConnection: {
+            findMany: vi.fn().mockResolvedValue([
+              {
+                runtime: 'antigravity',
+                status: 'connected',
+                sessionPercentUsed: 0,
+                weekPercentUsed: 56,
+                // As janelas viram NO FUTURO: percentual de janela já vencida é
+                // suprimido (vale a mesma regra do assistente). Sem estas duas
+                // datas o teste afirmaria que número velho deve aparecer.
+                sessionResetsAt: new Date(Date.now() + 3 * 3600_000).toISOString(),
+                weekResetsAt: new Date(Date.now() + 72 * 3600_000).toISOString(),
+                quotaRefreshedAt: new Date('2026-08-30T17:01:29.323Z'),
+              },
+              {
+                runtime: 'codex',
+                status: 'needs_reconnect',
+                sessionPercentUsed: null,
+                sessionResetsAt: null,
+                weekPercentUsed: null,
+                weekResetsAt: null,
+                quotaRefreshedAt: null,
+              },
+            ]),
+          },
+        })
+      )
+
+      const body = getAgentes ? (await getAgentes()).json() : null
+      expect(body.cotaLida).toBe(true)
+      expect(body.motores).toHaveLength(2)
+      expect(body.motores[0]).toMatchObject({
+        id: 'antigravity',
+        nome: 'Antigravity',
+        estado: 'ligado',
+        semana: 56,
+        precisaReligar: false,
+      })
+      // O motor caído aparece DITO — o assistente já mostrou "Conectado" com
+      // o motor morto havia uma hora, e quem descobriu foi o dono.
+      expect(body.motores[1]).toMatchObject({
+        id: 'codex',
+        estado: 'precisa_religar',
+        precisaReligar: true,
+        semana: null,
+      })
+    })
+
+    test('falha ao ler cota NÃO se disfarça de "nenhum motor"', async () => {
+      // Os dois davam a mesma tela vazia. Agora a resposta separa o fato
+      // ("você não tem motor") do não-saber ("não consegui ler").
+      await build(fakePrisma(comMissoes([])), {
+        lerCotas: async () => {
+          throw new Error('banco fora do ar')
+        },
+      })
+
+      const body = (await getAgentes()).json()
+      expect(body.motores).toEqual([])
+      expect(body.cotaLida).toBe(false)
+      expect(body.motivoDaCota).toBeTruthy()
     })
 
     test('missão running → estado trabalhando e progresso SEMPRE null', async () => {
@@ -571,6 +656,101 @@ describe('Rotas do painel do owner', () => {
       for (const cfg of [null, undefined, {}, [], 'texto', { envConfig: null }]) {
         expect(resolveQuadroDoProjeto(cfg)).toBeNull()
       }
+    })
+  })
+
+  describe('a duração da sprint é do cliente', () => {
+    // Decisão do dono (30/08): "nosso projeto de desenvolvimento 3 dias mas pra
+    // clientes no painel eles decidem de quantos dias". O número deixa de ser
+    // constante nossa no instante em que o produto passa a CRIAR o campo de
+    // iteração no quadro dele.
+    const getSprintDias = (qs = '') =>
+      app.inject({ method: 'GET', url: `/api/v1/painel/sprint-dias${qs}`, headers: authHeaders })
+
+    test('sem sessão → 401', async () => {
+      const res = await app.inject({ method: 'GET', url: '/api/v1/painel/sprint-dias' })
+      expect(res.statusCode).toBe(401)
+    })
+
+    test('GET sem escolha devolve o padrão e diz que ninguém escolheu', async () => {
+      await build(
+        fakePrisma({
+          project: {
+            findFirst: vi.fn().mockResolvedValue({ sprintDias: null, sprintDiasEscolhidoEm: null }),
+          },
+        })
+      )
+      const corpo = (await getSprintDias('?projeto=gitorch')).json()
+      expect(corpo.dias).toBe(3)
+      // A mesma distinção da régua e da autonomia: a tela não pode afirmar uma
+      // decisão que não houve.
+      expect(corpo.escolhido).toBe(false)
+      expect(corpo.padrao).toBe(3)
+    })
+
+    test('GET com escolha devolve o que ele escolheu', async () => {
+      await build(
+        fakePrisma({
+          project: {
+            findFirst: vi
+              .fn()
+              .mockResolvedValue({ sprintDias: 14, sprintDiasEscolhidoEm: new Date() }),
+          },
+        })
+      )
+      const corpo = (await getSprintDias('?projeto=gitorch')).json()
+      expect(corpo.dias).toBe(14)
+      expect(corpo.escolhido).toBe(true)
+    })
+
+    test('POST grava e carimba a escolha', async () => {
+      const update = vi.fn().mockResolvedValue({})
+      await build(
+        fakePrisma({ project: { findFirst: vi.fn().mockResolvedValue({ id: 'p1' }), update } })
+      )
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/painel/sprint-dias',
+        headers: authHeaders,
+        payload: { projeto: 'gitorch', dias: 7 },
+      })
+      expect(res.statusCode).toBe(200)
+      const dados = update.mock.calls[0]![0].data
+      expect(dados.sprintDias).toBe(7)
+      expect(dados.sprintDiasEscolhidoEm).toBeInstanceOf(Date)
+    })
+
+    test('recusa duração que quebraria o quadro em vez de configurá-lo', async () => {
+      // 0 dias cria um ciclo que nunca fecha; 3650 torna "sprint" um nome
+      // bonito para "sem prazo". As duas quebram a promessa do quadro.
+      const update = vi.fn().mockResolvedValue({})
+      await build(
+        fakePrisma({ project: { findFirst: vi.fn().mockResolvedValue({ id: 'p1' }), update } })
+      )
+      for (const dias of [0, -1, 61, 3650, 2.5]) {
+        const res = await app.inject({
+          method: 'POST',
+          url: '/api/v1/painel/sprint-dias',
+          headers: authHeaders,
+          payload: { projeto: 'gitorch', dias },
+        })
+        expect(res.statusCode, `dias=${dias} devia ser recusado`).toBe(400)
+      }
+      expect(update).not.toHaveBeenCalled()
+    })
+
+    test('projeto de outro dono devolve a MESMA frase de inexistente', async () => {
+      // Mesmo anti-vazamento das outras rotas do painel: "não encontrado" e
+      // "não é seu" não podem ser distinguíveis de fora.
+      await build(fakePrisma({ project: { findFirst: vi.fn().mockResolvedValue(null) } }))
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/painel/sprint-dias',
+        headers: authHeaders,
+        payload: { projeto: 'de-outro', dias: 7 },
+      })
+      expect(res.statusCode).toBe(404)
+      expect(res.json().error).toBe('Projeto não encontrado.')
     })
   })
 

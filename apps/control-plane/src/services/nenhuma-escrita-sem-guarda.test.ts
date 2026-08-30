@@ -151,4 +151,150 @@ describe('nenhuma escrita no GitHub sai por fora da guarda', () => {
       expect(motivo.length, `${arquivo} está na lista sem motivo`).toBeGreaterThan(20)
     }
   })
+
+  /**
+   * O OUTRO lado do fail-closed — e o que ele custou.
+   *
+   * As varreduras acima cuidam de escrita SEM guarda. Este cuida do inverso: o
+   * relógio chamando um serviço guardado e esquecendo de entregar o nível do
+   * projeto. Aí o `?? fetchSemPermissao()` faz exatamente o que promete, cai no
+   * nível mais restrito, e o produto para de trabalhar em silêncio.
+   *
+   * Não é hipótese. Medido em produção em 30/08/2026: o Scrum Master saiu de 82
+   * missões concluídas e zero falhas (29/08) para 5 falhas e nenhuma entrega,
+   * todas com "EscritaNaoAutorizadaError: Não posso organizar o quadro" — com os
+   * dois projetos em `cuidar`. `runSmDelegation` e `runSmWatchdog` eram chamados
+   * sem `fetchImpl`, enquanto o PO, poucas linhas acima, já usava
+   * `fetchDoQuadro(project)`.
+   *
+   * Um fail-closed que ninguém vê falhar é um interruptor de desligar o produto.
+   */
+  it('quem chama serviço guardado no relógio entrega o nível do projeto', () => {
+    const servicos = readdirSync(join(RAIZ, 'services'))
+      .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'))
+      .filter((f) =>
+        readFileSync(join(RAIZ, 'services', f), 'utf8').includes('?? fetchSemPermissao()')
+      )
+
+    // Só as funções que ACEITAM `fetchImpl`, e não toda função exportada do
+    // módulo. A diferença importa: `runDuvidaTecnicaViaRa` recebe `repository`
+    // e não escreve nada no GitHub — ali o repositório é contexto para o
+    // prompt do agente. Cobrar dela um fetch com permissão seria um alarme
+    // falso permanente, e alarme falso permanente é como se aprende a ignorar
+    // o vermelho.
+    const guardados = new Set<string>()
+    for (const f of servicos) {
+      const src = readFileSync(join(RAIZ, 'services', f), 'utf8')
+
+      // Os tipos de opções que têm `fetchImpl` — é o que marca quem escreve.
+      //
+      // Lido com contagem de chaves, não com regex preguiçoso. A versão por
+      // regex (`\{([\s\S]*?)\n\}`) fechava no PRIMEIRO `\n}` da coluna zero,
+      // que numa interface com objeto aninhado é o fecha-chaves errado: o match
+      // começava no tipo anterior e engolia a interface seguinte inteira.
+      //
+      // E o `[^{]*` antes da chave é limitado à MESMA LINHA (`[^{\n]*`): um
+      // `type X = 'a' | 'b'` não tem chave nenhuma, e sem a trava de linha o
+      // match saía procurando a próxima `{` do arquivo — a da interface
+      // SEGUINTE —, roubava o nome errado e deixava a interface de verdade
+      // fora da lista. Foi assim que este detector ficou cego para o RA.
+      const tiposComFetch = new Set<string>()
+      for (const m of src.matchAll(/(?:export\s+)?(?:interface|type)\s+(\w+)[^{\n]*\{/g)) {
+        const nome = m[1]
+        if (!nome) continue
+        let i = (m.index ?? 0) + m[0].length
+        let nivel = 1
+        while (i < src.length && nivel > 0) {
+          if (src[i] === '{') nivel++
+          else if (src[i] === '}') nivel--
+          i++
+        }
+        if (/\bfetchImpl\??:/.test(src.slice((m.index ?? 0) + m[0].length, i))) {
+          tiposComFetch.add(nome)
+        }
+      }
+
+      // `export function NOME(` e também `export const NOME = async (` —
+      // metade dos serviços deste projeto usa a segunda forma, e a versão
+      // anterior deste teste só via a primeira.
+      const assinaturas = [
+        ...src.matchAll(/export\s+(?:async\s+)?function\s+(\w+)\s*\(([\s\S]*?)\)\s*:/g),
+        ...src.matchAll(/export\s+const\s+(\w+)\s*=\s*(?:async\s*)?\(([\s\S]*?)\)\s*(?::|=>)/g),
+      ]
+      for (const m of assinaturas) {
+        const nome = m[1]
+        const params = m[2] ?? ''
+        if (!nome) continue
+        const aceitaFetch =
+          /\bfetchImpl\??:/.test(params) || [...tiposComFetch].some((t) => params.includes(t))
+        if (aceitaFetch) guardados.add(nome)
+      }
+    }
+
+    // O DETECTOR PRECISA SER VIGIADO TAMBÉM.
+    //
+    // A primeira versão deste teste passava verde sem enxergar NENHUMA das
+    // funções cujo esquecimento parou a esteira em 30/08: o regex que lê os
+    // tipos casava em posição errada e engolia a interface certa. Um detector
+    // que não detecta é pior que detector nenhum — dá a sensação de rede sem
+    // a rede.
+    //
+    // Esta lista é a prova de vida dele. Se um dia o detector deixar de
+    // enxergar qualquer uma destas, o vermelho aparece aqui, e não em produção.
+    const TEM_QUE_VIGIAR = [
+      'runSmDelegation',
+      'runSmWatchdog',
+      'runRaMissionViaRails',
+      'runPoMissionViaRails',
+      'runQaMissionViaRails',
+    ]
+    const cegoPara = TEM_QUE_VIGIAR.filter((n) => !guardados.has(n))
+    expect(
+      cegoPara,
+      [
+        'O detector parou de enxergar funções que ele TEM que vigiar.',
+        '',
+        'Estas são as que caíram no default fail-closed em 30/08 e pararam a',
+        'esteira. Se o detector não as vê, ele não impede a repetição — que é',
+        'a única razão de ele existir.',
+        '',
+        'Cegas:',
+        ...cegoPara.map((x) => `  ${x}`),
+      ].join('\n')
+    ).toEqual([])
+
+    const scheduler = readFileSync(join(RAIZ, 'plugins', 'scheduler.ts'), 'utf8')
+    const semNivel: string[] = []
+
+    for (const nome of guardados) {
+      // Cada chamada `nome({ ... })` do relógio; o corpo vai até o fecha-chaves
+      // no mesmo recuo da abertura, que é como este arquivo é formatado.
+      const re = new RegExp(`\\b${nome}\\(\\{\\n([\\s\\S]*?)\\n(\\s*)\\}\\)`, 'g')
+      for (const m of scheduler.matchAll(re)) {
+        const corpo = m[1] ?? ''
+        // Só cobra de quem escreve em repositório de CLIENTE: uma chamada que
+        // não nomeia repositório nenhum não tem nível para entregar.
+        if (!/repository:/.test(corpo)) continue
+        if (!/fetchImpl:/.test(corpo)) {
+          semNivel.push(`${nome}() — chamada com \`repository:\` e sem \`fetchImpl:\``)
+        }
+      }
+    }
+
+    expect(
+      semNivel,
+      [
+        'Serviço guardado chamado sem o nível de autonomia do projeto.',
+        '',
+        'O default é `?? fetchSemPermissao()`: quem não recebe o nível cai no',
+        'mais restrito e RECUSA toda escrita — o produto para de trabalhar sem',
+        'ninguém perceber. Foi assim que a esteira parou em 30/08/2026.',
+        '',
+        'Passe `fetchImpl: fetchDoQuadro(project)`, como o PO já faz.',
+        '',
+        'Encontrados:',
+        ...semNivel.map((x) => `  ${x}`),
+      ].join('\n')
+    ).toEqual([])
+  })
 })

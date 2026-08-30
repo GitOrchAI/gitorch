@@ -53,6 +53,10 @@ const AGENTES_DEMO: AgentesPayload = {
     progresso: a.progresso,
   })),
   motores: [],
+  // Exemplo não finge que leu: sem isto, a tela de exemplo diria "nenhum
+  // motor conectado" com a mesma cara de um dado real.
+  cotaLida: false,
+  motivoDaCota: null,
 }
 
 interface MissoesStats {

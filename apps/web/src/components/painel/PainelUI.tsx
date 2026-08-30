@@ -82,7 +82,12 @@ export function Barra({
   nome: ReactNode
   nota?: ReactNode
 }) {
-  const pct = Math.min(Math.round((usado / limite) * 100), 100)
+  // Trava o piso além do teto. Só o teto estava travado, e um percentual
+  // negativo (que um leitor de cota torto pode gravar) virava `width: -5%` —
+  // CSS inválido, declaração descartada, e o bloco sem largura ocupa 100% do
+  // trilho. O pior modo de falha possível: número sem sentido virando a
+  // afirmação mais alarmante da tela ("cota esgotada").
+  const pct = Math.min(Math.max(Math.round((usado / limite) * 100), 0), 100)
   const tone = pct >= 90 ? 'b' : pct >= 75 ? 'w' : ''
   return (
     <div>
