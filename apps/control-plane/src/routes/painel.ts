@@ -673,7 +673,7 @@ export const painelRoutes = async (
   // É a PRIMEIRA rota do painel que ESCREVE no repositório do cliente, e veio
   // por último de propósito. Passa pela guarda de autonomia antes de mover
   // qualquer coisa, e registra o que fez para ele poder ver depois.
-  app.post<{ Body: { projeto?: string; pedidos?: Array<{ pedido?: number; itemId?: string }> } }>(
+  app.post<{ Body: { projeto?: string; pedidos?: number[] } }>(
     '/api/v1/painel/ordem',
     { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
     async (request, reply) => {
@@ -682,14 +682,14 @@ export const painelRoutes = async (
       const projeto = request.body?.projeto?.trim()
       if (!projeto) return reply.code(400).send({ error: 'Informe o projeto.' })
 
-      const brutos = request.body?.pedidos ?? []
-      const pedidos = brutos
-        .filter(
-          (p): p is { pedido: number; itemId: string } =>
-            typeof p?.pedido === 'number' && typeof p?.itemId === 'string' && p.itemId.length > 0
-        )
-        .map((p) => ({ pedido: p.pedido, itemId: p.itemId }))
-      if (pedidos.length === 0) {
+      // O painel manda NÚMEROS de pedido — o que o dono reconhece —, nunca ids
+      // internos do quadro. A tradução acontece aqui embaixo; expor id de
+      // quadro na tela seria vazar encanamento para quem só quer arrastar um
+      // card.
+      const numeros = (request.body?.pedidos ?? []).filter(
+        (n): n is number => typeof n === 'number' && Number.isInteger(n)
+      )
+      if (numeros.length === 0) {
         return reply.code(400).send({ error: 'Informe os pedidos na ordem que você quer.' })
       }
 
@@ -725,16 +725,31 @@ export const painelRoutes = async (
       if (!token) return reply.code(503).send({ error: 'ORDEM_INDISPONIVEL' })
 
       try {
+        const cliente = new ProjectV2Client({
+          token,
+          fetchImpl: fetchDoRepositorio({ nivel: () => row.autonomia }),
+        })
+
+        // Traduz número de pedido para item do quadro. Um número que NÃO está
+        // no quadro é descartado com aviso, e não inventa item: mover algo que
+        // não existe ali daria erro do GitHub no meio da fila, deixando a
+        // ordem pela metade.
+        const itens = await cliente.listarItensDoQuadro(quadroId)
+        const porNumero = new Map(itens.map((i) => [i.pedido, i.itemId]))
+        const pedidos = numeros
+          .filter((n) => porNumero.has(n))
+          .map((n) => ({ pedido: n, itemId: porNumero.get(n)! }))
+        const foraDoQuadro = numeros.filter((n) => !porNumero.has(n))
+
+        if (pedidos.length === 0) {
+          return reply
+            .code(409)
+            .send({ error: 'Nenhum desses pedidos está no seu quadro para ser reordenado.' })
+        }
+
         const registro = await aplicarOrdemDosPedidos(
           {
-            quadro: new ProjectV2Client({
-              token,
-              // O fetch com a autonomia DESTE projeto: a guarda de saída de
-              // rede é a última linha, mesmo com a permissão já conferida
-              // acima. Duas conferências não é exagero — é a diferença entre
-              // uma guarda e um comentário.
-              fetchImpl: fetchDoRepositorio({ nivel: () => row.autonomia }),
-            }),
+            quadro: cliente,
             nivel: () => row.autonomia,
             registrar: async (r) => {
               await app.prisma.event.create({
@@ -748,7 +763,9 @@ export const painelRoutes = async (
           },
           { projectId: quadroId, pedidos }
         )
-        return reply.send(registro)
+        // O que ficou de fora vai DITO na resposta. Aplicar cinco de sete e
+        // responder "pronto" faria o dono achar que a ordem inteira valeu.
+        return reply.send({ ...registro, foraDoQuadro })
       } catch (err) {
         // A recusa da autonomia NÃO é erro do produto: é a escolha do cliente
         // valendo. Vira 403 com o motivo que a própria regra escreveu, para a

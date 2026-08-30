@@ -701,6 +701,50 @@ export class ProjectV2Client {
   }
 
   /**
+   * Os itens do quadro, com o número do pedido que cada um representa.
+   *
+   * Existe porque o painel fala em "pedido #36" — o número que o dono
+   * reconhece — e o GitHub move itens por um id interno que ele nunca viu.
+   * A tradução acontece aqui, e não na tela: expor id de quadro no painel
+   * seria vazar encanamento para quem só quer arrastar um card.
+   */
+  async listarItensDoQuadro(projectId: string): Promise<Array<{ itemId: string; pedido: number }>> {
+    const response = await this.request<{
+      node: {
+        items: {
+          nodes: Array<{ id: string; content?: { number?: number } | null }>
+        }
+      }
+    }>(
+      {
+        query: `
+          query ItensDoQuadro($projectId: ID!) {
+            node(id: $projectId) {
+              ... on ProjectV2 {
+                items(first: 100) {
+                  nodes {
+                    id
+                    content { ... on Issue { number } ... on PullRequest { number } }
+                  }
+                }
+              }
+            }
+          }
+        `,
+        variables: { projectId },
+      },
+      this.token
+    )
+
+    return (unwrap(response).node?.items?.nodes ?? [])
+      .filter(
+        (n): n is { id: string; content: { number: number } } =>
+          typeof n?.content?.number === 'number'
+      )
+      .map((n) => ({ itemId: n.id, pedido: n.content.number }))
+  }
+
+  /**
    * Move um item para depois de outro no quadro — a ORDEM que o cliente vê.
    *
    * É por aqui que o ajuste feito no painel chega ao GitHub: o dono arrasta o

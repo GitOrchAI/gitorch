@@ -482,10 +482,8 @@ describe('Rotas do painel do owner', () => {
       autonomia: 'cuidar',
       runtimeConfig: { githubBoardId: 'PVT_1' },
     }
-    const PEDIDOS = [
-      { pedido: 36, itemId: 'IT_36' },
-      { pedido: 37, itemId: 'IT_37' },
-    ]
+    // O painel manda NÚMEROS de pedido, nunca ids internos do quadro.
+    const PEDIDOS = [36, 37]
 
     const postOrdem = (payload: unknown) =>
       app.inject({ method: 'POST', url: '/api/v1/painel/ordem', headers: authHeaders, payload })
@@ -501,11 +499,11 @@ describe('Rotas do painel do owner', () => {
       expect((await postOrdem({ projeto: 'gitorch', pedidos: [] })).statusCode).toBe(400)
     })
 
-    test('pedido malformado é DESCARTADO, e sobrando nada vira 400', async () => {
-      // Um item sem itemId não dá para mover; aceitar e ignorar em silêncio
-      // faria o cliente achar que a ordem inteira foi aplicada.
+    test('o que não for número de pedido é DESCARTADO, e sobrando nada vira 400', async () => {
+      // Aceitar e ignorar em silêncio faria o cliente achar que a ordem
+      // inteira foi aplicada.
       await build(fakePrisma())
-      const res = await postOrdem({ projeto: 'gitorch', pedidos: [{ pedido: 1 }, { itemId: '' }] })
+      const res = await postOrdem({ projeto: 'gitorch', pedidos: ['36', null, 1.5] })
       expect(res.statusCode).toBe(400)
     })
 
