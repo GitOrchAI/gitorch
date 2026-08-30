@@ -702,8 +702,8 @@ export const painelRoutes = async (
       // anti-vazamento das outras rotas do painel.
       if (!row) return reply.code(404).send({ error: 'Projeto não encontrado.' })
 
-      const quadroId = resolveQuadroDoProjeto(row.runtimeConfig)
-      if (!quadroId) {
+      const quadro = resolveQuadroDoProjeto(row.runtimeConfig)
+      if (!quadro) {
         return reply
           .code(409)
           .send({ error: 'Este projeto ainda não tem quadro no GitHub para reordenar.' })
@@ -729,6 +729,28 @@ export const painelRoutes = async (
           token,
           fetchImpl: fetchDoRepositorio({ nivel: () => row.autonomia }),
         })
+
+        // O quadro é guardado como "dono/número"; o GraphQL precisa do id. A
+        // resolução acontece aqui, com a mesma credencial e a mesma guarda.
+        // O quadro pode estar na ORGANIZAÇÃO ou na conta pessoal, e o produto
+        // não guarda qual. Tenta os dois em vez de exigir que o cliente saiba a
+        // diferença: para ele é "o meu quadro", não "o quadro da minha org".
+        const quadroId =
+          (await cliente.findProjectId({
+            login: quadro.login,
+            number: quadro.numero,
+            ownerType: 'organization',
+          })) ??
+          (await cliente.findProjectId({
+            login: quadro.login,
+            number: quadro.numero,
+            ownerType: 'user',
+          }))
+        if (!quadroId) {
+          return reply
+            .code(409)
+            .send({ error: 'Não encontrei o seu quadro no GitHub para reordenar.' })
+        }
 
         // Traduz número de pedido para item do quadro. Um número que NÃO está
         // no quadro é descartado com aviso, e não inventa item: mover algo que
@@ -839,25 +861,33 @@ export const painelRoutes = async (
 }
 
 /**
- * O id do quadro deste projeto, guardado no `runtimeConfig`.
+ * O quadro deste projeto, do jeito que o produto REALMENTE o guarda.
+ *
+ * Eu tinha escrito isto procurando um `githubBoardId` — uma chave que o produto
+ * nunca gravou. Conferido no banco do dono: o que existe é
+ * `envConfig.GITORCH_PROJECT_BOARD` no formato "dono/número" (ex.:
+ * "GitOrchAI/2"), que é exatamente o que `resolveRailsBoard` já lê no
+ * scheduler. Inventar uma chave nova faria a rota responder "você não tem
+ * quadro" para quem tem.
  *
  * `null` quando não há: reordenar um quadro que não existe não é erro do
- * cliente, é um passo que ainda não aconteceu — e a rota diz isso em vez de
- * estourar.
+ * cliente, é um passo que ainda não aconteceu — e a rota diz isso.
  */
-function resolveQuadroDoProjeto(runtimeConfig: unknown): string | null {
+export function resolveQuadroDoProjeto(
+  runtimeConfig: unknown
+): { login: string; numero: number } | null {
   if (!runtimeConfig || typeof runtimeConfig !== 'object' || Array.isArray(runtimeConfig)) {
     return null
   }
-  const cfg = runtimeConfig as Record<string, unknown>
-  const direto = cfg['githubBoardId']
-  if (typeof direto === 'string' && direto) return direto
-  const env = cfg['envConfig']
-  if (env && typeof env === 'object' && !Array.isArray(env)) {
-    const doEnv = (env as Record<string, unknown>)['GITORCH_PROJECT_BOARD_ID']
-    if (typeof doEnv === 'string' && doEnv) return doEnv
-  }
-  return null
+  const env = (runtimeConfig as Record<string, unknown>)['envConfig']
+  if (!env || typeof env !== 'object' || Array.isArray(env)) return null
+  const bruto = (env as Record<string, unknown>)['GITORCH_PROJECT_BOARD']
+  if (typeof bruto !== 'string') return null
+
+  const [login, numeroTexto, ...resto] = bruto.split('/')
+  if (!login || !numeroTexto || resto.length > 0) return null
+  const numero = Number(numeroTexto)
+  return Number.isInteger(numero) && numero > 0 ? { login, numero } : null
 }
 
 /** Payload sem `texto` é evento antigo/inesperado — nunca inventa conteúdo. */
