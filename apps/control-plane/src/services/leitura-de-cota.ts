@@ -91,3 +91,30 @@ export async function lerCotaDoMotor(args: {
 export function carimboDaLeitura(cota: CotaLida, agora: Date): { quotaRefreshedAt?: Date } {
   return cota.temNumero ? { quotaRefreshedAt: agora } : {}
 }
+
+/**
+ * Um percentual de janela que JÁ VIROU não é um número — é desconhecido.
+ *
+ * Medido ao vivo em 30/08: o banco guardava "semana 99% usada" para o Claude,
+ * lido em 28/08. As duas janelas já tinham virado, e a leitura feita na hora
+ * devolveu 24%. Erro de 75 pontos percentuais, exibido com cara de fato.
+ *
+ * O leitor estava certo; o dado guardado é que estava morto. Esta função aplica
+ * ao percentual a mesma lei que este arquivo já enuncia sobre o carimbo:
+ * mentira no dado é pior que dado ausente.
+ *
+ * Devolve o valor quando a janela ainda vale, e `null` quando já virou ou
+ * quando não dá para saber (sem horário de virada, não há como afirmar que o
+ * número continua valendo).
+ */
+export function percentualAindaVale(
+  percentual: number | null | undefined,
+  viraEm: string | Date | null | undefined,
+  agora: Date = new Date()
+): number | null {
+  if (percentual == null) return null
+  if (viraEm == null) return null
+  const virada = viraEm instanceof Date ? viraEm : new Date(viraEm)
+  if (Number.isNaN(virada.getTime())) return null
+  return virada.getTime() > agora.getTime() ? percentual : null
+}

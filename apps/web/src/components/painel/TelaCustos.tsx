@@ -4,12 +4,118 @@
 // é AO VIVO (best-effort — sem store de consumo persistida a tela degrada com
 // honestidade); os KPIs de topo, o esforço por projeto e o plano ficam de
 // exemplo (leva 2). Portado de TelaCustos.jsx.
+import { useSyncExternalStore } from 'react'
 import { DEMO } from './painel-demo'
 import { ROTAS } from './painel-api'
 import { usePainelBusca } from './usePainelBusca'
 import { Cabeca, Card, Kpi, Barra } from './PainelUI'
 import { Estados, SeloDemo } from './PainelEstados'
 import type { MotorCota } from './painel-tipos'
+import { assinarProjeto, projetoAtual, projetoNoServidor, filtroDeProjeto } from './painel-projeto'
+
+interface Distribuicao {
+  mediana: number
+  p90: number
+  maximo: number
+}
+interface CicloView {
+  entregas: number
+  dePrimeira: number
+  cutucadas: Distribuicao
+  tentativas: Distribuicao
+  falhasDeMerge: Distribuicao
+  horasAteFechar: Distribuicao | null
+  naoMedido: string[]
+}
+
+/** Um número medido, com a mediana em destaque e a cauda ao lado. */
+function Medida({ rotulo, d, sufixo }: { rotulo: string; d: Distribuicao; sufixo?: string }) {
+  return (
+    <div>
+      <span className="pn-label">{rotulo}</span>
+      <div className="num" style={{ fontSize: 22, fontWeight: 600 }}>
+        {d.mediana}
+        {sufixo ?? ''}
+      </div>
+      <div className="tt" style={{ color: 'var(--gl-faint)', marginTop: 2 }}>
+        {/* A cauda ao lado da mediana, sempre. A mediana sozinha esconde a dor,
+            e a média sozinha esconde o caso típico — as duas juntas é que
+            descrevem o ciclo. */}
+        90% abaixo de {d.p90}
+        {sufixo ?? ''} · pior {d.maximo}
+        {sufixo ?? ''}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Quanto o ciclo custa, contando o retrabalho.
+ *
+ * O raciocínio do dono: "se o modelo é 20x melhor que humano, mas teve 5
+ * retrabalhos, o ganho real não é 20x". Por isso a conta desconta o retrabalho
+ * — e por isso o número vem do NOSSO banco, nunca de um multiplicador de fora.
+ */
+function ONossoCiclo() {
+  const projeto = useSyncExternalStore(assinarProjeto, projetoAtual, projetoNoServidor)
+  const r = usePainelBusca<CicloView, CicloView>(ROTAS.ciclo + filtroDeProjeto(projeto), {
+    vazio: (d) => d.entregas === 0,
+  })
+
+  return (
+    <Card
+      titulo="O nosso ciclo, com o retrabalho descontado"
+      sub="Medido no seu banco, não estimado."
+    >
+      <Estados
+        r={r}
+        o_que="a medição do ciclo"
+        vazio="Nenhuma entrega ainda para medir. A conta aparece com a primeira."
+      >
+        {(c) => (
+          <>
+            <div style={{ display: 'flex', gap: 26, flexWrap: 'wrap' }}>
+              <div>
+                <span className="pn-label">Saem de primeira</span>
+                <div className="num" style={{ fontSize: 22, fontWeight: 600 }}>
+                  {Math.round((c.dePrimeira / c.entregas) * 100)}%
+                </div>
+                <div className="tt" style={{ color: 'var(--gl-faint)', marginTop: 2 }}>
+                  {c.dePrimeira} de {c.entregas}, sem ninguém empurrar
+                </div>
+              </div>
+              <Medida rotulo="Cutucadas por entrega" d={c.cutucadas} />
+              <Medida rotulo="Falhas ao mesclar" d={c.falhasDeMerge} />
+              {c.horasAteFechar && (
+                <Medida rotulo="Horas até fechar" d={c.horasAteFechar} sufixo="h" />
+              )}
+            </div>
+
+            {/* Um travessão sem explicação é indistinguível de zero para quem
+                lê. O que não dá para medir aparece dito. */}
+            {c.naoMedido.length > 0 && (
+              <div style={{ marginTop: 18 }}>
+                <span className="pn-label">Ainda não consigo medir</span>
+                <ul
+                  style={{
+                    margin: '6px 0 0',
+                    paddingLeft: 18,
+                    fontSize: 13,
+                    color: 'var(--gl-muted)',
+                  }}
+                >
+                  {c.naoMedido.map((m) => (
+                    <li key={m}>{m}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </>
+        )}
+      </Estados>
+    </Card>
+  )
+}
 
 export function TelaCustos() {
   const motores = usePainelBusca<MotorCota[], { motores?: MotorCota[] }>(ROTAS.agentes, {
@@ -23,6 +129,8 @@ export function TelaCustos() {
         Você usa a sua própria assinatura de cada ferramenta. O que o painel controla é quanto de
         cada cota já foi gasto, para nenhum motor travar no meio de uma entrega.
       </Cabeca>
+
+      <ONossoCiclo />
 
       <p className="pn-eyebrow">
         Resumo do mês

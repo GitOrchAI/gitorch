@@ -11,6 +11,7 @@ import {
   writeCodexQuotaFile,
   readCodexQuota,
   codexQuotaFilePath,
+  rateLimitsDaRecusa,
 } from './quota-reader.js'
 
 afterEach(() => {
@@ -460,5 +461,66 @@ describe('writeCodexQuotaFile + readCodexQuota (arquivo real em disco)', () => {
       // Nem grava o arquivo — se o código tentasse ler, cairia no fallback null.
       expect(await readCodexQuota(home)).toEqual({ remaining: 5, total: 10 })
     })
+  })
+})
+
+describe('a cota que vem DENTRO da recusa por teto de conta', () => {
+  // MEDIDO AO VIVO em 30/08/2026: com a conta do dono em 100% usada, o servidor
+  // recusa o turno com 429 ANTES de mandar o evento `rate_limits`. O leitor
+  // devolvia nulo — o produto ficava cego exatamente no momento em que a cota
+  // acabou, que é quando ele mais precisa enxergar. E o número da verdade
+  // estava na própria recusa, sendo jogado fora.
+  //
+  // Esta é a mensagem REAL capturada do stderr do codex 0.142.5.
+  const RECUSA_REAL = JSON.stringify({
+    type: 'error',
+    error: {
+      type: 'usage_limit_reached',
+      message: 'The usage limit has been reached',
+      plan_type: 'free',
+      resets_at: 1789970409,
+    },
+    status_code: 429,
+    headers: {
+      'X-Codex-Primary-Used-Percent': '100',
+      'X-Codex-Secondary-Used-Percent': '0',
+      'X-Codex-Primary-Window-Minutes': '43200',
+      'X-Codex-Primary-Reset-At': '1789970410',
+      'X-Codex-Plan-Type': 'free',
+    },
+  })
+
+  it('a recusa vira cota: 100% usado, com a janela e a virada', () => {
+    const r = rateLimitsDaRecusa(JSON.parse(RECUSA_REAL))
+    expect(r?.primary?.used_percent).toBe(100)
+    expect(r?.primary?.window_minutes).toBe(43200)
+    expect(r?.primary?.reset_at).toBe(1789970410)
+  })
+
+  it('o leitor de JSONL agora enxerga a recusa na linha de trace', () => {
+    // O formato real: a linha do stderr tem texto antes do JSON.
+    const linha = `2026-08-30T00:12:00Z TRACE tungstenite::protocol: Received message ${RECUSA_REAL}`
+    const r = parseCodexRateLimitsFromJsonl(linha)
+    expect(r?.primary?.used_percent).toBe(100)
+  })
+
+  it('resposta que NÃO é recusa por teto continua devolvendo nulo', () => {
+    expect(rateLimitsDaRecusa({ status_code: 500, headers: {} })).toBeNull()
+    expect(rateLimitsDaRecusa({ type: 'error' })).toBeNull()
+    expect(rateLimitsDaRecusa(null)).toBeNull()
+  })
+
+  it('recusa SEM os cabeçalhos devolve nulo — nunca um zero inventado', () => {
+    // Sem número, nulo honesto é melhor que um zero que parece cota cheia.
+    expect(rateLimitsDaRecusa({ status_code: 429, headers: {} })).toBeNull()
+  })
+
+  it('o evento normal continua tendo prioridade sobre a recusa', () => {
+    // Quando os dois aparecem, o evento é a fonte melhor.
+    const normal = JSON.stringify({
+      rate_limits: { primary: { used_percent: 7 }, secondary: null },
+    })
+    const r = parseCodexRateLimitsFromJsonl(`${normal}\n${RECUSA_REAL}`)
+    expect(r?.primary?.used_percent).toBe(7)
   })
 })

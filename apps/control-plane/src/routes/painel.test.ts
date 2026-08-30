@@ -70,6 +70,8 @@ describe('Rotas do painel do owner', () => {
     app.inject({ method: 'GET', url: `/api/v1/painel/entregas${qs}`, headers: authHeaders })
   const getRegua = (qs = '') =>
     app.inject({ method: 'GET', url: `/api/v1/painel/regua${qs}`, headers: authHeaders })
+  const getCiclo = (qs = '') =>
+    app.inject({ method: 'GET', url: `/api/v1/painel/ciclo${qs}`, headers: authHeaders })
 
   beforeEach(async () => {
     await build()
@@ -401,6 +403,75 @@ describe('Rotas do painel do owner', () => {
       const res = await getEntregas()
       expect(res.statusCode).toBe(200)
       expect(res.json()).toEqual({ entregas: [], prontas: 0 })
+    })
+  })
+
+  describe('GET /api/v1/painel/ciclo — o retrabalho medido, não estimado', () => {
+    const sessaoDoCiclo = (over: Record<string, unknown> = {}) => ({
+      attempts: 1,
+      nudges: 0,
+      requeueCount: 0,
+      mergeFailures: 0,
+      createdAt: new Date('2026-08-29T00:00:00Z'),
+      closedAt: new Date('2026-08-29T02:00:00Z'),
+      ...over,
+    })
+
+    test('sem sessão, 401', async () => {
+      const res = await app.inject({ method: 'GET', url: '/api/v1/painel/ciclo' })
+      expect(res.statusCode).toBe(401)
+    })
+
+    test('mediana e p90 vêm separados — a média sozinha esconde a cauda', async () => {
+      // Nove entregas com 1 cutucada e uma com 40: a média daria 4,9, um
+      // número que não descreve nem o típico nem o pior.
+      const muitas = [
+        ...Array.from({ length: 9 }, () => sessaoDoCiclo({ nudges: 1 })),
+        sessaoDoCiclo({ nudges: 40 }),
+      ]
+      await build(
+        fakePrisma({
+          project: { findMany: vi.fn().mockResolvedValue([{ id: 'p1' }]) },
+          devSession: { findMany: vi.fn().mockResolvedValue(muitas) },
+        })
+      )
+      const c = (await getCiclo()).json()
+      expect(c.cutucadas.mediana).toBe(1)
+      expect(c.cutucadas.maximo).toBe(40)
+      expect(c.entregas).toBe(10)
+    })
+
+    test('conta quantas saíram de primeira, sem ninguém empurrar', async () => {
+      await build(
+        fakePrisma({
+          project: { findMany: vi.fn().mockResolvedValue([{ id: 'p1' }]) },
+          devSession: {
+            findMany: vi.fn().mockResolvedValue([sessaoDoCiclo(), sessaoDoCiclo({ nudges: 2 })]),
+          },
+        })
+      )
+      const c = (await getCiclo()).json()
+      expect(c.dePrimeira).toBe(1)
+    })
+
+    test('o que NÃO dá para medir vem escrito, com o motivo', async () => {
+      await build(
+        fakePrisma({
+          project: { findMany: vi.fn().mockResolvedValue([{ id: 'p1' }]) },
+          devSession: { findMany: vi.fn().mockResolvedValue([sessaoDoCiclo()]) },
+        })
+      )
+      const c = (await getCiclo()).json()
+      expect(c.naoMedido.length).toBeGreaterThan(0)
+      expect(c.naoMedido.join(' ')).toContain('QA reprovou')
+    })
+
+    test('dono sem projeto devolve medição vazia, não erro', async () => {
+      await build(fakePrisma({ project: { findMany: vi.fn().mockResolvedValue([]) } }))
+      const res = await getCiclo()
+      expect(res.statusCode).toBe(200)
+      expect(res.json().entregas).toBe(0)
+      expect(res.json().horasAteFechar).toBeNull()
     })
   })
 

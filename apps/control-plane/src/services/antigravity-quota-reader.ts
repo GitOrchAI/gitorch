@@ -129,7 +129,18 @@ export interface AntigravityUsageWindowMatch {
 // tela real → `janelasVistas: 0` → quota nula (achado no diagnóstico do reteste
 // do dono, apesar da tela ter aparecido de verdade). Agora são dois regexes:
 // o rótulo sozinho e a barra+percentual na linha seguinte.
-const WINDOW_LABEL_RE = /^\s*(Weekly Limit|Five Hour Limit)\s*$/i
+//
+// SEGUNDA QUEBRA DE FORMATO (medida ao vivo em 30/08, agy 1.1.22): o rótulo
+// passou a ser "Weekly Limit Remaining". Exigir que a linha TERMINE em "Limit"
+// derrubava o reconhecimento — zero janelas, cota nula, e a tela estava lá com
+// os números. O `(?:\s+Remaining)?` aceita as duas formas, e o grupo 1 continua
+// devolvendo o rótulo canônico, então a classificação logo abaixo não muda.
+//
+// Esta é a SEGUNDA vez que o formato muda (a primeira foi rótulo e barra na
+// mesma linha). Enquanto a cota depender de ler a tela, vai quebrar de novo —
+// e é por isso que a falha passou a ser registrada com motivo em vez de virar
+// nulo mudo.
+const WINDOW_LABEL_RE = /^\s*(Weekly Limit|Five Hour Limit)(?:\s+Remaining)?\s*$/i
 
 // "    [████████████████░░] 80.82%" — a barra + o percentual, numa linha só
 // (a linha logo abaixo do rótulo). NUNCA depende do conteúdo entre colchetes

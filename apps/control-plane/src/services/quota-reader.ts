@@ -209,9 +209,64 @@ export function parseCodexRateLimitsFromJsonl(output: string): CodexRateLimitsEv
       }
       const found = findRateLimitsNode(parsed, 0)
       if (found) return found
+      // A COTA TAMBÉM VEM DENTRO DA RECUSA, e era jogada fora.
+      //
+      // Medido ao vivo em 30/08: com a conta em 100% usada, o servidor recusa o
+      // turno com 429 ANTES de mandar o evento `rate_limits`. Sem evento, o
+      // leitor devolvia nulo — ou seja, o produto ficava cego exatamente no
+      // momento em que a cota acabou, que é quando ele mais precisa enxergar.
+      //
+      // Mas o número da verdade está na própria recusa, nos cabeçalhos
+      // `X-Codex-Primary-Used-Percent` e `X-Codex-Primary-Reset-At`. Ler dali
+      // não é remendo: é a mesma informação, pela porta que sobrou aberta.
+      const doTeto = rateLimitsDaRecusa(parsed)
+      if (doTeto) return doTeto
     }
   }
   return null
+}
+
+/** Cabeçalhos que o servidor manda junto com a recusa por teto de conta. */
+interface CabecalhosDeRecusa {
+  'X-Codex-Primary-Used-Percent'?: string
+  'X-Codex-Primary-Window-Minutes'?: string
+  'X-Codex-Primary-Reset-At'?: string
+  'X-Codex-Secondary-Used-Percent'?: string
+}
+
+/**
+ * A cota que vem embutida numa recusa 429 por teto de conta.
+ *
+ * Devolve `null` para qualquer outra coisa — inclusive para uma recusa sem os
+ * cabeçalhos: sem número, é melhor nulo honesto do que um zero inventado.
+ */
+export function rateLimitsDaRecusa(parsed: unknown): CodexRateLimitsEvent | null {
+  if (!parsed || typeof parsed !== 'object') return null
+  const raiz = parsed as Record<string, unknown>
+  const status = raiz['status_code']
+  if (status !== 429) return null
+
+  const headers = raiz['headers']
+  if (!headers || typeof headers !== 'object') return null
+  const h = headers as CabecalhosDeRecusa
+
+  const usado = Number(h['X-Codex-Primary-Used-Percent'])
+  if (!Number.isFinite(usado)) return null
+
+  const janelaEmMinutos = Number(h['X-Codex-Primary-Window-Minutes'])
+  const resetEm = Number(h['X-Codex-Primary-Reset-At'])
+
+  return {
+    primary: {
+      used_percent: usado,
+      ...(Number.isFinite(janelaEmMinutos) ? { window_minutes: janelaEmMinutos } : {}),
+      ...(Number.isFinite(resetEm) ? { reset_at: resetEm } : {}),
+    },
+    // A janela secundária pode não vir na recusa; nulo é a resposta honesta.
+    secondary: Number.isFinite(Number(h['X-Codex-Secondary-Used-Percent']))
+      ? { used_percent: Number(h['X-Codex-Secondary-Used-Percent']) }
+      : null,
+  } as CodexRateLimitsEvent
 }
 
 /** Candidatos de JSON numa linha: a linha inteira (JSONL puro) e, se ela tiver
