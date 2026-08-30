@@ -219,6 +219,34 @@ export class CampoDeIteracaoAusenteError extends Error {
   }
 }
 
+/**
+ * O quadro já tem um campo com esse nome, e ele NÃO é de iteração.
+ *
+ * Caso real, achado em produção no quadro "Jardim das Patinhas" (30/08/2026):
+ * existia um campo de TEXTO chamado "Sprint". A leitura de iteração não o
+ * enxergava (corretamente — não é um campo de ciclo), o produto concluía "não
+ * existe" e tentava criar; o GitHub recusava com "Name has already been taken".
+ * Isso se repetia a cada tique, para sempre, sem ninguém entender por quê.
+ *
+ * Erro PRÓPRIO porque quem chama precisa reagir de forma diferente: ausência se
+ * resolve criando, conflito de nome só o dono resolve — renomeando ou apagando
+ * o campo antigo. Tratar os dois como a mesma coisa é o que produzia o laço.
+ */
+export class NomeDeCampoEmConflitoError extends Error {
+  constructor(
+    readonly fieldName: string,
+    readonly projectId: string,
+    readonly tipoExistente: string
+  ) {
+    super(
+      `O quadro já tem um campo chamado "${fieldName}", mas ele é do tipo ` +
+        `${tipoExistente}, não um campo de ciclo. Renomeie ou remova esse campo ` +
+        `para o GitOrch poder criar a sprint.`
+    )
+    this.name = 'NomeDeCampoEmConflitoError'
+  }
+}
+
 export class ProjectV2Client {
   private readonly token: string
   private readonly request: GraphQLTransport
@@ -640,9 +668,13 @@ export class ProjectV2Client {
                 fields(first: 50) {
                   nodes {
                     __typename
+                    # O nome de QUALQUER campo, não só dos de iteração: sem isto
+                    # um campo de texto chamado "Sprint" fica invisível aqui, o
+                    # produto conclui "não existe" e tenta criar — e o GitHub
+                    # recusa por nome duplicado, a cada tique, para sempre.
+                    ... on ProjectV2FieldCommon { name }
                     ... on ProjectV2IterationField {
                       id
-                      name
                       configuration {
                         iterations { id title startDate duration }
                       }
@@ -661,6 +693,18 @@ export class ProjectV2Client {
     const nodes = unwrap(response).node?.fields?.nodes ?? []
     const field = nodes.find((node) => node.name === input.fieldName && node.configuration)
     if (!field || !field.configuration) {
+      // O nome está livre, ou já pertence a um campo de outro tipo? São
+      // situações diferentes: a primeira se resolve criando, a segunda só o
+      // dono resolve. Confundi-las produzia uma tentativa de criação recusada
+      // por minuto, indefinidamente.
+      const homonimo = nodes.find((node) => node.name === input.fieldName)
+      if (homonimo) {
+        throw new NomeDeCampoEmConflitoError(
+          input.fieldName,
+          input.projectId,
+          homonimo.__typename ?? 'campo comum'
+        )
+      }
       throw new CampoDeIteracaoAusenteError(input.fieldName, input.projectId)
     }
     return { fieldId: field.id, iterations: field.configuration.iterations }

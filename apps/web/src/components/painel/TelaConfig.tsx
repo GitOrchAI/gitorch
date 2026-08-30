@@ -209,6 +209,123 @@ function ReguaDePronto() {
   )
 }
 
+interface SprintDiasPayload {
+  dias: number
+  escolhido: boolean
+  padrao: number
+  minimo: number
+  maximo: number
+}
+
+/**
+ * De quantos dias é a sprint deste projeto.
+ *
+ * Decisão do dono (30/08): "nosso projeto de desenvolvimento 3 dias mas pra
+ * clientes no painel eles decidem de quantos dias". O número deixou de ser
+ * constante nossa no instante em que o produto passou a CRIAR o campo de ciclo
+ * no quadro do cliente — a partir daí ele vale no quadro DELE.
+ *
+ * Segue o mesmo contrato da régua de pronto: salva de verdade, o estado vem da
+ * RESPOSTA (não do que a tela achou que mandou), e a tela diz quando está no
+ * padrão porque ninguém escolheu — nunca afirma uma decisão que não houve.
+ */
+function DuracaoDaSprint() {
+  const projeto = useSyncExternalStore(assinarProjeto, projetoAtual, projetoNoServidor)
+  const [dados, setDados] = useState<SprintDiasPayload | null>(null)
+  const [erro, setErro] = useState<string | null>(null)
+  const [salvando, setSalvando] = useState(false)
+
+  const carregar = useCallback(async () => {
+    if (!projeto) {
+      setDados(null)
+      setErro(null)
+      return
+    }
+    try {
+      setDados(
+        await buscar<SprintDiasPayload>(
+          `${ROTAS.sprintDias}?projeto=${encodeURIComponent(projeto)}`
+        )
+      )
+      setErro(null)
+    } catch {
+      setErro('Não consegui ler a duração da sua sprint agora.')
+    }
+  }, [projeto])
+
+  useEffect(() => {
+    void carregar()
+  }, [carregar])
+
+  const escolher = async (dias: number) => {
+    if (!dados || !projeto || dias === dados.dias) return
+    setSalvando(true)
+    try {
+      const salvo = await pedir<{ dias: number; escolhido: boolean }>(ROTAS.sprintDias, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projeto, dias }),
+      })
+      setDados({ ...dados, dias: salvo.dias, escolhido: true })
+      setErro(null)
+    } catch {
+      setErro('Não consegui salvar. Nada mudou.')
+    } finally {
+      setSalvando(false)
+    }
+  }
+
+  if (!projeto) {
+    return (
+      <Card titulo="De quantos dias é a sua sprint">
+        <p style={{ margin: 0, fontSize: 13.5, color: 'var(--gl-muted)', maxWidth: '62ch' }}>
+          A duração é de cada projeto. Escolha um projeto no seletor do topo para ver e mudar a
+          dele.
+        </p>
+      </Card>
+    )
+  }
+
+  // Os ciclos que fazem sentido para quem trabalha com IA (curto) e para quem
+  // vem do Scrum tradicional (1 ou 2 semanas). Fora disso, o campo livre — a
+  // rota aceita de 1 a 60 e recusa o resto com o motivo.
+  const opcoes = [3, 7, 14]
+
+  return (
+    <Card titulo="De quantos dias é a sua sprint">
+      <p style={{ margin: '0 0 14px', fontSize: 13.5, color: 'var(--gl-muted)', maxWidth: '62ch' }}>
+        O ciclo que o <strong>{projeto}</strong> usa no quadro do GitHub. Mudar aqui vale para as
+        próximas sprints.
+        {dados &&
+          !dados.escolhido &&
+          ` Hoje vale o padrão de ${dados.padrao} dias — você ainda não escolheu.`}
+      </p>
+
+      {erro && (
+        <div style={{ marginBottom: 12, fontSize: 13.5, color: 'var(--gl-sev)' }}>{erro}</div>
+      )}
+
+      {dados && (
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          {opcoes.map((d) => (
+            <button
+              key={d}
+              type="button"
+              disabled={salvando}
+              onClick={() => void escolher(d)}
+              data-testid={`sprint-dias-${d}`}
+              aria-pressed={dados.dias === d}
+              className={`pn-btn sm${dados.dias === d ? ' a' : ''}`}
+            >
+              {d} dias
+            </button>
+          ))}
+        </div>
+      )}
+    </Card>
+  )
+}
+
 export function TelaConfig({ tema, setTema }: { tema: Tema; setTema: (t: Tema) => void }) {
   // Identidade da conta: dado VIVO. /api/v1/auth/me já responde nesta leva.
   // Sem e-mail no payload (login que não expõe e-mail), cai num rótulo que
@@ -224,6 +341,7 @@ export function TelaConfig({ tema, setTema }: { tema: Tema; setTema: (t: Tema) =
       </Cabeca>
 
       <ReguaDePronto />
+      <DuracaoDaSprint />
 
       <Card flush titulo="Conta">
         <Linha titulo={emailDaConta} desc="A conta com que você entrou no painel." />
