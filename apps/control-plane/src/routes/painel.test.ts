@@ -191,13 +191,20 @@ describe('Rotas do painel do owner', () => {
                 status: 'connected',
                 sessionPercentUsed: 0,
                 weekPercentUsed: 56,
+                // As janelas viram NO FUTURO: percentual de janela já vencida é
+                // suprimido (vale a mesma regra do assistente). Sem estas duas
+                // datas o teste afirmaria que número velho deve aparecer.
+                sessionResetsAt: new Date(Date.now() + 3 * 3600_000).toISOString(),
+                weekResetsAt: new Date(Date.now() + 72 * 3600_000).toISOString(),
                 quotaRefreshedAt: new Date('2026-08-30T17:01:29.323Z'),
               },
               {
                 runtime: 'codex',
                 status: 'needs_reconnect',
                 sessionPercentUsed: null,
+                sessionResetsAt: null,
                 weekPercentUsed: null,
+                weekResetsAt: null,
                 quotaRefreshedAt: null,
               },
             ]),

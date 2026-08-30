@@ -4,13 +4,19 @@ import { lerCotasDosMotores, NOMES_DOS_MOTORES } from './cotas-dos-motores.js'
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 // Uma linha de engine_connections como o banco de produção devolve.
+//
+// As janelas viram NO FUTURO de propósito: percentual de janela já vencida é
+// suprimido (vira null), e uma fixture sem horário de virada faria o teste
+// afirmar que números velhos devem aparecer — consagrando o defeito em vez de
+// pegá-lo.
+const DAQUI_A_POUCO = new Date(Date.now() + 3 * 3600_000).toISOString()
 const linha = (over: Record<string, any> = {}) => ({
   runtime: 'claude',
   status: 'connected',
   sessionPercentUsed: 1,
   weekPercentUsed: 27,
-  sessionResetsAt: null,
-  weekResetsAt: null,
+  sessionResetsAt: DAQUI_A_POUCO,
+  weekResetsAt: DAQUI_A_POUCO,
   quotaRefreshedAt: new Date('2026-08-30T16:53:24.105Z'),
   lastError: null,
   ...over,
@@ -74,6 +80,39 @@ describe('lerCotasDosMotores', () => {
 
     expect(codex?.estado).toBe('precisa_religar')
     expect(codex?.precisaReligar).toBe(true)
+  })
+
+  test('percentual de janela JÁ VENCIDA vira "não sei", nunca é exibido', async () => {
+    // O caso real de 30/08: a linha do Claude guardava semana=99%, lida dois
+    // dias antes, com a janela já virada. A leitura ao vivo deu 24%. Mostrar o
+    // 99% seria um erro de 75 pontos percentuais com cara de fato — e faria o
+    // dono parar de trabalhar para "não estourar a conta".
+    const ONTEM = new Date(Date.now() - 24 * 3600_000).toISOString()
+    const prisma = prismaCom([
+      linha({
+        sessionPercentUsed: 99,
+        weekPercentUsed: 99,
+        sessionResetsAt: ONTEM,
+        weekResetsAt: ONTEM,
+      }),
+    ])
+
+    const [m] = await lerCotasDosMotores(prisma as any, 'owner_1')
+
+    expect(m?.sessao).toBeNull()
+    expect(m?.semana).toBeNull()
+    // Mas o carimbo de quando foi lida permanece: o dono precisa saber que a
+    // leitura existe e está velha, não que nunca houve leitura.
+    expect(m?.lidoEm).not.toBeNull()
+  })
+
+  test('sem horário de virada, o percentual não é servido', async () => {
+    // Sem saber quando a janela vira, não dá para dizer se o número ainda vale.
+    // A mesma regra do assistente: na dúvida, não afirma.
+    const prisma = prismaCom([linha({ sessionResetsAt: null, weekResetsAt: null })])
+    const [m] = await lerCotasDosMotores(prisma as any, 'owner_1')
+    expect(m?.sessao).toBeNull()
+    expect(m?.semana).toBeNull()
   })
 
   test('sem número lido, diz que não sabe — nunca zero', async () => {

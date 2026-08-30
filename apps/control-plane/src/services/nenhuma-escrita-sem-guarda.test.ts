@@ -185,14 +185,43 @@ describe('nenhuma escrita no GitHub sai por fora da guarda', () => {
     const guardados = new Set<string>()
     for (const f of servicos) {
       const src = readFileSync(join(RAIZ, 'services', f), 'utf8')
+
       // Os tipos de opções que têm `fetchImpl` — é o que marca quem escreve.
+      //
+      // Lido com contagem de chaves, não com regex preguiçoso. A versão por
+      // regex (`\{([\s\S]*?)\n\}`) fechava no PRIMEIRO `\n}` da coluna zero,
+      // que numa interface com objeto aninhado é o fecha-chaves errado: o match
+      // começava no tipo anterior e engolia a interface seguinte inteira.
+      //
+      // E o `[^{]*` antes da chave é limitado à MESMA LINHA (`[^{\n]*`): um
+      // `type X = 'a' | 'b'` não tem chave nenhuma, e sem a trava de linha o
+      // match saía procurando a próxima `{` do arquivo — a da interface
+      // SEGUINTE —, roubava o nome errado e deixava a interface de verdade
+      // fora da lista. Foi assim que este detector ficou cego para o RA.
       const tiposComFetch = new Set<string>()
-      for (const m of src.matchAll(/(?:interface|type)\s+(\w+)[^{]*\{([\s\S]*?)\n\}/g)) {
-        if (m[1] && m[2] && /\bfetchImpl\??:/.test(m[2])) tiposComFetch.add(m[1])
+      for (const m of src.matchAll(/(?:export\s+)?(?:interface|type)\s+(\w+)[^{\n]*\{/g)) {
+        const nome = m[1]
+        if (!nome) continue
+        let i = (m.index ?? 0) + m[0].length
+        let nivel = 1
+        while (i < src.length && nivel > 0) {
+          if (src[i] === '{') nivel++
+          else if (src[i] === '}') nivel--
+          i++
+        }
+        if (/\bfetchImpl\??:/.test(src.slice((m.index ?? 0) + m[0].length, i))) {
+          tiposComFetch.add(nome)
+        }
       }
-      for (const m of src.matchAll(
-        /export\s+(?:async\s+)?function\s+(\w+)\s*\(([\s\S]*?)\)\s*:/g
-      )) {
+
+      // `export function NOME(` e também `export const NOME = async (` —
+      // metade dos serviços deste projeto usa a segunda forma, e a versão
+      // anterior deste teste só via a primeira.
+      const assinaturas = [
+        ...src.matchAll(/export\s+(?:async\s+)?function\s+(\w+)\s*\(([\s\S]*?)\)\s*:/g),
+        ...src.matchAll(/export\s+const\s+(\w+)\s*=\s*(?:async\s*)?\(([\s\S]*?)\)\s*(?::|=>)/g),
+      ]
+      for (const m of assinaturas) {
         const nome = m[1]
         const params = m[2] ?? ''
         if (!nome) continue
@@ -201,6 +230,38 @@ describe('nenhuma escrita no GitHub sai por fora da guarda', () => {
         if (aceitaFetch) guardados.add(nome)
       }
     }
+
+    // O DETECTOR PRECISA SER VIGIADO TAMBÉM.
+    //
+    // A primeira versão deste teste passava verde sem enxergar NENHUMA das
+    // funções cujo esquecimento parou a esteira em 30/08: o regex que lê os
+    // tipos casava em posição errada e engolia a interface certa. Um detector
+    // que não detecta é pior que detector nenhum — dá a sensação de rede sem
+    // a rede.
+    //
+    // Esta lista é a prova de vida dele. Se um dia o detector deixar de
+    // enxergar qualquer uma destas, o vermelho aparece aqui, e não em produção.
+    const TEM_QUE_VIGIAR = [
+      'runSmDelegation',
+      'runSmWatchdog',
+      'runRaMissionViaRails',
+      'runPoMissionViaRails',
+      'runQaMissionViaRails',
+    ]
+    const cegoPara = TEM_QUE_VIGIAR.filter((n) => !guardados.has(n))
+    expect(
+      cegoPara,
+      [
+        'O detector parou de enxergar funções que ele TEM que vigiar.',
+        '',
+        'Estas são as que caíram no default fail-closed em 30/08 e pararam a',
+        'esteira. Se o detector não as vê, ele não impede a repetição — que é',
+        'a única razão de ele existir.',
+        '',
+        'Cegas:',
+        ...cegoPara.map((x) => `  ${x}`),
+      ].join('\n')
+    ).toEqual([])
 
     const scheduler = readFileSync(join(RAIZ, 'plugins', 'scheduler.ts'), 'utf8')
     const semNivel: string[] = []

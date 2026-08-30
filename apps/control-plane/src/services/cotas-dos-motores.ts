@@ -1,4 +1,5 @@
 import type { PrismaClient } from '@prisma/client'
+import { percentualAindaVale } from './leitura-de-cota.js'
 
 /**
  * A cota de cada motor do dono, lida de `engine_connections`.
@@ -74,11 +75,14 @@ export async function lerCotasDosMotores(
       runtime: true,
       status: true,
       sessionPercentUsed: true,
+      sessionResetsAt: true,
       weekPercentUsed: true,
+      weekResetsAt: true,
       quotaRefreshedAt: true,
     },
   })
 
+  const agora = new Date()
   return linhas.map((l) => {
     const estado = estadoDe(l.status)
     return {
@@ -87,10 +91,15 @@ export async function lerCotasDosMotores(
       // algo do que esconder um motor que existe de verdade.
       nome: NOMES_DOS_MOTORES[l.runtime] ?? l.runtime,
       estado,
-      // `?? null` e não `?? 0`: zero é um número, e diria ao dono que a cota
+      // Percentual de janela JÁ VENCIDA vira `null` — a MESMA regra que o
+      // assistente aplica (`percentualAindaVale`, reusada aqui de propósito:
+      // duas cópias da regra divergiriam, e foi assim que o painel já mostrou
+      // 99% quando a verdade eram 24%, um erro de 75 pontos com cara de fato).
+      //
+      // E `null` nunca vira 0: zero é um número, e diria ao dono que a cota
       // está inteira quando na verdade ninguém mediu.
-      sessao: l.sessionPercentUsed ?? null,
-      semana: l.weekPercentUsed ?? null,
+      sessao: percentualAindaVale(l.sessionPercentUsed, l.sessionResetsAt, agora),
+      semana: percentualAindaVale(l.weekPercentUsed, l.weekResetsAt, agora),
       lidoEm: l.quotaRefreshedAt ? l.quotaRefreshedAt.toISOString() : null,
       precisaReligar: estado === 'precisa_religar',
     }

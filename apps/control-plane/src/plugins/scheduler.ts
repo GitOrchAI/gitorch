@@ -235,7 +235,7 @@ import {
   fetchSemPermissao,
 } from '../services/guarda-de-autonomia.js'
 import { garantirSprintDosProjetos } from '../services/garantir-sprint-dos-projetos.js'
-import { garantirSprintNoQuadro } from '../services/garantir-sprint.js'
+import { garantirSprintNoQuadro, hojeNoFuso } from '../services/garantir-sprint.js'
 import { decidirQuadro } from '../services/resolver-quadro.js'
 import { registrarSePronto } from '../services/incremento.js'
 import { fetchComTeto } from '../services/fetch-com-teto.js'
@@ -7489,7 +7489,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       },
 
       quadroDoProjeto: async (p, token) => {
-        const cliente = new ProjectV2Client({ token, fetchImpl: fetchSemPermissao() })
+        // COM TETO. Sem ele, uma conexão pendurada com o GitHub (rede parada,
+        // sem RST) trava esta varredura, e como ela roda dentro do tique sob
+        // `tickEmAndamento`, trava o RELÓGIO INTEIRO — nenhuma missão, nenhuma
+        // cota, nenhum deploy, e o único sinal seria "tick anterior ainda em
+        // andamento" a cada 60s. Nada falha, então nenhum vigia pega.
+        const cliente = new ProjectV2Client({
+          token,
+          fetchImpl: fetchComTeto(fetchSemPermissao(), TIMEOUT_DE_CHAMADA_GITHUB_MS),
+        })
         const [owner, repo] = p.wingId.split('/')
         const quadros = await cliente.listarQuadrosDoRepositorio({
           owner: owner ?? '',
@@ -7504,10 +7512,23 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       clienteDeQuadro: (p, token) =>
         new ProjectV2Client({
           token,
-          fetchImpl: fetchDoRepositorio({ nivel: () => p.autonomia }),
+          // `fetchDoRepositorio` já junta teto de tempo e guarda de autonomia;
+          // o teto vai explícito para ficar igual ao resto do relógio.
+          fetchImpl: fetchDoRepositorio({
+            nivel: () => p.autonomia,
+            timeoutMs: TIMEOUT_DE_CHAMADA_GITHUB_MS,
+          }),
         }),
 
-      garantir: (cliente, args) => garantirSprintNoQuadro(cliente, args),
+      garantir: (cliente, args) =>
+        garantirSprintNoQuadro(cliente, {
+          ...args,
+          // No FUSO DO DONO, não no do servidor. Quem LÊ a sprint já usa
+          // `hojeNoFuso()`; se quem ESCREVE usar UTC, entre 21h e a meia-noite
+          // de Brasília os dois discordam e o painel diz "quadro configurado,
+          // nenhuma sprint correndo" por até 3 horas.
+          hoje: hojeNoFuso(),
+        }),
       log: {
         warn: (m: string) => app.log.warn(m),
         info: (m: string) => app.log.info(m),

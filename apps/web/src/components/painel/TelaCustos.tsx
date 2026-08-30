@@ -56,22 +56,35 @@ function quandoFoiLido(iso: string | null): string {
  */
 function MotorCard({ m }: { m: MotorCota }) {
   const semNumero = m.sessao == null && m.semana == null
+  // TRÊS estados, não dois. Um motor com a conexão revogada, expirada ou com
+  // erro cai em `nao_conectado` — e a versão anterior desta tela o desenhava
+  // igual a um motor saudável que só não mede consumo. Era o "Codex Conectado
+  // com o motor morto" de novo, com outra roupa.
+  const fora = m.precisaReligar || m.estado === 'nao_conectado'
+  const rotulo = m.precisaReligar ? 'precisa religar' : 'não está conectado'
+  const explicacao = m.precisaReligar
+    ? 'a credencial venceu e a renovação automática não deu conta'
+    : 'este motor não está conectado agora'
+
   return (
     <div>
       <div className="pn-brow">
         <b>{m.nome}</b>
-        {m.precisaReligar ? (
-          <span className="num" style={{ color: 'var(--gl-bad, #A32C22)' }}>
-            precisa religar
+        {fora ? (
+          // `--gl-sev` é o token de severidade do painel. A versão anterior
+          // usava `var(--gl-bad, #A32C22)`, e `--gl-bad` não existe em lugar
+          // nenhum: caía sempre no literal, fixo nos dois temas, com contraste
+          // insuficiente no escuro — o aviso mais importante da tela era o
+          // texto menos legível dela.
+          <span className="num" style={{ color: 'var(--gl-sev)' }}>
+            {rotulo}
           </span>
         ) : null}
       </div>
 
-      {m.precisaReligar ? (
+      {fora ? (
         <div style={{ marginTop: 8 }}>
-          <div style={{ fontSize: 12.5, color: 'var(--gl-faint)' }}>
-            a credencial venceu e a renovação automática não deu conta
-          </div>
+          <div style={{ fontSize: 12.5, color: 'var(--gl-faint)' }}>{explicacao}</div>
           {/*
             O caminho para religar SEM tocar em SSH.
 
@@ -79,30 +92,41 @@ function MotorCard({ m }: { m: MotorCota }) {
             conecta motor é o passo do assistente, e o painel não falava de
             motor em lugar nenhum. O dono descobria pela missão que morria.
 
-            O botão leva ao assistente, que já roda o login DENTRO do container
-            com o HOME isolado do cliente — reusar aquele fluxo é mais seguro
-            que reescrever aqui a conversa de código de dispositivo, que é onde
-            mora a parte delicada.
+            O rótulo diz "no assistente" porque é isso que acontece — o botão
+            leva à tela que já roda o login dentro do container. Prometer a ação
+            e entregar uma navegação seria a mesma família de mentira que esta
+            leva veio consertar.
           */}
           <a
             href="/setup"
             className="pn-btn a sm"
             style={{ display: 'inline-block', marginTop: 10 }}
           >
-            Religar {m.nome}
+            Religar no assistente
           </a>
         </div>
       ) : semNumero ? (
         <div style={{ marginTop: 8, fontSize: 12.5, color: 'var(--gl-faint)' }}>
-          este motor não reporta consumo — {quandoFoiLido(m.lidoEm)}
+          {/*
+            "não consegui ler" e não "não reporta consumo": são fatos
+            diferentes, com causas e ações opostas. O tipo diz `null = não sei`,
+            e traduzir isso numa afirmação sobre a CAPACIDADE do motor seria
+            afirmar o que o produto não sabe.
+          */}
+          não consegui ler a cota deste motor — {quandoFoiLido(m.lidoEm)}
         </div>
       ) : (
         <div style={{ marginTop: 8, display: 'grid', gap: 10 }}>
-          {m.sessao != null ? <Barra usado={m.sessao} limite={100} nome="sessão" /> : null}
-          {m.semana != null ? <Barra usado={m.semana} limite={100} nome="semana" /> : null}
-          <div style={{ fontSize: 12.5, color: 'var(--gl-faint)' }}>
-            % já usado · {quandoFoiLido(m.lidoEm)}
-          </div>
+          {/* O rótulo carrega o "%" — a barra sozinha desenhava "27 / 100", que
+              o dono lê como "27 de 100 coisas". O denominador 100 é nosso, não
+              de um teto que algum motor tenha informado. */}
+          {m.sessao != null ? (
+            <Barra usado={m.sessao} limite={100} nome={`sessão · ${m.sessao}% usado`} />
+          ) : null}
+          {m.semana != null ? (
+            <Barra usado={m.semana} limite={100} nome={`semana · ${m.semana}% usado`} />
+          ) : null}
+          <div style={{ fontSize: 12.5, color: 'var(--gl-faint)' }}>{quandoFoiLido(m.lidoEm)}</div>
         </div>
       )}
     </div>
@@ -241,22 +265,25 @@ export function TelaCustos() {
         <Kpi l="Repositórios ativos" v={3} n="do teto de 5 do seu plano" />
       </div>
 
-      <Card
-        titulo="Cota de cada motor"
-        sub={
-          <>
-            quanto de cada janela já foi usado
-            <SeloDemo mostrar={!!motores.demo} />
-          </>
-        }
-      >
+      <Card titulo="Cota de cada motor" sub="quanto já foi usado da sessão de agora e da semana">
         <Estados r={motores} o_que="as cotas dos motores" vazio="Nenhum motor conectado ainda.">
           {(d) =>
             !d.cotaLida ? (
               // Não é a mesma coisa que "não há motor", e não pode parecer.
+              // E tem saída: a regra escrita do painel é que "não consegui
+              // saber" oferece botão, ao contrário de "não tem nada".
               <div style={{ fontSize: 13, color: 'var(--gl-muted)' }}>
-                {d.motivoDaCota ?? 'não consegui ler a cota dos seus motores agora'}. O número que
-                aparecia antes seria um chute — prefiro dizer que não sei.
+                <p style={{ margin: 0 }}>
+                  {d.motivoDaCota ?? 'Não consegui ler a cota dos seus motores agora'}. Prefiro
+                  dizer que não sei a mostrar um número que pode estar errado.
+                </p>
+                <button
+                  className="pn-btn a sm"
+                  style={{ marginTop: 10 }}
+                  onClick={() => motores.recarregar()}
+                >
+                  Tentar de novo
+                </button>
               </div>
             ) : (
               <div className="pn-3">
