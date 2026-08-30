@@ -3,7 +3,7 @@ import Fastify from 'fastify'
 import jwt from 'jsonwebtoken'
 import { loadEnv } from '../config/env.js'
 import { registerPlugins } from '../plugins/index.js'
-import { painelRoutes } from './painel.js'
+import { painelRoutes, resolveQuadroDoProjeto } from './painel.js'
 import { LeituraIndisponivelError } from '../services/leitura-do-repositorio.js'
 import { hojeNoFuso } from '../services/garantir-sprint.js'
 import { ArvoreIndisponivelError } from '../services/arvore-de-pedidos.js'
@@ -480,7 +480,9 @@ describe('Rotas do painel do owner', () => {
       id: 'p1',
       wingId: 'dono/repo',
       autonomia: 'cuidar',
-      runtimeConfig: { githubBoardId: 'PVT_1' },
+      // O formato REAL que o produto guarda: "dono/número", o mesmo que
+      // `resolveRailsBoard` lê no scheduler.
+      runtimeConfig: { envConfig: { GITORCH_PROJECT_BOARD: 'GitOrchAI/2' } },
     }
     // O painel manda NÚMEROS de pedido, nunca ids internos do quadro.
     const PEDIDOS = [36, 37]
@@ -540,6 +542,35 @@ describe('Rotas do painel do owner', () => {
       const res = await postOrdem({ projeto: 'gitorch', pedidos: PEDIDOS })
       expect(res.statusCode).toBe(403)
       expect(res.json().error).toContain('mude para')
+    })
+  })
+
+  describe('resolveQuadroDoProjeto — o formato que o produto REALMENTE guarda', () => {
+    // Eu tinha escrito a rota procurando um `githubBoardId` que o produto nunca
+    // gravou. Conferido no banco do dono: o que existe é
+    // `envConfig.GITORCH_PROJECT_BOARD` como "GitOrchAI/2". Inventar uma chave
+    // nova fazia a rota responder "você não tem quadro" para quem tem.
+    test('lê "dono/número" de envConfig, o mesmo que o scheduler lê', () => {
+      expect(
+        resolveQuadroDoProjeto({ envConfig: { GITORCH_PROJECT_BOARD: 'GitOrchAI/2' } })
+      ).toEqual({ login: 'GitOrchAI', numero: 2 })
+    })
+
+    test('formato torto devolve null em vez de um quadro inventado', () => {
+      for (const bruto of ['GitOrchAI', 'GitOrchAI/', '/2', 'a/b/c', 'GitOrchAI/zero', '']) {
+        expect(resolveQuadroDoProjeto({ envConfig: { GITORCH_PROJECT_BOARD: bruto } })).toBeNull()
+      }
+    })
+
+    test('número zero ou negativo não é quadro', () => {
+      expect(resolveQuadroDoProjeto({ envConfig: { GITORCH_PROJECT_BOARD: 'x/0' } })).toBeNull()
+      expect(resolveQuadroDoProjeto({ envConfig: { GITORCH_PROJECT_BOARD: 'x/-1' } })).toBeNull()
+    })
+
+    test('sem configuração nenhuma devolve null, sem estourar', () => {
+      for (const cfg of [null, undefined, {}, [], 'texto', { envConfig: null }]) {
+        expect(resolveQuadroDoProjeto(cfg)).toBeNull()
+      }
     })
   })
 
