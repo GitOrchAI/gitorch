@@ -229,7 +229,14 @@ import {
   resolveSprintDays,
   createCardMover,
 } from '../services/board-status.js'
-import { fetchDoRepositorio, guardaPorRepositorio } from '../services/guarda-de-autonomia.js'
+import {
+  fetchDoRepositorio,
+  guardaPorRepositorio,
+  fetchSemPermissao,
+} from '../services/guarda-de-autonomia.js'
+import { garantirSprintDosProjetos } from '../services/garantir-sprint-dos-projetos.js'
+import { garantirSprintNoQuadro } from '../services/garantir-sprint.js'
+import { decidirQuadro } from '../services/resolver-quadro.js'
 import { registrarSePronto } from '../services/incremento.js'
 import { fetchComTeto } from '../services/fetch-com-teto.js'
 import {
@@ -1310,6 +1317,17 @@ export interface SetupMissionRecord {
     wingId: string
     userId: string | null
     runtimeConfig?: unknown
+    /**
+     * Até onde o GitOrch pode ir no repositório DESTE cliente.
+     *
+     * Viaja junto com o projeto porque `provisionSetupMission` CRIA e LIGA o
+     * quadro no repositório dele — escrita de verdade, que precisa da mesma
+     * porta que o resto do produto usa. Antes desta linha o cliente do quadro
+     * era montado com `fetchComTeto(fetch)`: tinha teto de tempo e NENHUMA
+     * guarda de autonomia. Nulo cai no nível mais restrito, que é o lado
+     * seguro.
+     */
+    autonomia?: string | null
   }
 }
 
@@ -1419,7 +1437,15 @@ export async function provisionSetupMission(
       // nos chamadores").
       const client = deps.createProjectV2Client
         ? deps.createProjectV2Client(boardToken)
-        : new ProjectV2Client({ token: boardToken, fetchImpl: fetchComTeto(fetch) })
+        : new ProjectV2Client({
+            token: boardToken,
+            // Teto de tempo E guarda de autonomia. Antes era só
+            // `fetchComTeto(fetch)`: criar e ligar quadro no repositório do
+            // cliente passava por fora da porta que o bloco 4 construiu — o
+            // furo que a própria auditoria daquele bloco tinha se proposto a
+            // fechar, num caminho que ela não varreu.
+            fetchImpl: fetchDoRepositorio({ nivel: () => mission.project.autonomia }),
+          })
       // Achado importante: sem passar o número já gravado, findProjectId
       // nunca rodava e todo provisionamento criava board NOVO — finalizar o
       // wizard 2x para o mesmo repositório duplicava o board. O número já
@@ -2618,6 +2644,21 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           const delegation = await runSmDelegation({
             repository: project.wingId,
             githubToken: railsToken as string,
+            // O NÍVEL DESTE PROJETO, e sem isto a esteira para.
+            //
+            // Medido em produção em 30/08: o Scrum Master saiu de 82 missões
+            // concluídas e zero falhas (29/08) para 5 falhas e nenhuma entrega,
+            // todas com "EscritaNaoAutorizadaError: Não posso organizar o
+            // quadro". Os dois projetos estavam em `cuidar` — a guarda não
+            // estava obedecendo ao cliente, estava barrando o produto.
+            //
+            // A causa é o próprio acerto do bloco 4 visto pelo avesso: o
+            // default `?? fetchSemPermissao()` faz quem esquece falhar FECHADO,
+            // e aqui ninguém tinha passado o fetch. O fail-closed funcionou
+            // exatamente como projetado; o que faltou foi entregar o nível a
+            // quem precisa dele. `fetchDoQuadro` já existia e já era usado pelo
+            // PO poucas linhas acima — o SM só não tinha recebido.
+            fetchImpl: fetchDoQuadro(project),
             // Delegar de verdade: além do label, abrir a sessão de trabalho no
             // dev assíncrono. Sem chave configurada, `criarSessaoJules`
             // devolve null e o label continua sendo o plano B.
@@ -2933,6 +2974,10 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           const watchdog = await runSmWatchdog({
             repository: project.wingId,
             githubToken: railsToken as string,
+            // Mesmo motivo da delegação logo acima: o vigia aplica etiqueta no
+            // repositório do cliente, e sem o nível deste projeto cairia no
+            // default fail-closed e se recusaria a trabalhar em silêncio.
+            fetchImpl: fetchDoQuadro(project),
             ...(notify ? { notify } : {}),
           })
           // Sensor de infra (os "olhos"): varre Actions/Dependabot e levanta
@@ -3130,6 +3175,10 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               ? await (async () => {
                   const raResult = await runRaMissionViaRails({
                     repository: project.wingId,
+                    // O nível deste projeto: sem ele o serviço cai no default
+                    // fail-closed e recusa toda escrita no repositório do
+                    // cliente — foi o que parou a esteira em 30/08.
+                    fetchImpl: fetchDoQuadro(project),
                     githubToken: railsToken,
                     execute,
                     contextBlocks,
@@ -3177,6 +3226,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               : poRails
                 ? await runPoMissionViaRails({
                     repository: project.wingId,
+                    fetchImpl: fetchDoQuadro(project),
                     ...(railsBoard ? { board: railsBoard } : {}),
                     githubToken: railsToken as string,
                     contextBlocks,
@@ -3207,6 +3257,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                     )
                     return runQaMissionViaRails({
                       repository: project.wingId,
+                      fetchImpl: fetchDoQuadro(project),
                       githubToken: railsToken as string,
                       contextBlocks,
                       // Vivas + fechadas com PR pendente (não mescladas), sem
@@ -7385,6 +7436,96 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     }
   }
 
+  /**
+   * Garante o campo Sprint no quadro de cada projeto — a caixa "Acerta o campo
+   * Sprint" que o fluxograma da leva 2 promete e que NUNCA existiu no produto.
+   *
+   * `garantirSprintNoQuadro` foi construída e testada no bloco 3 e ficou ÓRFÃ:
+   * nenhum caminho de produção a chamava. Conferido na fonte em 30/08 — o
+   * quadro #2 do gitorch tinha os 13 campos padrão do GitHub e nenhum campo de
+   * iteração. Se a função tivesse rodado uma vez, o campo existiria.
+   *
+   * Roda no RELÓGIO, e não ao plugar, por dois motivos: os projetos que já
+   * existem nunca passariam de novo pelo onboarding, e um quadro que perde o
+   * campo (o cliente pode apagá-lo) volta a ser consertado sozinho.
+   *
+   * ESCREVE NO QUADRO DO CLIENTE, então cada chamada vai embrulhada em
+   * `fetchDoRepositorio` com o nível daquele projeto. GraphQL não carrega o
+   * repositório na URL — a mutation nomeia o quadro por id —, então a guarda
+   * por endereço (`ghComGuarda`) não serve aqui e o nível entra explícito.
+   *
+   * Nunca rejeita: um projeto que falha não derruba o tique nem os outros.
+   */
+  const varrerSprintDosProjetos = async () => {
+    const projetos = await app.prisma.project.findMany({
+      where: { isActive: true },
+      select: {
+        id: true,
+        name: true,
+        wingId: true,
+        autonomia: true,
+        sprintDias: true,
+        userId: true,
+      },
+    })
+    if (projetos.length === 0) return
+
+    const { resultados } = await garantirSprintDosProjetos({
+      listarProjetos: async () => projetos,
+
+      // A credencial que ALCANÇA este repositório. O App do produto não
+      // enxerga quadro de conta pessoal ("Resource not accessible by
+      // integration", provado no patinhas-3d-crafts): para esses vale a
+      // credencial do próprio cliente, guardada cifrada no projeto — o campo
+      // existe exatamente para onde o App não chega. Preferimos a do cliente
+      // quando ela existe, porque é a que tem o alcance maior.
+      credencialDoProjeto: async (p) => {
+        const doCliente = await lerCredencialDoProjeto({ prisma: app.prisma, projectId: p.id })
+        if (doCliente) return { token: doCliente, origem: 'cliente' as const }
+        const doApp = p.userId
+          ? ((await app.engineConnections?.getRawGithubToken(p.userId)) ?? null)
+          : null
+        return doApp ? { token: doApp, origem: 'app' as const } : null
+      },
+
+      quadroDoProjeto: async (p, token) => {
+        const cliente = new ProjectV2Client({ token, fetchImpl: fetchSemPermissao() })
+        const [owner, repo] = p.wingId.split('/')
+        const quadros = await cliente.listarQuadrosDoRepositorio({
+          owner: owner ?? '',
+          repo: repo ?? '',
+        })
+        return decidirQuadro({ candidatos: quadros.map((q) => ({ ...q, linkado: true })) })
+      },
+
+      // O cliente que ESCREVE: guarda de autonomia com o nível deste projeto,
+      // lido na hora da chamada (o dono pode mudar pelo painel a qualquer
+      // momento e a mudança não pode esperar um ciclo).
+      clienteDeQuadro: (p, token) =>
+        new ProjectV2Client({
+          token,
+          fetchImpl: fetchDoRepositorio({ nivel: () => p.autonomia }),
+        }),
+
+      garantir: (cliente, args) => garantirSprintNoQuadro(cliente, args),
+      log: {
+        warn: (m: string) => app.log.warn(m),
+        info: (m: string) => app.log.info(m),
+        debug: (m: string) => app.log.debug(m),
+      },
+    })
+
+    // Só o que MUDOU vira linha de log. "Já estava pronto" é o caso comum a
+    // cada minuto — registrá-lo encheria o log e esconderia o que importa.
+    for (const r of resultados) {
+      if (r.estado === 'criado' || r.estado === 'configurado') {
+        app.log.info(`[Scheduler] sprint no quadro de ${r.repo}: ${r.estado} — ${r.motivo}`)
+      } else if (r.estado === 'falhou') {
+        app.log.warn(`[Scheduler] sprint de ${r.repo} não deu nesta passada: ${r.motivo}`)
+      }
+    }
+  }
+
   const tick = async () => {
     // PRIMEIRO de tudo: um token do GitHub vencido no meio do tique derruba
     // qualquer missão que precise dele (materializeToHome recusa e a missão
@@ -7465,6 +7606,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // número de agora do que com o da última missão.
     await varrerCotasDosMotores().catch((err) =>
       app.log.error(err, '[Scheduler] varredura de cotas falhou; tenta no próximo tick')
+    )
+    // A sprint do quadro do cliente. Vem depois da cota e antes das missões
+    // porque é barata quando não há nada a fazer (uma leitura por projeto) e
+    // porque a sprint precisa existir ANTES de o Produto pendurar tarefa nela.
+    await varrerSprintDosProjetos().catch((err) =>
+      app.log.error(err, '[Scheduler] varredura de sprint falhou; tenta no próximo tick')
     )
     await sweepExpiredEnvironments()
     const now = new Date()

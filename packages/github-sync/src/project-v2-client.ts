@@ -790,11 +790,21 @@ export class ProjectV2Client {
    * Cria o campo de iteração (Sprint) no quadro.
    *
    * É o que dá eixo de tempo à visão Roadmap do GitHub: sem campo de iteração
-   * ela abre com "Dates: none" e não desenha nada. Houve época em que a
-   * comunidade dizia que criar iteração por API era impossível; hoje o enum
-   * `ProjectV2CustomFieldType` inclui ITERATION e `CreateProjectV2FieldInput`
-   * aceita `iterationConfiguration` — conferido por introspection em 29/08
-   * antes de escrever isto.
+   * ela abre com "Dates: none" e não desenha nada.
+   *
+   * `iterations` é OBRIGATÓRIO, e isto custou caro para descobrir. A versão
+   * anterior mandava só `{ duration, startDate }` e o comentário dizia ter
+   * conferido por introspection — mas a chamada real nunca tinha sido feita, e
+   * o GitHub recusa com "Argument 'iterations' on InputObject
+   * 'ProjectV2IterationFieldConfigurationInput' is required". O teste passava
+   * verde porque era contra um fake que aceitava qualquer coisa. Introspection
+   * refeita em 30/08 contra a API de produção: os TRÊS campos são NON_NULL —
+   * `startDate: Date!`, `duration: Int!` e `iterations: [ProjectV2Iteration!]!`
+   * (cada um com `startDate`, `duration` e `title`, todos obrigatórios).
+   *
+   * Criamos o primeiro ciclo junto: um campo de iteração sem nenhuma iteração
+   * é o mesmo estado quebrado do quadro do Jardim (existe, duração 0, e não
+   * funciona) — e o painel não teria sprint corrente para mostrar.
    */
   async criarCampoDeIteracao(input: ConfigurarIteracaoInput): Promise<CampoDeIteracaoCriado> {
     const response = await this.request<{
@@ -807,13 +817,18 @@ export class ProjectV2Client {
             $name: String!
             $duration: Int!
             $startDate: Date!
+            $iterations: [ProjectV2Iteration!]!
           ) {
             createProjectV2Field(
               input: {
                 projectId: $projectId
                 dataType: ITERATION
                 name: $name
-                iterationConfiguration: { duration: $duration, startDate: $startDate }
+                iterationConfiguration: {
+                  duration: $duration
+                  startDate: $startDate
+                  iterations: $iterations
+                }
               }
             ) {
               projectV2Field {
@@ -827,6 +842,12 @@ export class ProjectV2Client {
           name: input.fieldName,
           duration: input.duracaoEmDias,
           startDate: input.inicio,
+          // O primeiro ciclo. O título segue o que o GitHub usa por padrão
+          // ("Sprint 1"), para o quadro não nascer com um nome estranho ao
+          // que o cliente veria se tivesse criado o campo pela interface.
+          iterations: [
+            { startDate: input.inicio, duration: input.duracaoEmDias, title: 'Sprint 1' },
+          ],
         },
       },
       this.token
@@ -842,6 +863,12 @@ export class ProjectV2Client {
    * criado, com duração 0 e nenhuma iteração — existe e não funciona. Recriar
    * o campo perderia o vínculo dos itens que já apontam para ele; por isso a
    * operação é de atualização.
+   *
+   * `iterations` é obrigatório aqui pela MESMA razão que em
+   * `criarCampoDeIteracao`: os dois usam
+   * `ProjectV2IterationFieldConfigurationInput`, cujos três campos são
+   * NON_NULL. Este defeito estava nas duas mutations e passou verde nas duas,
+   * porque os testes eram contra um fake.
    */
   async configurarCampoDeIteracao(
     input: ConfigurarIteracaoInput & { fieldId: string }
@@ -855,11 +882,16 @@ export class ProjectV2Client {
             $fieldId: ID!
             $duration: Int!
             $startDate: Date!
+            $iterations: [ProjectV2Iteration!]!
           ) {
             updateProjectV2Field(
               input: {
                 fieldId: $fieldId
-                iterationConfiguration: { duration: $duration, startDate: $startDate }
+                iterationConfiguration: {
+                  duration: $duration
+                  startDate: $startDate
+                  iterations: $iterations
+                }
               }
             ) {
               projectV2Field {
@@ -872,6 +904,9 @@ export class ProjectV2Client {
           fieldId: input.fieldId,
           duration: input.duracaoEmDias,
           startDate: input.inicio,
+          iterations: [
+            { startDate: input.inicio, duration: input.duracaoEmDias, title: 'Sprint 1' },
+          ],
         },
       },
       this.token

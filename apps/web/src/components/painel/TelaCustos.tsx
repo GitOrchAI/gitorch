@@ -68,8 +68,29 @@ function MotorCard({ m }: { m: MotorCota }) {
       </div>
 
       {m.precisaReligar ? (
-        <div style={{ marginTop: 8, fontSize: 12.5, color: 'var(--gl-faint)' }}>
-          a credencial venceu e a renovação automática não deu conta
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize: 12.5, color: 'var(--gl-faint)' }}>
+            a credencial venceu e a renovação automática não deu conta
+          </div>
+          {/*
+            O caminho para religar SEM tocar em SSH.
+
+            Quem terminou o assistente ficava sem saída: o único lugar que
+            conecta motor é o passo do assistente, e o painel não falava de
+            motor em lugar nenhum. O dono descobria pela missão que morria.
+
+            O botão leva ao assistente, que já roda o login DENTRO do container
+            com o HOME isolado do cliente — reusar aquele fluxo é mais seguro
+            que reescrever aqui a conversa de código de dispositivo, que é onde
+            mora a parte delicada.
+          */}
+          <a
+            href="/setup"
+            className="pn-btn a sm"
+            style={{ display: 'inline-block', marginTop: 10 }}
+          >
+            Religar {m.nome}
+          </a>
         </div>
       ) : semNumero ? (
         <div style={{ marginTop: 8, fontSize: 12.5, color: 'var(--gl-faint)' }}>

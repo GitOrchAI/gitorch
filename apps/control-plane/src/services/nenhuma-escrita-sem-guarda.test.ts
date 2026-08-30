@@ -151,4 +151,89 @@ describe('nenhuma escrita no GitHub sai por fora da guarda', () => {
       expect(motivo.length, `${arquivo} está na lista sem motivo`).toBeGreaterThan(20)
     }
   })
+
+  /**
+   * O OUTRO lado do fail-closed — e o que ele custou.
+   *
+   * As varreduras acima cuidam de escrita SEM guarda. Este cuida do inverso: o
+   * relógio chamando um serviço guardado e esquecendo de entregar o nível do
+   * projeto. Aí o `?? fetchSemPermissao()` faz exatamente o que promete, cai no
+   * nível mais restrito, e o produto para de trabalhar em silêncio.
+   *
+   * Não é hipótese. Medido em produção em 30/08/2026: o Scrum Master saiu de 82
+   * missões concluídas e zero falhas (29/08) para 5 falhas e nenhuma entrega,
+   * todas com "EscritaNaoAutorizadaError: Não posso organizar o quadro" — com os
+   * dois projetos em `cuidar`. `runSmDelegation` e `runSmWatchdog` eram chamados
+   * sem `fetchImpl`, enquanto o PO, poucas linhas acima, já usava
+   * `fetchDoQuadro(project)`.
+   *
+   * Um fail-closed que ninguém vê falhar é um interruptor de desligar o produto.
+   */
+  it('quem chama serviço guardado no relógio entrega o nível do projeto', () => {
+    const servicos = readdirSync(join(RAIZ, 'services'))
+      .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'))
+      .filter((f) =>
+        readFileSync(join(RAIZ, 'services', f), 'utf8').includes('?? fetchSemPermissao()')
+      )
+
+    // Só as funções que ACEITAM `fetchImpl`, e não toda função exportada do
+    // módulo. A diferença importa: `runDuvidaTecnicaViaRa` recebe `repository`
+    // e não escreve nada no GitHub — ali o repositório é contexto para o
+    // prompt do agente. Cobrar dela um fetch com permissão seria um alarme
+    // falso permanente, e alarme falso permanente é como se aprende a ignorar
+    // o vermelho.
+    const guardados = new Set<string>()
+    for (const f of servicos) {
+      const src = readFileSync(join(RAIZ, 'services', f), 'utf8')
+      // Os tipos de opções que têm `fetchImpl` — é o que marca quem escreve.
+      const tiposComFetch = new Set<string>()
+      for (const m of src.matchAll(/(?:interface|type)\s+(\w+)[^{]*\{([\s\S]*?)\n\}/g)) {
+        if (m[1] && m[2] && /\bfetchImpl\??:/.test(m[2])) tiposComFetch.add(m[1])
+      }
+      for (const m of src.matchAll(
+        /export\s+(?:async\s+)?function\s+(\w+)\s*\(([\s\S]*?)\)\s*:/g
+      )) {
+        const nome = m[1]
+        const params = m[2] ?? ''
+        if (!nome) continue
+        const aceitaFetch =
+          /\bfetchImpl\??:/.test(params) || [...tiposComFetch].some((t) => params.includes(t))
+        if (aceitaFetch) guardados.add(nome)
+      }
+    }
+
+    const scheduler = readFileSync(join(RAIZ, 'plugins', 'scheduler.ts'), 'utf8')
+    const semNivel: string[] = []
+
+    for (const nome of guardados) {
+      // Cada chamada `nome({ ... })` do relógio; o corpo vai até o fecha-chaves
+      // no mesmo recuo da abertura, que é como este arquivo é formatado.
+      const re = new RegExp(`\\b${nome}\\(\\{\\n([\\s\\S]*?)\\n(\\s*)\\}\\)`, 'g')
+      for (const m of scheduler.matchAll(re)) {
+        const corpo = m[1] ?? ''
+        // Só cobra de quem escreve em repositório de CLIENTE: uma chamada que
+        // não nomeia repositório nenhum não tem nível para entregar.
+        if (!/repository:/.test(corpo)) continue
+        if (!/fetchImpl:/.test(corpo)) {
+          semNivel.push(`${nome}() — chamada com \`repository:\` e sem \`fetchImpl:\``)
+        }
+      }
+    }
+
+    expect(
+      semNivel,
+      [
+        'Serviço guardado chamado sem o nível de autonomia do projeto.',
+        '',
+        'O default é `?? fetchSemPermissao()`: quem não recebe o nível cai no',
+        'mais restrito e RECUSA toda escrita — o produto para de trabalhar sem',
+        'ninguém perceber. Foi assim que a esteira parou em 30/08/2026.',
+        '',
+        'Passe `fetchImpl: fetchDoQuadro(project)`, como o PO já faz.',
+        '',
+        'Encontrados:',
+        ...semNivel.map((x) => `  ${x}`),
+      ].join('\n')
+    ).toEqual([])
+  })
 })

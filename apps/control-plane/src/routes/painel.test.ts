@@ -652,6 +652,101 @@ describe('Rotas do painel do owner', () => {
     })
   })
 
+  describe('a duração da sprint é do cliente', () => {
+    // Decisão do dono (30/08): "nosso projeto de desenvolvimento 3 dias mas pra
+    // clientes no painel eles decidem de quantos dias". O número deixa de ser
+    // constante nossa no instante em que o produto passa a CRIAR o campo de
+    // iteração no quadro dele.
+    const getSprintDias = (qs = '') =>
+      app.inject({ method: 'GET', url: `/api/v1/painel/sprint-dias${qs}`, headers: authHeaders })
+
+    test('sem sessão → 401', async () => {
+      const res = await app.inject({ method: 'GET', url: '/api/v1/painel/sprint-dias' })
+      expect(res.statusCode).toBe(401)
+    })
+
+    test('GET sem escolha devolve o padrão e diz que ninguém escolheu', async () => {
+      await build(
+        fakePrisma({
+          project: {
+            findFirst: vi.fn().mockResolvedValue({ sprintDias: null, sprintDiasEscolhidoEm: null }),
+          },
+        })
+      )
+      const corpo = (await getSprintDias('?projeto=gitorch')).json()
+      expect(corpo.dias).toBe(3)
+      // A mesma distinção da régua e da autonomia: a tela não pode afirmar uma
+      // decisão que não houve.
+      expect(corpo.escolhido).toBe(false)
+      expect(corpo.padrao).toBe(3)
+    })
+
+    test('GET com escolha devolve o que ele escolheu', async () => {
+      await build(
+        fakePrisma({
+          project: {
+            findFirst: vi
+              .fn()
+              .mockResolvedValue({ sprintDias: 14, sprintDiasEscolhidoEm: new Date() }),
+          },
+        })
+      )
+      const corpo = (await getSprintDias('?projeto=gitorch')).json()
+      expect(corpo.dias).toBe(14)
+      expect(corpo.escolhido).toBe(true)
+    })
+
+    test('POST grava e carimba a escolha', async () => {
+      const update = vi.fn().mockResolvedValue({})
+      await build(
+        fakePrisma({ project: { findFirst: vi.fn().mockResolvedValue({ id: 'p1' }), update } })
+      )
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/painel/sprint-dias',
+        headers: authHeaders,
+        payload: { projeto: 'gitorch', dias: 7 },
+      })
+      expect(res.statusCode).toBe(200)
+      const dados = update.mock.calls[0]![0].data
+      expect(dados.sprintDias).toBe(7)
+      expect(dados.sprintDiasEscolhidoEm).toBeInstanceOf(Date)
+    })
+
+    test('recusa duração que quebraria o quadro em vez de configurá-lo', async () => {
+      // 0 dias cria um ciclo que nunca fecha; 3650 torna "sprint" um nome
+      // bonito para "sem prazo". As duas quebram a promessa do quadro.
+      const update = vi.fn().mockResolvedValue({})
+      await build(
+        fakePrisma({ project: { findFirst: vi.fn().mockResolvedValue({ id: 'p1' }), update } })
+      )
+      for (const dias of [0, -1, 61, 3650, 2.5]) {
+        const res = await app.inject({
+          method: 'POST',
+          url: '/api/v1/painel/sprint-dias',
+          headers: authHeaders,
+          payload: { projeto: 'gitorch', dias },
+        })
+        expect(res.statusCode, `dias=${dias} devia ser recusado`).toBe(400)
+      }
+      expect(update).not.toHaveBeenCalled()
+    })
+
+    test('projeto de outro dono devolve a MESMA frase de inexistente', async () => {
+      // Mesmo anti-vazamento das outras rotas do painel: "não encontrado" e
+      // "não é seu" não podem ser distinguíveis de fora.
+      await build(fakePrisma({ project: { findFirst: vi.fn().mockResolvedValue(null) } }))
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/painel/sprint-dias',
+        headers: authHeaders,
+        payload: { projeto: 'de-outro', dias: 7 },
+      })
+      expect(res.statusCode).toBe(404)
+      expect(res.json().error).toBe('Projeto não encontrado.')
+    })
+  })
+
   describe('a régua é do cliente', () => {
     test('GET devolve a régua, os critérios e se ele escolheu', async () => {
       await build(

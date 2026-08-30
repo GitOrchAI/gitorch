@@ -13,6 +13,9 @@ import {
   sprintCorrente,
   hojeNoFuso,
   CAMPO_DE_SPRINT,
+  DIAS_DE_SPRINT_PADRAO,
+  MINIMO_DE_DIAS_DA_SPRINT,
+  MAXIMO_DE_DIAS_DA_SPRINT,
   type Iteracao,
 } from '../services/garantir-sprint.js'
 import { decidirQuadro } from '../services/resolver-quadro.js'
@@ -868,6 +871,83 @@ export const painelRoutes = async (
         app.log.error(err, `[painel/ordem] não consegui reordenar ${row.wingId}`)
         return reply.code(502).send({ error: 'Não consegui falar com o GitHub agora.' })
       }
+    }
+  )
+
+  // GET /api/v1/painel/sprint-dias — de quantos dias é a sprint deste projeto.
+  //
+  // Decisão do dono (30/08/2026): "nosso projeto de desenvolvimento 3 dias mas
+  // pra clientes no painel eles decidem de quantos dias". Enquanto a duração era
+  // papel, uma constante servia. A partir do momento em que o produto CRIA o
+  // campo de iteração no quadro do cliente, o número passa a valer no quadro
+  // DELE — e aí não é mais decisão nossa.
+  app.get<{ Querystring: { projeto?: string } }>(
+    '/api/v1/painel/sprint-dias',
+    RATE_LIMIT_POLLING,
+    async (request, reply) => {
+      if (!request.user) return reply.code(401).send(NAO_LOGADO)
+      const ownerId = await resolveOwnerId(app.prisma, request.user)
+      const projeto = request.query.projeto?.trim()
+      if (!projeto) return reply.code(400).send({ error: 'Informe o projeto.' })
+
+      const row = await app.prisma.project.findFirst({
+        where: { name: projeto, userId: ownerId, isActive: true },
+        select: { sprintDias: true, sprintDiasEscolhidoEm: true },
+      })
+      if (!row) return reply.code(404).send({ error: 'Projeto não encontrado.' })
+
+      return reply.send({
+        dias: row.sprintDias ?? DIAS_DE_SPRINT_PADRAO,
+        // Separa "ele escolheu isto" de "está no padrão porque ninguém
+        // escolheu" — mesma distinção da régua e da autonomia.
+        escolhido: row.sprintDiasEscolhidoEm !== null,
+        padrao: DIAS_DE_SPRINT_PADRAO,
+        minimo: MINIMO_DE_DIAS_DA_SPRINT,
+        maximo: MAXIMO_DE_DIAS_DA_SPRINT,
+      })
+    }
+  )
+
+  // POST /api/v1/painel/sprint-dias — o cliente escolhe a duração.
+  app.post<{ Body: { projeto?: string; dias?: unknown } }>(
+    '/api/v1/painel/sprint-dias',
+    { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      if (!request.user) return reply.code(401).send(NAO_LOGADO)
+      const projeto = request.body?.projeto?.trim()
+      if (!projeto) return reply.code(400).send({ error: 'Informe o projeto.' })
+
+      // Validar ANTES de tocar no banco. Uma duração de 0 dias cria um ciclo
+      // que nunca fecha e uma de 3650 transforma "sprint" num nome bonito para
+      // "sem prazo": as duas quebram a promessa do quadro em vez de
+      // configurá-lo. Inteiro, porque o GitHub conta iteração em dias.
+      const dias = request.body?.dias
+      if (
+        typeof dias !== 'number' ||
+        !Number.isInteger(dias) ||
+        dias < MINIMO_DE_DIAS_DA_SPRINT ||
+        dias > MAXIMO_DE_DIAS_DA_SPRINT
+      ) {
+        return reply.code(400).send({
+          error: `A sprint precisa ter de ${MINIMO_DE_DIAS_DA_SPRINT} a ${MAXIMO_DE_DIAS_DA_SPRINT} dias.`,
+        })
+      }
+
+      const ownerId = await resolveOwnerId(app.prisma, request.user)
+      const row = await app.prisma.project.findFirst({
+        where: { name: projeto, userId: ownerId, isActive: true },
+        select: { id: true },
+      })
+      // Inexistente e "de outro dono" devolvem a MESMA frase — mesmo
+      // anti-vazamento das outras rotas do painel.
+      if (!row) return reply.code(404).send({ error: 'Projeto não encontrado.' })
+
+      await app.prisma.project.update({
+        where: { id: row.id },
+        data: { sprintDias: dias, sprintDiasEscolhidoEm: new Date() },
+      })
+
+      return reply.send({ dias, escolhido: true })
     }
   )
 

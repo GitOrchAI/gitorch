@@ -13,8 +13,23 @@ import { CampoDeIteracaoAusenteError } from '@gitorch/github-sync'
 //   campo pronto   → NÃO TOCAR      (mexer apagaria a sprint em andamento)
 
 /** Duração padrão da sprint, em dias. Decisão do dono (29/08): trabalhamos
- *  100% com IA, então o ciclo é curto. O cliente pode mudar. */
+ *  100% com IA, então o ciclo é curto.
+ *
+ *  O cliente muda a dele pelo painel (coluna `sprint_dias` em `projects`,
+ *  decisão do dono de 30/08: "nosso projeto de desenvolvimento 3 dias mas pra
+ *  clientes no painel eles decidem de quantos dias"). Este número é o padrão
+ *  de quem nunca escolheu — nunca uma imposição. */
 export const DIAS_DE_SPRINT_PADRAO = 3
+
+/** Os limites do que é uma sprint de verdade.
+ *
+ *  Abaixo de 1 dia o ciclo nunca fecha; acima de 60, "sprint" vira um nome
+ *  bonito para "sem prazo". Os dois extremos quebram a promessa do quadro em
+ *  vez de configurá-lo, então são recusados na porta da rota E no banco
+ *  (CHECK em `projects`) — quem escrever por outro caminho encontra a mesma
+ *  regra. */
+export const MINIMO_DE_DIAS_DA_SPRINT = 1
+export const MAXIMO_DE_DIAS_DA_SPRINT = 60
 
 /** Nome do campo de iteração no quadro do cliente. */
 export const CAMPO_DE_SPRINT = 'Sprint'

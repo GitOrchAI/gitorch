@@ -46,6 +46,7 @@ describe('MIGRATION_LEDGER', () => {
       'esteira-terminal-migration.sql',
       'autonomia-do-projeto-migration.sql',
       'incremento-migration.sql',
+      'sprint-dias-migration.sql',
     ])
   })
 })
