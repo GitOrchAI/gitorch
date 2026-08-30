@@ -701,6 +701,48 @@ export class ProjectV2Client {
   }
 
   /**
+   * Move um item para depois de outro no quadro — a ORDEM que o cliente vê.
+   *
+   * É por aqui que o ajuste feito no painel chega ao GitHub: o dono arrasta o
+   * pedido no nosso painel, e o quadro dele reflete.
+   *
+   * `depoisDe` ausente = vai para o TOPO. É como o GitHub expressa "primeiro",
+   * e não um caso de erro.
+   *
+   * IDEMPOTENTE, e isso foi medido, não presumido (30/08, quadro do dono com
+   * 118 itens): mandar a MESMA ordem duas vezes deixa 118 itens nas duas
+   * vezes. A mutation move, nunca insere — repetir não duplica.
+   */
+  async moverItemDoQuadro(input: {
+    projectId: string
+    itemId: string
+    /** O item que fica ANTES dele. Ausente = topo. */
+    depoisDe?: string
+  }): Promise<void> {
+    await this.request<{ updateProjectV2ItemPosition: { items: { totalCount: number } } }>(
+      {
+        query: `
+          mutation MoverItemDoQuadro($projectId: ID!, $itemId: ID!, $afterId: ID) {
+            updateProjectV2ItemPosition(
+              input: { projectId: $projectId, itemId: $itemId, afterId: $afterId }
+            ) {
+              items(first: 1) { totalCount }
+            }
+          }
+        `,
+        variables: {
+          projectId: input.projectId,
+          itemId: input.itemId,
+          // `null` explícito, e não a chave ausente: é assim que o GitHub
+          // entende "põe no topo".
+          afterId: input.depoisDe ?? null,
+        },
+      },
+      this.token
+    )
+  }
+
+  /**
    * Cria o campo de iteração (Sprint) no quadro.
    *
    * É o que dá eixo de tempo à visão Roadmap do GitHub: sem campo de iteração

@@ -475,6 +475,76 @@ describe('Rotas do painel do owner', () => {
     })
   })
 
+  describe('POST /api/v1/painel/ordem — a primeira rota que ESCREVE no cliente', () => {
+    const PROJETO_COM_QUADRO = {
+      id: 'p1',
+      wingId: 'dono/repo',
+      autonomia: 'cuidar',
+      runtimeConfig: { githubBoardId: 'PVT_1' },
+    }
+    const PEDIDOS = [
+      { pedido: 36, itemId: 'IT_36' },
+      { pedido: 37, itemId: 'IT_37' },
+    ]
+
+    const postOrdem = (payload: unknown) =>
+      app.inject({ method: 'POST', url: '/api/v1/painel/ordem', headers: authHeaders, payload })
+
+    test('sem sessão, 401', async () => {
+      const res = await app.inject({ method: 'POST', url: '/api/v1/painel/ordem', payload: {} })
+      expect(res.statusCode).toBe(401)
+    })
+
+    test('sem projeto ou sem pedidos, 400 com a frase certa', async () => {
+      await build(fakePrisma())
+      expect((await postOrdem({ pedidos: PEDIDOS })).statusCode).toBe(400)
+      expect((await postOrdem({ projeto: 'gitorch', pedidos: [] })).statusCode).toBe(400)
+    })
+
+    test('pedido malformado é DESCARTADO, e sobrando nada vira 400', async () => {
+      // Um item sem itemId não dá para mover; aceitar e ignorar em silêncio
+      // faria o cliente achar que a ordem inteira foi aplicada.
+      await build(fakePrisma())
+      const res = await postOrdem({ projeto: 'gitorch', pedidos: [{ pedido: 1 }, { itemId: '' }] })
+      expect(res.statusCode).toBe(400)
+    })
+
+    test('projeto de OUTRO dono devolve a mesma frase de inexistente', async () => {
+      await build(fakePrisma({ project: { findFirst: vi.fn().mockResolvedValue(null) } }))
+      const res = await postOrdem({ projeto: 'de-outro', pedidos: PEDIDOS })
+      expect(res.statusCode).toBe(404)
+      expect(res.json()).toEqual({ error: 'Projeto não encontrado.' })
+    })
+
+    test('projeto SEM quadro: 409, e a frase diz que é um passo que falta', async () => {
+      await build(
+        fakePrisma({
+          project: {
+            findFirst: vi.fn().mockResolvedValue({ ...PROJETO_COM_QUADRO, runtimeConfig: null }),
+          },
+        })
+      )
+      const res = await postOrdem({ projeto: 'gitorch', pedidos: PEDIDOS })
+      expect(res.statusCode).toBe(409)
+      expect(res.json().error).toContain('ainda não tem quadro')
+    })
+
+    test('no nível "só olhar" a escrita é RECUSADA com o motivo', async () => {
+      // 403, não 500: a recusa não é erro do produto, é a escolha do cliente
+      // valendo — e a tela precisa do motivo para dizer o que fazer.
+      await build(
+        fakePrisma({
+          project: {
+            findFirst: vi.fn().mockResolvedValue({ ...PROJETO_COM_QUADRO, autonomia: 'so_olhar' }),
+          },
+        })
+      )
+      const res = await postOrdem({ projeto: 'gitorch', pedidos: PEDIDOS })
+      expect(res.statusCode).toBe(403)
+      expect(res.json().error).toContain('mude para')
+    })
+  })
+
   describe('a régua é do cliente', () => {
     test('GET devolve a régua, os critérios e se ele escolheu', async () => {
       await build(
