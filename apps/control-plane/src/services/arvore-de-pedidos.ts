@@ -38,6 +38,13 @@ export interface ProjetoDoDono {
   nome: string
   /** "owner/repo". */
   repo: string
+  /**
+   * Id do projeto no banco. Necessário para achar a credencial DELE: o
+   * aplicativo do produto não enxerga quadro de conta pessoal, e nesses casos
+   * vale a credencial que o cliente guardou. Opcional porque nem todo chamador
+   * precisa dela.
+   */
+  id?: string
 }
 
 /**
@@ -50,8 +57,12 @@ export interface ProjetoDoDono {
  * quem lê rápido acha que é do `name` e manda "gitorch" para a API — sem
  * barra, a consulta nunca resolve e TODOS os projetos falham de uma vez.
  */
-export function projetoDaLinha(linha: { name: string; wingId: string }): ProjetoDoDono {
-  return { nome: linha.name, repo: linha.wingId }
+export function projetoDaLinha(linha: {
+  name: string
+  wingId: string
+  id?: string
+}): ProjetoDoDono {
+  return { nome: linha.name, repo: linha.wingId, ...(linha.id ? { id: linha.id } : {}) }
 }
 
 export interface DepsDaArvoreDePedidos {

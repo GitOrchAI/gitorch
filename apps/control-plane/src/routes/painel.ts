@@ -19,6 +19,7 @@ import {
   type Iteracao,
 } from '../services/garantir-sprint.js'
 import { decidirQuadro } from '../services/resolver-quadro.js'
+import { lerCredencialDoProjeto } from '../services/project-credential.js'
 import { lerCotasDosMotores, type MotorCota } from '../services/cotas-dos-motores.js'
 import {
   lerRepositorios,
@@ -176,18 +177,18 @@ export const painelRoutes = async (
       const projetos = args.projeto ? todos.filter((p) => p.nome === args.projeto) : todos
       if (projetos.length === 0) return []
 
-      const token = (await app.engineConnections?.getRawGithubToken(args.ownerId)) ?? null
-      if (!token) return []
-
-      const cliente = new ProjectV2Client({
-        token,
-        // Leitura passa em qualquer nível; o embrulho está aqui porque é a
-        // porta única, não porque esta chamada precise de permissão.
-        fetchImpl: fetchSemPermissao(),
-      })
-
       const saida: Array<{ projeto: string; iteracoes: Iteracao[] }> = []
       for (const projeto of projetos) {
+        // UM cliente POR PROJETO: a credencial que alcança o quadro é dele, não
+        // do dono em geral.
+        const token = await credencialQueAlcanca(args.ownerId, projeto.id)
+        if (!token) continue
+        const cliente = new ProjectV2Client({
+          token,
+          // Leitura passa em qualquer nível; o embrulho está aqui porque é a
+          // porta única, não porque esta chamada precise de permissão.
+          fetchImpl: fetchSemPermissao(),
+        })
         try {
           const quadros = await cliente.listarQuadrosDoRepositorio(partirEndereco(projeto.repo))
           // `repository.projectsV2` só traz quadros ANUNCIADOS naquele
@@ -227,9 +228,35 @@ export const painelRoutes = async (
   const repositoriosDoDono = async (ownerId: string): Promise<ProjetoDoDono[]> => {
     const ps = await app.prisma.project.findMany({
       where: { userId: ownerId, isActive: true },
-      select: { name: true, wingId: true },
+      // O `id` vem junto porque a credencial que alcança o quadro é POR
+      // PROJETO: o aplicativo do produto não enxerga quadro de conta pessoal,
+      // e nesses casos vale a que o cliente guardou.
+      select: { id: true, name: true, wingId: true },
     })
     return ps.map(projetoDaLinha)
+  }
+
+  /**
+   * A credencial que ALCANÇA o quadro deste projeto.
+   *
+   * A do cliente primeiro, a do aplicativo depois — a mesma ordem que o relógio
+   * usa para escrever (`varrerSprintDosProjetos`). Sem isto, ler e escrever
+   * usavam credenciais diferentes: a escrita criava a sprint no quadro de conta
+   * pessoal e a leitura não a enxergava, então o painel dizia que não havia
+   * sprint num quadro que acabara de recebê-la.
+   */
+  const credencialQueAlcanca = async (
+    ownerId: string,
+    projectId?: string
+  ): Promise<string | null> => {
+    if (projectId) {
+      const doCliente = await lerCredencialDoProjeto({
+        prisma: app.prisma as never,
+        projectId,
+      })
+      if (doCliente) return doCliente
+    }
+    return (await app.engineConnections?.getRawGithubToken(ownerId)) ?? null
   }
 
   const lerLeituras =
