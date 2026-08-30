@@ -46,6 +46,15 @@ export interface RepositorioLido {
     vivos: number
     /** Quantos dos vivos têm campo de sprint COM ciclos configurados. */
     comSprint: number
+    /**
+     * O GitHub disse que existem quadros mas NÃO deixou ver quais.
+     *
+     * Acontece em repositório de conta pessoal: o App não enxerga Projects V2
+     * lá, e a resposta vem com `totalCount: 2` e os nós FORBIDDEN. Sem este
+     * campo, `vivos: 0` diria "você não tem quadro" para quem tem dois — a
+     * mentira exata que este painel veio acabar.
+     */
+    naoConsigoVer: boolean
   }
   /** Ramo principal. `null` em repositório ainda sem nenhum commit. */
   ramoPrincipal: string | null
@@ -163,10 +172,15 @@ function partirRepo(repo: string): { owner: string; name: string } | null {
  * ciclos DE VERDADE — o quadro do Jardim tinha o campo criado com duração
  * zero e nenhuma iteração: existia e não funcionava.
  */
-export function contarQuadros(nodes: ReadonlyArray<QuadroBruto | null>): {
+export function contarQuadros(
+  nodes: ReadonlyArray<QuadroBruto | null>,
+  /** O que o GitHub DECLAROU existir, mesmo sem deixar ver. */
+  totalDeclarado?: number
+): {
   total: number
   vivos: number
   comSprint: number
+  naoConsigoVer: boolean
 } {
   const reais = nodes.filter((n): n is QuadroBruto => n !== null && n !== undefined)
   const vivos = reais.filter((q) => q.closed !== true)
@@ -177,7 +191,16 @@ export function contarQuadros(nodes: ReadonlyArray<QuadroBruto | null>): {
         (f.configuration?.iterations?.length ?? 0) > 0
     )
   )
-  return { total: reais.length, vivos: vivos.length, comSprint: comSprint.length }
+  // O GitHub declarou mais quadros do que deixou ver: dizer o total declarado
+  // e avisar que a contagem dos vivos não dá para fazer é mais honesto que
+  // mostrar zero.
+  const declarado = totalDeclarado ?? reais.length
+  return {
+    total: Math.max(declarado, reais.length),
+    vivos: vivos.length,
+    comSprint: comSprint.length,
+    naoConsigoVer: declarado > reais.length,
+  }
 }
 
 /** Traduz a resposta crua do GitHub para a leitura que a tela mostra. */
@@ -191,7 +214,7 @@ export function paraLeitura(bruto: RepositorioBruto, projeto: ProjetoDoDono): Re
     linguagem: bruto.primaryLanguage?.name ?? null,
     pedidosAbertos: bruto.issues?.totalCount ?? 0,
     entregasAbertas: bruto.pullRequests?.totalCount ?? 0,
-    quadros: contarQuadros(bruto.projectsV2?.nodes ?? []),
+    quadros: contarQuadros(bruto.projectsV2?.nodes ?? [], bruto.projectsV2?.totalCount),
     ramoPrincipal: ramo?.name ?? null,
     temVerificacao: (ramo?.target?.checkSuites?.totalCount ?? 0) > 0,
     ultimoCommit: ramo?.target?.committedDate ?? null,
@@ -255,7 +278,18 @@ export async function lerRepositorios(
         data?: { repository?: RepositorioBruto | null } | null
         errors?: Array<{ message?: string }>
       }
-      if (corpo.errors?.length || !corpo.data?.repository) {
+      // ERRO PARCIAL NAO E LEITURA IMPOSSIVEL.
+      //
+      // Medido com a credencial real do dono em 30/08: loureng/patinhas-3d-crafts
+      // responde 200 com o repositorio PRESENTE — 97 pedidos, 6 entregas, 2
+      // quadros — e dois `errors` FORBIDDEN so nos NOS dos quadros (o App nao
+      // enxerga quadro de conta pessoal). A versao anterior derrubava a leitura
+      // inteira por causa disso e mostrava "nao consegui ler" para um
+      // repositorio de onde 97 pedidos tinham acabado de chegar.
+      //
+      // Agora `errors` so derruba quando o repositorio NAO veio. Com ele
+      // presente, vale o que chegou.
+      if (!corpo.data?.repository) {
         leituras.push(
           indisponivel(
             projeto,

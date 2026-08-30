@@ -49,7 +49,7 @@ interface LeituraBruta {
   linguagem?: string | null
   pedidosAbertos?: number
   entregasAbertas?: number
-  quadros?: { total: number; vivos: number; comSprint: number }
+  quadros?: { total: number; vivos: number; comSprint: number; naoConsigoVer?: boolean }
   ramoPrincipal?: string | null
   temVerificacao?: boolean
   ultimoCommit?: string | null
@@ -120,7 +120,13 @@ function OQueEuJaLi() {
                     <div style={{ display: 'flex', gap: 22, marginTop: 18, flexWrap: 'wrap' }}>
                       <Conta rotulo="Pedidos abertos" valor={l.pedidosAbertos} />
                       <Conta rotulo="Entregas abertas" valor={l.entregasAbertas} />
-                      <Conta rotulo="Quadros" valor={l.quadros?.vivos} />
+                      {/* Quando o GitHub diz que há quadros e não deixa ver
+                          quais, mostrar o total com o aviso é honesto; mostrar
+                          "0 vivos" seria dizer que ele não tem quadro. */}
+                      <Conta
+                        rotulo={l.quadros?.naoConsigoVer ? 'Quadros (não consigo ver)' : 'Quadros'}
+                        valor={l.quadros?.naoConsigoVer ? l.quadros.total : l.quadros?.vivos}
+                      />
                     </div>
                     <div
                       style={{
@@ -148,11 +154,13 @@ function OQueEuJaLi() {
                           quadro do gitorch existe e NÃO tem campo de sprint, e
                           o do Jardim tinha o campo com zero ciclos. */}
                       <span>
-                        {(l.quadros?.comSprint ?? 0) > 0
-                          ? 'quadro com sprint configurada'
-                          : (l.quadros?.vivos ?? 0) > 0
-                            ? 'quadro sem sprint'
-                            : 'sem quadro'}
+                        {l.quadros?.naoConsigoVer
+                          ? 'não enxergo os quadros deste repositório'
+                          : (l.quadros?.comSprint ?? 0) > 0
+                            ? 'quadro com sprint configurada'
+                            : (l.quadros?.vivos ?? 0) > 0
+                              ? 'quadro sem sprint'
+                              : 'sem quadro'}
                       </span>
                     </div>
                   </>
