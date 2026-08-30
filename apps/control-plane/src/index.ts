@@ -5,28 +5,11 @@ import { loadEnv } from './config/env.js'
 import { registerPlugins } from './plugins/index.js'
 import { registerRoutes } from './routes/index.js'
 import { webStaticPlugin } from './plugins/web-static.js'
-import { conferirBancoNoArranque, type PrismaParaConferencia } from './services/banco-atrasado.js'
-import { buildTelegramNotifier } from './services/sm-watchdog.js'
-
-/**
- * O canal para falar com o dono da INSTÂNCIA, ou `null` se não houver.
- *
- * Vai direto no chat da instância, sem passar por `resolveNotifyChatId`: aquele
- * caminho resolve o chat de um PROJETO (parte do userId dele), e um banco
- * atrasado não é problema de projeto nenhum — é da instância inteira, e no
- * arranque ainda não há projeto em mãos.
- *
- * Nunca lança: sem chat ligado o aviso fica só no log, que é o que sobra, e é
- * melhor que derrubar o arranque por falta de mensageiro.
- */
-function notificadorDaInstancia(): ((texto: string) => Promise<boolean>) | null {
-  const chatId = process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID']
-  const avisar = buildTelegramNotifier({
-    botToken: process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
-    ...(chatId ? { chatId } : {}),
-  })
-  return avisar ?? null
-}
+import {
+  conferirBancoNoArranque,
+  notificadorDaInstancia,
+  type PrismaParaConferencia,
+} from './services/banco-atrasado.js'
 
 export async function buildApp(): Promise<FastifyInstance> {
   const env = loadEnv()
