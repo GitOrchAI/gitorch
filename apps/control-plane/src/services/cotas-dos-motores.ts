@@ -69,7 +69,17 @@ export async function lerCotasDosMotores(
   ownerId: string
 ): Promise<MotorCota[]> {
   const linhas = await prisma.engineConnection.findMany({
-    where: { userId: ownerId },
+    // `github` NÃO é motor de IA: é a credencial que abre o repositório. Não
+    // tem janela de cota, ninguém escreve percentual para ela, e nenhum leitor
+    // existe — então ela apareceria no card para SEMPRE dizendo "não consegui
+    // ler a cota deste motor", com um botão de tentar de novo que nunca
+    // funcionaria. Exatamente o tipo de estado morto com cara de atual que esta
+    // leva veio matar.
+    //
+    // Deny-list e não allow-list, pela mesma razão que `EngineConnectionService.list`
+    // (engine-connection.ts) usa deny-list: um motor de IA novo aparece sozinho,
+    // sem ninguém precisar lembrar de registrá-lo aqui.
+    where: { userId: ownerId, runtime: { not: 'github' } },
     orderBy: { runtime: 'asc' },
     select: {
       runtime: true,

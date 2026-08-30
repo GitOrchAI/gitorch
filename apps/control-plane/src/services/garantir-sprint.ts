@@ -127,6 +127,24 @@ export async function garantirSprintNoQuadro(
   }
 
   if (!campo) {
+    // JANELA CONHECIDA E NÃO FECHADA (dita aqui para não ser descoberta depois):
+    // entre a leitura acima e a criação abaixo existe um intervalo em que uma
+    // SEGUNDA execução para o mesmo projeto também leria "não existe" e também
+    // criaria. O resultado seriam dois campos "Sprint" no quadro do cliente, e
+    // `getIterationField` passa a enxergar só o primeiro da lista — o outro
+    // vira lixo permanente, sem detecção nem conserto automático.
+    //
+    // O que protege hoje, e até onde: a varredura roda em série dentro do tique,
+    // e `tickEmAndamento` impede dois tiques no MESMO processo. O que NÃO
+    // protege: duas instâncias do control-plane ao mesmo tempo — a trava é um
+    // booleano em memória de processo. Na prática isso significa a janela de
+    // sobreposição de um deploy/restart.
+    //
+    // O que fecharia de verdade: um lock por projeto no banco (SELECT ... FOR
+    // UPDATE) em volta deste bloco, ou idempotência pelo id do campo já gravado
+    // em vez de por nome. Não foi feito nesta rodada porque não dá para provar
+    // sem arriscar criar a duplicata no quadro real do dono — e proteção não
+    // testada é pior que janela conhecida.
     const criado = await cliente.criarCampoDeIteracao({
       projectId: args.projectId,
       fieldName: CAMPO_DE_SPRINT,

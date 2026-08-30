@@ -115,6 +115,21 @@ describe('lerCotasDosMotores', () => {
     expect(m?.semana).toBeNull()
   })
 
+  test('o GitHub NÃO entra na lista de motores', async () => {
+    // `github` é a credencial que abre o repositório, não um motor de IA. Não
+    // tem janela de cota e nenhum leitor escreve percentual para ela — se
+    // entrasse na lista, ficaria para sempre dizendo "não consegui ler a cota
+    // deste motor", com um botão de tentar de novo que nunca funcionaria.
+    // A mesma deny-list que EngineConnectionService.list já aplica.
+    const prisma = prismaCom([])
+    await lerCotasDosMotores(prisma as any, 'owner_1')
+    expect(prisma.engineConnection.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ runtime: { not: 'github' } }),
+      })
+    )
+  })
+
   test('sem número lido, diz que não sabe — nunca zero', async () => {
     // Zero é um número. "Não sei" não é zero: exibir 0% de uso faria o dono
     // achar que tem a cota inteira disponível.
