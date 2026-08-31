@@ -29,7 +29,14 @@ function plan(): BacklogPlan {
   return {
     wish: { number: 100, nodeId: 'I_wish' },
     journeysCount: 2,
-    phases: [{ title: 'Fase 1 — Dados', goal: 'estruturar', rationale: 'base' }],
+    phases: [
+      {
+        title: 'Fase 1 — Dados',
+        goal: 'estruturar',
+        rationale: 'base',
+        usableOutcome: 'O dono filtra os produtos por material e vê o resultado certo.',
+      },
+    ],
     epics: [
       {
         phaseIndex: 0,
@@ -192,6 +199,29 @@ describe('applyBacklog', () => {
     // épico publica quais jornadas cobre (visível ao cliente)
     const epicBody = created[1]!.body
     expect(epicBody).toContain('Covers journeys')
+  })
+
+  // L3-T7: a raiz da "issue rasa". O `usableOutcome` é EXIGIDO do modelo no
+  // schema poPhases e era descartado antes de virar issue — a issue de fase
+  // saía só com Goal e Rationale (prova ao vivo: issue #299). Este teste olha
+  // o CORPO GERADO, não a chamada: se a frase do resultado usável não estiver
+  // impressa, e impressa ANTES do Goal (é a primeira linha que o dono lê),
+  // ele falha.
+  it('corpo da fase publica o resultado usável do cliente, ANTES do Goal', async () => {
+    const { gh, created } = fakeGitHub()
+    const p = plan()
+    p.phases[0]!.usableOutcome = 'O dono filtra os produtos por material e vê o resultado certo.'
+    await applyBacklog({ github: gh, plan: p })
+
+    const phaseBody = created[0]!.body
+    expect(phaseBody).toContain('O dono filtra os produtos por material e vê o resultado certo.')
+
+    const iOutcome = phaseBody.indexOf('O dono filtra os produtos por material')
+    const iGoal = phaseBody.indexOf('**Goal**')
+    const iRationale = phaseBody.indexOf('**Rationale**')
+    expect(iOutcome).toBeGreaterThan(-1)
+    expect(iOutcome).toBeLessThan(iGoal)
+    expect(iGoal).toBeLessThan(iRationale)
   })
 
   it('task com blocker publica "Blocked by"; tasks nascem com a label de tipo p/ delegação contínua do SM', async () => {

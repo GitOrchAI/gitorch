@@ -36,7 +36,13 @@ export interface BacklogPlan {
   wish: IssueRef
   /** Quantas jornadas o RA escreveu (0 = plano sem RA; cobertura não exigida). */
   journeysCount: number
-  phases: Array<{ title: string; goal: string; rationale: string }>
+  /**
+   * `usableOutcome` é a frase, na voz do cliente, do que ele passa a conseguir
+   * fazer quando a fase termina. O schema `poPhases` já a EXIGE do modelo; até
+   * 31/08/2026 este tipo a descartava e a issue de fase nascia só com Goal e
+   * Rationale (issue #299) — a "issue rasa". Fase sem ela é camada técnica.
+   */
+  phases: Array<{ title: string; goal: string; rationale: string; usableOutcome: string }>
   epics: Array<{
     phaseIndex: number
     title: string
@@ -237,7 +243,16 @@ export async function applyBacklog(options: ApplyBacklogOptions): Promise<ApplyB
     const ref = await ensureNode(
       marker,
       phase.title,
-      renderNodeBody([`**Goal**: ${phase.goal}`, `**Rationale**: ${phase.rationale}`], marker),
+      // O resultado usável vem PRIMEIRO: é a linha que o dono lê antes de
+      // qualquer outra e a que diz se a fase é fatia usável ou camada técnica.
+      renderNodeBody(
+        [
+          `**Resultado usável**: ${phase.usableOutcome}`,
+          `**Goal**: ${phase.goal}`,
+          `**Rationale**: ${phase.rationale}`,
+        ],
+        marker
+      ),
       plan.wish.nodeId,
       // Quem produziu este nó foi o PO — visível de relance no quadro.
       [agentLabel('po')]
