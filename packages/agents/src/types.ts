@@ -25,6 +25,8 @@ export interface RuntimeCredentialRef {
 }
 
 export interface AgentMission {
+  waitingStatus?: string | null
+  waitingReason?: string | null
   id: string
   projectId: string
   repository: string

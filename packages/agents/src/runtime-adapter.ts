@@ -39,6 +39,8 @@ export interface RuntimeExecutionRequest {
 }
 
 export interface RuntimeExecutionResult {
+  waitingStatus?: string | null
+  waitingReason?: string | null
   missionId: string
   runtime: F6AgentRuntime
   output: string

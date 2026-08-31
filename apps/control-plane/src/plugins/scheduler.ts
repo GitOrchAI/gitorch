@@ -3462,8 +3462,16 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           const updated = await app.prisma.mission.updateMany({
             where: { id: missionId, status: 'running' },
             data: {
-              status: 'completed',
-              completedAt: new Date(),
+              waitingStatus:
+                (result as unknown as { waitingStatus?: string }).waitingStatus ?? null,
+              waitingReason:
+                (result as unknown as { waitingReason?: string }).waitingReason ?? null,
+              status: (result as unknown as { waitingStatus?: string }).waitingStatus
+                ? 'waiting'
+                : 'completed',
+              completedAt: (result as unknown as { waitingStatus?: string }).waitingStatus
+                ? null
+                : new Date(),
               error: null,
               result: {
                 output: result.output,
@@ -3875,8 +3883,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       }
 
       const claimed = await app.prisma.mission.updateMany({
-        where: { id: mission.id, status: 'pending' },
-        data: { status: 'running', startedAt: new Date() },
+        where: { id: mission.id, status: { in: ['pending', 'waiting'] } },
+        data: {
+          status: 'running',
+          startedAt: new Date(),
+          waitingStatus: null,
+          waitingReason: null,
+        },
       })
       if (claimed.count === 0) continue // outro tick já reivindicou esta missão
 
