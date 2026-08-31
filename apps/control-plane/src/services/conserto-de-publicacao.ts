@@ -360,7 +360,10 @@ export function decidirConsertoDePublicacao(entrada: EntradaDeConserto): Decisao
     chave,
     titulo: montado.titulo,
     campos: montado.campos,
-    corpo: renderIssueBody({ titulo: montado.titulo, ...montado.campos }, chave),
+    // `null` de peso, e não um número: esta tarefa nasce de uma publicação que
+    // falhou, não do roteiro do PO — ninguém a estimou. Inventar um tamanho
+    // aqui seria publicar estimativa que não existe.
+    corpo: renderIssueBody({ titulo: montado.titulo, ...montado.campos }, chave, null),
     // `gitorch:task` é o que o Scrum Master procura para delegar — sem ele a
     // tarefa fica visível no quadro e ninguém a executa. O label de agente
     // diz quem está com a bola agora: quem detectou foi a verificação.

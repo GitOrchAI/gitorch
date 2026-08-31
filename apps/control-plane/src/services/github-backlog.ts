@@ -1,4 +1,9 @@
-import { ProjectV2Client, CampoDeIteracaoAusenteError } from '@gitorch/github-sync'
+import {
+  ProjectV2Client,
+  CampoDeIteracaoAusenteError,
+  CampoNumericoAusenteError,
+  NomeDeCampoEmConflitoError,
+} from '@gitorch/github-sync'
 import { fetchSemPermissao } from './guarda-de-autonomia.js'
 import type { BacklogGitHub, IssueRef } from './backlog-executor.js'
 import { GithubExecutionError } from './github-errors.js'
@@ -32,6 +37,8 @@ export interface GithubBacklogOptions {
   sprintFieldName?: string
   /** nome do campo de status no board (padrão "Status") */
   statusFieldName?: string
+  /** nome do campo numérico de tamanho no board (padrão "Peso") */
+  weightFieldName?: string
   /** mapeamento de colunas do projeto (config por projeto; default nativo). */
   statusColumns?: BoardColumns
   /** duração de cada sprint em dias (config por projeto; padrão 7). */
@@ -63,6 +70,7 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
   })
   const sprintField = options.sprintFieldName ?? 'Sprint'
   const hoje = options.hoje ?? ((): string => hojeNoFuso())
+  const weightField = options.weightFieldName ?? 'Peso'
 
   const rest = async (method: string, path: string, body?: unknown): Promise<unknown> => {
     const response = await f(`https://api.github.com${path}`, {
@@ -185,6 +193,64 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
     return sprintCache
   }
 
+  // Campo numérico "Peso" — a resposta ao "não vejo visualmente no GitHub".
+  // Resolvido UMA vez por execução do plano (o cache também é o que impede uma
+  // segunda tentativa de criação depois da primeira ter dado certo).
+  //
+  // A ordem é ler-depois-criar, e não o contrário, pela cicatriz do campo
+  // Sprint: criar às cegas devolve "Name has already been taken" (confirmado
+  // ao vivo em 31/08/2026) e o produto repetiria isso a cada tique, para
+  // sempre, sem ninguém entender por quê.
+  let pesoCache: string | null | undefined
+
+  const resolvePesoField = async (): Promise<string | null> => {
+    if (pesoCache !== undefined) return pesoCache
+    if (!quadro) return (pesoCache = null)
+    try {
+      const campo = await client.getNumberField({ projectId: quadro, fieldName: weightField })
+      return (pesoCache = campo.fieldId)
+    } catch (error) {
+      if (error instanceof CampoNumericoAusenteError) {
+        // O nome está livre: criar é o conserto certo.
+        //
+        // A falha da CRIAÇÃO não pode subir crua. Quando esta linha roda, o
+        // `applyBacklog` JÁ criou as issues do plano: um `Error` anônimo do
+        // cliente de GraphQL atravessando daqui derruba o plano no meio e
+        // deixa o trabalho pela metade, sem o tipo que o resto do produto
+        // reconhece. O irmão `resolveSprint`, logo acima, embrulha em
+        // `GithubExecutionError` exatamente por isso — e a mensagem original
+        // vai junto, senão ninguém descobre por que o quadro recusou.
+        try {
+          const criado = await client.criarCampoNumerico({
+            projectId: quadro,
+            fieldName: weightField,
+          })
+          return (pesoCache = criado.fieldId)
+        } catch (falhaAoCriar) {
+          throw falhaAoCriar instanceof GithubExecutionError
+            ? falhaAoCriar
+            : new GithubExecutionError(
+                `criarCampoNumerico failed: ${String(falhaAoCriar).slice(0, 200)}`
+              )
+        }
+      }
+      if (error instanceof NomeDeCampoEmConflitoError) {
+        // Alguém já tem um campo "Peso" de outro tipo. Só o dono resolve
+        // (renomeando ou apagando); tentar criar de novo seria o laço eterno.
+        // O card fica sem o número — o corpo da issue continua trazendo o peso
+        // e o plano inteiro NÃO cai por causa da vitrine. O aviso é alto: sem
+        // ele isto seria mascarar.
+        // eslint-disable-next-line no-console
+        console.warn(`[backlog] campo "${weightField}" existe com outro tipo: ${String(error)}`)
+        return (pesoCache = null)
+      }
+      // Rede, 502, token sem autorização de quadro: erro real, sobe.
+      throw error instanceof GithubExecutionError
+        ? error
+        : new GithubExecutionError(`resolvePesoField failed: ${String(error).slice(0, 200)}`)
+    }
+  }
+
   // Milestones "Sprint N" com data de entrega: o ROADMAP visível ao cliente.
   // Cache por número; criação idempotente por título.
   const sprintDays = options.sprintDays ?? 7
@@ -291,6 +357,18 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
         itemId: boardItemId,
         fieldId: sprint.fieldId,
         iterationId: iteration.id,
+      })
+    },
+
+    async setWeight(boardItemId, weight): Promise<void> {
+      if (!quadro || !boardItemId) return
+      const fieldId = await resolvePesoField()
+      if (!fieldId) return
+      await client.setNumberField({
+        projectId: quadro,
+        itemId: boardItemId,
+        fieldId,
+        number: weight,
       })
     },
 

@@ -1,4 +1,11 @@
-import { validateDoD, DOD_FIELD_MAP, type DoDFields } from '@gitorch/cadence'
+import {
+  validateDoD,
+  DOD_FIELD_MAP,
+  ESCALA_DE_PESO,
+  PESO_MAXIMO_DE_SPRINT,
+  type DoDFields,
+  type PesoDeTask,
+} from '@gitorch/cadence'
 import { agentLabel } from './agent-label.js'
 
 // Backlog-executor: as MÃOS determinísticas da Lei "LLM decide, sistema
@@ -30,6 +37,12 @@ export interface BacklogGitHub {
   setStatus?(boardItemId: string, column: 'todo'): Promise<void>
   /** Associa a issue ao milestone "Sprint N" (criado com data se faltar). */
   setMilestone?(issueNumber: number, sprint: number): Promise<void>
+  /**
+   * Grava o PESO da task no campo numérico do card. Opcional pela mesma razão
+   * de `setSprint`/`setStatus`: sem quadro não há card para enfeitar, e o
+   * backlog continua valendo sem a vitrine.
+   */
+  setWeight?(boardItemId: string, weight: PesoDeTask): Promise<void>
 }
 
 export interface BacklogPlan {
@@ -55,6 +68,16 @@ export interface BacklogPlan {
     fields: DoDFields
     /** Índices (em tasks) de dependências "blocked by" declaradas pelo PO. */
     blockedByTaskIndexes?: number[]
+    /**
+     * Tamanho da task na ESCALA_DE_PESO (1,2,3,5,8,13). O schema `poTasks` já
+     * o EXIGE do modelo; até 31/08/2026 este tipo o descartava e o peso só
+     * servia para balancear sprint em `role-rails.ts` — nunca chegava ao
+     * GitHub. O dono: "as issues são rasas... quando é P2, quando é P0? não
+     * vejo visualmente no GitHub" (prova do defeito: issue #311).
+     */
+    weight: PesoDeTask
+    /** Por que este tamanho, citando a evidência. Vai para o corpo da issue. */
+    weightRationale: string
   }>
   roadmap: { sprintGoal: string; assignments: Array<{ taskIndex: number; sprint: number }> }
 }
@@ -78,12 +101,41 @@ export interface ApplyBacklogResult {
   issues: Array<{ marker: string; ref: IssueRef }>
 }
 
-/** Corpo canônico da issue: os 8 campos do DoD, na ordem, + marker invisível. */
-export function renderIssueBody(fields: DoDFields, marker: string): string {
+/** O tamanho da task e o porquê dele, do jeito que vai para o corpo da issue. */
+export interface PesoDaIssue {
+  weight: PesoDeTask
+  rationale: string
+}
+
+/**
+ * Corpo canônico da issue: peso (quando houver) + os 8 campos do DoD, na
+ * ordem, + marker invisível.
+ *
+ * `peso` é obrigatório e ANULÁVEL de propósito — não opcional. Toda issue
+ * nasce por um de dois caminhos: o roteiro do PO, onde o peso é exigido do
+ * modelo, e as issues de conserto/sensor, que não vieram de estimativa
+ * nenhuma. Com um parâmetro opcional, esquecer de passá-lo no caminho do PO
+ * seria invisível — exatamente o defeito que este trabalho conserta. Assim,
+ * cada chamador DECIDE, e o compilador cobra a decisão.
+ *
+ * `peso` não entra no DOD_FIELD_MAP: aquele mapa é a fonte única dos 8 campos
+ * de TEXTO que a LLM preenche em `DoDFields`, e o peso é um número irmão de
+ * `fields`, não um campo dentro dele.
+ */
+export function renderIssueBody(
+  fields: DoDFields,
+  marker: string,
+  peso: PesoDaIssue | null
+): string {
   // Derivado da fonte única do DoD: cabeçalho e valor vêm do MESMO mapa —
   // impossível publicar seção vazia por descasamento de chave.
   const sections = DOD_FIELD_MAP.map(({ key, header }) => `## ${header}\n\n${fields[key]}`)
-  return [`<!-- ${marker} -->`, ...sections].join('\n\n')
+  // O peso vem PRIMEIRO: é o sinal de tamanho que o dono lê antes de abrir o
+  // resto, e sozinho ele não diz nada — vem colado ao porquê.
+  const pesoSection = peso
+    ? [`## Peso\n\n**${peso.weight}** (escala ${ESCALA_DE_PESO.join(', ')})\n\n${peso.rationale}`]
+    : []
+  return [`<!-- ${marker} -->`, ...pesoSection, ...sections].join('\n\n')
 }
 
 /** Corpo simples (fases/épicos/features não carregam DoD de execução). */
@@ -134,6 +186,19 @@ export function validateBacklogPlan(plan: BacklogPlan): string[] {
   plan.tasks.forEach((task, i) => {
     const dod = validateDoD(task.fields)
     if (!dod.ok) problems.push(`tasks[${i}]: ${dod.errors.join('; ')}`)
+    // O TETO DE PESO vira regra aqui. `PESO_MAXIMO_DE_SPRINT` existia
+    // documentado como "acima de 13 não entra" e nenhum código o consultava:
+    // uma task de 21 entrava na sprint e a travava. Rejeitar o PLANO inteiro
+    // (all-or-nothing, como o DoD) é o que faz a task grande demais NÃO entrar
+    // em sprint nenhuma — em vez de entrar e estourar a sprint em silêncio.
+    // Fora da escala também é erro: os buracos (4, 6, 7…) são de propósito.
+    if (!(ESCALA_DE_PESO as readonly number[]).includes(task.weight)) {
+      problems.push(
+        task.weight > PESO_MAXIMO_DE_SPRINT
+          ? `tasks[${i}]: weight ${task.weight} passa do teto de sprint (${PESO_MAXIMO_DE_SPRINT}) — quebre a task antes de planejá-la`
+          : `tasks[${i}]: weight ${task.weight} fora da escala (${ESCALA_DE_PESO.join(', ')})`
+      )
+    }
     if (task.featureIndex < 0 || task.featureIndex >= plan.features.length) {
       problems.push(`tasks[${i}]: featureIndex ${task.featureIndex} out of range`)
     }
@@ -311,7 +376,10 @@ export async function applyBacklog(options: ApplyBacklogOptions): Promise<ApplyB
     const ref = await ensureNode(
       marker,
       task.fields.titulo,
-      renderIssueBody(task.fields, marker) + blockedLine,
+      renderIssueBody(task.fields, marker, {
+        weight: task.weight,
+        rationale: task.weightRationale,
+      }) + blockedLine,
       featureRefs[task.featureIndex]!.nodeId,
       // Só TASK é unidade delegável; a label de TIPO deixa o SM achá-las. A de
       // AGENTE (mesmo prefixo do resto da árvore) diz que quem a produziu foi
@@ -320,6 +388,11 @@ export async function applyBacklog(options: ApplyBacklogOptions): Promise<ApplyB
     )
     taskRefs.push(ref)
     const boardItem = await addToBoardWithStatus(ref.nodeId)
+
+    // O peso no CARD, não só no corpo: "não vejo visualmente no GitHub" é
+    // sobre o quadro. Só a TASK recebe — fase, épico e feature são
+    // checkpoints e somam os filhos; marcá-los duplicaria a conta.
+    if (github.setWeight) await github.setWeight(boardItem, task.weight)
 
     const sprint = sprintByTask.get(i)!
     await github.setSprint(boardItem, sprint)

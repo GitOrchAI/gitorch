@@ -164,6 +164,13 @@ describe('runPoRails', () => {
     expect(plan.phases[0]!.usableOutcome).toBe(
       'O dono filtra os produtos por material e vê o resultado certo.'
     )
+    // L3-T8: peso e o porquê dele são exigidos do modelo no schema poTasks e
+    // tinham que chegar INTEIROS ao BacklogPlan — o tipo os descartava e a
+    // issue nascia sem tamanho.
+    expect(plan.tasks[0]!.weight).toBe(3)
+    expect(plan.tasks[0]!.weightRationale).toBe(
+      'Uma coluna nova e um filtro; o padrão já existe no schema.'
+    )
   })
 
   it('cada passo recebe as decisões dos passos anteriores no contexto', async () => {
