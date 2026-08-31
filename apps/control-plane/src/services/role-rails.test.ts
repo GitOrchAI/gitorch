@@ -159,6 +159,11 @@ describe('runPoRails', () => {
     expect(plan.roadmap.sprintGoal).toBe('Filtrar por material')
     expect(plan.journeysCount).toBe(2)
     expect(plan.wish.number).toBe(100)
+    // L3-T7: o resultado usável é exigido do modelo no schema poPhases; ele
+    // tem que chegar INTEIRO ao BacklogPlan, senão a issue de fase nasce rasa.
+    expect(plan.phases[0]!.usableOutcome).toBe(
+      'O dono filtra os produtos por material e vê o resultado certo.'
+    )
   })
 
   it('cada passo recebe as decisões dos passos anteriores no contexto', async () => {
@@ -187,6 +192,12 @@ describe('runPoRails', () => {
     expect(prompts[3]).toContain('ONE focused change per task')
     // roadmap manda respeitar dependências entre sprints
     expect(prompts[4]).toContain('never lands before its blockers')
+    // L3-T7: o bloco de fases que alimenta épicos/features/tasks/roadmap
+    // carregava só título e goal — o resultado usável, que é o que amarra o
+    // plano ao que o dono passa a conseguir fazer, sumia do contexto.
+    for (const p of prompts.slice(1)) {
+      expect(p).toContain('O dono filtra os produtos por material e vê o resultado certo.')
+    }
   })
 
   // Item 6 (leva B2): `wishText` carrega o texto livre do cliente (título +

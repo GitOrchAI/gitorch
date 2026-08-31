@@ -123,8 +123,12 @@ export async function runPoRails(execute: StepExecutor, input: PoRailsInput): Pr
     execute,
   })) as PoPhasesForm
 
+  // O resultado usável entra no bloco que alimenta épicos, features, tasks e
+  // roadmap: é ele que amarra cada nível ao que o dono passa a conseguir
+  // fazer. Coletar a frase e escondê-la dos passos seguintes devolvia o mesmo
+  // plano raso que ela existe para impedir.
   const phasesBlock = `Phases you decided:\n${phases.phases
-    .map((p, i) => `${i}. ${p.title} — goal: ${p.goal}`)
+    .map((p, i) => `${i}. ${p.title} — goal: ${p.goal} — usable outcome: ${p.usableOutcome}`)
     .join('\n')}`
 
   const journeysNote =
