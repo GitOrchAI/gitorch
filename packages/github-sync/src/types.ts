@@ -45,6 +45,8 @@ export interface GitHubDeliveryEnvelope<TPayload = unknown> {
   payload: TPayload
   receivedAt: string
   body: string
+  mergedAt?: string
+  leadTime?: number
 }
 
 export interface GitHubWorkItem {
@@ -63,6 +65,7 @@ export interface GitHubWorkItem {
   linkedPullRequestNodeIds?: string[]
   wishCreatedAt?: string
   mergedAt?: string
+  leadTime?: number
 }
 
 export interface GitHubDependencyEdge {
@@ -96,6 +99,8 @@ export interface GitHubSyncEvent {
   dependency?: GitHubDependencyEdge
   hierarchy?: GitHubHierarchyEdge
   projectItem?: ProjectV2ItemSnapshot
+  mergedAt?: string
+  leadTime?: number
 }
 
 export interface AvailabilityDecision {
