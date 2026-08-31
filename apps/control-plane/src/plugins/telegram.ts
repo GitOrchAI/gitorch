@@ -23,7 +23,7 @@ import {
   telegramBotUsername,
 } from '../services/telegram-link.js'
 import { AgentQuestionService, type AgentQuestionRecord } from '../services/agent-question.js'
-import { pipelineCheckEnabled } from '../config/pipeline-check.js'
+import { pipelineCheckEnabled, type PipelineErrorMetadata } from '../config/pipeline-check.js'
 
 // O ouvido do bot. Sem ele, o deep link do passo 8 abriria o Telegram, o cliente
 // apertaria Start... e ninguém estaria escutando — o `chat_id` (a única coisa
@@ -105,6 +105,36 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
     }
     return
   }
+
+  app.ready(() => {
+    if ('emitter' in app) {
+      // @ts-ignore
+      app.emitter.on('pipeline.error', async (metadata: PipelineErrorMetadata) => {
+        const ownerEmail = process.env['GITORCH_OWNER_EMAIL']
+        if (!ownerEmail) return
+
+        const user = await app.prisma.user.findUnique({
+          where: { email: ownerEmail },
+          select: { id: true, email: true },
+        })
+        if (!user) return
+
+        const chatId = await resolveNotifyChatId(app.prisma, {
+          userId: user.id,
+          user: { email: user.email },
+        })
+        if (!chatId) return
+
+        const text = `🚨 Ocorreu um erro no passo ${metadata.step}.\nCausa: ${metadata.reason}\nO sistema já fez: ${metadata.mitigationAction}\nPrecisa agir? **${metadata.requiresAction ? 'Sim' : 'Não'}**`
+
+        await sendTelegramMessage({
+          botToken,
+          chatId,
+          text,
+        })
+      })
+    }
+  })
 
   // A porta do desejo pelo mensageiro. O pedido em linguagem de gente vira a
   // MESMA issue oficial que a tela cria (ver routes/index.ts) — quem escreve é
