@@ -1,4 +1,5 @@
 {
+  "//stripe": "stripe TRAVADO em 22.4.0 (versao exata, sem ^) desde 2026-08-31. A 22.5.0 (changelog de 2026-08-10, stripe-node PR #2805, 'Emit Claude Code plugin hint at module load time') passou a escrever no stderr, ao carregar o modulo, uma marcacao <claude-code-hint .../> forjada que imita a marcacao de controle interna do agente, sempre que ve CLAUDECODE ou CLAUDE_CODE_CHILD_SESSION no ambiente. Na pratica e injecao de contexto no nosso agente vinda de uma dependencia de terceiro. A 22.6.0 AINDA TEM o mesmo trecho: atualizar NAO resolve. Antes de soltar o pino ou trocar por faixa, rode grep -rn 'claude-code-hint' no pacote da versao nova. Pino reforcado em pnpm.overrides/overrides/resolutions na raiz.",
   "name": "@gitorch/control-plane",
   "version": "0.1.0",
   "private": true,
@@ -51,7 +52,7 @@
     "jsonwebtoken": "^9.0.3",
     "pino": "^10.3.1",
     "pino-pretty": "^13.1.3",
-    "stripe": "^22.5.0",
+    "stripe": "22.4.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
