@@ -19,16 +19,20 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v6
-      - uses: ./.github/actions/setup-pnpm
-        with:
-          node-version: 22
-          check-latest: false
-      - uses: pnpm/action-setup@v3
-        with:
-          version: 9.4.0
-          cache: pnpm
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      # Aqui havia TRÊS instalações de pnpm: `@v6` avulso, o que o composite rodava
+      # então (`@v4`) e `@v3` avulso — a última sobrescrevendo as anteriores. O pin
+      # 9.4.0 do `@v3` não sobrevivia a nada, e o `cache: pnpm` dele era mais um
+      # input inexistente ("Unexpected input(s) 'cache', valid inputs are
+      # ['version','dest','run_install','package_json_file','standalone']" no run
+      # 33339012691) — `cache` é input do setup-node, que o composite já passa.
+      #
+      # E o `node-version: 22` era ignorado igual ao do sla-tracker: o mesmo run
+      # mostra "node-version: 22" pedido, "node-version: 20.x" aplicado,
+      # "Acquiring 20.20.2". O site já é construído em Node 20 desde sempre; tirar
+      # o número que nunca valeu não muda o build, só para de prometer 22.
+      - name: Setup Node + pnpm
+        uses: ./.github/actions/setup-pnpm
       - run: pnpm install --frozen-lockfile
       - name: Build static site
         working-directory: apps/web
@@ -62,7 +66,18 @@ jobs:
             fi
             echo "OK: $f com assets em $BP"
           done
-      - uses: actions/upload-pages-artifact@v3
+      # Esta action e' `using: composite` — ela mesma nunca aparece no aviso de
+      # Node 20. Quem aparecia era o `actions/upload-artifact` que ela chama por
+      # dentro. ATENCAO ao "atualizar" para v4: NAO resolve nada — o manifesto do
+      # v4 fixa `actions/upload-artifact@ea165f8d...  # v4.6.2`, exatamente o mesmo
+      # SHA node20 que este repo ja usava. So' o v5.0.0 passa a chamar
+      # `actions/upload-artifact@bbbca2dd...  # v7.0.0`, que e' node24.
+      #
+      # Quebra herdada do v4.0.0: arquivos ocultos (dotfiles) deixaram de entrar no
+      # artefato. Inocuo aqui — o que sobe e' `apps/web/out`, gerado pelo build, e
+      # o unico dotfile de apps/web e' o `.gitignore`, que fica fora de `out/`.
+      # Se algum dia for preciso publicar um dotfile, o v5 tem `include-hidden-files`.
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5.0.0
         with:
           path: apps/web/out
   deploy:
@@ -72,25 +87,31 @@ jobs:
       name: github-pages
       url: ${{ steps.d1.outputs.page_url || steps.d2.outputs.page_url || steps.d3.outputs.page_url }}
     steps:
+      # `actions/deploy-pages` rodava no job `deploy`, nao no `build`, entao o aviso
+      # de Node 20 dela saia em anotacao SEPARADA do mesmo run — sao dois avisos,
+      # nao um. Os dois inputs usados abaixo (`timeout`, `error_count`) continuam
+      # existindo no v5; conferido no manifesto, porque o release v5.0.0 nao publicou
+      # nota de migracao v4->v5 (o corpo dele fecha com um comparativo v4.0.5...v4.0.6).
+      #
       # Rigor 2 + auto-cura: a infra do Pages falha com "try again later" de vez
       # em quando. Até 3 tentativas automáticas para uma falha transitória NUNCA
       # deixar o site quebrado (foi o que derrubou o site 2x em 06/07).
       - id: d1
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128  # v5.0.0
         continue-on-error: true
         with: { timeout: 600000, error_count: 25 }
       - if: steps.d1.outcome == 'failure'
         run: echo "Deploy 1 falhou (transitório); tentando de novo em 20s" && sleep 20
       - id: d2
         if: steps.d1.outcome == 'failure'
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128  # v5.0.0
         continue-on-error: true
         with: { timeout: 600000, error_count: 25 }
       - if: steps.d1.outcome == 'failure' && steps.d2.outcome == 'failure'
         run: echo "Deploy 2 falhou; última tentativa em 30s" && sleep 30
       - id: d3
         if: steps.d1.outcome == 'failure' && steps.d2.outcome == 'failure'
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128  # v5.0.0
         with: { timeout: 600000, error_count: 25 }
       # Se as 3 falharem, o job falha (e o smoke nem roda) — vai vermelho, não
       # verde-falso. Mas o esperado é uma das 3 passar e o site se curar sozinho.

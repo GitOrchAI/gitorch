@@ -3,8 +3,14 @@ description: Upload GitOrch CI audit reports
 runs:
   using: composite
   steps:
+    # ATENCAO ao "atualizar" isto para v5: NAO resolve. A release v5.0.0 anuncia
+    # "BREAKING CHANGE: this update supports Node v24.x", mas o manifesto de @v5
+    # ainda declara `using: node20` — as proprias notas do v6 admitem que "v5 had
+    # preliminary support for Node.js 24, however this action was by default
+    # still running on Node.js 20". O minimo que tira esta action do aviso de
+    # depreciacao do Node 20 e' o v6; aqui estamos no v7.
     - name: Upload audit reports
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
       with:
         name: gitorch-ci-audit
         path: |

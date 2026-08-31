@@ -27,19 +27,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           token: ${{ secrets.SECURITY_PAT || github.token }}
 
-      - name: Setup Node
+      # Um passo só, sem `with:`: o composite `setup-pnpm` não declara `inputs`, então
+      # `node-version`/`check-latest` eram descartados com um aviso que não reprova o job,
+      # e o runtime foi sempre o 20.x de dentro dele — o pedido aqui já era '20', então
+      # remover não muda nada, só para de mentir. O `pnpm/action-setup@v3` avulso abaixo
+      # era duplicata: quem instala o pnpm, e em que versão, é .github/actions/setup-pnpm.
+      - name: Setup Node + pnpm
         uses: ./.github/actions/setup-pnpm
-        with:
-          node-version: '20'
-          check-latest: false
-      - uses: pnpm/action-setup@v3
-        with:
-          version: 9.4.0
 
       - name: Install Dependencies
         working-directory: .github/scripts

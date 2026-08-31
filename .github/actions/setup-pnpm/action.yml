@@ -1,12 +1,50 @@
 name: Setup pnpm
 description: Setup Node.js and pnpm cache for GitOrch CI
+
+# Este composite NÃO declara `inputs`, e isso é deliberado.
+#
+# O runtime do CI é único para o monorepo inteiro: quem decide a versão de Node
+# é este arquivo, não cada workflow. Declarar `node-version` como input daria a
+# cada workflow uma versão própria — e, pior, desarmaria a única rede que pegou
+# o problema que existia aqui: com zero inputs, o `actionlint` acusa
+# "input ... is not defined in action" em qualquer `with:` que alguém passe.
+# Com um input declarado, um valor errado passaria calado para sempre.
+#
+# Sintoma real de quando 7 workflows passavam `with: node-version:` mesmo assim
+# (run 33349303373, sla-tracker, 31/08): o runner escrevia
+#   ##[warning]Unexpected input(s) 'node-version', 'check-latest', valid inputs are ['']
+#   node-version: 22        <- o que o workflow pedia
+#   node-version: 20.x      <- o que o composite realmente usou
+#   Acquiring 20.20.2 ...
+# Aviso que não reprova o job: o check ficava verde mentindo a versão.
+#
+# `pnpm/action-setup` SEM `version` é intencional: ele lê `packageManager` do
+# package.json da raiz (`pnpm@9.4.0`). Fixar o número aqui criaria um segundo
+# lugar para atualizar e os dois sairiam do ar em silêncio. E ele vem ANTES do
+# setup-node porque `cache: pnpm` precisa do pnpm já instalado para achar o
+# store — é por isso que este composite basta sozinho, sem passo extra fora.
+#
+# CONVENCAO DE PIN (vale para todo o repositorio): action externa e fixada pelo
+# SHA de 40 do COMMIT, com a versao em comentario ao lado. Motivo: tag flutuante
+# e' MUTAVEL. `pnpm/action-setup@v3`, que este repo usava, nem tag era — era uma
+# BRANCH (refs/tags/v3 da 404, refs/heads/v3 responde), ou seja, conteudo que
+# muda sob os nossos pes sem nenhum aviso. Sem o comentario ninguem sabe qual
+# versao esta rodando, entao os dois andam sempre juntos.
+# Actions internas (`./.github/actions/...`) NAO levam SHA: sao caminho local,
+# versionadas pelo proprio commit do repositorio.
 runs:
   using: composite
   steps:
+    # pnpm v6 e' o alvo correto, nao a sucessora `pnpm/setup`: o README do v6 diz
+    # que `action-setup` segue sendo a action para pnpm v10 e anteriores, e o
+    # nosso `packageManager` e' pnpm@9.4.0 (package.json:18). `pnpm/setup` exige v11.
     - name: Setup pnpm
-      uses: pnpm/action-setup@v4
+      uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86  # v6.0.10
+    # setup-node v5 passou a ligar cache sozinho ao ver `packageManager` no
+    # package.json, e o v6 restringiu esse automatico ao npm. Nada disso nos
+    # atinge porque o `cache: pnpm` abaixo e' EXPLICITO — nao depende da deteccao.
     - name: Setup Node.js
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
       with:
         node-version: 22.x
         cache: pnpm
