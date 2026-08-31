@@ -329,6 +329,45 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
             continue
           }
 
+          if (update.message?.text?.trim().startsWith('/esperas')) {
+            const chatId = update.message?.chat?.id
+            if (chatId !== undefined && chatId !== null) {
+              const waitingMissions = await app.prisma.mission.findMany({
+                where: {
+                  status: 'waiting',
+                  waitingReason: { not: null },
+                },
+                select: {
+                  waitingReason: true,
+                  payload: true,
+                },
+              })
+
+              let text = ''
+              if (waitingMissions.length === 0) {
+                text = '0 entregas aguardando.'
+              } else {
+                const parts = waitingMissions.map((m) => {
+                  const payload = m.payload as {
+                    issueNumber?: number
+                    issue_number?: number
+                  } | null
+                  const issueNumber = payload?.issueNumber ?? payload?.issue_number
+                  const reason = m.waitingReason?.replace(/\n/g, ' ') || 'Motivo não especificado'
+                  return issueNumber ? `#${issueNumber} - ${reason}` : reason
+                })
+                text = `${waitingMissions.length} entregas aguardando: ${parts.join(', ')}`
+              }
+
+              await sendTelegramMessage({
+                botToken,
+                chatId: String(chatId),
+                text,
+              })
+            }
+            continue
+          }
+
           // `/wishlist` continua com a resposta de orientação que já existia na
           // linha principal. Fica DEPOIS do desejo porque são coisas diferentes:
           // aqui só se explica a sintaxe, enquanto `/desejo` e `/quero` abrem o
