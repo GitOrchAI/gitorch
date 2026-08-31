@@ -4,6 +4,7 @@ import type { BacklogGitHub, IssueRef } from './backlog-executor.js'
 import { GithubExecutionError } from './github-errors.js'
 import { createBoardStatus, type BoardColumns } from './board-status.js'
 import { fetchComTeto } from './fetch-com-teto.js'
+import { hojeNoFuso, sprintCorrente, type Iteracao } from './garantir-sprint.js'
 
 // Adapter GitHub REAL do backlog-executor: implementa a superfície BacklogGitHub
 // com REST (issues/labels/busca) + ProjectV2Client (árvore, board, sprint).
@@ -35,6 +36,15 @@ export interface GithubBacklogOptions {
   statusColumns?: BoardColumns
   /** duração de cada sprint em dias (config por projeto; padrão 7). */
   sprintDays?: number
+  /**
+   * O dia de hoje NO FUSO DO DONO (formato do GitHub, YYYY-MM-DD).
+   *
+   * Existe porque `setSprint` precisa saber qual ciclo está correndo para não
+   * deixar task nenhuma fora da sprint, e porque o dia tem que ser o mesmo que
+   * o painel mostra: com UTC, entre 21h e a meia-noite de Brasília quem lê e
+   * quem escreve discordam por até 3 horas.
+   */
+  hoje?: () => string
   fetchImpl?: typeof fetch
 }
 
@@ -52,6 +62,7 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
     fetchImpl: f,
   })
   const sprintField = options.sprintFieldName ?? 'Sprint'
+  const hoje = options.hoje ?? ((): string => hojeNoFuso())
 
   const rest = async (method: string, path: string, body?: unknown): Promise<unknown> => {
     const response = await f(`https://api.github.com${path}`, {
@@ -135,11 +146,15 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
     : null
 
   // Cache do campo de iteração (resolvido uma vez por execução do plano).
-  let sprintCache: { fieldId: string; iterations: Array<{ id: string }> } | null | undefined
+  //
+  // Guarda a iteração INTEIRA (título, início e duração), e não só o id: sem as
+  // datas não dá para saber qual ciclo está correndo, e era por isso que toda
+  // task além do horizonte de iterações configuradas saía sem sprint nenhuma.
+  let sprintCache: { fieldId: string; iterations: Iteracao[] } | null | undefined
 
   const resolveSprint = async (): Promise<{
     fieldId: string
-    iterations: Array<{ id: string }>
+    iterations: Iteracao[]
   } | null> => {
     if (sprintCache !== undefined) return sprintCache
     if (!quadro) return (sprintCache = null)
@@ -244,11 +259,33 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
     async setSprint(boardItemId, sprintNumber): Promise<void> {
       const sprint = await resolveSprint()
       if (!sprint) return
-      // Sprint N → N-ésima iteração configurada no board; além do horizonte
-      // de iterações existentes, fica sem iteração (o milestone datado cobre).
-      const iteration = sprint.iterations[sprintNumber - 1]
-      if (!iteration) return
       if (!quadro || !boardItemId) return
+
+      // Sprint N → N-ésima iteração configurada no board. O caminho feliz.
+      //
+      // Quando N passa do que existe, o comportamento anterior era `return`
+      // mudo — e não era caso raro: medido em 31/08/2026, o quadro #2 do dono
+      // tinha UMA iteração configurada, então TODA task de sprint 2 ou adiante
+      // saía sem ciclo, sem erro e sem log. O card aparecia no quadro com o
+      // campo Sprint vazio e não havia como descobrir por quê.
+      //
+      // Agora cai no ciclo que está correndo hoje: é a sprint que o cliente vê
+      // no painel, e ter a task lá é mais verdadeiro que não ter ciclo nenhum.
+      const iteration =
+        sprint.iterations[sprintNumber - 1] ?? sprintCorrente(sprint.iterations, hoje())
+      if (!iteration) {
+        // O último caso possível: nem a N-ésima existe, nem há ciclo correndo
+        // hoje (o intervalo entre sprints). Aqui não há iteração certa para
+        // escolher — mas o silêncio é que era o defeito, então isto é DITO.
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[backlog] item ${boardItemId} ficou fora da sprint ${sprintNumber}: ` +
+            `o quadro tem ${sprint.iterations.length} iteração(ões) configurada(s) e ` +
+            `nenhuma está correndo em ${hoje()}. O milestone datado continua valendo.`
+        )
+        return
+      }
+
       await client.setIterationField({
         projectId: quadro,
         itemId: boardItemId,

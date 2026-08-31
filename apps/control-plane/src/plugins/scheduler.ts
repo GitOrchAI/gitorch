@@ -108,6 +108,7 @@ const MINUTOS_ATE_ALERTAR_TICK_QUEBRADO = 5
 import type { AchadoDeInfra } from '../services/incidente-ci.js'
 import { renderIssueBody } from '../services/backlog-executor.js'
 import type { DoDFields } from '@gitorch/cadence'
+import { EscritaNaoAutorizadaError } from '@gitorch/cadence'
 import {
   abrirSessao,
   sessoesVivas,
@@ -236,6 +237,11 @@ import {
 } from '../services/guarda-de-autonomia.js'
 import { garantirSprintDosProjetos } from '../services/garantir-sprint-dos-projetos.js'
 import { garantirSprintNoQuadro, hojeNoFuso } from '../services/garantir-sprint.js'
+import {
+  ETIQUETAS_DE_QUEM_ESTA_COM_A_BOLA,
+  levantarTrabalhoAtivo,
+  preencherSprintCorrente,
+} from '../services/sprint-com-itens.js'
 import { decidirQuadro } from '../services/resolver-quadro.js'
 import { registrarSePronto } from '../services/incremento.js'
 import { fetchComTeto } from '../services/fetch-com-teto.js'
@@ -7566,6 +7572,216 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     }
   }
 
+  /**
+   * Põe DENTRO da sprint o trabalho que o produto tem em mãos agora.
+   *
+   * A irmã de cima (`varrerSprintDosProjetos`) garante que o CICLO existe.
+   * Esta garante que ele não fica vazio. Eram metades do mesmo trabalho, e só
+   * a primeira tinha sido feita: medido em 31/08/2026 no quadro #2 do dono,
+   * 122 itens e 4 com o campo Sprint preenchido — os 4 criados naquele dia,
+   * porque `setSprint` só dispara no instante em que o Produto monta a árvore.
+   * O que já estava no quadro nunca entrava em ciclo nenhum, e o painel
+   * anunciava "Sprint 1 · 30 ago a 1 set" sem um item dentro.
+   *
+   * NÃO roda a cada tique. Uma sprint dura dias; entrar no ciclo dez minutos
+   * depois de o trabalho começar é indistinguível de entrar na hora, e a cada
+   * minuto seriam cinco chamadas por projeto ao GitHub para, quase sempre,
+   * não mudar nada.
+   *
+   * Nunca rejeita: um projeto que falha não derruba o tique nem os outros.
+   */
+  const CADENCIA_PADRAO_DOS_ITENS_DA_SPRINT_MS = 10 * 60_000
+  const CADENCIA_DOS_ITENS_DA_SPRINT_MS = (() => {
+    const bruto = process.env['GITORCH_SPRINT_ITENS_CADENCIA_MS']
+    if (bruto === undefined) return CADENCIA_PADRAO_DOS_ITENS_DA_SPRINT_MS
+    const lido = Number(bruto)
+    // Mesma cicatriz de `GITORCH_RECONCILIACAO_CADENCIA_MS`: `Number(x) ?? padrão`
+    // NÃO protege nada — string vazia vira 0, texto vira NaN, negativo passa
+    // inteiro, e nos três casos `agora - ultima < cadência` é sempre falsa. A
+    // varredura passaria a rodar a CADA TIQUE, ou seja, cinco chamadas por
+    // projeto ao GitHub por minuto, por causa de um erro de digitação.
+    if (!Number.isFinite(lido) || lido <= 0) {
+      app.log.warn(
+        `[Scheduler] GITORCH_SPRINT_ITENS_CADENCIA_MS inválido ('${bruto}'); ` +
+          `usando o padrão de ${CADENCIA_PADRAO_DOS_ITENS_DA_SPRINT_MS}ms`
+      )
+      return CADENCIA_PADRAO_DOS_ITENS_DA_SPRINT_MS
+    }
+    return lido
+  })()
+  let ultimaVarreduraDeItensDaSprint = 0
+
+  /**
+   * As issues abertas em que algum agente está com a bola.
+   *
+   * UMA CHAMADA POR ETIQUETA porque o parâmetro `labels` da API do GitHub é
+   * E, não OU: mandar as três juntas traria só as issues que têm as três ao
+   * mesmo tempo, que é sempre nenhuma. São três chamadas a cada dez minutos.
+   */
+  /**
+   * Itens por página e teto de páginas: mil issues abertas POR ETIQUETA.
+   *
+   * O teto existe para não girar para sempre num repositório absurdo, e é
+   * generoso de propósito — `gitorch:agent:sm`, `:jules` e `:qa` só marcam o
+   * que está em execução AGORA; mil delas abertas ao mesmo tempo já é um
+   * estado que o dono precisa saber, e é justamente o que o aviso diz.
+   */
+  const ISSUES_POR_PAGINA = 100
+  const MAX_PAGINAS_DE_ISSUES = 10
+
+  const issuesComEtiquetaDeExecucao = async (
+    repo: string,
+    githubToken: string,
+    /** Chamado quando o teto cortou a leitura de uma etiqueta. */
+    onTruncado?: (etiqueta: string, lidas: number) => void
+  ): Promise<number[]> => {
+    const numeros = new Set<number>()
+    for (const etiqueta of ETIQUETAS_DE_QUEM_ESTA_COM_A_BOLA) {
+      let lidas = 0
+      // Começa VERDADEIRO: só vira falso quando uma página volta incompleta,
+      // que é a única prova de que a lista acabou. Sair do laço pelo teto
+      // deixa o aviso de pé — o lado seguro é avisar a mais.
+      let cortou = true
+      for (let pagina = 1; pagina <= MAX_PAGINAS_DE_ISSUES; pagina++) {
+        // PAGINA DE VERDADE. Sem `page`, o GitHub devolve só as cem primeiras
+        // e o resto SOME — sem erro e sem log. É o mesmo defeito que o
+        // `items(first: 100)` do quadro tinha até hoje de manhã, e não era
+        // teórico lá: 18 de 118 itens sumiam, incluindo as issues que o dev
+        // assíncrono estava trabalhando naquele instante.
+        //
+        // O fim da lista é detectado pela página INCOMPLETA, e não pelo header
+        // `Link`, porque `ghGet` devolve o JSON já lido — trocar a assinatura
+        // dele para expor headers mexeria em todas as outras leituras do
+        // relógio. Os dois critérios dizem a mesma coisa: quando o `Link` não
+        // traz `rel="next"`, a página veio com menos de `per_page`. O custo é
+        // no máximo uma chamada a mais, quando o total é múltiplo exato de 100.
+        const lista = (await ghGet(
+          `/repos/${repo}/issues?state=open&per_page=${ISSUES_POR_PAGINA}` +
+            `&page=${pagina}&labels=${encodeURIComponent(etiqueta)}`,
+          githubToken
+        )) as Array<{ number?: number; pull_request?: unknown }> | null
+        const recebidas = lista?.length ?? 0
+        lidas += recebidas
+        for (const item of lista ?? []) {
+          // A rota `/issues` devolve PULL REQUEST junto (o GitHub trata PR como
+          // issue). O PR que importa já entra pela sessão viva, com o motivo
+          // certo; deixá-lo entrar aqui de novo trocaria o motivo no relatório.
+          if (typeof item.number === 'number' && !item.pull_request) numeros.add(item.number)
+        }
+        if (recebidas < ISSUES_POR_PAGINA) {
+          cortou = false
+          break
+        }
+      }
+      // Teto silencioso recria o defeito que a paginação veio consertar, só
+      // que mais tarde e maior. Mesmo contrato do `onTruncado` do quadro.
+      if (cortou) onTruncado?.(etiqueta, lidas)
+    }
+    return [...numeros]
+  }
+
+  const varrerItensDaSprint = async () => {
+    if (Date.now() - ultimaVarreduraDeItensDaSprint < CADENCIA_DOS_ITENS_DA_SPRINT_MS) return
+    ultimaVarreduraDeItensDaSprint = Date.now()
+
+    const projetos = await app.prisma.project.findMany({
+      where: { isActive: true },
+      select: { id: true, name: true, wingId: true, autonomia: true, userId: true },
+    })
+
+    // EM SÉRIE, pelo mesmo motivo da varredura irmã: dois projetos do mesmo
+    // dono compartilham a credencial, e uma renovação no meio da outra derruba
+    // as duas.
+    for (const p of projetos) {
+      try {
+        const doCliente = await lerCredencialDoProjeto({ prisma: app.prisma, projectId: p.id })
+        const token =
+          doCliente ??
+          (p.userId ? ((await app.engineConnections?.getRawGithubToken(p.userId)) ?? null) : null)
+        if (!token) {
+          // Ausência DITA, não silenciada — a mesma disciplina da varredura
+          // irmã, que devolve `sem_credencial` em vez de sumir com o projeto.
+          // Sem esta linha o projeto simplesmente não aparece, e "não tentei"
+          // fica igual a "tentei e estava tudo certo". Não é `warn` de defeito
+          // nosso: é aviso de que falta uma ação do dono.
+          app.log.info(
+            `[Scheduler] sprint de ${p.wingId} não preenchida: ` +
+              `não há credencial que alcance este repositório`
+          )
+          continue
+        }
+
+        // Descobrir o quadro é LEITURA: vai com teto de tempo, sem guarda de
+        // escrita. Sem teto, uma conexão pendurada trava o tique inteiro.
+        const leitor = new ProjectV2Client({
+          token,
+          fetchImpl: fetchComTeto(fetchSemPermissao(), TIMEOUT_DE_CHAMADA_GITHUB_MS),
+        })
+        const [owner, repo] = p.wingId.split('/')
+        const quadros = await leitor.listarQuadrosDoRepositorio({
+          owner: owner ?? '',
+          repo: repo ?? '',
+        })
+        const decisao = decidirQuadro({ candidatos: quadros.map((q) => ({ ...q, linkado: true })) })
+        if (decisao.acao !== 'usar' || !decisao.quadro) continue
+
+        const relatorio = await preencherSprintCorrente(
+          {
+            // ESCREVE no quadro do cliente: nível daquele projeto, lido na
+            // hora da chamada (o dono pode mudar pelo painel a qualquer
+            // momento e a mudança não pode esperar um ciclo).
+            quadro: new ProjectV2Client({
+              token,
+              fetchImpl: fetchDoRepositorio({
+                nivel: () => p.autonomia,
+                timeoutMs: TIMEOUT_DE_CHAMADA_GITHUB_MS,
+              }),
+            }),
+            nivel: () => p.autonomia,
+            hoje: () => hojeNoFuso(),
+            trabalhoAtivo: () =>
+              levantarTrabalhoAtivo({
+                sessoesVivas: () =>
+                  app.prisma.devSession.findMany({
+                    where: { projectId: p.id, closedAt: null },
+                    select: { issueNumber: true, pullRequestNumber: true },
+                  }),
+                issuesComEtiquetaDeExecucao: () =>
+                  issuesComEtiquetaDeExecucao(p.wingId, token, (etiqueta, lidas) => {
+                    // O teto mordeu: o que ficou além dele não entra na sprint
+                    // desta passada, e ninguém descobriria sozinho.
+                    app.log.warn(
+                      `[Scheduler] sprint de ${p.wingId}: não li a lista inteira de ` +
+                        `"${etiqueta}", parei em ${lidas} pedido(s) abertos — ` +
+                        `o que ficou além disso não entrou no ciclo desta passada.`
+                    )
+                  }),
+              }),
+          },
+          { projectId: decisao.quadro.id }
+        )
+
+        // Só o que MUDOU vira linha de log — e o corte de leitura, que é
+        // aviso sobre a própria resposta estar incompleta.
+        if (relatorio.entraram.length > 0 || relatorio.leituraIncompleta) {
+          app.log.info(`[Scheduler] sprint de ${p.wingId}: ${relatorio.oQueFiz}`)
+        }
+      } catch (err) {
+        // A recusa da guarda NÃO é defeito: é o produto obedecendo ao nível
+        // que o cliente escolheu. Misturar as duas faria um "só olhar"
+        // legítimo aparecer como falha e esconderia a falha de verdade.
+        if (err instanceof EscritaNaoAutorizadaError) {
+          app.log.debug(`[Scheduler] sprint de ${p.wingId} não preenchida: ${err.message}`)
+          continue
+        }
+        app.log.warn(
+          err,
+          `[Scheduler] não consegui pôr o trabalho de ${p.wingId} na sprint; tenta na próxima passada`
+        )
+      }
+    }
+  }
+
   const tick = async () => {
     // PRIMEIRO de tudo: um token do GitHub vencido no meio do tique derruba
     // qualquer missão que precise dele (materializeToHome recusa e a missão
@@ -7652,6 +7868,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // porque a sprint precisa existir ANTES de o Produto pendurar tarefa nela.
     await varrerSprintDosProjetos().catch((err) =>
       app.log.error(err, '[Scheduler] varredura de sprint falhou; tenta no próximo tick')
+    )
+    // LOGO DEPOIS, e nesta ordem: o ciclo precisa existir antes de ter o que
+    // pôr dentro dele. Na primeira passada de um quadro novo, a de cima cria a
+    // sprint e esta já a preenche na mesma volta do relógio.
+    await varrerItensDaSprint().catch((err) =>
+      app.log.error(err, '[Scheduler] preenchimento da sprint falhou; tenta no próximo tick')
     )
     await sweepExpiredEnvironments()
     const now = new Date()
