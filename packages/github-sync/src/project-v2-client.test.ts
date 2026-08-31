@@ -748,3 +748,209 @@ test('o quadro traz `closed`, que é o que barra quadro arquivado', async () => 
     { id: 'PVT_morto', number: 3, title: 'antigo', closed: true },
   ])
 })
+
+// ---------------------------------------------------------------------------
+// Paginação do quadro. Medido em 31/08 no quadro do dono: `items(first: 100)`
+// sem cursor trazia 100 de 118. Os 18 que sobravam não davam erro — sumiam. E
+// eram justamente as issues #305 a #344, entre elas as que o dev assíncrono
+// estava trabalhando naquele instante.
+// ---------------------------------------------------------------------------
+
+/** Uma página de resposta do GraphQL, no formato que o GitHub devolve. */
+function paginaDeItens(
+  nodes: Array<{ id: string; numero: number; iteracao?: string | null }>,
+  proxima: string | null
+) {
+  return {
+    data: {
+      node: {
+        items: {
+          pageInfo: { hasNextPage: proxima !== null, endCursor: proxima },
+          nodes: nodes.map((n) => ({
+            id: n.id,
+            content: { number: n.numero },
+            fieldValueByName: n.iteracao ? { iterationId: n.iteracao } : null,
+          })),
+        },
+      },
+    },
+  }
+}
+
+test('listarItensDoQuadro traz TODAS as páginas, não só a primeira', async () => {
+  const cursores: Array<string | null> = []
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async (request) => {
+      const vars = request.variables as { cursor: string | null }
+      cursores.push(vars.cursor)
+      // Primeira volta devolve 2 itens e diz que há mais; a segunda fecha.
+      return vars.cursor === null
+        ? paginaDeItens(
+            [
+              { id: 'PVTI_1', numero: 36 },
+              { id: 'PVTI_2', numero: 37 },
+            ],
+            'CURSOR_2'
+          )
+        : paginaDeItens([{ id: 'PVTI_3', numero: 344 }], null)
+    },
+  })
+
+  const itens = await client.listarItensDoQuadro('PVT_1')
+
+  // O item da segunda página é o que sumia. Sem paginação, este teste falha
+  // com 2 itens em vez de 3, e o pedido 344 nunca aparece.
+  expect(itens.map((i) => i.pedido)).toEqual([36, 37, 344])
+  expect(cursores).toEqual([null, 'CURSOR_2'])
+})
+
+test('a query de itens PEDE a próxima página — o TEXTO, não só o mock', async () => {
+  // Este teste existe porque o mock deste arquivo é CEGO para a query: ele
+  // decide a resposta olhando `variables.cursor` e nunca lê o texto enviado.
+  // Prova feita à mão: tirando `after: $cursor` da query, os três testes de
+  // paginação acima continuam VERDES — e contra o GitHub real toda página
+  // volta a ser a primeira, que é o defeito dos 18 itens sumidos de novo.
+  // Aqui o objeto do exame é a query, não o resultado.
+  const calls: GraphQLRequest[] = []
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async (request) => {
+      calls.push(request)
+      return paginaDeItens([{ id: 'PVTI_1', numero: 36 }], null)
+    },
+  })
+
+  await client.listarItensDoQuadro('PVT_1')
+
+  const query = calls[0]!.query
+  expect(query).toContain('$cursor: String')
+  expect(query).toContain('after: $cursor')
+  expect(query).toContain('pageInfo { hasNextPage endCursor }')
+})
+
+test('sem campo de sprint o seletor NÃO é pedido — diretiva, não nome inventado', async () => {
+  // A versão anterior mandava um espaço como nome de campo e CONTAVA com o
+  // GitHub responder `fieldValueByName: null` sem erro. Isso é comportamento
+  // de servidor, não contrato: nenhum teste consegue prová-lo, e este arquivo
+  // já carrega a cicatriz de `criarCampoDeIteracao`, que passava verde contra
+  // um fake permissivo enquanto a API real recusava a chamada.
+  //
+  // `@include(if:)` é built-in da especificação do GraphQL (Seção 3, sobre
+  // FIELD): com `if: false` o seletor não é executado, e nada mais depende de
+  // como o servidor trata um nome que não existe.
+  const calls: GraphQLRequest[] = []
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async (request) => {
+      calls.push(request)
+      return paginaDeItens([{ id: 'PVTI_1', numero: 36 }], null)
+    },
+  })
+
+  await client.listarItensDoQuadro('PVT_1')
+  await client.listarItensDoQuadro('PVT_1', { campoDeSprint: 'Sprint' })
+
+  expect(calls[0]!.query).toContain('fieldValueByName(name: $campo) @include(if: $querSprint)')
+  // Quem não quer a sprint desliga o seletor e não manda nome nenhum: o
+  // espaço mágico deixou de existir.
+  expect(calls[0]!.variables.querSprint).toBe(false)
+  expect(calls[0]!.variables.campo).toBe('')
+  // Quem quer, liga e manda o nome de verdade.
+  expect(calls[1]!.variables.querSprint).toBe(true)
+  expect(calls[1]!.variables.campo).toBe('Sprint')
+})
+
+test('listarItensDoQuadro devolve a sprint de cada item na mesma consulta', async () => {
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async () =>
+      paginaDeItens(
+        [
+          { id: 'PVTI_1', numero: 36, iteracao: 'iter_a' },
+          { id: 'PVTI_2', numero: 37 },
+        ],
+        null
+      ),
+  })
+
+  const itens = await client.listarItensDoQuadro('PVT_1', { campoDeSprint: 'Sprint' })
+
+  // Quem já está no ciclo e quem não está, sem uma segunda volta ao GitHub.
+  expect(itens).toEqual([
+    { itemId: 'PVTI_1', pedido: 36, iteracaoId: 'iter_a' },
+    { itemId: 'PVTI_2', pedido: 37, iteracaoId: null },
+  ])
+})
+
+/**
+ * O teto de páginas do cliente. Não é importável (é privado), então o valor
+ * vive aqui e os testes provam que o laço para exatamente nele.
+ */
+const PAGINAS_ATE_O_TETO = 20
+
+// Os dois testes seguintes andam EM PAR e de propósito. Nos dois o cliente lê
+// as mesmas 20 páginas e devolve os mesmos 20 itens: pelo resultado, "acabou"
+// e "cortei no teto" são indistinguíveis. Só o aviso os separa. Um teste
+// sozinho passaria com um `onTruncado` disparado sempre — ou nunca.
+
+test('listarItensDoQuadro AVISA quando o teto de páginas cortou a leitura', async () => {
+  // Um quadro que nunca acaba: toda página diz que há próxima.
+  const cursores: Array<string | null> = []
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async (request) => {
+      const vars = request.variables as { cursor: string | null }
+      cursores.push(vars.cursor)
+      // Cursor novo a cada volta: se o laço reenviasse o mesmo, a lista de
+      // cursores denunciaria — girar na mesma página gasta cota e não anda.
+      return paginaDeItens(
+        [{ id: `PVTI_${cursores.length}`, numero: cursores.length }],
+        `CURSOR_${cursores.length}`
+      )
+    },
+  })
+
+  const avisos: number[] = []
+  const itens = await client.listarItensDoQuadro('PVT_1', {
+    onTruncado: (lidos) => avisos.push(lidos),
+  })
+
+  // Para no teto em vez de girar para sempre...
+  expect(cursores).toHaveLength(PAGINAS_ATE_O_TETO)
+  expect(cursores[0]).toBeNull()
+  expect(cursores[1]).toBe('CURSOR_1')
+  expect(cursores[PAGINAS_ATE_O_TETO - 1]).toBe(`CURSOR_${PAGINAS_ATE_O_TETO - 1}`)
+  expect(itens).toHaveLength(PAGINAS_ATE_O_TETO)
+  // ...e avisa UMA vez, com o número exato do que conseguiu ler. Truncar em
+  // silêncio recriaria o defeito que a paginação veio consertar.
+  expect(avisos).toEqual([PAGINAS_ATE_O_TETO])
+})
+
+test('listarItensDoQuadro NÃO avisa quando o quadro acaba na última página permitida', async () => {
+  // O vizinho de porta do caso acima: mesmas 20 páginas, mesmos 20 itens, só
+  // que a última diz que não há próxima. O quadro acabou, não foi cortado.
+  let paginas = 0
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async () => {
+      paginas++
+      const ultima = paginas === PAGINAS_ATE_O_TETO
+      return paginaDeItens(
+        [{ id: `PVTI_${paginas}`, numero: paginas }],
+        ultima ? null : `CURSOR_${paginas}`
+      )
+    },
+  })
+
+  const avisos: number[] = []
+  const itens = await client.listarItensDoQuadro('PVT_1', {
+    onTruncado: (lidos) => avisos.push(lidos),
+  })
+
+  expect(paginas).toBe(PAGINAS_ATE_O_TETO)
+  expect(itens).toHaveLength(PAGINAS_ATE_O_TETO)
+  // Alarme falso aqui é pior que nenhum alarme: treina quem chama a ignorar
+  // o aviso do dia em que a leitura de verdade for cortada.
+  expect(avisos).toEqual([])
+})

@@ -856,7 +856,53 @@ export const painelRoutes = async (
         // no quadro é descartado com aviso, e não inventa item: mover algo que
         // não existe ali daria erro do GitHub no meio da fila, deixando a
         // ordem pela metade.
-        const itens = await cliente.listarItensDoQuadro(quadroId)
+        //
+        // O teto de páginas do cliente pode cortar a leitura num quadro
+        // enorme. Quando corta, a lista fica incompleta E ESTA ROTA PRECISA
+        // SABER: sem isso, um pedido que existe no quadro cai em
+        // `foraDoQuadro` e o dono lê "não está no quadro" sobre algo que está.
+        // Não pedimos `campoDeSprint`: aqui só se traduz número em item, e
+        // pedir o campo de iteração junto seria pagar por um dado que ninguém
+        // usa neste caminho.
+        let leituraIncompleta = false
+        let itensLidos = 0
+        const itens = await cliente.listarItensDoQuadro(quadroId, {
+          onTruncado: (lidos) => {
+            leituraIncompleta = true
+            itensLidos = lidos
+          },
+        })
+
+        // O CORTE É REGISTRADO AQUI, antes de qualquer resposta, e de
+        // propósito: o 409 logo abaixo ("nenhum desses pedidos está no seu
+        // quadro") é o caminho MAIS mentiroso de todos quando a leitura saiu
+        // pela metade. Guardar o aviso só para o fim feliz deixaria o pior
+        // caso sem rastro nenhum.
+        if (leituraIncompleta) {
+          app.log.warn(
+            { projectId: row.id, quadro: quadroId, itensLidos },
+            `[painel/ordem] leitura do quadro cortada pelo teto em ${row.wingId}`
+          )
+          // `audit` é o tipo que a timeline do painel LÊ — GET
+          // /api/v1/painel/timeline filtra `type: 'audit'` e mostra
+          // `payload.texto`. Gravar com outro tipo guardaria o aviso numa
+          // gaveta que nenhuma tela abre, que é o mesmo silêncio com um passo
+          // a mais.
+          await app.prisma.event.create({
+            data: {
+              projectId: row.id,
+              type: 'audit',
+              payload: {
+                texto:
+                  `Ao ajustar a ordem, não consegui ler o seu quadro inteiro: parei em ` +
+                  `${itensLidos} itens. A ordem valeu para essa parte, e o que ficou de ` +
+                  `fora dela não foi tocado.`,
+                itensLidos,
+              },
+            },
+          })
+        }
+
         const porNumero = new Map(itens.map((i) => [i.pedido, i.itemId]))
         const pedidos = numeros
           .filter((n) => porNumero.has(n))
@@ -864,9 +910,14 @@ export const painelRoutes = async (
         const foraDoQuadro = numeros.filter((n) => !porNumero.has(n))
 
         if (pedidos.length === 0) {
-          return reply
-            .code(409)
-            .send({ error: 'Nenhum desses pedidos está no seu quadro para ser reordenado.' })
+          return reply.code(409).send({
+            // Duas frases porque são dois fatos diferentes, e o dono decide
+            // coisas distintas com cada um: "não está no quadro" pede que ele
+            // ponha lá; "não consegui ler tudo" é limitação NOSSA.
+            error: leituraIncompleta
+              ? `Não achei esses pedidos na parte do quadro que consegui ler (${itensLidos} itens). Seu quadro é grande demais para eu ler de uma vez.`
+              : 'Nenhum desses pedidos está no seu quadro para ser reordenado.',
+          })
         }
 
         const registro = await aplicarOrdemDosPedidos(
@@ -887,7 +938,16 @@ export const painelRoutes = async (
         )
         // O que ficou de fora vai DITO na resposta. Aplicar cinco de sete e
         // responder "pronto" faria o dono achar que a ordem inteira valeu.
-        return reply.send({ ...registro, foraDoQuadro })
+        //
+        // E `foraDoQuadro` só significa "não está no quadro" quando o quadro
+        // foi lido inteiro. Cortado, o certo é "não sei" — por isso o sinal
+        // viaja junto, para a tela poder dizer a verdade em vez de acusar o
+        // quadro do dono de não ter um pedido que ele tem.
+        return reply.send({
+          ...registro,
+          foraDoQuadro,
+          ...(leituraIncompleta ? { leituraIncompleta: true, itensLidos } : {}),
+        })
       } catch (err) {
         // A recusa da autonomia NÃO é erro do produto: é a escolha do cliente
         // valendo. Vira 403 com o motivo que a própria regra escreveu, para a

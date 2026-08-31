@@ -9,7 +9,7 @@
 // inventada é pior que coluna faltando. Elas voltam quando houver de onde ler.
 // Portado de TelaPedidos.jsx.
 import { useState, useSyncExternalStore } from 'react'
-import { ROTAS, enviarPedido, pedir } from './painel-api'
+import { ROTAS, enviarPedido, fraseDaOrdem, pedir, type RespostaDaOrdem } from './painel-api'
 import { usePainelBusca } from './usePainelBusca'
 import { assinarProjeto, projetoAtual, projetoNoServidor, filtroDeProjeto } from './painel-projeto'
 import { Ad } from './PainelIcons'
@@ -156,17 +156,16 @@ export function TelaPedidos() {
     if (!ordem || !projeto) return
     setSalvandoOrdem(true)
     try {
-      const r2 = await pedir<{ oQueFiz: string; foraDoQuadro?: number[] }>(ROTAS.ordem, {
+      const r2 = await pedir<RespostaDaOrdem>(ROTAS.ordem, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ projeto, pedidos: ordem }),
       })
-      // O que ficou de fora vai DITO. "Pronto" com cinco de sete aplicados
-      // faria o dono achar que a ordem inteira valeu.
-      const sobra = r2.foraDoQuadro?.length
-        ? ` ${r2.foraDoQuadro.length} pedido(s) não estão no quadro e ficaram como estavam.`
-        : ''
-      setAvisoDaOrdem(r2.oQueFiz + sobra)
+      // O que ficou de fora vai DITO, e a montagem da frase mora no módulo de
+      // dados (testável em .ts) porque ela precisa distinguir "não está no
+      // quadro" de "não li o quadro todo" — a diferença entre um erro do dono
+      // e uma limitação nossa.
+      setAvisoDaOrdem(fraseDaOrdem(r2))
       setOrdem(null)
       r.recarregar()
     } catch (e) {

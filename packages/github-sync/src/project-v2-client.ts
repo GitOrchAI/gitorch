@@ -90,6 +90,40 @@ export interface SetIterationFieldInput {
   iterationId: string
 }
 
+/**
+ * Um item do quadro do cliente, do jeito que o produto precisa dele.
+ *
+ * `iteracaoId` é null quando o item não está em sprint nenhuma — que era a
+ * situação dos 118 itens do quadro do dono em 31/08, com o painel anunciando
+ * "Sprint 1" na tela. Ler isso junto com a lista evita uma segunda volta ao
+ * GitHub só para descobrir quem já está no ciclo.
+ */
+export interface ItemDoQuadro {
+  itemId: string
+  pedido: number
+  iteracaoId: string | null
+}
+
+/**
+ * O formato cru da resposta de `items` — usado só para tipar a paginação.
+ *
+ * `node` e `items` são anuláveis porque o GitHub responde 200 com `node: null`
+ * quando o id do quadro não resolve. O laço já se defendia com `?.`; era o
+ * tipo que prometia mais do que a API entrega.
+ */
+interface RespostaDeItensDoQuadro {
+  node: {
+    items: {
+      pageInfo: { hasNextPage: boolean; endCursor: string | null }
+      nodes: Array<{
+        id: string
+        content?: { number?: number } | null
+        fieldValueByName?: { iterationId?: string | null } | null
+      } | null> | null
+    } | null
+  } | null
+}
+
 export interface AddSubIssueInput {
   issueId: string
   subIssueId: string
@@ -248,6 +282,14 @@ export class NomeDeCampoEmConflitoError extends Error {
 }
 
 export class ProjectV2Client {
+  /**
+   * Teto de páginas na leitura do quadro. Existe para não girar para sempre
+   * num quadro absurdo — 20 páginas são 2000 itens, muito acima de qualquer
+   * quadro real. Quando ele morde, quem chamou é AVISADO (`onTruncado`); um
+   * teto silencioso seria o mesmo defeito que a paginação veio consertar.
+   */
+  private static readonly MAX_PAGINAS_DO_QUADRO = 20
+
   private readonly token: string
   private readonly request: GraphQLTransport
 
@@ -752,40 +794,99 @@ export class ProjectV2Client {
    * A tradução acontece aqui, e não na tela: expor id de quadro no painel
    * seria vazar encanamento para quem só quer arrastar um card.
    */
-  async listarItensDoQuadro(projectId: string): Promise<Array<{ itemId: string; pedido: number }>> {
-    const response = await this.request<{
-      node: {
-        items: {
-          nodes: Array<{ id: string; content?: { number?: number } | null }>
-        }
-      }
-    }>(
-      {
-        query: `
-          query ItensDoQuadro($projectId: ID!) {
-            node(id: $projectId) {
-              ... on ProjectV2 {
-                items(first: 100) {
-                  nodes {
-                    id
-                    content { ... on Issue { number } ... on PullRequest { number } }
+  async listarItensDoQuadro(
+    projectId: string,
+    opcoes?: {
+      /** Nome do campo de iteração a ler junto (ex.: 'Sprint'). */
+      campoDeSprint?: string
+      /** Chamado quando o teto de páginas cortou a leitura. */
+      onTruncado?: (lidos: number) => void
+    }
+  ): Promise<ItemDoQuadro[]> {
+    const itens: ItemDoQuadro[] = []
+    let cursor: string | null = null
+
+    // PAGINA DE VERDADE, e isso não é zelo: medido em 31/08 no quadro do dono,
+    // `items(first: 100)` sem cursor trazia 100 de 118. Os 18 restantes não
+    // davam erro — sumiam. E não eram sobras: eram as issues #305 a #344,
+    // incluindo #308, #329 e #340, exatamente as que o dev assíncrono estava
+    // trabalhando naquele instante. O trabalho vivo do produto morava na
+    // página que ninguém lia.
+    for (let pagina = 0; pagina < ProjectV2Client.MAX_PAGINAS_DO_QUADRO; pagina++) {
+      // A anotação na variável não é enfeite nem substitui o genérico: sem o
+      // `<T>` o transporte devolve `GraphQLResponse<unknown>`; sem a anotação o
+      // compilador entra em referência circular, porque `cursor` sai daqui e
+      // volta como variável desta mesma chamada. Precisa dos dois.
+      const response: GraphQLResponse<RespostaDeItensDoQuadro> =
+        await this.request<RespostaDeItensDoQuadro>(
+          {
+            query: `
+            query ItensDoQuadro(
+              $projectId: ID!
+              $cursor: String
+              $campo: String!
+              $querSprint: Boolean!
+            ) {
+              node(id: $projectId) {
+                ... on ProjectV2 {
+                  items(first: 100, after: $cursor) {
+                    pageInfo { hasNextPage endCursor }
+                    nodes {
+                      id
+                      content { ... on Issue { number } ... on PullRequest { number } }
+                      fieldValueByName(name: $campo) @include(if: $querSprint) {
+                        ... on ProjectV2ItemFieldIterationValue { iterationId }
+                      }
+                    }
                   }
                 }
               }
             }
-          }
-        `,
-        variables: { projectId },
-      },
-      this.token
-    )
+          `,
+            // UMA query serve aos dois usos, e quem decide é a diretiva.
+            //
+            // A versão anterior mandava um ESPAÇO como nome do campo e contava
+            // com o GitHub responder `fieldValueByName: null` sem erro. Foi
+            // observado ao vivo uma vez, mas é comportamento de servidor: não
+            // há teste que o prove, e este arquivo já tem a cicatriz de
+            // `criarCampoDeIteracao`, verde contra um fake permissivo enquanto
+            // a API real recusava a chamada.
+            //
+            // `@include(if:)` é built-in da especificação do GraphQL: com
+            // `false` o seletor não é executado, `$campo` nunca chega a ser
+            // usado como argumento, e nada depende de como o servidor trata um
+            // nome inexistente. A variável continua sendo enviada porque a
+            // validação de variáveis é estática — acontece antes da diretiva
+            // valer — e `String!` não aceita null.
+            variables: {
+              projectId,
+              cursor,
+              campo: opcoes?.campoDeSprint ?? '',
+              querSprint: (opcoes?.campoDeSprint ?? '').length > 0,
+            },
+          },
+          this.token
+        )
 
-    return (unwrap(response).node?.items?.nodes ?? [])
-      .filter(
-        (n): n is { id: string; content: { number: number } } =>
-          typeof n?.content?.number === 'number'
-      )
-      .map((n) => ({ itemId: n.id, pedido: n.content.number }))
+      const items = unwrap(response).node?.items
+      for (const n of items?.nodes ?? []) {
+        if (typeof n?.content?.number !== 'number') continue
+        itens.push({
+          itemId: n.id,
+          pedido: n.content.number,
+          iteracaoId: n.fieldValueByName?.iterationId ?? null,
+        })
+      }
+
+      if (!items?.pageInfo?.hasNextPage) return itens
+      cursor = items.pageInfo.endCursor
+    }
+
+    // Chegou ao teto com página seguinte pendente. A lista está incompleta e
+    // quem chamou PRECISA saber — silêncio aqui recria o defeito que este
+    // método acabou de consertar, só que mais tarde e maior.
+    opcoes?.onTruncado?.(itens.length)
+    return itens
   }
 
   /**
