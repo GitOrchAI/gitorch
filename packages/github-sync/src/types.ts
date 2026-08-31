@@ -61,6 +61,8 @@ export interface GitHubWorkItem {
   blockingNodeIds: string[]
   projectItemIds: string[]
   linkedPullRequestNodeIds?: string[]
+  wishCreatedAt?: string
+  mergedAt?: string
 }
 
 export interface GitHubDependencyEdge {

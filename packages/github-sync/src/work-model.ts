@@ -1,5 +1,7 @@
 import type { AvailabilityDecision, GitHubIssueType, GitHubWorkItem } from './types'
 
+export type { GitHubWorkItem }
+
 export class GitHubWorkModel {
   issueTypeFor(item: GitHubWorkItem): GitHubIssueType {
     return item.type
