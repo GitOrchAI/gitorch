@@ -129,3 +129,113 @@ describe('decidirQuadro — os 8 cenários de quadro do cliente', () => {
     if (d.acao === 'usar') expect(d.quadro.id).toBe('vivo')
   })
 })
+
+// ---------------------------------------------------------------------------
+// O LAÇO DOS QUADROS (medido na API do GitHub em 31/08/2026, no repositório do
+// dono `loureng/patinhas-3d-crafts`):
+//
+//   #3  "Jardim das Patinhas"       146 itens · 24 campos · criado 04/04 pelo dono
+//   #5  "@loureng's untitled..."      0 itens · 13 campos · FECHADO
+//   #11 "loureng/patinhas-3d-crafts"  0 itens · 13 campos · criado 31/08 03:02:46
+//   #12 "loureng/patinhas-3d-crafts"  0 itens · 13 campos · criado 31/08 03:03:28
+//
+// #11 e #12 nasceram com 42 SEGUNDOS de diferença e levam o nome do
+// REPOSITÓRIO como título: assinatura do produto, não do dono. A mecânica é um
+// laço que piora sozinho — a decisão devolvia `escolher` ("só o dono sabe qual
+// vale") e OUTRO caminho criava um quadro para resolver a falta; cada criação
+// deixa mais um quadro ligado, e na volta seguinte a dúvida é maior.
+//
+// A saída não é adivinhar: é reparar que 146 itens contra zero não é empate.
+// ---------------------------------------------------------------------------
+describe('desempate automático entre quadros ligados', () => {
+  const jardim = (): QuadroCandidato[] => [
+    quadro({
+      id: 'PVT_12',
+      number: 12,
+      title: 'loureng/patinhas-3d-crafts',
+      linkado: true,
+      itensCount: 0,
+      camposCount: 13,
+    }),
+    quadro({
+      id: 'PVT_11',
+      number: 11,
+      title: 'loureng/patinhas-3d-crafts',
+      linkado: true,
+      itensCount: 0,
+      camposCount: 13,
+    }),
+    quadro({
+      id: 'PVT_5',
+      number: 5,
+      title: "@loureng's untitled project",
+      closed: true,
+      linkado: true,
+      itensCount: 0,
+      camposCount: 13,
+    }),
+    quadro({
+      id: 'PVT_3',
+      number: 3,
+      title: 'Jardim das Patinhas',
+      linkado: true,
+      itensCount: 146,
+      camposCount: 24,
+    }),
+  ]
+
+  it('o Jardim real: escolhe o #3 sozinho, sem pedir nada ao dono', () => {
+    const d = decidirQuadro({ candidatos: jardim() })
+    expect(d.acao).toBe('usar')
+    if (d.acao === 'usar') {
+      expect(d.quadro.number).toBe(3)
+      expect(d.precisaLigar).toBe(false)
+      expect(d.motivo).toContain('146')
+    }
+  })
+
+  it('MAIS ITENS vence MAIS CAMPOS: uso real é sinal mais forte que investimento', () => {
+    const d = decidirQuadro({
+      candidatos: [
+        quadro({ id: 'rico_e_vazio', linkado: true, itensCount: 0, camposCount: 40 }),
+        quadro({ id: 'pobre_e_usado', linkado: true, itensCount: 12, camposCount: 13 }),
+      ],
+    })
+    expect(d.acao).toBe('usar')
+    if (d.acao === 'usar') expect(d.quadro.id).toBe('pobre_e_usado')
+  })
+
+  it('itens empatados: aí sim desempata por MAIS CAMPOS', () => {
+    const d = decidirQuadro({
+      candidatos: [
+        quadro({ id: 'padrao', linkado: true, itensCount: 7, camposCount: 13 }),
+        quadro({ id: 'cuidado', linkado: true, itensCount: 7, camposCount: 24 }),
+      ],
+    })
+    expect(d.acao).toBe('usar')
+    if (d.acao === 'usar') expect(d.quadro.id).toBe('cuidado')
+  })
+
+  it('empate de VERDADE (mesmos itens, mesmos campos) continua sendo pergunta ao dono', () => {
+    const d = decidirQuadro({
+      candidatos: [
+        quadro({ id: 'A', linkado: true, itensCount: 9, camposCount: 13 }),
+        quadro({ id: 'B', linkado: true, itensCount: 9, camposCount: 13 }),
+      ],
+    })
+    expect(d.acao).toBe('escolher')
+    if (d.acao === 'escolher') expect(d.candidatos).toHaveLength(2)
+  })
+
+  it('o quadro FECHADO não entra no desempate nem quando é o único com itens', () => {
+    const d = decidirQuadro({
+      candidatos: [
+        quadro({ id: 'morto', closed: true, linkado: true, itensCount: 999, camposCount: 99 }),
+        quadro({ id: 'vivo_a', linkado: true, itensCount: 4, camposCount: 13 }),
+        quadro({ id: 'vivo_b', linkado: true, itensCount: 1, camposCount: 13 }),
+      ],
+    })
+    expect(d.acao).toBe('usar')
+    if (d.acao === 'usar') expect(d.quadro.id).toBe('vivo_a')
+  })
+})

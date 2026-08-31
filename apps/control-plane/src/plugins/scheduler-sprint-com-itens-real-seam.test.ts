@@ -129,6 +129,25 @@ function issue(numero: number, ehPr = false) {
   return ehPr ? { number: numero, pull_request: { url: 'x' } } : { number: numero }
 }
 
+/** Um quadro ligado ao repositório, como a API do GitHub o devolve. */
+function quadroLigado(over: {
+  id: string
+  number: number
+  title?: string
+  closed?: boolean
+  itens?: number
+  campos?: number
+}) {
+  return {
+    id: over.id,
+    number: over.number,
+    title: over.title ?? 'Quadro',
+    closed: over.closed ?? false,
+    items: { totalCount: over.itens ?? 0 },
+    fields: { totalCount: over.campos ?? 13 },
+  }
+}
+
 interface Cenario {
   /** Issues abertas por etiqueta, JÁ PAGINADAS (uma posição por página). */
   issuesPorEtiqueta?: Record<string, Array<Array<ReturnType<typeof issue>>>>
@@ -136,12 +155,16 @@ interface Cenario {
   campoJaExiste?: boolean
   /** Itens do quadro: pedido -> iteração em que já está. */
   itens?: Array<{ pedido: number; itemId: string; iteracaoId: string | null }>
+  /** Os quadros LIGADOS ao repositório. Padrão: um só, o do caso simples. */
+  quadros?: ReturnType<typeof quadroLigado>[]
 }
 
 interface Espiao {
   fetchMock: ReturnType<typeof vi.fn>
   /** A sequência de operações GraphQL, na ordem em que saíram. */
   operacoes: string[]
+  /** Em QUAL quadro cada leitura de itens foi feita — a prova da escolha. */
+  quadrosLidos: string[]
   /** Cada escrita de sprint: item e iteração. */
   escritas: Array<{ itemId: string; iterationId: string }>
   /** Cada leitura REST de issues por etiqueta. */
@@ -149,7 +172,13 @@ interface Espiao {
 }
 
 function montarRede(cenario: Cenario): Espiao {
-  const espiao: Espiao = { fetchMock: vi.fn(), operacoes: [], escritas: [], leiturasDeIssues: [] }
+  const espiao: Espiao = {
+    fetchMock: vi.fn(),
+    operacoes: [],
+    quadrosLidos: [],
+    escritas: [],
+    leiturasDeIssues: [],
+  }
   let campoExiste = cenario.campoJaExiste ?? true
   const hoje = hojeNoFuso()
 
@@ -184,7 +213,7 @@ function montarRede(cenario: Cenario): Espiao {
           data: {
             repository: {
               projectsV2: {
-                nodes: [{ id: QUADRO_ID, number: 2, title: 'Quadro', closed: false }],
+                nodes: cenario.quadros ?? [quadroLigado({ id: QUADRO_ID, number: 2 })],
               },
             },
           },
@@ -211,6 +240,7 @@ function montarRede(cenario: Cenario): Espiao {
         })
       }
       if (nome === 'ItensDoQuadro') {
+        espiao.quadrosLidos.push(String(corpo.variables['id'] ?? corpo.variables['projectId']))
         const itens = cenario.itens ?? []
         return json({
           data: {
@@ -502,5 +532,118 @@ describe('varrerItensDaSprint: a caixa do relógio que põe o trabalho dentro do
     expect(
       textoDosLogs(subida.warn).some((l) => l.includes(REPO) && /não consegui pôr/i.test(l))
     ).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// O LAÇO DOS QUADROS, no caminho de PRODUÇÃO.
+//
+// Medido em 31/08/2026 no repositório do dono (loureng/patinhas-3d-crafts):
+// quatro quadros ligados — #3 "Jardim das Patinhas" com 146 itens e 24 campos,
+// #5 fechado, e #11 e #12 criados pelo PRODUTO com 42 segundos de diferença, os
+// dois vazios. A decisão devolvia "escolher" e esta varredura fazia `continue`
+// CALADA: o patinhas sumia do relato inteiro, e as 4 sessões vivas nunca
+// entravam em ciclo nenhum. Metade da frota parada esperando uma escolha que
+// ninguém nunca pediu ao dono.
+// ---------------------------------------------------------------------------
+describe('varrerItensDaSprint diante de vários quadros ligados', () => {
+  const original: Record<string, string | undefined> = {}
+  const originalFetch = global.fetch
+  let app: ReturnType<typeof Fastify> | undefined
+
+  beforeEach(() => {
+    for (const key of ENV_KEYS) {
+      original[key] = process.env[key]
+      delete process.env[key]
+    }
+    process.env['NODE_ENV'] = 'production'
+    process.env['GITORCH_SCHEDULER_TICK_MS'] = '15'
+  })
+
+  afterEach(async () => {
+    if (app) await app.close()
+    app = undefined
+    for (const key of ENV_KEYS) {
+      if (original[key] === undefined) delete process.env[key]
+      else process.env[key] = original[key]
+    }
+    global.fetch = originalFetch
+    vi.restoreAllMocks()
+  })
+
+  const cenarioBase = (): Cenario => ({
+    issuesPorEtiqueta: {
+      'gitorch:agent:sm': [[issue(20)]],
+      'gitorch:agent:jules': [[]],
+      'gitorch:agent:qa': [[]],
+    },
+    itens: [{ pedido: 20, itemId: ITEM[20], iteracaoId: null }],
+  })
+
+  const sessoes: SessoesVivas = { proj_sprint: [] }
+
+  test('o Jardim real: escolhe o quadro de 146 itens sozinho e põe o trabalho nele', async () => {
+    const cenario = cenarioBase()
+    cenario.quadros = [
+      quadroLigado({ id: 'PVT_12', number: 12, title: 'loureng/patinhas-3d-crafts' }),
+      quadroLigado({ id: 'PVT_11', number: 11, title: 'loureng/patinhas-3d-crafts' }),
+      quadroLigado({ id: 'PVT_5', number: 5, closed: true }),
+      quadroLigado({
+        id: 'PVT_3',
+        number: 3,
+        title: 'Jardim das Patinhas',
+        itens: 146,
+        campos: 24,
+      }),
+    ]
+    const espiao = montarRede(cenario)
+    const subida = await subirRelogio(buildFakePrisma([projeto()], sessoes), espiao)
+    app = subida.app
+
+    await vi.waitFor(() => expect(espiao.escritas.length).toBeGreaterThan(0), {
+      timeout: 5000,
+      interval: 10,
+    })
+
+    // A prova NÃO é "chamou a decisão": é em QUAL quadro o produto escreveu.
+    expect(espiao.quadrosLidos).toContain('PVT_3')
+    expect(espiao.quadrosLidos).not.toContain('PVT_11')
+    expect(espiao.quadrosLidos).not.toContain('PVT_12')
+    expect(espiao.quadrosLidos).not.toContain('PVT_5')
+    expect(espiao.escritas.map((e) => e.itemId)).toContain(ITEM[20])
+  })
+
+  test('empate de verdade: o projeto pulado é DITO, com o motivo — nunca some do relato', async () => {
+    const cenario = cenarioBase()
+    // Dois quadros indistinguíveis: mesmos itens, mesmos campos. Aqui a
+    // pergunta ao dono é legítima — o que não pode é ele nunca saber dela.
+    cenario.quadros = [
+      quadroLigado({ id: 'PVT_A', number: 7, itens: 9, campos: 13 }),
+      quadroLigado({ id: 'PVT_B', number: 8, itens: 9, campos: 13 }),
+    ]
+    const espiao = montarRede(cenario)
+    const subida = await subirRelogio(buildFakePrisma([projeto()], sessoes), espiao)
+    app = subida.app
+
+    await vi.waitFor(
+      () =>
+        expect(
+          textoDosLogs(subida.info).some(
+            (l) => l.includes(REPO) && l.includes('não preenchida') && /quadro/i.test(l)
+          )
+        ).toBe(true),
+      { timeout: 5000, interval: 20 }
+    )
+
+    // E a varredura IRMÃ (a que cria o ciclo) também precisa dizer que parou
+    // aqui — `sem_quadro` não estava em nenhum ramo do log dela.
+    expect(
+      textoDosLogs(subida.info).some(
+        (l) => l.includes(REPO) && l.includes('depende de você') && /quadro/i.test(l)
+      )
+    ).toBe(true)
+
+    // Nada foi escrito num quadro escolhido no chute.
+    expect(espiao.escritas).toEqual([])
   })
 })

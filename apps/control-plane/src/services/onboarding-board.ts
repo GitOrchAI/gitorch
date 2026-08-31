@@ -1,6 +1,7 @@
 import type { ProjectV2Client } from '@gitorch/github-sync'
 import { fetchSemPermissao } from './guarda-de-autonomia.js'
 import { fetchComTeto } from './fetch-com-teto.js'
+import { decidirQuadro } from './resolver-quadro.js'
 
 // A mesa de trabalho do PRÓPRIO projeto (Task 9). Antes disto o board vinha de
 // um env GLOBAL (GITORCH_PROJECT_BOARD), o que fazia todo projeto novo apontar
@@ -155,46 +156,100 @@ export async function ensureProjectBoard(
 
     const [dono, nome] = deps.repository.split('/')
 
-    // 1) Já anunciado a este repositório? Então não há o que criar nem ligar.
-    if (deps.client.listarQuadrosDoRepositorio) {
-      const ligados = await deps.client.listarQuadrosDoRepositorio({
-        owner: dono ?? '',
-        repo: nome ?? '',
-      })
-      if (ligados.length > 0) {
-        const escolhido = await escolherMaisRico(ligados, deps)
-        if (escolhido) return { owner, number: escolhido.number }
-      }
-    }
-
-    // 2) As issues deste repositório já vivem em algum quadro? Esse é o quadro
-    //    dele — por evidência, não por parecença de nome. Só falta anunciá-lo.
-    if (deps.client.descobrirQuadrosPorIssues) {
-      const achados = await deps.client.descobrirQuadrosPorIssues({
-        owner: dono ?? '',
-        repo: nome ?? '',
-      })
-      const vivos = achados.filter((q) => !q.closed)
-      const candidato = await escolherMaisRico(vivos, deps, { exigirExclusivo: true })
-
-      if (candidato) {
-        if (deps.resolveRepositoryId && deps.client.linkProjectV2ToRepository) {
-          try {
-            const repositoryId = await deps.resolveRepositoryId(deps.repository)
-            await deps.client.linkProjectV2ToRepository({
-              projectId: candidato.id,
-              repositoryId,
-            })
-          } catch (err) {
-            // O quadro existe e é o certo; não conseguir anunciá-lo ao
-            // repositório tira o atalho da aba /projects, não o quadro.
+    // A busca inteira, para UMA credencial. Vira função porque precisa rodar
+    // mais de uma vez: ver o comentário do passo 2.5.
+    //
+    // Devolve `'ambiguo'` quando há vários quadros ligados e nenhum se destaca.
+    // Isso NÃO é "não achei": é "achei demais", e cair no passo 3 daí criaria
+    // mais um quadro justamente onde já há quadros de sobra.
+    const procurar = async (
+      client: EnsureProjectBoardDeps['client']
+    ): Promise<ProjectBoardRef | 'ambiguo' | null> => {
+      // 1) Já anunciado a este repositório? Então não há o que criar nem ligar.
+      if (client.listarQuadrosDoRepositorio) {
+        const ligados = await client.listarQuadrosDoRepositorio({
+          owner: dono ?? '',
+          repo: nome ?? '',
+        })
+        if (ligados.length > 0) {
+          // A MESMA decisão que a sprint usa (`resolver-quadro.ts`), e não uma
+          // regra paralela: arquivado sai antes de tudo (aqui um quadro FECHADO
+          // era adotado, e escrever sprint nele é escrever no vazio), e o
+          // desempate é por uso — itens antes de campos.
+          const decisao = decidirQuadro({
+            candidatos: ligados.map((q) => ({ ...q, linkado: true })),
+          })
+          if (decisao.acao === 'usar') return { owner, number: decisao.quadro.number }
+          if (decisao.acao === 'escolher') {
             warn(
-              `quadro #${candidato.number} de ${deps.repository} encontrado, mas falhou ao ligar ao repositório: ${(err as Error).message}`
+              `${deps.repository} tem ${decisao.candidatos.length} quadros ligados e nenhum se destaca ` +
+                `(${decisao.motivo}); não crio outro para sair da dúvida — escolha um no GitHub.`
             )
+            return 'ambiguo'
           }
         }
-        return { owner, number: candidato.number }
       }
+
+      // 2) As issues deste repositório já vivem em algum quadro? Esse é o quadro
+      //    dele — por evidência, não por parecença de nome. Só falta anunciá-lo.
+      if (client.descobrirQuadrosPorIssues) {
+        const achados = await client.descobrirQuadrosPorIssues({
+          owner: dono ?? '',
+          repo: nome ?? '',
+        })
+        const vivos = achados.filter((q) => !q.closed)
+        const candidato = await escolherMaisRico(
+          vivos,
+          { ...deps, client },
+          {
+            exigirExclusivo: true,
+          }
+        )
+
+        if (candidato) {
+          if (deps.resolveRepositoryId && client.linkProjectV2ToRepository) {
+            try {
+              const repositoryId = await deps.resolveRepositoryId(deps.repository)
+              await client.linkProjectV2ToRepository({
+                projectId: candidato.id,
+                repositoryId,
+              })
+            } catch (err) {
+              // O quadro existe e é o certo; não conseguir anunciá-lo ao
+              // repositório tira o atalho da aba /projects, não o quadro.
+              warn(
+                `quadro #${candidato.number} de ${deps.repository} encontrado, mas falhou ao ligar ao repositório: ${(err as Error).message}`
+              )
+            }
+          }
+          return { owner, number: candidato.number }
+        }
+      }
+      return null
+    }
+
+    const achado = await procurar(deps.client)
+    if (achado === 'ambiguo') return null
+    if (achado) return achado
+
+    // 2.5) PROCURAR DE NOVO, com a credencial que vai CRIAR.
+    //
+    // Provado ao vivo em 31/08/2026 contra a API do GitHub: com o installation
+    // token do App, `repository.projectsV2` de loureng/patinhas-3d-crafts
+    // devolve `[]` — HTTP 200, sem `errors`. Com o token do dono, devolve
+    // QUATRO quadros. A busca acima roda com a credencial do App; quem cria em
+    // CONTA PESSOAL é a do cliente, porque a do App nem permissão tem. Buscar
+    // com a cega e criar com a que enxerga é o laço: "não enxergo" vira "não
+    // existe", nasce mais um quadro, e na volta seguinte tudo se repete. Foi
+    // assim que #11 e #12 apareceram com 42 segundos de diferença.
+    const clienteAlternativo =
+      deps.clientToken && deps.criarClienteAlternativo
+        ? deps.criarClienteAlternativo(deps.clientToken)
+        : null
+    if (clienteAlternativo) {
+      const comACredencialQueCria = await procurar(clienteAlternativo)
+      if (comACredencialQueCria === 'ambiguo') return null
+      if (comACredencialQueCria) return comACredencialQueCria
     }
 
     // 3) Nada existe: cria.
@@ -235,8 +290,7 @@ export async function ensureProjectBoard(
       // credencial do PRÓPRIO cliente, a segunda tentativa nasce sob a
       // identidade dele. Sem ela, o erro sobe para o catch de fora, que já
       // resolve em aviso acionável — nunca em silêncio.
-      if (!deps.clientToken || !deps.criarClienteAlternativo) throw err
-      const clienteAlternativo = deps.criarClienteAlternativo(deps.clientToken)
+      if (!clienteAlternativo) throw err
       return await criarELigarQuadro(clienteAlternativo)
     }
   } catch (err) {
