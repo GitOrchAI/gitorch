@@ -25,18 +25,16 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event.check_suite.conclusion == 'failure'
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
           token: ${{ secrets.SECURITY_PAT || github.token }}
 
-      # Um passo só, sem `with:`. O composite `setup-pnpm` não declara `inputs`, então
-      # `node-version`/`check-latest` nunca chegaram nele: o runner registrava
-      # "Unexpected input(s)" e seguia com o 20.x de dentro do composite. Como o valor
-      # pedido aqui já era '20', a remoção não muda o runtime — só para de mentir.
-      # O `pnpm/action-setup@v3` que vinha logo abaixo era duplicata (o composite já roda
-      # o v4) e o pin 9.4.0 dele era redundante: sem `version`, o v4 lê `packageManager`
-      # da raiz, que é `pnpm@9.4.0`. Ver .github/actions/setup-pnpm/action.yml.
+      # Um passo só, sem `with:`: o composite `setup-pnpm` não declara `inputs`, então
+      # `node-version`/`check-latest` eram descartados com um aviso que não reprova o job,
+      # e o runtime foi sempre o 20.x de dentro dele — o pedido aqui já era '20', então
+      # remover não muda nada, só para de mentir. O `pnpm/action-setup@v3` avulso abaixo
+      # era duplicata: quem instala o pnpm, e em que versão, é .github/actions/setup-pnpm.
       - name: Setup Node + pnpm
         uses: ./.github/actions/setup-pnpm
 

@@ -23,13 +23,28 @@ description: Setup Node.js and pnpm cache for GitOrch CI
 # lugar para atualizar e os dois sairiam do ar em silêncio. E ele vem ANTES do
 # setup-node porque `cache: pnpm` precisa do pnpm já instalado para achar o
 # store — é por isso que este composite basta sozinho, sem passo extra fora.
+#
+# CONVENCAO DE PIN (vale para todo o repositorio): action externa e fixada pelo
+# SHA de 40 do COMMIT, com a versao em comentario ao lado. Motivo: tag flutuante
+# e' MUTAVEL. `pnpm/action-setup@v3`, que este repo usava, nem tag era — era uma
+# BRANCH (refs/tags/v3 da 404, refs/heads/v3 responde), ou seja, conteudo que
+# muda sob os nossos pes sem nenhum aviso. Sem o comentario ninguem sabe qual
+# versao esta rodando, entao os dois andam sempre juntos.
+# Actions internas (`./.github/actions/...`) NAO levam SHA: sao caminho local,
+# versionadas pelo proprio commit do repositorio.
 runs:
   using: composite
   steps:
+    # pnpm v6 e' o alvo correto, nao a sucessora `pnpm/setup`: o README do v6 diz
+    # que `action-setup` segue sendo a action para pnpm v10 e anteriores, e o
+    # nosso `packageManager` e' pnpm@9.4.0 (package.json:18). `pnpm/setup` exige v11.
     - name: Setup pnpm
-      uses: pnpm/action-setup@v4
+      uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86  # v6.0.10
+    # setup-node v5 passou a ligar cache sozinho ao ver `packageManager` no
+    # package.json, e o v6 restringiu esse automatico ao npm. Nada disso nos
+    # atinge porque o `cache: pnpm` abaixo e' EXPLICITO — nao depende da deteccao.
     - name: Setup Node.js
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
       with:
         node-version: 22.x
         cache: pnpm

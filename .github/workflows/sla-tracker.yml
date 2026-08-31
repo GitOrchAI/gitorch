@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           token: ${{ secrets.SECURITY_PAT || github.token }}
 
@@ -40,8 +40,8 @@ jobs:
       # resto do repo roda 20. Passar a rodar 22 de verdade seria mudança de
       # runtime não pedida, em cima de uma premissa já desmentida.
       #
-      # O `pnpm/action-setup@v4` separado também saiu: o composite já o roda, e sem
-      # `version` ele lê `packageManager` da raiz (`pnpm@9.4.0`) — o mesmo pin.
+      # O `pnpm/action-setup@v4` separado também saiu: quem instala o pnpm é o composite,
+      # e sem `version` a action lê `packageManager` da raiz (`pnpm@9.4.0`) — o mesmo pin.
       # `ci.yml` já instala este mesmo `.github/scripts` assim, verde.
       - name: Setup Node + pnpm
         uses: ./.github/actions/setup-pnpm

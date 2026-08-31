@@ -18,8 +18,13 @@ jobs:
   analyze:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: github/codeql-action/init@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      # codeql-action fica na linha v4 de proposito: o manifesto na v4 JA declara
+      # `using: node24` (por isso ela nunca apareceu no aviso de depreciacao) e
+      # nao existe major acima do v4. Fixada por SHA so' para seguir a convencao, e o
+      # comentario ao lado traz a versao EXATA — nao o major `v4`, que e' flutuante e
+      # amanha aponta para outro commit que este pin nao segue.
+      - uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938  # v4.37.9
         with:
           languages: javascript
-      - uses: github/codeql-action/analyze@v4
+      - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938  # v4.37.9
