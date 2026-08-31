@@ -843,6 +843,15 @@ describe('POST /api/v1/setup/submit — coleta de contexto: board Projects V2 n�
           { status: 200 }
         )
       }
+      if (body.query.includes('ListarQuadrosDoRepositorio')) {
+        // A pergunta que a coleta passou a fazer ANTES de criar: "já existe
+        // quadro ligado a este repositório?". Aqui não existe nenhum, que é
+        // exatamente o caso em que criar é legítimo.
+        return new Response(
+          JSON.stringify({ data: { repository: { projectsV2: { nodes: [] } } } }),
+          { status: 200 }
+        )
+      }
       if (body.query.includes('GetProjectId')) {
         // Só é chamada quando um boardNumber já é conhecido (reuse) — devolve
         // o MESMO board criado na 1ª rodada.
@@ -1563,6 +1572,14 @@ describe('POST /api/v1/setup/submit — coleta de contexto usa a instalação do
             JSON.stringify({
               data: { repository: { owner: { id: 'U_owner', __typename: 'User' } } },
             }),
+            { status: 200 }
+          )
+        }
+        if (body.query.includes('ListarQuadrosDoRepositorio')) {
+          // Repositório sem quadro ligado: é o único caso em que criar é a
+          // resposta certa.
+          return new Response(
+            JSON.stringify({ data: { repository: { projectsV2: { nodes: [] } } } }),
             { status: 200 }
           )
         }

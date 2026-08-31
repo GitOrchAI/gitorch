@@ -7564,7 +7564,14 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         app.log.info(`[Scheduler] sprint no quadro de ${r.repo}: ${r.estado} — ${r.motivo}`)
       } else if (r.estado === 'falhou') {
         app.log.warn(`[Scheduler] sprint de ${r.repo} não deu nesta passada: ${r.motivo}`)
-      } else if (r.estado === 'conflito_de_nome' || r.estado === 'sem_credencial') {
+      } else if (
+        r.estado === 'conflito_de_nome' ||
+        r.estado === 'sem_credencial' ||
+        // `sem_quadro` existia no resultado e não aparecia em ramo nenhum do
+        // log: o projeto travado numa escolha de quadro ficava invisível aqui
+        // pelo mesmo motivo que ficava na varredura irmã.
+        r.estado === 'sem_quadro'
+      ) {
         // Estados que só o DONO resolve. Precisam aparecer: um projeto preso
         // aqui fica sem sprint para sempre, e sem log ninguém descobre por quê
         // — o mesmo silêncio que esta leva veio acabar. Não é `warn` de defeito
@@ -7725,7 +7732,19 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           repo: repo ?? '',
         })
         const decisao = decidirQuadro({ candidatos: quadros.map((q) => ({ ...q, linkado: true })) })
-        if (decisao.acao !== 'usar' || !decisao.quadro) continue
+        if (decisao.acao !== 'usar' || !decisao.quadro) {
+          // O `continue` era CALADO, e foi assim que o repositório do dono
+          // sumiu do relato inteiro: quatro quadros ligados, decisão
+          // 'escolher', e nem uma linha dizendo que o projeto tinha sido
+          // pulado. "Não tentei" ficava igual a "tentei e estava tudo certo",
+          // com as sessões vivas fora de qualquer ciclo. Não é `warn` de
+          // defeito nosso: é aviso de que falta uma ação dele.
+          app.log.info(
+            `[Scheduler] sprint de ${p.wingId} não preenchida: ` +
+              `nenhum quadro utilizável (${decisao.acao}) — ${decisao.motivo}`
+          )
+          continue
+        }
 
         const relatorio = await preencherSprintCorrente(
           {

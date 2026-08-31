@@ -299,9 +299,11 @@ test('lista os quadros já ligados a um repositório', async () => {
 
   const quadros = await client.listarQuadrosDoRepositorio({ owner: 'dono', repo: 'repo' })
 
+  // Itens e campos entram SEMPRE no retorno: a resposta que não os traz vale
+  // zero, e zero perde o desempate — nunca vira "não sei" silencioso.
   expect(quadros).toEqual([
-    { id: 'PVT_a', number: 2, title: 'dono/repo' },
-    { id: 'PVT_b', number: 9, title: 'Outro quadro' },
+    { id: 'PVT_a', number: 2, title: 'dono/repo', itensCount: 0, camposCount: 0 },
+    { id: 'PVT_b', number: 9, title: 'Outro quadro', itensCount: 0, camposCount: 0 },
   ])
   expect(calls[0]?.variables).toEqual({ owner: 'dono', repo: 'repo' })
 })
@@ -746,8 +748,8 @@ test('o quadro traz `closed`, que é o que barra quadro arquivado', async () => 
   const quadros = await client.listarQuadrosDoRepositorio({ owner: 'dono', repo: 'repo' })
 
   expect(quadros).toEqual([
-    { id: 'PVT_vivo', number: 2, title: 'dono/repo', closed: false },
-    { id: 'PVT_morto', number: 3, title: 'antigo', closed: true },
+    { id: 'PVT_vivo', number: 2, title: 'dono/repo', closed: false, itensCount: 0, camposCount: 0 },
+    { id: 'PVT_morto', number: 3, title: 'antigo', closed: true, itensCount: 0, camposCount: 0 },
   ])
 })
 
@@ -1096,4 +1098,74 @@ test('erro do GraphQL ao criar o campo Peso SOBE — não vira sucesso silencios
   await expect(
     client.criarCampoNumerico({ projectId: 'PVT_1', fieldName: 'Peso' })
   ).rejects.toThrow('Name has already been taken')
+})
+
+// ---------------------------------------------------------------------------
+// O que a listagem precisa carregar para o desempate existir. Sem estes dois
+// números, `decidirQuadro` recebe quatro quadros ligados indistinguíveis e
+// devolve "escolher" — que foi exatamente o que travou o repositório do dono.
+// A forma da query foi conferida contra a API de produção em 31/08.
+// ---------------------------------------------------------------------------
+test('a listagem traz itens e campos de cada quadro — o desempate depende deles', async () => {
+  const calls: GraphQLRequest[] = []
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async (request) => {
+      calls.push(request)
+      return {
+        data: {
+          repository: {
+            projectsV2: {
+              nodes: [
+                {
+                  id: 'PVT_kwHODEJV384BTtgW',
+                  number: 3,
+                  title: 'Jardim das Patinhas',
+                  closed: false,
+                  items: { totalCount: 146 },
+                  fields: { totalCount: 24 },
+                },
+                {
+                  id: 'PVT_kwHODEJV384Bh9VK',
+                  number: 11,
+                  title: 'loureng/patinhas-3d-crafts',
+                  closed: false,
+                  items: { totalCount: 0 },
+                  fields: { totalCount: 13 },
+                },
+              ],
+            },
+          },
+        },
+      }
+    },
+  })
+
+  const quadros = await client.listarQuadrosDoRepositorio({
+    owner: 'loureng',
+    repo: 'patinhas-3d-crafts',
+  })
+
+  expect(quadros).toEqual([
+    {
+      id: 'PVT_kwHODEJV384BTtgW',
+      number: 3,
+      title: 'Jardim das Patinhas',
+      closed: false,
+      itensCount: 146,
+      camposCount: 24,
+    },
+    {
+      id: 'PVT_kwHODEJV384Bh9VK',
+      number: 11,
+      title: 'loureng/patinhas-3d-crafts',
+      closed: false,
+      itensCount: 0,
+      camposCount: 13,
+    },
+  ])
+  // A query TEM que pedir os dois totais — sem isso o campo chega sempre zero e
+  // o desempate volta a ver empate onde não há.
+  expect(calls[0]?.query).toMatch(/items\(first: 1\)\s*\{\s*totalCount\s*\}/)
+  expect(calls[0]?.query).toMatch(/fields\(first: 1\)\s*\{\s*totalCount\s*\}/)
 })

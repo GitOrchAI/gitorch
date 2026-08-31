@@ -21,6 +21,16 @@ export interface QuadroCandidato {
   linkado: boolean
   /** Quantas issues deste repositório já estão dentro dele (evidência de uso). */
   issuesDesteRepo?: number
+  /**
+   * Quantos itens o quadro tem no total — o sinal mais forte de uso real.
+   *
+   * Medido no repositório do dono em 31/08: o quadro que ele cuida à mão tinha
+   * 146 itens e os dois que o produto criou tinham ZERO. Chamar isso de empate
+   * é o que fazia o produto pedir uma escolha que nunca precisou ser feita.
+   */
+  itensCount?: number
+  /** Quantos campos o quadro tem: quanto alguém já investiu nele. */
+  camposCount?: number
 }
 
 export type DecisaoDeQuadro =
@@ -48,6 +58,48 @@ export type DecisaoDeQuadro =
        */
       motivo: string
     }
+
+/**
+ * Os critérios de desempate, do sinal mais FORTE para o mais fraco.
+ *
+ * Itens antes de campos de propósito: campo é o que alguém configurou uma vez,
+ * item é o que alguém usa todo dia. Um quadro recém-criado já nasce com os 13
+ * campos padrão do GitHub — se campos viessem primeiro, dois quadros vazios
+ * empatariam com o quadro de verdade em vez de perder para ele.
+ */
+const CRITERIOS_DE_DESEMPATE: ReadonlyArray<{
+  valor: (q: QuadroCandidato) => number
+  frase: (n: number) => string
+}> = [
+  { valor: (q) => q.itensCount ?? 0, frase: (n) => `é o único com ${n} item(ns) dentro` },
+  { valor: (q) => q.camposCount ?? 0, frase: (n) => `é o que tem mais campos (${n})` },
+]
+
+/**
+ * Desempata entre candidatos igualmente plausíveis — e só quando o desempate é
+ * ÓBVIO.
+ *
+ * Devolve vencedor apenas se algum critério o separa SOZINHO do segundo
+ * colocado. Empate de verdade continua sendo pergunta ao dono: a correção aqui
+ * é parar de chamar 146-contra-zero de empate, não passar a adivinhar.
+ */
+function desempatar(
+  candidatos: readonly QuadroCandidato[]
+): { vencedor: QuadroCandidato; motivo: string } | null {
+  if (candidatos.length === 1) return { vencedor: candidatos[0]!, motivo: 'é o único vivo' }
+
+  for (const criterio of CRITERIOS_DE_DESEMPATE) {
+    const ordenados = [...candidatos].sort((a, b) => criterio.valor(b) - criterio.valor(a))
+    const topo = criterio.valor(ordenados[0]!)
+    // Zero no topo = ninguém tem este sinal; não separa nada, e "todo mundo com
+    // nada" não pode eleger o primeiro da lista por acaso.
+    if (topo === 0) continue
+    // Empatados no topo: este critério não decide, o próximo pode decidir.
+    if (criterio.valor(ordenados[1]!) === topo) continue
+    return { vencedor: ordenados[0]!, motivo: criterio.frase(topo) }
+  }
+  return null
+}
 
 /**
  * Decide qual quadro usar.
@@ -100,10 +152,25 @@ export function decidirQuadro(args: {
     }
   }
   if (linkados.length > 1) {
+    // O LAÇO: aqui a resposta era sempre `escolher`, e o caminho que criava
+    // quadro tratava a falta de resposta como falta de quadro — criava mais um,
+    // que ficava ligado, e a volta seguinte tinha mais um empate. Cada tentativa
+    // de sair do problema piorava o problema. Desempatar quando é óbvio é o que
+    // fecha o laço; pedir só quando é empate de verdade é o que o dono merece.
+    const desempate = desempatar(linkados)
+    if (desempate) {
+      return {
+        acao: 'usar',
+        quadro: desempate.vencedor,
+        precisaLigar: false,
+        motivo: `Há ${linkados.length} quadros ligados ao repositório, e este ${desempate.motivo}.`,
+      }
+    }
     return {
       acao: 'escolher',
       candidatos: linkados,
-      motivo: 'Há mais de um quadro ligado ao repositório; só o dono sabe qual vale.',
+      motivo:
+        'Há mais de um quadro ligado ao repositório e nenhum se destaca em uso; só o dono sabe qual vale.',
     }
   }
 
@@ -126,6 +193,15 @@ export function decidirQuadro(args: {
     }
   }
   if (comUso.length > 1) {
+    const desempate = desempatar(comUso)
+    if (desempate) {
+      return {
+        acao: 'usar',
+        quadro: desempate.vencedor,
+        precisaLigar: true,
+        motivo: `Empate no número de issues deste repositório, mas este ${desempate.motivo}.`,
+      }
+    }
     return {
       acao: 'escolher',
       candidatos: comUso,

@@ -3,6 +3,7 @@ import { fetchSemPermissao } from './guarda-de-autonomia.js'
 import type { GraphQLRequest, GraphQLResponse, GraphQLTransport } from '@gitorch/github-sync'
 import { coletarDividaDeSeguranca, type DividaDeSeguranca } from './security-debt-collector.js'
 import { mintInstallationToken } from './github-app-token.js'
+import { decidirQuadro } from './resolver-quadro.js'
 
 export interface RepoContextCollectorOptions {
   token: string
@@ -103,8 +104,19 @@ export class RepoContextCollector {
   }
 
   // Acha o board pelo número conhecido; se não há número, ou ele não existe
-  // mais, cria um novo. Usa o resolver que NÃO quebra (findProjectId) para
-  // distinguir "não existe" (→ criar) de erro real (→ propaga).
+  // mais, PERGUNTA ao repositório quais quadros já estão ligados a ele antes de
+  // criar qualquer coisa. Usa o resolver que NÃO quebra (findProjectId) para
+  // distinguir "não existe" (→ seguir procurando) de erro real (→ propaga).
+  //
+  // O LAÇO que esta ordem fecha, medido em loureng/patinhas-3d-crafts em
+  // 31/08/2026: aqui se criava quadro direto, sem perguntar. Cada quadro criado
+  // fica LIGADO ao repositório, então a decisão de sprint passava a achar mais
+  // um candidato e travava em "escolher" — e a próxima passada por aqui criava
+  // mais um. Sobraram quatro quadros ligados, dois deles nascidos com 42
+  // segundos de diferença, com o nome do repositório como título. Cada
+  // tentativa de sair do problema piorava o problema.
+  //
+  // Criar é a saída para "não existe nenhum". NUNCA para "não sei qual usar".
   private async resolveBoard(
     input: CollectRepoContextInput
   ): Promise<{ id: string; number: number; created: boolean }> {
@@ -118,6 +130,30 @@ export class RepoContextCollector {
         return { id: existing, number: input.boardNumber, created: false }
       }
     }
+
+    const ligados = await this.projects.listarQuadrosDoRepositorio({
+      owner: input.owner,
+      repo: input.repo,
+    })
+    // Tudo que a listagem do REPOSITÓRIO devolve está, por definição, anunciado
+    // nele — `linkado: true` é fato, não suposição. Itens e campos vêm na mesma
+    // resposta e são o que desempata sem incomodar o dono.
+    const decisao = decidirQuadro({ candidatos: ligados.map((q) => ({ ...q, linkado: true })) })
+
+    if (decisao.acao === 'usar') {
+      return { id: decisao.quadro.id, number: decisao.quadro.number, created: false }
+    }
+    if (decisao.acao !== 'criar') {
+      // 'escolher' e 'sem_acesso'. Falhar aqui é ruidoso de propósito: quem
+      // chama (`collectAndRememberRepoContext`) transforma isto em
+      // `{ collected: false, reason }`, que o dono lê. Criar um quadro para
+      // calar a dúvida é o defeito que esta ordem existe para não repetir.
+      throw new Error(
+        `não dá para saber qual quadro de ${input.owner}/${input.repo} é o deste projeto ` +
+          `(${decisao.acao}): ${decisao.motivo} — não crio outro quadro para sair da dúvida.`
+      )
+    }
+
     const created = await this.projects.createProjectV2({
       ownerId: input.ownerId,
       title: input.boardTitle ?? `GitOrch — ${input.repo}`,

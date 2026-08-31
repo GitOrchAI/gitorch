@@ -576,6 +576,77 @@ describe('ensureProjectBoard — descobre por evidência antes de criar', () => 
     expect(avisos.join(' ')).toContain('permission')
   })
 
+  // -------------------------------------------------------------------------
+  // O LAÇO DOS QUADROS. Provado AO VIVO em 31/08/2026 contra a API do GitHub:
+  // com o installation token do App, `repository.projectsV2` de
+  // loureng/patinhas-3d-crafts devolve `[]` — HTTP 200, sem `errors`. Com o
+  // token do dono, devolve QUATRO quadros. Quem procurava era a credencial
+  // CEGA (a do App); quem criava era a do cliente (a única com permissão de
+  // criar quadro em conta pessoal). "Não enxergo" virava "não existe" e o
+  // produto criava mais um quadro a cada passada — #11 e #12 nasceram com 42
+  // segundos de diferença, com o nome do repositório como título.
+  // -------------------------------------------------------------------------
+  it('quem vai CRIAR com a credencial do cliente procura com ela antes — senão o laço não fecha', async () => {
+    const cego = clienteCompleto()
+    const queEnxerga = clienteCompleto({
+      listarQuadrosDoRepositorio: vi.fn(async () => [
+        {
+          id: 'PVT_3',
+          number: 3,
+          title: 'Jardim das Patinhas',
+          closed: false,
+          itensCount: 146,
+          camposCount: 24,
+        },
+      ]),
+    })
+    const r = await ensureProjectBoard({
+      ...base,
+      client: cego as never,
+      clientToken: 'ghp_do_cliente',
+      criarClienteAlternativo: () => queEnxerga as never,
+    })
+    expect(r).toEqual({ owner: 'dono', number: 3 })
+    expect(cego.createProjectV2).not.toHaveBeenCalled()
+    expect(queEnxerga.createProjectV2).not.toHaveBeenCalled()
+  })
+
+  it('vários quadros ligados e nenhum se destaca: avisa e NÃO cria mais um', async () => {
+    const avisos: string[] = []
+    const c = clienteCompleto({
+      listarQuadrosDoRepositorio: vi.fn(async () => [
+        { id: 'PVT_A', number: 7, title: 'a', closed: false, itensCount: 9, camposCount: 13 },
+        { id: 'PVT_B', number: 8, title: 'b', closed: false, itensCount: 9, camposCount: 13 },
+      ]),
+    })
+    const r = await ensureProjectBoard({
+      ...base,
+      client: c as never,
+      onWarn: (m) => avisos.push(m),
+    })
+    expect(r).toBeNull()
+    expect(c.createProjectV2).not.toHaveBeenCalled()
+    expect(avisos.join(' ')).toMatch(/quadro/i)
+  })
+
+  it('o único quadro LIGADO está arquivado: não adota o morto', async () => {
+    const c = clienteCompleto({
+      listarQuadrosDoRepositorio: vi.fn(async () => [
+        {
+          id: 'PVT_morto',
+          number: 5,
+          title: 'arquivado',
+          closed: true,
+          itensCount: 0,
+          camposCount: 13,
+        },
+      ]),
+    })
+    const r = await ensureProjectBoard({ ...base, client: c as never })
+    expect(r).toEqual({ owner: 'dono', number: 42 })
+    expect(c.createProjectV2).toHaveBeenCalled()
+  })
+
   it('cliente sem as consultas de descoberta continua criando como antes', async () => {
     const c = {
       findProjectId: vi.fn(async () => null),

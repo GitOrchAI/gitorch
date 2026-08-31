@@ -187,6 +187,18 @@ export interface QuadroListado {
    * ativo (medido em 29/08).
    */
   closed: boolean
+  /**
+   * Quantos itens o quadro tem no total — a evidência de USO, e o desempate
+   * mais forte quando o repositório tem mais de um quadro ligado.
+   *
+   * Opcional porque nem toda listagem paga por ele (`listarQuadrosDaConta` não
+   * pede). Ausente é "não perguntei", nunca "está vazio": quem decide trata os
+   * dois iguais só porque a diferença ali não muda o resultado — zero e
+   * desconhecido perdem do mesmo jeito para um quadro com itens de verdade.
+   */
+  itensCount?: number
+  /** Quantos campos o quadro tem: quanto alguém já investiu nele. */
+  camposCount?: number
 }
 
 export interface ListarQuadrosDoRepositorioInput {
@@ -232,6 +244,16 @@ export interface QuadroDetalhado {
  * uma página alimenta a chamada da próxima, e sem um tipo declarado o
  * compilador entra em referência circular ao tentar inferi-lo.
  */
+/** O quadro como a listagem chega da API, antes de virar `QuadroListado`. */
+interface QuadroListadoBruto {
+  id: string
+  number: number
+  title: string
+  closed: boolean
+  items?: { totalCount: number } | null
+  fields?: { totalCount: number } | null
+}
+
 /** Forma da página de itens de um quadro; nomeada pelo mesmo motivo. */
 interface PaginaDeItens {
   node: {
@@ -496,17 +518,32 @@ export class ProjectV2Client {
   // Quais boards JÁ estão anunciados a este repositório. É a primeira pergunta
   // da descoberta: se a resposta não for vazia, não há o que criar nem ligar —
   // basta guardar o que já existe.
+  //
+  // Traz itens e campos JUNTO, e não numa segunda volta por quadro: o
+  // repositório do dono tinha QUATRO quadros ligados, e sem esses dois números
+  // a decisão via quatro candidatos idênticos e devolvia "escolher" — o que
+  // parava a sprint e fazia o produto criar mais um quadro para tentar sair da
+  // dúvida. `first: 1` é só para poder pedir `totalCount`; nenhum item é lido.
   async listarQuadrosDoRepositorio(
     input: ListarQuadrosDoRepositorioInput
   ): Promise<QuadroListado[]> {
     const response = await this.request<{
-      repository: { projectsV2: { nodes: QuadroListado[] | null } | null } | null
+      repository: { projectsV2: { nodes: QuadroListadoBruto[] | null } | null } | null
     }>(
       {
         query: `
           query ListarQuadrosDoRepositorio($owner: String!, $repo: String!) {
             repository(owner: $owner, name: $repo) {
-              projectsV2(first: 50) { nodes { id number title closed } }
+              projectsV2(first: 50) {
+                nodes {
+                  id
+                  number
+                  title
+                  closed
+                  items(first: 1) { totalCount }
+                  fields(first: 1) { totalCount }
+                }
+              }
             }
           }
         `,
@@ -515,7 +552,15 @@ export class ProjectV2Client {
       this.token
     )
 
-    return unwrap(response).repository?.projectsV2?.nodes ?? []
+    const nodes = unwrap(response).repository?.projectsV2?.nodes ?? []
+    return nodes.map((n) => ({
+      id: n.id,
+      number: n.number,
+      title: n.title,
+      closed: n.closed,
+      itensCount: n.items?.totalCount ?? 0,
+      camposCount: n.fields?.totalCount ?? 0,
+    }))
   }
 
   // Quais boards a CONTA tem, ligados a este repositório ou não. É a segunda
