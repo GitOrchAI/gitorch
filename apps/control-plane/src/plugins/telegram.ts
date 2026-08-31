@@ -24,6 +24,7 @@ import {
 } from '../services/telegram-link.js'
 import { AgentQuestionService, type AgentQuestionRecord } from '../services/agent-question.js'
 import { pipelineCheckEnabled, type PipelineErrorMetadata } from '../config/pipeline-check.js'
+import { traduzirErroParaUsuario, type SetupErrorCode } from '../lib/setup-errors.js'
 
 // O ouvido do bot. Sem ele, o deep link do passo 8 abriria o Telegram, o cliente
 // apertaria Start... e ninguém estaria escutando — o `chat_id` (a única coisa
@@ -125,7 +126,19 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
         })
         if (!chatId) return
 
-        const text = `🚨 Ocorreu um erro no passo ${metadata.step}.\nCausa: ${metadata.reason}\nO sistema já fez: ${metadata.mitigationAction}\nPrecisa agir? **${metadata.requiresAction ? 'Sim' : 'Não'}**`
+        // Extrai o code, remove a chave se for algo como "CODE: message"
+        let errorCode = metadata.reason
+        const match = /^([A-Z_]+):\s/.exec(errorCode)
+        if (match && match[1]) {
+          errorCode = match[1]
+        }
+
+        const translatedReason = traduzirErroParaUsuario(errorCode as SetupErrorCode | null)
+        const mitigationIcon = metadata.requiresAction ? '🚨' : '⚙️'
+        const actionRequired = metadata.requiresAction ? 'Sim' : 'Não'
+        const text = `${mitigationIcon} **Falha no passo:** ${metadata.step}\n**Problema:** ${translatedReason}\n**Ação do sistema:** ${metadata.mitigationAction}\n**Precisa agir?** ${actionRequired}`
+
+        app.log.info({ payload: text }, '[Telegram] enviando aviso de falha na pipeline')
 
         await sendTelegramMessage({
           botToken,
