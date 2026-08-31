@@ -253,6 +253,9 @@ model Increment {
   pullRequestNumber Int?    @map("pull_request_number")
   mergeCommitSha    String? @map("merge_commit_sha")
 
+  wishCreatedAt DateTime? @map("wish_created_at")
+  mergedAt      DateTime? @map("merged_at")
+
   /// Quando ficou pronto. É a data que o painel mostra.
   prontoEm DateTime @default(now()) @map("pronto_em")
 
