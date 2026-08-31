@@ -1,8 +1,8 @@
 'use client'
 // Projetos: cada projeto ligado ao GitOrch. AO VIVO (/api/projects). A tela
-// mostra o que a rota entrega — nome, última atividade, volume de tarefas,
-// se está ativo. Saúde e "agentes ligados" não vêm dessa rota ainda; em vez
-// de inventar, a tela omite. Portado de TelaRepositorios.jsx.
+// mostra o que a rota entrega — nome, última atividade, quantas rodadas de
+// agente, se está ativo. Saúde e "agentes ligados" não vêm dessa rota ainda;
+// em vez de inventar, a tela omite. Portado de TelaRepositorios.jsx.
 import { ROTAS } from './painel-api'
 import { usePainelBusca } from './usePainelBusca'
 import { useSyncExternalStore } from 'react'
@@ -10,6 +10,7 @@ import { assinarProjeto, projetoAtual, projetoNoServidor, filtroDeProjeto } from
 import { Ad } from './PainelIcons'
 import { Cabeca, Card, Estado } from './PainelUI'
 import { Estados } from './PainelEstados'
+import { contadoresDoProjeto, type ContadorDoProjeto } from './painel-numeros'
 
 interface ProjetoBruto {
   id: string
@@ -25,7 +26,15 @@ interface ProjetoView {
   full: string
   ativo: boolean
   ultima: string
-  tarefas: number
+  /**
+   * Os contadores do cartão, já com o rótulo do que cada um É.
+   *
+   * Era um campo `tarefas` alimentado por `_count.missions` e exibido como
+   * "Tarefas no total": 3.671 no gitorch, 1.327 no patinhas. Nenhum dos dois é
+   * tarefa — são rodadas de agente. O rótulo agora vem de painel-numeros.ts,
+   * que tem teste; a tela só desenha.
+   */
+  contadores: ContadorDoProjeto[]
 }
 
 function tempoRelativo(iso: string): string {
@@ -189,7 +198,7 @@ export function TelaProjetos() {
         full: p.description || p.name,
         ativo: p.isActive ?? true,
         ultima: tempoRelativo(p.updatedAt),
-        tarefas: p._count?.missions ?? 0,
+        contadores: contadoresDoProjeto(p),
       })),
     vazio: (d) => d.length === 0,
   })
@@ -197,7 +206,8 @@ export function TelaProjetos() {
   return (
     <>
       <Cabeca titulo="Projetos">
-        Cada projeto ligado ao GitOrch, com o volume de tarefas e quando saiu a última atividade.
+        Cada projeto ligado ao GitOrch, com quantas rodadas de agente ele já teve e quando saiu a
+        última atividade. O que ficou PRONTO fica na aba Entregas — rodada de agente não é entrega.
       </Cabeca>
 
       <Estados
@@ -229,12 +239,14 @@ export function TelaProjetos() {
                 </div>
 
                 <div style={{ display: 'flex', gap: 22, marginTop: 18 }}>
-                  <div>
-                    <span className="pn-label">Tarefas no total</span>
-                    <div className="num" style={{ fontSize: 22, fontWeight: 600 }}>
-                      {p.tarefas}
+                  {p.contadores.map((c) => (
+                    <div key={c.rotulo}>
+                      <span className="pn-label">{c.rotulo}</span>
+                      <div className="num" style={{ fontSize: 22, fontWeight: 600 }}>
+                        {c.valor}
+                      </div>
                     </div>
-                  </div>
+                  ))}
                   <div>
                     <span className="pn-label">Última atividade</span>
                     <div style={{ fontSize: 14, fontWeight: 500, paddingTop: 3 }}>{p.ultima}</div>

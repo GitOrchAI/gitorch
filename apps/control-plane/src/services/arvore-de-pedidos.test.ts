@@ -87,7 +87,10 @@ describe('lerArvoreDePedidos', () => {
       }),
       { ownerId: 'u1' }
     )
-    expect(r[0]?.situacao).toBe('entregue')
+    // Issue fechada vira 'fechado', NUNCA 'entregue': fechar uma issue não é
+    // passar pela régua de pronto, e o painel não pode declarar entrega a
+    // partir de um fato que não julgou.
+    expect(r[0]?.situacao).toBe('fechado')
   })
 
   it('dono sem projeto devolve lista vazia, e nem pede credencial', async () => {

@@ -20,7 +20,8 @@ import { Estados } from './PainelEstados'
 interface PedidoView {
   numero: number
   titulo: string
-  situacao: 'andando' | 'entregue'
+  /** Estado da issue no GitHub. 'fechado' NÃO quer dizer aprovado na régua. */
+  situacao: 'andando' | 'fechado'
   projeto: string
   quando: string
   endereco: string
@@ -44,7 +45,7 @@ function quandoLegivel(iso: string): string {
  * está parado quando na verdade nem começou a ser planejado.
  */
 function andamentoLegivel(p: PedidoView): string {
-  if (p.situacao === 'entregue') return 'entregue'
+  if (p.situacao === 'fechado') return 'fechado no GitHub'
   if (p.partes.total === 0) return 'ainda sendo planejado'
   return `${p.partes.concluidas} de ${p.partes.total} partes prontas`
 }
@@ -56,7 +57,7 @@ interface Projeto {
 }
 
 type Prioridade = 'P0' | 'P1' | 'P2'
-type Filtro = 'todos' | 'andando' | 'entregue'
+type Filtro = 'todos' | 'andando' | 'fechado'
 
 export function TelaPedidos() {
   const [texto, setTexto] = useState('')
@@ -116,7 +117,7 @@ export function TelaPedidos() {
   const filtros: [Filtro, string][] = [
     ['todos', 'Todos'],
     ['andando', 'Andando'],
-    ['entregue', 'Entregues'],
+    ['fechado', 'Fechados'],
   ]
   // O projeto escolhido no topo vale aqui: o dono vê todos os projetos ou um.
   const projeto = useSyncExternalStore(assinarProjeto, projetoAtual, projetoNoServidor)
@@ -345,8 +346,8 @@ export function TelaPedidos() {
                           </div>
                         </td>
                         <td className="pn-nowrap">
-                          <Estado d={p.situacao === 'entregue' ? 'g' : ''}>
-                            {p.situacao === 'entregue' ? 'Entregue' : 'Andando'}
+                          <Estado d={p.situacao === 'fechado' ? 'g' : ''}>
+                            {p.situacao === 'fechado' ? 'Fechado' : 'Andando'}
                           </Estado>
                         </td>
                         <td className="pn-nowrap" style={{ color: 'var(--gl-muted)' }}>

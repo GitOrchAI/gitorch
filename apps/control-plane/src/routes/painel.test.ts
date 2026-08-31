@@ -7,6 +7,9 @@ import { painelRoutes, resolveQuadroDoProjeto } from './painel.js'
 import { LeituraIndisponivelError } from '../services/leitura-do-repositorio.js'
 import { hojeNoFuso } from '../services/garantir-sprint.js'
 import { ArvoreIndisponivelError } from '../services/arvore-de-pedidos.js'
+import { tabelaEmMemoria, type ConsultaEmMemoria } from '../test/where-em-memoria.js'
+import type { SessaoDaEntrega, ProjetoDaEntrega } from '../services/entregas-por-pedido.js'
+import type { EntregaDoPainel } from '../services/incremento.js'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -419,8 +422,19 @@ describe('Rotas do painel do owner', () => {
   describe('GET /api/v1/painel/entregas — o que ficou pronto, e o que falta', () => {
     // Os estados são os que `dev_sessions` grava de verdade: deployState é
     // 'no-ar' | 'falhou' | 'publicando' | 'sem-publicacao' | 'commit-errado'.
-    const PROJETOS = [{ id: 'p1', name: 'gitorch', reguaDePronto: null }]
-    const sessao = (over: Record<string, unknown> = {}) => ({
+    const PROJETOS: ProjetoDaEntrega[] = [{ id: 'p1', name: 'gitorch', reguaDePronto: null }]
+
+    // Interseção com `Record<string, unknown>` porque `tabelaEmMemoria` filtra
+    // lendo campos por nome, como o Prisma faz. O tipo continua o da rota —
+    // trocar uma coluna de nome quebra aqui, que é o ponto.
+    type SessaoNoBanco = SessaoDaEntrega & Record<string, unknown>
+
+    // Cada linha nasce com `id`, como no banco. A rota ordena por
+    // `[updatedAt desc, id desc]` e um fixture sem `id` deixaria o desempate —
+    // que é justamente o conserto da ordenação instável — sem ser conferido.
+    let proximoId = 0
+    const sessao = (over: Partial<SessaoNoBanco> = {}): SessaoNoBanco => ({
+      id: `sess_${String(proximoId++).padStart(4, '0')}`,
       projectId: 'p1',
       issueNumber: 42,
       pullRequestNumber: 7,
@@ -431,11 +445,56 @@ describe('Rotas do painel do owner', () => {
       ...over,
     })
 
-    const prismaCom = (projetos: unknown[], sessoes: unknown[]) =>
-      fakePrisma({
+    // O Prisma falso FILTRA, ORDENA e PAGINA de verdade, lendo o mesmo objeto
+    // que a rota manda para o Prisma real. Um falso que devolvesse a lista
+    // pronta provaria que a rota CHAMOU o banco — e foi um falso desses que
+    // deixou o `take: 50` passar por revisão com todos os testes verdes.
+    const prismaCom = (
+      projetos: readonly ProjetoDaEntrega[],
+      sessoes: readonly SessaoNoBanco[]
+    ) => {
+      const tabela = tabelaEmMemoria(sessoes)
+      return fakePrisma({
         project: { findMany: vi.fn().mockResolvedValue(projetos) },
-        devSession: { findMany: vi.fn().mockResolvedValue(sessoes) },
+        devSession: { findMany: vi.fn((q: ConsultaEmMemoria) => tabela.findMany(q)) },
       })
+    }
+
+    // --- O banco do dono, na forma exata medida em 31/08/2026 --------------
+    //
+    //   select count(*), count(distinct issue_number) from dev_sessions;
+    //     200 | 99
+    //   -- 15 pedidos passam na régua padrão, e as sessões deles ocupam as
+    //   -- posições 66 a 193 na ordem por `updated_at` desc.
+    //
+    // A rota trazia as 50 mais recentes: NENHUMA das prontas cabia ali, e a
+    // tela dizia "PRONTAS: 0" com quinze entregas no ar.
+    const PRONTAS_ANTIGAS: SessaoNoBanco[] = Array.from({ length: 15 }, (_, i) =>
+      sessao({
+        issueNumber: 100 + i,
+        pullRequestNumber: 2000 + i,
+        updatedAt: new Date(Date.UTC(2026, 0, 1 + i, 12)),
+      })
+    )
+    // 84 pedidos abertos, com mais de uma sessão cada — é daqui que vêm as 200
+    // sessões para 99 pedidos, e é daqui que vinha a `key` repetida na tela.
+    const ABERTAS_RECENTES: SessaoNoBanco[] = Array.from({ length: 84 }, (_, p) =>
+      Array.from({ length: p < 17 ? 3 : 2 }, (_, t) =>
+        sessao({
+          issueNumber: 500 + p,
+          pullRequestNumber: null,
+          mergeCommitSha: null,
+          deployState: 'sem-publicacao',
+          updatedAt: new Date(Date.UTC(2026, 7, 30, 12) - (p * 3 + t) * 60_000),
+        })
+      )
+    ).flat()
+    const BANCO_DO_DONO = [...PRONTAS_ANTIGAS, ...ABERTAS_RECENTES]
+
+    test('o cenário é o do banco medido: 200 sessões para 99 pedidos', () => {
+      expect(BANCO_DO_DONO).toHaveLength(200)
+      expect(new Set(BANCO_DO_DONO.map((s) => s.issueNumber)).size).toBe(99)
+    })
 
     test('sem sessão, 401', async () => {
       const res = await app.inject({ method: 'GET', url: '/api/v1/painel/entregas' })
@@ -458,8 +517,9 @@ describe('Rotas do painel do owner', () => {
 
     test('mesclada mas não no ar: NÃO conta como pronta e diz por quê', async () => {
       await build(prismaCom(PROJETOS, [sessao({ deployState: 'sem-publicacao' })]))
-      const corpo = (await getEntregas()).json()
+      const corpo = (await getEntregas('?grupo=andando')).json()
       expect(corpo.prontas).toBe(0)
+      expect(corpo.andando).toBe(1)
       expect(corpo.entregas[0].pronto).toBe(false)
       expect(corpo.entregas[0].porQueNaoFechou).toEqual([
         'foi mesclada, mas ainda não chegou ao ar',
@@ -470,7 +530,7 @@ describe('Rotas do painel do owner', () => {
       // Mostrar `updatedAt` como se fosse a data da entrega diria que ficou
       // pronto num dia em que não ficou.
       await build(prismaCom(PROJETOS, [sessao({ deployState: 'falhou' })]))
-      const corpo = (await getEntregas()).json()
+      const corpo = (await getEntregas('?grupo=andando')).json()
       expect(corpo.entregas[0].prontoEm).toBeNull()
     })
 
@@ -487,7 +547,196 @@ describe('Rotas do painel do owner', () => {
       await build(prismaCom([], []))
       const res = await getEntregas()
       expect(res.statusCode).toBe(200)
-      expect(res.json()).toEqual({ entregas: [], prontas: 0 })
+      expect(res.json()).toEqual({
+        entregas: [],
+        prontas: 0,
+        andando: 0,
+        total: 0,
+        grupo: 'prontas',
+        pagina: 1,
+        porPagina: 25,
+        paginas: 0,
+      })
+    })
+
+    // --- O teto que escondia as entregas ----------------------------------
+
+    test('as 15 prontas aparecem, mesmo sendo as MAIS ANTIGAS do banco', async () => {
+      // A prova direta contra o `take: 50`: as prontas são de janeiro e há 185
+      // sessões mais recentes que elas.
+      await build(prismaCom(PROJETOS, BANCO_DO_DONO))
+      const corpo = (await getEntregas()).json()
+      expect(corpo.prontas).toBe(15)
+      expect(corpo.entregas).toHaveLength(15)
+      expect(corpo.entregas.every((e: EntregaDoPainel) => e.pronto)).toBe(true)
+    })
+
+    // --- O denominador é da unidade do CARTÃO ------------------------------
+
+    test('o denominador conta PEDIDOS, não sessões: 99, nunca 200', async () => {
+      // O cartão diz "Pedido #N". Dizer "de 200 que passaram pela sua régua"
+      // fazia o dono ler duzentos pedidos onde há noventa e nove.
+      await build(prismaCom(PROJETOS, BANCO_DO_DONO))
+      const corpo = (await getEntregas()).json()
+      expect(corpo.total).toBe(99)
+      expect(corpo.prontas + corpo.andando).toBe(corpo.total)
+    })
+
+    test('um pedido com três sessões é UM cartão', async () => {
+      await build(
+        prismaCom(PROJETOS, [
+          sessao({ updatedAt: new Date('2026-08-01T00:00:00Z') }),
+          sessao({ updatedAt: new Date('2026-08-02T00:00:00Z') }),
+          sessao({ updatedAt: new Date('2026-08-03T00:00:00Z') }),
+        ])
+      )
+      const corpo = (await getEntregas()).json()
+      expect(corpo.total).toBe(1)
+      expect(corpo.entregas).toHaveLength(1)
+    })
+
+    test('nenhum pedido se repete na página — a invariante da key do cartão', async () => {
+      // Era a `key` repetida que deixava nó de DOM órfão na tela: 25 linhas da
+      // API viravam 33 cartões desenhados ao virar a página.
+      await build(prismaCom(PROJETOS, BANCO_DO_DONO))
+      const corpo = (await getEntregas('?grupo=andando')).json()
+      const chaves = corpo.entregas.map((e: EntregaDoPainel) => `${e.projeto}#${e.pedido}`)
+      expect(new Set(chaves).size).toBe(chaves.length)
+    })
+
+    // --- A LISTA casa com o NÚMERO ----------------------------------------
+
+    test('sem pedir grupo, a lista traz as PRONTAS — o que o cabeçalho anuncia', async () => {
+      // O defeito de leitura: o cabeçalho dizia "Prontas: 15" e a lista mostrava
+      // as 50 mais recentes, onde há ZERO prontas. O dono lia 15 e não via
+      // nenhuma.
+      await build(prismaCom(PROJETOS, BANCO_DO_DONO))
+      const corpo = (await getEntregas()).json()
+      expect(corpo.grupo).toBe('prontas')
+      expect(corpo.entregas.filter((e: EntregaDoPainel) => e.pronto)).toHaveLength(
+        corpo.entregas.length
+      )
+      expect(corpo.entregas).toHaveLength(corpo.prontas)
+    })
+
+    test('as prontas saem da mais recente para a mais antiga', async () => {
+      await build(prismaCom(PROJETOS, BANCO_DO_DONO))
+      const datas = (await getEntregas())
+        .json()
+        .entregas.map((e: EntregaDoPainel) => Date.parse(e.prontoEm ?? ''))
+      expect(datas).toEqual([...datas].sort((a: number, b: number) => b - a))
+    })
+
+    test('o grupo "andando" traz os 84 que não fecharam, e nenhum pronto', async () => {
+      await build(prismaCom(PROJETOS, BANCO_DO_DONO))
+      const corpo = (await getEntregas('?grupo=andando')).json()
+      expect(corpo.andando).toBe(84)
+      expect(corpo.entregas.some((e: EntregaDoPainel) => e.pronto)).toBe(false)
+    })
+
+    test('grupo desconhecido cai nas prontas, não em lista vazia', async () => {
+      await build(prismaCom(PROJETOS, BANCO_DO_DONO))
+      const corpo = (await getEntregas('?grupo=sei-la')).json()
+      expect(corpo.grupo).toBe('prontas')
+      expect(corpo.entregas).toHaveLength(15)
+    })
+
+    // --- Paginação: igualdade, nunca "no máximo" ---------------------------
+
+    test('a página tem EXATAMENTE 25 linhas, e o cabeçalho fala das 84', async () => {
+      // `toBeLessThanOrEqual(25)` passaria com 25, com 1 e com 0. Não prova nada.
+      await build(prismaCom(PROJETOS, BANCO_DO_DONO))
+      const corpo = (await getEntregas('?grupo=andando')).json()
+      expect(corpo.entregas).toHaveLength(25)
+      expect(corpo.porPagina).toBe(25)
+      expect(corpo.paginas).toBe(4)
+      expect(corpo.andando).toBe(84)
+    })
+
+    test('a última página traz EXATAMENTE o que sobrou', async () => {
+      await build(prismaCom(PROJETOS, BANCO_DO_DONO))
+      const corpo = (await getEntregas('?grupo=andando&pagina=4')).json()
+      expect(corpo.entregas).toHaveLength(9)
+      expect(corpo.pagina).toBe(4)
+    })
+
+    test('somando TODAS as páginas dá exatamente o número do cabeçalho', async () => {
+      // A prova contra a divergência que criou este defeito: a lista inteira e
+      // o número têm que falar da mesma população.
+      await build(prismaCom(PROJETOS, BANCO_DO_DONO))
+      const primeira = (await getEntregas('?grupo=andando')).json()
+      const vistos = new Set<string>()
+      for (let p = 1; p <= primeira.paginas; p++) {
+        const pagina = (await getEntregas(`?grupo=andando&pagina=${p}`)).json()
+        for (const e of pagina.entregas) vistos.add(`${e.projeto}#${e.pedido}`)
+      }
+      expect(vistos.size).toBe(84)
+      expect(vistos.size).toBe(primeira.andando)
+    })
+
+    test('página além do fim: lista vazia, mas os números continuam certos', async () => {
+      // Sem isto, quem navega até o fim veria "0" e concluiria que não há
+      // entrega nenhuma — a mesma mentira do teto, na outra ponta.
+      await build(prismaCom(PROJETOS, BANCO_DO_DONO))
+      const corpo = (await getEntregas('?grupo=andando&pagina=9')).json()
+      expect(corpo.entregas).toEqual([])
+      expect(corpo.total).toBe(99)
+      expect(corpo.prontas).toBe(15)
+      expect(corpo.andando).toBe(84)
+    })
+
+    test('porPagina tem teto — pedir 5000 não devolve o banco inteiro', async () => {
+      await build(prismaCom(PROJETOS, BANCO_DO_DONO))
+      const corpo = (await getEntregas('?grupo=andando&porPagina=5000')).json()
+      expect(corpo.porPagina).toBe(100)
+      expect(corpo.entregas).toHaveLength(84)
+    })
+
+    test('pagina e porPagina inválidos caem no padrão, não em NaN', async () => {
+      await build(prismaCom(PROJETOS, BANCO_DO_DONO))
+      const corpo = (await getEntregas('?grupo=andando&pagina=-3&porPagina=abc')).json()
+      expect(corpo.pagina).toBe(1)
+      expect(corpo.porPagina).toBe(25)
+      expect(corpo.entregas).toHaveLength(25)
+    })
+
+    test('a consulta ordena com desempate por id — nunca só por updatedAt', async () => {
+      // `updatedAt` é reescrito pela esteira o tempo todo. Ordenar só por ele
+      // deixa linhas empatadas trocando de lugar entre uma leitura e a
+      // seguinte, e a mesma linha aparece em duas páginas.
+      const prisma = await build(prismaCom(PROJETOS, BANCO_DO_DONO))
+      await getEntregas()
+      expect(prisma.devSession.findMany.mock.calls[0][0].orderBy).toEqual([
+        { updatedAt: 'desc' },
+        { id: 'desc' },
+      ])
+    })
+
+    test('a consulta NÃO leva take — o teto vive na página, não na população', async () => {
+      const prisma = await build(prismaCom(PROJETOS, BANCO_DO_DONO))
+      await getEntregas()
+      expect(prisma.devSession.findMany.mock.calls[0][0].take).toBeUndefined()
+    })
+
+    test('cada projeto é julgado pela SUA régua, na mesma resposta', async () => {
+      const projetos: ProjetoDaEntrega[] = [
+        { id: 'p1', name: 'gitorch', reguaDePronto: null },
+        { id: 'p2', name: 'patinhas', reguaDePronto: { no_ar: false } },
+      ]
+      const sessoes = [
+        sessao({ projectId: 'p1', issueNumber: 1, deployState: 'sem-publicacao' }),
+        sessao({ projectId: 'p2', issueNumber: 2, deployState: 'sem-publicacao' }),
+      ]
+      await build(prismaCom(projetos, sessoes))
+      const corpo = (await getEntregas()).json()
+      expect(corpo.total).toBe(2)
+      expect(corpo.prontas).toBe(1)
+      expect(corpo.entregas.map((e: EntregaDoPainel) => e.pedido)).toEqual([2])
+    })
+
+    test('a resposta não carrega id de projeto', async () => {
+      await build(prismaCom(PROJETOS, BANCO_DO_DONO))
+      expect((await getEntregas()).body).not.toContain('p1')
     })
   })
 
