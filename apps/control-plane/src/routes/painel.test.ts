@@ -1,4 +1,4 @@
-import { test, expect, describe, beforeEach, vi } from 'vitest'
+import { test, expect, describe, beforeEach, afterEach, vi } from 'vitest'
 import Fastify from 'fastify'
 import jwt from 'jsonwebtoken'
 import { loadEnv } from '../config/env.js'
@@ -627,6 +627,140 @@ describe('Rotas do painel do owner', () => {
       const res = await postOrdem({ projeto: 'gitorch', pedidos: PEDIDOS })
       expect(res.statusCode).toBe(403)
       expect(res.json().error).toContain('mude para')
+    })
+  })
+
+  describe('POST /ordem quando o quadro é GRANDE DEMAIS para ser lido inteiro', () => {
+    // O teto de 20 páginas (2000 itens) do `listarItensDoQuadro` existe para o
+    // produto não girar para sempre. Mas até aqui a rota não escutava o aviso
+    // do corte: ela reordenava o que deu, respondia "Reordenei 2 pedido(s)" e
+    // dizia que o resto "não está no quadro" — quando estava, só não tinha
+    // sido lido. Mentira na tela do dono, e do tipo que ele não tem como
+    // desconfiar.
+    const PROJETO = {
+      id: 'p1',
+      wingId: 'dono/repo',
+      autonomia: 'cuidar',
+      runtimeConfig: { envConfig: { GITORCH_PROJECT_BOARD: 'GitOrchAI/2' } },
+    }
+
+    /**
+     * Sobe a rota com a rede FALSA no lugar do GitHub. Não é mock do nosso
+     * cliente: a query, a paginação e o teto são os de verdade — só o outro
+     * lado do fio é que é nosso. `semFim` decide se o quadro acaba ou não.
+     */
+    async function comQuadro(opts: { semFim: boolean }) {
+      const eventCreate = vi.fn().mockResolvedValue({})
+      const prisma = fakePrisma({
+        project: { findFirst: vi.fn().mockResolvedValue(PROJETO) },
+        event: {
+          findFirst: vi.fn().mockResolvedValue(null),
+          findMany: vi.fn().mockResolvedValue([]),
+          create: eventCreate,
+        },
+      })
+      await build(prisma)
+      ;(app as any).engineConnections = { getRawGithubToken: vi.fn().mockResolvedValue('tok_1') }
+
+      let paginas = 0
+      const fetchFalso = vi.fn(async (_url: any, init: any) => {
+        const corpo = JSON.parse(String(init.body)) as { query: string }
+        const responder = (data: unknown) =>
+          new Response(JSON.stringify({ data }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+
+        if (corpo.query.includes('GetProjectId')) {
+          return responder({ organization: { projectV2: { id: 'PVT_1' } } })
+        }
+        if (corpo.query.includes('ItensDoQuadro')) {
+          paginas++
+          // Os pedidos que o dono mandou estão na PRIMEIRA página — a ordem
+          // chega a ser aplicada. O corte não impede a escrita; ele só torna
+          // a lista de "fora do quadro" mentirosa.
+          const nodes =
+            paginas === 1
+              ? [
+                  { id: 'PVTI_36', content: { number: 36 }, fieldValueByName: null },
+                  { id: 'PVTI_37', content: { number: 37 }, fieldValueByName: null },
+                ]
+              : [
+                  {
+                    id: `PVTI_${paginas}`,
+                    content: { number: 1000 + paginas },
+                    fieldValueByName: null,
+                  },
+                ]
+          const ultima = !opts.semFim && paginas === 20
+          return responder({
+            node: {
+              items: {
+                pageInfo: { hasNextPage: !ultima, endCursor: ultima ? null : `C_${paginas}` },
+                nodes,
+              },
+            },
+          })
+        }
+        return responder({ updateProjectV2ItemPosition: { items: { totalCount: 1 } } })
+      })
+      vi.stubGlobal('fetch', fetchFalso)
+
+      const avisos = vi.spyOn(app.log, 'warn')
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/painel/ordem',
+        headers: authHeaders,
+        // #999 não existe em página nenhuma: é o "fora do quadro" legítimo.
+        payload: { projeto: 'gitorch', pedidos: [36, 37, 999] },
+      })
+      return { res, eventCreate, avisos, paginas: () => paginas }
+    }
+
+    afterEach(() => vi.unstubAllGlobals())
+
+    test('o corte NÃO passa calado: vira evento de auditoria, log e sinal na resposta', async () => {
+      const { res, eventCreate, avisos, paginas } = await comQuadro({ semFim: true })
+
+      expect(res.statusCode).toBe(200)
+      // Leu até o teto e parou. Se este número mudar, o teste abaixo do fim
+      // natural para de ser o vizinho de porta deste.
+      expect(paginas()).toBe(20)
+
+      // 1) O dono TEM que conseguir ver depois. A timeline do painel lê
+      // `type: 'audit'` e renderiza `payload.texto` — gravar com outro tipo
+      // seria gravar numa gaveta que nenhuma tela abre.
+      const evento = eventCreate.mock.calls
+        .map((c) => c[0].data)
+        .find((d: any) => d.type === 'audit')
+      expect(evento).toBeDefined()
+      expect(evento.projectId).toBe('p1')
+      expect(evento.payload.texto).toContain('não consegui ler o seu quadro inteiro')
+      expect(evento.payload.itensLidos).toBe(21)
+
+      // 2) E quem cuida da máquina também.
+      expect(avisos).toHaveBeenCalled()
+
+      // 3) A resposta não pode afirmar uma ordem inteira que não houve. Sem
+      // este sinal a tela diz "#999 não está no quadro", quando a verdade é
+      // "não sei se está — não li o quadro todo".
+      const corpo = res.json()
+      expect(corpo.leituraIncompleta).toBe(true)
+      expect(corpo.itensLidos).toBe(21)
+      expect(corpo.foraDoQuadro).toEqual([999])
+    })
+
+    test('quadro que ACABA dentro do teto não gera aviso nenhum', async () => {
+      // O vizinho de porta: mesmas 20 páginas lidas, mesma ordem aplicada. Só
+      // que o quadro acabou. Alarme falso aqui treinaria o dono a ignorar o
+      // aviso do dia em que a leitura for cortada de verdade.
+      const { res, eventCreate, avisos, paginas } = await comQuadro({ semFim: false })
+
+      expect(res.statusCode).toBe(200)
+      expect(paginas()).toBe(20)
+      expect(eventCreate.mock.calls.map((c) => c[0].data.type)).not.toContain('audit')
+      expect(avisos).not.toHaveBeenCalled()
+      expect(res.json().leituraIncompleta).toBeUndefined()
     })
   })
 

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  fraseDaOrdem,
   fraseDoErroDePedido,
   enviarPedido,
   responderDecisao,
@@ -145,5 +146,43 @@ describe('ROTAS', () => {
   it('as rotas novas têm o prefixo /api/v1/painel', () => {
     expect(ROTAS.pulso).toBe('/api/v1/painel/pulso')
     expect(ROTAS.agentes).toBe('/api/v1/painel/agentes')
+  })
+})
+
+describe('fraseDaOrdem — o que ficou de fora, sem acusar o quadro do dono', () => {
+  const OK = { oQueFiz: 'Reordenei 2 pedido(s) no seu quadro: #36, #37.' }
+
+  it('sem sobra, só o que foi feito', () => {
+    expect(fraseDaOrdem(OK)).toBe(OK.oQueFiz)
+    expect(fraseDaOrdem({ ...OK, foraDoQuadro: [] })).toBe(OK.oQueFiz)
+  })
+
+  it('com sobra e quadro lido inteiro, afirma que não estão no quadro', () => {
+    expect(fraseDaOrdem({ ...OK, foraDoQuadro: [999] })).toContain(
+      '1 pedido(s) não estão no quadro'
+    )
+  })
+
+  it('com sobra e leitura CORTADA, não afirma o que não sabe', () => {
+    // O defeito que este par de testes existe para prender: dizer "não estão
+    // no quadro" sobre pedidos que estão lá, só numa página que não foi lida.
+    // Para o dono a diferença é enorme — a primeira frase o manda procurar um
+    // erro dele que não existe.
+    const frase = fraseDaOrdem({
+      ...OK,
+      foraDoQuadro: [999],
+      leituraIncompleta: true,
+      itensLidos: 2000,
+    })
+    expect(frase).not.toContain('não estão no quadro')
+    expect(frase).toContain('não apareceram na parte do quadro que consegui ler')
+    expect(frase).toContain('2000')
+  })
+
+  it('leitura cortada mas nada sobrando: a ordem pedida valeu inteira', () => {
+    // Nada a corrigir na tela — o corte fica registrado na timeline. Avisar
+    // aqui seria alarme sem consequência, e alarme sem consequência é o que
+    // treina o dono a ignorar o aviso que importa.
+    expect(fraseDaOrdem({ ...OK, leituraIncompleta: true, itensLidos: 2000 })).toBe(OK.oQueFiz)
   })
 })

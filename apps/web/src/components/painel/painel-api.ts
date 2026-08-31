@@ -223,3 +223,37 @@ export function descreverEventoSSE(raw: string): string {
     return 'Movimento novo na esteira'
   }
 }
+
+/** O que POST /painel/ordem devolve quando a escrita no quadro deu certo. */
+export interface RespostaDaOrdem {
+  /** A frase do servidor: "Reordenei N pedido(s)...". */
+  oQueFiz: string
+  /** Números que a rota não encontrou no quadro e por isso não moveu. */
+  foraDoQuadro?: number[]
+  /** O quadro é grande demais e a leitura parou no teto. */
+  leituraIncompleta?: boolean
+  /** Quantos itens deu para ler antes do corte. */
+  itensLidos?: number
+}
+
+/**
+ * A frase que o dono lê depois de salvar a ordem.
+ *
+ * O ponto delicado é `foraDoQuadro`: ele só significa "não está no quadro"
+ * quando o quadro foi lido INTEIRO. Se a leitura foi cortada no teto, um
+ * pedido pode estar lá, numa página que ninguém leu — e dizer "não está no
+ * seu quadro" manda o dono caçar um erro dele que não existe. Com a leitura
+ * cortada a tela diz o que de fato aconteceu: não apareceu no que deu para ler.
+ *
+ * Quando nada sobrou, a ordem que ele pediu valeu inteira e não há o que
+ * corrigir aqui — o corte fica registrado na timeline. Alarme sem consequência
+ * é o que treina alguém a ignorar o alarme que importa.
+ */
+export function fraseDaOrdem(r: RespostaDaOrdem): string {
+  const fora = r.foraDoQuadro?.length ?? 0
+  if (fora === 0) return r.oQueFiz
+
+  return r.leituraIncompleta
+    ? `${r.oQueFiz} ${fora} pedido(s) não apareceram na parte do quadro que consegui ler (${r.itensLidos} itens) e ficaram como estavam: seu quadro é grande demais para eu ler de uma vez.`
+    : `${r.oQueFiz} ${fora} pedido(s) não estão no quadro e ficaram como estavam.`
+}
