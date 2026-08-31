@@ -34,10 +34,16 @@ jobs:
 
       - name: Setup Node
         uses: ./.github/actions/setup-pnpm
+        with:
+          node-version: '20'
+          check-latest: false
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9.4.0
 
       - name: Install Dependencies
         working-directory: .github/scripts
-        run: pnpm install --ignore-workspace
+        run: pnpm install --frozen-lockfile
 
       - name: Determine Alerts to Process
         id: alerts

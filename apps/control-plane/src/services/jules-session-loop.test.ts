@@ -22,14 +22,16 @@ describe('decidirRespostaDaSessao', () => {
     )
   })
 
-  it('concluída SEM entrega vai para o SM investigar, não é sucesso', () => {
-    // Visto em produção: sessão marcada COMPLETED com a saída vazia — o código
-    // existia dentro dela e morreu ali, sem ninguém perceber.
-    expect(decidirRespostaDaSessao({ ...base, estado: 'COMPLETED' }).acao).toBe('investigar')
+  it('concluída SEM entrega → fechar-terminal (a linha fecha, a issue volta à fila — D51)', () => {
+    // Até 29/08 isto ia para 'investigar', que acionava o SM em loop e NUNCA
+    // fechava a linha — a vaga ficava presa para sempre (21 de 23 sessões
+    // assim). Agora fecha e a esteira redelega.
+    expect(decidirRespostaDaSessao({ ...base, estado: 'COMPLETED' }).acao).toBe('fechar-terminal')
   })
 
-  it('falhou vai para o SM investigar', () => {
-    expect(decidirRespostaDaSessao({ ...base, estado: 'FAILED' }).acao).toBe('investigar')
+  it('falhou → fechar-terminal (não retoma por mensagem — fecha e redelega)', () => {
+    expect(decidirRespostaDaSessao({ ...base, estado: 'FAILED' }).acao).toBe('fechar-terminal')
+    expect(decidirRespostaDaSessao({ ...base, estado: 'CANCELLED' }).acao).toBe('fechar-terminal')
   })
 
   it('esperando aprovação de plano: o sistema aprova, sem gastar motor', () => {
