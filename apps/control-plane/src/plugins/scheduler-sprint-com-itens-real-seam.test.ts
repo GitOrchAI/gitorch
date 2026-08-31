@@ -26,6 +26,19 @@ const ITERACAO_CORRENTE = 'IT_de_hoje'
 const ITERACAO_ALHEIA = 'IT_de_outro_ciclo'
 const TOKEN_DO_CLIENTE = 'ghp_token_do_cliente'
 
+/**
+ * O DONO AVISÁVEL. Três coisas têm que existir ao mesmo tempo para um recado
+ * sair de verdade: o projeto tem `userId`, o vínculo de Telegram está `linked`
+ * com um chat, e o bot tem token. Faltando qualquer uma,
+ * `buildTelegramNotifier` devolve `undefined` e a chamada morre sem rastro —
+ * era exatamente esse o buraco: com o vínculo `unlinked` do padrão, apagar
+ * `avisarDonoDoProjeto` não mudava NADA que um teste conseguisse ver.
+ */
+const DONO = 'user_do_dono'
+const CHAT_DO_DONO = '6725599649'
+const TOKEN_DO_BOT = 'bot_de_teste:AAA'
+const VINCULO_VIVO = { status: 'linked', chatId: CHAT_DO_DONO }
+
 /** O item do quadro de cada pedido — o id que a escrita tem que citar. */
 const ITEM = {
   10: 'ITEM_da_issue_10',
@@ -74,7 +87,22 @@ function projeto(over: Partial<ProjetoFalso> = {}): ProjetoFalso {
 /** Sessões vivas por projeto — a primeira fonte de trabalho ativo. */
 type SessoesVivas = Record<string, Array<{ issueNumber: number; pullRequestNumber: number | null }>>
 
-function buildFakePrisma(projetos: ProjetoFalso[], sessoes: SessoesVivas) {
+function buildFakePrisma(
+  projetos: ProjetoFalso[],
+  sessoes: SessoesVivas,
+  eventos: Array<Record<string, unknown>> = [],
+  /**
+   * A ORDEM em que os dois canais saíram, na sequência real.
+   *
+   * Existe porque "marca no banco ANTES do Telegram" é uma decisão COM motivo:
+   * a marca é o que segura as 24 horas de silêncio, e mandar o recado antes
+   * dela deixaria o aviso saindo a cada passada se a gravação falhasse — a
+   * rajada de 29/08 outra vez. Decisão com motivo e sem teste é decisão que a
+   * próxima rebase desfaz sem ninguém perceber.
+   */
+  trilha: string[] = [],
+  vinculo: { status: string; chatId: string | null } = { status: 'unlinked', chatId: null }
+) {
   const porId = new Map(projetos.map((p) => [p.id, p]))
   return {
     mission: {
@@ -119,8 +147,46 @@ function buildFakePrisma(projetos: ProjetoFalso[], sessoes: SessoesVivas) {
       findUnique: vi.fn(async () => null),
       update: vi.fn(async () => undefined),
     },
+    // A tabela que a timeline do Painel lê (`type: 'audit'`). Guarda de
+    // verdade, e o `findFirst` filtra como o código de produção pergunta —
+    // um mock que sempre devolve `null` faria o teste do silêncio entre
+    // avisos passar sem que houvesse silêncio nenhum.
+    event: {
+      create: vi.fn(async (args: { data: Record<string, unknown> }) => {
+        const linha = { ...args.data, createdAt: new Date() }
+        eventos.push(linha)
+        // Com o ASSUNTO junto: outro ponto do relógio também grava em `events`,
+        // e uma trilha anônima deixaria a prova de ordem passar por causa de um
+        // evento alheio que caiu antes.
+        const payload = (args.data['payload'] ?? {}) as Record<string, unknown>
+        trilha.push(`evento:${String(payload['assunto'] ?? 'sem-assunto')}`)
+        return linha
+      }),
+      findFirst: vi.fn(
+        async (args: {
+          where?: {
+            projectId?: string
+            type?: string
+            payload?: { path?: string[]; equals?: unknown }
+          }
+        }) => {
+          const alvo = args?.where?.payload
+          const casa = (e: Record<string, unknown>) => {
+            if (args?.where?.projectId && e['projectId'] !== args.where.projectId) return false
+            if (args?.where?.type && e['type'] !== args.where.type) return false
+            if (alvo?.path?.length) {
+              const payload = (e['payload'] ?? {}) as Record<string, unknown>
+              if (payload[alvo.path[0] as string] !== alvo.equals) return false
+            }
+            return true
+          }
+          const achados = eventos.filter(casa)
+          return achados[achados.length - 1] ?? null
+        }
+      ),
+    },
     projectSchedule: { findMany: vi.fn(async () => []) },
-    telegramLink: { findUnique: vi.fn(async () => ({ status: 'unlinked', chatId: null })) },
+    telegramLink: { findUnique: vi.fn(async () => vinculo) },
   }
 }
 
@@ -155,7 +221,13 @@ interface Cenario {
   campoJaExiste?: boolean
   /** Itens do quadro: pedido -> iteração em que já está. */
   itens?: Array<{ pedido: number; itemId: string; iteracaoId: string | null }>
-  /** Os quadros LIGADOS ao repositório. Padrão: um só, o do caso simples. */
+  /**
+   * Os quadros LIGADOS ao repositório. Padrão: um só, o do caso simples.
+   *
+   * DOIS é o caso real do `loureng/patinhas-3d-crafts` (medido em 31/08/2026),
+   * em que `decidirQuadro` responde 'escolher' e o produto se recusa a
+   * adivinhar.
+   */
   quadros?: ReturnType<typeof quadroLigado>[]
 }
 
@@ -169,15 +241,25 @@ interface Espiao {
   escritas: Array<{ itemId: string; iterationId: string }>
   /** Cada leitura REST de issues por etiqueta. */
   leiturasDeIssues: Array<{ etiqueta: string; pagina: string }>
+  /**
+   * Cada recado que SAIU para o Telegram do dono.
+   *
+   * É por aqui que se prova a chamada: `avisarDonoDoProjeto` não devolve nada
+   * que o chamador guarde, não escreve no banco quando o texto é executivo, e
+   * não loga em caso de sucesso. A ÚNICA marca observável que ela deixa no
+   * mundo é este POST.
+   */
+  telegramas: Array<{ chatId: string; texto: string }>
 }
 
-function montarRede(cenario: Cenario): Espiao {
+function montarRede(cenario: Cenario, trilha: string[] = []): Espiao {
   const espiao: Espiao = {
     fetchMock: vi.fn(),
     operacoes: [],
     quadrosLidos: [],
     escritas: [],
     leiturasDeIssues: [],
+    telegramas: [],
   }
   let campoExiste = cenario.campoJaExiste ?? true
   const hoje = hojeNoFuso()
@@ -271,6 +353,15 @@ function montarRede(cenario: Cenario): Espiao {
         })
       }
       return json({ data: {} })
+    }
+
+    // O Telegram é rede como qualquer outra, e a URL embute o token do bot no
+    // caminho — por isso o casamento é pelo host, não pela URL inteira.
+    if (endereco.startsWith('https://api.telegram.org/')) {
+      const corpo = JSON.parse(String(init?.body ?? '{}')) as { chat_id: string; text: string }
+      espiao.telegramas.push({ chatId: String(corpo.chat_id), texto: String(corpo.text) })
+      trilha.push('telegram')
+      return json({ ok: true })
     }
 
     if (endereco.includes('/issues?') && endereco.includes('labels=')) {
@@ -504,6 +595,219 @@ describe('varrerItensDaSprint: a caixa do relógio que põe o trabalho dentro do
       timeout: 5000,
       interval: 10,
     })
+  })
+
+  /**
+   * DOIS quadros ligados ao mesmo repositório — o caso do
+   * `loureng/patinhas-3d-crafts`, medido em produção 31/08/2026: os quadros
+   * #12 e #11 com o MESMO nome, mais o #3 "Jardim das Patinhas".
+   * `decidirQuadro` devolve 'escolher', e a recusa em adivinhar é correta e
+   * deliberada — o defeito é o SILÊNCIO que vinha junto com ela.
+   */
+  const cenarioDeQuadroAmbiguo = (): Cenario => ({
+    ...cenarioCompleto(),
+    quadros: [
+      quadroLigado({ id: 'PVT_doze', number: 12, title: 'loureng/patinhas-3d-crafts' }),
+      quadroLigado({ id: 'PVT_onze', number: 11, title: 'loureng/patinhas-3d-crafts' }),
+    ],
+  })
+
+  /**
+   * O cenário do `criar`: o repositório não anuncia quadro NENHUM.
+   * `decidirQuadro` responde 'criar' — e o que o dono precisa fazer aqui não é
+   * "escolher" coisa nenhuma: não há entre o que escolher.
+   */
+  const cenarioSemQuadroNenhum = (): Cenario => ({ ...cenarioCompleto(), quadros: [] })
+
+  /** O trio que faz um recado chegar de verdade ao Telegram do dono. */
+  const comDonoAvisavel = (
+    cenario: Cenario
+  ): {
+    espiao: Espiao
+    eventos: Array<Record<string, unknown>>
+    trilha: string[]
+    prisma: ReturnType<typeof buildFakePrisma>
+  } => {
+    process.env['GITORCH_TELEGRAM_BOT_TOKEN'] = TOKEN_DO_BOT
+    const eventos: Array<Record<string, unknown>> = []
+    const trilha: string[] = []
+    const espiao = montarRede(cenario, trilha)
+    const prisma = buildFakePrisma(
+      [projeto({ userId: DONO })],
+      sessoesDoCenario,
+      eventos,
+      trilha,
+      VINCULO_VIVO
+    )
+    return { espiao, eventos, trilha, prisma }
+  }
+
+  /** O evento do quadro indefinido, quando já houver um. */
+  const eventoDoQuadro = (eventos: Array<Record<string, unknown>>) =>
+    eventos.find(
+      (e) =>
+        e['type'] === 'audit' &&
+        (e['payload'] as Record<string, unknown> | undefined)?.['assunto'] === 'sprint-sem-quadro'
+    )
+
+  test('quadro ambíguo NÃO passa calado: vira log, evento na timeline e recado ao dono', async () => {
+    const { espiao, eventos, prisma } = comDonoAvisavel(cenarioDeQuadroAmbiguo())
+    const subida = await subirRelogio(prisma, espiao)
+    app = subida.app
+
+    // 1) O LOG, com o repositório e o motivo que `decidirQuadro` já devolve.
+    await vi.waitFor(
+      () =>
+        expect(
+          textoDosLogs(subida.info).some(
+            (l) =>
+              l.includes(REPO) &&
+              // A frase da CAIXA, não a da irmã — que registra o mesmo estado
+              // no mesmo tique. Um teste que aceitasse a frase dela passaria
+              // verde com esta caixa muda.
+              l.includes('não preenchida') &&
+              l.includes('mais de um quadro ligado')
+          )
+        ).toBe(true),
+      { timeout: 5000, interval: 10 }
+    )
+
+    // 2) O DONO tem que conseguir ver depois, e sem sair caçando: a timeline
+    // do painel lê `type: 'audit'` e renderiza `payload.texto`. Gravar com
+    // outro tipo seria gravar numa gaveta que nenhuma tela abre.
+    await vi.waitFor(() => expect(eventoDoQuadro(eventos)).toBeDefined(), {
+      timeout: 5000,
+      interval: 10,
+    })
+    const evento = eventoDoQuadro(eventos)!
+    expect(evento['projectId']).toBe('proj_sprint')
+    const payload = evento['payload'] as Record<string, unknown>
+    expect(payload['acao']).toBe('escolher')
+    const texto = String(payload['texto'])
+    expect(texto).toContain(REPO)
+    // A LISTA DE CANDIDATOS vem junto — sem ela o dono sabe que há um
+    // problema e continua sem saber entre o que escolher.
+    expect(texto).toContain('#12')
+    expect(texto).toContain('#11')
+
+    // 3) O RECADO AO DONO. É o canal que nenhum outro substitui: escolher qual
+    // quadro vale é decisão que só ele toma, e decisão não se descobre olhando
+    // timeline por acaso. Sem esta asserção, apagar `avisarDonoDoProjeto`
+    // deixava as nove provas verdes — o teste dizia "e recado ao dono" no
+    // nome e não olhava o canal.
+    await vi.waitFor(() => expect(espiao.telegramas.length).toBeGreaterThan(0), {
+      timeout: 5000,
+      interval: 10,
+    })
+    const recado = espiao.telegramas[0]!
+    expect(recado.chatId).toBe(CHAT_DO_DONO)
+    // O MESMO texto dos dois lados: o dono não pode receber no chat uma versão
+    // e encontrar outra na timeline.
+    expect(recado.texto).toBe(texto)
+    expect(recado.texto).toContain('mais de um quadro ligado')
+    expect(recado.texto).toContain('#12')
+    expect(recado.texto).toContain('#11')
+    expect(recado.texto).toContain('Escolha um')
+
+    // 4) E o produto continua NÃO adivinhando: nenhuma sprint foi escrita.
+    expect(espiao.escritas).toEqual([])
+  })
+
+  test('a marca no banco sai ANTES do Telegram — a ordem é o que segura o silêncio', async () => {
+    const { espiao, trilha, prisma } = comDonoAvisavel(cenarioDeQuadroAmbiguo())
+    const subida = await subirRelogio(prisma, espiao)
+    app = subida.app
+
+    await vi.waitFor(() => expect(espiao.telegramas.length).toBeGreaterThan(0), {
+      timeout: 5000,
+      interval: 10,
+    })
+
+    // A ordem existe por um motivo: a marca é o que segura as 24 horas de
+    // silêncio. Telegram primeiro, e uma gravação que falhe depois, deixa o
+    // recado saindo A CADA PASSADA — a rajada de 29/08 de novo, agora daqui.
+    const doQuadro = trilha.filter(
+      (passo) => passo === 'evento:sprint-sem-quadro' || passo === 'telegram'
+    )
+    expect(doQuadro.slice(0, 2)).toEqual(['evento:sprint-sem-quadro', 'telegram'])
+  })
+
+  test('repositório SEM quadro nenhum: o recado cabe NESSE caso, não manda escolher', async () => {
+    const { espiao, eventos, prisma } = comDonoAvisavel(cenarioSemQuadroNenhum())
+    const subida = await subirRelogio(prisma, espiao)
+    app = subida.app
+
+    await vi.waitFor(() => expect(eventoDoQuadro(eventos)).toBeDefined(), {
+      timeout: 5000,
+      interval: 10,
+    })
+    const payload = eventoDoQuadro(eventos)!['payload'] as Record<string, unknown>
+    expect(payload['acao']).toBe('criar')
+    const texto = String(payload['texto'])
+
+    // O que o dono precisa FAZER muda com o motivo. Aqui não há entre o que
+    // escolher: mandar "escolha um e deixe só ele ligado" é um recado sem
+    // sentido, e um recado sem sentido é tão inútil quanto o silêncio que
+    // esta leva veio acabar.
+    expect(texto).not.toContain('Escolha um')
+    expect(texto).not.toContain('Candidatos')
+    expect(texto).not.toContain('não sei em qual quadro escrever')
+    expect(texto).toContain('não há quadro utilizável')
+    expect(texto).toContain('Crie um quadro')
+    expect(texto).toContain(REPO)
+
+    // E o mesmo texto chega ao dono pelo chat.
+    await vi.waitFor(() => expect(espiao.telegramas.length).toBeGreaterThan(0), {
+      timeout: 5000,
+      interval: 10,
+    })
+    expect(espiao.telegramas[0]!.texto).toBe(texto)
+  })
+
+  test('o aviso do quadro ambíguo não repete a cada passada — nos DOIS canais', async () => {
+    // Cadência curta: a caixa passa várias vezes na janela do teste.
+    process.env['GITORCH_SPRINT_ITENS_CADENCIA_MS'] = '120'
+    const { espiao, eventos, prisma } = comDonoAvisavel(cenarioDeQuadroAmbiguo())
+    const subida = await subirRelogio(prisma, espiao)
+    app = subida.app
+
+    const passadas = () =>
+      textoDosLogs(subida.info).filter((l) => l.includes(REPO) && l.includes('não preenchida'))
+        .length
+
+    // Duas passadas da caixa, comprovadas pelo log — que é stream e repete de
+    // propósito, na cadência dela.
+    await vi.waitFor(() => expect(passadas()).toBeGreaterThan(1), { timeout: 5000, interval: 10 })
+
+    // O RECADO ao dono, não: um aviso por dia. Dois eventos aqui seriam a
+    // rajada de 29/08 de novo, agora na timeline.
+    expect(eventos.filter((e) => e['type'] === 'audit').length).toBe(1)
+    // E o silêncio vale para o chat também — é o canal que o incomoda.
+    expect(espiao.telegramas.length).toBe(1)
+  })
+
+  test('a varredura IRMÃ também diz o `sem_quadro`, em vez de engoli-lo', async () => {
+    const { espiao, prisma } = comDonoAvisavel(cenarioDeQuadroAmbiguo())
+    const subida = await subirRelogio(prisma, espiao)
+    app = subida.app
+
+    // `garantirSprintDosProjetos` já DEVOLVIA `sem_quadro`, com o motivo
+    // dentro; o laço de log do relógio não o listava e o estado morria ali.
+    // A frase é a DELA ("depende de você"), não a da caixa de itens — as duas
+    // varreduras batem no mesmo estado no mesmo tique, e um teste que
+    // aceitasse qualquer uma das duas passaria verde com a irmã muda.
+    await vi.waitFor(
+      () =>
+        expect(
+          textoDosLogs(subida.info).some(
+            (l) =>
+              l.includes(REPO) &&
+              l.includes('depende de você') &&
+              l.includes('mais de um quadro ligado')
+          )
+        ).toBe(true),
+      { timeout: 5000, interval: 10 }
+    )
   })
 
   test('em "só olhar", a guarda recusa e isso não vira falha nem escrita', async () => {
