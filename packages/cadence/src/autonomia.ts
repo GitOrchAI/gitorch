@@ -46,7 +46,10 @@ export const O_QUE_A_ACAO_FAZ: Record<AcaoNoRepositorio, string> = {
   ler: 'ler o repositório (pedidos, entregas, quadro)',
   organizar: 'organizar o quadro (sprint, ordem, situação dos itens)',
   propor: 'propor trabalho (abrir pedido, abrir entrega, comentar)',
-  mesclar: 'fechar o ciclo (mesclar a entrega no código dele)',
+  // "Descartar" entrou aqui junto com a reclassificação do fechamento de pull
+  // request: as duas formas de encerrar uma entrega pedem o mesmo nível, e a
+  // recusa precisa dizer a verdade sobre o que foi barrado.
+  mesclar: 'fechar o ciclo da entrega no código dele (mesclar ou descartar)',
 }
 
 /** O que cada nível permite, na linguagem do cliente. */

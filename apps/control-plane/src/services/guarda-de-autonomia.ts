@@ -66,6 +66,18 @@ const ACAO_DA_ROTA: ReadonlyArray<{ caminho: RegExp; acao: AcaoNoRepositorio }> 
   // A mais forte do sistema: fechar o ciclo dentro do código do cliente.
   { caminho: /\/pulls\/\d+\/merge\b/, acao: 'mesclar' },
   { caminho: /\/pulls\/\d+\/(update-branch|reviews)\b/, acao: 'propor' },
+  // MEXER NO PULL REQUEST EM SI (`PATCH /repos/dono/nome/pulls/N`) é o que
+  // FECHA a entrega de alguém. Estava caindo em `propor` junto com "abrir pull
+  // request", e `propor` já está liberado no nível "Sugerir" — cujo texto
+  // promete ao cliente, com estas palavras: "organizo o quadro e proponho
+  // trabalho, mas não mexo". Descartar a entrega de alguém não é propor.
+  //
+  // Vai para `mesclar` porque é a única família acima de "Sugerir": as duas
+  // formas de encerrar o ciclo de uma entrega — aceitá-la ou descartá-la —
+  // pedem a mesma confiança. Precisa vir ANTES da regra genérica `/pulls`, que
+  // continua valendo para ABRIR pull request (`POST /pulls`), e depois das
+  // sub-rotas `reviews`/`update-branch`, que seguem em `propor`.
+  { caminho: /\/pulls\/\d+\/?$/, acao: 'mesclar' },
   { caminho: /\/pulls\b/, acao: 'propor' },
   // Abrir e mexer em pedido, e falar no pedido.
   { caminho: /\/issues\/\d+\/comments\b/, acao: 'propor' },

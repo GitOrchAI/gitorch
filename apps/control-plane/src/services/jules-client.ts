@@ -32,6 +32,25 @@ export interface CriarSessaoDeps {
   repository: string
   /** Branch de onde o trabalho parte (a base do PR). */
   startingBranch: string
+  /**
+   * Para onde a sessão DEVOLVE o trabalho, quando o destino não pode ser um
+   * ramo novo qualquer.
+   *
+   * É o que faz um conserto cair na entrega que JÁ EXISTE: com
+   * `automationMode: 'AUTO_CREATE_PR'` e sem isto, o Jules inventa um ramo e
+   * abre um pull request NOVO — inútil para retomar um pull request órfão, e
+   * pior que não fazer nada, porque passa a haver dois.
+   *
+   * Contrato conferido AO VIVO em 31/08/2026 contra `jules.googleapis.com`,
+   * sem criar sessão nenhuma (fonte inexistente de propósito):
+   *   · campo inventado no `sourceContext` → HTTP 400 `Cannot find field`
+   *   · `sourceContext.workingBranch`      → passou a validação (HTTP 404 na fonte)
+   *   · `automationMode` inventado         → HTTP 400 `Invalid value`
+   * E o documento de descoberta (`v1alpha`, revisão 20260830) descreve o campo
+   * como "the branch to push to for the session", usado justamente quando a
+   * automação criaria um ramo.
+   */
+  workingBranch?: string | undefined
   /** Título da sessão — o mesmo título da task, para dar para casar depois. */
   titulo: string
   /** O pedido em si: a task no padrão da issue. */
@@ -76,6 +95,9 @@ export async function criarSessaoJules(
         sourceContext: {
           source,
           githubRepoContext: { startingBranch: deps.startingBranch },
+          // Ausente quando ninguém pediu: aí o Jules escolhe o ramo, que é o
+          // certo para trabalho novo. `undefined` some do JSON.
+          ...(deps.workingBranch ? { workingBranch: deps.workingBranch } : {}),
         },
         // O PR é o entregável que o QA julga: pedir criação automática mantém
         // o ciclo fechado sem depender de ninguém apertar botão.
