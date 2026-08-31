@@ -82,7 +82,7 @@ jobs:
         run: pnpm run build
       - name: Impacted tests
         run: |
-          filters=$(cat ci/audit/impact-radius.json | jq -r '.packages[]' | sed 's/^/--filter /')
+          filters=$(cat ci/audit/impact-radius.json | jq -r '.packages[]' 2>/dev/null | sed 's/^/--filter /' || true)
           if [ -z "$filters" ]; then
             pnpm run test
           else
