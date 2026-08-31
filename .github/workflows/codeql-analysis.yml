@@ -12,6 +12,8 @@ permissions:
   contents: read
   security-events: write
 
+# Trigger workflow rerun to clear transient failure: The job was not acquired by Runner of type hosted even after multiple attempts (Issue #253)
+
 jobs:
   analyze:
     runs-on: ubuntu-latest
