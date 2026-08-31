@@ -49,7 +49,6 @@ test('runs an agent mission through the selected runtime and records Synapse exe
   const orchestrator = new AgentOrchestrator({ registry, synapse })
 
   const result = await orchestrator.runMission({
-    runtime: { runtime: 'codex' },
     id: 'mission-1',
     projectId: 'project-1',
     repository: 'owner/repo',
@@ -96,7 +95,6 @@ test('records Synapse execution as blocked when the mission fails (exitCode != 0
   const orchestrator = new AgentOrchestrator({ registry, synapse })
 
   const result = await orchestrator.runMission({
-    runtime: { runtime: 'codex' },
     id: 'mission-2',
     projectId: 'project-1',
     repository: 'owner/repo',
@@ -133,7 +131,7 @@ test('bubbles up step-level failure and recovery status to the workspace provide
 
   const registry = new RuntimeRegistry()
   registry.register(
-    createCliRuntimeAdapter({ runtime: 'antigravity', binary: 'agy', args: ['--print'], runner })
+    createCliRuntimeAdapter({ runtime: 'codex', binary: 'agy', args: ['--print'], runner })
   )
 
   const orchestrator = new AgentOrchestrator({
@@ -143,7 +141,6 @@ test('bubbles up step-level failure and recovery status to the workspace provide
   })
 
   await orchestrator.runMission({
-    runtime: { runtime: 'antigravity' },
     id: 'mission-failed-deploy',
     projectId: 'project-1',
     repository: 'owner/repo',
@@ -153,7 +150,7 @@ test('bubbles up step-level failure and recovery status to the workspace provide
     credentialRef: {
       connectionId: 'conn-agy',
       ownerScope: 'project',
-      runtime: 'antigravity',
+      runtime: 'codex',
       providedSecrets: [],
     },
     userId: 'qa-user',
@@ -186,7 +183,6 @@ test('uses an injected workspace provider instead of the default Firecracker man
   })
 
   await orchestrator.runMission({
-    runtime: { runtime: 'codex' },
     id: 'mission-3',
     projectId: 'project-1',
     repository: 'owner/repo',

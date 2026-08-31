@@ -515,22 +515,19 @@ export async function handleTelegramCallback(
   const option = options[parsed.optionIndex]
   if (!option) return
 
+  // O escape hatch de digitação livre foi invocado. Não tentamos processar a
+  // resposta via parse de opção aqui, porque a resposta virá numa MENSAGEM de
+  // texto que este callback só destrava. Mostra uma instrução via alert.
   if (option.value === FREE_TEXT_OPTION_VALUE) {
-    defaultAgentQuestionStateManager.setActiveTypingQuestion(question.userId, {
-      questionId: parsed.questionId,
-      userId: question.userId,
-      chatId: clickerChatId,
-    })
     await answerTelegramCallback({
       botToken: deps.botToken,
       callbackQueryId: cq.id,
-      text: '✍️ Digite sua resposta em uma mensagem para o bot',
+      text: 'Responda por texto: envie sua resposta como uma mensagem normal aqui no chat e o agente retoma de onde parou.',
       showAlert: true,
       ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
     })
     return
   }
-
   const updated = await deps.agentQuestionService.answer(
     parsed.questionId,
     option.value,

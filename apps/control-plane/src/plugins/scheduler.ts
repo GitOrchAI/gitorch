@@ -1789,6 +1789,11 @@ export async function renovarTokensGithubDoRelogio(
   return resumo
 }
 
+const avisosDeCredencialExpirada = new Map<string, number>()
+export const clearAvisosDeCredencialExpirada = () => {
+  avisosDeCredencialExpirada.clear()
+}
+
 const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // Modo INERTE do health pré-switch da esteira (F2.3/P1-2): sai ANTES de tocar
   // prisma/engineConnections/cortex — a instância de verificação aponta pro
@@ -1889,14 +1894,6 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // não redescobrir isto em produção: a dedup real multi-processo exigiria um
   // estado compartilhado (ex.: coluna em EngineConnection ou tabela própria),
   // fora do escopo desta tarefa.
-  const avisosDeCredencialExpirada = new Map<string, number>()
-
-  // Exportado apenas para testes, nunca chamado em runtime real.
-  if (!app.hasDecorator('resetSchedulerState')) {
-    app.decorate('resetSchedulerState', () => {
-      avisosDeCredencialExpirada.clear()
-    })
-  }
 
   /**
    * A fila de acordadas de julgamento que o SM levanta a cada ciclo. A regra

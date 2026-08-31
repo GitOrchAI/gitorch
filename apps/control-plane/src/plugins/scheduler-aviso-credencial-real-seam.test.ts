@@ -42,14 +42,14 @@ vi.mock('@gitorch/agents', async (importOriginal) => {
   }
 })
 
-const { schedulerPlugin } = await import('./scheduler.js')
+const { schedulerPlugin, clearAvisosDeCredencialExpirada } = await import('./scheduler.js')
 
 const PROJETO = {
   id: 'proj_1',
   wingId: 'acme/api',
+  runtimeConfig: { agents: { qa: { runtime: 'antigravity' } } },
   name: 'Acme API',
   userId: 'user_1',
-  runtimeConfig: { agents: { qa: { runtime: 'antigravity' } } },
   devPlan: null,
   accessSuspendedAt: null,
   accessSuspendedReason: null,
@@ -86,8 +86,6 @@ function buildFakePrisma(chatId: string | null) {
     // login novo. Sem isto a linha do banco seguia dizendo 'connected' e o
     // assistente mostrava o motor verde com ele morto (print do dono).
     engineConnection: {
-      findMany: vi.fn(async () => []),
-      findFirst: vi.fn(async () => null),
       updateMany: vi.fn(async () => ({ count: 1 })),
     },
   }
@@ -107,8 +105,6 @@ describe('Tarefa 16 (achado 2 da revisão) — aviso de credencial expirada pelo
   const originalEnv: Record<string, string | undefined> = {}
   const originalFetch = global.fetch
 
-  let testApp: ReturnType<typeof Fastify>
-
   beforeEach(() => {
     for (const key of ENV_KEYS) {
       originalEnv[key] = process.env[key]
@@ -123,8 +119,10 @@ describe('Tarefa 16 (achado 2 da revisão) — aviso de credencial expirada pelo
   })
 
   afterEach(() => {
-    if (testApp && (testApp as unknown as { resetSchedulerState: () => void }).resetSchedulerState)
-      (testApp as unknown as { resetSchedulerState: () => void }).resetSchedulerState()
+    clearAvisosDeCredencialExpirada()
+  })
+
+  afterEach(() => {
     for (const key of ENV_KEYS) {
       if (originalEnv[key] === undefined) delete process.env[key]
       else process.env[key] = originalEnv[key]
@@ -146,7 +144,6 @@ describe('Tarefa 16 (achado 2 da revisão) — aviso de credencial expirada pelo
     global.fetch = fetchMock as unknown as typeof fetch
 
     const app = Fastify({ logger: false })
-    testApp = app
     const prismaDoAviso = buildFakePrisma('chat-do-dono')
     app.decorate('prisma', prismaDoAviso as never)
     await app.register(schedulerPlugin)
@@ -215,7 +212,6 @@ describe('Tarefa 16 (achado 2 da revisão) — aviso de credencial expirada pelo
     global.fetch = fetchMock as unknown as typeof fetch
 
     const app = Fastify({ logger: false })
-    testApp = app
     const prisma = buildFakePrisma(null)
     app.decorate('prisma', prisma as never)
     await app.register(schedulerPlugin)
@@ -246,23 +242,17 @@ describe('Tarefa 16 (achado 2 da revisão) — aviso de credencial expirada pelo
     global.fetch = fetchMock as unknown as typeof fetch
 
     const app = Fastify({ logger: false })
-    testApp = app
     app.decorate('prisma', buildFakePrisma('chat-do-dono') as never)
     await app.register(schedulerPlugin)
 
     await app.triggerAgentMission('qa', 'proj_1')
-    await vi.waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(1), {
-      timeout: 2000,
-    })
-
-    // Clear the call count for the next mission
-    fetchMock.mockClear()
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2), { timeout: 2000 })
 
     await app.triggerAgentMission('qa', 'proj_1')
     // Segunda missão: dá tempo equivalente de sobra e confirma que NÃO houve
     // uma segunda chamada — SPAM apaga sinal tanto quanto silêncio.
     await new Promise((resolve) => setTimeout(resolve, 50))
-    expect(fetchMock).toHaveBeenCalledTimes(0)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
 
     await app.close()
   })
@@ -297,7 +287,6 @@ describe('Tarefa 16 (achado 2 da revisão) — aviso de credencial expirada pelo
     global.fetch = fetchMock as unknown as typeof fetch
 
     const app = Fastify({ logger: false })
-    testApp = app
     const prisma = buildFakePrisma('chat-do-dono')
     app.decorate('prisma', prisma as never)
     await app.register(schedulerPlugin)
