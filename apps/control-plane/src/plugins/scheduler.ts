@@ -4387,7 +4387,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         },
         body: JSON.stringify({
           title: fields.titulo,
-          body: renderIssueBody(fields, marker),
+          // Sem peso: o achado do sensor de infra não passou pelo roteiro do
+          // PO e ninguém o estimou.
+          body: renderIssueBody(fields, marker, null),
           labels,
         }),
       })

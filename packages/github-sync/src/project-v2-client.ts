@@ -90,6 +90,34 @@ export interface SetIterationFieldInput {
   iterationId: string
 }
 
+export interface GetNumberFieldInput {
+  projectId: string
+  /** Nome do campo numérico. O padrão do GitOrch é "Peso". */
+  fieldName: string
+}
+
+export interface CriarCampoNumericoInput {
+  projectId: string
+  fieldName: string
+}
+
+export interface CampoNumerico {
+  fieldId: string
+}
+
+export interface CampoNumericoCriado {
+  fieldId: string
+  name: string
+}
+
+export interface SetNumberFieldInput {
+  projectId: string
+  itemId: string
+  fieldId: string
+  /** O valor. `ProjectV2FieldValue.number` é Float na API (introspection 31/08/2026). */
+  number: number
+}
+
 /**
  * Um item do quadro do cliente, do jeito que o produto precisa dele.
  *
@@ -250,6 +278,22 @@ export class CampoDeIteracaoAusenteError extends Error {
   ) {
     super(`Iteration field "${fieldName}" not found on project ${projectId}.`)
     this.name = 'CampoDeIteracaoAusenteError'
+  }
+}
+
+/**
+ * O campo NUMÉRICO não existe no quadro. Mesmo contrato do irmão de iteração:
+ * ausência se resolve CRIANDO, e só ausência — um 502 do GraphQL ou um token
+ * sem autorização de quadro chegando como o mesmo Error faria o produto tentar
+ * criar "Peso" por cima de um que já roda, a cada tique.
+ */
+export class CampoNumericoAusenteError extends Error {
+  constructor(
+    readonly fieldName: string,
+    readonly projectId: string
+  ) {
+    super(`Number field "${fieldName}" not found on project ${projectId}.`)
+    this.name = 'CampoNumericoAusenteError'
   }
 }
 
@@ -772,6 +816,121 @@ export class ProjectV2Client {
                 itemId: $itemId
                 fieldId: $fieldId
                 value: { iterationId: $iterationId }
+              }
+            ) {
+              projectV2Item { id }
+            }
+          }
+        `,
+        variables: { ...input },
+      },
+      this.token
+    )
+
+    return unwrap(response).updateProjectV2ItemFieldValue.projectV2Item.id
+  }
+
+  /**
+   * Acha um campo NUMBER do quadro pelo nome (o do GitOrch é "Peso").
+   *
+   * Lê `dataType` de TODO campo, não só dos numéricos, pela mesma razão que
+   * `getIterationField`: um campo de TEXTO chamado "Peso" ficaria invisível
+   * numa leitura filtrada, o produto concluiria "não existe", tentaria criar e
+   * o GitHub recusaria com "Name has already been taken" — a cada tique, para
+   * sempre. Confirmado ao vivo em 31/08/2026 contra a API de produção.
+   */
+  async getNumberField(input: GetNumberFieldInput): Promise<CampoNumerico> {
+    const response = await this.request<{
+      node: { fields: { nodes: Array<{ id?: string; name?: string; dataType?: string }> } }
+    }>(
+      {
+        query: `
+          query GetNumberField($projectId: ID!) {
+            node(id: $projectId) {
+              ... on ProjectV2 {
+                fields(first: 50) {
+                  nodes {
+                    __typename
+                    ... on ProjectV2FieldCommon { id name dataType }
+                  }
+                }
+              }
+            }
+          }
+        `,
+        variables: { projectId: input.projectId },
+      },
+      this.token
+    )
+
+    const nodes = unwrap(response).node?.fields?.nodes ?? []
+    const homonimo = nodes.find((node) => node.name === input.fieldName)
+    if (!homonimo) throw new CampoNumericoAusenteError(input.fieldName, input.projectId)
+    if (homonimo.dataType !== 'NUMBER' || !homonimo.id) {
+      throw new NomeDeCampoEmConflitoError(
+        input.fieldName,
+        input.projectId,
+        homonimo.dataType ?? 'campo comum'
+      )
+    }
+    return { fieldId: homonimo.id }
+  }
+
+  /**
+   * Cria o campo NUMBER no quadro.
+   *
+   * Diferente do campo de iteração, NUMBER não leva configuração nenhuma:
+   * `CreateProjectV2FieldInput` pede só `{ projectId, dataType, name }`
+   * (introspection contra a API de produção em 31/08/2026, e a mutation foi
+   * executada de verdade num quadro descartável antes deste código existir —
+   * `criarCampoDeIteracao` já custou caro por ter sido escrita contra um fake).
+   */
+  async criarCampoNumerico(input: CriarCampoNumericoInput): Promise<CampoNumericoCriado> {
+    const response = await this.request<{
+      createProjectV2Field: { projectV2Field: { id: string; name: string } }
+    }>(
+      {
+        query: `
+          mutation CriarCampoNumerico($projectId: ID!, $name: String!) {
+            createProjectV2Field(
+              input: { projectId: $projectId, dataType: NUMBER, name: $name }
+            ) {
+              projectV2Field {
+                ... on ProjectV2Field { id name }
+              }
+            }
+          }
+        `,
+        variables: { projectId: input.projectId, name: input.fieldName },
+      },
+      this.token
+    )
+    const campo = unwrap(response).createProjectV2Field.projectV2Field
+    return { fieldId: campo.id, name: campo.name }
+  }
+
+  /**
+   * Grava um número num campo NUMBER do card. Mesma mutation do single select
+   * e da iteração, com o valor `number` (Float no schema real).
+   */
+  async setNumberField(input: SetNumberFieldInput): Promise<string> {
+    const response = await this.request<{
+      updateProjectV2ItemFieldValue: { projectV2Item: { id: string } }
+    }>(
+      {
+        query: `
+          mutation SetProjectV2Number(
+            $projectId: ID!
+            $itemId: ID!
+            $fieldId: ID!
+            $number: Float!
+          ) {
+            updateProjectV2ItemFieldValue(
+              input: {
+                projectId: $projectId
+                itemId: $itemId
+                fieldId: $fieldId
+                value: { number: $number }
               }
             ) {
               projectV2Item { id }

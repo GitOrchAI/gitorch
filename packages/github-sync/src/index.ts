@@ -3,6 +3,7 @@ export { GitHubWebhookVerifier, parseGitHubDeliveryHeaders } from './github-webh
 export {
   ProjectV2Client,
   CampoDeIteracaoAusenteError,
+  CampoNumericoAusenteError,
   NomeDeCampoEmConflitoError,
 } from './project-v2-client'
 export type {
@@ -14,6 +15,11 @@ export type {
   GraphQLTransport,
   ProjectV2ClientOptions,
   UpdateSingleSelectFieldInput,
+  GetNumberFieldInput,
+  CriarCampoNumericoInput,
+  CampoNumerico,
+  CampoNumericoCriado,
+  SetNumberFieldInput,
 } from './project-v2-client'
 export { GitHubWebhookNormalizer } from './webhook-normalizer'
 export { GitHubSyncEngine } from './sync-engine'

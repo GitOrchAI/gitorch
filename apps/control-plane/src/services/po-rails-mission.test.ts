@@ -31,7 +31,11 @@ const PO_REPLIES: Record<string, string> = {
 }
 
 // fetch fake: wish aberta + GraphQL de projeto/board + REST de issues.
-function fakeFetch(): typeof fetch {
+//
+// `pesoNoQuadro` (L3-T8) é o estado do campo numérico "Peso" do card, para a
+// missão inteira poder ser conferida pelo RESULTADO: o peso que a LLM
+// preencheu no formulário tem que sair do outro lado gravado no quadro.
+function fakeFetch(pesoNoQuadro?: Map<string, number>): typeof fetch {
   let issueN = 500
   return (async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     const u = String(url)
@@ -60,6 +64,23 @@ function fakeFetch(): typeof fetch {
       }
       if (q.includes('addProjectV2ItemById')) {
         return json({ data: { addProjectV2ItemById: { item: { id: 'PVTI_1' } } } })
+      }
+      // L3-T8: o quadro deste fake nasce SEM o campo "Peso" — o caminho que
+      // o cliente real percorre na primeira vez.
+      if (q.includes('GetNumberField')) {
+        return json({ data: { node: { fields: { nodes: [] } } } })
+      }
+      if (q.includes('CriarCampoNumerico')) {
+        return json({
+          data: { createProjectV2Field: { projectV2Field: { id: 'F_peso', name: 'Peso' } } },
+        })
+      }
+      if (q.includes('SetProjectV2Number')) {
+        const v = (body.variables ?? {}) as { itemId?: string; number?: number }
+        pesoNoQuadro?.set(String(v.itemId), Number(v.number))
+        return json({
+          data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: String(v.itemId) } } },
+        })
       }
       if (q.includes('GetIterationField')) {
         return json({ data: { node: { fields: { nodes: [] } } } })
@@ -261,12 +282,13 @@ describe('runPoMissionViaRails', () => {
 
   it('com wish: roda os 5 passos e aplica a árvore (resumo no output)', async () => {
     const steps: string[] = []
+    const pesoNoQuadro = new Map<string, number>()
     const r = await runPoMissionViaRails({
       repository: 'o/r',
       board: 'o/9',
       githubToken: 't',
       contextBlocks: ['ctx'],
-      fetchImpl: fakeFetch(),
+      fetchImpl: fakeFetch(pesoNoQuadro),
       execute: async (prompt) => {
         const step = prompt.match(/Step: po-(\w+)/)?.[1] ?? '?'
         steps.push(step)
@@ -279,6 +301,10 @@ describe('runPoMissionViaRails', () => {
     // fase + épico + feature + task = 4 issues
     expect(r.output).toContain('created=4')
     expect(r.output).toContain('Roadmap: 1 sprint(s)')
+    // L3-T8, a missão inteira ponta a ponta: o peso 2 que a LLM devolveu no
+    // formulário (PO_REPLIES.tasks) saiu gravado no card do quadro. Antes
+    // deste trabalho ele morria no tipo do BacklogPlan.
+    expect([...pesoNoQuadro.values()]).toEqual([2])
   })
 })
 

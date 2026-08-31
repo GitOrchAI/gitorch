@@ -5,6 +5,7 @@ import {
   MAX_TENTATIVAS_DE_MERGE,
 } from './qa-rails-mission.js'
 import { assertMissionDelivered } from './mission-outcome.js'
+import { renderIssueBody } from './backlog-executor.js'
 import type { LinhaDeSessao } from './dev-session-store.js'
 import { TETO_DE_ESPERA_MS } from './vigia-da-verificacao.js'
 import type { EstadoDaJanela } from './aviso-por-janela.js'
@@ -137,6 +138,12 @@ function fakeFetch(
      * dedupe/rearme do aviso variam este valor para simular um push novo.
      */
     headSha?: string
+    /**
+     * L3-T8: o corpo da issue vinculada. Default preserva os testes antigos;
+     * o teste do corpo novo passa aqui o corpo REAL gerado por
+     * `renderIssueBody` — com a seção "## Peso" no topo, antes do "## Goal".
+     */
+    issueBody?: string
   } = {}
 ): typeof fetch {
   const posted: {
@@ -202,7 +209,9 @@ function fakeFetch(
       return json({
         number: issueNumber,
         labels: issueLabels.map((name) => ({ name })),
-        body: '## Verification Criteria\n\n- GET /reviews retorna lista\n- POST valida compra',
+        body:
+          opts.issueBody ??
+          '## Verification Criteria\n\n- GET /reviews retorna lista\n- POST valida compra',
       })
     }
     if (u.includes('/commits/') && u.includes('/check-runs')) {
@@ -260,6 +269,67 @@ describe('buildJulesReworkComment', () => {
 })
 
 describe('runQaMissionViaRails', () => {
+  // L3-T8 — O LADO DE QUEM LÊ.
+  //
+  // A entrega do peso meteu uma seção "## Peso" no TOPO do corpo de toda
+  // issue de task, antes do "## Goal". Este julgamento lê o corpo por
+  // cabeçalho (`lerSecaoDaIssue(issue.body, 'Verification Criteria')`): se a
+  // seção nova atrapalhasse a leitura, nada estouraria — o critério voltaria
+  // vazio e o QA julgaria o PR contra "(no linked issue / Verification
+  // Criteria not found)", ou seja, contra nada. Silêncio, não erro.
+  //
+  // O corpo aqui é GERADO pela função de produção (`renderIssueBody`), não
+  // escrito à mão: uma fixture antiga passaria verde justamente por não ter o
+  // "## Peso" que é o risco. A asserção é sobre o RESULTADO — o que chega ao
+  // prompt do juiz.
+  it('corpo COM a seção "## Peso" no topo: o critério chega inteiro ao juiz', async () => {
+    const corpoReal = renderIssueBody(
+      {
+        titulo: '[Task] filtro por material',
+        goal: 'Filtrar por material.',
+        taskDetails: 'td',
+        taskDescription: 'd',
+        implementationGuide: '1. rota; 2. tela',
+        verificationCriteria: '- GET /produtos?material=couro devolve só couro\n- teste verde',
+        dependencies: 'nenhuma',
+        relatedFiles: 'src/produtos/rota.ts',
+        notes: 'n',
+      },
+      'gitorch:node:100:task:0',
+      { weight: 8, rationale: 'Toca duas telas e a rota; a incerteza está no cache.' }
+    )
+    // A premissa do teste, explícita: sem isto ele não estaria provando nada.
+    expect(corpoReal.indexOf('## Peso')).toBeLessThan(corpoReal.indexOf('## Goal'))
+
+    const f = fakeFetch(
+      [{ number: 7, user: 'google-labs-jules[bot]' }],
+      ['jules', 'gitorch:task'],
+      50,
+      { issueBody: corpoReal }
+    )
+    const prompts: string[] = []
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async (prompt) => {
+        prompts.push(prompt)
+        return APPROVE
+      },
+      fetchImpl: f,
+    })
+
+    expect(r.noOp).toBeUndefined()
+    // O critério chegou INTEIRO, as duas linhas.
+    expect(prompts[0]).toContain('- GET /produtos?material=couro devolve só couro')
+    expect(prompts[0]).toContain('- teste verde')
+    // E não chegou o recado de "não achei" — que é como esta quebra apareceria.
+    expect(prompts[0]).not.toContain('Verification Criteria not found')
+    // O peso não vaza para dentro do critério: o juiz não julga o PR contra
+    // "**8** (escala ...)", que não é critério de aceite nenhum.
+    const bloco = prompts[0]!.slice(prompts[0]!.indexOf('Verification Criteria (from'))
+    expect(bloco.slice(0, 400)).not.toContain('escala')
+  })
+
   it('sem PR do Jules pendente: no-op', async () => {
     const f = fakeFetch([])
     const r = await runQaMissionViaRails({

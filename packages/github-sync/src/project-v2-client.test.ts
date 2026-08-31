@@ -4,6 +4,8 @@ import {
   ProjectV2Client,
   type GraphQLRequest,
   CampoDeIteracaoAusenteError,
+  CampoNumericoAusenteError,
+  NomeDeCampoEmConflitoError,
 } from './project-v2-client'
 
 test('sends addProjectV2ItemById with deterministic variables', async () => {
@@ -953,4 +955,145 @@ test('listarItensDoQuadro NÃO avisa quando o quadro acaba na última página pe
   // Alarme falso aqui é pior que nenhum alarme: treina quem chama a ignorar
   // o aviso do dia em que a leitura de verdade for cortada.
   expect(avisos).toEqual([])
+})
+
+// ---------------------------------------------------------------------------
+// L3-T8 — o campo NUMBER "Peso" no quadro.
+//
+// Toda mutation abaixo foi conferida contra a API REAL do GitHub em
+// 31/08/2026 (quadro descartável PVT_kwHODEJV384BiCgy, criado e apagado):
+//   - introspection: ProjectV2CustomFieldType tem NUMBER; CreateProjectV2FieldInput
+//     pede só { projectId, dataType, name } — NUMBER não leva configuração;
+//   - ProjectV2FieldValue.number é Float;
+//   - criar duas vezes o mesmo nome responde "Name has already been taken"
+//     (o MESMO laço eterno que o campo Sprint já produziu — por isso a leitura
+//     vem antes da criação, e o homônimo de outro tipo é erro à parte).
+// Este arquivo já carrega a cicatriz de `criarCampoDeIteracao`, que passou
+// verde contra um fake permissivo enquanto a API real recusava a chamada.
+
+test('getNumberField acha o campo NUMBER pelo nome e devolve o id', async () => {
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async () => ({
+      data: {
+        node: {
+          fields: {
+            nodes: [
+              { __typename: 'ProjectV2Field', id: 'F_title', name: 'Title', dataType: 'TITLE' },
+              { __typename: 'ProjectV2Field', id: 'F_peso', name: 'Peso', dataType: 'NUMBER' },
+            ],
+          },
+        },
+      },
+    }),
+  })
+
+  const campo = await client.getNumberField({ projectId: 'PVT_1', fieldName: 'Peso' })
+  expect(campo).toEqual({ fieldId: 'F_peso' })
+})
+
+test('campo Peso ausente lança o erro TIPADO — quem chama resolve criando', async () => {
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async () => ({
+      data: {
+        node: {
+          fields: {
+            nodes: [
+              { __typename: 'ProjectV2Field', id: 'F_title', name: 'Title', dataType: 'TITLE' },
+            ],
+          },
+        },
+      },
+    }),
+  })
+
+  await expect(
+    client.getNumberField({ projectId: 'PVT_1', fieldName: 'Peso' })
+  ).rejects.toBeInstanceOf(CampoNumericoAusenteError)
+})
+
+test('homônimo de OUTRO tipo não é ausência: erro de conflito, não tentativa de criar', async () => {
+  // Sem esta separação o produto tentaria criar "Peso" a cada tique e o GitHub
+  // responderia "Name has already been taken" para sempre — provado ao vivo.
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async () => ({
+      data: {
+        node: {
+          fields: {
+            nodes: [{ __typename: 'ProjectV2Field', id: 'F_peso', name: 'Peso', dataType: 'TEXT' }],
+          },
+        },
+      },
+    }),
+  })
+
+  await expect(
+    client.getNumberField({ projectId: 'PVT_1', fieldName: 'Peso' })
+  ).rejects.toBeInstanceOf(NomeDeCampoEmConflitoError)
+})
+
+test('criarCampoNumerico manda dataType NUMBER e devolve o campo criado', async () => {
+  const calls: GraphQLRequest[] = []
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async (request) => {
+      calls.push(request)
+      return { data: { createProjectV2Field: { projectV2Field: { id: 'F_novo', name: 'Peso' } } } }
+    },
+  })
+
+  const campo = await client.criarCampoNumerico({ projectId: 'PVT_1', fieldName: 'Peso' })
+
+  expect(campo).toEqual({ fieldId: 'F_novo', name: 'Peso' })
+  expect(calls[0]?.variables).toEqual({ projectId: 'PVT_1', name: 'Peso' })
+  // Sem `dataType: NUMBER` o GitHub cria um campo de TEXTO chamado "Peso":
+  // parece certo na tela e não ordena, não soma, não filtra por tamanho.
+  expect(calls[0]?.query).toContain('dataType: NUMBER')
+  // NUMBER não leva `iterationConfiguration` nem `singleSelectOptions`
+  // (CreateProjectV2FieldInput, introspection de 31/08).
+  expect(calls[0]?.query).not.toContain('iterationConfiguration')
+  expect(calls[0]?.query).not.toContain('singleSelectOptions')
+})
+
+test('setNumberField manda o valor como number — o único aceito pelo campo NUMBER', async () => {
+  const calls: GraphQLRequest[] = []
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async (request) => {
+      calls.push(request)
+      return { data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: 'PVTI_1' } } } }
+    },
+  })
+
+  const itemId = await client.setNumberField({
+    projectId: 'PVT_1',
+    itemId: 'PVTI_1',
+    fieldId: 'F_peso',
+    number: 8,
+  })
+
+  expect(itemId).toBe('PVTI_1')
+  expect(calls[0]?.variables).toEqual({
+    projectId: 'PVT_1',
+    itemId: 'PVTI_1',
+    fieldId: 'F_peso',
+    number: 8,
+  })
+  // `value: { number: $number }` — mandar `text` aqui grava o campo errado ou
+  // é recusado; ProjectV2FieldValue.number é Float (introspection de 31/08).
+  expect(calls[0]?.query).toContain('value: { number: $number }')
+  expect(calls[0]?.query).toContain('$number: Float!')
+})
+
+test('erro do GraphQL ao criar o campo Peso SOBE — não vira sucesso silencioso', async () => {
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async () => ({ errors: [{ message: 'Name has already been taken' }] }),
+  })
+
+  await expect(
+    client.criarCampoNumerico({ projectId: 'PVT_1', fieldName: 'Peso' })
+  ).rejects.toThrow('Name has already been taken')
 })
