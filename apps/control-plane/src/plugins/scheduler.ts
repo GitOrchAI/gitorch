@@ -242,7 +242,7 @@ import {
   levantarTrabalhoAtivo,
   preencherSprintCorrente,
 } from '../services/sprint-com-itens.js'
-import { decidirQuadro } from '../services/resolver-quadro.js'
+import { decidirQuadro, type DecisaoDeQuadro } from '../services/resolver-quadro.js'
 import { registrarSePronto } from '../services/incremento.js'
 import { fetchComTeto } from '../services/fetch-com-teto.js'
 import {
@@ -7569,7 +7569,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         r.estado === 'sem_credencial' ||
         // `sem_quadro` existia no resultado e não aparecia em ramo nenhum do
         // log: o projeto travado numa escolha de quadro ficava invisível aqui
-        // pelo mesmo motivo que ficava na varredura irmã.
+        // pelo mesmo motivo que ficava na varredura irmã. Ele já vinha DITO por
+        // ela (`garantir-sprint-dos-projetos.ts`), com o motivo dentro, e morria
+        // fora desta lista — metade da lição aplicada é silêncio do mesmo jeito.
         r.estado === 'sem_quadro'
       ) {
         // Estados que só o DONO resolve. Precisam aparecer: um projeto preso
@@ -7689,6 +7691,123 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     return [...numeros]
   }
 
+  /**
+   * Quando o quadro NÃO foi decidido: dizer, em vez de sumir.
+   *
+   * `decidirQuadro` se recusa a adivinhar DE PROPÓSITO (resolver-quadro.ts:
+   * casar por título já adotou o quadro de um repositório para outro sem
+   * relação nenhuma). A recusa está certa. O que estava errado era ela sumir:
+   * este ramo era um `continue` mudo, e por causa dele o
+   * `loureng/patinhas-3d-crafts` — 3 quadros ligados, medido em 31/08/2026 —
+   * nunca entrava em sprint nenhuma. Metade da frota ativa parada, sem log,
+   * sem linha no painel, sem recado: "não deu" ficava indistinguível de
+   * "tentei e estava tudo certo". É a mesma disciplina da varredura irmã
+   * (garantir-sprint-dos-projetos.ts:112) — ausência DITA, não silenciada.
+   *
+   * DOIS canais, e cada um por um motivo:
+   *  - `events` com `type: 'audit'` é o que a timeline do Painel lê
+   *    (painel.ts:665) — é ali que a LISTA DE CANDIDATOS fica guardada e o
+   *    dono a reencontra. Sem a lista ele sabe que há um problema e continua
+   *    sem saber entre o que escolher. (`painel_escreveu` existe no banco e
+   *    nenhuma tela abre: gravar lá seria trocar um silêncio por outro.)
+   *  - Telegram porque, pela régua do ESTEIRA-T15, isto é executivo: uma
+   *    DECISÃO que só o dono pode tomar, e que não se resolve sozinha com o
+   *    tempo.
+   *
+   * UM AVISO POR DIA, com o relógio no BANCO e não em variável do processo —
+   * a lição da retrospectiva semanal, algumas centenas de linhas acima: este
+   * serviço reinicia várias vezes por dia, e memória de processo trocaria
+   * "uma vez por dia" por "uma vez por reinício". O LOG fica de fora do
+   * silêncio de propósito: é stream, sai no máximo na cadência desta caixa, e
+   * é por ele que se vê que o estado ainda dura.
+   */
+  const ASSUNTO_DO_QUADRO_INDEFINIDO = 'sprint-sem-quadro'
+  const SILENCIO_ENTRE_AVISOS_DE_QUADRO_MS = 24 * 60 * 60 * 1000
+
+  const avisarQuadroIndefinido = async (
+    p: NotifiableProject & { id: string; wingId: string },
+    decisao: DecisaoDeQuadro
+  ): Promise<void> => {
+    const candidatos =
+      decisao.acao === 'escolher'
+        ? decisao.candidatos.map((q) => `#${q.number} "${q.title}"`).join(', ')
+        : ''
+    const lista = candidatos ? ` Candidatos: ${candidatos}.` : ''
+
+    // Não é `warn` de defeito nosso: é aviso de que falta uma ação do dono —
+    // mesma escolha de nível da irmã.
+    app.log.info(
+      `[Scheduler] sprint de ${p.wingId} não preenchida (${decisao.acao}): ${decisao.motivo}${lista}`
+    )
+
+    const ultimo = await app.prisma.event.findFirst({
+      where: {
+        projectId: p.id,
+        type: 'audit',
+        payload: { path: ['assunto'], equals: ASSUNTO_DO_QUADRO_INDEFINIDO },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    })
+    if (ultimo && Date.now() - ultimo.createdAt.getTime() < SILENCIO_ENTRE_AVISOS_DE_QUADRO_MS) {
+      return
+    }
+
+    /**
+     * O QUE O DONO PRECISA FAZER muda com o motivo — então o texto muda junto.
+     *
+     * São os três estados que `decidirQuadro` devolve fora de 'usar'
+     * (resolver-quadro.ts), e o aviso dispara para os três. Mandar "escolha um
+     * e deixe só ele ligado" para um repositório que não tem quadro NENHUM é
+     * um recado sem sentido: não há entre o que escolher. E recado sem sentido
+     * é tão inútil quanto o silêncio que esta caixa veio acabar — o dono lê,
+     * não entende o que se espera dele, e o projeto continua parado.
+     */
+    const pedidoAoDono = (): string => {
+      if (decisao.acao === 'escolher') {
+        return (
+          `não sei em qual quadro escrever: ${decisao.motivo}${lista} ` +
+          `Escolha um e deixe só ele ligado ao repositório.`
+        )
+      }
+      if (decisao.acao === 'sem_acesso') {
+        // Hoje NÃO sai daqui: 'sem_acesso' só nasce com `podeEstarCego`, e
+        // esta chamada não passa esse argumento. Fica escrito porque o estado
+        // existe no tipo, e o dia em que a cegueira de conta pessoal chegar a
+        // esta caixa não pode ser o dia em que ela manda o texto errado.
+        return (
+          `não enxergo os quadros desta conta: ${decisao.motivo} ` +
+          `Autorize o acesso a quadros para a credencial do GitOrch.`
+        )
+      }
+      // 'criar'. A ação do dono é outra: criar e ligar. O RELÓGIO não cria
+      // quadro — quem cria é a entrada do projeto no produto
+      // (repo-context-collector.ts, `resolveBoard`). Um projeto que chegou
+      // aqui sem quadro não volta sozinho.
+      return (
+        `não há quadro utilizável neste repositório: ${decisao.motivo} ` +
+        `Crie um quadro (Projects V2) e ligue ao repositório.`
+      )
+    }
+
+    const texto =
+      `GitOrch — a sprint de ${p.wingId} não anda porque ${pedidoAoDono()} ` +
+      `Até lá, o trabalho vivo deste projeto fica fora do ciclo.`
+
+    await app.prisma.event.create({
+      data: {
+        projectId: p.id,
+        type: 'audit',
+        payload: { texto, assunto: ASSUNTO_DO_QUADRO_INDEFINIDO, acao: decisao.acao },
+      },
+    })
+
+    // O Telegram vai DEPOIS da marca gravada, nunca antes: a marca é o que
+    // segura as 24 horas de silêncio, e mandar sem ela deixaria o recado
+    // saindo a cada passada — a rajada de 29/08 outra vez.
+    await avisarDonoDoProjeto(p, texto)
+  }
+
   const varrerItensDaSprint = async () => {
     if (Date.now() - ultimaVarreduraDeItensDaSprint < CADENCIA_DOS_ITENS_DA_SPRINT_MS) return
     ultimaVarreduraDeItensDaSprint = Date.now()
@@ -7733,16 +7852,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         })
         const decisao = decidirQuadro({ candidatos: quadros.map((q) => ({ ...q, linkado: true })) })
         if (decisao.acao !== 'usar' || !decisao.quadro) {
-          // O `continue` era CALADO, e foi assim que o repositório do dono
-          // sumiu do relato inteiro: quatro quadros ligados, decisão
-          // 'escolher', e nem uma linha dizendo que o projeto tinha sido
-          // pulado. "Não tentei" ficava igual a "tentei e estava tudo certo",
-          // com as sessões vivas fora de qualquer ciclo. Não é `warn` de
-          // defeito nosso: é aviso de que falta uma ação dele.
-          app.log.info(
-            `[Scheduler] sprint de ${p.wingId} não preenchida: ` +
-              `nenhum quadro utilizável (${decisao.acao}) — ${decisao.motivo}`
-          )
+          await avisarQuadroIndefinido(p, decisao)
           continue
         }
 
