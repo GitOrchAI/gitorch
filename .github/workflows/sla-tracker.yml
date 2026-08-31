@@ -19,15 +19,32 @@ jobs:
         with:
           token: ${{ secrets.SECURITY_PAT || github.token }}
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9.4.0
-
-      - name: Setup Node
+      # Este passo pedia `node-version: '22'` e SEMPRE rodou em 20. O composite
+      # `setup-pnpm` não declara `inputs`, então o valor era descartado com um
+      # aviso que não reprova o job (run 33349303373, 31/08: "Unexpected input(s)
+      # 'node-version'" → "node-version: 20.x" → "Acquiring 20.20.2").
+      #
+      # O '22' entrou em #386 seguindo a issue #372, que mandava literalmente
+      # "change node-version from '20' to '22'" por causa deste log:
+      #   "Node.js 20 is deprecated. The following actions target Node.js 20 but
+      #    are being forced to run on Node.js 24: actions/checkout@v4,
+      #    actions/setup-node@v4, pnpm/action-setup@v3, pnpm/action-setup@v4."
+      # Esse aviso é sobre o `runs.using: node20` do manifesto DAS PRÓPRIAS AÇÕES,
+      # não sobre `node-version:`. Prova: `actions/checkout` está na lista e nem
+      # aceita `node-version`. Prova 2: o aviso continua idêntico no run acima,
+      # depois de #386 — mexer aqui nunca foi a alavanca. Quem silencia é subir
+      # actions/checkout e actions/setup-node de major (fora do escopo desta tarefa).
+      #
+      # Então o 20 é o correto e o '22' foi diagnóstico errado: o contrato do
+      # script é `engines: node >=20.0.0` (.github/scripts/package.json), e todo o
+      # resto do repo roda 20. Passar a rodar 22 de verdade seria mudança de
+      # runtime não pedida, em cima de uma premissa já desmentida.
+      #
+      # O `pnpm/action-setup@v4` separado também saiu: o composite já o roda, e sem
+      # `version` ele lê `packageManager` da raiz (`pnpm@9.4.0`) — o mesmo pin.
+      # `ci.yml` já instala este mesmo `.github/scripts` assim, verde.
+      - name: Setup Node + pnpm
         uses: ./.github/actions/setup-pnpm
-        with:
-          node-version: '22'
-          check-latest: false
 
       - name: Install Dependencies
         working-directory: .github/scripts

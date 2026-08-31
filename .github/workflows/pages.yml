@@ -20,15 +20,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v6
-      - uses: ./.github/actions/setup-pnpm
-        with:
-          node-version: 22
-          check-latest: false
-      - uses: pnpm/action-setup@v3
-        with:
-          version: 9.4.0
-          cache: pnpm
+      # Aqui havia TRÊS instalações de pnpm: `@v6` avulso, o `@v4` de dentro do
+      # composite e `@v3` avulso — a última sobrescrevendo as anteriores. O pin
+      # 9.4.0 do `@v3` não sobrevivia a nada, e o `cache: pnpm` dele era mais um
+      # input inexistente ("Unexpected input(s) 'cache', valid inputs are
+      # ['version','dest','run_install','package_json_file','standalone']" no run
+      # 33339012691) — `cache` é input do setup-node, que o composite já passa.
+      #
+      # E o `node-version: 22` era ignorado igual ao do sla-tracker: o mesmo run
+      # mostra "node-version: 22" pedido, "node-version: 20.x" aplicado,
+      # "Acquiring 20.20.2". O site já é construído em Node 20 desde sempre; tirar
+      # o número que nunca valeu não muda o build, só para de prometer 22.
+      - name: Setup Node + pnpm
+        uses: ./.github/actions/setup-pnpm
       - run: pnpm install --frozen-lockfile
       - name: Build static site
         working-directory: apps/web

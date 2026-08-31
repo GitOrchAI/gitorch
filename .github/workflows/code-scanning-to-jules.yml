@@ -32,14 +32,15 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.SECURITY_PAT || github.token }}
 
-      - name: Setup Node
+      # Um passo só, sem `with:`. O composite `setup-pnpm` não declara `inputs`, então
+      # `node-version`/`check-latest` nunca chegaram nele: o runner registrava
+      # "Unexpected input(s)" e seguia com o 20.x de dentro do composite. Como o valor
+      # pedido aqui já era '20', a remoção não muda o runtime — só para de mentir.
+      # O `pnpm/action-setup@v3` que vinha logo abaixo era duplicata (o composite já roda
+      # o v4) e o pin 9.4.0 dele era redundante: sem `version`, o v4 lê `packageManager`
+      # da raiz, que é `pnpm@9.4.0`. Ver .github/actions/setup-pnpm/action.yml.
+      - name: Setup Node + pnpm
         uses: ./.github/actions/setup-pnpm
-        with:
-          node-version: '20'
-          check-latest: false
-      - uses: pnpm/action-setup@v3
-        with:
-          version: 9.4.0
 
       - name: Install Dependencies
         working-directory: .github/scripts

@@ -1,5 +1,28 @@
 name: Setup pnpm
 description: Setup Node.js and pnpm cache for GitOrch CI
+
+# Este composite NÃO declara `inputs`, e isso é deliberado.
+#
+# O runtime do CI é único para o monorepo inteiro: quem decide a versão de Node
+# é este arquivo, não cada workflow. Declarar `node-version` como input daria a
+# cada workflow uma versão própria — e, pior, desarmaria a única rede que pegou
+# o problema que existia aqui: com zero inputs, o `actionlint` acusa
+# "input ... is not defined in action" em qualquer `with:` que alguém passe.
+# Com um input declarado, um valor errado passaria calado para sempre.
+#
+# Sintoma real de quando 7 workflows passavam `with: node-version:` mesmo assim
+# (run 33349303373, sla-tracker, 31/08): o runner escrevia
+#   ##[warning]Unexpected input(s) 'node-version', 'check-latest', valid inputs are ['']
+#   node-version: 22        <- o que o workflow pedia
+#   node-version: 20.x      <- o que o composite realmente usou
+#   Acquiring 20.20.2 ...
+# Aviso que não reprova o job: o check ficava verde mentindo a versão.
+#
+# `pnpm/action-setup` SEM `version` é intencional: ele lê `packageManager` do
+# package.json da raiz (`pnpm@9.4.0`). Fixar o número aqui criaria um segundo
+# lugar para atualizar e os dois sairiam do ar em silêncio. E ele vem ANTES do
+# setup-node porque `cache: pnpm` precisa do pnpm já instalado para achar o
+# store — é por isso que este composite basta sozinho, sem passo extra fora.
 runs:
   using: composite
   steps:
