@@ -81,6 +81,12 @@ test('diagnóstico grátis: clona a fixture real, mostra veredito + achado deter
   await acceptCheckbox.check()
   await page.getByRole('button', { name: /accept|aceitar/i }).click()
 
+  // Escolha de hospedagem (Nossa Nuvem)
+  const cloudCard = page.getByRole('button', { name: /GitOrch Cloud|Nossa Nuvem|Nuestra Nube/i })
+  await expect(cloudCard).toBeVisible({ timeout: 15000 })
+  await cloudCard.click()
+  await page.getByRole('button', { name: /^(continue|continuar)/i }).click()
+
   // Repos: busca pela fixture especificamente (nunca confia em "o primeiro
   // da lista" — a conta de teste pode ganhar outros repos no futuro).
   const search = page.getByPlaceholder(/search repository|buscar reposit/i)
