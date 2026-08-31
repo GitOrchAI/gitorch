@@ -1,0 +1,13 @@
+--- a/apps/control-plane/src/plugins/telegram.ts
++++ b/apps/control-plane/src/plugins/telegram.ts
+@@ -24,10 +24,6 @@
+ } from '../services/telegram-link.js'
+ import { AgentQuestionService, type AgentQuestionRecord } from '../services/agent-question.js'
+ import { pipelineCheckEnabled, type PipelineErrorMetadata } from '../config/pipeline-check.js'
+-import {
+-  traduzirErroParaUsuario as _traduzirErroParaUsuario,
+-  type SetupErrorCode as _SetupErrorCode,
+-} from '../lib/setup-errors.js'
+
+ // O ouvido do bot. Sem ele, o deep link do passo 8 abriria o Telegram, o cliente
+ // apertaria Start... e ninguém estaria escutando — o `chat_id` (a única coisa

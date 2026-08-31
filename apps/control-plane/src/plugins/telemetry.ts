@@ -100,6 +100,7 @@ export const telemetryPlugin: FastifyPluginAsync = async (app) => {
       app.broadcastEvent('global', 'pipeline.error', metadata)
     }
     if ('emitter' in app) {
+      // @ts-ignore - emitter is dynamically added by other plugins or in index
       app.emitter.emit('pipeline.error', metadata)
     }
   })
