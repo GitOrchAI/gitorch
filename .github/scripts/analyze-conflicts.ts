@@ -7,7 +7,7 @@
 
 import { Octokit } from '@octokit/rest'
 import { OpenRouterClient, createOpenRouterClientFromEnv } from './lib/openrouter-client.js'
-import { isSecurityAutomationPR } from './lib/pr-eligibility.js'
+import { decidirAcaoNoPR } from './lib/pr-eligibility.js'
 import { isWithinCooldown } from './lib/notification-cooldown.js'
 import { z } from 'zod'
 import { execSync } from 'child_process'
@@ -601,11 +601,27 @@ async function main() {
   const cooldownMinutes = parseInt(env['CONFLICT_NOTIFICATION_COOLDOWN_MIN'] || '20', 10)
 
   if (prNumber) {
-    // Só age em PR desta automação de segurança (Dependabot/Jules).
-    if (!(await isSecurityAutomationPR(octokit, owner, repo, prNumber))) {
+    // UM retrato do PR serve às DUAS decisões. Antes havia só uma: `isSecurityAutomationPR`
+    // buscava o PR por dentro, respondia "é da automação" e descartava o corpo — e daí ia direto
+    // postar. A pergunta "existe alguém escutando `@jules` aqui?" nunca era feita.
+    const pr = (await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber })).data
+    const acao = decidirAcaoNoPR(pr)
+
+    if (!acao.noEscopo) {
       console.log(`PR #${prNumber} fora da automação de segurança. Ignorando.`)
       return
     }
+    if (!acao.podeComentar) {
+      // Dependabot puro: elegível para a automação de segurança, mas sem sessão do dev. O aviso
+      // começa com `@jules` (ver `analyzeConflicts`) e ninguém reagiria a ele. Analisar seria
+      // gastar merge e LLM para gerar um texto que não pode ser postado.
+      console.log(
+        `PR #${prNumber} é da automação mas não tem sessão do dev assíncrono escutando ` +
+          '(ex.: bump puro do Dependabot). Um aviso `@jules` aqui seria falar sozinho. Ignorando.'
+      )
+      return
+    }
+
     const analysis = await analyzeConflicts(octokit, owner, repo, prNumber, llmClient)
     if (analysis.hasConflicts) {
       const posted = await postConflictResolutionComment(
@@ -629,17 +645,36 @@ async function main() {
       per_page: 100,
     })
 
-    const julesPRs: typeof prs.data = []
-    for (const pr of prs.data) {
-      if (await isSecurityAutomationPR(octokit, owner, repo, pr.number)) julesPRs.push(pr)
-    }
+    // `pulls.list` já devolve `user`, `labels` e `body` de cada PR — verificado contra a API real
+    // deste repositório, não presumido. Por isso a decisão sai do MESMO retrato que a listagem
+    // trouxe, sem um `pulls.get` por PR como antes (era o que `isSecurityAutomationPR` fazia por
+    // dentro, uma chamada por PR aberto a cada varredura de 6h).
+    const alvos = prs.data
+      .map((pr) => ({ pr, acao: decidirAcaoNoPR(pr) }))
+      .filter(({ acao }) => acao.noEscopo)
 
-    console.log(`Found ${julesPRs.length} PRs da automação para checar`)
+    console.log(`Found ${alvos.length} PRs da automação para checar`)
 
-    for (const pr of julesPRs) {
+    for (const { pr, acao } of alvos) {
       try {
-        const analysis = await analyzeConflicts(octokit, owner, repo, pr.number, llmClient)
+        // Sem sessão escutando, o comentário nunca será postado: não gastar chamada de LLM para
+        // escrever um texto que ninguém vai ler. A DETECÇÃO de conflito continua nos dois casos,
+        // porque a limpeza da label `jules-conflict-notified` depende dela.
+        const analysis = await analyzeConflicts(
+          octokit,
+          owner,
+          repo,
+          pr.number,
+          acao.podeComentar ? llmClient : null
+        )
         if (analysis.hasConflicts) {
+          if (!acao.podeComentar) {
+            console.log(
+              `PR #${pr.number}: em conflito, mas sem sessão do dev assíncrono escutando. ` +
+                'Não comentando (o aviso começa com `@jules` e não teria quem reagisse).'
+            )
+            continue
+          }
           await postConflictResolutionComment(
             octokit,
             owner,
