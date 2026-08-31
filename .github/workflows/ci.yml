@@ -58,6 +58,12 @@ jobs:
       # qualquer passo abaixo usar esses scripts pra decidir algo.
       - name: Testes dos scripts que governam o CI (fora dos workspaces)
         run: pnpm run test:scripts
+      # Rascunho de automacao na raiz (check-actions.mjs, patch.diff,
+      # fix_*.js do PR #336...) reincide a cada faxina. Este portao barra o
+      # arquivo NOVO e diz para onde mover. Escotilha: RAIZ_PERMITIDA, dentro
+      # do proprio script, com o motivo e QUEM chama.
+      - name: Portao da raiz (sem rascunho de automacao versionado)
+        run: pnpm exec tsx scripts/ci/check-root-drafts.ts
       - name: Verify CI baseline
         run: pnpm exec tsx scripts/ci/verify-ci-baseline.ts
       - name: Validate workflow YAML (sem chaves duplicadas)
