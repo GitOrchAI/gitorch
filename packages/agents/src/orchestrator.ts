@@ -113,6 +113,14 @@ export class AgentOrchestrator {
         timeoutMs: input.timeoutMs,
       })
 
+      if (result.waitingStatus) {
+        mission.waitingStatus = result.waitingStatus
+        mission.waitingReason = result.waitingReason
+      } else {
+        mission.waitingStatus = null
+        mission.waitingReason = null
+      }
+
       if (result.exitCode !== 0 || result.failedStep) {
         if (this.workspace.handleRuntimeFailure) {
           this.workspace.handleRuntimeFailure(
