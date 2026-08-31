@@ -26,14 +26,18 @@ import {
   LeituraIndisponivelError,
   type LeituraDeProjeto,
 } from '../services/leitura-do-repositorio.js'
-import { paraTela, type EntregaDoPainel } from '../services/incremento.js'
+import {
+  julgarPedidos,
+  paginar,
+  inteiroDaQuery,
+  grupoDaQuery,
+} from '../services/entregas-por-pedido.js'
 import { medirCiclo } from '../services/medicao-do-ciclo.js'
 import { aplicarOrdemDosPedidos } from '../services/ordem-dos-pedidos.js'
 import { exigirPermissao } from '@gitorch/cadence'
 import { ProjectV2Client } from '@gitorch/github-sync'
 import { fetchDoRepositorio, fetchSemPermissao } from '../services/guarda-de-autonomia.js'
 import {
-  avaliarPronto,
   normalizarRegua,
   CRITERIOS_DE_PRONTO,
   O_QUE_O_CRITERIO_EXIGE,
@@ -43,7 +47,10 @@ import type { PoliticaDePerguntasAoDono } from '../services/duvida-do-dev.js'
 
 // Rotas do painel do owner (ui_kits/painel-owner/API.md do handoff GitOrch
 // Design System). Nesta leva: pulso, agentes e responder-decisão ao vivo.
-// Ritmo/entregas/histórico ficam para a leva 2 (a tela mostra selo "exemplo").
+// `entregas` está AO VIVO desde a leva 2 — este comentário dizia que ela
+// "fica para a leva 2", e um comentário desatualizado ao lado de uma rota que
+// responde é da mesma família do contrato fantasma que a tela carregava.
+// Continuam sem rota: `ritmo` e `historico`.
 //
 // Escopo por DONO resolvido por e-mail (mesma regra de routes/setup.ts — o
 // helper compartilhado lib/resolve-owner-id.ts). Nenhuma resposta carrega
@@ -52,6 +59,12 @@ import type { PoliticaDePerguntasAoDono } from '../services/duvida-do-dev.js'
 const RATE_LIMIT_POLLING = { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } }
 const NAO_LOGADO = { error: 'UNAUTHORIZED: session required' }
 const LIMITE_FRIO_SEGUNDOS = 3600
+
+// Paginação das entregas. O teto que saiu do meio da consulta — onde escondia
+// entregas prontas — volta aqui, onde limita só o TAMANHO DA PÁGINA e nunca a
+// população que os números do cabeçalho contam.
+const ENTREGAS_POR_PAGINA = 25
+const ENTREGAS_POR_PAGINA_MAX = 100
 
 /**
  * Injeções opcionais (testes). Em produção os defaults são usados.
@@ -673,54 +686,87 @@ export const painelRoutes = async (
   // Os fatos vêm de `dev_sessions`, que o caminho que já roda grava. Nenhum
   // rastreio novo: uma segunda fonte da verdade sobre "isto ficou pronto"
   // divergiria da primeira, e o dono descobriria pelo número errado.
-  app.get<{ Querystring: { projeto?: string } }>(
-    '/api/v1/painel/entregas',
-    RATE_LIMIT_POLLING,
-    async (request, reply) => {
-      if (!request.user) return reply.code(401).send(NAO_LOGADO)
-      const ownerId = await resolveOwnerId(app.prisma, request.user)
-      const projeto = request.query.projeto?.trim() || undefined
+  //
+  // POR QUE NÃO `increments`: a tabela existe e é escrita por scheduler.ts,
+  // mas só PARA A FRENTE — em 31/08 ela tem 0 linhas e `dev_sessions` tem 200.
+  // Ler dali hoje faria a tela dizer "0 prontas" com quinze entregas no ar. E
+  // backfill não resolve, porque `Increment.prontoEm` é `default(now())`:
+  // carimbaria 31/08 em entregas que foram ao ar dia 27, inventando
+  // retroativamente a data de "ficou pronto".
+  //
+  // O TETO QUE ESTA ROTA PERDEU: até 31/08 ela trazia as 50 sessões mais
+  // recentes. Das 15 entregas prontas do dono, NENHUMA cabia nessas 50 — elas
+  // ocupam as posições 66 a 193 na ordem por data. A tela dizia "PRONTAS: 0"
+  // com quinze no ar. Agora a rota lê a população inteira do dono, julga por
+  // PEDIDO (a unidade do cartão) e pagina só a LISTA.
+  //
+  // A ORDENAÇÃO PEDE `id` COMO DESEMPATE: `updatedAt` é reescrito pela esteira
+  // o tempo todo, e ordenar só por ele deixa linhas empatadas trocando de lugar
+  // entre uma leitura e a seguinte.
+  app.get<{
+    Querystring: { projeto?: string; grupo?: string; pagina?: string; porPagina?: string }
+  }>('/api/v1/painel/entregas', RATE_LIMIT_POLLING, async (request, reply) => {
+    if (!request.user) return reply.code(401).send(NAO_LOGADO)
+    const ownerId = await resolveOwnerId(app.prisma, request.user)
+    const projeto = request.query.projeto?.trim() || undefined
 
-      const projetos = await app.prisma.project.findMany({
-        where: { userId: ownerId, isActive: true, ...(projeto ? { name: projeto } : {}) },
-        select: { id: true, name: true, reguaDePronto: true },
+    const grupo = grupoDaQuery(request.query.grupo)
+    const pagina = inteiroDaQuery(request.query.pagina, 1, 1, Number.MAX_SAFE_INTEGER)
+    const porPagina = inteiroDaQuery(
+      request.query.porPagina,
+      ENTREGAS_POR_PAGINA,
+      1,
+      ENTREGAS_POR_PAGINA_MAX
+    )
+
+    const projetos = await app.prisma.project.findMany({
+      where: { userId: ownerId, isActive: true, ...(projeto ? { name: projeto } : {}) },
+      select: { id: true, name: true, reguaDePronto: true },
+    })
+    if (projetos.length === 0) {
+      return reply.send({
+        entregas: [],
+        prontas: 0,
+        andando: 0,
+        total: 0,
+        grupo,
+        pagina: 1,
+        porPagina,
+        paginas: 0,
       })
-      if (projetos.length === 0) return reply.send({ entregas: [], prontas: 0 })
-
-      const porId = new Map(projetos.map((p) => [p.id, p]))
-      const sessoes = await app.prisma.devSession.findMany({
-        where: { projectId: { in: projetos.map((p) => p.id) } },
-        select: {
-          projectId: true,
-          issueNumber: true,
-          pullRequestNumber: true,
-          mergeCommitSha: true,
-          deployState: true,
-          envLastVerdict: true,
-          updatedAt: true,
-        },
-        orderBy: { updatedAt: 'desc' },
-        take: 50,
-      })
-
-      const entregas: EntregaDoPainel[] = sessoes.map((s) => {
-        const proj = porId.get(s.projectId)
-        const veredito = avaliarPronto(s, normalizarRegua(proj?.reguaDePronto))
-        return paraTela({
-          projeto: proj?.name ?? '',
-          pedido: s.issueNumber,
-          entrega: s.pullRequestNumber,
-          veredito,
-          // A data só existe quando fechou. Mostrar a última mexida como se
-          // fosse a data da entrega diria que ficou pronto num dia em que não
-          // ficou.
-          prontoEm: veredito.pronto ? s.updatedAt : null,
-        })
-      })
-
-      return reply.send({ entregas, prontas: entregas.filter((e) => e.pronto).length })
     }
-  )
+
+    const sessoes = await app.prisma.devSession.findMany({
+      where: { projectId: { in: projetos.map((p) => p.id) } },
+      select: {
+        projectId: true,
+        issueNumber: true,
+        pullRequestNumber: true,
+        mergeCommitSha: true,
+        deployState: true,
+        envLastVerdict: true,
+        updatedAt: true,
+      },
+      orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+    })
+
+    const julgados = julgarPedidos(sessoes, projetos)
+    const doGrupo = julgados[grupo]
+
+    // `prontas`, `andando` e `total` falam da população INTEIRA, em PEDIDOS —
+    // a mesma unidade do cartão, que se chama "Pedido #N". `entregas` é só a
+    // página do grupo pedido. Se um dia divergirem, é o número que mente.
+    return reply.send({
+      entregas: paginar(doGrupo, pagina, porPagina),
+      prontas: julgados.prontas.length,
+      andando: julgados.andando.length,
+      total: julgados.prontas.length + julgados.andando.length,
+      grupo,
+      pagina,
+      porPagina,
+      paginas: Math.ceil(doGrupo.length / porPagina),
+    })
+  })
 
   // GET /api/v1/painel/ciclo — quanto o nosso ciclo custa, contando o retrabalho.
   //

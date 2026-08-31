@@ -11,7 +11,7 @@ import { assinarProjeto, projetoAtual, projetoNoServidor, filtroDeProjeto } from
 interface PedidoResumo {
   numero: number
   titulo: string
-  situacao: 'andando' | 'entregue'
+  situacao: 'andando' | 'fechado'
   projeto: string
   partes: { total: number; concluidas: number }
 }
@@ -22,6 +22,7 @@ import { Card, Kpi, Estado, Barra, Decisao, Cabeca, type DecisaoView } from './P
 import { Estados, SeloDemo } from './PainelEstados'
 import type { TelaId } from './painel-nav'
 import type { AgentesPayload, PulsoPayload } from './painel-tipos'
+import { kpisDaVisaoGeral, type ResumoDeEntregas } from './painel-numeros'
 
 function fraseDeTempo(haSegundos: number | null): string | null {
   if (haSegundos == null) return null
@@ -143,10 +144,6 @@ function SprintAtual() {
       ))}
     </Card>
   )
-}
-
-interface MissoesStats {
-  stats?: { active: number; completed: number; failed: number }
 }
 
 function Pulso() {
@@ -277,40 +274,39 @@ function haQuantoTempo(iso: string): number | null {
   return Math.max(0, Math.floor((Date.now() - t) / 1000))
 }
 
+/**
+ * Os quatro números do topo.
+ *
+ * "Entregue no total" lê /painel/entregas — a MESMA rota, com o MESMO filtro
+ * de projeto, que alimenta a aba Entregas. Antes lia `missions.completed`, e
+ * era por isso que a mesma tela conseguia dizer "Entregue no total: 4521" no
+ * topo e "PRONTAS: 0" na aba ao lado: duas fontes respondendo a mesma
+ * pergunta. Os rótulos e as notas moram em painel-numeros.ts, que tem teste;
+ * aqui só se desenha.
+ */
 function Kpis({ decisoesPendentes }: { decisoesPendentes: number }) {
+  const projeto = useSyncExternalStore(assinarProjeto, projetoAtual, projetoNoServidor)
+  const e = usePainelBusca<ResumoDeEntregas, { prontas?: number; total?: number }>(
+    ROTAS.entregas + filtroDeProjeto(projeto),
+    {
+      // Campo ausente é DESCONHECIDO, nunca zero: "de 0 que passaram pela sua
+      // régua" ao lado de um número real é o default vazio que já nos custou caro.
+      mapear: (b) => ({ prontas: b.prontas ?? null, total: b.total ?? null }),
+      intervalo: 30000,
+    }
+  )
   const m = usePainelBusca<MissoesStats>(ROTAS.missoes, { intervalo: 15000 })
-  const stats = m.estado === 'ok' && m.dados ? m.dados.stats : null
-  const kpis = [
-    {
-      l: 'Entregue no total',
-      v: stats ? stats.completed : null,
-      n: stats ? 'concluídas até agora' : 'ainda carregando',
-      tone: 'g',
-    },
-    {
-      l: 'Esperando sua decisão',
-      v: decisoesPendentes,
-      n: decisoesPendentes ? 'responder destrava o trabalho' : 'nada pendente',
-      tone: 'w',
-      destaque: decisoesPendentes > 0,
-    },
-    {
-      l: 'Em andamento',
-      v: stats ? stats.active : null,
-      n: 'em execução ou na fila',
-      tone: '',
-    },
-    {
-      l: 'Travado',
-      v: stats ? stats.failed : null,
-      n: stats && stats.failed ? 'precisa de revisão manual' : 'nada travado',
-      tone: 'b',
-    },
-  ]
+
+  const kpis = kpisDaVisaoGeral({
+    entregas: e.estado === 'ok' && e.dados ? e.dados : null,
+    rodadas: m.estado === 'ok' && m.dados?.stats ? m.dados.stats : null,
+    decisoesPendentes,
+  })
+
   return (
     <div className="pn-kpis">
       {kpis.map((k) => (
-        <Kpi key={k.l} {...k} />
+        <Kpi key={k.l} l={k.l} v={k.v} n={k.n} tone={k.tone} destaque={k.destaque} />
       ))}
     </div>
   )
@@ -361,13 +357,13 @@ function PedidosRecentes({ ir }: { ir: (id: TelaId) => void }) {
                       <div className="m">{p.projeto}</div>
                     </td>
                     <td className="pn-nowrap">
-                      <Estado d={p.situacao === 'entregue' ? 'g' : ''}>
-                        {p.situacao === 'entregue' ? 'Entregue' : 'Andando'}
+                      <Estado d={p.situacao === 'fechado' ? 'g' : ''}>
+                        {p.situacao === 'fechado' ? 'Fechado' : 'Andando'}
                       </Estado>
                     </td>
                     <td className="pn-nowrap" style={{ color: 'var(--gl-muted)' }}>
-                      {p.situacao === 'entregue'
-                        ? 'entregue'
+                      {p.situacao === 'fechado'
+                        ? 'fechado no GitHub'
                         : p.partes.total === 0
                           ? 'ainda sendo planejado'
                           : `${p.partes.concluidas} de ${p.partes.total} partes`}
@@ -395,8 +391,8 @@ export function TelaVisaoGeral({
   return (
     <>
       <Cabeca titulo="Bom dia.">
-        Aqui está o ritmo dos seus pedidos: o que já entrou em produção, o que segue em andamento e
-        o que espera uma decisão sua.
+        Aqui está o ritmo dos seus pedidos: o que já ficou pronto pela sua régua, o que os agentes
+        estão rodando agora e o que espera uma decisão sua.
       </Cabeca>
 
       <SprintAtual />

@@ -60,3 +60,92 @@ Sem migração de schema nesta leva.
 - `GET /api/v1/painel/entregas` — origem do `ganho` (RA escreve / 1ª frase da issue / omite; **nunca** gerar com modelo em tempo de leitura).
 - `GET /api/v1/painel/historico` — listar `Event` paginado, imutável.
 - Cota de motor persistida (hoje best-effort), ações reais de Regras/Configurações, i18n do `/painel`.
+
+## Entregas: a unidade é o PEDIDO, e a lista casa com o número (31/08)
+
+**Os defeitos, medidos no banco do dono.**
+
+```
+select count(*), count(distinct issue_number) from dev_sessions;   -- 200 | 99
+-- 15 pedidos passam na régua padrão (gitorch 1 de 58, patinhas 14 de 41)
+```
+
+1. **O teto escondia as entregas.** `GET /api/v1/painel/entregas` trazia as 50
+   sessões mais recentes e reavaliava a régua em memória. Das 15 entregas
+   prontas, **nenhuma** cabia nessas 50: elas ocupam as posições 66 a 193 na
+   ordem por `updated_at`. A tela dizia `PRONTAS: 0` com quinze no ar.
+2. **O denominador contava a coisa errada.** O cartão diz "Pedido #N" e a nota
+   dizia "de 200 que passaram pela sua régua" — 200 é o número de SESSÕES. O
+   dono lia duzentos pedidos onde há noventa e nove.
+3. **A lista contradizia o cabeçalho.** O cabeçalho anunciava "Prontas: 15" e a
+   lista mostrava as 50 sessões mais recentes, onde há ZERO prontas.
+4. **Cartões acumulavam ao virar a página.** A `key` do `<Card>` era
+   `${projeto}-${pedido}`, e `pedido` não é único quando a linha é uma sessão.
+   Contando as colisões por página de 25: página 1 tinha 8, página 2 tinha 4. O
+   React monta o mapa de reconciliação por key, o segundo fiber sobrescreve o
+   primeiro, e o fiber sombreado não é reaproveitado nem apagado — o nó de DOM
+   dele fica na tela. Daí a aritmética que o QA contou no navegador:
+   25 → 25+8 = **33** → 33+4 = **37**.
+
+**A correção, com uma raiz só para 2, 3 e 4: a rota passou a responder em
+PEDIDOS.** `services/entregas-por-pedido.ts` agrupa as sessões por
+`(projeto, pedido)`, julga cada pedido pela régua do projeto dele e devolve
+`{ entregas, prontas, andando, total, grupo, pagina, porPagina, paginas }`.
+`prontas`, `andando` e `total` falam da população inteira; `entregas` é só a
+página do grupo pedido.
+
+**Um pedido está pronto se ALGUMA sessão dele passou na régua** — não se a
+última passou. Os critérios são fatos que não se desfazem: um PR foi mesclado,
+uma publicação chegou ao ar. Uma sessão posterior no mesmo pedido é trabalho a
+mais sobre algo que já chegou às mãos do dono, e não desmescla nem despublica o
+que já está lá. Julgar pela última faria uma entrega em produção sumir da conta
+no instante em que alguém abrisse um retoque sobre ela. `prontoEm` é o instante
+mais antigo em que o pedido passou — "ficou pronto" é quando chegou lá pela
+primeira vez.
+
+**A aba lista ENTREGAS.** O grupo padrão é o das prontas, ordenado da mais
+recente para a mais antiga. O que não fechou está no grupo "Ainda não
+fecharam", com a contagem no próprio botão e o que a lista mostra escrito em
+palavras abaixo dele — filtro que o dono não vê é a mesma família de mentira que
+esta tela veio acabar.
+
+**A fonte continua sendo `dev_sessions`, e não `increments`.**
+
+- `increments` **é escrita** — `scheduler.ts` grava quando a publicação muda de
+  estado. Mas grava só **para a frente**: em 31/08 a tabela tem **0 linhas**.
+  Ler dali hoje faria a tela dizer "0 prontas". **O leitor vem antes do
+  backfill, nunca o contrário.**
+- **O backfill não resolve, porque a data mentiria.** `Increment.prontoEm` é
+  `default(now())` e nada guarda o instante em que o último critério passou. Um
+  backfill hoje carimbaria 31/08 em entregas que foram ao ar dia 27.
+- **São perguntas diferentes.** `increments` congela a régua que valia na hora
+  (é história). Esta tela responde "o que está pronto pela minha régua de HOJE".
+
+**Uma régua, uma implementação.** A contagem é feita em TypeScript com
+`avaliarPronto`, e não traduzida para um `where` de banco. Ao nível da sessão a
+tradução funcionava; ao nível do PEDIDO o veredito é um agregado com data
+derivada por grupo e por régua de projeto, e escrevê-lo em SQL seria uma segunda
+implementação da régua com uma superfície de divergência bem maior — divergência
+que apareceria como número errado na tela, sem erro nenhum no caminho.
+
+**O preço, medido e declarado.** A rota lê as sessões do dono inteiras: 200
+linhas de 7 colunas hoje. Quando isso passar a custar, o conserto é agregar por
+pedido no banco (`groupBy`) — **nunca** um `take` que corta a população.
+
+**Ordenação estável.** A consulta ordena por `[updatedAt desc, id desc]` e a
+ordem final desempata por projeto e número do pedido. `updated_at` é reescrito
+pela esteira o tempo todo; ordenar só por ele deixa linhas empatadas trocando de
+lugar entre uma virada de página e a seguinte.
+
+**Rodada de agente nunca é entrega.** A Visão Geral lia `missions.completed`
+(4.521 em 31/08) sob o rótulo "Entregue no total", enquanto a aba ao lado dizia
+"PRONTAS: 0" — duas fontes respondendo a mesma pergunta. Os KPIs agora leem a
+MESMA rota da aba Entregas, e os contadores de `missions` ficaram com o nome do
+que são ("Rodadas de agente"). `painel-numeros.ts` tem um teste que cobra a
+regra: nenhum número de fonte `rodadas` pode usar palavra de entrega no rótulo
+ou na nota.
+
+**Fechar issue não é entregar.** `arvore-de-pedidos.ts` marcava
+`situacao: 'entregue'` só porque a issue estava `CLOSED`. Uma issue fecha por
+muitos motivos, e nenhum deles passa pela régua. O estado agora se chama
+`'fechado'` e a tela diz "Fechado".

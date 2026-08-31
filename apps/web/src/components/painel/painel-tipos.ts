@@ -1,27 +1,17 @@
 // Tipos dos payloads das rotas do painel do owner.
 //
-// Os shapes vêm verbatim de `ui_kits/painel-owner/API.md` do handoff
-// (GitOrch Design System). Rotas que já existem no control-plane e rotas
-// que faltam (leva 2) estão anotadas em cada bloco.
-
-// --- /api/v1/painel/ritmo (API.md §2.1) — FALTA (leva 2) -----------------
-
-export interface RitmoPorDia {
-  data: string
-  entregas: number
-}
-
-export interface RitmoPayload {
-  periodo: { inicio: string; fim: string; rotulo: string }
-  entregue: number
-  /** null quando não há meta configurada (`meta_definida: false`). Nunca chutar. */
-  meta: number | null
-  por_dia: RitmoPorDia[]
-  hoje: string
-  dias_uteis_restantes: number
-  no_ritmo: boolean
-  meta_definida: boolean
-}
+// SÓ ROTA QUE EXISTE, E SÓ CONTRATO QUE ALGUÉM USA. Este arquivo carregava
+// nove tipos que ninguém importava, três deles descrevendo rotas anotadas como
+// "FALTA (leva 2)". O pior era o de `/painel/entregas`: a rota EXISTE e
+// responde `{ entregas, prontas, andando, total, ... }`, enquanto o tipo aqui
+// declarava `{ grupos: [...] }` — um contrato que nunca foi verdade, parado ao
+// lado da tela, parecendo a fonte da verdade. Contrato declarado que ninguém
+// usa é exatamente como a tela e a rota se separam sem ninguém ver: o tipo
+// envelhece calado porque nada o compila contra o real.
+//
+// A regra, daqui para a frente: um tipo entra aqui quando a rota existe E uma
+// tela o importa. Rota nova nasce com o contrato escrito contra a resposta
+// real, não contra o desenho.
 
 // --- /api/v1/painel/pulso (API.md §2.2) — NOVA nesta leva ----------------
 
@@ -78,55 +68,4 @@ export interface AgentesPayload {
   cotaLida: boolean
   /** por que não deu, em linguagem de negócio. `null` quando leu. */
   motivoDaCota: string | null
-}
-
-// --- /api/v1/painel/entregas (API.md §2.5) — FALTA (leva 2) --------------
-
-export interface EntregaItem {
-  titulo: string
-  /** o ganho que a entrega trouxe; ausente quando ninguém o escreveu. */
-  ganho?: string
-  projeto: string
-  quando: string
-  responsavel: string
-  /** todo o jargão vive aqui e em nenhum outro campo. */
-  tecnico: string
-}
-
-export interface EntregasGrupo {
-  rotulo: string
-  total: number
-  itens: EntregaItem[]
-}
-
-export interface EntregasPayload {
-  grupos: EntregasGrupo[]
-}
-
-// --- /api/v1/painel/historico (API.md §2.6) — FALTA (leva 2) ------------
-
-export interface HistoricoEvento {
-  quando: string
-  quem: string
-  o_que: string
-  evidencia: string
-  tecnico: string
-}
-
-export interface HistoricoPayload {
-  eventos: HistoricoEvento[]
-  pagina: number
-  total: number
-}
-
-// --- POST /api/v1/painel/decisoes/:id/responder (API.md §2.4) — NOVA -----
-
-export interface DecisaoRespostaOk {
-  id: string
-  status: 'answered'
-  answer: string
-  answeredAt: string
-  /** o serviço grava a string 'panel' (schema comenta `telegram | panel`);
-   *  a view rotula em PT-BR, nunca usa este campo para lógica. */
-  answeredVia: 'panel'
 }

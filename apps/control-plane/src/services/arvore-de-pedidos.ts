@@ -18,8 +18,18 @@ import { ETIQUETA_DE_DESEJO } from './desejo.js'
 export interface PedidoDoPainel {
   numero: number
   titulo: string
-  /** 'andando' enquanto a issue está aberta; 'entregue' quando fecha. */
-  situacao: 'andando' | 'entregue'
+  /**
+   * O estado da ISSUE no GitHub: 'andando' enquanto aberta, 'fechado' quando
+   * fechada. NÃO é "entregue".
+   *
+   * Este campo já se chamou 'entregue', e era mentira: uma issue fecha por
+   * muitos motivos — duplicada, cancelada, fechada à mão, resolvida fora do
+   * produto — e nenhum deles passa pela régua de pronto do cliente. Quem
+   * responde "isto ficou pronto?" é `avaliarPronto` (packages/cadence) sobre
+   * os fatos de `dev_sessions`, e o resultado vive na aba Entregas. Aqui só
+   * cabe dizer o fato que a leitura realmente tem: a issue está fechada.
+   */
+  situacao: 'andando' | 'fechado'
   /** Nome do projeto — nunca o id: o painel não expõe id de projeto. */
   projeto: string
   /** Quando o dono pediu (ISO). */
@@ -118,7 +128,9 @@ function paraPedido(issue: IssueBruta, projeto: string): PedidoDoPainel | null {
   return {
     numero: issue.number,
     titulo: issue.title ?? '(sem título)',
-    situacao: issue.state === 'CLOSED' ? 'entregue' : 'andando',
+    // Fechada é fechada. Anunciar "Entregue" a partir daqui declararia pronto
+    // algo que nunca foi julgado pela régua do cliente.
+    situacao: issue.state === 'CLOSED' ? 'fechado' : 'andando',
     projeto,
     quando: issue.createdAt ?? '',
     endereco: issue.url ?? '',
