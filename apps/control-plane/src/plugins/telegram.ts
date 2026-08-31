@@ -107,7 +107,13 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
     return
   }
 
-  app.ready(() => {
+  // NUNCA `app.ready()` aqui: chamar ready() de dentro de um plugin BOOTA O ROOT, e todo
+  // `app.get()` registrado depois (routes/index.ts inteiro, a começar por healthRoutes)
+  // estoura AVV_ERR_ROOT_PLG_BOOTED — o processo morre no arranque e o serviço entra em
+  // crash-loop. Passou no CI porque o guard acima retorna quando NODE_ENV==='test', então
+  // este trecho só executa fora de teste: quebrou em produção, no primeiro restart depois
+  // do PR #394 (31/08, 502 no site). `onReady` agenda o mesmo callback sem bootar o root.
+  app.addHook('onReady', async () => {
     if ('emitter' in app) {
       // @ts-ignore
       app.emitter.on('pipeline.error', async (metadata: PipelineErrorMetadata) => {
