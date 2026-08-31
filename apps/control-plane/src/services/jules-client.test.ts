@@ -48,6 +48,44 @@ describe('criarSessaoJules', () => {
     prompt: '## Goal\n\nGarantir que o token alcance o repositório.',
   }
 
+  // ACHADO 1 do QA: o vigia do pull request órfão precisa que o trabalho volte
+  // para o ramo DO PULL REQUEST, e não para um ramo novo saído da principal.
+  //
+  // Contrato conferido AO VIVO em 31/08/2026 contra jules.googleapis.com, sem
+  // criar sessão nenhuma (fonte inexistente de propósito):
+  //   campo inventado           → HTTP 400 "Unknown name ... Cannot find field"
+  //   sourceContext.workingBranch → passou a validação, HTTP 404 na fonte
+  //   automationMode inventado  → HTTP 400 "Invalid value ... AutomationMode"
+  // Ou seja: `workingBranch` existe, e AUTO_CREATE_PR é o único modo além do
+  // não-especificado. É por `workingBranch` que a entrega volta ao mesmo ramo.
+  it('quando pedem um ramo de trabalho, ele viaja em sourceContext.workingBranch', async () => {
+    const { impl, chamadas } = fetchFake([
+      { ok: true, status: 200, body: { name: 'sessions/abc123' } },
+    ])
+
+    await criarSessaoJules({
+      ...base,
+      startingBranch: 'ramo-do-pr-356',
+      workingBranch: 'ramo-do-pr-356',
+      fetchImpl: impl,
+    })
+
+    const corpo = JSON.parse(String(chamadas[0]!.init!.body))
+    expect(corpo.sourceContext.githubRepoContext.startingBranch).toBe('ramo-do-pr-356')
+    expect(corpo.sourceContext.workingBranch).toBe('ramo-do-pr-356')
+  })
+
+  it('sem ramo de trabalho, `workingBranch` NÃO é enviado (o Jules escolhe um)', async () => {
+    const { impl, chamadas } = fetchFake([
+      { ok: true, status: 200, body: { name: 'sessions/abc123' } },
+    ])
+
+    await criarSessaoJules({ ...base, fetchImpl: impl })
+
+    const corpo = JSON.parse(String(chamadas[0]!.init!.body))
+    expect('workingBranch' in corpo.sourceContext).toBe(false)
+  })
+
   it('cria a sessão com o repositório, o branch e o pedido de PR automático', async () => {
     const { impl, chamadas } = fetchFake([
       { ok: true, status: 200, body: { name: 'sessions/abc123' } },

@@ -218,6 +218,12 @@ import {
   ultimaMensagemDoDevJules,
 } from '../services/jules-client.js'
 import { vigiarSessoes } from '../services/session-watch.js'
+import {
+  CADENCIA_DA_VARREDURA_MS,
+  fecharPrDoVigia,
+  listarPrsAbertosParaOVigia,
+  vigiarPrsOrfaos,
+} from '../services/vigia-do-pr.js'
 import { varrerVagasVazadas } from '../services/reconciliar-vagas.js'
 import { sessoesAbandonadas } from '../services/sessao-abandonada.js'
 import { medirRetrospectiva, escolherAMelhoria } from '../services/retrospectiva.js'
@@ -4993,6 +4999,263 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     }
   }
 
+  // O VIGIA DO PULL REQUEST ÓRFÃO — ESTEIRA-L3-T12.
+  //
+  // A vigia de sessões (`varrerSessoesDoDev`) e o ciclo terminal
+  // (`varrerCicloTerminalDaSessao`) só enxergam pull request que tem LINHA VIVA
+  // atrás. Quando a sessão morre com o pull request aberto, ele sai do radar das
+  // duas — e o SM também não o resgata, porque `escolherParaDelegar` trata
+  // "linha fechada com PR" como prova de que a tarefa já foi entregue.
+  //
+  // Medido no banco em 31/08/2026 (repositório do produto): 18 pull requests
+  // abertos, UM com sessão viva (#408), 17 com a sessão fechada como
+  // `pr-rejeitado-sem-retomada`/`abandoned`. Um cuidado, dezessete abandonados.
+  //
+  // POR QUE DEPOIS do ciclo terminal e não antes: é o ciclo terminal que FECHA
+  // a linha da sessão que acabou. Rodando depois dele, o conjunto "tem sessão
+  // viva" já está atualizado nesta mesma passada — e é justamente esse conjunto
+  // que separa o que é da vigia de sessões do que é do vigia do pull request.
+  // Rodando antes, um pull request recém-órfão esperaria mais um ciclo.
+  const ultimaVarreduraDePrOrfao = new Map<string, number>()
+
+  const varrerPrsOrfaos = async (): Promise<void> => {
+    const agora = new Date()
+    const projetos = await app.prisma.project.findMany({
+      where: { isActive: true },
+      select: {
+        id: true,
+        wingId: true,
+        name: true,
+        userId: true,
+        devPlan: true,
+        devAccountId: true,
+      },
+    })
+
+    for (const projeto of projetos) {
+      // Cadência por projeto: a varredura custa uma listagem paginada e duas
+      // leituras por candidato. A cada tique (1 min) isso viraria milhares de
+      // chamadas por dia contra o repositório do cliente sem nada ter mudado.
+      const ultima = ultimaVarreduraDePrOrfao.get(projeto.id) ?? 0
+      if (agora.getTime() - ultima < CADENCIA_DA_VARREDURA_MS) continue
+      ultimaVarreduraDePrOrfao.set(projeto.id, agora.getTime())
+
+      try {
+        const token =
+          process.env['GITORCH_GITHUB_TOKEN'] ??
+          (await mintInstallationToken({
+            repository: projeto.wingId,
+            onError: (m) => app.log.error(m),
+            onWarn: (m) => app.log.warn(m),
+          })) ??
+          undefined
+        if (!token) {
+          app.log.warn(`[Scheduler] vigia-do-pr: sem token para ${projeto.wingId}; pula a passada`)
+          continue
+        }
+
+        // As linhas do projeto: a viva diz de quem é o pull request AGORA, e as
+        // fechadas dizem qual tarefa originou cada pull request.
+        const linhas = await app.prisma.devSession.findMany({
+          where: { projectId: projeto.id, pullRequestNumber: { not: null } },
+          select: { pullRequestNumber: true, issueNumber: true, closedAt: true },
+          orderBy: { id: 'desc' },
+        })
+        const prsComSessaoViva = new Set<number>(
+          linhas.filter((l) => l.closedAt === null).map((l) => l.pullRequestNumber as number)
+        )
+        const issuePorPr = new Map<number, number>()
+        for (const l of linhas) {
+          const n = l.pullRequestNumber as number
+          if (!issuePorPr.has(n)) issuePorPr.set(n, l.issueNumber)
+        }
+
+        const resumo = await vigiarPrsOrfaos({
+          listarPrsAbertos: () =>
+            listarPrsAbertosParaOVigia({
+              repo: projeto.wingId,
+              // A porta de saída de rede do relógio, já com o token do projeto
+              // amarrado — a leitura do vigia passa pelos MESMOS teto e guarda
+              // de autonomia que o resto das chamadas ao GitHub daqui.
+              ghGet: (caminho) => ghGet(caminho, token),
+              prsComSessaoViva,
+              agora,
+              onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+            }),
+          prsComSessaoViva,
+          issueDoPr: (n) => issuePorPr.get(n) ?? null,
+          issueAberta: async (issueNumber) => {
+            const issue = (await ghGet(
+              `/repos/${projeto.wingId}/issues/${issueNumber}`,
+              token
+            )) as { state?: string }
+            return issue.state === 'open'
+          },
+          // O TETO VIVE NOS PRÓPRIOS EVENTOS que o vigia grava. Sem coluna
+          // nova, sem migração — e sem teto mudo: a contagem é feita pelo
+          // banco, sobre a população inteira, e não sobre uma janela recente
+          // que calaria depois de N eventos.
+          acoesAnteriores: (numeroDoPr) =>
+            app.prisma.event.count({
+              where: {
+                projectId: projeto.id,
+                type: 'audit',
+                payload: { path: ['vigiaDoPr', 'numeroDoPr'], equals: numeroDoPr },
+              },
+            }),
+          // O teto de sessões simultâneas é da CONTA do dev, não deste
+          // caminho. Estourá-lo por fora faria a delegação normal — a que tira
+          // tarefa da fila — passar a ser recusada por culpa do vigia.
+          vagasLivres: Math.max(
+            0,
+            tetosDoPlanoDoDev(projeto.devPlan).tetoConcorrentes -
+              (await app.prisma.devSession.count({
+                where: {
+                  devAccountId: projeto.devAccountId ?? null,
+                  closedAt: null,
+                  state: { notIn: [...ESTADOS_TERMINAIS] },
+                },
+              }))
+          ),
+          abrirSessaoDeConserto: ({ numeroDoPr, issueNumber, pedido, branchDoPr }) =>
+            abrirSessaoDeConsertoDoPr({ projeto, numeroDoPr, issueNumber, pedido, branchDoPr }),
+          // FECHA e só então comenta — a ordem é a correção do ACHADO 4 e vive
+          // em `fecharPrDoVigia`, onde dá para provar por teste.
+          fecharPr: ({ numero, motivo }) =>
+            fecharPrDoVigia({
+              repo: projeto.wingId,
+              numero,
+              motivo,
+              ghSend: (metodo, caminho, corpo) => ghSend(metodo, caminho, token, corpo),
+              onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+            }),
+          avisarDono: (texto) =>
+            avisarDonoDoProjeto(
+              projeto as NotifiableProject & { id: string; wingId: string },
+              texto
+            ),
+          registrarDecisao: async ({ numeroDoPr, acao, texto }) => {
+            // `type: 'audit'` é o ÚNICO que a linha do tempo do dono lê
+            // (`GET /api/v1/painel/timeline`, painel.ts). `payload.texto` é o
+            // que ela renderiza; `payload.vigiaDoPr` viaja ao lado, invisível
+            // para a tela e legível para o teto acima.
+            await app.prisma.event.create({
+              data: {
+                projectId: projeto.id,
+                type: 'audit',
+                payload: { texto, vigiaDoPr: { numeroDoPr, acao } },
+              },
+            })
+          },
+          onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+          onInfo: (m) => app.log.debug(`[Scheduler] ${m}`),
+        })
+        app.log.info(`[Scheduler] ${projeto.wingId}: ${resumo}`)
+      } catch (err) {
+        app.log.warn(err, `[Scheduler] vigia-do-pr falhou em ${projeto.wingId}; tenta na próxima`)
+      }
+    }
+  }
+
+  /**
+   * Abre sessão NOVA no dev assíncrono para consertar um pull request órfão.
+   *
+   * RESERVA PRIMEIRO, pelo mesmo motivo da delegação normal: o índice único
+   * parcial (`dev_sessions_open_per_issue`) é quem decide o vencedor quando
+   * duas passadas tentam a mesma tarefa ao mesmo tempo. Reservar antes de
+   * gastar cota evita nascer uma sessão lá fora que não pode ser guardada aqui.
+   */
+  const abrirSessaoDeConsertoDoPr = async (args: {
+    projeto: { id: string; wingId: string; devAccountId?: string | null }
+    numeroDoPr: number
+    issueNumber: number
+    pedido: string
+    /** O ramo do pull request. Nunca a principal — ver abaixo. */
+    branchDoPr: string
+  }): Promise<boolean> => {
+    const reserva = await abrirSessao({
+      prisma: app.prisma as unknown as PrismaDevSession,
+      projectId: args.projeto.id,
+      issueNumber: args.issueNumber,
+      sessionName: nomeDaReserva(args.projeto.id, args.issueNumber),
+      agora: new Date(),
+      devAccountId: args.projeto.devAccountId ?? null,
+    })
+    if (!reserva.ok) {
+      app.log.info(
+        `[Scheduler] vigia-do-pr: a tarefa #${args.issueNumber} já tem sessão viva; ` +
+          `o #${args.numeroDoPr} espera`
+      )
+      return false
+    }
+
+    const liberar = async (): Promise<void> => {
+      await app.prisma.devSession.updateMany({
+        where: {
+          projectId: args.projeto.id,
+          issueNumber: args.issueNumber,
+          sessionName: { startsWith: PREFIXO_DA_RESERVA },
+          closedAt: null,
+        },
+        data: { closedAt: new Date(), closedReason: 'failed_final' },
+      })
+    }
+
+    // O RAMO DO PULL REQUEST NOS DOIS CAMPOS — ACHADO 1 do QA.
+    //
+    // A versão reprovada mandava `startingBranch: 'main'`. Uma sessão que parte
+    // da principal não vê o trabalho do dev (que está no ramo dele) e, com
+    // `AUTO_CREATE_PR`, termina abrindo um SEGUNDO pull request: o órfão
+    // continua órfão e o cliente ganha uma entrega duplicada. A ação que dá
+    // nome à tarefa não retomava nada.
+    //
+    // `startingBranch` faz a sessão NASCER no ramo do pull request;
+    // `workingBranch` faz o resultado VOLTAR para o mesmo ramo, que é o que
+    // atualiza a entrega existente em vez de criar outra. Os dois campos foram
+    // conferidos ao vivo contra a API em 31/08/2026 (ver `jules-client.ts`), e
+    // não há um terceiro modo de automação: o enum tem só
+    // AUTOMATION_MODE_UNSPECIFIED (nenhuma automação, o trabalho não sai da
+    // sessão) e AUTO_CREATE_PR.
+    //
+    // Nunca cai na principal: quando o vigia não tem ramo utilizável ele nem
+    // chega aqui — a decisão vira `escalar` no portão 11.
+    const criada = await criarSessaoJules({
+      apiKey: (await chaveDoDevDoProjeto(args.projeto.id)) ?? undefined,
+      repository: args.projeto.wingId,
+      startingBranch: args.branchDoPr,
+      workingBranch: args.branchDoPr,
+      titulo: `Destravar o pull request #${args.numeroDoPr} (tarefa #${args.issueNumber})`,
+      prompt: args.pedido,
+      onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+    })
+    if (criada.situacao !== 'criada') {
+      await liberar()
+      return false
+    }
+
+    const trocou = await app.prisma.devSession.updateMany({
+      where: {
+        projectId: args.projeto.id,
+        issueNumber: args.issueNumber,
+        sessionName: { startsWith: PREFIXO_DA_RESERVA },
+        closedAt: null,
+      },
+      data: { sessionName: criada.sessionName, pullRequestNumber: args.numeroDoPr },
+    })
+    if (trocou.count === 0) {
+      // A reserva sumiu debaixo dos pés (outra passada a fechou). A sessão
+      // nasceu lá fora e não tem linha aqui: desfaz, senão a vaga fica presa
+      // na conta do cliente para sempre.
+      await arquivarSessaoJules({
+        apiKey: (await chaveDoDevDoProjeto(args.projeto.id)) ?? undefined,
+        sessionName: criada.sessionName,
+        onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+      })
+      return false
+    }
+    return true
+  }
+
   // A RETROSPECTIVA — a única parte do método que olha para trás.
   //
   // O evento já estava escrito e nunca tinha sido ligado: o playbook
@@ -7949,6 +8212,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // linha nunca fechou — a que encheu as vagas e parou a esteira em 29/08.
     await varrerCicloTerminalDaSessao().catch((err) =>
       app.log.warn(err, '[Scheduler] varredura do ciclo terminal falhou; tenta no próximo ciclo')
+    )
+    // ESTEIRA-L3-T12: o pull request que ficou sem sessão atrás. DEPOIS do
+    // ciclo terminal de propósito — é ele que acaba de fechar a linha da sessão
+    // que terminou, então o conjunto "tem sessão viva" que separa o trabalho
+    // das duas varreduras já está atualizado nesta mesma passada.
+    await varrerPrsOrfaos().catch((err) =>
+      app.log.warn(err, '[Scheduler] vigia do pull request órfão falhou; tenta no próximo ciclo')
     )
     await reconciliarVagasDoDev().catch((err) =>
       app.log.error(err, '[Scheduler] reconciliação de vagas falhou; tenta na próxima hora')

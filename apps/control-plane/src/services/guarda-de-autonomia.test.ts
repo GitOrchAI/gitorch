@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { EscritaNaoAutorizadaError } from '@gitorch/cadence'
+import { EscritaNaoAutorizadaError, podeEscrever } from '@gitorch/cadence'
 import {
   guardaDeAutonomia,
   guardaPorRepositorio,
@@ -330,5 +330,60 @@ describe('repositorioDaUrl', () => {
   it('caminho que não é de repositório devolve null', () => {
     expect(repositorioDaUrl('https://api.github.com/graphql')).toBeNull()
     expect(repositorioDaUrl('nao-e-url')).toBeNull()
+  })
+})
+
+describe('ACHADO 5 — fechar o pull request do cliente NÃO é "propor"', () => {
+  // O nível "Sugerir" promete ao cliente, com estas palavras: "organizo o
+  // quadro e proponho trabalho, mas não mexo". Descartar a entrega de alguém
+  // não é propor — é encerrar o ciclo dela. Enquanto isso caía na família
+  // `propor`, o vigia do pull request órfão podia fechar PR de um cliente que
+  // só tinha liberado "Sugerir".
+  const FECHAR = { url: `${REPO}/pulls/342`, metodo: 'PATCH', corpo: '{"state":"closed"}' }
+
+  it('mexer no pull request em si é da família "mesclar"', () => {
+    expect(classificarRequisicao(FECHAR)).toBe('mesclar')
+    expect(classificarRequisicao({ url: `${REPO}/pulls/342`, metodo: 'PATCH' })).toBe('mesclar')
+  })
+
+  it('no nível "Sugerir" o fechamento é RECUSADO', async () => {
+    const cru = fetchFalso()
+    const fetchGuardado = guardaDeAutonomia(cru, () => 'sugerir')
+    await expect(
+      fetchGuardado(FECHAR.url, { method: 'PATCH', body: FECHAR.corpo })
+    ).rejects.toBeInstanceOf(EscritaNaoAutorizadaError)
+    expect(cru).not.toHaveBeenCalled()
+  })
+
+  it('no nível "Só olhar" também é recusado, e em "Cuidar" passa', async () => {
+    const cru = fetchFalso()
+    await expect(
+      guardaDeAutonomia(cru, () => 'so_olhar')(FECHAR.url, { method: 'PATCH', body: FECHAR.corpo })
+    ).rejects.toBeInstanceOf(EscritaNaoAutorizadaError)
+    expect(cru).not.toHaveBeenCalled()
+
+    await guardaDeAutonomia(cru, () => 'cuidar')(FECHAR.url, {
+      method: 'PATCH',
+      body: FECHAR.corpo,
+    })
+    expect(cru).toHaveBeenCalledTimes(1)
+  })
+
+  it('a recusa diz que o nível necessário é "Cuidar"', () => {
+    const d = podeEscrever('sugerir', classificarRequisicao(FECHAR))
+    expect(d.pode).toBe(false)
+    if (d.pode) throw new Error('deveria ter recusado')
+    expect(d.nivelNecessario).toBe('cuidar')
+  })
+
+  it('ABRIR pull request e pedir revisão continuam sendo "propor" — não endureci o que não pedi', () => {
+    expect(classificarRequisicao({ url: `${REPO}/pulls`, metodo: 'POST' })).toBe('propor')
+    expect(classificarRequisicao({ url: `${REPO}/pulls/342/reviews`, metodo: 'POST' })).toBe(
+      'propor'
+    )
+    expect(classificarRequisicao({ url: `${REPO}/pulls/342/update-branch`, metodo: 'PUT' })).toBe(
+      'propor'
+    )
+    expect(classificarRequisicao({ url: `${REPO}/pulls/342/merge`, metodo: 'PUT' })).toBe('mesclar')
   })
 })

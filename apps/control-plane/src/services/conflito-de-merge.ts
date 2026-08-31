@@ -77,15 +77,29 @@ export function decidirQuemResolve(situacao: SituacaoDoMerge): QuemResolve {
     }
   }
 
-  return {
-    quem: 'dev',
-    pedido: [
-      `O pull request #${situacao.numeroDoPr} não pôde ser mesclado: ele tem conflito com a`,
-      'branch principal, que andou desde que você começou.',
-      '',
-      'Traga a base para o seu ramo (rebase ou merge da principal), resolva os conflitos',
-      'preservando o que a sua entrega faz, e empurre. Não mude nada fora do escopo da',
-      'tarefa enquanto faz isso.',
-    ].join('\n'),
-  }
+  return { quem: 'dev', pedido: pedidoDeRebase(situacao.numeroDoPr) }
+}
+
+/**
+ * O texto do pedido de rebase — extraído de `decidirQuemResolve` para ser
+ * REAPROVEITADO, não recopiado.
+ *
+ * Quem mais precisa dele: o vigia do pull request órfão (`vigia-do-pr.ts`).
+ * Lá a sessão do dev já morreu, então `decidirQuemResolve` responde 'dono' —
+ * corretamente, porque não há a quem pedir NAQUELE momento. O vigia muda a
+ * premissa: ele ABRE uma sessão nova para o mesmo trabalho, e aí passa a haver
+ * a quem pedir. O que ele não pode fazer é reescrever a frase por conta
+ * própria: duas versões do mesmo pedido divergiriam, e o dev receberia
+ * instruções diferentes para o mesmo problema dependendo de qual caminho o
+ * alcançou.
+ */
+export function pedidoDeRebase(numeroDoPr: number): string {
+  return [
+    `O pull request #${numeroDoPr} não pôde ser mesclado: ele tem conflito com a`,
+    'branch principal, que andou desde que você começou.',
+    '',
+    'Traga a base para o seu ramo (rebase ou merge da principal), resolva os conflitos',
+    'preservando o que a sua entrega faz, e empurre. Não mude nada fora do escopo da',
+    'tarefa enquanto faz isso.',
+  ].join('\n')
 }
