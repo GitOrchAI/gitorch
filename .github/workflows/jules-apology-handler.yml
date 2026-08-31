@@ -53,14 +53,20 @@ jobs:
         with:
           token: ${{ secrets.SECURITY_PAT || github.token }}
 
+      - name: Setup Node (pnpm)
+        if: steps.triage.outputs.act == 'true' && steps.triage.outputs.alreadyTried == 'false' && steps.triage.outputs.sessionId != ''
+        uses: pnpm/action-setup@v4
+
       - name: Setup Node
         if: steps.triage.outputs.act == 'true' && steps.triage.outputs.alreadyTried == 'false' && steps.triage.outputs.sessionId != ''
-        uses: ./.github/actions/setup-pnpm
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
       - name: Install Dependencies
         if: steps.triage.outputs.act == 'true' && steps.triage.outputs.alreadyTried == 'false' && steps.triage.outputs.sessionId != ''
         working-directory: .github/scripts
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --ignore-workspace
 
       - name: Orientar Jules (1ª tentativa)
         if: steps.triage.outputs.act == 'true' && steps.triage.outputs.alreadyTried == 'false' && steps.triage.outputs.sessionId != ''

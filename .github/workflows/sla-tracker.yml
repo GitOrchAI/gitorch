@@ -19,8 +19,13 @@ jobs:
         with:
           token: ${{ secrets.SECURITY_PAT || github.token }}
 
+      - name: Setup Node (pnpm)
+        uses: pnpm/action-setup@v4
+
       - name: Setup Node
-        uses: ./.github/actions/setup-pnpm
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
       # `npm ci` e não `install`: instala exatamente o que está no lockfile
       # versionado. Este passo roda no mesmo trabalho que recebe o token de
@@ -31,7 +36,7 @@ jobs:
       # lockfile, e era este o único fora do padrão.
       - name: Install Dependencies
         working-directory: .github/scripts
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --ignore-workspace
 
       - name: Run SLA Tracker
         env:

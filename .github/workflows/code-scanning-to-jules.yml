@@ -32,12 +32,17 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.SECURITY_PAT || github.token }}
 
+      - name: Setup Node (pnpm)
+        uses: pnpm/action-setup@v4
+
       - name: Setup Node
-        uses: ./.github/actions/setup-pnpm
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
       - name: Install Dependencies
         working-directory: .github/scripts
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --ignore-workspace
 
       - name: Determine Alerts to Process
         id: alerts

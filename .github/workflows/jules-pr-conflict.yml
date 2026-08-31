@@ -65,14 +65,20 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.SECURITY_PAT || github.token }}
 
+      - name: Setup Node (pnpm)
+        if: steps.preflight.outputs.configurada == 'true'
+        uses: pnpm/action-setup@v4
+
       - name: Setup Node
         if: steps.preflight.outputs.configurada == 'true'
-        uses: ./.github/actions/setup-pnpm
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
       - name: Install Dependencies
         if: steps.preflight.outputs.configurada == 'true'
         working-directory: .github/scripts
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --ignore-workspace
 
       - name: Analyze Merge Conflicts
         if: steps.preflight.outputs.configurada == 'true'
