@@ -163,3 +163,29 @@ export function setupErrorHttpStatus(code: SetupErrorCode): number {
       return 500
   }
 }
+
+export function traduzirErroParaUsuario(code: SetupErrorCode | null | undefined): string {
+  switch (code) {
+    case 'REPO_ACCESS_DENIED':
+      return 'GitOrch perdeu o acesso ao repositório.'
+    case 'REPO_NOT_FOUND':
+      return 'Repositório não encontrado (pode ter sido renomeado ou apagado).'
+    case 'RATE_LIMITED':
+      return 'Limite de requisições da API do GitHub excedido.'
+    case 'GITHUB_TOKEN_EXPIRED':
+      return 'Token do GitHub expirado ou revogado.'
+    case 'DIAG_EMPTY_REPO':
+      return 'O repositório está vazio.'
+    case 'CLONE_TIMEOUT':
+      return 'O clone do repositório demorou demais e foi interrompido.'
+    case 'DIAG_TIMEOUT':
+      return 'A análise do repositório demorou demais e foi interrompida.'
+    case 'DISK_FULL':
+      return 'Sem espaço em disco.'
+    case 'REPOS_EXCEED_PLAN_LIMIT':
+      return 'Número de repositórios excede o limite do plano.'
+    case 'INTERNAL':
+    default:
+      return 'Erro interno inesperado.'
+  }
+}
