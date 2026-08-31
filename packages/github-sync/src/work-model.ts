@@ -11,6 +11,17 @@ export class GitHubWorkModel {
     return [...item.subIssueNodeIds]
   }
 
+  mergedAtFor(item: GitHubWorkItem): string | undefined {
+    return item.mergedAt
+  }
+
+  leadTimeFor(item: GitHubWorkItem): number | undefined {
+    if (item.mergedAt && item.wishCreatedAt) {
+      return new Date(item.mergedAt).getTime() - new Date(item.wishCreatedAt).getTime()
+    }
+    return undefined
+  }
+
   availabilityFor(item: GitHubWorkItem, dependencyItems: GitHubWorkItem[]): AvailabilityDecision {
     const dependencyById = new Map(
       dependencyItems.map((dependency) => [dependency.nodeId, dependency])
