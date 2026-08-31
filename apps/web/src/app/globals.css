@@ -86,8 +86,20 @@ body {
 }
 
 /* ============================================================
-   Landing (scoped under .gl) — light/dark auto, isolated from
-   the cosmic-dark tokens used by /setup and /painel.
+   Tokens --gl-*, escopo `.gl`, claro/escuro automatico.
+   NAO e so a landing: TRES telas abrem este escopo — a landing
+   (app/page.tsx:976), o wizard (components/setup/WizardShell.tsx:51)
+   e o painel (app/painel/page.tsx:202/212/272), os tres com
+   `<div className="gl" data-theme=...>`. Mexer em um token daqui
+   alcanca as tres.
+   O comentario anterior dizia que /setup e /painel eram "isolados,
+   com tokens cosmic-dark". Nao ha token `--cosmic-*` definido nem
+   usado em lugar nenhum deste arquivo — a unica cor aqui e a familia
+   `--gl-*`. (A primeira versao desta correcao trazia numeros de grep;
+   estavam errados e a contagem virava auto-referente assim que este
+   proprio comentario passou a citar a palavra. Numero que mente e pior
+   que numero nenhum, entao ficou o fato, que da para conferir.)
+   A frase subestimava o raio de alcance de quem for trocar cor.
    ============================================================ */
 .gl {
   --gl-canvas: #fafaf8;
@@ -98,16 +110,65 @@ body {
   --gl-faint: #8a8c95;
   --gl-hair: rgba(16, 17, 22, 0.09);
   --gl-hair-strong: rgba(16, 17, 22, 0.16);
-  --gl-accent: #0c8b57;
-  --gl-accent-ink: #0a7a4c;
+  /* D63 — o verde do tema claro ESCURECEU de #0c8b57 para #0a7a4c.
+     Nao e troca de cor: e o MESMO verde da marca um degrau mais escuro. Medido
+     em HSL, os dois tem matiz 155.4deg e saturacao 0.84 — muda so a claridade
+     (0.296 -> 0.259). E o #0a7a4c ja rodava neste mesmo bloco como
+     --gl-accent-ink, entao nenhum tom novo entrou na paleta.
+     POR QUE escurecer, em vez de so escolher a tinta de cima: com #0c8b57
+     (luminancia 0.1923) NENHUMA tinta clara alcanca os 4.5:1 de AA — nem
+     branco puro, que da 4.33:1. O accent era o teto. Com #0a7a4c (luminancia
+     0.1451) o branco da 5.38:1, e a folga de 0.88 sobre o piso e o que sobra
+     para o proximo ajuste de paleta nao reabrir o buraco.
+     Candidatos medidos (branco em cima / matiz):
+       #0c8b57  4.33:1 REPROVA   155.4deg  (o de antes)
+       #0b8050  4.98:1 ok        155.4deg  folga 0.48 — fina demais
+       #0a7a4c  5.38:1 ok        155.4deg  ESCOLHIDO
+       #00794a  5.48:1 ok        156.7deg  saturacao vai a 1.000, verde outro
+       #097345  5.92:1 ok        154.0deg  matiz ja escorrega
+       #0a7048  6.13:1 ok        155.4deg  folga larga, mas escuro demais
+     De quebra conserta os usos em que o accent e TINTA sobre superficie clara,
+     que reprovavam calados desde antes: 4.15:1 sobre --gl-canvas e 3.93:1
+     sobre --gl-surface-2 viraram 5.15:1 e 4.89:1. */
+  --gl-accent: #0a7a4c;
+  /* Acompanha o accent obrigatoriamente. #0a7a4c virou o accent, entao o ink
+     tinha que descer junto — senao os dois tokens empatam no mesmo hex e o
+     anel de foco (`.gl :focus-visible`, que usa o ink) fica invisivel em cima
+     do botao primario (que usa o accent). #096b42 mantem o mesmo passo
+     relativo de luminancia que havia entre os dois (1.24:1 antes, 1.22:1
+     agora) no mesmo matiz. Como texto: 6.58:1 sobre #ffffff, 5.97:1 sobre
+     --gl-surface-2 — o pior caso das tres superficies. */
+  --gl-accent-ink: #096b42;
+  /* Deliberadamente NAO derivado do accent: e um verde mais claro (#0fa971,
+     matiz 158.2deg) usado so a 12% como lavagem de fundo. Com o accent escuro
+     novo ele fica visualmente mais distante, mas medi e nao ha falha:
+     --gl-accent-ink em cima dele da 5.80:1. Aproximar e decisao de design do
+     dono, nao conserto de acessibilidade — por isso ficou como estava. */
   --gl-accent-soft: rgba(15, 169, 113, 0.12);
+  /* Tinta de QUALQUER coisa que fique em cima de --gl-accent (rotulo do botao
+     ativo, numero das bolotas de contagem, miolo do interruptor). O token era
+     CITADO em 7 lugares e nunca DEFINIDO: `var()` sem definicao e invalido em
+     tempo de computacao, entao `color` caia para a herdada e `background` para
+     transparente.
+     INVERTE entre os temas, e isso e a decisao, nao uma inconsistencia: a
+     tinta de cima e sempre o oposto do verde de baixo.
+       claro   #ffffff sobre #0a7a4c =  5.38:1  AA ok  (tinta CLARA)
+       escuro  #08090b sobre #2dd483 = 10.30:1  AA ok  (tinta ESCURA)
+     Trocar um pelo outro reprova na hora: #08090b sobre o claro da 3.70:1 e
+     #ffffff sobre o escuro da 1.93:1. Quem guarda esta conta, e o fato de os
+     dois temas terem valores DIFERENTES, e painel-css-controles.test.ts. */
+  --gl-on-accent: #ffffff;
   --gl-pill-bg: #101116;
   --gl-pill-ink: #fafaf8;
   --gl-shadow: 0 1px 2px rgba(16, 17, 22, 0.04), 0 18px 50px -18px rgba(16, 17, 22, 0.18);
   --gl-halo1: rgba(255, 196, 158, 0.5);
   --gl-halo2: rgba(159, 232, 208, 0.55);
   --gl-halo3: rgba(178, 213, 255, 0.5);
-  --gl-spot: rgba(12, 139, 87, 0.16);
+  /* Copia literal do --gl-accent em rgba() — o halo radial do fundo. Sem
+     acompanhar D63 o halo ficaria pintado de #0c8b57, um verde que nao existe
+     mais na paleta. Decoracao, entao nao ha piso de contraste; o defeito seria
+     deriva. rgba(10, 122, 76) = #0a7a4c. */
+  --gl-spot: rgba(10, 122, 76, 0.16);
   --gl-sev: #e5484d;
   --gl-warn: #b8730c;
   --gl-warn-soft: rgba(184, 115, 12, 0.12);
@@ -142,6 +203,7 @@ body {
     --gl-accent: #2dd483;
     --gl-accent-ink: #38e591;
     --gl-accent-soft: rgba(45, 212, 131, 0.14);
+    --gl-on-accent: #08090b;
     --gl-pill-bg: #f5f5f3;
     --gl-pill-ink: #08090b;
     --gl-shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 30px 70px -24px rgba(0, 0, 0, 0.8);
@@ -166,6 +228,7 @@ body {
   --gl-accent: #2dd483;
   --gl-accent-ink: #38e591;
   --gl-accent-soft: rgba(45, 212, 131, 0.14);
+  --gl-on-accent: #08090b;
   --gl-pill-bg: #f5f5f3;
   --gl-pill-ink: #08090b;
   --gl-shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 30px 70px -24px rgba(0, 0, 0, 0.8);
@@ -186,16 +249,23 @@ body {
   --gl-faint: #8a8c95;
   --gl-hair: rgba(16, 17, 22, 0.09);
   --gl-hair-strong: rgba(16, 17, 22, 0.16);
-  --gl-accent: #0c8b57;
-  --gl-accent-ink: #0a7a4c;
+  /* Espelho do bloco `.gl` acima — os mesmos valores de D63. A conta e o
+     porque estao la; aqui so nao pode divergir. */
+  --gl-accent: #0a7a4c;
+  --gl-accent-ink: #096b42;
   --gl-accent-soft: rgba(15, 169, 113, 0.12);
+  --gl-on-accent: #ffffff;
   --gl-pill-bg: #101116;
   --gl-pill-ink: #fafaf8;
   --gl-shadow: 0 1px 2px rgba(16, 17, 22, 0.04), 0 18px 50px -18px rgba(16, 17, 22, 0.18);
   --gl-halo1: rgba(255, 196, 158, 0.5);
   --gl-halo2: rgba(159, 232, 208, 0.55);
   --gl-halo3: rgba(178, 213, 255, 0.5);
-  --gl-spot: rgba(12, 139, 87, 0.16);
+  /* Copia literal do --gl-accent em rgba() — o halo radial do fundo. Sem
+     acompanhar D63 o halo ficaria pintado de #0c8b57, um verde que nao existe
+     mais na paleta. Decoracao, entao nao ha piso de contraste; o defeito seria
+     deriva. rgba(10, 122, 76) = #0a7a4c. */
+  --gl-spot: rgba(10, 122, 76, 0.16);
   --gl-sev: #e5484d;
   --gl-warn: #b8730c;
   --gl-warn-soft: rgba(184, 115, 12, 0.12);
@@ -1146,7 +1216,10 @@ body {
   top: -11px;
   left: 26px;
   background: var(--gl-accent);
-  color: #08090b;
+  /* era `#08090b` chumbado: dava 4.60:1 sobre o verde antigo e cairia para
+     3.70:1 sobre o novo. Literal em cima de um fundo tokenizado nao acompanha
+     mudanca de paleta — a causa raiz nao era o tom, era o chumbo. */
+  color: var(--gl-on-accent);
   font-size: 0.66rem;
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -1303,7 +1376,10 @@ body {
 }
 .wz-dot.is-active {
   background: var(--gl-accent);
-  color: #fff;
+  /* era `#fff` chumbado: 4.33:1 sobre o verde antigo, REPROVAVA AA desde antes
+     desta tarefa. O token agora vale #ffffff no claro — mesma tinta na tela,
+     mas amarrada a paleta. */
+  color: var(--gl-on-accent);
   border-color: var(--gl-accent);
   box-shadow: 0 0 0 4px var(--gl-accent-soft);
 }
@@ -1372,7 +1448,9 @@ body {
 }
 .wz-btn-primary {
   background: var(--gl-accent);
-  color: #fff;
+  /* era `#fff` chumbado: 4.33:1, o botao primario do wizard reprovava AA desde
+     antes de qualquer mexida nossa. Com D63 o mesmo branco da 5.38:1. */
+  color: var(--gl-on-accent);
 }
 .wz-btn-primary:not(:disabled):hover {
   transform: translateY(-1px);
@@ -2525,6 +2603,72 @@ body {
   font-size: 12px;
   color: var(--gl-faint);
   margin-top: 3px;
+}
+
+/* ---- interruptor que SALVA (regua de pronto) ----
+   O <button role="switch"> desta linha nao tem filhos: o trilho e o proprio
+   botao e a bolinha e o ::before. Sem esta regra ele nascia 0x0 — invisivel —
+   e a secao "Marque o que precisa acontecer" nao tinha nada para marcar.
+   As cores saem dos tokens --gl-*, que ja trocam sozinhos entre claro e
+   escuro; nada de cor fixa aqui. */
+.gl .pn-sw {
+  flex: none;
+  position: relative;
+  display: inline-block;
+  /* declarado aqui de proposito: o painel nao tem reset proprio de box-sizing,
+     e sem isso a borda somaria 2px e desalinharia a bolinha. */
+  box-sizing: border-box;
+  width: 42px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--gl-hair-strong);
+  border-radius: 999px;
+  background: var(--gl-surface-2);
+  cursor: pointer;
+  transition:
+    background var(--dur-state),
+    border-color var(--dur-state);
+}
+.gl .pn-sw::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--gl-faint);
+  transition:
+    transform var(--dur-state) var(--ease-out-soft),
+    background var(--dur-state);
+}
+.gl .pn-sw.on {
+  background: var(--gl-accent);
+  border-color: var(--gl-accent);
+}
+.gl .pn-sw.on::before {
+  /* 40px uteis (42 - 2 de borda) - 18 da bolinha - 2+2 de folga = 18 de curso */
+  transform: translateX(18px);
+  background: var(--gl-on-accent);
+}
+.gl .pn-sw:disabled {
+  /* aqui `disabled` e passageiro (esta salvando), nao inerte: o cursor diz
+     "aguarde", nao "voce nao pode". */
+  opacity: 0.55;
+  cursor: progress;
+}
+/* O foco global (.gl :focus-visible) arredonda em 4px e ficaria quadrado em
+   volta de uma pilula; este acompanha a forma do interruptor. */
+.gl .pn-sw:focus-visible {
+  outline: 2px solid var(--gl-accent-ink);
+  outline-offset: 3px;
+  border-radius: 999px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .gl .pn-sw,
+  .gl .pn-sw::before {
+    transition: none;
+  }
 }
 .gl .pn-empty {
   padding: 38px 18px;

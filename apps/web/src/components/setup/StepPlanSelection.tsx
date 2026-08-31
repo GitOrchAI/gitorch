@@ -114,10 +114,14 @@ export default function StepPlanSelection({
               top: 0,
               right: 0,
               background: 'var(--gl-accent)',
-              // Mesma tinta fixa do badge "Recomendado" da landing (.gl-plan-badge):
-              // no tema escuro --gl-accent vira verde claro, e texto branco perderia
-              // contraste ali — tinta escura funciona nos dois temas (ver page.tsx).
-              color: '#08090b',
+              // Era `#08090b` chumbado, com a justificativa de que "tinta escura
+              // funciona nos dois temas". Não funciona: sobre o --gl-accent do tema
+              // claro (#0a7a4c) ela dá 3.70:1 e REPROVA o AA de 4.5:1. O que resolve
+              // é a tinta seguir o tema, e é exatamente isso que --gl-on-accent faz —
+              // #ffffff no claro (5.38:1) e #08090b no escuro (10.30:1). O mesmo
+              // conserto foi aplicado ao .gl-plan-badge da landing, de onde esta
+              // regra tinha sido copiada.
+              color: 'var(--gl-on-accent)',
               fontSize: '0.58rem',
               fontWeight: 700,
               letterSpacing: '0.06em',
