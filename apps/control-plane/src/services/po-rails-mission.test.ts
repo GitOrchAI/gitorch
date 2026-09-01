@@ -19,7 +19,9 @@ const PO_REPLIES: Record<string, string> = {
           taskDetails: 'td',
           taskDescription: 'd',
           implementationGuide: '1;2;3',
-          verificationCriteria: '- c1\n- c2',
+          // D5: precisa ser um critério REAL (não "c1"/"c2" de preenchimento)
+          // para passar na quarta pergunta da régua — "tem como testar?".
+          verificationCriteria: '- GET /o/r retorna 200\n- teste automatizado passa verde',
           dependencies: 'nenhuma',
           relatedFiles: 'f.ts',
           notes: 'n',

@@ -248,6 +248,39 @@ describe('validateBacklogPlan', () => {
     foraDaEscala.tasks[0]!.weight = 4 as never
     expect(validateBacklogPlan(foraDaEscala).join(' ')).toContain('tasks[0]')
   })
+
+  // D5 (leva 3, Bloco 1): a QUARTA pergunta da régua — "tem como testar?".
+  // Faltava desde o PR #363 (só usableOutcome/peso/weightRationale tinham
+  // entrado); a task com verificationCriteria vago passava batida.
+  it('verificationCriteria vago (curto demais para checar) reprova a task', () => {
+    const vago = plan()
+    vago.tasks[0]!.fields = { ...vago.tasks[0]!.fields, verificationCriteria: '- ok\n- tbd' }
+    const problemas = validateBacklogPlan(vago)
+    expect(problemas.join(' ')).toContain('tasks[0]')
+    expect(problemas.join(' ')).toContain('testar')
+  })
+
+  it('verificationCriteria concreto (mesmo curto e sem lista) passa', () => {
+    const ok = plan()
+    ok.tasks[0]!.fields = {
+      ...ok.tasks[0]!.fields,
+      verificationCriteria: 'GET /produtos?material=couro retorna só couro',
+    }
+    expect(validateBacklogPlan(ok)).toEqual([])
+  })
+
+  // FURO 2 (D5): a transformação (a) do desenho — "camada técnica vira fatia
+  // usável" — só existe se a régua REALMENTE barra fase sem resultado
+  // usável. Antes: `usableOutcome` era exigido pelo SCHEMA (a LLM tinha que
+  // mandar a chave), mas uma string vazia passava direto — o portão nunca
+  // enxergava a "issue rasa" que ele existe para barrar.
+  it('fase sem resultado usável (camada técnica, sem fatia) reprova', () => {
+    const semFatia = plan()
+    semFatia.phases[0]!.usableOutcome = '   '
+    const problemas = validateBacklogPlan(semFatia)
+    expect(problemas.join(' ')).toContain('phases[0]')
+    expect(problemas.join(' ')).toContain('usável')
+  })
 })
 
 describe('applyBacklog', () => {

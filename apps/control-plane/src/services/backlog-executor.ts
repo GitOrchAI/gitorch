@@ -1,5 +1,6 @@
 import {
   validateDoD,
+  criterioEhTestavel,
   DOD_FIELD_MAP,
   ESCALA_DE_PESO,
   PESO_MAXIMO_DE_SPRINT,
@@ -152,6 +153,20 @@ function renderNodeBody(lines: string[], marker: string): string {
 export function validateBacklogPlan(plan: BacklogPlan): string[] {
   const problems: string[] = []
 
+  // D5 (leva 3, Bloco 1 — "a lógica da leva 2"): a PRIMEIRA pergunta da
+  // régua — "é fatia usável?". O schema `poPhases` já EXIGE a chave
+  // `usableOutcome` da LLM, mas uma string vazia passava batida — o portão
+  // nunca via a "issue rasa" (camada técnica sem fatia) que ele existe para
+  // barrar. Sem este check, a transformação (a) do desenho ("camada técnica
+  // vira fatia usável") nunca tinha gatilho nenhum.
+  plan.phases.forEach((phase, i) => {
+    if (!phase.usableOutcome || phase.usableOutcome.trim().length === 0) {
+      problems.push(
+        `phases[${i}]: usableOutcome vazio — não é fatia usável, é camada técnica; reescreva como o que o CLIENTE passa a conseguir fazer, na voz dele`
+      )
+    }
+  })
+
   plan.epics.forEach((epic, i) => {
     if (epic.phaseIndex < 0 || epic.phaseIndex >= plan.phases.length) {
       problems.push(`epics[${i}]: phaseIndex ${epic.phaseIndex} out of range`)
@@ -197,6 +212,17 @@ export function validateBacklogPlan(plan: BacklogPlan): string[] {
         task.weight > PESO_MAXIMO_DE_SPRINT
           ? `tasks[${i}]: weight ${task.weight} passa do teto de sprint (${PESO_MAXIMO_DE_SPRINT}) — quebre a task antes de planejá-la`
           : `tasks[${i}]: weight ${task.weight} fora da escala (${ESCALA_DE_PESO.join(', ')})`
+      )
+    }
+    // D5: a QUARTA pergunta da régua — "tem como testar?" — que faltava
+    // desde o PR #363. `validateDoD` só exige que verificationCriteria tenha
+    // ALGUMA linha com mais de 3 caracteres; "ok", "tbd" ou o título colado
+    // de novo passavam por ali sem dizer nada verificável. Ver
+    // `criterioEhTestavel` (packages/cadence/src/rails.ts) para a definição
+    // completa do critério — deliberadamente estrutural, nunca lexical.
+    if (!criterioEhTestavel(task.fields.verificationCriteria, task.fields.titulo)) {
+      problems.push(
+        `tasks[${i}]: verificationCriteria não tem como testar — cite ao menos um critério concreto (comando, rota, resultado esperado), não uma frase vaga ou o título repetido`
       )
     }
     if (task.featureIndex < 0 || task.featureIndex >= plan.features.length) {

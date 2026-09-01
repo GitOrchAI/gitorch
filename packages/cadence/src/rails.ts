@@ -837,6 +837,68 @@ export function citaTooling(texto: string): boolean {
 }
 
 /**
+ * D5 (leva 3, Bloco 1 do fluxograma "a lógica da leva 2"): a QUARTA pergunta
+ * da régua entre o Produto e o quadro do cliente — "tem como testar?". O PR
+ * #363 entregou as outras três (usableOutcome = fatia usável; peso <= 13;
+ * weightRationale = evidência) e deixou esta de fora: `validateDoD` só exige
+ * que `verificationCriteria` tenha ALGUMA linha com mais de 3 caracteres —
+ * "ok", "tbd" ou o título colado de novo passam por ali sem dizer nada.
+ *
+ * Separa task ENTREGÁVEL de task VAGA: exige pelo menos UMA linha com
+ * conteúdo substancial (>= `TAMANHO_MINIMO_DE_CRITERIO_TESTAVEL` caracteres,
+ * ignorando marcador de lista) que não seja o título repetido.
+ *
+ * DELIBERADAMENTE estrutural (tamanho + distância do título), NUNCA lexical:
+ * nenhuma palavra, comando ou caminho de arquivo específico é exigido no
+ * texto. A régua irmã (L3-T18, cadeia causal) foi reprovada no QA por
+ * exatamente o oposto — exigia a citação verbatim de um caminho de arquivo
+ * dentro da frase, e isso reprovava o MESMO raciocínio só por causa da forma
+ * de escrever (3 de 5 achados legítimos reprovaram; reescrever só a prosa
+ * das 5 do próprio dev, mantendo o raciocínio, também reprovou as 5). Aqui
+ * qualquer frase real de verificação passa, seja lista ou texto corrido;
+ * só entulho e eco do título reprovam.
+ *
+ * O limiar (10) foi CALIBRADO contra critérios reais já escritos neste
+ * repositório (não inventado): "GET filtra" (10), "teste verde" (11), "roda
+ * verde no CI" (17) são exemplos verdadeiros usados em fixtures de teste
+ * hoje — o menor deles tem 10 caracteres. Um limiar maior reprovaria
+ * trabalho legítimo; "ok" (2), "tbd" (3) continuam reprovando.
+ */
+export const TAMANHO_MINIMO_DE_CRITERIO_TESTAVEL = 10
+
+function normalizarParaComparar(texto: string): string {
+  return texto
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // acentos (marcas de combinação, forma NFD)
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+}
+
+/** Tira a etiqueta de tipo ("[Task] ", "[Feature] "...) do começo do texto. */
+function semEtiquetaDeTipo(texto: string): string {
+  return texto.replace(/^\s*\[[^\]]+\]\s*/, '')
+}
+
+export function criterioEhTestavel(verificationCriteria: string, titulo: string): boolean {
+  const linhas = verificationCriteria
+    .split('\n')
+    .map((l) => l.replace(/^[\s\-*\d.)]+/, '').trim())
+    .filter((l) => l.length > 0)
+  if (linhas.length === 0) return false
+
+  // Comparação IGNORA a etiqueta de tipo dos dois lados — sem isso,
+  // "[Task] Adicionar coluna material" (linha) x "Adicionar coluna material"
+  // (título já sem etiqueta) nunca bateriam, e um eco completo do título
+  // passaria batido.
+  const tituloNormalizado = normalizarParaComparar(semEtiquetaDeTipo(titulo))
+  return linhas.some((linha) => {
+    if (linha.length < TAMANHO_MINIMO_DE_CRITERIO_TESTAVEL) return false
+    return normalizarParaComparar(semEtiquetaDeTipo(linha)) !== tituloNormalizado
+  })
+}
+
+/**
  * DoD dos 8 campos, POR CÓDIGO (decisão do owner): todo campo presente e
  * não-vazio; Verification Criteria precisa conter ao menos um critério de
  * verdade (linha com conteúdo). A LLM nunca é gasta com esta conferência.
