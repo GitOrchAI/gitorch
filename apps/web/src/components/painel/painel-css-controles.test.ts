@@ -219,6 +219,41 @@ describe('interruptor da régua de pronto (.pn-sw)', () => {
   })
 })
 
+/**
+ * POR QUE ESTE BLOCO EXISTE: a tela da cascata desabilita o seletor de esforço
+ * do Antigravity (lá `--effort` junto de `--model` é erro duro do CLI). O
+ * `disabled` estava no atributo e o motivo estava escrito embaixo — mas o
+ * CAMPO continuava com a mesma aparência de um campo ativo, porque
+ * `.gl .pn-field` nunca teve regra de `:disabled`. Visto na captura do
+ * navegador, não deduzido: lado a lado com um campo ativo idêntico, os dois
+ * eram indistinguíveis.
+ *
+ * É a mesma família do defeito que este arquivo já pegava no `.pn-sw`: o
+ * atributo existe, o comportamento existe, e a tela não conta. Um controle que
+ * PARECE ativo e não responde faz o dono achar que o clique dele se perdeu.
+ */
+describe('campo desabilitado precisa PARECER desabilitado (.pn-field:disabled)', () => {
+  const base = corpoDaRegra('.gl .pn-field')
+  const off = corpoDaRegra('.gl .pn-field:disabled')
+
+  it('a regra existe', () => {
+    expect(off).not.toBeNull()
+  })
+
+  it('e muda de verdade a aparência — não é uma regra vazia', () => {
+    // Resultado, não presença: uma regra `:disabled {}` sem declaração passaria
+    // num teste de existência e não mudaria um pixel.
+    const mudou =
+      prop(off ?? '', 'opacity') ?? prop(off ?? '', 'background') ?? prop(off ?? '', 'color')
+    expect(mudou).toBeTruthy()
+    expect(prop(off ?? '', 'background') ?? '').not.toBe(prop(base ?? '', 'background') ?? '')
+  })
+
+  it('e o cursor avisa que ele não aceita clique', () => {
+    expect(prop(off ?? '', 'cursor')).toBe('not-allowed')
+  })
+})
+
 describe('varredura: nada usado no painel pode faltar no CSS', () => {
   const dirPainel = join(RAIZ, 'components', 'painel')
   // app/painel/page.tsx entra junto porque é a RAIZ da tela: é lá que mora o

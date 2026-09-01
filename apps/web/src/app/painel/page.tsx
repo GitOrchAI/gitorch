@@ -45,6 +45,7 @@ import { TelaPedidos } from '../../components/painel/TelaPedidos'
 import { TelaDecisoes } from '../../components/painel/TelaDecisoes'
 import { TelaEntregas } from '../../components/painel/TelaEntregas'
 import { TelaCustos } from '../../components/painel/TelaCustos'
+import { TelaCascata } from '../../components/painel/TelaCascata'
 import { TelaProjetos } from '../../components/painel/TelaProjetos'
 import { TelaRegras } from '../../components/painel/TelaRegras'
 import { TelaHistorico } from '../../components/painel/TelaHistorico'
@@ -257,6 +258,8 @@ export default function PainelOwner() {
         return <TelaEntregas />
       case 'custos':
         return <TelaCustos />
+      case 'motores':
+        return <TelaCascata />
       case 'projetos':
         return <TelaProjetos />
       case 'regras':

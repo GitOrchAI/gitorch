@@ -90,6 +90,107 @@ describe('Rotas da cascata por agente', () => {
       })
     })
 
+    /**
+     * O MODELO QUE SAIU DO AR PRECISA APARECER DIZENDO QUE SAIU.
+     *
+     * A coleta não apaga o modelo removido pelo provedor: marca em
+     * `models_unavailable` com a data (PR de 31/08). Só que as opções da tela
+     * liam apenas `models` — então o modelo morto simplesmente SUMIA da lista.
+     *
+     * O efeito na tela é pior do que parece: um `<select>` cujo `value` não
+     * está entre as `<option>` mostra a PRIMEIRA opção. O dono abriria a
+     * cascata que ele mesmo montou e leria um modelo que nunca escolheu, sem
+     * um aviso — e salvar por cima trocaria a escolha dele em silêncio. É a
+     * mesma família do defeito de 31/08 (o produto sabia e não contava),
+     * agora na cara do cliente.
+     */
+    test('modelo marcado como indisponível pela coleta VEM na resposta, com a data', async () => {
+      app.prisma.engineConnection.findMany = vi.fn().mockResolvedValue([
+        {
+          runtime: 'antigravity',
+          models: ['Gemini 3.7 Flash (High)'],
+          modelsUnavailable: [
+            { nome: 'Gemini 3.5 Flash (Medium)', sumiuEm: '2026-08-31T23:00:00.000Z' },
+          ],
+          status: 'connected',
+        },
+      ])
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/projects/proj_1/cascata/opcoes',
+        headers: authHeaders,
+      })
+      expect(res.statusCode).toBe(200)
+      const agy = (
+        res.json() as {
+          motores: Array<{
+            runtime: string
+            modelos: Array<{ valor: string; rotulo: string }>
+            indisponiveis: Array<{ valor: string; rotulo: string; sumiuEm: string | null }>
+          }>
+        }
+      ).motores.find((m) => m.runtime === 'antigravity')
+
+      // O que está vivo continua vivo, e separado do que morreu: misturar os
+      // dois numa lista só devolveria o modelo morto como opção legítima.
+      expect(agy?.modelos).toEqual([
+        { valor: 'Gemini 3.7 Flash (High)', rotulo: 'Gemini 3.7 Flash (High)' },
+      ])
+      expect(agy?.indisponiveis).toEqual([
+        {
+          valor: 'Gemini 3.5 Flash (Medium)',
+          rotulo: 'Gemini 3.5 Flash (Medium)',
+          sumiuEm: '2026-08-31T23:00:00.000Z',
+        },
+      ])
+    })
+
+    test('o valor do indisponível também é convertido para o que o CLI aceita', async () => {
+      // Mesma armadilha do catálogo vivo: o claude guarda nome de vitrine
+      // ("Claude Opus 5") e o CLI só aceita o identificador. Um indisponível
+      // convertido de um jeito e o catálogo de outro nunca casariam na tela, e
+      // o modelo gravado apareceria DUAS vezes — uma como escolha, outra como
+      // "saiu do ar".
+      app.prisma.engineConnection.findMany = vi.fn().mockResolvedValue([
+        {
+          runtime: 'claude',
+          models: ['Claude Sonnet 5'],
+          modelsUnavailable: [{ nome: 'Claude Opus 4.1', sumiuEm: null }],
+          status: 'connected',
+        },
+      ])
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/projects/proj_1/cascata/opcoes',
+        headers: authHeaders,
+      })
+      const claude = (
+        res.json() as {
+          motores: Array<{
+            runtime: string
+            indisponiveis: Array<{ valor: string; rotulo: string; sumiuEm: string | null }>
+          }>
+        }
+      ).motores.find((m) => m.runtime === 'claude')
+      expect(claude?.indisponiveis).toEqual([
+        { valor: 'claude-opus-4-1', rotulo: 'Claude Opus 4.1', sumiuEm: null },
+      ])
+    })
+
+    test('motor sem nada marcado devolve lista vazia, nunca ausente', async () => {
+      // `undefined` obrigaria toda a tela a testar antes de percorrer, e uma
+      // tela que esquece o teste quebra no cliente. Contrato: sempre array.
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/projects/proj_1/cascata/opcoes',
+        headers: authHeaders,
+      })
+      for (const motor of (res.json() as { motores: Array<{ indisponiveis: unknown }> }).motores) {
+        expect(motor.indisponiveis).toEqual([])
+      }
+    })
+
     test('as opções são as do DONO do projeto, não uma lista global', async () => {
       await app.inject({
         method: 'GET',

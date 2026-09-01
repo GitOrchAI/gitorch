@@ -10,6 +10,7 @@ export type TelaId =
   | 'decisoes'
   | 'entregas'
   | 'custos'
+  | 'motores'
   | 'projetos'
   | 'regras'
   | 'historico'
@@ -44,6 +45,7 @@ export const NAV: GrupoNav[] = [
     g: 'Recursos',
     itens: [
       { id: 'custos', l: 'Custos e limites', i: 'wallet' },
+      { id: 'motores', l: 'Motores por agente', i: 'filter' },
       { id: 'projetos', l: 'Projetos', i: 'repo' },
     ],
   },

@@ -128,29 +128,83 @@ function validarCascata(agents: Record<string, DegrauEntrada>): Record<string, P
   return saida
 }
 
-/** Catálogo por motor DAQUELE dono, direto de engine_connections. */
+/** Um modelo que SAIU do catálogo do provedor, com a data em que a coleta viu. */
+interface ModeloQueSaiu {
+  nome: string
+  sumiuEm: string | null
+}
+
+interface CatalogoDoMotor {
+  /** o que o provedor lista HOJE. */
+  modelos: string[]
+  /** o que ele listava e não lista mais — marcado, nunca apagado. */
+  indisponiveis: ModeloQueSaiu[]
+}
+
+/**
+ * Catálogo por motor DAQUELE dono, direto de engine_connections.
+ *
+ * Traz o vivo E o que saiu. O que saiu vem de `models_unavailable`, a coluna
+ * que a coleta carimba quando o provedor remove um modelo (PR de 31/08) em vez
+ * de apagar a linha — e ela existe exatamente para esta pergunta: o modelo que
+ * o cliente escolheu ainda está no ar? Ler só `models` faria o modelo morto
+ * sumir da tela, que é a forma mais silenciosa possível de esconder isso dele.
+ */
 async function catalogosDoDono(
   app: FastifyInstance,
   userId: string | null | undefined
-): Promise<Record<string, string[]>> {
+): Promise<Record<string, CatalogoDoMotor>> {
   if (!userId) return {}
   const linhas = await app.prisma.engineConnection
     .findMany({
       where: { userId, runtime: { not: 'github' } },
-      select: { runtime: true, models: true },
+      select: { runtime: true, models: true, modelsUnavailable: true },
     })
-    .catch(() => [] as Array<{ runtime: string; models: unknown }>)
+    .catch(() => [] as Array<{ runtime: string; models: unknown; modelsUnavailable: unknown }>)
 
-  const catalogos: Record<string, string[]> = {}
-  for (const linha of linhas as Array<{ runtime: string; models: unknown }>) {
-    if (!Array.isArray(linha.models)) continue
-    catalogos[linha.runtime] = linha.models
-      .filter((m): m is string => typeof m === 'string')
-      .filter(ehLinhaDeModelo)
-      .map(nomeDeExibicaoDoModelo)
-      .filter(Boolean)
+  const catalogos: Record<string, CatalogoDoMotor> = {}
+  for (const linha of linhas as Array<{
+    runtime: string
+    models: unknown
+    modelsUnavailable: unknown
+  }>) {
+    const modelos = Array.isArray(linha.models)
+      ? linha.models
+          .filter((m): m is string => typeof m === 'string')
+          .filter(ehLinhaDeModelo)
+          .map(nomeDeExibicaoDoModelo)
+          .filter(Boolean)
+      : []
+
+    // A mesma normalização do lado vivo, e de propósito: as linhas antigas do
+    // banco guardam `slug<TAB>Nome`, e um lado normalizado enquanto o outro
+    // não faria o MESMO modelo aparecer duas vezes na tela — uma como escolha
+    // possível, outra como "saiu do ar".
+    const indisponiveis = Array.isArray(linha.modelsUnavailable)
+      ? (linha.modelsUnavailable as unknown[])
+          .filter(
+            (m): m is { nome: string; sumiuEm?: unknown } =>
+              typeof m === 'object' &&
+              m !== null &&
+              typeof (m as { nome?: unknown }).nome === 'string' &&
+              (m as { nome: string }).nome.length > 0
+          )
+          .map((m) => ({
+            nome: nomeDeExibicaoDoModelo(m.nome),
+            sumiuEm: typeof m.sumiuEm === 'string' ? m.sumiuEm : null,
+          }))
+          .filter((m) => m.nome.length > 0)
+      : []
+
+    if (!Array.isArray(linha.models) && indisponiveis.length === 0) continue
+    catalogos[linha.runtime] = { modelos, indisponiveis }
   }
   return catalogos
+}
+
+/** Só os modelos VIVOS, que é o que a conferência de catálogo pergunta. */
+function modelosVivos(catalogos: Record<string, CatalogoDoMotor>, runtime: string): string[] {
+  return catalogos[runtime]?.modelos ?? []
 }
 
 export const cascataRoutes = async (app: FastifyInstance): Promise<void> => {
@@ -181,7 +235,7 @@ export const cascataRoutes = async (app: FastifyInstance): Promise<void> => {
       const catalogos = await catalogosDoDono(app, projeto.userId)
       const motores = (Object.keys(COMO_O_MOTOR_EXPRESSA_ESFORCO) as F6AgentRuntime[]).map(
         (runtime) => {
-          const doCatalogo = catalogos[runtime] ?? []
+          const doCatalogo = catalogos[runtime]
           return {
             runtime,
             esforcos: [...(ESFORCOS_DO_MOTOR[runtime] ?? [])],
@@ -191,9 +245,22 @@ export const cascataRoutes = async (app: FastifyInstance): Promise<void> => {
              * recusa com erro duro.
              */
             esforcoNoNomeDoModelo: COMO_O_MOTOR_EXPRESSA_ESFORCO[runtime] === 'no-nome-do-modelo',
-            modelos: doCatalogo.map((rotulo) => ({
+            modelos: (doCatalogo?.modelos ?? []).map((rotulo) => ({
               valor: valorDeModeloParaOMotor(runtime, rotulo),
               rotulo,
+            })),
+            /**
+             * O que o provedor REMOVEU, com a data. Vai separado do vivo porque
+             * não é opção legítima — é aviso. A tela precisa poder mostrar o
+             * modelo morto que o cliente escolheu DIZENDO que ele morreu, em
+             * vez de fazê-lo sumir do seletor: `<select>` cujo `value` não está
+             * entre as `<option>` desenha a primeira, e o dono leria uma
+             * escolha que nunca fez.
+             */
+            indisponiveis: (doCatalogo?.indisponiveis ?? []).map((m) => ({
+              valor: valorDeModeloParaOMotor(runtime, m.nome),
+              rotulo: m.nome,
+              sumiuEm: m.sumiuEm,
             })),
           }
         }
@@ -221,7 +288,7 @@ export const cascataRoutes = async (app: FastifyInstance): Promise<void> => {
       const agents: Record<string, Degrau> = {}
       for (const role of F6_AGENT_ROLES) {
         const runtime = motorPadraoDoPapel(role)
-        const padrao = padraoDoDegrau({ role, runtime, catalogo: catalogos[runtime] ?? [] })
+        const padrao = padraoDoDegrau({ role, runtime, catalogo: modelosVivos(catalogos, runtime) })
         agents[role] = {
           runtime,
           ...(padrao.model ? { model: valorDeModeloParaOMotor(runtime, padrao.model) } : {}),
@@ -270,8 +337,8 @@ export const cascataRoutes = async (app: FastifyInstance): Promise<void> => {
       for (const [papel, degrauDoPapel] of Object.entries(validada)) {
         const todos = [degrauDoPapel, ...(degrauDoPapel.fallbacks ?? [])]
         for (const d of todos) {
-          const catalogo = catalogos[d.runtime]
-          if (!d.model || !catalogo || catalogo.length === 0) continue
+          const catalogo = modelosVivos(catalogos, d.runtime)
+          if (!d.model || catalogo.length === 0) continue
           // Compara pelos DOIS lados já convertidos: o cliente pode ter
           // gravado o rótulo ("GPT-5.5") ou o identificador ("gpt-5.5"), e os
           // dois são a mesma escolha.
