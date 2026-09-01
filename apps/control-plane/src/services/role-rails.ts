@@ -14,7 +14,7 @@ import {
   type PoRoadmapForm,
 } from '@gitorch/cadence'
 import { runFormStep } from './rails-runner.js'
-import type { BacklogPlan, IssueRef } from './backlog-executor.js'
+import { validateBacklogPlan, type BacklogPlan, type IssueRef } from './backlog-executor.js'
 
 // Role-rails: os ROTEIROS por papel da Lei "LLM decide, sistema executa".
 // Cada roteiro é uma sequência de passos pequenos; o executor de motor
@@ -205,4 +205,151 @@ export async function runPoRails(execute: StepExecutor, input: PoRailsInput): Pr
     tasks: tasks.tasks,
     roadmap,
   }
+}
+
+// ---------------------------------------------------------------------------
+// D5 (leva 3, Bloco 1 — "a lógica da leva 2"): a régua DEVOLVE, não quebra.
+// ---------------------------------------------------------------------------
+//
+// O desenho aprovado em 30/08: "Não passou -> VOLTA AO PRODUTO COM O MOTIVO.
+// Camada técnica vira fatia; item grande demais é quebrado." Até aqui,
+// `applyBacklog` validava o plano do PO e LANÇAVA — o item morria, sem
+// devolver o motivo, sem o PO ter chance de refazer. `runPoRailsWithRetry`
+// é o laço que faltava: roda o roteiro do PO, valida com o MESMO
+// `validateBacklogPlan` que a régua já usa, e — se reprovar — devolve ao PO
+// o motivo (as razões, mais as duas transformações do desenho quando
+// cabíveis) para ele refazer os 5 passos do zero, até um TETO de tentativas.
+//
+// O teto existe por causa da cota: um laço infinito de reprova-e-refaz
+// queimaria o motor a cada wake, do jeito que a esteira já quebrou antes por
+// outro motivo (ver `degrausQueValemATentativa`, scheduler.ts). Espelha o
+// `maxRepairs` de `runFormStep` (rails-runner.ts) — o mesmo padrão de
+// "motor erra, sistema explica o erro, motor tenta de novo, com limite" que
+// já existe um nível abaixo (por CAMPO); aqui é um nível acima (pelo PLANO
+// inteiro).
+
+/** Teto de replanejamentos: 3 tentativas completas (roteiro de 5 passos cada). */
+export const MAX_TENTATIVAS_DE_REPLANEJAMENTO = 3
+
+/**
+ * Estourou o teto de tentativas e o plano CONTINUA reprovado. Isto é o
+ * oposto do defeito que reprovou a régua irmã (L3-T18, cadeia causal): lá um
+ * `catch` só fazia `warn` e o achado sumia sem issue e sem aviso ao dono.
+ * Aqui: LANÇA, com os `problems` e o número de tentativas anexados — quem
+ * chama (scheduler.ts) já trata todo erro não classificado como falha
+ * HONESTA da missão (gravada, visível), nunca como sucesso silencioso.
+ */
+export class BacklogPlanRejectedError extends Error {
+  constructor(
+    message: string,
+    public readonly problems: string[],
+    public readonly attempts: number
+  ) {
+    super(message)
+    this.name = 'BacklogPlanRejectedError'
+  }
+}
+
+export interface PoRailsWithRetryResult {
+  plan: BacklogPlan
+  /** Quantas tentativas completas (roteiro de 5 passos) até passar na régua. */
+  attempts: number
+}
+
+/**
+ * Monta o bloco de contexto que devolve o plano reprovado ao PO, com o
+ * motivo — nunca uma exceção. Lista os problemas tais quais
+ * `validateBacklogPlan` os escreveu (a mesma régua, a mesma frase) e, quando
+ * a razão bate com uma das DUAS transformações do desenho, acrescenta a
+ * orientação de como corrigir:
+ *
+ * (a) fase sem resultado usável (camada técnica) -> reescrever como fatia
+ *     usável, na voz do cliente;
+ * (b) task com peso acima do teto -> quebrar em tasks menores que caibam na
+ *     escala.
+ *
+ * A detecção é por MARCADOR de texto que este mesmo módulo controla (a
+ * mensagem que `validateBacklogPlan` escreve), não uma tentativa de julgar
+ * prosa livre — por isso não corre o risco lexical que reprovou a régua
+ * irmã (L3-T18): lá o alvo era texto ESCRITO PELO AGENTE, aqui é texto
+ * escrito por ESTE código.
+ *
+ * EXPORTADA para teste direto: o schema `poTasks` (`enumNumbers` da escala
+ * 1..13) já barra peso > 13 ANTES de chegar aqui — `runFormStep` nunca deixa
+ * um valor fora do enum sair do roteiro do PO. A transformação (b) continua
+ * existindo como rede de segurança (qualquer `BacklogPlan` montado sem
+ * passar pelo schema, hoje ou no futuro), mas o único jeito de testá-la é
+ * chamando esta função direto com o texto que `validateBacklogPlan` produz —
+ * não dá para provocá-la de ponta a ponta pelo roteiro real do PO.
+ */
+export function buildMotivoDeDevolucao(problems: string[]): string {
+  const temFaseSemFatia = problems.some((p) => p.includes('não é fatia usável'))
+  const temTaskGrandeDemais = problems.some((p) => p.includes('passa do teto de sprint'))
+
+  const orientacoes: string[] = []
+  if (temFaseSemFatia) {
+    orientacoes.push(
+      '- Fase sem resultado usável é camada técnica, não fatia usável. Reescreva-a como o que ' +
+        'o CLIENTE passa a conseguir fazer, na voz dele (ex.: "o dono filtra os produtos por ' +
+        'material e vê o resultado certo") — nunca o nome de uma camada ("Backend", ' +
+        '"Data Persistence", "Foundation").'
+    )
+  }
+  if (temTaskGrandeDemais) {
+    orientacoes.push(
+      '- Quebre a task com peso acima do teto em tasks MENORES que caibam na escala ' +
+        '(1, 2, 3, 5, 8, 13), cada uma com seu próprio DoD completo — nunca force o peso a ' +
+        'entrar quando o item é grande demais.'
+    )
+  }
+
+  return [
+    'GitOrch REJECTED the plan you submitted — it did not pass the ruler between the Product ' +
+      'and the client board. Fix EVERY problem below and resubmit the SAME 5 steps from scratch.',
+    '',
+    'Problems found:',
+    ...problems.map((p) => `- ${p}`),
+    ...(orientacoes.length > 0 ? ['', 'How to fix the most common ones:', ...orientacoes] : []),
+  ].join('\n')
+}
+
+/**
+ * `runPoRails` + a régua (`validateBacklogPlan`) + o laço de devolução. É o
+ * caminho que `runPoMissionViaRails` (po-rails-mission.ts) usa em produção —
+ * `applyBacklog` continua validando e lançando na hora (rede de segurança
+ * para quem chamar direto, e é o que os testes de `backlog-executor.test.ts`
+ * cobrem), mas quem passa por AQUI nunca deveria alcançar aquele lançamento:
+ * o plano só sai daqui já validado, ou a função lança
+ * `BacklogPlanRejectedError` depois de esgotar as tentativas.
+ */
+export async function runPoRailsWithRetry(
+  execute: StepExecutor,
+  input: PoRailsInput,
+  maxTentativas: number = MAX_TENTATIVAS_DE_REPLANEJAMENTO
+): Promise<PoRailsWithRetryResult> {
+  let contextBlocks = input.contextBlocks
+
+  for (let tentativa = 1; tentativa <= maxTentativas; tentativa++) {
+    const plan = await runPoRails(execute, { ...input, contextBlocks })
+    const problems = validateBacklogPlan(plan)
+
+    if (problems.length === 0) {
+      return { plan, attempts: tentativa }
+    }
+
+    if (tentativa === maxTentativas) {
+      throw new BacklogPlanRejectedError(
+        `Backlog plan rejected by the Product<->board ruler after ${tentativa} attempt(s): ` +
+          problems.join(' | '),
+        problems,
+        tentativa
+      )
+    }
+
+    contextBlocks = [...contextBlocks, buildMotivoDeDevolucao(problems)]
+  }
+
+  // Inalcançável: o `for` acima sempre retorna (plano válido) ou lança
+  // (última tentativa esgotada). TypeScript exige um caminho de saída aqui.
+  throw new Error('runPoRailsWithRetry: unreachable — loop exited without result')
 }

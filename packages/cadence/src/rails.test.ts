@@ -7,6 +7,7 @@ import {
   RAILS_SCHEMAS,
   buildStepPrompt,
   citaTooling,
+  criterioEhTestavel,
   formatRaJourneys,
   validateDoD,
   validateForm,
@@ -510,5 +511,60 @@ describe('padrão Shrimp: contrato oficial da issue', () => {
     const r = validateDoD(semGoal)
     expect(r.ok).toBe(false)
     expect(r.errors.join(' ')).toContain('goal')
+  })
+})
+
+// D5 (leva 3, Bloco 1): a QUARTA pergunta da régua — "tem como testar?" — que
+// faltava desde o PR #363 (só usableOutcome/peso/weightRationale tinham
+// entrado). Separa task ENTREGÁVEL de task VAGA. DELIBERADAMENTE estrutural
+// (tamanho + distância do título), NUNCA lexical: a régua irmã (L3-T18,
+// cadeia causal) foi reprovada por exigir um caminho de arquivo citado
+// verbatim dentro da frase — reprovava o MESMO raciocínio só pela forma de
+// escrever. Aqui nenhuma palavra/comando/caminho específico é exigido.
+describe('criterioEhTestavel: a quarta pergunta da régua ("tem como testar?")', () => {
+  it('critério vazio não é testável', () => {
+    expect(criterioEhTestavel('', '[Task] x')).toBe(false)
+    expect(criterioEhTestavel('   \n  ', '[Task] x')).toBe(false)
+  })
+
+  it('preenchimento vago (curto demais para checar) não é testável', () => {
+    expect(criterioEhTestavel('- c1\n- c2', '[Task] x')).toBe(false)
+    expect(criterioEhTestavel('ok', '[Task] x')).toBe(false)
+    expect(criterioEhTestavel('tbd', '[Task] x')).toBe(false)
+  })
+
+  it('eco do título (sem informação nova) não é testável', () => {
+    expect(
+      criterioEhTestavel('[Task] Adicionar coluna material', '[Task] Adicionar coluna material')
+    ).toBe(false)
+    // mesma frase, caixa e espaços diferentes — ainda é eco, não critério novo.
+    expect(
+      criterioEhTestavel('   adicionar coluna material  ', '[Task] Adicionar coluna material')
+    ).toBe(false)
+  })
+
+  it('critério real e concreto passa — qualquer forma de escrever', () => {
+    expect(
+      criterioEhTestavel(
+        '- GET /products?material=PLA retorna só PLA.',
+        '[Task] Adicionar coluna material'
+      )
+    ).toBe(true)
+    // uma frase corrida (sem bullet) também conta — não exige formato de lista.
+    expect(
+      criterioEhTestavel(
+        'Rodar npm test e conferir que os 3 casos de filtro por material passam.',
+        '[Task] Adicionar coluna material'
+      )
+    ).toBe(true)
+  })
+
+  it('basta UMA linha testável entre várias — não precisa que todas sejam', () => {
+    expect(
+      criterioEhTestavel(
+        '- c1\n- GET /products?material=couro devolve só couro',
+        '[Task] Filtro por material'
+      )
+    ).toBe(true)
   })
 })
