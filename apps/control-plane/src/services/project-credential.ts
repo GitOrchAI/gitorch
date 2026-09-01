@@ -142,3 +142,54 @@ export async function lerCredencialDoProjeto(deps: {
   if (!registro?.encryptedClientToken) return null
   return decryptCredential(registro.encryptedClientToken)
 }
+
+/** Recorte mínimo de `EngineConnectionService` que este módulo precisa —
+ *  nunca o serviço inteiro, para não acoplar `project-credential.ts` (usado
+ *  por rotas e testes isolados) ao resto do cofre de motores. */
+export interface LeitorDeCredencialDeLogin {
+  getRawGithubToken(userId: string): Promise<string | null>
+}
+
+/**
+ * A credencial que ALCANÇA este repositório, tentando primeiro o que o
+ * cliente colou explicitamente PARA ESTE projeto (`lerCredencialDoProjeto` —
+ * PAT clássico com escopo `project`; D13/PR#445 mediu ao vivo que é a ÚNICA
+ * capaz de criar/ler Projects V2 em conta pessoal) e só depois a credencial
+ * que ele já deu no LOGIN do GitHub (`engine_connections`, runtime='github',
+ * status='connected') — a que o produto já tem guardada e funcionando, sem
+ * precisar de nenhuma ação nova dele.
+ *
+ * D15 (01/09/2026, task ce67b8bd): o dono apontou, com razão, que pedir para
+ * colar de novo uma credencial que ele já deu é atrito desnecessário. Este
+ * helper é o ponto ÚNICO onde essa ordem de preferência vive — a mesma
+ * duplicada em três lugares de `scheduler.ts` antes desta task
+ * (`varrerSprintDosProjetos`, `varrerItensDaSprint`, `avaliarCustoDaOrdem`);
+ * eles continuam com a lógica própria (motivo: os dois braços do resultado
+ * carregam metadado extra — de onde a credencial veio — que este helper não
+ * precisa expor), mas os pontos que ainda só liam `lerCredencialDoProjeto`
+ * sozinho (o wake do PO e o provisionamento do wizard) passam a usar este
+ * mesmo caminho.
+ *
+ * NUNCA lança: erro em qualquer uma das duas leituras (banco fora do ar,
+ * chave rotacionada) resolve em `null` — perde só o reforço, nunca derruba
+ * quem chama.
+ */
+export async function lerCredencialQueAlcancaOProjeto(deps: {
+  prisma: PrismaLike
+  projectId: string
+  /** Dono do projeto — chave de `engine_connections`. `null` (projeto
+   *  legado sem dono resolvido) pula direto para "sem reforço". */
+  userId: string | null
+  /** Injeção; produção passa `app.engineConnections`. Ausência (testes de
+   *  rota isolados, scripts) também resolve em "sem reforço", nunca lança. */
+  engineConnections?: LeitorDeCredencialDeLogin
+}): Promise<string | null> {
+  const doCliente = await lerCredencialDoProjeto({
+    prisma: deps.prisma,
+    projectId: deps.projectId,
+  }).catch(() => null)
+  if (doCliente) return doCliente
+
+  if (!deps.userId || !deps.engineConnections) return null
+  return await deps.engineConnections.getRawGithubToken(deps.userId).catch(() => null)
+}
