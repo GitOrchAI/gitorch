@@ -24,6 +24,14 @@ import type { BuildAgentMissionInput, RuntimeExecutionResult } from '@gitorch/ag
 // scheduler-free-tier-local.test.ts/scheduler-mission-cpus.test.ts.
 const resultadoDoMotor = vi.hoisted(() => ({
   atual: null as RuntimeExecutionResult | null,
+  /**
+   * Resposta POR MOTOR — só usada quando o teste precisa que degraus
+   * DIFERENTES da cadeia respondam DIFERENTE (ex.: só o Codex está com login
+   * vencido; Antigravity e Claude, os outros dois degraus da cadeia canônica
+   * codex → antigravity → claude, não estão). Ausente para uma chave: cai no
+   * `atual` único de sempre — nenhum teste que já passava precisou mudar.
+   */
+  porRuntime: null as Record<string, RuntimeExecutionResult> | null,
 }))
 
 vi.mock('@gitorch/agents', async (importOriginal) => {
@@ -32,7 +40,11 @@ vi.mock('@gitorch/agents', async (importOriginal) => {
     ...actual,
     AgentOrchestrator: class {
       constructor(_options: unknown) {}
-      async runMission(_input: BuildAgentMissionInput): Promise<RuntimeExecutionResult> {
+      async runMission(input: BuildAgentMissionInput): Promise<RuntimeExecutionResult> {
+        const doMotor = input.runtime
+          ? resultadoDoMotor.porRuntime?.[input.runtime.runtime]
+          : undefined
+        if (doMotor) return doMotor
         if (!resultadoDoMotor.atual) {
           throw new Error('teste não configurou resultadoDoMotor.atual antes de disparar a missão')
         }
@@ -116,6 +128,7 @@ describe('Tarefa 16 (achado 2 da revisão) — aviso de credencial expirada pelo
     // result.output é saída crua do motor (ver scheduler.ts ~1944-1949).
     process.env['GITORCH_TELEGRAM_BOT_TOKEN'] = 'bot-token-de-teste'
     resultadoDoMotor.atual = null
+    resultadoDoMotor.porRuntime = null
   })
 
   afterEach(() => {
@@ -229,13 +242,41 @@ describe('Tarefa 16 (achado 2 da revisão) — aviso de credencial expirada pelo
   })
 
   test('dedup real (não só em unidade): duas missões no mesmo dia para o MESMO dono+motor avisam UMA vez só', async () => {
-    resultadoDoMotor.atual = {
-      missionId: 'irrelevante-aqui',
-      runtime: 'antigravity',
-      exitCode: 0,
-      durationMs: 1,
-      output: 'invalid_grant: token expired',
-      stderr: '',
+    // Desde o fix da cascata canônica (01/09/2026), o papel 'qa' sem cascata
+    // escolhida (PROJETO.runtimeConfig=null) tenta TRÊS degraus em sequência
+    // — codex → antigravity → claude, nunca mais um só — e cada degrau é um
+    // MOTOR DIFERENTE por construção (resolveRuntimeChain nunca repete
+    // motor). Por isso a resposta é POR MOTOR: só o Codex (primeiro degrau)
+    // está com login vencido; Antigravity e Claude respondem uma falha COMUM
+    // (sem sinal de credencial), para o teste continuar provando exatamente
+    // o que o título promete — dedup do MESMO dono+motor entre DUAS
+    // missões — e não motores diferentes dentro da mesma missão (que a
+    // cadeia nunca permite: nenhum motor se repete nela).
+    resultadoDoMotor.porRuntime = {
+      codex: {
+        missionId: 'irrelevante-aqui',
+        runtime: 'codex',
+        exitCode: 0,
+        durationMs: 1,
+        output: 'invalid_grant: token expired',
+        stderr: '',
+      },
+      antigravity: {
+        missionId: 'irrelevante-aqui',
+        runtime: 'antigravity',
+        exitCode: 1,
+        durationMs: 1,
+        output: '',
+        stderr: 'engine crashed',
+      },
+      claude: {
+        missionId: 'irrelevante-aqui',
+        runtime: 'claude',
+        exitCode: 1,
+        durationMs: 1,
+        output: '',
+        stderr: 'engine crashed',
+      },
     }
     const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }))
     global.fetch = fetchMock as unknown as typeof fetch
