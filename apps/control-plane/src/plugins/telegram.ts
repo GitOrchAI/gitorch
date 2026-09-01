@@ -140,9 +140,8 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
         }
 
         const translatedReason = traduzirErroParaUsuario(errorCode as SetupErrorCode | null)
-        const mitigationIcon = metadata.requiresAction ? '🚨' : '⚙️'
         const actionRequired = metadata.requiresAction ? 'Sim' : 'Não'
-        const text = `${mitigationIcon} **Falha no passo:** ${metadata.step}\n**Problema:** ${translatedReason}\n**Ação do sistema:** ${metadata.mitigationAction}\n**Precisa agir?** ${actionRequired}`
+        const text = `🚨 Sua entrega falhou no passo ${metadata.step}. O que quebrou: ${translatedReason}. O que fizemos: ${metadata.mitigationAction}. Ação necessária: ${actionRequired}`
 
         app.log.info({ payload: text }, '[Telegram] enviando aviso de falha na pipeline')
 
