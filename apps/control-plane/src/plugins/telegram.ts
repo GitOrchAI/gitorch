@@ -351,6 +351,43 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
             continue
           }
 
+          if (update.message?.text?.trim().startsWith('/esperas')) {
+            const chatId = update.message?.chat?.id
+            if (chatId !== undefined && chatId !== null) {
+              const waitingMissions = await app.prisma.mission.findMany({
+                where: { status: 'waiting', waitingReason: { not: null } },
+                select: { payload: true, waitingReason: true },
+              })
+
+              let text = ''
+              if (waitingMissions.length === 0) {
+                text = '0 entregas aguardando.'
+              } else {
+                const reasons = waitingMissions
+                  .map((m) => {
+                    const payload = m.payload as Record<string, unknown> | null
+                    const issueNumber =
+                      payload && 'issueNumber' in payload
+                        ? payload['issueNumber']
+                        : payload && 'issue_number' in payload
+                          ? payload['issue_number']
+                          : '?'
+                    const cleanReason = (m.waitingReason || '').replace(/\r?\n/g, ' ')
+                    return `#${issueNumber} - ${cleanReason}`
+                  })
+                  .join(', ')
+                text = `${waitingMissions.length} entregas aguardando: ${reasons}`
+              }
+
+              await sendTelegramMessage({
+                botToken,
+                chatId: String(chatId),
+                text,
+              })
+            }
+            continue
+          }
+
           const reply = await handleTelegramUpdate(app.prisma, update, { agentQuestionService })
           if (!reply) continue
           await sendTelegramMessage({ botToken, chatId: reply.chatId, text: reply.text })
