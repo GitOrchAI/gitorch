@@ -36,6 +36,36 @@ test('normalizes issue dependency events as blocking gates', () => {
   })
 })
 
+test('normalizes pull request with merged_at timestamp', () => {
+  const normalizer = new GitHubWebhookNormalizer()
+  const event = normalizer.normalize({
+    receivedAt: '2026-06-23T12:05:00.000Z',
+    body: '{}',
+    headers: {
+      deliveryId: 'delivery-4',
+      eventName: 'pull_request',
+      signature256: 'sha256=abc',
+    },
+    payload: {
+      action: 'closed',
+      repository: { full_name: 'loureng/gitorch' },
+      pull_request: {
+        node_id: 'PR_1',
+        number: 1,
+        title: 'Test PR',
+        state: 'closed',
+        merged: true,
+        merged_at: '2026-06-23T12:00:00.000Z',
+        labels: [],
+      },
+    },
+  } satisfies GitHubDeliveryEnvelope)
+
+  expect(event.mergedAt).toEqual('2026-06-23T12:00:00.000Z')
+  expect(event.workItem?.mergedAt).toEqual('2026-06-23T12:00:00.000Z')
+  expect(event.workItem?.state).toEqual('merged')
+})
+
 test('normalizes sub-issue events as hierarchy edges', () => {
   const normalizer = new GitHubWebhookNormalizer()
   const event = normalizer.normalize({
