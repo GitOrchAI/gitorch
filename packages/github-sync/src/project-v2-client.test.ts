@@ -762,7 +762,7 @@ test('o quadro traz `closed`, que é o que barra quadro arquivado', async () => 
 
 /** Uma página de resposta do GraphQL, no formato que o GitHub devolve. */
 function paginaDeItens(
-  nodes: Array<{ id: string; numero: number; iteracao?: string | null }>,
+  nodes: Array<{ id: string; numero: number; iteracao?: string | null; peso?: number | null }>,
   proxima: string | null
 ) {
   return {
@@ -774,6 +774,7 @@ function paginaDeItens(
             id: n.id,
             content: { number: n.numero },
             fieldValueByName: n.iteracao ? { iterationId: n.iteracao } : null,
+            pesoValue: typeof n.peso === 'number' ? { number: n.peso } : null,
           })),
         },
       },
@@ -882,9 +883,69 @@ test('listarItensDoQuadro devolve a sprint de cada item na mesma consulta', asyn
 
   // Quem já está no ciclo e quem não está, sem uma segunda volta ao GitHub.
   expect(itens).toEqual([
-    { itemId: 'PVTI_1', pedido: 36, iteracaoId: 'iter_a' },
-    { itemId: 'PVTI_2', pedido: 37, iteracaoId: null },
+    { itemId: 'PVTI_1', pedido: 36, iteracaoId: 'iter_a', peso: null },
+    { itemId: 'PVTI_2', pedido: 37, iteracaoId: null, peso: null },
   ])
+})
+
+test('sem campo de peso o seletor NÃO é pedido — mesma diretiva do campo de sprint', async () => {
+  const calls: GraphQLRequest[] = []
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async (request) => {
+      calls.push(request)
+      return paginaDeItens([{ id: 'PVTI_1', numero: 36 }], null)
+    },
+  })
+
+  await client.listarItensDoQuadro('PVT_1')
+  await client.listarItensDoQuadro('PVT_1', { campoDePeso: 'Peso' })
+
+  expect(calls[0]!.query).toContain(
+    'pesoValue: fieldValueByName(name: $campoDePeso) @include(if: $querPeso)'
+  )
+  expect(calls[0]!.variables.querPeso).toBe(false)
+  expect(calls[0]!.variables.campoDePeso).toBe('')
+  expect(calls[1]!.variables.querPeso).toBe(true)
+  expect(calls[1]!.variables.campoDePeso).toBe('Peso')
+})
+
+test('listarItensDoQuadro devolve o peso de cada item na mesma consulta (L3-T8/D1)', async () => {
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async () =>
+      paginaDeItens(
+        [
+          { id: 'PVTI_1', numero: 36, peso: 13 },
+          { id: 'PVTI_2', numero: 37 },
+        ],
+        null
+      ),
+  })
+
+  const itens = await client.listarItensDoQuadro('PVT_1', { campoDePeso: 'Peso' })
+
+  // Quem tem peso planejado e quem ainda não tem, sem segunda volta ao GitHub.
+  // `null` — nunca 0 — para "não sei" nunca ser confundido com "peso zero".
+  expect(itens).toEqual([
+    { itemId: 'PVTI_1', pedido: 36, iteracaoId: null, peso: 13 },
+    { itemId: 'PVTI_2', pedido: 37, iteracaoId: null, peso: null },
+  ])
+})
+
+test('listarItensDoQuadro lê sprint E peso juntos, cada seletor independente do outro', async () => {
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async () =>
+      paginaDeItens([{ id: 'PVTI_1', numero: 36, iteracao: 'iter_a', peso: 5 }], null),
+  })
+
+  const itens = await client.listarItensDoQuadro('PVT_1', {
+    campoDeSprint: 'Sprint',
+    campoDePeso: 'Peso',
+  })
+
+  expect(itens).toEqual([{ itemId: 'PVTI_1', pedido: 36, iteracaoId: 'iter_a', peso: 5 }])
 })
 
 /**

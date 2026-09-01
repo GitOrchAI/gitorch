@@ -108,8 +108,8 @@ const MINUTOS_ATE_ALERTAR_VAGA = 20
 const MINUTOS_ATE_ALERTAR_TICK_QUEBRADO = 5
 import type { AchadoDeInfra } from '../services/incidente-ci.js'
 import { renderIssueBody } from '../services/backlog-executor.js'
-import type { DoDFields } from '@gitorch/cadence'
-import { EscritaNaoAutorizadaError } from '@gitorch/cadence'
+import type { DoDFields, PesoDeTask } from '@gitorch/cadence'
+import { EscritaNaoAutorizadaError, ESCALA_DE_PESO } from '@gitorch/cadence'
 import {
   abrirSessao,
   sessoesVivas,
@@ -260,6 +260,8 @@ import {
   type ResolvedOwner,
 } from '../services/onboarding-board.js'
 import { lerCredencialDoProjeto } from '../services/project-credential.js'
+import { avaliarCustoDaOrdemDosProjetos } from '../services/custo-da-ordem-do-projeto.js'
+import { resolveQuadroDoProjeto } from '../routes/painel.js'
 import {
   resolverCredencialDoDev,
   recadoDaRecusa,
@@ -8652,6 +8654,175 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     }
   }
 
+  /**
+   * D1 (leva 2) — "Sua ordem custa caro? { perda / tamanho }".
+   *
+   * A caixa do fluxograma aprovado em 30/08 que nunca virou tarefa. Por
+   * projeto, lê a fila do quadro (ordem + peso — o que já existe, ninguém
+   * preenche nada de novo), calcula com `analisarCustoDaOrdem`
+   * (packages/cadence) e — só quando vale a pena — avisa o dono pelo
+   * caminho que já existe (`avisarOuAuditar`, o mesmo do resto do relógio).
+   *
+   * A LEI DO DESENHO ("você sempre decide") está na composição: esta função
+   * só chama `filaDoQuadro` (LEITURA) e `avisar`. Em nenhum lugar aqui há
+   * uma chamada a `moverItemDoQuadro`/`aplicarOrdemDosPedidos` — reordenar
+   * continua sendo uma ação exclusiva da rota POST /api/v1/painel/ordem,
+   * disparada pelo CLIENTE.
+   *
+   * Cadência própria, mesmo padrão de `CADENCIA_DOS_ITENS_DA_SPRINT_MS`:
+   * calcular fila para todo projeto a cada tique (5s) gastaria a cota do
+   * GitHub por nada — a ordem do dono não muda a cada 5 segundos.
+   */
+  const CADENCIA_PADRAO_DO_CUSTO_DA_ORDEM_MS = 30 * 60_000
+  const CADENCIA_DO_CUSTO_DA_ORDEM_MS = (() => {
+    const bruto = process.env['GITORCH_CUSTO_DA_ORDEM_CADENCIA_MS']
+    if (bruto === undefined) return CADENCIA_PADRAO_DO_CUSTO_DA_ORDEM_MS
+    const lido = Number(bruto)
+    if (!Number.isFinite(lido) || lido <= 0) {
+      app.log.warn(
+        `[Scheduler] GITORCH_CUSTO_DA_ORDEM_CADENCIA_MS inválido ('${bruto}'); ` +
+          `usando o padrão de ${CADENCIA_PADRAO_DO_CUSTO_DA_ORDEM_MS}ms`
+      )
+      return CADENCIA_PADRAO_DO_CUSTO_DA_ORDEM_MS
+    }
+    return lido
+  })()
+  let ultimaAvaliacaoDeCustoDaOrdem = 0
+
+  const avaliarCustoDaOrdem = async () => {
+    if (Date.now() - ultimaAvaliacaoDeCustoDaOrdem < CADENCIA_DO_CUSTO_DA_ORDEM_MS) return
+    ultimaAvaliacaoDeCustoDaOrdem = Date.now()
+
+    type ProjetoComQuadro = {
+      id: string
+      wingId: string
+      userId: string | null
+      quadro: { login: string; numero: number }
+    }
+
+    await avaliarCustoDaOrdemDosProjetos({
+      projetos: async () => {
+        const linhas = await app.prisma.project.findMany({
+          where: { isActive: true },
+          select: { id: true, wingId: true, userId: true, runtimeConfig: true },
+        })
+        const comQuadro: ProjetoComQuadro[] = []
+        for (const linha of linhas) {
+          const quadro = resolveQuadroDoProjeto(linha.runtimeConfig)
+          // Projeto sem quadro ligado: fora desta avaliação, do mesmo jeito
+          // que a rota de reordenar (painel.ts) recusa com 409 — não há em
+          // que reordenar sem quadro nenhum.
+          if (quadro)
+            comQuadro.push({ id: linha.id, wingId: linha.wingId, userId: linha.userId, quadro })
+        }
+        return comQuadro
+      },
+      filaDoQuadro: async (projetoBase) => {
+        const p = projetoBase as ProjetoComQuadro
+        const doCliente = await lerCredencialDoProjeto({ prisma: app.prisma, projectId: p.id })
+        const token =
+          doCliente ??
+          (p.userId ? ((await app.engineConnections?.getRawGithubToken(p.userId)) ?? null) : null)
+        if (!token) return null // sem credencial: silêncio, tenta na próxima passada
+
+        // LEITURA, com teto de tempo, sem guarda de escrita — mesmo padrão de
+        // `varrerItensDaSprint` logo acima.
+        const leitor = new ProjectV2Client({
+          token,
+          fetchImpl: fetchComTeto(fetchSemPermissao(), TIMEOUT_DE_CHAMADA_GITHUB_MS),
+        })
+        const quadroId =
+          (await leitor.findProjectId({
+            login: p.quadro.login,
+            number: p.quadro.numero,
+            ownerType: 'organization',
+          })) ??
+          (await leitor.findProjectId({
+            login: p.quadro.login,
+            number: p.quadro.numero,
+            ownerType: 'user',
+          }))
+        if (!quadroId) return null
+
+        let leituraIncompleta = false
+        const itens = await leitor.listarItensDoQuadro(quadroId, {
+          campoDePeso: 'Peso',
+          onTruncado: () => {
+            leituraIncompleta = true
+          },
+        })
+        // Leitura cortada pelo teto de páginas: a fila que sobrou não é a
+        // fila real, e calcular espera sobre uma fila incompleta produziria
+        // um número que não sustenta. Silêncio, tenta de novo na próxima.
+        if (leituraIncompleta) return null
+
+        // Só entram no cálculo os itens com peso PLANEJADO. Peso ausente
+        // (`null`) é "não sei", nunca "peso zero" — e um item de peso
+        // desconhecido NO MEIO da fila invalidaria a espera calculada para
+        // quem vem depois dele. Exige a fila INTEIRA com peso conhecido: é
+        // conservador de propósito (ver CUIDADOS da tarefa) — sem isso o
+        // produto entregaria um número que não confia.
+        if (itens.length === 0 || itens.some((i) => i.peso === null)) return null
+        // Fora da ESCALA_DE_PESO (alguém digitou outra coisa no campo
+        // "Peso" pela interface do GitHub, fora do que o produto escreve):
+        // mesma lógica de `backlog-executor.ts` — não presume que serve.
+        if (itens.some((i) => !(ESCALA_DE_PESO as readonly number[]).includes(i.peso as number))) {
+          return null
+        }
+
+        return itens.map((i) => ({ pedido: i.pedido, peso: i.peso as PesoDeTask }))
+      },
+      lerEstado: async (projectId) => {
+        const linha = await app.prisma.project.findUnique({
+          where: { id: projectId },
+          select: { runtimeConfig: true },
+        })
+        const bruto = (linha?.runtimeConfig as Record<string, unknown> | null)?.['custoDaOrdem'] as
+          { ultimoPedidoProposto?: unknown } | undefined
+        const valor = bruto?.ultimoPedidoProposto
+        return { ultimoPedidoProposto: typeof valor === 'number' ? valor : null }
+      },
+      salvarEstado: async (projectId, estado) => {
+        // MESCLA rasa, nunca substituição — mesmo padrão de
+        // `agent-question.ts`: `runtimeConfig` carrega config de vários
+        // blocos do produto, e sobrescrever o objeto inteiro apagaria o
+        // resto (o endereço do quadro, entre outros).
+        const linha = await app.prisma.project.findUnique({
+          where: { id: projectId },
+          select: { runtimeConfig: true },
+        })
+        const atual = (linha?.runtimeConfig as Record<string, unknown> | null) ?? {}
+        await app.prisma.project.update({
+          where: { id: projectId },
+          data: {
+            // Literal fresco, não a variável tipada: o Prisma exige
+            // `InputJsonObject` (com assinatura de índice), e uma interface
+            // nomeada sem essa assinatura não é atribuível — mesmo tendo
+            // exatamente as mesmas chaves.
+            runtimeConfig: {
+              ...atual,
+              custoDaOrdem: { ultimoPedidoProposto: estado.ultimoPedidoProposto },
+            },
+          },
+        })
+      },
+      avisar: async (projeto, texto) => {
+        const linhaCompleta = await app.prisma.project.findUnique({ where: { id: projeto.id } })
+        if (!linhaCompleta) return
+        await avisarOuAuditar(
+          app,
+          linhaCompleta as NotifiableProject & { id: string; wingId: string },
+          texto
+        )
+      },
+      onErro: (projeto, err) =>
+        app.log.warn(
+          err,
+          `[Scheduler] custo da ordem de ${projeto.wingId} falhou; tenta na próxima passada`
+        ),
+    })
+  }
+
   const tick = async () => {
     // PRIMEIRO de tudo: um token do GitHub vencido no meio do tique derruba
     // qualquer missão que precise dele (materializeToHome recusa e a missão
@@ -8762,6 +8933,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // sprint e esta já a preenche na mesma volta do relógio.
     await varrerItensDaSprint().catch((err) =>
       app.log.error(err, '[Scheduler] preenchimento da sprint falhou; tenta no próximo tick')
+    )
+    // D1 (leva 2): "sua ordem custa caro?" — só LÊ a fila e, quando vale a
+    // pena, avisa o dono. Nunca reordena; a ordem dele prevalece sempre.
+    await avaliarCustoDaOrdem().catch((err) =>
+      app.log.error(err, '[Scheduler] avaliação do custo da ordem falhou; tenta no próximo tick')
     )
     await sweepExpiredEnvironments()
     const now = new Date()
