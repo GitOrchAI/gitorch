@@ -2,7 +2,7 @@ import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import type { PrismaClient } from '@prisma/client'
+import type { Prisma, PrismaClient } from '@prisma/client'
 import { decryptCredential, encryptCredential } from '../lib/credential-crypto.js'
 import { archivePaths, readArchiveEntry, restoreDirectory } from '../lib/credential-archive.js'
 import { MODEL_DISCOVERERS } from './model-catalog.js'
@@ -10,6 +10,10 @@ import { QUOTA_READERS } from './quota-reader.js'
 import { carimboDaLeitura, lerCotaDoMotor, percentualAindaVale } from './leitura-de-cota.js'
 import { checkLiveness, type LivenessResult } from './engine-liveness.js'
 import { validatePastedCredential } from './credential-validator.js'
+import {
+  atualizarModelosIndisponiveis,
+  type ModeloIndisponivel,
+} from './catalogo-vivo-de-modelos.js'
 
 // Runtimes suportados e os CAMINHOS de credencial de cada um, relativos ao HOME.
 // Apenas os arquivos de token/config — NÃO o diretório inteiro (históricos e
@@ -82,6 +86,14 @@ export interface ConnectionStatus {
   lastValidatedAt: Date | null
   lastError: string | null
   models: string[]
+  /**
+   * Os modelos que SAÍRAM do catálogo do provedor, com a data em que a coleta
+   * percebeu. Marcados, nunca apagados: quem escolheu um modelo precisa saber
+   * que ele saiu — em 31/08 o produto perdeu 24 missões em 9h48 com `invalid
+   * model selection` sem uma única linha em lugar nenhum dizendo que a geração
+   * pedida tinha sido removida.
+   */
+  modelsUnavailable: ModeloIndisponivel[]
   quotaRemaining: number | null
   quotaTotal: number | null
   // Claude e Codex (ver quota-reader.ts/QuotaReading): nenhum dos dois expõe
@@ -422,6 +434,31 @@ export class EngineConnectionService {
     })
   }
 
+  /**
+   * Registra que a coleta foi TENTADA — deu certo ou não.
+   *
+   * Separado do carimbo de sucesso (`modelsRefreshedAt`) de propósito: é este
+   * que o relógio de recoleta (services/modelos-a-recoletar.ts) consulta. Se
+   * ele olhasse o de sucesso, um motor cuja coleta falha sempre nunca seria
+   * carimbado, ficaria eternamente vencido e seria tentado a CADA tique de um
+   * minuto — uma tempestade de containers escondida atrás de uma boa intenção.
+   *
+   * Best-effort de verdade: um carimbo que não grava não pode derrubar a
+   * coleta nem a missão que a chamou.
+   */
+  private async marcarTentativaDeColeta(
+    userId: string,
+    runtime: string,
+    motivo?: string
+  ): Promise<void> {
+    await this.prisma.engineConnection
+      .updateMany({
+        where: { userId, runtime },
+        data: { modelsCheckedAt: new Date(), ...(motivo ? { lastError: motivo } : {}) },
+      })
+      .catch(() => undefined)
+  }
+
   async refreshModels(userId: string, runtime: string): Promise<string[]> {
     const discover = Object.hasOwn(MODEL_DISCOVERERS, runtime)
       ? MODEL_DISCOVERERS[runtime]
@@ -431,15 +468,39 @@ export class EngineConnectionService {
     return this.withTempHome('models', '.', async (home) => {
       try {
         const materialized = await this.materializeToHome(userId, runtime, home)
-        if (!materialized) return []
-        const models = await discover(home)
-        // Descoberta vazia NÃO sobrescreve um catálogo bom anterior nem finge que
-        // "atualizou": registra o sinal e preserva o catálogo existente.
-        if (models.length === 0) {
-          await this.prisma.engineConnection.updateMany({
-            where: { userId, runtime },
-            data: { lastError: 'catálogo de modelos veio vazio na última tentativa' },
+        if (!materialized) {
+          await this.marcarTentativaDeColeta(userId, runtime)
+          return []
+        }
+        // O catálogo ANTERIOR, lido antes de descobrir o novo: é a única
+        // maneira de saber o que SAIU. Sem esta leitura, um modelo removido
+        // pelo provedor simplesmente some da lista e ninguém liga a queda das
+        // missões à remoção — foi exatamente o que aconteceu em 31/08.
+        const antes = await this.prisma.engineConnection
+          .findUnique({
+            where: { userId_runtime: { userId, runtime } },
+            select: { models: true, modelsUnavailable: true },
           })
+          .catch(() => null)
+        const catalogoAnterior = Array.isArray(antes?.models) ? (antes.models as string[]) : []
+        const indisponiveisAntes = Array.isArray(antes?.modelsUnavailable)
+          ? (antes.modelsUnavailable as unknown as ModeloIndisponivel[])
+          : []
+
+        const models = await discover(home)
+        // FAIL-CLOSED CONSCIENTE: descoberta vazia NÃO sobrescreve um catálogo
+        // bom anterior, não marca ninguém como sumido e não finge que
+        // "atualizou". Uma lista vazia por erro de rede seria o mesmo "default
+        // vazio que mente" que já derrubou esta esteira (82 missões viraram 5
+        // falhas quando uma guarda passou a barrar o próprio produto). Só
+        // coleta BEM-SUCEDIDA substitui; a data de sucesso fica velha, que é a
+        // informação honesta.
+        if (models.length === 0) {
+          await this.marcarTentativaDeColeta(
+            userId,
+            runtime,
+            'catálogo de modelos veio vazio na última tentativa'
+          )
           return []
         }
         // Junto com os modelos, lê a quota restante do provider (best-effort): o
@@ -464,11 +525,24 @@ export class EngineConnectionService {
         const refreshedBlob = Object.hasOwn(ENGINE_CREDENTIAL_PATHS, runtime)
           ? await archivePaths(home, ENGINE_CREDENTIAL_PATHS[runtime] as string[]).catch(() => null)
           : null
+        const agora = new Date()
         await this.prisma.engineConnection.updateMany({
           where: { userId, runtime },
           data: {
             models,
-            modelsRefreshedAt: new Date(),
+            modelsRefreshedAt: agora,
+            // A tentativa e o sucesso são carimbados JUNTOS aqui — o que os
+            // separa é só o caminho da falha, onde um avança e o outro não.
+            modelsCheckedAt: agora,
+            // O que saiu do catálogo fica MARCADO, não apagado (ver
+            // atualizarModelosIndisponiveis). Só esta coleta, que deu certo,
+            // tem o direito de afirmar que um modelo sumiu.
+            modelsUnavailable: atualizarModelosIndisponiveis({
+              anterior: catalogoAnterior,
+              atual: models,
+              indisponiveis: indisponiveisAntes,
+              agora,
+            }) as unknown as Prisma.InputJsonValue,
             lastError: null,
             quotaRemaining: quota.remaining,
             quotaTotal: quota.total,
@@ -487,9 +561,19 @@ export class EngineConnectionService {
           },
         })
         return models
-      } catch {
+      } catch (err) {
         // Descoberta é best-effort: falha num provider não afeta os demais nem a
-        // conexão. O catálogo anterior (se houver) permanece.
+        // conexão. O catálogo anterior (se houver) permanece, e a data de
+        // sucesso fica velha de propósito.
+        //
+        // Mas a TENTATIVA é registrada, e o motivo com ela: sem isto o relógio
+        // de recoleta veria a conexão como "nunca coletada" para sempre e a
+        // tentaria a cada tique, e o dono continuaria sem saber por quê.
+        await this.marcarTentativaDeColeta(
+          userId,
+          runtime,
+          `coleta do catálogo de modelos falhou: ${err instanceof Error ? err.message : String(err)}`
+        )
         return []
       }
     })
@@ -524,6 +608,7 @@ function toStatus(record: {
   lastValidatedAt: Date | null
   lastError: string | null
   models?: unknown
+  modelsUnavailable?: unknown
   quotaRemaining?: number | null
   quotaTotal?: number | null
   sessionPercentUsed?: number | null
@@ -538,6 +623,9 @@ function toStatus(record: {
     lastValidatedAt: record.lastValidatedAt,
     lastError: record.lastError,
     models: Array.isArray(record.models) ? (record.models as string[]) : [],
+    modelsUnavailable: Array.isArray(record.modelsUnavailable)
+      ? (record.modelsUnavailable as ModeloIndisponivel[])
+      : [],
     quotaRemaining: record.quotaRemaining ?? null,
     quotaTotal: record.quotaTotal ?? null,
     // Percentual de janela JÁ VIRADA não é servido: vira null.

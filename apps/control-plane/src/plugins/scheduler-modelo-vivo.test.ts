@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from 'vitest'
-import { modeloVivoParaAMissao } from './scheduler.js'
+import { modeloVivoParaAMissao, degrausQueValemATentativa } from './scheduler.js'
 
 // A LISTA REAL do catálogo, no formato EXATO em que o banco a guarda hoje:
 // `slug<TAB>Nome de Exibição`. Conferido em 01/09/2026 com
@@ -31,7 +31,7 @@ describe('modeloVivoParaAMissao — o modelo sai do catálogo, não de um litera
       desejado: 'Gemini 3.5 Flash (Medium)',
       log: semLog,
     })
-    expect(r).toBe('Gemini 3.7 Flash (Medium)')
+    expect(r.modelo).toBe('Gemini 3.7 Flash (Medium)')
   })
 
   test('modelo vivo passa intacto — a guarda não mexe no que funciona', async () => {
@@ -42,7 +42,7 @@ describe('modeloVivoParaAMissao — o modelo sai do catálogo, não de um litera
       desejado: 'Gemini 3.1 Pro (Low)',
       log: semLog,
     })
-    expect(r).toBe('Gemini 3.1 Pro (Low)')
+    expect(r.modelo).toBe('Gemini 3.1 Pro (Low)')
   })
 
   test('FAIL-OPEN: sem conexão no banco, segue com o modelo pedido', async () => {
@@ -56,7 +56,7 @@ describe('modeloVivoParaAMissao — o modelo sai do catálogo, não de um litera
       desejado: 'Gemini 3.5 Flash (Medium)',
       log: semLog,
     })
-    expect(r).toBe('Gemini 3.5 Flash (Medium)')
+    expect(r.modelo).toBe('Gemini 3.5 Flash (Medium)')
   })
 
   test('FAIL-OPEN: banco fora do ar não derruba a missão', async () => {
@@ -70,7 +70,7 @@ describe('modeloVivoParaAMissao — o modelo sai do catálogo, não de um litera
       desejado: 'Gemini 3.5 Flash (Medium)',
       log: semLog,
     })
-    expect(r).toBe('Gemini 3.5 Flash (Medium)')
+    expect(r.modelo).toBe('Gemini 3.5 Flash (Medium)')
   })
 
   test('catálogo de forma inesperada (não é lista de texto) não quebra nem inventa', async () => {
@@ -82,7 +82,7 @@ describe('modeloVivoParaAMissao — o modelo sai do catálogo, não de um litera
         desejado: 'Gemini 3.5 Flash (Medium)',
         log: semLog,
       })
-      expect(r).toBe('Gemini 3.5 Flash (Medium)')
+      expect(r.modelo).toBe('Gemini 3.5 Flash (Medium)')
     }
   })
 
@@ -95,7 +95,7 @@ describe('modeloVivoParaAMissao — o modelo sai do catálogo, não de um litera
       desejado: 'Gemini 3.5 Flash (Medium)',
       log: semLog,
     })
-    expect(r).toBe('Gemini 3.5 Flash (Medium)')
+    expect(r.modelo).toBe('Gemini 3.5 Flash (Medium)')
     expect(prisma.engineConnection.findFirst).not.toHaveBeenCalled()
   })
 
@@ -111,7 +111,7 @@ describe('modeloVivoParaAMissao — o modelo sai do catálogo, não de um litera
         desejado: 'Gemini 3.5 Flash (Medium)',
         log: semLog,
       })
-      expect(r).toBe('Gemini 3.5 Flash (Medium)')
+      expect(r.modelo).toBe('Gemini 3.5 Flash (Medium)')
     }
   })
 
@@ -129,16 +129,98 @@ describe('modeloVivoParaAMissao — o modelo sai do catálogo, não de um litera
     expect(avisos[0]).toContain('Gemini 3.7 Flash (Medium)')
   })
 
-  test('modelo sem equivalente: mantém o pedido e avisa, mas não inventa outra família', async () => {
+  test('modelo de OUTRO motor não mata o degrau: roda sem --model e avisa', async () => {
+    // PROVADO AO VIVO em 01/09/2026 nesta VM, com a credencial real:
+    //   $ claude --model "Gemini 3.7 Flash (Medium)" -p "say ok"
+    //   ... There's an issue with the selected model. It may not exist ...
+    // E o resolvedor entrega esse nome ao degrau do claude (provado rodando
+    // resolveRuntimeChain com os padrões reais: os TRÊS degraus vinham com o
+    // modelo do Antigravity). Sem esta saída, o degrau do claude do rodízio é
+    // um container queimado toda vez que o failover chega nele.
+    const avisos: string[] = []
+    const r = await modeloVivoParaAMissao({
+      prisma: prismaCom(['Claude Opus 5', 'Claude Sonnet 5', 'Claude Haiku 4.5']),
+      ownerUserId: 'user_1',
+      runtime: 'claude',
+      desejado: 'Gemini 3.7 Flash (Medium)',
+      log: { warn: (m: string) => avisos.push(m) },
+    })
+    expect(r.modelo).toBeUndefined()
+    expect(r.valeATentativa).toBe(true)
+    expect(avisos).toHaveLength(1)
+  })
+
+  test('modelo que SAIU do catálogo do próprio motor: o degrau não vale a tentativa', async () => {
     const avisos: string[] = []
     const r = await modeloVivoParaAMissao({
       prisma: prismaCom(CATALOGO_DO_BANCO_COLADO),
       ownerUserId: 'user_1',
       runtime: 'antigravity',
-      desejado: 'Modelo Que Nao Existe',
+      desejado: 'Gemini 3.5 Flash (Ultra)',
       log: { warn: (m: string) => avisos.push(m) },
     })
-    expect(r).toBe('Modelo Que Nao Existe')
+    expect(r.valeATentativa).toBe(false)
     expect(avisos).toHaveLength(1)
+    expect(avisos[0]).toContain('antigravity')
+    expect(avisos[0]).toContain('Gemini 3.5 Flash (Ultra)')
+  })
+
+  test('FAIL-OPEN também no veredito: sem catálogo, todo degrau vale a tentativa', async () => {
+    for (const catalogo of [null, [], { nao: 'é lista' }]) {
+      const r = await modeloVivoParaAMissao({
+        prisma: prismaCom(catalogo),
+        ownerUserId: 'user_1',
+        runtime: 'antigravity',
+        desejado: 'Gemini 3.5 Flash (Ultra)',
+        log: semLog,
+      })
+      expect(r.valeATentativa).toBe(true)
+      expect(r.modelo).toBe('Gemini 3.5 Flash (Ultra)')
+    }
+  })
+})
+
+describe('degrausQueValemATentativa — PULA o degrau em vez de queimar a rodada', () => {
+  const degrau = (runtime: string, valeATentativa: boolean, modelo?: string) => ({
+    runtime,
+    valeATentativa,
+    ...(modelo !== undefined ? { modelo } : {}),
+  })
+
+  test('o degrau com modelo fora do catálogo é PULADO e o seguinte assume', () => {
+    // ISTO É O DEFEITO CENTRAL, medido em 31/08: 24 missões em 9h48, cada uma
+    // pagando um `podman run` inteiro para receber `invalid model selection`.
+    // O motor seguinte da cadeia estava conectado e ocioso ao lado.
+    const r = degrausQueValemATentativa([
+      degrau('antigravity', false),
+      degrau('claude', true, 'Claude Sonnet 5'),
+    ])
+    expect(r.degraus.map((d) => d.runtime)).toEqual(['claude'])
+    expect(r.pulados.map((d) => d.runtime)).toEqual(['antigravity'])
+  })
+
+  test('degrau que vale passa intacto — a guarda não mexe no que funciona', () => {
+    const cadeia = [degrau('codex', true), degrau('antigravity', true, 'Gemini 3.7 Flash (Medium)')]
+    const r = degrausQueValemATentativa(cadeia)
+    expect(r.degraus).toEqual(cadeia)
+    expect(r.pulados).toEqual([])
+  })
+
+  test('NUNCA esvazia a cadeia: se nenhum degrau vale, o ÚLTIMO ainda é tentado', () => {
+    // Mesma decisão de `filtrarCadeia` em motor-em-pausa.ts, pela mesma razão
+    // escrita lá: ficar sem motor nenhum é trocar desperdício por paralisação.
+    // Pular degraus corta 3 containers queimados para 1; pular TODOS pararia a
+    // esteira por causa de um catálogo que ninguém conferiu.
+    const r = degrausQueValemATentativa([
+      degrau('codex', false),
+      degrau('antigravity', false),
+      degrau('claude', false, 'X'),
+    ])
+    expect(r.degraus.map((d) => d.runtime)).toEqual(['claude'])
+    expect(r.pulados.map((d) => d.runtime)).toEqual(['codex', 'antigravity'])
+  })
+
+  test('cadeia vazia continua vazia — não inventa degrau', () => {
+    expect(degrausQueValemATentativa([])).toEqual({ degraus: [], pulados: [] })
   })
 })

@@ -645,6 +645,104 @@ describe('EngineConnectionService', () => {
     await fs.rm(missionHome, { recursive: true, force: true })
   })
 
+  // O catálogo só é substituído por uma coleta que DEU CERTO, e o que sumiu
+  // fica marcado em vez de sumir do registro. Os dois lados do mesmo defeito:
+  // em 31/08 o provedor removeu a geração 3.5 e o produto não tinha onde
+  // registrar isso — nem para escolher o modelo, nem para contar ao dono.
+  const comCatalogoDoCodex = async (
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    svc: any,
+    userId: string,
+    modelos: string[] | Error
+  ) => {
+    const original = MODEL_DISCOVERERS['codex']
+    if (!original) throw new Error('setup do teste: MODEL_DISCOVERERS.codex ausente')
+    MODEL_DISCOVERERS['codex'] = async () => {
+      if (modelos instanceof Error) throw modelos
+      return modelos
+    }
+    try {
+      return await svc.refreshModels(userId, 'codex')
+    } finally {
+      MODEL_DISCOVERERS['codex'] = original
+    }
+  }
+
+  const conectaCodex = async (userId: string) => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any, aliveLiveness)
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-cat-'))
+    await fs.mkdir(path.join(home, '.codex'), { recursive: true })
+    await fs.writeFile(path.join(home, '.codex', 'auth.json'), '{"token":"x"}')
+    await svc.captureFromHome(userId, 'codex', home)
+    await fs.rm(home, { recursive: true, force: true })
+    return { prisma, svc }
+  }
+
+  test('o modelo que SAIU do catálogo fica marcado indisponível, com a data, e não é apagado', async () => {
+    const { prisma, svc } = await conectaCodex('user_sumiu')
+    await comCatalogoDoCodex(svc, 'user_sumiu', ['GPT-5.5', 'GPT-5.4-Mini'])
+    await comCatalogoDoCodex(svc, 'user_sumiu', ['GPT-5.5'])
+
+    const rec = prisma.store.get('user_sumiu:codex') as Record<string, unknown>
+    expect(rec['models']).toEqual(['GPT-5.5'])
+    const fora = rec['modelsUnavailable'] as Array<{ nome: string; sumiuEm: string }>
+    expect(fora).toHaveLength(1)
+    expect(fora[0]?.nome).toBe('GPT-5.4-Mini')
+    expect(Date.parse(fora[0]?.sumiuEm as string)).not.toBeNaN()
+
+    // E o painel precisa PODER dizer: sem isto o dado existe no banco e morre lá.
+    const status = await svc.list('user_sumiu')
+    expect(status[0]?.modelsUnavailable).toEqual(fora)
+  })
+
+  test('modelo que VOLTA some da lista de indisponíveis', async () => {
+    const { prisma, svc } = await conectaCodex('user_voltou')
+    await comCatalogoDoCodex(svc, 'user_voltou', ['GPT-5.5', 'GPT-5.4-Mini'])
+    await comCatalogoDoCodex(svc, 'user_voltou', ['GPT-5.5'])
+    await comCatalogoDoCodex(svc, 'user_voltou', ['GPT-5.5', 'GPT-5.4-Mini'])
+
+    const rec = prisma.store.get('user_voltou:codex') as Record<string, unknown>
+    expect(rec['modelsUnavailable']).toEqual([])
+  })
+
+  test('FAIL-CLOSED CONSCIENTE: coleta que FALHA não zera a lista boa nem marca ninguém como sumido', async () => {
+    // A lista vazia por erro de rede seria o mesmo "default vazio que mente"
+    // que já derrubou a esteira aqui. Coleta que falhou não prova ausência de
+    // modelo nenhum.
+    const { prisma, svc } = await conectaCodex('user_falha')
+    await comCatalogoDoCodex(svc, 'user_falha', ['GPT-5.5', 'GPT-5.4-Mini'])
+    const bom = prisma.store.get('user_falha:codex') as Record<string, unknown>
+    const carimboBom = bom['modelsRefreshedAt']
+
+    for (const falha of [[] as string[], new Error('rede fora do ar')]) {
+      expect(await comCatalogoDoCodex(svc, 'user_falha', falha)).toEqual([])
+      const rec = prisma.store.get('user_falha:codex') as Record<string, unknown>
+      expect(rec['models']).toEqual(['GPT-5.5', 'GPT-5.4-Mini'])
+      expect(rec['modelsUnavailable']).toEqual([])
+      // "marca a data como VELHA": o carimbo de sucesso não avança.
+      expect(rec['modelsRefreshedAt']).toBe(carimboBom)
+      expect(String(rec['lastError'] ?? '')).not.toBe('')
+    }
+  })
+
+  test('a TENTATIVA é carimbada mesmo quando falha — senão o relógio tenta de novo a cada minuto', async () => {
+    const { prisma, svc } = await conectaCodex('user_tentou')
+    // O connect já faz uma coleta viva e carimba o sucesso — por isso a
+    // asserção é sobre o carimbo NÃO ANDAR, não sobre ele ser nulo.
+    const antes = prisma.store.get('user_tentou:codex') as Record<string, unknown>
+    const sucessoAntes = antes['modelsRefreshedAt']
+    expect(antes['modelsCheckedAt'] ?? null).toBeNull()
+
+    await comCatalogoDoCodex(svc, 'user_tentou', new Error('rede fora do ar'))
+    const rec = prisma.store.get('user_tentou:codex') as Record<string, unknown>
+    expect(rec['modelsCheckedAt']).toBeInstanceOf(Date)
+    // E o carimbo de SUCESSO não andou: a coleta não aconteceu.
+    expect(rec['modelsRefreshedAt']).toBe(sucessoAntes)
+    expect(String(rec['lastError'] ?? '')).toContain('rede fora do ar')
+  })
+
   test('refreshModels rearquiva a credencial com o que a descoberta grava no HOME (evita aquecer de novo em toda missão)', async () => {
     const prisma = fakePrisma()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

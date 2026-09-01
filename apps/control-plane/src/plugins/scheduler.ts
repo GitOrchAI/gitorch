@@ -303,6 +303,7 @@ import {
 import { umaAcordadaPorCiclo } from '../services/uma-acordada-por-ciclo.js'
 import { relogioDaAgenda } from '../services/espalhar-agendas.js'
 import { cotasAReler } from '../services/cotas-a-reler.js'
+import { modelosARecoletar } from '../services/modelos-a-recoletar.js'
 import { canRunMission, shouldAlertForQuota } from '../lib/spend-guard.js'
 import { computeConsumption } from '../lib/consumption.js'
 import { pipelineCheckEnabled } from '../config/pipeline-check.js'
@@ -531,23 +532,40 @@ export function resolveRailsBoard(project: { runtimeConfig?: unknown }): string 
  * E quando troca, DIZ. O defeito original durou 9h48 e 24 missões justamente
  * porque ninguém foi avisado de nada.
  */
+/**
+ * O que a conferência contra o catálogo decidiu para UM degrau da cadeia.
+ */
+export interface ModeloDaMissao {
+  /**
+   * O modelo a passar ao motor. `undefined` quer dizer "rode sem `--model`",
+   * com o modelo padrão do próprio motor — nunca um palpite nosso.
+   */
+  modelo: string | undefined
+  /**
+   * `false` quando o catálogo daquele motor prova que a tentativa é
+   * desperdício com resultado conhecido. O degrau é PULADO.
+   */
+  valeATentativa: boolean
+}
+
 export async function modeloVivoParaAMissao(args: {
   prisma: { engineConnection?: { findFirst?: (...args: never[]) => Promise<unknown> } }
   ownerUserId: string | null | undefined
   runtime: string
   desejado: string
   log: { warn: (msg: string) => void }
-}): Promise<string> {
+}): Promise<ModeloDaMissao> {
+  const segueComOPedido: ModeloDaMissao = { modelo: args.desejado, valeATentativa: true }
   // Projeto legado sem dono não tem catálogo para consultar — nem vale a ida ao
   // banco.
-  if (!args.ownerUserId) return args.desejado
+  if (!args.ownerUserId) return segueComOPedido
 
   // FAIL-OPEN inclusive no tropeço SÍNCRONO. Um `.catch()` só pega promessa
   // rejeitada; ler `.findFirst` de um `engineConnection` ausente estoura ANTES
   // de existir promessa alguma, e a exceção subiria para a missão. Esta guarda
   // não é paranoia de tipo: a suíte pegou o caso ao vivo.
   const conexoes = args.prisma?.engineConnection
-  if (typeof conexoes?.findFirst !== 'function') return args.desejado
+  if (typeof conexoes?.findFirst !== 'function') return segueComOPedido
   const buscar = conexoes.findFirst.bind(conexoes)
 
   const catalogo = await Promise.resolve()
@@ -561,14 +579,43 @@ export async function modeloVivoParaAMissao(args: {
     .catch(() => undefined)
 
   // Só lista de texto serve. Qualquer outra forma é tratada como "não sei".
-  if (!Array.isArray(catalogo)) return args.desejado
+  if (!Array.isArray(catalogo)) return segueComOPedido
   const nomes = catalogo.filter((m): m is string => typeof m === 'string')
 
   const escolha = escolherModeloVivo({ desejado: args.desejado, catalogo: nomes })
   if (escolha.aviso) {
     args.log.warn(`[Scheduler] modelo de ${args.runtime}: ${escolha.aviso}`)
   }
-  return escolha.modelo
+  return { modelo: escolha.modelo, valeATentativa: escolha.veredito !== 'saiu-do-catalogo' }
+}
+
+/**
+ * Tira da cadeia os degraus cujo modelo o catálogo do próprio motor prova que
+ * não existe mais.
+ *
+ * ISTO É O CONSERTO DO DEFEITO CENTRAL. Até aqui a cadeia tentava o degrau
+ * mesmo sabendo o resultado: em 31/08, 24 missões em 9h48 pagaram um `podman
+ * run` inteiro cada uma para receber `invalid model selection` do CLI, com
+ * outro motor conectado e ocioso ao lado.
+ *
+ * NUNCA ESVAZIA A CADEIA, e não é hesitação: é a mesma decisão que
+ * `filtrarCadeia` (motor-em-pausa.ts) já tomou neste produto, pela razão
+ * escrita lá — ficar sem motor nenhum é trocar desperdício por paralisação.
+ * Pular degraus corta três containers queimados para um; pular TODOS pararia a
+ * esteira inteira por causa de um catálogo que ninguém conferiu. Quando nenhum
+ * degrau vale, o ÚLTIMO é tentado assim mesmo e o log diz que está tentando
+ * contra o veredito do catálogo.
+ */
+export function degrausQueValemATentativa<T extends { valeATentativa: boolean }>(
+  degraus: readonly T[]
+): { degraus: T[]; pulados: T[] } {
+  const valem = degraus.filter((d) => d.valeATentativa)
+  if (valem.length > 0) {
+    return { degraus: valem, pulados: degraus.filter((d) => !d.valeATentativa) }
+  }
+  const ultimo = degraus[degraus.length - 1]
+  if (!ultimo) return { degraus: [], pulados: [] }
+  return { degraus: [ultimo], pulados: degraus.slice(0, -1) }
 }
 
 export function isEngineFault(err: unknown, lastError: string): boolean {
@@ -1896,6 +1943,66 @@ export async function reconferirAcessoDoRelogio(
  * mesmo caminho de cifragem de sempre, nunca duplicado) e POR ONDE o dono é
  * avisado quando a conexão precisa ser refeita.
  */
+/**
+ * Recoleta o CATÁLOGO DE MODELOS dos motores pelo RELÓGIO, uma vez por dia.
+ *
+ * A irmã da varredura de cotas, e nasce do mesmo defeito visto um degrau mais
+ * fundo. `refreshModels` só roda depois de uma missão COMPLETAR (ver o
+ * comentário no topo de `refreshQuota`, engine-connection.ts) — e com os
+ * motores caindo quase nenhuma completa, então a coleta só acontece quando já
+ * não adianta.
+ *
+ * MEDIDO em 01/09/2026 03:00, no banco de produção: o catálogo do antigravity
+ * estava carimbado 31/08 16:12 com 14 modelos, e `agy models` ao vivo no mesmo
+ * instante devolvia 11, nenhum da geração 3.5. O do claude estava parado havia
+ * QUATRO DIAS. Enquanto o catálogo era enfeite de tela isso era feio; agora que
+ * ele DECIDE o modelo da missão (ver `modeloVivoParaAMissao`), é uma guarda
+ * aprovando um modelo morto.
+ *
+ * A cadência da COTA (1 hora) NÃO muda: é o que o dono pediu e está certo. O
+ * catálogo muda em dias, e recoletá-lo custa materializar a credencial e rodar
+ * o binário do motor — um dia é o intervalo que pega a remoção de uma geração
+ * sem pagar por isso a cada hora.
+ *
+ * Exportada (e não fechada dentro do plugin) pelo mesmo motivo de
+ * `renovarTokensGithubDoRelogio`: a decisão pura está testada caso a caso em
+ * services/modelos-a-recoletar.test.ts, e o que só o WIRING pode errar — de
+ * onde vem a lista, quem é pulado, e que uma falha não derruba as outras —
+ * precisa de um teste que chame ISTO, não uma imitação do laço.
+ *
+ * Nunca rejeita: uma conexão que falha não pode derrubar o tique inteiro.
+ */
+export async function varrerCatalogoDeModelosDoRelogio(app: FastifyInstance): Promise<void> {
+  const conexoes = await app.prisma.engineConnection.findMany({
+    where: { runtime: { not: 'github' } },
+    select: { userId: true, runtime: true, status: true, modelsCheckedAt: true },
+  })
+  const vencidas = modelosARecoletar(conexoes, new Date())
+  if (vencidas.length === 0) return
+  for (const conexao of vencidas) {
+    // Em série, pelo mesmo motivo da varredura de cotas: cada coleta
+    // materializa a credencial num HOME temporário e roda o binário do motor.
+    // Em paralelo, dois motores do mesmo dono disputariam o mesmo refresh token
+    // de uso único — o defeito que derrubou a conta do Codex em 26/08.
+    try {
+      const modelos = await app.engineConnections.refreshModels(conexao.userId, conexao.runtime)
+      if (modelos.length === 0) {
+        // Nunca zera a lista boa (ver refreshModels): o catálogo anterior fica,
+        // a data de sucesso fica velha, e o motivo fica em lastError.
+        app.log.warn(
+          `[Scheduler] catálogo do ${conexao.runtime} não veio nesta passada; a lista anterior é preservada e a data fica velha`
+        )
+        continue
+      }
+      app.log.info(
+        `[Scheduler] catálogo do ${conexao.runtime} recoletado: ${modelos.length} modelo(s)`
+      )
+    } catch (err) {
+      app.log.warn(err, `[Scheduler] falhou ao recoletar o catálogo do ${conexao.runtime}`)
+    }
+  }
+}
+
 export async function renovarTokensGithubDoRelogio(
   app: FastifyInstance,
   agora?: Date
@@ -2658,24 +2765,62 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // Tira da cadeia o motor que morreu pedindo login. Ele volta sozinho — por
     // sucesso ou por tempo — e a cadeia inteira em pausa passa mesmo assim,
     // porque ficar sem motor nenhum seria trocar desperdício por paralisação.
-    const chain = motorEmPausa.filtrarCadeia(chainOriginal, new Date())
-    if (chain.length < chainOriginal.length) {
+    const cadeiaComMotorVivo = motorEmPausa.filtrarCadeia(chainOriginal, new Date())
+    if (cadeiaComMotorVivo.length < chainOriginal.length) {
       app.log.info(
-        `[Scheduler] ${chainOriginal.length - chain.length} motor(es) fora do rodízio por credencial morta`
+        `[Scheduler] ${chainOriginal.length - cadeiaComMotorVivo.length} motor(es) fora do rodízio por credencial morta`
       )
     }
-    for (let i = 0; i < chain.length; i++) {
-      const sel = chain[i] as { runtime: string; model?: string }
-      // Confere contra o catálogo vivo DESTE cliente antes de gastar um
-      // container: o modelo pode ter sido removido pelo provedor desde a última
-      // vez. Fail-open — na dúvida, segue com o pedido (ver modeloVivoParaAMissao).
-      const model = await modeloVivoParaAMissao({
-        prisma: app.prisma,
-        ownerUserId: project.userId,
+
+    // O SEGUNDO filtro da cadeia, e o que faltava: o MODELO de cada degrau
+    // conferido contra o catálogo vivo daquele motor, ANTES de gastar container
+    // nenhum. É aqui que os dois trilhos se encontram — a coleta gravava o
+    // catálogo em `engine_connections.models` só para desenhar a tela, e a
+    // escolha do modelo vinha de um literal no código. Em 31/08 o provedor
+    // removeu a geração Gemini 3.5 no meio do dia: o banco soube na hora, a
+    // missão continuou pedindo o modelo morto, e 24 delas morreram em 9h48
+    // pagando um `podman run` inteiro cada uma para receber `invalid model
+    // selection` — com outro motor conectado e ocioso ao lado.
+    //
+    // A conferência é feita para a cadeia INTEIRA de uma vez (leituras
+    // indexadas, uma por motor) porque a decisão é sobre quais degraus existem,
+    // não sobre o degrau da vez.
+    const degrausConferidos = await Promise.all(
+      cadeiaComMotorVivo.map(async (sel) => ({
         runtime: sel.runtime,
-        desejado: sel.model ?? MODEL_BY_ROLE[role],
-        log: app.log,
-      })
+        ...(await modeloVivoParaAMissao({
+          prisma: app.prisma,
+          ownerUserId: project.userId,
+          runtime: sel.runtime,
+          desejado: sel.model ?? MODEL_BY_ROLE[role],
+          log: app.log,
+        })),
+      }))
+    )
+    const { degraus: chain, pulados } = degrausQueValemATentativa(degrausConferidos)
+    if (pulados.length > 0) {
+      lastError =
+        `modelo fora do catálogo vivo em ${pulados.length} motor(es) — ` +
+        `${pulados.map((d) => d.runtime).join(', ')} não foram tentados`
+      app.log.warn(`[Scheduler] ${lastError}`)
+    }
+    // Nenhum degrau com modelo vivo: o último é tentado assim mesmo. Ver
+    // `degrausQueValemATentativa` — parar a esteira por um catálogo que
+    // ninguém conferiu seria trocar desperdício por paralisação.
+    if (chain.length === 1 && chain[0]?.valeATentativa === false) {
+      app.log.warn(
+        `[Scheduler] nenhum motor da cadeia tem o modelo pedido no catálogo; tentando ${chain[0]?.runtime} assim mesmo para não parar a esteira`
+      )
+    }
+
+    for (let i = 0; i < chain.length; i++) {
+      const sel = chain[i] as { runtime: string; modelo: string | undefined }
+      // `undefined` aqui é decisão, não ausência: quer dizer "rode sem
+      // `--model`", com o modelo padrão do próprio motor. É o que salva o
+      // degrau do claude, que recebe do resolvedor um nome de modelo do
+      // Antigravity — provado ao vivo em 01/09: `claude --model "Gemini 3.7
+      // Flash (Medium)"` responde "There's an issue with the selected model".
+      const model = sel.modelo
       const isLast = i === chain.length - 1
 
       // Reinicia o relógio de "presa" a cada tentativa: o limite de stale é por
@@ -3217,7 +3362,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             const step = await adapter.run({
               missionId: `${missionId}-step-${stepN}`,
               prompt,
-              runtime: { runtime: sel.runtime as F6AgentRuntime, model },
+              runtime: { runtime: sel.runtime as F6AgentRuntime, ...(model ? { model } : {}) },
               credentialRef,
               role,
               cwd: stepDir,
@@ -3531,7 +3676,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             role,
             goal: `Analyze and coordinate tasks for ${project.name}`,
             context: [],
-            runtime: { runtime: sel.runtime as F6AgentRuntime, model },
+            runtime: { runtime: sel.runtime as F6AgentRuntime, ...(model ? { model } : {}) },
             credentialRef,
             userId: project.userId ?? 'scheduler-user',
             timeoutMs: STALE_RUNNING_MS,
@@ -8436,6 +8581,17 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // número de agora do que com o da última missão.
     await varrerCotasDosMotores().catch((err) =>
       app.log.error(err, '[Scheduler] varredura de cotas falhou; tenta no próximo tick')
+    )
+    // E o CATÁLOGO DE MODELOS, uma vez por dia, logo depois da cota e pelo
+    // mesmo motivo dela — só que aqui o dado velho não desatualiza um painel,
+    // ele aprova um modelo morto na hora de escolher com o que a missão roda.
+    // Antes das missões de propósito: é esta lista que a guarda de modelo
+    // consulta degrau a degrau.
+    await varrerCatalogoDeModelosDoRelogio(app).catch((err) =>
+      app.log.error(
+        err,
+        '[Scheduler] varredura de catálogo de modelos falhou; tenta no próximo tick'
+      )
     )
     // A sprint do quadro do cliente. Vem depois da cota e antes das missões
     // porque é barata quando não há nada a fazer (uma leitura por projeto) e

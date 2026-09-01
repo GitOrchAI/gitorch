@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { nomeDeExibicaoDoModelo, escolherModeloVivo } from './catalogo-vivo-de-modelos.js'
+import {
+  nomeDeExibicaoDoModelo,
+  escolherModeloVivo,
+  atualizarModelosIndisponiveis,
+} from './catalogo-vivo-de-modelos.js'
 
 // A LISTA REAL, copiada da saída de `agy models` nesta VM em 31/08/2026
 // (`cat -A` para ver o TAB): cada linha é `slug<TAB>Nome de Exibição`.
@@ -94,14 +98,16 @@ describe('escolherModeloVivo — o produto PERCEBE que o modelo morreu e DIZ', (
     expect(r.aviso).toBeUndefined()
   })
 
-  it('modelo ausente SEM substituto possível: mantém o desejado, mas DIZ', () => {
-    // Não inventa substituto de outra família. Mas também não repete a falha
-    // em silêncio: o motivo fica no aviso para o dono agir.
+  it('nome de OUTRO motor: roda sem --model (o motor usa o dele) e DIZ', () => {
+    // Não inventa substituto de outra família — mas também não desiste do
+    // degrau. Um nome cuja MARCA não aparece em lugar nenhum deste catálogo
+    // nunca foi modelo deste motor: mandar o motor rodar com o modelo padrão
+    // DELE entrega trabalho; pular o degrau não entrega nada.
     const r = escolherModeloVivo({ desejado: 'Modelo Que Nao Existe', catalogo: CATALOGO_VIVO })
-    expect(r.modelo).toBe('Modelo Que Nao Existe')
+    expect(r.veredito).toBe('de-outro-motor')
+    expect(r.modelo).toBeUndefined()
     expect(r.trocado).toBe(false)
     expect(r.aviso).toContain('Modelo Que Nao Existe')
-    expect(r.aviso).toMatch(/não est|nao est/i)
   })
 
   it('o catálogo ainda COLADO do banco não engana a guarda', () => {
@@ -114,5 +120,130 @@ describe('escolherModeloVivo — o produto PERCEBE que o modelo morreu e DIZ', (
     })
     expect(r.modelo).toBe('Gemini 3.7 Flash (Medium)')
     expect(r.trocado).toBe(false)
+  })
+})
+
+describe('escolherModeloVivo — o veredito que decide se o degrau vale a tentativa', () => {
+  // MEDIDO AO VIVO em 01/09/2026, nesta VM, com a credencial real do dono:
+  //   $ claude --model "Gemini 3.7 Flash (Medium)" -p "say ok"
+  //   "Gemini 3.7 Flash (Medium)" is not a model this version of Claude Code
+  //   recognizes ... There's an issue with the selected model (Gemini 3.7 Flash
+  //   (Medium)). It may not exist or you may not have access to it.
+  // E o resolvedor ENTREGA esse nome ao degrau do claude — provado rodando
+  // resolveRuntimeChain('ra', null, defaults, ['antigravity','claude','codex']):
+  // os TRÊS degraus vinham com 'Gemini 3.7 Flash (Medium)'. O catálogo do
+  // claude no banco tem 10 modelos, nenhum deles Gemini.
+  const CATALOGO_DO_CLAUDE = [
+    'Claude Opus 5',
+    'Claude Sonnet 5',
+    'Claude Fable 5',
+    'Claude Opus 4.8',
+    'Claude Haiku 4.5',
+  ]
+
+  it('o modelo do Antigravity no degrau do Claude NÃO mata o degrau — tira o --model', () => {
+    const r = escolherModeloVivo({
+      desejado: 'Gemini 3.7 Flash (Medium)',
+      catalogo: CATALOGO_DO_CLAUDE,
+    })
+    expect(r.veredito).toBe('de-outro-motor')
+    expect(r.modelo).toBeUndefined()
+    expect(r.aviso).toContain('Gemini 3.7 Flash (Medium)')
+  })
+
+  it('modelo que SAIU do catálogo do próprio motor, sem equivalente: o degrau não vale a tentativa', () => {
+    // A marca `gemini` ESTÁ neste catálogo — é modelo deste motor mesmo. Só que
+    // este esforço não existe mais e não há geração nova com ele. Rodar assim é
+    // pagar um container inteiro para receber `invalid model selection`.
+    const r = escolherModeloVivo({
+      desejado: 'Gemini 3.5 Flash (Ultra)',
+      catalogo: CATALOGO_VIVO,
+    })
+    expect(r.veredito).toBe('saiu-do-catalogo')
+    expect(r.aviso).toContain('Gemini 3.5 Flash (Ultra)')
+  })
+
+  it('nome de outro motor que o catálogo do motor TEM: vale, sem drama', () => {
+    // O catálogo do Antigravity de verdade lista `Claude Opus 4.6 (Thinking)`.
+    const r = escolherModeloVivo({
+      desejado: 'Claude Opus 4.6 (Thinking)',
+      catalogo: CATALOGO_VIVO,
+    })
+    expect(r.veredito).toBe('vale')
+    expect(r.modelo).toBe('Claude Opus 4.6 (Thinking)')
+  })
+
+  it('FAIL-OPEN: catálogo vazio dá veredito "vale" — nunca "saiu-do-catalogo"', () => {
+    // Lista vazia é "não sei". Um veredito de ausência aqui pularia TODOS os
+    // degraus toda vez que a leitura do banco piscasse — trocar desperdício por
+    // paralisação é exatamente o que este produto não faz.
+    const r = escolherModeloVivo({ desejado: 'Gemini 3.5 Flash (Medium)', catalogo: [] })
+    expect(r.veredito).toBe('vale')
+    expect(r.modelo).toBe('Gemini 3.5 Flash (Medium)')
+  })
+
+  it('substituição continua ganhando de pular: 3.5 vira 3.7 e o degrau roda', () => {
+    const r = escolherModeloVivo({ desejado: 'Gemini 3.5 Flash (Medium)', catalogo: CATALOGO_VIVO })
+    expect(r.veredito).toBe('trocado')
+    expect(r.modelo).toBe('Gemini 3.7 Flash (Medium)')
+  })
+})
+
+describe('atualizarModelosIndisponiveis — o modelo que sumiu fica MARCADO, não apagado', () => {
+  const AGORA = new Date('2026-09-01T12:00:00.000Z')
+
+  it('modelo que saiu do catálogo entra na lista de indisponíveis com a data', () => {
+    const r = atualizarModelosIndisponiveis({
+      anterior: ['Gemini 3.5 Flash (Medium)', 'Gemini 3.7 Flash (Medium)'],
+      atual: ['Gemini 3.7 Flash (Medium)'],
+      indisponiveis: [],
+      agora: AGORA,
+    })
+    expect(r).toEqual([{ nome: 'Gemini 3.5 Flash (Medium)', sumiuEm: AGORA.toISOString() }])
+  })
+
+  it('a data de quando sumiu NÃO é reescrita na coleta seguinte', () => {
+    // Quem escolheu o modelo precisa saber HÁ QUANTO TEMPO ele saiu. Carimbar
+    // de novo a cada coleta faria toda ausência parecer de agora.
+    const jaMarcado = [{ nome: 'Gemini 3.5 Flash (Medium)', sumiuEm: '2026-08-31T23:00:00.000Z' }]
+    const r = atualizarModelosIndisponiveis({
+      anterior: ['Gemini 3.7 Flash (Medium)'],
+      atual: ['Gemini 3.7 Flash (Medium)'],
+      indisponiveis: jaMarcado,
+      agora: AGORA,
+    })
+    expect(r).toEqual(jaMarcado)
+  })
+
+  it('modelo que VOLTOU sai da lista de indisponíveis', () => {
+    const r = atualizarModelosIndisponiveis({
+      anterior: ['Gemini 3.7 Flash (Medium)'],
+      atual: ['Gemini 3.7 Flash (Medium)', 'Gemini 3.5 Flash (Medium)'],
+      indisponiveis: [{ nome: 'Gemini 3.5 Flash (Medium)', sumiuEm: '2026-08-31T23:00:00.000Z' }],
+      agora: AGORA,
+    })
+    expect(r).toEqual([])
+  })
+
+  it('catálogo anterior COLADO não faz o modelo parecer que sumiu', () => {
+    // As linhas antigas do banco vinham `slug<TAB>Nome`. Comparar cru marcaria
+    // os 14 modelos como sumidos na primeira coleta nova.
+    const r = atualizarModelosIndisponiveis({
+      anterior: ['gemini-3.7-flash-medium\tGemini 3.7 Flash (Medium)'],
+      atual: ['Gemini 3.7 Flash (Medium)'],
+      indisponiveis: [],
+      agora: AGORA,
+    })
+    expect(r).toEqual([])
+  })
+
+  it('lista de indisponíveis com forma estranha no banco não quebra nem inventa', () => {
+    const r = atualizarModelosIndisponiveis({
+      anterior: ['A', 'B'],
+      atual: ['A'],
+      indisponiveis: [{ nao: 'é isso' }, null, 'texto', { nome: 'B' }] as never,
+      agora: AGORA,
+    })
+    expect(r).toEqual([{ nome: 'B', sumiuEm: AGORA.toISOString() }])
   })
 })
