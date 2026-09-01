@@ -16,6 +16,11 @@
 //   qual motor merece o primeiro degrau — sem ele isto seria um formulário
 //   cego. Ela vem de /api/v1/painel/agentes, a mesma fonte da tela de custos.
 //
+// · MOTOR CAÍDO RELIGA AQUI (01/09/2026). Mostrar "precisa religar" e não dar o
+//   que clicar é a mesma família de defeito que mandava o dono para `/setup`
+//   ("Serviço mal pensado"). O login assistido roda na própria tela, pelo fluxo
+//   único de conexao-de-motor.ts — o mesmo do passo 7 do assistente.
+//
 // · OU DADO REAL, OU SELO, OU NÃO AFIRMA NADA. Não há exemplo nesta tela.
 //   Quando o produto não sabe (cota não lida, catálogo não coletado), ele diz
 //   que não sabe — `null` nunca vira 0, e vazio nunca vira "está tudo bem".
@@ -33,6 +38,8 @@ import { Cabeca, Card } from './PainelUI'
 import { Carregando, Indisponivel } from './PainelEstados'
 import { Ad } from './PainelIcons'
 import { assinarProjeto, projetoAtual, projetoNoServidor } from './painel-projeto'
+import { ReligarMotor } from './ReligarMotor'
+import { motorParaReligar } from './religar-motor'
 import type { AgentesPayload, MotorCota } from './painel-tipos'
 import {
   PAPEIS,
@@ -74,8 +81,24 @@ interface ProjetoDoDono {
   nome: string
 }
 
-/** A cota daquele motor, escrita para decidir. */
-function CotaDoMotor({ runtime, agentes }: { runtime: string; agentes: AgentesPayload | null }) {
+/** A cota daquele motor, escrita para decidir — e, quando ele está caído, o
+ *  caminho para religá-lo SEM sair desta tela.
+ *
+ *  `podeReligar` é falso nos degraus de propósito: o mesmo motor aparece na
+ *  fila de vários agentes, e repetir o formulário de login em cada degrau daria
+ *  quatro campos de código para a mesma conexão. O botão mora na lista do topo,
+ *  onde cada motor aparece UMA vez. */
+function CotaDoMotor({
+  runtime,
+  agentes,
+  podeReligar = false,
+  aoReligar,
+}: {
+  runtime: string
+  agentes: AgentesPayload | null
+  podeReligar?: boolean
+  aoReligar?: () => void
+}) {
   const r = resumoDaCota({
     motor: agentes?.motores.find((m: MotorCota) => m.id === runtime),
     // Sem resposta da rota ainda, o honesto é "não sei" — nunca "está tudo
@@ -83,13 +106,27 @@ function CotaDoMotor({ runtime, agentes }: { runtime: string; agentes: AgentesPa
     cotaLida: agentes ? agentes.cotaLida : false,
     motivoDaCota: agentes ? agentes.motivoDaCota : 'ainda estou lendo a cota dos seus motores',
   })
+  // Com a cota NÃO lida isto devolve `null`: "não consegui ler" não é "está
+  // caído", e oferecer religar por cima de uma leitura que falhou seria
+  // afirmar uma pane que ninguém mediu.
+  const alvo = podeReligar
+    ? motorParaReligar({
+        runtime,
+        nome: nomeDoMotor(runtime),
+        motor: agentes?.motores.find((m: MotorCota) => m.id === runtime),
+        cotaLida: agentes ? agentes.cotaLida : false,
+      })
+    : null
   return (
-    <p className="pn-casc-cota">
-      <span className={`pn-d ${BOLOTA[r.tom] ?? 'idle'}`} aria-hidden="true" />
-      <span>
-        <b>{nomeDoMotor(runtime)}:</b> {r.texto}
-      </span>
-    </p>
+    <>
+      <p className="pn-casc-cota">
+        <span className={`pn-d ${BOLOTA[r.tom] ?? 'idle'}`} aria-hidden="true" />
+        <span>
+          <b>{nomeDoMotor(runtime)}:</b> {r.texto}
+        </span>
+      </p>
+      {alvo ? <ReligarMotor motor={alvo} aoConectar={aoReligar} /> : null}
+    </>
   )
 }
 
@@ -363,7 +400,13 @@ function CascataDoProjeto({ projectId, nome }: { projectId: string; nome: string
         </p>
         <div className="pn-casc">
           {opcoes.map((m) => (
-            <CotaDoMotor key={m.runtime} runtime={m.runtime} agentes={agentes.dados} />
+            <CotaDoMotor
+              key={m.runtime}
+              runtime={m.runtime}
+              agentes={agentes.dados}
+              podeReligar
+              aoReligar={agentes.recarregar}
+            />
           ))}
         </div>
       </Card>

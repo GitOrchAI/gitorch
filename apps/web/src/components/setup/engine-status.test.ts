@@ -671,28 +671,45 @@ describe('looksLikeAuthCode — detecta quando o campo de token recebeu o códig
 // registrada acima), então o que precisa de teste sobre o COMPONENTE mora
 // aqui, lendo o source real — mesmo padrão usado em submit-flow.test.ts pra
 // proteger StepPlanConfirmation/StepReady.
-describe('guarda: StepConnectEngine usa as funções puras pra decidir o accordion manual', () => {
+// 01/09/2026: os controles saíram de StepConnectEngine e viraram
+// ControlesDeConexao.tsx, para o painel religar motor SEM mandar o dono para
+// `/setup`. Os guardas seguiram o comportamento até o arquivo onde ele mora
+// agora — e por isso passaram a valer para as DUAS telas de uma vez.
+describe('guarda: os controles de conexão usam as funções puras pra decidir o accordion manual', () => {
   const source = (): string =>
-    readFileSync(new URL('./StepConnectEngine.tsx', import.meta.url), 'utf8')
+    readFileSync(new URL('./ControlesDeConexao.tsx', import.meta.url), 'utf8')
 
   it('o accordion manual é gated por isManualAccordionVisible, não mais sempre-renderizado', () => {
     const step = source()
-    expect(step).toContain('isManualAccordionVisible(state.phase, !!manualRequested[id])')
+    expect(step).toContain('isManualAccordionVisible(estado.phase, manualPedido)')
     // Regressão: o padrão antigo (`<details open={state.phase === 'error'}>`)
     // sempre RENDERIZAVA o accordion (só recolhido) ao lado do campo de
     // código — era exatamente isso que causava a dupla-colagem (18/07).
-    expect(step).not.toContain("open={state.phase === 'error'}")
+    expect(step).not.toContain("open={estado.phase === 'error'}")
   })
 
   it('o hint de erro verifica looksLikeAuthCode antes de cair no genérico', () => {
     const step = source()
-    expect(step).toContain("looksLikeAuthCode(pastedToken[id] ?? '', runtime)")
-    expect(step).toContain("t('setup.connectManualLooksLikeCode')")
+    expect(step).toContain('looksLikeAuthCode(tokenDigitado, runtime)')
+    expect(step).toContain('textos.pareceCodigo')
+    // A frase do assistente continua vindo do dicionário de idiomas; a do
+    // painel é PT-BR fixo (religar-motor.ts), como toda tela dele.
+    const textos = readFileSync(new URL('./conexao-textos.ts', import.meta.url), 'utf8')
+    expect(textos).toContain("t('setup.connectManualLooksLikeCode')")
   })
 
   it('existe o link discreto que abre o accordion fora da fase de erro', () => {
     const step = source()
-    expect(step).toContain('setManualRequested((m) => ({ ...m, [id]: true }))')
+    expect(step).toContain('setManualPedido(true)')
+  })
+
+  it('o assistente NÃO tem uma segunda cópia do fluxo — ele usa a compartilhada', () => {
+    const passo = readFileSync(new URL('./StepConnectEngine.tsx', import.meta.url), 'utf8')
+    expect(passo).toContain('<ControlesDeConexao')
+    // Duas cópias do mesmo login divergem na primeira mudança, e a que
+    // ninguém olha é a que mente. Nenhuma chamada de rota mora mais aqui.
+    expect(passo).not.toContain('/login/start')
+    expect(passo).not.toContain('new EventSource')
   })
 })
 
@@ -726,17 +743,20 @@ describe('guarda: StepConnectEngine mostra os NOMES dos modelos e a quota REAL d
   })
 
   it('o refetch de /engines repassa a LISTA de modelos, não mais só o tamanho', () => {
-    const step = source()
     // 26/08: a montagem do estado saiu do componente e virou função PURA
     // (estadoDoMotorDaLista) — mesma garantia, agora travada por
     // COMPORTAMENTO logo abaixo, não por texto de source. O que se guarda aqui
-    // é que o componente delega em vez de reescrever a decisão à mão: foi
+    // é que quem lê a rota DELEGA em vez de reescrever a decisão à mão: foi
     // exatamente a decisão duplicada dentro do componente que deixou a tela
     // mentir "Conectado" sobre um motor morto.
-    expect(step).toContain('estadoDoMotorDaLista(')
-    expect(step).not.toContain('eng.models.length')
+    //
+    // 01/09: o refetch mudou de casa junto com o resto do fluxo (conexao-de-
+    // motor.ts), que agora serve o assistente E o painel.
+    const fluxo = readFileSync(new URL('./conexao-de-motor.ts', import.meta.url), 'utf8')
+    expect(fluxo).toContain('estadoDoMotorDaLista(')
+    expect(fluxo).not.toContain('eng.models.length')
     // Regressão: o filtro cru que ignorava qualquer motor não-conectado.
-    expect(step).not.toContain("e.status === 'connected'")
+    expect(fluxo).not.toContain("e.status === 'connected'")
   })
 
   it('a função pura devolve a LISTA de nomes, e nunca uma contagem', () => {
