@@ -265,8 +265,31 @@ model Increment {
   pullRequestNumber Int?    @map("pull_request_number")
   mergeCommitSha    String? @map("merge_commit_sha")
 
+  /// D4: o INÍCIO do ciclo do ITEM — quando a wish nasceu (issue proativa: a
+  /// própria issue É a origem). Nulo = não deu para confirmar no GitHub no
+  /// momento do registro; fica de fora da medição do ciclo, nunca com data
+  /// inventada. Lido por `enriquecer-incremento.ts`.
   wishCreatedAt DateTime? @map("wish_created_at")
-  mergedAt      DateTime? @map("merged_at")
+  /// Quando o PR mesclou (fato do GitHub) — distinto de `prontoEm`, que é
+  /// quando a RÉGUA considerou pronto (pode ser depois do merge).
+  mergedAt DateTime? @map("merged_at")
+
+  /// "O que era" — o título da issue, relido do GitHub.
+  titulo String?
+  /// O milestone nativo do GitHub ("Sprint 3"), que backlog-executor.ts já
+  /// grava via setMilestone. Nulo = issue sem milestone no momento do registro.
+  sprint String?
+  /// "Quanto pesava" — escala 1,2,3,5,8,13 (packages/cadence ESCALA_DE_PESO),
+  /// relida da seção "## Peso" que o PO já escreve no corpo da issue. Nulo =
+  /// task sem estimativa (conserto/aviso/incidente, fora do roteiro do PO).
+  peso Int? @db.SmallInt
+  /// Quem produziu a entrega: 'gitorch' (dev assíncrono) ou 'dono' (merge à
+  /// mão). Hoje só há um caminho de escrita e ele é sempre 'gitorch' — ver
+  /// CamposDoDesenho em services/incremento.ts.
+  quemTocou String @default("gitorch") @map("quem_tocou")
+  /// Nasceu de uma wish do dono ('pedido', etiqueta `wishlist`) ou o produto
+  /// criou por conta própria ('proativo'). 'desconhecido' = ainda não lido.
+  pedidoOuProativo String @default("desconhecido") @map("pedido_ou_proativo")
 
   /// Quando ficou pronto. É a data que o painel mostra.
   prontoEm DateTime @default(now()) @map("pronto_em")

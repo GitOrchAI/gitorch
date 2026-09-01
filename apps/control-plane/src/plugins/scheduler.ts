@@ -251,6 +251,11 @@ import {
 } from '../services/sprint-com-itens.js'
 import { decidirQuadro, type DecisaoDeQuadro } from '../services/resolver-quadro.js'
 import { registrarSePronto } from '../services/incremento.js'
+import {
+  buscarCamposDoIncremento,
+  CAMPOS_VAZIOS,
+  type IssueResumo,
+} from '../services/enriquecer-incremento.js'
 import { fetchComTeto } from '../services/fetch-com-teto.js'
 import {
   ensureAndPersistProjectBoard,
@@ -6486,6 +6491,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       sessao: args.sessao,
       estado: args.estado,
       agora: args.agora,
+      projeto: args.projeto,
+      githubToken: args.githubToken,
     })
     await fecharSessaoEArquivar({
       sessionName: args.sessao.sessionName,
@@ -6518,10 +6525,57 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
    * estado da publicação é o fato principal e já foi gravado. O Incremento é o
    * registro que o painel lê, e uma volta seguinte do relógio o grava.
    */
+  // As mesmas duas leituras que `buscarCamposDoIncremento` (D3) precisa,
+  // pelo `ghGet` que este plugin já usa em todo lugar. Sem token — projeto
+  // sem credencial de GitHub no momento do fechamento — nem tenta: os seis
+  // campos do desenho ficam vazios, nunca inventados, e o registro do
+  // Incremento (o fato que mais importa) segue em frente do mesmo jeito.
+  const buscarIssueParaIncremento =
+    (repo: string, githubToken: string): ((numero: number) => Promise<IssueResumo | null>) =>
+    async (numero) => {
+      const raw = (await ghGet(`/repos/${repo}/issues/${numero}`, githubToken)) as {
+        title?: string
+        body?: string | null
+        created_at?: string
+        milestone?: { title?: string | null } | null
+      }
+      if (typeof raw?.title !== 'string' || typeof raw?.created_at !== 'string') return null
+      return {
+        titulo: raw.title,
+        corpo: raw.body ?? null,
+        criadaEm: new Date(raw.created_at),
+        sprint: raw.milestone?.title ?? null,
+      }
+    }
+
+  const buscarPRParaIncremento =
+    (repo: string, githubToken: string) =>
+    async (numero: number): Promise<{ mescladoEm: Date | null } | null> => {
+      const raw = (await ghGet(`/repos/${repo}/pulls/${numero}`, githubToken)) as {
+        merged_at?: string | null
+      }
+      return { mescladoEm: raw?.merged_at ? new Date(raw.merged_at) : null }
+    }
+
+  /**
+   * Grava o estado da publicação E passa a entrega pela régua de pronto.
+   *
+   * Os dois juntos porque é EXATAMENTE aqui que a entrega pode ter acabado de
+   * ficar pronta: `deployState` é o último fato que a régua padrão espera. Em
+   * qualquer outro lugar, o registro do Incremento chegaria atrasado — o
+   * painel diria "ainda não" numa entrega que já estava no ar.
+   *
+   * Falha ao registrar o Incremento NÃO derruba o fechamento da sessão: o
+   * estado da publicação é o fato principal e já foi gravado. O Incremento é o
+   * registro que o painel lê, e uma volta seguinte do relógio o grava.
+   */
   const registrarPublicacaoEIncremento = async (args: {
     sessao: LinhaDeSessao
     estado: string
     agora: Date
+    /** Para os seis campos do desenho (D3) — sprint, título, peso, origem. */
+    projeto: { wingId: string }
+    githubToken: string | undefined
   }): Promise<void> => {
     await registrarEstadoDaPublicacao({
       prisma: app.prisma as unknown as PrismaDevSession,
@@ -6531,6 +6585,22 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     })
 
     try {
+      // Best-effort, isolado do resto: GitHub fora do ar aqui nunca pode
+      // impedir o registro do fato principal (isto ficou pronto) — só faz os
+      // quatro campos do desenho (D3) ficarem vazios desta vez.
+      const campos = args.githubToken
+        ? await buscarCamposDoIncremento(
+            {
+              buscarIssue: buscarIssueParaIncremento(args.projeto.wingId, args.githubToken),
+              buscarPR: buscarPRParaIncremento(args.projeto.wingId, args.githubToken),
+            },
+            {
+              issueNumber: args.sessao.issueNumber,
+              pullRequestNumber: args.sessao.pullRequestNumber ?? null,
+            }
+          )
+        : CAMPOS_VAZIOS
+
       await registrarSePronto(
         {
           lerRegua: async (projectId: string) =>
@@ -6553,6 +6623,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 mergeCommitSha: dados.mergeCommitSha,
                 reguaAplicada: dados.reguaAplicada,
                 criterios: dados.criterios,
+                sprint: dados.sprint,
+                titulo: dados.titulo,
+                peso: dados.peso,
+                quemTocou: dados.quemTocou,
+                pedidoOuProativo: dados.pedidoOuProativo,
+                wishCreatedAt: dados.wishCreatedAt,
+                mergedAt: dados.mergedAt,
               },
             })
           },
@@ -6566,6 +6643,16 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           // linha em memória é anterior à escrita.
           deployState: args.estado,
           envLastVerdict: args.sessao.envLastVerdict ?? null,
+          sprint: campos.sprint,
+          titulo: campos.titulo,
+          peso: campos.peso,
+          // Este caminho SÓ roda para sessões do dev assíncrono (LinhaDeSessao
+          // vem de dev_sessions) — não existe hoje um segundo caminho de
+          // registro para merge feito à mão pelo dono.
+          quemTocou: 'gitorch',
+          pedidoOuProativo: campos.pedidoOuProativo,
+          wishCreatedAt: campos.wishCreatedAt,
+          mergedAt: campos.mergedAt,
         }
       )
     } catch (err) {
@@ -6586,7 +6673,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   }): Promise<void> => {
     const { projeto, sessao, agora, desdeAMescla, ultimaObservacao, githubToken } = args
     const veredito = fecharPorTetoAbsoluto({ desdeAMescla, ultimaObservacao })
-    await registrarPublicacaoEIncremento({ sessao, estado: veredito.estado, agora })
+    await registrarPublicacaoEIncremento({
+      sessao,
+      estado: veredito.estado,
+      agora,
+      projeto,
+      githubToken,
+    })
     await fecharSessaoEArquivar({
       sessionName: sessao.sessionName,
       motivo: 'merged',
@@ -7642,7 +7735,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         // `session-watch.ts`). Lido AQUI, antes da escrita.
         const estadoAnterior = sessao.deployState
 
-        await registrarPublicacaoEIncremento({ sessao, estado: veredito.estado, agora })
+        await registrarPublicacaoEIncremento({
+          sessao,
+          estado: veredito.estado,
+          agora,
+          projeto,
+          githubToken,
+        })
 
         if (veredito.estado === 'no-ar') {
           // A publicação PROVOU que é deste commit — agora o juiz abre o
