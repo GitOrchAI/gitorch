@@ -179,6 +179,7 @@ import {
   jaExisteOPedido,
 } from '../services/instalar-aviso-de-publicacao.js'
 import { TASK_LABEL } from '../services/sm-delegation.js'
+import { diagnosticarIssues } from '../services/diagnostico-de-issues.js'
 import { sessoesParaAcompanharPublicacao } from '../services/pos-merge.js'
 import { descobrirMecanismo, type Mecanismo } from '../services/mecanismo-de-publicacao.js'
 import {
@@ -192,6 +193,7 @@ import {
   dispensaOlharORepositorio,
 } from '../services/como-o-projeto-publica.js'
 import type { AgentQuestionService } from '../services/agent-question.js'
+import { buildFreeTextOption } from '../services/telegram-bot.js'
 import { nomeDaReserva, PREFIXO_DA_RESERVA, semAsReservas } from '../services/reserva-de-vaga.js'
 import {
   acompanharPublicacao,
@@ -3416,6 +3418,93 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               await gh('POST', `/repos/${project.wingId}/issues/${issueNumber}/comments`, {
                 body: `${marcador}\nCoberto pelo PR #${prNumber} — o GitOrch não abre uma segunda sessão para o mesmo incidente de infra.`,
               })
+            },
+            // D14 (01/09) — O CONSERTO DE MAIOR VALOR: roda "já resolvido"
+            // ANTES de delegar, não só quando o painel "liga" o repositório
+            // (onde diagnosticarIssues já existia, mas nunca evitava a
+            // delegação em si — routes/lote-de-sugestoes.ts). Caso real: a
+            // #46 de GitOrchAI/gitorch pedia o /wishlist, já implementado 17
+            // dias antes (commit d175cb70), e foi delegada mesmo assim — uma
+            // sessão inteira do dev para descobrir o óbvio, e o dono acordado
+            // à toa no fim.
+            //
+            // Best-effort por completo: sem workspace (clone falhou, sem
+            // credencial de leitura, graphify indisponível), devolve mapa
+            // vazio — o comportamento é o de ANTES desta mudança (delega
+            // normalmente). O diagnóstico tem 43% de erro medido, então ele
+            // nunca decide sozinho aqui — só builds o mapa; quem decide não
+            // delegar é sm-delegation.ts, e quem sinaliza é o comentário
+            // abaixo (nunca fecha a issue).
+            diagnosticarJaResolvido: async (issues) => {
+              try {
+                const ws = (await activeStack.workspaceProvider.allocateWorkspace(
+                  project.userId ?? 'scheduler-user',
+                  project.id,
+                  { repository: project.wingId }
+                )) as { path?: string } | undefined
+                if (!ws?.path) return new Map()
+                const resultado = await diagnosticarIssues(issues, { workspacePath: ws.path })
+                if (resultado.grafoIndisponivel) {
+                  app.log.info(
+                    `[Scheduler] diagnóstico "já resolvido" indisponível para ${project.wingId}: ${resultado.grafoIndisponivel}`
+                  )
+                }
+                return new Map(
+                  resultado.achados
+                    .filter((a) => a.categoria === 'ja_resolvido')
+                    .map((a) => [a.issue, a])
+                )
+              } catch (err) {
+                app.log.warn(
+                  err,
+                  `[Scheduler] diagnóstico "já resolvido" falhou para ${project.wingId} — delegando sem o gate`
+                )
+                return new Map()
+              }
+            },
+            // NÃO fecha a issue — o diagnóstico sugere, nunca decide sozinho
+            // (43% de erro medido). Comenta uma vez (idempotente pelo
+            // marcador, mesmo padrão de `comentarCoberturaDeIncidente` acima)
+            // pedindo revisão humana/RA antes de fechar ou redelegar.
+            sinalizarPossivelmenteResolvida: async ({ issueNumber, achado }) => {
+              const marcador = '<!-- gitorch:possivelmente-ja-resolvida -->'
+              const gh = async (method: string, path: string, body?: unknown): Promise<unknown> => {
+                const resp = await ghComGuarda(`https://api.github.com${path}`, {
+                  method,
+                  headers: {
+                    authorization: `token ${railsToken as string}`,
+                    accept: 'application/vnd.github+json',
+                    'user-agent': 'gitorch',
+                    ...(body ? { 'content-type': 'application/json' } : {}),
+                  },
+                  ...(body ? { body: JSON.stringify(body) } : {}),
+                })
+                if (!resp.ok) throw new Error(`GitHub ${method} ${path} → ${resp.status}`)
+                return resp.json().catch(() => ({}))
+              }
+              const existentes = (await gh(
+                'GET',
+                `/repos/${project.wingId}/issues/${issueNumber}/comments?per_page=100`
+              )) as Array<{ body?: string }>
+              if (
+                (Array.isArray(existentes) ? existentes : []).some((c) =>
+                  (c.body ?? '').includes(marcador)
+                )
+              ) {
+                return
+              }
+              await gh('POST', `/repos/${project.wingId}/issues/${issueNumber}/comments`, {
+                body:
+                  `${marcador}\nO GitOrch NÃO delegou esta tarefa ao dev assíncrono: o grafo do ` +
+                  `código sugere que o trabalho já está feito.\n\n${achado.motivo}` +
+                  (achado.evidencia ? `\n\nEvidência: ${achado.evidencia}` : '') +
+                  '\n\nEste diagnóstico tem uma taxa de erro medida — ele SUGERE, não fecha nada ' +
+                  'sozinho. Confira e feche a issue (ou remova esta suspeita) para que a esteira ' +
+                  'volte a considerá-la para delegação.',
+              })
+              app.log.info(
+                `[Scheduler] #${issueNumber} de ${project.wingId} sinalizada como possivelmente já resolvida — NÃO delegada`
+              )
             },
             // O SM é o orquestrador do julgamento (docs/agents/quality-assurance.md
             // §3.1). Até aqui o julgamento só era acordado por aviso do
@@ -7123,12 +7212,56 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         }).catch(() => undefined)
         const projeto = await app.prisma.project.findUnique({ where: { id: args.projectId } })
         if (projeto) {
-          await avisarDonoDoProjeto(
-            projeto,
-            `GitOrch: o dev parou na tarefa #${esperando.issueNumber} de ${args.repository} e ` +
-              `perguntou algo que eu não devo responder sozinho — ${motivo}\n\nA pergunta dele:\n` +
-              pergunta.slice(0, 900)
-          )
+          // D14 (01/09): decisão de negócio DE VERDADE (não "sem resposta
+          // útil") com tradução executiva pronta do modelo — pergunta com
+          // botão no Telegram, no MESMO caminho que já existe para
+          // `duvidaSobreComoPublica` (agent-question.ts), em vez de despejar
+          // o texto técnico cru do dev em inglês numa mensagem sem
+          // `reply_markup`. Isto corrige os defeitos 1 (sem botão), 2
+          // (idiomas misturados) e 3 (não executiva) do caso #46.
+          const perguntador = (app as unknown as { agentQuestionService?: AgentQuestionService })
+            .agentQuestionService
+          const perguntaExecutiva =
+            destino.tipo === 'perguntar-ao-dono' ? destino.perguntaExecutiva : undefined
+          if (perguntador && projeto.userId && perguntaExecutiva) {
+            const opcoesDoModelo =
+              destino.tipo === 'perguntar-ao-dono' ? (destino.opcoes ?? []) : []
+            await perguntador
+              .ask(projeto.userId, args.projectId, {
+                text: perguntaExecutiva,
+                context:
+                  `Tarefa #${esperando.issueNumber} de ${args.repository} — o dev assíncrono ` +
+                  `está parado esperando esta decisão.`,
+                // Objetivas (o modelo) + a aberta (sempre presente,
+                // determinística — nunca a critério do modelo): "3
+                // objetivas + 1 aberta" é o formato que o dono sempre pede.
+                options: [...opcoesDoModelo, buildFreeTextOption()],
+                dedupKey: `duvida-dev:${args.repository}:${esperando.issueNumber}:${hashDaPergunta}`,
+              })
+              .catch((err: unknown) =>
+                app.log.warn(
+                  err,
+                  `[Scheduler] não deu para perguntar ao dono (agent-question) sobre a ` +
+                    `tarefa #${esperando.issueNumber} de ${args.repository}`
+                )
+              )
+          } else {
+            // Sem serviço de pergunta ligado, sem vínculo, ou — o caso que
+            // importa aqui — sem tradução executiva pronta: NUNCA despeja o
+            // texto cru do dev em inglês. Diz explicitamente que a pergunta
+            // objetiva não pôde ser montada; quem quiser o detalhe técnico
+            // encontra no painel.
+            const semTraducao = destino.tipo === 'perguntar-ao-dono' && !perguntaExecutiva
+            await avisarDonoDoProjeto(
+              projeto,
+              `GitOrch: o dev parou na tarefa #${esperando.issueNumber} de ${args.repository} e ` +
+                `perguntou algo que eu não devo responder sozinho — ${motivo}` +
+                (semTraducao
+                  ? '\n\nNão consegui montar isso como pergunta objetiva em português — o ' +
+                    'detalhe técnico da pergunta do dev está no painel.'
+                  : '')
+            )
+          }
         }
         return
       }

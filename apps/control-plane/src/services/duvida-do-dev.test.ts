@@ -5,6 +5,7 @@ import {
   destinoAposRa,
   resolvePoliticaDePerguntasAoDono,
   textoDaRespostaAoDev,
+  pareceTrabalhoJaFeito,
   MIN_CARACTERES_DE_RESPOSTA,
 } from './duvida-do-dev.js'
 
@@ -65,6 +66,96 @@ describe('destinoDaDuvida — quem responde o quê', () => {
   it('mesmo dizendo que não precisa do dono, resposta vazia escala ao RA, não ao dono direto', () => {
     const d = destinoDaDuvida({ precisaDoDono: false, resposta: '   ' })
     expect(d.tipo).toBe('escalar-ao-ra')
+  })
+
+  // D14, 01/09 — CASO REAL: tarefa #46 de GitOrchAI/gitorch. O dev perguntou
+  // (em inglês, cru) se o /wishlist já implementado no commit d175cb70 devia
+  // virar PR vazio ou se faltava registrar via setMyCommands — o modelo
+  // marcou precisaDoDono=true e acordou o dono à toa. Isto é decisão
+  // técnica/de processo, nunca decisão de negócio.
+  it('D14: pergunta "já está feito, o que faço" NÃO vai para o dono mesmo com precisaDoDono=true', () => {
+    const perguntaReal =
+      'I have explored the codebase and the task is to "Register the `/wishlist` command in the ' +
+      'Telegram plugin to respond with a basic usage message." However, looking at the code in ' +
+      '`apps/control-plane/src/plugins/telegram.ts`, the exact implementation for `/wishlist` to ' +
+      'respond with `Use /wishlist add <item>` is already present, as it was added in commit ' +
+      '`d175cb705b2b132fc11b1e175f9914a7916f12f2`. Could you advise on what exactly needs to be ' +
+      'done? Should I just verify the functionality and open an empty or formatting PR to close ' +
+      'the issue, or is there another file or specific registration method I am supposed to add?'
+    const d = destinoDaDuvida({
+      precisaDoDono: true,
+      resposta: 'não sei se é decisão de negócio ou não',
+      pergunta: perguntaReal,
+    })
+    expect(d.tipo).toBe('escalar-ao-ra')
+    expect(d.tipo === 'escalar-ao-ra' && d.motivo).toContain('trabalho já feito')
+  })
+
+  it('D14: "já está feito" em português também é pego pelo freio', () => {
+    const d = destinoDaDuvida({
+      precisaDoDono: true,
+      resposta: 'x',
+      pergunta: 'Essa funcionalidade já está implementada no commit abc123, o que eu faço agora?',
+    })
+    expect(d.tipo).toBe('escalar-ao-ra')
+  })
+
+  it('D14: decisão de negócio DE VERDADE (sem sinal de "já feito") continua indo para o dono', () => {
+    const d = destinoDaDuvida({
+      precisaDoDono: true,
+      resposta: 'Isso muda o preço cobrado do cliente final; quem decide é o dono.',
+      pergunta: 'Should the wishlist feature be free for all users or only for paying customers?',
+    })
+    expect(d.tipo).toBe('perguntar-ao-dono')
+  })
+
+  it('D14: carrega perguntaExecutiva e opções quando o modelo já traduziu', () => {
+    const d = destinoDaDuvida({
+      precisaDoDono: true,
+      resposta: 'y',
+      pergunta: 'Should this feature be free or paid?',
+      perguntaExecutiva: 'A funcionalidade X deve ser grátis ou paga?',
+      opcoes: [
+        { label: 'Grátis para todos', value: 'gratis' },
+        { label: 'Só para pagantes', value: 'pago' },
+      ],
+    })
+    expect(d.tipo).toBe('perguntar-ao-dono')
+    if (d.tipo === 'perguntar-ao-dono') {
+      expect(d.perguntaExecutiva).toBe('A funcionalidade X deve ser grátis ou paga?')
+      expect(d.opcoes).toHaveLength(2)
+    }
+  })
+
+  it('D14: sem perguntaExecutiva/opções do modelo, o destino não inventa nenhuma', () => {
+    const d = destinoDaDuvida({
+      precisaDoDono: true,
+      resposta: 'y',
+      pergunta: 'Should this feature be free or paid?',
+    })
+    expect(d.tipo).toBe('perguntar-ao-dono')
+    if (d.tipo === 'perguntar-ao-dono') {
+      expect(d.perguntaExecutiva).toBeUndefined()
+      expect(d.opcoes).toBeUndefined()
+    }
+  })
+})
+
+describe('pareceTrabalhoJaFeito', () => {
+  it('pega variações comuns em inglês', () => {
+    expect(pareceTrabalhoJaFeito('this is already implemented in commit abc')).toBe(true)
+    expect(pareceTrabalhoJaFeito('the bug has already been fixed')).toBe(true)
+    expect(pareceTrabalhoJaFeito('this feature is already done')).toBe(true)
+  })
+
+  it('pega variações em português', () => {
+    expect(pareceTrabalhoJaFeito('isso já está implementado, o que eu faço?')).toBe(true)
+    expect(pareceTrabalhoJaFeito('já foi corrigido no commit anterior')).toBe(true)
+  })
+
+  it('não dispara em pergunta de negócio sem sinal de trabalho pronto', () => {
+    expect(pareceTrabalhoJaFeito('should this be free or paid for customers?')).toBe(false)
+    expect(pareceTrabalhoJaFeito('qual preço devo cobrar do cliente final?')).toBe(false)
   })
 })
 

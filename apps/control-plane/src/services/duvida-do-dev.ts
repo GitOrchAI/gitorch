@@ -100,28 +100,91 @@ export type DestinoDaDuvida =
    * decisões técnicas, eu mesmo faria".
    */
   | { tipo: 'escalar-ao-ra'; motivo: string }
-  /** Decisão de NEGÓCIO de verdade — nunca se adivinha — ou nem o RA soube. */
-  | { tipo: 'perguntar-ao-dono'; motivo: string }
+  /**
+   * Decisão de NEGÓCIO de verdade — nunca se adivinha — ou nem o RA soube.
+   *
+   * `perguntaExecutiva`/`opcoes` só existem quando o próprio modelo já
+   * traduziu a pergunta para uma decisão de negócio em português, com opções
+   * objetivas (D14, 01/09) — nunca o texto técnico cru do dev. Ausentes: quem
+   * mostra a pergunta ao dono decide o texto de reserva (nunca despeja o
+   * inglês do dev sem avisar que não deu para traduzir).
+   */
+  | {
+      tipo: 'perguntar-ao-dono'
+      motivo: string
+      perguntaExecutiva?: string
+      opcoes?: Array<{ label: string; value: string }>
+    }
+
+/**
+ * Sinal determinístico: a pergunta descreve um TRABALHO JÁ FEITO (o código já
+ * existe, já foi corrigido, já está implementado) e pede orientação de
+ * PROCESSO sobre como fechar a tarefa — isto é decisão técnica/de processo
+ * (comentar, fechar, abrir PR vazio), NUNCA decisão de negócio.
+ *
+ * Existe porque o modelo errou exatamente este caso ao vivo (D14, 01/09,
+ * tarefa #46 de GitOrchAI/gitorch): a pergunta era "o /wishlist já está
+ * implementado no commit d175cb70, o que faço?" e o modelo marcou
+ * `precisaDoDono=true`, acordando o dono à toa com uma pergunta técnica em
+ * inglês cru. `precisaDoDono` é AUTO-DECLARAÇÃO do modelo — sem um freio
+ * determinístico aqui, o mesmo erro se repete toda vez que o modelo confundir
+ * "eu não posso decidir isso sozinho" com "isto é decisão de negócio". O
+ * prompt (duvida-rails-mission.ts) também foi reforçado — isto é o
+ * SEGUNDO freio, não o único.
+ */
+const SINAIS_DE_TRABALHO_JA_FEITO = [
+  /\balready\s+(?:been\s+)?(?:implemented|fixed|present|done|corrected|exists?|resolved)\b/i,
+  /\bhas\s+already\s+been\s+(?:implemented|fixed|corrected|resolved|added)\b/i,
+  /\bj[áa]\s+(?:est[áa]|foi)\s+(?:implementad[oa]|corrigid[oa]|feit[oa]|resolvid[oa]|presente)\b/i,
+  /\b(?:this|the)\s+(?:bug|issue|feature|fix)\s+(?:is|has been)\s+already\b/i,
+]
+
+/** A pergunta descreve trabalho já feito, pedindo só orientação de processo? */
+export function pareceTrabalhoJaFeito(pergunta: string): boolean {
+  return SINAIS_DE_TRABALHO_JA_FEITO.some((padrao) => padrao.test(pergunta))
+}
 
 /**
  * Para onde vai a dúvida, na primeira passada (QA).
  *
- * Três portas. `precisaDoDono` é o único jeito de chegar direto ao dono aqui
- * — é a declaração do próprio agente de que é decisão de negócio, e decisão
- * de negócio não se adivinha. Qualquer coisa técnica que o QA não conseguiu
- * resolver vai para o RA antes, nunca direto para o dono: o dono não deveria
- * receber uma pergunta que o produto ainda nem tentou resolver a sério.
+ * Três portas. `precisaDoDono` é o jeito PRINCIPAL de chegar direto ao dono
+ * aqui — é a declaração do próprio agente de que é decisão de negócio, e
+ * decisão de negócio não se adivinha. Qualquer coisa técnica que o QA não
+ * conseguiu resolver vai para o RA antes, nunca direto para o dono: o dono
+ * não deveria receber uma pergunta que o produto ainda nem tentou resolver a
+ * sério.
+ *
+ * EXCEÇÃO (D14): quando a própria pergunta descreve trabalho já feito
+ * (`pareceTrabalhoJaFeito`), a declaração do modelo é IGNORADA — isto é
+ * decisão técnica/de processo por definição, mesmo que o modelo tenha
+ * marcado `precisaDoDono=true`.
  */
 export function destinoDaDuvida(args: {
   /** O próprio agente declarou que isto é decisão de negócio. */
   precisaDoDono: boolean
   /** O que o agente escreveu como resposta. */
   resposta: string
+  /** A pergunta original do dev — usada só pelo freio determinístico acima. */
+  pergunta?: string
+  /** Tradução executiva em português + opções, quando o modelo já preparou (D14). */
+  perguntaExecutiva?: string
+  opcoes?: Array<{ label: string; value: string }>
 }): DestinoDaDuvida {
+  if (args.precisaDoDono && args.pergunta && pareceTrabalhoJaFeito(args.pergunta)) {
+    return {
+      tipo: 'escalar-ao-ra',
+      motivo:
+        'a pergunta descreve trabalho já feito (código já existe/já corrigido) — isto é decisão ' +
+        'técnica/de processo (fechar a tarefa, comentar, abrir PR vazio), nunca decisão de ' +
+        'negócio, mesmo com o modelo tendo marcado como tal.',
+    }
+  }
   if (args.precisaDoDono) {
     return {
       tipo: 'perguntar-ao-dono',
       motivo: 'é decisão de negócio, e decisão de negócio é do dono — não se adivinha.',
+      ...(args.perguntaExecutiva ? { perguntaExecutiva: args.perguntaExecutiva } : {}),
+      ...(args.opcoes && args.opcoes.length > 0 ? { opcoes: args.opcoes } : {}),
     }
   }
   if (!ehRespostaUtil(args.resposta)) {

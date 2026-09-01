@@ -9,6 +9,7 @@ import { acharParecerNesteHead, ehParecerSemPoderDeMesclar } from './parecer-do-
 import { arquivosDeclarados } from './secao-da-issue.js'
 import { montarPedidoAoDev } from './pedido-ao-dev.js'
 import { ehPrDelegado } from './pr-delegado.js'
+import type { AchadoDeDiagnostico, IssueParaDiagnostico } from './diagnostico-de-issues.js'
 
 // Delegação contínua do SM (F3.6 item 2): a cada wake, encontra as TASKS prontas
 // (label `gitorch:task`, sem sessão viva na tabela `dev_sessions`, com todos os
@@ -338,6 +339,46 @@ export interface SmDelegationOptions {
   desfazerSessao?: (sessionName: string) => Promise<void>
   avisarDono?: (mensagem: string) => Promise<void>
   onWarn?: (message: string) => void
+  /**
+   * O CONSERTO DE MAIOR VALOR (D14, 01/09): roda o diagnóstico "já resolvido"
+   * (services/diagnostico-de-issues.ts, PR #437) nas candidatas ANTES de
+   * delegar — não só quando o repositório é "ligado" pelo painel, que era
+   * onde ele já existia e nunca evitava a delegação em si.
+   *
+   * Caso real que motivou: a issue #46 de GitOrchAI/gitorch pedia registrar
+   * o /wishlist, o commit d175cb70 já tinha implementado (17 dias antes), e
+   * mesmo assim a tarefa foi delegada — o dev gastou uma sessão inteira para
+   * descobrir que o trabalho já estava pronto, e ainda acordou o dono com
+   * uma pergunta que não era dele.
+   *
+   * Recebe só as issues que SERIAM delegadas neste ciclo (depois de todos os
+   * outros filtros mais baratos) — nunca a lista inteira, para não gastar
+   * grafo em issue que já ia ficar de fora por outro motivo. Devolve um mapa
+   * issueNumber → achado, só para as que o diagnóstico marcou 'ja_resolvido'.
+   *
+   * O diagnóstico tem 43% de erro medido (o autor conferiu à mão) — por
+   * isso ele nunca fecha nada sozinho aqui: `runSmDelegation` só SUSPENDE a
+   * delegação e chama `sinalizarPossivelmenteResolvida`, que existe para
+   * pedir revisão humana/RA, nunca para fechar a issue.
+   *
+   * Ausente: comportamento antigo, sem gate nenhum (compatibilidade com quem
+   * já chama `runSmDelegation` sem esta capacidade).
+   */
+  diagnosticarJaResolvido?: (
+    issues: IssueParaDiagnostico[]
+  ) => Promise<Map<number, AchadoDeDiagnostico>>
+  /**
+   * Chamado no lugar de delegar, para cada issue que o diagnóstico marcou
+   * 'ja_resolvido'. NÃO fecha a issue (o diagnóstico sugere, nunca fecha
+   * sozinho — 43% de erro medido): o desenho aqui é "a tarefa vai para
+   * revisão em vez de execução" — sinaliza (ex.: comentário na issue) para
+   * quem decide (RA/humano) confirmar antes de fechar ou delegar mesmo
+   * assim. Best-effort: uma falha aqui não pode travar o resto do ciclo.
+   */
+  sinalizarPossivelmenteResolvida?: (args: {
+    issueNumber: number
+    achado: AchadoDeDiagnostico
+  }) => Promise<void>
 }
 
 export interface SmDelegationResult {
@@ -355,6 +396,12 @@ export interface SmDelegationResult {
    * persiste e avisa o dono uma vez.
    */
   travadaPorVaga: boolean
+  /**
+   * D14: issues que o diagnóstico marcou 'ja_resolvido' e que por isso NÃO
+   * foram delegadas neste ciclo — sinalizadas para revisão em vez de
+   * viraram sessão. Vazio quando `diagnosticarJaResolvido` não foi passado.
+   */
+  sinalizadasComoResolvidas: number[]
 }
 
 /** Extrai os números de "Blocked by #N, #M" do corpo da issue. */
@@ -393,7 +440,14 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
   const tasks = (await gh(
     'GET',
     `/repos/${options.repository}/issues?state=open&labels=${encodeURIComponent(TASK_LABEL)}&per_page=100`
-  )) as Array<{ number: number; title?: string; labels: Array<{ name: string }>; body?: string }>
+  )) as Array<{
+    number: number
+    title?: string
+    labels: Array<{ name: string }>
+    body?: string
+    created_at?: string
+    updated_at?: string
+  }>
   const abertas = Array.isArray(tasks) ? tasks : []
 
   // Bloqueadores só para quem ainda não tem sessão viva — não adianta gastar
@@ -416,6 +470,34 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
   const comPrDeIncidente = options.issuesComPrDeIncidente ?? new Map<number, number>()
   // ESTEIRA-T10: incidente escalado (3 PRs sem resolver) não é redelegado.
   const escaladas = new Set(options.issuesDeIncidenteEscalado ?? [])
+
+  // D14 — O CONSERTO DE MAIOR VALOR: roda "já resolvido" nas issues que
+  // SOBREVIVERAM aos filtros mais baratos de cima (mesclada/incidente
+  // coberto/incidente escalado/sessão viva) — nunca no lote inteiro, para não
+  // gastar grafo em issue que já ia ficar de fora por outro motivo mais
+  // barato de checar.
+  const elegiveisParaDiagnostico = abertas.filter(
+    (t) =>
+      !jaEntregues.has(t.number) &&
+      !escaladas.has(t.number) &&
+      !comPrDeIncidente.has(t.number) &&
+      !comSessaoViva.has(t.number)
+  )
+  const achadosJaResolvido =
+    options.diagnosticarJaResolvido && elegiveisParaDiagnostico.length > 0
+      ? await options.diagnosticarJaResolvido(
+          elegiveisParaDiagnostico.map((t) => ({
+            number: t.number,
+            title: t.title ?? '',
+            body: t.body ?? null,
+            createdAt: t.created_at ?? new Date(0).toISOString(),
+            updatedAt: t.updated_at ?? new Date(0).toISOString(),
+            labels: t.labels.map((l) => l.name),
+          }))
+        )
+      : new Map<number, AchadoDeDiagnostico>()
+  const sinalizadasComoResolvidas: number[] = []
+
   const candidatas: IssueCandidata[] = []
   // Os arquivos de quem JÁ está em trabalho. Quem tem sessão viva é filtrado
   // das candidatas na linha seguinte, então sem esta coleta os arquivos dele
@@ -444,6 +526,25 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
     }
     if (comSessaoViva.has(t.number)) {
       for (const arquivo of arquivosDeclarados(t.body)) arquivosEmTrabalho.add(arquivo)
+      continue
+    }
+    // D14: o diagnóstico marcou esta issue como 'ja_resolvido'. NÃO delega —
+    // o diagnóstico SUGERE (43% de erro medido), nunca fecha sozinho, então
+    // a tarefa vai para revisão (sinalizada) em vez de virar sessão nova. É
+    // exatamente o gasto que o caso real (#46 de GitOrchAI/gitorch, 17 dias
+    // obsoleta) evidenciou: uma sessão inteira do dev para descobrir o óbvio.
+    const achadoJaResolvido = achadosJaResolvido.get(t.number)
+    if (achadoJaResolvido) {
+      sinalizadasComoResolvidas.push(t.number)
+      if (options.sinalizarPossivelmenteResolvida) {
+        await options
+          .sinalizarPossivelmenteResolvida({ issueNumber: t.number, achado: achadoJaResolvido })
+          .catch((err) =>
+            (options.onWarn ?? console.warn)(
+              `sm-delegation: sinalizar #${t.number} como possivelmente resolvida falhou: ${String(err).slice(0, 120)}`
+            )
+          )
+      }
       continue
     }
     let abertosCount = 0
@@ -758,9 +859,11 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
       delegated.length === 0 &&
       paraJulgar.length === 0 &&
       recusadas.length === 0 &&
+      sinalizadasComoResolvidas.length === 0 &&
       !falhaAoEnfileirar,
     delegated,
     paraJulgar,
     travadaPorVaga,
+    sinalizadasComoResolvidas,
   }
 }

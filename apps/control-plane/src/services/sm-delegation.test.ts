@@ -618,3 +618,154 @@ describe('runSmDelegation: incidente de infra já coberto por um PR', () => {
     expect(r.delegated).toEqual([201])
   })
 })
+
+describe('runSmDelegation: D14 — "já resolvido" barra a delegação ANTES da sessão do dev', () => {
+  const fetchDeIssues = (tarefas: unknown[]) =>
+    (async () =>
+      new Response(JSON.stringify(tarefas), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })) as unknown as typeof fetch
+
+  // CASO REAL (01/09): issue #46 de GitOrchAI/gitorch pedia registrar o
+  // /wishlist, já implementado 17 dias antes no commit d175cb70 — e mesmo
+  // assim foi delegada, gastando uma sessão inteira do dev para descobrir o
+  // óbvio e ainda acordando o dono à toa (D14, defeito de fundo).
+  it('issue marcada "ja_resolvido" pelo diagnóstico NÃO vira sessão — é sinalizada', async () => {
+    const criar = vi.fn(async () => ({ situacao: 'criada' as const, sessionName: 's/46' }))
+    const sinalizar = vi.fn(async () => undefined)
+    const diagnosticar = vi.fn(
+      async () =>
+        new Map([
+          [
+            46,
+            {
+              issue: 46,
+              categoria: 'ja_resolvido' as const,
+              motivo: 'o grafo aponta commit d175cb70 alterando telegram.ts depois da issue abrir',
+            },
+          ],
+        ])
+    )
+
+    const r = await runSmDelegation({
+      repository: 'GitOrchAI/gitorch',
+      githubToken: 't',
+      fetchImpl: fetchDeIssues([
+        {
+          number: 46,
+          title: 'Register /wishlist Telegram command',
+          labels: [{ name: 'gitorch:task' }],
+          body: '',
+          created_at: '2026-08-07T00:00:00Z',
+          updated_at: '2026-08-07T00:00:00Z',
+        },
+      ]),
+      criarSessaoDev: criar as never,
+      aoCriarSessao: async () => undefined,
+      diagnosticarJaResolvido: diagnosticar,
+      sinalizarPossivelmenteResolvida: sinalizar,
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+    })
+
+    // A PROVA central: nenhuma sessão nasceu para a #46.
+    expect(criar).not.toHaveBeenCalled()
+    expect(r.delegated).toEqual([])
+    // E ela foi sinalizada para revisão — nunca fechada sozinha (o
+    // diagnóstico sugere, tem 43% de erro medido).
+    expect(sinalizar).toHaveBeenCalledWith({
+      issueNumber: 46,
+      achado: expect.objectContaining({ categoria: 'ja_resolvido' }),
+    })
+    expect(r.sinalizadasComoResolvidas).toEqual([46])
+  })
+
+  it('issue SEM achado "ja_resolvido" é delegada normalmente — o gate não é indiscriminado', async () => {
+    const criar = vi.fn(async () => ({ situacao: 'criada' as const, sessionName: 's/47' }))
+    const diagnosticar = vi.fn(async () => new Map())
+
+    const r = await runSmDelegation({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: fetchDeIssues([
+        {
+          number: 47,
+          title: 'Feature nova, ainda não existe',
+          labels: [{ name: 'gitorch:task' }],
+          body: '',
+          created_at: '2026-08-30T00:00:00Z',
+          updated_at: '2026-08-30T00:00:00Z',
+        },
+      ]),
+      criarSessaoDev: criar as never,
+      aoCriarSessao: async () => undefined,
+      diagnosticarJaResolvido: diagnosticar,
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+    })
+
+    expect(criar).toHaveBeenCalledOnce()
+    expect(r.delegated).toEqual([47])
+    expect(r.sinalizadasComoResolvidas).toEqual([])
+  })
+
+  it('sem diagnosticarJaResolvido injetado: comportamento antigo, sem gate nenhum (compatibilidade)', async () => {
+    const criar = vi.fn(async () => ({ situacao: 'criada' as const, sessionName: 's/48' }))
+
+    const r = await runSmDelegation({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: fetchDeIssues([{ number: 48, labels: [{ name: 'gitorch:task' }], body: '' }]),
+      criarSessaoDev: criar as never,
+      aoCriarSessao: async () => undefined,
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+    })
+
+    expect(r.delegated).toEqual([48])
+    expect(r.sinalizadasComoResolvidas).toEqual([])
+  })
+
+  it('diagnóstico não roda quando não sobra nenhuma candidata (economiza grafo)', async () => {
+    // #50 já tem sessão viva — o filtro mais barato já resolve sozinho, e o
+    // diagnóstico (caro: clona/consulta o grafo do código) nem chega a ser
+    // chamado. Gastar grafo aqui seria puro desperdício.
+    const diagnosticar = vi.fn(async () => new Map())
+    await runSmDelegation({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: fetchDeIssues([{ number: 50, labels: [{ name: 'gitorch:task' }], body: '' }]),
+      sessoesVivas: [
+        {
+          id: 'x',
+          projectId: 'p',
+          issueNumber: 50,
+          sessionName: 's',
+          state: 'IN_PROGRESS',
+          answeredHash: null,
+          pullRequestNumber: null,
+          attempts: 1,
+          nudges: 0,
+          lastProgressAt: null,
+          stateCheckedAt: null,
+          reworkNoticePending: null,
+          reworkNoticeAttempts: 0,
+          pendingSince: null,
+          mergeCommitSha: null,
+          deployState: null,
+          deployCheckedAt: null,
+          mergeFailures: 0,
+          mergeLastFailedAt: null,
+          deployFixKey: null,
+          envLastVerdict: null,
+          closedAt: null,
+        },
+      ],
+      diagnosticarJaResolvido: diagnosticar,
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+    })
+    expect(diagnosticar).not.toHaveBeenCalled()
+  })
+})
