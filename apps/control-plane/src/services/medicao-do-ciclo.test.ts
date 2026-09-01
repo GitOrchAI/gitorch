@@ -5,7 +5,9 @@ import {
   percentil,
   saiuDePrimeira,
   NAO_MEDIDO,
+  medirMultiplicador,
   type FatosDoCiclo,
+  type FatosDoCicloDoItem,
 } from './medicao-do-ciclo.js'
 
 // Os números abaixo vieram do banco do dono em 30/08: 179 entregas, 903
@@ -124,5 +126,90 @@ describe('medirCiclo — o retrabalho aparece, não some na média', () => {
     expect(m.naoMedido).toEqual([...NAO_MEDIDO])
     expect(m.naoMedido[0]).toContain('QA reprovou')
     expect(m.naoMedido.every((x) => x.includes('—') || x.includes('-'))).toBe(true)
+  })
+})
+
+// D4 — o CICLO DO ITEM: do desejo (INÍCIO) até a entrega (FIM), nunca da
+// sessão do dev (que é só um PEDAÇO do ciclo — uma issue pode passar por
+// várias sessões até mesclar). Vem do Incremento: wishCreatedAt é o INÍCIO,
+// prontoEm é o FIM.
+const itemDoCiclo = (over: Partial<FatosDoCicloDoItem> = {}): FatosDoCicloDoItem => ({
+  wishCreatedAt: new Date('2026-08-20T00:00:00Z'),
+  prontoEm: new Date('2026-08-20T10:00:00Z'),
+  teveRetrabalho: false,
+  ...over,
+})
+
+describe('medirMultiplicador — o que o retrabalho custa, medido no NOSSO banco', () => {
+  it('sem entrega nenhuma: os dois grupos e o fator vêm nulos, não zero', () => {
+    const mm = medirMultiplicador([])
+    expect(mm.cicloDePrimeira).toBeNull()
+    expect(mm.cicloComRetrabalho).toBeNull()
+    expect(mm.custoDoRetrabalho).toBeNull()
+    expect(mm.amostra).toEqual({ entregas: 0, dePrimeira: 0, comRetrabalho: 0 })
+  })
+
+  it('só entregas de primeira: cicloComRetrabalho e o fator ficam nulos (nada para comparar)', () => {
+    const mm = medirMultiplicador([itemDoCiclo(), itemDoCiclo()])
+    expect(mm.cicloDePrimeira?.mediana).toBe(10)
+    expect(mm.cicloComRetrabalho).toBeNull()
+    expect(mm.custoDoRetrabalho).toBeNull()
+  })
+
+  it('só entregas com retrabalho: cicloDePrimeira e o fator ficam nulos', () => {
+    const mm = medirMultiplicador([itemDoCiclo({ teveRetrabalho: true })])
+    expect(mm.cicloComRetrabalho?.mediana).toBe(10)
+    expect(mm.cicloDePrimeira).toBeNull()
+    expect(mm.custoDoRetrabalho).toBeNull()
+  })
+
+  it('o fator é a mediana COM retrabalho dividida pela mediana SEM — quantas vezes mais devagar', () => {
+    // De primeira: 10h. Com retrabalho: 40h. O retrabalho custa 4x o tempo.
+    const mm = medirMultiplicador([
+      itemDoCiclo({ prontoEm: new Date('2026-08-20T10:00:00Z') }), // 10h
+      itemDoCiclo({
+        teveRetrabalho: true,
+        prontoEm: new Date('2026-08-21T16:00:00Z'), // 40h
+      }),
+    ])
+    expect(mm.cicloDePrimeira?.mediana).toBe(10)
+    expect(mm.cicloComRetrabalho?.mediana).toBe(40)
+    expect(mm.custoDoRetrabalho).toBe(4)
+    expect(mm.amostra).toEqual({ entregas: 2, dePrimeira: 1, comRetrabalho: 1 })
+  })
+
+  it('usa MEDIANA, não média — uma entrega travada não distorce o fator', () => {
+    const dePrimeira = [
+      itemDoCiclo({ prontoEm: new Date('2026-08-20T10:00:00Z') }), // 10h
+      itemDoCiclo({ prontoEm: new Date('2026-08-20T12:00:00Z') }), // 12h
+      itemDoCiclo({ prontoEm: new Date('2026-08-20T11:00:00Z') }), // 11h
+    ]
+    const comRetrabalho = [
+      itemDoCiclo({ teveRetrabalho: true, prontoEm: new Date('2026-08-21T10:00:00Z') }), // 34h
+      itemDoCiclo({ teveRetrabalho: true, prontoEm: new Date('2026-08-21T12:00:00Z') }), // 36h
+      // uma que travou muito mais: não pode puxar o fator sozinha.
+      itemDoCiclo({
+        teveRetrabalho: true,
+        wishCreatedAt: new Date('2026-08-01T00:00:00Z'),
+        prontoEm: new Date('2026-09-01T00:00:00Z'),
+      }),
+    ]
+    const mm = medirMultiplicador([...dePrimeira, ...comRetrabalho])
+    // percentil não interpola (mesma regra de `percentil` acima): a mediana
+    // de 3 valores é o do MEIO observado, não a média dos dois centrais.
+    // de primeira [10,11,12] -> 11h; com retrabalho [34,36,744h] -> 36h.
+    expect(mm.cicloDePrimeira?.mediana).toBe(11)
+    expect(mm.cicloComRetrabalho?.mediana).toBe(36)
+    // e a entrega que travou 744h (31 dias) não puxa a mediana pra cima —
+    // é exatamente o ponto de usar mediana em vez de média.
+    expect(mm.cicloComRetrabalho?.maximo).toBe(744)
+  })
+
+  it('wishCreatedAt nulo (não deu para confirmar a wish): o item fica de fora, nunca inventa a conta', () => {
+    const mm = medirMultiplicador([
+      itemDoCiclo(),
+      { wishCreatedAt: null, prontoEm: new Date('2026-08-20T10:00:00Z'), teveRetrabalho: false },
+    ])
+    expect(mm.amostra.entregas).toBe(1)
   })
 })
