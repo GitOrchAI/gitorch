@@ -67,6 +67,23 @@ export interface ProjectBoardRef {
 }
 
 /**
+ * IGUALDADE exata (sem acento/maiúscula não importando), nunca parecença: o
+ * título bate com "dono/repo" inteiro ou só com o nome do repo. Existe só
+ * para o passo 3 de `ensureProjectBoard` — reduzir a lista de TODOS os
+ * quadros pessoais da conta (nove, medido ao vivo contra loureng) aos que
+ * sequer citam este repositório, antes de gastar uma chamada de detalhe
+ * (`detalharQuadro`) em cada um. A exclusividade de verdade continua sendo
+ * decidida por dentro do quadro, não por este nome.
+ */
+function quadroNomeadoParaRepositorio(title: string, repository: string): boolean {
+  const normalizar = (s: string) => s.trim().toLowerCase()
+  const alvo = normalizar(title)
+  const nomeCompleto = normalizar(repository)
+  const soNome = normalizar(repository.split('/')[1] ?? '')
+  return alvo === nomeCompleto || (soNome.length > 0 && alvo === soNome)
+}
+
+/**
  * Entre vários candidatos, vence o que tem MAIS CAMPOS.
  *
  * Decisão do dono, e a razão é o respeito ao trabalho de quem já cuidava do
@@ -219,6 +236,55 @@ export async function ensureProjectBoard(
               // repositório tira o atalho da aba /projects, não o quadro.
               warn(
                 `quadro #${candidato.number} de ${deps.repository} encontrado, mas falhou ao ligar ao repositório: ${(err as Error).message}`
+              )
+            }
+          }
+          return { owner, number: candidato.number }
+        }
+      }
+
+      // 3) A conta tem um quadro AVULSO — nunca ligado a este repositório e
+      //    sem NENHUMA issue dele — mas com o NOME dele. É o caso de quem já
+      //    criou o quadro à mão e ainda não abriu a primeira issue: sem item
+      //    nenhum, o passo 2 (evidência por issue) não tem como achar nada.
+      //
+      //    NUNCA decide por parecença livre — a mesma armadilha que o passo 2
+      //    evita (ver o comentário de `escolherMaisRico`): exige IGUALDADE
+      //    exata com "dono/repo" ou só o nome do repo, e a exclusividade por
+      //    dentro do quadro (mesma checagem do passo 2) ainda confere antes
+      //    de adotar. Sem esse filtro, `listarQuadrosDaConta` devolve TODOS
+      //    os quadros pessoais da conta — provado ao vivo em 01/09/2026 contra
+      //    loureng: nove quadros, a maioria de OUTROS projetos dele. Os dois
+      //    quadros REAIS batizados exatamente "loureng/patinhas-3d-crafts"
+      //    nasceram 42 segundos um do outro (ver o comentário do passo 2.5,
+      //    "O LAÇO DOS QUADROS") — é o caso que este caminho existe para
+      //    achar, em vez de nascer um terceiro.
+      if (client.listarQuadrosDaConta) {
+        const daConta = await client.listarQuadrosDaConta({
+          login: dono ?? '',
+          ownerType: resolved.type,
+        })
+        const nomeados = daConta.filter(
+          (q) => !q.closed && quadroNomeadoParaRepositorio(q.title, deps.repository)
+        )
+        const candidato = await escolherMaisRico(
+          nomeados,
+          { ...deps, client },
+          { exigirExclusivo: true }
+        )
+        if (candidato) {
+          if (deps.resolveRepositoryId && client.linkProjectV2ToRepository) {
+            try {
+              const repositoryId = await deps.resolveRepositoryId(deps.repository)
+              await client.linkProjectV2ToRepository({
+                projectId: candidato.id,
+                repositoryId,
+              })
+            } catch (err) {
+              // Mesmo raciocínio do passo 2: o quadro é o certo; não anunciá-lo
+              // ao repositório tira só o atalho da aba /projects.
+              warn(
+                `quadro #${candidato.number} de ${deps.repository} encontrado na conta pessoal, mas falhou ao ligar ao repositório: ${(err as Error).message}`
               )
             }
           }

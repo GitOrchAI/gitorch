@@ -17,9 +17,19 @@ import { billingRoutes } from './billing.js'
 import { diagnoseRoutes } from './diagnose.js'
 import { desejosRoutes } from './desejos.js'
 import { criarIssueDeDesejo } from '../services/desejo-no-github.js'
-import { projetoParaDesejo, projetosParaDesejo } from '../services/projetos-do-desejo.js'
+import {
+  ACEITA_PEDIDO,
+  projetoParaDesejo,
+  projetosParaDesejo,
+} from '../services/projetos-do-desejo.js'
 import { provaDeEscritaNoUso } from '../services/acesso-ao-repositorio.js'
 import { fetchImplParaProvaDeAcesso } from '../services/fake-github-access.js'
+import { loteDeSugestoesRoutes } from './lote-de-sugestoes.js'
+import { diagnosticarIssues } from '../services/diagnostico-de-issues.js'
+import { listarIssuesAbertasReal, fecharIssueReal } from '../services/lote-de-sugestoes-github.js'
+import { mintInstallationToken } from '../services/github-app-token.js'
+import { repoWorkspaceSlug } from '../services/free-diagnosis.js'
+import { LocalWorkspaceProvider } from '@gitorch/workspace-engine'
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   // Health and readiness endpoints
@@ -91,6 +101,66 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         etiquetas,
         log: { onError: (m) => app.log.error(m), onWarn: (m) => app.log.warn(m) },
       }),
+  })
+
+  // D7 (parte A, "A lógica da leva 2"): o lote de sugestões do nível
+  // "Sugerir" — junta os achados do diagnóstico (diagnostico-de-issues.ts,
+  // D6) numa lista única e resolve UM aval sobre o lote inteiro.
+  //
+  // `garantirWorkspace`/`listarIssuesAbertas`/`fecharIssue` mintam o
+  // installation token do App a cada chamada (mesmo padrão de
+  // candidatosViaInstalacao em setup.ts) — sem cache aqui porque
+  // `mintInstallationToken` já cacheia por instalação por baixo.
+  const workspaceProviderDoLote = new LocalWorkspaceProvider()
+  await app.register(loteDeSugestoesRoutes, {
+    buscarProjeto: async ({ projectId, userId }) => {
+      const projeto = await app.prisma.project.findFirst({
+        where: { id: projectId, userId, ...ACEITA_PEDIDO },
+        select: { id: true, wingId: true, autonomia: true },
+      })
+      return projeto
+        ? { id: projeto.id, githubRepo: projeto.wingId, autonomia: projeto.autonomia }
+        : null
+    },
+    garantirWorkspace: async (repo) => {
+      const token = await mintInstallationToken({
+        repository: repo,
+        onWarn: (m) => app.log.warn(m),
+        onError: (m) => app.log.error(m),
+      })
+      if (!token) {
+        throw new Error(`sem installation token do App para ${repo} — App não instalado?`)
+      }
+      const ws = await workspaceProviderDoLote.allocateWorkspace(
+        'lote-de-sugestoes',
+        repoWorkspaceSlug(repo),
+        { repository: repo, token }
+      )
+      return ws.path
+    },
+    listarIssuesAbertas: async (repo) => {
+      const token = await mintInstallationToken({
+        repository: repo,
+        onWarn: (m) => app.log.warn(m),
+        onError: (m) => app.log.error(m),
+      })
+      if (!token) {
+        throw new Error(`sem installation token do App para ${repo} — App não instalado?`)
+      }
+      return listarIssuesAbertasReal(repo, token)
+    },
+    diagnosticar: (issues, workspacePath) => diagnosticarIssues(issues, { workspacePath }),
+    fecharIssue: async (repo, issueNumber, comentario) => {
+      const token = await mintInstallationToken({
+        repository: repo,
+        onWarn: (m) => app.log.warn(m),
+        onError: (m) => app.log.error(m),
+      })
+      if (!token) {
+        throw new Error(`sem installation token do App para ${repo} — App não instalado?`)
+      }
+      await fecharIssueReal(repo, issueNumber, comentario, token)
+    },
   })
 
   // Runtime Config endpoint

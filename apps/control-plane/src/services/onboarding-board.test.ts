@@ -658,6 +658,149 @@ describe('ensureProjectBoard — descobre por evidência antes de criar', () => 
   })
 })
 
+// D7 (parte B): o terceiro caminho — quadro AVULSO na conta pessoal, nunca
+// ligado a este repositório e sem NENHUMA issue dele (por isso o passo 2 não
+// acha nada: ele procura evidência por issue, e um quadro recém-criado à mão
+// não tem nenhuma ainda). `listarQuadrosDaConta` existia desde antes e nunca
+// era chamada — zero chamadas em produção.
+//
+// PROVADO AO VIVO em 01/09/2026 contra a API real do GitHub, com a
+// credencial de produção: o installation token do App vê `user(login:
+// "loureng").projectsV2.totalCount = 0` (HTTP 200, sem erro, o nó do usuário
+// resolve — não é dono nulo, é zero mesmo para o App). Com o TOKEN DO PRÓPRIO
+// DONO (o mesmo que já resolve o laço dos quadros #11/#12 acima), a mesma
+// consulta devolve NOVE quadros pessoais — a maioria de OUTROS projetos dele
+// (GitOrch, AutoPatch Roadmap, ECA Verify Development, um teste antigo...).
+// É por isso que o filtro abaixo NUNCA decide por parecença de nome livre
+// (a mesma armadilha que o passo 2 já evita, ver comentário de
+// `escolherMaisRico`): exige IGUALDADE exata com "dono/repo" ou o nome do
+// repo, e ainda assim confere exclusividade por dentro do quadro antes de
+// adotar. Os dois quadros REAIS batizados exatamente "loureng/patinhas-3d-
+// crafts" nasceram assim, 42 segundos um do outro — é o caso que este
+// caminho existe para achar sem criar um TERCEIRO.
+describe('ensureProjectBoard — 3) quadro avulso na conta pessoal (sem issue ainda)', () => {
+  const clienteCompleto = (over: Record<string, unknown> = {}) => ({
+    findProjectId: vi.fn(async () => null),
+    createProjectV2: vi.fn(async () => ({ id: 'PVT_novo', number: 42 })),
+    linkProjectV2ToRepository: vi.fn(async () => 'R_repo'),
+    listarQuadrosDoRepositorio: vi.fn(async () => []),
+    descobrirQuadrosPorIssues: vi.fn(async () => []),
+    listarQuadrosDaConta: vi.fn(async () => []),
+    detalharQuadro: vi.fn(async () => ({ camposCount: 14, outrosRepositorios: [] })),
+    ...over,
+  })
+
+  const base = {
+    repository: 'dono/repo',
+    resolveOwner: async () => ({ id: 'U_dono', type: 'user' as const }),
+    resolveRepositoryId: async () => 'R_repo',
+  }
+
+  it('acha o quadro batizado exatamente "dono/repo" na conta e liga, sem criar outro', async () => {
+    const c = clienteCompleto({
+      listarQuadrosDaConta: vi.fn(async () => [
+        { id: 'PVT_avulso', number: 11, title: 'dono/repo', closed: false },
+        { id: 'PVT_de_outro_projeto', number: 6, title: 'GitOrch', closed: false },
+        { id: 'PVT_arquivado', number: 5, title: "@dono's untitled project", closed: true },
+      ]),
+    })
+    const r = await ensureProjectBoard({ ...base, client: c as never })
+    expect(r).toEqual({ owner: 'dono', number: 11 })
+    expect(c.createProjectV2).not.toHaveBeenCalled()
+    expect(c.linkProjectV2ToRepository).toHaveBeenCalledWith({
+      projectId: 'PVT_avulso',
+      repositoryId: 'R_repo',
+    })
+  })
+
+  it('também aceita o quadro batizado só com o NOME do repo (sem o dono)', async () => {
+    const c = clienteCompleto({
+      listarQuadrosDaConta: vi.fn(async () => [
+        { id: 'PVT_avulso', number: 11, title: 'repo', closed: false },
+      ]),
+    })
+    const r = await ensureProjectBoard({ ...base, client: c as never })
+    expect(r).toEqual({ owner: 'dono', number: 11 })
+  })
+
+  it('NÃO adota por parecença de nome — só igualdade exata (a mesma vara do passo 2)', async () => {
+    const c = clienteCompleto({
+      listarQuadrosDaConta: vi.fn(async () => [
+        { id: 'PVT_parecido', number: 6, title: 'dono/repo (cópia de trabalho)', closed: false },
+        { id: 'PVT_generico', number: 7, title: 'Roadmap geral do dono', closed: false },
+      ]),
+    })
+    const r = await ensureProjectBoard({ ...base, client: c as never })
+    expect(r).toEqual({ owner: 'dono', number: 42 })
+    expect(c.createProjectV2).toHaveBeenCalled()
+  })
+
+  it('quadro batizado certo mas usado por OUTRO repositório: não invade, cria o próprio', async () => {
+    const c = clienteCompleto({
+      listarQuadrosDaConta: vi.fn(async () => [
+        { id: 'PVT_ocupado', number: 11, title: 'dono/repo', closed: false },
+      ]),
+      detalharQuadro: vi.fn(async () => ({
+        camposCount: 30,
+        outrosRepositorios: ['dono/outro-repo-qualquer'],
+      })),
+    })
+    const r = await ensureProjectBoard({ ...base, client: c as never })
+    expect(r).toEqual({ owner: 'dono', number: 42 })
+    expect(c.createProjectV2).toHaveBeenCalled()
+  })
+
+  it('quadro batizado certo mas FECHADO: não adota o morto, cria o próprio', async () => {
+    const c = clienteCompleto({
+      listarQuadrosDaConta: vi.fn(async () => [
+        { id: 'PVT_morto', number: 11, title: 'dono/repo', closed: true },
+      ]),
+    })
+    const r = await ensureProjectBoard({ ...base, client: c as never })
+    expect(r).toEqual({ owner: 'dono', number: 42 })
+  })
+
+  it('dois candidatos com o nome exato: vence o mais rico em campos (mesma regra do passo 2)', async () => {
+    const c = clienteCompleto({
+      listarQuadrosDaConta: vi.fn(async () => [
+        { id: 'PVT_11', number: 11, title: 'dono/repo', closed: false },
+        { id: 'PVT_12', number: 12, title: 'dono/repo', closed: false },
+      ]),
+      detalharQuadro: vi.fn(async ({ projectId }: { projectId: string }) =>
+        projectId === 'PVT_12'
+          ? { camposCount: 20, outrosRepositorios: [] }
+          : { camposCount: 3, outrosRepositorios: [] }
+      ),
+    })
+    const r = await ensureProjectBoard({ ...base, client: c as never })
+    expect(r).toEqual({ owner: 'dono', number: 12 })
+  })
+
+  it('cliente sem listarQuadrosDaConta continua criando como antes (opcional de verdade)', async () => {
+    const c = {
+      findProjectId: vi.fn(async () => null),
+      createProjectV2: vi.fn(async () => ({ id: 'PVT_novo', number: 42 })),
+      linkProjectV2ToRepository: vi.fn(async () => 'R_repo'),
+      listarQuadrosDoRepositorio: vi.fn(async () => []),
+      descobrirQuadrosPorIssues: vi.fn(async () => []),
+    }
+    const r = await ensureProjectBoard({ ...base, client: c as never })
+    expect(r).toEqual({ owner: 'dono', number: 42 })
+  })
+
+  it('conta que só devolve quadros de outros nomes: segue para criar, nunca trava', async () => {
+    const c = clienteCompleto({
+      listarQuadrosDaConta: vi.fn(async () => [
+        { id: 'PVT_1', number: 1, title: 'ECA Verify Development', closed: false },
+        { id: 'PVT_2', number: 2, title: 'AutoPatch Roadmap', closed: false },
+      ]),
+    })
+    const r = await ensureProjectBoard({ ...base, client: c as never })
+    expect(r).toEqual({ owner: 'dono', number: 42 })
+    expect(c.createProjectV2).toHaveBeenCalled()
+  })
+})
+
 // Achado de revisão: o tipo permite um cliente que descobre quadros mas não
 // sabe olhar dentro deles. Nesse caso não há como afirmar exclusividade, e
 // adotar assim mesmo reabriria o risco de despejar o backlog na casa de outro.
