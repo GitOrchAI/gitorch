@@ -142,6 +142,17 @@ export interface ItemDoQuadro {
    * colocaria sempre primeiro na ordem ótima — mentira por omissão.
    */
   peso: number | null
+  /**
+   * O corpo (markdown) da issue, lido na MESMA consulta — mesmo motivo de
+   * `peso`/`iteracaoId`: o backfill de itens existentes (D8) precisa achar o
+   * peso que já está no TEXTO de até 124 issues, e uma chamada REST por issue
+   * pagaria a busca uma a uma.
+   *
+   * `null` quando o corpo não foi pedido (`comCorpo` ausente) OU quando a
+   * issue não tem corpo — mesma convenção de `peso`: os dois casos são "não
+   * tenho o texto", nunca "corpo vazio válido".
+   */
+  corpo: string | null
 }
 
 /**
@@ -157,7 +168,7 @@ interface RespostaDeItensDoQuadro {
       pageInfo: { hasNextPage: boolean; endCursor: string | null }
       nodes: Array<{
         id: string
-        content?: { number?: number } | null
+        content?: { number?: number; corpo?: string | null } | null
         fieldValueByName?: { iterationId?: string | null } | null
         pesoValue?: { number?: number | null } | null
       } | null> | null
@@ -1023,6 +1034,13 @@ export class ProjectV2Client {
        * um dos dois não paga pelo outro.
        */
       campoDePeso?: string
+      /**
+       * Traz o corpo (markdown) de cada issue na mesma consulta — o backfill
+       * de peso (D8) lê o que já está no TEXTO de itens antigos. Sem nome de
+       * campo, diferente de sprint/peso: `body` é built-in do tipo `Issue`,
+       * não um campo do quadro do cliente.
+       */
+      comCorpo?: boolean
       /** Chamado quando o teto de páginas cortou a leitura. */
       onTruncado?: (lidos: number) => void
     }
@@ -1052,6 +1070,7 @@ export class ProjectV2Client {
               $querSprint: Boolean!
               $campoDePeso: String!
               $querPeso: Boolean!
+              $comCorpo: Boolean!
             ) {
               node(id: $projectId) {
                 ... on ProjectV2 {
@@ -1059,7 +1078,10 @@ export class ProjectV2Client {
                     pageInfo { hasNextPage endCursor }
                     nodes {
                       id
-                      content { ... on Issue { number } ... on PullRequest { number } }
+                      content {
+                        ... on Issue { number corpo: body @include(if: $comCorpo) }
+                        ... on PullRequest { number }
+                      }
                       fieldValueByName(name: $campo) @include(if: $querSprint) {
                         ... on ProjectV2ItemFieldIterationValue { iterationId }
                       }
@@ -1100,6 +1122,7 @@ export class ProjectV2Client {
               querSprint: (opcoes?.campoDeSprint ?? '').length > 0,
               campoDePeso: opcoes?.campoDePeso ?? '',
               querPeso: (opcoes?.campoDePeso ?? '').length > 0,
+              comCorpo: opcoes?.comCorpo ?? false,
             },
           },
           this.token
@@ -1113,6 +1136,7 @@ export class ProjectV2Client {
           pedido: n.content.number,
           iteracaoId: n.fieldValueByName?.iterationId ?? null,
           peso: typeof n.pesoValue?.number === 'number' ? n.pesoValue.number : null,
+          corpo: n.content.corpo ?? null,
         })
       }
 
