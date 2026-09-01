@@ -7,6 +7,7 @@ import { missionRoutes } from './missions.js'
 import { painelRoutes } from './painel.js'
 import { eventRoutes } from './events.js'
 import { runtimeConfigRoutes } from './runtime-config.js'
+import { cascataRoutes } from './cascata.js'
 import { avisoDePublicacaoRoutes } from './aviso-de-publicacao.js'
 import { contaDoDevRoutes } from './conta-do-dev.js'
 import { authRoutes } from './auth.js'
@@ -94,6 +95,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
   // Runtime Config endpoint
   await runtimeConfigRoutes(app)
+  // A cascata por agente (motor + modelo + esforço, por papel), por projeto.
+  await cascataRoutes(app)
   await avisoDePublicacaoRoutes(app)
   await contaDoDevRoutes(app)
 

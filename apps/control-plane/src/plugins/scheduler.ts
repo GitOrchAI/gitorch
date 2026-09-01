@@ -22,6 +22,7 @@ import {
   DEFAULT_AGENT_RUNTIME_ASSIGNMENTS,
   type F6AgentRole,
   type F6AgentRuntime,
+  type ReasoningEffort,
   type RuntimeCommandRunner,
   type WorkspaceProvider,
 } from '@gitorch/agents'
@@ -294,6 +295,14 @@ import {
   temMarcaDeFailover,
 } from '../services/resumo-de-erro-do-motor.js'
 import { escolherModeloVivo } from '../services/catalogo-vivo-de-modelos.js'
+import {
+  argumentosDeEsforco,
+  modeloComEsforcoNoNome,
+  valorDeModeloParaOMotor,
+  esforcoValidoNoMotor,
+  COMO_O_MOTOR_EXPRESSA_ESFORCO,
+} from '../services/esforco-por-motor.js'
+import { padraoDoDegrau } from '../services/padrao-do-degrau.js'
 import { marcaDePedidoDeLogin } from '../services/motor-que-pede-login.js'
 import {
   ehTetoDeUsoDaConta,
@@ -382,19 +391,24 @@ interface TriggerResult {
 // truncamento era NOSSO (ver resumo-de-erro-do-motor.ts), não do CLI. Rodando
 // `agy models` de verdade nesta VM em 01/09 vêm 11 modelos. Nunca escolher
 // substituto pela lista que aparece no log.
-const MODEL_FLASH = process.env['GITORCH_MODEL_FLASH'] ?? 'Gemini 3.7 Flash (Medium)'
-const MODEL_PRO = process.env['GITORCH_MODEL_PRO'] ?? 'Gemini 3.1 Pro (Low)'
+// O `MODEL_BY_ROLE` que morava aqui FOI REMOVIDO, e vale registrar por quê.
+//
+// Ele era `po: Pro, ra/sm/qa: Flash` — dois níveis para quatro papéis, com
+// nomes do Antigravity, e era aplicado a QUALQUER motor da cadeia. Medido ao
+// vivo em 01/09/2026: rodando `resolveRuntimeChain('ra', null, padrões_reais,
+// ['antigravity','claude','codex'])`, os TRÊS degraus voltaram com
+// `Gemini 3.7 Flash (Medium)`; e `claude --model "Gemini 3.7 Flash (Medium)"`
+// responde "There's an issue with the selected model". Os degraus de reserva
+// nasciam mortos.
+//
+// O padrão agora é por PAPEL e por MOTOR, resolvido contra o catálogo VIVO
+// daquele motor: services/padrao-do-degrau.ts, onde a exigência de cada papel
+// está escrita e justificada (o QA julga e pede modelo forte; o SM só
+// movimenta e pede o barato). Um nome de modelo escrito no código envelhece —
+// foi assim que a geração Gemini 3.5 matou 24 missões em 9h48.
 
-// PO decide (modelo forte); RA/SM/QA analisam (modelo rápido).
-const MODEL_BY_ROLE: Record<F6AgentRole, string> = {
-  po: MODEL_PRO,
-  ra: MODEL_FLASH,
-  sm: MODEL_FLASH,
-  qa: MODEL_FLASH,
-}
-
-// Padrões da instância para o resolvedor por projeto: motor por papel (config
-// do pacote de agentes) e modelo por papel. O projeto sobrescreve via
+// Padrões da instância para o resolvedor por projeto: só o MOTOR por papel
+// (config do pacote de agentes). O projeto sobrescreve via
 // project.runtimeConfig.agents.
 const RESOLVER_DEFAULTS: ResolverDefaults = {
   runtimeByRole: {
@@ -403,7 +417,6 @@ const RESOLVER_DEFAULTS: ResolverDefaults = {
     sm: DEFAULT_AGENT_RUNTIME_ASSIGNMENTS.sm.runtime,
     qa: DEFAULT_AGENT_RUNTIME_ASSIGNMENTS.qa.runtime,
   },
-  modelByRole: MODEL_BY_ROLE,
 }
 
 /**
@@ -537,10 +550,18 @@ export function resolveRailsBoard(project: { runtimeConfig?: unknown }): string 
  */
 export interface ModeloDaMissao {
   /**
-   * O modelo a passar ao motor. `undefined` quer dizer "rode sem `--model`",
-   * com o modelo padrão do próprio motor — nunca um palpite nosso.
+   * O modelo a passar ao motor, JÁ no formato que aquele CLI aceita.
+   * `undefined` quer dizer "rode sem `--model`", com o modelo padrão do próprio
+   * motor — nunca um palpite nosso.
    */
   modelo: string | undefined
+  /**
+   * O esforço a passar ao motor, JÁ validado contra a escada real dele.
+   * `undefined` quer dizer "não passe esforço nenhum": ou o cliente não pediu,
+   * ou o nível não existe naquele motor, ou o motor não separa esforço de
+   * modelo (antigravity — lá o esforço já virou o nome do modelo acima).
+   */
+  esforco: string | undefined
   /**
    * `false` quando o catálogo daquele motor prova que a tentativa é
    * desperdício com resultado conhecido. O degrau é PULADO.
@@ -552,20 +573,49 @@ export async function modeloVivoParaAMissao(args: {
   prisma: { engineConnection?: { findFirst?: (...args: never[]) => Promise<unknown> } }
   ownerUserId: string | null | undefined
   runtime: string
-  desejado: string
+  /**
+   * O papel do agente. É ele que define a EXIGÊNCIA do degrau quando o cliente
+   * não escolheu modelo — o QA julga e pede modelo forte, o SM só movimenta e
+   * pede o barato (ver services/padrao-do-degrau.ts).
+   */
+  role?: F6AgentRole
+  /** O modelo que o cliente escolheu. Ausente = usar o padrão do papel. */
+  desejado?: string | undefined
+  /** O esforço que o cliente escolheu para ESTE degrau. */
+  esforco?: string | undefined
   log: { warn: (msg: string) => void }
 }): Promise<ModeloDaMissao> {
-  const segueComOPedido: ModeloDaMissao = { modelo: args.desejado, valeATentativa: true }
+  const avisar = (msg: string): void =>
+    args.log.warn(`[Scheduler] modelo de ${args.runtime}: ${msg}`)
+
+  // O que sai quando não dá para consultar o catálogo. Sem catálogo não há como
+  // resolver padrão nem trocar variante de esforço: segue com o que o cliente
+  // pediu, e o esforço só passa se o nível existir naquele motor.
+  const semCatalogo = (): ModeloDaMissao => {
+    const esforco =
+      args.esforco && esforcoValidoNoMotor(args.runtime, args.esforco) ? args.esforco : undefined
+    return {
+      modelo: args.desejado ? valorDeModeloParaOMotor(args.runtime, args.desejado) : undefined,
+      // No antigravity o esforço nunca viaja separado do modelo (`--effort`
+      // junto de `--model` é erro duro do CLI, medido ao vivo).
+      esforco:
+        COMO_O_MOTOR_EXPRESSA_ESFORCO[args.runtime as F6AgentRuntime] === 'no-nome-do-modelo'
+          ? undefined
+          : esforco,
+      valeATentativa: true,
+    }
+  }
+
   // Projeto legado sem dono não tem catálogo para consultar — nem vale a ida ao
   // banco.
-  if (!args.ownerUserId) return segueComOPedido
+  if (!args.ownerUserId) return semCatalogo()
 
   // FAIL-OPEN inclusive no tropeço SÍNCRONO. Um `.catch()` só pega promessa
   // rejeitada; ler `.findFirst` de um `engineConnection` ausente estoura ANTES
   // de existir promessa alguma, e a exceção subiria para a missão. Esta guarda
   // não é paranoia de tipo: a suíte pegou o caso ao vivo.
   const conexoes = args.prisma?.engineConnection
-  if (typeof conexoes?.findFirst !== 'function') return segueComOPedido
+  if (typeof conexoes?.findFirst !== 'function') return semCatalogo()
   const buscar = conexoes.findFirst.bind(conexoes)
 
   const catalogo = await Promise.resolve()
@@ -579,14 +629,74 @@ export async function modeloVivoParaAMissao(args: {
     .catch(() => undefined)
 
   // Só lista de texto serve. Qualquer outra forma é tratada como "não sei".
-  if (!Array.isArray(catalogo)) return segueComOPedido
+  if (!Array.isArray(catalogo)) return semCatalogo()
   const nomes = catalogo.filter((m): m is string => typeof m === 'string')
+  if (nomes.length === 0) return semCatalogo()
 
-  const escolha = escolherModeloVivo({ desejado: args.desejado, catalogo: nomes })
-  if (escolha.aviso) {
-    args.log.warn(`[Scheduler] modelo de ${args.runtime}: ${escolha.aviso}`)
+  // 1) O PADRÃO DE QUEM NÃO ESCOLHEU sai daqui, e sai por PAPEL e por MOTOR,
+  //    do catálogo vivo deste motor. Antes vinha de uma constante única com
+  //    nomes do Antigravity, entregue a qualquer motor — e o degrau do claude
+  //    do rodízio morria na chegada (medido em 01/09/2026).
+  const padrao = args.role
+    ? padraoDoDegrau({ role: args.role, runtime: args.runtime, catalogo: nomes })
+    : {}
+  let desejado = args.desejado ?? padrao.model
+  const esforcoPedido = args.esforco ?? (args.desejado ? undefined : padrao.effort)
+
+  // 2) No antigravity, ESFORÇO É NOME DE MODELO. Aplicar aqui, contra o
+  //    catálogo, antes de qualquer outra conferência — é a única forma de
+  //    atender o esforço num motor cujo CLI recusa `--effort` junto de
+  //    `--model` (medido ao vivo em 01/09/2026).
+  const esforcoViveNoNome =
+    COMO_O_MOTOR_EXPRESSA_ESFORCO[args.runtime as F6AgentRuntime] === 'no-nome-do-modelo'
+  if (esforcoViveNoNome && desejado && esforcoPedido) {
+    const comEsforco = modeloComEsforcoNoNome({
+      modelo: desejado,
+      esforco: esforcoPedido,
+      catalogo: nomes,
+    })
+    if (comEsforco.aviso) avisar(comEsforco.aviso)
+    desejado = comEsforco.modelo
   }
-  return { modelo: escolha.modelo, valeATentativa: escolha.veredito !== 'saiu-do-catalogo' }
+
+  // Sem modelo escolhido e sem padrão que case com este catálogo: roda com o
+  // modelo padrão do próprio motor. Nunca um palpite nosso.
+  if (!desejado) {
+    return {
+      modelo: undefined,
+      esforco: esforcoDoDegrau(args.runtime, esforcoPedido, avisar),
+      valeATentativa: true,
+    }
+  }
+
+  // 3) A conferência de sempre: o modelo ainda existe no catálogo deste motor?
+  const escolha = escolherModeloVivo({ desejado, catalogo: nomes })
+  if (escolha.aviso) avisar(escolha.aviso)
+
+  return {
+    // 4) E só agora o nome vira o VALOR que aquele CLI aceita. DOIS dos três
+    //    catálogos guardam nome de vitrine que o CLI recusa: "Claude Opus 5"
+    //    (o que roda é `claude-opus-5`) e "GPT-5.5" (o que roda é `gpt-5.5`).
+    //    Medido ao vivo — ver services/esforco-por-motor.ts.
+    modelo: escolha.modelo ? valorDeModeloParaOMotor(args.runtime, escolha.modelo) : undefined,
+    esforco: esforcoDoDegrau(args.runtime, esforcoPedido, avisar),
+    valeATentativa: escolha.veredito !== 'saiu-do-catalogo',
+  }
+}
+
+/**
+ * O esforço que de fato sai no degrau: só o que aquele motor aceita, e nunca
+ * no antigravity (lá ele já virou nome de modelo). Um nível que o motor não
+ * tem NÃO é aproximado para o vizinho — é descartado com aviso.
+ */
+function esforcoDoDegrau(
+  runtime: string,
+  esforco: string | undefined,
+  avisar: (msg: string) => void
+): string | undefined {
+  const r = argumentosDeEsforco({ runtime, esforco })
+  if (r.aviso) avisar(r.aviso)
+  return r.args.length > 0 ? esforco : undefined
 }
 
 /**
@@ -1386,6 +1496,16 @@ function buildRuntimeStack(
         binary: containerized ? 'agy' : (process.env['GITORCH_AGY_BIN'] ?? 'agy'),
         args: buildAntigravityCliArgs(printTimeout, process.env['GITORCH_AGY_EXTRA_ARGS']),
         modelArgName: '--model',
+        // SEM `effortArgs`, e é decisão medida, não esquecimento. O `agy` tem
+        // a flag (`--effort low|medium|high`), mas ela é RECUSADA junto com
+        // `--model`, para todo modelo — medido nesta VM em 01/09/2026:
+        //   $ agy --model "Gemini 3.7 Flash (Medium)" --effort high --print ...
+        //     Error: invalid model selection ... --effort is not supported
+        //            for model "Gemini 3.7 Flash (Medium)"
+        // A cascata sempre fixa o modelo, então passar a flag aqui mataria
+        // 100% das missões do Antigravity — a mesma falha de 31/08 de volta.
+        // Neste motor o esforço vira o NOME do modelo (`(High)`/`(Medium)`/
+        // `(Low)`), resolvido contra o catálogo vivo em `modeloVivoParaAMissao`.
         workspaceDirArgName: '--add-dir',
         promptArgName: '--print',
         ...(missionRunner ? { runner: missionRunner } : {}),
@@ -1401,6 +1521,11 @@ function buildRuntimeStack(
       runtime: 'codex',
       binary: 'codex',
       args: ['exec', '-s', 'read-only', '--skip-git-repo-check'],
+      // O Codex NÃO tem `--effort` (conferido: `codex exec --help` não cita
+      // nem "effort" nem "reasoning"). O esforço é uma chave de configuração,
+      // e ela é reconhecida de verdade: com `--strict-config`, uma chave
+      // inventada é recusada na porta e `model_reasoning_effort` passa.
+      effortArgs: (esforco) => argumentosDeEsforco({ runtime: 'codex', esforco }).args,
       ...(missionRunner ? { runner: missionRunner } : {}),
     })
   )
@@ -1420,6 +1545,12 @@ function buildRuntimeStack(
       binary: containerized ? 'claude' : (process.env['GITORCH_CLAUDE_BIN'] ?? 'claude'),
       args: ['-p', '--permission-mode', 'plan'],
       modelArgName: '--model',
+      // O esforço do degrau, na flag própria do Claude Code
+      // (`--effort low|medium|high|xhigh|max`, conferido em `claude --help`).
+      // O nível já chega validado por `esforco-por-motor.ts`, e isso importa:
+      // o CLI ACEITA valor inválido com um aviso e roda no padrão — ou seja,
+      // um erro nosso passaria calado, cobrando por um nível nunca aplicado.
+      effortArgs: (esforco) => argumentosDeEsforco({ runtime: 'claude', esforco }).args,
       ...(missionRunner ? { runner: missionRunner } : {}),
     })
   )
@@ -2621,7 +2752,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       RESOLVER_DEFAULTS,
       motoresConectados
     )
-    const primary = chain[0] as { runtime: string; model?: string }
+    const primary = chain[0] as { runtime: string; model?: string; effort?: string }
 
     // Controle de gasto (BYOK): a missão roda no LLM do cliente. Antes de
     // disparar, checa a quota do motor primário e o orçamento de tokens do
@@ -2688,7 +2819,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           triggeredBy: onboardingSequence !== undefined ? 'onboarding' : origem,
           ...(onboardingSequence !== undefined ? { onboardingSequence } : {}),
           runtime: primary.runtime,
-          model: primary.model ?? MODEL_BY_ROLE[role],
+          // Só o que o CLIENTE escolheu. Quando ele não escolheu, o modelo
+          // ainda não existe neste ponto: quem o resolve é a conferência
+          // contra o catálogo vivo, dentro do failover. Registrar aqui um
+          // palpite (era `MODEL_BY_ROLE[role]`) gravava no banco um modelo
+          // que a missão nunca usou.
+          ...(primary.model !== undefined ? { model: primary.model } : {}),
+          ...(primary.effort !== undefined ? { effort: primary.effort } : {}),
         },
       },
     })
@@ -2738,7 +2875,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     missionId: string,
     project: ChainProject,
     role: F6AgentRole,
-    chainOriginal: Array<{ runtime: string; model?: string }>,
+    chainOriginal: Array<{ runtime: string; model?: string; effort?: string }>,
     planId?: string,
     // A cascata de onboarding (Task 10) é hoje o ÚNICO caminho que acorda o
     // QA — o projeto não tem agenda de QA própria em project_schedules. Sem
@@ -2792,7 +2929,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           prisma: app.prisma,
           ownerUserId: project.userId,
           runtime: sel.runtime,
-          desejado: sel.model ?? MODEL_BY_ROLE[role],
+          // O degrau viaja INTEIRO: motor, modelo e esforço, do jeito que o
+          // cliente montou a cascata. Quando ele não escolheu modelo, quem
+          // responde é o padrão do PAPEL naquele MOTOR — nunca mais uma
+          // constante única aplicada a todos.
+          role,
+          ...(sel.model !== undefined ? { desejado: sel.model } : {}),
+          ...(sel.effort !== undefined ? { esforco: sel.effort } : {}),
           log: app.log,
         })),
       }))
@@ -2814,13 +2957,20 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     }
 
     for (let i = 0; i < chain.length; i++) {
-      const sel = chain[i] as { runtime: string; modelo: string | undefined }
+      const sel = chain[i] as {
+        runtime: string
+        modelo: string | undefined
+        esforco: string | undefined
+      }
       // `undefined` aqui é decisão, não ausência: quer dizer "rode sem
       // `--model`", com o modelo padrão do próprio motor. É o que salva o
-      // degrau do claude, que recebe do resolvedor um nome de modelo do
+      // degrau do claude, que recebia do resolvedor um nome de modelo do
       // Antigravity — provado ao vivo em 01/09: `claude --model "Gemini 3.7
       // Flash (Medium)"` responde "There's an issue with the selected model".
       const model = sel.modelo
+      // O esforço já chega VALIDADO contra a escada real daquele motor, e já
+      // vem vazio no antigravity (lá ele virou o nome do modelo acima).
+      const reasoning = sel.esforco
       const isLast = i === chain.length - 1
 
       // Reinicia o relógio de "presa" a cada tentativa: o limite de stale é por
@@ -3362,7 +3512,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             const step = await adapter.run({
               missionId: `${missionId}-step-${stepN}`,
               prompt,
-              runtime: { runtime: sel.runtime as F6AgentRuntime, ...(model ? { model } : {}) },
+              runtime: {
+                runtime: sel.runtime as F6AgentRuntime,
+                ...(model ? { model } : {}),
+                ...(reasoning ? { reasoning: reasoning as ReasoningEffort } : {}),
+              },
               credentialRef,
               role,
               cwd: stepDir,
@@ -3676,7 +3830,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             role,
             goal: `Analyze and coordinate tasks for ${project.name}`,
             context: [],
-            runtime: { runtime: sel.runtime as F6AgentRuntime, ...(model ? { model } : {}) },
+            runtime: {
+              runtime: sel.runtime as F6AgentRuntime,
+              ...(model ? { model } : {}),
+              ...(reasoning ? { reasoning: reasoning as ReasoningEffort } : {}),
+            },
             credentialRef,
             userId: project.userId ?? 'scheduler-user',
             timeoutMs: STALE_RUNNING_MS,

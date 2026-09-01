@@ -88,12 +88,17 @@ function pecasDoModelo(nome: string): PecasDoModelo | null {
  *   "Gemini 3.7 Flash (Medium)" is not a model this version of Claude Code
  *   recognizes ... There's an issue with the selected model.
  *
- * E o resolvedor entrega esse nome ao degrau do claude: rodando
+ * E o resolvedor ENTREGAVA esse nome ao degrau do claude: rodando
  * `resolveRuntimeChain('ra', null, defaults, ['antigravity','claude','codex'])`
  * com os padrões reais do scheduler, os TRÊS degraus vieram com
- * `Gemini 3.7 Flash (Medium)` — porque `modelByRole` é uma constante do
- * Antigravity aplicada a qualquer motor. Ou seja: o degrau do claude do rodízio
- * está morto na chegada hoje, e ninguém tinha medido.
+ * `Gemini 3.7 Flash (Medium)`, porque o `modelByRole` de então era uma
+ * constante do Antigravity aplicada a qualquer motor. O degrau do claude do
+ * rodízio estava morto na chegada, e ninguém tinha medido.
+ *
+ * CORRIGIDO no mesmo dia: o `modelByRole` não existe mais. O padrão de modelo
+ * é por PAPEL e por MOTOR, resolvido contra o catálogo vivo daquele motor —
+ * ver services/padrao-do-degrau.ts. Esta guarda continua valendo como rede:
+ * ela existe para a escolha do CLIENTE, que pode apontar para o motor errado.
  *
  * Separa em espaço, hífen e sublinhado para valer também para o formato de
  * slug (`claude-sonnet-5` → `claude`) e para nomes como `GPT-OSS 120B (Medium)`
@@ -146,9 +151,10 @@ export interface EscolhaDeModelo {
  * Confere o modelo pedido contra o catálogo vivo e, quando ele não existe mais,
  * substitui pelo equivalente — mesma FAMÍLIA e mesmo ESFORÇO, geração mais nova.
  *
- * Por que família E esforço, e não "o mais novo da lista": o produto escolheu
- * Flash+Medium de propósito para ra/sm/qa (Pro/Low fica só para o PO decidir).
- * Um substituto que troca o esforço muda o comportamento do agente pelas costas.
+ * Por que família E esforço, e não "o mais novo da lista": o esforço do degrau
+ * é escolha do CLIENTE — a cascata dele diz, papel por papel, se aquele agente
+ * roda forte ou barato (ver routes/cascata.ts). Um substituto que troca o
+ * esforço muda o comportamento do agente pelas costas de quem escolheu.
  *
  * Por que a geração MAIS NOVA: em 31/08 existiam 3.6 e 3.7 Flash (Medium) — dois
  * candidatos exatos. O provedor mantém duas gerações e derruba a mais velha sem

@@ -17,18 +17,14 @@ import { resolveRuntimeChain, type ResolverDefaults } from '../lib/runtime-resol
  * `executeMissionWithFailover` chama, na mesma ordem.
  */
 
-// Os padrões REAIS do scheduler (MODEL_BY_ROLE / RESOLVER_DEFAULTS): motor
-// padrão codex para todo papel, e um modelo do ANTIGRAVITY como modelo padrão
-// de qualquer motor. É essa segunda parte que envenena os degraus dos outros
-// motores, e ninguém tinha medido.
+// Os padrões REAIS do scheduler (RESOLVER_DEFAULTS): motor padrão codex nos
+// quatro papéis. O `modelByRole` que ficava aqui ao lado — um modelo do
+// ANTIGRAVITY servindo de padrão para QUALQUER motor — foi removido em
+// 01/09/2026: era ele que envenenava os degraus dos outros motores, e ninguém
+// tinha medido. O padrão de modelo agora é por papel E por motor, do catálogo
+// vivo (services/padrao-do-degrau.ts).
 const PADROES_REAIS: ResolverDefaults = {
   runtimeByRole: { po: 'codex', ra: 'codex', sm: 'codex', qa: 'codex' },
-  modelByRole: {
-    po: 'Gemini 3.1 Pro (Low)',
-    ra: 'Gemini 3.7 Flash (Medium)',
-    sm: 'Gemini 3.7 Flash (Medium)',
-    qa: 'Gemini 3.7 Flash (Medium)',
-  },
 }
 
 // OS CATÁLOGOS REAIS, copiados do banco de produção em 01/09/2026 03:00:
@@ -93,7 +89,9 @@ async function degrausDaMissao(args: {
         prisma: args.prisma,
         ownerUserId: 'user_1',
         runtime: sel.runtime,
-        desejado: sel.model ?? PADROES_REAIS.modelByRole[args.role],
+        role: args.role,
+        ...(sel.model !== undefined ? { desejado: sel.model } : {}),
+        ...(sel.effort !== undefined ? { esforco: sel.effort } : {}),
         log: args.log ?? semLog,
       })),
     }))
@@ -102,39 +100,126 @@ async function degrausDaMissao(args: {
 }
 
 describe('o catálogo coletado LIGADO à escolha do modelo (caminho real da missão)', () => {
-  test('o resolvedor real entrega o modelo do Antigravity aos TRÊS motores — este é o estado de hoje', () => {
-    // Isto não é hipótese: é a saída de `resolveRuntimeChain` com os padrões
-    // reais do scheduler. E `claude --model "Gemini 3.7 Flash (Medium)"`,
-    // rodado ao vivo nesta VM em 01/09/2026 com a credencial do dono,
-    // responde: "There's an issue with the selected model (Gemini 3.7 Flash
-    // (Medium)). It may not exist or you may not have access to it."
+  test('o resolvedor não carimba mais o modelo de um motor nos outros', () => {
+    // ATÉ 01/09/2026 esta chamada devolvia `Gemini 3.7 Flash (Medium)` nos
+    // TRÊS degraus, porque `modelByRole` era uma constante só. E, rodado ao
+    // vivo nesta VM com a credencial do dono:
+    //   $ claude --model "Gemini 3.7 Flash (Medium)" -p "say ok"
+    //     There's an issue with the selected model (Gemini 3.7 Flash (Medium)).
     // Ou seja: o degrau do claude do rodízio era um container queimado.
+    // Agora o modelo só aparece aqui quando o CLIENTE escolheu; o padrão de
+    // quem não escolheu é resolvido por motor, contra o catálogo vivo dele.
     const cadeia = resolveRuntimeChain('ra', null, PADROES_REAIS, [
       'antigravity',
       'claude',
       'codex',
     ])
     expect(cadeia).toEqual([
-      { runtime: 'codex', model: 'Gemini 3.7 Flash (Medium)' },
-      { runtime: 'antigravity', model: 'Gemini 3.7 Flash (Medium)' },
-      { runtime: 'claude', model: 'Gemini 3.7 Flash (Medium)' },
+      { runtime: 'codex' },
+      { runtime: 'antigravity' },
+      { runtime: 'claude' },
     ])
   })
 
-  test('com o catálogo ligado, NENHUM degrau é perdido e cada motor recebe o que ele entende', async () => {
+  test('quem não escolheu recebe o padrão do PAPEL naquele MOTOR, do catálogo vivo', async () => {
     const r = await degrausDaMissao({
       role: 'ra',
       motoresConectados: ['antigravity', 'claude', 'codex'],
       prisma: prismaComOsCatalogosReais(),
     })
     expect(r.pulados).toEqual([])
+    // O RA é papel de exigência MÉDIA (ver services/padrao-do-degrau.ts).
+    // Cada motor entrega o médio DELE, tirado do catálogo dele — e o modelo
+    // sai no formato que aquele CLI aceita — `claude-sonnet-5` e `gpt-5.5`, e
+    // não os nomes de vitrine "Claude Sonnet 5" e "GPT-5.5", que os dois CLIs
+    // recusam (medido ao vivo em 01/09/2026).
     expect(r.degraus).toEqual([
-      // codex e claude não conhecem modelo Gemini nenhum: rodam com o modelo
-      // padrão deles em vez de morrer pedindo um que não existe lá.
-      { runtime: 'codex', modelo: undefined, valeATentativa: true },
-      { runtime: 'antigravity', modelo: 'Gemini 3.7 Flash (Medium)', valeATentativa: true },
-      { runtime: 'claude', modelo: undefined, valeATentativa: true },
+      { runtime: 'codex', modelo: 'gpt-5.5', esforco: 'medium', valeATentativa: true },
+      {
+        runtime: 'antigravity',
+        modelo: 'Gemini 3.7 Flash (Medium)',
+        esforco: undefined,
+        valeATentativa: true,
+      },
+      { runtime: 'claude', modelo: 'claude-sonnet-5', esforco: 'medium', valeATentativa: true },
     ])
+  })
+
+  test('o SM (papel barato) e o QA (papel que julga) não recebem mais o mesmo modelo', async () => {
+    // Era o desperdício dos dois lados: o SM, que só movimenta card, rodava no
+    // mesmo modelo do QA, que JULGA o PR. Um pagava caro à toa, o outro
+    // julgava fraco.
+    const sm = await degrausDaMissao({
+      role: 'sm',
+      motoresConectados: ['claude'],
+      prisma: prismaComOsCatalogosReais(),
+    })
+    const qa = await degrausDaMissao({
+      role: 'qa',
+      motoresConectados: ['claude'],
+      prisma: prismaComOsCatalogosReais(),
+    })
+    const doClaude = (r: { degraus: Array<{ runtime: string }> }) =>
+      r.degraus.find((d) => d.runtime === 'claude')
+    expect(doClaude(sm)).toEqual({
+      runtime: 'claude',
+      modelo: 'claude-haiku-4-5',
+      esforco: 'low',
+      valeATentativa: true,
+    })
+    expect(doClaude(qa)).toEqual({
+      runtime: 'claude',
+      modelo: 'claude-opus-5',
+      esforco: 'high',
+      valeATentativa: true,
+    })
+  })
+
+  test('o esforço pedido é validado contra o motor, nunca repassado às cegas', async () => {
+    // 'max' existe no claude e NÃO existe no codex (medido: o catálogo do
+    // servidor do Codex lista low/medium/high/xhigh). O CLI do claude, aliás,
+    // ACEITA valor inválido com um simples aviso e roda no padrão — então quem
+    // precisa recusar somos nós.
+    const noCodex = await modeloVivoParaAMissao({
+      prisma: prismaComOsCatalogosReais(),
+      ownerUserId: 'user_1',
+      runtime: 'codex',
+      role: 'qa',
+      desejado: 'GPT-5.5',
+      esforco: 'max',
+      log: semLog,
+    })
+    expect(noCodex.esforco).toBeUndefined()
+
+    const noClaude = await modeloVivoParaAMissao({
+      prisma: prismaComOsCatalogosReais(),
+      ownerUserId: 'user_1',
+      runtime: 'claude',
+      role: 'qa',
+      desejado: 'Claude Opus 5',
+      esforco: 'max',
+      log: semLog,
+    })
+    expect(noClaude).toEqual({ modelo: 'claude-opus-5', esforco: 'max', valeATentativa: true })
+  })
+
+  test('no antigravity o esforço troca o MODELO, e nunca vira esforço separado', async () => {
+    const r = await modeloVivoParaAMissao({
+      prisma: prismaComOsCatalogosReais(),
+      ownerUserId: 'user_1',
+      runtime: 'antigravity',
+      role: 'sm',
+      desejado: 'Gemini 3.7 Flash (Medium)',
+      esforco: 'high',
+      log: semLog,
+    })
+    // `agy --model X --effort high` é erro duro do CLI (medido ao vivo), então
+    // o esforço tem que sair do degrau depois de virar nome de modelo.
+    expect(r).toEqual({
+      modelo: 'Gemini 3.7 Flash (High)',
+      esforco: undefined,
+      valeATentativa: true,
+    })
   })
 
   test('O DEFEITO DE 31/08: o modelo removido pelo provedor não queima mais a rodada', async () => {
@@ -160,7 +245,8 @@ describe('o catálogo coletado LIGADO à escolha do modelo (caminho real da miss
           prisma: prismaComOsCatalogosReais(semA35),
           ownerUserId: 'user_1',
           runtime: sel.runtime,
-          desejado: sel.model ?? PADROES_REAIS.modelByRole['ra'],
+          role: 'ra' as const,
+          ...(sel.model !== undefined ? { desejado: sel.model } : {}),
           log: { warn: (m: string) => avisos.push(m) },
         })),
       }))
@@ -185,10 +271,36 @@ describe('o catálogo coletado LIGADO à escolha do modelo (caminho real da miss
     })
     expect(r.pulados).toEqual([])
     // Três degraus: o codex padrão do papel mais os dois motores conectados.
-    // TODOS seguem com o modelo pedido — sem catálogo, a resposta honesta é
-    // "não sei", nunca "o modelo não existe".
+    // NENHUM é pulado — sem catálogo, a resposta honesta é "não sei", nunca
+    // "o modelo não existe".
     expect(r.degraus.map((d) => d.runtime)).toEqual(['codex', 'antigravity', 'claude'])
-    expect(r.degraus.every((d) => d.modelo === 'Gemini 3.7 Flash (Medium)')).toBe(true)
+    // E todos rodam SEM `--model`, com o modelo padrão do próprio motor.
+    //
+    // Até 01/09/2026 este caso devolvia `Gemini 3.7 Flash (Medium)` nos três,
+    // porque o padrão da instância era esse literal. Com o banco fora do ar
+    // não há como saber o modelo de cada motor, e chutar o nome de UM deles
+    // para os TRÊS é o que fazia `claude --model "Gemini 3.7 Flash (Medium)"`
+    // responder "There's an issue with the selected model". Não saber e não
+    // passar nada é honesto; não saber e chutar é o defeito.
+    expect(r.degraus.every((d) => d.modelo === undefined)).toBe(true)
+  })
+
+  test('projeto que ESCOLHEU o modelo mantém a escolha mesmo com o banco fora do ar', async () => {
+    // O fail-open não pode virar desculpa para descartar a cascata do cliente:
+    // sem catálogo não há como conferir, e a escolha dele continua valendo.
+    const semBanco = {
+      engineConnection: { findFirst: vi.fn().mockRejectedValue(new Error('sem banco')) },
+    }
+    const escolhido = await modeloVivoParaAMissao({
+      prisma: semBanco,
+      ownerUserId: 'user_1',
+      runtime: 'claude',
+      role: 'qa',
+      desejado: 'Claude Opus 5',
+      esforco: 'high',
+      log: semLog,
+    })
+    expect(escolhido).toEqual({ modelo: 'claude-opus-5', esforco: 'high', valeATentativa: true })
   })
 })
 
