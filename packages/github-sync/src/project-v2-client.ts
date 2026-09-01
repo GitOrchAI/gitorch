@@ -5,7 +5,10 @@ export interface GraphQLRequest {
 
 export interface GraphQLResponse<TData> {
   data?: TData
-  errors?: Array<{ message: string }>
+  /** `type` (ex.: "NOT_FOUND") é opcional: a API do GitHub sempre manda,
+   *  mas o contrato genérico do GraphQL não garante — quem depende dele
+   *  (findProjectId) trata a ausência como "não é um NOT_FOUND conhecido". */
+  errors?: Array<{ message: string; type?: string }>
 }
 
 export type GraphQLTransport = <TData>(
@@ -503,18 +506,31 @@ export class ProjectV2Client {
   // Resolve o node id de um Project v2 a partir do login do dono + número, ou
   // null se o board não existe. É o resolver que NÃO quebra quando ausente: a
   // coleta de contexto (F4.2) o usa para decidir CRIAR o board (createProjectV2)
-  // em vez de tratar "não existe" como erro. user e organization têm consultas
-  // distintas (a org é o destino final; a conta pessoal é a origem dos forks).
+  // em vez de tratar "não existe" como erro.
+  //
+  // D10 (01/09, journal de produção): login de conta PESSOAL ("loureng")
+  // consultado como `organization(login:)` quebrava — GitHub não tem
+  // fallback entre as duas raízes, e "conta pessoal" e "organização" são
+  // tipos GraphQL distintos (`User` / `Organization`). A consulta usa
+  // `repositoryOwner(login:)`, que resolve os DOIS tipos numa raiz só e diz
+  // o `__typename` — testado ao vivo contra a API real do GitHub com
+  // GitOrchAI (organização) e loureng (pessoal) antes de adotar. `ownerType`
+  // no input continua existindo (mensagem de erro do getProjectId, contrato
+  // público) mas não decide mais QUAL raiz consultar — o produto é
+  // multi-tenant e cada cliente pode ser conta pessoal ou organização; a
+  // descoberta é sempre dinâmica, nunca chumbada.
   async findProjectId(input: GetProjectIdInput): Promise<string | null> {
-    const owner = input.ownerType === 'organization' ? 'organization' : 'user'
     const response = await this.request<
-      Record<string, { projectV2: { id: string } | null } | null>
+      Record<'repositoryOwner', { __typename: string; projectV2: { id: string } | null } | null>
     >(
       {
         query: `
           query GetProjectId($login: String!, $number: Int!) {
-            ${owner}(login: $login) {
-              projectV2(number: $number) { id }
+            repositoryOwner(login: $login) {
+              __typename
+              ... on ProjectV2Owner {
+                projectV2(number: $number) { id }
+              }
             }
           }
         `,
@@ -523,7 +539,20 @@ export class ProjectV2Client {
       this.token
     )
 
-    return unwrap(response)[owner]?.projectV2?.id ?? null
+    // O GraphQL do GitHub devolve "sucesso parcial" para "não achei": quando
+    // o número do board não existe (testado ao vivo contra um board real),
+    // `data` já vem com o campo como null E um erro `NOT_FOUND` ao lado —
+    // não é falha de rede/credencial/limite, é a resposta correta para
+    // "board ausente". Só ESSE tipo de erro vira silêncio; qualquer outro
+    // (permissão, autenticação, limite de taxa, erro de sintaxe) continua
+    // estourando via `unwrap` — a tolerância nunca vira rede de segurança
+    // geral (NUNCA MASCARAR).
+    if (response.errors && response.errors.length > 0) {
+      const soNaoEncontrado = response.errors.every((error) => error.type === 'NOT_FOUND')
+      if (soNaoEncontrado) return null
+    }
+
+    return unwrap(response).repositoryOwner?.projectV2?.id ?? null
   }
 
   // Igual ao findProjectId, mas LANÇA quando o board não existe: os fluxos do PO

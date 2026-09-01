@@ -55,10 +55,14 @@ function fakeFetch(pesoNoQuadro?: Map<string, number>): typeof fetch {
     if (u.includes('/graphql')) {
       const q = String(body.query ?? '')
       if (q.includes('projectV2(number:') || q.includes('projectV2(number :')) {
-        return json({ data: { user: { projectV2: { id: 'PVT_board' } } } })
+        return json({
+          data: { repositoryOwner: { __typename: 'User', projectV2: { id: 'PVT_board' } } },
+        })
       }
       if (q.includes('GetProjectId')) {
-        return json({ data: { user: { projectV2: { id: 'PVT_board' } } } })
+        return json({
+          data: { repositoryOwner: { __typename: 'User', projectV2: { id: 'PVT_board' } } },
+        })
       }
       if (q.includes('addSubIssue')) return json({ data: { addSubIssue: { issue: { id: 'x' } } } })
       if (q.includes('createProjectV2StatusUpdate')) {

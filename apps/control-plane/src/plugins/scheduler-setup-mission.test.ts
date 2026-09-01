@@ -375,7 +375,7 @@ describe('provisionSetupMission', () => {
       if (u.endsWith('/graphql')) {
         const body = JSON.parse(String(init?.body)) as { query: string }
         if (body.query.includes('GetProjectId') || body.query.includes('projectV2(number')) {
-          return json({ data: { user: { projectV2: null } } })
+          return json({ data: { repositoryOwner: { __typename: 'User', projectV2: null } } })
         }
         if (body.query.includes('createProjectV2')) {
           return json({

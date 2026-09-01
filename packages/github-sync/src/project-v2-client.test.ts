@@ -65,7 +65,9 @@ test('resolves a user project node id by number', async () => {
     token: 'test-token',
     request: async (request) => {
       calls.push(request)
-      return { data: { user: { projectV2: { id: 'PVT_user_1' } } } }
+      return {
+        data: { repositoryOwner: { __typename: 'User', projectV2: { id: 'PVT_user_1' } } },
+      }
     },
   })
 
@@ -73,7 +75,7 @@ test('resolves a user project node id by number', async () => {
 
   expect(id).toBe('PVT_user_1')
   expect(calls[0].variables).toEqual({ login: 'dono-exemplo', number: 3 })
-  expect(calls[0].query).toContain('user(login: $login)')
+  expect(calls[0].query).toContain('repositoryOwner(login: $login)')
 })
 
 test('resolves an organization project node id by number', async () => {
@@ -82,7 +84,9 @@ test('resolves an organization project node id by number', async () => {
     token: 'test-token',
     request: async (request) => {
       calls.push(request)
-      return { data: { organization: { projectV2: { id: 'PVT_org_1' } } } }
+      return {
+        data: { repositoryOwner: { __typename: 'Organization', projectV2: { id: 'PVT_org_1' } } },
+      }
     },
   })
 
@@ -93,7 +97,7 @@ test('resolves an organization project node id by number', async () => {
   })
 
   expect(id).toBe('PVT_org_1')
-  expect(calls[0].query).toContain('organization(login: $login)')
+  expect(calls[0].query).toContain('repositoryOwner(login: $login)')
 })
 
 test('reads the iterations of a Sprint field by name', async () => {
@@ -199,7 +203,9 @@ test('surfaces GitHub GraphQL errors with actionable messages', async () => {
 test('findProjectId returns the node id when the board exists', async () => {
   const client = new ProjectV2Client({
     token: 'test-token',
-    request: async () => ({ data: { user: { projectV2: { id: 'PVT_found' } } } }),
+    request: async () => ({
+      data: { repositoryOwner: { __typename: 'User', projectV2: { id: 'PVT_found' } } },
+    }),
   })
 
   const id = await client.findProjectId({ login: 'dono-exemplo', number: 3, ownerType: 'user' })
@@ -211,17 +217,131 @@ test('findProjectId returns null (does NOT throw) when the board is absent', asy
     token: 'test-token',
     // Dono existe, mas não tem o Project v2 #N — o resolver da coleta de
     // contexto trata isso como "criar", não como erro.
-    request: async () => ({ data: { user: { projectV2: null } } }),
+    request: async () => ({
+      data: { repositoryOwner: { __typename: 'User', projectV2: null } },
+    }),
   })
 
   const id = await client.findProjectId({ login: 'dono-exemplo', number: 99, ownerType: 'user' })
   expect(id).toBeNull()
 })
 
+// D10 (01/09, journal de produção): 'loureng' é a conta PESSOAL do dono, não
+// uma organização. `organization(login: "loureng")` devolve, DE VERDADE (não
+// é suposição — testado ao vivo contra a API real do GitHub com a
+// credencial de produção), `data.organization: null` MAIS um erro
+// NOT_FOUND — não "sem erro nenhum" como os mocks antigos deste arquivo
+// simulavam. `unwrap` estourava nesse erro antes do `??` de
+// organization-então-user (scheduler.ts, painel.ts) sequer ter a chance de
+// tentar o outro tipo — a mesma classe de defeito que quebrou em produção.
+test('findProjectId resolve conta pessoal mesmo quando ownerType pedido é organization (D10)', async () => {
+  const calls: GraphQLRequest[] = []
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async (request) => {
+      calls.push(request)
+      // Formato REAL da resposta do GitHub para repositoryOwner(login:) —
+      // resolve os dois tipos numa consulta só, sem gerar erro nenhum.
+      return {
+        data: {
+          repositoryOwner: { __typename: 'User', projectV2: { id: 'PVT_jardim_das_patinhas' } },
+        },
+      }
+    },
+  })
+
+  // O chamador (scheduler.ts) tenta 'organization' primeiro por padrão —
+  // isso não pode mais quebrar nem devolver o quadro errado.
+  const id = await client.findProjectId({ login: 'loureng', number: 3, ownerType: 'organization' })
+
+  expect(id).toBe('PVT_jardim_das_patinhas')
+  expect(calls[0]?.query).toContain('repositoryOwner(login: $login)')
+})
+
+// Prova de que a raiz nova também atende quem já sabe o tipo certo (conta
+// de organização) — mesma consulta, mesmo caminho, nenhuma bifurcação.
+test('findProjectId resolve conta de organização pela mesma consulta repositoryOwner', async () => {
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async () => ({
+      data: { repositoryOwner: { __typename: 'Organization', projectV2: { id: 'PVT_org_1' } } },
+    }),
+  })
+
+  const id = await client.findProjectId({
+    login: 'GitOrchAI',
+    number: 2,
+    ownerType: 'organization',
+  })
+  expect(id).toBe('PVT_org_1')
+})
+
+// Segunda descoberta do mesmo levantamento: mesmo com a raiz certa, um
+// NÚMERO de board que não existe TAMBÉM vem com erro NOT_FOUND ao lado do
+// null (testado ao vivo contra GitOrchAI#999) — não é exclusividade do caso
+// organização/pessoa. findProjectId promete no comentário "não quebra
+// quando ausente"; esta prova cobre a promessa por inteiro.
+test('findProjectId devolve null (não lança) quando só o NÚMERO do board não existe', async () => {
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async () => ({
+      data: { repositoryOwner: { __typename: 'Organization', projectV2: null } },
+      errors: [
+        {
+          type: 'NOT_FOUND',
+          message: 'Could not resolve to a ProjectV2 with the number 999.',
+        },
+      ],
+    }),
+  })
+
+  const id = await client.findProjectId({
+    login: 'GitOrchAI',
+    number: 999,
+    ownerType: 'organization',
+  })
+  expect(id).toBeNull()
+})
+
+// Login que não existe em lugar nenhum: o GitHub devolve repositoryOwner
+// null SEM erro nenhum (testado ao vivo) — outro caminho de "não achei".
+test('findProjectId devolve null quando o login não existe (sem erro nenhum)', async () => {
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async () => ({ data: { repositoryOwner: null } }),
+  })
+
+  const id = await client.findProjectId({
+    login: 'login-inexistente',
+    number: 1,
+    ownerType: 'user',
+  })
+  expect(id).toBeNull()
+})
+
+// NUNCA MASCARAR: um erro que NÃO é NOT_FOUND (credencial ruim, escopo
+// insuficiente, limite de taxa) continua estourando — a tolerância é
+// estritamente para "não achei", nunca uma rede de segurança geral contra
+// qualquer erro do GraphQL.
+test('findProjectId ainda lança para erro que NÃO é NOT_FOUND (não mascara)', async () => {
+  const client = new ProjectV2Client({
+    token: 'test-token',
+    request: async () => ({
+      errors: [{ type: 'FORBIDDEN', message: 'Resource not accessible by integration' }],
+    }),
+  })
+
+  await expect(
+    client.findProjectId({ login: 'GitOrchAI', number: 2, ownerType: 'organization' })
+  ).rejects.toThrow('Resource not accessible by integration')
+})
+
 test('getProjectId still throws when the board is absent (contrato estrito do PO/SM)', async () => {
   const client = new ProjectV2Client({
     token: 'test-token',
-    request: async () => ({ data: { organization: { projectV2: null } } }),
+    request: async () => ({
+      data: { repositoryOwner: { __typename: 'Organization', projectV2: null } },
+    }),
   })
 
   await expect(
