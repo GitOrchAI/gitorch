@@ -785,4 +785,68 @@ describe('EngineConnectionService', () => {
     await fs.rm(home, { recursive: true, force: true })
     await fs.rm(missionHome, { recursive: true, force: true })
   })
+
+  // ------------------------------------------------------------------
+  // Os DOIS catches que devolviam silêncio.
+  //
+  // O comportamento best-effort está CERTO e não muda: ler cota ou carimbar
+  // uma tentativa nunca pode derrubar o relógio nem a missão que chamou. O
+  // defeito era o SILÊNCIO — a falha virava `false`/`undefined` e o motivo
+  // morria ali, sem uma linha em lugar nenhum. O desenho certo já existe ao
+  // lado, em `lerCotaDoMotor`: ou vem número, ou vem a razão de não ter vindo.
+  // ------------------------------------------------------------------
+  const capturaAvisos = () => {
+    const avisos: string[] = []
+    const spy = vi.spyOn(console, 'warn').mockImplementation((...args) => {
+      avisos.push(args.map(String).join(' '))
+    })
+    return { avisos, restaura: () => spy.mockRestore() }
+  }
+
+  test('refreshQuota que explode registra o MOTIVO com o runtime — e segue best-effort, devolvendo false sem derrubar o relógio', async () => {
+    const { prisma, svc } = await conectaCodex('user_cota_explode')
+    // A falha que motivou isto: a releitura de cota caindo sistematicamente,
+    // o retorno sendo sempre `false`, e ninguém nunca sabendo por quê.
+    prisma.engineConnection.findUnique.mockImplementation(async () => {
+      throw new Error('banco fora do ar ao ler a conexão')
+    })
+
+    const { avisos, restaura } = capturaAvisos()
+    try {
+      // Best-effort preservado: não lança, devolve false.
+      expect(await svc.refreshQuota('user_cota_explode', 'codex')).toBe(false)
+    } finally {
+      restaura()
+    }
+
+    // Não basta "alguém foi avisado": o aviso tem que CONTER o motivo real e
+    // dizer de qual motor ele veio. Um log genérico manda quem investiga para
+    // o lado errado, exatamente como o carimbo mentiroso de 26/08.
+    const texto = avisos.join('\n')
+    expect(texto).toContain('banco fora do ar ao ler a conexão')
+    expect(texto).toContain('codex')
+  })
+
+  test('carimbo de tentativa que não grava registra o MOTIVO — o silêncio aqui vira tempestade de containers a cada minuto', async () => {
+    const { prisma, svc } = await conectaCodex('user_carimbo_falha')
+    // Consequência MEDIDA: se o UPDATE do carimbo falha calado,
+    // `modelsCheckedAt` nunca avança, a conexão fica "vencida" para sempre e o
+    // relógio de recoleta a tenta a CADA tique de um minuto, em vez de a cada
+    // 24 horas — uma tempestade de containers escondida atrás do silêncio.
+    prisma.engineConnection.updateMany.mockImplementation(async () => {
+      throw new Error('disco cheio: o UPDATE do carimbo não gravou')
+    })
+
+    const { avisos, restaura } = capturaAvisos()
+    try {
+      // Best-effort preservado: a coleta não morre por causa do carimbo.
+      expect(await comCatalogoDoCodex(svc, 'user_carimbo_falha', [])).toEqual([])
+    } finally {
+      restaura()
+    }
+
+    const texto = avisos.join('\n')
+    expect(texto).toContain('disco cheio: o UPDATE do carimbo não gravou')
+    expect(texto).toContain('codex')
+  })
 })

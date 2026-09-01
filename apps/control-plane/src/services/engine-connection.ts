@@ -427,8 +427,16 @@ export class EngineConnectionService {
           },
         })
         return cota.temNumero
-      } catch {
-        // Best-effort de verdade: ler cota nunca pode derrubar o relógio.
+      } catch (err) {
+        // Best-effort de verdade: ler cota nunca pode derrubar o relógio — a
+        // tolerância continua. O que acabou aqui é o SILÊNCIO: sem esta linha,
+        // uma leitura que falha SEMPRE devolve `false` para sempre e o motivo
+        // nunca aparece em lugar nenhum. É a mesma lei que `lerCotaDoMotor`
+        // já aplica ao lado (ver leitura-de-cota.ts): ou vem número, ou vem a
+        // razão de não ter vindo — nunca um nulo mudo.
+        console.warn(
+          `[engine-connection] a releitura de cota de ${runtime} falhou: ${err instanceof Error ? err.message : String(err)}`
+        )
         return false
       }
     })
@@ -456,7 +464,17 @@ export class EngineConnectionService {
         where: { userId, runtime },
         data: { modelsCheckedAt: new Date(), ...(motivo ? { lastError: motivo } : {}) },
       })
-      .catch(() => undefined)
+      .catch((err: unknown) => {
+        // Continua best-effort — um carimbo que não grava não derruba a coleta
+        // nem a missão. Mas voltar calado escondia justamente a falha mais
+        // cara: se o UPDATE falha (disco cheio, permissão), `modelsCheckedAt`
+        // nunca avança, a conexão fica "vencida" para sempre e passa a ser
+        // tentada a CADA tique de um minuto em vez de a cada 24 horas — uma
+        // tempestade de containers atrás de uma boa intenção.
+        console.warn(
+          `[engine-connection] o carimbo de tentativa de coleta de ${runtime} não gravou: ${err instanceof Error ? err.message : String(err)}`
+        )
+      })
   }
 
   async refreshModels(userId: string, runtime: string): Promise<string[]> {
