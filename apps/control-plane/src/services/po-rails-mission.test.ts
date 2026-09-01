@@ -314,6 +314,126 @@ describe('runPoMissionViaRails', () => {
   })
 })
 
+describe('boardToken (D12) — a credencial que alcança Projects V2 em conta pessoal', () => {
+  // Simula exatamente o que foi provado ao vivo em 01/09/2026 contra
+  // loureng/patinhas-3d-crafts: o token do App ("app-token") é CEGO para
+  // Projects V2 — GraphQL com esse token devolve erro; só "client-token"
+  // (a credencial do próprio dono, guardada no projeto) enxerga o board.
+  function fetchComAppCegoParaQuadro(pesoNoQuadro?: Map<string, number>): typeof fetch {
+    let issueN = 700
+    return (async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const u = String(url)
+      const headers = new Headers(init?.headers)
+      const auth = headers.get('authorization') ?? ''
+      const body = init?.body ? JSON.parse(String(init.body)) : {}
+      const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status })
+
+      if (u.includes('/issues?labels=wishlist')) {
+        return json([{ number: 42, node_id: 'I_wish42', title: 'Wish', body: 'b' }])
+      }
+      if (u.includes('/search/issues')) return json({ items: [] })
+      if (u.endsWith('/issues') && init?.method === 'POST') {
+        issueN += 1
+        return json({ number: issueN, node_id: `I_${issueN}` })
+      }
+      if (u.includes('/graphql')) {
+        const q = String(body.query ?? '')
+        // O App NUNCA alcança Projects V2 — nem leitura nem escrita —
+        // exatamente como medido ao vivo (getProjectId "not found";
+        // addProjectV2ItemById "Resource not accessible by integration").
+        // `addSubIssue` NÃO é Projects V2 (é a árvore Issue-a-Issue) — o App
+        // alcança normalmente, com qualquer token, como medido ao vivo.
+        const ehProjectsV2 =
+          q.includes('GetProjectId') ||
+          q.includes('projectV2(number') ||
+          q.includes('addProjectV2ItemById') ||
+          q.includes('GetNumberField') ||
+          q.includes('CriarCampoNumerico') ||
+          q.includes('SetProjectV2Number') ||
+          q.includes('GetIterationField') ||
+          q.includes('projectItems')
+        if (ehProjectsV2 && !auth.includes('client-token')) {
+          if (q.includes('GetProjectId') || q.includes('projectV2(number')) {
+            return json({ data: { repositoryOwner: { __typename: 'User', projectV2: null } } })
+          }
+          return json({ errors: [{ message: 'Resource not accessible by integration' }] })
+        }
+        if (q.includes('GetProjectId') || q.includes('projectV2(number')) {
+          return json({
+            data: { repositoryOwner: { __typename: 'User', projectV2: { id: 'PVT_board' } } },
+          })
+        }
+        if (q.includes('addSubIssue'))
+          return json({ data: { addSubIssue: { issue: { id: 'x' } } } })
+        if (q.includes('createProjectV2StatusUpdate')) {
+          return json({ data: { createProjectV2StatusUpdate: { statusUpdate: { id: 'SU_1' } } } })
+        }
+        if (q.includes('addProjectV2ItemById')) {
+          return json({ data: { addProjectV2ItemById: { item: { id: 'PVTI_1' } } } })
+        }
+        if (q.includes('GetNumberField')) return json({ data: { node: { fields: { nodes: [] } } } })
+        if (q.includes('CriarCampoNumerico')) {
+          return json({
+            data: { createProjectV2Field: { projectV2Field: { id: 'F_peso', name: 'Peso' } } },
+          })
+        }
+        if (q.includes('SetProjectV2Number')) {
+          const v = (body.variables ?? {}) as { itemId?: string; number?: number }
+          pesoNoQuadro?.set(String(v.itemId), Number(v.number))
+          return json({
+            data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: String(v.itemId) } } },
+          })
+        }
+        if (q.includes('GetIterationField'))
+          return json({ data: { node: { fields: { nodes: [] } } } })
+        if (q.includes('projectItems'))
+          return json({ data: { node: { projectItems: { nodes: [] } } } })
+        if (q.includes('nameWithOwner')) {
+          return json({ data: { node: { number: issueN, repository: { nameWithOwner: 'o/r' } } } })
+        }
+        return json({ data: {} })
+      }
+      if (u.includes('/labels') && init?.method === 'POST') return json([])
+      return json({})
+    }) as typeof fetch
+  }
+
+  it('sem boardToken, getProjectId quebra com o token do App (a regressão que D11 expôs)', async () => {
+    await expect(
+      runPoMissionViaRails({
+        repository: 'o/r',
+        board: 'o/9', // conta pessoal, App cego
+        githubToken: 'app-token',
+        contextBlocks: ['ctx'],
+        fetchImpl: fetchComAppCegoParaQuadro(),
+        execute: async (prompt) => {
+          const step = prompt.match(/Step: po-(\w+)/)?.[1] ?? '?'
+          return PO_REPLIES[step] ?? '{}'
+        },
+      })
+    ).rejects.toThrow()
+  })
+
+  it('com boardToken, a missão inteira roda e o item chega ao quadro (com peso no campo)', async () => {
+    const pesoNoQuadro = new Map<string, number>()
+    const r = await runPoMissionViaRails({
+      repository: 'o/r',
+      board: 'o/9',
+      githubToken: 'app-token',
+      boardToken: 'client-token',
+      contextBlocks: ['ctx'],
+      fetchImpl: fetchComAppCegoParaQuadro(pesoNoQuadro),
+      execute: async (prompt) => {
+        const step = prompt.match(/Step: po-(\w+)/)?.[1] ?? '?'
+        return PO_REPLIES[step] ?? '{}'
+      },
+    })
+    expect(r.exitCode).toBe(0)
+    expect(r.output).toContain('created=4')
+    expect([...pesoNoQuadro.values()]).toEqual([2])
+  })
+})
+
 describe('teto de tempo (leva D)', () => {
   it('toda chamada ao GitHub (REST direto e via ProjectV2Client) carrega um AbortSignal não abortado', async () => {
     const spy = vi.fn(fakeFetch())

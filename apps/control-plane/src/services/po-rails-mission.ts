@@ -31,6 +31,18 @@ export interface PoRailsMissionOptions {
    */
   board?: string
   githubToken: string
+  /**
+   * A credencial para Projects V2 (resolver o board + toda mutation do
+   * quadro). AUSENTE cai em `githubToken`, o comportamento de sempre.
+   *
+   * D12 (01/09/2026, provado ao vivo): o token do App é CEGO para Projects
+   * V2 de conta pessoal — nem lê, nem escreve ("Resource not accessible by
+   * integration" na mutation; "not found" na leitura, mesmo o board
+   * existindo). Só a credencial do PRÓPRIO cliente alcança lá. Sem isto, a
+   * missão do PO quebra em `getProjectId` assim que `board` aponta para um
+   * quadro de conta pessoal — antes de criar qualquer issue.
+   */
+  boardToken?: string
   execute: StepExecutor
   /** Contexto do projeto montado pelo sistema (codegraph, memórias). */
   contextBlocks: string[]
@@ -289,8 +301,16 @@ export async function runPoMissionViaRails(
   // 3) Executor determinístico aplica no GitHub. `fetchImpl: f` (não
   // `options.fetchImpl` cru) — leva D: `ProjectV2Client` não tem teto
   // próprio, então quem for embrulhado aqui precisa já vir com um.
+  //
+  // `boardToken` (D12): a credencial que ALCANÇA Projects V2. Sem ela,
+  // `getProjectId` quebra em conta pessoal ANTES de qualquer issue nascer —
+  // provado ao vivo contra loureng/patinhas-3d-crafts (App: "not found" na
+  // leitura mesmo o board existindo; "Resource not accessible by
+  // integration" na escrita). `githubToken` continua sendo quem cria issue,
+  // sub-issue e label — REST, onde o App alcança nos dois tipos de conta.
+  const boardToken = options.boardToken ?? options.githubToken
   const client = new ProjectV2Client({
-    token: options.githubToken,
+    token: boardToken,
     fetchImpl: f,
   })
   // Board de usuário primeiro (piloto); org é o destino do produto (F4).
@@ -308,6 +328,7 @@ export async function runPoMissionViaRails(
 
   const github = createGithubBacklog({
     token: options.githubToken,
+    boardToken,
     repository: options.repository,
     ...(projectId ? { projectId } : {}),
     ...(options.boardColumns ? { statusColumns: options.boardColumns } : {}),
