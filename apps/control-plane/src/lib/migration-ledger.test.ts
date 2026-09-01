@@ -49,6 +49,7 @@ describe('MIGRATION_LEDGER', () => {
       'sprint-dias-migration.sql',
       'catalogo-de-modelos-colado-migration.sql',
       'catalogo-por-relogio-migration.sql',
+      'incremento-campos-do-desenho-migration.sql',
     ])
   })
 })

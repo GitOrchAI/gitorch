@@ -1,6 +1,20 @@
 import { describe, it, expect, vi } from 'vitest'
 import { REGUA_PADRAO } from '@gitorch/cadence'
 import { registrarSePronto, paraTela, type DepsDoIncremento } from './incremento.js'
+import { CAMPOS_VAZIOS } from './enriquecer-incremento.js'
+
+// Os seis campos do desenho (D3): projeto (via projectId/relação) + issueNumber
+// já eram gravados; os quatro que faltavam (sprint, título, peso, origem) mais
+// wishCreatedAt/mergedAt vêm de `buscarCamposDoIncremento` (enriquecer-incremento.ts)
+// e chegam aqui já prontos — este módulo só os repassa para `gravar`.
+const CAMPOS_REAIS = {
+  sprint: 'Sprint 3',
+  titulo: 'A árvore aparece no painel',
+  peso: 8,
+  pedidoOuProativo: 'pedido' as const,
+  wishCreatedAt: new Date('2026-08-20T09:00:00Z'),
+  mergedAt: new Date('2026-08-25T18:00:00Z'),
+}
 
 const PRONTA = {
   projectId: 'proj_1',
@@ -9,6 +23,8 @@ const PRONTA = {
   mergeCommitSha: 'deadbeef',
   deployState: 'no-ar',
   envLastVerdict: 'no-ar',
+  quemTocou: 'gitorch' as const,
+  ...CAMPOS_REAIS,
 }
 
 function deps(over: Partial<DepsDoIncremento> = {}): DepsDoIncremento {
@@ -56,6 +72,37 @@ describe('registrarSePronto — só grava o que a régua deixa fechar', () => {
     const gravado = (d.gravar as ReturnType<typeof vi.fn>).mock.calls[0]![0]
     expect(gravado.reguaAplicada).toEqual({ ...REGUA_PADRAO, ambiente_respondeu: true })
     expect(gravado.criterios).toContain('ambiente_respondeu')
+  })
+
+  it('D3: os seis campos do desenho chegam completos em gravar', async () => {
+    // projeto (via projectId) · sprint · o que era (titulo) · quanto pesava
+    // (peso) · quem tocou · pedido seu ou proativo — os seis do desenho.
+    const d = deps()
+    await registrarSePronto(d, PRONTA)
+    const gravado = (d.gravar as ReturnType<typeof vi.fn>).mock.calls[0]![0]
+    expect(gravado.projectId).toBe('proj_1')
+    expect(gravado.sprint).toBe('Sprint 3')
+    expect(gravado.titulo).toBe('A árvore aparece no painel')
+    expect(gravado.peso).toBe(8)
+    expect(gravado.quemTocou).toBe('gitorch')
+    expect(gravado.pedidoOuProativo).toBe('pedido')
+    expect(gravado.wishCreatedAt).toEqual(new Date('2026-08-20T09:00:00Z'))
+    expect(gravado.mergedAt).toEqual(new Date('2026-08-25T18:00:00Z'))
+  })
+
+  it('D3: quando o enriquecimento não achou nada, grava os campos vazios — nunca inventa', async () => {
+    const d = deps()
+    await registrarSePronto(d, {
+      ...PRONTA,
+      ...CAMPOS_VAZIOS,
+      quemTocou: 'gitorch' as const,
+    })
+    const gravado = (d.gravar as ReturnType<typeof vi.fn>).mock.calls[0]![0]
+    expect(gravado.sprint).toBeNull()
+    expect(gravado.titulo).toBeNull()
+    expect(gravado.peso).toBeNull()
+    expect(gravado.pedidoOuProativo).toBe('proativo')
+    expect(gravado.wishCreatedAt).toBeNull()
   })
 
   it('o mesmo pedido NÃO vira dois Incrementos', async () => {

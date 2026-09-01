@@ -36,7 +36,11 @@ import {
   inteiroDaQuery,
   grupoDaQuery,
 } from '../services/entregas-por-pedido.js'
-import { medirCiclo } from '../services/medicao-do-ciclo.js'
+import {
+  medirCiclo,
+  medirMultiplicador,
+  type FatosDoCicloDoItem,
+} from '../services/medicao-do-ciclo.js'
 import { aplicarOrdemDosPedidos } from '../services/ordem-dos-pedidos.js'
 import { exigirPermissao } from '@gitorch/cadence'
 import { ProjectV2Client } from '@gitorch/github-sync'
@@ -933,10 +937,13 @@ export const painelRoutes = async (
         where: { userId: ownerId, isActive: true, ...(projeto ? { name: projeto } : {}) },
         select: { id: true },
       })
-      if (projetos.length === 0) return reply.send(medirCiclo([]))
+      if (projetos.length === 0)
+        return reply.send({ ...medirCiclo([]), multiplicador: medirMultiplicador([]) })
+
+      const projetoIds = projetos.map((p) => p.id)
 
       const fatos = await app.prisma.devSession.findMany({
-        where: { projectId: { in: projetos.map((p) => p.id) } },
+        where: { projectId: { in: projetoIds } },
         select: {
           attempts: true,
           nudges: true,
@@ -947,7 +954,45 @@ export const painelRoutes = async (
         },
       })
 
-      return reply.send(medirCiclo(fatos))
+      // D4 — o CICLO DO ITEM (do desejo até a entrega, via Increment/D3),
+      // cruzado com o retrabalho da SESSÃO que efetivamente mesclou aquela
+      // issue. Isolado do resto: `increments` pode não existir ainda em quem
+      // não rodou a migração de D3, ou a consulta pode falhar — o
+      // multiplicador cai nos nulos, mas o resto da medição (por sessão, já
+      // provado) segue respondendo normalmente.
+      let multiplicador = medirMultiplicador([])
+      try {
+        const incrementos = await app.prisma.increment.findMany({
+          where: { projectId: { in: projetoIds } },
+          select: { projectId: true, issueNumber: true, wishCreatedAt: true, prontoEm: true },
+        })
+
+        if (incrementos.length > 0) {
+          const sessoesMescladas = await app.prisma.devSession.findMany({
+            where: {
+              projectId: { in: projetoIds },
+              closedReason: 'merged',
+              issueNumber: { in: incrementos.map((i) => i.issueNumber) },
+            },
+            select: { projectId: true, issueNumber: true, requeueCount: true },
+          })
+          const retrabalhoPorItem = new Map<string, boolean>()
+          for (const s of sessoesMescladas) {
+            retrabalhoPorItem.set(`${s.projectId}:${s.issueNumber}`, (s.requeueCount ?? 0) > 0)
+          }
+
+          const fatosDoItem: FatosDoCicloDoItem[] = incrementos.map((i) => ({
+            wishCreatedAt: i.wishCreatedAt,
+            prontoEm: i.prontoEm,
+            teveRetrabalho: retrabalhoPorItem.get(`${i.projectId}:${i.issueNumber}`) ?? false,
+          }))
+          multiplicador = medirMultiplicador(fatosDoItem)
+        }
+      } catch (err) {
+        app.log.warn(err, '[Painel] não consegui medir o multiplicador de velocidade (D4)')
+      }
+
+      return reply.send({ ...medirCiclo(fatos), multiplicador })
     }
   )
 
