@@ -108,8 +108,8 @@ const MINUTOS_ATE_ALERTAR_VAGA = 20
 const MINUTOS_ATE_ALERTAR_TICK_QUEBRADO = 5
 import type { AchadoDeInfra } from '../services/incidente-ci.js'
 import { renderIssueBody } from '../services/backlog-executor.js'
-import type { DoDFields, PesoDeTask } from '@gitorch/cadence'
-import { EscritaNaoAutorizadaError, ESCALA_DE_PESO } from '@gitorch/cadence'
+import type { DoDFields } from '@gitorch/cadence'
+import { EscritaNaoAutorizadaError } from '@gitorch/cadence'
 import {
   abrirSessao,
   sessoesVivas,
@@ -266,6 +266,7 @@ import {
 } from '../services/onboarding-board.js'
 import { lerCredencialDoProjeto } from '../services/project-credential.js'
 import { avaliarCustoDaOrdemDosProjetos } from '../services/custo-da-ordem-do-projeto.js'
+import { filtrarFilaDeTasks } from '../services/filtrar-fila-de-tasks.js'
 import { resolveQuadroDoProjeto } from '../routes/painel.js'
 import {
   resolverCredencialDoDev,
@@ -8846,6 +8847,10 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         let leituraIncompleta = false
         const itens = await leitor.listarItensDoQuadro(quadroId, {
           campoDePeso: 'Peso',
+          // A fila da D1 só considera TASK (ver filtrar-fila-de-tasks.ts) —
+          // e o tipo de cada item mora no corpo, no marcador
+          // `gitorch:node:<wish>:tipo:i` que o backlog-executor já grava.
+          comCorpo: true,
           onTruncado: () => {
             leituraIncompleta = true
           },
@@ -8855,21 +8860,35 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         // um número que não sustenta. Silêncio, tenta de novo na próxima.
         if (leituraIncompleta) return null
 
-        // Só entram no cálculo os itens com peso PLANEJADO. Peso ausente
-        // (`null`) é "não sei", nunca "peso zero" — e um item de peso
-        // desconhecido NO MEIO da fila invalidaria a espera calculada para
-        // quem vem depois dele. Exige a fila INTEIRA com peso conhecido: é
-        // conservador de propósito (ver CUIDADOS da tarefa) — sem isso o
-        // produto entregaria um número que não confia.
-        if (itens.length === 0 || itens.some((i) => i.peso === null)) return null
-        // Fora da ESCALA_DE_PESO (alguém digitou outra coisa no campo
-        // "Peso" pela interface do GitHub, fora do que o produto escreve):
-        // mesma lógica de `backlog-executor.ts` — não presume que serve.
-        if (itens.some((i) => !(ESCALA_DE_PESO as readonly number[]).includes(i.peso as number))) {
-          return null
-        }
+        // Só TASK entra na conta de sequenciamento — fase, épico, feature e
+        // incidente são agrupadores/eventos, e o produto NUNCA atribui peso
+        // a eles, por desenho (D9, 01/09: 48 dos 124 itens do quadro real
+        // eram desse tipo, e a condição antiga "fila inteira com peso" era
+        // estruturalmente inalcançável). A prudência do peso continua de
+        // pé: task sem peso conhecido segue fazendo a conta ficar em
+        // silêncio — só parou de exigir peso de quem nunca vai ter.
+        const filtro = filtrarFilaDeTasks(itens)
+        if (filtro.fila) return filtro.fila
 
-        return itens.map((i) => ({ pedido: i.pedido, peso: i.peso as PesoDeTask }))
+        // OBSERVABILIDADE: silêncio sempre com o motivo, nunca mudo — para
+        // distinguir "não há o que avisar" de "não consegui calcular"
+        // (mesmo defeito de L3-T23).
+        if (filtro.motivo === 'sem-peso') {
+          app.log.info(
+            `[Scheduler] custo da ordem de ${p.wingId}: ${filtro.semPeso.length} de ` +
+              `${filtro.totalDeTasks} task(s) ainda sem peso conhecido ` +
+              `(#${filtro.semPeso.join(', #')}) — silêncio nesta passada, tenta na próxima`
+          )
+        } else if (filtro.motivo === 'peso-fora-da-escala') {
+          app.log.warn(
+            `[Scheduler] custo da ordem de ${p.wingId}: ${filtro.pedidos.length} de ` +
+              `${filtro.totalDeTasks} task(s) com peso fora da escala 1,2,3,5,8,13 ` +
+              `(#${filtro.pedidos.join(', #')}) — silêncio nesta passada, tenta na próxima`
+          )
+        }
+        // 'sem-task-nenhuma': quadro só com agrupadores (ou vazio) — nada a
+        // sequenciar, silêncio comum, sem log (não é falha nem pendência).
+        return null
       },
       lerEstado: async (projectId) => {
         const linha = await app.prisma.project.findUnique({
