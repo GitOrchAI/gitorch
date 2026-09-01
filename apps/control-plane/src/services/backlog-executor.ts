@@ -8,6 +8,7 @@ import {
   type PesoDeTask,
 } from '@gitorch/cadence'
 import { agentLabel } from './agent-label.js'
+import { lerSecaoDaIssue } from './secao-da-issue.js'
 
 // Backlog-executor: as MÃOS determinísticas da Lei "LLM decide, sistema
 // executa". Recebe o plano que o PO preencheu (formulários já validados por
@@ -142,6 +143,31 @@ export function renderIssueBody(
 /** Corpo simples (fases/épicos/features não carregam DoD de execução). */
 function renderNodeBody(lines: string[], marker: string): string {
   return [`<!-- ${marker} -->`, ...lines].join('\n\n')
+}
+
+/**
+ * O LADO DE QUEM LÊ: inverso de `renderIssueBody` — acha o peso que já foi
+ * publicado no CORPO de uma issue existente. Existe para o backfill (D8): 124
+ * itens nasceram no quadro antes de `setWeight` existir (PR #417, 31/08), e
+ * quem tem o número é o texto, não o campo.
+ *
+ * Reaproveita `lerSecaoDaIssue` (secao-da-issue.ts) — a MESMA leitura por
+ * cabeçalho que já serve sm-delegation/qa-rails-mission/pedido-ao-dev — em vez
+ * de uma segunda regra de parsing que diverge da primeira no dia em que o
+ * formato mudar.
+ *
+ * `null`, nunca um número chutado, quando: não há seção "## Peso" (issue
+ * anterior ao PR #417), ou o valor não é um dos seis da ESCALA_DE_PESO (campo
+ * editado à mão no GitHub, fora do que o produto escreve). Mesma régua de
+ * `validateBacklogPlan`: fora da escala não é "quase certo", é desconhecido.
+ */
+export function pesoDoCorpoDaIssue(corpo: string | undefined | null): PesoDeTask | null {
+  const secao = lerSecaoDaIssue(corpo, 'Peso')
+  if (!secao) return null
+  const achado = secao.match(/^\*\*(-?\d+(?:\.\d+)?)\*\*/)
+  if (!achado?.[1]) return null
+  const numero = Number(achado[1])
+  return (ESCALA_DE_PESO as readonly number[]).includes(numero) ? (numero as PesoDeTask) : null
 }
 
 /**
