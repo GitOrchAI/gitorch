@@ -4,10 +4,13 @@ import { descreverEvento, papelDoAgente, estadoDoAgente } from '../services/desc
 import type { AgentQuestionRecord } from '../services/agent-question.js'
 import {
   lerArvoreDePedidos,
+  lerArvoreDoPedido,
   projetoDaLinha,
   ArvoreIndisponivelError,
+  PedidoNaoEncontradoError,
   type PedidoDoPainel,
   type ProjetoDoDono,
+  type NoDaArvore,
 } from '../services/arvore-de-pedidos.js'
 import {
   sprintCorrente,
@@ -106,6 +109,18 @@ export interface PainelRoutesOpts {
     projeto?: string | undefined
   }) => Promise<PedidoDoPainel[]>
   /**
+   * Lê a árvore de UM pedido — fase→épico→feature→task. Default: o serviço
+   * real. Chamada só quando o dono expande a linha na tela (D2, leva 3):
+   * pendurar a árvore de TODOS os pedidos da lista estouraria o teto de nós
+   * do GraphQL do GitHub muito antes de chegar em qualquer fase. Injetável
+   * só nos testes.
+   */
+  lerArvoreDoPedido?: (args: {
+    ownerId: string
+    projeto: string
+    numero: number
+  }) => Promise<NoDaArvore[]>
+  /**
    * Lê as sprints configuradas nos quadros do dono. Default: ainda não há
    * caminho ligado (o quadro do cliente é configurado no passo de execução do
    * bloco 3), então devolve lista vazia e a tela diz honestamente que não há
@@ -166,6 +181,24 @@ export const painelRoutes = async (
           },
           // A credencial do DONO, não a da instalação: os pedidos vivem no
           // repositório dele, e é a permissão dele que vale.
+          lerToken: async (ownerId: string) =>
+            (await app.engineConnections?.getRawGithubToken(ownerId)) ?? null,
+        },
+        args
+      ))
+
+  const lerArvoreDeUmPedido =
+    opts.lerArvoreDoPedido ??
+    ((args: { ownerId: string; projeto: string; numero: number }) =>
+      lerArvoreDoPedido(
+        {
+          listarProjetos: async (ownerId: string): Promise<ProjetoDoDono[]> => {
+            const ps = await app.prisma.project.findMany({
+              where: { userId: ownerId, isActive: true },
+              select: { name: true, wingId: true },
+            })
+            return ps.map(projetoDaLinha)
+          },
           lerToken: async (ownerId: string) =>
             (await app.engineConnections?.getRawGithubToken(ownerId)) ?? null,
         },
@@ -527,6 +560,49 @@ export const painelRoutes = async (
           // não pediu nada". Devolver lista vazia aqui seria mentir.
           app.log.warn(`[painel/pedidos] árvore indisponível: ${err.message}`)
           return reply.code(503).send({ error: 'PEDIDOS_INDISPONIVEIS' })
+        }
+        throw err
+      }
+    }
+  )
+
+  // GET /api/v1/painel/pedidos/arvore — fase→épico→feature→task de UM pedido
+  // (D2, leva 3 — "A logica da leva 2", bloco 2, aprovado 30/08).
+  //
+  // NUNCA junto da lista de pedidos: buscar a árvore inteira dos até 50
+  // pedidos da lista de uma vez estouraria o teto de nós do GraphQL do GitHub
+  // muito antes de chegar em qualquer fase (ver o comentário de
+  // CONSULTA_ARVORE em services/arvore-de-pedidos.ts). Por isso esta rota
+  // pede `projeto` E `numero`: o dono expande UMA linha por vez, e a tela
+  // busca só aquele pedido.
+  app.get<{ Querystring: { projeto?: string; numero?: string } }>(
+    '/api/v1/painel/pedidos/arvore',
+    RATE_LIMIT_POLLING,
+    async (request, reply) => {
+      if (!request.user) return reply.code(401).send(NAO_LOGADO)
+      const projeto = request.query.projeto?.trim()
+      if (!projeto) return reply.code(400).send({ error: 'Informe o projeto.' })
+
+      const numero = Number(request.query.numero)
+      if (!Number.isInteger(numero) || numero <= 0) {
+        return reply.code(400).send({ error: 'Informe o número do pedido.' })
+      }
+
+      const ownerId = await resolveOwnerId(app.prisma, request.user)
+      try {
+        const nos = await lerArvoreDeUmPedido({ ownerId, projeto, numero })
+        return reply.send({ nos })
+      } catch (err) {
+        if (err instanceof PedidoNaoEncontradoError) {
+          // 404 e não 503: "isto não existe" é diferente de "não consegui
+          // ler agora". Mesma frase para projeto errado e número errado —
+          // anti-vazamento, igual à rota de ordem.
+          app.log.warn(`[painel/pedidos/arvore] ${err.message}`)
+          return reply.code(404).send({ error: 'Pedido não encontrado.' })
+        }
+        if (err instanceof ArvoreIndisponivelError) {
+          app.log.warn(`[painel/pedidos/arvore] árvore indisponível: ${err.message}`)
+          return reply.code(503).send({ error: 'ARVORE_INDISPONIVEL' })
         }
         throw err
       }

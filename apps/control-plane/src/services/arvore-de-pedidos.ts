@@ -102,6 +102,107 @@ query Pedidos($owner: String!, $name: String!, $label: String!) {
 }`
 
 /**
+ * Um nó da árvore embaixo do pedido: fase, épico, feature ou task — o mesmo
+ * shape em todo nível, porque `addSubIssue` (backlog-executor.ts) pendura
+ * cada um do mesmo jeito nativo do GitHub.
+ */
+export interface NoDaArvore {
+  numero: number
+  titulo: string
+  /** Mesma regra do pedido: é o estado da ISSUE, nunca "entregue". */
+  situacao: 'andando' | 'fechado'
+  endereco: string
+  /**
+   * Quantos filhos diretos o GitHub reporta (`subIssuesSummary`) e quantos já
+   * fecharam. PODE ser maior que `filhos.length`: a consulta tem um teto por
+   * nível (ver CONSULTA_ARVORE) e um nó com mais filhos do que o teto chega
+   * aqui com `partes.total` maior — a tela é que decide como avisar que não
+   * trouxe todos, nunca finge que viu a lista inteira.
+   */
+  partes: { total: number; concluidas: number }
+  /** Os filhos que a consulta conseguiu trazer, já como nós da árvore. Task
+   *  (o último nível que a consulta desce) sempre chega com `filhos: []` —
+   *  não é "sem filhos de verdade", é "não perguntei mais um nível". */
+  filhos: NoDaArvore[]
+}
+
+/**
+ * Não achei o pedido nem o nível que a consulta pediu.
+ *
+ * Duas causas viram ESTE erro, de propósito: o projeto não é do dono (ele
+ * poderia estar tentando o número de outro cliente) e o número não existe
+ * naquele repositório. As duas merecem 404, nunca 503 — não é "não consegui
+ * ler agora", é "isso que você pediu não existe". `ArvoreIndisponivelError`
+ * continua reservado para quando a leitura em si falhou (rede, GitHub fora do
+ * ar, sem credencial).
+ */
+export class PedidoNaoEncontradoError extends Error {
+  constructor(motivo: string) {
+    super(`PEDIDO_NAO_ENCONTRADO: ${motivo}`)
+    this.name = 'PedidoNaoEncontradoError'
+  }
+}
+
+/**
+ * Um nó bruto, do jeito que o GraphQL devolve dentro de `subIssues.nodes` —
+ * recursivo porque a consulta pendura o MESMO campo em cada nível (ver
+ * CONSULTA_ARVORE). O último nível pedido não tem `subIssues` no corpo: o
+ * campo chega `undefined`, e `noDaSubIssue` trata isso como "sem filhos",
+ * nunca como erro.
+ */
+interface SubIssueBruta {
+  number?: number
+  title?: string
+  state?: string
+  url?: string
+  subIssuesSummary?: { total?: number; completed?: number } | null
+  subIssues?: { nodes?: (SubIssueBruta | null)[] } | null
+}
+
+/**
+ * fase → épico → feature → task, um `subIssues` aninhado por nível.
+ *
+ * OS TETOS SÃO DE PROPÓSITO, não arredondados no olho: o limite de nós de uma
+ * consulta GraphQL do GitHub é o PRODUTO dos `first` de cada nível aninhado
+ * (documentado, não hipótese). Com `20 × 20 × 20 × 50 = 400.000` a consulta
+ * fica sob o teto de 500.000 mesmo no pior caso — mas um pedido real nunca
+ * tem 20 fases; o teto generoso é para o nível mais raso nunca cortar, e o
+ * `50` no de tasks é o nível que o dono descreveu como "dezenas". Cortar
+ * SEM avisar seria o mesmo defeito que este bloco existe para consertar: a
+ * árvore mentindo que viu tudo. Por isso cada nível também pede
+ * `subIssuesSummary` — é o que deixa `NoDaArvore.partes.total` maior que
+ * `filhos.length` quando o teto cortou, em vez de escantear em silêncio.
+ */
+const CONSULTA_ARVORE = `
+query ArvoreDoPedido($owner: String!, $name: String!, $numero: Int!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $numero) {
+      subIssues(first: 20) {
+        nodes {
+          number title state url
+          subIssuesSummary { total completed }
+          subIssues(first: 20) {
+            nodes {
+              number title state url
+              subIssuesSummary { total completed }
+              subIssues(first: 20) {
+                nodes {
+                  number title state url
+                  subIssuesSummary { total completed }
+                  subIssues(first: 50) {
+                    nodes { number title state url subIssuesSummary { total completed } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}`
+
+/**
  * Não deu para ler a árvore.
  *
  * Existe para a rota separar "não consegui ler" de "o dono não pediu nada".
@@ -211,4 +312,91 @@ export async function lerArvoreDePedidos(
   }
   // Mais recente primeiro, atravessando projetos.
   return pedidos.sort((a, b) => b.quando.localeCompare(a.quando))
+}
+
+/** Um nó bruto de `subIssues.nodes` → `NoDaArvore`, descendo recursivamente. */
+function noDaSubIssue(bruto: SubIssueBruta): NoDaArvore | null {
+  if (typeof bruto.number !== 'number') return null
+  const s = bruto.subIssuesSummary
+  const filhos = (bruto.subIssues?.nodes ?? [])
+    .map((f) => (f ? noDaSubIssue(f) : null))
+    .filter((n): n is NoDaArvore => n !== null)
+  return {
+    numero: bruto.number,
+    titulo: bruto.title ?? '(sem título)',
+    situacao: bruto.state === 'CLOSED' ? 'fechado' : 'andando',
+    endereco: bruto.url ?? '',
+    partes: { total: s?.total ?? 0, concluidas: s?.completed ?? 0 },
+    filhos,
+  }
+}
+
+/**
+ * Lê a árvore de UM pedido — fase → épico → feature → task — pendurada
+ * embaixo dele no GitHub.
+ *
+ * Chamada só quando o dono expande a linha do pedido na tela (nunca junto da
+ * lista): a lista cobre até 50 pedidos de uma vez, e pendurar a árvore
+ * inteira de cada um estouraria o teto de nós do GraphQL do GitHub muito
+ * antes de chegar em qualquer fase (ver o comentário de CONSULTA_ARVORE).
+ * Buscar sob demanda, um pedido por vez, é o que deixa os tetos de cada
+ * nível serem generosos sem violar esse teto.
+ */
+export async function lerArvoreDoPedido(
+  deps: DepsDaArvoreDePedidos,
+  args: { ownerId: string; projeto: string; numero: number }
+): Promise<NoDaArvore[]> {
+  const f = deps.fetchImpl ?? fetch
+  const todos = await deps.listarProjetos(args.ownerId)
+  const projeto = todos.find((p) => p.nome === args.projeto)
+  // Projeto que o dono não tem: MESMA família de defeito que o `numero`
+  // errado — 404, e nunca chega a pedir a credencial dele à toa.
+  if (!projeto) throw new PedidoNaoEncontradoError('projeto não encontrado')
+
+  const alvo = partirRepo(projeto.repo)
+  if (!alvo) throw new ArvoreIndisponivelError('endereço do repositório sem forma')
+
+  const token = await deps.lerToken(args.ownerId)
+  if (!token) throw new ArvoreIndisponivelError('sem credencial do dono')
+
+  try {
+    const resposta = await f('https://api.github.com/graphql', {
+      method: 'POST',
+      headers: {
+        authorization: `token ${token}`,
+        'content-type': 'application/json',
+        'user-agent': 'gitorch',
+      },
+      body: JSON.stringify({
+        query: CONSULTA_ARVORE,
+        variables: { owner: alvo.owner, name: alvo.name, numero: args.numero },
+      }),
+    })
+    if (!resposta.ok) throw new ArvoreIndisponivelError('GitHub respondeu com erro')
+
+    const corpo = (await resposta.json()) as {
+      data?: {
+        repository?: { issue?: { subIssues?: { nodes?: (SubIssueBruta | null)[] } } | null } | null
+      } | null
+      errors?: unknown[]
+    }
+    if (corpo.errors?.length || !corpo.data?.repository) {
+      throw new ArvoreIndisponivelError('não consegui ler o repositório')
+    }
+    const issue = corpo.data.repository.issue
+    // O repositório respondeu, mas ESTE número não existe nele — diferente de
+    // "não consegui ler o repositório inteiro".
+    if (!issue) throw new PedidoNaoEncontradoError('pedido não encontrado no repositório')
+
+    return (issue.subIssues?.nodes ?? [])
+      .map((n) => (n ? noDaSubIssue(n) : null))
+      .filter((n): n is NoDaArvore => n !== null)
+  } catch (err) {
+    // Já eram os erros de domínio que este serviço decidiu levantar —
+    // deixa passar. Qualquer outra coisa (rede caiu, JSON quebrado) vira
+    // ArvoreIndisponivelError: o erro cru do fetch NUNCA é repassado adiante,
+    // porque pode carregar a credencial no texto.
+    if (err instanceof ArvoreIndisponivelError || err instanceof PedidoNaoEncontradoError) throw err
+    throw new ArvoreIndisponivelError('rede caiu')
+  }
 }
