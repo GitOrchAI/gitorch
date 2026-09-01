@@ -348,6 +348,78 @@ describe('provisionSetupMission', () => {
     })
   })
 
+  // D15 (01/09/2026, task ce67b8bd): o dono já deu a credencial do GitHub no
+  // login (o próprio `githubToken` recebido como 3º argumento desta função —
+  // ver o call site real em scheduler.ts, que resolve isso via
+  // `app.engineConnections.getRawGithubToken`). Conta pessoal, App instalado
+  // mas SEM PAT explícito ainda colado para o projeto
+  // (`lerCredencialDoProjeto` vazio, mesmo cenário do teste D13 acima): antes
+  // desta task, `clientToken` ficava `null` e o provisionamento desistia
+  // direto no aviso "cole sua credencial" — MESMO tendo a credencial de
+  // login já guardada e à mão. Agora o default de `lerClientToken` tenta esse
+  // token de login antes de desistir.
+  test('sem lerClientToken injetado e sem PAT do cliente guardado, o default cai no token de login (githubToken) — nunca pede de novo ao dono', async () => {
+    const stack = fakeStack(vi.fn().mockResolvedValue({ path: '/workspace/x' }))
+    const update = vi.fn().mockResolvedValue({})
+    const findUnique = vi.fn().mockResolvedValue({ encryptedClientToken: null })
+    const tokensUsados: string[] = []
+
+    const outcome = await provisionSetupMission(
+      {
+        id: 'mission_fallback_login',
+        project: { id: 'proj_fallback', wingId: 'loureng/repo-pessoal-novo', userId: 'user_1' },
+      },
+      stack,
+      // 3º argumento: o `githubToken` que o call site real já resolve via
+      // engine_connections (a credencial que o dono já deu no login).
+      'token-do-login-ja-guardado',
+      {
+        prisma: { project: { update, findUnique } } as never,
+        createProjectV2Client: (token: string) => {
+          tokensUsados.push(token)
+          // A 1ª tentativa (identidade do App) nega por permissão — mesmo
+          // formato de erro real medido em produção (D13). Só a 2ª tentativa
+          // (`criarClienteAlternativo`, sob o `clientToken` resolvido pelo
+          // default) usa o token de login e cria de verdade.
+          if (token === 'ghs_token_do_app') {
+            return {
+              findProjectId: vi.fn(async () => null),
+              createProjectV2: vi.fn(async () => {
+                throw new Error(
+                  'GitHub GraphQL request failed: does not have permission to create projects on ownerId U_zzz'
+                )
+              }),
+            }
+          }
+          return {
+            findProjectId: vi.fn(async () => null),
+            createProjectV2: vi.fn(async () => ({ id: 'PVT_fallback', number: 31 })),
+          }
+        },
+        resolveOwner: async () => ({ id: 'U_loureng', type: 'user' }),
+        mintInstallationToken: async () => 'ghs_token_do_app',
+      }
+    )
+
+    expect(outcome.status).toBe('completed')
+    // A credencial que o cliente colou explicitamente foi consultada
+    // (default real), veio vazia, e SÓ ENTÃO caiu no token de login — nunca
+    // pulou direto para "sem reforço nenhum".
+    expect(findUnique).toHaveBeenCalledWith({
+      where: { id: 'proj_fallback' },
+      select: { encryptedClientToken: true },
+    })
+    // As DUAS tentativas de fato aconteceram, nesta ordem: App primeiro
+    // (negado), token de login já guardado depois (criou).
+    expect(tokensUsados).toEqual(['ghs_token_do_app', 'token-do-login-ja-guardado'])
+    expect(update).toHaveBeenCalledWith({
+      where: { id: 'proj_fallback' },
+      data: {
+        runtimeConfig: { envConfig: { GITORCH_PROJECT_BOARD: 'loureng/31' } },
+      },
+    })
+  })
+
   // Achado importante: `existingNumber` era código morto — nenhum chamador
   // passava, então `findProjectId` nunca rodava e TODO provisionamento criava
   // board NOVO. Finalizar o wizard 2x para o mesmo repositório (ex.: o

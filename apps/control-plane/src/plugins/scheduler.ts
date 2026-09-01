@@ -266,7 +266,10 @@ import {
   resolveGithubRepositoryId,
   type ResolvedOwner,
 } from '../services/onboarding-board.js'
-import { lerCredencialDoProjeto } from '../services/project-credential.js'
+import {
+  lerCredencialDoProjeto,
+  lerCredencialQueAlcancaOProjeto,
+} from '../services/project-credential.js'
 import { avaliarCustoDaOrdemDosProjetos } from '../services/custo-da-ordem-do-projeto.js'
 import { filtrarFilaDeTasks } from '../services/filtrar-fila-de-tasks.js'
 import { resolveQuadroDoProjeto } from '../routes/painel.js'
@@ -1820,9 +1823,25 @@ export async function provisionSetupMission(
       // criar, e sem ela aqui esse reforço nunca entrava em jogo. Protegida:
       // erro na leitura (chave rotacionada, banco fora do ar) nunca derruba
       // o provisionamento, só perde o reforço.
+      //
+      // D15 (01/09/2026, task ce67b8bd): antes de mais nada pedir ao dono
+      // para colar de novo, o default tenta a credencial que ele JÁ DEU no
+      // login (`githubToken`, este mesmo parâmetro — o call site real em
+      // `processSetupMissions` já resolve isso via
+      // `app.engineConnections.getRawGithubToken`) — nunca só "sem PAT,
+      // desiste". Continua havendo casos em que só o PAT explícito colado em
+      // /api/v1/setup/credencial-do-cliente alcança (D13 acima); aqui só
+      // evitamos pular direto para "nenhum reforço" quando um token de login
+      // já está em mãos.
       const lerClientToken =
         deps.lerClientToken ??
-        ((projectId: string) => lerCredencialDoProjeto({ prisma: deps.prisma as never, projectId }))
+        (async (projectId: string) => {
+          const doCliente = await lerCredencialDoProjeto({
+            prisma: deps.prisma as never,
+            projectId,
+          })
+          return doCliente ?? githubToken ?? null
+        })
       const clientToken = await lerClientToken(mission.project.id).catch((err) => {
         avisarBoard(
           `não foi possível ler a credencial do cliente para ${mission.project.wingId}, seguindo sem ela: ${(err as Error).message}`
@@ -3104,8 +3123,19 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               new ProjectV2Client({ token, fetchImpl: fetchDoQuadro(project) }),
             resolveOwner: resolveGithubOwnerId,
             resolveRepositoryId: resolveGithubRepositoryId,
+            // D15 (01/09/2026, task ce67b8bd): antes de desistir por falta de
+            // PAT explícito, tenta a credencial que o dono já deu no login
+            // (engine_connections) — nunca pede de novo algo que já está
+            // guardado e funcionando. `lerCredencialQueAlcancaOProjeto`
+            // engloba essa ordem (cliente primeiro, login depois) e nunca
+            // lança — mesma garantia que este `lerClientToken` já tinha.
             lerClientToken: () =>
-              lerCredencialDoProjeto({ prisma: app.prisma as never, projectId: project.id }),
+              lerCredencialQueAlcancaOProjeto({
+                prisma: app.prisma as never,
+                projectId: project.id,
+                userId: project.userId,
+                engineConnections: app.engineConnections,
+              }),
             criarClienteAlternativo: (token: string) =>
               new ProjectV2Client({ token, fetchImpl: fetchDoQuadro(project) }),
             onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
@@ -3143,13 +3173,21 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         //
         // SÓ para 'po' — o único papel que fala com Projects V2 por aqui
         // (`runPoMissionViaRails` → `createGithubBacklog`). Chamar
-        // `lerCredencialDoProjeto` para 'qa'/'sm' seria uma consulta a mais
-        // por tique sem chamador nenhum do outro lado.
+        // `lerCredencialQueAlcancaOProjeto` para 'qa'/'sm' seria uma consulta
+        // a mais por tique sem chamador nenhum do outro lado.
+        //
+        // D15 (01/09/2026, task ce67b8bd): entre o PAT explícito do cliente e
+        // o token do App (`railsToken`, cego para Projects V2 de conta
+        // pessoal — D12), agora entra a credencial que o dono já deu no
+        // login (engine_connections) — mais um caso coberto sem pedir nada
+        // de novo a ele.
         const railsBoardToken =
           role === 'po'
-            ? ((await lerCredencialDoProjeto({
+            ? ((await lerCredencialQueAlcancaOProjeto({
                 prisma: app.prisma as never,
                 projectId: project.id,
+                userId: project.userId,
+                engineConnections: app.engineConnections,
               })) ?? railsToken)
             : undefined
         // O quadro deixou de ser condição para o PO agir. Ele é a vitrine do
