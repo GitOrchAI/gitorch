@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import {
   lerArvoreDePedidos,
+  lerArvoreDoPedido,
   projetoDaLinha,
   ArvoreIndisponivelError,
+  PedidoNaoEncontradoError,
   type DepsDaArvoreDePedidos,
 } from './arvore-de-pedidos.js'
 
@@ -18,6 +20,19 @@ function issue(over: Record<string, unknown> = {}): Record<string, unknown> {
     createdAt: '2026-08-06T12:00:00Z',
     url: 'https://github.com/GitOrchAI/gitorch/issues/30',
     subIssuesSummary: { total: 3, completed: 0 },
+    ...over,
+  }
+}
+
+/** Um nó da árvore (fase/épico/feature/task), do jeito que o GraphQL devolve
+ *  dentro de `subIssues.nodes`. */
+function subIssue(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    number: 31,
+    title: 'Fase 1 — descobrir o cliente',
+    state: 'OPEN',
+    url: 'https://github.com/GitOrchAI/gitorch/issues/31',
+    subIssuesSummary: { total: 0, completed: 0 },
     ...over,
   }
 }
@@ -283,5 +298,262 @@ describe('projetoDaLinha — qual campo é o endereço do repositório', () => {
     expect(projetoDaLinha({ name: 'gitorch', wingId: 'GitOrchAI/gitorch' }).repo).not.toBe(
       'gitorch'
     )
+  })
+})
+
+describe('lerArvoreDoPedido — fase→épico→feature→task de UM pedido', () => {
+  // A árvore vem pendurada embaixo do pedido: fase(31) → épico(41) → feature(51)
+  // → task(61). Cada nível carrega o MESMO par {total, concluidas} do pedido —
+  // é `subIssuesSummary`, o próprio GitHub calculando, nunca inventado aqui.
+  function arvoreCompleta(): Record<string, unknown> {
+    return {
+      data: {
+        repository: {
+          issue: {
+            subIssues: {
+              nodes: [
+                subIssue({
+                  number: 31,
+                  title: 'Fase 1',
+                  subIssuesSummary: { total: 1, completed: 0 },
+                  subIssues: {
+                    nodes: [
+                      subIssue({
+                        number: 41,
+                        title: 'Épico 1',
+                        subIssuesSummary: { total: 1, completed: 0 },
+                        subIssues: {
+                          nodes: [
+                            subIssue({
+                              number: 51,
+                              title: 'Feature 1',
+                              subIssuesSummary: { total: 1, completed: 1 },
+                              subIssues: {
+                                nodes: [
+                                  subIssue({
+                                    number: 61,
+                                    title: 'Task 1',
+                                    state: 'CLOSED',
+                                    subIssuesSummary: { total: 0, completed: 0 },
+                                  }),
+                                ],
+                              },
+                            }),
+                          ],
+                        },
+                      }),
+                    ],
+                  },
+                }),
+              ],
+            },
+          },
+        },
+      },
+    }
+  }
+
+  it('monta os quatro níveis, cada um com seu andamento de verdade', async () => {
+    const r = await lerArvoreDoPedido(
+      deps({ fetchImpl: githubFake({ 'GitOrchAI/gitorch': arvoreCompleta() }) }),
+      { ownerId: 'u1', projeto: 'gitorch', numero: 30 }
+    )
+    expect(r).toHaveLength(1)
+    const fase = r[0]!
+    expect(fase).toMatchObject({
+      numero: 31,
+      titulo: 'Fase 1',
+      situacao: 'andando',
+      partes: { total: 1, concluidas: 0 },
+    })
+    expect(fase.filhos).toHaveLength(1)
+    const epico = fase.filhos[0]!
+    expect(epico).toMatchObject({
+      numero: 41,
+      titulo: 'Épico 1',
+      partes: { total: 1, concluidas: 0 },
+    })
+    expect(epico.filhos).toHaveLength(1)
+    const feature = epico.filhos[0]!
+    expect(feature).toMatchObject({
+      numero: 51,
+      titulo: 'Feature 1',
+      partes: { total: 1, concluidas: 1 },
+    })
+    expect(feature.filhos).toHaveLength(1)
+    const task = feature.filhos[0]!
+    expect(task).toMatchObject({
+      numero: 61,
+      titulo: 'Task 1',
+      situacao: 'fechado',
+      partes: { total: 0, concluidas: 0 },
+      filhos: [],
+    })
+  })
+
+  it('nó sem subIssuesSummary vem 0 de 0, nunca inventa número', async () => {
+    const r = await lerArvoreDoPedido(
+      deps({
+        fetchImpl: githubFake({
+          'GitOrchAI/gitorch': {
+            data: {
+              repository: {
+                issue: { subIssues: { nodes: [subIssue({ subIssuesSummary: null })] } },
+              },
+            },
+          },
+        }),
+      }),
+      { ownerId: 'u1', projeto: 'gitorch', numero: 30 }
+    )
+    expect(r[0]?.partes).toEqual({ total: 0, concluidas: 0 })
+  })
+
+  it('pedido ainda sem árvore (subIssues vazio) devolve lista vazia', async () => {
+    const r = await lerArvoreDoPedido(
+      deps({
+        fetchImpl: githubFake({
+          'GitOrchAI/gitorch': { data: { repository: { issue: { subIssues: { nodes: [] } } } } },
+        }),
+      }),
+      { ownerId: 'u1', projeto: 'gitorch', numero: 30 }
+    )
+    expect(r).toEqual([])
+  })
+
+  it('a consulta trouxe menos filhos do que o GitHub reporta — mostra o que veio, nunca trava', async () => {
+    // 3 épicos de verdade (subIssuesSummary.total), a consulta só devolveu 1
+    // (o teto da consulta). A tela decide como avisar; o serviço só passa os
+    // dois números adiante sem tentar reconciliar.
+    const r = await lerArvoreDoPedido(
+      deps({
+        fetchImpl: githubFake({
+          'GitOrchAI/gitorch': {
+            data: {
+              repository: {
+                issue: {
+                  subIssues: {
+                    nodes: [
+                      subIssue({
+                        number: 31,
+                        subIssuesSummary: { total: 3, completed: 0 },
+                        subIssues: { nodes: [subIssue({ number: 41 })] },
+                      }),
+                    ],
+                  },
+                },
+              },
+            },
+          },
+        }),
+      }),
+      { ownerId: 'u1', projeto: 'gitorch', numero: 30 }
+    )
+    expect(r[0]?.partes.total).toBe(3)
+    expect(r[0]?.filhos).toHaveLength(1)
+  })
+
+  it('projeto que o dono não tem → PedidoNaoEncontradoError, nunca pede credencial', async () => {
+    let pediuToken = false
+    await expect(
+      lerArvoreDoPedido(
+        deps({
+          lerToken: async () => {
+            pediuToken = true
+            return 'x'
+          },
+        }),
+        { ownerId: 'u1', projeto: 'nao-existe', numero: 30 }
+      )
+    ).rejects.toBeInstanceOf(PedidoNaoEncontradoError)
+    expect(pediuToken).toBe(false)
+  })
+
+  it('issue(número) que não existe naquele repositório → PedidoNaoEncontradoError', async () => {
+    await expect(
+      lerArvoreDoPedido(
+        deps({
+          fetchImpl: githubFake({
+            'GitOrchAI/gitorch': { data: { repository: { issue: null } } },
+          }),
+        }),
+        { ownerId: 'u1', projeto: 'gitorch', numero: 999 }
+      )
+    ).rejects.toBeInstanceOf(PedidoNaoEncontradoError)
+  })
+
+  it('repositório indisponível (repository null) → ArvoreIndisponivelError, não NaoEncontrado', async () => {
+    await expect(
+      lerArvoreDoPedido(
+        deps({ fetchImpl: githubFake({ 'GitOrchAI/gitorch': { data: { repository: null } } }) }),
+        { ownerId: 'u1', projeto: 'gitorch', numero: 30 }
+      )
+    ).rejects.toBeInstanceOf(ArvoreIndisponivelError)
+  })
+
+  it('erro de GraphQL no corpo → ArvoreIndisponivelError', async () => {
+    await expect(
+      lerArvoreDoPedido(
+        deps({
+          fetchImpl: githubFake({
+            'GitOrchAI/gitorch': { errors: [{ message: 'NOT_FOUND' }], data: null },
+          }),
+        }),
+        { ownerId: 'u1', projeto: 'gitorch', numero: 30 }
+      )
+    ).rejects.toBeInstanceOf(ArvoreIndisponivelError)
+  })
+
+  it('status ruim do GitHub → ArvoreIndisponivelError', async () => {
+    await expect(
+      lerArvoreDoPedido(deps({ fetchImpl: githubFake({ 'GitOrchAI/gitorch': 'http-500' }) }), {
+        ownerId: 'u1',
+        projeto: 'gitorch',
+        numero: 30,
+      })
+    ).rejects.toBeInstanceOf(ArvoreIndisponivelError)
+  })
+
+  it('rede caiu → ArvoreIndisponivelError, nunca o erro cru (pode carregar credencial)', async () => {
+    await expect(
+      lerArvoreDoPedido(deps({ fetchImpl: githubFake({}) }), {
+        ownerId: 'u1',
+        projeto: 'gitorch',
+        numero: 30,
+      })
+    ).rejects.toBeInstanceOf(ArvoreIndisponivelError)
+  })
+
+  it('sem credencial do dono → ArvoreIndisponivelError', async () => {
+    await expect(
+      lerArvoreDoPedido(deps({ lerToken: async () => null }), {
+        ownerId: 'u1',
+        projeto: 'gitorch',
+        numero: 30,
+      })
+    ).rejects.toBeInstanceOf(ArvoreIndisponivelError)
+  })
+
+  it('a credencial vai no cabeçalho e o número do pedido na consulta', async () => {
+    let visto: { headers?: Record<string, string>; body?: string } = {}
+    await lerArvoreDoPedido(
+      deps({
+        fetchImpl: (async (_u: string, init?: RequestInit) => {
+          visto = {
+            headers: init?.headers as Record<string, string>,
+            body: String(init?.body ?? ''),
+          }
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ data: { repository: { issue: { subIssues: { nodes: [] } } } } }),
+          }
+        }) as unknown as typeof fetch,
+      }),
+      { ownerId: 'u1', projeto: 'gitorch', numero: 30 }
+    )
+    expect(visto.headers?.['authorization']).toBe('token token-do-dono')
+    const corpo = JSON.parse(visto.body ?? '{}') as { variables?: { numero?: number } }
+    expect(corpo.variables?.numero).toBe(30)
   })
 })

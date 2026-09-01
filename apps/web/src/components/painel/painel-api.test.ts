@@ -6,6 +6,7 @@ import {
   responderDecisao,
   salvarDuvidaConfig,
   descreverEventoSSE,
+  buscarArvoreDoPedido,
   ROTAS,
 } from './painel-api'
 
@@ -139,6 +140,39 @@ describe('descreverEventoSSE', () => {
   })
 })
 
+describe('buscarArvoreDoPedido', () => {
+  it('monta a rota com projeto e número, e devolve os nós', async () => {
+    let vista = ''
+    const r = await buscarArvoreDoPedido('gitorch', 30, {
+      fetchImpl: (async (url: string) => {
+        vista = String(url)
+        return { ok: true, status: 200, json: async () => ({ nos: [{ numero: 31 }] }) }
+      }) as unknown as typeof fetch,
+    })
+    expect(vista).toContain('/api/v1/painel/pedidos/arvore?projeto=gitorch&numero=30')
+    expect(r).toEqual([{ numero: 31 }])
+  })
+
+  it('nome de projeto com espaço/acento vai codificado na URL', async () => {
+    let vista = ''
+    await buscarArvoreDoPedido('meu projeto', 7, {
+      fetchImpl: (async (url: string) => {
+        vista = String(url)
+        return { ok: true, status: 200, json: async () => ({ nos: [] }) }
+      }) as unknown as typeof fetch,
+    })
+    expect(vista).toContain(`projeto=${encodeURIComponent('meu projeto')}`)
+  })
+
+  it('árvore indisponível (503) propaga o erro para quem chamou decidir o estado', async () => {
+    await expect(
+      buscarArvoreDoPedido('gitorch', 30, {
+        fetchImpl: fetchQueRetorna(503, { error: 'ARVORE_INDISPONIVEL' }),
+      })
+    ).rejects.toThrow()
+  })
+})
+
 describe('ROTAS', () => {
   it('responder monta o caminho com o id', () => {
     expect(ROTAS.responder('abc')).toBe('/api/v1/painel/decisoes/abc/responder')
@@ -146,6 +180,7 @@ describe('ROTAS', () => {
   it('as rotas novas têm o prefixo /api/v1/painel', () => {
     expect(ROTAS.pulso).toBe('/api/v1/painel/pulso')
     expect(ROTAS.agentes).toBe('/api/v1/painel/agentes')
+    expect(ROTAS.arvoreDoPedido).toBe('/api/v1/painel/pedidos/arvore')
   })
 })
 

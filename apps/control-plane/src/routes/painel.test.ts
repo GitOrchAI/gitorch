@@ -6,7 +6,7 @@ import { registerPlugins } from '../plugins/index.js'
 import { painelRoutes, resolveQuadroDoProjeto } from './painel.js'
 import { LeituraIndisponivelError } from '../services/leitura-do-repositorio.js'
 import { hojeNoFuso } from '../services/garantir-sprint.js'
-import { ArvoreIndisponivelError } from '../services/arvore-de-pedidos.js'
+import { ArvoreIndisponivelError, PedidoNaoEncontradoError } from '../services/arvore-de-pedidos.js'
 import { tabelaEmMemoria, type ConsultaEmMemoria } from '../test/where-em-memoria.js'
 import type { SessaoDaEntrega, ProjetoDaEntrega } from '../services/entregas-por-pedido.js'
 import type { EntregaDoPainel } from '../services/incremento.js'
@@ -70,6 +70,8 @@ describe('Rotas do painel do owner', () => {
     app.inject({ method: 'GET', url: '/api/v1/painel/agentes', headers: authHeaders })
   const getPedidos = (qs = '') =>
     app.inject({ method: 'GET', url: `/api/v1/painel/pedidos${qs}`, headers: authHeaders })
+  const getArvore = (qs = '') =>
+    app.inject({ method: 'GET', url: `/api/v1/painel/pedidos/arvore${qs}`, headers: authHeaders })
   const getSprint = (qs = '') =>
     app.inject({ method: 'GET', url: `/api/v1/painel/sprint${qs}`, headers: authHeaders })
   const getLeitura = (qs = '') =>
@@ -416,6 +418,88 @@ describe('Rotas do painel do owner', () => {
       const corpo = (await getPedidos()).body
       expect(corpo).not.toContain('proj_1')
       expect(corpo).not.toContain('owner_1')
+    })
+  })
+
+  describe('GET /api/v1/painel/pedidos/arvore — fase→épico→feature→task de UM pedido', () => {
+    const umNo = {
+      numero: 31,
+      titulo: 'Fase 1',
+      situacao: 'andando' as const,
+      endereco: 'https://github.com/GitOrchAI/gitorch/issues/31',
+      partes: { total: 0, concluidas: 0 },
+      filhos: [],
+    }
+
+    test('sem sessão → 401', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/painel/pedidos/arvore?projeto=gitorch&numero=30',
+      })
+      expect(res.statusCode).toBe(401)
+    })
+
+    test('sem projeto → 400', async () => {
+      await build(fakePrisma(), { lerArvoreDoPedido: async () => [umNo] })
+      const res = await getArvore('?numero=30')
+      expect(res.statusCode).toBe(400)
+    })
+
+    test('sem número, ou número que não é inteiro → 400', async () => {
+      await build(fakePrisma(), { lerArvoreDoPedido: async () => [umNo] })
+      expect((await getArvore('?projeto=gitorch')).statusCode).toBe(400)
+      expect((await getArvore('?projeto=gitorch&numero=abc')).statusCode).toBe(400)
+      expect((await getArvore('?projeto=gitorch&numero=1.5')).statusCode).toBe(400)
+    })
+
+    test('devolve os nós da árvore', async () => {
+      await build(fakePrisma(), { lerArvoreDoPedido: async () => [umNo] })
+      const res = await getArvore('?projeto=gitorch&numero=30')
+      expect(res.statusCode).toBe(200)
+      expect(res.json()).toEqual({ nos: [umNo] })
+    })
+
+    test('projeto e número chegam ao serviço', async () => {
+      const vistos: Array<{ ownerId: string; projeto: string; numero: number }> = []
+      await build(fakePrisma(), {
+        lerArvoreDoPedido: async (args: { ownerId: string; projeto: string; numero: number }) => {
+          vistos.push(args)
+          return []
+        },
+      })
+      await getArvore('?projeto=gitorch&numero=30')
+      expect(vistos[0]).toMatchObject({ projeto: 'gitorch', numero: 30 })
+    })
+
+    test('pedido não encontrado → 404, nunca 503 (não é "não consegui ler")', async () => {
+      await build(fakePrisma(), {
+        lerArvoreDoPedido: async () => {
+          throw new PedidoNaoEncontradoError('pedido não encontrado no repositório')
+        },
+      })
+      const res = await getArvore('?projeto=gitorch&numero=999')
+      expect(res.statusCode).toBe(404)
+    })
+
+    test('árvore indisponível → 503', async () => {
+      await build(fakePrisma(), {
+        lerArvoreDoPedido: async () => {
+          throw new ArvoreIndisponivelError('sem credencial do dono')
+        },
+      })
+      const res = await getArvore('?projeto=gitorch&numero=30')
+      expect(res.statusCode).toBe(503)
+      expect(res.json()).toEqual({ error: 'ARVORE_INDISPONIVEL' })
+    })
+
+    test('erro inesperado não vira 404 nem 503 disfarçado', async () => {
+      await build(fakePrisma(), {
+        lerArvoreDoPedido: async () => {
+          throw new Error('bug de verdade')
+        },
+      })
+      const res = await getArvore('?projeto=gitorch&numero=30')
+      expect(res.statusCode).toBe(500)
     })
   })
 

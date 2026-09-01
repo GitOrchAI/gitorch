@@ -4,17 +4,35 @@
 // (POST /api/v1/desejos, com as 7 frases de erro do produto) e a lista lê de
 // volta (GET /api/v1/painel/pedidos), com a árvore que o Produto pendurou.
 //
+// A ÁRVORE (D2, leva 3 — bloco 2 do desenho "A logica da leva 2", aprovado
+// 30/08): cada pedido pode expandir em fase→épico→feature→task. Busca sob
+// demanda — só quando o dono expande A LINHA daquele pedido
+// (GET /api/v1/painel/pedidos/arvore?projeto=&numero=) — nunca junto da
+// lista: os até 50 pedidos da lista, cada um com a árvore inteira pendurada,
+// estourariam o teto de nós do GraphQL do GitHub. A lógica de achatar a
+// árvore em linhas (níveis, chaves únicas, o que ainda não abriu) mora em
+// arvore-pedido.ts, testada; aqui é só desenho e o fetch sob demanda.
+//
 // A tabela mostra SÓ o que existe de verdade. O desenho original tinha colunas
 // de urgência, responsável e previsão; nenhuma delas tem fonte hoje, e coluna
 // inventada é pior que coluna faltando. Elas voltam quando houver de onde ler.
 // Portado de TelaPedidos.jsx.
-import { useState, useSyncExternalStore } from 'react'
-import { ROTAS, enviarPedido, fraseDaOrdem, pedir, type RespostaDaOrdem } from './painel-api'
+import { Fragment, useState, useSyncExternalStore } from 'react'
+import {
+  ROTAS,
+  enviarPedido,
+  fraseDaOrdem,
+  pedir,
+  buscarArvoreDoPedido,
+  type RespostaDaOrdem,
+} from './painel-api'
 import { usePainelBusca } from './usePainelBusca'
 import { assinarProjeto, projetoAtual, projetoNoServidor, filtroDeProjeto } from './painel-projeto'
 import { Ad } from './PainelIcons'
 import { Card, Estado, Chips, Cabeca } from './PainelUI'
 import { Estados } from './PainelEstados'
+import { linhasVisiveis, alternar, andamentoDoNo, NIVEL } from './arvore-pedido'
+import type { NoDaArvore } from './painel-tipos'
 
 /** Um pedido como a rota devolve (espelha PedidoDoPainel do control-plane). */
 interface PedidoView {
@@ -50,6 +68,18 @@ function andamentoLegivel(p: PedidoView): string {
   return `${p.partes.concluidas} de ${p.partes.total} partes prontas`
 }
 
+/** Identidade de um pedido na tela — projeto + número, nunca só o número:
+ *  "todos os projetos" pendura mais de uma árvore na mesma tabela, e dois
+ *  repositórios podem repetir o número da issue. Mesma regra da `key` da
+ *  linha do pedido logo abaixo. */
+function chavePedido(p: PedidoView): string {
+  return `${p.projeto}#${p.numero}`
+}
+
+/** O que a busca da árvore de um pedido devolveu, para aquele pedido. */
+type EstadoDaArvore =
+  { estado: 'carregando' } | { estado: 'ok'; nos: NoDaArvore[] } | { estado: 'indisponivel' }
+
 interface Projeto {
   id: string
   nome: string
@@ -75,6 +105,26 @@ export function TelaPedidos() {
     null
   )
   const [filtro, setFiltro] = useState<Filtro>('todos')
+
+  // A árvore: quais pedidos o dono expandiu (mostra as fases), quais nós
+  // dentro delas (épico/feature/task), e o que cada busca devolveu — cache
+  // por pedido, para reabrir não buscar de novo.
+  const [pedidosAbertos, setPedidosAbertos] = useState<ReadonlySet<string>>(new Set())
+  const [nosAbertos, setNosAbertos] = useState<ReadonlySet<string>>(new Set())
+  const [arvores, setArvores] = useState<Record<string, EstadoDaArvore>>({})
+
+  /** Expande/colapsa a árvore de UM pedido. Busca só na PRIMEIRA vez que abre
+   *  (nunca junto da lista — ver o comentário no topo do arquivo). */
+  const alternarPedido = (p: PedidoView) => {
+    const chave = chavePedido(p)
+    const jaAberto = pedidosAbertos.has(chave)
+    setPedidosAbertos((s) => alternar(s, chave))
+    if (jaAberto || arvores[chave]) return
+    setArvores((m) => ({ ...m, [chave]: { estado: 'carregando' } }))
+    buscarArvoreDoPedido(p.projeto, p.numero)
+      .then((nos) => setArvores((m) => ({ ...m, [chave]: { estado: 'ok', nos } })))
+      .catch(() => setArvores((m) => ({ ...m, [chave]: { estado: 'indisponivel' } })))
+  }
 
   // Mesma regra do envio: GET /api/v1/desejos/projetos — é o que impede a tela
   // de oferecer um projeto que o servidor recusaria.
@@ -337,46 +387,83 @@ export function TelaPedidos() {
                     </tr>
                   </thead>
                   <tbody>
-                    {vis.map((p) => (
-                      <tr key={`${p.projeto}#${p.numero}`}>
-                        <td>
-                          <b>{p.titulo}</b>
-                          <div className="m">
-                            {p.projeto} · pedido {quandoLegivel(p.quando)}
-                          </div>
-                        </td>
-                        <td className="pn-nowrap">
-                          <Estado d={p.situacao === 'fechado' ? 'g' : ''}>
-                            {p.situacao === 'fechado' ? 'Fechado' : 'Andando'}
-                          </Estado>
-                        </td>
-                        <td className="pn-nowrap" style={{ color: 'var(--gl-muted)' }}>
-                          {andamentoLegivel(p)}
-                        </td>
-                        {projeto && (
-                          <td className="pn-nowrap">
-                            <button
-                              className="pn-btn g sm"
-                              aria-label={`Subir o pedido ${p.numero}`}
-                              data-testid={`subir-${p.numero}`}
-                              disabled={salvandoOrdem}
-                              onClick={() => mover(p.numero, -1)}
-                            >
-                              ↑
-                            </button>{' '}
-                            <button
-                              className="pn-btn g sm"
-                              aria-label={`Descer o pedido ${p.numero}`}
-                              data-testid={`descer-${p.numero}`}
-                              disabled={salvandoOrdem}
-                              onClick={() => mover(p.numero, 1)}
-                            >
-                              ↓
-                            </button>
-                          </td>
-                        )}
-                      </tr>
-                    ))}
+                    {vis.map((p) => {
+                      const chave = chavePedido(p)
+                      const aberto = pedidosAbertos.has(chave)
+                      const numColunas = projeto ? 4 : 3
+                      return (
+                        <Fragment key={chave}>
+                          <tr>
+                            <td>
+                              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                                {p.partes.total > 0 ? (
+                                  <button
+                                    className="pn-arv-toggle"
+                                    aria-label={
+                                      aberto
+                                        ? `Recolher a árvore do pedido ${p.numero}`
+                                        : `Expandir a árvore do pedido ${p.numero}`
+                                    }
+                                    aria-expanded={aberto}
+                                    data-testid={`arvore-toggle-${chave}`}
+                                    onClick={() => alternarPedido(p)}
+                                  >
+                                    <Ad n={aberto ? 'chevU' : 'chevD'} s={14} />
+                                  </button>
+                                ) : (
+                                  <span className="pn-arv-toggle-vazio" aria-hidden="true" />
+                                )}
+                                <div>
+                                  <b>{p.titulo}</b>
+                                  <div className="m">
+                                    {p.projeto} · pedido {quandoLegivel(p.quando)}
+                                  </div>
+                                </div>
+                              </div>
+                            </td>
+                            <td className="pn-nowrap">
+                              <Estado d={p.situacao === 'fechado' ? 'go' : 'idle'}>
+                                {p.situacao === 'fechado' ? 'Fechado' : 'Andando'}
+                              </Estado>
+                            </td>
+                            <td className="pn-nowrap" style={{ color: 'var(--gl-muted)' }}>
+                              {andamentoLegivel(p)}
+                            </td>
+                            {projeto && (
+                              <td className="pn-nowrap">
+                                <button
+                                  className="pn-btn g sm"
+                                  aria-label={`Subir o pedido ${p.numero}`}
+                                  data-testid={`subir-${p.numero}`}
+                                  disabled={salvandoOrdem}
+                                  onClick={() => mover(p.numero, -1)}
+                                >
+                                  ↑
+                                </button>{' '}
+                                <button
+                                  className="pn-btn g sm"
+                                  aria-label={`Descer o pedido ${p.numero}`}
+                                  data-testid={`descer-${p.numero}`}
+                                  disabled={salvandoOrdem}
+                                  onClick={() => mover(p.numero, 1)}
+                                >
+                                  ↓
+                                </button>
+                              </td>
+                            )}
+                          </tr>
+                          {aberto && (
+                            <LinhasDaArvore
+                              pedido={p}
+                              colSpan={numColunas}
+                              estado={arvores[chave]}
+                              nosAbertos={nosAbertos}
+                              onAlternarNo={(chaveNo) => setNosAbertos((s) => alternar(s, chaveNo))}
+                            />
+                          )}
+                        </Fragment>
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -384,6 +471,105 @@ export function TelaPedidos() {
           }
         </Estados>
       </Card>
+    </>
+  )
+}
+
+/**
+ * As linhas da árvore de UM pedido — fase→épico→feature→task —, já
+ * achatadas por `linhasVisiveis` (arvore-pedido.ts, testada). Aqui é só
+ * desenho: cada estado da busca (carregando/indisponível/ok) e cada nível.
+ */
+function LinhasDaArvore({
+  pedido,
+  colSpan,
+  estado,
+  nosAbertos,
+  onAlternarNo,
+}: {
+  pedido: PedidoView
+  colSpan: number
+  estado: EstadoDaArvore | undefined
+  nosAbertos: ReadonlySet<string>
+  onAlternarNo: (chave: string) => void
+}) {
+  if (!estado || estado.estado === 'carregando') {
+    return (
+      <tr>
+        <td colSpan={colSpan} className="pn-arv-msg">
+          Carregando a árvore…
+        </td>
+      </tr>
+    )
+  }
+  if (estado.estado === 'indisponivel') {
+    return (
+      <tr>
+        <td colSpan={colSpan} className="pn-arv-msg">
+          Não consegui ler a árvore agora.
+        </td>
+      </tr>
+    )
+  }
+
+  const linhas = linhasVisiveis(chavePedido(pedido), estado.nos, nosAbertos)
+  if (linhas.length === 0) {
+    return (
+      <tr>
+        <td colSpan={colSpan} className="pn-arv-msg">
+          Ainda sem fases penduradas neste pedido.
+        </td>
+      </tr>
+    )
+  }
+
+  return (
+    <>
+      {linhas.map((l) => {
+        const abertoAqui = nosAbertos.has(l.chave)
+        const texto = andamentoDoNo(l.no)
+        return (
+          <tr key={l.chave}>
+            <td colSpan={colSpan}>
+              <div className="pn-arv-no" style={{ paddingLeft: 12 + l.nivel * 20 }}>
+                {l.temFilhos ? (
+                  <button
+                    className="pn-arv-toggle"
+                    aria-label={
+                      abertoAqui
+                        ? `Recolher ${NIVEL[l.nivel]} ${l.no.titulo}`
+                        : `Expandir ${NIVEL[l.nivel]} ${l.no.titulo}`
+                    }
+                    aria-expanded={abertoAqui}
+                    data-testid={`no-toggle-${l.chave}`}
+                    onClick={() => onAlternarNo(l.chave)}
+                  >
+                    <Ad n={abertoAqui ? 'chevU' : 'chevD'} s={13} />
+                  </button>
+                ) : (
+                  <span className="pn-arv-toggle-vazio" aria-hidden="true" />
+                )}
+                <span className="pn-tag">{NIVEL[l.nivel]}</span>
+                <Estado d={l.no.situacao === 'fechado' ? 'go' : 'idle'}>
+                  {l.no.endereco ? (
+                    <a href={l.no.endereco} target="_blank" rel="noreferrer">
+                      {l.no.titulo}
+                    </a>
+                  ) : (
+                    l.no.titulo
+                  )}
+                </Estado>
+                {texto && <span className="pn-arv-andamento">{texto}</span>}
+                {l.naoCarregados > 0 && (
+                  <span className="pn-arv-nota">
+                    mostrando {l.no.filhos.length} de {l.no.partes.total}
+                  </span>
+                )}
+              </div>
+            </td>
+          </tr>
+        )
+      })}
     </>
   )
 }

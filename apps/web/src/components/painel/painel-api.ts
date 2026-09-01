@@ -7,6 +7,7 @@
 // não aqui: este módulo só fala HTTP e traduz erro.
 
 import { API_BASE_URL } from '../../lib/api'
+import type { ArvorePayload, NoDaArvore } from './painel-tipos'
 
 export interface PedirDeps {
   fetchImpl?: typeof fetch
@@ -32,6 +33,7 @@ export const ROTAS = {
   agentes: '/api/v1/painel/agentes', // NOVA nesta leva
   responder: (id: string): string => `/api/v1/painel/decisoes/${id}/responder`, // NOVA nesta leva
   pedidos: '/api/v1/painel/pedidos', // NOVA (leva 2, bloco 2) — a árvore dos desejos
+  arvoreDoPedido: '/api/v1/painel/pedidos/arvore', // NOVA (D2, leva 3) — fase→épico→feature→task de UM pedido
   sprint: '/api/v1/painel/sprint', // NOVA (leva 2, bloco 3) — a sprint corrente
   leitura: '/api/v1/painel/leitura', // NOVA (leva 2, bloco 4) — o que já li do repositório
   ritmo: '/api/v1/painel/ritmo', // FALTA — leva 2
@@ -108,6 +110,25 @@ export async function enviarPedido(args: EnviarPedidoArgs): Promise<EnviarPedido
   } catch (e) {
     return { ok: false, erro: fraseDoErroDePedido(e as ErroDaApi) }
   }
+}
+
+/**
+ * Busca a árvore de UM pedido (fase→épico→feature→task).
+ *
+ * Chamada só quando o dono expande a linha daquele pedido — nunca junto da
+ * lista (ver o comentário de CONSULTA_ARVORE no control-plane: pendurar a
+ * árvore de todos os pedidos de uma vez estouraria o teto de nós do GraphQL
+ * do GitHub). `projeto` e `numero` vêm do próprio `PedidoView` que a linha já
+ * tem em mãos.
+ */
+export async function buscarArvoreDoPedido(
+  projeto: string,
+  numero: number,
+  deps: PedirDeps = {}
+): Promise<NoDaArvore[]> {
+  const qs = `?projeto=${encodeURIComponent(projeto)}&numero=${numero}`
+  const r = await pedir<ArvorePayload>(ROTAS.arvoreDoPedido + qs, {}, deps)
+  return r.nos
 }
 
 /** Traduz o erro de POST /api/v1/desejos para a frase do produto (verbatim). */

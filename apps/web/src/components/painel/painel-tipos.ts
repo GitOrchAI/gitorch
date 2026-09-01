@@ -69,3 +69,31 @@ export interface AgentesPayload {
   /** por que não deu, em linguagem de negócio. `null` quando leu. */
   motivoDaCota: string | null
 }
+
+// --- /api/v1/painel/pedidos/arvore (D2, leva 3) — NOVA nesta leva --------
+//
+// A árvore de UM pedido — fase→épico→feature→task —, pendurada embaixo da
+// linha do pedido em TelaPedidos. Espelha `NoDaArvore` do control-plane
+// (services/arvore-de-pedidos.ts): MESMO shape em todo nível, porque
+// `addSubIssue` pendura cada um do mesmo jeito nativo do GitHub.
+
+export interface NoDaArvore {
+  numero: number
+  situacao: 'andando' | 'fechado'
+  titulo: string
+  endereco: string
+  /**
+   * Quantos filhos diretos o GitHub reporta e quantos já fecharam. PODE ser
+   * maior que `filhos.length`: a consulta tem um teto por nível, e um nó com
+   * mais filhos do que o teto chega com `partes.total` maior — nunca finge
+   * que trouxe a lista inteira.
+   */
+  partes: { total: number; concluidas: number }
+  /** Os filhos que a consulta conseguiu trazer. Task (o último nível que a
+   *  consulta desce) sempre chega com `filhos: []`. */
+  filhos: NoDaArvore[]
+}
+
+export interface ArvorePayload {
+  nos: NoDaArvore[]
+}
