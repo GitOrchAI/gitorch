@@ -130,6 +130,18 @@ export interface ItemDoQuadro {
   itemId: string
   pedido: number
   iteracaoId: string | null
+  /**
+   * O valor do campo NUMBER "Peso" (getNumberField/setNumberField), lido na
+   * MESMA consulta — mesmo motivo do `iteracaoId`: evitar uma segunda volta
+   * ao GitHub só para saber o tamanho de quem já está na lista.
+   *
+   * `null` quando o campo não foi pedido (`campoDePeso` ausente) OU quando o
+   * item não tem valor ali — os dois casos são "não sei", nunca "peso zero".
+   * Confundir os dois faria um pedido ainda não planejado pelo PO entrar numa
+   * conta de fila como se pesasse 0, que é o menor peso possível e o
+   * colocaria sempre primeiro na ordem ótima — mentira por omissão.
+   */
+  peso: number | null
 }
 
 /**
@@ -147,6 +159,7 @@ interface RespostaDeItensDoQuadro {
         id: string
         content?: { number?: number } | null
         fieldValueByName?: { iterationId?: string | null } | null
+        pesoValue?: { number?: number | null } | null
       } | null> | null
     } | null
   } | null
@@ -1003,6 +1016,13 @@ export class ProjectV2Client {
     opcoes?: {
       /** Nome do campo de iteração a ler junto (ex.: 'Sprint'). */
       campoDeSprint?: string
+      /**
+       * Nome do campo NUMBER de tamanho a ler junto (padrão do GitOrch:
+       * 'Peso' — ver getNumberField/setNumberField). Independente do campo de
+       * sprint: cada seletor liga na sua própria diretiva, então quem quer só
+       * um dos dois não paga pelo outro.
+       */
+      campoDePeso?: string
       /** Chamado quando o teto de páginas cortou a leitura. */
       onTruncado?: (lidos: number) => void
     }
@@ -1030,6 +1050,8 @@ export class ProjectV2Client {
               $cursor: String
               $campo: String!
               $querSprint: Boolean!
+              $campoDePeso: String!
+              $querPeso: Boolean!
             ) {
               node(id: $projectId) {
                 ... on ProjectV2 {
@@ -1041,13 +1063,18 @@ export class ProjectV2Client {
                       fieldValueByName(name: $campo) @include(if: $querSprint) {
                         ... on ProjectV2ItemFieldIterationValue { iterationId }
                       }
+                      pesoValue: fieldValueByName(name: $campoDePeso) @include(if: $querPeso) {
+                        ... on ProjectV2ItemFieldNumberValue { number }
+                      }
                     }
                   }
                 }
               }
             }
           `,
-            // UMA query serve aos dois usos, e quem decide é a diretiva.
+            // UMA query serve aos três usos (posição, sprint, peso), e quem
+            // decide cada seletor extra é a diretiva dele, independente dos
+            // outros.
             //
             // A versão anterior mandava um ESPAÇO como nome do campo e contava
             // com o GitHub responder `fieldValueByName: null` sem erro. Foi
@@ -1057,16 +1084,22 @@ export class ProjectV2Client {
             // a API real recusava a chamada.
             //
             // `@include(if:)` é built-in da especificação do GraphQL: com
-            // `false` o seletor não é executado, `$campo` nunca chega a ser
-            // usado como argumento, e nada depende de como o servidor trata um
-            // nome inexistente. A variável continua sendo enviada porque a
-            // validação de variáveis é estática — acontece antes da diretiva
-            // valer — e `String!` não aceita null.
+            // `false` o seletor não é executado, `$campo`/`$campoDePeso` nunca
+            // chegam a ser usados como argumento, e nada depende de como o
+            // servidor trata um nome inexistente. As variáveis continuam
+            // sendo enviadas porque a validação de variáveis é estática —
+            // acontece antes da diretiva valer — e `String!` não aceita null.
+            //
+            // O alias `pesoValue:` é obrigatório: GraphQL não permite dois
+            // seletores `fieldValueByName` no mesmo nível sem alias, mesmo com
+            // argumentos diferentes — colidiriam no mesmo nome de resposta.
             variables: {
               projectId,
               cursor,
               campo: opcoes?.campoDeSprint ?? '',
               querSprint: (opcoes?.campoDeSprint ?? '').length > 0,
+              campoDePeso: opcoes?.campoDePeso ?? '',
+              querPeso: (opcoes?.campoDePeso ?? '').length > 0,
             },
           },
           this.token
@@ -1079,6 +1112,7 @@ export class ProjectV2Client {
           itemId: n.id,
           pedido: n.content.number,
           iteracaoId: n.fieldValueByName?.iterationId ?? null,
+          peso: typeof n.pesoValue?.number === 'number' ? n.pesoValue.number : null,
         })
       }
 
