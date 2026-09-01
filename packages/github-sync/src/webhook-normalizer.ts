@@ -74,6 +74,7 @@ function normalizePullRequest(envelope: GitHubDeliveryEnvelope): GitHubSyncEvent
   const repository = repositoryName(payload)
   const pullRequest = requiredRecord(payload, 'pull_request')
   const pullRequestNodeId = requiredString(pullRequest, 'node_id')
+  const mergedAt = optionalString(pullRequest, 'merged_at')
 
   return {
     id: eventId(envelope, pullRequestNodeId),
@@ -82,6 +83,7 @@ function normalizePullRequest(envelope: GitHubDeliveryEnvelope): GitHubSyncEvent
     action: action(payload, envelope.headers.eventName),
     repository,
     occurredAt: envelope.receivedAt,
+    mergedAt,
     workItem: {
       nodeId: pullRequestNodeId,
       number: requiredNumber(pullRequest, 'number'),
@@ -95,6 +97,7 @@ function normalizePullRequest(envelope: GitHubDeliveryEnvelope): GitHubSyncEvent
       blockingNodeIds: [],
       projectItemIds: [],
       linkedPullRequestNodeIds: [pullRequestNodeId],
+      mergedAt,
     },
   }
 }

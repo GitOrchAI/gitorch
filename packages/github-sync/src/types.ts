@@ -64,7 +64,7 @@ export interface GitHubWorkItem {
   projectItemIds: string[]
   linkedPullRequestNodeIds?: string[]
   wishCreatedAt?: string
-  mergedAt?: string
+  mergedAt?: string | undefined
   leadTime?: number
 }
 
@@ -99,7 +99,7 @@ export interface GitHubSyncEvent {
   dependency?: GitHubDependencyEdge
   hierarchy?: GitHubHierarchyEdge
   projectItem?: ProjectV2ItemSnapshot
-  mergedAt?: string
+  mergedAt?: string | undefined
   leadTime?: number
 }
 
