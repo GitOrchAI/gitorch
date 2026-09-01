@@ -35,6 +35,8 @@ export interface DuvidaRailsMissionResult {
 interface FormularioDaDuvida {
   precisaDoDono: boolean
   resposta: string
+  perguntaExecutivaPtBr?: string
+  opcoesPtBr?: Array<{ label: string; value: string }>
 }
 
 export async function runDuvidaMissionViaRails(
@@ -56,6 +58,22 @@ export async function runDuvidaMissionViaRails(
         'which file, which existing helper. If you genuinely cannot tell from the repository, ' +
         'say so plainly in `resposta` and leave precisaDoDono=false — an empty answer is never ' +
         'sent to the developer, it is escalated instead.',
+      '',
+      'IMPORTANT — this is NEVER a business decision, even if it looks like one at first: ' +
+        'whether existing/prior work already satisfies the issue (bugs already fixed, features ' +
+        'already implemented, "should I open an empty PR or is there something else to register"), ' +
+        'which approach/file/existing helper to use, or how to resolve a disagreement with a code ' +
+        'review tool. Those are process/technical questions — set precisaDoDono=false and answer ' +
+        'them (or say plainly you could not determine it from the repository).',
+      '',
+      'When precisaDoDono=true (a REAL business decision — pricing, scope, what the product ' +
+        'should do): the owner is not technical and reads only Portuguese. ALSO fill ' +
+        '`perguntaExecutivaPtBr` — the decision translated into Portuguese, framed as a BUSINESS ' +
+        'question (what changes for the business, never the technical detail/file names/commit ' +
+        'hashes) — and `opcoesPtBr` — 2 to 4 short, objective options in Portuguese the owner can ' +
+        'tap instead of typing. If you cannot produce a confident Portuguese translation, leave ' +
+        'both empty rather than forcing a bad one; never invent options that misrepresent the ' +
+        'decision.',
     ]),
     execute: options.execute,
   })) as FormularioDaDuvida
@@ -63,6 +81,13 @@ export async function runDuvidaMissionViaRails(
   const destino = destinoDaDuvida({
     precisaDoDono: formulario.precisaDoDono,
     resposta: formulario.resposta,
+    pergunta: options.pergunta,
+    ...(formulario.perguntaExecutivaPtBr
+      ? { perguntaExecutiva: formulario.perguntaExecutivaPtBr }
+      : {}),
+    ...(formulario.opcoesPtBr && formulario.opcoesPtBr.length > 0
+      ? { opcoes: formulario.opcoesPtBr }
+      : {}),
   })
 
   return {

@@ -67,4 +67,69 @@ describe('runDuvidaMissionViaRails', () => {
     // E o contexto do trabalho, para a resposta ser sobre ESTA tarefa.
     expect(prompts[0]).toContain('#7')
   })
+
+  // D14, 01/09 — CASO REAL (tarefa #46 de GitOrchAI/gitorch): mesmo que o
+  // modelo erre e marque precisaDoDono=true para "já está feito, o que
+  // faço?", o freio determinístico de duvida-do-dev.ts reclassifica como
+  // técnica e NUNCA acorda o dono.
+  it('D14: mesmo com precisaDoDono=true do modelo, "já está feito" nunca acorda o dono', async () => {
+    const perguntaReal =
+      'However, looking at the code, the exact implementation for /wishlist is already present, ' +
+      'as it was added in commit d175cb705b2b132fc11b1e175f9914a7916f12f2. Could you advise on ' +
+      'what exactly needs to be done? Should I just open an empty PR to close the issue?'
+    const execute = vi.fn(async () =>
+      JSON.stringify({
+        precisaDoDono: true, // o modelo erra, exatamente como ao vivo
+        resposta: 'não tenho certeza se decido isso sozinho',
+      })
+    )
+
+    const r = await runDuvidaMissionViaRails({ ...BASE, pergunta: perguntaReal, execute })
+
+    expect(r.destino.tipo).toBe('escalar-ao-ra')
+    expect(r.mensagemParaODev).toBeNull()
+  })
+
+  it('decisão de negócio de verdade: perguntaExecutivaPtBr/opcoesPtBr do modelo chegam no destino', async () => {
+    const execute = vi.fn(async () =>
+      JSON.stringify({
+        precisaDoDono: true,
+        resposta: 'Isso muda o que o cliente paga; quem decide é o dono.',
+        perguntaExecutivaPtBr: 'A funcionalidade de wishlist deve ser grátis ou paga?',
+        opcoesPtBr: [
+          { label: 'Grátis para todos', value: 'gratis' },
+          { label: 'Só para pagantes', value: 'pago' },
+        ],
+      })
+    )
+
+    const r = await runDuvidaMissionViaRails({ ...BASE, execute })
+
+    expect(r.destino.tipo).toBe('perguntar-ao-dono')
+    if (r.destino.tipo === 'perguntar-ao-dono') {
+      expect(r.destino.perguntaExecutiva).toBe(
+        'A funcionalidade de wishlist deve ser grátis ou paga?'
+      )
+      expect(r.destino.opcoes).toHaveLength(2)
+    }
+    // Nunca escreve nada na sessão do dev quando sobe para o dono.
+    expect(r.mensagemParaODev).toBeNull()
+  })
+
+  it('decisão de negócio sem tradução do modelo: destino não inventa perguntaExecutiva', async () => {
+    const execute = vi.fn(async () =>
+      JSON.stringify({
+        precisaDoDono: true,
+        resposta: 'Isso muda o que o cliente paga; quem decide é o dono.',
+      })
+    )
+
+    const r = await runDuvidaMissionViaRails({ ...BASE, execute })
+
+    expect(r.destino.tipo).toBe('perguntar-ao-dono')
+    if (r.destino.tipo === 'perguntar-ao-dono') {
+      expect(r.destino.perguntaExecutiva).toBeUndefined()
+      expect(r.destino.opcoes).toBeUndefined()
+    }
+  })
 })
