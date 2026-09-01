@@ -8,6 +8,11 @@
 // plausível demais para alguém desconfiar. Agora a resposta separa "não há
 // motor" de "não consegui ler", e a tela mostra os dois de forma diferente.
 //
+// Motor caído RELIGA AQUI (01/09/2026). Até hoje esta tela oferecia um link
+// para `/setup`: o dono clicava para religar o Codex e era despejado noutra
+// tela. O login assistido agora roda no próprio card, pelo mesmo fluxo do
+// passo 7 do assistente — um só, compartilhado, em conexao-de-motor.ts.
+//
 // Os KPIs de topo, o esforço por projeto e o plano seguem de exemplo (leva 2).
 // Portado de TelaCustos.jsx.
 import { useSyncExternalStore } from 'react'
@@ -18,6 +23,7 @@ import { Cabeca, Card, Kpi, Barra } from './PainelUI'
 import { Estados, SeloDemo } from './PainelEstados'
 import type { MotorCota } from './painel-tipos'
 import { assinarProjeto, projetoAtual, projetoNoServidor, filtroDeProjeto } from './painel-projeto'
+import { ReligarMotor } from './ReligarMotor'
 
 interface Distribuicao {
   mediana: number
@@ -54,7 +60,7 @@ function quandoFoiLido(iso: string | null): string {
  * 2. Motor caído aparece dito. O assistente já mostrou "Codex Conectado" com o
  *    motor morto havia uma hora, e quem descobriu foi o dono, não o produto.
  */
-function MotorCard({ m }: { m: MotorCota }) {
+function MotorCard({ m, aoReligar }: { m: MotorCota; aoReligar: () => void }) {
   const semNumero = m.sessao == null && m.semana == null
   // TRÊS estados, não dois. Um motor com a conexão revogada, expirada ou com
   // erro cai em `nao_conectado` — e a versão anterior desta tela o desenhava
@@ -86,24 +92,19 @@ function MotorCard({ m }: { m: MotorCota }) {
         <div style={{ marginTop: 8 }}>
           <div style={{ fontSize: 12.5, color: 'var(--gl-faint)' }}>{explicacao}</div>
           {/*
-            O caminho para religar SEM tocar em SSH.
+            O caminho para religar SEM tocar em SSH e SEM SAIR DAQUI.
 
-            Quem terminou o assistente ficava sem saída: o único lugar que
-            conecta motor é o passo do assistente, e o painel não falava de
-            motor em lugar nenhum. O dono descobria pela missão que morria.
+            A versão anterior mandava para `/setup` com o rótulo "Religar no
+            assistente". Era honesto — e era o defeito. O dono clicou para
+            religar o Codex, foi parar noutra tela e escreveu: "Serviço mal
+            pensado." Um rótulo honesto CONFESSA a navegação; não a conserta.
 
-            O rótulo diz "no assistente" porque é isso que acontece — o botão
-            leva à tela que já roda o login dentro do container. Prometer a ação
-            e entregar uma navegação seria a mesma família de mentira que esta
-            leva veio consertar.
+            Agora o login assistido acontece aqui, no mesmo fluxo do passo 7
+            (components/setup/conexao-de-motor.ts, compartilhado com o
+            assistente — uma cópia divergiria na primeira mudança). Ao voltar,
+            a tela RELÊ a cota do servidor em vez de supor que deu certo.
           */}
-          <a
-            href="/setup"
-            className="pn-btn a sm"
-            style={{ display: 'inline-block', marginTop: 10 }}
-          >
-            Religar no assistente
-          </a>
+          <ReligarMotor motor={m} aoConectar={aoReligar} />
         </div>
       ) : semNumero ? (
         <div style={{ marginTop: 8, fontSize: 12.5, color: 'var(--gl-faint)' }}>
@@ -288,7 +289,7 @@ export function TelaCustos() {
             ) : (
               <div className="pn-3">
                 {d.motores.map((m) => (
-                  <MotorCard key={m.id} m={m} />
+                  <MotorCard key={m.id} m={m} aoReligar={motores.recarregar} />
                 ))}
               </div>
             )
