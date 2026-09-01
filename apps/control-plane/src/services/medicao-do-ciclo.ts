@@ -111,6 +111,95 @@ export const NAO_MEDIDO: readonly string[] = [
  * "ainda não houve entrega" é uma resposta, e a tela sabe dizê-la. O que não é
  * resposta é inventar uma distribuição a partir de nada.
  */
+/**
+ * O ciclo de UM ITEM: do desejo até a entrega — nunca da sessão do dev.
+ *
+ * A sessão é só um PEDAÇO do ciclo: uma issue pode passar por várias sessões
+ * (redelegação após retrabalho) até finalmente mesclar. `FatosDoCiclo` acima
+ * mede a SESSÃO (createdAt/closedAt de dev_sessions); isto mede o ITEM
+ * (wishCreatedAt/prontoEm do Incremento — D3).
+ */
+export interface FatosDoCicloDoItem {
+  /**
+   * Quando o DESEJO nasceu (a wish, não esta task). `null` quando não deu
+   * para confirmar no GitHub — o item fica de fora da conta, nunca entra com
+   * uma data inventada.
+   */
+  wishCreatedAt: Date | null
+  /** Quando ficou PRONTO pela régua (Increment.prontoEm — sempre presente). */
+  prontoEm: Date
+  /** Precisou de ao menos uma redelegação (requeueCount > 0) para chegar aqui. */
+  teveRetrabalho: boolean
+}
+
+export interface MultiplicadorDeVelocidade {
+  /** Horas do ciclo das entregas que saíram SEM nenhum retrabalho. */
+  cicloDePrimeira: Distribuicao | null
+  /** Horas do ciclo das entregas que precisaram de retrabalho. */
+  cicloComRetrabalho: Distribuicao | null
+  /**
+   * Quantas vezes mais devagar fica uma entrega com retrabalho, comparada a
+   * uma de primeira — mediana de um grupo dividida pela mediana do outro.
+   * Ex.: 4 quer dizer "com retrabalho, a entrega típica leva 4x mais tempo".
+   *
+   * É o fator para descontar de QUALQUER multiplicador alegado de fora (a
+   * regra do dono: "se o modelo é 20x melhor, mas teve 5 retrabalhos, o
+   * ganho real não é 20x") — multiplicador_real ≈ multiplicador_alegado /
+   * custoDoRetrabalho. `null` quando falta um dos dois grupos: sem os dois
+   * lados não há conta para fazer, e inventar um seria o número que ninguém
+   * mediu.
+   */
+  custoDoRetrabalho: number | null
+  /** O período e a amostra ao lado — número sem denominador não decide nada. */
+  amostra: { entregas: number; dePrimeira: number; comRetrabalho: number }
+}
+
+/** Horas entre duas datas, arredondadas a 1 casa — a mesma granularidade de `medirCiclo`. */
+function horasEntre(inicio: Date, fim: Date): number {
+  return Math.round(((fim.getTime() - inicio.getTime()) / 3_600_000) * 10) / 10
+}
+
+/**
+ * O custo do retrabalho, medido do NOSSO próprio banco — nunca importado de
+ * fora. Compara a mediana do ciclo de quem saiu de primeira com a mediana de
+ * quem precisou de retrabalho.
+ *
+ * Itens com `wishCreatedAt` nulo (não deu para confirmar quando o desejo
+ * nasceu) ficam de FORA da conta — entram só na parte que dá para provar.
+ */
+export function medirMultiplicador(
+  fatos: readonly FatosDoCicloDoItem[]
+): MultiplicadorDeVelocidade {
+  const medivel = fatos.filter(
+    (f): f is FatosDoCicloDoItem & { wishCreatedAt: Date } => f.wishCreatedAt !== null
+  )
+
+  const dePrimeira = medivel.filter((f) => !f.teveRetrabalho)
+  const comRetrabalho = medivel.filter((f) => f.teveRetrabalho)
+
+  const horasDePrimeira = dePrimeira.map((f) => horasEntre(f.wishCreatedAt, f.prontoEm))
+  const horasComRetrabalho = comRetrabalho.map((f) => horasEntre(f.wishCreatedAt, f.prontoEm))
+
+  const cicloDePrimeira = horasDePrimeira.length > 0 ? distribuir(horasDePrimeira) : null
+  const cicloComRetrabalho = horasComRetrabalho.length > 0 ? distribuir(horasComRetrabalho) : null
+
+  const custoDoRetrabalho =
+    cicloDePrimeira !== null && cicloComRetrabalho !== null && cicloDePrimeira.mediana > 0
+      ? Math.round((cicloComRetrabalho.mediana / cicloDePrimeira.mediana) * 100) / 100
+      : null
+
+  return {
+    cicloDePrimeira,
+    cicloComRetrabalho,
+    custoDoRetrabalho,
+    amostra: {
+      entregas: medivel.length,
+      dePrimeira: dePrimeira.length,
+      comRetrabalho: comRetrabalho.length,
+    },
+  }
+}
+
 export function medirCiclo(fatos: readonly FatosDoCiclo[]): MedicaoDoCiclo {
   const fechadas = fatos.filter((f) => f.closedAt !== null)
   const horas = fechadas.map((f) => (f.closedAt!.getTime() - f.createdAt.getTime()) / 3_600_000)

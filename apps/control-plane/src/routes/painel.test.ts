@@ -1006,6 +1006,90 @@ describe('Rotas do painel do owner', () => {
       expect(res.json().entregas).toBe(0)
       expect(res.json().horasAteFechar).toBeNull()
     })
+
+    // D4 — o multiplicador de velocidade: o ciclo do ITEM (Increment,
+    // wishCreatedAt→prontoEm — o desejo até a entrega), não o da sessão do
+    // dev. `horasAteFechar` (acima) mede a sessão; isto mede o item inteiro.
+    describe('multiplicador — o ciclo do ITEM, cruzado com o retrabalho da sessão que mesclou', () => {
+      test('increments não mockado (rota antiga, sem D3 ainda): o resto da medição não quebra', async () => {
+        await build(
+          fakePrisma({
+            project: { findMany: vi.fn().mockResolvedValue([{ id: 'p1' }]) },
+            devSession: { findMany: vi.fn().mockResolvedValue([sessaoDoCiclo()]) },
+          })
+        )
+        const res = await getCiclo()
+        expect(res.statusCode).toBe(200)
+        expect(res.json().entregas).toBe(1)
+        expect(res.json().multiplicador.custoDoRetrabalho).toBeNull()
+      })
+
+      test('sem nenhum Incremento: os três campos do multiplicador vêm nulos', async () => {
+        await build(
+          fakePrisma({
+            project: { findMany: vi.fn().mockResolvedValue([{ id: 'p1' }]) },
+            devSession: { findMany: vi.fn().mockResolvedValue([]) },
+            increment: { findMany: vi.fn().mockResolvedValue([]) },
+          })
+        )
+        const c = (await getCiclo()).json()
+        expect(c.multiplicador.cicloDePrimeira).toBeNull()
+        expect(c.multiplicador.cicloComRetrabalho).toBeNull()
+        expect(c.multiplicador.custoDoRetrabalho).toBeNull()
+        expect(c.multiplicador.amostra).toEqual({ entregas: 0, dePrimeira: 0, comRetrabalho: 0 })
+      })
+
+      test('cruza increments com a sessão MESCLADA da mesma issue para saber quem teve retrabalho', async () => {
+        const incrementos = [
+          {
+            projectId: 'p1',
+            issueNumber: 10,
+            wishCreatedAt: new Date('2026-08-20T00:00:00Z'),
+            prontoEm: new Date('2026-08-20T10:00:00Z'), // 10h, de primeira
+          },
+          {
+            projectId: 'p1',
+            issueNumber: 11,
+            wishCreatedAt: new Date('2026-08-20T00:00:00Z'),
+            prontoEm: new Date('2026-08-21T16:00:00Z'), // 40h, com retrabalho
+          },
+        ]
+        const sessoesMescladas = [
+          { projectId: 'p1', issueNumber: 10, requeueCount: 0 },
+          { projectId: 'p1', issueNumber: 11, requeueCount: 2 },
+        ]
+        await build(
+          fakePrisma({
+            project: { findMany: vi.fn().mockResolvedValue([{ id: 'p1' }]) },
+            devSession: {
+              findMany: vi.fn(async (args: { where?: { closedReason?: unknown } }) =>
+                args?.where?.closedReason ? sessoesMescladas : [sessaoDoCiclo()]
+              ),
+            },
+            increment: { findMany: vi.fn().mockResolvedValue(incrementos) },
+          })
+        )
+        const c = (await getCiclo()).json()
+        expect(c.multiplicador.cicloDePrimeira.mediana).toBe(10)
+        expect(c.multiplicador.cicloComRetrabalho.mediana).toBe(40)
+        expect(c.multiplicador.custoDoRetrabalho).toBe(4)
+        expect(c.multiplicador.amostra).toEqual({ entregas: 2, dePrimeira: 1, comRetrabalho: 1 })
+      })
+
+      test('increment.findMany explode: o multiplicador some pros nulos, mas o resto da rota responde 200', async () => {
+        await build(
+          fakePrisma({
+            project: { findMany: vi.fn().mockResolvedValue([{ id: 'p1' }]) },
+            devSession: { findMany: vi.fn().mockResolvedValue([sessaoDoCiclo()]) },
+            increment: { findMany: vi.fn().mockRejectedValue(new Error('banco fora')) },
+          })
+        )
+        const res = await getCiclo()
+        expect(res.statusCode).toBe(200)
+        expect(res.json().entregas).toBe(1)
+        expect(res.json().multiplicador.custoDoRetrabalho).toBeNull()
+      })
+    })
   })
 
   describe('POST /api/v1/painel/ordem — a primeira rota que ESCREVE no cliente', () => {
