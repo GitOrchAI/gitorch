@@ -1715,6 +1715,21 @@ export interface ProvisionSetupMissionDeps {
     onError?: (message: string) => void
   }) => Promise<string | null>
   /**
+   * Lê a credencial do PRÓPRIO cliente — a que ele cola em
+   * `/api/v1/setup/credencial-do-cliente` (PAT clássico, escopos repo+project).
+   * É a ÚNICA credencial capaz de criar/ligar board em CONTA PESSOAL: D13
+   * (01/09/2026, medido ao vivo contra loureng/padrao-executores) mostrou que
+   * nem o installation token do App NEM o token de login do dono
+   * (`githubToken` acima — user-to-server de GitHub App, sem permissão de
+   * conta para Projects V2) alcançam lá. Terceira ocorrência da mesma família
+   * em três dias (#441 findProjectId, #444 addProjectV2ItemById, esta:
+   * createProjectV2). Reforço OPCIONAL, mesmo padrão de
+   * `ensureAndPersistProjectBoard` (a auto-cura do wake do PO): default lê
+   * `lerCredencialDoProjeto` deste mesmo `prisma`; erro nunca derruba o
+   * provisionamento, só perde o reforço.
+   */
+  lerClientToken?: (projectId: string) => Promise<string | null>
+  /**
    * Logger estruturado (produção sempre passa `app.log`); sem ele cai no
    * console apenas para chamadas fora do plugin (ex.: scripts, testes que
    * não o injetam). Achado importante: sem `githubToken`/`prisma`, o passo do
@@ -1795,6 +1810,26 @@ export async function provisionSetupMission(
           Record<string, unknown> | undefined
       )?.['GITORCH_PROJECT_BOARD'] as string | undefined
       const existingNumber = boardJaGravado ? Number(boardJaGravado.split('/')[1]) : undefined
+
+      // D13 (01/09/2026): a credencial do PRÓPRIO cliente — a única que
+      // cria/liga board em CONTA PESSOAL — nunca era lida aqui. Leitura
+      // SEMPRE tentada (não só como reação a uma falha): é o mesmo motivo de
+      // `ensureAndPersistProjectBoard` já lê de propósito, mesmo quando a
+      // primeira tentativa daria certo — o passo 2.5 de `ensureProjectBoard`
+      // (o LAÇO DOS QUADROS) PROCURA de novo com esta credencial antes de
+      // criar, e sem ela aqui esse reforço nunca entrava em jogo. Protegida:
+      // erro na leitura (chave rotacionada, banco fora do ar) nunca derruba
+      // o provisionamento, só perde o reforço.
+      const lerClientToken =
+        deps.lerClientToken ??
+        ((projectId: string) => lerCredencialDoProjeto({ prisma: deps.prisma as never, projectId }))
+      const clientToken = await lerClientToken(mission.project.id).catch((err) => {
+        avisarBoard(
+          `não foi possível ler a credencial do cliente para ${mission.project.wingId}, seguindo sem ela: ${(err as Error).message}`
+        )
+        return null
+      })
+
       const board = await ensureProjectBoard({
         repository: mission.project.wingId,
         client,
@@ -1819,6 +1854,18 @@ export async function provisionSetupMission(
             : {}),
         ...(existingNumber !== undefined && Number.isFinite(existingNumber)
           ? { existingNumber }
+          : {}),
+        ...(clientToken
+          ? {
+              clientToken,
+              criarClienteAlternativo: (token: string) =>
+                deps.createProjectV2Client
+                  ? deps.createProjectV2Client(token)
+                  : new ProjectV2Client({
+                      token,
+                      fetchImpl: fetchDoRepositorio({ nivel: () => mission.project.autonomia }),
+                    }),
+            }
           : {}),
         onWarn: (m) => (deps.log ?? console).warn(`[Scheduler] ${m}`),
       })
