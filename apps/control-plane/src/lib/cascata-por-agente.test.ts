@@ -273,7 +273,10 @@ describe('aditivo: quem tem só o motor no degrau continua igual', () => {
   test('degrau só com runtime não perde nada e ganha o padrão do papel', () => {
     const cfg = { agents: { qa: { runtime: 'claude', fallbacks: [{ runtime: 'codex' }] } } }
     const chain = resolveRuntimeChain('qa', cfg, PADROES)
-    expect(chain.map((c) => c.runtime)).toEqual(['claude', 'codex'])
+    // 'antigravity' entra no fim, completando a cadeia canônica (codex →
+    // antigravity → claude) — o cliente só escolheu dois dos três motores
+    // que existem, e o terceiro continua como reserva em vez de sumir.
+    expect(chain.map((c) => c.runtime)).toEqual(['claude', 'codex', 'antigravity'])
     // Sem modelo escolhido, o padrão do PAPEL naquele MOTOR é quem responde —
     // e ele sai do catálogo vivo daquele motor, nunca de um literal do vizinho.
     const doQa = padraoDoDegrau({ role: 'qa', runtime: 'claude', catalogo: CATALOGO.claude })
