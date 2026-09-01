@@ -14,6 +14,7 @@ import {
   type TelegramDesejoDeps,
 } from '../services/telegram-bot.js'
 import { criarIssueDeDesejo } from '../services/desejo-no-github.js'
+import { guardaPorRepositorio } from '../services/guarda-de-autonomia.js'
 import { PRAZO_DO_PENDENTE_MS } from '../services/desejo-pendente.js'
 import { projetosParaDesejo } from '../services/projetos-do-desejo.js'
 import { provaDeEscritaNoUso } from '../services/acesso-ao-repositorio.js'
@@ -183,6 +184,16 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
         corpo,
         etiquetas,
         log: { onError: (m) => app.log.error(m), onWarn: (m) => app.log.warn(m) },
+        fetchImpl: guardaPorRepositorio(fetch, {
+          nivelDoRepositorio: async (r) => {
+            const l = await app.prisma.project.findFirst({
+              where: { wingId: r, isActive: true },
+              select: { autonomia: true },
+            })
+            return l?.autonomia ?? null
+          },
+          nossosRepositorios: new Set([process.env['GITORCH_SELF_REPO'] ?? 'GitOrchAI/gitorch']),
+        }),
       }),
     // O pedido que ainda não sabe o projeto vive no BANCO, nunca na memória
     // do processo: entre a pergunta e o toque no botão o serviço reinicia
@@ -352,15 +363,17 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
               if (waitingMissions.length === 0) {
                 text = '0 entregas aguardando.'
               } else {
-                const parts = waitingMissions.map((m) => {
-                  const payload = m.payload as {
-                    issueNumber?: number
-                    issue_number?: number
-                  } | null
-                  const issueNumber = payload?.issueNumber ?? payload?.issue_number
-                  const reason = m.waitingReason?.replace(/\n/g, ' ') || 'Motivo não especificado'
-                  return issueNumber ? `#${issueNumber} - ${reason}` : reason
-                })
+                const parts = waitingMissions.map(
+                  (m: { waitingReason: string | null; payload: unknown }) => {
+                    const payload = m.payload as {
+                      issueNumber?: number
+                      issue_number?: number
+                    } | null
+                    const issueNumber = payload?.issueNumber ?? payload?.issue_number
+                    const reason = m.waitingReason?.replace(/\n/g, ' ') || 'Motivo não especificado'
+                    return issueNumber ? `#${issueNumber} - ${reason}` : reason
+                  }
+                )
                 text = `${waitingMissions.length} entregas aguardando: ${parts.join(', ')}`
               }
 

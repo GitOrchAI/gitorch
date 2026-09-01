@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify'
+import { EscritaNaoAutorizadaError } from '@gitorch/cadence'
 import { autorLegivel, LIMITE_DO_TEXTO_DO_DESEJO, montarDesejo } from '../services/desejo.js'
 import {
   AcessoNaoVerificavelError,
@@ -157,6 +158,19 @@ export async function desejosRoutes(app: FastifyInstance, deps: DependenciasDeDe
           endereco: `https://github.com/${projeto.githubRepo}/issues/${criada.numero}`,
         })
       } catch (erro) {
+        if (
+          erro instanceof EscritaNaoAutorizadaError ||
+          (erro as { name?: string })?.name === 'EscritaNaoAutorizadaError'
+        ) {
+          request.log.warn(
+            { err: erro, userId, repo: projeto.githubRepo },
+            'pedido recusado por autonomia insuficiente'
+          )
+          return reply.code(403).send({
+            error: (erro as Error).message,
+            code: 'AUTONOMIA_INSUFICIENTE',
+          })
+        }
         // O erro do GitHub pode conter credencial; nunca repassar ao cliente.
         // A chave é `err` de propósito: o pino só serializa um Error sob ela.
         // Sob qualquer outra chave o objeto vira `{}` e a linha registra

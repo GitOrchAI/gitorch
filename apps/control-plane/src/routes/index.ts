@@ -17,6 +17,7 @@ import { billingRoutes } from './billing.js'
 import { diagnoseRoutes } from './diagnose.js'
 import { desejosRoutes } from './desejos.js'
 import { criarIssueDeDesejo } from '../services/desejo-no-github.js'
+import { guardaPorRepositorio } from '../services/guarda-de-autonomia.js'
 import {
   ACEITA_PEDIDO,
   projetoParaDesejo,
@@ -100,6 +101,16 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         corpo,
         etiquetas,
         log: { onError: (m) => app.log.error(m), onWarn: (m) => app.log.warn(m) },
+        fetchImpl: guardaPorRepositorio(fetch, {
+          nivelDoRepositorio: async (r) => {
+            const l = await app.prisma.project.findFirst({
+              where: { wingId: r, isActive: true },
+              select: { autonomia: true },
+            })
+            return l?.autonomia ?? null
+          },
+          nossosRepositorios: new Set([process.env['GITORCH_SELF_REPO'] ?? 'GitOrchAI/gitorch']),
+        }),
       }),
   })
 

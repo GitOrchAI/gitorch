@@ -94,6 +94,8 @@ export const locales = {
       wishErrorSession: 'Your session expired. Sign in again and resend.',
       wishErrorRepoAccess:
         "You no longer have write access to this project's repository on GitHub, so the request can't be recorded there. Ask for access again and resend.",
+      wishErrorAutonomy:
+        'This project is set to "Look only", which does not allow creating requests. Change its autonomy to "Suggest" or "Take care" in settings and try again.',
       wishErrorRepoUnverified:
         "We couldn't confirm with GitHub that this repository is still yours. Try again in a moment.",
       wishErrorGithubDisconnected:
@@ -458,6 +460,8 @@ export const locales = {
       wishErrorSession: 'Sua sessão expirou. Entre de novo e mande outra vez.',
       wishErrorRepoAccess:
         'Você não tem mais acesso de escrita ao repositório deste projeto no GitHub, então o pedido não pode ser registrado lá. Peça o acesso de volta e mande outra vez.',
+      wishErrorAutonomy:
+        'Este projeto está configurado como "Só olhar", que não permite criar pedidos. Mude a autonomia para "Sugerir" ou "Cuidar" nas configurações e tente de novo.',
       wishErrorRepoUnverified:
         'Não deu para confirmar no GitHub que esse repositório ainda é seu. Tente de novo em instantes.',
       wishErrorGithubDisconnected:
@@ -825,6 +829,8 @@ export const locales = {
       wishErrorSession: 'Tu sesión expiró. Inicia sesión de nuevo y envíalo otra vez.',
       wishErrorRepoAccess:
         'Ya no tienes acceso de escritura al repositorio de este proyecto en GitHub, así que el pedido no puede registrarse allí. Pide el acceso de vuelta y envíalo otra vez.',
+      wishErrorAutonomy:
+        'Este proyecto está configurado como "Solo mirar", lo que no permite crear pedidos. Cambia la autonomía a "Sugerir" o "Cuidar" en la configuración e inténtalo de nuevo.',
       wishErrorRepoUnverified:
         'No pudimos confirmar en GitHub que ese repositorio siga siendo tuyo. Inténtalo de nuevo en un momento.',
       wishErrorGithubDisconnected:

@@ -68,7 +68,7 @@ describe('nenhuma escrita no GitHub sai por fora da guarda', () => {
     const infratores: string[] = []
 
     for (const caminho of arquivosTs(RAIZ)) {
-      const relativo = caminho.slice(RAIZ.length + 1)
+      const relativo = caminho.slice(RAIZ.length + 1).replace(/\\/g, '/')
       if (PERMITIDOS.has(relativo)) continue
 
       const linhas = readFileSync(caminho, 'utf8').split('\n')
@@ -110,7 +110,7 @@ describe('nenhuma escrita no GitHub sai por fora da guarda', () => {
     const DEFAULT_CRU = /\?\?\s*fetch\s*[),\n]/
 
     for (const caminho of arquivosTs(RAIZ)) {
-      const relativo = caminho.slice(RAIZ.length + 1)
+      const relativo = caminho.slice(RAIZ.length + 1).replace(/\\/g, '/')
       if (PERMITIDOS.has(relativo)) continue
       const texto = readFileSync(caminho, 'utf8')
       // Só interessa quem fala com o GitHub. Um `?? fetch` num cliente de
