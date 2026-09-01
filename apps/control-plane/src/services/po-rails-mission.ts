@@ -1,7 +1,7 @@
 import { ProjectV2Client } from '@gitorch/github-sync'
 import { fetchSemPermissao } from './guarda-de-autonomia.js'
 import { RAILS_SCHEMAS, buildStepPrompt, type PoTriageForm } from '@gitorch/cadence'
-import { runPoRails } from './role-rails.js'
+import { runPoRailsWithRetry } from './role-rails.js'
 import { runFormStep } from './rails-runner.js'
 import { applyBacklog } from './backlog-executor.js'
 import { createGithubBacklog } from './github-backlog.js'
@@ -272,8 +272,14 @@ export async function runPoMissionViaRails(
     }
   }
 
-  // 2) Roteiro do PO (5 formulários; a LLM nunca toca no GitHub).
-  const plan = await runPoRails(options.execute, {
+  // 2) Roteiro do PO (5 formulários; a LLM nunca toca no GitHub) + a régua
+  // (Bloco 1, D5): plano reprovado DEVOLVE ao PO com o motivo e ele refaz,
+  // até um teto de tentativas — nunca lança direto na primeira reprovação.
+  // Esgotado o teto, `runPoRailsWithRetry` lança `BacklogPlanRejectedError`
+  // (não capturado aqui de propósito: o scheduler já trata todo erro não
+  // classificado como falha HONESTA da missão, gravada e visível — nunca
+  // some calado).
+  const { plan, attempts } = await runPoRailsWithRetry(options.execute, {
     wish: { number: wish.number, nodeId: wish.node_id },
     wishText: `${wish.title} — ${wish.body ?? ''}`,
     contextBlocks: options.contextBlocks,
@@ -314,10 +320,19 @@ export async function runPoMissionViaRails(
   // assíncrono. Ver `fila-de-delegacao.ts`.
   const result = await applyBacklog({ github, plan })
 
-  // 4) Resumo textual: vira memória do projeto (e evidência humana).
+  // 4) Resumo textual: vira memória do projeto (e evidência humana). Quando
+  // a régua devolveu o plano ao menos uma vez (attempts > 1), isto fica
+  // VISÍVEL no resumo — não é um detalhe que deve desaparecer só porque a
+  // tentativa seguinte passou.
   const lines = [
     ...(triageSummary.length > 0 ? [`Incident triage: ${triageSummary.join('; ')}.`] : []),
     `PO rails applied wish #${wish.number} ("${wish.title}").`,
+    ...(attempts > 1
+      ? [
+          `Ruler (Bloco 1) rejected the plan ${attempts - 1} time(s) before it passed — ` +
+            `it was sent back to the PO with the reason instead of failing outright.`,
+        ]
+      : []),
     `Sprint goal: ${plan.roadmap.sprintGoal}`,
     `Tree: ${plan.phases.length} phase(s), ${plan.epics.length} epic(s), ${plan.features.length} feature(s), ${plan.tasks.length} task(s).`,
     `Roadmap: ${result.sprintsPlanned} sprint(s); journeys covered: ${plan.journeysCount}.`,

@@ -24,6 +24,7 @@ import {
 import { decidirQuadro } from '../services/resolver-quadro.js'
 import { lerCredencialDoProjeto } from '../services/project-credential.js'
 import { lerCotasDosMotores, type MotorCota } from '../services/cotas-dos-motores.js'
+import { resumoDeCotaDoDev } from '../services/resumo-de-cota-do-dev.js'
 import {
   lerRepositorios,
   LeituraIndisponivelError,
@@ -465,6 +466,70 @@ export const painelRoutes = async (
       }
 
       return reply.send({ atuando, motores, cotaLida, motivoDaCota })
+    }
+  )
+
+  // GET /api/v1/painel/dev-cota — a cota do dev assíncrono (Jules), POR CONTA.
+  //
+  // Pedido do dono (01/09/2026): "precisa saber o que está sendo enviado,
+  // quando foi enviado" — ver o consumo, não adivinhar. Até aqui o número só
+  // existia DENTRO da decisão de delegar (sm-delegation.ts via
+  // montarOpcoesDeDelegacao, scheduler.ts) e nunca saía para o dono ver.
+  //
+  // JANELA ROLANTE de 24h (não dia de calendário) e teto POR CONTA (não por
+  // projeto) — as duas MESMAS regras que já valem para a decisão real de
+  // delegar (mesmo motivo do achado de 29/08 em sm-delegation.ts: contar por
+  // projeto fez dois projetos "pro" se acharem com 200/dia e 30 simultâneas
+  // contra um teto real de 100 e 15). A conta é `project.devAccountId`; nulo
+  // agrupa nos projetos que ainda usam a credencial da instância.
+  app.get(
+    '/api/v1/painel/dev-cota',
+    RATE_LIMIT_POLLING,
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      if (!request.user) return reply.code(401).send(NAO_LOGADO)
+      const ownerId = await resolveOwnerId(app.prisma, request.user)
+
+      const linhasDeProjeto = await app.prisma.project.findMany({
+        where: { userId: ownerId },
+        select: { id: true, name: true, devPlan: true, devAccountId: true },
+      })
+      // `nome`, não `name`: o domínio do resumo (e o resto deste arquivo,
+      // ver `ProjetoDoDono`/`projetoDaLinha`) fala português; só a coluna do
+      // Prisma é inglesa.
+      const projetos = linhasDeProjeto.map((p) => ({
+        id: p.id,
+        nome: p.name,
+        devPlan: p.devPlan,
+        devAccountId: p.devAccountId,
+      }))
+
+      if (projetos.length === 0) {
+        return reply.send(resumoDeCotaDoDev({ projetos: [], sessoes: [], agora: new Date() }))
+      }
+
+      const corte = new Date(Date.now() - 24 * 60 * 60 * 1000)
+      // Uma linha entra se AINDA ocupa vaga (closedAt nulo, de qualquer data —
+      // uma sessão pode estar aberta há mais de 24h) OU se foi criada dentro
+      // da janela rolante (para a contagem e a lista de enviadas). As duas
+      // condições cobrem tudo que o resumo precisa; o resto é ignorado por
+      // `resumoDeCotaDoDev` (função pura, sem saber de onde a linha veio).
+      const sessoes = await app.prisma.devSession.findMany({
+        where: {
+          projectId: { in: projetos.map((p) => p.id) },
+          OR: [{ closedAt: null }, { createdAt: { gte: corte } }],
+        },
+        select: {
+          projectId: true,
+          devAccountId: true,
+          issueNumber: true,
+          sessionName: true,
+          state: true,
+          createdAt: true,
+          closedAt: true,
+        },
+      })
+
+      return reply.send(resumoDeCotaDoDev({ projetos, sessoes, agora: new Date() }))
     }
   )
 

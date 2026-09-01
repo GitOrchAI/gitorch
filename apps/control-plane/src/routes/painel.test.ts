@@ -338,6 +338,121 @@ describe('Rotas do painel do owner', () => {
     })
   })
 
+  describe('GET /api/v1/painel/dev-cota — visibilidade da cota do Jules (pedido do dono, 01/09)', () => {
+    const getDevCota = () =>
+      app.inject({ method: 'GET', url: '/api/v1/painel/dev-cota', headers: authHeaders })
+
+    test('sem sessão → 401', async () => {
+      const res = await app.inject({ method: 'GET', url: '/api/v1/painel/dev-cota' })
+      expect(res.statusCode).toBe(401)
+    })
+
+    test('dono sem projeto → lista de contas vazia, sem tocar devSession', async () => {
+      const prisma = await build(
+        fakePrisma({
+          project: { findMany: vi.fn().mockResolvedValue([]) },
+        })
+      )
+      const res = await getDevCota()
+      expect(res.statusCode).toBe(200)
+      expect(res.json().contas).toEqual([])
+      expect(prisma.devSession).toBeUndefined()
+    })
+
+    test('devolve quantas foram enviadas nas últimas 24h, quando, e as vagas restantes pela janela rolante', async () => {
+      const agora = Date.now()
+      const dentroDaJanela = new Date(agora - 60 * 60 * 1000) // 1h atrás
+      const foraDaJanela = new Date(agora - 25 * 60 * 60 * 1000) // 25h atrás
+
+      const prisma = await build(
+        fakePrisma({
+          project: {
+            findMany: vi
+              .fn()
+              .mockResolvedValue([
+                { id: 'proj_1', name: 'GitOrchAI/gitorch', devPlan: 'pro', devAccountId: null },
+              ]),
+          },
+          devSession: {
+            findMany: vi.fn().mockResolvedValue([
+              {
+                projectId: 'proj_1',
+                devAccountId: null,
+                issueNumber: 309,
+                sessionName: 'sessions/1',
+                state: 'IN_PROGRESS',
+                createdAt: dentroDaJanela,
+                closedAt: null,
+              },
+              {
+                projectId: 'proj_1',
+                devAccountId: null,
+                issueNumber: 100,
+                sessionName: 'sessions/2',
+                state: 'COMPLETED',
+                createdAt: foraDaJanela,
+                closedAt: foraDaJanela,
+              },
+            ]),
+          },
+        })
+      )
+
+      const res = await getDevCota()
+      expect(res.statusCode).toBe(200)
+      const body = res.json()
+      expect(body.contas).toHaveLength(1)
+      const conta = body.contas[0]
+      expect(conta.contaId).toBeNull()
+      expect(conta.tetoConcorrentes).toBe(15)
+      expect(conta.tetoDiario).toBe(100)
+      expect(conta.enviadas24h).toBe(1)
+      expect(conta.vagasDiariasRestantes).toBe(99)
+      expect(conta.simultaneas).toBe(1)
+      expect(conta.vagasRestantes).toBe(14)
+      expect(conta.sessoes24h).toEqual([
+        {
+          projeto: 'GitOrchAI/gitorch',
+          issueNumber: 309,
+          sessionName: 'sessions/1',
+          estado: 'IN_PROGRESS',
+          enviadaEm: dentroDaJanela.toISOString(),
+          ocupaVaga: true,
+        },
+      ])
+
+      // A busca no banco pede TANTO quem ainda ocupa vaga (closedAt nulo,
+      // pode ter nascido há mais de 24h) QUANTO quem foi criada na janela —
+      // nunca só um dos dois, senão a conta perde sessão antiga ainda viva ou
+      // sessão recente já fechada.
+      const where = prisma.devSession.findMany.mock.calls[0][0].where
+      expect(where.OR).toEqual(
+        expect.arrayContaining([
+          { closedAt: null },
+          expect.objectContaining({
+            createdAt: expect.objectContaining({ gte: expect.any(Date) }),
+          }),
+        ])
+      )
+    })
+
+    test('escopo por dono: filtra devSession pelos projectId do dono, nunca do dono inteiro sem filtro', async () => {
+      const prisma = await build(
+        fakePrisma({
+          project: {
+            findMany: vi
+              .fn()
+              .mockResolvedValue([{ id: 'p1', name: 'a/b', devPlan: 'pro', devAccountId: null }]),
+          },
+          devSession: { findMany: vi.fn().mockResolvedValue([]) },
+        })
+      )
+      await getDevCota()
+      const where = prisma.devSession.findMany.mock.calls[0][0].where
+      expect(where.projectId).toEqual({ in: ['p1'] })
+    })
+  })
+
   describe('GET /api/v1/painel/pedidos', () => {
     const umPedido = {
       numero: 30,

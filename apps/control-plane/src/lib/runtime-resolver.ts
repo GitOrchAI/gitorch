@@ -1,4 +1,9 @@
-import { isF6AgentRole, isF6AgentRuntime, type F6AgentRole } from '@gitorch/agents'
+import {
+  isF6AgentRole,
+  isF6AgentRuntime,
+  CANONICAL_RUNTIME_CHAIN,
+  type F6AgentRole,
+} from '@gitorch/agents'
 
 // Resolve, por projeto e por agente, qual motor+modelo usar e a cadeia de
 // fallback. A escolha vive em project.runtimeConfig.agents (dado do cliente);
@@ -95,8 +100,31 @@ export function resolveRuntimeChain(
   // o do papel naquele motor sai do catálogo vivo, na etapa assíncrona.
   push(defaults.runtimeByRole[role])
 
-  // E, por último, o que o cliente tem conectado. Sem isto, um projeto que
-  // escolheu um motor só fica sem reserva no dia em que ele estoura a cota.
+  // A CADEIA CANÔNICA da instância (codex → antigravity → claude,
+  // runtime-config.ts) completa os degraus que ainda faltam.
+  //
+  // Decisão do dono (01/09/2026): "o fluxo principal vai ser o Codex e depois
+  // o Antigravity" — nessa ordem, e a lógica não é gosto: o Codex é grátis e
+  // tem cota que EXPIRA se não for gasta, o Antigravity segura o volume
+  // depois, e o Claude é a última reserva. Isso vale sempre que o cliente não
+  // escolheu (tela de cascata por agente, PR #427) — quem escolheu continua
+  // em primeiro lugar, sem mudança.
+  //
+  // ANTES desta linha, um projeto sem cascata configurada só tinha ESTE degrau
+  // (`defaults.runtimeByRole[role]`, hoje 'codex' para os quatro papéis) e
+  // dependia inteiramente de `motoresConectados` para ter para onde ir — e
+  // `motoresConectados` vem de `engineConnection.findMany` SEM `orderBy`
+  // (scheduler.ts): a ordem não é garantida pelo Postgres. Medido em produção
+  // em 01/09/2026: a cadeia da conta real só saía 'codex' → 'antigravity' →
+  // 'claude' porque o dono conectou o Antigravity (06/08) antes do Claude
+  // (27/08) — coincidência de datas, não desenho. "Codex e Antigravity
+  // funcionarem em TODOS os repositórios" (pedido do dono) não pode depender
+  // da ordem em que uma conta conectou os motores.
+  for (const runtime of CANONICAL_RUNTIME_CHAIN) push(runtime)
+
+  // E, por último, o que o cliente tem conectado — hoje redundante (a cadeia
+  // canônica acima já cobre os três motores que existem), mas fica como
+  // reserva para um motor futuro que ainda não entrou na cadeia canônica.
   for (const runtime of motoresConectados) push(runtime)
 
   // O MODELO NÃO É MAIS CARIMBADO AQUI, e isso é o conserto de um defeito

@@ -51,12 +51,37 @@ describe('resolveRuntimeChain', () => {
       agents: { sm: { runtime: 'invalido', fallbacks: [{ runtime: 'antigravity' }] } },
     }
     const chain = resolveRuntimeChain('sm', cfg, defaults)
-    expect(chain.map((c) => c.runtime)).toEqual(['antigravity'])
+    // 'invalido' nunca aparece; 'antigravity' aparece uma única vez (o
+    // fallback do cliente, não de novo pela cadeia canônica); o resto da
+    // cadeia canônica completa atrás.
+    expect(chain.map((c) => c.runtime)).toEqual(['antigravity', 'codex', 'claude'])
   })
 
   test('sem config cai no MOTOR default do papel — e sem inventar modelo', () => {
     const chain = resolveRuntimeChain('qa', undefined, defaults)
-    expect(chain).toEqual([{ runtime: 'antigravity' }])
+    // O default do papel (antigravity, nesta fixture) vem primeiro; o resto
+    // da cadeia canônica (codex → antigravity → claude) completa atrás dele —
+    // ver o teste abaixo, que prova a ordem real de produção.
+    expect(chain.map((c) => c.runtime)).toEqual(['antigravity', 'codex', 'claude'])
+  })
+
+  // Pedido do dono (01/09/2026): "o fluxo principal vai ser o Codex e depois o
+  // Antigravity" — Codex primeiro PORQUE é grátis e tem cota que expira se
+  // gasta primeiro; Antigravity segura o volume depois; Claude é a terceira
+  // reserva. Sem escolha explícita do cliente (a tela de cascata por agente,
+  // PR #427), a cadeia tem que nascer NESTA ordem — não na ordem em que a
+  // conta do cliente conectou os motores (engine_connections não tem
+  // `orderBy`; medido em produção em 01/09: a ordem de conexão real era
+  // github → antigravity → codex → claude, e SÓ por essa coincidência a
+  // cadeia de reserva saía certa).
+  test('sem escolha do cliente, a cascata canônica é codex → antigravity → claude', () => {
+    const defaultsReais: ResolverDefaults = {
+      runtimeByRole: { po: 'codex', ra: 'codex', sm: 'codex', qa: 'codex' },
+    }
+    for (const role of ['po', 'ra', 'sm', 'qa'] as const) {
+      const chain = resolveRuntimeChain(role, undefined, defaultsReais)
+      expect(chain.map((c) => c.runtime)).toEqual(['codex', 'antigravity', 'claude'])
+    }
   })
 
   test('resolvePrimaryRuntime devolve a primeira seleção', () => {
