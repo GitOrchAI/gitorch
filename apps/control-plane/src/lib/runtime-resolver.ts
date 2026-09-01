@@ -107,8 +107,13 @@ export function resolvePrimaryRuntime(
 // quota reached", casava. A mesma situação era tratada de dois jeitos por
 // acaso de vocabulário, e no caso do Codex a troca de motor nem era tentada
 // pelo texto (só pelo tipo do erro, quando havia um).
+// "sem credencial conectada" entrou em 31/08 pelo mesmo motivo de "usage
+// limit": é uma falha de AUTENTICAÇÃO do motor — a mais clara de todas, porque
+// o produto a constata ANTES de disparar (ver SemCredencialDoMotorError) — e
+// sem este padrão ela não seria reconhecida como motivo de trocar de motor,
+// e um motor desconectado mataria a missão em vez de passá-la para a reserva.
 const FAILOVER_PATTERN =
-  /quota|rate.?limit|429|exhaust|insufficient|unauthor|forbidden|\b401\b|\b403\b|invalid.?api.?key|e2big|argument list too long|usage limit/i
+  /quota|rate.?limit|429|exhaust|insufficient|unauthor|forbidden|\b401\b|\b403\b|invalid.?api.?key|e2big|argument list too long|usage limit|sem credencial conectada/i
 
 export function isFailoverError(message: string): boolean {
   return FAILOVER_PATTERN.test(message)

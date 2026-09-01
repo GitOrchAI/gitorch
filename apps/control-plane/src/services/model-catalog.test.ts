@@ -20,6 +20,28 @@ describe('model-catalog', () => {
     expect(await discover('/tmp/x')).toEqual(['Gemini 3.5 Flash', 'Claude Opus'])
   })
 
+  // O `agy models` REAL imprime `slug<TAB>Nome de Exibição` — conferido nesta
+  // VM em 31/08/2026 com `agy models | cat -A`. O fake acima nunca teve TAB,
+  // então o coletor guardava a string COLADA e o teste passava mesmo assim:
+  // medido no banco, engine_connections.models do antigravity tinha 14 entradas
+  // no formato 'gemini-3.7-flash-medium\tGemini 3.7 Flash (Medium)'. Nenhuma
+  // delas serviria como valor de --model, que aceita o NOME DE EXIBIÇÃO
+  // (provado: `agy --model "Gemini 3.5 Flash (Medium)"` -> "invalid model
+  // selection ... Available models: Gemini 3.7 Flash (High) ...").
+  test('antigravity: a saída REAL tem TAB, e só o nome de exibição serve', async () => {
+    const saidaReal =
+      'Fetching available models...\n' +
+      'gemini-3.7-flash-medium\tGemini 3.7 Flash (Medium)\n' +
+      'gemini-3.1-pro-low\tGemini 3.1 Pro (Low)\n'
+    const discover = makeAntigravityDiscoverer('agy', async () => saidaReal)
+    const modelos = await discover('/tmp/x')
+    expect(modelos).toContain('Gemini 3.7 Flash (Medium)')
+    expect(modelos).toContain('Gemini 3.1 Pro (Low)')
+    expect(modelos.some((m) => m.includes('\t'))).toBe(false)
+    // A linha de status do CLI não é modelo nenhum.
+    expect(modelos).not.toContain('Fetching available models...')
+  })
+
   test('codex: lê models_cache.json (display_name ou slug)', async () => {
     const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-codex-'))
     await fs.mkdir(path.join(home, '.codex'), { recursive: true })

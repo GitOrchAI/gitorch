@@ -283,8 +283,17 @@ import {
   ehCredencialExpirada,
   ehFalhaDeCredencialCorroborada,
   CredencialExpiradaError,
+  SemCredencialDoMotorError,
+  exigirCredencialDoMotor,
   deveAvisarDeNovo,
 } from '../services/credencial-do-motor.js'
+import {
+  resumoDeErroDoMotor,
+  classificarFalhaDoMotor,
+  marcarFailoverDoTextoCompleto,
+  temMarcaDeFailover,
+} from '../services/resumo-de-erro-do-motor.js'
+import { escolherModeloVivo } from '../services/catalogo-vivo-de-modelos.js'
 import { marcaDePedidoDeLogin } from '../services/motor-que-pede-login.js'
 import {
   ehTetoDeUsoDaConta,
@@ -350,7 +359,29 @@ interface TriggerResult {
   reason?: string
 }
 // Nomes de modelo aceitos pelo Antigravity CLI (ver `agy models`); configuráveis por ambiente.
-const MODEL_FLASH = process.env['GITORCH_MODEL_FLASH'] ?? 'Gemini 3.5 Flash (Medium)'
+//
+// REMENDO, e está escrito aqui para ninguém confundir com conserto: trocar a
+// string conserta HOJE e quebra de novo na próxima remoção do provedor. O
+// conserto de verdade é `escolherModeloVivo` (catalogo-vivo-de-modelos.ts),
+// ligado logo abaixo em `modeloVivoParaAMissao` — este literal virou só o ponto
+// de partida de quando o catálogo do cliente ainda não foi coletado.
+//
+// O QUE ACONTECEU: até 01/09/2026 este literal era 'Gemini 3.5 Flash (Medium)'.
+// O Google removeu a geração 3.5 em 31/08 entre 16:12 e 23:00, e a partir daí
+// 100% das missões que caíam no Antigravity morriam com `invalid model
+// selection`. A env `GITORCH_MODEL_FLASH` NÃO está definida no processo real
+// (conferido em /proc/<pid>/environ), então quem valia era o literal.
+//
+// POR QUE 3.7 E NÃO 3.6, e não é gosto: às 16:12 o catálogo tinha 3.5/3.6/3.7;
+// às 23:00 só 3.6/3.7. O provedor mantém DUAS gerações Flash e derruba a mais
+// velha sem aviso, no meio do dia. Escolher 3.6 é escolher a próxima a cair.
+//
+// ARMADILHA para quem for conferir: a lista de modelos que aparece DENTRO da
+// mensagem de erro do CLI chegava truncada em 4 itens nos nossos logs — e o
+// truncamento era NOSSO (ver resumo-de-erro-do-motor.ts), não do CLI. Rodando
+// `agy models` de verdade nesta VM em 01/09 vêm 11 modelos. Nunca escolher
+// substituto pela lista que aparece no log.
+const MODEL_FLASH = process.env['GITORCH_MODEL_FLASH'] ?? 'Gemini 3.7 Flash (Medium)'
 const MODEL_PRO = process.env['GITORCH_MODEL_PRO'] ?? 'Gemini 3.1 Pro (Low)'
 
 // PO decide (modelo forte); RA/SM/QA analisam (modelo rápido).
@@ -478,12 +509,80 @@ export function resolveRailsBoard(project: { runtimeConfig?: unknown }): string 
  * cadeia pode ter credencial válida), e o reconhecimento por texto já
  * aconteceu na origem (onde a saída crua do motor existe), não aqui.
  */
+/**
+ * O modelo da missão CONFERIDO contra o catálogo vivo do motor daquele cliente.
+ *
+ * Este é o conserto de verdade do defeito que derrubou a frota em 31/08: o
+ * produto tinha DOIS TRILHOS que nunca se encontravam. A coleta de modelos
+ * grava o catálogo em `engine_connections.models` (só para desenhar a tela), e
+ * a escolha do modelo da missão vinha de um literal no código. Quando o Google
+ * removeu a geração Gemini 3.5 no meio do dia, o catálogo do banco soube na
+ * hora — e a missão continuou pedindo o modelo morto, porque ninguém tinha
+ * ligado um trilho no outro. Trocar o literal (feito, ver MODEL_FLASH) conserta
+ * hoje; ligar os trilhos é o que impede a próxima remoção de repetir tudo.
+ *
+ * FAIL-OPEN em TODO caminho de dúvida — sem conexão, sem catálogo, banco fora
+ * do ar, catálogo com forma inesperada: segue com o modelo pedido. Catálogo
+ * vazio quer dizer "não sei", nunca "o modelo não existe". Uma guarda que
+ * parasse a missão por falta de lista trocaria um desperdício (uma missão que
+ * falha) por uma paralisação (a esteira inteira parada toda vez que a leitura
+ * do banco piscasse) — exatamente o que `filtrarCadeia` já recusa fazer.
+ *
+ * E quando troca, DIZ. O defeito original durou 9h48 e 24 missões justamente
+ * porque ninguém foi avisado de nada.
+ */
+export async function modeloVivoParaAMissao(args: {
+  prisma: { engineConnection?: { findFirst?: (...args: never[]) => Promise<unknown> } }
+  ownerUserId: string | null | undefined
+  runtime: string
+  desejado: string
+  log: { warn: (msg: string) => void }
+}): Promise<string> {
+  // Projeto legado sem dono não tem catálogo para consultar — nem vale a ida ao
+  // banco.
+  if (!args.ownerUserId) return args.desejado
+
+  // FAIL-OPEN inclusive no tropeço SÍNCRONO. Um `.catch()` só pega promessa
+  // rejeitada; ler `.findFirst` de um `engineConnection` ausente estoura ANTES
+  // de existir promessa alguma, e a exceção subiria para a missão. Esta guarda
+  // não é paranoia de tipo: a suíte pegou o caso ao vivo.
+  const conexoes = args.prisma?.engineConnection
+  if (typeof conexoes?.findFirst !== 'function') return args.desejado
+  const buscar = conexoes.findFirst.bind(conexoes)
+
+  const catalogo = await Promise.resolve()
+    .then(() =>
+      buscar({
+        where: { userId: args.ownerUserId, runtime: args.runtime },
+        select: { models: true },
+      } as never)
+    )
+    .then((linha) => (linha as { models?: unknown } | null)?.models)
+    .catch(() => undefined)
+
+  // Só lista de texto serve. Qualquer outra forma é tratada como "não sei".
+  if (!Array.isArray(catalogo)) return args.desejado
+  const nomes = catalogo.filter((m): m is string => typeof m === 'string')
+
+  const escolha = escolherModeloVivo({ desejado: args.desejado, catalogo: nomes })
+  if (escolha.aviso) {
+    args.log.warn(`[Scheduler] modelo de ${args.runtime}: ${escolha.aviso}`)
+  }
+  return escolha.modelo
+}
+
 export function isEngineFault(err: unknown, lastError: string): boolean {
   if (err instanceof GithubExecutionError) return false
   return (
     err instanceof RailsStepError ||
     err instanceof RailsExecutionError ||
     err instanceof CredencialExpiradaError ||
+    err instanceof SemCredencialDoMotorError ||
+    // O veredito tirado do stderr COMPLETO na origem (ver
+    // classificarFalhaDoMotor). Vem ANTES do teste por texto de propósito: aqui
+    // `lastError` já é o resumo, e decidir por ele é decidir pelo que sobrou do
+    // erro. Foi assim que um 401 no byte 674 virou "não é caso de failover".
+    temMarcaDeFailover(err) ||
     isFailoverError(lastError)
   )
 }
@@ -857,6 +956,86 @@ export async function resolveEngineBinDir(
  * ambiente do cliente e o antepõe no PATH da execução — sem ele (ou sem os
  * recursos instalados), cai no binário do host com log claro (`log`).
  */
+/**
+ * Prepara as montagens de credencial da missão que roda em CONTAINER.
+ *
+ * Materializa a credencial do dono do projeto (da sua EngineConnection
+ * cifrada) num staging temporário, monta SOMENTE-LEITURA em
+ * /run/gitorch-credentials, e o entrypoint da imagem a copia para o HOME
+ * gravável. O staging é apagado ao fim. Assim a missão de um cliente nunca vê
+ * a credencial de outro nem a do host.
+ *
+ * EXPORTADA, e não mais uma closure dentro do plugin, pelo mesmo motivo de
+ * `montarOpcoesDeDelegacao`: o comportamento abaixo é uma DECISÃO de produto
+ * (disparar ou não disparar o motor), e decisão de produto sem teste é decisão
+ * que volta atrás sozinha na próxima refatoração.
+ *
+ * SEM CREDENCIAL, NÃO DISPARA. Antes disto o `false` do `materializeToHome`
+ * virava um `app.log.warn` e a preparação devolvia `{ mounts: [] }` — o
+ * container subia sem credencial nenhuma. Medido no journal de 31/08 (janela de
+ * 9h48): 48 vezes. Reproduzido ao vivo no mesmo container, um `codex exec` sem
+ * credencial gasta ~15s e morre em `401 Unauthorized`. O produto sabia que ia
+ * falhar, escrevia no log que sabia, e disparava assim mesmo — queimando uma
+ * rodada da cadeia e um `podman run` inteiro por missão.
+ *
+ * Parar aqui NÃO é fail-closed: `SemCredencialDoMotorError` é falha de MOTOR
+ * (ver isEngineFault/isFailoverError), então a cadeia cai na reserva na hora. A
+ * missão anda MAIS rápido do que antes, não menos — o que some é só a rodada
+ * queimada no motor que não tinha como atender.
+ */
+export function criarPreparadorDeMontagens(deps: {
+  engineConnections: Pick<EngineConnectionService, 'materializeToHome'>
+  stagingBase: string
+  log: { warn: (...args: unknown[]) => void; error: (...args: unknown[]) => void }
+}): (request: { env: Record<string, string> }) => Promise<{
+  mounts: Array<{ source: string; target: string; readOnly?: boolean }>
+  cleanup?: () => Promise<void>
+}> {
+  return async (request) => {
+    const runtime = request.env['GITORCH_RUNTIME']
+    const ownerUserId = request.env['GITORCH_OWNER_USER_ID']
+    if (!runtime || !ownerUserId) return { mounts: [] }
+
+    // 0700: staging guarda a credencial descriptografada em host compartilhado.
+    const dir = path.join(deps.stagingBase, randomUUID())
+    await fs.mkdir(dir, { recursive: true, mode: 0o700 })
+    const cleanup = async (): Promise<void> => {
+      await fs.rm(dir, { recursive: true, force: true })
+    }
+    try {
+      const ok = await deps.engineConnections.materializeToHome(ownerUserId, runtime, dir)
+      // Lança SemCredencialDoMotorError: a missão não é despachada para um
+      // motor que já se sabe incapaz de autenticar.
+      exigirCredencialDoMotor(ok, runtime, ownerUserId)
+      // As "mãos" no GitHub: se o dono conectou um token (runtime lógico
+      // `github`), ele entra no MESMO staging e vira GH_TOKEN no container
+      // (entrypoint). Ausência é normal — missão segue só-leitura de GitHub.
+      await deps.engineConnections.materializeToHome(ownerUserId, 'github', dir)
+      return {
+        mounts: [{ source: dir, target: '/run/gitorch-credentials', readOnly: true }],
+        cleanup,
+      }
+    } catch (err) {
+      await cleanup()
+      // Falha de DESCRIPTOGRAFIA é incidente (chave trocada/dado corrompido): NÃO
+      // mascarar rodando sem credencial — propaga para a missão falhar com causa
+      // clara. Outras falhas (fs) são best-effort e não derrubam a preparação.
+      if ((err as { name?: string })?.name === 'CredentialDecryptError') {
+        throw err
+      }
+      // A ausência de credencial TAMBÉM propaga — e precisa estar escrita aqui,
+      // porque este mesmo `catch` é o que antes engolia tudo. Sem esta linha o
+      // conserto acima seria desfeito duas linhas abaixo, no `return { mounts:
+      // [] }`, e o container voltaria a subir sem credencial.
+      if (err instanceof SemCredencialDoMotorError) {
+        throw err
+      }
+      deps.log.error(err, '[Scheduler] falha ao materializar credencial da missão')
+      return { mounts: [] }
+    }
+  }
+}
+
 export function createLocalCredentialRunner(
   engineConnections: Pick<EngineConnectionService, 'materializeToHome' | 'captureFromHome'>,
   innerRunner: RuntimeCommandRunner = realRuntimeCommandRunner,
@@ -879,7 +1058,12 @@ export function createLocalCredentialRunner(
     let materializou = false
     try {
       const ok = await engineConnections.materializeToHome(ownerUserId, runtime, dir)
-      if (!ok) return await innerRunner(request)
+      // SEM CREDENCIAL, NÃO DISPARA — irmão exato da guarda em
+      // `criarPreparadorDeMontagens` (caminho do container), pelo mesmo motivo
+      // medido: subir o motor sem credencial gasta a rodada para colher um 401
+      // que o produto já sabia que viria. `SemCredencialDoMotorError` é falha de
+      // MOTOR, então a cadeia cai na reserva na hora em vez de morrer aqui.
+      exigirCredencialDoMotor(ok, runtime, ownerUserId)
       materializou = true
 
       // Espelha o loop genérico do entrypoint.sh (infra/agent-image/ no repo
@@ -1044,56 +1228,11 @@ export function buildMissionRunner(
     .then(() => fs.mkdir(stagingBase, { recursive: true, mode: 0o700 }))
     .catch((err) => app.log.warn(err, '[Scheduler] falha ao limpar staging de credenciais no boot'))
 
-  // Credencial POR MISSÃO: materializa a credencial do dono do projeto (da sua
-  // EngineConnection cifrada) num staging temporário, monta SOMENTE-LEITURA em
-  // /run/gitorch-credentials, e o entrypoint da imagem a copia para o HOME
-  // gravável. O staging é apagado ao fim. Assim a missão de um cliente nunca vê
-  // a credencial de outro nem a do host.
-  const prepareMounts = async (request: {
-    env: Record<string, string>
-  }): Promise<{
-    mounts: Array<{ source: string; target: string; readOnly?: boolean }>
-    cleanup?: () => Promise<void>
-  }> => {
-    const runtime = request.env['GITORCH_RUNTIME']
-    const ownerUserId = request.env['GITORCH_OWNER_USER_ID']
-    if (!runtime || !ownerUserId) return { mounts: [] }
-
-    // 0700: staging guarda a credencial descriptografada em host compartilhado.
-    const dir = path.join(stagingBase, randomUUID())
-    await fs.mkdir(dir, { recursive: true, mode: 0o700 })
-    const cleanup = async () => {
-      await fs.rm(dir, { recursive: true, force: true })
-    }
-    try {
-      const ok = await app.engineConnections.materializeToHome(ownerUserId, runtime, dir)
-      if (!ok) {
-        await cleanup()
-        app.log.warn(
-          `[Scheduler] Sem credencial conectada de ${runtime} para o usuário ${ownerUserId}; missão sem credencial`
-        )
-        return { mounts: [] }
-      }
-      // As "mãos" no GitHub: se o dono conectou um token (runtime lógico
-      // `github`), ele entra no MESMO staging e vira GH_TOKEN no container
-      // (entrypoint). Ausência é normal — missão segue só-leitura de GitHub.
-      await app.engineConnections.materializeToHome(ownerUserId, 'github', dir)
-      return {
-        mounts: [{ source: dir, target: '/run/gitorch-credentials', readOnly: true }],
-        cleanup,
-      }
-    } catch (err) {
-      await cleanup()
-      // Falha de DESCRIPTOGRAFIA é incidente (chave trocada/dado corrompido): NÃO
-      // mascarar rodando sem credencial — propaga para a missão falhar com causa
-      // clara. Outras falhas (fs) são best-effort e não derrubam a preparação.
-      if ((err as { name?: string })?.name === 'CredentialDecryptError') {
-        throw err
-      }
-      app.log.error(err, '[Scheduler] falha ao materializar credencial da missão')
-      return { mounts: [] }
-    }
-  }
+  const prepareMounts = criarPreparadorDeMontagens({
+    engineConnections: app.engineConnections,
+    stagingBase,
+    log: app.log,
+  })
 
   const memoryLimit = process.env['GITORCH_MISSION_MEMORY'] ?? '2g'
   const missionCpus = resolveMissionCpus()
@@ -2527,7 +2666,16 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     }
     for (let i = 0; i < chain.length; i++) {
       const sel = chain[i] as { runtime: string; model?: string }
-      const model = sel.model ?? MODEL_BY_ROLE[role]
+      // Confere contra o catálogo vivo DESTE cliente antes de gastar um
+      // container: o modelo pode ter sido removido pelo provedor desde a última
+      // vez. Fail-open — na dúvida, segue com o pedido (ver modeloVivoParaAMissao).
+      const model = await modeloVivoParaAMissao({
+        prisma: app.prisma,
+        ownerUserId: project.userId,
+        runtime: sel.runtime,
+        desejado: sel.model ?? MODEL_BY_ROLE[role],
+        log: app.log,
+      })
       const isLast = i === chain.length - 1
 
       // Reinicia o relógio de "presa" a cada tentativa: o limite de stale é por
@@ -3112,8 +3260,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 exitCode: step.exitCode,
               })
             ) {
+              // Resumo de DUAS PONTAS (ver resumo-de-erro-do-motor.ts): o
+              // motivo do Codex mora no fim do stderr, o do Antigravity no
+              // começo. O corte de cabeça perdia um dos dois sempre.
               throw new CredencialExpiradaError(
-                `motor ${sel.runtime} pediu novo login: ${(step.stderr || step.output).slice(0, 300)}`,
+                `motor ${sel.runtime} pediu novo login: ${resumoDeErroDoMotor(
+                  step.stderr || step.output
+                )}`,
                 sel.runtime
               )
             }
@@ -3127,9 +3280,17 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               // isEngineFault não reconhecia — a missão morria sem nunca
               // tentar o motor de reserva (bug real: chain=codex>antigravity
               // falhando todo dia, antigravity nunca acionado).
-              throw new RailsExecutionError(
-                `rails step ${stepN} failed: ${step.stderr.slice(0, 300)}`,
-                step.exitCode
+              // CLASSIFICA ANTES DE CORTAR. O veredito sai do stderr inteiro
+              // e viaja grudado no erro; a mensagem vai resumida para o log e
+              // para `missions.error`. Enquanto era o contrário, o produto
+              // decidia o failover pelo que tinha sobrado do erro.
+              const falha = classificarFalhaDoMotor({ bruto: step.stderr })
+              throw marcarFailoverDoTextoCompleto(
+                new RailsExecutionError(
+                  `rails step ${stepN} failed: ${falha.mensagem}`,
+                  step.exitCode
+                ),
+                falha.ehFailover
               )
             }
             return step.output
@@ -3405,7 +3566,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             )
           ) {
             throw new CredencialExpiradaError(
-              `motor ${sel.runtime} pediu novo login: ${(result.stderr || result.output).slice(0, 300)}`,
+              `motor ${sel.runtime} pediu novo login: ${resumoDeErroDoMotor(
+                result.stderr || result.output
+              )}`,
               sel.runtime
             )
           }
@@ -3722,6 +3885,16 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           }
         }
         const engineFault = isEngineFault(err, lastError)
+        if (engineFault) {
+          // ESTA linha de log apareceu 54 vezes no journal de 31/08 numa janela
+          // de 9h48 — 24 vezes com o MESMO `invalid model selection` e 30 com o
+          // MESMO 401. Um motor quebrado, tentado a cada poucos minutos, para
+          // sempre. Contar as falhas IGUAIS seguidas tira do rodízio o motor que
+          // não vai melhorar sozinho, sem punir o que só teve um dia ruim (ver
+          // marcarFalha/assinaturaDeFalha em motor-em-pausa.ts).
+          const pausa = motorEmPausa.marcarFalha(sel.runtime, lastError, new Date())
+          if (pausa.pausou) app.log.warn(`[Scheduler] ${pausa.motivo}`)
+        }
         if (!isLast && engineFault) {
           app.log.warn(err, `[Scheduler] erro recuperável em ${sel.runtime}; próximo motor`)
           continue
