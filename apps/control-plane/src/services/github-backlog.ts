@@ -33,6 +33,22 @@ export interface GithubBacklogOptions {
    * não podia ter quadro também não recebia backlog nenhum.
    */
   projectId?: string | undefined
+  /**
+   * A credencial para TODA chamada a Projects V2 (GraphQL) — addItemById,
+   * status, sprint, peso, status update. AUSENTE cai em `token`, o
+   * comportamento de sempre.
+   *
+   * D12 (01/09/2026, provado ao vivo contra loureng/patinhas-3d-crafts): o
+   * token do App do produto devolve "Resource not accessible by
+   * integration" em toda mutation de Projects V2 de conta PESSOAL, e nem
+   * sequer enxerga o board na leitura — mesmo limite que
+   * `garantir-sprint-dos-projetos.ts` já documentava para a passada de
+   * sprint. REST (issue, sub-issue, label, milestone) continua com `token`
+   * nos dois tipos de conta — só Projects V2 é cego em conta pessoal, e só
+   * a credencial do PRÓPRIO cliente (guardada em
+   * `Project.encryptedClientToken`, escopo `project`) alcança lá.
+   */
+  boardToken?: string | undefined
   /** nome do campo de iteração no board (padrão "Sprint") */
   sprintFieldName?: string
   /** nome do campo de status no board (padrão "Status") */
@@ -64,7 +80,19 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
   // a autonomia do projeto tem que falhar FECHADO. Com `?? fetch` o
   // esquecimento escrevia no repositorio do cliente sem guarda nenhuma.
   const f = fetchComTeto(options.fetchImpl ?? fetchSemPermissao())
+  // A credencial de Projects V2: a do cliente quando existe (o único alcance
+  // em conta pessoal — ver `boardToken` acima), senão a do produto de sempre.
+  const boardToken = options.boardToken ?? options.token
   const client = new ProjectV2Client({
+    token: boardToken,
+    fetchImpl: f,
+  })
+  // `addSubIssue` NÃO é Projects V2 — é a árvore de sub-issues (Issue-a-Issue),
+  // território que o App alcança nos dois tipos de conta (provado ao vivo: só
+  // Projects V2 é cego em conta pessoal). Cliente PRÓPRIO, sempre com
+  // `options.token`, para a ligação entre issues continuar saindo em nome do
+  // produto mesmo quando `boardToken` (a credencial do cliente) está presente.
+  const clienteDeSubIssue = new ProjectV2Client({
     token: options.token,
     fetchImpl: f,
   })
@@ -94,11 +122,21 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
 
   // Helper GraphQL ÚNICO do adapter (o client cobre as mutations tipadas; este
   // cobre consultas ad-hoc). Sempre valida errors[] — nada de undefined mudo.
-  const gql = async <T>(query: string, variables: Record<string, unknown>): Promise<T> => {
+  //
+  // `tokenParaUsar`: default `options.token` (identidade do produto) — é o
+  // que `addLabels` quer, uma consulta de Issue/repositório pura. Quem lê
+  // `projectItems` de dentro de um nó (a idempotência de `addToBoard`, D12)
+  // passa `boardToken` explicitamente: aquela leitura atravessa Projects V2,
+  // o mesmo território cego para o App em conta pessoal.
+  const gql = async <T>(
+    query: string,
+    variables: Record<string, unknown>,
+    tokenParaUsar: string = options.token
+  ): Promise<T> => {
     const resp = await f('https://api.github.com/graphql', {
       method: 'POST',
       headers: {
-        authorization: `Bearer ${options.token}`,
+        authorization: `Bearer ${tokenParaUsar}`,
         'content-type': 'application/json',
         'user-agent': 'gitorch',
       },
@@ -141,7 +179,7 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
 
   const boardStatus = quadro
     ? createBoardStatus({
-        token: options.token,
+        token: boardToken,
         projectId: quadro,
         ...(options.statusFieldName ? { statusFieldName: options.statusFieldName } : {}),
         ...(options.statusColumns ? { columns: options.statusColumns } : {}),
@@ -295,7 +333,7 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
     },
 
     async addSubIssue(parentNodeId, childNodeId): Promise<void> {
-      await client.addSubIssue({ issueId: parentNodeId, subIssueId: childNodeId })
+      await clienteDeSubIssue.addSubIssue({ issueId: parentNodeId, subIssueId: childNodeId })
     },
 
     async addToBoard(nodeId): Promise<string> {
@@ -314,7 +352,8 @@ export function createGithubBacklog(options: GithubBacklogOptions): BacklogGitHu
         }>(
           `query($id: ID!) { node(id: $id) { ... on Issue {
             projectItems(first: 20) { nodes { id project { id } } } } } }`,
-          { id: nodeId }
+          { id: nodeId },
+          boardToken
         )
         const item = data.node?.projectItems?.nodes?.find((n) => n.project?.id === quadro)
         if (!item) throw error

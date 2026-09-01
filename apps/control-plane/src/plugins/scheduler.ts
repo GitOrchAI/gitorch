@@ -3082,6 +3082,27 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             onWarn: (m) => app.log.warn(m),
           })) ??
           undefined
+        // D12 (01/09, provado ao vivo contra loureng/patinhas-3d-crafts): o
+        // App é CEGO para Projects V2 de conta pessoal — nem lê nem escreve
+        // ("Resource not accessible by integration"/"not found", mesmo o
+        // board existindo). Mesmo limite que `varrerSprintDosProjetos` já
+        // trata (`credencialDoProjeto` logo abaixo, neste arquivo): a
+        // credencial do PRÓPRIO cliente, guardada cifrada no projeto, é a
+        // única que alcança lá. Preferida quando existe — maior alcance —
+        // com o token do App como reserva (comportamento de sempre em
+        // repositório de organização, onde o App enxerga o board).
+        //
+        // SÓ para 'po' — o único papel que fala com Projects V2 por aqui
+        // (`runPoMissionViaRails` → `createGithubBacklog`). Chamar
+        // `lerCredencialDoProjeto` para 'qa'/'sm' seria uma consulta a mais
+        // por tique sem chamador nenhum do outro lado.
+        const railsBoardToken =
+          role === 'po'
+            ? ((await lerCredencialDoProjeto({
+                prisma: app.prisma as never,
+                projectId: project.id,
+              })) ?? railsToken)
+            : undefined
         // O quadro deixou de ser condição para o PO agir. Ele é a vitrine do
         // plano, não o plano: sem quadro, as issues, a árvore entre elas e os
         // marcos continuam sendo criados — e é isso que o cliente precisa
@@ -3709,6 +3730,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                     fetchImpl: fetchDoQuadro(project),
                     ...(railsBoard ? { board: railsBoard } : {}),
                     githubToken: railsToken as string,
+                    ...(railsBoardToken ? { boardToken: railsBoardToken } : {}),
                     contextBlocks,
                     boardColumns,
                     sprintDays: resolveSprintDays(project.runtimeConfig),
