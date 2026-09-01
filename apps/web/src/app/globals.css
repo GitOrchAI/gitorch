@@ -2490,6 +2490,17 @@ body {
   border-color: var(--gl-accent);
   box-shadow: var(--ring-accent);
 }
+/* Campo travado tem que PARECER travado. O `disabled` sozinho deixa o campo
+   com a mesma cara de um ativo, e aí o dono clica, nada acontece e ele acha
+   que o produto engoliu o clique — o mesmo mal-estar de um controle
+   clicável-e-inerte, ao contrário. Mesma dose do `.pn-btn:disabled`.
+   WCAG 1.4.3 isenta de contraste componente de interface INATIVO, então a
+   opacidade aqui não rebaixa nenhuma régua. */
+.gl .pn-field:disabled {
+  background: var(--gl-surface-2);
+  opacity: 0.55;
+  cursor: not-allowed;
+}
 .gl .pn-label {
   display: block;
   font-size: 11px;
@@ -2714,10 +2725,97 @@ body {
   padding: 8px 0 24px;
 }
 
+/* ---- cascata por agente (.pn-casc-*) ------------------------------------
+   A tela em que o dono monta a fila de motores de cada agente. Um degrau é um
+   cartão com os três seletores (motor, modelo, esforço), a cota daquele motor
+   embaixo e os botões de ordenar ao lado.
+
+   TINTA MEDIDA, NÃO ESCOLHIDA NO OLHO: `--gl-sev` (#e5484d) e `--gl-warn`
+   (#b8730c) dão 3.5–3.9:1 sobre as superfícies do tema CLARO — reprovam AA
+   (4.5:1) para texto. Por isso a frase da cota é sempre `--gl-ink`/`--gl-muted`
+   (6.4:1 ou mais nos dois temas) e a gravidade vai numa BOLOTA `.pn-d`, que é
+   gráfico sem texto e responde ao piso de 3:1 (WCAG 1.4.11) — onde as duas
+   passam. O estado nunca depende só da cor: a frase diz o fato por extenso.
+   ------------------------------------------------------------------------ */
+.gl .pn-casc {
+  display: grid;
+  gap: 12px;
+}
+.gl .pn-casc-degrau {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--gl-hair-strong);
+  border-radius: 12px;
+  background: var(--gl-surface-2);
+}
+.gl .pn-casc-degrau.reserva {
+  background: var(--gl-surface);
+}
+.gl .pn-casc-topo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.gl .pn-casc-campos {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+.gl .pn-casc-acoes {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-left: auto;
+}
+.gl .pn-casc-cota {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--gl-ink);
+}
+.gl .pn-casc-cota .pn-d {
+  margin-top: 5px;
+}
+.gl .pn-casc-nota {
+  display: block;
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--gl-muted);
+}
+.gl .pn-casc-campos .pn-casc-nota {
+  margin-top: 7px;
+}
+.gl .pn-casc-avisos {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--gl-hair-strong);
+  background: var(--gl-surface-2);
+}
+.gl .pn-casc-barra {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
 /* ---- responsivo ---- */
 @media (min-width: 720px) {
   .gl .pn-kpis {
     grid-template-columns: repeat(4, 1fr);
+  }
+  /* Motor | Modelo | Esforço lado a lado. O modelo é o mais largo porque é o
+     único cujo texto varia de verdade ("Gemini 3.7 Flash (Medium) — saiu do
+     ar em 31/08/2026"), e cortá-lo esconderia justamente o aviso. */
+  .gl .pn-casc-campos {
+    grid-template-columns: 1fr 1.6fr 1fr;
   }
   .gl .pn-3 {
     grid-template-columns: repeat(3, 1fr);

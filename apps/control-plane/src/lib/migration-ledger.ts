@@ -46,6 +46,8 @@ export const MIGRATION_LEDGER = [
   'autonomia-do-projeto-migration.sql',
   'incremento-migration.sql',
   'sprint-dias-migration.sql',
+  'catalogo-de-modelos-colado-migration.sql',
+  'catalogo-por-relogio-migration.sql',
 ] as const
 
 /**

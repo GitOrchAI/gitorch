@@ -3,7 +3,6 @@ import { resolveRuntimeChain, type ResolverDefaults } from './runtime-resolver.j
 
 const DEFAULTS: ResolverDefaults = {
   runtimeByRole: { ra: 'antigravity', po: 'antigravity', sm: 'antigravity', qa: 'antigravity' },
-  modelByRole: { ra: 'm', po: 'm', sm: 'm', qa: 'm' },
 }
 const SO_ANTIGRAVITY = { agents: { ra: { runtime: 'antigravity' } } }
 const runtimes = (c: Array<{ runtime: string }>) => c.map((s) => s.runtime)

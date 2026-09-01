@@ -256,3 +256,44 @@ export function deveAvisarDeNovo(
   const ultimo = ultimoAviso.get(chave)
   return ultimo === undefined || agora - ultimo >= UM_DIA_MS
 }
+
+/**
+ * O motor não tem credencial conectada — a missão para ANTES de subir o motor.
+ *
+ * `materializeToHome` devolve `false` exatamente quando não há conexão, quando
+ * o status não é 'connected', ou quando o segredo já venceu. Ou seja: esse
+ * `false` é a resposta de "este motor não tem como autenticar agora", não um
+ * detalhe de sistema de arquivos.
+ *
+ * ANTES DISTO o produto logava `Sem credencial conectada de <motor> ...; missão
+ * sem credencial` e SUBIA O CONTAINER MESMO ASSIM. Medido no journal de 31/08
+ * (janela de 9h48): 48 vezes. Reproduzido ao vivo no mesmo container, o
+ * `codex exec` sem credencial gasta ~15s e morre em `401 Unauthorized`. O
+ * produto sabia que ia falhar, escrevia que sabia, e disparava assim mesmo —
+ * queimando uma tentativa da cadeia e um `podman run` inteiro por missão.
+ *
+ * NÃO é fail-closed: isto é falha de MOTOR (ver isEngineFault/isFailoverError),
+ * então a cadeia cai na reserva na hora. A missão anda MAIS rápido do que antes,
+ * não menos — o que some é só a rodada queimada no motor que não podia atender.
+ */
+export class SemCredencialDoMotorError extends Error {
+  constructor(
+    readonly runtime: string,
+    readonly ownerUserId: string
+  ) {
+    super(
+      `sem credencial conectada de ${runtime} para o usuário ${ownerUserId}: ` +
+        `a missão não foi despachada para esse motor (a conexão precisa de um login novo)`
+    )
+    this.name = 'SemCredencialDoMotorError'
+  }
+}
+
+/** Lança quando o motor não tem credencial utilizável; passa direto quando tem. */
+export function exigirCredencialDoMotor(
+  materializou: boolean,
+  runtime: string,
+  ownerUserId: string
+): void {
+  if (!materializou) throw new SemCredencialDoMotorError(runtime, ownerUserId)
+}

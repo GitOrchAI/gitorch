@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
   CredencialExpiradaError,
+  SemCredencialDoMotorError,
   deveAvisarDeNovo,
   ehCredencialExpirada,
   ehFalhaDeCredencialCorroborada,
+  exigirCredencialDoMotor,
 } from './credencial-do-motor.js'
+import { isFailoverError } from '../lib/runtime-resolver.js'
 import { resolveMissionDelivery, type MissionDeliveryCheck } from './mission-outcome.js'
 
 describe('ehCredencialExpirada', () => {
@@ -361,5 +364,46 @@ describe('ehFalhaDeCredencialCorroborada — a detecção real não quebra (nece
     const entrada = { exitCode: 1, stdout: '', stderr: 'file not found' }
     const entrega: MissionDeliveryCheck = { delivered: false, reason: 'sem entregável' }
     expect(ehFalhaDeCredencialCorroborada(entrada, entrega)).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// NÃO DESPACHAR MISSÃO PARA MOTOR SEM CREDENCIAL CONECTADA
+//
+// Medido no journal de 31/08 (janela de 9h48): 48 linhas de "[Scheduler] Sem
+// credencial conectada de codex para o usuário ...; missão sem credencial" —
+// e o container subia mesmo assim. Reproduzido ao vivo no mesmo container:
+// `codex exec` sem credencial leva ~15s e morre em 401. O produto sabia que ia
+// falhar, logava que sabia, e disparava assim mesmo.
+//
+// engine_connections do codex está em status='needs_reconnect' desde 29/08, e
+// materializeToHome devolve false EXATAMENTE quando status !== 'connected'
+// (ou o segredo venceu) — então esse `false` é a resposta de "motor sem
+// credencial", não um detalhe de sistema de arquivos.
+// ---------------------------------------------------------------------------
+describe('exigirCredencialDoMotor — motor sem credencial não queima container', () => {
+  it('credencial materializada: segue em frente sem reclamar', () => {
+    expect(() => exigirCredencialDoMotor(true, 'claude', 'user_1')).not.toThrow()
+  })
+
+  it('sem credencial: para ANTES de subir o motor, e diz de quem é a falta', () => {
+    let capturado: unknown
+    try {
+      exigirCredencialDoMotor(false, 'codex', 'cmshldoos0010p5vy69dk57qg')
+    } catch (err) {
+      capturado = err
+    }
+    expect(capturado).toBeInstanceOf(SemCredencialDoMotorError)
+    expect((capturado as SemCredencialDoMotorError).runtime).toBe('codex')
+    expect((capturado as Error).message).toContain('codex')
+    expect((capturado as Error).message).toContain('cmshldoos0010p5vy69dk57qg')
+  })
+
+  it('NÃO derruba a esteira: é falha de MOTOR, então a cadeia cai na reserva', () => {
+    // Este é o lado do fail-closed que precisa ficar provado. Se este erro não
+    // fosse reconhecido como falha de motor, um motor desconectado mataria a
+    // missão inteira em vez de passar o trabalho para o próximo da cadeia.
+    const err = new SemCredencialDoMotorError('codex', 'user_1')
+    expect(isFailoverError(err.message)).toBe(true)
   })
 })

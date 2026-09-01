@@ -422,7 +422,7 @@ export function parseSetupStatus(json: unknown): ProvisionSnapshot {
 // (runtime -> nome bonito). Um motor fora dessa lista (nunca deveria
 // acontecer — o backend só reconhece estes 3) cai no nome cru em vez de
 // desaparecer: melhor mostrar algo do que esconder um motor real instalado.
-const ENGINE_DISPLAY_NAMES: Record<string, string> = {
+export const ENGINE_DISPLAY_NAMES: Record<string, string> = {
   claude: 'Claude Code',
   codex: 'Codex',
   antigravity: 'Antigravity',

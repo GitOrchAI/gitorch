@@ -282,6 +282,25 @@ export interface CreateCliRuntimeAdapterOptions {
   /** Nome da flag de modelo do CLI (ex.: '--model'); quando presente, o modelo da missão vira argumento. */
   modelArgName?: string
   /**
+   * Como ESTE CLI recebe o esforço de raciocínio, se é que recebe. Recebe o
+   * nível já validado e devolve o pedaço de linha de comando.
+   *
+   * É função, e não um `effortArgName`, porque os CLIs não concordam nem no
+   * FORMATO: o Claude Code tem flag própria (`--effort high`) e o Codex não
+   * tem flag nenhuma — o esforço é uma chave de configuração
+   * (`-c model_reasoning_effort=high`). Medido nesta VM em 01/09/2026.
+   *
+   * Ausente quer dizer "este motor não recebe esforço na linha de comando", e
+   * é o caso do Antigravity: lá `--effort` existe mas é RECUSADA junto com
+   * `--model` ("--effort is not supported for model ..."), e a cascata sempre
+   * fixa o modelo. O esforço dele vive dentro do nome do modelo.
+   *
+   * O que vale em qual motor é decisão do control-plane
+   * (services/esforco-por-motor.ts), onde a medição de cada CLI está escrita —
+   * este pacote continua sem opinião sobre motores.
+   */
+  effortArgs?: (esforco: string) => string[]
+  /**
    * Nome da flag que escopa o CLI ao diretório da missão (ex.: '--add-dir').
    * Sem isso o Antigravity CLI analisa o "projeto ativo" dele, não o workspace
    * clonado da missão. Só é aplicada quando request.cwd está presente.
@@ -336,6 +355,15 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
           ? [options.modelArgName, request.runtime.model]
           : []
 
+      // O esforço tem que SAIR na linha de comando. Até 01/09/2026 ele só
+      // virava a env `GITORCH_RUNTIME_REASONING` (acima), que nenhum dos três
+      // CLIs lê: dava para configurar esforço e nada acontecia — o motor
+      // rodava no padrão dele, sem erro nenhum para denunciar.
+      const effortArgs =
+        options.effortArgs && request.runtime.reasoning
+          ? options.effortArgs(request.runtime.reasoning)
+          : []
+
       const workspaceArgs =
         options.workspaceDirArgName && request.cwd ? [options.workspaceDirArgName, request.cwd] : []
 
@@ -363,7 +391,7 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
       const { result, error, failedStep } = await wrapExecutionStep('execute-runner', () =>
         runner({
           binary: options.binary,
-          args: [...baseArgs, ...modelArgs, ...workspaceArgs, ...promptArgs],
+          args: [...baseArgs, ...modelArgs, ...effortArgs, ...workspaceArgs, ...promptArgs],
           env,
           cwd: request.cwd,
           timeoutMs: request.timeoutMs,

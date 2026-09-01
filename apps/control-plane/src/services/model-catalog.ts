@@ -15,6 +15,7 @@ import {
   writeCodexQuotaFile,
 } from './quota-reader.js'
 import { estaNaHoraDeColetarCota } from './quando-coletar-cota.js'
+import { ehLinhaDeModelo, nomeDeExibicaoDoModelo } from './catalogo-vivo-de-modelos.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -33,17 +34,28 @@ const CODEX_WARMUP_TIMEOUT_MS = 45_000
 
 export type ModelDiscoverer = (homeDir: string) => Promise<string[]>
 
-/** Antigravity: `agy models` imprime um modelo por linha. */
+/**
+ * Antigravity: `agy models` imprime um modelo por linha, no formato
+ * `slug<TAB>Nome de Exibição` — conferido nesta VM em 31/08/2026 com
+ * `agy models | cat -A`.
+ *
+ * O coletor ANTIGO só fazia split+trim e guardava a linha inteira. Resultado
+ * medido no banco no mesmo dia: as 14 entradas de `engine_connections.models`
+ * do antigravity estavam todas coladas
+ * (`'gemini-3.7-flash-medium\tGemini 3.7 Flash (Medium)'`) — nenhuma delas
+ * serviria como valor de `--model`, que aceita o NOME DE EXIBIÇÃO (provado ao
+ * vivo: `agy --model "Gemini 3.5 Flash (Medium)"` responde `invalid model
+ * selection ... Available models: Gemini 3.7 Flash (High) ...`). O catálogo
+ * era bonito na tela e inútil para qualquer decisão — e o teste não pegava
+ * porque o fake nunca teve TAB.
+ */
 export function makeAntigravityDiscoverer(
   agyBin = process.env['GITORCH_AGY_BIN'] ?? 'agy',
   runner: (bin: string, args: string[], home: string) => Promise<string> = defaultRunner
 ): ModelDiscoverer {
   return async (homeDir: string) => {
     const out = await runner(agyBin, ['models'], homeDir)
-    return out
-      .split('\n')
-      .map((l) => l.trim())
-      .filter(Boolean)
+    return out.split('\n').filter(ehLinhaDeModelo).map(nomeDeExibicaoDoModelo).filter(Boolean)
   }
 }
 

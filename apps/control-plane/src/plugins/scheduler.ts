@@ -22,6 +22,7 @@ import {
   DEFAULT_AGENT_RUNTIME_ASSIGNMENTS,
   type F6AgentRole,
   type F6AgentRuntime,
+  type ReasoningEffort,
   type RuntimeCommandRunner,
   type WorkspaceProvider,
 } from '@gitorch/agents'
@@ -283,8 +284,25 @@ import {
   ehCredencialExpirada,
   ehFalhaDeCredencialCorroborada,
   CredencialExpiradaError,
+  SemCredencialDoMotorError,
+  exigirCredencialDoMotor,
   deveAvisarDeNovo,
 } from '../services/credencial-do-motor.js'
+import {
+  resumoDeErroDoMotor,
+  classificarFalhaDoMotor,
+  marcarFailoverDoTextoCompleto,
+  temMarcaDeFailover,
+} from '../services/resumo-de-erro-do-motor.js'
+import { escolherModeloVivo } from '../services/catalogo-vivo-de-modelos.js'
+import {
+  argumentosDeEsforco,
+  modeloComEsforcoNoNome,
+  valorDeModeloParaOMotor,
+  esforcoValidoNoMotor,
+  COMO_O_MOTOR_EXPRESSA_ESFORCO,
+} from '../services/esforco-por-motor.js'
+import { padraoDoDegrau } from '../services/padrao-do-degrau.js'
 import { marcaDePedidoDeLogin } from '../services/motor-que-pede-login.js'
 import {
   ehTetoDeUsoDaConta,
@@ -294,6 +312,7 @@ import {
 import { umaAcordadaPorCiclo } from '../services/uma-acordada-por-ciclo.js'
 import { relogioDaAgenda } from '../services/espalhar-agendas.js'
 import { cotasAReler } from '../services/cotas-a-reler.js'
+import { modelosARecoletar } from '../services/modelos-a-recoletar.js'
 import { canRunMission, shouldAlertForQuota } from '../lib/spend-guard.js'
 import { computeConsumption } from '../lib/consumption.js'
 import { pipelineCheckEnabled } from '../config/pipeline-check.js'
@@ -350,19 +369,46 @@ interface TriggerResult {
   reason?: string
 }
 // Nomes de modelo aceitos pelo Antigravity CLI (ver `agy models`); configuráveis por ambiente.
-const MODEL_FLASH = process.env['GITORCH_MODEL_FLASH'] ?? 'Gemini 3.5 Flash (Medium)'
-const MODEL_PRO = process.env['GITORCH_MODEL_PRO'] ?? 'Gemini 3.1 Pro (Low)'
+//
+// REMENDO, e está escrito aqui para ninguém confundir com conserto: trocar a
+// string conserta HOJE e quebra de novo na próxima remoção do provedor. O
+// conserto de verdade é `escolherModeloVivo` (catalogo-vivo-de-modelos.ts),
+// ligado logo abaixo em `modeloVivoParaAMissao` — este literal virou só o ponto
+// de partida de quando o catálogo do cliente ainda não foi coletado.
+//
+// O QUE ACONTECEU: até 01/09/2026 este literal era 'Gemini 3.5 Flash (Medium)'.
+// O Google removeu a geração 3.5 em 31/08 entre 16:12 e 23:00, e a partir daí
+// 100% das missões que caíam no Antigravity morriam com `invalid model
+// selection`. A env `GITORCH_MODEL_FLASH` NÃO está definida no processo real
+// (conferido em /proc/<pid>/environ), então quem valia era o literal.
+//
+// POR QUE 3.7 E NÃO 3.6, e não é gosto: às 16:12 o catálogo tinha 3.5/3.6/3.7;
+// às 23:00 só 3.6/3.7. O provedor mantém DUAS gerações Flash e derruba a mais
+// velha sem aviso, no meio do dia. Escolher 3.6 é escolher a próxima a cair.
+//
+// ARMADILHA para quem for conferir: a lista de modelos que aparece DENTRO da
+// mensagem de erro do CLI chegava truncada em 4 itens nos nossos logs — e o
+// truncamento era NOSSO (ver resumo-de-erro-do-motor.ts), não do CLI. Rodando
+// `agy models` de verdade nesta VM em 01/09 vêm 11 modelos. Nunca escolher
+// substituto pela lista que aparece no log.
+// O `MODEL_BY_ROLE` que morava aqui FOI REMOVIDO, e vale registrar por quê.
+//
+// Ele era `po: Pro, ra/sm/qa: Flash` — dois níveis para quatro papéis, com
+// nomes do Antigravity, e era aplicado a QUALQUER motor da cadeia. Medido ao
+// vivo em 01/09/2026: rodando `resolveRuntimeChain('ra', null, padrões_reais,
+// ['antigravity','claude','codex'])`, os TRÊS degraus voltaram com
+// `Gemini 3.7 Flash (Medium)`; e `claude --model "Gemini 3.7 Flash (Medium)"`
+// responde "There's an issue with the selected model". Os degraus de reserva
+// nasciam mortos.
+//
+// O padrão agora é por PAPEL e por MOTOR, resolvido contra o catálogo VIVO
+// daquele motor: services/padrao-do-degrau.ts, onde a exigência de cada papel
+// está escrita e justificada (o QA julga e pede modelo forte; o SM só
+// movimenta e pede o barato). Um nome de modelo escrito no código envelhece —
+// foi assim que a geração Gemini 3.5 matou 24 missões em 9h48.
 
-// PO decide (modelo forte); RA/SM/QA analisam (modelo rápido).
-const MODEL_BY_ROLE: Record<F6AgentRole, string> = {
-  po: MODEL_PRO,
-  ra: MODEL_FLASH,
-  sm: MODEL_FLASH,
-  qa: MODEL_FLASH,
-}
-
-// Padrões da instância para o resolvedor por projeto: motor por papel (config
-// do pacote de agentes) e modelo por papel. O projeto sobrescreve via
+// Padrões da instância para o resolvedor por projeto: só o MOTOR por papel
+// (config do pacote de agentes). O projeto sobrescreve via
 // project.runtimeConfig.agents.
 const RESOLVER_DEFAULTS: ResolverDefaults = {
   runtimeByRole: {
@@ -371,7 +417,6 @@ const RESOLVER_DEFAULTS: ResolverDefaults = {
     sm: DEFAULT_AGENT_RUNTIME_ASSIGNMENTS.sm.runtime,
     qa: DEFAULT_AGENT_RUNTIME_ASSIGNMENTS.qa.runtime,
   },
-  modelByRole: MODEL_BY_ROLE,
 }
 
 /**
@@ -478,12 +523,223 @@ export function resolveRailsBoard(project: { runtimeConfig?: unknown }): string 
  * cadeia pode ter credencial válida), e o reconhecimento por texto já
  * aconteceu na origem (onde a saída crua do motor existe), não aqui.
  */
+/**
+ * O modelo da missão CONFERIDO contra o catálogo vivo do motor daquele cliente.
+ *
+ * Este é o conserto de verdade do defeito que derrubou a frota em 31/08: o
+ * produto tinha DOIS TRILHOS que nunca se encontravam. A coleta de modelos
+ * grava o catálogo em `engine_connections.models` (só para desenhar a tela), e
+ * a escolha do modelo da missão vinha de um literal no código. Quando o Google
+ * removeu a geração Gemini 3.5 no meio do dia, o catálogo do banco soube na
+ * hora — e a missão continuou pedindo o modelo morto, porque ninguém tinha
+ * ligado um trilho no outro. Trocar o literal (feito, ver MODEL_FLASH) conserta
+ * hoje; ligar os trilhos é o que impede a próxima remoção de repetir tudo.
+ *
+ * FAIL-OPEN em TODO caminho de dúvida — sem conexão, sem catálogo, banco fora
+ * do ar, catálogo com forma inesperada: segue com o modelo pedido. Catálogo
+ * vazio quer dizer "não sei", nunca "o modelo não existe". Uma guarda que
+ * parasse a missão por falta de lista trocaria um desperdício (uma missão que
+ * falha) por uma paralisação (a esteira inteira parada toda vez que a leitura
+ * do banco piscasse) — exatamente o que `filtrarCadeia` já recusa fazer.
+ *
+ * E quando troca, DIZ. O defeito original durou 9h48 e 24 missões justamente
+ * porque ninguém foi avisado de nada.
+ */
+/**
+ * O que a conferência contra o catálogo decidiu para UM degrau da cadeia.
+ */
+export interface ModeloDaMissao {
+  /**
+   * O modelo a passar ao motor, JÁ no formato que aquele CLI aceita.
+   * `undefined` quer dizer "rode sem `--model`", com o modelo padrão do próprio
+   * motor — nunca um palpite nosso.
+   */
+  modelo: string | undefined
+  /**
+   * O esforço a passar ao motor, JÁ validado contra a escada real dele.
+   * `undefined` quer dizer "não passe esforço nenhum": ou o cliente não pediu,
+   * ou o nível não existe naquele motor, ou o motor não separa esforço de
+   * modelo (antigravity — lá o esforço já virou o nome do modelo acima).
+   */
+  esforco: string | undefined
+  /**
+   * `false` quando o catálogo daquele motor prova que a tentativa é
+   * desperdício com resultado conhecido. O degrau é PULADO.
+   */
+  valeATentativa: boolean
+}
+
+export async function modeloVivoParaAMissao(args: {
+  prisma: { engineConnection?: { findFirst?: (...args: never[]) => Promise<unknown> } }
+  ownerUserId: string | null | undefined
+  runtime: string
+  /**
+   * O papel do agente. É ele que define a EXIGÊNCIA do degrau quando o cliente
+   * não escolheu modelo — o QA julga e pede modelo forte, o SM só movimenta e
+   * pede o barato (ver services/padrao-do-degrau.ts).
+   */
+  role?: F6AgentRole
+  /** O modelo que o cliente escolheu. Ausente = usar o padrão do papel. */
+  desejado?: string | undefined
+  /** O esforço que o cliente escolheu para ESTE degrau. */
+  esforco?: string | undefined
+  log: { warn: (msg: string) => void }
+}): Promise<ModeloDaMissao> {
+  const avisar = (msg: string): void =>
+    args.log.warn(`[Scheduler] modelo de ${args.runtime}: ${msg}`)
+
+  // O que sai quando não dá para consultar o catálogo. Sem catálogo não há como
+  // resolver padrão nem trocar variante de esforço: segue com o que o cliente
+  // pediu, e o esforço só passa se o nível existir naquele motor.
+  const semCatalogo = (): ModeloDaMissao => {
+    const esforco =
+      args.esforco && esforcoValidoNoMotor(args.runtime, args.esforco) ? args.esforco : undefined
+    return {
+      modelo: args.desejado ? valorDeModeloParaOMotor(args.runtime, args.desejado) : undefined,
+      // No antigravity o esforço nunca viaja separado do modelo (`--effort`
+      // junto de `--model` é erro duro do CLI, medido ao vivo).
+      esforco:
+        COMO_O_MOTOR_EXPRESSA_ESFORCO[args.runtime as F6AgentRuntime] === 'no-nome-do-modelo'
+          ? undefined
+          : esforco,
+      valeATentativa: true,
+    }
+  }
+
+  // Projeto legado sem dono não tem catálogo para consultar — nem vale a ida ao
+  // banco.
+  if (!args.ownerUserId) return semCatalogo()
+
+  // FAIL-OPEN inclusive no tropeço SÍNCRONO. Um `.catch()` só pega promessa
+  // rejeitada; ler `.findFirst` de um `engineConnection` ausente estoura ANTES
+  // de existir promessa alguma, e a exceção subiria para a missão. Esta guarda
+  // não é paranoia de tipo: a suíte pegou o caso ao vivo.
+  const conexoes = args.prisma?.engineConnection
+  if (typeof conexoes?.findFirst !== 'function') return semCatalogo()
+  const buscar = conexoes.findFirst.bind(conexoes)
+
+  const catalogo = await Promise.resolve()
+    .then(() =>
+      buscar({
+        where: { userId: args.ownerUserId, runtime: args.runtime },
+        select: { models: true },
+      } as never)
+    )
+    .then((linha) => (linha as { models?: unknown } | null)?.models)
+    .catch(() => undefined)
+
+  // Só lista de texto serve. Qualquer outra forma é tratada como "não sei".
+  if (!Array.isArray(catalogo)) return semCatalogo()
+  const nomes = catalogo.filter((m): m is string => typeof m === 'string')
+  if (nomes.length === 0) return semCatalogo()
+
+  // 1) O PADRÃO DE QUEM NÃO ESCOLHEU sai daqui, e sai por PAPEL e por MOTOR,
+  //    do catálogo vivo deste motor. Antes vinha de uma constante única com
+  //    nomes do Antigravity, entregue a qualquer motor — e o degrau do claude
+  //    do rodízio morria na chegada (medido em 01/09/2026).
+  const padrao = args.role
+    ? padraoDoDegrau({ role: args.role, runtime: args.runtime, catalogo: nomes })
+    : {}
+  let desejado = args.desejado ?? padrao.model
+  const esforcoPedido = args.esforco ?? (args.desejado ? undefined : padrao.effort)
+
+  // 2) No antigravity, ESFORÇO É NOME DE MODELO. Aplicar aqui, contra o
+  //    catálogo, antes de qualquer outra conferência — é a única forma de
+  //    atender o esforço num motor cujo CLI recusa `--effort` junto de
+  //    `--model` (medido ao vivo em 01/09/2026).
+  const esforcoViveNoNome =
+    COMO_O_MOTOR_EXPRESSA_ESFORCO[args.runtime as F6AgentRuntime] === 'no-nome-do-modelo'
+  if (esforcoViveNoNome && desejado && esforcoPedido) {
+    const comEsforco = modeloComEsforcoNoNome({
+      modelo: desejado,
+      esforco: esforcoPedido,
+      catalogo: nomes,
+    })
+    if (comEsforco.aviso) avisar(comEsforco.aviso)
+    desejado = comEsforco.modelo
+  }
+
+  // Sem modelo escolhido e sem padrão que case com este catálogo: roda com o
+  // modelo padrão do próprio motor. Nunca um palpite nosso.
+  if (!desejado) {
+    return {
+      modelo: undefined,
+      esforco: esforcoDoDegrau(args.runtime, esforcoPedido, avisar),
+      valeATentativa: true,
+    }
+  }
+
+  // 3) A conferência de sempre: o modelo ainda existe no catálogo deste motor?
+  const escolha = escolherModeloVivo({ desejado, catalogo: nomes })
+  if (escolha.aviso) avisar(escolha.aviso)
+
+  return {
+    // 4) E só agora o nome vira o VALOR que aquele CLI aceita. DOIS dos três
+    //    catálogos guardam nome de vitrine que o CLI recusa: "Claude Opus 5"
+    //    (o que roda é `claude-opus-5`) e "GPT-5.5" (o que roda é `gpt-5.5`).
+    //    Medido ao vivo — ver services/esforco-por-motor.ts.
+    modelo: escolha.modelo ? valorDeModeloParaOMotor(args.runtime, escolha.modelo) : undefined,
+    esforco: esforcoDoDegrau(args.runtime, esforcoPedido, avisar),
+    valeATentativa: escolha.veredito !== 'saiu-do-catalogo',
+  }
+}
+
+/**
+ * O esforço que de fato sai no degrau: só o que aquele motor aceita, e nunca
+ * no antigravity (lá ele já virou nome de modelo). Um nível que o motor não
+ * tem NÃO é aproximado para o vizinho — é descartado com aviso.
+ */
+function esforcoDoDegrau(
+  runtime: string,
+  esforco: string | undefined,
+  avisar: (msg: string) => void
+): string | undefined {
+  const r = argumentosDeEsforco({ runtime, esforco })
+  if (r.aviso) avisar(r.aviso)
+  return r.args.length > 0 ? esforco : undefined
+}
+
+/**
+ * Tira da cadeia os degraus cujo modelo o catálogo do próprio motor prova que
+ * não existe mais.
+ *
+ * ISTO É O CONSERTO DO DEFEITO CENTRAL. Até aqui a cadeia tentava o degrau
+ * mesmo sabendo o resultado: em 31/08, 24 missões em 9h48 pagaram um `podman
+ * run` inteiro cada uma para receber `invalid model selection` do CLI, com
+ * outro motor conectado e ocioso ao lado.
+ *
+ * NUNCA ESVAZIA A CADEIA, e não é hesitação: é a mesma decisão que
+ * `filtrarCadeia` (motor-em-pausa.ts) já tomou neste produto, pela razão
+ * escrita lá — ficar sem motor nenhum é trocar desperdício por paralisação.
+ * Pular degraus corta três containers queimados para um; pular TODOS pararia a
+ * esteira inteira por causa de um catálogo que ninguém conferiu. Quando nenhum
+ * degrau vale, o ÚLTIMO é tentado assim mesmo e o log diz que está tentando
+ * contra o veredito do catálogo.
+ */
+export function degrausQueValemATentativa<T extends { valeATentativa: boolean }>(
+  degraus: readonly T[]
+): { degraus: T[]; pulados: T[] } {
+  const valem = degraus.filter((d) => d.valeATentativa)
+  if (valem.length > 0) {
+    return { degraus: valem, pulados: degraus.filter((d) => !d.valeATentativa) }
+  }
+  const ultimo = degraus[degraus.length - 1]
+  if (!ultimo) return { degraus: [], pulados: [] }
+  return { degraus: [ultimo], pulados: degraus.slice(0, -1) }
+}
+
 export function isEngineFault(err: unknown, lastError: string): boolean {
   if (err instanceof GithubExecutionError) return false
   return (
     err instanceof RailsStepError ||
     err instanceof RailsExecutionError ||
     err instanceof CredencialExpiradaError ||
+    err instanceof SemCredencialDoMotorError ||
+    // O veredito tirado do stderr COMPLETO na origem (ver
+    // classificarFalhaDoMotor). Vem ANTES do teste por texto de propósito: aqui
+    // `lastError` já é o resumo, e decidir por ele é decidir pelo que sobrou do
+    // erro. Foi assim que um 401 no byte 674 virou "não é caso de failover".
+    temMarcaDeFailover(err) ||
     isFailoverError(lastError)
   )
 }
@@ -857,6 +1113,86 @@ export async function resolveEngineBinDir(
  * ambiente do cliente e o antepõe no PATH da execução — sem ele (ou sem os
  * recursos instalados), cai no binário do host com log claro (`log`).
  */
+/**
+ * Prepara as montagens de credencial da missão que roda em CONTAINER.
+ *
+ * Materializa a credencial do dono do projeto (da sua EngineConnection
+ * cifrada) num staging temporário, monta SOMENTE-LEITURA em
+ * /run/gitorch-credentials, e o entrypoint da imagem a copia para o HOME
+ * gravável. O staging é apagado ao fim. Assim a missão de um cliente nunca vê
+ * a credencial de outro nem a do host.
+ *
+ * EXPORTADA, e não mais uma closure dentro do plugin, pelo mesmo motivo de
+ * `montarOpcoesDeDelegacao`: o comportamento abaixo é uma DECISÃO de produto
+ * (disparar ou não disparar o motor), e decisão de produto sem teste é decisão
+ * que volta atrás sozinha na próxima refatoração.
+ *
+ * SEM CREDENCIAL, NÃO DISPARA. Antes disto o `false` do `materializeToHome`
+ * virava um `app.log.warn` e a preparação devolvia `{ mounts: [] }` — o
+ * container subia sem credencial nenhuma. Medido no journal de 31/08 (janela de
+ * 9h48): 48 vezes. Reproduzido ao vivo no mesmo container, um `codex exec` sem
+ * credencial gasta ~15s e morre em `401 Unauthorized`. O produto sabia que ia
+ * falhar, escrevia no log que sabia, e disparava assim mesmo — queimando uma
+ * rodada da cadeia e um `podman run` inteiro por missão.
+ *
+ * Parar aqui NÃO é fail-closed: `SemCredencialDoMotorError` é falha de MOTOR
+ * (ver isEngineFault/isFailoverError), então a cadeia cai na reserva na hora. A
+ * missão anda MAIS rápido do que antes, não menos — o que some é só a rodada
+ * queimada no motor que não tinha como atender.
+ */
+export function criarPreparadorDeMontagens(deps: {
+  engineConnections: Pick<EngineConnectionService, 'materializeToHome'>
+  stagingBase: string
+  log: { warn: (...args: unknown[]) => void; error: (...args: unknown[]) => void }
+}): (request: { env: Record<string, string> }) => Promise<{
+  mounts: Array<{ source: string; target: string; readOnly?: boolean }>
+  cleanup?: () => Promise<void>
+}> {
+  return async (request) => {
+    const runtime = request.env['GITORCH_RUNTIME']
+    const ownerUserId = request.env['GITORCH_OWNER_USER_ID']
+    if (!runtime || !ownerUserId) return { mounts: [] }
+
+    // 0700: staging guarda a credencial descriptografada em host compartilhado.
+    const dir = path.join(deps.stagingBase, randomUUID())
+    await fs.mkdir(dir, { recursive: true, mode: 0o700 })
+    const cleanup = async (): Promise<void> => {
+      await fs.rm(dir, { recursive: true, force: true })
+    }
+    try {
+      const ok = await deps.engineConnections.materializeToHome(ownerUserId, runtime, dir)
+      // Lança SemCredencialDoMotorError: a missão não é despachada para um
+      // motor que já se sabe incapaz de autenticar.
+      exigirCredencialDoMotor(ok, runtime, ownerUserId)
+      // As "mãos" no GitHub: se o dono conectou um token (runtime lógico
+      // `github`), ele entra no MESMO staging e vira GH_TOKEN no container
+      // (entrypoint). Ausência é normal — missão segue só-leitura de GitHub.
+      await deps.engineConnections.materializeToHome(ownerUserId, 'github', dir)
+      return {
+        mounts: [{ source: dir, target: '/run/gitorch-credentials', readOnly: true }],
+        cleanup,
+      }
+    } catch (err) {
+      await cleanup()
+      // Falha de DESCRIPTOGRAFIA é incidente (chave trocada/dado corrompido): NÃO
+      // mascarar rodando sem credencial — propaga para a missão falhar com causa
+      // clara. Outras falhas (fs) são best-effort e não derrubam a preparação.
+      if ((err as { name?: string })?.name === 'CredentialDecryptError') {
+        throw err
+      }
+      // A ausência de credencial TAMBÉM propaga — e precisa estar escrita aqui,
+      // porque este mesmo `catch` é o que antes engolia tudo. Sem esta linha o
+      // conserto acima seria desfeito duas linhas abaixo, no `return { mounts:
+      // [] }`, e o container voltaria a subir sem credencial.
+      if (err instanceof SemCredencialDoMotorError) {
+        throw err
+      }
+      deps.log.error(err, '[Scheduler] falha ao materializar credencial da missão')
+      return { mounts: [] }
+    }
+  }
+}
+
 export function createLocalCredentialRunner(
   engineConnections: Pick<EngineConnectionService, 'materializeToHome' | 'captureFromHome'>,
   innerRunner: RuntimeCommandRunner = realRuntimeCommandRunner,
@@ -879,7 +1215,12 @@ export function createLocalCredentialRunner(
     let materializou = false
     try {
       const ok = await engineConnections.materializeToHome(ownerUserId, runtime, dir)
-      if (!ok) return await innerRunner(request)
+      // SEM CREDENCIAL, NÃO DISPARA — irmão exato da guarda em
+      // `criarPreparadorDeMontagens` (caminho do container), pelo mesmo motivo
+      // medido: subir o motor sem credencial gasta a rodada para colher um 401
+      // que o produto já sabia que viria. `SemCredencialDoMotorError` é falha de
+      // MOTOR, então a cadeia cai na reserva na hora em vez de morrer aqui.
+      exigirCredencialDoMotor(ok, runtime, ownerUserId)
       materializou = true
 
       // Espelha o loop genérico do entrypoint.sh (infra/agent-image/ no repo
@@ -1044,56 +1385,11 @@ export function buildMissionRunner(
     .then(() => fs.mkdir(stagingBase, { recursive: true, mode: 0o700 }))
     .catch((err) => app.log.warn(err, '[Scheduler] falha ao limpar staging de credenciais no boot'))
 
-  // Credencial POR MISSÃO: materializa a credencial do dono do projeto (da sua
-  // EngineConnection cifrada) num staging temporário, monta SOMENTE-LEITURA em
-  // /run/gitorch-credentials, e o entrypoint da imagem a copia para o HOME
-  // gravável. O staging é apagado ao fim. Assim a missão de um cliente nunca vê
-  // a credencial de outro nem a do host.
-  const prepareMounts = async (request: {
-    env: Record<string, string>
-  }): Promise<{
-    mounts: Array<{ source: string; target: string; readOnly?: boolean }>
-    cleanup?: () => Promise<void>
-  }> => {
-    const runtime = request.env['GITORCH_RUNTIME']
-    const ownerUserId = request.env['GITORCH_OWNER_USER_ID']
-    if (!runtime || !ownerUserId) return { mounts: [] }
-
-    // 0700: staging guarda a credencial descriptografada em host compartilhado.
-    const dir = path.join(stagingBase, randomUUID())
-    await fs.mkdir(dir, { recursive: true, mode: 0o700 })
-    const cleanup = async () => {
-      await fs.rm(dir, { recursive: true, force: true })
-    }
-    try {
-      const ok = await app.engineConnections.materializeToHome(ownerUserId, runtime, dir)
-      if (!ok) {
-        await cleanup()
-        app.log.warn(
-          `[Scheduler] Sem credencial conectada de ${runtime} para o usuário ${ownerUserId}; missão sem credencial`
-        )
-        return { mounts: [] }
-      }
-      // As "mãos" no GitHub: se o dono conectou um token (runtime lógico
-      // `github`), ele entra no MESMO staging e vira GH_TOKEN no container
-      // (entrypoint). Ausência é normal — missão segue só-leitura de GitHub.
-      await app.engineConnections.materializeToHome(ownerUserId, 'github', dir)
-      return {
-        mounts: [{ source: dir, target: '/run/gitorch-credentials', readOnly: true }],
-        cleanup,
-      }
-    } catch (err) {
-      await cleanup()
-      // Falha de DESCRIPTOGRAFIA é incidente (chave trocada/dado corrompido): NÃO
-      // mascarar rodando sem credencial — propaga para a missão falhar com causa
-      // clara. Outras falhas (fs) são best-effort e não derrubam a preparação.
-      if ((err as { name?: string })?.name === 'CredentialDecryptError') {
-        throw err
-      }
-      app.log.error(err, '[Scheduler] falha ao materializar credencial da missão')
-      return { mounts: [] }
-    }
-  }
+  const prepareMounts = criarPreparadorDeMontagens({
+    engineConnections: app.engineConnections,
+    stagingBase,
+    log: app.log,
+  })
 
   const memoryLimit = process.env['GITORCH_MISSION_MEMORY'] ?? '2g'
   const missionCpus = resolveMissionCpus()
@@ -1200,6 +1496,16 @@ function buildRuntimeStack(
         binary: containerized ? 'agy' : (process.env['GITORCH_AGY_BIN'] ?? 'agy'),
         args: buildAntigravityCliArgs(printTimeout, process.env['GITORCH_AGY_EXTRA_ARGS']),
         modelArgName: '--model',
+        // SEM `effortArgs`, e é decisão medida, não esquecimento. O `agy` tem
+        // a flag (`--effort low|medium|high`), mas ela é RECUSADA junto com
+        // `--model`, para todo modelo — medido nesta VM em 01/09/2026:
+        //   $ agy --model "Gemini 3.7 Flash (Medium)" --effort high --print ...
+        //     Error: invalid model selection ... --effort is not supported
+        //            for model "Gemini 3.7 Flash (Medium)"
+        // A cascata sempre fixa o modelo, então passar a flag aqui mataria
+        // 100% das missões do Antigravity — a mesma falha de 31/08 de volta.
+        // Neste motor o esforço vira o NOME do modelo (`(High)`/`(Medium)`/
+        // `(Low)`), resolvido contra o catálogo vivo em `modeloVivoParaAMissao`.
         workspaceDirArgName: '--add-dir',
         promptArgName: '--print',
         ...(missionRunner ? { runner: missionRunner } : {}),
@@ -1215,6 +1521,11 @@ function buildRuntimeStack(
       runtime: 'codex',
       binary: 'codex',
       args: ['exec', '-s', 'read-only', '--skip-git-repo-check'],
+      // O Codex NÃO tem `--effort` (conferido: `codex exec --help` não cita
+      // nem "effort" nem "reasoning"). O esforço é uma chave de configuração,
+      // e ela é reconhecida de verdade: com `--strict-config`, uma chave
+      // inventada é recusada na porta e `model_reasoning_effort` passa.
+      effortArgs: (esforco) => argumentosDeEsforco({ runtime: 'codex', esforco }).args,
       ...(missionRunner ? { runner: missionRunner } : {}),
     })
   )
@@ -1234,6 +1545,12 @@ function buildRuntimeStack(
       binary: containerized ? 'claude' : (process.env['GITORCH_CLAUDE_BIN'] ?? 'claude'),
       args: ['-p', '--permission-mode', 'plan'],
       modelArgName: '--model',
+      // O esforço do degrau, na flag própria do Claude Code
+      // (`--effort low|medium|high|xhigh|max`, conferido em `claude --help`).
+      // O nível já chega validado por `esforco-por-motor.ts`, e isso importa:
+      // o CLI ACEITA valor inválido com um aviso e roda no padrão — ou seja,
+      // um erro nosso passaria calado, cobrando por um nível nunca aplicado.
+      effortArgs: (esforco) => argumentosDeEsforco({ runtime: 'claude', esforco }).args,
       ...(missionRunner ? { runner: missionRunner } : {}),
     })
   )
@@ -1757,6 +2074,66 @@ export async function reconferirAcessoDoRelogio(
  * mesmo caminho de cifragem de sempre, nunca duplicado) e POR ONDE o dono é
  * avisado quando a conexão precisa ser refeita.
  */
+/**
+ * Recoleta o CATÁLOGO DE MODELOS dos motores pelo RELÓGIO, uma vez por dia.
+ *
+ * A irmã da varredura de cotas, e nasce do mesmo defeito visto um degrau mais
+ * fundo. `refreshModels` só roda depois de uma missão COMPLETAR (ver o
+ * comentário no topo de `refreshQuota`, engine-connection.ts) — e com os
+ * motores caindo quase nenhuma completa, então a coleta só acontece quando já
+ * não adianta.
+ *
+ * MEDIDO em 01/09/2026 03:00, no banco de produção: o catálogo do antigravity
+ * estava carimbado 31/08 16:12 com 14 modelos, e `agy models` ao vivo no mesmo
+ * instante devolvia 11, nenhum da geração 3.5. O do claude estava parado havia
+ * QUATRO DIAS. Enquanto o catálogo era enfeite de tela isso era feio; agora que
+ * ele DECIDE o modelo da missão (ver `modeloVivoParaAMissao`), é uma guarda
+ * aprovando um modelo morto.
+ *
+ * A cadência da COTA (1 hora) NÃO muda: é o que o dono pediu e está certo. O
+ * catálogo muda em dias, e recoletá-lo custa materializar a credencial e rodar
+ * o binário do motor — um dia é o intervalo que pega a remoção de uma geração
+ * sem pagar por isso a cada hora.
+ *
+ * Exportada (e não fechada dentro do plugin) pelo mesmo motivo de
+ * `renovarTokensGithubDoRelogio`: a decisão pura está testada caso a caso em
+ * services/modelos-a-recoletar.test.ts, e o que só o WIRING pode errar — de
+ * onde vem a lista, quem é pulado, e que uma falha não derruba as outras —
+ * precisa de um teste que chame ISTO, não uma imitação do laço.
+ *
+ * Nunca rejeita: uma conexão que falha não pode derrubar o tique inteiro.
+ */
+export async function varrerCatalogoDeModelosDoRelogio(app: FastifyInstance): Promise<void> {
+  const conexoes = await app.prisma.engineConnection.findMany({
+    where: { runtime: { not: 'github' } },
+    select: { userId: true, runtime: true, status: true, modelsCheckedAt: true },
+  })
+  const vencidas = modelosARecoletar(conexoes, new Date())
+  if (vencidas.length === 0) return
+  for (const conexao of vencidas) {
+    // Em série, pelo mesmo motivo da varredura de cotas: cada coleta
+    // materializa a credencial num HOME temporário e roda o binário do motor.
+    // Em paralelo, dois motores do mesmo dono disputariam o mesmo refresh token
+    // de uso único — o defeito que derrubou a conta do Codex em 26/08.
+    try {
+      const modelos = await app.engineConnections.refreshModels(conexao.userId, conexao.runtime)
+      if (modelos.length === 0) {
+        // Nunca zera a lista boa (ver refreshModels): o catálogo anterior fica,
+        // a data de sucesso fica velha, e o motivo fica em lastError.
+        app.log.warn(
+          `[Scheduler] catálogo do ${conexao.runtime} não veio nesta passada; a lista anterior é preservada e a data fica velha`
+        )
+        continue
+      }
+      app.log.info(
+        `[Scheduler] catálogo do ${conexao.runtime} recoletado: ${modelos.length} modelo(s)`
+      )
+    } catch (err) {
+      app.log.warn(err, `[Scheduler] falhou ao recoletar o catálogo do ${conexao.runtime}`)
+    }
+  }
+}
+
 export async function renovarTokensGithubDoRelogio(
   app: FastifyInstance,
   agora?: Date
@@ -2375,7 +2752,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       RESOLVER_DEFAULTS,
       motoresConectados
     )
-    const primary = chain[0] as { runtime: string; model?: string }
+    const primary = chain[0] as { runtime: string; model?: string; effort?: string }
 
     // Controle de gasto (BYOK): a missão roda no LLM do cliente. Antes de
     // disparar, checa a quota do motor primário e o orçamento de tokens do
@@ -2442,7 +2819,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           triggeredBy: onboardingSequence !== undefined ? 'onboarding' : origem,
           ...(onboardingSequence !== undefined ? { onboardingSequence } : {}),
           runtime: primary.runtime,
-          model: primary.model ?? MODEL_BY_ROLE[role],
+          // Só o que o CLIENTE escolheu. Quando ele não escolheu, o modelo
+          // ainda não existe neste ponto: quem o resolve é a conferência
+          // contra o catálogo vivo, dentro do failover. Registrar aqui um
+          // palpite (era `MODEL_BY_ROLE[role]`) gravava no banco um modelo
+          // que a missão nunca usou.
+          ...(primary.model !== undefined ? { model: primary.model } : {}),
+          ...(primary.effort !== undefined ? { effort: primary.effort } : {}),
         },
       },
     })
@@ -2492,7 +2875,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     missionId: string,
     project: ChainProject,
     role: F6AgentRole,
-    chainOriginal: Array<{ runtime: string; model?: string }>,
+    chainOriginal: Array<{ runtime: string; model?: string; effort?: string }>,
     planId?: string,
     // A cascata de onboarding (Task 10) é hoje o ÚNICO caminho que acorda o
     // QA — o projeto não tem agenda de QA própria em project_schedules. Sem
@@ -2519,15 +2902,75 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // Tira da cadeia o motor que morreu pedindo login. Ele volta sozinho — por
     // sucesso ou por tempo — e a cadeia inteira em pausa passa mesmo assim,
     // porque ficar sem motor nenhum seria trocar desperdício por paralisação.
-    const chain = motorEmPausa.filtrarCadeia(chainOriginal, new Date())
-    if (chain.length < chainOriginal.length) {
+    const cadeiaComMotorVivo = motorEmPausa.filtrarCadeia(chainOriginal, new Date())
+    if (cadeiaComMotorVivo.length < chainOriginal.length) {
       app.log.info(
-        `[Scheduler] ${chainOriginal.length - chain.length} motor(es) fora do rodízio por credencial morta`
+        `[Scheduler] ${chainOriginal.length - cadeiaComMotorVivo.length} motor(es) fora do rodízio por credencial morta`
       )
     }
+
+    // O SEGUNDO filtro da cadeia, e o que faltava: o MODELO de cada degrau
+    // conferido contra o catálogo vivo daquele motor, ANTES de gastar container
+    // nenhum. É aqui que os dois trilhos se encontram — a coleta gravava o
+    // catálogo em `engine_connections.models` só para desenhar a tela, e a
+    // escolha do modelo vinha de um literal no código. Em 31/08 o provedor
+    // removeu a geração Gemini 3.5 no meio do dia: o banco soube na hora, a
+    // missão continuou pedindo o modelo morto, e 24 delas morreram em 9h48
+    // pagando um `podman run` inteiro cada uma para receber `invalid model
+    // selection` — com outro motor conectado e ocioso ao lado.
+    //
+    // A conferência é feita para a cadeia INTEIRA de uma vez (leituras
+    // indexadas, uma por motor) porque a decisão é sobre quais degraus existem,
+    // não sobre o degrau da vez.
+    const degrausConferidos = await Promise.all(
+      cadeiaComMotorVivo.map(async (sel) => ({
+        runtime: sel.runtime,
+        ...(await modeloVivoParaAMissao({
+          prisma: app.prisma,
+          ownerUserId: project.userId,
+          runtime: sel.runtime,
+          // O degrau viaja INTEIRO: motor, modelo e esforço, do jeito que o
+          // cliente montou a cascata. Quando ele não escolheu modelo, quem
+          // responde é o padrão do PAPEL naquele MOTOR — nunca mais uma
+          // constante única aplicada a todos.
+          role,
+          ...(sel.model !== undefined ? { desejado: sel.model } : {}),
+          ...(sel.effort !== undefined ? { esforco: sel.effort } : {}),
+          log: app.log,
+        })),
+      }))
+    )
+    const { degraus: chain, pulados } = degrausQueValemATentativa(degrausConferidos)
+    if (pulados.length > 0) {
+      lastError =
+        `modelo fora do catálogo vivo em ${pulados.length} motor(es) — ` +
+        `${pulados.map((d) => d.runtime).join(', ')} não foram tentados`
+      app.log.warn(`[Scheduler] ${lastError}`)
+    }
+    // Nenhum degrau com modelo vivo: o último é tentado assim mesmo. Ver
+    // `degrausQueValemATentativa` — parar a esteira por um catálogo que
+    // ninguém conferiu seria trocar desperdício por paralisação.
+    if (chain.length === 1 && chain[0]?.valeATentativa === false) {
+      app.log.warn(
+        `[Scheduler] nenhum motor da cadeia tem o modelo pedido no catálogo; tentando ${chain[0]?.runtime} assim mesmo para não parar a esteira`
+      )
+    }
+
     for (let i = 0; i < chain.length; i++) {
-      const sel = chain[i] as { runtime: string; model?: string }
-      const model = sel.model ?? MODEL_BY_ROLE[role]
+      const sel = chain[i] as {
+        runtime: string
+        modelo: string | undefined
+        esforco: string | undefined
+      }
+      // `undefined` aqui é decisão, não ausência: quer dizer "rode sem
+      // `--model`", com o modelo padrão do próprio motor. É o que salva o
+      // degrau do claude, que recebia do resolvedor um nome de modelo do
+      // Antigravity — provado ao vivo em 01/09: `claude --model "Gemini 3.7
+      // Flash (Medium)"` responde "There's an issue with the selected model".
+      const model = sel.modelo
+      // O esforço já chega VALIDADO contra a escada real daquele motor, e já
+      // vem vazio no antigravity (lá ele virou o nome do modelo acima).
+      const reasoning = sel.esforco
       const isLast = i === chain.length - 1
 
       // Reinicia o relógio de "presa" a cada tentativa: o limite de stale é por
@@ -3069,7 +3512,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             const step = await adapter.run({
               missionId: `${missionId}-step-${stepN}`,
               prompt,
-              runtime: { runtime: sel.runtime as F6AgentRuntime, model },
+              runtime: {
+                runtime: sel.runtime as F6AgentRuntime,
+                ...(model ? { model } : {}),
+                ...(reasoning ? { reasoning: reasoning as ReasoningEffort } : {}),
+              },
               credentialRef,
               role,
               cwd: stepDir,
@@ -3112,8 +3559,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 exitCode: step.exitCode,
               })
             ) {
+              // Resumo de DUAS PONTAS (ver resumo-de-erro-do-motor.ts): o
+              // motivo do Codex mora no fim do stderr, o do Antigravity no
+              // começo. O corte de cabeça perdia um dos dois sempre.
               throw new CredencialExpiradaError(
-                `motor ${sel.runtime} pediu novo login: ${(step.stderr || step.output).slice(0, 300)}`,
+                `motor ${sel.runtime} pediu novo login: ${resumoDeErroDoMotor(
+                  step.stderr || step.output
+                )}`,
                 sel.runtime
               )
             }
@@ -3127,9 +3579,17 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               // isEngineFault não reconhecia — a missão morria sem nunca
               // tentar o motor de reserva (bug real: chain=codex>antigravity
               // falhando todo dia, antigravity nunca acionado).
-              throw new RailsExecutionError(
-                `rails step ${stepN} failed: ${step.stderr.slice(0, 300)}`,
-                step.exitCode
+              // CLASSIFICA ANTES DE CORTAR. O veredito sai do stderr inteiro
+              // e viaja grudado no erro; a mensagem vai resumida para o log e
+              // para `missions.error`. Enquanto era o contrário, o produto
+              // decidia o failover pelo que tinha sobrado do erro.
+              const falha = classificarFalhaDoMotor({ bruto: step.stderr })
+              throw marcarFailoverDoTextoCompleto(
+                new RailsExecutionError(
+                  `rails step ${stepN} failed: ${falha.mensagem}`,
+                  step.exitCode
+                ),
+                falha.ehFailover
               )
             }
             return step.output
@@ -3370,7 +3830,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             role,
             goal: `Analyze and coordinate tasks for ${project.name}`,
             context: [],
-            runtime: { runtime: sel.runtime as F6AgentRuntime, model },
+            runtime: {
+              runtime: sel.runtime as F6AgentRuntime,
+              ...(model ? { model } : {}),
+              ...(reasoning ? { reasoning: reasoning as ReasoningEffort } : {}),
+            },
             credentialRef,
             userId: project.userId ?? 'scheduler-user',
             timeoutMs: STALE_RUNNING_MS,
@@ -3405,7 +3869,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             )
           ) {
             throw new CredencialExpiradaError(
-              `motor ${sel.runtime} pediu novo login: ${(result.stderr || result.output).slice(0, 300)}`,
+              `motor ${sel.runtime} pediu novo login: ${resumoDeErroDoMotor(
+                result.stderr || result.output
+              )}`,
               sel.runtime
             )
           }
@@ -3722,6 +4188,16 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           }
         }
         const engineFault = isEngineFault(err, lastError)
+        if (engineFault) {
+          // ESTA linha de log apareceu 54 vezes no journal de 31/08 numa janela
+          // de 9h48 — 24 vezes com o MESMO `invalid model selection` e 30 com o
+          // MESMO 401. Um motor quebrado, tentado a cada poucos minutos, para
+          // sempre. Contar as falhas IGUAIS seguidas tira do rodízio o motor que
+          // não vai melhorar sozinho, sem punir o que só teve um dia ruim (ver
+          // marcarFalha/assinaturaDeFalha em motor-em-pausa.ts).
+          const pausa = motorEmPausa.marcarFalha(sel.runtime, lastError, new Date())
+          if (pausa.pausou) app.log.warn(`[Scheduler] ${pausa.motivo}`)
+        }
         if (!isLast && engineFault) {
           app.log.warn(err, `[Scheduler] erro recuperável em ${sel.runtime}; próximo motor`)
           continue
@@ -8263,6 +8739,17 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // número de agora do que com o da última missão.
     await varrerCotasDosMotores().catch((err) =>
       app.log.error(err, '[Scheduler] varredura de cotas falhou; tenta no próximo tick')
+    )
+    // E o CATÁLOGO DE MODELOS, uma vez por dia, logo depois da cota e pelo
+    // mesmo motivo dela — só que aqui o dado velho não desatualiza um painel,
+    // ele aprova um modelo morto na hora de escolher com o que a missão roda.
+    // Antes das missões de propósito: é esta lista que a guarda de modelo
+    // consulta degrau a degrau.
+    await varrerCatalogoDeModelosDoRelogio(app).catch((err) =>
+      app.log.error(
+        err,
+        '[Scheduler] varredura de catálogo de modelos falhou; tenta no próximo tick'
+      )
     )
     // A sprint do quadro do cliente. Vem depois da cota e antes das missões
     // porque é barata quando não há nada a fazer (uma leitura por projeto) e

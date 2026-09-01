@@ -198,7 +198,19 @@ model EngineConnection {
   encryptedRefreshToken String?   @map("encrypted_refresh_token")
   refreshTokenExpiresAt DateTime? @map("refresh_token_expires_at")
   models                Json? // catálogo de modelos descoberto no provider
+  /// Quando um catálogo novo de verdade SUBSTITUIU o anterior. Coleta que
+  /// falhou ou voltou vazia NÃO carimba aqui — a data velha é a informação
+  /// honesta de que a lista está velha.
   modelsRefreshedAt     DateTime? @map("models_refreshed_at")
+  /// Quando a coleta foi TENTADA, dando certo ou não. É o carimbo que o
+  /// relógio de recoleta (services/modelos-a-recoletar.ts) consulta. Separado
+  /// do de cima de propósito: olhar o carimbo de sucesso faria um motor cuja
+  /// coleta falha sempre ser tentado a cada tique de um minuto.
+  modelsCheckedAt       DateTime? @map("models_checked_at")
+  /// Os modelos que SAÍRAM do catálogo do provedor, com a data em que a coleta
+  /// percebeu: [{ nome, sumiuEm }]. Marcados, nunca apagados — quem escolheu
+  /// aquele modelo precisa saber que ele saiu, e o painel precisa poder dizer.
+  modelsUnavailable     Json?     @map("models_unavailable")
   lastValidatedAt       DateTime? @map("last_validated_at")
   /// Ate quando esta conta esta RESERVADA para uma renovacao em curso.
   ///

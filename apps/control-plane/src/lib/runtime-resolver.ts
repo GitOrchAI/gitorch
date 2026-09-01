@@ -7,19 +7,40 @@ import { isF6AgentRole, isF6AgentRuntime, type F6AgentRole } from '@gitorch/agen
 export interface RuntimeSelection {
   runtime: string
   model?: string
+  /**
+   * O ESFORÇO daquele degrau, no vocabulário do MOTOR dele — nunca um nível
+   * genérico nosso. Cada motor tem a sua escada e elas não coincidem:
+   * claude aceita low|medium|high|xhigh|max, codex low|medium|high|xhigh, e o
+   * antigravity não separa esforço de modelo (o nível vive dentro do nome,
+   * `Gemini 3.7 Flash (High)`). Quem valida e quem traduz para a linha de
+   * comando é `services/esforco-por-motor.ts`, onde está a medição de cada CLI.
+   *
+   * Opcional de propósito: um degrau que só tem `runtime` continua valendo
+   * exatamente como antes desta mudança.
+   */
+  effort?: string
 }
 
 interface AgentRuntimePref {
   runtime?: string
   model?: string
-  fallbacks?: Array<{ runtime: string; model?: string }>
+  effort?: string
+  fallbacks?: Array<{ runtime: string; model?: string; effort?: string }>
 }
 
+/**
+ * Os padrões da INSTÂNCIA. Só motor: o MODELO padrão não mora mais aqui.
+ *
+ * Ele morava — `modelByRole`, um nome por papel — e era a mesma constante do
+ * Antigravity aplicada a qualquer motor, ao lado de um `runtimeByRole` que diz
+ * `codex`. O par nunca foi coerente, e ninguém tinha medido: em 01/09/2026,
+ * `claude --model "Gemini 3.7 Flash (Medium)"` responde "There's an issue with
+ * the selected model". O padrão de modelo é por PAPEL e por MOTOR, resolvido
+ * contra o catálogo vivo daquele motor — ver services/padrao-do-degrau.ts.
+ */
 export interface ResolverDefaults {
   /** Motor padrão por papel quando o projeto não define. */
   runtimeByRole: Record<F6AgentRole, string>
-  /** Modelo padrão por papel. */
-  modelByRole: Record<F6AgentRole, string>
 }
 
 function readAgentsConfig(runtimeConfig: unknown): Record<string, AgentRuntimePref> {
@@ -57,26 +78,51 @@ export function resolveRuntimeChain(
   const pref = readAgentsConfig(runtimeConfig)[role] ?? {}
   const chain: RuntimeSelection[] = []
 
-  const push = (runtime?: string, model?: string) => {
+  const push = (runtime?: string, model?: string, effort?: string) => {
     if (!runtime || !isF6AgentRuntime(runtime)) return
     if (chain.some((c) => c.runtime === runtime)) return // sem duplicar motor
-    chain.push(model ? { runtime, model } : { runtime })
+    chain.push({
+      runtime,
+      ...(model ? { model } : {}),
+      ...(effort ? { effort } : {}),
+    })
   }
 
-  push(pref.runtime, pref.model)
-  for (const fb of pref.fallbacks ?? []) push(fb.runtime, fb.model)
+  push(pref.runtime, pref.model, pref.effort)
+  for (const fb of pref.fallbacks ?? []) push(fb.runtime, fb.model, fb.effort)
 
-  // Garante o motor padrão do papel na cadeia (nunca fica vazia).
-  push(defaults.runtimeByRole[role], defaults.modelByRole[role])
+  // Garante o motor padrão do papel na cadeia (nunca fica vazia). Sem modelo:
+  // o do papel naquele motor sai do catálogo vivo, na etapa assíncrona.
+  push(defaults.runtimeByRole[role])
 
   // E, por último, o que o cliente tem conectado. Sem isto, um projeto que
   // escolheu um motor só fica sem reserva no dia em que ele estoura a cota.
   for (const runtime of motoresConectados) push(runtime)
 
-  // Preenche o modelo padrão quando a preferência não trouxe um.
-  return chain.map((sel) =>
-    sel.model ? sel : { runtime: sel.runtime, model: defaults.modelByRole[role] }
-  )
+  // O MODELO NÃO É MAIS CARIMBADO AQUI, e isso é o conserto de um defeito
+  // medido ao vivo em 01/09/2026.
+  //
+  // Antes, todo degrau sem modelo recebia `defaults.modelByRole[role]` — uma
+  // constante só, escrita com nomes do Antigravity. Rodando
+  // `resolveRuntimeChain('ra', null, padrões_reais, ['antigravity','claude',
+  // 'codex'])` com o resolvedor compilado, os TRÊS degraus voltaram com
+  // `Gemini 3.7 Flash (Medium)`. E:
+  //
+  //   $ claude --model "Gemini 3.7 Flash (Medium)" -p "say ok"
+  //     [claude-code:unrecognized_model] ...
+  //     There's an issue with the selected model.
+  //
+  // Os degraus de reserva nasciam mortos: o rodízio existia no papel e não
+  // tinha para onde ir. Pior, o próprio padrão da instância era incoerente —
+  // `runtimeByRole` diz `codex` e `modelByRole` diz um nome Gemini, um par que
+  // nenhum dos dois motores aceita.
+  //
+  // Um degrau sem `model` quer dizer "ainda não sei", nunca "rode qualquer
+  // um". Quem responde é o padrão do PAPEL naquele MOTOR, resolvido contra o
+  // catálogo VIVO daquele motor (services/padrao-do-degrau.ts), na etapa
+  // assíncrona que já existe para conferir o catálogo. Um modelo aqui só
+  // aparece quando o CLIENTE escolheu.
+  return chain
 }
 
 /** Conveniência: só a seleção primária. */
@@ -107,8 +153,13 @@ export function resolvePrimaryRuntime(
 // quota reached", casava. A mesma situação era tratada de dois jeitos por
 // acaso de vocabulário, e no caso do Codex a troca de motor nem era tentada
 // pelo texto (só pelo tipo do erro, quando havia um).
+// "sem credencial conectada" entrou em 31/08 pelo mesmo motivo de "usage
+// limit": é uma falha de AUTENTICAÇÃO do motor — a mais clara de todas, porque
+// o produto a constata ANTES de disparar (ver SemCredencialDoMotorError) — e
+// sem este padrão ela não seria reconhecida como motivo de trocar de motor,
+// e um motor desconectado mataria a missão em vez de passá-la para a reserva.
 const FAILOVER_PATTERN =
-  /quota|rate.?limit|429|exhaust|insufficient|unauthor|forbidden|\b401\b|\b403\b|invalid.?api.?key|e2big|argument list too long|usage limit/i
+  /quota|rate.?limit|429|exhaust|insufficient|unauthor|forbidden|\b401\b|\b403\b|invalid.?api.?key|e2big|argument list too long|usage limit|sem credencial conectada/i
 
 export function isFailoverError(message: string): boolean {
   return FAILOVER_PATTERN.test(message)

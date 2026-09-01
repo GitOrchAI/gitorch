@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { createLocalCredentialRunner } from './scheduler.js'
+import { SemCredencialDoMotorError } from '../services/credencial-do-motor.js'
 
 // Casos que não são sobre a devolução ao cofre: a captura existe (o tipo a
 // exige, para o compilador impedir que produção esqueça dela), mas o que
@@ -66,7 +67,16 @@ describe('createLocalCredentialRunner', () => {
     expect(inner).toHaveBeenCalledWith({ binary: 'codex', args: [], env: {} })
   })
 
-  test('sem conexão do motor (materializeToHome retorna false), roda sem credencial ao invés de travar a missão', async () => {
+  // ANTES desta correção este teste exigia o OPOSTO: "roda sem credencial ao
+  // invés de travar a missão". A intenção era boa e continua valendo — a
+  // missão não pode morrer aqui — mas a medição de 31/08 mostrou que rodar
+  // sem credencial NÃO é o caminho benigno que se supunha: o motor sobe,
+  // gasta um container inteiro (~15s no Codex, reproduzido ao vivo) e morre
+  // em 401 garantido, 48 vezes numa janela de 9h48. Parar aqui com um erro de
+  // MOTOR é mais rápido E mais honesto: a cadeia cai na reserva na hora, em
+  // vez de queimar a rodada primeiro (ver SemCredencialDoMotorError, que
+  // isEngineFault/isFailoverError reconhecem como falha de motor).
+  test('sem conexão do motor (materializeToHome false): falha de MOTOR, sem subir o motor', async () => {
     const materializeToHome = vi.fn().mockResolvedValue(false)
     const inner = vi.fn(async () => ({ exitCode: 0, stdout: '', stderr: '', durationMs: 1 }))
     const runner = createLocalCredentialRunner(
@@ -74,17 +84,38 @@ describe('createLocalCredentialRunner', () => {
       inner as never
     )
 
-    await runner({
-      binary: 'codex',
-      args: [],
-      env: { GITORCH_RUNTIME: 'codex', GITORCH_OWNER_USER_ID: 'user_2' },
-    })
+    await expect(
+      runner({
+        binary: 'codex',
+        args: [],
+        env: { GITORCH_RUNTIME: 'codex', GITORCH_OWNER_USER_ID: 'user_2' },
+      })
+    ).rejects.toBeInstanceOf(SemCredencialDoMotorError)
 
-    expect(inner).toHaveBeenCalledWith({
-      binary: 'codex',
-      args: [],
-      env: { GITORCH_RUNTIME: 'codex', GITORCH_OWNER_USER_ID: 'user_2' },
+    // O que prova o conserto: o motor NÃO foi disparado.
+    expect(inner).not.toHaveBeenCalled()
+  })
+
+  test('e o staging temporário some mesmo quando o motor nem chega a rodar', async () => {
+    let capturedDir = ''
+    const materializeToHome = vi.fn(async (_u: string, _r: string, dir: string) => {
+      capturedDir = dir
+      return false
     })
+    const runner = createLocalCredentialRunner(
+      { materializeToHome, captureFromHome: capturaIgnorada },
+      (async () => ({ exitCode: 0, stdout: '', stderr: '', durationMs: 1 })) as never
+    )
+
+    await expect(
+      runner({
+        binary: 'codex',
+        args: [],
+        env: { GITORCH_RUNTIME: 'codex', GITORCH_OWNER_USER_ID: 'user_9' },
+      })
+    ).rejects.toBeInstanceOf(SemCredencialDoMotorError)
+
+    await expect(fs.stat(capturedDir)).rejects.toThrow()
   })
 
   test('sempre limpa o diretório temporário de staging, mesmo se o runner interno falhar', async () => {
@@ -435,14 +466,22 @@ describe('createLocalCredentialRunner', () => {
         { materializeToHome, captureFromHome },
         inner as never
       )
-      await runner({
-        binary: 'codex',
-        args: [],
-        env: { GITORCH_RUNTIME: 'codex', GITORCH_OWNER_USER_ID: 'user_4' },
-      })
+      // A missão para aqui (SemCredencialDoMotorError) desde 01/09 — antes ela
+      // seguia e rodava o motor sem credencial. O que este teste guarda é OUTRA
+      // coisa, e continua valendo dos dois jeitos: seja parando, seja seguindo,
+      // NÃO pode capturar.
+      await expect(
+        runner({
+          binary: 'codex',
+          args: [],
+          env: { GITORCH_RUNTIME: 'codex', GITORCH_OWNER_USER_ID: 'user_4' },
+        })
+      ).rejects.toBeInstanceOf(SemCredencialDoMotorError)
 
       // Capturar aqui gravaria um cofre vazio por cima de uma conexão boa.
       expect(captureFromHome).not.toHaveBeenCalled()
+      // E o motor não chegou a ser disparado.
+      expect(inner).not.toHaveBeenCalled()
     })
   })
 })
