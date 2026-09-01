@@ -191,6 +191,68 @@ describe('ensureProjectBoard', () => {
     expect(r).toBeNull()
     expect(avisos.join(' ')).toContain('permission')
   })
+
+  // D13 (01/09/2026, produção): a mensagem que saía aqui era só o erro cru do
+  // GraphQL ("does not have permission to create projects on ownerId U_...")
+  // — o dono lia e não entendia que faltava colar a própria credencial.
+  // "não tem quadro" escondia a causa (permissão), não a explicava. Este
+  // teste prova que o aviso agora DIZ o que fazer, não só o que falhou.
+  it('sem credencial do cliente, o aviso de permissão nega diz ONDE colar a credencial', async () => {
+    const avisos: string[] = []
+    const c = {
+      findProjectId: vi.fn(async () => null),
+      createProjectV2: vi.fn(async () => {
+        throw new Error(
+          'GitHub GraphQL request failed: gitorch-ai[bot] does not have permission to create projects on ownerId U_kgDO'
+        )
+      }),
+      linkProjectV2ToRepository: vi.fn(async () => 'R_repo'),
+      descobrirQuadrosPorIssues: vi.fn(async () => []),
+      detalharQuadro: vi.fn(async () => ({ camposCount: 0, outrosRepositorios: [] })),
+    }
+    const r = await ensureProjectBoard({
+      repository: 'loureng/padrao-executores',
+      client: c as never,
+      resolveOwner: async () => ({ id: 'U_loureng', type: 'user' as const }),
+      onWarn: (m) => avisos.push(m),
+    })
+    expect(r).toBeNull()
+    const texto = avisos.join(' ')
+    expect(texto).toContain('permission')
+    expect(texto).toContain('loureng/padrao-executores')
+    expect(texto).toContain('/api/v1/setup/credencial-do-cliente')
+  })
+
+  it('mesmo com a credencial do cliente, se a 2ª tentativa também negar por permissão, o aviso diz que já tentou a credencial guardada', async () => {
+    const avisos: string[] = []
+    const cegoPeloApp = {
+      findProjectId: vi.fn(async () => null),
+      createProjectV2: vi.fn(async () => {
+        throw new Error('does not have permission to create projects on ownerId U_x')
+      }),
+      linkProjectV2ToRepository: vi.fn(async () => 'R_repo'),
+      descobrirQuadrosPorIssues: vi.fn(async () => []),
+      detalharQuadro: vi.fn(async () => ({ camposCount: 0, outrosRepositorios: [] })),
+    }
+    const comCredencialExpirada = {
+      ...cegoPeloApp,
+      createProjectV2: vi.fn(async () => {
+        throw new Error('Bad credentials')
+      }),
+    }
+    const r = await ensureProjectBoard({
+      repository: 'loureng/padrao-executores',
+      client: cegoPeloApp as never,
+      resolveOwner: async () => ({ id: 'U_loureng', type: 'user' as const }),
+      clientToken: 'ghp_expirado',
+      criarClienteAlternativo: () => comCredencialExpirada as never,
+      onWarn: (m) => avisos.push(m),
+    })
+    expect(r).toBeNull()
+    const texto = avisos.join(' ')
+    expect(texto).toContain('Bad credentials')
+    expect(texto).toContain('credencial do cliente')
+  })
 })
 
 describe('resolveGithubOwnerId', () => {

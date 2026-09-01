@@ -217,6 +217,137 @@ describe('provisionSetupMission', () => {
     expect(tokensUsados).toEqual(['gh_token_pessoal_do_dono'])
   })
 
+  // D13 (01/09/2026, caso real do dono): loureng/padrao-executores nasceu de
+  // conta pessoal com o App JÁ instalado (mintInstallationToken emite token
+  // normalmente) — mas o App é CEGO para Projects V2 de conta pessoal, e
+  // createProjectV2 nega: "gitorch-ai[bot] does not have permission to
+  // create projects on ownerId ...". Diferente do teste acima (App NEM
+  // instalado — cai no token de LOGIN do dono, que é user-to-server do
+  // GitHub App e é IGUALMENTE cego lá), aqui a única credencial que alcança é
+  // a que o cliente colou à mão em /api/v1/setup/credencial-do-cliente
+  // (`lerCredencialDoProjeto` — PAT clássico com escopo `project`). Terceira
+  // ocorrência da mesma família em três dias (#441, #444).
+  test('conta pessoal, App instalado mas sem permissão de Projects V2: retenta e cria com a credencial que o cliente colou', async () => {
+    const stack = fakeStack(vi.fn().mockResolvedValue({ path: '/workspace/x' }))
+    const update = vi.fn().mockResolvedValue({})
+    const tokensUsados: string[] = []
+
+    const outcome = await provisionSetupMission(
+      {
+        id: 'mission_conta_pessoal',
+        project: { id: 'proj_pessoal', wingId: 'loureng/padrao-executores', userId: 'user_1' },
+      },
+      stack,
+      'gh_token_login_do_dono',
+      {
+        prisma: { project: { update } } as never,
+        createProjectV2Client: (token: string) => {
+          tokensUsados.push(token)
+          if (token === 'ghs_token_do_app') {
+            return {
+              findProjectId: vi.fn(async () => null),
+              createProjectV2: vi.fn(async () => {
+                throw new Error(
+                  'GitHub GraphQL request failed: gitorch-ai[bot] does not have permission to create projects on ownerId U_kgDO'
+                )
+              }),
+            }
+          }
+          return {
+            findProjectId: vi.fn(async () => null),
+            createProjectV2: vi.fn(async () => ({ id: 'PVT_pessoal', number: 11 })),
+          }
+        },
+        resolveOwner: async () => ({ id: 'U_loureng', type: 'user' }),
+        mintInstallationToken: async () => 'ghs_token_do_app',
+        lerClientToken: async () => 'ghp_colado_pelo_cliente',
+      }
+    )
+
+    expect(outcome.status).toBe('completed')
+    expect(tokensUsados).toEqual(['ghs_token_do_app', 'ghp_colado_pelo_cliente'])
+    expect(update).toHaveBeenCalledWith({
+      where: { id: 'proj_pessoal' },
+      data: {
+        runtimeConfig: {
+          envConfig: { GITORCH_PROJECT_BOARD: 'loureng/11' },
+        },
+      },
+    })
+  })
+
+  test('conta pessoal sem credencial do cliente guardada: a negativa de permissão vira aviso ACIONÁVEL, não silêncio', async () => {
+    const stack = fakeStack(vi.fn().mockResolvedValue({ path: '/workspace/x' }))
+    const update = vi.fn().mockResolvedValue({})
+    const warn = vi.fn()
+
+    const outcome = await provisionSetupMission(
+      {
+        id: 'mission_sem_credencial',
+        project: { id: 'proj_sem_cred', wingId: 'loureng/outro-repo-pessoal', userId: 'user_1' },
+      },
+      stack,
+      'gh_token_login_do_dono',
+      {
+        prisma: { project: { update } } as never,
+        createProjectV2Client: () => ({
+          findProjectId: vi.fn(async () => null),
+          createProjectV2: vi.fn(async () => {
+            throw new Error(
+              'GitHub GraphQL request failed: gitorch-ai[bot] does not have permission to create projects on ownerId U_yyy'
+            )
+          }),
+        }),
+        resolveOwner: async () => ({ id: 'U_loureng', type: 'user' }),
+        mintInstallationToken: async () => 'ghs_token_do_app',
+        lerClientToken: async () => null,
+        log: { warn, info: vi.fn() },
+      }
+    )
+
+    expect(outcome.status).toBe('completed')
+    expect(update).not.toHaveBeenCalled()
+    const avisos = warn.mock.calls.map((c) => String(c[0]))
+    expect(avisos.some((m) => /permission/i.test(m))).toBe(true)
+    expect(avisos.some((m) => /\/api\/v1\/setup\/credencial-do-cliente/.test(m))).toBe(true)
+  })
+
+  test('sem lerClientToken injetado (produção), o default lê lerCredencialDoProjeto do próprio prisma', async () => {
+    const stack = fakeStack(vi.fn().mockResolvedValue({ path: '/workspace/x' }))
+    const update = vi.fn().mockResolvedValue({})
+    const findUnique = vi.fn().mockResolvedValue({ encryptedClientToken: null })
+
+    const outcome = await provisionSetupMission(
+      {
+        id: 'mission_default_ler',
+        project: { id: 'proj_default', wingId: 'GitOrchAI/gitorch', userId: 'user_1' },
+      },
+      stack,
+      'gh_owner_token',
+      {
+        prisma: { project: { update, findUnique } } as never,
+        createProjectV2Client: () => ({
+          findProjectId: vi.fn(async () => null),
+          createProjectV2: vi.fn(async () => ({ id: 'PVT_default', number: 21 })),
+        }),
+        resolveOwner: async () => ({ id: 'O_org', type: 'organization' }),
+        mintInstallationToken: async () => 'ghs_app',
+      }
+    )
+
+    expect(outcome.status).toBe('completed')
+    expect(findUnique).toHaveBeenCalledWith({
+      where: { id: 'proj_default' },
+      select: { encryptedClientToken: true },
+    })
+    expect(update).toHaveBeenCalledWith({
+      where: { id: 'proj_default' },
+      data: {
+        runtimeConfig: { envConfig: { GITORCH_PROJECT_BOARD: 'GitOrchAI/21' } },
+      },
+    })
+  })
+
   // Achado importante: `existingNumber` era código morto — nenhum chamador
   // passava, então `findProjectId` nunca rodava e TODO provisionamento criava
   // board NOVO. Finalizar o wizard 2x para o mesmo repositório (ex.: o

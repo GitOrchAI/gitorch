@@ -356,8 +356,35 @@ export async function ensureProjectBoard(
       // credencial do PRÓPRIO cliente, a segunda tentativa nasce sob a
       // identidade dele. Sem ela, o erro sobe para o catch de fora, que já
       // resolve em aviso acionável — nunca em silêncio.
-      if (!clienteAlternativo) throw err
-      return await criarELigarQuadro(clienteAlternativo)
+      if (!clienteAlternativo) {
+        // D13 (01/09/2026, produção real contra loureng/padrao-executores): o
+        // que saía daqui era só o texto cru do GraphQL ("does not have
+        // permission to create projects on ownerId U_..."). O dono leu e não
+        // entendeu — a causa (permissão de conta pessoal) ficava escondida
+        // atrás de "o repositório não tem quadro". Quando a causa é essa e
+        // não há credencial do cliente para tentar, o aviso agora diz ONDE
+        // resolver — não só o que falhou.
+        const motivo = (err as Error).message
+        if (/does not have permission to create projects/i.test(motivo)) {
+          throw new Error(
+            `${motivo} — conta pessoal: a credencial do produto não pode criar quadro aí; ` +
+              `cole a sua própria credencial do GitHub (escopos repo+project) em ` +
+              `/api/v1/setup/credencial-do-cliente para este projeto`
+          )
+        }
+        throw err
+      }
+      try {
+        return await criarELigarQuadro(clienteAlternativo)
+      } catch (err2) {
+        // A credencial do cliente TAMBÉM não criou — dizer que as DUAS
+        // tentativas aconteceram evita o dono reler "não tem quadro" achando
+        // que a credencial dele nunca foi usada.
+        throw new Error(
+          `a credencial do cliente também não criou o quadro de ${deps.repository}: ` +
+            `${(err2 as Error).message} (a do produto já tinha negado antes: ${(err as Error).message})`
+        )
+      }
     }
   } catch (err) {
     warn(`falha ao garantir o board do projeto ${deps.repository}: ${(err as Error).message}`)
