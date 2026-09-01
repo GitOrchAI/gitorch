@@ -856,7 +856,9 @@ describe('POST /api/v1/setup/submit — coleta de contexto: board Projects V2 n�
         // Só é chamada quando um boardNumber já é conhecido (reuse) — devolve
         // o MESMO board criado na 1ª rodada.
         return new Response(
-          JSON.stringify({ data: { user: { projectV2: { id: 'PVT_reused' } } } }),
+          JSON.stringify({
+            data: { repositoryOwner: { __typename: 'User', projectV2: { id: 'PVT_reused' } } },
+          }),
           { status: 200 }
         )
       }

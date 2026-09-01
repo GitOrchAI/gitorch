@@ -1204,7 +1204,9 @@ describe('Rotas do painel do owner', () => {
           })
 
         if (corpo.query.includes('GetProjectId')) {
-          return responder({ organization: { projectV2: { id: 'PVT_1' } } })
+          return responder({
+            repositoryOwner: { __typename: 'Organization', projectV2: { id: 'PVT_1' } },
+          })
         }
         if (corpo.query.includes('ItensDoQuadro')) {
           paginas++

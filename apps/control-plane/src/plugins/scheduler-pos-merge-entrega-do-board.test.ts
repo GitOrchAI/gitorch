@@ -149,7 +149,9 @@ function fakeGithubBoard(opts: {
           return json({ data: { addProjectV2ItemById: { item: { id: 'IT1' } } } })
         }
         if (body.query.includes('GetProjectId') || body.query.includes('projectV2(number')) {
-          return json({ data: { user: { projectV2: { id: 'P1' } } } })
+          return json({
+            data: { repositoryOwner: { __typename: 'User', projectV2: { id: 'P1' } } },
+          })
         }
         return json({ data: {} })
       }

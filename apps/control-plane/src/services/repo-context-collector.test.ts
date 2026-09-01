@@ -67,7 +67,9 @@ const semPrsNemIssues: ResponseFor = () => ({
 describe('RepoContextCollector', () => {
   it('acha o board existente pelo número e coleta PRs + Issues', async () => {
     const { transport, calls } = routingTransport({
-      find: () => ({ data: { user: { projectV2: { id: 'PVT_existing' } } } }),
+      find: () => ({
+        data: { repositoryOwner: { __typename: 'User', projectV2: { id: 'PVT_existing' } } },
+      }),
       repo: () => ({
         data: {
           repository: {
@@ -159,7 +161,9 @@ describe('RepoContextCollector', () => {
 
   it('cria o board quando o número conhecido não existe mais (findProjectId → null)', async () => {
     const { transport } = routingTransport({
-      find: () => ({ data: { organization: { projectV2: null } } }),
+      find: () => ({
+        data: { repositoryOwner: { __typename: 'Organization', projectV2: null } },
+      }),
       create: () => ({
         data: { createProjectV2: { projectV2: { id: 'PVT_recreated', number: 9 } } },
       }),
