@@ -5,6 +5,7 @@ const nextConfig: NextConfig = {
   // GitHub Pages de projeto vive em /<repo>; domínio custom (js.org) vive na
   // raiz. Dinâmico por build — nunca fixo no código.
   basePath: process.env.NEXT_PUBLIC_BASE_PATH ?? '',
+  trailingSlash: true,
   images: {
     unoptimized: true,
   },
