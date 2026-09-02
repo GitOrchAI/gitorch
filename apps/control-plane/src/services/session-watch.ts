@@ -78,7 +78,14 @@ export interface VigiaDeps {
     hashDaPergunta: string
     agora: Date
   }) => Promise<void>
-  registrarPr: (args: { sessionName: string; numeroDoPr: number; agora: Date }) => Promise<void>
+  registrarPr: (args: {
+    sessionName: string
+    numeroDoPr: number
+    agora: Date
+    /** L4-T1: liga o PR ao incidente de infra aberto por esta issue, se houver. */
+    projectId?: string
+    issueNumber?: number
+  }) => Promise<void>
   /** Reentrega o pedido de retrabalho que ficou pendente. */
   reentregarAviso?: (args: { sessionName: string; texto: string }) => Promise<boolean>
   /** Apaga a pendência quando o recado finalmente chega. */
@@ -523,6 +530,8 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
               sessionName: linha.sessionName,
               numeroDoPr: consulta.numeroDoPr!,
               agora: deps.agora,
+              projectId: linha.projectId,
+              issueNumber: linha.issueNumber,
             })
             prsCapturados += 1
             // "PR entregue e aguardando QA" — ordem do dono, 25/08: "Se o Dev

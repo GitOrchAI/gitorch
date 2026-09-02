@@ -14,6 +14,12 @@ export interface IncidenteAberto {
   issueNumber: number | null
   prNumber: number | null
   clearedAt: Date | null
+  /**
+   * L4-T1: primeiro avistamento do incidente (`infra_incidents.first_seen_at`).
+   * Usado como piso de "desde quando" ao ler runs do workflow quando ainda
+   * não há `mergedAt` (PR não lido de volta pela API do GitHub).
+   */
+  firstSeenAt: Date
   /** ESTEIRA-T10: quantos PRs já fracassaram em resolver este incidente. */
   prAttempts?: number
   /** ESTEIRA-T10: quando o incidente foi escalado (parou de insistir). */
@@ -75,6 +81,23 @@ export interface SituacaoDoIncidente {
    * É o sinal de "mais um PR fracassou" — conta +1 tentativa.
    */
   prFechadoSemMerge?: boolean
+  /**
+   * L4-T1: o workflow desta identidade ainda existe no repositório?
+   * `undefined` = não foi possível verificar (não afirma nada). `false` = o
+   * workflow foi removido (ex.: `.github/workflows/<arquivo>.yml` apagado ou
+   * arquivado) — nesse caso NUNCA mais vai existir uma run verde para provar
+   * o conserto, e a ausência do workflow É a prova de que o incidente acabou.
+   */
+  workflowExiste?: boolean
+  /**
+   * L4-T1: alguma run do workflow FALHOU desde o conserto (PR mesclado, ou
+   * desde `firstSeenAt` quando ainda não há `mergedAt`)? Caso real (#3681,
+   * `jules-api-retry.yml`): o workflow passou a só disparar runs "skipped"
+   * depois do PR — nunca "success" — então `ultimaRunVerde` nunca fica true,
+   * mas também nunca mais falhou. A prova de resolvido aqui é negativa: não
+   * houve falha, não é "ficou verde".
+   */
+  houveFalhaDesdeOPr?: boolean
 }
 
 export interface DecisaoDeFechamento {
@@ -97,6 +120,15 @@ export function decidirFechamentoDeIncidente(
   if (inc.clearedAt) {
     return { fecharIssue: false, limparIncidente: false, motivo: 'já estava limpo' }
   }
+
+  // L4-T1: o workflow que causava o incidente não existe mais no repositório
+  // — não há mais run nenhuma para provar "ficou verde", e esperar por uma
+  // deixaria o incidente aberto para sempre. Prioridade sobre qualquer outra
+  // regra: a ausência do workflow É a prova de que o incidente acabou.
+  if (sit.workflowExiste === false) {
+    return { fecharIssue: true, limparIncidente: true, motivo: 'workflow removido do repositório' }
+  }
+
   // Só para o job do Dependabot / alerta de segurança não existe "run do
   // workflow" — nesses a prova é o PR mesclado (o updater volta a rodar sozinho).
   const semRunDeWorkflow =
@@ -113,6 +145,17 @@ export function decidirFechamentoDeIncidente(
   if (sit.ultimaRunVerde && sit.rodouDepoisDoPr) {
     return { fecharIssue: true, limparIncidente: true, motivo: 'workflow verde depois do conserto' }
   }
+  // L4-T1: caso real (#3681, jules-api-retry.yml) — o workflow passou a só
+  // disparar runs "skipped" depois do conserto, nunca "success", então
+  // `ultimaRunVerde` nunca fica true. Quando dá para provar que NÃO houve
+  // falha desde o PR, isso já basta — não exige um verde que pode nunca vir.
+  if (sit.prMesclado && sit.houveFalhaDesdeOPr === false) {
+    return {
+      fecharIssue: true,
+      limparIncidente: true,
+      motivo: 'sem falha do workflow desde a correção',
+    }
+  }
   if (sit.prMesclado && !sit.rodouDepoisDoPr) {
     return {
       fecharIssue: false,
@@ -121,6 +164,39 @@ export function decidirFechamentoDeIncidente(
     }
   }
   return { fecharIssue: false, limparIncidente: false, motivo: 'nada mudou' }
+}
+
+// --- L4-T1: casar identidade legada (ci:<nome>) com o workflow real -------
+
+/**
+ * Normaliza um nome de workflow para comparação robusta: sem acento, minúsculo,
+ * pontuação vira espaço, espaços colapsados e sem sobra nas bordas. É o que
+ * permite casar `w.name` (GitHub) com o nome extraído da identidade legada
+ * sem que maiúscula, acento ou pontuação decidam um "não bate" falso.
+ */
+export function normalizarNomeDeWorkflow(nome: string): string {
+  return nome
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+}
+
+/**
+ * Incidentes antigos (antes de `wf:<id>`) guardam a identidade como
+ * `ci:<nome de exibição>`, às vezes com um travessão separando um subtítulo
+ * (ex.: `ci:Jules API Retry — re-dispara via API direta`). Extrai só o nome
+ * do workflow (antes do travessão) para casar com `actions/workflows[].name`
+ * — devolve `null` para qualquer identidade que não seja `ci:` (`wf:`,
+ * `dependabot:`, `sec:`), que não são "legadas" neste sentido.
+ */
+export function nomeDoWorkflowNaIdentidadeLegada(identidadeEstavel: string): string | null {
+  const m = identidadeEstavel.match(/^ci:(.+)$/)
+  const bruto = m?.[1]
+  if (bruto === undefined) return null
+  const antesDoTracejado = bruto.split(/\s+—\s+/)[0] ?? bruto
+  return antesDoTracejado.trim()
 }
 
 /** Um achado tal como o sensor devolve, para o agrupamento por causa. */

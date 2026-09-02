@@ -172,6 +172,16 @@ export interface PrismaDevSession {
     /** Tarefa 17 (`aoMesclarUmaEntrega`, scheduler.ts): acha a linha viva pelo número do PR mesclado. */
     findFirst: (args: unknown) => Promise<LinhaDeSessao | null>
   }
+  /**
+   * L4-T1: só `registrarPr` usa, e só quando a issue tem `projectId`/
+   * `issueNumber` — é o que liga o PR da entrega ao incidente de infra aberto
+   * pela mesma issue. Opcional porque os demais chamadores de
+   * `PrismaDevSession` (github-webhook.ts, testes mais antigos) nunca tocam
+   * nisto e não precisam mockar este model.
+   */
+  infraIncident?: {
+    updateMany: (args: unknown) => Promise<unknown>
+  }
 }
 
 /** Por que `abrirSessao` não abriu a linha. */
@@ -526,11 +536,26 @@ export async function registrarPr(deps: {
   sessionName: string
   numeroDoPr: number
   agora: Date
+  /**
+   * L4-T1: quando a issue trabalhada tem um incidente de infra aberto
+   * (`infra_incidents`), passar `projectId`/`issueNumber` liga o PR a ele —
+   * sem isto, `situacaoDoIncidente` (fechar-incidente-resolvido.ts) nunca via
+   * o PR e o incidente nunca fechava sozinho mesmo com o workflow são de
+   * novo. Os dois precisam vir juntos; faltando um, não toca `infra_incidents`.
+   */
+  projectId?: string
+  issueNumber?: number
 }): Promise<void> {
   await deps.prisma.devSession.update({
     where: { sessionName: deps.sessionName },
     data: { pullRequestNumber: deps.numeroDoPr, stateCheckedAt: deps.agora },
   })
+  if (deps.projectId !== undefined && deps.issueNumber !== undefined) {
+    await deps.prisma.infraIncident?.updateMany({
+      where: { projectId: deps.projectId, issueNumber: deps.issueNumber, prNumber: null },
+      data: { prNumber: deps.numeroDoPr },
+    })
+  }
 }
 
 /**

@@ -5,6 +5,8 @@ import {
   mesmaCausa,
   agruparPorCausa,
   varrerIncidentesResolvidos,
+  normalizarNomeDeWorkflow,
+  nomeDoWorkflowNaIdentidadeLegada,
   type IncidenteAberto,
 } from './fechar-incidente-resolvido.js'
 
@@ -17,6 +19,7 @@ function inc(over: Partial<IncidenteAberto> = {}): IncidenteAberto {
     issueNumber: 50,
     prNumber: 90,
     clearedAt: null,
+    firstSeenAt: new Date('2025-12-01T00:00:00.000Z'),
     ...over,
   }
 }
@@ -74,6 +77,87 @@ describe('decidirFechamentoDeIncidente', () => {
       prMesclado: true,
     })
     expect(d.limparIncidente).toBe(false)
+  })
+
+  // L4-T1: o workflow que causava o incidente foi removido do repositório —
+  // não existe mais "run" nenhuma para provar verde, e insistir esperando uma
+  // deixaria o incidente aberto para sempre. A ausência do workflow É a prova.
+  it('workflow removido do repositório → fecha mesmo sem run verde', () => {
+    const d = decidirFechamentoDeIncidente(inc(), {
+      ultimaRunVerde: false,
+      rodouDepoisDoPr: false,
+      prMesclado: false,
+      workflowExiste: false,
+    })
+    expect(d).toMatchObject({
+      fecharIssue: true,
+      limparIncidente: true,
+      motivo: 'workflow removido do repositório',
+    })
+  })
+
+  it('já limpo tem prioridade mesmo com o workflow removido', () => {
+    const d = decidirFechamentoDeIncidente(inc({ clearedAt: new Date() }), {
+      ultimaRunVerde: false,
+      rodouDepoisDoPr: false,
+      prMesclado: false,
+      workflowExiste: false,
+    })
+    expect(d.limparIncidente).toBe(false)
+  })
+
+  // L4-T1: caso real (#3681, jules-api-retry.yml) — o workflow só tem runs
+  // "skipped" desde o conserto, nunca "success", então `ultimaRunVerde` nunca
+  // fica true. A prova de que sarou não é "ficou verde", é "não falhou mais".
+  it('PR mesclado e nenhuma falha do workflow desde então → fecha mesmo sem run verde explícita', () => {
+    const d = decidirFechamentoDeIncidente(inc(), {
+      ultimaRunVerde: false,
+      rodouDepoisDoPr: false,
+      prMesclado: true,
+      houveFalhaDesdeOPr: false,
+    })
+    expect(d).toMatchObject({
+      fecharIssue: true,
+      limparIncidente: true,
+      motivo: 'sem falha do workflow desde a correção',
+    })
+  })
+
+  it('PR mesclado mas HOUVE falha depois → não fecha por essa via, continua esperando', () => {
+    const d = decidirFechamentoDeIncidente(inc(), {
+      ultimaRunVerde: false,
+      rodouDepoisDoPr: false,
+      prMesclado: true,
+      houveFalhaDesdeOPr: true,
+    })
+    expect(d).toMatchObject({ fecharIssue: false, limparIncidente: false })
+  })
+})
+
+describe('normalizarNomeDeWorkflow', () => {
+  it('baixa a caixa e colapsa espaços repetidos', () => {
+    expect(normalizarNomeDeWorkflow('Jules   API Retry')).toBe('jules api retry')
+  })
+  it('remove acentos', () => {
+    expect(normalizarNomeDeWorkflow('Ação Rápida')).toBe('acao rapida')
+  })
+  it('ignora pontuação e espaços nas bordas', () => {
+    expect(normalizarNomeDeWorkflow('  CI: Build & Test  ')).toBe('ci build test')
+  })
+})
+
+describe('nomeDoWorkflowNaIdentidadeLegada', () => {
+  it('extrai o nome antes do travessão da identidade legada ci:<nome>', () => {
+    expect(nomeDoWorkflowNaIdentidadeLegada('ci:Jules API Retry — re-dispara via API direta')).toBe(
+      'Jules API Retry'
+    )
+  })
+  it('identidade ci: sem travessão devolve o nome inteiro', () => {
+    expect(nomeDoWorkflowNaIdentidadeLegada('ci:Build')).toBe('Build')
+  })
+  it('identidade não-ci (wf:/dependabot:) devolve null — não é uma identidade legada', () => {
+    expect(nomeDoWorkflowNaIdentidadeLegada('wf:11')).toBeNull()
+    expect(nomeDoWorkflowNaIdentidadeLegada('dependabot:updates')).toBeNull()
   })
 })
 

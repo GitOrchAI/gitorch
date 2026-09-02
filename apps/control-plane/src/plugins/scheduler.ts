@@ -89,7 +89,12 @@ import {
 import { analisarFalhasPendentes } from '../services/analisar-falhas-pendentes.js'
 import { runAnaliseDeFalha, type SessaoMorta } from '../services/analise-de-falha-do-dev.js'
 import { processarAchadosDeInfra } from '../services/processar-achados-de-infra.js'
-import { varrerIncidentesResolvidos } from '../services/fechar-incidente-resolvido.js'
+import {
+  varrerIncidentesResolvidos,
+  normalizarNomeDeWorkflow,
+  nomeDoWorkflowNaIdentidadeLegada,
+} from '../services/fechar-incidente-resolvido.js'
+import { reconciliarIncidentesLegados } from '../services/reconciliar-incidentes-legados.js'
 import { runRetroDeInfra } from '../services/retro-de-infra.js'
 import {
   decidirAvisoPorJanela,
@@ -5368,6 +5373,67 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       if (!resp.ok) throw new Error(`GitHub PATCH ${path} → ${resp.status}`)
     }
 
+    // L4-T1: incidentes abertos ANTES de `infra_incidents` existir (ou que
+    // escaparam de `registrarIncidente`) só têm a issue no GitHub — sem
+    // linha no banco, `listarAbertos` abaixo nunca os vê e eles nunca fecham
+    // sozinhos. Reconcilia PRIMEIRO, para a varredura desta mesma passada já
+    // enxergar as linhas recém-criadas.
+    const legado = await reconciliarIncidentesLegados({
+      projectId: project.id,
+      listarIssuesAbertas: async () => {
+        const q = encodeURIComponent(`repo:${project.wingId} label:gitorch:incident state:open`)
+        const found = (await gh(`/search/issues?q=${q}&per_page=50`)) as {
+          items?: Array<{ number: number; body?: string | null; created_at: string }>
+        }
+        return (found.items ?? []).map((i) => ({
+          number: i.number,
+          body: i.body ?? null,
+          createdAt: new Date(i.created_at),
+        }))
+      },
+      jaExisteLinha: async ({ projectId, identidadeEstavel }) => {
+        const linhaExistente = await app.prisma.infraIncident.findFirst({
+          where: { projectId, identidadeEstavel },
+          select: { id: true },
+        })
+        return linhaExistente !== null
+      },
+      prDaSessaoDaIssue: async (issueNumber) => {
+        const sessao = (await app.prisma.devSession.findFirst({
+          where: { projectId: project.id, issueNumber, pullRequestNumber: { not: null } },
+          orderBy: { createdAt: 'desc' },
+          select: { pullRequestNumber: true },
+        })) as { pullRequestNumber: number | null } | null
+        return sessao?.pullRequestNumber ?? null
+      },
+      criarIncidente: async ({
+        projectId,
+        identidadeEstavel,
+        classe,
+        issueNumber,
+        firstSeenAt,
+        prNumber,
+      }) => {
+        await app.prisma.infraIncident.upsert({
+          where: { projectId_identidadeEstavel: { projectId, identidadeEstavel } },
+          create: {
+            projectId,
+            classe,
+            identidadeEstavel,
+            issueNumber,
+            firstSeenAt,
+            ...(prNumber !== null ? { prNumber } : {}),
+          },
+          update: { issueNumber, lastSeenAt: new Date() },
+        })
+      },
+      onInfo: (mm) => app.log.info(`[Scheduler] ${mm}`),
+      onWarn: (mm) => app.log.warn(`[Scheduler] ${mm}`),
+    }).catch((err) => {
+      app.log.warn(err, `[Scheduler] reconciliar incidentes legados falhou em ${project.wingId}`)
+      return { reconciliados: [] as string[], ignorados: 0 }
+    })
+
     const r = await varrerIncidentesResolvidos({
       listarAbertos: async () =>
         (await app.prisma.infraIncident.findMany({
@@ -5380,6 +5446,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             issueNumber: true,
             prNumber: true,
             clearedAt: true,
+            firstSeenAt: true,
             prAttempts: true,
             escalatedAt: true,
           },
@@ -5391,6 +5458,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           issueNumber: number | null
           prNumber: number | null
           clearedAt: Date | null
+          firstSeenAt: Date
           prAttempts: number
           escalatedAt: Date | null
         }>,
@@ -5433,16 +5501,65 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             /* PR ilegível: trata como não mesclado */
           }
         }
-        // Identidade `wf:<id>` → última run desse workflow na branch default.
+        // L4-T1: o PR pode não estar mais legível pela API (token sem
+        // alcance, rate limit) mesmo já mesclado — a sessão que trabalhou a
+        // issue já registra `closedReason: 'merged'` quando o merge é
+        // confirmado (aoMesclarUmaEntrega), então isso também prova merge.
+        if (!prMesclado && inc.issueNumber !== null) {
+          try {
+            const sessaoMesclada = await app.prisma.devSession.findFirst({
+              where: {
+                projectId: project.id,
+                issueNumber: inc.issueNumber,
+                closedReason: 'merged',
+              },
+              select: { id: true },
+            })
+            if (sessaoMesclada) prMesclado = true
+          } catch {
+            /* leitura da sessão falhou: não afirma merge por essa via */
+          }
+        }
+
+        // Identidade `wf:<id>` (nova) OU `ci:<nome>` (legada, ex.: "Jules API
+        // Retry — re-dispara via API direta") → acha o workflow real na
+        // lista de workflows ATIVOS do repositório (a lista só mostra os que
+        // ainda existem — testado ao vivo em 02/09/2026) e sua última run.
         let ultimaRunVerde = false
         let rodouDepoisDoPr = false
-        const m = inc.identidadeEstavel.match(/^wf:(\d+)$/)
-        if (m) {
+        let workflowExiste: boolean | undefined
+        let houveFalhaDesdeOPr: boolean | undefined
+
+        const idNumerico = inc.identidadeEstavel.match(/^wf:(\d+)$/)?.[1] ?? null
+        const nomeLegado = nomeDoWorkflowNaIdentidadeLegada(inc.identidadeEstavel)
+        let idDoWorkflowParaRuns: string | null = idNumerico
+
+        if (idNumerico || nomeLegado) {
+          try {
+            const lista = (await gh(`/repos/${project.wingId}/actions/workflows?per_page=100`)) as {
+              workflows?: Array<{ id: number; name: string }>
+            }
+            const workflows = lista.workflows ?? []
+            if (idNumerico) {
+              workflowExiste = workflows.some((w) => String(w.id) === idNumerico)
+            } else if (nomeLegado) {
+              const achado = workflows.find(
+                (w) => normalizarNomeDeWorkflow(w.name) === normalizarNomeDeWorkflow(nomeLegado)
+              )
+              workflowExiste = achado !== undefined
+              idDoWorkflowParaRuns = achado ? String(achado.id) : null
+            }
+          } catch {
+            /* lista de workflows ilegível: não afirma existência nem ausência */
+          }
+        }
+
+        if (idDoWorkflowParaRuns) {
           try {
             const repo = (await gh(`/repos/${project.wingId}`)) as { default_branch?: string }
             const branch = repo.default_branch ?? 'main'
             const runs = (await gh(
-              `/repos/${project.wingId}/actions/workflows/${m[1]}/runs?branch=${encodeURIComponent(branch)}&per_page=1`
+              `/repos/${project.wingId}/actions/workflows/${idDoWorkflowParaRuns}/runs?branch=${encodeURIComponent(branch)}&per_page=20`
             )) as {
               workflow_runs?: Array<{
                 conclusion?: string
@@ -5450,17 +5567,34 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 created_at?: string
               }>
             }
-            const run = runs.workflow_runs?.[0]
+            const todasAsRuns = runs.workflow_runs ?? []
+            const run = todasAsRuns[0]
             if (run) {
               ultimaRunVerde = run.conclusion === 'success'
               const runEm = run.run_started_at ?? run.created_at
               rodouDepoisDoPr = Boolean(mergedAt && runEm && runEm > mergedAt)
             }
+            // L4-T1: prova negativa para quando o workflow nunca mais roda
+            // "success" (ex.: passou a só disparar "skipped") — desde o
+            // merge (ou, sem isso, desde o primeiro avistamento do
+            // incidente), nenhuma run falhou?
+            const desde = mergedAt ?? inc.firstSeenAt.toISOString()
+            houveFalhaDesdeOPr = todasAsRuns.some((rr) => {
+              const criadoEm = rr.run_started_at ?? rr.created_at
+              return rr.conclusion === 'failure' && Boolean(criadoEm && criadoEm >= desde)
+            })
           } catch {
             /* runs ilegíveis */
           }
         }
-        return { ultimaRunVerde, rodouDepoisDoPr, prMesclado, prFechadoSemMerge }
+        return {
+          ultimaRunVerde,
+          rodouDepoisDoPr,
+          prMesclado,
+          prFechadoSemMerge,
+          ...(workflowExiste !== undefined ? { workflowExiste } : {}),
+          ...(houveFalhaDesdeOPr !== undefined ? { houveFalhaDesdeOPr } : {}),
+        }
       },
       fecharIssue: async (issueNumber, comentario) => {
         await ghPatch(`/repos/${project.wingId}/issues/${issueNumber}`, {
@@ -5520,6 +5654,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       onWarn: (mm) => app.log.warn(`[Scheduler] ${mm}`),
     })
     const partes: string[] = []
+    if (legado.reconciliados.length > 0)
+      partes.push(`${legado.reconciliados.length} incidente(s) legado(s) reconciliado(s)`)
     if (r.fechados.length > 0)
       partes.push(`${r.fechados.length} incidente(s) de infra resolvido(s) e fechado(s)`)
     if (r.escalados.length > 0)
