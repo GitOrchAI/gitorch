@@ -102,6 +102,26 @@ describe('vigiarSessoes', () => {
     expect(deps.fecharSessao).not.toHaveBeenCalled()
   })
 
+  // L4-T1: sem propagar projectId/issueNumber, `registrarPr` nunca sabe qual
+  // incidente de infra ligar ao PR novo — a issue do incidente nunca aprende
+  // o número do PR e `fechar-incidente-resolvido.ts` nunca a fecha sozinha.
+  it('PR novo → propaga projectId/issueNumber da linha para registrarPr (liga ao incidente de infra)', async () => {
+    const deps = depsFalso({
+      sessoes: [linha({ sessionName: 'sessions/pr', projectId: 'projX', issueNumber: 77 })],
+      consultarSessao: vi.fn(async () => ({
+        estado: 'COMPLETED',
+        numeroDoPr: 63,
+        ultimaAtualizacao: agora.toISOString(),
+      })),
+    })
+
+    await vigiarSessoes(deps)
+
+    expect(deps.registrarPr).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: 'projX', issueNumber: 77 })
+    )
+  })
+
   it('concluída SEM PR → fecha a linha (dev-concluiu-sem-entrega) e a issue volta à fila — D51', async () => {
     // Até 29/08 isto acionava o SM em loop e a linha NUNCA fechava (21 de 23
     // sessões presas assim, enchendo as 15 vagas e parando a esteira).

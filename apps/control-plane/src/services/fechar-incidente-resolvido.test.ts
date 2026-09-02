@@ -5,6 +5,10 @@ import {
   mesmaCausa,
   agruparPorCausa,
   varrerIncidentesResolvidos,
+  normalizarNomeDeWorkflow,
+  nomeDoWorkflowNaIdentidadeLegada,
+  houveRunConcluidaDesde,
+  comentarFechamentoDeIncidente,
   type IncidenteAberto,
 } from './fechar-incidente-resolvido.js'
 
@@ -17,6 +21,7 @@ function inc(over: Partial<IncidenteAberto> = {}): IncidenteAberto {
     issueNumber: 50,
     prNumber: 90,
     clearedAt: null,
+    firstSeenAt: new Date('2025-12-01T00:00:00.000Z'),
     ...over,
   }
 }
@@ -74,6 +79,161 @@ describe('decidirFechamentoDeIncidente', () => {
       prMesclado: true,
     })
     expect(d.limparIncidente).toBe(false)
+  })
+
+  // L4-T1: o workflow que causava o incidente foi removido do repositório —
+  // não existe mais "run" nenhuma para provar verde, e insistir esperando uma
+  // deixaria o incidente aberto para sempre. A ausência do workflow É a prova.
+  it('workflow removido do repositório → fecha mesmo sem run verde', () => {
+    const d = decidirFechamentoDeIncidente(inc(), {
+      ultimaRunVerde: false,
+      rodouDepoisDoPr: false,
+      prMesclado: false,
+      workflowExiste: false,
+    })
+    expect(d).toMatchObject({
+      fecharIssue: true,
+      limparIncidente: true,
+      motivo: 'workflow removido do repositório',
+    })
+  })
+
+  it('já limpo tem prioridade mesmo com o workflow removido', () => {
+    const d = decidirFechamentoDeIncidente(inc({ clearedAt: new Date() }), {
+      ultimaRunVerde: false,
+      rodouDepoisDoPr: false,
+      prMesclado: false,
+      workflowExiste: false,
+    })
+    expect(d.limparIncidente).toBe(false)
+  })
+
+  // L4-T1 (fix-up crítico): PR mesclado às 14h, o workflow AINDA NÃO RODOU
+  // desde então — "nenhuma run" não pode virar "nenhuma falha". Sem isso, o
+  // workflow roda às 15h e falha com o incidente já fechado. Tem que ficar
+  // "aguardando", nunca fechar, enquanto `rodouDepoisDoPr` for false.
+  it('PR mesclado, workflow AINDA NÃO rodou desde o merge → não fecha mesmo com houveFalhaDesdeOPr false', () => {
+    const d = decidirFechamentoDeIncidente(inc(), {
+      ultimaRunVerde: false,
+      rodouDepoisDoPr: false,
+      prMesclado: true,
+      houveFalhaDesdeOPr: false,
+    })
+    expect(d).toMatchObject({
+      fecharIssue: false,
+      limparIncidente: false,
+      motivo: 'PR mesclado, esperando a próxima run do workflow',
+    })
+  })
+
+  // L4-T1: caso real (#3681, jules-api-retry.yml) — o workflow só tem runs
+  // "skipped" desde o conserto, nunca "success", então `ultimaRunVerde` nunca
+  // fica true. A prova de que sarou não é "ficou verde", é "não falhou mais"
+  // — mas só conta depois que o workflow de fato rodou de novo (skipped já
+  // é "rodou").
+  it('PR mesclado, HOUVE run depois do PR (mesmo só skipped) e nenhuma falha → fecha', () => {
+    const d = decidirFechamentoDeIncidente(inc(), {
+      ultimaRunVerde: false,
+      rodouDepoisDoPr: true,
+      prMesclado: true,
+      houveFalhaDesdeOPr: false,
+    })
+    expect(d).toMatchObject({
+      fecharIssue: true,
+      limparIncidente: true,
+      motivo: 'sem falha do workflow desde a correção',
+    })
+  })
+
+  it('PR mesclado mas HOUVE falha depois → não fecha por essa via, continua esperando', () => {
+    const d = decidirFechamentoDeIncidente(inc(), {
+      ultimaRunVerde: false,
+      rodouDepoisDoPr: false,
+      prMesclado: true,
+      houveFalhaDesdeOPr: true,
+    })
+    expect(d).toMatchObject({ fecharIssue: false, limparIncidente: false })
+  })
+})
+
+describe('normalizarNomeDeWorkflow', () => {
+  it('baixa a caixa e colapsa espaços repetidos', () => {
+    expect(normalizarNomeDeWorkflow('Jules   API Retry')).toBe('jules api retry')
+  })
+  it('remove acentos', () => {
+    expect(normalizarNomeDeWorkflow('Ação Rápida')).toBe('acao rapida')
+  })
+  it('ignora pontuação e espaços nas bordas', () => {
+    expect(normalizarNomeDeWorkflow('  CI: Build & Test  ')).toBe('ci build test')
+  })
+})
+
+describe('nomeDoWorkflowNaIdentidadeLegada', () => {
+  it('extrai o nome antes do travessão da identidade legada ci:<nome>', () => {
+    expect(nomeDoWorkflowNaIdentidadeLegada('ci:Jules API Retry — re-dispara via API direta')).toBe(
+      'Jules API Retry'
+    )
+  })
+  it('identidade ci: sem travessão devolve o nome inteiro', () => {
+    expect(nomeDoWorkflowNaIdentidadeLegada('ci:Build')).toBe('Build')
+  })
+  it('identidade não-ci (wf:/dependabot:) devolve null — não é uma identidade legada', () => {
+    expect(nomeDoWorkflowNaIdentidadeLegada('wf:11')).toBeNull()
+    expect(nomeDoWorkflowNaIdentidadeLegada('dependabot:updates')).toBeNull()
+  })
+})
+
+describe('houveRunConcluidaDesde', () => {
+  // L4-T1 (fix-up): esta é a regra que decide `rodouDepoisDoPr` no scheduler.
+  // Caso real #3681: desde 13/08 o workflow só dispara runs "skipped" — isso
+  // TEM que contar como "rodou", senão o incidente nunca fecha por essa via.
+  it('run "skipped" depois do corte conta como rodou', () => {
+    expect(
+      houveRunConcluidaDesde(
+        [{ conclusion: 'skipped', run_started_at: '2026-08-13T10:00:00.000Z' }],
+        '2026-08-13T09:00:00.000Z'
+      )
+    ).toBe(true)
+  })
+
+  it('run "cancelled" depois do corte também conta', () => {
+    expect(
+      houveRunConcluidaDesde(
+        [{ conclusion: 'cancelled', run_started_at: '2026-08-13T10:00:00.000Z' }],
+        '2026-08-13T09:00:00.000Z'
+      )
+    ).toBe(true)
+  })
+
+  it('run ainda em andamento (conclusion nulo) NÃO conta como concluída', () => {
+    expect(
+      houveRunConcluidaDesde(
+        [{ conclusion: null, run_started_at: '2026-08-13T10:00:00.000Z' }],
+        '2026-08-13T09:00:00.000Z'
+      )
+    ).toBe(false)
+  })
+
+  it('run concluída ANTES do corte não conta', () => {
+    expect(
+      houveRunConcluidaDesde(
+        [{ conclusion: 'success', run_started_at: '2026-08-13T08:00:00.000Z' }],
+        '2026-08-13T09:00:00.000Z'
+      )
+    ).toBe(false)
+  })
+
+  it('lista vazia → false', () => {
+    expect(houveRunConcluidaDesde([], '2026-08-13T09:00:00.000Z')).toBe(false)
+  })
+
+  it('usa created_at quando run_started_at não vem', () => {
+    expect(
+      houveRunConcluidaDesde(
+        [{ conclusion: 'success', created_at: '2026-08-13T10:00:00.000Z' }],
+        '2026-08-13T09:00:00.000Z'
+      )
+    ).toBe(true)
   })
 })
 
@@ -306,5 +466,41 @@ describe('varrerIncidentesResolvidos: escalonamento', () => {
       escalar: vi.fn(async () => undefined),
     })
     expect(incrementarTentativa).not.toHaveBeenCalled()
+  })
+})
+
+describe('comentarFechamentoDeIncidente (L4-T1b: comentário passa pela guarda)', () => {
+  it('usa o postarComentario INJETADO (nunca fetch global) para gravar o comentário', async () => {
+    const postarComentario = vi.fn(async () => undefined)
+    await comentarFechamentoDeIncidente('acme/repo', 42, 'resolvido, fechado sozinho', {
+      postarComentario,
+    })
+    expect(postarComentario).toHaveBeenCalledWith('/repos/acme/repo/issues/42/comments', {
+      body: 'resolvido, fechado sozinho',
+    })
+  })
+
+  it('postarComentario rejeitado → chama onWarn com contexto (repo/issue), NUNCA engole em silêncio', async () => {
+    const onWarn = vi.fn()
+    const postarComentario = vi.fn(async () => {
+      throw new Error('GitHub POST → 403')
+    })
+    await expect(
+      comentarFechamentoDeIncidente('acme/repo', 42, 'resolvido', { postarComentario, onWarn })
+    ).resolves.toBeUndefined()
+    expect(onWarn).toHaveBeenCalledTimes(1)
+    const [mensagem] = onWarn.mock.calls[0] as [string]
+    expect(mensagem).toContain('acme/repo')
+    expect(mensagem).toContain('42')
+    expect(mensagem).toContain('403')
+  })
+
+  it('sem onWarn (opcional) → não explode ao falhar', async () => {
+    const postarComentario = vi.fn(async () => {
+      throw new Error('boom')
+    })
+    await expect(
+      comentarFechamentoDeIncidente('acme/repo', 1, 'x', { postarComentario })
+    ).resolves.toBeUndefined()
   })
 })

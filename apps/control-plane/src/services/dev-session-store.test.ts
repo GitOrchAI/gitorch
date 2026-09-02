@@ -204,6 +204,37 @@ describe('registrarPr', () => {
     expect(chamada.data['pullRequestNumber']).toBe(63)
     expect(JSON.stringify(chamada.data)).not.toContain('http')
   })
+
+  // L4-T1: sem isto, um incidente de infra aberto pela mesma issue nunca
+  // aprendia o número do PR — `situacaoDoIncidente` via sempre `prNumber:
+  // null` e a issue jamais fechava sozinha, mesmo com o workflow são de novo.
+  it('com projectId e issueNumber → também liga o PR ao incidente de infra aberto daquela issue', async () => {
+    const infraIncident = { updateMany: vi.fn(async (_args: unknown) => undefined) }
+    const prisma = { ...prismaFalso(), infraIncident }
+
+    await registrarPr({
+      prisma,
+      sessionName: 'sessions/1',
+      numeroDoPr: 63,
+      agora,
+      projectId: 'p1',
+      issueNumber: 25,
+    })
+
+    expect(infraIncident.updateMany).toHaveBeenCalledWith({
+      where: { projectId: 'p1', issueNumber: 25, prNumber: null },
+      data: { prNumber: 63 },
+    })
+  })
+
+  it('sem projectId/issueNumber → não toca infra_incidents (issue sem incidente de infra ligado)', async () => {
+    const infraIncident = { updateMany: vi.fn(async (_args: unknown) => undefined) }
+    const prisma = { ...prismaFalso(), infraIncident }
+
+    await registrarPr({ prisma, sessionName: 'sessions/1', numeroDoPr: 63, agora })
+
+    expect(infraIncident.updateMany).not.toHaveBeenCalled()
+  })
 })
 
 describe('fecharSessao', () => {
