@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto'
 import {
   guardarCredencialDoProjeto,
   lerCredencialDoProjeto,
+  lerCredencialQueAlcancaOProjeto,
   verificarCredencial,
   VerificacaoIndisponivelError,
 } from './project-credential.js'
@@ -133,5 +134,133 @@ describe('guardarCredencialDoProjeto / lerCredencialDoProjeto', () => {
       project: { update: vi.fn(), findUnique: vi.fn(async () => ({ encryptedClientToken: null })) },
     } as never
     await expect(lerCredencialDoProjeto({ prisma, projectId: 'proj_1' })).resolves.toBeNull()
+  })
+})
+
+// D15 (01/09/2026, task ce67b8bd): o dono já deu a credencial do GitHub uma
+// vez, no login (engine_connections, runtime='github', status='connected') —
+// pedir para colar de novo em /api/v1/setup/credencial-do-cliente sempre que
+// um projeto NOVO ainda não tem PAT próprio guardado é atrito desnecessário.
+// Este helper é o ponto ÚNICO onde a ordem de preferência mora: primeiro o
+// que o cliente colou explicitamente PARA ESTE projeto (mais alcance —
+// D13/PR#445 provou que só um PAT clássico com escopo `project` cria/lê
+// Projects V2 de conta pessoal), só depois o que ele já deu no login.
+describe('lerCredencialQueAlcancaOProjeto', () => {
+  const originalKey = process.env['GITORCH_CREDENTIAL_KEY']
+  beforeEach(() => {
+    process.env['GITORCH_CREDENTIAL_KEY'] = randomBytes(32).toString('hex')
+  })
+  afterEach(() => {
+    if (originalKey === undefined) delete process.env['GITORCH_CREDENTIAL_KEY']
+    else process.env['GITORCH_CREDENTIAL_KEY'] = originalKey
+  })
+
+  it('com PAT do próprio projeto guardado, usa ele — nunca chega a consultar engine_connections', async () => {
+    // Espia lerCredencialDoProjeto via um prisma que já devolve o valor
+    // decifrável esperado (mesmo padrão do teste "o que foi guardado volta
+    // igual ao original" acima).
+    let cofre = ''
+    const prismaComPat = {
+      project: {
+        update: vi.fn(async (args: never) => {
+          cofre = (args as { data: { encryptedClientToken: string } }).data.encryptedClientToken
+          return {}
+        }),
+        findUnique: vi.fn(async () => ({ encryptedClientToken: cofre })),
+      },
+    }
+    await guardarCredencialDoProjeto({
+      prisma: prismaComPat as never,
+      projectId: 'proj_1',
+      token: 'pat-do-cliente',
+    })
+    const getRawGithubToken = vi.fn(async () => 'token-do-login')
+
+    const resultado = await lerCredencialQueAlcancaOProjeto({
+      prisma: prismaComPat as never,
+      projectId: 'proj_1',
+      userId: 'user_1',
+      engineConnections: { getRawGithubToken },
+    })
+
+    expect(resultado).toBe('pat-do-cliente')
+    expect(getRawGithubToken).not.toHaveBeenCalled()
+  })
+
+  it('sem PAT do projeto, cai na credencial que o dono já deu no login (engine_connections) — nunca pede de novo', async () => {
+    const prisma = {
+      project: {
+        update: vi.fn(),
+        findUnique: vi.fn(async () => ({ encryptedClientToken: null })),
+      },
+    }
+    const getRawGithubToken = vi.fn(async () => 'token-do-login')
+
+    const resultado = await lerCredencialQueAlcancaOProjeto({
+      prisma: prisma as never,
+      projectId: 'proj_1',
+      userId: 'user_1',
+      engineConnections: { getRawGithubToken },
+    })
+
+    expect(resultado).toBe('token-do-login')
+    expect(getRawGithubToken).toHaveBeenCalledWith('user_1')
+  })
+
+  it('sem nenhuma das duas, devolve nulo — quem chama decide se aí sim pede ao dono', async () => {
+    const prisma = {
+      project: {
+        update: vi.fn(),
+        findUnique: vi.fn(async () => ({ encryptedClientToken: null })),
+      },
+    }
+    const getRawGithubToken = vi.fn(async () => null)
+
+    await expect(
+      lerCredencialQueAlcancaOProjeto({
+        prisma: prisma as never,
+        projectId: 'proj_1',
+        userId: 'user_1',
+        engineConnections: { getRawGithubToken },
+      })
+    ).resolves.toBeNull()
+  })
+
+  it('sem userId (projeto legado) ou sem engineConnections injetado, nunca lança — só perde o reforço', async () => {
+    const prisma = {
+      project: {
+        update: vi.fn(),
+        findUnique: vi.fn(async () => ({ encryptedClientToken: null })),
+      },
+    }
+
+    await expect(
+      lerCredencialQueAlcancaOProjeto({
+        prisma: prisma as never,
+        projectId: 'proj_1',
+        userId: null,
+      })
+    ).resolves.toBeNull()
+  })
+
+  it('erro ao ler o token de login (banco fora do ar, chave rotacionada) nunca sobe — resolve em nulo', async () => {
+    const prisma = {
+      project: {
+        update: vi.fn(),
+        findUnique: vi.fn(async () => ({ encryptedClientToken: null })),
+      },
+    }
+    const getRawGithubToken = vi.fn(async () => {
+      throw new Error('banco fora do ar')
+    })
+
+    await expect(
+      lerCredencialQueAlcancaOProjeto({
+        prisma: prisma as never,
+        projectId: 'proj_1',
+        userId: 'user_1',
+        engineConnections: { getRawGithubToken },
+      })
+    ).resolves.toBeNull()
   })
 })
