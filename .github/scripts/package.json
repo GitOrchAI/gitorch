@@ -13,8 +13,6 @@
   },
   "dependencies": {
     "@octokit/rest": "^21.0.0",
-    "@octokit/webhooks-types": "^7.6.0",
-    "dotenv": "^16.4.5",
     "zod": "^3.23.8"
   },
   "devDependencies": {
