@@ -36,6 +36,13 @@ export interface DependenciasDeDesejos {
     titulo: string
     corpo: string
     etiquetas: string[]
+    /**
+     * L4-T8 (fix-up): o id do PROJETO do GitOrch (nunca o repositório do
+     * GitHub) — é o que permite a quem monta esta dependência
+     * (routes/index.ts) resolver o quadro e a credencial pelo caminho único
+     * (`resolverQuadroDoRepositorio`) e anexar a issue ao quadro ao nascer.
+     */
+    projectId: string
   }) => Promise<{ numero: number }>
 }
 
@@ -151,6 +158,7 @@ export async function desejosRoutes(app: FastifyInstance, deps: DependenciasDeDe
           titulo: desejo.titulo,
           corpo: desejo.corpo,
           etiquetas: desejo.etiquetas,
+          projectId: projeto.id,
         })
         return reply.code(201).send({
           numero: criada.numero,

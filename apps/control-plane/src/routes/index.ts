@@ -17,6 +17,7 @@ import { billingRoutes } from './billing.js'
 import { diagnoseRoutes } from './diagnose.js'
 import { desejosRoutes } from './desejos.js'
 import { criarIssueDeDesejo } from '../services/desejo-no-github.js'
+import { resolverQuadroParaDesejo } from '../services/quadro-do-repositorio.js'
 import {
   ACEITA_PEDIDO,
   projetoParaDesejo,
@@ -93,14 +94,30 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     // A escrita da issue mora no serviço porque o mensageiro (bot do Telegram)
     // registra o desejo pelo MESMO caminho — o pedido do dono nasce igual venha
     // da tela ou do celular.
-    criarIssue: ({ repo, titulo, corpo, etiquetas }) =>
-      criarIssueDeDesejo({
+    //
+    // L4-T8 (fix-up): "ao nascer" a issue de desejo tenta o quadro do
+    // repositório ANTES de existir — `resolverQuadroParaDesejo` é o MESMO
+    // caminho que a varredura periódica usa (nada de resolução nova de
+    // credencial). Sem decisão 'usar', a issue nasce igual, sem card, e o
+    // motivo vira log — nunca deixa de registrar o pedido do dono.
+    criarIssue: async ({ repo, titulo, corpo, etiquetas, projectId }) => {
+      const quadro = await resolverQuadroParaDesejo(
+        { projectId, repo },
+        {
+          prisma: app.prisma,
+          engineConnections: app.engineConnections,
+          onInfo: (m) => app.log.info(`[Desejo] ${m}`),
+        }
+      )
+      return criarIssueDeDesejo({
         repo,
         titulo,
         corpo,
         etiquetas,
         log: { onError: (m) => app.log.error(m), onWarn: (m) => app.log.warn(m) },
-      }),
+        ...(quadro ? { quadro } : {}),
+      })
+    },
   })
 
   // D7 (parte A, "A lógica da leva 2"): o lote de sugestões do nível

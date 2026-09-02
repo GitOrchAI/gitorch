@@ -69,6 +69,25 @@ describe('POST /api/v1/desejos', () => {
     )
   })
 
+  // L4-T8 (fix-up): "ao nascer" a issue de desejo tem que carregar o
+  // `projectId` para que quem monta o `criarIssue` real (routes/index.ts)
+  // consiga resolver o quadro do repositório e anexar a issue ao nascer —
+  // sem o id do PROJETO do GitOrch (não confundir com o repo do GitHub) não
+  // há como achar a credencial nem o quadro certos.
+  it('passa o projectId do projeto resolvido para criarIssue — é o que permite achar o quadro depois', async () => {
+    const criarIssue = vi.fn().mockResolvedValue({ numero: 77 })
+    const app = appDeTeste({
+      buscarProjeto: vi.fn().mockResolvedValue(projeto),
+      criarIssue,
+    })
+    await app.inject({
+      method: 'POST',
+      url: '/api/v1/desejos',
+      payload: { projectId: 'p1', texto: 'quero avaliação com foto' },
+    })
+    expect(criarIssue).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'p1' }))
+  })
+
   it('recusa texto vazio com 400, sem chamar o GitHub', async () => {
     const criarIssue = vi.fn()
     const app = appDeTeste({ buscarProjeto: vi.fn().mockResolvedValue(projeto), criarIssue })
