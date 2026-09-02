@@ -16,6 +16,9 @@ describe('origemFuraODescanso', () => {
     expect(origemFuraODescanso('onboarding')).toBe(true)
     expect(origemFuraODescanso('sob-demanda')).toBe(true)
   })
+  it('boot fura — o control-plane retomou sozinho uma vez pendente que sobreviveu ao restart (D16); é informação nova, mesmo motivo de "esteira", não repetição do relógio', () => {
+    expect(origemFuraODescanso('boot')).toBe(true)
+  })
   it('relógio e vigília NÃO furam — são justamente quem repete a acordada vazia', () => {
     expect(origemFuraODescanso('agenda')).toBe(false)
     expect(origemFuraODescanso('vigia')).toBe(false)
