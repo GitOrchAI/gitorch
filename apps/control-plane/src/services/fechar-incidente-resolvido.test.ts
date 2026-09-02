@@ -8,6 +8,7 @@ import {
   normalizarNomeDeWorkflow,
   nomeDoWorkflowNaIdentidadeLegada,
   houveRunConcluidaDesde,
+  comentarFechamentoDeIncidente,
   type IncidenteAberto,
 } from './fechar-incidente-resolvido.js'
 
@@ -465,5 +466,41 @@ describe('varrerIncidentesResolvidos: escalonamento', () => {
       escalar: vi.fn(async () => undefined),
     })
     expect(incrementarTentativa).not.toHaveBeenCalled()
+  })
+})
+
+describe('comentarFechamentoDeIncidente (L4-T1b: comentário passa pela guarda)', () => {
+  it('usa o postarComentario INJETADO (nunca fetch global) para gravar o comentário', async () => {
+    const postarComentario = vi.fn(async () => undefined)
+    await comentarFechamentoDeIncidente('acme/repo', 42, 'resolvido, fechado sozinho', {
+      postarComentario,
+    })
+    expect(postarComentario).toHaveBeenCalledWith('/repos/acme/repo/issues/42/comments', {
+      body: 'resolvido, fechado sozinho',
+    })
+  })
+
+  it('postarComentario rejeitado → chama onWarn com contexto (repo/issue), NUNCA engole em silêncio', async () => {
+    const onWarn = vi.fn()
+    const postarComentario = vi.fn(async () => {
+      throw new Error('GitHub POST → 403')
+    })
+    await expect(
+      comentarFechamentoDeIncidente('acme/repo', 42, 'resolvido', { postarComentario, onWarn })
+    ).resolves.toBeUndefined()
+    expect(onWarn).toHaveBeenCalledTimes(1)
+    const [mensagem] = onWarn.mock.calls[0] as [string]
+    expect(mensagem).toContain('acme/repo')
+    expect(mensagem).toContain('42')
+    expect(mensagem).toContain('403')
+  })
+
+  it('sem onWarn (opcional) → não explode ao falhar', async () => {
+    const postarComentario = vi.fn(async () => {
+      throw new Error('boom')
+    })
+    await expect(
+      comentarFechamentoDeIncidente('acme/repo', 1, 'x', { postarComentario })
+    ).resolves.toBeUndefined()
   })
 })

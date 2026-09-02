@@ -7,12 +7,26 @@
 // issues de volta e recria a linha que falta. Idempotente: roda toda vez,
 // antes de `varrerIncidentesResolvidos`, e só cria o que ainda não existe.
 
+/**
+ * L4-T1b (achado 2 da auditoria de segurança): a identidade vem do CORPO DA
+ * ISSUE — entrada não confiável, escrita por qualquer um com permissão de
+ * comentar/editar no repositório do cliente — e ia direto para
+ * `infra_incidents.identidade_estavel` sem limite nenhum. Teto de 200
+ * caracteres corta qualquer tentativa de inflar a coluna.
+ */
+export const TETO_DE_CARACTERES_DA_IDENTIDADE = 200
+
 /** Extrai a identidade estável do marcador HTML no corpo da issue. */
 export function identidadeDoMarcador(body: string | null | undefined): string | null {
   if (!body) return null
   const m = body.match(/<!--\s*gitorch:incident:([^>]*?)\s*-->/)
-  const identidade = m?.[1]
-  return identidade !== undefined ? identidade.trim() : null
+  const bruto = m?.[1]
+  if (bruto === undefined) return null
+  // Trim primeiro (marcador só com espaços não deve virar string vazia
+  // sobrevivente), depois teto de tamanho — nunca o contrário, senão um
+  // corte no meio de espaços de borda poderia deixar sobra.
+  const identidade = bruto.trim().slice(0, TETO_DE_CARACTERES_DA_IDENTIDADE)
+  return identidade.length > 0 ? identidade : null
 }
 
 /** Uma issue de incidente aberta no GitHub, tal como a busca devolve. */

@@ -94,6 +94,7 @@ import {
   normalizarNomeDeWorkflow,
   nomeDoWorkflowNaIdentidadeLegada,
   houveRunConcluidaDesde,
+  comentarFechamentoDeIncidente,
 } from '../services/fechar-incidente-resolvido.js'
 import { reconciliarIncidentesLegados } from '../services/reconciliar-incidentes-legados.js'
 import { runRetroDeInfra } from '../services/retro-de-infra.js'
@@ -5373,6 +5374,23 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       })
       if (!resp.ok) throw new Error(`GitHub PATCH ${path} → ${resp.status}`)
     }
+    // L4-T1b (achado 1 da auditoria de segurança): mesmo molde de `ghPatch`,
+    // no MESMO `ghComGuarda` — o comentário de fechamento (mais abaixo) usava
+    // `fetch` cru para POST, por fora da guarda de autonomia que o PATCH
+    // vizinho respeita. Com `ghPost` os dois passam pela mesma porta.
+    const ghPost = async (path: string, body: unknown): Promise<void> => {
+      const resp = await ghComGuarda(`https://api.github.com${path}`, {
+        method: 'POST',
+        headers: {
+          authorization: `token ${railsToken}`,
+          accept: 'application/vnd.github+json',
+          'user-agent': 'gitorch',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      })
+      if (!resp.ok) throw new Error(`GitHub POST ${path} → ${resp.status}`)
+    }
 
     // L4-T1: incidentes abertos ANTES de `infra_incidents` existir (ou que
     // escaparam de `registrarIncidente`) só têm a issue no GitHub — sem
@@ -5610,19 +5628,14 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           state: 'closed',
           state_reason: 'completed',
         })
-        await fetch(
-          `https://api.github.com/repos/${project.wingId}/issues/${issueNumber}/comments`,
-          {
-            method: 'POST',
-            headers: {
-              authorization: `token ${railsToken}`,
-              accept: 'application/vnd.github+json',
-              'user-agent': 'gitorch',
-              'content-type': 'application/json',
-            },
-            body: JSON.stringify({ body: comentario }),
-          }
-        ).catch(() => undefined)
+        // L4-T1b (achado 1 da auditoria): antes ia por `fetch` cru — por
+        // fora da guarda de autonomia do PATCH acima e engolindo qualquer
+        // erro em `.catch(() => undefined)`. Agora usa o mesmo `ghPost`
+        // guardado, e falha vira `app.log.warn` (nunca desaparece muda).
+        await comentarFechamentoDeIncidente(project.wingId, issueNumber, comentario, {
+          postarComentario: ghPost,
+          onWarn: (mensagem) => app.log.warn(`[Scheduler] ${mensagem}`),
+        })
       },
       limparIncidente: async (id) => {
         await app.prisma.infraIncident.update({

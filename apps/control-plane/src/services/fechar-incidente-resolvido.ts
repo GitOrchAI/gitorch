@@ -125,6 +125,13 @@ export function decidirFechamentoDeIncidente(
   // — não há mais run nenhuma para provar "ficou verde", e esperar por uma
   // deixaria o incidente aberto para sempre. Prioridade sobre qualquer outra
   // regra: a ausência do workflow É a prova de que o incidente acabou.
+  //
+  // L4-T1b (achado 3 da auditoria, ACEITO — regra não muda): sim, quem apaga
+  // o arquivo do workflow induz este fechamento. Aceito porque só um
+  // MANTENEDOR do repositório do cliente tem permissão de apagar workflow; o
+  // motivo fica explícito no comentário de fechamento (auditável); a issue
+  // pode ser reaberta manualmente a qualquer momento; e sem o workflow não
+  // sobra nada para este incidente monitorar de qualquer forma.
   if (sit.workflowExiste === false) {
     return { fecharIssue: true, limparIncidente: true, motivo: 'workflow removido do repositório' }
   }
@@ -248,6 +255,47 @@ export interface AchadoParaAgrupar {
  * #24/#188/#216: mesmo `.github/workflows/dependabot-to-jules.yml`, mesmo
  * "npm ci" quebrado.)
  */
+// --- L4-T1b: comentário de fechamento pela MESMA guarda do fechamento -----
+
+export interface ComentarFechamentoDeps {
+  /**
+   * POST guardado — em `scheduler.ts` é o `ghPost` que passa por
+   * `ghComGuarda` (`guardaPorRepositorio`), o MESMO caminho do `ghPatch` que
+   * fecha a issue. NUNCA `fetch` cru: era assim que, em projeto
+   * 'so-olhar' (autonomia que barra escrita), o PATCH de fechamento era
+   * recusado mas o comentário era gravado do mesmo jeito — a guarda de
+   * autonomia valia para metade da ação, não para a ação inteira.
+   */
+  postarComentario: (path: string, body: unknown) => Promise<void>
+  /** Falha do POST NUNCA desaparece em silêncio — vira warn com contexto (nunca o token). */
+  onWarn?: (mensagem: string) => void
+}
+
+/**
+ * L4-T1b (achado 1 da auditoria de segurança): grava o comentário de
+ * fechamento pelo mesmo caminho guardado do PATCH que fecha a issue. Best-
+ * effort quanto ao RESULTADO da varredura (uma falha aqui não derruba o
+ * fechamento da issue, que já aconteceu antes desta chamada) — mas a falha
+ * em si é sempre reportada via `onWarn`, nunca engolida com um `.catch(() =>
+ * undefined)` mudo.
+ */
+export async function comentarFechamentoDeIncidente(
+  repo: string,
+  issueNumber: number,
+  comentario: string,
+  deps: ComentarFechamentoDeps
+): Promise<void> {
+  try {
+    await deps.postarComentario(`/repos/${repo}/issues/${issueNumber}/comments`, {
+      body: comentario,
+    })
+  } catch (err) {
+    deps.onWarn?.(
+      `comentar-fechamento-de-incidente: ${repo}#${issueNumber} — ${String(err).slice(0, 200)}`
+    )
+  }
+}
+
 export function mesmaCausa(a: AchadoParaAgrupar, b: AchadoParaAgrupar): boolean {
   if (a.identidadeEstavel === b.identidadeEstavel) return true
   const pathsA = new Set(a.paths)

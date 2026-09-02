@@ -24,6 +24,27 @@ describe('identidadeDoMarcador', () => {
     expect(identidadeDoMarcador(undefined)).toBeNull()
     expect(identidadeDoMarcador('')).toBeNull()
   })
+
+  // L4-T1b (achado 2 da auditoria): a identidade vem do corpo da issue —
+  // entrada NÃO confiável (qualquer um com permissão de comentar/editar a
+  // issue no repositório do cliente escreve o corpo) — e ia sem limite para
+  // `infra_incidents.identidade_estavel`. Endurece: trim, teto de 200
+  // caracteres, e marcador vazio/só espaços vira null (nunca string vazia).
+  it('identidade maior que 200 caracteres → corta em 200', () => {
+    const bruta = 'x'.repeat(300)
+    const resultado = identidadeDoMarcador(`<!-- gitorch:incident:${bruta} -->`)
+    expect(resultado).not.toBeNull()
+    expect(resultado).toHaveLength(200)
+    expect(resultado).toBe('x'.repeat(200))
+  })
+
+  it('marcador vazio → null (não string vazia)', () => {
+    expect(identidadeDoMarcador('<!-- gitorch:incident: -->')).toBeNull()
+  })
+
+  it('marcador só espaços → null', () => {
+    expect(identidadeDoMarcador('<!-- gitorch:incident:    -->')).toBeNull()
+  })
 })
 
 describe('reconciliarIncidentesLegados', () => {
