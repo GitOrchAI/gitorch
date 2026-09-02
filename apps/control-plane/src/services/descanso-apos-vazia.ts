@@ -56,6 +56,14 @@ export type OrigemDoDisparo =
   | 'sob-demanda'
   /** Cascata de onboarding de um projeto novo. */
   | 'onboarding'
+  /**
+   * D16: o control-plane RETOMOU sozinho, na subida do processo, uma vez
+   * pendente que sobreviveu a um restart (persistida em VezPendente — ver
+   * services/vez-pendente.ts). Mesmo motivo de 'esteira': o papel anterior
+   * terminou e deixou trabalho pronto; só que desta vez a informação
+   * atravessou um restart em vez de continuar no mesmo processo.
+   */
+  | 'boot'
 
 /**
  * Origens que trazem INFORMAÇÃO NOVA e por isso furam o descanso.
@@ -75,6 +83,9 @@ const ORIGENS_QUE_FURAM: ReadonlySet<OrigemDoDisparo> = new Set<OrigemDoDisparo>
   'esteira',
   'sob-demanda',
   'onboarding',
+  // Pelo MESMO motivo de 'esteira' — só que a informação atravessou um
+  // restart do processo em vez de continuar no mesmo (D16, vez-pendente.ts).
+  'boot',
 ])
 
 export function origemFuraODescanso(origem: OrigemDoDisparo): boolean {

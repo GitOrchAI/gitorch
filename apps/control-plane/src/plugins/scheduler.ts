@@ -69,6 +69,11 @@ import {
   type PrismaParaTrava,
 } from '../services/trava-de-renovacao.js'
 import { criarPassagemDeBastao } from '../services/passar-o-bastao.js'
+import {
+  registrarBastaoPendente,
+  removerBastaoPendente,
+  retomarVezesPendentesNoBoot,
+} from '../services/vez-pendente.js'
 import { criarRegistroDeMotorMorto } from '../services/motor-em-pausa.js'
 import { criarRegistroDeDescanso, type OrigemDoDisparo } from '../services/descanso-apos-vazia.js'
 import { tetosDoPlanoDoDev } from '../services/plano-do-dev.js'
@@ -4188,7 +4193,24 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           // Acordada em falso NÃO passa o bastão: se o papel não achou nada
           // para fazer, não há trabalho novo esperando o seguinte, e acordá-lo
           // seria gastar motor para ouvir o mesmo silêncio.
-          if (!isNoOp) passagemDeBastao.passar(role, project.id)
+          if (!isNoOp) {
+            passagemDeBastao.passar(role, project.id)
+            // D16: a fila acima é em memória e morre num restart. `await`,
+            // não fire-and-forget — gravar DEPOIS de mover para o próximo
+            // passo (refresh de cota, saveMissionMemory) reabriria a mesma
+            // janela de perda que esta gravação existe para fechar: um
+            // restart entre "enfileirei em memória" e "persisti" perderia a
+            // vez de novo. Falha aqui não derruba a missão que ACABOU de
+            // completar com sucesso — best-effort, log honesto; o pior caso
+            // é a fila em memória cobrir sozinha até o próximo restart,
+            // exatamente o comportamento de antes desta tarefa.
+            await registrarBastaoPendente(app.prisma, role, project.id).catch((err: unknown) =>
+              app.log.error(
+                err,
+                `[Scheduler] falha ao persistir vez pendente para ${role} em ${project.id}`
+              )
+            )
+          }
 
           // Medição de consumo (ideia do owner): refresca a quota do motor que
           // rodou e grava a diferença antes−depois na missão. Best-effort: nunca
@@ -4506,6 +4528,18 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       )
       return
     }
+    // D16: a vez foi HONRADA (disparou, ou falhou por motivo definitivo, não
+    // por "estou ocupado agora") — a linha persistida não precisa mais
+    // sobreviver a um restart, porque não há mais nada pendente para
+    // retomar. Melhor-esforço: se a limpeza falhar, o pior caso é um
+    // redisparo redundante no próximo boot (gasta motor à toa, nunca perde
+    // trabalho), e cai sob o mesmo teto de tentativas do retomador.
+    await removerBastaoPendente(app.prisma, vez.papel, vez.projectId).catch((err: unknown) =>
+      app.log.warn(
+        err,
+        `[Scheduler] falha ao limpar vez pendente persistida de ${vez.papel} em ${vez.projectId}`
+      )
+    )
     if (resultado.triggered) {
       app.log.info(`[Scheduler] a esteira passou o bastão para ${vez.papel} em ${vez.projectId}`)
     }
@@ -9448,6 +9482,35 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
 
   // Exposto para rotas administrativas e QA real dispararem missões sob demanda.
   app.decorate('triggerAgentMission', triggerAgentMission)
+
+  // D16: NO BOOT, retoma. Toda vez pendente persistida (VezPendente,
+  // gravada no mesmo instante em que passagemDeBastao.passar() enfileira em
+  // memória — ver o handler de missão completada acima) dispara o papel
+  // seguinte AQUI, na subida do processo — sem esperar o próximo tique nem
+  // o cron do papel. É a PROVA do D16: o trabalho que um restart deixaria
+  // preso por até 9 horas volta a andar na subida do próprio processo que
+  // causou a perda.
+  //
+  // Fire-and-forget, mesmo padrão do ceifador de boot logo acima (não
+  // atrasa o boot do servidor) — deliberadamente SEM depender da ordem
+  // entre os dois: se o ceifador ainda não marcou a missão órfã como
+  // `failed` quando este disparo roda, o pior caso é o teto de
+  // concorrência recusar como 'busy' (motivo RETRYABLE, RETRYABLE_REASONS
+  // acima) — a vez volta para a fila EM MEMÓRIA e o próprio tique (60s
+  // depois, bem antes do ceifador terminar de qualquer forma) tenta de
+  // novo. Nunca sob teste, mesmo motivo do ceifador: a suíte roda contra
+  // Prisma de teste e disparar missão real aqui quebraria isolamento.
+  if (process.env['NODE_ENV'] !== 'test') {
+    void retomarVezesPendentesNoBoot(
+      app.prisma,
+      app.log,
+      (papel, projectId) => triggerAgentMission(papel, projectId, undefined, 'boot'),
+      (vez) => passagemDeBastao.devolver(vez),
+      RETRYABLE_REASONS
+    ).catch((err: unknown) =>
+      app.log.error(err, '[Scheduler] retomada de vez pendente no boot falhou inesperadamente')
+    )
+  }
 })
 
 declare module 'fastify' {

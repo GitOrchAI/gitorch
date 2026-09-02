@@ -50,6 +50,7 @@ describe('MIGRATION_LEDGER', () => {
       'catalogo-de-modelos-colado-migration.sql',
       'catalogo-por-relogio-migration.sql',
       'incremento-campos-do-desenho-migration.sql',
+      'vez-pendente-migration.sql',
     ])
   })
 })
