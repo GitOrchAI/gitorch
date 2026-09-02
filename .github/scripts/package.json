@@ -3,15 +3,12 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "GitHub Actions automation for Dependabot alerts + Jules AI agent workflow",
+  "description": "Scripts de automacao do repositorio (SLA tracker + regra de elegibilidade de PR)",
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --ext .ts",
     "test": "vitest run",
-    "generate-jules-prompt": "tsx generate-jules-prompt.ts",
-    "analyze-conflicts": "tsx analyze-conflicts.ts",
-    "analyze-ci-failure": "tsx analyze-ci-failure.ts",
     "sla-tracker": "tsx sla-tracker.ts"
   },
   "dependencies": {
