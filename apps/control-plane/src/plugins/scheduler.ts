@@ -93,6 +93,7 @@ import {
   varrerIncidentesResolvidos,
   normalizarNomeDeWorkflow,
   nomeDoWorkflowNaIdentidadeLegada,
+  houveRunConcluidaDesde,
 } from '../services/fechar-incidente-resolvido.js'
 import { reconciliarIncidentesLegados } from '../services/reconciliar-incidentes-legados.js'
 import { runRetroDeInfra } from '../services/retro-de-infra.js'
@@ -5571,14 +5572,22 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             const run = todasAsRuns[0]
             if (run) {
               ultimaRunVerde = run.conclusion === 'success'
-              const runEm = run.run_started_at ?? run.created_at
-              rodouDepoisDoPr = Boolean(mergedAt && runEm && runEm > mergedAt)
             }
+            // L4-T1 (fix-up): "desde" é `mergedAt ?? firstSeenAt` — nunca só
+            // `mergedAt`, senão um PR confirmado por outra via (ex.:
+            // `closedReason: 'merged'` da sessão, quando a API do PR não
+            // está legível) deixaria `mergedAt` nulo e `rodouDepoisDoPr`
+            // travado em `false` para sempre, mesmo com runs novas.
+            const desde = mergedAt ?? inc.firstSeenAt.toISOString()
+            // `houveRunConcluidaDesde` conta QUALQUER run concluída (não só
+            // success/failure) — "skipped" também prova que o workflow
+            // voltou a rodar (caso real #3681, jules-api-retry.yml, que só
+            // dispara "skipped" desde o conserto).
+            rodouDepoisDoPr = houveRunConcluidaDesde(todasAsRuns, desde)
             // L4-T1: prova negativa para quando o workflow nunca mais roda
             // "success" (ex.: passou a só disparar "skipped") — desde o
             // merge (ou, sem isso, desde o primeiro avistamento do
             // incidente), nenhuma run falhou?
-            const desde = mergedAt ?? inc.firstSeenAt.toISOString()
             houveFalhaDesdeOPr = todasAsRuns.some((rr) => {
               const criadoEm = rr.run_started_at ?? rr.created_at
               return rr.conclusion === 'failure' && Boolean(criadoEm && criadoEm >= desde)

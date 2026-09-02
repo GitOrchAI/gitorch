@@ -7,6 +7,7 @@ import {
   varrerIncidentesResolvidos,
   normalizarNomeDeWorkflow,
   nomeDoWorkflowNaIdentidadeLegada,
+  houveRunConcluidaDesde,
   type IncidenteAberto,
 } from './fechar-incidente-resolvido.js'
 
@@ -106,13 +107,33 @@ describe('decidirFechamentoDeIncidente', () => {
     expect(d.limparIncidente).toBe(false)
   })
 
-  // L4-T1: caso real (#3681, jules-api-retry.yml) — o workflow só tem runs
-  // "skipped" desde o conserto, nunca "success", então `ultimaRunVerde` nunca
-  // fica true. A prova de que sarou não é "ficou verde", é "não falhou mais".
-  it('PR mesclado e nenhuma falha do workflow desde então → fecha mesmo sem run verde explícita', () => {
+  // L4-T1 (fix-up crítico): PR mesclado às 14h, o workflow AINDA NÃO RODOU
+  // desde então — "nenhuma run" não pode virar "nenhuma falha". Sem isso, o
+  // workflow roda às 15h e falha com o incidente já fechado. Tem que ficar
+  // "aguardando", nunca fechar, enquanto `rodouDepoisDoPr` for false.
+  it('PR mesclado, workflow AINDA NÃO rodou desde o merge → não fecha mesmo com houveFalhaDesdeOPr false', () => {
     const d = decidirFechamentoDeIncidente(inc(), {
       ultimaRunVerde: false,
       rodouDepoisDoPr: false,
+      prMesclado: true,
+      houveFalhaDesdeOPr: false,
+    })
+    expect(d).toMatchObject({
+      fecharIssue: false,
+      limparIncidente: false,
+      motivo: 'PR mesclado, esperando a próxima run do workflow',
+    })
+  })
+
+  // L4-T1: caso real (#3681, jules-api-retry.yml) — o workflow só tem runs
+  // "skipped" desde o conserto, nunca "success", então `ultimaRunVerde` nunca
+  // fica true. A prova de que sarou não é "ficou verde", é "não falhou mais"
+  // — mas só conta depois que o workflow de fato rodou de novo (skipped já
+  // é "rodou").
+  it('PR mesclado, HOUVE run depois do PR (mesmo só skipped) e nenhuma falha → fecha', () => {
+    const d = decidirFechamentoDeIncidente(inc(), {
+      ultimaRunVerde: false,
+      rodouDepoisDoPr: true,
       prMesclado: true,
       houveFalhaDesdeOPr: false,
     })
@@ -158,6 +179,60 @@ describe('nomeDoWorkflowNaIdentidadeLegada', () => {
   it('identidade não-ci (wf:/dependabot:) devolve null — não é uma identidade legada', () => {
     expect(nomeDoWorkflowNaIdentidadeLegada('wf:11')).toBeNull()
     expect(nomeDoWorkflowNaIdentidadeLegada('dependabot:updates')).toBeNull()
+  })
+})
+
+describe('houveRunConcluidaDesde', () => {
+  // L4-T1 (fix-up): esta é a regra que decide `rodouDepoisDoPr` no scheduler.
+  // Caso real #3681: desde 13/08 o workflow só dispara runs "skipped" — isso
+  // TEM que contar como "rodou", senão o incidente nunca fecha por essa via.
+  it('run "skipped" depois do corte conta como rodou', () => {
+    expect(
+      houveRunConcluidaDesde(
+        [{ conclusion: 'skipped', run_started_at: '2026-08-13T10:00:00.000Z' }],
+        '2026-08-13T09:00:00.000Z'
+      )
+    ).toBe(true)
+  })
+
+  it('run "cancelled" depois do corte também conta', () => {
+    expect(
+      houveRunConcluidaDesde(
+        [{ conclusion: 'cancelled', run_started_at: '2026-08-13T10:00:00.000Z' }],
+        '2026-08-13T09:00:00.000Z'
+      )
+    ).toBe(true)
+  })
+
+  it('run ainda em andamento (conclusion nulo) NÃO conta como concluída', () => {
+    expect(
+      houveRunConcluidaDesde(
+        [{ conclusion: null, run_started_at: '2026-08-13T10:00:00.000Z' }],
+        '2026-08-13T09:00:00.000Z'
+      )
+    ).toBe(false)
+  })
+
+  it('run concluída ANTES do corte não conta', () => {
+    expect(
+      houveRunConcluidaDesde(
+        [{ conclusion: 'success', run_started_at: '2026-08-13T08:00:00.000Z' }],
+        '2026-08-13T09:00:00.000Z'
+      )
+    ).toBe(false)
+  })
+
+  it('lista vazia → false', () => {
+    expect(houveRunConcluidaDesde([], '2026-08-13T09:00:00.000Z')).toBe(false)
+  })
+
+  it('usa created_at quando run_started_at não vem', () => {
+    expect(
+      houveRunConcluidaDesde(
+        [{ conclusion: 'success', created_at: '2026-08-13T10:00:00.000Z' }],
+        '2026-08-13T09:00:00.000Z'
+      )
+    ).toBe(true)
   })
 })
 

@@ -145,17 +145,11 @@ export function decidirFechamentoDeIncidente(
   if (sit.ultimaRunVerde && sit.rodouDepoisDoPr) {
     return { fecharIssue: true, limparIncidente: true, motivo: 'workflow verde depois do conserto' }
   }
-  // L4-T1: caso real (#3681, jules-api-retry.yml) — o workflow passou a só
-  // disparar runs "skipped" depois do conserto, nunca "success", então
-  // `ultimaRunVerde` nunca fica true. Quando dá para provar que NÃO houve
-  // falha desde o PR, isso já basta — não exige um verde que pode nunca vir.
-  if (sit.prMesclado && sit.houveFalhaDesdeOPr === false) {
-    return {
-      fecharIssue: true,
-      limparIncidente: true,
-      motivo: 'sem falha do workflow desde a correção',
-    }
-  }
+  // L4-T1 (fix-up crítico): "nenhuma falha" só prova conserto se o workflow
+  // JÁ RODOU depois do PR. Sem `rodouDepoisDoPr`, "nenhuma run" e "nenhuma
+  // falha" são a MESMA coisa — fechar aqui fecharia às 14h (PR mesclado,
+  // workflow ainda não rodou) e o workflow falharia às 15h com o incidente
+  // já fechado. Por isso este `if` vem ANTES e barra o caso sem run.
   if (sit.prMesclado && !sit.rodouDepoisDoPr) {
     return {
       fecharIssue: false,
@@ -163,7 +157,48 @@ export function decidirFechamentoDeIncidente(
       motivo: 'PR mesclado, esperando a próxima run do workflow',
     }
   }
+  // L4-T1: caso real (#3681, jules-api-retry.yml) — o workflow passou a só
+  // disparar runs "skipped" depois do conserto, nunca "success", então
+  // `ultimaRunVerde` nunca fica true. Quando dá para provar que NÃO houve
+  // falha desde o PR (e o workflow já rodou de novo — checado acima), isso
+  // já basta — não exige um verde que pode nunca vir.
+  if (sit.prMesclado && sit.rodouDepoisDoPr && sit.houveFalhaDesdeOPr === false) {
+    return {
+      fecharIssue: true,
+      limparIncidente: true,
+      motivo: 'sem falha do workflow desde a correção',
+    }
+  }
   return { fecharIssue: false, limparIncidente: false, motivo: 'nada mudou' }
+}
+
+// --- L4-T1 (fix-up): calcular `rodouDepoisDoPr` como função pura testável -
+
+/** Um run de workflow do GitHub Actions, só os campos que interessam aqui. */
+export interface RunDoWorkflowParaCorte {
+  conclusion?: string | null
+  run_started_at?: string
+  created_at?: string
+}
+
+/**
+ * Regra pura. Havia alguma run do workflow CONCLUÍDA (`conclusion` não nulo —
+ * `success`, `failure`, `skipped`, `cancelled`, etc. todas contam) desde
+ * `desde` (ISO 8601, tipicamente `mergedAt ?? firstSeenAt`)?
+ *
+ * `skipped` conta como "rodou" de propósito: o caso real #3681
+ * (`jules-api-retry.yml`) passou a só disparar runs "skipped" desde o
+ * conserto, nunca "success" — e mesmo assim isso prova que o workflow voltou
+ * a rodar depois do PR, o que é exatamente o que `rodouDepoisDoPr` precisa
+ * responder. Uma run ainda em andamento (`conclusion` nulo/undefined) não
+ * conta — ela não terminou, não prova nada ainda.
+ */
+export function houveRunConcluidaDesde(runs: RunDoWorkflowParaCorte[], desde: string): boolean {
+  return runs.some((r) => {
+    if (!r.conclusion) return false
+    const quando = r.run_started_at ?? r.created_at
+    return quando !== undefined && quando >= desde
+  })
 }
 
 // --- L4-T1: casar identidade legada (ci:<nome>) com o workflow real -------
