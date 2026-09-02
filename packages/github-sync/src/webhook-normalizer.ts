@@ -56,6 +56,7 @@ function normalizeIssue(envelope: GitHubDeliveryEnvelope): GitHubSyncEvent {
     blockedByNodeIds: namedNodeIdsOrNames(issue['blocked_by'], 'node_id'),
     blockingNodeIds: namedNodeIdsOrNames(issue['blocking'], 'node_id'),
     projectItemIds: namedNodeIdsOrNames(issue['project_items'], 'id'),
+    wishCreatedAt: optionalString(issue, 'created_at'),
   }
 
   return {

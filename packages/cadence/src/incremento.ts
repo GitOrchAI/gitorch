@@ -70,6 +70,10 @@ export interface FatosDaEntrega {
   deployState: string | null
   /** 'no-ar' | 'inalcancavel' — o ensaio do ambiente do cliente. */
   envLastVerdict: string | null
+  /** Quando o pedido (issue) foi criado. */
+  wishCreatedAt?: string
+  /** Quando a entrega (PR) foi mesclada. */
+  mergedAt?: string
 }
 
 export type ReguaDePronto = Readonly<Partial<Record<CriterioDePronto, boolean>>>

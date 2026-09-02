@@ -146,6 +146,7 @@ test('normalizes issues with issue type and project item ids', () => {
         blocked_by: [{ node_id: 'I_41' }],
         blocking: [],
         project_items: [{ id: 'PVTI_42' }],
+        created_at: '2026-06-23T12:00:00.000Z',
       },
     },
   } satisfies GitHubDeliveryEnvelope)
@@ -157,5 +158,6 @@ test('normalizes issues with issue type and project item ids', () => {
     subIssueNodeIds: ['I_43'],
     blockedByNodeIds: ['I_41'],
     projectItemIds: ['PVTI_42'],
+    wishCreatedAt: '2026-06-23T12:00:00.000Z',
   })
 })

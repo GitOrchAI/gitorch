@@ -23,6 +23,8 @@ import {
 export interface EntregaCandidata extends FatosDaEntrega {
   projectId: string
   issueNumber: number
+  wishCreatedAt?: string
+  mergedAt?: string
 }
 
 /** O que a tela mostra de cada entrega. */
@@ -50,6 +52,8 @@ export interface DepsDoIncremento {
     mergeCommitSha: string | null
     reguaAplicada: Record<CriterioDePronto, boolean>
     criterios: CriterioDePronto[]
+    wishCreatedAt?: string
+    mergedAt?: string
   }) => Promise<void>
   /** Já existe Incremento para este pedido? */
   jaRegistrado: (projectId: string, issueNumber: number) => Promise<boolean>
@@ -88,6 +92,8 @@ export async function registrarSePronto(
     mergeCommitSha: entrega.mergeCommitSha,
     reguaAplicada: regua,
     criterios: veredito.atendidos,
+    ...(entrega.wishCreatedAt && { wishCreatedAt: entrega.wishCreatedAt }),
+    ...(entrega.mergedAt && { mergedAt: entrega.mergedAt }),
   })
 
   return veredito

@@ -6551,6 +6551,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 mergeCommitSha: dados.mergeCommitSha,
                 reguaAplicada: dados.reguaAplicada,
                 criterios: dados.criterios,
+                ...(dados.wishCreatedAt && { wishCreatedAt: dados.wishCreatedAt }),
+                ...(dados.mergedAt && { mergedAt: dados.mergedAt }),
               },
             })
           },
@@ -6564,6 +6566,10 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           // linha em memória é anterior à escrita.
           deployState: args.estado,
           envLastVerdict: args.sessao.envLastVerdict ?? null,
+          ...(args.sessao.wishCreatedAt && {
+            wishCreatedAt: args.sessao.wishCreatedAt.toISOString(),
+          }),
+          ...(args.sessao.mergedAt && { mergedAt: args.sessao.mergedAt.toISOString() }),
         }
       )
     } catch (err) {

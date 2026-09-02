@@ -142,7 +142,13 @@ export async function ligarPrDaEntrega(deps: {
   event: string | undefined
   payload: {
     action?: string
-    pull_request?: { number?: number; body?: string; head?: { ref?: string } }
+    pull_request?: {
+      number?: number
+      body?: string
+      head?: { ref?: string }
+      created_at?: string
+      merged_at?: string
+    }
   }
   agora?: Date
 }): Promise<{ sessionName: string; numeroDoPr: number } | null> {
@@ -163,11 +169,17 @@ export async function ligarPrDaEntrega(deps: {
   })
   if (!casamento) return null
 
+  const pr = deps.payload.pull_request
+  const wishCreatedAt = pr?.created_at ? new Date(pr.created_at) : undefined
+  const mergedAt = pr?.merged_at ? new Date(pr.merged_at) : undefined
+
   await registrarPr({
     prisma: deps.prisma,
     sessionName: casamento.sessionName,
     numeroDoPr,
     agora: deps.agora ?? new Date(),
+    ...(wishCreatedAt && { wishCreatedAt }),
+    ...(mergedAt && { mergedAt }),
   })
   return { sessionName: casamento.sessionName, numeroDoPr }
 }

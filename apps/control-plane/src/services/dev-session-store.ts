@@ -24,6 +24,8 @@ export interface LinhaDeSessao {
   attempts: number
   nudges: number
   lastProgressAt: Date | null
+  wishCreatedAt?: Date | null
+  mergedAt?: Date | null
   /**
    * Última vez que a vigia examinou esta sessão. É o que dá a cadência: sem
    * ele, cada tick reexaminaria toda sessão viva a cada minuto, gastando
@@ -526,10 +528,17 @@ export async function registrarPr(deps: {
   sessionName: string
   numeroDoPr: number
   agora: Date
+  wishCreatedAt?: Date
+  mergedAt?: Date
 }): Promise<void> {
   await deps.prisma.devSession.update({
     where: { sessionName: deps.sessionName },
-    data: { pullRequestNumber: deps.numeroDoPr, stateCheckedAt: deps.agora },
+    data: {
+      pullRequestNumber: deps.numeroDoPr,
+      stateCheckedAt: deps.agora,
+      ...(deps.wishCreatedAt !== undefined && { wishCreatedAt: deps.wishCreatedAt }),
+      ...(deps.mergedAt !== undefined && { mergedAt: deps.mergedAt }),
+    },
   })
 }
 
@@ -784,6 +793,7 @@ export async function registrarMescla(deps: {
   mergeCommitSha: string
   numeroDoPr: number
   agora: Date
+  mergedAt?: Date
 }): Promise<void> {
   await deps.prisma.devSession.update({
     where: { sessionName: deps.sessionName },
@@ -791,6 +801,7 @@ export async function registrarMescla(deps: {
       mergeCommitSha: deps.mergeCommitSha,
       pullRequestNumber: deps.numeroDoPr,
       stateCheckedAt: deps.agora,
+      ...(deps.mergedAt !== undefined && { mergedAt: deps.mergedAt }),
     },
   })
 }
