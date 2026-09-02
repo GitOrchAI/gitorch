@@ -30,11 +30,11 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Build static site
         working-directory: apps/web
+        run: pnpm build
         env:
           NEXT_PUBLIC_API_URL: ${{ vars.GITORCH_PUBLIC_API_URL }}
           NEXT_PUBLIC_BASE_PATH: ${{ vars.GITORCH_PAGES_BASE_PATH }}
           NEXT_PUBLIC_GITHUB_REPO: ${{ github.repository }}
-        run: pnpm --filter web build
       - name: Assert basePath nas páginas (home + setup + painel)
         working-directory: apps/web
         env:
