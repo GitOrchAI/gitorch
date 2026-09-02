@@ -1,5 +1,6 @@
 import Fastify from 'fastify'
 import { describe, expect, it, vi } from 'vitest'
+import { EscritaNaoAutorizadaError } from '@gitorch/cadence'
 import { desejosRoutes, type DependenciasDeDesejos } from './desejos.js'
 import { LIMITE_DO_TEXTO_DO_DESEJO } from '../services/desejo.js'
 import {
@@ -285,6 +286,30 @@ describe('POST /api/v1/desejos', () => {
     })
     expect(r.statusCode).toBe(201)
     expect(criarIssue).toHaveBeenCalled()
+  })
+
+  it('quando o projeto está em só olhar, recusa com 403 e AUTONOMIA_INSUFICIENTE', async () => {
+    const app = appDeTeste({
+      buscarProjeto: vi.fn().mockResolvedValue(projeto),
+      criarIssue: vi
+        .fn()
+        .mockRejectedValue(
+          new EscritaNaoAutorizadaError(
+            'propor',
+            'so_olhar',
+            'sugerir',
+            'Não posso propor trabalho (abrir pedido, abrir entrega, comentar): você me deixou em "Só olhar".'
+          )
+        ),
+    })
+    const r = await app.inject({
+      method: 'POST',
+      url: '/api/v1/desejos',
+      payload: { projectId: 'p1', texto: 'quero busca por cor' },
+    })
+    expect(r.statusCode).toBe(403)
+    expect(r.json().code).toBe('AUTONOMIA_INSUFICIENTE')
+    expect(r.json().error).toContain('Só olhar')
   })
 })
 

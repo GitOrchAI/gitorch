@@ -43,6 +43,7 @@ const ERRO_SESSAO = 'dashboard.wishErrorSession'
 // nesse repositório" — que entrar de novo NÃO resolve — e "não consegui
 // confirmar agora", que é indisponibilidade e pede só uma nova tentativa.
 const ERRO_ACESSO_AO_REPO = 'dashboard.wishErrorRepoAccess'
+const ERRO_AUTONOMIA = 'dashboard.wishErrorAutonomy'
 const ERRO_REPO_NAO_VERIFICADO = 'dashboard.wishErrorRepoUnverified'
 // Terceiro fato que morava escondido dentro do "não consegui confirmar": a
 // conexão com o GitHub morreu (credencial expirada ou revogada). Tem conserto
@@ -265,6 +266,7 @@ function chaveDaRecusa(status: number, code: string | null): string {
   // falavam a mesma frase, quem teve a credencial revogada lia "tente de novo
   // em instantes" para sempre.
   if (status === 503 && code === 'GITHUB_DESCONECTADO') return ERRO_GITHUB_DESCONECTADO
+  if (status === 403 && code === 'AUTONOMIA_INSUFICIENTE') return ERRO_AUTONOMIA
   return chaveDoStatus(status)
 }
 

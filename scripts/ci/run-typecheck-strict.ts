@@ -44,8 +44,10 @@ type PnpmWorkspacePackage = {
 
 const repoRoot = process.cwd()
 
+const pnpmCmd = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
+
 function listRealWorkspaces(): PnpmWorkspacePackage[] {
-  const raw = execFileSync('pnpm', ['-r', 'list', '--depth', '-1', '--json'], {
+  const raw = execFileSync(pnpmCmd, ['-r', 'list', '--depth', '-1', '--json'], {
     encoding: 'utf8',
   })
   const all = JSON.parse(raw) as PnpmWorkspacePackage[]
@@ -56,7 +58,7 @@ function listRealWorkspaces(): PnpmWorkspacePackage[] {
 }
 
 function turboReachablePackageNames(): Set<string> {
-  const raw = execFileSync('pnpm', ['exec', 'turbo', 'run', 'build', '--dry=json'], {
+  const raw = execFileSync(pnpmCmd, ['exec', 'turbo', 'run', 'build', '--dry=json'], {
     encoding: 'utf8',
   })
   // A CLI do turbo imprime uma linha de log ("• turbo x.y.z") antes do JSON.
@@ -87,7 +89,7 @@ function ensurePrismaClientIsGenerated(): void {
   // aqui. Gerar de novo é idempotente e rápido — deixa este script correto
   // não importa quem o chama primeiro (CI, pre-commit local, ou alguém
   // rodando `pnpm run typecheck:strict` à mão).
-  execFileSync('pnpm', ['--filter', '@gitorch/control-plane', 'exec', 'prisma', 'generate'], {
+  execFileSync(pnpmCmd, ['--filter', '@gitorch/control-plane', 'exec', 'prisma', 'generate'], {
     stdio: 'inherit',
   })
 }
@@ -118,4 +120,4 @@ if (uncovered.length > 0) {
 
 ensurePrismaClientIsGenerated()
 
-execFileSync('pnpm', ['exec', 'turbo', 'run', 'build'], { stdio: 'inherit' })
+execFileSync(pnpmCmd, ['exec', 'turbo', 'run', 'build'], { stdio: 'inherit' })

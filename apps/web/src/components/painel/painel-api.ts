@@ -139,6 +139,8 @@ export function fraseDoErroDePedido(e: {
 }): string {
   if (e.code === 'REPO_SEM_ACESSO')
     return 'Você não tem mais acesso de escrita a este repositório no GitHub, então não dá para registrar o pedido nele.'
+  if (e.code === 'AUTONOMIA_INSUFICIENTE')
+    return 'Este projeto está configurado como "Só olhar", que não permite criar pedidos. Mude a autonomia para "Sugerir" ou "Cuidar" e tente de novo.'
   if (e.code === 'GITHUB_DESCONECTADO')
     return 'Sua conexão com o GitHub não vale mais. Reconecte sua conta e mande de novo.'
   if (e.code === 'REPO_NAO_VERIFICAVEL')
