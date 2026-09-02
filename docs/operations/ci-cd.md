@@ -77,6 +77,8 @@ O job `scripts-de-automacao` fecha isso: instala pelo lockfile do próprio diret
 cd .github/scripts && npm ci && npm run typecheck && npm test
 ```
 
+Em 02/09/2026, por decisão do dono (D62, o GitOrch é a única esteira), saíram os 6 workflows que acionavam o Jules por fora do produto (`code-scanning-to-jules`, `dependabot-to-jules`, `jules-apology-handler`, `jules-auto-recovery`, `jules-pr-ci-failure`, `jules-pr-conflict`) e os scripts e libs que só serviam a eles. Ficaram `sla-tracker.ts`/`sla-tracker.yml` e `lib/pr-eligibility.ts` (lido por `vigia-do-pr.test.ts`). Detalhes em `.github/DEPENDABOT-JULES-AUTOMATION.md`.
+
 ## Merge automático e o portão do QA
 
 O `.github/workflows/auto-merge.yml` mescla sozinho **apenas** pull requests da automação de segurança: os do Dependabot e os do dev assíncrono que resolvem uma issue com label `dependabot`/`jules`. Qualquer outro pull request não entra por essa via.
