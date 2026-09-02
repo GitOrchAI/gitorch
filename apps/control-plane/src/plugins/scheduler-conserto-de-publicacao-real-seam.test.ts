@@ -94,6 +94,16 @@ function buildFakePrisma(
     project: {
       findUnique: vi.fn(async () => projeto),
       findMany: vi.fn(async () => []),
+      // `nascerDesejo` (achado A, revisão do fix-up 2) lê a autonomia REAL
+      // na hora de escrever, pelo `wingId` — o MESMO caminho que
+      // `guarda-de-autonomia.ts`/`routes/index.ts` já usam. Sem este mock,
+      // a leitura estoura (`findFirst` não existe) e a tarefa de conserto
+      // nunca abre, em NENHUM nível — o oposto do que este arquivo prova.
+      findFirst: vi.fn(async (args: { where?: { wingId?: string } }) =>
+        args?.where?.wingId === (projeto['wingId'] as string)
+          ? { autonomia: projeto['autonomia'] }
+          : null
+      ),
     },
     devSession: {
       findMany: vi.fn(async (args: { where?: { mergeCommitSha?: unknown } }) => {

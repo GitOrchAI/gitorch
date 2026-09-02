@@ -13,9 +13,7 @@ import {
   zerarTecladoDaMensagem,
   type TelegramDesejoDeps,
 } from '../services/telegram-bot.js'
-import { criarIssueDeDesejo } from '../services/desejo-no-github.js'
-import { resolverQuadroParaDesejo } from '../services/quadro-do-repositorio.js'
-import { guardaPorRepositorio } from '../services/guarda-de-autonomia.js'
+import { nascerDesejo } from '../services/nascer-desejo.js'
 import { PRAZO_DO_PENDENTE_MS } from '../services/desejo-pendente.js'
 import { projetosParaDesejo } from '../services/projetos-do-desejo.js'
 import { provaDeEscritaNoUso } from '../services/acesso-ao-repositorio.js'
@@ -178,38 +176,26 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
     // Comando endereçado a outro bot do grupo não é nosso. O nome sai da mesma
     // fonte que monta o deep link do wizard.
     nomeDoBot: telegramBotUsername(),
-    // L4-T8 (fix-up): "ao nascer" a issue de desejo pelo Telegram tenta o
-    // quadro do repositório ANTES de existir — MESMO caminho da porta HTTP
-    // (routes/index.ts) e da varredura periódica. Sem decisão 'usar', a
-    // issue nasce igual, sem card, e o motivo vira log.
-    criarIssue: async ({ repo, titulo, corpo, etiquetas, projectId }) => {
-      const quadro = await resolverQuadroParaDesejo(
-        { projectId, repo },
+    // Achado A (revisão do fix-up 2): "ao nascer" a issue de desejo pelo
+    // Telegram passa por `nascerDesejo` — o MESMO caminho único da porta
+    // HTTP (routes/index.ts) e da varredura periódica. Sem decisão 'usar'
+    // de quadro, a issue nasce igual, sem card, e o motivo vira log.
+    criarIssue: ({ repo, titulo, corpo, etiquetas, projectId }) =>
+      nascerDesejo(
+        {
+          projectId,
+          repo,
+          titulo,
+          corpo,
+          etiquetas,
+          log: { onError: (m) => app.log.error(m), onWarn: (m) => app.log.warn(m) },
+        },
         {
           prisma: app.prisma,
           engineConnections: app.engineConnections,
           onInfo: (m) => app.log.info(`[Telegram] ${m}`),
         }
-      )
-      return criarIssueDeDesejo({
-        repo,
-        titulo,
-        corpo,
-        etiquetas,
-        log: { onError: (m) => app.log.error(m), onWarn: (m) => app.log.warn(m) },
-        fetchImpl: guardaPorRepositorio(fetch, {
-          nivelDoRepositorio: async (r) => {
-            const l = await app.prisma.project.findFirst({
-              where: { wingId: r, isActive: true },
-              select: { autonomia: true },
-            })
-            return l?.autonomia ?? null
-          },
-          nossosRepositorios: new Set([process.env['GITORCH_SELF_REPO'] ?? 'GitOrchAI/gitorch']),
-        }),
-        ...(quadro ? { quadro } : {}),
-      })
-    },
+      ),
     // O pedido que ainda não sabe o projeto vive no BANCO, nunca na memória
     // do processo: entre a pergunta e o toque no botão o serviço reinicia
     // várias vezes por dia, e o dono clicaria no vazio.

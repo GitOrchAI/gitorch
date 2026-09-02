@@ -100,11 +100,20 @@ export async function resolverQuadroDoRepositorio(
   let token: string
 
   if ('projectId' in args) {
-    let projeto: { wingId?: string | null; userId?: string | null } | null
+    let projeto: {
+      wingId?: string | null
+      userId?: string | null
+      encryptedClientToken?: string | null
+    } | null
     try {
+      // Achado F (revisão do fix-up 2): os três campos numa ÚNICA leitura —
+      // `wingId`/`userId` (para achar o repositório) E `encryptedClientToken`
+      // (que `lerCredencialQueAlcancaOProjeto` leria de novo, pelo MESMO
+      // `projectId`, se não recebesse o valor já em mãos). Duas consultas
+      // idênticas ao mesmo registro por chamada nunca foi necessário.
       projeto = await deps.prisma.project.findUnique({
         where: { id: args.projectId },
-        select: { wingId: true, userId: true },
+        select: { wingId: true, userId: true, encryptedClientToken: true },
       })
     } catch (err) {
       return {
@@ -121,6 +130,7 @@ export async function resolverQuadroDoRepositorio(
       prisma: deps.prisma,
       projectId: args.projectId,
       userId: projeto.userId ?? null,
+      encryptedClientTokenJaLido: projeto.encryptedClientToken ?? null,
       ...(deps.engineConnections ? { engineConnections: deps.engineConnections } : {}),
     })
     if (!obtido) {
@@ -195,6 +205,37 @@ export interface DepsDeAnexarIncidenteAoQuadro extends DepsDoResolverQuadro {
   onWarn?: (mensagem: string, err: unknown) => void
 }
 
+/** O que os dois casos de `anexarIssueDeIncidenteAoQuadro` sempre têm. */
+interface ArgsComunsDeAnexarIncidente {
+  repo: string
+  issueNodeId: string
+  issueNumber: number
+}
+
+/**
+ * Achado E (revisão do fix-up 2): união discriminada por `ehORepoDoProduto`,
+ * SEM fallback silencioso. Antes, `projectId` era opcional e a checagem
+ * `args.ehORepoDoProduto || !args.projectId` decidia sozinha — um chamador
+ * que passasse `ehORepoDoProduto: false` e esquecesse `projectId` caía, em
+ * silêncio, no caminho de `{ repo, token }` (o do repo do PRODUTO), tentando
+ * resolver o quadro do CLIENTE com a credencial errada. Com a união, o
+ * TypeScript recusa essa combinação antes de rodar: `token` só existe
+ * quando `ehORepoDoProduto` é `true`; `projectId` só quando é `false`.
+ */
+export type ArgsDeAnexarIncidenteAoQuadro =
+  | (ArgsComunsDeAnexarIncidente & {
+      /** `repo` é o repositório do PRÓPRIO produto — sem `Project` no
+       *  banco; `token` já é a credencial certa. */
+      ehORepoDoProduto: true
+      token: string
+    })
+  | (ArgsComunsDeAnexarIncidente & {
+      /** `repo` é o repositório do CLIENTE; `projectId` resolve quadro e
+       *  credencial pelo caminho único (`resolverQuadroDoRepositorio`). */
+      ehORepoDoProduto: false
+      projectId: string
+    })
+
 /**
  * O `ghIssue` do incidente (plugins/scheduler.ts) usa isto DEPOIS de criar a
  * issue: pendura no quadro do repositório onde ela nasceu — o do CLIENTE ou
@@ -207,24 +248,13 @@ export interface DepsDeAnexarIncidenteAoQuadro extends DepsDoResolverQuadro {
  * vira log (`onInfo`/`onWarn`), nunca exceção.
  */
 export async function anexarIssueDeIncidenteAoQuadro(
-  args: {
-    repo: string
-    issueNodeId: string
-    issueNumber: number
-    /** Quando `true`, `repo` é o repositório do PRÓPRIO produto — sem
-     *  `Project` no banco; `token` já é a credencial certa. Quando `false`,
-     *  `projectId` é obrigatório. */
-    ehORepoDoProduto: boolean
-    projectId?: string
-    token: string
-  },
+  args: ArgsDeAnexarIncidenteAoQuadro,
   deps: DepsDeAnexarIncidenteAoQuadro
 ): Promise<void> {
   try {
-    const resolvido =
-      args.ehORepoDoProduto || !args.projectId
-        ? await resolverQuadroDoRepositorio({ repo: args.repo, token: args.token }, deps)
-        : await resolverQuadroDoRepositorio({ projectId: args.projectId }, deps)
+    const resolvido = args.ehORepoDoProduto
+      ? await resolverQuadroDoRepositorio({ repo: args.repo, token: args.token }, deps)
+      : await resolverQuadroDoRepositorio({ projectId: args.projectId }, deps)
 
     if (!resolvido.quadro) {
       deps.onInfo?.(

@@ -16,9 +16,7 @@ import { setupRoutes } from './setup.js'
 import { billingRoutes } from './billing.js'
 import { diagnoseRoutes } from './diagnose.js'
 import { desejosRoutes } from './desejos.js'
-import { criarIssueDeDesejo } from '../services/desejo-no-github.js'
-import { resolverQuadroParaDesejo } from '../services/quadro-do-repositorio.js'
-import { guardaPorRepositorio } from '../services/guarda-de-autonomia.js'
+import { nascerDesejo } from '../services/nascer-desejo.js'
 import {
   ACEITA_PEDIDO,
   projetoParaDesejo,
@@ -96,39 +94,31 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     // registra o desejo pelo MESMO caminho — o pedido do dono nasce igual venha
     // da tela ou do celular.
     //
-    // L4-T8 (fix-up): "ao nascer" a issue de desejo tenta o quadro do
-    // repositório ANTES de existir — `resolverQuadroParaDesejo` é o MESMO
-    // caminho que a varredura periódica usa (nada de resolução nova de
-    // credencial). Sem decisão 'usar', a issue nasce igual, sem card, e o
-    // motivo vira log — nunca deixa de registrar o pedido do dono.
-    criarIssue: async ({ repo, titulo, corpo, etiquetas, projectId }) => {
-      const quadro = await resolverQuadroParaDesejo(
-        { projectId, repo },
+    // Achado A (revisão do fix-up 2): "ao nascer" a issue de desejo passa
+    // por `nascerDesejo` — o caminho ÚNICO que resolve o quadro do
+    // repositório (`resolverQuadroParaDesejo`) E monta o fetch guardado
+    // pela autonomia real do projeto, os mesmos dois passos que antes
+    // viviam repetidos em cada um dos 4 nascimentos (routes/index.ts,
+    // plugins/telegram.ts, plugins/scheduler.ts×2). Sem decisão 'usar' de
+    // quadro, a issue nasce igual, sem card, e o motivo vira log; em "só
+    // olhar", a escrita real recusa com `EscritaNaoAutorizadaError`, que o
+    // catch abaixo traduz em 403 `AUTONOMIA_INSUFICIENTE`.
+    criarIssue: ({ repo, titulo, corpo, etiquetas, projectId }) =>
+      nascerDesejo(
+        {
+          projectId,
+          repo,
+          titulo,
+          corpo,
+          etiquetas,
+          log: { onError: (m) => app.log.error(m), onWarn: (m) => app.log.warn(m) },
+        },
         {
           prisma: app.prisma,
           engineConnections: app.engineConnections,
           onInfo: (m) => app.log.info(`[Desejo] ${m}`),
         }
-      )
-      return criarIssueDeDesejo({
-        repo,
-        titulo,
-        corpo,
-        etiquetas,
-        log: { onError: (m) => app.log.error(m), onWarn: (m) => app.log.warn(m) },
-        fetchImpl: guardaPorRepositorio(fetch, {
-          nivelDoRepositorio: async (r) => {
-            const l = await app.prisma.project.findFirst({
-              where: { wingId: r, isActive: true },
-              select: { autonomia: true },
-            })
-            return l?.autonomia ?? null
-          },
-          nossosRepositorios: new Set([process.env['GITORCH_SELF_REPO'] ?? 'GitOrchAI/gitorch']),
-        }),
-        ...(quadro ? { quadro } : {}),
-      })
-    },
+      ),
   })
 
   // D7 (parte A, "A lógica da leva 2"): o lote de sugestões do nível

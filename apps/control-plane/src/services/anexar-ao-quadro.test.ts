@@ -59,6 +59,27 @@ describe('anexarAoQuadro', () => {
     ).rejects.toBe(erroOriginal)
   })
 
+  // Achado G (revisão do fix-up 2): uma issue é uma coisa só, mas pode estar
+  // pendurada em MUITOS quadros — 20 já é pouco para uma issue popular
+  // (bug tracker central, "épico" referenciado por vários times). `first: 100`
+  // reduz bastante a chance de o item existir em outro quadro, mas ESTE
+  // ficar de fora da página e a função relançar o erro original por engano.
+  it('idempotência: reencontra o item mesmo quando ele está entre os itens 21-100 do quadro', async () => {
+    const client = fakeClient({
+      addItemByIdImpl: async () => {
+        throw new Error('Content already exists in this project')
+      },
+    })
+    const gql = vi.fn().mockResolvedValue({
+      node: { projectItems: { nodes: [{ id: 'ITEM_JA_EXISTIA', project: { id: 'P1' } }] } },
+    })
+
+    await anexarAoQuadro({ projectId: 'P1', issueNodeId: 'I1' }, { client, gql })
+
+    const [query] = gql.mock.calls[0] as [string, unknown]
+    expect(query).toContain('projectItems(first: 100)')
+  })
+
   it('erro que NÃO é "already exists" propaga sem tentar reencontrar (nunca engole falha real)', async () => {
     const erroDeRede = new Error('ECONNRESET')
     const client = fakeClient({
@@ -148,6 +169,35 @@ describe('criarGqlDoGithub', () => {
 
   it('resposta sem data e sem errors também não vira sucesso', async () => {
     const f = vi.fn().mockResolvedValue(new Response(JSON.stringify({}), { status: 200 }))
+    const gql = criarGqlDoGithub(f as unknown as typeof fetch, 'TOKEN_X')
+
+    await expect(gql('query { x }', {})).rejects.toBeInstanceOf(GithubExecutionError)
+  })
+
+  // Achado D (revisão do fix-up 2): antes desta correção, `resp.json()` era
+  // chamado ANTES de conferir `resp.ok` — uma resposta 403 do GitHub (corpo
+  // em HTML, não JSON) fazia `.json()` lançar um `SyntaxError` cru, em vez do
+  // `GithubExecutionError` que o resto do produto sabe reconhecer.
+  it('HTTP não-ok: lança GithubExecutionError com o status, sem ler o corpo nem vazar o token', async () => {
+    const f = vi.fn().mockResolvedValue(
+      new Response('<html>Forbidden — corpo que não é JSON</html>', {
+        status: 403,
+        statusText: 'Forbidden',
+      })
+    )
+    const gql = criarGqlDoGithub(f as unknown as typeof fetch, 'TOKEN_SUPER_SECRETO')
+
+    await expect(gql('query { x }', {})).rejects.toBeInstanceOf(GithubExecutionError)
+    await expect(gql('query { x }', {})).rejects.toThrow(/403/)
+    await expect(gql('query { x }', {})).rejects.not.toThrow(/TOKEN_SUPER_SECRETO/)
+    await expect(gql('query { x }', {})).rejects.not.toThrow(/Forbidden — corpo/)
+  })
+
+  it('HTTP não-ok nunca chega a chamar `.json()` no corpo (que aqui nem parseia)', async () => {
+    // Um corpo que, se `.json()` fosse chamado, lançaria um erro DIFERENTE
+    // (SyntaxError do parser) em vez do GithubExecutionError esperado — prova
+    // que a checagem de `resp.ok` vem antes.
+    const f = vi.fn().mockResolvedValue(new Response('não é json válido {{{', { status: 500 }))
     const gql = criarGqlDoGithub(f as unknown as typeof fetch, 'TOKEN_X')
 
     await expect(gql('query { x }', {})).rejects.toBeInstanceOf(GithubExecutionError)

@@ -14,7 +14,9 @@
 // segura isto — é ANTES dela, de propósito: assim um projeto em "só olhar"
 // nunca aparece tentando e nunca conta "falha" por causa da recusa.
 
+import { podeEscrever } from '@gitorch/cadence'
 import type { GqlDoGithub } from './anexar-ao-quadro.js'
+import { nomeDeRepositorioValido } from './nome-de-repositorio.js'
 
 export interface NoDeIssueAberta {
   id: string
@@ -61,6 +63,14 @@ export interface ResultadoDaVarreduraDeQuadro {
 export const TETO_DE_PAGINAS_DA_VARREDURA = 10
 const ITENS_POR_PAGINA = 100
 
+// Achado G (revisão do fix-up 2) — o `first: 20` de `projectItems` abaixo,
+// DELIBERADAMENTE mantido (diferente do `first: 100` de anexar-ao-quadro.ts):
+// aqui a pergunta é só "esta issue já está NO NOSSO quadro?" (um só,
+// `deps.projectId`), nunca "reencontrar o item entre muitos". Uma issue
+// pendurada em 21+ quadros pode ser tratada como "fora" por engano — o nosso
+// não aparecer nos primeiros 20 — e ganhar uma tentativa de anexo a mais;
+// best-effort e idempotente (`anexarAoQuadro` já sabe lidar com "já existe"),
+// sem risco real, só uma chamada extra ocasional.
 const QUERY_ISSUES_ABERTAS = `
   query($owner: String!, $name: String!, $after: String) {
     repository(owner: $owner, name: $name) {
@@ -75,9 +85,6 @@ const QUERY_ISSUES_ABERTAS = `
     }
   }
 `
-
-/** Os únicos dois níveis em que o produto pode ESCREVER no repositório do cliente. */
-const NIVEIS_QUE_ESCREVEM = new Set(['sugerir', 'cuidar'])
 
 /**
  * Varre as issues abertas de UM repositório e pendura no quadro as que ainda
@@ -101,8 +108,27 @@ export async function varrerIssuesForaDoQuadro(
     falhas: 0,
   }
 
-  if (!NIVEIS_QUE_ESCREVEM.has(deps.nivelDeAutonomia ?? '')) {
+  // Achado C (revisão do fix-up 2): a lista própria `NIVEIS_QUE_ESCREVEM`
+  // duplicava a tabela de `packages/cadence/src/autonomia.ts` — a mesma
+  // lição do SSRF, regra de autonomia espalhada diverge da central sem
+  // ninguém perceber. `podeEscrever` cobre nível nulo/desconhecido pelo
+  // mesmo fail-closed (`normalizarNivel`), então o comportamento não muda.
+  if (!podeEscrever(deps.nivelDeAutonomia, 'organizar').pode) {
     info(`[Scheduler] quadro ${deps.repositorio}: autonomia "só olhar" — varredura não escreve.`)
+    return resultado
+  }
+
+  // Achado B (revisão do fix-up 2): `deps.repositorio` vai colado numa URL
+  // que carrega credencial (dentro de `gql`, por quem monta a chamada real)
+  // — a mesma porta que `desejo-no-github.ts` já guarda. Recusar ANTES do
+  // `.split('/')` fecha para um valor que atravesse diretório ou troque de
+  // host; nunca toca a rede, e conta como falha (nunca como "0 fora" — a
+  // varredura NÃO rodou, não é "rodou e não achou nada").
+  if (!nomeDeRepositorioValido(deps.repositorio)) {
+    resultado.falhas += 1
+    warn(
+      `[Scheduler] quadro ${deps.repositorio}: repositório fora do formato dono/repositorio — varredura recusada antes de tocar a rede`
+    )
     return resultado
   }
 
@@ -111,12 +137,34 @@ export async function varrerIssuesForaDoQuadro(
 
   let after: string | null = null
   for (let pagina = 0; pagina < teto; pagina++) {
-    const data: PaginaDeIssuesAbertas = await deps.gql<PaginaDeIssuesAbertas>(
-      QUERY_ISSUES_ABERTAS,
-      { owner, name, after }
-    )
+    let data: PaginaDeIssuesAbertas
+    try {
+      data = await deps.gql<PaginaDeIssuesAbertas>(QUERY_ISSUES_ABERTAS, { owner, name, after })
+    } catch (err) {
+      // Achado B — `gql` pode lançar (rede, ou `GithubExecutionError` de
+      // `criarGqlDoGithub` quando a resposta vem com `errors[]`). Sem este
+      // catch, UM repositório instável derrubava a função inteira — contra
+      // o próprio contrato documentado acima ("nunca lança").
+      resultado.falhas += 1
+      warn(
+        `[Scheduler] quadro ${deps.repositorio}: falha ao ler issues abertas (${String(err).slice(0, 160)})`
+      )
+      break
+    }
     const conexao: ConexaoDeIssuesAbertas | undefined = data.repository?.issues
-    if (!conexao) break
+    if (!conexao) {
+      // Achado B — antes desta correção, isto era um `break` silencioso:
+      // o `info` de resumo lá embaixo dizia "0 fora, 0 anexadas, 0 falhas",
+      // indistinguível de um repositório limpo de verdade. Um `data`
+      // sem `repository`/`issues` é sempre anomalia (repo renomeado,
+      // apagado, permissão perdida no meio do caminho) — nunca "nada a
+      // fazer".
+      resultado.falhas += 1
+      warn(
+        `[Scheduler] quadro ${deps.repositorio}: resposta do GitHub sem repository/issues — varredura incompleta`
+      )
+      break
+    }
 
     for (const issue of conexao.nodes ?? []) {
       resultado.abertas += 1

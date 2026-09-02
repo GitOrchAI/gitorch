@@ -4,6 +4,7 @@ import {
   resolverQuadroParaDesejo,
   anexarIssueDeIncidenteAoQuadro,
   type PrismaLikeParaQuadro,
+  type ArgsDeAnexarIncidenteAoQuadro,
 } from './quadro-do-repositorio.js'
 
 // L4-T8 (fix-up) — o caminho ÚNICO de "qual quadro (Projects v2) e qual
@@ -62,6 +63,33 @@ describe('resolverQuadroDoRepositorio', () => {
       expect(resultado.quadro).toEqual({ projectId: 'PVT_1', boardToken: 'token-do-login' })
       expect(resultado.motivo).toBeUndefined()
       expect(getRawGithubToken).toHaveBeenCalledWith('user_1')
+    })
+
+    // Achado F (revisão do fix-up 2): antes desta correção,
+    // `resolverQuadroDoRepositorio({ projectId })` lia o MESMO projeto do
+    // banco DUAS vezes — uma vez aqui (`wingId`/`userId`) e outra vez dentro
+    // de `lerCredencialQueAlcancaOProjeto` → `lerCredencialDoProjeto`
+    // (`encryptedClientToken`), os dois com `where: { id: projectId }`. Uma
+    // leitura só, selecionando os três campos de uma vez, resolve o mesmo
+    // resultado sem a consulta repetida.
+    it('achado F: resolve quadro e credencial com UMA SÓ leitura do projeto (findUnique), não duas', async () => {
+      const prisma = fakePrisma({
+        wingId: 'acme/api',
+        userId: 'user_1',
+        encryptedClientToken: null,
+      })
+      const getRawGithubToken = vi.fn(async () => 'token-do-login')
+      const fetchImpl = fakeFetchDeQuadros([
+        { id: 'PVT_1', number: 2, title: 'acme/api', closed: false },
+      ])
+
+      const resultado = await resolverQuadroDoRepositorio(
+        { projectId: 'proj_1' },
+        { prisma, engineConnections: { getRawGithubToken }, fetchImpl }
+      )
+
+      expect(resultado.quadro).toEqual({ projectId: 'PVT_1', boardToken: 'token-do-login' })
+      expect(prisma.project.findUnique).toHaveBeenCalledTimes(1)
     })
 
     it('sem quadro nenhum no repositório: devolve null com motivo, nunca lança', async () => {
@@ -330,7 +358,6 @@ describe('resolverQuadroDoRepositorio', () => {
           issueNumber: 42,
           ehORepoDoProduto: false,
           projectId: 'proj_1',
-          token: 'token-da-issue',
         },
         {
           prisma,
@@ -388,7 +415,6 @@ describe('resolverQuadroDoRepositorio', () => {
           issueNumber: 42,
           ehORepoDoProduto: false,
           projectId: 'proj_1',
-          token: 'token-da-issue',
         },
         {
           prisma,
@@ -427,7 +453,6 @@ describe('resolverQuadroDoRepositorio', () => {
             issueNumber: 88,
             ehORepoDoProduto: false,
             projectId: 'proj_1',
-            token: 'token-da-issue',
           },
           {
             prisma,
@@ -444,6 +469,36 @@ describe('resolverQuadroDoRepositorio', () => {
       const [mensagem] = onWarn.mock.calls[0] as [string, unknown]
       expect(mensagem).toContain('88')
       expect(mensagem).toContain('acme/api')
+    })
+
+    // Achado E (revisão do fix-up 2): a união discriminada recusa, em TEMPO
+    // DE COMPILAÇÃO, a combinação que antes caía num fallback silencioso
+    // (`ehORepoDoProduto: false` sem `projectId` era tratado como se fosse
+    // `{ repo, token }`, tentando o quadro do repo do PRODUTO com a
+    // credencial do incidente do CLIENTE). Não é um teste de comportamento
+    // em runtime — é a prova de que o `tsc` do build barra a forma inválida
+    // antes de ela existir. `pnpm --filter @gitorch/control-plane build`
+    // falharia se faltasse o `@ts-expect-error` OU se ele estivesse sobrando
+    // (TS2578, "Unused '@ts-expect-error' directive").
+    it('tipo: ehORepoDoProduto:false SEM projectId não compila — sem fallback para {repo,token}', () => {
+      // @ts-expect-error — projectId é obrigatório quando ehORepoDoProduto é false.
+      const semProjectId: ArgsDeAnexarIncidenteAoQuadro = {
+        repo: 'acme/api',
+        issueNodeId: 'X',
+        issueNumber: 1,
+        ehORepoDoProduto: false,
+      }
+      const comTokenIndevido: ArgsDeAnexarIncidenteAoQuadro = {
+        repo: 'acme/api',
+        issueNodeId: 'X',
+        issueNumber: 1,
+        ehORepoDoProduto: false,
+        projectId: 'proj_1',
+        // @ts-expect-error — token não existe no ramo ehORepoDoProduto:false.
+        token: 'não deveria compilar aqui',
+      }
+      void semProjectId
+      void comTokenIndevido
     })
   })
 })

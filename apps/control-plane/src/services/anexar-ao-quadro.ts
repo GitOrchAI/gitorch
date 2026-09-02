@@ -73,11 +73,16 @@ export async function anexarAoQuadro(
   } catch (error) {
     if (!String(error).includes(MENSAGEM_DE_JA_EXISTE)) throw error
 
+    // Achado G (revisão do fix-up 2): 100, não 20 — uma issue é UMA SÓ, mas
+    // pode estar pendurada em muitos quadros (bug tracker central, "épico"
+    // referenciado por vários times). Com 20, um item que já existia no
+    // quadro certo mas fora das primeiras 20 páginas relançava o erro
+    // original por engano, como se o anexo tivesse falhado de verdade.
     const data = await deps.gql<{
       node?: { projectItems?: { nodes?: Array<{ id: string; project?: { id?: string } }> } }
     }>(
       `query($id: ID!) { node(id: $id) { ... on Issue {
-        projectItems(first: 20) { nodes { id project { id } } } } } }`,
+        projectItems(first: 100) { nodes { id project { id } } } } } }`,
       { id: args.issueNodeId }
     )
     const item = data.node?.projectItems?.nodes?.find((n) => n.project?.id === args.projectId)
@@ -112,6 +117,15 @@ export function criarGqlDoGithub(f: typeof fetch, token: string): GqlDoGithub {
       },
       body: JSON.stringify({ query, variables }),
     })
+    // Achado D (revisão do fix-up 2): conferir `resp.ok` ANTES de `.json()`.
+    // Uma resposta não-ok pode vir com corpo que não é JSON (403/500 do
+    // proxy, HTML de erro do GitHub) — chamar `.json()` nela lançaria um
+    // `SyntaxError` cru, mascarando a causa real. Nunca lê o corpo (pode
+    // carregar detalhe sensível) nem o token — só o status, que já basta
+    // para quem chama decidir o que fazer.
+    if (!resp.ok) {
+      throw new GithubExecutionError(`GitHub GraphQL failed: HTTP ${resp.status}`)
+    }
     const json = (await resp.json()) as { data?: T; errors?: Array<{ message: string }> }
     if (json.errors?.length) {
       throw new GithubExecutionError(`GitHub GraphQL failed: ${json.errors[0]?.message}`)
