@@ -90,6 +90,8 @@ import { analisarFalhasPendentes } from '../services/analisar-falhas-pendentes.j
 import { runAnaliseDeFalha, type SessaoMorta } from '../services/analise-de-falha-do-dev.js'
 import { processarAchadosDeInfra } from '../services/processar-achados-de-infra.js'
 import { varrerIncidentesResolvidos } from '../services/fechar-incidente-resolvido.js'
+import { anexarAoQuadro, criarGqlDoGithub } from '../services/anexar-ao-quadro.js'
+import { varrerIssuesForaDoQuadro } from '../services/varrer-issues-fora-do-quadro.js'
 import { runRetroDeInfra } from '../services/retro-de-infra.js'
 import {
   decidirAvisoPorJanela,
@@ -9029,6 +9031,132 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   }
 
   /**
+   * L4-T8 ("quadro 100%") — a REDE DE SEGURANÇA do anexo ao quadro.
+   *
+   * MEDIDO 02/09/2026 no gitorch: 52 issues abertas, 44 no quadro, 8 fora. O
+   * anexo na hora da criação (desejo-no-github.ts, incidente,
+   * board-status.ts) é o PRIMEIRO elo, e é best-effort — best-effort às vezes
+   * falha (rede, quadro ainda não resolvido naquele instante, corrida). Esta
+   * varredura é o SEGUNDO elo: por projeto, relê TODAS as issues abertas do
+   * repositório (GraphQL paginado, `varrer-issues-fora-do-quadro.ts`) e
+   * pendura no quadro qualquer uma que ainda não esteja lá — não importa quem
+   * a criou.
+   *
+   * MESMO padrão de `varrerItensDaSprint` logo acima: resolve a credencial
+   * pelo caminho ÚNICO (`lerCredencialQueAlcancaOProjeto` — nunca uma
+   * resolução nova), descobre o quadro do jeito que `resolver-quadro.ts`
+   * já decide (`decidirQuadro` + `listarQuadrosDoRepositorio`), e escreve
+   * com `fetchDoRepositorio` (a guarda de autonomia na PORTA de rede — nunca
+   * inventada aqui). NÃO roda a cada tique pelo mesmo motivo da sprint: uma
+   * consulta GraphQL por projeto a cada 5 segundos gastaria a cota do GitHub
+   * à toa.
+   */
+  const CADENCIA_PADRAO_DA_VARREDURA_DE_QUADRO_MS = 6 * 60 * 60 * 1000
+  const CADENCIA_DA_VARREDURA_DE_QUADRO_MS = (() => {
+    const bruto = process.env['GITORCH_VARREDURA_DE_QUADRO_CADENCIA_MS']
+    if (bruto === undefined) return CADENCIA_PADRAO_DA_VARREDURA_DE_QUADRO_MS
+    const lido = Number(bruto)
+    // Mesma cicatriz de `GITORCH_SPRINT_ITENS_CADENCIA_MS`: `Number(x) ?? padrão`
+    // não protege nada — string vazia, texto ou negativo passam inteiros, e a
+    // varredura passaria a rodar a CADA TIQUE por um erro de digitação.
+    if (!Number.isFinite(lido) || lido <= 0) {
+      app.log.warn(
+        `[Scheduler] GITORCH_VARREDURA_DE_QUADRO_CADENCIA_MS inválido ('${bruto}'); ` +
+          `usando o padrão de ${CADENCIA_PADRAO_DA_VARREDURA_DE_QUADRO_MS}ms`
+      )
+      return CADENCIA_PADRAO_DA_VARREDURA_DE_QUADRO_MS
+    }
+    return lido
+  })()
+  let ultimaVarreduraDeQuadro = 0
+
+  const varrerIssuesForaDoQuadroDosProjetos = async (): Promise<void> => {
+    if (Date.now() - ultimaVarreduraDeQuadro < CADENCIA_DA_VARREDURA_DE_QUADRO_MS) return
+    ultimaVarreduraDeQuadro = Date.now()
+
+    const projetos = await app.prisma.project.findMany({
+      where: { isActive: true },
+      select: { id: true, wingId: true, autonomia: true, userId: true },
+    })
+
+    // EM SÉRIE, mesmo motivo das varreduras irmãs: dois projetos do mesmo
+    // dono compartilham credencial, e uma renovação no meio da outra derruba
+    // as duas.
+    for (const p of projetos) {
+      try {
+        const token = await lerCredencialQueAlcancaOProjeto({
+          prisma: app.prisma,
+          projectId: p.id,
+          userId: p.userId,
+          engineConnections: app.engineConnections,
+        })
+        if (!token) {
+          app.log.info(
+            `[Scheduler] quadro de ${p.wingId} não varrido: não há credencial que alcance este repositório`
+          )
+          continue
+        }
+
+        // Descobrir o quadro é LEITURA: vai com teto de tempo, sem guarda de
+        // escrita — mesma separação da sprint (varrerItensDaSprint) logo acima.
+        const leitor = new ProjectV2Client({
+          token,
+          fetchImpl: fetchComTeto(fetchSemPermissao(), TIMEOUT_DE_CHAMADA_GITHUB_MS),
+        })
+        const [owner, repo] = p.wingId.split('/')
+        const quadros = await leitor.listarQuadrosDoRepositorio({
+          owner: owner ?? '',
+          repo: repo ?? '',
+        })
+        const decisao = decidirQuadro({ candidatos: quadros.map((q) => ({ ...q, linkado: true })) })
+        if (decisao.acao !== 'usar' || !decisao.quadro) {
+          // O aviso ao dono sobre quadro indefinido já sai pela varredura
+          // irmã de sprint (avisarQuadroIndefinido) — duplicar aqui só
+          // dobraria o Telegram pelo MESMO motivo, sem informação nova.
+          app.log.debug(`[Scheduler] quadro de ${p.wingId} não varrido: ${decisao.motivo}`)
+          continue
+        }
+        const projectId = decisao.quadro.id
+
+        // ESCREVE no quadro do cliente: nível daquele projeto, lido na hora
+        // da chamada — o dono pode mudar pelo painel a qualquer momento.
+        const fetchDoQuadroDoCliente = fetchDoRepositorio({
+          nivel: () => p.autonomia,
+          timeoutMs: TIMEOUT_DE_CHAMADA_GITHUB_MS,
+        })
+        const gql = criarGqlDoGithub(fetchDoQuadroDoCliente, token)
+        const client = new ProjectV2Client({ token, fetchImpl: fetchDoQuadroDoCliente })
+
+        // `varrerIssuesForaDoQuadro` já loga o resumo por repositório
+        // (`onInfo`) no formato `[Scheduler] quadro <repo>: N fora, M
+        // anexadas, K falhas`, sempre — nenhum log extra aqui duplicaria.
+        await varrerIssuesForaDoQuadro({
+          repositorio: p.wingId,
+          projectId,
+          nivelDeAutonomia: p.autonomia,
+          gql,
+          anexarAoQuadro: async (issueNodeId) => {
+            await anexarAoQuadro({ projectId, issueNodeId }, { client, gql })
+          },
+          onInfo: (m) => app.log.info(m),
+          onWarn: (m) => app.log.warn(m),
+        })
+      } catch (err) {
+        // A recusa da guarda NÃO é defeito: é o produto obedecendo ao nível
+        // que o cliente escolheu (mesma separação da sprint acima).
+        if (err instanceof EscritaNaoAutorizadaError) {
+          app.log.debug(`[Scheduler] quadro de ${p.wingId} não varrido: ${err.message}`)
+          continue
+        }
+        app.log.warn(
+          err,
+          `[Scheduler] varredura de quadro de ${p.wingId} falhou; tenta na próxima passada`
+        )
+      }
+    }
+  }
+
+  /**
    * D1 (leva 2) — "Sua ordem custa caro? { perda / tamanho }".
    *
    * A caixa do fluxograma aprovado em 30/08 que nunca virou tarefa. Por
@@ -9325,6 +9453,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // sprint e esta já a preenche na mesma volta do relógio.
     await varrerItensDaSprint().catch((err) =>
       app.log.error(err, '[Scheduler] preenchimento da sprint falhou; tenta no próximo tick')
+    )
+    // L4-T8: a rede de segurança do quadro — pendura no board qualquer issue
+    // aberta que ainda ficou de fora (o anexo na hora da criação é
+    // best-effort). Cadência própria (6h), não trava o resto do tique.
+    await varrerIssuesForaDoQuadroDosProjetos().catch((err) =>
+      app.log.error(
+        err,
+        '[Scheduler] varredura de issues fora do quadro falhou; tenta no próximo tick'
+      )
     )
     // D1 (leva 2): "sua ordem custa caro?" — só LÊ a fila e, quando vale a
     // pena, avisa o dono. Nunca reordena; a ordem dele prevalece sempre.
