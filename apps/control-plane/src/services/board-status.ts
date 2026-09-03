@@ -2,6 +2,7 @@ import { ProjectV2Client } from '@gitorch/github-sync'
 import { fetchSemPermissao } from './guarda-de-autonomia.js'
 import { GithubExecutionError } from './github-errors.js'
 import { fetchComTeto } from './fetch-com-teto.js'
+import { anexarAoQuadro, criarGqlDoGithub } from './anexar-ao-quadro.js'
 
 // Status do card no board (Projects v2) — o board é a interface do cliente.
 // As COLUNAS são configuração POR PROJETO (runtimeConfig.board.columns), nunca
@@ -222,36 +223,14 @@ export function createCardMover(options: CardMoverOptions): CardMover {
     }
 
     const projectId = await resolveProjectId()
-    // Garante o item no board (idempotente: já existir não é falha).
-    let itemId: string
-    try {
-      itemId = await client.addItemById({ projectId, contentId: issue.node_id })
-    } catch (error) {
-      if (!String(error).includes('already exists')) throw error
-      const data = await (async () => {
-        const resp = await f('https://api.github.com/graphql', {
-          method: 'POST',
-          headers: {
-            authorization: `Bearer ${options.token}`,
-            'content-type': 'application/json',
-            'user-agent': 'gitorch',
-          },
-          body: JSON.stringify({
-            query: `query($id: ID!) { node(id: $id) { ... on Issue {
-              projectItems(first: 20) { nodes { id project { id } } } } } }`,
-            variables: { id: issue.node_id },
-          }),
-        })
-        return (await resp.json()) as {
-          data?: {
-            node?: { projectItems?: { nodes?: Array<{ id: string; project?: { id?: string } }> } }
-          }
-        }
-      })()
-      const item = data.data?.node?.projectItems?.nodes?.find((n) => n.project?.id === projectId)
-      if (!item) throw error
-      itemId = item.id
-    }
+    // Garante o item no board (idempotente: já existir não é falha) — lógica
+    // ÚNICA em anexar-ao-quadro.ts (L4-T8), reusada por qualquer chamador que
+    // precise pendurar uma issue no quadro (desejo, incidente, varredura, e
+    // este movedor de card).
+    const { itemId } = await anexarAoQuadro(
+      { projectId, issueNodeId: issue.node_id },
+      { client, gql: criarGqlDoGithub(f, options.token) }
+    )
 
     const status = await resolveStatus()
     const outcome = await status.setStatus(itemId, column)

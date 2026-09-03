@@ -16,7 +16,7 @@ import { setupRoutes } from './setup.js'
 import { billingRoutes } from './billing.js'
 import { diagnoseRoutes } from './diagnose.js'
 import { desejosRoutes } from './desejos.js'
-import { criarIssueDeDesejo } from '../services/desejo-no-github.js'
+import { nascerDesejo } from '../services/nascer-desejo.js'
 import {
   ACEITA_PEDIDO,
   projetoParaDesejo,
@@ -93,14 +93,32 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     // A escrita da issue mora no serviço porque o mensageiro (bot do Telegram)
     // registra o desejo pelo MESMO caminho — o pedido do dono nasce igual venha
     // da tela ou do celular.
-    criarIssue: ({ repo, titulo, corpo, etiquetas }) =>
-      criarIssueDeDesejo({
-        repo,
-        titulo,
-        corpo,
-        etiquetas,
-        log: { onError: (m) => app.log.error(m), onWarn: (m) => app.log.warn(m) },
-      }),
+    //
+    // Achado A (revisão do fix-up 2): "ao nascer" a issue de desejo passa
+    // por `nascerDesejo` — o caminho ÚNICO que resolve o quadro do
+    // repositório (`resolverQuadroParaDesejo`) E monta o fetch guardado
+    // pela autonomia real do projeto, os mesmos dois passos que antes
+    // viviam repetidos em cada um dos 4 nascimentos (routes/index.ts,
+    // plugins/telegram.ts, plugins/scheduler.ts×2). Sem decisão 'usar' de
+    // quadro, a issue nasce igual, sem card, e o motivo vira log; em "só
+    // olhar", a escrita real recusa com `EscritaNaoAutorizadaError`, que o
+    // catch abaixo traduz em 403 `AUTONOMIA_INSUFICIENTE`.
+    criarIssue: ({ repo, titulo, corpo, etiquetas, projectId }) =>
+      nascerDesejo(
+        {
+          projectId,
+          repo,
+          titulo,
+          corpo,
+          etiquetas,
+          log: { onError: (m) => app.log.error(m), onWarn: (m) => app.log.warn(m) },
+        },
+        {
+          prisma: app.prisma,
+          engineConnections: app.engineConnections,
+          onInfo: (m) => app.log.info(`[Desejo] ${m}`),
+        }
+      ),
   })
 
   // D7 (parte A, "A lógica da leva 2"): o lote de sugestões do nível

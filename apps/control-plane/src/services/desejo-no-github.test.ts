@@ -134,4 +134,90 @@ describe('criarIssueDeDesejo', () => {
       })
     }
   })
+
+  // L4-T8: a issue de desejo passa a pendurar no quadro do cliente assim que
+  // nasce, best-effort — reusa `anexarAoQuadro` (anexar-ao-quadro.ts) com o
+  // node_id que a PRÓPRIA resposta de criação já devolve (nenhum lookup extra).
+  describe('anexo ao quadro (best-effort)', () => {
+    function fetchQueResponde(opts: {
+      issue?: { number: number; node_id?: string }
+      addItemById?: () => Response | Promise<Response>
+    }) {
+      const chamadas: string[] = []
+      const impl = vi.fn(async (url: Parameters<typeof fetch>[0]) => {
+        const u = String(url)
+        chamadas.push(u)
+        if (u.endsWith('/issues')) {
+          return new Response(JSON.stringify(opts.issue ?? { number: 1, node_id: 'ISSUE_NODE' }), {
+            status: 201,
+          })
+        }
+        if (u.endsWith('/graphql')) {
+          if (opts.addItemById) return opts.addItemById()
+          return new Response(
+            JSON.stringify({ data: { addProjectV2ItemById: { item: { id: 'ITEM_1' } } } }),
+            { status: 200 }
+          )
+        }
+        throw new Error(`URL inesperada no teste: ${u}`)
+      })
+      return { impl: impl as unknown as typeof fetch, chamadas }
+    }
+
+    it('sem `quadro` informado, nunca toca o GraphQL do board (comportamento de hoje, intocado)', async () => {
+      const { impl, chamadas } = fetchQueResponde({})
+      const r = await criarIssueDeDesejo({
+        ...ARGS,
+        obterToken: async () => 'segredo',
+        fetchImpl: impl,
+      })
+      expect(r).toEqual({ numero: 1 })
+      expect(chamadas.some((u) => u.endsWith('/graphql'))).toBe(false)
+    })
+
+    it('com `quadro`, pendura a issue recém-criada no board usando o node_id da resposta', async () => {
+      const { impl, chamadas } = fetchQueResponde({ issue: { number: 42, node_id: 'ISSUE_42' } })
+      const r = await criarIssueDeDesejo({
+        ...ARGS,
+        obterToken: async () => 'segredo',
+        fetchImpl: impl,
+        quadro: { projectId: 'PROJ_1' },
+      })
+      expect(r).toEqual({ numero: 42 })
+      expect(chamadas.some((u) => u.endsWith('/graphql'))).toBe(true)
+    })
+
+    it('falha ao anexar NUNCA derruba a issue já criada — só gera warn com repo e número', async () => {
+      const onWarn = vi.fn()
+      const { impl } = fetchQueResponde({
+        issue: { number: 88, node_id: 'ISSUE_88' },
+        addItemById: () =>
+          new Response(JSON.stringify({ errors: [{ message: 'boom de rede' }] }), { status: 200 }),
+      })
+      const r = await criarIssueDeDesejo({
+        ...ARGS,
+        obterToken: async () => 'segredo',
+        fetchImpl: impl,
+        quadro: { projectId: 'PROJ_1' },
+        log: { onWarn },
+      })
+      expect(r).toEqual({ numero: 88 })
+      expect(onWarn).toHaveBeenCalledTimes(1)
+      const [mensagem] = onWarn.mock.calls[0] as [string]
+      expect(mensagem).toContain('88')
+      expect(mensagem).toContain(ARGS.repo)
+    })
+
+    it('resposta de criação sem node_id: não tenta anexar (não há o que passar)', async () => {
+      const { impl, chamadas } = fetchQueResponde({ issue: { number: 9 } })
+      const r = await criarIssueDeDesejo({
+        ...ARGS,
+        obterToken: async () => 'segredo',
+        fetchImpl: impl,
+        quadro: { projectId: 'PROJ_1' },
+      })
+      expect(r).toEqual({ numero: 9 })
+      expect(chamadas.some((u) => u.endsWith('/graphql'))).toBe(false)
+    })
+  })
 })

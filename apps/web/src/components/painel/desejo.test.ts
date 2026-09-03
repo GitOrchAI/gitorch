@@ -285,6 +285,19 @@ describe('enviarDesejo — o pedido em linguagem de gente vira issue', () => {
     expect(r).toEqual({ ok: false, chaveDoErro: 'dashboard.wishErrorGithubDisconnected' })
   })
 
+  it('403 com AUTONOMIA_INSUFICIENTE vira a chave de autonomia', async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      okResponse(403, { error: 'Só olhar', code: 'AUTONOMIA_INSUFICIENTE' })
+    )
+
+    const r = await enviarDesejo(
+      { apiBaseUrl: 'http://api.test', projectId: 'p1', texto: 'oi' },
+      { fetchImpl }
+    )
+
+    expect(r).toEqual({ ok: false, chaveDoErro: 'dashboard.wishErrorAutonomy' })
+  })
+
   it('503 sem code continua sendo indisponibilidade (rota antiga, proxy no meio)', async () => {
     const fetchImpl = vi.fn<typeof fetch>(async () => okResponse(503, { error: 'x' }))
 

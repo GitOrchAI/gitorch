@@ -23,6 +23,11 @@ describe('fraseDoErroDePedido — verbatim do produto', () => {
       'Você não tem mais acesso de escrita a este repositório no GitHub, então não dá para registrar o pedido nele.'
     )
   })
+  it('AUTONOMIA_INSUFICIENTE', () => {
+    expect(fraseDoErroDePedido({ code: 'AUTONOMIA_INSUFICIENTE' })).toBe(
+      'Este projeto está configurado como "Só olhar", que não permite criar pedidos. Mude a autonomia para "Sugerir" ou "Cuidar" e tente de novo.'
+    )
+  })
   it('GITHUB_DESCONECTADO', () => {
     expect(fraseDoErroDePedido({ code: 'GITHUB_DESCONECTADO' })).toBe(
       'Sua conexão com o GitHub não vale mais. Reconecte sua conta e mande de novo.'
@@ -66,6 +71,15 @@ describe('enviarPedido', () => {
     })
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.erro).toContain('acesso de escrita')
+  })
+  it('403 AUTONOMIA_INSUFICIENTE vira a frase de autonomia e ok:false', async () => {
+    const r = await enviarPedido({
+      projectId: 'p1',
+      texto: 'oi',
+      fetchImpl: fetchQueRetorna(403, { code: 'AUTONOMIA_INSUFICIENTE' }),
+    })
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.erro).toContain('Só olhar')
   })
   it('502 cai no fallback', async () => {
     const r = await enviarPedido({

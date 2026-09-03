@@ -1,5 +1,6 @@
 import Fastify from 'fastify'
 import { describe, expect, it, vi } from 'vitest'
+import { EscritaNaoAutorizadaError } from '@gitorch/cadence'
 import { desejosRoutes, type DependenciasDeDesejos } from './desejos.js'
 import { LIMITE_DO_TEXTO_DO_DESEJO } from '../services/desejo.js'
 import {
@@ -67,6 +68,25 @@ describe('POST /api/v1/desejos', () => {
         titulo: 'quero avaliação com foto',
       })
     )
+  })
+
+  // L4-T8 (fix-up): "ao nascer" a issue de desejo tem que carregar o
+  // `projectId` para que quem monta o `criarIssue` real (routes/index.ts)
+  // consiga resolver o quadro do repositório e anexar a issue ao nascer —
+  // sem o id do PROJETO do GitOrch (não confundir com o repo do GitHub) não
+  // há como achar a credencial nem o quadro certos.
+  it('passa o projectId do projeto resolvido para criarIssue — é o que permite achar o quadro depois', async () => {
+    const criarIssue = vi.fn().mockResolvedValue({ numero: 77 })
+    const app = appDeTeste({
+      buscarProjeto: vi.fn().mockResolvedValue(projeto),
+      criarIssue,
+    })
+    await app.inject({
+      method: 'POST',
+      url: '/api/v1/desejos',
+      payload: { projectId: 'p1', texto: 'quero avaliação com foto' },
+    })
+    expect(criarIssue).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'p1' }))
   })
 
   it('recusa texto vazio com 400, sem chamar o GitHub', async () => {
@@ -266,6 +286,30 @@ describe('POST /api/v1/desejos', () => {
     })
     expect(r.statusCode).toBe(201)
     expect(criarIssue).toHaveBeenCalled()
+  })
+
+  it('quando o projeto está em só olhar, recusa com 403 e AUTONOMIA_INSUFICIENTE', async () => {
+    const app = appDeTeste({
+      buscarProjeto: vi.fn().mockResolvedValue(projeto),
+      criarIssue: vi
+        .fn()
+        .mockRejectedValue(
+          new EscritaNaoAutorizadaError(
+            'propor',
+            'so_olhar',
+            'sugerir',
+            'Não posso propor trabalho (abrir pedido, abrir entrega, comentar): você me deixou em "Só olhar".'
+          )
+        ),
+    })
+    const r = await app.inject({
+      method: 'POST',
+      url: '/api/v1/desejos',
+      payload: { projectId: 'p1', texto: 'quero busca por cor' },
+    })
+    expect(r.statusCode).toBe(403)
+    expect(r.json().code).toBe('AUTONOMIA_INSUFICIENTE')
+    expect(r.json().error).toContain('Só olhar')
   })
 })
 

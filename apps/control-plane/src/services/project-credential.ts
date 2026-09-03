@@ -183,13 +183,44 @@ export async function lerCredencialQueAlcancaOProjeto(deps: {
   /** Injeção; produção passa `app.engineConnections`. Ausência (testes de
    *  rota isolados, scripts) também resolve em "sem reforço", nunca lança. */
   engineConnections?: LeitorDeCredencialDeLogin
+  /**
+   * Achado F (revisão do fix-up 2, L4-T8): quando quem chama JÁ leu
+   * `encryptedClientToken` do MESMO projeto (ex.:
+   * `resolverQuadroDoRepositorio`, que precisa de `wingId`/`userId` do mesmo
+   * registro) — evita uma SEGUNDA `project.findUnique` idêntica, pelo mesmo
+   * `projectId`, só para pegar este campo.
+   *
+   * `undefined` (o padrão) preserva o comportamento de sempre: lê aqui, via
+   * `lerCredencialDoProjeto`. Presente — mesmo `null`, "já sei que não há
+   * token do cliente" — pula essa leitura própria e vai direto para o valor
+   * recebido (decifrando-o se houver).
+   */
+  encryptedClientTokenJaLido?: string | null
 }): Promise<string | null> {
-  const doCliente = await lerCredencialDoProjeto({
-    prisma: deps.prisma,
-    projectId: deps.projectId,
-  }).catch(() => null)
+  const doCliente =
+    deps.encryptedClientTokenJaLido !== undefined
+      ? decodificarTokenDoClienteSeHouver(deps.encryptedClientTokenJaLido)
+      : await lerCredencialDoProjeto({
+          prisma: deps.prisma,
+          projectId: deps.projectId,
+        }).catch(() => null)
   if (doCliente) return doCliente
 
   if (!deps.userId || !deps.engineConnections) return null
   return await deps.engineConnections.getRawGithubToken(deps.userId).catch(() => null)
+}
+
+/**
+ * Decifra um `encryptedClientToken` já lido por quem chama — mesma postura
+ * de `lerCredencialDoProjeto`: envelope ausente ou corrompido (chave
+ * rotacionada) nunca lança, só resolve em `null` e cai para o próximo elo
+ * da corrente (`engine_connections`).
+ */
+function decodificarTokenDoClienteSeHouver(envelope: string | null): string | null {
+  if (!envelope) return null
+  try {
+    return decryptCredential(envelope)
+  } catch {
+    return null
+  }
 }

@@ -265,6 +265,16 @@ describe('tratarPedidoDeDesejo', () => {
     expect(r?.text).toContain('https://github.com/dono/loja/issues/77')
   })
 
+  // L4-T8 (fix-up): "ao nascer" a issue de desejo pelo Telegram precisa do
+  // `projectId` do projeto ESCOLHIDO — é o que permite a quem monta o
+  // `criarIssue` real (plugins/telegram.ts) resolver o quadro e a
+  // credencial pelo caminho único e anexar a issue ao quadro ao nascer.
+  it('passa o projectId do projeto escolhido para criarIssue — é o que permite achar o quadro depois', async () => {
+    const d = deps()
+    await tratarPedidoDeDesejo(d, updateComTexto('/desejo quero avaliação com foto'))
+    expect(d.criarIssue).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'p1' }))
+  })
+
   it('com mais de um projeto e sem escolha, pede o projeto listando os nomes', async () => {
     const d = deps({
       projetosDoDono: vi

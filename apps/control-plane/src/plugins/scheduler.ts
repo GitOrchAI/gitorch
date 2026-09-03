@@ -97,6 +97,13 @@ import {
   comentarFechamentoDeIncidente,
 } from '../services/fechar-incidente-resolvido.js'
 import { reconciliarIncidentesLegados } from '../services/reconciliar-incidentes-legados.js'
+import { anexarAoQuadro, criarGqlDoGithub } from '../services/anexar-ao-quadro.js'
+import { varrerIssuesForaDoQuadro } from '../services/varrer-issues-fora-do-quadro.js'
+import {
+  resolverQuadroDoRepositorio,
+  anexarIssueDeIncidenteAoQuadro,
+} from '../services/quadro-do-repositorio.js'
+import { nascerDesejo } from '../services/nascer-desejo.js'
 import { runRetroDeInfra } from '../services/retro-de-infra.js'
 import {
   decidirAvisoPorJanela,
@@ -164,7 +171,6 @@ import {
   notaDeConserto,
   type EvidenciaDeConserto,
 } from '../services/conserto-de-publicacao.js'
-import { criarIssueDeDesejo } from '../services/desejo-no-github.js'
 import { runDuvidaMissionViaRails } from '../services/duvida-rails-mission.js'
 import {
   decidirSobreAPergunta,
@@ -3896,7 +3902,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                   // o RA entende a causa de cada falha de infra e o PO escreve
                   // a issue padrão Shrimp, no repo certo (cliente vs produto).
                   const achadosOut = await rodarProcessamentoDeAchados(
-                    project as NotifiableProject & { id: string; wingId: string },
+                    project as NotifiableProject & {
+                      id: string
+                      wingId: string
+                      autonomia?: string | null
+                    },
                     railsToken,
                     execute,
                     contextBlocks
@@ -5069,7 +5079,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
    * lança para fora — o RA tem outro trabalho.
    */
   const rodarProcessamentoDeAchados = async (
-    project: NotifiableProject & { id: string; wingId: string },
+    project: NotifiableProject & { id: string; wingId: string; autonomia?: string | null },
     railsToken: string | undefined,
     execute: StepExecutor,
     contextBlocks: string[]
@@ -5124,8 +5134,61 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         const detail = await resp.text().catch(() => '')
         throw new Error(`POST /repos/${repo}/issues → ${resp.status}: ${detail.slice(0, 150)}`)
       }
-      const issue = (await resp.json()) as { number?: number }
+      const issue = (await resp.json()) as { number?: number; node_id?: string }
       if (!issue.number) throw new Error(`issue criada em ${repo} sem número`)
+
+      // L4-T8 (fix-up): "ao nascer" a issue de incidente também tenta o
+      // quadro do repositório onde ela nasceu — o do CLIENTE (`repo ===
+      // project.wingId`) ou o do PRÓPRIO PRODUTO (`repo === REPO_DO_PRODUTO`,
+      // o encanamento de D54). Usa o `node_id` que a própria criação já
+      // devolveu — sem lookup extra. `anexarIssueDeIncidenteAoQuadro` NUNCA
+      // lança: falha aqui vira warn, a issue continua existindo.
+      if (issue.node_id) {
+        const nodeId = issue.node_id
+        const numero = issue.number
+        // Achado E (revisão do fix-up 2): `anexarIssueDeIncidenteAoQuadro`
+        // agora recebe uma união discriminada, sem fallback silencioso
+        // (services/quadro-do-repositorio.ts) — `ehORepoDoProduto` aqui é um
+        // `boolean` de RUNTIME (`repo === REPO_DO_PRODUTO`), então só um
+        // `if`/`else` narrowa para o literal `true`/`false` que cada ramo da
+        // união exige; um objeto montado com espalhamento condicional
+        // (`...(x ? {} : {...})`) não compila mais contra o tipo novo.
+        const depsDoAnexo = {
+          prisma: app.prisma,
+          engineConnections: app.engineConnections,
+          // GraphQL não carrega o repositório na URL — `ghComGuarda`
+          // (guardaPorRepositorio) não sabe de quem é a chamada e
+          // RECUSARIA sempre (guarda-de-autonomia.ts). O repo do produto é
+          // a nossa casa, sem guarda de cliente nenhuma; o repo do cliente
+          // usa o nível DAQUELE projeto, explícito — o mesmo par que a
+          // varredura e o desejo já usam.
+          fetchDeEscritaNoProduto: fetchComTeto(fetch, TIMEOUT_DE_CHAMADA_GITHUB_MS),
+          fetchDeEscritaNoCliente: fetchDoRepositorio({
+            nivel: () => project.autonomia,
+            timeoutMs: TIMEOUT_DE_CHAMADA_GITHUB_MS,
+          }),
+          onInfo: (m: string) => app.log.info(`[Scheduler] ${m}`),
+          onWarn: (m: string, err: unknown) => app.log.warn(err, `[Scheduler] ${m}`),
+        }
+        if (repo === REPO_DO_PRODUTO) {
+          await anexarIssueDeIncidenteAoQuadro(
+            { repo, issueNodeId: nodeId, issueNumber: numero, ehORepoDoProduto: true, token },
+            depsDoAnexo
+          )
+        } else {
+          await anexarIssueDeIncidenteAoQuadro(
+            {
+              repo,
+              issueNodeId: nodeId,
+              issueNumber: numero,
+              ehORepoDoProduto: false,
+              projectId: project.id,
+            },
+            depsDoAnexo
+          )
+        }
+      }
+
       return issue.number
     }
 
@@ -7217,18 +7280,33 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         }
       }
 
-      // Caminho ÚNICO de escrita de issue no repositório do cliente.
-      const criada = await criarIssueDeDesejo({
-        repo: projeto.wingId,
-        titulo: decisao.titulo,
-        corpo: corpoDoPedidoDeAviso({
-          repositorio: projeto.wingId,
+      // Achado A (revisão do fix-up 2): "ao nascer" esta issue passa por
+      // `nascerDesejo` — o caminho ÚNICO da porta de desejo e da varredura
+      // periódica, que resolve o quadro E monta o fetch guardado pela
+      // autonomia real do projeto. ANTES desta correção, esta chamada não
+      // passava `fetchImpl` nenhum — a issue nunca nascia, em NENHUM nível
+      // de autonomia, porque o padrão sem guarda (`fetchSemPermissao`)
+      // recusa toda escrita e a exceção morria neste mesmo `catch` de fora
+      // (L4-T19: o aviso de publicação nunca chegava a existir).
+      const criada = await nascerDesejo(
+        {
           projectId: projeto.id,
-          endereco,
-        }),
-        etiquetas: decisao.etiquetas,
-        log: { onError: (m) => app.log.error(m), onWarn: (m) => app.log.warn(m) },
-      })
+          repo: projeto.wingId,
+          titulo: decisao.titulo,
+          corpo: corpoDoPedidoDeAviso({
+            repositorio: projeto.wingId,
+            projectId: projeto.id,
+            endereco,
+          }),
+          etiquetas: decisao.etiquetas,
+          log: { onError: (m) => app.log.error(m), onWarn: (m) => app.log.warn(m) },
+        },
+        {
+          prisma: app.prisma,
+          engineConnections: app.engineConnections,
+          onInfo: (m) => app.log.info(`[Scheduler] ${m}`),
+        }
+      )
       // A marca é gravada DEPOIS de a issue existir de verdade: gravar antes e
       // falhar a escrita deixaria o projeto marcado como "já pedido" sem tarefa
       // nenhuma — o silêncio exato que isto veio acabar.
@@ -7240,6 +7318,18 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         `[Scheduler] pedi ao ${projeto.wingId} que o CD dele avise quando sobe ao ar (issue #${criada.numero})`
       )
     } catch (err) {
+      // Achado A / L4-T19: a recusa da guarda de autonomia NÃO é defeito —
+      // é o produto obedecendo ao nível que o cliente escolheu (mesma
+      // separação que `varrerIssuesForaDoQuadroDosProjetos` já faz). Antes
+      // desta correção, ISSO NUNCA ACONTECIA: sem `fetchImpl` nenhum, a
+      // issue nunca nascia em NENHUM nível — nem em "cuidar" — e o produto
+      // não tinha como distinguir "autonomia recusou" de "GitHub caiu".
+      if (err instanceof EscritaNaoAutorizadaError) {
+        app.log.debug(
+          `[Scheduler] pedido de aviso de publicação a ${projeto.wingId} não escrito: ${err.message}`
+        )
+        return
+      }
       app.log.error(
         err,
         `[Scheduler] não foi possível pedir o aviso de publicação a ${projeto.wingId}`
@@ -7624,25 +7714,38 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
 
     let numero: number
     try {
-      // Caminho ÚNICO de escrita de issue no repositório do cliente. Uma
-      // segunda cópia desta chamada divergiria em silêncio da primeira, e o
-      // cliente descobriria pela issue errada.
-      const criada = await criarIssueDeDesejo({
-        repo: args.projeto.wingId,
-        titulo: decisao.titulo,
-        corpo: decisao.corpo,
-        etiquetas: decisao.etiquetas,
-        // Abrir issue no repositório do cliente é escrita: passa pela guarda de
-        // autonomia com o nível DESTE projeto. Sem isto a chamada cairia no
-        // padrão que recusa, e a tarefa de conserto nunca seria aberta.
-        fetchImpl: fetchDoRepositorio({ nivel: () => args.projeto.autonomia }),
-        log: {
-          onError: (m) => app.log.error(m),
-          onWarn: (m) => app.log.warn(m),
+      // Achado A (revisão do fix-up 2): "ao nascer" esta issue passa por
+      // `nascerDesejo` — o caminho ÚNICO da porta de desejo e da varredura
+      // periódica, que resolve o quadro E monta o fetch guardado pela
+      // autonomia real do projeto. Uma segunda cópia desta chamada
+      // divergiria em silêncio da primeira, e o cliente descobriria pela
+      // issue errada.
+      const criada = await nascerDesejo(
+        {
+          projectId: args.projeto.id,
+          repo: args.projeto.wingId,
+          titulo: decisao.titulo,
+          corpo: decisao.corpo,
+          etiquetas: decisao.etiquetas,
+          log: {
+            onError: (m) => app.log.error(m),
+            onWarn: (m) => app.log.warn(m),
+          },
         },
-      })
+        {
+          prisma: app.prisma,
+          engineConnections: app.engineConnections,
+          onInfo: (m) => app.log.info(`[Scheduler] ${m}`),
+        }
+      )
       numero = criada.numero
     } catch (err) {
+      if (err instanceof EscritaNaoAutorizadaError) {
+        app.log.debug(
+          `[Scheduler] tarefa de conserto de ${args.projeto.wingId} para ${args.sessao.sessionName} não escrita: ${err.message}`
+        )
+        return null
+      }
       app.log.error(
         err,
         `[Scheduler] não foi possível abrir a tarefa de conserto de ${args.projeto.wingId} para ${args.sessao.sessionName}`
@@ -9187,6 +9290,117 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   }
 
   /**
+   * L4-T8 ("quadro 100%") — a REDE DE SEGURANÇA do anexo ao quadro.
+   *
+   * MEDIDO 02/09/2026 no gitorch: 52 issues abertas, 44 no quadro, 8 fora. O
+   * anexo na hora da criação (desejo-no-github.ts, incidente,
+   * board-status.ts) é o PRIMEIRO elo, e é best-effort — best-effort às vezes
+   * falha (rede, quadro ainda não resolvido naquele instante, corrida). Esta
+   * varredura é o SEGUNDO elo: por projeto, relê TODAS as issues abertas do
+   * repositório (GraphQL paginado, `varrer-issues-fora-do-quadro.ts`) e
+   * pendura no quadro qualquer uma que ainda não esteja lá — não importa quem
+   * a criou.
+   *
+   * L4-T8 (fix-up): a resolução de "qual quadro e qual credencial este
+   * repositório usa" vive AGORA em `resolverQuadroDoRepositorio`
+   * (services/quadro-do-repositorio.ts) — o MESMO caminho que os 4
+   * nascimentos de desejo e a issue de incidente usam. Antes desta extração
+   * o trio (`lerCredencialQueAlcancaOProjeto` + `listarQuadrosDoRepositorio`
+   * + `decidirQuadro`) vivia duplicado só aqui; agora é uma fonte só. A
+   * ESCRITA continua com `fetchDoRepositorio` (a guarda de autonomia na
+   * PORTA de rede — nunca inventada aqui). NÃO roda a cada tique pelo mesmo
+   * motivo da sprint: uma consulta GraphQL por projeto a cada 5 segundos
+   * gastaria a cota do GitHub à toa.
+   */
+  const CADENCIA_PADRAO_DA_VARREDURA_DE_QUADRO_MS = 6 * 60 * 60 * 1000
+  const CADENCIA_DA_VARREDURA_DE_QUADRO_MS = (() => {
+    const bruto = process.env['GITORCH_VARREDURA_DE_QUADRO_CADENCIA_MS']
+    if (bruto === undefined) return CADENCIA_PADRAO_DA_VARREDURA_DE_QUADRO_MS
+    const lido = Number(bruto)
+    // Mesma cicatriz de `GITORCH_SPRINT_ITENS_CADENCIA_MS`: `Number(x) ?? padrão`
+    // não protege nada — string vazia, texto ou negativo passam inteiros, e a
+    // varredura passaria a rodar a CADA TIQUE por um erro de digitação.
+    if (!Number.isFinite(lido) || lido <= 0) {
+      app.log.warn(
+        `[Scheduler] GITORCH_VARREDURA_DE_QUADRO_CADENCIA_MS inválido ('${bruto}'); ` +
+          `usando o padrão de ${CADENCIA_PADRAO_DA_VARREDURA_DE_QUADRO_MS}ms`
+      )
+      return CADENCIA_PADRAO_DA_VARREDURA_DE_QUADRO_MS
+    }
+    return lido
+  })()
+  let ultimaVarreduraDeQuadro = 0
+
+  const varrerIssuesForaDoQuadroDosProjetos = async (): Promise<void> => {
+    if (Date.now() - ultimaVarreduraDeQuadro < CADENCIA_DA_VARREDURA_DE_QUADRO_MS) return
+    ultimaVarreduraDeQuadro = Date.now()
+
+    const projetos = await app.prisma.project.findMany({
+      where: { isActive: true },
+      select: { id: true, wingId: true, autonomia: true, userId: true },
+    })
+
+    // EM SÉRIE, mesmo motivo das varreduras irmãs: dois projetos do mesmo
+    // dono compartilham credencial, e uma renovação no meio da outra derruba
+    // as duas.
+    for (const p of projetos) {
+      try {
+        // L4-T8 (fix-up): a resolução de credencial+quadro vive AGORA no
+        // serviço único `quadro-do-repositorio.ts` — os 4 nascimentos de
+        // desejo e a issue de incidente usam o MESMO caminho; duplicar aqui
+        // era exatamente a divergência que a extração veio fechar.
+        const resolvido = await resolverQuadroDoRepositorio(
+          { projectId: p.id },
+          { prisma: app.prisma, engineConnections: app.engineConnections }
+        )
+        if (!resolvido.quadro) {
+          // O aviso ao dono sobre quadro indefinido já sai pela varredura
+          // irmã de sprint (avisarQuadroIndefinido) — duplicar aqui só
+          // dobraria o Telegram pelo MESMO motivo, sem informação nova.
+          app.log.debug(`[Scheduler] quadro de ${p.wingId} não varrido: ${resolvido.motivo}`)
+          continue
+        }
+        const { projectId, boardToken } = resolvido.quadro
+
+        // ESCREVE no quadro do cliente: nível daquele projeto, lido na hora
+        // da chamada — o dono pode mudar pelo painel a qualquer momento.
+        const fetchDoQuadroDoCliente = fetchDoRepositorio({
+          nivel: () => p.autonomia,
+          timeoutMs: TIMEOUT_DE_CHAMADA_GITHUB_MS,
+        })
+        const gql = criarGqlDoGithub(fetchDoQuadroDoCliente, boardToken)
+        const client = new ProjectV2Client({ token: boardToken, fetchImpl: fetchDoQuadroDoCliente })
+
+        // `varrerIssuesForaDoQuadro` já loga o resumo por repositório
+        // (`onInfo`) no formato `[Scheduler] quadro <repo>: N fora, M
+        // anexadas, K falhas`, sempre — nenhum log extra aqui duplicaria.
+        await varrerIssuesForaDoQuadro({
+          repositorio: p.wingId,
+          projectId,
+          nivelDeAutonomia: p.autonomia,
+          gql,
+          anexarAoQuadro: async (issueNodeId) => {
+            await anexarAoQuadro({ projectId, issueNodeId }, { client, gql })
+          },
+          onInfo: (m) => app.log.info(m),
+          onWarn: (m) => app.log.warn(m),
+        })
+      } catch (err) {
+        // A recusa da guarda NÃO é defeito: é o produto obedecendo ao nível
+        // que o cliente escolheu (mesma separação da sprint acima).
+        if (err instanceof EscritaNaoAutorizadaError) {
+          app.log.debug(`[Scheduler] quadro de ${p.wingId} não varrido: ${err.message}`)
+          continue
+        }
+        app.log.warn(
+          err,
+          `[Scheduler] varredura de quadro de ${p.wingId} falhou; tenta na próxima passada`
+        )
+      }
+    }
+  }
+
+  /**
    * D1 (leva 2) — "Sua ordem custa caro? { perda / tamanho }".
    *
    * A caixa do fluxograma aprovado em 30/08 que nunca virou tarefa. Por
@@ -9483,6 +9697,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // sprint e esta já a preenche na mesma volta do relógio.
     await varrerItensDaSprint().catch((err) =>
       app.log.error(err, '[Scheduler] preenchimento da sprint falhou; tenta no próximo tick')
+    )
+    // L4-T8: a rede de segurança do quadro — pendura no board qualquer issue
+    // aberta que ainda ficou de fora (o anexo na hora da criação é
+    // best-effort). Cadência própria (6h), não trava o resto do tique.
+    await varrerIssuesForaDoQuadroDosProjetos().catch((err) =>
+      app.log.error(
+        err,
+        '[Scheduler] varredura de issues fora do quadro falhou; tenta no próximo tick'
+      )
     )
     // D1 (leva 2): "sua ordem custa caro?" — só LÊ a fila e, quando vale a
     // pena, avisa o dono. Nunca reordena; a ordem dele prevalece sempre.

@@ -7,6 +7,7 @@ import {
   verificarCredencial,
   VerificacaoIndisponivelError,
 } from './project-credential.js'
+import { encryptCredential } from '../lib/credential-crypto.js'
 
 const resposta = (escopos: string, login = 'alguem') =>
   new Response(JSON.stringify({ login }), {
@@ -262,5 +263,75 @@ describe('lerCredencialQueAlcancaOProjeto', () => {
         engineConnections: { getRawGithubToken },
       })
     ).resolves.toBeNull()
+  })
+
+  // Achado F (revisão do fix-up 2): `resolverQuadroDoRepositorio` já lê
+  // `wingId`/`userId`/`encryptedClientToken` do MESMO projeto numa única
+  // consulta — passar o valor já lido aqui evita que este helper leia o
+  // MESMO registro outra vez pelo mesmo `projectId`. `undefined` (o padrão,
+  // todos os testes acima) preserva o comportamento de sempre.
+  it('com o token cifrado JÁ lido por quem chama, usa ele — nunca toca `findUnique`', async () => {
+    const cofre = encryptCredential('pat-ja-lido-pelo-chamador')
+    const prisma = {
+      project: {
+        update: vi.fn(),
+        findUnique: vi.fn(),
+      },
+    }
+    const getRawGithubToken = vi.fn(async () => 'token-do-login')
+
+    const resultado = await lerCredencialQueAlcancaOProjeto({
+      prisma: prisma as never,
+      projectId: 'proj_1',
+      userId: 'user_1',
+      engineConnections: { getRawGithubToken },
+      encryptedClientTokenJaLido: cofre,
+    })
+
+    expect(resultado).toBe('pat-ja-lido-pelo-chamador')
+    expect(prisma.project.findUnique).not.toHaveBeenCalled()
+    expect(getRawGithubToken).not.toHaveBeenCalled()
+  })
+
+  it('sabendo (`null`) que não há token do cliente, pula direto para engine_connections sem tocar `findUnique`', async () => {
+    const prisma = {
+      project: {
+        update: vi.fn(),
+        findUnique: vi.fn(),
+      },
+    }
+    const getRawGithubToken = vi.fn(async () => 'token-do-login')
+
+    const resultado = await lerCredencialQueAlcancaOProjeto({
+      prisma: prisma as never,
+      projectId: 'proj_1',
+      userId: 'user_1',
+      engineConnections: { getRawGithubToken },
+      encryptedClientTokenJaLido: null,
+    })
+
+    expect(resultado).toBe('token-do-login')
+    expect(prisma.project.findUnique).not.toHaveBeenCalled()
+    expect(getRawGithubToken).toHaveBeenCalledWith('user_1')
+  })
+
+  it('token cifrado já lido mas corrompido (chave rotacionada): nunca lança, cai para engine_connections', async () => {
+    const prisma = {
+      project: {
+        update: vi.fn(),
+        findUnique: vi.fn(),
+      },
+    }
+    const getRawGithubToken = vi.fn(async () => 'token-do-login')
+
+    const resultado = await lerCredencialQueAlcancaOProjeto({
+      prisma: prisma as never,
+      projectId: 'proj_1',
+      userId: 'user_1',
+      engineConnections: { getRawGithubToken },
+      encryptedClientTokenJaLido: 'envelope-corrompido-nao-decifra',
+    })
+
+    expect(resultado).toBe('token-do-login')
   })
 })

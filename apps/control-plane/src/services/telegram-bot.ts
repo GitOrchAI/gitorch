@@ -714,6 +714,13 @@ export interface TelegramDesejoDeps {
     titulo: string
     corpo: string
     etiquetas: string[]
+    /**
+     * L4-T8 (fix-up): o id do PROJETO do GitOrch (nunca o repositório do
+     * GitHub) — permite a quem monta esta dependência (plugins/telegram.ts)
+     * resolver o quadro e a credencial pelo caminho único
+     * (`resolverQuadroDoRepositorio`) e anexar a issue ao quadro ao nascer.
+     */
+    projectId: string
   }) => Promise<{ numero: number }>
   /**
    * Guarda o pedido que ainda não sabe a qual projeto pertence e devolve o id
@@ -1186,6 +1193,7 @@ async function registrarDesejoEmProjeto(
         titulo: desejo.titulo,
         corpo: desejo.corpo,
         etiquetas: desejo.etiquetas,
+        projectId: projeto.id,
       }),
       deps.prazoDaIssueMs ?? PRAZO_DA_ISSUE_MS
     )
