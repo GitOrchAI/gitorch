@@ -3,33 +3,11 @@ import { registrarResposta } from './dev-session-store.js'
 import { marcarRespondida } from './pergunta-sem-resposta.js'
 import { chaveDaSessaoDoDev, type PrismaParaChaveDoDev } from './chave-do-dev-assincrono.js'
 import { responderSessaoJules as responderSessaoJulesReal } from './jules-client.js'
+// A2 (fix-up L4-T3): fonte ÚNICA do formato `duvida-dev:<repo>:<issue>:<hash>`
+// — reexportado aqui para não quebrar quem já importa daqui.
+import { parseDedupKeyDeDuvidaDoDev, type DuvidaDevDedupKey } from './dedup-key-de-duvida.js'
 
-const PREFIXO_DUVIDA_DEV = 'duvida-dev:'
-
-export interface DuvidaDevDedupKey {
-  repository: string
-  issueNumber: number
-  hash: string
-}
-
-/**
- * Lê `duvida-dev:<repo>:<issue>:<hash>` (gravado por
- * `escalar-duvida-ao-dono.ts`). `repo` (wingId) nunca carrega `:` — nomes de
- * repositório do GitHub não aceitam o caractere — então o split é seguro.
- * Formato desconhecido/mal formado devolve `null` de propósito: quem chama
- * (`agent-question.ts answer()`) só aciona a retomada para dedupKey deste
- * tipo, exatamente como `automacao:*` já faz para `aoResponderAutomacao`.
- */
-export function parseDedupKeyDeDuvidaDoDev(dedupKey: string): DuvidaDevDedupKey | null {
-  if (!dedupKey.startsWith(PREFIXO_DUVIDA_DEV)) return null
-  const resto = dedupKey.slice(PREFIXO_DUVIDA_DEV.length)
-  const partes = resto.split(':')
-  if (partes.length !== 3) return null
-  const [repository, issueNumberBruto, hash] = partes
-  const issueNumber = Number(issueNumberBruto)
-  if (!repository || !hash || !Number.isInteger(issueNumber) || issueNumber <= 0) return null
-  return { repository, issueNumber, hash }
-}
+export { parseDedupKeyDeDuvidaDoDev, type DuvidaDevDedupKey }
 
 export interface PrismaParaRetomada extends PrismaDevSession, PrismaParaChaveDoDev {
   project: {
@@ -93,8 +71,15 @@ export async function aoResponderDuvidaDoDev(
   // Primeiro tenta a sessão com o hash EXATO desta pergunta (a marca
   // `escalada:0:<hash>` gravada por `escalar-duvida-ao-dono.ts`). Sem achar
   // (a sessão pode ter progredido/mudado de marca entretanto), cai para a
-  // mais recente ainda AWAITING_USER_FEEDBACK da mesma issue — melhor
-  // entregar a decisão do dono a ela do que perder a resposta.
+  // mais recente sessão do MESMO projeto ainda AWAITING_USER_FEEDBACK **E
+  // marcada `escalada:`** — nunca a mais recente AWAITING qualquer.
+  //
+  // C1 (fix-up L4-T3): com DUAS sessões AWAITING_USER_FEEDBACK na mesma
+  // issue — uma escalada de verdade (esperando o dono) e outra só esperando
+  // o QA responder algo comum — a busca reserva sem o filtro de marca podia
+  // entregar a decisão do dono à sessão ERRADA (a que nem tinha perguntado
+  // nada ao dono). A regra agora: só sessão com `answeredHash` começando por
+  // `escalada:` é candidata à reserva; sem nenhuma, LANÇA — nunca adivinha.
   let sessao = await deps.prisma.devSession.findFirst({
     where: {
       projectId: projeto.id,
@@ -109,14 +94,15 @@ export async function aoResponderDuvidaDoDev(
         projectId: projeto.id,
         issueNumber: parsed.issueNumber,
         state: 'AWAITING_USER_FEEDBACK',
+        answeredHash: { startsWith: 'escalada:' },
       },
       orderBy: { createdAt: 'desc' },
     })
   }
   if (!sessao) {
     throw new Error(
-      `aoResponderDuvidaDoDev: nenhuma sessão AWAITING_USER_FEEDBACK para a tarefa #${parsed.issueNumber} ` +
-        `de ${parsed.repository} (dedupKey ${args.dedupKey})`
+      `aoResponderDuvidaDoDev: sessão escalada não encontrada para ${parsed.repository}#${parsed.issueNumber} ` +
+        `(dedupKey ${args.dedupKey}) — a pergunta continua open, nunca adivinha a sessão`
     )
   }
 

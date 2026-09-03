@@ -219,6 +219,45 @@ describe('registrarEscalada', () => {
     const chamada = prisma.devSession.update.mock.calls[0]?.[0] as { data: Record<string, unknown> }
     expect(chamada.data['nudges']).toBeUndefined()
   })
+
+  /**
+   * C4 (fix-up L4-T3): sem esta guarda, um `hashDaPergunta` vazio/nulo
+   * (bug de quem chama) gravaria `escalada:0:` ou `escalada:0:null` — uma
+   * marca sem pergunta real por trás, que nunca mais seria reconciliável
+   * de volta (o hash na marca não bate com nenhuma agent_question de
+   * verdade).
+   */
+  it('C4: recusa hashDaPergunta vazio — nunca grava "escalada:0:" sem pergunta real', async () => {
+    const prisma = prismaFalso()
+
+    await expect(
+      registrarEscalada({ prisma, sessionName: 'sessions/1', hashDaPergunta: '', agora })
+    ).rejects.toThrow()
+    expect(prisma.devSession.update).not.toHaveBeenCalled()
+  })
+
+  it('C4: recusa hashDaPergunta só espaço', async () => {
+    const prisma = prismaFalso()
+
+    await expect(
+      registrarEscalada({ prisma, sessionName: 'sessions/1', hashDaPergunta: '   ', agora })
+    ).rejects.toThrow()
+    expect(prisma.devSession.update).not.toHaveBeenCalled()
+  })
+
+  it('C4: recusa hashDaPergunta null/undefined mesmo fora do tipo declarado (defesa contra chamador com bug)', async () => {
+    const prisma = prismaFalso()
+
+    await expect(
+      registrarEscalada({
+        prisma,
+        sessionName: 'sessions/1',
+        hashDaPergunta: null as unknown as string,
+        agora,
+      })
+    ).rejects.toThrow()
+    expect(prisma.devSession.update).not.toHaveBeenCalled()
+  })
 })
 
 describe('registrarPr', () => {

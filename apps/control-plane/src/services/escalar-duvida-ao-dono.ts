@@ -7,6 +7,7 @@ import { buildFreeTextOption } from './telegram-bot.js'
 import { responderSessaoJules as responderSessaoJulesReal } from './jules-client.js'
 import { textoDeEscaladaParaODono } from './texto-de-escalada.js'
 import type { NotifiableProject } from './telegram-link.js'
+import { dedupKeyDeDuvidaDoDev } from './dedup-key-de-duvida.js'
 
 export interface PrismaParaEscalarDuvida extends PrismaDevSession {
   project: {
@@ -106,8 +107,12 @@ export async function escalarDuvidaAoDono(
   // texto de RESERVA determinístico, nunca um aviso de texto solto (D71).
   const perguntaExecutivaDoModelo =
     args.destino.tipo === 'perguntar-ao-dono' ? args.destino.perguntaExecutiva : undefined
-  const opcoesDoModelo =
+  // C2 (fix-up L4-T3): D71 é "3 objetivas + 1 aberta" — SEMPRE. Sem este
+  // teto, um RA que devolvesse 4+ opções faria `ask()` juntar TODAS elas +
+  // a opção livre, estourando o formato que o dono sempre pede.
+  const opcoesDoModelo = (
     args.destino.tipo === 'perguntar-ao-dono' ? (args.destino.opcoes ?? []) : []
+  ).slice(0, 3)
   const textoDaPergunta =
     perguntaExecutivaDoModelo ??
     textoDeEscaladaParaODono({
@@ -115,7 +120,23 @@ export async function escalarDuvidaAoDono(
       repository: args.repository,
       pergunta: args.pergunta,
     })
-  const dedupKey = `duvida-dev:${args.repository}:${args.issueNumber}:${args.hashDaPergunta}`
+  // A2 (fix-up L4-T3): fonte ÚNICA do formato (dedup-key-de-duvida.ts) —
+  // valida e lança cedo (nunca cria uma agent_question com dedupKey
+  // quebrado que ninguém mais consegue casar de volta).
+  let dedupKey: string
+  try {
+    dedupKey = dedupKeyDeDuvidaDoDev({
+      repo: args.repository,
+      issue: args.issueNumber,
+      hash: args.hashDaPergunta,
+    })
+  } catch (err) {
+    const mensagem =
+      `escalarDuvidaAoDono: dedupKey inválido para a tarefa #${args.issueNumber} de ` +
+      `${args.repository} — a pergunta NÃO nasceu: ${err instanceof Error ? err.message : String(err)}`
+    deps.onError(err, mensagem)
+    throw err
+  }
 
   let resultado: AskResult
   try {
@@ -139,22 +160,45 @@ export async function escalarDuvidaAoDono(
     // A MESMA pergunta (dedupKey) já tinha sido decidida antes: entrega a
     // resposta anterior direto ao dev, em vez de fazer o dono decidir de
     // novo a mesma coisa.
-    if (!resultado.question.answer) return
+    //
+    // C5 (fix-up L4-T3): `!resultado.question.answer` só barrava
+    // `null`/`''` — uma resposta gravada como espaço em branco (`'   '`) é
+    // truthy em JS e passava direto, entregando um TEXTO VAZIO ao dev.
+    // Trata como dado corrompido: nunca entrega, erro ALTO (nunca silêncio)
+    // — a mesma disciplina do resto desta função.
+    const respostaAnterior = resultado.question.answer
+    if (!respostaAnterior || !respostaAnterior.trim()) {
+      const mensagem =
+        `escalarDuvidaAoDono: a pergunta ${resultado.question.id} já está respondida mas com ` +
+        `resposta vazia — não dá para retomar a sessão ${args.sessionName} com um texto vazio ` +
+        `(tarefa #${args.issueNumber} de ${args.repository})`
+      deps.onError(new Error(mensagem), mensagem)
+      throw new Error(mensagem)
+    }
     const responder = deps.responderSessaoJules ?? responderSessaoJulesReal
     const saiu = await responder({
       apiKey: args.apiKey,
       sessionName: args.sessionName,
-      texto: `${resultado.question.answer}\n\nDecisão do dono.`,
+      texto: `${respostaAnterior}\n\nDecisão do dono.`,
       onWarn: (m) => deps.onInfo(m),
     })
-    if (saiu) {
-      await registrarResposta({
-        prisma: deps.prisma,
-        sessionName: args.sessionName,
-        hashDaPergunta: marcarRespondida(args.hashDaPergunta),
-        agora: new Date(),
-      })
+    if (!saiu) {
+      // C5 (fix-up L4-T3): antes retornava em silêncio (a exceção não
+      // subia) — a próxima acordada nem sabia que precisava tentar de
+      // novo com urgência. Agora LANÇA, mesma disciplina de
+      // `aoResponderDuvidaDoDev` (retomar-sessao-com-resposta.ts).
+      const mensagem =
+        `escalarDuvidaAoDono: não deu para entregar a resposta anterior à sessão ${args.sessionName} ` +
+        `(tarefa #${args.issueNumber} de ${args.repository})`
+      deps.onError(new Error(mensagem), mensagem)
+      throw new Error(mensagem)
     }
+    await registrarResposta({
+      prisma: deps.prisma,
+      sessionName: args.sessionName,
+      hashDaPergunta: marcarRespondida(args.hashDaPergunta),
+      agora: new Date(),
+    })
     return
   }
 

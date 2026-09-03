@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { escalarDuvidaAoDono, type PrismaParaEscalarDuvida } from './escalar-duvida-ao-dono.js'
+import { FREE_TEXT_OPTION_VALUE } from './telegram-bot.js'
 
 /**
  * CAUSA RAIZ (L4-T3, item 0) — medido 02/09: 30 dev_sessions em
@@ -142,6 +143,46 @@ describe('escalarDuvidaAoDono — causa raiz medida 02/09 (destinoAposRa sem per
     expect(chamada[2].options.length).toBe(2)
   })
 
+  /**
+   * C2 (fix-up L4-T3): D71 é "3 objetivas + 1 aberta" — SEMPRE. Sem o teto,
+   * um RA que devolvesse 4+ opções faria `ask()` juntar TODAS + a opção
+   * livre, estourando o formato que o dono sempre pede.
+   */
+  it('C2: RA devolve 4 opções — só as 3 primeiras entram, mais a opção livre (D71: 3 + 1)', async () => {
+    const deps = depsFalso()
+
+    await escalarDuvidaAoDono(
+      {
+        destino: {
+          tipo: 'perguntar-ao-dono',
+          motivo: 'decisão de negócio',
+          perguntaExecutiva: 'Qual plano de cobrança usar?',
+          opcoes: [
+            { label: 'Mensal', value: 'mensal' },
+            { label: 'Anual', value: 'anual' },
+            { label: 'Vitalício', value: 'vitalicio' },
+            { label: 'Gratuito', value: 'gratuito' },
+          ],
+        },
+        ...ARGS_BASE,
+      },
+      deps as never
+    )
+
+    const chamada = deps.agentQuestionService.ask.mock.calls[0] as unknown as [
+      string,
+      string,
+      { options: Array<{ value: string }> },
+    ]
+    expect(chamada[2].options.map((o) => o.value)).toEqual([
+      'mensal',
+      'anual',
+      'vitalicio',
+      FREE_TEXT_OPTION_VALUE,
+    ])
+    expect(chamada[2].options.length).toBe(4)
+  })
+
   it('a marca ESCALADA só é gravada DEPOIS que a pergunta nasceu de verdade — nunca antes', async () => {
     const ordem: string[] = []
     const prisma = prismaFalso()
@@ -262,7 +303,7 @@ describe('escalarDuvidaAoDono — causa raiz medida 02/09 (destinoAposRa sem per
     )
   })
 
-  it('deduped mas a entrega ao dev falha: NÃO marca respondida — próxima acordada tenta de novo', async () => {
+  it('C5: deduped mas a entrega ao dev falha: LANÇA (nunca finge sucesso) — não marca respondida', async () => {
     const ask = vi.fn(async () => ({
       deduped: true,
       question: { id: 'q1', answer: 'Use argon2.' } as never,
@@ -270,11 +311,40 @@ describe('escalarDuvidaAoDono — causa raiz medida 02/09 (destinoAposRa sem per
     const responderSessaoJules = vi.fn(async () => false)
     const deps = depsFalso({ agentQuestionService: { ask }, responderSessaoJules })
 
-    await escalarDuvidaAoDono(
-      { destino: { tipo: 'perguntar-ao-dono', motivo: 'x' }, ...ARGS_BASE },
-      deps as never
-    )
+    await expect(
+      escalarDuvidaAoDono(
+        { destino: { tipo: 'perguntar-ao-dono', motivo: 'x' }, ...ARGS_BASE },
+        deps as never
+      )
+    ).rejects.toThrow()
 
+    expect((deps.prisma as PrismaParaEscalarDuvida).devSession.update).not.toHaveBeenCalled()
+    expect(deps.onError).toHaveBeenCalled()
+  })
+
+  /**
+   * C5 (fix-up L4-T3): `!resultado.question.answer` só barrava `null`/`''` —
+   * uma resposta gravada como espaço em branco (`'   '`) é truthy em JS e
+   * passava direto, entregando um texto vazio ao dev. Trata como corrompida:
+   * nunca entrega, erro ALTO (nunca silêncio).
+   */
+  it('C5: resposta anterior vazia/só espaço (dedupado): NÃO entrega texto vazio ao dev — lança erro claro', async () => {
+    const ask = vi.fn(async () => ({
+      deduped: true,
+      question: { id: 'q1', answer: '   ' } as never,
+    }))
+    const responderSessaoJules = vi.fn(async () => true)
+    const deps = depsFalso({ agentQuestionService: { ask }, responderSessaoJules })
+
+    await expect(
+      escalarDuvidaAoDono(
+        { destino: { tipo: 'perguntar-ao-dono', motivo: 'x' }, ...ARGS_BASE },
+        deps as never
+      )
+    ).rejects.toThrow(/resposta.*vazia/i)
+
+    expect(responderSessaoJules).not.toHaveBeenCalled()
+    expect(deps.onError).toHaveBeenCalled()
     expect((deps.prisma as PrismaParaEscalarDuvida).devSession.update).not.toHaveBeenCalled()
   })
 })

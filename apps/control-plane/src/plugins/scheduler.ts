@@ -186,6 +186,7 @@ import {
   reconciliarDuvidasEscaladasDoProjeto,
   type PrismaParaReconciliacao,
 } from '../services/reconciliar-duvidas-escaladas.js'
+import { lerCadenciaMs } from '../services/cadencia-de-varredura.js'
 import {
   decidirSobreAPergunta,
   marcarDesistencia,
@@ -9337,22 +9338,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
    * gastaria a cota do GitHub à toa.
    */
   const CADENCIA_PADRAO_DA_VARREDURA_DE_QUADRO_MS = 6 * 60 * 60 * 1000
-  const CADENCIA_DA_VARREDURA_DE_QUADRO_MS = (() => {
-    const bruto = process.env['GITORCH_VARREDURA_DE_QUADRO_CADENCIA_MS']
-    if (bruto === undefined) return CADENCIA_PADRAO_DA_VARREDURA_DE_QUADRO_MS
-    const lido = Number(bruto)
-    // Mesma cicatriz de `GITORCH_SPRINT_ITENS_CADENCIA_MS`: `Number(x) ?? padrão`
-    // não protege nada — string vazia, texto ou negativo passam inteiros, e a
-    // varredura passaria a rodar a CADA TIQUE por um erro de digitação.
-    if (!Number.isFinite(lido) || lido <= 0) {
-      app.log.warn(
-        `[Scheduler] GITORCH_VARREDURA_DE_QUADRO_CADENCIA_MS inválido ('${bruto}'); ` +
-          `usando o padrão de ${CADENCIA_PADRAO_DA_VARREDURA_DE_QUADRO_MS}ms`
-      )
-      return CADENCIA_PADRAO_DA_VARREDURA_DE_QUADRO_MS
-    }
-    return lido
-  })()
+  // A3 (fix-up L4-T3): guarda extraída para `services/cadencia-de-varredura.ts`
+  // (`lerCadenciaMs`) — mesma mensagem de aviso, mesmo comportamento.
+  const CADENCIA_DA_VARREDURA_DE_QUADRO_MS = lerCadenciaMs(
+    'GITORCH_VARREDURA_DE_QUADRO_CADENCIA_MS',
+    CADENCIA_PADRAO_DA_VARREDURA_DE_QUADRO_MS,
+    (m) => app.log.warn(m)
+  )
   let ultimaVarreduraDeQuadro = 0
 
   const varrerIssuesForaDoQuadroDosProjetos = async (): Promise<void> => {
@@ -9622,19 +9614,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
    * `services/reconciliar-duvidas-escaladas.ts` (testável sem esta máquina).
    */
   const CADENCIA_PADRAO_DA_RECONCILIACAO_DE_DUVIDAS_MS = 6 * 60 * 60 * 1000
-  const CADENCIA_DA_RECONCILIACAO_DE_DUVIDAS_MS = (() => {
-    const bruto = process.env['GITORCH_RECONCILIACAO_DUVIDAS_CADENCIA_MS']
-    if (bruto === undefined) return CADENCIA_PADRAO_DA_RECONCILIACAO_DE_DUVIDAS_MS
-    const lido = Number(bruto)
-    if (!Number.isFinite(lido) || lido <= 0) {
-      app.log.warn(
-        `[Scheduler] GITORCH_RECONCILIACAO_DUVIDAS_CADENCIA_MS inválido ('${bruto}'); ` +
-          `usando o padrão de ${CADENCIA_PADRAO_DA_RECONCILIACAO_DE_DUVIDAS_MS}ms`
-      )
-      return CADENCIA_PADRAO_DA_RECONCILIACAO_DE_DUVIDAS_MS
-    }
-    return lido
-  })()
+  // A3 (fix-up L4-T3): guarda extraída para `services/cadencia-de-varredura.ts`
+  // (`lerCadenciaMs`) — mesmo comportamento e mesma mensagem de aviso.
+  const CADENCIA_DA_RECONCILIACAO_DE_DUVIDAS_MS = lerCadenciaMs(
+    'GITORCH_RECONCILIACAO_DUVIDAS_CADENCIA_MS',
+    CADENCIA_PADRAO_DA_RECONCILIACAO_DE_DUVIDAS_MS,
+    (m) => app.log.warn(m)
+  )
   let ultimaReconciliacaoDeDuvidas = 0
 
   const reconciliarDuvidasEscaladasLegadas = async (): Promise<void> => {
@@ -9658,6 +9644,10 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             decifrar: decryptCredential,
             julesApiKeyDaInstancia: process.env['JULES_API_KEY'],
             onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+            // C3 (fix-up L4-T3): falha do ask() vira nível `error` de
+            // verdade (não só warn) — nunca engolida, nunca reprocessada em
+            // silêncio a cada 6h.
+            onError: (err, m) => app.log.error(err, `[Scheduler] ${m}`),
           }
         )
         if (resumo.presas > 0 || resumo.criadas > 0 || resumo.falhas > 0) {

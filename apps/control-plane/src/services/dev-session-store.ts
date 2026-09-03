@@ -550,6 +550,17 @@ export async function registrarEscalada(deps: {
   hashDaPergunta: string
   agora: Date
 }): Promise<void> {
+  // C4 (fix-up L4-T3): sem esta guarda, um `hashDaPergunta` vazio/nulo (bug
+  // de quem chama) gravaria `escalada:0:` ou `escalada:0:null` — uma marca
+  // sem pergunta real por trás, que `retomar-sessao-com-resposta.ts` (busca
+  // pelo hash exato) e a reconciliação nunca conseguem casar de volta com
+  // nenhuma `agent_question`. Recusa alto e cedo, nunca grava lixo.
+  if (!deps.hashDaPergunta || !deps.hashDaPergunta.trim()) {
+    throw new Error(
+      `registrarEscalada: hashDaPergunta vazio/nulo para ${deps.sessionName} — recusa gravar ` +
+        'marca de escalada sem pergunta real'
+    )
+  }
   await deps.prisma.devSession.update({
     where: { sessionName: deps.sessionName },
     data: {

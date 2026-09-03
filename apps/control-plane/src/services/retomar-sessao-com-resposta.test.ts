@@ -164,4 +164,79 @@ describe('aoResponderDuvidaDoDev', () => {
     expect(findFirst).toHaveBeenCalledTimes(2)
     expect(deps.responderSessaoJules).toHaveBeenCalled()
   })
+
+  /**
+   * C1 (fix-up L4-T3): sem o hash exato, a busca reserva pegava a sessão
+   * AWAITING_USER_FEEDBACK MAIS RECENTE da issue — mesmo se ela nunca tivesse
+   * sido escalada (ex.: uma pergunta comum do dev, ainda esperando o QA
+   * responder). Com DUAS sessões AWAITING na mesma issue, a resposta do dono
+   * podia ir parar na sessão ERRADA. A regra nova: a busca reserva só aceita
+   * sessão com `answeredHash` começando por `escalada:` — nunca adivinha.
+   */
+  it('duas sessões AWAITING na mesma issue (uma escalada, outra não): só escolhe a ESCALADA — nunca adivinha', async () => {
+    const sessaoNaoEscalada = {
+      ...SESSAO,
+      sessionName: 'sessions/nao-escalada',
+      answeredHash: 'tentando:1:outra-pergunta-qualquer',
+    }
+    const sessaoEscalada = {
+      ...SESSAO,
+      sessionName: 'sessions/escalada',
+      answeredHash: 'escalada:0:outro-hash',
+    }
+    const findFirst = vi.fn(
+      async (args: { where: { answeredHash?: string | { startsWith?: string } } }) => {
+        const filtro = args.where.answeredHash
+        if (typeof filtro === 'string') {
+          return [sessaoNaoEscalada, sessaoEscalada].find((s) => s.answeredHash === filtro) ?? null
+        }
+        if (filtro && typeof filtro === 'object' && filtro.startsWith === 'escalada:') {
+          return (
+            [sessaoNaoEscalada, sessaoEscalada].find((s) =>
+              s.answeredHash.startsWith('escalada:')
+            ) ?? null
+          )
+        }
+        // Busca reserva sem filtro por marca (comportamento antigo) NÃO pode
+        // mais acontecer — devolver a não-escalada aqui provaria o defeito.
+        return sessaoNaoEscalada
+      }
+    )
+    const prisma = prismaFalso({
+      devSession: { findFirst, update: vi.fn(async () => undefined) } as never,
+    })
+    const deps = depsFalso({ prisma })
+
+    await aoResponderDuvidaDoDev(ARGS_BASE, deps as never)
+
+    expect(deps.responderSessaoJules).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionName: 'sessions/escalada' })
+    )
+  })
+
+  it('nenhuma sessão ESCALADA (só existe uma AWAITING comum): LANÇA erro claro — a pergunta continua open, nunca adivinha', async () => {
+    const sessaoNaoEscalada = {
+      ...SESSAO,
+      sessionName: 'sessions/nao-escalada',
+      answeredHash: 'tentando:1:outra-pergunta-qualquer',
+    }
+    const findFirst = vi.fn(
+      async (args: { where: { answeredHash?: string | { startsWith?: string } } }) => {
+        const filtro = args.where.answeredHash
+        if (typeof filtro === 'string') return null
+        if (filtro && typeof filtro === 'object' && filtro.startsWith === 'escalada:') return null
+        return sessaoNaoEscalada
+      }
+    )
+    const prisma = prismaFalso({
+      devSession: { findFirst, update: vi.fn(async () => undefined) } as never,
+    })
+    const deps = depsFalso({ prisma })
+
+    await expect(aoResponderDuvidaDoDev(ARGS_BASE, deps as never)).rejects.toThrow(
+      /sessão escalada não encontrada para acme\/api#46/
+    )
+    expect(deps.responderSessaoJules).not.toHaveBeenCalled()
+    expect((deps.prisma as PrismaParaRetomada).devSession.update).not.toHaveBeenCalled()
+  })
 })

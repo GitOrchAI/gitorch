@@ -6,6 +6,7 @@ import { textoDeEscaladaParaODono } from './texto-de-escalada.js'
 import { buildFreeTextOption } from './telegram-bot.js'
 import { chaveDaSessaoDoDev, type PrismaParaChaveDoDev } from './chave-do-dev-assincrono.js'
 import { ultimaMensagemDoDevJules as ultimaMensagemDoDevJulesReal } from './jules-client.js'
+import { dedupKeyDeDuvidaDoDev } from './dedup-key-de-duvida.js'
 
 export interface PrismaParaReconciliacao extends PrismaDevSession, PrismaParaChaveDoDev {
   devSession: {
@@ -28,6 +29,11 @@ export interface DepsDeReconciliacao {
   julesApiKeyDaInstancia: string | undefined
   ultimaMensagemDoDevJules?: typeof ultimaMensagemDoDevJulesReal
   onWarn?: (mensagem: string) => void
+  /** C3 (fix-up L4-T3): a falha do `ask()` (rede, Prisma) já contava como
+   *  falha e já mantinha a marca inalterada — mas só ia para `onWarn`, que
+   *  se perde em qualquer monitoramento real. Produção passa `app.log.error`
+   *  — sem isto a MESMA sessão presa é reprocessada a cada 6h em silêncio. */
+  onError?: (err: unknown, mensagem: string) => void
 }
 
 export interface ResumoDaReconciliacao {
@@ -89,7 +95,6 @@ export async function reconciliarDuvidasEscaladasDoProjeto(
 
     resumo.presas += 1
     const hash = lida.hash
-    const dedupKey = `duvida-dev:${args.repository}:${sessao.issueNumber}:${hash}`
 
     const perguntador = deps.agentQuestionService
     if (!perguntador || !args.userId) {
@@ -102,6 +107,14 @@ export async function reconciliarDuvidasEscaladasDoProjeto(
     }
 
     try {
+      // A2 (fix-up L4-T3): fonte ÚNICA do formato (dedup-key-de-duvida.ts).
+      // Dentro do try: um hash inválido vindo da marca conta como falha
+      // desta sessão, nunca derruba a reconciliação inteira.
+      const dedupKey = dedupKeyDeDuvidaDoDev({
+        repo: args.repository,
+        issue: sessao.issueNumber,
+        hash,
+      })
       const jaExiste = await deps.prisma.agentQuestion.findFirst({
         where: { projectId: args.projectId, dedupKey },
       })
@@ -148,9 +161,16 @@ export async function reconciliarDuvidasEscaladasDoProjeto(
       })
     } catch (err) {
       resumo.falhas += 1
-      deps.onWarn?.(
-        `reconciliação: não deu para escalar de verdade a dúvida presa de ${sessao.sessionName}: ${String(err)}`
-      )
+      // C3 (fix-up L4-T3): NUNCA engole — nível `error` (não `warn`, que se
+      // perde), com repo/issue explícitos (nunca segredo: `String(err)` é a
+      // mensagem da exceção, nunca a apiKey). A marca fica INALTERADA de
+      // propósito (não chama `registrarEscalada`) — a próxima passada tenta
+      // de novo.
+      const mensagem =
+        `reconciliação: não deu para escalar de verdade a dúvida presa de ` +
+        `${args.repository}#${sessao.issueNumber} (sessão ${sessao.sessionName}): ${String(err)}`
+      deps.onError?.(err, mensagem)
+      deps.onWarn?.(mensagem)
     }
   }
 

@@ -161,6 +161,30 @@ describe('reconciliarDuvidasEscaladasDoProjeto', () => {
     expect(resumo).toEqual({ presas: 1, criadas: 0, falhas: 1 })
   })
 
+  /**
+   * C3 (fix-up L4-T3): a falha do `ask()` já era contada como falha e a
+   * marca já ficava inalterada — mas ia só para `onWarn`, sem nível `error`
+   * nem repo/issue explícitos. Sem isso a MESMA sessão é reprocessada a
+   * cada 6h em silêncio (warn se perde em qualquer monitoramento real).
+   */
+  it('C3: ask() lança: falhas=1, onError chamado com repo/issue (nunca engole), marca INALTERADA', async () => {
+    const erro = new Error('rede caiu')
+    const onError = vi.fn()
+    const deps = depsFalso({
+      agentQuestionService: { ask: vi.fn(async () => Promise.reject(erro)) },
+      onError,
+    })
+
+    const resumo = await reconciliarDuvidasEscaladasDoProjeto(ARGS, deps as never)
+
+    expect(resumo).toEqual({ presas: 1, criadas: 0, falhas: 1 })
+    expect(onError).toHaveBeenCalledTimes(1)
+    const [errArg, mensagem] = onError.mock.calls[0] as [unknown, string]
+    expect(errArg).toBe(erro)
+    expect(mensagem).toContain('acme/api#46')
+    expect((deps.prisma as PrismaParaReconciliacao).devSession.update).not.toHaveBeenCalled()
+  })
+
   it('ask() lança: conta falha, segue para a próxima sessão, nunca derruba a reconciliação', async () => {
     const prisma = prismaFalso({
       devSession: {

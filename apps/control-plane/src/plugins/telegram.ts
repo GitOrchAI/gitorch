@@ -191,11 +191,18 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
   const agentQuestionService = new AgentQuestionService(app.prisma, {
     ...(notifyOwner ? { notify: notifyOwner } : {}),
     cortex: app.cortex,
-    aoResponderAutomacao,
-    aoResponderDuvidaDoDev,
-    // C4 (fix-up L4-T2): logger injetado para a falha de `aoResponderAutomacao`
-    // (e, desde L4-T3, de `aoResponderDuvidaDoDev`) — nunca `console.warn`,
-    // que some do monitoramento.
+    // A1 (fix-up L4-T3): registro por prefixo — substitui os dois campos
+    // fixos `aoResponderAutomacao`/`aoResponderDuvidaDoDev`. A ORDEM não
+    // importa aqui (prefixos `automacao:`/`duvida-dev:` nunca colidem), mas
+    // é a mesma disciplina que qualquer prefixo novo (L4-T4/T9/T18) vai
+    // seguir: uma entrada nova nesta lista, nunca mais um `if` em
+    // `agent-question.ts`.
+    manipuladoresDeResposta: [
+      { prefixo: 'automacao:', executar: aoResponderAutomacao },
+      { prefixo: 'duvida-dev:', executar: aoResponderDuvidaDoDev },
+    ],
+    // C4 (fix-up L4-T2): logger injetado para a falha de um manipulador de
+    // resposta — nunca `console.warn`, que some do monitoramento.
     onError: (m) => app.log.error(`[Telegram] ${m}`),
   })
   app.decorate('agentQuestionService', agentQuestionService)

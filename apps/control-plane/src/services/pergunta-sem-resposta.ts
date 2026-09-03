@@ -49,6 +49,24 @@ export const MAX_TENTATIVAS_DE_RESPOSTA = 3
  */
 export const JANELA_DE_TENTATIVA_EM_VOO_MS = 15 * 60_000
 
+/**
+ * A4 (fix-up L4-T3, DÍVIDA — não resolver agora): `answered_hash` (a coluna
+ * real por trás de `DevSession.answeredHash`, ver schema.prisma) carrega
+ * TRÊS significados de negócio bem diferentes dentro do mesmo campo de texto
+ * (`respondida:`/`desisti:`/`escalada:`, além do em-voo `tentando:`) — cada
+ * um decodificado por `lerMarca` abaixo a partir de um prefixo dentro de uma
+ * string, nunca por uma coluna própria. Funciona porque `lerMarca` é a
+ * ÚNICA porta de leitura (nenhum outro lugar faz `startsWith` direto na
+ * coluna, exceto o único caso documentado em `marcarEscalada` acima:
+ * `session-watch.ts`), mas é uma dívida: um estado novo (ex.: uma L4-T4
+ * que precisasse de um 5º significado) tem que caber no MESMO formato
+ * `<situação>:<tentativas>:<hash>` ou reabre a ambiguidade que a introdução
+ * deste arquivo documenta (dois significados se sobrescrevendo). A correção
+ * de verdade é uma coluna própria (ou uma tabela via ledger, no padrão que
+ * o resto do produto já usa para histórico) — fora do escopo desta task;
+ * fica registrado aqui para a L4-T4 (ou quem mexer aqui depois) não
+ * redescobrir o problema do zero.
+ */
 type Situacao = 'tentando' | 'respondida' | 'desisti' | 'escalada'
 
 interface MarcaLida {
