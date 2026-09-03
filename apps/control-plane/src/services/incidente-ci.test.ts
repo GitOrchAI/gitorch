@@ -138,8 +138,8 @@ describe('coletarAchadosDeInfra', () => {
         workflows: [
           {
             id: 40,
-            name: 'Dependabot → Jules',
-            path: '.github/workflows/dependabot-to-jules.yml',
+            name: 'SLA Tracker for Dependabot Alerts',
+            path: '.github/workflows/sla-tracker.yml',
             state: 'active',
           },
         ],
@@ -148,14 +148,14 @@ describe('coletarAchadosDeInfra', () => {
         workflow_runs: [
           {
             id: 960,
-            name: 'Dependabot → Jules',
+            name: 'SLA Tracker for Dependabot Alerts',
             event: 'schedule',
             status: 'completed',
             conclusion: 'failure',
           },
         ],
       },
-      '/contents/.github/workflows/dependabot-to-jules.yml': {
+      '/contents/.github/workflows/sla-tracker.yml': {
         encoding: 'base64',
         content: Buffer.from('name: x').toString('base64'),
       },
