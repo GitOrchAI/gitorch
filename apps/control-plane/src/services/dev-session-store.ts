@@ -225,6 +225,20 @@ export async function abrirSessao(deps: {
    * instância.
    */
   devAccountId?: string | null
+  /**
+   * C3 (fix-up L4-T5, CSO): a sessão de RETOMADA (mesmo PR,
+   * `retomar-pr-reprovado.ts`) não é uma redelegação da issue — é a MESMA
+   * tarefa continuando. Sem isto, `abrirSessao` recontava o histórico e
+   * enxergava a sessão que a PRÓPRIA retomada ACABOU de fechar
+   * (`pr-rejeitado-sem-retomada` é um dos `MOTIVOS_QUE_REDELEGAM`) — inflando
+   * `requeueCount` da issue a cada tentativa de retomada e disparando
+   * `REQUEUE_ATE_ANALISAR` (sessao-terminal.ts) cedo demais por um sinal que
+   * não é "a issue voltou para a fila", é "o dev está insistindo no mesmo
+   * PR". Quando informado, `requeueCount`/`analysisDoneAt` da linha ANTERIOR
+   * são herdados tal como estão — a consulta ao histórico é PULADA (ela é
+   * exatamente o que contaria a sessão que está fechando agora).
+   */
+  herancaDeRequeue?: { requeueCount: number; analysisDoneAt: Date | null }
 }): Promise<ResultadoDeAbrirSessao> {
   // Carrega o histórico da issue para a linha nova (ciclo terminal, D51): quantas
   // vezes esta issue já foi redelegada por entrega que não mesclou, e se a
@@ -233,20 +247,25 @@ export async function abrirSessao(deps: {
   // 3ª". Best-effort: falha aqui não pode barrar a delegação — cai no zero.
   let requeueCount = 0
   let analysisDoneAt: Date | null = null
-  try {
-    const anteriores = (await deps.prisma.devSession.findMany({
-      where: {
-        projectId: deps.projectId,
-        issueNumber: deps.issueNumber,
-        closedReason: { in: [...MOTIVOS_QUE_REDELEGAM] },
-      },
-      select: { analysisDoneAt: true },
-      orderBy: { closedAt: 'desc' },
-    })) as unknown as Array<{ analysisDoneAt: Date | null }>
-    requeueCount = anteriores.length
-    analysisDoneAt = anteriores[0]?.analysisDoneAt ?? null
-  } catch {
-    // sem histórico utilizável — a linha nasce do zero
+  if (deps.herancaDeRequeue) {
+    requeueCount = deps.herancaDeRequeue.requeueCount
+    analysisDoneAt = deps.herancaDeRequeue.analysisDoneAt
+  } else {
+    try {
+      const anteriores = (await deps.prisma.devSession.findMany({
+        where: {
+          projectId: deps.projectId,
+          issueNumber: deps.issueNumber,
+          closedReason: { in: [...MOTIVOS_QUE_REDELEGAM] },
+        },
+        select: { analysisDoneAt: true },
+        orderBy: { closedAt: 'desc' },
+      })) as unknown as Array<{ analysisDoneAt: Date | null }>
+      requeueCount = anteriores.length
+      analysisDoneAt = anteriores[0]?.analysisDoneAt ?? null
+    } catch {
+      // sem histórico utilizável — a linha nasce do zero
+    }
   }
 
   try {

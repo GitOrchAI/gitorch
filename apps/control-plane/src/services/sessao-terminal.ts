@@ -46,6 +46,16 @@ export type DecisaoTerminal =
   | { acao: 'fechar-concluido'; motivo: 'merged' }
   | { acao: 'fechar-e-redelegar'; motivo: MotivoDeFechamento }
   | { acao: 'fechar-e-analisar'; motivo: MotivoDeFechamento }
+  /**
+   * L4-T5: PR aberto, reprovado, o dev não vai retomar sozinho (terminal) —
+   * mas HÁ um ramo para retomar nele. Em vez de fechar às cegas e devolver a
+   * issue para a fila (que abriria um SEGUNDO pull request — medido: issue
+   * #3884, 5 sessões e 3 PRs para uma task), a esteira tenta de novo NO
+   * MESMO PR. O teto de tentativas e a escalada ao dono, quando ele bate,
+   * vivem em `retomarPrReprovado` (retomar-pr-reprovado.ts) — aqui só se
+   * decide que HÁ o que retomar.
+   */
+  | { acao: 'retomar-no-mesmo-pr'; branchDoPr: string }
 
 export function decidirSessaoTerminal(args: {
   estado: string
@@ -56,6 +66,15 @@ export function decidirSessaoTerminal(args: {
   analiseJaFeita: boolean
   /** Há quantas horas a sessão está terminal (≈ agora − último sinal de avanço). */
   horasNoTerminal: number
+  /**
+   * L4-T5: o ramo do PR reprovado, quando dá para retomar nele
+   * (`branchParaRetomar`, vigia-do-pr.ts — `null` para fork ou ramo
+   * desconhecido). Só é OLHADO quando `situacaoDoPr === 'aberto-rejeitado-parado'`
+   * e as 12h já passaram; `undefined` (chamador que ainda não sabe o ramo)
+   * preserva o comportamento antigo (fecha e redelega, nunca retoma no mesmo
+   * PR) — nenhum chamador existente quebra por não conhecer este campo.
+   */
+  branchRetomavel?: string | null
   /**
    * A marca de `pergunta-sem-resposta.ts` guardada em `DevSession.answeredHash`.
    *
@@ -93,6 +112,12 @@ export function decidirSessaoTerminal(args: {
     args.horasNoTerminal < HORAS_ATE_DESISTIR_DO_PR_REJEITADO
   ) {
     return { acao: 'manter' }
+  }
+
+  // L4-T5: passou o tempo de espera e HÁ um ramo para retomar — a esteira
+  // tenta de novo NO MESMO PR em vez de fechar e devolver a issue à fila.
+  if (args.situacaoDoPr === 'aberto-rejeitado-parado' && args.branchRetomavel) {
+    return { acao: 'retomar-no-mesmo-pr', branchDoPr: args.branchRetomavel }
   }
 
   const motivo: MotivoDeFechamento =

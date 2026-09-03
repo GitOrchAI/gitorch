@@ -1,7 +1,17 @@
 import { describe, it, expect } from 'vitest'
 import { applyBacklog, type BacklogGitHub, type BacklogPlan } from './backlog-executor.js'
 import { arquivosDeclarados } from './secao-da-issue.js'
-import { runSmDelegation, extractBlockers } from './sm-delegation.js'
+import { runSmDelegation as runSmDelegationReal, extractBlockers } from './sm-delegation.js'
+
+// C8 (fix-up L4-T5, CSO): `onWarn` virou obrigatório em `SmDelegationOptions`
+// — ver o mesmo wrapper e o mesmo motivo em `sm-delegation.test.ts`.
+function runSmDelegation(
+  args: Omit<Parameters<typeof runSmDelegationReal>[0], 'onWarn'> & {
+    onWarn?: Parameters<typeof runSmDelegationReal>[0]['onWarn']
+  }
+): ReturnType<typeof runSmDelegationReal> {
+  return runSmDelegationReal({ onWarn: () => undefined, ...args })
+}
 import { montarPedidoAoDev } from './pedido-ao-dev.js'
 import type { DoDFields } from '@gitorch/cadence'
 

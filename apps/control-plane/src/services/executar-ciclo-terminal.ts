@@ -42,6 +42,31 @@ export interface CicloTerminalDeps {
   }) => Promise<void>
   /** 2ª falha na mesma issue: pede a análise de "por que" antes da 3ª tentativa. */
   pedirAnalise: (args: { linha: LinhaParaCicloTerminal }) => Promise<void>
+  /**
+   * L4-T5: o ramo do pull request reprovado, quando dá para retomar nele
+   * (`branchParaRetomar`, vigia-do-pr.ts) — só chamado quando a situação é
+   * `aberto-rejeitado-parado` e as 12h já passaram. Devolve `null` quando não
+   * há ramo utilizável (fork, ausente); ausente o dep inteiro (chamador
+   * antigo), o ciclo preserva o comportamento anterior a esta tarefa (fecha e
+   * redelega, nunca tenta retomar no mesmo PR).
+   */
+  branchRetomavel?: (args: {
+    linha: LinhaParaCicloTerminal
+    numeroDoPr: number
+  }) => Promise<string | null>
+  /**
+   * L4-T5: executa a retomada de fato — abre a sessão nova na mesma branch
+   * (ou escala ao dono se o teto de tentativas do PR já bateu; ver
+   * `retomarPrReprovado`, retomar-pr-reprovado.ts). Só chamado quando
+   * `branchRetomavel` devolveu um ramo utilizável. A linha ANTIGA já foi
+   * fechada (`fecharSessao`) antes desta chamada — a vaga da conta precisa
+   * voltar antes de abrir a sessão nova.
+   */
+  retomarNoMesmoPr?: (args: {
+    linha: LinhaParaCicloTerminal
+    numeroDoPr: number
+    branchDoPr: string
+  }) => Promise<void>
   agora: Date
   teto?: number
   onInfo?: (m: string) => void
@@ -54,6 +79,12 @@ export interface CicloTerminalResultado {
   issuesRedelegadas: number[]
   /** Issues cuja 2ª falha pediu análise antes da 3ª tentativa. */
   issuesEmAnalise: number[]
+  /**
+   * L4-T5: issues cujo PR reprovado foi retomado no MESMO pull request — a
+   * issue NÃO volta para a fila (`issuesRedelegadas`): ela continua sendo
+   * trabalhada, só que numa sessão nova.
+   */
+  issuesRetomadasNoPr: number[]
   mantidas: number
   ilegiveis: number
 }
@@ -74,6 +105,7 @@ export async function executarCicloTerminal(
     fechadasConcluidas: 0,
     issuesRedelegadas: [],
     issuesEmAnalise: [],
+    issuesRetomadasNoPr: [],
     mantidas: 0,
     ilegiveis: 0,
   }
@@ -108,17 +140,98 @@ export async function executarCicloTerminal(
       continue
     }
 
+    // L4-T5: só busca o ramo retomável quando PODE fazer diferença — PR
+    // reprovado, 12h já passadas, o dep injetado (chamador antigo não paga
+    // esta chamada) e há de fato um PR para olhar. Custa uma chamada; gastá-la
+    // fora deste caso específico seria à toa.
+    let branchRetomavel: string | null = null
+    if (
+      situacao === 'aberto-rejeitado-parado' &&
+      horasNoTerminal >= HORAS_ATE_DESISTIR_DO_PR_REJEITADO &&
+      deps.branchRetomavel &&
+      linha.pullRequestNumber !== null
+    ) {
+      try {
+        branchRetomavel = await deps.branchRetomavel({
+          linha,
+          numeroDoPr: linha.pullRequestNumber,
+        })
+      } catch (err) {
+        warn(
+          `[ciclo-terminal] não deu para achar o ramo retomável de #${linha.issueNumber}: ` +
+            `${(err as Error).message}`
+        )
+        branchRetomavel = null
+      }
+    }
+
     const decisao = decidirSessaoTerminal({
       estado: linha.state,
       situacaoDoPr: situacao,
       requeueCount: linha.requeueCount,
       analiseJaFeita: linha.analysisDoneAt !== null,
       horasNoTerminal,
+      branchRetomavel,
       answeredHash: linha.answeredHash,
     })
 
     if (decisao.acao === 'manter') {
       r.mantidas += 1
+      continue
+    }
+
+    // L4-T5: retomada no MESMO PR é um caminho à parte — fecha a linha
+    // antiga (a vaga da conta precisa voltar) e abre a sessão nova na mesma
+    // branch, em vez do fechar-e-redelegar genérico que abriria um SEGUNDO
+    // pull request para a mesma tarefa.
+    if (decisao.acao === 'retomar-no-mesmo-pr') {
+      if (!deps.retomarNoMesmoPr) {
+        // Guarda defensiva: `branchRetomavel` só é preenchido quando o dep
+        // existe (ver acima) — chegar aqui sem ele é bug de wiring, nunca
+        // motivo para fingir uma ação que não aconteceu.
+        warn(
+          `[ciclo-terminal] decisão retomar-no-mesmo-pr para #${linha.issueNumber} sem ` +
+            'executor injetado — mantendo a linha para o próximo ciclo'
+        )
+        r.mantidas += 1
+        continue
+      }
+      // C4 (fix-up L4-T5, CSO): defesa em profundidade contra a combinação
+      // inconsistente "decisão diz retomar, mas a linha não carrega o número
+      // do PR" — hoje inalcançável pela wiring real (o chamador só passa
+      // `branchRetomavel` truthy quando `linha.pullRequestNumber !== null`),
+      // mas um `situacaoDoPr`/`branchRetomavel` injetado com bug não pode
+      // virar `numeroDoPr: null` digitado como `number` (o cast antigo,
+      // `as number`) numa chamada real ao GitHub/Jules. Nunca finge sucesso:
+      // pula a retomada, avisa, e a linha cai no comportamento antigo
+      // (mantida para o próximo ciclo reexaminar do zero).
+      if (linha.pullRequestNumber === null) {
+        warn(
+          `[ciclo-terminal] decisão retomar-no-mesmo-pr para #${linha.issueNumber} sem número ` +
+            'de PR na linha — mantendo para o próximo ciclo (comportamento antigo)'
+        )
+        r.mantidas += 1
+        continue
+      }
+      try {
+        await deps.fecharSessao({ linha, motivo: 'pr-rejeitado-sem-retomada' })
+        await deps.retomarNoMesmoPr({
+          linha,
+          numeroDoPr: linha.pullRequestNumber,
+          branchDoPr: decisao.branchDoPr,
+        })
+        feitas += 1
+        r.issuesRetomadasNoPr.push(linha.issueNumber)
+        info(
+          `[ciclo-terminal] ${linha.sessionName} (issue #${linha.issueNumber}) fechada; PR ` +
+            `#${linha.pullRequestNumber} retomado na mesma branch (${decisao.branchDoPr})`
+        )
+      } catch (err) {
+        warn(
+          `[ciclo-terminal] retomada do PR de #${linha.issueNumber} falhou: ` +
+            `${(err as Error).message}`
+        )
+      }
       continue
     }
 
