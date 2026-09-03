@@ -146,6 +146,27 @@ describe('vigiarSessoes', () => {
     expect(deps.registrarPr).not.toHaveBeenCalled()
   })
 
+  // L4-T4, fix-up 5 (task a13a42f8-2953-4259-b41f-3f8cddb304cd) — mesma classe
+  // de defeito provada em produção (03/09) para o caminho `fechar-terminal`
+  // desta vigia (o caso SEM PR, decidível sem rede): o Jules pode reportar
+  // COMPLETED mesmo com a dúvida ainda ESCALADA (`escalada:0:<hash>`) e sem
+  // decisão do dono. `decidirSessaoTerminal` agora veta por `answeredHash`,
+  // independente do `estado` remoto.
+  it('concluída SEM PR mas com marca escalada residual → NÃO fecha (a dúvida ainda espera o dono)', async () => {
+    const deps = depsFalso({
+      sessoes: [linha({ sessionName: 'sessions/escalada-sem-pr', answeredHash: 'escalada:0:abc' })],
+      consultarSessao: vi.fn(async () => ({
+        estado: 'COMPLETED',
+        numeroDoPr: null,
+        ultimaAtualizacao: agora.toISOString(),
+      })),
+    })
+
+    await vigiarSessoes(deps)
+
+    expect(deps.fecharSessao).not.toHaveBeenCalled()
+  })
+
   it('FAILED sem PR → fecha a linha (dev-falhou); NÃO pede retomada nem aciona o SM em loop', async () => {
     const deps = depsFalso({
       sessoes: [linha({ sessionName: 'sessions/falhou', issueNumber: 42 })],

@@ -446,6 +446,14 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
             requeueCount: linha.requeueCount ?? 0,
             analiseJaFeita: (linha.analysisDoneAt ?? null) !== null,
             horasNoTerminal: paradoHaMs / (60 * 60 * 1000),
+            // L4-T4, fix-up 5 (task a13a42f8-2953-4259-b41f-3f8cddb304cd):
+            // MESMA classe de defeito provada em produção — `estadoBruto`
+            // acima é o `state` que a API do Jules acabou de devolver NESTE
+            // exame, e o Jules pode reportar COMPLETED/FAILED/CANCELLED
+            // mesmo com a dúvida ainda ESCALADA (ninguém respondeu ainda).
+            // `decidirSessaoTerminal` veta o fechamento por `answeredHash`,
+            // independente de `estadoBruto`.
+            answeredHash: linha.answeredHash,
           })
           if (decisaoTerminal.acao === 'manter') break
           await deps.fecharSessao({

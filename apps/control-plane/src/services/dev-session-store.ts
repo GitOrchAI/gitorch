@@ -402,6 +402,12 @@ export interface LinhaParaCicloTerminal {
   requeueCount: number
   analysisDoneAt: Date | null
   devAccountId: string | null
+  /**
+   * L4-T4, fix-up 5 (task a13a42f8-2953-4259-b41f-3f8cddb304cd): a marca de
+   * `pergunta-sem-resposta.ts` — `decidirSessaoTerminal` veta o fechamento
+   * quando ela é `escalada:` (`ehMarcaDeEscalada`), independente de `state`.
+   */
+  answeredHash: string | null
 }
 
 /**
@@ -427,6 +433,7 @@ export async function linhasVivasParaCicloTerminal(deps: {
       requeueCount: true,
       analysisDoneAt: true,
       devAccountId: true,
+      answeredHash: true,
     },
   })) as unknown as LinhaParaCicloTerminal[]
 }

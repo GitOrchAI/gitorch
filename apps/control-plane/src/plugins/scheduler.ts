@@ -9764,29 +9764,32 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   }
 
   /**
-   * L4-T3, item 4 — O CONSERTO DAS 24 PRESAS: uma varredura ÚNICA (por boot,
-   * repetida a cada 6h para pegar o que uma sessão nova esbarrar) que migra
-   * as sessões marcadas `respondida:` SEM `agent_question` real — a
-   * assinatura exata do defeito de `escalar-duvida-ao-dono.ts` antes do
-   * conserto do item 0. Mesmo template de cadência de
-   * `varrerIssuesForaDoQuadroDosProjetos` (6h, override por env, `ultima* =
-   * 0` corre a primeira vez no boot). A lógica por projeto vive em
-   * `services/reconciliar-duvidas-escaladas.ts` (testável sem esta máquina).
+   * L4-T3, item 4 — O CONSERTO DAS 24 PRESAS: migra as sessões marcadas
+   * `respondida:` SEM `agent_question` real — a assinatura exata do defeito
+   * de `escalar-duvida-ao-dono.ts` antes do conserto do item 0. A lógica por
+   * projeto vive em `services/reconciliar-duvidas-escaladas.ts` (testável
+   * sem esta máquina).
+   *
+   * L4-T4, fix-up 5 (task a13a42f8-2953-4259-b41f-3f8cddb304cd) — PROVADO em
+   * produção 03/09: com a cadência de 6h (herdada do item 4) e rodando DEPOIS
+   * de `devolverVagasDeSessaoAbandonada`/`varrerCicloTerminalDaSessao` no
+   * tique, uma sessão AWAITING_USER_FEEDBACK com marca `respondida:0:<hash>`
+   * (legada, sem `agent_question`) podia ser FECHADA pelos dois varredores
+   * de cima ANTES de esta reconciliação sequer rodar — e a query dela filtra
+   * `closedAt: null` (reconciliar-duvidas-escaladas.ts), então uma sessão já
+   * fechada some da reconciliação PARA SEMPRE (medido: 9 sessões assim em
+   * 03/09, 2 fechadas no MESMO primeiro tique às 09:49:14, a reconciliação só
+   * às 09:51:08). O conserto de `sessao-terminal.ts` (o veto por
+   * `answeredHash`) só protege marca JÁ migrada para `escalada:` — a marca
+   * legada `respondida:` continua vulnerável enquanto não for reconciliada.
+   *
+   * A partir de agora: SEM cadência (roda em TODO tique — o `findMany` é
+   * barato, um por projeto ativo) e ANTES dos dois varredores que fecham
+   * sessão no `tick` (abaixo). Uma sessão presa é migrada para `escalada:` +
+   * ganha a `agent_question` na MESMA passada em que seria fechada — e o
+   * veto por `answeredHash` (sessao-terminal.ts) a protege daí em diante.
    */
-  const CADENCIA_PADRAO_DA_RECONCILIACAO_DE_DUVIDAS_MS = 6 * 60 * 60 * 1000
-  // A3 (fix-up L4-T3): guarda extraída para `services/cadencia-de-varredura.ts`
-  // (`lerCadenciaMs`) — mesmo comportamento e mesma mensagem de aviso.
-  const CADENCIA_DA_RECONCILIACAO_DE_DUVIDAS_MS = lerCadenciaMs(
-    'GITORCH_RECONCILIACAO_DUVIDAS_CADENCIA_MS',
-    CADENCIA_PADRAO_DA_RECONCILIACAO_DE_DUVIDAS_MS,
-    (m) => app.log.warn(m)
-  )
-  let ultimaReconciliacaoDeDuvidas = 0
-
   const reconciliarDuvidasEscaladasLegadas = async (): Promise<void> => {
-    if (Date.now() - ultimaReconciliacaoDeDuvidas < CADENCIA_DA_RECONCILIACAO_DE_DUVIDAS_MS) return
-    ultimaReconciliacaoDeDuvidas = Date.now()
-
     const perguntador = (app as unknown as { agentQuestionService?: AgentQuestionService })
       .agentQuestionService
     const projetos = await app.prisma.project.findMany({
@@ -9847,6 +9850,21 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     await reconferirAcessoDoRelogio(app)
     await processSetupMissions()
     await varrerSessoesDoDev()
+    // L4-T4, fix-up 5 (task a13a42f8-2953-4259-b41f-3f8cddb304cd): ANTES dos
+    // dois varredores abaixo, de propósito — são eles que fecham sessão, e a
+    // marca legada `respondida:` (sem `agent_question`) só vira `escalada:`
+    // (protegida pelo veto de `sessao-terminal.ts`) se esta reconciliação já
+    // tiver rodado NESTA passada. Rodar depois (como era) deixava a sessão
+    // fechar antes de a reconciliação sequer olhar para ela — e a query dela
+    // filtra `closedAt: null`, então uma sessão fechada some de vista para
+    // sempre (medido em produção 03/09: 9 sessões assim). Nunca derruba o
+    // tique: cada projeto se isola sozinho.
+    await reconciliarDuvidasEscaladasLegadas().catch((err) =>
+      app.log.error(
+        err,
+        '[Scheduler] reconciliação de dúvidas escaladas falhou; tenta no próximo tick'
+      )
+    )
     // Nunca derruba o tique: a varredura já isola cada arquivamento, este é o
     // último cinto de segurança, igual às vizinhas.
     // Antes da reconciliação de vagas de propósito: esta é a que devolve a
@@ -9949,15 +9967,6 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // pena, avisa o dono. Nunca reordena; a ordem dele prevalece sempre.
     await avaliarCustoDaOrdem().catch((err) =>
       app.log.error(err, '[Scheduler] avaliação do custo da ordem falhou; tenta no próximo tick')
-    )
-    // L4-T3: as 24 sessões que ficaram presas ANTES do conserto do item 0
-    // (marcadas "respondida" sem `agent_question` real). Cadência própria
-    // (6h, roda no boot), não trava o resto do tique.
-    await reconciliarDuvidasEscaladasLegadas().catch((err) =>
-      app.log.error(
-        err,
-        '[Scheduler] reconciliação de dúvidas escaladas falhou; tenta no próximo tick'
-      )
     )
     await sweepExpiredEnvironments()
     const now = new Date()

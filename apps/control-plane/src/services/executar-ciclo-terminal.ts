@@ -114,6 +114,7 @@ export async function executarCicloTerminal(
       requeueCount: linha.requeueCount,
       analiseJaFeita: linha.analysisDoneAt !== null,
       horasNoTerminal,
+      answeredHash: linha.answeredHash,
     })
 
     if (decisao.acao === 'manter') {
