@@ -68,15 +68,29 @@ export type AoResponderAutomacaoFn = (args: {
   autonomia: string | null | undefined
 }) => Promise<void>
 
+/** L4-T3: a resposta do dono a uma dúvida escalada do dev assíncrono
+ *  (dedupKey `duvida-dev:<repo>:<issue>:<hash>`) RETOMA a sessão dele —
+ *  `AgentQuestionService` não sabe nada de Jules/sessões; só delega para cá
+ *  (`services/retomar-sessao-com-resposta.ts`). MESMA disciplina de
+ *  `aoResponderAutomacao`: chamada ANTES de marcar `answered`, uma falha
+ *  (lançada, nunca engolida) mantém a pergunta `open` para nova tentativa. */
+export type AoResponderDuvidaDoDevFn = (args: {
+  dedupKey: string
+  resposta: string
+  opcoes: AgentQuestionOption[]
+}) => Promise<void>
+
 export interface AgentQuestionServiceDeps {
   notify?: NotifyFn
   /** Grava a decisão respondida na memória de longo prazo (Cortex) — best-effort. */
   cortex?: CortexWriter
   now?: () => Date
   aoResponderAutomacao?: AoResponderAutomacaoFn
+  aoResponderDuvidaDoDev?: AoResponderDuvidaDoDevFn
   /** C4 (fix-up L4-T2): logger injetado para a falha de `aoResponderAutomacao`
-   *  — NUNCA `console.warn` (o padrão antigo, que não aparecia em lugar
-   *  nenhum monitorado). Produção passa `app.log.error`. */
+   *  (e, desde L4-T3, de `aoResponderDuvidaDoDev`) — NUNCA `console.warn` (o
+   *  padrão antigo, que não aparecia em lugar nenhum monitorado). Produção
+   *  passa `app.log.error`. */
   onError?: (mensagem: string) => void
 }
 
@@ -213,6 +227,31 @@ export class AgentQuestionService {
         const mensagem = err instanceof Error ? err.message : String(err)
         this.deps.onError?.(
           `[agent-question] decisão de automação falhou — pergunta ${questionId} continua open: ${mensagem}`
+        )
+        throw err
+      }
+    }
+
+    // L4-T3: dedupKey de dúvida escalada do dev assíncrono — a resposta do
+    // dono RETOMA a sessão dele (`retomar-sessao-com-resposta.ts`). MESMA
+    // disciplina de `automacao:` acima: a ação roda ANTES de marcar
+    // `answered`; falha (lançada, nunca engolida) mantém a pergunta `open`
+    // para nova tentativa — sem isto, o dono clicaria "Sim", veria a
+    // pergunta sumir, e o dev continuaria parado para sempre porque a
+    // entrega de verdade (`responderSessaoJules`) falhou em silêncio.
+    if (existing.dedupKey?.startsWith('duvida-dev:') && this.deps.aoResponderDuvidaDoDev) {
+      try {
+        await this.deps.aoResponderDuvidaDoDev({
+          dedupKey: existing.dedupKey,
+          resposta: value,
+          opcoes: Array.isArray(existing.options)
+            ? (existing.options as unknown as AgentQuestionOption[])
+            : [],
+        })
+      } catch (err) {
+        const mensagem = err instanceof Error ? err.message : String(err)
+        this.deps.onError?.(
+          `[agent-question] retomada da sessão do dev falhou — pergunta ${questionId} continua open: ${mensagem}`
         )
         throw err
       }

@@ -5,6 +5,7 @@ import {
   sessoesVivas,
   registrarEstado,
   registrarResposta,
+  registrarEscalada,
   registrarPr,
   fecharSessao,
   registrarPendencia,
@@ -191,6 +192,32 @@ describe('registrarResposta', () => {
         data: expect.objectContaining({ answeredHash: 'h1', nudges: { increment: 1 } }),
       })
     )
+  })
+})
+
+describe('registrarEscalada', () => {
+  // L4-T3: escalar ao dono grava a marca `escalada:0:<hash>` — NUNCA
+  // `respondida` (ninguém respondeu ainda) — e, ao contrário de
+  // `registrarResposta`, NÃO incrementa `nudges`. `nudges` mede "quantas
+  // vezes pedimos para a sessão CONTINUAR" (é o teto que decide abandono,
+  // `jules-session-loop.ts`/`MAX_NUDGES`) — escalar não é pedir para
+  // continuar, é parar e esperar o dono decidir; contar como nudge
+  // aproximaria a sessão do abandono por um evento que não tem nada a ver
+  // com "insistimos e ela não andou". Mesmo raciocínio documentado em
+  // `registrarInvestigacao`, aplicado a esta categoria de evento.
+  it('grava a marca de escalada SEM incrementar nudges', async () => {
+    const prisma = prismaFalso()
+
+    await registrarEscalada({ prisma, sessionName: 'sessions/1', hashDaPergunta: 'h1', agora })
+
+    expect(prisma.devSession.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { sessionName: 'sessions/1' },
+        data: expect.objectContaining({ answeredHash: 'escalada:0:h1' }),
+      })
+    )
+    const chamada = prisma.devSession.update.mock.calls[0]?.[0] as { data: Record<string, unknown> }
+    expect(chamada.data['nudges']).toBeUndefined()
   })
 })
 

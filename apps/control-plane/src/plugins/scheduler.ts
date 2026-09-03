@@ -179,6 +179,14 @@ import {
 } from '../services/conserto-de-publicacao.js'
 import { runDuvidaMissionViaRails } from '../services/duvida-rails-mission.js'
 import {
+  escalarDuvidaAoDono,
+  type PrismaParaEscalarDuvida,
+} from '../services/escalar-duvida-ao-dono.js'
+import {
+  reconciliarDuvidasEscaladasDoProjeto,
+  type PrismaParaReconciliacao,
+} from '../services/reconciliar-duvidas-escaladas.js'
+import {
   decidirSobreAPergunta,
   marcarDesistencia,
   marcarRespondida,
@@ -217,7 +225,6 @@ import {
   dispensaOlharORepositorio,
 } from '../services/como-o-projeto-publica.js'
 import type { AgentQuestionService } from '../services/agent-question.js'
-import { buildFreeTextOption } from '../services/telegram-bot.js'
 import { nomeDaReserva, PREFIXO_DA_RESERVA, semAsReservas } from '../services/reserva-de-vaga.js'
 import {
   acompanharPublicacao,
@@ -298,9 +305,10 @@ import { avaliarCustoDaOrdemDosProjetos } from '../services/custo-da-ordem-do-pr
 import { filtrarFilaDeTasks } from '../services/filtrar-fila-de-tasks.js'
 import { resolveQuadroDoProjeto } from '../routes/painel.js'
 import {
-  resolverCredencialDoDev,
-  recadoDaRecusa,
-} from '../services/credencial-do-dev-do-cliente.js'
+  chaveDoDevDoProjeto as resolverChaveDoDevDoProjeto,
+  chaveDaContaDoDev as resolverChaveDaContaDoDev,
+  chaveDaSessaoDoDev as resolverChaveDaSessaoDoDev,
+} from '../services/chave-do-dev-assincrono.js'
 import { provaDeEscritaNoUso } from '../services/acesso-ao-repositorio.js'
 import {
   reconferirAcessoDosProjetos,
@@ -6702,89 +6710,28 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   const VALIDADE_DO_CACHE_DE_MECANISMO_MS = 60 * 60_000
   const cacheDeMecanismo = new Map<string, { mecanismo: Mecanismo; expiraEm: number }>()
 
-  /**
-   * A chave do dev assíncrono que ESTE projeto usa (BYOK, D34).
-   *
-   * Decifrada no instante do uso e devolvida por valor, nunca guardada em
-   * arquivo nem escrita em log — mesma regra das credenciais dos motores.
-   * Recusa em vez de cair calada na conta do dono: gastar a conta de quem não
-   * pediu é dinheiro dos outros.
-   */
-  const chaveDoDevDoProjeto = async (projetoId: string): Promise<string | undefined> => {
-    const registro = await app.prisma.project.findUnique({
-      where: { id: projetoId },
-      select: { encryptedDevApiKey: true },
-    })
-    const resolvida = resolverCredencialDoDev({
-      credencialCifrada: registro?.encryptedDevApiKey ?? null,
-      chaveDaInstancia: process.env['JULES_API_KEY'],
-      decifrar: decryptCredential,
-    })
-    if (resolvida.ok) return resolvida.chave
-    app.log.warn(`[Scheduler] projeto ${projetoId}: ${recadoDaRecusa(resolvida.motivo)}`)
-    return undefined
+  // L4-T3: as três resoluções de chave do dev assíncrono (BYOK, D34) viviam
+  // AQUI, presas em closures que só o scheduler conseguia chamar. Extraídas
+  // para `services/chave-do-dev-assincrono.ts` — INJETÁVEIS — porque
+  // `retomar-sessao-com-resposta.ts` (a resposta do dono que retoma a sessão)
+  // roda fora do relógio (chamada por `agent-question.ts answer()`) e precisa
+  // da MESMA lógica, nunca uma segunda cópia divergente. As chamadas abaixo
+  // (`chaveDoDevDoProjeto(...)`, `chaveDaConta(...)`, `chaveDaSessao(...)`)
+  // continuam idênticas em todo o arquivo — só a implementação por trás
+  // delas mudou de local.
+  const depsDaChaveDoDev = {
+    prisma:
+      app.prisma as unknown as import('../services/chave-do-dev-assincrono.js').PrismaParaChaveDoDev,
+    decifrar: decryptCredential,
+    chaveDaInstancia: process.env['JULES_API_KEY'],
+    onWarn: (m: string) => app.log.warn(`[Scheduler] ${m}`),
   }
-
-  /**
-   * A chave de uma CONTA específica (BYOK, D34).
-   *
-   * Sem cair na conta da instância quando a conta é de cliente: uma sessão que
-   * nasceu na conta do cliente só pode ser consultada, avisada ou arquivada com
-   * a chave DELE. Tentar com a do dono devolve 404 no fornecedor — a vigília
-   * passaria a ler "sem avanço" numa sessão que está progredindo, e o
-   * arquivamento nunca devolveria a vaga, que ficaria presa para sempre na
-   * conta que o cliente paga.
-   */
-  const chaveDaConta = async (
-    devAccountId: string | null | undefined
-  ): Promise<string | undefined> => {
-    // Conta da instância: é a do dono, no ambiente.
-    if (!devAccountId) return process.env['JULES_API_KEY']
-
-    const dono = await app.prisma.project.findFirst({
-      where: { devAccountId, encryptedDevApiKey: { not: null } },
-      select: { encryptedDevApiKey: true },
-    })
-    const resolvida = resolverCredencialDoDev({
-      credencialCifrada: dono?.encryptedDevApiKey ?? null,
-      // De propósito sem recuo para a chave da instância.
-      chaveDaInstancia: null,
-      decifrar: decryptCredential,
-    })
-    if (resolvida.ok) return resolvida.chave
-    app.log.warn(
-      `[Scheduler] conta ${devAccountId} do dev assíncrono sem credencial utilizável: ` +
-        `${recadoDaRecusa(resolvida.motivo)} — as sessões abertas nela ficam sem acompanhamento até religar`
-    )
-    return undefined
-  }
-
-  /**
-   * A chave da conta em que ESTA sessão nasceu.
-   *
-   * A conta do PROJETO não serve aqui: ela muda quando o cliente conecta,
-   * troca ou desconecta a dele, e a sessão continua existindo lá fora na conta
-   * antiga. Quem manda é o carimbo da linha.
-   */
-  const chaveDaSessao = async (sessionName: string): Promise<string | undefined> => {
-    let linha: { devAccountId: string | null } | null
-    try {
-      linha = await app.prisma.devSession.findUnique({
-        where: { sessionName },
-        select: { devAccountId: true },
-      })
-    } catch (err) {
-      // Não saber de qual conta é a sessão NÃO autoriza usar a do dono: seria
-      // mexer com a chave errada numa sessão que pode ser de um cliente, e o
-      // fornecedor devolveria 404 de qualquer jeito. Sem chave, quem chama
-      // avisa e segue — falha aberta, nunca falha silenciosa na conta errada.
-      app.log.warn(
-        `[Scheduler] não deu para descobrir a conta da sessão ${sessionName}: ${String(err)}`
-      )
-      return undefined
-    }
-    return chaveDaConta(linha?.devAccountId ?? null)
-  }
+  const chaveDoDevDoProjeto = (projetoId: string): Promise<string | undefined> =>
+    resolverChaveDoDevDoProjeto(depsDaChaveDoDev, projetoId)
+  const chaveDaConta = (devAccountId: string | null | undefined): Promise<string | undefined> =>
+    resolverChaveDaContaDoDev(depsDaChaveDoDev, devAccountId)
+  const chaveDaSessao = (sessionName: string): Promise<string | undefined> =>
+    resolverChaveDaSessaoDoDev(depsDaChaveDoDev, sessionName)
 
   /**
    * "Como este projeto vai ao ar?" — a pergunta ao dono (D47).
@@ -7681,74 +7628,32 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       }
 
       if (destino.tipo === 'perguntar-ao-dono' || !mensagemParaODev) {
-        // Sobe para quem pode decidir. Sem chat ligado não há a quem perguntar:
-        // fica o registro no log, que é o que sobra — nunca uma resposta
-        // inventada mandada ao dev.
-        const motivo = destino.tipo === 'perguntar-ao-dono' ? destino.motivo : 'sem resposta útil'
-        app.log.info(
-          `[Scheduler] a dúvida do dev na tarefa #${esperando.issueNumber} de ${args.repository} sobe para o dono: ${motivo}`
-        )
-        // O aviso ao dono também é marcado: sem isto, o MESMO aviso chegaria ao
-        // chat dele a cada acordada do QA enquanto a sessão continuasse parada.
-        await registrarResposta({
-          prisma: app.prisma as unknown as PrismaDevSession,
-          sessionName: esperando.sessionName,
-          hashDaPergunta: marcarRespondida(hashDaPergunta),
-          agora: new Date(),
-        }).catch(() => undefined)
-        const projeto = await app.prisma.project.findUnique({ where: { id: args.projectId } })
-        if (projeto) {
-          // D14 (01/09): decisão de negócio DE VERDADE (não "sem resposta
-          // útil") com tradução executiva pronta do modelo — pergunta com
-          // botão no Telegram, no MESMO caminho que já existe para
-          // `duvidaSobreComoPublica` (agent-question.ts), em vez de despejar
-          // o texto técnico cru do dev em inglês numa mensagem sem
-          // `reply_markup`. Isto corrige os defeitos 1 (sem botão), 2
-          // (idiomas misturados) e 3 (não executiva) do caso #46.
-          const perguntador = (app as unknown as { agentQuestionService?: AgentQuestionService })
-            .agentQuestionService
-          const perguntaExecutiva =
-            destino.tipo === 'perguntar-ao-dono' ? destino.perguntaExecutiva : undefined
-          if (perguntador && projeto.userId && perguntaExecutiva) {
-            const opcoesDoModelo =
-              destino.tipo === 'perguntar-ao-dono' ? (destino.opcoes ?? []) : []
-            await perguntador
-              .ask(projeto.userId, args.projectId, {
-                text: perguntaExecutiva,
-                context:
-                  `Tarefa #${esperando.issueNumber} de ${args.repository} — o dev assíncrono ` +
-                  `está parado esperando esta decisão.`,
-                // Objetivas (o modelo) + a aberta (sempre presente,
-                // determinística — nunca a critério do modelo): "3
-                // objetivas + 1 aberta" é o formato que o dono sempre pede.
-                options: [...opcoesDoModelo, buildFreeTextOption()],
-                dedupKey: `duvida-dev:${args.repository}:${esperando.issueNumber}:${hashDaPergunta}`,
-              })
-              .catch((err: unknown) =>
-                app.log.warn(
-                  err,
-                  `[Scheduler] não deu para perguntar ao dono (agent-question) sobre a ` +
-                    `tarefa #${esperando.issueNumber} de ${args.repository}`
-                )
-              )
-          } else {
-            // Sem serviço de pergunta ligado, sem vínculo, ou — o caso que
-            // importa aqui — sem tradução executiva pronta: NUNCA despeja o
-            // texto cru do dev em inglês. Diz explicitamente que a pergunta
-            // objetiva não pôde ser montada; quem quiser o detalhe técnico
-            // encontra no painel.
-            const semTraducao = destino.tipo === 'perguntar-ao-dono' && !perguntaExecutiva
-            await avisarDonoDoProjeto(
-              projeto,
-              `GitOrch: o dev parou na tarefa #${esperando.issueNumber} de ${args.repository} e ` +
-                `perguntou algo que eu não devo responder sozinho — ${motivo}` +
-                (semTraducao
-                  ? '\n\nNão consegui montar isso como pergunta objetiva em português — o ' +
-                    'detalhe técnico da pergunta do dev está no painel.'
-                  : '')
-            )
+        // L4-T3: a decisão e a escrita real (agent_question/escalada) vivem em
+        // `services/escalar-duvida-ao-dono.ts` — extraído para ser testável
+        // sem a máquina de missão/motor (ver o teste real de costura
+        // `escalar-duvida-ao-dono.test.ts`, que reproduziu o defeito de
+        // 02/09 antes do conserto: 24 sessões marcadas "respondida" ao
+        // escalar, ZERO `agent_question` criada).
+        await escalarDuvidaAoDono(
+          {
+            destino,
+            sessionName: esperando.sessionName,
+            issueNumber: esperando.issueNumber,
+            repository: args.repository,
+            projectId: args.projectId,
+            hashDaPergunta,
+            pergunta,
+            apiKey,
+          },
+          {
+            prisma: app.prisma as unknown as PrismaParaEscalarDuvida,
+            agentQuestionService: (
+              app as unknown as { agentQuestionService?: AgentQuestionService }
+            ).agentQuestionService,
+            onInfo: (m) => app.log.info(`[Scheduler] ${m}`),
+            onError: (err, m) => app.log.error(err, `[Scheduler] ${m}`),
           }
-        }
+        )
         return
       }
 
@@ -9706,6 +9611,70 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     })
   }
 
+  /**
+   * L4-T3, item 4 — O CONSERTO DAS 24 PRESAS: uma varredura ÚNICA (por boot,
+   * repetida a cada 6h para pegar o que uma sessão nova esbarrar) que migra
+   * as sessões marcadas `respondida:` SEM `agent_question` real — a
+   * assinatura exata do defeito de `escalar-duvida-ao-dono.ts` antes do
+   * conserto do item 0. Mesmo template de cadência de
+   * `varrerIssuesForaDoQuadroDosProjetos` (6h, override por env, `ultima* =
+   * 0` corre a primeira vez no boot). A lógica por projeto vive em
+   * `services/reconciliar-duvidas-escaladas.ts` (testável sem esta máquina).
+   */
+  const CADENCIA_PADRAO_DA_RECONCILIACAO_DE_DUVIDAS_MS = 6 * 60 * 60 * 1000
+  const CADENCIA_DA_RECONCILIACAO_DE_DUVIDAS_MS = (() => {
+    const bruto = process.env['GITORCH_RECONCILIACAO_DUVIDAS_CADENCIA_MS']
+    if (bruto === undefined) return CADENCIA_PADRAO_DA_RECONCILIACAO_DE_DUVIDAS_MS
+    const lido = Number(bruto)
+    if (!Number.isFinite(lido) || lido <= 0) {
+      app.log.warn(
+        `[Scheduler] GITORCH_RECONCILIACAO_DUVIDAS_CADENCIA_MS inválido ('${bruto}'); ` +
+          `usando o padrão de ${CADENCIA_PADRAO_DA_RECONCILIACAO_DE_DUVIDAS_MS}ms`
+      )
+      return CADENCIA_PADRAO_DA_RECONCILIACAO_DE_DUVIDAS_MS
+    }
+    return lido
+  })()
+  let ultimaReconciliacaoDeDuvidas = 0
+
+  const reconciliarDuvidasEscaladasLegadas = async (): Promise<void> => {
+    if (Date.now() - ultimaReconciliacaoDeDuvidas < CADENCIA_DA_RECONCILIACAO_DE_DUVIDAS_MS) return
+    ultimaReconciliacaoDeDuvidas = Date.now()
+
+    const perguntador = (app as unknown as { agentQuestionService?: AgentQuestionService })
+      .agentQuestionService
+    const projetos = await app.prisma.project.findMany({
+      where: { isActive: true },
+      select: { id: true, wingId: true, userId: true },
+    })
+
+    for (const projeto of projetos) {
+      try {
+        const resumo = await reconciliarDuvidasEscaladasDoProjeto(
+          { projectId: projeto.id, repository: projeto.wingId, userId: projeto.userId },
+          {
+            prisma: app.prisma as unknown as PrismaParaReconciliacao,
+            agentQuestionService: perguntador,
+            decifrar: decryptCredential,
+            julesApiKeyDaInstancia: process.env['JULES_API_KEY'],
+            onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+          }
+        )
+        if (resumo.presas > 0 || resumo.criadas > 0 || resumo.falhas > 0) {
+          app.log.info(
+            `[Scheduler] duvidas-escaladas ${projeto.wingId}: ${resumo.presas} presas, ` +
+              `${resumo.criadas} perguntas criadas, ${resumo.falhas} falhas`
+          )
+        }
+      } catch (err) {
+        app.log.error(
+          err,
+          `[Scheduler] reconciliação de dúvidas escaladas falhou em ${projeto.wingId}`
+        )
+      }
+    }
+  }
+
   const tick = async () => {
     // PRIMEIRO de tudo: um token do GitHub vencido no meio do tique derruba
     // qualquer missão que precise dele (materializeToHome recusa e a missão
@@ -9830,6 +9799,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // pena, avisa o dono. Nunca reordena; a ordem dele prevalece sempre.
     await avaliarCustoDaOrdem().catch((err) =>
       app.log.error(err, '[Scheduler] avaliação do custo da ordem falhou; tenta no próximo tick')
+    )
+    // L4-T3: as 24 sessões que ficaram presas ANTES do conserto do item 0
+    // (marcadas "respondida" sem `agent_question` real). Cadência própria
+    // (6h, roda no boot), não trava o resto do tique.
+    await reconciliarDuvidasEscaladasLegadas().catch((err) =>
+      app.log.error(
+        err,
+        '[Scheduler] reconciliação de dúvidas escaladas falhou; tenta no próximo tick'
+      )
     )
     await sweepExpiredEnvironments()
     const now = new Date()

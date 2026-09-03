@@ -623,3 +623,139 @@ describe('a resposta do dono aciona a decisão de automação (L4-T2 / C4)', () 
     warnSpy.mockRestore()
   })
 })
+
+// L4-T3 (item 3): a resposta do DONO a uma dúvida do dev assíncrono
+// (dedupKey `duvida-dev:<repo>:<issue>:<hash>`, criada por
+// `escalar-duvida-ao-dono.ts`) precisa RETOMAR a sessão dele —
+// `retomar-sessao-com-resposta.ts` faz o trabalho; aqui só se prova a
+// ligação em `answer()`, MESMA disciplina de `aoResponderAutomacao` (ação
+// antes de gravar `answered`; falha mantém a pergunta `open`).
+describe('a resposta do dono retoma a sessão do dev assíncrono (L4-T3)', () => {
+  test('dedupKey duvida-dev: → chama aoResponderDuvidaDoDev com dedupKey/resposta/opcoes', async () => {
+    const prisma = fakePrisma()
+    prisma.projects.set('p1', { id: 'p1', wingId: 'acme/api' } as any)
+    prisma.questions.set('q_duvida', {
+      id: 'q_duvida',
+      projectId: 'p1',
+      userId: 'u1',
+      text: 'Podemos cobrar taxa extra?',
+      dedupKey: 'duvida-dev:acme/api:46:hash123',
+      status: 'open',
+      options: [
+        { label: 'Sim', value: 'sim' },
+        { label: 'Não', value: 'nao' },
+      ],
+      answer: null,
+      answeredAt: null,
+      answeredVia: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const aoResponderDuvidaDoDev = vi.fn(async (_args: Record<string, unknown>) => undefined)
+    const svc = new AgentQuestionService(prisma as any, { aoResponderDuvidaDoDev })
+
+    const result = await svc.answer('q_duvida', 'sim', 'telegram')
+
+    expect(aoResponderDuvidaDoDev).toHaveBeenCalledOnce()
+    expect(aoResponderDuvidaDoDev.mock.calls[0]![0]).toEqual({
+      dedupKey: 'duvida-dev:acme/api:46:hash123',
+      resposta: 'sim',
+      opcoes: [
+        { label: 'Sim', value: 'sim' },
+        { label: 'Não', value: 'nao' },
+      ],
+    })
+    expect(result?.status).toBe('answered')
+  })
+
+  test('aoResponderDuvidaDoDev roda ANTES de marcar a pergunta answered', async () => {
+    const prisma = fakePrisma()
+    prisma.projects.set('p1', { id: 'p1', wingId: 'acme/api' } as any)
+    prisma.questions.set('q_duvida', {
+      id: 'q_duvida',
+      projectId: 'p1',
+      userId: 'u1',
+      text: 'x',
+      dedupKey: 'duvida-dev:acme/api:46:hash123',
+      status: 'open',
+      options: [],
+      answer: null,
+      answeredAt: null,
+      answeredVia: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const aoResponderDuvidaDoDev = vi.fn(async () => {
+      expect(prisma.questions.get('q_duvida')!.status).toBe('open')
+    })
+    const svc = new AgentQuestionService(prisma as any, { aoResponderDuvidaDoDev })
+
+    await svc.answer('q_duvida', 'sim', 'telegram')
+
+    const ordemAcao = aoResponderDuvidaDoDev.mock.invocationCallOrder[0]!
+    const ordemUpdate = (prisma.agentQuestion.update as any).mock.invocationCallOrder[0]
+    expect(ordemAcao).toBeLessThan(ordemUpdate)
+  })
+
+  test('dedupKey que NÃO é duvida-dev: → aoResponderDuvidaDoDev nunca é chamado', async () => {
+    const prisma = fakePrisma()
+    prisma.projects.set('p1', { id: 'p1', wingId: 'acme/api' } as any)
+    prisma.questions.set('q_1', {
+      id: 'q_1',
+      projectId: 'p1',
+      userId: 'u1',
+      text: 'dúvida qualquer',
+      dedupKey: 'automacao:acme/api:wf:1',
+      status: 'open',
+      options: [],
+      answer: null,
+      answeredAt: null,
+      answeredVia: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const aoResponderDuvidaDoDev = vi.fn(async () => undefined)
+    const aoResponderAutomacao = vi.fn(async () => undefined)
+    const svc = new AgentQuestionService(prisma as any, {
+      aoResponderDuvidaDoDev,
+      aoResponderAutomacao,
+    })
+
+    await svc.answer('q_1', 'qualquer', 'panel')
+
+    expect(aoResponderDuvidaDoDev).not.toHaveBeenCalled()
+  })
+
+  test('falha em aoResponderDuvidaDoDev → a pergunta continua open, onError é chamado, e answer() lança', async () => {
+    const prisma = fakePrisma()
+    prisma.projects.set('p1', { id: 'p1', wingId: 'acme/api' } as any)
+    prisma.questions.set('q_duvida', {
+      id: 'q_duvida',
+      projectId: 'p1',
+      userId: 'u1',
+      text: 'x',
+      dedupKey: 'duvida-dev:acme/api:46:hash123',
+      status: 'open',
+      options: [],
+      answer: null,
+      answeredAt: null,
+      answeredVia: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const aoResponderDuvidaDoDev = vi.fn(async () => {
+      throw new Error('sessão do Jules fora do ar')
+    })
+    const onError = vi.fn()
+    const svc = new AgentQuestionService(prisma as any, { aoResponderDuvidaDoDev, onError })
+
+    await expect(svc.answer('q_duvida', 'sim', 'telegram')).rejects.toThrow(
+      'sessão do Jules fora do ar'
+    )
+
+    expect(prisma.questions.get('q_duvida')!.status).toBe('open')
+    expect(prisma.agentQuestion.update).not.toHaveBeenCalled()
+    expect(onError).toHaveBeenCalledOnce()
+    expect(onError.mock.calls[0]![0]).toContain('sessão do Jules fora do ar')
+  })
+})
