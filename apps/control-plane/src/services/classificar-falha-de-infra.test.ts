@@ -42,9 +42,9 @@ describe('classificarFalhaDeInfra', () => {
     expect(
       classificarFalhaDeInfra(
         {
-          path: '.github/workflows/dependabot-to-jules.yml',
+          path: '.github/workflows/sla-tracker.yml',
           event: 'schedule',
-          name: 'Dependabot → Jules',
+          name: 'SLA Tracker for Dependabot Alerts',
         },
         ativo,
         []

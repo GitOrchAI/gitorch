@@ -1,6 +1,6 @@
 // O que o GitOrch INSTALA no repositório do cliente — os robôs da automação
-// (rotear alerta do Dependabot, auto-merge, monitorar PR do Jules...). Quando
-// UM DELES falha, é bug NOSSO, não do cliente: o Jules não tem contexto para
+// (rotear alerta do Dependabot, monitorar PR do Jules...). Quando UM DELES
+// falha, é bug NOSSO, não do cliente: o Jules não tem contexto para
 // consertar a nossa automação, e o dono do repositório não deveria receber
 // uma issue sobre isso.
 //
@@ -9,6 +9,12 @@
 //     para todo workflow que o produto instalar daqui pra frente);
 //  2. a lista fixa abaixo — os que já existem nos dois repos de teste e nasceram
 //     antes do marcador.
+//
+// A lista ENCOLHEU em 02/09 (D62): os workflows legados de automação
+// concorrente (auto-merge, *-to-jules, *-failure-handler, auto-merge-monitor,
+// dependabot-alert-to-issue...) foram removidos dos repos de teste na
+// consolidação da esteira única — não existem mais, então saíram da lista.
+// O que sobrou é só o que continua instalado de verdade hoje.
 
 /** O marcador que todo workflow instalado pelo GitOrch carrega (ou deveria). */
 export const MARCADOR_SCAFFOLDING = 'gitorch:managed'
@@ -20,28 +26,11 @@ export const MARCADOR_SCAFFOLDING = 'gitorch:managed'
  */
 const BASENAMES_SCAFFOLDING = new Set([
   // GitOrchAI/gitorch
-  'auto-merge.yml',
-  'code-scanning-to-jules.yml',
-  'dependabot-to-jules.yml',
   'sla-tracker.yml',
-  'jules-apology-handler.yml',
-  'jules-auto-recovery.yml',
-  'jules-pr-ci-failure.yml',
-  'jules-pr-conflict.yml',
   // loureng/patinhas-3d-crafts
   'dependabot-automation.yml',
-  'dependabot-alert-to-issue.yml',
-  'ci-failure-handler.yml',
-  'cd-failure-handler.yml',
-  'auto-merge-monitor.yml',
-  'jules-pr-monitor.yml',
-  'jules-pr-labeler.yml',
   'cleanup-artifacts.yml',
-  'jules-api-retry.yml',
-  'jules-auto-merge.yml',
-  'jules-ci-failure-fix.yml',
-  'jules-merge-conflict-fix.yml',
-  'jules-conflict-resolver.yml',
+  // jules-pr-labeler.yml (patinhas) já é coberto pela regex `jules-*.yml` abaixo.
 ])
 
 /** Este workflow é da automação do GitOrch (não do CI do cliente)? */
