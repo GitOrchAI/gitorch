@@ -46,11 +46,15 @@ import { runPoMissionViaRails } from '../services/po-rails-mission.js'
 import { runRaMissionViaRails, runDuvidaTecnicaViaRa } from '../services/ra-rails-mission.js'
 import {
   resolvePoliticaDePerguntasAoDono,
+  devoAvisarDonoDeBloqueioResolvido,
   classificarMensagemDoDev,
   textoParaRelatorioDeConclusao,
   textoParaPedidoDeAprovacaoDePlano,
 } from '../services/duvida-do-dev.js'
-import { tentarSuposicaoImediata } from '../services/suposicao-imediata-de-duvida.js'
+import {
+  tentarSuposicaoImediata,
+  criarComentarNaIssue,
+} from '../services/suposicao-imediata-de-duvida.js'
 import {
   reprocessarPerguntasSemOpcoesDoProjeto,
   type PrismaAgentQuestionParaReprocessar,
@@ -3996,7 +4000,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                       // D72, item 2: mesma autonomia/token que `suporDuvidaPendente`
                       // logo abaixo já usa para comentar na issue do cliente.
                       autonomia: project.autonomia,
-                      githubToken: railsToken as string,
+                      githubToken: railsToken,
                     }).catch((err: unknown) =>
                       app.log.warn(
                         err,
@@ -4010,7 +4014,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                       projectId: project.id,
                       repository: project.wingId,
                       autonomia: project.autonomia,
-                      githubToken: railsToken as string,
+                      githubToken: railsToken,
                       execute,
                       contextBlocks,
                     }).catch((err: unknown) =>
@@ -7776,7 +7780,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     runtimeConfig: unknown
     /** D72, item 2: até onde o GitOrch pode ir no repositório do CLIENTE — necessário para comentar na issue quando a suposição imediata resolve. */
     autonomia: string | null | undefined
-    githubToken: string
+    /** `undefined` quando o projeto não tem credencial do GitHub — nunca um cast mentiroso: sem token, `criarComentarNaIssue` pula a chamada e loga, em vez de sair com "token undefined" no header. */
+    githubToken: string | undefined
   }): Promise<void> => {
     // TODAS as que esperam, não só a mais antiga.
     //
@@ -8038,27 +8043,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             },
             {
               prisma: app.prisma as unknown as PrismaDevSession,
-              comentarNaIssue: async ({ issueNumber, texto }) => {
-                const fetchDoCliente = fetchDoRepositorio({ nivel: () => args.autonomia })
-                const resp = await fetchDoCliente(
-                  `https://api.github.com/repos/${args.repository}/issues/${issueNumber}/comments`,
-                  {
-                    method: 'POST',
-                    headers: {
-                      authorization: `token ${args.githubToken}`,
-                      accept: 'application/vnd.github+json',
-                      'content-type': 'application/json',
-                      'user-agent': 'gitorch',
-                    },
-                    body: JSON.stringify({ body: texto }),
-                  }
-                )
-                if (!resp.ok) {
-                  throw new Error(
-                    `comentarNaIssue: POST /repos/${args.repository}/issues/${issueNumber}/comments -> ${resp.status}`
-                  )
-                }
-              },
+              comentarNaIssue: criarComentarNaIssue({
+                fetchDoCliente: fetchDoRepositorio({ nivel: () => args.autonomia }),
+                repository: args.repository,
+                githubToken: args.githubToken,
+                onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+              }),
               onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
             }
           ).catch((err: unknown) => {
@@ -8112,10 +8102,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         texto: mensagemParaODev,
         onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
       })
-      // ESTEIRA-T14, política 'tudo': visibilidade total — o dono também vê
-      // as dúvidas técnicas que o produto resolveu sozinho. NUNCA bloqueante:
-      // é aviso, o dev já foi respondido antes desta linha rodar.
-      if (saiu && politica === 'tudo') {
+      // ESTEIRA-T14/D72 (revisão pós-D72): política 'executivo-e-tecnico-
+      // bloqueante' OU 'tudo' avisam o dono quando o produto resolveu uma
+      // dúvida técnica sozinho. NUNCA bloqueante: é aviso, o dev já foi
+      // respondido antes desta linha rodar. Defeito real: antes só 'tudo'
+      // disparava o aviso — 'executivo-e-tecnico-bloqueante' (a política
+      // que existe PARA ISTO) ficava idêntica a 'so-executivo'.
+      if (saiu && devoAvisarDonoDeBloqueioResolvido(politica)) {
         const projetoParaAviso = await app.prisma.project.findUnique({
           where: { id: args.projectId },
         })
@@ -8193,7 +8186,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     repository: string
     /** Até onde o GitOrch pode ir no repositório do CLIENTE (guarda de autonomia). */
     autonomia: string | null | undefined
-    githubToken: string
+    /** `undefined` quando o projeto não tem credencial do GitHub — ver a mesma nota em `responderDuvidaPendente`. */
+    githubToken: string | undefined
     execute: StepExecutor
     contextBlocks: string[]
   }): Promise<void> => {
@@ -8217,27 +8211,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         chaveDaSessao,
         // MESMA BYOK de `reentregarAviso`/`responder` da vigia — sem
         // credencial nova.
-        comentarNaIssue: async ({ issueNumber, texto }) => {
-          const fetchDoCliente = fetchDoRepositorio({ nivel: () => args.autonomia })
-          const resp = await fetchDoCliente(
-            `https://api.github.com/repos/${args.repository}/issues/${issueNumber}/comments`,
-            {
-              method: 'POST',
-              headers: {
-                authorization: `token ${args.githubToken}`,
-                accept: 'application/vnd.github+json',
-                'content-type': 'application/json',
-                'user-agent': 'gitorch',
-              },
-              body: JSON.stringify({ body: texto }),
-            }
-          )
-          if (!resp.ok) {
-            throw new Error(
-              `comentarNaIssue: POST /repos/${args.repository}/issues/${issueNumber}/comments -> ${resp.status}`
-            )
-          }
-        },
+        comentarNaIssue: criarComentarNaIssue({
+          fetchDoCliente: fetchDoRepositorio({ nivel: () => args.autonomia }),
+          repository: args.repository,
+          githubToken: args.githubToken,
+          onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+        }),
         // C2 (fix-up 3): a busca de `questionId` a partir do dedupKey —
         // ABERTA mais recente, nunca uma linha indeterminada entre a
         // escalada e uma reconciliação por cima — e a checagem do retorno

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { tentarSuposicaoImediata } from './suposicao-imediata-de-duvida.js'
+import { tentarSuposicaoImediata, criarComentarNaIssue } from './suposicao-imediata-de-duvida.js'
 import * as duvidaRailsMission from './duvida-rails-mission.js'
 import { marcarRespondida } from './pergunta-sem-resposta.js'
 
@@ -132,5 +132,58 @@ describe('tentarSuposicaoImediata', () => {
     expect(resolvido).toBe(true)
     expect(deps.onWarn).toHaveBeenCalled()
     vi.restoreAllMocks()
+  })
+})
+
+describe('criarComentarNaIssue — o comentário best-effort na issue do cliente (defeito real: header "token undefined" em produção)', () => {
+  it('sem token: NENHUMA chamada de rede é feita — só um aviso claro', async () => {
+    const fetchDoCliente = vi.fn()
+    const onWarn = vi.fn()
+    const comentar = criarComentarNaIssue({
+      fetchDoCliente: fetchDoCliente as unknown as typeof fetch,
+      repository: 'acme/api',
+      githubToken: undefined,
+      onWarn,
+    })
+
+    await comentar({ issueNumber: 46, texto: 'GitOrch: suposição adotada: x' })
+
+    expect(fetchDoCliente).not.toHaveBeenCalled()
+    expect(onWarn).toHaveBeenCalledWith(expect.stringMatching(/token/i))
+    expect(onWarn).toHaveBeenCalledWith(expect.stringContaining('#46'))
+  })
+
+  it('com token: chama o fetch guardado, com o header de autorização correto', async () => {
+    const fetchDoCliente = vi.fn(async () => new Response('{}', { status: 201 }))
+    const onWarn = vi.fn()
+    const comentar = criarComentarNaIssue({
+      fetchDoCliente: fetchDoCliente as unknown as typeof fetch,
+      repository: 'acme/api',
+      githubToken: 'ghs_abc123',
+      onWarn,
+    })
+
+    await comentar({ issueNumber: 46, texto: 'GitOrch: suposição adotada: x' })
+
+    expect(fetchDoCliente).toHaveBeenCalledWith(
+      'https://api.github.com/repos/acme/api/issues/46/comments',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ authorization: 'token ghs_abc123' }),
+      })
+    )
+    expect(onWarn).not.toHaveBeenCalled()
+  })
+
+  it('com token, mas o GitHub recusa (resp não ok): lança — best-effort é responsabilidade de quem chama', async () => {
+    const fetchDoCliente = vi.fn(async () => new Response('{}', { status: 401 }))
+    const comentar = criarComentarNaIssue({
+      fetchDoCliente: fetchDoCliente as unknown as typeof fetch,
+      repository: 'acme/api',
+      githubToken: 'ghs_abc123',
+      onWarn: vi.fn(),
+    })
+
+    await expect(comentar({ issueNumber: 46, texto: 'x' })).rejects.toThrow(/401/)
   })
 })

@@ -232,15 +232,23 @@ export function destinoAposRa(resposta: string): DestinoDaDuvida {
 
 /**
  * ESTEIRA-T14 — config por projeto de quanto o dono quer ver no chat sobre
- * dúvidas do dev assíncrono (`runtimeConfig.perguntasAoDono`):
+ * dúvidas do dev assíncrono (`runtimeConfig.perguntasAoDono`).
  *
- * - `so-executivo` (default): só decisão de negócio real, ou o caso raro em
- *   que QA E RA tentaram e nenhum soube.
- * - `executivo-e-tecnico-bloqueante`: além disso, todo bloqueio técnico vai
- *   direto ao dono (pula o RA) — para quem quer o humano vendo todo travamento.
- * - `tudo`: mesmo comportamento de escalada de `executivo-e-tecnico-bloqueante`,
- *   e AINDA avisa o dono (sem bloquear nada) quando o QA respondeu sozinho —
- *   visibilidade total.
+ * D72 (02/09) mudou a regra de fundo: o RA SEMPRE responde primeiro, em
+ * QUALQUER política — nenhuma pergunta técnica crua chega ao dono sem antes
+ * passar por QA e RA. O que cada política controla agora é só a
+ * VISIBILIDADE de um bloqueio técnico já resolvido — nunca mais "pula o RA":
+ *
+ * - `so-executivo` (default): o dono só vê decisão de negócio real (ou o
+ *   caso raro em que QA E RA tentaram e nenhum soube) — nenhum aviso sobre
+ *   bloqueio técnico que o time resolveu sozinho.
+ * - `executivo-e-tecnico-bloqueante`: além da decisão de negócio, o dono é
+ *   AVISADO (nunca bloqueado — é aviso informativo, nunca uma pergunta)
+ *   toda vez que o time resolve um bloqueio técnico sozinho. É a política
+ *   que existe PARA ISSO: antes deste conserto ela tinha o mesmo efeito de
+ *   `so-executivo`, o que a esvaziava por completo.
+ * - `tudo`: mesmo aviso de `executivo-e-tecnico-bloqueante` — visibilidade
+ *   total de qualquer dúvida técnica que o time resolveu sozinho.
  */
 /**
  * D72 (02/09) — o dono flagrou 4 "Esperando você" que NÃO eram perguntas: um
@@ -361,6 +369,22 @@ export function resolvePoliticaDePerguntasAoDono(
   return POLITICAS_VALIDAS.has(valor as PoliticaDePerguntasAoDono)
     ? (valor as PoliticaDePerguntasAoDono)
     : 'so-executivo'
+}
+
+/**
+ * O dono é AVISADO (nunca bloqueado — o dev já foi respondido antes disto
+ * rodar) quando o QA/RA resolveu uma dúvida técnica sozinho?
+ *
+ * Depende só da política: o RA SEMPRE responde primeiro em qualquer uma
+ * delas (D72) — o que muda aqui é só quem fica sabendo depois.
+ *
+ * Defeito real (revisão pós-D72): o aviso só saía em `politica === 'tudo'`,
+ * então quem escolhia `executivo-e-tecnico-bloqueante` — a política que
+ * existe justamente para ver todo bloqueio técnico resolvido — não recebia
+ * nada, ficando idêntica a `so-executivo` na prática.
+ */
+export function devoAvisarDonoDeBloqueioResolvido(politica: PoliticaDePerguntasAoDono): boolean {
+  return politica !== 'so-executivo'
 }
 
 /**

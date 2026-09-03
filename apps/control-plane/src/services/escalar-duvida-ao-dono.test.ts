@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from 'vitest'
-import { escalarDuvidaAoDono, type PrismaParaEscalarDuvida } from './escalar-duvida-ao-dono.js'
+import {
+  escalarDuvidaAoDono,
+  completarOpcoesAte3,
+  type PrismaParaEscalarDuvida,
+} from './escalar-duvida-ao-dono.js'
 import { FREE_TEXT_OPTION_VALUE } from './telegram-bot.js'
 
 /**
@@ -167,10 +171,11 @@ describe('escalarDuvidaAoDono — causa raiz medida 02/09 (destinoAposRa sem per
     ])
   })
 
-  // D72: 1-2 opções do modelo NÃO bastam mais — sem as 3, a tradução do
-  // modelo é descartada e vale a pergunta executiva de reserva (nunca manda
-  // ao dono uma pergunta traduzida mas com menos de 3 opções reais).
-  it('D72: perguntaExecutiva do modelo mas com só 1 opção — cai para a reserva de 3 opções', async () => {
+  // Correção pós-D72 (revisão): 1-2 opções do modelo AGORA são aproveitadas
+  // — o texto do modelo nunca é descartado por faltar opção; ele é
+  // COMPLETADO até 3 com a reserva. Descartar tudo (comportamento antigo)
+  // jogava fora uma pergunta executiva boa só por faltar 1 opção.
+  it('perguntaExecutiva do modelo com só 1 opção: mantém o texto do modelo, completa até 3 com a reserva', async () => {
     const deps = depsFalso()
 
     await escalarDuvidaAoDono(
@@ -180,6 +185,100 @@ describe('escalarDuvidaAoDono — causa raiz medida 02/09 (destinoAposRa sem per
           motivo: 'decisão de negócio',
           perguntaExecutiva: 'Podemos cobrar taxa extra por esta feature?',
           opcoes: [{ label: 'Sim', value: 'sim' }],
+        },
+        ...ARGS_BASE,
+      },
+      deps as never
+    )
+
+    const chamada = deps.agentQuestionService.ask.mock.calls[0] as unknown as [
+      string,
+      string,
+      { text: string; options: Array<{ label: string; value: string }> },
+    ]
+    // O texto do modelo é PRESERVADO — não cai mais para a reserva.
+    expect(chamada[2].text).toBe('Podemos cobrar taxa extra por esta feature?')
+    // A opção do modelo entra primeiro, completada pela reserva até 3 + a livre.
+    expect(chamada[2].options.map((o) => o.value)).toEqual([
+      'sim',
+      'pausar',
+      'seguir-suposicao-ra',
+      FREE_TEXT_OPTION_VALUE,
+    ])
+  })
+
+  it('perguntaExecutiva do modelo com 2 opções: completa só a que falta', async () => {
+    const deps = depsFalso()
+
+    await escalarDuvidaAoDono(
+      {
+        destino: {
+          tipo: 'perguntar-ao-dono',
+          motivo: 'decisão de negócio',
+          perguntaExecutiva: 'Cobramos mensal ou anual?',
+          opcoes: [
+            { label: 'Mensal', value: 'mensal' },
+            { label: 'Anual', value: 'anual' },
+          ],
+        },
+        ...ARGS_BASE,
+      },
+      deps as never
+    )
+
+    const chamada = deps.agentQuestionService.ask.mock.calls[0] as unknown as [
+      string,
+      string,
+      { text: string; options: Array<{ value: string }> },
+    ]
+    expect(chamada[2].text).toBe('Cobramos mensal ou anual?')
+    expect(chamada[2].options.map((o) => o.value)).toEqual([
+      'mensal',
+      'anual',
+      'pausar',
+      FREE_TEXT_OPTION_VALUE,
+    ])
+  })
+
+  it('opção do modelo colide com uma da reserva (mesmo value): não duplica, pula para a próxima', async () => {
+    const deps = depsFalso()
+
+    await escalarDuvidaAoDono(
+      {
+        destino: {
+          tipo: 'perguntar-ao-dono',
+          motivo: 'decisão de negócio',
+          perguntaExecutiva: 'Seguimos com o plano atual?',
+          opcoes: [{ label: 'Pausar por enquanto', value: 'pausar' }],
+        },
+        ...ARGS_BASE,
+      },
+      deps as never
+    )
+
+    const chamada = deps.agentQuestionService.ask.mock.calls[0] as unknown as [
+      string,
+      string,
+      { options: Array<{ value: string }> },
+    ]
+    expect(chamada[2].options.map((o) => o.value)).toEqual([
+      'pausar',
+      'seguir-suposicao-ra',
+      'pedir-pr',
+      FREE_TEXT_OPTION_VALUE,
+    ])
+  })
+
+  it('perguntaExecutiva do modelo mas SEM nenhuma opção: cai para a reserva INTEIRA (texto e opções)', async () => {
+    const deps = depsFalso()
+
+    await escalarDuvidaAoDono(
+      {
+        destino: {
+          tipo: 'perguntar-ao-dono',
+          motivo: 'decisão de negócio',
+          perguntaExecutiva: 'Podemos cobrar taxa extra por esta feature?',
+          opcoes: [],
         },
         ...ARGS_BASE,
       },
@@ -402,5 +501,40 @@ describe('escalarDuvidaAoDono — causa raiz medida 02/09 (destinoAposRa sem per
     expect(responderSessaoJules).not.toHaveBeenCalled()
     expect(deps.onError).toHaveBeenCalled()
     expect((deps.prisma as PrismaParaEscalarDuvida).devSession.update).not.toHaveBeenCalled()
+  })
+})
+
+describe('completarOpcoesAte3 — nunca duplica, sempre fecha em 3 (pura, sem mock)', () => {
+  it('já tem 3: devolve como está', () => {
+    const opcoes = [
+      { label: 'A', value: 'a' },
+      { label: 'B', value: 'b' },
+      { label: 'C', value: 'c' },
+    ]
+    expect(completarOpcoesAte3(opcoes)).toEqual(opcoes)
+  })
+
+  it('1 opção: completa com as 2 primeiras da reserva', () => {
+    expect(completarOpcoesAte3([{ label: 'Sim', value: 'sim' }])).toEqual([
+      { label: 'Sim', value: 'sim' },
+      { label: 'Pausar a tarefa e revisar depois', value: 'pausar' },
+      { label: 'Seguir com a melhor suposição do RA mesmo assim', value: 'seguir-suposicao-ra' },
+    ])
+  })
+
+  it('0 opções: devolve só a reserva (as 3 primeiras)', () => {
+    expect(completarOpcoesAte3([])).toEqual([
+      { label: 'Pausar a tarefa e revisar depois', value: 'pausar' },
+      { label: 'Seguir com a melhor suposição do RA mesmo assim', value: 'seguir-suposicao-ra' },
+      { label: 'Pedir ao dev que abra o PR com o que tem', value: 'pedir-pr' },
+    ])
+  })
+
+  it('colisão de value com a reserva: pula a opção que duplicaria', () => {
+    expect(completarOpcoesAte3([{ label: 'Pausar mesmo assim', value: 'pausar' }])).toEqual([
+      { label: 'Pausar mesmo assim', value: 'pausar' },
+      { label: 'Seguir com a melhor suposição do RA mesmo assim', value: 'seguir-suposicao-ra' },
+      { label: 'Pedir ao dev que abra o PR com o que tem', value: 'pedir-pr' },
+    ])
   })
 })

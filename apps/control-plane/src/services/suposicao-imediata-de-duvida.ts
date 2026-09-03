@@ -127,3 +127,59 @@ export async function tentarSuposicaoImediata(
   })
   return true
 }
+
+export interface DepsDeComentarNaIssue {
+  /** O `fetch` já guardado pela autonomia do projeto — nunca um `fetch` cru. */
+  fetchDoCliente: typeof fetch
+  repository: string
+  /** `undefined` quando o produto não tem credencial do GitHub para este
+   *  projeto (nenhum token de instalação, nenhum `GITORCH_GITHUB_TOKEN`). */
+  githubToken: string | undefined
+  onWarn: (mensagem: string) => void
+}
+
+/**
+ * Constrói o `comentarNaIssue` que `tentarSuposicaoImediata` (e
+ * `supor-duvida-pendente.ts`, mesmo padrão) chamam, best-effort, para
+ * registrar a suposição do RA na issue do repositório do CLIENTE.
+ *
+ * Extraído de `plugins/scheduler.ts` para ser testável sem a máquina de
+ * missão/motor — mesmo princípio de `escalar-duvida-ao-dono.ts`. O defeito
+ * real: `railsToken as string` (scheduler.ts) mentia sobre o tipo — o token
+ * pode não existir — e a chamada saía com o cabeçalho literal
+ * `authorization: token undefined`, morrendo com 401 do GitHub dentro do
+ * `.catch` best-effort de `tentarSuposicaoImediata`, que só loga "não
+ * consegui comentar" sem dizer que a causa era a falta de token. Agora: sem
+ * token, NENHUMA chamada de rede acontece — só um aviso claro.
+ */
+export function criarComentarNaIssue(
+  deps: DepsDeComentarNaIssue
+): (args: { issueNumber: number; texto: string }) => Promise<void> {
+  return async ({ issueNumber, texto }) => {
+    if (!deps.githubToken) {
+      deps.onWarn(
+        `criarComentarNaIssue: suposição formada para a tarefa #${issueNumber} de ` +
+          `${deps.repository}, mas não há token do GitHub para publicar o comentário na issue — pulei a chamada`
+      )
+      return
+    }
+    const resp = await deps.fetchDoCliente(
+      `https://api.github.com/repos/${deps.repository}/issues/${issueNumber}/comments`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: `token ${deps.githubToken}`,
+          accept: 'application/vnd.github+json',
+          'content-type': 'application/json',
+          'user-agent': 'gitorch',
+        },
+        body: JSON.stringify({ body: texto }),
+      }
+    )
+    if (!resp.ok) {
+      throw new Error(
+        `comentarNaIssue: POST /repos/${deps.repository}/issues/${issueNumber}/comments -> ${resp.status}`
+      )
+    }
+  }
+}

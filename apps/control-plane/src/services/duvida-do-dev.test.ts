@@ -5,6 +5,7 @@ import {
   destinoDaDuvida,
   destinoAposRa,
   resolvePoliticaDePerguntasAoDono,
+  devoAvisarDonoDeBloqueioResolvido,
   textoDaRespostaAoDev,
   pareceTrabalhoJaFeito,
   classificarMensagemDoDev,
@@ -221,6 +222,20 @@ describe('resolvePoliticaDePerguntasAoDono — config por projeto (T14)', () => 
     expect(resolvePoliticaDePerguntasAoDono({ perguntasAoDono: 'qualquer-coisa' })).toBe(
       'so-executivo'
     )
+  })
+})
+
+describe('devoAvisarDonoDeBloqueioResolvido — quem fica sabendo depois que o time resolveu sozinho (revisão pós-D72)', () => {
+  it('so-executivo: nunca avisa — é a política de quem só quer ver decisão de negócio', () => {
+    expect(devoAvisarDonoDeBloqueioResolvido('so-executivo')).toBe(false)
+  })
+
+  it('executivo-e-tecnico-bloqueante: avisa — é a política que existe PARA isto (defeito real: virava idêntica a so-executivo)', () => {
+    expect(devoAvisarDonoDeBloqueioResolvido('executivo-e-tecnico-bloqueante')).toBe(true)
+  })
+
+  it('tudo: avisa — visibilidade total', () => {
+    expect(devoAvisarDonoDeBloqueioResolvido('tudo')).toBe(true)
   })
 })
 

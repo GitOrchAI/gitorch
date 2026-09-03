@@ -5,7 +5,10 @@ import { registrarResposta, registrarEscalada } from './dev-session-store.js'
 import { marcarRespondida } from './pergunta-sem-resposta.js'
 import { buildFreeTextOption } from './telegram-bot.js'
 import { responderSessaoJules as responderSessaoJulesReal } from './jules-client.js'
-import { perguntaExecutivaDeReserva } from './texto-de-escalada.js'
+import {
+  perguntaExecutivaDeReserva,
+  OPCOES_DE_RESERVA_DE_DUVIDA_TECNICA,
+} from './texto-de-escalada.js'
 import type { NotifiableProject } from './telegram-link.js'
 import { dedupKeyDeDuvidaDoDev } from './dedup-key-de-duvida.js'
 
@@ -59,6 +62,34 @@ export interface DepsDeEscalarDuvida {
  * respondida antes) entrega a resposta anterior direto ao dev, em vez de
  * fazer o dono decidir de novo a mesma coisa.
  */
+
+/**
+ * Completa as opções do MODELO até 3, usando a reserva determinística
+ * (`OPCOES_DE_RESERVA_DE_DUVIDA_TECNICA`) para preencher o que falta — nunca
+ * duplica `value` nem `label`.
+ *
+ * Existe porque a checagem anterior (`opcoesDoModelo.length === 3`) jogava
+ * fora o TEXTO INTEIRO de uma pergunta executiva boa só porque o modelo
+ * trouxe 1 ou 2 opções em vez de 3 — o dono perdia a pergunta de verdade e
+ * recebia a genérica de reserva por causa de uma opção faltando. D71/D72
+ * continuam intactos: o resultado aqui é SEMPRE exatamente 3 opções (a 4ª,
+ * "Outro", é sempre adicionada por quem chama `ask()` — nunca aqui).
+ */
+export function completarOpcoesAte3(
+  opcoesDoModelo: Array<{ label: string; value: string }>
+): Array<{ label: string; value: string }> {
+  if (opcoesDoModelo.length >= 3) return opcoesDoModelo.slice(0, 3)
+  const completas = [...opcoesDoModelo]
+  for (const opcaoDeReserva of OPCOES_DE_RESERVA_DE_DUVIDA_TECNICA) {
+    if (completas.length >= 3) break
+    const duplicada = completas.some(
+      (o) => o.value === opcaoDeReserva.value || o.label === opcaoDeReserva.label
+    )
+    if (!duplicada) completas.push(opcaoDeReserva)
+  }
+  return completas
+}
+
 export async function escalarDuvidaAoDono(
   args: {
     destino: DestinoDaDuvida
@@ -114,17 +145,21 @@ export async function escalarDuvidaAoDono(
     args.destino.tipo === 'perguntar-ao-dono' ? (args.destino.opcoes ?? []) : []
   ).slice(0, 3)
   // D72 (02/09): o dono flagrou ao vivo a pergunta CRUA do dev (em inglês)
-  // chegando com um botão só, porque `destinoAposRa`/o QA deixam
-  // `perguntaExecutiva`/`opcoes` vazios "de propósito" (comentário acima) e
-  // o código antigo caía para um texto de reserva que encaminhava a
-  // mensagem do dev sem tradução nenhuma. Agora: só confia na tradução do
-  // modelo quando ela vem JUNTO com as 3 opções (D71/D72 — nunca menos,
-  // nunca mais); qualquer coisa fora disso é a pergunta executiva de
-  // reserva, que NUNCA cita o texto do dev.
-  const modeloTrouxeTraducaoValida =
-    Boolean(perguntaExecutivaDoModelo) && opcoesDoModelo.length === 3
+  // chegando com um botão só. Correção pós-D72 (revisão): a checagem
+  // anterior (`opcoesDoModelo.length === 3`) jogava fora o TEXTO INTEIRO do
+  // modelo sempre que ele trazia 1 ou 2 opções concretas — uma pergunta
+  // executiva boa virava a genérica de reserva só por faltar 1 opção. Agora:
+  // confia no texto do modelo sempre que ele veio (`perguntaExecutivaDoModelo`)
+  // junto de PELO MENOS 1 opção concreta, e COMPLETA até 3 com a reserva
+  // (nunca duplica value/label — `completarOpcoesAte3`). Só cai para a
+  // reserva INTEIRA (texto e opções) quando o modelo não trouxe texto
+  // nenhum, ou trouxe 0 opções.
+  const modeloTrouxeTraducaoValida = Boolean(perguntaExecutivaDoModelo) && opcoesDoModelo.length > 0
   const { textoDaPergunta, opcoesReais } = modeloTrouxeTraducaoValida
-    ? { textoDaPergunta: perguntaExecutivaDoModelo as string, opcoesReais: opcoesDoModelo }
+    ? {
+        textoDaPergunta: perguntaExecutivaDoModelo as string,
+        opcoesReais: completarOpcoesAte3(opcoesDoModelo),
+      }
     : (() => {
         const reserva = perguntaExecutivaDeReserva({
           issueNumber: args.issueNumber,
