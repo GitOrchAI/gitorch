@@ -144,6 +144,23 @@ export function lerMarca(bruto: string | null): MarcaLida | null {
   return { situacao, hash: resto.join(':'), tentativas: n }
 }
 
+/**
+ * C5 (fix-up 3, task a13a42f8-2953-4259-b41f-3f8cddb304cd): fonte ÚNICA de
+ * "isto é uma marca de escalada". Antes desta extração, `sessao-abandonada.ts`
+ * (`ehDuvidaEscaladaAoDono`) e `session-watch.ts` faziam
+ * `answeredHash?.startsWith('escalada:')` cada um por conta própria — um
+ * terceiro `startsWith` solto (ou um jeito novo de escrever a marca) bastaria
+ * para os dois divergirem sem erro de tipo nenhum. Passa pela MESMA leitura
+ * de `lerMarca` que decide tudo o mais sobre a marca (formato de três partes
+ * `<situação>:<tentativas>:<hash>`, nunca um simples prefixo solto): uma
+ * marca truncada ou de formato desconhecido (`'escalada'` sem as partes, por
+ * exemplo) devolve `false` aqui do MESMO jeito que devolve `null` em
+ * `lerMarca` — nunca um falso positivo por bater só o prefixo.
+ */
+export function ehMarcaDeEscalada(bruto: string | null | undefined): boolean {
+  return lerMarca(bruto ?? null)?.situacao === 'escalada'
+}
+
 export type DecisaoSobreAPergunta =
   /** Tentar responder. `tentativa` é a contagem DESTA pergunta, para a marca. */
   | { acao: 'responder'; tentativa: number }

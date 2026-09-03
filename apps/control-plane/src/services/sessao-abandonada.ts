@@ -15,6 +15,8 @@
  * Este arquivo é a REGRA, sem banco e sem rede.
  */
 
+import { ehMarcaDeEscalada } from './pergunta-sem-resposta.js'
+
 /**
  * Sem progresso por este tempo, a sessão é dada como abandonada.
  *
@@ -65,9 +67,13 @@ export interface LinhaParaJulgar {
  * `escalar-duvida-ao-dono.ts`, chamado só a partir desse estado).
  */
 function ehDuvidaEscaladaAoDono(linha: LinhaParaJulgar): boolean {
-  return (
-    linha.state === 'AWAITING_USER_FEEDBACK' && Boolean(linha.answeredHash?.startsWith('escalada:'))
-  )
+  // C5 (fix-up 3): `ehMarcaDeEscalada` (pergunta-sem-resposta.ts) e' a fonte
+  // UNICA desta checagem - antes, este arquivo e `session-watch.ts` faziam
+  // `startsWith('escalada:')` cada um por conta propria, e uma marca
+  // truncada (ex.: `escalada:` sem tentativas/hash) passaria aqui como
+  // "escalada de verdade" sem nunca ter sido gravada por
+  // `escalar-duvida-ao-dono.ts`.
+  return linha.state === 'AWAITING_USER_FEEDBACK' && ehMarcaDeEscalada(linha.answeredHash)
 }
 
 /**

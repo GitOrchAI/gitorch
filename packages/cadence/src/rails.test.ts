@@ -268,6 +268,31 @@ describe('RAILS_SCHEMAS.duvidaSuposicao (L4-T4, D64)', () => {
     const r = validateForm(RAILS_SCHEMAS.duvidaSuposicao, semJustificativa)
     expect(r.ok).toBe(false)
   })
+
+  // C3 (fix-up 3, task a13a42f8-2953-4259-b41f-3f8cddb304cd): `minLength` é
+  // contado sobre a string com `.trim()` aplicado — confirma que o código já
+  // fazia isso (`walk`, rails.ts) ANTES desta task: quarenta espaços não
+  // bastam para passar no piso de 40 caracteres de `suposicao`.
+  it('C3: só espaços NÃO passa no piso de minLength (40 espaços não são 40 caracteres)', () => {
+    const r = validateForm(RAILS_SCHEMAS.duvidaSuposicao, {
+      ...boa,
+      suposicao: ' '.repeat(40),
+    })
+    expect(r.ok).toBe(false)
+    expect(r.errors.join(' ')).toContain('suposicao')
+  })
+
+  it('C3: exatamente 40 caracteres REAIS (sem contar espaço de sobra) passa no piso', () => {
+    const quarentaCaracteresReais = 'x'.repeat(40)
+    expect(quarentaCaracteresReais).toHaveLength(40)
+    const r = validateForm(RAILS_SCHEMAS.duvidaSuposicao, {
+      ...boa,
+      // Envolto em espaços: o `.trim()` do validador tem que contar só os
+      // 40 caracteres reais, não o padding em volta.
+      suposicao: `  ${quarentaCaracteresReais}  `,
+    })
+    expect(r.ok).toBe(true)
+  })
 })
 
 describe('validateDoD (código puro, 8 campos)', () => {

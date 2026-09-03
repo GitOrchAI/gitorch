@@ -18,6 +18,7 @@ import { createHash } from 'node:crypto'
 import type { LinhaDeSessao, MotivoDeFechamento } from './dev-session-store.js'
 import { decidirRespostaDaSessao, MAX_NUDGES } from './jules-session-loop.js'
 import { decidirSessaoTerminal } from './sessao-terminal.js'
+import { ehMarcaDeEscalada } from './pergunta-sem-resposta.js'
 
 /**
  * A pergunta do Jules (AWAITING_USER_FEEDBACK) já foi respondida e mesmo assim
@@ -367,7 +368,12 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
           // resposta.ts`). Fechar aqui diria "a dúvida já foi respondida" —
           // mentira. O que fazer quando o prazo vence com o dono ainda
           // calado é a L4-T4 (D64, ramo logo abaixo).
-          const escalada = Boolean(linha.answeredHash?.startsWith('escalada:'))
+          // C5 (fix-up 3): `ehMarcaDeEscalada` (pergunta-sem-resposta.ts) e'
+          // a fonte UNICA desta checagem, ao inves de um `startsWith('escalada:')`
+          // proprio deste arquivo (sessao-abandonada.ts fazia a MESMA checagem
+          // solta, e uma marca truncada passaria como escalada de verdade em
+          // qualquer um dos dois sem o outro saber).
+          const escalada = ehMarcaDeEscalada(linha.answeredHash)
           const jaRespondida = Boolean(linha.answeredHash) && !escalada
           if (jaRespondida && paradoHaMs >= HORAS_ATE_TIMEOUT_PERGUNTA_MS) {
             await deps.fecharSessao({

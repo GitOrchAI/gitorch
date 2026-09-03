@@ -355,7 +355,15 @@ export class AgentQuestionService {
   async marcarAssumida(questionId: string, suposicao: string): Promise<AgentQuestionRecord | null> {
     const existing = await this.prisma.agentQuestion.findUnique({ where: { id: questionId } })
     if (!existing) {
-      console.warn('[agent-question] marcarAssumida: dúvida não encontrada', { questionId })
+      // C7 (fix-up 3): `console.warn` não aparece em monitoramento nenhum —
+      // MESMA disciplina do `onError` que `answer()` já usa para o
+      // manipulador de resposta (ver comentário lá em cima). O CHAMADOR
+      // (`marcarAssumidaPorDedupKey`, a partir de `scheduler.ts`) ainda
+      // lança quando isto devolve `null` — este log é o rastro do lado de
+      // dentro do serviço, não a única rede de segurança.
+      this.deps.onError?.(
+        `[agent-question] marcarAssumida: dúvida não encontrada (questionId=${questionId})`
+      )
       return null
     }
     if (existing.status === 'answered' || existing.status === 'assumida') {

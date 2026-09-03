@@ -190,6 +190,7 @@ import {
   // máquina de missão/motor — MESMO padrão de `escalar-duvida-ao-dono.ts`.
   suporDuvidaPendente as suporDuvidaPendenteService,
   type PrismaParaSuporDuvidaPendente,
+  PADRAO_TETO_DE_ESPERA_ESCALADA_MS,
 } from '../services/supor-duvida-pendente.js'
 import {
   reconciliarDuvidasEscaladasDoProjeto,
@@ -197,6 +198,10 @@ import {
 } from '../services/reconciliar-duvidas-escaladas.js'
 import { lerCadenciaMs } from '../services/cadencia-de-varredura.js'
 import { dedupKeyDeDuvidaDoDev } from '../services/dedup-key-de-duvida.js'
+import {
+  marcarAssumidaPorDedupKey,
+  type PrismaParaMarcarAssumidaPorDedupKey,
+} from '../services/marcar-assumida-por-dedupkey.js'
 import {
   decidirSobreAPergunta,
   marcarDesistencia,
@@ -7802,6 +7807,14 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         repository: args.repository,
         execute: args.execute,
         contextBlocks: args.contextBlocks,
+        // C6b (fix-up 3): teto de espera antes do aviso "está parada há N
+        // dias" — MESMA guarda de cadência (`lerCadenciaMs`) que o resto do
+        // scheduler já usa para env inválida.
+        tetoDeEsperaMs: lerCadenciaMs(
+          'GITORCH_DUVIDA_ESCALADA_TETO_MS',
+          PADRAO_TETO_DE_ESPERA_ESCALADA_MS,
+          (m) => app.log.warn(`[Scheduler] ${m}`)
+        ),
       },
       {
         prisma: app.prisma as unknown as PrismaParaSuporDuvidaPendente,
@@ -7829,6 +7842,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             )
           }
         },
+        // C2 (fix-up 3): a busca de `questionId` a partir do dedupKey —
+        // ABERTA mais recente, nunca uma linha indeterminada entre a
+        // escalada e uma reconciliação por cima — e a checagem do retorno
+        // de `marcarAssumida` (nunca `null` em silêncio) moraram para
+        // `marcar-assumida-por-dedupkey.ts`, testável sem o Fastify inteiro.
         marcarAssumida: async ({ issueNumber, hash, suposicao }) => {
           const perguntador = (app as unknown as { agentQuestionService?: AgentQuestionService })
             .agentQuestionService
@@ -7840,15 +7858,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             issue: issueNumber,
             hash,
           })
-          const question = await app.prisma.agentQuestion.findFirst({
-            where: { projectId: args.projectId, dedupKey },
-          })
-          if (!question) {
-            throw new Error(
-              `marcarAssumida: agent_question não encontrada para dedupKey ${dedupKey}`
-            )
-          }
-          await perguntador.marcarAssumida(question.id, suposicao)
+          await marcarAssumidaPorDedupKey(
+            { projectId: args.projectId, dedupKey, suposicao },
+            {
+              prisma: app.prisma as unknown as PrismaParaMarcarAssumidaPorDedupKey,
+              marcarAssumida: (questionId, s) => perguntador.marcarAssumida(questionId, s),
+            }
+          )
         },
         avisarDono: avisarDonoDoProjeto,
         onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),

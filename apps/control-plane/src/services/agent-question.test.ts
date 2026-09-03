@@ -1007,6 +1007,24 @@ describe('AgentQuestionService.marcarAssumida (L4-T4, D64)', () => {
     expect(resultado).toBeNull()
   })
 
+  // C7 (fix-up 3, task a13a42f8-2953-4259-b41f-3f8cddb304cd): `console.warn`
+  // não aparece em nenhum monitoramento — o logger INJETADO (`onError`,
+  // mesmo campo que `answer()` já usa) é quem tem que registrar isto.
+  test('C7: pergunta inexistente loga pelo onError INJETADO, nunca console.warn', async () => {
+    const prisma = fakePrisma()
+    const onError = vi.fn()
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const svc = new AgentQuestionService(prisma as any, { onError })
+
+    const resultado = await svc.marcarAssumida('nao-existe', 'qualquer suposição de teste aqui.')
+
+    expect(resultado).toBeNull()
+    expect(onError).toHaveBeenCalledOnce()
+    expect(onError.mock.calls[0]![0]).toContain('nao-existe')
+    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('marcarAssumida'))).toBe(false)
+    warnSpy.mockRestore()
+  })
+
   test('idempotente: pergunta já answered (o dono respondeu antes do RA terminar) NÃO é sobrescrita', async () => {
     const prisma = fakePrisma()
     prisma.questions.set('q_1', {

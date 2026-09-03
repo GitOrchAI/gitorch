@@ -24,7 +24,10 @@ export function TelaDecisoes({
   const [filtro, setFiltro] = useState<'pendente' | 'respondida' | 'todas'>('pendente')
   // 'assumida' (L4-T4, D64) entra no filtro "Respondidas": não é resposta do
   // dono, mas também não é mais "esperando você" — a `Decisao` já diferencia
-  // com o selo "Suposição do RA".
+  // com o selo "Suposição do RA". C9 (fix-up 3): o RÓTULO do filtro também
+  // avisa isso — sem o "(inclui suposições do RA)", o dono via "Respondidas"
+  // e lia como "eu respondi tudo isso", quando parte foi o produto seguindo
+  // sozinho por falta de resposta em 24h.
   const lista = decisoes.filter(
     (d) => filtro === 'todas' || d.st === filtro || (filtro === 'respondida' && d.st === 'assumida')
   )
@@ -50,7 +53,7 @@ export function TelaDecisoes({
         onChange={setFiltro}
         opcoes={[
           ['pendente', 'Esperando você' + (pend ? ' · ' + pend : '')],
-          ['respondida', 'Respondidas'],
+          ['respondida', 'Respondidas (inclui suposições do RA)'],
           ['todas', 'Todas'],
         ]}
       />

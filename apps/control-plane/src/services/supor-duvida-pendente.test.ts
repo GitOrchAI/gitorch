@@ -61,11 +61,15 @@ function prismaFalso(
   overrides: {
     candidatas?: LinhaDeSessao[]
     projeto?: { id: string; wingId: string; userId: string | null } | null
+    /** C6a: texto da agent_question de fallback quando `ultimaMensagem` vem vazia. */
+    agentQuestion?: { id: string; text: string } | null
   } = {}
 ): PrismaParaSuporDuvidaPendente & {
   _updateCalls: Array<{ where: unknown; data: Record<string, unknown> }>
+  _agentQuestionFindFirstCalls: unknown[]
 } {
   const updateCalls: Array<{ where: unknown; data: Record<string, unknown> }> = []
+  const agentQuestionFindFirstCalls: unknown[] = []
   return {
     devSession: {
       findMany: vi.fn(async () => overrides.candidatas ?? []),
@@ -82,9 +86,17 @@ function prismaFalso(
         async () => overrides.projeto ?? { id: 'proj1', wingId: 'acme/api', userId: 'user1' }
       ),
     },
+    agentQuestion: {
+      findFirst: vi.fn(async (args: unknown) => {
+        agentQuestionFindFirstCalls.push(args)
+        return overrides.agentQuestion ?? null
+      }),
+    },
     _updateCalls: updateCalls,
+    _agentQuestionFindFirstCalls: agentQuestionFindFirstCalls,
   } as unknown as PrismaParaSuporDuvidaPendente & {
     _updateCalls: Array<{ where: unknown; data: Record<string, unknown> }>
+    _agentQuestionFindFirstCalls: unknown[]
   }
 }
 
@@ -328,5 +340,315 @@ describe('suporDuvidaPendente (L4-T4, D64) — o tratador roda dentro da missão
     expect(deps.comentarNaIssue).not.toHaveBeenCalled()
     expect(deps.marcarAssumida).not.toHaveBeenCalled()
     expect(prisma._updateCalls).toHaveLength(0)
+  })
+
+  // C4 (fix-up 3, task a13a42f8-2953-4259-b41f-3f8cddb304cd).
+  it('C4: marca de escalada truncada (sem hash) é pulada — nunca chega a marcarAssumida/registrarResposta', async () => {
+    const prisma = prismaFalso({
+      candidatas: [
+        linha({
+          sessionName: 'sessions/escalada-truncada',
+          issueNumber: 99,
+          answeredHash: 'escalada:0:', // hash vazio
+          lastProgressAt: new Date(agora.getTime() - 25 * 60 * 60 * 1000),
+        }),
+      ],
+    })
+    const deps = depsFalso({ prisma })
+    const execute = vi.fn(async () => '')
+
+    await suporDuvidaPendente({ ...ARGS_BASE, execute }, deps)
+
+    expect(execute).not.toHaveBeenCalled()
+    expect(deps.marcarAssumida).not.toHaveBeenCalled()
+    expect(prisma._updateCalls).toHaveLength(0)
+    expect(deps.onWarn).toHaveBeenCalledWith(expect.stringContaining('truncada'))
+  })
+
+  // C1 (fix-up 3): a ordem já era responder -> comentar/marcar (best-effort)
+  // -> registrarResposta, mas a falha de `registrarResposta` não era tratada
+  // — subia sem log com repositório/issue nenhum. Agora loga e relança.
+  it('C1: registrarResposta falha DEPOIS da suposição já entregue ao dev — loga com repo/issue e relança (nunca silêncio)', async () => {
+    const mensagem = 'Devo usar bcrypt ou argon2 para o hash de senha?'
+    const prisma = prismaFalso({
+      candidatas: [
+        linha({
+          sessionName: 'sessions/escalada-registrar-falha',
+          issueNumber: 101,
+          answeredHash: `escalada:0:${hashDe(mensagem)}`,
+          lastProgressAt: new Date(agora.getTime() - 25 * 60 * 60 * 1000),
+        }),
+      ],
+    })
+    prisma.devSession.update = vi.fn(async () => {
+      throw new Error('conexão com o banco caiu')
+    })
+    const deps = depsFalso({ prisma, ultimaMensagem: vi.fn(async () => mensagem) })
+    const execute = vi.fn(async () =>
+      JSON.stringify({
+        suposicao: 'Vou usar argon2id, o mesmo padrão de src/lib/hash.ts, para este endpoint.',
+        justificativa: 'É o único helper de hash do repositório e já é usado no login.',
+        arquivosCitados: ['src/lib/hash.ts'],
+      })
+    )
+
+    await expect(suporDuvidaPendente({ ...ARGS_BASE, execute }, deps)).rejects.toThrow(
+      'conexão com o banco caiu'
+    )
+
+    // A suposição JÁ tinha sido entregue e a issue já comentada — nada disto
+    // é desfeito por causa da falha de registro.
+    expect(deps.responder).toHaveBeenCalled()
+    expect(deps.comentarNaIssue).toHaveBeenCalled()
+    expect(deps.marcarAssumida).toHaveBeenCalled()
+    expect(deps.onWarn).toHaveBeenCalledWith(expect.stringContaining('acme/api#101'))
+  })
+
+  // C6a (fix-up 3): o dev "emudeceu" — Jules não devolve mais a última
+  // mensagem — antes de desistir, usa o texto original da agent_question.
+  it('C6a: última mensagem do dev vem vazia — usa o texto da agent_question original como fallback', async () => {
+    const mensagem = 'Isto é decisão de preço — decido sozinho?'
+    const prisma = prismaFalso({
+      candidatas: [
+        linha({
+          sessionName: 'sessions/escalada-emudecida',
+          issueNumber: 102,
+          answeredHash: `escalada:0:${hashDe(mensagem)}`,
+          lastProgressAt: new Date(agora.getTime() - 25 * 60 * 60 * 1000),
+        }),
+      ],
+      agentQuestion: { id: 'q_1', text: mensagem },
+    })
+    const deps = depsFalso({ prisma, ultimaMensagem: vi.fn(async () => '') })
+    const execute = vi.fn(async (_prompt: string) =>
+      JSON.stringify({
+        suposicao: 'Vou usar argon2id, o mesmo padrão de src/lib/hash.ts, para este endpoint.',
+        justificativa: 'É o único helper de hash do repositório e já é usado no login.',
+        arquivosCitados: ['src/lib/hash.ts'],
+      })
+    )
+
+    await suporDuvidaPendente({ ...ARGS_BASE, execute }, deps)
+
+    // A pergunta de FALLBACK (agent_question) chegou ao motor, não uma vazia.
+    expect(execute.mock.calls[0]?.[0]).toContain(mensagem)
+    expect(prisma._agentQuestionFindFirstCalls[0]).toEqual({
+      where: {
+        projectId: 'proj1',
+        dedupKey: `duvida-dev:acme/api:102:${hashDe(mensagem)}`,
+        status: 'open',
+      },
+      orderBy: { createdAt: 'desc' },
+    })
+    expect(deps.responder).toHaveBeenCalled()
+  })
+
+  it('C6a: nem o Jules nem a agent_question têm a pergunta — aviso único ao dono, marca escalada:1, NUNCA fecha', async () => {
+    const mensagem = 'Isto é decisão de preço — decido sozinho?'
+    const prisma = prismaFalso({
+      candidatas: [
+        linha({
+          sessionName: 'sessions/escalada-sem-pergunta',
+          issueNumber: 103,
+          answeredHash: `escalada:0:${hashDe(mensagem)}`,
+          lastProgressAt: new Date(agora.getTime() - 25 * 60 * 60 * 1000),
+        }),
+      ],
+      agentQuestion: null,
+    })
+    const deps = depsFalso({ prisma, ultimaMensagem: vi.fn(async () => '') })
+    const execute = vi.fn(async () => '')
+
+    await suporDuvidaPendente({ ...ARGS_BASE, execute }, deps)
+
+    expect(execute).not.toHaveBeenCalled()
+    expect(deps.avisarDono).toHaveBeenCalledWith(
+      expect.objectContaining({ wingId: 'acme/api' }),
+      expect.stringContaining('#103')
+    )
+    expect(prisma._updateCalls).toContainEqual(
+      expect.objectContaining({
+        where: { sessionName: 'sessions/escalada-sem-pergunta' },
+        data: expect.objectContaining({ answeredHash: `escalada:1:${hashDe(mensagem)}` }),
+      })
+    )
+  })
+
+  it('C6a: aviso já dado antes (escalada:1:) para pergunta ilegível — NUNCA avisa o dono duas vezes', async () => {
+    const mensagem = 'Isto é decisão de preço — decido sozinho?'
+    const prisma = prismaFalso({
+      candidatas: [
+        linha({
+          sessionName: 'sessions/escalada-sem-pergunta-2',
+          issueNumber: 104,
+          answeredHash: `escalada:1:${hashDe(mensagem)}`,
+          lastProgressAt: new Date(agora.getTime() - 30 * 60 * 60 * 1000),
+        }),
+      ],
+      agentQuestion: null,
+    })
+    const deps = depsFalso({ prisma, ultimaMensagem: vi.fn(async () => '') })
+    const execute = vi.fn(async () => '')
+
+    await suporDuvidaPendente({ ...ARGS_BASE, execute }, deps)
+
+    expect(deps.avisarDono).not.toHaveBeenCalled()
+    expect(prisma._updateCalls).toHaveLength(0)
+  })
+
+  // C8 (fix-up 3): `avisarDono(...).catch(() => undefined)` escondia a
+  // falha por completo — agora loga com repositório/issue.
+  it('C8: avisarDono falha (rede fora) — loga com repo/issue pelo onWarn, nunca silêncio', async () => {
+    const mensagem = 'Isto é decisão de preço — decido sozinho?'
+    const prisma = prismaFalso({
+      candidatas: [
+        linha({
+          sessionName: 'sessions/escalada-aviso-falha',
+          issueNumber: 105,
+          answeredHash: `escalada:0:${hashDe(mensagem)}`,
+          lastProgressAt: new Date(agora.getTime() - 25 * 60 * 60 * 1000),
+        }),
+      ],
+    })
+    const deps = depsFalso({
+      prisma,
+      ultimaMensagem: vi.fn(async () => mensagem),
+      avisarDono: vi.fn(async () => {
+        throw new Error('Telegram fora do ar')
+      }),
+    })
+    const execute = vi.fn(async () =>
+      JSON.stringify({
+        suposicao: 'Acho que qualquer abordagem comum serve aqui, sem problema nenhum.',
+        justificativa: 'Parece razoável.',
+        arquivosCitados: ['algum-arquivo.ts'],
+      })
+    )
+
+    await expect(suporDuvidaPendente({ ...ARGS_BASE, execute }, deps)).resolves.toBeUndefined()
+
+    expect(deps.onWarn).toHaveBeenCalledWith(expect.stringContaining('acme/api#105'))
+    expect(
+      (deps.onWarn as ReturnType<typeof vi.fn>).mock.calls.some((c: unknown[]) =>
+        String(c[0]).includes('Telegram fora do ar')
+      )
+    ).toBe(true)
+    // Mesmo com o aviso falhando, a marca de "já avisei" ainda é gravada —
+    // nunca tenta de novo pra sempre.
+    expect(prisma._updateCalls).toContainEqual(
+      expect.objectContaining({
+        data: expect.objectContaining({ answeredHash: `escalada:1:${hashDe(mensagem)}` }),
+      })
+    )
+  })
+
+  // C6b (fix-up 3): a sessão escalada nunca pode virar "imortal" — depois de
+  // `tetoDeEsperaMs` (padrão sete dias) sem suposição concreta nenhuma, um
+  // SEGUNDO aviso, mais grave, ao dono — nunca fecha a sessão.
+  describe('C6b: teto de espera — sessão escalada nunca vira "imortal"', () => {
+    it('mais de 7 dias sem suposição concreta: avisa "está parada há N dias" e marca escalada:2 (nunca fecha)', async () => {
+      const mensagem = 'Isto é decisão de preço — decido sozinho?'
+      const prisma = prismaFalso({
+        candidatas: [
+          linha({
+            sessionName: 'sessions/escalada-7-dias',
+            issueNumber: 106,
+            answeredHash: `escalada:1:${hashDe(mensagem)}`, // já tinha avisado o de 24h
+            lastProgressAt: new Date(agora.getTime() - 8 * 24 * 60 * 60 * 1000), // 8 dias
+          }),
+        ],
+      })
+      const deps = depsFalso({ prisma, ultimaMensagem: vi.fn(async () => mensagem) })
+      const execute = vi.fn(async () =>
+        JSON.stringify({
+          suposicao: 'Acho que qualquer abordagem comum serve aqui, sem problema nenhum.',
+          justificativa: 'Parece razoável.',
+          arquivosCitados: ['algum-arquivo.ts'],
+        })
+      )
+
+      await suporDuvidaPendente({ ...ARGS_BASE, execute }, deps)
+
+      expect(deps.avisarDono).toHaveBeenCalledWith(
+        expect.objectContaining({ wingId: 'acme/api' }),
+        expect.stringContaining('7 dias')
+      )
+      expect(deps.avisarDono).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.stringContaining('#106')
+      )
+      expect(prisma._updateCalls).toContainEqual(
+        expect.objectContaining({
+          where: { sessionName: 'sessions/escalada-7-dias' },
+          data: expect.objectContaining({ answeredHash: `escalada:2:${hashDe(mensagem)}` }),
+        })
+      )
+    })
+
+    it('aviso de 7 dias JÁ dado (escalada:2:) — nunca avisa o dono de novo, nunca fecha', async () => {
+      const mensagem = 'Isto é decisão de preço — decido sozinho?'
+      const prisma = prismaFalso({
+        candidatas: [
+          linha({
+            sessionName: 'sessions/escalada-7-dias-ja-avisada',
+            issueNumber: 107,
+            answeredHash: `escalada:2:${hashDe(mensagem)}`,
+            lastProgressAt: new Date(agora.getTime() - 10 * 24 * 60 * 60 * 1000), // 10 dias
+          }),
+        ],
+      })
+      const deps = depsFalso({ prisma, ultimaMensagem: vi.fn(async () => mensagem) })
+      const execute = vi.fn(async () =>
+        JSON.stringify({
+          suposicao: 'Acho que qualquer abordagem comum serve aqui, sem problema nenhum.',
+          justificativa: 'Parece razoável.',
+          arquivosCitados: ['algum-arquivo.ts'],
+        })
+      )
+
+      await suporDuvidaPendente({ ...ARGS_BASE, execute }, deps)
+
+      expect(deps.avisarDono).not.toHaveBeenCalled()
+      expect(prisma._updateCalls).toHaveLength(0)
+    })
+
+    it('tetoDeEsperaMs é injetável (produção lê de GITORCH_DUVIDA_ESCALADA_TETO_MS)', async () => {
+      const mensagem = 'Isto é decisão de preço — decido sozinho?'
+      const prisma = prismaFalso({
+        candidatas: [
+          linha({
+            sessionName: 'sessions/escalada-teto-custom',
+            issueNumber: 108,
+            answeredHash: `escalada:0:${hashDe(mensagem)}`,
+            lastProgressAt: new Date(agora.getTime() - 3 * 24 * 60 * 60 * 1000), // 3 dias
+          }),
+        ],
+      })
+      const deps = depsFalso({ prisma, ultimaMensagem: vi.fn(async () => mensagem) })
+      const execute = vi.fn(async () =>
+        JSON.stringify({
+          suposicao: 'Acho que qualquer abordagem comum serve aqui, sem problema nenhum.',
+          justificativa: 'Parece razoável.',
+          arquivosCitados: ['algum-arquivo.ts'],
+        })
+      )
+
+      // Teto customizado de 2 dias (não os 7 do padrão): 3 dias parada já
+      // passa disso, então dispara o aviso de "dias parada".
+      await suporDuvidaPendente(
+        { ...ARGS_BASE, execute, tetoDeEsperaMs: 2 * 24 * 60 * 60 * 1000 },
+        deps
+      )
+
+      expect(deps.avisarDono).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.stringContaining('2 dias')
+      )
+      expect(prisma._updateCalls).toContainEqual(
+        expect.objectContaining({
+          data: expect.objectContaining({ answeredHash: `escalada:2:${hashDe(mensagem)}` }),
+        })
+      )
+    })
   })
 })

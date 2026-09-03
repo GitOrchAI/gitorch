@@ -334,6 +334,11 @@ export interface MiniSchema {
    * nos arrays: "ok"/"acho que sim" passam em qualquer checagem de tipo e
    * não desbloqueiam ninguém — o piso é como o CÓDIGO força substância, sem
    * depender do modelo se autodisciplinar (L4-T4, D64).
+   *
+   * C3 (fix-up 3): contado sobre a string com `.trim()` aplicado (ver
+   * `walk`, abaixo) — QUARENTA ESPAÇOS não passam no piso de 40 caracteres.
+   * Sem isso um modelo preguiçoso preencheria o campo com espaço em branco
+   * só para bater o tamanho mínimo em bytes, sem escrever nada de verdade.
    */
   minLength?: number
 }
