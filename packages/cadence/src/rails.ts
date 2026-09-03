@@ -369,11 +369,17 @@ export const RAILS_SCHEMAS = {
   //
   // `perguntaExecutivaPtBr`/`opcoesPtBr` SO existem quando precisaDoDono=true:
   // e o modelo quem traduz a decisao para portugues, em linguagem de NEGOCIO
-  // (o que muda para o negocio, nao o detalhe tecnico), com 2 a 4 opcoes
-  // objetivas — nunca o texto tecnico cru do dev, em ingles, sem tradicao.
-  // Sem estes dois campos o dono nao tem como responder por botao no
-  // Telegram (D14 defeito 1) e recebe a pergunta misturando idiomas (D14
-  // defeito 2/3).
+  // (o que muda para o negocio, nao o detalhe tecnico), com EXATAMENTE 3
+  // opcoes objetivas (D72, 02/09) — nunca o texto tecnico cru do dev, em
+  // ingles, sem tradicao. Sem estes dois campos o dono nao tem como
+  // responder por botao no Telegram (D14 defeito 1) e recebe a pergunta
+  // misturando idiomas (D14 defeito 2/3). D72: uma traducao com qualquer
+  // quantidade de opcoes diferente de 3 e DESCARTADA por
+  // `escalar-duvida-ao-dono.ts` em favor da pergunta executiva de reserva
+  // (services/texto-de-escalada.ts) — o formulario em si continua sem
+  // minItems/maxItems (o MiniSchema abaixo nao suporta validacao
+  // condicional a outro campo); a garantia real vive no unico ponto por
+  // onde toda pergunta ao dono passa.
   devQuestion: {
     type: 'object',
     required: ['precisaDoDono', 'resposta'],

@@ -1,6 +1,7 @@
 import type { Prisma, PrismaClient } from '@prisma/client'
 import type { CortexClient, CortexDrawer } from '@gitorch/cortex'
 import { configuracaoAPartirDaResposta } from './como-o-projeto-publica.js'
+import { PREFIXO_DUVIDA_DEV } from './dedup-key-de-duvida.js'
 
 // Só o que o serviço usa do Prisma — permite injetar um fake nos testes
 // (mesmo padrão de environment.ts/engine-connection.ts), nunca banco real.
@@ -47,6 +48,35 @@ export interface AskResult {
   deduped: boolean
   question: AgentQuestionRecord
 }
+
+/**
+ * D72 (02/09) — guarda central contra o defeito que o dono flagrou ao vivo
+ * (painel/Telegram, tarefa #309 de GitOrchAI/gitorch): uma pergunta de
+ * dúvida do dev assíncrono chegando com UM botão só ("Outro/respondo por
+ * texto"), sem as 3 opções executivas que ele pediu ("não são três
+ * opções... seja executivo").
+ *
+ * Escopo DELIBERADO: só perguntas com `dedupKey` começando com
+ * `duvida-dev:` (o prefixo de `dedupKeyDeDuvidaDoDev`, dedup-key-de-duvida.ts)
+ * — a classe exata do defeito medido. Outras perguntas já catalogadas
+ * (`automacao:*`, `como-publica:*`, `sem-verificacao:*`, a rota de dev
+ * `cor-azul-oficial`) têm seus próprios conjuntos de opções, verificados
+ * manualmente nesta tarefa — nenhuma reproduz o defeito. Travá-las também
+ * exigiria reformular listas de opções que já funcionam em produção sem
+ * nenhuma evidência de que estão quebradas.
+ */
+export class ErroDePerguntaSemOpcoes extends Error {
+  constructor(dedupKey: string, quantidadeDeOpcoes: number) {
+    super(
+      `pergunta ao dono sem as 3 opções executivas (D72) — dedupKey=${dedupKey}, ` +
+        `options.length=${quantidadeDeOpcoes} (esperado 4: 3 opções objetivas + a livre)`
+    )
+    this.name = 'ErroDePerguntaSemOpcoes'
+  }
+}
+
+/** 3 opções objetivas + a 4ª livre ("Outro/respondo por texto"), SEMPRE. */
+const QUANTIDADE_DE_OPCOES_EXIGIDA_PARA_DUVIDA_DEV = 4
 
 /**
  * Notifica o dono da dúvida nova (Telegram — implementação real vem no épico
@@ -154,6 +184,14 @@ export class AgentQuestionService {
    */
   async ask(userId: string, projectId: string, input: AskInput): Promise<AskResult> {
     const { text, context, options = [], dedupKey } = input
+
+    // D72: guarda central — ver ErroDePerguntaSemOpcoes acima. Roda ANTES de
+    // qualquer escrita (nunca cria a pergunta quebrada e corrige depois).
+    if (dedupKey?.startsWith(PREFIXO_DUVIDA_DEV)) {
+      if (options.length !== QUANTIDADE_DE_OPCOES_EXIGIDA_PARA_DUVIDA_DEV) {
+        throw new ErroDePerguntaSemOpcoes(dedupKey, options.length)
+      }
+    }
 
     if (dedupKey !== undefined) {
       const already = await this.prisma.agentQuestion.findFirst({

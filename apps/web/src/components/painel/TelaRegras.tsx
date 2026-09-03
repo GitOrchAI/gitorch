@@ -76,7 +76,7 @@ const DESC_POR_OPCAO: Record<string, string> = {
   'so-executivo':
     'Você só vê pergunta que é decisão SUA. O time (QA e RA) resolve tudo que é técnico sozinho.',
   'executivo-e-tecnico-bloqueante':
-    'Além da decisão sua, você também vê na hora todo bloqueio técnico — antes mesmo do RA tentar.',
+    'Além da decisão sua, você também é avisado sempre que o time (QA e RA, que tentam primeiro) resolve um bloqueio técnico sozinho.',
   tudo: 'Você vê tudo, inclusive as dúvidas técnicas que o time já resolveu sozinho (sem bloquear nada).',
 }
 

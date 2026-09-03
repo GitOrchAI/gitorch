@@ -80,10 +80,11 @@ export async function runDuvidaMissionViaRails(
         'should do): the owner is not technical and reads only Portuguese. ALSO fill ' +
         '`perguntaExecutivaPtBr` — the decision translated into Portuguese, framed as a BUSINESS ' +
         'question (what changes for the business, never the technical detail/file names/commit ' +
-        'hashes) — and `opcoesPtBr` — 2 to 4 short, objective options in Portuguese the owner can ' +
-        'tap instead of typing. If you cannot produce a confident Portuguese translation, leave ' +
-        'both empty rather than forcing a bad one; never invent options that misrepresent the ' +
-        'decision.',
+        'hashes) — and `opcoesPtBr` — EXACTLY 3 short, objective options in Portuguese the owner ' +
+        'can tap instead of typing (D72: not 2, not 4 — a translation with any other count is ' +
+        'discarded downstream in favor of a generic fallback question). If you cannot produce a ' +
+        'confident Portuguese translation with exactly 3 options, leave both empty rather than ' +
+        'forcing bad ones; never invent options that misrepresent the decision.',
     ]),
     execute: options.execute,
   })) as FormularioDaDuvida

@@ -1,47 +1,44 @@
 import { describe, it, expect } from 'vitest'
-import { textoDeEscaladaParaODono } from './texto-de-escalada.js'
+import {
+  perguntaExecutivaDeReserva,
+  OPCOES_DE_RESERVA_DE_DUVIDA_TECNICA,
+} from './texto-de-escalada.js'
 
-// L4-T3: quando o modelo (QA ou RA, depois de tentar e não saber) NÃO deixou
-// uma tradução executiva pronta (`perguntaExecutivaPtBr`) — o que
-// `destinoAposRa` (services/duvida-do-dev.ts) SEMPRE devolve, por desenho, e
-// o que o próprio QA pode deixar vazio de propósito (o prompt de
-// duvida-rails-mission.ts autoriza "leave both empty rather than forcing a
-// bad one") — o produto NÃO pode cair para um aviso de texto solto
-// (D71: toda pergunta ao dono é agent_question com botões, nunca texto
-// solto). Este helper é o texto de RESERVA em PT-BR, determinístico, usado
-// como `text` do `agentQuestionService.ask(...)` nesse caso.
-describe('textoDeEscaladaParaODono', () => {
-  it('sem pergunta do dev disponível: só o aviso genérico em PT-BR', () => {
-    const texto = textoDeEscaladaParaODono({ issueNumber: 46, repository: 'acme/api' })
-    expect(texto).toBe(
-      'O dev assíncrono está parado na tarefa #46 de acme/api esperando uma decisão sua.'
+// D72 (02/09) — o dono flagrou o texto de reserva anterior (`textoDeEscaladaParaODono`)
+// chegando com a PERGUNTA CRUA do dev, em inglês, e sem opções de verdade
+// (só o botão "Outro"): "não são perguntas formuladas ... não são três
+// opções ... seja executivo". A reserva agora NUNCA cita o texto do dev —
+// é sempre um texto executivo determinístico, com EXATAMENTE 3 opções
+// objetivas (a 4ª, "Outro", é adicionada por quem chama `ask()`).
+describe('perguntaExecutivaDeReserva — nunca a pergunta crua do dev, sempre 3 opções executivas', () => {
+  it('o texto NUNCA contém a pergunta original do dev, mesmo passando ela', () => {
+    const pergunta = perguntaExecutivaDeReserva({ issueNumber: 46, repository: 'acme/api' })
+    expect(pergunta.text).toBe(
+      'O dev está travado numa dúvida técnica na tarefa #46 de acme/api e nem o RA conseguiu ' +
+        'resolver. O que fazer?'
     )
   })
 
-  it('null/vazio se comporta como "sem pergunta"', () => {
-    expect(
-      textoDeEscaladaParaODono({ issueNumber: 46, repository: 'acme/api', pergunta: null })
-    ).toBe('O dev assíncrono está parado na tarefa #46 de acme/api esperando uma decisão sua.')
-    expect(
-      textoDeEscaladaParaODono({ issueNumber: 46, repository: 'acme/api', pergunta: '   ' })
-    ).toBe('O dev assíncrono está parado na tarefa #46 de acme/api esperando uma decisão sua.')
+  it('exatamente 3 opções objetivas, na ordem pedida pelo dono', () => {
+    const pergunta = perguntaExecutivaDeReserva({ issueNumber: 1, repository: 'a/b' })
+    expect(pergunta.options).toHaveLength(3)
+    expect(pergunta.options.map((o) => o.label)).toEqual([
+      'Pausar a tarefa e revisar depois',
+      'Seguir com a melhor suposição do RA mesmo assim',
+      'Pedir ao dev que abra o PR com o que tem',
+    ])
   })
 
-  it('com a pergunta do dev: aviso genérico + a pergunta original, entre aspas', () => {
-    const texto = textoDeEscaladaParaODono({
-      issueNumber: 46,
-      repository: 'acme/api',
-      pergunta: 'Should I use bcrypt or argon2 for password hashing?',
+  it('as opções são as mesmas exportadas em OPCOES_DE_RESERVA_DE_DUVIDA_TECNICA', () => {
+    const pergunta = perguntaExecutivaDeReserva({ issueNumber: 1, repository: 'a/b' })
+    expect(pergunta.options).toEqual(OPCOES_DE_RESERVA_DE_DUVIDA_TECNICA)
+  })
+
+  it('nunca em inglês — o texto inteiro é PT-BR determinístico', () => {
+    const pergunta = perguntaExecutivaDeReserva({
+      issueNumber: 309,
+      repository: 'GitOrchAI/gitorch',
     })
-    expect(texto).toBe(
-      'O dev assíncrono está parado na tarefa #46 de acme/api esperando uma decisão sua.\n\n' +
-        'Pergunta original do dev: "Should I use bcrypt or argon2 for password hashing?"'
-    )
-  })
-
-  it('pergunta gigante é cortada — nunca despeja um texto sem fim no Telegram', () => {
-    const enorme = 'x'.repeat(1000)
-    const texto = textoDeEscaladaParaODono({ issueNumber: 1, repository: 'a/b', pergunta: enorme })
-    expect(texto.length).toBeLessThan(600)
+    expect(pergunta.text).not.toMatch(/successfully|tests are passing|the plan/i)
   })
 })

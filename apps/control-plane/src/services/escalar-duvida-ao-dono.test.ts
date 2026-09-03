@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from 'vitest'
-import { escalarDuvidaAoDono, type PrismaParaEscalarDuvida } from './escalar-duvida-ao-dono.js'
+import {
+  escalarDuvidaAoDono,
+  completarOpcoesAte3,
+  type PrismaParaEscalarDuvida,
+} from './escalar-duvida-ao-dono.js'
 import { FREE_TEXT_OPTION_VALUE } from './telegram-bot.js'
 
 /**
@@ -99,7 +103,13 @@ describe('escalarDuvidaAoDono — causa raiz medida 02/09 (destinoAposRa sem per
     )
   })
 
-  it('sem perguntaExecutiva do modelo: usa o texto de reserva em PT-BR com a pergunta original do dev', async () => {
+  // D72 (02/09) — SUBSTITUI o teste antigo, que esperava a pergunta CRUA do
+  // dev (em inglês) no texto de reserva. O dono flagrou isso ao vivo, com
+  // print do painel/Telegram, exatamente na tarefa #309 de GitOrchAI/gitorch:
+  // "Pergunta original do dev: 'I have successfully modified...'" com UM
+  // botão só. A reserva agora é sempre a pergunta executiva determinística,
+  // com 3 opções — NUNCA cita o texto do dev.
+  it('D72: sem perguntaExecutiva do modelo — pergunta executiva de RESERVA, nunca a pergunta crua do dev', async () => {
     const deps = depsFalso()
 
     await escalarDuvidaAoDono(
@@ -110,13 +120,62 @@ describe('escalarDuvidaAoDono — causa raiz medida 02/09 (destinoAposRa sem per
     const chamada = deps.agentQuestionService.ask.mock.calls[0] as unknown as [
       string,
       string,
-      { text: string },
+      { text: string; options: Array<{ label: string; value: string }> },
     ]
-    expect(chamada[2].text).toContain('tarefa #46 de acme/api')
-    expect(chamada[2].text).toContain('Should I use bcrypt or argon2?')
+    expect(chamada[2].text).toBe(
+      'O dev está travado numa dúvida técnica na tarefa #46 de acme/api e nem o RA conseguiu ' +
+        'resolver. O que fazer?'
+    )
+    expect(chamada[2].text).not.toContain('Should I use bcrypt or argon2?')
+    // 3 opções executivas + a 4ª "Outro" (D71: 3 objetivas + 1 aberta).
+    expect(chamada[2].options).toHaveLength(4)
+    expect(chamada[2].options.slice(0, 3).map((o) => o.label)).toEqual([
+      'Pausar a tarefa e revisar depois',
+      'Seguir com a melhor suposição do RA mesmo assim',
+      'Pedir ao dev que abra o PR com o que tem',
+    ])
   })
 
-  it('com perguntaExecutiva do modelo: usa ela, não o texto de reserva', async () => {
+  it('com perguntaExecutiva do modelo E exatamente 3 opções: usa a tradução do modelo, não a reserva', async () => {
+    const deps = depsFalso()
+
+    await escalarDuvidaAoDono(
+      {
+        destino: {
+          tipo: 'perguntar-ao-dono',
+          motivo: 'decisão de negócio',
+          perguntaExecutiva: 'Podemos cobrar taxa extra por esta feature?',
+          opcoes: [
+            { label: 'Sim', value: 'sim' },
+            { label: 'Não', value: 'nao' },
+            { label: 'Só para o plano Pro', value: 'so-pro' },
+          ],
+        },
+        ...ARGS_BASE,
+      },
+      deps as never
+    )
+
+    const chamada = deps.agentQuestionService.ask.mock.calls[0] as unknown as [
+      string,
+      string,
+      { text: string; options: Array<{ value: string }> },
+    ]
+    expect(chamada[2].text).toBe('Podemos cobrar taxa extra por esta feature?')
+    // as 3 opções do modelo + a 4ª "Outro" sempre presente (D71).
+    expect(chamada[2].options.map((o) => o.value)).toEqual([
+      'sim',
+      'nao',
+      'so-pro',
+      FREE_TEXT_OPTION_VALUE,
+    ])
+  })
+
+  // Correção pós-D72 (revisão): 1-2 opções do modelo AGORA são aproveitadas
+  // — o texto do modelo nunca é descartado por faltar opção; ele é
+  // COMPLETADO até 3 com a reserva. Descartar tudo (comportamento antigo)
+  // jogava fora uma pergunta executiva boa só por faltar 1 opção.
+  it('perguntaExecutiva do modelo com só 1 opção: mantém o texto do modelo, completa até 3 com a reserva', async () => {
     const deps = depsFalso()
 
     await escalarDuvidaAoDono(
@@ -135,12 +194,108 @@ describe('escalarDuvidaAoDono — causa raiz medida 02/09 (destinoAposRa sem per
     const chamada = deps.agentQuestionService.ask.mock.calls[0] as unknown as [
       string,
       string,
+      { text: string; options: Array<{ label: string; value: string }> },
+    ]
+    // O texto do modelo é PRESERVADO — não cai mais para a reserva.
+    expect(chamada[2].text).toBe('Podemos cobrar taxa extra por esta feature?')
+    // A opção do modelo entra primeiro, completada pela reserva até 3 + a livre.
+    expect(chamada[2].options.map((o) => o.value)).toEqual([
+      'sim',
+      'pausar',
+      'seguir-suposicao-ra',
+      FREE_TEXT_OPTION_VALUE,
+    ])
+  })
+
+  it('perguntaExecutiva do modelo com 2 opções: completa só a que falta', async () => {
+    const deps = depsFalso()
+
+    await escalarDuvidaAoDono(
+      {
+        destino: {
+          tipo: 'perguntar-ao-dono',
+          motivo: 'decisão de negócio',
+          perguntaExecutiva: 'Cobramos mensal ou anual?',
+          opcoes: [
+            { label: 'Mensal', value: 'mensal' },
+            { label: 'Anual', value: 'anual' },
+          ],
+        },
+        ...ARGS_BASE,
+      },
+      deps as never
+    )
+
+    const chamada = deps.agentQuestionService.ask.mock.calls[0] as unknown as [
+      string,
+      string,
       { text: string; options: Array<{ value: string }> },
     ]
-    expect(chamada[2].text).toBe('Podemos cobrar taxa extra por esta feature?')
-    // opções do modelo + a 4ª "Outro" sempre presente (D71: 3 objetivas + 1 aberta).
-    expect(chamada[2].options.map((o) => o.value)).toContain('sim')
-    expect(chamada[2].options.length).toBe(2)
+    expect(chamada[2].text).toBe('Cobramos mensal ou anual?')
+    expect(chamada[2].options.map((o) => o.value)).toEqual([
+      'mensal',
+      'anual',
+      'pausar',
+      FREE_TEXT_OPTION_VALUE,
+    ])
+  })
+
+  it('opção do modelo colide com uma da reserva (mesmo value): não duplica, pula para a próxima', async () => {
+    const deps = depsFalso()
+
+    await escalarDuvidaAoDono(
+      {
+        destino: {
+          tipo: 'perguntar-ao-dono',
+          motivo: 'decisão de negócio',
+          perguntaExecutiva: 'Seguimos com o plano atual?',
+          opcoes: [{ label: 'Pausar por enquanto', value: 'pausar' }],
+        },
+        ...ARGS_BASE,
+      },
+      deps as never
+    )
+
+    const chamada = deps.agentQuestionService.ask.mock.calls[0] as unknown as [
+      string,
+      string,
+      { options: Array<{ value: string }> },
+    ]
+    expect(chamada[2].options.map((o) => o.value)).toEqual([
+      'pausar',
+      'seguir-suposicao-ra',
+      'pedir-pr',
+      FREE_TEXT_OPTION_VALUE,
+    ])
+  })
+
+  it('perguntaExecutiva do modelo mas SEM nenhuma opção: cai para a reserva INTEIRA (texto e opções)', async () => {
+    const deps = depsFalso()
+
+    await escalarDuvidaAoDono(
+      {
+        destino: {
+          tipo: 'perguntar-ao-dono',
+          motivo: 'decisão de negócio',
+          perguntaExecutiva: 'Podemos cobrar taxa extra por esta feature?',
+          opcoes: [],
+        },
+        ...ARGS_BASE,
+      },
+      deps as never
+    )
+
+    const chamada = deps.agentQuestionService.ask.mock.calls[0] as unknown as [
+      string,
+      string,
+      { text: string; options: Array<{ label: string; value: string }> },
+    ]
+    expect(chamada[2].text).not.toBe('Podemos cobrar taxa extra por esta feature?')
+    expect(chamada[2].options.slice(0, 3).map((o) => o.label)).toEqual([
+      'Pausar a tarefa e revisar depois',
+      'Seguir com a melhor suposição do RA mesmo assim',
+      'Pedir ao dev que abra o PR com o que tem',
+    ])
   })
 
   /**
@@ -346,5 +501,40 @@ describe('escalarDuvidaAoDono — causa raiz medida 02/09 (destinoAposRa sem per
     expect(responderSessaoJules).not.toHaveBeenCalled()
     expect(deps.onError).toHaveBeenCalled()
     expect((deps.prisma as PrismaParaEscalarDuvida).devSession.update).not.toHaveBeenCalled()
+  })
+})
+
+describe('completarOpcoesAte3 — nunca duplica, sempre fecha em 3 (pura, sem mock)', () => {
+  it('já tem 3: devolve como está', () => {
+    const opcoes = [
+      { label: 'A', value: 'a' },
+      { label: 'B', value: 'b' },
+      { label: 'C', value: 'c' },
+    ]
+    expect(completarOpcoesAte3(opcoes)).toEqual(opcoes)
+  })
+
+  it('1 opção: completa com as 2 primeiras da reserva', () => {
+    expect(completarOpcoesAte3([{ label: 'Sim', value: 'sim' }])).toEqual([
+      { label: 'Sim', value: 'sim' },
+      { label: 'Pausar a tarefa e revisar depois', value: 'pausar' },
+      { label: 'Seguir com a melhor suposição do RA mesmo assim', value: 'seguir-suposicao-ra' },
+    ])
+  })
+
+  it('0 opções: devolve só a reserva (as 3 primeiras)', () => {
+    expect(completarOpcoesAte3([])).toEqual([
+      { label: 'Pausar a tarefa e revisar depois', value: 'pausar' },
+      { label: 'Seguir com a melhor suposição do RA mesmo assim', value: 'seguir-suposicao-ra' },
+      { label: 'Pedir ao dev que abra o PR com o que tem', value: 'pedir-pr' },
+    ])
+  })
+
+  it('colisão de value com a reserva: pula a opção que duplicaria', () => {
+    expect(completarOpcoesAte3([{ label: 'Pausar mesmo assim', value: 'pausar' }])).toEqual([
+      { label: 'Pausar mesmo assim', value: 'pausar' },
+      { label: 'Seguir com a melhor suposição do RA mesmo assim', value: 'seguir-suposicao-ra' },
+      { label: 'Pedir ao dev que abra o PR com o que tem', value: 'pedir-pr' },
+    ])
   })
 })

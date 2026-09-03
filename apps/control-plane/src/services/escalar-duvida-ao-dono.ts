@@ -5,7 +5,10 @@ import { registrarResposta, registrarEscalada } from './dev-session-store.js'
 import { marcarRespondida } from './pergunta-sem-resposta.js'
 import { buildFreeTextOption } from './telegram-bot.js'
 import { responderSessaoJules as responderSessaoJulesReal } from './jules-client.js'
-import { textoDeEscaladaParaODono } from './texto-de-escalada.js'
+import {
+  perguntaExecutivaDeReserva,
+  OPCOES_DE_RESERVA_DE_DUVIDA_TECNICA,
+} from './texto-de-escalada.js'
 import type { NotifiableProject } from './telegram-link.js'
 import { dedupKeyDeDuvidaDoDev } from './dedup-key-de-duvida.js'
 
@@ -59,6 +62,34 @@ export interface DepsDeEscalarDuvida {
  * respondida antes) entrega a resposta anterior direto ao dev, em vez de
  * fazer o dono decidir de novo a mesma coisa.
  */
+
+/**
+ * Completa as opções do MODELO até 3, usando a reserva determinística
+ * (`OPCOES_DE_RESERVA_DE_DUVIDA_TECNICA`) para preencher o que falta — nunca
+ * duplica `value` nem `label`.
+ *
+ * Existe porque a checagem anterior (`opcoesDoModelo.length === 3`) jogava
+ * fora o TEXTO INTEIRO de uma pergunta executiva boa só porque o modelo
+ * trouxe 1 ou 2 opções em vez de 3 — o dono perdia a pergunta de verdade e
+ * recebia a genérica de reserva por causa de uma opção faltando. D71/D72
+ * continuam intactos: o resultado aqui é SEMPRE exatamente 3 opções (a 4ª,
+ * "Outro", é sempre adicionada por quem chama `ask()` — nunca aqui).
+ */
+export function completarOpcoesAte3(
+  opcoesDoModelo: Array<{ label: string; value: string }>
+): Array<{ label: string; value: string }> {
+  if (opcoesDoModelo.length >= 3) return opcoesDoModelo.slice(0, 3)
+  const completas = [...opcoesDoModelo]
+  for (const opcaoDeReserva of OPCOES_DE_RESERVA_DE_DUVIDA_TECNICA) {
+    if (completas.length >= 3) break
+    const duplicada = completas.some(
+      (o) => o.value === opcaoDeReserva.value || o.label === opcaoDeReserva.label
+    )
+    if (!duplicada) completas.push(opcaoDeReserva)
+  }
+  return completas
+}
+
 export async function escalarDuvidaAoDono(
   args: {
     destino: DestinoDaDuvida
@@ -103,8 +134,8 @@ export async function escalarDuvidaAoDono(
 
   // D14: quando o modelo já traduziu a decisão de negócio em PT-BR
   // (`perguntaExecutiva`), usa ela. Senão — `destinoAposRa` NUNCA carrega
-  // este campo, e o próprio QA pode deixá-lo vazio de propósito — usa o
-  // texto de RESERVA determinístico, nunca um aviso de texto solto (D71).
+  // este campo, e o próprio QA pode deixá-lo vazio de propósito — usa a
+  // pergunta EXECUTIVA de reserva (determinística, D72).
   const perguntaExecutivaDoModelo =
     args.destino.tipo === 'perguntar-ao-dono' ? args.destino.perguntaExecutiva : undefined
   // C2 (fix-up L4-T3): D71 é "3 objetivas + 1 aberta" — SEMPRE. Sem este
@@ -113,13 +144,29 @@ export async function escalarDuvidaAoDono(
   const opcoesDoModelo = (
     args.destino.tipo === 'perguntar-ao-dono' ? (args.destino.opcoes ?? []) : []
   ).slice(0, 3)
-  const textoDaPergunta =
-    perguntaExecutivaDoModelo ??
-    textoDeEscaladaParaODono({
-      issueNumber: args.issueNumber,
-      repository: args.repository,
-      pergunta: args.pergunta,
-    })
+  // D72 (02/09): o dono flagrou ao vivo a pergunta CRUA do dev (em inglês)
+  // chegando com um botão só. Correção pós-D72 (revisão): a checagem
+  // anterior (`opcoesDoModelo.length === 3`) jogava fora o TEXTO INTEIRO do
+  // modelo sempre que ele trazia 1 ou 2 opções concretas — uma pergunta
+  // executiva boa virava a genérica de reserva só por faltar 1 opção. Agora:
+  // confia no texto do modelo sempre que ele veio (`perguntaExecutivaDoModelo`)
+  // junto de PELO MENOS 1 opção concreta, e COMPLETA até 3 com a reserva
+  // (nunca duplica value/label — `completarOpcoesAte3`). Só cai para a
+  // reserva INTEIRA (texto e opções) quando o modelo não trouxe texto
+  // nenhum, ou trouxe 0 opções.
+  const modeloTrouxeTraducaoValida = Boolean(perguntaExecutivaDoModelo) && opcoesDoModelo.length > 0
+  const { textoDaPergunta, opcoesReais } = modeloTrouxeTraducaoValida
+    ? {
+        textoDaPergunta: perguntaExecutivaDoModelo as string,
+        opcoesReais: completarOpcoesAte3(opcoesDoModelo),
+      }
+    : (() => {
+        const reserva = perguntaExecutivaDeReserva({
+          issueNumber: args.issueNumber,
+          repository: args.repository,
+        })
+        return { textoDaPergunta: reserva.text, opcoesReais: reserva.options }
+      })()
   // A2 (fix-up L4-T3): fonte ÚNICA do formato (dedup-key-de-duvida.ts) —
   // valida e lança cedo (nunca cria uma agent_question com dedupKey
   // quebrado que ninguém mais consegue casar de volta).
@@ -145,7 +192,7 @@ export async function escalarDuvidaAoDono(
       context: `Tarefa #${args.issueNumber} de ${args.repository} — o dev assíncrono está parado esperando esta decisão.`,
       // Objetivas (o modelo) + a aberta (sempre presente, determinística):
       // "3 objetivas + 1 aberta" é o formato que o dono sempre pede (D71).
-      options: [...opcoesDoModelo, buildFreeTextOption()],
+      options: [...opcoesReais, buildFreeTextOption()],
       dedupKey,
     })
   } catch (err) {

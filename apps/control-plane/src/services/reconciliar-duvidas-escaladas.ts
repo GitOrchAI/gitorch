@@ -2,10 +2,10 @@ import type { AgentQuestionService } from './agent-question.js'
 import type { PrismaDevSession } from './dev-session-store.js'
 import { registrarEscalada } from './dev-session-store.js'
 import { lerMarca } from './pergunta-sem-resposta.js'
-import { textoDeEscaladaParaODono } from './texto-de-escalada.js'
+import { perguntaExecutivaDeReserva } from './texto-de-escalada.js'
 import { buildFreeTextOption } from './telegram-bot.js'
-import { chaveDaSessaoDoDev, type PrismaParaChaveDoDev } from './chave-do-dev-assincrono.js'
-import { ultimaMensagemDoDevJules as ultimaMensagemDoDevJulesReal } from './jules-client.js'
+import type { PrismaParaChaveDoDev } from './chave-do-dev-assincrono.js'
+import type { ultimaMensagemDoDevJules as ultimaMensagemDoDevJulesReal } from './jules-client.js'
 import { dedupKeyDeDuvidaDoDev } from './dedup-key-de-duvida.js'
 
 export interface PrismaParaReconciliacao extends PrismaDevSession, PrismaParaChaveDoDev {
@@ -119,35 +119,24 @@ export async function reconciliarDuvidasEscaladasDoProjeto(
         where: { projectId: args.projectId, dedupKey },
       })
       if (!jaExiste) {
-        const apiKey = await chaveDaSessaoDoDev(
-          {
-            prisma: deps.prisma,
-            decifrar: deps.decifrar,
-            chaveDaInstancia: deps.julesApiKeyDaInstancia,
-            ...(deps.onWarn ? { onWarn: deps.onWarn } : {}),
-          },
-          sessao.sessionName
-        )
-        const buscarUltimaMensagem = deps.ultimaMensagemDoDevJules ?? ultimaMensagemDoDevJulesReal
-        // Best-effort: sem conseguir ler a última pergunta do dev, o texto
-        // de reserva genérico (sem a pergunta) ainda é uma pergunta de
-        // verdade — nunca deixa de escalar por causa disto.
-        const perguntaDoDev = await buscarUltimaMensagem({
-          apiKey,
-          sessionName: sessao.sessionName,
-          ...(deps.onWarn ? { onWarn: deps.onWarn } : {}),
-        }).catch(() => null)
-        const texto = textoDeEscaladaParaODono({
+        // D72 (02/09): a pergunta EXECUTIVA de reserva, determinística —
+        // NUNCA a mensagem crua do dev. Antes desta correção, este caminho
+        // buscava a última mensagem do dev (`ultimaMensagemDoDevJules`) e
+        // encaminhava ela ao dono via `textoDeEscaladaParaODono`, com um
+        // único botão "Outro" — exatamente o padrão que o dono flagrou ao
+        // vivo (painel/Telegram, tarefa #309 de GitOrchAI/gitorch): pergunta
+        // em inglês, sem opções de verdade. `chaveDaSessaoDoDev`/
+        // `ultimaMensagemDoDevJules` deixaram de ser necessários aqui.
+        const reserva = perguntaExecutivaDeReserva({
           issueNumber: sessao.issueNumber,
           repository: args.repository,
-          pergunta: perguntaDoDev,
         })
         await perguntador.ask(args.userId, args.projectId, {
-          text: texto,
+          text: reserva.text,
           context:
             `Tarefa #${sessao.issueNumber} de ${args.repository} — o dev assíncrono está parado ` +
             'esperando esta decisão (pergunta presa antes do conserto — L4-T3).',
-          options: [buildFreeTextOption()],
+          options: [...reserva.options, buildFreeTextOption()],
           dedupKey,
         })
         resumo.criadas += 1

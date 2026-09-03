@@ -232,16 +232,127 @@ export function destinoAposRa(resposta: string): DestinoDaDuvida {
 
 /**
  * ESTEIRA-T14 — config por projeto de quanto o dono quer ver no chat sobre
- * dúvidas do dev assíncrono (`runtimeConfig.perguntasAoDono`):
+ * dúvidas do dev assíncrono (`runtimeConfig.perguntasAoDono`).
  *
- * - `so-executivo` (default): só decisão de negócio real, ou o caso raro em
- *   que QA E RA tentaram e nenhum soube.
- * - `executivo-e-tecnico-bloqueante`: além disso, todo bloqueio técnico vai
- *   direto ao dono (pula o RA) — para quem quer o humano vendo todo travamento.
- * - `tudo`: mesmo comportamento de escalada de `executivo-e-tecnico-bloqueante`,
- *   e AINDA avisa o dono (sem bloquear nada) quando o QA respondeu sozinho —
- *   visibilidade total.
+ * D72 (02/09) mudou a regra de fundo: o RA SEMPRE responde primeiro, em
+ * QUALQUER política — nenhuma pergunta técnica crua chega ao dono sem antes
+ * passar por QA e RA. O que cada política controla agora é só a
+ * VISIBILIDADE de um bloqueio técnico já resolvido — nunca mais "pula o RA":
+ *
+ * - `so-executivo` (default): o dono só vê decisão de negócio real (ou o
+ *   caso raro em que QA E RA tentaram e nenhum soube) — nenhum aviso sobre
+ *   bloqueio técnico que o time resolveu sozinho.
+ * - `executivo-e-tecnico-bloqueante`: além da decisão de negócio, o dono é
+ *   AVISADO (nunca bloqueado — é aviso informativo, nunca uma pergunta)
+ *   toda vez que o time resolve um bloqueio técnico sozinho. É a política
+ *   que existe PARA ISSO: antes deste conserto ela tinha o mesmo efeito de
+ *   `so-executivo`, o que a esvaziava por completo.
+ * - `tudo`: mesmo aviso de `executivo-e-tecnico-bloqueante` — visibilidade
+ *   total de qualquer dúvida técnica que o time resolveu sozinho.
  */
+/**
+ * D72 (02/09) — o dono flagrou 4 "Esperando você" que NÃO eram perguntas: um
+ * relatório de conclusão do dev ("I have successfully modified the code and
+ * verified the tests are passing...", tarefa #309 de GitOrchAI/gitorch)
+ * tratado como dúvida técnica sem resposta. `responderDuvidaPendente`
+ * (scheduler.ts) lê a ÚLTIMA MENSAGEM de qualquer sessão AWAITING_USER_FEEDBACK
+ * e mandava direto para a missão de QA "responda esta pergunta" — mesmo
+ * quando não havia pergunta nenhuma. Sem este freio, o QA (e depois o RA)
+ * tentavam "responder" um não-pergunta, normalmente falhavam a ehRespostaUtil,
+ * e o caso acabava escalado ao dono, em inglês, sem opções.
+ *
+ * Roda ANTES das 3 portas de `destinoDaDuvida`/`destinoAposRa` (que não
+ * mudam) — intercepta o caso comum de a sessão não ter perguntado nada.
+ */
+export type ClassificacaoDaMensagemDoDev =
+  /** O dev avisou que terminou (ou fez progresso) — não perguntou nada. */
+  | 'relatorio-de-conclusao'
+  /** O dev está esperando aprovação de um plano — nunca decisão do dono. */
+  | 'pedido-de-aprovacao-de-plano'
+  /** Alguma coisa que de fato precisa de resposta. */
+  | 'pergunta'
+
+// Verbos/frases de conclusão — reconhecidos de propósito nos DOIS idiomas,
+// porque o dev assíncrono (Jules) escreve em inglês e o produto também fala
+// com o dono em português.
+const SINAIS_DE_RELATORIO_DE_CONCLUSAO = [
+  /\bsuccessfully\b/i,
+  /\btests?\s+(are|is|were)\s+passing\b/i,
+  /\b(i\s+have|i've)\s+(implemented|completed|finished|fixed|modified|verified)\b/i,
+  /\bimplementation\s+is\s+complete\b/i,
+  /\bready\s+for\s+review\b/i,
+  /\bimplementad[oa]s?\s+com\s+sucesso\b/i,
+  /\bconclu[ií]d[oa]\b/i,
+  /\bterminei\b/i,
+]
+
+// Só conta como pedido de aprovação de PLANO quando a linguagem é
+// explicitamente sobre aprovar/esperar aprovação — NUNCA por citar "plan"
+// de passagem (D72: o segundo print do dono citava "the plan" dentro de um
+// feedback de review, mas a pergunta de verdade era outra — confundir os
+// dois faria uma dúvida técnica real desaparecer sem resposta).
+const SINAIS_DE_PEDIDO_DE_APROVACAO_DE_PLANO = [
+  /\b(approve|approval)\s+(of\s+|the\s+)?(the\s+)?plan\b/i,
+  /\bplan\s+is\s+ready.{0,40}\bapproval\b/i,
+  /\bwaiting\s+for\s+(plan\s+)?approval\b/i,
+  /\bawaiting\s+(plan\s+)?approval\b/i,
+  /\baguardando\s+aprova[cç][aã]o\b/i,
+  /\baprovar\s+o\s+plano\b/i,
+]
+
+/**
+ * A mensagem do dev é de fato uma pergunta — ou é outra coisa (relatório de
+ * conclusão, pedido de aprovação de plano) que a missão de QA não devia nem
+ * tentar "responder"?
+ *
+ * Determinístico de propósito, como o resto deste arquivo: um relatório de
+ * conclusão com "?" no meio (ex.: "fiz X, devo fazer Y também?") CONTINUA
+ * pergunta — a presença de "?" nunca vira relatório.
+ */
+export function classificarMensagemDoDev(mensagem: string): ClassificacaoDaMensagemDoDev {
+  const texto = mensagem.trim()
+  if (SINAIS_DE_PEDIDO_DE_APROVACAO_DE_PLANO.some((padrao) => padrao.test(texto))) {
+    return 'pedido-de-aprovacao-de-plano'
+  }
+  const temInterrogacao = texto.includes('?')
+  if (!temInterrogacao && SINAIS_DE_RELATORIO_DE_CONCLUSAO.some((padrao) => padrao.test(texto))) {
+    return 'relatorio-de-conclusao'
+  }
+  return 'pergunta'
+}
+
+/**
+ * O texto que o dev recebe quando só avisou que terminou — nunca vira
+ * pergunta ao dono, nunca gasta um ciclo de QA/RA tentando "responder" um
+ * relatório. Pede a ação de processo que realmente destrava a tarefa: abrir/
+ * atualizar o PR.
+ */
+export function textoParaRelatorioDeConclusao(): string {
+  return [
+    'GitOrch (resposta automática):',
+    '',
+    'Entendido. Finalize a entrega: abra ou atualize o pull request desta tarefa e sinalize a ' +
+      'conclusão.',
+  ].join('\n')
+}
+
+/**
+ * O texto que o dev recebe quando parece estar esperando aprovação de plano
+ * dentro de uma sessão AWAITING_USER_FEEDBACK — a aprovação de verdade
+ * acontece pelo estado AWAITING_PLAN_APPROVAL (jules-session-loop.ts,
+ * automática, nunca passa pelo dono); isto aqui é só a instrução para o dev
+ * seguir sem acordar ninguém à toa.
+ */
+export function textoParaPedidoDeAprovacaoDePlano(): string {
+  return [
+    'GitOrch (resposta automática):',
+    '',
+    'Entendido. A aprovação do plano acontece automaticamente quando a sessão chega nesse ' +
+      'estado — continue o trabalho. Se ainda houver uma dúvida técnica real, descreva-a como ' +
+      'uma pergunta direta.',
+  ].join('\n')
+}
+
 export type PoliticaDePerguntasAoDono = 'so-executivo' | 'executivo-e-tecnico-bloqueante' | 'tudo'
 
 const POLITICAS_VALIDAS = new Set<PoliticaDePerguntasAoDono>([
@@ -258,6 +369,22 @@ export function resolvePoliticaDePerguntasAoDono(
   return POLITICAS_VALIDAS.has(valor as PoliticaDePerguntasAoDono)
     ? (valor as PoliticaDePerguntasAoDono)
     : 'so-executivo'
+}
+
+/**
+ * O dono é AVISADO (nunca bloqueado — o dev já foi respondido antes disto
+ * rodar) quando o QA/RA resolveu uma dúvida técnica sozinho?
+ *
+ * Depende só da política: o RA SEMPRE responde primeiro em qualquer uma
+ * delas (D72) — o que muda aqui é só quem fica sabendo depois.
+ *
+ * Defeito real (revisão pós-D72): o aviso só saía em `politica === 'tudo'`,
+ * então quem escolhia `executivo-e-tecnico-bloqueante` — a política que
+ * existe justamente para ver todo bloqueio técnico resolvido — não recebia
+ * nada, ficando idêntica a `so-executivo` na prática.
+ */
+export function devoAvisarDonoDeBloqueioResolvido(politica: PoliticaDePerguntasAoDono): boolean {
+  return politica !== 'so-executivo'
 }
 
 /**

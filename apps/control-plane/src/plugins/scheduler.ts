@@ -44,7 +44,21 @@ import { resolveMissionDelivery, type MissionPathKind } from '../services/missio
 import { ClientEnvironmentService } from '../services/environment.js'
 import { runPoMissionViaRails } from '../services/po-rails-mission.js'
 import { runRaMissionViaRails, runDuvidaTecnicaViaRa } from '../services/ra-rails-mission.js'
-import { resolvePoliticaDePerguntasAoDono } from '../services/duvida-do-dev.js'
+import {
+  resolvePoliticaDePerguntasAoDono,
+  devoAvisarDonoDeBloqueioResolvido,
+  classificarMensagemDoDev,
+  textoParaRelatorioDeConclusao,
+  textoParaPedidoDeAprovacaoDePlano,
+} from '../services/duvida-do-dev.js'
+import {
+  tentarSuposicaoImediata,
+  criarComentarNaIssue,
+} from '../services/suposicao-imediata-de-duvida.js'
+import {
+  reprocessarPerguntasSemOpcoesDoProjeto,
+  type PrismaAgentQuestionParaReprocessar,
+} from '../services/reprocessar-perguntas-sem-opcoes.js'
 import {
   runQaMissionViaRails,
   type VigiliaDoJulgamentoOptions,
@@ -3983,6 +3997,10 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                       execute,
                       contextBlocks,
                       runtimeConfig: project.runtimeConfig,
+                      // D72, item 2: mesma autonomia/token que `suporDuvidaPendente`
+                      // logo abaixo já usa para comentar na issue do cliente.
+                      autonomia: project.autonomia,
+                      githubToken: railsToken,
                     }).catch((err: unknown) =>
                       app.log.warn(
                         err,
@@ -3996,7 +4014,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                       projectId: project.id,
                       repository: project.wingId,
                       autonomia: project.autonomia,
-                      githubToken: railsToken as string,
+                      githubToken: railsToken,
                       execute,
                       contextBlocks,
                     }).catch((err: unknown) =>
@@ -7758,8 +7776,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     repository: string
     execute: StepExecutor
     contextBlocks: string[]
-    /** ESTEIRA-T14: runtimeConfig.perguntasAoDono decide se o RA tenta antes do dono. */
+    /** ESTEIRA-T14: runtimeConfig.perguntasAoDono decide o AVISO ao dono; D72: o RA sempre tenta primeiro. */
     runtimeConfig: unknown
+    /** D72, item 2: até onde o GitOrch pode ir no repositório do CLIENTE — necessário para comentar na issue quando a suposição imediata resolve. */
+    autonomia: string | null | undefined
+    /** `undefined` quando o projeto não tem credencial do GitHub — nunca um cast mentiroso: sem token, `criarComentarNaIssue` pula a chamada e loga, em vez de sair com "token undefined" no header. */
+    githubToken: string | undefined
   }): Promise<void> => {
     // TODAS as que esperam, não só a mais antiga.
     //
@@ -7873,6 +7895,57 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       // Outra acordada pegou esta: tenta a próxima em vez de desistir da vez.
       if (!minha) continue
 
+      // D72 (02/09): a mensagem do dev É uma pergunta? O dono flagrou ao
+      // vivo (painel/Telegram, tarefa #309 de GitOrchAI/gitorch) um
+      // relatório de conclusão ("I have successfully modified the code and
+      // verified the tests are passing...") sendo tratado como dúvida
+      // técnica sem resposta — sem este freio, a missão de QA abaixo
+      // tentava "responder" um não-pergunta, normalmente esgotava QA+RA, e
+      // o caso acabava escalado ao dono, em inglês. Roda ANTES de gastar
+      // qualquer ciclo de QA/RA.
+      const classificacao = classificarMensagemDoDev(pergunta)
+      if (classificacao !== 'pergunta') {
+        const textoDeRespostaDireta =
+          classificacao === 'relatorio-de-conclusao'
+            ? textoParaRelatorioDeConclusao()
+            : textoParaPedidoDeAprovacaoDePlano()
+        const saiuDireto = await responderSessaoJules({
+          apiKey,
+          sessionName: esperando.sessionName,
+          texto: textoDeRespostaDireta,
+          onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+        })
+        if (saiuDireto) {
+          await registrarResposta({
+            prisma: app.prisma as unknown as PrismaDevSession,
+            sessionName: esperando.sessionName,
+            hashDaPergunta: marcarRespondida(hashDaPergunta),
+            agora: new Date(),
+          }).catch((err: unknown) =>
+            app.log.warn(
+              err,
+              `[Scheduler] não deu para marcar a mensagem (${classificacao}) como respondida`
+            )
+          )
+        } else {
+          await devolverAReserva({
+            prisma: app.prisma as unknown as PrismaParaReserva,
+            sessionName: esperando.sessionName,
+            hashDaPergunta,
+            tentativa: decisao.tentativa,
+            marcaAnterior: esperando.answeredHash,
+            agora: new Date(),
+          }).catch(() => false)
+        }
+        app.log.info(
+          `[Scheduler] ${esperando.sessionName}: mensagem classificada como '${classificacao}' — ` +
+            (saiuDireto
+              ? 'respondida direto, sem gastar QA/RA/dono'
+              : 'não consegui entregar a resposta direta, tentativa devolvida')
+        )
+        return
+      }
+
       // Se quem falhar for o MOTOR, a tentativa é DEVOLVIDA. O dono recebeu
       // (26/08 21:49): "tentei responder 3 vezes sem conseguir" na tarefa #246 —
       // e as três mortes foram `Individual quota reached`, nenhuma tinha a ver
@@ -7907,60 +7980,93 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         return
       }
       let { destino, mensagemParaODev } = resultadoDaDuvida
-      // ESTEIRA-T14: o QA não conseguiu responder tecnicamente. Por padrão
-      // (so-executivo), o RA tenta ANTES de incomodar o dono — o dono não
-      // deveria ver uma pergunta técnica que o produto ainda nem tentou
-      // resolver a sério. As outras políticas pulam o RA de propósito (quem
-      // configurou quer o humano vendo todo bloqueio técnico na hora).
+      // D72 (02/09) — ordem explícita do dono: "não é pra fazer isso para
+      // dúvidas técnicas, seja executivo". O RA SEMPRE tenta antes do dono,
+      // para TODA política — antes, só 'so-executivo' chamava o RA;
+      // 'executivo-e-tecnico-bloqueante'/'tudo' pulavam ele de propósito e
+      // era exatamente esse pulo que deixava uma dúvida técnica crua chegar
+      // ao dono. As políticas continuam controlando só o AVISO (não
+      // bloqueante, política 'tudo') quando o QA/RA resolve sozinho.
       const politica = resolvePoliticaDePerguntasAoDono(args.runtimeConfig)
       let respostaVeioDoRa = false
       if (destino.tipo === 'escalar-ao-ra') {
-        if (politica === 'so-executivo') {
-          const resultadoRa = await runDuvidaTecnicaViaRa({
-            pergunta,
-            repository: args.repository,
-            issueNumber: esperando.issueNumber,
-            motivoDaEscalada: destino.motivo,
-            execute: args.execute,
-            contextBlocks: args.contextBlocks,
-          })
-          if (resultadoRa.aprendizadoParaGravar) {
-            // O acerto do RA vira aprendizado do QA — é o coração do T14: da
-            // próxima vez que o mesmo tema aparecer, o QA responde sozinho
-            // (blocoDeContextoDoJules já injeta estes aprendizados no prompt
-            // dele, sem nenhuma outra mudança de encanamento).
-            await registrarAprendizado({
-              prisma: app.prisma as unknown as PrismaEventoDoJules,
-              projectId: args.projectId,
-              aprendizado: {
-                padrao:
-                  `Pergunta técnica na issue #${esperando.issueNumber} — "` +
-                  `${pergunta.replace(/\s+/g, ' ').trim().slice(0, 160)}" -> resposta: ` +
-                  resultadoRa.aprendizadoParaGravar.replace(/\s+/g, ' ').trim().slice(0, 300),
-                origem: 'resposta-tecnica',
-                issueNumber: esperando.issueNumber,
-              },
-              onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
-            }).catch(() => undefined)
-          }
-          destino = resultadoRa.destino
-          mensagemParaODev = resultadoRa.mensagemParaODev
-          respostaVeioDoRa = true
-        } else {
-          // executivo-e-tecnico-bloqueante | tudo: pula o RA, o bloqueio
-          // técnico vai direto ao dono. Motivo PRÓPRIO desta política — o
-          // texto de destinoDaDuvida fala em "o RA tenta", e aqui o RA nunca
-          // chega a rodar; usar aquele motivo mentiria sobre o que aconteceu.
-          destino = {
-            tipo: 'perguntar-ao-dono',
-            motivo:
-              'é bloqueio técnico e a configuração deste projeto pede visibilidade imediata ' +
-              '(sem esperar o RA tentar).',
-          }
+        const resultadoRa = await runDuvidaTecnicaViaRa({
+          pergunta,
+          repository: args.repository,
+          issueNumber: esperando.issueNumber,
+          motivoDaEscalada: destino.motivo,
+          execute: args.execute,
+          contextBlocks: args.contextBlocks,
+        })
+        if (resultadoRa.aprendizadoParaGravar) {
+          // O acerto do RA vira aprendizado do QA — é o coração do T14: da
+          // próxima vez que o mesmo tema aparecer, o QA responde sozinho
+          // (blocoDeContextoDoJules já injeta estes aprendizados no prompt
+          // dele, sem nenhuma outra mudança de encanamento).
+          await registrarAprendizado({
+            prisma: app.prisma as unknown as PrismaEventoDoJules,
+            projectId: args.projectId,
+            aprendizado: {
+              padrao:
+                `Pergunta técnica na issue #${esperando.issueNumber} — "` +
+                `${pergunta.replace(/\s+/g, ' ').trim().slice(0, 160)}" -> resposta: ` +
+                resultadoRa.aprendizadoParaGravar.replace(/\s+/g, ' ').trim().slice(0, 300),
+              origem: 'resposta-tecnica',
+              issueNumber: esperando.issueNumber,
+            },
+            onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+          }).catch(() => undefined)
         }
+        destino = resultadoRa.destino
+        mensagemParaODev = resultadoRa.mensagemParaODev
+        respostaVeioDoRa = true
       }
 
       if (destino.tipo === 'perguntar-ao-dono' || !mensagemParaODev) {
+        // D72, item 2: antes de perguntar ao dono, tenta a suposição do RA
+        // JÁ — mesmo tique, mesmo `execute` — em vez de esperar até 24h em
+        // silêncio (supor-duvida-pendente.ts). Só quando a dúvida esgotou
+        // QA E RA (`respostaVeioDoRa`): uma decisão de negócio genuína
+        // (precisaDoDono direto do QA) nunca passa por suposição técnica —
+        // o RA não pode opinar sobre isso.
+        if (respostaVeioDoRa) {
+          const resolvidoPelaSuposicaoImediata = await tentarSuposicaoImediata(
+            {
+              pergunta,
+              repository: args.repository,
+              issueNumber: esperando.issueNumber,
+              execute: args.execute,
+              contextBlocks: args.contextBlocks,
+              apiKey,
+              sessionName: esperando.sessionName,
+              hashDaPergunta,
+            },
+            {
+              prisma: app.prisma as unknown as PrismaDevSession,
+              comentarNaIssue: criarComentarNaIssue({
+                fetchDoCliente: fetchDoRepositorio({ nivel: () => args.autonomia }),
+                repository: args.repository,
+                githubToken: args.githubToken,
+                onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+              }),
+              onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+            }
+          ).catch((err: unknown) => {
+            app.log.warn(
+              err,
+              `[Scheduler] tentarSuposicaoImediata falhou para a tarefa #${esperando.issueNumber} ` +
+                `de ${args.repository}`
+            )
+            return false
+          })
+          if (resolvidoPelaSuposicaoImediata) {
+            app.log.info(
+              `[Scheduler] a suposição imediata do RA resolveu a dúvida da tarefa ` +
+                `#${esperando.issueNumber} de ${args.repository} — o dono não foi incomodado`
+            )
+            return
+          }
+        }
         // L4-T3: a decisão e a escrita real (agent_question/escalada) vivem em
         // `services/escalar-duvida-ao-dono.ts` — extraído para ser testável
         // sem a máquina de missão/motor (ver o teste real de costura
@@ -7996,10 +8102,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         texto: mensagemParaODev,
         onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
       })
-      // ESTEIRA-T14, política 'tudo': visibilidade total — o dono também vê
-      // as dúvidas técnicas que o produto resolveu sozinho. NUNCA bloqueante:
-      // é aviso, o dev já foi respondido antes desta linha rodar.
-      if (saiu && politica === 'tudo') {
+      // ESTEIRA-T14/D72 (revisão pós-D72): política 'executivo-e-tecnico-
+      // bloqueante' OU 'tudo' avisam o dono quando o produto resolveu uma
+      // dúvida técnica sozinho. NUNCA bloqueante: é aviso, o dev já foi
+      // respondido antes desta linha rodar. Defeito real: antes só 'tudo'
+      // disparava o aviso — 'executivo-e-tecnico-bloqueante' (a política
+      // que existe PARA ISTO) ficava idêntica a 'so-executivo'.
+      if (saiu && devoAvisarDonoDeBloqueioResolvido(politica)) {
         const projetoParaAviso = await app.prisma.project.findUnique({
           where: { id: args.projectId },
         })
@@ -8077,7 +8186,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     repository: string
     /** Até onde o GitOrch pode ir no repositório do CLIENTE (guarda de autonomia). */
     autonomia: string | null | undefined
-    githubToken: string
+    /** `undefined` quando o projeto não tem credencial do GitHub — ver a mesma nota em `responderDuvidaPendente`. */
+    githubToken: string | undefined
     execute: StepExecutor
     contextBlocks: string[]
   }): Promise<void> => {
@@ -8101,27 +8211,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         chaveDaSessao,
         // MESMA BYOK de `reentregarAviso`/`responder` da vigia — sem
         // credencial nova.
-        comentarNaIssue: async ({ issueNumber, texto }) => {
-          const fetchDoCliente = fetchDoRepositorio({ nivel: () => args.autonomia })
-          const resp = await fetchDoCliente(
-            `https://api.github.com/repos/${args.repository}/issues/${issueNumber}/comments`,
-            {
-              method: 'POST',
-              headers: {
-                authorization: `token ${args.githubToken}`,
-                accept: 'application/vnd.github+json',
-                'content-type': 'application/json',
-                'user-agent': 'gitorch',
-              },
-              body: JSON.stringify({ body: texto }),
-            }
-          )
-          if (!resp.ok) {
-            throw new Error(
-              `comentarNaIssue: POST /repos/${args.repository}/issues/${issueNumber}/comments -> ${resp.status}`
-            )
-          }
-        },
+        comentarNaIssue: criarComentarNaIssue({
+          fetchDoCliente: fetchDoRepositorio({ nivel: () => args.autonomia }),
+          repository: args.repository,
+          githubToken: args.githubToken,
+          onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+        }),
         // C2 (fix-up 3): a busca de `questionId` a partir do dedupKey —
         // ABERTA mais recente, nunca uma linha indeterminada entre a
         // escalada e uma reconciliação por cima — e a checagem do retorno
@@ -10104,6 +10199,38 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           err,
           `[Scheduler] reconciliação de dúvidas escaladas falhou em ${projeto.wingId}`
         )
+      }
+
+      // D72 (02/09), item 5 — a LIMPEZA: as perguntas que o dono já
+      // flagrou AO VIVO no painel/Telegram, quebradas (menos de 4 opções),
+      // saem de "Esperando você" sem esperar ninguém clicar. Roda no MESMO
+      // relógio de `reconciliarDuvidasEscaladasDoProjeto` (todo tique, todo
+      // projeto ativo) — idempotente: depois da primeira passada não sobra
+      // nenhuma para reprocessar.
+      if (perguntador) {
+        try {
+          const resumoDoReprocessamento = await reprocessarPerguntasSemOpcoesDoProjeto(
+            { projectId: projeto.id },
+            {
+              prisma: app.prisma as unknown as PrismaAgentQuestionParaReprocessar,
+              marcarAssumida: (marcarArgs) => perguntador.marcarAssumida(marcarArgs),
+              onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+            }
+          )
+          if (resumoDoReprocessamento.encontradas > 0) {
+            app.log.info(
+              `[Scheduler] perguntas-sem-opcoes ${projeto.wingId}: ` +
+                `${resumoDoReprocessamento.encontradas} encontradas, ` +
+                `${resumoDoReprocessamento.reprocessadas} reprocessadas, ` +
+                `${resumoDoReprocessamento.falhas} falhas`
+            )
+          }
+        } catch (err) {
+          app.log.error(
+            err,
+            `[Scheduler] reprocessamento de perguntas sem opções falhou em ${projeto.wingId}`
+          )
+        }
       }
     }
   }
