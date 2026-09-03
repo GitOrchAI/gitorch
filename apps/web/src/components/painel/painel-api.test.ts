@@ -100,13 +100,38 @@ describe('responderDecisao', () => {
   })
   it('409 devolve a resposta que já veio pelo Telegram', async () => {
     const r = await responderDecisao('d1', 'Sim', {
-      fetchImpl: fetchQueRetorna(409, { answer: 'Não' }),
+      // control-plane sempre manda `code: 'JA_RESPONDIDA'` neste 409
+      // (routes/painel.ts) — é ISSO que o cliente usa para decidir a
+      // mensagem, nunca a presença do campo `answer`.
+      fetchImpl: fetchQueRetorna(409, { code: 'JA_RESPONDIDA', answer: 'Não' }),
     })
     expect(r).toEqual({
       ok: false,
       jaRespondida: 'Não',
       erro: 'Essa decisão já foi respondida pelo Telegram.',
     })
+  })
+  // Defeito da revisão: o 409 NOVO (control-plane não conseguiu registrar a
+  // resposta agora — `code: 'ERRO_AO_RESPONDER'`, sem campo `answer`) virava
+  // "Essa decisão já foi respondida pelo Telegram" na tela — o dono via
+  // "já respondida" quando na verdade a resposta dele nem foi salva. O
+  // cliente tem que distinguir os dois 409 pelo `code`, nunca pela presença
+  // do campo `answer`.
+  it('409 de falha ao registrar (code ERRO_AO_RESPONDER) NUNCA vira "já respondida"', async () => {
+    const r = await responderDecisao('d1', 'Sim', {
+      fetchImpl: fetchQueRetorna(409, {
+        code: 'ERRO_AO_RESPONDER',
+        error: 'Não deu para registrar sua resposta agora.',
+      }),
+    })
+    expect(r).toEqual({
+      ok: false,
+      erro: 'Não deu para registrar sua resposta agora. Tente de novo em instantes.',
+    })
+    expect(r).not.toHaveProperty('jaRespondida')
+    if (!r.ok) {
+      expect(r.erro).not.toMatch(/já foi respondida/i)
+    }
   })
   it('404 diz que a decisão sumiu', async () => {
     const r = await responderDecisao('d1', 'Sim', { fetchImpl: fetchQueRetorna(404, {}) })

@@ -743,6 +743,14 @@ export const painelRoutes = async (
         const causa = err instanceof Error ? err.message : String(err)
         app.log.warn(`[painel] responder decisão ${id} falhou: ${causa}`)
         return reply.code(409).send({
+          // Fix-up (revisão): antes deste `code`, os dois 409 desta rota
+          // eram indistinguíveis para quem só olhava o status — o de "já
+          // respondida" trazia `{code, answer, answeredVia, answeredAt}` e
+          // este trazia só `{error}`. O cliente (painel-api.ts) decide a
+          // mensagem pelo `code`, nunca pela presença de `answer` — sem
+          // isto, este 409 (falha real, resposta NÃO registrada) virava
+          // "já foi respondida" na tela.
+          code: 'ERRO_AO_RESPONDER',
           error:
             'Não deu para registrar sua resposta agora. Tente de novo em instantes — se continuar ' +
             'falhando, isto já está anotado para investigação.',

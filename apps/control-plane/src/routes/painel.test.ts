@@ -1837,6 +1837,12 @@ describe('Rotas do painel do owner', () => {
       expect(body.error.length).toBeGreaterThan(0)
       // Nunca jargão interno vazando pro dono na mensagem de erro.
       expect(body.error).not.toMatch(/sess[ãa]o|hash|AWAITING|dedupKey/i)
+      // Fix-up (revisão): os dois 409 desta rota (já respondida / falhou
+      // agora) tinham formatos incompatíveis — só o de "já respondida" tinha
+      // `code`. O cliente (painel-api.ts) decide a mensagem pelo `code`,
+      // nunca pela presença de `answer` — sem este `code` aqui, TODO 409
+      // (inclusive este, de falha real) virava "já respondida" na tela.
+      expect(body.code).toBe('ERRO_AO_RESPONDER')
       expect(avisos).toHaveBeenCalled()
       const logou = avisos.mock.calls.some((c) => String(c[0]).includes('projeto proj1'))
       expect(logou).toBe(true)

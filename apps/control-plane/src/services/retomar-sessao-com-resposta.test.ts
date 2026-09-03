@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from 'vitest'
-import { aoResponderDuvidaDoDev, type PrismaParaRetomada } from './retomar-sessao-com-resposta.js'
+import {
+  aoResponderDuvidaDoDev,
+  manipuladorDeResultadoDeRetomada,
+  AVISO_CORRECAO_SEM_SESSAO_VIVA,
+  type PrismaParaRetomada,
+} from './retomar-sessao-com-resposta.js'
 
 /**
  * L4-T3 (item 3): a resposta do DONO a uma dúvida escalada (agent_question
@@ -68,10 +73,17 @@ const ARGS_BASE = {
 }
 
 describe('aoResponderDuvidaDoDev', () => {
-  it('dedupKey de outro tipo (ex.: automacao:) NUNCA aciona nada', async () => {
+  // Fix-up (revisão): antes deste teste, os dois casos abaixo (dedupKey de
+  // outro assunto vs. dedupKey do assunto CERTO mas corrompido) devolviam o
+  // MESMO `{ entregue: false }` sem motivo — o chamador (plugins/telegram.ts)
+  // só sabe avisar o dono quando `motivo === 'sem-sessao-viva'`, então uma
+  // correção do dono numa pergunta com chave malformada sumia sem aviso
+  // nenhum, igualzinho ao caso "nem era meu assunto" (que É certo ficar em
+  // silêncio). Agora os dois têm motivo PRÓPRIO e distinto.
+  it('dedupKey de outro tipo (ex.: automacao:) NUNCA aciona nada — não é assunto deste manipulador (motivo nao-aplicavel)', async () => {
     const deps = depsFalso()
 
-    await aoResponderDuvidaDoDev(
+    const resultado = await aoResponderDuvidaDoDev(
       {
         dedupKey: 'automacao:acme/api:workflow-x',
         resposta: 'deletar',
@@ -84,12 +96,13 @@ describe('aoResponderDuvidaDoDev', () => {
 
     expect(deps.responderSessaoJules).not.toHaveBeenCalled()
     expect((deps.prisma as PrismaParaRetomada).devSession.findFirst).not.toHaveBeenCalled()
+    expect(resultado).toEqual({ entregue: false, motivo: 'nao-aplicavel' })
   })
 
-  it('dedupKey mal formado (sem hash) NUNCA aciona nada', async () => {
+  it('dedupKey COM o prefixo duvida-dev: mas malformado (issue não é número) NUNCA aciona nada — mas é falha DE VERDADE (motivo chave-malformada)', async () => {
     const deps = depsFalso()
 
-    await aoResponderDuvidaDoDev(
+    const resultado = await aoResponderDuvidaDoDev(
       {
         dedupKey: 'duvida-dev:acme/api:naoenumero:hash',
         resposta: 'sim',
@@ -99,6 +112,8 @@ describe('aoResponderDuvidaDoDev', () => {
       },
       deps as never
     )
+
+    expect(resultado).toEqual({ entregue: false, motivo: 'chave-malformada' })
 
     expect(deps.responderSessaoJules).not.toHaveBeenCalled()
   })
@@ -575,5 +590,41 @@ describe('aoResponderDuvidaDoDev', () => {
       ).rejects.toThrow(/sessão escalada não encontrada/)
       expect(deps.responderSessaoJules).not.toHaveBeenCalled()
     })
+  })
+})
+
+/**
+ * Fix-up (revisão) do defeito 5: `plugins/telegram.ts` registra
+ * `aoResponderDuvidaDoDev` (este arquivo) como o manipulador do prefixo
+ * `duvida-dev:` em `AgentQuestionService`, e precisa decidir o que FAZER com
+ * cada `ResultadoDeRetomada` — extraído aqui (em vez de ficar um `if` solto
+ * dentro do plugin Fastify) para ser testável sem montar app/prisma/telegram
+ * inteiros, mesmo padrão de `parseDedupKeyDeDuvidaDoDev`/`criarComentarNaIssue`.
+ *
+ * Contrato (doc de `ResultadoDoManipuladorDeResposta`, agent-question.ts):
+ * `aviso` só faz sentido numa resposta de SUCESSO; um manipulador que falha
+ * DE VERDADE continua lançando — nunca finge sucesso com um aviso.
+ */
+describe('manipuladorDeResultadoDeRetomada', () => {
+  it('entregue:true (caminho feliz) — nada a avisar', () => {
+    expect(manipuladorDeResultadoDeRetomada({ entregue: true })).toBeUndefined()
+  })
+
+  it('motivo sem-sessao-viva — sucesso durável, mas não entregue de imediato: aviso em português', () => {
+    expect(
+      manipuladorDeResultadoDeRetomada({ entregue: false, motivo: 'sem-sessao-viva' })
+    ).toEqual({ aviso: AVISO_CORRECAO_SEM_SESSAO_VIVA })
+  })
+
+  it('motivo nao-aplicavel — dedupKey nem era deste manipulador: silêncio, de propósito (nunca aviso)', () => {
+    expect(
+      manipuladorDeResultadoDeRetomada({ entregue: false, motivo: 'nao-aplicavel' })
+    ).toBeUndefined()
+  })
+
+  it('motivo chave-malformada — falha DE VERDADE: LANÇA (nunca devolve aviso fingindo sucesso)', () => {
+    expect(() =>
+      manipuladorDeResultadoDeRetomada({ entregue: false, motivo: 'chave-malformada' })
+    ).toThrow()
   })
 })

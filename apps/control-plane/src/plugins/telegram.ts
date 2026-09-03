@@ -34,7 +34,7 @@ import { fetchDoRepositorio } from '../services/guarda-de-autonomia.js'
 import { lerCredencialQueAlcancaOProjeto } from '../services/project-credential.js'
 import {
   aoResponderDuvidaDoDev as retomarSessaoComResposta,
-  AVISO_CORRECAO_SEM_SESSAO_VIVA,
+  manipuladorDeResultadoDeRetomada,
   type PrismaParaRetomada,
 } from '../services/retomar-sessao-com-resposta.js'
 import { criarComentarNaIssue } from '../services/suposicao-imediata-de-duvida.js'
@@ -63,6 +63,25 @@ import { ghJson } from '../services/github-json.js'
 const POLL_TIMEOUT_SEC = 30
 // Backoff quando o Telegram está fora / a rede caiu: não martelar a API.
 const ERROR_BACKOFF_MS = 15_000
+
+/**
+ * Fix-up (revisão, defeito 4): usado por `comentarNaIssue`
+ * (`aoResponderDuvidaDoDev`, abaixo) ANTES de montar a URL do GitHub —
+ * `criarComentarNaIssue` (suposicao-imediata-de-duvida.ts) recebe
+ * `repository: string` e confia cegamente nisso. O TypeScript garante que
+ * `wingId` é sempre `string` no schema (nunca opcional) — mas o valor real
+ * de um registro corrompido/legado pode chegar nulo ou vazio em tempo de
+ * execução, e sem checar isto aqui a chamada seguia para
+ * `https://api.github.com/repos/<vazio>/issues/...`: uma URL inválida que só
+ * estourava (404 confuso do GitHub) várias chamadas depois, longe de onde o
+ * dado já se mostrou ruim. Exportado para ser testável isoladamente (mesmo
+ * padrão de `criarComentarNaIssue`/`parseDedupKeyDeDuvidaDoDev`).
+ */
+export function projetoTemRepositorioValido(
+  projeto: { wingId?: string | null | undefined } | null | undefined
+): projeto is { wingId: string } {
+  return !!projeto && typeof projeto.wingId === 'string' && projeto.wingId.trim().length > 0
+}
 
 export const telegramPlugin = fp(async (app: FastifyInstance) => {
   const botToken = process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN']
@@ -228,6 +247,21 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
           )
           return
         }
+        // Fix-up (revisão, defeito 4): o código validava `!projeto` mas NUNCA
+        // `!projeto.wingId` — um projeto achado com o identificador do
+        // repositório nulo/vazio (registro corrompido/legado) seguia direto
+        // para `criarComentarNaIssue({ repository: projeto.wingId, ... })`,
+        // que monta `https://api.github.com/repos/<vazio ou null>/issues/...`
+        // — uma URL inválida que só estoura (erro confuso, 404 do GitHub)
+        // várias chamadas depois, em vez de um aviso claro aqui, no ponto
+        // onde o dado já se mostrou ruim.
+        if (!projetoTemRepositorioValido(projeto)) {
+          app.log.warn(
+            `[Telegram] correção do dono sem sessão viva: projeto ${args.projectId} sem ` +
+              `identificador de repositório (wingId) válido — pulei o comentário na issue #${issueNumber}`
+          )
+          return
+        }
         const token = await lerCredencialQueAlcancaOProjeto({
           prisma: app.prisma,
           projectId: args.projectId,
@@ -245,9 +279,17 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
       },
       onWarn: (m) => app.log.warn(`[Telegram] ${m}`),
     })
-    if (!resultado.entregue && resultado.motivo === 'sem-sessao-viva') {
-      return { aviso: AVISO_CORRECAO_SEM_SESSAO_VIVA }
-    }
+    // Fix-up (revisão, defeito 5): extraído para
+    // `manipuladorDeResultadoDeRetomada` (retomar-sessao-com-resposta.ts) —
+    // antes, este `if` só sabia avisar o dono para `motivo ===
+    // 'sem-sessao-viva'`; qualquer outro `{ entregue: false }` (incluindo o
+    // caso de chave malformada, que agora tem motivo próprio) caía direto
+    // no `return` implícito de sucesso, perdendo a correção do dono em
+    // silêncio. `manipuladorDeResultadoDeRetomada` LANÇA para
+    // 'chave-malformada' — a exceção sobe por aqui, mantém a pergunta
+    // `open` (agent-question.ts answer()) e o painel devolve 409
+    // (ERRO_AO_RESPONDER) em vez de fingir sucesso.
+    return manipuladorDeResultadoDeRetomada(resultado)
   }
 
   // C2 (fix-up L4-T5, CSO): a resposta do dono à escalada de "PR travado em

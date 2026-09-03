@@ -5,7 +5,16 @@ import { chaveDaSessaoDoDev, type PrismaParaChaveDoDev } from './chave-do-dev-as
 import { responderSessaoJules as responderSessaoJulesReal } from './jules-client.js'
 // A2 (fix-up L4-T3): fonte ÚNICA do formato `duvida-dev:<repo>:<issue>:<hash>`
 // — reexportado aqui para não quebrar quem já importa daqui.
-import { parseDedupKeyDeDuvidaDoDev, type DuvidaDevDedupKey } from './dedup-key-de-duvida.js'
+import {
+  parseDedupKeyDeDuvidaDoDev,
+  PREFIXO_DUVIDA_DEV,
+  type DuvidaDevDedupKey,
+} from './dedup-key-de-duvida.js'
+// Fix-up (revisão, defeito 5): só para o TIPO — `ResultadoDoManipuladorDeResposta`
+// é o que `manipuladorDeResultadoDeRetomada` (abaixo) devolve para o registro
+// de manipuladores de `agent-question.ts`. Import type-only: nenhum ciclo em
+// tempo de execução (agent-question.ts não importa nada deste arquivo).
+import type { ResultadoDoManipuladorDeResposta } from './agent-question.js'
 // L4-T21: MESMA sanitização que `processarRespostaDeAutomacao` já usa para
 // texto livre do dono antes de virar comentário PÚBLICO numa issue do
 // cliente (neutraliza @menção e /comando de ChatOps, cerca em bloco de
@@ -69,10 +78,26 @@ export interface DepsDeRetomada {
  * issue + a própria `agent_question` respondida por quem chama), mas o dev
  * só vai vê-la quando esta issue for delegada de novo — NUNCA finge que
  * entregou ao dev quando não entregou.
+ *
+ * Fix-up (revisão, defeito 5): `motivo` ganhou dois valores novos para o
+ * caso em que a própria CHAVE (`dedupKey`) não dá para parsear — antes os
+ * dois casos abaixo devolviam o MESMO `{ entregue: false }` sem motivo, e
+ * quem chama (`manipuladorDeResultadoDeRetomada`, abaixo) só sabia avisar o
+ * dono quando o motivo era `'sem-sessao-viva'`: uma correção do dono numa
+ * pergunta com chave malformada sumia sem NENHUM aviso.
+ *   - `'nao-aplicavel'`: o `dedupKey` nem começa com `duvida-dev:` — este
+ *     manipulador simplesmente não é o dono do assunto (dedupKey de outro
+ *     tipo, ex.: `automacao:`). Ficar em silêncio aqui é o CERTO — não é
+ *     falha nenhuma.
+ *   - `'chave-malformada'`: o `dedupKey` TEM o prefixo `duvida-dev:` mas o
+ *     resto não parseia (`parseDedupKeyDeDuvidaDoDev` devolveu `null`) — a
+ *     `agent_question` tem uma chave corrompida. Isto É falha de verdade:
+ *     `manipuladorDeResultadoDeRetomada` lança para este motivo, nunca
+ *     finge sucesso com um aviso.
  */
 export interface ResultadoDeRetomada {
   entregue: boolean
-  motivo?: 'sem-sessao-viva'
+  motivo?: 'sem-sessao-viva' | 'nao-aplicavel' | 'chave-malformada'
 }
 
 /**
@@ -154,7 +179,16 @@ export async function aoResponderDuvidaDoDev(
   deps: DepsDeRetomada
 ): Promise<ResultadoDeRetomada> {
   const parsed = parseDedupKeyDeDuvidaDoDev(args.dedupKey)
-  if (!parsed) return { entregue: false }
+  if (!parsed) {
+    // Fix-up (revisão, defeito 5): os dois `null` de `parseDedupKeyDeDuvidaDoDev`
+    // (sem o prefixo vs. com o prefixo mas malformado) não são a MESMA coisa
+    // — distinguir aqui, ANTES de qualquer efeito colateral (nenhuma query
+    // roda em nenhum dos dois ramos, igual a antes).
+    if (!args.dedupKey.startsWith(PREFIXO_DUVIDA_DEV)) {
+      return { entregue: false, motivo: 'nao-aplicavel' }
+    }
+    return { entregue: false, motivo: 'chave-malformada' }
+  }
   const ehCorrecaoDeSuposicao = args.statusAnterior === 'assumida'
 
   // S1 (fix-up 2, CSO — CRÍTICO, cross-tenant): NUNCA resolve o projeto por
@@ -339,4 +373,46 @@ export async function aoResponderDuvidaDoDev(
   })
 
   return { entregue: true }
+}
+
+/**
+ * Fix-up (revisão, defeito 5): `plugins/telegram.ts` registra
+ * `aoResponderDuvidaDoDev` (acima) como o `executar` do manipulador do
+ * prefixo `duvida-dev:` em `AgentQuestionService` — e precisa decidir o que
+ * FAZER com cada `ResultadoDeRetomada`. Extraído aqui (em vez de um `if`
+ * solto dentro do plugin Fastify) para ser testável sem montar
+ * app/prisma/telegram inteiros, mesmo padrão de
+ * `parseDedupKeyDeDuvidaDoDev`/`criarComentarNaIssue`.
+ *
+ * Contrato de `ResultadoDoManipuladorDeResposta` (agent-question.ts):
+ * `aviso` só faz sentido numa resposta de SUCESSO — um manipulador que falha
+ * DE VERDADE continua LANÇANDO, nunca devolvendo aviso (senão finge sucesso
+ * e `answer()` marca a pergunta `answered` mesmo a correção do dono tendo
+ * se perdido).
+ *
+ *   - `entregue: true` (caminho feliz) — nada a devolver.
+ *   - `motivo: 'sem-sessao-viva'` — sucesso durável, só não entregue de
+ *     imediato: aviso em português (`AVISO_CORRECAO_SEM_SESSAO_VIVA`).
+ *   - `motivo: 'nao-aplicavel'` — o dedupKey nem era assunto deste
+ *     manipulador; silêncio, DE PROPÓSITO (nunca gera aviso).
+ *   - `motivo: 'chave-malformada'` — falha de verdade (a `agent_question`
+ *     tem uma chave corrompida): lança, para `agent-question.ts answer()`
+ *     manter a pergunta `open` e o painel devolver 409 (`ERRO_AO_RESPONDER`,
+ *     routes/painel.ts) em vez de fingir sucesso e a correção do dono sumir
+ *     sem nenhum aviso.
+ */
+export function manipuladorDeResultadoDeRetomada(
+  resultado: ResultadoDeRetomada
+): ResultadoDoManipuladorDeResposta | void {
+  if (resultado.entregue) return
+  if (resultado.motivo === 'sem-sessao-viva') {
+    return { aviso: AVISO_CORRECAO_SEM_SESSAO_VIVA }
+  }
+  if (resultado.motivo === 'chave-malformada') {
+    throw new Error(
+      'aoResponderDuvidaDoDev: dedupKey da pergunta tem o prefixo duvida-dev: mas está ' +
+        'malformado — a correção do dono não pôde ser interpretada, pergunta continua open'
+    )
+  }
+  // 'nao-aplicavel' (ou um motivo futuro desconhecido): silêncio, de propósito.
 }
