@@ -31,6 +31,20 @@ import { schedulerPlugin } from './scheduler.js'
 // `suporDuvidaPendente` roda — e NUNCA fecha a sessão dizendo "já foi
 // respondida" (mentira: ninguém respondeu, é o dono quem decide).
 //
+// FIX-UP 2 (D64/L4-T3/L4-T4, task a13a42f8-2953-4259-b41f-3f8cddb304cd):
+// este arquivo isolava o watchdog de abandono (`devolverVagasDeSessaoAbandonada`
+// / `sessao-abandonada.ts`) do restante do tique, devolvendo `[]` para a
+// consulta GLOBAL dele — porque, sem o conserto, esse watchdog fechava
+// qualquer AWAITING_USER_FEEDBACK parada há 12h+ como `abandoned`, e a
+// sessão escalada deste teste (25h parada) seria uma delas: o teste provaria
+// o disparo da missão e, ao mesmo tempo, esconderia que a MESMA sessão seria
+// fechada por um watchdog vizinho — o achado real do executor anterior. O
+// conserto (`sessao-abandonada.ts`: `AWAITING_USER_FEEDBACK` com marca
+// `escalada:` pausa o relógio de abandono) já está no ar, então o
+// isolamento SAIU: a consulta global agora recebe os MESMOS dados reais, e
+// é o comportamento de produção — não mais um mock — que garante a sessão
+// escalada sobrevivendo ao tique inteiro.
+//
 // Mesma costura real dos outros arquivos `*-real-seam`
 // (`scheduler-vigia-pre-merge-real-seam.test.ts`): `mission.count` devolve
 // um valor acima do teto para forçar `busy` em `runTrigger` — o disparo já
@@ -117,14 +131,18 @@ function buildFakePrisma(sessoesDoProjeto: unknown[]) {
           if (args?.distinct) return [{ projectId: PROJETO.id }]
           // `devolverVagasDeSessaoAbandonada` (dev-session-store.ts
           // `linhasVivasParaJulgarAbandono`) roda a CADA tique, GLOBAL (sem
-          // `projectId` no `where`), e reclama a vaga de QUALQUER sessão
-          // parada há 12h+ em `AWAITING_USER_FEEDBACK` — inclusive a escalada
-          // que este arquivo testa (25h > 12h). É um watchdog DIFERENTE,
-          // sem relação com L4-T4/D64 (achado à parte, reportado fora deste
-          // teste): aqui ele é neutralizado (`[]`) para isolar exatamente o
-          // que este arquivo prova — o disparo da vigia de dúvida pendente —
-          // sem o resultado depender de um sweep de vaga completamente alheio.
-          if (args?.where && !('projectId' in args.where)) return []
+          // `projectId` no `where`), e antes do conserto reclamava a vaga de
+          // QUALQUER sessão parada há 12h+ em `AWAITING_USER_FEEDBACK` —
+          // inclusive a escalada que este arquivo testa (25h > 12h). SEM
+          // isolamento agora: a mesma sessão real (`sessoesDoProjeto`) é
+          // devolvida também para esta consulta global — é o conserto de
+          // `sessao-abandonada.ts` (escalada: pausa o relógio) que garante
+          // ela não ser fechada, não mais um mock que escondia o watchdog.
+          // A varredura do CICLO TERMINAL (`linhasVivasParaCicloTerminal`)
+          // usa a MESMA forma de `where` (`{ closedAt: null }`, sem
+          // `projectId`) e cai neste mesmo ramo — inofensivo aqui porque ela
+          // filtra por `ehTerminal(state)` antes de tocar a linha, e a
+          // sessão deste teste está em AWAITING_USER_FEEDBACK.
           return sessoesDoProjeto
         }
       ),

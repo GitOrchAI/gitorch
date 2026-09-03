@@ -113,6 +113,46 @@ describe('sessoesAbandonadas', () => {
     }
   )
 
+  // D64 (deriva do dono) + L4-T3 (escalada:) + L4-T4 (fix-up
+  // a13a42f8-2953-4259-b41f-3f8cddb304cd): a dúvida escalada ao dono tem que
+  // SOBREVIVER às 24h para a suposição do RA disparar — 24h > 12h do teto de
+  // abandono, então sem esta exceção o watchdog fechava a sessão antes.
+  it('AWAITING escalada ao dono NÃO é abandonada mesmo muito além do limite de 12h (D64/L4-T3/L4-T4)', () => {
+    const escalada = linha({
+      state: 'AWAITING_USER_FEEDBACK',
+      answeredHash: 'escalada:0:abc123',
+      lastProgressAt: new Date(AGORA.getTime() - 25 * HORA),
+    })
+    expect(sessoesAbandonadas({ linhas: [escalada], agora: AGORA })).toEqual([])
+  })
+
+  it('AWAITING sem marca de escalada continua com a regra de 12h de sempre', () => {
+    const semMarca = linha({
+      state: 'AWAITING_USER_FEEDBACK',
+      answeredHash: null,
+      lastProgressAt: new Date(AGORA.getTime() - 13 * HORA),
+    })
+    expect(sessoesAbandonadas({ linhas: [semMarca], agora: AGORA })).toHaveLength(1)
+  })
+
+  it('AWAITING com marca "respondida" (não escalada) continua com a regra de 12h de sempre', () => {
+    const respondida = linha({
+      state: 'AWAITING_USER_FEEDBACK',
+      answeredHash: 'respondida:0:abc123',
+      lastProgressAt: new Date(AGORA.getTime() - 13 * HORA),
+    })
+    expect(sessoesAbandonadas({ linhas: [respondida], agora: AGORA })).toHaveLength(1)
+  })
+
+  it('IN_PROGRESS não ganha a exceção mesmo com marca "escalada:" residual — só AWAITING_USER_FEEDBACK pausa o relógio', () => {
+    const emProgresso = linha({
+      state: 'IN_PROGRESS',
+      answeredHash: 'escalada:0:abc123',
+      lastProgressAt: new Date(AGORA.getTime() - 13 * HORA),
+    })
+    expect(sessoesAbandonadas({ linhas: [emProgresso], agora: AGORA })).toHaveLength(1)
+  })
+
   it('o teto corta a varredura, para nada fechar em massa sem ninguém ver', () => {
     const muitas = Array.from({ length: TETO_POR_VARREDURA + 10 }, (_, i) =>
       linha({
