@@ -34,6 +34,16 @@ export interface AgentQuestionRecord {
   telegramMessageId: number | null
   createdAt: Date
   updatedAt: Date
+  /**
+   * L4-T21: aviso EFÊMERO em português, NUNCA persistido (não é coluna do
+   * banco — não existe em `schema.prisma`). Só `answer()` preenche isto no
+   * objeto que devolve, quando o `ManipuladorDeResposta` da ação registrou
+   * a decisão do dono de forma durável mas não conseguiu ENTREGÁ-LA de
+   * imediato (ex.: correção de uma suposição sem sessão viva do dev —
+   * `retomar-sessao-com-resposta.ts`). O painel usa isto para responder com
+   * SUCESSO + um aviso claro, em vez de 500 ou de fingir silêncio.
+   */
+  avisoDoManipulador?: string
 }
 
 export interface AskInput {
@@ -131,6 +141,21 @@ export interface ManipuladorDeRespostaArgs {
 }
 
 /**
+ * L4-T21: o que um `ManipuladorDeResposta` pode devolver além de `void` (o
+ * caso comum, sem nada a dizer). `aviso` é texto em português, para um
+ * leitor NÃO TÉCNICO — nunca "sessão"/"hash"/"AWAITING" — que `answer()`
+ * repassa no objeto que devolve (`AgentQuestionRecord.avisoDoManipulador`,
+ * nunca persistido) quando a ação foi registrada de forma durável mas não
+ * pôde ser ENTREGUE de imediato (ex.: `retomar-sessao-com-resposta.ts`,
+ * correção de suposição sem sessão viva do dev). Só faz sentido numa
+ * resposta de SUCESSO — um manipulador que falha de verdade continua
+ * lançando, nunca devolvendo `aviso`.
+ */
+export interface ResultadoDoManipuladorDeResposta {
+  aviso?: string
+}
+
+/**
  * Uma entrada do registro: `prefixo` é comparado com `dedupKey.startsWith(...)`
  * na ORDEM da lista — a primeira que casar é a única que executa (mesmo
  * dedupKey nunca pertence a duas ações ao mesmo tempo, mas a ordem importa
@@ -141,7 +166,7 @@ export interface ManipuladorDeRespostaArgs {
  */
 export interface ManipuladorDeResposta {
   prefixo: string
-  executar: (args: ManipuladorDeRespostaArgs) => Promise<void>
+  executar: (args: ManipuladorDeRespostaArgs) => Promise<ResultadoDoManipuladorDeResposta | void>
 }
 
 export interface AgentQuestionServiceDeps {
@@ -295,9 +320,15 @@ export class AgentQuestionService {
     const manipulador = existing.dedupKey
       ? this.deps.manipuladoresDeResposta?.find((m) => existing.dedupKey!.startsWith(m.prefixo))
       : undefined
+    // L4-T21: aviso OPCIONAL que o manipulador devolve quando a ação foi
+    // registrada de forma durável mas não pôde ser entregue de imediato
+    // (ex.: correção de suposição sem sessão viva — ver
+    // `ResultadoDoManipuladorDeResposta`). `undefined` é o caso comum (o
+    // manipulador não devolve nada, ou nem existe).
+    let avisoDoManipulador: string | undefined
     if (manipulador) {
       try {
-        await manipulador.executar({
+        const resultado = await manipulador.executar({
           dedupKey: existing.dedupKey!,
           resposta: value,
           projectId: existing.projectId,
@@ -311,6 +342,7 @@ export class AgentQuestionService {
           // manipulador jamais saberia que está numa correção de suposição.
           statusAnterior: existing.status,
         })
+        avisoDoManipulador = resultado?.aviso
       } catch (err) {
         const mensagem = err instanceof Error ? err.message : String(err)
         this.deps.onError?.(
@@ -327,6 +359,12 @@ export class AgentQuestionService {
       data: { answer: value, answeredAt: now, answeredVia: via, status: 'answered' },
     })
     const question = updated as unknown as AgentQuestionRecord
+    // EFÊMERO — nunca gravado no `update` acima (não é coluna do banco); só
+    // anexado no objeto que `answer()` devolve, para quem chamou decidir o
+    // que fazer com o aviso (ex.: `routes/painel.ts`).
+    if (avisoDoManipulador) {
+      question.avisoDoManipulador = avisoDoManipulador
+    }
 
     // A resposta vira CONFIGURAÇÃO do projeto, não só uma linha na tabela de
     // dúvidas (D49). Sem isto o produto perguntava "como este projeto vai ao

@@ -727,7 +727,27 @@ export const painelRoutes = async (
         })
       }
 
-      const atualizada = await answer(id, resposta, 'panel')
+      // L4-T21 — defeito medido em produção (issue #309, 02/09 21:07 UTC):
+      // o dono corrigiu a suposição do RA duas vezes e levou HTTP 500 nas
+      // duas — `answer()` (via o manipulador `duvida-dev:`,
+      // `retomar-sessao-com-resposta.ts`) lançava quando não achava nenhuma
+      // sessão viva do dev, e nada aqui tratava a falha. Uma falha do
+      // manipulador NUNCA mais vira 500: vira 409 com uma frase em
+      // português para o dono (nunca jargão interno — "sessão"/"hash"/
+      // "AWAITING"), e a causa REAL vai pro log via `app.log.warn` (nunca
+      // escondida — só não é isto que o dono lê).
+      let atualizada
+      try {
+        atualizada = await answer(id, resposta, 'panel')
+      } catch (err) {
+        const causa = err instanceof Error ? err.message : String(err)
+        app.log.warn(`[painel] responder decisão ${id} falhou: ${causa}`)
+        return reply.code(409).send({
+          error:
+            'Não deu para registrar sua resposta agora. Tente de novo em instantes — se continuar ' +
+            'falhando, isto já está anotado para investigação.',
+        })
+      }
       if (!atualizada) {
         // Corrida rara: sumiu entre o findUnique e o answer.
         return reply.code(404).send({ error: 'Decisão não encontrada.' })
@@ -740,6 +760,13 @@ export const painelRoutes = async (
         answer: atualizada.answer,
         answeredAt: isoOuNulo(atualizada.answeredAt),
         answeredVia: atualizada.answeredVia,
+        // L4-T21: quando o manipulador registrou a ação de forma durável
+        // mas não conseguiu entregá-la de imediato (ex.: correção de
+        // suposição sem sessão viva do dev), `answer()` devolve este aviso
+        // em português (`AgentQuestionRecord.avisoDoManipulador`, EFÊMERO —
+        // nunca persistido). Ausente no caminho feliz comum — o corpo
+        // continua idêntico a hoje.
+        ...(atualizada.avisoDoManipulador ? { aviso: atualizada.avisoDoManipulador } : {}),
       })
     }
   )

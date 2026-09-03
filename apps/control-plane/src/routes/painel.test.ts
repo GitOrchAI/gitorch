@@ -1810,6 +1810,89 @@ describe('Rotas do painel do owner', () => {
       )
       expect((await responder({ resposta: 'x' })).statusCode).toBe(404)
     })
+
+    // L4-T21 — defeito medido em produção (issue #309, 02/09 21:07 UTC): o
+    // dono clicou para corrigir a suposição do RA e recebeu HTTP 500 duas
+    // vezes porque `answer()` (via o manipulador `duvida-dev:`) LANÇAVA sem
+    // sessão viva do dev. A rota nunca pode devolver 500 por uma falha do
+    // manipulador — vira 409 com mensagem em português, e a causa real vai
+    // pro log via `app.log.warn` (nunca escondida, só não exposta ao dono
+    // como jargão técnico).
+    test('manipulador de resposta falha → 409 com mensagem em português (nunca 500), e loga a causa real', async () => {
+      const causaReal = new Error(
+        'aoResponderDuvidaDoDev: projeto proj1 (userId user1) não encontrado (dedupKey duvida-dev:acme/api:46:hash123)'
+      )
+      const answerImpl = vi.fn().mockRejectedValue(causaReal)
+      await build(
+        fakePrisma({ agentQuestion: { findUnique: vi.fn().mockResolvedValue(pergunta()) } }),
+        { answerImpl }
+      )
+      const avisos = vi.spyOn(app.log, 'warn')
+
+      const res = await responder({ resposta: 'Junto' })
+
+      expect(res.statusCode).toBe(409)
+      const body = res.json()
+      expect(typeof body.error).toBe('string')
+      expect(body.error.length).toBeGreaterThan(0)
+      // Nunca jargão interno vazando pro dono na mensagem de erro.
+      expect(body.error).not.toMatch(/sess[ãa]o|hash|AWAITING|dedupKey/i)
+      expect(avisos).toHaveBeenCalled()
+      const logou = avisos.mock.calls.some((c) => String(c[0]).includes('projeto proj1'))
+      expect(logou).toBe(true)
+    })
+
+    // Item 2 do defeito: quando a correção do dono FOI registrada de forma
+    // durável (comentário na issue + a própria agent_question respondida)
+    // mas não havia sessão viva do dev para entregá-la de imediato, a
+    // resposta ao dono continua SUCESSO — só com um aviso em português,
+    // sem jargão técnico, que `AgentQuestionService.answer()` propaga via
+    // `avisoDoManipulador` (agent-question.ts).
+    test('correção registrada sem sessão viva do dev → 200 com aviso claro em português, sem jargão técnico', async () => {
+      const aviso =
+        'Sua orientação foi guardada e será entregue ao dev quando esta tarefa voltar a ser trabalhada.'
+      const answerImpl = vi.fn().mockResolvedValue({
+        id: 'd1',
+        answer: 'nao',
+        answeredAt: new Date('2026-09-02T21:07:00Z'),
+        answeredVia: 'panel',
+        status: 'answered',
+        avisoDoManipulador: aviso,
+      })
+      await build(
+        fakePrisma({
+          agentQuestion: {
+            findUnique: vi.fn().mockResolvedValue(pergunta({ status: 'assumida' })),
+          },
+        }),
+        { answerImpl }
+      )
+
+      const res = await responder({ resposta: 'nao' })
+
+      expect(res.statusCode).toBe(200)
+      const body = res.json()
+      expect(body).toMatchObject({ status: 'answered', answer: 'nao', answeredVia: 'panel' })
+      expect(body.aviso).toBe(aviso)
+      expect(body.aviso).not.toMatch(/sess[ãa]o|hash|AWAITING/i)
+    })
+
+    test('sem avisoDoManipulador (caminho feliz comum) → resposta 200 SEM campo aviso', async () => {
+      const answerImpl = vi.fn().mockResolvedValue({
+        id: 'd1',
+        answer: 'Junto',
+        answeredAt: new Date('2026-08-27T12:00:00Z'),
+        answeredVia: 'panel',
+        status: 'answered',
+      })
+      await build(
+        fakePrisma({ agentQuestion: { findUnique: vi.fn().mockResolvedValue(pergunta()) } }),
+        { answerImpl }
+      )
+      const res = await responder({ resposta: 'Junto' })
+      expect(res.statusCode).toBe(200)
+      expect(res.json()).not.toHaveProperty('aviso')
+    })
   })
 
   // ESTEIRA-T14 — config por projeto de quanto o dono quer ver sobre dúvidas

@@ -1096,6 +1096,76 @@ describe('A1: manipuladoresDeResposta — registro de manipuladores por prefixo'
     expect(primeiro).toHaveBeenCalledOnce()
     expect(segundo).not.toHaveBeenCalled()
   })
+
+  // L4-T21 — defeito medido em produção (issue #309, 02/09 21:07 UTC): a
+  // correção do dono para uma suposição do RA sem sessão viva do dev
+  // (`retomar-sessao-com-resposta.ts`, ramo `ehCorrecaoDeSuposicao`) não
+  // pode mais LANÇAR — em vez disso o manipulador devolve um `aviso` em
+  // português para o painel/Telegram explicarem que a orientação foi
+  // guardada. `answer()` precisa propagar esse aviso no objeto que devolve
+  // (efêmero — nunca persistido na coluna real do banco).
+  test('L4-T21: manipulador devolve { aviso } → answer() propaga avisoDoManipulador, sem persistir no banco', async () => {
+    const prisma = fakePrisma()
+    prisma.projects.set('p1', { id: 'p1', wingId: 'acme/api' } as any)
+    prisma.questions.set('q_1', {
+      id: 'q_1',
+      projectId: 'p1',
+      userId: 'u1',
+      text: 'x',
+      dedupKey: 'duvida-dev:acme/api:46:hash123',
+      status: 'assumida',
+      options: [],
+      answer: null,
+      answeredAt: null,
+      answeredVia: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const aviso =
+      'Sua orientação foi guardada e será entregue ao dev quando esta tarefa voltar a ser trabalhada.'
+    const manipulador = vi.fn(async () => ({ aviso }))
+    const svc = new AgentQuestionService(prisma as any, {
+      manipuladoresDeResposta: [{ prefixo: 'duvida-dev:', executar: manipulador }],
+    })
+
+    const result = await svc.answer('q_1', 'nao', 'panel')
+
+    expect(result?.status).toBe('answered')
+    expect(result?.avisoDoManipulador).toBe(aviso)
+    // Nunca persistido: a CHAMADA ao update() do Prisma (o que de fato vira
+    // SQL) não carrega `avisoDoManipulador` — só é anexado no objeto que
+    // `answer()` devolve, depois do update já ter acontecido.
+    const chamadaDeUpdate = (prisma.agentQuestion.update as any).mock.calls[0][0]
+    expect(chamadaDeUpdate.data).not.toHaveProperty('avisoDoManipulador')
+  })
+
+  test('L4-T21: manipulador SEM aviso (retorno void, o comum) → avisoDoManipulador fica undefined', async () => {
+    const prisma = fakePrisma()
+    prisma.projects.set('p1', { id: 'p1', wingId: 'acme/api' } as any)
+    prisma.questions.set('q_1', {
+      id: 'q_1',
+      projectId: 'p1',
+      userId: 'u1',
+      text: 'x',
+      dedupKey: 'duvida-dev:acme/api:46:hash123',
+      status: 'open',
+      options: [],
+      answer: null,
+      answeredAt: null,
+      answeredVia: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const manipulador = vi.fn(async () => undefined)
+    const svc = new AgentQuestionService(prisma as any, {
+      manipuladoresDeResposta: [{ prefixo: 'duvida-dev:', executar: manipulador }],
+    })
+
+    const result = await svc.answer('q_1', 'sim', 'panel')
+
+    expect(result?.status).toBe('answered')
+    expect(result?.avisoDoManipulador).toBeUndefined()
+  })
 })
 
 // L4-T4 (D64): o RA formou uma suposição para uma dúvida ESCALADA que o dono

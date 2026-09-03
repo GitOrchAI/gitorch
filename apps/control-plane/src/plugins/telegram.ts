@@ -22,7 +22,11 @@ import {
   resolveDonoDoChat,
   telegramBotUsername,
 } from '../services/telegram-link.js'
-import { AgentQuestionService, type AgentQuestionRecord } from '../services/agent-question.js'
+import {
+  AgentQuestionService,
+  type AgentQuestionRecord,
+  type ResultadoDoManipuladorDeResposta,
+} from '../services/agent-question.js'
 import { pipelineCheckEnabled, type PipelineErrorMetadata } from '../config/pipeline-check.js'
 import { traduzirErroParaUsuario, type SetupErrorCode } from '../lib/setup-errors.js'
 import { processarRespostaDeAutomacao } from '../services/decisao-de-automacao.js'
@@ -30,8 +34,10 @@ import { fetchDoRepositorio } from '../services/guarda-de-autonomia.js'
 import { lerCredencialQueAlcancaOProjeto } from '../services/project-credential.js'
 import {
   aoResponderDuvidaDoDev as retomarSessaoComResposta,
+  AVISO_CORRECAO_SEM_SESSAO_VIVA,
   type PrismaParaRetomada,
 } from '../services/retomar-sessao-com-resposta.js'
+import { criarComentarNaIssue } from '../services/suposicao-imediata-de-duvida.js'
 import { decryptCredential } from '../lib/credential-crypto.js'
 import {
   aoResponderRetomadaTravada,
@@ -184,7 +190,7 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
   // manda a mensagem pelo mesmo caminho de produção do Jules. Mesma
   // disciplina do gancho de automação acima: o logger é o INJETADO
   // (`app.log`), nunca `console.warn`.
-  const aoResponderDuvidaDoDev = (args: {
+  const aoResponderDuvidaDoDev = async (args: {
     dedupKey: string
     resposta: string
     // S1 (fix-up 2, CSO): repassados direto da agent_question — nunca
@@ -196,13 +202,53 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
     // direto para `retomarSessaoComResposta` — `assumida` significa que o
     // dono está corrigindo uma suposição do RA já entregue ao dev.
     statusAnterior?: string
-  }): Promise<void> =>
-    retomarSessaoComResposta(args, {
+  }): Promise<ResultadoDoManipuladorDeResposta | void> => {
+    const resultado = await retomarSessaoComResposta(args, {
       prisma: app.prisma as unknown as PrismaParaRetomada,
       decifrar: decryptCredential,
       julesApiKeyDaInstancia: process.env['JULES_API_KEY'],
+      // L4-T21 — defeito medido em produção (issue #309, 02/09 21:07 UTC):
+      // correção do dono numa suposição sem sessão viva do dev não pode
+      // mais se perder. Construído PREGUIÇOSAMENTE (só quando
+      // `retomar-sessao-com-resposta.ts` realmente precisa comentar — o
+      // caminho feliz, de longe o mais comum, nunca paga o custo desta
+      // segunda consulta de projeto/credencial). MESMO padrão de
+      // `aoResponderRetomadaTravadaHandler` logo abaixo: credencial do
+      // repositório guardada pela autonomia do projeto, nunca um `fetch`
+      // cru.
+      comentarNaIssue: async ({ issueNumber, texto }) => {
+        const projeto = await app.prisma.project.findUnique({
+          where: { id: args.projectId },
+          select: { wingId: true, userId: true, encryptedClientToken: true, autonomia: true },
+        })
+        if (!projeto) {
+          app.log.warn(
+            `[Telegram] correção do dono sem sessão viva: projeto ${args.projectId} não encontrado ` +
+              `para comentar na issue #${issueNumber}`
+          )
+          return
+        }
+        const token = await lerCredencialQueAlcancaOProjeto({
+          prisma: app.prisma,
+          projectId: args.projectId,
+          userId: projeto.userId,
+          engineConnections: app.engineConnections,
+          encryptedClientTokenJaLido: projeto.encryptedClientToken,
+        })
+        const fetchImpl = fetchDoRepositorio({ nivel: () => projeto.autonomia })
+        await criarComentarNaIssue({
+          fetchDoCliente: fetchImpl,
+          repository: projeto.wingId,
+          githubToken: token ?? undefined,
+          onWarn: (m) => app.log.warn(`[Telegram] ${m}`),
+        })({ issueNumber, texto })
+      },
       onWarn: (m) => app.log.warn(`[Telegram] ${m}`),
     })
+    if (!resultado.entregue && resultado.motivo === 'sem-sessao-viva') {
+      return { aviso: AVISO_CORRECAO_SEM_SESSAO_VIVA }
+    }
+  }
 
   // C2 (fix-up L4-T5, CSO): a resposta do dono à escalada de "PR travado em
   // retomada" (dedupKey `retomada-travada:<repo>:<pr>`,

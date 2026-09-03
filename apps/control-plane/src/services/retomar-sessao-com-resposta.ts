@@ -6,6 +6,12 @@ import { responderSessaoJules as responderSessaoJulesReal } from './jules-client
 // A2 (fix-up L4-T3): fonte ÚNICA do formato `duvida-dev:<repo>:<issue>:<hash>`
 // — reexportado aqui para não quebrar quem já importa daqui.
 import { parseDedupKeyDeDuvidaDoDev, type DuvidaDevDedupKey } from './dedup-key-de-duvida.js'
+// L4-T21: MESMA sanitização que `processarRespostaDeAutomacao` já usa para
+// texto livre do dono antes de virar comentário PÚBLICO numa issue do
+// cliente (neutraliza @menção e /comando de ChatOps, cerca em bloco de
+// citação) — a correção do dono, quando não há sessão viva para entregá-la
+// ao dev, vira exatamente esse tipo de comentário.
+import { sanitizarRespostaLivre } from './decisao-de-automacao.js'
 
 export { parseDedupKeyDeDuvidaDoDev, type DuvidaDevDedupKey }
 
@@ -29,7 +35,55 @@ export interface DepsDeRetomada {
   julesApiKeyDaInstancia: string | undefined
   responderSessaoJules?: typeof responderSessaoJulesReal
   onWarn?: (mensagem: string) => void
+  /**
+   * L4-T21 — defeito medido em produção (issue GitOrchAI/gitorch#309,
+   * 02/09 21:07 UTC): a varredura `reprocessar-perguntas-sem-opcoes.ts`
+   * marcou perguntas antigas como `assumida`, mas a sessão do dev que
+   * recebeu a suposição do RA já tinha morrido — a correção do dono
+   * (`ehCorrecaoDeSuposicao`) não achava nenhuma sessão viva pelo hash e
+   * `throw`ava, virando HTTP 500 no painel (`routes/painel.ts`) e perdendo
+   * a correção (a `agent_question` nunca virava `answered`).
+   *
+   * Comenta na issue do repositório do CLIENTE quando isso acontece —
+   * MESMO contrato de `supor-duvida-pendente.ts`/
+   * `suposicao-imediata-de-duvida.ts`: sempre pelo fetch guardado pela
+   * autonomia do projeto (nunca um `fetch` cru; produção passa
+   * `criarComentarNaIssue`, decisao-de-automacao.ts). BEST-EFFORT do lado
+   * de quem chama esta função: a correção do dono JÁ fica durável só por
+   * `answer()` gravar `answer`/`status: 'answered'` na própria
+   * `agent_question` (quem chama `aoResponderDuvidaDoDev` faz isso
+   * INDEPENDENTE do resultado, contanto que esta função não lance) — o
+   * comentário na issue é só a segunda metade da rastreabilidade (ligar a
+   * orientação à PRÓXIMA delegação daquela issue). Sem este dep configurado
+   * (ou se ele falhar), avisa pelo `onWarn` e segue — NUNCA lança.
+   */
+  comentarNaIssue?: (args: { issueNumber: number; texto: string }) => Promise<void>
 }
+
+/**
+ * L4-T21: o resultado da correção/decisão do dono. `entregue: true` é o
+ * caminho feliz de sempre (sessão viva encontrada e respondida — nenhuma
+ * mudança de comportamento). `entregue: false` só acontece na correção de
+ * uma suposição (`statusAnterior: 'assumida'`) sem NENHUMA sessão viva
+ * esperando: a correção foi registrada de forma durável (comentário na
+ * issue + a própria `agent_question` respondida por quem chama), mas o dev
+ * só vai vê-la quando esta issue for delegada de novo — NUNCA finge que
+ * entregou ao dev quando não entregou.
+ */
+export interface ResultadoDeRetomada {
+  entregue: boolean
+  motivo?: 'sem-sessao-viva'
+}
+
+/**
+ * L4-T21: o aviso em português (leitor NÃO TÉCNICO — nunca "sessão"/"hash"/
+ * "AWAITING") que quem chama `aoResponderDuvidaDoDev` (produção:
+ * `plugins/telegram.ts`) devolve como `ResultadoDoManipuladorDeResposta.aviso`
+ * quando `resultado.motivo === 'sem-sessao-viva'` — fonte ÚNICA do texto,
+ * para o painel e o Telegram nunca divergirem na palavra.
+ */
+export const AVISO_CORRECAO_SEM_SESSAO_VIVA =
+  'Sua orientação foi guardada e será entregue ao dev quando esta tarefa voltar a ser trabalhada.'
 
 /** Acha a LABEL da opção escolhida (botão do Telegram/painel); sem bater
  *  com nenhuma (resposta livre — D71, "Outro"), usa o texto cru. */
@@ -98,9 +152,9 @@ export async function aoResponderDuvidaDoDev(
     statusAnterior?: string
   },
   deps: DepsDeRetomada
-): Promise<void> {
+): Promise<ResultadoDeRetomada> {
   const parsed = parseDedupKeyDeDuvidaDoDev(args.dedupKey)
-  if (!parsed) return
+  if (!parsed) return { entregue: false }
   const ehCorrecaoDeSuposicao = args.statusAnterior === 'assumida'
 
   // S1 (fix-up 2, CSO — CRÍTICO, cross-tenant): NUNCA resolve o projeto por
@@ -151,10 +205,53 @@ export async function aoResponderDuvidaDoDev(
     })
     sessao = candidatas.find((s) => lerMarca(s.answeredHash)?.hash === parsed.hash) ?? null
     if (!sessao) {
-      throw new Error(
-        `aoResponderDuvidaDoDev: sessão da suposição não encontrada para ${parsed.repository}#${parsed.issueNumber} ` +
-          `(projeto ${args.projectId}, hash ${parsed.hash}) — a correção do dono não foi entregue, a pergunta continua assumida`
+      // L4-T21 — defeito medido em produção (issue #309, 02/09 21:07 UTC):
+      // a sessão que recebeu a suposição do RA já morreu quando o dono
+      // corrige. Isto NÃO É mais um erro que perde a correção do dono — o
+      // dono clicou, e a orientação dele NUNCA pode desaparecer. Em vez de
+      // lançar (o que virava HTTP 500 no painel e a pergunta ficava presa
+      // em `assumida` para sempre, sem NENHUM registro da correção):
+      //   1. Comenta na issue do repositório do CLIENTE — best-effort,
+      //      pelo helper GUARDADO pela autonomia (nunca um `fetch` cru),
+      //      igual a `supor-duvida-pendente.ts`/
+      //      `suposicao-imediata-de-duvida.ts`. Sem este dep configurado,
+      //      ou se ele falhar, só avisa — nunca lança.
+      //   2. Devolve `{ entregue: false, motivo: 'sem-sessao-viva' }` —
+      //      quem chama (`answer()`, agent-question.ts) NÃO trata isto como
+      //      falha do manipulador: grava `answer`/`status: 'answered'` na
+      //      própria `agent_question` normalmente. É ESSE registro (mais o
+      //      comentário na issue, ligado à issue) que torna a correção
+      //      DURÁVEL — nenhum mecanismo hoje reinjeta `agent_question` na
+      //      próxima delegação (sm-delegation.ts/fila-de-delegacao.ts não
+      //      leem esta tabela), então o comentário público na issue é o elo
+      //      concreto que a próxima rodada de trabalho enxerga.
+      const textoDaCorrecao = sanitizarRespostaLivre(
+        textoDaRespostaParaODev(args.resposta, args.opcoes)
       )
+      const contexto = `${parsed.repository}#${parsed.issueNumber} (projeto ${args.projectId}, hash ${parsed.hash})`
+      if (deps.comentarNaIssue && textoDaCorrecao) {
+        try {
+          await deps.comentarNaIssue({
+            issueNumber: parsed.issueNumber,
+            texto:
+              'GitOrch: o dono corrigiu a suposição anterior do RA para esta issue:\n\n' +
+              `${textoDaCorrecao}\n\n` +
+              'Nenhuma sessão do dev assíncrono estava viva agora para receber esta correção ' +
+              'imediatamente — ela será usada quando este trabalho for retomado.',
+          })
+        } catch (err) {
+          deps.onWarn?.(
+            `aoResponderDuvidaDoDev: correção do dono para ${contexto} ficou registrada só na ` +
+              `agent_question — não consegui comentar na issue: ${err instanceof Error ? err.message : String(err)}`
+          )
+        }
+      } else {
+        deps.onWarn?.(
+          `aoResponderDuvidaDoDev: correção do dono para ${contexto} sem sessão viva do dev — ` +
+            'registrada só na agent_question (comentarNaIssue ausente ou resposta vazia)'
+        )
+      }
+      return { entregue: false, motivo: 'sem-sessao-viva' }
     }
   } else {
     // Primeiro tenta a sessão com o hash EXATO desta pergunta (a marca
@@ -240,4 +337,6 @@ export async function aoResponderDuvidaDoDev(
     hashDaPergunta: marcarRespondida(parsed.hash),
     agora: new Date(),
   })
+
+  return { entregue: true }
 }

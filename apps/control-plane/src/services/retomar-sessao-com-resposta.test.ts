@@ -106,8 +106,12 @@ describe('aoResponderDuvidaDoDev', () => {
   it('sucesso: retoma a sessão com a LABEL da opção escolhida + "Decisão do dono." e marca respondida', async () => {
     const deps = depsFalso()
 
-    await aoResponderDuvidaDoDev(ARGS_BASE, deps as never)
+    const resultado = await aoResponderDuvidaDoDev(ARGS_BASE, deps as never)
 
+    // L4-T21: o caminho feliz continua devolvendo `entregue: true` — a
+    // correção do dono passa a devolver um RESULTADO em vez de void, mas o
+    // caminho feliz (sessão viva encontrada) nunca muda de comportamento.
+    expect(resultado).toEqual({ entregue: true })
     expect(deps.responderSessaoJules).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionName: 'sessions/1',
@@ -472,7 +476,18 @@ describe('aoResponderDuvidaDoDev', () => {
       )
     })
 
-    it('nenhuma sessão com o hash desta pergunta (em NENHUMA situação de marca): LANÇA — nunca adivinha, a pergunta continua assumida', async () => {
+    // L4-T21 — defeito medido em produção (21:07 UTC, issue #309): o dono
+    // corrigiu a suposição do RA, a sessão do dev já tinha morrido, e o
+    // manipulador LANÇAVA — a rota devolvia HTTP 500 e a correção do dono
+    // se perdia (a `agent_question` nunca virava `answered`, o clique dele
+    // não valeu nada). A partir de agora: NUNCA lança neste ramo — registra
+    // a correção de forma durável (comentário na issue, pelo helper
+    // guardado pela autonomia) e devolve `{ entregue: false, motivo:
+    // 'sem-sessao-viva' }`. Quem chama (`answer()`, agent-question.ts)
+    // segue e grava a resposta na própria `agent_question` — é ISSO que
+    // torna a correção durável mesmo sem sessão viva (nunca finge que
+    // entregou ao dev).
+    it('nenhuma sessão viva com o hash desta pergunta: NUNCA lança — comenta na issue e devolve entregue:false/motivo sem-sessao-viva', async () => {
       const sessaoDeOutraPergunta = {
         ...SESSAO,
         sessionName: 'sessions/outra-pergunta',
@@ -485,12 +500,63 @@ describe('aoResponderDuvidaDoDev', () => {
           update: vi.fn(async () => undefined),
         } as never,
       })
-      const deps = depsFalso({ prisma })
+      const comentarNaIssue = vi.fn(async () => undefined)
+      const deps = depsFalso({ prisma, comentarNaIssue })
 
-      await expect(
-        aoResponderDuvidaDoDev({ ...ARGS_BASE, statusAnterior: 'assumida' }, deps as never)
-      ).rejects.toThrow(/acme\/api#46/)
+      const resultado = await aoResponderDuvidaDoDev(
+        { ...ARGS_BASE, statusAnterior: 'assumida' },
+        deps as never
+      )
+
+      expect(resultado).toEqual({ entregue: false, motivo: 'sem-sessao-viva' })
       expect(deps.responderSessaoJules).not.toHaveBeenCalled()
+      expect(comentarNaIssue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          issueNumber: 46,
+          texto: expect.stringContaining('Sim, pode cobrar'),
+        })
+      )
+    })
+
+    it('sem comentarNaIssue configurado: ainda assim NUNCA lança — avisa pelo onWarn e devolve entregue:false', async () => {
+      const prisma = prismaFalso({
+        devSession: {
+          findFirst: vi.fn(async () => null),
+          findMany: vi.fn(async () => []),
+          update: vi.fn(async () => undefined),
+        } as never,
+      })
+      const deps = depsFalso({ prisma, comentarNaIssue: undefined })
+
+      const resultado = await aoResponderDuvidaDoDev(
+        { ...ARGS_BASE, statusAnterior: 'assumida' },
+        deps as never
+      )
+
+      expect(resultado).toEqual({ entregue: false, motivo: 'sem-sessao-viva' })
+      expect(deps.onWarn).toHaveBeenCalledWith(expect.stringContaining('acme/api#46'))
+    })
+
+    it('comentarNaIssue falha (issue apagada, rede fora): best-effort — ainda assim devolve entregue:false, nunca lança', async () => {
+      const prisma = prismaFalso({
+        devSession: {
+          findFirst: vi.fn(async () => null),
+          findMany: vi.fn(async () => []),
+          update: vi.fn(async () => undefined),
+        } as never,
+      })
+      const comentarNaIssue = vi.fn(async () => {
+        throw new Error('GitHub 404')
+      })
+      const deps = depsFalso({ prisma, comentarNaIssue })
+
+      const resultado = await aoResponderDuvidaDoDev(
+        { ...ARGS_BASE, statusAnterior: 'assumida' },
+        deps as never
+      )
+
+      expect(resultado).toEqual({ entregue: false, motivo: 'sem-sessao-viva' })
+      expect(deps.onWarn).toHaveBeenCalledWith(expect.stringContaining('GitHub 404'))
     })
 
     it('regressão: com statusAnterior "open" (fluxo comum), uma sessão só com marca "respondida:" (sem nenhuma "escalada:") NUNCA é encontrada — prova que os dois fluxos de busca são mesmo diferentes', async () => {
