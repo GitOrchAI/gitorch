@@ -206,6 +206,35 @@ describe('runPoMissionViaRails', () => {
     expect(milestone?.body).toEqual({ milestone: 7 })
   })
 
+  // L4-T2 (D63): uma proposta ao dono (`gitorch:proposal`) não é um
+  // incidente triável — o PO nem deve tentar, ela não pede prioridade, pede
+  // decisão do dono.
+  it('a busca de incidentes exclui gitorch:proposal (D63 — proposta não é incidente)', async () => {
+    const buscas: string[] = []
+    const f = (async (url: Parameters<typeof fetch>[0]) => {
+      const u = String(url)
+      const json = (d: unknown) => new Response(JSON.stringify(d), { status: 200 })
+      if (u.includes('/search/issues')) {
+        buscas.push(u)
+        return json({ items: [] })
+      }
+      if (u.includes('/issues?labels=wishlist')) return json([])
+      return json({})
+    }) as typeof fetch
+
+    await runPoMissionViaRails({
+      repository: 'o/r',
+      board: 'o/9',
+      githubToken: 't',
+      contextBlocks: [],
+      fetchImpl: f,
+      execute: async () => '{}',
+    })
+
+    expect(buscas).toHaveLength(1)
+    expect(decodeURIComponent(buscas[0]!)).toContain('-label:gitorch:proposal')
+  })
+
   it('incidente NÃO liberado: só prioridade e racional, sem furar a sprint', async () => {
     const actions: Array<{ url: string; body?: unknown }> = []
     const f = (async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {

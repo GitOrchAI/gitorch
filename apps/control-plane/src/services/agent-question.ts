@@ -55,11 +55,24 @@ export interface AskResult {
  */
 export type NotifyFn = (question: AgentQuestionRecord) => Promise<void>
 
+/** L4-T2 (D63): a resposta a uma dúvida de decisão de automação
+ *  (`dedupKey` começando com `automacao:`) vira ação — deletar via PR,
+ *  reajustar para incidente normal, manter e fechar, ou só registrar texto
+ *  livre. Best-effort por contrato: nunca desfaz o `answer` já gravado. */
+export type AoResponderAutomacaoFn = (args: {
+  dedupKey: string
+  context: string | null
+  resposta: string
+  projectId: string
+  autonomia: string | null | undefined
+}) => Promise<void>
+
 export interface AgentQuestionServiceDeps {
   notify?: NotifyFn
   /** Grava a decisão respondida na memória de longo prazo (Cortex) — best-effort. */
   cortex?: CortexWriter
   now?: () => Date
+  aoResponderAutomacao?: AoResponderAutomacaoFn
 }
 
 /**
@@ -220,6 +233,36 @@ export class AgentQuestionService {
         // conteúdo da decisão.
         console.warn(
           '[agent-question] gravação no Cortex falhou (best-effort, answer já gravado)',
+          {
+            questionId,
+            error: err instanceof Error ? err.message : String(err),
+          }
+        )
+      }
+    }
+
+    // L4-T2 (D63): dúvida de decisão de automação — a resposta vira ação
+    // (deletar/reajustar/manter/texto livre). Best-effort, como o Cortex
+    // logo acima: uma falha aqui NUNCA desfaz o `answer`, que já está
+    // gravado no banco. `AgentQuestionService` não sabe nada de GitHub/PR —
+    // só reconhece o prefixo do dedupKey e delega para a função injetada
+    // (produção: `processarRespostaDeAutomacao`, decisao-de-automacao.ts).
+    if (existing.dedupKey?.startsWith('automacao:') && this.deps.aoResponderAutomacao) {
+      try {
+        const projeto = await this.prisma.project.findUnique({
+          where: { id: existing.projectId },
+          select: { autonomia: true },
+        })
+        await this.deps.aoResponderAutomacao({
+          dedupKey: existing.dedupKey,
+          context: existing.context,
+          resposta: value,
+          projectId: existing.projectId,
+          autonomia: (projeto as { autonomia?: string | null } | null)?.autonomia,
+        })
+      } catch (err) {
+        console.warn(
+          '[agent-question] decisão de automação falhou (best-effort, answer já gravado)',
           {
             questionId,
             error: err instanceof Error ? err.message : String(err),

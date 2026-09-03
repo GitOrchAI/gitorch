@@ -16,6 +16,7 @@ export type ClasseDeFalha =
   | 'alerta-de-seguranca'
   | 'scaffolding-do-gitorch'
   | 'workflow-morto'
+  | 'automacao'
 
 export interface RunDeWorkflow {
   /** `.github/workflows/ci.yml` | `dynamic/dependabot/dependabot-updates` | ... */
@@ -36,6 +37,27 @@ export interface MetaDoWorkflow {
 /** Além de quantos dias sem rodar um workflow ainda-`active` conta como morto. */
 export const DIAS_SEM_RODAR_ATE_MORTO = 30
 
+/**
+ * D63 (medido: 97 de 193 sessões do dev assíncrono em 14 dias foram para
+ * incidente de automação — Dependabot→Jules, Jules PR Monitor, auto-merge
+ * monitor, CD-failure-handler...). "O dono não quer o Jules consertando o
+ * robô do Jules": um workflow deste FORMATO — mesmo em outro cliente, mesmo
+ * ainda não catalogado em `scaffolding-do-gitorch` — não é CI do cliente, é
+ * automação, e vira PROPOSTA ao dono, nunca incidente P0 delegável.
+ */
+const REGEX_DE_AUTOMACAO =
+  /jules|dependabot|auto-?merge|code-?scanning|apology|recovery|failure-handler/i
+
+/** Este workflow (pelo nome de exibição OU pelo basename do arquivo) tem cara
+ *  de automação do cliente (bot de Dependabot/Jules/auto-merge/...)? Regra
+ *  PURA — não decide sozinha se é NOSSA automação (isso é
+ *  `ehScaffoldingDoGitorch`, que corre antes) nem se vira proposta (isso é
+ *  `alvoDaClasse`, em processar-achados-de-infra.ts). */
+export function ehAutomacaoDoCliente(nome: string, caminho: string): boolean {
+  const base = caminho.split('/').pop() ?? caminho
+  return REGEX_DE_AUTOMACAO.test(base) || REGEX_DE_AUTOMACAO.test(nome)
+}
+
 export function classificarFalhaDeInfra(
   run: RunDeWorkflow,
   meta: MetaDoWorkflow,
@@ -55,6 +77,12 @@ export function classificarFalhaDeInfra(
 
   // 3. Encanamento do GitOrch — bug nosso, não do cliente.
   if (ehScaffoldingDoGitorch(run.path, conteudoDoWorkflow)) return 'scaffolding-do-gitorch'
+
+  // 3.5. Automação do cliente (D63) — mesmo rodando no gate (push/pull_request),
+  //      vira proposta ao dono, nunca incidente P0. Depois de scaffolding (o
+  //      que É nosso continua nosso) e antes de ci-do-cliente (de propósito:
+  //      um bot de auto-merge que dispara em push não vira "CI quebrado").
+  if (ehAutomacaoDoCliente(run.name, run.path)) return 'automacao'
 
   // 4. É o CI de verdade do cliente? Sinal forte: um check que a proteção do
   //    branch EXIGE, ou um workflow que roda em push/pull_request (o gate).

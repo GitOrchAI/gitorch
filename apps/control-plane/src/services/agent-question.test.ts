@@ -482,3 +482,99 @@ describe('a resposta do dono vira configuração do projeto (D49)', () => {
     expect(prisma.project.update).not.toHaveBeenCalled()
   })
 })
+
+// L4-T2 (D63): quando a dúvida respondida é sobre uma automação do cliente
+// que falhou (dedupKey `automacao:<repo>:<identidade>`), a resposta vira
+// AÇÃO (deletar/reajustar/manter/texto livre) — best-effort, injetada, para
+// AgentQuestionService continuar sem saber nada de GitHub/PR.
+describe('a resposta do dono aciona a decisão de automação (L4-T2)', () => {
+  test('dedupKey automacao: → chama aoResponderAutomacao com dedupKey/context/resposta/projectId/autonomia', async () => {
+    const prisma = fakePrisma()
+    prisma.projects.set('p1', { id: 'p1', wingId: 'acme/api', autonomia: 'cuidar' } as any)
+    prisma.questions.set('q_auto', {
+      id: 'q_auto',
+      projectId: 'p1',
+      userId: 'u1',
+      text: 'O que fazer?',
+      context: 'dispara em "push" · proposta #901 · arquivo:.github/workflows/x.yml',
+      dedupKey: 'automacao:acme/api:wf:40',
+      status: 'open',
+      options: [],
+      answer: null,
+      answeredAt: null,
+      answeredVia: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const aoResponderAutomacao = vi.fn(async (_args: Record<string, unknown>) => undefined)
+    const svc = new AgentQuestionService(prisma as any, { aoResponderAutomacao })
+
+    await svc.answer('q_auto', 'deletar', 'telegram')
+
+    expect(aoResponderAutomacao).toHaveBeenCalledOnce()
+    const chamada = aoResponderAutomacao.mock.calls[0]![0]
+    expect(chamada).toEqual({
+      dedupKey: 'automacao:acme/api:wf:40',
+      context: 'dispara em "push" · proposta #901 · arquivo:.github/workflows/x.yml',
+      resposta: 'deletar',
+      projectId: 'p1',
+      autonomia: 'cuidar',
+    })
+  })
+
+  test('dedupKey que NÃO é de automação → aoResponderAutomacao nunca é chamado', async () => {
+    const prisma = fakePrisma()
+    prisma.projects.set('p1', { id: 'p1', wingId: 'acme/api', autonomia: 'cuidar' } as any)
+    prisma.questions.set('q_1', {
+      id: 'q_1',
+      projectId: 'p1',
+      userId: 'u1',
+      text: 'dúvida qualquer',
+      dedupKey: 'como-publica:acme/api',
+      status: 'open',
+      options: [],
+      answer: null,
+      answeredAt: null,
+      answeredVia: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const aoResponderAutomacao = vi.fn(async () => undefined)
+    const svc = new AgentQuestionService(prisma as any, { aoResponderAutomacao })
+
+    await svc.answer('q_1', 'qualquer', 'panel')
+
+    expect(aoResponderAutomacao).not.toHaveBeenCalled()
+  })
+
+  test('falha em aoResponderAutomacao (best-effort) NÃO desfaz o answer já gravado', async () => {
+    const prisma = fakePrisma()
+    prisma.projects.set('p1', { id: 'p1', wingId: 'acme/api', autonomia: 'sugerir' } as any)
+    prisma.questions.set('q_auto', {
+      id: 'q_auto',
+      projectId: 'p1',
+      userId: 'u1',
+      text: 'O que fazer?',
+      context: '· proposta #1 · arquivo:x.yml',
+      dedupKey: 'automacao:acme/api:wf:1',
+      status: 'open',
+      options: [],
+      answer: null,
+      answeredAt: null,
+      answeredVia: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const aoResponderAutomacao = vi.fn(async () => {
+      throw new Error('GitHub fora do ar')
+    })
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const svc = new AgentQuestionService(prisma as any, { aoResponderAutomacao })
+
+    const result = await svc.answer('q_auto', 'manter', 'telegram')
+
+    expect(result?.status).toBe('answered')
+    expect(warnSpy).toHaveBeenCalled()
+    warnSpy.mockRestore()
+  })
+})

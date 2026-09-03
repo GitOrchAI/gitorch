@@ -208,6 +208,25 @@ describe('runSmDelegation', () => {
     expect(labeled.filter((l) => l.labels.includes('jules')).map((l) => l.number)).toEqual([51])
   })
 
+  // L4-T2 (D63): uma proposta ao dono (`gitorch:proposal`) nunca vira sessão
+  // de dev nem ganha o label `jules` — mesmo que, por algum bug em outro
+  // lugar, ela chegasse aqui com `gitorch:task` também. A busca real do
+  // GitHub (`labels=gitorch:task`) já filtra isso (AND de labels), mas este
+  // teste prova a defesa em profundidade DENTRO do SM, sem depender só do
+  // comportamento do servidor do GitHub.
+  it('issue com label gitorch:proposal (mesmo com gitorch:task) NUNCA vira dev_session nem recebe label jules', async () => {
+    const f = fakeFetch([
+      { number: 70, labels: ['gitorch:task', 'gitorch:proposal'], body: 'proposta, não tarefa' },
+      { number: 71, labels: ['gitorch:task'], body: 'tarefa de verdade' },
+    ])
+    const labeled = (f as unknown as { labeled: Array<{ number: number; labels: string[] }> })
+      .labeled
+    const r = await runSmDelegation({ repository: 'o/r', githubToken: 't', fetchImpl: f })
+    expect(r.delegated).toEqual([71])
+    expect(labeled.some((l) => l.number === 70)).toBe(false)
+    expect(labeled.filter((l) => l.labels.includes('jules')).map((l) => l.number)).toEqual([71])
+  })
+
   it('ocupamVagaNaConta no teto: a conta cheia por OUTRO projeto barra a delegação aqui', async () => {
     const f = fakeFetch([{ number: 52, labels: ['gitorch:task'], body: 'pronta' }])
     const labeled = (f as unknown as { labeled: Array<{ number: number; labels: string[] }> })

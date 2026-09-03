@@ -90,6 +90,12 @@ import { analisarFalhasPendentes } from '../services/analisar-falhas-pendentes.j
 import { runAnaliseDeFalha, type SessaoMorta } from '../services/analise-de-falha-do-dev.js'
 import { processarAchadosDeInfra } from '../services/processar-achados-de-infra.js'
 import {
+  criarProposta as criarPropostaService,
+  tituloDaPropostaDeAutomacao,
+  corpoDaPropostaDeAutomacao,
+} from '../services/proposta.js'
+import { perguntarAoDono as perguntarAoDonoService } from '../services/decisao-de-automacao.js'
+import {
   varrerIncidentesResolvidos,
   normalizarNomeDeWorkflow,
   nomeDoWorkflowNaIdentidadeLegada,
@@ -5071,6 +5077,20 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   const REPO_DO_PRODUTO = process.env['GITORCH_SELF_REPO'] ?? 'GitOrchAI/gitorch'
 
   /**
+   * D63/L4-T2: `AchadoDeInfra` não carrega `nome`/`arquivo` separados (só
+   * `titulo` — uma frase pronta — e `paths`). Melhor sinal disponível: o
+   * primeiro path é o arquivo; o nome é o trecho entre aspas do título
+   * (o sensor já escreve `Workflow "X" falhou...`), com o basename do
+   * arquivo como fallback.
+   */
+  const nomeEArquivoDoAchado = (achado: AchadoDeInfra): { nome: string; arquivo: string } => {
+    const arquivo = achado.paths[0] ?? achado.identidadeEstavel
+    const nome =
+      achado.titulo.match(/"([^"]+)"/)?.[1] ?? arquivo.split('/').pop() ?? achado.identidadeEstavel
+    return { nome, arquivo }
+  }
+
+  /**
    * ESTEIRA-T8 (D54): entre o sensor e a delegação existe SEMPRE análise. Roda
    * junto do RA na agenda: varre a infra (Actions/Dependabot), e para cada
    * achado NOVO o RA entende a causa e o PO escreve a issue padrão Shrimp — no
@@ -5246,6 +5266,85 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           fields,
           `gitorch:scaffolding:${project.id}:${achado.identidadeEstavel}`,
           ['gitorch:task', agentLabel('po'), 'gitorch:scaffolding']
+        )
+      },
+      // D63/L4-T2: achado de automação (ou Dependabot travado) — proposta ao
+      // dono, NUNCA incidente P0. Reaproveita o MESMO `fetchDoRepositorio` +
+      // `anexarIssueDeIncidenteAoQuadro` que `ghIssue` já usa acima — nada de
+      // resolução nova de credencial.
+      criarProposta: (achado) => {
+        const { nome, arquivo } = nomeEArquivoDoAchado(achado)
+        const desde = new Date().toISOString().slice(0, 10)
+        return criarPropostaService(
+          {
+            repo: project.wingId,
+            identidade: achado.identidadeEstavel,
+            titulo: tituloDaPropostaDeAutomacao(nome, arquivo, desde),
+            corpo: corpoDaPropostaDeAutomacao({
+              nome,
+              arquivo,
+              // O achado (`AchadoDeInfra`) não carrega o `on:` da run — só o
+              // sensor via runs sabe; aqui entra o melhor sinal disponível
+              // (a evidência já traz o YAML quando dá).
+              gatilho: 'ver evidência da issue',
+              desde,
+              resumo: achado.titulo,
+            }),
+            origem: 'incidente-automacao',
+          },
+          {
+            fetchImpl: fetchDoRepositorio({
+              nivel: () => project.autonomia,
+              timeoutMs: TIMEOUT_DE_CHAMADA_GITHUB_MS,
+            }),
+            token: railsToken,
+            anexarAoQuadro: (a) =>
+              anexarIssueDeIncidenteAoQuadro(
+                {
+                  repo: project.wingId,
+                  issueNodeId: a.issueNodeId,
+                  issueNumber: a.issueNumber,
+                  ehORepoDoProduto: false,
+                  projectId: project.id,
+                },
+                {
+                  prisma: app.prisma,
+                  engineConnections: app.engineConnections,
+                  fetchDeEscritaNoProduto: fetchComTeto(fetch, TIMEOUT_DE_CHAMADA_GITHUB_MS),
+                  fetchDeEscritaNoCliente: fetchDoRepositorio({
+                    nivel: () => project.autonomia,
+                    timeoutMs: TIMEOUT_DE_CHAMADA_GITHUB_MS,
+                  }),
+                  onInfo: (m) => app.log.info(`[Scheduler] ${m}`),
+                  onWarn: (m, err) => app.log.warn(err, `[Scheduler] ${m}`),
+                }
+              ),
+            onInfo: (m) => app.log.info(`[Scheduler] ${m}`),
+            onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+          }
+        )
+      },
+      perguntarAoDono: async (achado, numeroDaProposta) => {
+        const perguntador = (app as unknown as { agentQuestionService?: AgentQuestionService })
+          .agentQuestionService
+        if (!perguntador || !project.userId) return
+        const { nome, arquivo } = nomeEArquivoDoAchado(achado)
+        await perguntarAoDonoService(
+          {
+            userId: project.userId,
+            projectId: project.id,
+            repo: project.wingId,
+            identidade: achado.identidadeEstavel,
+            nome,
+            arquivo,
+            gatilho: 'ver evidência da issue',
+            desde: new Date().toISOString().slice(0, 10),
+            resumo: achado.titulo,
+            numeroProposta: numeroDaProposta,
+          },
+          { agentQuestion: perguntador }
+        ).catch((err: unknown) =>
+          app.log.warn(err, `[Scheduler] não perguntei ao dono sobre ${achado.identidadeEstavel}`)
         )
       },
       avisarDono: async (texto) => {
