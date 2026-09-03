@@ -524,10 +524,13 @@ describe('a resposta do dono aciona a decisão de automação (L4-T2 / C4)', () 
     // A1 (fix-up L4-T3): o args agora é o bag COMUM a todo manipulador —
     // inclui `opcoes` mesmo para quem não usa (aqui vazio, fixture sem
     // opções) — o handler real ignora o que não precisa.
+    // S1 (fix-up 2, CSO): também inclui `userId` — este manipulador não usa
+    // (só `projectId`/`autonomia`), mas o bag é comum a todos.
     expect(chamada).toEqual({
       dedupKey: 'automacao:acme/api:wf:40',
       resposta: 'deletar',
       projectId: 'p1',
+      userId: 'u1',
       autonomia: 'cuidar',
       opcoes: [],
     })
@@ -679,10 +682,14 @@ describe('a resposta do dono retoma a sessão do dev assíncrono (L4-T3)', () =>
     // (autonomia fica `undefined`, p1 não tem o campo na fixture; `toEqual`
     // trata chave ausente e `undefined` como equivalentes) mesmo este
     // manipulador não usando os dois; ele só lê `opcoes`.
+    // S1 (fix-up 2, CSO): agora também inclui `userId` — `aoResponderDuvidaDoDev`
+    // passa a usar `projectId`/`userId` da PRÓPRIA pergunta (nunca resolve o
+    // projeto pelo nome do repositório, que não é único entre donos).
     expect(aoResponderDuvidaDoDev.mock.calls[0]![0]).toEqual({
       dedupKey: 'duvida-dev:acme/api:46:hash123',
       resposta: 'sim',
       projectId: 'p1',
+      userId: 'u1',
       opcoes: [
         { label: 'Sim', value: 'sim' },
         { label: 'Não', value: 'nao' },

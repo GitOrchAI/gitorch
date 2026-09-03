@@ -49,6 +49,12 @@ interface DepsDaChave {
    *  módulo nunca lê `process.env` diretamente (fica testável sem env). */
   chaveDaInstancia: string | undefined
   onWarn?: (mensagem: string) => void
+  /** S4 (fix-up 2, CSO): telemetria do RECUO — chamado UMA VEZ por resolução
+   *  quando o projeto não trouxe chave BYOK própria e a delegação usa a
+   *  chave da INSTÂNCIA (`JULES_API_KEY`). Sinal de quanto da cota
+   *  compartilhada da instância está sendo gasto por projetos sem conta
+   *  própria — NUNCA loga a chave, só o `projectId`. */
+  onInfo?: (mensagem: string) => void
 }
 
 /**
@@ -70,7 +76,15 @@ export async function chaveDoDevDoProjeto(
     chaveDaInstancia: deps.chaveDaInstancia,
     decifrar: deps.decifrar,
   })
-  if (resolvida.ok) return resolvida.chave
+  if (resolvida.ok) {
+    // S4 (fix-up 2, CSO): `propria: false` é o RECUO — o projeto não trouxe
+    // chave BYOK própria e a delegação está gastando a cota da instância.
+    // Uma vez por resolução, nunca a chave.
+    if (!resolvida.propria) {
+      deps.onInfo?.(`projeto ${projetoId}: sem chave BYOK própria — usando a chave da instância`)
+    }
+    return resolvida.chave
+  }
   deps.onWarn?.(`projeto ${projetoId}: ${recadoDaRecusa(resolvida.motivo)}`)
   return undefined
 }

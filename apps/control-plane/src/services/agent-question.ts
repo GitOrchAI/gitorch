@@ -70,11 +70,20 @@ export type NotifyFn = (question: AgentQuestionRecord) => Promise<void>
  * args é COMUM a todo manipulador (nunca um tipo por ação): cada um lê só o
  * que precisa e ignora o resto — `aoResponderAutomacao` (produção,
  * plugins/telegram.ts) só usa `projectId`/`autonomia`; `aoResponderDuvidaDoDev`
- * só usa `opcoes`. */
+ * usa `projectId`/`userId`/`opcoes`.
+ *
+ * S1 (fix-up 2, CSO): `projectId`/`userId` vêm SEMPRE da própria
+ * `agent_question` (`existing.projectId`/`existing.userId`, gravados quando a
+ * dúvida nasceu — nunca adivinhados depois). `aoResponderDuvidaDoDev` os usa
+ * para NUNCA resolver o projeto pelo nome do repositório (`wingId`): o schema
+ * só garante `wingId` único POR DONO (`@@unique([userId, wingId])`), então
+ * dois donos podem cadastrar o MESMO `acme/api` — resolver por nome entregava
+ * a resposta de um dono à sessão do dev do OUTRO. */
 export interface ManipuladorDeRespostaArgs {
   dedupKey: string
   resposta: string
   projectId: string
+  userId: string
   autonomia: string | null | undefined
   opcoes: AgentQuestionOption[]
 }
@@ -242,6 +251,7 @@ export class AgentQuestionService {
           dedupKey: existing.dedupKey!,
           resposta: value,
           projectId: existing.projectId,
+          userId: existing.userId,
           autonomia: (existing.project as { autonomia?: string | null } | null)?.autonomia,
           opcoes: Array.isArray(existing.options)
             ? (existing.options as unknown as AgentQuestionOption[])

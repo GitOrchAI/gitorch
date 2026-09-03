@@ -179,6 +179,10 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
   const aoResponderDuvidaDoDev = (args: {
     dedupKey: string
     resposta: string
+    // S1 (fix-up 2, CSO): repassados direto da agent_question — nunca
+    // resolvidos aqui por nome de repositório.
+    projectId: string
+    userId: string
     opcoes: Array<{ label: string; value: string }>
   }): Promise<void> =>
     retomarSessaoComResposta(args, {

@@ -6726,6 +6726,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     decifrar: decryptCredential,
     chaveDaInstancia: process.env['JULES_API_KEY'],
     onWarn: (m: string) => app.log.warn(`[Scheduler] ${m}`),
+    // S4 (fix-up 2, CSO): telemetria do recuo para a chave da instância —
+    // nunca a chave, só o projectId (ver chave-do-dev-assincrono.ts).
+    onInfo: (m: string) => app.log.info(`[Scheduler] ${m}`),
   }
   const chaveDoDevDoProjeto = (projetoId: string): Promise<string | undefined> =>
     resolverChaveDoDevDoProjeto(depsDaChaveDoDev, projetoId)

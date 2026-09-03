@@ -10,8 +10,12 @@ import { parseDedupKeyDeDuvidaDoDev, type DuvidaDevDedupKey } from './dedup-key-
 export { parseDedupKeyDeDuvidaDoDev, type DuvidaDevDedupKey }
 
 export interface PrismaParaRetomada extends PrismaDevSession, PrismaParaChaveDoDev {
+  // S1 (fix-up 2, CSO): por ID — NUNCA por `wingId` (nome do repositório).
+  // `wingId` só é único POR DONO (`@@unique([userId, wingId])`, schema.prisma):
+  // dois donos podem cadastrar o MESMO `acme/api`, e resolver por nome
+  // entregaria a resposta de um dono à sessão do dev do OUTRO.
   project: {
-    findFirst: (args: { where: { wingId: string } }) => Promise<{ id: string } | null>
+    findUnique: (args: { where: { id: string } }) => Promise<{ id: string; wingId: string } | null>
   } & PrismaParaChaveDoDev['project']
   devSession: {
     findFirst: (args: unknown) => Promise<LinhaDeSessao | null>
@@ -37,6 +41,26 @@ function textoDaRespostaParaODev(
   return escolhida ? escolhida.label : resposta
 }
 
+// S2 (fix-up 2, CSO — ALTO): o texto da resposta LIVRE do dono ("Outro", D71)
+// não tinha teto nenhum antes de virar mensagem para o dev assíncrono — um
+// texto absurdamente grande (colado por engano, ou um campo de formulário
+// mal validado rio acima) ia inteiro para a API do fornecedor. Corta e avisa
+// (nunca falha em silêncio: quem opera vê no log que uma resposta foi
+// cortada).
+const TETO_DE_CARACTERES_DA_RESPOSTA_DO_DONO = 2000
+const SUFIXO_DE_RESPOSTA_TRUNCADA = '[… resposta truncada]'
+
+function limitarTamanhoDaResposta(resposta: string, onWarn?: (mensagem: string) => void): string {
+  if (resposta.length <= TETO_DE_CARACTERES_DA_RESPOSTA_DO_DONO) return resposta
+  onWarn?.(
+    `aoResponderDuvidaDoDev: resposta do dono truncada de ${resposta.length} para ` +
+      `${TETO_DE_CARACTERES_DA_RESPOSTA_DO_DONO} caracteres antes de entregar ao dev`
+  )
+  const tamanhoDoConteudo =
+    TETO_DE_CARACTERES_DA_RESPOSTA_DO_DONO - SUFIXO_DE_RESPOSTA_TRUNCADA.length
+  return `${resposta.slice(0, tamanhoDoConteudo)}${SUFIXO_DE_RESPOSTA_TRUNCADA}`
+}
+
 /**
  * A resposta do DONO a uma dúvida escalada (L4-T3, item 3) RETOMA a sessão
  * do dev assíncrono que ficou esperando.
@@ -54,6 +78,13 @@ export async function aoResponderDuvidaDoDev(
   args: {
     dedupKey: string
     resposta: string
+    // S1 (fix-up 2, CSO): `projectId`/`userId` vêm SEMPRE da própria
+    // `agent_question` (`ManipuladorDeRespostaArgs`, agent-question.ts) —
+    // fonte de verdade, nunca adivinhados. `userId` não entra em NENHUMA
+    // query aqui (só é usado nas mensagens de erro, para auditoria) — quem
+    // determina o escopo é `projectId`.
+    projectId: string
+    userId: string
     opcoes: Array<{ label: string; value: string }>
   },
   deps: DepsDeRetomada
@@ -61,10 +92,27 @@ export async function aoResponderDuvidaDoDev(
   const parsed = parseDedupKeyDeDuvidaDoDev(args.dedupKey)
   if (!parsed) return
 
-  const projeto = await deps.prisma.project.findFirst({ where: { wingId: parsed.repository } })
+  // S1 (fix-up 2, CSO — CRÍTICO, cross-tenant): NUNCA resolve o projeto por
+  // `wingId` (nome do repositório) — o schema só garante `wingId` único POR
+  // DONO (`@@unique([userId, wingId])`), então dois donos podem cadastrar o
+  // MESMO `acme/api`. Resolver por nome entregava a resposta de um dono à
+  // sessão do dev do OUTRO. `projectId` já é o projeto CERTO, resolvido
+  // quando a pergunta nasceu (`escalar-duvida-ao-dono.ts`).
+  const projeto = await deps.prisma.project.findUnique({ where: { id: args.projectId } })
   if (!projeto) {
     throw new Error(
-      `aoResponderDuvidaDoDev: projeto ${parsed.repository} não encontrado (dedupKey ${args.dedupKey})`
+      `aoResponderDuvidaDoDev: projeto ${args.projectId} (userId ${args.userId}) não encontrado ` +
+        `(dedupKey ${args.dedupKey})`
+    )
+  }
+  // O repo do dedupKey serve só para CONFERIR/logar — nunca para resolver o
+  // projeto. Divergindo do wingId do projeto DA PERGUNTA é dado inconsistente
+  // (dedupKey de outro projeto, ou o wingId mudou depois de escalado): erro
+  // claro, a pergunta continua open, nunca adivinha.
+  if (projeto.wingId !== parsed.repository) {
+    throw new Error(
+      `aoResponderDuvidaDoDev: repo do dedupKey (${parsed.repository}) diverge do wingId do ` +
+        `projeto ${args.projectId} da pergunta (${projeto.wingId}) — pergunta continua open`
     )
   }
 
@@ -82,7 +130,7 @@ export async function aoResponderDuvidaDoDev(
   // `escalada:` é candidata à reserva; sem nenhuma, LANÇA — nunca adivinha.
   let sessao = await deps.prisma.devSession.findFirst({
     where: {
-      projectId: projeto.id,
+      projectId: args.projectId,
       issueNumber: parsed.issueNumber,
       state: 'AWAITING_USER_FEEDBACK',
       answeredHash: `escalada:0:${parsed.hash}`,
@@ -91,7 +139,7 @@ export async function aoResponderDuvidaDoDev(
   if (!sessao) {
     sessao = await deps.prisma.devSession.findFirst({
       where: {
-        projectId: projeto.id,
+        projectId: args.projectId,
         issueNumber: parsed.issueNumber,
         state: 'AWAITING_USER_FEEDBACK',
         answeredHash: { startsWith: 'escalada:' },
@@ -102,7 +150,7 @@ export async function aoResponderDuvidaDoDev(
   if (!sessao) {
     throw new Error(
       `aoResponderDuvidaDoDev: sessão escalada não encontrada para ${parsed.repository}#${parsed.issueNumber} ` +
-        `(dedupKey ${args.dedupKey}) — a pergunta continua open, nunca adivinha a sessão`
+        `(projeto ${args.projectId}, dedupKey ${args.dedupKey}) — a pergunta continua open, nunca adivinha a sessão`
     )
   }
 
@@ -116,7 +164,14 @@ export async function aoResponderDuvidaDoDev(
     sessao.sessionName
   )
 
-  const texto = `${textoDaRespostaParaODev(args.resposta, args.opcoes)}\n\nDecisão do dono.`
+  // S2 (fix-up 2, CSO — ALTO): teto de 2000 caracteres na resposta do dono
+  // ANTES de montar a mensagem e chamar `responderSessaoJules` — a moldura
+  // "Decisão do dono." continua fora do teto (é sempre curta e fixa).
+  const respostaLimitada = limitarTamanhoDaResposta(
+    textoDaRespostaParaODev(args.resposta, args.opcoes),
+    deps.onWarn
+  )
+  const texto = `${respostaLimitada}\n\nDecisão do dono.`
   const responder = deps.responderSessaoJules ?? responderSessaoJulesReal
   const saiu = await responder({
     apiKey,

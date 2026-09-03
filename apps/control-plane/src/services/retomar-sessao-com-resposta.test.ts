@@ -6,6 +6,16 @@ import { aoResponderDuvidaDoDev, type PrismaParaRetomada } from './retomar-sessa
  * dedupKey `duvida-dev:<repo>:<issue>:<hash>`) precisa RETOMAR a sessão do
  * dev assíncrono — sem isto, a marca `escalada:` (item 1) fica presa para
  * sempre, porque nada nunca a transforma em resposta de verdade.
+ *
+ * S1 (fix-up 2, CSO — CRÍTICO, cross-tenant): `wingId` (nome do repositório)
+ * NÃO é único globalmente — o schema só garante `@@unique([userId, wingId])`
+ * — então dois donos podem cadastrar o MESMO `acme/api`. Resolver o projeto
+ * por `wingId` (como o código fazia antes deste fix-up) podia entregar a
+ * resposta de UM dono à sessão do dev do OUTRO. A partir de agora, `projectId`
+ * (e `userId`) vêm DIRETO da `agent_question` (via `ManipuladorDeRespostaArgs`,
+ * agent-question.ts) — nunca adivinhados por nome — e TODAS as queries usam
+ * `projectId`. O `repo` do dedupKey só CONFERE contra o `wingId` do projeto
+ * da pergunta (diverge → erro claro, pergunta continua open).
  */
 
 const SESSAO = {
@@ -18,7 +28,7 @@ const SESSAO = {
 function prismaFalso(overrides: Partial<PrismaParaRetomada> = {}): PrismaParaRetomada {
   return {
     project: {
-      findFirst: vi.fn(async () => ({ id: 'proj1', encryptedDevApiKey: null })),
+      findUnique: vi.fn(async () => ({ id: 'proj1', wingId: 'acme/api' })),
     },
     devSession: {
       findFirst: vi.fn(async () => SESSAO),
@@ -43,6 +53,8 @@ function depsFalso(overrides: Record<string, unknown> = {}) {
 const ARGS_BASE = {
   dedupKey: 'duvida-dev:acme/api:46:hash123',
   resposta: 'sim',
+  projectId: 'proj1',
+  userId: 'user1',
   opcoes: [
     { label: 'Sim, pode cobrar', value: 'sim' },
     { label: 'Não', value: 'nao' },
@@ -54,7 +66,13 @@ describe('aoResponderDuvidaDoDev', () => {
     const deps = depsFalso()
 
     await aoResponderDuvidaDoDev(
-      { dedupKey: 'automacao:acme/api:workflow-x', resposta: 'deletar', opcoes: [] },
+      {
+        dedupKey: 'automacao:acme/api:workflow-x',
+        resposta: 'deletar',
+        projectId: 'proj1',
+        userId: 'user1',
+        opcoes: [],
+      },
       deps as never
     )
 
@@ -66,7 +84,13 @@ describe('aoResponderDuvidaDoDev', () => {
     const deps = depsFalso()
 
     await aoResponderDuvidaDoDev(
-      { dedupKey: 'duvida-dev:acme/api:naoenumero:hash', resposta: 'sim', opcoes: [] },
+      {
+        dedupKey: 'duvida-dev:acme/api:naoenumero:hash',
+        resposta: 'sim',
+        projectId: 'proj1',
+        userId: 'user1',
+        opcoes: [],
+      },
       deps as never
     )
 
@@ -140,8 +164,8 @@ describe('aoResponderDuvidaDoDev', () => {
     await expect(aoResponderDuvidaDoDev(ARGS_BASE, deps as never)).rejects.toThrow()
   })
 
-  it('projeto do repositório não encontrado: LANÇA', async () => {
-    const prisma = prismaFalso({ project: { findFirst: vi.fn(async () => null) } as never })
+  it('projeto da pergunta (por projectId) não encontrado: LANÇA', async () => {
+    const prisma = prismaFalso({ project: { findUnique: vi.fn(async () => null) } as never })
     const deps = depsFalso({ prisma })
 
     await expect(aoResponderDuvidaDoDev(ARGS_BASE, deps as never)).rejects.toThrow()
@@ -238,5 +262,111 @@ describe('aoResponderDuvidaDoDev', () => {
     )
     expect(deps.responderSessaoJules).not.toHaveBeenCalled()
     expect((deps.prisma as PrismaParaRetomada).devSession.update).not.toHaveBeenCalled()
+  })
+
+  // ---------------------------------------------------------------------
+  // S1 (fix-up 2, CSO — CRÍTICO, cross-tenant)
+  // ---------------------------------------------------------------------
+
+  it('S1: nunca resolve o projeto pelo wingId — usa o projectId da PERGUNTA em todas as queries de dev_session', async () => {
+    const findUniqueProject = vi.fn(async (args: { where: { id: string } }) => ({
+      id: args.where.id,
+      wingId: 'acme/api',
+    }))
+    const findFirstDevSession = vi.fn(async (args: { where: { projectId: string } }) => {
+      expect(args.where.projectId).toBe('proj1')
+      return SESSAO
+    })
+    const prisma = prismaFalso({
+      project: { findUnique: findUniqueProject } as never,
+      devSession: { findFirst: findFirstDevSession, update: vi.fn(async () => undefined) } as never,
+    })
+    const deps = depsFalso({ prisma })
+
+    await aoResponderDuvidaDoDev(ARGS_BASE, deps as never)
+
+    // Resolve o projeto por ID (nunca por wingId/nome do repositório).
+    expect(findUniqueProject).toHaveBeenCalledWith({ where: { id: 'proj1' } })
+    expect(deps.responderSessaoJules).toHaveBeenCalled()
+  })
+
+  it('S1: dois projetos com o MESMO wingId (donos diferentes), sessões AWAITING escaladas nos dois — a resposta vai SÓ para o projeto da PERGUNTA (projectId), nunca por nome do repo', async () => {
+    const sessaoDoDonoCerto = { ...SESSAO, sessionName: 'sessions/dono-certo' }
+    const sessaoDoDonoErrado = { ...SESSAO, sessionName: 'sessions/dono-errado' }
+
+    // Os DOIS projetos declaram o MESMO wingId — é exatamente a colisão que
+    // `@@unique([userId, wingId])` permite (dois donos, mesmo repositório).
+    const findUniqueProject = vi.fn(async (args: { where: { id: string } }) => ({
+      id: args.where.id,
+      wingId: 'acme/api',
+    }))
+    const findFirstDevSession = vi.fn(
+      async (args: {
+        where: { projectId: string; answeredHash?: string | { startsWith?: string } }
+      }) => {
+        const doDono = args.where.projectId === 'proj1' ? sessaoDoDonoCerto : sessaoDoDonoErrado
+        const filtro = args.where.answeredHash
+        if (typeof filtro === 'string') return filtro === doDono.answeredHash ? doDono : null
+        return doDono
+      }
+    )
+    const prisma = prismaFalso({
+      project: { findUnique: findUniqueProject } as never,
+      devSession: { findFirst: findFirstDevSession, update: vi.fn(async () => undefined) } as never,
+    })
+    const deps = depsFalso({ prisma })
+
+    // A pergunta é do dono do projeto 'proj1' (agent-question.ts já resolveu
+    // isso corretamente ao criar a pergunta — `projectId` é fonte de verdade).
+    await aoResponderDuvidaDoDev({ ...ARGS_BASE, projectId: 'proj1' }, deps as never)
+
+    expect(deps.responderSessaoJules).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionName: 'sessions/dono-certo' })
+    )
+  })
+
+  it('S1: repo do dedupKey diverge do wingId do projeto DA PERGUNTA: LANÇA erro claro, nunca entrega — a pergunta continua open', async () => {
+    const prisma = prismaFalso({
+      project: {
+        findUnique: vi.fn(async () => ({ id: 'proj1', wingId: 'outra-org/outro-repo' })),
+      } as never,
+    })
+    const deps = depsFalso({ prisma })
+
+    await expect(aoResponderDuvidaDoDev(ARGS_BASE, deps as never)).rejects.toThrow(/diverge/)
+    expect(deps.responderSessaoJules).not.toHaveBeenCalled()
+    expect((deps.prisma as PrismaParaRetomada).devSession.update).not.toHaveBeenCalled()
+  })
+
+  // ---------------------------------------------------------------------
+  // S2 (fix-up 2, CSO — ALTO): teto de 2000 caracteres na resposta do dono
+  // ---------------------------------------------------------------------
+
+  it('S2: resposta livre do dono maior que 2000 caracteres é truncada com sufixo antes de ir ao dev, e loga warn', async () => {
+    const respostaGigante = 'x'.repeat(5000)
+    const deps = depsFalso()
+
+    await aoResponderDuvidaDoDev({ ...ARGS_BASE, resposta: respostaGigante }, deps as never)
+
+    const chamada = (deps.responderSessaoJules as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as {
+      texto: string
+    }
+    const [conteudo] = chamada.texto.split('\n\nDecisão do dono.')
+    expect(conteudo!.length).toBeLessThanOrEqual(2000)
+    expect(conteudo!.endsWith('[… resposta truncada]')).toBe(true)
+    expect(deps.onWarn).toHaveBeenCalled()
+  })
+
+  it('S2: resposta com exatamente 2000 caracteres passa intacta, sem truncar nem avisar', async () => {
+    const respostaNoTeto = 'y'.repeat(2000)
+    const deps = depsFalso()
+
+    await aoResponderDuvidaDoDev({ ...ARGS_BASE, resposta: respostaNoTeto }, deps as never)
+
+    const chamada = (deps.responderSessaoJules as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as {
+      texto: string
+    }
+    expect(chamada.texto).toContain(respostaNoTeto)
+    expect(deps.onWarn).not.toHaveBeenCalled()
   })
 })

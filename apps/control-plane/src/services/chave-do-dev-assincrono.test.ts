@@ -67,6 +67,47 @@ describe('chaveDoDevDoProjeto', () => {
     expect(chave).toBe('chave-da-instancia')
   })
 
+  // S4 (fix-up 2, CSO — MÉDIO): telemetria do recuo — sem isto, não há sinal
+  // nenhum de quanto da cota compartilhada da instância está sendo gasta por
+  // projetos sem conta própria (BYOK). Loga `onInfo` UMA VEZ por resolução,
+  // com o projectId — NUNCA a chave.
+  it('S4: sem credencial própria — loga onInfo com o projectId (nunca a chave), telemetria do recuo', async () => {
+    const onInfo = vi.fn()
+    const prisma = prismaFalso({
+      project: {
+        findUnique: vi.fn(async () => ({ encryptedDevApiKey: null })),
+        findFirst: vi.fn(async () => null),
+      },
+    })
+
+    const chave = await chaveDoDevDoProjeto(
+      { prisma, decifrar: decifrarFake, chaveDaInstancia: 'chave-da-instancia', onInfo },
+      'proj1'
+    )
+
+    expect(chave).toBe('chave-da-instancia')
+    expect(onInfo).toHaveBeenCalledOnce()
+    expect(onInfo.mock.calls[0]![0]).toContain('proj1')
+    expect(onInfo.mock.calls[0]![0]).not.toContain('chave-da-instancia')
+  })
+
+  it('S4: COM credencial própria — nunca loga onInfo (não é recuo)', async () => {
+    const onInfo = vi.fn()
+    const prisma = prismaFalso({
+      project: {
+        findUnique: vi.fn(async () => ({ encryptedDevApiKey: 'cifrado:chave-do-cliente' })),
+        findFirst: vi.fn(async () => null),
+      },
+    })
+
+    await chaveDoDevDoProjeto(
+      { prisma, decifrar: decifrarFake, chaveDaInstancia: 'chave-da-instancia', onInfo },
+      'proj1'
+    )
+
+    expect(onInfo).not.toHaveBeenCalled()
+  })
+
   it('credencial ilegível: avisa e devolve undefined — nunca cai na conta errada', async () => {
     const onWarn = vi.fn()
     const prisma = prismaFalso({
