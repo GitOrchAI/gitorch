@@ -3,6 +3,7 @@ import {
   decidirSobreAPergunta,
   lerMarca,
   marcarDesistencia,
+  marcarEscalada,
   marcarRespondida,
   marcarTentativa,
   MAX_TENTATIVAS_DE_RESPOSTA,
@@ -105,6 +106,42 @@ describe('a resposta que SAI encerra o assunto', () => {
     const d = decidirSobreAPergunta({
       hashDaPergunta: 'p2',
       marca: marcarRespondida('p1'),
+    })
+    expect(d).toEqual({ acao: 'responder', tentativa: 1 })
+  })
+})
+
+describe('a pergunta ESCALADA ao dono: nem respondida, nem tentada de novo', () => {
+  // L4-T3: escalar ao dono não é "responder" — ninguém respondeu ainda, é o
+  // dono que vai decidir. Mas também não pode voltar a ser tentada a cada
+  // ciclo do QA: a pergunta já subiu, e subir de novo a cada acordada
+  // spammaria o dono com a MESMA pergunta (agent_question dedupada por
+  // dedupKey, mas o formulário do QA/RA rodaria de novo à toa, gastando
+  // motor por nada).
+  it('marcarEscalada grava com o prefixo "escalada:"', () => {
+    expect(marcarEscalada('p1').startsWith('escalada:')).toBe(true)
+  })
+
+  it('lerMarca entende a marca de escalada e devolve o hash certo', () => {
+    expect(lerMarca(marcarEscalada('abc'))).toEqual({
+      situacao: 'escalada',
+      hash: 'abc',
+      tentativas: 0,
+    })
+  })
+
+  it('decidirSobreAPergunta: mesma pergunta escalada → nada (não tenta de novo)', () => {
+    const d = decidirSobreAPergunta({
+      hashDaPergunta: 'p1',
+      marca: marcarEscalada('p1'),
+    })
+    expect(d.acao).toBe('nada')
+  })
+
+  it('escalar a p1 não silencia uma p2 nova', () => {
+    const d = decidirSobreAPergunta({
+      hashDaPergunta: 'p2',
+      marca: marcarEscalada('p1'),
     })
     expect(d).toEqual({ acao: 'responder', tentativa: 1 })
   })

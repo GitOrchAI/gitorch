@@ -28,6 +28,11 @@ import { traduzirErroParaUsuario, type SetupErrorCode } from '../lib/setup-error
 import { processarRespostaDeAutomacao } from '../services/decisao-de-automacao.js'
 import { fetchDoRepositorio } from '../services/guarda-de-autonomia.js'
 import { lerCredencialQueAlcancaOProjeto } from '../services/project-credential.js'
+import {
+  aoResponderDuvidaDoDev as retomarSessaoComResposta,
+  type PrismaParaRetomada,
+} from '../services/retomar-sessao-com-resposta.js'
+import { decryptCredential } from '../lib/credential-crypto.js'
 
 // O ouvido do bot. Sem ele, o deep link do passo 8 abriria o Telegram, o cliente
 // apertaria Start... e ninguém estaria escutando — o `chat_id` (a única coisa
@@ -165,12 +170,43 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
   // registram dúvidas (ex.: routes/dev-agent-question.ts, W3.5.1) reusam esta
   // MESMA instância via `app.agentQuestionService`, pra criar E notificar
   // pelo mesmo caminho de produção em vez de duplicar a ligação com o Cortex.
+  // L4-T3: a resposta do dono a uma dúvida escalada do dev assíncrono
+  // (dedupKey `duvida-dev:*`) RETOMA a sessão dele —
+  // `services/retomar-sessao-com-resposta.ts` resolve a chave BYOK (D34) e
+  // manda a mensagem pelo mesmo caminho de produção do Jules. Mesma
+  // disciplina do gancho de automação acima: o logger é o INJETADO
+  // (`app.log`), nunca `console.warn`.
+  const aoResponderDuvidaDoDev = (args: {
+    dedupKey: string
+    resposta: string
+    // S1 (fix-up 2, CSO): repassados direto da agent_question — nunca
+    // resolvidos aqui por nome de repositório.
+    projectId: string
+    userId: string
+    opcoes: Array<{ label: string; value: string }>
+  }): Promise<void> =>
+    retomarSessaoComResposta(args, {
+      prisma: app.prisma as unknown as PrismaParaRetomada,
+      decifrar: decryptCredential,
+      julesApiKeyDaInstancia: process.env['JULES_API_KEY'],
+      onWarn: (m) => app.log.warn(`[Telegram] ${m}`),
+    })
+
   const agentQuestionService = new AgentQuestionService(app.prisma, {
     ...(notifyOwner ? { notify: notifyOwner } : {}),
     cortex: app.cortex,
-    aoResponderAutomacao,
-    // C4 (fix-up L4-T2): logger injetado para a falha de `aoResponderAutomacao`
-    // — nunca `console.warn`, que some do monitoramento.
+    // A1 (fix-up L4-T3): registro por prefixo — substitui os dois campos
+    // fixos `aoResponderAutomacao`/`aoResponderDuvidaDoDev`. A ORDEM não
+    // importa aqui (prefixos `automacao:`/`duvida-dev:` nunca colidem), mas
+    // é a mesma disciplina que qualquer prefixo novo (L4-T4/T9/T18) vai
+    // seguir: uma entrada nova nesta lista, nunca mais um `if` em
+    // `agent-question.ts`.
+    manipuladoresDeResposta: [
+      { prefixo: 'automacao:', executar: aoResponderAutomacao },
+      { prefixo: 'duvida-dev:', executar: aoResponderDuvidaDoDev },
+    ],
+    // C4 (fix-up L4-T2): logger injetado para a falha de um manipulador de
+    // resposta — nunca `console.warn`, que some do monitoramento.
     onError: (m) => app.log.error(`[Telegram] ${m}`),
   })
   app.decorate('agentQuestionService', agentQuestionService)

@@ -5,6 +5,7 @@ import {
   sessoesVivas,
   registrarEstado,
   registrarResposta,
+  registrarEscalada,
   registrarPr,
   fecharSessao,
   registrarPendencia,
@@ -191,6 +192,71 @@ describe('registrarResposta', () => {
         data: expect.objectContaining({ answeredHash: 'h1', nudges: { increment: 1 } }),
       })
     )
+  })
+})
+
+describe('registrarEscalada', () => {
+  // L4-T3: escalar ao dono grava a marca `escalada:0:<hash>` — NUNCA
+  // `respondida` (ninguém respondeu ainda) — e, ao contrário de
+  // `registrarResposta`, NÃO incrementa `nudges`. `nudges` mede "quantas
+  // vezes pedimos para a sessão CONTINUAR" (é o teto que decide abandono,
+  // `jules-session-loop.ts`/`MAX_NUDGES`) — escalar não é pedir para
+  // continuar, é parar e esperar o dono decidir; contar como nudge
+  // aproximaria a sessão do abandono por um evento que não tem nada a ver
+  // com "insistimos e ela não andou". Mesmo raciocínio documentado em
+  // `registrarInvestigacao`, aplicado a esta categoria de evento.
+  it('grava a marca de escalada SEM incrementar nudges', async () => {
+    const prisma = prismaFalso()
+
+    await registrarEscalada({ prisma, sessionName: 'sessions/1', hashDaPergunta: 'h1', agora })
+
+    expect(prisma.devSession.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { sessionName: 'sessions/1' },
+        data: expect.objectContaining({ answeredHash: 'escalada:0:h1' }),
+      })
+    )
+    const chamada = prisma.devSession.update.mock.calls[0]?.[0] as { data: Record<string, unknown> }
+    expect(chamada.data['nudges']).toBeUndefined()
+  })
+
+  /**
+   * C4 (fix-up L4-T3): sem esta guarda, um `hashDaPergunta` vazio/nulo
+   * (bug de quem chama) gravaria `escalada:0:` ou `escalada:0:null` — uma
+   * marca sem pergunta real por trás, que nunca mais seria reconciliável
+   * de volta (o hash na marca não bate com nenhuma agent_question de
+   * verdade).
+   */
+  it('C4: recusa hashDaPergunta vazio — nunca grava "escalada:0:" sem pergunta real', async () => {
+    const prisma = prismaFalso()
+
+    await expect(
+      registrarEscalada({ prisma, sessionName: 'sessions/1', hashDaPergunta: '', agora })
+    ).rejects.toThrow()
+    expect(prisma.devSession.update).not.toHaveBeenCalled()
+  })
+
+  it('C4: recusa hashDaPergunta só espaço', async () => {
+    const prisma = prismaFalso()
+
+    await expect(
+      registrarEscalada({ prisma, sessionName: 'sessions/1', hashDaPergunta: '   ', agora })
+    ).rejects.toThrow()
+    expect(prisma.devSession.update).not.toHaveBeenCalled()
+  })
+
+  it('C4: recusa hashDaPergunta null/undefined mesmo fora do tipo declarado (defesa contra chamador com bug)', async () => {
+    const prisma = prismaFalso()
+
+    await expect(
+      registrarEscalada({
+        prisma,
+        sessionName: 'sessions/1',
+        hashDaPergunta: null as unknown as string,
+        agora,
+      })
+    ).rejects.toThrow()
+    expect(prisma.devSession.update).not.toHaveBeenCalled()
   })
 })
 

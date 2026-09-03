@@ -266,6 +266,38 @@ describe('vigiarSessoes', () => {
     expect(deps.dispararMissao).not.toHaveBeenCalledWith('qa', 'proj1')
   })
 
+  it('pergunta ESCALADA ao dono e parada há MAIS de 24h → NÃO fecha (L4-T4 decide) e não avisa "já respondida"', async () => {
+    // L4-T3: `escalada:` não é `respondida` — ninguém respondeu ainda, é o
+    // dono quem vai decidir. Fechar a sessão dizendo "a dúvida já foi
+    // respondida" (como faz o ramo de 24h acima) seria mentira: a pergunta
+    // está na mesa do dono, não resolvida. Esta tarefa só garante que NÃO
+    // fecha nem mente — o que fazer quando vence o prazo com o dono ainda
+    // calado é decisão da L4-T4.
+    const mensagem = 'Isto é decisão de preço — decido sozinho?'
+    const deps = depsFalso({
+      sessoes: [
+        linha({
+          sessionName: 'sessions/escalada-24h',
+          issueNumber: 91,
+          answeredHash: `escalada:0:${hashDe(mensagem)}`,
+          lastProgressAt: new Date(agora.getTime() - 25 * 60 * 60 * 1000),
+          stateCheckedAt: new Date(agora.getTime() - 30 * 60 * 1000),
+        }),
+      ],
+      consultarSessao: vi.fn(async () => ({
+        estado: 'AWAITING_USER_FEEDBACK',
+        numeroDoPr: null,
+        ultimaAtualizacao: new Date(agora.getTime() - 25 * 60 * 60 * 1000).toISOString(),
+      })),
+      ultimaMensagem: vi.fn(async () => mensagem),
+    })
+
+    await vigiarSessoes(deps)
+
+    expect(deps.fecharSessao).not.toHaveBeenCalled()
+    expect(deps.avisarDono).not.toHaveBeenCalled()
+  })
+
   it('pergunta respondida mas AINDA dentro das 24h → continua chamando o QA, não fecha', async () => {
     const mensagem = 'x?'
     const deps = depsFalso({

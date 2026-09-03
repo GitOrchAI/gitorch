@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from 'vitest'
 import type { CortexDrawer } from '@gitorch/cortex'
-import { AgentQuestionService } from './agent-question.js'
+import { AgentQuestionService, type ManipuladorDeRespostaArgs } from './agent-question.js'
 import { chaveDaDuvida } from './duvidas-do-projeto.js'
 import { comoPublicaDeclarado } from './como-o-projeto-publica.js'
 
@@ -508,8 +508,12 @@ describe('a resposta do dono aciona a decisão de automação (L4-T2 / C4)', () 
       createdAt: new Date(),
       updatedAt: new Date(),
     })
-    const aoResponderAutomacao = vi.fn(async (_args: Record<string, unknown>) => undefined)
-    const svc = new AgentQuestionService(prisma as any, { aoResponderAutomacao })
+    const aoResponderAutomacao = vi.fn(async (_args: ManipuladorDeRespostaArgs) => undefined)
+    // A1 (fix-up L4-T3): registro por prefixo — substitui o dep fixo
+    // `aoResponderAutomacao` por uma entrada em `manipuladoresDeResposta`.
+    const svc = new AgentQuestionService(prisma as any, {
+      manipuladoresDeResposta: [{ prefixo: 'automacao:', executar: aoResponderAutomacao }],
+    })
 
     const result = await svc.answer('q_auto', 'deletar', 'telegram')
 
@@ -517,11 +521,18 @@ describe('a resposta do dono aciona a decisão de automação (L4-T2 / C4)', () 
     const chamada = aoResponderAutomacao.mock.calls[0]![0]
     // A2 (fix-up L4-T2): NUNCA `context` — `processarRespostaDeAutomacao`
     // resolve pela dedupKey/infra_incidents, não reparseando texto do dono.
+    // A1 (fix-up L4-T3): o args agora é o bag COMUM a todo manipulador —
+    // inclui `opcoes` mesmo para quem não usa (aqui vazio, fixture sem
+    // opções) — o handler real ignora o que não precisa.
+    // S1 (fix-up 2, CSO): também inclui `userId` — este manipulador não usa
+    // (só `projectId`/`autonomia`), mas o bag é comum a todos.
     expect(chamada).toEqual({
       dedupKey: 'automacao:acme/api:wf:40',
       resposta: 'deletar',
       projectId: 'p1',
+      userId: 'u1',
       autonomia: 'cuidar',
+      opcoes: [],
     })
     expect(result?.status).toBe('answered')
   })
@@ -547,7 +558,9 @@ describe('a resposta do dono aciona a decisão de automação (L4-T2 / C4)', () 
       // No momento em que a ação roda, a pergunta AINDA tem que estar open.
       expect(prisma.questions.get('q_auto')!.status).toBe('open')
     })
-    const svc = new AgentQuestionService(prisma as any, { aoResponderAutomacao })
+    const svc = new AgentQuestionService(prisma as any, {
+      manipuladoresDeResposta: [{ prefixo: 'automacao:', executar: aoResponderAutomacao }],
+    })
 
     await svc.answer('q_auto', 'deletar', 'telegram')
 
@@ -575,7 +588,9 @@ describe('a resposta do dono aciona a decisão de automação (L4-T2 / C4)', () 
       updatedAt: new Date(),
     })
     const aoResponderAutomacao = vi.fn(async () => undefined)
-    const svc = new AgentQuestionService(prisma as any, { aoResponderAutomacao })
+    const svc = new AgentQuestionService(prisma as any, {
+      manipuladoresDeResposta: [{ prefixo: 'automacao:', executar: aoResponderAutomacao }],
+    })
 
     await svc.answer('q_1', 'qualquer', 'panel')
 
@@ -604,7 +619,10 @@ describe('a resposta do dono aciona a decisão de automação (L4-T2 / C4)', () 
     })
     const onError = vi.fn()
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
-    const svc = new AgentQuestionService(prisma as any, { aoResponderAutomacao, onError })
+    const svc = new AgentQuestionService(prisma as any, {
+      manipuladoresDeResposta: [{ prefixo: 'automacao:', executar: aoResponderAutomacao }],
+      onError,
+    })
 
     await expect(svc.answer('q_auto', 'manter', 'telegram')).rejects.toThrow('GitHub fora do ar')
 
@@ -621,5 +639,300 @@ describe('a resposta do dono aciona a decisão de automação (L4-T2 / C4)', () 
       false
     )
     warnSpy.mockRestore()
+  })
+})
+
+// L4-T3 (item 3): a resposta do DONO a uma dúvida do dev assíncrono
+// (dedupKey `duvida-dev:<repo>:<issue>:<hash>`, criada por
+// `escalar-duvida-ao-dono.ts`) precisa RETOMAR a sessão dele —
+// `retomar-sessao-com-resposta.ts` faz o trabalho; aqui só se prova a
+// ligação em `answer()`, MESMA disciplina de `aoResponderAutomacao` (ação
+// antes de gravar `answered`; falha mantém a pergunta `open`).
+describe('a resposta do dono retoma a sessão do dev assíncrono (L4-T3)', () => {
+  test('dedupKey duvida-dev: → chama aoResponderDuvidaDoDev com dedupKey/resposta/opcoes', async () => {
+    const prisma = fakePrisma()
+    prisma.projects.set('p1', { id: 'p1', wingId: 'acme/api' } as any)
+    prisma.questions.set('q_duvida', {
+      id: 'q_duvida',
+      projectId: 'p1',
+      userId: 'u1',
+      text: 'Podemos cobrar taxa extra?',
+      dedupKey: 'duvida-dev:acme/api:46:hash123',
+      status: 'open',
+      options: [
+        { label: 'Sim', value: 'sim' },
+        { label: 'Não', value: 'nao' },
+      ],
+      answer: null,
+      answeredAt: null,
+      answeredVia: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const aoResponderDuvidaDoDev = vi.fn(async (_args: ManipuladorDeRespostaArgs) => undefined)
+    // A1 (fix-up L4-T3): registro por prefixo.
+    const svc = new AgentQuestionService(prisma as any, {
+      manipuladoresDeResposta: [{ prefixo: 'duvida-dev:', executar: aoResponderDuvidaDoDev }],
+    })
+
+    const result = await svc.answer('q_duvida', 'sim', 'telegram')
+
+    expect(aoResponderDuvidaDoDev).toHaveBeenCalledOnce()
+    // A1 (fix-up L4-T3): o args agora é o bag COMUM — inclui `projectId`
+    // (autonomia fica `undefined`, p1 não tem o campo na fixture; `toEqual`
+    // trata chave ausente e `undefined` como equivalentes) mesmo este
+    // manipulador não usando os dois; ele só lê `opcoes`.
+    // S1 (fix-up 2, CSO): agora também inclui `userId` — `aoResponderDuvidaDoDev`
+    // passa a usar `projectId`/`userId` da PRÓPRIA pergunta (nunca resolve o
+    // projeto pelo nome do repositório, que não é único entre donos).
+    expect(aoResponderDuvidaDoDev.mock.calls[0]![0]).toEqual({
+      dedupKey: 'duvida-dev:acme/api:46:hash123',
+      resposta: 'sim',
+      projectId: 'p1',
+      userId: 'u1',
+      opcoes: [
+        { label: 'Sim', value: 'sim' },
+        { label: 'Não', value: 'nao' },
+      ],
+    })
+    expect(result?.status).toBe('answered')
+  })
+
+  test('aoResponderDuvidaDoDev roda ANTES de marcar a pergunta answered', async () => {
+    const prisma = fakePrisma()
+    prisma.projects.set('p1', { id: 'p1', wingId: 'acme/api' } as any)
+    prisma.questions.set('q_duvida', {
+      id: 'q_duvida',
+      projectId: 'p1',
+      userId: 'u1',
+      text: 'x',
+      dedupKey: 'duvida-dev:acme/api:46:hash123',
+      status: 'open',
+      options: [],
+      answer: null,
+      answeredAt: null,
+      answeredVia: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const aoResponderDuvidaDoDev = vi.fn(async () => {
+      expect(prisma.questions.get('q_duvida')!.status).toBe('open')
+    })
+    const svc = new AgentQuestionService(prisma as any, {
+      manipuladoresDeResposta: [{ prefixo: 'duvida-dev:', executar: aoResponderDuvidaDoDev }],
+    })
+
+    await svc.answer('q_duvida', 'sim', 'telegram')
+
+    const ordemAcao = aoResponderDuvidaDoDev.mock.invocationCallOrder[0]!
+    const ordemUpdate = (prisma.agentQuestion.update as any).mock.invocationCallOrder[0]
+    expect(ordemAcao).toBeLessThan(ordemUpdate)
+  })
+
+  test('dedupKey que NÃO é duvida-dev: → aoResponderDuvidaDoDev nunca é chamado', async () => {
+    const prisma = fakePrisma()
+    prisma.projects.set('p1', { id: 'p1', wingId: 'acme/api' } as any)
+    prisma.questions.set('q_1', {
+      id: 'q_1',
+      projectId: 'p1',
+      userId: 'u1',
+      text: 'dúvida qualquer',
+      dedupKey: 'automacao:acme/api:wf:1',
+      status: 'open',
+      options: [],
+      answer: null,
+      answeredAt: null,
+      answeredVia: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const aoResponderDuvidaDoDev = vi.fn(async () => undefined)
+    const aoResponderAutomacao = vi.fn(async () => undefined)
+    const svc = new AgentQuestionService(prisma as any, {
+      manipuladoresDeResposta: [
+        { prefixo: 'duvida-dev:', executar: aoResponderDuvidaDoDev },
+        { prefixo: 'automacao:', executar: aoResponderAutomacao },
+      ],
+    })
+
+    await svc.answer('q_1', 'qualquer', 'panel')
+
+    expect(aoResponderDuvidaDoDev).not.toHaveBeenCalled()
+  })
+
+  test('falha em aoResponderDuvidaDoDev → a pergunta continua open, onError é chamado, e answer() lança', async () => {
+    const prisma = fakePrisma()
+    prisma.projects.set('p1', { id: 'p1', wingId: 'acme/api' } as any)
+    prisma.questions.set('q_duvida', {
+      id: 'q_duvida',
+      projectId: 'p1',
+      userId: 'u1',
+      text: 'x',
+      dedupKey: 'duvida-dev:acme/api:46:hash123',
+      status: 'open',
+      options: [],
+      answer: null,
+      answeredAt: null,
+      answeredVia: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const aoResponderDuvidaDoDev = vi.fn(async () => {
+      throw new Error('sessão do Jules fora do ar')
+    })
+    const onError = vi.fn()
+    const svc = new AgentQuestionService(prisma as any, {
+      manipuladoresDeResposta: [{ prefixo: 'duvida-dev:', executar: aoResponderDuvidaDoDev }],
+      onError,
+    })
+
+    await expect(svc.answer('q_duvida', 'sim', 'telegram')).rejects.toThrow(
+      'sessão do Jules fora do ar'
+    )
+
+    expect(prisma.questions.get('q_duvida')!.status).toBe('open')
+    expect(prisma.agentQuestion.update).not.toHaveBeenCalled()
+    expect(onError).toHaveBeenCalledOnce()
+    expect(onError.mock.calls[0]![0]).toContain('sessão do Jules fora do ar')
+  })
+})
+
+// A1 (fix-up L4-T3): antes deste registro, cada prefixo novo (`automacao:`,
+// `duvida-dev:`) virava mais um `if (dedupKey.startsWith(...))` fixo dentro
+// de `answer()` — e a L4-T4/T9/T18 iam abrir o 3º e o 4º. `manipuladoresDeResposta`
+// troca isso por uma LISTA: `answer()` escolhe o PRIMEIRO cujo prefixo casa
+// e o executa (mesma disciplina de sempre — ação ANTES de marcar `answered`;
+// falha lançada mantém a pergunta `open`). Os testes acima (automação/
+// duvida-dev) já provam que o comportamento por prefixo continua idêntico;
+// os daqui cobrem o mecanismo genérico do registro em si.
+describe('A1: manipuladoresDeResposta — registro de manipuladores por prefixo', () => {
+  test('dedupKey que não casa com NENHUM prefixo registrado → nenhum manipulador roda, segue para answered', async () => {
+    const prisma = fakePrisma()
+    prisma.projects.set('p1', { id: 'p1', wingId: 'acme/api' } as any)
+    prisma.questions.set('q_1', {
+      id: 'q_1',
+      projectId: 'p1',
+      userId: 'u1',
+      text: 'dúvida qualquer',
+      dedupKey: 'como-publica:acme/api',
+      status: 'open',
+      options: [],
+      answer: null,
+      answeredAt: null,
+      answeredVia: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const automacao = vi.fn(async () => undefined)
+    const duvidaDev = vi.fn(async () => undefined)
+    const svc = new AgentQuestionService(prisma as any, {
+      manipuladoresDeResposta: [
+        { prefixo: 'automacao:', executar: automacao },
+        { prefixo: 'duvida-dev:', executar: duvidaDev },
+      ],
+    })
+
+    const result = await svc.answer('q_1', 'qualquer', 'panel')
+
+    expect(automacao).not.toHaveBeenCalled()
+    expect(duvidaDev).not.toHaveBeenCalled()
+    expect(result?.status).toBe('answered')
+  })
+
+  test('falha do manipulador (prefixo qualquer) → a pergunta continua open, onError é chamado, e answer() lança', async () => {
+    const prisma = fakePrisma()
+    prisma.projects.set('p1', { id: 'p1', wingId: 'acme/api' } as any)
+    prisma.questions.set('q_1', {
+      id: 'q_1',
+      projectId: 'p1',
+      userId: 'u1',
+      text: 'x',
+      dedupKey: 'futuro-prefixo:acme/api:1',
+      status: 'open',
+      options: [],
+      answer: null,
+      answeredAt: null,
+      answeredVia: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const manipulador = vi.fn(async () => {
+      throw new Error('boom')
+    })
+    const onError = vi.fn()
+    const svc = new AgentQuestionService(prisma as any, {
+      manipuladoresDeResposta: [{ prefixo: 'futuro-prefixo:', executar: manipulador }],
+      onError,
+    })
+
+    await expect(svc.answer('q_1', 'resp', 'panel')).rejects.toThrow('boom')
+
+    expect(prisma.questions.get('q_1')!.status).toBe('open')
+    expect(prisma.agentQuestion.update).not.toHaveBeenCalled()
+    expect(onError).toHaveBeenCalledOnce()
+    expect(onError.mock.calls[0]![0]).toContain('boom')
+  })
+
+  test('ordem: o manipulador executa ANTES de gravar answered (preservado do mecanismo antigo)', async () => {
+    const prisma = fakePrisma()
+    prisma.projects.set('p1', { id: 'p1', wingId: 'acme/api' } as any)
+    prisma.questions.set('q_1', {
+      id: 'q_1',
+      projectId: 'p1',
+      userId: 'u1',
+      text: 'x',
+      dedupKey: 'futuro-prefixo:acme/api:1',
+      status: 'open',
+      options: [],
+      answer: null,
+      answeredAt: null,
+      answeredVia: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const manipulador = vi.fn(async () => {
+      expect(prisma.questions.get('q_1')!.status).toBe('open')
+    })
+    const svc = new AgentQuestionService(prisma as any, {
+      manipuladoresDeResposta: [{ prefixo: 'futuro-prefixo:', executar: manipulador }],
+    })
+
+    await svc.answer('q_1', 'resp', 'panel')
+
+    const ordemAcao = manipulador.mock.invocationCallOrder[0]!
+    const ordemUpdate = (prisma.agentQuestion.update as any).mock.invocationCallOrder[0]
+    expect(ordemAcao).toBeLessThan(ordemUpdate)
+  })
+
+  test('duas entradas cujo prefixo casaria — só a PRIMEIRA da lista executa', async () => {
+    const prisma = fakePrisma()
+    prisma.projects.set('p1', { id: 'p1', wingId: 'acme/api' } as any)
+    prisma.questions.set('q_1', {
+      id: 'q_1',
+      projectId: 'p1',
+      userId: 'u1',
+      text: 'x',
+      dedupKey: 'duvida-dev:acme/api:46:hash123',
+      status: 'open',
+      options: [],
+      answer: null,
+      answeredAt: null,
+      answeredVia: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const primeiro = vi.fn(async () => undefined)
+    const segundo = vi.fn(async () => undefined)
+    const svc = new AgentQuestionService(prisma as any, {
+      manipuladoresDeResposta: [
+        { prefixo: 'duvida-dev:', executar: primeiro },
+        { prefixo: 'duvida-dev:', executar: segundo },
+      ],
+    })
+
+    await svc.answer('q_1', 'resp', 'panel')
+
+    expect(primeiro).toHaveBeenCalledOnce()
+    expect(segundo).not.toHaveBeenCalled()
   })
 })

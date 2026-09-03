@@ -11,6 +11,7 @@
 // decide é a função pura de estado. Este módulo só guarda e devolve.
 
 import { Prisma } from '@prisma/client'
+import { marcarEscalada } from './pergunta-sem-resposta.js'
 
 /** Uma linha viva da vigia, com o que a decisão precisa saber. */
 export interface LinhaDeSessao {
@@ -519,6 +520,51 @@ export async function registrarResposta(deps: {
     data: {
       answeredHash: deps.hashDaPergunta,
       nudges: { increment: 1 },
+      stateCheckedAt: deps.agora,
+    },
+  })
+}
+
+/**
+ * Marca que esta pergunta ESCALOU DE VERDADE ao dono (L4-T3).
+ *
+ * Nunca `registrarResposta`: escalar não é responder — ninguém respondeu
+ * ainda, é o dono quem vai decidir (e a decisão dele RETOMA a sessão, ver
+ * `services/retomar-sessao-com-resposta.ts`). Por isso a marca própria
+ * `escalada:0:<hash>` (`marcarEscalada`), que `decidirSobreAPergunta` lê como
+ * "não tenta de novo" e `session-watch.ts` lê como "NÃO conta como
+ * respondida" (a sessão fica aguardando o dono, sem fechar em 24h — L4-T4
+ * decide o que fazer quando vencer).
+ *
+ * DE PROPÓSITO não incrementa `nudges`, pelo mesmo raciocínio de
+ * `registrarInvestigacao`: `nudges` mede "quantas vezes pedimos para a
+ * sessão CONTINUAR" — é o contador que `jules-session-loop.ts` usa para
+ * decidir abandono (`MAX_NUDGES`). Escalar é o oposto de insistir: é parar e
+ * esperar uma decisão de negócio. Contar como nudge aproximaria do abandono
+ * uma sessão que está parada por um motivo que não tem nada a ver com "a
+ * sessão não andou apesar de pedirmos".
+ */
+export async function registrarEscalada(deps: {
+  prisma: PrismaDevSession
+  sessionName: string
+  hashDaPergunta: string
+  agora: Date
+}): Promise<void> {
+  // C4 (fix-up L4-T3): sem esta guarda, um `hashDaPergunta` vazio/nulo (bug
+  // de quem chama) gravaria `escalada:0:` ou `escalada:0:null` — uma marca
+  // sem pergunta real por trás, que `retomar-sessao-com-resposta.ts` (busca
+  // pelo hash exato) e a reconciliação nunca conseguem casar de volta com
+  // nenhuma `agent_question`. Recusa alto e cedo, nunca grava lixo.
+  if (!deps.hashDaPergunta || !deps.hashDaPergunta.trim()) {
+    throw new Error(
+      `registrarEscalada: hashDaPergunta vazio/nulo para ${deps.sessionName} — recusa gravar ` +
+        'marca de escalada sem pergunta real'
+    )
+  }
+  await deps.prisma.devSession.update({
+    where: { sessionName: deps.sessionName },
+    data: {
+      answeredHash: marcarEscalada(deps.hashDaPergunta),
       stateCheckedAt: deps.agora,
     },
   })

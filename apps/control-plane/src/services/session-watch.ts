@@ -359,7 +359,17 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
           // `answeredHash`) e mesmo assim a sessão está parada em
           // AWAITING_USER_FEEDBACK há mais de 24h, o Jules não vai andar — a
           // resposta não destravou. Fecha e a issue volta para a fila (D51).
-          const jaRespondida = Boolean(linha.answeredHash)
+          //
+          // L4-T3: `escalada:` NÃO conta como respondida — é o oposto:
+          // ninguém respondeu ainda, a pergunta está na mesa do DONO (subiu
+          // de verdade como agent_question, dedupKey `duvida-dev:*`) e é a
+          // resposta dele que retoma a sessão (`retomar-sessao-com-
+          // resposta.ts`). Fechar aqui diria "a dúvida já foi respondida" —
+          // mentira. O que fazer quando o prazo vence com o dono ainda
+          // calado fica para a L4-T4; esta tarefa só garante que não mente
+          // nem fecha antes da hora.
+          const escalada = Boolean(linha.answeredHash?.startsWith('escalada:'))
+          const jaRespondida = Boolean(linha.answeredHash) && !escalada
           if (jaRespondida && paradoHaMs >= HORAS_ATE_TIMEOUT_PERGUNTA_MS) {
             await deps.fecharSessao({
               sessionName: linha.sessionName,

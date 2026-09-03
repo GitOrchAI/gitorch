@@ -60,23 +60,61 @@ export type NotifyFn = (question: AgentQuestionRecord) => Promise<void>
  *  reajustar para incidente normal, manter e fechar, ou só registrar texto
  *  livre. C4 (fix-up): chamada ANTES de marcar `answered` — uma falha aqui
  *  agora IMPEDE o `answer` (a pergunta continua `open` para nova tentativa),
- *  ao contrário do best-effort antigo que fingia sucesso. */
-export type AoResponderAutomacaoFn = (args: {
+ *  ao contrário do best-effort antigo que fingia sucesso.
+ *
+ * L4-T3 adicionou uma segunda ação do mesmo tipo (`duvida-dev:` → RETOMA a
+ * sessão do dev assíncrono). A1 (fix-up L4-T3): em vez de um `if
+ * (dedupKey.startsWith(...))` fixo POR AÇÃO — o que faria a L4-T4/T9/T18
+ * abrirem o 3º e o 4º `if` iguais — `answer()` agora escolhe por um REGISTRO
+ * de manipuladores por prefixo (`manipuladoresDeResposta`, abaixo). O bag de
+ * args é COMUM a todo manipulador (nunca um tipo por ação): cada um lê só o
+ * que precisa e ignora o resto — `aoResponderAutomacao` (produção,
+ * plugins/telegram.ts) só usa `projectId`/`autonomia`; `aoResponderDuvidaDoDev`
+ * usa `projectId`/`userId`/`opcoes`.
+ *
+ * S1 (fix-up 2, CSO): `projectId`/`userId` vêm SEMPRE da própria
+ * `agent_question` (`existing.projectId`/`existing.userId`, gravados quando a
+ * dúvida nasceu — nunca adivinhados depois). `aoResponderDuvidaDoDev` os usa
+ * para NUNCA resolver o projeto pelo nome do repositório (`wingId`): o schema
+ * só garante `wingId` único POR DONO (`@@unique([userId, wingId])`), então
+ * dois donos podem cadastrar o MESMO `acme/api` — resolver por nome entregava
+ * a resposta de um dono à sessão do dev do OUTRO. */
+export interface ManipuladorDeRespostaArgs {
   dedupKey: string
   resposta: string
   projectId: string
+  userId: string
   autonomia: string | null | undefined
-}) => Promise<void>
+  opcoes: AgentQuestionOption[]
+}
+
+/**
+ * Uma entrada do registro: `prefixo` é comparado com `dedupKey.startsWith(...)`
+ * na ORDEM da lista — a primeira que casar é a única que executa (mesmo
+ * dedupKey nunca pertence a duas ações ao mesmo tempo, mas a ordem importa
+ * se dois prefixos puderem colidir). `executar` roda ANTES de `answer()`
+ * marcar a pergunta `answered`; se lançar, a exceção sobe e NADA é gravado
+ * (a pergunta continua `open`, pronta para nova tentativa) — mesma
+ * disciplina que os dois `if` fixos já tinham.
+ */
+export interface ManipuladorDeResposta {
+  prefixo: string
+  executar: (args: ManipuladorDeRespostaArgs) => Promise<void>
+}
 
 export interface AgentQuestionServiceDeps {
   notify?: NotifyFn
   /** Grava a decisão respondida na memória de longo prazo (Cortex) — best-effort. */
   cortex?: CortexWriter
   now?: () => Date
-  aoResponderAutomacao?: AoResponderAutomacaoFn
-  /** C4 (fix-up L4-T2): logger injetado para a falha de `aoResponderAutomacao`
-   *  — NUNCA `console.warn` (o padrão antigo, que não aparecia em lugar
-   *  nenhum monitorado). Produção passa `app.log.error`. */
+  /** A1 (fix-up L4-T3): registro de manipuladores de resposta por prefixo do
+   *  dedupKey (ex.: `automacao:`, `duvida-dev:`) — ver `ManipuladorDeResposta`
+   *  acima. Substitui os campos fixos `aoResponderAutomacao`/
+   *  `aoResponderDuvidaDoDev` que existiam antes desta task. */
+  manipuladoresDeResposta?: ManipuladorDeResposta[]
+  /** C4 (fix-up L4-T2): logger injetado para a falha de um manipulador de
+   *  resposta — NUNCA `console.warn` (o padrão antigo, que não aparecia em
+   *  lugar nenhum monitorado). Produção passa `app.log.error`. */
   onError?: (mensagem: string) => void
 }
 
@@ -178,7 +216,10 @@ export class AgentQuestionService {
   ): Promise<AgentQuestionRecord | null> {
     const existing = await this.prisma.agentQuestion.findUnique({
       where: { id: questionId },
-      include: { project: { select: { wingId: true } } },
+      // `autonomia` entrou aqui (fix-up A1, L4-T3) para nenhum manipulador
+      // de resposta precisar de uma query própria — `wingId` já era buscado
+      // por conta do Cortex mais abaixo.
+      include: { project: { select: { wingId: true, autonomia: true } } },
     })
     if (!existing) {
       console.warn('[agent-question] answer: dúvida não encontrada', { questionId })
@@ -188,31 +229,39 @@ export class AgentQuestionService {
       return existing as unknown as AgentQuestionRecord
     }
 
-    // C4 (fix-up L4-T2): para dedupKey de decisão de automação, a AÇÃO roda
-    // ANTES de marcar `answered` — o antigo best-effort (ação DEPOIS, falha
-    // vira warn e engolida) fingia sucesso: o dono clicava "Deletar", via a
-    // pergunta sumir, e o workflow continuava lá porque a ação de verdade
-    // (abrir o PR) tinha falhado em silêncio. Agora, se a ação falhar, a
-    // pergunta continua `open` — nova tentativa (Telegram/painel respondem
-    // de novo) — e o erro é logado pelo logger INJETADO (nunca
-    // `console.warn`, que não aparece em monitoramento nenhum). As outras
-    // perguntas (sem esse prefixo) mantêm a ordem de sempre.
-    if (existing.dedupKey?.startsWith('automacao:') && this.deps.aoResponderAutomacao) {
-      const projeto = await this.prisma.project.findUnique({
-        where: { id: existing.projectId },
-        select: { autonomia: true },
-      })
+    // A1 (fix-up L4-T3): registro de manipuladores por prefixo — substitui
+    // os dois `if (dedupKey.startsWith(...))` fixos (`automacao:`,
+    // `duvida-dev:`) que existiam aqui antes desta task. `answer()` escolhe
+    // o PRIMEIRO manipulador cujo prefixo casa com o dedupKey; nenhum
+    // casando, segue direto (idêntico ao "nenhum `if` bateu" de antes). A
+    // ação roda ANTES de marcar `answered` — o antigo best-effort (ação
+    // DEPOIS, falha vira warn e engolida) fingia sucesso: o dono clicava
+    // "Deletar"/"Sim", via a pergunta sumir, e a ação de verdade (abrir o
+    // PR / retomar a sessão do dev) tinha falhado em silêncio. Agora, se o
+    // manipulador falhar, a pergunta continua `open` — nova tentativa
+    // (Telegram/painel respondem de novo) — e o erro é logado pelo logger
+    // INJETADO (nunca `console.warn`, que não aparece em monitoramento
+    // nenhum).
+    const manipulador = existing.dedupKey
+      ? this.deps.manipuladoresDeResposta?.find((m) => existing.dedupKey!.startsWith(m.prefixo))
+      : undefined
+    if (manipulador) {
       try {
-        await this.deps.aoResponderAutomacao({
-          dedupKey: existing.dedupKey,
+        await manipulador.executar({
+          dedupKey: existing.dedupKey!,
           resposta: value,
           projectId: existing.projectId,
-          autonomia: (projeto as { autonomia?: string | null } | null)?.autonomia,
+          userId: existing.userId,
+          autonomia: (existing.project as { autonomia?: string | null } | null)?.autonomia,
+          opcoes: Array.isArray(existing.options)
+            ? (existing.options as unknown as AgentQuestionOption[])
+            : [],
         })
       } catch (err) {
         const mensagem = err instanceof Error ? err.message : String(err)
         this.deps.onError?.(
-          `[agent-question] decisão de automação falhou — pergunta ${questionId} continua open: ${mensagem}`
+          `[agent-question] manipulador de resposta (prefixo '${manipulador.prefixo}') falhou — ` +
+            `pergunta ${questionId} continua open: ${mensagem}`
         )
         throw err
       }

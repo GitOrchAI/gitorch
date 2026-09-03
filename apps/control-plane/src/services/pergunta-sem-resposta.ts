@@ -49,7 +49,25 @@ export const MAX_TENTATIVAS_DE_RESPOSTA = 3
  */
 export const JANELA_DE_TENTATIVA_EM_VOO_MS = 15 * 60_000
 
-type Situacao = 'tentando' | 'respondida' | 'desisti'
+/**
+ * A4 (fix-up L4-T3, DÍVIDA — não resolver agora): `answered_hash` (a coluna
+ * real por trás de `DevSession.answeredHash`, ver schema.prisma) carrega
+ * TRÊS significados de negócio bem diferentes dentro do mesmo campo de texto
+ * (`respondida:`/`desisti:`/`escalada:`, além do em-voo `tentando:`) — cada
+ * um decodificado por `lerMarca` abaixo a partir de um prefixo dentro de uma
+ * string, nunca por uma coluna própria. Funciona porque `lerMarca` é a
+ * ÚNICA porta de leitura (nenhum outro lugar faz `startsWith` direto na
+ * coluna, exceto o único caso documentado em `marcarEscalada` acima:
+ * `session-watch.ts`), mas é uma dívida: um estado novo (ex.: uma L4-T4
+ * que precisasse de um 5º significado) tem que caber no MESMO formato
+ * `<situação>:<tentativas>:<hash>` ou reabre a ambiguidade que a introdução
+ * deste arquivo documenta (dois significados se sobrescrevendo). A correção
+ * de verdade é uma coluna própria (ou uma tabela via ledger, no padrão que
+ * o resto do produto já usa para histórico) — fora do escopo desta task;
+ * fica registrado aqui para a L4-T4 (ou quem mexer aqui depois) não
+ * redescobrir o problema do zero.
+ */
+type Situacao = 'tentando' | 'respondida' | 'desisti' | 'escalada'
 
 interface MarcaLida {
   situacao: Situacao
@@ -81,6 +99,30 @@ export function marcarDesistencia(hash: string, tentativas: number): string {
 }
 
 /**
+ * A pergunta subiu de VERDADE ao dono (L4-T3) — nunca "respondida".
+ *
+ * MEDIDO ao vivo em 02/09: 24 sessões marcadas `respondida:0:<hash>` no
+ * instante da escalada, ANTES de qualquer `agent_question` existir — e
+ * `agent_questions` com ZERO linhas de dedupKey `duvida-dev:*`. O produto
+ * achava que tinha perguntado; ninguém nunca viu nada. `escalada` é um
+ * terceiro estado, distinto de `respondida`: ninguém respondeu ainda (é o
+ * dono quem vai responder — e a resposta dele RETOMA a sessão, ver
+ * `services/retomar-sessao-com-resposta.ts`), mas a MESMA pergunta também não
+ * pode ser refeita a cada acordada do QA (gastaria motor formulando de novo
+ * uma pergunta que já está na mesa do dono).
+ *
+ * Mantém o formato de três partes (`<situação>:<tentativas>:<hash>`) das
+ * irmãs acima — não um simples `'escalada:' + hash` solto — porque é isso
+ * que permite `lerMarca`/`decidirSobreAPergunta` reconhecerem o estado pela
+ * MESMA leitura que já existe, sem um segundo formato de marca no mesmo
+ * campo. `startsWith('escalada:')` continua válido para quem só precisa do
+ * prefixo (ex.: `session-watch.ts`).
+ */
+export function marcarEscalada(hash: string): string {
+  return `escalada:0:${hash}`
+}
+
+/**
  * Lê a marca. Formato desconhecido (ou marca de uma versão anterior) vira
  * "nunca vi esta pergunta" de propósito: é o padrão seguro — no pior caso o
  * produto tenta uma vez a mais, em vez de desistir de uma pergunta viva.
@@ -90,7 +132,13 @@ export function lerMarca(bruto: string | null): MarcaLida | null {
   const partes = bruto.split(':')
   if (partes.length < 3) return null
   const [situacao, tentativas, ...resto] = partes
-  if (situacao !== 'tentando' && situacao !== 'respondida' && situacao !== 'desisti') return null
+  if (
+    situacao !== 'tentando' &&
+    situacao !== 'respondida' &&
+    situacao !== 'desisti' &&
+    situacao !== 'escalada'
+  )
+    return null
   const n = Number(tentativas)
   if (!Number.isInteger(n) || n < 0) return null
   return { situacao, hash: resto.join(':'), tentativas: n }
@@ -137,6 +185,16 @@ export function decidirSobreAPergunta(args: {
   }
   if (lida.situacao === 'desisti') {
     return { acao: 'nada', motivo: 'já desistimos desta pergunta e o dono já foi avisado' }
+  }
+  if (lida.situacao === 'escalada') {
+    // L4-T3: já subiu ao dono de verdade (agent_question com dedupKey
+    // duvida-dev:*). Não é "respondida" (ninguém respondeu ainda), mas
+    // também não se reformula a cada ciclo — a resposta do dono é quem
+    // resolve isto, por `retomar-sessao-com-resposta.ts`.
+    return {
+      acao: 'nada',
+      motivo: 'esta pergunta já foi escalada ao dono e aguarda a decisão dele',
+    }
   }
 
   // ALGUÉM ESTÁ TENTANDO AGORA — não some por cima.
