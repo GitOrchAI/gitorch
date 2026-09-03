@@ -225,6 +225,51 @@ describe('validateForm (validador minimal por schema)', () => {
   })
 })
 
+// L4-T4 (D64): a dúvida do dev, ESCALADA ao dono, venceu 24h sem resposta —
+// o RA forma uma suposição para seguir o dev sem esperar mais. Três campos:
+// a suposição em si (piso de 40 chars — o mesmo piso de `ehRespostaUtil`,
+// duvida-do-dev.ts, para não deixar "acho que sim" destravar ninguém), o
+// PORQUÊ (piso de 20 — o dono precisa entender a base antes de corrigir) e
+// os arquivos citados (pelo menos 1 — sem isto não dá pra saber se o RA leu
+// o repositório de verdade ou só chutou).
+describe('RAILS_SCHEMAS.duvidaSuposicao (L4-T4, D64)', () => {
+  const boa = {
+    suposicao:
+      'Vou usar o padrão de hashing já existente em src/lib/hash.ts (argon2id) para o novo endpoint.',
+    justificativa: 'É o único helper de hash do repositório e já é usado no login.',
+    arquivosCitados: ['src/lib/hash.ts'],
+  }
+
+  it('aceita uma suposição completa, com justificativa e arquivo citado', () => {
+    const r = validateForm(RAILS_SCHEMAS.duvidaSuposicao, boa)
+    expect(r.ok).toBe(true)
+  })
+
+  it('rejeita suposição curta demais (< 40 caracteres) — não desbloqueia ninguém', () => {
+    const r = validateForm(RAILS_SCHEMAS.duvidaSuposicao, { ...boa, suposicao: 'Acho que sim.' })
+    expect(r.ok).toBe(false)
+    expect(r.errors.join(' ')).toContain('suposicao')
+  })
+
+  it('rejeita justificativa curta demais (< 20 caracteres)', () => {
+    const r = validateForm(RAILS_SCHEMAS.duvidaSuposicao, { ...boa, justificativa: 'porque sim' })
+    expect(r.ok).toBe(false)
+    expect(r.errors.join(' ')).toContain('justificativa')
+  })
+
+  it('rejeita sem nenhum arquivo citado — suposição sem lastro no repositório', () => {
+    const r = validateForm(RAILS_SCHEMAS.duvidaSuposicao, { ...boa, arquivosCitados: [] })
+    expect(r.ok).toBe(false)
+    expect(r.errors.join(' ')).toContain('arquivosCitados')
+  })
+
+  it('rejeita faltando um campo obrigatório', () => {
+    const { justificativa: _omitida, ...semJustificativa } = boa
+    const r = validateForm(RAILS_SCHEMAS.duvidaSuposicao, semJustificativa)
+    expect(r.ok).toBe(false)
+  })
+})
+
 describe('validateDoD (código puro, 8 campos)', () => {
   const good = {
     titulo: '[Task] Adicionar coluna material',

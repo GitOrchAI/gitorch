@@ -22,7 +22,12 @@ export function TelaDecisoes({
   setFoco: (id: string) => void
 }) {
   const [filtro, setFiltro] = useState<'pendente' | 'respondida' | 'todas'>('pendente')
-  const lista = decisoes.filter((d) => filtro === 'todas' || d.st === filtro)
+  // 'assumida' (L4-T4, D64) entra no filtro "Respondidas": não é resposta do
+  // dono, mas também não é mais "esperando você" — a `Decisao` já diferencia
+  // com o selo "Suposição do RA".
+  const lista = decisoes.filter(
+    (d) => filtro === 'todas' || d.st === filtro || (filtro === 'respondida' && d.st === 'assumida')
+  )
   const sel = decisoes.find((d) => d.id === foco) ?? lista[0]
   const pend = decisoes.filter((d) => d.st === 'pendente').length
 

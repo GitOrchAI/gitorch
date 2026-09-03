@@ -936,3 +936,123 @@ describe('A1: manipuladoresDeResposta — registro de manipuladores por prefixo'
     expect(segundo).not.toHaveBeenCalled()
   })
 })
+
+// L4-T4 (D64): o RA formou uma suposição para uma dúvida ESCALADA que o dono
+// deixou 24h em silêncio. `marcarAssumida` grava isso — mas NÃO é uma
+// resposta do dono (nunca passa pelo registro de manipuladores de
+// `answer()`, nunca vira configuração do projeto via `answer()`'s side
+// effects): é só o registro de que o produto seguiu sozinho, provisoriamente.
+describe('AgentQuestionService.marcarAssumida (L4-T4, D64)', () => {
+  test('grava status=assumida, answer=suposição, answeredVia=ra-suposicao, answeredAt', async () => {
+    const prisma = fakePrisma()
+    prisma.questions.set('q_1', {
+      id: 'q_1',
+      projectId: 'p1',
+      userId: 'u1',
+      text: 'Devo usar bcrypt ou argon2?',
+      dedupKey: 'duvida-dev:acme/api:93:hash',
+      status: 'open',
+      options: [],
+      answer: null,
+      answeredAt: null,
+      answeredVia: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const svc = new AgentQuestionService(prisma as any)
+
+    const resultado = await svc.marcarAssumida(
+      'q_1',
+      'Vou usar argon2id, o mesmo padrão de src/lib/hash.ts.'
+    )
+
+    expect(resultado?.status).toBe('assumida')
+    expect(resultado?.answer).toBe('Vou usar argon2id, o mesmo padrão de src/lib/hash.ts.')
+    expect(resultado?.answeredVia).toBe('ra-suposicao')
+    expect(resultado?.answeredAt).toBeInstanceOf(Date)
+  })
+
+  test('NUNCA passa pelo registro de manipuladores de resposta — não é ação do dono', async () => {
+    const prisma = fakePrisma()
+    prisma.questions.set('q_1', {
+      id: 'q_1',
+      projectId: 'p1',
+      userId: 'u1',
+      text: 'x',
+      dedupKey: 'duvida-dev:acme/api:93:hash',
+      status: 'open',
+      options: [],
+      answer: null,
+      answeredAt: null,
+      answeredVia: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const manipulador = vi.fn(async () => undefined)
+    const svc = new AgentQuestionService(prisma as any, {
+      manipuladoresDeResposta: [{ prefixo: 'duvida-dev:', executar: manipulador }],
+    })
+
+    await svc.marcarAssumida('q_1', 'suposição qualquer, texto suficiente para passar.')
+
+    expect(manipulador).not.toHaveBeenCalled()
+  })
+
+  test('pergunta inexistente devolve null sem lançar', async () => {
+    const prisma = fakePrisma()
+    const svc = new AgentQuestionService(prisma as any)
+
+    const resultado = await svc.marcarAssumida('nao-existe', 'qualquer suposição de teste aqui.')
+
+    expect(resultado).toBeNull()
+  })
+
+  test('idempotente: pergunta já answered (o dono respondeu antes do RA terminar) NÃO é sobrescrita', async () => {
+    const prisma = fakePrisma()
+    prisma.questions.set('q_1', {
+      id: 'q_1',
+      projectId: 'p1',
+      userId: 'u1',
+      text: 'x',
+      dedupKey: null,
+      status: 'answered',
+      options: [],
+      answer: 'decisão real do dono',
+      answeredAt: new Date('2026-01-01T00:00:00.000Z'),
+      answeredVia: 'panel',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const svc = new AgentQuestionService(prisma as any)
+
+    const resultado = await svc.marcarAssumida('q_1', 'suposição do RA, que chegou tarde demais.')
+
+    expect(resultado?.answer).toBe('decisão real do dono')
+    expect(resultado?.answeredVia).toBe('panel')
+    expect(prisma.agentQuestion.update).not.toHaveBeenCalled()
+  })
+
+  test('idempotente: já assumida antes NÃO regrava (segunda tentativa do mesmo ciclo)', async () => {
+    const prisma = fakePrisma()
+    prisma.questions.set('q_1', {
+      id: 'q_1',
+      projectId: 'p1',
+      userId: 'u1',
+      text: 'x',
+      dedupKey: null,
+      status: 'assumida',
+      options: [],
+      answer: 'primeira suposição',
+      answeredAt: new Date('2026-01-01T00:00:00.000Z'),
+      answeredVia: 'ra-suposicao',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const svc = new AgentQuestionService(prisma as any)
+
+    const resultado = await svc.marcarAssumida('q_1', 'segunda suposição, diferente da primeira.')
+
+    expect(resultado?.answer).toBe('primeira suposição')
+    expect(prisma.agentQuestion.update).not.toHaveBeenCalled()
+  })
+})

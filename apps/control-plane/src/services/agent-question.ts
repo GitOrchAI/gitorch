@@ -333,6 +333,44 @@ export class AgentQuestionService {
   }
 
   /**
+   * L4-T4 (D64): a dúvida ESCALADA ao dono ficou 24h em silêncio e o RA
+   * formou uma suposição para o dev seguir em frente — o dono pode corrigir
+   * depois. Marca a pergunta como decidida PROVISORIAMENTE pelo produto,
+   * nunca pelo dono.
+   *
+   * Deliberadamente MAIS SIMPLES que `answer()`: NUNCA passa pelo registro
+   * de `manipuladoresDeResposta` (nenhuma automação/retomada de sessão é
+   * disparada por aqui — quem já entregou a suposição ao dev e comentou na
+   * issue foi `session-watch.ts`/scheduler, ANTES de chamar isto), nunca
+   * vira `runtimeConfig` do projeto (`configuracaoAPartirDaResposta` é para
+   * decisão REAL do dono, D49) e nunca escreve no Cortex como decisão de
+   * rumo — seria uma memória enganosa, atribuindo ao dono algo que ele nunca
+   * viu.
+   *
+   * IDEMPOTENTE, no mesmo espírito de `answer()`: uma pergunta já `answered`
+   * (o dono respondeu de verdade antes do RA terminar) ou já `assumida`
+   * (uma passagem anterior já gravou) nunca é sobrescrita — devolve o estado
+   * atual sem regravar. `questionId` inexistente devolve `null` sem lançar.
+   */
+  async marcarAssumida(questionId: string, suposicao: string): Promise<AgentQuestionRecord | null> {
+    const existing = await this.prisma.agentQuestion.findUnique({ where: { id: questionId } })
+    if (!existing) {
+      console.warn('[agent-question] marcarAssumida: dúvida não encontrada', { questionId })
+      return null
+    }
+    if (existing.status === 'answered' || existing.status === 'assumida') {
+      return existing as unknown as AgentQuestionRecord
+    }
+
+    const now = this.deps.now ? this.deps.now() : new Date()
+    const updated = await this.prisma.agentQuestion.update({
+      where: { id: questionId },
+      data: { answer: suposicao, answeredAt: now, answeredVia: 'ra-suposicao', status: 'assumida' },
+    })
+    return updated as unknown as AgentQuestionRecord
+  }
+
+  /**
    * Dúvidas do DONO (userId), em qualquer projeto — abertas primeiro, depois
    * por `createdAt` (mais recente primeiro). Alimenta o painel (GET .../
    * agent-questions, rota de outra task).

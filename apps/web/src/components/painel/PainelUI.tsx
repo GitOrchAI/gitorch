@@ -142,7 +142,14 @@ export interface DecisaoView {
   /** número do pedido de origem, quando conhecido */
   pedido?: number
   op: OpcaoDecisao[]
-  st: 'pendente' | 'respondida'
+  /**
+   * `assumida` (L4-T4, D64): a dúvida foi ESCALADA ao dono, ele ficou 24h em
+   * silêncio, e o RA formou uma suposição para o dev seguir em frente — o
+   * dono ainda pode corrigir. Nunca conta como "esperando você" (não é mais
+   * pendente), mas também não é a resposta DELE — o selo "Suposição do RA"
+   * em `Decisao` avisa a diferença.
+   */
+  st: 'pendente' | 'respondida' | 'assumida'
   resposta?: string
   tec?: string
 }
@@ -169,12 +176,18 @@ export function Decisao({
         {d.agente} · {d.quando}
         {d.pedido ? ` · pedido #${d.pedido}` : ''}
       </div>
-      {d.st === 'respondida' ? (
+      {d.st === 'respondida' || d.st === 'assumida' ? (
         <div className="pn-answered">
           <span className="pn-label" style={{ color: 'var(--gl-accent-ink)', marginBottom: 4 }}>
-            Sua resposta
+            {d.st === 'assumida' ? 'Suposição do RA' : 'Sua resposta'}
           </span>
           <span style={{ fontSize: 14 }}>{rotuloDaResposta}</span>
+          {d.st === 'assumida' && (
+            <span className="pn-rs" style={{ display: 'block', marginTop: 4 }}>
+              O dono não respondeu em 24h; o produto seguiu com esta suposição. Você ainda pode
+              corrigir.
+            </span>
+          )}
         </div>
       ) : (
         <>

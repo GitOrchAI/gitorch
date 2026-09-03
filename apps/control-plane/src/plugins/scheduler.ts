@@ -187,6 +187,7 @@ import {
   type PrismaParaReconciliacao,
 } from '../services/reconciliar-duvidas-escaladas.js'
 import { lerCadenciaMs } from '../services/cadencia-de-varredura.js'
+import { dedupKeyDeDuvidaDoDev } from '../services/dedup-key-de-duvida.js'
 import {
   decidirSobreAPergunta,
   marcarDesistencia,
@@ -6507,6 +6508,87 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         )
         const chaveDaLinha = (sessionName: string): Promise<string | undefined> =>
           chaveDaConta(contaDaSessao.get(sessionName) ?? null)
+
+        // L4-T4 (D64): as TRÊS pontas reais da suposição do RA que NÃO
+        // precisam de motor — comentar na issue (fetch guardado pela
+        // autonomia do projeto, mesmo padrão de `vigia-do-pr.ts`), marcar a
+        // pergunta como assumida (agentQuestionService já registrado pelo
+        // telegramPlugin) e entregar o texto ao dev (MESMA BYOK de
+        // `chaveDaLinha`/`reentregarAviso`, sem credencial nova).
+        //
+        // `suporSemODono` (quem FORMULA a suposição, com motor real) fica de
+        // fora deste wiring: o único `execute: StepExecutor` que existe hoje
+        // no scheduler nasce dentro de `executeMissionWithFailover`, preso a
+        // uma linha de `Mission` real, seleção/failover de motor e
+        // orçamento diário — não existe primitiva "rode UM prompt avulso"
+        // fora daquele pipeline. Duplicar a resolução de credencial/adapter
+        // aqui, fora do failover, seria mexer no coração do sistema de
+        // missões sem o teste de costura que ele merece. Enquanto isso não
+        // existir, o ramo cai — de forma segura e testada — no caminho "sem
+        // suposição concreta" (avisa o dono uma vez, nunca fecha, nunca
+        // mente). Reportado como o que falta para D64 fechar 100%.
+        const comentarNaIssueDoProjeto = async (args: {
+          issueNumber: number
+          texto: string
+        }): Promise<void> => {
+          const token =
+            process.env['GITORCH_GITHUB_TOKEN'] ??
+            (await mintInstallationToken({
+              repository: projeto.wingId,
+              onError: (m) => app.log.error(m),
+              onWarn: (m) => app.log.warn(m),
+            })) ??
+            undefined
+          if (!token) {
+            throw new Error(`comentarNaIssue: sem token de GitHub para ${projeto.wingId}`)
+          }
+          const fetchDoCliente = fetchDoRepositorio({ nivel: () => projeto.autonomia })
+          const resp = await fetchDoCliente(
+            `https://api.github.com/repos/${projeto.wingId}/issues/${args.issueNumber}/comments`,
+            {
+              method: 'POST',
+              headers: {
+                authorization: `token ${token}`,
+                accept: 'application/vnd.github+json',
+                'content-type': 'application/json',
+                'user-agent': 'gitorch',
+              },
+              body: JSON.stringify({ body: args.texto }),
+            }
+          )
+          if (!resp.ok) {
+            throw new Error(
+              `comentarNaIssue: POST /repos/${projeto.wingId}/issues/${args.issueNumber}/comments -> ${resp.status}`
+            )
+          }
+        }
+
+        const marcarAssumidaDoProjeto = async (args: {
+          issueNumber: number
+          hash: string
+          suposicao: string
+        }): Promise<void> => {
+          const perguntador = (app as unknown as { agentQuestionService?: AgentQuestionService })
+            .agentQuestionService
+          if (!perguntador) {
+            throw new Error('marcarAssumida: agentQuestionService não registrado')
+          }
+          const dedupKey = dedupKeyDeDuvidaDoDev({
+            repo: projeto.wingId,
+            issue: args.issueNumber,
+            hash: args.hash,
+          })
+          const question = await app.prisma.agentQuestion.findFirst({
+            where: { projectId: projeto.id, dedupKey },
+          })
+          if (!question) {
+            throw new Error(
+              `marcarAssumida: agent_question não encontrada para dedupKey ${dedupKey}`
+            )
+          }
+          await perguntador.marcarAssumida(question.id, args.suposicao)
+        }
+
         const vigiaOut = await vigiarSessoes({
           sessoes: sessoesParaVigiaPreMerge(sessoesDoProjeto),
           consultarSessao: async (sessionName) =>
@@ -6580,6 +6662,18 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           fecharSessao: (args) => fecharSessaoEArquivar(args),
           registrarInvestigacao: (args) =>
             registrarInvestigacao({ prisma: app.prisma as unknown as PrismaDevSession, ...args }),
+          // L4-T4 (D64): entrega da suposição do RA ao dev — MESMA BYOK de
+          // `reentregarAviso` acima, só com texto arbitrário em vez do
+          // pedido fixo de retrabalho.
+          responder: async ({ sessionName, texto }) =>
+            responderSessaoJules({
+              apiKey: await chaveDaLinha(sessionName),
+              sessionName,
+              texto,
+              onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+            }),
+          comentarNaIssue: comentarNaIssueDoProjeto,
+          marcarAssumida: marcarAssumidaDoProjeto,
           ...(notify ? { avisarDono: notify } : {}),
           agora: new Date(),
           onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),

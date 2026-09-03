@@ -75,7 +75,10 @@ function paraDecisao(q: AgentQuestionView): DecisaoView {
     agente: 'Um agente',
     quando: tempoRelativo(q.createdAt),
     op: q.options.map((o) => ({ label: o.label, value: o.value })),
-    st: q.status === 'answered' ? 'respondida' : 'pendente',
+    // 'assumida' (L4-T4, D64): o RA formou a suposição depois de 24h de
+    // silêncio do dono — não é resposta dele, mas também não conta mais
+    // como "esperando você" (a Decisao mostra o selo "Suposição do RA").
+    st: q.status === 'answered' ? 'respondida' : q.status === 'assumida' ? 'assumida' : 'pendente',
     resposta: q.answer ?? undefined,
   }
 }

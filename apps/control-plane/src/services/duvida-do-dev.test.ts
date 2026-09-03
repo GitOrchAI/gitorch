@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   ehRespostaUtil,
+  citaAlgoConcreto,
   destinoDaDuvida,
   destinoAposRa,
   resolvePoliticaDePerguntasAoDono,
@@ -8,6 +9,34 @@ import {
   pareceTrabalhoJaFeito,
   MIN_CARACTERES_DE_RESPOSTA,
 } from './duvida-do-dev.js'
+
+// L4-T4 (D64): exportada para `suporSemODono` (duvida-rails-mission.ts)
+// aplicar o MESMO freio de concretude à suposição do RA. Estes testes
+// provam que a extração não mudou o comportamento — `ehRespostaUtil` reusa
+// esta mesma função (ver os testes de "cita algo concreto" mais abaixo).
+describe('citaAlgoConcreto — a suposição/resposta aponta para algo real do repositório?', () => {
+  it('arquivo com extensão real passa', () => {
+    expect(citaAlgoConcreto('veja src/lib/hash.ts')).toBe(true)
+  })
+
+  it('crase com código passa', () => {
+    expect(citaAlgoConcreto('chame `hashSenha()`')).toBe(true)
+  })
+
+  it('função() sem crase passa', () => {
+    expect(citaAlgoConcreto('chame hashSenha() direto')).toBe(true)
+  })
+
+  it('caminho src/apps/packages/lib/scripts passa', () => {
+    expect(citaAlgoConcreto('está em packages/cadence/src/rails.ts')).toBe(true)
+  })
+
+  it('opinião genérica sem nada concreto não passa', () => {
+    expect(citaAlgoConcreto('acho que dá para usar qualquer biblioteca de hash conhecida')).toBe(
+      false
+    )
+  })
+})
 
 describe('ehRespostaUtil — nada de mandar vazio para o dev', () => {
   it('resposta de verdade passa', () => {

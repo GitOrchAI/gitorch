@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { runDuvidaMissionViaRails } from './duvida-rails-mission.js'
+import { runDuvidaMissionViaRails, suporSemODono } from './duvida-rails-mission.js'
 
 const BASE = {
   pergunta: 'Devo usar bcrypt ou argon2 para o hash de senha?',
@@ -131,5 +131,63 @@ describe('runDuvidaMissionViaRails', () => {
       expect(r.destino.perguntaExecutiva).toBeUndefined()
       expect(r.destino.opcoes).toBeUndefined()
     }
+  })
+})
+
+// L4-T4 (D64): a dúvida ESCALADA ao dono venceu 24h sem resposta dele. Em
+// vez de matar a sessão do dev ou continuar acordando o QA para sempre num
+// no-op, o RA forma uma SUPOSIÇÃO com o contexto do repositório — o dono
+// pode corrigir depois.
+describe('suporSemODono (L4-T4, D64)', () => {
+  it('suposição concreta (cita arquivo real) é devolvida como está', async () => {
+    const execute = vi.fn(async () =>
+      JSON.stringify({
+        suposicao:
+          'Vou usar argon2id, o mesmo padrão de src/lib/hash.ts, para o novo endpoint de login.',
+        justificativa: 'É o único helper de hash do repositório e já é usado no login hoje.',
+        arquivosCitados: ['src/lib/hash.ts'],
+      })
+    )
+
+    const r = await suporSemODono({ ...BASE, execute })
+
+    expect(r).not.toBeNull()
+    expect(r?.suposicao).toContain('src/lib/hash.ts')
+    expect(r?.arquivosCitados).toEqual(['src/lib/hash.ts'])
+  })
+
+  it('suposição sem NADA concreto no texto vira null — mesmo freio de duvida-do-dev.ts', async () => {
+    // O formulário PASSA no schema (40+ chars, arquivosCitados não vazio),
+    // mas a prosa da suposição em si não aponta para nada real — o mesmo
+    // buraco que motivou CITA_ALGO_CONCRETO em duvida-do-dev.ts.
+    const execute = vi.fn(async () =>
+      JSON.stringify({
+        suposicao:
+          'Acho que dá para usar qualquer abordagem de autenticação comum sem problema nenhum aqui.',
+        justificativa: 'Parece razoável e não deve quebrar nada no fluxo existente.',
+        arquivosCitados: ['algum-arquivo.ts'],
+      })
+    )
+
+    const r = await suporSemODono({ ...BASE, execute })
+
+    expect(r).toBeNull()
+  })
+
+  it('a pergunta original e o número da issue vão inteiros no prompt', async () => {
+    const prompts: string[] = []
+    const execute = vi.fn(async (prompt: string) => {
+      prompts.push(prompt)
+      return JSON.stringify({
+        suposicao: 'Vou seguir o padrão de src/lib/hash.ts para o hashing deste endpoint novo.',
+        justificativa: 'É o único helper de hash já usado no login.',
+        arquivosCitados: ['src/lib/hash.ts'],
+      })
+    })
+
+    await suporSemODono({ ...BASE, execute })
+
+    expect(prompts[0]).toContain(BASE.pergunta)
+    expect(prompts[0]).toContain('#7')
   })
 })

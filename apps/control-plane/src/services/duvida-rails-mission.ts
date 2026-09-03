@@ -1,6 +1,11 @@
 import { RAILS_SCHEMAS, buildStepPrompt } from '@gitorch/cadence'
 import { runFormStep } from './rails-runner.js'
-import { destinoDaDuvida, textoDaRespostaAoDev, type DestinoDaDuvida } from './duvida-do-dev.js'
+import {
+  destinoDaDuvida,
+  textoDaRespostaAoDev,
+  citaAlgoConcreto,
+  type DestinoDaDuvida,
+} from './duvida-do-dev.js'
 import type { StepExecutor } from './role-rails.js'
 
 /**
@@ -95,4 +100,70 @@ export async function runDuvidaMissionViaRails(
     mensagemParaODev:
       destino.tipo === 'responder-o-dev' ? textoDaRespostaAoDev(destino.resposta) : null,
   }
+}
+
+/**
+ * A SUPOSIÇÃO do RA quando a dúvida foi ESCALADA ao dono e ele ficou 24h em
+ * silêncio (L4-T4, D64).
+ *
+ * Diferente de `runDuvidaMissionViaRails` acima: aqui não existe mais
+ * "perguntar ao dono" como destino — o dono JÁ FOI perguntado
+ * (`escalar-duvida-ao-dono.ts`) e não respondeu a tempo. O RA lê o
+ * repositório e forma uma suposição TÉCNICA para o dev seguir em frente; o
+ * dono continua podendo corrigir depois (`agent-question.ts marcarAssumida`
+ * grava a suposição como decisão provisória, não definitiva).
+ */
+export interface SuposicaoDoRa {
+  suposicao: string
+  justificativa: string
+  arquivosCitados: string[]
+}
+
+export interface SuporSemODonoOptions {
+  /** O que o dev perguntou, na íntegra — a MESMA pergunta que foi escalada. */
+  pergunta: string
+  repository: string
+  issueNumber: number
+  execute: StepExecutor
+  contextBlocks: string[]
+}
+
+/**
+ * Formula a suposição, ou `null` quando ela não passa no freio de
+ * concretude. `null` é o sinal para `session-watch.ts` manter a espera e
+ * avisar o dono, em vez de entregar ao dev uma opinião genérica travestida
+ * de decisão.
+ */
+export async function suporSemODono(options: SuporSemODonoOptions): Promise<SuposicaoDoRa | null> {
+  const formulario = (await runFormStep({
+    schema: RAILS_SCHEMAS.duvidaSuposicao,
+    prompt: buildStepPrompt('ra', 'duvida-suposicao', RAILS_SCHEMAS.duvidaSuposicao, [
+      ...options.contextBlocks,
+      `The async developer working on issue #${options.issueNumber} of ${options.repository} ` +
+        'asked a question that was ESCALATED to the product owner as a business decision. The ' +
+        'owner has been silent for 24 HOURS and the work is still frozen — this is the ' +
+        'original question:',
+      '',
+      options.pergunta,
+      '',
+      'Since the owner has not answered, form a CONCRETE SUPPOSITION so the developer can keep ' +
+        'going — the owner can still correct this later, it is not final. Ground it in the REAL ' +
+        'repository: read the actual code, cite real files, real existing patterns, never invent. ' +
+        '`suposicao` is the technical decision itself, `justificativa` is why (in one or two ' +
+        'sentences), and `arquivosCitados` lists the real file paths you based this on. Never ' +
+        'fabricate a file that does not exist.',
+    ]),
+    execute: options.execute,
+  })) as SuposicaoDoRa
+
+  // O MESMO freio de concretude que `duvida-do-dev.ts` aplica à resposta
+  // comum (`ehRespostaUtil`): o schema já garante tamanho mínimo e pelo
+  // menos um arquivo citado, mas nada impede o modelo de escrever uma
+  // suposição vaga ("acho que qualquer abordagem serve") enquanto cita um
+  // arquivo qualquer só para passar na forma. Sem apontar para algo REAL no
+  // próprio texto da suposição, ela não desbloqueia ninguém — vira null, e
+  // `session-watch.ts` mantém a espera em vez de entregar isto ao dev.
+  if (!citaAlgoConcreto(formulario.suposicao)) return null
+
+  return formulario
 }
