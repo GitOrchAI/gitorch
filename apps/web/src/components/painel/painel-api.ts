@@ -165,8 +165,15 @@ export type ResponderDecisaoResultado =
 
 /**
  * Responde uma decisão pelo painel (POST /api/v1/painel/decisoes/:id/responder).
- * 409 = a mesma pergunta já foi respondida pelo Telegram: devolve a resposta
- * que existe, para a tela mostrar em vez de sumir com o clique.
+ * A rota devolve DOIS 409 diferentes (routes/painel.ts) — o `code` no corpo
+ * é quem distingue, NUNCA a presença do campo `answer` (fix-up da revisão:
+ * todo 409 virava "já foi respondida", inclusive o novo, que na verdade
+ * significa que o control-plane não conseguiu registrar a resposta agora):
+ *   - `code: 'JA_RESPONDIDA'` — a mesma pergunta já foi respondida pelo
+ *     Telegram: devolve a resposta que existe, para a tela mostrar em vez de
+ *     sumir com o clique.
+ *   - `code: 'ERRO_AO_RESPONDER'` (ou qualquer outro/ausente) — falha real ao
+ *     registrar agora; nunca finge que já foi respondida.
  */
 export async function responderDecisao(
   id: string,
@@ -187,14 +194,22 @@ export async function responderDecisao(
   } catch (e) {
     const erro = e as ErroDaApi
     if (erro.status === 409) {
-      const jaRespondida =
-        erro.corpo && typeof erro.corpo === 'object' && 'answer' in erro.corpo
-          ? String((erro.corpo as { answer?: unknown }).answer ?? '')
+      const corpo =
+        erro.corpo && typeof erro.corpo === 'object'
+          ? (erro.corpo as Record<string, unknown>)
           : undefined
+      const codigo = corpo && typeof corpo['code'] === 'string' ? corpo['code'] : undefined
+      if (codigo === 'JA_RESPONDIDA') {
+        const jaRespondida = corpo && 'answer' in corpo ? String(corpo['answer'] ?? '') : undefined
+        return {
+          ok: false,
+          ...(jaRespondida ? { jaRespondida } : {}),
+          erro: 'Essa decisão já foi respondida pelo Telegram.',
+        }
+      }
       return {
         ok: false,
-        ...(jaRespondida ? { jaRespondida } : {}),
-        erro: 'Essa decisão já foi respondida pelo Telegram.',
+        erro: 'Não deu para registrar sua resposta agora. Tente de novo em instantes.',
       }
     }
     if (erro.status === 404) return { ok: false, erro: 'Essa decisão não existe mais.' }

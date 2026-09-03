@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from 'vitest'
-import { aoResponderDuvidaDoDev, type PrismaParaRetomada } from './retomar-sessao-com-resposta.js'
+import {
+  aoResponderDuvidaDoDev,
+  manipuladorDeResultadoDeRetomada,
+  AVISO_CORRECAO_SEM_SESSAO_VIVA,
+  type PrismaParaRetomada,
+} from './retomar-sessao-com-resposta.js'
 
 /**
  * L4-T3 (item 3): a resposta do DONO a uma dúvida escalada (agent_question
@@ -68,10 +73,17 @@ const ARGS_BASE = {
 }
 
 describe('aoResponderDuvidaDoDev', () => {
-  it('dedupKey de outro tipo (ex.: automacao:) NUNCA aciona nada', async () => {
+  // Fix-up (revisão): antes deste teste, os dois casos abaixo (dedupKey de
+  // outro assunto vs. dedupKey do assunto CERTO mas corrompido) devolviam o
+  // MESMO `{ entregue: false }` sem motivo — o chamador (plugins/telegram.ts)
+  // só sabe avisar o dono quando `motivo === 'sem-sessao-viva'`, então uma
+  // correção do dono numa pergunta com chave malformada sumia sem aviso
+  // nenhum, igualzinho ao caso "nem era meu assunto" (que É certo ficar em
+  // silêncio). Agora os dois têm motivo PRÓPRIO e distinto.
+  it('dedupKey de outro tipo (ex.: automacao:) NUNCA aciona nada — não é assunto deste manipulador (motivo nao-aplicavel)', async () => {
     const deps = depsFalso()
 
-    await aoResponderDuvidaDoDev(
+    const resultado = await aoResponderDuvidaDoDev(
       {
         dedupKey: 'automacao:acme/api:workflow-x',
         resposta: 'deletar',
@@ -84,12 +96,13 @@ describe('aoResponderDuvidaDoDev', () => {
 
     expect(deps.responderSessaoJules).not.toHaveBeenCalled()
     expect((deps.prisma as PrismaParaRetomada).devSession.findFirst).not.toHaveBeenCalled()
+    expect(resultado).toEqual({ entregue: false, motivo: 'nao-aplicavel' })
   })
 
-  it('dedupKey mal formado (sem hash) NUNCA aciona nada', async () => {
+  it('dedupKey COM o prefixo duvida-dev: mas malformado (issue não é número) NUNCA aciona nada — mas é falha DE VERDADE (motivo chave-malformada)', async () => {
     const deps = depsFalso()
 
-    await aoResponderDuvidaDoDev(
+    const resultado = await aoResponderDuvidaDoDev(
       {
         dedupKey: 'duvida-dev:acme/api:naoenumero:hash',
         resposta: 'sim',
@@ -100,14 +113,20 @@ describe('aoResponderDuvidaDoDev', () => {
       deps as never
     )
 
+    expect(resultado).toEqual({ entregue: false, motivo: 'chave-malformada' })
+
     expect(deps.responderSessaoJules).not.toHaveBeenCalled()
   })
 
   it('sucesso: retoma a sessão com a LABEL da opção escolhida + "Decisão do dono." e marca respondida', async () => {
     const deps = depsFalso()
 
-    await aoResponderDuvidaDoDev(ARGS_BASE, deps as never)
+    const resultado = await aoResponderDuvidaDoDev(ARGS_BASE, deps as never)
 
+    // L4-T21: o caminho feliz continua devolvendo `entregue: true` — a
+    // correção do dono passa a devolver um RESULTADO em vez de void, mas o
+    // caminho feliz (sessão viva encontrada) nunca muda de comportamento.
+    expect(resultado).toEqual({ entregue: true })
     expect(deps.responderSessaoJules).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionName: 'sessions/1',
@@ -472,7 +491,18 @@ describe('aoResponderDuvidaDoDev', () => {
       )
     })
 
-    it('nenhuma sessão com o hash desta pergunta (em NENHUMA situação de marca): LANÇA — nunca adivinha, a pergunta continua assumida', async () => {
+    // L4-T21 — defeito medido em produção (21:07 UTC, issue #309): o dono
+    // corrigiu a suposição do RA, a sessão do dev já tinha morrido, e o
+    // manipulador LANÇAVA — a rota devolvia HTTP 500 e a correção do dono
+    // se perdia (a `agent_question` nunca virava `answered`, o clique dele
+    // não valeu nada). A partir de agora: NUNCA lança neste ramo — registra
+    // a correção de forma durável (comentário na issue, pelo helper
+    // guardado pela autonomia) e devolve `{ entregue: false, motivo:
+    // 'sem-sessao-viva' }`. Quem chama (`answer()`, agent-question.ts)
+    // segue e grava a resposta na própria `agent_question` — é ISSO que
+    // torna a correção durável mesmo sem sessão viva (nunca finge que
+    // entregou ao dev).
+    it('nenhuma sessão viva com o hash desta pergunta: NUNCA lança — comenta na issue e devolve entregue:false/motivo sem-sessao-viva', async () => {
       const sessaoDeOutraPergunta = {
         ...SESSAO,
         sessionName: 'sessions/outra-pergunta',
@@ -485,12 +515,63 @@ describe('aoResponderDuvidaDoDev', () => {
           update: vi.fn(async () => undefined),
         } as never,
       })
-      const deps = depsFalso({ prisma })
+      const comentarNaIssue = vi.fn(async () => undefined)
+      const deps = depsFalso({ prisma, comentarNaIssue })
 
-      await expect(
-        aoResponderDuvidaDoDev({ ...ARGS_BASE, statusAnterior: 'assumida' }, deps as never)
-      ).rejects.toThrow(/acme\/api#46/)
+      const resultado = await aoResponderDuvidaDoDev(
+        { ...ARGS_BASE, statusAnterior: 'assumida' },
+        deps as never
+      )
+
+      expect(resultado).toEqual({ entregue: false, motivo: 'sem-sessao-viva' })
       expect(deps.responderSessaoJules).not.toHaveBeenCalled()
+      expect(comentarNaIssue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          issueNumber: 46,
+          texto: expect.stringContaining('Sim, pode cobrar'),
+        })
+      )
+    })
+
+    it('sem comentarNaIssue configurado: ainda assim NUNCA lança — avisa pelo onWarn e devolve entregue:false', async () => {
+      const prisma = prismaFalso({
+        devSession: {
+          findFirst: vi.fn(async () => null),
+          findMany: vi.fn(async () => []),
+          update: vi.fn(async () => undefined),
+        } as never,
+      })
+      const deps = depsFalso({ prisma, comentarNaIssue: undefined })
+
+      const resultado = await aoResponderDuvidaDoDev(
+        { ...ARGS_BASE, statusAnterior: 'assumida' },
+        deps as never
+      )
+
+      expect(resultado).toEqual({ entregue: false, motivo: 'sem-sessao-viva' })
+      expect(deps.onWarn).toHaveBeenCalledWith(expect.stringContaining('acme/api#46'))
+    })
+
+    it('comentarNaIssue falha (issue apagada, rede fora): best-effort — ainda assim devolve entregue:false, nunca lança', async () => {
+      const prisma = prismaFalso({
+        devSession: {
+          findFirst: vi.fn(async () => null),
+          findMany: vi.fn(async () => []),
+          update: vi.fn(async () => undefined),
+        } as never,
+      })
+      const comentarNaIssue = vi.fn(async () => {
+        throw new Error('GitHub 404')
+      })
+      const deps = depsFalso({ prisma, comentarNaIssue })
+
+      const resultado = await aoResponderDuvidaDoDev(
+        { ...ARGS_BASE, statusAnterior: 'assumida' },
+        deps as never
+      )
+
+      expect(resultado).toEqual({ entregue: false, motivo: 'sem-sessao-viva' })
+      expect(deps.onWarn).toHaveBeenCalledWith(expect.stringContaining('GitHub 404'))
     })
 
     it('regressão: com statusAnterior "open" (fluxo comum), uma sessão só com marca "respondida:" (sem nenhuma "escalada:") NUNCA é encontrada — prova que os dois fluxos de busca são mesmo diferentes', async () => {
@@ -509,5 +590,41 @@ describe('aoResponderDuvidaDoDev', () => {
       ).rejects.toThrow(/sessão escalada não encontrada/)
       expect(deps.responderSessaoJules).not.toHaveBeenCalled()
     })
+  })
+})
+
+/**
+ * Fix-up (revisão) do defeito 5: `plugins/telegram.ts` registra
+ * `aoResponderDuvidaDoDev` (este arquivo) como o manipulador do prefixo
+ * `duvida-dev:` em `AgentQuestionService`, e precisa decidir o que FAZER com
+ * cada `ResultadoDeRetomada` — extraído aqui (em vez de ficar um `if` solto
+ * dentro do plugin Fastify) para ser testável sem montar app/prisma/telegram
+ * inteiros, mesmo padrão de `parseDedupKeyDeDuvidaDoDev`/`criarComentarNaIssue`.
+ *
+ * Contrato (doc de `ResultadoDoManipuladorDeResposta`, agent-question.ts):
+ * `aviso` só faz sentido numa resposta de SUCESSO; um manipulador que falha
+ * DE VERDADE continua lançando — nunca finge sucesso com um aviso.
+ */
+describe('manipuladorDeResultadoDeRetomada', () => {
+  it('entregue:true (caminho feliz) — nada a avisar', () => {
+    expect(manipuladorDeResultadoDeRetomada({ entregue: true })).toBeUndefined()
+  })
+
+  it('motivo sem-sessao-viva — sucesso durável, mas não entregue de imediato: aviso em português', () => {
+    expect(
+      manipuladorDeResultadoDeRetomada({ entregue: false, motivo: 'sem-sessao-viva' })
+    ).toEqual({ aviso: AVISO_CORRECAO_SEM_SESSAO_VIVA })
+  })
+
+  it('motivo nao-aplicavel — dedupKey nem era deste manipulador: silêncio, de propósito (nunca aviso)', () => {
+    expect(
+      manipuladorDeResultadoDeRetomada({ entregue: false, motivo: 'nao-aplicavel' })
+    ).toBeUndefined()
+  })
+
+  it('motivo chave-malformada — falha DE VERDADE: LANÇA (nunca devolve aviso fingindo sucesso)', () => {
+    expect(() =>
+      manipuladorDeResultadoDeRetomada({ entregue: false, motivo: 'chave-malformada' })
+    ).toThrow()
   })
 })
