@@ -70,9 +70,9 @@ describe('classificarFalhaDeInfra', () => {
     expect(
       classificarFalhaDeInfra(
         {
-          path: '.github/workflows/dependabot-to-jules.yml',
+          path: '.github/workflows/sla-tracker.yml',
           event: 'schedule',
-          name: 'Dependabot → Jules',
+          name: 'SLA Tracker for Dependabot Alerts',
         },
         ativo,
         []
@@ -116,6 +116,34 @@ describe('classificarFalhaDeInfra', () => {
         []
       )
     ).toBe('workflow-morto')
+  })
+
+  it('workflow legado que saiu da lista fixa (D62), sem marcador → NÃO é scaffolding, é ci-do-cliente', () => {
+    // dependabot-to-jules.yml e auto-merge.yml existiram na lista fixa até
+    // 02/09 (D62, PRs #456 e #3920) e foram removidos porque os workflows
+    // legados de automação concorrente saíram dos dois repos de teste. Sem
+    // o marcador `gitorch:managed`, esses nomes hoje não são reconhecidos
+    // como scaffolding-do-gitorch — e é isso que se quer: se aparecerem em
+    // ALGUM repositório sem o marcador, é CI do cliente, não bug nosso.
+    for (const path of [
+      '.github/workflows/dependabot-to-jules.yml',
+      '.github/workflows/auto-merge.yml',
+    ]) {
+      expect(classificarFalhaDeInfra({ path, event: 'pull_request', name: 'x' }, ativo, [])).toBe(
+        'ci-do-cliente'
+      )
+    }
+  })
+
+  it('mesmo nome legado, mas COM o marcador gitorch:managed no conteúdo → volta a ser scaffolding-do-gitorch', () => {
+    expect(
+      classificarFalhaDeInfra(
+        { path: '.github/workflows/auto-merge.yml', event: 'pull_request', name: 'x' },
+        ativo,
+        [],
+        'name: Auto Merge\n# gitorch:managed\non: pull_request'
+      )
+    ).toBe('scaffolding-do-gitorch')
   })
 
   it('workflow do cliente, ativo, fora do caminho de merge → config-de-actions', () => {

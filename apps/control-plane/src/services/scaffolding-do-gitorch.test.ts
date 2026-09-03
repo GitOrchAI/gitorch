@@ -12,18 +12,7 @@ describe('ehScaffoldingDoGitorch', () => {
   })
 
   it('reconhece os workflows que o GitOrch já instalou nos dois repos de teste', () => {
-    for (const base of [
-      'auto-merge.yml',
-      'code-scanning-to-jules.yml',
-      'dependabot-to-jules.yml',
-      'sla-tracker.yml',
-      'dependabot-automation.yml',
-      'dependabot-alert-to-issue.yml',
-      'ci-failure-handler.yml',
-      'cd-failure-handler.yml',
-      'auto-merge-monitor.yml',
-      'cleanup-artifacts.yml',
-    ]) {
+    for (const base of ['sla-tracker.yml', 'dependabot-automation.yml', 'cleanup-artifacts.yml']) {
       expect(ehScaffoldingDoGitorch(`.github/workflows/${base}`)).toBe(true)
     }
   })
@@ -31,6 +20,36 @@ describe('ehScaffoldingDoGitorch', () => {
   it('reconhece qualquer jules-*.yml por convenção', () => {
     expect(ehScaffoldingDoGitorch('.github/workflows/jules-pr-monitor.yml')).toBe(true)
     expect(ehScaffoldingDoGitorch('.github/workflows/jules-inventado-amanha.yaml')).toBe(true)
+  })
+
+  it('workflows legados removidos (D62, 02/09) saem da lista fixa → false, salvo jules-*', () => {
+    // Não existem mais nos repos de teste: os workflows legados foram
+    // removidos (D62). A lista fixa encolheu para o que existe hoje.
+    for (const base of [
+      'dependabot-to-jules.yml',
+      'code-scanning-to-jules.yml',
+      'ci-failure-handler.yml',
+      'cd-failure-handler.yml',
+      'dependabot-alert-to-issue.yml',
+      'auto-merge.yml',
+      'auto-merge-monitor.yml',
+    ]) {
+      expect(ehScaffoldingDoGitorch(`.github/workflows/${base}`)).toBe(false)
+    }
+    // Exceção: `jules-pr-monitor.yml` saiu da lista fixa mas continua `true`
+    // porque cai na convenção `jules-*.yml`, testada pela regex, não pela lista.
+    expect(ehScaffoldingDoGitorch('.github/workflows/jules-pr-monitor.yml')).toBe(true)
+  })
+
+  it('workflow legado sem marcador → false; mesmo nome COM o marcador → true', () => {
+    // auto-merge.yml saiu da lista fixa em 02/09 (D62). Sozinho, sem o
+    // marcador `gitorch:managed`, não é mais reconhecido como scaffolding —
+    // vira responsabilidade do repositório que o tem (CI do cliente). Com o
+    // marcador, qualquer nome (inclusive este) volta a ser scaffolding.
+    expect(ehScaffoldingDoGitorch('.github/workflows/auto-merge.yml')).toBe(false)
+    expect(ehScaffoldingDoGitorch('.github/workflows/auto-merge.yml', '# gitorch:managed')).toBe(
+      true
+    )
   })
 
   it('NÃO marca o CI real do cliente como scaffolding', () => {
