@@ -172,6 +172,7 @@ export async function executarCicloTerminal(
       analiseJaFeita: linha.analysisDoneAt !== null,
       horasNoTerminal,
       branchRetomavel,
+      answeredHash: linha.answeredHash,
     })
 
     if (decisao.acao === 'manter') {

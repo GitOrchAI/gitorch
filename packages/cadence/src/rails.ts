@@ -329,6 +329,18 @@ export interface MiniSchema {
   enumNumbers?: number[]
   /** Mínimo de itens (arrays): é como o CÓDIGO força profundidade de análise. */
   minItems?: number
+  /**
+   * Mínimo de caracteres (strings). Existe pelo mesmo motivo de `minItems`
+   * nos arrays: "ok"/"acho que sim" passam em qualquer checagem de tipo e
+   * não desbloqueiam ninguém — o piso é como o CÓDIGO força substância, sem
+   * depender do modelo se autodisciplinar (L4-T4, D64).
+   *
+   * C3 (fix-up 3): contado sobre a string com `.trim()` aplicado (ver
+   * `walk`, abaixo) — QUARENTA ESPAÇOS não passam no piso de 40 caracteres.
+   * Sem isso um modelo preguiçoso preencheria o campo com espaço em branco
+   * só para bater o tamanho mínimo em bytes, sem escrever nada de verdade.
+   */
+  minLength?: number
 }
 
 // Derivado da fonte única (DOD_FIELD_MAP) — nunca listar as chaves de novo.
@@ -380,6 +392,35 @@ export const RAILS_SCHEMAS = {
           },
         },
       },
+    },
+  } as MiniSchema,
+
+  // L4-T4 (D64): a dúvida ESCALADA ao dono venceu 24h sem resposta dele. Em
+  // vez de matar a sessão do dev (mentira: ninguém respondeu) ou acordar o
+  // QA para sempre num no-op (a pergunta já está com o dono —
+  // `decidirSobreAPergunta`, services/pergunta-sem-resposta.ts, devolve
+  // 'nada' para marca `escalada:`), o RA forma uma SUPOSIÇÃO com o contexto
+  // do repositório e o produto segue o dev com ela — o dono pode corrigir
+  // depois. Os TRÊS pisos abaixo são o mesmo freio de concretude que
+  // `duvida-do-dev.ts` já aplica à resposta comum: sem eles, "acho que sim"
+  // passaria a validação e destravaria zero trabalho.
+  duvidaSuposicao: {
+    type: 'object',
+    required: ['suposicao', 'justificativa', 'arquivosCitados'],
+    properties: {
+      // Piso igual a MIN_CARACTERES_DE_RESPOSTA (duvida-do-dev.ts): a mesma
+      // régua que decide se uma resposta comum desbloqueia alguém decide se
+      // uma suposição desbloqueia. Duplicado aqui de propósito — o schema
+      // (packages/cadence) não importa serviços de apps/control-plane.
+      suposicao: { type: 'string', minLength: 40 },
+      // Menor que `suposicao`: é o PORQUÊ, não a decisão em si — o dono lê
+      // isto para corrigir rápido, não para reconstruir o raciocínio inteiro.
+      justificativa: { type: 'string', minLength: 20 },
+      // Pelo menos um arquivo real — sem isto não dá para saber se o RA leu
+      // o repositório ou só chutou (mesmo espírito de CITA_ALGO_CONCRETO em
+      // duvida-do-dev.ts, aplicado aqui como estrutura do formulário em vez
+      // de regex sobre o texto).
+      arquivosCitados: { type: 'array', items: { type: 'string' }, minItems: 1 },
     },
   } as MiniSchema,
 
@@ -799,9 +840,15 @@ function walk(schema: MiniSchema, value: unknown, path: string, errors: string[]
     return
   }
   if (schema.type === 'string') {
-    if (typeof value !== 'string') errors.push(`${path}: expected string`)
-    else if (schema.enum && !schema.enum.includes(value)) {
-      errors.push(`${path}: expected one of [${schema.enum.join(', ')}]`)
+    if (typeof value !== 'string') {
+      errors.push(`${path}: expected string`)
+    } else {
+      if (schema.enum && !schema.enum.includes(value)) {
+        errors.push(`${path}: expected one of [${schema.enum.join(', ')}]`)
+      }
+      if (schema.minLength !== undefined && value.trim().length < schema.minLength) {
+        errors.push(`${path}: expected at least ${schema.minLength} character(s)`)
+      }
     }
     return
   }

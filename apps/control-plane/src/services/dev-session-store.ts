@@ -351,6 +351,12 @@ export async function nomesDeSessoesVivasDaInstancia(deps: {
  * Da instância inteira, e não de um projeto: a vaga que trava a esteira é
  * contada por instância, e uma varredura por projeto deixaria zumbi de outro
  * projeto segurando a mesma fila.
+ *
+ * `answeredHash` entrou aqui pela L4-T4 (D64, fix-up
+ * a13a42f8-2953-4259-b41f-3f8cddb304cd): é o que `sessao-abandonada.ts`
+ * precisa para saber se uma linha `AWAITING_USER_FEEDBACK` está com dúvida
+ * ESCALADA ao dono (marca `escalada:`) — e por isso não pode ser fechada como
+ * abandonada antes das 24h que acionam a suposição do RA.
  */
 export async function linhasVivasParaJulgarAbandono(deps: { prisma: PrismaDevSession }): Promise<
   Array<{
@@ -360,6 +366,7 @@ export async function linhasVivasParaJulgarAbandono(deps: { prisma: PrismaDevSes
     lastProgressAt: Date | null
     createdAt: Date | null
     closedAt: Date | null
+    answeredHash: string | null
   }>
 > {
   return (await deps.prisma.devSession.findMany({
@@ -371,6 +378,7 @@ export async function linhasVivasParaJulgarAbandono(deps: { prisma: PrismaDevSes
       lastProgressAt: true,
       createdAt: true,
       closedAt: true,
+      answeredHash: true,
     },
   })) as unknown as Array<{
     sessionName: string
@@ -379,6 +387,7 @@ export async function linhasVivasParaJulgarAbandono(deps: { prisma: PrismaDevSes
     lastProgressAt: Date | null
     createdAt: Date | null
     closedAt: Date | null
+    answeredHash: string | null
   }>
 }
 
@@ -393,6 +402,12 @@ export interface LinhaParaCicloTerminal {
   requeueCount: number
   analysisDoneAt: Date | null
   devAccountId: string | null
+  /**
+   * L4-T4, fix-up 5 (task a13a42f8-2953-4259-b41f-3f8cddb304cd): a marca de
+   * `pergunta-sem-resposta.ts` — `decidirSessaoTerminal` veta o fechamento
+   * quando ela é `escalada:` (`ehMarcaDeEscalada`), independente de `state`.
+   */
+  answeredHash: string | null
 }
 
 /**
@@ -418,6 +433,7 @@ export async function linhasVivasParaCicloTerminal(deps: {
       requeueCount: true,
       analysisDoneAt: true,
       devAccountId: true,
+      answeredHash: true,
     },
   })) as unknown as LinhaParaCicloTerminal[]
 }

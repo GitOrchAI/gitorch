@@ -32,6 +32,7 @@ function prismaFalso(overrides: Partial<PrismaParaRetomada> = {}): PrismaParaRet
     },
     devSession: {
       findFirst: vi.fn(async () => SESSAO),
+      findMany: vi.fn(async () => [SESSAO]),
       findUnique: vi.fn(async () => ({ devAccountId: null })),
       update: vi.fn(async () => undefined),
     },
@@ -59,6 +60,11 @@ const ARGS_BASE = {
     { label: 'Sim, pode cobrar', value: 'sim' },
     { label: 'Não', value: 'nao' },
   ],
+  // D2 (fix-up 6, task a13a42f8-2953-4259-b41f-3f8cddb304cd): status da
+  // pergunta ANTES desta resposta — 'open' é o fluxo comum (dono responde
+  // pela primeira vez). Ver describe dedicado abaixo para 'assumida'
+  // (correção de uma suposição do RA já entregue ao dev).
+  statusAnterior: 'open' as const,
 }
 
 describe('aoResponderDuvidaDoDev', () => {
@@ -368,5 +374,140 @@ describe('aoResponderDuvidaDoDev', () => {
     }
     expect(chamada.texto).toContain(respostaNoTeto)
     expect(deps.onWarn).not.toHaveBeenCalled()
+  })
+
+  // ---------------------------------------------------------------------
+  // D2 (fix-up 6, task a13a42f8-2953-4259-b41f-3f8cddb304cd): o dono corrige
+  // uma pergunta já ASSUMIDA (o RA formou suposição depois de 24h de
+  // silêncio, L4-T4/D64, e já entregou ao dev via `supor-duvida-pendente.ts`).
+  //
+  // Depois da suposição, a marca da sessão NÃO é mais `escalada:<n>:<hash>`
+  // — `suporDuvidaPendente` grava `marcarRespondida(marca.hash)`, que é
+  // `respondida:0:<hash>` (MESMO hash, situação diferente). A busca do fluxo
+  // normal (acima, por `escalada:` exato e depois por `startsWith('escalada:')`)
+  // NUNCA acharia essa sessão — e a correção do dono falharia com "sessão
+  // escalada não encontrada" mesmo com a sessão viva e esperando. A regra
+  // nova: quando `statusAnterior === 'assumida'`, a busca ignora a SITUAÇÃO
+  // da marca (`lerMarca(...).situacao` pode ser `respondida`, `escalada`,
+  // `tentando` ou `desisti`) e casa só pelo HASH — o que identifica ESTA
+  // pergunta de forma estável entre a suposição e a correção.
+  // ---------------------------------------------------------------------
+  describe('D2: correção do dono depois da suposição do RA (statusAnterior "assumida")', () => {
+    const SESSAO_POS_SUPOSICAO = {
+      ...SESSAO,
+      sessionName: 'sessions/pos-suposicao',
+      // A marca NÃO começa mais por 'escalada:' — é isto que o fluxo normal
+      // (statusAnterior 'open') nunca encontra.
+      answeredHash: 'respondida:0:hash123',
+    }
+
+    it('localiza a sessão pela marca "respondida:" (mesmo hash) — o fluxo normal por "escalada:" nunca acharia', async () => {
+      const findMany = vi.fn(async () => [SESSAO_POS_SUPOSICAO])
+      const prisma = prismaFalso({
+        devSession: {
+          findFirst: vi.fn(async () => {
+            throw new Error('statusAnterior=assumida NUNCA deve usar findFirst por escalada:')
+          }),
+          findMany,
+          update: vi.fn(async () => undefined),
+        } as never,
+      })
+      const deps = depsFalso({ prisma })
+
+      await aoResponderDuvidaDoDev({ ...ARGS_BASE, statusAnterior: 'assumida' }, deps as never)
+
+      expect(findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            projectId: 'proj1',
+            issueNumber: 46,
+            state: 'AWAITING_USER_FEEDBACK',
+          }),
+        })
+      )
+      expect(deps.responderSessaoJules).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionName: 'sessions/pos-suposicao' })
+      )
+    })
+
+    it('a mensagem ao dev usa a moldura "Correção do dono (substitui a suposição do RA): ..." — nunca "Decisão do dono."', async () => {
+      const prisma = prismaFalso({
+        devSession: {
+          findFirst: vi.fn(async () => null),
+          findMany: vi.fn(async () => [SESSAO_POS_SUPOSICAO]),
+          update: vi.fn(async () => undefined),
+        } as never,
+      })
+      const deps = depsFalso({ prisma })
+
+      await aoResponderDuvidaDoDev({ ...ARGS_BASE, statusAnterior: 'assumida' }, deps as never)
+
+      const chamada = (deps.responderSessaoJules as ReturnType<typeof vi.fn>).mock
+        .calls[0]?.[0] as {
+        texto: string
+      }
+      expect(chamada.texto).toContain('Correção do dono (substitui a suposição do RA):')
+      expect(chamada.texto).toContain('Sim, pode cobrar')
+      expect(chamada.texto).not.toContain('Decisão do dono.')
+    })
+
+    it('grava respondida normalmente ao final (mesmo formato de marca do fluxo comum)', async () => {
+      const update = vi.fn(async () => undefined)
+      const prisma = prismaFalso({
+        devSession: {
+          findFirst: vi.fn(async () => null),
+          findMany: vi.fn(async () => [SESSAO_POS_SUPOSICAO]),
+          update,
+        } as never,
+      })
+      const deps = depsFalso({ prisma })
+
+      await aoResponderDuvidaDoDev({ ...ARGS_BASE, statusAnterior: 'assumida' }, deps as never)
+
+      expect(update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { sessionName: 'sessions/pos-suposicao' },
+          data: expect.objectContaining({ answeredHash: 'respondida:0:hash123' }),
+        })
+      )
+    })
+
+    it('nenhuma sessão com o hash desta pergunta (em NENHUMA situação de marca): LANÇA — nunca adivinha, a pergunta continua assumida', async () => {
+      const sessaoDeOutraPergunta = {
+        ...SESSAO,
+        sessionName: 'sessions/outra-pergunta',
+        answeredHash: 'respondida:0:hash-de-outra-pergunta',
+      }
+      const prisma = prismaFalso({
+        devSession: {
+          findFirst: vi.fn(async () => null),
+          findMany: vi.fn(async () => [sessaoDeOutraPergunta]),
+          update: vi.fn(async () => undefined),
+        } as never,
+      })
+      const deps = depsFalso({ prisma })
+
+      await expect(
+        aoResponderDuvidaDoDev({ ...ARGS_BASE, statusAnterior: 'assumida' }, deps as never)
+      ).rejects.toThrow(/acme\/api#46/)
+      expect(deps.responderSessaoJules).not.toHaveBeenCalled()
+    })
+
+    it('regressão: com statusAnterior "open" (fluxo comum), uma sessão só com marca "respondida:" (sem nenhuma "escalada:") NUNCA é encontrada — prova que os dois fluxos de busca são mesmo diferentes', async () => {
+      const findFirst = vi.fn(async () => null) // nem hash exato, nem startsWith('escalada:') acham nada
+      const prisma = prismaFalso({
+        devSession: {
+          findFirst,
+          findMany: vi.fn(async () => [SESSAO_POS_SUPOSICAO]),
+          update: vi.fn(async () => undefined),
+        } as never,
+      })
+      const deps = depsFalso({ prisma })
+
+      await expect(
+        aoResponderDuvidaDoDev({ ...ARGS_BASE, statusAnterior: 'open' }, deps as never)
+      ).rejects.toThrow(/sessão escalada não encontrada/)
+      expect(deps.responderSessaoJules).not.toHaveBeenCalled()
+    })
   })
 })

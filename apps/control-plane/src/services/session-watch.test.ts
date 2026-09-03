@@ -146,6 +146,27 @@ describe('vigiarSessoes', () => {
     expect(deps.registrarPr).not.toHaveBeenCalled()
   })
 
+  // L4-T4, fix-up 5 (task a13a42f8-2953-4259-b41f-3f8cddb304cd) — mesma classe
+  // de defeito provada em produção (03/09) para o caminho `fechar-terminal`
+  // desta vigia (o caso SEM PR, decidível sem rede): o Jules pode reportar
+  // COMPLETED mesmo com a dúvida ainda ESCALADA (`escalada:0:<hash>`) e sem
+  // decisão do dono. `decidirSessaoTerminal` agora veta por `answeredHash`,
+  // independente do `estado` remoto.
+  it('concluída SEM PR mas com marca escalada residual → NÃO fecha (a dúvida ainda espera o dono)', async () => {
+    const deps = depsFalso({
+      sessoes: [linha({ sessionName: 'sessions/escalada-sem-pr', answeredHash: 'escalada:0:abc' })],
+      consultarSessao: vi.fn(async () => ({
+        estado: 'COMPLETED',
+        numeroDoPr: null,
+        ultimaAtualizacao: agora.toISOString(),
+      })),
+    })
+
+    await vigiarSessoes(deps)
+
+    expect(deps.fecharSessao).not.toHaveBeenCalled()
+  })
+
   it('FAILED sem PR → fecha a linha (dev-falhou); NÃO pede retomada nem aciona o SM em loop', async () => {
     const deps = depsFalso({
       sessoes: [linha({ sessionName: 'sessions/falhou', issueNumber: 42 })],
@@ -266,13 +287,19 @@ describe('vigiarSessoes', () => {
     expect(deps.dispararMissao).not.toHaveBeenCalledWith('qa', 'proj1')
   })
 
-  it('pergunta ESCALADA ao dono e parada há MAIS de 24h → NÃO fecha (L4-T4 decide) e não avisa "já respondida"', async () => {
+  it('pergunta ESCALADA ao dono e parada há MAIS de 24h → dispara o QA pelo MESMO trilho de dúvida pendente, nunca fecha (L4-T4/D64, fix-up a13a42f8)', async () => {
     // L4-T3: `escalada:` não é `respondida` — ninguém respondeu ainda, é o
     // dono quem vai decidir. Fechar a sessão dizendo "a dúvida já foi
     // respondida" (como faz o ramo de 24h acima) seria mentira: a pergunta
-    // está na mesa do dono, não resolvida. Esta tarefa só garante que NÃO
-    // fecha nem mente — o que fazer quando vence o prazo com o dono ainda
-    // calado é decisão da L4-T4.
+    // está na mesa do dono, não resolvida.
+    //
+    // L4-T4 (D64): a vigia não forma mais a suposição sozinha — ela só
+    // acorda o QA. Quem decide "esperar" x "supor com o RA", com o `execute`
+    // REAL da missão, é `suporDuvidaPendente` (scheduler.ts), rodando dentro
+    // da MESMA missão que já responde dúvida pendente. Cobertura de
+    // "suposição concreta"/"sem suposição concreta"/"motor falhou" agora
+    // vive nos testes de `suporDuvidaPendente`, não aqui — a vigia não tem
+    // mais como decidir isso (não tem `execute`).
     const mensagem = 'Isto é decisão de preço — decido sozinho?'
     const deps = depsFalso({
       sessoes: [
@@ -294,8 +321,34 @@ describe('vigiarSessoes', () => {
 
     await vigiarSessoes(deps)
 
+    expect(deps.dispararMissao).toHaveBeenCalledWith('qa', 'proj1')
     expect(deps.fecharSessao).not.toHaveBeenCalled()
-    expect(deps.avisarDono).not.toHaveBeenCalled()
+  })
+
+  it('pergunta ESCALADA AINDA dentro das 24h → também dispara o QA (a idade de 24h é decidida no tratador da missão, não na vigia)', async () => {
+    const mensagem = 'Isto é decisão de preço — decido sozinho?'
+    const deps = depsFalso({
+      sessoes: [
+        linha({
+          sessionName: 'sessions/escalada-recente',
+          issueNumber: 96,
+          answeredHash: `escalada:0:${hashDe(mensagem)}`,
+          lastProgressAt: new Date(agora.getTime() - 1 * 60 * 60 * 1000),
+          stateCheckedAt: new Date(agora.getTime() - 30 * 60 * 1000),
+        }),
+      ],
+      consultarSessao: vi.fn(async () => ({
+        estado: 'AWAITING_USER_FEEDBACK',
+        numeroDoPr: null,
+        ultimaAtualizacao: new Date(agora.getTime() - 1 * 60 * 60 * 1000).toISOString(),
+      })),
+      ultimaMensagem: vi.fn(async () => mensagem),
+    })
+
+    await vigiarSessoes(deps)
+
+    expect(deps.dispararMissao).toHaveBeenCalledWith('qa', 'proj1')
+    expect(deps.fecharSessao).not.toHaveBeenCalled()
   })
 
   it('pergunta respondida mas AINDA dentro das 24h → continua chamando o QA, não fecha', async () => {

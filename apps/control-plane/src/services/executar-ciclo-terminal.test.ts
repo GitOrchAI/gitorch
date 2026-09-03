@@ -14,6 +14,7 @@ function linha(over: Partial<LinhaParaCicloTerminal>): LinhaParaCicloTerminal {
     requeueCount: 0,
     analysisDoneAt: null,
     devAccountId: null,
+    answeredHash: null,
     ...over,
   }
 }
@@ -100,6 +101,43 @@ describe('executarCicloTerminal', () => {
     d.teto = 2
     await executarCicloTerminal(d)
     expect(fechadas).toHaveLength(2)
+  })
+
+  // L4-T4, fix-up 5 (task a13a42f8-2953-4259-b41f-3f8cddb304cd) — CENÁRIO
+  // EXATO de produção (03/09): sessão COMPLETED (estado remoto do Jules já
+  // sincronizado) + PR aberto-rejeitado-parado além das 12h, mas com marca
+  // `escalada:0:<hash>` em `answeredHash` — a dúvida ainda espera o dono.
+  // Antes deste fix-up, `[ciclo-terminal] ... fechada (pr-rejeitado-sem-retomada)`
+  // era exatamente isto.
+  it('COMPLETED + PR rejeitado além das 12h, mas com marca escalada → NÃO fecha (cenário exato de produção)', async () => {
+    const { d, fechadas } = deps({
+      linhas: [linha({ issueNumber: 3787, answeredHash: 'escalada:0:abc123' })],
+      pr: 'aberto-rejeitado-parado',
+    })
+    d.agora = new Date('2026-08-28T13:00:00Z') // 13h depois de lastProgressAt
+    const r = await executarCicloTerminal(d)
+    expect(fechadas).toEqual([])
+    expect(r.mantidas).toBe(1)
+    expect(r.issuesRedelegadas).toEqual([])
+  })
+
+  it('FAILED sem PR, mas com marca escalada → NÃO fecha nem pede análise', async () => {
+    const { d, fechadas, analises } = deps({
+      linhas: [linha({ state: 'FAILED', answeredHash: 'escalada:0:abc123', requeueCount: 2 })],
+    })
+    const r = await executarCicloTerminal(d)
+    expect(fechadas).toEqual([])
+    expect(analises).toEqual([])
+    expect(r.mantidas).toBe(1)
+  })
+
+  it('marca "respondida" (legada, ainda não reconciliada) NÃO ativa o veto — segue fechando como antes', async () => {
+    const { d, fechadas } = deps({
+      linhas: [linha({ issueNumber: 46, answeredHash: 'respondida:0:abc123' })],
+    })
+    const r = await executarCicloTerminal(d)
+    expect(fechadas).toEqual([{ sessionName: 'sessions/x', motivo: 'dev-concluiu-sem-entrega' }])
+    expect(r.issuesRedelegadas).toEqual([46])
   })
 
   it('uma que falha ao fechar não impede as outras', async () => {
