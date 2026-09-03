@@ -144,6 +144,69 @@ export async function listarPrsSemParecer(args: {
   return semParecer
 }
 
+/**
+ * As issues cuja sessão do dev JÁ TEM um pull request ABERTO — mesmo que a
+ * sessão em si tenha morrido (`pr-rejeitado-sem-retomada`). L4-T5.
+ *
+ * `escolherParaDelegar` (fila-de-delegacao.ts) usa este conjunto para NÃO
+ * tratar a issue como livre enquanto o PR anterior segue esperando conserto.
+ * Sem ele, a sessão fechada solta a issue da fila e a próxima delegação abre
+ * um PR NOVO do zero — a MESMA tarefa acumulando sessões e PRs. Medido:
+ * issue #3884 do Jardim, 5 sessões e 3 pull requests (#3907, #3913, #3917)
+ * para uma task. A retomada certa é no MESMO PR
+ * (`retomar-pr-reprovado.ts`/`sessao-terminal.ts`); esta fila só volta a
+ * tratar a issue como livre depois que aquele PR fechar.
+ *
+ * UMA chamada ao GitHub (lista de PRs abertos), reaproveitada para todas as
+ * sessões do ciclo — nunca uma consulta por sessão.
+ */
+/**
+ * C5 (fix-up L4-T5, CSO): teto de páginas — um repositório com centenas de
+ * PRs abertos não pode fazer esta varredura girar para sempre. Dez páginas
+ * de 100 já são 1000 PRs abertos do dev ao mesmo tempo, uma situação que por
+ * si só é sinal de algo muito errado — parar aqui e seguir com o que já foi
+ * lido é mais seguro do que uma varredura sem fim a cada acordada do SM.
+ */
+const TETO_DE_PAGINAS_DE_PRS_ABERTOS = 10
+
+export async function issuesComPrAbertoDoDev(args: {
+  repository: string
+  gh: (method: string, path: string) => Promise<unknown>
+  /**
+   * Linhas deste projeto (vivas e fechadas) que carregam um `pullRequestNumber`
+   * — a mesma fonte de `listarPrsSemParecer` (`sessoesParaReconhecerPr`, ou
+   * `sessoesVivas` como recuo).
+   */
+  sessoes: LinhaDeSessao[]
+}): Promise<Set<number>> {
+  const comPr = args.sessoes.filter(
+    (s): s is LinhaDeSessao & { pullRequestNumber: number } => s.pullRequestNumber !== null
+  )
+  // Nenhuma sessão carrega PR: não vale gastar chamada ao GitHub à toa.
+  if (comPr.length === 0) return new Set()
+
+  // C5: pagina até a página vir com MENOS de 100 (a página não está cheia —
+  // não há próxima) ou até o teto — nunca só a primeira página, senão um PR
+  // que caiu na página 2+ é tratado como "não está mais aberto" e a issue
+  // dele volta a ser considerada livre com o PR antigo ainda de pé.
+  const numerosAbertos = new Set<number>()
+  for (let pagina = 1; pagina <= TETO_DE_PAGINAS_DE_PRS_ABERTOS; pagina++) {
+    const prs = (await args.gh(
+      'GET',
+      `/repos/${args.repository}/pulls?state=open&per_page=100&page=${pagina}`
+    )) as Array<{ number: number }>
+    const lista = Array.isArray(prs) ? prs : []
+    for (const p of lista) numerosAbertos.add(p.number)
+    if (lista.length < 100) break
+  }
+
+  const issues = new Set<number>()
+  for (const s of comPr) {
+    if (numerosAbertos.has(s.pullRequestNumber)) issues.add(s.issueNumber)
+  }
+  return issues
+}
+
 /** Marcador oculto que impede o comentário de recusa de se repetir. */
 export const MARCA_DE_RECUSA = '<!-- gitorch:delegacao-recusada -->'
 
@@ -312,18 +375,6 @@ export interface SmDelegationOptions {
   tetoConcorrentes?: number
   tetoDiario?: number
   /**
-   * Canal do aviso de degradação — antes hardcoded em `console.warn`,
-   * invisível na observabilidade estruturada. Produção (scheduler.ts) sempre
-   * passa `app.log.warn`. Default: console.warn (só pra chamadas fora do
-   * plugin).
-   *
-   * Não é preciosismo: este é justamente o aviso que existe para o
-   * julgamento não morrer em silêncio quando a sessão nasceu no dev
-   * assíncrono mas a ligação issue↔sessão não pôde ser guardada — sem essa
-   * ligação, o QA não reconhece o PR que chegar depois. Mesmo motivo já
-   * registrado em `github-app-token.ts` e `qa-rails-mission.ts`.
-   */
-  /**
    * Fala com o dono quando a delegação é RECUSADA pelo dev.
    *
    * O log estruturado não basta aqui: a falha deixa uma tarefa parada na fila
@@ -338,7 +389,21 @@ export interface SmDelegationOptions {
    */
   desfazerSessao?: (sessionName: string) => Promise<void>
   avisarDono?: (mensagem: string) => Promise<void>
-  onWarn?: (message: string) => void
+  /**
+   * Canal do aviso de degradação — OBRIGATÓRIO (C8, fix-up L4-T5, CSO).
+   * Produção (scheduler.ts) sempre passa `app.log.warn`.
+   *
+   * Antes tinha `?? console.warn` como recuo em SETE pontos deste arquivo:
+   * `console.warn` não aparece em NENHUM lugar monitorado (mesma classe de
+   * defeito já corrigida em `agent-question.ts`/`github-app-token.ts`), e um
+   * chamador que esquecesse de passar o canal perderia o aviso em silêncio —
+   * exatamente o "julgamento morre calado" que este canal existe para evitar
+   * (a sessão nasceu no dev assíncrono mas a ligação issue↔sessão não pôde
+   * ser guardada, e sem essa ligação o QA não reconhece o PR que chegar
+   * depois). Tornar obrigatório move esse esquecimento de "silencioso em
+   * produção" para "erro de tipo em tempo de build".
+   */
+  onWarn: (message: string) => void
   /**
    * O CONSERTO DE MAIOR VALOR (D14, 01/09): roda o diagnóstico "já resolvido"
    * (services/diagnostico-de-issues.ts, PR #437) nas candidatas ANTES de
@@ -524,7 +589,7 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
         await options
           .comentarCoberturaDeIncidente({ issueNumber: t.number, prNumber: prDoIncidente })
           .catch((err) =>
-            (options.onWarn ?? console.warn)(
+            options.onWarn(
               `sm-delegation: comentário de cobertura da #${t.number} falhou: ${String(err).slice(0, 120)}`
             )
           )
@@ -547,7 +612,7 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
         await options
           .sinalizarPossivelmenteResolvida({ issueNumber: t.number, achado: achadoJaResolvido })
           .catch((err) =>
-            (options.onWarn ?? console.warn)(
+            options.onWarn(
               `sm-delegation: sinalizar #${t.number} como possivelmente resolvida falhou: ${String(err).slice(0, 120)}`
             )
           )
@@ -571,11 +636,37 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
     })
   }
 
+  // L4-T5: issue cuja sessão do dev já tem um PR ABERTO não pode ser tratada
+  // como livre, mesmo com a sessão fechada. UMA chamada ao GitHub (cache por
+  // ciclo), reaproveitada por todas as sessões — nunca uma consulta por
+  // issue. Best-effort: falha aqui não pode travar a delegação inteira, só
+  // deixa de aplicar este filtro específico neste ciclo.
+  const naFilaComPr = options.sessoesParaReconhecerPr ?? options.sessoesVivas ?? []
+  const comPrAbertoDoDev = await issuesComPrAbertoDoDev({
+    repository: options.repository,
+    gh: (method, path) => gh(method, path),
+    sessoes: naFilaComPr,
+  }).catch((err) => {
+    options.onWarn(
+      `sm-delegation: não deu para checar PRs abertos do dev; a fila segue este ciclo sem ` +
+        `esse filtro: ${(err as Error).message}`
+    )
+    return new Set<number>()
+  })
+  if (comPrAbertoDoDev.size > 0) {
+    options.onWarn(
+      `sm-delegation: ${comPrAbertoDoDev.size} issue(s) com PR aberto do dev não voltam para a ` +
+        `fila agora: ${[...comPrAbertoDoDev].map((n) => `#${n}`).join(', ')} — aguardando ` +
+        'retomada no mesmo PR'
+    )
+  }
+
   let travadaPorVaga = false
   const escolhidas = escolherParaDelegar({
     candidatas,
     arquivosEmTrabalho: [...arquivosEmTrabalho],
     sessoesVivas: options.sessoesVivas ?? [],
+    issuesComPrAbertoDoDev: comPrAbertoDoDev,
     delegadasHoje: options.delegadasHoje ?? 0,
     onDiagnostico: (d) => {
       travadaPorVaga = d.travadaPorVaga
@@ -673,7 +764,7 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
           sessionName: resultado.sessionName,
         })
       } catch (err) {
-        const avisar = options.onWarn ?? console.warn
+        const avisar = options.onWarn
         avisar(
           `[sm] sessão ${resultado.sessionName} criada para #${task.number} mas a ligação não ` +
             `pôde ser guardada: ${(err as Error).message}`
@@ -703,7 +794,7 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
         await options.liberarLugarDaIssue(task.number).catch(() => undefined)
       }
       recusadas.push({ numero: task.number, motivo: resultado.motivo })
-      const avisar = options.onWarn ?? console.warn
+      const avisar = options.onWarn
       // O motivo cru vai para o log, e SÓ para o log. Ver `motivoPublicavel`.
       avisar(`[sm] delegação de #${task.number} recusada pelo dev: ${resultado.motivo}`)
 
@@ -822,7 +913,7 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
     } catch (err) {
       paraJulgar = []
       falhaAoEnfileirar = (err as Error).message
-      const avisar = options.onWarn ?? console.warn
+      const avisar = options.onWarn
       avisar(
         `[sm] não consegui levantar a fila de julgamento de ${options.repository}; ` +
           `entrega sem parecer pode ficar parada até a próxima acordada: ${falhaAoEnfileirar}`

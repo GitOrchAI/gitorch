@@ -102,6 +102,61 @@ describe('decidirSessaoTerminal', () => {
     expect(d).toEqual({ acao: 'fechar-e-analisar', motivo: 'pr-rejeitado-sem-retomada' })
   })
 
+  // ── L4-T5: retomada no MESMO PR ───────────────────────────────────────────
+  //
+  // Medido: issue #3884 do Jardim, 5 sessões e 3 PRs para UMA task. Fechar e
+  // devolver a issue à fila abre um SEGUNDO pull request do zero; com um ramo
+  // retomável a esteira tenta de novo NO MESMO PR em vez disso.
+  describe('retomada no mesmo PR (L4-T5)', () => {
+    it('PR rejeitado, passou das 12h, HÁ ramo retomável → retomar-no-mesmo-pr', () => {
+      const d = decidirSessaoTerminal({
+        ...base,
+        situacaoDoPr: 'aberto-rejeitado-parado',
+        horasNoTerminal: 13,
+        branchRetomavel: 'jules-3917-branch',
+      })
+      expect(d).toEqual({ acao: 'retomar-no-mesmo-pr', branchDoPr: 'jules-3917-branch' })
+    })
+
+    it('ainda dentro das 12h, mesmo com ramo retomável → mantém (dá tempo)', () => {
+      const d = decidirSessaoTerminal({
+        ...base,
+        situacaoDoPr: 'aberto-rejeitado-parado',
+        horasNoTerminal: 5,
+        branchRetomavel: 'jules-3917-branch',
+      })
+      expect(d).toEqual({ acao: 'manter' })
+    })
+
+    it('SEM ramo retomável (fork, ausente) → cai no comportamento antigo (fecha e redelega)', () => {
+      const d = decidirSessaoTerminal({
+        ...base,
+        situacaoDoPr: 'aberto-rejeitado-parado',
+        horasNoTerminal: 13,
+        branchRetomavel: null,
+      })
+      expect(d).toEqual({ acao: 'fechar-e-redelegar', motivo: 'pr-rejeitado-sem-retomada' })
+    })
+
+    it('branchRetomavel AUSENTE (chamador antigo) → comportamento antigo preservado', () => {
+      const d = decidirSessaoTerminal({
+        ...base,
+        situacaoDoPr: 'aberto-rejeitado-parado',
+        horasNoTerminal: 13,
+      })
+      expect(d).toEqual({ acao: 'fechar-e-redelegar', motivo: 'pr-rejeitado-sem-retomada' })
+    })
+
+    it('ramo retomável mas situação é OUTRA (não é PR rejeitado) → ignora o ramo', () => {
+      const d = decidirSessaoTerminal({
+        ...base,
+        situacaoDoPr: 'fechado-sem-merge',
+        branchRetomavel: 'jules-3917-branch',
+      })
+      expect(d).toEqual({ acao: 'fechar-e-redelegar', motivo: 'pr-descartado' })
+    })
+  })
+
   // L4-T4, fix-up 5 (task a13a42f8-2953-4259-b41f-3f8cddb304cd) — PROVADO em
   // produção 03/09: 2 sessões com dúvida ESCALADA ao dono (`answeredHash`
   // `escalada:0:<hash>`) foram fechadas por este passo às 09:49:14, motivo

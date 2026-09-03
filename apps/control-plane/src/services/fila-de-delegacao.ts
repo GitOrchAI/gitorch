@@ -79,6 +79,21 @@ export function escolherParaDelegar(args: {
   /** Freio de fluxo por ciclo, independente do plano. */
   capPorCiclo: number
   /**
+   * L4-T5: issues cuja sessão do dev JÁ TEM um pull request ABERTO — mesmo
+   * que a sessão em si tenha morrido (`pr-rejeitado-sem-retomada`).
+   *
+   * Medido: issue #3884 do Jardim, 5 sessões e 3 PRs (#3907, #3913, #3917)
+   * para UMA task. A sessão fechada solta a issue da fila (nenhum outro
+   * filtro aqui olha para o PR), e a próxima delegação abre um PR NOVO do
+   * zero — a mesma tarefa acumulando sessões e PRs. A retomada certa é no
+   * MESMO PR (retomar-pr-reprovado.ts, sessao-terminal.ts); esta fila só
+   * pode voltar a tratar a issue como livre depois que aquele PR fechar.
+   *
+   * OPCIONAL, mesma disciplina de `arquivosEmTrabalho`: chamador antigo que
+   * ainda não monta este conjunto não muda de comportamento.
+   */
+  issuesComPrAbertoDoDev?: Set<number>
+  /**
    * ESTEIRA-T11: recebe o diagnóstico de por que a fila "voltou vazia". Só
    * `travadaPorVaga: true` — fila com trabalho pronto, folga diária, mas a
    * conta do dev externo lotada de sessões vivas — é notícia para o dono.
@@ -87,16 +102,21 @@ export function escolherParaDelegar(args: {
 }): number[] {
   const comSessaoViva = new Set(args.sessoesVivas.map((s) => s.issueNumber))
   const analisePendente = new Set(args.issuesComAnalisePendente ?? [])
+  const comPrAbertoDoDev = args.issuesComPrAbertoDoDev ?? new Set<number>()
 
   // "Pronta" = seria delegável se houvesse vaga: sem bloqueador aberto, sem
-  // sessão viva e não presa na análise das 2 falhas. É a MESMA regra do laço
-  // de escolha abaixo (menos a reserva de arquivo, que é só do ciclo) — e é o
-  // que o diagnóstico do T11 precisa: "há trabalho pronto parado?" não é "há
-  // candidata na lista?" (uma issue bloqueada por dependência não está pronta,
-  // e avisar o dono que a esteira travou por vaga nesse caso é o falso alarme
-  // que o T11 existe para não dar).
+  // sessão viva, não presa na análise das 2 falhas, e sem PR do dev ainda
+  // aberto (L4-T5). É a MESMA regra do laço de escolha abaixo (menos a
+  // reserva de arquivo, que é só do ciclo) — e é o que o diagnóstico do T11
+  // precisa: "há trabalho pronto parado?" não é "há candidata na lista?"
+  // (uma issue bloqueada por dependência não está pronta, e avisar o dono
+  // que a esteira travou por vaga nesse caso é o falso alarme que o T11
+  // existe para não dar).
   const estaPronta = (c: IssueCandidata): boolean =>
-    c.bloqueadoresAbertos === 0 && !comSessaoViva.has(c.number) && !analisePendente.has(c.number)
+    c.bloqueadoresAbertos === 0 &&
+    !comSessaoViva.has(c.number) &&
+    !analisePendente.has(c.number) &&
+    !comPrAbertoDoDev.has(c.number)
 
   // As vagas são da CONTA, não deste projeto: no Pro são 15 simultâneas
   // divididas entre todos os repositórios daquela conta. Usar só as vivas

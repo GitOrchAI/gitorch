@@ -33,6 +33,14 @@ import {
   type PrismaParaRetomada,
 } from '../services/retomar-sessao-com-resposta.js'
 import { decryptCredential } from '../lib/credential-crypto.js'
+import {
+  aoResponderRetomadaTravada,
+  type PrismaParaRetomadaTravada,
+} from '../services/responder-retomada-travada.js'
+import { chaveDoDevDoProjeto as resolverChaveDoDevDoProjeto } from '../services/chave-do-dev-assincrono.js'
+import { criarSessaoJules } from '../services/jules-client.js'
+import { abrirSessao, registrarPr, type PrismaDevSession } from '../services/dev-session-store.js'
+import { ghJson } from '../services/github-json.js'
 
 // O ouvido do bot. Sem ele, o deep link do passo 8 abriria o Telegram, o cliente
 // apertaria Start... e ninguém estaria escutando — o `chat_id` (a única coisa
@@ -196,6 +204,110 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
       onWarn: (m) => app.log.warn(`[Telegram] ${m}`),
     })
 
+  // C2 (fix-up L4-T5, CSO): a resposta do dono à escalada de "PR travado em
+  // retomada" (dedupKey `retomada-travada:<repo>:<pr>`,
+  // `retomarPrReprovado.perguntarAoDono`, plugins/scheduler.ts) tinha 4
+  // opções e NINGUÉM as consumia — a pergunta desaparecia da tela e nada
+  // acontecia. `services/responder-retomada-travada.ts` decide o QUÊ (puro);
+  // aqui é só a injeção: a MESMA credencial do repositório que
+  // `aoResponderAutomacao` usa (leitura/escrita guardada pelo nível de
+  // autonomia do projeto) e a MESMA resolução de chave do dev assíncrono
+  // (BYOK, D34) que o resto do produto usa para abrir sessão nova.
+  const depsDaChaveDoDevParaRetomada = {
+    prisma:
+      app.prisma as unknown as import('../services/chave-do-dev-assincrono.js').PrismaParaChaveDoDev,
+    decifrar: decryptCredential,
+    chaveDaInstancia: process.env['JULES_API_KEY'],
+    onWarn: (m: string) => app.log.warn(`[Telegram] ${m}`),
+  }
+  const aoResponderRetomadaTravadaHandler = async (args: {
+    dedupKey: string
+    resposta: string
+    projectId: string
+  }): Promise<void> => {
+    const projeto = await app.prisma.project.findUnique({
+      where: { id: args.projectId },
+      select: { wingId: true, userId: true, encryptedClientToken: true, autonomia: true },
+    })
+    if (!projeto) {
+      app.log.error(
+        `[Telegram] retomada travada: projeto ${args.projectId} não encontrado (dedupKey ${args.dedupKey})`
+      )
+      throw new Error(`aoResponderRetomadaTravada: projeto ${args.projectId} não encontrado`)
+    }
+    const token = await lerCredencialQueAlcancaOProjeto({
+      prisma: app.prisma,
+      projectId: args.projectId,
+      userId: projeto.userId,
+      engineConnections: app.engineConnections,
+      encryptedClientTokenJaLido: projeto.encryptedClientToken,
+    })
+    if (!token) {
+      app.log.error(
+        `[Telegram] retomada travada: sem credencial para ${projeto.wingId} (proj ${args.projectId})`
+      )
+      throw new Error(
+        `aoResponderRetomadaTravada: sem credencial do GitHub para ${projeto.wingId} — ação não executada`
+      )
+    }
+    const fetchImpl = fetchDoRepositorio({ nivel: () => projeto.autonomia })
+    const gh = <T = unknown>(method: string, path: string, body?: unknown): Promise<T> =>
+      ghJson<T>(fetchImpl, token, method, `https://api.github.com${path}`, body)
+
+    await aoResponderRetomadaTravada(args, {
+      prisma: app.prisma as unknown as PrismaParaRetomadaTravada,
+      lerPr: async ({ repository, prNumber }) => {
+        const pr = await gh<{ head?: { ref?: string } }>(
+          'GET',
+          `/repos/${repository}/pulls/${prNumber}`
+        )
+        return pr.head?.ref ? { headRef: pr.head.ref } : null
+      },
+      comentar: async ({ repository, prNumber, comentario }) => {
+        await gh('POST', `/repos/${repository}/issues/${prNumber}/comments`, { body: comentario })
+      },
+      fecharPr: async ({ repository, prNumber }) => {
+        await gh('PATCH', `/repos/${repository}/pulls/${prNumber}`, { state: 'closed' })
+      },
+      criarSessaoDev: async ({ repository, startingBranch, workingBranch, titulo, prompt }) =>
+        criarSessaoJules({
+          apiKey:
+            (await resolverChaveDoDevDoProjeto(depsDaChaveDoDevParaRetomada, args.projectId)) ??
+            undefined,
+          repository,
+          startingBranch,
+          workingBranch,
+          titulo,
+          prompt,
+          onWarn: (m) => app.log.warn(`[Telegram] ${m}`),
+        }),
+      registrarSessaoRetomada: async ({ issueNumber, sessionName, prNumber }) => {
+        const agora = new Date()
+        const aberta = await abrirSessao({
+          prisma: app.prisma as unknown as PrismaDevSession,
+          projectId: args.projectId,
+          issueNumber,
+          sessionName,
+          agora,
+        })
+        if (!aberta.ok) {
+          throw new Error(
+            `aoResponderRetomadaTravada: já existe sessão viva para a issue #${issueNumber} ` +
+              `(${aberta.motivo}) — a sessão ${sessionName} ficou órfã no dev assíncrono`
+          )
+        }
+        await registrarPr({
+          prisma: app.prisma as unknown as PrismaDevSession,
+          sessionName,
+          numeroDoPr: prNumber,
+          agora,
+        })
+      },
+      onWarn: (m) => app.log.warn(`[Telegram] ${m}`),
+      onInfo: (m) => app.log.info(`[Telegram] ${m}`),
+    })
+  }
+
   const agentQuestionService = new AgentQuestionService(app.prisma, {
     ...(notifyOwner ? { notify: notifyOwner } : {}),
     cortex: app.cortex,
@@ -208,6 +320,7 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
     manipuladoresDeResposta: [
       { prefixo: 'automacao:', executar: aoResponderAutomacao },
       { prefixo: 'duvida-dev:', executar: aoResponderDuvidaDoDev },
+      { prefixo: 'retomada-travada:', executar: aoResponderRetomadaTravadaHandler },
     ],
     // C4 (fix-up L4-T2): logger injetado para a falha de um manipulador de
     // resposta — nunca `console.warn`, que some do monitoramento.
