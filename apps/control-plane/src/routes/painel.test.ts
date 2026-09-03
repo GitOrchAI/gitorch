@@ -1738,6 +1738,42 @@ describe('Rotas do painel do owner', () => {
       })
     })
 
+    // D2 (fix-up 6, task a13a42f8-2953-4259-b41f-3f8cddb304cd): a pergunta
+    // `assumida` (o RA formou suposição depois de 24h de silêncio, L4-T4/
+    // D64) NÃO é bloqueada aqui — só `status === 'answered'` devolve 409.
+    // O dono pode corrigir a suposição; a rota chama `answer()` (mesma
+    // função do fluxo normal) normalmente, sem tratamento especial — quem
+    // sabe que é uma CORREÇÃO é o manipulador (`retomar-sessao-com-
+    // resposta.test.ts`), via `statusAnterior` no bag que `answer()` monta.
+    test('pergunta ASSUMIDA (suposição do RA) → NÃO bloqueia (nunca 409), chama answer() e devolve 200', async () => {
+      const answerImpl = vi.fn().mockResolvedValue({
+        id: 'd1',
+        answer: 'nao',
+        answeredAt: new Date('2026-09-01T12:00:00Z'),
+        answeredVia: 'panel',
+        status: 'answered',
+      })
+      await build(
+        fakePrisma({
+          agentQuestion: {
+            findUnique: vi.fn().mockResolvedValue(
+              pergunta({
+                status: 'assumida',
+                answer: 'sim',
+                answeredVia: 'ra-suposicao',
+                answeredAt: new Date('2026-08-30T00:00:00Z'),
+              })
+            ),
+          },
+        }),
+        { answerImpl }
+      )
+      const res = await responder({ resposta: 'nao' })
+      expect(res.statusCode).toBe(200)
+      expect(res.json()).toMatchObject({ status: 'answered', answer: 'nao', answeredVia: 'panel' })
+      expect(answerImpl).toHaveBeenCalledWith('d1', 'nao', 'panel')
+    })
+
     test('ok → 200, answeredVia panel, sem campo interno vazando', async () => {
       const answerImpl = vi.fn().mockResolvedValue({
         id: 'd1',

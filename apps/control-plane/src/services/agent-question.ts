@@ -86,6 +86,18 @@ export interface ManipuladorDeRespostaArgs {
   userId: string
   autonomia: string | null | undefined
   opcoes: AgentQuestionOption[]
+  /**
+   * D2 (fix-up 6, task a13a42f8-2953-4259-b41f-3f8cddb304cd): o status da
+   * pergunta ANTES desta resposta (`existing.status`, sempre presente —
+   * `open` é o caso comum). `assumida` (L4-T4/D64) é o dono CORRIGINDO uma
+   * suposição que o RA já formou e já entregou ao dev — não é a primeira
+   * resposta. `aoResponderDuvidaDoDev` usa isto para escolher a busca certa
+   * da sessão (a marca deixa de começar por `escalada:` depois da
+   * suposição) e para avisar o dev que isto SUBSTITUI a suposição, nunca uma
+   * decisão nova desconectada. Manipuladores que não distinguem os dois
+   * casos (ex.: `automacao:`) simplesmente ignoram o campo.
+   */
+  statusAnterior?: string
 }
 
 /**
@@ -256,6 +268,10 @@ export class AgentQuestionService {
           opcoes: Array.isArray(existing.options)
             ? (existing.options as unknown as AgentQuestionOption[])
             : [],
+          // D2 (fix-up 6): sempre o status ANTES desta chamada — nunca o
+          // que `answer()` vai gravar mais abaixo (`answered`), senão o
+          // manipulador jamais saberia que está numa correção de suposição.
+          statusAnterior: existing.status,
         })
       } catch (err) {
         const mensagem = err instanceof Error ? err.message : String(err)

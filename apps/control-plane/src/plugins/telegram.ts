@@ -184,6 +184,10 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
     projectId: string
     userId: string
     opcoes: Array<{ label: string; value: string }>
+    // D2 (fix-up 6, task a13a42f8-2953-4259-b41f-3f8cddb304cd): repassado
+    // direto para `retomarSessaoComResposta` — `assumida` significa que o
+    // dono está corrigindo uma suposição do RA já entregue ao dev.
+    statusAnterior?: string
   }): Promise<void> =>
     retomarSessaoComResposta(args, {
       prisma: app.prisma as unknown as PrismaParaRetomada,

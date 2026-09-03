@@ -534,6 +534,12 @@ describe('a resposta do dono aciona a decisão de automação (L4-T2 / C4)', () 
       userId: 'u1',
       autonomia: 'cuidar',
       opcoes: [],
+      // D2 (fix-up 6, task a13a42f8-2953-4259-b41f-3f8cddb304cd): o bag agora
+      // carrega o status ANTES da resposta — `aoResponderDuvidaDoDev` usa
+      // isto para saber se está retomando uma sessão comum (`open`) ou
+      // corrigindo uma suposição já entregue ao dev (`assumida`). Este
+      // manipulador (`automacao:`) não lê o campo, mas o bag é comum a todos.
+      statusAnterior: 'open',
     })
     expect(result?.status).toBe('answered')
   })
@@ -695,8 +701,65 @@ describe('a resposta do dono retoma a sessão do dev assíncrono (L4-T3)', () =>
         { label: 'Sim', value: 'sim' },
         { label: 'Não', value: 'nao' },
       ],
+      // D2 (fix-up 6): pergunta estava `open` — `aoResponderDuvidaDoDev` usa
+      // isto para escolher a busca normal (por marca `escalada:`), nunca a
+      // busca de correção de suposição (ver teste dedicado abaixo).
+      statusAnterior: 'open',
     })
     expect(result?.status).toBe('answered')
+  })
+
+  // D2 (fix-up 6, task a13a42f8-2953-4259-b41f-3f8cddb304cd): o dono pode
+  // CORRIGIR uma pergunta já `assumida` (o RA formou suposição depois de 24h
+  // de silêncio, L4-T4/D64) — `answer()` só bloqueia `status === 'answered'`
+  // (nunca `assumida`), e o manipulador precisa saber que está numa
+  // CORREÇÃO (não uma primeira resposta) para localizar a sessão certa e
+  // avisar o dev que isto substitui a suposição. Ver
+  // `retomar-sessao-com-resposta.test.ts` para a lógica de busca/moldura.
+  test('D2: pergunta ASSUMIDA (suposição do RA) → answer() NÃO bloqueia, chama o manipulador com statusAnterior "assumida", e grava answered normalmente', async () => {
+    const prisma = fakePrisma()
+    prisma.projects.set('p1', { id: 'p1', wingId: 'acme/api' } as any)
+    prisma.questions.set('q_assumida', {
+      id: 'q_assumida',
+      projectId: 'p1',
+      userId: 'u1',
+      text: 'Podemos cobrar taxa extra?',
+      dedupKey: 'duvida-dev:acme/api:46:hash123',
+      status: 'assumida',
+      options: [
+        { label: 'Sim', value: 'sim' },
+        { label: 'Não', value: 'nao' },
+      ],
+      answer: 'Vou seguir com "Sim" por padrão, sem confirmação do dono.',
+      answeredAt: new Date('2026-08-30T00:00:00Z'),
+      answeredVia: 'ra-suposicao',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const aoResponderDuvidaDoDev = vi.fn(async (_args: ManipuladorDeRespostaArgs) => undefined)
+    const svc = new AgentQuestionService(prisma as any, {
+      manipuladoresDeResposta: [{ prefixo: 'duvida-dev:', executar: aoResponderDuvidaDoDev }],
+    })
+
+    const result = await svc.answer('q_assumida', 'nao', 'panel')
+
+    expect(aoResponderDuvidaDoDev).toHaveBeenCalledOnce()
+    expect(aoResponderDuvidaDoDev.mock.calls[0]![0]).toEqual({
+      dedupKey: 'duvida-dev:acme/api:46:hash123',
+      resposta: 'nao',
+      projectId: 'p1',
+      userId: 'u1',
+      opcoes: [
+        { label: 'Sim', value: 'sim' },
+        { label: 'Não', value: 'nao' },
+      ],
+      statusAnterior: 'assumida',
+    })
+    // A correção do dono VENCE a suposição do RA: answer/answeredVia viram os
+    // do dono, e o status sai de `assumida` para `answered` de verdade.
+    expect(result?.status).toBe('answered')
+    expect(result?.answer).toBe('nao')
+    expect(result?.answeredVia).toBe('panel')
   })
 
   test('aoResponderDuvidaDoDev roda ANTES de marcar a pergunta answered', async () => {
