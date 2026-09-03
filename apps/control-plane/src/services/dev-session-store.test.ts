@@ -130,6 +130,55 @@ describe('abrirSessao', () => {
       })
     ).rejects.toThrow('conexão com o banco caiu')
   })
+
+  // C3 (fix-up L4-T5, CSO): retomada (mesmo PR, retomar-pr-reprovado.ts) NÃO
+  // é uma redelegação da issue — é a MESMA tarefa continuando. Sem
+  // `herancaDeRequeue`, `abrirSessao` recontava o histórico e enxergava a
+  // sessão que a PRÓPRIA retomada acabou de fechar (`pr-rejeitado-sem-retomada`,
+  // um dos `MOTIVOS_QUE_REDELEGAM`) — inflando `requeueCount` da issue a cada
+  // tentativa de retomada e disparando `REQUEUE_ATE_ANALISAR` cedo demais.
+  it('C3: com herancaDeRequeue, herda requeueCount/analysisDoneAt tal como estão — NUNCA reconta o histórico', async () => {
+    const prisma = prismaFalso()
+
+    await abrirSessao({
+      prisma,
+      projectId: 'p1',
+      issueNumber: 24,
+      sessionName: 'sessions/retomada-1',
+      agora,
+      herancaDeRequeue: { requeueCount: 1, analysisDoneAt: null },
+    })
+
+    // Nunca consulta o histórico: o valor herdado já é a fonte de verdade —
+    // reconsultar poderia contar a PRÓPRIA sessão que a retomada fechou.
+    expect(prisma.devSession.findMany).not.toHaveBeenCalled()
+    const chamada = prisma.devSession.upsert.mock.calls[0]?.[0] as {
+      create: Record<string, unknown>
+    }
+    expect(chamada.create).toEqual(
+      expect.objectContaining({ requeueCount: 1, analysisDoneAt: null })
+    )
+  })
+
+  it('C3: sem herancaDeRequeue, comportamento antigo (reconta o histórico)', async () => {
+    const prisma = prismaFalso({
+      findMany: vi.fn(async () => [{ analysisDoneAt: null }, { analysisDoneAt: null }]),
+    })
+
+    await abrirSessao({
+      prisma,
+      projectId: 'p1',
+      issueNumber: 24,
+      sessionName: 'sessions/1',
+      agora,
+    })
+
+    expect(prisma.devSession.findMany).toHaveBeenCalledOnce()
+    const chamada = prisma.devSession.upsert.mock.calls[0]?.[0] as {
+      create: Record<string, unknown>
+    }
+    expect(chamada.create).toEqual(expect.objectContaining({ requeueCount: 2 }))
+  })
 })
 
 describe('sessoesVivas', () => {

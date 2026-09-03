@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { runSmDelegation } from './sm-delegation.js'
+import { runSmDelegation as runSmDelegationReal } from './sm-delegation.js'
+
+// C8 (fix-up L4-T5, CSO): `onWarn` virou obrigatório em `SmDelegationOptions`
+// — ver o mesmo wrapper e o mesmo motivo em `sm-delegation.test.ts`.
+function runSmDelegation(
+  args: Omit<Parameters<typeof runSmDelegationReal>[0], 'onWarn'> & {
+    onWarn?: Parameters<typeof runSmDelegationReal>[0]['onWarn']
+  }
+): ReturnType<typeof runSmDelegationReal> {
+  return runSmDelegationReal({ onWarn: () => undefined, ...args })
+}
 
 // POR QUE ESTE ARQUIVO EXISTE — o sintoma mudo, medido em 21/08/2026.
 //

@@ -1,6 +1,21 @@
 import { describe, it, expect, vi } from 'vitest'
-import { runSmDelegation, extractBlockers } from './sm-delegation.js'
+import { runSmDelegation as runSmDelegationReal, extractBlockers } from './sm-delegation.js'
 import type { LinhaDeSessao } from './dev-session-store.js'
+
+// C8 (fix-up L4-T5, CSO): `onWarn` virou OBRIGATÓRIO em `SmDelegationOptions`
+// — produção (scheduler.ts) sempre o passa; o tipo agora barra em build quem
+// esquecer. Este arquivo tem dezenas de chamadas que não testam o canal de
+// aviso; em vez de adicionar `onWarn: () => undefined` em cada uma, este
+// wrapper local supre o padrão quando o teste não passa o seu — testes que
+// QUEREM examinar `onWarn` continuam passando o deles, que prevalece (vem
+// depois no spread).
+function runSmDelegation(
+  args: Omit<Parameters<typeof runSmDelegationReal>[0], 'onWarn'> & {
+    onWarn?: Parameters<typeof runSmDelegationReal>[0]['onWarn']
+  }
+): ReturnType<typeof runSmDelegationReal> {
+  return runSmDelegationReal({ onWarn: () => undefined, ...args })
+}
 
 describe('extractBlockers', () => {
   it('lê "Blocked by #N, #M" do corpo', () => {
@@ -867,5 +882,153 @@ describe('runSmDelegation: issue com PR aberto do dev não volta para a fila (L4
     })
     expect(labeled.filter((l) => l.labels.includes('jules')).map((l) => l.number)).toEqual([3884])
     expect(r.delegated).toEqual([3884])
+  })
+})
+
+// C8 (fix-up L4-T5, CSO): os quatro pontos que a revisão apontou
+// (`comentarCoberturaDeIncidente` falhando, `sinalizarPossivelmenteResolvida`
+// falhando, `issuesComPrAbertoDoDev` falhando, e o aviso informativo de
+// quantas issues ficaram esperando retomada) tinham `options.onWarn ??
+// console.warn` — nenhum destes quatro caminhos tinha teste provando que o
+// aviso sai pelo canal INJETADO, nunca por `console.warn` (que não aparece em
+// lugar nenhum monitorado). Usa `runSmDelegationReal` (a função de produção,
+// não o wrapper deste arquivo) para provar o contrato de verdade.
+describe('runSmDelegation: C8 — onWarn é o ÚNICO canal, nunca console.warn', () => {
+  it('comentarCoberturaDeIncidente falha → avisa por onWarn, nunca console.warn', async () => {
+    ;(console.warn as ReturnType<typeof vi.fn>).mockClear()
+    const impl = fakeFetch([{ number: 200, labels: ['gitorch:task'], body: '' }])
+    const avisos: string[] = []
+    await runSmDelegationReal({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: impl,
+      criarSessaoDev: async () => ({ situacao: 'criada' as const, sessionName: 's/1' }),
+      aoCriarSessao: async () => undefined,
+      issuesComPrDeIncidente: new Map([[200, 314]]),
+      comentarCoberturaDeIncidente: async () => {
+        throw new Error('comentário falhou')
+      },
+      onWarn: (m) => avisos.push(m),
+    })
+    expect(avisos.join(' ')).toContain('#200')
+    expect(console.warn).not.toHaveBeenCalled()
+  })
+
+  it('sinalizarPossivelmenteResolvida falha → avisa por onWarn, nunca console.warn', async () => {
+    ;(console.warn as ReturnType<typeof vi.fn>).mockClear()
+    const impl = fakeFetch([{ number: 46, labels: ['gitorch:task'], body: '' }])
+    const avisos: string[] = []
+    await runSmDelegationReal({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: impl,
+      criarSessaoDev: async () => ({ situacao: 'criada' as const, sessionName: 's/1' }),
+      aoCriarSessao: async () => undefined,
+      diagnosticarJaResolvido: async () =>
+        new Map([
+          [46, { issue: 46, categoria: 'ja_resolvido' as const, motivo: 'já implementado' }],
+        ]),
+      sinalizarPossivelmenteResolvida: async () => {
+        throw new Error('sinalização falhou')
+      },
+      onWarn: (m) => avisos.push(m),
+    })
+    expect(avisos.join(' ')).toContain('#46')
+    expect(console.warn).not.toHaveBeenCalled()
+  })
+
+  it('issuesComPrAbertoDoDev falha (GitHub fora do ar) → avisa por onWarn, segue sem o filtro', async () => {
+    ;(console.warn as ReturnType<typeof vi.fn>).mockClear()
+    const task = { number: 1, labels: ['gitorch:task'], body: 'sem bloqueio' }
+    const semRedeParaPulls: typeof fetch = (async (
+      url: Parameters<typeof fetch>[0],
+      init?: Parameters<typeof fetch>[1]
+    ) => {
+      const u = String(url)
+      if (u.includes('/pulls?state=open')) throw new Error('GitHub fora do ar')
+      return fakeFetch([task])(url, init)
+    }) as typeof fetch
+    const avisos: string[] = []
+    const r = await runSmDelegationReal({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: semRedeParaPulls,
+      criarSessaoDev: async () => ({ situacao: 'criada' as const, sessionName: 's/1' }),
+      aoCriarSessao: async () => undefined,
+      sessoesParaReconhecerPr: [
+        {
+          id: 'x',
+          projectId: 'p1',
+          issueNumber: 1,
+          sessionName: 's-antiga',
+          state: 'COMPLETED',
+          answeredHash: null,
+          pullRequestNumber: 999,
+          attempts: 1,
+          nudges: 0,
+          lastProgressAt: null,
+          stateCheckedAt: null,
+          reworkNoticePending: null,
+          reworkNoticeAttempts: 0,
+          pendingSince: null,
+          mergeCommitSha: null,
+          deployState: null,
+          deployCheckedAt: null,
+          mergeFailures: 0,
+          mergeLastFailedAt: null,
+          deployFixKey: null,
+          envLastVerdict: null,
+          closedAt: new Date(),
+        } as LinhaDeSessao,
+      ],
+      onWarn: (m) => avisos.push(m),
+    })
+    expect(avisos.some((m) => m.includes('não deu para checar PRs abertos'))).toBe(true)
+    expect(console.warn).not.toHaveBeenCalled()
+    // Sem o filtro (falhou), a issue segue elegível — best-effort de verdade.
+    expect(r.delegated).toEqual([1])
+  })
+
+  it('issue(s) com PR aberto do dev aguardando retomada → avisa por onWarn, nunca console.warn', async () => {
+    ;(console.warn as ReturnType<typeof vi.fn>).mockClear()
+    const task = { number: 3884, labels: ['gitorch:task'], body: 'sem bloqueio' }
+    const impl = fakeFetch([task], [], [3917])
+    const avisos: string[] = []
+    await runSmDelegationReal({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: impl,
+      criarSessaoDev: async () => ({ situacao: 'criada' as const, sessionName: 's/1' }),
+      aoCriarSessao: async () => undefined,
+      sessoesParaReconhecerPr: [
+        {
+          id: 'x',
+          projectId: 'p1',
+          issueNumber: 3884,
+          sessionName: 's-antiga',
+          state: 'COMPLETED',
+          answeredHash: null,
+          pullRequestNumber: 3917,
+          attempts: 1,
+          nudges: 0,
+          lastProgressAt: null,
+          stateCheckedAt: null,
+          reworkNoticePending: null,
+          reworkNoticeAttempts: 0,
+          pendingSince: null,
+          mergeCommitSha: null,
+          deployState: null,
+          deployCheckedAt: null,
+          mergeFailures: 0,
+          mergeLastFailedAt: null,
+          deployFixKey: null,
+          envLastVerdict: null,
+          closedAt: new Date(),
+        } as LinhaDeSessao,
+      ],
+      onWarn: (m) => avisos.push(m),
+    })
+    expect(avisos.some((m) => m.includes('#3884') && m.includes('aguardando'))).toBe(true)
+    expect(console.warn).not.toHaveBeenCalled()
   })
 })

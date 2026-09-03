@@ -692,8 +692,16 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
                   }
                 }
               } catch (err) {
+                // C6 (fix-up L4-T5, CSO): repo + PR novo no log estruturado —
+                // sem eles, um erro aqui só diz "algum projeto, algum PR",
+                // exigindo ir ao banco para saber QUAL entrega ficou sem a
+                // limpeza de duplicata. O(s) PR(s) ANTIGO(s) que falharam ao
+                // fechar já são logados individualmente por
+                // `fecharPrsSubstituidos` (pr-substituido.ts); best-effort,
+                // nunca derruba o 200 do webhook (nenhum throw daqui em
+                // diante).
                 app.log.error(
-                  { err, projectId: project.id },
+                  { err, projectId: project.id, repo: project.wingId, prNovo: ligado.numeroDoPr },
                   'Falha ao verificar/fechar PR duplicado da mesma tarefa'
                 )
               }

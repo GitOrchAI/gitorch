@@ -1,5 +1,19 @@
 import { describe, it, expect, vi } from 'vitest'
-import { listarPrsSemParecer, runSmDelegation, CAP_PADRAO_DE_JULGAMENTO } from './sm-delegation.js'
+import {
+  listarPrsSemParecer,
+  runSmDelegation as runSmDelegationReal,
+  CAP_PADRAO_DE_JULGAMENTO,
+} from './sm-delegation.js'
+
+// C8 (fix-up L4-T5, CSO): `onWarn` virou obrigatório em `SmDelegationOptions`
+// — ver o mesmo wrapper e o mesmo motivo em `sm-delegation.test.ts`.
+function runSmDelegation(
+  args: Omit<Parameters<typeof runSmDelegationReal>[0], 'onWarn'> & {
+    onWarn?: Parameters<typeof runSmDelegationReal>[0]['onWarn']
+  }
+): ReturnType<typeof runSmDelegationReal> {
+  return runSmDelegationReal({ onWarn: () => undefined, ...args })
+}
 import { MARCA_DO_PARECER } from './parecer-do-qa.js'
 
 interface FakePr {

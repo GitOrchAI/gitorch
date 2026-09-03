@@ -31,3 +31,27 @@ export function lerCadenciaMs(
   }
   return lido
 }
+
+/**
+ * C3 (fix-up L4-T5, CSO): a mesma guarda de `lerCadenciaMs`, mas para um
+ * TETO inteiro (ex.: `GITORCH_RETOMADAS_POR_PR`) — nunca milissegundos.
+ * Ausente → devolve `padrao` em silêncio. Presente mas inválido (não
+ * numérico, `NaN`, não-inteiro, `<= 0`) → devolve `padrao` e avisa via
+ * `onWarn` — nunca deixa passar um valor que faria o teto virar zero/negativo
+ * (qualquer tentativa escalaria na hora) ou fracionário (sem sentido para uma
+ * CONTAGEM de tentativas).
+ */
+export function lerInteiroDaEnv(
+  nomeEnv: string,
+  padrao: number,
+  onWarn?: (mensagem: string) => void
+): number {
+  const bruto = process.env[nomeEnv]
+  if (bruto === undefined) return padrao
+  const lido = Number(bruto)
+  if (!Number.isInteger(lido) || lido <= 0) {
+    onWarn?.(`[Scheduler] ${nomeEnv} inválido ('${bruto}'); usando o padrão de ${padrao}`)
+    return padrao
+  }
+  return lido
+}

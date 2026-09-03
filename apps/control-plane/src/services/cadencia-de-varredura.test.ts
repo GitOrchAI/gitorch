@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { lerCadenciaMs } from './cadencia-de-varredura.js'
+import { lerCadenciaMs, lerInteiroDaEnv } from './cadencia-de-varredura.js'
 
 /**
  * A3 (fix-up L4-T3): o padrão "lê `process.env[nomeEnv]`, `Number(...)`,
@@ -64,5 +64,67 @@ describe('lerCadenciaMs', () => {
     process.env[NOME_ENV] = 'lixo'
 
     expect(lerCadenciaMs(NOME_ENV, 5000)).toBe(5000)
+  })
+})
+
+// C3 (fix-up L4-T5, CSO): mesmo padrão de `lerCadenciaMs`, mas para um TETO
+// inteiro (ex.: `GITORCH_RETOMADAS_POR_PR`) em vez de milissegundos — a
+// mesma cicatriz (`Number(x)` deixa passar string vazia/texto/negativo)
+// vale igual aqui.
+const NOME_ENV_INTEIRO = 'GITORCH_TESTE_INTEIRO'
+
+describe('lerInteiroDaEnv', () => {
+  beforeEach(() => {
+    delete process.env[NOME_ENV_INTEIRO]
+  })
+  afterEach(() => {
+    delete process.env[NOME_ENV_INTEIRO]
+  })
+
+  it('env ausente: devolve o padrão, nunca avisa', () => {
+    const onWarn = vi.fn()
+    expect(lerInteiroDaEnv(NOME_ENV_INTEIRO, 3, onWarn)).toBe(3)
+    expect(onWarn).not.toHaveBeenCalled()
+  })
+
+  it('env válida: devolve o valor da env, nunca avisa', () => {
+    process.env[NOME_ENV_INTEIRO] = '5'
+    const onWarn = vi.fn()
+    expect(lerInteiroDaEnv(NOME_ENV_INTEIRO, 3, onWarn)).toBe(5)
+    expect(onWarn).not.toHaveBeenCalled()
+  })
+
+  it('env não numérica (NaN): devolve o padrão e avisa com o nome da env', () => {
+    process.env[NOME_ENV_INTEIRO] = 'abc'
+    const onWarn = vi.fn()
+    expect(lerInteiroDaEnv(NOME_ENV_INTEIRO, 3, onWarn)).toBe(3)
+    expect(onWarn).toHaveBeenCalledOnce()
+    expect(onWarn.mock.calls[0]?.[0]).toContain(NOME_ENV_INTEIRO)
+  })
+
+  it('env "0": devolve o padrão e avisa', () => {
+    process.env[NOME_ENV_INTEIRO] = '0'
+    const onWarn = vi.fn()
+    expect(lerInteiroDaEnv(NOME_ENV_INTEIRO, 3, onWarn)).toBe(3)
+    expect(onWarn).toHaveBeenCalledOnce()
+  })
+
+  it('env negativa: devolve o padrão e avisa', () => {
+    process.env[NOME_ENV_INTEIRO] = '-2'
+    const onWarn = vi.fn()
+    expect(lerInteiroDaEnv(NOME_ENV_INTEIRO, 3, onWarn)).toBe(3)
+    expect(onWarn).toHaveBeenCalledOnce()
+  })
+
+  it('env decimal (não inteira): devolve o padrão e avisa', () => {
+    process.env[NOME_ENV_INTEIRO] = '2.5'
+    const onWarn = vi.fn()
+    expect(lerInteiroDaEnv(NOME_ENV_INTEIRO, 3, onWarn)).toBe(3)
+    expect(onWarn).toHaveBeenCalledOnce()
+  })
+
+  it('onWarn ausente (opcional): não lança mesmo com env inválida', () => {
+    process.env[NOME_ENV_INTEIRO] = 'lixo'
+    expect(lerInteiroDaEnv(NOME_ENV_INTEIRO, 3)).toBe(3)
   })
 })

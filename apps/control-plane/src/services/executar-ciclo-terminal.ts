@@ -196,11 +196,28 @@ export async function executarCicloTerminal(
         r.mantidas += 1
         continue
       }
+      // C4 (fix-up L4-T5, CSO): defesa em profundidade contra a combinação
+      // inconsistente "decisão diz retomar, mas a linha não carrega o número
+      // do PR" — hoje inalcançável pela wiring real (o chamador só passa
+      // `branchRetomavel` truthy quando `linha.pullRequestNumber !== null`),
+      // mas um `situacaoDoPr`/`branchRetomavel` injetado com bug não pode
+      // virar `numeroDoPr: null` digitado como `number` (o cast antigo,
+      // `as number`) numa chamada real ao GitHub/Jules. Nunca finge sucesso:
+      // pula a retomada, avisa, e a linha cai no comportamento antigo
+      // (mantida para o próximo ciclo reexaminar do zero).
+      if (linha.pullRequestNumber === null) {
+        warn(
+          `[ciclo-terminal] decisão retomar-no-mesmo-pr para #${linha.issueNumber} sem número ` +
+            'de PR na linha — mantendo para o próximo ciclo (comportamento antigo)'
+        )
+        r.mantidas += 1
+        continue
+      }
       try {
         await deps.fecharSessao({ linha, motivo: 'pr-rejeitado-sem-retomada' })
         await deps.retomarNoMesmoPr({
           linha,
-          numeroDoPr: linha.pullRequestNumber as number,
+          numeroDoPr: linha.pullRequestNumber,
           branchDoPr: decisao.branchDoPr,
         })
         feitas += 1

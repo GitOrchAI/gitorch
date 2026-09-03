@@ -196,8 +196,9 @@ import {
   reconciliarDuvidasEscaladasDoProjeto,
   type PrismaParaReconciliacao,
 } from '../services/reconciliar-duvidas-escaladas.js'
-import { lerCadenciaMs } from '../services/cadencia-de-varredura.js'
+import { lerCadenciaMs, lerInteiroDaEnv } from '../services/cadencia-de-varredura.js'
 import { dedupKeyDeDuvidaDoDev } from '../services/dedup-key-de-duvida.js'
+import { dedupKeyDeRetomada } from '../services/dedup-key-de-retomada.js'
 import {
   marcarAssumidaPorDedupKey,
   type PrismaParaMarcarAssumidaPorDedupKey,
@@ -275,7 +276,9 @@ import {
   listarPrsAbertosParaOVigia,
   vigiarPrsOrfaos,
 } from '../services/vigia-do-pr.js'
-import { retomarPrReprovado } from '../services/retomar-pr-reprovado.js'
+import { retomarPrReprovado, TETO_DE_RETOMADAS_POR_PR } from '../services/retomar-pr-reprovado.js'
+import { varrerPrsDuplicadosDoDev } from '../services/varrer-prs-duplicados.js'
+import { ehPRDaAutomacao } from '../services/vigia-do-pr.js'
 import { buildFreeTextOption } from '../services/telegram-bot.js'
 import { varrerVagasVazadas } from '../services/reconciliar-vagas.js'
 import { sessoesAbandonadas } from '../services/sessao-abandonada.js'
@@ -6075,6 +6078,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             pr: { number: numeroDoPr, headRef: branchDoPr },
             parecerDoQa: parecerPorPr.get(numeroDoPr) ?? 'O QA pediu mudanças neste pull request.',
             sessaoAnterior: { sessionName: linha.sessionName },
+            // C3 (fix-up L4-T5, CSO): teto configurável por env — mesma
+            // guarda de `lerCadenciaMs` (nunca deixa passar um valor que
+            // faria a próxima tentativa escalar na hora, ou nunca escalar).
+            teto: lerInteiroDaEnv('GITORCH_RETOMADAS_POR_PR', TETO_DE_RETOMADAS_POR_PR, (m) =>
+              app.log.warn(m)
+            ),
           },
           {
             contarRetomadasAnteriores: async ({ projectId, prNumber }) => {
@@ -6103,6 +6112,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 sessionName,
                 agora,
                 devAccountId: linha.devAccountId ?? null,
+                // C3 (fix-up L4-T5, CSO): herda requeueCount/analysisDoneAt da
+                // linha que está fechando — retomada NÃO é redelegação da
+                // issue (dev-session-store.ts, `herancaDeRequeue`).
+                herancaDeRequeue: {
+                  requeueCount: linha.requeueCount,
+                  analysisDoneAt: linha.analysisDoneAt,
+                },
               })
               if (!aberta.ok) {
                 // A sessão nasceu lá fora mas não pôde ser guardada — desfaz
@@ -6152,7 +6168,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                     { label: 'Vou revisar eu mesmo', value: 'revisar-manualmente' },
                     buildFreeTextOption(),
                   ],
-                  dedupKey: `retomada-travada:${proj.wingId}:${nPr}:${retomadasAnteriores}`,
+                  // C1 (fix-up L4-T5, CSO): dedupKey ESTÁVEL por PR — nunca
+                  // inclui `retomadasAnteriores` (varia a cada ciclo). Uma
+                  // chave que mudasse a cada tentativa nunca bateria de novo
+                  // no dedupe de `AgentQuestionService.ask`, e a resposta do
+                  // dono a esta MESMA trava ficaria órfã assim que o contador
+                  // avançasse (dedup-key-de-retomada.ts).
+                  dedupKey: dedupKeyDeRetomada({ repo: proj.wingId, prNumber: nPr }),
                 })
                 .catch((err: unknown) =>
                   app.log.warn(err, `[Scheduler] retomada: pergunta ao dono sobre #${nPr} falhou`)
@@ -6393,6 +6415,118 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         app.log.info(`[Scheduler] ${projeto.wingId}: ${resumo}`)
       } catch (err) {
         app.log.warn(err, `[Scheduler] vigia-do-pr falhou em ${projeto.wingId}; tenta na próxima`)
+      }
+    }
+  }
+
+  // C10 (fix-up L4-T5, CSO) — CASO LEGADO aceito como referência: "#3907
+  // fechado como substituído por #3917" (issue #3884 do Jardim). A fila
+  // (fila-de-delegacao.ts), a retomada no mesmo PR (retomar-pr-reprovado.ts)
+  // e o fecho automático do antigo QUANDO UM NOVO NASCE (pr-substituido.ts,
+  // github-webhook.ts) juntos cobrem tudo que acontece DAQUI PARA FRENTE —
+  // nenhum dos três olha para um par de PRs duplicados que já existia ANTES
+  // deles. Esta varredura periódica é a rede de segurança que fecha essa
+  // lacuna: cadência de 6h (mesmo padrão de `lerCadenciaMs` da varredura de
+  // quadro, T8), rodando já no PRIMEIRO tique (`ultimaVarreduraDePrsDuplicados`
+  // nasce em 0).
+  const CADENCIA_PADRAO_DE_VARREDURA_DE_PRS_DUPLICADOS_MS = 6 * 60 * 60 * 1000
+  const CADENCIA_DE_VARREDURA_DE_PRS_DUPLICADOS_MS = lerCadenciaMs(
+    'GITORCH_VARREDURA_DE_PRS_DUPLICADOS_CADENCIA_MS',
+    CADENCIA_PADRAO_DE_VARREDURA_DE_PRS_DUPLICADOS_MS,
+    (m) => app.log.warn(m)
+  )
+  let ultimaVarreduraDePrsDuplicados = 0
+
+  const varrerPrsDuplicadosDosProjetos = async (): Promise<void> => {
+    if (Date.now() - ultimaVarreduraDePrsDuplicados < CADENCIA_DE_VARREDURA_DE_PRS_DUPLICADOS_MS) {
+      return
+    }
+    ultimaVarreduraDePrsDuplicados = Date.now()
+
+    const projetos = await app.prisma.project.findMany({
+      where: { isActive: true },
+      select: { id: true, wingId: true },
+    })
+
+    // EM SÉRIE, mesmo motivo das varreduras irmãs: dois projetos do mesmo
+    // dono compartilham credencial, e uma renovação no meio da outra derruba
+    // as duas.
+    for (const projeto of projetos) {
+      try {
+        const token =
+          process.env['GITORCH_GITHUB_TOKEN'] ??
+          (await mintInstallationToken({
+            repository: projeto.wingId,
+            onError: (m) => app.log.error(m),
+            onWarn: (m) => app.log.warn(m),
+          })) ??
+          undefined
+        if (!token) {
+          app.log.warn(
+            `[Scheduler] prs-duplicados: sem token para ${projeto.wingId}; pula a passada`
+          )
+          continue
+        }
+
+        const resultado = await varrerPrsDuplicadosDoDev({
+          issuesComPrsRegistrados: async () => {
+            const linhas = (await app.prisma.devSession.findMany({
+              where: { projectId: projeto.id, pullRequestNumber: { not: null } },
+              select: { issueNumber: true, pullRequestNumber: true },
+            })) as unknown as Array<{ issueNumber: number; pullRequestNumber: number | null }>
+            const mapa = new Map<number, number[]>()
+            for (const l of linhas) {
+              if (l.pullRequestNumber === null) continue
+              mapa.set(l.issueNumber, [...(mapa.get(l.issueNumber) ?? []), l.pullRequestNumber])
+            }
+            return mapa
+          },
+          lerPr: async (numeroDoPr) => {
+            const pr = (await ghGet(`/repos/${projeto.wingId}/pulls/${numeroDoPr}`, token)) as {
+              state?: string
+              user?: { login?: string }
+              labels?: Array<{ name?: string }>
+              body?: string
+            }
+            return {
+              aberto: pr.state === 'open',
+              ehDoDev: ehPRDaAutomacao({
+                autor: pr.user?.login ?? null,
+                labels: (pr.labels ?? []).map((l) => l.name ?? ''),
+                corpo: pr.body ?? null,
+              }),
+            }
+          },
+          comentariosDoPr: async (numeroDoPr) => {
+            const comentarios = (await ghGet(
+              `/repos/${projeto.wingId}/issues/${numeroDoPr}/comments?per_page=100`,
+              token
+            )) as Array<{ body?: string }>
+            return (Array.isArray(comentarios) ? comentarios : []).map((c) => c.body ?? '')
+          },
+          comentarEFechar: async ({ numeroDoPr, comentario }) => {
+            await ghSend('POST', `/repos/${projeto.wingId}/issues/${numeroDoPr}/comments`, token, {
+              body: comentario,
+            })
+            await ghSend('PATCH', `/repos/${projeto.wingId}/pulls/${numeroDoPr}`, token, {
+              state: 'closed',
+            })
+          },
+          onInfo: (m) => app.log.info(`[Scheduler] ${m}`),
+          onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+        })
+
+        if (resultado.issuesComDuplicata > 0 || resultado.falhas > 0) {
+          app.log.info(
+            `[Scheduler] prs-duplicados ${projeto.wingId}: ${resultado.issuesComDuplicata} ` +
+              `issues com duplicata, ${resultado.fechados} fechados, ${resultado.falhas} falhas`
+          )
+        }
+      } catch (err) {
+        app.log.warn(
+          err,
+          `[Scheduler] prs-duplicados falhou em ${projeto.wingId}; tenta na próxima`
+        )
       }
     }
   }
@@ -10032,6 +10166,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // das duas varreduras já está atualizado nesta mesma passada.
     await varrerPrsOrfaos().catch((err) =>
       app.log.warn(err, '[Scheduler] vigia do pull request órfão falhou; tenta no próximo ciclo')
+    )
+    // C10 (fix-up L4-T5, CSO): rede de segurança para PR duplicado LEGADO —
+    // cadência própria de 6h (a função em si decide se roda ou não neste
+    // tique). Nunca derruba o tique: cada projeto se isola sozinho.
+    await varrerPrsDuplicadosDosProjetos().catch((err) =>
+      app.log.warn(err, '[Scheduler] varredura de PRs duplicados falhou; tenta no próximo ciclo')
     )
     await reconciliarVagasDoDev().catch((err) =>
       app.log.error(err, '[Scheduler] reconciliação de vagas falhou; tenta na próxima hora')

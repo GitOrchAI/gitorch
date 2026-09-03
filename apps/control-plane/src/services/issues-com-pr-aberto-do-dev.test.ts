@@ -128,4 +128,61 @@ describe('issuesComPrAbertoDoDev', () => {
     })
     expect(chamadas).toHaveLength(1)
   })
+
+  // C5 (fix-up L4-T5, CSO): a chamada original só lia a PRIMEIRA página
+  // (`per_page=100`) — um repositório com mais de cem PRs abertos do dev
+  // perderia os que ficassem na página 2 em diante, tratando a issue deles
+  // como "livre" mesmo com o PR ainda aberto (a mesma classe de defeito que
+  // este módulo inteiro existe para evitar).
+  function ghPaginado(paginas: number[][]) {
+    const chamadas: string[] = []
+    const gh = async (method: string, path: string): Promise<unknown> => {
+      chamadas.push(`${method} ${path}`)
+      const m = /[?&]page=(\d+)/.exec(path)
+      const pagina = m ? Number(m[1]) : 1
+      if (/\/pulls\?state=open/.test(path)) {
+        return (paginas[pagina - 1] ?? []).map((n) => ({ number: n }))
+      }
+      throw new Error(`chamada inesperada: ${method} ${path}`)
+    }
+    return { gh, chamadas }
+  }
+
+  it('pagina até achar uma página com menos de 100 — não perde PR além da 1ª página', async () => {
+    const pagina1 = Array.from({ length: 100 }, (_, i) => i + 1) // 1..100
+    const pagina2 = [3917] // o PR que importa está na 2ª página
+    const { gh, chamadas } = ghPaginado([pagina1, pagina2])
+    const r = await issuesComPrAbertoDoDev({
+      repository: 'o/r',
+      gh,
+      sessoes: [linha({ issueNumber: 3884, pullRequestNumber: 3917 })],
+    })
+    expect(r).toEqual(new Set([3884]))
+    expect(chamadas).toEqual([
+      'GET /repos/o/r/pulls?state=open&per_page=100&page=1',
+      'GET /repos/o/r/pulls?state=open&per_page=100&page=2',
+    ])
+  })
+
+  it('página cheia (100) seguida de página vazia → para, não pagina para sempre', async () => {
+    const pagina1 = Array.from({ length: 100 }, (_, i) => i + 1)
+    const { gh, chamadas } = ghPaginado([pagina1, []])
+    await issuesComPrAbertoDoDev({
+      repository: 'o/r',
+      gh,
+      sessoes: [linha({ issueNumber: 1, pullRequestNumber: 1 })],
+    })
+    expect(chamadas).toHaveLength(2)
+  })
+
+  it('teto de 10 páginas — mesmo se o repositório tivesse 1000+ PRs abertos, nunca gira para sempre', async () => {
+    const paginas = Array.from({ length: 15 }, () => Array.from({ length: 100 }, (_, i) => i + 1))
+    const { gh, chamadas } = ghPaginado(paginas)
+    await issuesComPrAbertoDoDev({
+      repository: 'o/r',
+      gh,
+      sessoes: [linha({ issueNumber: 1, pullRequestNumber: 1 })],
+    })
+    expect(chamadas).toHaveLength(10)
+  })
 })
