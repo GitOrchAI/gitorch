@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from 'vitest'
-import { runDuvidaMissionViaRails, suporSemODono } from './duvida-rails-mission.js'
+import {
+  runDuvidaMissionViaRails,
+  suporSemODono,
+  textoDaSuposicaoParaODev,
+  textoDoComentarioDeSuposicao,
+} from './duvida-rails-mission.js'
 
 const BASE = {
   pergunta: 'Devo usar bcrypt ou argon2 para o hash de senha?',
@@ -189,5 +194,34 @@ describe('suporSemODono (L4-T4, D64)', () => {
 
     expect(prompts[0]).toContain(BASE.pergunta)
     expect(prompts[0]).toContain('#7')
+  })
+})
+
+// Fix-up (task a13a42f8-2953-4259-b41f-3f8cddb304cd): estas duas funções de
+// texto moraram em `session-watch.ts` até a suposição passar a rodar dentro
+// do trilho real de missão (`scheduler.ts` `suporDuvidaPendente`) — ver o
+// comentário em `textoDaSuposicaoParaODev` acima. Testadas aqui, direto, sem
+// precisar montar `VigiaDeps` nem o scheduler inteiro.
+describe('textoDaSuposicaoParaODev / textoDoComentarioDeSuposicao (L4-T4, D64)', () => {
+  const suposicao = {
+    suposicao: 'Vou usar argon2id, o mesmo padrão de src/lib/hash.ts, para este endpoint.',
+    justificativa: 'É o único helper de hash do repositório e já é usado no login.',
+    arquivosCitados: ['src/lib/hash.ts'],
+  }
+
+  it('o texto para o dev cita a suposição, a justificativa e os arquivos', () => {
+    const texto = textoDaSuposicaoParaODev(suposicao)
+
+    expect(texto).toContain('src/lib/hash.ts')
+    expect(texto).toContain(suposicao.suposicao)
+    expect(texto).toContain(suposicao.justificativa)
+    expect(texto).toContain('o dono pode corrigir')
+  })
+
+  it('o comentário da issue cita a suposição e avisa que o dono pode corrigir', () => {
+    const texto = textoDoComentarioDeSuposicao(suposicao)
+
+    expect(texto).toContain(suposicao.suposicao)
+    expect(texto).toContain('o dono pode corrigir')
   })
 })

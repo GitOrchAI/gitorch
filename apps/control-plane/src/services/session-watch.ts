@@ -18,12 +18,6 @@ import { createHash } from 'node:crypto'
 import type { LinhaDeSessao, MotivoDeFechamento } from './dev-session-store.js'
 import { decidirRespostaDaSessao, MAX_NUDGES } from './jules-session-loop.js'
 import { decidirSessaoTerminal } from './sessao-terminal.js'
-import { lerMarca, marcarRespondida } from './pergunta-sem-resposta.js'
-// Import de TIPO apenas (compila fora, zero custo em runtime): o formato da
-// suposição do RA é o MESMO em `duvida-rails-mission.ts` (quem a formula,
-// com motor e contexto reais) e aqui (quem decide o que fazer com ela) — uma
-// fonte só evita duas formas divergirem.
-import type { SuposicaoDoRa } from './duvida-rails-mission.js'
 
 /**
  * A pergunta do Jules (AWAITING_USER_FEEDBACK) já foi respondida e mesmo assim
@@ -126,54 +120,8 @@ export interface VigiaDeps {
    * retorno é o único jeito, já que `buildTelegramNotifier` nunca rejeita.
    */
   avisarDono?: (mensagem: string) => Promise<boolean>
-  /**
-   * L4-T4 (D64): a dúvida foi ESCALADA ao dono e ele ficou 24h em silêncio.
-   * Formula uma suposição técnica lendo o repositório de verdade (RA, com
-   * motor real) — `null` quando não achou nada concreto. Opcional: sem ele,
-   * o ramo abaixo cai direto para "manter a espera e avisar o dono", que é
-   * o mesmo desfecho de uma suposição que veio `null`.
-   */
-  suporSemODono?: (args: {
-    sessionName: string
-    issueNumber: number
-    pergunta: string
-  }) => Promise<SuposicaoDoRa | null>
-  /**
-   * Entrega TEXTO ARBITRÁRIO à sessão do dev — diferente de
-   * `pedirParaContinuar` acima, que manda sempre o mesmo texto fixo. L4-T4
-   * usa para entregar a suposição do RA quando ela é concreta.
-   */
-  responder?: (args: { sessionName: string; texto: string }) => Promise<boolean>
-  /**
-   * Comenta na issue do repositório do CLIENTE (L4-T4) — sempre pelo fetch
-   * guardado pela autonomia do projeto (`guarda-de-autonomia.ts`), nunca um
-   * `fetch` cru. Best-effort do lado de quem chama: a suposição já foi
-   * entregue ao dev quando isto roda, e uma falha aqui não desfaz isso.
-   */
-  comentarNaIssue?: (args: { issueNumber: number; texto: string }) => Promise<void>
-  /**
-   * Marca a pergunta ESCALADA como ASSUMIDA pelo RA (L4-T4) —
-   * `agent-question.ts marcarAssumida`, nunca `answer()`: isto não é uma
-   * decisão do dono, é uma suposição provisória que ele ainda pode corrigir.
-   */
-  marcarAssumida?: (args: { issueNumber: number; hash: string; suposicao: string }) => Promise<void>
   agora: Date
   onWarn?: (m: string) => void
-}
-
-/** L4-T4 (D64): o texto que chega ao dev quando o RA assume por ele. */
-function textoDaSuposicaoParaODev(s: SuposicaoDoRa): string {
-  return (
-    `Suposição adotada pelo RA (o dono pode corrigir): ${s.suposicao}\n\n` +
-    `Por quê: ${s.justificativa}\n` +
-    `Arquivos: ${s.arquivosCitados.join(', ')}`
-  )
-}
-
-/** L4-T4 (D64): o comentário que fica registrado na issue, para quem olhar
- *  depois entender por que o trabalho seguiu sem resposta do dono. */
-function textoDoComentarioDeSuposicao(s: SuposicaoDoRa): string {
-  return `GitOrch: suposição adotada: ${s.suposicao} (o dono pode corrigir)`
 }
 
 /**
@@ -221,7 +169,6 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
   let fechadasTerminal = 0
   let falhas = 0
   let avisosReentregues = 0
-  let suposicoesAdotadas = 0
 
   for (const linha of deps.sessoes) {
     // Cadência por sessão: pula quem foi examinada há menos de 10 minutos.
@@ -440,123 +387,28 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
             break
           }
 
-          // L4-T4 (D64): a dúvida foi ESCALADA ao dono (subiu de verdade
-          // como agent_question) e ele ficou 24h em silêncio. Continuar
-          // caindo no `dispararMissao('qa', ...)` de baixo não ajudaria —
-          // `decidirSobreAPergunta` (pergunta-sem-resposta.ts) devolve
-          // 'nada' para marca `escalada:`, então cada acordada seria um
-          // no-op puro, gastando uma vaga de concorrência sem nunca
-          // destravar nada. Fechar (o ramo acima) mentiria: ninguém
-          // respondeu. A decisão do dono: o RA forma uma SUPOSIÇÃO com o
-          // contexto do repositório e o produto segue o dev com ela — o
-          // dono pode corrigir depois.
-          if (escalada && paradoHaMs >= HORAS_ATE_TIMEOUT_PERGUNTA_MS) {
-            const marca = lerMarca(linha.answeredHash)
-            const hashEscalado = marca?.hash ?? ''
-            // Idempotência do AVISO (não da tentativa de suposição): reusa o
-            // MESMO formato de três partes que `escalada:0:<hash>` já usa —
-            // `escalada:1:<hash>` diz "já avisamos o dono que não achamos
-            // suposição concreta para esta pergunta". Sem contar, o aviso se
-            // repetiria a cada `CADENCIA_DE_EXAME_MS` para sempre — SPAM
-            // apaga sinal tanto quanto silêncio (mesmo princípio já aplicado
-            // ao ramo 'investigar' abaixo).
-            const jaAvisadoSemSuposicao = (marca?.tentativas ?? 0) >= 1
-
-            const suposicao = deps.suporSemODono
-              ? await deps
-                  .suporSemODono({
-                    sessionName: linha.sessionName,
-                    issueNumber: linha.issueNumber,
-                    pergunta: ultimaMensagem,
-                  })
-                  .catch((err) => {
-                    warn(
-                      `[vigia] suporSemODono falhou para ${linha.sessionName}: ${(err as Error).message}`
-                    )
-                    return null
-                  })
-              : null
-
-            if (suposicao) {
-              const entregue = deps.responder
-                ? await deps
-                    .responder({
-                      sessionName: linha.sessionName,
-                      texto: textoDaSuposicaoParaODev(suposicao),
-                    })
-                    .catch(() => false)
-                : false
-
-              if (entregue) {
-                if (deps.comentarNaIssue) {
-                  await deps
-                    .comentarNaIssue({
-                      issueNumber: linha.issueNumber,
-                      texto: textoDoComentarioDeSuposicao(suposicao),
-                    })
-                    .catch((err) =>
-                      warn(
-                        `[vigia] suposição entregue ao dev, mas não consegui comentar na issue ` +
-                          `#${linha.issueNumber}: ${(err as Error).message}`
-                      )
-                    )
-                }
-                if (deps.marcarAssumida) {
-                  await deps
-                    .marcarAssumida({
-                      issueNumber: linha.issueNumber,
-                      hash: hashEscalado,
-                      suposicao: suposicao.suposicao,
-                    })
-                    .catch((err) =>
-                      warn(
-                        `[vigia] suposição entregue ao dev, mas não consegui marcar a pergunta ` +
-                          `como assumida (issue #${linha.issueNumber}): ${(err as Error).message}`
-                      )
-                    )
-                }
-                // A marca deixa de ser `escalada:` — respondida de verdade
-                // (pelo RA, não pelo dono), do MESMO jeito que
-                // `retomar-sessao-com-resposta.ts` marca quando é o dono
-                // quem responde. Nada disto volta a rodar para esta
-                // pergunta, e a sessão NÃO fecha.
-                await deps.registrarResposta({
-                  sessionName: linha.sessionName,
-                  hashDaPergunta: marcarRespondida(hashEscalado),
-                  agora: deps.agora,
-                })
-                suposicoesAdotadas += 1
-              } else {
-                warn(
-                  `[vigia] formei uma suposição para ${linha.sessionName} mas não consegui ` +
-                    'entregá-la ao dev'
-                )
-              }
-              break
-            }
-
-            // Sem suposição concreta: mantém a espera — NUNCA fecha, NUNCA
-            // inventa. Avisa o dono e grava a marca de "já avisei" NA MESMA
-            // passagem, só a PRIMEIRA vez que isto acontecer para esta
-            // pergunta.
-            if (!jaAvisadoSemSuposicao) {
-              if (deps.avisarDono) {
-                await deps
-                  .avisarDono(
-                    `GitOrch: a issue #${linha.issueNumber} ficou 24h esperando sua decisão e eu ` +
-                      'não consegui formar uma suposição segura para seguir sozinho. O trabalho ' +
-                      'continua parado até você responder.'
-                  )
-                  .catch(() => undefined)
-              }
-              await deps.registrarResposta({
-                sessionName: linha.sessionName,
-                hashDaPergunta: `escalada:1:${hashEscalado}`,
-                agora: deps.agora,
-              })
-            }
-            break
-          }
+          // L4-T4 (D64), fix-up task a13a42f8-2953-4259-b41f-3f8cddb304cd: a
+          // dúvida foi ESCALADA ao dono (subiu de verdade como
+          // agent_question) e ele pode ter ficado 24h em silêncio — ou não,
+          // ainda dentro do prazo. A vigia NÃO decide mais isso sozinha:
+          // ela só acorda o QA, exatamente como faz para qualquer outra
+          // pergunta pendente, um parágrafo abaixo. Quem decide "esperar" x
+          // "supor" é `suporDuvidaPendente` (scheduler.ts), irmã de
+          // `responderDuvidaPendente`, rodando DENTRO da MESMA missão de QA
+          // — porque o único `execute: StepExecutor` real do produto nasce
+          // dentro de `executeMissionWithFailover`, e esta função roda por
+          // um `setInterval` próprio (`varrerSessoesDoDev`), fora de
+          // qualquer missão. Antes desta correção, `deps.suporSemODono` era
+          // um hook OPCIONAL que a produção nunca fornecia (não tinha como:
+          // não existe `execute` aqui) — todo tique caía sempre no "sem
+          // suposição concreta", que é exatamente o defeito que esta task
+          // corrige.
+          //
+          // A vigia AINDA sabe que a pergunta está escalada (linha acima) —
+          // é o que a impede de fechar a sessão dizendo "já foi respondida"
+          // (mentira, ver comentário no topo deste `case`). O resto —
+          // idempotência do aviso, formar a suposição, entregar, comentar na
+          // issue, marcar assumida — mora inteiro em `suporDuvidaPendente`.
 
           // A vigília DETECTA e chama quem responde. Ela não conta tentativa
           // nem avisa o dono: quem faz isso é o caminho que de fato age (a
@@ -814,11 +666,6 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
         'pedidos de retrabalho reentregues'
       )
     )
-  if (suposicoesAdotadas > 0)
-    partes.push(
-      pluralizar(suposicoesAdotadas, 'suposição do RA adotada', 'suposições do RA adotadas')
-    )
-
   const resumo = partes.length > 0 ? partes.join(', ') : 'nada novo'
   return `vigia: ${pluralizar(deps.sessoes.length, 'sessão', 'sessões')}, ${resumo}.`
 }

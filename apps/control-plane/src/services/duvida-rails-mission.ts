@@ -167,3 +167,33 @@ export async function suporSemODono(options: SuporSemODonoOptions): Promise<Supo
 
   return formulario
 }
+
+/**
+ * O texto que chega ao dev quando o RA assume por ele (L4-T4, D64).
+ *
+ * Vive AQUI, ao lado de `SuposicaoDoRa`/`suporSemODono`, e não em
+ * `session-watch.ts` (onde nasceu) nem duplicado no scheduler: fix-up da
+ * task a13a42f8-2953-4259-b41f-3f8cddb304cd — a suposição passou a ser
+ * FORMADA e APLICADA dentro do mesmo trilho de missão que já responde a
+ * dúvida pendente (`scheduler.ts` `suporDuvidaPendente`, irmã de
+ * `responderDuvidaPendente`), porque o único `execute: StepExecutor` real
+ * nasce dentro de `executeMissionWithFailover` — `session-watch.ts`
+ * (`vigiarSessoes`) roda FORA de qualquer missão e nunca teve um `execute`
+ * para chamar. Uma função de formatação só, reaproveitada por quem de fato
+ * entrega o texto, evita duas cópias divergindo.
+ */
+export function textoDaSuposicaoParaODev(s: SuposicaoDoRa): string {
+  return (
+    `Suposição adotada pelo RA (o dono pode corrigir): ${s.suposicao}\n\n` +
+    `Por quê: ${s.justificativa}\n` +
+    `Arquivos: ${s.arquivosCitados.join(', ')}`
+  )
+}
+
+/**
+ * O comentário que fica registrado na issue do cliente (L4-T4, D64), para
+ * quem olhar depois entender por que o trabalho seguiu sem resposta do dono.
+ */
+export function textoDoComentarioDeSuposicao(s: SuposicaoDoRa): string {
+  return `GitOrch: suposição adotada: ${s.suposicao} (o dono pode corrigir)`
+}

@@ -266,16 +266,19 @@ describe('vigiarSessoes', () => {
     expect(deps.dispararMissao).not.toHaveBeenCalledWith('qa', 'proj1')
   })
 
-  it('pergunta ESCALADA ao dono e parada há MAIS de 24h, sem suporSemODono configurado → NÃO fecha, avisa o dono UMA vez (L4-T4/D64)', async () => {
+  it('pergunta ESCALADA ao dono e parada há MAIS de 24h → dispara o QA pelo MESMO trilho de dúvida pendente, nunca fecha (L4-T4/D64, fix-up a13a42f8)', async () => {
     // L4-T3: `escalada:` não é `respondida` — ninguém respondeu ainda, é o
     // dono quem vai decidir. Fechar a sessão dizendo "a dúvida já foi
     // respondida" (como faz o ramo de 24h acima) seria mentira: a pergunta
     // está na mesa do dono, não resolvida.
     //
-    // L4-T4 (D64) decide o que fazer quando o prazo vence: sem `suporSemODono`
-    // configurado (produção ainda sem o motor ligado neste ponto, ou o RA
-    // não achou nada concreto), a sessão continua aberta e o dono é avisado
-    // UMA vez — nunca mais uma mentira de "já respondida", nunca silêncio.
+    // L4-T4 (D64): a vigia não forma mais a suposição sozinha — ela só
+    // acorda o QA. Quem decide "esperar" x "supor com o RA", com o `execute`
+    // REAL da missão, é `suporDuvidaPendente` (scheduler.ts), rodando dentro
+    // da MESMA missão que já responde dúvida pendente. Cobertura de
+    // "suposição concreta"/"sem suposição concreta"/"motor falhou" agora
+    // vive nos testes de `suporDuvidaPendente`, não aqui — a vigia não tem
+    // mais como decidir isso (não tem `execute`).
     const mensagem = 'Isto é decisão de preço — decido sozinho?'
     const deps = depsFalso({
       sessoes: [
@@ -297,186 +300,34 @@ describe('vigiarSessoes', () => {
 
     await vigiarSessoes(deps)
 
+    expect(deps.dispararMissao).toHaveBeenCalledWith('qa', 'proj1')
     expect(deps.fecharSessao).not.toHaveBeenCalled()
-    expect(deps.avisarDono).toHaveBeenCalledWith(expect.stringContaining('#91'))
-    // Marca a tentativa de aviso (formato de 3 partes já usado pela marca
-    // `escalada:`) — é o que impede o MESMO aviso de se repetir a cada dez
-    // minutos para sempre.
-    expect(deps.registrarResposta).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionName: 'sessions/escalada-24h',
-        hashDaPergunta: `escalada:1:${hashDe(mensagem)}`,
-      })
-    )
   })
 
-  it('escalada + 24h + aviso JÁ dado antes (escalada:1:) → NUNCA avisa duas vezes (idempotente)', async () => {
+  it('pergunta ESCALADA AINDA dentro das 24h → também dispara o QA (a idade de 24h é decidida no tratador da missão, não na vigia)', async () => {
     const mensagem = 'Isto é decisão de preço — decido sozinho?'
     const deps = depsFalso({
       sessoes: [
         linha({
-          sessionName: 'sessions/escalada-ja-avisada',
-          issueNumber: 92,
-          answeredHash: `escalada:1:${hashDe(mensagem)}`,
-          lastProgressAt: new Date(agora.getTime() - 30 * 60 * 60 * 1000),
+          sessionName: 'sessions/escalada-recente',
+          issueNumber: 96,
+          answeredHash: `escalada:0:${hashDe(mensagem)}`,
+          lastProgressAt: new Date(agora.getTime() - 1 * 60 * 60 * 1000),
           stateCheckedAt: new Date(agora.getTime() - 30 * 60 * 1000),
         }),
       ],
       consultarSessao: vi.fn(async () => ({
         estado: 'AWAITING_USER_FEEDBACK',
         numeroDoPr: null,
-        ultimaAtualizacao: new Date(agora.getTime() - 30 * 60 * 60 * 1000).toISOString(),
+        ultimaAtualizacao: new Date(agora.getTime() - 1 * 60 * 60 * 1000).toISOString(),
       })),
       ultimaMensagem: vi.fn(async () => mensagem),
     })
 
     await vigiarSessoes(deps)
 
-    expect(deps.avisarDono).not.toHaveBeenCalled()
+    expect(deps.dispararMissao).toHaveBeenCalledWith('qa', 'proj1')
     expect(deps.fecharSessao).not.toHaveBeenCalled()
-    expect(deps.registrarResposta).not.toHaveBeenCalled()
-  })
-
-  it('escalada + 24h + o RA acha uma suposição concreta → entrega ao dev, comenta na issue, marca assumida, registra resposta e NÃO fecha', async () => {
-    const mensagem = 'Devo usar bcrypt ou argon2 para o hash de senha?'
-    const suposicao = {
-      suposicao: 'Vou usar argon2id, o mesmo padrão de src/lib/hash.ts, para este endpoint.',
-      justificativa: 'É o único helper de hash do repositório e já é usado no login.',
-      arquivosCitados: ['src/lib/hash.ts'],
-    }
-    const suporSemODono = vi.fn(async () => suposicao)
-    const responder = vi.fn(async () => true)
-    const comentarNaIssue = vi.fn(async () => undefined)
-    const marcarAssumida = vi.fn(async () => undefined)
-    const deps = depsFalso({
-      sessoes: [
-        linha({
-          sessionName: 'sessions/escalada-suposicao',
-          issueNumber: 93,
-          answeredHash: `escalada:0:${hashDe(mensagem)}`,
-          lastProgressAt: new Date(agora.getTime() - 25 * 60 * 60 * 1000),
-          stateCheckedAt: new Date(agora.getTime() - 30 * 60 * 1000),
-        }),
-      ],
-      consultarSessao: vi.fn(async () => ({
-        estado: 'AWAITING_USER_FEEDBACK',
-        numeroDoPr: null,
-        ultimaAtualizacao: new Date(agora.getTime() - 25 * 60 * 60 * 1000).toISOString(),
-      })),
-      ultimaMensagem: vi.fn(async () => mensagem),
-      suporSemODono,
-      responder,
-      comentarNaIssue,
-      marcarAssumida,
-    })
-
-    const resumo = await vigiarSessoes(deps)
-
-    // A pergunta original chega inteira a quem forma a suposição.
-    expect(suporSemODono).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionName: 'sessions/escalada-suposicao',
-        issueNumber: 93,
-        pergunta: mensagem,
-      })
-    )
-    expect(responder).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionName: 'sessions/escalada-suposicao',
-        texto: expect.stringContaining('src/lib/hash.ts'),
-      })
-    )
-    expect(comentarNaIssue).toHaveBeenCalledWith(
-      expect.objectContaining({
-        issueNumber: 93,
-        texto: expect.stringContaining('o dono pode corrigir'),
-      })
-    )
-    expect(marcarAssumida).toHaveBeenCalledWith(
-      expect.objectContaining({
-        issueNumber: 93,
-        hash: hashDe(mensagem),
-        suposicao: suposicao.suposicao,
-      })
-    )
-    expect(deps.registrarResposta).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sessionName: 'sessions/escalada-suposicao',
-        hashDaPergunta: `respondida:0:${hashDe(mensagem)}`,
-      })
-    )
-    expect(deps.fecharSessao).not.toHaveBeenCalled()
-    expect(deps.avisarDono).not.toHaveBeenCalled()
-    expect(resumo).toContain('suposição do RA adotada')
-  })
-
-  it('escalada + 24h + suposição concreta mas a entrega ao dev FALHA → não comenta, não marca assumida, não registra resposta', async () => {
-    const mensagem = 'Devo usar bcrypt ou argon2 para o hash de senha?'
-    const suposicao = {
-      suposicao: 'Vou usar argon2id, o mesmo padrão de src/lib/hash.ts, para este endpoint.',
-      justificativa: 'É o único helper de hash do repositório e já é usado no login.',
-      arquivosCitados: ['src/lib/hash.ts'],
-    }
-    const comentarNaIssue = vi.fn(async () => undefined)
-    const marcarAssumida = vi.fn(async () => undefined)
-    const deps = depsFalso({
-      sessoes: [
-        linha({
-          sessionName: 'sessions/escalada-entrega-falha',
-          issueNumber: 94,
-          answeredHash: `escalada:0:${hashDe(mensagem)}`,
-          lastProgressAt: new Date(agora.getTime() - 25 * 60 * 60 * 1000),
-          stateCheckedAt: new Date(agora.getTime() - 30 * 60 * 1000),
-        }),
-      ],
-      consultarSessao: vi.fn(async () => ({
-        estado: 'AWAITING_USER_FEEDBACK',
-        numeroDoPr: null,
-        ultimaAtualizacao: new Date(agora.getTime() - 25 * 60 * 60 * 1000).toISOString(),
-      })),
-      ultimaMensagem: vi.fn(async () => mensagem),
-      suporSemODono: vi.fn(async () => suposicao),
-      responder: vi.fn(async () => false),
-      comentarNaIssue,
-      marcarAssumida,
-    })
-
-    await vigiarSessoes(deps)
-
-    expect(comentarNaIssue).not.toHaveBeenCalled()
-    expect(marcarAssumida).not.toHaveBeenCalled()
-    expect(deps.registrarResposta).not.toHaveBeenCalled()
-    expect(deps.fecharSessao).not.toHaveBeenCalled()
-  })
-
-  it('escalada + 24h + suporSemODono lança erro → tratado como "sem suposição concreta", nunca derruba a vigia', async () => {
-    const mensagem = 'Isto é decisão de preço — decido sozinho?'
-    const deps = depsFalso({
-      sessoes: [
-        linha({
-          sessionName: 'sessions/escalada-erro-motor',
-          issueNumber: 95,
-          answeredHash: `escalada:0:${hashDe(mensagem)}`,
-          lastProgressAt: new Date(agora.getTime() - 25 * 60 * 60 * 1000),
-          stateCheckedAt: new Date(agora.getTime() - 30 * 60 * 1000),
-        }),
-      ],
-      consultarSessao: vi.fn(async () => ({
-        estado: 'AWAITING_USER_FEEDBACK',
-        numeroDoPr: null,
-        ultimaAtualizacao: new Date(agora.getTime() - 25 * 60 * 60 * 1000).toISOString(),
-      })),
-      ultimaMensagem: vi.fn(async () => mensagem),
-      suporSemODono: vi.fn(async () => {
-        throw new Error('motor sem cota agora')
-      }),
-    })
-
-    const resumo = await vigiarSessoes(deps)
-
-    expect(deps.fecharSessao).not.toHaveBeenCalled()
-    expect(deps.avisarDono).toHaveBeenCalledWith(expect.stringContaining('#95'))
-    expect(resumo).not.toContain('falha')
   })
 
   it('pergunta respondida mas AINDA dentro das 24h → continua chamando o QA, não fecha', async () => {
