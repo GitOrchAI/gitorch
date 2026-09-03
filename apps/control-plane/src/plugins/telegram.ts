@@ -91,11 +91,12 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
   // D63/L4-T2: quando a dúvida respondida é sobre uma automação do cliente
   // (dedupKey `automacao:<repo>:<identidade>`), a resposta vira ação
   // (deletar/reajustar/manter/texto livre) — `AgentQuestionService` não sabe
-  // nada de GitHub; só delega para cá. Best-effort por contrato (mesmo do
-  // Cortex/notify acima): uma falha nunca desfaz o `answer` já gravado.
+  // nada de GitHub; só delega para cá. C4 (fix-up): `AgentQuestionService.
+  // answer()` agora chama isto ANTES de marcar `status: 'answered'` — uma
+  // falha AQUI (lançada, nunca engolida) mantém a pergunta `open` para nova
+  // tentativa, em vez de fingir que a ação aconteceu.
   const aoResponderAutomacao = async (args: {
     dedupKey: string
-    context: string | null
     resposta: string
     projectId: string
     autonomia: string | null | undefined
@@ -104,7 +105,15 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
       where: { id: args.projectId },
       select: { wingId: true, userId: true, encryptedClientToken: true },
     })
-    if (!projeto) return
+    // C5 (fix-up L4-T2): nunca retorno silencioso — sem o projeto não há
+    // como agir, e devolver sem erro faria `answer()` achar que a decisão
+    // foi executada (a issue fica presa sem PR/comentário nenhum).
+    if (!projeto) {
+      app.log.error(
+        `[Telegram] decisão de automação: projeto ${args.projectId} não encontrado (dedupKey ${args.dedupKey})`
+      )
+      throw new Error(`aoResponderAutomacao: projeto ${args.projectId} não encontrado`)
+    }
     const token = await lerCredencialQueAlcancaOProjeto({
       prisma: app.prisma,
       projectId: args.projectId,
@@ -113,14 +122,28 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
       encryptedClientTokenJaLido: projeto.encryptedClientToken,
     })
     if (!token) {
-      app.log.warn(
-        `[Telegram] decisão de automação: sem credencial para ${projeto.wingId} (proj ${args.projectId})`
+      // C5 (fix-up L4-T2): idem — `warn` + retorno silencioso deixava
+      // `answer()` marcar a pergunta `answered` sem NENHUMA ação executada
+      // (nem PR, nem label, nem comentário). Nível `error` + lança.
+      app.log.error(
+        `[Telegram] decisão de automação: sem credencial para ${projeto.wingId} (proj ${args.projectId}, dedupKey ${args.dedupKey})`
       )
-      return
+      throw new Error(
+        `aoResponderAutomacao: sem credencial do GitHub para ${projeto.wingId} — decisão não executada`
+      )
     }
     await processarRespostaDeAutomacao(args, {
       fetchImpl: fetchDoRepositorio({ nivel: () => args.autonomia }),
       token,
+      // A2 (fix-up L4-T2): o número da proposta vem da linha de
+      // `infra_incidents` — nunca de um `context` reparseado.
+      buscarIncidente: async ({ projectId, identidadeEstavel }) => {
+        const incidente = await app.prisma.infraIncident.findUnique({
+          where: { projectId_identidadeEstavel: { projectId, identidadeEstavel } },
+          select: { issueNumber: true },
+        })
+        return incidente ? { issueNumber: incidente.issueNumber } : null
+      },
       marcarIncidenteResolvido: async ({ projectId, identidadeEstavel }) => {
         await app.prisma.infraIncident.update({
           where: { projectId_identidadeEstavel: { projectId, identidadeEstavel } },
@@ -146,6 +169,9 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
     ...(notifyOwner ? { notify: notifyOwner } : {}),
     cortex: app.cortex,
     aoResponderAutomacao,
+    // C4 (fix-up L4-T2): logger injetado para a falha de `aoResponderAutomacao`
+    // — nunca `console.warn`, que some do monitoramento.
+    onError: (m) => app.log.error(`[Telegram] ${m}`),
   })
   app.decorate('agentQuestionService', agentQuestionService)
 

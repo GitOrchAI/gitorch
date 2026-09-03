@@ -7,26 +7,26 @@
 // issues de volta e recria a linha que falta. Idempotente: roda toda vez,
 // antes de `varrerIncidentesResolvidos`, e só cria o que ainda não existe.
 
+import { lerMarcador, TETO_DE_CARACTERES_DO_MARCADOR } from './marcador-de-issue.js'
+
 /**
  * L4-T1b (achado 2 da auditoria de segurança): a identidade vem do CORPO DA
  * ISSUE — entrada não confiável, escrita por qualquer um com permissão de
  * comentar/editar no repositório do cliente — e ia direto para
  * `infra_incidents.identidade_estavel` sem limite nenhum. Teto de 200
- * caracteres corta qualquer tentativa de inflar a coluna.
+ * caracteres corta qualquer tentativa de inflar a coluna. Reexportado por
+ * compatibilidade — o teto real vive em `marcador-de-issue.ts` (R1).
  */
-export const TETO_DE_CARACTERES_DA_IDENTIDADE = 200
+export const TETO_DE_CARACTERES_DA_IDENTIDADE = TETO_DE_CARACTERES_DO_MARCADOR
 
-/** Extrai a identidade estável do marcador HTML no corpo da issue. */
+/**
+ * Extrai a identidade estável do marcador HTML no corpo da issue. R1
+ * (fix-up L4-T2): agora um fininho sobre `lerMarcador` (helper único de
+ * marcador — `services/marcador-de-issue.ts`), comportamento idêntico ao de
+ * antes (ver testes deste arquivo).
+ */
 export function identidadeDoMarcador(body: string | null | undefined): string | null {
-  if (!body) return null
-  const m = body.match(/<!--\s*gitorch:incident:([^>]*?)\s*-->/)
-  const bruto = m?.[1]
-  if (bruto === undefined) return null
-  // Trim primeiro (marcador só com espaços não deve virar string vazia
-  // sobrevivente), depois teto de tamanho — nunca o contrário, senão um
-  // corte no meio de espaços de borda poderia deixar sobra.
-  const identidade = bruto.trim().slice(0, TETO_DE_CARACTERES_DA_IDENTIDADE)
-  return identidade.length > 0 ? identidade : null
+  return lerMarcador(body, 'incident')
 }
 
 /** Uma issue de incidente aberta no GitHub, tal como a busca devolve. */

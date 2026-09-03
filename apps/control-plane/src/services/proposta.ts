@@ -9,6 +9,11 @@
 // `reconciliar-incidentes-legados.ts`): nunca duplica a proposta na mesma
 // varredura nem na próxima.
 
+import { GithubExecutionError } from './github-errors.js'
+import { nomeDeRepositorioValido } from './nome-de-repositorio.js'
+import { marcador } from './marcador-de-issue.js'
+import { ghJson, headersGithub } from './github-json.js'
+
 /** O label que toda proposta carrega — NUNCA `jules`, NUNCA P0..P3. */
 export const LABEL_PROPOSTA = 'gitorch:proposal'
 
@@ -17,6 +22,12 @@ export const LABEL_PROPOSTA = 'gitorch:proposal'
 export function marcadorDaProposta(identidade: string): string {
   return `gitorch:proposta:${identidade}`
 }
+
+/** A2/R1: tipo do segundo marcador estruturado — carrega o CAMINHO do
+ *  arquivo do workflow, a origem confiável que `processarRespostaDeAutomacao`
+ *  (decisao-de-automacao.ts) lê de volta para o "deletar" via `lerMarcador`
+ *  (NUNCA o `context` da pergunta, que é texto do dono). */
+export const TIPO_MARCADOR_ARQUIVO = 'proposta:arquivo'
 
 /** Texto do título, exatamente como o dono pediu. */
 export function tituloDaPropostaDeAutomacao(nome: string, arquivo: string, desde: string): string {
@@ -39,6 +50,10 @@ export interface CorpoDaPropostaArgs {
 export function corpoDaPropostaDeAutomacao(args: CorpoDaPropostaArgs): string {
   const linkDaRun = args.urlDaRun ? `\n\nRun: ${args.urlDaRun}` : ''
   return [
+    // A2/R1: marcador ESTRUTURADO do caminho do arquivo — a única origem que
+    // `processarRespostaDeAutomacao` pode confiar para o "deletar" (nunca o
+    // `context` da pergunta, que é texto do dono).
+    marcador(TIPO_MARCADOR_ARQUIVO, args.arquivo),
     `## Goal`,
     `\n\nO workflow "${args.nome}" (${args.arquivo}) ${args.resumo} e falha desde ${args.desde}. ` +
       `Isto é automação (bot de Dependabot/Jules/auto-merge/...), não CI do cliente — o GitOrch não abre ` +
@@ -83,6 +98,12 @@ interface IssueCriada {
   node_id?: string
 }
 
+/** C2: teto de páginas ao buscar issues abertas com `LABEL_PROPOSTA` —
+ *  `per_page=100`, para de pedir a próxima assim que uma página vier com
+ *  menos de 100 (a última). Protege contra um repo patológico. */
+const MAX_PAGINAS_DE_BUSCA_DE_PROPOSTAS = 10
+const PER_PAGE_DE_BUSCA_DE_PROPOSTAS = 100
+
 /**
  * Cria (ou acha, idempotente) a proposta ao dono para `identidade`. Devolve o
  * número da issue — nova ou já existente. NUNCA `jules`, NUNCA P0..P3: só
@@ -92,27 +113,34 @@ export async function criarProposta(
   args: CriarPropostaArgs,
   deps: CriarPropostaDeps
 ): Promise<number> {
+  // S1: `repo` vai colado numa URL que carrega o token — mesmo padrão de
+  // `desejo-no-github.ts`: recusa ANTES de montar qualquer URL/tocar rede.
+  if (!nomeDeRepositorioValido(args.repo)) {
+    throw new GithubExecutionError(
+      `proposta: repositório em formato inválido, não é "dono/repositorio": ${JSON.stringify(args.repo).slice(0, 80)}`
+    )
+  }
+
   const info = deps.onInfo ?? (() => undefined)
   const warn = deps.onWarn ?? (() => undefined)
-  const headers = {
-    authorization: `token ${deps.token}`,
-    accept: 'application/vnd.github+json',
-    'user-agent': 'gitorch',
-  }
-  const marcador = marcadorDaProposta(args.identidade)
+  const marcadorTexto = marcador('proposta', args.identidade)
 
   // 1. Idempotência: uma proposta ABERTA para esta identidade já existe?
-  const buscaResp = await deps.fetchImpl(
-    `https://api.github.com/repos/${args.repo}/issues?labels=${encodeURIComponent(LABEL_PROPOSTA)}&state=open&per_page=100`,
-    { headers }
-  )
-  if (!buscaResp.ok) {
-    throw new Error(`GET issues (proposta) /repos/${args.repo} → ${buscaResp.status}`)
+  //    C2: pagina — uma página cheia (100) pode esconder a proposta antiga
+  //    numa página seguinte; para assim que uma página vier incompleta.
+  let existentes: IssueDeBusca[] = []
+  for (let pagina = 1; pagina <= MAX_PAGINAS_DE_BUSCA_DE_PROPOSTAS; pagina++) {
+    const lote = await ghJson<IssueDeBusca[]>(
+      deps.fetchImpl,
+      deps.token,
+      'GET',
+      `https://api.github.com/repos/${args.repo}/issues?labels=${encodeURIComponent(LABEL_PROPOSTA)}&state=open&per_page=${PER_PAGE_DE_BUSCA_DE_PROPOSTAS}&page=${pagina}`
+    )
+    const pedaco = Array.isArray(lote) ? lote : []
+    existentes = existentes.concat(pedaco)
+    if (pedaco.length < PER_PAGE_DE_BUSCA_DE_PROPOSTAS) break
   }
-  const existentes = (await buscaResp.json()) as IssueDeBusca[]
-  const jaExiste = (Array.isArray(existentes) ? existentes : []).find((i) =>
-    (i.body ?? '').includes(marcador)
-  )
+  const jaExiste = existentes.find((i) => (i.body ?? '').includes(marcadorTexto))
   if (jaExiste) {
     info(`proposta: já existe #${jaExiste.number} para ${args.identidade} — não duplica`)
     return jaExiste.number
@@ -120,10 +148,11 @@ export async function criarProposta(
 
   // 2. Garante a label (cor e descrição deliberadas, em PT-BR — não a
   //    aleatória que o GitHub daria criando "na mão" via /issues).
-  //    422 = já existe. Best-effort: a issue nasce mesmo se isto falhar.
+  //    422 = já existe. Best-effort: a issue nasce mesmo se isto falhar —
+  //    por isso não usa `ghJson` (que lançaria em qualquer !ok).
   const labelResp = await deps.fetchImpl(`https://api.github.com/repos/${args.repo}/labels`, {
     method: 'POST',
-    headers: { ...headers, 'content-type': 'application/json' },
+    headers: headersGithub(deps.token, true),
     body: JSON.stringify({
       name: LABEL_PROPOSTA,
       color: '5319e7',
@@ -135,20 +164,15 @@ export async function criarProposta(
   }
 
   // 3. Cria a issue — marcador PRIMEIRO (mesmo padrão de `renderIssueBody`).
-  const corpo = `<!-- ${marcador} -->\n\n${args.corpo}`
-  const criaResp = await deps.fetchImpl(`https://api.github.com/repos/${args.repo}/issues`, {
-    method: 'POST',
-    headers: { ...headers, 'content-type': 'application/json' },
-    body: JSON.stringify({ title: args.titulo, body: corpo, labels: [LABEL_PROPOSTA] }),
-  })
-  if (!criaResp.ok) {
-    const detail = await criaResp.text().catch(() => '')
-    throw new Error(
-      `POST /repos/${args.repo}/issues (proposta) → ${criaResp.status}: ${detail.slice(0, 150)}`
-    )
-  }
-  const issue = (await criaResp.json()) as IssueCriada
-  if (!issue.number) throw new Error(`proposta criada em ${args.repo} sem número`)
+  const corpo = `${marcadorTexto}\n\n${args.corpo}`
+  const issue = await ghJson<IssueCriada>(
+    deps.fetchImpl,
+    deps.token,
+    'POST',
+    `https://api.github.com/repos/${args.repo}/issues`,
+    { title: args.titulo, body: corpo, labels: [LABEL_PROPOSTA] }
+  )
+  if (!issue.number) throw new GithubExecutionError(`proposta criada em ${args.repo} sem número`)
 
   if (issue.node_id && deps.anexarAoQuadro) {
     const nodeId = issue.node_id

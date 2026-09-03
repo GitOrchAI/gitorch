@@ -5077,17 +5077,24 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   const REPO_DO_PRODUTO = process.env['GITORCH_SELF_REPO'] ?? 'GitOrchAI/gitorch'
 
   /**
-   * D63/L4-T2: `AchadoDeInfra` não carrega `nome`/`arquivo` separados (só
-   * `titulo` — uma frase pronta — e `paths`). Melhor sinal disponível: o
-   * primeiro path é o arquivo; o nome é o trecho entre aspas do título
-   * (o sensor já escreve `Workflow "X" falhou...`), com o basename do
-   * arquivo como fallback.
+   * A1 (fix-up L4-T2): `AchadoDeInfra` agora carrega nome/arquivo/gatilho/
+   * falhaDesde ESTRUTURADOS (`coletarAchadosDeInfra`, incidente-ci.ts) — nada
+   * de regex no título (`nomeEArquivoDoAchado`, removida). O fallback só
+   * cobre o caso raro de um achado sem os campos novos (ex.: gerado por um
+   * caminho de teste antigo). R2: também a ÚNICA função que formata
+   * `falhaDesde` em data (`YYYY-MM-DD`) — antes duplicada em duas closures
+   * abaixo, cada uma com o próprio `new Date().toISOString().slice(0, 10)`.
    */
-  const nomeEArquivoDoAchado = (achado: AchadoDeInfra): { nome: string; arquivo: string } => {
-    const arquivo = achado.paths[0] ?? achado.identidadeEstavel
-    const nome =
-      achado.titulo.match(/"([^"]+)"/)?.[1] ?? arquivo.split('/').pop() ?? achado.identidadeEstavel
-    return { nome, arquivo }
+  const camposDoAchadoDeAutomacao = (
+    achado: AchadoDeInfra
+  ): { nome: string; arquivo: string; gatilho: string; desde: string } => {
+    const arquivo = achado.arquivo ?? achado.paths[0] ?? achado.identidadeEstavel
+    return {
+      nome: achado.nomeDoWorkflow ?? arquivo.split('/').pop() ?? achado.identidadeEstavel,
+      arquivo,
+      gatilho: achado.gatilho ?? 'ver evidência da issue',
+      desde: (achado.falhaDesde ?? new Date().toISOString()).slice(0, 10),
+    }
   }
 
   /**
@@ -5273,8 +5280,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       // `anexarIssueDeIncidenteAoQuadro` que `ghIssue` já usa acima — nada de
       // resolução nova de credencial.
       criarProposta: (achado) => {
-        const { nome, arquivo } = nomeEArquivoDoAchado(achado)
-        const desde = new Date().toISOString().slice(0, 10)
+        const { nome, arquivo, gatilho, desde } = camposDoAchadoDeAutomacao(achado)
         return criarPropostaService(
           {
             repo: project.wingId,
@@ -5283,10 +5289,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             corpo: corpoDaPropostaDeAutomacao({
               nome,
               arquivo,
-              // O achado (`AchadoDeInfra`) não carrega o `on:` da run — só o
-              // sensor via runs sabe; aqui entra o melhor sinal disponível
-              // (a evidência já traz o YAML quando dá).
-              gatilho: 'ver evidência da issue',
+              gatilho,
               desde,
               resumo: achado.titulo,
             }),
@@ -5327,8 +5330,22 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       perguntarAoDono: async (achado, numeroDaProposta) => {
         const perguntador = (app as unknown as { agentQuestionService?: AgentQuestionService })
           .agentQuestionService
-        if (!perguntador || !project.userId) return
-        const { nome, arquivo } = nomeEArquivoDoAchado(achado)
+        // C5 (fix-up L4-T2): a proposta #numeroDaProposta JÁ EXISTE no GitHub
+        // neste ponto — sem a pergunta, ela fica lá para sempre sem ninguém
+        // saber que pode responder (meia entrega). Nunca retorno silencioso:
+        // loga ERROR com repo+issue e RELANÇA — o chamador (`processar-
+        // achados-de-infra.ts`) só loga um warn e segue para o próximo
+        // achado, mas o `registrarIncidente` desta proposta NÃO roda (fica
+        // fora do `try`), então a próxima varredura tenta de novo — e
+        // `criarProposta` é idempotente (acha a issue pelo marcador), então
+        // repetir é seguro.
+        if (!perguntador || !project.userId) {
+          const motivo = !perguntador ? 'agentQuestionService indefinido' : 'projeto sem userId'
+          const mensagem = `proposta #${numeroDaProposta} criada em ${project.wingId} sem pergunta ao dono (${motivo})`
+          app.log.error(`[Scheduler] ${mensagem}`)
+          throw new Error(`perguntarAoDono: ${mensagem}`)
+        }
+        const { nome, arquivo, gatilho, desde } = camposDoAchadoDeAutomacao(achado)
         await perguntarAoDonoService(
           {
             userId: project.userId,
@@ -5337,14 +5354,17 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             identidade: achado.identidadeEstavel,
             nome,
             arquivo,
-            gatilho: 'ver evidência da issue',
-            desde: new Date().toISOString().slice(0, 10),
+            gatilho,
+            desde,
             resumo: achado.titulo,
             numeroProposta: numeroDaProposta,
           },
+          // C5 (fix-up L4-T2): este `await` NÃO tem `.catch` — o antigo
+          // `.catch` engolia a falha em warn e deixava o chamador achar que
+          // a pergunta saiu. Mesmo raciocínio do guard acima: propaga, o
+          // `registrarIncidente` desta proposta não roda, e a próxima
+          // varredura tenta de novo (idempotente).
           { agentQuestion: perguntador }
-        ).catch((err: unknown) =>
-          app.log.warn(err, `[Scheduler] não perguntei ao dono sobre ${achado.identidadeEstavel}`)
         )
       },
       avisarDono: async (texto) => {

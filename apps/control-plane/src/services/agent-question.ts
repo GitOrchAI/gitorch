@@ -58,10 +58,11 @@ export type NotifyFn = (question: AgentQuestionRecord) => Promise<void>
 /** L4-T2 (D63): a resposta a uma dúvida de decisão de automação
  *  (`dedupKey` começando com `automacao:`) vira ação — deletar via PR,
  *  reajustar para incidente normal, manter e fechar, ou só registrar texto
- *  livre. Best-effort por contrato: nunca desfaz o `answer` já gravado. */
+ *  livre. C4 (fix-up): chamada ANTES de marcar `answered` — uma falha aqui
+ *  agora IMPEDE o `answer` (a pergunta continua `open` para nova tentativa),
+ *  ao contrário do best-effort antigo que fingia sucesso. */
 export type AoResponderAutomacaoFn = (args: {
   dedupKey: string
-  context: string | null
   resposta: string
   projectId: string
   autonomia: string | null | undefined
@@ -73,6 +74,10 @@ export interface AgentQuestionServiceDeps {
   cortex?: CortexWriter
   now?: () => Date
   aoResponderAutomacao?: AoResponderAutomacaoFn
+  /** C4 (fix-up L4-T2): logger injetado para a falha de `aoResponderAutomacao`
+   *  — NUNCA `console.warn` (o padrão antigo, que não aparecia em lugar
+   *  nenhum monitorado). Produção passa `app.log.error`. */
+  onError?: (mensagem: string) => void
 }
 
 /**
@@ -149,16 +154,20 @@ export class AgentQuestionService {
   }
 
   /**
-   * Registra a resposta do dono: grava `answer/answeredAt/answeredVia` e
-   * marca `status: 'answered'`. Em seguida grava a DECISÃO na memória de
-   * longo prazo (Cortex) do projeto — a fonte que os agentes consultam antes
-   * de perguntar de novo (ver `ask`/dedupKey). O Cortex é BEST-EFFORT: se a
-   * gravação falhar, loga e segue — o banco (o `answer` em si) é a fonte de
-   * verdade, nunca desfeito por uma falha de memória.
+   * Registra a resposta do dono. C4 (fix-up L4-T2): para dedupKey de decisão
+   * de automação (`automacao:*`), a AÇÃO (`aoResponderAutomacao`) roda
+   * PRIMEIRO — se ela lançar, a exceção sobe e NADA é gravado (a pergunta
+   * continua `open`, pronta para nova tentativa). Só depois disso grava
+   * `answer/answeredAt/answeredVia` + `status: 'answered'`, e em seguida
+   * grava a DECISÃO na memória de longo prazo (Cortex) do projeto — a fonte
+   * que os agentes consultam antes de perguntar de novo (ver `ask`/dedupKey).
+   * O Cortex (e a configuração do projeto, D49) continuam BEST-EFFORT: se a
+   * gravação falhar, loga e segue — o `answer` em si é a fonte de verdade
+   * dali em diante, nunca desfeito por uma falha de memória.
    *
    * IDEMPOTENTE: se a questão já está `answered`, devolve o estado atual sem
-   * regravar nem duplicar a memória (responder 2x — ex.: Telegram reentrega o
-   * callback_query — é inofensivo).
+   * regravar nem duplicar a memória nem repetir a ação (responder 2x — ex.:
+   * Telegram reentrega o callback_query — é inofensivo).
    *
    * `questionId` inexistente devolve `null` sem lançar.
    */
@@ -177,6 +186,36 @@ export class AgentQuestionService {
     }
     if (existing.status === 'answered') {
       return existing as unknown as AgentQuestionRecord
+    }
+
+    // C4 (fix-up L4-T2): para dedupKey de decisão de automação, a AÇÃO roda
+    // ANTES de marcar `answered` — o antigo best-effort (ação DEPOIS, falha
+    // vira warn e engolida) fingia sucesso: o dono clicava "Deletar", via a
+    // pergunta sumir, e o workflow continuava lá porque a ação de verdade
+    // (abrir o PR) tinha falhado em silêncio. Agora, se a ação falhar, a
+    // pergunta continua `open` — nova tentativa (Telegram/painel respondem
+    // de novo) — e o erro é logado pelo logger INJETADO (nunca
+    // `console.warn`, que não aparece em monitoramento nenhum). As outras
+    // perguntas (sem esse prefixo) mantêm a ordem de sempre.
+    if (existing.dedupKey?.startsWith('automacao:') && this.deps.aoResponderAutomacao) {
+      const projeto = await this.prisma.project.findUnique({
+        where: { id: existing.projectId },
+        select: { autonomia: true },
+      })
+      try {
+        await this.deps.aoResponderAutomacao({
+          dedupKey: existing.dedupKey,
+          resposta: value,
+          projectId: existing.projectId,
+          autonomia: (projeto as { autonomia?: string | null } | null)?.autonomia,
+        })
+      } catch (err) {
+        const mensagem = err instanceof Error ? err.message : String(err)
+        this.deps.onError?.(
+          `[agent-question] decisão de automação falhou — pergunta ${questionId} continua open: ${mensagem}`
+        )
+        throw err
+      }
     }
 
     const now = this.deps.now ? this.deps.now() : new Date()
@@ -233,36 +272,6 @@ export class AgentQuestionService {
         // conteúdo da decisão.
         console.warn(
           '[agent-question] gravação no Cortex falhou (best-effort, answer já gravado)',
-          {
-            questionId,
-            error: err instanceof Error ? err.message : String(err),
-          }
-        )
-      }
-    }
-
-    // L4-T2 (D63): dúvida de decisão de automação — a resposta vira ação
-    // (deletar/reajustar/manter/texto livre). Best-effort, como o Cortex
-    // logo acima: uma falha aqui NUNCA desfaz o `answer`, que já está
-    // gravado no banco. `AgentQuestionService` não sabe nada de GitHub/PR —
-    // só reconhece o prefixo do dedupKey e delega para a função injetada
-    // (produção: `processarRespostaDeAutomacao`, decisao-de-automacao.ts).
-    if (existing.dedupKey?.startsWith('automacao:') && this.deps.aoResponderAutomacao) {
-      try {
-        const projeto = await this.prisma.project.findUnique({
-          where: { id: existing.projectId },
-          select: { autonomia: true },
-        })
-        await this.deps.aoResponderAutomacao({
-          dedupKey: existing.dedupKey,
-          context: existing.context,
-          resposta: value,
-          projectId: existing.projectId,
-          autonomia: (projeto as { autonomia?: string | null } | null)?.autonomia,
-        })
-      } catch (err) {
-        console.warn(
-          '[agent-question] decisão de automação falhou (best-effort, answer já gravado)',
           {
             questionId,
             error: err instanceof Error ? err.message : String(err),
