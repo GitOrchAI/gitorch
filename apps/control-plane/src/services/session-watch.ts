@@ -18,6 +18,7 @@ import { createHash } from 'node:crypto'
 import type { LinhaDeSessao, MotivoDeFechamento } from './dev-session-store.js'
 import { decidirRespostaDaSessao, MAX_NUDGES } from './jules-session-loop.js'
 import { decidirSessaoTerminal } from './sessao-terminal.js'
+import { ehMarcaDeEscalada } from './pergunta-sem-resposta.js'
 
 /**
  * A pergunta do Jules (AWAITING_USER_FEEDBACK) já foi respondida e mesmo assim
@@ -366,9 +367,13 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
           // resposta dele que retoma a sessão (`retomar-sessao-com-
           // resposta.ts`). Fechar aqui diria "a dúvida já foi respondida" —
           // mentira. O que fazer quando o prazo vence com o dono ainda
-          // calado fica para a L4-T4; esta tarefa só garante que não mente
-          // nem fecha antes da hora.
-          const escalada = Boolean(linha.answeredHash?.startsWith('escalada:'))
+          // calado é a L4-T4 (D64, ramo logo abaixo).
+          // C5 (fix-up 3): `ehMarcaDeEscalada` (pergunta-sem-resposta.ts) e'
+          // a fonte UNICA desta checagem, ao inves de um `startsWith('escalada:')`
+          // proprio deste arquivo (sessao-abandonada.ts fazia a MESMA checagem
+          // solta, e uma marca truncada passaria como escalada de verdade em
+          // qualquer um dos dois sem o outro saber).
+          const escalada = ehMarcaDeEscalada(linha.answeredHash)
           const jaRespondida = Boolean(linha.answeredHash) && !escalada
           if (jaRespondida && paradoHaMs >= HORAS_ATE_TIMEOUT_PERGUNTA_MS) {
             await deps.fecharSessao({
@@ -387,6 +392,30 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
             }
             break
           }
+
+          // L4-T4 (D64), fix-up task a13a42f8-2953-4259-b41f-3f8cddb304cd: a
+          // dúvida foi ESCALADA ao dono (subiu de verdade como
+          // agent_question) e ele pode ter ficado 24h em silêncio — ou não,
+          // ainda dentro do prazo. A vigia NÃO decide mais isso sozinha:
+          // ela só acorda o QA, exatamente como faz para qualquer outra
+          // pergunta pendente, um parágrafo abaixo. Quem decide "esperar" x
+          // "supor" é `suporDuvidaPendente` (scheduler.ts), irmã de
+          // `responderDuvidaPendente`, rodando DENTRO da MESMA missão de QA
+          // — porque o único `execute: StepExecutor` real do produto nasce
+          // dentro de `executeMissionWithFailover`, e esta função roda por
+          // um `setInterval` próprio (`varrerSessoesDoDev`), fora de
+          // qualquer missão. Antes desta correção, `deps.suporSemODono` era
+          // um hook OPCIONAL que a produção nunca fornecia (não tinha como:
+          // não existe `execute` aqui) — todo tique caía sempre no "sem
+          // suposição concreta", que é exatamente o defeito que esta task
+          // corrige.
+          //
+          // A vigia AINDA sabe que a pergunta está escalada (linha acima) —
+          // é o que a impede de fechar a sessão dizendo "já foi respondida"
+          // (mentira, ver comentário no topo deste `case`). O resto —
+          // idempotência do aviso, formar a suposição, entregar, comentar na
+          // issue, marcar assumida — mora inteiro em `suporDuvidaPendente`.
+
           // A vigília DETECTA e chama quem responde. Ela não conta tentativa
           // nem avisa o dono: quem faz isso é o caminho que de fato age (a
           // missão de QA, em `responderDuvidaPendente`). Enquanto os dois
@@ -417,6 +446,14 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
             requeueCount: linha.requeueCount ?? 0,
             analiseJaFeita: (linha.analysisDoneAt ?? null) !== null,
             horasNoTerminal: paradoHaMs / (60 * 60 * 1000),
+            // L4-T4, fix-up 5 (task a13a42f8-2953-4259-b41f-3f8cddb304cd):
+            // MESMA classe de defeito provada em produção — `estadoBruto`
+            // acima é o `state` que a API do Jules acabou de devolver NESTE
+            // exame, e o Jules pode reportar COMPLETED/FAILED/CANCELLED
+            // mesmo com a dúvida ainda ESCALADA (ninguém respondeu ainda).
+            // `decidirSessaoTerminal` veta o fechamento por `answeredHash`,
+            // independente de `estadoBruto`.
+            answeredHash: linha.answeredHash,
           })
           if (decisaoTerminal.acao === 'manter') break
           await deps.fecharSessao({
@@ -643,7 +680,6 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
         'pedidos de retrabalho reentregues'
       )
     )
-
   const resumo = partes.length > 0 ? partes.join(', ') : 'nada novo'
   return `vigia: ${pluralizar(deps.sessoes.length, 'sessão', 'sessões')}, ${resumo}.`
 }

@@ -76,6 +76,21 @@ const CITA_ALGO_CONCRETO = [
   /\b(src|apps|packages|lib|scripts)\//i,
 ]
 
+/**
+ * O texto aponta para algo REAL do repositório (arquivo, crase, função(),
+ * caminho src/apps/packages/lib/scripts)?
+ *
+ * Exportada (L4-T4, D64) para `suporSemODono` (duvida-rails-mission.ts)
+ * aplicar o MESMO freio de concretude à suposição do RA — sem isto, uma
+ * suposição bem escrita mas sem lastro nenhum no código passaria e o dev
+ * receberia uma opinião genérica em vez de algo que de fato o desbloqueia.
+ * As 3 portas de `destinoDaDuvida`/`destinoAposRa` abaixo continuam
+ * chamando só `ehRespostaUtil` — este export não muda o comportamento delas.
+ */
+export function citaAlgoConcreto(texto: string): boolean {
+  return CITA_ALGO_CONCRETO.some((padrao) => padrao.test(texto))
+}
+
 /** A resposta serve para mandar ao dev? */
 export function ehRespostaUtil(resposta: string): boolean {
   const limpa = resposta.trim()
@@ -84,7 +99,7 @@ export function ehRespostaUtil(resposta: string): boolean {
   // Tem que apontar para algo real do repositório. Sem isto, uma opinião
   // genérica bem escrita passava — e opinião genérica não desbloqueia
   // ninguém, só faz o produto achar que respondeu.
-  return CITA_ALGO_CONCRETO.some((padrao) => padrao.test(limpa))
+  return citaAlgoConcreto(limpa)
 }
 
 export type DestinoDaDuvida =

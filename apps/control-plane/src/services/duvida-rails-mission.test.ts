@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from 'vitest'
-import { runDuvidaMissionViaRails } from './duvida-rails-mission.js'
+import {
+  runDuvidaMissionViaRails,
+  suporSemODono,
+  textoDaSuposicaoParaODev,
+  textoDoComentarioDeSuposicao,
+} from './duvida-rails-mission.js'
 
 const BASE = {
   pergunta: 'Devo usar bcrypt ou argon2 para o hash de senha?',
@@ -131,5 +136,141 @@ describe('runDuvidaMissionViaRails', () => {
       expect(r.destino.perguntaExecutiva).toBeUndefined()
       expect(r.destino.opcoes).toBeUndefined()
     }
+  })
+})
+
+// L4-T4 (D64): a dúvida ESCALADA ao dono venceu 24h sem resposta dele. Em
+// vez de matar a sessão do dev ou continuar acordando o QA para sempre num
+// no-op, o RA forma uma SUPOSIÇÃO com o contexto do repositório — o dono
+// pode corrigir depois.
+describe('suporSemODono (L4-T4, D64)', () => {
+  it('suposição concreta (cita arquivo real) é devolvida como está', async () => {
+    const execute = vi.fn(async () =>
+      JSON.stringify({
+        suposicao:
+          'Vou usar argon2id, o mesmo padrão de src/lib/hash.ts, para o novo endpoint de login.',
+        justificativa: 'É o único helper de hash do repositório e já é usado no login hoje.',
+        arquivosCitados: ['src/lib/hash.ts'],
+      })
+    )
+
+    const r = await suporSemODono({ ...BASE, execute })
+
+    expect(r).not.toBeNull()
+    expect(r?.suposicao).toContain('src/lib/hash.ts')
+    expect(r?.arquivosCitados).toEqual(['src/lib/hash.ts'])
+  })
+
+  it('suposição sem NADA concreto no texto vira null — mesmo freio de duvida-do-dev.ts', async () => {
+    // O formulário PASSA no schema (40+ chars, arquivosCitados não vazio),
+    // mas a prosa da suposição em si não aponta para nada real — o mesmo
+    // buraco que motivou CITA_ALGO_CONCRETO em duvida-do-dev.ts.
+    const execute = vi.fn(async () =>
+      JSON.stringify({
+        suposicao:
+          'Acho que dá para usar qualquer abordagem de autenticação comum sem problema nenhum aqui.',
+        justificativa: 'Parece razoável e não deve quebrar nada no fluxo existente.',
+        arquivosCitados: ['algum-arquivo.ts'],
+      })
+    )
+
+    const r = await suporSemODono({ ...BASE, execute })
+
+    expect(r).toBeNull()
+  })
+
+  it('a pergunta original e o número da issue vão inteiros no prompt', async () => {
+    const prompts: string[] = []
+    const execute = vi.fn(async (prompt: string) => {
+      prompts.push(prompt)
+      return JSON.stringify({
+        suposicao: 'Vou seguir o padrão de src/lib/hash.ts para o hashing deste endpoint novo.',
+        justificativa: 'É o único helper de hash já usado no login.',
+        arquivosCitados: ['src/lib/hash.ts'],
+      })
+    })
+
+    await suporSemODono({ ...BASE, execute })
+
+    expect(prompts[0]).toContain(BASE.pergunta)
+    expect(prompts[0]).toContain('#7')
+  })
+})
+
+// Fix-up (task a13a42f8-2953-4259-b41f-3f8cddb304cd): estas duas funções de
+// texto moraram em `session-watch.ts` até a suposição passar a rodar dentro
+// do trilho real de missão (`scheduler.ts` `suporDuvidaPendente`) — ver o
+// comentário em `textoDaSuposicaoParaODev` acima. Testadas aqui, direto, sem
+// precisar montar `VigiaDeps` nem o scheduler inteiro.
+describe('textoDaSuposicaoParaODev / textoDoComentarioDeSuposicao (L4-T4, D64)', () => {
+  const suposicao = {
+    suposicao: 'Vou usar argon2id, o mesmo padrão de src/lib/hash.ts, para este endpoint.',
+    justificativa: 'É o único helper de hash do repositório e já é usado no login.',
+    arquivosCitados: ['src/lib/hash.ts'],
+  }
+
+  it('o texto para o dev cita a suposição, a justificativa e os arquivos', () => {
+    const texto = textoDaSuposicaoParaODev(suposicao)
+
+    expect(texto).toContain('src/lib/hash.ts')
+    expect(texto).toContain(suposicao.suposicao)
+    expect(texto).toContain(suposicao.justificativa)
+    expect(texto).toContain('o dono pode corrigir')
+  })
+
+  it('o comentário da issue cita a suposição e avisa que o dono pode corrigir', () => {
+    const texto = textoDoComentarioDeSuposicao(suposicao)
+
+    expect(texto).toContain(suposicao.suposicao)
+    expect(texto).toContain('o dono pode corrigir')
+  })
+})
+
+// S2 (fix-up 4, CSO — texto de LLM em comentário público): `suposicao` e
+// `justificativa` são gerados pelo MODELO (`suporSemODono`) e vão direto
+// para o comentário da issue do CLIENTE e para a mensagem entregue ao dev —
+// sem sanitizar, uma suposição podia carregar `@menção` ativa, um
+// `/comando` de ChatOps no início de linha, ou cercas de código que
+// escapam o formato esperado. Reusa `sanitizarRespostaLivre`
+// (`decisao-de-automacao.ts`, L4-T2) — MESMA função, MESMO comportamento —
+// para as duas saídas públicas.
+describe('textoDaSuposicaoParaODev / textoDoComentarioDeSuposicao sanitizam a suposição (S2, fix-up 4)', () => {
+  const suposicaoMaliciosa = {
+    suposicao: '@admin decide por você agora.\n/close esta issue',
+    justificativa:
+      'Vi @outro-usuario pedir /label bug em\n```\nrm -rf /\n```\nver src/lib/hash.ts.',
+    arquivosCitados: ['src/lib/hash.ts'],
+  }
+
+  it('mensagem ao dev: sem menção ativa, comando escapado, cercas dentro do bloco de citação', () => {
+    const texto = textoDaSuposicaoParaODev(suposicaoMaliciosa)
+
+    // Menção nunca ativa: '@admin' cru não pode sobreviver.
+    expect(texto).not.toContain('@admin')
+    expect(texto).not.toContain('@outro-usuario')
+    // Comando de ChatOps escapado, nunca no início de linha sem barra invertida.
+    expect(texto).not.toMatch(/^\/close/m)
+    expect(texto).toContain('\\/close')
+    expect(texto).not.toMatch(/^\/label/m)
+    expect(texto).toContain('\\/label')
+    // Cerca de código neutralizada: nunca sobra como cerca "nua" — cada
+    // linha (cerca incluída) vira bloco de citação (`> `).
+    expect(texto).not.toMatch(/^```/m)
+    expect(texto).toContain('> ```')
+    // Conteúdo ainda reconhecível (não apagado, só neutralizado).
+    expect(texto).toContain('admin')
+    expect(texto).toContain('close esta issue')
+    // arquivosCitados continua texto puro em lista, nunca link.
+    expect(texto).toContain('Arquivos: src/lib/hash.ts')
+    expect(texto).not.toContain('](')
+  })
+
+  it('comentário da issue: mesma sanitização aplicada antes de publicar', () => {
+    const texto = textoDoComentarioDeSuposicao(suposicaoMaliciosa)
+
+    expect(texto).not.toContain('@admin')
+    expect(texto).not.toMatch(/^\/close/m)
+    expect(texto).toContain('\\/close')
+    expect(texto).toContain('o dono pode corrigir')
   })
 })

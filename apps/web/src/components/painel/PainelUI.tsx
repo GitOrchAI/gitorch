@@ -142,7 +142,14 @@ export interface DecisaoView {
   /** número do pedido de origem, quando conhecido */
   pedido?: number
   op: OpcaoDecisao[]
-  st: 'pendente' | 'respondida'
+  /**
+   * `assumida` (L4-T4, D64): a dúvida foi ESCALADA ao dono, ele ficou 24h em
+   * silêncio, e o RA formou uma suposição para o dev seguir em frente — o
+   * dono ainda pode corrigir. Nunca conta como "esperando você" (não é mais
+   * pendente), mas também não é a resposta DELE — o selo "Suposição do RA"
+   * em `Decisao` avisa a diferença.
+   */
+  st: 'pendente' | 'respondida' | 'assumida'
   resposta?: string
   tec?: string
 }
@@ -169,15 +176,48 @@ export function Decisao({
         {d.agente} · {d.quando}
         {d.pedido ? ` · pedido #${d.pedido}` : ''}
       </div>
-      {d.st === 'respondida' ? (
+      {(d.st === 'respondida' || d.st === 'assumida') && (
         <div className="pn-answered">
-          <span className="pn-label" style={{ color: 'var(--gl-accent-ink)', marginBottom: 4 }}>
-            Sua resposta
-          </span>
+          {d.st === 'assumida' ? (
+            // D4 (fix-up 6): "Suposição do RA" precisa se distinguir de "Sua
+            // resposta" — reusa o selo de aviso que o painel já tem
+            // (`.pn-tag.p1`, mesmo tom de `--gl-warn` usado em outras telas,
+            // ex.: PainelEstados.tsx), nunca uma cor nova inventada.
+            <span className="pn-tag p1" style={{ marginBottom: 4 }}>
+              Suposição do RA
+            </span>
+          ) : (
+            <span className="pn-label" style={{ color: 'var(--gl-accent-ink)', marginBottom: 4 }}>
+              Sua resposta
+            </span>
+          )}
           <span style={{ fontSize: 14 }}>{rotuloDaResposta}</span>
+          {d.st === 'assumida' && (
+            // D1 (fix-up 6): quem lê esta tela é o PRÓPRIO dono — a frase
+            // tem que falar com ele em segunda pessoa, como o resto do
+            // painel já faz (ver TelaRegras.tsx/TelaConfig.tsx).
+            <span className="pn-rs" style={{ display: 'block', marginTop: 4 }}>
+              Você não respondeu em 24h e o produto seguiu com esta suposição do analista (RA). Se
+              discordar, corrija abaixo.
+            </span>
+          )}
         </div>
-      ) : (
+      )}
+      {(d.st === 'pendente' || d.st === 'assumida') && (
         <>
+          {
+            // D2 (fix-up 6): a copy acima promete que "você ainda pode
+            // corrigir" — antes desta correção a tela NÃO mostrava nenhum
+            // controle para `assumida` (só o bloco de "respondida" acima),
+            // então a promessa não se cumpria. Agora os MESMOS controles de
+            // resposta do estado `pendente` aparecem também aqui, com um
+            // rótulo que deixa claro que isto é uma correção.
+            d.st === 'assumida' && (
+              <span className="pn-label" style={{ marginTop: 12 }}>
+                Corrigir a suposição
+              </span>
+            )
+          }
           <div className="pn-qb">
             {d.op.map((o, i) => (
               <button

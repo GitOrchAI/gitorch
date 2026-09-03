@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   decidirSobreAPergunta,
+  ehMarcaDeEscalada,
   lerMarca,
   marcarDesistencia,
   marcarEscalada,
@@ -170,6 +171,29 @@ describe('lerMarca', () => {
 
   it('hash com dois-pontos dentro sobrevive à ida e volta', () => {
     expect(lerMarca(marcarTentativa('a:b:c', 1))?.hash).toBe('a:b:c')
+  })
+})
+
+// C5 (fix-up 3, task a13a42f8-2953-4259-b41f-3f8cddb304cd): fonte única de
+// "isto é uma marca de escalada", usada por `sessao-abandonada.ts`,
+// `session-watch.ts` e `supor-duvida-pendente.ts` — os três liam
+// `startsWith('escalada:')` cada um por conta própria antes desta extração.
+describe('ehMarcaDeEscalada', () => {
+  it('"escalada" sem as partes (situação:tentativas:hash) não é uma marca válida', () => {
+    expect(ehMarcaDeEscalada('escalada')).toBe(false)
+  })
+
+  it('escalada:0:abc é uma marca de escalada', () => {
+    expect(ehMarcaDeEscalada('escalada:0:abc')).toBe(true)
+  })
+
+  it('respondida:0:abc NÃO é uma marca de escalada', () => {
+    expect(ehMarcaDeEscalada('respondida:0:abc')).toBe(false)
+  })
+
+  it('null/undefined não é uma marca de escalada', () => {
+    expect(ehMarcaDeEscalada(null)).toBe(false)
+    expect(ehMarcaDeEscalada(undefined)).toBe(false)
   })
 })
 

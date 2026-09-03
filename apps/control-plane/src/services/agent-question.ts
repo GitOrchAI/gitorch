@@ -86,6 +86,18 @@ export interface ManipuladorDeRespostaArgs {
   userId: string
   autonomia: string | null | undefined
   opcoes: AgentQuestionOption[]
+  /**
+   * D2 (fix-up 6, task a13a42f8-2953-4259-b41f-3f8cddb304cd): o status da
+   * pergunta ANTES desta resposta (`existing.status`, sempre presente —
+   * `open` é o caso comum). `assumida` (L4-T4/D64) é o dono CORRIGINDO uma
+   * suposição que o RA já formou e já entregou ao dev — não é a primeira
+   * resposta. `aoResponderDuvidaDoDev` usa isto para escolher a busca certa
+   * da sessão (a marca deixa de começar por `escalada:` depois da
+   * suposição) e para avisar o dev que isto SUBSTITUI a suposição, nunca uma
+   * decisão nova desconectada. Manipuladores que não distinguem os dois
+   * casos (ex.: `automacao:`) simplesmente ignoram o campo.
+   */
+  statusAnterior?: string
 }
 
 /**
@@ -256,6 +268,10 @@ export class AgentQuestionService {
           opcoes: Array.isArray(existing.options)
             ? (existing.options as unknown as AgentQuestionOption[])
             : [],
+          // D2 (fix-up 6): sempre o status ANTES desta chamada — nunca o
+          // que `answer()` vai gravar mais abaixo (`answered`), senão o
+          // manipulador jamais saberia que está numa correção de suposição.
+          statusAnterior: existing.status,
         })
       } catch (err) {
         const mensagem = err instanceof Error ? err.message : String(err)
@@ -330,6 +346,70 @@ export class AgentQuestionService {
     }
 
     return question
+  }
+
+  /**
+   * L4-T4 (D64): a dúvida ESCALADA ao dono ficou 24h em silêncio e o RA
+   * formou uma suposição para o dev seguir em frente — o dono pode corrigir
+   * depois. Marca a pergunta como decidida PROVISORIAMENTE pelo produto,
+   * nunca pelo dono.
+   *
+   * Deliberadamente MAIS SIMPLES que `answer()`: NUNCA passa pelo registro
+   * de `manipuladoresDeResposta` (nenhuma automação/retomada de sessão é
+   * disparada por aqui — quem já entregou a suposição ao dev e comentou na
+   * issue foi `session-watch.ts`/scheduler, ANTES de chamar isto), nunca
+   * vira `runtimeConfig` do projeto (`configuracaoAPartirDaResposta` é para
+   * decisão REAL do dono, D49) e nunca escreve no Cortex como decisão de
+   * rumo — seria uma memória enganosa, atribuindo ao dono algo que ele nunca
+   * viu.
+   *
+   * IDEMPOTENTE, no mesmo espírito de `answer()`: uma pergunta já `answered`
+   * (o dono respondeu de verdade antes do RA terminar) ou já `assumida`
+   * (uma passagem anterior já gravou) nunca é sobrescrita — devolve o estado
+   * atual sem regravar. `questionId` inexistente devolve `null` sem lançar.
+   *
+   * S1 (fix-up 4, CSO — isolamento entre donos): recebe `projectId` e só
+   * marca a pergunta se ela pertencer a ESTE projeto
+   * (`findFirst({ where: { id, projectId } })`, nunca `findUnique` só pela
+   * chave primária). Antes desta correção o filtro de projeto existia SÓ no
+   * chamador (`marcarAssumidaPorDedupKey`, que resolve o `questionId` a
+   * partir de `(projectId, dedupKey)`) — uma chamada direta a este método
+   * com um `questionId` de OUTRO projeto ainda seria aceita, porque
+   * `marcarAssumida` em si nunca conferia o dono da pergunta. Pergunta de
+   * outro projeto segue o MESMO caminho de pergunta inexistente: devolve
+   * `null` e loga pelo `onError` injetado — nunca marca.
+   */
+  async marcarAssumida(args: {
+    questionId: string
+    projectId: string
+    suposicao: string
+  }): Promise<AgentQuestionRecord | null> {
+    const { questionId, projectId, suposicao } = args
+    const existing = await this.prisma.agentQuestion.findFirst({
+      where: { id: questionId, projectId },
+    })
+    if (!existing) {
+      // C7 (fix-up 3): `console.warn` não aparece em monitoramento nenhum —
+      // MESMA disciplina do `onError` que `answer()` já usa para o
+      // manipulador de resposta (ver comentário lá em cima). O CHAMADOR
+      // (`marcarAssumidaPorDedupKey`, a partir de `scheduler.ts`) ainda
+      // lança quando isto devolve `null` — este log é o rastro do lado de
+      // dentro do serviço, não a única rede de segurança.
+      this.deps.onError?.(
+        `[agent-question] marcarAssumida: dúvida não encontrada (questionId=${questionId}, projectId=${projectId})`
+      )
+      return null
+    }
+    if (existing.status === 'answered' || existing.status === 'assumida') {
+      return existing as unknown as AgentQuestionRecord
+    }
+
+    const now = this.deps.now ? this.deps.now() : new Date()
+    const updated = await this.prisma.agentQuestion.update({
+      where: { id: questionId },
+      data: { answer: suposicao, answeredAt: now, answeredVia: 'ra-suposicao', status: 'assumida' },
+    })
+    return updated as unknown as AgentQuestionRecord
   }
 
   /**

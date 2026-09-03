@@ -22,7 +22,17 @@ export function TelaDecisoes({
   setFoco: (id: string) => void
 }) {
   const [filtro, setFiltro] = useState<'pendente' | 'respondida' | 'todas'>('pendente')
-  const lista = decisoes.filter((d) => filtro === 'todas' || d.st === filtro)
+  // 'assumida' (L4-T4, D64) entra no filtro "Respondidas": não é resposta do
+  // dono, mas também não é mais "esperando você" — a `Decisao` já diferencia
+  // com o selo "Suposição do RA". C9 (fix-up 3): o RÓTULO do filtro também
+  // avisa isso — sem indicar as suposições, o dono via "Respondidas" e lia
+  // como "eu respondi tudo isso", quando parte foi o produto seguindo
+  // sozinho por falta de resposta em 24h. D3 (fix-up 6): o texto original
+  // ("Respondidas (inclui suposições do RA)") estourava a largura do chip em
+  // tela estreita — encurtado sem perder o aviso.
+  const lista = decisoes.filter(
+    (d) => filtro === 'todas' || d.st === filtro || (filtro === 'respondida' && d.st === 'assumida')
+  )
   const sel = decisoes.find((d) => d.id === foco) ?? lista[0]
   const pend = decisoes.filter((d) => d.st === 'pendente').length
 
@@ -45,7 +55,7 @@ export function TelaDecisoes({
         onChange={setFiltro}
         opcoes={[
           ['pendente', 'Esperando você' + (pend ? ' · ' + pend : '')],
-          ['respondida', 'Respondidas'],
+          ['respondida', 'Respondidas e suposições'],
           ['todas', 'Todas'],
         ]}
       />

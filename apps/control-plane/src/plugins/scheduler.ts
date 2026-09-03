@@ -183,10 +183,25 @@ import {
   type PrismaParaEscalarDuvida,
 } from '../services/escalar-duvida-ao-dono.js'
 import {
+  // L4-T4 (D64), fix-up a13a42f8: renomeado no import — o wiring real
+  // (prisma, BYOK, GitHub, agentQuestionService) mora em `scheduler.ts`
+  // (função de mesmo nome, mais abaixo); a DECISÃO (candidatas, limiar de
+  // 24h, formar/entregar a suposição) mora no serviço, testável sem a
+  // máquina de missão/motor — MESMO padrão de `escalar-duvida-ao-dono.ts`.
+  suporDuvidaPendente as suporDuvidaPendenteService,
+  type PrismaParaSuporDuvidaPendente,
+  PADRAO_TETO_DE_ESPERA_ESCALADA_MS,
+} from '../services/supor-duvida-pendente.js'
+import {
   reconciliarDuvidasEscaladasDoProjeto,
   type PrismaParaReconciliacao,
 } from '../services/reconciliar-duvidas-escaladas.js'
 import { lerCadenciaMs } from '../services/cadencia-de-varredura.js'
+import { dedupKeyDeDuvidaDoDev } from '../services/dedup-key-de-duvida.js'
+import {
+  marcarAssumidaPorDedupKey,
+  type PrismaParaMarcarAssumidaPorDedupKey,
+} from '../services/marcar-assumida-por-dedupkey.js'
 import {
   decidirSobreAPergunta,
   marcarDesistencia,
@@ -3968,6 +3983,22 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                         `[Scheduler] não deu para responder a dúvida do dev em ${project.wingId}`
                       )
                     )
+                    // L4-T4 (D64), fix-up a13a42f8: MESMA missão, MESMO
+                    // `execute` — a suposição do RA para dúvida escalada e
+                    // vencida (24h) roda logo depois, pelo trilho real.
+                    await suporDuvidaPendente({
+                      projectId: project.id,
+                      repository: project.wingId,
+                      autonomia: project.autonomia,
+                      githubToken: railsToken as string,
+                      execute,
+                      contextBlocks,
+                    }).catch((err: unknown) =>
+                      app.log.warn(
+                        err,
+                        `[Scheduler] não deu para formar a suposição do RA em ${project.wingId}`
+                      )
+                    )
                     return runQaMissionViaRails({
                       repository: project.wingId,
                       fetchImpl: fetchDoQuadro(project),
@@ -6507,6 +6538,24 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         )
         const chaveDaLinha = (sessionName: string): Promise<string | undefined> =>
           chaveDaConta(contaDaSessao.get(sessionName) ?? null)
+
+        // L4-T4 (D64), fix-up a13a42f8-2953-4259-b41f-3f8cddb304cd: a
+        // suposição do RA (quando a dúvida escalada vence 24h em silêncio)
+        // NÃO é mais decidida/formada aqui. Comentar na issue, marcar a
+        // pergunta como assumida e entregar o texto ao dev viviam NESTA
+        // closure porque era daqui que `deps.suporSemODono` seria chamado —
+        // mas o único `execute: StepExecutor` real nasce dentro de
+        // `executeMissionWithFailover`, e esta função (`varrerSessoesDoDev`)
+        // roda no seu próprio `setInterval`, fora de qualquer missão. Sem
+        // `execute` aqui, `suporSemODono` nunca podia ser chamado de
+        // verdade — o hook ficava opcional para sempre e a produção caía
+        // sempre no "sem suposição concreta". A vigia agora só ACORDA o QA
+        // (`dispararMissao('qa', ...)`, no `case 'responder'` de
+        // `session-watch.ts`); quem forma a suposição, comenta na issue e
+        // marca a pergunta como assumida é `suporDuvidaPendente`, abaixo,
+        // rodando DENTRO da mesma missão de QA que já responde dúvida
+        // pendente (`responderDuvidaPendente`) — o mesmo trilho, o mesmo
+        // `execute`, o mesmo orçamento diário.
         const vigiaOut = await vigiarSessoes({
           sessoes: sessoesParaVigiaPreMerge(sessoesDoProjeto),
           consultarSessao: async (sessionName) =>
@@ -7718,6 +7767,114 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       // Respondeu (ou escalou) uma: a próxima acordada pega a seguinte.
       return
     }
+  }
+
+  /**
+   * A SUPOSIÇÃO do RA quando a dúvida ESCALADA ao dono venceu 24h em
+   * silêncio (L4-T4, D64 — fix-up da task a13a42f8-2953-4259-b41f-3f8cddb304cd).
+   *
+   * A DECISÃO (candidatas, limiar de 24h, formar a suposição, entregar,
+   * best-effort de comentar/marcar) mora em `services/supor-duvida-pendente.ts`
+   * — extraída para ser testável sem a máquina de missão/motor, MESMO padrão
+   * de `escalar-duvida-ao-dono.ts`. Esta função aqui é só o WIRING real:
+   * prisma, BYOK (`chaveDaSessao`), GitHub (comentário na issue, guardado
+   * pela autonomia do projeto) e `agentQuestionService` (marcar assumida).
+   *
+   * Chamada de dentro da MESMA missão de QA que já responde dúvida pendente
+   * (`responderDuvidaPendente`, logo acima no call site), com o `execute:
+   * StepExecutor` REAL: é o único lugar do produto onde esse `execute`
+   * existe — nasce em `executeMissionWithFailover`, depois do teto diário
+   * da instância, do orçamento do plano e da guarda de gasto já terem sido
+   * checados (`runTrigger`). `session-watch.ts` (`vigiarSessoes`) roda no
+   * seu próprio `setInterval` (`varrerSessoesDoDev`), fora de qualquer
+   * missão, e por isso NUNCA teve um `execute` para chamar: antes desta
+   * correção, o hook equivalente (`VigiaDeps.suporSemODono`) era opcional e
+   * a produção nunca o fornecia — todo tique caía sempre em "sem suposição
+   * concreta".
+   */
+  const suporDuvidaPendente = async (args: {
+    projectId: string
+    repository: string
+    /** Até onde o GitOrch pode ir no repositório do CLIENTE (guarda de autonomia). */
+    autonomia: string | null | undefined
+    githubToken: string
+    execute: StepExecutor
+    contextBlocks: string[]
+  }): Promise<void> => {
+    await suporDuvidaPendenteService(
+      {
+        projectId: args.projectId,
+        repository: args.repository,
+        execute: args.execute,
+        contextBlocks: args.contextBlocks,
+        // C6b (fix-up 3): teto de espera antes do aviso "está parada há N
+        // dias" — MESMA guarda de cadência (`lerCadenciaMs`) que o resto do
+        // scheduler já usa para env inválida.
+        tetoDeEsperaMs: lerCadenciaMs(
+          'GITORCH_DUVIDA_ESCALADA_TETO_MS',
+          PADRAO_TETO_DE_ESPERA_ESCALADA_MS,
+          (m) => app.log.warn(`[Scheduler] ${m}`)
+        ),
+      },
+      {
+        prisma: app.prisma as unknown as PrismaParaSuporDuvidaPendente,
+        chaveDaSessao,
+        // MESMA BYOK de `reentregarAviso`/`responder` da vigia — sem
+        // credencial nova.
+        comentarNaIssue: async ({ issueNumber, texto }) => {
+          const fetchDoCliente = fetchDoRepositorio({ nivel: () => args.autonomia })
+          const resp = await fetchDoCliente(
+            `https://api.github.com/repos/${args.repository}/issues/${issueNumber}/comments`,
+            {
+              method: 'POST',
+              headers: {
+                authorization: `token ${args.githubToken}`,
+                accept: 'application/vnd.github+json',
+                'content-type': 'application/json',
+                'user-agent': 'gitorch',
+              },
+              body: JSON.stringify({ body: texto }),
+            }
+          )
+          if (!resp.ok) {
+            throw new Error(
+              `comentarNaIssue: POST /repos/${args.repository}/issues/${issueNumber}/comments -> ${resp.status}`
+            )
+          }
+        },
+        // C2 (fix-up 3): a busca de `questionId` a partir do dedupKey —
+        // ABERTA mais recente, nunca uma linha indeterminada entre a
+        // escalada e uma reconciliação por cima — e a checagem do retorno
+        // de `marcarAssumida` (nunca `null` em silêncio) moraram para
+        // `marcar-assumida-por-dedupkey.ts`, testável sem o Fastify inteiro.
+        marcarAssumida: async ({ issueNumber, hash, suposicao }) => {
+          const perguntador = (app as unknown as { agentQuestionService?: AgentQuestionService })
+            .agentQuestionService
+          if (!perguntador) {
+            throw new Error('marcarAssumida: agentQuestionService não registrado')
+          }
+          const dedupKey = dedupKeyDeDuvidaDoDev({
+            repo: args.repository,
+            issue: issueNumber,
+            hash,
+          })
+          await marcarAssumidaPorDedupKey(
+            { projectId: args.projectId, dedupKey, suposicao },
+            {
+              prisma: app.prisma as unknown as PrismaParaMarcarAssumidaPorDedupKey,
+              // S1 (fix-up 4, CSO): `marcarAssumida` agora recebe
+              // `{ questionId, projectId, suposicao }` — o mesmo formato de
+              // objeto que `marcarAssumidaPorDedupKey` já monta, então basta
+              // repassar.
+              marcarAssumida: (marcarArgs) => perguntador.marcarAssumida(marcarArgs),
+            }
+          )
+        },
+        avisarDono: avisarDonoDoProjeto,
+        onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+        agora: new Date(),
+      }
+    )
   }
 
   const abrirConsertoDePublicacao = async (args: {
@@ -9607,29 +9764,32 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   }
 
   /**
-   * L4-T3, item 4 — O CONSERTO DAS 24 PRESAS: uma varredura ÚNICA (por boot,
-   * repetida a cada 6h para pegar o que uma sessão nova esbarrar) que migra
-   * as sessões marcadas `respondida:` SEM `agent_question` real — a
-   * assinatura exata do defeito de `escalar-duvida-ao-dono.ts` antes do
-   * conserto do item 0. Mesmo template de cadência de
-   * `varrerIssuesForaDoQuadroDosProjetos` (6h, override por env, `ultima* =
-   * 0` corre a primeira vez no boot). A lógica por projeto vive em
-   * `services/reconciliar-duvidas-escaladas.ts` (testável sem esta máquina).
+   * L4-T3, item 4 — O CONSERTO DAS 24 PRESAS: migra as sessões marcadas
+   * `respondida:` SEM `agent_question` real — a assinatura exata do defeito
+   * de `escalar-duvida-ao-dono.ts` antes do conserto do item 0. A lógica por
+   * projeto vive em `services/reconciliar-duvidas-escaladas.ts` (testável
+   * sem esta máquina).
+   *
+   * L4-T4, fix-up 5 (task a13a42f8-2953-4259-b41f-3f8cddb304cd) — PROVADO em
+   * produção 03/09: com a cadência de 6h (herdada do item 4) e rodando DEPOIS
+   * de `devolverVagasDeSessaoAbandonada`/`varrerCicloTerminalDaSessao` no
+   * tique, uma sessão AWAITING_USER_FEEDBACK com marca `respondida:0:<hash>`
+   * (legada, sem `agent_question`) podia ser FECHADA pelos dois varredores
+   * de cima ANTES de esta reconciliação sequer rodar — e a query dela filtra
+   * `closedAt: null` (reconciliar-duvidas-escaladas.ts), então uma sessão já
+   * fechada some da reconciliação PARA SEMPRE (medido: 9 sessões assim em
+   * 03/09, 2 fechadas no MESMO primeiro tique às 09:49:14, a reconciliação só
+   * às 09:51:08). O conserto de `sessao-terminal.ts` (o veto por
+   * `answeredHash`) só protege marca JÁ migrada para `escalada:` — a marca
+   * legada `respondida:` continua vulnerável enquanto não for reconciliada.
+   *
+   * A partir de agora: SEM cadência (roda em TODO tique — o `findMany` é
+   * barato, um por projeto ativo) e ANTES dos dois varredores que fecham
+   * sessão no `tick` (abaixo). Uma sessão presa é migrada para `escalada:` +
+   * ganha a `agent_question` na MESMA passada em que seria fechada — e o
+   * veto por `answeredHash` (sessao-terminal.ts) a protege daí em diante.
    */
-  const CADENCIA_PADRAO_DA_RECONCILIACAO_DE_DUVIDAS_MS = 6 * 60 * 60 * 1000
-  // A3 (fix-up L4-T3): guarda extraída para `services/cadencia-de-varredura.ts`
-  // (`lerCadenciaMs`) — mesmo comportamento e mesma mensagem de aviso.
-  const CADENCIA_DA_RECONCILIACAO_DE_DUVIDAS_MS = lerCadenciaMs(
-    'GITORCH_RECONCILIACAO_DUVIDAS_CADENCIA_MS',
-    CADENCIA_PADRAO_DA_RECONCILIACAO_DE_DUVIDAS_MS,
-    (m) => app.log.warn(m)
-  )
-  let ultimaReconciliacaoDeDuvidas = 0
-
   const reconciliarDuvidasEscaladasLegadas = async (): Promise<void> => {
-    if (Date.now() - ultimaReconciliacaoDeDuvidas < CADENCIA_DA_RECONCILIACAO_DE_DUVIDAS_MS) return
-    ultimaReconciliacaoDeDuvidas = Date.now()
-
     const perguntador = (app as unknown as { agentQuestionService?: AgentQuestionService })
       .agentQuestionService
     const projetos = await app.prisma.project.findMany({
@@ -9690,6 +9850,21 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     await reconferirAcessoDoRelogio(app)
     await processSetupMissions()
     await varrerSessoesDoDev()
+    // L4-T4, fix-up 5 (task a13a42f8-2953-4259-b41f-3f8cddb304cd): ANTES dos
+    // dois varredores abaixo, de propósito — são eles que fecham sessão, e a
+    // marca legada `respondida:` (sem `agent_question`) só vira `escalada:`
+    // (protegida pelo veto de `sessao-terminal.ts`) se esta reconciliação já
+    // tiver rodado NESTA passada. Rodar depois (como era) deixava a sessão
+    // fechar antes de a reconciliação sequer olhar para ela — e a query dela
+    // filtra `closedAt: null`, então uma sessão fechada some de vista para
+    // sempre (medido em produção 03/09: 9 sessões assim). Nunca derruba o
+    // tique: cada projeto se isola sozinho.
+    await reconciliarDuvidasEscaladasLegadas().catch((err) =>
+      app.log.error(
+        err,
+        '[Scheduler] reconciliação de dúvidas escaladas falhou; tenta no próximo tick'
+      )
+    )
     // Nunca derruba o tique: a varredura já isola cada arquivamento, este é o
     // último cinto de segurança, igual às vizinhas.
     // Antes da reconciliação de vagas de propósito: esta é a que devolve a
@@ -9792,15 +9967,6 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // pena, avisa o dono. Nunca reordena; a ordem dele prevalece sempre.
     await avaliarCustoDaOrdem().catch((err) =>
       app.log.error(err, '[Scheduler] avaliação do custo da ordem falhou; tenta no próximo tick')
-    )
-    // L4-T3: as 24 sessões que ficaram presas ANTES do conserto do item 0
-    // (marcadas "respondida" sem `agent_question` real). Cadência própria
-    // (6h, roda no boot), não trava o resto do tique.
-    await reconciliarDuvidasEscaladasLegadas().catch((err) =>
-      app.log.error(
-        err,
-        '[Scheduler] reconciliação de dúvidas escaladas falhou; tenta no próximo tick'
-      )
     )
     await sweepExpiredEnvironments()
     const now = new Date()

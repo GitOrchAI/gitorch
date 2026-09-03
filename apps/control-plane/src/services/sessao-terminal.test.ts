@@ -101,4 +101,64 @@ describe('decidirSessaoTerminal', () => {
     })
     expect(d).toEqual({ acao: 'fechar-e-analisar', motivo: 'pr-rejeitado-sem-retomada' })
   })
+
+  // L4-T4, fix-up 5 (task a13a42f8-2953-4259-b41f-3f8cddb304cd) — PROVADO em
+  // produção 03/09: 2 sessões com dúvida ESCALADA ao dono (`answeredHash`
+  // `escalada:0:<hash>`) foram fechadas por este passo às 09:49:14, motivo
+  // `pr-rejeitado-sem-retomada`, ANTES de a reconciliação rodar. A causa:
+  // `varrerSessoesDoDev` sincroniza `state` do Jules remoto ANTES deste
+  // passo no mesmo tique (scheduler.ts) — o Jules pode marcar a sessão como
+  // COMPLETED/FAILED/CANCELLED mesmo com a dúvida ainda sem resposta do
+  // dono, e o `estado` que chega aqui já não é mais AWAITING_USER_FEEDBACK.
+  // `ehTerminal(state)` (fix-up 2) não segura nada nesse caso — o único jeito
+  // de saber que o dono ainda não decidiu é a marca em `answeredHash`, que é
+  // INDEPENDENTE do `estado` remoto. A partir de agora a marca de escalada
+  // VETA o fechamento por este passo, seja qual for `estado`/`situacaoDoPr`.
+  it('marca de escalada em answeredHash → mantém MESMO com PR rejeitado passado das 12h (cenário exato de produção)', () => {
+    const d = decidirSessaoTerminal({
+      ...base,
+      situacaoDoPr: 'aberto-rejeitado-parado',
+      horasNoTerminal: 13,
+      answeredHash: 'escalada:0:abc123',
+    })
+    expect(d).toEqual({ acao: 'manter' })
+  })
+
+  it('marca de escalada em answeredHash → mantém mesmo FAILED sem PR (nunca fecha por este passo)', () => {
+    const d = decidirSessaoTerminal({
+      ...base,
+      estado: 'FAILED',
+      answeredHash: 'escalada:0:abc123',
+    })
+    expect(d).toEqual({ acao: 'manter' })
+  })
+
+  it('marca de escalada em answeredHash → mantém mesmo com PR mesclado (a escalada é absoluta)', () => {
+    const d = decidirSessaoTerminal({
+      ...base,
+      situacaoDoPr: 'mesclado',
+      answeredHash: 'escalada:0:abc123',
+    })
+    expect(d).toEqual({ acao: 'manter' })
+  })
+
+  it('marca "respondida" (não escalada) NÃO ativa o veto — segue a decisão normal', () => {
+    const d = decidirSessaoTerminal({
+      ...base,
+      situacaoDoPr: 'aberto-rejeitado-parado',
+      horasNoTerminal: 13,
+      answeredHash: 'respondida:0:abc123',
+    })
+    expect(d).toEqual({ acao: 'fechar-e-redelegar', motivo: 'pr-rejeitado-sem-retomada' })
+  })
+
+  it('answeredHash ausente (null/undefined) NÃO ativa o veto — comportamento de sempre', () => {
+    expect(
+      decidirSessaoTerminal({ ...base, situacaoDoPr: 'mesclado', answeredHash: null })
+    ).toEqual({ acao: 'fechar-concluido', motivo: 'merged' })
+    expect(decidirSessaoTerminal({ ...base, situacaoDoPr: 'mesclado' })).toEqual({
+      acao: 'fechar-concluido',
+      motivo: 'merged',
+    })
+  })
 })

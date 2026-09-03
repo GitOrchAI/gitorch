@@ -17,8 +17,22 @@ import { schedulerPlugin } from './scheduler.js'
 // (a assinatura exata do defeito medido em 02/09 — 24 sessões assim, ZERO
 // agent_question) e SEM a agent_question correspondente. Prova que o boot
 // cria a pergunta de verdade (dedupKey `duvida-dev:*`) e migra a marca para
-// `escalada:`, e que a cadência de 6h (aqui, minúscula pra ficar
-// observável) impede reprocessar a cada tick.
+// `escalada:`.
+//
+// ATUALIZADO — L4-T4, fix-up 5 (task a13a42f8-2953-4259-b41f-3f8cddb304cd):
+// a cadência de 6h que existia aqui foi REMOVIDA — `reconciliarDuvidasEscaladasLegadas`
+// agora roda em TODO tique, e ANTES de `devolverVagasDeSessaoAbandonada`/
+// `varrerCicloTerminalDaSessao` (ver `scheduler-duvidas-escaladas-antes-do-
+// fechamento-real-seam.test.ts`, que prova esse ORDENAMENTO). Era a cadência
+// de 6h, somada a rodar DEPOIS dos dois fechamentos, que deixava uma sessão
+// legada `respondida:` ser fechada antes de a reconciliação sequer olhar
+// para ela — medido em produção 03/09: 9 sessões assim, a query da
+// reconciliação filtra `closedAt: null`, e uma sessão fechada some dali para
+// sempre. O segundo teste abaixo agora prova a IDEMPOTÊNCIA de rodar em todo
+// tique: a mesma sessão, já migrada para `escalada:`, não gera um segundo
+// `ask()` nos tiques seguintes — a marca já migrada (`marcaBruta.startsWith('escalada:')`
+// em `reconciliar-duvidas-escaladas.ts`) é o que garante isso agora, não mais
+// um relógio de cadência.
 const PROJETO = {
   id: 'proj_1',
   wingId: 'acme/api',
@@ -128,7 +142,6 @@ const ENV_KEYS = [
   'JULES_API_KEY',
   'GITORCH_TELEGRAM_BOT_TOKEN',
   'TELEGRAM_BOT_TOKEN',
-  'GITORCH_RECONCILIACAO_DUVIDAS_CADENCIA_MS',
 ]
 
 describe('reconciliação de dúvidas escaladas legadas wiring em schedulerPlugin (real seam)', () => {
@@ -148,7 +161,6 @@ describe('reconciliação de dúvidas escaladas legadas wiring em schedulerPlugi
     // sem tocar rede (contrato do próprio serviço) — o teste prova a
     // ESCALADA em si, não a leitura da última mensagem (já coberta em
     // `reconciliar-duvidas-escaladas.test.ts`).
-    process.env['GITORCH_RECONCILIACAO_DUVIDAS_CADENCIA_MS'] = '5000'
   })
 
   afterEach(async () => {
@@ -199,7 +211,15 @@ describe('reconciliação de dúvidas escaladas legadas wiring em schedulerPlugi
     })
   })
 
-  test('cadência: NÃO reprocessa a cada tick — só de novo depois da janela vencer', async () => {
+  // RENOMEADO — L4-T4, fix-up 5: não existe mais cadência aqui (roda em todo
+  // tique, de propósito — ver comentário no topo do arquivo). O que este
+  // teste prova agora é IDEMPOTÊNCIA: rodar a cada tique não reprocessa nem
+  // reenvia a MESMA pergunta, porque a marca já migrada (`escalada:0:<hash>`)
+  // é pulada logo no início de `reconciliarDuvidasEscaladasDoProjeto`
+  // (`marcaBruta.startsWith('escalada:')`, e também `lida.situacao !==
+  // 'respondida'` mais abaixo) — dupla defesa, nenhuma delas depende de
+  // relógio.
+  test('idempotência: rodar em todo tique NÃO reprocessa nem reenvia a mesma pergunta depois de migrada', async () => {
     const prisma = buildFakePrisma()
     const ask = vi.fn(async () => ({ deduped: false, question: { id: 'q1', answer: null } }))
 
@@ -211,9 +231,10 @@ describe('reconciliação de dúvidas escaladas legadas wiring em schedulerPlugi
     // Primeira escalada, no boot.
     await vi.waitFor(() => expect(ask).toHaveBeenCalledTimes(1), { timeout: 3000, interval: 10 })
 
-    // Vários ticks depois (bem menos que os 5s de cadência configurados),
-    // `ask` continua com UMA chamada só — a marca já é `escalada:`, que a
-    // query nem devolve mais (mas mesmo que devolvesse, a cadência barraria).
+    // Vários tiques depois (o tique aqui é de 15ms — dezenas de passadas),
+    // `ask` continua com UMA chamada só: a marca já é `escalada:`, e
+    // `reconciliarDuvidasEscaladasDoProjeto` pula de propósito qualquer marca
+    // que já comece com `escalada:` (dupla defesa, ver acima).
     await new Promise((r) => setTimeout(r, 200))
     expect(ask).toHaveBeenCalledTimes(1)
   })

@@ -1,7 +1,17 @@
 import { RAILS_SCHEMAS, buildStepPrompt } from '@gitorch/cadence'
 import { runFormStep } from './rails-runner.js'
-import { destinoDaDuvida, textoDaRespostaAoDev, type DestinoDaDuvida } from './duvida-do-dev.js'
+import {
+  destinoDaDuvida,
+  textoDaRespostaAoDev,
+  citaAlgoConcreto,
+  type DestinoDaDuvida,
+} from './duvida-do-dev.js'
 import type { StepExecutor } from './role-rails.js'
+// S2 (fix-up 4, CSO): MESMA sanitização que L4-T2 já aplica à resposta
+// livre do dono ("Vou escrever") antes de virar comentário público — reusa
+// a função em vez de duplicar a regra (menção/comando/citação), sem mudar
+// o comportamento dela em `decisao-de-automacao.ts`.
+import { sanitizarRespostaLivre } from './decisao-de-automacao.js'
 
 /**
  * A missão que RESPONDE a pergunta do dev assíncrono.
@@ -95,4 +105,118 @@ export async function runDuvidaMissionViaRails(
     mensagemParaODev:
       destino.tipo === 'responder-o-dev' ? textoDaRespostaAoDev(destino.resposta) : null,
   }
+}
+
+/**
+ * A SUPOSIÇÃO do RA quando a dúvida foi ESCALADA ao dono e ele ficou 24h em
+ * silêncio (L4-T4, D64).
+ *
+ * Diferente de `runDuvidaMissionViaRails` acima: aqui não existe mais
+ * "perguntar ao dono" como destino — o dono JÁ FOI perguntado
+ * (`escalar-duvida-ao-dono.ts`) e não respondeu a tempo. O RA lê o
+ * repositório e forma uma suposição TÉCNICA para o dev seguir em frente; o
+ * dono continua podendo corrigir depois (`agent-question.ts marcarAssumida`
+ * grava a suposição como decisão provisória, não definitiva).
+ */
+export interface SuposicaoDoRa {
+  suposicao: string
+  justificativa: string
+  arquivosCitados: string[]
+}
+
+export interface SuporSemODonoOptions {
+  /** O que o dev perguntou, na íntegra — a MESMA pergunta que foi escalada. */
+  pergunta: string
+  repository: string
+  issueNumber: number
+  execute: StepExecutor
+  contextBlocks: string[]
+}
+
+/**
+ * Formula a suposição, ou `null` quando ela não passa no freio de
+ * concretude. `null` é o sinal para `session-watch.ts` manter a espera e
+ * avisar o dono, em vez de entregar ao dev uma opinião genérica travestida
+ * de decisão.
+ */
+export async function suporSemODono(options: SuporSemODonoOptions): Promise<SuposicaoDoRa | null> {
+  const formulario = (await runFormStep({
+    schema: RAILS_SCHEMAS.duvidaSuposicao,
+    prompt: buildStepPrompt('ra', 'duvida-suposicao', RAILS_SCHEMAS.duvidaSuposicao, [
+      ...options.contextBlocks,
+      `The async developer working on issue #${options.issueNumber} of ${options.repository} ` +
+        'asked a question that was ESCALATED to the product owner as a business decision. The ' +
+        'owner has been silent for 24 HOURS and the work is still frozen — this is the ' +
+        'original question:',
+      '',
+      options.pergunta,
+      '',
+      'Since the owner has not answered, form a CONCRETE SUPPOSITION so the developer can keep ' +
+        'going — the owner can still correct this later, it is not final. Ground it in the REAL ' +
+        'repository: read the actual code, cite real files, real existing patterns, never invent. ' +
+        '`suposicao` is the technical decision itself, `justificativa` is why (in one or two ' +
+        'sentences), and `arquivosCitados` lists the real file paths you based this on. Never ' +
+        'fabricate a file that does not exist.',
+    ]),
+    execute: options.execute,
+  })) as SuposicaoDoRa
+
+  // O MESMO freio de concretude que `duvida-do-dev.ts` aplica à resposta
+  // comum (`ehRespostaUtil`): o schema já garante tamanho mínimo e pelo
+  // menos um arquivo citado, mas nada impede o modelo de escrever uma
+  // suposição vaga ("acho que qualquer abordagem serve") enquanto cita um
+  // arquivo qualquer só para passar na forma. Sem apontar para algo REAL no
+  // próprio texto da suposição, ela não desbloqueia ninguém — vira null, e
+  // `session-watch.ts` mantém a espera em vez de entregar isto ao dev.
+  if (!citaAlgoConcreto(formulario.suposicao)) return null
+
+  return formulario
+}
+
+/**
+ * O texto que chega ao dev quando o RA assume por ele (L4-T4, D64).
+ *
+ * Vive AQUI, ao lado de `SuposicaoDoRa`/`suporSemODono`, e não em
+ * `session-watch.ts` (onde nasceu) nem duplicado no scheduler: fix-up da
+ * task a13a42f8-2953-4259-b41f-3f8cddb304cd — a suposição passou a ser
+ * FORMADA e APLICADA dentro do mesmo trilho de missão que já responde a
+ * dúvida pendente (`scheduler.ts` `suporDuvidaPendente`, irmã de
+ * `responderDuvidaPendente`), porque o único `execute: StepExecutor` real
+ * nasce dentro de `executeMissionWithFailover` — `session-watch.ts`
+ * (`vigiarSessoes`) roda FORA de qualquer missão e nunca teve um `execute`
+ * para chamar. Uma função de formatação só, reaproveitada por quem de fato
+ * entrega o texto, evita duas cópias divergindo.
+ *
+ * S2 (fix-up 4, CSO): `suposicao`/`justificativa` são texto LIVRE do
+ * MODELO (não do dono, mas igualmente não confiável) — antes de entrar
+ * nesta mensagem (que o dev vê na sessão) passam por
+ * `sanitizarRespostaLivre` (MESMA função de `decisao-de-automacao.ts`,
+ * L4-T2): neutraliza `@menção` ativa, escapa `/comando` de ChatOps no
+ * início de linha, e cerca cada linha em bloco de citação — mesma
+ * disciplina da resposta livre do dono, porque o destino (mensagem/
+ * comentário que pode acabar num chat com bot de ChatOps) é o mesmo tipo de
+ * superfície. `arquivosCitados` fica como texto puro em lista — nunca virou
+ * link, então não precisa da mesma sanitização.
+ */
+export function textoDaSuposicaoParaODev(s: SuposicaoDoRa): string {
+  const suposicao = sanitizarRespostaLivre(s.suposicao) ?? ''
+  const justificativa = sanitizarRespostaLivre(s.justificativa) ?? ''
+  return (
+    `Suposição adotada pelo RA (o dono pode corrigir): ${suposicao}\n\n` +
+    `Por quê: ${justificativa}\n` +
+    `Arquivos: ${s.arquivosCitados.join(', ')}`
+  )
+}
+
+/**
+ * O comentário que fica registrado na issue do cliente (L4-T4, D64), para
+ * quem olhar depois entender por que o trabalho seguiu sem resposta do dono.
+ *
+ * S2 (fix-up 4, CSO): comentário PÚBLICO no repositório do CLIENTE — MESMA
+ * sanitização de `textoDaSuposicaoParaODev` acima, pela MESMA razão
+ * (`sanitizarRespostaLivre`, texto de modelo nunca cru numa issue alheia).
+ */
+export function textoDoComentarioDeSuposicao(s: SuposicaoDoRa): string {
+  const suposicao = sanitizarRespostaLivre(s.suposicao) ?? ''
+  return `GitOrch: suposição adotada: ${suposicao} (o dono pode corrigir)`
 }

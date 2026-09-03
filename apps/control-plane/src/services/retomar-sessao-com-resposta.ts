@@ -1,6 +1,6 @@
 import type { PrismaDevSession, LinhaDeSessao } from './dev-session-store.js'
 import { registrarResposta } from './dev-session-store.js'
-import { marcarRespondida } from './pergunta-sem-resposta.js'
+import { lerMarca, marcarRespondida } from './pergunta-sem-resposta.js'
 import { chaveDaSessaoDoDev, type PrismaParaChaveDoDev } from './chave-do-dev-assincrono.js'
 import { responderSessaoJules as responderSessaoJulesReal } from './jules-client.js'
 // A2 (fix-up L4-T3): fonte ÚNICA do formato `duvida-dev:<repo>:<issue>:<hash>`
@@ -86,11 +86,22 @@ export async function aoResponderDuvidaDoDev(
     projectId: string
     userId: string
     opcoes: Array<{ label: string; value: string }>
+    /**
+     * D2 (fix-up 6, task a13a42f8-2953-4259-b41f-3f8cddb304cd): status da
+     * `agent_question` ANTES desta resposta (`agent-question.ts answer()`
+     * sempre passa `existing.status`). `assumida` = o dono está CORRIGINDO
+     * uma suposição que o RA já formou e já entregou ao dev
+     * (`supor-duvida-pendente.ts`) — muda a busca da sessão (abaixo) e a
+     * moldura da mensagem. Qualquer outro valor (`open`, o caso comum) usa
+     * o fluxo já existente, inalterado.
+     */
+    statusAnterior?: string
   },
   deps: DepsDeRetomada
 ): Promise<void> {
   const parsed = parseDedupKeyDeDuvidaDoDev(args.dedupKey)
   if (!parsed) return
+  const ehCorrecaoDeSuposicao = args.statusAnterior === 'assumida'
 
   // S1 (fix-up 2, CSO — CRÍTICO, cross-tenant): NUNCA resolve o projeto por
   // `wingId` (nome do repositório) — o schema só garante `wingId` único POR
@@ -116,42 +127,73 @@ export async function aoResponderDuvidaDoDev(
     )
   }
 
-  // Primeiro tenta a sessão com o hash EXATO desta pergunta (a marca
-  // `escalada:0:<hash>` gravada por `escalar-duvida-ao-dono.ts`). Sem achar
-  // (a sessão pode ter progredido/mudado de marca entretanto), cai para a
-  // mais recente sessão do MESMO projeto ainda AWAITING_USER_FEEDBACK **E
-  // marcada `escalada:`** — nunca a mais recente AWAITING qualquer.
-  //
-  // C1 (fix-up L4-T3): com DUAS sessões AWAITING_USER_FEEDBACK na mesma
-  // issue — uma escalada de verdade (esperando o dono) e outra só esperando
-  // o QA responder algo comum — a busca reserva sem o filtro de marca podia
-  // entregar a decisão do dono à sessão ERRADA (a que nem tinha perguntado
-  // nada ao dono). A regra agora: só sessão com `answeredHash` começando por
-  // `escalada:` é candidata à reserva; sem nenhuma, LANÇA — nunca adivinha.
-  let sessao = await deps.prisma.devSession.findFirst({
-    where: {
-      projectId: args.projectId,
-      issueNumber: parsed.issueNumber,
-      state: 'AWAITING_USER_FEEDBACK',
-      answeredHash: `escalada:0:${parsed.hash}`,
-    },
-  })
-  if (!sessao) {
+  let sessao: LinhaDeSessao | null
+  if (ehCorrecaoDeSuposicao) {
+    // D2 (fix-up 6): depois que o RA forma a suposição, a marca da sessão
+    // deixa de começar por `escalada:` — `supor-duvida-pendente.ts` grava
+    // `marcarRespondida(marca.hash)`, que é `respondida:0:<hash>` (MESMO
+    // hash, situação diferente). A busca do fluxo comum (abaixo, por
+    // `escalada:` exato e depois por `startsWith('escalada:')`) NUNCA
+    // acharia essa sessão — a correção do dono falharia com "sessão
+    // escalada não encontrada" mesmo com a sessão viva e esperando pelo
+    // dev processar a suposição. Aqui a busca ignora a SITUAÇÃO da marca
+    // (`respondida`/`escalada`/`tentando`/`desisti` — qualquer uma) e casa
+    // só pelo HASH, que identifica ESTA pergunta de forma estável entre a
+    // suposição e a correção. Continua restrito a AWAITING_USER_FEEDBACK
+    // do mesmo projeto/issue — mesma garantia de nunca adivinhar entre
+    // issues diferentes.
+    const candidatas = await deps.prisma.devSession.findMany({
+      where: {
+        projectId: args.projectId,
+        issueNumber: parsed.issueNumber,
+        state: 'AWAITING_USER_FEEDBACK',
+      },
+    })
+    sessao = candidatas.find((s) => lerMarca(s.answeredHash)?.hash === parsed.hash) ?? null
+    if (!sessao) {
+      throw new Error(
+        `aoResponderDuvidaDoDev: sessão da suposição não encontrada para ${parsed.repository}#${parsed.issueNumber} ` +
+          `(projeto ${args.projectId}, hash ${parsed.hash}) — a correção do dono não foi entregue, a pergunta continua assumida`
+      )
+    }
+  } else {
+    // Primeiro tenta a sessão com o hash EXATO desta pergunta (a marca
+    // `escalada:0:<hash>` gravada por `escalar-duvida-ao-dono.ts`). Sem achar
+    // (a sessão pode ter progredido/mudado de marca entretanto), cai para a
+    // mais recente sessão do MESMO projeto ainda AWAITING_USER_FEEDBACK **E
+    // marcada `escalada:`** — nunca a mais recente AWAITING qualquer.
+    //
+    // C1 (fix-up L4-T3): com DUAS sessões AWAITING_USER_FEEDBACK na mesma
+    // issue — uma escalada de verdade (esperando o dono) e outra só esperando
+    // o QA responder algo comum — a busca reserva sem o filtro de marca podia
+    // entregar a decisão do dono à sessão ERRADA (a que nem tinha perguntado
+    // nada ao dono). A regra agora: só sessão com `answeredHash` começando por
+    // `escalada:` é candidata à reserva; sem nenhuma, LANÇA — nunca adivinha.
     sessao = await deps.prisma.devSession.findFirst({
       where: {
         projectId: args.projectId,
         issueNumber: parsed.issueNumber,
         state: 'AWAITING_USER_FEEDBACK',
-        answeredHash: { startsWith: 'escalada:' },
+        answeredHash: `escalada:0:${parsed.hash}`,
       },
-      orderBy: { createdAt: 'desc' },
     })
-  }
-  if (!sessao) {
-    throw new Error(
-      `aoResponderDuvidaDoDev: sessão escalada não encontrada para ${parsed.repository}#${parsed.issueNumber} ` +
-        `(projeto ${args.projectId}, dedupKey ${args.dedupKey}) — a pergunta continua open, nunca adivinha a sessão`
-    )
+    if (!sessao) {
+      sessao = await deps.prisma.devSession.findFirst({
+        where: {
+          projectId: args.projectId,
+          issueNumber: parsed.issueNumber,
+          state: 'AWAITING_USER_FEEDBACK',
+          answeredHash: { startsWith: 'escalada:' },
+        },
+        orderBy: { createdAt: 'desc' },
+      })
+    }
+    if (!sessao) {
+      throw new Error(
+        `aoResponderDuvidaDoDev: sessão escalada não encontrada para ${parsed.repository}#${parsed.issueNumber} ` +
+          `(projeto ${args.projectId}, dedupKey ${args.dedupKey}) — a pergunta continua open, nunca adivinha a sessão`
+      )
+    }
   }
 
   const apiKey = await chaveDaSessaoDoDev(
@@ -171,7 +213,14 @@ export async function aoResponderDuvidaDoDev(
     textoDaRespostaParaODev(args.resposta, args.opcoes),
     deps.onWarn
   )
-  const texto = `${respostaLimitada}\n\nDecisão do dono.`
+  // D2 (fix-up 6): a correção de uma suposição usa uma moldura DIFERENTE do
+  // fluxo comum — o dev já recebeu a suposição do RA (`suporSemODono`,
+  // `supor-duvida-pendente.ts`) e seguiu a partir dela; sem avisar que isto
+  // SUBSTITUI aquilo, o dev não teria como saber que a suposição anterior
+  // deixou de valer.
+  const texto = ehCorrecaoDeSuposicao
+    ? `Correção do dono (substitui a suposição do RA): ${respostaLimitada}`
+    : `${respostaLimitada}\n\nDecisão do dono.`
   const responder = deps.responderSessaoJules ?? responderSessaoJulesReal
   const saiu = await responder({
     apiKey,
