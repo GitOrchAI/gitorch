@@ -118,21 +118,38 @@ describe('classificarFalhaDeInfra', () => {
     ).toBe('workflow-morto')
   })
 
-  it('workflow legado que saiu da lista fixa (D62), sem marcador → NÃO é scaffolding, é ci-do-cliente', () => {
+  it('workflow legado que saiu da lista fixa (D62), sem marcador → NÃO é scaffolding; como o nome casa a convenção de automação, vira automacao (proposta ao dono, L4-T2)', () => {
     // dependabot-to-jules.yml e auto-merge.yml existiram na lista fixa até
     // 02/09 (D62, PRs #456 e #3920) e foram removidos porque os workflows
     // legados de automação concorrente saíram dos dois repos de teste. Sem
     // o marcador `gitorch:managed`, esses nomes hoje não são reconhecidos
-    // como scaffolding-do-gitorch — e é isso que se quer: se aparecerem em
-    // ALGUM repositório sem o marcador, é CI do cliente, não bug nosso.
+    // como scaffolding-do-gitorch — mas continuam casando a REGEX_DE_AUTOMACAO
+    // (L4-T2/D63: jules|dependabot|auto-?merge|...), então a classe final é
+    // `automacao` (vira proposta ao dono), nunca `ci-do-cliente`: o dono não
+    // quer o Jules "consertando" o robô do Jules de outro cliente.
     for (const path of [
       '.github/workflows/dependabot-to-jules.yml',
       '.github/workflows/auto-merge.yml',
     ]) {
       expect(classificarFalhaDeInfra({ path, event: 'pull_request', name: 'x' }, ativo, [])).toBe(
-        'ci-do-cliente'
+        'automacao'
       )
     }
+  })
+
+  it('nome legado FICTÍCIO que não casa a convenção de automação, sem marcador → aí sim é ci-do-cliente', () => {
+    // Contraponto: "workflow legado sem marcador não é do produto" continua
+    // valendo — só não basta para virar `automacao` sozinho, precisa também
+    // casar a REGEX_DE_AUTOMACAO. `legacy-build.yml` não é nenhum dos 17
+    // nomes medidos e não casa jules/dependabot/auto-merge/... — no caminho
+    // de merge (pull_request), é CI do cliente de verdade.
+    expect(
+      classificarFalhaDeInfra(
+        { path: '.github/workflows/legacy-build.yml', event: 'pull_request', name: 'x' },
+        ativo,
+        []
+      )
+    ).toBe('ci-do-cliente')
   })
 
   it('mesmo nome legado, mas COM o marcador gitorch:managed no conteúdo → volta a ser scaffolding-do-gitorch', () => {
