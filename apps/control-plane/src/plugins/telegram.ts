@@ -25,6 +25,9 @@ import {
 import { AgentQuestionService, type AgentQuestionRecord } from '../services/agent-question.js'
 import { pipelineCheckEnabled, type PipelineErrorMetadata } from '../config/pipeline-check.js'
 import { traduzirErroParaUsuario, type SetupErrorCode } from '../lib/setup-errors.js'
+import { processarRespostaDeAutomacao } from '../services/decisao-de-automacao.js'
+import { fetchDoRepositorio } from '../services/guarda-de-autonomia.js'
+import { lerCredencialQueAlcancaOProjeto } from '../services/project-credential.js'
 
 // O ouvido do bot. Sem ele, o deep link do passo 8 abriria o Telegram, o cliente
 // apertaria Start... e ninguém estaria escutando — o `chat_id` (a única coisa
@@ -85,9 +88,90 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
   // registram dúvidas (ex.: routes/dev-agent-question.ts, W3.5.1) reusam esta
   // MESMA instância via `app.agentQuestionService`, pra criar E notificar
   // pelo mesmo caminho de produção em vez de duplicar a ligação com o Cortex.
+  // D63/L4-T2: quando a dúvida respondida é sobre uma automação do cliente
+  // (dedupKey `automacao:<repo>:<identidade>`), a resposta vira ação
+  // (deletar/reajustar/manter/texto livre) — `AgentQuestionService` não sabe
+  // nada de GitHub; só delega para cá. C4 (fix-up): `AgentQuestionService.
+  // answer()` agora chama isto ANTES de marcar `status: 'answered'` — uma
+  // falha AQUI (lançada, nunca engolida) mantém a pergunta `open` para nova
+  // tentativa, em vez de fingir que a ação aconteceu.
+  const aoResponderAutomacao = async (args: {
+    dedupKey: string
+    resposta: string
+    projectId: string
+    autonomia: string | null | undefined
+  }): Promise<void> => {
+    const projeto = await app.prisma.project.findUnique({
+      where: { id: args.projectId },
+      select: { wingId: true, userId: true, encryptedClientToken: true },
+    })
+    // C5 (fix-up L4-T2): nunca retorno silencioso — sem o projeto não há
+    // como agir, e devolver sem erro faria `answer()` achar que a decisão
+    // foi executada (a issue fica presa sem PR/comentário nenhum).
+    if (!projeto) {
+      app.log.error(
+        `[Telegram] decisão de automação: projeto ${args.projectId} não encontrado (dedupKey ${args.dedupKey})`
+      )
+      throw new Error(`aoResponderAutomacao: projeto ${args.projectId} não encontrado`)
+    }
+    const token = await lerCredencialQueAlcancaOProjeto({
+      prisma: app.prisma,
+      projectId: args.projectId,
+      userId: projeto.userId,
+      engineConnections: app.engineConnections,
+      encryptedClientTokenJaLido: projeto.encryptedClientToken,
+    })
+    if (!token) {
+      // C5 (fix-up L4-T2): idem — `warn` + retorno silencioso deixava
+      // `answer()` marcar a pergunta `answered` sem NENHUMA ação executada
+      // (nem PR, nem label, nem comentário). Nível `error` + lança.
+      app.log.error(
+        `[Telegram] decisão de automação: sem credencial para ${projeto.wingId} (proj ${args.projectId}, dedupKey ${args.dedupKey})`
+      )
+      throw new Error(
+        `aoResponderAutomacao: sem credencial do GitHub para ${projeto.wingId} — decisão não executada`
+      )
+    }
+    await processarRespostaDeAutomacao(args, {
+      fetchImpl: fetchDoRepositorio({ nivel: () => args.autonomia }),
+      token,
+      // A2 (fix-up L4-T2): o número da proposta vem da linha de
+      // `infra_incidents` — nunca de um `context` reparseado.
+      buscarIncidente: async ({ projectId, identidadeEstavel }) => {
+        const incidente = await app.prisma.infraIncident.findUnique({
+          where: { projectId_identidadeEstavel: { projectId, identidadeEstavel } },
+          select: { issueNumber: true },
+        })
+        return incidente ? { issueNumber: incidente.issueNumber } : null
+      },
+      marcarIncidenteResolvido: async ({ projectId, identidadeEstavel }) => {
+        await app.prisma.infraIncident.update({
+          where: { projectId_identidadeEstavel: { projectId, identidadeEstavel } },
+          data: { clearedAt: new Date() },
+        })
+      },
+      onInfo: (m) => app.log.info(`[Telegram] ${m}`),
+      onWarn: (m) => app.log.warn(`[Telegram] ${m}`),
+    })
+  }
+
+  // A API interna que qualquer agente chama pra registrar uma dúvida
+  // (docs/superpowers/specs/2026-07-21-w3-telegram-duvidas-design.md). O
+  // notify real (Telegram) e o Cortex (memória de longo prazo das decisões)
+  // ficam ligados aqui — é este service que também resolve o clique do botão
+  // (`handleTelegramCallback`, abaixo).
+  //
+  // DECORADO SEMPRE (mesmo sem bot token, mesmo em teste): outras rotas que
+  // registram dúvidas (ex.: routes/dev-agent-question.ts, W3.5.1) reusam esta
+  // MESMA instância via `app.agentQuestionService`, pra criar E notificar
+  // pelo mesmo caminho de produção em vez de duplicar a ligação com o Cortex.
   const agentQuestionService = new AgentQuestionService(app.prisma, {
     ...(notifyOwner ? { notify: notifyOwner } : {}),
     cortex: app.cortex,
+    aoResponderAutomacao,
+    // C4 (fix-up L4-T2): logger injetado para a falha de `aoResponderAutomacao`
+    // — nunca `console.warn`, que some do monitoramento.
+    onError: (m) => app.log.error(`[Telegram] ${m}`),
   })
   app.decorate('agentQuestionService', agentQuestionService)
 

@@ -26,9 +26,14 @@
 // CONSEQUÊNCIA (é isso que se quer, não um efeito colateral a corrigir): se
 // um desses 17 nomes aparecer em ALGUM repositório sem o marcador, esta
 // função devolve `false` — deixa de ser reconhecido como scaffolding-do-
-// gitorch e vira `ci-do-cliente` em `classificarFalhaDeInfra`. O produto não
-// deve assumir autoria de um workflow que não instalou só porque o nome
-// coincide com um que um dia existiu num repo de teste.
+// gitorch. O produto não deve assumir autoria de um workflow que não
+// instalou só porque o nome coincide com um que um dia existiu num repo de
+// teste. Isso NÃO faz esses nomes virarem `ci-do-cliente`: os 17 casam a
+// convenção de automação (jules-*, dependabot-*, auto-merge*, *-failure-
+// handler...), então `classificarFalhaDeInfra` os classifica como
+// `automacao` (proposta ao dono, nunca incidente P0 — ver
+// `ehAutomacaoDoCliente` em classificar-falha-de-infra.ts, L4-T2/D63). Um
+// nome legado que NÃO casasse aquela convenção é que viraria ci-do-cliente.
 
 /** O marcador que todo workflow instalado pelo GitOrch carrega (ou deveria). */
 export const MARCADOR_SCAFFOLDING = 'gitorch:managed'
@@ -43,8 +48,9 @@ export const MARCADOR_SCAFFOLDING = 'gitorch:managed'
  * existiram nos dois repos de teste, escritos à mão antes do marcador, e
  * saíram porque não existem mais lá. Se um workflow com um desses nomes
  * aparecer de novo em algum repositório SEM o marcador `gitorch:managed`, o
- * comportamento correto é classificá-lo como CI do cliente, não voltar a
- * inseri-lo aqui.
+ * comportamento correto NÃO é voltar a inseri-lo aqui — é deixar
+ * `classificarFalhaDeInfra` classificá-lo como `automacao` (proposta ao
+ * dono, L4-T2/D63), já que o nome casa a convenção de automação do cliente.
  */
 const BASENAMES_SCAFFOLDING = new Set([
   // GitOrchAI/gitorch

@@ -90,6 +90,12 @@ import { analisarFalhasPendentes } from '../services/analisar-falhas-pendentes.j
 import { runAnaliseDeFalha, type SessaoMorta } from '../services/analise-de-falha-do-dev.js'
 import { processarAchadosDeInfra } from '../services/processar-achados-de-infra.js'
 import {
+  criarProposta as criarPropostaService,
+  tituloDaPropostaDeAutomacao,
+  corpoDaPropostaDeAutomacao,
+} from '../services/proposta.js'
+import { perguntarAoDono as perguntarAoDonoService } from '../services/decisao-de-automacao.js'
+import {
   varrerIncidentesResolvidos,
   normalizarNomeDeWorkflow,
   nomeDoWorkflowNaIdentidadeLegada,
@@ -5071,6 +5077,27 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   const REPO_DO_PRODUTO = process.env['GITORCH_SELF_REPO'] ?? 'GitOrchAI/gitorch'
 
   /**
+   * A1 (fix-up L4-T2): `AchadoDeInfra` agora carrega nome/arquivo/gatilho/
+   * falhaDesde ESTRUTURADOS (`coletarAchadosDeInfra`, incidente-ci.ts) — nada
+   * de regex no título (`nomeEArquivoDoAchado`, removida). O fallback só
+   * cobre o caso raro de um achado sem os campos novos (ex.: gerado por um
+   * caminho de teste antigo). R2: também a ÚNICA função que formata
+   * `falhaDesde` em data (`YYYY-MM-DD`) — antes duplicada em duas closures
+   * abaixo, cada uma com o próprio `new Date().toISOString().slice(0, 10)`.
+   */
+  const camposDoAchadoDeAutomacao = (
+    achado: AchadoDeInfra
+  ): { nome: string; arquivo: string; gatilho: string; desde: string } => {
+    const arquivo = achado.arquivo ?? achado.paths[0] ?? achado.identidadeEstavel
+    return {
+      nome: achado.nomeDoWorkflow ?? arquivo.split('/').pop() ?? achado.identidadeEstavel,
+      arquivo,
+      gatilho: achado.gatilho ?? 'ver evidência da issue',
+      desde: (achado.falhaDesde ?? new Date().toISOString()).slice(0, 10),
+    }
+  }
+
+  /**
    * ESTEIRA-T8 (D54): entre o sensor e a delegação existe SEMPRE análise. Roda
    * junto do RA na agenda: varre a infra (Actions/Dependabot), e para cada
    * achado NOVO o RA entende a causa e o PO escreve a issue padrão Shrimp — no
@@ -5246,6 +5273,98 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           fields,
           `gitorch:scaffolding:${project.id}:${achado.identidadeEstavel}`,
           ['gitorch:task', agentLabel('po'), 'gitorch:scaffolding']
+        )
+      },
+      // D63/L4-T2: achado de automação (ou Dependabot travado) — proposta ao
+      // dono, NUNCA incidente P0. Reaproveita o MESMO `fetchDoRepositorio` +
+      // `anexarIssueDeIncidenteAoQuadro` que `ghIssue` já usa acima — nada de
+      // resolução nova de credencial.
+      criarProposta: (achado) => {
+        const { nome, arquivo, gatilho, desde } = camposDoAchadoDeAutomacao(achado)
+        return criarPropostaService(
+          {
+            repo: project.wingId,
+            identidade: achado.identidadeEstavel,
+            titulo: tituloDaPropostaDeAutomacao(nome, arquivo, desde),
+            corpo: corpoDaPropostaDeAutomacao({
+              nome,
+              arquivo,
+              gatilho,
+              desde,
+              resumo: achado.titulo,
+            }),
+            origem: 'incidente-automacao',
+          },
+          {
+            fetchImpl: fetchDoRepositorio({
+              nivel: () => project.autonomia,
+              timeoutMs: TIMEOUT_DE_CHAMADA_GITHUB_MS,
+            }),
+            token: railsToken,
+            anexarAoQuadro: (a) =>
+              anexarIssueDeIncidenteAoQuadro(
+                {
+                  repo: project.wingId,
+                  issueNodeId: a.issueNodeId,
+                  issueNumber: a.issueNumber,
+                  ehORepoDoProduto: false,
+                  projectId: project.id,
+                },
+                {
+                  prisma: app.prisma,
+                  engineConnections: app.engineConnections,
+                  fetchDeEscritaNoProduto: fetchComTeto(fetch, TIMEOUT_DE_CHAMADA_GITHUB_MS),
+                  fetchDeEscritaNoCliente: fetchDoRepositorio({
+                    nivel: () => project.autonomia,
+                    timeoutMs: TIMEOUT_DE_CHAMADA_GITHUB_MS,
+                  }),
+                  onInfo: (m) => app.log.info(`[Scheduler] ${m}`),
+                  onWarn: (m, err) => app.log.warn(err, `[Scheduler] ${m}`),
+                }
+              ),
+            onInfo: (m) => app.log.info(`[Scheduler] ${m}`),
+            onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+          }
+        )
+      },
+      perguntarAoDono: async (achado, numeroDaProposta) => {
+        const perguntador = (app as unknown as { agentQuestionService?: AgentQuestionService })
+          .agentQuestionService
+        // C5 (fix-up L4-T2): a proposta #numeroDaProposta JÁ EXISTE no GitHub
+        // neste ponto — sem a pergunta, ela fica lá para sempre sem ninguém
+        // saber que pode responder (meia entrega). Nunca retorno silencioso:
+        // loga ERROR com repo+issue e RELANÇA — o chamador (`processar-
+        // achados-de-infra.ts`) só loga um warn e segue para o próximo
+        // achado, mas o `registrarIncidente` desta proposta NÃO roda (fica
+        // fora do `try`), então a próxima varredura tenta de novo — e
+        // `criarProposta` é idempotente (acha a issue pelo marcador), então
+        // repetir é seguro.
+        if (!perguntador || !project.userId) {
+          const motivo = !perguntador ? 'agentQuestionService indefinido' : 'projeto sem userId'
+          const mensagem = `proposta #${numeroDaProposta} criada em ${project.wingId} sem pergunta ao dono (${motivo})`
+          app.log.error(`[Scheduler] ${mensagem}`)
+          throw new Error(`perguntarAoDono: ${mensagem}`)
+        }
+        const { nome, arquivo, gatilho, desde } = camposDoAchadoDeAutomacao(achado)
+        await perguntarAoDonoService(
+          {
+            userId: project.userId,
+            projectId: project.id,
+            repo: project.wingId,
+            identidade: achado.identidadeEstavel,
+            nome,
+            arquivo,
+            gatilho,
+            desde,
+            resumo: achado.titulo,
+            numeroProposta: numeroDaProposta,
+          },
+          // C5 (fix-up L4-T2): este `await` NÃO tem `.catch` — o antigo
+          // `.catch` engolia a falha em warn e deixava o chamador achar que
+          // a pergunta saiu. Mesmo raciocínio do guard acima: propaga, o
+          // `registrarIncidente` desta proposta não roda, e a próxima
+          // varredura tenta de novo (idempotente).
+          { agentQuestion: perguntador }
         )
       },
       avisarDono: async (texto) => {

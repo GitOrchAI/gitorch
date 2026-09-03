@@ -482,3 +482,144 @@ describe('a resposta do dono vira configuração do projeto (D49)', () => {
     expect(prisma.project.update).not.toHaveBeenCalled()
   })
 })
+
+// L4-T2 (D63): quando a dúvida respondida é sobre uma automação do cliente
+// que falhou (dedupKey `automacao:<repo>:<identidade>`), a resposta vira
+// AÇÃO (deletar/reajustar/manter/texto livre) — injetada, para
+// AgentQuestionService continuar sem saber nada de GitHub/PR. C4 (fix-up
+// L4-T2): a ação roda ANTES de marcar `answered`, e uma falha dela IMPEDE o
+// `answer` — nada de best-effort aqui (ao contrário do Cortex/config acima).
+describe('a resposta do dono aciona a decisão de automação (L4-T2 / C4)', () => {
+  test('dedupKey automacao: → chama aoResponderAutomacao com dedupKey/resposta/projectId/autonomia (SEM context)', async () => {
+    const prisma = fakePrisma()
+    prisma.projects.set('p1', { id: 'p1', wingId: 'acme/api', autonomia: 'cuidar' } as any)
+    prisma.questions.set('q_auto', {
+      id: 'q_auto',
+      projectId: 'p1',
+      userId: 'u1',
+      text: 'O que fazer?',
+      context: 'dispara em "push" · proposta #901 · arquivo:.github/workflows/x.yml',
+      dedupKey: 'automacao:acme/api:wf:40',
+      status: 'open',
+      options: [],
+      answer: null,
+      answeredAt: null,
+      answeredVia: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const aoResponderAutomacao = vi.fn(async (_args: Record<string, unknown>) => undefined)
+    const svc = new AgentQuestionService(prisma as any, { aoResponderAutomacao })
+
+    const result = await svc.answer('q_auto', 'deletar', 'telegram')
+
+    expect(aoResponderAutomacao).toHaveBeenCalledOnce()
+    const chamada = aoResponderAutomacao.mock.calls[0]![0]
+    // A2 (fix-up L4-T2): NUNCA `context` — `processarRespostaDeAutomacao`
+    // resolve pela dedupKey/infra_incidents, não reparseando texto do dono.
+    expect(chamada).toEqual({
+      dedupKey: 'automacao:acme/api:wf:40',
+      resposta: 'deletar',
+      projectId: 'p1',
+      autonomia: 'cuidar',
+    })
+    expect(result?.status).toBe('answered')
+  })
+
+  test('C4: aoResponderAutomacao roda ANTES de marcar a pergunta answered', async () => {
+    const prisma = fakePrisma()
+    prisma.projects.set('p1', { id: 'p1', wingId: 'acme/api', autonomia: 'cuidar' } as any)
+    prisma.questions.set('q_auto', {
+      id: 'q_auto',
+      projectId: 'p1',
+      userId: 'u1',
+      text: 'O que fazer?',
+      dedupKey: 'automacao:acme/api:wf:40',
+      status: 'open',
+      options: [],
+      answer: null,
+      answeredAt: null,
+      answeredVia: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const aoResponderAutomacao = vi.fn(async () => {
+      // No momento em que a ação roda, a pergunta AINDA tem que estar open.
+      expect(prisma.questions.get('q_auto')!.status).toBe('open')
+    })
+    const svc = new AgentQuestionService(prisma as any, { aoResponderAutomacao })
+
+    await svc.answer('q_auto', 'deletar', 'telegram')
+
+    expect(aoResponderAutomacao).toHaveBeenCalledOnce()
+    const ordemAcao = aoResponderAutomacao.mock.invocationCallOrder[0]!
+    const ordemUpdate = (prisma.agentQuestion.update as any).mock.invocationCallOrder[0]
+    expect(ordemAcao).toBeLessThan(ordemUpdate)
+  })
+
+  test('dedupKey que NÃO é de automação → aoResponderAutomacao nunca é chamado', async () => {
+    const prisma = fakePrisma()
+    prisma.projects.set('p1', { id: 'p1', wingId: 'acme/api', autonomia: 'cuidar' } as any)
+    prisma.questions.set('q_1', {
+      id: 'q_1',
+      projectId: 'p1',
+      userId: 'u1',
+      text: 'dúvida qualquer',
+      dedupKey: 'como-publica:acme/api',
+      status: 'open',
+      options: [],
+      answer: null,
+      answeredAt: null,
+      answeredVia: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const aoResponderAutomacao = vi.fn(async () => undefined)
+    const svc = new AgentQuestionService(prisma as any, { aoResponderAutomacao })
+
+    await svc.answer('q_1', 'qualquer', 'panel')
+
+    expect(aoResponderAutomacao).not.toHaveBeenCalled()
+  })
+
+  test('C4: falha em aoResponderAutomacao → a pergunta continua open, o erro é logado pelo logger injetado, e answer() lança', async () => {
+    const prisma = fakePrisma()
+    prisma.projects.set('p1', { id: 'p1', wingId: 'acme/api', autonomia: 'sugerir' } as any)
+    prisma.questions.set('q_auto', {
+      id: 'q_auto',
+      projectId: 'p1',
+      userId: 'u1',
+      text: 'O que fazer?',
+      dedupKey: 'automacao:acme/api:wf:1',
+      status: 'open',
+      options: [],
+      answer: null,
+      answeredAt: null,
+      answeredVia: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const aoResponderAutomacao = vi.fn(async () => {
+      throw new Error('GitHub fora do ar')
+    })
+    const onError = vi.fn()
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const svc = new AgentQuestionService(prisma as any, { aoResponderAutomacao, onError })
+
+    await expect(svc.answer('q_auto', 'manter', 'telegram')).rejects.toThrow('GitHub fora do ar')
+
+    // A pergunta NÃO foi marcada answered — nada foi gravado.
+    expect(prisma.questions.get('q_auto')!.status).toBe('open')
+    expect(prisma.agentQuestion.update).not.toHaveBeenCalled()
+    // Logado pelo logger INJETADO — nunca console.warn. (Não assume
+    // `warnSpy` zero chamadas no total: outro teste deste arquivo aciona o
+    // console.warn REAL de um caminho não relacionado; o que importa aqui é
+    // que ESTA falha especificamente não passou por ele.)
+    expect(onError).toHaveBeenCalledOnce()
+    expect(onError.mock.calls[0]![0]).toContain('GitHub fora do ar')
+    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('decisão de automação'))).toBe(
+      false
+    )
+    warnSpy.mockRestore()
+  })
+})

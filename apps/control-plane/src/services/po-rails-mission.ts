@@ -100,7 +100,12 @@ async function triageIncidents(args: {
   cap?: number
 }): Promise<string[]> {
   const { gh, repository, execute } = args
-  const q = encodeURIComponent(`repo:${repository} label:gitorch:incident state:open`)
+  // D63/L4-T2: `gitorch:proposal` NÃO é incidente triável — é uma pergunta
+  // ao dono (deletar/reajustar/manter), sem prioridade nenhuma para o PO
+  // decidir. Excluída da busca para o PO nem tentar.
+  const q = encodeURIComponent(
+    `repo:${repository} label:gitorch:incident -label:gitorch:proposal state:open`
+  )
   const found = (await gh('GET', `/search/issues?q=${q}&per_page=20`)) as {
     items?: Array<{
       number: number

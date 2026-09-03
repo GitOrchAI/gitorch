@@ -448,7 +448,14 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
     created_at?: string
     updated_at?: string
   }>
-  const abertas = Array.isArray(tasks) ? tasks : []
+  // D63/L4-T2: defesa em profundidade — uma issue `gitorch:proposal` (pergunta
+  // ao dono, nunca tarefa) NUNCA vira sessão nem ganha `jules`, mesmo que por
+  // um bug em algum outro lugar ela chegasse aqui também com `gitorch:task`.
+  // A busca real (`labels=gitorch:task`) já filtra pelo AND do GitHub; isto
+  // não depende só desse comportamento do servidor.
+  const abertas = (Array.isArray(tasks) ? tasks : []).filter(
+    (t) => !(t.labels ?? []).some((l) => l.name === 'gitorch:proposal')
+  )
 
   // Bloqueadores só para quem ainda não tem sessão viva — não adianta gastar
   // chamada em issue que já está em trabalho.

@@ -16,21 +16,33 @@ import type { AchadoDeInfra } from './incidente-ci.js'
 import type { ClasseDeFalha } from './classificar-falha-de-infra.js'
 import { runAnaliseCausaDeInfra, runIssuePadraoDeInfra } from './analise-causa-de-infra.js'
 
-/** Onde a issue nasce. `nenhum` = o RA nem analisa (só log). */
-export type AlvoDaIssue = 'repo-do-cliente' | 'repo-do-produto' | 'nenhum'
+/**
+ * Onde a issue nasce. `nenhum` = o RA nem analisa (só log). `proposta` (D63,
+ * L4-T2) = NÃO é incidente P0 delegável — vira uma proposta ao dono
+ * (`services/proposta.ts`) com uma pergunta de 4 opções, sem análise de
+ * RA/PO nenhuma.
+ */
+export type AlvoDaIssue = 'repo-do-cliente' | 'repo-do-produto' | 'proposta' | 'nenhum'
 
 /** Roteamento PURO por classe. */
 export function alvoDaClasse(classe: ClasseDeFalha): AlvoDaIssue {
   switch (classe) {
     case 'ci-do-cliente':
     case 'config-de-actions':
-    case 'dependabot-travado':
     case 'alerta-de-seguranca':
       return 'repo-do-cliente'
     case 'scaffolding-do-gitorch':
       return 'repo-do-produto'
     case 'workflow-morto':
       return 'nenhum'
+    // D63 (medido: 97/193 sessões do dev assíncrono foram para incidente de
+    // automação — 14 delas o próprio Dependabot travado em
+    // `.github/scripts`): "o dono não quer o Jules consertando o robô do
+    // Jules". Nem `automacao` nem `dependabot-travado` viram issue P0 no
+    // cliente — viram proposta, com pergunta de 4 opções para o dono.
+    case 'automacao':
+    case 'dependabot-travado':
+      return 'proposta'
     default:
       // Classe nova sem rota: fail-safe para o repo do produto (é um bug nosso
       // de classificação, o dono precisa ver — nunca o cliente).
@@ -84,6 +96,18 @@ export interface ProcessarAchadosDeps {
   criarIssueNoCliente: (fields: DoDFields, achado: AchadoDeInfra) => Promise<number>
   /** Cria a issue em `GitOrchAI/gitorch` (encanamento do produto). */
   criarIssueNoProduto: (fields: DoDFields, achado: AchadoDeInfra) => Promise<number>
+  /**
+   * D63/L4-T2: cria (ou acha, idempotente) a PROPOSTA ao dono para um achado
+   * de automação — `services/proposta.ts`. SEM análise de RA/PO: a proposta
+   * não pede trabalho, pede uma decisão. Devolve o número da issue.
+   */
+  criarProposta: (achado: AchadoDeInfra) => Promise<number>
+  /**
+   * D63/L4-T2 (D71): pergunta ao dono o que fazer com a automação — 4 opções
+   * (deletar/reajustar/manter/escrever), dedupada por projeto+identidade.
+   * Chamada DEPOIS de `criarProposta`, com o número que ela devolveu.
+   */
+  perguntarAoDono: (achado: AchadoDeInfra, numeroDaProposta: number) => Promise<void>
   /** Telegram ao DONO (só para achados de encanamento do produto). */
   avisarDono: (texto: string) => Promise<void>
   /** upsert em `infra_incidents` por (projectId, identidadeEstavel). */
@@ -97,6 +121,8 @@ export interface ProcessarAchadosDeps {
 export interface ProcessarAchadosResultado {
   issuesNoCliente: number[]
   issuesNoProduto: number[]
+  /** D63/L4-T2: propostas ao dono (achados de automação/dependabot-travado). */
+  propostas: number[]
   ignorados: string[]
   jaRastreados: string[]
 }
@@ -115,6 +141,7 @@ export async function processarAchadosDeInfra(
   const res: ProcessarAchadosResultado = {
     issuesNoCliente: [],
     issuesNoProduto: [],
+    propostas: [],
     ignorados: [],
     jaRastreados: [],
   }
@@ -149,6 +176,33 @@ export async function processarAchadosDeInfra(
     if (alvo === 'nenhum') {
       info(`processar-achados: ${achado.identidadeEstavel} (${achado.classe}) — só log, sem issue`)
       res.ignorados.push(achado.identidadeEstavel)
+      continue
+    }
+
+    // D63/L4-T2: automação (e o Dependabot travado) NUNCA vira incidente P0
+    // — vira proposta ao dono. SEM análise de RA/PO (a proposta não pede
+    // trabalho, pede uma decisão): pula direto para criar/achar a proposta e
+    // perguntar. `registrarIncidente` continua valendo — é o MESMO dedup por
+    // `infra_incidents` que o resto do fluxo usa, só a classe/número mudam.
+    if (alvo === 'proposta') {
+      processados += 1
+      try {
+        const numero = await deps.criarProposta(achado)
+        await deps.perguntarAoDono(achado, numero)
+        await deps.registrarIncidente({
+          projectId: deps.projectId,
+          classe: achado.classe,
+          identidadeEstavel: achado.identidadeEstavel,
+          issueNumber: numero,
+          titulo: achado.titulo,
+        })
+        res.propostas.push(numero)
+        info(`processar-achados: proposta #${numero} para ${achado.identidadeEstavel}`)
+      } catch (err) {
+        warn(
+          `processar-achados: ${achado.identidadeEstavel} (proposta) falhou (${String(err).slice(0, 160)})`
+        )
+      }
       continue
     }
 

@@ -58,6 +58,28 @@ export interface AchadoDeInfra {
   evidencia: string
   /** Arquivo(s) de workflow envolvidos, para o RA/PO abrirem. */
   paths: string[]
+  /**
+   * A1 (fix-up L4-T2): nome do workflow — `wf.name` do Actions, ou
+   * `'Dependabot Updates'` para o job do Dependabot. Existe para
+   * `services/proposta.ts`/`decisao-de-automacao.ts` não precisarem mais
+   * adivinhar via regex no título (`nomeEArquivoDoAchado`, removido do
+   * scheduler).
+   */
+  nomeDoWorkflow?: string
+  /**
+   * A1: arquivo do workflow — mesmo valor do primeiro `paths[0]`, por nome
+   * próprio (structured field em vez de índice de array). Para o Dependabot,
+   * só preenchido quando `.github/dependabot.yml` foi lido com sucesso.
+   */
+  arquivo?: string
+  /**
+   * A1: gatilho(s) de nível superior do `on:` do YAML (`gatilhoDoYaml`), ou
+   * `'dependabot'` fixo para o job do Dependabot (que não tem `on:` de
+   * workflow nenhum para ler).
+   */
+  gatilho?: string
+  /** A1: ISO da run que falhou (`run.run_started_at` ?? `run.created_at`). */
+  falhaDesde?: string
 }
 
 export interface ColetarAchadosDeInfraOpts {
@@ -246,6 +268,49 @@ async function pedirConteudo(
   }
 }
 
+/**
+ * A1 (fix-up L4-T2): extrai os gatilhos de nível superior do `on:` de um
+ * workflow do Actions — parse SIMPLES por linha, sem lib de YAML nova (o
+ * pedido explícito do dono). Cobre os 3 formatos comuns:
+ *   - escalar:      `on: push`
+ *   - lista inline: `on: [push, pull_request]`
+ *   - mapeamento:   `on:\n  push:\n  pull_request:\n    branches: [main]`
+ * Devolve as chaves juntas por ", ", ou `undefined` sem `on:` nenhum.
+ */
+export function gatilhoDoYaml(yaml: string): string | undefined {
+  const linhas = yaml.split('\n')
+  const idxOn = linhas.findIndex((l) => /^on:/.test(l))
+  if (idxOn < 0) return undefined
+
+  const resto = (linhas[idxOn] ?? '').slice('on:'.length).replace(/#.*$/, '').trim()
+  if (resto) {
+    // escalar ou lista inline — `[a, b]` ou `a, b` ou só `a`.
+    const semColchetes = resto.replace(/^\[/, '').replace(/\]$/, '')
+    const chaves = semColchetes
+      .split(',')
+      .map((s) => s.trim().replace(/^['"]|['"]$/g, ''))
+      .filter(Boolean)
+    return chaves.length > 0 ? chaves.join(', ') : undefined
+  }
+
+  // mapeamento: só a PRIMEIRA camada de indentação depois de "on:" (0) conta
+  // como chave — uma sub-chave mais funda (ex.: `branches:`) é ignorada. Para
+  // no primeiro `if` que voltar à indentação 0 (próxima seção do YAML).
+  let indentDosFilhos: number | null = null
+  const chaves: string[] = []
+  for (let i = idxOn + 1; i < linhas.length; i++) {
+    const linha = linhas[i] ?? ''
+    if (!linha.trim()) continue
+    const indent = linha.length - linha.trimStart().length
+    if (indent === 0) break
+    if (indentDosFilhos === null) indentDosFilhos = indent
+    if (indent !== indentDosFilhos) continue
+    const m = linha.trim().match(/^([A-Za-z0-9_-]+):/)
+    if (m?.[1]) chaves.push(m[1])
+  }
+  return chaves.length > 0 ? chaves.join(', ') : undefined
+}
+
 function travaMergePorNome(
   contextos: string[],
   wfName: string,
@@ -366,6 +431,7 @@ export async function coletarAchadosDeInfra(
       yaml
     )
     const wfBase = wf.path.split('/').pop() ?? wf.path
+    const gatilho = gatilhoDoYaml(yaml)
     achados.push({
       classe,
       identidadeEstavel: `wf:${wf.id}`,
@@ -373,6 +439,13 @@ export async function coletarAchadosDeInfra(
       travaMerge: travaMergePorNome(contextos, wf.name, wfBase, evento),
       evidencia: await montarEvidencia(f, token, opts.repository, ultima, wf.path, branch, yaml),
       paths: [wf.path],
+      // A1 (fix-up L4-T2): campos estruturados — nada de regex no título.
+      nomeDoWorkflow: wf.name,
+      arquivo: wf.path,
+      ...(gatilho ? { gatilho } : {}),
+      ...(ultima.run_started_at || ultima.created_at
+        ? { falhaDesde: ultima.run_started_at ?? ultima.created_at }
+        : {}),
     })
   }
 
@@ -420,6 +493,14 @@ export async function coletarAchadosDeInfra(
             .filter(Boolean)
             .join('\n'),
           paths: ['.github/dependabot.yml'],
+          // A1 (fix-up L4-T2): campos fixos — não há workflow/YAML de `on:`
+          // para o job do Dependabot ler.
+          nomeDoWorkflow: 'Dependabot Updates',
+          ...(dependabotYml ? { arquivo: '.github/dependabot.yml' } : {}),
+          gatilho: 'dependabot',
+          ...(ultima.run_started_at || ultima.created_at
+            ? { falhaDesde: ultima.run_started_at ?? ultima.created_at }
+            : {}),
         })
       }
     } catch (err) {
