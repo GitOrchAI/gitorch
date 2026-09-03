@@ -15,6 +15,10 @@ import { mintInstallationToken } from '../services/github-app-token.js'
 import { nomeDeRepositorioValido } from '../services/nome-de-repositorio.js'
 import { enderecoPermitido } from '../services/endereco-seguro.js'
 import { registrarPr, sessoesVivas, type PrismaDevSession } from '../services/dev-session-store.js'
+import { fecharPrsSubstituidos } from '../services/pr-substituido.js'
+import { ehPRDaAutomacao } from '../services/vigia-do-pr.js'
+import { guardaPorRepositorio } from '../services/guarda-de-autonomia.js'
+import { fetchComTeto } from '../services/fetch-com-teto.js'
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -172,6 +176,72 @@ export async function ligarPrDaEntrega(deps: {
   return { sessionName: casamento.sessionName, numeroDoPr }
 }
 
+/**
+ * L4-T5, item 3: quando o pull request que acabou de nascer é do dev (já
+ * ligado por `ligarPrDaEntrega`) e a MESMA issue já tem outro pull request do
+ * dev aberto, fecha o antigo como substituído — nunca o novo.
+ *
+ * Medido: issue #3884 do Jardim, pull requests #3907 (31/08) e #3917
+ * (02/09) da mesma task, os dois abertos ao mesmo tempo — mesmo depois da
+ * fila (fila-de-delegacao.ts) e da retomada no mesmo PR
+ * (retomar-pr-reprovado.ts), uma corrida entre ciclos ou uma retomada que
+ * falhou ainda pode abrir um pull request novo. Decisão e ação vivem em
+ * `pr-substituido.ts` (puro na decisão, injetado na leitura/escrita do
+ * GitHub); esta função só monta os candidatos a partir de `dev_sessions`.
+ *
+ * Best-effort: chamada DEPOIS de `ligarPrDaEntrega`, nunca antes — a ligação
+ * do pull request novo é o conserto de maior valor e não pode ser atrasada
+ * nem arriscada por esta verificação.
+ */
+export async function fecharPrsSubstituidosDaEntrega(deps: {
+  prisma: PrismaDevSession
+  projectId: string
+  /** A sessão do PR que ACABOU de nascer (o resultado de `ligarPrDaEntrega`). */
+  sessionName: string
+  numeroDoNovoPr: number
+  lerPr: (numeroDoPr: number) => Promise<{ aberto: boolean; ehDoDev: boolean } | null>
+  comentariosDoPr: (numeroDoPr: number) => Promise<string[]>
+  comentarEFechar: (args: { numeroDoPr: number; comentario: string }) => Promise<void>
+  onInfo?: (m: string) => void
+  onWarn?: (m: string) => void
+}): Promise<number[]> {
+  const sessaoNova = await deps.prisma.devSession.findFirst({
+    where: { sessionName: deps.sessionName },
+  })
+  // Sem a sessão nova não há issue para procurar candidatos — não deveria
+  // acontecer logo depois de `ligarPrDaEntrega` tê-la gravado, mas na dúvida
+  // não faz nada, nunca adivinha.
+  if (!sessaoNova) return []
+
+  return fecharPrsSubstituidos(
+    { issueNumber: sessaoNova.issueNumber, numeroDoNovoPr: deps.numeroDoNovoPr },
+    {
+      candidatosDaMesmaIssue: async ({ issueNumber, numeroDoNovoPr }) => {
+        const linhas = (await deps.prisma.devSession.findMany({
+          where: {
+            projectId: deps.projectId,
+            issueNumber,
+            pullRequestNumber: { not: null },
+          },
+          select: { pullRequestNumber: true },
+        })) as unknown as Array<{ pullRequestNumber: number | null }>
+        return [
+          ...new Set(
+            linhas
+              .map((l) => l.pullRequestNumber)
+              .filter((n): n is number => n !== null && n !== numeroDoNovoPr)
+          ),
+        ]
+      },
+      lerPr: deps.lerPr,
+      comentariosDoPr: deps.comentariosDoPr,
+      comentarEFechar: deps.comentarEFechar,
+      ...(deps.onInfo ? { onInfo: deps.onInfo } : {}),
+      ...(deps.onWarn ? { onWarn: deps.onWarn } : {}),
+    }
+  )
+}
+
 // Map GitHub event header to supported event names
 function toGitHubEventName(event: string | undefined): GitHubWebhookEventName {
   const supported: GitHubWebhookEventName[] = [
@@ -281,6 +351,26 @@ async function casarProjeto(
 }
 
 export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
+  // L4-T5, item 3: a ÚNICA escrita real neste arquivo (fechar PR duplicado da
+  // mesma tarefa) tem que passar pela MESMA porta que toda escrita no
+  // repositório de um cliente usa em produção (`nenhuma-escrita-sem-guarda.test.ts`
+  // varre o repositório inteiro atrás de `fetch` cru contra `api.github.com/repos/`
+  // — a auditoria do bloco 4 achou onze chamadas cruas assim dentro do
+  // relógio). `guardaPorRepositorio` descobre o dono pelo endereço da própria
+  // chamada e respeita o nível de autonomia que o cliente configurou.
+  const ghComGuarda = fetchComTeto(
+    guardaPorRepositorio(fetch, {
+      nivelDoRepositorio: async (repo: string) => {
+        const linha = await app.prisma.project.findFirst({
+          where: { wingId: repo, isActive: true },
+          select: { autonomia: true },
+        })
+        return linha?.autonomia ?? null
+      },
+      nossosRepositorios: new Set([process.env['GITORCH_SELF_REPO'] ?? 'GitOrchAI/gitorch']),
+    })
+  )
+
   app.post(
     '/api/webhooks/github',
     {
@@ -498,6 +588,115 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
                 { projectId: project.id, ...ligado },
                 'Entrega do dev reconhecida no ato: PR ligado à tarefa'
               )
+            }
+            // L4-T5, item 3: o PR que acabou de nascer é do dev — a MESMA
+            // issue pode já ter outro PR do dev aberto (retomada que
+            // falhou, corrida entre ciclos). Fecha o antigo, nunca o novo.
+            // Best-effort e DEPOIS da ligação acima, nunca antes: o conserto
+            // de maior valor é reconhecer a entrega nova; este é só limpeza.
+            if (ligado) {
+              try {
+                const token = await mintInstallationToken({ repository: project.wingId }).catch(
+                  () => null
+                )
+                if (token) {
+                  // `ghComGuarda` (topo desta função) é a MESMA porta de toda
+                  // escrita real no repositório de um cliente — descobre o
+                  // repositório pela própria URL e respeita o nível de
+                  // autonomia configurado. Nunca `fetch` cru aqui.
+                  const ghSubstituicao = async (path: string): Promise<Response> =>
+                    ghComGuarda(new URL(path, 'https://api.github.com/').toString(), {
+                      headers: {
+                        authorization: `token ${token}`,
+                        accept: 'application/vnd.github+json',
+                        'user-agent': 'gitorch',
+                      },
+                    })
+                  const fechados = await fecharPrsSubstituidosDaEntrega({
+                    prisma: app.prisma as unknown as PrismaDevSession,
+                    projectId: project.id,
+                    sessionName: ligado.sessionName,
+                    numeroDoNovoPr: ligado.numeroDoPr,
+                    lerPr: async (numeroDoPr) => {
+                      const resp = await ghSubstituicao(
+                        `repos/${project.wingId}/pulls/${numeroDoPr}`
+                      )
+                      if (!resp.ok) return null
+                      const pr = (await resp.json()) as {
+                        state?: string
+                        user?: { login?: string }
+                        labels?: Array<{ name?: string }>
+                        body?: string
+                      }
+                      return {
+                        aberto: pr.state === 'open',
+                        ehDoDev: ehPRDaAutomacao({
+                          autor: pr.user?.login ?? null,
+                          labels: (pr.labels ?? []).map((l) => l.name ?? ''),
+                          corpo: pr.body ?? null,
+                        }),
+                      }
+                    },
+                    comentariosDoPr: async (numeroDoPr) => {
+                      const resp = await ghSubstituicao(
+                        `repos/${project.wingId}/issues/${numeroDoPr}/comments?per_page=100`
+                      )
+                      if (!resp.ok) return []
+                      const comentarios = (await resp.json()) as Array<{ body?: string }>
+                      return (Array.isArray(comentarios) ? comentarios : []).map(
+                        (c) => c.body ?? ''
+                      )
+                    },
+                    comentarEFechar: async ({ numeroDoPr, comentario }) => {
+                      await ghComGuarda(
+                        new URL(
+                          `repos/${project.wingId}/issues/${numeroDoPr}/comments`,
+                          'https://api.github.com/'
+                        ).toString(),
+                        {
+                          method: 'POST',
+                          headers: {
+                            authorization: `token ${token}`,
+                            accept: 'application/vnd.github+json',
+                            'content-type': 'application/json',
+                            'user-agent': 'gitorch',
+                          },
+                          body: JSON.stringify({ body: comentario }),
+                        }
+                      )
+                      await ghComGuarda(
+                        new URL(
+                          `repos/${project.wingId}/pulls/${numeroDoPr}`,
+                          'https://api.github.com/'
+                        ).toString(),
+                        {
+                          method: 'PATCH',
+                          headers: {
+                            authorization: `token ${token}`,
+                            accept: 'application/vnd.github+json',
+                            'content-type': 'application/json',
+                            'user-agent': 'gitorch',
+                          },
+                          body: JSON.stringify({ state: 'closed' }),
+                        }
+                      )
+                    },
+                    onInfo: (m) => app.log.info(m),
+                    onWarn: (m) => app.log.warn(m),
+                  })
+                  if (fechados.length > 0) {
+                    app.log.info(
+                      { projectId: project.id, fechados, novo: ligado.numeroDoPr },
+                      'PR(s) antigo(s) da mesma tarefa fechado(s) — substituído(s) pelo novo'
+                    )
+                  }
+                }
+              } catch (err) {
+                app.log.error(
+                  { err, projectId: project.id },
+                  'Falha ao verificar/fechar PR duplicado da mesma tarefa'
+                )
+              }
             }
           } catch (err) {
             app.log.error({ err, projectId: project.id }, 'Falha ao ligar PR à tarefa delegada')

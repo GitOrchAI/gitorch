@@ -144,6 +144,51 @@ export async function listarPrsSemParecer(args: {
   return semParecer
 }
 
+/**
+ * As issues cuja sessão do dev JÁ TEM um pull request ABERTO — mesmo que a
+ * sessão em si tenha morrido (`pr-rejeitado-sem-retomada`). L4-T5.
+ *
+ * `escolherParaDelegar` (fila-de-delegacao.ts) usa este conjunto para NÃO
+ * tratar a issue como livre enquanto o PR anterior segue esperando conserto.
+ * Sem ele, a sessão fechada solta a issue da fila e a próxima delegação abre
+ * um PR NOVO do zero — a MESMA tarefa acumulando sessões e PRs. Medido:
+ * issue #3884 do Jardim, 5 sessões e 3 pull requests (#3907, #3913, #3917)
+ * para uma task. A retomada certa é no MESMO PR
+ * (`retomar-pr-reprovado.ts`/`sessao-terminal.ts`); esta fila só volta a
+ * tratar a issue como livre depois que aquele PR fechar.
+ *
+ * UMA chamada ao GitHub (lista de PRs abertos), reaproveitada para todas as
+ * sessões do ciclo — nunca uma consulta por sessão.
+ */
+export async function issuesComPrAbertoDoDev(args: {
+  repository: string
+  gh: (method: string, path: string) => Promise<unknown>
+  /**
+   * Linhas deste projeto (vivas e fechadas) que carregam um `pullRequestNumber`
+   * — a mesma fonte de `listarPrsSemParecer` (`sessoesParaReconhecerPr`, ou
+   * `sessoesVivas` como recuo).
+   */
+  sessoes: LinhaDeSessao[]
+}): Promise<Set<number>> {
+  const comPr = args.sessoes.filter(
+    (s): s is LinhaDeSessao & { pullRequestNumber: number } => s.pullRequestNumber !== null
+  )
+  // Nenhuma sessão carrega PR: não vale gastar chamada ao GitHub à toa.
+  if (comPr.length === 0) return new Set()
+
+  const prs = (await args.gh(
+    'GET',
+    `/repos/${args.repository}/pulls?state=open&per_page=100`
+  )) as Array<{ number: number }>
+  const numerosAbertos = new Set((Array.isArray(prs) ? prs : []).map((p) => p.number))
+
+  const issues = new Set<number>()
+  for (const s of comPr) {
+    if (numerosAbertos.has(s.pullRequestNumber)) issues.add(s.issueNumber)
+  }
+  return issues
+}
+
 /** Marcador oculto que impede o comentário de recusa de se repetir. */
 export const MARCA_DE_RECUSA = '<!-- gitorch:delegacao-recusada -->'
 
@@ -571,11 +616,37 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
     })
   }
 
+  // L4-T5: issue cuja sessão do dev já tem um PR ABERTO não pode ser tratada
+  // como livre, mesmo com a sessão fechada. UMA chamada ao GitHub (cache por
+  // ciclo), reaproveitada por todas as sessões — nunca uma consulta por
+  // issue. Best-effort: falha aqui não pode travar a delegação inteira, só
+  // deixa de aplicar este filtro específico neste ciclo.
+  const naFilaComPr = options.sessoesParaReconhecerPr ?? options.sessoesVivas ?? []
+  const comPrAbertoDoDev = await issuesComPrAbertoDoDev({
+    repository: options.repository,
+    gh: (method, path) => gh(method, path),
+    sessoes: naFilaComPr,
+  }).catch((err) => {
+    ;(options.onWarn ?? console.warn)(
+      `sm-delegation: não deu para checar PRs abertos do dev; a fila segue este ciclo sem ` +
+        `esse filtro: ${(err as Error).message}`
+    )
+    return new Set<number>()
+  })
+  if (comPrAbertoDoDev.size > 0) {
+    ;(options.onWarn ?? console.warn)(
+      `sm-delegation: ${comPrAbertoDoDev.size} issue(s) com PR aberto do dev não voltam para a ` +
+        `fila agora: ${[...comPrAbertoDoDev].map((n) => `#${n}`).join(', ')} — aguardando ` +
+        'retomada no mesmo PR'
+    )
+  }
+
   let travadaPorVaga = false
   const escolhidas = escolherParaDelegar({
     candidatas,
     arquivosEmTrabalho: [...arquivosEmTrabalho],
     sessoesVivas: options.sessoesVivas ?? [],
+    issuesComPrAbertoDoDev: comPrAbertoDoDev,
     delegadasHoje: options.delegadasHoje ?? 0,
     onDiagnostico: (d) => {
       travadaPorVaga = d.travadaPorVaga

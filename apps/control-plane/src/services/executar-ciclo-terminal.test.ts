@@ -116,4 +116,78 @@ describe('executarCicloTerminal', () => {
     await executarCicloTerminal(d)
     expect(fechadas.map((f) => f.sessionName)).toEqual(['sessions/b'])
   })
+
+  // ── L4-T5: retomada no MESMO PR ───────────────────────────────────────────
+  describe('retomada no mesmo PR (L4-T5)', () => {
+    it('PR reprovado + ramo retomável → fecha a linha antiga e chama retomarNoMesmoPr', async () => {
+      const linhas = [linha({ issueNumber: 3884, pullRequestNumber: 3917 })]
+      const { d, fechadas } = deps({ linhas, pr: 'aberto-rejeitado-parado' })
+      d.agora = new Date('2026-09-02T12:00:00Z') // 12h depois de lastProgressAt de linha()
+      d.branchRetomavel = async () => 'jules-3917-branch'
+      const retomadas: Array<{ issueNumber: number; numeroDoPr: number; branchDoPr: string }> = []
+      d.retomarNoMesmoPr = async ({ linha: l, numeroDoPr, branchDoPr }) => {
+        retomadas.push({ issueNumber: l.issueNumber, numeroDoPr, branchDoPr })
+      }
+      const r = await executarCicloTerminal(d)
+      expect(fechadas).toEqual([{ sessionName: 'sessions/x', motivo: 'pr-rejeitado-sem-retomada' }])
+      expect(retomadas).toEqual([
+        { issueNumber: 3884, numeroDoPr: 3917, branchDoPr: 'jules-3917-branch' },
+      ])
+      expect(r.issuesRetomadasNoPr).toEqual([3884])
+      // NÃO conta como redelegada — a issue não volta para a fila, ela
+      // continua sendo trabalhada, só que numa sessão nova.
+      expect(r.issuesRedelegadas).toEqual([])
+    })
+
+    it('sem branchRetomavel injetado → comportamento antigo (fecha e redelega)', async () => {
+      const linhas = [linha({ issueNumber: 3884, pullRequestNumber: 3917 })]
+      const { d, fechadas } = deps({ linhas, pr: 'aberto-rejeitado-parado' })
+      d.agora = new Date('2026-09-02T12:00:00Z')
+      const r = await executarCicloTerminal(d)
+      expect(fechadas).toEqual([{ sessionName: 'sessions/x', motivo: 'pr-rejeitado-sem-retomada' }])
+      expect(r.issuesRedelegadas).toEqual([3884])
+      expect(r.issuesRetomadasNoPr).toEqual([])
+    })
+
+    it('branchRetomavel devolve null → cai no comportamento antigo', async () => {
+      const linhas = [linha({ issueNumber: 3884, pullRequestNumber: 3917 })]
+      const { d } = deps({ linhas, pr: 'aberto-rejeitado-parado' })
+      d.agora = new Date('2026-09-02T12:00:00Z')
+      d.branchRetomavel = async () => null
+      const retomarNoMesmoPr = vi.fn(async () => undefined)
+      d.retomarNoMesmoPr = retomarNoMesmoPr
+      const r = await executarCicloTerminal(d)
+      expect(retomarNoMesmoPr).not.toHaveBeenCalled()
+      expect(r.issuesRedelegadas).toEqual([3884])
+    })
+
+    it('retomarNoMesmoPr falha → não impede as outras linhas do ciclo', async () => {
+      const linhas = [
+        linha({ sessionName: 'sessions/a', issueNumber: 1, pullRequestNumber: 10 }),
+        linha({ sessionName: 'sessions/b', issueNumber: 2 }),
+      ]
+      const { d, fechadas } = deps({ linhas, pr: 'aberto-rejeitado-parado' })
+      d.agora = new Date('2026-09-02T12:00:00Z')
+      d.branchRetomavel = async () => 'branch-x'
+      d.retomarNoMesmoPr = async () => {
+        throw new Error('boom')
+      }
+      const r = await executarCicloTerminal(d)
+      // a de #2 (sem PR, situação sem-pr) segue seu caminho normal
+      expect(fechadas.map((f) => f.sessionName)).toContain('sessions/b')
+      expect(r.issuesRetomadasNoPr).toEqual([])
+    })
+
+    it('ainda dentro das 12h → mantém, nem chega a olhar o ramo', async () => {
+      const linhas = [linha({ issueNumber: 3884, pullRequestNumber: 3917 })]
+      const { d, fechadas } = deps({ linhas, pr: 'aberto-rejeitado-parado' })
+      d.agora = new Date('2026-08-28T06:00:00Z') // poucas horas depois
+      const branchRetomavel = vi.fn(async () => 'branch-x')
+      d.branchRetomavel = branchRetomavel
+      const r = await executarCicloTerminal(d)
+      expect(fechadas).toEqual([])
+      expect(r.mantidas).toBe(1)
+      expect(branchRetomavel).not.toHaveBeenCalled()
+    })
+  })
 })

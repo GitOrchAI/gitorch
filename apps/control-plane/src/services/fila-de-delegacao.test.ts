@@ -516,3 +516,68 @@ describe('o teto de simultâneas é da CONTA, não do projeto', () => {
     expect(escolhidas).toEqual([1])
   })
 })
+
+// ── L4-T5: issue com PR aberto do dev não volta para a fila ────────────────
+//
+// Medido: issue #3884 do Jardim, 5 sessões e 3 PRs (#3907, #3913, #3917) para
+// UMA task. A sessão morre (`pr-rejeitado-sem-retomada`), a issue solta a
+// sessão viva, e nada mais impedia `escolherParaDelegar` de tratá-la como
+// livre — mesmo com o PR anterior ainda aberto esperando conserto. A
+// retomada certa é no MESMO PR (retomar-pr-reprovado.ts); a fila só pode
+// voltar a tratar a issue como livre depois que aquele PR fechar.
+describe('escolherParaDelegar: issue com PR aberto do dev não volta para a fila', () => {
+  const semTeto = {
+    sessoesVivas: [],
+    delegadasHoje: 0,
+    tetoConcorrentes: 10,
+    tetoDiario: 10,
+    capPorCiclo: 10,
+  }
+
+  it('NÃO escolhe issue cuja sessão morreu mas o PR do dev continua aberto', () => {
+    const escolhidas = escolherParaDelegar({
+      ...semTeto,
+      candidatas: [issue({ number: 3884 })],
+      issuesComPrAbertoDoDev: new Set([3884]),
+    })
+    expect(escolhidas).toEqual([])
+  })
+
+  it('volta a escolher assim que o PR sai do conjunto (fechou/mesclou)', () => {
+    const escolhidas = escolherParaDelegar({
+      ...semTeto,
+      candidatas: [issue({ number: 3884 })],
+      issuesComPrAbertoDoDev: new Set(),
+    })
+    expect(escolhidas).toEqual([3884])
+  })
+
+  it('o campo é OPCIONAL — chamador antigo não muda de comportamento', () => {
+    const escolhidas = escolherParaDelegar({
+      ...semTeto,
+      candidatas: [issue({ number: 10 })],
+    })
+    expect(escolhidas).toEqual([10])
+  })
+
+  it('issue com PR aberto do dev não consome vaga do teto por ciclo', () => {
+    // Mesma disciplina do bloqueio por arquivo: barrada não pode gastar a
+    // cota de quem vem depois dela na mesma passada.
+    const escolhidas = escolherParaDelegar({
+      ...semTeto,
+      capPorCiclo: 1,
+      candidatas: [issue({ number: 1 }), issue({ number: 2 })],
+      issuesComPrAbertoDoDev: new Set([1]),
+    })
+    expect(escolhidas).toEqual([2])
+  })
+
+  it('outras issues sem PR aberto continuam entrando normalmente', () => {
+    const escolhidas = escolherParaDelegar({
+      ...semTeto,
+      candidatas: [issue({ number: 1 }), issue({ number: 2 }), issue({ number: 3 })],
+      issuesComPrAbertoDoDev: new Set([2]),
+    })
+    expect(escolhidas).toEqual([1, 3])
+  })
+})

@@ -19,7 +19,7 @@ interface FakeIssue {
   title?: string
 }
 
-function fakeFetch(issues: FakeIssue[], closed: number[] = []) {
+function fakeFetch(issues: FakeIssue[], closed: number[] = [], prsAbertos: number[] = []) {
   const labeled: Array<{ number: number; labels: string[] }> = []
   const removed: Array<{ number: number; label: string }> = []
   const byNumber = new Map(issues.map((i) => [i.number, i]))
@@ -44,6 +44,12 @@ function fakeFetch(issues: FakeIssue[], closed: number[] = []) {
     if (m && method === 'GET') {
       const n = Number(m[1])
       return json({ number: n, state: closed.includes(n) ? 'closed' : 'open' })
+    }
+    // L4-T5: pull requests abertos do repositório — usado por
+    // `issuesComPrAbertoDoDev` para não redelegar issue com PR do dev ainda
+    // aberto.
+    if (u.includes('/pulls?state=open')) {
+      return json(prsAbertos.map((n) => ({ number: n })))
     }
     // PRs que referenciam a issue (nenhuma, para simplificar)
     if (u.includes('/issues?') && u.includes('linked')) return json([])
@@ -786,5 +792,80 @@ describe('runSmDelegation: D14 — "já resolvido" barra a delegação ANTES da 
       tetoDiario: 100,
     })
     expect(diagnosticar).not.toHaveBeenCalled()
+  })
+})
+
+// ── L4-T5: issue com PR aberto do dev não volta para a fila ────────────────
+//
+// Medido: issue #3884 do Jardim, 5 sessões e 3 PRs (#3907, #3913, #3917) para
+// UMA task. A sessão morre (`pr-rejeitado-sem-retomada`), solta a issue da
+// fila, e o SM abria uma sessão nova (e um PR novo) sem olhar se o PR
+// anterior ainda estava aberto.
+function linhaFechadaComPr(over: {
+  issueNumber: number
+  pullRequestNumber: number
+}): NonNullable<Parameters<typeof runSmDelegation>[0]['sessoesParaReconhecerPr']>[number] {
+  return {
+    id: `x-${over.pullRequestNumber}`,
+    projectId: 'p',
+    issueNumber: over.issueNumber,
+    sessionName: `sessions/${over.pullRequestNumber}`,
+    state: 'COMPLETED',
+    answeredHash: null,
+    pullRequestNumber: over.pullRequestNumber,
+    attempts: 1,
+    nudges: 0,
+    lastProgressAt: null,
+    stateCheckedAt: null,
+    reworkNoticePending: null,
+    reworkNoticeAttempts: 0,
+    pendingSince: null,
+    mergeCommitSha: null,
+    deployState: null,
+    deployCheckedAt: null,
+    mergeFailures: 0,
+    mergeLastFailedAt: null,
+    deployFixKey: null,
+    envLastVerdict: null,
+    closedAt: new Date('2026-09-02T05:00:00Z'),
+  }
+}
+
+describe('runSmDelegation: issue com PR aberto do dev não volta para a fila (L4-T5)', () => {
+  it('NÃO delega de novo enquanto o PR da sessão fechada ainda está aberto', async () => {
+    const f = fakeFetch(
+      [{ number: 3884, labels: ['gitorch:task'], body: 'sem bloqueio' }],
+      [],
+      [3917] // o PR da tentativa anterior segue aberto no GitHub
+    )
+    const labeled = (f as unknown as { labeled: Array<{ number: number; labels: string[] }> })
+      .labeled
+    const r = await runSmDelegation({
+      repository: 'loureng/patinhas-3d-crafts',
+      githubToken: 't',
+      fetchImpl: f,
+      // sem sessão VIVA — a sessão morreu — mas com o histórico do PR aberto.
+      sessoesParaReconhecerPr: [linhaFechadaComPr({ issueNumber: 3884, pullRequestNumber: 3917 })],
+    })
+    expect(labeled.filter((l) => l.labels.includes('jules'))).toEqual([])
+    expect(r.delegated).toEqual([])
+  })
+
+  it('volta a delegar assim que o PR anterior sai da lista de abertos (fechou/mesclou)', async () => {
+    const f = fakeFetch(
+      [{ number: 3884, labels: ['gitorch:task'], body: 'sem bloqueio' }],
+      [],
+      [] // nenhum PR aberto agora
+    )
+    const labeled = (f as unknown as { labeled: Array<{ number: number; labels: string[] }> })
+      .labeled
+    const r = await runSmDelegation({
+      repository: 'loureng/patinhas-3d-crafts',
+      githubToken: 't',
+      fetchImpl: f,
+      sessoesParaReconhecerPr: [linhaFechadaComPr({ issueNumber: 3884, pullRequestNumber: 3917 })],
+    })
+    expect(labeled.filter((l) => l.labels.includes('jules')).map((l) => l.number)).toEqual([3884])
+    expect(r.delegated).toEqual([3884])
   })
 })

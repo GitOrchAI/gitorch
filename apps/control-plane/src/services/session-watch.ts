@@ -419,6 +419,17 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
             horasNoTerminal: paradoHaMs / (60 * 60 * 1000),
           })
           if (decisaoTerminal.acao === 'manter') break
+          if (decisaoTerminal.acao === 'retomar-no-mesmo-pr') {
+            // L4-T5: só é possível com `situacaoDoPr: 'aberto-rejeitado-parado'`,
+            // e aqui sempre passamos `'sem-pr'` — o caso COM PR já saiu antes
+            // (linha acima) para o ciclo terminal do scheduler cuidar, que É
+            // quem sabe retomar no mesmo PR. Guarda defensiva: nunca finge
+            // uma ação que não aconteceu.
+            warn(
+              `[vigia] decisão inesperada retomar-no-mesmo-pr para ${linha.sessionName} sem PR — ignorando`
+            )
+            break
+          }
           await deps.fecharSessao({
             sessionName: linha.sessionName,
             motivo: decisaoTerminal.acao === 'fechar-concluido' ? 'merged' : decisaoTerminal.motivo,

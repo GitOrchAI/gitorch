@@ -255,10 +255,13 @@ import {
 import { vigiarSessoes } from '../services/session-watch.js'
 import {
   CADENCIA_DA_VARREDURA_MS,
+  branchParaRetomar,
   fecharPrDoVigia,
   listarPrsAbertosParaOVigia,
   vigiarPrsOrfaos,
 } from '../services/vigia-do-pr.js'
+import { retomarPrReprovado } from '../services/retomar-pr-reprovado.js'
+import { buildFreeTextOption } from '../services/telegram-bot.js'
 import { varrerVagasVazadas } from '../services/reconciliar-vagas.js'
 import { sessoesAbandonadas } from '../services/sessao-abandonada.js'
 import { medirRetrospectiva, escolherAMelhoria } from '../services/retrospectiva.js'
@@ -5963,6 +5966,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     const projetoDaIssue = (n: number): string | undefined =>
       linhas.find((l) => l.issueNumber === n)?.projectId
 
+    // L4-T5: o ramo retomável e o parecer do QA são lidos DENTRO de
+    // `situacaoDoPr` (mesma chamada ao PR/reviews que já decide
+    // `aberto-rejeitado-parado`) e guardados aqui — `branchRetomavel` (abaixo)
+    // reaproveita em vez de consultar o GitHub de novo pelo mesmo PR.
+    const branchPorPr = new Map<number, string | null>()
+    const parecerPorPr = new Map<number, string>()
+
     const resultado = await executarCicloTerminal({
       listarLinhas: async () => linhas,
       situacaoDoPr: async ({ linha, numeroDoPr }) => {
@@ -5985,19 +5995,153 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           state?: string
           merged?: boolean
           merged_at?: string | null
+          head?: { ref?: string; repo?: { full_name?: string } | null }
         }
         if (pr.merged || pr.merged_at) return 'mesclado'
         if (pr.state === 'closed') return 'fechado-sem-merge'
         // Aberto: reprovado por nós? A régua de tempo é de `decidirSessaoTerminal`.
         const reviews = (await gh(
           `/repos/${proj.wingId}/pulls/${numeroDoPr}/reviews?per_page=100`
-        )) as Array<{ state?: string; user?: { login?: string } }>
-        const reprovadoPorNos = reviews.some(
+        )) as Array<{ state?: string; user?: { login?: string }; body?: string }>
+        const reprovacoesNossas = reviews.filter(
           (rev) =>
             rev.state === 'CHANGES_REQUESTED' &&
             (rev.user?.login ?? '').toLowerCase().includes('gitorch')
         )
+        const reprovadoPorNos = reprovacoesNossas.length > 0
+        if (reprovadoPorNos) {
+          // L4-T5: guarda o ramo e o parecer MAIS RECENTE já nesta mesma
+          // chamada — `branchRetomavel`/`retomarNoMesmoPr` (abaixo) reusam em
+          // vez de ler o PR e as reviews de novo.
+          branchPorPr.set(
+            numeroDoPr,
+            branchParaRetomar({
+              branchDoPr: pr.head?.ref ?? null,
+              branchNoRepoDoProjeto: (pr.head?.repo?.full_name ?? '') === proj.wingId,
+            })
+          )
+          const ultimoParecer = reprovacoesNossas[reprovacoesNossas.length - 1]?.body?.trim()
+          parecerPorPr.set(
+            numeroDoPr,
+            ultimoParecer && ultimoParecer.length > 0
+              ? ultimoParecer
+              : 'O QA pediu mudanças neste pull request.'
+          )
+        }
         return reprovadoPorNos ? 'aberto-rejeitado-parado' : 'aberto-vivo'
+      },
+      branchRetomavel: async ({ numeroDoPr }) => branchPorPr.get(numeroDoPr) ?? null,
+      retomarNoMesmoPr: async ({ linha, numeroDoPr, branchDoPr }) => {
+        const proj = projetosPorId.get(linha.projectId)
+        if (!proj) {
+          throw new Error(`retomada: projeto ${linha.projectId} não encontrado (PR #${numeroDoPr})`)
+        }
+        const resultadoDaRetomada = await retomarPrReprovado(
+          {
+            projectId: linha.projectId,
+            repository: proj.wingId,
+            issueNumber: linha.issueNumber,
+            pr: { number: numeroDoPr, headRef: branchDoPr },
+            parecerDoQa: parecerPorPr.get(numeroDoPr) ?? 'O QA pediu mudanças neste pull request.',
+            sessaoAnterior: { sessionName: linha.sessionName },
+          },
+          {
+            contarRetomadasAnteriores: async ({ projectId, prNumber }) => {
+              // A linha que ACABOU de fechar já conta aqui — ela é a ORIGEM
+              // do PR, não uma retomada; por isso o `- 1`.
+              const total = await app.prisma.devSession.count({
+                where: { projectId, pullRequestNumber: prNumber },
+              })
+              return Math.max(0, total - 1)
+            },
+            criarSessaoDev: async ({ repository, startingBranch, workingBranch, titulo, prompt }) =>
+              criarSessaoJules({
+                apiKey: (await chaveDoDevDoProjeto(linha.projectId)) ?? undefined,
+                repository,
+                startingBranch,
+                workingBranch,
+                titulo,
+                prompt,
+                onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+              }),
+            registrarSessaoRetomada: async ({ issueNumber, sessionName, prNumber }) => {
+              const aberta = await abrirSessao({
+                prisma: app.prisma as unknown as PrismaDevSession,
+                projectId: linha.projectId,
+                issueNumber,
+                sessionName,
+                agora,
+                devAccountId: linha.devAccountId ?? null,
+              })
+              if (!aberta.ok) {
+                // A sessão nasceu lá fora mas não pôde ser guardada — desfaz
+                // na hora, senão a vaga fica presa na conta do cliente (mesmo
+                // princípio de `abrirSessaoDeConsertoDoPr`/sm-delegation.ts).
+                await arquivarSessaoJules({
+                  apiKey: (await chaveDoDevDoProjeto(linha.projectId)) ?? undefined,
+                  sessionName,
+                  onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+                })
+                throw new Error(
+                  `retomada: já existe sessão viva para a issue #${issueNumber} (${aberta.motivo}) ` +
+                    `— a sessão ${sessionName} foi desfeita`
+                )
+              }
+              await registrarPr({
+                prisma: app.prisma as unknown as PrismaDevSession,
+                sessionName,
+                numeroDoPr: prNumber,
+                agora,
+              })
+            },
+            // D71: 3 opções objetivas + a livre — reutiliza
+            // `agentQuestionService.ask` (mesmo padrão de
+            // `escalarDuvidaAoDono`). Nunca um aviso de texto solto.
+            perguntarAoDono: async ({ issueNumber, numeroDoPr: nPr, retomadasAnteriores }) => {
+              const perguntador = (
+                app as unknown as { agentQuestionService?: AgentQuestionService }
+              ).agentQuestionService
+              if (!perguntador || !proj.userId) {
+                app.log.warn(
+                  `[Scheduler] retomada: não deu para escalar o PR #${nPr} (issue #${issueNumber}) ` +
+                    'ao dono — agentQuestionService indefinido ou projeto sem userId'
+                )
+                return
+              }
+              await perguntador
+                .ask(proj.userId, proj.id, {
+                  text:
+                    `O pull request #${nPr} (tarefa #${issueNumber}) já foi retomado ` +
+                    `${retomadasAnteriores}× na mesma branch e o QA continua pedindo mudança. ` +
+                    'O que fazer?',
+                  context: `Repositório ${proj.wingId}.`,
+                  options: [
+                    { label: 'Tentar mais uma vez', value: 'tentar-de-novo' },
+                    { label: 'Fechar este PR e recomeçar do zero', value: 'fechar-e-recomecar' },
+                    { label: 'Vou revisar eu mesmo', value: 'revisar-manualmente' },
+                    buildFreeTextOption(),
+                  ],
+                  dedupKey: `retomada-travada:${proj.wingId}:${nPr}:${retomadasAnteriores}`,
+                })
+                .catch((err: unknown) =>
+                  app.log.warn(err, `[Scheduler] retomada: pergunta ao dono sobre #${nPr} falhou`)
+                )
+            },
+            onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+            onInfo: (m) => app.log.info(`[Scheduler] ${m}`),
+          }
+        )
+        if (resultadoDaRetomada.acao === 'nao-retomou') {
+          // NUNCA finge sucesso: a linha antiga já fechou, e sem uma sessão
+          // nova de pé a issue fica sem ninguém trabalhando nela até a
+          // próxima passada (ou até a vigia de PR órfão, 3 dias depois,
+          // escalar por outro caminho). Ver nota de escopo no relato da
+          // task L4-T5.
+          throw new Error(
+            `retomada do PR #${numeroDoPr} (issue #${linha.issueNumber}) não aconteceu: ` +
+              resultadoDaRetomada.motivo
+          )
+        }
       },
       fecharSessao: async ({ linha, motivo }) => {
         const apiKey = await chaveDaSessao(linha.sessionName)
@@ -6051,12 +6195,14 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     const total =
       resultado.fechadasConcluidas +
       resultado.issuesRedelegadas.length +
-      resultado.issuesEmAnalise.length
+      resultado.issuesEmAnalise.length +
+      resultado.issuesRetomadasNoPr.length
     if (total > 0) {
       app.log.info(
         `[Scheduler] ciclo-terminal: ${resultado.fechadasConcluidas} mescladas, ` +
           `${resultado.issuesRedelegadas.length} de volta à fila, ` +
           `${resultado.issuesEmAnalise.length} para análise, ` +
+          `${resultado.issuesRetomadasNoPr.length} retomadas no mesmo PR (L4-T5), ` +
           `${resultado.mantidas} mantidas, ${resultado.ilegiveis} ilegíveis`
       )
     }
