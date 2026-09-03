@@ -7,6 +7,9 @@ import {
   resolvePoliticaDePerguntasAoDono,
   textoDaRespostaAoDev,
   pareceTrabalhoJaFeito,
+  classificarMensagemDoDev,
+  textoParaRelatorioDeConclusao,
+  textoParaPedidoDeAprovacaoDePlano,
   MIN_CARACTERES_DE_RESPOSTA,
 } from './duvida-do-dev.js'
 
@@ -273,5 +276,92 @@ describe('a rendição EDUCADA também não passa — foi o buraco da revisão',
     expect(
       ehRespostaUtil('Chame `hashSenha()` em vez de bcrypt direto; ele já trata o salt por você.')
     ).toBe(true)
+  })
+})
+
+// D72 (02/09) — o dono recebeu 4 "Esperando você" no painel/Telegram que NÃO
+// eram perguntas: relatório de conclusão do dev tratado como se fosse uma
+// dúvida técnica sem resposta. `responderDuvidaPendente` (scheduler.ts) lia a
+// ÚLTIMA MENSAGEM da sessão AWAITING_USER_FEEDBACK e mandava direto para a
+// missão de QA "responda esta pergunta" — mesmo quando não havia pergunta
+// nenhuma. Esta porta roda ANTES das 3 portas de `destinoDaDuvida` (que
+// continuam do jeito que estão) e intercepta o caso comum: o dev não
+// perguntou nada, só avisou que terminou (ou pediu aprovação de plano).
+describe('classificarMensagemDoDev — a mensagem do dev É uma pergunta?', () => {
+  it('relatório de conclusão real (tarefa #309, GitOrchAI/gitorch) — texto EXATO que chegou ao dono', () => {
+    const mensagem =
+      'I have successfully modified the code and verified the tests are passing. ' +
+      '1. In packages/github-sync/src/webhook-normalizer.ts, I mapped wishCreatedAt to ' +
+      'optionalString(issue, created_at). 2. In packages/cadence/src/incremento.ts, I added ' +
+      'wishCreatedAt and mergedAt to the FatosDaEntrega interface. 3. In ' +
+      'packages/github-sync/src/sync-engine.ts, I updated OperationPlan to include the new fields.'
+    expect(classificarMensagemDoDev(mensagem)).toBe('relatorio-de-conclusao')
+  })
+
+  it('verbos de conclusão em PT-BR também contam', () => {
+    expect(classificarMensagemDoDev('Implementado com sucesso, todos os testes passando.')).toBe(
+      'relatorio-de-conclusao'
+    )
+    expect(classificarMensagemDoDev('Tarefa concluída, aguardando revisão.')).toBe(
+      'relatorio-de-conclusao'
+    )
+  })
+
+  it('presença de "?" NUNCA é relatório de conclusão, mesmo citando "successfully"', () => {
+    expect(
+      classificarMensagemDoDev(
+        'I successfully implemented most of it, but should I also update the docs?'
+      )
+    ).toBe('pergunta')
+  })
+
+  it('pedido de aprovação de plano — linguagem explícita de aprovação', () => {
+    expect(
+      classificarMensagemDoDev('The plan is ready. Waiting for approval before I proceed.')
+    ).toBe('pedido-de-aprovacao-de-plano')
+    expect(classificarMensagemDoDev('Estou aguardando aprovação do plano para continuar.')).toBe(
+      'pedido-de-aprovacao-de-plano'
+    )
+  })
+
+  it('mencionar "plan" sem ser sobre aprovação NÃO vira pedido de aprovação — é pergunta de verdade (tarefa #309, 2ª dúvida)', () => {
+    // Texto real do segundo print do dono: o dev menciona "the plan" (feedback
+    // de review), mas a pergunta de verdade é sobre ignorar uma restrição de
+    // memória — isto tem que seguir pela porta normal de pergunta técnica,
+    // nunca ser confundido com "pedido de aprovação de plano".
+    const mensagem =
+      "The review feedback told me: 'The plan completely omits the required changes for " +
+      'packages/github-sync/src/sync-engine.ts and apps/control-plane/src/plugins/prisma.ts ' +
+      'requested in the issue… remembering that explicit user instructions supersede memory ' +
+      "constraints.' Wait, I asked for clarification on whether I should ignore the memory " +
+      'constraints about prisma.ts, and the automated response e...'
+    expect(classificarMensagemDoDev(mensagem)).toBe('pergunta')
+  })
+
+  it('pergunta técnica comum continua "pergunta"', () => {
+    expect(classificarMensagemDoDev('Should I use bcrypt or argon2 for password hashing?')).toBe(
+      'pergunta'
+    )
+  })
+
+  it('vazio/whitespace é tratado como pergunta (deixa o resto do pipeline decidir)', () => {
+    expect(classificarMensagemDoDev('')).toBe('pergunta')
+    expect(classificarMensagemDoDev('   ')).toBe('pergunta')
+  })
+})
+
+describe('textoParaRelatorioDeConclusao — resposta direta ao dev, sem gastar QA/RA/dono', () => {
+  it('instrui a finalizar a entrega, em PT-BR', () => {
+    const texto = textoParaRelatorioDeConclusao()
+    expect(texto).toContain('pull request')
+    expect(texto).not.toMatch(/successfully|please|thank you/i)
+  })
+})
+
+describe('textoParaPedidoDeAprovacaoDePlano — nunca vira pergunta ao dono', () => {
+  it('instrui o dev a seguir, em PT-BR', () => {
+    const texto = textoParaPedidoDeAprovacaoDePlano()
+    expect(texto.length).toBeGreaterThan(0)
+    expect(texto).not.toMatch(/successfully|please|thank you/i)
   })
 })

@@ -121,6 +121,24 @@ describe('runDuvidaMissionViaRails', () => {
     expect(r.mensagemParaODev).toBeNull()
   })
 
+  // D72 (02/09), item 3: `escalar-duvida-ao-dono.ts` só confia na tradução
+  // do modelo quando ela vem com EXATAMENTE 3 opções — pedir "2 a 4" no
+  // prompt (como era antes) deixava o modelo entregar 2, que a partir de
+  // D72 é silenciosamente descartado em favor da reserva genérica. O
+  // prompt precisa pedir o número certo.
+  it('D72: o prompt pede EXATAMENTE 3 opções (não mais "2 a 4")', async () => {
+    const prompts: string[] = []
+    const execute = vi.fn(async (prompt: string) => {
+      prompts.push(prompt)
+      return JSON.stringify({ precisaDoDono: false, resposta: 'x' })
+    })
+
+    await runDuvidaMissionViaRails({ ...BASE, execute })
+
+    expect(prompts[0]).toMatch(/exatamente 3|exactly 3/i)
+    expect(prompts[0]).not.toMatch(/2 (to|a) 4/i)
+  })
+
   it('decisão de negócio sem tradução do modelo: destino não inventa perguntaExecutiva', async () => {
     const execute = vi.fn(async () =>
       JSON.stringify({

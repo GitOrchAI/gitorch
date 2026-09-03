@@ -99,7 +99,13 @@ describe('escalarDuvidaAoDono — causa raiz medida 02/09 (destinoAposRa sem per
     )
   })
 
-  it('sem perguntaExecutiva do modelo: usa o texto de reserva em PT-BR com a pergunta original do dev', async () => {
+  // D72 (02/09) — SUBSTITUI o teste antigo, que esperava a pergunta CRUA do
+  // dev (em inglês) no texto de reserva. O dono flagrou isso ao vivo, com
+  // print do painel/Telegram, exatamente na tarefa #309 de GitOrchAI/gitorch:
+  // "Pergunta original do dev: 'I have successfully modified...'" com UM
+  // botão só. A reserva agora é sempre a pergunta executiva determinística,
+  // com 3 opções — NUNCA cita o texto do dev.
+  it('D72: sem perguntaExecutiva do modelo — pergunta executiva de RESERVA, nunca a pergunta crua do dev', async () => {
     const deps = depsFalso()
 
     await escalarDuvidaAoDono(
@@ -110,13 +116,61 @@ describe('escalarDuvidaAoDono — causa raiz medida 02/09 (destinoAposRa sem per
     const chamada = deps.agentQuestionService.ask.mock.calls[0] as unknown as [
       string,
       string,
-      { text: string },
+      { text: string; options: Array<{ label: string; value: string }> },
     ]
-    expect(chamada[2].text).toContain('tarefa #46 de acme/api')
-    expect(chamada[2].text).toContain('Should I use bcrypt or argon2?')
+    expect(chamada[2].text).toBe(
+      'O dev está travado numa dúvida técnica na tarefa #46 de acme/api e nem o RA conseguiu ' +
+        'resolver. O que fazer?'
+    )
+    expect(chamada[2].text).not.toContain('Should I use bcrypt or argon2?')
+    // 3 opções executivas + a 4ª "Outro" (D71: 3 objetivas + 1 aberta).
+    expect(chamada[2].options).toHaveLength(4)
+    expect(chamada[2].options.slice(0, 3).map((o) => o.label)).toEqual([
+      'Pausar a tarefa e revisar depois',
+      'Seguir com a melhor suposição do RA mesmo assim',
+      'Pedir ao dev que abra o PR com o que tem',
+    ])
   })
 
-  it('com perguntaExecutiva do modelo: usa ela, não o texto de reserva', async () => {
+  it('com perguntaExecutiva do modelo E exatamente 3 opções: usa a tradução do modelo, não a reserva', async () => {
+    const deps = depsFalso()
+
+    await escalarDuvidaAoDono(
+      {
+        destino: {
+          tipo: 'perguntar-ao-dono',
+          motivo: 'decisão de negócio',
+          perguntaExecutiva: 'Podemos cobrar taxa extra por esta feature?',
+          opcoes: [
+            { label: 'Sim', value: 'sim' },
+            { label: 'Não', value: 'nao' },
+            { label: 'Só para o plano Pro', value: 'so-pro' },
+          ],
+        },
+        ...ARGS_BASE,
+      },
+      deps as never
+    )
+
+    const chamada = deps.agentQuestionService.ask.mock.calls[0] as unknown as [
+      string,
+      string,
+      { text: string; options: Array<{ value: string }> },
+    ]
+    expect(chamada[2].text).toBe('Podemos cobrar taxa extra por esta feature?')
+    // as 3 opções do modelo + a 4ª "Outro" sempre presente (D71).
+    expect(chamada[2].options.map((o) => o.value)).toEqual([
+      'sim',
+      'nao',
+      'so-pro',
+      FREE_TEXT_OPTION_VALUE,
+    ])
+  })
+
+  // D72: 1-2 opções do modelo NÃO bastam mais — sem as 3, a tradução do
+  // modelo é descartada e vale a pergunta executiva de reserva (nunca manda
+  // ao dono uma pergunta traduzida mas com menos de 3 opções reais).
+  it('D72: perguntaExecutiva do modelo mas com só 1 opção — cai para a reserva de 3 opções', async () => {
     const deps = depsFalso()
 
     await escalarDuvidaAoDono(
@@ -135,12 +189,14 @@ describe('escalarDuvidaAoDono — causa raiz medida 02/09 (destinoAposRa sem per
     const chamada = deps.agentQuestionService.ask.mock.calls[0] as unknown as [
       string,
       string,
-      { text: string; options: Array<{ value: string }> },
+      { text: string; options: Array<{ label: string; value: string }> },
     ]
-    expect(chamada[2].text).toBe('Podemos cobrar taxa extra por esta feature?')
-    // opções do modelo + a 4ª "Outro" sempre presente (D71: 3 objetivas + 1 aberta).
-    expect(chamada[2].options.map((o) => o.value)).toContain('sim')
-    expect(chamada[2].options.length).toBe(2)
+    expect(chamada[2].text).not.toBe('Podemos cobrar taxa extra por esta feature?')
+    expect(chamada[2].options.slice(0, 3).map((o) => o.label)).toEqual([
+      'Pausar a tarefa e revisar depois',
+      'Seguir com a melhor suposição do RA mesmo assim',
+      'Pedir ao dev que abra o PR com o que tem',
+    ])
   })
 
   /**

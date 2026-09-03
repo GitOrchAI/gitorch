@@ -12,7 +12,11 @@
  * Uma fonte só elimina essa classe de erro.
  */
 
-const PREFIXO_DUVIDA_DEV = 'duvida-dev:'
+// Exportado (D72, 02/09) para `agent-question.ts` (guarda `ErroDePerguntaSemOpcoes`)
+// e `reprocessar-perguntas-sem-opcoes.ts` reconhecerem o mesmo prefixo sem
+// duplicar a string — MESMA razão desta extração existir: uma fonte só
+// elimina a classe de erro de duas cópias divergindo.
+export const PREFIXO_DUVIDA_DEV = 'duvida-dev:'
 
 export interface DuvidaDevDedupKey {
   repository: string

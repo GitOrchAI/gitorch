@@ -76,15 +76,30 @@ describe('reconciliarDuvidasEscaladasDoProjeto', () => {
     )
   })
 
-  it('a pergunta usa a última mensagem do dev quando disponível', async () => {
+  // D72 (02/09) — SUBSTITUI o teste antigo, que esperava a pergunta CRUA do
+  // dev embutida no texto. A reconciliação agora usa a MESMA pergunta
+  // executiva de reserva (3 opções), NUNCA a mensagem do dev — mesmo quando
+  // ela está disponível.
+  it('D72: NUNCA embute a última mensagem do dev — sempre a pergunta executiva de reserva com 3 opções', async () => {
     const deps = depsFalso()
 
     await reconciliarDuvidasEscaladasDoProjeto(ARGS, deps as never)
 
     const chamada = (
-      deps.agentQuestionService.ask.mock.calls[0] as unknown as [string, string, { text: string }]
+      deps.agentQuestionService.ask.mock.calls[0] as unknown as [
+        string,
+        string,
+        { text: string; options: Array<{ label: string; value: string }> },
+      ]
     )[2]
-    expect(chamada.text).toContain('Should I use bcrypt or argon2?')
+    expect(chamada.text).not.toContain('Should I use bcrypt or argon2?')
+    expect(chamada.text).toContain('tarefa #46 de acme/api')
+    expect(chamada.options).toHaveLength(4)
+    expect(chamada.options.slice(0, 3).map((o) => o.label)).toEqual([
+      'Pausar a tarefa e revisar depois',
+      'Seguir com a melhor suposição do RA mesmo assim',
+      'Pedir ao dev que abra o PR com o que tem',
+    ])
   })
 
   it('sem conseguir ler a última mensagem: usa o texto genérico de reserva (nunca falha por isso)', async () => {

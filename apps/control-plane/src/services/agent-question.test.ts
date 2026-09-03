@@ -1,6 +1,10 @@
 import { describe, expect, test, vi } from 'vitest'
 import type { CortexDrawer } from '@gitorch/cortex'
-import { AgentQuestionService, type ManipuladorDeRespostaArgs } from './agent-question.js'
+import {
+  AgentQuestionService,
+  ErroDePerguntaSemOpcoes,
+  type ManipuladorDeRespostaArgs,
+} from './agent-question.js'
 import { chaveDaDuvida } from './duvidas-do-projeto.js'
 import { comoPublicaDeclarado } from './como-o-projeto-publica.js'
 
@@ -218,6 +222,99 @@ describe('AgentQuestionService.ask (W3.2.2)', () => {
     await expect(svc.ask('user_1', 'proj_1', { text: 'dúvida qualquer' })).resolves.toMatchObject({
       deduped: false,
     })
+  })
+})
+
+// D72 (02/09) — o dono flagrou ao vivo (painel/Telegram) uma pergunta da
+// dúvida do dev assíncrono chegando com UM botão só ("Outro/respondo por
+// texto"), sem as 3 opções executivas. A guarda fecha essa porta na fonte:
+// nenhuma `agent_question` de dúvida do dev (`dedupKey` começando com
+// `duvida-dev:`) nasce sem exatamente 3 opções objetivas + a 4ª livre — a
+// invariante que `escalar-duvida-ao-dono.ts`/`reconciliar-duvidas-escaladas.ts`
+// já produzem depois do conserto de D72 (perguntaExecutivaDeReserva).
+//
+// Escopo DELIBERADO ao prefixo `duvida-dev:`: outras perguntas já
+// catalogadas (`automacao:*`, `como-publica:*`, `sem-verificacao:*`, a rota
+// de dev `cor-azul-oficial`) têm seus próprios conjuntos de opções,
+// verificados manualmente nesta tarefa (nenhuma reproduz o defeito medido) —
+// travá-las também exigiria reformular exaustivas listas de opções que já
+// funcionam em produção, sem nenhuma evidência de que estão quebradas
+// (LEI: "configuração é indício, teste é prova").
+describe('AgentQuestionService.ask — guarda D72: pergunta de dúvida do dev exige as 3 opções executivas', () => {
+  test('dedupKey duvida-dev: com as 3 opções + a livre (4 no total): cria normalmente', async () => {
+    const prisma = fakePrisma()
+    const svc = new AgentQuestionService(prisma as any)
+
+    const result = await svc.ask('user_1', 'proj_1', {
+      text: 'O dev está travado numa dúvida técnica na tarefa #46 de acme/api...',
+      options: [
+        { label: 'Pausar a tarefa e revisar depois', value: 'pausar' },
+        { label: 'Seguir com a melhor suposição do RA mesmo assim', value: 'seguir-suposicao-ra' },
+        { label: 'Pedir ao dev que abra o PR com o que tem', value: 'pedir-pr' },
+        { label: '✍️ Outro (respondo por texto)', value: '__gitorch_free_text__' },
+      ],
+      dedupKey: 'duvida-dev:acme/api:46:hash123',
+    })
+
+    expect(result.deduped).toBe(false)
+    expect(prisma.agentQuestion.create).toHaveBeenCalledTimes(1)
+  })
+
+  test('dedupKey duvida-dev: com 1 opção só (o defeito medido) — LANÇA, nunca cria', async () => {
+    const prisma = fakePrisma()
+    const svc = new AgentQuestionService(prisma as any)
+
+    await expect(
+      svc.ask('user_1', 'proj_1', {
+        text: 'texto qualquer',
+        options: [{ label: '✍️ Outro (respondo por texto)', value: '__gitorch_free_text__' }],
+        dedupKey: 'duvida-dev:acme/api:46:hash123',
+      })
+    ).rejects.toThrow(ErroDePerguntaSemOpcoes)
+    expect(prisma.agentQuestion.create).not.toHaveBeenCalled()
+  })
+
+  test('dedupKey duvida-dev: sem NENHUMA opção — LANÇA', async () => {
+    const prisma = fakePrisma()
+    const svc = new AgentQuestionService(prisma as any)
+
+    await expect(
+      svc.ask('user_1', 'proj_1', { text: 'texto qualquer', dedupKey: 'duvida-dev:acme/api:46:h' })
+    ).rejects.toThrow(ErroDePerguntaSemOpcoes)
+    expect(prisma.agentQuestion.create).not.toHaveBeenCalled()
+  })
+
+  test('a mensagem do erro cita o dedupKey e a quantidade de opções recebidas', async () => {
+    const prisma = fakePrisma()
+    const svc = new AgentQuestionService(prisma as any)
+
+    await expect(
+      svc.ask('user_1', 'proj_1', {
+        text: 'x',
+        options: [{ label: 'Só uma', value: 'a' }],
+        dedupKey: 'duvida-dev:acme/api:46:hash123',
+      })
+    ).rejects.toThrow(/duvida-dev:acme\/api:46:hash123/)
+  })
+
+  test('dedupKey de OUTRO tipo (ex.: automacao:) — guarda não se aplica, mesmo com poucas opções', async () => {
+    const prisma = fakePrisma()
+    const svc = new AgentQuestionService(prisma as any)
+
+    const result = await svc.ask('user_1', 'proj_1', {
+      text: 'x',
+      options: [{ label: 'Deletar', value: 'deletar' }],
+      dedupKey: 'automacao:acme/api:wf:123',
+    })
+    expect(result.deduped).toBe(false)
+  })
+
+  test('sem dedupKey nenhum — guarda não se aplica', async () => {
+    const prisma = fakePrisma()
+    const svc = new AgentQuestionService(prisma as any)
+
+    const result = await svc.ask('user_1', 'proj_1', { text: 'x' })
+    expect(result.deduped).toBe(false)
   })
 })
 
