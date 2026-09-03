@@ -21,6 +21,7 @@ function fakePrisma() {
     agentQuestion: {
       findFirst: vi.fn(async ({ where }: any) => {
         const rows = [...questions.values()].filter((r) => {
+          if (where.id !== undefined && r.id !== where.id) return false
           if (where.projectId !== undefined && r.projectId !== where.projectId) return false
           if (where.dedupKey !== undefined && r.dedupKey !== where.dedupKey) return false
           if (where.status !== undefined && r.status !== where.status) return false
@@ -961,10 +962,11 @@ describe('AgentQuestionService.marcarAssumida (L4-T4, D64)', () => {
     })
     const svc = new AgentQuestionService(prisma as any)
 
-    const resultado = await svc.marcarAssumida(
-      'q_1',
-      'Vou usar argon2id, o mesmo padrão de src/lib/hash.ts.'
-    )
+    const resultado = await svc.marcarAssumida({
+      questionId: 'q_1',
+      projectId: 'p1',
+      suposicao: 'Vou usar argon2id, o mesmo padrão de src/lib/hash.ts.',
+    })
 
     expect(resultado?.status).toBe('assumida')
     expect(resultado?.answer).toBe('Vou usar argon2id, o mesmo padrão de src/lib/hash.ts.')
@@ -993,7 +995,11 @@ describe('AgentQuestionService.marcarAssumida (L4-T4, D64)', () => {
       manipuladoresDeResposta: [{ prefixo: 'duvida-dev:', executar: manipulador }],
     })
 
-    await svc.marcarAssumida('q_1', 'suposição qualquer, texto suficiente para passar.')
+    await svc.marcarAssumida({
+      questionId: 'q_1',
+      projectId: 'p1',
+      suposicao: 'suposição qualquer, texto suficiente para passar.',
+    })
 
     expect(manipulador).not.toHaveBeenCalled()
   })
@@ -1002,9 +1008,53 @@ describe('AgentQuestionService.marcarAssumida (L4-T4, D64)', () => {
     const prisma = fakePrisma()
     const svc = new AgentQuestionService(prisma as any)
 
-    const resultado = await svc.marcarAssumida('nao-existe', 'qualquer suposição de teste aqui.')
+    const resultado = await svc.marcarAssumida({
+      questionId: 'nao-existe',
+      projectId: 'p1',
+      suposicao: 'qualquer suposição de teste aqui.',
+    })
 
     expect(resultado).toBeNull()
+  })
+
+  // S1 (fix-up 4, CSO): `marcarAssumida` buscava só pela chave primária
+  // (`findUnique({ where: { id } })`), sem confirmar que a pergunta
+  // pertencia ao `projectId` de quem está chamando — o filtro de projeto
+  // existia SÓ no chamador (`marcarAssumidaPorDedupKey`, que resolve o
+  // `questionId` a partir de `(projectId, dedupKey)`). Uma chamada direta
+  // com um `questionId` de OUTRO projeto ainda seria aceita. Agora
+  // `marcarAssumida` também filtra por `projectId`
+  // (`findFirst({ where: { id, projectId } })`): pergunta de outro projeto
+  // devolve `null`, exatamente como pergunta inexistente — nunca marca.
+  test('S1: pergunta de OUTRO projeto não é marcada — devolve null, nunca atualiza', async () => {
+    const prisma = fakePrisma()
+    prisma.questions.set('q_1', {
+      id: 'q_1',
+      projectId: 'p1',
+      userId: 'u1',
+      text: 'Devo usar bcrypt ou argon2?',
+      dedupKey: 'duvida-dev:acme/api:93:hash',
+      status: 'open',
+      options: [],
+      answer: null,
+      answeredAt: null,
+      answeredVia: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const onError = vi.fn()
+    const svc = new AgentQuestionService(prisma as any, { onError })
+
+    const resultado = await svc.marcarAssumida({
+      questionId: 'q_1',
+      projectId: 'p2', // dono/projeto DIFERENTE do dono real da pergunta (p1)
+      suposicao: 'suposição de um projeto que não é o dono desta pergunta.',
+    })
+
+    expect(resultado).toBeNull()
+    expect(prisma.agentQuestion.update).not.toHaveBeenCalled()
+    expect(onError).toHaveBeenCalledOnce()
+    expect(onError.mock.calls[0]![0]).toContain('q_1')
   })
 
   // C7 (fix-up 3, task a13a42f8-2953-4259-b41f-3f8cddb304cd): `console.warn`
@@ -1016,7 +1066,11 @@ describe('AgentQuestionService.marcarAssumida (L4-T4, D64)', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const svc = new AgentQuestionService(prisma as any, { onError })
 
-    const resultado = await svc.marcarAssumida('nao-existe', 'qualquer suposição de teste aqui.')
+    const resultado = await svc.marcarAssumida({
+      questionId: 'nao-existe',
+      projectId: 'p1',
+      suposicao: 'qualquer suposição de teste aqui.',
+    })
 
     expect(resultado).toBeNull()
     expect(onError).toHaveBeenCalledOnce()
@@ -1043,7 +1097,11 @@ describe('AgentQuestionService.marcarAssumida (L4-T4, D64)', () => {
     })
     const svc = new AgentQuestionService(prisma as any)
 
-    const resultado = await svc.marcarAssumida('q_1', 'suposição do RA, que chegou tarde demais.')
+    const resultado = await svc.marcarAssumida({
+      questionId: 'q_1',
+      projectId: 'p1',
+      suposicao: 'suposição do RA, que chegou tarde demais.',
+    })
 
     expect(resultado?.answer).toBe('decisão real do dono')
     expect(resultado?.answeredVia).toBe('panel')
@@ -1068,7 +1126,11 @@ describe('AgentQuestionService.marcarAssumida (L4-T4, D64)', () => {
     })
     const svc = new AgentQuestionService(prisma as any)
 
-    const resultado = await svc.marcarAssumida('q_1', 'segunda suposição, diferente da primeira.')
+    const resultado = await svc.marcarAssumida({
+      questionId: 'q_1',
+      projectId: 'p1',
+      suposicao: 'segunda suposição, diferente da primeira.',
+    })
 
     expect(resultado?.answer).toBe('primeira suposição')
     expect(prisma.agentQuestion.update).not.toHaveBeenCalled()

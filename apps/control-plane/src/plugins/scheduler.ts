@@ -7862,7 +7862,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             { projectId: args.projectId, dedupKey, suposicao },
             {
               prisma: app.prisma as unknown as PrismaParaMarcarAssumidaPorDedupKey,
-              marcarAssumida: (questionId, s) => perguntador.marcarAssumida(questionId, s),
+              // S1 (fix-up 4, CSO): `marcarAssumida` agora recebe
+              // `{ questionId, projectId, suposicao }` — o mesmo formato de
+              // objeto que `marcarAssumidaPorDedupKey` já monta, então basta
+              // repassar.
+              marcarAssumida: (marcarArgs) => perguntador.marcarAssumida(marcarArgs),
             }
           )
         },

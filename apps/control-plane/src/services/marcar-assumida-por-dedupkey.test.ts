@@ -49,7 +49,32 @@ describe('marcarAssumidaPorDedupKey (C2, fix-up 3)', () => {
       { prisma: { agentQuestion: { findFirst } }, marcarAssumida }
     )
 
-    expect(marcarAssumida).toHaveBeenCalledWith('q_mais_recente', 'suposição real')
+    expect(marcarAssumida).toHaveBeenCalledWith({
+      questionId: 'q_mais_recente',
+      projectId: 'p1',
+      suposicao: 'suposição real',
+    })
+  })
+
+  // S1 (fix-up 4, CSO): o `projectId` do PRÓPRIO chamador — nunca um valor
+  // adivinhado — tem que chegar a `marcarAssumida`, para o serviço poder
+  // confirmar que a pergunta encontrada de fato pertence a este projeto
+  // (defesa em profundidade: mesmo que o `findFirst` acima já filtre por
+  // `projectId`, `marcarAssumida` confere de novo antes de gravar).
+  it('S1: propaga o projectId do chamador para marcarAssumida (nunca um projeto diferente)', async () => {
+    const findFirst = vi.fn(async () => ({ id: 'q_1' }))
+    const marcarAssumida = vi.fn(async () => questao({ id: 'q_1', projectId: 'p_outro_dono' }))
+
+    await marcarAssumidaPorDedupKey(
+      { projectId: 'p_outro_dono', dedupKey: 'duvida-dev:acme/api:93:hash', suposicao: 'x' },
+      { prisma: { agentQuestion: { findFirst } }, marcarAssumida }
+    )
+
+    expect(marcarAssumida).toHaveBeenCalledWith({
+      questionId: 'q_1',
+      projectId: 'p_outro_dono',
+      suposicao: 'x',
+    })
   })
 
   it('nenhuma pergunta ABERTA para o dedupKey: lança (nunca silêncio)', async () => {

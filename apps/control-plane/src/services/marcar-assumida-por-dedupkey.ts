@@ -49,8 +49,18 @@ export interface PrismaParaMarcarAssumidaPorDedupKey {
 
 export interface DepsDeMarcarAssumidaPorDedupKey {
   prisma: PrismaParaMarcarAssumidaPorDedupKey
-  /** `AgentQuestionService.marcarAssumida`, já vinculado à instância real. */
-  marcarAssumida: (questionId: string, suposicao: string) => Promise<AgentQuestionRecord | null>
+  /**
+   * `AgentQuestionService.marcarAssumida`, já vinculado à instância real.
+   * S1 (fix-up 4, CSO): recebe `projectId` — o MESMO projeto usado para
+   * achar a pergunta abaixo — para o serviço confirmar de novo (defesa em
+   * profundidade) que a pergunta encontrada pertence a este projeto antes
+   * de gravar.
+   */
+  marcarAssumida: (args: {
+    questionId: string
+    projectId: string
+    suposicao: string
+  }) => Promise<AgentQuestionRecord | null>
 }
 
 export async function marcarAssumidaPorDedupKey(
@@ -65,7 +75,11 @@ export async function marcarAssumidaPorDedupKey(
     throw new Error(`marcarAssumida: pergunta não encontrada para dedupKey ${args.dedupKey}`)
   }
 
-  const marcada = await deps.marcarAssumida(question.id, args.suposicao)
+  const marcada = await deps.marcarAssumida({
+    questionId: question.id,
+    projectId: args.projectId,
+    suposicao: args.suposicao,
+  })
   if (!marcada) {
     // Corrida rara: a linha existia no findFirst e sumiu (ou virou
     // answered/assumida por outra via) antes do findUnique interno de

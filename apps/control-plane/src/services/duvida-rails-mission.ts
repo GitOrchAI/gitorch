@@ -7,6 +7,11 @@ import {
   type DestinoDaDuvida,
 } from './duvida-do-dev.js'
 import type { StepExecutor } from './role-rails.js'
+// S2 (fix-up 4, CSO): MESMA sanitização que L4-T2 já aplica à resposta
+// livre do dono ("Vou escrever") antes de virar comentário público — reusa
+// a função em vez de duplicar a regra (menção/comando/citação), sem mudar
+// o comportamento dela em `decisao-de-automacao.ts`.
+import { sanitizarRespostaLivre } from './decisao-de-automacao.js'
 
 /**
  * A missão que RESPONDE a pergunta do dev assíncrono.
@@ -181,11 +186,24 @@ export async function suporSemODono(options: SuporSemODonoOptions): Promise<Supo
  * (`vigiarSessoes`) roda FORA de qualquer missão e nunca teve um `execute`
  * para chamar. Uma função de formatação só, reaproveitada por quem de fato
  * entrega o texto, evita duas cópias divergindo.
+ *
+ * S2 (fix-up 4, CSO): `suposicao`/`justificativa` são texto LIVRE do
+ * MODELO (não do dono, mas igualmente não confiável) — antes de entrar
+ * nesta mensagem (que o dev vê na sessão) passam por
+ * `sanitizarRespostaLivre` (MESMA função de `decisao-de-automacao.ts`,
+ * L4-T2): neutraliza `@menção` ativa, escapa `/comando` de ChatOps no
+ * início de linha, e cerca cada linha em bloco de citação — mesma
+ * disciplina da resposta livre do dono, porque o destino (mensagem/
+ * comentário que pode acabar num chat com bot de ChatOps) é o mesmo tipo de
+ * superfície. `arquivosCitados` fica como texto puro em lista — nunca virou
+ * link, então não precisa da mesma sanitização.
  */
 export function textoDaSuposicaoParaODev(s: SuposicaoDoRa): string {
+  const suposicao = sanitizarRespostaLivre(s.suposicao) ?? ''
+  const justificativa = sanitizarRespostaLivre(s.justificativa) ?? ''
   return (
-    `Suposição adotada pelo RA (o dono pode corrigir): ${s.suposicao}\n\n` +
-    `Por quê: ${s.justificativa}\n` +
+    `Suposição adotada pelo RA (o dono pode corrigir): ${suposicao}\n\n` +
+    `Por quê: ${justificativa}\n` +
     `Arquivos: ${s.arquivosCitados.join(', ')}`
   )
 }
@@ -193,7 +211,12 @@ export function textoDaSuposicaoParaODev(s: SuposicaoDoRa): string {
 /**
  * O comentário que fica registrado na issue do cliente (L4-T4, D64), para
  * quem olhar depois entender por que o trabalho seguiu sem resposta do dono.
+ *
+ * S2 (fix-up 4, CSO): comentário PÚBLICO no repositório do CLIENTE — MESMA
+ * sanitização de `textoDaSuposicaoParaODev` acima, pela MESMA razão
+ * (`sanitizarRespostaLivre`, texto de modelo nunca cru numa issue alheia).
  */
 export function textoDoComentarioDeSuposicao(s: SuposicaoDoRa): string {
-  return `GitOrch: suposição adotada: ${s.suposicao} (o dono pode corrigir)`
+  const suposicao = sanitizarRespostaLivre(s.suposicao) ?? ''
+  return `GitOrch: suposição adotada: ${suposicao} (o dono pode corrigir)`
 }

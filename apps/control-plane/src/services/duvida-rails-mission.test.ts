@@ -225,3 +225,52 @@ describe('textoDaSuposicaoParaODev / textoDoComentarioDeSuposicao (L4-T4, D64)',
     expect(texto).toContain('o dono pode corrigir')
   })
 })
+
+// S2 (fix-up 4, CSO — texto de LLM em comentário público): `suposicao` e
+// `justificativa` são gerados pelo MODELO (`suporSemODono`) e vão direto
+// para o comentário da issue do CLIENTE e para a mensagem entregue ao dev —
+// sem sanitizar, uma suposição podia carregar `@menção` ativa, um
+// `/comando` de ChatOps no início de linha, ou cercas de código que
+// escapam o formato esperado. Reusa `sanitizarRespostaLivre`
+// (`decisao-de-automacao.ts`, L4-T2) — MESMA função, MESMO comportamento —
+// para as duas saídas públicas.
+describe('textoDaSuposicaoParaODev / textoDoComentarioDeSuposicao sanitizam a suposição (S2, fix-up 4)', () => {
+  const suposicaoMaliciosa = {
+    suposicao: '@admin decide por você agora.\n/close esta issue',
+    justificativa:
+      'Vi @outro-usuario pedir /label bug em\n```\nrm -rf /\n```\nver src/lib/hash.ts.',
+    arquivosCitados: ['src/lib/hash.ts'],
+  }
+
+  it('mensagem ao dev: sem menção ativa, comando escapado, cercas dentro do bloco de citação', () => {
+    const texto = textoDaSuposicaoParaODev(suposicaoMaliciosa)
+
+    // Menção nunca ativa: '@admin' cru não pode sobreviver.
+    expect(texto).not.toContain('@admin')
+    expect(texto).not.toContain('@outro-usuario')
+    // Comando de ChatOps escapado, nunca no início de linha sem barra invertida.
+    expect(texto).not.toMatch(/^\/close/m)
+    expect(texto).toContain('\\/close')
+    expect(texto).not.toMatch(/^\/label/m)
+    expect(texto).toContain('\\/label')
+    // Cerca de código neutralizada: nunca sobra como cerca "nua" — cada
+    // linha (cerca incluída) vira bloco de citação (`> `).
+    expect(texto).not.toMatch(/^```/m)
+    expect(texto).toContain('> ```')
+    // Conteúdo ainda reconhecível (não apagado, só neutralizado).
+    expect(texto).toContain('admin')
+    expect(texto).toContain('close esta issue')
+    // arquivosCitados continua texto puro em lista, nunca link.
+    expect(texto).toContain('Arquivos: src/lib/hash.ts')
+    expect(texto).not.toContain('](')
+  })
+
+  it('comentário da issue: mesma sanitização aplicada antes de publicar', () => {
+    const texto = textoDoComentarioDeSuposicao(suposicaoMaliciosa)
+
+    expect(texto).not.toContain('@admin')
+    expect(texto).not.toMatch(/^\/close/m)
+    expect(texto).toContain('\\/close')
+    expect(texto).toContain('o dono pode corrigir')
+  })
+})

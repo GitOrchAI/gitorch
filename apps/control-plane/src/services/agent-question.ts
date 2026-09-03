@@ -351,9 +351,27 @@ export class AgentQuestionService {
    * (o dono respondeu de verdade antes do RA terminar) ou já `assumida`
    * (uma passagem anterior já gravou) nunca é sobrescrita — devolve o estado
    * atual sem regravar. `questionId` inexistente devolve `null` sem lançar.
+   *
+   * S1 (fix-up 4, CSO — isolamento entre donos): recebe `projectId` e só
+   * marca a pergunta se ela pertencer a ESTE projeto
+   * (`findFirst({ where: { id, projectId } })`, nunca `findUnique` só pela
+   * chave primária). Antes desta correção o filtro de projeto existia SÓ no
+   * chamador (`marcarAssumidaPorDedupKey`, que resolve o `questionId` a
+   * partir de `(projectId, dedupKey)`) — uma chamada direta a este método
+   * com um `questionId` de OUTRO projeto ainda seria aceita, porque
+   * `marcarAssumida` em si nunca conferia o dono da pergunta. Pergunta de
+   * outro projeto segue o MESMO caminho de pergunta inexistente: devolve
+   * `null` e loga pelo `onError` injetado — nunca marca.
    */
-  async marcarAssumida(questionId: string, suposicao: string): Promise<AgentQuestionRecord | null> {
-    const existing = await this.prisma.agentQuestion.findUnique({ where: { id: questionId } })
+  async marcarAssumida(args: {
+    questionId: string
+    projectId: string
+    suposicao: string
+  }): Promise<AgentQuestionRecord | null> {
+    const { questionId, projectId, suposicao } = args
+    const existing = await this.prisma.agentQuestion.findFirst({
+      where: { id: questionId, projectId },
+    })
     if (!existing) {
       // C7 (fix-up 3): `console.warn` não aparece em monitoramento nenhum —
       // MESMA disciplina do `onError` que `answer()` já usa para o
@@ -362,7 +380,7 @@ export class AgentQuestionService {
       // lança quando isto devolve `null` — este log é o rastro do lado de
       // dentro do serviço, não a única rede de segurança.
       this.deps.onError?.(
-        `[agent-question] marcarAssumida: dúvida não encontrada (questionId=${questionId})`
+        `[agent-question] marcarAssumida: dúvida não encontrada (questionId=${questionId}, projectId=${projectId})`
       )
       return null
     }
