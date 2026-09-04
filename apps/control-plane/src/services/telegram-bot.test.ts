@@ -235,7 +235,7 @@ describe('sendMessage — é o chat_id que endereça, não o @username', () => {
 })
 
 describe('sendTelegramQuestion — a dúvida do agente vira botões (W3.3.1)', () => {
-  it('monta um inline_keyboard com callback_data "q:<id>:<índice>" (não o value — cabe em 64 bytes)', async () => {
+  it('monta um inline_keyboard com callback_data "q:<id>:<índice>" (não o value — cabe em 64 bytes), e SEMPRE inclui o botão de escrever', async () => {
     const fetchImpl = vi.fn(
       async () =>
         new Response(JSON.stringify({ ok: true, result: { message_id: 42 } }), { status: 200 })
@@ -258,33 +258,86 @@ describe('sendTelegramQuestion — a dúvida do agente vira botões (W3.3.1)', (
     const body = JSON.parse(String(call?.[1]?.body))
     expect(body.chat_id).toBe('555')
     expect(body.text).toBe('Qual é o azul oficial do site?')
-    expect(body.reply_markup.inline_keyboard).toEqual([
-      [
-        { text: '#2563EB', callback_data: 'q:q_abc123:0' },
-        { text: '#1E40AF', callback_data: 'q:q_abc123:1' },
-      ],
+    // L4-T18 (item 3, D71): o botão de escrever é SEMPRE incluído, mesmo
+    // quando quem chama não pediu — o dono nunca fica com um texto solto sem
+    // como responder. O label longo do botão de escrever joga o layout para
+    // 1-por-linha (mesma regra de sempre, `buildQuestionKeyboard`) — aqui
+    // confere-se cada callback_data, não o agrupamento por linha.
+    const botoes = body.reply_markup.inline_keyboard.flat()
+    expect(botoes).toEqual([
+      { text: '#2563EB', callback_data: 'q:q_abc123:0' },
+      { text: '#1E40AF', callback_data: 'q:q_abc123:1' },
+      { text: expect.any(String), callback_data: 'q:q_abc123:2' },
     ])
   })
 
-  it('sem opções: manda só o texto (pergunta aberta), sem reply_markup', async () => {
+  it('quem já manda o botão de escrever explícito (padrão duvida-dev/retomada-travada): não duplica', async () => {
     const fetchImpl = vi.fn(
-      async () =>
-        new Response(JSON.stringify({ ok: true, result: { message_id: 7 } }), { status: 200 })
+      async () => new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 })
     ) as unknown as typeof fetch
 
     await sendTelegramQuestion({
       botToken: BOT,
       chatId: '555',
-      questionId: 'q_aberta',
-      text: 'Descreva em texto livre...',
-      options: [],
+      questionId: 'q_dup',
+      text: 'O que fazer?',
+      options: [
+        { label: 'Tentar de novo', value: 'tentar' },
+        { label: 'Fechar', value: 'fechar' },
+        { label: 'Revisar eu mesmo', value: 'revisar' },
+        buildFreeTextOption(),
+      ],
       fetchImpl,
     })
 
     const call = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
     const body = JSON.parse(String(call?.[1]?.body))
-    expect(body).toEqual({ chat_id: '555', text: 'Descreva em texto livre...' })
-    expect(body.reply_markup).toBeUndefined()
+    const botoes = body.reply_markup.inline_keyboard.flat()
+    expect(botoes).toHaveLength(4)
+    expect(
+      botoes.filter((b: { callback_data: string }) => b.callback_data.endsWith(':3'))
+    ).toHaveLength(1)
+  })
+
+  it('recusa pergunta com MAIS de 3 opções fixas', async () => {
+    await expect(
+      sendTelegramQuestion({
+        botToken: BOT,
+        chatId: '555',
+        questionId: 'q_muitas',
+        text: 'Qual?',
+        options: [
+          { label: 'a', value: 'a' },
+          { label: 'b', value: 'b' },
+          { label: 'c', value: 'c' },
+          { label: 'd', value: 'd' },
+        ],
+      })
+    ).rejects.toThrow(/opç(ões|ões) fixas/i)
+  })
+
+  it('recusa pergunta com NENHUMA opção fixa', async () => {
+    await expect(
+      sendTelegramQuestion({
+        botToken: BOT,
+        chatId: '555',
+        questionId: 'q_vazia',
+        text: 'Descreva em texto livre...',
+        options: [],
+      })
+    ).rejects.toThrow(/sem opç/i)
+  })
+
+  it('nenhuma opção fixa mesmo com o botão de escrever já incluído: recusa igual', async () => {
+    await expect(
+      sendTelegramQuestion({
+        botToken: BOT,
+        chatId: '555',
+        questionId: 'q_so_escrever',
+        text: 'Descreva em texto livre...',
+        options: [buildFreeTextOption()],
+      })
+    ).rejects.toThrow(/sem opç/i)
   })
 
   it('devolve o message_id da resposta (pro telegramMessageId da AgentQuestion)', async () => {
@@ -298,14 +351,14 @@ describe('sendTelegramQuestion — a dúvida do agente vira botões (W3.3.1)', (
       chatId: '555',
       questionId: 'q_x',
       text: 'oi',
-      options: [],
+      options: [{ label: 'Sim', value: 'sim' }],
       fetchImpl,
     })
 
     expect(messageId).toBe(999)
   })
 
-  it('labels longos: 1 botão por linha (decisão simples de layout)', async () => {
+  it('labels longos: 1 botão por linha (decisão simples de layout), com o botão de escrever na última linha', async () => {
     const fetchImpl = vi.fn(
       async () => new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 })
     ) as unknown as typeof fetch
@@ -324,7 +377,7 @@ describe('sendTelegramQuestion — a dúvida do agente vira botões (W3.3.1)', (
 
     const call = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
     const body = JSON.parse(String(call?.[1]?.body))
-    expect(body.reply_markup.inline_keyboard).toHaveLength(2) // 1 por linha
+    expect(body.reply_markup.inline_keyboard).toHaveLength(3) // 1 por linha + o de escrever
     expect(body.reply_markup.inline_keyboard[0]).toHaveLength(1)
   })
 
@@ -346,7 +399,7 @@ describe('sendTelegramQuestion — a dúvida do agente vira botões (W3.3.1)', (
       chatId: '555',
       questionId: 'q_z',
       text: 'oi',
-      options: [],
+      options: [{ label: 'Sim', value: 'sim' }],
       fetchImpl,
     })
 

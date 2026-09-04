@@ -337,7 +337,11 @@ import {
   lerCredencialDoProjeto,
   lerCredencialQueAlcancaOProjeto,
 } from '../services/project-credential.js'
-import { avaliarCustoDaOrdemDosProjetos } from '../services/custo-da-ordem-do-projeto.js'
+import {
+  avaliarCustoDaOrdemDosProjetos,
+  lerEstadoBrutoDoAvisoDeCustoDaOrdem,
+} from '../services/custo-da-ordem-do-projeto.js'
+import { perguntarSobreCustoDaOrdem } from '../services/aviso-de-custo-da-ordem.js'
 import { filtrarFilaDeTasks } from '../services/filtrar-fila-de-tasks.js'
 import { resolveQuadroDoProjeto } from '../routes/painel.js'
 import {
@@ -10287,15 +10291,20 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         // sequenciar, silêncio comum, sem log (não é falha nem pendência).
         return null
       },
+      // L4-T18 fix-up (itens 3 e 4): parsing extraído para
+      // `lerEstadoBrutoDoAvisoDeCustoDaOrdem` (custo-da-ordem-do-projeto.ts,
+      // testado sem Fastify/Prisma) — este bloco só lê o banco e delega. O
+      // parser aceita `silencio.ate` como string ISO OU `Date` de verdade
+      // (item 4 — antes só string, e a marca de "manter" se perdia em
+      // silêncio quando a configuração devolvia data) e também lê
+      // `ordemProposta` (item 3).
       lerEstado: async (projectId) => {
         const linha = await app.prisma.project.findUnique({
           where: { id: projectId },
           select: { runtimeConfig: true },
         })
-        const bruto = (linha?.runtimeConfig as Record<string, unknown> | null)?.['custoDaOrdem'] as
-          { ultimoPedidoProposto?: unknown } | undefined
-        const valor = bruto?.ultimoPedidoProposto
-        return { ultimoPedidoProposto: typeof valor === 'number' ? valor : null }
+        const bruto = (linha?.runtimeConfig as Record<string, unknown> | null)?.['custoDaOrdem']
+        return lerEstadoBrutoDoAvisoDeCustoDaOrdem(bruto)
       },
       salvarEstado: async (projectId, estado) => {
         // MESCLA rasa, nunca substituição — mesmo padrão de
@@ -10316,18 +10325,59 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             // exatamente as mesmas chaves.
             runtimeConfig: {
               ...atual,
-              custoDaOrdem: { ultimoPedidoProposto: estado.ultimoPedidoProposto },
+              custoDaOrdem: {
+                ultimoPedidoProposto: estado.ultimoPedidoProposto,
+                // Literal fresco (mesmo motivo do comentário acima): o
+                // Prisma exige `InputJsonObject`, e `SilencioDeCandidato`
+                // (interface nomeada, sem assinatura de índice) não é
+                // atribuível mesmo tendo as mesmas chaves.
+                silencio: estado.silencio
+                  ? {
+                      pedido: estado.silencio.pedido,
+                      ate: estado.silencio.ate,
+                      rodada: estado.silencio.rodada,
+                    }
+                  : null,
+                // Item 3 (fix-up L4-T18): a ordem proposta guardada junto —
+                // `ordemProposta` já é um array de números puro (sem tipo
+                // nomeado), então não precisa do literal fresco acima.
+                ordemProposta: estado.ordemProposta,
+              },
             },
           },
         })
       },
-      avisar: async (projeto, texto) => {
-        const linhaCompleta = await app.prisma.project.findUnique({ where: { id: projeto.id } })
-        if (!linhaCompleta) return
-        await avisarOuAuditar(
-          app,
-          linhaCompleta as NotifiableProject & { id: string; wingId: string },
-          texto
+      // L4-T18 (D71): PERGUNTA FORMAL ao dono — 3 opções (aplicar/manter/
+      // ver a fila) + o botão de escrever, dedupada por repositório+pedido —
+      // nunca mais o `avisarOuAuditar` de texto solto que este bloco usava
+      // antes (a classe exata do defeito medido: "Quer trocar?" sem como
+      // responder). `agentQuestionService` é o MESMO decorado por
+      // plugins/telegram.ts — sem ele (bot desligado/teste), silêncio: a
+      // avaliação já loga o motivo pelo `onErro` abaixo.
+      avisar: async (projeto, candidato, rodada) => {
+        const perguntador = (app as unknown as { agentQuestionService?: AgentQuestionService })
+          .agentQuestionService
+        if (!perguntador) {
+          app.log.warn(
+            `[Scheduler] custo da ordem de ${projeto.wingId}: não deu para perguntar ao dono — ` +
+              'agentQuestionService indefinido'
+          )
+          return
+        }
+        const linhaCompleta = await app.prisma.project.findUnique({
+          where: { id: projeto.id },
+          select: { userId: true },
+        })
+        if (!linhaCompleta?.userId) return
+        await perguntarSobreCustoDaOrdem(
+          {
+            userId: linhaCompleta.userId,
+            projectId: projeto.id,
+            repo: projeto.wingId,
+            candidato,
+            rodada,
+          },
+          { agentQuestion: perguntador }
         )
       },
       onErro: (projeto, err) =>

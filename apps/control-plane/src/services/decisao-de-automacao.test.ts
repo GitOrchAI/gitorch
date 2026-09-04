@@ -9,6 +9,7 @@ import {
   sanitizarRespostaLivre,
 } from './decisao-de-automacao.js'
 import { GithubExecutionError } from './github-errors.js'
+import { FREE_TEXT_OPTION_VALUE } from './telegram-bot.js'
 import { marcador } from './marcador-de-issue.js'
 
 describe('dedupKeyDeAutomacao / parseDedupKeyDeAutomacao', () => {
@@ -115,7 +116,12 @@ describe('perguntarAoDono', () => {
       { label: 'Deletar o workflow', value: 'deletar' },
       { label: 'Reajustar (vira tarefa)', value: 'reajustar' },
       { label: 'Manter como está', value: 'manter' },
-      { label: 'Vou escrever', value: 'escrever' },
+      // L4-T18 (item 3, D71): o botão de escrever usa o SENTINEL de
+      // `buildFreeTextOption` (o mesmo padrão de `duvida-dev:`/
+      // `retomada-travada:`) — nunca mais um valor literal 'escrever', que
+      // clicado direto GRAVAVA a string "escrever" como se fosse a decisão
+      // do dono, em vez de abrir o "digite sua resposta".
+      { label: 'Vou escrever', value: FREE_TEXT_OPTION_VALUE },
     ])
     expect(input['dedupKey']).toBe('automacao:acme/api:wf:40')
     expect(typeof input['text']).toBe('string')

@@ -298,12 +298,38 @@ function buildQuestionKeyboard(
   return { inline_keyboard: rows }
 }
 
+/** D71/L4-T18 (item 3) — o formato passa a ser OBRIGATÓRIO no envio: no
+ *  máximo 3 opções objetivas (o "fixas" abaixo). Acima disso a pergunta some
+ *  numa parede de botões; é o mesmo teto que `ErroDePerguntaSemOpcoes`
+ *  (agent-question.ts) já cobra de `duvida-dev:`. */
+const MAXIMO_DE_OPCOES_FIXAS = 3
+
+/** true = já é o próprio botão de escrever (o sentinel de `buildFreeTextOption`). */
+function ehOpcaoDeEscrever(opcao: TelegramQuestionOption): boolean {
+  return opcao.value === FREE_TEXT_OPTION_VALUE
+}
+
 /**
  * Manda a dúvida do agente com botões (uma `AgentQuestion` — ver
- * services/agent-question.ts). Sem `options`, manda só o texto: é a pergunta
- * aberta, respondida em mensagem livre (fora do escopo desta fase). Devolve o
- * `message_id` (guardado em `telegramMessageId`, pra futura edição/confirmação);
- * `undefined` se o envio falhar — best-effort, quem chama trata (nunca lança).
+ * services/agent-question.ts).
+ *
+ * D71/L4-T18 (item 3): o formato agora é OBRIGATÓRIO, não mais opcional —
+ * ANTES desta task, `options: []` mandava só o texto (a "pergunta aberta"
+ * sem botão nenhum, a classe exata do defeito que o dono flagrou: "Quer
+ * trocar?" sem como responder). Agora:
+ *
+ *   - `options` carrega só as opções OBJETIVAS (1 a 3) — recusa (lança) com
+ *     mais de 3 ou com nenhuma;
+ *   - o botão de escrever é SEMPRE incluído no teclado enviado: se `options`
+ *     já vier com um (`buildFreeTextOption()`, o padrão de
+ *     `duvida-dev:`/`retomada-travada:`), não duplica; senão, esta função
+ *     mesma acrescenta um.
+ *
+ * Devolve o `message_id` (guardado em `telegramMessageId`, pra futura
+ * edição/confirmação); `undefined` se o ENVIO falhar — best-effort, quem
+ * chama trata. A recusa por FORMATO (opções fora do padrão) é diferente: é
+ * erro de programação de quem chamou, então LANÇA — nunca mascarada como um
+ * `undefined` best-effort igual a uma falha de rede.
  */
 export async function sendTelegramQuestion(input: {
   botToken: string
@@ -314,18 +340,35 @@ export async function sendTelegramQuestion(input: {
   fetchImpl?: typeof fetch
   includeTypeButton?: boolean
 }): Promise<number | undefined> {
+  const opcoesFixas = input.options.filter((o) => !ehOpcaoDeEscrever(o))
+  if (opcoesFixas.length === 0) {
+    throw new Error(
+      'sendTelegramQuestion: pergunta sem opções — toda pergunta ao dono exige de 1 a 3 opções ' +
+        'objetivas mais o botão de escrever (D71), nunca texto solto sem botão'
+    )
+  }
+  if (opcoesFixas.length > MAXIMO_DE_OPCOES_FIXAS) {
+    throw new Error(
+      `sendTelegramQuestion: pergunta com ${opcoesFixas.length} opções fixas (máximo ` +
+        `${MAXIMO_DE_OPCOES_FIXAS}) — toda pergunta ao dono exige de 1 a 3 opções objetivas mais o ` +
+        'botão de escrever (D71)'
+    )
+  }
+  const jaTemBotaoDeEscrever = input.options.some(ehOpcaoDeEscrever)
+  const opcoesParaOTeclado = jaTemBotaoDeEscrever
+    ? input.options
+    : [...input.options, buildFreeTextOption()]
+
   const f = input.fetchImpl ?? fetch
   const body: { chat_id: string; text: string; reply_markup?: unknown } = {
     chat_id: input.chatId,
     text: input.text,
   }
-  if (input.options.length > 0 || input.includeTypeButton) {
-    body.reply_markup = buildQuestionKeyboard(
-      input.questionId,
-      input.options,
-      input.includeTypeButton ?? false
-    )
-  }
+  body.reply_markup = buildQuestionKeyboard(
+    input.questionId,
+    opcoesParaOTeclado,
+    input.includeTypeButton ?? false
+  )
   try {
     const resp = await f(`${API}/bot${input.botToken}/sendMessage`, {
       method: 'POST',
