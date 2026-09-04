@@ -639,12 +639,52 @@ export async function handleTelegramCallback(
     return
   }
 
+  // FIX-UP L4-T16: capturado ANTES de chamar `answer()` (que é idempotente e
+  // devolve o record JÁ existente sem regravar nada) — é o único jeito de
+  // saber se ESTE clique registrou a decisão ou chegou tarde demais. Botão
+  // antigo + fechamento no outro canal que falhou (best-effort, D70) é
+  // exatamente o cenário: o painel já respondeu, `fecharPerguntaNoTelegramAoResponderPeloPainel`
+  // não conseguiu colapsar a mensagem, e o dono clica num botão que já não
+  // vale nada. Dizer "registrado" aqui, ou colapsar como "Você escolheu",
+  // atribuiria ao Telegram (e à opção que ele acabou de clicar) uma decisão
+  // que já foi tomada em outro canal, com outro valor.
+  const jaRespondidaAntesDesteClique = question.status === 'answered'
+
   const updated = await deps.agentQuestionService.answer(
     parsed.questionId,
     option.value,
     'telegram'
   )
   defaultAgentQuestionStateManager.clearActiveTypingQuestion(question.userId)
+
+  if (jaRespondidaAntesDesteClique && updated) {
+    // A verdade gravada, nunca o que foi clicado agora nem um "registrado"
+    // genérico: por qual canal a decisão já tinha sido tomada, e qual foi.
+    const canalReal: 'telegram' | 'panel' = updated.answeredVia === 'panel' ? 'panel' : 'telegram'
+    const rotuloReal = resolveAnswerLabel(options, updated.answer)
+    const canalRotulo = canalReal === 'panel' ? 'pelo painel' : 'pelo Telegram'
+    await answerTelegramCallback({
+      botToken: deps.botToken,
+      callbackQueryId: cq.id,
+      text: `Essa decisão já tinha sido registrada ${canalRotulo}: ${rotuloReal}`,
+      showAlert: true,
+      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    })
+
+    const messageId = cq.message?.message_id ?? question.telegramMessageId ?? undefined
+    if (messageId !== undefined && messageId !== null) {
+      await collapseTelegramQuestion({
+        botToken: deps.botToken,
+        chatId: clickerChatId,
+        messageId,
+        questionText: question.text,
+        chosenLabel: rotuloReal,
+        origem: canalReal,
+        ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+      })
+    }
+    return
+  }
 
   await answerTelegramCallback({
     botToken: deps.botToken,

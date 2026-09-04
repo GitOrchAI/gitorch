@@ -48,6 +48,7 @@ import { ProjectV2Client } from '@gitorch/github-sync'
 import { fetchDoRepositorio, fetchSemPermissao } from '../services/guarda-de-autonomia.js'
 import { TIPO_DO_APRENDIZADO } from '../services/memoria-do-jules.js'
 import { criarComentarNaIssue } from '../services/suposicao-imediata-de-duvida.js'
+import { sanitizarRespostaLivre } from '../services/decisao-de-automacao.js'
 import {
   normalizarRegua,
   CRITERIOS_DE_PRONTO,
@@ -76,6 +77,11 @@ const LIMITE_FRIO_SEGUNDOS = 3600
 // população que os números do cabeçalho contam.
 const ENTREGAS_POR_PAGINA = 25
 const ENTREGAS_POR_PAGINA_MAX = 100
+
+// Paginação de /respostas-ao-dev (fix-up L4-T16, mesma família do teto das
+// entregas acima): tamanho da PÁGINA, nunca da população que `total` conta.
+const RESPOSTAS_AO_DEV_POR_PAGINA = 50
+const RESPOSTAS_AO_DEV_POR_PAGINA_MAX = 200
 
 // D69 (02/09) — GET /painel/respostas-ao-dev. LACUNA REAL, e por isso
 // declarada AQUI, na própria resposta, em vez de escondida num comentário: o
@@ -880,26 +886,60 @@ export const painelRoutes = async (
   // `destinoDaDuvida`/`destinoAposRa`, services/duvida-do-dev.ts). Lê o que
   // JÁ é gravado hoje (Event.type='jules-learning', ver LACUNA_RESPOSTAS_AO_DEV
   // acima) — nenhuma tabela nova.
-  app.get(
+  app.get<{ Querystring: { pagina?: string; porPagina?: string } }>(
     '/api/v1/painel/respostas-ao-dev',
     RATE_LIMIT_POLLING,
-    async (request: FastifyRequest, reply: FastifyReply) => {
+    async (request, reply) => {
       if (!request.user) return reply.code(401).send(NAO_LOGADO)
       const ownerId = await resolveOwnerId(app.prisma, request.user)
       const projetos = await app.prisma.project.findMany({
         where: { userId: ownerId },
         select: { id: true, wingId: true },
       })
+      const pagina = inteiroDaQuery(request.query.pagina, 1, 1, Number.MAX_SAFE_INTEGER)
+      const porPagina = inteiroDaQuery(
+        request.query.porPagina,
+        RESPOSTAS_AO_DEV_POR_PAGINA,
+        1,
+        RESPOSTAS_AO_DEV_POR_PAGINA_MAX
+      )
       if (projetos.length === 0) {
-        return reply.send({ itens: [], lacuna: LACUNA_RESPOSTAS_AO_DEV })
+        return reply.send({
+          itens: [],
+          lacuna: LACUNA_RESPOSTAS_AO_DEV,
+          total: 0,
+          pagina: 1,
+          porPagina,
+          paginas: 0,
+        })
       }
 
       const wingPorId = new Map(projetos.map((p) => [p.id, p.wingId]))
-      const linhas = await app.prisma.event.findMany({
-        where: { projectId: { in: [...wingPorId.keys()] }, type: TIPO_DO_APRENDIZADO },
-        orderBy: { createdAt: 'desc' },
-        take: 50,
-      })
+      // FIX-UP L4-T16 — MESMO DEFEITO, MESMO CONSERTO do `take: 50` das
+      // entregas (comentário no topo deste arquivo): o filtro por origem
+      // RODA NO BANCO (`payload.path`, sintaxe já usada em
+      // plugins/scheduler.ts), nunca depois do `take`. Antes, a rota trazia
+      // os 50 eventos mais recentes de QUALQUER origem e só então descartava
+      // os que não eram 'resposta-tecnica' — se o tipo mais comum de
+      // aprendizado fosse outro (ex.: 'duvida-do-dev'), respostas técnicas
+      // reais e mais antigas nunca apareciam, e a tela dizia "nenhuma
+      // resposta registrada" com respostas de verdade escondidas atrás do
+      // teto. `count` e `findMany` leem o MESMO `where` — a paginação nunca
+      // mente sobre a população que filtrou.
+      const where = {
+        projectId: { in: [...wingPorId.keys()] },
+        type: TIPO_DO_APRENDIZADO,
+        payload: { path: ['origem'], equals: 'resposta-tecnica' },
+      }
+      const [linhas, total] = await Promise.all([
+        app.prisma.event.findMany({
+          where,
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          skip: (pagina - 1) * porPagina,
+          take: porPagina,
+        }),
+        app.prisma.event.count({ where }),
+      ])
 
       const itens: RespostaAoDevView[] = []
       for (const linha of linhas) {
@@ -909,11 +949,11 @@ export const painelRoutes = async (
           issueNumber?: number
           corrigidoEm?: string
         } | null
-        // Só 'resposta-tecnica' embute a pergunta+resposta de verdade — as
-        // demais origens (ex.: 'duvida-do-dev', D52) só anotam que a issue
-        // faltou contexto, sem o texto da resposta que foi dada ao dev.
-        if (!payload || payload.origem !== 'resposta-tecnica') continue
-        if (!payload.padrao || payload.padrao.trim() === '') continue
+        // `origem` já veio filtrada pelo banco — esta linha só descarta o
+        // caso malformado (sem `padrao`, ou vazio), que o `where` de igualdade
+        // simples não consegue expressar. Item raro o bastante para não
+        // justificar uma segunda implementação do filtro em SQL.
+        if (!payload?.padrao || payload.padrao.trim() === '') continue
         itens.push({
           id: linha.id,
           projeto: wingPorId.get(linha.projectId) ?? null,
@@ -924,7 +964,14 @@ export const painelRoutes = async (
         })
       }
 
-      return reply.send({ itens, lacuna: LACUNA_RESPOSTAS_AO_DEV })
+      return reply.send({
+        itens,
+        lacuna: LACUNA_RESPOSTAS_AO_DEV,
+        total,
+        pagina,
+        porPagina,
+        paginas: Math.ceil(total / porPagina),
+      })
     }
   )
 
@@ -956,7 +1003,29 @@ export const painelRoutes = async (
       })
       if (!projeto) return reply.code(404).send({ error: 'Registro não encontrado.' })
 
-      const payload = evento.payload as { issueNumber?: number } | null
+      const payload = evento.payload as {
+        issueNumber?: number
+        corrigidoEm?: string
+      } | null
+
+      // FIX-UP L4-T16 — DEFEITO MEDIDO: a proteção contra corrigir duas
+      // vezes só existia na TELA (o React esconde o botão quando
+      // `corrigidoEm` já existe). Com duas abas abertas, as duas mandam
+      // POST antes de qualquer uma recarregar o estado, e as duas
+      // publicariam um comentário — o segundo podendo CONTRADIZER o
+      // primeiro na issue do CLIENTE, e a gravação (merge raso) apagando o
+      // rastro da primeira correção. A recusa mora AQUI, antes de qualquer
+      // chamada externa — nunca só na tela.
+      if (payload?.corrigidoEm) {
+        return reply.code(409).send({
+          error:
+            'Este registro já foi corrigido antes, em ' +
+            new Date(payload.corrigidoEm).toLocaleString('pt-BR') +
+            ' — cada resposta só pode ser corrigida uma vez, para não publicar duas correções ' +
+            'contraditórias na mesma issue. Se precisar mudar de novo, comente diretamente na issue.',
+        })
+      }
+
       const issueNumber = payload?.issueNumber
       if (!issueNumber) {
         return reply
@@ -976,6 +1045,18 @@ export const painelRoutes = async (
       const token = (await app.engineConnections?.getRawGithubToken(ownerId)) ?? null
       if (!token) return reply.code(503).send({ error: 'CORRECAO_INDISPONIVEL' })
 
+      // FIX-UP L4-T16 — DEFEITO MEDIDO: o texto do dono ia CRU para o
+      // comentário público na issue do repositório do CLIENTE. O produto já
+      // tem `sanitizarRespostaLivre` (services/decisao-de-automacao.ts,
+      // criado para o MESMO risco na resposta livre de automação) — corta em
+      // 2000 caracteres e neutraliza `@menção`/`/comando`. Reaproveita a
+      // MESMA função, nunca uma segunda implementação divergente. `texto` já
+      // não é vazio/só-espaço aqui (checado no topo da rota), então
+      // `sanitizado` nunca é `null` na prática — mas nunca finge sucesso se
+      // for.
+      const sanitizado = sanitizarRespostaLivre(texto)
+      if (!sanitizado) return reply.code(400).send({ error: 'Escreva a correção.' })
+
       try {
         await criarComentarNaIssue({
           fetchDoCliente: fetchDoRepositorio({ nivel: () => projeto.autonomia }),
@@ -984,7 +1065,8 @@ export const painelRoutes = async (
           onWarn: (m) => app.log.warn(`[painel] ${m}`),
         })({
           issueNumber,
-          texto: 'Correção do dono sobre a resposta que demos a você em nome dele:\n\n' + texto,
+          texto:
+            'Correção do dono sobre a resposta que demos a você em nome dele:\n\n' + sanitizado,
         })
       } catch (err) {
         app.log.warn(

@@ -10,6 +10,10 @@ import { ArvoreIndisponivelError, PedidoNaoEncontradoError } from '../services/a
 import { tabelaEmMemoria, type ConsultaEmMemoria } from '../test/where-em-memoria.js'
 import type { SessaoDaEntrega, ProjetoDaEntrega } from '../services/entregas-por-pedido.js'
 import type { EntregaDoPainel } from '../services/incremento.js'
+import {
+  sanitizarRespostaLivre,
+  TETO_DE_CARACTERES_DA_RESPOSTA_LIVRE,
+} from '../services/decisao-de-automacao.js'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -28,6 +32,11 @@ function fakePrisma(over: Record<string, any> = {}) {
     event: {
       findFirst: vi.fn().mockResolvedValue(null),
       findMany: vi.fn().mockResolvedValue([]),
+      // FIX-UP L4-T16: GET /respostas-ao-dev passou a contar a população
+      // filtrada de verdade (mesmo `where` de `findMany`) para paginar sem
+      // mentir sobre quantas respostas existem. Default 0 — testes que
+      // importam com dados reais injetam a própria contagem.
+      count: vi.fn().mockResolvedValue(0),
     },
     mission: {
       findFirst: vi.fn().mockResolvedValue(null),
@@ -2046,36 +2055,45 @@ describe('Rotas do painel do owner', () => {
       expect(body.lacuna.length).toBeGreaterThan(0)
     })
 
+    // FIX-UP L4-T16: o `where` agora filtra a origem NO BANCO — um fake que
+    // só devolve `mockResolvedValue([...])` sem olhar pro `where` provaria
+    // que a rota CHAMOU o findMany, não que o filtro que ela monta seleciona
+    // as linhas certas (mesma lição de `where-em-memoria.ts`). `tabelaEmMemoria`
+    // filtra de verdade pelo MESMO `where` que a rota manda.
     test('aprendizado de origem "resposta-tecnica" vira item; outras origens (ex.: a issue faltou contexto) NÃO aparecem', async () => {
       const quando = new Date('2026-09-01T10:00:00Z')
+      const tabela = tabelaEmMemoria([
+        {
+          id: 'evt_resp',
+          projectId: 'proj_1',
+          type: 'jules-learning',
+          createdAt: quando,
+          payload: {
+            padrao: 'Pergunta técnica na issue #46 — "..." -> resposta: use o padrão X.',
+            origem: 'resposta-tecnica',
+            issueNumber: 46,
+          },
+        },
+        {
+          id: 'evt_contexto',
+          projectId: 'proj_1',
+          type: 'jules-learning',
+          createdAt: quando,
+          payload: {
+            padrao: 'O dev precisou perguntar na issue #47 — a issue faltou contexto.',
+            origem: 'duvida-do-dev',
+            issueNumber: 47,
+          },
+        },
+      ])
       await build(
         fakePrisma({
           project: {
             findMany: vi.fn().mockResolvedValue([{ id: 'proj_1', wingId: 'acme/api' }]),
           },
           event: {
-            findMany: vi.fn().mockResolvedValue([
-              {
-                id: 'evt_resp',
-                projectId: 'proj_1',
-                createdAt: quando,
-                payload: {
-                  padrao: 'Pergunta técnica na issue #46 — "..." -> resposta: use o padrão X.',
-                  origem: 'resposta-tecnica',
-                  issueNumber: 46,
-                },
-              },
-              {
-                id: 'evt_contexto',
-                projectId: 'proj_1',
-                createdAt: quando,
-                payload: {
-                  padrao: 'O dev precisou perguntar na issue #47 — a issue faltou contexto.',
-                  origem: 'duvida-do-dev',
-                  issueNumber: 47,
-                },
-              },
-            ]),
+            findMany: vi.fn((q: ConsultaEmMemoria) => tabela.findMany(q)),
+            count: vi.fn((q: ConsultaEmMemoria) => tabela.count(q)),
           },
         })
       )
@@ -2090,30 +2108,34 @@ describe('Rotas do painel do owner', () => {
           corrigidoEm: null,
         },
       ])
+      expect(body.total).toBe(1)
     })
 
     test('já corrigido antes → carrega corrigidoEm no item', async () => {
       const quando = new Date('2026-09-01T10:00:00Z')
+      const tabela = tabelaEmMemoria([
+        {
+          id: 'evt_resp',
+          projectId: 'proj_1',
+          type: 'jules-learning',
+          createdAt: quando,
+          payload: {
+            padrao: 'Pergunta técnica -> resposta: X.',
+            origem: 'resposta-tecnica',
+            issueNumber: 46,
+            corrigidoEm: '2026-09-02T00:00:00.000Z',
+            correcaoTexto: 'Na verdade é Y.',
+          },
+        },
+      ])
       await build(
         fakePrisma({
           project: {
             findMany: vi.fn().mockResolvedValue([{ id: 'proj_1', wingId: 'acme/api' }]),
           },
           event: {
-            findMany: vi.fn().mockResolvedValue([
-              {
-                id: 'evt_resp',
-                projectId: 'proj_1',
-                createdAt: quando,
-                payload: {
-                  padrao: 'Pergunta técnica -> resposta: X.',
-                  origem: 'resposta-tecnica',
-                  issueNumber: 46,
-                  corrigidoEm: '2026-09-02T00:00:00.000Z',
-                  correcaoTexto: 'Na verdade é Y.',
-                },
-              },
-            ]),
+            findMany: vi.fn((q: ConsultaEmMemoria) => tabela.findMany(q)),
+            count: vi.fn((q: ConsultaEmMemoria) => tabela.count(q)),
           },
         })
       )
@@ -2133,6 +2155,67 @@ describe('Rotas do painel do owner', () => {
       expect(prisma.event.findMany.mock.calls[0][0].where).toMatchObject({
         projectId: { in: ['p1'] },
       })
+    })
+
+    // FIX-UP L4-T16 — DEFEITO MEDIDO: a rota buscava os 50 eventos mais
+    // recentes de QUALQUER origem e SÓ DEPOIS filtrava por
+    // `origem === 'resposta-tecnica'` em memória. Quando o tipo mais comum
+    // de aprendizado não é 'resposta-tecnica' (aqui: 'duvida-do-dev', bem
+    // mais frequente), os 50 mais recentes podem não conter NENHUMA
+    // resposta técnica — e a tela dizia "nenhuma resposta registrada" com
+    // respostas reais mais antigas escondidas atrás do teto. MESMO defeito,
+    // MESMO conserto do `take: 50` das entregas (comentário no topo deste
+    // arquivo): filtrar a origem NO BANCO (`where`), nunca depois do take.
+    test('DEFEITO MEDIDO: 55 eventos recentes de outra origem escondiam 5 respostas técnicas mais antigas atrás do take — agora o filtro roda no banco', async () => {
+      const projeto = { id: 'proj_1', wingId: 'acme/api' }
+      // 55 eventos de RUÍDO, todos mais recentes que as respostas reais —
+      // com o `take: 50` ANTES do filtro, eram estes que ocupavam a página
+      // inteira, e nenhuma resposta técnica sobrava para aparecer.
+      const ruido = Array.from({ length: 55 }, (_, i) => ({
+        id: `evt_ruido_${i}`,
+        projectId: 'proj_1',
+        type: 'jules-learning',
+        createdAt: new Date(Date.UTC(2026, 8, 4, 12, 0, 0) - i * 60_000),
+        payload: {
+          padrao: `o dev perguntou na issue #${900 + i} — a issue faltou contexto`,
+          origem: 'duvida-do-dev',
+          issueNumber: 900 + i,
+        },
+      }))
+      // 5 respostas técnicas REAIS, mais antigas que TODO o ruído.
+      const reais = Array.from({ length: 5 }, (_, i) => ({
+        id: `evt_real_${i}`,
+        projectId: 'proj_1',
+        type: 'jules-learning',
+        createdAt: new Date(Date.UTC(2026, 7, 20, 12, 0, 0) - i * 60_000),
+        payload: {
+          padrao: `Pergunta técnica na issue #${100 + i} -> resposta real ${i}`,
+          origem: 'resposta-tecnica',
+          issueNumber: 100 + i,
+        },
+      }))
+      const tabela = tabelaEmMemoria([...ruido, ...reais])
+      await build(
+        fakePrisma({
+          project: { findMany: vi.fn().mockResolvedValue([projeto]) },
+          event: {
+            findMany: vi.fn((q: ConsultaEmMemoria) => tabela.findMany(q)),
+            count: vi.fn((q: ConsultaEmMemoria) => tabela.count(q)),
+          },
+        })
+      )
+
+      const body = (await getRespostas()).json()
+
+      // As 5 respostas reais aparecem — nenhuma escondida atrás do take.
+      expect(body.itens).toHaveLength(5)
+      expect(body.itens.map((i: { issueNumber: number }) => i.issueNumber).sort()).toEqual([
+        100, 101, 102, 103, 104,
+      ])
+      // A população contada é a FILTRADA (5), nunca as 60 linhas cruas nem
+      // os 50 do take antigo — o mesmo contrato de `total` que a aba
+      // Entregas já garante (count e findMany leem o MESMO where).
+      expect(body.total).toBe(5)
     })
   })
 
@@ -2287,6 +2370,104 @@ describe('Rotas do painel do owner', () => {
 
       const res = await corrigir('evt_1', { texto: 'Na verdade é Y.' })
       expect(res.statusCode).toBe(502)
+      vi.unstubAllGlobals()
+    })
+
+    // FIX-UP L4-T16 — DEFEITO MEDIDO: o texto do dono ia CRU para
+    // `criarComentarNaIssue`, sem passar pelo `sanitizarRespostaLivre` que o
+    // produto já tem (services/decisao-de-automacao.ts) exatamente para este
+    // risco. Sem isto, `@alguem` vira notificação real de gente no repo do
+    // CLIENTE, e `/comando` no início de linha pode disparar automação de
+    // ChatOps de terceiros. Reaproveita o MESMO sanitizador — nunca uma
+    // segunda implementação divergente.
+    test('DEFEITO: texto do dono ia cru pro GitHub — agora reaproveita sanitizarRespostaLivre (corta @menção e /comando)', async () => {
+      const eventUpdate = vi.fn().mockResolvedValue({})
+      await build(
+        fakePrisma({
+          event: { findUnique: vi.fn().mockResolvedValue(EVENTO), update: eventUpdate },
+          project: { findFirst: vi.fn().mockResolvedValue(PROJETO) },
+        })
+      )
+      ;(app as any).engineConnections = { getRawGithubToken: vi.fn().mockResolvedValue('tok_1') }
+      const fetchFalso = vi.fn<typeof fetch>(
+        async () => new Response(JSON.stringify({ id: 999 }), { status: 201 })
+      )
+      vi.stubGlobal('fetch', fetchFalso)
+
+      const textoPerigoso = 'Na verdade @alguem já tinha avisado, /close por favor.'
+      const res = await corrigir('evt_1', { texto: textoPerigoso })
+
+      expect(res.statusCode).toBe(200)
+      const call = fetchFalso.mock.calls[0]
+      const body = JSON.parse(String((call?.[1] as any)?.body))
+      // Nunca a menção crua — notificaria alguém de verdade no repo do cliente.
+      expect(body.body).not.toContain('@alguem')
+      // Nunca o comando cru — um bot de ChatOps do cliente poderia agir sobre
+      // o texto que é só a resposta de uma pergunta.
+      expect(body.body).not.toMatch(/(^|\s)\/close/)
+      // É o MESMO sanitizador que decisao-de-automacao.ts já usa.
+      expect(body.body).toContain(sanitizarRespostaLivre(textoPerigoso))
+      vi.unstubAllGlobals()
+    })
+
+    test('DEFEITO: sem teto de tamanho antes de publicar — agora corta em TETO_DE_CARACTERES_DA_RESPOSTA_LIVRE', async () => {
+      const eventUpdate = vi.fn().mockResolvedValue({})
+      await build(
+        fakePrisma({
+          event: { findUnique: vi.fn().mockResolvedValue(EVENTO), update: eventUpdate },
+          project: { findFirst: vi.fn().mockResolvedValue(PROJETO) },
+        })
+      )
+      ;(app as any).engineConnections = { getRawGithubToken: vi.fn().mockResolvedValue('tok_1') }
+      const fetchFalso = vi.fn<typeof fetch>(
+        async () => new Response(JSON.stringify({ id: 999 }), { status: 201 })
+      )
+      vi.stubGlobal('fetch', fetchFalso)
+
+      const textoGigante = 'A'.repeat(TETO_DE_CARACTERES_DA_RESPOSTA_LIVRE + 500)
+      const res = await corrigir('evt_1', { texto: textoGigante })
+
+      expect(res.statusCode).toBe(200)
+      const call = fetchFalso.mock.calls[0]
+      const body = JSON.parse(String((call?.[1] as any)?.body))
+      expect(body.body.length).toBeLessThan(textoGigante.length)
+      vi.unstubAllGlobals()
+    })
+
+    // FIX-UP L4-T16 — DEFEITO MEDIDO: a proteção contra corrigir duas vezes
+    // só existia na TELA (o React esconde o botão quando `corrigidoEm`
+    // existe). Com duas abas abertas, as duas mandam POST e as duas
+    // publicam um comentário — o segundo pode contradizer o primeiro na
+    // issue do CLIENTE, e a segunda gravação apaga o rastro da primeira
+    // (merge raso sobrescreve `correcaoTexto`/`corrigidoEm`). O servidor
+    // agora recusa a segunda correção.
+    test('DEFEITO: registro JÁ corrigido recusa nova correção — nunca publica um segundo comentário contraditório', async () => {
+      await build(
+        fakePrisma({
+          event: {
+            findUnique: vi.fn().mockResolvedValue({
+              ...EVENTO,
+              payload: {
+                ...EVENTO.payload,
+                corrigidoEm: '2026-09-02T00:00:00.000Z',
+                correcaoTexto: 'Já corrigi antes.',
+              },
+            }),
+          },
+          project: { findFirst: vi.fn().mockResolvedValue(PROJETO) },
+        })
+      )
+      const fetchFalso = vi.fn()
+      vi.stubGlobal('fetch', fetchFalso)
+
+      const res = await corrigir('evt_1', { texto: 'Segunda correção, contraditória' })
+
+      expect(res.statusCode).toBe(409)
+      const corpo = res.json()
+      expect(typeof corpo.error).toBe('string')
+      expect(corpo.error.length).toBeGreaterThan(0)
+      // Nunca chega a publicar um segundo comentário na issue do cliente.
+      expect(fetchFalso).not.toHaveBeenCalled()
       vi.unstubAllGlobals()
     })
   })

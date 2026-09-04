@@ -987,6 +987,59 @@ describe('handleTelegramCallback — o clique no botão vira answer(), com guard
     expect(body.text).toContain('✓ Você escolheu: #2563EB')
   })
 
+  // FIX-UP L4-T16: o defeito medido — o fechamento no Telegram falhou quando
+  // o PAINEL respondeu primeiro (D70, `fecharPerguntaNoTelegramAoResponderPeloPainel`
+  // é best-effort), então o botão antigo continuou vivo. O dono clica nele
+  // (em OUTRA opção, sem saber que já decidiu pelo painel) e o produto não
+  // pode fingir que este clique registrou algo, nem colapsar como se "você"
+  // tivesse escolhido aqui — os dois mentiriam sobre quem decidiu.
+  //
+  // O sinal de "já estava respondida ANTES deste clique" é o `status` da
+  // pergunta no `findUnique` INICIAL (antes de chamar `answer()`, que é
+  // idempotente e devolveria o mesmo record de qualquer forma).
+  it('clique num botão de pergunta JÁ respondida por OUTRO canal (painel): o toast diz a verdade (canal+resposta real), nunca "registrado", e o colapso usa a origem real', async () => {
+    const jaRespondidaPeloPainel = {
+      ...QUESTION,
+      status: 'answered',
+      answer: '#2563EB',
+      answeredVia: 'panel',
+    }
+    const { deps, fetchImpl } = fakeDeps({
+      question: jaRespondidaPeloPainel, // findUnique inicial já vem 'answered'
+      link: LINK_DONO,
+      answerReturns: jaRespondidaPeloPainel, // answer() idempotente devolve o mesmo record
+    })
+
+    await handleTelegramCallback(deps as any, {
+      update_id: 12,
+      callback_query: {
+        id: 'cbq_12',
+        from: { id: 555 },
+        message: { message_id: 42, chat: { id: 555 } },
+        data: 'q:q_1:1', // clicou em #1E40AF, mas quem decidiu foi o painel, e a resposta é #2563EB
+      },
+    })
+
+    const calls = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls
+    const alertCall = calls.find((c) => String(c[0]).includes('/answerCallbackQuery'))
+    expect(alertCall).toBeTruthy()
+    const alertBody = JSON.parse(String(alertCall?.[1]?.body))
+    // Nunca finge que este clique registrou a decisão.
+    expect(alertBody.text).not.toBe('✓ registrado')
+    // Diz por qual canal e qual foi a decisão real.
+    expect(alertBody.text).toContain('painel')
+    expect(alertBody.text).toContain('#2563EB')
+    // NUNCA atribui a opção que a pessoa acabou de clicar agora.
+    expect(alertBody.text).not.toContain('#1E40AF')
+
+    const editCall = calls.find((c) => String(c[0]).includes('/editMessageText'))
+    expect(editCall).toBeTruthy()
+    const editBody = JSON.parse(String(editCall?.[1]?.body))
+    // Colapso usa a origem REAL (painel) — nunca "Você escolheu" (D70).
+    expect(editBody.text).toContain('✓ Já respondida pelo painel: #2563EB')
+    expect(editBody.text).not.toContain('Você escolheu')
+  })
+
   it('sem messageId disponível (nem cq.message, nem telegramMessageId no banco): não tenta colapsar', async () => {
     const questionSemMessageId = { ...QUESTION, telegramMessageId: null }
     const answeredRecord = { ...questionSemMessageId, status: 'answered', answer: '#1E40AF' }
