@@ -389,6 +389,7 @@ import {
   ehTetoDeUsoDaConta,
   quandoACotaVolta,
   recadoDeTetoDeUso,
+  recadoDeMotoresEsgotados,
 } from '../services/teto-de-uso-da-conta.js'
 import { umaAcordadaPorCiclo } from '../services/uma-acordada-por-ciclo.js'
 import { relogioDaAgenda } from '../services/espalhar-agendas.js'
@@ -2594,6 +2595,16 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // fora do escopo desta tarefa.
   const avisosDeCredencialExpirada = new Map<string, number>()
 
+  // L4-T22, item 3: dedup do aviso EXECUTIVO de "a cadeia inteira ficou sem
+  // cota" — MESMA disciplina de `avisosDeCredencialExpirada` acima
+  // (`deveAvisarDeNovo`, em memória do processo, uma vez por dono+projeto por
+  // janela de 24h): sem isto, cada tique que esgotasse a cadeia de novo (o
+  // motor não volta sozinho antes do prazo) mandaria o mesmo recado de novo —
+  // SPAM apaga sinal tanto quanto silêncio. Map SEPARADO do de credencial
+  // expirada de propósito: são dois avisos com conteúdo e gatilho diferentes,
+  // e compartilhar a chave faria um apagar o cooldown do outro.
+  const avisosDeMotoresEsgotados = new Map<string, number>()
+
   /**
    * A fila de acordadas de julgamento que o SM levanta a cada ciclo. A regra
    * (rodízio, `max` em vez de soma, devolução da vez recusada) vive em
@@ -3987,10 +3998,24 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                   })
                 : await (async () => {
                     // ANTES de julgar PR: o dev está parado esperando resposta?
-                    // Best-effort — uma pergunta que não dá para responder não
-                    // pode impedir o julgamento, que é o outro trabalho do QA.
-                    // A trava de "já respondida" vive dentro da função: sem
-                    // ela, a mesma resposta sairia a cada acordada.
+                    // Best-effort só para falha que NÃO É de motor — uma
+                    // pergunta que não dá para responder por um bug qualquer
+                    // não pode impedir o julgamento, que é o outro trabalho
+                    // do QA. A trava de "já respondida" vive dentro da
+                    // função: sem ela, a mesma resposta sairia a cada
+                    // acordada.
+                    //
+                    // L4-T22: esgotamento de COTA é diferente — deixou de ser
+                    // engolido aqui. Antes, QUALQUER erro (motor sem cota
+                    // incluído) morria neste `.catch`, e a dúvida ficava
+                    // esperando o MESMO motor morto voltar, com o resto da
+                    // cadeia (`chain`, acima) ocioso. Agora `isEngineFault`
+                    // decide: falha de motor RELANÇA, para o catch de
+                    // `executeMissionWithFailover` (que envolve todo este
+                    // bloco) trocar de motor e tentar de novo, exatamente
+                    // como qualquer outro papel já faz. Qualquer outro erro
+                    // continua só logado — não é um problema que trocar de
+                    // motor resolveria.
                     await responderDuvidaPendente({
                       projectId: project.id,
                       repository: project.wingId,
@@ -4001,12 +4026,16 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                       // logo abaixo já usa para comentar na issue do cliente.
                       autonomia: project.autonomia,
                       githubToken: railsToken,
-                    }).catch((err: unknown) =>
+                      runtime: sel.runtime,
+                    }).catch((err: unknown) => {
+                      if (isEngineFault(err, err instanceof Error ? err.message : String(err))) {
+                        throw err
+                      }
                       app.log.warn(
                         err,
                         `[Scheduler] não deu para responder a dúvida do dev em ${project.wingId}`
                       )
-                    )
+                    })
                     // L4-T4 (D64), fix-up a13a42f8: MESMA missão, MESMO
                     // `execute` — a suposição do RA para dúvida escalada e
                     // vencida (24h) roda logo depois, pelo trilho real.
@@ -4514,6 +4543,44 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         if (!isLast && engineFault) {
           app.log.warn(err, `[Scheduler] erro recuperável em ${sel.runtime}; próximo motor`)
           continue
+        }
+
+        // L4-T22, item 3: ESGOTOU A CADEIA INTEIRA (este era o ÚLTIMO degrau)
+        // e o motivo foi COTA — não auth, não crash de processo, não erro do
+        // GitHub. Um aviso por motor (`recadoDeTetoDeUso`, acima) já saiu
+        // para cada degrau que bateu no teto; este é o resumo EXECUTIVO
+        // diferente: não sobrou motor NENHUM para tentar, e enquanto isso
+        // durar, o dev assíncrono acumula dúvida sem resposta. Quem não é
+        // técnico não precisa saber qual motor caiu — precisa saber que o
+        // time ficou sem capacidade e até quando.
+        if (isLast && engineFault && ehTetoDeUsoDaConta(lastError)) {
+          const chaveDeMotoresEsgotados = `motoresEsgotados:${project.userId ?? project.id}`
+          if (deveAvisarDeNovo(avisosDeMotoresEsgotados, chaveDeMotoresEsgotados, Date.now())) {
+            avisosDeMotoresEsgotados.set(chaveDeMotoresEsgotados, Date.now())
+            const duvidasEsperando = await app.prisma.devSession
+              .count({
+                where: { projectId: project.id, state: 'AWAITING_USER_FEEDBACK', closedAt: null },
+              })
+              .catch(() => 0)
+            const chatDosMotoresEsgotados = await resolveNotifyChatId(app.prisma, project, {
+              instanceOwnerEmail: process.env['GITORCH_OWNER_EMAIL'],
+              instanceChatId:
+                process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
+            }).catch(() => null)
+            const avisarMotoresEsgotados = buildTelegramNotifier({
+              botToken:
+                process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
+              ...(chatDosMotoresEsgotados ? { chatId: chatDosMotoresEsgotados } : {}),
+            })
+            if (avisarMotoresEsgotados) {
+              await avisarMotoresEsgotados(
+                recadoDeMotoresEsgotados({
+                  ateQuando: quandoACotaVolta(lastError),
+                  duvidasEsperando,
+                })
+              ).catch(() => undefined)
+            }
+          }
         }
         break
       }
@@ -7782,6 +7849,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     autonomia: string | null | undefined
     /** `undefined` quando o projeto não tem credencial do GitHub — nunca um cast mentiroso: sem token, `criarComentarNaIssue` pula a chamada e loga, em vez de sair com "token undefined" no header. */
     githubToken: string | undefined
+    /** L4-T22: o motor DESTE degrau da cadeia — só para o log dizer qual motor
+     *  respondeu (sucesso) ou esgotou (falha). O `execute` acima já roda
+     *  contra ele; isto é só o nome, para a mensagem de log ser honesta sobre
+     *  qual motor de fato tentou. */
+    runtime: string
   }): Promise<void> => {
     // TODAS as que esperam, não só a mais antiga.
     //
@@ -7946,13 +8018,24 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         return
       }
 
-      // Se quem falhar for o MOTOR, a tentativa é DEVOLVIDA. O dono recebeu
-      // (26/08 21:49): "tentei responder 3 vezes sem conseguir" na tarefa #246 —
-      // e as três mortes foram `Individual quota reached`, nenhuma tinha a ver
-      // com a pergunta. Como `desisti` não tem volta, algumas horas sem cota
-      // condenavam a pergunta para sempre: o motor voltaria e ninguém tentaria
-      // de novo. Uma tentativa é "formulei uma resposta e ela não serviu";
-      // motor sem cota não formulou nada.
+      // Se quem falhar for o MOTOR, a tentativa é DEVOLVIDA — e, a partir da
+      // L4-T22, a exceção SOBE, para acionar a MESMA cascata de failover que
+      // qualquer outro papel já usa (`executeMissionWithFailover`, chamador
+      // desta função). Antes, esgotar a cota aqui era falha LOCAL: o catch
+      // devolvia a reserva e retornava em silêncio, sem nunca alcançar o
+      // laço que troca de motor — a dúvida ficava esperando o motor MORTO
+      // voltar, com os outros dois degraus da cadeia ociosos ao lado. O dono
+      // recebeu (26/08 21:49): "tentei responder 3 vezes sem conseguir" na
+      // tarefa #246 — e as três mortes foram `Individual quota reached`, o
+      // MESMO motor tentado três vezes, nunca o próximo da cadeia.
+      //
+      // `devolverAReserva` continua indo ANTES do rethrow: é o que permite o
+      // failover tentar de novo NO MESMO TIQUE — sem devolver, a marca
+      // `tentando:` ficaria "em voo" (`decidirSobreAPergunta`,
+      // `JANELA_DE_TENTATIVA_EM_VOO_MS`) e o próximo motor da cadeia, ao
+      // reprocessar esta MESMA função do zero, veria a pergunta como já
+      // reservada e pularia para a próxima candidata em vez de tentar
+      // responder com o motor novo.
       let resultadoDaDuvida: Awaited<ReturnType<typeof runDuvidaMissionViaRails>>
       try {
         resultadoDaDuvida = await runDuvidaMissionViaRails({
@@ -7974,11 +8057,16 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         }).catch(() => false)
         app.log.warn(
           err,
-          `[Scheduler] o motor não deu conta de responder a dúvida da tarefa #${esperando.issueNumber} ` +
-            `de ${args.repository}; a tentativa foi devolvida e a pergunta continua na fila`
+          `[Scheduler] motor ${args.runtime} não deu conta de responder a dúvida da tarefa ` +
+            `#${esperando.issueNumber} de ${args.repository}; a tentativa foi devolvida e o ` +
+            `próximo motor da cadeia assume`
         )
-        return
+        throw err
       }
+      app.log.info(
+        `[Scheduler] motor ${args.runtime} respondeu à dúvida da tarefa #${esperando.issueNumber} ` +
+          `de ${args.repository}`
+      )
       let { destino, mensagemParaODev } = resultadoDaDuvida
       // D72 (02/09) — ordem explícita do dono: "não é pra fazer isso para
       // dúvidas técnicas, seja executivo". O RA SEMPRE tenta antes do dono,
