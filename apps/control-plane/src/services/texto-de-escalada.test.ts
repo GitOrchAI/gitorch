@@ -5,6 +5,7 @@ import {
 } from './texto-de-escalada.js'
 import {
   contextoExecutivoVazio,
+  montarContextoExecutivoDaPergunta,
   LACUNA_SEM_SPRINT_CONFIGURADA,
   LACUNA_SEM_OBJETIVO_LEGIVEL,
   LACUNA_SEM_DECISAO_REGISTRADA,
@@ -68,6 +69,45 @@ describe('perguntaExecutivaDeReserva — conta a história (D73): ciclo, entrega
       expect(texto).not.toMatch(/desenvolvedor/i)
       expect(texto).not.toMatch(/técnic/i)
     }
+  })
+
+  /**
+   * Fix-up (revisão, task a3902ca3-c6b4-4110-9d30-313a5a8f3787, item 3): o
+   * teste acima só exercita `CONTEXTO_COMPLETO` — um ESQUELETO escrito à
+   * mão, sem nenhuma palavra proibida. A promessa nunca era realmente
+   * testada com DADO REAL (corpo de issue + resposta anterior, texto de
+   * TERCEIRO) contendo "dev"/"desenvolvedor"/"técnica" — que é exatamente
+   * onde a palavra vazava (`contexto-executivo-da-pergunta.ts`, `sanitizar`
+   * só tirava caractere de controle, nunca filtrava vocabulário). Este
+   * teste roda o pipeline INTEIRO (`montarContextoExecutivoDaPergunta` →
+   * `perguntaExecutivaDeReserva`) com as 3 fontes contaminadas.
+   */
+  it('dado real (issue + decisão anterior) com cada palavra proibida: nenhuma atravessa para o texto final', async () => {
+    const corpoDaIssueContaminado =
+      '## Goal\n\nO desenvolvedor valida o webhook antes do dev subir a versão técnica.'
+    const contexto = await montarContextoExecutivoDaPergunta(
+      { projectId: 'proj1', repository: 'acme/api', issueNumber: 46 },
+      {
+        buscarCorpoDaIssue: async () => corpoDaIssueContaminado,
+        prisma: {
+          agentQuestion: {
+            findMany: async () => [
+              { answer: 'Precisa de uma validação técnica extra antes do dev entregar.' },
+            ],
+          },
+        },
+      }
+    )
+
+    const pergunta = perguntaExecutivaDeReserva({
+      issueNumber: 46,
+      repository: 'acme/api',
+      contexto,
+    })
+
+    expect(pergunta.text).not.toMatch(/\bdev\b/i)
+    expect(pergunta.text).not.toMatch(/desenvolvedor/i)
+    expect(pergunta.text).not.toMatch(/técnic/i)
   })
 
   it('NUNCA cita nome de arquivo, de função ou de motor', () => {

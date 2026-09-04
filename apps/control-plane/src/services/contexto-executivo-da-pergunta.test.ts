@@ -339,3 +339,271 @@ describe('contextoExecutivoVazio — o fallback totalmente vazio, nunca inventa'
     })
   })
 })
+
+/**
+ * Fix-up (revisão, task a3902ca3-c6b4-4110-9d30-313a5a8f3787) — item 1: a
+ * frase da entrega parava no PRIMEIRO ponto, mesmo dentro de um número
+ * decimal — "Aumentar a conversão de 2.5% para 4% no checkout." virava
+ * "Aumentar a conversão de 2.". Cada caso abaixo é RED antes do conserto de
+ * `primeiraFrase`.
+ */
+describe('montarContextoExecutivoDaPergunta — a primeira frase não quebra no meio de número/sigla/endereço', () => {
+  it('número decimal no meio da frase: não corta em "2."', async () => {
+    const corpo =
+      '## Goal\n\nAumentar a conversão de 2.5% para 4% no checkout. Detalhe técnico irrelevante.'
+    const deps = depsFalso({ buscarCorpoDaIssue: vi.fn(async () => corpo) })
+
+    const contexto = await montarContextoExecutivoDaPergunta(ARGS, deps)
+
+    expect(contexto.entrega).toBe('Aumentar a conversão de 2.5% para 4% no checkout.')
+  })
+
+  it('número de versão no meio da frase: não corta em "v2."', async () => {
+    const corpo = '## Goal\n\nAtualizar o app para a versão v2.5.1 antes do fim do mês. Blá.'
+    const deps = depsFalso({ buscarCorpoDaIssue: vi.fn(async () => corpo) })
+
+    const contexto = await montarContextoExecutivoDaPergunta(ARGS, deps)
+
+    expect(contexto.entrega).toBe('Atualizar o app para a versão v2.5.1 antes do fim do mês.')
+  })
+
+  it('sigla com ponto entre as letras: não corta em "E."', async () => {
+    const corpo = '## Goal\n\nAbrir a loja também para clientes dos E.U.A. e do Canadá. Blá.'
+    const deps = depsFalso({ buscarCorpoDaIssue: vi.fn(async () => corpo) })
+
+    const contexto = await montarContextoExecutivoDaPergunta(ARGS, deps)
+
+    expect(contexto.entrega).toBe('Abrir a loja também para clientes dos E.U.A. e do Canadá.')
+  })
+
+  it('endereço com abreviação: não corta em "Av."', async () => {
+    const corpo = '## Goal\n\nInstalar o totem na loja da Av. Paulista, 1000. Detalhe irrelevante.'
+    const deps = depsFalso({ buscarCorpoDaIssue: vi.fn(async () => corpo) })
+
+    const contexto = await montarContextoExecutivoDaPergunta(ARGS, deps)
+
+    expect(contexto.entrega).toBe('Instalar o totem na loja da Av. Paulista, 1000.')
+  })
+})
+
+/**
+ * Item 2: a decisão anterior é gravada como o VALUE interno do botão
+ * clicado (ex.: "seguir-suposicao-ra"), nunca o label. O texto final
+ * ("A equipe já resolveu sozinha: seguir-suposicao-ra.") mostra código ao
+ * dono. Mesmo padrão de `telegram-bot.ts`/`retomar-sessao-com-resposta.ts`:
+ * casar valor↔rótulo pelas opções da PRÓPRIA pergunta.
+ */
+describe('montarContextoExecutivoDaPergunta — decisão anterior vira o rótulo legível, nunca o código', () => {
+  const OPCOES_REAIS = [
+    { label: 'Pausar esta tarefa até eu decidir com calma', value: 'pausar' },
+    { label: 'Seguir com a melhor decisão da equipe por agora', value: 'seguir-suposicao-ra' },
+    { label: 'Entregar o que já está pronto para revisão', value: 'pedir-pr' },
+  ]
+
+  it('o value bate com uma opção da própria pergunta: usa o label, nunca o código', async () => {
+    const deps = depsFalso({
+      prisma: {
+        agentQuestion: {
+          findMany: vi.fn(async () => [{ answer: 'seguir-suposicao-ra', options: OPCOES_REAIS }]),
+        },
+      },
+    })
+
+    const contexto = await montarContextoExecutivoDaPergunta(ARGS, deps)
+
+    expect(contexto.decisoes).toEqual(['Seguir com a melhor decisão da equipe por agora'])
+    expect(contexto.decisoes.join(' ')).not.toContain('seguir-suposicao-ra')
+  })
+
+  it('resposta em texto livre (não bate com nenhuma opção, não parece código): mantém o texto como está', async () => {
+    const deps = depsFalso({
+      prisma: {
+        agentQuestion: {
+          findMany: vi.fn(async () => [
+            {
+              answer: 'Vamos usar o parceiro novo mesmo, já validamos o preço com o financeiro.',
+              options: OPCOES_REAIS,
+            },
+          ]),
+        },
+      },
+    })
+
+    const contexto = await montarContextoExecutivoDaPergunta(ARGS, deps)
+
+    expect(contexto.decisoes).toEqual([
+      'Vamos usar o parceiro novo mesmo, já validamos o preço com o financeiro.',
+    ])
+  })
+
+  it('value órfão (não bate com nenhuma opção e parece código): omite em vez de mostrar código', async () => {
+    const deps = depsFalso({
+      prisma: {
+        agentQuestion: {
+          findMany: vi.fn(async () => [
+            { answer: 'valor-que-nao-existe-mais', options: OPCOES_REAIS },
+            { answer: 'Cobrar frete fixo para todo o Brasil.', options: OPCOES_REAIS },
+          ]),
+        },
+      },
+    })
+
+    const contexto = await montarContextoExecutivoDaPergunta(ARGS, deps)
+
+    expect(contexto.decisoes).toEqual(['Cobrar frete fixo para todo o Brasil.'])
+    expect(contexto.decisoes.join(' ')).not.toContain('valor-que-nao-existe-mais')
+  })
+
+  it('sem options na linha (pergunta aberta, sem botões): mantém o texto como sempre foi', async () => {
+    const deps = depsFalso({
+      prisma: {
+        agentQuestion: {
+          findMany: vi.fn(async () => [{ answer: 'Usar o serviço de imagens do catálogo.' }]),
+        },
+      },
+    })
+
+    const contexto = await montarContextoExecutivoDaPergunta(ARGS, deps)
+
+    expect(contexto.decisoes).toEqual(['Usar o serviço de imagens do catálogo.'])
+  })
+})
+
+/**
+ * Item 3: objetivo da issue e decisão anterior são texto de TERCEIRO — só
+ * limpeza de caracteres não impedia a palavra proibida ("dev"/
+ * "desenvolvedor"/"técnica") de atravessar para o texto final, quebrando a
+ * MESMA promessa de D72/D73 (`texto-de-escalada.ts`).
+ */
+describe('montarContextoExecutivoDaPergunta — palavra proibida é barrada mesmo vinda de dado externo', () => {
+  it('objetivo da issue com "desenvolvedor": filtrado, frase continua com sentido', async () => {
+    const corpo = '## Goal\n\nO desenvolvedor valida o webhook antes de publicar a nova versão.'
+    const deps = depsFalso({ buscarCorpoDaIssue: vi.fn(async () => corpo) })
+
+    const contexto = await montarContextoExecutivoDaPergunta(ARGS, deps)
+
+    expect(contexto.entrega).not.toBeNull()
+    expect(contexto.entrega).not.toMatch(/desenvolvedor/i)
+    expect(contexto.entrega).toBe('O responsável valida o webhook antes de publicar a nova versão.')
+  })
+
+  it('objetivo da issue com "dev": filtrado', async () => {
+    const corpo = '## Goal\n\nO dev sobe o pacote assim que o teste passar.'
+    const deps = depsFalso({ buscarCorpoDaIssue: vi.fn(async () => corpo) })
+
+    const contexto = await montarContextoExecutivoDaPergunta(ARGS, deps)
+
+    expect(contexto.entrega).not.toMatch(/\bdev\b/i)
+    expect(contexto.entrega).toBe('O responsável sobe o pacote assim que o teste passar.')
+  })
+
+  it('decisão anterior com "técnica": filtrada', async () => {
+    const deps = depsFalso({
+      prisma: {
+        agentQuestion: {
+          findMany: vi.fn(async () => [
+            { answer: 'Precisa de uma revisão técnica antes de liberar.' },
+          ]),
+        },
+      },
+    })
+
+    const contexto = await montarContextoExecutivoDaPergunta(ARGS, deps)
+
+    expect(contexto.decisoes[0]).not.toMatch(/técnic/i)
+    expect(contexto.decisoes[0]).toBe('Precisa de uma revisão operacional antes de liberar.')
+  })
+})
+
+/**
+ * Item 4: o corte por tamanho usava `.length`/`.slice()` em unidades de
+ * código (UTF-16) — um emoji fora do BMP é um par substituto (2 unidades),
+ * e cortar no meio dele deixa uma surrogate solta (glifo quebrado).
+ */
+describe('montarContextoExecutivoDaPergunta — o corte por tamanho respeita o caractere inteiro (emoji)', () => {
+  it('emoji bem no ponto de corte: nunca uma surrogate solta', async () => {
+    const emoji = '😀'
+    const prefixo = 'B'.repeat(178) // teto da decisão = 180
+    const sufixo = 'CCCCCC' // garante que o texto total ultrapassa o teto
+    const respostaComEmoji = `${prefixo}${emoji}${sufixo}`
+    const deps = depsFalso({
+      prisma: {
+        agentQuestion: { findMany: vi.fn(async () => [{ answer: respostaComEmoji }]) },
+      },
+    })
+
+    const contexto = await montarContextoExecutivoDaPergunta(ARGS, deps)
+
+    const decisao = contexto.decisoes[0]!
+    expect(decisao.endsWith('…')).toBe(true)
+    // nenhuma high-surrogate sem a low-surrogate correspondente logo depois,
+    // e vice-versa — prova de que o emoji nunca foi partido ao meio.
+    expect(decisao).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/)
+    expect(decisao).not.toMatch(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/)
+  })
+})
+
+/**
+ * Item 5: ciclo/entrega/decisões eram lidos em FILA (3 `await` em série),
+ * somando a latência das 3 fontes — nenhuma depende da outra. Este teste
+ * prova (a) que rodam em paralelo (tempo total ~= a mais lenta, não a soma)
+ * e (b) que uma fonte falhando não impede as demais de completar.
+ */
+describe('montarContextoExecutivoDaPergunta — as 3 leituras rodam em paralelo', () => {
+  it('uma fonte falhando não impede as outras 2 de completar com sucesso', async () => {
+    const deps = depsFalso({
+      clienteDeQuadro: {
+        getIterationField: vi.fn(async () => {
+          throw new Error('quadro fora do ar')
+        }),
+      },
+      quadroId: 'PVT_x',
+      buscarCorpoDaIssue: vi.fn(async () => '## Goal\n\nEntregar o relatório mensal.'),
+      prisma: {
+        agentQuestion: {
+          findMany: vi.fn(async () => [{ answer: 'Decisão registrada com sucesso.' }]),
+        },
+      },
+    })
+
+    const contexto = await montarContextoExecutivoDaPergunta(ARGS, deps)
+
+    expect(contexto.ciclo).toBeNull()
+    expect(contexto.lacunas).toContain(LACUNA_FALHA_AO_LER_CICLO)
+    expect(contexto.entrega).toBe('Entregar o relatório mensal.')
+    expect(contexto.decisoes).toEqual(['Decisão registrada com sucesso.'])
+  })
+
+  it('as 3 fontes rodam em paralelo: o tempo total é ~ a mais lenta, não a soma das 3', async () => {
+    const ATRASO_MS = 60
+    const comAtraso = <T>(valor: T): Promise<T> =>
+      new Promise((resolve) => setTimeout(() => resolve(valor), ATRASO_MS))
+
+    const deps = depsFalso({
+      clienteDeQuadro: {
+        getIterationField: vi.fn(() =>
+          comAtraso({
+            fieldId: 'f1',
+            iterations: [{ id: 'it1', title: 'Sprint 4', startDate: '2026-09-01', duration: 3 }],
+          })
+        ),
+      },
+      quadroId: 'PVT_x',
+      hoje: '2026-09-02',
+      buscarCorpoDaIssue: vi.fn(() => comAtraso('## Goal\n\nEntregar o relatório mensal.')),
+      prisma: {
+        agentQuestion: {
+          findMany: vi.fn(() => comAtraso([{ answer: 'Decisão registrada com sucesso.' }])),
+        },
+      },
+    })
+
+    const inicio = Date.now()
+    await montarContextoExecutivoDaPergunta(ARGS, deps)
+    const duracao = Date.now() - inicio
+
+    // sequencial custaria >= 3*ATRASO_MS (180ms); paralelo fica perto de 1x
+    // (60ms) — folga generosa para não ficar frágil em CI mais lento.
+    expect(duracao).toBeLessThan(ATRASO_MS * 2.5)
+  })
+})

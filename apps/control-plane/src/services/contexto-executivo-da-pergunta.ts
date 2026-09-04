@@ -89,8 +89,20 @@ export interface ClienteDeQuadroParaContexto {
   }): Promise<{ fieldId: string; iterations: Iteracao[] }>
 }
 
+/** Uma opção `{label, value}` da PRÓPRIA pergunta (`agent_question.options`,
+ *  JSON) — mesmo formato que `telegram-bot.ts`/`retomar-sessao-com-
+ *  resposta.ts` já usam para casar valor↔rótulo. */
+export interface OpcaoDeAgentQuestionParaContexto {
+  label: string
+  value: string
+}
+
 export interface AgentQuestionAnteriorParaContexto {
   answer: string | null
+  /** As opções da pergunta que gerou esta resposta (JSON — `unknown` porque
+   *  o Prisma devolve `Json` sem tipo). Ausente/vazio = pergunta aberta,
+   *  sem botões (o `answer` já É o texto humano, nada para converter). */
+  options?: unknown
 }
 
 /** Só o que este módulo usa do Prisma — permite injetar um fake nos testes,
@@ -133,30 +145,52 @@ const TETO_DA_DECISAO = 180
 const MAXIMO_DE_DECISOES = 3
 const NOME_PADRAO_DO_CAMPO_DE_SPRINT = 'Sprint'
 
+/** Uma leitura isolada devolve seu valor E a lacuna (ou `null`) no MESMO
+ *  objeto — nunca um array de lacunas compartilhado e mutado por 3 funções
+ *  ao mesmo tempo (item 5, fix-up): rodar em paralelo com estado mutável
+ *  compartilhado teria ordem de gravação não-determinística; devolvendo a
+ *  lacuna junto do valor, quem combina os 3 resultados decide a ORDEM final
+ *  (ciclo → entrega → decisões, sempre, disputa ou não a corrida). */
+interface ResultadoDeLeitura<T> {
+  valor: T
+  lacuna: string | null
+}
+
 /**
  * Monta a história executiva de uma pergunta ao dono. NUNCA lança — cada
- * fonte roda isolada; a que falhar vira lacuna, e a função sempre resolve.
+ * fonte roda ISOLADA e EM PARALELO (item 5, fix-up: ciclo, entrega e
+ * decisões não dependem uma da outra — lidas em fila elas só somavam a
+ * latência das 3; `Promise.all` é seguro aqui porque nenhuma das 3 funções
+ * abaixo deixa uma exceção escapar do próprio `try/catch` — uma fonte
+ * falhando nunca derruba `Promise.all` nem as outras 2).
  */
 export async function montarContextoExecutivoDaPergunta(
   args: ArgsDoContextoExecutivo,
   deps: DepsDoContextoExecutivo
 ): Promise<ContextoExecutivoDaPergunta> {
-  const lacunas: string[] = []
+  const [resultadoCiclo, resultadoEntrega, resultadoDecisoes] = await Promise.all([
+    lerCicloCorrente(deps),
+    lerEntrega(deps),
+    lerDecisoesAnteriores(args, deps),
+  ])
 
-  const ciclo = await lerCicloCorrente(deps, lacunas)
-  const entrega = await lerEntrega(deps, lacunas)
-  const decisoes = await lerDecisoesAnteriores(args, deps, lacunas)
+  const lacunas = [resultadoCiclo.lacuna, resultadoEntrega.lacuna, resultadoDecisoes.lacuna].filter(
+    (lacuna): lacuna is string => lacuna !== null
+  )
 
-  return { ciclo, entrega, decisoes, lacunas }
+  return {
+    ciclo: resultadoCiclo.valor,
+    entrega: resultadoEntrega.valor,
+    decisoes: resultadoDecisoes.valor,
+    lacunas,
+  }
 }
 
 async function lerCicloCorrente(
-  deps: DepsDoContextoExecutivo,
-  lacunas: string[]
-): Promise<string | null> {
+  deps: DepsDoContextoExecutivo
+): Promise<ResultadoDeLeitura<string | null>> {
   if (!deps.clienteDeQuadro || !deps.quadroId) {
-    lacunas.push(LACUNA_SEM_SPRINT_CONFIGURADA)
-    return null
+    return { valor: null, lacuna: LACUNA_SEM_SPRINT_CONFIGURADA }
   }
   try {
     const campo = await deps.clienteDeQuadro.getIterationField({
@@ -166,41 +200,38 @@ async function lerCicloCorrente(
     const hoje = deps.hoje ?? new Date().toISOString().slice(0, 10)
     const atual = sprintCorrente(campo.iterations, hoje)
     if (!atual) {
-      lacunas.push(LACUNA_SEM_CICLO_CORRENTE)
-      return null
+      return { valor: null, lacuna: LACUNA_SEM_CICLO_CORRENTE }
     }
-    return sanitizar(`${atual.title} (${formatarPeriodo(atual)})`, TETO_DO_CICLO)
+    return {
+      valor: sanitizar(`${atual.title} (${formatarPeriodo(atual)})`, TETO_DO_CICLO),
+      lacuna: null,
+    }
   } catch {
     // Rede, GraphQL, token sem autorização — nunca deixa a pergunta inteira
     // cair por causa do quadro estar inacessível.
-    lacunas.push(LACUNA_FALHA_AO_LER_CICLO)
-    return null
+    return { valor: null, lacuna: LACUNA_FALHA_AO_LER_CICLO }
   }
 }
 
 async function lerEntrega(
-  deps: DepsDoContextoExecutivo,
-  lacunas: string[]
-): Promise<string | null> {
+  deps: DepsDoContextoExecutivo
+): Promise<ResultadoDeLeitura<string | null>> {
   try {
     const corpo = await deps.buscarCorpoDaIssue()
     const goal = lerSecaoDaIssue(corpo, 'Goal')
     if (!goal) {
-      lacunas.push(LACUNA_SEM_OBJETIVO_LEGIVEL)
-      return null
+      return { valor: null, lacuna: LACUNA_SEM_OBJETIVO_LEGIVEL }
     }
-    return sanitizar(primeiraFrase(goal), TETO_DA_ENTREGA)
+    return { valor: sanitizar(primeiraFrase(goal), TETO_DA_ENTREGA), lacuna: null }
   } catch {
-    lacunas.push(LACUNA_SEM_OBJETIVO_LEGIVEL)
-    return null
+    return { valor: null, lacuna: LACUNA_SEM_OBJETIVO_LEGIVEL }
   }
 }
 
 async function lerDecisoesAnteriores(
   args: ArgsDoContextoExecutivo,
-  deps: DepsDoContextoExecutivo,
-  lacunas: string[]
-): Promise<string[]> {
+  deps: DepsDoContextoExecutivo
+): Promise<ResultadoDeLeitura<string[]>> {
   try {
     const prefixo = `${PREFIXO_DUVIDA_DEV}${args.repository}:${args.issueNumber}:`
     const anteriores = await deps.prisma.agentQuestion.findMany({
@@ -208,40 +239,250 @@ async function lerDecisoesAnteriores(
       orderBy: { createdAt: 'asc' },
     })
     const decisoes = anteriores
-      .map((q) => (q.answer ?? '').trim())
-      .filter((texto) => texto.length > 0)
+      .map((q) => converterValorEmDecisaoLegivel((q.answer ?? '').trim(), q.options))
+      .filter((texto): texto is string => texto !== null && texto.length > 0)
       .slice(0, MAXIMO_DE_DECISOES)
       .map((texto) => sanitizar(texto, TETO_DA_DECISAO))
     if (decisoes.length === 0) {
-      lacunas.push(LACUNA_SEM_DECISAO_REGISTRADA)
+      return { valor: decisoes, lacuna: LACUNA_SEM_DECISAO_REGISTRADA }
     }
-    return decisoes
+    return { valor: decisoes, lacuna: null }
   } catch {
     // Banco fora do ar não pode derrubar a pergunta — a decisão anterior é
     // só UMA das 4 peças da história.
-    lacunas.push(LACUNA_FALHA_AO_LER_DECISOES)
-    return []
+    return { valor: [], lacuna: LACUNA_FALHA_AO_LER_DECISOES }
   }
 }
 
+/** Um `value` que não bate com NENHUMA opção e parece um identificador
+ *  interno (minúsculas/dígitos/hífen, sem espaço/acento/pontuação) — nunca
+ *  o formato de uma frase livre do dono. */
+const REGEX_PARECE_VALOR_INTERNO = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/
+
+function opcoesValidas(options: unknown): OpcaoDeAgentQuestionParaContexto[] {
+  if (!Array.isArray(options)) return []
+  return options.filter((o): o is OpcaoDeAgentQuestionParaContexto => {
+    if (typeof o !== 'object' || o === null) return false
+    const candidato = o as { label?: unknown; value?: unknown }
+    return typeof candidato.label === 'string' && typeof candidato.value === 'string'
+  })
+}
+
 /**
- * Tira caracteres de controle (quebra de linha inclusive) e colapsa espaço —
- * texto de terceiro (corpo de issue escrito pelo modelo, resposta anterior
- * do dono) não pode quebrar o layout de uma mensagem de uma frase por peça.
- * Corta no teto com reticências em vez de estourar o tamanho da pergunta.
+ * Item 2 (fix-up): quando o dono decide clicando num botão, o que fica
+ * gravado em `answer` é o VALUE interno (ex.: "seguir-suposicao-ra"), nunca
+ * o label — mesmo defeito que `telegram-bot.ts`/`retomar-sessao-com-
+ * resposta.ts` já resolvem casando valor↔rótulo pelas OPÇÕES DA PRÓPRIA
+ * pergunta (`agent_question.options`).
+ *
+ * Diferença deliberada dos outros dois arquivos: eles caem de volta no
+ * valor cru quando não acham o label (audiência técnica/espelho visual,
+ * onde mostrar o value é aceitável). Aqui a promessa é NUNCA mostrar código
+ * ao dono — então, sem rótulo correspondente, só mantém o texto como está
+ * quando ele parece FRASE LIVRE (o dono escolheu "Outro" e escreveu com as
+ * próprias palavras — isso já É texto humano, teria sentido apagar). Só
+ * quando o valor sem rótulo AINDA parece um identificador interno (sem
+ * espaço, minúsculas-com-hífen) é que omite — nunca arrisca mostrar código.
+ */
+function converterValorEmDecisaoLegivel(valorBruto: string, options: unknown): string | null {
+  if (valorBruto.length === 0) return null
+  const opcoes = opcoesValidas(options)
+  if (opcoes.length === 0) return valorBruto // pergunta aberta: já é texto humano
+  const encontrada = opcoes.find((o) => o.value === valorBruto)
+  if (encontrada) return encontrada.label
+  if (REGEX_PARECE_VALOR_INTERNO.test(valorBruto)) return null // código órfão: omite
+  return valorBruto // frase livre (ex.: resposta "Outro"): mantém como está
+}
+
+/**
+ * Item 3 (fix-up): objetivo da issue e decisão anterior são texto de
+ * TERCEIRO (o modelo escreveu o corpo da issue; o dono escreveu a resposta
+ * anterior) — só limpar caractere de controle não impede a palavra
+ * proibida de atravessar ("o desenvolvedor valida o webhook" chegaria
+ * intacto ao dono, quebrando a MESMA promessa de D72/D73 em
+ * `texto-de-escalada.ts`: nunca "dev"/"desenvolvedor"/"técnica").
+ *
+ * Escolha de design: SUBSTITUI em vez de cortar/apagar a palavra — cortar
+ * deixaria a frase truncada ("O valida o webhook...") ou sem sentido
+ * gramatical. Cada regra troca pela MESMA classe gramatical, no MESMO
+ * número (singular/plural) e com a MESMA capitalização do que foi
+ * encontrado:
+ *   - "dev"/"desenvolvedor" (+ variações de gênero/plural) → "responsável"/
+ *     "responsáveis" — substantivo, invariante em gênero, então cobre
+ *     "o desenvolvedor"/"a desenvolvedora"/"os desenvolvedores" sem
+ *     precisar decidir gênero;
+ *   - "técnica"/"técnico" (+ plurais) → "operacional"/"operacionais" —
+ *     adjetivo em "-al", também invariante em gênero (só muda no plural),
+ *     então serve tanto para "dúvida técnica" (fem.) quanto "detalhe
+ *     técnico" (masc.) sem quebrar a concordância.
+ */
+interface RegraDePalavraProibida {
+  regex: RegExp
+  singular: string
+  plural: string
+  sufixosDePlural: readonly string[]
+}
+
+const REGRAS_DE_PALAVRA_PROIBIDA: readonly RegraDePalavraProibida[] = [
+  {
+    regex: /(?<![\p{L}\p{N}_])desenvolvedor(a|es|as)?(?![\p{L}\p{N}_])/giu,
+    singular: 'responsável',
+    plural: 'responsáveis',
+    sufixosDePlural: ['es', 'as'],
+  },
+  {
+    regex: /(?<![\p{L}\p{N}_])dev(s)?(?![\p{L}\p{N}_])/giu,
+    singular: 'responsável',
+    plural: 'responsáveis',
+    sufixosDePlural: ['s'],
+  },
+  {
+    regex: /(?<![\p{L}\p{N}_])técnic[ao](s)?(?![\p{L}\p{N}_])/giu,
+    singular: 'operacional',
+    plural: 'operacionais',
+    sufixosDePlural: ['s'],
+  },
+]
+
+function comMesmaCapitalizacao(original: string, substituto: string): string {
+  const primeiraLetra = original.charAt(0)
+  const ehMaiuscula =
+    primeiraLetra !== '' &&
+    primeiraLetra === primeiraLetra.toUpperCase() &&
+    primeiraLetra !== primeiraLetra.toLowerCase()
+  return ehMaiuscula ? substituto.charAt(0).toUpperCase() + substituto.slice(1) : substituto
+}
+
+function filtrarPalavrasProibidas(texto: string): string {
+  return REGRAS_DE_PALAVRA_PROIBIDA.reduce(
+    (acc, regra) =>
+      acc.replace(regra.regex, (match: string, sufixo?: string) => {
+        const substituto =
+          sufixo && regra.sufixosDePlural.includes(sufixo) ? regra.plural : regra.singular
+        return comMesmaCapitalizacao(match, substituto)
+      }),
+    texto
+  )
+}
+
+/**
+ * Item 4 (fix-up): conta e corta por CARACTERE INTEIRO (grafema), nunca por
+ * unidade de código UTF-16 — `.length`/`.slice()` cortam um par substituto
+ * (emoji fora do BMP) ao meio, deixando uma surrogate solta (glifo
+ * quebrado) bem no ponto de corte.
+ */
+const SEGMENTADOR_DE_GRAFEMAS = new Intl.Segmenter('pt-BR', { granularity: 'grapheme' })
+
+function grafemasDe(texto: string): string[] {
+  return Array.from(SEGMENTADOR_DE_GRAFEMAS.segment(texto), (s) => s.segment)
+}
+
+function cortarRespeitandoGrafemas(texto: string, teto: number): string {
+  const grafemas = grafemasDe(texto)
+  if (grafemas.length <= teto) return texto
+  return `${grafemas
+    .slice(0, Math.max(0, teto - 1))
+    .join('')
+    .trim()}…`
+}
+
+/**
+ * Tira caracteres de controle (quebra de linha inclusive), colapsa espaço e
+ * barra palavra proibida — texto de terceiro (corpo de issue escrito pelo
+ * modelo, resposta anterior do dono) não pode quebrar o layout de uma
+ * mensagem de uma frase por peça, nem carregar vocabulário proibido só
+ * porque veio de fora. Corta no teto (por grafema, item 4) com reticências
+ * em vez de estourar o tamanho da pergunta.
  */
 function sanitizar(texto: string, teto: number): string {
   const regexDeControle = new RegExp('[\\u0000-\\u001f\\u007f]+', 'g')
-  const semControle = texto.replace(regexDeControle, ' ').replace(/\s+/g, ' ').trim()
-  if (semControle.length <= teto) return semControle
-  return `${semControle.slice(0, Math.max(0, teto - 1)).trim()}…`
+  const semControle = filtrarPalavrasProibidas(
+    texto.replace(regexDeControle, ' ').replace(/\s+/g, ' ').trim()
+  )
+  return cortarRespeitandoGrafemas(semControle, teto)
 }
 
-/** A primeira frase de um texto livre (corta na 1ª pontuação de fim de frase). */
+/**
+ * Item 1 (fix-up): a primeira frase de um texto livre. Corta na 1ª
+ * pontuação de fim de frase (`.!?`) que REALMENTE termina uma frase — antes
+ * cortava na 1ª ocorrência cega, quebrando no meio de número decimal
+ * ("2.5%" virava "2."), versão ("v2.5.1"), sigla encadeada ("E.U.A.") ou
+ * abreviação de endereço ("Av. Paulista").
+ */
 function primeiraFrase(texto: string): string {
   const limpo = texto.replace(/\s+/g, ' ').trim()
-  const casado = limpo.match(/^[^.!?\n]+[.!?]?/)
-  return (casado ? casado[0] : limpo).trim()
+  const intervalosDeSigla = acharIntervalosDeSiglaEncadeada(limpo)
+  const regexPontuacaoDeFrase = /[.!?]/g
+  let match: RegExpExecArray | null
+  while ((match = regexPontuacaoDeFrase.exec(limpo))) {
+    if (naoTerminaAFraseAqui(limpo, match.index, intervalosDeSigla)) continue
+    return limpo.slice(0, match.index + 1).trim()
+  }
+  return limpo
+}
+
+// Palavras que, seguidas de ponto, quase nunca fecham a frase (abreviação de
+// título/endereço) — lista pequena e deliberada, o objetivo é não cortar no
+// meio de "Av. Paulista"/"Dr. Fulano", não reconhecer toda abreviação do
+// português.
+const ABREVIACOES_QUE_NAO_TERMINAM_FRASE = new Set([
+  'av',
+  'al',
+  'r',
+  'rod',
+  'sr',
+  'sra',
+  'dr',
+  'dra',
+  'prof',
+  'profa',
+  'depto',
+  'ltda',
+  'etc',
+  'vs',
+  'gen',
+  'cia',
+  'cel',
+  'eng',
+  'no',
+])
+
+/** "E.U.A." — sigla encadeada: 2+ grupos de UMA letra maiúscula + ponto,
+ *  colados (sem espaço). Acha o intervalo INTEIRO de uma vez (em vez de
+ *  olhar só 1 ou 2 caracteres antes de cada ponto) para não perder o 1º
+ *  ponto do grupo, que não tem outro "letra+ponto" antes dele — só depois. */
+function acharIntervalosDeSiglaEncadeada(texto: string): Array<[number, number]> {
+  const regex = /(?:[A-ZÀ-Ú]\.){2,}/gu
+  const intervalos: Array<[number, number]> = []
+  let m: RegExpExecArray | null
+  while ((m = regex.exec(texto))) {
+    intervalos.push([m.index, m.index + m[0].length])
+  }
+  return intervalos
+}
+
+function dentroDeAlgumIntervalo(posicao: number, intervalos: Array<[number, number]>): boolean {
+  return intervalos.some(([inicio, fim]) => posicao >= inicio && posicao < fim)
+}
+
+function ehAbreviacaoConhecida(texto: string, posicao: number): boolean {
+  const antes = texto.slice(0, posicao)
+  const palavra = antes.match(/\p{L}+$/u)?.[0]?.toLowerCase()
+  return !!palavra && ABREVIACOES_QUE_NAO_TERMINAM_FRASE.has(palavra)
+}
+
+function naoTerminaAFraseAqui(
+  texto: string,
+  posicao: number,
+  intervalosDeSigla: Array<[number, number]>
+): boolean {
+  const anterior = texto.charAt(posicao - 1)
+  const seguinte = texto.charAt(posicao + 1)
+  // decimal/versão: ponto colado entre dois dígitos ("2.5", "4.2.1")
+  if (/\d/.test(anterior) && /\d/.test(seguinte)) return true
+  if (dentroDeAlgumIntervalo(posicao, intervalosDeSigla)) return true
+  if (ehAbreviacaoConhecida(texto, posicao)) return true
+  return false
 }
 
 function formatarPeriodo(it: Iteracao): string {
