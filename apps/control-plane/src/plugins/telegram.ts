@@ -56,6 +56,8 @@ import {
   parseDedupKeyDeCustoDaOrdem,
   type ItemDaFilaComId,
 } from '../services/aviso-de-custo-da-ordem.js'
+import { lerEstadoBrutoDoAvisoDeCustoDaOrdem } from '../services/custo-da-ordem-do-projeto.js'
+import { duvidaDeSeguimentoComoPublica } from '../services/duvidas-do-projeto.js'
 
 // O ouvido do bot. Sem ele, o deep link do passo 8 abriria o Telegram, o cliente
 // apertaria Start... e ninguém estaria escutando — o `chat_id` (a única coisa
@@ -485,6 +487,9 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
     const salvarCustoDaOrdem = async (estado: {
       ultimoPedidoProposto: number | null
       silencio: { pedido: number; ate: string; rodada: number } | null
+      /** Item 3 (fix-up L4-T18) — `null` limpa a ordem guardada (nenhuma
+       *  pergunta viva propõe mais nada). */
+      ordemProposta: number[] | null
     }): Promise<void> => {
       // MESCLA rasa, nunca substituição — mesmo padrão de `salvarEstado`
       // (scheduler.ts) e de `agent-question.ts`.
@@ -510,6 +515,7 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
                     rodada: estado.silencio.rodada,
                   }
                 : null,
+              ordemProposta: estado.ordemProposta,
             },
           },
         },
@@ -543,9 +549,32 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
           }
           return comId
         },
+        // Item 3 (fix-up L4-T18) — a ordem GUARDADA junto com a pergunta
+        // (custo-da-ordem-do-projeto.ts escreve, na MESMA leitura de
+        // `Project.runtimeConfig.custoDaOrdem` que `scheduler.ts` usa).
+        // Reusa o parser PURO e testado (`lerEstadoBrutoDoAvisoDeCustoDaOrdem`)
+        // em vez de duplicar este parsing uma terceira vez.
+        ordemProposta: async (): Promise<number[] | null> => {
+          const linha = await app.prisma.project.findUnique({
+            where: { id: args.projectId },
+            select: { runtimeConfig: true },
+          })
+          const bruto = (linha?.runtimeConfig as Record<string, unknown> | null)?.['custoDaOrdem']
+          return lerEstadoBrutoDoAvisoDeCustoDaOrdem(bruto).ordemProposta
+        },
         aplicarOrdem: async (pedidos) => {
           const quadroId = await resolverQuadroId()
           if (!quadroId) {
+            // Item 7 (fix-up L4-T18, revisão de portão) — registrar a causa
+            // ANTES de lançar, igual às outras 3 recusas desta mesma função
+            // (projeto não encontrado / sem quadro / sem credencial, acima):
+            // sem isto, a falha de aplicar a troca não deixava rastro
+            // nenhum no log — só a exceção, sem contexto, subindo para
+            // `answer()` (agent-question.ts).
+            app.log.error(
+              `[Telegram] custo-da-ordem: não achei o quadro de ${projeto.wingId} para aplicar ` +
+                `a troca (proj ${args.projectId}, dedupKey ${args.dedupKey})`
+            )
             throw new Error(
               `aoResponderCustoDaOrdem: não achei o quadro de ${projeto.wingId} para aplicar a troca`
             )
@@ -571,15 +600,46 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
           await salvarCustoDaOrdem({
             ultimoPedidoProposto: pedido,
             silencio: { pedido, ate: ate.toISOString(), rodada: parsedDedupKey?.rodada ?? 1 },
+            // A ordem guardada é desta pergunta, que está se resolvendo
+            // agora (manter, ver-a-fila, ou fila mudada) — a PRÓXIMA
+            // pergunta (nova rodada) grava a SUA PRÓPRIA ordem, calculada
+            // da fila fresca daquele momento (custo-da-ordem-do-projeto.ts).
+            ordemProposta: null,
           })
         },
         limparEstadoAposAplicar: async () => {
-          await salvarCustoDaOrdem({ ultimoPedidoProposto: null, silencio: null })
+          await salvarCustoDaOrdem({
+            ultimoPedidoProposto: null,
+            silencio: null,
+            ordemProposta: null,
+          })
         },
         onInfo: (m) => app.log.info(`[Telegram] ${m}`),
         onWarn: (m) => app.log.warn(`[Telegram] ${m}`),
       }
     )
+  }
+
+  // L4-T18 fix-up (itens 5/6, revisão de portão) — "outro" na pergunta de
+  // como publica (`duvidaSobreComoPublica`, duvidas-do-projeto.ts, reduzida
+  // para 3 opções porque `sendTelegramQuestion` passou a recusar mais de 3)
+  // dispara o 2º passo, que distingue serviço externo de manual SEM PERDER
+  // informação. `duvidaDeSeguimentoComoPublica` é PURA (decide o quê); aqui
+  // é só a injeção — chama `ask()` de novo, na MESMA dedupKey, quando ela
+  // devolve uma pergunta de seguimento; para qualquer outra resposta
+  // (workflow, vm-própria, texto livre) devolve `null` e este manipulador
+  // não faz nada, deixando `configuracaoAPartirDaResposta`
+  // (como-o-projeto-publica.ts, chamada incondicionalmente por `answer()`)
+  // gravar a config como sempre.
+  const aoResponderComoPublica = async (args: {
+    dedupKey: string
+    resposta: string
+    projectId: string
+    userId: string
+  }): Promise<void> => {
+    const seguimento = duvidaDeSeguimentoComoPublica(args.dedupKey, args.resposta)
+    if (!seguimento) return
+    await agentQuestionService.ask(args.userId, args.projectId, seguimento)
   }
 
   const agentQuestionService = new AgentQuestionService(app.prisma, {
@@ -596,6 +656,7 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
       { prefixo: 'duvida-dev:', executar: aoResponderDuvidaDoDev },
       { prefixo: 'retomada-travada:', executar: aoResponderRetomadaTravadaHandler },
       { prefixo: 'custo-da-ordem:', executar: aoResponderCustoDaOrdem },
+      { prefixo: 'como-publica:', executar: aoResponderComoPublica },
     ],
     // C4 (fix-up L4-T2): logger injetado para a falha de um manipulador de
     // resposta — nunca `console.warn`, que some do monitoramento.

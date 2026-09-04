@@ -1,4 +1,9 @@
-import { analisarCustoDaOrdem, type CandidatoDeTroca, type PedidoNaFila } from '@gitorch/cadence'
+import {
+  analisarCustoDaOrdem,
+  ordemQueMinimizaEspera,
+  type CandidatoDeTroca,
+  type PedidoNaFila,
+} from '@gitorch/cadence'
 
 // A caixa "Sua ordem custa caro?" ligada ao relógio: por PROJETO, lê a fila
 // do quadro (ordem + peso — o que já existe), calcula, e — só quando vale a
@@ -51,6 +56,18 @@ export interface EstadoDoAvisoDeCustoDaOrdem {
   ultimoPedidoProposto: number | null
   /** `null` = nenhum silêncio ativo (ver `SilencioDeCandidato`). */
   silencio: SilencioDeCandidato | null
+  /**
+   * L4-T18 fix-up (item 3) — a ordem (sequência de números de pedido) que
+   * `ordemQueMinimizaEspera` calculou da fila NO MOMENTO em que se
+   * perguntou ao dono — a mesma que o texto do aviso descreve. Guardada
+   * junto com o resto do estado para `processarRespostaDeCustoDaOrdem`
+   * (aviso-de-custo-da-ordem.ts) comparar na hora de "aplicar": se a fila
+   * mudou entre a pergunta e a resposta, a ordem recém-calculada pode não
+   * ser mais esta, e aplicar às cegas seria "o dono aprova uma coisa, o
+   * produto aplica outra". `null` = nenhuma ordem guardada (estado limpo,
+   * ou pergunta de antes deste campo existir).
+   */
+  ordemProposta: number[] | null
 }
 
 export interface DepsDeCustoDaOrdem {
@@ -90,7 +107,67 @@ export interface ResumoDaAvaliacao {
   avisados: number
 }
 
-const ESTADO_LIMPO: EstadoDoAvisoDeCustoDaOrdem = { ultimoPedidoProposto: null, silencio: null }
+const ESTADO_LIMPO: EstadoDoAvisoDeCustoDaOrdem = {
+  ultimoPedidoProposto: null,
+  silencio: null,
+  ordemProposta: null,
+}
+
+/**
+ * L4-T18 fix-up (itens 3 e 4) — parsing PURO do que está gravado em
+ * `Project.runtimeConfig.custoDaOrdem` (JSON) — extraído para ser testável
+ * sem Fastify/Prisma. `scheduler.ts` (`lerEstado`) só faz a leitura do banco
+ * e delega aqui; `plugins/telegram.ts` (`ordemProposta`, dep de
+ * `processarRespostaDeCustoDaOrdem`) reusa a MESMA função, para nunca
+ * duplicar este parsing uma terceira vez.
+ *
+ * Item 4 — o defeito real: `silencio.ate` era lido assumindo STRING
+ * (`typeof === 'string'`). Se a configuração devolvesse uma DATA de verdade
+ * (`Date`) em vez de texto — ex.: um armazenamento que não serializa JSON à
+ * risca —, o guard rejeitava o silêncio inteiro, e a marca de "manter" se
+ * perdia sem ninguém notar (o candidato voltava a ser perguntado antes da
+ * hora, como se o dono nunca tivesse respondido). Os dois formatos (string
+ * ISO — o que `telegram.ts` sempre grava, via `.toISOString()` — ou `Date`)
+ * são aceitos e normalizados para string ISO; qualquer terceiro formato
+ * invalida só o SILÊNCIO, nunca o resto do estado.
+ */
+export function lerEstadoBrutoDoAvisoDeCustoDaOrdem(bruto: unknown): EstadoDoAvisoDeCustoDaOrdem {
+  if (!bruto || typeof bruto !== 'object') return ESTADO_LIMPO
+
+  const objeto = bruto as {
+    ultimoPedidoProposto?: unknown
+    silencio?: unknown
+    ordemProposta?: unknown
+  }
+
+  const valorProposto = objeto.ultimoPedidoProposto
+  const ultimoPedidoProposto = typeof valorProposto === 'number' ? valorProposto : null
+
+  const silencioBruto = objeto.silencio as
+    { pedido?: unknown; ate?: unknown; rodada?: unknown } | null | undefined
+  const ateBruta = silencioBruto?.ate
+  const ateNormalizada =
+    typeof ateBruta === 'string'
+      ? ateBruta
+      : ateBruta instanceof Date
+        ? ateBruta.toISOString()
+        : null
+  const silencio =
+    silencioBruto &&
+    typeof silencioBruto.pedido === 'number' &&
+    ateNormalizada !== null &&
+    typeof silencioBruto.rodada === 'number'
+      ? { pedido: silencioBruto.pedido, ate: ateNormalizada, rodada: silencioBruto.rodada }
+      : null
+
+  const ordemPropostaBruta = objeto.ordemProposta
+  const ordemProposta =
+    Array.isArray(ordemPropostaBruta) && ordemPropostaBruta.every((v) => typeof v === 'number')
+      ? (ordemPropostaBruta as number[])
+      : null
+
+  return { ultimoPedidoProposto, silencio, ordemProposta }
+}
 
 export async function avaliarCustoDaOrdemDosProjetos(
   deps: DepsDeCustoDaOrdem
@@ -140,9 +217,14 @@ export async function avaliarCustoDaOrdemDosProjetos(
       // ver o comentário de `SilencioDeCandidato`).
       const rodada = silencioDoCandidato ? silencioDoCandidato.rodada + 1 : 1
       await deps.avisar(projeto, candidato, rodada)
+      // Item 3 (fix-up) — guarda a ordem PROPOSTA junto com o resto do
+      // estado, calculada da MESMA fila que gerou o candidato/o texto do
+      // aviso: é o que `processarRespostaDeCustoDaOrdem`
+      // (aviso-de-custo-da-ordem.ts) compara na hora de "aplicar".
       await deps.salvarEstado(projeto.id, {
         ultimoPedidoProposto: candidato.pedido,
         silencio: null,
+        ordemProposta: ordemQueMinimizaEspera(fila).map((item) => item.pedido),
       })
       avisados++
     } catch (err) {

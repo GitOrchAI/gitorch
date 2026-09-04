@@ -186,6 +186,16 @@ export interface DepsDeRespostaDeCustoDaOrdem {
    *  (`aplicarOrdemDosPedidos`, ordem-dos-pedidos.ts; quem injeta decide
    *  quadro/nível/registro). */
   aplicarOrdem: (pedidos: PedidoNaOrdem[]) => Promise<void>
+  /**
+   * L4-T18 fix-up (item 3) — a ordem (sequência de números de pedido) que
+   * `ordemQueMinimizaEspera` calculou NO MOMENTO em que se perguntou ao dono
+   * (guardada por `avaliarCustoDaOrdemDosProjetos`,
+   * custo-da-ordem-do-projeto.ts, junto com o resto do estado). `null` =
+   * nenhuma ordem guardada (pergunta de antes deste campo existir, ou
+   * estado já limpo) — tratado como "mudou", nunca como "pode aplicar às
+   * cegas".
+   */
+  ordemProposta: () => Promise<number[] | null>
   /** Registra a escolha "manter" e silencia ESTE candidato até `ate`. */
   silenciarCandidato: (args: { pedido: number; ate: Date }) => Promise<void>
   /** "Aplicar" mudou a ordem de verdade: o candidato antigo não existe
@@ -252,6 +262,37 @@ export async function processarRespostaDeCustoDaOrdem(
 
       const porPedido = new Map(fila.map((item) => [item.pedido, item.itemId]))
       const ordemAlvo = ordemQueMinimizaEspera(fila.map(({ pedido, peso }) => ({ pedido, peso })))
+
+      // Item 3 (fix-up) — a fila é lida FRESCA aqui, mas o texto que o dono
+      // viu descrevia a ordem calculada NO MOMENTO da pergunta. Se a fila
+      // mudou desde então (pedido novo, removido, ou peso diferente), a
+      // ordem recém-calculada pode não ser mais a que ele aprovou — aplicar
+      // do mesmo jeito seria "ele aprova uma coisa, o produto aplica
+      // outra". Compara com a ordem GUARDADA junto com a pergunta; qualquer
+      // divergência (ou ausência da guarda — pergunta antiga) recusa a
+      // aplicação silenciosa.
+      const ordemAtualEmPedidos = ordemAlvo.map((item) => item.pedido)
+      const ordemPropostaSalva = await deps.ordemProposta()
+      const filaMudouDesdeAPergunta =
+        ordemPropostaSalva === null ||
+        ordemPropostaSalva.length !== ordemAtualEmPedidos.length ||
+        ordemPropostaSalva.some((pedido, indice) => pedido !== ordemAtualEmPedidos[indice])
+
+      if (filaMudouDesdeAPergunta) {
+        warn(`custo-da-ordem: 'aplicar' recusado — fila mudou desde a pergunta (${args.dedupKey})`)
+        // Mesmo mecanismo do item 2 ("ver a fila"): silencia com `ate` JÁ
+        // VENCIDO, para a decisão reabrir sozinha — com o candidato
+        // recalculado da fila ATUAL — na próxima passada do relógio, em vez
+        // de aplicar às cegas uma ordem diferente da que o dono aprovou.
+        const agoraDaRecusa = (deps.agora ?? (() => new Date()))()
+        await deps.silenciarCandidato({ pedido: parsed.pedido, ate: agoraDaRecusa })
+        return {
+          aviso:
+            'Sua fila mudou desde que eu perguntei, então não apliquei nada para não trocar a ' +
+            'ordem por engano. Vou te perguntar de novo já com a fila atual.',
+        }
+      }
+
       const pedidosNaOrdem: PedidoNaOrdem[] = []
       for (const item of ordemAlvo) {
         const itemId = porPedido.get(item.pedido)
@@ -262,8 +303,19 @@ export async function processarRespostaDeCustoDaOrdem(
         return { aviso: 'Não consegui casar os pedidos da fila com o quadro — nada foi mudado.' }
       }
 
-      await deps.aplicarOrdem(pedidosNaOrdem)
-      await deps.limparEstadoAposAplicar()
+      // Item 1 (fix-up) — se `aplicarOrdem` lançar, o `finally` garante que
+      // `limparEstadoAposAplicar` roda DO MESMO JEITO: sem isso, o
+      // `ultimoPedidoProposto` que a varredura gravou continua apontando
+      // para este mesmo pedido, e a PRÓXIMA passada do relógio pula a
+      // pergunta para sempre (custo-da-ordem-do-projeto.ts) — a pergunta
+      // fica órfã. O erro CONTINUA subindo depois do `finally` (nunca
+      // mascarado): é o que faz `answer()` (agent-question.ts) NÃO marcar
+      // esta pergunta `answered`, devolvendo-a a `open` para nova tentativa.
+      try {
+        await deps.aplicarOrdem(pedidosNaOrdem)
+      } finally {
+        await deps.limparEstadoAposAplicar()
+      }
       info(`custo-da-ordem: troca aplicada para #${parsed.pedido} (${args.dedupKey})`)
       return
     }
@@ -279,6 +331,20 @@ export async function processarRespostaDeCustoDaOrdem(
     case VALOR_VER_FILA: {
       const fila = await deps.filaAtual()
       const aviso = fila ? textoDaFilaAtual(fila) : 'Não consegui ler seu quadro agora.'
+      // Item 2 (fix-up) — "ver a fila" NÃO é uma decisão (aplicar/manter),
+      // mas devolver aqui SEM LANÇAR faz `answer()` (agent-question.ts)
+      // marcar a pergunta `answered` (o único outro desfecho do contrato de
+      // `ManipuladorDeResposta` é lançar — e aí o aviso da fila NUNCA
+      // chegaria ao dono, porque `avisoDoManipulador` só existe numa
+      // resposta de SUCESSO). Com a dedupKey ESTÁVEL, isso travaria a
+      // decisão para sempre: nenhuma pergunta nova sobre este pedido
+      // nasceria de novo. Reusa o MESMO mecanismo de "manter"
+      // (`silenciarCandidato`) para reabrir sem inventar um 3º desfecho no
+      // contrato — só que com `ate` JÁ VENCIDO (agora, não +24h): a próxima
+      // passada do relógio vê o silêncio expirado e pergunta de novo, na
+      // rodada seguinte (dedupKey distinto da pergunta já respondida).
+      const agoraDoSilencio = (deps.agora ?? (() => new Date()))()
+      await deps.silenciarCandidato({ pedido: parsed.pedido, ate: agoraDoSilencio })
       return { aviso }
     }
 

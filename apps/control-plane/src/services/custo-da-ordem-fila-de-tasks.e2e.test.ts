@@ -65,7 +65,7 @@ function depsQueLeemOFiltro(
   return {
     projetos: async () => [PROJETO],
     filaDoQuadro: async () => filtrarFilaDeTasks(itens).fila,
-    lerEstado: async () => ({ ultimoPedidoProposto: null, silencio: null }),
+    lerEstado: async () => ({ ultimoPedidoProposto: null, silencio: null, ordemProposta: null }),
     salvarEstado: vi.fn().mockResolvedValue(undefined),
     avisar: vi.fn().mockResolvedValue(undefined),
     ...over,

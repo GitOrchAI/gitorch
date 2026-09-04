@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
   avaliarCustoDaOrdemDosProjetos,
+  lerEstadoBrutoDoAvisoDeCustoDaOrdem,
   type DepsDeCustoDaOrdem,
   type ProjetoParaAvaliar,
   type EstadoDoAvisoDeCustoDaOrdem,
@@ -26,7 +27,15 @@ const FILA_CARA: PedidoNaFila[] = [
   { pedido: 103, peso: 2 },
 ]
 
-const ESTADO_LIMPO: EstadoDoAvisoDeCustoDaOrdem = { ultimoPedidoProposto: null, silencio: null }
+// SPT de [13,1,2] por peso crescente: #102 (1), #103 (2), #101 (13) — a
+// ordem que `avisar` guarda junto com a pergunta (item 3, fix-up L4-T18).
+const ORDEM_PROPOSTA_DA_FILA_CARA = [102, 103, 101]
+
+const ESTADO_LIMPO: EstadoDoAvisoDeCustoDaOrdem = {
+  ultimoPedidoProposto: null,
+  silencio: null,
+  ordemProposta: null,
+}
 
 function deps(over: Partial<DepsDeCustoDaOrdem> = {}): DepsDeCustoDaOrdem {
   return {
@@ -68,7 +77,20 @@ describe('avaliarCustoDaOrdemDosProjetos — a pergunta chega com o candidato ce
     expect(d.salvarEstado).toHaveBeenCalledWith(P1.id, {
       ultimoPedidoProposto: 102,
       silencio: null,
+      ordemProposta: ORDEM_PROPOSTA_DA_FILA_CARA,
     })
+  })
+
+  // L4-T18 fix-up, item 3 — a ordem proposta É GUARDADA junto com o resto do
+  // estado, no MESMO momento em que se pergunta: é o que
+  // `processarRespostaDeCustoDaOrdem` (aviso-de-custo-da-ordem.ts) compara
+  // na hora de aplicar, para nunca aplicar em silêncio uma ordem diferente
+  // da que o dono viu.
+  it('a ordem guardada é a SPT calculada da fila lida agora — a mesma que o texto do aviso descreve', async () => {
+    const d = deps()
+    await avaliarCustoDaOrdemDosProjetos(d)
+    const [, estadoGravado] = (d.salvarEstado as ReturnType<typeof vi.fn>).mock.calls[0]!
+    expect(estadoGravado.ordemProposta).toEqual([102, 103, 101])
   })
 })
 
@@ -109,7 +131,11 @@ describe('avaliarCustoDaOrdemDosProjetos — a ordem do dono SEMPRE prevalece', 
     ]
     const d = deps({
       filaDoQuadro: async () => OUTRA_FILA_CARA,
-      lerEstado: vi.fn(async () => ({ ultimoPedidoProposto: 102, silencio: null })), // já perguntou #102 antes
+      lerEstado: vi.fn(async () => ({
+        ultimoPedidoProposto: 102,
+        silencio: null,
+        ordemProposta: ORDEM_PROPOSTA_DA_FILA_CARA,
+      })), // já perguntou #102 antes
     })
 
     const resumo = await avaliarCustoDaOrdemDosProjetos(d)
@@ -126,7 +152,11 @@ describe('avaliarCustoDaOrdemDosProjetos — a ordem do dono SEMPRE prevalece', 
     ]
     const d = deps({
       filaDoQuadro: async () => FILA_JA_OTIMA,
-      lerEstado: async () => ({ ultimoPedidoProposto: 102, silencio: null }),
+      lerEstado: async () => ({
+        ultimoPedidoProposto: 102,
+        silencio: null,
+        ordemProposta: ORDEM_PROPOSTA_DA_FILA_CARA,
+      }),
     })
     const resumo = await avaliarCustoDaOrdemDosProjetos(d)
     expect(resumo.avisados).toBe(0)
@@ -134,6 +164,7 @@ describe('avaliarCustoDaOrdemDosProjetos — a ordem do dono SEMPRE prevalece', 
     expect(d.salvarEstado).toHaveBeenCalledWith(P1.id, {
       ultimoPedidoProposto: null,
       silencio: null,
+      ordemProposta: null,
     })
   })
 })
@@ -144,6 +175,7 @@ describe('avaliarCustoDaOrdemDosProjetos — L4-T18: "manter" silencia por um pe
       lerEstado: async () => ({
         ultimoPedidoProposto: 102,
         silencio: { pedido: 102, ate: '2026-09-05T00:00:00.000Z', rodada: 1 },
+        ordemProposta: ORDEM_PROPOSTA_DA_FILA_CARA,
       }),
       agora: () => new Date('2026-09-04T12:00:00.000Z'), // antes do "ate"
     })
@@ -157,6 +189,7 @@ describe('avaliarCustoDaOrdemDosProjetos — L4-T18: "manter" silencia por um pe
       lerEstado: async () => ({
         ultimoPedidoProposto: 102,
         silencio: { pedido: 102, ate: '2026-09-05T00:00:00.000Z', rodada: 1 },
+        ordemProposta: ORDEM_PROPOSTA_DA_FILA_CARA,
       }),
       agora: () => new Date('2026-09-06T00:00:00.000Z'), // depois do "ate"
     })
@@ -172,6 +205,7 @@ describe('avaliarCustoDaOrdemDosProjetos — L4-T18: "manter" silencia por um pe
       lerEstado: async () => ({
         ultimoPedidoProposto: 999,
         silencio: { pedido: 999, ate: '2099-01-01T00:00:00.000Z', rodada: 1 },
+        ordemProposta: null,
       }),
     })
     const resumo = await avaliarCustoDaOrdemDosProjetos(d)
@@ -210,5 +244,69 @@ describe('avaliarCustoDaOrdemDosProjetos — vários projetos, em série, um def
     expect(onErro).toHaveBeenCalledWith(P1, expect.any(Error))
     expect(d.avisar).toHaveBeenCalledTimes(1)
     expect((d.avisar as ReturnType<typeof vi.fn>).mock.calls[0]![0]).toBe(P2)
+  })
+})
+
+// L4-T18 fix-up, item 4 — `lerEstado` (scheduler.ts) só faz a leitura do
+// banco e delega este parsing PURO, extraído para ser testável sem
+// Fastify/Prisma. O defeito real: o prazo do silêncio (`silencio.ate`)
+// chegava assumindo STRING; se a config devolvesse uma data (um `Date` de
+// verdade, em vez do texto ISO que `telegram.ts` sempre grava), a marca de
+// "manter" se perdia em silêncio — o `typeof === 'string'` rejeitava o
+// silêncio inteiro sem ninguém notar.
+describe('lerEstadoBrutoDoAvisoDeCustoDaOrdem — parsing puro do JSON gravado', () => {
+  it('estado ausente (projeto nunca avaliado): devolve o estado limpo', () => {
+    expect(lerEstadoBrutoDoAvisoDeCustoDaOrdem(undefined)).toEqual(ESTADO_LIMPO)
+    expect(lerEstadoBrutoDoAvisoDeCustoDaOrdem(null)).toEqual(ESTADO_LIMPO)
+  })
+
+  it('formato normal: ultimoPedidoProposto, silencio (ate em STRING) e ordemProposta', () => {
+    const bruto = {
+      ultimoPedidoProposto: 102,
+      silencio: { pedido: 102, ate: '2026-09-05T00:00:00.000Z', rodada: 2 },
+      ordemProposta: [102, 103, 101],
+    }
+    expect(lerEstadoBrutoDoAvisoDeCustoDaOrdem(bruto)).toEqual({
+      ultimoPedidoProposto: 102,
+      silencio: { pedido: 102, ate: '2026-09-05T00:00:00.000Z', rodada: 2 },
+      ordemProposta: [102, 103, 101],
+    })
+  })
+
+  it('silencio.ate como Date de verdade (não string): normaliza para ISO, nunca perde o silêncio', () => {
+    const ate = new Date('2026-09-05T00:00:00.000Z')
+    const bruto = {
+      ultimoPedidoProposto: 102,
+      silencio: { pedido: 102, ate, rodada: 1 },
+      ordemProposta: null,
+    }
+    const estado = lerEstadoBrutoDoAvisoDeCustoDaOrdem(bruto)
+    expect(estado.silencio).toEqual({ pedido: 102, ate: ate.toISOString(), rodada: 1 })
+  })
+
+  it('silencio.ate num formato irreconhecível (nem string nem Date): só o silêncio vira null, o resto do estado sobrevive', () => {
+    const bruto = {
+      ultimoPedidoProposto: 102,
+      silencio: { pedido: 102, ate: 12345, rodada: 1 },
+      ordemProposta: [102, 103, 101],
+    }
+    const estado = lerEstadoBrutoDoAvisoDeCustoDaOrdem(bruto)
+    expect(estado.silencio).toBeNull()
+    expect(estado.ultimoPedidoProposto).toBe(102)
+    expect(estado.ordemProposta).toEqual([102, 103, 101])
+  })
+
+  it('ordemProposta ausente ou quebrada (não é array de números): vira null', () => {
+    expect(
+      lerEstadoBrutoDoAvisoDeCustoDaOrdem({ ultimoPedidoProposto: 102, silencio: null })
+        .ordemProposta
+    ).toBeNull()
+    expect(
+      lerEstadoBrutoDoAvisoDeCustoDaOrdem({
+        ultimoPedidoProposto: 102,
+        silencio: null,
+        ordemProposta: ['102', '103'],
+      }).ordemProposta
+    ).toBeNull()
   })
 })

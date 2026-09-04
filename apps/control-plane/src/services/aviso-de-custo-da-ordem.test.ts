@@ -176,6 +176,11 @@ function depsDaResposta(over: Partial<Parameters<typeof processarRespostaDeCusto
     aplicarOrdem: vi.fn().mockResolvedValue(undefined),
     silenciarCandidato: vi.fn().mockResolvedValue(undefined),
     limparEstadoAposAplicar: vi.fn().mockResolvedValue(undefined),
+    // SPT de [13,1,2] por peso crescente: #102 (1), #103 (2), #101 (13) — a
+    // MESMA ordem que `ordemQueMinimizaEspera` calcula de FILA_COM_ID. Bate
+    // por padrão (nada mudou entre perguntar e aplicar); os testes do item 3
+    // sobrescrevem para simular fila mudada.
+    ordemProposta: vi.fn().mockResolvedValue([102, 103, 101]),
     agora: () => new Date('2026-09-04T12:00:00.000Z'),
     ...over,
   }
@@ -220,6 +225,86 @@ describe('processarRespostaDeCustoDaOrdem — "aplicar": reordena pelo caminho q
   })
 })
 
+// L4-T18 fix-up, item 1 — falha ao aplicar não pode deixar a pergunta órfã:
+// se `aplicarOrdem` lança, `limparEstadoAposAplicar` tem que rodar DO MESMO
+// JEITO (senão o `ultimoPedidoProposto` salvo pela varredura continua
+// apontando pro mesmo pedido, e a PRÓXIMA passada pula a pergunta para
+// sempre — ver custo-da-ordem-do-projeto.ts) — e o erro tem que CONTINUAR
+// subindo (o contrato de `ManipuladorDeResposta`, agent-question.ts: uma
+// exceção aqui impede `answer()` de marcar a pergunta `answered`, ela volta
+// a ficar `open` para nova tentativa).
+describe('processarRespostaDeCustoDaOrdem — "aplicar" falha: nunca deixa a pergunta órfã', () => {
+  it('aplicarOrdem lança: limpa o estado mesmo assim, e o erro sobe (a pergunta some do open só se REALMENTE aplicar)', async () => {
+    const erroDoQuadro = new Error('GitHub: falha ao mover item do quadro')
+    const deps = depsDaResposta({ aplicarOrdem: vi.fn().mockRejectedValue(erroDoQuadro) })
+
+    await expect(
+      processarRespostaDeCustoDaOrdem(
+        { dedupKey: 'custo-da-ordem:acme/api:102', resposta: VALOR_APLICAR_TROCA },
+        deps
+      )
+    ).rejects.toThrow(erroDoQuadro)
+
+    expect(deps.limparEstadoAposAplicar).toHaveBeenCalledOnce()
+  })
+
+  it('aplicarOrdem lança: NUNCA mascara o erro devolvendo um aviso de sucesso', async () => {
+    const deps = depsDaResposta({ aplicarOrdem: vi.fn().mockRejectedValue(new Error('boom')) })
+    await expect(
+      processarRespostaDeCustoDaOrdem(
+        { dedupKey: 'custo-da-ordem:acme/api:102', resposta: VALOR_APLICAR_TROCA },
+        deps
+      )
+    ).rejects.toThrow()
+  })
+})
+
+// L4-T18 fix-up, item 3 — o dono aprova a ordem QUE VIU; se a fila mudou
+// entre a pergunta e o clique, a ordem recém-calculada pode não ser mais
+// aquela. `ordemProposta` (deps) é a ordem GUARDADA junto com a pergunta
+// (custo-da-ordem-do-projeto.ts, no momento de perguntar) — comparada aqui
+// contra a ordem recém-calculada da fila FRESCA antes de aplicar de verdade.
+describe('processarRespostaDeCustoDaOrdem — "aplicar": a fila mudou desde a pergunta', () => {
+  it('ordem proposta diferente da recalculada: NÃO aplica, avisa em português e silencia com prazo já vencido (reabre sozinho)', async () => {
+    const deps = depsDaResposta({ ordemProposta: vi.fn().mockResolvedValue([999, 888, 777]) })
+
+    const resultado = await processarRespostaDeCustoDaOrdem(
+      { dedupKey: 'custo-da-ordem:acme/api:102', resposta: VALOR_APLICAR_TROCA },
+      deps
+    )
+
+    expect(deps.aplicarOrdem).not.toHaveBeenCalled()
+    expect(deps.limparEstadoAposAplicar).not.toHaveBeenCalled()
+    // Mesmo mecanismo do item 2 ("ver a fila"): silencia com `ate` JÁ
+    // VENCIDO — a decisão reabre sozinha, com o candidato recalculado da
+    // fila atual, na próxima passada do relógio.
+    expect(deps.silenciarCandidato).toHaveBeenCalledWith({ pedido: 102, ate: deps.agora() })
+    expect(resultado?.aviso).toBeTruthy()
+    expect(resultado?.aviso?.toLowerCase()).toContain('mudou')
+  })
+
+  it('sem ordem proposta guardada (pergunta de antes deste campo existir): trata como mudança — nunca aplica às cegas', async () => {
+    const deps = depsDaResposta({ ordemProposta: vi.fn().mockResolvedValue(null) })
+    const resultado = await processarRespostaDeCustoDaOrdem(
+      { dedupKey: 'custo-da-ordem:acme/api:102', resposta: VALOR_APLICAR_TROCA },
+      deps
+    )
+    expect(deps.aplicarOrdem).not.toHaveBeenCalled()
+    expect(resultado?.aviso).toBeTruthy()
+  })
+
+  it('ordem proposta IGUAL à recalculada: aplica normalmente, sem avisar mudança nenhuma', async () => {
+    const deps = depsDaResposta() // default já bate com a SPT de FILA_COM_ID
+    const resultado = await processarRespostaDeCustoDaOrdem(
+      { dedupKey: 'custo-da-ordem:acme/api:102', resposta: VALOR_APLICAR_TROCA },
+      deps
+    )
+    expect(deps.aplicarOrdem).toHaveBeenCalledOnce()
+    expect(deps.silenciarCandidato).not.toHaveBeenCalled()
+    expect(resultado).toBeUndefined()
+  })
+})
+
 describe('processarRespostaDeCustoDaOrdem — "manter": registra e silencia por um período', () => {
   it('silencia ESTE pedido até agora + o período configurado', async () => {
     const deps = depsDaResposta()
@@ -256,14 +341,32 @@ describe('processarRespostaDeCustoDaOrdem — "ver a fila": informa e mantém a 
     expect(resultado?.aviso).toContain('peso 13')
   })
 
-  it('NÃO reordena e NÃO silencia — a decisão de verdade (aplicar/manter) segue em aberto', async () => {
+  it('NÃO reordena — a decisão de verdade (aplicar/manter) segue em aberto', async () => {
     const deps = depsDaResposta()
     await processarRespostaDeCustoDaOrdem(
       { dedupKey: 'custo-da-ordem:acme/api:102', resposta: VALOR_VER_FILA },
       deps
     )
     expect(deps.aplicarOrdem).not.toHaveBeenCalled()
-    expect(deps.silenciarCandidato).not.toHaveBeenCalled()
+  })
+
+  // L4-T18 fix-up, item 2 — "ver a fila" devolvendo sem lançar faz `answer()`
+  // marcar a pergunta `answered` (contrato de `ManipuladorDeResposta`,
+  // agent-question.ts), e a dedupKey ESTÁVEL impediria qualquer pergunta nova
+  // sobre o MESMO pedido depois disso — a decisão ficaria travada para
+  // sempre, o oposto do que o comentário acima documenta. O ÚNICO mecanismo
+  // que o contrato oferece para reabrir sem inventar um 3º desfecho é o
+  // MESMO de "manter" (`silenciarCandidato`) — só que com `ate` JÁ VENCIDO
+  // (agora mesmo, não +24h): a próxima passada do relógio
+  // (`avaliarCustoDaOrdemDosProjetos`) vê o silêncio expirado e pergunta de
+  // novo, na rodada seguinte (dedupKey distinto da pergunta já respondida).
+  it('silencia com prazo JÁ VENCIDO — reabre a decisão sozinha na próxima passada, sem inventar um 3º desfecho', async () => {
+    const deps = depsDaResposta()
+    await processarRespostaDeCustoDaOrdem(
+      { dedupKey: 'custo-da-ordem:acme/api:102', resposta: VALOR_VER_FILA },
+      deps
+    )
+    expect(deps.silenciarCandidato).toHaveBeenCalledWith({ pedido: 102, ate: deps.agora() })
   })
 })
 
