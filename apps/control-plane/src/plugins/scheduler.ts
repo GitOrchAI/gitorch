@@ -196,6 +196,7 @@ import {
   escalarDuvidaAoDono,
   type PrismaParaEscalarDuvida,
 } from '../services/escalar-duvida-ao-dono.js'
+import { montarContextoExecutivoDaPergunta } from '../services/contexto-executivo-da-pergunta.js'
 import {
   // L4-T4 (D64), fix-up a13a42f8: renomeado no import — o wiring real
   // (prisma, BYOK, GitHub, agentQuestionService) mora em `scheduler.ts`
@@ -7198,6 +7199,79 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       timeoutMs: TIMEOUT_DE_CHAMADA_GITHUB_MS,
     })
 
+  /**
+   * D73/L4-T23: monta o contexto executivo (ciclo, entrega, decisões já
+   * tomadas — contexto-executivo-da-pergunta.ts) para a pergunta de RESERVA
+   * de `escalarDuvidaAoDono` contar a história em vez de citar a dúvida
+   * técnica do dev. Definida UMA VEZ aqui (fora do `for` de candidatas de
+   * `responderDuvidaPendente`) — não como closure inline dentro do laço —
+   * para não pagar o custo de recriar/reanalisar esta função a cada
+   * candidata de cada tique.
+   *
+   * Reaproveita os MESMOS caminhos que o resto do relógio já usa para ler
+   * este repositório: `ghGet` (leitura da issue, acima),
+   * `ProjectV2Client.findProjectId` com o fallback organization→user (MESMO
+   * padrão de `avaliarCustoDaOrdem`, mais abaixo neste arquivo) e
+   * `resolveQuadroDoProjeto` (routes/painel.ts) para achar o quadro
+   * configurado. Best-effort por contrato: sem token, sem quadro
+   * configurado, ou qualquer falha de rede, o método devolve o contexto com
+   * as lacunas declaradas — nunca lança (ver
+   * `montarContextoExecutivoDaPergunta`) — e `escalarDuvidaAoDono` já trata
+   * a falha do PRÓPRIO `montarContexto` como best-effort por cima disso.
+   */
+  const montarContextoParaEscalada = async (
+    ctxArgs: { issueNumber: number; repository: string; projectId: string },
+    contextoDoTique: {
+      githubToken: string | undefined
+      autonomia: string | null | undefined
+      runtimeConfig: unknown
+    }
+  ) => {
+    const fetchDeLeitura = fetchDoRepositorio({
+      nivel: () => contextoDoTique.autonomia,
+      timeoutMs: TIMEOUT_DE_CHAMADA_GITHUB_MS,
+    })
+    const token = contextoDoTique.githubToken
+    const quadroConfigurado = resolveQuadroDoProjeto(contextoDoTique.runtimeConfig)
+    let quadroId: string | undefined
+    if (token && quadroConfigurado) {
+      const leitor = new ProjectV2Client({ token, fetchImpl: fetchDeLeitura })
+      quadroId =
+        (await leitor.findProjectId({
+          login: quadroConfigurado.login,
+          number: quadroConfigurado.numero,
+          ownerType: 'organization',
+        })) ??
+        (await leitor.findProjectId({
+          login: quadroConfigurado.login,
+          number: quadroConfigurado.numero,
+          ownerType: 'user',
+        })) ??
+        undefined
+    }
+    return montarContextoExecutivoDaPergunta(ctxArgs, {
+      buscarCorpoDaIssue: async () => {
+        if (!token) return null
+        const issue = (await ghGet(
+          `/repos/${ctxArgs.repository}/issues/${ctxArgs.issueNumber}`,
+          token
+        )) as { body?: string | null }
+        return issue.body ?? null
+      },
+      // `exactOptionalPropertyTypes`: só entra no objeto quando os dois
+      // existem — nunca `undefined` explícito numa propriedade opcional.
+      ...(token && quadroId
+        ? { clienteDeQuadro: new ProjectV2Client({ token, fetchImpl: fetchDeLeitura }), quadroId }
+        : {}),
+      prisma: {
+        agentQuestion: {
+          findMany: (a: unknown) => app.prisma.agentQuestion.findMany(a as never),
+        },
+      },
+      hoje: hojeNoFuso(),
+    })
+  }
+
   // R6 do controlador: o mecanismo de publicação (Tarefa 12) muda raramente
   // mas NÃO é imutável — guardado em memória, por repositório, com validade
   // de uma hora. Sem coluna nova, sem migração: se o processo reinicia,
@@ -8293,6 +8367,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             agentQuestionService: (
               app as unknown as { agentQuestionService?: AgentQuestionService }
             ).agentQuestionService,
+            // D73/L4-T23: `montarContextoParaEscalada` está definida UMA VEZ
+            // fora deste laço (logo depois de `ghGet`/`fetchDoQuadro`) — aqui
+            // só um wrapper fino que fecha sobre o `args` deste tique.
+            montarContexto: (ctxArgs) =>
+              montarContextoParaEscalada(ctxArgs, {
+                githubToken: args.githubToken,
+                autonomia: args.autonomia,
+                runtimeConfig: args.runtimeConfig,
+              }),
             onInfo: (m) => app.log.info(`[Scheduler] ${m}`),
             onError: (err, m) => app.log.error(err, `[Scheduler] ${m}`),
           }

@@ -96,9 +96,9 @@ describe('reconciliarDuvidasEscaladasDoProjeto', () => {
     expect(chamada.text).toContain('tarefa #46 de acme/api')
     expect(chamada.options).toHaveLength(4)
     expect(chamada.options.slice(0, 3).map((o) => o.label)).toEqual([
-      'Pausar a tarefa e revisar depois',
-      'Seguir com a melhor suposição do RA mesmo assim',
-      'Pedir ao dev que abra o PR com o que tem',
+      'Pausar esta tarefa até eu decidir com calma',
+      'Seguir com a melhor decisão da equipe por agora',
+      'Entregar o que já está pronto para revisão',
     ])
   })
 
