@@ -3,6 +3,7 @@ import type { PrismaDevSession } from './dev-session-store.js'
 import { registrarEscalada } from './dev-session-store.js'
 import { lerMarca } from './pergunta-sem-resposta.js'
 import { perguntaExecutivaDeReserva } from './texto-de-escalada.js'
+import { contextoExecutivoVazio } from './contexto-executivo-da-pergunta.js'
 import { buildFreeTextOption } from './telegram-bot.js'
 import type { PrismaParaChaveDoDev } from './chave-do-dev-assincrono.js'
 import type { ultimaMensagemDoDevJules as ultimaMensagemDoDevJulesReal } from './jules-client.js'
@@ -127,9 +128,16 @@ export async function reconciliarDuvidasEscaladasDoProjeto(
         // vivo (painel/Telegram, tarefa #309 de GitOrchAI/gitorch): pergunta
         // em inglês, sem opções de verdade. `chaveDaSessaoDoDev`/
         // `ultimaMensagemDoDevJules` deixaram de ser necessários aqui.
+        // D73/L4-T23: `contextoExecutivoVazio()` aqui é DELIBERADO — este é
+        // um caminho de MIGRAÇÃO HISTÓRICA pontual (as 24 sessões presas de
+        // 02/09), não o caminho vivo de escalada; monta as 3 lacunas (sem
+        // sprint/objetivo/decisão) em vez de buscar quadro/issue/histórico
+        // de novo para sessões que já ficaram presas por dias. O texto
+        // continua honesto (nunca inventa) e continua citando a tarefa.
         const reserva = perguntaExecutivaDeReserva({
           issueNumber: sessao.issueNumber,
           repository: args.repository,
+          contexto: contextoExecutivoVazio(),
         })
         await perguntador.ask(args.userId, args.projectId, {
           text: reserva.text,

@@ -9,6 +9,10 @@ import {
   perguntaExecutivaDeReserva,
   OPCOES_DE_RESERVA_DE_DUVIDA_TECNICA,
 } from './texto-de-escalada.js'
+import {
+  contextoExecutivoVazio,
+  type ContextoExecutivoDaPergunta,
+} from './contexto-executivo-da-pergunta.js'
 import type { NotifiableProject } from './telegram-link.js'
 import { dedupKeyDeDuvidaDoDev } from './dedup-key-de-duvida.js'
 
@@ -27,6 +31,22 @@ export interface DepsDeEscalarDuvida {
   agentQuestionService?: Pick<AgentQuestionService, 'ask'> | undefined
   /** Injetável para teste; produção passa `responderSessaoJules` de verdade. */
   responderSessaoJules?: typeof responderSessaoJulesReal
+  /**
+   * D73/L4-T23: monta as 4 peças da história executiva (ciclo, entrega,
+   * decisões já tomadas, lacunas) para a pergunta de RESERVA contar a
+   * história em vez de citar a dúvida técnica do dev — ver
+   * `contexto-executivo-da-pergunta.ts`. `undefined` (nenhum dep
+   * configurado) e qualquer falha aqui dentro caem para
+   * `contextoExecutivoVazio()` — best-effort por contrato, MESMO princípio
+   * de `notify` em `agent-question.ts`: uma falha ao ENRIQUECER a pergunta
+   * nunca pode impedir a pergunta de NASCER (as lacunas entram no texto no
+   * lugar do dado que faltou).
+   */
+  montarContexto?: (args: {
+    issueNumber: number
+    repository: string
+    projectId: string
+  }) => Promise<ContextoExecutivoDaPergunta>
   onInfo: (mensagem: string) => void
   /** L4-T3/item 0: nunca `.catch(warn)` — a pergunta TEM de nascer; quem não
    *  conseguir loga ERROR (nunca silêncio) e a exceção sobe. */
@@ -155,18 +175,45 @@ export async function escalarDuvidaAoDono(
   // reserva INTEIRA (texto e opções) quando o modelo não trouxe texto
   // nenhum, ou trouxe 0 opções.
   const modeloTrouxeTraducaoValida = Boolean(perguntaExecutivaDoModelo) && opcoesDoModelo.length > 0
-  const { textoDaPergunta, opcoesReais } = modeloTrouxeTraducaoValida
-    ? {
-        textoDaPergunta: perguntaExecutivaDoModelo as string,
-        opcoesReais: completarOpcoesAte3(opcoesDoModelo),
-      }
-    : (() => {
-        const reserva = perguntaExecutivaDeReserva({
+  let textoDaPergunta: string
+  let opcoesReais: Array<{ label: string; value: string }>
+  if (modeloTrouxeTraducaoValida) {
+    textoDaPergunta = perguntaExecutivaDoModelo as string
+    opcoesReais = completarOpcoesAte3(opcoesDoModelo)
+  } else {
+    // D73/L4-T23: a reserva agora CONTA A HISTÓRIA (ciclo, entrega, decisões
+    // já tomadas) em vez de citar a dúvida técnica do dev — só busca o
+    // contexto quando de fato vai usar a reserva (o modelo não trouxe
+    // tradução válida); best-effort por contrato: uma falha aqui NUNCA pode
+    // impedir a pergunta de nascer (contextoExecutivoVazio() entra no lugar,
+    // com as lacunas declaradas no texto).
+    let contexto: ContextoExecutivoDaPergunta
+    if (deps.montarContexto) {
+      try {
+        contexto = await deps.montarContexto({
           issueNumber: args.issueNumber,
           repository: args.repository,
+          projectId: args.projectId,
         })
-        return { textoDaPergunta: reserva.text, opcoesReais: reserva.options }
-      })()
+      } catch (err) {
+        deps.onInfo(
+          `escalarDuvidaAoDono: não deu para montar o contexto executivo da tarefa ` +
+            `#${args.issueNumber} de ${args.repository} — a pergunta segue com as lacunas ` +
+            `declaradas: ${err instanceof Error ? err.message : String(err)}`
+        )
+        contexto = contextoExecutivoVazio()
+      }
+    } else {
+      contexto = contextoExecutivoVazio()
+    }
+    const reserva = perguntaExecutivaDeReserva({
+      issueNumber: args.issueNumber,
+      repository: args.repository,
+      contexto,
+    })
+    textoDaPergunta = reserva.text
+    opcoesReais = reserva.options
+  }
   // A2 (fix-up L4-T3): fonte ÚNICA do formato (dedup-key-de-duvida.ts) —
   // valida e lança cedo (nunca cria uma agent_question com dedupKey
   // quebrado que ninguém mais consegue casar de volta).

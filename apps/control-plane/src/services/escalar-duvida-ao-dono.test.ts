@@ -109,7 +109,13 @@ describe('escalarDuvidaAoDono — causa raiz medida 02/09 (destinoAposRa sem per
   // "Pergunta original do dev: 'I have successfully modified...'" com UM
   // botão só. A reserva agora é sempre a pergunta executiva determinística,
   // com 3 opções — NUNCA cita o texto do dev.
-  it('D72: sem perguntaExecutiva do modelo — pergunta executiva de RESERVA, nunca a pergunta crua do dev', async () => {
+  // D73/L4-T23 (04/09) — SUBSTITUI de novo o texto da reserva: o dono
+  // recusou também a versão de D72 ("O dev está travado numa dúvida
+  // técnica..."). Sem `montarContexto` configurado (caso deste teste), o
+  // contexto executivo é `contextoExecutivoVazio()` — as 3 lacunas aparecem
+  // com naturalidade, mas o texto CONTA A HISTÓRIA (ciclo → entrega →
+  // decisões → decisão que resta) em vez de citar dúvida/dev/RA.
+  it('D73: sem perguntaExecutiva do modelo — pergunta executiva conta a história, nunca a pergunta crua do dev', async () => {
     const deps = depsFalso()
 
     await escalarDuvidaAoDono(
@@ -123,17 +129,85 @@ describe('escalarDuvidaAoDono — causa raiz medida 02/09 (destinoAposRa sem per
       { text: string; options: Array<{ label: string; value: string }> },
     ]
     expect(chamada[2].text).toBe(
-      'O dev está travado numa dúvida técnica na tarefa #46 de acme/api e nem o RA conseguiu ' +
-        'resolver. O que fazer?'
+      'Este projeto ainda não tem uma sprint configurada.\n\n' +
+        'Não foi possível ler o objetivo desta tarefa.\n\n' +
+        'A equipe ainda não tinha registrado nenhuma decisão sobre esta tarefa.\n\n' +
+        'Falta uma decisão de negócio: como você quer seguir com a tarefa #46 de acme/api?'
     )
+    expect(chamada[2].text).not.toMatch(/\bdev\b|desenvolvedor|técnic/i)
     expect(chamada[2].text).not.toContain('Should I use bcrypt or argon2?')
     // 3 opções executivas + a 4ª "Outro" (D71: 3 objetivas + 1 aberta).
     expect(chamada[2].options).toHaveLength(4)
     expect(chamada[2].options.slice(0, 3).map((o) => o.label)).toEqual([
-      'Pausar a tarefa e revisar depois',
-      'Seguir com a melhor suposição do RA mesmo assim',
-      'Pedir ao dev que abra o PR com o que tem',
+      'Pausar esta tarefa até eu decidir com calma',
+      'Seguir com a melhor decisão da equipe por agora',
+      'Entregar o que já está pronto para revisão',
     ])
+  })
+
+  /**
+   * D73/L4-T23, item 5 — "o que o dono vê no Telegram é o texto completo".
+   * O caminho escolhido para a armadilha (`sendTelegramQuestion`/
+   * `notifyOwner` não têm parâmetro de contexto) foi embutir a história
+   * INTEIRA no próprio `text` — o mesmo campo que `notifyOwner`
+   * (plugins/telegram.ts) repassa literalmente para `sendTelegramQuestion`,
+   * que por sua vez manda `text` como `body.text` da API do Telegram
+   * (telegram-bot.test.ts já prova esse passo: "sendTelegramQuestion —
+   * ... expect(body.text).toBe(...)"). Esta prova fecha o elo de cima: o
+   * `text` que `ask()` recebe aqui É o texto com a história completa —
+   * nada se perde entre montar o contexto e chamar `ask()`.
+   */
+  it('D73, item 5: com montarContexto real, a história INTEIRA (ciclo/entrega/decisões) vai no text de ask() — o que chega ao Telegram', async () => {
+    const montarContexto = vi.fn(async () => ({
+      ciclo: 'Sprint 4 (01/09 a 04/09)',
+      entrega: 'O cliente sobe uma foto do produto e vê a prévia antes de publicar.',
+      decisoes: ['Usar o mesmo serviço de imagens que já processa as fotos do catálogo.'],
+      lacunas: [],
+    }))
+    const deps = depsFalso({ montarContexto })
+
+    await escalarDuvidaAoDono(
+      { destino: { tipo: 'perguntar-ao-dono', motivo: 'x' }, ...ARGS_BASE },
+      deps as never
+    )
+
+    expect(montarContexto).toHaveBeenCalledWith({
+      issueNumber: 46,
+      repository: 'acme/api',
+      projectId: 'proj1',
+    })
+    const chamada = deps.agentQuestionService.ask.mock.calls[0] as unknown as [
+      string,
+      string,
+      { text: string },
+    ]
+    expect(chamada[2].text).toBe(
+      'O time está no ciclo "Sprint 4 (01/09 a 04/09)".\n\n' +
+        'Esta tarefa entrega: O cliente sobe uma foto do produto e vê a prévia antes de publicar.\n\n' +
+        'A equipe já resolveu sozinha: Usar o mesmo serviço de imagens que já processa as fotos do catálogo.\n\n' +
+        'Falta uma decisão de negócio: como você quer seguir com a tarefa #46 de acme/api?'
+    )
+  })
+
+  it('D73: montarContexto falha (rede/banco) — a pergunta NASCE do mesmo jeito, com o contexto vazio (lacunas)', async () => {
+    const montarContexto = vi.fn(async () => {
+      throw new Error('rede caiu')
+    })
+    const deps = depsFalso({ montarContexto })
+
+    await escalarDuvidaAoDono(
+      { destino: { tipo: 'perguntar-ao-dono', motivo: 'x' }, ...ARGS_BASE },
+      deps as never
+    )
+
+    expect(deps.agentQuestionService.ask).toHaveBeenCalledTimes(1)
+    const chamada = deps.agentQuestionService.ask.mock.calls[0] as unknown as [
+      string,
+      string,
+      { text: string },
+    ]
+    expect(chamada[2].text).toContain('Este projeto ainda não tem uma sprint configurada.')
+    expect(deps.onInfo).toHaveBeenCalled()
   })
 
   it('com perguntaExecutiva do modelo E exatamente 3 opções: usa a tradução do modelo, não a reserva', async () => {
@@ -292,9 +366,9 @@ describe('escalarDuvidaAoDono — causa raiz medida 02/09 (destinoAposRa sem per
     ]
     expect(chamada[2].text).not.toBe('Podemos cobrar taxa extra por esta feature?')
     expect(chamada[2].options.slice(0, 3).map((o) => o.label)).toEqual([
-      'Pausar a tarefa e revisar depois',
-      'Seguir com a melhor suposição do RA mesmo assim',
-      'Pedir ao dev que abra o PR com o que tem',
+      'Pausar esta tarefa até eu decidir com calma',
+      'Seguir com a melhor decisão da equipe por agora',
+      'Entregar o que já está pronto para revisão',
     ])
   })
 
@@ -517,24 +591,24 @@ describe('completarOpcoesAte3 — nunca duplica, sempre fecha em 3 (pura, sem mo
   it('1 opção: completa com as 2 primeiras da reserva', () => {
     expect(completarOpcoesAte3([{ label: 'Sim', value: 'sim' }])).toEqual([
       { label: 'Sim', value: 'sim' },
-      { label: 'Pausar a tarefa e revisar depois', value: 'pausar' },
-      { label: 'Seguir com a melhor suposição do RA mesmo assim', value: 'seguir-suposicao-ra' },
+      { label: 'Pausar esta tarefa até eu decidir com calma', value: 'pausar' },
+      { label: 'Seguir com a melhor decisão da equipe por agora', value: 'seguir-suposicao-ra' },
     ])
   })
 
   it('0 opções: devolve só a reserva (as 3 primeiras)', () => {
     expect(completarOpcoesAte3([])).toEqual([
-      { label: 'Pausar a tarefa e revisar depois', value: 'pausar' },
-      { label: 'Seguir com a melhor suposição do RA mesmo assim', value: 'seguir-suposicao-ra' },
-      { label: 'Pedir ao dev que abra o PR com o que tem', value: 'pedir-pr' },
+      { label: 'Pausar esta tarefa até eu decidir com calma', value: 'pausar' },
+      { label: 'Seguir com a melhor decisão da equipe por agora', value: 'seguir-suposicao-ra' },
+      { label: 'Entregar o que já está pronto para revisão', value: 'pedir-pr' },
     ])
   })
 
   it('colisão de value com a reserva: pula a opção que duplicaria', () => {
     expect(completarOpcoesAte3([{ label: 'Pausar mesmo assim', value: 'pausar' }])).toEqual([
       { label: 'Pausar mesmo assim', value: 'pausar' },
-      { label: 'Seguir com a melhor suposição do RA mesmo assim', value: 'seguir-suposicao-ra' },
-      { label: 'Pedir ao dev que abra o PR com o que tem', value: 'pedir-pr' },
+      { label: 'Seguir com a melhor decisão da equipe por agora', value: 'seguir-suposicao-ra' },
+      { label: 'Entregar o que já está pronto para revisão', value: 'pedir-pr' },
     ])
   })
 })
