@@ -10,6 +10,7 @@ import {
   handleTelegramUpdate,
   handleTelegramQuestionReply,
   collapseTelegramQuestion,
+  fecharPerguntaNoTelegramAoResponderPeloPainel,
   buildFreeTextOption,
   FREE_TEXT_OPTION_VALUE,
   acharProjeto,
@@ -605,6 +606,150 @@ describe('collapseTelegramQuestion — a pergunta some com os botões depois de 
         fetchImpl,
       })
     ).toBe(false)
+  })
+
+  // D70 (02/09): o dono pode responder pelo painel também — quando ele
+  // responde por lá primeiro, a mensagem no Telegram precisa dizer isso, NUNCA
+  // fingir que foi um clique aqui (a frase "Você escolheu" mentiria sobre quem
+  // decidiu). `origem: 'panel'` é a única mudança; sem o parâmetro, o
+  // comportamento é IDÊNTICO ao de antes (ver o teste acima, que não passa
+  // `origem` e continua esperando "Você escolheu").
+  it('origem "panel": a mensagem diz que foi respondida pelo painel, nunca "Você escolheu"', async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response(JSON.stringify({ ok: true }), { status: 200 })
+    ) as unknown as typeof fetch
+
+    const ok = await collapseTelegramQuestion({
+      botToken: BOT,
+      chatId: '555',
+      messageId: 42,
+      questionText: 'Qual é o azul oficial do site?',
+      chosenLabel: '#2563EB',
+      origem: 'panel',
+      fetchImpl,
+    })
+
+    expect(ok).toBe(true)
+    const call = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    const body = JSON.parse(String(call?.[1]?.body))
+    expect(body.text).toBe('Qual é o azul oficial do site?\n\n✓ Já respondida pelo painel: #2563EB')
+    expect(body.reply_markup).toEqual({ inline_keyboard: [] })
+  })
+})
+
+describe('fecharPerguntaNoTelegramAoResponderPeloPainel — o painel fecha o Telegram quando responde primeiro (D70)', () => {
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  function fakeDeps(opts: { link?: any; fetchOk?: boolean }) {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ ok: opts.fetchOk ?? true }), {
+          status: (opts.fetchOk ?? true) ? 200 : 400,
+        })
+    ) as unknown as typeof fetch
+    const deps = {
+      prisma: {
+        telegramLink: {
+          findUnique: vi.fn(async ({ where }: any) =>
+            opts.link && where.userId === opts.link.userId ? opts.link : null
+          ),
+        },
+      },
+      botToken: BOT,
+      fetchImpl,
+    }
+    return { deps, fetchImpl }
+  }
+
+  const OPCOES = [
+    { label: '#2563EB', value: '#2563EB' },
+    { label: '#1E40AF', value: '#1E40AF' },
+  ]
+  const LINK_DONO = { userId: 'user_dono', status: 'linked', chatId: '555' }
+
+  it('sem telegramMessageId (a notificação original nunca chegou a sair) → não faz nada, devolve false', async () => {
+    const { deps, fetchImpl } = fakeDeps({ link: LINK_DONO })
+    const ok = await fecharPerguntaNoTelegramAoResponderPeloPainel(deps as any, {
+      userId: 'user_dono',
+      telegramMessageId: null,
+      questionText: 'Qual é o azul oficial do site?',
+      options: OPCOES,
+      resposta: '#2563EB',
+    })
+    expect(ok).toBe(false)
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('sem vínculo do Telegram (ninguém apertou Start) → não faz nada, devolve false', async () => {
+    const { deps, fetchImpl } = fakeDeps({ link: undefined })
+    const ok = await fecharPerguntaNoTelegramAoResponderPeloPainel(deps as any, {
+      userId: 'user_dono',
+      telegramMessageId: 42,
+      questionText: 'Qual é o azul oficial do site?',
+      options: OPCOES,
+      resposta: '#2563EB',
+    })
+    expect(ok).toBe(false)
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('vínculo ainda pending (Start não confirmado) → não faz nada, devolve false', async () => {
+    const { deps, fetchImpl } = fakeDeps({
+      link: { userId: 'user_dono', status: 'pending', chatId: null },
+    })
+    const ok = await fecharPerguntaNoTelegramAoResponderPeloPainel(deps as any, {
+      userId: 'user_dono',
+      telegramMessageId: 42,
+      questionText: 'Qual é o azul oficial do site?',
+      options: OPCOES,
+      resposta: '#2563EB',
+    })
+    expect(ok).toBe(false)
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('vínculo linked + mensagem existente → edita a mensagem no chat certo, com o rótulo da opção', async () => {
+    const { deps, fetchImpl } = fakeDeps({ link: LINK_DONO })
+    const ok = await fecharPerguntaNoTelegramAoResponderPeloPainel(deps as any, {
+      userId: 'user_dono',
+      telegramMessageId: 42,
+      questionText: 'Qual é o azul oficial do site?',
+      options: OPCOES,
+      resposta: '#1E40AF',
+    })
+    expect(ok).toBe(true)
+    const call = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(String(call?.[0])).toContain('/editMessageText')
+    const body = JSON.parse(String(call?.[1]?.body))
+    expect(body.chat_id).toBe('555')
+    expect(body.message_id).toBe(42)
+    expect(body.text).toBe('Qual é o azul oficial do site?\n\n✓ Já respondida pelo painel: #1E40AF')
+    expect(body.reply_markup).toEqual({ inline_keyboard: [] })
+  })
+
+  it('resposta em texto livre (não bate com nenhuma opção) → o rótulo é o próprio texto', async () => {
+    const { deps, fetchImpl } = fakeDeps({ link: LINK_DONO })
+    await fecharPerguntaNoTelegramAoResponderPeloPainel(deps as any, {
+      userId: 'user_dono',
+      telegramMessageId: 42,
+      questionText: 'Qual é o azul oficial do site?',
+      options: OPCOES,
+      resposta: 'Usar o roxo da marca nova',
+    })
+    const call = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    const body = JSON.parse(String(call?.[1]?.body))
+    expect(body.text).toContain('Usar o roxo da marca nova')
+  })
+
+  it('falha do Telegram não lança — best-effort, devolve false', async () => {
+    const { deps } = fakeDeps({ link: LINK_DONO, fetchOk: false })
+    const ok = await fecharPerguntaNoTelegramAoResponderPeloPainel(deps as any, {
+      userId: 'user_dono',
+      telegramMessageId: 42,
+      questionText: 'x',
+      options: [],
+      resposta: 'y',
+    })
+    expect(ok).toBe(false)
   })
 })
 

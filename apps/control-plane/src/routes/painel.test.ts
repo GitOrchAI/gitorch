@@ -1668,6 +1668,9 @@ describe('Rotas do painel do owner', () => {
       answer: null,
       answeredVia: null,
       answeredAt: null,
+      text: 'Qual é o azul oficial do site?',
+      options: [{ label: '#2563EB', value: '#2563EB' }],
+      telegramMessageId: null,
       ...over,
     })
     const responder = (payload: any) =>
@@ -1898,6 +1901,393 @@ describe('Rotas do painel do owner', () => {
       const res = await responder({ resposta: 'Junto' })
       expect(res.statusCode).toBe(200)
       expect(res.json()).not.toHaveProperty('aviso')
+    })
+
+    // D70 (02/09): "quem responde primeiro fecha o outro canal" — respondida
+    // pelo painel, a mensagem do Telegram (se existir) precisa parar de
+    // oferecer botões. A rota nunca edita o Telegram ela mesma: delega para
+    // a função injetada (produção: fecharPerguntaNoTelegramAoResponderPeloPainel,
+    // services/telegram-bot.ts — MESMA edição que o clique no Telegram usa).
+    describe('D70 — fecha o Telegram quando o painel responde primeiro', () => {
+      test('havia mensagem no Telegram → chama o fechamento com os dados certos', async () => {
+        const answerImpl = vi.fn().mockResolvedValue({
+          id: 'd1',
+          answer: '#2563EB',
+          answeredAt: new Date('2026-09-02T12:00:00Z'),
+          answeredVia: 'panel',
+          status: 'answered',
+        })
+        const fecharTelegramAoResponderPeloPainel = vi.fn().mockResolvedValue(true)
+        await build(
+          fakePrisma({
+            agentQuestion: {
+              findUnique: vi.fn().mockResolvedValue(pergunta({ telegramMessageId: 42 })),
+            },
+          }),
+          { answerImpl, fecharTelegramAoResponderPeloPainel }
+        )
+
+        const res = await responder({ resposta: '#2563EB' })
+
+        expect(res.statusCode).toBe(200)
+        expect(fecharTelegramAoResponderPeloPainel).toHaveBeenCalledWith({
+          userId: 'owner_1',
+          telegramMessageId: 42,
+          questionText: 'Qual é o azul oficial do site?',
+          options: [{ label: '#2563EB', value: '#2563EB' }],
+          resposta: '#2563EB',
+        })
+      })
+
+      test('sem mensagem no Telegram (telegramMessageId nulo) → ainda assim delega (a função decide que não há o que fechar)', async () => {
+        const answerImpl = vi.fn().mockResolvedValue({
+          id: 'd1',
+          answer: '#2563EB',
+          answeredAt: new Date('2026-09-02T12:00:00Z'),
+          answeredVia: 'panel',
+          status: 'answered',
+        })
+        const fecharTelegramAoResponderPeloPainel = vi.fn().mockResolvedValue(false)
+        await build(
+          fakePrisma({
+            agentQuestion: {
+              findUnique: vi.fn().mockResolvedValue(pergunta({ telegramMessageId: null })),
+            },
+          }),
+          { answerImpl, fecharTelegramAoResponderPeloPainel }
+        )
+
+        const res = await responder({ resposta: '#2563EB' })
+
+        expect(res.statusCode).toBe(200)
+        expect(fecharTelegramAoResponderPeloPainel).toHaveBeenCalledWith(
+          expect.objectContaining({ telegramMessageId: null })
+        )
+      })
+
+      test('o fechamento do Telegram falhando NUNCA derruba a resposta 200 ao painel (best-effort)', async () => {
+        const answerImpl = vi.fn().mockResolvedValue({
+          id: 'd1',
+          answer: '#2563EB',
+          answeredAt: new Date('2026-09-02T12:00:00Z'),
+          answeredVia: 'panel',
+          status: 'answered',
+        })
+        const fecharTelegramAoResponderPeloPainel = vi
+          .fn()
+          .mockRejectedValue(new Error('Telegram fora do ar'))
+        await build(
+          fakePrisma({
+            agentQuestion: {
+              findUnique: vi.fn().mockResolvedValue(pergunta({ telegramMessageId: 42 })),
+            },
+          }),
+          { answerImpl, fecharTelegramAoResponderPeloPainel }
+        )
+
+        const res = await responder({ resposta: '#2563EB' })
+
+        expect(res.statusCode).toBe(200)
+        expect(res.json()).toMatchObject({ status: 'answered', answer: '#2563EB' })
+      })
+
+      test('já respondida (409) → NÃO tenta fechar o Telegram de novo (só a resposta NOVA fecha o outro canal)', async () => {
+        const fecharTelegramAoResponderPeloPainel = vi.fn().mockResolvedValue(true)
+        await build(
+          fakePrisma({
+            agentQuestion: {
+              findUnique: vi.fn().mockResolvedValue(
+                pergunta({
+                  status: 'answered',
+                  answer: 'Separado',
+                  answeredVia: 'telegram',
+                  answeredAt: new Date('2026-08-27T12:00:00Z'),
+                })
+              ),
+            },
+          }),
+          { fecharTelegramAoResponderPeloPainel }
+        )
+
+        const res = await responder({ resposta: 'Junto' })
+
+        expect(res.statusCode).toBe(409)
+        expect(fecharTelegramAoResponderPeloPainel).not.toHaveBeenCalled()
+      })
+    })
+  })
+
+  // D69 (02/09) — o dono quer VER no painel (não só saber pelo Telegram) as
+  // respostas que o time deu ao DEV em nome dele, quando o QA/RA resolveu uma
+  // dúvida técnica sozinho sem nunca escalar (nenhuma agent_question nasce
+  // nesse caminho — services/duvida-do-dev.ts). LACUNA REAL, documentada no
+  // relatório da task: o produto não guarda o texto exato enviado ao dev; o
+  // único rastro durável é o "aprendizado" (Event.type='jules-learning') que
+  // registrarAprendizado grava para o QA escrever issues melhores — e só a
+  // origem 'resposta-tecnica' embute pergunta+resposta num resumo em texto.
+  describe('GET /api/v1/painel/respostas-ao-dev', () => {
+    const getRespostas = () =>
+      app.inject({
+        method: 'GET',
+        url: '/api/v1/painel/respostas-ao-dev',
+        headers: authHeaders,
+      })
+
+    test('sem sessão → 401', async () => {
+      const res = await app.inject({ method: 'GET', url: '/api/v1/painel/respostas-ao-dev' })
+      expect(res.statusCode).toBe(401)
+    })
+
+    test('dono sem projeto → itens vazio, mas SEMPRE com a lacuna explicada', async () => {
+      await build(fakePrisma({ project: { findMany: vi.fn().mockResolvedValue([]) } }))
+      const body = (await getRespostas()).json()
+      expect(body.itens).toEqual([])
+      expect(typeof body.lacuna).toBe('string')
+      expect(body.lacuna.length).toBeGreaterThan(0)
+    })
+
+    test('aprendizado de origem "resposta-tecnica" vira item; outras origens (ex.: a issue faltou contexto) NÃO aparecem', async () => {
+      const quando = new Date('2026-09-01T10:00:00Z')
+      await build(
+        fakePrisma({
+          project: {
+            findMany: vi.fn().mockResolvedValue([{ id: 'proj_1', wingId: 'acme/api' }]),
+          },
+          event: {
+            findMany: vi.fn().mockResolvedValue([
+              {
+                id: 'evt_resp',
+                projectId: 'proj_1',
+                createdAt: quando,
+                payload: {
+                  padrao: 'Pergunta técnica na issue #46 — "..." -> resposta: use o padrão X.',
+                  origem: 'resposta-tecnica',
+                  issueNumber: 46,
+                },
+              },
+              {
+                id: 'evt_contexto',
+                projectId: 'proj_1',
+                createdAt: quando,
+                payload: {
+                  padrao: 'O dev precisou perguntar na issue #47 — a issue faltou contexto.',
+                  origem: 'duvida-do-dev',
+                  issueNumber: 47,
+                },
+              },
+            ]),
+          },
+        })
+      )
+      const body = (await getRespostas()).json()
+      expect(body.itens).toEqual([
+        {
+          id: 'evt_resp',
+          projeto: 'acme/api',
+          issueNumber: 46,
+          quando: quando.toISOString(),
+          resumo: 'Pergunta técnica na issue #46 — "..." -> resposta: use o padrão X.',
+          corrigidoEm: null,
+        },
+      ])
+    })
+
+    test('já corrigido antes → carrega corrigidoEm no item', async () => {
+      const quando = new Date('2026-09-01T10:00:00Z')
+      await build(
+        fakePrisma({
+          project: {
+            findMany: vi.fn().mockResolvedValue([{ id: 'proj_1', wingId: 'acme/api' }]),
+          },
+          event: {
+            findMany: vi.fn().mockResolvedValue([
+              {
+                id: 'evt_resp',
+                projectId: 'proj_1',
+                createdAt: quando,
+                payload: {
+                  padrao: 'Pergunta técnica -> resposta: X.',
+                  origem: 'resposta-tecnica',
+                  issueNumber: 46,
+                  corrigidoEm: '2026-09-02T00:00:00.000Z',
+                  correcaoTexto: 'Na verdade é Y.',
+                },
+              },
+            ]),
+          },
+        })
+      )
+      const body = (await getRespostas()).json()
+      expect(body.itens[0].corrigidoEm).toBe('2026-09-02T00:00:00.000Z')
+    })
+
+    test('filtra por projeto do PRÓPRIO dono (Event.findMany recebe só os ids dele)', async () => {
+      const prisma = await build(
+        fakePrisma({
+          project: {
+            findMany: vi.fn().mockResolvedValue([{ id: 'p1', wingId: 'acme/api' }]),
+          },
+        })
+      )
+      await getRespostas()
+      expect(prisma.event.findMany.mock.calls[0][0].where).toMatchObject({
+        projectId: { in: ['p1'] },
+      })
+    })
+  })
+
+  describe('POST /api/v1/painel/respostas-ao-dev/:id/corrigir', () => {
+    const EVENTO = {
+      id: 'evt_1',
+      projectId: 'proj_1',
+      type: 'jules-learning',
+      createdAt: new Date('2026-09-01T10:00:00Z'),
+      payload: {
+        padrao: 'Pergunta técnica -> resposta: X.',
+        origem: 'resposta-tecnica',
+        issueNumber: 46,
+      },
+    }
+    const PROJETO = { id: 'proj_1', userId: 'owner_1', wingId: 'acme/api', autonomia: 'cuidar' }
+
+    const corrigir = (id: string, body: any) =>
+      app.inject({
+        method: 'POST',
+        url: `/api/v1/painel/respostas-ao-dev/${id}/corrigir`,
+        headers: authHeaders,
+        payload: body,
+      })
+
+    test('sem sessão → 401', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/painel/respostas-ao-dev/evt_1/corrigir',
+        payload: { texto: 'x' },
+      })
+      expect(res.statusCode).toBe(401)
+    })
+
+    test('texto vazio → 400', async () => {
+      await build(
+        fakePrisma({
+          event: { findFirst: vi.fn().mockResolvedValue(null), findUnique: vi.fn() },
+        })
+      )
+      expect((await corrigir('evt_1', { texto: '   ' })).statusCode).toBe(400)
+      expect((await corrigir('evt_1', {})).statusCode).toBe(400)
+    })
+
+    test('registro inexistente → 404', async () => {
+      await build(fakePrisma({ event: { findUnique: vi.fn().mockResolvedValue(null) } }))
+      const res = await corrigir('evt_1', { texto: 'Correção real' })
+      expect(res.statusCode).toBe(404)
+    })
+
+    test('registro de outro dono → 404 (mesma frase, anti-vazamento)', async () => {
+      await build(
+        fakePrisma({
+          event: { findUnique: vi.fn().mockResolvedValue(EVENTO) },
+          project: { findFirst: vi.fn().mockResolvedValue(null) },
+        })
+      )
+      const res = await corrigir('evt_1', { texto: 'Correção real' })
+      expect(res.statusCode).toBe(404)
+    })
+
+    test('registro sem issueNumber vinculado → 409', async () => {
+      await build(
+        fakePrisma({
+          event: {
+            findUnique: vi.fn().mockResolvedValue({
+              ...EVENTO,
+              payload: { padrao: 'x', origem: 'resposta-tecnica' },
+            }),
+          },
+          project: { findFirst: vi.fn().mockResolvedValue(PROJETO) },
+        })
+      )
+      const res = await corrigir('evt_1', { texto: 'Correção real' })
+      expect(res.statusCode).toBe(409)
+    })
+
+    test('autonomia "só olhar" → 403, nunca chama o GitHub', async () => {
+      const fetchFalso = vi.fn()
+      vi.stubGlobal('fetch', fetchFalso)
+      await build(
+        fakePrisma({
+          event: { findUnique: vi.fn().mockResolvedValue(EVENTO) },
+          project: {
+            findFirst: vi.fn().mockResolvedValue({ ...PROJETO, autonomia: 'so_olhar' }),
+          },
+        })
+      )
+      const res = await corrigir('evt_1', { texto: 'Correção real' })
+      expect(res.statusCode).toBe(403)
+      expect(fetchFalso).not.toHaveBeenCalled()
+      vi.unstubAllGlobals()
+    })
+
+    test('sem token do GitHub → 503', async () => {
+      await build(
+        fakePrisma({
+          event: { findUnique: vi.fn().mockResolvedValue(EVENTO) },
+          project: { findFirst: vi.fn().mockResolvedValue(PROJETO) },
+        })
+      )
+      ;(app as any).engineConnections = { getRawGithubToken: vi.fn().mockResolvedValue(null) }
+      const res = await corrigir('evt_1', { texto: 'Correção real' })
+      expect(res.statusCode).toBe(503)
+    })
+
+    test('sucesso → comenta na issue certa e marca corrigidoEm no evento', async () => {
+      const eventUpdate = vi.fn().mockResolvedValue({})
+      await build(
+        fakePrisma({
+          event: { findUnique: vi.fn().mockResolvedValue(EVENTO), update: eventUpdate },
+          project: { findFirst: vi.fn().mockResolvedValue(PROJETO) },
+        })
+      )
+      ;(app as any).engineConnections = { getRawGithubToken: vi.fn().mockResolvedValue('tok_1') }
+
+      const fetchFalso = vi.fn<typeof fetch>(
+        async () => new Response(JSON.stringify({ id: 999 }), { status: 201 })
+      )
+      vi.stubGlobal('fetch', fetchFalso)
+
+      const res = await corrigir('evt_1', { texto: 'Na verdade é Y.' })
+
+      expect(res.statusCode).toBe(200)
+      expect(res.json().corrigidoEm).toBeTruthy()
+      const call = fetchFalso.mock.calls[0]
+      expect(String(call?.[0])).toBe('https://api.github.com/repos/acme/api/issues/46/comments')
+      const body = JSON.parse(String((call?.[1] as any)?.body))
+      expect(body.body).toContain('Na verdade é Y.')
+      expect(eventUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'evt_1' },
+          data: expect.objectContaining({
+            payload: expect.objectContaining({ correcaoTexto: 'Na verdade é Y.' }),
+          }),
+        })
+      )
+      vi.unstubAllGlobals()
+    })
+
+    test('GitHub recusa o comentário → 502, nunca finge sucesso', async () => {
+      await build(
+        fakePrisma({
+          event: { findUnique: vi.fn().mockResolvedValue(EVENTO) },
+          project: { findFirst: vi.fn().mockResolvedValue(PROJETO) },
+        })
+      )
+      ;(app as any).engineConnections = { getRawGithubToken: vi.fn().mockResolvedValue('tok_1') }
+
+      const fetchFalso = vi.fn(async () => new Response('nope', { status: 500 }))
+      vi.stubGlobal('fetch', fetchFalso)
+
+      const res = await corrigir('evt_1', { texto: 'Na verdade é Y.' })
+      expect(res.statusCode).toBe(502)
+      vi.unstubAllGlobals()
     })
   })
 

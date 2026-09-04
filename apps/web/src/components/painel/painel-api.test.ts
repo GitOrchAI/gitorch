@@ -5,6 +5,7 @@ import {
   enviarPedido,
   responderDecisao,
   salvarDuvidaConfig,
+  corrigirRespostaAoDev,
   descreverEventoSSE,
   buscarArvoreDoPedido,
   ROTAS,
@@ -162,6 +163,47 @@ describe('salvarDuvidaConfig (ESTEIRA-T14)', () => {
   })
 })
 
+// D69 (02/09): corrige uma resposta que o time deu ao dev em nome do dono —
+// POST /api/v1/painel/respostas-ao-dev/:id/corrigir (vira um comentário real
+// na issue, control-plane/routes/painel.ts).
+describe('corrigirRespostaAoDev (D69)', () => {
+  it('200 devolve ok + corrigidoEm', async () => {
+    const r = await corrigirRespostaAoDev('evt_1', 'Na verdade é Y.', {
+      fetchImpl: fetchQueRetorna(200, { ok: true, corrigidoEm: '2026-09-02T00:00:00.000Z' }),
+    })
+    expect(r).toEqual({ ok: true, corrigidoEm: '2026-09-02T00:00:00.000Z' })
+  })
+  it('400 pede para escrever a correção', async () => {
+    const r = await corrigirRespostaAoDev('evt_1', '', { fetchImpl: fetchQueRetorna(400, {}) })
+    expect(r).toEqual({ ok: false, erro: 'Escreva a correção.' })
+  })
+  it('404 diz que o registro sumiu', async () => {
+    const r = await corrigirRespostaAoDev('evt_1', 'x', { fetchImpl: fetchQueRetorna(404, {}) })
+    expect(r).toEqual({ ok: false, erro: 'Registro não encontrado.' })
+  })
+  it('409 diz que não há tarefa vinculada', async () => {
+    const r = await corrigirRespostaAoDev('evt_1', 'x', { fetchImpl: fetchQueRetorna(409, {}) })
+    expect(r).toEqual({
+      ok: false,
+      erro: 'Este registro não tem uma tarefa vinculada para corrigir.',
+    })
+  })
+  it('403 diz que a autonomia não permite', async () => {
+    const r = await corrigirRespostaAoDev('evt_1', 'x', {
+      fetchImpl: fetchQueRetorna(403, { error: 'Este projeto está em "Só olhar"...' }),
+    })
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.erro).toBe('Este projeto está em "Só olhar"...')
+  })
+  it('502/outro erro cai no fallback', async () => {
+    const r = await corrigirRespostaAoDev('evt_1', 'x', { fetchImpl: fetchQueRetorna(502, {}) })
+    expect(r).toEqual({
+      ok: false,
+      erro: 'Não consegui publicar a correção agora. Tente de novo em instantes.',
+    })
+  })
+})
+
 describe('descreverEventoSSE', () => {
   it('usa a descrição do payload', () => {
     expect(descreverEventoSSE(JSON.stringify({ descricao: 'Jules subiu algo' }))).toBe(
@@ -220,6 +262,12 @@ describe('ROTAS', () => {
     expect(ROTAS.pulso).toBe('/api/v1/painel/pulso')
     expect(ROTAS.agentes).toBe('/api/v1/painel/agentes')
     expect(ROTAS.arvoreDoPedido).toBe('/api/v1/painel/pedidos/arvore')
+  })
+  it('respostasAoDev e corrigirRespostaAoDev (D69)', () => {
+    expect(ROTAS.respostasAoDev).toBe('/api/v1/painel/respostas-ao-dev')
+    expect(ROTAS.corrigirRespostaAoDev('evt_1')).toBe(
+      '/api/v1/painel/respostas-ao-dev/evt_1/corrigir'
+    )
   })
 })
 

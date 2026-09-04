@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { resolveOwnerId } from '../lib/resolve-owner-id.js'
 import { descreverEvento, papelDoAgente, estadoDoAgente } from '../services/descrever-evento.js'
 import type { AgentQuestionRecord } from '../services/agent-question.js'
+import { fecharPerguntaNoTelegramAoResponderPeloPainel } from '../services/telegram-bot.js'
 import {
   lerArvoreDePedidos,
   lerArvoreDoPedido,
@@ -45,6 +46,8 @@ import { aplicarOrdemDosPedidos } from '../services/ordem-dos-pedidos.js'
 import { exigirPermissao } from '@gitorch/cadence'
 import { ProjectV2Client } from '@gitorch/github-sync'
 import { fetchDoRepositorio, fetchSemPermissao } from '../services/guarda-de-autonomia.js'
+import { TIPO_DO_APRENDIZADO } from '../services/memoria-do-jules.js'
+import { criarComentarNaIssue } from '../services/suposicao-imediata-de-duvida.js'
 import {
   normalizarRegua,
   CRITERIOS_DE_PRONTO,
@@ -73,6 +76,30 @@ const LIMITE_FRIO_SEGUNDOS = 3600
 // população que os números do cabeçalho contam.
 const ENTREGAS_POR_PAGINA = 25
 const ENTREGAS_POR_PAGINA_MAX = 100
+
+// D69 (02/09) — GET /painel/respostas-ao-dev. LACUNA REAL, e por isso
+// declarada AQUI, na própria resposta, em vez de escondida num comentário: o
+// produto não guarda o texto exato que foi enviado ao dev quando o QA/RA
+// resolveu uma dúvida técnica sozinho. O único rastro durável hoje é o
+// "aprendizado" (services/memoria-do-jules.ts, Event.type='jules-learning')
+// que o produto grava para o QA escrever issues melhores — e só a origem
+// 'resposta-tecnica' embute a pergunta+resposta num resumo em texto. Uma
+// dúvida que o QA resolveu sem o RA nunca gerar um aprendizado NÃO aparece
+// aqui — não existe tabela nenhuma que grave isso hoje.
+const LACUNA_RESPOSTAS_AO_DEV =
+  'O produto ainda não guarda o texto exato que foi enviado ao dev — isto é um resumo aprendido a ' +
+  'partir da pergunta e da resposta, registrado só quando o time tentou entender o padrão para ' +
+  'escrever tarefas melhores da próxima vez. Pode haver respostas dadas ao dev que não aparecem aqui.'
+
+/** Item de "respostas ao dev" (D69) — o formato exposto pela rota. */
+interface RespostaAoDevView {
+  id: string
+  projeto: string | null
+  issueNumber: number | null
+  quando: string
+  resumo: string
+  corrigidoEm: string | null
+}
 
 /**
  * Injeções opcionais (testes). Em produção os defaults são usados.
@@ -104,6 +131,23 @@ export interface PainelRoutesOpts {
     valor: string,
     via: 'telegram' | 'panel'
   ) => Promise<AgentQuestionRecord | null>
+  /**
+   * D70 (02/09) — "quem responde primeiro fecha o outro canal": depois que o
+   * painel registra a resposta, esta função tenta colapsar a mensagem que o
+   * Telegram já tinha mandado (se mandou). Default:
+   * `fecharPerguntaNoTelegramAoResponderPeloPainel` (services/telegram-bot.ts)
+   * — a MESMA edição (`collapseTelegramQuestion`) que o clique no Telegram já
+   * usa, sem bot token configurado vira no-op. BEST-EFFORT por contrato: a
+   * rota nunca deixa uma falha aqui virar erro para o dono — `answer()` já é
+   * a fonte de verdade antes disto rodar. Injetável só nos testes.
+   */
+  fecharTelegramAoResponderPeloPainel?: (args: {
+    userId: string
+    telegramMessageId: number | null
+    questionText: string
+    options: unknown
+    resposta: string
+  }) => Promise<boolean>
   /**
    * Lê a árvore dos pedidos no GitHub. Default: o serviço real, com os
    * projetos do dono e a credencial dele. Injetável só nos testes.
@@ -167,6 +211,35 @@ export const painelRoutes = async (
       const svc = app.agentQuestionService
       if (!svc) throw new Error('agentQuestionService não registrado (telegramPlugin ausente)')
       return svc.answer(id, valor, via)
+    })
+
+  // D70: default de produção — sem GITORCH_TELEGRAM_BOT_TOKEN (self-host sem
+  // Telegram, ou ambiente de teste) vira no-op, igual ao resto do produto
+  // quando o bot não está configurado.
+  const fecharTelegramAoResponderPeloPainel =
+    opts.fecharTelegramAoResponderPeloPainel ??
+    ((args: {
+      userId: string
+      telegramMessageId: number | null
+      questionText: string
+      options: unknown
+      resposta: string
+    }) => {
+      const botToken =
+        process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN']
+      if (!botToken) return Promise.resolve(false)
+      return fecharPerguntaNoTelegramAoResponderPeloPainel(
+        { prisma: app.prisma, botToken },
+        {
+          userId: args.userId,
+          telegramMessageId: args.telegramMessageId,
+          questionText: args.questionText,
+          options: Array.isArray(args.options)
+            ? (args.options as unknown as { label: string; value: string }[])
+            : [],
+          resposta: args.resposta,
+        }
+      )
     })
 
   const lerPedidos =
@@ -761,6 +834,27 @@ export const painelRoutes = async (
         return reply.code(404).send({ error: 'Decisão não encontrada.' })
       }
 
+      // D70: "quem responde primeiro fecha o outro canal" — a resposta já
+      // está gravada (answer() é a fonte de verdade); isto só tenta colapsar
+      // a mensagem que o Telegram mandou, se mandou. BEST-EFFORT por
+      // contrato: uma falha aqui (Telegram fora do ar, sem vínculo, etc.)
+      // NUNCA pode virar erro para o dono — ele já recebeu a resposta.
+      try {
+        await fecharTelegramAoResponderPeloPainel({
+          userId: pergunta.userId,
+          telegramMessageId: pergunta.telegramMessageId,
+          questionText: pergunta.text,
+          options: pergunta.options,
+          resposta: atualizada.answer ?? resposta,
+        })
+      } catch (err) {
+        app.log.warn(
+          `[painel] não deu para fechar a pergunta ${id} no Telegram: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        )
+      }
+
       // Nunca vaza userId, dedupKey, telegramMessageId nem projectId.
       return reply.send({
         id: atualizada.id,
@@ -776,6 +870,158 @@ export const painelRoutes = async (
         // continua idêntico a hoje.
         ...(atualizada.avisoDoManipulador ? { aviso: atualizada.avisoDoManipulador } : {}),
       })
+    }
+  )
+
+  // GET /api/v1/painel/respostas-ao-dev — D69 (02/09): o dono quer VER (no
+  // painel, não só descobrir pelo Telegram) as respostas que o time deu ao
+  // DEV em nome dele, quando o QA/RA resolveu uma dúvida técnica sozinho sem
+  // nunca escalar ao dono (nenhuma agent_question nasce nesse caminho — ver
+  // `destinoDaDuvida`/`destinoAposRa`, services/duvida-do-dev.ts). Lê o que
+  // JÁ é gravado hoje (Event.type='jules-learning', ver LACUNA_RESPOSTAS_AO_DEV
+  // acima) — nenhuma tabela nova.
+  app.get(
+    '/api/v1/painel/respostas-ao-dev',
+    RATE_LIMIT_POLLING,
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      if (!request.user) return reply.code(401).send(NAO_LOGADO)
+      const ownerId = await resolveOwnerId(app.prisma, request.user)
+      const projetos = await app.prisma.project.findMany({
+        where: { userId: ownerId },
+        select: { id: true, wingId: true },
+      })
+      if (projetos.length === 0) {
+        return reply.send({ itens: [], lacuna: LACUNA_RESPOSTAS_AO_DEV })
+      }
+
+      const wingPorId = new Map(projetos.map((p) => [p.id, p.wingId]))
+      const linhas = await app.prisma.event.findMany({
+        where: { projectId: { in: [...wingPorId.keys()] }, type: TIPO_DO_APRENDIZADO },
+        orderBy: { createdAt: 'desc' },
+        take: 50,
+      })
+
+      const itens: RespostaAoDevView[] = []
+      for (const linha of linhas) {
+        const payload = linha.payload as {
+          padrao?: string
+          origem?: string
+          issueNumber?: number
+          corrigidoEm?: string
+        } | null
+        // Só 'resposta-tecnica' embute a pergunta+resposta de verdade — as
+        // demais origens (ex.: 'duvida-do-dev', D52) só anotam que a issue
+        // faltou contexto, sem o texto da resposta que foi dada ao dev.
+        if (!payload || payload.origem !== 'resposta-tecnica') continue
+        if (!payload.padrao || payload.padrao.trim() === '') continue
+        itens.push({
+          id: linha.id,
+          projeto: wingPorId.get(linha.projectId) ?? null,
+          issueNumber: payload.issueNumber ?? null,
+          quando: linha.createdAt.toISOString(),
+          resumo: payload.padrao,
+          corrigidoEm: payload.corrigidoEm ?? null,
+        })
+      }
+
+      return reply.send({ itens, lacuna: LACUNA_RESPOSTAS_AO_DEV })
+    }
+  )
+
+  // POST /api/v1/painel/respostas-ao-dev/:id/corrigir — D69: o dono discorda
+  // de uma resposta que o time deu ao dev em seu nome e quer corrigi-la. Sem
+  // garantia de sessão viva do dev neste ponto (o aprendizado pode ser de
+  // dias atrás) — a correção vira um COMENTÁRIO REAL na issue, o mesmo canal
+  // que `retomar-sessao-com-resposta.ts` já usa como retaguarda quando não há
+  // sessão viva. Mesma guarda de autonomia das outras escritas do painel
+  // (`exigirPermissao` ANTES da credencial, para o 403 dizer a causa certa).
+  app.post<{ Params: { id: string }; Body: { texto?: string } }>(
+    '/api/v1/painel/respostas-ao-dev/:id/corrigir',
+    { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      if (!request.user) return reply.code(401).send(NAO_LOGADO)
+      const { id } = request.params
+      const texto = (request.body?.texto ?? '').trim()
+      if (!texto) return reply.code(400).send({ error: 'Escreva a correção.' })
+
+      const ownerId = await resolveOwnerId(app.prisma, request.user)
+      const evento = await app.prisma.event.findUnique({ where: { id } })
+      if (!evento) return reply.code(404).send({ error: 'Registro não encontrado.' })
+
+      // Inexistente e "de outro dono" devolvem a MESMA frase — mesmo
+      // anti-vazamento das outras rotas do painel.
+      const projeto = await app.prisma.project.findFirst({
+        where: { id: evento.projectId, userId: ownerId },
+        select: { wingId: true, autonomia: true },
+      })
+      if (!projeto) return reply.code(404).send({ error: 'Registro não encontrado.' })
+
+      const payload = evento.payload as { issueNumber?: number } | null
+      const issueNumber = payload?.issueNumber
+      if (!issueNumber) {
+        return reply
+          .code(409)
+          .send({ error: 'Este registro não tem uma tarefa vinculada para eu comentar.' })
+      }
+
+      // A PERMISSÃO É CONFERIDA ANTES DA CREDENCIAL — mesma ordem de
+      // /api/v1/painel/ordem, e pelo mesmo motivo: quem escolheu "só olhar"
+      // merece ouvir exatamente isso, não uma falha de infraestrutura.
+      try {
+        exigirPermissao(projeto.autonomia, 'propor')
+      } catch (err) {
+        return reply.code(403).send({ error: (err as Error).message })
+      }
+
+      const token = (await app.engineConnections?.getRawGithubToken(ownerId)) ?? null
+      if (!token) return reply.code(503).send({ error: 'CORRECAO_INDISPONIVEL' })
+
+      try {
+        await criarComentarNaIssue({
+          fetchDoCliente: fetchDoRepositorio({ nivel: () => projeto.autonomia }),
+          repository: projeto.wingId,
+          githubToken: token,
+          onWarn: (m) => app.log.warn(`[painel] ${m}`),
+        })({
+          issueNumber,
+          texto: 'Correção do dono sobre a resposta que demos a você em nome dele:\n\n' + texto,
+        })
+      } catch (err) {
+        app.log.warn(
+          `[painel] corrigir resposta-ao-dev ${id} falhou: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        )
+        return reply
+          .code(502)
+          .send({ error: 'Não consegui publicar a correção agora. Tente de novo em instantes.' })
+      }
+
+      // Marca a correção NO PRÓPRIO evento (merge raso, nunca substituição —
+      // mesmo padrão de duvida-config acima) para a tela parar de oferecer
+      // "corrigir" de novo neste item. Best-effort: o comentário já chegou
+      // ao dev (fonte de verdade); uma falha aqui não desfaz isso.
+      const corrigidoEm = new Date().toISOString()
+      await app.prisma.event
+        .update({
+          where: { id },
+          data: {
+            payload: {
+              ...(evento.payload as Record<string, unknown>),
+              corrigidoEm,
+              correcaoTexto: texto,
+            },
+          },
+        })
+        .catch((err: unknown) =>
+          app.log.warn(
+            `[painel] não deu para marcar a correção ${id}: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          )
+        )
+
+      return reply.send({ ok: true, corrigidoEm })
     }
   )
 

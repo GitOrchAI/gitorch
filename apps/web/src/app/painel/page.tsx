@@ -36,7 +36,11 @@ import {
   fetchAgentQuestions,
   type AgentQuestionView,
 } from '../../components/painel/agent-questions'
-import { ROTAS, responderDecisao } from '../../components/painel/painel-api'
+import {
+  fetchRespostasAoDev,
+  type RespostaAoDevView,
+} from '../../components/painel/respostas-ao-dev'
+import { ROTAS, responderDecisao, corrigirRespostaAoDev } from '../../components/painel/painel-api'
 import { usePainelBusca } from '../../components/painel/usePainelBusca'
 import { Ad, AdMark } from '../../components/painel/PainelIcons'
 import type { DecisaoView } from '../../components/painel/PainelUI'
@@ -145,6 +149,11 @@ export default function PainelOwner() {
   const [decisoes, setDecisoes] = useState<DecisaoView[]>([])
   const [avisoDecisao, setAvisoDecisao] = useState<string | null>(null)
 
+  // D69 (02/09): o que o time respondeu ao DEV em nome do dono — a lacuna
+  // (o que falta) vem do PRÓPRIO servidor, nunca inventada aqui.
+  const [respostasAoDev, setRespostasAoDev] = useState<RespostaAoDevView[]>([])
+  const [lacunaRespostasAoDev, setLacunaRespostasAoDev] = useState('')
+
   useEffect(() => {
     let vivo = true
     fetch(`${API_BASE_URL}/api/v1/auth/me`, { credentials: 'include' })
@@ -167,6 +176,19 @@ export default function PainelOwner() {
     let vivo = true
     fetchAgentQuestions(API_BASE_URL).then((qs) => {
       if (vivo) setDecisoes(qs.map(paraDecisao))
+    })
+    return () => {
+      vivo = false
+    }
+  }, [autenticado])
+
+  useEffect(() => {
+    if (!autenticado) return
+    let vivo = true
+    fetchRespostasAoDev(API_BASE_URL).then((r) => {
+      if (!vivo) return
+      setRespostasAoDev(r.itens)
+      setLacunaRespostasAoDev(r.lacuna)
     })
     return () => {
       vivo = false
@@ -197,6 +219,21 @@ export default function PainelOwner() {
       setDecisoes((ds) =>
         ds.map((d) => (d.id === id ? { ...d, st: 'respondida', resposta: ja } : d))
       )
+    }
+    setAvisoDecisao(r.erro)
+  }, [])
+
+  // D69: corrige uma resposta que o time deu ao dev — vira um comentário novo
+  // na tarefa. Reusa a MESMA faixa de aviso da tela de decisões (nenhuma UI
+  // duplicada para "deu erro").
+  const corrigirAoDev = useCallback(async (id: string, texto: string) => {
+    setAvisoDecisao(null)
+    const r = await corrigirRespostaAoDev(id, texto)
+    if (r.ok) {
+      setRespostasAoDev((itens) =>
+        itens.map((i) => (i.id === id ? { ...i, corrigidoEm: r.corrigidoEm } : i))
+      )
+      return
     }
     setAvisoDecisao(r.erro)
   }, [])
@@ -255,6 +292,9 @@ export default function PainelOwner() {
             aviso={avisoDecisao}
             foco={foco}
             setFoco={setFoco}
+            respostasAoDev={respostasAoDev}
+            lacunaRespostasAoDev={lacunaRespostasAoDev}
+            corrigirRespostaAoDev={corrigirAoDev}
           />
         )
       case 'entregas':
