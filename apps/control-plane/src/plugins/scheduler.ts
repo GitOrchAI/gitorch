@@ -390,6 +390,7 @@ import {
   quandoACotaVolta,
   recadoDeTetoDeUso,
   recadoDeMotoresEsgotados,
+  deveAvisarMotoresEsgotadosDeNovo,
 } from '../services/teto-de-uso-da-conta.js'
 import { umaAcordadaPorCiclo } from '../services/uma-acordada-por-ciclo.js'
 import { relogioDaAgenda } from '../services/espalhar-agendas.js'
@@ -2595,15 +2596,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // fora do escopo desta tarefa.
   const avisosDeCredencialExpirada = new Map<string, number>()
 
-  // L4-T22, item 3: dedup do aviso EXECUTIVO de "a cadeia inteira ficou sem
-  // cota" — MESMA disciplina de `avisosDeCredencialExpirada` acima
-  // (`deveAvisarDeNovo`, em memória do processo, uma vez por dono+projeto por
-  // janela de 24h): sem isto, cada tique que esgotasse a cadeia de novo (o
-  // motor não volta sozinho antes do prazo) mandaria o mesmo recado de novo —
-  // SPAM apaga sinal tanto quanto silêncio. Map SEPARADO do de credencial
-  // expirada de propósito: são dois avisos com conteúdo e gatilho diferentes,
-  // e compartilhar a chave faria um apagar o cooldown do outro.
-  const avisosDeMotoresEsgotados = new Map<string, number>()
+  // L4-T22, item 3: o aviso EXECUTIVO de "a cadeia inteira ficou sem cota"
+  // NÃO usa Map em memória (fix-up, item 4/6) — o control-plane reinicia a
+  // cada publicação e um Map perderia a marca a cada deploy, mandando o
+  // mesmo recado de novo dentro da MESMA janela de 24h. O dedup vive em
+  // `Project.motoresEsgotadosAvisadoEm` (coluna, lida e gravada no bloco que
+  // manda o aviso, dentro do `for` de `executeMissionWithFailover`) — sem
+  // Map, não há o que vazar por idade.
 
   /**
    * A fila de acordadas de julgamento que o SM levanta a cada ciclo. A regra
@@ -3054,6 +3053,25 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // Sem isto, o teto diário não teria como distinguir uma missão que fez
     // trabalho e falhou de uma que nem chegou a usar o motor.
     let falhaDeCredencial = false
+    // Fix-up L4-T22, item 3: o aviso EXECUTIVO de "cadeia esgotada" tem que
+    // olhar a CADEIA INTEIRA, não só o ÚLTIMO erro. A condição original
+    // (`isLast && engineFault && ehTetoDeUsoDaConta(lastError)`) checava
+    // exclusivamente o erro do ÚLTIMO degrau — dois motores caindo por cota
+    // seguidos de um terceiro caindo por OUTRO motivo de motor (credencial
+    // expirada, 429 sem texto de teto) fazia esta condição ser falsa e o
+    // dono não recebia NADA, o mesmo silêncio que a tarefa veio consertar.
+    // `todasFalhasForamDeMotor` cai para falso assim que QUALQUER degrau
+    // falhar por algo que NÃO é falha de motor (a cadeia já para de
+    // qualquer forma nesse caso, ver os `break`s abaixo — mas a marcação
+    // aqui garante que o aviso executivo nunca dispara sobre uma cadeia que
+    // não esgotou por falha de motor). `algumaFalhaFoiPorCota` sobe assim
+    // que QUALQUER degrau bater no teto de uso, mesmo que não seja o
+    // último. `todasFalhasForamPorCota` cai assim que um degrau falhar por
+    // OUTRO motivo de motor — é o que decide se o recado final precisa
+    // admitir que a causa foi MISTA (`misto`, recadoDeMotoresEsgotados).
+    let todasFalhasForamDeMotor = true
+    let algumaFalhaFoiPorCota = false
+    let todasFalhasForamPorCota = true
     // Tira da cadeia o motor que morreu pedindo login. Ele volta sozinho — por
     // sucesso ou por tempo — e a cadeia inteira em pausa passa mesmo assim,
     // porque ficar sem motor nenhum seria trocar desperdício por paralisação.
@@ -4530,6 +4548,17 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           }
         }
         const engineFault = isEngineFault(err, lastError)
+        // Fix-up L4-T22, item 3: agrega a classificação deste degrau à
+        // cadeia inteira (ver comentário das três variáveis, declaradas
+        // antes do `for`) — não substitui `engineFault`, que continua sendo
+        // só deste degrau (usado logo abaixo para o `continue`/pausa).
+        if (!engineFault) {
+          todasFalhasForamDeMotor = false
+        } else if (ehTetoDeUsoDaConta(lastError)) {
+          algumaFalhaFoiPorCota = true
+        } else {
+          todasFalhasForamPorCota = false
+        }
         if (engineFault) {
           // ESTA linha de log apareceu 54 vezes no journal de 31/08 numa janela
           // de 9h48 — 24 vezes com o MESMO `invalid model selection` e 30 com o
@@ -4545,28 +4574,76 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           continue
         }
 
-        // L4-T22, item 3: ESGOTOU A CADEIA INTEIRA (este era o ÚLTIMO degrau)
-        // e o motivo foi COTA — não auth, não crash de processo, não erro do
-        // GitHub. Um aviso por motor (`recadoDeTetoDeUso`, acima) já saiu
-        // para cada degrau que bateu no teto; este é o resumo EXECUTIVO
-        // diferente: não sobrou motor NENHUM para tentar, e enquanto isso
-        // durar, o dev assíncrono acumula dúvida sem resposta. Quem não é
-        // técnico não precisa saber qual motor caiu — precisa saber que o
-        // time ficou sem capacidade e até quando.
-        if (isLast && engineFault && ehTetoDeUsoDaConta(lastError)) {
-          const chaveDeMotoresEsgotados = `motoresEsgotados:${project.userId ?? project.id}`
-          if (deveAvisarDeNovo(avisosDeMotoresEsgotados, chaveDeMotoresEsgotados, Date.now())) {
-            avisosDeMotoresEsgotados.set(chaveDeMotoresEsgotados, Date.now())
+        // L4-T22, item 3 (fix-up pós-revisão): ESGOTOU A CADEIA INTEIRA (este
+        // era o ÚLTIMO degrau) e TODOS os degraus tentados falharam por
+        // FALHA DE MOTOR (nunca GitHub, nunca um bug qualquer), com PELO
+        // MENOS UM deles batendo no teto de uso — não precisa ser o último.
+        // A versão original só olhava `ehTetoDeUsoDaConta(lastError)` (o
+        // ÚLTIMO erro): dois motores por cota seguidos de um terceiro por
+        // OUTRO motivo de motor (credencial, 429 sem texto de teto) fazia
+        // essa condição falhar e o dono não recebia NADA — o mesmo silêncio
+        // que esta tarefa veio matar. Um aviso por motor (`recadoDeTetoDeUso`,
+        // acima) já saiu para cada degrau que bateu no teto; este é o resumo
+        // EXECUTIVO diferente: não sobrou motor NENHUM para tentar, e
+        // enquanto isso durar, o dev assíncrono acumula dúvida sem resposta.
+        // Quem não é técnico não precisa saber qual motor caiu — precisa
+        // saber que o time ficou sem capacidade, até quando, e (fix-up item
+        // 5) que nem toda queda foi pelo mesmo motivo, quando for o caso.
+        if (isLast && engineFault && todasFalhasForamDeMotor && algumaFalhaFoiPorCota) {
+          // Fix-up L4-T22, item 4: dedup PERSISTIDO em
+          // `Project.motoresEsgotadosAvisadoEm`, não mais num Map em memória
+          // do processo. O control-plane reinicia a CADA publicação — um Map
+          // perderia a marca a cada deploy e o dono levaria o MESMO aviso de
+          // novo a cada subida, dentro da MESMA janela de 24h. A leitura é
+          // fresca (direto do banco, não do `project` que o chamador de
+          // `executeMissionWithFailover` carregou no início do tique) de
+          // propósito: é a fonte de verdade compartilhada entre processos e
+          // entre tiques, exatamente como `deployNoticeAskedKey` já funciona
+          // para o aviso de publicação.
+          const projetoAtual = await app.prisma.project
+            .findUnique({
+              where: { id: project.id },
+              select: { motoresEsgotadosAvisadoEm: true },
+            })
+            .catch(() => null)
+          if (
+            deveAvisarMotoresEsgotadosDeNovo(
+              projetoAtual?.motoresEsgotadosAvisadoEm ?? null,
+              Date.now()
+            )
+          ) {
+            await app.prisma.project
+              .update({
+                where: { id: project.id },
+                data: { motoresEsgotadosAvisadoEm: new Date() },
+              })
+              .catch((e: unknown) =>
+                app.log.warn(
+                  e,
+                  `[Scheduler] não consegui gravar a marca do aviso de motores esgotados de ${project.wingId} — o próximo tique pode repetir o aviso`
+                )
+              )
             const duvidasEsperando = await app.prisma.devSession
               .count({
                 where: { projectId: project.id, state: 'AWAITING_USER_FEEDBACK', closedAt: null },
               })
               .catch(() => 0)
+            // Fix-up L4-T22, item 7: o `.catch(() => null)` original escondia
+            // QUALQUER erro de resolução do destino — o aviso não chegava e
+            // ninguém ficava sabendo nem que a tentativa aconteceu. Registra
+            // o erro ANTES de desistir; `null` continua sendo o resultado
+            // (o notificador cai no chat padrão do ambiente, se houver).
             const chatDosMotoresEsgotados = await resolveNotifyChatId(app.prisma, project, {
               instanceOwnerEmail: process.env['GITORCH_OWNER_EMAIL'],
               instanceChatId:
                 process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
-            }).catch(() => null)
+            }).catch((e: unknown) => {
+              app.log.warn(
+                e,
+                `[Scheduler] não consegui resolver o destino do aviso de motores esgotados de ${project.wingId}`
+              )
+              return null
+            })
             const avisarMotoresEsgotados = buildTelegramNotifier({
               botToken:
                 process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
@@ -4577,6 +4654,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 recadoDeMotoresEsgotados({
                   ateQuando: quandoACotaVolta(lastError),
                   duvidasEsperando,
+                  misto: algumaFalhaFoiPorCota && !todasFalhasForamPorCota,
                 })
               ).catch(() => undefined)
             }
@@ -8036,6 +8114,19 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       // reprocessar esta MESMA função do zero, veria a pergunta como já
       // reservada e pularia para a próxima candidata em vez de tentar
       // responder com o motor novo.
+      //
+      // Fix-up L4-T22, item 1: a devolução SEMPRE roda, ANTES de classificar
+      // o erro. A versão original checava `isEngineFault` PRIMEIRO e lançava
+      // direto (`if (!isEngineFault(...)) throw err`) quando o erro NÃO era
+      // de motor — pulando a devolução inteira nesse ramo. Um erro qualquer
+      // (um bug de parsing, por exemplo) deixava a marca `tentando:` presa
+      // para sempre: a pergunta some da fila e ninguém mais tenta responder,
+      // porque `decidirSobreAPergunta` nunca vê essa sessão como disponível
+      // de novo. O TIPO do erro decide só o LOG e se ele é relançado (motor:
+      // relança para o failover tentar o próximo degrau; qualquer outro
+      // erro: relança do mesmo jeito, mas o catch de `executeMissionWithFailover`
+      // não faz failover sobre ele — só encerra a cadeia) — nunca se a
+      // reserva volta.
       let resultadoDaDuvida: Awaited<ReturnType<typeof runDuvidaMissionViaRails>>
       try {
         resultadoDaDuvida = await runDuvidaMissionViaRails({
@@ -8046,20 +8137,41 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           contextBlocks: args.contextBlocks,
         })
       } catch (err) {
-        if (!isEngineFault(err, err instanceof Error ? err.message : String(err))) throw err
-        await devolverAReserva({
+        // Fix-up L4-T22, item 2: o resultado da devolução deixou de ser
+        // engolido. `.catch(() => false)` escondia qualquer falha da própria
+        // devolução (banco fora do ar, por exemplo) — e o log logo abaixo
+        // afirmava "a tentativa foi devolvida" mesmo quando ela não tinha
+        // sido. Agora o erro da devolução (se houver) é registrado por si
+        // só, e o texto de sucesso só sai quando `devolverAReserva`
+        // realmente devolveu (`count > 0`).
+        const devolvida = await devolverAReserva({
           prisma: app.prisma as unknown as PrismaParaReserva,
           sessionName: esperando.sessionName,
           hashDaPergunta,
           tentativa: decisao.tentativa,
           marcaAnterior: esperando.answeredHash,
           agora: new Date(),
-        }).catch(() => false)
+        }).catch((devolveErr: unknown) => {
+          app.log.error(
+            devolveErr,
+            `[Scheduler] motor ${args.runtime} falhou na dúvida da tarefa #${esperando.issueNumber} ` +
+              `de ${args.repository} E a devolução da reserva TAMBÉM falhou — a marca pode ficar ` +
+              `presa até o teto de tentativas`
+          )
+          return false
+        })
+        const ehFalhaDeMotor = isEngineFault(err, err instanceof Error ? err.message : String(err))
         app.log.warn(
           err,
           `[Scheduler] motor ${args.runtime} não deu conta de responder a dúvida da tarefa ` +
-            `#${esperando.issueNumber} de ${args.repository}; a tentativa foi devolvida e o ` +
-            `próximo motor da cadeia assume`
+            `#${esperando.issueNumber} de ${args.repository}; ` +
+            (devolvida
+              ? 'a tentativa foi devolvida e ' +
+                (ehFalhaDeMotor
+                  ? 'o próximo motor da cadeia assume'
+                  : 'a cadeia encerra (erro não é de motor, failover não ajudaria)')
+              : 'a tentativa NÃO foi devolvida (marca já não era mais minha, ou a devolução ' +
+                'falhou) — a pergunta pode ficar presa até o teto de tentativas')
         )
         throw err
       }

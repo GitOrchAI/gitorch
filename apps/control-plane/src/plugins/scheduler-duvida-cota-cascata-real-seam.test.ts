@@ -62,6 +62,35 @@ vi.mock('@gitorch/agents', async (importOriginal) => {
   }
 })
 
+// Fix-up L4-T22 (itens 1 e 2): para os testes de "erro que NÃO é falha de
+// motor" e "a devolução da reserva também falha", o seam precisa controlar
+// EXATAMENTE o que `runDuvidaMissionViaRails` lança — um erro genérico
+// (não-motor) é praticamente impossível de produzir de verdade passando pelo
+// `runFormStep`/CLI adapter reais (qualquer saída malformada do CLI vira
+// RailsStepError, que É falha de motor). Substituir só esta função (e nunca
+// `execute`/CLI) é o MESMO princípio do seam acima: quando `forcarErro` está
+// desarmado (`null`, o padrão), delega 100% para a implementação real — os
+// dois testes existentes abaixo (que dependem do comportamento real de
+// parsing/`destinoDaDuvida`) continuam passando sem tocar neste mock.
+const duvidaMissionMock = vi.hoisted(() => ({
+  forcarErro: null as (() => unknown) | null,
+  chamadas: 0,
+}))
+
+vi.mock('../services/duvida-rails-mission.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/duvida-rails-mission.js')>()
+  return {
+    ...actual,
+    runDuvidaMissionViaRails: async (
+      opts: Parameters<typeof actual.runDuvidaMissionViaRails>[0]
+    ) => {
+      duvidaMissionMock.chamadas += 1
+      if (duvidaMissionMock.forcarErro) throw duvidaMissionMock.forcarErro()
+      return actual.runDuvidaMissionViaRails(opts)
+    },
+  }
+})
+
 const { schedulerPlugin } = await import('./scheduler.js')
 
 // A saída LITERAL do provedor batendo no teto — mesma medição de
@@ -95,8 +124,27 @@ const SESSAO_DUVIDA = {
   stateCheckedAt: null as Date | null,
 }
 
-function buildFakePrisma(args: { chatId: string | null; duvidasEsperando: number }) {
+function buildFakePrisma(args: {
+  chatId: string | null
+  duvidasEsperando: number
+  /**
+   * Fix-up L4-T22, item 4: estado inicial da marca persistida — permite
+   * simular um restart do control-plane compartilhando o MESMO objeto
+   * prisma entre duas instâncias de `schedulerPlugin` (o registro do plugin
+   * cria closures novas a cada vez, exatamente como um processo novo criaria
+   * Maps novos; só o "banco" — este objeto — sobrevive).
+   */
+  motoresEsgotadosAvisadoEmInicial?: Date | null
+  /** Fix-up L4-T22, item 2: para simular a PRÓPRIA devolução falhando. */
+  devSessionUpdateManyImpl?: (a: {
+    where: unknown
+    data: { answeredHash: string | null; stateCheckedAt?: Date }
+  }) => Promise<{ count: number }>
+  /** Fix-up L4-T22, item 7: para simular a resolução do destino falhando. */
+  telegramLinkFindUniqueImpl?: () => Promise<{ status: string; chatId: string | null } | null>
+}) {
   let missionCounter = 0
+  let motoresEsgotadosAvisadoEm: Date | null = args.motoresEsgotadosAvisadoEmInicial ?? null
   return {
     mission: {
       updateMany: vi.fn(async (_args: { where: unknown; data: { status?: string } }) => ({
@@ -110,14 +158,28 @@ function buildFakePrisma(args: { chatId: string | null; duvidasEsperando: number
     },
     project: {
       findFirst: vi.fn(async () => PROJETO),
-      findUnique: vi.fn(async () => PROJETO),
+      findUnique: vi.fn(async () => ({ ...PROJETO, motoresEsgotadosAvisadoEm })),
+      // Fix-up L4-T22, item 4: a marca do aviso executivo persiste AQUI, não
+      // num Map do processo — é o que faz o dedup sobreviver a um "restart"
+      // (uma segunda instância de schedulerPlugin, closures novas, mesmo
+      // objeto prisma).
+      update: vi.fn(
+        async (a: { where: { id: string }; data: { motoresEsgotadosAvisadoEm?: Date } }) => {
+          if (a.data.motoresEsgotadosAvisadoEm !== undefined) {
+            motoresEsgotadosAvisadoEm = a.data.motoresEsgotadosAvisadoEm
+          }
+          return { ...PROJETO, motoresEsgotadosAvisadoEm }
+        }
+      ),
     },
     telegramLink: {
-      findUnique: vi.fn(async () =>
-        args.chatId
-          ? { status: 'linked', chatId: args.chatId }
-          : { status: 'unlinked', chatId: null }
-      ),
+      findUnique:
+        args.telegramLinkFindUniqueImpl ??
+        vi.fn(async () =>
+          args.chatId
+            ? { status: 'linked', chatId: args.chatId }
+            : { status: 'unlinked', chatId: null }
+        ),
     },
     engineConnection: {
       updateMany: vi.fn(async () => ({ count: 1 })),
@@ -129,7 +191,9 @@ function buildFakePrisma(args: { chatId: string | null; duvidasEsperando: number
       // porque `responderDuvidaPendente` sempre lança (cota esgotada).
       findMany: vi.fn(async () => [SESSAO_DUVIDA]),
       findUnique: vi.fn(async () => ({ devAccountId: null })),
-      updateMany: vi.fn(async () => ({ count: 1 })),
+      updateMany: args.devSessionUpdateManyImpl
+        ? vi.fn(args.devSessionUpdateManyImpl)
+        : vi.fn(async () => ({ count: 1 })),
       update: vi.fn(async () => ({})),
       count: vi.fn(async () => args.duvidasEsperando),
     },
@@ -223,6 +287,8 @@ describe('dúvida do dev + cota esgotada: liga à cascata de failover que já ex
     process.env['GITORCH_TELEGRAM_BOT_TOKEN'] = 'bot-token-de-teste'
     resultadoDoMotor.porRuntime = null
     resultadoDoMotor.chamadas = []
+    duvidaMissionMock.forcarErro = null
+    duvidaMissionMock.chamadas = 0
   })
 
   afterEach(async () => {
@@ -408,5 +474,336 @@ describe('dúvida do dev + cota esgotada: liga à cascata de failover que já ex
     )
     // Depois de estabilizado: o terceiro motor (claude) nunca foi chamado.
     expect(resultadoDoMotor.chamadas).toEqual(['codex', 'antigravity'])
+  })
+
+  // Fix-up pós-revisão (item 1): a versão original checava `isEngineFault`
+  // ANTES de devolver a reserva, e lançava direto quando o erro NÃO era de
+  // motor — pulando a devolução inteira. A marca `tentando:` ficava presa
+  // para sempre e a pergunta some da fila.
+  test('item 1 (fix-up): erro que NÃO é falha de motor — a reserva é devolvida mesmo assim, e a cadeia não insiste noutro motor', async () => {
+    duvidaMissionMock.forcarErro = () =>
+      new Error('bug interno: parse do formulário falhou de verdade')
+    const fetchMock = fetchRoteado(PERGUNTA_DO_DEV)
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    app = Fastify({ logger: false })
+    const prisma = buildFakePrisma({ chatId: 'chat-do-dono', duvidasEsperando: 0 })
+    app.decorate('prisma', prisma as never)
+    await app.register(schedulerPlugin)
+
+    const resultado = await app.triggerAgentMission('qa', 'proj_1')
+    expect(resultado.triggered).toBe(true)
+
+    // Erro que NÃO é de motor não justifica failover — só UMA tentativa,
+    // nunca os três degraus da cadeia.
+    await vi.waitFor(
+      () => {
+        expect(duvidaMissionMock.chamadas).toBe(1)
+      },
+      { timeout: 3000, interval: 10 }
+    )
+
+    // A prova central: a reserva foi devolvida MESMO com um erro que não é
+    // de motor. `devolverAReserva` grava `data.answeredHash` de volta à
+    // marca ANTERIOR (`null`, para esta sessão) — valor distinto do que
+    // `reservarAResposta` grava (sempre um hash de tentativa, nunca null).
+    await vi.waitFor(
+      () => {
+        const chamadasDeDevolucao = prisma.devSession.updateMany.mock.calls.filter(
+          (c) => (c[0] as { data: { answeredHash: string | null } }).data.answeredHash === null
+        )
+        expect(chamadasDeDevolucao.length).toBeGreaterThan(0)
+      },
+      { timeout: 3000, interval: 10 }
+    )
+
+    // A missão termina como falha honesta — nenhum motor concluiu.
+    await vi.waitFor(
+      () => {
+        const chamadasDeFalha = prisma.mission.updateMany.mock.calls.filter(
+          (c) => (c[0] as { data?: { status?: string } }).data?.status === 'failed'
+        )
+        expect(chamadasDeFalha.length).toBeGreaterThan(0)
+      },
+      { timeout: 3000, interval: 10 }
+    )
+  })
+
+  // Fix-up pós-revisão (item 2): `.catch(() => false)` escondia qualquer
+  // falha da PRÓPRIA devolução, e o log logo abaixo afirmava "a tentativa
+  // foi devolvida" mesmo quando ela não tinha sido.
+  test('item 2 (fix-up): a falha da PRÓPRIA devolução é registrada (nunca engolida) e o log não afirma um sucesso que não houve', async () => {
+    duvidaMissionMock.forcarErro = () => new Error('Individual quota reached')
+    const fetchMock = fetchRoteado(PERGUNTA_DO_DEV)
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    const { linhas: logLinhas, logger } = criaLoggerCapturado()
+    app = Fastify({ loggerInstance: logger as never })
+    const prisma = buildFakePrisma({
+      chatId: 'chat-do-dono',
+      duvidasEsperando: 0,
+      // Falha SÓ na devolução (`data.answeredHash === null`, o formato que
+      // `devolverAReserva` grava aqui — `esperando.answeredHash` é `null`
+      // nesta fixture). A RESERVA (`reservarAResposta`, `data.answeredHash`
+      // = um hash de tentativa, nunca null) precisa continuar funcionando —
+      // senão a própria reserva quebra ANTES de `runDuvidaMissionViaRails`
+      // ser chamado, e o teste deixaria de exercitar o que quer provar.
+      devSessionUpdateManyImpl: async (a) => {
+        if (a.data.answeredHash === null) throw new Error('banco fora do ar')
+        return { count: 1 }
+      },
+    })
+    app.decorate('prisma', prisma as never)
+    await app.register(schedulerPlugin)
+
+    const resultado = await app.triggerAgentMission('qa', 'proj_1')
+    expect(resultado.triggered).toBe(true)
+
+    // Erro DE motor (cota) — a cadeia insiste nos três degraus mesmo com a
+    // devolução falhando em TODOS: uma devolução que não funciona não pode
+    // impedir o failover de tentar o próximo motor.
+    await vi.waitFor(
+      () => {
+        expect(duvidaMissionMock.chamadas).toBe(3)
+      },
+      { timeout: 3000, interval: 10 }
+    )
+
+    await vi.waitFor(
+      () => {
+        const textoDoLog = logLinhas.join('\n')
+        // A prova central do item 2: o erro da DEVOLUÇÃO em si vira log —
+        // nunca silêncio (`.catch(() => false)` escondia isto por completo).
+        expect(textoDoLog).toContain('devolução da reserva TAMBÉM falhou')
+        // E o log NÃO afirma "a tentativa foi devolvida" quando ela não foi —
+        // a versão original imprimia essa frase incondicionalmente.
+        expect(textoDoLog).not.toContain('a tentativa foi devolvida')
+        expect(textoDoLog).toContain('a tentativa NÃO foi devolvida')
+      },
+      { timeout: 3000, interval: 10 }
+    )
+  })
+
+  // Fix-up pós-revisão (item 3/5): a condição original só olhava o ÚLTIMO
+  // erro da cadeia — dois motores por cota seguidos de um terceiro por OUTRO
+  // motivo fazia o dono não receber aviso NENHUM.
+  test('item 3 e 5 (fix-up): falha MISTA — dois motores por cota, o terceiro por OUTRO motivo — ainda assim o dono recebe o aviso executivo, e o recado admite a mistura', async () => {
+    const SAIDA_DE_OUTRO_MOTIVO =
+      '401 Unauthorized: token expired for this session, please re-authenticate'
+    resultadoDoMotor.porRuntime = {
+      codex: {
+        missionId: 'irrelevante',
+        runtime: 'codex',
+        exitCode: 1,
+        durationMs: 1,
+        output: '',
+        stderr: SAIDA_DE_COTA_ESGOTADA,
+      },
+      antigravity: {
+        missionId: 'irrelevante',
+        runtime: 'antigravity',
+        exitCode: 1,
+        durationMs: 1,
+        output: '',
+        stderr: SAIDA_DE_COTA_ESGOTADA,
+      },
+      claude: {
+        missionId: 'irrelevante',
+        runtime: 'claude',
+        exitCode: 1,
+        durationMs: 1,
+        output: '',
+        stderr: SAIDA_DE_OUTRO_MOTIVO,
+      },
+    }
+    const fetchMock = fetchRoteado(PERGUNTA_DO_DEV)
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    app = Fastify({ logger: false })
+    const prisma = buildFakePrisma({ chatId: 'chat-do-dono', duvidasEsperando: 2 })
+    app.decorate('prisma', prisma as never)
+    await app.register(schedulerPlugin)
+
+    const resultado = await app.triggerAgentMission('qa', 'proj_1')
+    expect(resultado.triggered).toBe(true)
+
+    await vi.waitFor(
+      () => {
+        expect(resultadoDoMotor.chamadas).toEqual(['codex', 'antigravity', 'claude'])
+      },
+      { timeout: 3000, interval: 10 }
+    )
+
+    const mensagensDeTelegramDe = (mock: typeof fetchMock) =>
+      mock.mock.calls
+        .filter((c) => String(c[0]).startsWith('https://api.telegram.org/'))
+        .map((c) => JSON.parse(String((c[1] as RequestInit).body)) as { text: string })
+
+    let avisoExecutivo: Array<{ text: string }> = []
+    await vi.waitFor(
+      () => {
+        avisoExecutivo = mensagensDeTelegramDe(fetchMock).filter((m) =>
+          m.text.includes('sem capacidade')
+        )
+        expect(avisoExecutivo).toHaveLength(1)
+      },
+      { timeout: 3000, interval: 10 }
+    )
+
+    // Item 5: o recado é HONESTO — admite que nem toda queda foi por cota,
+    // nunca simplifica para "foi tudo cota" quando não foi.
+    expect(avisoExecutivo[0]?.text).toMatch(/outro motivo|nem toda queda/i)
+  })
+
+  // Fix-up pós-revisão (item 4): o dedup deste aviso deixou de viver num Map
+  // em memória do processo — o control-plane reinicia a cada publicação, e
+  // um Map perderia a marca a cada deploy.
+  test('item 4 (fix-up): o dedup do aviso executivo sobrevive a um "restart" do control-plane (marca em banco, não em Map)', async () => {
+    const fetchMock = fetchRoteado(PERGUNTA_DO_DEV)
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    const prisma = buildFakePrisma({ chatId: 'chat-do-dono', duvidasEsperando: 1 })
+    resultadoDoMotor.porRuntime = {
+      codex: {
+        missionId: 'irrelevante',
+        runtime: 'codex',
+        exitCode: 1,
+        durationMs: 1,
+        output: '',
+        stderr: SAIDA_DE_COTA_ESGOTADA,
+      },
+      antigravity: {
+        missionId: 'irrelevante',
+        runtime: 'antigravity',
+        exitCode: 1,
+        durationMs: 1,
+        output: '',
+        stderr: SAIDA_DE_COTA_ESGOTADA,
+      },
+      claude: {
+        missionId: 'irrelevante',
+        runtime: 'claude',
+        exitCode: 1,
+        durationMs: 1,
+        output: '',
+        stderr: SAIDA_DE_COTA_ESGOTADA,
+      },
+    }
+
+    const mensagensDeTelegramDe = () =>
+      fetchMock.mock.calls
+        .filter((c) => String(c[0]).startsWith('https://api.telegram.org/'))
+        .map((c) => JSON.parse(String((c[1] as RequestInit).body)) as { text: string })
+
+    // "Processo 1": registra o plugin, esgota a cadeia, recebe o aviso.
+    const app1 = Fastify({ logger: false })
+    app1.decorate('prisma', prisma as never)
+    await app1.register(schedulerPlugin)
+    const resultado1 = await app1.triggerAgentMission('qa', 'proj_1')
+    expect(resultado1.triggered).toBe(true)
+
+    await vi.waitFor(
+      () => {
+        expect(
+          mensagensDeTelegramDe().filter((m) => m.text.includes('sem capacidade'))
+        ).toHaveLength(1)
+      },
+      { timeout: 3000, interval: 10 }
+    )
+    await app1.close()
+
+    // "Restart": uma instância NOVA do plugin — closures novas, Maps em
+    // memória (se algum existisse) começariam ZERADOS. O MESMO objeto prisma
+    // é a única coisa que sobrevive, exatamente como um banco real sobrevive
+    // a um restart do processo.
+    resultadoDoMotor.chamadas = []
+    app = Fastify({ logger: false })
+    app.decorate('prisma', prisma as never)
+    await app.register(schedulerPlugin)
+    const resultado2 = await app.triggerAgentMission('qa', 'proj_1')
+    expect(resultado2.triggered).toBe(true)
+
+    await vi.waitFor(
+      () => {
+        expect(resultadoDoMotor.chamadas).toEqual(['codex', 'antigravity', 'claude'])
+      },
+      { timeout: 3000, interval: 10 }
+    )
+    // Tempo de sobra para qualquer aviso adicional terminar de sair — se
+    // fosse repetir, já teria acontecido dentro desta janela.
+    await new Promise((resolve) => setTimeout(resolve, 200))
+
+    // A prova do item 4: mesmo numa instância NOVA do plugin (equivalente a
+    // um restart), o SEGUNDO aviso executivo NÃO sai — a marca persistida em
+    // `Project.motoresEsgotadosAvisadoEm` (o "banco", que sobreviveu) ainda
+    // diz que o aviso já saiu dentro da janela. Um Map em memória do
+    // processo FALHARIA este teste (closure nova = Map vazio = reenviaria).
+    expect(mensagensDeTelegramDe().filter((m) => m.text.includes('sem capacidade'))).toHaveLength(1)
+  })
+
+  // Fix-up pós-revisão (item 7): `.catch(() => null)` escondia qualquer erro
+  // de resolução do destino do aviso executivo — o aviso não chegava e
+  // ninguém ficava sabendo nem que a tentativa aconteceu.
+  test('item 7 (fix-up): falha ao resolver o destino do aviso executivo é registrada, não silenciada', async () => {
+    resultadoDoMotor.porRuntime = {
+      codex: {
+        missionId: 'irrelevante',
+        runtime: 'codex',
+        exitCode: 1,
+        durationMs: 1,
+        output: '',
+        stderr: SAIDA_DE_COTA_ESGOTADA,
+      },
+      antigravity: {
+        missionId: 'irrelevante',
+        runtime: 'antigravity',
+        exitCode: 1,
+        durationMs: 1,
+        output: '',
+        stderr: SAIDA_DE_COTA_ESGOTADA,
+      },
+      claude: {
+        missionId: 'irrelevante',
+        runtime: 'claude',
+        exitCode: 1,
+        durationMs: 1,
+        output: '',
+        stderr: SAIDA_DE_COTA_ESGOTADA,
+      },
+    }
+    const fetchMock = fetchRoteado(PERGUNTA_DO_DEV)
+    global.fetch = fetchMock as unknown as typeof fetch
+
+    const { linhas: logLinhas, logger } = criaLoggerCapturado()
+    app = Fastify({ loggerInstance: logger as never })
+    const prisma = buildFakePrisma({
+      chatId: 'chat-do-dono',
+      duvidasEsperando: 1,
+      telegramLinkFindUniqueImpl: async () => {
+        throw new Error('telegram_link fora do ar')
+      },
+    })
+    app.decorate('prisma', prisma as never)
+    await app.register(schedulerPlugin)
+
+    const resultado = await app.triggerAgentMission('qa', 'proj_1')
+    expect(resultado.triggered).toBe(true)
+
+    await vi.waitFor(
+      () => {
+        expect(resultadoDoMotor.chamadas).toEqual(['codex', 'antigravity', 'claude'])
+      },
+      { timeout: 3000, interval: 10 }
+    )
+
+    await vi.waitFor(
+      () => {
+        const textoDoLog = logLinhas.join('\n')
+        expect(textoDoLog).toContain(
+          'não consegui resolver o destino do aviso de motores esgotados'
+        )
+      },
+      { timeout: 3000, interval: 10 }
+    )
   })
 })

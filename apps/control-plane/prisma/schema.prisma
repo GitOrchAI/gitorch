@@ -390,6 +390,16 @@ model Project {
   deployNoticeInstalledAt DateTime? @map("deploy_notice_installed_at")
   deployNoticeAskedKey    String?   @map("deploy_notice_asked_key")
 
+  // L4-T22 (fix-up, item 4): dedup do aviso EXECUTIVO de "a cadeia inteira de
+  // motores ficou sem cota" (ver recadoDeMotoresEsgotados em
+  // teto-de-uso-da-conta.ts). ANTES vivia num Map em memória do processo
+  // (avisosDeMotoresEsgotados, scheduler.ts) — e o processo reinicia a CADA
+  // publicação (deploy), então a marca sumia e o dono recebia o MESMO aviso
+  // de novo a cada subida do control-plane, mesmo dentro da mesma janela de
+  // 24h. Coluna, não Map: sobrevive a restart, mesma disciplina de
+  // `deployNoticeAskedKey` acima.
+  motoresEsgotadosAvisadoEm DateTime? @map("motores_esgotados_avisado_em")
+
   // Reconferência PERIÓDICA do acesso do dono ao repositório (o acesso era
   // provado uma vez, no cadastro, e o caminho automático nunca mais perguntava
   // nada — ver services/reconferencia-de-acesso.ts).

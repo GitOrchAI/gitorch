@@ -125,6 +125,19 @@ export function recadoDeMotoresEsgotados(args: {
   ateQuando: string | null
   /** Quantas dúvidas do dev assíncrono estão esperando resposta agora. */
   duvidasEsperando: number
+  /**
+   * Fix-up (revisão pós-L4-T22, item 3/5): `true` quando NEM TODA queda da
+   * cadeia foi por cota — algum degrau falhou por OUTRO motivo de motor
+   * (credencial expirada, 429 sem texto de teto, etc.) antes de a cadeia
+   * esgotar de vez. A condição original só olhava o ÚLTIMO erro: dois
+   * motores caindo por cota e o terceiro (o último) por outro motivo fazia
+   * o dono não receber aviso NENHUM — o mesmo silêncio que esta tarefa veio
+   * matar. Agora o chamador (scheduler.ts) agrega a cadeia inteira e manda
+   * este sinalizador; o recado precisa ser honesto sobre a mistura, nunca
+   * simplificar para "foi tudo cota" quando não foi. Omitido = `false`
+   * (retrocompatível com quem já chamava esta função).
+   */
+  misto?: boolean
 }): string {
   const prazo = args.ateQuando ? `até ${args.ateQuando}` : '— nenhum provedor disse até quando'
   const linhaDeDuvidas =
@@ -133,12 +146,43 @@ export function recadoDeMotoresEsgotados(args: {
           args.duvidasEsperando === 1 ? 'dúvida do dev está' : 'dúvidas do dev estão'
         } esperando resposta.`
       : 'Nesse meio tempo, não há nenhuma dúvida do dev esperando resposta.'
+  const linhaDeMistura = args.misto
+    ? [
+        '',
+        'Nem toda queda foi por cota: parte da cadeia falhou por outro motivo ' +
+          '(credencial ou erro do motor), e mesmo assim não sobrou nenhum motor de reserva.',
+      ]
+    : []
   return [
     `GitOrch: o time ficou sem capacidade de motor ${prazo}.`,
+    ...linhaDeMistura,
     '',
     linhaDeDuvidas,
     '',
     'Não é preciso fazer nada agora — quando a cota de algum motor voltar, o',
     'trabalho retoma sozinho.',
   ].join('\n')
+}
+
+const JANELA_DO_AVISO_DE_MOTORES_ESGOTADOS_MS = 24 * 60 * 60 * 1000
+
+/**
+ * "Uma vez por janela de 24h", mas persistida em banco em vez de Map —
+ * L4-T22 fix-up, item 4.
+ *
+ * MESMA disciplina de `deveAvisarDeNovo` (credencial-do-motor.ts): SPAM apaga
+ * sinal tanto quanto silêncio. A diferença é que ali a limitação de viver em
+ * memória do processo foi uma decisão deliberada e documentada (aviso por
+ * MOTOR, tolerável repetir uma vez a mais depois de um restart raro). Este
+ * aviso é diferente: dispara exatamente quando a esteira do cliente PAROU de
+ * verdade (cadeia inteira sem cota), e o control-plane reinicia a CADA
+ * publicação — no clima de deploy contínuo deste produto, "uma vez por
+ * processo" na prática vira "de novo a cada deploy", nunca uma vez por dia.
+ * Por isso o chamador (scheduler.ts) lê e grava `Project.motoresEsgotadosAvisadoEm`
+ * em vez de um Map — esta função só decide, pura, a partir da marca lida.
+ */
+export function deveAvisarMotoresEsgotadosDeNovo(avisadoEm: Date | null, agora: number): boolean {
+  return (
+    avisadoEm === null || agora - avisadoEm.getTime() >= JANELA_DO_AVISO_DE_MOTORES_ESGOTADOS_MS
+  )
 }
