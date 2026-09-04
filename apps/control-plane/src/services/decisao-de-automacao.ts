@@ -11,6 +11,7 @@ import { GithubExecutionError } from './github-errors.js'
 import { nomeDeRepositorioValido } from './nome-de-repositorio.js'
 import { lerMarcador } from './marcador-de-issue.js'
 import { ghJson } from './github-json.js'
+import { buildFreeTextOption } from './telegram-bot.js'
 
 /** Prefixo do dedupKey de toda pergunta de decisão de automação. */
 export const DEDUP_PREFIXO_AUTOMACAO = 'automacao:'
@@ -20,12 +21,25 @@ export interface OpcaoDeDecisao {
   value: string
 }
 
-/** D71: 3 opções objetivas + "Vou escrever" — nesta ordem, sempre. */
+/**
+ * D71: 3 opções objetivas + "Vou escrever" — nesta ordem, sempre.
+ *
+ * L4-T18 (item 3): o botão de escrever usa o SENTINEL de
+ * `buildFreeTextOption` — mesmo padrão de `duvida-dev:`
+ * (escalar-duvida-ao-dono.ts) e `retomada-travada:` (plugins/scheduler.ts).
+ * ANTES desta task era um valor literal (`value: 'escrever'`): clicar no
+ * botão gravava a STRING "escrever" direto como se fosse a decisão do dono
+ * (`processarRespostaDeAutomacao` via `default`, abaixo, tratava isso como
+ * "texto livre: escrever" e comentava isso mesmo na proposta) — nunca abria
+ * o "digite sua resposta" de verdade. O sentinel corrige: o clique arma
+ * `setActiveTypingQuestion` (telegram-bot.ts) e só o texto REAL que o dono
+ * digitar depois vira `args.resposta` no `default` abaixo.
+ */
 export const OPCOES_DE_DECISAO_DE_AUTOMACAO: OpcaoDeDecisao[] = [
   { label: 'Deletar o workflow', value: 'deletar' },
   { label: 'Reajustar (vira tarefa)', value: 'reajustar' },
   { label: 'Manter como está', value: 'manter' },
-  { label: 'Vou escrever', value: 'escrever' },
+  buildFreeTextOption('Vou escrever'),
 ]
 
 /**

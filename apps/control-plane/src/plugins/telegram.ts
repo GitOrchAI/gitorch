@@ -47,6 +47,15 @@ import { chaveDoDevDoProjeto as resolverChaveDoDevDoProjeto } from '../services/
 import { criarSessaoJules } from '../services/jules-client.js'
 import { abrirSessao, registrarPr, type PrismaDevSession } from '../services/dev-session-store.js'
 import { ghJson } from '../services/github-json.js'
+import { ProjectV2Client } from '@gitorch/github-sync'
+import { resolveQuadroDoProjeto } from '../routes/painel.js'
+import { filtrarFilaDeTasks } from '../services/filtrar-fila-de-tasks.js'
+import { aplicarOrdemDosPedidos } from '../services/ordem-dos-pedidos.js'
+import {
+  processarRespostaDeCustoDaOrdem,
+  parseDedupKeyDeCustoDaOrdem,
+  type ItemDaFilaComId,
+} from '../services/aviso-de-custo-da-ordem.js'
 
 // O ouvido do bot. Sem ele, o deep link do passo 8 abriria o Telegram, o cliente
 // apertaria Start... e ninguém estaria escutando — o `chat_id` (a única coisa
@@ -396,6 +405,183 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
     })
   }
 
+  // L4-T18 (item 2) — a resposta à pergunta de custo da ordem
+  // (dedupKey `custo-da-ordem:<repo>:<pedido>`, `perguntarSobreCustoDaOrdem`
+  // em plugins/scheduler.ts) vira ação de verdade.
+  // `processarRespostaDeCustoDaOrdem` (aviso-de-custo-da-ordem.ts) decide o
+  // QUÊ (puro, sem rede); aqui é só a injeção — a MESMA leitura de quadro
+  // que `avaliarCustoDaOrdem` (scheduler.ts) já faz para calcular o
+  // candidato, e a MESMA escrita que a rota `POST /api/v1/painel/ordem`
+  // (routes/painel.ts) já usa para reordenar de verdade
+  // (`aplicarOrdemDosPedidos`).
+  const aoResponderCustoDaOrdem = async (args: {
+    dedupKey: string
+    resposta: string
+    projectId: string
+  }): Promise<ResultadoDoManipuladorDeResposta | void> => {
+    const parsedDedupKey = parseDedupKeyDeCustoDaOrdem(args.dedupKey)
+    const projeto = await app.prisma.project.findUnique({
+      where: { id: args.projectId },
+      select: {
+        wingId: true,
+        userId: true,
+        encryptedClientToken: true,
+        autonomia: true,
+        runtimeConfig: true,
+      },
+    })
+    if (!projeto) {
+      app.log.error(
+        `[Telegram] custo-da-ordem: projeto ${args.projectId} não encontrado (dedupKey ${args.dedupKey})`
+      )
+      throw new Error(`aoResponderCustoDaOrdem: projeto ${args.projectId} não encontrado`)
+    }
+    const quadro = resolveQuadroDoProjeto(projeto.runtimeConfig)
+    if (!quadro) {
+      app.log.error(
+        `[Telegram] custo-da-ordem: projeto ${args.projectId} sem quadro (dedupKey ${args.dedupKey})`
+      )
+      throw new Error(`aoResponderCustoDaOrdem: projeto ${args.projectId} sem quadro ligado`)
+    }
+    const token = await lerCredencialQueAlcancaOProjeto({
+      prisma: app.prisma,
+      projectId: args.projectId,
+      userId: projeto.userId,
+      engineConnections: app.engineConnections,
+      encryptedClientTokenJaLido: projeto.encryptedClientToken,
+    })
+    if (!token) {
+      app.log.error(
+        `[Telegram] custo-da-ordem: sem credencial para ${projeto.wingId} (proj ${args.projectId})`
+      )
+      throw new Error(
+        `aoResponderCustoDaOrdem: sem credencial do GitHub para ${projeto.wingId} — ação não executada`
+      )
+    }
+
+    const cliente = new ProjectV2Client({
+      token,
+      fetchImpl: fetchDoRepositorio({ nivel: () => projeto.autonomia }),
+    })
+    // Resolvido no máximo uma vez por resposta — "aplicar" e "ver a fila"
+    // podem precisar dele, "manter" nunca chega a pedir.
+    let quadroIdCache: string | null | undefined
+    const resolverQuadroId = async (): Promise<string | null> => {
+      if (quadroIdCache !== undefined) return quadroIdCache
+      quadroIdCache =
+        (await cliente.findProjectId({
+          login: quadro.login,
+          number: quadro.numero,
+          ownerType: 'organization',
+        })) ??
+        (await cliente.findProjectId({
+          login: quadro.login,
+          number: quadro.numero,
+          ownerType: 'user',
+        }))
+      return quadroIdCache
+    }
+
+    const salvarCustoDaOrdem = async (estado: {
+      ultimoPedidoProposto: number | null
+      silencio: { pedido: number; ate: string; rodada: number } | null
+    }): Promise<void> => {
+      // MESCLA rasa, nunca substituição — mesmo padrão de `salvarEstado`
+      // (scheduler.ts) e de `agent-question.ts`.
+      const linha = await app.prisma.project.findUnique({
+        where: { id: args.projectId },
+        select: { runtimeConfig: true },
+      })
+      const atual = (linha?.runtimeConfig as Record<string, unknown> | null) ?? {}
+      await app.prisma.project.update({
+        where: { id: args.projectId },
+        data: {
+          // Literal fresco, não a variável tipada: o Prisma exige
+          // `InputJsonObject` (com assinatura de índice) — mesmo motivo do
+          // comentário equivalente em `salvarEstado` (scheduler.ts).
+          runtimeConfig: {
+            ...atual,
+            custoDaOrdem: {
+              ultimoPedidoProposto: estado.ultimoPedidoProposto,
+              silencio: estado.silencio
+                ? {
+                    pedido: estado.silencio.pedido,
+                    ate: estado.silencio.ate,
+                    rodada: estado.silencio.rodada,
+                  }
+                : null,
+            },
+          },
+        },
+      })
+    }
+
+    return processarRespostaDeCustoDaOrdem(
+      { dedupKey: args.dedupKey, resposta: args.resposta },
+      {
+        filaAtual: async (): Promise<ItemDaFilaComId[] | null> => {
+          const quadroId = await resolverQuadroId()
+          if (!quadroId) return null
+          let leituraIncompleta = false
+          const itens = await cliente.listarItensDoQuadro(quadroId, {
+            campoDePeso: 'Peso',
+            comCorpo: true,
+            onTruncado: () => {
+              leituraIncompleta = true
+            },
+          })
+          // Leitura cortada: a fila que sobrou não é a fila real — mesma
+          // prudência de `avaliarCustoDaOrdem` (scheduler.ts).
+          if (leituraIncompleta) return null
+          const filtro = filtrarFilaDeTasks(itens)
+          if (!filtro.fila) return null
+          const itemIdPorPedido = new Map(itens.map((i) => [i.pedido, i.itemId]))
+          const comId: ItemDaFilaComId[] = []
+          for (const p of filtro.fila) {
+            const itemId = itemIdPorPedido.get(p.pedido)
+            if (itemId) comId.push({ pedido: p.pedido, peso: p.peso, itemId })
+          }
+          return comId
+        },
+        aplicarOrdem: async (pedidos) => {
+          const quadroId = await resolverQuadroId()
+          if (!quadroId) {
+            throw new Error(
+              `aoResponderCustoDaOrdem: não achei o quadro de ${projeto.wingId} para aplicar a troca`
+            )
+          }
+          await aplicarOrdemDosPedidos(
+            {
+              quadro: cliente,
+              nivel: () => projeto.autonomia,
+              registrar: async (r) => {
+                await app.prisma.event.create({
+                  data: {
+                    projectId: args.projectId,
+                    type: 'painel_escreveu',
+                    payload: { texto: r.oQueFiz, ordem: r.ordem, quando: r.quando },
+                  },
+                })
+              },
+            },
+            { projectId: quadroId, pedidos }
+          )
+        },
+        silenciarCandidato: async ({ pedido, ate }) => {
+          await salvarCustoDaOrdem({
+            ultimoPedidoProposto: pedido,
+            silencio: { pedido, ate: ate.toISOString(), rodada: parsedDedupKey?.rodada ?? 1 },
+          })
+        },
+        limparEstadoAposAplicar: async () => {
+          await salvarCustoDaOrdem({ ultimoPedidoProposto: null, silencio: null })
+        },
+        onInfo: (m) => app.log.info(`[Telegram] ${m}`),
+        onWarn: (m) => app.log.warn(`[Telegram] ${m}`),
+      }
+    )
+  }
+
   const agentQuestionService = new AgentQuestionService(app.prisma, {
     ...(notifyOwner ? { notify: notifyOwner } : {}),
     cortex: app.cortex,
@@ -409,6 +595,7 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
       { prefixo: 'automacao:', executar: aoResponderAutomacao },
       { prefixo: 'duvida-dev:', executar: aoResponderDuvidaDoDev },
       { prefixo: 'retomada-travada:', executar: aoResponderRetomadaTravadaHandler },
+      { prefixo: 'custo-da-ordem:', executar: aoResponderCustoDaOrdem },
     ],
     // C4 (fix-up L4-T2): logger injetado para a falha de um manipulador de
     // resposta — nunca `console.warn`, que some do monitoramento.

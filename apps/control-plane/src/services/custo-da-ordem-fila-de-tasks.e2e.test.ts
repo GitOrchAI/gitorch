@@ -65,7 +65,7 @@ function depsQueLeemOFiltro(
   return {
     projetos: async () => [PROJETO],
     filaDoQuadro: async () => filtrarFilaDeTasks(itens).fila,
-    lerEstado: async () => ({ ultimoPedidoProposto: null }),
+    lerEstado: async () => ({ ultimoPedidoProposto: null, silencio: null }),
     salvarEstado: vi.fn().mockResolvedValue(undefined),
     avisar: vi.fn().mockResolvedValue(undefined),
     ...over,
@@ -96,13 +96,13 @@ describe('a costura ponta a ponta: quadro cru -> filtro -> cálculo -> aviso', (
 
     expect(resumo).toEqual({ avaliados: 1, avisados: 1 })
     expect(d.avisar).toHaveBeenCalledTimes(1)
-    const [projetoAvisado, texto] = (d.avisar as ReturnType<typeof vi.fn>).mock.calls[0]!
+    const [projetoAvisado, candidato, rodada] = (d.avisar as ReturnType<typeof vi.fn>).mock
+      .calls[0]!
     expect(projetoAvisado).toBe(PROJETO)
     // #102 (peso 1) preso atrás de #101 (peso 13): perda 13, razão 13 — bem
     // acima dos dois limiares.
-    expect(texto).toContain('#102')
-    expect(texto).toContain('13 pontos de peso')
-    expect(texto).toContain('Quer trocar?')
+    expect(candidato).toMatchObject({ pedido: 102, perda: 13 })
+    expect(rodada).toBe(1)
   })
 
   it('caso espelho: UMA task sem peso no meio -> a prudência barra -> filtro fica null -> NENHUM aviso sai', async () => {
