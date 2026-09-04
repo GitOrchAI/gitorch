@@ -231,6 +231,50 @@ function criaLoggerCapturado(): { linhas: string[]; logger: LoggerCapturado } {
   return { linhas, logger }
 }
 
+/**
+ * A corrida medida (achado 02/09, "cascata de cota instável"): `runTrigger`
+ * dispara `executeMissionWithFailover` com `void` — fire-and-forget de
+ * propósito (o disparo tem que voltar rápido, a missão roda em background,
+ * ver o comentário no próprio scheduler.ts). Cada teste deste arquivo
+ * observava só o efeito que lhe interessava (a lista `chamadas`, uma linha
+ * de log, UMA mensagem específica do Telegram) e devolvia o controle ao
+ * `test()` antes da função inteira assentar — o `await app.close()` do
+ * `afterEach` NÃO cancela essa promessa solta. Ela continua rodando (mais
+ * updateMany de dedup, mais `resolveNotifyChatId`, mais o `fetch` do aviso
+ * executivo) e, quando finalmente chama `global.fetch`, o `beforeEach` do
+ * PRÓXIMO teste já trocou o mock global por outro — a mensagem tardia do
+ * teste ANTERIOR aparece nos `mock.calls` do teste ATUAL (medido ao vivo:
+ * seis execuções isoladas do arquivo, uma falhou com "expected 1 but got 2"
+ * bem no teste da falha mista, e a instrumentação por `currentTestName`
+ * mostrou a segunda mensagem chegando com o conteúdo do teste "item 2",
+ * já rotulada com o nome do teste seguinte).
+ *
+ * A persistência final de `executeMissionWithFailover` — o
+ * `mission.updateMany` com `data.status` preenchido ('completed', 'waiting'
+ * ou 'failed', ver scheduler.ts) — é SEMPRE o ÚLTIMO `await` da função,
+ * depois de qualquer notificação. Esperar por ele (pelo `missionId` exato
+ * que `triggerAgentMission` devolveu) é esperar pelo EFEITO OBSERVÁVEL de a
+ * missão ter assentado por completo — nunca por relógio — antes do teste
+ * devolver o controle ao runner. Mesmo timeout/interval que todo `vi.waitFor`
+ * já usa neste arquivo (3000/10): não é tempo A MAIS, é a mesma janela
+ * aplicada ao ÚLTIMO efeito da cadeia, não só ao do meio.
+ */
+async function esperaMissaoAssentar(
+  prisma: { mission: { updateMany: ReturnType<typeof vi.fn> } },
+  missionId: string | undefined
+) {
+  await vi.waitFor(
+    () => {
+      const assentou = prisma.mission.updateMany.mock.calls.some((c) => {
+        const args = c[0] as { where?: { id?: string }; data?: { status?: string } }
+        return args.where?.id === missionId && args.data?.status !== undefined
+      })
+      expect(assentou).toBe(true)
+    },
+    { timeout: 3000, interval: 10 }
+  )
+}
+
 const ENV_KEYS = [
   'NODE_ENV',
   'GITORCH_SCHEDULER_TICK_MS',
@@ -409,6 +453,12 @@ describe('dúvida do dev + cota esgotada: liga à cascata de failover que já ex
       m.text.includes('sem capacidade')
     )
     expect(avisosExecutivosNoTotal).toHaveLength(1)
+
+    // Espera pelo efeito observável final da SEGUNDA missão (o
+    // `mission.updateMany` terminal) antes de terminar o teste — sem isto, a
+    // cauda fire-and-forget dela pode vazar para o `global.fetch` do
+    // PRÓXIMO teste (ver `esperaMissaoAssentar`).
+    await esperaMissaoAssentar(prisma, segundaMissao.missionId)
   })
 
   test('cota esgotada só no primeiro motor: o SEGUNDO responde, o terceiro nunca é chamado, e o log nomeia qual motor respondeu', async () => {
@@ -474,6 +524,11 @@ describe('dúvida do dev + cota esgotada: liga à cascata de failover que já ex
     )
     // Depois de estabilizado: o terceiro motor (claude) nunca foi chamado.
     expect(resultadoDoMotor.chamadas).toEqual(['codex', 'antigravity'])
+
+    // Espera a missão assentar (ver `esperaMissaoAssentar`) antes de encerrar
+    // o teste — sem isto, a cauda fire-and-forget pode vazar para o teste
+    // seguinte.
+    await esperaMissaoAssentar(prisma, resultado.missionId)
   })
 
   // Fix-up pós-revisão (item 1): a versão original checava `isEngineFault`
@@ -582,6 +637,22 @@ describe('dúvida do dev + cota esgotada: liga à cascata de failover que já ex
       },
       { timeout: 3000, interval: 10 }
     )
+
+    // Causa raiz medida do achado "cascata de cota instável" (task
+    // 95380eae): este teste força os TRÊS degraus a falhar por cota
+    // ('Individual quota reached' em todos), o que TAMBÉM dispara o aviso
+    // executivo agregado — mas o teste só verificava `duvidaMissionMock.chamadas`
+    // e o log, nunca esperava esse aviso (nem a persistência final da
+    // missão) assentar. A cauda fire-and-forget (resolveNotifyChatId,
+    // devSession.count, o `fetch` do aviso) continuava rodando DEPOIS do
+    // `afterEach` fechar o app, e — como `global.fetch` é reatribuído a cada
+    // teste — a mensagem tardia acabava batendo no `fetchMock` do teste
+    // SEGUINTE ("item 3 e 5", a falha mista), inflando de 1 para 2 o total
+    // de avisos "sem capacidade" que aquele teste contava (reproduzido ao
+    // vivo instrumentando `expect.getState().currentTestName` no envio).
+    // Esperar aqui pelo efeito observável final (`mission.updateMany` com
+    // `status` preenchido) fecha a cauda antes do teste devolver o controle.
+    await esperaMissaoAssentar(prisma, resultado.missionId)
   })
 
   // Fix-up pós-revisão (item 3/5): a condição original só olhava o ÚLTIMO
@@ -653,6 +724,12 @@ describe('dúvida do dev + cota esgotada: liga à cascata de failover que já ex
     // Item 5: o recado é HONESTO — admite que nem toda queda foi por cota,
     // nunca simplifica para "foi tudo cota" quando não foi.
     expect(avisoExecutivo[0]?.text).toMatch(/outro motivo|nem toda queda/i)
+
+    // Mesma causa raiz do fix-up acima: espera a missão assentar por
+    // completo antes de terminar, para a cauda fire-and-forget não vazar
+    // para o teste seguinte ("item 4", que reseta `resultadoDoMotor.chamadas`
+    // e reconta do zero — um vazamento aqui duplicaria a contagem dele).
+    await esperaMissaoAssentar(prisma, resultado.missionId)
   })
 
   // Fix-up pós-revisão (item 4): o dedup deste aviso deixou de viver num Map
@@ -710,6 +787,12 @@ describe('dúvida do dev + cota esgotada: liga à cascata de failover que já ex
       },
       { timeout: 3000, interval: 10 }
     )
+    // Espera o "processo 1" assentar por completo (mesma causa raiz dos
+    // fix-ups acima) ANTES de fechar e subir o "processo 2" — sem isto, a
+    // cauda fire-and-forget do processo 1 pode vazar `chamadas`/telegram
+    // para o processo 2, que resetou `resultadoDoMotor.chamadas` logo
+    // abaixo esperando começar do zero.
+    await esperaMissaoAssentar(prisma, resultado1.missionId)
     await app1.close()
 
     // "Restart": uma instância NOVA do plugin — closures novas, Maps em
@@ -739,6 +822,10 @@ describe('dúvida do dev + cota esgotada: liga à cascata de failover que já ex
     // diz que o aviso já saiu dentro da janela. Um Map em memória do
     // processo FALHARIA este teste (closure nova = Map vazio = reenviaria).
     expect(mensagensDeTelegramDe().filter((m) => m.text.includes('sem capacidade'))).toHaveLength(1)
+
+    // Espera o "processo 2" assentar por completo antes de terminar — sem
+    // isto, a cauda fire-and-forget vaza para o próximo teste do arquivo.
+    await esperaMissaoAssentar(prisma, resultado2.missionId)
   })
 
   // Fix-up pós-revisão (item 7): `.catch(() => null)` escondia qualquer erro
@@ -805,5 +892,10 @@ describe('dúvida do dev + cota esgotada: liga à cascata de failover que já ex
       },
       { timeout: 3000, interval: 10 }
     )
+
+    // Último teste do arquivo, mas a mesma disciplina vale: espera a missão
+    // assentar por completo antes de terminar (consistência com os demais
+    // fix-ups desta rodada — ver `esperaMissaoAssentar`).
+    await esperaMissaoAssentar(prisma, resultado.missionId)
   })
 })
