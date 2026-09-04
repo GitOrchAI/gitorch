@@ -59,14 +59,29 @@ export function ehTetoDeUsoDaConta(saida: string): boolean {
 /**
  * Quando a cota volta, se o provedor disse.
  *
- * O Antigravity informa ("Resets in 15h41m4s"); o Codex, não. Devolver `null`
- * em vez de inventar um horário é o ponto: um prazo errado é pior que nenhum,
- * porque o dono organiza o dia em cima dele.
+ * O Antigravity informa um CONTADOR relativo ("Resets in 15h41m4s"). O Codex,
+ * medido ao vivo (L4-T22), informa uma DATA E HORA absolutas — "... or try
+ * again at Sep 21st, 2026 6:00 AM" — outro vocabulário para a mesma
+ * informação, exatamente a mesma lacuna que "usage limit" já tinha sido para
+ * `isFailoverError` (ver o comentário no topo deste arquivo): um formato novo
+ * não bate em nenhum padrão antigo e o produto trata como se ninguém tivesse
+ * dito nada. Quando NENHUM dos dois formatos aparece, devolve `null` em vez
+ * de inventar um horário — um prazo errado é pior que nenhum, porque o dono
+ * organiza o dia em cima dele.
  */
 export function quandoACotaVolta(saida: string): string | null {
-  const m = /resets? in ([0-9]+h)?\s?([0-9]+m)?/i.exec(saida)
-  if (!m || (!m[1] && !m[2])) return null
-  return [m[1], m[2]].filter(Boolean).join('')
+  const relativo = /resets? in ([0-9]+h)?\s?([0-9]+m)?/i.exec(saida)
+  if (relativo && (relativo[1] || relativo[2])) {
+    return [relativo[1], relativo[2]].filter(Boolean).join('')
+  }
+  // Corta em ponto final, parêntese ou fim da frase — nunca engole o resto
+  // da mensagem (ex.: "... (https://chatgpt.com/explore/plus)") junto da data.
+  const absoluto = /try again at ([^.()\n]+)/i.exec(saida)
+  if (absoluto?.[1]) {
+    const data = absoluto[1].trim()
+    if (data.length > 0) return data
+  }
+  return null
 }
 
 /**
@@ -88,4 +103,86 @@ export function recadoDeTetoDeUso(args: { runtime: string; volta: string | null 
     'fazer nada. Se acontecer todo dia, o caminho é um plano maior nesse',
     'provedor, não uma reconexão.',
   ].join('\n')
+}
+
+/**
+ * O aviso EXECUTIVO de quando a CADEIA INTEIRA de motores ficou sem cota
+ * (L4-T22) — diferente de `recadoDeTetoDeUso` acima, que avisa POR MOTOR a
+ * cada degrau que bate no teto (útil para o dono saber qual conta upar).
+ * Este dispara só quando não sobrou NENHUM motor para tentar: é o resumo que
+ * importa para quem não é técnico — o time ficou sem capacidade, até quando
+ * (se algum motor souber dizer) e quantas dúvidas do dev assíncrono estão
+ * paradas esperando por causa disso.
+ *
+ * D71/D72: isto NUNCA é uma pergunta — é um informe, ponto final. Se um dia
+ * isto precisar virar decisão (ex.: pausar alguma automação até a cota
+ * voltar), a decisão sobe pelo caminho formal de `agent-question.ts` (pergunta
+ * executiva + EXATAMENTE 3 opções + "Vou escrever"), nunca texto solto
+ * perguntando algo técnico aqui.
+ */
+export function recadoDeMotoresEsgotados(args: {
+  /** `quandoACotaVolta` do último motor tentado, ou `null` se ninguém disse. */
+  ateQuando: string | null
+  /** Quantas dúvidas do dev assíncrono estão esperando resposta agora. */
+  duvidasEsperando: number
+  /**
+   * Fix-up (revisão pós-L4-T22, item 3/5): `true` quando NEM TODA queda da
+   * cadeia foi por cota — algum degrau falhou por OUTRO motivo de motor
+   * (credencial expirada, 429 sem texto de teto, etc.) antes de a cadeia
+   * esgotar de vez. A condição original só olhava o ÚLTIMO erro: dois
+   * motores caindo por cota e o terceiro (o último) por outro motivo fazia
+   * o dono não receber aviso NENHUM — o mesmo silêncio que esta tarefa veio
+   * matar. Agora o chamador (scheduler.ts) agrega a cadeia inteira e manda
+   * este sinalizador; o recado precisa ser honesto sobre a mistura, nunca
+   * simplificar para "foi tudo cota" quando não foi. Omitido = `false`
+   * (retrocompatível com quem já chamava esta função).
+   */
+  misto?: boolean
+}): string {
+  const prazo = args.ateQuando ? `até ${args.ateQuando}` : '— nenhum provedor disse até quando'
+  const linhaDeDuvidas =
+    args.duvidasEsperando > 0
+      ? `Nesse meio tempo, ${args.duvidasEsperando} ${
+          args.duvidasEsperando === 1 ? 'dúvida do dev está' : 'dúvidas do dev estão'
+        } esperando resposta.`
+      : 'Nesse meio tempo, não há nenhuma dúvida do dev esperando resposta.'
+  const linhaDeMistura = args.misto
+    ? [
+        '',
+        'Nem toda queda foi por cota: parte da cadeia falhou por outro motivo ' +
+          '(credencial ou erro do motor), e mesmo assim não sobrou nenhum motor de reserva.',
+      ]
+    : []
+  return [
+    `GitOrch: o time ficou sem capacidade de motor ${prazo}.`,
+    ...linhaDeMistura,
+    '',
+    linhaDeDuvidas,
+    '',
+    'Não é preciso fazer nada agora — quando a cota de algum motor voltar, o',
+    'trabalho retoma sozinho.',
+  ].join('\n')
+}
+
+const JANELA_DO_AVISO_DE_MOTORES_ESGOTADOS_MS = 24 * 60 * 60 * 1000
+
+/**
+ * "Uma vez por janela de 24h", mas persistida em banco em vez de Map —
+ * L4-T22 fix-up, item 4.
+ *
+ * MESMA disciplina de `deveAvisarDeNovo` (credencial-do-motor.ts): SPAM apaga
+ * sinal tanto quanto silêncio. A diferença é que ali a limitação de viver em
+ * memória do processo foi uma decisão deliberada e documentada (aviso por
+ * MOTOR, tolerável repetir uma vez a mais depois de um restart raro). Este
+ * aviso é diferente: dispara exatamente quando a esteira do cliente PAROU de
+ * verdade (cadeia inteira sem cota), e o control-plane reinicia a CADA
+ * publicação — no clima de deploy contínuo deste produto, "uma vez por
+ * processo" na prática vira "de novo a cada deploy", nunca uma vez por dia.
+ * Por isso o chamador (scheduler.ts) lê e grava `Project.motoresEsgotadosAvisadoEm`
+ * em vez de um Map — esta função só decide, pura, a partir da marca lida.
+ */
+export function deveAvisarMotoresEsgotadosDeNovo(avisadoEm: Date | null, agora: number): boolean {
+  return (
+    avisadoEm === null || agora - avisadoEm.getTime() >= JANELA_DO_AVISO_DE_MOTORES_ESGOTADOS_MS
+  )
 }
