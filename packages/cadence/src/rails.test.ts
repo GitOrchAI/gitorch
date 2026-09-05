@@ -3,11 +3,13 @@ import { loadEventPlaybook, loadPlaybook } from './index'
 import {
   DOD_FIELD_MAP,
   ESCALA_DE_PESO,
+  MIN_CARACTERES_JUSTIFICATIVA_DE_DEPENDENCIA,
   PESO_MAXIMO_DE_SPRINT,
   RAILS_SCHEMAS,
   buildStepPrompt,
   citaTooling,
   criterioEhTestavel,
+  dependenciaTemJustificativa,
   formatRaJourneys,
   validateDoD,
   validateForm,
@@ -116,6 +118,49 @@ describe('validateForm (validador minimal por schema)', () => {
     for (const peso of ESCALA_DE_PESO) {
       expect(validateForm(RAILS_SCHEMAS.poTasks, { tasks: [tarefaComPeso(peso)] }).ok).toBe(true)
     }
+  })
+
+  // D74 (05/09, dono): "Só dependência real." O MiniSchema não sabe validar
+  // "blockedByRationale obrigatório só se blockedByTaskIndexes não está
+  // vazio" (mesma lacuna documentada no comentário de `devQuestion`) — por
+  // isso a régua vive em `dependenciaTemJustificativa`, no mesmo padrão de
+  // `criterioEhTestavel`/`validateDoD`.
+  describe('dependenciaTemJustificativa (D74: só dependência real)', () => {
+    it('sem blockedByTaskIndexes, não exige justificativa nenhuma', () => {
+      expect(dependenciaTemJustificativa(undefined, undefined)).toBe(true)
+      expect(dependenciaTemJustificativa([], undefined)).toBe(true)
+    })
+
+    it('com blockedByTaskIndexes e SEM blockedByRationale, é rejeitada', () => {
+      expect(dependenciaTemJustificativa([0], undefined)).toBe(false)
+      expect(dependenciaTemJustificativa([0], '')).toBe(false)
+    })
+
+    it('blockedByRationale curto demais (abaixo do piso) é rejeitada', () => {
+      expect(dependenciaTemJustificativa([0], 'faz sentido')).toBe(false)
+    })
+
+    it('blockedByRationale citando o resultado necessário passa', () => {
+      expect(
+        dependenciaTemJustificativa(
+          [0],
+          'Precisa da coluna material que a task 0 cria na migração.'
+        )
+      ).toBe(true)
+    })
+
+    it('o piso é MIN_CARACTERES_JUSTIFICATIVA_DE_DEPENDENCIA, contado com trim', () => {
+      const exato = 'x'.repeat(MIN_CARACTERES_JUSTIFICATIVA_DE_DEPENDENCIA)
+      expect(dependenciaTemJustificativa([0], exato)).toBe(true)
+      expect(
+        dependenciaTemJustificativa(
+          [0],
+          'x'.repeat(MIN_CARACTERES_JUSTIFICATIVA_DE_DEPENDENCIA - 1)
+        )
+      ).toBe(false)
+      // espaço em branco não conta — mesmo espírito de minLength no MiniSchema
+      expect(dependenciaTemJustificativa([0], ' '.repeat(40))).toBe(false)
+    })
   })
 
   it('aceita PoPhases válido', () => {

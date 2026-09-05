@@ -172,7 +172,7 @@ export async function runPoRails(execute: StepExecutor, input: PoRailsInput): Pr
       phasesBlock,
       epicsBlock,
       featuresBlock,
-      'Write the TASKS for every feature (featureIndex refers to the list above). Every feature needs at least one task; every task MUST carry the complete 8-field DoD — incomplete tasks are rejected by code. Use blockedByTaskIndexes for real dependencies (earlier tasks only).',
+      'Write the TASKS for every feature (featureIndex refers to the list above). Every feature needs at least one task; every task MUST carry the complete 8-field DoD — incomplete tasks are rejected by code. Only use blockedByTaskIndexes for REAL dependencies (earlier tasks only): the task needs a RESULT the other one produces — an artifact it builds, a migration that must exist first, a data/interface contract it defines. Preferred ordering, touching the same file/area, or "makes sense to do later" are NOT dependencies — do not chain tasks by habit. Every blockedByTaskIndexes MUST come with a blockedByRationale naming the concrete result needed; code rejects a dependency without one.',
       TASK_WRITING_RULES,
     ]),
     execute,

@@ -1,6 +1,7 @@
 import {
   validateDoD,
   criterioEhTestavel,
+  dependenciaTemJustificativa,
   DOD_FIELD_MAP,
   ESCALA_DE_PESO,
   PESO_MAXIMO_DE_SPRINT,
@@ -70,6 +71,14 @@ export interface BacklogPlan {
     fields: DoDFields
     /** Índices (em tasks) de dependências "blocked by" declaradas pelo PO. */
     blockedByTaskIndexes?: number[]
+    /**
+     * D74 (05/09, dono): "Só dependência real." O RESULTADO da task
+     * bloqueadora que esta task precisa — nunca ordem preferida ou mesma
+     * área/arquivo tocado. Exigido pela régua `dependenciaTemJustificativa`
+     * (@gitorch/cadence) só quando `blockedByTaskIndexes` não está vazio;
+     * ver `docs/agents/dependencia-real-entre-tasks.md`.
+     */
+    blockedByRationale?: string
     /**
      * Tamanho da task na ESCALA_DE_PESO (1,2,3,5,8,13). O schema `poTasks` já
      * o EXIGE do modelo; até 31/08/2026 este tipo o descartava e o peso só
@@ -258,6 +267,17 @@ export function validateBacklogPlan(plan: BacklogPlan): string[] {
       if (!Number.isInteger(b) || b < 0 || b >= i) {
         problems.push(`tasks[${i}]: blockedBy ${b} must reference an EARLIER task`)
       }
+    }
+    // D74 (05/09, dono): "Só dependência real." `blockedByTaskIndexes` sem
+    // um `blockedByRationale` que cite o RESULTADO necessário (artefato,
+    // migração, contrato de dados/interface) é rejeitado aqui, no mesmo
+    // laço all-or-nothing que já reprova DoD incompleto e peso fora da
+    // escala — nunca ordem preferida, mesma área/arquivo tocado, ou
+    // sequência numérica. Ver `docs/agents/dependencia-real-entre-tasks.md`.
+    if (!dependenciaTemJustificativa(task.blockedByTaskIndexes, task.blockedByRationale)) {
+      problems.push(
+        `tasks[${i}]: blockedByTaskIndexes declarado sem blockedByRationale (ou justificativa curta demais) — diga qual RESULTADO da task bloqueadora esta task precisa (artefato, migração, contrato de dados/interface), não a ordem preferida`
+      )
     }
   })
   plan.features.forEach((_, f) => {
