@@ -9,6 +9,7 @@ import { renderIssueBody } from './backlog-executor.js'
 import type { LinhaDeSessao } from './dev-session-store.js'
 import { TETO_DE_ESPERA_MS } from './vigia-da-verificacao.js'
 import type { EstadoDaJanela } from './aviso-por-janela.js'
+import { textoDeEntregaSemConteudo } from './entrega-sem-conteudo.js'
 
 const RECON = JSON.stringify({
   ci: 'GitHub Actions (.github/workflows/ci.yml) — roda lint, typecheck e testes por workspace.',
@@ -90,6 +91,16 @@ function fakeFetch(
     existingReviews?: Array<{ body: string; commit_id: string }>
     /** Corpo do PR. Default preserva o `Closes #50` que os 15 testes antigos assumem. */
     body?: string
+    /**
+     * L5-T1: os três campos que o GET isolado da PR devolve para
+     * `ehEntregaSemConteudo` ler. Default (`undefined`) preserva o
+     * comportamento antigo: sem estes campos no mock, a checagem de vazio
+     * nunca acha os três presentes e cai no recuo `false` — nenhum teste
+     * existente vira "entrega sem conteúdo" por acidente.
+     */
+    changedFiles?: number
+    additions?: number
+    deletions?: number
   }>,
   issueLabels: string[] = ['jules', 'gitorch:task'],
   /**
@@ -200,6 +211,9 @@ function fakeFetch(
         number: numeroDoPr,
         body: p?.body ?? 'Closes #50',
         head: opts.semShaNaPrIsolada ? {} : { sha: opts.headSha ?? 'abc123' },
+        ...(p?.changedFiles !== undefined ? { changed_files: p.changedFiles } : {}),
+        ...(p?.additions !== undefined ? { additions: p.additions } : {}),
+        ...(p?.deletions !== undefined ? { deletions: p.deletions } : {}),
       })
     }
     // label da issue vinculada — checar ANTES de "/issues/{issueNumber}" (que também
@@ -3323,5 +3337,215 @@ describe('ESTEIRA-T15: dedupe do aviso de entregas barradas', () => {
     await runQaMissionViaRails(opcoes)
     await runQaMissionViaRails(opcoes)
     expect(avisos).toHaveLength(2)
+  })
+})
+
+// L5-T1 — ENTREGA SEM CONTEÚDO.
+//
+// Medido: PR #468 (GitOrchAI/gitorch, issue #309), 03-05/09/2026 — diff
+// vazio (o dev nunca empurrou o commit), duas reviews CHANGES_REQUESTED de
+// gitorch-ai[bot] no MESMO commit, e a entrega presa em julgamento por dois
+// dias. O julgamento já dizia a coisa certa; faltava o produto REAGIR.
+describe('runQaMissionViaRails — entrega sem conteúdo (L5-T1)', () => {
+  it('changed_files=0: reconhece como entrega sem conteúdo, avisa o dev, reprova, e NUNCA chama o motor', async () => {
+    const f = fakeFetch([
+      { number: 468, user: 'jules[bot]', changedFiles: 0, additions: 0, deletions: 0 },
+    ])
+    const posted = (
+      f as unknown as { posted: { reviews: Array<{ event?: string; body?: string }> } }
+    ).posted
+    const enviadas: Array<{ sessionName: string; texto: string }> = []
+    let motorChamado = false
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => {
+        motorChamado = true
+        return APPROVE
+      },
+      sessoes: [linha({ issueNumber: 309, pullRequestNumber: 468, sessionName: 'sessions/309' })],
+      avisarSessao: async (args) => {
+        enviadas.push(args)
+        return true
+      },
+      fetchImpl: f,
+    })
+
+    // Item 4 — nunca aprovar nem mesclar PR sem conteúdo, garantido por
+    // CONSTRUÇÃO: o motor nem chega a ser consultado.
+    expect(motorChamado).toBe(false)
+    expect(r.podeMesclar).toBe(false)
+    expect(r.noOp).toBeUndefined() // não fica preso em silêncio
+
+    // A review sai como reprovação de verdade, não comentário solto.
+    expect(posted.reviews).toHaveLength(1)
+    expect(posted.reviews[0]!.event).toBe('REQUEST_CHANGES')
+    expect(posted.reviews[0]!.body).toContain('empty diff')
+
+    // Item 2 — sendMessage ao dev (o MESMO `avisarSessao` que qualquer
+    // reprovação normal usa) dizendo exatamente o que falta.
+    expect(enviadas).toHaveLength(1)
+    expect(enviadas[0]!.sessionName).toBe('sessions/309')
+    expect(enviadas[0]!.texto).toBe(textoDeEntregaSemConteudo(468))
+    expect(enviadas[0]!.texto).toContain('no commit was pushed')
+  })
+
+  it('sem changed_files no retorno do GitHub: recua para additions=0/deletions=0 e reconhece do mesmo jeito', async () => {
+    const f = fakeFetch([{ number: 469, user: 'jules[bot]', additions: 0, deletions: 0 }])
+    const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
+    let motorChamado = false
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => {
+        motorChamado = true
+        return APPROVE
+      },
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 469, sessionName: 'sessions/x' })],
+      fetchImpl: f,
+    })
+    expect(motorChamado).toBe(false)
+    expect(posted.reviews[0]!.event).toBe('REQUEST_CHANGES')
+    expect(r.podeMesclar).toBe(false)
+  })
+
+  it('nunca tenta mesclar um PR sem conteúdo (item 4): nenhuma chamada a .../merge', async () => {
+    const f = fakeFetch([{ number: 468, user: 'jules[bot]', changedFiles: 0 }])
+    const posted = (f as unknown as { posted: { merges: unknown[] } }).posted
+    await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      sessoes: [linha({ issueNumber: 309, pullRequestNumber: 468, sessionName: 'sessions/309' })],
+      fetchImpl: f,
+    })
+    expect(posted.merges).toHaveLength(0)
+  })
+
+  it('não fica preso: no MESMO head sha já reprovado por nós, o laço de descoberta pula em vez de avisar de novo a cada tique', async () => {
+    // Simula o ESTADO do GitHub DEPOIS de uma primeira passagem: a review de
+    // entrega-sem-conteúdo já está lá, marcada, no head atual. Mesmo padrão
+    // dos outros testes de "já julgado" desta suíte (ver `existingReviews`
+    // com `MARCA_DO_PARECER` no head — ex.: linha 462 acima) — uma chamada
+    // só, não duas, porque este `fakeFetch` não realimenta os posts de uma
+    // chamada nas leituras da próxima.
+    const parecerAnterior = [
+      {
+        body: '<!-- gitorch:qa -->\nGitOrch QA verdict: REQUEST CHANGES — empty diff, no commit pushed.',
+        commit_id: 'sha-vazio',
+      },
+    ]
+    const f = fakeFetch(
+      [{ number: 468, user: 'jules[bot]', changedFiles: 0, existingReviews: parecerAnterior }],
+      undefined,
+      50,
+      { headSha: 'sha-vazio' }
+    )
+    const enviadas: unknown[] = []
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      sessoes: [linha({ issueNumber: 309, pullRequestNumber: 468, sessionName: 'sessions/309' })],
+      avisarSessao: async (a) => {
+        enviadas.push(a)
+        return true
+      },
+      fetchImpl: f,
+    })
+    // "Já julgado, mesmo head" — o laço de descoberta pula esta entrega
+    // (mesma regra de qualquer outra reprovação): sem review nova, sem
+    // aviso novo ao dev, sem martelar a cada tique do scheduler.
+    expect(r.noOp).toBe(true)
+    expect(enviadas).toHaveLength(0)
+  })
+
+  it('sem linha de sessão correspondente: reprova mesmo assim, mas não quebra por falta de para quem avisar', async () => {
+    const f = fakeFetch([{ number: 468, user: 'jules[bot]', changedFiles: 0 }])
+    const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
+    const enviadas: unknown[] = []
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      sessoes: [], // nenhuma linha para o PR nem para a issue
+      avisarSessao: async (a) => {
+        enviadas.push(a)
+        return true
+      },
+      fetchImpl: f,
+    })
+    expect(r.podeMesclar).toBe(false)
+    expect(posted.reviews[0]!.event).toBe('REQUEST_CHANGES')
+    expect(enviadas).toHaveLength(0)
+  })
+
+  it('avisarSessao falha: guarda o aviso pendente em vez de sumir em silêncio (mesmo recuo do rework normal)', async () => {
+    const f = fakeFetch([{ number: 468, user: 'jules[bot]', changedFiles: 0 }])
+    const guardados: Array<{ sessionName: string; texto: string }> = []
+    const avisos: string[] = []
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      sessoes: [linha({ issueNumber: 309, pullRequestNumber: 468, sessionName: 'sessions/309' })],
+      avisarSessao: async () => false,
+      registrarAvisoPendente: async (args) => {
+        guardados.push(args)
+      },
+      onWarn: (m) => avisos.push(m),
+      fetchImpl: f,
+    })
+    expect(r.exitCode).toBe(0) // best-effort: não derruba a missão
+    expect(guardados).toHaveLength(1)
+    expect(guardados[0]!.sessionName).toBe('sessions/309')
+    expect(avisos.some((m) => m.includes('sem conteúdo'))).toBe(true)
+  })
+
+  // REGRESSÃO ZERO — o outro lado do item (b) do plano: PR com diff REAL
+  // segue o julgamento normal do QA, comportamento idêntico ao de hoje.
+  it('regressão zero — PR com diff real (changed_files > 0) segue o julgamento normal e pode aprovar', async () => {
+    const f = fakeFetch([
+      { number: 7, user: 'jules[bot]', changedFiles: 1, additions: 12, deletions: 3 },
+    ])
+    const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
+    let motorChamado = false
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => {
+        motorChamado = true
+        return APPROVE
+      },
+      fetchImpl: f,
+    })
+    expect(motorChamado).toBe(true)
+    expect(posted.reviews[0]!.event).toBe('APPROVE')
+    expect(r.podeMesclar).toBe(true)
+  })
+
+  // Os PRs 3926/3937 citados na tarefa: UNSTABLE, CI vermelho, diff REAL —
+  // continuam indo para julgamento como hoje (o corte de vazio não os pega).
+  it('regressão zero — diff real com CI vermelho (padrão dos PRs 3926/3937) continua indo a julgamento normal', async () => {
+    const f = fakeFetch(
+      [{ number: 3926, user: 'jules[bot]', changedFiles: 4, additions: 40, deletions: 5 }],
+      undefined,
+      50,
+      { checkRuns: [{ conclusion: 'failure', status: 'completed' }] }
+    )
+    const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
+    let motorChamado = false
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => {
+        motorChamado = true
+        return REQUEST_CHANGES
+      },
+      fetchImpl: f,
+    })
+    expect(motorChamado).toBe(true)
+    expect(posted.reviews[0]!.event).toBe('REQUEST_CHANGES')
+    expect(r.podeMesclar).toBe(true) // delegado — só o VEREDITO é reprovação
   })
 })
