@@ -886,8 +886,20 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
             // próprio, com guard anti cross-tenant embutido em
             // handleTelegramCallback. Nunca é também um /start: são tipos de
             // update mutuamente exclusivos.
+            //
+            // L4-T27 (item 3) — defeito medido em produção (issue
+            // GitOrchAI/gitorch#3866): `onError` é o que faz a falha
+            // ISOLADA dentro de handleTelegramCallback aparecer de verdade
+            // no log (nunca console.*) — sem isto configurado, o aviso
+            // seria descartado em silêncio e ninguém saberia que um clique
+            // falhou.
             await handleTelegramCallback(
-              { prisma: app.prisma, agentQuestionService, botToken },
+              {
+                prisma: app.prisma,
+                agentQuestionService,
+                botToken,
+                onError: (m) => app.log.error(`[Telegram] ${m}`),
+              },
               update
             )
             continue

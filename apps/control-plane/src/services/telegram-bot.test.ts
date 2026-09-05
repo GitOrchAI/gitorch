@@ -801,8 +801,17 @@ describe('handleTelegramCallback — o clique no botão vira answer(), com guard
     // não olham pro record devolvido). Os testes de colapso passam um record
     // de verdade, como o answer() real devolveria.
     answerReturns?: any
+    // L4-T27 (item 3): simula uma falha DE VERDADE do manipulador (ex.:
+    // dedupKey corrompido) — `agentQuestionService.answer` real também pode
+    // lançar (agent-question.ts `answer()` propaga), e handleTelegramCallback
+    // precisa isolar isto sem derrubar quem chamou.
+    answerThrows?: Error
   }) {
     const answerCalls: any[] = []
+    // L4-T27 (item 3): registra a causa quando o manipulador falha de
+    // verdade — nunca console.*, sempre o logger injetado (produção:
+    // app.log.error, plugins/telegram.ts).
+    const onErrorCalls: string[] = []
     const fetchImpl = vi.fn(
       async () => new Response(JSON.stringify({ ok: opts.fetchOk ?? true }), { status: 200 })
     ) as unknown as typeof fetch
@@ -822,13 +831,15 @@ describe('handleTelegramCallback — o clique no botão vira answer(), com guard
       agentQuestionService: {
         answer: vi.fn(async (id: string, value: string, via: string) => {
           answerCalls.push({ id, value, via })
+          if (opts.answerThrows) throw opts.answerThrows
           return opts.answerReturns ?? null
         }),
       },
       botToken: BOT,
       fetchImpl,
+      onError: vi.fn((mensagem: string) => onErrorCalls.push(mensagem)),
     }
-    return { deps, answerCalls, fetchImpl }
+    return { deps, answerCalls, fetchImpl, onErrorCalls }
   }
 
   const QUESTION = {
@@ -1099,6 +1110,108 @@ describe('handleTelegramCallback — o clique no botão vira answer(), com guard
     const editCall = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.find((c) =>
       String(c[0]).includes('/editMessageText')
     )
+    expect(editCall).toBeUndefined()
+  })
+
+  // ---------------------------------------------------------------------
+  // L4-T27 — defeito medido em produção (issue GitOrchAI/gitorch#3866,
+  // dedupKey duvida-dev:loureng/patinhas-3d-crafts:3866:a9dad428e18bf927):
+  // o dono clicou para responder uma dúvida escalada, a resposta se perdeu
+  // (a pergunta continuou `open`, sem canal nem data de resposta) e o
+  // teclado nunca colapsou — ele não sabia nem se o produto tinha lido. O
+  // ouvinte do bot caiu 5 vezes em 6 horas com a MESMA exceção
+  // (`aoResponderDuvidaDoDev: sessão escalada não encontrada...`,
+  // retomar-sessao-com-resposta.ts), subindo por handleTelegramCallback.
+  // ---------------------------------------------------------------------
+
+  it('ITEM 2: avisoDoManipulador presente (correção/resposta registrada de forma durável, mas a entrega ao dev não foi possível): colapsa mostrando a escolha + um aviso honesto, sem jargão técnico', async () => {
+    const answeredComAviso = {
+      ...QUESTION,
+      status: 'answered',
+      answer: '#1E40AF',
+      // MESMO texto de AVISO_CORRECAO_SEM_SESSAO_VIVA
+      // (retomar-sessao-com-resposta.ts) — fonte única, nunca reinventado
+      // aqui.
+      avisoDoManipulador:
+        'Sua orientação foi guardada e será entregue ao dev quando esta tarefa voltar a ser trabalhada.',
+    }
+    const { deps, fetchImpl } = fakeDeps({
+      question: QUESTION,
+      link: LINK_DONO,
+      answerReturns: answeredComAviso,
+    })
+
+    await handleTelegramCallback(deps as any, {
+      update_id: 20,
+      callback_query: {
+        id: 'cbq_20',
+        from: { id: 555 },
+        message: { message_id: 42, chat: { id: 555 } },
+        data: 'q:q_1:1',
+      },
+    })
+
+    const calls = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls
+
+    // O teclado SEMPRE colapsa — inclusive aqui, que antes desta task era
+    // exatamente o caso que ficava pendurado (a exceção subia ANTES de
+    // chegar neste ponto).
+    const editCall = calls.find((c) => String(c[0]).includes('/editMessageText'))
+    expect(editCall).toBeTruthy()
+    const body = JSON.parse(String(editCall?.[1]?.body))
+    expect(body.text).toContain('✓ Você escolheu: #1E40AF')
+    expect(body.text).toContain(
+      'Sua orientação foi guardada e será entregue ao dev quando esta tarefa voltar a ser trabalhada.'
+    )
+    // Nada de jargão técnico (sessão/hash/nome de arquivo) no que o dono lê.
+    expect(body.text).not.toMatch(/sess[ãa]o|hash|\.ts\b/i)
+    expect(body.reply_markup).toEqual({ inline_keyboard: [] })
+
+    // O "carregando" do botão some — não fica girando pra sempre.
+    const alertCall = calls.find((c) => String(c[0]).includes('/answerCallbackQuery'))
+    expect(alertCall).toBeTruthy()
+  })
+
+  it('ITEM 3: answer() lança (falha DE VERDADE do manipulador, ex.: dedupKey corrompido) — NUNCA propaga (o ouvinte do bot segue vivo), loga a causa via onError, tira o "carregando" do botão com um aviso honesto, e NÃO colapsa (a pergunta continua open, o dono pode tentar de novo)', async () => {
+    const causaReal = new Error(
+      'aoResponderDuvidaDoDev: dedupKey da pergunta tem o prefixo duvida-dev: mas está malformado — a correção do dono não pôde ser interpretada, pergunta continua open'
+    )
+    const { deps, fetchImpl, onErrorCalls } = fakeDeps({
+      question: QUESTION,
+      link: LINK_DONO,
+      answerThrows: causaReal,
+    })
+
+    // A PROVA central do item 3: handleTelegramCallback NUNCA relança — quem
+    // chama (o laço do ouvinte, plugins/telegram.ts) nunca vê esta exceção.
+    await expect(
+      handleTelegramCallback(deps as any, {
+        update_id: 21,
+        callback_query: {
+          id: 'cbq_21',
+          from: { id: 555 },
+          message: { message_id: 42, chat: { id: 555 } },
+          data: 'q:q_1:1',
+        },
+      })
+    ).resolves.toBeUndefined()
+
+    // A causa REAL foi registrada (nunca console.*, nunca engolida em
+    // silêncio) — produção passa app.log.error (plugins/telegram.ts).
+    expect(onErrorCalls.some((m) => m.includes('dedupKey da pergunta'))).toBe(true)
+
+    const calls = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls
+    const alertCall = calls.find((c) => String(c[0]).includes('/answerCallbackQuery'))
+    expect(alertCall).toBeTruthy()
+    const alertBody = JSON.parse(String(alertCall?.[1]?.body))
+    // Honesto: NUNCA finge sucesso ("✓ registrado") quando não registrou nada.
+    expect(alertBody.text).not.toBe('✓ registrado')
+    expect(alertBody.text).toMatch(/n[ãa]o deu para registrar/i)
+
+    // A pergunta NÃO foi respondida de verdade — nunca colapsa como se
+    // tivesse sido (mentiria sobre o que aconteceu, e tiraria do dono a
+    // chance de clicar de novo).
+    const editCall = calls.find((c) => String(c[0]).includes('/editMessageText'))
     expect(editCall).toBeUndefined()
   })
 })

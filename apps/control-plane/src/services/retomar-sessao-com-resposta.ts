@@ -141,6 +141,71 @@ function limitarTamanhoDaResposta(resposta: string, onWarn?: (mensagem: string) 
 }
 
 /**
+ * L4-T27 — defeito medido em produção (issue GitOrchAI/gitorch#3866, dedupKey
+ * `duvida-dev:loureng/patinhas-3d-crafts:3866:a9dad428e18bf927`): a MESMA
+ * classe de defeito que L4-T21 já corrigiu, mas L4-T21 só tratou o ramo da
+ * CORREÇÃO de suposição (`statusAnterior === 'assumida'`) — o ramo COMUM
+ * (uma pergunta escalada de verdade, de longe o caso mais frequente) continuava
+ * `throw`ando aqui quando a sessão escalada já tinha morrido antes do dono
+ * responder. Pelo painel isso virava 409 (`ERRO_AO_RESPONDER`, routes/
+ * painel.ts); pelo Telegram, a exceção subia por `handleTelegramCallback`
+ * (services/telegram-bot.ts) e derrubava o ouvinte do bot — o clique do
+ * dono se perdia, o teclado nunca colapsava, e ele não tinha como saber se
+ * o produto tinha lido.
+ *
+ * Extraído para os DOIS ramos chamarem em vez de duplicar o bloco (o
+ * `desenho` é idêntico ao que a correção de suposição já tinha): comenta na
+ * issue do repositório do CLIENTE — best-effort, pelo helper GUARDADO pela
+ * autonomia do projeto (nunca um `fetch` cru), igual a
+ * `supor-duvida-pendente.ts`/`suposicao-imediata-de-duvida.ts`. Sem este dep
+ * configurado, ou se ele falhar, só avisa pelo `onWarn` — NUNCA lança.
+ * Devolve sempre `{ entregue: false, motivo: 'sem-sessao-viva' }`; quem
+ * chama (`answer()`, agent-question.ts) NÃO trata isto como falha do
+ * manipulador — grava `answer`/`status: 'answered'` na própria
+ * `agent_question` normalmente. É esse registro (mais o comentário, ligado
+ * à issue) que torna a resposta do dono DURÁVEL mesmo sem sessão viva do dev.
+ */
+async function registrarRespostaSemSessaoViva(
+  deps: DepsDeRetomada,
+  args: {
+    parsed: DuvidaDevDedupKey
+    projectId: string
+    resposta: string
+    opcoes: Array<{ label: string; value: string }>
+    /** Só muda a moldura do comentário na issue — o resto é idêntico nos dois ramos. */
+    abertura: string
+  }
+): Promise<ResultadoDeRetomada> {
+  const textoDaResposta = sanitizarRespostaLivre(
+    textoDaRespostaParaODev(args.resposta, args.opcoes)
+  )
+  const contexto = `${args.parsed.repository}#${args.parsed.issueNumber} (projeto ${args.projectId}, hash ${args.parsed.hash})`
+  if (deps.comentarNaIssue && textoDaResposta) {
+    try {
+      await deps.comentarNaIssue({
+        issueNumber: args.parsed.issueNumber,
+        texto:
+          `${args.abertura}\n\n` +
+          `${textoDaResposta}\n\n` +
+          'Nenhuma sessão do dev assíncrono estava viva agora para receber esta resposta ' +
+          'imediatamente — ela será usada quando este trabalho for retomado.',
+      })
+    } catch (err) {
+      deps.onWarn?.(
+        `aoResponderDuvidaDoDev: resposta do dono para ${contexto} ficou registrada só na ` +
+          `agent_question — não consegui comentar na issue: ${err instanceof Error ? err.message : String(err)}`
+      )
+    }
+  } else {
+    deps.onWarn?.(
+      `aoResponderDuvidaDoDev: resposta do dono para ${contexto} sem sessão viva do dev — ` +
+        'registrada só na agent_question (comentarNaIssue ausente ou resposta vazia)'
+    )
+  }
+  return { entregue: false, motivo: 'sem-sessao-viva' }
+}
+
+/**
  * A resposta do DONO a uma dúvida escalada (L4-T3, item 3) RETOMA a sessão
  * do dev assíncrono que ficou esperando.
  *
@@ -242,50 +307,20 @@ export async function aoResponderDuvidaDoDev(
       // L4-T21 — defeito medido em produção (issue #309, 02/09 21:07 UTC):
       // a sessão que recebeu a suposição do RA já morreu quando o dono
       // corrige. Isto NÃO É mais um erro que perde a correção do dono — o
-      // dono clicou, e a orientação dele NUNCA pode desaparecer. Em vez de
-      // lançar (o que virava HTTP 500 no painel e a pergunta ficava presa
-      // em `assumida` para sempre, sem NENHUM registro da correção):
-      //   1. Comenta na issue do repositório do CLIENTE — best-effort,
-      //      pelo helper GUARDADO pela autonomia (nunca um `fetch` cru),
-      //      igual a `supor-duvida-pendente.ts`/
-      //      `suposicao-imediata-de-duvida.ts`. Sem este dep configurado,
-      //      ou se ele falhar, só avisa — nunca lança.
-      //   2. Devolve `{ entregue: false, motivo: 'sem-sessao-viva' }` —
-      //      quem chama (`answer()`, agent-question.ts) NÃO trata isto como
-      //      falha do manipulador: grava `answer`/`status: 'answered'` na
-      //      própria `agent_question` normalmente. É ESSE registro (mais o
-      //      comentário na issue, ligado à issue) que torna a correção
-      //      DURÁVEL — nenhum mecanismo hoje reinjeta `agent_question` na
-      //      próxima delegação (sm-delegation.ts/fila-de-delegacao.ts não
-      //      leem esta tabela), então o comentário público na issue é o elo
-      //      concreto que a próxima rodada de trabalho enxerga.
-      const textoDaCorrecao = sanitizarRespostaLivre(
-        textoDaRespostaParaODev(args.resposta, args.opcoes)
-      )
-      const contexto = `${parsed.repository}#${parsed.issueNumber} (projeto ${args.projectId}, hash ${parsed.hash})`
-      if (deps.comentarNaIssue && textoDaCorrecao) {
-        try {
-          await deps.comentarNaIssue({
-            issueNumber: parsed.issueNumber,
-            texto:
-              'GitOrch: o dono corrigiu a suposição anterior do RA para esta issue:\n\n' +
-              `${textoDaCorrecao}\n\n` +
-              'Nenhuma sessão do dev assíncrono estava viva agora para receber esta correção ' +
-              'imediatamente — ela será usada quando este trabalho for retomado.',
-          })
-        } catch (err) {
-          deps.onWarn?.(
-            `aoResponderDuvidaDoDev: correção do dono para ${contexto} ficou registrada só na ` +
-              `agent_question — não consegui comentar na issue: ${err instanceof Error ? err.message : String(err)}`
-          )
-        }
-      } else {
-        deps.onWarn?.(
-          `aoResponderDuvidaDoDev: correção do dono para ${contexto} sem sessão viva do dev — ` +
-            'registrada só na agent_question (comentarNaIssue ausente ou resposta vazia)'
-        )
-      }
-      return { entregue: false, motivo: 'sem-sessao-viva' }
+      // dono clicou, e a orientação dele NUNCA pode desaparecer. L4-T27
+      // extraiu o tratamento (comentário na issue + devolver sem lançar)
+      // para `registrarRespostaSemSessaoViva`, chamado aqui e no ramo comum
+      // logo abaixo — nenhum mecanismo hoje reinjeta `agent_question` na
+      // próxima delegação (sm-delegation.ts/fila-de-delegacao.ts não leem
+      // esta tabela), então o comentário público na issue é o elo concreto
+      // que a próxima rodada de trabalho enxerga.
+      return registrarRespostaSemSessaoViva(deps, {
+        parsed,
+        projectId: args.projectId,
+        resposta: args.resposta,
+        opcoes: args.opcoes,
+        abertura: 'GitOrch: o dono corrigiu a suposição anterior do RA para esta issue:',
+      })
     }
   } else {
     // Primeiro tenta a sessão com o hash EXATO desta pergunta (a marca
@@ -320,10 +355,21 @@ export async function aoResponderDuvidaDoDev(
       })
     }
     if (!sessao) {
-      throw new Error(
-        `aoResponderDuvidaDoDev: sessão escalada não encontrada para ${parsed.repository}#${parsed.issueNumber} ` +
-          `(projeto ${args.projectId}, dedupKey ${args.dedupKey}) — a pergunta continua open, nunca adivinha a sessão`
-      )
+      // L4-T27 — defeito medido em produção (issue GitOrchAI/gitorch#3866):
+      // ANTES desta task, este ramo (o comum — de longe o mais frequente)
+      // lançava aqui quando a sessão escalada já tinha morrido antes do
+      // dono responder — a pergunta ficava presa em `open` pelo painel
+      // (409 ERRO_AO_RESPONDER) e, pelo Telegram, a exceção subia por
+      // `handleTelegramCallback` e derrubava o ouvinte do bot. MESMO
+      // tratamento que a correção de suposição (acima) já tinha: nunca
+      // adivinha a sessão, mas também nunca perde a resposta do dono.
+      return registrarRespostaSemSessaoViva(deps, {
+        parsed,
+        projectId: args.projectId,
+        resposta: args.resposta,
+        opcoes: args.opcoes,
+        abertura: 'GitOrch: o dono respondeu a uma dúvida escalada para esta issue:',
+      })
     }
   }
 

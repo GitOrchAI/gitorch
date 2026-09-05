@@ -441,6 +441,17 @@ export async function collapseTelegramQuestion(input: {
    * abaixo.
    */
   origem?: 'telegram' | 'panel'
+  /**
+   * L4-T27 (item 2) — defeito medido em produção (issue GitOrchAI/gitorch#3866):
+   * quando a resposta do dono foi registrada de forma DURÁVEL mas não pôde
+   * ser entregue de imediato ao dev (nenhuma sessão viva —
+   * `retomar-sessao-com-resposta.ts`, `AgentQuestionRecord.avisoDoManipulador`),
+   * este texto aparece como uma segunda linha honesta no colapso — NUNCA
+   * jargão técnico ("sessão"/"hash"/nome de arquivo), sempre a MESMA frase
+   * de `AVISO_CORRECAO_SEM_SESSAO_VIVA`. Ausente no caminho feliz comum — o
+   * colapso continua idêntico a antes desta task.
+   */
+  avisoDeEntrega?: string
   fetchImpl?: typeof fetch
 }): Promise<boolean> {
   const f = input.fetchImpl ?? fetch
@@ -448,6 +459,7 @@ export async function collapseTelegramQuestion(input: {
     input.origem === 'panel'
       ? `✓ Já respondida pelo painel: ${input.chosenLabel}`
       : `✓ Você escolheu: ${input.chosenLabel}`
+  const rodape = input.avisoDeEntrega ? `\n\n${input.avisoDeEntrega}` : ''
   try {
     const resp = await f(`${API}/bot${input.botToken}/editMessageText`, {
       method: 'POST',
@@ -455,7 +467,7 @@ export async function collapseTelegramQuestion(input: {
       body: JSON.stringify({
         chat_id: input.chatId,
         message_id: input.messageId,
-        text: `${input.questionText}\n\n${linha}`,
+        text: `${input.questionText}\n\n${linha}${rodape}`,
         reply_markup: { inline_keyboard: [] },
       }),
     })
@@ -558,6 +570,16 @@ export interface TelegramCallbackDeps {
   agentQuestionService: Pick<AgentQuestionService, 'answer'>
   botToken: string
   fetchImpl?: typeof fetch
+  /**
+   * L4-T27 (item 3) — defeito medido em produção (issue GitOrchAI/gitorch#3866):
+   * registra a causa quando `agentQuestionService.answer` falha DE VERDADE
+   * (ex.: dedupKey corrompido, erro de banco) — a falha é ISOLADA aqui
+   * (nunca sobe para quem chama `handleTelegramCallback`, o laço do ouvinte
+   * em plugins/telegram.ts) e o dono ainda assim recebe um aviso honesto.
+   * Produção passa `app.log.error` (nunca `console.*`); opcional para não
+   * quebrar quem já monta este deps sem logger.
+   */
+  onError?: (mensagem: string) => void
 }
 
 /**
@@ -650,11 +672,31 @@ export async function handleTelegramCallback(
   // que já foi tomada em outro canal, com outro valor.
   const jaRespondidaAntesDesteClique = question.status === 'answered'
 
-  const updated = await deps.agentQuestionService.answer(
-    parsed.questionId,
-    option.value,
-    'telegram'
-  )
+  // L4-T27 (item 3) — defeito medido em produção (issue GitOrchAI/gitorch#3866):
+  // `answer()` pode LANÇAR de verdade (ex.: dedupKey corrompido —
+  // agent-question.ts `answer()` propaga a falha do manipulador). Isto
+  // NUNCA pode subir e derrubar o laço do ouvinte (plugins/telegram.ts,
+  // `listen()`) — isola aqui, loga a causa pelo logger injetado (nunca
+  // console.*) e ainda assim tira o "carregando" do botão no celular do
+  // dono, com um aviso honesto. A pergunta continua open (nada foi
+  // gravado) — nunca colapsa como se tivesse sido respondida.
+  let updated: Awaited<ReturnType<AgentQuestionService['answer']>>
+  try {
+    updated = await deps.agentQuestionService.answer(parsed.questionId, option.value, 'telegram')
+  } catch (err) {
+    const mensagem = err instanceof Error ? err.message : String(err)
+    deps.onError?.(
+      `handleTelegramCallback: falha ao registrar a resposta da pergunta ${parsed.questionId} — ${mensagem}`
+    )
+    await answerTelegramCallback({
+      botToken: deps.botToken,
+      callbackQueryId: cq.id,
+      text: 'Não deu para registrar sua resposta agora. Tente de novo em instantes.',
+      showAlert: true,
+      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    })
+    return
+  }
   defaultAgentQuestionStateManager.clearActiveTypingQuestion(question.userId)
 
   if (jaRespondidaAntesDesteClique && updated) {
@@ -689,7 +731,11 @@ export async function handleTelegramCallback(
   await answerTelegramCallback({
     botToken: deps.botToken,
     callbackQueryId: cq.id,
-    text: '✓ registrado',
+    // L4-T27 (item 2): quando a resposta foi registrada de forma durável
+    // mas não pôde ser entregue de imediato ao dev (nenhuma sessão viva —
+    // retomar-sessao-com-resposta.ts), o toast já avisa — nunca finge um
+    // "✓ registrado" simples quando há mais para o dono saber.
+    text: updated?.avisoDoManipulador ? `✓ ${updated.avisoDoManipulador}` : '✓ registrado',
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
   })
 
@@ -704,6 +750,11 @@ export async function handleTelegramCallback(
       messageId,
       questionText: question.text,
       chosenLabel: resolveAnswerLabel(options, updated.answer),
+      // L4-T27 (item 2): o teclado SEMPRE colapsa, inclusive quando a
+      // entrega ao dev não foi possível — a segunda linha honesta
+      // (AVISO_CORRECAO_SEM_SESSAO_VIVA, retomar-sessao-com-resposta.ts)
+      // é o que muda, nunca jargão técnico.
+      ...(updated.avisoDoManipulador ? { avisoDeEntrega: updated.avisoDoManipulador } : {}),
       ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
     })
   }
