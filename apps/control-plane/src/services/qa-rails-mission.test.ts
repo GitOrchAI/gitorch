@@ -906,6 +906,57 @@ describe('runQaMissionViaRails', () => {
       expect(r.noOp).toBe(true)
       expect(r.output).toContain('cancelado')
     })
+
+    // Fix-up L4-T17 (achado 1 da revisão) — a REGRESSÃO medida ao vivo:
+    // diferente do PR #3945 acima (onde o job-gate mostra `failure` no
+    // check-run e por isso `estadoDoCi` já devolve 'red' sem precisar
+    // investigar), aqui NENHUM check-run mostra falha real — os DOIS
+    // aparecem 'cancelled' no nível do job (a mesma armadilha: o passo de
+    // Prettier falha e o próprio passo de cancelamento em cadeia derruba o
+    // job ATÉ ele, terminando 'cancelled', nunca 'failure'). Sem investigar
+    // os passos quando o estado puro já é 'cancelado', o produto nunca
+    // saberia — ficaria esperando para sempre (mesma régua de pending), que
+    // foi exatamente o que travou 5 PRs em loureng/patinhas-3d-crafts.
+    it('achado 1: TUDO cancelado nos check-runs (nenhum "failure" à vista), mas um passo escondido falhou de verdade — investiga, promove a red e JULGA', async () => {
+      const qualidadeId = 9001
+      const outroId = 9002
+      const f = fakeFetch([{ number: 4001, user: 'jules[bot]' }], undefined, undefined, {
+        checkRuns: [
+          { id: qualidadeId, name: '✅ Qualidade', conclusion: 'cancelled', status: 'completed' },
+          { id: outroId, name: 'outro job', conclusion: 'cancelled', status: 'completed' },
+        ],
+        jobSteps: {
+          [qualidadeId]: [
+            { name: 'Set up job', conclusion: 'success', completedAt: '2026-09-05T04:37:12Z' },
+            {
+              name: 'Prettier (formatação consistente)',
+              conclusion: 'failure',
+              completedAt: '2026-09-05T04:40:14Z',
+            },
+          ],
+          [outroId]: [
+            { name: 'Set up job', conclusion: 'success', completedAt: '2026-09-05T04:02:43Z' },
+            { name: 'Rodar', conclusion: 'cancelled', completedAt: '2026-09-05T04:40:15Z' },
+          ],
+        },
+      })
+      const posted = (
+        f as unknown as {
+          posted: { reviews: Array<{ event?: string; body?: string }>; comments: unknown[] }
+        }
+      ).posted
+      const r = await runQaMissionViaRails({
+        repository: 'loureng/patinhas-3d-crafts',
+        githubToken: 't',
+        execute: async () => APPROVE, // trava determinística tem que sobrepor (CI não-verde)
+        fetchImpl: f,
+      })
+      expect(posted.reviews).toHaveLength(1)
+      expect(posted.reviews[0]!.event).toBe('REQUEST_CHANGES')
+      expect(posted.reviews[0]!.body).toContain('Prettier (formatação consistente)')
+      expect(r.output).toContain('request_changes')
+      expect(r.noOp).toBeUndefined()
+    })
   })
 
   // `unknown` (não deu para ler o head sha, logo não dá para consultar

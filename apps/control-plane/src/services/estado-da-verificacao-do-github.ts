@@ -5,6 +5,12 @@
  * julgar, outra para decidir se rejulga — e as duas erravam do mesmo jeito.
  */
 
+import {
+  investigarCancelamentoEmCadeia,
+  type PassoDoJob,
+  type ResultadoDoCulpado,
+} from './causa-do-cancelamento.js'
+
 /** Um check-run, reduzido ao que a decisão precisa. */
 export interface CheckDoGithub {
   status?: string | undefined
@@ -47,8 +53,20 @@ const CONCLUSOES_QUE_NAO_REPROVAM = new Set(['success', 'neutral', 'skipped'])
  * tem falha nenhuma atrás: é só um run que ficou para trás. As duas
  * situações são indistinguíveis SÓ com a conclusão do job — quem distingue
  * de verdade (acha o passo que falhou) é `causa-do-cancelamento.ts`, que
- * investiga mais fundo (API de jobs/steps) exatamente quando este módulo
- * devolve `'red'` com cancelamento no meio.
+ * investiga mais fundo (API de jobs/steps).
+ *
+ * CORREÇÃO (fix-up L4-T17, achado 1 da revisão — REGRESSÃO): a versão
+ * original só chamava essa investigação mais funda quando este módulo já
+ * devolvia `'red'` com cancelamento misturado a uma falha real noutro job —
+ * nunca quando devolvia `'cancelado'` puro. Resultado medido: um workflow
+ * de cliente sem um job SEPARADO que termine `failure` (o caso mais comum —
+ * o próprio job que falhou já cancela a si mesmo, ver `causa-do-
+ * cancelamento.ts`) fazia o estado ficar `'cancelado'` para sempre, e a
+ * vigília (`vigia-da-verificacao.ts`) só sabe esperar diante desse estado —
+ * nunca chega a julgar. Antes de L4-T17, `cancelled` virava `'red'` direto:
+ * pior explicado, mas ao menos era julgado. `investigarEstadoDoCi`, abaixo,
+ * fecha o buraco: investiga TAMBÉM quando a resposta pura é `'cancelado'`,
+ * e só continua indefinido quando de fato não há falha em passo nenhum.
  */
 const CONCLUSAO_CANCELADA = 'cancelled'
 
@@ -79,4 +97,59 @@ export function estadoDoCi(runs: CheckDoGithub[]): EstadoDoCi {
  */
 export function ciTerminouVerde(runs: CheckDoGithub[]): boolean {
   return runs.length > 0 && estadoDoCi(runs) === 'green'
+}
+
+/** Um check-run com o mínimo extra (`id`+`name`) para dar para investigar os
+ *  passos por trás dele — o mesmo `id` que a API de jobs do Actions usa. */
+export interface CheckDoGithubInvestigavel extends CheckDoGithub {
+  id?: number | undefined
+  name?: string | undefined
+}
+
+export interface EstadoDoCiInvestigado {
+  estado: EstadoDoCi
+  culpado: ResultadoDoCulpado
+}
+
+/**
+ * Mesma decisão de `estadoDoCi` — mas quando a resposta PURA seria
+ * inconclusiva (`'cancelado'`, ou `'red'` com cancelamento misturado a uma
+ * falha real noutro job), busca os passos (I/O, via `buscarPassosDoJob`)
+ * antes de fechar a resposta.
+ *
+ * Correção da REGRESSÃO do achado 1 (ver o comentário de `CONCLUSAO_
+ * CANCELADA` acima): `'cancelado'` agora SEMPRE investiga. Se
+ * `causa-do-cancelamento.ts` achar um passo que falhou de verdade — único
+ * ou ambíguo, não importa: os dois são falha REAL —, o estado é promovido
+ * para `'red'` e o culpado vai junto. Só continua `'cancelado'` (indefinido)
+ * quando a investigação não acha falha real em passo nenhum — e esse
+ * "continua esperando" já tem teto próprio: `decidirSobreVerificacao`
+ * (vigia-da-verificacao.ts) vira `'avisar-demora'` depois de
+ * `TETO_DE_ESPERA_MS`, então mesmo o cancelamento genuinamente sem culpa
+ * não fica parado indefinidamente — só deixa de ser julgado como veredito.
+ *
+ * `'red'` que já era `'red'` por si (uma falha real direta, sem
+ * cancelamento misturado) nunca precisa investigar — nada escondido para
+ * achar, e gastar a chamada seria à toa.
+ */
+export async function investigarEstadoDoCi(
+  // Mutável, não `readonly`: `estadoDoCi` (acima) já pede `CheckDoGithub[]`
+  // mutável, e esta função só embrulha aquela — mesmo tipo de entrada.
+  runs: CheckDoGithubInvestigavel[],
+  buscarPassosDoJob: (jobId: number) => Promise<readonly PassoDoJob[]>
+): Promise<EstadoDoCiInvestigado> {
+  const estadoPuro = estadoDoCi(runs)
+  const temCanceladoNoMeio = runs.some((r) => r.conclusion === CONCLUSAO_CANCELADA)
+  const precisaInvestigar =
+    estadoPuro === 'cancelado' || (estadoPuro === 'red' && temCanceladoNoMeio)
+  if (!precisaInvestigar) {
+    return { estado: estadoPuro, culpado: { encontrado: false } }
+  }
+  const jobs = runs.filter(
+    (r): r is CheckDoGithubInvestigavel & { id: number; name: string } =>
+      typeof r.id === 'number' && typeof r.name === 'string'
+  )
+  const culpado = await investigarCancelamentoEmCadeia(jobs, buscarPassosDoJob)
+  const estado: EstadoDoCi = estadoPuro === 'cancelado' && culpado.encontrado ? 'red' : estadoPuro
+  return { estado, culpado }
 }
