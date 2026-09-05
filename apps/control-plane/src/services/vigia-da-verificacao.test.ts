@@ -65,4 +65,30 @@ describe('decidirSobreVerificacao', () => {
     expect(d.acao).toBe('esperar')
     expect(d.motivo).toMatch(/unknown/i)
   })
+
+  // L4-T17 (item 4): cancelamento SEM culpa (`estadoDoCi` devolve
+  // 'cancelado' quando tudo cancelou e nada falhou de verdade) nunca vira
+  // veredito — segue a MESMA régua de pending/unknown: espera, e só depois
+  // do teto avisa o dono. Este é "o caminho da base continua existindo":
+  // deixa de ser a explicação PADRÃO (só entra quando não há culpado real),
+  // mas continua coberto por teste, igual sempre foi.
+  it('cancelado sem culpa: espera, nunca vira veredito — mesma régua de pending', () => {
+    const d = decidirSobreVerificacao({
+      estado: 'cancelado',
+      primeiraVezVistoPendenteEm: null,
+      agora,
+    })
+    expect(d.acao).toBe('esperar')
+    expect(d.motivo).toMatch(/cancelado/i)
+  })
+
+  it('cancelado sem culpa além do teto: avisa o dono — o mesmo aviso de sempre, não um veredito', () => {
+    const d = decidirSobreVerificacao({
+      estado: 'cancelado',
+      primeiraVezVistoPendenteEm: new Date(agora.getTime() - TETO_DE_ESPERA_MS - 1),
+      agora,
+    })
+    expect(d.acao).toBe('avisar-demora')
+    expect(d.motivo).toMatch(/demora|parada/i)
+  })
 })

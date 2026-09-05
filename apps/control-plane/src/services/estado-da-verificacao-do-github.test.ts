@@ -31,13 +31,12 @@ describe('estadoDoCi', () => {
   })
 
   // Cada um destes é uma forma de "não sei se passa", e aprovar sobre eles
-  // seria aprovar sobre um teste que não terminou.
-  it.each(['cancelled', 'timed_out', 'action_required', 'stale'])(
-    'conclusão "%s" reprova',
-    (conclusao) => {
-      expect(estadoDoCi([ok(), { status: 'completed', conclusion: conclusao }])).toBe('red')
-    }
-  )
+  // seria aprovar sobre um teste que não terminou. "cancelled" SAIU desta
+  // lista (L4-T17, ver describe próprio abaixo) — sozinho ele vira o estado
+  // "cancelado", não "red".
+  it.each(['timed_out', 'action_required', 'stale'])('conclusão "%s" reprova', (conclusao) => {
+    expect(estadoDoCi([ok(), { status: 'completed', conclusion: conclusao }])).toBe('red')
+  })
 
   it('conclusão desconhecida reprova: o produto não inventa que passou', () => {
     expect(estadoDoCi([ok(), { status: 'completed', conclusion: 'algo_novo_do_github' }])).toBe(
@@ -64,6 +63,45 @@ describe('estadoDoCi', () => {
 
   it('repositório sem verificação nenhuma é "no checks", que é estado estável', () => {
     expect(estadoDoCi([])).toBe('no checks')
+  })
+
+  // L4-T17 — medido em loureng/patinhas-3d-crafts: 5 PRs abertos, vários
+  // checks cancelados, NENHUM parecer do QA — paravam em silêncio porque
+  // "cancelled" caía no mesmo balaio de "failure" (reprova). A causa real,
+  // provada no run 33943490885 (PR #3945): um job de qualidade cujo próprio
+  // passo de Prettier falhava cancelava o run inteiro em cadeia. Precisa
+  // distinguir cancelamento COM culpa (existe falha real por trás) de
+  // cancelamento SEM culpa (push novo, concorrência — nada falhou de
+  // verdade).
+  describe('cancelamento — com culpa vs. sem culpa', () => {
+    it('só cancelado, nenhuma falha real ao lado: "cancelado" — não é reprovação, é indefinido', () => {
+      expect(estadoDoCi([ok(), { status: 'completed', conclusion: 'cancelled' }])).toBe('cancelado')
+    })
+
+    it('todos cancelados (nem um sucesso): continua "cancelado", nunca "green"', () => {
+      expect(
+        estadoDoCi([
+          { status: 'completed', conclusion: 'cancelled' },
+          { status: 'completed', conclusion: 'cancelled' },
+        ])
+      ).toBe('cancelado')
+    })
+
+    // O caso medido ao vivo: o job de Qualidade aparece "cancelled" no
+    // nível do JOB (o cancelamento em cadeia alcança até ele), mas o
+    // job-gate ("CI passou — pronto para merge") aparece "failure" de
+    // verdade — a falha real existe, só que em outro job. `estadoDoCi`
+    // decide pelo CONJUNTO de conclusões de job; achar QUAL job/passo é a
+    // causa legível é trabalho de `causa-do-cancelamento.ts`, mais fundo.
+    it('cancelado JUNTO com uma falha real em outro job: continua "red" — a falha real manda', () => {
+      expect(
+        estadoDoCi([
+          ok(),
+          { status: 'completed', conclusion: 'cancelled' },
+          { status: 'completed', conclusion: 'failure' },
+        ])
+      ).toBe('red')
+    })
   })
 })
 

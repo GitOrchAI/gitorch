@@ -26,25 +26,51 @@ export interface CheckDoGithub {
  * `neutral` já estava aqui e continua: é o "rodei e não tenho opinião".
  *
  * O que fica de fora reprova de propósito: `failure` e `timed_out` são falha;
- * `cancelled` é execução interrompida, e aprovar sobre ela seria aprovar sobre
- * um teste que não terminou; `action_required` pede gente; `stale` é veredito
- * de um código que já não é este.
+ * `action_required` pede gente; `stale` é veredito de um código que já não é
+ * este. `cancelled` fica de fora TAMBÉM — nunca conta como sucesso —, mas
+ * ganhou tratamento PRÓPRIO logo abaixo (`CONCLUSAO_CANCELADA`): sozinho, ele
+ * não prova falha nenhuma.
  */
 const CONCLUSOES_QUE_NAO_REPROVAM = new Set(['success', 'neutral', 'skipped'])
 
-export type EstadoDoCi = 'no checks' | 'pending' | 'green' | 'red'
+/**
+ * A conclusão "execução interrompida" — nem sucesso, nem prova de falha.
+ *
+ * L4-T17 (05/09/2026): medido em loureng/patinhas-3d-crafts — 8 PRs abertos,
+ * 5 com vários checks cancelados e NENHUM parecer do QA, parando em
+ * silêncio. Até aqui `cancelled` caía no mesmo balaio de `failure` (jogava o
+ * estado para `red`), e isso só é honesto quando existe falha real por
+ * trás. Provado no run 33943490885 (PR #3945): um job de qualidade cujo
+ * próprio passo de Prettier falhava rodava `gh run cancel` nele mesmo — o
+ * run inteiro cancela em cadeia, e ali existe causa REAL. Mas cancelamento
+ * por push novo ou por concorrência (`concurrency: cancel-in-progress`) não
+ * tem falha nenhuma atrás: é só um run que ficou para trás. As duas
+ * situações são indistinguíveis SÓ com a conclusão do job — quem distingue
+ * de verdade (acha o passo que falhou) é `causa-do-cancelamento.ts`, que
+ * investiga mais fundo (API de jobs/steps) exatamente quando este módulo
+ * devolve `'red'` com cancelamento no meio.
+ */
+const CONCLUSAO_CANCELADA = 'cancelled'
+
+export type EstadoDoCi = 'no checks' | 'pending' | 'green' | 'red' | 'cancelado'
 
 /**
  * O estado do CI a partir dos check-runs do head.
  *
  * `no checks` é ESTÁVEL, não transitório: um repositório sem verificação não
- * passa a ter uma só porque se espera. Quem decide o que fazer com cada estado
- * é `decidirSobreVerificacao`.
+ * passa a ter uma só porque se espera. `cancelado` é o estado NOVO (L4-T17):
+ * todo job que não passou está `cancelled`, e nenhum mostra uma conclusão de
+ * falha real — não é reprovação, é "ainda não sei" (a mesma régua de
+ * `pending`/`unknown`, só que aqui os checks JÁ terminaram, cancelados).
+ * Quem decide o que fazer com cada estado é `decidirSobreVerificacao`.
  */
 export function estadoDoCi(runs: CheckDoGithub[]): EstadoDoCi {
   if (runs.length === 0) return 'no checks'
   if (runs.some((r) => r.status !== 'completed')) return 'pending'
-  return runs.every((r) => CONCLUSOES_QUE_NAO_REPROVAM.has(r.conclusion ?? '')) ? 'green' : 'red'
+  const naoAprovam = runs.filter((r) => !CONCLUSOES_QUE_NAO_REPROVAM.has(r.conclusion ?? ''))
+  if (naoAprovam.length === 0) return 'green'
+  const existeFalhaReal = naoAprovam.some((r) => (r.conclusion ?? '') !== CONCLUSAO_CANCELADA)
+  return existeFalhaReal ? 'red' : 'cancelado'
 }
 
 /**

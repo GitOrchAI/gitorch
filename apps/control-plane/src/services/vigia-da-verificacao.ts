@@ -8,8 +8,14 @@
  * avisado de que a verificação daquele repositório está parada.
  */
 
-/** Estados possíveis lidos do repositório. */
-export type EstadoDaVerificacao = 'green' | 'red' | 'pending' | 'no checks' | 'unknown'
+/**
+ * Estados possíveis lidos do repositório. `cancelado` (L4-T17): todo job
+ * cancelou e nenhum mostrou falha real por trás — cancelamento SEM culpa
+ * (push novo, concorrência). Cai na MESMA régua de pending/unknown logo
+ * abaixo: nunca vira veredito sozinho.
+ */
+export type EstadoDaVerificacao =
+  'green' | 'red' | 'pending' | 'no checks' | 'unknown' | 'cancelado'
 
 /** Quanto tempo uma verificação pode ficar pendente antes de virar aviso. */
 export const TETO_DE_ESPERA_MS = 90 * 60 * 1000
@@ -31,7 +37,7 @@ export function decidirSobreVerificacao(args: {
     return { acao: 'julgar', motivo: 'repositório sem verificação automática' }
   }
 
-  // pending e unknown caem aqui: nunca viram veredito.
+  // pending, unknown e cancelado caem aqui: nunca viram veredito.
   const desde = args.primeiraVezVistoPendenteEm
   if (desde !== null && args.agora.getTime() - desde.getTime() > TETO_DE_ESPERA_MS) {
     return {
