@@ -14,7 +14,11 @@ import { lerSecaoDaIssue } from './secao-da-issue.js'
 import { aplicarLabelDoAgente } from './agent-label.js'
 import type { CardMover } from './board-status.js'
 import { ehPrDelegado } from './pr-delegado.js'
-import { ehEntregaSemConteudo, textoDeEntregaSemConteudo } from './entrega-sem-conteudo.js'
+import {
+  ehEntregaSemConteudo,
+  textoDeEntregaSemConteudo,
+  type EstatisticasDoPr,
+} from './entrega-sem-conteudo.js'
 import type { LinhaDeSessao } from './dev-session-store.js'
 import { lerDiffDoPr, type ArquivoDoPr } from './diff-do-pr.js'
 import { mesclarPr, type ResultadoDoMerge } from './merge-do-pr.js'
@@ -33,6 +37,8 @@ import {
   temMarcaDeRejulgamentoDeLegado,
   MARCA_DE_APROVACAO,
   MARCA_DO_PARECER,
+  MARCA_DE_COBRANCA_DE_ENTREGA_VAZIA,
+  temMarcaDeCobrancaDeEntregaVazia,
 } from './parecer-do-qa.js'
 import {
   decidirSobreOProjeto,
@@ -674,13 +680,74 @@ export async function runQaMissionViaRails(
       }
     }
 
+    // A QUARTA exceção ao skip, e ela é de natureza diferente das três
+    // acima. As outras três reabrem OPINIÃO (aprovação que não mesclou,
+    // parecer sob premissa errada, reprovação do portão que caiu) — esta
+    // reabre um FATO estrutural. "Diff vazio" não muda de ideia com o
+    // tempo: ou o dev empurrou o commit, ou não. O skip logo abaixo existe
+    // para o produto não repetir OPINIÃO a cada ciclo (comentado ali); um
+    // fato que continua verdadeiro não é opinião.
+    //
+    // Medido: PR #468 (GitOrchAI/gitorch, issue #309), 03-05/09/2026. Duas
+    // reviews CHANGES_REQUESTED de gitorch-ai[bot], as duas no MESMO head,
+    // e NENHUMA delas se encaixava em nenhuma das três exceções acima — era
+    // reprovação comum, do julgamento normal. O skip descartava a entrega
+    // ANTES de a detecção de `ehEntregaSemConteudo` (mais abaixo no
+    // arquivo) rodar, e a sessão da issue #309 seguia COMPLETED com
+    // `closed_at` nulo para sempre. O julgamento já dizia a coisa certa
+    // ("Diff vazio"); o que faltava era o produto REAGIR — ver
+    // `entrega-sem-conteudo.ts`.
+    //
+    // A pergunta só é feita quando ainda vale a pena perguntar: teto de
+    // tentativas não estourado, e esta review neste head AINDA não é a
+    // cobrança de entrega vazia (`temMarcaDeCobrancaDeEntregaVazia`) — sem
+    // essa marca, a cobrança se repetiria a cada tique enquanto o dev não
+    // reage, virando o mesmo spam que o skip original existe para evitar
+    // (ver o teste "não fica preso" em qa-rails-mission.test.ts).
+    //
+    // Responder exige um GET a mais: a lista de PRs abertos não devolve
+    // `changed_files`/`additions`/`deletions` (só o GET de UM PR devolve —
+    // o mesmo GET que roda de qualquer forma mais abaixo para o PR
+    // escolhido). Custa uma chamada por entrega nesta situação estreita —
+    // delegada, dentro do teto, com parecer já marcado e sem a cobrança —,
+    // não por PR aberto do repositório. As outras três exceções, quando já
+    // valem, dispensam esta pergunta (mesmo recuo de `legadoMereceUmaChance`
+    // com `!foiAprovacao` acima): se `deveRejulgar` já vai ficar `true` por
+    // outro motivo, gastar um GET para saber se o diff está vazio não muda
+    // nada no resultado.
+    let entregaVaziaAindaNaoCobrada = false
+    if (
+      veredito.delegado &&
+      aindaPodeTentarMesclar &&
+      reviewMarcadaNesteHead &&
+      !foiAprovacao &&
+      !parecerSobPremissaErrada &&
+      !reprovadoPeloPortaoComCiVerdeAgora &&
+      !legadoMereceUmaChance &&
+      !temMarcaDeCobrancaDeEntregaVazia(reviewMarcadaNesteHead) &&
+      p.head?.sha
+    ) {
+      try {
+        const statsDoPr = (await gh(
+          'GET',
+          `/repos/${options.repository}/pulls/${p.number}`
+        )) as EstatisticasDoPr
+        entregaVaziaAindaNaoCobrada = ehEntregaSemConteudo(statsDoPr)
+      } catch {
+        // Não saber não pode virar cobrança: na dúvida, segue pulado como
+        // hoje, e uma passagem futura tenta de novo.
+        entregaVaziaAindaNaoCobrada = false
+      }
+    }
+
     const deveRejulgar =
       veredito.delegado &&
       aindaPodeTentarMesclar &&
       (foiAprovacao ||
         parecerSobPremissaErrada ||
         reprovadoPeloPortaoComCiVerdeAgora ||
-        legadoMereceUmaChance)
+        legadoMereceUmaChance ||
+        entregaVaziaAindaNaoCobrada)
 
     // A entrega que TRAVOU no teto de tentativas de mescla.
     //
@@ -946,10 +1013,17 @@ export async function runQaMissionViaRails(
   // `retomar-pr-reprovado.ts` já resolve — teto `TETO_DE_RETOMADAS_POR_PR`,
   // registro de tentativa, escalada ao dono via `perguntarAoDono` — sem
   // precisar de um segundo mecanismo paralelo aqui.
+  //
+  // L5-T1b: o corpo carrega `MARCA_DE_COBRANCA_DE_ENTREGA_VAZIA` — é ela que
+  // a QUARTA exceção do laço de descoberta (acima, `entregaVaziaAindaNaoCobrada`)
+  // lê para nunca cobrar duas vezes o MESMO head. Sem a marca, esta review
+  // seria idêntica a uma reprovação comum aos olhos daquela exceção, e o
+  // próximo tique cobraria de novo.
   if (delegado && ehEntregaSemConteudo(pr)) {
     await postarReview(
       'REQUEST_CHANGES',
-      `${JULES_MARKER}\nGitOrch QA verdict: REQUEST CHANGES — empty diff, no commit pushed.`
+      `${JULES_MARKER}\n${MARCA_DE_COBRANCA_DE_ENTREGA_VAZIA}\n` +
+        'GitOrch QA verdict: REQUEST CHANGES — empty diff, no commit pushed.'
     )
 
     const textoParaODev = textoDeEntregaSemConteudo(target.number)
