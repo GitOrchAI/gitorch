@@ -3,6 +3,7 @@ import {
   aoResponderDuvidaDoDev,
   manipuladorDeResultadoDeRetomada,
   AVISO_CORRECAO_SEM_SESSAO_VIVA,
+  AVISO_CORRECAO_NAO_REGISTRADA,
   type PrismaParaRetomada,
 } from './retomar-sessao-com-resposta.js'
 
@@ -190,7 +191,7 @@ describe('aoResponderDuvidaDoDev', () => {
   // continuava LANÇANDO aqui, subindo por handleTelegramCallback
   // (telegram-bot.ts) e derrubando o ouvinte do bot. A resposta do dono
   // NUNCA pode se perder: mesmo tratamento do ramo da correção agora.
-  it('nenhuma dev_session AWAITING encontrada: NUNCA lança — registra de forma durável e devolve entregue:false/motivo sem-sessao-viva', async () => {
+  it('nenhuma dev_session AWAITING encontrada, SEM comentarNaIssue configurado: NUNCA lança — mas NÃO registrou de forma durável (motivo sem-sessao-viva-sem-registro, fix-up item 2)', async () => {
     const prisma = prismaFalso({
       devSession: {
         findFirst: vi.fn(async () => null),
@@ -201,7 +202,11 @@ describe('aoResponderDuvidaDoDev', () => {
 
     const resultado = await aoResponderDuvidaDoDev(ARGS_BASE, deps as never)
 
-    expect(resultado).toEqual({ entregue: false, motivo: 'sem-sessao-viva' })
+    // FIX-UP L4-T27 (revisão, item 2): sem `comentarNaIssue` configurado,
+    // NADA foi registrado de um jeito que a próxima delegação enxergue — o
+    // motivo tem que dizer isso, nunca o mesmo `'sem-sessao-viva'` do caso
+    // em que o comentário de fato saiu.
+    expect(resultado).toEqual({ entregue: false, motivo: 'sem-sessao-viva-sem-registro' })
     expect(deps.responderSessaoJules).not.toHaveBeenCalled()
     expect((deps.prisma as PrismaParaRetomada).devSession.update).not.toHaveBeenCalled()
     // Sem comentarNaIssue configurado (não passado em depsFalso por padrão):
@@ -318,7 +323,7 @@ describe('aoResponderDuvidaDoDev', () => {
     )
   })
 
-  it('comentarNaIssue falha (issue apagada, rede fora) no fluxo COMUM: best-effort — ainda assim devolve entregue:false, nunca lança', async () => {
+  it('comentarNaIssue falha (issue apagada, rede fora) no fluxo COMUM: best-effort, nunca lança — mas o motivo agora diz que NÃO registrou (fix-up item 2)', async () => {
     const findFirst = vi.fn(async () => null)
     const prisma = prismaFalso({
       devSession: { findFirst, update: vi.fn(async () => undefined) } as never,
@@ -330,7 +335,11 @@ describe('aoResponderDuvidaDoDev', () => {
 
     const resultado = await aoResponderDuvidaDoDev(ARGS_BASE, deps as never)
 
-    expect(resultado).toEqual({ entregue: false, motivo: 'sem-sessao-viva' })
+    // FIX-UP L4-T27 (revisão, item 2): o comentário FALHOU — nada foi
+    // guardado de um jeito que a próxima delegação enxergue. Antes desta
+    // task isto devolvia o MESMO `'sem-sessao-viva'` do caso de sucesso, e
+    // o dono ouvia "foi guardado" quando não foi.
+    expect(resultado).toEqual({ entregue: false, motivo: 'sem-sessao-viva-sem-registro' })
     expect(deps.onWarn).toHaveBeenCalledWith(expect.stringContaining('GitHub 404'))
   })
 
@@ -578,7 +587,7 @@ describe('aoResponderDuvidaDoDev', () => {
       )
     })
 
-    it('sem comentarNaIssue configurado: ainda assim NUNCA lança — avisa pelo onWarn e devolve entregue:false', async () => {
+    it('sem comentarNaIssue configurado: ainda assim NUNCA lança — mas o motivo agora diz que NÃO registrou (fix-up item 2)', async () => {
       const prisma = prismaFalso({
         devSession: {
           findFirst: vi.fn(async () => null),
@@ -593,11 +602,14 @@ describe('aoResponderDuvidaDoDev', () => {
         deps as never
       )
 
-      expect(resultado).toEqual({ entregue: false, motivo: 'sem-sessao-viva' })
+      // FIX-UP L4-T27 (revisão, item 2): sem `comentarNaIssue` configurado,
+      // nada foi registrado de forma durável — nunca o mesmo motivo do caso
+      // de sucesso.
+      expect(resultado).toEqual({ entregue: false, motivo: 'sem-sessao-viva-sem-registro' })
       expect(deps.onWarn).toHaveBeenCalledWith(expect.stringContaining('acme/api#46'))
     })
 
-    it('comentarNaIssue falha (issue apagada, rede fora): best-effort — ainda assim devolve entregue:false, nunca lança', async () => {
+    it('comentarNaIssue falha (issue apagada, rede fora): best-effort, nunca lança — mas o motivo agora diz que NÃO registrou (fix-up item 2)', async () => {
       const prisma = prismaFalso({
         devSession: {
           findFirst: vi.fn(async () => null),
@@ -615,7 +627,9 @@ describe('aoResponderDuvidaDoDev', () => {
         deps as never
       )
 
-      expect(resultado).toEqual({ entregue: false, motivo: 'sem-sessao-viva' })
+      // FIX-UP L4-T27 (revisão, item 2): o comentário FALHOU — nada foi
+      // guardado de um jeito que a próxima delegação enxergue.
+      expect(resultado).toEqual({ entregue: false, motivo: 'sem-sessao-viva-sem-registro' })
       expect(deps.onWarn).toHaveBeenCalledWith(expect.stringContaining('GitHub 404'))
     })
 
@@ -636,7 +650,10 @@ describe('aoResponderDuvidaDoDev', () => {
         deps as never
       )
 
-      expect(resultado).toEqual({ entregue: false, motivo: 'sem-sessao-viva' })
+      // FIX-UP L4-T27 (revisão, item 2): sem `comentarNaIssue` configurado
+      // (não passado em `depsFalso` aqui), nada foi registrado de forma
+      // durável — nunca o mesmo motivo do caso em que o comentário sai.
+      expect(resultado).toEqual({ entregue: false, motivo: 'sem-sessao-viva-sem-registro' })
       expect(deps.responderSessaoJules).not.toHaveBeenCalled()
       // A prova de que os fluxos de busca continuam DIFERENTES: o comum
       // nunca recorre ao findMany por hash (exclusivo da correção de
@@ -667,6 +684,23 @@ describe('manipuladorDeResultadoDeRetomada', () => {
     expect(
       manipuladorDeResultadoDeRetomada({ entregue: false, motivo: 'sem-sessao-viva' })
     ).toEqual({ aviso: AVISO_CORRECAO_SEM_SESSAO_VIVA })
+  })
+
+  // FIX-UP L4-T27 (revisão) — item 2: quando nem o registro durável (o
+  // comentário na issue) deu certo, o dono NÃO pode ouvir a MESMA frase
+  // tranquilizadora de 'sem-sessao-viva' ("foi guardada e será entregue") —
+  // isso seria mentira: sem o comentário, nenhum mecanismo hoje religa esta
+  // resposta à próxima delegação (ver retomar-sessao-com-resposta.ts).
+  it('motivo sem-sessao-viva-sem-registro — NEM o registro durável deu certo: aviso HONESTO e DIFERENTE do de sucesso', () => {
+    const resultado = manipuladorDeResultadoDeRetomada({
+      entregue: false,
+      motivo: 'sem-sessao-viva-sem-registro',
+    })
+    expect(resultado).toEqual({ aviso: AVISO_CORRECAO_NAO_REGISTRADA })
+    // Nunca a MESMA frase do caso de sucesso — diriam coisas opostas com o
+    // mesmo texto.
+    expect(resultado?.aviso).not.toBe(AVISO_CORRECAO_SEM_SESSAO_VIVA)
+    expect(resultado?.aviso).toMatch(/n[ãa]o deu para guardar|n[ãa]o consegui guardar/i)
   })
 
   it('motivo nao-aplicavel — dedupKey nem era deste manipulador: silêncio, de propósito (nunca aviso)', () => {

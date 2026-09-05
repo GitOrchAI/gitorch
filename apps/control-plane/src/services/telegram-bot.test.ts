@@ -1214,12 +1214,180 @@ describe('handleTelegramCallback — o clique no botão vira answer(), com guard
     const editCall = calls.find((c) => String(c[0]).includes('/editMessageText'))
     expect(editCall).toBeUndefined()
   })
+
+  // ---------------------------------------------------------------------
+  // FIX-UP L4-T27 (revisão) — item 4: dos 4 avisos "algo além do comum
+  // aconteceu" que este arquivo mostra ao dono (já respondida em outro
+  // canal / falha ao registrar / instrução do "Outro" / entrega ao dev sem
+  // sessão viva), só o ÚLTIMO usava o toast que some sozinho — justo o mais
+  // importante (o único que diz "guardei mas não entreguei ao dev").
+  // ---------------------------------------------------------------------
+  it('ITEM 4: avisoDoManipulador presente no toast do clique — vira ALERTA MODAL (show_alert), igual aos outros 3 avisos equivalentes (nunca notificação passageira que some sozinha)', async () => {
+    const answeredComAviso = {
+      ...QUESTION,
+      status: 'answered',
+      answer: '#1E40AF',
+      avisoDoManipulador:
+        'Sua orientação foi guardada e será entregue ao dev quando esta tarefa voltar a ser trabalhada.',
+    }
+    const { deps, fetchImpl } = fakeDeps({
+      question: QUESTION,
+      link: LINK_DONO,
+      answerReturns: answeredComAviso,
+    })
+
+    await handleTelegramCallback(deps as any, {
+      update_id: 22,
+      callback_query: {
+        id: 'cbq_22',
+        from: { id: 555 },
+        message: { message_id: 42, chat: { id: 555 } },
+        data: 'q:q_1:1',
+      },
+    })
+
+    const calls = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls
+    const alertCall = calls.find((c) => String(c[0]).includes('/answerCallbackQuery'))
+    expect(alertCall).toBeTruthy()
+    const alertBody = JSON.parse(String(alertCall?.[1]?.body))
+    expect(alertBody.text).toContain(
+      'Sua orientação foi guardada e será entregue ao dev quando esta tarefa voltar a ser trabalhada.'
+    )
+    // O aviso mais importante (guardei mas não entreguei) precisa de alerta
+    // MODAL, igual aos outros 3 — nunca o toast que some sozinho.
+    expect(alertBody.show_alert).toBe(true)
+  })
+
+  it('toast comum ("✓ registrado", sem avisoDoManipulador): CONTINUA sem alerta modal — nunca incomoda o dono no caminho feliz', async () => {
+    const answeredSemAviso = { ...QUESTION, status: 'answered', answer: '#1E40AF' }
+    const { deps, fetchImpl } = fakeDeps({
+      question: QUESTION,
+      link: LINK_DONO,
+      answerReturns: answeredSemAviso,
+    })
+
+    await handleTelegramCallback(deps as any, {
+      update_id: 23,
+      callback_query: {
+        id: 'cbq_23',
+        from: { id: 555 },
+        message: { message_id: 42, chat: { id: 555 } },
+        data: 'q:q_1:1',
+      },
+    })
+
+    const calls = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls
+    const alertCall = calls.find((c) => String(c[0]).includes('/answerCallbackQuery'))
+    expect(alertCall).toBeTruthy()
+    const alertBody = JSON.parse(String(alertCall?.[1]?.body))
+    expect(alertBody.text).toBe('✓ registrado')
+    expect(alertBody.show_alert).toBeUndefined()
+  })
+
+  // ---------------------------------------------------------------------
+  // FIX-UP L4-T27 (revisão) — item 3: a 2ª pressão no MESMO botão (ex.:
+  // duplo-toque antes do teclado colapsar) chama `answer()` de novo. Por
+  // contrato `agent-question.ts` é IDEMPOTENTE: numa pergunta já
+  // `answered`, devolve o record CRU do banco sem recomputar o manipulador
+  // — e `avisoDoManipulador` é EFÊMERO (nunca gravado no banco,
+  // `agent-question.ts`), então a 2ª chamada NUNCA o traz de volta. Sem
+  // cache nenhuma, o 2º colapso reescrevia a MESMA mensagem sem a ressalva
+  // que a 1ª resposta tinha acabado de mostrar, como se a entrega ao dev
+  // tivesse sido normal.
+  // ---------------------------------------------------------------------
+  it('ITEM 3: 2ª pressão no MESMO botão depois de uma 1ª resposta com aviso (sem sessão viva) — a ressalva SOBREVIVE à repetição, nunca reescreve como se a entrega tivesse sido normal', async () => {
+    const QUESTION_2CLIQUES = {
+      id: 'q_double_click',
+      userId: 'user_dono',
+      text: 'Confirma o valor da tarefa?',
+      telegramMessageId: 88,
+      options: [
+        { label: 'Sim', value: 'sim' },
+        { label: 'Não', value: 'nao' },
+      ],
+    }
+    const AVISO =
+      'Sua orientação foi guardada e será entregue ao dev quando esta tarefa voltar a ser trabalhada.'
+
+    // 1º clique: `findUnique` inicial ainda mostra a pergunta 'open' —
+    // `answer()` roda o manipulador de VERDADE e devolve o aviso (efêmero).
+    const primeiroClique = fakeDeps({
+      question: QUESTION_2CLIQUES,
+      link: LINK_DONO,
+      answerReturns: {
+        ...QUESTION_2CLIQUES,
+        status: 'answered',
+        answer: 'sim',
+        answeredVia: 'telegram',
+        avisoDoManipulador: AVISO,
+      },
+    })
+    await handleTelegramCallback(primeiroClique.deps as any, {
+      update_id: 30,
+      callback_query: {
+        id: 'cbq_30',
+        from: { id: 555 },
+        message: { message_id: 88, chat: { id: 555 } },
+        data: 'q:q_double_click:0',
+      },
+    })
+
+    // 2º clique no MESMO botão: `findUnique` inicial já mostra 'answered'
+    // (gravado pelo 1º clique) — `jaRespondidaAntesDesteClique` = true. A
+    // idempotência REAL de `agent-question.ts` devolve o record cru, SEM
+    // `avisoDoManipulador` — exatamente o cenário que perdia a ressalva.
+    const segundoClique = fakeDeps({
+      question: {
+        ...QUESTION_2CLIQUES,
+        status: 'answered',
+        answer: 'sim',
+        answeredVia: 'telegram',
+      },
+      link: LINK_DONO,
+      answerReturns: {
+        ...QUESTION_2CLIQUES,
+        status: 'answered',
+        answer: 'sim',
+        answeredVia: 'telegram',
+        // SEM avisoDoManipulador — o 2º answer() idempotente não recomputa.
+      },
+    })
+    await handleTelegramCallback(segundoClique.deps as any, {
+      update_id: 31,
+      callback_query: {
+        id: 'cbq_31',
+        from: { id: 555 },
+        message: { message_id: 88, chat: { id: 555 } },
+        data: 'q:q_double_click:0',
+      },
+    })
+
+    const editCall = (
+      segundoClique.fetchImpl as unknown as ReturnType<typeof vi.fn>
+    ).mock.calls.find((c) => String(c[0]).includes('/editMessageText'))
+    expect(editCall).toBeTruthy()
+    const body = JSON.parse(String(editCall?.[1]?.body))
+    // A ressalva da 1ª resposta sobrevive à 2ª pressão — nunca reescreve
+    // como se a entrega ao dev tivesse sido normal.
+    expect(body.text).toContain(AVISO)
+  })
 })
 
 describe('handleTelegramQuestionReply — resposta em TEXTO LIVRE casada por reply_to_message (feedback do dono: falta escape hatch)', () => {
   /* eslint-disable @typescript-eslint/no-explicit-any */
-  function fakeDeps(opts: { question?: any; link?: any; answerReturns?: any }) {
+  function fakeDeps(opts: {
+    question?: any
+    link?: any
+    answerReturns?: any
+    // FIX-UP L4-T27 (revisão, item 1): simula uma falha DE VERDADE do
+    // manipulador (ex.: dedupKey corrompido) — `agentQuestionService.answer`
+    // real também pode lançar (agent-question.ts `answer()` propaga), e
+    // `handleTelegramQuestionReply` precisa isolar isto sem derrubar o
+    // ouvinte, igual a `handleTelegramCallback` (item 3, já corrigido).
+    answerThrows?: Error
+  }) {
     const answerCalls: any[] = []
+    const onErrorCalls: string[] = []
     const fetchImpl = vi.fn(
       async () => new Response(JSON.stringify({ ok: true }), { status: 200 })
     ) as unknown as typeof fetch
@@ -1245,13 +1413,15 @@ describe('handleTelegramQuestionReply — resposta em TEXTO LIVRE casada por rep
       agentQuestionService: {
         answer: vi.fn(async (id: string, value: string, via: string) => {
           answerCalls.push({ id, value, via })
+          if (opts.answerThrows) throw opts.answerThrows
           return opts.answerReturns ?? null
         }),
       },
       botToken: BOT,
       fetchImpl,
+      onError: vi.fn((mensagem: string) => onErrorCalls.push(mensagem)),
     }
-    return { deps, answerCalls, fetchImpl }
+    return { deps, answerCalls, fetchImpl, onErrorCalls }
   }
 
   const QUESTION = {
@@ -1360,6 +1530,61 @@ describe('handleTelegramQuestionReply — resposta em TEXTO LIVRE casada por rep
       callback_query: { id: 'cbq_x', data: 'q:x:0' },
     })
     expect(handled).toBe(false)
+  })
+
+  // ---------------------------------------------------------------------
+  // FIX-UP L4-T27 (revisão) — item 1: o caminho de texto livre (reply) NÃO
+  // tinha o mesmo isolamento que o caminho do clique já ganhou (item 3,
+  // handleTelegramCallback). `answer()` pode LANÇAR de verdade (dedupKey
+  // corrompido, erro de banco...) — sem isolar aqui, a exceção sobe pelo
+  // ouvinte do bot (plugins/telegram.ts `listen()`). O `offset` (marcador
+  // de leitura do getUpdates) já avançou para a LEVA INTEIRA antes do
+  // for-loop processar update por update — então quando a exceção derruba
+  // o loop no meio da leva, as mensagens SEGUINTES da mesma leva nunca são
+  // reprocessadas (o Telegram não as reentrega depois que o offset passou
+  // delas). Pior que o caminho do clique: lá a falha já era isolada.
+  // ---------------------------------------------------------------------
+  it('ITEM 1: answer() lança (falha DE VERDADE do manipulador) — NUNCA propaga (o ouvinte do bot e as outras mensagens da leva sobrevivem), loga a causa via onError e avisa o dono por mensagem — mesmo isolamento e registro de erro que handleTelegramCallback (item 3)', async () => {
+    const causaReal = new Error(
+      'aoResponderDuvidaDoDev: dedupKey da pergunta tem o prefixo duvida-dev: mas está malformado — a correção do dono não pôde ser interpretada, pergunta continua open'
+    )
+    const { deps, fetchImpl, onErrorCalls } = fakeDeps({
+      question: QUESTION,
+      link: LINK_DONO,
+      answerThrows: causaReal,
+    })
+
+    // A PROVA central do item 1: handleTelegramQuestionReply NUNCA relança —
+    // quem chama (o laço do ouvinte, plugins/telegram.ts) nunca vê esta
+    // exceção, e as próximas mensagens da MESMA leva continuam sendo
+    // processadas pelo for-loop.
+    await expect(
+      handleTelegramQuestionReply(deps as any, {
+        update_id: 7,
+        message: {
+          chat: { id: 555 },
+          text: 'quero um tom mais escuro',
+          reply_to_message: { message_id: 77 },
+        },
+      })
+    ).resolves.toBe(true) // reconheceu que ISTO É um reply — não cai no fluxo normal
+
+    // A causa REAL foi registrada (nunca console.*, nunca engolida em
+    // silêncio) — produção passa app.log.error (plugins/telegram.ts).
+    expect(onErrorCalls.some((m) => m.includes('dedupKey da pergunta'))).toBe(true)
+
+    // O dono é avisado por mensagem (não há callback_query_id num reply de
+    // texto) — honesto, nunca finge que a resposta foi registrada.
+    const calls = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls
+    const sendCall = calls.find((c) => String(c[0]).includes('/sendMessage'))
+    expect(sendCall).toBeTruthy()
+    const body = JSON.parse(String(sendCall?.[1]?.body))
+    expect(body.text).toMatch(/n[ãa]o deu para registrar/i)
+
+    // A pergunta NÃO foi respondida de verdade — nunca colapsa como se
+    // tivesse sido.
+    const editCall = calls.find((c) => String(c[0]).includes('/editMessageText'))
+    expect(editCall).toBeUndefined()
   })
 })
 

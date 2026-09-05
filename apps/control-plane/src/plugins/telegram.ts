@@ -910,8 +910,20 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
           // Só entra aqui quando FOI de fato um reply a uma pergunta nossa;
           // qualquer outra mensagem (ex.: um /start) segue pro fluxo normal
           // logo abaixo.
+          //
+          // FIX-UP L4-T27 (revisão, item 1): `onError` é o que faz a falha
+          // ISOLADA dentro de handleTelegramQuestionReply aparecer de
+          // verdade no log (nunca console.*) — MESMO onError que o clique
+          // (handleTelegramCallback, acima) já recebe. Sem isto configurado,
+          // uma falha ao registrar a resposta em texto livre seria
+          // descartada em silêncio.
           const handledAsAnswer = await handleTelegramQuestionReply(
-            { prisma: app.prisma, agentQuestionService, botToken },
+            {
+              prisma: app.prisma,
+              agentQuestionService,
+              botToken,
+              onError: (m) => app.log.error(`[Telegram] ${m}`),
+            },
             update
           )
           if (handledAsAnswer) continue
