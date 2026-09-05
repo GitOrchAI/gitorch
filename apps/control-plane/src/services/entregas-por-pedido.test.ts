@@ -1,9 +1,12 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import {
   julgarPedidos,
   paginar,
   inteiroDaQuery,
   grupoDaQuery,
+  chaveDoPedido,
   type SessaoDaEntrega,
 } from './entregas-por-pedido.js'
 
@@ -258,5 +261,77 @@ describe('grupoDaQuery — o grupo é explícito, nunca um filtro escondido', ()
 
   it('andando é pedível', () => {
     expect(grupoDaQuery('andando')).toBe('andando')
+  })
+})
+
+// PROVA: o arquivo entregas-por-pedido.ts chegou a ter 4 bytes NUL literais
+// (offsets 3238, 3366, 8258, 8549), o que fazia `file` classifica-lo como
+// `data` e `grep` (sem `-a`) devolver zero resultados em silencio, sem avisar
+// que o arquivo e binario. O separador da chave composta E o NUL (por design:
+// nao aparece em id de projeto, entao nao ha colisao) - o conserto foi trocar
+// o BYTE CRU pela sequencia de escape \u0000 no template literal; o valor em
+// runtime continua sendo exatamente o mesmo caractere. Estes testes travam
+// esse valor: qualquer troca futura do separador (espaco, hifen etc.), em
+// qualquer uma das tres ocorrencias, quebra aqui.
+describe('separador da chave composta - prova byte a byte de que nao mudou', () => {
+  const NUL = String.fromCharCode(0)
+
+  it('chaveDoPedido() monta "<projectId><NUL><issueNumber>", byte a byte', () => {
+    const s = sessao({ projectId: 'proj-x', issueNumber: 42 })
+    const chave = chaveDoPedido(s)
+    const esperada = `proj-x${NUL}42`
+
+    expect(chave).toBe(esperada)
+    expect(chave.length).toBe(esperada.length)
+    for (let i = 0; i < esperada.length; i++) {
+      expect(chave.charCodeAt(i)).toBe(esperada.charCodeAt(i))
+    }
+    // O separador e NUL (code point 0), nao espaco (32) nem outro caractere.
+    expect(chave.charCodeAt('proj-x'.length)).toBe(0)
+  })
+
+  it('as tres montagens de chave no arquivo-fonte usam a mesma sequencia de escape do NUL', () => {
+    const fonte = readFileSync(
+      fileURLToPath(new URL('./entregas-por-pedido.ts', import.meta.url)),
+      'utf8'
+    )
+
+    // Nenhum byte NUL cru deve sobrar no arquivo-fonte.
+    expect(fonte.includes(NUL)).toBe(false)
+
+    const ocorrencias: Array<[string, RegExp]> = [
+      ['chaveDoPedido (sessao)', /\$\{s\.projectId\}(\\u0000)\$\{s\.issueNumber\}/],
+      ['ultimaAtividade.set (cartao)', /\$\{cartao\.projeto\}(\\u0000)\$\{cartao\.pedido\}/],
+      ['ultimaAtividade.get (entrega)', /\$\{e\.projeto\}(\\u0000)\$\{e\.pedido\}/],
+    ]
+
+    for (const [nome, regex] of ocorrencias) {
+      const m = fonte.match(regex)
+      expect(
+        m,
+        `separador de "${nome}" nao encontrado como \\u0000 no arquivo-fonte`
+      ).not.toBeNull()
+      expect(m?.[1]).toBe('\\u0000')
+    }
+  })
+
+  it('julgarPedidos ordena "andando" pela atividade mais recente - prova de que a chave gravada (set) e a lida (get) do mapa de atividade batem', () => {
+    const projetos = [{ id: 'p1', name: 'gitorch', reguaDePronto: null }]
+    const antiga = new Date('2026-08-01T00:00:00Z')
+    const recente = new Date('2026-08-30T00:00:00Z')
+
+    const r = julgarPedidos(
+      [
+        sessao({ issueNumber: 10, updatedAt: antiga, deployState: null, envLastVerdict: null }),
+        sessao({ issueNumber: 20, updatedAt: recente, deployState: null, envLastVerdict: null }),
+      ],
+      projetos
+    )
+
+    // Se a chave gravada em ultimaAtividade.set (usa cartao.projeto/cartao.pedido)
+    // nao bater byte a byte com a chave lida em ultimaAtividade.get (usa
+    // e.projeto/e.pedido), o .get cai no `?? 0` para os dois pedidos e a
+    // ordenacao por data deixa de acontecer.
+    expect(r.andando.map((e) => e.pedido)).toEqual([20, 10])
   })
 })
