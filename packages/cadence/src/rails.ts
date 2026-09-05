@@ -196,6 +196,20 @@ export interface PoTasksForm {
     fields: DoDFields
     blockedByTaskIndexes?: number[]
     /**
+     * D74 (05/09, dono): "Só dependência real." O RESULTADO da task
+     * bloqueadora que esta task precisa — um artefato que ela produz, uma
+     * migração que precisa existir antes, um contrato de dados ou interface
+     * que ela define. NUNCA ordem preferida, mesma área/arquivo tocado ou
+     * sequência numérica — ver `docs/agents/dependencia-real-entre-tasks.md`.
+     *
+     * Só é exigido quando `blockedByTaskIndexes` não está vazio;
+     * `dependenciaTemJustificativa` (abaixo) é quem cobra isso — o
+     * `MiniSchema` declarativo não sabe validar "campo X obrigatório só se
+     * campo Y está presente" (mesma lacuna documentada no comentário de
+     * `devQuestion`, mais abaixo).
+     */
+    blockedByRationale?: string
+    /**
      * Tamanho relativo da task na ESCALA_DE_PESO. Não é hora: é esforço mais
      * complexidade mais incerteza mais risco. É o único nível que recebe peso
      * — fase, épico e feature são checkpoints e somam os filhos.
@@ -620,6 +634,11 @@ export const RAILS_SCHEMAS = {
             featureIndex: { type: 'number' },
             fields: DOD_FIELDS_SCHEMA,
             blockedByTaskIndexes: { type: 'array', items: { type: 'number' } },
+            // D74: obrigatório só quando blockedByTaskIndexes não está
+            // vazio — o MiniSchema não expressa essa condicional, por isso
+            // não entra em `required` aqui; `dependenciaTemJustificativa`
+            // cobra a régua em código (ver comentário em `PoTasksForm`).
+            blockedByRationale: { type: 'string' },
             weight: { type: 'number', enumNumbers: [...ESCALA_DE_PESO] },
             weightRationale: { type: 'string' },
           },
@@ -970,6 +989,55 @@ export function criterioEhTestavel(verificationCriteria: string, titulo: string)
     if (linha.length < TAMANHO_MINIMO_DE_CRITERIO_TESTAVEL) return false
     return normalizarParaComparar(semEtiquetaDeTipo(linha)) !== tituloNormalizado
   })
+}
+
+/**
+ * D74 (05/09, dono): "Só dependência real." Medido no GitHub: 51 issues com
+ * a etiqueta de tarefa abertas nos dois repositórios do produto, 39
+ * travadas — em GitOrchAI/gitorch, 24 presas numa corrente linear de 14
+ * tasks (#497→#521) contra só 4 livres, com 15 vagas simultâneas ociosas no
+ * plano do dev assíncrono. A causa não é o portão que LÊ
+ * (`bloqueadoresAbertos === 0`, `fila-de-delegacao.ts:116` — esse continua
+ * certo e não muda) — é o planejador amarrando `blockedByTaskIndexes` por
+ * hábito de sequência, sem que nada cobrasse o PORQUÊ.
+ *
+ * Dependência real = a task precisa do RESULTADO da outra (um artefato que
+ * ela produz, uma migração que precisa existir antes, um contrato de dados
+ * ou interface que ela define) — nunca ordem preferida, mesma área/arquivo
+ * tocado, ou sequência numérica. Ver
+ * `docs/agents/dependencia-real-entre-tasks.md` para os exemplos dos dois
+ * lados, tirados do próprio backlog.
+ *
+ * O piso de tamanho segue o mesmo espírito de `MIN_CARACTERES_DE_RESPOSTA`
+ * (`duvida-do-dev.ts`) e `TAMANHO_MINIMO_DE_CRITERIO_TESTAVEL` acima: sem
+ * ele, "faz sentido" ou "depois" passariam como justificativa — o piso
+ * força uma frase com substância, não elimina toda frase vazia possível,
+ * mas já é o bastante para separar "citei o resultado" de "só preenchi o
+ * campo".
+ */
+export const MIN_CARACTERES_JUSTIFICATIVA_DE_DEPENDENCIA = 20
+
+/**
+ * Verdadeiro quando a task NÃO declara dependência (nada a justificar), ou
+ * quando declara E `blockedByRationale` tem substância (piso acima, contado
+ * com `.trim()` — espaço em branco não conta, mesmo espírito de `minLength`
+ * no `MiniSchema`). Falso quando há `blockedByTaskIndexes` mas a
+ * justificativa está ausente, vazia ou curta demais.
+ *
+ * Vive em código, não no `MiniSchema` declarativo: "campo X obrigatório só
+ * se campo Y está presente" é validação condicional que o schema minimal
+ * (acima) não expressa — mesma lacuna documentada no comentário de
+ * `RAILS_SCHEMAS.devQuestion`.
+ */
+export function dependenciaTemJustificativa(
+  blockedByTaskIndexes: number[] | undefined,
+  blockedByRationale: string | undefined
+): boolean {
+  if (!blockedByTaskIndexes || blockedByTaskIndexes.length === 0) return true
+  return (
+    typeof blockedByRationale === 'string' &&
+    blockedByRationale.trim().length >= MIN_CARACTERES_JUSTIFICATIVA_DE_DEPENDENCIA
+  )
 }
 
 /**

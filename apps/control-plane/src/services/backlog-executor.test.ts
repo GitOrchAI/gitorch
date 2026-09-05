@@ -58,6 +58,9 @@ function plan(): BacklogPlan {
         featureIndex: 0,
         fields: fields(),
         blockedByTaskIndexes: [0],
+        // D74: dependência real precisa dizer QUAL resultado da task 0 esta
+        // task precisa (aqui, a coluna que a migração da task 0 cria).
+        blockedByRationale: 'Precisa da coluna material que a task 0 cria na migração.',
         weight: 8,
         weightRationale: 'Toca duas telas e a rota; a incerteza está no cache.',
       },
@@ -185,6 +188,39 @@ describe('renderIssueBody', () => {
 describe('validateBacklogPlan', () => {
   it('plano válido passa sem problemas', () => {
     expect(validateBacklogPlan(plan())).toEqual([])
+  })
+
+  // D74 (05/09, dono): "Só dependência real." Medido no GitHub: 24 tasks
+  // presas numa corrente linear em GitOrchAI/gitorch com 15 vagas ociosas —
+  // o planejador amarrava `blockedByTaskIndexes` por hábito de sequência,
+  // sem que o código cobrasse o RESULTADO necessário. A régua vive no mesmo
+  // laço all-or-nothing que já reprova DoD incompleto e peso fora da escala.
+  it('blockedByTaskIndexes sem blockedByRationale reprova o plano inteiro', () => {
+    const semJustificativa = plan()
+    delete semJustificativa.tasks[1]!.blockedByRationale
+    const problemas = validateBacklogPlan(semJustificativa)
+    expect(problemas.join(' ')).toContain('tasks[1]')
+    expect(problemas.join(' ')).toContain('blockedByRationale')
+  })
+
+  it('blockedByRationale vago demais (abaixo do piso) também reprova', () => {
+    const vago = plan()
+    vago.tasks[1]!.blockedByRationale = 'faz sentido'
+    expect(validateBacklogPlan(vago).join(' ')).toContain('tasks[1]')
+  })
+
+  it('blockedByRationale citando o resultado necessário passa', () => {
+    const comJustificativa = plan()
+    comJustificativa.tasks[1]!.blockedByRationale =
+      'Precisa da coluna material que a task 0 cria na migração.'
+    expect(validateBacklogPlan(comJustificativa)).toEqual([])
+  })
+
+  it('task sem dependência nenhuma não exige blockedByRationale', () => {
+    const semDependencia = plan()
+    delete semDependencia.tasks[1]!.blockedByTaskIndexes
+    delete semDependencia.tasks[1]!.blockedByRationale
+    expect(validateBacklogPlan(semDependencia)).toEqual([])
   })
 
   it('jornada do RA ignorada pelos épicos → rejeitado (o "plano raso")', () => {
