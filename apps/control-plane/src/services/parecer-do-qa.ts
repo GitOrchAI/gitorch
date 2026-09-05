@@ -117,6 +117,32 @@ export function temMarcaDeRejulgamentoDeLegado(review?: ReviewDoGithub | null): 
   return Boolean(review?.body?.includes(MARCA_DE_LEGADO_REJULGADO))
 }
 
+/**
+ * Marca invisível que registra: esta review JÁ é a cobrança de entrega sem
+ * conteúdo (diff vazio) para o head atual — a `REQUEST_CHANGES` que
+ * `qa-rails-mission.ts` posta quando reconhece `ehEntregaSemConteudo`
+ * (`entrega-sem-conteudo.ts`).
+ *
+ * Existe pelo mesmo motivo de `MARCA_DE_LEGADO_REJULGADO`: o skip de "já tem
+ * parecer neste head" (linha 701 de `qa-rails-mission.ts`) existe para o
+ * produto não repetir OPINIÃO a cada ciclo — mas "diff vazio" não é opinião,
+ * é fato estrutural, e uma reprovação comum (sem esta marca) não pode travar
+ * a cobrança para sempre (foi isso que prendeu o PR #468/issue #309, medido
+ * 03-05/09/2026: duas reviews CHANGES_REQUESTED no mesmo head, nenhuma
+ * exceção existente se aplicava, e a detecção de entrega vazia nunca
+ * rodava). Sem esta marca, uma vez destravada a cobrança REPETIRIA a cada
+ * tique — a mesma opinião, postada de novo e de novo no PR do cliente. Ela
+ * garante a cobrança UMA vez por head: o dev só recebe recado novo quando
+ * empurra um commit novo (que muda `p.head.sha` e derruba
+ * `reviewMarcadaNesteHead`).
+ */
+export const MARCA_DE_COBRANCA_DE_ENTREGA_VAZIA = '<!-- gitorch:qa:entrega-vazia-cobrada -->'
+
+/** Esta review já é a cobrança de entrega sem conteúdo para o head atual? */
+export function temMarcaDeCobrancaDeEntregaVazia(review?: ReviewDoGithub | null): boolean {
+  return Boolean(review?.body?.includes(MARCA_DE_COBRANCA_DE_ENTREGA_VAZIA))
+}
+
 export interface ReviewDoGithub {
   body?: string
   commit_id?: string
