@@ -1000,7 +1000,18 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
             continue
           }
 
-          const reply = await handleTelegramUpdate(app.prisma, update, { agentQuestionService })
+          // L4-T27 (3º caminho de resposta — achado na revisão pós-fix dos
+          // itens 1 e 3, handleTelegramQuestionReply/handleTelegramCallback,
+          // acima): `onError` é o que faz a falha ISOLADA dentro de
+          // handleTelegramUpdate (fluxo de "digitando ativo") aparecer de
+          // verdade no log (nunca console.*) — MESMO onError que os outros
+          // dois caminhos já recebem. Sem isto configurado, o aviso seria
+          // descartado em silêncio e ninguém saberia que uma resposta por
+          // texto livre (digitando ativo) falhou.
+          const reply = await handleTelegramUpdate(app.prisma, update, {
+            agentQuestionService,
+            onError: (m) => app.log.error(`[Telegram] ${m}`),
+          })
           if (!reply) continue
           await sendTelegramMessage({ botToken, chatId: reply.chatId, text: reply.text })
         }

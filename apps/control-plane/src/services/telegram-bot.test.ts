@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   parseStartToken,
   getTelegramUpdates,
@@ -15,6 +15,7 @@ import {
   FREE_TEXT_OPTION_VALUE,
   acharProjeto,
 } from './telegram-bot.js'
+import { defaultAgentQuestionStateManager } from './agent-question-state.js'
 
 // A ponte com a API do Telegram. Aqui mora o único jeito de o bot descobrir o
 // `chat_id` de alguém: o update de `/start <token>`, que só chega DEPOIS de a
@@ -486,6 +487,131 @@ describe('handleTelegramUpdate — o Start do cliente vira vínculo real', () =>
     expect(prisma.novo.chatId).toBeNull()
     expect(reply?.text).toMatch(/outra conta/i)
     expect(reply?.text).not.toContain(BOT)
+  })
+})
+
+describe('handleTelegramUpdate — o fluxo de "digitando ativo" (3º caminho de resposta, distinto do clique e do reply)', () => {
+  // Achado na revisão pós-fix dos itens 1 e 3 (handleTelegramQuestionReply e
+  // handleTelegramCallback, acima): este é o TERCEIRO lugar do arquivo que
+  // fecha `agentQuestionService.answer()` — guardado pelo estado do bot
+  // ("✍️ Vou digitar...", `defaultAgentQuestionStateManager`), nunca por
+  // `reply_to_message` (handleTelegramQuestionReply) nem por `callback_query`
+  // (handleTelegramCallback). Os 3 caminhos chamam o MESMO método — só este
+  // tinha ficado fora do isolamento.
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  function fakePrismaLinkado(userId: string, chatId: string) {
+    return {
+      telegramLink: {
+        findFirst: vi.fn(async ({ where }: any) =>
+          where.chatId === chatId && where.status === 'linked'
+            ? { userId, chatId, status: 'linked' }
+            : null
+        ),
+      },
+    }
+  }
+
+  const USER_ID = 'user_digitando'
+  const CHAT_ID = '777'
+
+  afterEach(() => {
+    // `defaultAgentQuestionStateManager` é um singleton do módulo — nunca
+    // some sozinho entre testes. O teste de throw (abaixo) deixa o estado
+    // "ativo" DE PROPÓSITO (prova de que o catch não limpa); esta limpeza
+    // evita que ele vaze pro próximo teste que usar a mesma USER_ID.
+    defaultAgentQuestionStateManager.clearActiveTypingQuestion(USER_ID)
+  })
+
+  it('caminho feliz: com pergunta ativa, o texto vira answer(), o estado de digitação é limpo e o dono lê a confirmação', async () => {
+    defaultAgentQuestionStateManager.setActiveTypingQuestion(USER_ID, {
+      questionId: 'q_ativa_1',
+      userId: USER_ID,
+      chatId: CHAT_ID,
+    })
+    const answerCalls: any[] = []
+    const deps = {
+      agentQuestionService: {
+        answer: vi.fn(async (id: string, value: string, via: string) => {
+          answerCalls.push({ id, value, via })
+          return { id, status: 'answered', answer: value }
+        }),
+      },
+    }
+
+    const reply = await handleTelegramUpdate(
+      fakePrismaLinkado(USER_ID, CHAT_ID) as any,
+      { update_id: 30, message: { chat: { id: 777 }, text: 'quero o botão maior' } },
+      deps as any
+    )
+
+    expect(answerCalls).toEqual([
+      { id: 'q_ativa_1', value: 'quero o botão maior', via: 'telegram' },
+    ])
+    expect(reply).toEqual({
+      chatId: CHAT_ID,
+      text: '✅ Resposta registrada com sucesso! A Sprint continuará seu fluxo.',
+    })
+    // O estado de digitação não sobrevive ao caminho feliz — senão a
+    // PRÓXIMA mensagem solta do dono seria incorretamente tratada como
+    // resposta a uma pergunta que já foi respondida.
+    expect(defaultAgentQuestionStateManager.getActiveTypingQuestion(USER_ID)).toBeNull()
+  })
+
+  // ---------------------------------------------------------------------
+  // `answer()` pode LANÇAR de verdade (dedupKey corrompido, erro de banco —
+  // agent-question.ts `answer()` propaga a falha do manipulador). Sem
+  // isolar aqui, a exceção sobe por este `handleTelegramUpdate` até o
+  // for-loop do ouvinte (plugins/telegram.ts `listen()`) — e como o
+  // `offset` (marcador de leitura do getUpdates) já avançou para a LEVA
+  // INTEIRA antes desse for-loop processar update por update, as mensagens
+  // SEGUINTES da mesma leva nunca são reprocessadas (o Telegram não as
+  // reentrega depois que o offset passou delas). MESMO risco que os outros
+  // dois caminhos já tinham antes de serem corrigidos.
+  // ---------------------------------------------------------------------
+  it('answer() lança (falha DE VERDADE do manipulador) — NUNCA propaga (o ouvinte do bot e as outras mensagens da leva sobrevivem), loga a causa via onError, o dono lê a MESMA mensagem honesta que os outros dois caminhos já usam, e o estado de digitação NÃO é limpo (a mesma pergunta ativa segue esperando uma nova tentativa)', async () => {
+    defaultAgentQuestionStateManager.setActiveTypingQuestion(USER_ID, {
+      questionId: 'q_ativa_2',
+      userId: USER_ID,
+      chatId: CHAT_ID,
+    })
+    const causaReal = new Error(
+      'aoResponderDuvidaDoDev: dedupKey da pergunta tem o prefixo duvida-dev: mas está malformado — a correção do dono não pôde ser interpretada, pergunta continua open'
+    )
+    const onErrorCalls: string[] = []
+    const deps = {
+      agentQuestionService: {
+        answer: vi.fn(async () => {
+          throw causaReal
+        }),
+      },
+      onError: vi.fn((mensagem: string) => onErrorCalls.push(mensagem)),
+    }
+    const update = { update_id: 31, message: { chat: { id: 777 }, text: 'quero o botão maior' } }
+
+    // A PROVA central: a promise RESOLVE (nunca rejeita) — é exatamente
+    // isto que garante que o for-loop do ouvinte segue vivo para as
+    // próximas mensagens da mesma leva, e o dono lê a MESMA mensagem
+    // honesta que os outros dois caminhos usam quando `answer()` falha.
+    await expect(
+      handleTelegramUpdate(fakePrismaLinkado(USER_ID, CHAT_ID) as any, update, deps as any)
+    ).resolves.toEqual({
+      chatId: CHAT_ID,
+      text: 'Não deu para registrar sua resposta agora. Tente de novo em instantes.',
+    })
+
+    // A causa REAL foi registrada (nunca console.*, nunca engolida em
+    // silêncio) — produção passa app.log.error (plugins/telegram.ts).
+    expect(onErrorCalls.some((m) => m.includes('dedupKey da pergunta'))).toBe(true)
+
+    // Nada foi gravado: a pergunta ativa continua esperando uma nova
+    // tentativa de texto — o catch NUNCA limpa o estado de digitação
+    // (mesma doutrina do catch em handleTelegramCallback, acima).
+    expect(defaultAgentQuestionStateManager.getActiveTypingQuestion(USER_ID)).toEqual({
+      questionId: 'q_ativa_2',
+      userId: USER_ID,
+      chatId: CHAT_ID,
+      requestedAt: expect.any(Date),
+    })
   })
 })
 

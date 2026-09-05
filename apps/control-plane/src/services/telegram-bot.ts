@@ -1578,6 +1578,17 @@ export async function tratarCliqueDeProjeto(
 
 export interface TelegramUpdateDeps {
   agentQuestionService?: Pick<AgentQuestionService, 'answer'>
+  /**
+   * L4-T27 (3º caminho de resposta — achado na revisão pós-fix dos itens 1
+   * e 3, handleTelegramQuestionReply/handleTelegramCallback, acima): mesmo
+   * racional do `onError` em `TelegramCallbackDeps` — regista a causa
+   * quando `agentQuestionService.answer` falha DE VERDADE no fluxo de
+   * "digitando ativo" (bot: "✍️ Vou digitar..."). Produção passa
+   * `app.log.error` (nunca `console.*`); opcional para não quebrar os
+   * testes de /start acima, que nunca configuram `agentQuestionService` e
+   * por isso nunca entram no ramo que usa isto.
+   */
+  onError?: (mensagem: string) => void
 }
 
 /**
@@ -1616,7 +1627,41 @@ export async function handleTelegramUpdate(
     if (link) {
       const active = defaultAgentQuestionStateManager.getActiveTypingQuestion(link.userId)
       if (active) {
-        await deps.agentQuestionService.answer(active.questionId, message.text.trim(), 'telegram')
+        // L4-T27 (3º caminho de resposta — achado na revisão pós-fix dos
+        // itens 1 e 3, handleTelegramQuestionReply/handleTelegramCallback,
+        // acima): este é o TERCEIRO lugar que fecha
+        // `agentQuestionService.answer()` neste arquivo, e ficou de fora do
+        // MESMO isolamento que os outros dois já ganharam. `answer()` pode
+        // LANÇAR de verdade (dedupKey corrompido, erro de banco —
+        // agent-question.ts `answer()` propaga a falha do manipulador).
+        // Sem isolar aqui, a exceção sobe por este `handleTelegramUpdate`
+        // até o for-loop do ouvinte (plugins/telegram.ts `listen()`) — e
+        // como o `offset` (marcador de leitura do getUpdates) já avançou
+        // para a LEVA INTEIRA antes desse for-loop processar update por
+        // update, as mensagens SEGUINTES da mesma leva nunca são
+        // reprocessadas (o Telegram não as reentrega depois que o offset
+        // passou delas). Isola aqui, loga a causa pelo logger injetado
+        // (nunca console.*) e devolve a MESMA mensagem honesta que os
+        // outros dois caminhos usam — pelo MESMO mecanismo de retorno que
+        // esta função já usa pros outros ramos (quem chama, em
+        // plugins/telegram.ts, envia via sendTelegramMessage): nunca um
+        // envio duplicado por dentro.
+        try {
+          await deps.agentQuestionService.answer(active.questionId, message.text.trim(), 'telegram')
+        } catch (err) {
+          const mensagem = err instanceof Error ? err.message : String(err)
+          deps.onError?.(
+            `handleTelegramUpdate: falha ao registrar a resposta da pergunta ${active.questionId} — ${mensagem}`
+          )
+          // NUNCA limpa o estado de digitação aqui: nada foi gravado, e o
+          // dono precisa poder digitar de novo — a MESMA pergunta ativa
+          // segue esperando a próxima tentativa (mesma doutrina do catch
+          // em handleTelegramCallback, acima: só o caminho feliz limpa).
+          return {
+            chatId,
+            text: 'Não deu para registrar sua resposta agora. Tente de novo em instantes.',
+          }
+        }
         defaultAgentQuestionStateManager.clearActiveTypingQuestion(link.userId)
         return {
           chatId,
