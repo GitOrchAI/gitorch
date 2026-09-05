@@ -8,6 +8,7 @@ import {
   aprovarPlanoJules,
   ultimaMensagemDoDevJules,
   houveAtividadeDoDevDesde,
+  atividadesDeConversaJules,
 } from './jules-client.js'
 import * as julesClient from './jules-client.js'
 
@@ -373,6 +374,103 @@ describe('houveAtividadeDoDevDesde (L5-T3 — sinal de vida)', () => {
 
     expect(houve).toBe(false)
     expect(avisos[0]).toContain('sessions/1')
+  })
+})
+
+describe('atividadesDeConversaJules (L5-T5/D75 — catálogo de dúvidas)', () => {
+  // Regressão do refactor da leitura compartilhada: `ultimaMensagemDoDevJules`
+  // e `houveAtividadeDoDevDesde` continuam vendo SÓ o originador 'agent' (os
+  // testes acima, intocados, travam isso); esta função é a ÚNICA que enxerga
+  // os DOIS lados da conversa — pergunta do dev (`agentMessaged`) e resposta
+  // que O TIME deu (`userMessaged`) — para o catálogo (D75: a dúvida do dev
+  // nunca mais sobe ao dono; o que o time respondeu tem de ficar guardado).
+  it('devolve a pergunta do agente E a resposta do usuário, com originator e momento', async () => {
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify({
+          activities: [
+            {
+              originator: 'agent',
+              createTime: '2026-01-01T10:00:00Z',
+              agentMessaged: { agentMessage: 'devo usar bcrypt ou argon2?' },
+            },
+            {
+              originator: 'user',
+              createTime: '2026-01-01T10:05:00Z',
+              userMessaged: { userMessage: 'use argon2, já é o padrão do projeto' },
+            },
+          ],
+        }),
+        { status: 200 }
+      )) as unknown as typeof fetch
+
+    const conversa = await atividadesDeConversaJules({
+      apiKey: 'k',
+      sessionName: 'sessions/1',
+      fetchImpl,
+    })
+
+    expect(conversa).toEqual([
+      {
+        originator: 'agent',
+        quando: new Date('2026-01-01T10:00:00Z'),
+        texto: 'devo usar bcrypt ou argon2?',
+      },
+      {
+        originator: 'user',
+        quando: new Date('2026-01-01T10:05:00Z'),
+        texto: 'use argon2, já é o padrão do projeto',
+      },
+    ])
+  })
+
+  it('ignora atividade sem texto (progressUpdated, sessionCompleted, …) — não é fala de ninguém', async () => {
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify({
+          activities: [
+            { originator: 'agent', createTime: '2026-01-01T09:00:00Z', progressUpdated: {} },
+            { originator: 'agent', createTime: '2026-01-01T09:05:00Z', sessionCompleted: {} },
+            {
+              originator: 'agent',
+              createTime: '2026-01-01T09:10:00Z',
+              agentMessaged: { agentMessage: 'pergunta real' },
+            },
+          ],
+        }),
+        { status: 200 }
+      )) as unknown as typeof fetch
+
+    const conversa = await atividadesDeConversaJules({
+      apiKey: 'k',
+      sessionName: 'sessions/1',
+      fetchImpl,
+    })
+
+    expect(conversa).toEqual([
+      { originator: 'agent', quando: new Date('2026-01-01T09:10:00Z'), texto: 'pergunta real' },
+    ])
+  })
+
+  it('sem chave configurada devolve lista vazia, sem chamar a rede', async () => {
+    let chamou = false
+    const fetchImpl = (async () => {
+      chamou = true
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch
+
+    expect(await atividadesDeConversaJules({ sessionName: 'sessions/1', fetchImpl })).toEqual([])
+    expect(chamou).toBe(false)
+  })
+
+  it('serviço fora do ar: devolve lista vazia, nunca lança', async () => {
+    const fetchImpl = (async () => {
+      throw new Error('rede caiu')
+    }) as unknown as typeof fetch
+
+    await expect(
+      atividadesDeConversaJules({ apiKey: 'k', sessionName: 'sessions/1', fetchImpl })
+    ).resolves.toEqual([])
   })
 })
 

@@ -197,7 +197,6 @@ import {
   escalarDuvidaAoDono,
   type PrismaParaEscalarDuvida,
 } from '../services/escalar-duvida-ao-dono.js'
-import { montarContextoExecutivoDaPergunta } from '../services/contexto-executivo-da-pergunta.js'
 import {
   // L4-T4 (D64), fix-up a13a42f8: renomeado no import — o wiring real
   // (prisma, BYOK, GitHub, agentQuestionService) mora em `scheduler.ts`
@@ -6312,8 +6311,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               })
             },
             // D71: 3 opções objetivas + a livre — reutiliza
-            // `agentQuestionService.ask` (mesmo padrão de
-            // `escalarDuvidaAoDono`). Nunca um aviso de texto solto.
+            // `agentQuestionService.ask` diretamente. Nunca um aviso de texto
+            // solto. Isto é retomada de PR REPROVADO (decisão de negócio
+            // legítima do dono sobre insistir ou não) — NÃO é dúvida técnica
+            // do dev assíncrono; D75 (05/09) fechou só o caminho da dúvida do
+            // dev (`escalar-duvida-ao-dono.ts`), que não passa mais por
+            // `agentQuestionService`.
             perguntarAoDono: async ({ issueNumber, numeroDoPr: nPr, retomadasAnteriores }) => {
               const perguntador = (
                 app as unknown as { agentQuestionService?: AgentQuestionService }
@@ -7213,79 +7216,6 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       nivel: () => projetoDaVez.autonomia,
       timeoutMs: TIMEOUT_DE_CHAMADA_GITHUB_MS,
     })
-
-  /**
-   * D73/L4-T23: monta o contexto executivo (ciclo, entrega, decisões já
-   * tomadas — contexto-executivo-da-pergunta.ts) para a pergunta de RESERVA
-   * de `escalarDuvidaAoDono` contar a história em vez de citar a dúvida
-   * técnica do dev. Definida UMA VEZ aqui (fora do `for` de candidatas de
-   * `responderDuvidaPendente`) — não como closure inline dentro do laço —
-   * para não pagar o custo de recriar/reanalisar esta função a cada
-   * candidata de cada tique.
-   *
-   * Reaproveita os MESMOS caminhos que o resto do relógio já usa para ler
-   * este repositório: `ghGet` (leitura da issue, acima),
-   * `ProjectV2Client.findProjectId` com o fallback organization→user (MESMO
-   * padrão de `avaliarCustoDaOrdem`, mais abaixo neste arquivo) e
-   * `resolveQuadroDoProjeto` (routes/painel.ts) para achar o quadro
-   * configurado. Best-effort por contrato: sem token, sem quadro
-   * configurado, ou qualquer falha de rede, o método devolve o contexto com
-   * as lacunas declaradas — nunca lança (ver
-   * `montarContextoExecutivoDaPergunta`) — e `escalarDuvidaAoDono` já trata
-   * a falha do PRÓPRIO `montarContexto` como best-effort por cima disso.
-   */
-  const montarContextoParaEscalada = async (
-    ctxArgs: { issueNumber: number; repository: string; projectId: string },
-    contextoDoTique: {
-      githubToken: string | undefined
-      autonomia: string | null | undefined
-      runtimeConfig: unknown
-    }
-  ) => {
-    const fetchDeLeitura = fetchDoRepositorio({
-      nivel: () => contextoDoTique.autonomia,
-      timeoutMs: TIMEOUT_DE_CHAMADA_GITHUB_MS,
-    })
-    const token = contextoDoTique.githubToken
-    const quadroConfigurado = resolveQuadroDoProjeto(contextoDoTique.runtimeConfig)
-    let quadroId: string | undefined
-    if (token && quadroConfigurado) {
-      const leitor = new ProjectV2Client({ token, fetchImpl: fetchDeLeitura })
-      quadroId =
-        (await leitor.findProjectId({
-          login: quadroConfigurado.login,
-          number: quadroConfigurado.numero,
-          ownerType: 'organization',
-        })) ??
-        (await leitor.findProjectId({
-          login: quadroConfigurado.login,
-          number: quadroConfigurado.numero,
-          ownerType: 'user',
-        })) ??
-        undefined
-    }
-    return montarContextoExecutivoDaPergunta(ctxArgs, {
-      buscarCorpoDaIssue: async () => {
-        if (!token) return null
-        const issue = (await ghGet(
-          `/repos/${ctxArgs.repository}/issues/${ctxArgs.issueNumber}`,
-          token
-        )) as { body?: string | null }
-        return issue.body ?? null
-      },
-      // `exactOptionalPropertyTypes`: só entra no objeto quando os dois
-      // existem — nunca `undefined` explícito numa propriedade opcional.
-      ...(token && quadroId
-        ? { clienteDeQuadro: new ProjectV2Client({ token, fetchImpl: fetchDeLeitura }), quadroId }
-        : {}),
-      prisma: {
-        agentQuestion: {
-          findMany: (a: unknown) => app.prisma.agentQuestion.findMany(a as never),
-        },
-      },
-      hoje: hojeNoFuso(),
-    })
-  }
 
   // R6 do controlador: o mecanismo de publicação (Tarefa 12) muda raramente
   // mas NÃO é imutável — guardado em memória, por repositório, com validade
@@ -8360,12 +8290,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             return
           }
         }
-        // L4-T3: a decisão e a escrita real (agent_question/escalada) vivem em
-        // `services/escalar-duvida-ao-dono.ts` — extraído para ser testável
-        // sem a máquina de missão/motor (ver o teste real de costura
-        // `escalar-duvida-ao-dono.test.ts`, que reproduziu o defeito de
-        // 02/09 antes do conserto: 24 sessões marcadas "respondida" ao
-        // escalar, ZERO `agent_question` criada).
+        // D75 (05/09, decisão do dono): dúvida do dev NUNCA MAIS vira
+        // pergunta ao dono — `escalar-duvida-ao-dono.ts` (L5-T5) reescreveu
+        // o contrato por completo: guarda a conversa no catálogo
+        // (best-effort) e SEMPRE registra a falha do TIME via `onError`,
+        // nunca `agent_question`, nunca lança. Nome da função mantido (o
+        // que ela fecha, não o que ela abre — o comentário no módulo explica
+        // a virada).
         await escalarDuvidaAoDono(
           {
             destino,
@@ -8379,18 +8310,6 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           },
           {
             prisma: app.prisma as unknown as PrismaParaEscalarDuvida,
-            agentQuestionService: (
-              app as unknown as { agentQuestionService?: AgentQuestionService }
-            ).agentQuestionService,
-            // D73/L4-T23: `montarContextoParaEscalada` está definida UMA VEZ
-            // fora deste laço (logo depois de `ghGet`/`fetchDoQuadro`) — aqui
-            // só um wrapper fino que fecha sobre o `args` deste tique.
-            montarContexto: (ctxArgs) =>
-              montarContextoParaEscalada(ctxArgs, {
-                githubToken: args.githubToken,
-                autonomia: args.autonomia,
-                runtimeConfig: args.runtimeConfig,
-              }),
             onInfo: (m) => app.log.info(`[Scheduler] ${m}`),
             onError: (err, m) => app.log.error(err, `[Scheduler] ${m}`),
           }
