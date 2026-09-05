@@ -94,10 +94,20 @@ export interface DepsDeRetomada {
  *     `agent_question` tem uma chave corrompida. Isto É falha de verdade:
  *     `manipuladorDeResultadoDeRetomada` lança para este motivo, nunca
  *     finge sucesso com um aviso.
+ *
+ * FIX-UP L4-T27 (revisão, item 2): `'sem-sessao-viva'` cobria os DOIS casos
+ * de `registrarRespostaSemSessaoViva` — o comentário na issue saiu (registro
+ * durável de verdade) E o comentário falhou/nem foi tentado (nada além da
+ * `agent_question` guarda a resposta, e o próprio código desta função diz
+ * que o comentário é o ÚNICO elo que a próxima delegação enxerga). O dono
+ * ouvia a MESMA frase tranquilizadora ("foi guardada e será entregue") nos
+ * dois casos — uma mentira quando o registro falhou. `'sem-sessao-viva-sem-registro'`
+ * distingue o segundo caso: mesma garantia de nunca lançar, mas o aviso ao
+ * dono muda (`manipuladorDeResultadoDeRetomada`, abaixo).
  */
 export interface ResultadoDeRetomada {
   entregue: boolean
-  motivo?: 'sem-sessao-viva' | 'nao-aplicavel' | 'chave-malformada'
+  motivo?: 'sem-sessao-viva' | 'sem-sessao-viva-sem-registro' | 'nao-aplicavel' | 'chave-malformada'
 }
 
 /**
@@ -109,6 +119,19 @@ export interface ResultadoDeRetomada {
  */
 export const AVISO_CORRECAO_SEM_SESSAO_VIVA =
   'Sua orientação foi guardada e será entregue ao dev quando esta tarefa voltar a ser trabalhada.'
+
+/**
+ * FIX-UP L4-T27 (revisão, item 2): o par HONESTO de `AVISO_CORRECAO_SEM_SESSAO_VIVA`
+ * para quando NEM o registro durável (o comentário na issue do repositório
+ * do cliente) deu certo — `resultado.motivo === 'sem-sessao-viva-sem-registro'`.
+ * Sem o comentário, nada além da `agent_question` guarda esta resposta, e
+ * nenhum mecanismo hoje religa a `agent_question` à próxima delegação
+ * (mesma ressalva de `registrarRespostaSemSessaoViva`, abaixo) — dizer "foi
+ * guardada e será entregue" aqui seria mentira. NUNCA a mesma frase de
+ * `AVISO_CORRECAO_SEM_SESSAO_VIVA` — dizem coisas opostas.
+ */
+export const AVISO_CORRECAO_NAO_REGISTRADA =
+  'Não deu para guardar sua orientação agora. Ela pode não chegar ao dev — tente responder de novo em instantes.'
 
 /** Acha a LABEL da opção escolhida (botão do Telegram/painel); sem bater
  *  com nenhuma (resposta livre — D71, "Outro"), usa o texto cru. */
@@ -138,6 +161,95 @@ function limitarTamanhoDaResposta(resposta: string, onWarn?: (mensagem: string) 
   const tamanhoDoConteudo =
     TETO_DE_CARACTERES_DA_RESPOSTA_DO_DONO - SUFIXO_DE_RESPOSTA_TRUNCADA.length
   return `${resposta.slice(0, tamanhoDoConteudo)}${SUFIXO_DE_RESPOSTA_TRUNCADA}`
+}
+
+/**
+ * L4-T27 — defeito medido em produção (issue GitOrchAI/gitorch#3866, dedupKey
+ * `duvida-dev:loureng/patinhas-3d-crafts:3866:a9dad428e18bf927`): a MESMA
+ * classe de defeito que L4-T21 já corrigiu, mas L4-T21 só tratou o ramo da
+ * CORREÇÃO de suposição (`statusAnterior === 'assumida'`) — o ramo COMUM
+ * (uma pergunta escalada de verdade, de longe o caso mais frequente) continuava
+ * `throw`ando aqui quando a sessão escalada já tinha morrido antes do dono
+ * responder. Pelo painel isso virava 409 (`ERRO_AO_RESPONDER`, routes/
+ * painel.ts); pelo Telegram, a exceção subia por `handleTelegramCallback`
+ * (services/telegram-bot.ts) e derrubava o ouvinte do bot — o clique do
+ * dono se perdia, o teclado nunca colapsava, e ele não tinha como saber se
+ * o produto tinha lido.
+ *
+ * Extraído para os DOIS ramos chamarem em vez de duplicar o bloco (o
+ * `desenho` é idêntico ao que a correção de suposição já tinha): comenta na
+ * issue do repositório do CLIENTE — best-effort, pelo helper GUARDADO pela
+ * autonomia do projeto (nunca um `fetch` cru), igual a
+ * `supor-duvida-pendente.ts`/`suposicao-imediata-de-duvida.ts`. Sem este dep
+ * configurado, ou se ele falhar, só avisa pelo `onWarn` — NUNCA lança.
+ * Devolve sempre `{ entregue: false, motivo: ... }`; quem chama (`answer()`,
+ * agent-question.ts) NÃO trata isto como falha do manipulador — grava
+ * `answer`/`status: 'answered'` na própria `agent_question` normalmente,
+ * nos dois casos abaixo.
+ *
+ * FIX-UP L4-T27 (revisão, item 2): o `motivo` distingue se o comentário na
+ * issue (o elo concreto que a próxima delegação enxerga) de fato saiu:
+ *   - `'sem-sessao-viva'`: o comentário saiu — é esse registro (mais a
+ *     própria `agent_question` respondida) que torna a resposta do dono
+ *     DURÁVEL mesmo sem sessão viva do dev.
+ *   - `'sem-sessao-viva-sem-registro'`: o comentário FALHOU (ou nem foi
+ *     tentado — dep ausente, resposta vazia) — só a `agent_question` guarda
+ *     esta resposta, e nenhum mecanismo hoje relê essa tabela para
+ *     reinjetá-la na próxima delegação. Dizer ao dono que "foi guardada e
+ *     será entregue" aqui seria mentira — `manipuladorDeResultadoDeRetomada`
+ *     (abaixo) mostra um aviso DIFERENTE, honesto sobre o que não deu certo.
+ */
+async function registrarRespostaSemSessaoViva(
+  deps: DepsDeRetomada,
+  args: {
+    parsed: DuvidaDevDedupKey
+    projectId: string
+    resposta: string
+    opcoes: Array<{ label: string; value: string }>
+    /** Só muda a moldura do comentário na issue — o resto é idêntico nos dois ramos. */
+    abertura: string
+  }
+): Promise<ResultadoDeRetomada> {
+  const textoDaResposta = sanitizarRespostaLivre(
+    textoDaRespostaParaODev(args.resposta, args.opcoes)
+  )
+  const contexto = `${args.parsed.repository}#${args.parsed.issueNumber} (projeto ${args.projectId}, hash ${args.parsed.hash})`
+  // FIX-UP L4-T27 (revisão, item 2): antes desta task, os DOIS ramos abaixo
+  // (comentário saiu / comentário falhou ou nem foi tentado) devolviam o
+  // MESMO `motivo: 'sem-sessao-viva'` — e `manipuladorDeResultadoDeRetomada`
+  // mostrava a MESMA frase tranquilizadora ao dono nos dois casos. Mas só o
+  // comentário na issue é o elo que a próxima delegação enxerga (nenhum
+  // mecanismo hoje relê `agent_question` para reinjetar a resposta) — sem
+  // ele, "foi guardada e será entregue" é mentira. `registradoDeFormaDuravel`
+  // decide qual dos dois motivos volta.
+  let registradoDeFormaDuravel = false
+  if (deps.comentarNaIssue && textoDaResposta) {
+    try {
+      await deps.comentarNaIssue({
+        issueNumber: args.parsed.issueNumber,
+        texto:
+          `${args.abertura}\n\n` +
+          `${textoDaResposta}\n\n` +
+          'Nenhuma sessão do dev assíncrono estava viva agora para receber esta resposta ' +
+          'imediatamente — ela será usada quando este trabalho for retomado.',
+      })
+      registradoDeFormaDuravel = true
+    } catch (err) {
+      deps.onWarn?.(
+        `aoResponderDuvidaDoDev: resposta do dono para ${contexto} NÃO ficou registrada de forma ` +
+          `durável (só a agent_question guarda) — não consegui comentar na issue: ${err instanceof Error ? err.message : String(err)}`
+      )
+    }
+  } else {
+    deps.onWarn?.(
+      `aoResponderDuvidaDoDev: resposta do dono para ${contexto} sem sessão viva do dev e SEM ` +
+        'registro durável (comentarNaIssue ausente ou resposta vazia) — só a agent_question guarda'
+    )
+  }
+  return {
+    entregue: false,
+    motivo: registradoDeFormaDuravel ? 'sem-sessao-viva' : 'sem-sessao-viva-sem-registro',
+  }
 }
 
 /**
@@ -242,50 +354,20 @@ export async function aoResponderDuvidaDoDev(
       // L4-T21 — defeito medido em produção (issue #309, 02/09 21:07 UTC):
       // a sessão que recebeu a suposição do RA já morreu quando o dono
       // corrige. Isto NÃO É mais um erro que perde a correção do dono — o
-      // dono clicou, e a orientação dele NUNCA pode desaparecer. Em vez de
-      // lançar (o que virava HTTP 500 no painel e a pergunta ficava presa
-      // em `assumida` para sempre, sem NENHUM registro da correção):
-      //   1. Comenta na issue do repositório do CLIENTE — best-effort,
-      //      pelo helper GUARDADO pela autonomia (nunca um `fetch` cru),
-      //      igual a `supor-duvida-pendente.ts`/
-      //      `suposicao-imediata-de-duvida.ts`. Sem este dep configurado,
-      //      ou se ele falhar, só avisa — nunca lança.
-      //   2. Devolve `{ entregue: false, motivo: 'sem-sessao-viva' }` —
-      //      quem chama (`answer()`, agent-question.ts) NÃO trata isto como
-      //      falha do manipulador: grava `answer`/`status: 'answered'` na
-      //      própria `agent_question` normalmente. É ESSE registro (mais o
-      //      comentário na issue, ligado à issue) que torna a correção
-      //      DURÁVEL — nenhum mecanismo hoje reinjeta `agent_question` na
-      //      próxima delegação (sm-delegation.ts/fila-de-delegacao.ts não
-      //      leem esta tabela), então o comentário público na issue é o elo
-      //      concreto que a próxima rodada de trabalho enxerga.
-      const textoDaCorrecao = sanitizarRespostaLivre(
-        textoDaRespostaParaODev(args.resposta, args.opcoes)
-      )
-      const contexto = `${parsed.repository}#${parsed.issueNumber} (projeto ${args.projectId}, hash ${parsed.hash})`
-      if (deps.comentarNaIssue && textoDaCorrecao) {
-        try {
-          await deps.comentarNaIssue({
-            issueNumber: parsed.issueNumber,
-            texto:
-              'GitOrch: o dono corrigiu a suposição anterior do RA para esta issue:\n\n' +
-              `${textoDaCorrecao}\n\n` +
-              'Nenhuma sessão do dev assíncrono estava viva agora para receber esta correção ' +
-              'imediatamente — ela será usada quando este trabalho for retomado.',
-          })
-        } catch (err) {
-          deps.onWarn?.(
-            `aoResponderDuvidaDoDev: correção do dono para ${contexto} ficou registrada só na ` +
-              `agent_question — não consegui comentar na issue: ${err instanceof Error ? err.message : String(err)}`
-          )
-        }
-      } else {
-        deps.onWarn?.(
-          `aoResponderDuvidaDoDev: correção do dono para ${contexto} sem sessão viva do dev — ` +
-            'registrada só na agent_question (comentarNaIssue ausente ou resposta vazia)'
-        )
-      }
-      return { entregue: false, motivo: 'sem-sessao-viva' }
+      // dono clicou, e a orientação dele NUNCA pode desaparecer. L4-T27
+      // extraiu o tratamento (comentário na issue + devolver sem lançar)
+      // para `registrarRespostaSemSessaoViva`, chamado aqui e no ramo comum
+      // logo abaixo — nenhum mecanismo hoje reinjeta `agent_question` na
+      // próxima delegação (sm-delegation.ts/fila-de-delegacao.ts não leem
+      // esta tabela), então o comentário público na issue é o elo concreto
+      // que a próxima rodada de trabalho enxerga.
+      return registrarRespostaSemSessaoViva(deps, {
+        parsed,
+        projectId: args.projectId,
+        resposta: args.resposta,
+        opcoes: args.opcoes,
+        abertura: 'GitOrch: o dono corrigiu a suposição anterior do RA para esta issue:',
+      })
     }
   } else {
     // Primeiro tenta a sessão com o hash EXATO desta pergunta (a marca
@@ -320,10 +402,21 @@ export async function aoResponderDuvidaDoDev(
       })
     }
     if (!sessao) {
-      throw new Error(
-        `aoResponderDuvidaDoDev: sessão escalada não encontrada para ${parsed.repository}#${parsed.issueNumber} ` +
-          `(projeto ${args.projectId}, dedupKey ${args.dedupKey}) — a pergunta continua open, nunca adivinha a sessão`
-      )
+      // L4-T27 — defeito medido em produção (issue GitOrchAI/gitorch#3866):
+      // ANTES desta task, este ramo (o comum — de longe o mais frequente)
+      // lançava aqui quando a sessão escalada já tinha morrido antes do
+      // dono responder — a pergunta ficava presa em `open` pelo painel
+      // (409 ERRO_AO_RESPONDER) e, pelo Telegram, a exceção subia por
+      // `handleTelegramCallback` e derrubava o ouvinte do bot. MESMO
+      // tratamento que a correção de suposição (acima) já tinha: nunca
+      // adivinha a sessão, mas também nunca perde a resposta do dono.
+      return registrarRespostaSemSessaoViva(deps, {
+        parsed,
+        projectId: args.projectId,
+        resposta: args.resposta,
+        opcoes: args.opcoes,
+        abertura: 'GitOrch: o dono respondeu a uma dúvida escalada para esta issue:',
+      })
     }
   }
 
@@ -391,8 +484,14 @@ export async function aoResponderDuvidaDoDev(
  * se perdido).
  *
  *   - `entregue: true` (caminho feliz) — nada a devolver.
- *   - `motivo: 'sem-sessao-viva'` — sucesso durável, só não entregue de
- *     imediato: aviso em português (`AVISO_CORRECAO_SEM_SESSAO_VIVA`).
+ *   - `motivo: 'sem-sessao-viva'` — sucesso durável (o comentário na issue
+ *     SAIU), só não entregue de imediato: aviso em português
+ *     (`AVISO_CORRECAO_SEM_SESSAO_VIVA`).
+ *   - `motivo: 'sem-sessao-viva-sem-registro'` (FIX-UP L4-T27, revisão, item
+ *     2) — NEM o registro durável deu certo (o comentário falhou, ou nem foi
+ *     tentado): aviso DIFERENTE e honesto (`AVISO_CORRECAO_NAO_REGISTRADA`)
+ *     — nunca a mesma frase tranquilizadora do caso de sucesso, que aqui
+ *     seria mentira.
  *   - `motivo: 'nao-aplicavel'` — o dedupKey nem era assunto deste
  *     manipulador; silêncio, DE PROPÓSITO (nunca gera aviso).
  *   - `motivo: 'chave-malformada'` — falha de verdade (a `agent_question`
@@ -407,6 +506,14 @@ export function manipuladorDeResultadoDeRetomada(
   if (resultado.entregue) return
   if (resultado.motivo === 'sem-sessao-viva') {
     return { aviso: AVISO_CORRECAO_SEM_SESSAO_VIVA }
+  }
+  // FIX-UP L4-T27 (revisão, item 2): NEM o registro durável (comentário na
+  // issue) deu certo — o dono não pode ouvir a mesma frase tranquilizadora
+  // de cima. Continua NÃO lançando (a `agent_question` já foi respondida
+  // pelo chamador de qualquer forma; a correção do dono não se perde), só o
+  // aviso muda para dizer a verdade.
+  if (resultado.motivo === 'sem-sessao-viva-sem-registro') {
+    return { aviso: AVISO_CORRECAO_NAO_REGISTRADA }
   }
   if (resultado.motivo === 'chave-malformada') {
     throw new Error(

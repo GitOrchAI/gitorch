@@ -7,6 +7,17 @@ import {
 } from './agent-question.js'
 import { chaveDaDuvida } from './duvidas-do-projeto.js'
 import { comoPublicaDeclarado } from './como-o-projeto-publica.js'
+// L4-T27: importa o manipulador REAL (não um mock feito à mão) para provar,
+// no ponto exato onde os DOIS canais (Telegram e painel) convergem —
+// `AgentQuestionService.answer()` — que o ramo comum sem sessão viva nunca
+// mais lança. Alias para não colidir com os `const aoResponderDuvidaDoDev =
+// vi.fn(...)` locais que os testes L4-T3 acima já declaram (escopo de cada
+// `test`, nenhum conflito de verdade — só clareza de leitura).
+import {
+  aoResponderDuvidaDoDev as aoResponderDuvidaDoDevReal,
+  manipuladorDeResultadoDeRetomada,
+  type PrismaParaRetomada,
+} from './retomar-sessao-com-resposta.js'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // Fake do Prisma para agent_questions + events: store em memória com os
@@ -955,6 +966,88 @@ describe('a resposta do dono retoma a sessão do dev assíncrono (L4-T3)', () =>
     expect(prisma.agentQuestion.update).not.toHaveBeenCalled()
     expect(onError).toHaveBeenCalledOnce()
     expect(onError.mock.calls[0]![0]).toContain('sessão do Jules fora do ar')
+  })
+})
+
+// L4-T27 — defeito medido em produção (issue GitOrchAI/gitorch#3866,
+// dedupKey duvida-dev:loureng/patinhas-3d-crafts:3866:a9dad428e18bf927): o
+// manipulador REAL de `duvida-dev:` (`aoResponderDuvidaDoDev`,
+// retomar-sessao-com-resposta.ts — não um mock feito à mão como os testes
+// L4-T3 acima) é o ponto EXATO que tanto o clique no Telegram
+// (`handleTelegramCallback`, telegram-bot.ts) quanto a rota do painel (POST
+// /api/v1/painel/decisoes/:id/responder, routes/painel.ts) atravessam via
+// `AgentQuestionService.answer()` — os dois chamam o MESMO `answer()`, com
+// o MESMO registro de `manipuladoresDeResposta`. Provar aqui que `answer()`
+// nunca lança para o ramo COMUM sem sessão viva é provar que os DOIS canais
+// ficam corrigidos por uma mudança só, sem tratamento próprio em nenhum dos
+// dois — a wiring espelha `plugins/telegram.ts` (o manipulador chama a
+// função real e pipeta o resultado por `manipuladorDeResultadoDeRetomada`).
+describe('L4-T27: o manipulador REAL duvida-dev: (ramo comum, sem sessão viva) nunca perde a resposta do dono — mesmo ponto que Telegram E painel atravessam', () => {
+  function prismaComDevSession() {
+    const base = fakePrisma()
+    return {
+      ...base,
+      devSession: {
+        findFirst: vi.fn(async () => null), // nem hash exato, nem fallback por escalada: acham sessão
+        findMany: vi.fn(async () => []),
+        findUnique: vi.fn(async () => ({ devAccountId: null })),
+        update: vi.fn(async () => undefined),
+      },
+    }
+  }
+
+  test('sessão escalada já morreu: answer() NÃO lança — devolve status "answered" com avisoDoManipulador honesto', async () => {
+    const prisma = prismaComDevSession()
+    prisma.projects.set('p1', { id: 'p1', wingId: 'acme/api' } as any)
+    prisma.questions.set('q_duvida', {
+      id: 'q_duvida',
+      projectId: 'p1',
+      userId: 'u1',
+      text: 'Podemos cobrar taxa extra?',
+      dedupKey: 'duvida-dev:acme/api:46:hash123',
+      status: 'open',
+      options: [
+        { label: 'Sim', value: 'sim' },
+        { label: 'Não', value: 'nao' },
+      ],
+      answer: null,
+      answeredAt: null,
+      answeredVia: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })
+    const comentarNaIssue = vi.fn(async () => undefined)
+
+    // Espelha EXATAMENTE a montagem de plugins/telegram.ts: o manipulador
+    // registrado chama a função REAL de retomar-sessao-com-resposta.ts e
+    // pipeta o resultado por manipuladorDeResultadoDeRetomada — nenhum mock
+    // do comportamento que está sob teste.
+    const manipulador = async (args: ManipuladorDeRespostaArgs) => {
+      const resultado = await aoResponderDuvidaDoDevReal(args, {
+        prisma: prisma as unknown as PrismaParaRetomada,
+        decifrar: (envelope: string) => envelope.replace('cifrado:', ''),
+        julesApiKeyDaInstancia: 'chave-da-instancia',
+        comentarNaIssue,
+      })
+      return manipuladorDeResultadoDeRetomada(resultado)
+    }
+    const svc = new AgentQuestionService(prisma as any, {
+      manipuladoresDeResposta: [{ prefixo: 'duvida-dev:', executar: manipulador }],
+    })
+
+    // 'telegram' aqui é só o `via` do primeiro clique — o ponto sob teste
+    // (`answer()` + o manipulador) é idêntico para 'panel' (routes/painel.ts
+    // chama a mesma `AgentQuestionService.answer()`, só muda o `via`).
+    const result = await svc.answer('q_duvida', 'sim', 'telegram')
+
+    expect(result?.status).toBe('answered')
+    expect(result?.answer).toBe('sim')
+    expect(result?.avisoDoManipulador).toBe(
+      'Sua orientação foi guardada e será entregue ao dev quando esta tarefa voltar a ser trabalhada.'
+    )
+    expect(comentarNaIssue).toHaveBeenCalledWith(
+      expect.objectContaining({ issueNumber: 46, texto: expect.stringContaining('Sim') })
+    )
   })
 })
 

@@ -14,6 +14,17 @@ export interface PendingQuestionState {
 export class AgentQuestionStateManager {
   private readonly typingUsers = new Map<string, PendingQuestionState>()
   private readonly frozenTasksByProject = new Map<string, Set<string>>()
+  // FIX-UP L4-T27 (revisão, item 3): `avisoDoManipulador` é EFÊMERO em
+  // `agent-question.ts` — nunca gravado no banco, só anexado no objeto que
+  // `answer()` devolve na chamada que de fato rodou o manipulador
+  // (`agent-question.ts answer()`: `if (existing.status === 'answered')
+  // return existing` — a idempotência devolve o record CRU, sem recomputar
+  // o aviso). Uma 2ª pressão no MESMO botão (`handleTelegramCallback`, ramo
+  // `jaRespondidaAntesDesteClique`) chama `answer()` de novo e cai
+  // exatamente nesse `return` cru — sem esta cache, o 2º colapso reescrevia
+  // a mensagem SEM a ressalva que a 1ª resposta tinha mostrado, como se a
+  // entrega ao dev tivesse sido normal.
+  private readonly avisosPorQuestionId = new Map<string, string>()
 
   /**
    * Define que o usuário clicou em "✍️ Vou digitar..." para uma pergunta específica.
@@ -38,6 +49,25 @@ export class AgentQuestionStateManager {
    */
   clearActiveTypingQuestion(userId: string): void {
     this.typingUsers.delete(userId)
+  }
+
+  /**
+   * FIX-UP L4-T27 (revisão, item 3): guarda o aviso EFÊMERO que o
+   * manipulador de resposta devolveu na 1ª chamada de verdade a `answer()`
+   * — para uma 2ª pressão no mesmo botão ainda achar a ressalva (ver
+   * comentário do campo, acima).
+   */
+  setAvisoDoManipulador(questionId: string, aviso: string): void {
+    this.avisosPorQuestionId.set(questionId, aviso)
+  }
+
+  /**
+   * Lê o aviso guardado por `setAvisoDoManipulador` — `undefined` quando
+   * nenhuma resposta anterior desta pergunta guardou um (caminho feliz
+   * comum, ou processo reiniciado entre as duas pressões).
+   */
+  getAvisoDoManipulador(questionId: string): string | undefined {
+    return this.avisosPorQuestionId.get(questionId)
   }
 
   /**
