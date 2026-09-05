@@ -39,7 +39,12 @@ import {
   MARCA_DE_ENTREGA_GRANDE_DEMAIS,
   type EntregaJulgada,
 } from './reprovacao-que-ensina.js'
-import { ciTerminouVerde, estadoDoCi } from './estado-da-verificacao-do-github.js'
+import {
+  ciTerminouVerde,
+  estadoDoCi,
+  investigarEstadoDoCi,
+} from './estado-da-verificacao-do-github.js'
+import { frasarCausaDoCancelamento, type ResultadoDoCulpado } from './causa-do-cancelamento.js'
 import { decidirQuemResolve } from './conflito-de-merge.js'
 import {
   chaveDoResgate,
@@ -844,12 +849,45 @@ export async function runQaMissionViaRails(
   // (`decidirSobreVerificacao`, logo abaixo) pode mandar esperar; não há por
   // que buscar critérios e diff de um PR que não vai ser julgado agora.
   let ciState: EstadoDaVerificacao = 'unknown'
+  // L4-T17 — medido AO VIVO em loureng/patinhas-3d-crafts (run 33943490885,
+  // PR #3945): quando a verificação está vermelha COM cancelamento no meio
+  // — ou quando ela É `cancelado` (fix-up L4-T17, achado 1 da revisão: ver
+  // o comentário de `investigarEstadoDoCi`, estado-da-verificacao-do-
+  // github.ts, para a regressão que isto conserta) —, o job/passo que
+  // causou tudo pode estar escondido atrás de um job que o próprio GitHub
+  // marcou "cancelled": o pedido de `gh run cancel` alcança aquele job
+  // antes de o GitHub fechar a conclusão dele como falha. A API de
+  // check-runs não mostra passo nenhum; só a API de jobs do Actions mostra
+  // — e `investigarEstadoDoCi` decide SOZINHA quando vale a pena chamá-la,
+  // promovendo `cancelado` para `red` quando acha uma falha real.
+  // `{ encontrado: false }` não significa "nada cancelou" — significa "sem
+  // passo que prove culpa" (ou não havia nada para investigar).
+  let culpadoDoCancelamento: ResultadoDoCulpado | undefined
   if (pr.head?.sha) {
     const checks = (await gh(
       'GET',
       `/repos/${options.repository}/commits/${pr.head.sha}/check-runs`
-    )) as { check_runs?: Array<{ conclusion?: string; status?: string }> }
-    ciState = estadoDoCi(checks.check_runs ?? [])
+    )) as {
+      check_runs?: Array<{ id?: number; name?: string; conclusion?: string; status?: string }>
+    }
+    const checkRuns = checks.check_runs ?? []
+    const investigado = await investigarEstadoDoCi(checkRuns, async (jobId) => {
+      const job = (await gh('GET', `/repos/${options.repository}/actions/jobs/${jobId}`)) as {
+        steps?: Array<{ name?: string; conclusion?: string; completed_at?: string }>
+      }
+      return (job.steps ?? []).map((s) => ({
+        name: s.name ?? '',
+        conclusion: s.conclusion ?? null,
+        completedAt: s.completed_at ?? null,
+      }))
+    })
+      // Crash inesperado (não a falha best-effort de UM job — essa,
+      // `investigarCancelamentoEmCadeia` já absorve sozinha): recua para a
+      // resposta PURA (sem rede) — nunca trava a missão, nunca inventa
+      // culpado sem prova.
+      .catch(() => ({ estado: estadoDoCi(checkRuns), culpado: { encontrado: false as const } }))
+    ciState = investigado.estado
+    culpadoDoCancelamento = investigado.culpado
   }
 
   // A linha da sessão desta entrega — usada AQUI pela decisão da verificação
@@ -1005,7 +1043,11 @@ export async function runQaMissionViaRails(
     ...(options.contextBlocks ?? []),
     `PR #${target.number} by ${target.user?.login}.`,
     `Verification Criteria (from linked issue #${linkedIssue ?? '?'}):\n${criteria}`,
-    `CI status: ${ciState}. (You MUST NOT approve when CI is not green.)`,
+    `CI status: ${ciState}${
+      culpadoDoCancelamento && culpadoDoCancelamento.encontrado
+        ? ` — ${frasarCausaDoCancelamento(culpadoDoCancelamento)}`
+        : ''
+    }. (You MUST NOT approve when CI is not green.)`,
     truncado
       ? `Diff: ${arquivos} file(s), TRUNCATED — you are NOT seeing the whole change. ` +
         `You MUST NOT approve on a truncated diff: if the criteria cannot be checked ` +
@@ -1099,6 +1141,17 @@ export async function runQaMissionViaRails(
   const explicacaoDoTamanho = barradoPorTamanho
     ? `\n\n${pedidoDeDividirAEntrega(target.number, arquivos)}`
     : ''
+
+  // L4-T17 (item 2 — causa legível). Determinístico, não escrito pelo motor:
+  // o motor pode nem mencionar o cancelamento em cadeia (ele só vê "CI
+  // status: red" na prompt, mesmo enriquecida, e pode focar noutra coisa no
+  // comentário) — mas o parecer no PR do cliente PRECISA dizer, sempre, onde
+  // a verificação parou de verdade. Sem isto, cinco entregas paradas por
+  // formatação de código continuariam sem ninguém saber por quê.
+  const explicacaoDoCancelamento =
+    culpadoDoCancelamento && culpadoDoCancelamento.encontrado
+      ? `\n\n${frasarCausaDoCancelamento(culpadoDoCancelamento)}`
+      : ''
 
   // 4) Executor determinístico posta o veredito. O GitHub PROÍBE
   // aprovar/pedir-mudanças no PRÓPRIO PR (422) — e o Jules abre o PR pela
@@ -1358,7 +1411,7 @@ export async function runQaMissionViaRails(
   } else {
     await postarReview(
       reviewEvent,
-      `${JULES_MARKER}${marcaDoPortao}${marcaDoLegado}\nGitOrch QA verdict: REQUEST CHANGES (see comment).${explicacaoDoTamanho}${avisoDeNaoMesclar}`
+      `${JULES_MARKER}${marcaDoPortao}${marcaDoLegado}\nGitOrch QA verdict: REQUEST CHANGES (see comment).${explicacaoDoTamanho}${explicacaoDoCancelamento}${avisoDeNaoMesclar}`
     )
 
     // Este julgamento entra na conta do repositório ANTES de decidir se pede

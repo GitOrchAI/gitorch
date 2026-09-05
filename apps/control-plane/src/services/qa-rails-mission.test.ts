@@ -113,7 +113,16 @@ function fakeFetch(
    */
   opts: {
     patchArquivoUnico?: string
-    checkRuns?: Array<{ conclusion?: string; status?: string }>
+    checkRuns?: Array<{ id?: number; name?: string; conclusion?: string; status?: string }>
+    /**
+     * L4-T17: passos (steps) de cada job, por `id` — o que
+     * `GET /repos/.../actions/jobs/{id}` devolveria de verdade. Só é
+     * consultado quando `causa-do-cancelamento.ts` decide investigar um job
+     * que não passou; um `id` de `checkRuns` sem entrada aqui devolve `{}`
+     * pelo fallback genérico (sem `steps`), fiel ao "não sei dizer" do
+     * GitHub quando o produto não tem nada para mostrar.
+     */
+    jobSteps?: Record<number, Array<{ name: string; conclusion?: string; completedAt?: string }>>
     /**
      * Achado Importante da revisão da Task 11: sem isto, o fallback genérico
      * (`return json({})` no final desta função) absorvia o `PUT .../merge`
@@ -218,6 +227,25 @@ function fakeFetch(
       return json({
         check_runs: opts.checkRuns ?? [{ name: 'ci', conclusion: 'success', status: 'completed' }],
       })
+    }
+    // L4-T17: API de jobs do Actions — o id do job é o MESMO id do
+    // check-run. Só existe entrada quando o teste declara `jobSteps`; sem
+    // ela, cai no fallback genérico (`{}`, sem `steps`) — fiel ao "não
+    // achei nada" do GitHub real.
+    const jm = u.match(/\/actions\/jobs\/(\d+)$/)
+    if (jm) {
+      const jobId = Number(jm[1])
+      const steps = opts.jobSteps?.[jobId]
+      if (steps) {
+        return json({
+          id: jobId,
+          steps: steps.map((s) => ({
+            name: s.name,
+            conclusion: s.conclusion ?? null,
+            completed_at: s.completedAt ?? null,
+          })),
+        })
+      }
     }
     if (u.match(/\/pulls\/\d+\/files/)) {
       // A página 1 traz o arquivo; da página 2 em diante, vazio — como o
@@ -720,6 +748,215 @@ describe('runQaMissionViaRails', () => {
     expect(posted.comments).toHaveLength(1)
     expect(r.output).toContain('request_changes')
     expect(r.noOp).toBeUndefined()
+  })
+
+  // L4-T17 — fiel ao medido AO VIVO em loureng/patinhas-3d-crafts (run
+  // 33943490885, PR #3945): o job de Qualidade cancela (o próprio passo de
+  // Prettier falhou e disparou `gh run cancel`) e o job-gate "CI passou"
+  // aparece `failure` — mas o job-gate NÃO é a causa, é consequência (o
+  // passo dele termina DEPOIS do passo de Prettier). O parecer tem que citar
+  // o passo de Prettier, nunca o do gate.
+  describe('L4-T17: cancelamento em cadeia com causa legível', () => {
+    const QUALIDADE_ID = 101245229398
+    const GATE_ID = 101249875104
+    const DB_ADVISOR_ID = 101245111111
+
+    const checkRunsDoPr3945 = [
+      { id: 1, name: 'sucesso', conclusion: 'success', status: 'completed' },
+      {
+        id: DB_ADVISOR_ID,
+        name: '🗄️ DB Advisor — Schema, índices e RLS',
+        conclusion: 'cancelled',
+        status: 'completed',
+      },
+      {
+        id: QUALIDADE_ID,
+        name: '✅ Qualidade — Lint + Typecheck + Prettier',
+        conclusion: 'cancelled',
+        status: 'completed',
+      },
+      {
+        id: GATE_ID,
+        name: '🏁 CI passou — pronto para merge',
+        conclusion: 'failure',
+        status: 'completed',
+      },
+    ]
+
+    const jobStepsDoPr3945 = {
+      [DB_ADVISOR_ID]: [
+        { name: 'Set up job', conclusion: 'success', completedAt: '2026-09-05T04:02:43Z' },
+        { name: 'Rodar advisor', conclusion: 'cancelled', completedAt: '2026-09-05T04:40:15Z' },
+      ],
+      [QUALIDADE_ID]: [
+        { name: 'Set up job', conclusion: 'success', completedAt: '2026-09-05T04:37:12Z' },
+        {
+          name: 'Prettier (formatação consistente)',
+          conclusion: 'failure',
+          completedAt: '2026-09-05T04:40:14Z',
+        },
+        {
+          name: 'Cancelar workflow em caso de falha (Fail-Fast Cross-Job)',
+          conclusion: 'success',
+          completedAt: '2026-09-05T04:40:16Z',
+        },
+      ],
+      [GATE_ID]: [
+        { name: 'Set up job', conclusion: 'success', completedAt: '2026-09-05T04:40:19Z' },
+        {
+          name: 'Verificar resultado de todos os jobs',
+          conclusion: 'failure',
+          completedAt: '2026-09-05T04:40:21Z',
+        },
+      ],
+    }
+
+    it('item 1+2: acha o job/passo que REALMENTE falhou (Qualidade/Prettier, não o job-gate) e posta a causa legível', async () => {
+      const f = fakeFetch([{ number: 3945, user: 'jules[bot]' }], undefined, undefined, {
+        checkRuns: checkRunsDoPr3945,
+        jobSteps: jobStepsDoPr3945,
+      })
+      const posted = (
+        f as unknown as { posted: { reviews: Array<{ event?: string; body?: string }> } }
+      ).posted
+      const r = await runQaMissionViaRails({
+        repository: 'loureng/patinhas-3d-crafts',
+        githubToken: 't',
+        // O motor nem precisa saber — a trava determinística já reprova
+        // sozinha com CI não-verde, e a causa legível é MONTADA pelo
+        // sistema, não escrita pelo motor.
+        execute: async () => APPROVE,
+        fetchImpl: f,
+      })
+      expect(posted.reviews[0]!.event).toBe('REQUEST_CHANGES')
+      expect(posted.reviews[0]!.body).toContain('Prettier (formatação consistente)')
+      expect(posted.reviews[0]!.body).toContain('Qualidade')
+      // NUNCA o passo do job-gate — ele é sintoma, não causa.
+      expect(posted.reviews[0]!.body).not.toContain('Verificar resultado de todos os jobs')
+      expect(r.output).toContain('request_changes')
+    })
+
+    // Item 3: reaproveita a MESMA deduplicação por head sha que o parecer do
+    // QA já faz hoje (`acharParecerNesteHead`/`MARCA_DO_PARECER`) — sem
+    // precisar de nenhuma marca nova. Um parecer JÁ marcado neste head
+    // (ainda que sobre outro motivo) segura a repetição.
+    it('item 3: parecer já existe neste head — não posta de novo, mesmo com a causa do cancelamento', async () => {
+      const f = fakeFetch(
+        [
+          {
+            number: 3945,
+            user: 'jules[bot]',
+            existingReviews: [
+              { body: '<!-- gitorch:qa -->\nGitOrch QA: ...', commit_id: 'abc123' },
+            ],
+          },
+        ],
+        undefined,
+        undefined,
+        { checkRuns: checkRunsDoPr3945, jobSteps: jobStepsDoPr3945 }
+      )
+      const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
+      const r = await runQaMissionViaRails({
+        repository: 'loureng/patinhas-3d-crafts',
+        githubToken: 't',
+        execute: async () => APPROVE,
+        fetchImpl: f,
+      })
+      expect(posted.reviews).toHaveLength(0)
+      expect(r.noOp).toBe(true)
+    })
+
+    // Item 4: tudo cancelado e NENHUM passo, em nenhum job, prova falha real
+    // — cancelamento SEM culpa (push novo/concorrência). Não é reprovação:
+    // segue indefinido, mesma régua de pending, e o "caminho da base" (o
+    // aviso ao dono depois do teto, já coberto por
+    // vigia-da-verificacao.test.ts) continua de pé — só deixou de ser a
+    // explicação padrão.
+    it('item 4: tudo cancelado, nada falhou — não reprova, não é o veredito padrão', async () => {
+      const semCulpaId1 = 5001
+      const semCulpaId2 = 5002
+      const f = fakeFetch([{ number: 3946, user: 'jules[bot]' }], undefined, undefined, {
+        checkRuns: [
+          { id: semCulpaId1, name: 'job A', conclusion: 'cancelled', status: 'completed' },
+          { id: semCulpaId2, name: 'job B', conclusion: 'cancelled', status: 'completed' },
+        ],
+        jobSteps: {
+          [semCulpaId1]: [
+            { name: 'Set up job', conclusion: 'success', completedAt: '2026-09-05T04:02:43Z' },
+            { name: 'Rodar', conclusion: 'cancelled', completedAt: '2026-09-05T04:40:15Z' },
+          ],
+          [semCulpaId2]: [
+            { name: 'Set up job', conclusion: 'success', completedAt: '2026-09-05T04:02:43Z' },
+            { name: 'Rodar', conclusion: 'cancelled', completedAt: '2026-09-05T04:40:15Z' },
+          ],
+        },
+      })
+      const posted = (f as unknown as { posted: { reviews: unknown[]; comments: unknown[] } })
+        .posted
+      const r = await runQaMissionViaRails({
+        repository: 'loureng/patinhas-3d-crafts',
+        githubToken: 't',
+        execute: async () => {
+          throw new Error('não deveria julgar — cancelamento sem culpa é indefinido, não veredito')
+        },
+        fetchImpl: f,
+      })
+      expect(posted.reviews).toHaveLength(0)
+      expect(posted.comments).toHaveLength(0)
+      expect(r.noOp).toBe(true)
+      expect(r.output).toContain('cancelado')
+    })
+
+    // Fix-up L4-T17 (achado 1 da revisão) — a REGRESSÃO medida ao vivo:
+    // diferente do PR #3945 acima (onde o job-gate mostra `failure` no
+    // check-run e por isso `estadoDoCi` já devolve 'red' sem precisar
+    // investigar), aqui NENHUM check-run mostra falha real — os DOIS
+    // aparecem 'cancelled' no nível do job (a mesma armadilha: o passo de
+    // Prettier falha e o próprio passo de cancelamento em cadeia derruba o
+    // job ATÉ ele, terminando 'cancelled', nunca 'failure'). Sem investigar
+    // os passos quando o estado puro já é 'cancelado', o produto nunca
+    // saberia — ficaria esperando para sempre (mesma régua de pending), que
+    // foi exatamente o que travou 5 PRs em loureng/patinhas-3d-crafts.
+    it('achado 1: TUDO cancelado nos check-runs (nenhum "failure" à vista), mas um passo escondido falhou de verdade — investiga, promove a red e JULGA', async () => {
+      const qualidadeId = 9001
+      const outroId = 9002
+      const f = fakeFetch([{ number: 4001, user: 'jules[bot]' }], undefined, undefined, {
+        checkRuns: [
+          { id: qualidadeId, name: '✅ Qualidade', conclusion: 'cancelled', status: 'completed' },
+          { id: outroId, name: 'outro job', conclusion: 'cancelled', status: 'completed' },
+        ],
+        jobSteps: {
+          [qualidadeId]: [
+            { name: 'Set up job', conclusion: 'success', completedAt: '2026-09-05T04:37:12Z' },
+            {
+              name: 'Prettier (formatação consistente)',
+              conclusion: 'failure',
+              completedAt: '2026-09-05T04:40:14Z',
+            },
+          ],
+          [outroId]: [
+            { name: 'Set up job', conclusion: 'success', completedAt: '2026-09-05T04:02:43Z' },
+            { name: 'Rodar', conclusion: 'cancelled', completedAt: '2026-09-05T04:40:15Z' },
+          ],
+        },
+      })
+      const posted = (
+        f as unknown as {
+          posted: { reviews: Array<{ event?: string; body?: string }>; comments: unknown[] }
+        }
+      ).posted
+      const r = await runQaMissionViaRails({
+        repository: 'loureng/patinhas-3d-crafts',
+        githubToken: 't',
+        execute: async () => APPROVE, // trava determinística tem que sobrepor (CI não-verde)
+        fetchImpl: f,
+      })
+      expect(posted.reviews).toHaveLength(1)
+      expect(posted.reviews[0]!.event).toBe('REQUEST_CHANGES')
+      expect(posted.reviews[0]!.body).toContain('Prettier (formatação consistente)')
+      expect(r.output).toContain('request_changes')
+      expect(r.noOp).toBeUndefined()
+    })
   })
 
   // `unknown` (não deu para ler o head sha, logo não dá para consultar

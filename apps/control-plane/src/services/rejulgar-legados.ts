@@ -45,8 +45,12 @@ export interface EntregaPresa {
   headJulgado: string | null
   /** Quando a reprovação foi publicada. */
   reprovadaEm: Date | null
-  /** O CI daquele head, pela régua de HOJE. */
-  ciHoje: 'green' | 'red' | 'pending' | 'no checks' | 'unknown'
+  /**
+   * O CI daquele head, pela régua de HOJE. `cancelado` (L4-T17): tudo
+   * cancelou e nada falhou de verdade — cai no MESMO "não é green" das
+   * linhas abaixo, então não muda a decisão, só o rótulo no motivo.
+   */
+  ciHoje: 'green' | 'red' | 'pending' | 'no checks' | 'unknown' | 'cancelado'
   /** O produto encomendou esta entrega? Só ela é nossa para mesclar. */
   delegada: boolean
   /** Já recebeu o rejulgamento de cortesia? */

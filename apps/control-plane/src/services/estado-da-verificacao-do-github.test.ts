@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { estadoDoCi, ciTerminouVerde } from './estado-da-verificacao-do-github.js'
+import {
+  estadoDoCi,
+  ciTerminouVerde,
+  investigarEstadoDoCi,
+} from './estado-da-verificacao-do-github.js'
+import type { PassoDoJob } from './causa-do-cancelamento.js'
 
 const ok = (nome = 'x') => ({ status: 'completed', conclusion: 'success', nome })
 
@@ -31,13 +36,12 @@ describe('estadoDoCi', () => {
   })
 
   // Cada um destes é uma forma de "não sei se passa", e aprovar sobre eles
-  // seria aprovar sobre um teste que não terminou.
-  it.each(['cancelled', 'timed_out', 'action_required', 'stale'])(
-    'conclusão "%s" reprova',
-    (conclusao) => {
-      expect(estadoDoCi([ok(), { status: 'completed', conclusion: conclusao }])).toBe('red')
-    }
-  )
+  // seria aprovar sobre um teste que não terminou. "cancelled" SAIU desta
+  // lista (L4-T17, ver describe próprio abaixo) — sozinho ele vira o estado
+  // "cancelado", não "red".
+  it.each(['timed_out', 'action_required', 'stale'])('conclusão "%s" reprova', (conclusao) => {
+    expect(estadoDoCi([ok(), { status: 'completed', conclusion: conclusao }])).toBe('red')
+  })
 
   it('conclusão desconhecida reprova: o produto não inventa que passou', () => {
     expect(estadoDoCi([ok(), { status: 'completed', conclusion: 'algo_novo_do_github' }])).toBe(
@@ -65,6 +69,45 @@ describe('estadoDoCi', () => {
   it('repositório sem verificação nenhuma é "no checks", que é estado estável', () => {
     expect(estadoDoCi([])).toBe('no checks')
   })
+
+  // L4-T17 — medido em loureng/patinhas-3d-crafts: 5 PRs abertos, vários
+  // checks cancelados, NENHUM parecer do QA — paravam em silêncio porque
+  // "cancelled" caía no mesmo balaio de "failure" (reprova). A causa real,
+  // provada no run 33943490885 (PR #3945): um job de qualidade cujo próprio
+  // passo de Prettier falhava cancelava o run inteiro em cadeia. Precisa
+  // distinguir cancelamento COM culpa (existe falha real por trás) de
+  // cancelamento SEM culpa (push novo, concorrência — nada falhou de
+  // verdade).
+  describe('cancelamento — com culpa vs. sem culpa', () => {
+    it('só cancelado, nenhuma falha real ao lado: "cancelado" — não é reprovação, é indefinido', () => {
+      expect(estadoDoCi([ok(), { status: 'completed', conclusion: 'cancelled' }])).toBe('cancelado')
+    })
+
+    it('todos cancelados (nem um sucesso): continua "cancelado", nunca "green"', () => {
+      expect(
+        estadoDoCi([
+          { status: 'completed', conclusion: 'cancelled' },
+          { status: 'completed', conclusion: 'cancelled' },
+        ])
+      ).toBe('cancelado')
+    })
+
+    // O caso medido ao vivo: o job de Qualidade aparece "cancelled" no
+    // nível do JOB (o cancelamento em cadeia alcança até ele), mas o
+    // job-gate ("CI passou — pronto para merge") aparece "failure" de
+    // verdade — a falha real existe, só que em outro job. `estadoDoCi`
+    // decide pelo CONJUNTO de conclusões de job; achar QUAL job/passo é a
+    // causa legível é trabalho de `causa-do-cancelamento.ts`, mais fundo.
+    it('cancelado JUNTO com uma falha real em outro job: continua "red" — a falha real manda', () => {
+      expect(
+        estadoDoCi([
+          ok(),
+          { status: 'completed', conclusion: 'cancelled' },
+          { status: 'completed', conclusion: 'failure' },
+        ])
+      ).toBe('red')
+    })
+  })
 })
 
 describe('ciTerminouVerde', () => {
@@ -78,5 +121,87 @@ describe('ciTerminouVerde', () => {
   // opinar duas vezes no pull request do cliente sem base.
   it('sem check nenhum NÃO conta como verde para rejulgar', () => {
     expect(ciTerminouVerde([])).toBe(false)
+  })
+})
+
+// L4-T17 fix-up (achado 1 da revisão) — REGRESSÃO: a saída 'cancelado' era
+// decidida só pela conclusão de cada job, sem nunca olhar os passos. Se o
+// workflow do cliente não tem um job separado que termine `failure`, o
+// estado virava 'cancelado' para sempre, o QA nunca investigava, e a
+// vigília só sabia esperar — nunca chegava a julgar (antes de L4-T17,
+// cancelado virava vermelho direto; ao menos era julgado). `estadoDoCi`
+// continua PURO (não pode investigar — não tem rede); quem investiga é
+// `investigarEstadoDoCi`, que envolve a decisão pura e só busca os passos
+// quando a resposta pura seria inconclusiva.
+describe('investigarEstadoDoCi', () => {
+  it('achado 1: cancelado com falha real escondida num passo — investiga, promove a "red" e traz o culpado', async () => {
+    const runs = [
+      { id: 1, name: 'Qualidade', status: 'completed', conclusion: 'cancelled' },
+      { id: 2, name: 'outro', status: 'completed', conclusion: 'cancelled' },
+    ]
+    const passosPorJob: Record<number, PassoDoJob[]> = {
+      1: [{ name: 'Prettier', conclusion: 'failure', completedAt: '2026-09-05T04:40:14Z' }],
+      2: [{ name: 'Rodar', conclusion: 'cancelled', completedAt: '2026-09-05T04:40:15Z' }],
+    }
+    const resultado = await investigarEstadoDoCi(runs, async (id) => passosPorJob[id] ?? [])
+    expect(resultado.estado).toBe('red')
+    expect(resultado.culpado).toEqual({
+      encontrado: true,
+      ambiguo: false,
+      job: 'Qualidade',
+      passo: 'Prettier',
+    })
+  })
+
+  it('achado 1: cancelado sem falha real em passo nenhum — investiga e CONTINUA cancelado (indefinido), não vira veredito', async () => {
+    const runs = [{ id: 1, name: 'job', status: 'completed', conclusion: 'cancelled' }]
+    const resultado = await investigarEstadoDoCi(runs, async () => [
+      { name: 'Rodar', conclusion: 'cancelled', completedAt: '2026-09-05T04:40:15Z' },
+    ])
+    expect(resultado.estado).toBe('cancelado')
+    expect(resultado.culpado).toEqual({ encontrado: false })
+  })
+
+  // green / pending / no checks / red-sem-cancelado-no-meio: nunca precisam
+  // investigar — gastar uma chamada de rede aqui seria à toa.
+  it('não investiga quando a resposta pura já é conclusiva (não gasta chamada de rede à toa)', async () => {
+    let chamou = false
+    const buscar = async (): Promise<PassoDoJob[]> => {
+      chamou = true
+      return []
+    }
+    expect((await investigarEstadoDoCi([], buscar)).estado).toBe('no checks')
+    expect(
+      (await investigarEstadoDoCi([{ status: 'completed', conclusion: 'success' }], buscar)).estado
+    ).toBe('green')
+    expect((await investigarEstadoDoCi([{ status: 'in_progress' }], buscar)).estado).toBe('pending')
+    // 'red' sem NENHUM 'cancelled' misturado: já é conclusivo por si, nada
+    // escondido para investigar.
+    expect(
+      (await investigarEstadoDoCi([{ status: 'completed', conclusion: 'failure' }], buscar)).estado
+    ).toBe('red')
+    expect(chamou).toBe(false)
+  })
+
+  // 'red' com cancelamento misturado a uma falha real (caso original,
+  // pré-L4-T17): continua investigando, mas só para enriquecer a
+  // explicação — o estado já era 'red' e continua 'red'.
+  it('red com cancelamento misturado: investiga para achar a causa legível, mas o estado já era red e continua red', async () => {
+    const runs = [
+      { id: 1, name: 'Qualidade', status: 'completed', conclusion: 'cancelled' },
+      { id: 2, name: 'gate', status: 'completed', conclusion: 'failure' },
+    ]
+    const passosPorJob: Record<number, PassoDoJob[]> = {
+      1: [{ name: 'Prettier', conclusion: 'failure', completedAt: '2026-09-05T04:40:14Z' }],
+      2: [{ name: 'Verificar', conclusion: 'failure', completedAt: '2026-09-05T04:40:21Z' }],
+    }
+    const resultado = await investigarEstadoDoCi(runs, async (id) => passosPorJob[id] ?? [])
+    expect(resultado.estado).toBe('red')
+    expect(resultado.culpado).toEqual({
+      encontrado: true,
+      ambiguo: false,
+      job: 'Qualidade',
+      passo: 'Prettier',
+    })
   })
 })

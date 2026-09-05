@@ -169,27 +169,45 @@ const ZERO_WIDTH_SPACE = '\u200B'
 export const TETO_DE_CARACTERES_DA_RESPOSTA_LIVRE = 2000
 
 /**
- * S3: a resposta de "Vou escrever" é TEXTO LIVRE do dono, e vira um
- * COMENTÁRIO PÚBLICO na proposta (repo do cliente) — sanitiza antes de
- * publicar:
- *   - vazio/só espaços → `null` (o chamador não comenta, só loga info);
- *   - teto de 2000 caracteres;
+ * O NÚCLEO de sanitização de texto de terceiro (dono, ou — L4-T17 fix-up —
+ * nome de job/passo de workflow do cliente) que vai virar comentário
+ * PÚBLICO em repositório alheio:
+ *   - corta em `tetoDeCaracteres` (cada chamador escolhe o teto certo para
+ *     o que está sanitizando — a resposta livre inteira e um nome de job
+ *     não têm o mesmo tamanho razoável);
  *   - `@nome` quebrado com um espaço de largura zero (nunca vira notificação
  *     real ao colar cru num comentário do GitHub);
  *   - `/comando` neutralizado (barra invertida) no início da string, de
  *     qualquer linha, ou depois de espaço — um bot de ChatOps do repositório
  *     do cliente (ex.: `/close`, `/label`) não pode agir sobre texto que é
- *     só a resposta de uma pergunta;
+ *     só a resposta de uma pergunta ou o nome de um passo de CI.
+ *
+ * NÃO decide o que fazer com texto vazio nem aplica bloco de citação — isso
+ * é política de CADA formato de saída (`sanitizarRespostaLivre` decide a
+ * dela; `causa-do-cancelamento.ts` decide a dela, que é embrulhar em
+ * marcação de código, não citar linha por linha).
+ */
+export function neutralizarTextoDeTerceiros(texto: string, tetoDeCaracteres: number): string {
+  const cortado = texto.slice(0, tetoDeCaracteres)
+  const semMencao = cortado.replace(/@(?=\w)/g, `@${ZERO_WIDTH_SPACE}`)
+  return semMencao.replace(/(^|\s)\/(?=[A-Za-z])/gm, '$1\\/')
+}
+
+/**
+ * S3: a resposta de "Vou escrever" é TEXTO LIVRE do dono, e vira um
+ * COMENTÁRIO PÚBLICO na proposta (repo do cliente) — sanitiza antes de
+ * publicar:
+ *   - vazio/só espaços → `null` (o chamador não comenta, só loga info);
+ *   - teto de 2000 caracteres, menção e comando neutralizados
+ *     (`neutralizarTextoDeTerceiros`, acima);
  *   - bloco de citação (`> `) em cada linha, deixando claro que é fala do
  *     dono, não do GitOrch.
  */
 export function sanitizarRespostaLivre(texto: string): string | null {
   const bruto = texto.trim()
   if (!bruto) return null
-  const cortado = bruto.slice(0, TETO_DE_CARACTERES_DA_RESPOSTA_LIVRE)
-  const semMencao = cortado.replace(/@(?=\w)/g, `@${ZERO_WIDTH_SPACE}`)
-  const semComando = semMencao.replace(/(^|\s)\/(?=[A-Za-z])/gm, '$1\\/')
-  return semComando
+  const neutralizado = neutralizarTextoDeTerceiros(bruto, TETO_DE_CARACTERES_DA_RESPOSTA_LIVRE)
+  return neutralizado
     .split('\n')
     .map((linha) => `> ${linha}`)
     .join('\n')
