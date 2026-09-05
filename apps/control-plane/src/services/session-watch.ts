@@ -64,6 +64,20 @@ export interface VigiaDeps {
   consultarSessao: (sessionName: string) => Promise<EstadoLido | null>
   /** Última mensagem do dev naquela sessão (para decidir e para o hash de idempotência). */
   ultimaMensagem: (sessionName: string) => Promise<string>
+  /**
+   * L5-T3 — sinal de vida independente de `session.updateTime`. Só é chamado
+   * quando a sessão JÁ estaria no teto de abandono (nudges >= MAX_NUDGES);
+   * mesma disciplina de `ultimaMensagem`, que também só busca quando o
+   * estado de fato usa o valor. Opcional: sem ele, o teto decide sozinho —
+   * comportamento de antes desta tarefa.
+   */
+  houveAtividadeRecente?: (args: { sessionName: string; desde: Date }) => Promise<boolean>
+  /**
+   * L5-T3 — zera o contador de nudges quando `houveAtividadeRecente` prova
+   * que a sessão está viva. Opcional pelo mesmo motivo dos outros hooks
+   * condicionais deste contrato.
+   */
+  zerarNudges?: (args: { sessionName: string }) => Promise<void>
   aprovarPlano: (sessionName: string) => Promise<boolean>
   pedirParaContinuar: (sessionName: string) => Promise<boolean>
   /** Cria missão de verdade para o papel. NUNCA chamar motor direto. */
@@ -297,6 +311,23 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
           ? await deps.ultimaMensagem(linha.sessionName)
           : ''
 
+      // L5-T3: só busca o sinal de vida quando a sessão JÁ estaria no teto de
+      // abandono — mesma disciplina de `ultimaMensagem` acima, uma chamada de
+      // rede a mais só quando o valor de fato entra na decisão.
+      const trabalhandoOuPausada =
+        estadoNormalizado === 'PAUSED' ||
+        estadoNormalizado === 'IN_PROGRESS' ||
+        estadoNormalizado === 'QUEUED' ||
+        estadoNormalizado === 'PLANNING'
+      const podeAbandonar = trabalhandoOuPausada && linha.nudges >= MAX_NUDGES
+      const houveAtividadeDesdeUltimoNudge =
+        podeAbandonar && deps.houveAtividadeRecente
+          ? await deps.houveAtividadeRecente({
+              sessionName: linha.sessionName,
+              desde: linha.lastProgressAt ?? new Date(0),
+            })
+          : false
+
       const decisao = decidirRespostaDaSessao({
         estado: estadoBruto,
         ultimaMensagem,
@@ -311,6 +342,7 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
         temPr: consulta.numeroDoPr !== null,
         paradoHaMs,
         nudges: linha.nudges,
+        houveAtividadeDesdeUltimoNudge,
       })
 
       // REGISTRA O QUE VIU, ANTES de decidir o que fazer.
@@ -340,7 +372,14 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
 
       switch (decisao.acao) {
         case 'aguardar': {
-          // Já registrado acima.
+          // Já registrado acima. L5-T3: sinal de vida provou que a sessão
+          // segue trabalhando apesar do teto de nudges estourado — zera o
+          // contador para a PRÓXIMA sequência de cutucadas começar do zero,
+          // em vez de já nascer no teto e cair direto no abandono na
+          // próxima passagem parada.
+          if (decisao.zerarNudges && deps.zerarNudges) {
+            await deps.zerarNudges({ sessionName: linha.sessionName }).catch(() => undefined)
+          }
           break
         }
 
@@ -656,10 +695,16 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
           })
           abandonadas += 1
           if (deps.avisarDono) {
+            // L5-T3: quando a decisão veio da checagem de silêncio real (sem
+            // sinal de vida), `motivoDoAbandono` carrega o tempo medido —
+            // não só "abandonei", mas "abandonei depois de quanto tempo
+            // calado". Sem ele (outros caminhos de abandono, se surgirem),
+            // o texto de sempre.
             await deps
               .avisarDono(
                 `GitOrch: a sessão da issue #${linha.issueNumber} (${linha.sessionName}) foi ` +
-                  `abandonada depois de ${linha.nudges} tentativa(s) de retomada sem sucesso.`
+                  `abandonada depois de ${linha.nudges} tentativa(s) de retomada sem sucesso` +
+                  (decisao.motivoDoAbandono ? ` (${decisao.motivoDoAbandono}).` : '.')
               )
               .catch(() => undefined)
           }

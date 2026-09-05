@@ -6,6 +6,8 @@ import {
   consultarSessaoJules,
   responderSessaoJules,
   aprovarPlanoJules,
+  ultimaMensagemDoDevJules,
+  houveAtividadeDoDevDesde,
 } from './jules-client.js'
 import * as julesClient from './jules-client.js'
 
@@ -246,6 +248,131 @@ describe('responderSessaoJules e aprovarPlanoJules', () => {
     expect(await aprovarPlanoJules({ apiKey: 'k', sessionName: 'sessions/1', fetchImpl })).toBe(
       false
     )
+  })
+})
+
+describe('ultimaMensagemDoDevJules', () => {
+  // Regressão do refactor L5-T3: o fetch+parse da página de atividades saiu
+  // desta função para uma função privada compartilhada com
+  // `houveAtividadeDoDevDesde` — este teste trava o comportamento visível de
+  // ANTES da mudança (só a mensagem do agente mais recente, por `createTime`,
+  // ignorando originador diferente de 'agent' e atividades sem texto).
+  it('pega a mensagem do agente mais recente por createTime, ignorando o resto', async () => {
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify({
+          activities: [
+            {
+              originator: 'agent',
+              createTime: '2026-01-01T10:00:00Z',
+              agentMessaged: { agentMessage: 'mais antiga' },
+            },
+            {
+              originator: 'user',
+              createTime: '2026-01-01T12:00:00Z',
+              agentMessaged: { agentMessage: 'do usuário, não conta' },
+            },
+            {
+              originator: 'agent',
+              createTime: '2026-01-01T11:00:00Z',
+              agentMessaged: { agentMessage: 'mais recente do agente' },
+            },
+            { originator: 'agent', createTime: '2026-01-01T11:30:00Z', progressUpdated: {} },
+          ],
+        }),
+        { status: 200 }
+      )) as unknown as typeof fetch
+
+    const msg = await ultimaMensagemDoDevJules({
+      apiKey: 'k',
+      sessionName: 'sessions/1',
+      fetchImpl,
+    })
+
+    expect(msg).toBe('mais recente do agente')
+  })
+
+  it('sem chave configurada devolve string vazia, sem chamar a rede', async () => {
+    let chamou = false
+    const fetchImpl = (async () => {
+      chamou = true
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch
+
+    expect(await ultimaMensagemDoDevJules({ sessionName: 'sessions/1', fetchImpl })).toBe('')
+    expect(chamou).toBe(false)
+  })
+})
+
+describe('houveAtividadeDoDevDesde (L5-T3 — sinal de vida)', () => {
+  const desde = new Date('2026-01-01T10:00:00Z')
+
+  it('há atividade do agente depois da referência, mesmo sem texto (progressUpdated) — verdadeiro', async () => {
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify({
+          activities: [
+            { originator: 'agent', createTime: '2026-01-01T09:00:00Z', progressUpdated: {} },
+            { originator: 'agent', createTime: '2026-01-01T11:00:00Z', progressUpdated: {} },
+          ],
+        }),
+        { status: 200 }
+      )) as unknown as typeof fetch
+
+    expect(
+      await houveAtividadeDoDevDesde({ apiKey: 'k', sessionName: 'sessions/1', desde, fetchImpl })
+    ).toBe(true)
+  })
+
+  it('toda atividade do agente é anterior (ou igual) à referência — falso, silêncio real', async () => {
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify({
+          activities: [
+            { originator: 'agent', createTime: '2026-01-01T09:00:00Z', progressUpdated: {} },
+            { originator: 'agent', createTime: '2026-01-01T10:00:00Z', sessionCompleted: {} },
+            // Atividade do USUÁRIO depois da referência não prova que o dev
+            // está vivo — não conta como sinal de vida do agente.
+            { originator: 'user', createTime: '2026-01-01T12:00:00Z', agentMessaged: {} },
+          ],
+        }),
+        { status: 200 }
+      )) as unknown as typeof fetch
+
+    expect(
+      await houveAtividadeDoDevDesde({ apiKey: 'k', sessionName: 'sessions/1', desde, fetchImpl })
+    ).toBe(false)
+  })
+
+  it('sem chave configurada devolve falso, sem chamar a rede — mesmo contrato de degradação do arquivo', async () => {
+    let chamou = false
+    const fetchImpl = (async () => {
+      chamou = true
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch
+
+    expect(await houveAtividadeDoDevDesde({ sessionName: 'sessions/1', desde, fetchImpl })).toBe(
+      false
+    )
+    expect(chamou).toBe(false)
+  })
+
+  it('serviço fora do ar avisa e devolve falso — leitura conservadora, nunca lança', async () => {
+    const avisos: string[] = []
+    const fetchImpl = (async () => {
+      throw new Error('rede caiu')
+    }) as unknown as typeof fetch
+
+    const houve = await houveAtividadeDoDevDesde({
+      apiKey: 'k',
+      sessionName: 'sessions/1',
+      desde,
+      fetchImpl,
+      onWarn: (m) => avisos.push(m),
+    })
+
+    expect(houve).toBe(false)
+    expect(avisos[0]).toContain('sessions/1')
   })
 })
 

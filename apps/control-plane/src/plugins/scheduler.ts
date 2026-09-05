@@ -175,6 +175,7 @@ import {
   registrarCadenciaDePublicacao,
   registrarConsertoDePublicacao,
   registrarVereditoDeAmbiente,
+  zerarNudges,
   type PrismaDevSession,
   type LinhaDeSessao,
 } from '../services/dev-session-store.js'
@@ -282,6 +283,7 @@ import {
   arquivarSessaoJules,
   aprovarPlanoJules,
   ultimaMensagemDoDevJules,
+  houveAtividadeDoDevDesde,
 } from '../services/jules-client.js'
 import { vigiarSessoes } from '../services/session-watch.js'
 import {
@@ -7018,6 +7020,19 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               sessionName,
               onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
             }),
+          // L5-T3: sinal de vida checado antes de abandonar por teto de
+          // nudges — ver `jules-client.ts`/`houveAtividadeDoDevDesde` e
+          // `session-watch.ts` para o porquê (`session.updateTime`, de onde
+          // vem `paradoHaMs`, nem sempre acompanha trabalho real).
+          houveAtividadeRecente: async ({ sessionName, desde }) =>
+            houveAtividadeDoDevDesde({
+              apiKey: await chaveDaLinha(sessionName),
+              sessionName,
+              desde,
+              onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+            }),
+          zerarNudges: ({ sessionName }) =>
+            zerarNudges({ prisma: app.prisma as unknown as PrismaDevSession, sessionName }),
           aprovarPlano: async (sessionName) =>
             aprovarPlanoJules({
               apiKey: await chaveDaLinha(sessionName),

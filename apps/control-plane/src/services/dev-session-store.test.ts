@@ -13,6 +13,7 @@ import {
   registrarMescla,
   registrarEstadoDaPublicacao,
   registrarCadenciaDePublicacao,
+  zerarNudges,
 } from './dev-session-store.js'
 
 const agora = new Date('2026-01-01T00:00:00.000Z')
@@ -241,6 +242,24 @@ describe('registrarResposta', () => {
         data: expect.objectContaining({ answeredHash: 'h1', nudges: { increment: 1 } }),
       })
     )
+  })
+})
+
+describe('zerarNudges (L5-T3)', () => {
+  // O sinal de vida (`jules-session-loop.ts` → `zerarNudges: true` na
+  // decisão) prova que os nudges anteriores contavam contra uma sessão que
+  // seguia trabalhando. Sem zerar de verdade no banco, a PRÓXIMA passagem
+  // parada chegaria com `nudges` já no teto e cairia direto no abandono —
+  // a mesma contagem cega que esta tarefa existe para corrigir.
+  it('zera o contador de nudges da sessão', async () => {
+    const prisma = prismaFalso()
+
+    await zerarNudges({ prisma, sessionName: 'sessions/1' })
+
+    expect(prisma.devSession.update).toHaveBeenCalledWith({
+      where: { sessionName: 'sessions/1' },
+      data: { nudges: 0 },
+    })
   })
 })
 
