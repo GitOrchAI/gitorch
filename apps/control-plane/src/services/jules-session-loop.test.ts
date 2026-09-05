@@ -91,4 +91,35 @@ describe('decidirRespostaDaSessao', () => {
       'julgar'
     )
   })
+
+  // L5-T3 — medido no banco de produção: 48 das 86 sessões abandonadas na
+  // história do produto morreram com o dev ainda `IN_PROGRESS` (média de 3,4
+  // nudges, só 10 com PR). `session.updateTime` (de onde vem `paradoHaMs`)
+  // nem sempre acompanha atividade real — a página de atividades mostra
+  // trabalho que o carimbo de topo não reflete. Por isso a decisão de
+  // abandonar agora checa um sinal de vida independente antes de desistir.
+  it('L5-T3: parada com sinal de vida NÃO abandona — atividade nova depois do último nudge zera o contador', () => {
+    const d = decidirRespostaDaSessao({
+      ...base,
+      estado: 'IN_PROGRESS',
+      paradoHaMs: PARADO_MS,
+      nudges: MAX_NUDGES,
+      houveAtividadeDesdeUltimoNudge: true,
+    })
+    expect(d.acao).toBe('aguardar')
+    expect(d.zerarNudges).toBe(true)
+  })
+
+  it('L5-T3: parada em silêncio real (sem sinal de vida) continua abandonando, e o motivo registra o tempo parado', () => {
+    const paradoHaMs = 5 * 60 * 60 * 1000 // 5h de silêncio real
+    const d = decidirRespostaDaSessao({
+      ...base,
+      estado: 'IN_PROGRESS',
+      paradoHaMs,
+      nudges: MAX_NUDGES,
+      houveAtividadeDesdeUltimoNudge: false,
+    })
+    expect(d.acao).toBe('abandonar')
+    expect(d.motivoDoAbandono).toContain('5.0h')
+  })
 })

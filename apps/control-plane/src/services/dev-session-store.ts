@@ -561,6 +561,27 @@ export async function registrarResposta(deps: {
 }
 
 /**
+ * Zera o contador de cutucadas (L5-T3).
+ *
+ * Chamada quando `decidirRespostaDaSessao` (jules-session-loop.ts) devolve
+ * `zerarNudges: true`: o sinal de vida (`houveAtividadeDoDevDesde`,
+ * jules-client.ts) provou que a sessão seguia trabalhando apesar do teto de
+ * nudges já estourado — os nudges anteriores contavam contra atividade real.
+ * Sem zerar aqui, a PRÓXIMA passagem parada chegaria com `nudges` já no teto
+ * e cairia direto no abandono, sem dar mais nenhuma chance de insistir de
+ * verdade — a mesma contagem cega que esta tarefa existe para corrigir.
+ */
+export async function zerarNudges(deps: {
+  prisma: PrismaDevSession
+  sessionName: string
+}): Promise<void> {
+  await deps.prisma.devSession.update({
+    where: { sessionName: deps.sessionName },
+    data: { nudges: 0 },
+  })
+}
+
+/**
  * Marca que esta pergunta ESCALOU DE VERDADE ao dono (L4-T3).
  *
  * Nunca `registrarResposta`: escalar não é responder — ninguém respondeu

@@ -8,7 +8,7 @@ import {
   type EstadoLido,
 } from './session-watch.js'
 import type { LinhaDeSessao } from './dev-session-store.js'
-import { MAX_NUDGES } from './jules-session-loop.js'
+import { MAX_NUDGES, PARADO_MS } from './jules-session-loop.js'
 
 // Fase 2 da esteira que fecha o ciclo: a Fase 1 (dev-session-store) só guarda
 // a ligação issue↔sessão↔PR. Sem alguém lendo essa ligação de volta e agindo,
@@ -532,6 +532,70 @@ describe('vigiarSessoes', () => {
       expect.objectContaining({ sessionName: 'sessions/teto', motivo: 'abandoned' })
     )
     expect(deps.avisarDono).toHaveBeenCalledWith(expect.stringContaining('#99'))
+  })
+
+  // L5-T3 — medido no banco de produção: 48 das 86 sessões abandonadas na
+  // história do produto morreram ainda `IN_PROGRESS` (média de 3,4 nudges, só
+  // 10 com PR). `session.updateTime` (de onde vem `paradoHaMs`) nem sempre
+  // acompanha atividade real — por isso a vigia agora checa um sinal de vida
+  // (`houveAtividadeRecente`) antes de desistir de uma sessão no teto.
+  it('L5-T3: sinal de vida no teto de nudges NÃO abandona — zera o contador em vez de desistir', async () => {
+    const lastProgressAt = new Date(agora.getTime() - PARADO_MS - 60_000)
+    const houveAtividadeRecente = vi.fn(async () => true)
+    const zerarNudgesFn = vi.fn(async (_args: unknown) => undefined)
+    const deps = depsFalso({
+      sessoes: [
+        linha({
+          sessionName: 'sessions/viva',
+          issueNumber: 77,
+          nudges: MAX_NUDGES,
+          lastProgressAt,
+        }),
+      ],
+      consultarSessao: vi.fn(async () => ({
+        estado: 'IN_PROGRESS',
+        numeroDoPr: null,
+        ultimaAtualizacao: lastProgressAt.toISOString(),
+      })),
+      houveAtividadeRecente,
+      zerarNudges: zerarNudgesFn,
+    })
+
+    await vigiarSessoes(deps)
+
+    expect(houveAtividadeRecente).toHaveBeenCalledWith({
+      sessionName: 'sessions/viva',
+      desde: lastProgressAt,
+    })
+    expect(deps.fecharSessao).not.toHaveBeenCalled()
+    expect(zerarNudgesFn).toHaveBeenCalledWith({ sessionName: 'sessions/viva' })
+  })
+
+  it('L5-T3: sem sinal de vida no teto continua abandonando, e o aviso ao dono carrega o tempo real de silêncio', async () => {
+    const lastProgressAt = new Date(agora.getTime() - 5 * 60 * 60 * 1000) // 5h de silêncio
+    const deps = depsFalso({
+      sessoes: [
+        linha({
+          sessionName: 'sessions/silenciosa',
+          issueNumber: 88,
+          nudges: MAX_NUDGES,
+          lastProgressAt,
+        }),
+      ],
+      consultarSessao: vi.fn(async () => ({
+        estado: 'IN_PROGRESS',
+        numeroDoPr: null,
+        ultimaAtualizacao: lastProgressAt.toISOString(),
+      })),
+      houveAtividadeRecente: vi.fn(async () => false),
+    })
+
+    await vigiarSessoes(deps)
+
+    expect(deps.fecharSessao).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionName: 'sessions/silenciosa', motivo: 'abandoned' })
+    )
+    expect(deps.avisarDono).toHaveBeenCalledWith(expect.stringContaining('5.0h'))
   })
 
   it('sessão examinada há 2 minutos é pulada — dentro da cadência de 10 minutos', async () => {

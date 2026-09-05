@@ -424,31 +424,45 @@ export async function aprovarPlanoJules(deps: {
   return chamarMetodoDaSessao({ ...deps, metodo: 'approvePlan', corpo: {} })
 }
 
+/** Uma atividade do ORIGINADOR agente, já validada e pronta para decisão. */
+interface AtividadeDoAgente {
+  /** `Date.parse(createTime)` — já filtrado de `NaN`. */
+  quando: number
+  /** Texto de `agentMessaged.agentMessage`, ou string vazia quando a atividade não é mensagem (progressUpdated, artifacts, sessionCompleted, …). */
+  texto: string
+}
+
 /**
- * Lê a última mensagem que o dev assíncrono mandou nesta sessão — é o que a
- * vigia usa para decidir uma pergunta pendente e para o hash de idempotência
- * (não responder duas vezes à mesma pergunta).
+ * Busca e normaliza a página de atividades da sessão, mantendo só o que veio
+ * do ORIGINADOR agente com `createTime` válido.
+ *
+ * Compartilhada por `ultimaMensagemDoDevJules` (que filtra por texto não
+ * vazio) e `houveAtividadeDoDevDesde` (L5-T3, que não filtra por texto — uma
+ * `progressUpdated` ou `artifacts` sem mensagem nenhuma ainda é sinal de vida
+ * do agente). Extraída para as duas nunca divergirem no que conta como
+ * "atividade do agente" — o mesmo raciocínio de reaproveitar `hashDaMensagem`
+ * em `session-watch.ts` em vez de duas cópias locais.
  *
  * A API não documenta a ordem de retorno de `activities.list`, então não dá
- * para confiar que o último item da página é o mais recente: comparamos
- * `createTime` de cada atividade do ORIGINADOR agente e ficamos com a maior.
+ * para confiar que o último item da página é o mais recente — quem chama
+ * decide "mais recente" ou "existe alguma depois de X" olhando `quando`.
  * `pageSize=100` (o teto da API) cobre a folga de uma sessão comum numa
  * página só; sessões com histórico maior que isso são o caso raro que este
  * contrato de degradação aceita (mesma classe de "melhor esforço" do resto
  * deste módulo).
  *
  * Mesmo contrato de degradação do resto do arquivo: nunca lança. Sem chave,
- * sem atividade do agente ou serviço fora do ar devolvem string vazia, com
+ * sem atividade do agente ou serviço fora do ar devolvem lista vazia, com
  * aviso.
  */
-export async function ultimaMensagemDoDevJules(deps: {
+async function buscarAtividadesDoAgente(deps: {
   apiKey?: string | undefined
   sessionName: string
   fetchImpl?: typeof fetch
   onWarn?: (message: string) => void
-}): Promise<string> {
+}): Promise<AtividadeDoAgente[]> {
   const warn = deps.onWarn ?? (() => undefined)
-  if (!deps.apiKey) return ''
+  if (!deps.apiKey) return []
   const f = deps.fetchImpl ?? fetch
   try {
     const resp = await f(`${JULES_API}/${deps.sessionName}/activities?pageSize=100`, {
@@ -459,7 +473,7 @@ export async function ultimaMensagemDoDevJules(deps: {
       warn(
         `[jules] não foi possível ler as atividades da sessão ${deps.sessionName} (HTTP ${resp.status})`
       )
-      return ''
+      return []
     }
     const body = (await resp.json().catch(() => ({}))) as {
       activities?: Array<{
@@ -470,22 +484,76 @@ export async function ultimaMensagemDoDevJules(deps: {
     }
     const atividades = Array.isArray(body.activities) ? body.activities : []
 
-    let maisRecente: { texto: string; quando: number } | null = null
+    const resultado: AtividadeDoAgente[] = []
     for (const atividade of atividades) {
       if ((atividade.originator ?? '').toLowerCase() !== 'agent') continue
-      const texto = atividade.agentMessaged?.agentMessage
-      if (typeof texto !== 'string' || texto.length === 0) continue
       const quando = atividade.createTime ? Date.parse(atividade.createTime) : NaN
       if (Number.isNaN(quando)) continue
-      if (!maisRecente || quando > maisRecente.quando) {
-        maisRecente = { texto, quando }
-      }
+      const texto = atividade.agentMessaged?.agentMessage
+      resultado.push({ quando, texto: typeof texto === 'string' ? texto : '' })
     }
-    return maisRecente?.texto ?? ''
+    return resultado
   } catch (err) {
     warn(
       `[jules] falha ao ler as atividades da sessão ${deps.sessionName}: ${(err as Error).message}`
     )
-    return ''
+    return []
   }
+}
+
+/**
+ * Lê a última mensagem que o dev assíncrono mandou nesta sessão — é o que a
+ * vigia usa para decidir uma pergunta pendente e para o hash de idempotência
+ * (não responder duas vezes à mesma pergunta).
+ *
+ * Mesmo contrato de degradação do resto do arquivo: nunca lança. Sem chave,
+ * sem atividade do agente ou serviço fora do ar devolvem string vazia, com
+ * aviso (dentro de `buscarAtividadesDoAgente`).
+ */
+export async function ultimaMensagemDoDevJules(deps: {
+  apiKey?: string | undefined
+  sessionName: string
+  fetchImpl?: typeof fetch
+  onWarn?: (message: string) => void
+}): Promise<string> {
+  const atividades = await buscarAtividadesDoAgente(deps)
+
+  let maisRecente: AtividadeDoAgente | null = null
+  for (const atividade of atividades) {
+    if (atividade.texto.length === 0) continue
+    if (!maisRecente || atividade.quando > maisRecente.quando) {
+      maisRecente = atividade
+    }
+  }
+  return maisRecente?.texto ?? ''
+}
+
+/**
+ * L5-T3 — sinal de vida independente de `session.updateTime`.
+ *
+ * `jules-session-loop.ts` decidia abandonar uma sessão só pela contagem cega
+ * de nudges, com `paradoHaMs` vindo de `session.updateTime` (`consultarSessaoJules`).
+ * Esse carimbo de topo NEM SEMPRE acompanha trabalho real — medido em
+ * produção: 48 das 86 sessões abandonadas na história do produto morreram
+ * ainda `IN_PROGRESS`, média de 3,4 nudges e só 10 com pull request. Esta
+ * função olha a página de atividades DIRETO (`progressUpdated`, `artifacts`,
+ * `agentMessaged`, `sessionCompleted` — tudo do ORIGINADOR agente) em vez de
+ * confiar só no carimbo de topo, e diz se algo aconteceu depois de `desde`.
+ *
+ * Mesmo contrato de degradação do resto do arquivo: sem chave, sem atividade
+ * do agente ou serviço fora do ar devolvem `false` — "sem prova de vida" é a
+ * leitura conservadora quando não dá para confirmar nada, e é o que preserva
+ * o comportamento de abandono de hoje quando o sinal não pode ser lido.
+ */
+export async function houveAtividadeDoDevDesde(deps: {
+  apiKey?: string | undefined
+  sessionName: string
+  /** Instante de referência — tipicamente `lastProgressAt` da linha. */
+  desde: Date
+  fetchImpl?: typeof fetch
+  onWarn?: (message: string) => void
+}): Promise<boolean> {
+  const atividades = await buscarAtividadesDoAgente(deps)
+  const desdeMs = deps.desde.getTime()
+  return atividades.some((atividade) => atividade.quando > desdeMs)
 }
