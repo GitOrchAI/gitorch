@@ -425,6 +425,7 @@ model Project {
   devSessions DevSession[]
   infraIncidents InfraIncident[]
   increments     Increment[]
+  catalogoDeDuvidas CatalogoDeDuvidas[]
 
   // Um repo, um projeto, POR DONO. É o banco garantindo o que a rota de setup
   // passou a exigir — mesmo repo em dois clientes = dois projetos distintos.
@@ -828,6 +829,45 @@ model DevSession {
   /// sessão pelo início dela), então não há índice parcial para duplicar.
   @@index([devAccountId])
   @@map("dev_sessions")
+}
+
+/// Catálogo de conversa entre o dev assíncrono (Jules) e o TIME (QA/RA/PO) —
+/// L5-T5, decisão do dono D75 (05/09): "os agentes do gitorch nao podem
+/// mandar essas duvidas pra mim [...] tem que ter sistema que coleta todas
+/// essas duvidas pra que nas proximas tasks o RA e PO não gere duvidas e
+/// sempre melhore". Cada linha é UMA mensagem: `originator` 'agent' (pergunta
+/// do dev, `agentMessaged` na API do Jules) ou 'user' (resposta que o TIME
+/// mandou, `userMessaged`). `escalar-duvida-ao-dono.ts` grava aqui em vez de
+/// criar `agent_question` — o caminho até o dono foi fechado. Ver
+/// prisma/catalogo-de-duvidas-migration.sql.
+///
+/// `sessionName`/`issueNumber` são DESCRITIVOS, não uma relação Prisma —
+/// mesmo padrão de `InfraIncident.issueNumber`/`prNumber`, logo abaixo: a
+/// sessão do dev assíncrono é identidade externa (Jules), não uma FK local.
+model CatalogoDeDuvidas {
+  id          String @id @default(cuid())
+  projectId   String @map("project_id")
+  sessionName String @map("session_name")
+  issueNumber Int    @map("issue_number")
+
+  /// 'agent' (pergunta do dev) | 'user' (resposta que o time mandou).
+  originator String
+  texto      String
+  /// `createTime` da atividade na API do Jules — quando ela de fato
+  /// aconteceu lá, não quando este produto a leu.
+  momento DateTime
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  project Project @relation(fields: [projectId], references: [id], onUpdate: Cascade, onDelete: Cascade)
+
+  /// O que torna a gravação IDEMPOTENTE: a mesma sessão é relida a cada
+  /// tique enquanto espera resposta, e `registrarConversaDaSessao`
+  /// (catalogo-de-duvidas.ts) usa `createMany({ skipDuplicates: true })` —
+  /// sem este índice, cada releitura duplicaria as mensagens já conhecidas.
+  @@unique([sessionName, originator, momento])
+  @@index([projectId])
+  @@map("catalogo_de_duvidas")
 }
 
 /// Um problema de CI/CD do repositório do cliente que o GitOrch está cuidando.

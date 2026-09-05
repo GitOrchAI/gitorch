@@ -424,24 +424,44 @@ export async function aprovarPlanoJules(deps: {
   return chamarMetodoDaSessao({ ...deps, metodo: 'approvePlan', corpo: {} })
 }
 
-/** Uma atividade do ORIGINADOR agente, já validada e pronta para decisão. */
-interface AtividadeDoAgente {
+/**
+ * Uma atividade de um dos DOIS originadores que participam da conversa, já
+ * validada e pronta para decisão.
+ *
+ * Até a L5-T5 só existia o lado do agente (`AtividadeDoAgente`, nome antigo
+ * deste tipo) — o suficiente para "qual foi a última pergunta" e "houve sinal
+ * de vida". O catálogo de dúvidas (D75, 05/09) precisa dos DOIS lados: a
+ * pergunta do dev (`agentMessaged`) E a resposta que O TIME mandou
+ * (`userMessaged`) — sem o segundo lado não dá para saber se uma pergunta
+ * ficou sem resposta.
+ */
+interface AtividadeDaSessao {
+  originator: 'agent' | 'user'
   /** `Date.parse(createTime)` — já filtrado de `NaN`. */
   quando: number
-  /** Texto de `agentMessaged.agentMessage`, ou string vazia quando a atividade não é mensagem (progressUpdated, artifacts, sessionCompleted, …). */
+  /**
+   * Texto de `agentMessaged.agentMessage` (agent) ou `userMessaged.userMessage`
+   * (user), ou string vazia quando a atividade não é mensagem (progressUpdated,
+   * artifacts, sessionCompleted, planGenerated, planApproved, …).
+   */
   texto: string
 }
 
 /**
- * Busca e normaliza a página de atividades da sessão, mantendo só o que veio
- * do ORIGINADOR agente com `createTime` válido.
+ * Busca e normaliza a página de atividades da sessão, mantendo o que veio dos
+ * DOIS originadores que fazem parte da conversa (`agent` e `user`) com
+ * `createTime` válido — qualquer outro originador (se algum dia existir) é
+ * descartado aqui, na fonte única.
  *
- * Compartilhada por `ultimaMensagemDoDevJules` (que filtra por texto não
- * vazio) e `houveAtividadeDoDevDesde` (L5-T3, que não filtra por texto — uma
- * `progressUpdated` ou `artifacts` sem mensagem nenhuma ainda é sinal de vida
- * do agente). Extraída para as duas nunca divergirem no que conta como
- * "atividade do agente" — o mesmo raciocínio de reaproveitar `hashDaMensagem`
- * em `session-watch.ts` em vez de duas cópias locais.
+ * Compartilhada por `ultimaMensagemDoDevJules` (só o lado `agent`, texto não
+ * vazio), `houveAtividadeDoDevDesde` (L5-T3, só o lado `agent`, sem filtrar
+ * texto — uma `progressUpdated` ou `artifacts` sem mensagem nenhuma ainda é
+ * sinal de vida do agente) e `atividadesDeConversaJules` (L5-T5/D75, os DOIS
+ * lados, só com texto — é o catálogo de pergunta/resposta). Continua sendo A
+ * ÚNICA função que fala com o endpoint de atividades: as três de cima
+ * filtram o que já veio daqui, nunca refazem a chamada — mesmo raciocínio de
+ * reaproveitar `hashDaMensagem` em `session-watch.ts` em vez de cópias
+ * locais.
  *
  * A API não documenta a ordem de retorno de `activities.list`, então não dá
  * para confiar que o último item da página é o mais recente — quem chama
@@ -452,15 +472,15 @@ interface AtividadeDoAgente {
  * deste módulo).
  *
  * Mesmo contrato de degradação do resto do arquivo: nunca lança. Sem chave,
- * sem atividade do agente ou serviço fora do ar devolvem lista vazia, com
+ * sem atividade relevante ou serviço fora do ar devolvem lista vazia, com
  * aviso.
  */
-async function buscarAtividadesDoAgente(deps: {
+async function buscarAtividadesDaSessao(deps: {
   apiKey?: string | undefined
   sessionName: string
   fetchImpl?: typeof fetch
   onWarn?: (message: string) => void
-}): Promise<AtividadeDoAgente[]> {
+}): Promise<AtividadeDaSessao[]> {
   const warn = deps.onWarn ?? (() => undefined)
   if (!deps.apiKey) return []
   const f = deps.fetchImpl ?? fetch
@@ -480,17 +500,22 @@ async function buscarAtividadesDoAgente(deps: {
         originator?: string
         createTime?: string
         agentMessaged?: { agentMessage?: string }
+        userMessaged?: { userMessage?: string }
       }>
     }
     const atividades = Array.isArray(body.activities) ? body.activities : []
 
-    const resultado: AtividadeDoAgente[] = []
+    const resultado: AtividadeDaSessao[] = []
     for (const atividade of atividades) {
-      if ((atividade.originator ?? '').toLowerCase() !== 'agent') continue
+      const originator = (atividade.originator ?? '').toLowerCase()
+      if (originator !== 'agent' && originator !== 'user') continue
       const quando = atividade.createTime ? Date.parse(atividade.createTime) : NaN
       if (Number.isNaN(quando)) continue
-      const texto = atividade.agentMessaged?.agentMessage
-      resultado.push({ quando, texto: typeof texto === 'string' ? texto : '' })
+      const texto =
+        originator === 'agent'
+          ? atividade.agentMessaged?.agentMessage
+          : atividade.userMessaged?.userMessage
+      resultado.push({ originator, quando, texto: typeof texto === 'string' ? texto : '' })
     }
     return resultado
   } catch (err) {
@@ -516,9 +541,9 @@ export async function ultimaMensagemDoDevJules(deps: {
   fetchImpl?: typeof fetch
   onWarn?: (message: string) => void
 }): Promise<string> {
-  const atividades = await buscarAtividadesDoAgente(deps)
+  const atividades = (await buscarAtividadesDaSessao(deps)).filter((a) => a.originator === 'agent')
 
-  let maisRecente: AtividadeDoAgente | null = null
+  let maisRecente: AtividadeDaSessao | null = null
   for (const atividade of atividades) {
     if (atividade.texto.length === 0) continue
     if (!maisRecente || atividade.quando > maisRecente.quando) {
@@ -553,7 +578,45 @@ export async function houveAtividadeDoDevDesde(deps: {
   fetchImpl?: typeof fetch
   onWarn?: (message: string) => void
 }): Promise<boolean> {
-  const atividades = await buscarAtividadesDoAgente(deps)
+  const atividades = (await buscarAtividadesDaSessao(deps)).filter((a) => a.originator === 'agent')
   const desdeMs = deps.desde.getTime()
   return atividades.some((atividade) => atividade.quando > desdeMs)
+}
+
+/**
+ * Uma mensagem de VERDADE da conversa — pergunta do dev ou resposta que O
+ * TIME deu — pronta para o catálogo de dúvidas (L5-T5/D75).
+ */
+export interface AtividadeDaConversaJules {
+  originator: 'agent' | 'user'
+  quando: Date
+  texto: string
+}
+
+/**
+ * A conversa INTEIRA da sessão — cada pergunta do dev (`agentMessaged`) e
+ * cada resposta que O TIME mandou (`userMessaged`) — para o catálogo de
+ * dúvidas (L5-T5, decisão do dono D75 de 05/09: "tem que ter sistema que
+ * coleta todas essas dúvidas pra que nas próximas tasks o RA e PO não gerem
+ * dúvidas").
+ *
+ * Diferente de `ultimaMensagemDoDevJules` (só a última do agente) e
+ * `houveAtividadeDoDevDesde` (só existência, indiferente a texto), esta
+ * devolve TODAS as mensagens com texto não vazio, dos DOIS lados — na ordem
+ * em que a API as devolveu (não documentada; quem grava decide dedup pelo
+ * `momento` de cada uma, nunca pela posição na lista).
+ *
+ * Mesmo contrato de degradação do resto do arquivo: nunca lança. Sem chave,
+ * sem mensagem com texto ou serviço fora do ar devolvem lista vazia.
+ */
+export async function atividadesDeConversaJules(deps: {
+  apiKey?: string | undefined
+  sessionName: string
+  fetchImpl?: typeof fetch
+  onWarn?: (message: string) => void
+}): Promise<AtividadeDaConversaJules[]> {
+  const atividades = await buscarAtividadesDaSessao(deps)
+  return atividades
+    .filter((a) => a.texto.length > 0)
+    .map((a) => ({ originator: a.originator, quando: new Date(a.quando), texto: a.texto }))
 }
