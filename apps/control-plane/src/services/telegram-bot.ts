@@ -431,9 +431,23 @@ export async function collapseTelegramQuestion(input: {
   messageId: number
   questionText: string
   chosenLabel: string
+  /**
+   * D70 (02/09) — o dono pode responder pelo painel também, no MESMO
+   * mecanismo de colapso: quem chega aqui depois que o PAINEL respondeu não
+   * pode ler "Você escolheu" — ninguém escolheu nada AQUI, e a frase mentiria
+   * sobre quem decidiu. `undefined`/`'telegram'` preserva o texto de sempre
+   * (nenhum call site existente muda de comportamento); `'panel'` é a
+   * novidade, usada por `fecharPerguntaNoTelegramAoResponderPeloPainel`
+   * abaixo.
+   */
+  origem?: 'telegram' | 'panel'
   fetchImpl?: typeof fetch
 }): Promise<boolean> {
   const f = input.fetchImpl ?? fetch
+  const linha =
+    input.origem === 'panel'
+      ? `✓ Já respondida pelo painel: ${input.chosenLabel}`
+      : `✓ Você escolheu: ${input.chosenLabel}`
   try {
     const resp = await f(`${API}/bot${input.botToken}/editMessageText`, {
       method: 'POST',
@@ -441,7 +455,7 @@ export async function collapseTelegramQuestion(input: {
       body: JSON.stringify({
         chat_id: input.chatId,
         message_id: input.messageId,
-        text: `${input.questionText}\n\n✓ Você escolheu: ${input.chosenLabel}`,
+        text: `${input.questionText}\n\n${linha}`,
         reply_markup: { inline_keyboard: [] },
       }),
     })
@@ -458,13 +472,57 @@ export async function collapseTelegramQuestion(input: {
  * sempre a VERDADE gravada, nunca o que foi clicado agora (ver o contrato de
  * idempotência de `AgentQuestionService.answer`).
  */
-function resolveAnswerLabel(
+export function resolveAnswerLabel(
   options: TelegramQuestionOption[],
   answerValue: string | null | undefined
 ): string {
   if (!answerValue) return ''
   const match = options.find((o) => o.value === answerValue)
   return match ? match.label : answerValue
+}
+
+/**
+ * D70 (02/09) — "quem responde primeiro fecha o outro canal": quando o dono
+ * responde uma AgentQuestion PELO PAINEL, a mensagem que o Telegram já tinha
+ * mandado (se mandou — `telegramMessageId` pode nunca ter existido, ex.: sem
+ * bot configurado) precisa parar de oferecer botões e dizer que a decisão já
+ * foi tomada em outro lugar. Reaproveita `collapseTelegramQuestion`
+ * (`origem: 'panel'`) — o MESMO editMessageText que `handleTelegramCallback`
+ * usa quando o clique é aqui, nunca um caminho duplicado.
+ *
+ * Best-effort por contrato, como todo o resto deste arquivo: nenhuma falha
+ * (sem vínculo, vínculo pendente, Telegram fora do ar) pode derrubar a
+ * resposta que o painel já registrou no banco — o `answer()` já é a fonte de
+ * verdade antes disto rodar.
+ */
+export async function fecharPerguntaNoTelegramAoResponderPeloPainel(
+  deps: {
+    prisma: PrismaLike
+    botToken: string
+    fetchImpl?: typeof fetch
+  },
+  args: {
+    userId: string
+    telegramMessageId: number | null | undefined
+    questionText: string
+    options: TelegramQuestionOption[]
+    resposta: string
+  }
+): Promise<boolean> {
+  if (args.telegramMessageId === null || args.telegramMessageId === undefined) return false
+
+  const link = await deps.prisma.telegramLink.findUnique({ where: { userId: args.userId } })
+  if (!link || link.status !== 'linked' || !link.chatId) return false
+
+  return collapseTelegramQuestion({
+    botToken: deps.botToken,
+    chatId: link.chatId,
+    messageId: args.telegramMessageId,
+    questionText: args.questionText,
+    chosenLabel: resolveAnswerLabel(args.options, args.resposta),
+    origem: 'panel',
+    ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+  })
 }
 
 export interface ParsedQuestionCallback {
@@ -581,12 +639,52 @@ export async function handleTelegramCallback(
     return
   }
 
+  // FIX-UP L4-T16: capturado ANTES de chamar `answer()` (que é idempotente e
+  // devolve o record JÁ existente sem regravar nada) — é o único jeito de
+  // saber se ESTE clique registrou a decisão ou chegou tarde demais. Botão
+  // antigo + fechamento no outro canal que falhou (best-effort, D70) é
+  // exatamente o cenário: o painel já respondeu, `fecharPerguntaNoTelegramAoResponderPeloPainel`
+  // não conseguiu colapsar a mensagem, e o dono clica num botão que já não
+  // vale nada. Dizer "registrado" aqui, ou colapsar como "Você escolheu",
+  // atribuiria ao Telegram (e à opção que ele acabou de clicar) uma decisão
+  // que já foi tomada em outro canal, com outro valor.
+  const jaRespondidaAntesDesteClique = question.status === 'answered'
+
   const updated = await deps.agentQuestionService.answer(
     parsed.questionId,
     option.value,
     'telegram'
   )
   defaultAgentQuestionStateManager.clearActiveTypingQuestion(question.userId)
+
+  if (jaRespondidaAntesDesteClique && updated) {
+    // A verdade gravada, nunca o que foi clicado agora nem um "registrado"
+    // genérico: por qual canal a decisão já tinha sido tomada, e qual foi.
+    const canalReal: 'telegram' | 'panel' = updated.answeredVia === 'panel' ? 'panel' : 'telegram'
+    const rotuloReal = resolveAnswerLabel(options, updated.answer)
+    const canalRotulo = canalReal === 'panel' ? 'pelo painel' : 'pelo Telegram'
+    await answerTelegramCallback({
+      botToken: deps.botToken,
+      callbackQueryId: cq.id,
+      text: `Essa decisão já tinha sido registrada ${canalRotulo}: ${rotuloReal}`,
+      showAlert: true,
+      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    })
+
+    const messageId = cq.message?.message_id ?? question.telegramMessageId ?? undefined
+    if (messageId !== undefined && messageId !== null) {
+      await collapseTelegramQuestion({
+        botToken: deps.botToken,
+        chatId: clickerChatId,
+        messageId,
+        questionText: question.text,
+        chosenLabel: rotuloReal,
+        origem: canalReal,
+        ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+      })
+    }
+    return
+  }
 
   await answerTelegramCallback({
     botToken: deps.botToken,

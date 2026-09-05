@@ -1105,13 +1105,14 @@ export const setupRoutes = async (app: FastifyInstance): Promise<void> => {
     }
   )
 
-  // GET /api/v1/setup/agent-questions — o painel passa a EXIBIR as dúvidas de
-  // rumo que os agentes registram (human-in-the-loop, épico W3), READ-ONLY:
-  // responder continua sendo só pelo Telegram (services/telegram-bot.ts) —
-  // ligar o painel para responder fica pra próxima fase (backlog). Escopo por
-  // DONO resolvido por e-mail (mesmo id de toda rota acima); listForUser já
-  // filtra por userId e ordena (abertas primeiro) — a garantia anti-vazamento
-  // entre contas. toPublicQuestion nunca deixa passar campo interno.
+  // GET /api/v1/setup/agent-questions — o painel EXIBE as dúvidas de rumo que
+  // os agentes registram (human-in-the-loop, épico W3). Esta rota continua
+  // SÓ LEITURA — responder pelo painel existe desde D70 (02/09), mas por
+  // OUTRA rota (POST /api/v1/painel/decisoes/:id/responder, routes/painel.ts),
+  // que reusa a MESMA `answer()` que o Telegram chama. Escopo por DONO
+  // resolvido por e-mail (mesmo id de toda rota acima); listForUser já filtra
+  // por userId e ordena (abertas primeiro) — a garantia anti-vazamento entre
+  // contas. toPublicQuestion nunca deixa passar campo interno.
   app.get(
     '/api/v1/setup/agent-questions',
     { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } },

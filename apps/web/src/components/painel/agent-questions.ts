@@ -2,11 +2,13 @@
 // decisão de setup/telegram-link.ts e setup/submit-flow.ts: o app web não tem
 // jsdom/testing-library, então o que precisa de teste mora aqui).
 //
-// O painel aqui é READ-ONLY: só EXIBE a dúvida (texto, contexto, opções,
-// status e a resposta já dada). Responder continua sendo só pelo Telegram
-// (control-plane/services/agent-question.ts + telegram-bot.ts) — ligar o
-// painel para responder é backlog da próxima fase (ver
-// docs/superpowers/specs/2026-07-21-w3-telegram-duvidas-design.md, seção 6).
+// Este módulo é só LEITURA (busca e mostra: texto, contexto, opções, status e
+// a resposta já dada) — o formato que o control-plane devolve em
+// GET /api/v1/setup/agent-questions. RESPONDER pelo painel já existe desde
+// D70 (02/09): `responderDecisao`/`corrigirRespostaAoDev`, em painel-api.ts,
+// chamam POST /api/v1/painel/decisoes/:id/responder — a MESMA `answer()` que
+// o Telegram usa (control-plane/services/agent-question.ts). Quem responde
+// primeiro, painel ou Telegram, fecha o outro canal.
 
 export interface AgentQuestionOptionView {
   label: string

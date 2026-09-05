@@ -45,6 +45,8 @@ export const ROTAS = {
   historico: '/api/v1/painel/historico', // FALTA — leva 2
   duvidaConfig: '/api/v1/painel/duvida-config', // NOVA (T14) — POST
   timeline: '/api/v1/painel/timeline', // NOVA (T15) — auditoria que não vira spam no Telegram
+  respostasAoDev: '/api/v1/painel/respostas-ao-dev', // NOVA (D69) — o que o time respondeu ao dev em nome do dono
+  corrigirRespostaAoDev: (id: string): string => `/api/v1/painel/respostas-ao-dev/${id}/corrigir`, // NOVA (D69) — POST
 } as const
 
 /**
@@ -244,6 +246,53 @@ export async function salvarDuvidaConfig(
     if (erro.status === 404) return { ok: false, erro: 'Este projeto não existe mais.' }
     if (erro.status === 400) return { ok: false, erro: 'Escolha uma das opções antes de salvar.' }
     return { ok: false, erro: 'Não consegui salvar agora. Tente de novo.' }
+  }
+}
+
+export type CorrigirRespostaAoDevResultado =
+  { ok: true; corrigidoEm: string } | { ok: false; erro: string }
+
+/**
+ * Corrige uma resposta que o time deu ao DEV em nome do dono (D69, POST
+ * /api/v1/painel/respostas-ao-dev/:id/corrigir). Vira um comentário REAL na
+ * issue do dev — não há sessão viva garantida a esta altura (o aprendizado
+ * pode ser de dias atrás), então o controle-plane usa o mesmo canal de
+ * retaguarda que a correção de suposição do RA já usa.
+ */
+export async function corrigirRespostaAoDev(
+  id: string,
+  texto: string,
+  deps: PedirDeps = {}
+): Promise<CorrigirRespostaAoDevResultado> {
+  try {
+    const r = await pedir<{ corrigidoEm: string }>(
+      ROTAS.corrigirRespostaAoDev(id),
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ texto }),
+      },
+      deps
+    )
+    return { ok: true, corrigidoEm: r.corrigidoEm }
+  } catch (e) {
+    const erro = e as ErroDaApi
+    if (erro.status === 400) return { ok: false, erro: 'Escreva a correção.' }
+    if (erro.status === 404) return { ok: false, erro: 'Registro não encontrado.' }
+    if (erro.status === 409) {
+      return { ok: false, erro: 'Este registro não tem uma tarefa vinculada para corrigir.' }
+    }
+    if (erro.status === 403) {
+      const mensagem =
+        erro.corpo && typeof erro.corpo === 'object' && 'error' in erro.corpo
+          ? String((erro.corpo as Record<string, unknown>)['error'] ?? '')
+          : ''
+      return { ok: false, erro: mensagem || 'Este projeto não permite esta ação agora.' }
+    }
+    return {
+      ok: false,
+      erro: 'Não consegui publicar a correção agora. Tente de novo em instantes.',
+    }
   }
 }
 

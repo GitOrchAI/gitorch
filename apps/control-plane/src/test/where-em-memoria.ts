@@ -57,6 +57,22 @@ function comparar(valor: unknown, alvo: unknown): number {
 function casaCampo(valor: unknown, cond: unknown): boolean {
   if (!eObjeto(cond)) return igual(valor, cond)
 
+  // Filtro de campo JSON do Prisma (`payload: { path: ['origem'], equals: 'x' }`
+  // — sintaxe já usada de verdade em plugins/scheduler.ts). `path` desce
+  // dentro do valor JSON e o RESTO da condição (equals/not/in/...) roda
+  // sobre o que achou lá, pelos MESMOS operadores — nunca uma segunda regra.
+  if ('path' in cond) {
+    const { path: caminho, ...resto } = cond as { path: unknown } & Record<string, unknown>
+    if (!Array.isArray(caminho) || !caminho.every((c) => typeof c === 'string')) {
+      throw new Error('where-em-memoria: "path" precisa ser um array de strings')
+    }
+    let atual: unknown = valor
+    for (const chave of caminho) {
+      atual = eObjeto(atual) ? atual[chave] : undefined
+    }
+    return casaCampo(atual, resto)
+  }
+
   for (const chave of Object.keys(cond)) {
     if (!(OPERADORES as readonly string[]).includes(chave)) {
       throw new Error(

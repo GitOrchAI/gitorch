@@ -10,6 +10,7 @@ import {
   handleTelegramUpdate,
   handleTelegramQuestionReply,
   collapseTelegramQuestion,
+  fecharPerguntaNoTelegramAoResponderPeloPainel,
   buildFreeTextOption,
   FREE_TEXT_OPTION_VALUE,
   acharProjeto,
@@ -606,6 +607,150 @@ describe('collapseTelegramQuestion — a pergunta some com os botões depois de 
       })
     ).toBe(false)
   })
+
+  // D70 (02/09): o dono pode responder pelo painel também — quando ele
+  // responde por lá primeiro, a mensagem no Telegram precisa dizer isso, NUNCA
+  // fingir que foi um clique aqui (a frase "Você escolheu" mentiria sobre quem
+  // decidiu). `origem: 'panel'` é a única mudança; sem o parâmetro, o
+  // comportamento é IDÊNTICO ao de antes (ver o teste acima, que não passa
+  // `origem` e continua esperando "Você escolheu").
+  it('origem "panel": a mensagem diz que foi respondida pelo painel, nunca "Você escolheu"', async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response(JSON.stringify({ ok: true }), { status: 200 })
+    ) as unknown as typeof fetch
+
+    const ok = await collapseTelegramQuestion({
+      botToken: BOT,
+      chatId: '555',
+      messageId: 42,
+      questionText: 'Qual é o azul oficial do site?',
+      chosenLabel: '#2563EB',
+      origem: 'panel',
+      fetchImpl,
+    })
+
+    expect(ok).toBe(true)
+    const call = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    const body = JSON.parse(String(call?.[1]?.body))
+    expect(body.text).toBe('Qual é o azul oficial do site?\n\n✓ Já respondida pelo painel: #2563EB')
+    expect(body.reply_markup).toEqual({ inline_keyboard: [] })
+  })
+})
+
+describe('fecharPerguntaNoTelegramAoResponderPeloPainel — o painel fecha o Telegram quando responde primeiro (D70)', () => {
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  function fakeDeps(opts: { link?: any; fetchOk?: boolean }) {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ ok: opts.fetchOk ?? true }), {
+          status: (opts.fetchOk ?? true) ? 200 : 400,
+        })
+    ) as unknown as typeof fetch
+    const deps = {
+      prisma: {
+        telegramLink: {
+          findUnique: vi.fn(async ({ where }: any) =>
+            opts.link && where.userId === opts.link.userId ? opts.link : null
+          ),
+        },
+      },
+      botToken: BOT,
+      fetchImpl,
+    }
+    return { deps, fetchImpl }
+  }
+
+  const OPCOES = [
+    { label: '#2563EB', value: '#2563EB' },
+    { label: '#1E40AF', value: '#1E40AF' },
+  ]
+  const LINK_DONO = { userId: 'user_dono', status: 'linked', chatId: '555' }
+
+  it('sem telegramMessageId (a notificação original nunca chegou a sair) → não faz nada, devolve false', async () => {
+    const { deps, fetchImpl } = fakeDeps({ link: LINK_DONO })
+    const ok = await fecharPerguntaNoTelegramAoResponderPeloPainel(deps as any, {
+      userId: 'user_dono',
+      telegramMessageId: null,
+      questionText: 'Qual é o azul oficial do site?',
+      options: OPCOES,
+      resposta: '#2563EB',
+    })
+    expect(ok).toBe(false)
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('sem vínculo do Telegram (ninguém apertou Start) → não faz nada, devolve false', async () => {
+    const { deps, fetchImpl } = fakeDeps({ link: undefined })
+    const ok = await fecharPerguntaNoTelegramAoResponderPeloPainel(deps as any, {
+      userId: 'user_dono',
+      telegramMessageId: 42,
+      questionText: 'Qual é o azul oficial do site?',
+      options: OPCOES,
+      resposta: '#2563EB',
+    })
+    expect(ok).toBe(false)
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('vínculo ainda pending (Start não confirmado) → não faz nada, devolve false', async () => {
+    const { deps, fetchImpl } = fakeDeps({
+      link: { userId: 'user_dono', status: 'pending', chatId: null },
+    })
+    const ok = await fecharPerguntaNoTelegramAoResponderPeloPainel(deps as any, {
+      userId: 'user_dono',
+      telegramMessageId: 42,
+      questionText: 'Qual é o azul oficial do site?',
+      options: OPCOES,
+      resposta: '#2563EB',
+    })
+    expect(ok).toBe(false)
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('vínculo linked + mensagem existente → edita a mensagem no chat certo, com o rótulo da opção', async () => {
+    const { deps, fetchImpl } = fakeDeps({ link: LINK_DONO })
+    const ok = await fecharPerguntaNoTelegramAoResponderPeloPainel(deps as any, {
+      userId: 'user_dono',
+      telegramMessageId: 42,
+      questionText: 'Qual é o azul oficial do site?',
+      options: OPCOES,
+      resposta: '#1E40AF',
+    })
+    expect(ok).toBe(true)
+    const call = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(String(call?.[0])).toContain('/editMessageText')
+    const body = JSON.parse(String(call?.[1]?.body))
+    expect(body.chat_id).toBe('555')
+    expect(body.message_id).toBe(42)
+    expect(body.text).toBe('Qual é o azul oficial do site?\n\n✓ Já respondida pelo painel: #1E40AF')
+    expect(body.reply_markup).toEqual({ inline_keyboard: [] })
+  })
+
+  it('resposta em texto livre (não bate com nenhuma opção) → o rótulo é o próprio texto', async () => {
+    const { deps, fetchImpl } = fakeDeps({ link: LINK_DONO })
+    await fecharPerguntaNoTelegramAoResponderPeloPainel(deps as any, {
+      userId: 'user_dono',
+      telegramMessageId: 42,
+      questionText: 'Qual é o azul oficial do site?',
+      options: OPCOES,
+      resposta: 'Usar o roxo da marca nova',
+    })
+    const call = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    const body = JSON.parse(String(call?.[1]?.body))
+    expect(body.text).toContain('Usar o roxo da marca nova')
+  })
+
+  it('falha do Telegram não lança — best-effort, devolve false', async () => {
+    const { deps } = fakeDeps({ link: LINK_DONO, fetchOk: false })
+    const ok = await fecharPerguntaNoTelegramAoResponderPeloPainel(deps as any, {
+      userId: 'user_dono',
+      telegramMessageId: 42,
+      questionText: 'x',
+      options: [],
+      resposta: 'y',
+    })
+    expect(ok).toBe(false)
+  })
 })
 
 describe('buildFreeTextOption — a 4ª opção "responda por texto" (feedback do dono: falta escape hatch)', () => {
@@ -840,6 +985,59 @@ describe('handleTelegramCallback — o clique no botão vira answer(), com guard
     )
     const body = JSON.parse(String(editCall?.[1]?.body))
     expect(body.text).toContain('✓ Você escolheu: #2563EB')
+  })
+
+  // FIX-UP L4-T16: o defeito medido — o fechamento no Telegram falhou quando
+  // o PAINEL respondeu primeiro (D70, `fecharPerguntaNoTelegramAoResponderPeloPainel`
+  // é best-effort), então o botão antigo continuou vivo. O dono clica nele
+  // (em OUTRA opção, sem saber que já decidiu pelo painel) e o produto não
+  // pode fingir que este clique registrou algo, nem colapsar como se "você"
+  // tivesse escolhido aqui — os dois mentiriam sobre quem decidiu.
+  //
+  // O sinal de "já estava respondida ANTES deste clique" é o `status` da
+  // pergunta no `findUnique` INICIAL (antes de chamar `answer()`, que é
+  // idempotente e devolveria o mesmo record de qualquer forma).
+  it('clique num botão de pergunta JÁ respondida por OUTRO canal (painel): o toast diz a verdade (canal+resposta real), nunca "registrado", e o colapso usa a origem real', async () => {
+    const jaRespondidaPeloPainel = {
+      ...QUESTION,
+      status: 'answered',
+      answer: '#2563EB',
+      answeredVia: 'panel',
+    }
+    const { deps, fetchImpl } = fakeDeps({
+      question: jaRespondidaPeloPainel, // findUnique inicial já vem 'answered'
+      link: LINK_DONO,
+      answerReturns: jaRespondidaPeloPainel, // answer() idempotente devolve o mesmo record
+    })
+
+    await handleTelegramCallback(deps as any, {
+      update_id: 12,
+      callback_query: {
+        id: 'cbq_12',
+        from: { id: 555 },
+        message: { message_id: 42, chat: { id: 555 } },
+        data: 'q:q_1:1', // clicou em #1E40AF, mas quem decidiu foi o painel, e a resposta é #2563EB
+      },
+    })
+
+    const calls = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls
+    const alertCall = calls.find((c) => String(c[0]).includes('/answerCallbackQuery'))
+    expect(alertCall).toBeTruthy()
+    const alertBody = JSON.parse(String(alertCall?.[1]?.body))
+    // Nunca finge que este clique registrou a decisão.
+    expect(alertBody.text).not.toBe('✓ registrado')
+    // Diz por qual canal e qual foi a decisão real.
+    expect(alertBody.text).toContain('painel')
+    expect(alertBody.text).toContain('#2563EB')
+    // NUNCA atribui a opção que a pessoa acabou de clicar agora.
+    expect(alertBody.text).not.toContain('#1E40AF')
+
+    const editCall = calls.find((c) => String(c[0]).includes('/editMessageText'))
+    expect(editCall).toBeTruthy()
+    const editBody = JSON.parse(String(editCall?.[1]?.body))
+    // Colapso usa a origem REAL (painel) — nunca "Você escolheu" (D70).
+    expect(editBody.text).toContain('✓ Já respondida pelo painel: #2563EB')
+    expect(editBody.text).not.toContain('Você escolheu')
   })
 
   it('sem messageId disponível (nem cq.message, nem telegramMessageId no banco): não tenta colapsar', async () => {
