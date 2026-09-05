@@ -14,6 +14,7 @@ import { lerSecaoDaIssue } from './secao-da-issue.js'
 import { aplicarLabelDoAgente } from './agent-label.js'
 import type { CardMover } from './board-status.js'
 import { ehPrDelegado } from './pr-delegado.js'
+import { ehEntregaSemConteudo, textoDeEntregaSemConteudo } from './entrega-sem-conteudo.js'
 import type { LinhaDeSessao } from './dev-session-store.js'
 import { lerDiffDoPr, type ArquivoDoPr } from './diff-do-pr.js'
 import { mesclarPr, type ResultadoDoMerge } from './merge-do-pr.js'
@@ -842,10 +843,164 @@ export async function runQaMissionViaRails(
   const pr = (await gh('GET', `/repos/${options.repository}/pulls/${target.number}`)) as {
     body?: string
     head?: { sha?: string }
+    // L5-T1: os três campos que o GitHub já devolve neste MESMO GET — usados
+    // logo abaixo por `ehEntregaSemConteudo` (entrega-sem-conteudo.ts) SEM
+    // nenhuma chamada nova.
+    changed_files?: number
+    additions?: number
+    deletions?: number
   }
 
-  // O ESTADO da verificação vem logo após buscar a PR — ANTES de gastar
-  // chamadas com a issue vinculada e o diff — porque a decisão da Tarefa 6
+  // A linha da sessão desta entrega — usada AQUI (pelo corte de entrega sem
+  // conteúdo, logo abaixo, e pela decisão da verificação, mais abaixo ainda:
+  // precisa saber desde quando ela está pendente) e mais adiante, no ramo de
+  // reprovação, para avisar o dev assíncrono. Calculada uma única vez.
+  //
+  // A linha pode ainda não ter o PR gravado: quem grava é a vigia, e ela
+  // roda em outro ciclo. Medido em produção: o QA julgou o PR #97 pela
+  // delegação achada no recuo do corpo ("Fixes #74") porque a linha guardada
+  // ainda não tinha o PR, e a vigia só gravou `pullRequestNumber = 97`
+  // minutos depois — buscando só por PR, o `find` não acharia nada, o mesmo
+  // destino do PR #79 (5 dias parado sem aviso). A issue de origem o QA já
+  // conhece neste instante (`issueDaEntrega`, resolvida no laço de
+  // descoberta acima), então ela entra como SEGUNDA tentativa — não
+  // substitui a busca por PR, que é inequívoca (um PR só tem uma linha) e
+  // continua sendo a primeira. Quando `issueDaEntrega` é `null` (recuo por
+  // login do autor — `ehPrDelegado` não tem como saber a issue nesse recuo),
+  // só a busca por PR vale mesmo.
+  //
+  // `LinhaDeSessao` não expõe `closedAt` (só `dev-session-store.ts` grava; o
+  // tipo devolvido aqui é deliberadamente estreito), então não há como
+  // filtrar "só viva" dentro deste módulo. Em vez disso, `find` pega a
+  // PRIMEIRA linha da issue na ordem em que `options.sessoes` chegou —
+  // documentada acima como `createdAt` decrescente. O índice único parcial
+  // `dev_sessions_open_per_issue` garante no máximo UMA sessão viva por
+  // issue ao mesmo tempo, então a linha mais recente para essa issue É a
+  // viva (ou a única candidata, se todas já fecharam) — resolve "prefira a
+  // viva/mais recente" sem precisar do campo que o tipo não tem.
+  const linhaDaEntrega =
+    (options.sessoes ?? []).find((s) => s.pullRequestNumber === target.number) ??
+    (issueDaEntrega !== null
+      ? (options.sessoes ?? []).find((s) => s.issueNumber === issueDaEntrega)
+      : undefined)
+
+  // O executor determinístico que posta o veredito no GitHub. Definido AQUI
+  // (cedo — antes até do estado da verificação) porque o corte de entrega
+  // sem conteúdo, logo abaixo, também precisa postar review sem esperar o
+  // resto do snapshot (CI, critérios, diff) nem o motor rodar. Ver a
+  // explicação completa do recuo por COMMENT (422, PR da própria identidade
+  // do GitOrch) mais abaixo, junto de `reviewEvent` — a MESMA lógica vale
+  // aqui, só que chamada mais cedo.
+  const postarReview = async (evento: string, corpo: string): Promise<boolean> => {
+    try {
+      await gh('POST', `/repos/${options.repository}/pulls/${target.number}/reviews`, {
+        event: evento,
+        body: corpo,
+      })
+      return false
+    } catch (err) {
+      const recusouProprioPr =
+        err instanceof GithubExecutionError &&
+        err.message.includes('(422)') &&
+        /own pull request/i.test(err.message)
+      if (!recusouProprioPr) throw err
+      await gh('POST', `/repos/${options.repository}/pulls/${target.number}/reviews`, {
+        event: 'COMMENT',
+        body: `${corpo}\n\n_(publicado como comentário: o autor da PR é a própria identidade do GitOrch)_`,
+      })
+      return true
+    }
+  }
+
+  // L5-T1 — ENTREGA SEM CONTEÚDO.
+  //
+  // Medido: PR #468 (issue #309), 03-05/09/2026 — diff vazio, o dev nunca
+  // empurrou o commit para a branch do PR, e a entrega ficou presa em
+  // julgamento por dois dias, ocupando a vaga da conta. O julgamento do QA
+  // já dizia a coisa certa ("Diff vazio"); o que faltava era o produto
+  // REAGIR: sem nenhuma regra reconhecendo este caso, nada avisava o dev de
+  // volta, e nada impedia — por CONSTRUÇÃO, sem depender do motor acertar —
+  // a aprovação de um PR sem nenhuma mudança.
+  //
+  // Por isso este corte vem ANTES de tudo: antes do estado da verificação,
+  // antes dos critérios da issue, antes do diff, e principalmente antes do
+  // motor (`options.execute`). Não há o que revisar num diff vazio — chamar
+  // o motor seria opinião sobre nada, com o risco real (alucinação, prompt
+  // malformado) de aprovar o que não existe. Pular o motor inteiro é a
+  // garantia mais forte do item "nunca aprovar PR sem conteúdo": não é uma
+  // trava que confia no motor dizer a coisa certa, é a ausência da própria
+  // pergunta.
+  //
+  // Só entrega DELEGADA entra aqui: um PR vazio de terceiro não é problema
+  // nosso a notificar (mesmo corte de `!veredito.delegado &&
+  // !options.julgarEntregaDeTerceiro` no laço de descoberta, acima).
+  //
+  // O AVISO ao dev reaproveita `avisarSessao` — o MESMO `sendMessage` que
+  // qualquer reprovação normal já usa mais abaixo (Task 10) — em vez de um
+  // mecanismo novo. O teto de tentativas e a escalada ao dono quando o dev
+  // não reage NÃO são reconstruídos aqui: `sendMessage` só alcança uma
+  // sessão AINDA VIVA (uma sessão TERMINAL não aceita mais mensagem — ver
+  // `jules-session-loop.ts`); quando esta sessão terminar, a entrega
+  // continua marcada `aberto-rejeitado-parado` (a review abaixo é
+  // `REQUEST_CHANGES` como qualquer reprovação) e cai no MESMO caminho que
+  // `retomar-pr-reprovado.ts` já resolve — teto `TETO_DE_RETOMADAS_POR_PR`,
+  // registro de tentativa, escalada ao dono via `perguntarAoDono` — sem
+  // precisar de um segundo mecanismo paralelo aqui.
+  if (delegado && ehEntregaSemConteudo(pr)) {
+    await postarReview(
+      'REQUEST_CHANGES',
+      `${JULES_MARKER}\nGitOrch QA verdict: REQUEST CHANGES — empty diff, no commit pushed.`
+    )
+
+    const textoParaODev = textoDeEntregaSemConteudo(target.number)
+    if (linhaDaEntrega && options.avisarSessao) {
+      // Best-effort e BARULHENTO, mesmo padrão do aviso de rework abaixo:
+      // falhar ao avisar não pode derrubar a missão (o veredito já foi
+      // postado no PR), mas silenciar seria repetir o defeito que esta
+      // mudança existe para matar.
+      const avisou = await options
+        .avisarSessao({ sessionName: linhaDaEntrega.sessionName, texto: textoParaODev })
+        .catch(() => false)
+      if (!avisou) {
+        const avisar = options.onWarn ?? console.warn
+        avisar(
+          `[qa] PR #${target.number} sem conteúdo (diff vazio), mas a sessão ` +
+            `${linhaDaEntrega.sessionName} não foi avisada — guardando para reentregar`
+        )
+        // Mesmo recuo do aviso de rework: o recado fica GUARDADO, não só
+        // gritado — um 429 passageiro não pode encalhar a entrega para
+        // sempre (a passagem seguinte pula quem "já foi julgado", pelo
+        // mesmo head sha).
+        if (options.registrarAvisoPendente) {
+          await options
+            .registrarAvisoPendente({
+              sessionName: linhaDaEntrega.sessionName,
+              texto: textoParaODev,
+            })
+            .catch((err) =>
+              avisar(
+                `[qa] não consegui nem guardar o aviso de entrega sem conteúdo de ` +
+                  `${linhaDaEntrega.sessionName}: ${(err as Error).message}`
+              )
+            )
+        }
+      }
+    }
+
+    return {
+      exitCode: 0,
+      output: `QA judged PR #${target.number}: request_changes (empty diff — no commit pushed).`,
+      stderr: '',
+      // Item 4 (L5-T1): nunca aprovar nem mesclar PR sem conteúdo — mesmo
+      // sendo `delegado`, este caminho nunca devolve elegibilidade de merge.
+      podeMesclar: false,
+    }
+  }
+
+  // O ESTADO da verificação vem logo após buscar a PR (e logo após o corte
+  // de entrega sem conteúdo, acima — não há por que gastar chamadas de CI
+  // num diff vazio que já voltou cedo) — ANTES de gastar chamadas com a
+  // issue vinculada e o diff — porque a decisão da Tarefa 6
   // (`decidirSobreVerificacao`, logo abaixo) pode mandar esperar; não há por
   // que buscar critérios e diff de um PR que não vai ser julgado agora.
   let ciState: EstadoDaVerificacao = 'unknown'
@@ -889,38 +1044,6 @@ export async function runQaMissionViaRails(
     ciState = investigado.estado
     culpadoDoCancelamento = investigado.culpado
   }
-
-  // A linha da sessão desta entrega — usada AQUI pela decisão da verificação
-  // (precisa saber desde quando ela está pendente) e mais abaixo, no ramo de
-  // reprovação, para avisar o dev assíncrono. Calculada uma única vez.
-  //
-  // A linha pode ainda não ter o PR gravado: quem grava é a vigia, e ela
-  // roda em outro ciclo. Medido em produção: o QA julgou o PR #97 pela
-  // delegação achada no recuo do corpo ("Fixes #74") porque a linha guardada
-  // ainda não tinha o PR, e a vigia só gravou `pullRequestNumber = 97`
-  // minutos depois — buscando só por PR, o `find` não acharia nada, o mesmo
-  // destino do PR #79 (5 dias parado sem aviso). A issue de origem o QA já
-  // conhece neste instante (`issueDaEntrega`, resolvida no laço de
-  // descoberta acima), então ela entra como SEGUNDA tentativa — não
-  // substitui a busca por PR, que é inequívoca (um PR só tem uma linha) e
-  // continua sendo a primeira. Quando `issueDaEntrega` é `null` (recuo por
-  // login do autor — `ehPrDelegado` não tem como saber a issue nesse recuo),
-  // só a busca por PR vale mesmo.
-  //
-  // `LinhaDeSessao` não expõe `closedAt` (só `dev-session-store.ts` grava; o
-  // tipo devolvido aqui é deliberadamente estreito), então não há como
-  // filtrar "só viva" dentro deste módulo. Em vez disso, `find` pega a
-  // PRIMEIRA linha da issue na ordem em que `options.sessoes` chegou —
-  // documentada acima como `createdAt` decrescente. O índice único parcial
-  // `dev_sessions_open_per_issue` garante no máximo UMA sessão viva por
-  // issue ao mesmo tempo, então a linha mais recente para essa issue É a
-  // viva (ou a única candidata, se todas já fecharam) — resolve "prefira a
-  // viva/mais recente" sem precisar do campo que o tipo não tem.
-  const linhaDaEntrega =
-    (options.sessoes ?? []).find((s) => s.pullRequestNumber === target.number) ??
-    (issueDaEntrega !== null
-      ? (options.sessoes ?? []).find((s) => s.issueNumber === issueDaEntrega)
-      : undefined)
 
   // Defeito real de produção (PR #97): o QA julgou este PR ENQUANTO a
   // verificação ainda rodava (`ciState === 'pending'`), reprovou com "CI
@@ -1180,32 +1303,16 @@ export async function runQaMissionViaRails(
   // COMMENT, com o parecer completo (e o aviso de "não vai mesclar",
   // `avisoDeNaoMesclar` abaixo) no corpo. A entrega delegada mantém
   // APPROVE/REQUEST_CHANGES exatamente como sempre foi.
+  //
+  // `postarReview` em si (a função) já foi definida bem mais acima, logo
+  // após buscar `pr` — o corte de entrega sem conteúdo (L5-T1) precisa dela
+  // antes de o motor rodar, então subiu de posição; a lógica é exatamente a
+  // mesma descrita aqui.
   const reviewEvent = !delegado
     ? 'COMMENT'
     : effectiveVerdict === 'approve'
       ? 'APPROVE'
       : 'REQUEST_CHANGES'
-
-  const postarReview = async (evento: string, corpo: string): Promise<boolean> => {
-    try {
-      await gh('POST', `/repos/${options.repository}/pulls/${target.number}/reviews`, {
-        event: evento,
-        body: corpo,
-      })
-      return false
-    } catch (err) {
-      const recusouProprioPr =
-        err instanceof GithubExecutionError &&
-        err.message.includes('(422)') &&
-        /own pull request/i.test(err.message)
-      if (!recusouProprioPr) throw err
-      await gh('POST', `/repos/${options.repository}/pulls/${target.number}/reviews`, {
-        event: 'COMMENT',
-        body: `${corpo}\n\n_(publicado como comentário: o autor da PR é a própria identidade do GitOrch)_`,
-      })
-      return true
-    }
-  }
 
   // Task 11 (decisão do dono D7): o produto mescla sozinho desde o primeiro
   // ciclo, sem confirmação humana — não há dono para esse passo hoje, e
