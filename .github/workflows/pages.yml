@@ -55,7 +55,8 @@ jobs:
             fi
             echo "OK: $f com assets em $BP"
           done
-      - uses: actions/upload-pages-artifact@v3
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
         with:
           path: apps/web/out
   deploy:
@@ -65,7 +66,8 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - id: deployment
+      - name: Deploy to GitHub Pages
+        id: deployment
         uses: actions/deploy-pages@v4
   smoke:
     needs: deploy
