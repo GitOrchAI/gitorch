@@ -2,41 +2,26 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import Fastify from 'fastify'
 import { schedulerPlugin } from './scheduler.js'
 
-// L4-T3, item 4 — O CONSERTO DAS 24 PRESAS: prova que `reconciliarDuvidasEscaladasLegadas`
-// (extraída para `services/reconciliar-duvidas-escaladas.ts`, testada em
-// isolamento em `reconciliar-duvidas-escaladas.test.ts`) está de fato
-// CHAMADA pelo `tick()` de produção — o mesmo risco nomeado em
-// `scheduler-pos-merge-real-seam.test.ts`: uma peça 100% testada em
-// isolamento pode nunca rodar porque o call site real dentro do fechamento
-// não-exportado do relógio nunca a chamou. Mesmo "real seam" (registra
-// `schedulerPlugin` de VERDADE, `NODE_ENV` fora de 'test' só no registro,
-// `GITORCH_SCHEDULER_TICK_MS` minúsculo para o `setInterval` de produção
-// disparar `tick` de verdade).
+// L4-T30 (05/09) — REESCRITA pós-D75 (decisão do dono: "os agentes do
+// gitorch não podem mandar essas dúvidas pra mim").
 //
-// Cenário: uma dev_session AWAITING_USER_FEEDBACK marcada `respondida:0:<hash>`
-// (a assinatura exata do defeito medido em 02/09 — 24 sessões assim, ZERO
-// agent_question) e SEM a agent_question correspondente. Prova que o boot
-// cria a pergunta de verdade (dedupKey `duvida-dev:*`) e migra a marca para
-// `escalada:`.
+// ATÉ AQUI este teste provava que `reconciliarDuvidasEscaladasLegadas`
+// criava uma `agent_question` DE VERDADE para a sessão presa (L4-T3, item
+// 4) e migrava a marca para `escalada:`. Esse caminho é EXATAMENTE o que
+// mandou as duas perguntas vazias de 05/09 — D75 fechou o caminho vivo
+// (`escalar-duvida-ao-dono.ts`), mas este legado nunca foi desligado.
 //
-// ATUALIZADO — L4-T4, fix-up 5 (task a13a42f8-2953-4259-b41f-3f8cddb304cd):
-// a cadência de 6h que existia aqui foi REMOVIDA — `reconciliarDuvidasEscaladasLegadas`
-// agora roda em TODO tique, e ANTES de `devolverVagasDeSessaoAbandonada`/
-// `varrerCicloTerminalDaSessao` (ver `scheduler-duvidas-escaladas-antes-do-
-// fechamento-real-seam.test.ts`, que prova esse ORDENAMENTO). Era a cadência
-// de 6h, somada a rodar DEPOIS dos dois fechamentos, que deixava uma sessão
-// legada `respondida:` ser fechada antes de a reconciliação sequer olhar
-// para ela — medido em produção 03/09: 9 sessões assim, a query da
-// reconciliação filtra `closedAt: null`, e uma sessão fechada some dali para
-// sempre. O segundo teste abaixo agora prova a IDEMPOTÊNCIA de rodar em todo
-// tique: a mesma sessão, já migrada para `escalada:`, não gera um segundo
-// `ask()` nos tiques seguintes — a marca já migrada (`marcaBruta.startsWith('escalada:')`
-// em `reconciliar-duvidas-escaladas.ts`) é o que garante isso agora, não mais
-// um relógio de cadência.
+// A reescrita inverte o que se prova: o boot NUNCA cria `agent_question`
+// para esta sessão — `reconciliarDuvidasEscaladasDoProjeto`
+// (services/reconciliar-duvidas-escaladas.ts) não tem mais nenhum jeito de
+// tocar `agentQuestion` (garantia estrutural no próprio tipo). A sessão
+// presa (mesma assinatura exata: AWAITING_USER_FEEDBACK, marcada
+// `respondida:0:<hash>`, sem `agent_question`) é ENCERRADA direto —
+// `fecharSessao` com o motivo redelegante `pergunta-sem-resposta` — e a
+// issue some da lista de "presa" (query filtra `closedAt: null`).
 const PROJETO = {
   id: 'proj_1',
   wingId: 'acme/api',
-  userId: 'user_1',
   isActive: true,
 }
 
@@ -75,22 +60,21 @@ function autoModel(overrides: Record<string, unknown> = {}): Record<string, unkn
 function buildFakePrisma() {
   const askCalls: Array<{ userId: string; projectId: string; input: Record<string, unknown> }> = []
   const updateCalls: Array<{ where: unknown; data: Record<string, unknown> }> = []
-  let marcaAtual: string | null = SESSAO_PRESA.answeredHash
+  let fechada = false
 
   const prisma = new Proxy(
     {
       project: autoModel({
-        // SÓ a consulta de `reconciliarDuvidasEscaladasLegadas` usa esta
-        // forma exata de `select` ({id, wingId, userId} e mais nada) — as
-        // outras ~11 varreduras que também leem `{isActive:true}` pedem
-        // campos extras (autonomia/name/runtimeConfig/user) e caem no
-        // default (`[]`), ficando inertes neste teste — mesmo espírito do
-        // roteamento por forma de `scheduler-pos-merge-real-seam.test.ts`.
+        // Só a consulta de `reconciliarDuvidasEscaladasLegadas` usa esta
+        // forma exata de `select` ({id, wingId} e mais nada, desde a
+        // reescrita L4-T30 — antes incluía `userId`, que ninguém mais lê
+        // aqui) — as outras varreduras que também leem `{isActive:true}`
+        // pedem campos extras e caem no default (`[]`).
         findMany: vi.fn(async (args: { select?: Record<string, boolean> }) => {
           const chaves = Object.keys(args?.select ?? {})
             .sort()
             .join(',')
-          if (chaves === 'id,userId,wingId') return [PROJETO]
+          if (chaves === 'id,wingId') return [PROJETO]
           return []
         }),
       }),
@@ -99,21 +83,19 @@ function buildFakePrisma() {
           // Só a query da reconciliação filtra `answeredHash: { not: null }`
           // — a de `sessoesVivas`/`varrerSessoesDoDev` não filtra por isso.
           if (args?.where?.answeredHash?.not === null) {
-            return marcaAtual ? [{ ...SESSAO_PRESA, answeredHash: marcaAtual }] : []
+            return fechada ? [] : [{ ...SESSAO_PRESA }]
           }
           return []
         }),
         findUnique: vi.fn(async () => ({ devAccountId: null })),
         update: vi.fn(async (args: { where: unknown; data: Record<string, unknown> }) => {
           updateCalls.push(args)
-          if (typeof args.data['answeredHash'] === 'string') {
-            marcaAtual = args.data['answeredHash']
-          }
+          if (args.data['closedAt'] !== undefined) fechada = true
           return undefined
         }),
       }),
       agentQuestion: autoModel({
-        findFirst: vi.fn(async () => null), // nunca existe ainda — não é idempotência entre boots aqui.
+        findMany: vi.fn(async () => []), // nenhuma agent_question legada aberta neste cenário.
       }),
       mission: autoModel({
         updateMany: vi.fn(async () => ({ count: 0 })),
@@ -123,12 +105,14 @@ function buildFakePrisma() {
       projectSchedule: autoModel({ findMany: vi.fn(async () => []) }),
       _askCalls: askCalls,
       _updateCalls: updateCalls,
+      _fechada: () => fechada,
     },
     {}
   )
   return prisma as unknown as Record<string, unknown> & {
     _askCalls: typeof askCalls
     _updateCalls: typeof updateCalls
+    _fechada: () => boolean
   }
 }
 
@@ -157,10 +141,9 @@ describe('reconciliação de dúvidas escaladas legadas wiring em schedulerPlugi
     process.env['NODE_ENV'] = 'production'
     process.env['GITORCH_SCHEDULER_TICK_MS'] = '15'
     process.env['GITORCH_GITHUB_TOKEN'] = 'token-de-teste'
-    // Sem chave do Jules de propósito: `ultimaMensagemDoDevJules` devolve ''
-    // sem tocar rede (contrato do próprio serviço) — o teste prova a
-    // ESCALADA em si, não a leitura da última mensagem (já coberta em
-    // `reconciliar-duvidas-escaladas.test.ts`).
+    // Sem chave do Jules de propósito: `chaveDaSessao` devolve `undefined`
+    // sem tocar rede — o teste prova o ENCERRAMENTO em si, não a chamada ao
+    // fornecedor (best-effort, já coberta em `dev-session-store.test.ts`).
   })
 
   afterEach(async () => {
@@ -174,7 +157,7 @@ describe('reconciliação de dúvidas escaladas legadas wiring em schedulerPlugi
     vi.restoreAllMocks()
   })
 
-  test('boot cria a agent_question de verdade (dedupKey duvida-dev:*) e migra a marca para escalada:', async () => {
+  test('boot NUNCA cria agent_question — encerra a sessão presa direto (motivo pergunta-sem-resposta)', async () => {
     const prisma = buildFakePrisma()
     const ask = vi.fn(async (userId: string, projectId: string, input: Record<string, unknown>) => {
       prisma._askCalls.push({ userId, projectId, input })
@@ -183,59 +166,52 @@ describe('reconciliação de dúvidas escaladas legadas wiring em schedulerPlugi
 
     app = Fastify({ logger: false })
     app.decorate('prisma', prisma as never)
-    // Decora `agentQuestionService` DIRETO (sem telegramPlugin) — a mesma
-    // leitura viva que `reconciliarDuvidasEscaladasLegadas` faz
-    // (`(app as unknown as {agentQuestionService}).agentQuestionService`).
-    app.decorate('agentQuestionService', { ask } as never)
+    app.decorate('agentQuestionService', { ask, marcarAssumida: vi.fn() } as never)
     await app.register(schedulerPlugin)
 
     await vi.waitFor(
       () => {
-        expect(ask).toHaveBeenCalledTimes(1)
+        expect(
+          prisma._updateCalls.some(
+            (c: { where: unknown; data: Record<string, unknown> }) =>
+              (c.where as { sessionName?: string }).sessionName === SESSAO_PRESA.sessionName &&
+              c.data['closedAt'] !== undefined
+          )
+        ).toBe(true)
       },
       { timeout: 3000, interval: 10 }
     )
 
-    expect(prisma._askCalls[0]?.userId).toBe('user_1')
-    expect(prisma._askCalls[0]?.projectId).toBe('proj_1')
-    expect(prisma._askCalls[0]?.input['dedupKey']).toBe('duvida-dev:acme/api:46:hash123')
-
-    await vi.waitFor(() => {
-      expect(
-        prisma._updateCalls.some(
-          (c: { where: unknown; data: Record<string, unknown> }) =>
-            (c.where as { sessionName?: string }).sessionName === SESSAO_PRESA.sessionName &&
-            c.data['answeredHash'] === 'escalada:0:hash123'
-        )
-      ).toBe(true)
-    })
+    const fechamento = prisma._updateCalls.find(
+      (c) => (c.where as { sessionName?: string }).sessionName === SESSAO_PRESA.sessionName
+    )
+    expect(fechamento?.data['closedReason']).toBe('pergunta-sem-resposta')
+    expect(ask).not.toHaveBeenCalled()
   })
 
-  // RENOMEADO — L4-T4, fix-up 5: não existe mais cadência aqui (roda em todo
-  // tique, de propósito — ver comentário no topo do arquivo). O que este
-  // teste prova agora é IDEMPOTÊNCIA: rodar a cada tique não reprocessa nem
-  // reenvia a MESMA pergunta, porque a marca já migrada (`escalada:0:<hash>`)
-  // é pulada logo no início de `reconciliarDuvidasEscaladasDoProjeto`
-  // (`marcaBruta.startsWith('escalada:')`, e também `lida.situacao !==
-  // 'respondida'` mais abaixo) — dupla defesa, nenhuma delas depende de
-  // relógio.
-  test('idempotência: rodar em todo tique NÃO reprocessa nem reenvia a mesma pergunta depois de migrada', async () => {
+  test('idempotência: rodar em todo tique não reencerra nem reenvia nada depois de fechada', async () => {
     const prisma = buildFakePrisma()
     const ask = vi.fn(async () => ({ deduped: false, question: { id: 'q1', answer: null } }))
 
     app = Fastify({ logger: false })
     app.decorate('prisma', prisma as never)
-    app.decorate('agentQuestionService', { ask } as never)
+    app.decorate('agentQuestionService', { ask, marcarAssumida: vi.fn() } as never)
     await app.register(schedulerPlugin)
 
-    // Primeira escalada, no boot.
-    await vi.waitFor(() => expect(ask).toHaveBeenCalledTimes(1), { timeout: 3000, interval: 10 })
+    await vi.waitFor(() => expect(prisma._fechada()).toBe(true), { timeout: 3000, interval: 10 })
+    const fechamentosNoPrimeiroInstante = prisma._updateCalls.filter(
+      (c) => (c.where as { sessionName?: string }).sessionName === SESSAO_PRESA.sessionName
+    ).length
 
-    // Vários tiques depois (o tique aqui é de 15ms — dezenas de passadas),
-    // `ask` continua com UMA chamada só: a marca já é `escalada:`, e
-    // `reconciliarDuvidasEscaladasDoProjeto` pula de propósito qualquer marca
-    // que já comece com `escalada:` (dupla defesa, ver acima).
+    // Vários tiques depois (o tique aqui é de 15ms — dezenas de passadas):
+    // a sessão já fechada não aparece mais na query da reconciliação
+    // (`closedAt: null`), então não é reprocessada — nem reenviada, nem
+    // ganha `ask()` nenhum.
     await new Promise((r) => setTimeout(r, 200))
-    expect(ask).toHaveBeenCalledTimes(1)
+    expect(ask).not.toHaveBeenCalled()
+    const fechamentosDepois = prisma._updateCalls.filter(
+      (c) => (c.where as { sessionName?: string }).sessionName === SESSAO_PRESA.sessionName
+    ).length
+    expect(fechamentosDepois).toBe(fechamentosNoPrimeiroInstante)
   })
 })
