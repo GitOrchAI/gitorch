@@ -425,64 +425,30 @@ export async function aprovarPlanoJules(deps: {
 }
 
 /**
- * Uma atividade de um dos DOIS originadores que participam da conversa, já
- * validada e pronta para decisão.
- *
- * Até a L5-T5 só existia o lado do agente (`AtividadeDoAgente`, nome antigo
- * deste tipo) — o suficiente para "qual foi a última pergunta" e "houve sinal
- * de vida". O catálogo de dúvidas (D75, 05/09) precisa dos DOIS lados: a
- * pergunta do dev (`agentMessaged`) E a resposta que O TIME mandou
- * (`userMessaged`) — sem o segundo lado não dá para saber se uma pergunta
- * ficou sem resposta.
- */
-interface AtividadeDaSessao {
-  originator: 'agent' | 'user'
-  /** `Date.parse(createTime)` — já filtrado de `NaN`. */
-  quando: number
-  /**
-   * Texto de `agentMessaged.agentMessage` (agent) ou `userMessaged.userMessage`
-   * (user), ou string vazia quando a atividade não é mensagem (progressUpdated,
-   * artifacts, sessionCompleted, planGenerated, planApproved, …).
-   */
-  texto: string
-}
-
-/**
- * Busca e normaliza a página de atividades da sessão, mantendo o que veio dos
- * DOIS originadores que fazem parte da conversa (`agent` e `user`) com
- * `createTime` válido — qualquer outro originador (se algum dia existir) é
- * descartado aqui, na fonte única.
- *
- * Compartilhada por `ultimaMensagemDoDevJules` (só o lado `agent`, texto não
- * vazio), `houveAtividadeDoDevDesde` (L5-T3, só o lado `agent`, sem filtrar
- * texto — uma `progressUpdated` ou `artifacts` sem mensagem nenhuma ainda é
- * sinal de vida do agente) e `atividadesDeConversaJules` (L5-T5/D75, os DOIS
- * lados, só com texto — é o catálogo de pergunta/resposta). Continua sendo A
- * ÚNICA função que fala com o endpoint de atividades: as três de cima
- * filtram o que já veio daqui, nunca refazem a chamada — mesmo raciocínio de
- * reaproveitar `hashDaMensagem` em `session-watch.ts` em vez de cópias
- * locais.
+ * Lê a última mensagem que o dev assíncrono mandou nesta sessão — é o que a
+ * vigia usa para decidir uma pergunta pendente e para o hash de idempotência
+ * (não responder duas vezes à mesma pergunta).
  *
  * A API não documenta a ordem de retorno de `activities.list`, então não dá
- * para confiar que o último item da página é o mais recente — quem chama
- * decide "mais recente" ou "existe alguma depois de X" olhando `quando`.
+ * para confiar que o último item da página é o mais recente: comparamos
+ * `createTime` de cada atividade do ORIGINADOR agente e ficamos com a maior.
  * `pageSize=100` (o teto da API) cobre a folga de uma sessão comum numa
  * página só; sessões com histórico maior que isso são o caso raro que este
  * contrato de degradação aceita (mesma classe de "melhor esforço" do resto
  * deste módulo).
  *
  * Mesmo contrato de degradação do resto do arquivo: nunca lança. Sem chave,
- * sem atividade relevante ou serviço fora do ar devolvem lista vazia, com
+ * sem atividade do agente ou serviço fora do ar devolvem string vazia, com
  * aviso.
  */
-async function buscarAtividadesDaSessao(deps: {
+export async function ultimaMensagemDoDevJules(deps: {
   apiKey?: string | undefined
   sessionName: string
   fetchImpl?: typeof fetch
   onWarn?: (message: string) => void
-}): Promise<AtividadeDaSessao[]> {
+}): Promise<string> {
   const warn = deps.onWarn ?? (() => undefined)
-  if (!deps.apiKey) return []
+  if (!deps.apiKey) return ''
   const f = deps.fetchImpl ?? fetch
   try {
     const resp = await f(`${JULES_API}/${deps.sessionName}/activities?pageSize=100`, {
@@ -493,130 +459,33 @@ async function buscarAtividadesDaSessao(deps: {
       warn(
         `[jules] não foi possível ler as atividades da sessão ${deps.sessionName} (HTTP ${resp.status})`
       )
-      return []
+      return ''
     }
     const body = (await resp.json().catch(() => ({}))) as {
       activities?: Array<{
         originator?: string
         createTime?: string
         agentMessaged?: { agentMessage?: string }
-        userMessaged?: { userMessage?: string }
       }>
     }
     const atividades = Array.isArray(body.activities) ? body.activities : []
 
-    const resultado: AtividadeDaSessao[] = []
+    let maisRecente: { texto: string; quando: number } | null = null
     for (const atividade of atividades) {
-      const originator = (atividade.originator ?? '').toLowerCase()
-      if (originator !== 'agent' && originator !== 'user') continue
+      if ((atividade.originator ?? '').toLowerCase() !== 'agent') continue
+      const texto = atividade.agentMessaged?.agentMessage
+      if (typeof texto !== 'string' || texto.length === 0) continue
       const quando = atividade.createTime ? Date.parse(atividade.createTime) : NaN
       if (Number.isNaN(quando)) continue
-      const texto =
-        originator === 'agent'
-          ? atividade.agentMessaged?.agentMessage
-          : atividade.userMessaged?.userMessage
-      resultado.push({ originator, quando, texto: typeof texto === 'string' ? texto : '' })
+      if (!maisRecente || quando > maisRecente.quando) {
+        maisRecente = { texto, quando }
+      }
     }
-    return resultado
+    return maisRecente?.texto ?? ''
   } catch (err) {
     warn(
       `[jules] falha ao ler as atividades da sessão ${deps.sessionName}: ${(err as Error).message}`
     )
-    return []
+    return ''
   }
-}
-
-/**
- * Lê a última mensagem que o dev assíncrono mandou nesta sessão — é o que a
- * vigia usa para decidir uma pergunta pendente e para o hash de idempotência
- * (não responder duas vezes à mesma pergunta).
- *
- * Mesmo contrato de degradação do resto do arquivo: nunca lança. Sem chave,
- * sem atividade do agente ou serviço fora do ar devolvem string vazia, com
- * aviso (dentro de `buscarAtividadesDoAgente`).
- */
-export async function ultimaMensagemDoDevJules(deps: {
-  apiKey?: string | undefined
-  sessionName: string
-  fetchImpl?: typeof fetch
-  onWarn?: (message: string) => void
-}): Promise<string> {
-  const atividades = (await buscarAtividadesDaSessao(deps)).filter((a) => a.originator === 'agent')
-
-  let maisRecente: AtividadeDaSessao | null = null
-  for (const atividade of atividades) {
-    if (atividade.texto.length === 0) continue
-    if (!maisRecente || atividade.quando > maisRecente.quando) {
-      maisRecente = atividade
-    }
-  }
-  return maisRecente?.texto ?? ''
-}
-
-/**
- * L5-T3 — sinal de vida independente de `session.updateTime`.
- *
- * `jules-session-loop.ts` decidia abandonar uma sessão só pela contagem cega
- * de nudges, com `paradoHaMs` vindo de `session.updateTime` (`consultarSessaoJules`).
- * Esse carimbo de topo NEM SEMPRE acompanha trabalho real — medido em
- * produção: 48 das 86 sessões abandonadas na história do produto morreram
- * ainda `IN_PROGRESS`, média de 3,4 nudges e só 10 com pull request. Esta
- * função olha a página de atividades DIRETO (`progressUpdated`, `artifacts`,
- * `agentMessaged`, `sessionCompleted` — tudo do ORIGINADOR agente) em vez de
- * confiar só no carimbo de topo, e diz se algo aconteceu depois de `desde`.
- *
- * Mesmo contrato de degradação do resto do arquivo: sem chave, sem atividade
- * do agente ou serviço fora do ar devolvem `false` — "sem prova de vida" é a
- * leitura conservadora quando não dá para confirmar nada, e é o que preserva
- * o comportamento de abandono de hoje quando o sinal não pode ser lido.
- */
-export async function houveAtividadeDoDevDesde(deps: {
-  apiKey?: string | undefined
-  sessionName: string
-  /** Instante de referência — tipicamente `lastProgressAt` da linha. */
-  desde: Date
-  fetchImpl?: typeof fetch
-  onWarn?: (message: string) => void
-}): Promise<boolean> {
-  const atividades = (await buscarAtividadesDaSessao(deps)).filter((a) => a.originator === 'agent')
-  const desdeMs = deps.desde.getTime()
-  return atividades.some((atividade) => atividade.quando > desdeMs)
-}
-
-/**
- * Uma mensagem de VERDADE da conversa — pergunta do dev ou resposta que O
- * TIME deu — pronta para o catálogo de dúvidas (L5-T5/D75).
- */
-export interface AtividadeDaConversaJules {
-  originator: 'agent' | 'user'
-  quando: Date
-  texto: string
-}
-
-/**
- * A conversa INTEIRA da sessão — cada pergunta do dev (`agentMessaged`) e
- * cada resposta que O TIME mandou (`userMessaged`) — para o catálogo de
- * dúvidas (L5-T5, decisão do dono D75 de 05/09: "tem que ter sistema que
- * coleta todas essas dúvidas pra que nas próximas tasks o RA e PO não gerem
- * dúvidas").
- *
- * Diferente de `ultimaMensagemDoDevJules` (só a última do agente) e
- * `houveAtividadeDoDevDesde` (só existência, indiferente a texto), esta
- * devolve TODAS as mensagens com texto não vazio, dos DOIS lados — na ordem
- * em que a API as devolveu (não documentada; quem grava decide dedup pelo
- * `momento` de cada uma, nunca pela posição na lista).
- *
- * Mesmo contrato de degradação do resto do arquivo: nunca lança. Sem chave,
- * sem mensagem com texto ou serviço fora do ar devolvem lista vazia.
- */
-export async function atividadesDeConversaJules(deps: {
-  apiKey?: string | undefined
-  sessionName: string
-  fetchImpl?: typeof fetch
-  onWarn?: (message: string) => void
-}): Promise<AtividadeDaConversaJules[]> {
-  const atividades = await buscarAtividadesDaSessao(deps)
-  return atividades
-    .filter((a) => a.texto.length > 0)
-    .map((a) => ({ originator: a.originator, quando: new Date(a.quando), texto: a.texto }))
 }

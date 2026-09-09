@@ -1,33 +1,55 @@
 import { describe, it, expect, vi } from 'vitest'
-import { escalarDuvidaAoDono, type PrismaParaEscalarDuvida } from './escalar-duvida-ao-dono.js'
+import {
+  escalarDuvidaAoDono,
+  completarOpcoesAte3,
+  type PrismaParaEscalarDuvida,
+} from './escalar-duvida-ao-dono.js'
+import { FREE_TEXT_OPTION_VALUE } from './telegram-bot.js'
 
 /**
- * D75 (05/09) — DECISÃO DO DONO, palavras dele: "os agentes do gitorch nao
- * podem mandar essas duvidas pra mim, o jules (DEV assincrono) eles (QA, SM,
- * PO e RA) algum deles tem que resolver isso, responder o jules. E não
- * passar por mim, se o dev assincrono tem duvidas, é pq foi mal planejado la
- * atras com o PO e RA."
+ * CAUSA RAIZ (L4-T3, item 0) — medido 02/09: 30 dev_sessions em
+ * AWAITING_USER_FEEDBACK, 24 com `answered_hash` gravado (marcado
+ * "respondida") no instante da escalada, e `agent_questions` com ZERO linhas
+ * de dedupKey `duvida-dev:*`. O produto achava que tinha perguntado ao dono;
+ * ninguém nunca viu nada.
  *
- * ATÉ esta tarefa (L5-T5), `escalarDuvidaAoDono` SEMPRE criava uma
- * `agent_question` de verdade (`agentQuestionService.ask(...)`) — era
- * literalmente a função que subia a dúvida do dev ao dono. O conserto
- * anterior (L4-T3, 02-03/09) tinha fechado o buraco de "achava que perguntou
- * e não perguntou"; esta tarefa fecha o caminho por INTEIRO: a função NUNCA
- * MAIS pergunta ao dono. Quando QA/RA/PO não resolvem, a sessão ESPERA — e
- * isto é FALHA DO TIME (planejamento malfeito lá atrás), sempre registrada
- * (nunca silêncio), nunca uma pergunta ao dono.
+ * Reconstrução exata: `destinoAposRa` (services/duvida-do-dev.ts, chamado
+ * quando nem o QA nem o RA sabem responder) NUNCA popula `perguntaExecutiva`
+ * — a função não tem esse campo. O próprio QA também pode deixar
+ * `perguntaExecutivaPtBr` vazio de propósito (o prompt em
+ * duvida-rails-mission.ts autoriza: "leave both empty rather than forcing a
+ * bad one"). Nos dois casos, `plugins/scheduler.ts` (`responderDuvidaPendente`,
+ * ramo `perguntar-ao-dono`) caía para `avisarDonoDoProjeto` — um aviso de
+ * TEXTO SOLTO, sem `agent_question`, sem dedupKey `duvida-dev:*`, sem botão —
+ * violando D71 ("toda pergunta ao dono é agent_question com opções, nunca
+ * texto solto"). E pior: a marca `respondida:0:<hash>` era gravada ANTES e
+ * INCONDICIONALMENTE, então mesmo quando `perguntador.ask(...)` FALHAVA
+ * (rede, Prisma), a sessão ficava marcada como respondida do mesmo jeito.
  *
- * Os testes ANTIGOS deste arquivo (pré-D75) afirmavam o oposto — que `ask()`
- * era SEMPRE chamado. Removidos/reescritos de propósito: são a MESMA classe
- * de regressão que este arquivo existe para travar, só que na direção nova.
+ * A primeira versão desta função (rodada contra o teste abaixo antes do
+ * conserto) reproduziu o defeito byte a byte: `ask` nunca era chamado neste
+ * cenário — ficou RED. O conserto: `perguntar-ao-dono` SEMPRE vira uma
+ * pergunta de verdade (usa `textoDeEscaladaParaODono` como PT-BR de reserva
+ * quando falta `perguntaExecutiva`), e a marca vira `escalada:` (nunca
+ * `respondida:`) — só gravada DEPOIS que a pergunta nasceu.
  */
 
 function prismaFalso(overrides: Partial<PrismaParaEscalarDuvida> = {}): PrismaParaEscalarDuvida {
   return {
-    catalogoDeDuvidas: {
-      createMany: vi.fn(async (args: unknown) => ({
-        count: (args as { data: unknown[] }).data.length,
+    project: {
+      findUnique: vi.fn(async () => ({
+        id: 'proj1',
+        wingId: 'acme/api',
+        userId: 'user1',
+        runtimeConfig: null,
       })),
+    },
+    devSession: {
+      update: vi.fn(async () => undefined),
+      upsert: vi.fn(async () => undefined),
+      updateMany: vi.fn(async () => undefined),
+      findMany: vi.fn(async () => []),
+      findFirst: vi.fn(async () => null),
     },
     ...overrides,
   } as PrismaParaEscalarDuvida
@@ -43,41 +65,21 @@ const ARGS_BASE = {
   apiKey: 'jules-key',
 }
 
-const CONVERSA_PADRAO = [
-  { originator: 'agent' as const, quando: new Date('2026-01-01T10:00:00Z'), texto: 'pergunta' },
-]
-
 function depsFalso(overrides: Record<string, unknown> = {}) {
   return {
     prisma: prismaFalso(),
-    buscarConversa: vi.fn(async () => CONVERSA_PADRAO),
+    agentQuestionService: {
+      ask: vi.fn(async () => ({ deduped: false, question: { id: 'q1', answer: null } as never })),
+    },
+    responderSessaoJules: vi.fn(async () => true),
     onInfo: vi.fn(),
     onError: vi.fn(),
     ...overrides,
   }
 }
 
-describe('escalarDuvidaAoDono — D75 (05/09): o caminho ao dono está FECHADO', () => {
-  it('NUNCA cria agent_question — a interface de deps nem aceita agentQuestionService (fechado na estrutura, não só no comportamento)', async () => {
-    const deps = depsFalso()
-
-    // Nenhuma das chaves de deps tem relação com agent-question/ask — a
-    // prova estrutural de que este caminho foi removido, não só desviado.
-    expect(Object.keys(deps)).toEqual(
-      expect.not.arrayContaining(['agentQuestionService', 'montarContexto'])
-    )
-
-    await escalarDuvidaAoDono(
-      { destino: { tipo: 'perguntar-ao-dono', motivo: 'decisão de negócio' }, ...ARGS_BASE },
-      deps as never
-    )
-
-    // Nada no fake de prisma tem `ask` nem `agentQuestion` — se o código
-    // tentasse chamar algo assim, o teste quebraria por TypeError, não por
-    // uma asserção que alguém possa esquecer de escrever.
-  })
-
-  it('QA/RA/PO não resolveram: registra FALHA DO TIME via onError, nunca lança (a sessão espera)', async () => {
+describe('escalarDuvidaAoDono — causa raiz medida 02/09 (destinoAposRa sem perguntaExecutiva)', () => {
+  it('SEMPRE cria uma agent_question de verdade — nunca cai para aviso de texto solto', async () => {
     const deps = depsFalso()
 
     await escalarDuvidaAoDono(
@@ -91,94 +93,389 @@ describe('escalarDuvidaAoDono — D75 (05/09): o caminho ao dono está FECHADO',
       deps as never
     )
 
-    expect(deps.onError).toHaveBeenCalledTimes(1)
-    const [erro, mensagem] = (deps.onError as ReturnType<typeof vi.fn>).mock.calls[0] as [
-      unknown,
-      string,
-    ]
-    expect(erro).toBeInstanceOf(Error)
-    expect(mensagem).toContain('#46')
-    expect(mensagem).toContain('acme/api')
-    expect(mensagem).toMatch(/falha do time/i)
-    expect(mensagem).not.toMatch(/agent.?question/i)
-  })
-
-  it('motivo do destino "escalar-ao-ra" (sem perguntar-ao-dono): usa "sem resposta útil" no relato', async () => {
-    const deps = depsFalso()
-
-    await escalarDuvidaAoDono(
-      { destino: { tipo: 'escalar-ao-ra', motivo: 'x' }, ...ARGS_BASE },
-      deps as never
+    // A PROVA do defeito original: sem `perguntaExecutiva`, `ask` nunca era
+    // chamado — o código caía direto para um aviso de texto solto.
+    expect(deps.agentQuestionService.ask).toHaveBeenCalledTimes(1)
+    expect(deps.agentQuestionService.ask).toHaveBeenCalledWith(
+      'user1',
+      'proj1',
+      expect.objectContaining({ dedupKey: 'duvida-dev:acme/api:46:hash123' })
     )
-
-    const [, mensagem] = (deps.onError as ReturnType<typeof vi.fn>).mock.calls[0] as [
-      unknown,
-      string,
-    ]
-    expect(mensagem).toContain('sem resposta útil')
   })
 
-  it('persiste a conversa da sessão no catálogo (pergunta do dev + resposta do time) antes de registrar a falha', async () => {
-    const conversa = [
-      { originator: 'agent' as const, quando: new Date('2026-01-01T10:00:00Z'), texto: 'pergunta' },
-      { originator: 'user' as const, quando: new Date('2026-01-01T10:05:00Z'), texto: 'resposta' },
-    ]
-    const buscarConversa = vi.fn(async () => conversa)
-    const prisma = prismaFalso()
-    const deps = depsFalso({ buscarConversa, prisma })
+  // D72 (02/09) — SUBSTITUI o teste antigo, que esperava a pergunta CRUA do
+  // dev (em inglês) no texto de reserva. O dono flagrou isso ao vivo, com
+  // print do painel/Telegram, exatamente na tarefa #309 de GitOrchAI/gitorch:
+  // "Pergunta original do dev: 'I have successfully modified...'" com UM
+  // botão só. A reserva agora é sempre a pergunta executiva determinística,
+  // com 3 opções — NUNCA cita o texto do dev.
+  // D73/L4-T23 (04/09) — SUBSTITUI de novo o texto da reserva: o dono
+  // recusou também a versão de D72 ("O dev está travado numa dúvida
+  // técnica..."). Sem `montarContexto` configurado (caso deste teste), o
+  // contexto executivo é `contextoExecutivoVazio()` — as 3 lacunas aparecem
+  // com naturalidade, mas o texto CONTA A HISTÓRIA (ciclo → entrega →
+  // decisões → decisão que resta) em vez de citar dúvida/dev/RA.
+  it('D73: sem perguntaExecutiva do modelo — pergunta executiva conta a história, nunca a pergunta crua do dev', async () => {
+    const deps = depsFalso()
 
     await escalarDuvidaAoDono(
       { destino: { tipo: 'perguntar-ao-dono', motivo: 'x' }, ...ARGS_BASE },
       deps as never
     )
 
-    expect(buscarConversa).toHaveBeenCalledWith(
-      expect.objectContaining({ apiKey: 'jules-key', sessionName: 'sessions/1' })
+    const chamada = deps.agentQuestionService.ask.mock.calls[0] as unknown as [
+      string,
+      string,
+      { text: string; options: Array<{ label: string; value: string }> },
+    ]
+    expect(chamada[2].text).toBe(
+      'Este projeto ainda não tem uma sprint configurada.\n\n' +
+        'Não foi possível ler o objetivo desta tarefa.\n\n' +
+        'A equipe ainda não tinha registrado nenhuma decisão sobre esta tarefa.\n\n' +
+        'Falta uma decisão de negócio: como você quer seguir com a tarefa #46 de acme/api?'
     )
-    expect(prisma.catalogoDeDuvidas.createMany).toHaveBeenCalledWith({
-      data: [
-        {
-          projectId: 'proj1',
-          sessionName: 'sessions/1',
-          issueNumber: 46,
-          originator: 'agent',
-          texto: 'pergunta',
-          momento: new Date('2026-01-01T10:00:00Z'),
-        },
-        {
-          projectId: 'proj1',
-          sessionName: 'sessions/1',
-          issueNumber: 46,
-          originator: 'user',
-          texto: 'resposta',
-          momento: new Date('2026-01-01T10:05:00Z'),
-        },
-      ],
-      skipDuplicates: true,
-    })
+    expect(chamada[2].text).not.toMatch(/\bdev\b|desenvolvedor|técnic/i)
+    expect(chamada[2].text).not.toContain('Should I use bcrypt or argon2?')
+    // 3 opções executivas + a 4ª "Outro" (D71: 3 objetivas + 1 aberta).
+    expect(chamada[2].options).toHaveLength(4)
+    expect(chamada[2].options.slice(0, 3).map((o) => o.label)).toEqual([
+      'Pausar esta tarefa até eu decidir com calma',
+      'Seguir com a melhor decisão da equipe por agora',
+      'Entregar o que já está pronto para revisão',
+    ])
   })
 
-  it('falha ao buscar a conversa (rede do Jules caiu): best-effort — a falha do time é registrada do mesmo jeito, nunca lança', async () => {
-    const buscarConversa = vi.fn(async () => {
-      throw new Error('rede do jules caiu')
+  /**
+   * D73/L4-T23, item 5 — "o que o dono vê no Telegram é o texto completo".
+   * O caminho escolhido para a armadilha (`sendTelegramQuestion`/
+   * `notifyOwner` não têm parâmetro de contexto) foi embutir a história
+   * INTEIRA no próprio `text` — o mesmo campo que `notifyOwner`
+   * (plugins/telegram.ts) repassa literalmente para `sendTelegramQuestion`,
+   * que por sua vez manda `text` como `body.text` da API do Telegram
+   * (telegram-bot.test.ts já prova esse passo: "sendTelegramQuestion —
+   * ... expect(body.text).toBe(...)"). Esta prova fecha o elo de cima: o
+   * `text` que `ask()` recebe aqui É o texto com a história completa —
+   * nada se perde entre montar o contexto e chamar `ask()`.
+   */
+  it('D73, item 5: com montarContexto real, a história INTEIRA (ciclo/entrega/decisões) vai no text de ask() — o que chega ao Telegram', async () => {
+    const montarContexto = vi.fn(async () => ({
+      ciclo: 'Sprint 4 (01/09 a 04/09)',
+      entrega: 'O cliente sobe uma foto do produto e vê a prévia antes de publicar.',
+      decisoes: ['Usar o mesmo serviço de imagens que já processa as fotos do catálogo.'],
+      lacunas: [],
+    }))
+    const deps = depsFalso({ montarContexto })
+
+    await escalarDuvidaAoDono(
+      { destino: { tipo: 'perguntar-ao-dono', motivo: 'x' }, ...ARGS_BASE },
+      deps as never
+    )
+
+    expect(montarContexto).toHaveBeenCalledWith({
+      issueNumber: 46,
+      repository: 'acme/api',
+      projectId: 'proj1',
     })
-    const deps = depsFalso({ buscarConversa })
+    const chamada = deps.agentQuestionService.ask.mock.calls[0] as unknown as [
+      string,
+      string,
+      { text: string },
+    ]
+    expect(chamada[2].text).toBe(
+      'O time está no ciclo "Sprint 4 (01/09 a 04/09)".\n\n' +
+        'Esta tarefa entrega: O cliente sobe uma foto do produto e vê a prévia antes de publicar.\n\n' +
+        'A equipe já resolveu sozinha: Usar o mesmo serviço de imagens que já processa as fotos do catálogo.\n\n' +
+        'Falta uma decisão de negócio: como você quer seguir com a tarefa #46 de acme/api?'
+    )
+  })
+
+  it('D73: montarContexto falha (rede/banco) — a pergunta NASCE do mesmo jeito, com o contexto vazio (lacunas)', async () => {
+    const montarContexto = vi.fn(async () => {
+      throw new Error('rede caiu')
+    })
+    const deps = depsFalso({ montarContexto })
+
+    await escalarDuvidaAoDono(
+      { destino: { tipo: 'perguntar-ao-dono', motivo: 'x' }, ...ARGS_BASE },
+      deps as never
+    )
+
+    expect(deps.agentQuestionService.ask).toHaveBeenCalledTimes(1)
+    const chamada = deps.agentQuestionService.ask.mock.calls[0] as unknown as [
+      string,
+      string,
+      { text: string },
+    ]
+    expect(chamada[2].text).toContain('Este projeto ainda não tem uma sprint configurada.')
+    expect(deps.onInfo).toHaveBeenCalled()
+  })
+
+  it('com perguntaExecutiva do modelo E exatamente 3 opções: usa a tradução do modelo, não a reserva', async () => {
+    const deps = depsFalso()
+
+    await escalarDuvidaAoDono(
+      {
+        destino: {
+          tipo: 'perguntar-ao-dono',
+          motivo: 'decisão de negócio',
+          perguntaExecutiva: 'Podemos cobrar taxa extra por esta feature?',
+          opcoes: [
+            { label: 'Sim', value: 'sim' },
+            { label: 'Não', value: 'nao' },
+            { label: 'Só para o plano Pro', value: 'so-pro' },
+          ],
+        },
+        ...ARGS_BASE,
+      },
+      deps as never
+    )
+
+    const chamada = deps.agentQuestionService.ask.mock.calls[0] as unknown as [
+      string,
+      string,
+      { text: string; options: Array<{ value: string }> },
+    ]
+    expect(chamada[2].text).toBe('Podemos cobrar taxa extra por esta feature?')
+    // as 3 opções do modelo + a 4ª "Outro" sempre presente (D71).
+    expect(chamada[2].options.map((o) => o.value)).toEqual([
+      'sim',
+      'nao',
+      'so-pro',
+      FREE_TEXT_OPTION_VALUE,
+    ])
+  })
+
+  // Correção pós-D72 (revisão): 1-2 opções do modelo AGORA são aproveitadas
+  // — o texto do modelo nunca é descartado por faltar opção; ele é
+  // COMPLETADO até 3 com a reserva. Descartar tudo (comportamento antigo)
+  // jogava fora uma pergunta executiva boa só por faltar 1 opção.
+  it('perguntaExecutiva do modelo com só 1 opção: mantém o texto do modelo, completa até 3 com a reserva', async () => {
+    const deps = depsFalso()
+
+    await escalarDuvidaAoDono(
+      {
+        destino: {
+          tipo: 'perguntar-ao-dono',
+          motivo: 'decisão de negócio',
+          perguntaExecutiva: 'Podemos cobrar taxa extra por esta feature?',
+          opcoes: [{ label: 'Sim', value: 'sim' }],
+        },
+        ...ARGS_BASE,
+      },
+      deps as never
+    )
+
+    const chamada = deps.agentQuestionService.ask.mock.calls[0] as unknown as [
+      string,
+      string,
+      { text: string; options: Array<{ label: string; value: string }> },
+    ]
+    // O texto do modelo é PRESERVADO — não cai mais para a reserva.
+    expect(chamada[2].text).toBe('Podemos cobrar taxa extra por esta feature?')
+    // A opção do modelo entra primeiro, completada pela reserva até 3 + a livre.
+    expect(chamada[2].options.map((o) => o.value)).toEqual([
+      'sim',
+      'pausar',
+      'seguir-suposicao-ra',
+      FREE_TEXT_OPTION_VALUE,
+    ])
+  })
+
+  it('perguntaExecutiva do modelo com 2 opções: completa só a que falta', async () => {
+    const deps = depsFalso()
+
+    await escalarDuvidaAoDono(
+      {
+        destino: {
+          tipo: 'perguntar-ao-dono',
+          motivo: 'decisão de negócio',
+          perguntaExecutiva: 'Cobramos mensal ou anual?',
+          opcoes: [
+            { label: 'Mensal', value: 'mensal' },
+            { label: 'Anual', value: 'anual' },
+          ],
+        },
+        ...ARGS_BASE,
+      },
+      deps as never
+    )
+
+    const chamada = deps.agentQuestionService.ask.mock.calls[0] as unknown as [
+      string,
+      string,
+      { text: string; options: Array<{ value: string }> },
+    ]
+    expect(chamada[2].text).toBe('Cobramos mensal ou anual?')
+    expect(chamada[2].options.map((o) => o.value)).toEqual([
+      'mensal',
+      'anual',
+      'pausar',
+      FREE_TEXT_OPTION_VALUE,
+    ])
+  })
+
+  it('opção do modelo colide com uma da reserva (mesmo value): não duplica, pula para a próxima', async () => {
+    const deps = depsFalso()
+
+    await escalarDuvidaAoDono(
+      {
+        destino: {
+          tipo: 'perguntar-ao-dono',
+          motivo: 'decisão de negócio',
+          perguntaExecutiva: 'Seguimos com o plano atual?',
+          opcoes: [{ label: 'Pausar por enquanto', value: 'pausar' }],
+        },
+        ...ARGS_BASE,
+      },
+      deps as never
+    )
+
+    const chamada = deps.agentQuestionService.ask.mock.calls[0] as unknown as [
+      string,
+      string,
+      { options: Array<{ value: string }> },
+    ]
+    expect(chamada[2].options.map((o) => o.value)).toEqual([
+      'pausar',
+      'seguir-suposicao-ra',
+      'pedir-pr',
+      FREE_TEXT_OPTION_VALUE,
+    ])
+  })
+
+  it('perguntaExecutiva do modelo mas SEM nenhuma opção: cai para a reserva INTEIRA (texto e opções)', async () => {
+    const deps = depsFalso()
+
+    await escalarDuvidaAoDono(
+      {
+        destino: {
+          tipo: 'perguntar-ao-dono',
+          motivo: 'decisão de negócio',
+          perguntaExecutiva: 'Podemos cobrar taxa extra por esta feature?',
+          opcoes: [],
+        },
+        ...ARGS_BASE,
+      },
+      deps as never
+    )
+
+    const chamada = deps.agentQuestionService.ask.mock.calls[0] as unknown as [
+      string,
+      string,
+      { text: string; options: Array<{ label: string; value: string }> },
+    ]
+    expect(chamada[2].text).not.toBe('Podemos cobrar taxa extra por esta feature?')
+    expect(chamada[2].options.slice(0, 3).map((o) => o.label)).toEqual([
+      'Pausar esta tarefa até eu decidir com calma',
+      'Seguir com a melhor decisão da equipe por agora',
+      'Entregar o que já está pronto para revisão',
+    ])
+  })
+
+  /**
+   * C2 (fix-up L4-T3): D71 é "3 objetivas + 1 aberta" — SEMPRE. Sem o teto,
+   * um RA que devolvesse 4+ opções faria `ask()` juntar TODAS + a opção
+   * livre, estourando o formato que o dono sempre pede.
+   */
+  it('C2: RA devolve 4 opções — só as 3 primeiras entram, mais a opção livre (D71: 3 + 1)', async () => {
+    const deps = depsFalso()
+
+    await escalarDuvidaAoDono(
+      {
+        destino: {
+          tipo: 'perguntar-ao-dono',
+          motivo: 'decisão de negócio',
+          perguntaExecutiva: 'Qual plano de cobrança usar?',
+          opcoes: [
+            { label: 'Mensal', value: 'mensal' },
+            { label: 'Anual', value: 'anual' },
+            { label: 'Vitalício', value: 'vitalicio' },
+            { label: 'Gratuito', value: 'gratuito' },
+          ],
+        },
+        ...ARGS_BASE,
+      },
+      deps as never
+    )
+
+    const chamada = deps.agentQuestionService.ask.mock.calls[0] as unknown as [
+      string,
+      string,
+      { options: Array<{ value: string }> },
+    ]
+    expect(chamada[2].options.map((o) => o.value)).toEqual([
+      'mensal',
+      'anual',
+      'vitalicio',
+      FREE_TEXT_OPTION_VALUE,
+    ])
+    expect(chamada[2].options.length).toBe(4)
+  })
+
+  it('a marca ESCALADA só é gravada DEPOIS que a pergunta nasceu de verdade — nunca antes', async () => {
+    const ordem: string[] = []
+    const prisma = prismaFalso()
+    ;(prisma.devSession.update as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      ordem.push('gravou-marca')
+    })
+    const ask = vi.fn(async () => {
+      ordem.push('perguntou')
+      return { deduped: false, question: { id: 'q1', answer: null } as never }
+    })
+    const deps = depsFalso({ prisma, agentQuestionService: { ask } })
+
+    await escalarDuvidaAoDono(
+      { destino: { tipo: 'perguntar-ao-dono', motivo: 'x' }, ...ARGS_BASE },
+      deps as never
+    )
+
+    expect(ordem).toEqual(['perguntou', 'gravou-marca'])
+    expect(prisma.devSession.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ answeredHash: 'escalada:0:hash123' }),
+      })
+    )
+  })
+
+  it('ask() falha: erro ALTO (nunca silêncio) e a marca NÃO é gravada — a sessão continua tentando', async () => {
+    const erro = new Error('rede caiu')
+    const deps = depsFalso({
+      agentQuestionService: { ask: vi.fn(async () => Promise.reject(erro)) },
+    })
 
     await expect(
       escalarDuvidaAoDono(
         { destino: { tipo: 'perguntar-ao-dono', motivo: 'x' }, ...ARGS_BASE },
         deps as never
       )
-    ).resolves.toBeUndefined()
+    ).rejects.toThrow()
 
-    expect(deps.onInfo).toHaveBeenCalledWith(expect.stringContaining('rede do jules caiu'))
-    expect(deps.onError).toHaveBeenCalledTimes(1)
+    expect(deps.onError).toHaveBeenCalled()
+    expect((deps.prisma as PrismaParaEscalarDuvida).devSession.update).not.toHaveBeenCalled()
   })
 
-  it('falha ao gravar o catálogo (banco fora do ar): best-effort — a falha do time é registrada do mesmo jeito, nunca lança', async () => {
+  it('sem agentQuestionService ligado: erro ALTO e lança — nunca finge que perguntou', async () => {
+    const deps = depsFalso({ agentQuestionService: undefined })
+
+    await expect(
+      escalarDuvidaAoDono(
+        { destino: { tipo: 'perguntar-ao-dono', motivo: 'x' }, ...ARGS_BASE },
+        deps as never
+      )
+    ).rejects.toThrow()
+
+    expect(deps.onError).toHaveBeenCalled()
+  })
+
+  it('projeto sem userId (sem dono vinculado): erro ALTO e lança', async () => {
     const prisma = prismaFalso({
-      catalogoDeDuvidas: {
-        createMany: vi.fn(async () => Promise.reject(new Error('banco fora do ar'))),
+      project: {
+        findUnique: vi.fn(async () => ({
+          id: 'proj1',
+          wingId: 'acme/api',
+          userId: null,
+          runtimeConfig: null,
+        })),
       },
     })
     const deps = depsFalso({ prisma })
@@ -188,23 +485,130 @@ describe('escalarDuvidaAoDono — D75 (05/09): o caminho ao dono está FECHADO',
         { destino: { tipo: 'perguntar-ao-dono', motivo: 'x' }, ...ARGS_BASE },
         deps as never
       )
-    ).resolves.toBeUndefined()
+    ).rejects.toThrow()
 
-    expect(deps.onInfo).toHaveBeenCalledWith(expect.stringContaining('banco fora do ar'))
-    expect(deps.onError).toHaveBeenCalledTimes(1)
+    expect(deps.onError).toHaveBeenCalled()
   })
 
-  it('conversa vazia (Jules ainda sem histórico legível): não grava nada no catálogo, mas ainda registra a falha do time', async () => {
-    const buscarConversa = vi.fn(async () => [])
-    const prisma = prismaFalso()
-    const deps = depsFalso({ buscarConversa, prisma })
+  it('projeto não encontrado: erro ALTO e lança', async () => {
+    const prisma = prismaFalso({ project: { findUnique: vi.fn(async () => null) } })
+    const deps = depsFalso({ prisma })
+
+    await expect(
+      escalarDuvidaAoDono(
+        { destino: { tipo: 'perguntar-ao-dono', motivo: 'x' }, ...ARGS_BASE },
+        deps as never
+      )
+    ).rejects.toThrow()
+
+    expect(deps.onError).toHaveBeenCalled()
+  })
+
+  it('ask() devolve deduped=true (mesma pergunta já respondida antes): entrega a resposta anterior direto ao dev', async () => {
+    const ask = vi.fn(async () => ({
+      deduped: true,
+      question: { id: 'q1', answer: 'Use argon2.' } as never,
+    }))
+    const responderSessaoJules = vi.fn(async () => true)
+    const deps = depsFalso({ agentQuestionService: { ask }, responderSessaoJules })
 
     await escalarDuvidaAoDono(
       { destino: { tipo: 'perguntar-ao-dono', motivo: 'x' }, ...ARGS_BASE },
       deps as never
     )
 
-    expect(prisma.catalogoDeDuvidas.createMany).not.toHaveBeenCalled()
-    expect(deps.onError).toHaveBeenCalledTimes(1)
+    expect(responderSessaoJules).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiKey: 'jules-key',
+        sessionName: 'sessions/1',
+        texto: expect.stringContaining('Use argon2.'),
+      })
+    )
+    // Entregue de verdade ao dev: marca RESPONDIDA (não escalada) — o ciclo fechou.
+    expect((deps.prisma as PrismaParaEscalarDuvida).devSession.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ answeredHash: 'respondida:0:hash123' }),
+      })
+    )
+  })
+
+  it('C5: deduped mas a entrega ao dev falha: LANÇA (nunca finge sucesso) — não marca respondida', async () => {
+    const ask = vi.fn(async () => ({
+      deduped: true,
+      question: { id: 'q1', answer: 'Use argon2.' } as never,
+    }))
+    const responderSessaoJules = vi.fn(async () => false)
+    const deps = depsFalso({ agentQuestionService: { ask }, responderSessaoJules })
+
+    await expect(
+      escalarDuvidaAoDono(
+        { destino: { tipo: 'perguntar-ao-dono', motivo: 'x' }, ...ARGS_BASE },
+        deps as never
+      )
+    ).rejects.toThrow()
+
+    expect((deps.prisma as PrismaParaEscalarDuvida).devSession.update).not.toHaveBeenCalled()
+    expect(deps.onError).toHaveBeenCalled()
+  })
+
+  /**
+   * C5 (fix-up L4-T3): `!resultado.question.answer` só barrava `null`/`''` —
+   * uma resposta gravada como espaço em branco (`'   '`) é truthy em JS e
+   * passava direto, entregando um texto vazio ao dev. Trata como corrompida:
+   * nunca entrega, erro ALTO (nunca silêncio).
+   */
+  it('C5: resposta anterior vazia/só espaço (dedupado): NÃO entrega texto vazio ao dev — lança erro claro', async () => {
+    const ask = vi.fn(async () => ({
+      deduped: true,
+      question: { id: 'q1', answer: '   ' } as never,
+    }))
+    const responderSessaoJules = vi.fn(async () => true)
+    const deps = depsFalso({ agentQuestionService: { ask }, responderSessaoJules })
+
+    await expect(
+      escalarDuvidaAoDono(
+        { destino: { tipo: 'perguntar-ao-dono', motivo: 'x' }, ...ARGS_BASE },
+        deps as never
+      )
+    ).rejects.toThrow(/resposta.*vazia/i)
+
+    expect(responderSessaoJules).not.toHaveBeenCalled()
+    expect(deps.onError).toHaveBeenCalled()
+    expect((deps.prisma as PrismaParaEscalarDuvida).devSession.update).not.toHaveBeenCalled()
+  })
+})
+
+describe('completarOpcoesAte3 — nunca duplica, sempre fecha em 3 (pura, sem mock)', () => {
+  it('já tem 3: devolve como está', () => {
+    const opcoes = [
+      { label: 'A', value: 'a' },
+      { label: 'B', value: 'b' },
+      { label: 'C', value: 'c' },
+    ]
+    expect(completarOpcoesAte3(opcoes)).toEqual(opcoes)
+  })
+
+  it('1 opção: completa com as 2 primeiras da reserva', () => {
+    expect(completarOpcoesAte3([{ label: 'Sim', value: 'sim' }])).toEqual([
+      { label: 'Sim', value: 'sim' },
+      { label: 'Pausar esta tarefa até eu decidir com calma', value: 'pausar' },
+      { label: 'Seguir com a melhor decisão da equipe por agora', value: 'seguir-suposicao-ra' },
+    ])
+  })
+
+  it('0 opções: devolve só a reserva (as 3 primeiras)', () => {
+    expect(completarOpcoesAte3([])).toEqual([
+      { label: 'Pausar esta tarefa até eu decidir com calma', value: 'pausar' },
+      { label: 'Seguir com a melhor decisão da equipe por agora', value: 'seguir-suposicao-ra' },
+      { label: 'Entregar o que já está pronto para revisão', value: 'pedir-pr' },
+    ])
+  })
+
+  it('colisão de value com a reserva: pula a opção que duplicaria', () => {
+    expect(completarOpcoesAte3([{ label: 'Pausar mesmo assim', value: 'pausar' }])).toEqual([
+      { label: 'Pausar mesmo assim', value: 'pausar' },
+      { label: 'Seguir com a melhor decisão da equipe por agora', value: 'seguir-suposicao-ra' },
+      { label: 'Entregar o que já está pronto para revisão', value: 'pedir-pr' },
+    ])
   })
 })

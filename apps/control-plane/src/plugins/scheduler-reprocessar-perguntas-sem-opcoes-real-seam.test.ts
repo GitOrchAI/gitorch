@@ -96,15 +96,6 @@ function buildFakePrisma() {
             .join(',')
           if (chaves === 'id,userId,wingId') return [PROJETO]
           if (chaves === 'id,isActive,userId,wingId') return [PROJETO]
-          // L4-T30 (05/09, pós-D75): `reconciliarDuvidasEscaladasLegadas`
-          // (scheduler.ts) não usa mais `projeto.userId` — a reconciliação
-          // e o encerramento de dúvidas legadas passaram a fechar a sessão
-          // presa (`fecharSessao`, por `sessionName`) em vez de decifrar
-          // credencial por `userId`. O select correspondente encolheu para
-          // `{ id, wingId }`, MESMO formato que `varrerPrsDuplicadosDosProjetos`
-          // já usa (scheduler.ts) — reconhecer aqui é seguir a query real,
-          // não abrandar o teste: as asserções abaixo continuam intactas.
-          if (chaves === 'id,wingId') return [PROJETO]
           return []
         }),
       }),

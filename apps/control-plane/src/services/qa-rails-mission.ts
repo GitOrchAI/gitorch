@@ -14,11 +14,6 @@ import { lerSecaoDaIssue } from './secao-da-issue.js'
 import { aplicarLabelDoAgente } from './agent-label.js'
 import type { CardMover } from './board-status.js'
 import { ehPrDelegado } from './pr-delegado.js'
-import {
-  ehEntregaSemConteudo,
-  textoDeEntregaSemConteudo,
-  type EstatisticasDoPr,
-} from './entrega-sem-conteudo.js'
 import type { LinhaDeSessao } from './dev-session-store.js'
 import { lerDiffDoPr, type ArquivoDoPr } from './diff-do-pr.js'
 import { mesclarPr, type ResultadoDoMerge } from './merge-do-pr.js'
@@ -37,8 +32,6 @@ import {
   temMarcaDeRejulgamentoDeLegado,
   MARCA_DE_APROVACAO,
   MARCA_DO_PARECER,
-  MARCA_DE_COBRANCA_DE_ENTREGA_VAZIA,
-  temMarcaDeCobrancaDeEntregaVazia,
 } from './parecer-do-qa.js'
 import {
   decidirSobreOProjeto,
@@ -46,12 +39,7 @@ import {
   MARCA_DE_ENTREGA_GRANDE_DEMAIS,
   type EntregaJulgada,
 } from './reprovacao-que-ensina.js'
-import {
-  ciTerminouVerde,
-  estadoDoCi,
-  investigarEstadoDoCi,
-} from './estado-da-verificacao-do-github.js'
-import { frasarCausaDoCancelamento, type ResultadoDoCulpado } from './causa-do-cancelamento.js'
+import { ciTerminouVerde, estadoDoCi } from './estado-da-verificacao-do-github.js'
 import { decidirQuemResolve } from './conflito-de-merge.js'
 import {
   chaveDoResgate,
@@ -680,74 +668,13 @@ export async function runQaMissionViaRails(
       }
     }
 
-    // A QUARTA exceção ao skip, e ela é de natureza diferente das três
-    // acima. As outras três reabrem OPINIÃO (aprovação que não mesclou,
-    // parecer sob premissa errada, reprovação do portão que caiu) — esta
-    // reabre um FATO estrutural. "Diff vazio" não muda de ideia com o
-    // tempo: ou o dev empurrou o commit, ou não. O skip logo abaixo existe
-    // para o produto não repetir OPINIÃO a cada ciclo (comentado ali); um
-    // fato que continua verdadeiro não é opinião.
-    //
-    // Medido: PR #468 (GitOrchAI/gitorch, issue #309), 03-05/09/2026. Duas
-    // reviews CHANGES_REQUESTED de gitorch-ai[bot], as duas no MESMO head,
-    // e NENHUMA delas se encaixava em nenhuma das três exceções acima — era
-    // reprovação comum, do julgamento normal. O skip descartava a entrega
-    // ANTES de a detecção de `ehEntregaSemConteudo` (mais abaixo no
-    // arquivo) rodar, e a sessão da issue #309 seguia COMPLETED com
-    // `closed_at` nulo para sempre. O julgamento já dizia a coisa certa
-    // ("Diff vazio"); o que faltava era o produto REAGIR — ver
-    // `entrega-sem-conteudo.ts`.
-    //
-    // A pergunta só é feita quando ainda vale a pena perguntar: teto de
-    // tentativas não estourado, e esta review neste head AINDA não é a
-    // cobrança de entrega vazia (`temMarcaDeCobrancaDeEntregaVazia`) — sem
-    // essa marca, a cobrança se repetiria a cada tique enquanto o dev não
-    // reage, virando o mesmo spam que o skip original existe para evitar
-    // (ver o teste "não fica preso" em qa-rails-mission.test.ts).
-    //
-    // Responder exige um GET a mais: a lista de PRs abertos não devolve
-    // `changed_files`/`additions`/`deletions` (só o GET de UM PR devolve —
-    // o mesmo GET que roda de qualquer forma mais abaixo para o PR
-    // escolhido). Custa uma chamada por entrega nesta situação estreita —
-    // delegada, dentro do teto, com parecer já marcado e sem a cobrança —,
-    // não por PR aberto do repositório. As outras três exceções, quando já
-    // valem, dispensam esta pergunta (mesmo recuo de `legadoMereceUmaChance`
-    // com `!foiAprovacao` acima): se `deveRejulgar` já vai ficar `true` por
-    // outro motivo, gastar um GET para saber se o diff está vazio não muda
-    // nada no resultado.
-    let entregaVaziaAindaNaoCobrada = false
-    if (
-      veredito.delegado &&
-      aindaPodeTentarMesclar &&
-      reviewMarcadaNesteHead &&
-      !foiAprovacao &&
-      !parecerSobPremissaErrada &&
-      !reprovadoPeloPortaoComCiVerdeAgora &&
-      !legadoMereceUmaChance &&
-      !temMarcaDeCobrancaDeEntregaVazia(reviewMarcadaNesteHead) &&
-      p.head?.sha
-    ) {
-      try {
-        const statsDoPr = (await gh(
-          'GET',
-          `/repos/${options.repository}/pulls/${p.number}`
-        )) as EstatisticasDoPr
-        entregaVaziaAindaNaoCobrada = ehEntregaSemConteudo(statsDoPr)
-      } catch {
-        // Não saber não pode virar cobrança: na dúvida, segue pulado como
-        // hoje, e uma passagem futura tenta de novo.
-        entregaVaziaAindaNaoCobrada = false
-      }
-    }
-
     const deveRejulgar =
       veredito.delegado &&
       aindaPodeTentarMesclar &&
       (foiAprovacao ||
         parecerSobPremissaErrada ||
         reprovadoPeloPortaoComCiVerdeAgora ||
-        legadoMereceUmaChance ||
-        entregaVaziaAindaNaoCobrada)
+        legadoMereceUmaChance)
 
     // A entrega que TRAVOU no teto de tentativas de mescla.
     //
@@ -910,17 +837,23 @@ export async function runQaMissionViaRails(
   const pr = (await gh('GET', `/repos/${options.repository}/pulls/${target.number}`)) as {
     body?: string
     head?: { sha?: string }
-    // L5-T1: os três campos que o GitHub já devolve neste MESMO GET — usados
-    // logo abaixo por `ehEntregaSemConteudo` (entrega-sem-conteudo.ts) SEM
-    // nenhuma chamada nova.
-    changed_files?: number
-    additions?: number
-    deletions?: number
   }
 
-  // A linha da sessão desta entrega — usada AQUI (pelo corte de entrega sem
-  // conteúdo, logo abaixo, e pela decisão da verificação, mais abaixo ainda:
-  // precisa saber desde quando ela está pendente) e mais adiante, no ramo de
+  // O ESTADO da verificação vem logo após buscar a PR — ANTES de gastar
+  // chamadas com a issue vinculada e o diff — porque a decisão da Tarefa 6
+  // (`decidirSobreVerificacao`, logo abaixo) pode mandar esperar; não há por
+  // que buscar critérios e diff de um PR que não vai ser julgado agora.
+  let ciState: EstadoDaVerificacao = 'unknown'
+  if (pr.head?.sha) {
+    const checks = (await gh(
+      'GET',
+      `/repos/${options.repository}/commits/${pr.head.sha}/check-runs`
+    )) as { check_runs?: Array<{ conclusion?: string; status?: string }> }
+    ciState = estadoDoCi(checks.check_runs ?? [])
+  }
+
+  // A linha da sessão desta entrega — usada AQUI pela decisão da verificação
+  // (precisa saber desde quando ela está pendente) e mais abaixo, no ramo de
   // reprovação, para avisar o dev assíncrono. Calculada uma única vez.
   //
   // A linha pode ainda não ter o PR gravado: quem grava é a vigia, e ela
@@ -950,174 +883,6 @@ export async function runQaMissionViaRails(
     (issueDaEntrega !== null
       ? (options.sessoes ?? []).find((s) => s.issueNumber === issueDaEntrega)
       : undefined)
-
-  // O executor determinístico que posta o veredito no GitHub. Definido AQUI
-  // (cedo — antes até do estado da verificação) porque o corte de entrega
-  // sem conteúdo, logo abaixo, também precisa postar review sem esperar o
-  // resto do snapshot (CI, critérios, diff) nem o motor rodar. Ver a
-  // explicação completa do recuo por COMMENT (422, PR da própria identidade
-  // do GitOrch) mais abaixo, junto de `reviewEvent` — a MESMA lógica vale
-  // aqui, só que chamada mais cedo.
-  const postarReview = async (evento: string, corpo: string): Promise<boolean> => {
-    try {
-      await gh('POST', `/repos/${options.repository}/pulls/${target.number}/reviews`, {
-        event: evento,
-        body: corpo,
-      })
-      return false
-    } catch (err) {
-      const recusouProprioPr =
-        err instanceof GithubExecutionError &&
-        err.message.includes('(422)') &&
-        /own pull request/i.test(err.message)
-      if (!recusouProprioPr) throw err
-      await gh('POST', `/repos/${options.repository}/pulls/${target.number}/reviews`, {
-        event: 'COMMENT',
-        body: `${corpo}\n\n_(publicado como comentário: o autor da PR é a própria identidade do GitOrch)_`,
-      })
-      return true
-    }
-  }
-
-  // L5-T1 — ENTREGA SEM CONTEÚDO.
-  //
-  // Medido: PR #468 (issue #309), 03-05/09/2026 — diff vazio, o dev nunca
-  // empurrou o commit para a branch do PR, e a entrega ficou presa em
-  // julgamento por dois dias, ocupando a vaga da conta. O julgamento do QA
-  // já dizia a coisa certa ("Diff vazio"); o que faltava era o produto
-  // REAGIR: sem nenhuma regra reconhecendo este caso, nada avisava o dev de
-  // volta, e nada impedia — por CONSTRUÇÃO, sem depender do motor acertar —
-  // a aprovação de um PR sem nenhuma mudança.
-  //
-  // Por isso este corte vem ANTES de tudo: antes do estado da verificação,
-  // antes dos critérios da issue, antes do diff, e principalmente antes do
-  // motor (`options.execute`). Não há o que revisar num diff vazio — chamar
-  // o motor seria opinião sobre nada, com o risco real (alucinação, prompt
-  // malformado) de aprovar o que não existe. Pular o motor inteiro é a
-  // garantia mais forte do item "nunca aprovar PR sem conteúdo": não é uma
-  // trava que confia no motor dizer a coisa certa, é a ausência da própria
-  // pergunta.
-  //
-  // Só entrega DELEGADA entra aqui: um PR vazio de terceiro não é problema
-  // nosso a notificar (mesmo corte de `!veredito.delegado &&
-  // !options.julgarEntregaDeTerceiro` no laço de descoberta, acima).
-  //
-  // O AVISO ao dev reaproveita `avisarSessao` — o MESMO `sendMessage` que
-  // qualquer reprovação normal já usa mais abaixo (Task 10) — em vez de um
-  // mecanismo novo. O teto de tentativas e a escalada ao dono quando o dev
-  // não reage NÃO são reconstruídos aqui: `sendMessage` só alcança uma
-  // sessão AINDA VIVA (uma sessão TERMINAL não aceita mais mensagem — ver
-  // `jules-session-loop.ts`); quando esta sessão terminar, a entrega
-  // continua marcada `aberto-rejeitado-parado` (a review abaixo é
-  // `REQUEST_CHANGES` como qualquer reprovação) e cai no MESMO caminho que
-  // `retomar-pr-reprovado.ts` já resolve — teto `TETO_DE_RETOMADAS_POR_PR`,
-  // registro de tentativa, escalada ao dono via `perguntarAoDono` — sem
-  // precisar de um segundo mecanismo paralelo aqui.
-  //
-  // L5-T1b: o corpo carrega `MARCA_DE_COBRANCA_DE_ENTREGA_VAZIA` — é ela que
-  // a QUARTA exceção do laço de descoberta (acima, `entregaVaziaAindaNaoCobrada`)
-  // lê para nunca cobrar duas vezes o MESMO head. Sem a marca, esta review
-  // seria idêntica a uma reprovação comum aos olhos daquela exceção, e o
-  // próximo tique cobraria de novo.
-  if (delegado && ehEntregaSemConteudo(pr)) {
-    await postarReview(
-      'REQUEST_CHANGES',
-      `${JULES_MARKER}\n${MARCA_DE_COBRANCA_DE_ENTREGA_VAZIA}\n` +
-        'GitOrch QA verdict: REQUEST CHANGES — empty diff, no commit pushed.'
-    )
-
-    const textoParaODev = textoDeEntregaSemConteudo(target.number)
-    if (linhaDaEntrega && options.avisarSessao) {
-      // Best-effort e BARULHENTO, mesmo padrão do aviso de rework abaixo:
-      // falhar ao avisar não pode derrubar a missão (o veredito já foi
-      // postado no PR), mas silenciar seria repetir o defeito que esta
-      // mudança existe para matar.
-      const avisou = await options
-        .avisarSessao({ sessionName: linhaDaEntrega.sessionName, texto: textoParaODev })
-        .catch(() => false)
-      if (!avisou) {
-        const avisar = options.onWarn ?? console.warn
-        avisar(
-          `[qa] PR #${target.number} sem conteúdo (diff vazio), mas a sessão ` +
-            `${linhaDaEntrega.sessionName} não foi avisada — guardando para reentregar`
-        )
-        // Mesmo recuo do aviso de rework: o recado fica GUARDADO, não só
-        // gritado — um 429 passageiro não pode encalhar a entrega para
-        // sempre (a passagem seguinte pula quem "já foi julgado", pelo
-        // mesmo head sha).
-        if (options.registrarAvisoPendente) {
-          await options
-            .registrarAvisoPendente({
-              sessionName: linhaDaEntrega.sessionName,
-              texto: textoParaODev,
-            })
-            .catch((err) =>
-              avisar(
-                `[qa] não consegui nem guardar o aviso de entrega sem conteúdo de ` +
-                  `${linhaDaEntrega.sessionName}: ${(err as Error).message}`
-              )
-            )
-        }
-      }
-    }
-
-    return {
-      exitCode: 0,
-      output: `QA judged PR #${target.number}: request_changes (empty diff — no commit pushed).`,
-      stderr: '',
-      // Item 4 (L5-T1): nunca aprovar nem mesclar PR sem conteúdo — mesmo
-      // sendo `delegado`, este caminho nunca devolve elegibilidade de merge.
-      podeMesclar: false,
-    }
-  }
-
-  // O ESTADO da verificação vem logo após buscar a PR (e logo após o corte
-  // de entrega sem conteúdo, acima — não há por que gastar chamadas de CI
-  // num diff vazio que já voltou cedo) — ANTES de gastar chamadas com a
-  // issue vinculada e o diff — porque a decisão da Tarefa 6
-  // (`decidirSobreVerificacao`, logo abaixo) pode mandar esperar; não há por
-  // que buscar critérios e diff de um PR que não vai ser julgado agora.
-  let ciState: EstadoDaVerificacao = 'unknown'
-  // L4-T17 — medido AO VIVO em loureng/patinhas-3d-crafts (run 33943490885,
-  // PR #3945): quando a verificação está vermelha COM cancelamento no meio
-  // — ou quando ela É `cancelado` (fix-up L4-T17, achado 1 da revisão: ver
-  // o comentário de `investigarEstadoDoCi`, estado-da-verificacao-do-
-  // github.ts, para a regressão que isto conserta) —, o job/passo que
-  // causou tudo pode estar escondido atrás de um job que o próprio GitHub
-  // marcou "cancelled": o pedido de `gh run cancel` alcança aquele job
-  // antes de o GitHub fechar a conclusão dele como falha. A API de
-  // check-runs não mostra passo nenhum; só a API de jobs do Actions mostra
-  // — e `investigarEstadoDoCi` decide SOZINHA quando vale a pena chamá-la,
-  // promovendo `cancelado` para `red` quando acha uma falha real.
-  // `{ encontrado: false }` não significa "nada cancelou" — significa "sem
-  // passo que prove culpa" (ou não havia nada para investigar).
-  let culpadoDoCancelamento: ResultadoDoCulpado | undefined
-  if (pr.head?.sha) {
-    const checks = (await gh(
-      'GET',
-      `/repos/${options.repository}/commits/${pr.head.sha}/check-runs`
-    )) as {
-      check_runs?: Array<{ id?: number; name?: string; conclusion?: string; status?: string }>
-    }
-    const checkRuns = checks.check_runs ?? []
-    const investigado = await investigarEstadoDoCi(checkRuns, async (jobId) => {
-      const job = (await gh('GET', `/repos/${options.repository}/actions/jobs/${jobId}`)) as {
-        steps?: Array<{ name?: string; conclusion?: string; completed_at?: string }>
-      }
-      return (job.steps ?? []).map((s) => ({
-        name: s.name ?? '',
-        conclusion: s.conclusion ?? null,
-        completedAt: s.completed_at ?? null,
-      }))
-    })
-      // Crash inesperado (não a falha best-effort de UM job — essa,
-      // `investigarCancelamentoEmCadeia` já absorve sozinha): recua para a
-      // resposta PURA (sem rede) — nunca trava a missão, nunca inventa
-      // culpado sem prova.
-      .catch(() => ({ estado: estadoDoCi(checkRuns), culpado: { encontrado: false as const } }))
-    ciState = investigado.estado
-    culpadoDoCancelamento = investigado.culpado
-  }
 
   // Defeito real de produção (PR #97): o QA julgou este PR ENQUANTO a
   // verificação ainda rodava (`ciState === 'pending'`), reprovou com "CI
@@ -1240,11 +1005,7 @@ export async function runQaMissionViaRails(
     ...(options.contextBlocks ?? []),
     `PR #${target.number} by ${target.user?.login}.`,
     `Verification Criteria (from linked issue #${linkedIssue ?? '?'}):\n${criteria}`,
-    `CI status: ${ciState}${
-      culpadoDoCancelamento && culpadoDoCancelamento.encontrado
-        ? ` — ${frasarCausaDoCancelamento(culpadoDoCancelamento)}`
-        : ''
-    }. (You MUST NOT approve when CI is not green.)`,
+    `CI status: ${ciState}. (You MUST NOT approve when CI is not green.)`,
     truncado
       ? `Diff: ${arquivos} file(s), TRUNCATED — you are NOT seeing the whole change. ` +
         `You MUST NOT approve on a truncated diff: if the criteria cannot be checked ` +
@@ -1339,17 +1100,6 @@ export async function runQaMissionViaRails(
     ? `\n\n${pedidoDeDividirAEntrega(target.number, arquivos)}`
     : ''
 
-  // L4-T17 (item 2 — causa legível). Determinístico, não escrito pelo motor:
-  // o motor pode nem mencionar o cancelamento em cadeia (ele só vê "CI
-  // status: red" na prompt, mesmo enriquecida, e pode focar noutra coisa no
-  // comentário) — mas o parecer no PR do cliente PRECISA dizer, sempre, onde
-  // a verificação parou de verdade. Sem isto, cinco entregas paradas por
-  // formatação de código continuariam sem ninguém saber por quê.
-  const explicacaoDoCancelamento =
-    culpadoDoCancelamento && culpadoDoCancelamento.encontrado
-      ? `\n\n${frasarCausaDoCancelamento(culpadoDoCancelamento)}`
-      : ''
-
   // 4) Executor determinístico posta o veredito. O GitHub PROÍBE
   // aprovar/pedir-mudanças no PRÓPRIO PR (422) — e o Jules abre o PR pela
   // conta do dono da instalação, que é a mesma do token. Nesse caso o
@@ -1377,16 +1127,32 @@ export async function runQaMissionViaRails(
   // COMMENT, com o parecer completo (e o aviso de "não vai mesclar",
   // `avisoDeNaoMesclar` abaixo) no corpo. A entrega delegada mantém
   // APPROVE/REQUEST_CHANGES exatamente como sempre foi.
-  //
-  // `postarReview` em si (a função) já foi definida bem mais acima, logo
-  // após buscar `pr` — o corte de entrega sem conteúdo (L5-T1) precisa dela
-  // antes de o motor rodar, então subiu de posição; a lógica é exatamente a
-  // mesma descrita aqui.
   const reviewEvent = !delegado
     ? 'COMMENT'
     : effectiveVerdict === 'approve'
       ? 'APPROVE'
       : 'REQUEST_CHANGES'
+
+  const postarReview = async (evento: string, corpo: string): Promise<boolean> => {
+    try {
+      await gh('POST', `/repos/${options.repository}/pulls/${target.number}/reviews`, {
+        event: evento,
+        body: corpo,
+      })
+      return false
+    } catch (err) {
+      const recusouProprioPr =
+        err instanceof GithubExecutionError &&
+        err.message.includes('(422)') &&
+        /own pull request/i.test(err.message)
+      if (!recusouProprioPr) throw err
+      await gh('POST', `/repos/${options.repository}/pulls/${target.number}/reviews`, {
+        event: 'COMMENT',
+        body: `${corpo}\n\n_(publicado como comentário: o autor da PR é a própria identidade do GitOrch)_`,
+      })
+      return true
+    }
+  }
 
   // Task 11 (decisão do dono D7): o produto mescla sozinho desde o primeiro
   // ciclo, sem confirmação humana — não há dono para esse passo hoje, e
@@ -1592,7 +1358,7 @@ export async function runQaMissionViaRails(
   } else {
     await postarReview(
       reviewEvent,
-      `${JULES_MARKER}${marcaDoPortao}${marcaDoLegado}\nGitOrch QA verdict: REQUEST CHANGES (see comment).${explicacaoDoTamanho}${explicacaoDoCancelamento}${avisoDeNaoMesclar}`
+      `${JULES_MARKER}${marcaDoPortao}${marcaDoLegado}\nGitOrch QA verdict: REQUEST CHANGES (see comment).${explicacaoDoTamanho}${avisoDeNaoMesclar}`
     )
 
     // Este julgamento entra na conta do repositório ANTES de decidir se pede
