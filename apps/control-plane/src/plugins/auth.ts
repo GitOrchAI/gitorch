@@ -318,7 +318,13 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
       githubLogin: z.string().optional(),
     })
 
-    const body = _schema.parse(request.body)
+    const parsedBody = _schema.safeParse(request.body)
+    if (!parsedBody.success) {
+      const error = new Error('BAD REQUEST: Invalid payload') as Error & { statusCode: number }
+      error.statusCode = 400
+      throw error
+    }
+    const body = parsedBody.data
     const expiresAt = new Date()
     expiresAt.setDate(expiresAt.getDate() + body.ttlDays)
 

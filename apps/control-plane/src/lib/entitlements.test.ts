@@ -9,6 +9,7 @@ import {
   type PlanLike,
 } from './entitlements.js'
 import { prisma } from '../plugins/prisma.js'
+import type { ProjectInvitation } from '@prisma/client'
 
 vi.mock('../plugins/prisma.js', () => ({
   prisma: {
@@ -115,7 +116,7 @@ describe('invitations', () => {
       expiresAt: new Date(Date.now() + 100000),
       createdAt: new Date(),
       updatedAt: new Date(),
-    } as any)
+    } as unknown as ProjectInvitation)
 
     const expiresAt = new Date(Date.now() + 100000)
     const payload = {
@@ -152,7 +153,7 @@ describe('invitations', () => {
       expiresAt: new Date(Date.now() - 10000), // Past date
       createdAt: new Date(),
       updatedAt: new Date(),
-    } as any)
+    } as unknown as ProjectInvitation)
 
     const expiresAt = new Date(Date.now() - 10000)
     const payload = {

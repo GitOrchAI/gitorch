@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import fastify from 'fastify'
+import fastify, { FastifyInstance, FastifyRequest } from 'fastify'
 import { authPlugin } from './auth.js'
 import * as entitlements from '../lib/entitlements.js'
 
@@ -12,13 +12,13 @@ vi.mock('../lib/entitlements.js', async () => {
 })
 
 describe('POST /invitations/create', () => {
-  let app: any
+  let app: FastifyInstance
 
   beforeEach(async () => {
     vi.clearAllMocks()
     app = fastify()
-    app.decorateRequest('user', null)
-    app.addHook('preHandler', async (request: any) => {
+    app.decorateRequest('user', undefined)
+    app.addHook('preHandler', async (request: FastifyRequest) => {
       // Mock an authenticated user if authorization header is present
       if (request.headers.authorization === 'Bearer valid') {
         request.user = { id: 'test-user-id', wingId: 'wing-id' }
