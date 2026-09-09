@@ -2,7 +2,7 @@ import { FastifyPluginAsync, FastifyRequest } from 'fastify'
 import fp from 'fastify-plugin'
 import { z } from 'zod'
 import { prisma, wingIdContext, tenantContext } from './prisma.js'
-import { generateProjectInvitation } from '../lib/entitlements.js'
+import { generateProjectInvitation, validateProjectInvitation } from '../lib/entitlements.js'
 
 /**
  * O escopo de isolamento da requisição: o DONO (userId) quando há um, ou o
@@ -63,6 +63,7 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
     '/api/pricing',
     '/api/waitlist',
     '/api/billing/webhook',
+    '/api/v1/invitations/validate/',
   ]
 
   // O front estático (wizard Next export) é servido pela MESMA origem e é
@@ -337,6 +338,38 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
     })
 
     return reply.send({ token })
+  })
+
+  app.get('/api/v1/invitations/validate/:token', async (request, reply) => {
+    const { token } = request.params as { token: string }
+    try {
+      const payload = validateProjectInvitation(token)
+
+      const projects = await prisma.project.findMany({
+        where: { id: { in: payload.targetProjects }, userId: payload.userId },
+        select: { id: true, wingId: true, name: true },
+      })
+
+      const user = await prisma.user.findUnique({
+        where: { id: payload.userId },
+        select: { id: true, githubLogin: true },
+      })
+
+      return reply.send({
+        invitation: {
+          expiresAt: payload.expiresAt,
+          email: payload.email,
+          githubLogin: payload.githubLogin,
+        },
+        projects,
+        owner: user,
+      })
+    } catch (err) {
+      if (err instanceof Error && err.message === 'Project invitation expired') {
+        return reply.status(401).send({ error: 'Project invitation expired' })
+      }
+      return reply.status(400).send({ error: 'Invalid invitation token' })
+    }
   })
 }
 

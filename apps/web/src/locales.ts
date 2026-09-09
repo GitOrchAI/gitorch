@@ -364,6 +364,11 @@ export const locales = {
       errINTERNAL: 'Something unexpected happened on our side. Try again in a moment.',
       reposSignInAgain: 'Sign in to GitHub again',
     },
+    invitation: {
+      validateTitle: 'Validating invitation...',
+      invalidToken: 'Invalid or expired invitation.',
+      acceptInvitation: 'Accept Invitation',
+    },
   },
   pt: {
     nav: {
@@ -735,6 +740,11 @@ export const locales = {
       errINTERNAL: 'Algo inesperado aconteceu do nosso lado. Tente de novo em instantes.',
       reposSignInAgain: 'Entrar de novo no GitHub',
     },
+    invitation: {
+      validateTitle: 'Validando convite...',
+      invalidToken: 'Convite inválido ou expirado.',
+      acceptInvitation: 'Aceitar Convite',
+    },
   },
   es: {
     nav: {
@@ -1103,6 +1113,11 @@ export const locales = {
         'Tu acceso a GitHub expiró. El inicio de sesión expiró o fue revocado — inicia sesión de nuevo para continuar.',
       errINTERNAL: 'Algo inesperado pasó de nuestro lado. Inténtalo de nuevo en un momento.',
       reposSignInAgain: 'Inicia sesión de nuevo en GitHub',
+    },
+    invitation: {
+      validateTitle: 'Validando invitación...',
+      invalidToken: 'Invitación inválida o expirada.',
+      acceptInvitation: 'Aceptar Invitación',
     },
   },
 }

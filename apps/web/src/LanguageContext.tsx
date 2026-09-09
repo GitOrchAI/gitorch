@@ -8,6 +8,7 @@ export type Language = 'en' | 'pt' | 'es'
 interface LanguageContextProps {
   language: Language
   setLanguage: (lang: Language) => void
+  // t supports keys from nested objects like nav.*, setup.*, invitation.*
   t: (key: string, vars?: Record<string, string | number>) => string
 }
 
