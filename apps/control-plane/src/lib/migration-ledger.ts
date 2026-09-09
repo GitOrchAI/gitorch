@@ -52,6 +52,7 @@ export const MIGRATION_LEDGER = [
   'vez-pendente-migration.sql',
   'motores-esgotados-aviso-migration.sql',
   'catalogo-de-duvidas-migration.sql',
+  'project-invitation-migration.sql',
 ] as const
 
 /**
