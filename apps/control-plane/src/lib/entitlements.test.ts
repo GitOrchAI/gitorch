@@ -20,7 +20,7 @@ vi.mock('../plugins/prisma.js', () => ({
 
 beforeEach(() => {
   vi.clearAllMocks()
-  process.env.GITORCH_CREDENTIAL_KEY = 'a'.repeat(64)
+  process.env['GITORCH_CREDENTIAL_KEY'] = 'a'.repeat(64)
 })
 
 const freePlan: PlanLike = {
@@ -112,12 +112,12 @@ describe('invitations', () => {
       userId: 'user-1',
       targetProjects: ['p1', 'p2'],
       status: 'pending',
-      expiresAt: new Date(),
+      expiresAt: new Date(Date.now() + 100000),
       createdAt: new Date(),
       updatedAt: new Date(),
     } as any)
 
-    const expiresAt = new Date()
+    const expiresAt = new Date(Date.now() + 100000)
     const payload = {
       userId: 'user-1',
       targetProjects: ['p1', 'p2'],
@@ -141,5 +141,27 @@ describe('invitations', () => {
     expect(decoded.email).toBe('test@example.com')
     expect(new Date(decoded.expiresAt)).toEqual(expiresAt)
     expect(decoded.invitationId).toBe('inv-123')
+  })
+
+  it('validateProjectInvitation throws an error when token is expired', async () => {
+    vi.mocked(prisma.projectInvitation.create).mockResolvedValue({
+      id: 'inv-124',
+      userId: 'user-1',
+      targetProjects: ['p1'],
+      status: 'pending',
+      expiresAt: new Date(Date.now() - 10000), // Past date
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as any)
+
+    const expiresAt = new Date(Date.now() - 10000)
+    const payload = {
+      userId: 'user-1',
+      targetProjects: ['p1'],
+      expiresAt,
+    }
+
+    const token = await generateProjectInvitation(payload)
+    expect(() => validateProjectInvitation(token)).toThrow('Project invitation expired')
   })
 })

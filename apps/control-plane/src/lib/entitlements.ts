@@ -80,8 +80,14 @@ export function validateProjectInvitation(
 ): ProjectInvitationPayload & { invitationId: string } {
   const decrypted = decryptCredential(token)
   const parsed = JSON.parse(decrypted)
+  const expiresAt = new Date(parsed.expiresAt)
+
+  if (expiresAt < new Date()) {
+    throw new Error('Project invitation expired')
+  }
+
   return {
     ...parsed,
-    expiresAt: new Date(parsed.expiresAt),
+    expiresAt,
   }
 }

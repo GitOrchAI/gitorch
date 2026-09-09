@@ -1,6 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import fastify from 'fastify'
-import fp from 'fastify-plugin'
 import { authPlugin } from './auth.js'
 import * as entitlements from '../lib/entitlements.js'
 

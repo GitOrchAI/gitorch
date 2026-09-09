@@ -326,8 +326,8 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
       userId,
       targetProjects: body.targetProjects,
       expiresAt,
-      email: body.email,
-      githubLogin: body.githubLogin,
+      ...(body.email ? { email: body.email } : {}),
+      ...(body.githubLogin ? { githubLogin: body.githubLogin } : {}),
     })
 
     return reply.send({ token })
