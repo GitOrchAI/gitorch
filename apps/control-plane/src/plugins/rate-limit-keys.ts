@@ -8,6 +8,9 @@ export function parseRateLimitAllowList(raw: string): string[] {
     .filter(Boolean)
 }
 
-export function getInvitationRateLimitMax(env: { GITORCH_AUTH_RATE_LIMIT_MAX?: string | number; [key: string]: unknown }): number {
+export function getInvitationRateLimitMax(env: {
+  GITORCH_AUTH_RATE_LIMIT_MAX?: string | number
+  [key: string]: unknown
+}): number {
   return Number(env.GITORCH_AUTH_RATE_LIMIT_MAX ?? 20)
 }
