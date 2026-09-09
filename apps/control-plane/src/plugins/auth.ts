@@ -1,6 +1,8 @@
 import { FastifyPluginAsync, FastifyRequest } from 'fastify'
 import fp from 'fastify-plugin'
+import { z } from 'zod'
 import { prisma, wingIdContext, tenantContext } from './prisma.js'
+import { generateProjectInvitation } from '../lib/entitlements.js'
 
 /**
  * O escopo de isolamento da requisição: o DONO (userId) quando há um, ou o
@@ -301,6 +303,40 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
   app.decorate('verifyJwt', async (token: string) => {
     const env = getEnv()
     return jwt.verify(token, env.JWT_SECRET) as UserPayload
+  })
+
+  app.post('/invitations/create', async (request, reply) => {
+    const userId = request.user?.id
+    if (!userId) {
+      throw unauthorized('UNAUTHORIZED: No user in context')
+    }
+
+    const _schema = z.object({
+      targetProjects: z.array(z.string()).min(1),
+      ttlDays: z.number().int().positive(),
+      email: z.string().email().optional(),
+      githubLogin: z.string().optional(),
+    })
+
+    const parsedBody = _schema.safeParse(request.body)
+    if (!parsedBody.success) {
+      const error = new Error('BAD REQUEST: Invalid payload') as Error & { statusCode: number }
+      error.statusCode = 400
+      throw error
+    }
+    const body = parsedBody.data
+    const expiresAt = new Date()
+    expiresAt.setDate(expiresAt.getDate() + body.ttlDays)
+
+    const token = await generateProjectInvitation({
+      userId,
+      targetProjects: body.targetProjects,
+      expiresAt,
+      ...(body.email ? { email: body.email } : {}),
+      ...(body.githubLogin ? { githubLogin: body.githubLogin } : {}),
+    })
+
+    return reply.send({ token })
   })
 }
 

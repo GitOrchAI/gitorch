@@ -1,6 +1,8 @@
 // Entitlements central: uma única função can() decide o que um plano libera.
 // Evita `if (plan === 'pro')` espalhado pelo código (dívida). As flags vivem no
 // Plan.features (JSON) — ver prisma/seed.ts. Ver docs/business/pricing-strategy.md.
+import { prisma } from '../plugins/prisma.js'
+import { encryptCredential, decryptCredential } from './credential-crypto.js'
 
 export type Capability =
   | 'autoAutonomy' // agente decide sozinho (vs. dono aprova cada missão)
@@ -43,4 +45,49 @@ export function canAddSeat(plan: PlanLike, currentSeatCount: number): boolean {
 /** Quantos slots de missão simultânea ainda cabem para este plano. */
 export function remainingConcurrency(plan: PlanLike, activeMissions: number): number {
   return Math.max(0, plan.maxConcurrentMissions - activeMissions)
+}
+
+export interface ProjectInvitationPayload {
+  userId: string
+  targetProjects: string[]
+  expiresAt: Date
+  email?: string
+  githubLogin?: string
+}
+
+export async function generateProjectInvitation(
+  payload: ProjectInvitationPayload
+): Promise<string> {
+  const invitation = await prisma.projectInvitation.create({
+    data: {
+      userId: payload.userId,
+      targetProjects: payload.targetProjects,
+      expiresAt: payload.expiresAt,
+    },
+  })
+
+  const tokenPayload = {
+    ...payload,
+    invitationId: invitation.id,
+  }
+
+  const token = encryptCredential(JSON.stringify(tokenPayload))
+  return token
+}
+
+export function validateProjectInvitation(
+  token: string
+): ProjectInvitationPayload & { invitationId: string } {
+  const decrypted = decryptCredential(token)
+  const parsed = JSON.parse(decrypted)
+  const expiresAt = new Date(parsed.expiresAt)
+
+  if (expiresAt < new Date()) {
+    throw new Error('Project invitation expired')
+  }
+
+  return {
+    ...parsed,
+    expiresAt,
+  }
 }

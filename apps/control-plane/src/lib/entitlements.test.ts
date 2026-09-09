@@ -1,11 +1,28 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi, beforeEach } from 'vitest'
 import {
   can,
   canAddProject,
   canAddSeat,
   remainingConcurrency,
+  generateProjectInvitation,
+  validateProjectInvitation,
   type PlanLike,
 } from './entitlements.js'
+import { prisma } from '../plugins/prisma.js'
+import type { ProjectInvitation } from '@prisma/client'
+
+vi.mock('../plugins/prisma.js', () => ({
+  prisma: {
+    projectInvitation: {
+      create: vi.fn(),
+    },
+  },
+}))
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  process.env['GITORCH_CREDENTIAL_KEY'] = 'a'.repeat(64)
+})
 
 const freePlan: PlanLike = {
   features: {
@@ -86,5 +103,66 @@ describe('limites', () => {
     expect(remainingConcurrency(proPlan, 0)).toBe(2)
     expect(remainingConcurrency(proPlan, 2)).toBe(0)
     expect(remainingConcurrency(proPlan, 5)).toBe(0)
+  })
+})
+
+describe('invitations', () => {
+  it('generateProjectInvitation saves and returns a token', async () => {
+    const mockCreate = vi.mocked(prisma.projectInvitation.create).mockResolvedValue({
+      id: 'inv-123',
+      userId: 'user-1',
+      targetProjects: ['p1', 'p2'],
+      status: 'pending',
+      expiresAt: new Date(Date.now() + 100000),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as unknown as ProjectInvitation)
+
+    const expiresAt = new Date(Date.now() + 100000)
+    const payload = {
+      userId: 'user-1',
+      targetProjects: ['p1', 'p2'],
+      expiresAt,
+      email: 'test@example.com',
+    }
+
+    const token = await generateProjectInvitation(payload)
+
+    expect(mockCreate).toHaveBeenCalledWith({
+      data: {
+        userId: 'user-1',
+        targetProjects: ['p1', 'p2'],
+        expiresAt,
+      },
+    })
+
+    const decoded = validateProjectInvitation(token)
+    expect(decoded.userId).toBe('user-1')
+    expect(decoded.targetProjects).toEqual(['p1', 'p2'])
+    expect(decoded.email).toBe('test@example.com')
+    expect(new Date(decoded.expiresAt)).toEqual(expiresAt)
+    expect(decoded.invitationId).toBe('inv-123')
+  })
+
+  it('validateProjectInvitation throws an error when token is expired', async () => {
+    vi.mocked(prisma.projectInvitation.create).mockResolvedValue({
+      id: 'inv-124',
+      userId: 'user-1',
+      targetProjects: ['p1'],
+      status: 'pending',
+      expiresAt: new Date(Date.now() - 10000), // Past date
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as unknown as ProjectInvitation)
+
+    const expiresAt = new Date(Date.now() - 10000)
+    const payload = {
+      userId: 'user-1',
+      targetProjects: ['p1'],
+      expiresAt,
+    }
+
+    const token = await generateProjectInvitation(payload)
+    expect(() => validateProjectInvitation(token)).toThrow('Project invitation expired')
   })
 })

@@ -44,8 +44,26 @@ model User {
   diagnosisJobs     DiagnosisJob[]
   environments      ClientEnvironment[]
   telegramLink      TelegramLink?
+  projectInvitations ProjectInvitation[]
 
   @@map("users")
+}
+
+// Convites criados pelo dono do projeto para adicionar membros via email ou GitHub login.
+model ProjectInvitation {
+  id             String   @id @default(cuid())
+  userId         String   @map("user_id")
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  targetProjects Json     @map("target_projects")
+  status         String   @default("pending") // pending | accepted | revoked | expired
+  expiresAt      DateTime @map("expires_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@map("project_invitations")
 }
 
 // Vínculo do Telegram do CLIENTE — o que torna o aviso possível.
