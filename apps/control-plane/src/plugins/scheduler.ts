@@ -60,10 +60,6 @@ import {
   type PrismaAgentQuestionParaReprocessar,
 } from '../services/reprocessar-perguntas-sem-opcoes.js'
 import {
-  encerrarDuvidasLegadasAbertasDoProjeto,
-  type PrismaParaEncerrarDuvidasLegadas,
-} from '../services/encerrar-duvidas-legadas-abertas.js'
-import {
   runQaMissionViaRails,
   type VigiliaDoJulgamentoOptions,
 } from '../services/qa-rails-mission.js'
@@ -179,7 +175,6 @@ import {
   registrarCadenciaDePublicacao,
   registrarConsertoDePublicacao,
   registrarVereditoDeAmbiente,
-  zerarNudges,
   type PrismaDevSession,
   type LinhaDeSessao,
 } from '../services/dev-session-store.js'
@@ -201,6 +196,7 @@ import {
   escalarDuvidaAoDono,
   type PrismaParaEscalarDuvida,
 } from '../services/escalar-duvida-ao-dono.js'
+import { montarContextoExecutivoDaPergunta } from '../services/contexto-executivo-da-pergunta.js'
 import {
   // L4-T4 (D64), fix-up a13a42f8: renomeado no import — o wiring real
   // (prisma, BYOK, GitHub, agentQuestionService) mora em `scheduler.ts`
@@ -286,7 +282,6 @@ import {
   arquivarSessaoJules,
   aprovarPlanoJules,
   ultimaMensagemDoDevJules,
-  houveAtividadeDoDevDesde,
 } from '../services/jules-client.js'
 import { vigiarSessoes } from '../services/session-watch.js'
 import {
@@ -6315,12 +6310,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               })
             },
             // D71: 3 opções objetivas + a livre — reutiliza
-            // `agentQuestionService.ask` diretamente. Nunca um aviso de texto
-            // solto. Isto é retomada de PR REPROVADO (decisão de negócio
-            // legítima do dono sobre insistir ou não) — NÃO é dúvida técnica
-            // do dev assíncrono; D75 (05/09) fechou só o caminho da dúvida do
-            // dev (`escalar-duvida-ao-dono.ts`), que não passa mais por
-            // `agentQuestionService`.
+            // `agentQuestionService.ask` (mesmo padrão de
+            // `escalarDuvidaAoDono`). Nunca um aviso de texto solto.
             perguntarAoDono: async ({ issueNumber, numeroDoPr: nPr, retomadasAnteriores }) => {
               const perguntador = (
                 app as unknown as { agentQuestionService?: AgentQuestionService }
@@ -7027,19 +7018,6 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               sessionName,
               onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
             }),
-          // L5-T3: sinal de vida checado antes de abandonar por teto de
-          // nudges — ver `jules-client.ts`/`houveAtividadeDoDevDesde` e
-          // `session-watch.ts` para o porquê (`session.updateTime`, de onde
-          // vem `paradoHaMs`, nem sempre acompanha trabalho real).
-          houveAtividadeRecente: async ({ sessionName, desde }) =>
-            houveAtividadeDoDevDesde({
-              apiKey: await chaveDaLinha(sessionName),
-              sessionName,
-              desde,
-              onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
-            }),
-          zerarNudges: ({ sessionName }) =>
-            zerarNudges({ prisma: app.prisma as unknown as PrismaDevSession, sessionName }),
           aprovarPlano: async (sessionName) =>
             aprovarPlanoJules({
               apiKey: await chaveDaLinha(sessionName),
@@ -7220,6 +7198,79 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       nivel: () => projetoDaVez.autonomia,
       timeoutMs: TIMEOUT_DE_CHAMADA_GITHUB_MS,
     })
+
+  /**
+   * D73/L4-T23: monta o contexto executivo (ciclo, entrega, decisões já
+   * tomadas — contexto-executivo-da-pergunta.ts) para a pergunta de RESERVA
+   * de `escalarDuvidaAoDono` contar a história em vez de citar a dúvida
+   * técnica do dev. Definida UMA VEZ aqui (fora do `for` de candidatas de
+   * `responderDuvidaPendente`) — não como closure inline dentro do laço —
+   * para não pagar o custo de recriar/reanalisar esta função a cada
+   * candidata de cada tique.
+   *
+   * Reaproveita os MESMOS caminhos que o resto do relógio já usa para ler
+   * este repositório: `ghGet` (leitura da issue, acima),
+   * `ProjectV2Client.findProjectId` com o fallback organization→user (MESMO
+   * padrão de `avaliarCustoDaOrdem`, mais abaixo neste arquivo) e
+   * `resolveQuadroDoProjeto` (routes/painel.ts) para achar o quadro
+   * configurado. Best-effort por contrato: sem token, sem quadro
+   * configurado, ou qualquer falha de rede, o método devolve o contexto com
+   * as lacunas declaradas — nunca lança (ver
+   * `montarContextoExecutivoDaPergunta`) — e `escalarDuvidaAoDono` já trata
+   * a falha do PRÓPRIO `montarContexto` como best-effort por cima disso.
+   */
+  const montarContextoParaEscalada = async (
+    ctxArgs: { issueNumber: number; repository: string; projectId: string },
+    contextoDoTique: {
+      githubToken: string | undefined
+      autonomia: string | null | undefined
+      runtimeConfig: unknown
+    }
+  ) => {
+    const fetchDeLeitura = fetchDoRepositorio({
+      nivel: () => contextoDoTique.autonomia,
+      timeoutMs: TIMEOUT_DE_CHAMADA_GITHUB_MS,
+    })
+    const token = contextoDoTique.githubToken
+    const quadroConfigurado = resolveQuadroDoProjeto(contextoDoTique.runtimeConfig)
+    let quadroId: string | undefined
+    if (token && quadroConfigurado) {
+      const leitor = new ProjectV2Client({ token, fetchImpl: fetchDeLeitura })
+      quadroId =
+        (await leitor.findProjectId({
+          login: quadroConfigurado.login,
+          number: quadroConfigurado.numero,
+          ownerType: 'organization',
+        })) ??
+        (await leitor.findProjectId({
+          login: quadroConfigurado.login,
+          number: quadroConfigurado.numero,
+          ownerType: 'user',
+        })) ??
+        undefined
+    }
+    return montarContextoExecutivoDaPergunta(ctxArgs, {
+      buscarCorpoDaIssue: async () => {
+        if (!token) return null
+        const issue = (await ghGet(
+          `/repos/${ctxArgs.repository}/issues/${ctxArgs.issueNumber}`,
+          token
+        )) as { body?: string | null }
+        return issue.body ?? null
+      },
+      // `exactOptionalPropertyTypes`: só entra no objeto quando os dois
+      // existem — nunca `undefined` explícito numa propriedade opcional.
+      ...(token && quadroId
+        ? { clienteDeQuadro: new ProjectV2Client({ token, fetchImpl: fetchDeLeitura }), quadroId }
+        : {}),
+      prisma: {
+        agentQuestion: {
+          findMany: (a: unknown) => app.prisma.agentQuestion.findMany(a as never),
+        },
+      },
+      hoje: hojeNoFuso(),
+    })
+  }
 
   // R6 do controlador: o mecanismo de publicação (Tarefa 12) muda raramente
   // mas NÃO é imutável — guardado em memória, por repositório, com validade
@@ -8294,13 +8345,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             return
           }
         }
-        // D75 (05/09, decisão do dono): dúvida do dev NUNCA MAIS vira
-        // pergunta ao dono — `escalar-duvida-ao-dono.ts` (L5-T5) reescreveu
-        // o contrato por completo: guarda a conversa no catálogo
-        // (best-effort) e SEMPRE registra a falha do TIME via `onError`,
-        // nunca `agent_question`, nunca lança. Nome da função mantido (o
-        // que ela fecha, não o que ela abre — o comentário no módulo explica
-        // a virada).
+        // L4-T3: a decisão e a escrita real (agent_question/escalada) vivem em
+        // `services/escalar-duvida-ao-dono.ts` — extraído para ser testável
+        // sem a máquina de missão/motor (ver o teste real de costura
+        // `escalar-duvida-ao-dono.test.ts`, que reproduziu o defeito de
+        // 02/09 antes do conserto: 24 sessões marcadas "respondida" ao
+        // escalar, ZERO `agent_question` criada).
         await escalarDuvidaAoDono(
           {
             destino,
@@ -8314,6 +8364,18 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           },
           {
             prisma: app.prisma as unknown as PrismaParaEscalarDuvida,
+            agentQuestionService: (
+              app as unknown as { agentQuestionService?: AgentQuestionService }
+            ).agentQuestionService,
+            // D73/L4-T23: `montarContextoParaEscalada` está definida UMA VEZ
+            // fora deste laço (logo depois de `ghGet`/`fetchDoQuadro`) — aqui
+            // só um wrapper fino que fecha sobre o `args` deste tique.
+            montarContexto: (ctxArgs) =>
+              montarContextoParaEscalada(ctxArgs, {
+                githubToken: args.githubToken,
+                autonomia: args.autonomia,
+                runtimeConfig: args.runtimeConfig,
+              }),
             onInfo: (m) => app.log.info(`[Scheduler] ${m}`),
             onError: (err, m) => app.log.error(err, `[Scheduler] ${m}`),
           }
@@ -10410,87 +10472,59 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   }
 
   /**
-   * L4-T3, item 4, ORIGEM: migrava as sessões marcadas `respondida:` SEM
-   * `agent_question` real (a assinatura exata do defeito de
-   * `escalar-duvida-ao-dono.ts` medido em 02/09) criando uma pergunta de
-   * verdade. L4-T4, fix-up 5: passou a rodar em TODO tique (sem cadência de
-   * 6h) e ANTES de `devolverVagasDeSessaoAbandonada`/
-   * `varrerCicloTerminalDaSessao` — sem essa ordem, uma sessão presa podia
-   * ser fechada pelos dois varredores ANTES de a reconciliação sequer olhar
-   * para ela (medido em produção 03/09: 9 sessões assim), e a query dela
-   * filtra `closedAt: null`, então uma sessão já fechada some da
-   * reconciliação PARA SEMPRE.
+   * L4-T3, item 4 — O CONSERTO DAS 24 PRESAS: migra as sessões marcadas
+   * `respondida:` SEM `agent_question` real — a assinatura exata do defeito
+   * de `escalar-duvida-ao-dono.ts` antes do conserto do item 0. A lógica por
+   * projeto vive em `services/reconciliar-duvidas-escaladas.ts` (testável
+   * sem esta máquina).
    *
-   * L4-T30 (05/09) — REESCRITA pós-D75 (decisão do dono: "os agentes do
-   * gitorch não podem mandar essas dúvidas pra mim"). O caminho LEGADO
-   * acima nunca foi desligado depois do conserto do caminho VIVO
-   * (`escalar-duvida-ao-dono.ts`) e continuava criando `agent_question` com
-   * contexto vazio (D73/L4-T23) a cada tique — foi ele que mandou as duas
-   * perguntas vazias de 05/09. Agora:
-   *  1. `reconciliarDuvidasEscaladasDoProjeto` (services/reconciliar-
-   *     duvidas-escaladas.ts) não tem MAIS NENHUM jeito de criar pergunta —
-   *     garantia estrutural no próprio tipo dos deps. A MESMA sessão presa
-   *     (`respondida:` sem pergunta real) é ENCERRADA direto, com o motivo
-   *     redelegante `pergunta-sem-resposta` (`fecharSessao`,
-   *     dev-session-store.ts — a issue volta para a fila, nunca se perde).
-   *     PRESERVA A ORDEM de antes (ANTES dos dois varredores abaixo) pelo
-   *     MESMO motivo: se `devolverVagasDeSessaoAbandonada` chegasse
-   *     primeiro numa sessão assim, fecharia com `abandoned` — motivo que
-   *     NÃO redelega — e a tarefa se perderia da fila em vez de ser
-   *     redelegada.
-   *  2. `encerrarDuvidasLegadasAbertasDoProjeto` (services/encerrar-
-   *     duvidas-legadas-abertas.ts) — NOVO: as `agent_question` que o
-   *     caminho legado JÁ tinha criado antes deste conserto (dedupKey
-   *     `duvida-dev:*`, ainda `open`) são encerradas pelo MESMO mecanismo
-   *     de "assumida" que o produto já usa, citando D75 no texto — nunca
-   *     ficam esperando uma resposta do dono que não vai vir.
+   * L4-T4, fix-up 5 (task a13a42f8-2953-4259-b41f-3f8cddb304cd) — PROVADO em
+   * produção 03/09: com a cadência de 6h (herdada do item 4) e rodando DEPOIS
+   * de `devolverVagasDeSessaoAbandonada`/`varrerCicloTerminalDaSessao` no
+   * tique, uma sessão AWAITING_USER_FEEDBACK com marca `respondida:0:<hash>`
+   * (legada, sem `agent_question`) podia ser FECHADA pelos dois varredores
+   * de cima ANTES de esta reconciliação sequer rodar — e a query dela filtra
+   * `closedAt: null` (reconciliar-duvidas-escaladas.ts), então uma sessão já
+   * fechada some da reconciliação PARA SEMPRE (medido: 9 sessões assim em
+   * 03/09, 2 fechadas no MESMO primeiro tique às 09:49:14, a reconciliação só
+   * às 09:51:08). O conserto de `sessao-terminal.ts` (o veto por
+   * `answeredHash`) só protege marca JÁ migrada para `escalada:` — a marca
+   * legada `respondida:` continua vulnerável enquanto não for reconciliada.
+   *
+   * A partir de agora: SEM cadência (roda em TODO tique — o `findMany` é
+   * barato, um por projeto ativo) e ANTES dos dois varredores que fecham
+   * sessão no `tick` (abaixo). Uma sessão presa é migrada para `escalada:` +
+   * ganha a `agent_question` na MESMA passada em que seria fechada — e o
+   * veto por `answeredHash` (sessao-terminal.ts) a protege daí em diante.
    */
   const reconciliarDuvidasEscaladasLegadas = async (): Promise<void> => {
     const perguntador = (app as unknown as { agentQuestionService?: AgentQuestionService })
       .agentQuestionService
     const projetos = await app.prisma.project.findMany({
       where: { isActive: true },
-      select: { id: true, wingId: true },
+      select: { id: true, wingId: true, userId: true },
     })
 
     for (const projeto of projetos) {
       try {
         const resumo = await reconciliarDuvidasEscaladasDoProjeto(
-          { projectId: projeto.id, repository: projeto.wingId },
+          { projectId: projeto.id, repository: projeto.wingId, userId: projeto.userId },
           {
             prisma: app.prisma as unknown as PrismaParaReconciliacao,
-            fecharSessao: async ({ sessionName, agora }) => {
-              // A chave é da conta em que a sessão NASCEU (BYOK, D34), lida
-              // linha a linha — MESMO padrão de `devolverVagasDeSessaoAbandonada`.
-              const apiKey = await chaveDaSessao(sessionName)
-              await fecharSessao({
-                prisma: app.prisma as unknown as PrismaDevSession,
-                sessionName,
-                motivo: 'pergunta-sem-resposta',
-                agora,
-                ...(apiKey
-                  ? {
-                      arquivarNoFornecedor: (nome: string) =>
-                        arquivarSessaoJules({
-                          apiKey,
-                          sessionName: nome,
-                          onWarn: (m) => app.log.warn(m),
-                        }),
-                    }
-                  : {}),
-                onWarn: (m) => app.log.warn(m),
-              })
-            },
+            agentQuestionService: perguntador,
+            decifrar: decryptCredential,
+            julesApiKeyDaInstancia: process.env['JULES_API_KEY'],
             onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
-            // Nunca engole: rede/Prisma falhando ao encerrar uma sessão
-            // presa é nível `error` de verdade, não só `warn`.
+            // C3 (fix-up L4-T3): falha do ask() vira nível `error` de
+            // verdade (não só warn) — nunca engolida, nunca reprocessada em
+            // silêncio a cada 6h.
             onError: (err, m) => app.log.error(err, `[Scheduler] ${m}`),
           }
         )
-        if (resumo.encontradas > 0 || resumo.encerradas > 0 || resumo.falhas > 0) {
+        if (resumo.presas > 0 || resumo.criadas > 0 || resumo.falhas > 0) {
           app.log.info(
-            `[Scheduler] duvidas-escaladas ${projeto.wingId}: ${resumo.encontradas} encontradas, ` +
-              `${resumo.encerradas} encerradas, ${resumo.falhas} falhas`
+            `[Scheduler] duvidas-escaladas ${projeto.wingId}: ${resumo.presas} presas, ` +
+              `${resumo.criadas} perguntas criadas, ${resumo.falhas} falhas`
           )
         }
       } catch (err) {
@@ -10500,42 +10534,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         )
       }
 
+      // D72 (02/09), item 5 — a LIMPEZA: as perguntas que o dono já
+      // flagrou AO VIVO no painel/Telegram, quebradas (menos de 4 opções),
+      // saem de "Esperando você" sem esperar ninguém clicar. Roda no MESMO
+      // relógio de `reconciliarDuvidasEscaladasDoProjeto` (todo tique, todo
+      // projeto ativo) — idempotente: depois da primeira passada não sobra
+      // nenhuma para reprocessar.
       if (perguntador) {
-        // L4-T30, item 2 — a LIMPEZA das perguntas que o caminho legado já
-        // tinha criado (contexto vazio, D73/L4-T23) antes de D75 desligar
-        // o caminho vivo. Roda ANTES da limpeza de "sem opções" abaixo —
-        // depois desta, não deve sobrar nenhuma `duvida-dev:*` aberta para
-        // a de baixo reprocessar (mesmo dedupKey, critério mais amplo).
-        try {
-          const resumoDoEncerramento = await encerrarDuvidasLegadasAbertasDoProjeto(
-            { projectId: projeto.id },
-            {
-              prisma: app.prisma as unknown as PrismaParaEncerrarDuvidasLegadas,
-              marcarAssumida: (marcarArgs) => perguntador.marcarAssumida(marcarArgs),
-              onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
-            }
-          )
-          if (resumoDoEncerramento.encontradas > 0) {
-            app.log.info(
-              `[Scheduler] duvidas-legadas-abertas ${projeto.wingId}: ` +
-                `${resumoDoEncerramento.encontradas} encontradas, ` +
-                `${resumoDoEncerramento.encerradas} encerradas, ` +
-                `${resumoDoEncerramento.falhas} falhas`
-            )
-          }
-        } catch (err) {
-          app.log.error(
-            err,
-            `[Scheduler] encerramento de dúvidas legadas abertas falhou em ${projeto.wingId}`
-          )
-        }
-
-        // D72 (02/09), item 5 — a LIMPEZA: as perguntas que o dono já
-        // flagrou AO VIVO no painel/Telegram, quebradas (menos de 4 opções),
-        // saem de "Esperando você" sem esperar ninguém clicar. Roda no MESMO
-        // relógio de `reconciliarDuvidasEscaladasDoProjeto` (todo tique, todo
-        // projeto ativo) — idempotente: depois da primeira passada não sobra
-        // nenhuma para reprocessar.
         try {
           const resumoDoReprocessamento = await reprocessarPerguntasSemOpcoesDoProjeto(
             { projectId: projeto.id },
@@ -10586,13 +10591,10 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     await processSetupMissions()
     await varrerSessoesDoDev()
     // L4-T4, fix-up 5 (task a13a42f8-2953-4259-b41f-3f8cddb304cd): ANTES dos
-    // dois varredores abaixo, de propósito — são eles que fecham sessão. L4-
-    // T30 (05/09, pós-D75): a reconciliação agora ENCERRA a sessão presa ela
-    // mesma (motivo redelegante `pergunta-sem-resposta`, nunca cria mais
-    // pergunta) — se `devolverVagasDeSessaoAbandonada` chegasse primeiro
-    // numa sessão `respondida:` sem pergunta real, fecharia com `abandoned`
-    // (motivo que NÃO redelega) e a tarefa se perderia da fila em vez de ser
-    // redelegada. Rodar depois (como era antes da L4-T4) deixava a sessão
+    // dois varredores abaixo, de propósito — são eles que fecham sessão, e a
+    // marca legada `respondida:` (sem `agent_question`) só vira `escalada:`
+    // (protegida pelo veto de `sessao-terminal.ts`) se esta reconciliação já
+    // tiver rodado NESTA passada. Rodar depois (como era) deixava a sessão
     // fechar antes de a reconciliação sequer olhar para ela — e a query dela
     // filtra `closedAt: null`, então uma sessão fechada some de vista para
     // sempre (medido em produção 03/09: 9 sessões assim). Nunca derruba o

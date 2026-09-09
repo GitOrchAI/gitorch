@@ -52,7 +52,6 @@ describe('MIGRATION_LEDGER', () => {
       'incremento-campos-do-desenho-migration.sql',
       'vez-pendente-migration.sql',
       'motores-esgotados-aviso-migration.sql',
-      'catalogo-de-duvidas-migration.sql',
     ])
   })
 })

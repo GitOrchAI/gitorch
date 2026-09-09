@@ -55,23 +55,17 @@ jobs:
             fi
             echo "OK: $f com assets em $BP"
           done
-      - name: Upload artifact
-        id: upload-artifact
-        uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v3
         with:
           path: apps/web/out
   deploy:
     needs: build
     runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
+      - id: deploy
         uses: actions/deploy-pages@v4
   smoke:
     needs: deploy

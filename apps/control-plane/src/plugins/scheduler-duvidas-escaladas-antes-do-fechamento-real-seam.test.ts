@@ -2,38 +2,39 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import Fastify from 'fastify'
 import { schedulerPlugin } from './scheduler.js'
 
-// L4-T4, fix-up 5 (task a13a42f8-2953-4259-b41f-3f8cddb304cd) — ITEM 2,
-// REESCRITO em L4-T30 (05/09) pós-D75.
+// L4-T4, fix-up 5 (task a13a42f8-2953-4259-b41f-3f8cddb304cd) — ITEM 2.
 //
 // PROVADO em produção 03/09: `reconciliarDuvidasEscaladasLegadas` rodava
 // DEPOIS de `devolverVagasDeSessaoAbandonada`/`varrerCicloTerminalDaSessao`
-// no `tick()`, e uma sessão AWAITING_USER_FEEDBACK marcada
-// `respondida:0:<hash>` (assinatura do defeito L4-T3) podia ser fechada
-// pelos dois varredores de cima ANTES de a reconciliação sequer olhar para
-// ela. O conserto original preservou a ordem (reconciliação PRIMEIRO) para
-// a sessão virar `escalada:` (protegida) antes dos fechamentos — mas isso
-// ainda dependia de criar `agent_question`, o caminho que D75 fechou.
+// no `tick()`, e com cadência de 6h — então uma sessão AWAITING_USER_FEEDBACK
+// marcada `respondida:0:<hash>` (assinatura do defeito da L4-T3: escalada sem
+// `agent_question` real) podia ser fechada pelos dois varredores de cima
+// ANTES de a reconciliação sequer olhar para ela. Pior: a query da
+// reconciliação filtra `closedAt: null` (reconciliar-duvidas-escaladas.ts) —
+// uma sessão já fechada some da reconciliação PARA SEMPRE. Medido: 9 sessões
+// assim, 2 fechadas no MESMO primeiro tique (09:49:14), a reconciliação só às
+// 09:51:08.
 //
-// L4-T30: a reconciliação agora ENCERRA a sessão ela mesma (`fecharSessao`,
-// motivo redelegante `pergunta-sem-resposta` — dev-session-store.ts,
-// `MOTIVOS_QUE_REDELEGAM`), e a ORDEM continua importando pelo MESMO
-// motivo, só que invertido: se `devolverVagasDeSessaoAbandonada` (que fecha
-// com `abandoned`, motivo que NÃO redelega) chegasse primeiro nesta MESMA
-// sessão, a tarefa se perderia da fila em vez de ser redelegada. Rodando a
-// reconciliação primeiro, a sessão já está fechada (com o motivo CERTO)
-// quando os dois varredores de fechamento chegam — a query deles filtra
-// `closedAt: null`, então nem tocam nela.
+// O conserto (este arquivo prova o wiring real, registrando o
+// `schedulerPlugin` de verdade e deixando o `setInterval` de produção
+// disparar o `tick`): `reconciliarDuvidasEscaladasLegadas()` agora roda SEM
+// cadência (todo tique) e ANTES dos dois varredores. Cenário do próprio
+// fix-up: sessão AWAITING_USER_FEEDBACK marcada `respondida:0:<hash>`, parada
+// há 25h (além do teto de 12h de `devolverVagasDeSessaoAbandonada`) — no fim
+// do tique ela continua ABERTA, a marca virou `escalada:0:<hash>` e existe 1
+// `agent_question` com dedupKey `duvida-dev:*`.
 //
-// Cenário do próprio fix-up: sessão AWAITING_USER_FEEDBACK marcada
-// `respondida:0:<hash>`, parada há 25h (além do teto de 12h de
-// `devolverVagasDeSessaoAbandonada`) — no fim do tique ela está FECHADA,
-// com `closedReason: 'pergunta-sem-resposta'` (nunca `abandoned`), e NENHUMA
-// `agent_question` foi criada.
+// Mesma técnica de costura dos outros `*-real-seam`: `project.findMany` e
+// `devSession.findMany` roteiam por FORMA (select/where) — cada varredura do
+// tique que este cenário não avalia (quadro, sprint, cotas, catálogo de
+// modelos etc.) cai num default seguro e fica inerte, sem precisar mockar 20+
+// call sites que não são o assunto deste teste.
 
 const PROJETO = {
   id: 'proj_1',
   wingId: 'acme/api',
   name: 'Acme API',
+  userId: 'user_1',
   isActive: true,
 }
 
@@ -44,7 +45,6 @@ const SESSAO_PRESA = {
   issueNumber: 3787,
   pullRequestNumber: 501,
   state: 'AWAITING_USER_FEEDBACK',
-  answeredHash: `respondida:0:${HASH}`,
   devAccountId: null,
   requeueCount: 0,
   analysisDoneAt: null,
@@ -79,21 +79,21 @@ function autoModel(overrides: Record<string, unknown> = {}): Record<string, unkn
 function buildFakePrisma() {
   const askCalls: Array<{ userId: string; projectId: string; input: Record<string, unknown> }> = []
   const updateCalls: Array<{ where: unknown; data: Record<string, unknown> }> = []
+  let marcaAtual: string | null = `respondida:0:${HASH}`
   let fechada = false
-  let motivoFechamento: string | null = null
 
   const prisma = new Proxy(
     {
       project: autoModel({
         // Só a consulta de `reconciliarDuvidasEscaladasLegadas` usa esta
-        // forma exata de `select` ({id, wingId}, desde a reescrita L4-T30
-        // — antes incluía `userId`) — as outras varreduras que também leem
-        // `{isActive:true}` pedem campos extras e caem no default (`[]`).
+        // forma exata de `select` ({id, wingId, userId}) — as outras ~11
+        // varreduras que também leem `{isActive:true}` pedem campos extras e
+        // caem no default (`[]`), ficando inertes neste teste.
         findMany: vi.fn(async (args: { select?: Record<string, boolean> }) => {
           const chaves = Object.keys(args?.select ?? {})
             .sort()
             .join(',')
-          if (chaves === 'id,wingId') return [PROJETO]
+          if (chaves === 'id,userId,wingId') return [PROJETO]
           return []
         }),
         findUnique: vi.fn(async () => PROJETO),
@@ -109,35 +109,45 @@ function buildFakePrisma() {
             if (args?.distinct) return [{ projectId: PROJETO.id }]
             // 2) A query da RECONCILIAÇÃO — só ela filtra `answeredHash: {not: null}`.
             if (args?.where?.answeredHash?.not === null) {
-              return fechada ? [] : [{ ...SESSAO_PRESA }]
+              return marcaAtual && !fechada
+                ? [
+                    {
+                      sessionName: SESSAO_PRESA.sessionName,
+                      issueNumber: SESSAO_PRESA.issueNumber,
+                      answeredHash: marcaAtual,
+                    },
+                  ]
+                : []
             }
             // 3) `sessoesVivas` (por projeto, dentro de `varrerSessoesDoDev`)
             //    — sem chave do Jules configurada, `consultarSessao` devolve
             //    null e a vigia não toca nesta linha (ver comentário no topo).
             if (args?.where?.projectId) {
-              return fechada ? [] : [{ ...SESSAO_PRESA, closedAt: null }]
+              return fechada ? [] : [{ ...SESSAO_PRESA, answeredHash: marcaAtual, closedAt: null }]
             }
             // 4) Consulta GLOBAL `{closedAt: null}` — usada pelas DUAS
             //    varreduras que este teste avalia:
             //    `linhasVivasParaJulgarAbandono` (devolverVagasDeSessaoAbandonada)
             //    e `linhasVivasParaCicloTerminal` (varrerCicloTerminalDaSessao).
-            //    Depois do conserto, a reconciliação já FECHOU a sessão
-            //    ANTES destas duas no mesmo tique — `fechada` já é `true`.
-            return fechada ? [] : [{ ...SESSAO_PRESA, closedAt: null }]
+            //    Depois do conserto, a reconciliação já rodou ANTES destas
+            //    duas no mesmo tique — `marcaAtual` já reflete `escalada:`.
+            return fechada ? [] : [{ ...SESSAO_PRESA, answeredHash: marcaAtual, closedAt: null }]
           }
         ),
         findUnique: vi.fn(async () => ({ devAccountId: null })),
         update: vi.fn(async (args: { where: unknown; data: Record<string, unknown> }) => {
           updateCalls.push(args)
+          if (typeof args.data['answeredHash'] === 'string') {
+            marcaAtual = args.data['answeredHash']
+          }
           if (args.data['closedAt'] !== undefined) {
             fechada = true
-            motivoFechamento = (args.data['closedReason'] as string) ?? null
           }
           return undefined
         }),
       }),
       agentQuestion: autoModel({
-        findMany: vi.fn(async () => []), // nenhuma agent_question legada aberta neste cenário.
+        findFirst: vi.fn(async () => null),
       }),
       mission: autoModel({
         updateMany: vi.fn(async () => ({ count: 0 })),
@@ -148,7 +158,7 @@ function buildFakePrisma() {
       _askCalls: askCalls,
       _updateCalls: updateCalls,
       _fechada: () => fechada,
-      _motivoFechamento: () => motivoFechamento,
+      _marcaAtual: () => marcaAtual,
     },
     {}
   )
@@ -156,7 +166,7 @@ function buildFakePrisma() {
     _askCalls: typeof askCalls
     _updateCalls: typeof updateCalls
     _fechada: () => boolean
-    _motivoFechamento: () => string | null
+    _marcaAtual: () => string | null
   }
 }
 
@@ -172,7 +182,7 @@ const ENV_KEYS = [
   'TELEGRAM_BOT_TOKEN',
 ]
 
-describe('reconciliação de dúvidas ANTES dos fechamentos no tick (real seam, L4-T4 fix-up 5 / L4-T30)', () => {
+describe('reconciliação de dúvidas ANTES dos fechamentos no tick (real seam, L4-T4 fix-up 5)', () => {
   const original: Record<string, string | undefined> = {}
   const originalFetch = global.fetch
   let app: ReturnType<typeof Fastify> | undefined
@@ -202,7 +212,7 @@ describe('reconciliação de dúvidas ANTES dos fechamentos no tick (real seam, 
     vi.restoreAllMocks()
   })
 
-  test('sessão AWAITING com respondida:0:<hash> parada há 25h: no fim do tique está FECHADA com pergunta-sem-resposta (nunca abandoned), e nenhuma agent_question foi criada', async () => {
+  test('sessão AWAITING com respondida:0:<hash> parada há 25h: no fim do tique continua ABERTA, marca virou escalada: e existe 1 agent_question duvida-dev:*', async () => {
     const prisma = buildFakePrisma()
     const ask = vi.fn(async (userId: string, projectId: string, input: Record<string, unknown>) => {
       prisma._askCalls.push({ userId, projectId, input })
@@ -211,35 +221,35 @@ describe('reconciliação de dúvidas ANTES dos fechamentos no tick (real seam, 
 
     app = Fastify({ logger: false })
     app.decorate('prisma', prisma as never)
-    app.decorate('agentQuestionService', { ask, marcarAssumida: vi.fn() } as never)
+    app.decorate('agentQuestionService', { ask } as never)
     await app.register(schedulerPlugin)
 
-    // A reconciliação encerrou a sessão direto — prova que rodou ANTES dos
-    // dois varredores de fechamento (senão eles teriam fechado primeiro,
-    // com `abandoned`).
+    // A reconciliação criou a pergunta de verdade — prova que rodou.
     await vi.waitFor(
       () => {
-        expect(prisma._fechada()).toBe(true)
+        expect(ask).toHaveBeenCalledTimes(1)
       },
       { timeout: 3000, interval: 10 }
     )
-    expect(prisma._motivoFechamento()).toBe('pergunta-sem-resposta')
+    expect(prisma._askCalls[0]?.input['dedupKey']).toBe(`duvida-dev:acme/api:3787:${HASH}`)
+
+    // A marca migrou para `escalada:` — é o que protege a sessão dos dois
+    // varredores de fechamento que rodam DEPOIS no mesmo tique.
+    await vi.waitFor(() => {
+      expect(prisma._marcaAtual()).toBe(`escalada:0:${HASH}`)
+    })
 
     // Dá tempo de mais alguns tiques passarem (devolverVagasDeSessaoAbandonada
     // e varrerCicloTerminalDaSessao já tiveram a chance de agir sobre a MESMA
-    // sessão, no mesmo tique e nos seguintes) — o motivo do fechamento NUNCA
-    // vira `abandoned`: a query deles filtra `closedAt: null` e a sessão já
-    // não aparece mais.
+    // sessão, no mesmo tique e nos seguintes) — e ela CONTINUA aberta.
     await new Promise((r) => setTimeout(r, 200))
 
-    expect(prisma._motivoFechamento()).toBe('pergunta-sem-resposta')
-    expect(ask).not.toHaveBeenCalled()
-
-    const fechamentosDaSessao = prisma._updateCalls.filter(
+    expect(prisma._fechada()).toBe(false)
+    const fechouASessao = prisma._updateCalls.some(
       (c) =>
         (c.where as { sessionName?: string }).sessionName === SESSAO_PRESA.sessionName &&
         c.data['closedAt'] !== undefined
     )
-    expect(fechamentosDaSessao).toHaveLength(1)
+    expect(fechouASessao).toBe(false)
   })
 })

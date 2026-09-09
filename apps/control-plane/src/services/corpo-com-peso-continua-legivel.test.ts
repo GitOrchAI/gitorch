@@ -84,9 +84,6 @@ function plano(): BacklogPlan {
           implementationGuide: '1. Ligar o filtro na tela',
         }),
         blockedByTaskIndexes: [0],
-        // D74: dependência real precisa dizer QUAL resultado da task 0 esta
-        // task precisa (aqui, a coluna que a migração da task 0 cria).
-        blockedByRationale: 'Precisa da coluna material que a task 0 cria na migração.',
         weight: 8,
         weightRationale: 'Toca duas telas e a rota; a incerteza está no cache.',
       },
