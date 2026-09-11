@@ -49,9 +49,15 @@ export function linhasDaCotaDoDev(contas: readonly ContaDeCotaDoDev[]): LinhaDaC
     rotuloDaConta: maisDeUma ? c.projetos.join(', ') : null,
     simultaneasTexto: `${c.simultaneas} de ${c.tetoConcorrentes}`,
     enviadas24hTexto: `${c.enviadas24h} de ${c.tetoDiario}`,
-    prontasEsperandoVaga: c.prontasEsperandoVaga,
-    notaDeEsperandoVaga:
-      c.leituraDoSm === 'sem_leitura' ? 'sem leitura ainda' : 'tarefas prontas na fila',
+    // `?? 0`: um control-plane antigo (sem DJ-T5 no ar) devolve a conta sem
+    // este campo — undefined não pode virar um KPI em branco.
+    prontasEsperandoVaga: c.prontasEsperandoVaga ?? 0,
+    // `leituraDoSm !== 'ok'` (não `=== 'sem_leitura'`): um payload antigo, sem
+    // o campo, é `undefined` — e undefined não é leitura confirmada. Testado
+    // com o /dev-cota real de produção (11/09), que ainda não devolve este
+    // campo: sem essa troca a tela afirmava "tarefas prontas na fila" com o
+    // SM nunca tendo lido nada.
+    notaDeEsperandoVaga: c.leituraDoSm !== 'ok' ? 'sem leitura ainda' : 'tarefas prontas na fila',
     // proximaVagaDiariaEm já vem null do servidor quando há folga — aqui só
     // traduz para horário; nunca calculamos "quando" no cliente (JANELA
     // ROLANTE já foi decidida no control-plane, com o relógio do servidor).

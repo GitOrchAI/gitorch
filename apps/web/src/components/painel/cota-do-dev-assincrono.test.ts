@@ -76,6 +76,29 @@ describe('linhasDaCotaDoDev', () => {
   test('lista vazia → lista vazia, não quebra', () => {
     expect(linhasDaCotaDoDev([])).toEqual([])
   })
+
+  // Payload real do control-plane em produção (11/09/2026), antes do DJ-T5
+  // subir lá: `prontasEsperandoVaga` e `leituraDoSm` vêm ausentes (undefined),
+  // não zerados. Sem o `?? 0` e o `!== 'ok'`, a tela mostrava um KPI em
+  // branco e afirmava "tarefas prontas na fila" com o SM nunca tendo lido —
+  // o oposto do "sem leitura ainda" honesto.
+  test('payload antigo sem os campos novos → cai em "sem leitura ainda" e 0, não quebra', () => {
+    const contaAntiga = {
+      contaId: null,
+      projetos: ['GitOrchAI/gitorch'],
+      plano: 'free',
+      tetoConcorrentes: 3,
+      tetoDiario: 15,
+      simultaneas: 2,
+      enviadas24h: 12,
+      proximaVagaDiariaEm: null,
+      // prontasEsperandoVaga e leituraDoSm ausentes de propósito.
+    } as unknown as ContaDeCotaDoDev
+    const linhas = linhasDaCotaDoDev([contaAntiga])
+    expect(linhas[0]?.prontasEsperandoVaga).toBe(0)
+    expect(linhas[0]?.notaDeEsperandoVaga).toBe('sem leitura ainda')
+    expect(linhas[0]?.proximaVagaHorario).toBeNull()
+  })
 })
 
 describe('horaEmSaoPaulo', () => {
