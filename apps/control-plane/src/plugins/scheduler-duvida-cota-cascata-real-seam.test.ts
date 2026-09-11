@@ -346,7 +346,17 @@ describe('dúvida do dev + cota esgotada: liga à cascata de failover que já ex
     vi.restoreAllMocks()
   })
 
-  test('cota esgotada nos TRÊS motores da cadeia: os três são tentados (item 2) e o dono recebe UM aviso executivo agregado, não por motor (item 3)', async () => {
+  // DJ-T4 (10/09/2026), decisão do dono: "não tem cota? tudo bem, aguarda —
+  // sem falha, sem mensagem." Este teste testava o comportamento ANTERIOR
+  // (falha honesta + UM aviso executivo agregado, #511/#513/L4-T22) para
+  // exatamente este cenário — cadeia INTEIRA esgotada por cota, nenhum
+  // outro motivo misturado. DJ-T4 substitui esse desfecho: a missão agora
+  // DORME (status 'waiting', waitingReason 'cota-dos-motores') em vez de
+  // falhar, e não manda mais o resumo executivo (a ordem do dono foi
+  // silêncio). O teste continua provando o que ainda vale (item 2: os TRÊS
+  // motores são realmente tentados pela MESMA cascata) e passou a provar o
+  // NOVO desfecho no lugar do antigo.
+  test('cota esgotada nos TRÊS motores da cadeia: os três são tentados (item 2) e a missão dorme sem falha nem aviso executivo (DJ-T4)', async () => {
     resultadoDoMotor.porRuntime = {
       codex: {
         missionId: 'irrelevante',
@@ -395,70 +405,61 @@ describe('dúvida do dev + cota esgotada: liga à cascata de failover que já ex
       { timeout: 3000, interval: 10 }
     )
 
-    // A missão termina marcada como falha honesta (nenhum motor concluiu) —
-    // nunca mascarada como sucesso.
+    // DJ-T4: a missão termina DORMINDO ('waiting', waitingReason
+    // 'cota-dos-motores') — nunca 'failed'. Esse é exatamente o desfecho
+    // que substitui a falha honesta de antes: nenhum motor tinha cota, mas
+    // isso não é mais tratado como defeito.
     await vi.waitFor(
       () => {
-        const chamadasDeFalha = prisma.mission.updateMany.mock.calls.filter(
-          (c) => (c[0] as { data?: { status?: string } }).data?.status === 'failed'
+        const chamadasDeEspera = prisma.mission.updateMany.mock.calls.filter(
+          (c) => (c[0] as { data?: { status?: string } }).data?.status === 'waiting'
         )
-        expect(chamadasDeFalha.length).toBeGreaterThan(0)
+        expect(chamadasDeEspera.length).toBeGreaterThan(0)
       },
       { timeout: 3000, interval: 10 }
     )
+    // Filtra por ESTA missão (`where.id`): o fake prisma deste arquivo
+    // devolve `count: 1` para QUALQUER updateMany, então o ceifador de boot
+    // e `failStuckMissions` (que rodam incondicionalmente a cada disparo,
+    // sem relação nenhuma com esta missão) também aparecem como "failed" na
+    // lista — sem o filtro por id, a asserção pegaria ruído alheio.
+    const chamadasDeFalhaDestaMissao = prisma.mission.updateMany.mock.calls.filter(
+      (c) =>
+        (c[0] as { where?: { id?: string }; data?: { status?: string } }).where?.id ===
+          resultado.missionId && (c[0] as { data?: { status?: string } }).data?.status === 'failed'
+    )
+    expect(chamadasDeFalhaDestaMissao).toHaveLength(0)
 
-    // Item 3: entre as mensagens de Telegram (o aviso por motor de
-    // `recadoDeTetoDeUso` sai a cada degrau, e é um recado DIFERENTE), existe
-    // UM aviso executivo agregado dizendo que o TIME ficou sem capacidade — e
-    // ele conta as dúvidas esperando. O envio é fire-and-forget (a mesma razão
-    // de `vi.waitFor` em scheduler-aviso-credencial-real-seam.test.ts): os
-    // `await`s de `resolveNotifyChatId`/`devSession.count`/`avisarMotoresEsgotados`
-    // terminam DEPOIS do `chamadas` já ter os 3 motores.
+    // O resumo executivo ("sem capacidade") NÃO sai mais para este caso —
+    // a ordem do dono foi silêncio, não um informe. O aviso POR MOTOR
+    // (`recadoDeTetoDeUso`, #511) continua saindo a cada degrau — ver a
+    // nota em scheduler-cota-espera-real-seam.test.ts — e não é o que este
+    // teste verifica.
     const mensagensDeTelegramDe = (mock: typeof fetchMock) =>
       mock.mock.calls
         .filter((c) => String(c[0]).startsWith('https://api.telegram.org/'))
         .map((c) => JSON.parse(String((c[1] as RequestInit).body)) as { text: string })
 
-    let avisoExecutivo: Array<{ text: string }> = []
-    await vi.waitFor(
-      () => {
-        avisoExecutivo = mensagensDeTelegramDe(fetchMock).filter((m) =>
-          m.text.includes('sem capacidade')
-        )
-        expect(avisoExecutivo).toHaveLength(1)
-      },
-      { timeout: 3000, interval: 10 }
-    )
-    expect(avisoExecutivo[0]?.text).toContain('3')
-    expect(avisoExecutivo[0]?.text).toContain('Sep 21st, 2026 6:00 AM')
-    // Nunca uma pergunta técnica solta — é um informe (D71/D72).
-    expect(avisoExecutivo[0]?.text).not.toContain('?')
-
-    // Dedup "uma vez por janela": uma SEGUNDA missão, na mesma janela (mesmo
-    // dono+projeto), esgotando a cadeia de novo, NÃO manda um segundo aviso
-    // executivo — spam apagaria sinal tanto quanto silêncio.
-    resultadoDoMotor.chamadas = []
-    const segundaMissao = await app.triggerAgentMission('qa', 'proj_1')
-    expect(segundaMissao.triggered).toBe(true)
-    await vi.waitFor(
-      () => {
-        expect(resultadoDoMotor.chamadas).toEqual(['codex', 'antigravity', 'claude'])
-      },
-      { timeout: 3000, interval: 10 }
-    )
-    // Tempo de sobra para qualquer aviso adicional terminar de sair — se
-    // fosse repetir, já teria acontecido dentro desta janela.
+    // Tempo de sobra para qualquer aviso adicional terminar de sair.
     await new Promise((resolve) => setTimeout(resolve, 200))
-    const avisosExecutivosNoTotal = mensagensDeTelegramDe(fetchMock).filter((m) =>
+    const avisoExecutivo = mensagensDeTelegramDe(fetchMock).filter((m) =>
       m.text.includes('sem capacidade')
     )
-    expect(avisosExecutivosNoTotal).toHaveLength(1)
+    expect(avisoExecutivo).toHaveLength(0)
 
-    // Espera pelo efeito observável final da SEGUNDA missão (o
-    // `mission.updateMany` terminal) antes de terminar o teste — sem isto, a
-    // cauda fire-and-forget dela pode vazar para o `global.fetch` do
-    // PRÓXIMO teste (ver `esperaMissaoAssentar`).
-    await esperaMissaoAssentar(prisma, segundaMissao.missionId)
+    // O dedup de MISSÃO duplicada (DJ-T4, item 3 — "enquanto houver missão
+    // waiting do mesmo papel+projeto, não cria outra") tem cobertura própria
+    // e com estado real em scheduler-cota-espera-real-seam.test.ts: o fake
+    // prisma DESTE arquivo não implementa `mission.findFirst` (só
+    // updateMany/count/create, ver `buildFakePrisma` no topo), então a
+    // checagem aqui cairia no best-effort "seguindo sem a checagem" e não
+    // provaria nada — testar com o fixture certo em vez de forçar aqui.
+    //
+    // Espera a missão assentar por completo (mesma disciplina de
+    // `esperaMissaoAssentar` usada nos demais testes deste arquivo) antes de
+    // terminar — sem isto, a cauda fire-and-forget vaza `resultadoDoMotor.chamadas`
+    // para o próximo teste.
+    await esperaMissaoAssentar(prisma, resultado.missionId)
   })
 
   test('cota esgotada só no primeiro motor: o SEGUNDO responde, o terceiro nunca é chamado, e o log nomeia qual motor respondeu', async () => {
@@ -659,8 +660,13 @@ describe('dúvida do dev + cota esgotada: liga à cascata de failover que já ex
   // erro da cadeia — dois motores por cota seguidos de um terceiro por OUTRO
   // motivo fazia o dono não receber aviso NENHUM.
   test('item 3 e 5 (fix-up): falha MISTA — dois motores por cota, o terceiro por OUTRO motivo — ainda assim o dono recebe o aviso executivo, e o recado admite a mistura', async () => {
-    const SAIDA_DE_OUTRO_MOTIVO =
-      '401 Unauthorized: token expired for this session, please re-authenticate'
+    // Engine-fault genérico, deliberadamente SEM palavras que casem
+    // credencial expirada ('401'/'unauthorized'/'token expired') — este
+    // teste quer engineFault=true e ehTetoDeUsoDaConta=false, nada mais
+    // (ver o achado desta tarefa: reusar o texto de credencial aqui fazia
+    // este degrau lançar CredencialExpiradaError, que dispara um recado
+    // e uma resolução de destino DIFERENTES — não os que este teste mede).
+    const SAIDA_DE_OUTRO_MOTIVO = 'engine process crashed unexpectedly (exit 137, OOM killed)'
     resultadoDoMotor.porRuntime = {
       codex: {
         missionId: 'irrelevante',
@@ -735,10 +741,28 @@ describe('dúvida do dev + cota esgotada: liga à cascata de failover que já ex
   // Fix-up pós-revisão (item 4): o dedup deste aviso deixou de viver num Map
   // em memória do processo — o control-plane reinicia a cada publicação, e
   // um Map perderia a marca a cada deploy.
+  // DJ-T4: este teste provava o dedup do aviso executivo usando uma cadeia
+  // 100% por cota — cenário que a própria tarefa DJ-T4 passou a tratar como
+  // 'waiting' silencioso, sem NENHUM aviso executivo (ver o teste "cota
+  // esgotada nos TRÊS motores", acima, atualizado para provar isso). O
+  // MECANISMO de dedup aqui testado (`Project.motoresEsgotadosAvisadoEm`
+  // sobrevivendo a um "restart") continua existindo e valendo para a
+  // cascata MISTA (`todasFalhasForamPorCota === false`, que ainda falha e
+  // ainda avisa, como hoje) — trocado aqui pelo MESMO erro misto do teste
+  // "item 3 e 5" (dois motores por cota, um por outro motivo) para
+  // continuar exercitando o dedup de verdade em vez de um cenário que este
+  // código não alcança mais.
   test('item 4 (fix-up): o dedup do aviso executivo sobrevive a um "restart" do control-plane (marca em banco, não em Map)', async () => {
     const fetchMock = fetchRoteado(PERGUNTA_DO_DEV)
     global.fetch = fetchMock as unknown as typeof fetch
 
+    // Engine-fault genérico, deliberadamente SEM palavras que casem
+    // credencial expirada ('401'/'unauthorized'/'token expired') — este
+    // teste quer engineFault=true e ehTetoDeUsoDaConta=false, nada mais
+    // (ver o achado desta tarefa: reusar o texto de credencial aqui fazia
+    // este degrau lançar CredencialExpiradaError, que dispara um recado
+    // e uma resolução de destino DIFERENTES — não os que este teste mede).
+    const SAIDA_DE_OUTRO_MOTIVO = 'engine process crashed unexpectedly (exit 137, OOM killed)'
     const prisma = buildFakePrisma({ chatId: 'chat-do-dono', duvidasEsperando: 1 })
     resultadoDoMotor.porRuntime = {
       codex: {
@@ -763,7 +787,7 @@ describe('dúvida do dev + cota esgotada: liga à cascata de failover que já ex
         exitCode: 1,
         durationMs: 1,
         output: '',
-        stderr: SAIDA_DE_COTA_ESGOTADA,
+        stderr: SAIDA_DE_OUTRO_MOTIVO,
       },
     }
 
@@ -831,7 +855,19 @@ describe('dúvida do dev + cota esgotada: liga à cascata de failover que já ex
   // Fix-up pós-revisão (item 7): `.catch(() => null)` escondia qualquer erro
   // de resolução do destino do aviso executivo — o aviso não chegava e
   // ninguém ficava sabendo nem que a tentativa aconteceu.
+  //
+  // DJ-T4: cadeia trocada de "100% cota" para MISTA (mesmo motivo do item 4,
+  // acima) — o resumo executivo, e portanto este código de resolução de
+  // destino, só é alcançado quando a cascata NÃO é pura-cota depois desta
+  // tarefa.
   test('item 7 (fix-up): falha ao resolver o destino do aviso executivo é registrada, não silenciada', async () => {
+    // Engine-fault genérico, deliberadamente SEM palavras que casem
+    // credencial expirada ('401'/'unauthorized'/'token expired') — este
+    // teste quer engineFault=true e ehTetoDeUsoDaConta=false, nada mais
+    // (ver o achado desta tarefa: reusar o texto de credencial aqui fazia
+    // este degrau lançar CredencialExpiradaError, que dispara um recado
+    // e uma resolução de destino DIFERENTES — não os que este teste mede).
+    const SAIDA_DE_OUTRO_MOTIVO = 'engine process crashed unexpectedly (exit 137, OOM killed)'
     resultadoDoMotor.porRuntime = {
       codex: {
         missionId: 'irrelevante',
@@ -855,7 +891,7 @@ describe('dúvida do dev + cota esgotada: liga à cascata de failover que já ex
         exitCode: 1,
         durationMs: 1,
         output: '',
-        stderr: SAIDA_DE_COTA_ESGOTADA,
+        stderr: SAIDA_DE_OUTRO_MOTIVO,
       },
     }
     const fetchMock = fetchRoteado(PERGUNTA_DO_DEV)
