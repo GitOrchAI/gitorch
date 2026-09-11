@@ -100,6 +100,17 @@ export interface MotorEmPausa {
   marcarFalha: (runtime: string, mensagem: string, agora: Date) => ResultadoDaFalha
   /** Um sucesso prova que voltou: a marca some na hora. */
   marcarVivo: (runtime: string) => void
+  /**
+   * DJ-T4: a conta bateu no teto de uso NESTE motor — fora do rodízio até
+   * `ate`, o horário calculado a partir do que o PRÓPRIO PROVEDOR disse (ver
+   * `parseHorarioDeVoltaDaCota` em horario-de-volta-da-cota.ts). Reaproveita
+   * o MESMO mecanismo de pausa de `marcarMorto`/`estaEmPausa`/`filtrarCadeia`
+   * — a diferença é só a ORIGEM do prazo: fixo (`DESCANSO_DO_MOTOR_MORTO_MS`)
+   * em `marcarMorto`, vindo do provedor aqui. Decisão do dono (10/09/2026):
+   * "não tem cota? tudo bem, aguarda" — o motor volta sozinho no horário
+   * certo, sem ninguém pedir, e sem insistir nele enquanto isso.
+   */
+  marcarEsgotadoPorCota: (runtime: string, ate: Date) => void
   estaEmPausa: (runtime: string, agora: Date) => boolean
   /** Os motores da cadeia que ainda podem rodar. */
   filtrarCadeia: <T extends { runtime: string }>(cadeia: T[], agora: Date) => T[]
@@ -109,8 +120,23 @@ export function criarRegistroDeMotorMorto(descansoMs = DESCANSO_DO_MOTOR_MORTO_M
   const mortoDesde = new Map<string, number>()
   // Falhas IGUAIS seguidas por motor: a assinatura da última e quantas vezes.
   const falhasSeguidas = new Map<string, { assinatura: string; vezes: number }>()
+  // DJ-T4: prazo ABSOLUTO (não um descanso fixo) que o provedor deu para a
+  // cota voltar NESTE motor. Mapa separado de `mortoDesde` de propósito: o
+  // fim da pausa de credencial é `desde + descansoMs` (calculado); o fim da
+  // pausa de cota é um instante que já vem pronto do provedor.
+  const esgotadoPorCotaAte = new Map<string, number>()
 
   const estaEmPausa = (runtime: string, agora: Date): boolean => {
+    const ateCota = esgotadoPorCotaAte.get(runtime)
+    if (ateCota !== undefined) {
+      if (agora.getTime() >= ateCota) {
+        // O horário que o provedor deu passou: o motor volta sozinho, sem
+        // ninguém pedir — mesma disciplina da pausa de credencial abaixo.
+        esgotadoPorCotaAte.delete(runtime)
+      } else {
+        return true
+      }
+    }
     const desde = mortoDesde.get(runtime)
     if (desde === undefined) return false
     if (agora.getTime() - desde >= descansoMs) {
@@ -127,6 +153,9 @@ export function criarRegistroDeMotorMorto(descansoMs = DESCANSO_DO_MOTOR_MORTO_M
       // A primeira marca é a que vale: remarcar a cada falha esticaria o
       // descanso para sempre num motor que falha em rajada.
       if (!mortoDesde.has(runtime)) mortoDesde.set(runtime, agora.getTime())
+    },
+    marcarEsgotadoPorCota(runtime, ate) {
+      esgotadoPorCotaAte.set(runtime, ate.getTime())
     },
     marcarFalha(runtime, mensagem, agora) {
       const assinatura = assinaturaDeFalha(mensagem)
@@ -152,6 +181,7 @@ export function criarRegistroDeMotorMorto(descansoMs = DESCANSO_DO_MOTOR_MORTO_M
     },
     marcarVivo(runtime) {
       mortoDesde.delete(runtime)
+      esgotadoPorCotaAte.delete(runtime)
       // O sucesso apaga a contagem também: senão duas falhas antigas somariam
       // com uma nova e derrubariam um motor que acabou de provar que funciona.
       falhasSeguidas.delete(runtime)

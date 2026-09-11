@@ -981,7 +981,12 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
               const waitingMissions = await app.prisma.mission.findMany({
                 where: {
                   status: 'waiting',
-                  waitingReason: { not: null },
+                  // DJ-T4: 'cota-dos-motores' NÃO é uma entrega esperando o
+                  // dono — é a esteira dormindo até o motor voltar sozinha,
+                  // sem ação nenhuma dele (decisão do dono: "sem falha, sem
+                  // mensagem"). Listar aqui misturaria as duas coisas e
+                  // faria parecer que ele precisa fazer algo.
+                  waitingReason: { not: null, notIn: ['cota-dos-motores'] },
                 },
                 select: {
                   waitingReason: true,

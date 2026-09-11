@@ -93,7 +93,10 @@ import {
   removerBastaoPendente,
   retomarVezesPendentesNoBoot,
 } from '../services/vez-pendente.js'
-import { criarRegistroDeMotorMorto } from '../services/motor-em-pausa.js'
+import {
+  criarRegistroDeMotorMorto,
+  DESCANSO_DO_MOTOR_MORTO_MS,
+} from '../services/motor-em-pausa.js'
 import { criarRegistroDeDescanso, type OrigemDoDisparo } from '../services/descanso-apos-vazia.js'
 import { tetosDoPlanoDoDev, capPorCicloDoAmbiente } from '../services/plano-do-dev.js'
 import { ESTADOS_TERMINAIS } from '../services/estados-de-sessao.js'
@@ -396,13 +399,16 @@ import {
 } from '../services/esforco-por-motor.js'
 import { padraoDoDegrau } from '../services/padrao-do-degrau.js'
 import { marcaDePedidoDeLogin } from '../services/motor-que-pede-login.js'
+// DJ-T4 (10/09/2026, decisão D76): `recadoDeTetoDeUso`, `recadoDeMotoresEsgotados`
+// e `deveAvisarMotoresEsgotadosDeNovo` deixaram de ser chamados aqui — motor
+// sem cota não gera NENHUMA mensagem ao dono (nem por motor, nem no resumo
+// agregado). As funções continuam existindo em teto-de-uso-da-conta.ts (e
+// testadas lá) para o caso de a decisão mudar; só o CHAMADOR foi desligado.
+import { ehTetoDeUsoDaConta, quandoACotaVolta } from '../services/teto-de-uso-da-conta.js'
 import {
-  ehTetoDeUsoDaConta,
-  quandoACotaVolta,
-  recadoDeTetoDeUso,
-  recadoDeMotoresEsgotados,
-  deveAvisarMotoresEsgotadosDeNovo,
-} from '../services/teto-de-uso-da-conta.js'
+  parseHorarioDeVoltaDaCota,
+  menorHorarioDeVolta,
+} from '../services/horario-de-volta-da-cota.js'
 import { umaAcordadaPorCiclo } from '../services/uma-acordada-por-ciclo.js'
 import { relogioDaAgenda } from '../services/espalhar-agendas.js'
 import { cotasAReler } from '../services/cotas-a-reler.js'
@@ -2622,13 +2628,14 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // fora do escopo desta tarefa.
   const avisosDeCredencialExpirada = new Map<string, number>()
 
-  // L4-T22, item 3: o aviso EXECUTIVO de "a cadeia inteira ficou sem cota"
-  // NÃO usa Map em memória (fix-up, item 4/6) — o control-plane reinicia a
-  // cada publicação e um Map perderia a marca a cada deploy, mandando o
-  // mesmo recado de novo dentro da MESMA janela de 24h. O dedup vive em
-  // `Project.motoresEsgotadosAvisadoEm` (coluna, lida e gravada no bloco que
-  // manda o aviso, dentro do `for` de `executeMissionWithFailover`) — sem
-  // Map, não há o que vazar por idade.
+  // DJ-T4 (10/09/2026, decisão D76): existia aqui um segundo mecanismo de
+  // dedup (`Project.motoresEsgotadosAvisadoEm`, L4-T22 item 3/4) para o
+  // aviso EXECUTIVO de "a cadeia inteira ficou sem cota". Esse aviso deixou
+  // de ser enviado — motor sem cota não gera NENHUMA mensagem ao dono, nem
+  // por motor nem no resumo agregado (ver `executeMissionWithFailover`) —
+  // então o dedup não tem mais o que proteger e foi removido junto. A coluna
+  // `Project.motoresEsgotadosAvisadoEm` continua no schema (não migrada
+  // nesta tarefa) mas não é mais lida nem gravada por este arquivo.
 
   /**
    * A fila de acordadas de julgamento que o SM levanta a cada ciclo. A regra
@@ -2840,6 +2847,41 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         '[Scheduler] projeto suspenso por falta de acesso ao repositório; nenhuma missão é disparada'
       )
       return { triggered: false, reason: 'acesso-suspenso' }
+    }
+
+    // DJ-T4: enquanto existir uma missão deste MESMO papel+projeto esperando
+    // a cota voltar, não cria outra. Sem isto, a agenda dispararia de novo a
+    // cada janela do cron — a missão 'waiting' não conta para o `active`
+    // pending/running acima — e empilharia missão nova em cima da que já
+    // está dormindo, a mesma pilha que este item veio evitar. Quem tira a
+    // missão desse estado é a retomada (`retomarMissoesEsperandoCota`, no
+    // tick) quando o horário passa; até lá, a agenda espera.
+    // Best-effort de propósito (try, não `.catch()` da promessa — o método
+    // pode nem existir no cliente prisma injetado): uma leitura auxiliar que
+    // falhasse não pode impedir a missão de sair — pior é a checagem de
+    // duplicidade travar a esteira inteira por causa de si mesma.
+    let esperandoCota: { id: string } | null = null
+    try {
+      esperandoCota = await app.prisma.mission.findFirst({
+        where: {
+          projectId: project.id,
+          type: `agent-run-${role}`,
+          status: 'waiting',
+          waitingReason: 'cota-dos-motores',
+        },
+        select: { id: true },
+      })
+    } catch (err) {
+      app.log.warn(
+        err,
+        '[Scheduler] não consegui checar missão esperando cota; seguindo sem a checagem'
+      )
+    }
+    if (esperandoCota) {
+      app.log.debug(
+        `[Scheduler] ${role} de ${project.wingId} já tem missão esperando cota (${esperandoCota.id}); pulando`
+      )
+      return { triggered: false, reason: 'cota-esperando' }
     }
 
     // Descanso depois de uma acordada vazia. Vem DEPOIS de o projeto ser
@@ -3166,11 +3208,18 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // não esgotou por falha de motor). `algumaFalhaFoiPorCota` sobe assim
     // que QUALQUER degrau bater no teto de uso, mesmo que não seja o
     // último. `todasFalhasForamPorCota` cai assim que um degrau falhar por
-    // OUTRO motivo de motor — é o que decide se o recado final precisa
-    // admitir que a causa foi MISTA (`misto`, recadoDeMotoresEsgotados).
+    // OUTRO motivo de motor. DJ-T4 (D76): nenhuma das duas gera mensagem ao
+    // dono — `todasFalhasForamPorCota` decide só se a missão dorme em
+    // silêncio (100% cota) ou segue o caminho de falha de sempre (misto),
+    // e `algumaFalhaFoiPorCota` decide só o texto do log, nunca de um envio.
     let todasFalhasForamDeMotor = true
     let algumaFalhaFoiPorCota = false
     let todasFalhasForamPorCota = true
+    // DJ-T4: quando um degrau bate no teto de uso, o horário que o PRÓPRIO
+    // PROVEDOR deu para a cota voltar — usado no fim da cadeia para dormir
+    // até o motor que volta PRIMEIRO, se TODOS os degraus tentados caírem
+    // por cota (ver `menorHorarioDeVolta` mais abaixo).
+    const voltasDaCota = new Map<string, Date>()
     // Tira da cadeia o motor que morreu pedindo login. Ele volta sozinho — por
     // sucesso ou por tempo — e a cadeia inteira em pausa passa mesmo assim,
     // porque ficar sem motor nenhum seria trocar desperdício por paralisação.
@@ -4576,35 +4625,23 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         // aconteceu de verdade em produção. Avisa uma vez por dono+motor por
         // dia (deveAvisarDeNovo) — SPAM apaga sinal tanto quanto silêncio,
         // mesma disciplina de session-watch.ts.
-        // ACABOU A COTA não é LOGIN VENCIDO, e confundir os dois custou caro:
-        // em 27/08 o dono religou o Codex DUAS VEZES no mesmo dia por um
-        // diagnóstico errado. A resposta literal do provedor, capturada
-        // rodando o CLI na mão, era "You've hit your usage limit" — conta no
-        // teto, que só o tempo resolve. Antes disto esse caso não produzia
-        // aviso NENHUM: o dono só percebia quando as coisas paravam de andar.
+        // ACABOU A COTA não é LOGIN VENCIDO — mas D76 (decisão literal do
+        // dono, 10/09/2026): "não tem cota? tudo bem, aguarda. Eu sei que
+        // está sem cota." e "não quero ficar recebendo... se eu precisar ver
+        // como estão as coisas eu acesso o painel". Isto MATA o recado
+        // POR MOTOR que existia aqui (`recadoDeTetoDeUso`, #511): motor sem
+        // cota não gera NENHUMA mensagem ao dono, nem por degrau nem no
+        // resumo agregado (ver o bloco de `algumaFalhaFoiPorCota`, abaixo).
+        // O fato continua registrado — em log, e no PAINEL via o estado do
+        // motor (`motorEmPausa.marcarEsgotadoPorCota`, mais abaixo, e o
+        // status 'waiting' da missão quando a cadeia inteira esgota) — nunca
+        // em silêncio total.
         if (!falhaDeCredencial && ehTetoDeUsoDaConta(lastError)) {
-          const chaveDoTeto = `teto:${project.userId ?? project.id}:${sel.runtime}`
-          if (deveAvisarDeNovo(avisosDeCredencialExpirada, chaveDoTeto, Date.now())) {
-            avisosDeCredencialExpirada.set(chaveDoTeto, Date.now())
-            const chatDoTeto = await resolveNotifyChatId(app.prisma, project, {
-              instanceOwnerEmail: process.env['GITORCH_OWNER_EMAIL'],
-              instanceChatId:
-                process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
-            }).catch(() => null)
-            const avisarDoTeto = buildTelegramNotifier({
-              botToken:
-                process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
-              ...(chatDoTeto ? { chatId: chatDoTeto } : {}),
-            })
-            if (avisarDoTeto) {
-              await avisarDoTeto(
-                recadoDeTetoDeUso({
-                  runtime: sel.runtime,
-                  volta: quandoACotaVolta(lastError),
-                })
-              ).catch(() => undefined)
-            }
-          }
+          app.log.info(
+            `[Scheduler] ${sel.runtime} bateu no teto de uso da conta em ${project.wingId} ` +
+              `(volta ${quandoACotaVolta(lastError) ?? 'sem prazo dito pelo provedor'}) — ` +
+              'sem aviso ao dono (decisão D76: sem cota é silêncio, visível pelo painel).'
+          )
         }
         if (err instanceof CredencialExpiradaError) {
           falhaDeCredencial = true
@@ -4673,6 +4710,18 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           todasFalhasForamDeMotor = false
         } else if (ehTetoDeUsoDaConta(lastError)) {
           algumaFalhaFoiPorCota = true
+          // DJ-T4: guarda o horário de volta DESTE motor (o que o provedor
+          // disse; sem prazo dito, o padrão de descanso de motor morto —
+          // barato dos dois lados, ver horario-de-volta-da-cota.ts) e já
+          // registra a pausa no MESMO mecanismo de `marcarMorto` — reflexo
+          // imediato em `filtrarCadeia` para QUALQUER outra missão que tente
+          // este motor antes do horário, sem depender de este cascade
+          // terminar.
+          const voltaDoMotor =
+            parseHorarioDeVoltaDaCota(lastError, new Date()) ??
+            new Date(Date.now() + DESCANSO_DO_MOTOR_MORTO_MS)
+          voltasDaCota.set(sel.runtime, voltaDoMotor)
+          motorEmPausa.marcarEsgotadoPorCota(sel.runtime, voltaDoMotor)
         } else {
           todasFalhasForamPorCota = false
         }
@@ -4691,91 +4740,109 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           continue
         }
 
+        // DJ-T4 (10/09/2026) — decisão do dono: "não tem cota? tudo bem,
+        // aguarda. Sem falha, sem mensagem." ESGOTOU A CADEIA INTEIRA (este
+        // era o último degrau) e TODOS os degraus falharam por FALHA DE
+        // MOTOR e TODOS por COTA — `todasFalhasForamPorCota`, não
+        // `algumaFalhaFoiPorCota`, DE PROPÓSITO: um degrau que falhou por
+        // OUTRO motivo de motor (credencial, 429 sem texto de teto) faz esta
+        // condição ser falsa e cai no bloco de baixo (L4-T22), que continua
+        // avisando e falhando como sempre — a mistura não é o caso que o
+        // dono pediu silêncio.
+        //
+        // Antes desta tarefa, este caso virava 'failed' e o papel era
+        // redisparado minutos depois pela agenda: 244 missões de QA 'failed'
+        // em 24h, sem nenhum trabalho feito, só porque nenhum motor tinha
+        // cota naquele minuto. Agora a missão DORME até o motor mais
+        // próximo da cadeia voltar — o MENOR horário entre os que bateram
+        // no teto (`voltasDaCota`, preenchido a cada iteração acima) — sem
+        // nenhum aviso novo ao dono (a ordem dele foi silêncio, não um
+        // resumo executivo) e sem contar como falha em lugar nenhum que lê
+        // `Mission.status`: `waitingReason: 'cota-dos-motores'` é o que
+        // `runTrigger` usa para não empilhar outra missão do mesmo
+        // papel+projeto, e o que a retomada (`retomarMissoesEsperandoCota`,
+        // chamada no tick) usa para saber quais linhas redisparar quando o
+        // horário passa — pelo MESMO caminho (`executeMissionWithFailover`,
+        // a mesma missão, nunca uma segunda linha).
+        if (isLast && engineFault && todasFalhasForamDeMotor && todasFalhasForamPorCota) {
+          const ate =
+            menorHorarioDeVolta([...voltasDaCota.values()]) ??
+            new Date(Date.now() + DESCANSO_DO_MOTOR_MORTO_MS)
+          // try/catch, não `.catch()` da promessa: em algum fake de teste
+          // mais antigo `mission.findUnique` pode nem existir, e chamar um
+          // método inexistente lança SÍNCRONO, antes de qualquer `.catch`
+          // conseguir se prender à promessa.
+          let missaoAtual: { payload: unknown } | null = null
+          try {
+            missaoAtual = await app.prisma.mission.findUnique({
+              where: { id: missionId },
+              select: { payload: true },
+            })
+          } catch {
+            // Best-effort: sem o payload anterior, a espera ainda é gravada
+            // (só perde os campos extras que não sejam `cotaEspera`).
+          }
+          const payloadAtual = (missaoAtual?.payload as Record<string, unknown> | null) ?? {}
+          await app.prisma.mission
+            .updateMany({
+              where: { id: missionId, status: 'running' },
+              data: {
+                status: 'waiting',
+                waitingReason: 'cota-dos-motores',
+                waitingStatus: ate.toISOString(),
+                payload: {
+                  ...payloadAtual,
+                  // Guardado para a retomada reconstruir a MESMA cadeia sem
+                  // reimplementar `resolveRuntimeChain` — a cadeia ORIGINAL
+                  // (não a já filtrada por `filtrarCadeia`/catálogo), porque
+                  // até o horário passar outro motor pode ter religado.
+                  cotaEspera: {
+                    chainOriginal,
+                    ...(planId !== undefined ? { planId } : {}),
+                    isOnboarding,
+                    origem,
+                  },
+                },
+              },
+            })
+            .catch((e: unknown) =>
+              app.log.error(
+                e,
+                `[Scheduler] não consegui gravar a espera de cota de ${missionId}; a próxima varredura de stale pode marcá-la failed`
+              )
+            )
+          app.log.info(
+            `[Scheduler] ${role} de ${project.wingId} sem cota em nenhum motor da cadeia; ` +
+              `dorme até ${ate.toISOString()} (sem falha, sem aviso — decisão do dono)`
+          )
+          return
+        }
+
         // L4-T22, item 3 (fix-up pós-revisão): ESGOTOU A CADEIA INTEIRA (este
         // era o ÚLTIMO degrau) e TODOS os degraus tentados falharam por
         // FALHA DE MOTOR (nunca GitHub, nunca um bug qualquer), com PELO
         // MENOS UM deles batendo no teto de uso — não precisa ser o último.
-        // A versão original só olhava `ehTetoDeUsoDaConta(lastError)` (o
-        // ÚLTIMO erro): dois motores por cota seguidos de um terceiro por
-        // OUTRO motivo de motor (credencial, 429 sem texto de teto) fazia
-        // essa condição falhar e o dono não recebia NADA — o mesmo silêncio
-        // que esta tarefa veio matar. Um aviso por motor (`recadoDeTetoDeUso`,
-        // acima) já saiu para cada degrau que bateu no teto; este é o resumo
-        // EXECUTIVO diferente: não sobrou motor NENHUM para tentar, e
-        // enquanto isso durar, o dev assíncrono acumula dúvida sem resposta.
-        // Quem não é técnico não precisa saber qual motor caiu — precisa
-        // saber que o time ficou sem capacidade, até quando, e (fix-up item
-        // 5) que nem toda queda foi pelo mesmo motivo, quando for o caso.
+        //
+        // DJ-T4 (10/09/2026), decisão do dono (D76, literal): "não tem cota?
+        // tudo bem, aguarda. Eu sei que está sem cota." e "não quero ficar
+        // recebendo... se eu precisar ver como estão as coisas eu acesso o
+        // painel". Isto mata o resumo EXECUTIVO (`recadoDeMotoresEsgotados`,
+        // #511/L4-T22) que existia aqui — inclusive no caso MISTO (nem toda
+        // queda foi por cota): se PELO MENOS UMA falha da cadeia foi por
+        // cota, não sai mensagem NENHUMA por causa dela. O caminho SEM
+        // NENHUMA cota misturada (`!algumaFalhaFoiPorCota`, cadeia exaurida
+        // só por outros motivos de motor) não passa por este `if` e segue com
+        // o comportamento de sempre (a missão termina 'failed' logo abaixo,
+        // como hoje). O fato de ter batido cota fica registrado em log — o
+        // painel mostra o estado real pelo motor em pausa
+        // (`motorEmPausa.marcarEsgotadoPorCota`, calculado acima) e pela
+        // missão marcada 'failed' com o erro em `Mission.error`.
         if (isLast && engineFault && todasFalhasForamDeMotor && algumaFalhaFoiPorCota) {
-          // Fix-up L4-T22, item 4: dedup PERSISTIDO em
-          // `Project.motoresEsgotadosAvisadoEm`, não mais num Map em memória
-          // do processo. O control-plane reinicia a CADA publicação — um Map
-          // perderia a marca a cada deploy e o dono levaria o MESMO aviso de
-          // novo a cada subida, dentro da MESMA janela de 24h. A leitura é
-          // fresca (direto do banco, não do `project` que o chamador de
-          // `executeMissionWithFailover` carregou no início do tique) de
-          // propósito: é a fonte de verdade compartilhada entre processos e
-          // entre tiques, exatamente como `deployNoticeAskedKey` já funciona
-          // para o aviso de publicação.
-          const projetoAtual = await app.prisma.project
-            .findUnique({
-              where: { id: project.id },
-              select: { motoresEsgotadosAvisadoEm: true },
-            })
-            .catch(() => null)
-          if (
-            deveAvisarMotoresEsgotadosDeNovo(
-              projetoAtual?.motoresEsgotadosAvisadoEm ?? null,
-              Date.now()
-            )
-          ) {
-            await app.prisma.project
-              .update({
-                where: { id: project.id },
-                data: { motoresEsgotadosAvisadoEm: new Date() },
-              })
-              .catch((e: unknown) =>
-                app.log.warn(
-                  e,
-                  `[Scheduler] não consegui gravar a marca do aviso de motores esgotados de ${project.wingId} — o próximo tique pode repetir o aviso`
-                )
-              )
-            const duvidasEsperando = await app.prisma.devSession
-              .count({
-                where: { projectId: project.id, state: 'AWAITING_USER_FEEDBACK', closedAt: null },
-              })
-              .catch(() => 0)
-            // Fix-up L4-T22, item 7: o `.catch(() => null)` original escondia
-            // QUALQUER erro de resolução do destino — o aviso não chegava e
-            // ninguém ficava sabendo nem que a tentativa aconteceu. Registra
-            // o erro ANTES de desistir; `null` continua sendo o resultado
-            // (o notificador cai no chat padrão do ambiente, se houver).
-            const chatDosMotoresEsgotados = await resolveNotifyChatId(app.prisma, project, {
-              instanceOwnerEmail: process.env['GITORCH_OWNER_EMAIL'],
-              instanceChatId:
-                process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
-            }).catch((e: unknown) => {
-              app.log.warn(
-                e,
-                `[Scheduler] não consegui resolver o destino do aviso de motores esgotados de ${project.wingId}`
-              )
-              return null
-            })
-            const avisarMotoresEsgotados = buildTelegramNotifier({
-              botToken:
-                process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
-              ...(chatDosMotoresEsgotados ? { chatId: chatDosMotoresEsgotados } : {}),
-            })
-            if (avisarMotoresEsgotados) {
-              await avisarMotoresEsgotados(
-                recadoDeMotoresEsgotados({
-                  ateQuando: quandoACotaVolta(lastError),
-                  duvidasEsperando,
-                  misto: algumaFalhaFoiPorCota && !todasFalhasForamPorCota,
-                })
-              ).catch(() => undefined)
-            }
-          }
+          app.log.info(
+            `[Scheduler] ${role} de ${project.wingId} esgotou a cadeia inteira de motores ` +
+              `(misto=${algumaFalhaFoiPorCota && !todasFalhasForamPorCota}) — sem aviso ao dono ` +
+              '(decisão D76: sem cota é silêncio, visível pelo painel); missão marcada failed a seguir.'
+          )
         }
         break
       }
@@ -4836,6 +4903,10 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // ser reprocessada. Queimá-la faria uma acordada vazia às 08:00 custar a
     // janela inteira das 08:00 — a próxima só às 16:00.
     'descanso',
+    // DJ-T4: mesma lógica — a missão esperando cota é temporária por
+    // definição (a retomada mesma cuida de acordá-la), e queimar a janela do
+    // cron não muda nada além de atrasar a PRÓXIMA verificação em uma hora.
+    'cota-esperando',
   ])
 
   /**
@@ -9790,6 +9861,127 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   }
 
   /**
+   * DJ-T4: a metade que faltava do "não tem cota? aguarda" — sem isto a
+   * missão dormia para sempre. Acha toda missão `waiting` por
+   * 'cota-dos-motores' cujo horário já passou e a redispara PELO MESMO
+   * CAMINHO (`executeMissionWithFailover`, a MESMA missão — nunca cria uma
+   * segunda linha), reconstruindo a cadeia original a partir do que foi
+   * gravado em `payload.cotaEspera` na hora de dormir.
+   *
+   * Comparação de STRING, não de Date, de propósito: `waitingStatus` é campo
+   * livre reaproveitado (já existia para o caminho de dúvida do dev, não é
+   * uma coluna nova desta tarefa), e o ISO gravado é sempre UTC de largura
+   * fixa — a ordem lexicográfica bate com a ordem cronológica, mesmo truque
+   * que o restante do produto evita reinventar.
+   */
+  const retomarMissoesEsperandoCota = async (): Promise<void> => {
+    const agoraIso = new Date().toISOString()
+    let vencidas: Array<{ id: string; projectId: string; type: string; payload: unknown }> = []
+    try {
+      vencidas = await app.prisma.mission.findMany({
+        where: {
+          status: 'waiting',
+          waitingReason: 'cota-dos-motores',
+          waitingStatus: { lte: agoraIso },
+        },
+        select: { id: true, projectId: true, type: true, payload: true },
+      })
+    } catch (err) {
+      app.log.error(
+        err,
+        '[Scheduler] não consegui ler missões esperando cota; tenta no próximo tick'
+      )
+      return
+    }
+
+    for (const missao of vencidas) {
+      const m = /^agent-run-([a-z]+)$/.exec(missao.type)
+      const role = m?.[1]
+      if (!role || !isF6AgentRole(role)) {
+        app.log.warn(
+          `[Scheduler] missão ${missao.id} esperando cota com type '${missao.type}' sem papel reconhecível`
+        )
+        continue
+      }
+
+      const payload = missao.payload as {
+        cotaEspera?: {
+          chainOriginal?: Array<{ runtime: string; model?: string; effort?: string }>
+          planId?: string
+          isOnboarding?: boolean
+          origem?: OrigemDoDisparo
+        }
+      } | null
+      const cotaEspera = payload?.cotaEspera
+      if (!cotaEspera?.chainOriginal || cotaEspera.chainOriginal.length === 0) {
+        // Achado defensivo, não esperado em produção (todo caminho que grava
+        // 'waiting'/'cota-dos-motores' também grava `cotaEspera` no MESMO
+        // updateMany) — mas uma missão sem cadeia gravada não tem como ser
+        // retomada com segurança, e dormir para sempre seria pior que uma
+        // falha honesta que a agenda pode reprocessar.
+        app.log.warn(
+          `[Scheduler] missão ${missao.id} esperando cota sem cadeia gravada; marcando falha honesta`
+        )
+        await app.prisma.mission
+          .updateMany({
+            where: { id: missao.id, status: 'waiting' },
+            data: {
+              status: 'failed',
+              waitingStatus: null,
+              waitingReason: null,
+              error: 'esperando cota sem cadeia gravada para retomar (achado no tick)',
+              completedAt: new Date(),
+            },
+          })
+          .catch(() => undefined)
+        continue
+      }
+
+      const project = await app.prisma.project
+        .findFirst({
+          where: { id: missao.projectId, isActive: true },
+          include: { user: { include: { plan: true } } },
+        })
+        .catch(() => null)
+      if (!project) {
+        app.log.warn(
+          `[Scheduler] missão ${missao.id} esperando cota: projeto ${missao.projectId} não existe mais/inativo`
+        )
+        continue
+      }
+
+      // Write condicional: se outro processo/tick já retomou esta missão
+      // (status já não é mais 'waiting'), count vem 0 e este tick a ignora —
+      // nunca redispara a mesma missão duas vezes.
+      const claimed = await app.prisma.mission
+        .updateMany({
+          where: { id: missao.id, status: 'waiting' },
+          data: {
+            status: 'running',
+            startedAt: new Date(),
+            waitingStatus: null,
+            waitingReason: null,
+          },
+        })
+        .catch(() => ({ count: 0 }))
+      if (claimed.count === 0) continue
+
+      app.log.info(
+        `[Scheduler] retomando ${role} de ${project.wingId} (missão ${missao.id}) — a cota deveria ter voltado`
+      )
+      void executeMissionWithFailover(
+        missao.id,
+        project as unknown as ChainProject,
+        role,
+        cotaEspera.chainOriginal,
+        cotaEspera.planId,
+        cotaEspera.isOnboarding ?? false,
+        cotaEspera.origem ?? 'agenda'
+      )
+    }
+  }
+
+  /**
    * Garante o campo Sprint no quadro de cada projeto — a caixa "Acerta o campo
    * Sprint" que o fluxograma da leva 2 promete e que NUNCA existiu no produto.
    *
@@ -10851,6 +11043,16 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     await varrerCotasDosMotores().catch((err) =>
       app.log.error(err, '[Scheduler] varredura de cotas falhou; tenta no próximo tick')
     )
+    // DJ-T4: logo depois da varredura de cota, pelo mesmo motivo dela — é
+    // aqui que a esteira acorda a missão que dormia esperando o motor
+    // voltar. Nunca derruba o tick: cada missão se isola sozinha dentro da
+    // função (try/catch por missão, ver retomarMissoesEsperandoCota).
+    await retomarMissoesEsperandoCota().catch((err) =>
+      app.log.error(
+        err,
+        '[Scheduler] retomada de missões esperando cota falhou; tenta no próximo tick'
+      )
+    )
     // E o CATÁLOGO DE MODELOS, uma vez por dia, logo depois da cota e pelo
     // mesmo motivo dela — só que aqui o dado velho não desatualiza um painel,
     // ele aprova um modelo morto na hora de escolher com o que a missão roda.
@@ -11043,6 +11245,10 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // respondida; po-rails-mission/scheduler — PO criou tarefas) registrarem um
   // evento de vaga liberada sem enxergar a fila em si — só o scheduler drena.
   app.decorate('acordarSmPorVagaLiberada', acordarSmPorVagaLiberada)
+  // DJ-T4: exposto para o QA real disparar a retomada sem esperar o relógio
+  // (que não roda sob teste, ver o comentário do `setInterval` abaixo) —
+  // mesmo padrão de `triggerAgentMission` acima.
+  app.decorate('retomarMissoesEsperandoCota', retomarMissoesEsperandoCota)
 
   // D16: NO BOOT, retoma. Toda vez pendente persistida (VezPendente,
   // gravada no mesmo instante em que passagemDeBastao.passar() enfileira em
@@ -11084,6 +11290,7 @@ declare module 'fastify' {
     ) => Promise<TriggerResult>
     /** DJ-T3: registra que `projectId` teve uma vaga liberada (ver acordar-sm.ts). */
     acordarSmPorVagaLiberada: (projectId: string, motivo: string) => void
+    retomarMissoesEsperandoCota: () => Promise<void>
   }
 }
 

@@ -195,3 +195,55 @@ describe('marcarFalha — desliga o que falha SEMPRE, não o que falha uma vez',
     expect(r.filtrarCadeia(cadeia, T0)).toEqual([{ runtime: 'claude' }])
   })
 })
+
+// ---------------------------------------------------------------------------
+// DJ-T4: "não tem cota? tudo bem, aguarda" — o motor que bateu no teto de uso
+// some do rodízio até o horário que o PRÓPRIO PROVEDOR disse, reaproveitando
+// o MESMO mapa de pausa de marcarMorto/estaEmPausa/filtrarCadeia (a diferença
+// é só a ORIGEM do prazo: fixo em marcarMorto, vindo do provedor aqui).
+// ---------------------------------------------------------------------------
+
+describe('marcarEsgotadoPorCota — o motor sem cota some do rodízio até o horário que o provedor deu', () => {
+  it('motor esgotado por cota entra em pausa até o horário informado', () => {
+    const r = criarRegistroDeMotorMorto()
+    const volta = depois(3 * 60 * 60_000)
+    r.marcarEsgotadoPorCota('codex', volta)
+    expect(r.estaEmPausa('codex', T0)).toBe(true)
+  })
+
+  it('os outros motores seguem normalmente', () => {
+    const r = criarRegistroDeMotorMorto()
+    r.marcarEsgotadoPorCota('codex', depois(60 * 60_000))
+    expect(r.estaEmPausa('antigravity', T0)).toBe(false)
+  })
+
+  it('a cadeia perde só o motor sem cota', () => {
+    const r = criarRegistroDeMotorMorto()
+    r.marcarEsgotadoPorCota('codex', depois(60 * 60_000))
+    const cadeia = [{ runtime: 'codex' }, { runtime: 'antigravity' }]
+    expect(r.filtrarCadeia(cadeia, T0)).toEqual([{ runtime: 'antigravity' }])
+  })
+
+  it('o horário exato do provedor volta o motor sozinho — nem antes, nem depois', () => {
+    const r = criarRegistroDeMotorMorto()
+    const volta = depois(3 * 60 * 60_000)
+    r.marcarEsgotadoPorCota('codex', volta)
+    expect(r.estaEmPausa('codex', new Date(volta.getTime() - 1))).toBe(true)
+    expect(r.estaEmPausa('codex', volta)).toBe(false)
+  })
+
+  it('sucesso apaga a marca de cota na hora, igual à de credencial', () => {
+    const r = criarRegistroDeMotorMorto()
+    r.marcarEsgotadoPorCota('codex', depois(3 * 60 * 60_000))
+    r.marcarVivo('codex')
+    expect(r.estaEmPausa('codex', T0)).toBe(false)
+  })
+
+  it('cadeia inteira sem cota devolve a original — a proteção não pode parar a esteira sozinha', () => {
+    const r = criarRegistroDeMotorMorto()
+    r.marcarEsgotadoPorCota('codex', depois(60 * 60_000))
+    r.marcarEsgotadoPorCota('antigravity', depois(60 * 60_000))
+    const cadeia = [{ runtime: 'codex' }, { runtime: 'antigravity' }]
+    expect(r.filtrarCadeia(cadeia, T0)).toEqual(cadeia)
+  })
+})
