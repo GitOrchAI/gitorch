@@ -260,23 +260,19 @@ describe('DJ-T4 — cadeia inteira sem cota: a missão dorme, não falha, e não
     // é exatamente essa mensagem que o silêncio do dono substitui: o time
     // não fica mais sabendo que "a esteira parou", porque ela não parou.
     //
-    // NOTA (achado desta tarefa, não resolvido aqui — ver relatório): o
-    // aviso POR MOTOR (`recadoDeTetoDeUso`, pré-existente desde #511,
-    // 03/09) continua saindo a cada degrau que bate no teto, inclusive
-    // nesta cadeia 100% de cota. Mantido de propósito: é uma decisão do
-    // dono ANTERIOR e distinta ("dono avisado por motor, uma vez por
-    // janela"), e o pedido desta tarefa (DJ-T4) não nomeia esse aviso
-    // especificamente — só o resumo executivo que via `recadoDeMotoresEsgotados`.
+    // Ajuste DJ-T4 (decisão D76, literal): "não tem cota? tudo bem, aguarda.
+    // Eu sei que está sem cota" e "não quero ficar recebendo... se eu
+    // precisar ver como estão as coisas eu acesso o painel". O achado
+    // registrado aqui antes (o aviso POR MOTOR `recadoDeTetoDeUso`, #511,
+    // ainda saindo a cada degrau que bate no teto) foi corrigido nesta
+    // rodada: nenhuma mensagem sai para NENHUM motor desta cadeia, mesmo
+    // cada um batendo no teto individualmente. O fato continua em log e
+    // visível pelo painel via o estado 'waiting' da missão, verificado acima.
     expect(missao?.status).not.toBe('failed')
-    const textosEnviados = fetchMock.mock.calls.map(
-      (chamada) =>
-        (
-          JSON.parse(String((chamada as unknown as [string, RequestInit])[1].body)) as {
-            text: string
-          }
-        ).text
-    )
-    expect(textosEnviados.some((t) => t.includes('sem capacidade de motor'))).toBe(false)
+    const chamadasDeFetch = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>
+    expect(
+      chamadasDeFetch.filter((c) => c[0].startsWith('https://api.telegram.org/'))
+    ).toHaveLength(0)
 
     // A cadeia original fica gravada para a retomada reconstruir o caminho.
     const cotaEspera = missao?.payload['cotaEspera'] as { chainOriginal?: unknown[] } | undefined
@@ -348,7 +344,7 @@ describe('DJ-T4 — cadeia inteira sem cota: a missão dorme, não falha, e não
     await app.close()
   })
 
-  test('cascata MISTA (cota + outro motivo de motor): continua avisando e falhando, como hoje', async () => {
+  test('cascata MISTA (cota + outro motivo de motor): continua falhando como hoje, mas DJ-T4 (D76) desligou o aviso', async () => {
     resultadoDoMotor.erroPorRuntime = {
       codex: CODEX_SEM_COTA_8H,
       antigravity: ERRO_NAO_E_COTA,
@@ -372,9 +368,17 @@ describe('DJ-T4 — cadeia inteira sem cota: a missão dorme, não falha, e não
       },
       { timeout: 2000 }
     )
-    // Mista: o resumo executivo (recadoDeMotoresEsgotados) continua saindo —
-    // comportamento pré-existente (#511/#513), não tocado por esta tarefa.
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled(), { timeout: 2000 })
+    // DJ-T4 (decisão D76, literal): mista ou 100% cota, não importa — pelo
+    // menos um motor desta cadeia bateu no teto de uso, então nenhuma
+    // mensagem sai ao dono. Antes desta tarefa o resumo executivo
+    // (`recadoDeMotoresEsgotados`) ainda saía aqui (#511/#513/L4-T22); esta
+    // rodada desligou também esse caso. O desfecho da MISSÃO (failed) não
+    // muda — só o envio.
+    //
+    // Tempo de sobra para qualquer chamada de rede terminar de sair antes de
+    // provar que nenhuma saiu.
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    expect(fetchMock).not.toHaveBeenCalled()
 
     await app.close()
   })

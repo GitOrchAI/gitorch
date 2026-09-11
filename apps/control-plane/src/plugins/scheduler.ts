@@ -399,13 +399,12 @@ import {
 } from '../services/esforco-por-motor.js'
 import { padraoDoDegrau } from '../services/padrao-do-degrau.js'
 import { marcaDePedidoDeLogin } from '../services/motor-que-pede-login.js'
-import {
-  ehTetoDeUsoDaConta,
-  quandoACotaVolta,
-  recadoDeTetoDeUso,
-  recadoDeMotoresEsgotados,
-  deveAvisarMotoresEsgotadosDeNovo,
-} from '../services/teto-de-uso-da-conta.js'
+// DJ-T4 (10/09/2026, decisão D76): `recadoDeTetoDeUso`, `recadoDeMotoresEsgotados`
+// e `deveAvisarMotoresEsgotadosDeNovo` deixaram de ser chamados aqui — motor
+// sem cota não gera NENHUMA mensagem ao dono (nem por motor, nem no resumo
+// agregado). As funções continuam existindo em teto-de-uso-da-conta.ts (e
+// testadas lá) para o caso de a decisão mudar; só o CHAMADOR foi desligado.
+import { ehTetoDeUsoDaConta, quandoACotaVolta } from '../services/teto-de-uso-da-conta.js'
 import {
   parseHorarioDeVoltaDaCota,
   menorHorarioDeVolta,
@@ -2629,13 +2628,14 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // fora do escopo desta tarefa.
   const avisosDeCredencialExpirada = new Map<string, number>()
 
-  // L4-T22, item 3: o aviso EXECUTIVO de "a cadeia inteira ficou sem cota"
-  // NÃO usa Map em memória (fix-up, item 4/6) — o control-plane reinicia a
-  // cada publicação e um Map perderia a marca a cada deploy, mandando o
-  // mesmo recado de novo dentro da MESMA janela de 24h. O dedup vive em
-  // `Project.motoresEsgotadosAvisadoEm` (coluna, lida e gravada no bloco que
-  // manda o aviso, dentro do `for` de `executeMissionWithFailover`) — sem
-  // Map, não há o que vazar por idade.
+  // DJ-T4 (10/09/2026, decisão D76): existia aqui um segundo mecanismo de
+  // dedup (`Project.motoresEsgotadosAvisadoEm`, L4-T22 item 3/4) para o
+  // aviso EXECUTIVO de "a cadeia inteira ficou sem cota". Esse aviso deixou
+  // de ser enviado — motor sem cota não gera NENHUMA mensagem ao dono, nem
+  // por motor nem no resumo agregado (ver `executeMissionWithFailover`) —
+  // então o dedup não tem mais o que proteger e foi removido junto. A coluna
+  // `Project.motoresEsgotadosAvisadoEm` continua no schema (não migrada
+  // nesta tarefa) mas não é mais lida nem gravada por este arquivo.
 
   /**
    * A fila de acordadas de julgamento que o SM levanta a cada ciclo. A regra
@@ -3208,8 +3208,10 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // não esgotou por falha de motor). `algumaFalhaFoiPorCota` sobe assim
     // que QUALQUER degrau bater no teto de uso, mesmo que não seja o
     // último. `todasFalhasForamPorCota` cai assim que um degrau falhar por
-    // OUTRO motivo de motor — é o que decide se o recado final precisa
-    // admitir que a causa foi MISTA (`misto`, recadoDeMotoresEsgotados).
+    // OUTRO motivo de motor. DJ-T4 (D76): nenhuma das duas gera mensagem ao
+    // dono — `todasFalhasForamPorCota` decide só se a missão dorme em
+    // silêncio (100% cota) ou segue o caminho de falha de sempre (misto),
+    // e `algumaFalhaFoiPorCota` decide só o texto do log, nunca de um envio.
     let todasFalhasForamDeMotor = true
     let algumaFalhaFoiPorCota = false
     let todasFalhasForamPorCota = true
@@ -4623,35 +4625,23 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         // aconteceu de verdade em produção. Avisa uma vez por dono+motor por
         // dia (deveAvisarDeNovo) — SPAM apaga sinal tanto quanto silêncio,
         // mesma disciplina de session-watch.ts.
-        // ACABOU A COTA não é LOGIN VENCIDO, e confundir os dois custou caro:
-        // em 27/08 o dono religou o Codex DUAS VEZES no mesmo dia por um
-        // diagnóstico errado. A resposta literal do provedor, capturada
-        // rodando o CLI na mão, era "You've hit your usage limit" — conta no
-        // teto, que só o tempo resolve. Antes disto esse caso não produzia
-        // aviso NENHUM: o dono só percebia quando as coisas paravam de andar.
+        // ACABOU A COTA não é LOGIN VENCIDO — mas D76 (decisão literal do
+        // dono, 10/09/2026): "não tem cota? tudo bem, aguarda. Eu sei que
+        // está sem cota." e "não quero ficar recebendo... se eu precisar ver
+        // como estão as coisas eu acesso o painel". Isto MATA o recado
+        // POR MOTOR que existia aqui (`recadoDeTetoDeUso`, #511): motor sem
+        // cota não gera NENHUMA mensagem ao dono, nem por degrau nem no
+        // resumo agregado (ver o bloco de `algumaFalhaFoiPorCota`, abaixo).
+        // O fato continua registrado — em log, e no PAINEL via o estado do
+        // motor (`motorEmPausa.marcarEsgotadoPorCota`, mais abaixo, e o
+        // status 'waiting' da missão quando a cadeia inteira esgota) — nunca
+        // em silêncio total.
         if (!falhaDeCredencial && ehTetoDeUsoDaConta(lastError)) {
-          const chaveDoTeto = `teto:${project.userId ?? project.id}:${sel.runtime}`
-          if (deveAvisarDeNovo(avisosDeCredencialExpirada, chaveDoTeto, Date.now())) {
-            avisosDeCredencialExpirada.set(chaveDoTeto, Date.now())
-            const chatDoTeto = await resolveNotifyChatId(app.prisma, project, {
-              instanceOwnerEmail: process.env['GITORCH_OWNER_EMAIL'],
-              instanceChatId:
-                process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
-            }).catch(() => null)
-            const avisarDoTeto = buildTelegramNotifier({
-              botToken:
-                process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
-              ...(chatDoTeto ? { chatId: chatDoTeto } : {}),
-            })
-            if (avisarDoTeto) {
-              await avisarDoTeto(
-                recadoDeTetoDeUso({
-                  runtime: sel.runtime,
-                  volta: quandoACotaVolta(lastError),
-                })
-              ).catch(() => undefined)
-            }
-          }
+          app.log.info(
+            `[Scheduler] ${sel.runtime} bateu no teto de uso da conta em ${project.wingId} ` +
+              `(volta ${quandoACotaVolta(lastError) ?? 'sem prazo dito pelo provedor'}) — ` +
+              'sem aviso ao dono (decisão D76: sem cota é silêncio, visível pelo painel).'
+          )
         }
         if (err instanceof CredencialExpiradaError) {
           falhaDeCredencial = true
@@ -4832,87 +4822,27 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         // era o ÚLTIMO degrau) e TODOS os degraus tentados falharam por
         // FALHA DE MOTOR (nunca GitHub, nunca um bug qualquer), com PELO
         // MENOS UM deles batendo no teto de uso — não precisa ser o último.
-        // A versão original só olhava `ehTetoDeUsoDaConta(lastError)` (o
-        // ÚLTIMO erro): dois motores por cota seguidos de um terceiro por
-        // OUTRO motivo de motor (credencial, 429 sem texto de teto) fazia
-        // essa condição falhar e o dono não recebia NADA — o mesmo silêncio
-        // que esta tarefa veio matar. Um aviso por motor (`recadoDeTetoDeUso`,
-        // acima) já saiu para cada degrau que bateu no teto; este é o resumo
-        // EXECUTIVO diferente: não sobrou motor NENHUM para tentar, e
-        // enquanto isso durar, o dev assíncrono acumula dúvida sem resposta.
-        // Quem não é técnico não precisa saber qual motor caiu — precisa
-        // saber que o time ficou sem capacidade, até quando, e (fix-up item
-        // 5) que nem toda queda foi pelo mesmo motivo, quando for o caso.
+        //
+        // DJ-T4 (10/09/2026), decisão do dono (D76, literal): "não tem cota?
+        // tudo bem, aguarda. Eu sei que está sem cota." e "não quero ficar
+        // recebendo... se eu precisar ver como estão as coisas eu acesso o
+        // painel". Isto mata o resumo EXECUTIVO (`recadoDeMotoresEsgotados`,
+        // #511/L4-T22) que existia aqui — inclusive no caso MISTO (nem toda
+        // queda foi por cota): se PELO MENOS UMA falha da cadeia foi por
+        // cota, não sai mensagem NENHUMA por causa dela. O caminho SEM
+        // NENHUMA cota misturada (`!algumaFalhaFoiPorCota`, cadeia exaurida
+        // só por outros motivos de motor) não passa por este `if` e segue com
+        // o comportamento de sempre (a missão termina 'failed' logo abaixo,
+        // como hoje). O fato de ter batido cota fica registrado em log — o
+        // painel mostra o estado real pelo motor em pausa
+        // (`motorEmPausa.marcarEsgotadoPorCota`, calculado acima) e pela
+        // missão marcada 'failed' com o erro em `Mission.error`.
         if (isLast && engineFault && todasFalhasForamDeMotor && algumaFalhaFoiPorCota) {
-          // Fix-up L4-T22, item 4: dedup PERSISTIDO em
-          // `Project.motoresEsgotadosAvisadoEm`, não mais num Map em memória
-          // do processo. O control-plane reinicia a CADA publicação — um Map
-          // perderia a marca a cada deploy e o dono levaria o MESMO aviso de
-          // novo a cada subida, dentro da MESMA janela de 24h. A leitura é
-          // fresca (direto do banco, não do `project` que o chamador de
-          // `executeMissionWithFailover` carregou no início do tique) de
-          // propósito: é a fonte de verdade compartilhada entre processos e
-          // entre tiques, exatamente como `deployNoticeAskedKey` já funciona
-          // para o aviso de publicação.
-          const projetoAtual = await app.prisma.project
-            .findUnique({
-              where: { id: project.id },
-              select: { motoresEsgotadosAvisadoEm: true },
-            })
-            .catch(() => null)
-          if (
-            deveAvisarMotoresEsgotadosDeNovo(
-              projetoAtual?.motoresEsgotadosAvisadoEm ?? null,
-              Date.now()
-            )
-          ) {
-            await app.prisma.project
-              .update({
-                where: { id: project.id },
-                data: { motoresEsgotadosAvisadoEm: new Date() },
-              })
-              .catch((e: unknown) =>
-                app.log.warn(
-                  e,
-                  `[Scheduler] não consegui gravar a marca do aviso de motores esgotados de ${project.wingId} — o próximo tique pode repetir o aviso`
-                )
-              )
-            const duvidasEsperando = await app.prisma.devSession
-              .count({
-                where: { projectId: project.id, state: 'AWAITING_USER_FEEDBACK', closedAt: null },
-              })
-              .catch(() => 0)
-            // Fix-up L4-T22, item 7: o `.catch(() => null)` original escondia
-            // QUALQUER erro de resolução do destino — o aviso não chegava e
-            // ninguém ficava sabendo nem que a tentativa aconteceu. Registra
-            // o erro ANTES de desistir; `null` continua sendo o resultado
-            // (o notificador cai no chat padrão do ambiente, se houver).
-            const chatDosMotoresEsgotados = await resolveNotifyChatId(app.prisma, project, {
-              instanceOwnerEmail: process.env['GITORCH_OWNER_EMAIL'],
-              instanceChatId:
-                process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
-            }).catch((e: unknown) => {
-              app.log.warn(
-                e,
-                `[Scheduler] não consegui resolver o destino do aviso de motores esgotados de ${project.wingId}`
-              )
-              return null
-            })
-            const avisarMotoresEsgotados = buildTelegramNotifier({
-              botToken:
-                process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
-              ...(chatDosMotoresEsgotados ? { chatId: chatDosMotoresEsgotados } : {}),
-            })
-            if (avisarMotoresEsgotados) {
-              await avisarMotoresEsgotados(
-                recadoDeMotoresEsgotados({
-                  ateQuando: quandoACotaVolta(lastError),
-                  duvidasEsperando,
-                  misto: algumaFalhaFoiPorCota && !todasFalhasForamPorCota,
-                })
-              ).catch(() => undefined)
-            }
-          }
+          app.log.info(
+            `[Scheduler] ${role} de ${project.wingId} esgotou a cadeia inteira de motores ` +
+              `(misto=${algumaFalhaFoiPorCota && !todasFalhasForamPorCota}) — sem aviso ao dono ` +
+              '(decisão D76: sem cota é silêncio, visível pelo painel); missão marcada failed a seguir.'
+          )
         }
         break
       }

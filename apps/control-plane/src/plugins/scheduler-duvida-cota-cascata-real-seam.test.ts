@@ -431,10 +431,11 @@ describe('dúvida do dev + cota esgotada: liga à cascata de failover que já ex
     expect(chamadasDeFalhaDestaMissao).toHaveLength(0)
 
     // O resumo executivo ("sem capacidade") NÃO sai mais para este caso —
-    // a ordem do dono foi silêncio, não um informe. O aviso POR MOTOR
-    // (`recadoDeTetoDeUso`, #511) continua saindo a cada degrau — ver a
-    // nota em scheduler-cota-espera-real-seam.test.ts — e não é o que este
-    // teste verifica.
+    // a ordem do dono foi silêncio, não um informe. Ajuste DJ-T4 (D76,
+    // literal): o aviso POR MOTOR (`recadoDeTetoDeUso`, #511) TAMBÉM parou
+    // de sair — ele ainda disparava a cada degrau que batia no teto até
+    // esta rodada corrigir o achado. Agora NENHUMA mensagem de Telegram sai
+    // para esta cadeia inteira, motor nenhum.
     const mensagensDeTelegramDe = (mock: typeof fetchMock) =>
       mock.mock.calls
         .filter((c) => String(c[0]).startsWith('https://api.telegram.org/'))
@@ -446,6 +447,9 @@ describe('dúvida do dev + cota esgotada: liga à cascata de failover que já ex
       m.text.includes('sem capacidade')
     )
     expect(avisoExecutivo).toHaveLength(0)
+    // DJ-T4: prova nova — nenhuma mensagem de Telegram sai, nem o resumo
+    // executivo nem o aviso por motor.
+    expect(mensagensDeTelegramDe(fetchMock)).toHaveLength(0)
 
     // O dedup de MISSÃO duplicada (DJ-T4, item 3 — "enquanto houver missão
     // waiting do mesmo papel+projeto, não cria outra") tem cobertura própria
@@ -656,10 +660,18 @@ describe('dúvida do dev + cota esgotada: liga à cascata de failover que já ex
     await esperaMissaoAssentar(prisma, resultado.missionId)
   })
 
-  // Fix-up pós-revisão (item 3/5): a condição original só olhava o ÚLTIMO
-  // erro da cadeia — dois motores por cota seguidos de um terceiro por OUTRO
-  // motivo fazia o dono não receber aviso NENHUM.
-  test('item 3 e 5 (fix-up): falha MISTA — dois motores por cota, o terceiro por OUTRO motivo — ainda assim o dono recebe o aviso executivo, e o recado admite a mistura', async () => {
+  // Fix-up pós-revisão (item 3/5), histórico: a condição original só olhava
+  // o ÚLTIMO erro da cadeia — dois motores por cota seguidos de um terceiro
+  // por OUTRO motivo fazia o dono não receber aviso NENHUM. L4-T22 corrigiu
+  // isso mandando o resumo executivo também no caso MISTO.
+  //
+  // DJ-T4 (10/09/2026, decisão D76, literal): "não tem cota? tudo bem,
+  // aguarda. Eu sei que está sem cota" — e isto vale TAMBÉM quando a cota é
+  // só PARTE da causa (misto). O teste agora prova o oposto do que provava:
+  // nenhuma mensagem sai para este caso, porque pelo menos um motor da
+  // cadeia caiu por cota. A missão continua terminando 'failed' (a parte
+  // "não é cota" do comportamento de hoje não mudou — só o envio ao dono).
+  test('DJ-T4: falha MISTA (dois motores por cota, o terceiro por OUTRO motivo) — nenhum aviso sai, e a missão ainda termina failed como hoje', async () => {
     // Engine-fault genérico, deliberadamente SEM palavras que casem
     // credencial expirada ('401'/'unauthorized'/'token expired') — este
     // teste quer engineFault=true e ehTetoDeUsoDaConta=false, nada mais
@@ -716,20 +728,26 @@ describe('dúvida do dev + cota esgotada: liga à cascata de failover que já ex
         .filter((c) => String(c[0]).startsWith('https://api.telegram.org/'))
         .map((c) => JSON.parse(String((c[1] as RequestInit).body)) as { text: string })
 
-    let avisoExecutivo: Array<{ text: string }> = []
-    await vi.waitFor(
-      () => {
-        avisoExecutivo = mensagensDeTelegramDe(fetchMock).filter((m) =>
-          m.text.includes('sem capacidade')
-        )
-        expect(avisoExecutivo).toHaveLength(1)
-      },
-      { timeout: 3000, interval: 10 }
+    // Tempo de sobra para qualquer aviso terminar de sair, antes de provar
+    // que nenhum saiu.
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    const avisoExecutivo = mensagensDeTelegramDe(fetchMock).filter((m) =>
+      m.text.includes('sem capacidade')
     )
+    expect(avisoExecutivo).toHaveLength(0)
+    // DJ-T4: nenhuma mensagem de Telegram sai — nem o resumo executivo, nem
+    // o aviso por motor de nenhum dos dois degraus que bateram no teto.
+    expect(mensagensDeTelegramDe(fetchMock)).toHaveLength(0)
 
-    // Item 5: o recado é HONESTO — admite que nem toda queda foi por cota,
-    // nunca simplifica para "foi tudo cota" quando não foi.
-    expect(avisoExecutivo[0]?.text).toMatch(/outro motivo|nem toda queda/i)
+    // A missão ainda termina 'failed': a cadeia continha um motivo que NÃO
+    // é cota (`SAIDA_DE_OUTRO_MOTIVO`), então o comportamento de hoje (falha
+    // honesta) segue valendo — DJ-T4 só silenciou o AVISO, não o desfecho.
+    const chamadasDeFalha = prisma.mission.updateMany.mock.calls.filter(
+      (c) =>
+        (c[0] as { where?: { id?: string }; data?: { status?: string } }).where?.id ===
+          resultado.missionId && (c[0] as { data?: { status?: string } }).data?.status === 'failed'
+    )
+    expect(chamadasDeFalha.length).toBeGreaterThan(0)
 
     // Mesma causa raiz do fix-up acima: espera a missão assentar por
     // completo antes de terminar, para a cauda fire-and-forget não vazar
@@ -738,21 +756,23 @@ describe('dúvida do dev + cota esgotada: liga à cascata de failover que já ex
     await esperaMissaoAssentar(prisma, resultado.missionId)
   })
 
-  // Fix-up pós-revisão (item 4): o dedup deste aviso deixou de viver num Map
-  // em memória do processo — o control-plane reinicia a cada publicação, e
-  // um Map perderia a marca a cada deploy.
-  // DJ-T4: este teste provava o dedup do aviso executivo usando uma cadeia
-  // 100% por cota — cenário que a própria tarefa DJ-T4 passou a tratar como
-  // 'waiting' silencioso, sem NENHUM aviso executivo (ver o teste "cota
-  // esgotada nos TRÊS motores", acima, atualizado para provar isso). O
-  // MECANISMO de dedup aqui testado (`Project.motoresEsgotadosAvisadoEm`
-  // sobrevivendo a um "restart") continua existindo e valendo para a
-  // cascata MISTA (`todasFalhasForamPorCota === false`, que ainda falha e
-  // ainda avisa, como hoje) — trocado aqui pelo MESMO erro misto do teste
-  // "item 3 e 5" (dois motores por cota, um por outro motivo) para
-  // continuar exercitando o dedup de verdade em vez de um cenário que este
-  // código não alcança mais.
-  test('item 4 (fix-up): o dedup do aviso executivo sobrevive a um "restart" do control-plane (marca em banco, não em Map)', async () => {
+  // DJ-T4 (10/09/2026, decisão D76): os DOIS testes que viviam aqui (item 4
+  // — dedup do aviso executivo sobrevivendo a um "restart" via
+  // `Project.motoresEsgotadosAvisadoEm"; item 7 — erro ao resolver o destino
+  // do aviso sendo logado) testavam mecanismos que EXISTIAM só para dar
+  // suporte ao envio do resumo executivo. Esse envio foi desligado nesta
+  // tarefa (nem no caso 100% cota, nem no misto) — não sobrou dedup para
+  // sobreviver a um restart, nem destino de Telegram para falhar ao
+  // resolver: o código de ambos os mecanismos foi removido de
+  // `executeMissionWithFailover` junto com o `avisarMotoresEsgotados`.
+  // Removidos em vez de mantidos como "sempre verde": testavam infra morta,
+  // e um teste verde sobre código deletado é pior que nenhum teste — passa
+  // sem provar nada. Este teste novo prova o que importa agora: mesmo
+  // atravessando um "restart" do control-plane, nenhuma chamada a
+  // `Project.update` grava `motoresEsgotadosAvisadoEm` (a coluna de dedup
+  // não é mais tocada) e nenhuma mensagem de Telegram sai — o log é o único
+  // registro do evento.
+  test('DJ-T4: cadeia MISTA através de um "restart" — nenhum dedup em banco, nenhuma mensagem de Telegram, só log', async () => {
     const fetchMock = fetchRoteado(PERGUNTA_DO_DEV)
     global.fetch = fetchMock as unknown as typeof fetch
 
@@ -791,31 +811,18 @@ describe('dúvida do dev + cota esgotada: liga à cascata de failover que já ex
       },
     }
 
+    const { linhas: logLinhas, logger } = criaLoggerCapturado()
     const mensagensDeTelegramDe = () =>
       fetchMock.mock.calls
         .filter((c) => String(c[0]).startsWith('https://api.telegram.org/'))
         .map((c) => JSON.parse(String((c[1] as RequestInit).body)) as { text: string })
 
-    // "Processo 1": registra o plugin, esgota a cadeia, recebe o aviso.
-    const app1 = Fastify({ logger: false })
+    // "Processo 1": registra o plugin, esgota a cadeia.
+    const app1 = Fastify({ loggerInstance: logger as never })
     app1.decorate('prisma', prisma as never)
     await app1.register(schedulerPlugin)
     const resultado1 = await app1.triggerAgentMission('qa', 'proj_1')
     expect(resultado1.triggered).toBe(true)
-
-    await vi.waitFor(
-      () => {
-        expect(
-          mensagensDeTelegramDe().filter((m) => m.text.includes('sem capacidade'))
-        ).toHaveLength(1)
-      },
-      { timeout: 3000, interval: 10 }
-    )
-    // Espera o "processo 1" assentar por completo (mesma causa raiz dos
-    // fix-ups acima) ANTES de fechar e subir o "processo 2" — sem isto, a
-    // cauda fire-and-forget do processo 1 pode vazar `chamadas`/telegram
-    // para o processo 2, que resetou `resultadoDoMotor.chamadas` logo
-    // abaixo esperando começar do zero.
     await esperaMissaoAssentar(prisma, resultado1.missionId)
     await app1.close()
 
@@ -824,7 +831,7 @@ describe('dúvida do dev + cota esgotada: liga à cascata de failover que já ex
     // é a única coisa que sobrevive, exatamente como um banco real sobrevive
     // a um restart do processo.
     resultadoDoMotor.chamadas = []
-    app = Fastify({ logger: false })
+    app = Fastify({ loggerInstance: logger as never })
     app.decorate('prisma', prisma as never)
     await app.register(schedulerPlugin)
     const resultado2 = await app.triggerAgentMission('qa', 'proj_1')
@@ -836,102 +843,25 @@ describe('dúvida do dev + cota esgotada: liga à cascata de failover que já ex
       },
       { timeout: 3000, interval: 10 }
     )
+    await esperaMissaoAssentar(prisma, resultado2.missionId)
     // Tempo de sobra para qualquer aviso adicional terminar de sair — se
-    // fosse repetir, já teria acontecido dentro desta janela.
+    // fosse disparar, já teria acontecido dentro desta janela.
     await new Promise((resolve) => setTimeout(resolve, 200))
 
-    // A prova do item 4: mesmo numa instância NOVA do plugin (equivalente a
-    // um restart), o SEGUNDO aviso executivo NÃO sai — a marca persistida em
-    // `Project.motoresEsgotadosAvisadoEm` (o "banco", que sobreviveu) ainda
-    // diz que o aviso já saiu dentro da janela. Um Map em memória do
-    // processo FALHARIA este teste (closure nova = Map vazio = reenviaria).
-    expect(mensagensDeTelegramDe().filter((m) => m.text.includes('sem capacidade'))).toHaveLength(1)
+    // Nenhuma mensagem de Telegram, nos dois "processos" somados.
+    expect(mensagensDeTelegramDe()).toHaveLength(0)
 
-    // Espera o "processo 2" assentar por completo antes de terminar — sem
-    // isto, a cauda fire-and-forget vaza para o próximo teste do arquivo.
-    await esperaMissaoAssentar(prisma, resultado2.missionId)
-  })
-
-  // Fix-up pós-revisão (item 7): `.catch(() => null)` escondia qualquer erro
-  // de resolução do destino do aviso executivo — o aviso não chegava e
-  // ninguém ficava sabendo nem que a tentativa aconteceu.
-  //
-  // DJ-T4: cadeia trocada de "100% cota" para MISTA (mesmo motivo do item 4,
-  // acima) — o resumo executivo, e portanto este código de resolução de
-  // destino, só é alcançado quando a cascata NÃO é pura-cota depois desta
-  // tarefa.
-  test('item 7 (fix-up): falha ao resolver o destino do aviso executivo é registrada, não silenciada', async () => {
-    // Engine-fault genérico, deliberadamente SEM palavras que casem
-    // credencial expirada ('401'/'unauthorized'/'token expired') — este
-    // teste quer engineFault=true e ehTetoDeUsoDaConta=false, nada mais
-    // (ver o achado desta tarefa: reusar o texto de credencial aqui fazia
-    // este degrau lançar CredencialExpiradaError, que dispara um recado
-    // e uma resolução de destino DIFERENTES — não os que este teste mede).
-    const SAIDA_DE_OUTRO_MOTIVO = 'engine process crashed unexpectedly (exit 137, OOM killed)'
-    resultadoDoMotor.porRuntime = {
-      codex: {
-        missionId: 'irrelevante',
-        runtime: 'codex',
-        exitCode: 1,
-        durationMs: 1,
-        output: '',
-        stderr: SAIDA_DE_COTA_ESGOTADA,
-      },
-      antigravity: {
-        missionId: 'irrelevante',
-        runtime: 'antigravity',
-        exitCode: 1,
-        durationMs: 1,
-        output: '',
-        stderr: SAIDA_DE_COTA_ESGOTADA,
-      },
-      claude: {
-        missionId: 'irrelevante',
-        runtime: 'claude',
-        exitCode: 1,
-        durationMs: 1,
-        output: '',
-        stderr: SAIDA_DE_OUTRO_MOTIVO,
-      },
-    }
-    const fetchMock = fetchRoteado(PERGUNTA_DO_DEV)
-    global.fetch = fetchMock as unknown as typeof fetch
-
-    const { linhas: logLinhas, logger } = criaLoggerCapturado()
-    app = Fastify({ loggerInstance: logger as never })
-    const prisma = buildFakePrisma({
-      chatId: 'chat-do-dono',
-      duvidasEsperando: 1,
-      telegramLinkFindUniqueImpl: async () => {
-        throw new Error('telegram_link fora do ar')
-      },
-    })
-    app.decorate('prisma', prisma as never)
-    await app.register(schedulerPlugin)
-
-    const resultado = await app.triggerAgentMission('qa', 'proj_1')
-    expect(resultado.triggered).toBe(true)
-
-    await vi.waitFor(
-      () => {
-        expect(resultadoDoMotor.chamadas).toEqual(['codex', 'antigravity', 'claude'])
-      },
-      { timeout: 3000, interval: 10 }
+    // Nenhuma gravação da antiga marca de dedup — o campo não é mais tocado.
+    const gravacoesDeDedup = (prisma.project.update as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (c) =>
+        (c[0] as { data?: { motoresEsgotadosAvisadoEm?: unknown } }).data
+          ?.motoresEsgotadosAvisadoEm !== undefined
     )
+    expect(gravacoesDeDedup).toHaveLength(0)
 
-    await vi.waitFor(
-      () => {
-        const textoDoLog = logLinhas.join('\n')
-        expect(textoDoLog).toContain(
-          'não consegui resolver o destino do aviso de motores esgotados'
-        )
-      },
-      { timeout: 3000, interval: 10 }
-    )
-
-    // Último teste do arquivo, mas a mesma disciplina vale: espera a missão
-    // assentar por completo antes de terminar (consistência com os demais
-    // fix-ups desta rodada — ver `esperaMissaoAssentar`).
-    await esperaMissaoAssentar(prisma, resultado.missionId)
+    // O fato fica em log — "sem aviso ao dono" é a marca textual do novo
+    // comportamento (ver o log adicionado em scheduler.ts).
+    const textoDoLog = logLinhas.join('\n')
+    expect(textoDoLog).toContain('sem aviso ao dono')
   })
 })
