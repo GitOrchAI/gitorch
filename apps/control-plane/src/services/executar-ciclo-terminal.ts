@@ -87,6 +87,15 @@ export interface CicloTerminalResultado {
   issuesRetomadasNoPr: number[]
   mantidas: number
   ilegiveis: number
+  /**
+   * Projetos com pelo menos uma VAGA LIBERADA nesta varredura (sessão
+   * fechada — mesclada, redelegada ou mandada para análise), sem repetição.
+   * `retomar-no-mesmo-pr` fica de fora de propósito: a sessão antiga fecha,
+   * mas a nova abre no mesmo fôlego — nenhuma vaga sobra livre. O chamador
+   * usa esta lista para acordar o SM na hora (DJ-T3), em vez de esperar a
+   * próxima janela do cron.
+   */
+  projetosComVagaLiberada: string[]
 }
 
 function horasEntre(agora: Date, quando: Date | null): number {
@@ -108,6 +117,13 @@ export async function executarCicloTerminal(
     issuesRetomadasNoPr: [],
     mantidas: 0,
     ilegiveis: 0,
+    projetosComVagaLiberada: [],
+  }
+  const projetosComVagaLiberadaVistos = new Set<string>()
+  const marcarVagaLiberada = (projectId: string): void => {
+    if (projetosComVagaLiberadaVistos.has(projectId)) return
+    projetosComVagaLiberadaVistos.add(projectId)
+    r.projetosComVagaLiberada.push(projectId)
   }
 
   const linhas = (await deps.listarLinhas()).filter((l) => ehTerminal(l.state))
@@ -245,6 +261,7 @@ export async function executarCicloTerminal(
 
     if (decisao.acao === 'fechar-concluido') {
       r.fechadasConcluidas += 1
+      marcarVagaLiberada(linha.projectId)
       info(
         `[ciclo-terminal] ${linha.sessionName} (issue #${linha.issueNumber}) mesclada — linha fechada`
       )
@@ -256,6 +273,7 @@ export async function executarCicloTerminal(
     // sessão — o dono já reclamou de spam no Telegram.
     if (decisao.acao === 'fechar-e-analisar') {
       r.issuesEmAnalise.push(linha.issueNumber)
+      marcarVagaLiberada(linha.projectId)
       await deps
         .pedirAnalise({ linha })
         .catch((err) =>
@@ -269,6 +287,7 @@ export async function executarCicloTerminal(
       )
     } else {
       r.issuesRedelegadas.push(linha.issueNumber)
+      marcarVagaLiberada(linha.projectId)
       info(
         `[ciclo-terminal] ${linha.sessionName} (issue #${linha.issueNumber}) fechada (${decisao.motivo}); ` +
           'a issue volta para a fila'

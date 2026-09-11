@@ -300,7 +300,13 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
     // 'chave-malformada' — a exceção sobe por aqui, mantém a pergunta
     // `open` (agent-question.ts answer()) e o painel devolve 409
     // (ERRO_AO_RESPONDER) em vez de fingir sucesso.
-    return manipuladorDeResultadoDeRetomada(resultado)
+    const manipulado = manipuladorDeResultadoDeRetomada(resultado)
+    // DJ-T3, evento (c): a dúvida do dev foi respondida — a sessão volta a
+    // andar (ou, sem sessão viva, a correção virou comentário na issue e a
+    // task volta disponível). Nos dois casos há trabalho novo para o SM
+    // redescobrir; não espera a próxima janela do cron.
+    app.acordarSmPorVagaLiberada(args.projectId, 'dúvida do dev respondida')
+    return manipulado
   }
 
   // C2 (fix-up L4-T5, CSO): a resposta do dono à escalada de "PR travado em
