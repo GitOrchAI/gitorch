@@ -97,3 +97,5 @@ jobs:
           done
           if [ "$fail" != "0" ]; then exit 1; fi
           echo "OK: home, setup e painel publicados e com assets carregando"
+
+    # comment to trigger ci
