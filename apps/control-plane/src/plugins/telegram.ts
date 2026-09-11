@@ -94,6 +94,32 @@ export function projetoTemRepositorioValido(
   return !!projeto && typeof projeto.wingId === 'string' && projeto.wingId.trim().length > 0
 }
 
+/**
+ * DJ-T3b (revisão): `aoResponderDuvidaDoDev`, abaixo, chamava
+ * `app.acordarSmPorVagaLiberada(...)` sem guarda, DEPOIS de a retomada já ter
+ * acontecido. Sem o decorator registrado (scheduler não registrado/desligado,
+ * ordem de registro dos plugins, teste de rota isolado) o `TypeError` subia
+ * por cima da resposta já entregue ao dono, devolvendo erro na rota mesmo com
+ * a retomada concluída com sucesso. Isolado numa chamada opcional — se o
+ * decorator não existir ou lançar, apenas loga aviso e a resposta ao dono
+ * segue normal. Exportado para ser testável isoladamente (mesmo padrão de
+ * `projetoTemRepositorioValido`).
+ */
+export function acordarSmComSeguranca(
+  app: Pick<FastifyInstance, 'log'> & Partial<Pick<FastifyInstance, 'acordarSmPorVagaLiberada'>>,
+  projectId: string,
+  motivo: string
+): void {
+  if (typeof app.acordarSmPorVagaLiberada !== 'function') return
+  try {
+    app.acordarSmPorVagaLiberada(projectId, motivo)
+  } catch (err) {
+    app.log.warn(
+      `[Telegram] acordarSmPorVagaLiberada falhou para o projeto ${projectId} — resposta ao dono segue normal: ${String(err)}`
+    )
+  }
+}
+
 export const telegramPlugin = fp(async (app: FastifyInstance) => {
   const botToken = process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN']
 
@@ -300,7 +326,13 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
     // 'chave-malformada' — a exceção sobe por aqui, mantém a pergunta
     // `open` (agent-question.ts answer()) e o painel devolve 409
     // (ERRO_AO_RESPONDER) em vez de fingir sucesso.
-    return manipuladorDeResultadoDeRetomada(resultado)
+    const manipulado = manipuladorDeResultadoDeRetomada(resultado)
+    // DJ-T3, evento (c): a dúvida do dev foi respondida — a sessão volta a
+    // andar (ou, sem sessão viva, a correção virou comentário na issue e a
+    // task volta disponível). Nos dois casos há trabalho novo para o SM
+    // redescobrir; não espera a próxima janela do cron.
+    acordarSmComSeguranca(app, args.projectId, 'dúvida do dev respondida')
+    return manipulado
   }
 
   // C2 (fix-up L4-T5, CSO): a resposta do dono à escalada de "PR travado em

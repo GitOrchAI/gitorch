@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { projetoTemRepositorioValido } from './telegram.js'
+import { describe, it, expect, vi } from 'vitest'
+import { projetoTemRepositorioValido, acordarSmComSeguranca } from './telegram.js'
 
 /**
  * Fix-up (revisão) do defeito 4: dentro de `aoResponderDuvidaDoDev` (o
@@ -37,5 +37,48 @@ describe('projetoTemRepositorioValido', () => {
   it('projeto com wingId vazio ou só espaço: inválido', () => {
     expect(projetoTemRepositorioValido({ wingId: '' })).toBe(false)
     expect(projetoTemRepositorioValido({ wingId: '   ' })).toBe(false)
+  })
+})
+
+/**
+ * DJ-T3b (revisão): dentro de `aoResponderDuvidaDoDev`,
+ * `app.acordarSmPorVagaLiberada(...)` era chamado sem guarda, DEPOIS de a
+ * retomada já ter acontecido — se o decorator não estiver registrado (ordem
+ * de plugins, scheduler desligado, teste de rota isolado) o `TypeError`
+ * derrubava a resposta ao dono mesmo com a retomada já entregue.
+ * `acordarSmComSeguranca` isola essa chamada (mesmo padrão de
+ * `projetoTemRepositorioValido`: extraído para ser testável sem montar o
+ * plugin Fastify inteiro).
+ */
+describe('acordarSmComSeguranca', () => {
+  it('decorator ausente: não lança', () => {
+    const app = { log: { warn: vi.fn() } } as unknown as Parameters<typeof acordarSmComSeguranca>[0]
+    expect(() => acordarSmComSeguranca(app, 'proj_1', 'dúvida do dev respondida')).not.toThrow()
+  })
+
+  it('decorator presente: chamado uma vez com o projectId e o motivo', () => {
+    const acordar = vi.fn()
+    const app = {
+      acordarSmPorVagaLiberada: acordar,
+      log: { warn: vi.fn() },
+    } as unknown as Parameters<typeof acordarSmComSeguranca>[0]
+
+    acordarSmComSeguranca(app, 'proj_1', 'dúvida do dev respondida')
+
+    expect(acordar).toHaveBeenCalledTimes(1)
+    expect(acordar).toHaveBeenCalledWith('proj_1', 'dúvida do dev respondida')
+  })
+
+  it('decorator que lança: não propaga — só loga aviso', () => {
+    const warn = vi.fn()
+    const app = {
+      acordarSmPorVagaLiberada: vi.fn(() => {
+        throw new Error('boom')
+      }),
+      log: { warn },
+    } as unknown as Parameters<typeof acordarSmComSeguranca>[0]
+
+    expect(() => acordarSmComSeguranca(app, 'proj_1', 'dúvida do dev respondida')).not.toThrow()
+    expect(warn).toHaveBeenCalledTimes(1)
   })
 })

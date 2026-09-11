@@ -64,6 +64,14 @@ export type OrigemDoDisparo =
    * atravessou um restart em vez de continuar no mesmo processo.
    */
   | 'boot'
+  /**
+   * DJ-T3: uma vaga do dev assíncrono liberou (sessão fechada — mesclada,
+   * redelegada ou enviada para análise; PR delegado mesclado; dúvida do dev
+   * respondida; PO criou tarefas). Informação NOVA sobre o projeto, do
+   * mesmíssimo jeito que `fila-do-sm` é nova sobre uma entrega sem parecer —
+   * por isso fura o descanso pelo mesmo motivo.
+   */
+  | 'vaga-liberada'
 
 /**
  * Origens que trazem INFORMAÇÃO NOVA e por isso furam o descanso.
@@ -86,6 +94,8 @@ const ORIGENS_QUE_FURAM: ReadonlySet<OrigemDoDisparo> = new Set<OrigemDoDisparo>
   // Pelo MESMO motivo de 'esteira' — só que a informação atravessou um
   // restart do processo em vez de continuar no mesmo (D16, vez-pendente.ts).
   'boot',
+  // DJ-T3: mesmíssimo motivo de 'fila-do-sm' — ver o comentário do tipo.
+  'vaga-liberada',
 ])
 
 export function origemFuraODescanso(origem: OrigemDoDisparo): boolean {

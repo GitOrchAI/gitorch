@@ -69,6 +69,7 @@ import {
 } from '../services/qa-rails-mission.js'
 import { runSmDelegation } from '../services/sm-delegation.js'
 import { criarFilaDeJulgamento } from '../services/fila-de-julgamento.js'
+import { criarFilaDeVagaLiberada } from '../services/acordar-sm.js'
 import {
   deveAvisarSobreOMotor,
   recadoDeMotorRevogado,
@@ -2637,6 +2638,27 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   const filaDeJulgamento = criarFilaDeJulgamento()
 
   /**
+   * DJ-T3: a fila coalescida de "vaga liberada" — o SM acorda por EVENTO em
+   * vez de só pela janela do cron (a cada 15 min, a rede de segurança). MESMO
+   * desenho de `filaDeJulgamento`: o evento entra num Set por projeto (não
+   * soma — a acordada do SM redescobre TUDO que está pronto de uma vez) e o
+   * relógio drena uma vez por tique, fora de qualquer missão.
+   */
+  const filaDeVagaLiberada = criarFilaDeVagaLiberada()
+
+  /**
+   * Registra o evento na fila E entrega o texto de log — chamado pelos QUATRO
+   * pontos do scheduler que liberam uma vaga do dev assíncrono (ciclo
+   * terminal, PR delegado mesclado, dúvida do dev respondida, PO criou
+   * tarefas). Um ponto único para não repetir o par "acordarSm + log" quatro
+   * vezes com redação ligeiramente diferente em cada.
+   */
+  const acordarSmPorVagaLiberada = (projectId: string, motivo: string): void => {
+    filaDeVagaLiberada.acordarSm(projectId)
+    app.log.info(`[Scheduler] vaga liberada em ${projectId} (${motivo}) — SM na fila do tique`)
+  }
+
+  /**
    * A esteira não para entre um papel e o outro.
    *
    * Mesmo desenho da fila de julgamento, que já resolveu o problema gêmeo
@@ -2933,13 +2955,56 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     )
     const primary = chain[0] as { runtime: string; model?: string; effort?: string }
 
+    // DJ-T3 (correção pós-QA, task 93f68d45): o bypass da guarda de gasto só
+    // vale para o SM quando ele VAI mesmo rodar pelo caminho determinístico
+    // dos trilhos (`smRails` em `executeMissionWithFailover`, mais abaixo —
+    // `role === 'sm' && Boolean(railsToken)`). Sem `railsToken` disponível
+    // (App não instalado no repositório e sem `GITORCH_GITHUB_TOKEN` de
+    // override), o SM cai no `else` clássico igual a qualquer outro papel e
+    // ALI o motor de verdade roda — gastando quota. O defeito original
+    // (`role !== 'sm'`) pulava a guarda para TODO SM, mesmo esse caminho, e
+    // deixaria o cliente estourar a conta com o motor primário em cota
+    // crítica.
+    //
+    // Decide isso aqui, ANTES da guarda, com a MESMA regra que
+    // `executeMissionWithFailover` usa para `smRails` — e reaproveita o
+    // resultado lá embaixo (`smRailsTokenAntecipado`) para não mintar o
+    // installation token duas vezes por disparo (`mintInstallationToken` já
+    // cacheia ~1h, mas nada aqui deveria depender de cache para ficar
+    // barato).
+    let smRailsTokenAntecipado: string | undefined
+    if (role === 'sm') {
+      smRailsTokenAntecipado =
+        process.env['GITORCH_GITHUB_TOKEN'] ??
+        (await mintInstallationToken({
+          repository: project.wingId,
+          onError: (m) => app.log.error(m),
+          onWarn: (m) => app.log.warn(m),
+        })) ??
+        undefined
+    }
+    const smVaiPelosTrilhos = role === 'sm' && Boolean(smRailsTokenAntecipado)
+
     // Controle de gasto (BYOK): a missão roda no LLM do cliente. Antes de
     // disparar, checa a quota do motor primário e o orçamento de tokens do
     // plano. Quota crítica bloqueia (protege a conta do cliente de estourar);
     // quota baixa só alerta. Ver spend-guard.ts.
+    //
+    // DJ-T3: só o SM PELOS TRILHOS (`smVaiPelosTrilhos`, acima) fica de FORA
+    // desta guarda. `runSmDelegation` é 100% determinístico — delega pela
+    // etiqueta do GitHub, sem passo de LLM (ver o comentário de `smRails` em
+    // `executeMissionWithFailover`, mais abaixo) — então ele nunca gasta a
+    // quota do motor, e barrá-lo pela quota do `primary.runtime` bloqueava a
+    // esteira inteira num cliente com TODOS os motores sem cota, mesmo
+    // quando a única coisa que precisava rodar não usa motor nenhum. Medido:
+    // sem este bypass, a vaga liberada por DJ-T3 nunca chegaria a acordar o
+    // SM justamente no cenário em que a próxima tarefa mais precisa entrar
+    // na hora — cliente sem cota sobrando em nenhum motor. Mas SEM
+    // `railsToken` o SM cai no caminho clássico que chama o motor — esse
+    // caminho passa pela guarda como qualquer outro papel.
     // Fotografa a quota ANTES da missão (medição de consumo por diferença).
     let quotaBefore: number | null = null
-    if (project.userId && plan) {
+    if (project.userId && plan && !smVaiPelosTrilhos) {
       const conn = await app.prisma.engineConnection.findFirst({
         where: { userId: project.userId, runtime: primary.runtime, status: 'connected' },
         select: { quotaRemaining: true, quotaTotal: true },
@@ -3023,7 +3088,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       chain,
       plan?.id,
       onboardingSequence !== undefined,
-      origem
+      origem,
+      smRailsTokenAntecipado
     )
 
     return { triggered: true, missionId: mission.id }
@@ -3066,7 +3132,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
      * pelo aviso de desejo novo ele analisa AQUELE desejo; pela agenda ele
      * explora o projeto.
      */
-    origem: OrigemDoDisparo = 'agenda'
+    origem: OrigemDoDisparo = 'agenda',
+    /**
+     * DJ-T3 (task 93f68d45): para `role === 'sm'`, `runTrigger` já decidiu
+     * ANTES da guarda de gasto se o SM vai pelos trilhos (minta o token, se
+     * precisar) — reaproveita aqui em vez de mintar de novo. `undefined`
+     * para os demais papéis (eles resolvem o próprio `railsToken` abaixo,
+     * como sempre).
+     */
+    smRailsTokenAntecipado?: string
   ): Promise<void> => {
     // Isolamento por tier: grátis roda no stack remoto (MT-SaaS) quando
     // configurado; qualquer outro caso usa o stack local de sempre — nunca
@@ -3272,17 +3346,24 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             )
           }
         }
+        // DJ-T3: para 'sm', `runTrigger` já mintou (ou não) este MESMO token
+        // ANTES da guarda de gasto, para decidir se pulava a guarda —
+        // reaproveita o resultado (mesmo quando `undefined`, isto é, sem
+        // trilhos) em vez de mintar de nada — para os demais papéis o
+        // cálculo é o de sempre.
         const railsToken =
-          process.env['GITORCH_GITHUB_TOKEN'] ??
-          (await mintInstallationToken({
-            // Sem o repositório, o App emitia o token da PRIMEIRA instalação
-            // da lista — a de outra conta — e toda escrita no repositório do
-            // projeto voltava 403.
-            repository: project.wingId,
-            onError: (m) => app.log.error(m),
-            onWarn: (m) => app.log.warn(m),
-          })) ??
-          undefined
+          role === 'sm'
+            ? smRailsTokenAntecipado
+            : (process.env['GITORCH_GITHUB_TOKEN'] ??
+              (await mintInstallationToken({
+                // Sem o repositório, o App emitia o token da PRIMEIRA instalação
+                // da lista — a de outra conta — e toda escrita no repositório do
+                // projeto voltava 403.
+                repository: project.wingId,
+                onError: (m) => app.log.error(m),
+                onWarn: (m) => app.log.warn(m),
+              })) ??
+              undefined)
         // D12 (01/09, provado ao vivo contra loureng/patinhas-3d-crafts): o
         // App é CEGO para Projects V2 de conta pessoal — nem lê nem escreve
         // ("Resource not accessible by integration"/"not found", mesmo o
@@ -4026,20 +4107,30 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                   return extra ? { ...raResult, output: `${raResult.output}\n${extra}` } : raResult
                 })()
               : poRails
-                ? await runPoMissionViaRails({
-                    repository: project.wingId,
-                    fetchImpl: fetchDoQuadro(project),
-                    ...(railsBoard ? { board: railsBoard } : {}),
-                    githubToken: railsToken as string,
-                    ...(railsBoardToken ? { boardToken: railsBoardToken } : {}),
-                    contextBlocks,
-                    boardColumns,
-                    sprintDays: resolveSprintDays(project.runtimeConfig),
-                    execute,
-                    projectId: project.id,
-                    userId: project.userId ?? undefined,
-                    agentQuestionService: app.agentQuestionService,
-                  })
+                ? await (async () => {
+                    const poResult = await runPoMissionViaRails({
+                      repository: project.wingId,
+                      fetchImpl: fetchDoQuadro(project),
+                      ...(railsBoard ? { board: railsBoard } : {}),
+                      githubToken: railsToken as string,
+                      ...(railsBoardToken ? { boardToken: railsBoardToken } : {}),
+                      contextBlocks,
+                      boardColumns,
+                      sprintDays: resolveSprintDays(project.runtimeConfig),
+                      execute,
+                      projectId: project.id,
+                      userId: project.userId ?? undefined,
+                      agentQuestionService: app.agentQuestionService,
+                    })
+                    // DJ-T3, evento (d): `noOp` só é `true` quando o PO não
+                    // teve trabalho nenhum para fazer — `false` significa que
+                    // triagem, tarefas ou issues NOVAS entraram no board. Não
+                    // espera a próxima janela do cron para o SM redescobrir.
+                    if (poResult.noOp === false) {
+                      acordarSmPorVagaLiberada(project.id, 'PO criou tarefas')
+                    }
+                    return poResult
+                  })()
                 : await (async () => {
                     // ANTES de julgar PR: o dev está parado esperando resposta?
                     // Best-effort só para falha que NÃO É de motor — uma
@@ -4815,6 +4906,55 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       filaDeJulgamento.devolver(projectId)
       app.log.warn(
         `[Scheduler] julgamento pedido pelo SM para ${projectId} recusado (${resultado.reason}); ` +
+          'a vez volta para a fila e o próximo tique tenta de novo'
+      )
+    }
+  }
+
+  /**
+   * DJ-T3: drena UMA vaga liberada por tique — mesmo rodízio de
+   * `drenarFilaDeJulgamento`, um por minuto.
+   *
+   * Guarda extra além do teto global de concorrência (`MAX_CONCURRENT_MISSIONS`,
+   * default 1): numa VM com o teto elevado (>1), duas vagas liberadas do MESMO
+   * projeto em tiques seguidos poderiam, em tese, disparar um segundo SM antes
+   * do primeiro terminar — o teto global só barra a VM inteira, não o par
+   * papel+projeto. Checa aqui e não em `runTrigger` (que vale para todo papel)
+   * porque só o SM tem fila coalescida por evento; os demais papéis continuam
+   * cobertos pelo teto global e pelo `triggerChain` serializado.
+   */
+  const drenarFilaDeVagaLiberada = async (): Promise<void> => {
+    const projectId = filaDeVagaLiberada.proxima()
+    if (!projectId) return
+
+    let jaTemSmAtivo = false
+    try {
+      const smAtivo = await app.prisma.mission.count({
+        where: { projectId, type: 'agent-run-sm', status: { in: ['pending', 'running'] } },
+      })
+      jaTemSmAtivo = smAtivo > 0
+    } catch (err) {
+      // Best-effort: falha na leitura não pode travar a fila para sempre —
+      // pior caso é tentar disparar e `runTrigger` recusar por "busy" (teto
+      // global), que já devolve a vez do jeito de sempre.
+      app.log.warn(
+        err,
+        `[Scheduler] não deu para checar SM ativo de ${projectId}; tentando mesmo assim`
+      )
+    }
+    if (jaTemSmAtivo) {
+      // Nunca dois SM do mesmo projeto ao mesmo tempo: devolve a vez para o
+      // próximo tique reexaminar, em vez de perder o evento.
+      filaDeVagaLiberada.devolver(projectId)
+      return
+    }
+
+    const resultado = await triggerAgentMission('sm', projectId, undefined, 'vaga-liberada')
+    if (!resultado.triggered && resultado.reason && RETRYABLE_REASONS.has(resultado.reason)) {
+      // Recusa temporária DEVOLVE a vez, pelo mesmo motivo de `drenarFilaDeJulgamento`.
+      filaDeVagaLiberada.devolver(projectId)
+      app.log.warn(
+        `[Scheduler] SM acordado por vaga liberada em ${projectId} recusado (${resultado.reason}); ` +
           'a vez volta para a fila e o próximo tique tenta de novo'
       )
     }
@@ -6419,6 +6559,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
     })
 
+    // DJ-T3, eventos (a) e (b): o ciclo terminal fechou uma sessão — mesclada
+    // (PR delegado mesclado) ou devolvida para a fila. Nos dois casos uma
+    // vaga do dev assíncrono liberou; o SM acorda para preenchê-la na hora.
+    for (const projectId of resultado.projetosComVagaLiberada) {
+      acordarSmPorVagaLiberada(projectId, 'ciclo terminal fechou uma sessão')
+    }
+
     // UM aviso por projeto, nunca um por sessão (o dono já reclamou de spam).
     const todasAsIssues = [...resultado.issuesRedelegadas, ...resultado.issuesEmAnalise]
     const porProjeto = new Map<string, number[]>()
@@ -7112,7 +7259,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               prisma: app.prisma as unknown as PrismaDevSession,
               sessionName,
             }),
-          fecharSessao: (args) => fecharSessaoEArquivar(args),
+          fecharSessao: async (args) => {
+            await fecharSessaoEArquivar(args)
+            // DJ-T3, evento (a): a vigia viu esta sessão fechar (terminal sem
+            // PR, dúvida vencida sem resposta, ou abandono por silêncio) — a
+            // vaga do dev assíncrono liberou. Mesmo `projectId` do laço de
+            // `varrerSessoesDoDev` — a vigia só examina sessões DESTE projeto
+            // nesta passada.
+            acordarSmPorVagaLiberada(projectId, 'vigia fechou uma sessão')
+          },
           registrarInvestigacao: (args) =>
             registrarInvestigacao({ prisma: app.prisma as unknown as PrismaDevSession, ...args }),
           ...(notify ? { avisarDono: notify } : {}),
@@ -10664,6 +10819,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     await drenarFilaDeJulgamento().catch((err) =>
       app.log.error(err, '[Scheduler] dreno da fila de julgamento falhou; tenta no próximo tick')
     )
+    // DJ-T3: vaga liberada no dev assíncrono — acorda o SM na hora em vez de
+    // esperar a janela do cron.
+    await drenarFilaDeVagaLiberada().catch((err) =>
+      app.log.error(err, '[Scheduler] dreno da fila de vaga liberada falhou; tenta no próximo tick')
+    )
     // Tarefa 17: falha aqui não pode derrubar o tick — o próprio
     // `varrerPublicacoes` já isola cada sessão em try/catch; este é só o
     // último cinto de segurança (mesmo padrão de `sweepExpiredEnvironments`
@@ -10879,6 +11039,10 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
 
   // Exposto para rotas administrativas e QA real dispararem missões sob demanda.
   app.decorate('triggerAgentMission', triggerAgentMission)
+  // DJ-T3: exposto para OUTROS plugins (telegram.ts — dúvida do dev
+  // respondida; po-rails-mission/scheduler — PO criou tarefas) registrarem um
+  // evento de vaga liberada sem enxergar a fila em si — só o scheduler drena.
+  app.decorate('acordarSmPorVagaLiberada', acordarSmPorVagaLiberada)
 
   // D16: NO BOOT, retoma. Toda vez pendente persistida (VezPendente,
   // gravada no mesmo instante em que passagemDeBastao.passar() enfileira em
@@ -10918,6 +11082,8 @@ declare module 'fastify' {
       onboardingSequence?: F6AgentRole[],
       origem?: OrigemDoDisparo
     ) => Promise<TriggerResult>
+    /** DJ-T3: registra que `projectId` teve uma vaga liberada (ver acordar-sm.ts). */
+    acordarSmPorVagaLiberada: (projectId: string, motivo: string) => void
   }
 }
 
