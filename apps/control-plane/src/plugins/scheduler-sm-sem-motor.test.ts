@@ -134,6 +134,22 @@ describe('DJ-T3: SM roda sem motor (cota crítica não bloqueia missão determin
     expect(resultado.reason).toBeUndefined()
   })
 
+  test('SM SEM trilhos (sem GITORCH_GITHUB_TOKEN e sem App instalado) é barrado pela quota crítica, como os outros papéis', async () => {
+    // Sem railsToken o SM cai no caminho clássico (`else` de
+    // `executeMissionWithFailover`), que chama o motor de verdade — não pode
+    // ficar de fora da guarda de gasto nesse caso, senão gastaria a quota do
+    // cliente sem checar nada.
+    delete process.env['GITORCH_GITHUB_TOKEN']
+    delete process.env['GITHUB_APP_ID']
+    delete process.env['GITHUB_APP_PRIVATE_KEY']
+    const fake = buildFakePrisma()
+
+    const resultado = await disparar('sm', fake)
+
+    expect(resultado.triggered).toBe(false)
+    expect(resultado.reason).toBe('engine-quota-critical')
+  })
+
   test('SM disparado NÃO consulta a quota do motor (a guarda de gasto é pulada, não só ignorada no resultado)', async () => {
     // `engineConnection.findFirst` também é chamado por outros caminhos (ex.:
     // catálogo de modelos, `select: { models: true }`) — o que importa aqui é
