@@ -20,6 +20,8 @@
  * recusa fazer em motor-em-pausa.ts.
  */
 
+import { mesmoModelo, valorDeModeloParaOMotor } from './esforco-por-motor.js'
+
 /**
  * `agy models` imprime `slug<TAB>Nome de Exibição` — conferido nesta VM com
  * `agy models | cat -A`. O `--model` aceita o NOME DE EXIBIÇÃO, não o slug:
@@ -165,17 +167,25 @@ export interface EscolhaDeModelo {
  * pedido e DIZ. Repetir a falha em silêncio é o que trouxe o produto até aqui.
  */
 export function escolherModeloVivo(args: {
+  runtime: string
   desejado: string
   catalogo: readonly string[]
 }): EscolhaDeModelo {
-  const desejado = args.desejado
+  const { runtime, desejado } = args
   const vivos = args.catalogo.filter(ehLinhaDeModelo).map(nomeDeExibicaoDoModelo)
 
   // FAIL-OPEN: sem catálogo não há o que conferir. Segue com o pedido.
   if (vivos.length === 0) return { modelo: desejado, veredito: 'vale', trocado: false }
 
-  if (vivos.some((m) => m === desejado))
-    return { modelo: desejado, veredito: 'vale', trocado: false }
+  // MESMA regra do painel (routes/cascata.ts): compara pelos DOIS lados
+  // convertidos, porque o cliente pode ter gravado o rótulo de vitrine
+  // ("Codex Auto Review") ou o identificador que a CLI aceita
+  // ("codex-auto-review") — os dois são a mesma escolha. Antes daqui a
+  // esteira comparava só o cru contra o cru e pulava motores que o painel já
+  // tinha validado como corretos.
+  const igual = vivos.find((m) => mesmoModelo(runtime, m, desejado))
+  if (igual)
+    return { modelo: valorDeModeloParaOMotor(runtime, igual), veredito: 'vale', trocado: false }
 
   const alvo = pecasDoModelo(desejado)
   const candidato = alvo
@@ -215,7 +225,7 @@ export function escolherModeloVivo(args: {
   }
 
   return {
-    modelo: candidato.nome,
+    modelo: valorDeModeloParaOMotor(runtime, candidato.nome),
     veredito: 'trocado',
     trocado: true,
     aviso:
