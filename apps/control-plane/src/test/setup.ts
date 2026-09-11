@@ -28,6 +28,11 @@ class MockRedis {
   quit = vi.fn().mockResolvedValue(undefined)
   on = vi.fn()
   ping = vi.fn().mockResolvedValue('PONG')
+  subscribe = vi.fn().mockResolvedValue(undefined)
+  set = vi.fn().mockResolvedValue(undefined)
+  publish = vi.fn().mockResolvedValue(undefined)
+  exists = vi.fn().mockResolvedValue(1)
+  del = vi.fn().mockResolvedValue(1)
 }
 
 vi.mock('ioredis', () => ({

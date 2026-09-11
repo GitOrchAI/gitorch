@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events'
 import { FastifyPluginAsync } from 'fastify'
 import Redis from 'ioredis'
 import type { Redis as RedisType } from 'ioredis'
@@ -8,6 +9,9 @@ const env = loadEnv()
 declare module 'fastify' {
   interface FastifyInstance {
     redis: RedisType
+    emitter: EventEmitter
+    setWaitingRoomSession: (token: string, ttl: number) => Promise<void>
+    publishGuestStatus: (token: string, status: string) => Promise<void>
   }
 }
 
@@ -28,16 +32,44 @@ export function createRedisClient(
 
 export const redisPlugin: FastifyPluginAsync = async (app) => {
   try {
+    if (!app.hasDecorator('emitter')) {
+      app.decorate('emitter', new EventEmitter())
+    }
+
     const redis = createRedisClient()
+    const redisSubscriber = createRedisClient()
 
     redis.on('error', (err: Error) => app.log.error({ err }, 'Redis error'))
+    redisSubscriber.on('error', (err: Error) => app.log.error({ err }, 'Redis subscriber error'))
 
-    await redis.connect()
+    await Promise.all([redis.connect(), redisSubscriber.connect()])
 
     app.decorate('redis', redis)
 
+    app.decorate('setWaitingRoomSession', async (token: string, ttl: number) => {
+      await redis.set(`waiting_room:${token}`, 'pending', 'EX', ttl)
+    })
+
+    app.decorate('publishGuestStatus', async (token: string, status: string) => {
+      const message = JSON.stringify({ token, status })
+      await redis.publish('guest_status_changed', message)
+    })
+
+    redisSubscriber.on('message', (channel, message) => {
+      if (channel === 'guest_status_changed') {
+        try {
+          const data = JSON.parse(message)
+          app.emitter.emit('guest_status_changed', data)
+        } catch (e) {
+          app.log.error({ err: e }, 'Failed to parse guest_status_changed message')
+        }
+      }
+    })
+
+    await redisSubscriber.subscribe('guest_status_changed')
+
     app.addHook('onClose', async () => {
-      await redis.quit()
+      await Promise.all([redis.quit(), redisSubscriber.quit()])
     })
   } catch (e) {
     throw e
