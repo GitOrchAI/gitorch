@@ -6,6 +6,7 @@ const mockRedisInstance = {
   quit: vi.fn().mockResolvedValue(undefined),
   on: vi.fn(),
   ping: vi.fn().mockResolvedValue('PONG'),
+  subscribe: vi.fn().mockResolvedValue(undefined),
 }
 
 vi.mock('ioredis', () => {
