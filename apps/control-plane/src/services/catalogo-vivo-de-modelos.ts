@@ -174,8 +174,11 @@ export function escolherModeloVivo(args: {
   const { runtime, desejado } = args
   const vivos = args.catalogo.filter(ehLinhaDeModelo).map(nomeDeExibicaoDoModelo)
 
-  // FAIL-OPEN: sem catálogo não há o que conferir. Segue com o pedido.
-  if (vivos.length === 0) return { modelo: desejado, veredito: 'vale', trocado: false }
+  // FAIL-OPEN: sem catálogo não há o que conferir. Segue com o pedido — mas
+  // "seguir com o pedido" ainda passa pela mesma conversão dos demais ramos:
+  // o chamador espera o valor que a CLI aceita, não o rótulo de vitrine.
+  if (vivos.length === 0)
+    return { modelo: valorDeModeloParaOMotor(runtime, desejado), veredito: 'vale', trocado: false }
 
   // MESMA regra do painel (routes/cascata.ts): compara pelos DOIS lados
   // convertidos, porque o cliente pode ter gravado o rótulo de vitrine

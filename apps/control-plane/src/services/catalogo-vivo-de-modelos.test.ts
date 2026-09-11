@@ -260,6 +260,47 @@ describe('escolherModeloVivo — compara do mesmo jeito que o painel (mesmoModel
   })
 })
 
+// FAIL-OPEN devolve o modelo pedido sem checar o catálogo — mas "sem checar"
+// não é "sem converter". O chamador espera sempre o valor que a CLI aceita,
+// nunca o rótulo de vitrine: para antigravity os dois coincidem (por isso os
+// testes de FAIL-OPEN acima nunca pegaram isso), mas para codex e claude são
+// strings diferentes, e o ramo fail-open ficou de fora da conversão quando
+// ela migrou do chamador (scheduler.ts) para dentro desta função.
+describe('escolherModeloVivo — FAIL-OPEN também devolve o valor da CLI, não o rótulo', () => {
+  it('catálogo vazio: codex recebe o valor convertido, não o rótulo de vitrine', () => {
+    const r = escolherModeloVivo({
+      runtime: 'codex',
+      desejado: 'Codex Auto Review',
+      catalogo: [],
+    })
+    expect(r.veredito).toBe('vale')
+    expect(r.trocado).toBe(false)
+    expect(r.modelo).toBe('codex-auto-review')
+  })
+
+  it('catálogo só com ruído do CLI (nenhuma linha sobrevive a ehLinhaDeModelo): mesma conversão', () => {
+    const r = escolherModeloVivo({
+      runtime: 'codex',
+      desejado: 'Codex Auto Review',
+      catalogo: ['fetching models...', 'Available models:', '   '],
+    })
+    expect(r.veredito).toBe('vale')
+    expect(r.trocado).toBe(false)
+    expect(r.modelo).toBe('codex-auto-review')
+  })
+
+  it('catálogo vazio: claude também recebe o valor convertido', () => {
+    const r = escolherModeloVivo({
+      runtime: 'claude',
+      desejado: 'Claude Opus 5',
+      catalogo: [],
+    })
+    expect(r.veredito).toBe('vale')
+    expect(r.trocado).toBe(false)
+    expect(r.modelo).toBe('claude-opus-5')
+  })
+})
+
 describe('atualizarModelosIndisponiveis — o modelo que sumiu fica MARCADO, não apagado', () => {
   const AGORA = new Date('2026-09-01T12:00:00.000Z')
 
