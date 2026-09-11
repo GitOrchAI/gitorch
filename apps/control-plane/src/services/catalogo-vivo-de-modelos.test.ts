@@ -228,7 +228,7 @@ describe('escolherModeloVivo — o veredito que decide se o degrau vale a tentat
 // `valorDeModeloParaOMotor`. Um modelo salvo pelo painel como
 // "codex-auto-review" batia lá e falhava aqui — o mesmíssimo modelo, escrito
 // diferente, pulava o motor com "não está no catálogo vivo". Dado real de
-// produção (GET /api/projects/:id/cascata/opcoes, 11/09, HTTP 200): o codex
+// catálogo real devolvido pela rota GET /api/projects/:id/cascata/opcoes: o codex
 // oferece {valor:"codex-auto-review", rotulo:"Codex Auto Review"} — o
 // `engine_connections.models` guarda o RÓTULO ("Codex Auto Review"), e é
 // contra ele que a esteira compara.
