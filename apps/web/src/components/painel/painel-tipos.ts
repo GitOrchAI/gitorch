@@ -97,3 +97,38 @@ export interface NoDaArvore {
 export interface ArvorePayload {
   nos: NoDaArvore[]
 }
+
+// --- /api/v1/painel/dev-cota (DJ-T5) — existe -----------------------------
+//
+// Espelha ContaNoResumo/ResumoDeCota do control-plane
+// (services/resumo-de-cota-do-dev.ts). Pedido do dono: "sabendo quantas
+// tarefas diárias tem disponível baseado no plano... e quantas estão sendo
+// usadas pra próximas tarefas ficarem na esteira".
+
+export interface ContaDeCotaDoDev {
+  /** Nulo = conta padrão da instância. */
+  contaId: string | null
+  /** Nomes (owner/repo) dos projetos que dividem esta conta. */
+  projetos: string[]
+  plano: string
+  tetoConcorrentes: number
+  tetoDiario: number
+  /** Quantas sessões ocupam vaga simultânea AGORA. */
+  simultaneas: number
+  /** Sessões abertas nas últimas 24h — janela rolante, não dia de calendário. */
+  enviadas24h: number
+  /**
+   * ISO 8601 de quando a próxima vaga diária libera. `null` quando há folga
+   * agora (enviadas24h < tetoDiario) — não faz sentido prometer "próxima".
+   */
+  proximaVagaDiariaEm: string | null
+  /** Tarefas prontas que o SM não delegou na última acordada, somadas entre os projetos da conta. */
+  prontasEsperandoVaga: number
+  /** 'sem_leitura' quando nenhum projeto da conta ainda teve uma acordada do SM lida. */
+  leituraDoSm: 'ok' | 'sem_leitura'
+}
+
+export interface ResumoDeCotaDoDevPayload {
+  agora: string
+  contas: ContaDeCotaDoDev[]
+}

@@ -468,6 +468,16 @@ export interface SmDelegationResult {
    * viraram sessão. Vazio quando `diagnosticarJaResolvido` não foi passado.
    */
   sinalizadasComoResolvidas: number[]
+  /**
+   * DJ-T5: quantas candidatas PRONTAS (sem bloqueador, sem sessão viva, sem
+   * análise pendente, sem PR aberto do dev — a mesma `estaPronta` de
+   * fila-de-delegacao.ts) ficaram de fora deste ciclo por falta de
+   * vaga/cota do ciclo ou por colisão de arquivo declarado. `prontas -
+   * escolhidas.length`, nunca negativo. Vai no `result` da missão
+   * agent-run-sm para o painel somar entre projetos da conta
+   * ("N tarefas prontas esperando vaga").
+   */
+  prontasNaoDelegadas: number
 }
 
 /** Extrai os números de "Blocked by #N, #M" do corpo da issue. */
@@ -697,6 +707,7 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
   }
 
   let travadaPorVaga = false
+  let prontasNoDiagnostico = 0
   const escolhidas = escolherParaDelegar({
     candidatas,
     arquivosEmTrabalho: [...arquivosEmTrabalho],
@@ -705,6 +716,7 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
     delegadasHoje: options.delegadasHoje ?? 0,
     onDiagnostico: (d) => {
       travadaPorVaga = d.travadaPorVaga
+      prontasNoDiagnostico = d.prontas
     },
     // O teto de simultâneas é da CONTA e só conta quem ainda ocupa vaga no
     // Jules. Sem este número o cálculo caía no `sessoesVivas.length` DESTE
@@ -998,5 +1010,10 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
     paraJulgar,
     travadaPorVaga,
     sinalizadasComoResolvidas,
+    // Nunca negativo: `escolhidas` é sempre um subconjunto das prontas
+    // (mesma função `estaPronta`), mas o `Math.max` blinda contra uma
+    // futura divergência entre as duas contagens virar número negativo no
+    // painel do dono.
+    prontasNaoDelegadas: Math.max(0, prontasNoDiagnostico - escolhidas.length),
   }
 }

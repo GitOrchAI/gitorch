@@ -460,6 +460,109 @@ describe('Rotas do painel do owner', () => {
       const where = prisma.devSession.findMany.mock.calls[0][0].where
       expect(where.projectId).toEqual({ in: ['p1'] })
     })
+
+    // DJ-T5 — pedido do dono: "quantas [vagas] estão sendo usadas pra
+    // próximas tarefas ficarem na esteira".
+    test('lê a última missão agent-run-sm CONCLUÍDA do projeto e soma prontasNaoDelegadas', async () => {
+      const prisma = await build(
+        fakePrisma({
+          project: {
+            findMany: vi
+              .fn()
+              .mockResolvedValue([{ id: 'p1', name: 'a/b', devPlan: 'pro', devAccountId: null }]),
+          },
+          devSession: { findMany: vi.fn().mockResolvedValue([]) },
+          mission: {
+            findMany: vi
+              .fn()
+              .mockResolvedValue([{ projectId: 'p1', result: { prontasNaoDelegadas: 4 } }]),
+            findFirst: vi.fn(),
+          },
+        })
+      )
+      const res = await getDevCota()
+      expect(res.statusCode).toBe(200)
+      expect(res.json().contas[0]).toMatchObject({ prontasEsperandoVaga: 4, leituraDoSm: 'ok' })
+
+      // Só a última missão CONCLUÍDA de cada projeto — nunca o histórico
+      // inteiro, e nunca uma missão ainda rodando.
+      const where = prisma.mission.findMany.mock.calls[0][0].where
+      expect(where.type).toBe('agent-run-sm')
+      expect(where.status).toBe('completed')
+      expect(where.projectId).toEqual({ in: ['p1'] })
+      expect(prisma.mission.findMany.mock.calls[0][0].distinct).toEqual(['projectId'])
+    })
+
+    test('sem nenhuma missão agent-run-sm ainda → prontasEsperandoVaga 0, leituraDoSm "sem_leitura" (não inventa)', async () => {
+      await build(
+        fakePrisma({
+          project: {
+            findMany: vi
+              .fn()
+              .mockResolvedValue([{ id: 'p1', name: 'a/b', devPlan: 'pro', devAccountId: null }]),
+          },
+          devSession: { findMany: vi.fn().mockResolvedValue([]) },
+          mission: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn() },
+        })
+      )
+      const res = await getDevCota()
+      expect(res.json().contas[0]).toMatchObject({
+        prontasEsperandoVaga: 0,
+        leituraDoSm: 'sem_leitura',
+      })
+    })
+
+    test('missão com result sem o campo (versão antiga) é ignorada — não vira número inventado', async () => {
+      await build(
+        fakePrisma({
+          project: {
+            findMany: vi
+              .fn()
+              .mockResolvedValue([{ id: 'p1', name: 'a/b', devPlan: 'pro', devAccountId: null }]),
+          },
+          devSession: { findMany: vi.fn().mockResolvedValue([]) },
+          mission: {
+            findMany: vi.fn().mockResolvedValue([{ projectId: 'p1', result: { output: 'x' } }]),
+            findFirst: vi.fn(),
+          },
+        })
+      )
+      const res = await getDevCota()
+      expect(res.json().contas[0]).toMatchObject({
+        prontasEsperandoVaga: 0,
+        leituraDoSm: 'sem_leitura',
+      })
+    })
+
+    test('teto diário cheio → devolve proximaVagaDiariaEm; com folga, null', async () => {
+      const agora = Date.now()
+      const maisAntigaDaJanela = new Date(agora - 23 * 60 * 60 * 1000) // 23h atrás
+      const sessoes = Array.from({ length: 100 }, (_, i) => ({
+        projectId: 'p1',
+        devAccountId: null,
+        issueNumber: i,
+        sessionName: `s${i}`,
+        state: 'IN_PROGRESS',
+        createdAt: i === 0 ? maisAntigaDaJanela : new Date(agora - (i + 1) * 1000),
+        closedAt: null,
+      }))
+      await build(
+        fakePrisma({
+          project: {
+            findMany: vi
+              .fn()
+              .mockResolvedValue([{ id: 'p1', name: 'a/b', devPlan: 'pro', devAccountId: null }]),
+          },
+          devSession: { findMany: vi.fn().mockResolvedValue(sessoes) },
+        })
+      )
+      const res = await getDevCota()
+      const conta = res.json().contas[0]
+      expect(conta.vagasDiariasRestantes).toBe(0)
+      expect(conta.proximaVagaDiariaEm).toBe(
+        new Date(maisAntigaDaJanela.getTime() + 24 * 60 * 60 * 1000).toISOString()
+      )
+    })
   })
 
   describe('GET /api/v1/painel/pedidos', () => {

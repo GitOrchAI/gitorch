@@ -1109,6 +1109,28 @@ describe('runSmDelegation: cap por acordada não é mais o literal 3 fixo', () =
       delegadasHoje: 0,
     })
     expect(r.delegated).toHaveLength(2)
+    // DJ-T5: 10 candidatas prontas, só 2 delegadas pelo teto diário — as
+    // outras 8 ficaram de fora por falta de vaga/cota do ciclo.
+    expect(r.prontasNaoDelegadas).toBe(8)
+  })
+
+  it('DJ-T5: sem candidata sobrando (tudo delegado) → prontasNaoDelegadas: 0', async () => {
+    const tarefas = Array.from({ length: 3 }, (_, i) => ({
+      number: 400 + i,
+      labels: ['gitorch:task'],
+      body: '',
+    }))
+    const f = fakeFetch(tarefas)
+    const r = await runSmDelegation({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: f,
+      sessoesVivas: [],
+      tetoConcorrentes: 12,
+      tetoDiario: 90,
+    })
+    expect(r.delegated).toHaveLength(3)
+    expect(r.prontasNaoDelegadas).toBe(0)
   })
 
   it('cap explícito (ex.: override de GITORCH_SM_CAP_POR_CICLO=4) prevalece sobre o teto do plano', async () => {

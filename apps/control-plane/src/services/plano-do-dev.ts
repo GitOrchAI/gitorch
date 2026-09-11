@@ -29,6 +29,41 @@ export function tetosDoPlanoDoDev(plano: string | null | undefined): TetosDoDev 
   return TETOS[chave as PlanoDoDev] ?? TETOS.free
 }
 
+/**
+ * DJ-T5b — dados reais de produção: `projects.dev_plan` = 'pro' em
+ * `gitorch` e `patinhas-3d-crafts`, e NULL em `padrao-executores` — os três
+ * dividem a MESMA conta do dev assíncrono (mesmo `devAccountId`, aqui nulo =
+ * conta padrão da instância). O teto é da CONTA (D34/BYOK), não do projeto;
+ * antes desta função, um projeto sem `devPlan` declarado entrava no cálculo
+ * do "mais restritivo" como se fosse 'free', arrastando a conta INTEIRA para
+ * 3/15 mesmo com dois projetos 'pro' ao lado — o dono via "de 3 agora / de 15
+ * em 24h" numa conta Pro real (15/100).
+ *
+ * NULO/vazio é IGNORADO, não tratado como 'free': ausência de declaração não
+ * é uma declaração de 'free'. Entre os planos de fato declarados, continua
+ * valendo a regra de sempre — o mais RESTRITIVO vence, errar pra baixo é
+ * seguro. Sem nenhum plano declarado (lista vazia ou só nulos), cai no
+ * 'free' — mesmo padrão seguro de `tetosDoPlanoDoDev` para "não sei".
+ */
+export function planoEfetivoDaConta(
+  planosDeclarados: ReadonlyArray<string | null | undefined>
+): string {
+  const declarados = planosDeclarados
+    .map((p) => (p ?? '').trim().toLowerCase())
+    .filter((p) => p !== '')
+
+  if (declarados.length === 0) return 'free'
+
+  return declarados.reduce((maisRestritivo, atual) => {
+    const tetoAtual = tetosDoPlanoDoDev(atual)
+    const tetoAcumulado = tetosDoPlanoDoDev(maisRestritivo)
+    if (tetoAtual.tetoConcorrentes !== tetoAcumulado.tetoConcorrentes) {
+      return tetoAtual.tetoConcorrentes < tetoAcumulado.tetoConcorrentes ? atual : maisRestritivo
+    }
+    return tetoAtual.tetoDiario < tetoAcumulado.tetoDiario ? atual : maisRestritivo
+  })
+}
+
 /** Nome da variável de ambiente que sobrescreve o cap de delegação por ciclo. */
 export const ENV_CAP_POR_CICLO = 'GITORCH_SM_CAP_POR_CICLO'
 

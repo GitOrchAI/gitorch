@@ -83,6 +83,37 @@ describe('resumoDeCotaDoDev', () => {
     ])
   })
 
+  test('DJ-T5b — dados reais de produção: gitorch e patinhas-3d-crafts pro, padrao-executores SEM plano, mesma conta → pro (15/100), não free', () => {
+    // Achado real (11/09/2026): os três projetos dividem a mesma conta do dev
+    // assíncrono (devAccountId nulo = conta padrão da instância).
+    // `padrao-executores` sem `devPlan` declarado NÃO pode arrastar a conta
+    // Pro real (15/100) para o teto gratuito (3/15) — nulo é ausência de
+    // declaração, não uma declaração de 'free'.
+    const resumo = resumoDeCotaDoDev({
+      projetos: [
+        projeto({ id: 'a', nome: 'GitOrchAI/gitorch', devPlan: 'pro', devAccountId: null }),
+        projeto({
+          id: 'b',
+          nome: 'loureng/patinhas-3d-crafts',
+          devPlan: 'pro',
+          devAccountId: null,
+        }),
+        projeto({
+          id: 'c',
+          nome: 'loureng/padrao-executores',
+          devPlan: null,
+          devAccountId: null,
+        }),
+      ],
+      sessoes: [],
+      agora: AGORA,
+    })
+    expect(resumo.contas).toHaveLength(1)
+    expect(resumo.contas[0]?.plano).toBe('pro')
+    expect(resumo.contas[0]?.tetoConcorrentes).toBe(15)
+    expect(resumo.contas[0]?.tetoDiario).toBe(100)
+  })
+
   test('conta com planos divergentes entre projetos exibe o MAIS RESTRITIVO — errar pra baixo é seguro', () => {
     const resumo = resumoDeCotaDoDev({
       projetos: [
@@ -181,6 +212,89 @@ describe('resumoDeCotaDoDev', () => {
       sessionName: 'acabou',
       estado: 'COMPLETED',
       ocupaVaga: false,
+    })
+  })
+
+  // DJ-T5 — pedido do dono: "quantas estão sendo usadas pra próximas tarefas
+  // ficarem na esteira" → proximaVagaDiariaEm.
+  describe('proximaVagaDiariaEm', () => {
+    test('com folga no teto diário (enviadas24h < tetoDiario) → null, há vaga agora', () => {
+      const resumo = resumoDeCotaDoDev({
+        projetos: [projeto()],
+        sessoes: [sessao({ createdAt: AGORA })],
+        agora: AGORA,
+      })
+      expect(resumo.contas[0]?.enviadas24h).toBeLessThan(resumo.contas[0]?.tetoDiario ?? 0)
+      expect(resumo.contas[0]?.proximaVagaDiariaEm).toBeNull()
+    })
+
+    test('teto diário cheio → próxima vaga = createdAt da sessão mais antiga da janela + 24h', () => {
+      // Plano 'free' aqui teria teto baixo; usamos 'pro' (100/dia) e enchemos
+      // com 100 sessões dentro da janela rolante.
+      const maisAntiga = new Date(H24_ATRAS.getTime() + 5_000)
+      const sessoes = Array.from({ length: 100 }, (_, i) =>
+        sessao({
+          sessionName: `s${i}`,
+          issueNumber: i,
+          createdAt: i === 0 ? maisAntiga : new Date(AGORA.getTime() - i * 1000),
+        })
+      )
+      const resumo = resumoDeCotaDoDev({
+        projetos: [projeto({ devPlan: 'pro' })],
+        sessoes,
+        agora: AGORA,
+      })
+      expect(resumo.contas[0]?.enviadas24h).toBe(100)
+      expect(resumo.contas[0]?.vagasDiariasRestantes).toBe(0)
+      expect(resumo.contas[0]?.proximaVagaDiariaEm).toBe(
+        new Date(maisAntiga.getTime() + 24 * 60 * 60 * 1000).toISOString()
+      )
+    })
+  })
+
+  // DJ-T5: "quantas tarefas prontas esperando vaga" — soma a última leitura
+  // do SM (result.prontasNaoDelegadas da missão agent-run-sm) por projeto,
+  // dentro da mesma conta.
+  describe('prontasEsperandoVaga / leituraDoSm', () => {
+    test('sem leiturasDoSm nenhuma → 0 com leituraDoSm "sem_leitura" (não inventa)', () => {
+      const resumo = resumoDeCotaDoDev({
+        projetos: [projeto()],
+        sessoes: [],
+        agora: AGORA,
+      })
+      expect(resumo.contas[0]?.prontasEsperandoVaga).toBe(0)
+      expect(resumo.contas[0]?.leituraDoSm).toBe('sem_leitura')
+    })
+
+    test('soma entre os projetos da MESMA conta, ignorando projeto sem leitura', () => {
+      const resumo = resumoDeCotaDoDev({
+        projetos: [
+          projeto({ id: 'proj-1', nome: 'a/um', devAccountId: 'conta-x' }),
+          projeto({ id: 'proj-2', nome: 'a/dois', devAccountId: 'conta-x' }),
+        ],
+        sessoes: [],
+        agora: AGORA,
+        leiturasDoSm: [{ projectId: 'proj-1', prontasNaoDelegadas: 3 }],
+      })
+      expect(resumo.contas[0]?.prontasEsperandoVaga).toBe(3)
+      expect(resumo.contas[0]?.leituraDoSm).toBe('ok')
+    })
+
+    test('duas leituras na mesma conta somam', () => {
+      const resumo = resumoDeCotaDoDev({
+        projetos: [
+          projeto({ id: 'proj-1', nome: 'a/um', devAccountId: 'conta-x' }),
+          projeto({ id: 'proj-2', nome: 'a/dois', devAccountId: 'conta-x' }),
+        ],
+        sessoes: [],
+        agora: AGORA,
+        leiturasDoSm: [
+          { projectId: 'proj-1', prontasNaoDelegadas: 3 },
+          { projectId: 'proj-2', prontasNaoDelegadas: 4 },
+        ],
+      })
+      expect(resumo.contas[0]?.prontasEsperandoVaga).toBe(7)
+      expect(resumo.contas[0]?.leituraDoSm).toBe('ok')
     })
   })
 })
