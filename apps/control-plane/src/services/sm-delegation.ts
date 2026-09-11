@@ -10,6 +10,7 @@ import { arquivosDeclarados } from './secao-da-issue.js'
 import { montarPedidoAoDev } from './pedido-ao-dev.js'
 import { ehPrDelegado } from './pr-delegado.js'
 import type { AchadoDeDiagnostico, IssueParaDiagnostico } from './diagnostico-de-issues.js'
+import { ocupaVaga } from './estados-de-sessao.js'
 
 // Delegação contínua do SM (F3.6 item 2): a cada wake, encontra as TASKS prontas
 // (label `gitorch:task`, sem sessão viva na tabela `dev_sessions`, com todos os
@@ -484,7 +485,15 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
   // esquecimento escrevia no repositorio do cliente sem guarda nenhuma.
   const f = fetchComTeto(options.fetchImpl ?? fetchSemPermissao())
   const label = options.delegateLabel ?? 'jules'
-  const cap = options.cap ?? 3
+  // Sem `cap` explícito, o teto por acordada é o teto de SIMULTÂNEAS do plano
+  // do projeto (pro=15, ultra=60…) — nunca mais o literal `3` fixo de antes,
+  // que barrava a esteira em 3 delegações por ciclo mesmo com dezenas de
+  // vagas e cota diária livres (medido: 11 vagas e 95 de cota sobrando, só 3
+  // delegadas). `montarOpcoesDeDelegacao` (scheduler.ts) já resolve `cap` com
+  // esse mesmo teto (e o override de `GITORCH_SM_CAP_POR_CICLO`) antes de
+  // chegar aqui; este fallback cobre só quem chama sem passar por lá (testes,
+  // outros futuros chamadores).
+  const cap = options.cap ?? options.tetoConcorrentes ?? 3
 
   const gh = async (method: string, path: string, body?: unknown): Promise<unknown> => {
     const resp = await f(`https://api.github.com${path}`, {
@@ -525,6 +534,23 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
   // Bloqueadores só para quem ainda não tem sessão viva — não adianta gastar
   // chamada em issue que já está em trabalho.
   const comSessaoViva = new Set((options.sessoesVivas ?? []).map((s) => s.issueNumber))
+  // As issues que AINDA OCUPAM vaga no Jules por QUALQUER linha viva delas —
+  // para só reservar arquivo de quem tem trabalho de verdade rolando (ver
+  // `arquivosEmTrabalho` abaixo). Uma issue com sessão viva nunca é candidata
+  // (linha seguinte já cuida disso); isto é só sobre reservar o arquivo dela
+  // para as OUTRAS.
+  //
+  // Antes disto era um `Map(issueNumber -> state)`: com DUAS linhas vivas da
+  // MESMA issue (ex.: uma IN_PROGRESS e outra já COMPLETED, uma sessão
+  // redelegada que ainda não foi limpa), o Map só guardava o estado da
+  // ÚLTIMA linha do array — e a ordem virava sorte: se a IN_PROGRESS viesse
+  // depois, `ocupaVaga` acertava; se viesse antes, a COMPLETED sobrescrevia
+  // e a reserva sumia com trabalho de verdade ainda rolando (fail-open,
+  // quebrando o fail-closed que `ocupaVaga` promete). Aqui: a issue reserva
+  // se QUALQUER linha viva dela ocupa vaga (`some`/OR) — ordem não importa.
+  const issuesQueOcupamVagaAgora = new Set(
+    (options.sessoesVivas ?? []).filter((s) => ocupaVaga(s.state)).map((s) => s.issueNumber)
+  )
   // Tarefa cuja entrega JÁ FOI MESCLADA não vira sessão nova, mesmo que a
   // issue continue aberta no GitHub.
   //
@@ -597,7 +623,16 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
       continue
     }
     if (comSessaoViva.has(t.number)) {
-      for (const arquivo of arquivosDeclarados(t.body)) arquivosEmTrabalho.add(arquivo)
+      // Só reserva o arquivo se a sessão AINDA ocupa vaga no Jules
+      // (`ocupaVaga`). Uma sessão COMPLETED/FAILED/CANCELLED — terminal no
+      // fornecedor mas ainda aberta no banco esperando o julgamento do PR —
+      // não está mexendo em arquivo nenhum: reservá-la barrava outras
+      // candidatas por um trabalho que já tinha acabado (medido: #3884 do
+      // Jardim, COMPLETED e aberta, travou #3842/#3841/#3830/#3827 declarando
+      // `backend/src/app.ts`).
+      if (issuesQueOcupamVagaAgora.has(t.number)) {
+        for (const arquivo of arquivosDeclarados(t.body)) arquivosEmTrabalho.add(arquivo)
+      }
       continue
     }
     // D14: o diagnóstico marcou esta issue como 'ja_resolvido'. NÃO delega —
