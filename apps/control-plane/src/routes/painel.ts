@@ -612,7 +612,33 @@ export const painelRoutes = async (
         },
       })
 
-      return reply.send(resumoDeCotaDoDev({ projetos, sessoes, agora: new Date() }))
+      // DJ-T5: "N tarefas prontas esperando vaga" — a ÚLTIMA missão
+      // agent-run-sm CONCLUÍDA de cada projeto já carrega, no próprio
+      // `result` (runSmDelegation/scheduler.ts), quantas candidatas prontas
+      // ficaram de fora por falta de vaga/cota ou colisão de arquivo. `take`
+      // por projeto via `distinct` — não somamos o histórico, só o retrato
+      // da última acordada de cada um. Best-effort: projeto sem missão ainda
+      // (ou `result` sem o campo, de antes desta mudança) fica de fora e
+      // `resumoDeCotaDoDev` marca a conta como 'sem_leitura' em vez de
+      // inventar um número.
+      const ultimasMissoesSm = await app.prisma.mission.findMany({
+        where: {
+          projectId: { in: projetos.map((p) => p.id) },
+          type: 'agent-run-sm',
+          status: 'completed',
+        },
+        select: { projectId: true, result: true },
+        orderBy: { completedAt: 'desc' },
+        distinct: ['projectId'],
+      })
+      const leiturasDoSm = ultimasMissoesSm.flatMap((m) => {
+        const prontas = (m.result as { prontasNaoDelegadas?: unknown } | null)?.prontasNaoDelegadas
+        return typeof prontas === 'number'
+          ? [{ projectId: m.projectId, prontasNaoDelegadas: prontas }]
+          : []
+      })
+
+      return reply.send(resumoDeCotaDoDev({ projetos, sessoes, agora: new Date(), leiturasDoSm }))
     }
   )
 

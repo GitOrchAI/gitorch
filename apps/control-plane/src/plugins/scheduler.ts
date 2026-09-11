@@ -3454,7 +3454,21 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         // RA não age no GitHub: os trilhos dele (áreas→jornadas→brief) só
         // precisam do motor — sempre disponíveis.
         const raRails = role === 'ra'
-        let result: { exitCode: number; output: string; stderr: string; noOp?: boolean }
+        let result: {
+          exitCode: number
+          output: string
+          stderr: string
+          noOp?: boolean
+          /**
+           * DJ-T5: só o SM preenche — quantas candidatas prontas ficaram de
+           * fora desta acordada por falta de vaga/cota ou colisão de
+           * arquivo (sm-delegation.ts). Vai para `mission.result` e o
+           * painel (`GET /api/v1/painel/dev-cota`) lê a última missão
+           * agent-run-sm de cada projeto para somar "N tarefas prontas
+           * esperando vaga".
+           */
+          prontasNaoDelegadas?: number
+        }
 
         if (smRails) {
           // SM é o dono da esteira, 100% determinístico (sem passo de LLM):
@@ -3957,6 +3971,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               watchdog.noOp === true &&
               sensorNoOp &&
               incidentesOut === '',
+            prontasNaoDelegadas: delegation.prontasNaoDelegadas,
           }
         } else if (poRails || qaRails || raRails) {
           const stepDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-rails-'))
@@ -4472,6 +4487,17 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 // parou a esteira em 21/08: 220 missões contadas, 143 delas
                 // sem ter chamado motor nenhum.
                 ...(isNoOp ? { noOp: true } : {}),
+                // DJ-T5: só o SM preenche `result.prontasNaoDelegadas` (ver
+                // atribuição de `result` acima); demais papéis não têm o
+                // campo e não escrevem nada aqui — o painel trata a
+                // ausência como "sem leitura ainda", nunca como zero real.
+                ...(typeof (result as unknown as { prontasNaoDelegadas?: number })
+                  .prontasNaoDelegadas === 'number'
+                  ? {
+                      prontasNaoDelegadas: (result as unknown as { prontasNaoDelegadas?: number })
+                        .prontasNaoDelegadas,
+                    }
+                  : {}),
               },
             },
           })

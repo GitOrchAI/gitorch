@@ -97,8 +97,16 @@ export function escolherParaDelegar(args: {
    * ESTEIRA-T11: recebe o diagnóstico de por que a fila "voltou vazia". Só
    * `travadaPorVaga: true` — fila com trabalho pronto, folga diária, mas a
    * conta do dev externo lotada de sessões vivas — é notícia para o dono.
+   *
+   * DJ-T5: `prontas` é o total de candidatas que passariam em `estaPronta`
+   * NESTE ciclo (sem bloqueador, sem sessão viva, sem análise pendente, sem
+   * PR aberto do dev) — não importa se havia vaga ou não. `prontas -
+   * escolhidas.length` (o retorno desta função) é quanto ficou de fora
+   * especificamente por falta de vaga/cota do ciclo ou por colisão de
+   * arquivo — o número que o painel de cota (resumo-de-cota-do-dev.ts)
+   * precisa para "N tarefas prontas esperando vaga".
    */
-  onDiagnostico?: (d: { travadaPorVaga: boolean }) => void
+  onDiagnostico?: (d: { travadaPorVaga: boolean; prontas: number }) => void
 }): number[] {
   const comSessaoViva = new Set(args.sessoesVivas.map((s) => s.issueNumber))
   const analisePendente = new Set(args.issuesComAnalisePendente ?? [])
@@ -139,6 +147,7 @@ export function escolherParaDelegar(args: {
   // problema, mas a conta está lotada de sessões vivas no dev externo.
   args.onDiagnostico?.({
     travadaPorVaga: args.candidatas.some(estaPronta) && folgaConcorrentes <= 0 && folgaDiaria > 0,
+    prontas: args.candidatas.filter(estaPronta).length,
   })
 
   if (limite <= 0) return []

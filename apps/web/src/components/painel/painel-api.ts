@@ -47,6 +47,7 @@ export const ROTAS = {
   timeline: '/api/v1/painel/timeline', // NOVA (T15) — auditoria que não vira spam no Telegram
   respostasAoDev: '/api/v1/painel/respostas-ao-dev', // NOVA (D69) — o que o time respondeu ao dev em nome do dono
   corrigirRespostaAoDev: (id: string): string => `/api/v1/painel/respostas-ao-dev/${id}/corrigir`, // NOVA (D69) — POST
+  devCota: '/api/v1/painel/dev-cota', // existe — cota do dev assíncrono (Jules), por conta (DJ-T5)
 } as const
 
 /**

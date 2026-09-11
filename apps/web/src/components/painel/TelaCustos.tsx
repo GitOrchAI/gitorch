@@ -21,9 +21,10 @@ import { ROTAS } from './painel-api'
 import { usePainelBusca } from './usePainelBusca'
 import { Cabeca, Card, Kpi, Barra } from './PainelUI'
 import { Estados, SeloDemo } from './PainelEstados'
-import type { MotorCota } from './painel-tipos'
+import type { MotorCota, ResumoDeCotaDoDevPayload } from './painel-tipos'
 import { assinarProjeto, projetoAtual, projetoNoServidor, filtroDeProjeto } from './painel-projeto'
 import { ReligarMotor } from './ReligarMotor'
+import { linhasDaCotaDoDev } from './cota-do-dev-assincrono'
 
 interface Distribuicao {
   mediana: number
@@ -229,6 +230,76 @@ interface CotaView {
   motivoDaCota: string | null
 }
 
+/**
+ * Cota do dev assíncrono (Jules) — DJ-T5, pedido do dono: "só quero o meu
+ * gitorch usando o jules, sabendo quantas tarefas diárias tem disponível
+ * baseado no plano (meu é 100) e quantas estão sendo usadas pra próximas
+ * tarefas ficarem na esteira".
+ *
+ * Mora nesta tela (Custos e limites), ao lado de "Cota de cada motor": as
+ * duas são exatamente a mesma pergunta — quanto de um teto de capacidade já
+ * foi gasto — só que uma é sobre o motor síncrono (Claude/Codex/Antigravity)
+ * e esta é sobre o dev assíncrono. Não é a Visão Geral porque ali o critério
+ * é "o que precisa da atenção do dono agora"; a cota do Jules é um número de
+ * capacidade, não uma decisão pendente.
+ *
+ * `intervalo: 30000` — mesmo ritmo dos outros blocos vivos da Visão Geral
+ * (TelaVisaoGeral.tsx). GET /api/v1/painel/dev-cota é barata (lê devSession +
+ * a última missão por projeto), então 30s não pesa no banco.
+ */
+function CotaDoDevAssincrono() {
+  const r = usePainelBusca<ResumoDeCotaDoDevPayload>(ROTAS.devCota, {
+    intervalo: 30000,
+    vazio: (d) => d.contas.length === 0,
+  })
+
+  return (
+    <Card titulo="Cota do dev assíncrono (Jules)" sub="vagas em uso agora e o que está esperando">
+      <Estados
+        r={r}
+        o_que="a cota do Jules"
+        vazio="Nenhuma conta do Jules configurada ainda — conecte um projeto ao dev assíncrono."
+      >
+        {(d) => (
+          <div style={{ display: 'grid', gap: 18 }}>
+            {linhasDaCotaDoDev(d.contas).map((l) => (
+              <div key={l.contaId ?? '_instancia'}>
+                {l.rotuloDaConta && (
+                  <div className="pn-label" style={{ marginBottom: 8 }}>
+                    {l.rotuloDaConta}
+                  </div>
+                )}
+                <div className="pn-kpis">
+                  <Kpi
+                    l="Trabalhando agora"
+                    v={l.simultaneasTexto}
+                    n="sessões simultâneas no Jules"
+                  />
+                  <Kpi
+                    l="Últimas 24 horas"
+                    v={l.enviadas24hTexto}
+                    n="janela rolante, não dia de calendário"
+                  />
+                  <Kpi l="Esperando vaga" v={l.prontasEsperandoVaga} n={l.notaDeEsperandoVaga} />
+                  {/* Só aparece com o teto diário CHEIO — com folga, prometer
+                      uma "próxima vaga" seria enganoso (há vaga agora). */}
+                  {l.proximaVagaHorario ? (
+                    <Kpi
+                      l="Próxima vaga diária"
+                      v={l.proximaVagaHorario}
+                      n="horário de São Paulo"
+                    />
+                  ) : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Estados>
+    </Card>
+  )
+}
+
 export function TelaCustos() {
   const motores = usePainelBusca<
     CotaView,
@@ -296,6 +367,8 @@ export function TelaCustos() {
           }
         </Estados>
       </Card>
+
+      <CotaDoDevAssincrono />
 
       <Card flush titulo="Onde o esforço foi este mês" sub={<SeloDemo mostrar />}>
         <div className="pn-tw">

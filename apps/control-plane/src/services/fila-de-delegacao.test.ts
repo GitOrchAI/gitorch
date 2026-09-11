@@ -502,6 +502,66 @@ describe('o teto de simultâneas é da CONTA, não do projeto', () => {
     expect(d?.travadaPorVaga).toBe(false)
   })
 
+  // DJ-T5: `prontas` é o insumo do painel de cota ("N tarefas prontas
+  // esperando vaga") — total de candidatas que passariam em `estaPronta`
+  // NESTE ciclo, sem olhar se havia vaga.
+  it('prontas conta as candidatas elegíveis, mesmo com a conta cheia (vaga=0)', () => {
+    let d: { travadaPorVaga: boolean; prontas: number } | undefined
+    escolherParaDelegar({
+      candidatas: [candidata(1), candidata(2), candidata(3)],
+      sessoesVivas: [],
+      ocupamVagaNaConta: 15,
+      delegadasHoje: 3,
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+      capPorCiclo: 3,
+      onDiagnostico: (x) => {
+        d = x
+      },
+    })
+    expect(d?.prontas).toBe(3)
+  })
+
+  it('prontas exclui bloqueada, com sessão viva e presa na análise pendente', () => {
+    let d: { travadaPorVaga: boolean; prontas: number } | undefined
+    escolherParaDelegar({
+      candidatas: [candidata(1), { number: 2, bloqueadoresAbertos: 1 }, candidata(3)],
+      sessoesVivas: [linha({ issueNumber: 3 })],
+      issuesComAnalisePendente: [1],
+      ocupamVagaNaConta: 0,
+      delegadasHoje: 0,
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+      capPorCiclo: 3,
+      onDiagnostico: (x) => {
+        d = x
+      },
+    })
+    // #1 presa na análise, #2 bloqueada, #3 com sessão viva — nenhuma pronta.
+    expect(d?.prontas).toBe(0)
+  })
+
+  it('prontas menos escolhidas = quem ficou de fora por falta de vaga/cota', () => {
+    let d: { travadaPorVaga: boolean; prontas: number } | undefined
+    const escolhidas = escolherParaDelegar({
+      candidatas: [candidata(1), candidata(2), candidata(3)],
+      sessoesVivas: [],
+      ocupamVagaNaConta: 14,
+      delegadasHoje: 0,
+      tetoConcorrentes: 15,
+      tetoDiario: 100,
+      capPorCiclo: 3,
+      onDiagnostico: (x) => {
+        d = x
+      },
+    })
+    // Só 1 vaga de folga (15-14); das 3 prontas, só 1 é escolhida — 2 ficam
+    // de fora por falta de vaga.
+    expect(d?.prontas).toBe(3)
+    expect(escolhidas.length).toBe(1)
+    expect((d?.prontas ?? 0) - escolhidas.length).toBe(2)
+  })
+
   // Sem o número da conta, o comportamento é o antigo — o que mantém os
   // chamadores que ainda não passam a informação funcionando como antes.
   it('sem o número da conta, cai nas vivas deste projeto', () => {
