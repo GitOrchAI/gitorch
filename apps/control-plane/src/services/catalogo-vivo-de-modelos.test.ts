@@ -51,6 +51,7 @@ describe('escolherModeloVivo — o produto PERCEBE que o modelo morreu e DIZ', (
     // Este é o defeito real: MODEL_FLASH valia 'Gemini 3.5 Flash (Medium)' e o
     // Google removeu a geração 3.5 no meio do dia 31/08.
     const r = escolherModeloVivo({
+      runtime: 'antigravity',
       desejado: 'Gemini 3.5 Flash (Medium)',
       catalogo: CATALOGO_VIVO,
     })
@@ -64,22 +65,35 @@ describe('escolherModeloVivo — o produto PERCEBE que o modelo morreu e DIZ', (
     // O produto escolheu Flash+Medium de propósito para ra/sm/qa. Um substituto
     // que troca o esforço muda o comportamento do agente pelas costas.
     expect(
-      escolherModeloVivo({ desejado: 'Gemini 3.5 Flash (Low)', catalogo: CATALOGO_VIVO }).modelo
+      escolherModeloVivo({
+        runtime: 'antigravity',
+        desejado: 'Gemini 3.5 Flash (Low)',
+        catalogo: CATALOGO_VIVO,
+      }).modelo
     ).toBe('Gemini 3.7 Flash (Low)')
     expect(
-      escolherModeloVivo({ desejado: 'Gemini 3.5 Flash (High)', catalogo: CATALOGO_VIVO }).modelo
+      escolherModeloVivo({
+        runtime: 'antigravity',
+        desejado: 'Gemini 3.5 Flash (High)',
+        catalogo: CATALOGO_VIVO,
+      }).modelo
     ).toBe('Gemini 3.7 Flash (High)')
   })
 
   it('pega a geração MAIS NOVA da família — a mais velha é a próxima a cair', () => {
     // 3.6 e 3.7 Flash (Medium) existiam os dois. O 3.5 morreu em menos de 7h;
     // o provedor mantém duas gerações e derruba a mais velha sem avisar.
-    const r = escolherModeloVivo({ desejado: 'Gemini 3.4 Flash (Medium)', catalogo: CATALOGO_VIVO })
+    const r = escolherModeloVivo({
+      runtime: 'antigravity',
+      desejado: 'Gemini 3.4 Flash (Medium)',
+      catalogo: CATALOGO_VIVO,
+    })
     expect(r.modelo).toBe('Gemini 3.7 Flash (Medium)')
   })
 
   it('modelo VIVO passa intacto e sem aviso — a guarda não mexe no que funciona', () => {
     const r = escolherModeloVivo({
+      runtime: 'antigravity',
       desejado: 'Gemini 3.1 Pro (Low)',
       catalogo: CATALOGO_VIVO,
     })
@@ -92,7 +106,11 @@ describe('escolherModeloVivo — o produto PERCEBE que o modelo morreu e DIZ', (
     // Catálogo vazio quer dizer "não sei", nunca "o modelo não existe". Se a
     // guarda desligasse o motor por não ter lista, ela derrubaria a esteira
     // toda vez que a leitura do banco falhasse.
-    const r = escolherModeloVivo({ desejado: 'Gemini 3.5 Flash (Medium)', catalogo: [] })
+    const r = escolherModeloVivo({
+      runtime: 'antigravity',
+      desejado: 'Gemini 3.5 Flash (Medium)',
+      catalogo: [],
+    })
     expect(r.modelo).toBe('Gemini 3.5 Flash (Medium)')
     expect(r.trocado).toBe(false)
     expect(r.aviso).toBeUndefined()
@@ -103,7 +121,11 @@ describe('escolherModeloVivo — o produto PERCEBE que o modelo morreu e DIZ', (
     // degrau. Um nome cuja MARCA não aparece em lugar nenhum deste catálogo
     // nunca foi modelo deste motor: mandar o motor rodar com o modelo padrão
     // DELE entrega trabalho; pular o degrau não entrega nada.
-    const r = escolherModeloVivo({ desejado: 'Modelo Que Nao Existe', catalogo: CATALOGO_VIVO })
+    const r = escolherModeloVivo({
+      runtime: 'antigravity',
+      desejado: 'Modelo Que Nao Existe',
+      catalogo: CATALOGO_VIVO,
+    })
     expect(r.veredito).toBe('de-outro-motor')
     expect(r.modelo).toBeUndefined()
     expect(r.trocado).toBe(false)
@@ -115,6 +137,7 @@ describe('escolherModeloVivo — o produto PERCEBE que o modelo morreu e DIZ', (
     // coladas. Normalizar na entrada evita a guarda concluir "3.7 não existe"
     // e trocar um modelo bom por outro.
     const r = escolherModeloVivo({
+      runtime: 'antigravity',
       desejado: 'Gemini 3.7 Flash (Medium)',
       catalogo: SAIDA_REAL_DO_AGY,
     })
@@ -143,6 +166,7 @@ describe('escolherModeloVivo — o veredito que decide se o degrau vale a tentat
 
   it('o modelo do Antigravity no degrau do Claude NÃO mata o degrau — tira o --model', () => {
     const r = escolherModeloVivo({
+      runtime: 'antigravity',
       desejado: 'Gemini 3.7 Flash (Medium)',
       catalogo: CATALOGO_DO_CLAUDE,
     })
@@ -156,6 +180,7 @@ describe('escolherModeloVivo — o veredito que decide se o degrau vale a tentat
     // este esforço não existe mais e não há geração nova com ele. Rodar assim é
     // pagar um container inteiro para receber `invalid model selection`.
     const r = escolherModeloVivo({
+      runtime: 'antigravity',
       desejado: 'Gemini 3.5 Flash (Ultra)',
       catalogo: CATALOGO_VIVO,
     })
@@ -166,6 +191,7 @@ describe('escolherModeloVivo — o veredito que decide se o degrau vale a tentat
   it('nome de outro motor que o catálogo do motor TEM: vale, sem drama', () => {
     // O catálogo do Antigravity de verdade lista `Claude Opus 4.6 (Thinking)`.
     const r = escolherModeloVivo({
+      runtime: 'antigravity',
       desejado: 'Claude Opus 4.6 (Thinking)',
       catalogo: CATALOGO_VIVO,
     })
@@ -177,15 +203,101 @@ describe('escolherModeloVivo — o veredito que decide se o degrau vale a tentat
     // Lista vazia é "não sei". Um veredito de ausência aqui pularia TODOS os
     // degraus toda vez que a leitura do banco piscasse — trocar desperdício por
     // paralisação é exatamente o que este produto não faz.
-    const r = escolherModeloVivo({ desejado: 'Gemini 3.5 Flash (Medium)', catalogo: [] })
+    const r = escolherModeloVivo({
+      runtime: 'antigravity',
+      desejado: 'Gemini 3.5 Flash (Medium)',
+      catalogo: [],
+    })
     expect(r.veredito).toBe('vale')
     expect(r.modelo).toBe('Gemini 3.5 Flash (Medium)')
   })
 
   it('substituição continua ganhando de pular: 3.5 vira 3.7 e o degrau roda', () => {
-    const r = escolherModeloVivo({ desejado: 'Gemini 3.5 Flash (Medium)', catalogo: CATALOGO_VIVO })
+    const r = escolherModeloVivo({
+      runtime: 'antigravity',
+      desejado: 'Gemini 3.5 Flash (Medium)',
+      catalogo: CATALOGO_VIVO,
+    })
     expect(r.veredito).toBe('trocado')
     expect(r.modelo).toBe('Gemini 3.7 Flash (Medium)')
+  })
+})
+
+// A esteira comparava o desejado CRU contra o catálogo CRU;
+// o painel (routes/cascata.ts) já comparava os dois lados convertidos por
+// `valorDeModeloParaOMotor`. Um modelo salvo pelo painel como
+// "codex-auto-review" batia lá e falhava aqui — o mesmíssimo modelo, escrito
+// diferente, pulava o motor com "não está no catálogo vivo". Dado real de
+// catálogo real devolvido pela rota GET /api/projects/:id/cascata/opcoes: o codex
+// oferece {valor:"codex-auto-review", rotulo:"Codex Auto Review"} — o
+// `engine_connections.models` guarda o RÓTULO ("Codex Auto Review"), e é
+// contra ele que a esteira compara.
+describe('escolherModeloVivo — compara do mesmo jeito que o painel (mesmoModelo)', () => {
+  it('desejado gravado como VALOR ("codex-auto-review") bate contra o RÓTULO do catálogo', () => {
+    const r = escolherModeloVivo({
+      runtime: 'codex',
+      desejado: 'codex-auto-review',
+      catalogo: ['GPT-5.5', 'Codex Auto Review'],
+    })
+    expect(r.veredito).toBe('vale')
+    expect(r.trocado).toBe(false)
+    // O que segue para a CLI é o VALOR convertido do item vivo — o `--model`
+    // do codex recusa o rótulo de vitrine ("Codex Auto Review").
+    expect(r.modelo).toBe('codex-auto-review')
+  })
+
+  it('regressão: modelo de fato ausente do catálogo continua sem casar e sem trocar de família', () => {
+    // "gpt-5.4-mini" não é a mesma família de "GPT-5.5" nem de
+    // "Codex Auto Review" — mesmoModelo comparar os dois lados convertidos não
+    // pode fazer um modelo ausente aparentar presente.
+    const r = escolherModeloVivo({
+      runtime: 'codex',
+      desejado: 'gpt-5.4-mini',
+      catalogo: ['GPT-5.5', 'Codex Auto Review'],
+    })
+    expect(r.veredito).not.toBe('vale')
+    expect(r.modelo).not.toBe('gpt-5.4-mini')
+  })
+})
+
+// FAIL-OPEN devolve o modelo pedido sem checar o catálogo — mas "sem checar"
+// não é "sem converter". O chamador espera sempre o valor que a CLI aceita,
+// nunca o rótulo de vitrine: para antigravity os dois coincidem (por isso os
+// testes de FAIL-OPEN acima nunca pegaram isso), mas para codex e claude são
+// strings diferentes, e o ramo fail-open ficou de fora da conversão quando
+// ela migrou do chamador (scheduler.ts) para dentro desta função.
+describe('escolherModeloVivo — FAIL-OPEN também devolve o valor da CLI, não o rótulo', () => {
+  it('catálogo vazio: codex recebe o valor convertido, não o rótulo de vitrine', () => {
+    const r = escolherModeloVivo({
+      runtime: 'codex',
+      desejado: 'Codex Auto Review',
+      catalogo: [],
+    })
+    expect(r.veredito).toBe('vale')
+    expect(r.trocado).toBe(false)
+    expect(r.modelo).toBe('codex-auto-review')
+  })
+
+  it('catálogo só com ruído do CLI (nenhuma linha sobrevive a ehLinhaDeModelo): mesma conversão', () => {
+    const r = escolherModeloVivo({
+      runtime: 'codex',
+      desejado: 'Codex Auto Review',
+      catalogo: ['fetching models...', 'Available models:', '   '],
+    })
+    expect(r.veredito).toBe('vale')
+    expect(r.trocado).toBe(false)
+    expect(r.modelo).toBe('codex-auto-review')
+  })
+
+  it('catálogo vazio: claude também recebe o valor convertido', () => {
+    const r = escolherModeloVivo({
+      runtime: 'claude',
+      desejado: 'Claude Opus 5',
+      catalogo: [],
+    })
+    expect(r.veredito).toBe('vale')
+    expect(r.trocado).toBe(false)
+    expect(r.modelo).toBe('claude-opus-5')
   })
 })
 

@@ -324,3 +324,21 @@ export function valorDeModeloParaOMotor(runtime: string, modelo: string): string
 
   return cru
 }
+
+/**
+ * A MESMA regra de comparação em todo lugar que precisa decidir se dois
+ * modelos são a mesma escolha, escritos diferente. O painel (cascata.ts) já
+ * comparava assim; a esteira (`escolherModeloVivo`,
+ * catalogo-vivo-de-modelos.ts) comparava o cru contra o cru e por isso pulava
+ * motores que o painel aceitava — "codex-auto-review" salvo pelo dono contra
+ * o catálogo `["GPT-5.5", "Codex Auto Review"]` batia no painel e falhava na
+ * esteira, porque só um lado convertia.
+ *
+ * `a === b` cobre o caso raro em que os dois já chegam iguais sem precisar
+ * converter; o `||` cobre o caso real — rótulo de vitrine de um lado,
+ * identificador do outro — convertendo os dois para o valor que o CLI aceita
+ * antes de comparar.
+ */
+export function mesmoModelo(runtime: string, a: string, b: string): boolean {
+  return a === b || valorDeModeloParaOMotor(runtime, a) === valorDeModeloParaOMotor(runtime, b)
+}
