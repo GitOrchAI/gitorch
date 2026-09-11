@@ -75,53 +75,56 @@ export const ssePlugin: FastifyPluginAsync = async (app) => {
       return reply.code(401).send({ error: 'Invalid or expired waiting room token' })
     }
 
-    reply.sse((async function* () {
-      yield { event: 'connected', data: JSON.stringify({ token }) }
+    reply.sse(
+      (async function* () {
+        yield { event: 'connected', data: JSON.stringify({ token }) }
 
-      let resolveNextMessage: ((msg: any) => void) | null = null
-      let cleanupDone = false
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let resolveNextMessage: ((msg: unknown) => void) | null = null
+        let cleanupDone = false
 
-      const listener = (data: { token: string; status: string }) => {
-        if (data.token === token && resolveNextMessage) {
-          resolveNextMessage({ event: 'guest_status_changed', data: JSON.stringify(data) })
-          resolveNextMessage = null
+        const listener = (data: { token: string; status: string }) => {
+          if (data.token === token && resolveNextMessage) {
+            resolveNextMessage({ event: 'guest_status_changed', data: JSON.stringify(data) })
+            resolveNextMessage = null
+          }
         }
-      }
 
-      app.emitter.on('guest_status_changed', listener)
+        app.emitter.on('guest_status_changed', listener)
 
-      const cleanup = async () => {
-        if (cleanupDone) return
-        cleanupDone = true
-        app.emitter.off('guest_status_changed', listener)
-        // Clean up the session if the connection closes before moderation
-        await app.redis.del(`waiting_room:${token}`)
-      }
-
-      request.raw.on('close', cleanup)
-      request.raw.on('end', cleanup)
-
-      try {
-        while (!cleanupDone) {
-          const msg = await Promise.race([
-            new Promise((resolve) => {
-              resolveNextMessage = resolve
-            }),
-            new Promise((resolve) => {
-              setTimeout(() => {
-                resolve({ event: 'heartbeat', data: '' })
-              }, heartbeatInterval)
-            }),
-          ])
-
-          if (cleanupDone) break
-
-          yield msg as EventMessage
+        const cleanup = async () => {
+          if (cleanupDone) return
+          cleanupDone = true
+          app.emitter.off('guest_status_changed', listener)
+          // Clean up the session if the connection closes before moderation
+          await app.redis.del(`waiting_room:${token}`)
         }
-      } finally {
-        await cleanup()
-      }
-    })())
+
+        request.raw.on('close', cleanup)
+        request.raw.on('end', cleanup)
+
+        try {
+          while (!cleanupDone) {
+            const msg = await Promise.race([
+              new Promise((resolve) => {
+                resolveNextMessage = resolve
+              }),
+              new Promise((resolve) => {
+                setTimeout(() => {
+                  resolve({ event: 'heartbeat', data: '' })
+                }, heartbeatInterval)
+              }),
+            ])
+
+            if (cleanupDone) break
+
+            yield msg as EventMessage
+          }
+        } finally {
+          await cleanup()
+        }
+      })()
+    )
   })
 }
 

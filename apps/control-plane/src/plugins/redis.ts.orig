@@ -32,7 +32,7 @@ export function createRedisClient(
 
 export const redisPlugin: FastifyPluginAsync = async (app) => {
   try {
-    if (!app.hasDecorator('emitter')) {
+    if (!('emitter' in app)) {
       app.decorate('emitter', new EventEmitter())
     }
 

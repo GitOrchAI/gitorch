@@ -7,6 +7,10 @@ const mockRedisInstance = {
   on: vi.fn(),
   ping: vi.fn().mockResolvedValue('PONG'),
   subscribe: vi.fn().mockResolvedValue(undefined),
+  set: vi.fn().mockResolvedValue(undefined),
+  publish: vi.fn().mockResolvedValue(undefined),
+  exists: vi.fn().mockResolvedValue(1),
+  del: vi.fn().mockResolvedValue(1),
 }
 
 vi.mock('ioredis', () => {
@@ -50,5 +54,23 @@ describe('Redis Plugin', () => {
     expect(hasRedis).toBe(true)
     expect(app.redis).toBeDefined()
     expect(mockRedisInstance.connect).toHaveBeenCalled()
+  })
+
+  it('setWaitingRoomSession calls redis.set with correct params', async () => {
+    await app.setWaitingRoomSession('mytoken', 3600)
+    expect(mockRedisInstance.set).toHaveBeenCalledWith(
+      'waiting_room:mytoken',
+      'pending',
+      'EX',
+      3600
+    )
+  })
+
+  it('publishGuestStatus calls redis.publish with correct channel and message', async () => {
+    await app.publishGuestStatus('mytoken', 'approved')
+    expect(mockRedisInstance.publish).toHaveBeenCalledWith(
+      'guest_status_changed',
+      JSON.stringify({ token: 'mytoken', status: 'approved' })
+    )
   })
 })

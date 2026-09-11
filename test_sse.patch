@@ -1,0 +1,10 @@
+--- apps/control-plane/src/plugins/sse.test.ts
++++ apps/control-plane/src/plugins/sse.test.ts
+@@ -48,6 +48,7 @@
+     // but the simplest is just testing the SSE reply logic.
+     // However, if we do a real network request using app.server.address, we can abort it.
+     await app.listen({ port: 0 })
++    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     const port = (app.server.address() as any).port
+
+     const resPromise = fetch(`http://localhost:${port}/wait/validtoken`)
