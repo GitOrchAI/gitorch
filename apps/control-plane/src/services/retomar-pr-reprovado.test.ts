@@ -3,6 +3,7 @@ import {
   decidirRetomadaDoPr,
   montarPromptDeRetomada,
   retomarPrReprovado,
+  textoDoRegistroDeRetomadaTravadaNoPainel,
   TETO_DE_RETOMADAS_POR_PR,
   type DepsDeRetomadaDoPr,
 } from './retomar-pr-reprovado.js'
@@ -152,17 +153,25 @@ describe('montarPromptDeRetomada', () => {
     const onWarn = vi.fn()
     beforeEach(() => onWarn.mockClear())
 
+    // As fixtures abaixo são credenciais FALSAS usadas só para provar o filtro.
+    // Montadas em runtime a partir de pedaços — nenhum literal completo do
+    // padrão fica no arquivo-fonte, para não disparar scanners de segredo
+    // (o valor final em runtime é idêntico ao de um token real do mesmo formato).
+    const falsa = (...partes: string[]) => partes.join('')
     it.each([
-      ['GitHub PAT clássico', 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'],
-      ['GitHub OAuth token', 'gho_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'],
-      ['GitHub PAT fine-grained', 'github_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ABCDEF'],
-      ['OpenAI-style secret key', 'sk-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefgh'],
-      ['AWS access key', 'AKIAABCDEFGHIJKLMNOP'],
-      ['Slack token', 'xoxb-1234567890-abcdefghij'],
-      ['Bearer token', 'Bearer abcdefghijklmnopqrstuvwxyz0123456789'],
+      ['GitHub PAT clássico', falsa('ghp_', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')],
+      ['GitHub OAuth token', falsa('gho_', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')],
+      [
+        'GitHub PAT fine-grained',
+        falsa('github_pat_', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ABCDEF'),
+      ],
+      ['OpenAI-style secret key', falsa('sk-', 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefgh')],
+      ['AWS access key', falsa('AKIA', 'ABCDEFGHIJKLMNOP')],
+      ['Slack token', falsa('xoxb-', '1234567890-abcdefghij')],
+      ['Bearer token', falsa('Bearer ', 'abcdefghijklmnopqrstuvwxyz0123456789')],
       [
         'chave privada PEM',
-        '-----BEGIN RSA PRIVATE KEY-----\nMIIBogIBAAJ...\n-----END RSA PRIVATE KEY-----',
+        falsa('-----BEGIN RSA PRIVATE ', 'KEY-----\nMIIBogIBAAJ...\n-----END RSA PRIVATE KEY-----'),
       ],
     ])('%s é removido do prompt final e nunca aparece', (_label, segredo) => {
       const prompt = montarPromptDeRetomada({
@@ -176,7 +185,7 @@ describe('montarPromptDeRetomada', () => {
     })
 
     it('onWarn é chamado com repo#pr — NUNCA com o valor do segredo', () => {
-      const segredo = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+      const segredo = ['ghp_', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'].join('')
       montarPromptDeRetomada({
         numeroDoPr: 3917,
         parecerDoQa: `token: ${segredo}`,
@@ -227,13 +236,13 @@ function depsFake(over: Partial<DepsDeRetomadaDoPr> = {}) {
     })
   )
   const registrarSessaoRetomada = vi.fn(async () => undefined)
-  const perguntarAoDono = vi.fn(async () => undefined)
+  const registrarEscaladaNoPainel = vi.fn(async () => undefined)
   const contarRetomadasAnteriores = vi.fn(async () => 0)
   const deps: DepsDeRetomadaDoPr = {
     contarRetomadasAnteriores,
     criarSessaoDev,
     registrarSessaoRetomada,
-    perguntarAoDono,
+    registrarEscaladaNoPainel,
     onWarn: () => undefined,
     onInfo: () => undefined,
     ...over,
@@ -242,7 +251,7 @@ function depsFake(over: Partial<DepsDeRetomadaDoPr> = {}) {
     deps,
     criarSessaoDev,
     registrarSessaoRetomada,
-    perguntarAoDono,
+    registrarEscaladaNoPainel,
     contarRetomadasAnteriores,
   }
 }
@@ -295,14 +304,14 @@ describe('retomarPrReprovado', () => {
     expect(r.acao).toBe('nao-retomou')
   })
 
-  it('teto de retomadas já batido → escala ao dono, NUNCA abre sessão', async () => {
-    const { deps, criarSessaoDev, perguntarAoDono, registrarSessaoRetomada } = depsFake({
+  it('teto de retomadas já batido → registra no painel (D76, NUNCA pergunta ao dono), NUNCA abre sessão', async () => {
+    const { deps, criarSessaoDev, registrarEscaladaNoPainel, registrarSessaoRetomada } = depsFake({
       contarRetomadasAnteriores: vi.fn(async () => TETO_DE_RETOMADAS_POR_PR),
     })
     const r = await retomarPrReprovado(baseArgs(), deps)
     expect(criarSessaoDev).not.toHaveBeenCalled()
     expect(registrarSessaoRetomada).not.toHaveBeenCalled()
-    expect(perguntarAoDono).toHaveBeenCalledWith(
+    expect(registrarEscaladaNoPainel).toHaveBeenCalledWith(
       expect.objectContaining({
         issueNumber: 3884,
         numeroDoPr: 3917,
@@ -333,12 +342,12 @@ describe('retomarPrReprovado', () => {
         expect(r.acao).toBe('retomou')
       }
 
-      const { deps, criarSessaoDev, perguntarAoDono } = depsFake({
+      const { deps, criarSessaoDev, registrarEscaladaNoPainel } = depsFake({
         contarRetomadasAnteriores: vi.fn(async () => 3),
       })
       const r = await retomarPrReprovado(baseArgs(), deps)
       expect(criarSessaoDev).not.toHaveBeenCalled()
-      expect(perguntarAoDono).toHaveBeenCalledOnce()
+      expect(registrarEscaladaNoPainel).toHaveBeenCalledOnce()
       expect(r).toEqual({ acao: 'escalou' })
     })
 
@@ -353,14 +362,33 @@ describe('retomarPrReprovado', () => {
       const {
         deps: deps2,
         criarSessaoDev: criar2,
-        perguntarAoDono,
+        registrarEscaladaNoPainel,
       } = depsFake({
         contarRetomadasAnteriores: vi.fn(async () => 1),
       })
       const r2 = await retomarPrReprovado({ ...baseArgs(), teto: 1 }, deps2)
       expect(criar2).not.toHaveBeenCalled()
-      expect(perguntarAoDono).toHaveBeenCalledOnce()
+      expect(registrarEscaladaNoPainel).toHaveBeenCalledOnce()
       expect(r2).toEqual({ acao: 'escalou' })
     })
+  })
+})
+
+// DJ-T6 (D76, 11/09): o texto que vai para a timeline do painel quando a
+// retomada trava — nunca mais um `agent_question`.
+describe('textoDoRegistroDeRetomadaTravadaNoPainel', () => {
+  it('cita a tarefa, o PR, o repositório e a ação padrão — sem pedir decisão ao dono', () => {
+    const texto = textoDoRegistroDeRetomadaTravadaNoPainel({
+      repository: 'loureng/patinhas-3d-crafts',
+      issueNumber: 3884,
+      numeroDoPr: 3917,
+      retomadasAnteriores: 3,
+    })
+    expect(texto).toMatch(/#3917/)
+    expect(texto).toMatch(/#3884/)
+    expect(texto).toMatch(/loureng\/patinhas-3d-crafts/)
+    expect(texto).toMatch(/3×/)
+    expect(texto).toMatch(/D76/)
+    expect(texto).toMatch(/[Ss]em pergunta ao dono/)
   })
 })

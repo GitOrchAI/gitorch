@@ -232,17 +232,42 @@ export interface DepsDeRetomadaDoPr {
     prNumber: number
   }) => Promise<void>
   /**
-   * D71: escala ao dono com 3 opções objetivas + a livre — reutiliza
-   * `agentQuestionService.ask` (ver `escalar-duvida-ao-dono.ts` para o
-   * mesmo padrão). Nunca um aviso de texto solto.
+   * D76 (11/09, DJ-T6): substitui o antigo "pergunta ao dono"
+   * (`agentQuestionService.ask`, D71) — retomada travada NUNCA MAIS vira
+   * pergunta ao dono. Registra o fato na timeline de auditoria do painel
+   * (`GET /api/v1/painel/timeline`); a AÇÃO PADRÃO é a que o produto já
+   * tinha para quando ninguém decide: para de insistir neste PR (o
+   * `acao: 'escalou'` devolvido por `retomarPrReprovado` já não relança —
+   * ver o chamador em `scheduler.ts`) e segue o fluxo normal — a issue
+   * volta a ficar disponível para uma nova tentativa, e o vigia de PR órfão
+   * (`vigia-do-pr.ts`) cuida do pull request depois de alguns dias parado.
    */
-  perguntarAoDono: (args: {
+  registrarEscaladaNoPainel: (args: {
     issueNumber: number
     numeroDoPr: number
     retomadasAnteriores: number
   }) => Promise<void>
   onWarn?: (m: string) => void
   onInfo?: (m: string) => void
+}
+
+/**
+ * D76: o texto que vai para `payload.texto` do evento `type: 'audit'`
+ * (`app.prisma.event.create`, `scheduler.ts`) quando a retomada trava — a
+ * MESMA timeline que `GET /api/v1/painel/timeline` já lê e renderiza.
+ */
+export function textoDoRegistroDeRetomadaTravadaNoPainel(args: {
+  repository: string
+  issueNumber: number
+  numeroDoPr: number
+  retomadasAnteriores: number
+}): string {
+  return (
+    `D76: PR #${args.numeroDoPr} (tarefa #${args.issueNumber}) de ${args.repository} já foi ` +
+    `retomado ${args.retomadasAnteriores}× e continua reprovado. Sem pergunta ao dono (só o PO ` +
+    'fala com ele, no planejamento). Ação padrão: para de insistir neste PR; a tarefa volta a ' +
+    'ficar disponível para nova tentativa.'
+  )
 }
 
 export type ResultadoDeRetomada =
@@ -286,14 +311,14 @@ export async function retomarPrReprovado(
   })
 
   if (decisao.acao === 'escalar') {
-    await deps.perguntarAoDono({
+    await deps.registrarEscaladaNoPainel({
       issueNumber: args.issueNumber,
       numeroDoPr: args.pr.number,
       retomadasAnteriores,
     })
     info(
       `[retomada] PR #${args.pr.number} (issue #${args.issueNumber}) já foi retomado ` +
-        `${retomadasAnteriores}× e continua reprovado — escalado ao dono`
+        `${retomadasAnteriores}× e continua reprovado — sem pergunta ao dono (D76); registrado no painel`
     )
     return { acao: 'escalou' }
   }

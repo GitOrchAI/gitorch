@@ -120,7 +120,10 @@ import {
   tituloDaPropostaDeAutomacao,
   corpoDaPropostaDeAutomacao,
 } from '../services/proposta.js'
-import { perguntarAoDono as perguntarAoDonoService } from '../services/decisao-de-automacao.js'
+import {
+  registrarAchadoDeAutomacaoNoPainel,
+  dedupKeyDeAutomacao,
+} from '../services/decisao-de-automacao.js'
 import {
   varrerIncidentesResolvidos,
   normalizarNomeDeWorkflow,
@@ -225,7 +228,6 @@ import {
 } from '../services/reconciliar-duvidas-escaladas.js'
 import { lerCadenciaMs, lerInteiroDaEnv } from '../services/cadencia-de-varredura.js'
 import { dedupKeyDeDuvidaDoDev } from '../services/dedup-key-de-duvida.js'
-import { dedupKeyDeRetomada } from '../services/dedup-key-de-retomada.js'
 import {
   marcarAssumidaPorDedupKey,
   type PrismaParaMarcarAssumidaPorDedupKey,
@@ -304,10 +306,15 @@ import {
   listarPrsAbertosParaOVigia,
   vigiarPrsOrfaos,
 } from '../services/vigia-do-pr.js'
-import { retomarPrReprovado, TETO_DE_RETOMADAS_POR_PR } from '../services/retomar-pr-reprovado.js'
+import {
+  retomarPrReprovado,
+  TETO_DE_RETOMADAS_POR_PR,
+  textoDoRegistroDeRetomadaTravadaNoPainel,
+} from '../services/retomar-pr-reprovado.js'
+import { dedupKeyDeRetomada } from '../services/dedup-key-de-retomada.js'
+import { registrarNoPainelUmaVez } from '../services/registro-no-painel.js'
 import { varrerPrsDuplicadosDoDev } from '../services/varrer-prs-duplicados.js'
 import { ehPRDaAutomacao } from '../services/vigia-do-pr.js'
-import { buildFreeTextOption } from '../services/telegram-bot.js'
 import { varrerVagasVazadas } from '../services/reconciliar-vagas.js'
 import { sessoesAbandonadas } from '../services/sessao-abandonada.js'
 import { medirRetrospectiva, escolherAMelhoria } from '../services/retrospectiva.js'
@@ -5847,28 +5854,23 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           }
         )
       },
-      perguntarAoDono: async (achado, numeroDaProposta) => {
-        const perguntador = (app as unknown as { agentQuestionService?: AgentQuestionService })
-          .agentQuestionService
-        // C5 (fix-up L4-T2): a proposta #numeroDaProposta JÁ EXISTE no GitHub
-        // neste ponto — sem a pergunta, ela fica lá para sempre sem ninguém
-        // saber que pode responder (meia entrega). Nunca retorno silencioso:
-        // loga ERROR com repo+issue e RELANÇA — o chamador (`processar-
-        // achados-de-infra.ts`) só loga um warn e segue para o próximo
-        // achado, mas o `registrarIncidente` desta proposta NÃO roda (fica
-        // fora do `try`), então a próxima varredura tenta de novo — e
-        // `criarProposta` é idempotente (acha a issue pelo marcador), então
-        // repetir é seguro.
-        if (!perguntador || !project.userId) {
-          const motivo = !perguntador ? 'agentQuestionService indefinido' : 'projeto sem userId'
-          const mensagem = `proposta #${numeroDaProposta} criada em ${project.wingId} sem pergunta ao dono (${motivo})`
-          app.log.error(`[Scheduler] ${mensagem}`)
-          throw new Error(`perguntarAoDono: ${mensagem}`)
-        }
+      // D76 (11/09, DJ-T6): NUNCA MAIS pergunta ao dono sobre uma automação
+      // falhando — só o PO fala com ele, e só no planejamento. Registra o
+      // achado na MESMA timeline de auditoria que o painel já lê
+      // (`type: 'audit'`, `GET /api/v1/painel/timeline`). Este `await` não
+      // tem `.catch`: propaga em vez de engolir (mesmo raciocínio do antigo
+      // guard) — o `registrarIncidente` desta proposta não roda se isto
+      // falhar, e a próxima varredura tenta de novo (idempotente, `criarProposta`
+      // acha a issue pelo marcador).
+      registrarAchadoNoPainel: async (achado, numeroDaProposta) => {
         const { nome, arquivo, gatilho, desde } = camposDoAchadoDeAutomacao(achado)
-        await perguntarAoDonoService(
+        // DJ-T6b: mesma proteção por segurança do achado da revisão de
+        // DJ-T6 (retomada travada) — `registrarNoPainelUmaVez` dedupa por
+        // `dedupKeyDeAutomacao(repo, identidade)`, mesmo hoje só invocado
+        // uma vez por proposta nova.
+        await registrarAchadoDeAutomacaoNoPainel(
           {
-            userId: project.userId,
+            userId: project.userId ?? '',
             projectId: project.id,
             repo: project.wingId,
             identidade: achado.identidadeEstavel,
@@ -5879,12 +5881,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             resumo: achado.titulo,
             numeroProposta: numeroDaProposta,
           },
-          // C5 (fix-up L4-T2): este `await` NÃO tem `.catch` — o antigo
-          // `.catch` engolia a falha em warn e deixava o chamador achar que
-          // a pergunta saiu. Mesmo raciocínio do guard acima: propaga, o
-          // `registrarIncidente` desta proposta não roda, e a próxima
-          // varredura tenta de novo (idempotente).
-          { agentQuestion: perguntador }
+          {
+            registrarEventoDoPainel: (texto) =>
+              registrarNoPainelUmaVez({
+                prisma: app.prisma,
+                projectId: project.id,
+                chave: dedupKeyDeAutomacao(project.wingId, achado.identidadeEstavel),
+                texto,
+              }),
+          }
         )
       },
       avisarDono: async (texto) => {
@@ -6615,48 +6620,42 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 agora,
               })
             },
-            // D71: 3 opções objetivas + a livre — reutiliza
-            // `agentQuestionService.ask` diretamente. Nunca um aviso de texto
-            // solto. Isto é retomada de PR REPROVADO (decisão de negócio
-            // legítima do dono sobre insistir ou não) — NÃO é dúvida técnica
-            // do dev assíncrono; D75 (05/09) fechou só o caminho da dúvida do
-            // dev (`escalar-duvida-ao-dono.ts`), que não passa mais por
-            // `agentQuestionService`.
-            perguntarAoDono: async ({ issueNumber, numeroDoPr: nPr, retomadasAnteriores }) => {
-              const perguntador = (
-                app as unknown as { agentQuestionService?: AgentQuestionService }
-              ).agentQuestionService
-              if (!perguntador || !proj.userId) {
-                app.log.warn(
-                  `[Scheduler] retomada: não deu para escalar o PR #${nPr} (issue #${issueNumber}) ` +
-                    'ao dono — agentQuestionService indefinido ou projeto sem userId'
-                )
-                return
-              }
-              await perguntador
-                .ask(proj.userId, proj.id, {
-                  text:
-                    `O pull request #${nPr} (tarefa #${issueNumber}) já foi retomado ` +
-                    `${retomadasAnteriores}× na mesma branch e o QA continua pedindo mudança. ` +
-                    'O que fazer?',
-                  context: `Repositório ${proj.wingId}.`,
-                  options: [
-                    { label: 'Tentar mais uma vez', value: 'tentar-de-novo' },
-                    { label: 'Fechar este PR e recomeçar do zero', value: 'fechar-e-recomecar' },
-                    { label: 'Vou revisar eu mesmo', value: 'revisar-manualmente' },
-                    buildFreeTextOption(),
-                  ],
-                  // C1 (fix-up L4-T5, CSO): dedupKey ESTÁVEL por PR — nunca
-                  // inclui `retomadasAnteriores` (varia a cada ciclo). Uma
-                  // chave que mudasse a cada tentativa nunca bateria de novo
-                  // no dedupe de `AgentQuestionService.ask`, e a resposta do
-                  // dono a esta MESMA trava ficaria órfã assim que o contador
-                  // avançasse (dedup-key-de-retomada.ts).
-                  dedupKey: dedupKeyDeRetomada({ repo: proj.wingId, prNumber: nPr }),
-                })
-                .catch((err: unknown) =>
-                  app.log.warn(err, `[Scheduler] retomada: pergunta ao dono sobre #${nPr} falhou`)
-                )
+            // D76 (11/09, DJ-T6): NUNCA MAIS pergunta ao dono — retomada
+            // travada é fato operacional, não decisão de planejamento nem
+            // dev+PO+RA validando mudança de cenário (as duas únicas letras
+            // de D76 que autorizam falar com ele). ATÉ AQUI, D71 cobria isto
+            // com `agentQuestionService.ask` (3 opções + livre) — REMOVIDO.
+            // Registra na MESMA timeline de auditoria que o painel lê
+            // (`type: 'audit'`, `GET /api/v1/painel/timeline`); a AÇÃO
+            // PADRÃO é a nota que já existe logo abaixo neste arquivo desde
+            // L4-T5: para de insistir neste PR e segue o fluxo normal — a
+            // issue fica disponível para a próxima passada, e a vigia de PR
+            // órfão (`vigia-do-pr.ts`) cuida do PR depois de alguns dias
+            // parado.
+            // DJ-T6b: `registrarNoPainelUmaVez` dedupa por
+            // `dedupKeyDeRetomada({repo, prNumber})` — sem isto, cada
+            // passada da esteira que decide "escalar" o MESMO PR gravava
+            // outro evento `audit` idêntico na timeline (achado da revisão
+            // de DJ-T6, que removeu o dedupe que existia quando isto ainda
+            // era `agentQuestionService.ask`).
+            registrarEscaladaNoPainel: async ({
+              issueNumber,
+              numeroDoPr: nPr,
+              retomadasAnteriores,
+            }) => {
+              await registrarNoPainelUmaVez({
+                prisma: app.prisma,
+                projectId: proj.id,
+                chave: dedupKeyDeRetomada({ repo: proj.wingId, prNumber: nPr }),
+                texto: textoDoRegistroDeRetomadaTravadaNoPainel({
+                  repository: proj.wingId,
+                  issueNumber,
+                  numeroDoPr: nPr,
+                  retomadasAnteriores,
+                }),
+              }).catch((err: unknown) =>
+                app.log.warn(err, `[Scheduler] retomada: registrar no painel sobre #${nPr} falhou`)
+              )
             },
             onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
             onInfo: (m) => app.log.info(`[Scheduler] ${m}`),
