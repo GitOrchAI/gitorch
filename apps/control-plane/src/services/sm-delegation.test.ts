@@ -1192,4 +1192,97 @@ describe('runSmDelegation: reserva de arquivo só de sessão que ainda ocupa vag
     expect(r.delegated).toEqual([])
     expect(labeled.filter((l) => l.labels.includes('jules'))).toEqual([])
   })
+
+  it('issue com DUAS linhas vivas (IN_PROGRESS depois COMPLETED) ainda reserva o arquivo — não é só a última linha que conta', async () => {
+    const f = fakeFetch([
+      {
+        number: 500,
+        labels: ['gitorch:task'],
+        body: '## Related Files\nbackend/src/app.ts',
+      },
+      {
+        number: 501,
+        labels: ['gitorch:task'],
+        body: '## Related Files\nbackend/src/app.ts',
+      },
+    ])
+    const labeled = (f as unknown as { labeled: Array<{ number: number; labels: string[] }> })
+      .labeled
+    const r = await runSmDelegation({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: f,
+      // Mesma issue, duas linhas vivas: uma ainda IN_PROGRESS, outra já
+      // COMPLETED. A ordem do array não pode decidir se reserva ou não — a
+      // issue tem trabalho de verdade rolando (a IN_PROGRESS) e isso basta.
+      sessoesVivas: [
+        linhaViva({ id: 'a', issueNumber: 500, state: 'IN_PROGRESS' }),
+        linhaViva({ id: 'b', issueNumber: 500, state: 'COMPLETED' }),
+      ],
+    })
+    expect(r.delegated).not.toContain(500)
+    // #501 declara o mesmo arquivo — a #500 ainda ocupa vaga de verdade
+    // (existe linha IN_PROGRESS dela), então a colisão barra a delegação.
+    expect(r.delegated).toEqual([])
+    expect(labeled.filter((l) => l.labels.includes('jules'))).toEqual([])
+  })
+
+  it('a mesma issue com as linhas na ordem inversa (COMPLETED depois IN_PROGRESS) reserva do mesmo jeito', async () => {
+    const f = fakeFetch([
+      {
+        number: 510,
+        labels: ['gitorch:task'],
+        body: '## Related Files\nbackend/src/app.ts',
+      },
+      {
+        number: 511,
+        labels: ['gitorch:task'],
+        body: '## Related Files\nbackend/src/app.ts',
+      },
+    ])
+    const labeled = (f as unknown as { labeled: Array<{ number: number; labels: string[] }> })
+      .labeled
+    const r = await runSmDelegation({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: f,
+      sessoesVivas: [
+        linhaViva({ id: 'a', issueNumber: 510, state: 'COMPLETED' }),
+        linhaViva({ id: 'b', issueNumber: 510, state: 'IN_PROGRESS' }),
+      ],
+    })
+    expect(r.delegated).not.toContain(510)
+    expect(r.delegated).toEqual([])
+    expect(labeled.filter((l) => l.labels.includes('jules'))).toEqual([])
+  })
+
+  it('issue com SÓ linhas terminais (COMPLETED e FAILED) não reserva nada', async () => {
+    const f = fakeFetch([
+      {
+        number: 520,
+        labels: ['gitorch:task'],
+        body: '## Related Files\nbackend/src/app.ts',
+      },
+      {
+        number: 521,
+        labels: ['gitorch:task'],
+        body: '## Related Files\nbackend/src/app.ts',
+      },
+    ])
+    const labeled = (f as unknown as { labeled: Array<{ number: number; labels: string[] }> })
+      .labeled
+    const r = await runSmDelegation({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: f,
+      sessoesVivas: [
+        linhaViva({ id: 'a', issueNumber: 520, state: 'COMPLETED' }),
+        linhaViva({ id: 'b', issueNumber: 520, state: 'FAILED' }),
+      ],
+    })
+    expect(r.delegated).not.toContain(520)
+    // Nenhuma linha viva de #520 ainda ocupa vaga → #521 é livre.
+    expect(r.delegated).toEqual([521])
+    expect(labeled.filter((l) => l.labels.includes('jules')).map((l) => l.number)).toEqual([521])
+  })
 })

@@ -534,12 +534,22 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
   // Bloqueadores só para quem ainda não tem sessão viva — não adianta gastar
   // chamada em issue que já está em trabalho.
   const comSessaoViva = new Set((options.sessoesVivas ?? []).map((s) => s.issueNumber))
-  // O ESTADO da sessão viva de cada issue — para só reservar arquivo de quem
-  // AINDA OCUPA vaga no Jules (ver `arquivosEmTrabalho` abaixo). Uma issue
-  // com sessão viva nunca é candidata (linha seguinte já cuida disso); isto é
-  // só sobre reservar o arquivo dela para as OUTRAS.
-  const estadoDaSessaoVivaPorIssue = new Map(
-    (options.sessoesVivas ?? []).map((s) => [s.issueNumber, s.state])
+  // As issues que AINDA OCUPAM vaga no Jules por QUALQUER linha viva delas —
+  // para só reservar arquivo de quem tem trabalho de verdade rolando (ver
+  // `arquivosEmTrabalho` abaixo). Uma issue com sessão viva nunca é candidata
+  // (linha seguinte já cuida disso); isto é só sobre reservar o arquivo dela
+  // para as OUTRAS.
+  //
+  // Antes disto era um `Map(issueNumber -> state)`: com DUAS linhas vivas da
+  // MESMA issue (ex.: uma IN_PROGRESS e outra já COMPLETED, uma sessão
+  // redelegada que ainda não foi limpa), o Map só guardava o estado da
+  // ÚLTIMA linha do array — e a ordem virava sorte: se a IN_PROGRESS viesse
+  // depois, `ocupaVaga` acertava; se viesse antes, a COMPLETED sobrescrevia
+  // e a reserva sumia com trabalho de verdade ainda rolando (fail-open,
+  // quebrando o fail-closed que `ocupaVaga` promete). Aqui: a issue reserva
+  // se QUALQUER linha viva dela ocupa vaga (`some`/OR) — ordem não importa.
+  const issuesQueOcupamVagaAgora = new Set(
+    (options.sessoesVivas ?? []).filter((s) => ocupaVaga(s.state)).map((s) => s.issueNumber)
   )
   // Tarefa cuja entrega JÁ FOI MESCLADA não vira sessão nova, mesmo que a
   // issue continue aberta no GitHub.
@@ -620,7 +630,7 @@ export async function runSmDelegation(options: SmDelegationOptions): Promise<SmD
       // candidatas por um trabalho que já tinha acabado (medido: #3884 do
       // Jardim, COMPLETED e aberta, travou #3842/#3841/#3830/#3827 declarando
       // `backend/src/app.ts`).
-      if (ocupaVaga(estadoDaSessaoVivaPorIssue.get(t.number))) {
+      if (issuesQueOcupamVagaAgora.has(t.number)) {
         for (const arquivo of arquivosDeclarados(t.body)) arquivosEmTrabalho.add(arquivo)
       }
       continue
