@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { montarOpcoesDeDelegacao } from './scheduler.js'
+import { montarOpcoesDeDelegacao, devPlanParaDelegacao } from './scheduler.js'
 import type { LinhaDeSessao } from '../services/dev-session-store.js'
 
 // Achado 2 da revisão da Task 5: `montarOpcoesDeDelegacao` é a única ponte
@@ -113,5 +113,39 @@ describe('montarOpcoesDeDelegacao', () => {
     // contra o teto de simultâneas é ocupamVagaNaConta (2).
     expect(opcoes.vivasNaConta).toBe(23)
     expect(opcoes.ocupamVagaNaConta).toBe(2)
+  })
+})
+
+// DJ-T5b — dados reais de produção: gitorch e patinhas-3d-crafts têm devPlan
+// 'pro'; padrao-executores NÃO TEM devPlan — os três dividem a mesma conta
+// do dev assíncrono. `devPlanParaDelegacao` é a ponte pura entre o plano
+// próprio do projeto (ou a ausência dele) e o plano que de fato entra em
+// `montarOpcoesDeDelegacao` — sem ela, o projeto sem plano herdava um
+// 'free' fixo mesmo estando numa conta Pro real.
+describe('devPlanParaDelegacao', () => {
+  test('projeto com plano próprio declarado usa o seu, ignorando os da conta', () => {
+    expect(devPlanParaDelegacao('free', ['pro', 'pro'])).toBe('free')
+  })
+
+  test('projeto sem plano numa conta com outro pro herda pro — não inventa free', () => {
+    expect(devPlanParaDelegacao(null, ['pro', null])).toBe('pro')
+  })
+
+  test('projeto sem plano e conta também sem nenhum declarado cai no free', () => {
+    expect(devPlanParaDelegacao(null, [null])).toBe('free')
+  })
+
+  test('ponta a ponta: projeto sem plano numa conta pro produz o teto 15/100 na delegação', () => {
+    const devPlan = devPlanParaDelegacao(null, ['pro', 'pro', null])
+    const opcoes = montarOpcoesDeDelegacao({
+      devPlan,
+      sessoesVivas: [],
+      delegadasHoje: 0,
+      entregasDoProjeto: [],
+      vivasNaConta: 0,
+      ocupamVagaNaConta: 0,
+    })
+    expect(opcoes.tetoConcorrentes).toBe(15)
+    expect(opcoes.tetoDiario).toBe(100)
   })
 })

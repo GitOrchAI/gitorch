@@ -98,7 +98,11 @@ import {
   DESCANSO_DO_MOTOR_MORTO_MS,
 } from '../services/motor-em-pausa.js'
 import { criarRegistroDeDescanso, type OrigemDoDisparo } from '../services/descanso-apos-vazia.js'
-import { tetosDoPlanoDoDev, capPorCicloDoAmbiente } from '../services/plano-do-dev.js'
+import {
+  tetosDoPlanoDoDev,
+  capPorCicloDoAmbiente,
+  planoEfetivoDaConta,
+} from '../services/plano-do-dev.js'
 import { ESTADOS_TERMINAIS } from '../services/estados-de-sessao.js'
 import { executarCicloTerminal } from '../services/executar-ciclo-terminal.js'
 import {
@@ -859,6 +863,31 @@ export function isEngineFault(err: unknown, lastError: string): boolean {
  * quebraria teste nenhum, estourando a cota do cliente em silêncio. Ver
  * scheduler-teto-delegacao.test.ts.
  */
+/**
+ * DJ-T5b — dados reais de produção: `gitorch` e `patinhas-3d-crafts` têm
+ * `devPlan` 'pro'; `padrao-executores` NÃO TEM `devPlan` declarado — os três
+ * dividem a MESMA conta do dev assíncrono. Antes, `montarOpcoesDeDelegacao`
+ * recebia `project.devPlan` direto: um projeto sem plano caía no `free`
+ * (3/15) mesmo que outro projeto da mesma conta fosse 'pro' (15/100) — o
+ * teto é da CONTA (D34/BYOK), não do projeto, e um projeto sem declaração
+ * própria precisa herdar o efetivo da conta, não inventar um 'free' que a
+ * conta não tem.
+ *
+ * Projeto com plano PRÓPRIO declarado continua usando o seu — só o projeto
+ * sem declaração cai no efetivo da conta (`planoEfetivoDaConta`,
+ * plano-do-dev.ts), calculado a partir dos planos dos projetos ATIVOS que
+ * dividem o mesmo `devAccountId` (mesma leitura que já conta as sessões da
+ * conta, ver `sessoesVivas`/`vivasNaConta` no call site abaixo).
+ */
+export function devPlanParaDelegacao(
+  devPlanDoProjeto: string | null | undefined,
+  devPlansDaConta: ReadonlyArray<string | null | undefined>
+): string {
+  const proprio = (devPlanDoProjeto ?? '').trim()
+  if (proprio !== '') return proprio
+  return planoEfetivoDaConta(devPlansDaConta)
+}
+
 export function montarOpcoesDeDelegacao(args: {
   devPlan: string | null | undefined
   sessoesVivas: LinhaDeSessao[]
@@ -3602,7 +3631,26 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             // leituras (Prisma) ficam aqui, dentro da closure não exportada.
             ...montarOpcoesDeDelegacao({
               onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
-              devPlan: project.devPlan,
+              // DJ-T5b: o próprio plano do projeto quando declarado; sem
+              // declaração, o efetivo da CONTA (mais restritivo entre os
+              // planos declarados dos projetos ativos que dividem o mesmo
+              // devAccountId) — nunca mais um 'free' inventado para um
+              // projeto que só não tem `devPlan` preenchido na tabela.
+              devPlan: devPlanParaDelegacao(
+                project.devPlan,
+                // Só busca os planos da conta quando o PRÓPRIO projeto não
+                // declarou o dele — é o caso raro (padrao-executores);
+                // manter a leitura extra fora do caminho comum evita um
+                // round-trip a mais no Prisma em toda acordada do SM.
+                (project.devPlan ?? '').trim() !== ''
+                  ? []
+                  : (
+                      await app.prisma.project.findMany({
+                        where: { devAccountId: project.devAccountId ?? null, isActive: true },
+                        select: { devPlan: true },
+                      })
+                    ).map((p) => p.devPlan)
+              ),
               // A fila real: issue com linha viva já está sendo trabalhada;
               // sem linha viva está por delegar, mesmo que já tenha sido
               // delegada antes e a sessão tenha morrido (fila-de-delegacao.ts).

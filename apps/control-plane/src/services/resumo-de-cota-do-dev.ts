@@ -1,4 +1,4 @@
-import { tetosDoPlanoDoDev, type TetosDoDev } from './plano-do-dev.js'
+import { tetosDoPlanoDoDev, planoEfetivoDaConta, type TetosDoDev } from './plano-do-dev.js'
 import { ocupaVaga } from './estados-de-sessao.js'
 
 // VISIBILIDADE da cota do dev assíncrono (Jules) — pedido do dono (01/09/2026):
@@ -100,21 +100,18 @@ const JANELA_24H_MS = 24 * 60 * 60 * 1000
 
 const nuncaNegativo = (n: number): number => Math.max(0, n)
 
-/** O plano mais RESTRITIVO (menor teto simultâneo) entre os declarados. Empate: o de teto diário menor. */
+/**
+ * O plano EFETIVO da conta — mais restritivo entre os DECLARADOS
+ * (`planoEfetivoDaConta`, plano-do-dev.ts). DJ-T5b: nulo/vazio é IGNORADO,
+ * não tratado como 'free' — projeto sem `devPlan` não pode arrastar a conta
+ * inteira para o teto gratuito quando outro projeto da mesma conta é 'pro'.
+ */
 function tetoMaisRestritivo(planos: readonly (string | null)[]): {
   plano: string
   tetos: TetosDoDev
 } {
-  const candidatos = planos.map((p) => {
-    const normalizado = (p ?? '').trim().toLowerCase() || 'free'
-    return { plano: normalizado, tetos: tetosDoPlanoDoDev(p) }
-  })
-  return candidatos.reduce((a, b) => {
-    if (b.tetos.tetoConcorrentes !== a.tetos.tetoConcorrentes) {
-      return b.tetos.tetoConcorrentes < a.tetos.tetoConcorrentes ? b : a
-    }
-    return b.tetos.tetoDiario < a.tetos.tetoDiario ? b : a
-  })
+  const plano = planoEfetivoDaConta(planos)
+  return { plano, tetos: tetosDoPlanoDoDev(plano) }
 }
 
 export interface LeituraDeSmParaResumo {

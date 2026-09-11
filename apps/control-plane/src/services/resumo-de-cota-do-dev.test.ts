@@ -83,6 +83,37 @@ describe('resumoDeCotaDoDev', () => {
     ])
   })
 
+  test('DJ-T5b — dados reais de produção: gitorch e patinhas-3d-crafts pro, padrao-executores SEM plano, mesma conta → pro (15/100), não free', () => {
+    // Achado real (11/09/2026): os três projetos dividem a mesma conta do dev
+    // assíncrono (devAccountId nulo = conta padrão da instância).
+    // `padrao-executores` sem `devPlan` declarado NÃO pode arrastar a conta
+    // Pro real (15/100) para o teto gratuito (3/15) — nulo é ausência de
+    // declaração, não uma declaração de 'free'.
+    const resumo = resumoDeCotaDoDev({
+      projetos: [
+        projeto({ id: 'a', nome: 'GitOrchAI/gitorch', devPlan: 'pro', devAccountId: null }),
+        projeto({
+          id: 'b',
+          nome: 'loureng/patinhas-3d-crafts',
+          devPlan: 'pro',
+          devAccountId: null,
+        }),
+        projeto({
+          id: 'c',
+          nome: 'loureng/padrao-executores',
+          devPlan: null,
+          devAccountId: null,
+        }),
+      ],
+      sessoes: [],
+      agora: AGORA,
+    })
+    expect(resumo.contas).toHaveLength(1)
+    expect(resumo.contas[0]?.plano).toBe('pro')
+    expect(resumo.contas[0]?.tetoConcorrentes).toBe(15)
+    expect(resumo.contas[0]?.tetoDiario).toBe(100)
+  })
+
   test('conta com planos divergentes entre projetos exibe o MAIS RESTRITIVO — errar pra baixo é seguro', () => {
     const resumo = resumoDeCotaDoDev({
       projetos: [
