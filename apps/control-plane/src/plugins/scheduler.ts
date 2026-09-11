@@ -763,15 +763,17 @@ export async function modeloVivoParaAMissao(args: {
   }
 
   // 3) A conferência de sempre: o modelo ainda existe no catálogo deste motor?
-  const escolha = escolherModeloVivo({ desejado, catalogo: nomes })
+  //    Compara pelos DOIS lados convertidos (mesmoModelo) — o mesmo jeito que
+  //    o painel (routes/cascata.ts) já compara — e o `modelo` que volta já é o
+  //    VALOR que aquele CLI aceita, não o rótulo de vitrine do catálogo. DOIS
+  //    dos três catálogos guardam nome de vitrine que o CLI recusa: "Claude
+  //    Opus 5" (o que roda é `claude-opus-5`) e "GPT-5.5" (o que roda é
+  //    `gpt-5.5`). Medido ao vivo — ver services/esforco-por-motor.ts.
+  const escolha = escolherModeloVivo({ runtime: args.runtime, desejado, catalogo: nomes })
   if (escolha.aviso) avisar(escolha.aviso)
 
   return {
-    // 4) E só agora o nome vira o VALOR que aquele CLI aceita. DOIS dos três
-    //    catálogos guardam nome de vitrine que o CLI recusa: "Claude Opus 5"
-    //    (o que roda é `claude-opus-5`) e "GPT-5.5" (o que roda é `gpt-5.5`).
-    //    Medido ao vivo — ver services/esforco-por-motor.ts.
-    modelo: escolha.modelo ? valorDeModeloParaOMotor(args.runtime, escolha.modelo) : undefined,
+    modelo: escolha.modelo,
     esforco: esforcoDoDegrau(args.runtime, esforcoPedido, avisar),
     valeATentativa: escolha.veredito !== 'saiu-do-catalogo',
   }

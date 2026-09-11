@@ -6,6 +6,7 @@ import {
   argumentosDeEsforco,
   modeloComEsforcoNoNome,
   valorDeModeloParaOMotor,
+  mesmoModelo,
 } from './esforco-por-motor.js'
 
 // Os valores abaixo NÃO são de doc nem de memória: cada um saiu de rodar o CLI
@@ -181,5 +182,33 @@ describe('o catálogo do codex tem o MESMO defeito, com outra regra de conversã
 
   test('quem já vem como identificador passa intacto', () => {
     expect(valorDeModeloParaOMotor('codex', 'gpt-5.5')).toBe('gpt-5.5')
+  })
+})
+
+// A esteira (escolherModeloVivo, catalogo-vivo-de-modelos.ts) comparava o
+// desejado cru contra o catálogo cru. O painel (cascata.ts) já comparava os
+// dois lados CONVERTIDOS. Resultado: o painel aceitava "codex-auto-review"
+// contra o catálogo ["GPT-5.5", "Codex Auto Review"], e a esteira recusava o
+// mesmíssimo par — o motor era pulado com "modelo não está no catálogo vivo"
+// mesmo o modelo existindo, só que escrito diferente. `mesmoModelo` é a regra
+// única: usada pelos dois lados agora.
+describe('mesmoModelo — mesma regra de comparação que o painel já usa', () => {
+  test('bate igual, sem conversão nenhuma', () => {
+    expect(mesmoModelo('codex', 'gpt-5.5', 'gpt-5.5')).toBe(true)
+  })
+
+  test('bate pelo VALOR convertido: rótulo de vitrine contra identificador', () => {
+    expect(mesmoModelo('codex', 'gpt-5.5', 'GPT-5.5')).toBe(true)
+  })
+
+  test('não bate quando os valores convertidos são diferentes', () => {
+    expect(mesmoModelo('antigravity', 'Gemini 3.7 Flash (High)', 'Gemini 3.7 Flash (Medium)')).toBe(
+      false
+    )
+  })
+
+  test('regressão: modelo de fato ausente do catálogo continua sem casar', () => {
+    expect(mesmoModelo('codex', 'gpt-5.4-mini', 'GPT-5.5')).toBe(false)
+    expect(mesmoModelo('codex', 'gpt-5.4-mini', 'Codex Auto Review')).toBe(false)
   })
 })

@@ -12,6 +12,7 @@ import {
   COMO_O_MOTOR_EXPRESSA_ESFORCO,
   esforcoValidoNoMotor,
   valorDeModeloParaOMotor,
+  mesmoModelo,
 } from '../services/esforco-por-motor.js'
 import { padraoDoDegrau } from '../services/padrao-do-degrau.js'
 import { nomeDeExibicaoDoModelo, ehLinhaDeModelo } from '../services/catalogo-vivo-de-modelos.js'
@@ -338,14 +339,14 @@ export const cascataRoutes = async (app: FastifyInstance): Promise<void> => {
         const todos = [degrauDoPapel, ...(degrauDoPapel.fallbacks ?? [])]
         for (const d of todos) {
           const catalogo = modelosVivos(catalogos, d.runtime)
-          if (!d.model || catalogo.length === 0) continue
-          // Compara pelos DOIS lados já convertidos: o cliente pode ter
-          // gravado o rótulo ("GPT-5.5") ou o identificador ("gpt-5.5"), e os
-          // dois são a mesma escolha.
-          const alvo = valorDeModeloParaOMotor(d.runtime, d.model)
-          const cabe = catalogo.some(
-            (m) => m === d.model || valorDeModeloParaOMotor(d.runtime, m) === alvo
-          )
+          const modeloDoDegrau = d.model
+          if (!modeloDoDegrau || catalogo.length === 0) continue
+          // Compara pelos DOIS lados já convertidos (mesmoModelo,
+          // esforco-por-motor.ts): o cliente pode ter gravado o rótulo
+          // ("GPT-5.5") ou o identificador ("gpt-5.5"), e os dois são a mesma
+          // escolha. A esteira (escolherModeloVivo, catalogo-vivo-de-modelos.ts)
+          // usa a MESMA regra.
+          const cabe = catalogo.some((m) => mesmoModelo(d.runtime, m, modeloDoDegrau))
           if (!cabe) {
             avisos.push(
               `${papel}: "${d.model}" não está no catálogo vivo do motor "${d.runtime}" ` +
