@@ -1032,3 +1032,164 @@ describe('runSmDelegation: C8 — onWarn é o ÚNICO canal, nunca console.warn',
     expect(console.warn).not.toHaveBeenCalled()
   })
 })
+
+// Fábrica de linha de sessão viva — mesma forma completa usada nos blocos
+// acima, extraída para não repetir os ~20 campos em cada teste novo.
+function linhaViva(over: Partial<LinhaDeSessao>): LinhaDeSessao {
+  return {
+    id: 'sessao',
+    projectId: 'p',
+    issueNumber: 0,
+    sessionName: 's',
+    state: 'IN_PROGRESS',
+    answeredHash: null,
+    pullRequestNumber: null,
+    attempts: 1,
+    nudges: 0,
+    lastProgressAt: null,
+    stateCheckedAt: null,
+    reworkNoticePending: null,
+    reworkNoticeAttempts: 0,
+    pendingSince: null,
+    mergeCommitSha: null,
+    deployState: null,
+    deployCheckedAt: null,
+    mergeFailures: 0,
+    mergeLastFailedAt: null,
+    deployFixKey: null,
+    envLastVerdict: null,
+    closedAt: null,
+    ...over,
+  } as LinhaDeSessao
+}
+
+// DJ-T2: o cap por acordada era o literal `3` fixo, mesmo com folga de vagas
+// e cota diária de sobra — a esteira nunca delegava mais que 3 por ciclo,
+// mesmo com 11 vagas e 95 de cota livres. O cap agora é `options.cap` ou,
+// na ausência, o teto de simultâneas do plano (`tetoConcorrentes`), que
+// `montarOpcoesDeDelegacao` (scheduler.ts) já resolve a partir do plano do
+// projeto (mais o override de `GITORCH_SM_CAP_POR_CICLO`).
+describe('runSmDelegation: cap por acordada não é mais o literal 3 fixo', () => {
+  it('10 candidatas prontas, sem colisão de arquivo, folga de vagas 12 e folga diária 90 → 10 escolhidas (antes, no máximo 3)', async () => {
+    const tarefas = Array.from({ length: 10 }, (_, i) => ({
+      number: 100 + i,
+      labels: ['gitorch:task'],
+      body: '',
+    }))
+    const f = fakeFetch(tarefas)
+    const labeled = (f as unknown as { labeled: Array<{ number: number; labels: string[] }> })
+      .labeled
+    const r = await runSmDelegation({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: f,
+      sessoesVivas: [],
+      // Sem `cap` explícito: o fallback precisa usar `tetoConcorrentes`.
+      tetoConcorrentes: 12, // folga de vagas = 12 (sem sessão viva ocupando)
+      tetoDiario: 90, // folga diária = 90 (delegadasHoje ausente = 0)
+    })
+    expect(r.delegated).toHaveLength(10)
+    expect(labeled.filter((l) => l.labels.includes('jules'))).toHaveLength(10)
+  })
+
+  it('folga diária 2 → no máximo 2 delegadas, mesmo com vaga e candidatas de sobra', async () => {
+    const tarefas = Array.from({ length: 10 }, (_, i) => ({
+      number: 200 + i,
+      labels: ['gitorch:task'],
+      body: '',
+    }))
+    const f = fakeFetch(tarefas)
+    const r = await runSmDelegation({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: f,
+      sessoesVivas: [],
+      tetoConcorrentes: 12,
+      tetoDiario: 2,
+      delegadasHoje: 0,
+    })
+    expect(r.delegated).toHaveLength(2)
+  })
+
+  it('cap explícito (ex.: override de GITORCH_SM_CAP_POR_CICLO=4) prevalece sobre o teto do plano', async () => {
+    const tarefas = Array.from({ length: 10 }, (_, i) => ({
+      number: 300 + i,
+      labels: ['gitorch:task'],
+      body: '',
+    }))
+    const f = fakeFetch(tarefas)
+    const r = await runSmDelegation({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: f,
+      sessoesVivas: [],
+      tetoConcorrentes: 12,
+      tetoDiario: 90,
+      cap: 4,
+    })
+    expect(r.delegated).toHaveLength(4)
+  })
+})
+
+// DJ-T2: reserva de arquivo só para quem AINDA está trabalhando. Uma sessão
+// viva no banco (closedAt null) mas já TERMINAL no Jules (COMPLETED, por
+// exemplo, esperando o julgamento do PR) não ocupa vaga nem está mexendo em
+// arquivo nenhum — reservá-la travava candidatas livres pelo mesmo caminho.
+describe('runSmDelegation: reserva de arquivo só de sessão que ainda ocupa vaga', () => {
+  it('sessão viva em COMPLETED declarando o arquivo NÃO barra candidata com o mesmo arquivo; a issue da própria sessão não é candidata', async () => {
+    const f = fakeFetch([
+      {
+        number: 400,
+        labels: ['gitorch:task'],
+        body: '## Related Files\nbackend/src/app.ts',
+      },
+      {
+        number: 401,
+        labels: ['gitorch:task'],
+        body: '## Related Files\nbackend/src/app.ts',
+      },
+    ])
+    const labeled = (f as unknown as { labeled: Array<{ number: number; labels: string[] }> })
+      .labeled
+    const r = await runSmDelegation({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: f,
+      sessoesVivas: [linhaViva({ issueNumber: 400, state: 'COMPLETED' })],
+    })
+    // #400 tem sessão viva → nunca é candidata, mesmo estando pronta.
+    expect(r.delegated).not.toContain(400)
+    // #401 declara o MESMO arquivo, mas a sessão de #400 já é terminal no
+    // Jules — não reserva nada, então #401 é livre para ser delegada.
+    expect(r.delegated).toEqual([401])
+    expect(labeled.filter((l) => l.labels.includes('jules')).map((l) => l.number)).toEqual([401])
+  })
+
+  it('sessão viva em IN_PROGRESS declarando o arquivo BARRA candidata com o mesmo arquivo', async () => {
+    const f = fakeFetch([
+      {
+        number: 410,
+        labels: ['gitorch:task'],
+        body: '## Related Files\nbackend/src/app.ts',
+      },
+      {
+        number: 411,
+        labels: ['gitorch:task'],
+        body: '## Related Files\nbackend/src/app.ts',
+      },
+    ])
+    const labeled = (f as unknown as { labeled: Array<{ number: number; labels: string[] }> })
+      .labeled
+    const r = await runSmDelegation({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: f,
+      sessoesVivas: [linhaViva({ issueNumber: 410, state: 'IN_PROGRESS' })],
+    })
+    expect(r.delegated).not.toContain(410)
+    // #411 declara o mesmo arquivo que #410 (ainda em trabalho de verdade no
+    // Jules) — a colisão barra a delegação neste ciclo.
+    expect(r.delegated).toEqual([])
+    expect(labeled.filter((l) => l.labels.includes('jules'))).toEqual([])
+  })
+})

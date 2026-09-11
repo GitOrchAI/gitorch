@@ -94,7 +94,7 @@ import {
 } from '../services/vez-pendente.js'
 import { criarRegistroDeMotorMorto } from '../services/motor-em-pausa.js'
 import { criarRegistroDeDescanso, type OrigemDoDisparo } from '../services/descanso-apos-vazia.js'
-import { tetosDoPlanoDoDev } from '../services/plano-do-dev.js'
+import { tetosDoPlanoDoDev, capPorCicloDoAmbiente } from '../services/plano-do-dev.js'
 import { ESTADOS_TERMINAIS } from '../services/estados-de-sessao.js'
 import { executarCicloTerminal } from '../services/executar-ciclo-terminal.js'
 import {
@@ -869,6 +869,12 @@ export function montarOpcoesDeDelegacao(args: {
    * a redelegação.
    */
   entregasDoProjeto: Array<{ issueNumber: number; mergeCommitSha?: string | null }>
+  /**
+   * Canal de aviso para o override de ambiente inválido
+   * (`GITORCH_SM_CAP_POR_CICLO`). Ausente: o override inválido é ignorado em
+   * silêncio (compatibilidade com quem ainda não passa este canal).
+   */
+  onWarn?: (mensagem: string) => void
 }): {
   sessoesVivas: LinhaDeSessao[]
   delegadasHoje: number
@@ -877,14 +883,21 @@ export function montarOpcoesDeDelegacao(args: {
   entregasDoProjeto: Array<{ issueNumber: number; mergeCommitSha?: string | null }>
   tetoConcorrentes: number
   tetoDiario: number
+  cap: number
 } {
+  const tetos = tetosDoPlanoDoDev(args.devPlan)
   return {
     sessoesVivas: args.sessoesVivas,
     delegadasHoje: args.delegadasHoje,
     vivasNaConta: args.vivasNaConta,
     ocupamVagaNaConta: args.ocupamVagaNaConta,
     entregasDoProjeto: args.entregasDoProjeto,
-    ...tetosDoPlanoDoDev(args.devPlan),
+    ...tetos,
+    // Cap por acordada: o teto de SIMULTÂNEAS do plano por padrão (pro=15,
+    // não o literal `3` fixo de antes), com override manual opcional por
+    // `GITORCH_SM_CAP_POR_CICLO`. Env inválida (não inteiro positivo) é
+    // ignorada com aviso — nunca derruba a esteira nem usa lixo como teto.
+    cap: capPorCicloDoAmbiente(process.env, args.onWarn) ?? tetos.tetoConcorrentes,
   }
 }
 
@@ -3442,6 +3455,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             // exportada `montarOpcoesDeDelegacao` (topo do arquivo) — só as
             // leituras (Prisma) ficam aqui, dentro da closure não exportada.
             ...montarOpcoesDeDelegacao({
+              onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
               devPlan: project.devPlan,
               // A fila real: issue com linha viva já está sendo trabalhada;
               // sem linha viva está por delegar, mesmo que já tenha sido
