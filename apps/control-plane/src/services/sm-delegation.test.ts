@@ -895,7 +895,7 @@ describe('runSmDelegation: issue com PR aberto do dev não volta para a fila (L4
 // não o wrapper deste arquivo) para provar o contrato de verdade.
 describe('runSmDelegation: C8 — onWarn é o ÚNICO canal, nunca console.warn', () => {
   it('comentarCoberturaDeIncidente falha → avisa por onWarn, nunca console.warn', async () => {
-    ;(console.warn as ReturnType<typeof vi.fn>).mockClear()
+    vi.clearAllMocks()
     const impl = fakeFetch([{ number: 200, labels: ['gitorch:task'], body: '' }])
     const avisos: string[] = []
     await runSmDelegationReal({
@@ -915,7 +915,7 @@ describe('runSmDelegation: C8 — onWarn é o ÚNICO canal, nunca console.warn',
   })
 
   it('sinalizarPossivelmenteResolvida falha → avisa por onWarn, nunca console.warn', async () => {
-    ;(console.warn as ReturnType<typeof vi.fn>).mockClear()
+    vi.clearAllMocks()
     const impl = fakeFetch([{ number: 46, labels: ['gitorch:task'], body: '' }])
     const avisos: string[] = []
     await runSmDelegationReal({
@@ -938,7 +938,7 @@ describe('runSmDelegation: C8 — onWarn é o ÚNICO canal, nunca console.warn',
   })
 
   it('issuesComPrAbertoDoDev falha (GitHub fora do ar) → avisa por onWarn, segue sem o filtro', async () => {
-    ;(console.warn as ReturnType<typeof vi.fn>).mockClear()
+    vi.clearAllMocks()
     const task = { number: 1, labels: ['gitorch:task'], body: 'sem bloqueio' }
     const semRedeParaPulls: typeof fetch = (async (
       url: Parameters<typeof fetch>[0],
@@ -990,7 +990,7 @@ describe('runSmDelegation: C8 — onWarn é o ÚNICO canal, nunca console.warn',
   })
 
   it('issue(s) com PR aberto do dev aguardando retomada → avisa por onWarn, nunca console.warn', async () => {
-    ;(console.warn as ReturnType<typeof vi.fn>).mockClear()
+    vi.clearAllMocks()
     const task = { number: 3884, labels: ['gitorch:task'], body: 'sem bloqueio' }
     const impl = fakeFetch([task], [], [3917])
     const avisos: string[] = []
