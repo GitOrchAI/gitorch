@@ -103,11 +103,14 @@ export interface ProcessarAchadosDeps {
    */
   criarProposta: (achado: AchadoDeInfra) => Promise<number>
   /**
-   * D63/L4-T2 (D71): pergunta ao dono o que fazer com a automação — 4 opções
-   * (deletar/reajustar/manter/escrever), dedupada por projeto+identidade.
-   * Chamada DEPOIS de `criarProposta`, com o número que ela devolveu.
+   * D76 (11/09, DJ-T6): substitui o antigo "pergunta ao dono" — nunca mais
+   * cria `agent_question` para uma automação falhando. Registra o achado na
+   * timeline de auditoria do painel (`GET /api/v1/painel/timeline`); a ação
+   * padrão é manter a automação como está até o RA/PO trazerem a decisão no
+   * planejamento. Chamada DEPOIS de `criarProposta`, com o número que ela
+   * devolveu.
    */
-  perguntarAoDono: (achado: AchadoDeInfra, numeroDaProposta: number) => Promise<void>
+  registrarAchadoNoPainel: (achado: AchadoDeInfra, numeroDaProposta: number) => Promise<void>
   /** Telegram ao DONO (só para achados de encanamento do produto). */
   avisarDono: (texto: string) => Promise<void>
   /** upsert em `infra_incidents` por (projectId, identidadeEstavel). */
@@ -188,7 +191,7 @@ export async function processarAchadosDeInfra(
       processados += 1
       try {
         const numero = await deps.criarProposta(achado)
-        await deps.perguntarAoDono(achado, numero)
+        await deps.registrarAchadoNoPainel(achado, numero)
         await deps.registrarIncidente({
           projectId: deps.projectId,
           classe: achado.classe,

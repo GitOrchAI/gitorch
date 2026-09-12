@@ -64,25 +64,6 @@ export function parseDedupKeyDeAutomacao(
   return { repo, identidade }
 }
 
-function textoDaPerguntaDeAutomacao(
-  nome: string,
-  arquivo: string,
-  gatilho: string,
-  desde: string
-): string {
-  return `O workflow "${nome}" (${arquivo}, gatilho ${gatilho}) falha desde ${desde}. O que fazer?`
-}
-
-/** Só para HUMANO ler no Telegram/painel — nunca reparseado de volta (ver
- *  A2: `processarRespostaDeAutomacao` resolve pela `dedupKey`, não daqui). */
-function contextoDaPerguntaDeAutomacao(args: {
-  resumo: string
-  numeroProposta: number
-  arquivo: string
-}): string {
-  return `${args.resumo} · proposta #${args.numeroProposta} · arquivo:${args.arquivo}`
-}
-
 export interface PerguntarAoDonoArgs {
   userId: string
   projectId: string
@@ -97,39 +78,66 @@ export interface PerguntarAoDonoArgs {
   numeroProposta: number
 }
 
-/** Só o que `perguntarAoDono` precisa de `AgentQuestionService.ask`. */
-export interface AgentQuestionAsker {
-  ask: (
-    userId: string,
-    projectId: string,
-    input: {
-      text: string
-      context?: string
-      options?: OpcaoDeDecisao[]
-      dedupKey?: string
-    }
-  ) => Promise<unknown>
+/**
+ * D76 (11/09, decisão do dono — "o GitOrch é o Scrum"): só o PO fala com o
+ * dono, e só (a) no planejamento ou (b) quando dev+PO+RA já validaram uma
+ * mudança de cenário. Um achado de automação falhando NÃO é nenhum dos dois
+ * — é fato operacional. ATÉ DJ-T6, esta decisão virava `agent_question`
+ * (`perguntarAoDono`/`AgentQuestionAsker`, abaixo, REMOVIDOS nesta task):
+ * a automação ficava esperando um clique que, por D76, nunca deveria ter
+ * sido pedido a ele.
+ *
+ * Substitui pelo registro na MESMA linha do tempo de auditoria que o painel
+ * já lê (`GET /api/v1/painel/timeline`, `type: 'audit'`, `routes/painel.ts`)
+ * — o dono VÊ o fato quando quiser olhar, sem receber pergunta nenhuma. A
+ * AÇÃO PADRÃO é "manter como está": nenhuma escrita no repositório do
+ * cliente acontece sozinha (nem deletar workflow, nem reajustar/virar
+ * tarefa) — a proposta (`services/proposta.ts`) segue aberta no GitHub como
+ * já ficava, e cabe ao RA/PO trazer a decisão no próximo planejamento (letra
+ * (a) de D76), não ao scheduler decidir por conta própria.
+ */
+export function textoDoRegistroDeAutomacaoNoPainel(args: {
+  nome: string
+  arquivo: string
+  gatilho: string
+  desde: string
+  numeroProposta: number
+  repo: string
+}): string {
+  return (
+    `D76: automação "${args.nome}" (${args.arquivo}, gatilho ${args.gatilho}) de ${args.repo} ` +
+    `falha desde ${args.desde} — proposta #${args.numeroProposta}. Sem pergunta ao dono (só o PO ` +
+    'fala com ele, no planejamento). Ação padrão: mantém como está; o RA/PO trazem a decisão no ' +
+    'próximo planejamento.'
+  )
+}
+
+/** Só o que `registrarAchadoDeAutomacaoNoPainel` precisa para escrever na timeline. */
+export interface RegistradorDoPainel {
+  registrarEventoDoPainel: (texto: string) => Promise<void>
 }
 
 /**
- * D71: pergunta ao dono (3 opções objetivas + "Vou escrever"), dedupada por
- * `automacao:<repo>:<identidade>` — a mesma automação nunca pergunta duas
- * vezes (o dono já respondeu uma vez, a resposta vale).
+ * D76: registra o achado de automação na timeline do painel — NUNCA cria
+ * `agent_question`, NUNCA escreve no repositório do cliente. Idempotente por
+ * natureza de uso: quem chama (scheduler.ts) só invoca uma vez por proposta
+ * nova (a mesma disciplina de dedupe que `criarProposta`/`registrarIncidente`
+ * já aplicam antes desta chamada).
  */
-export async function perguntarAoDono(
+export async function registrarAchadoDeAutomacaoNoPainel(
   args: PerguntarAoDonoArgs,
-  deps: { agentQuestion: AgentQuestionAsker }
+  deps: RegistradorDoPainel
 ): Promise<void> {
-  await deps.agentQuestion.ask(args.userId, args.projectId, {
-    text: textoDaPerguntaDeAutomacao(args.nome, args.arquivo, args.gatilho, args.desde),
-    context: contextoDaPerguntaDeAutomacao({
-      resumo: args.resumo,
-      numeroProposta: args.numeroProposta,
+  await deps.registrarEventoDoPainel(
+    textoDoRegistroDeAutomacaoNoPainel({
+      nome: args.nome,
       arquivo: args.arquivo,
-    }),
-    options: OPCOES_DE_DECISAO_DE_AUTOMACAO,
-    dedupKey: dedupKeyDeAutomacao(args.repo, args.identidade),
-  })
+      gatilho: args.gatilho,
+      desde: args.desde,
+      numeroProposta: args.numeroProposta,
+      repo: args.repo,
+    })
+  )
 }
 
 // --- Resposta vira ação ----------------------------------------------------

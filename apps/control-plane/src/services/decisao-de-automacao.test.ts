@@ -1,15 +1,14 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
-  perguntarAoDono,
   dedupKeyDeAutomacao,
-  OPCOES_DE_DECISAO_DE_AUTOMACAO,
   parseDedupKeyDeAutomacao,
   processarRespostaDeAutomacao,
   caminhoDeWorkflowValido,
   sanitizarRespostaLivre,
+  registrarAchadoDeAutomacaoNoPainel,
+  textoDoRegistroDeAutomacaoNoPainel,
 } from './decisao-de-automacao.js'
 import { GithubExecutionError } from './github-errors.js'
-import { FREE_TEXT_OPTION_VALUE } from './telegram-bot.js'
 import { marcador } from './marcador-de-issue.js'
 
 describe('dedupKeyDeAutomacao / parseDedupKeyDeAutomacao', () => {
@@ -84,48 +83,48 @@ describe('sanitizarRespostaLivre', () => {
   })
 })
 
-describe('perguntarAoDono', () => {
-  it('D71: pergunta em PT-BR com EXATAMENTE 4 opções (deletar/reajustar/manter/escrever) e o dedupKey certo', async () => {
-    const ask = vi.fn(async () => ({ deduped: false, question: {} }) as never)
-    await perguntarAoDono(
-      {
-        userId: 'user-1',
-        projectId: 'proj-1',
-        repo: 'acme/api',
-        identidade: 'wf:40',
-        nome: 'Auto Merge Checker',
-        arquivo: '.github/workflows/auto-merge-checker.yml',
-        gatilho: 'push',
-        desde: '2026-08-20',
-        resumo: 'dispara em "push"',
-        numeroProposta: 901,
-      },
-      { agentQuestion: { ask } }
-    )
+// DJ-T6 (D76, 11/09): a automação NUNCA MAIS pergunta ao dono — só o PO fala
+// com ele, e só no planejamento. `registrarAchadoDeAutomacaoNoPainel`
+// substitui o antigo `perguntarAoDono` (removido: criava `agent_question`
+// via `AgentQuestionService.ask`).
+describe('registrarAchadoDeAutomacaoNoPainel', () => {
+  const ARGS = {
+    userId: 'user-1',
+    projectId: 'proj-1',
+    repo: 'acme/api',
+    identidade: 'wf:40',
+    nome: 'Auto Merge Checker',
+    arquivo: '.github/workflows/auto-merge-checker.yml',
+    gatilho: 'push',
+    desde: '2026-08-20',
+    resumo: 'dispara em "push"',
+    numeroProposta: 901,
+  }
 
-    expect(ask).toHaveBeenCalledOnce()
-    const [userId, projectId, input] = ask.mock.calls[0] as unknown as [
-      string,
-      string,
-      Record<string, unknown>,
-    ]
-    expect(userId).toBe('user-1')
-    expect(projectId).toBe('proj-1')
-    expect(input['options']).toEqual(OPCOES_DE_DECISAO_DE_AUTOMACAO)
-    expect(input['options']).toEqual([
-      { label: 'Deletar o workflow', value: 'deletar' },
-      { label: 'Reajustar (vira tarefa)', value: 'reajustar' },
-      { label: 'Manter como está', value: 'manter' },
-      // L4-T18 (item 3, D71): o botão de escrever usa o SENTINEL de
-      // `buildFreeTextOption` (o mesmo padrão de `duvida-dev:`/
-      // `retomada-travada:`) — nunca mais um valor literal 'escrever', que
-      // clicado direto GRAVAVA a string "escrever" como se fosse a decisão
-      // do dono, em vez de abrir o "digite sua resposta".
-      { label: 'Vou escrever', value: FREE_TEXT_OPTION_VALUE },
-    ])
-    expect(input['dedupKey']).toBe('automacao:acme/api:wf:40')
-    expect(typeof input['text']).toBe('string')
-    expect(input['text'] as string).toMatch(/Auto Merge Checker/)
+  it('NUNCA chama agentQuestion.ask — só registra um evento na timeline do painel', async () => {
+    const registrarEventoDoPainel = vi.fn(async (_texto: string) => undefined)
+    await registrarAchadoDeAutomacaoNoPainel(ARGS, { registrarEventoDoPainel })
+
+    expect(registrarEventoDoPainel).toHaveBeenCalledOnce()
+    const [texto] = registrarEventoDoPainel.mock.calls[0]!
+    expect(texto).toMatch(/Auto Merge Checker/)
+    expect(texto).toMatch(/#901/)
+    expect(texto).toMatch(/D76/)
+    expect(texto).toMatch(/[Ss]em pergunta ao dono/)
+  })
+
+  it('textoDoRegistroDeAutomacaoNoPainel: cita a ação padrão (mantém como está)', () => {
+    const texto = textoDoRegistroDeAutomacaoNoPainel({
+      nome: ARGS.nome,
+      arquivo: ARGS.arquivo,
+      gatilho: ARGS.gatilho,
+      desde: ARGS.desde,
+      numeroProposta: ARGS.numeroProposta,
+      repo: ARGS.repo,
+    })
+    expect(texto).toMatch(/mantém como está/)
+    expect(texto).toMatch(/RA\/PO/)
+    expect(texto).not.toMatch(/deletar|reajustar/i)
   })
 })
 
