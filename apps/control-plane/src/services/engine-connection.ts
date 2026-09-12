@@ -5,8 +5,8 @@ import { randomUUID } from 'node:crypto'
 import type { Prisma, PrismaClient } from '@prisma/client'
 import { decryptCredential, encryptCredential } from '../lib/credential-crypto.js'
 import { archivePaths, readArchiveEntry, restoreDirectory } from '../lib/credential-archive.js'
-import { MODEL_DISCOVERERS } from './model-catalog.js'
-import { QUOTA_READERS } from './quota-reader.js'
+import { MODEL_DISCOVERERS, makeClaudeModelDiscoverer } from './model-catalog.js'
+import { QUOTA_READERS, makeClaudeQuotaReader } from './quota-reader.js'
 import { carimboDaLeitura, lerCotaDoMotor, percentualAindaVale } from './leitura-de-cota.js'
 import { checkLiveness, type LivenessResult } from './engine-liveness.js'
 import { validatePastedCredential } from './credential-validator.js'
@@ -365,6 +365,36 @@ export class EngineConnectionService {
   }
 
   /**
+   * Lê o valor de uma credencial `credentialKind === 'env'` (ex.: o token do
+   * Claude, `.gitorch/env/CLAUDE_CODE_OAUTH_TOKEN`) DIRETO do blob cifrado em
+   * memória — mesmo atalho que `getRawGithubToken` já usa (`readArchiveEntry`,
+   * ver credential-archive.ts): evita o ciclo mkdir/writeFile/readFile/rm que
+   * materializar um HOME inteiro exige quando o objetivo real é só ler um
+   * valor. É "a mesma fonte que o resto usa" — o mesmo blob decifrado que
+   * materializeToHome restaura em disco — sem precisar do arquivo no meio.
+   *
+   * Devolve `null` para qualquer coisa que não seja uma credencial 'env'
+   * conectada e dentro da validade — quem chama decide o fallback honesto.
+   * Nunca loga o valor.
+   */
+  private readEnvCredentialValue(
+    record: {
+      encryptedCredential: string | null
+      status: string
+      credentialKind: string | null
+      envVarName: string | null
+      expiresAt: Date | null
+    } | null
+  ): string | null {
+    if (!record?.encryptedCredential || record.status !== 'connected') return null
+    if (record.credentialKind !== 'env' || !record.envVarName) return null
+    if (record.expiresAt && record.expiresAt.getTime() < Date.now()) return null
+    const blob = decryptCredential(record.encryptedCredential)
+    const token = readArchiveEntry(blob, path.join('.gitorch', 'env', record.envVarName))
+    return token?.trim() || null
+  }
+
+  /**
    * Os MOTORES conectados do usuário. A linha 'github' mora nesta mesma tabela
    * (o cofre cifrado é reusado de propósito), mas github NÃO é motor: não tem
    * liveness e nasce 'connected' no callback do OAuth. Listá-la junto dos
@@ -408,7 +438,21 @@ export class EngineConnectionService {
         const materialized = await this.materializeToHome(userId, runtime, home)
         if (!materialized) return false
 
-        const cota = await lerCotaDoMotor({ runtime, ler: readQuota, home })
+        // Claude com credencial 'env': lê o token direto do blob cifrado em
+        // memória (mesma fonte que materializeToHome usa para escrever o
+        // arquivo), sem depender do arquivo materializado no HOME temporário.
+        const record =
+          runtime === 'claude'
+            ? await this.prisma.engineConnection
+                .findUnique({ where: { userId_runtime: { userId, runtime } } })
+                .catch(() => null)
+            : null
+        const readQuotaEfetivo =
+          runtime === 'claude' && record?.credentialKind === 'env'
+            ? makeClaudeQuotaReader(fetch, async () => this.readEnvCredentialValue(record))
+            : readQuota
+
+        const cota = await lerCotaDoMotor({ runtime, ler: readQuotaEfetivo, home })
         if (cota.motivo) console.warn(`[engine-connection] ${cota.motivo}`)
         const quota = cota.leitura
 
@@ -497,7 +541,15 @@ export class EngineConnectionService {
         const antes = await this.prisma.engineConnection
           .findUnique({
             where: { userId_runtime: { userId, runtime } },
-            select: { models: true, modelsUnavailable: true },
+            select: {
+              models: true,
+              modelsUnavailable: true,
+              credentialKind: true,
+              envVarName: true,
+              encryptedCredential: true,
+              status: true,
+              expiresAt: true,
+            },
           })
           .catch(() => null)
         const catalogoAnterior = Array.isArray(antes?.models) ? (antes.models as string[]) : []
@@ -505,7 +557,15 @@ export class EngineConnectionService {
           ? (antes.modelsUnavailable as unknown as ModeloIndisponivel[])
           : []
 
-        const models = await discover(home)
+        // Claude com credencial 'env': o mesmo atalho de refreshQuota — lê o
+        // token direto do blob cifrado em memória, sem depender do arquivo
+        // que acabou de ser materializado no HOME temporário.
+        const discoverEfetivo =
+          runtime === 'claude' && antes?.credentialKind === 'env'
+            ? makeClaudeModelDiscoverer(fetch, async () => this.readEnvCredentialValue(antes))
+            : discover
+
+        const models = await discoverEfetivo(home)
         // FAIL-CLOSED CONSCIENTE: descoberta vazia NÃO sobrescreve um catálogo
         // bom anterior, não marca ninguém como sumido e não finge que
         // "atualizou". Uma lista vazia por erro de rede seria o mesmo "default

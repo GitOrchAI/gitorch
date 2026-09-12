@@ -46,6 +46,7 @@ import {
   PAPEL_NA_TELA,
   acharMotor,
   avisosDoCarregamento,
+  avisoDoCatalogo,
   esforcoNaTela,
   mover,
   mudou,
@@ -154,6 +155,7 @@ function Degrau({
   const motor = acharMotor(motores, degrau.runtime)
   const modelos = opcoesDeModelo(motor, degrau.model)
   const esforco = esforcoNaTela(motor)
+  const avisoCatalogo = avisoDoCatalogo(motor)
   const posicao = indice === 0 ? 'Primeiro a tentar' : `Reserva ${indice}`
   const id = `${papel}-${indice}`
 
@@ -232,11 +234,7 @@ function Degrau({
             className="pn-field"
             value={degrau.model}
             disabled={modelos.length === 0}
-            title={
-              modelos.length === 0
-                ? 'Ainda não li o catálogo de modelos deste motor. Enquanto isso, o degrau roda no modelo padrão dele.'
-                : undefined
-            }
+            title={avisoCatalogo ?? undefined}
             onChange={(e) => aoMudar(trocarModelo(degrau, e.target.value))}
           >
             <option value="">Padrão do motor</option>
@@ -246,11 +244,11 @@ function Degrau({
               </option>
             ))}
           </select>
-          {modelos.length === 0 && (
-            <span className="pn-casc-nota">
-              ainda não li o catálogo deste motor — este degrau roda no modelo padrão dele
-            </span>
-          )}
+          {/* O motivo fica VISÍVEL, não só no title (mesma lei do esforço
+              logo abaixo): quando a coleta falhou por um motivo real, a tela
+              diz qual — em vez de fingir lista viva ou esconder atrás da
+              mesma nota genérica de sempre (D77). */}
+          {avisoCatalogo && <span className="pn-casc-nota">{avisoCatalogo}</span>}
         </span>
 
         <span>

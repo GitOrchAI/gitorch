@@ -3,7 +3,6 @@ import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import {
-  knownClaudeModels,
   makeAntigravityDiscoverer,
   makeCodexDiscoverer,
   makeClaudeModelDiscoverer,
@@ -173,35 +172,15 @@ describe('model-catalog', () => {
     expect(await discover('/tmp/gitorch-inexistente-xyz')).toEqual([])
   })
 
-  // Renomeado de `discoverClaudeModels` (20/07): o nome antigo mentia — a CLI
-  // do Claude não tem NENHUM comando de listagem (verificado), então isto
-  // nunca "descobre" nada; é a lista CONHECIDA de modelos reais disponíveis
-  // hoje, a melhor fonte possível (não é dívida técnica).
-  describe('knownClaudeModels', () => {
-    const original = process.env['GITORCH_CLAUDE_MODELS']
-    beforeEach(() => delete process.env['GITORCH_CLAUDE_MODELS'])
-    afterEach(() => {
-      if (original === undefined) delete process.env['GITORCH_CLAUDE_MODELS']
-      else process.env['GITORCH_CLAUDE_MODELS'] = original
-    })
-
-    test('usa a lista conhecida por padrão', async () => {
-      const models = await knownClaudeModels('/tmp')
-      expect(models).toContain('claude-fable-5')
-    })
-
-    test('sobrescreve por ambiente', async () => {
-      process.env['GITORCH_CLAUDE_MODELS'] = 'model-a, model-b'
-      expect(await knownClaudeModels('/tmp')).toEqual(['model-a', 'model-b'])
-    })
-  })
-
-  // Substitui a lista hardcoded como fonte PRIMÁRIA: `GET /v1/models` da API
-  // pública da Anthropic, autenticado com o token que `claude setup-token`
-  // gera (o mesmo do homeDir — ver claude-token.ts). Provado ao vivo 21/07
-  // (docs/operations/engine-collection-real-steps.md): 10 modelos reais.
+  // `GET /v1/models` da API pública da Anthropic, autenticado com o token que
+  // `claude setup-token` gera (o mesmo do homeDir — ver claude-token.ts).
   // `fetch` é injetado (nunca bate rede real no teste); `readToken` também,
   // pra não depender de um homeDir de verdade.
+  //
+  // SEM lista fixa de reserva: uma falha de leitura real tem que LANÇAR, não
+  // devolver uma lista hardcode com cara de catálogo vivo — foi essa troca
+  // silenciosa que fazia o chamador (refreshModels) gravar a lista fixa como
+  // se fosse coleta bem-sucedida, sobrescrevendo um catálogo real anterior.
   describe('makeClaudeModelDiscoverer (API real, fetch/token fake)', () => {
     const original = process.env['GITORCH_CLAUDE_MODELS']
     beforeEach(() => delete process.env['GITORCH_CLAUDE_MODELS'])
@@ -210,11 +189,10 @@ describe('model-catalog', () => {
       else process.env['GITORCH_CLAUDE_MODELS'] = original
     })
 
-    test('sem token no homeDir -> cai na lista conhecida, nunca chama fetch', async () => {
+    test('sem token no homeDir -> lança erro explícito, nunca chama fetch, nunca inventa lista', async () => {
       const fetchSpy = vi.fn()
       const discover = makeClaudeModelDiscoverer(fetchSpy, async () => null)
-      const models = await discover('/tmp/gitorch-sem-token-xyz')
-      expect(models).toContain('claude-fable-5')
+      await expect(discover('/tmp/gitorch-sem-token-xyz')).rejects.toThrow('sem token do Claude')
       expect(fetchSpy).not.toHaveBeenCalled()
     })
 
@@ -244,25 +222,22 @@ describe('model-catalog', () => {
       })
     })
 
-    test('resposta não-ok (401/500) -> cai na lista conhecida, nunca lança', async () => {
+    test('resposta não-ok (401/500) -> lança com o status, nunca inventa lista', async () => {
       const fetchSpy = vi.fn().mockResolvedValue({ ok: false, status: 401 })
       const discover = makeClaudeModelDiscoverer(fetchSpy, async () => 'sk-ant-oat01-fake')
-      const models = await discover('/home/x')
-      expect(models).toContain('claude-fable-5')
+      await expect(discover('/home/x')).rejects.toThrow('401')
     })
 
-    test('fetch rejeita (rede fora/timeout) -> cai na lista conhecida, nunca lança', async () => {
+    test('fetch rejeita (rede fora/timeout) -> lança com o motivo real, nunca inventa lista', async () => {
       const fetchSpy = vi.fn().mockRejectedValue(new Error('network down'))
       const discover = makeClaudeModelDiscoverer(fetchSpy, async () => 'sk-ant-oat01-fake')
-      const models = await discover('/home/x')
-      expect(models).toContain('claude-fable-5')
+      await expect(discover('/home/x')).rejects.toThrow('network down')
     })
 
-    test('JSON sem data / lista vazia -> cai na lista conhecida', async () => {
+    test('JSON sem data / lista vazia -> lança, nunca inventa lista', async () => {
       const fetchSpy = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({}) })
       const discover = makeClaudeModelDiscoverer(fetchSpy, async () => 'sk-ant-oat01-fake')
-      const models = await discover('/home/x')
-      expect(models).toContain('claude-fable-5')
+      await expect(discover('/home/x')).rejects.toThrow('vazio')
     })
 
     test('GITORCH_CLAUDE_MODELS vence tudo — nunca lê token nem chama fetch', async () => {
@@ -273,6 +248,18 @@ describe('model-catalog', () => {
       expect(await discover('/home/x')).toEqual(['model-a', 'model-b'])
       expect(fetchSpy).not.toHaveBeenCalled()
       expect(readToken).not.toHaveBeenCalled()
+    })
+
+    test('erro nunca carrega o valor do token na mensagem', async () => {
+      const fetchSpy = vi.fn().mockRejectedValue(new Error('network down'))
+      const discover = makeClaudeModelDiscoverer(fetchSpy, async () => 'sk-ant-oat01-SEGREDO')
+      let mensagem = ''
+      try {
+        await discover('/home/x')
+      } catch (err) {
+        mensagem = err instanceof Error ? err.message : String(err)
+      }
+      expect(mensagem).not.toContain('SEGREDO')
     })
   })
 })

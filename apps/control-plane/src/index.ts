@@ -10,6 +10,7 @@ import {
   notificadorDaInstancia,
   type PrismaParaConferencia,
 } from './services/banco-atrasado.js'
+import { registrarContratoDeMotoresNoBoot } from './services/contrato-de-motor.js'
 
 export async function buildApp(): Promise<FastifyInstance> {
   const env = loadEnv()
@@ -45,6 +46,14 @@ export async function buildApp(): Promise<FastifyInstance> {
       customOptions: { strict: true, coerceTypes: 'array' },
     },
   })
+
+  // Contrato de motor, no boot: um runtime registrado sem leitor de cota ou
+  // sem descobridor de catálogo nunca aparece cota/modelo nenhum, e sem isto
+  // a única forma de perceber era investigar o banco vazio sem nenhuma pista
+  // de por quê (mesma classe de defeito já medida em produção, ver
+  // services/leitura-de-cota.ts). Nunca derruba o boot: registra e marca o
+  // motor quebrado como inutilizável.
+  registrarContratoDeMotoresNoBoot(app.log)
 
   await registerPlugins(app, env)
   await registerRoutes(app)
