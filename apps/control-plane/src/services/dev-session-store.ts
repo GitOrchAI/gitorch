@@ -502,9 +502,9 @@ export async function marcarAnaliseFeitaDaIssue(deps: {
  * herda esse valor para a linha seguinte. Resultado: depois da 1ª análise da
  * vida da issue, `analysisDoneAt` nunca mais voltava a `null` — o freio
  * funcionava uma vez só, para sempre, não importa quantas reprovações novas
- * viessem depois. Medido ao vivo na issue #3787 (patinhas-3d-crafts): análise
- * em 30/08, e mais 5 reprovações depois disso sem o freio reacender uma vez
- * (requeue_count foi de 2 a 6, 11 sessões em 14 dias).
+ * viessem depois. Medido ao vivo: uma tarefa de um cliente acumulou 11
+ * sessões porque a marca de análise nunca voltava a nulo, mesmo com novas
+ * reprovações se empilhando depois da análise.
  *
  * O conserto larga o contador que nunca reseta e CONTA de novo: reprovações
  * com `closedAt` POSTERIOR à análise mais recente da própria issue (nenhuma

@@ -542,13 +542,11 @@ describe('registrarCadenciaDePublicacao', () => {
 // seguinte, então depois da 1ª análise o campo nunca mais volta a `null` e
 // `issuesComAnalisePendente` (que exigia `analysisDoneAt IS NULL`) parava de
 // enxergar a issue para sempre — mesmo com reprovações novas se acumulando.
-// Medido ao vivo na issue #3787 do projeto patinhas-3d-crafts
-// (projectId cmshvhkqu00bqp5vykx1peqf7): análise rodou em 30/08 18:10 e a
-// issue seguiu sendo reprovada (pr-rejeitado-sem-retomada, dev-concluiu-sem-
-// entrega) até requeue_count 6 — 5 reprovações DEPOIS da análise sem o freio
-// reacender uma vez sequer, 11 sessões em 14 dias.
+// Medido ao vivo: uma tarefa de um cliente acumulou 11 sessões porque a marca
+// de análise nunca voltava a nulo, com reprovações novas se empilhando depois
+// da análise sem o freio reacender uma vez sequer.
 describe('issuesComAnalisePendente — freio por ciclo (task 6cae9795, DJ-T7)', () => {
-  // Espaçamento em dias que reproduz a forma real da linha do tempo da #3787:
+  // Espaçamento em dias que reproduz a forma da linha do tempo do caso real:
   // duas reprovações, uma análise, e reprovações novas depois dela.
   const dia = (n: number) => new Date(`2026-08-${20 + n}T00:00:00.000Z`)
 
@@ -628,6 +626,22 @@ describe('issuesComAnalisePendente — freio por ciclo (task 6cae9795, DJ-T7)', 
     const pendentes = await issuesComAnalisePendente({ prisma, projectId: 'p1' })
 
     expect(pendentes).toEqual([3787])
+  })
+
+  it('closedAt EXATAMENTE igual a analysisDoneAt não conta como "depois" — comparação é `>` estrito, empate não reacende o freio', async () => {
+    const prisma = prismaFalso({
+      findMany: vi.fn(async () => [
+        { issueNumber: 3787, closedAt: dia(1), analysisDoneAt: dia(3) },
+        { issueNumber: 3787, closedAt: dia(2), analysisDoneAt: dia(3) },
+        // Mesmo instante da análise: a reprovação que a análise já cobriu,
+        // não uma nova depois dela — não deve contar.
+        { issueNumber: 3787, closedAt: dia(3), analysisDoneAt: dia(3) },
+      ]),
+    })
+
+    const pendentes = await issuesComAnalisePendente({ prisma, projectId: 'p1' })
+
+    expect(pendentes).toEqual([])
   })
 
   it('linha ainda aberta (closedAt null) não conta como reprovação — só o fechamento é fato consumado', async () => {
