@@ -99,3 +99,5 @@ jobs:
           echo "OK: home, setup e painel publicados e com assets carregando"
 
     # comment to trigger ci
+
+    # Dummy comment to trigger push
