@@ -207,4 +207,27 @@ export class TreeSitterManager {
   getSupportedExtensions(): string[] {
     return Array.from(this.extensionMap.keys())
   }
+
+  /**
+   * Libera a memoria WASM de todo parser carregado (getOrCreateParser cacheia
+   * um WasmParser por linguagem em `parsers`, e o modulo nunca solta essa
+   * memoria sozinho). Sem chamar isto ao terminar de usar o manager, o objeto
+   * fica vivo ate o finalizador do GC decidir rodar `[Symbol.dispose]` — em
+   * "momento arbitrario", possivelmente durante o teardown de um worker do
+   * vitest ou junto de outra chamada nativa em curso, derrubando o processo
+   * ("Worker exited unexpectedly"). Cada `summarizeWorkspace`/`exportGraph`
+   * cria um TreeSitterManager novo; sem dispose, um processo que roda varias
+   * chamadas (ou varios arquivos de teste, no mesmo worker) acumula um
+   * WasmParser vivo por chamada, todos aguardando o mesmo finalizador tardio.
+   */
+  dispose(): void {
+    for (const parser of this.parsers.values()) {
+      try {
+        parser.free()
+      } catch {
+        /* ja liberado (poison/erro anterior o deixou inconsistente): segue */
+      }
+    }
+    this.parsers.clear()
+  }
 }
