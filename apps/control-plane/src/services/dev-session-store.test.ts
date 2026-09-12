@@ -14,6 +14,7 @@ import {
   registrarEstadoDaPublicacao,
   registrarCadenciaDePublicacao,
   zerarNudges,
+  issuesComAnalisePendente,
 } from './dev-session-store.js'
 
 const agora = new Date('2026-01-01T00:00:00.000Z')
@@ -532,5 +533,142 @@ describe('registrarCadenciaDePublicacao', () => {
     })
     const chamada = prisma.devSession.update.mock.calls[0]?.[0] as { data: Record<string, unknown> }
     expect(chamada.data).not.toHaveProperty('deployState')
+  })
+})
+
+// DJ-T7 (task 6cae9795): o freio de retrabalho só funcionava UMA vez na vida
+// da issue — `marcarAnaliseFeitaDaIssue` grava `analysisDoneAt` em todas as
+// linhas fechadas da issue e `abrirSessao` herda esse valor para a linha
+// seguinte, então depois da 1ª análise o campo nunca mais volta a `null` e
+// `issuesComAnalisePendente` (que exigia `analysisDoneAt IS NULL`) parava de
+// enxergar a issue para sempre — mesmo com reprovações novas se acumulando.
+// Medido ao vivo: uma tarefa de um cliente acumulou 11 sessões porque a marca
+// de análise nunca voltava a nulo, com reprovações novas se empilhando depois
+// da análise sem o freio reacender uma vez sequer.
+describe('issuesComAnalisePendente — freio por ciclo (task 6cae9795, DJ-T7)', () => {
+  // Espaçamento em dias que reproduz a forma da linha do tempo do caso real:
+  // duas reprovações, uma análise, e reprovações novas depois dela.
+  const dia = (n: number) => new Date(`2026-08-${20 + n}T00:00:00.000Z`)
+
+  it('2 reprovações (closedReason em MOTIVOS_QUE_REDELEGAM) sem análise: pendente de análise', async () => {
+    const prisma = prismaFalso({
+      findMany: vi.fn(async () => [
+        { issueNumber: 3787, closedAt: dia(1), analysisDoneAt: null },
+        { issueNumber: 3787, closedAt: dia(2), analysisDoneAt: null },
+      ]),
+    })
+
+    const pendentes = await issuesComAnalisePendente({ prisma, projectId: 'p1' })
+
+    expect(pendentes).toEqual([3787])
+  })
+
+  it('a consulta busca por closedReason em MOTIVOS_QUE_REDELEGAM e pelo projeto — nunca todo o banco', async () => {
+    const prisma = prismaFalso()
+
+    await issuesComAnalisePendente({ prisma, projectId: 'p1' })
+
+    expect(prisma.devSession.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          projectId: 'p1',
+          closedReason: {
+            in: [
+              'dev-concluiu-sem-entrega',
+              'dev-falhou',
+              'pr-descartado',
+              'pr-rejeitado-sem-retomada',
+              'pergunta-sem-resposta',
+            ],
+          },
+        }),
+      })
+    )
+  })
+
+  it('análise feita depois das 2 reprovações: livre — nenhuma reprovação nova desde a análise', async () => {
+    const prisma = prismaFalso({
+      findMany: vi.fn(async () => [
+        { issueNumber: 3787, closedAt: dia(1), analysisDoneAt: dia(3) },
+        { issueNumber: 3787, closedAt: dia(2), analysisDoneAt: dia(3) },
+      ]),
+    })
+
+    const pendentes = await issuesComAnalisePendente({ prisma, projectId: 'p1' })
+
+    expect(pendentes).toEqual([])
+  })
+
+  it('+1 reprovação depois da análise: ainda livre — não bateu o teto de 2 desde a última análise', async () => {
+    const prisma = prismaFalso({
+      findMany: vi.fn(async () => [
+        { issueNumber: 3787, closedAt: dia(1), analysisDoneAt: dia(3) },
+        { issueNumber: 3787, closedAt: dia(2), analysisDoneAt: dia(3) },
+        { issueNumber: 3787, closedAt: dia(4), analysisDoneAt: dia(3) },
+      ]),
+    })
+
+    const pendentes = await issuesComAnalisePendente({ prisma, projectId: 'p1' })
+
+    expect(pendentes).toEqual([])
+  })
+
+  it('+2 reprovações depois da análise: pendente de novo — este é o caso real da #3787 que nunca reacendia', async () => {
+    const prisma = prismaFalso({
+      findMany: vi.fn(async () => [
+        { issueNumber: 3787, closedAt: dia(1), analysisDoneAt: dia(3) },
+        { issueNumber: 3787, closedAt: dia(2), analysisDoneAt: dia(3) },
+        { issueNumber: 3787, closedAt: dia(4), analysisDoneAt: dia(3) },
+        { issueNumber: 3787, closedAt: dia(5), analysisDoneAt: dia(3) },
+      ]),
+    })
+
+    const pendentes = await issuesComAnalisePendente({ prisma, projectId: 'p1' })
+
+    expect(pendentes).toEqual([3787])
+  })
+
+  it('closedAt EXATAMENTE igual a analysisDoneAt não conta como "depois" — comparação é `>` estrito, empate não reacende o freio', async () => {
+    const prisma = prismaFalso({
+      findMany: vi.fn(async () => [
+        { issueNumber: 3787, closedAt: dia(1), analysisDoneAt: dia(3) },
+        { issueNumber: 3787, closedAt: dia(2), analysisDoneAt: dia(3) },
+        // Mesmo instante da análise: a reprovação que a análise já cobriu,
+        // não uma nova depois dela — não deve contar.
+        { issueNumber: 3787, closedAt: dia(3), analysisDoneAt: dia(3) },
+      ]),
+    })
+
+    const pendentes = await issuesComAnalisePendente({ prisma, projectId: 'p1' })
+
+    expect(pendentes).toEqual([])
+  })
+
+  it('linha ainda aberta (closedAt null) não conta como reprovação — só o fechamento é fato consumado', async () => {
+    const prisma = prismaFalso({
+      findMany: vi.fn(async () => [
+        { issueNumber: 3787, closedAt: dia(1), analysisDoneAt: null },
+        { issueNumber: 3787, closedAt: null, analysisDoneAt: null },
+      ]),
+    })
+
+    const pendentes = await issuesComAnalisePendente({ prisma, projectId: 'p1' })
+
+    expect(pendentes).toEqual([])
+  })
+
+  it('issues diferentes não se misturam: cada uma conta as próprias reprovações desde a própria última análise', async () => {
+    const prisma = prismaFalso({
+      findMany: vi.fn(async () => [
+        { issueNumber: 3787, closedAt: dia(1), analysisDoneAt: dia(3) },
+        { issueNumber: 3787, closedAt: dia(4), analysisDoneAt: dia(3) },
+        { issueNumber: 4200, closedAt: dia(1), analysisDoneAt: null },
+        { issueNumber: 4200, closedAt: dia(2), analysisDoneAt: null },
+      ]),
+    })
+
+    const pendentes = await issuesComAnalisePendente({ prisma, projectId: 'p1' })
+
+    expect(pendentes).toEqual([4200])
   })
 })
