@@ -6,19 +6,24 @@ import { ImpactAnalyzer } from './impact-analyzer'
 
 describe('ImpactAnalyzer', () => {
   let client: KuzuClient
+  let manager: TreeSitterManager
   let indexer: CodeGraphIndexer
   let analyzer: ImpactAnalyzer
 
   beforeAll(async () => {
     client = new KuzuClient(':memory:')
     await client.init()
-    const manager = new TreeSitterManager()
+    manager = new TreeSitterManager()
     indexer = new CodeGraphIndexer(client, manager)
     await indexer.initializeSchema()
     analyzer = new ImpactAnalyzer(client)
   })
 
   afterAll(async () => {
+    // dispose ANTES do close: solta o WasmParser cacheado em `manager` (senao
+    // fica vivo ate o finalizador do GC rodar em momento arbitrario — causa
+    // medida de "Worker exited unexpectedly" no vitest).
+    manager.dispose()
     await client.close()
   })
 

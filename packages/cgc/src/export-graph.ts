@@ -115,6 +115,7 @@ export async function exportGraph(
   const excluded = new Set(options.excludeFiles ?? [])
 
   let client: KuzuClient | undefined
+  let manager: TreeSitterManager | undefined
   try {
     const sources = collectSourceFiles(workspacePath, maxFiles, maxFileBytes).filter(
       (f) => !excluded.has(f.relPath)
@@ -122,7 +123,7 @@ export async function exportGraph(
     if (sources.length === 0) return null
 
     client = new KuzuClient(':memory:')
-    const manager = new TreeSitterManager()
+    manager = new TreeSitterManager()
     const indexer = new CodeGraphIndexer(client, manager)
     await indexer.initializeSchema()
 
@@ -217,6 +218,13 @@ export async function exportGraph(
     if (err instanceof PoisonedFileError) throw err
     return null
   } finally {
+    // dispose ANTES do close: solta o WASM do parser enquanto o processo
+    // ainda esta estavel, em vez de deixar o objeto vivo para o finalizador
+    // do GC rodar em momento arbitrario (causa medida de "Worker exited
+    // unexpectedly" no vitest — ver tree-sitter-manager.ts).
+    if (manager) {
+      manager.dispose()
+    }
     if (client) {
       try {
         await client.close()

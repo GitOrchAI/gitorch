@@ -21,5 +21,11 @@ declare module 'kuzu' {
   export class QueryResult {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     getAll(): Promise<any[]>
+    // Handle NATIVO (kuzu, C++): nao fechar deixa o handle vivo ate o
+    // finalizador do GC rodar em momento arbitrario, o que pode corromper
+    // memoria nativa se isso acontecer depois de Connection/Database
+    // fecharem (kuzudb/kuzu#5316) — sintoma: "Worker exited unexpectedly"
+    // no vitest, sem excecao JS nenhuma pra capturar.
+    close(): void
   }
 }

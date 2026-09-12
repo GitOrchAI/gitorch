@@ -1,5 +1,14 @@
 import { Database, Connection, QueryResult } from 'kuzu'
 
+// `conn.query`/`conn.execute` podem devolver um QueryResult OU um array deles
+// (statement com `;` multiplo). Fecha todos os handles nativos, cobrindo os
+// dois formatos.
+function closeAll(result: QueryResult | QueryResult[]): void {
+  for (const r of Array.isArray(result) ? result : [result]) {
+    r.close()
+  }
+}
+
 export interface QueryResultRow {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any
@@ -36,21 +45,31 @@ export class KuzuClient {
       finalQuery = query.replace(/\)\s*$/, ', id UUID, PRIMARY KEY(id))')
     }
 
+    // QueryResult e um handle NATIVO (kuzu, C++) que precisa ser fechado
+    // explicitamente. Descartar a referencia sem chamar close() (como o
+    // codigo fazia antes) deixa o handle vivo ate o GC decidir rodar o
+    // finalizador — em "momento arbitrario", possivelmente durante o
+    // teardown do processo, quando Connection/Database ja fecharam. O
+    // proprio Kuzu documenta essa ordem de fechamento (QueryResult antes de
+    // Connection/Database) como pre-condicao para nao corromper memoria
+    // nativa (kuzudb/kuzu#5316) — sem ela, o worker do vitest morre com
+    // "Worker exited unexpectedly" DEPOIS de todos os testes passarem, sem
+    // nenhuma excecao JS para capturar (a falha e nativa, nao lancada).
     if (parameters && Object.keys(parameters).length > 0) {
       const stmt = await this.conn.prepare(finalQuery)
       if (!stmt.isSuccess()) {
         throw new Error(`Prepare failed: ${stmt.getErrorMessage()}`)
       }
-      await this.conn.execute(stmt, parameters)
+      closeAll(await this.conn.execute(stmt, parameters))
     } else {
-      await this.conn.query(finalQuery)
+      closeAll(await this.conn.query(finalQuery))
     }
   }
 
   async query(query: string, options: QueryOptions = {}): Promise<QueryResultRow[]> {
     if (this.closed) throw new Error('Client is closed')
 
-    let result: QueryResult
+    let result: QueryResult | QueryResult[]
     if (options.parameters && Object.keys(options.parameters).length > 0) {
       const stmt = await this.conn.prepare(query)
       if (!stmt.isSuccess()) {
@@ -61,7 +80,16 @@ export class KuzuClient {
       result = await this.conn.query(query)
     }
 
-    return this.resultToArray(result)
+    // Le sempre o PRIMEIRO result set (uso atual so roda 1 statement por
+    // chamada) e fecha TODOS os QueryResult devolvidos SO depois de ler —
+    // ver comentario em execute() sobre a ordem de fechamento exigida pelo
+    // Kuzu (QueryResult antes de Connection/Database).
+    const first = Array.isArray(result) ? result[0] : result
+    try {
+      return await this.resultToArray(first)
+    } finally {
+      closeAll(result)
+    }
   }
 
   private async resultToArray(result: QueryResult): Promise<QueryResultRow[]> {

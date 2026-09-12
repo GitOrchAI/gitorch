@@ -20,6 +20,10 @@ describe('ScipExporter', () => {
   })
 
   afterAll(async () => {
+    // dispose ANTES do close: solta o WasmParser cacheado em `manager` (senao
+    // fica vivo ate o finalizador do GC rodar em momento arbitrario — causa
+    // medida de "Worker exited unexpectedly" no vitest).
+    manager.dispose()
     await client.close()
   })
 

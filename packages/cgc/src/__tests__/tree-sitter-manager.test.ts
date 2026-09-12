@@ -12,9 +12,13 @@ describe('TreeSitterManager', () => {
   })
 
   afterAll(() => {
-    // Árvores são liberadas em cada teste: objeto WASM vivo no teardown do
-    // worker deixa finalizador do GC rodar em momento arbitrário — flake raro
-    // de "Worker exited unexpectedly" no vitest (visto no CI).
+    // Árvores são liberadas em cada teste (tree.free()), mas os PARSERS
+    // (getParser/getOrCreateParser) ficam cacheados em `manager` e nunca
+    // eram liberados: o WasmParser vivo esperava o finalizador do GC rodar
+    // em momento arbitrário — causa medida de "Worker exited unexpectedly"
+    // no vitest (visto no CI). dispose() libera os 5 parsers carregados por
+    // este describe (typescript/tsx/python/go/rust) na hora certa.
+    manager.dispose()
   })
 
   it('should initialize with all language parsers', () => {
