@@ -54,7 +54,7 @@ function deps(over: Partial<ProcessarAchadosDeps> = {}): ProcessarAchadosDeps {
     criarIssueNoCliente: vi.fn(async () => 501),
     criarIssueNoProduto: vi.fn(async () => 777),
     criarProposta: vi.fn(async () => 901),
-    perguntarAoDono: vi.fn(async () => undefined),
+    registrarAchadoNoPainel: vi.fn(async () => undefined),
     avisarDono: vi.fn(async () => undefined),
     registrarIncidente: vi.fn(async () => undefined),
     ...over,
@@ -152,7 +152,7 @@ describe('processarAchadosDeInfra', () => {
   })
 
   // L4-T2 (D63): achado de automação → proposta ao dono, NUNCA incidente P0.
-  it('achado "automacao" → 1 criarProposta + 1 perguntarAoDono + 1 registrarIncidente, ZERO issue no cliente, ZERO análise', async () => {
+  it('achado "automacao" → 1 criarProposta + 1 registrarAchadoNoPainel + 1 registrarIncidente, ZERO issue no cliente, ZERO análise', async () => {
     vi.mocked(runAnaliseCausaDeInfra).mockClear()
     vi.mocked(runIssuePadraoDeInfra).mockClear()
     const d = deps({
@@ -167,7 +167,7 @@ describe('processarAchadosDeInfra', () => {
     })
     const r = await processarAchadosDeInfra(d)
     expect(d.criarProposta).toHaveBeenCalledOnce()
-    expect(d.perguntarAoDono).toHaveBeenCalledOnce()
+    expect(d.registrarAchadoNoPainel).toHaveBeenCalledOnce()
     expect(d.registrarIncidente).toHaveBeenCalledWith(
       expect.objectContaining({ classe: 'automacao', identidadeEstavel: 'wf:77', issueNumber: 901 })
     )
@@ -183,7 +183,7 @@ describe('processarAchadosDeInfra', () => {
     const r = await processarAchadosDeInfra(d)
     expect(r.issuesNoCliente).toEqual([501])
     expect(d.criarProposta).not.toHaveBeenCalled()
-    expect(d.perguntarAoDono).not.toHaveBeenCalled()
+    expect(d.registrarAchadoNoPainel).not.toHaveBeenCalled()
     expect(r.propostas).toEqual([])
   })
 

@@ -156,7 +156,7 @@ export async function aoResponderRetomadaTravada(
           registrarSessaoRetomada: deps.registrarSessaoRetomada,
           // Nunca deveria ser chamado (o teto zerado sempre decide
           // 'retomar') — se chamar, é bug de wiring, nunca finge sucesso.
-          perguntarAoDono: async () => {
+          registrarEscaladaNoPainel: async () => {
             warn(
               `aoResponderRetomadaTravada: retomada forçada do PR #${parsed.prNumber} escalou de ` +
                 'novo mesmo com o teto zerado — bug de wiring'
