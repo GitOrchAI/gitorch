@@ -1040,6 +1040,86 @@ export function dependenciaTemJustificativa(
   )
 }
 
+/** O mínimo de tasks encadeadas (cada uma bloqueada só pela anterior) que
+ * caracteriza a "fila indiana" — abaixo disso é dependência real em série,
+ * não o hábito medido em D74. */
+export const TAMANHO_MINIMO_DE_CORRENTE_SUSPEITA = 3
+
+/** Metade mínima que `correnteSequencialSemJustificativa` precisa de cada
+ * task do plano — mesma forma reduzida usada por `dependenciaTemJustificativa`,
+ * sem depender do tipo `BacklogPlan` (que vive em `apps/control-plane`, fora
+ * deste pacote). */
+export interface EloDeDependencia {
+  blockedByTaskIndexes?: number[]
+  blockedByRationale?: string
+}
+
+/**
+ * D74 (05/09, dono): nomeia a "fila indiana" que a medição encontrou —
+ * 24/29 e 22/23 tasks abertas travadas numa corrente linear de até 14 tasks,
+ * cada uma bloqueada só pela ANTERIOR, por hábito de sequência (não porque
+ * usa o resultado dela). `dependenciaTemJustificativa` (acima) já reprova
+ * QUALQUER elo sem `blockedByRationale` substancial, um por um — esta régua
+ * NÃO substitui aquela, dá um diagnóstico PRÓPRIO quando o padrão é a
+ * corrente inteira, para o PO corrigir o hábito, não só preencher o campo
+ * que faltou.
+ *
+ * "Bloqueada exatamente pela anterior" = `blockedByTaskIndexes` é um array
+ * de UM elemento igual a `i - 1`; mais de um índice, ou um índice que não é
+ * o imediatamente anterior, quebra a corrente (é dependência declarada de
+ * outra forma, fora do escopo desta régua). `TAMANHO_MINIMO_DE_CORRENTE_SUSPEITA`
+ * elos consecutivos, com pelo menos um sem motivo, é o suficiente — não
+ * exige que a corrente inteira esteja sem motivo, porque o hábito já está
+ * ali mesmo que uma ou duas justificativas tenham sido preenchidas por
+ * coincidência.
+ *
+ * Devolve o intervalo `[inicio, fim]` (índices de task, inclusive, contando
+ * a task-base do primeiro elo) da PRIMEIRA corrente suspeita encontrada, ou
+ * `null` quando não há nenhuma.
+ */
+export function correnteSequencialSemJustificativa(
+  tasks: ReadonlyArray<EloDeDependencia>
+): { inicio: number; fim: number } | null {
+  let fimDoRun: number | null = null
+  let tamanhoDoRun = 0
+  let semMotivoNoRun = false
+
+  const fechaRun = (): { inicio: number; fim: number } | null => {
+    if (
+      fimDoRun !== null &&
+      tamanhoDoRun >= TAMANHO_MINIMO_DE_CORRENTE_SUSPEITA &&
+      semMotivoNoRun
+    ) {
+      return { inicio: fimDoRun - tamanhoDoRun + 1, fim: fimDoRun }
+    }
+    return null
+  }
+
+  for (let i = 0; i < tasks.length; i++) {
+    const task = tasks[i]!
+    const eloDaCorrente =
+      i > 0 &&
+      Array.isArray(task.blockedByTaskIndexes) &&
+      task.blockedByTaskIndexes.length === 1 &&
+      task.blockedByTaskIndexes[0] === i - 1
+
+    if (eloDaCorrente) {
+      tamanhoDoRun += 1
+      fimDoRun = i
+      if (!dependenciaTemJustificativa(task.blockedByTaskIndexes, task.blockedByRationale)) {
+        semMotivoNoRun = true
+      }
+    } else {
+      const achado = fechaRun()
+      if (achado) return achado
+      tamanhoDoRun = 0
+      fimDoRun = null
+      semMotivoNoRun = false
+    }
+  }
+  return fechaRun()
+}
+
 /**
  * DoD dos 8 campos, POR CÓDIGO (decisão do owner): todo campo presente e
  * não-vazio; Verification Criteria precisa conter ao menos um critério de

@@ -1,5 +1,6 @@
 import {
   validateDoD,
+  correnteSequencialSemJustificativa,
   criterioEhTestavel,
   dependenciaTemJustificativa,
   DOD_FIELD_MAP,
@@ -286,6 +287,21 @@ export function validateBacklogPlan(plan: BacklogPlan): string[] {
     }
   })
 
+  // D74 (05/09, dono): a "fila indiana" medida no GitHub — 3+ tasks
+  // consecutivas bloqueadas cada uma só pela ANTERIOR, com pelo menos um elo
+  // sem `blockedByRationale` — ganha um diagnóstico PRÓPRIO, além (nunca em
+  // vez) da reprovação por task de `dependenciaTemJustificativa` acima: o
+  // padrão da corrente é o hábito que D74 pediu para corrigir, não só o
+  // campo vazio de uma task isolada.
+  const corrente = correnteSequencialSemJustificativa(plan.tasks)
+  if (corrente) {
+    problems.push(
+      `tasks[${corrente.inicio}..${corrente.fim}]: corrente sequencial de ${
+        corrente.fim - corrente.inicio + 1
+      } tarefas bloqueadas cada uma exatamente pela anterior, com pelo menos um elo sem blockedByRationale — dependência por hábito de sequência não é dependência real (D74); declare o RESULTADO que cada elo precisa ou remova o bloqueio`
+    )
+  }
+
   // Roadmap: TODA task tem sprint (>=1, inteiro), sem duplicata, e nenhuma
   // task entra em sprint anterior à de um bloqueador.
   const sprintByTask = new Map<number, number>()
@@ -443,8 +459,17 @@ export async function applyBacklog(options: ApplyBacklogOptions): Promise<ApplyB
     const blocked = (task.blockedByTaskIndexes ?? [])
       .map((b) => taskRefs[b]?.number)
       .filter((n): n is number => typeof n === 'number')
+    // D74: o MOTIVO declarado (`blockedByRationale`) vai para o corpo, uma
+    // linha por bloqueio, junto do "Blocked by #N, #M" que `extractBlockers`
+    // (sm-delegation.ts) já lê — sem mexer nesse formato, só ACRESCENTANDO
+    // depois dele. Cada linha começa com "- " (não dígito/vírgula/espaço),
+    // então o regex de `extractBlockers` (que só casa `[#\d,\s]+`) para
+    // antes dela e continua achando os números certos.
     const blockedLine =
-      blocked.length > 0 ? `\n\nBlocked by ${blocked.map((n) => `#${n}`).join(', ')}` : ''
+      blocked.length > 0
+        ? `\n\nBlocked by ${blocked.map((n) => `#${n}`).join(', ')}` +
+          (task.blockedByRationale ? `\n- ${task.blockedByRationale}` : '')
+        : ''
     const ref = await ensureNode(
       marker,
       task.fields.titulo,

@@ -8,6 +8,7 @@ import {
   RAILS_SCHEMAS,
   buildStepPrompt,
   citaTooling,
+  correnteSequencialSemJustificativa,
   criterioEhTestavel,
   dependenciaTemJustificativa,
   formatRaJourneys,
@@ -160,6 +161,77 @@ describe('validateForm (validador minimal por schema)', () => {
       ).toBe(false)
       // espaço em branco não conta — mesmo espírito de minLength no MiniSchema
       expect(dependenciaTemJustificativa([0], ' '.repeat(40))).toBe(false)
+    })
+  })
+
+  // D74: medido no GitHub, 24/29 e 22/23 tasks presas numa fila indiana —
+  // cada task bloqueada só pela anterior, em corrente, por hábito de
+  // sequência. `dependenciaTemJustificativa` já reprova QUALQUER elo sem
+  // motivo isoladamente; esta régua dá um diagnóstico PRÓPRIO para o padrão
+  // da corrente (em vez de um erro genérico por task), para o PO enxergar
+  // que o hábito de encadear é o problema, não só o campo vazio.
+  describe('correnteSequencialSemJustificativa (D74: nomeia a fila indiana)', () => {
+    const justificativaBoa = 'Precisa do endpoint que a task anterior publica.'
+
+    it('sem bloqueio nenhum, não há corrente', () => {
+      expect(correnteSequencialSemJustificativa([{}, {}, {}])).toBeNull()
+    })
+
+    it('corrente de 2 elos (3 tasks) sem motivo NÃO é longa o bastante para acusar', () => {
+      const tasks = [
+        {},
+        { blockedByTaskIndexes: [0], blockedByRationale: undefined },
+        { blockedByTaskIndexes: [1], blockedByRationale: undefined },
+      ]
+      expect(correnteSequencialSemJustificativa(tasks)).toBeNull()
+    })
+
+    it('corrente de 3 elos (4 tasks) com pelo menos um sem motivo é acusada', () => {
+      const tasks = [
+        {},
+        { blockedByTaskIndexes: [0], blockedByRationale: justificativaBoa },
+        { blockedByTaskIndexes: [1], blockedByRationale: undefined },
+        { blockedByTaskIndexes: [2], blockedByRationale: justificativaBoa },
+      ]
+      expect(correnteSequencialSemJustificativa(tasks)).toEqual({ inicio: 1, fim: 3 })
+    })
+
+    it('corrente de 3 elos com TODOS os motivos presentes e substanciais passa', () => {
+      const tasks = [
+        {},
+        { blockedByTaskIndexes: [0], blockedByRationale: justificativaBoa },
+        { blockedByTaskIndexes: [1], blockedByRationale: justificativaBoa },
+        { blockedByTaskIndexes: [2], blockedByRationale: justificativaBoa },
+      ]
+      expect(correnteSequencialSemJustificativa(tasks)).toBeNull()
+    })
+
+    it('bloqueio por MAIS de um índice quebra a corrente (não é "exatamente a anterior")', () => {
+      const tasks = [
+        {},
+        {},
+        { blockedByTaskIndexes: [0, 1], blockedByRationale: undefined },
+        { blockedByTaskIndexes: [2], blockedByRationale: undefined },
+        { blockedByTaskIndexes: [3], blockedByRationale: undefined },
+      ]
+      // O elo [0,1] não conta como "bloqueada exatamente pela anterior" —
+      // só sobra a corrente de 2 elos (índices 3 e 4), curta demais.
+      expect(correnteSequencialSemJustificativa(tasks)).toBeNull()
+    })
+
+    it('duas correntes separadas por uma task independente: acusa a primeira encontrada', () => {
+      const tasks = [
+        {},
+        { blockedByTaskIndexes: [0], blockedByRationale: undefined },
+        { blockedByTaskIndexes: [1], blockedByRationale: undefined },
+        { blockedByTaskIndexes: [2], blockedByRationale: undefined },
+        {}, // independente: quebra a corrente
+        {},
+        { blockedByTaskIndexes: [5], blockedByRationale: justificativaBoa },
+        { blockedByTaskIndexes: [6], blockedByRationale: justificativaBoa },
+        { blockedByTaskIndexes: [7], blockedByRationale: justificativaBoa },
+      ]
+      expect(correnteSequencialSemJustificativa(tasks)).toEqual({ inicio: 1, fim: 3 })
     })
   })
 
