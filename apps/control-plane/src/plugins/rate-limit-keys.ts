@@ -14,3 +14,9 @@ export function getInvitationRateLimitMax(env: {
 }): number {
   return Number(env.GITORCH_AUTH_RATE_LIMIT_MAX ?? 20)
 }
+
+export function getInvitationRateLimitKey(request: import('fastify').FastifyRequest): string {
+  const match = request.url.match(/\/api\/v1\/invitations\/validate\/([^/?]+)/)
+  const token = match ? match[1] : 'unknown'
+  return `invitation:${request.ip}:${token}`
+}
