@@ -491,9 +491,25 @@ export async function marcarAnaliseFeitaDaIssue(deps: {
 }
 
 /**
- * As issues que já falharam 2× (`requeue_count >= 2`) e cuja análise ainda NÃO
- * rodou (`analysis_done_at IS NULL`). Enquanto uma issue está nesta lista, o SM
- * NÃO a redelega — espera a análise (D51). Escopado por projeto.
+ * As issues com 2+ reprovações (`closedReason` em `MOTIVOS_QUE_REDELEGAM`)
+ * DESDE A ÚLTIMA análise. Enquanto uma issue está nesta lista, o SM NÃO a
+ * redelega — espera a análise (D51). Escopado por projeto.
+ *
+ * DJ-T7 (task 6cae9795): a versão antiga comparava `requeueCount >= 2` (um
+ * total que NUNCA reseta, herdado de linha em linha) contra
+ * `analysisDoneAt IS NULL` — mas `marcarAnaliseFeitaDaIssue` grava
+ * `analysisDoneAt` em TODAS as linhas fechadas da issue, e `abrirSessao`
+ * herda esse valor para a linha seguinte. Resultado: depois da 1ª análise da
+ * vida da issue, `analysisDoneAt` nunca mais voltava a `null` — o freio
+ * funcionava uma vez só, para sempre, não importa quantas reprovações novas
+ * viessem depois. Medido ao vivo: uma tarefa de um cliente acumulou 11
+ * sessões porque a marca de análise nunca voltava a nulo, mesmo com novas
+ * reprovações se empilhando depois da análise.
+ *
+ * O conserto larga o contador que nunca reseta e CONTA de novo: reprovações
+ * com `closedAt` POSTERIOR à análise mais recente da própria issue (nenhuma
+ * análise ainda = conta tudo). Sem migração — usa só os campos que já
+ * existem (`closedAt`, `analysisDoneAt`, `closedReason`).
  */
 export async function issuesComAnalisePendente(deps: {
   prisma: PrismaDevSession
@@ -502,12 +518,38 @@ export async function issuesComAnalisePendente(deps: {
   const linhas = (await deps.prisma.devSession.findMany({
     where: {
       projectId: deps.projectId,
-      requeueCount: { gte: 2 },
-      analysisDoneAt: null,
+      closedReason: { in: [...MOTIVOS_QUE_REDELEGAM] },
     },
-    select: { issueNumber: true },
-  })) as unknown as Array<{ issueNumber: number }>
-  return [...new Set(linhas.map((l) => l.issueNumber))]
+    select: { issueNumber: true, closedAt: true, analysisDoneAt: true },
+  })) as unknown as Array<{
+    issueNumber: number
+    closedAt: Date | null
+    analysisDoneAt: Date | null
+  }>
+
+  const porIssue = new Map<number, { reprovacoes: Date[]; ultimaAnalise: Date | null }>()
+  for (const linha of linhas) {
+    // Linha ainda aberta: a reprovação não é fato consumado até fechar.
+    if (!linha.closedAt) continue
+    const atual = porIssue.get(linha.issueNumber) ?? { reprovacoes: [], ultimaAnalise: null }
+    atual.reprovacoes.push(linha.closedAt)
+    if (
+      linha.analysisDoneAt &&
+      (!atual.ultimaAnalise || linha.analysisDoneAt.getTime() > atual.ultimaAnalise.getTime())
+    ) {
+      atual.ultimaAnalise = linha.analysisDoneAt
+    }
+    porIssue.set(linha.issueNumber, atual)
+  }
+
+  const pendentes: number[] = []
+  for (const [issueNumber, { reprovacoes, ultimaAnalise }] of porIssue) {
+    const desdeAUltimaAnalise = ultimaAnalise
+      ? reprovacoes.filter((fechou) => fechou.getTime() > ultimaAnalise.getTime()).length
+      : reprovacoes.length
+    if (desdeAUltimaAnalise >= 2) pendentes.push(issueNumber)
+  }
+  return pendentes
 }
 
 /**
