@@ -191,6 +191,49 @@ describe('Rotas da cascata por agente', () => {
       }
     })
 
+    // D77: a coleta pode falhar (rede fora do ar, token ausente...) sem
+    // catálogo novo nenhum. A tela precisa saber a data da última leitura
+    // REAL e o motivo de agora não ter conseguido — nunca fingir lista viva.
+    test('motor com catálogo real anterior + coleta que falhou agora: expõe lidoEm e motivo', async () => {
+      app.prisma.engineConnection.findMany = vi.fn().mockResolvedValue([
+        {
+          runtime: 'claude',
+          models: ['Claude Sonnet 5'],
+          modelsUnavailable: [],
+          modelsRefreshedAt: new Date('2026-09-01T12:00:00.000Z'),
+          lastError: 'coleta do catálogo de modelos falhou: GET /v1/models devolveu status 401',
+          status: 'connected',
+        },
+      ])
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/projects/proj_1/cascata/opcoes',
+        headers: authHeaders,
+      })
+      const claude = (
+        res.json() as {
+          motores: Array<{ runtime: string; lidoEm: string | null; motivo: string | null }>
+        }
+      ).motores.find((m) => m.runtime === 'claude')
+      expect(claude?.lidoEm).toBe('2026-09-01T12:00:00.000Z')
+      expect(claude?.motivo).toContain('401')
+    })
+
+    test('motor que NUNCA coletou catálogo nenhum: lidoEm e motivo vêm null', async () => {
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/projects/proj_1/cascata/opcoes',
+        headers: authHeaders,
+      })
+      for (const motor of (
+        res.json() as { motores: Array<{ lidoEm: string | null; motivo: string | null }> }
+      ).motores) {
+        expect(motor.lidoEm).toBeNull()
+        expect(motor.motivo).toBeNull()
+      }
+    })
+
     test('as opções são as do DONO do projeto, não uma lista global', async () => {
       await app.inject({
         method: 'GET',

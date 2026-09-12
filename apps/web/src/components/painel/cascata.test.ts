@@ -13,6 +13,7 @@ import {
   trocarEsforco,
   opcoesDeModelo,
   esforcoNaTela,
+  avisoDoCatalogo,
   nomeDoMotor,
   avisosDoCarregamento,
   resumoDaCota,
@@ -394,6 +395,64 @@ describe('o seletor de esforço', () => {
     const e = esforcoNaTela(undefined)
     expect(e.habilitado).toBe(false)
     expect(e.opcoes).toEqual([])
+  })
+})
+
+// D77: a coleta pode falhar sem catálogo novo nenhum (rede fora do ar, token
+// ausente...). A tela precisa dizer isso, com a data do último catálogo
+// real que deu certo — nunca fingir lista viva nem esconder o motivo atrás
+// da mesma nota genérica de "ainda não li".
+describe('o aviso do catálogo de modelos', () => {
+  const AGORA = new Date('2026-09-01T12:00:00.000Z')
+
+  it('motor sem motivo e com modelos: sem aviso nenhum', () => {
+    expect(avisoDoCatalogo(MOTORES[0], AGORA)).toBeNull()
+  })
+
+  it('motor nunca coletado (sem modelos, sem indisponível, sem motivo): nota genérica de sempre', () => {
+    const motor: MotorOpcoes = {
+      runtime: 'claude',
+      esforcos: ['low', 'medium'],
+      esforcoNoNomeDoModelo: false,
+      modelos: [],
+      indisponiveis: [],
+    }
+    expect(avisoDoCatalogo(motor, AGORA)).toMatch(/ainda não li o catálogo/)
+  })
+
+  it('coleta com motivo real: mostra o motivo e há quanto tempo é o último catálogo bom', () => {
+    const motor: MotorOpcoes = {
+      runtime: 'claude',
+      esforcos: ['low', 'medium'],
+      esforcoNoNomeDoModelo: false,
+      modelos: [{ valor: 'claude-sonnet-5', rotulo: 'Claude Sonnet 5' }],
+      indisponiveis: [],
+      lidoEm: '2026-09-01T06:00:00.000Z',
+      motivo: 'GET /v1/models devolveu status 401',
+    }
+    const aviso = avisoDoCatalogo(motor, AGORA)
+    expect(aviso).toContain('não consegui ler os modelos agora')
+    expect(aviso).toContain('GET /v1/models devolveu status 401')
+    expect(aviso).toMatch(/6 h/)
+  })
+
+  it('coleta com motivo real mas NUNCA coletou nada antes: diz "nunca foi lida", nunca inventa data', () => {
+    const motor: MotorOpcoes = {
+      runtime: 'claude',
+      esforcos: ['low', 'medium'],
+      esforcoNoNomeDoModelo: false,
+      modelos: [],
+      indisponiveis: [],
+      lidoEm: null,
+      motivo: 'sem token do Claude para consultar o catálogo de modelos',
+    }
+    const aviso = avisoDoCatalogo(motor, AGORA)
+    expect(aviso).toContain('sem token do Claude')
+    expect(aviso).toMatch(/nunca/)
+  })
+
+  it('motor desconhecido não inventa aviso', () => {
+    expect(avisoDoCatalogo(undefined)).toBeNull()
   })
 })
 

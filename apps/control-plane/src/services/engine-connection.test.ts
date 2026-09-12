@@ -364,6 +364,172 @@ describe('EngineConnectionService', () => {
     ).rejects.toThrow('envVarName')
   })
 
+  // D77: a credencial 'env' do Claude tem que chegar ao descobridor de
+  // catálogo e ao leitor de cota pela MESMA fonte que o resto do produto usa
+  // (o blob cifrado decifrado em memória) — sem depender do arquivo que
+  // materializeToHome também escreve no HOME temporário. `vi.stubGlobal`
+  // troca o `fetch` global que engine-connection.ts referencia (nenhum teste
+  // aqui bate rede real).
+  describe('credencial env chega ao descobridor/leitor sem depender do arquivo materializado', () => {
+    afterEach(() => vi.unstubAllGlobals())
+
+    test('refreshModels (claude, credencial env): usa o token do banco, não o arquivo do HOME', async () => {
+      const prisma = fakePrisma()
+      const svc = new EngineConnectionService(prisma as any, aliveLiveness)
+      await svc.connectRawToken('user_env_models', 'claude', 'sk-ant-oat01-DO-BANCO', {
+        envVarName: 'CLAUDE_CODE_OAUTH_TOKEN',
+      })
+
+      const fetchSpy = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: [{ id: 'claude-sonnet-5', display_name: 'Claude Sonnet 5' }],
+        }),
+      })
+      vi.stubGlobal('fetch', fetchSpy)
+
+      const models = await svc.refreshModels('user_env_models', 'claude')
+      expect(models).toEqual(['Claude Sonnet 5'])
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+      const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit]
+      expect((init.headers as Record<string, string>)['authorization']).toBe(
+        'Bearer sk-ant-oat01-DO-BANCO'
+      )
+    })
+
+    test('refreshQuota (claude, credencial env): usa o token do banco, não o arquivo do HOME', async () => {
+      const prisma = fakePrisma()
+      const svc = new EngineConnectionService(prisma as any, aliveLiveness)
+      await svc.connectRawToken('user_env_quota', 'claude', 'sk-ant-oat01-DO-BANCO-2', {
+        envVarName: 'CLAUDE_CODE_OAUTH_TOKEN',
+      })
+
+      const fetchSpy = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: {
+          get: (name: string) =>
+            name === 'anthropic-ratelimit-unified-5h-utilization' ? '0.5' : null,
+        },
+      })
+      vi.stubGlobal('fetch', fetchSpy)
+
+      const ok = await svc.refreshQuota('user_env_quota', 'claude')
+      expect(ok).toBe(true)
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+      const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit]
+      expect((init.headers as Record<string, string>)['authorization']).toBe(
+        'Bearer sk-ant-oat01-DO-BANCO-2'
+      )
+      const rec = prisma.store.get('user_env_quota:claude') as Record<string, unknown>
+      expect(rec['sessionPercentUsed']).toBe(50)
+    })
+
+    test('claude com credencial "file" (não env) não usa o atalho direto do banco', async () => {
+      const prisma = fakePrisma()
+      const svc = new EngineConnectionService(prisma as any, aliveLiveness)
+      const credencial = JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-oat01-fake' } })
+      await svc.connectFileCredential('user_claude_file', 'claude', credencial)
+      const stored = prisma.store.get('user_claude_file:claude') as Record<string, unknown>
+      expect(stored['credentialKind'] ?? 'file').not.toBe('env')
+
+      // Sem token no formato .gitorch/env, o atalho direto não teria nada
+      // pra ler mesmo — a prova aqui é que o refreshModels NÃO chama fetch
+      // (a leitura padrão via homeDir também não acha token, e o descobridor
+      // lança "sem token", nunca a lista fixa).
+      const fetchSpy = vi.fn()
+      vi.stubGlobal('fetch', fetchSpy)
+      const resultado = await svc.refreshModels('user_claude_file', 'claude')
+      expect(resultado).toEqual([])
+      expect(fetchSpy).not.toHaveBeenCalled()
+    })
+  })
+
+  // D77 item 1: o descobridor do Claude agora LANÇA em vez de cair numa lista
+  // fixa — prova que o chamador (refreshModels) trata isso exatamente como
+  // trata qualquer outra falha de coleta: mantém o catálogo bom anterior,
+  // não carimba sucesso, e registra o motivo. Nunca grava a lista inventada.
+  describe('D77: Claude nunca inventa catálogo — mantém o último real + motivo', () => {
+    test('coleta que falha mantém o catálogo anterior e grava o motivo, sem tocar modelsRefreshedAt', async () => {
+      const prisma = fakePrisma()
+      const svc = new EngineConnectionService(prisma as any, aliveLiveness)
+      await svc.connectRawToken('user_claude_falha', 'claude', 'sk-ant-oat01-X', {
+        envVarName: 'CLAUDE_CODE_OAUTH_TOKEN',
+      })
+
+      // 1ª coleta: sucesso, grava catálogo real.
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          json: async () => ({ data: [{ id: 'claude-sonnet-5' }] }),
+        })
+      )
+      await svc.refreshModels('user_claude_falha', 'claude')
+      const bom = prisma.store.get('user_claude_falha:claude') as Record<string, unknown>
+      expect(bom['models']).toEqual(['claude-sonnet-5'])
+      const carimboBom = bom['modelsRefreshedAt']
+      expect(carimboBom).toBeInstanceOf(Date)
+
+      // 2ª coleta: a API real falha (401). O descobridor LANÇA — nunca cai
+      // numa lista fixa que pareceria uma coleta bem-sucedida.
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 401 }))
+      const resultado = await svc.refreshModels('user_claude_falha', 'claude')
+      expect(resultado).toEqual([])
+
+      const depois = prisma.store.get('user_claude_falha:claude') as Record<string, unknown>
+      // Catálogo bom de antes continua intacto — nunca foi substituído pela
+      // lista fixa nem por uma lista vazia.
+      expect(depois['models']).toEqual(['claude-sonnet-5'])
+      // A data de sucesso fica VELHA — a coleta atual não aconteceu de verdade.
+      expect(depois['modelsRefreshedAt']).toBe(carimboBom)
+      // O motivo da falha fica registrado, nunca um silêncio.
+      expect(String(depois['lastError'] ?? '')).toContain('401')
+
+      vi.unstubAllGlobals()
+    })
+
+    test('catálogo REAL nunca coletado ainda: coleta que falha deixa vazio com motivo, nunca com a lista fixa antiga', async () => {
+      const prisma = fakePrisma()
+      // liveness "morta" de propósito: connect não deve deixar NENHUM
+      // catálogo gravado — a única coisa que pode gravar `models` aqui é a
+      // coleta de verdade dentro de refreshModels.
+      const deadLiveness = async () => ({
+        alive: false as const,
+        error: 'motor não respondeu à validação viva',
+      })
+      const svc = new EngineConnectionService(prisma as any, deadLiveness as any)
+      await svc.connectRawToken('user_claude_nunca', 'claude', 'sk-ant-oat01-Y', {
+        envVarName: 'CLAUDE_CODE_OAUTH_TOKEN',
+      })
+      // connect com liveness morta marca status 'error', mas a credencial já
+      // está persistida — refreshModels ainda tenta usá-la (mesmo contrato
+      // best-effort do resto do arquivo).
+      await prisma.engineConnection.updateMany({
+        where: { userId: 'user_claude_nunca', runtime: 'claude' },
+        data: { status: 'connected' },
+      })
+      const antes = prisma.store.get('user_claude_nunca:claude') as Record<string, unknown>
+      expect(antes['models'] ?? null).toBeFalsy()
+      expect(antes['modelsRefreshedAt'] ?? null).toBeFalsy()
+
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('rede fora do ar')))
+      const resultado = await svc.refreshModels('user_claude_nunca', 'claude')
+      expect(resultado).toEqual([])
+
+      const rec = prisma.store.get('user_claude_nunca:claude') as Record<string, unknown>
+      expect(rec['models'] ?? []).toEqual([])
+      expect(rec['modelsRefreshedAt'] ?? null).toBeFalsy()
+      expect(String(rec['lastError'] ?? '')).toContain('rede fora do ar')
+      // NUNCA a lista fixa antiga (claude-fable-5 etc.).
+      expect(JSON.stringify(rec['models'] ?? [])).not.toContain('claude-fable-5')
+
+      vi.unstubAllGlobals()
+    })
+  })
+
   test('connectFileCredential grava o conteúdo colado no caminho primário do runtime (codex auth.json)', async () => {
     const prisma = fakePrisma()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

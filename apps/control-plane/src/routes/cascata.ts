@@ -140,6 +140,15 @@ interface CatalogoDoMotor {
   modelos: string[]
   /** o que ele listava e não lista mais — marcado, nunca apagado. */
   indisponiveis: ModeloQueSaiu[]
+  /** ISO da última coleta que trouxe catálogo REAL. `null` = nunca coletou. */
+  lidoEm: string | null
+  /**
+   * Por que a coleta MAIS RECENTE não trouxe catálogo novo (rede fora do ar,
+   * sem token, resposta não-ok...). `null` quando a última tentativa deu
+   * certo. A tela usa isto para dizer a verdade em vez de fingir lista viva
+   * (D77): "não consegui ler os modelos agora (motivo)".
+   */
+  motivo: string | null
 }
 
 /**
@@ -159,15 +168,32 @@ async function catalogosDoDono(
   const linhas = await app.prisma.engineConnection
     .findMany({
       where: { userId, runtime: { not: 'github' } },
-      select: { runtime: true, models: true, modelsUnavailable: true },
+      select: {
+        runtime: true,
+        models: true,
+        modelsUnavailable: true,
+        modelsRefreshedAt: true,
+        lastError: true,
+      },
     })
-    .catch(() => [] as Array<{ runtime: string; models: unknown; modelsUnavailable: unknown }>)
+    .catch(
+      () =>
+        [] as Array<{
+          runtime: string
+          models: unknown
+          modelsUnavailable: unknown
+          modelsRefreshedAt: unknown
+          lastError: unknown
+        }>
+    )
 
   const catalogos: Record<string, CatalogoDoMotor> = {}
   for (const linha of linhas as Array<{
     runtime: string
     models: unknown
     modelsUnavailable: unknown
+    modelsRefreshedAt: unknown
+    lastError: unknown
   }>) {
     const modelos = Array.isArray(linha.models)
       ? linha.models
@@ -197,8 +223,19 @@ async function catalogosDoDono(
           .filter((m) => m.nome.length > 0)
       : []
 
-    if (!Array.isArray(linha.models) && indisponiveis.length === 0) continue
-    catalogos[linha.runtime] = { modelos, indisponiveis }
+    const lidoEm =
+      typeof linha.modelsRefreshedAt === 'string'
+        ? linha.modelsRefreshedAt
+        : linha.modelsRefreshedAt instanceof Date
+          ? linha.modelsRefreshedAt.toISOString()
+          : null
+    const motivo = typeof linha.lastError === 'string' && linha.lastError ? linha.lastError : null
+
+    // Nada pra dizer sobre este motor: nunca coletou, nada saiu do ar, e a
+    // última tentativa não deixou motivo nenhum registrado. Continua fora da
+    // resposta, como antes.
+    if (!Array.isArray(linha.models) && indisponiveis.length === 0 && !lidoEm && !motivo) continue
+    catalogos[linha.runtime] = { modelos, indisponiveis, lidoEm, motivo }
   }
   return catalogos
 }
@@ -263,6 +300,15 @@ export const cascataRoutes = async (app: FastifyInstance): Promise<void> => {
               rotulo: m.nome,
               sumiuEm: m.sumiuEm,
             })),
+            /** ISO da última coleta que trouxe catálogo REAL. `null` = nunca. */
+            lidoEm: doCatalogo?.lidoEm ?? null,
+            /**
+             * Por que a coleta mais recente não trouxe catálogo novo — a tela
+             * mostra isto em vez de fingir lista viva quando o motivo existe
+             * (D77). `null` quando a última tentativa deu certo (ou nunca
+             * houve tentativa nenhuma ainda).
+             */
+            motivo: doCatalogo?.motivo ?? null,
           }
         }
       )

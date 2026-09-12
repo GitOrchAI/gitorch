@@ -84,6 +84,16 @@ export interface MotorOpcoes {
   esforcoNoNomeDoModelo: boolean
   modelos: ModeloOpcao[]
   indisponiveis: ModeloQueSaiu[]
+  /**
+   * ISO da última coleta que trouxe catálogo REAL deste motor. `null`/ausente
+   * = nunca. Opcional para não quebrar um payload salvo antes do D77.
+   */
+  lidoEm?: string | null
+  /**
+   * Por que a coleta mais recente não trouxe catálogo novo (D77) — `null`
+   * quando a última tentativa deu certo (ou nunca houve tentativa ainda).
+   */
+  motivo?: string | null
 }
 
 export interface OpcoesPayload {
@@ -427,6 +437,31 @@ export function esforcoNaTela(motor: MotorOpcoes | undefined): EsforcoNaTela {
     }
   }
   return { habilitado: true, opcoes: [...motor.esforcos], motivo: null }
+}
+
+/**
+ * O aviso do catálogo de modelos daquele motor (D77).
+ *
+ * Antes, um catálogo vazio virava sempre a mesma nota genérica ("ainda não
+ * li o catálogo") — mesmo quando a coleta TINHA rodado e falhado por um
+ * motivo real (rede fora do ar, token ausente, API fora do ar). A tela
+ * escondia justamente o que ajudaria o dono a agir. Agora: quando existe um
+ * `motivo` registrado, ele aparece — dito, com a data da última leitura que
+ * deu certo quando ela existe. Sem motivo e sem nunca ter lido, cai na nota
+ * genérica de sempre (nenhuma mudança de comportamento nesse caso).
+ */
+export function avisoDoCatalogo(
+  motor: MotorOpcoes | undefined,
+  agora: Date = new Date()
+): string | null {
+  if (!motor) return null
+  if (motor.motivo) {
+    return `não consegui ler os modelos agora (${motor.motivo}) — último catálogo ${quandoFoiLido(motor.lidoEm ?? null, agora)}.`
+  }
+  if (motor.modelos.length === 0 && motor.indisponiveis.length === 0) {
+    return 'ainda não li o catálogo deste motor — este degrau roda no modelo padrão dele'
+  }
+  return null
 }
 
 // --- o que vai para a rota --------------------------------------------------
