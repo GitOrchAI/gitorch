@@ -272,3 +272,16 @@ global.console = {
   warn: vi.fn(),
   error: vi.fn(),
 }
+
+vi.mock('@prisma/client/runtime/library', () => {
+  class MockPrismaClientKnownRequestError extends Error {
+    code: string
+    meta: Record<string, unknown> | undefined
+    constructor(message: string, opts: { code: string; meta?: Record<string, unknown> }) {
+      super(message)
+      this.code = opts.code
+      this.meta = opts.meta
+    }
+  }
+  return { PrismaClientKnownRequestError: MockPrismaClientKnownRequestError }
+})

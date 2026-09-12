@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
-import { Prisma } from '@prisma/client'
+
+import { PrismaClientKnownRequestError } from '@prisma/client/runtime/library'
 import {
   abrirSessao,
   sessoesVivas,
@@ -97,7 +98,7 @@ describe('abrirSessao', () => {
   })
 
   it('violação do índice único parcial (P2002) vira resultado tipado, não exceção crua — duas delegações da mesma issue geram sessionName diferentes e caem as duas no ramo create do upsert', async () => {
-    const p2002 = new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+    const p2002 = new PrismaClientKnownRequestError('Unique constraint failed', {
       code: 'P2002',
       clientVersion: '5.22.0',
       meta: { target: ['project_id', 'issue_number'] },

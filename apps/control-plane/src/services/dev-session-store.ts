@@ -9,8 +9,8 @@
 //
 // Nada aqui conhece rede. Quem fala com o serviço externo é o cliente; quem
 // decide é a função pura de estado. Este módulo só guarda e devolve.
+import { PrismaClientKnownRequestError } from '@prisma/client/runtime/library'
 
-import { Prisma } from '@prisma/client'
 import { marcarEscalada } from './pergunta-sem-resposta.js'
 
 /** Uma linha viva da vigia, com o que a decisão precisa saber. */
@@ -297,7 +297,7 @@ export async function abrirSessao(deps: {
     })
     return { ok: true }
   } catch (err) {
-    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+    if (err instanceof PrismaClientKnownRequestError && err.code === 'P2002') {
       return { ok: false, motivo: 'ja-existe-sessao-viva' }
     }
     throw err
