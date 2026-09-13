@@ -6,7 +6,7 @@ import type { StepExecutor } from './role-rails.js'
 import { arquivosDeclarados, lerSecaoDaIssue } from './secao-da-issue.js'
 import { extractBlockers } from './sm-delegation.js'
 import { registrarNoPainelUmaVez, type PrismaDoRegistroNoPainel } from './registro-no-painel.js'
-import { lerCadenciaMs } from './cadencia-de-varredura.js'
+import { lerCadenciaMs, lerInteiroDaEnv } from './cadencia-de-varredura.js'
 
 // DJ-T12: as filas que já existem estão em fila indiana — medido no GitHub
 // (26/32 e 22/23 tasks abertas com "Blocked by" num repositório): só a
@@ -126,6 +126,62 @@ export function sinalDeCruzamento(args: {
   return { cruza, sinal }
 }
 
+/** Teto de PARES (tarefa, bloqueador) que chamam o motor numa única rodada — protege a cota e o tempo da missão do PO (medido: 29 pares num único repositório levariam a rodada inteira para o motor). */
+export const ENV_POR_RODADA_DE_REAVALIACAO = 'GITORCH_REAVALIAR_BLOQUEIOS_POR_RODADA'
+const TETO_PADRAO_POR_RODADA = 8
+
+interface TaskParaPriorizar {
+  number: number
+  body?: string | null
+}
+
+/**
+ * Ordena as tasks com bloqueio pendente para decidir QUAIS pares cabem no
+ * teto desta rodada: prioriza a task que é CABEÇA da corrente mais longa —
+ * a que, resolvida, libera a maior sequência de tarefas atrás dela (maior
+ * ganho de paralelismo). Empate (correntes do mesmo tamanho, ou nenhuma
+ * corrente) desempata pela mais antiga (menor número — ordem de criação no
+ * GitHub).
+ *
+ * "Corrente" só enxerga as próprias `tasks` desta rodada (mesma etiqueta
+ * `gitorch:task`); um bloqueador fora dessa lista é uma folha (comprimento
+ * 1) — não há como saber se ele também está numa corrente maior sem buscá-lo.
+ */
+export function ordenarPorPrioridadeDeCorrente<T extends TaskParaPriorizar>(tasks: T[]): T[] {
+  const porNumero = new Map(tasks.map((t) => [t.number, t] as const))
+  const dependentesDe = new Map<number, number[]>()
+  for (const t of tasks) {
+    for (const b of extractBlockers(t.body ?? '')) {
+      if (!porNumero.has(b)) continue
+      const lista = dependentesDe.get(b) ?? []
+      lista.push(t.number)
+      dependentesDe.set(b, lista)
+    }
+  }
+  const memo = new Map<number, number>()
+  function comprimento(numero: number, caminho: Set<number>): number {
+    const guardado = memo.get(numero)
+    if (guardado !== undefined) return guardado
+    if (caminho.has(numero)) return 0 // ciclo (não deveria existir) — corta aqui, nunca gira para sempre
+    caminho.add(numero)
+    let maior = 0
+    for (const dep of dependentesDe.get(numero) ?? []) {
+      maior = Math.max(maior, comprimento(dep, caminho))
+    }
+    caminho.delete(numero)
+    const resultado = 1 + maior
+    memo.set(numero, resultado)
+    return resultado
+  }
+  const comprimentos = new Map(
+    tasks.map((t) => [t.number, comprimento(t.number, new Set())] as const)
+  )
+  return [...tasks].sort((a, b) => {
+    const diff = (comprimentos.get(b.number) ?? 0) - (comprimentos.get(a.number) ?? 0)
+    return diff !== 0 ? diff : a.number - b.number
+  })
+}
+
 export interface ReavaliarBloqueiosOptions {
   repository: string
   githubToken: string
@@ -140,6 +196,14 @@ export interface ReavaliarBloqueiosResult {
   mantidos: number
   /** true quando o motor ficou sem resposta válida (cota) e a rodada parou antes de terminar. */
   interrompidoPorMotor: boolean
+  /**
+   * true quando, ao fim desta rodada, ainda existe algum "Blocked by" sem
+   * marcador (teto da rodada atingido, motor sem cota, releitura ou escrita
+   * recusadas). A agenda semanal (`deveRodarReavaliacaoAgora`) só marca a
+   * rodada como concluída quando isto vier `false` — enquanto for `true`,
+   * a próxima missão do PO roda de novo, sem esperar os 7 dias.
+   */
+  restamPendentes: boolean
 }
 
 interface IssueDoGithub {
@@ -156,9 +220,24 @@ interface IssueDoGithub {
  * roteiro do PO) e aplica no GitHub via `fetchDoRepositorio`
  * (`options.fetchImpl`) — nunca `fetch` cru.
  *
+ * Teto por rodada (`GITORCH_REAVALIAR_BLOQUEIOS_POR_RODADA`, padrão 8, mesma
+ * guarda `lerInteiroDaEnv` do scheduler): só essa quantidade de PARES chama o
+ * motor nesta chamada — protege a cota e o tempo da missão do PO. A ordem é
+ * `ordenarPorPrioridadeDeCorrente` (cabeça da corrente mais longa primeiro,
+ * empate pelo mais antigo); os pares que não couberem ficam pendentes
+ * (`restamPendentes: true`) e são os primeiros da PRÓXIMA chamada — o
+ * marcador de idempotência impede reperguntar o que já foi decidido.
+ *
  * Sem motor com cota (execute lança), a rodada PARA no par que falhou —
- * nada além disso é decidido — e devolve o que já foi aplicado; o resto fica
- * para a próxima rodada (o marcador impede reperguntar o que já foi decidido).
+ * nada além disso é decidido para aquela tarefa — e devolve o que já foi
+ * aplicado; o resto fica para a próxima rodada.
+ *
+ * Antes de aplicar qualquer decisão numa issue, relê o corpo pelo GET
+ * (`aplicarDecisoesNaIssue`): o corpo usado para montar o prompt pode já
+ * estar velho quando o motor devolve o veredito — SM/PO podem ter editado a
+ * issue nesse intervalo. A decisão é aplicada sobre o corpo FRESCO; se o
+ * bloqueador decidido não está mais no "Blocked by" fresco (alguém já
+ * resolveu), o par é pulado sem erro e sem PATCH.
  */
 export async function runReavaliarBloqueios(
   options: ReavaliarBloqueiosOptions
@@ -193,9 +272,83 @@ export async function runReavaliarBloqueios(
     removidos: 0,
     mantidos: 0,
     interrompidoPorMotor: false,
+    restamPendentes: false,
   }
 
-  paresDeTarefas: for (const t of Array.isArray(tasks) ? tasks : []) {
+  /**
+   * Aplica um lote de decisões (já com o veredito do motor) numa ÚNICA
+   * issue: relê o corpo fresco, descarta as decisões cujo bloqueador já
+   * saiu do "Blocked by" (edição concorrente), grava comentário + PATCH só
+   * se algo de fato mudou, e devolve quantas decisões pegaram.
+   */
+  const aplicarDecisoesNaIssue = async (
+    t: IssueDoGithub,
+    decisoes: Array<{ numero: number; decisao: 'manter' | 'remover'; motivo: string }>
+  ): Promise<{ removidos: number; mantidos: number }> => {
+    let corpoFresco: string
+    try {
+      const fresh = (await gh('GET', `/repos/${options.repository}/issues/${t.number}`)) as {
+        body?: string
+      }
+      corpoFresco = fresh.body ?? ''
+    } catch (err) {
+      onWarn(
+        `reavaliar-bloqueios: não deu para reler a #${t.number} antes de aplicar; decisão fica para a próxima rodada: ${String(err).slice(0, 150)}`
+      )
+      result.restamPendentes = true
+      return { removidos: 0, mantidos: 0 }
+    }
+
+    // Se o bloqueador decidido já saiu do "Blocked by" fresco — alguém
+    // (SM/PO, ou outra rodada) mexeu na issue nesse meio-tempo — o par não é
+    // mais real: pula sem erro, sem reaplicar uma decisão sobre bloqueio que
+    // já sumiu.
+    const bloqueiosNoCorpoFresco = new Set(lerBloqueiosComMotivo(corpoFresco).map((b) => b.numero))
+    const decisoesValidas = decisoes.filter((d) => bloqueiosNoCorpoFresco.has(d.numero))
+    if (decisoesValidas.length === 0) return { removidos: 0, mantidos: 0 }
+
+    const novoCorpo = aplicarDecisoesNoCorpo(corpoFresco, decisoesValidas)
+    if (novoCorpo === corpoFresco) return { removidos: 0, mantidos: 0 }
+
+    // Escreve SEMPRE via `fetchDoRepositorio` (embrulhado em `gh`/`f`) —
+    // nunca fetch cru. Uma autonomia "só olhar" recusa a escrita
+    // (`EscritaNaoAutorizadaError`); aqui isso vira aviso e a decisão
+    // continua sem marcador, reperguntada na próxima rodada.
+    try {
+      for (const d of decisoesValidas) {
+        if (d.decisao === 'remover') {
+          await gh('POST', `/repos/${options.repository}/issues/${t.number}/comments`, {
+            body: `${marcador(d.numero)}\nO PO reavaliou: esta tarefa não depende de #${d.numero} (${d.motivo}). Pode andar em paralelo.`,
+          })
+        }
+      }
+      await gh('PATCH', `/repos/${options.repository}/issues/${t.number}`, { body: novoCorpo })
+    } catch (err) {
+      onWarn(
+        `reavaliar-bloqueios: escrita recusada para a #${t.number} (autonomia do projeto) — decisão não aplicada, fica para a próxima rodada: ${String(err).slice(0, 150)}`
+      )
+      result.restamPendentes = true
+      return { removidos: 0, mantidos: 0 }
+    }
+
+    let removidos = 0
+    let mantidos = 0
+    for (const d of decisoesValidas) {
+      if (d.decisao === 'remover') removidos += 1
+      else mantidos += 1
+    }
+    return { removidos, mantidos }
+  }
+
+  const teto = lerInteiroDaEnv(ENV_POR_RODADA_DE_REAVALIACAO, TETO_PADRAO_POR_RODADA, onWarn)
+  const ordemPrioritaria = ordenarPorPrioridadeDeCorrente(Array.isArray(tasks) ? tasks : [])
+
+  let chamadasAoMotor = 0
+  let pararRodada = false
+
+  for (const t of ordemPrioritaria) {
+    if (pararRodada) break
+
     const bloqueios = lerBloqueiosComMotivo(t.body)
     const pendentes = bloqueios.filter((b) => !b.marcado)
     if (pendentes.length === 0) continue
@@ -203,6 +356,12 @@ export async function runReavaliarBloqueios(
     const decisoes: Array<{ numero: number; decisao: 'manter' | 'remover'; motivo: string }> = []
 
     for (const pendente of pendentes) {
+      if (chamadasAoMotor >= teto) {
+        result.restamPendentes = true
+        pararRodada = true
+        break
+      }
+
       let bloqueador: { number?: number; state?: string; title?: string; body?: string }
       try {
         bloqueador = (await gh(
@@ -217,6 +376,7 @@ export async function runReavaliarBloqueios(
         onWarn(
           `reavaliar-bloqueios: não deu para ler #${pendente.numero} (bloqueador da #${t.number}); segue para a próxima rodada: ${String(err).slice(0, 150)}`
         )
+        result.restamPendentes = true
         continue
       }
       // Bloqueador já fechado não é mais bloqueio ativo — a fila normal do SM
@@ -243,6 +403,7 @@ export async function runReavaliarBloqueios(
         ]
       )
 
+      chamadasAoMotor += 1
       let veredito: PoReavaliarBloqueioForm
       try {
         veredito = (await runFormStep({
@@ -255,39 +416,18 @@ export async function runReavaliarBloqueios(
           `reavaliar-bloqueios: motor sem resposta válida para #${t.number}/#${pendente.numero} — sem cota agora, fica para a próxima rodada: ${String(err).slice(0, 150)}`
         )
         result.interrompidoPorMotor = true
-        break paresDeTarefas
+        result.restamPendentes = true
+        pararRodada = true
+        break
       }
 
       decisoes.push({ numero: pendente.numero, decisao: veredito.decisao, motivo: veredito.motivo })
     }
 
-    if (decisoes.length === 0) continue
-
-    // Escreve SEMPRE via `fetchDoRepositorio` (embrulhado em `gh`/`f`) —
-    // nunca fetch cru. Uma autonomia "só olhar" recusa a escrita
-    // (`EscritaNaoAutorizadaError`); aqui isso vira aviso e a rodada segue
-    // para a próxima tarefa, sem contar a decisão como aplicada (ela
-    // continua sem marcador e será reperguntada na próxima rodada).
-    try {
-      for (const d of decisoes) {
-        if (d.decisao === 'remover') {
-          await gh('POST', `/repos/${options.repository}/issues/${t.number}/comments`, {
-            body: `${marcador(d.numero)}\nO PO reavaliou: esta tarefa não depende de #${d.numero} (${d.motivo}). Pode andar em paralelo.`,
-          })
-        }
-      }
-      const novoCorpo = aplicarDecisoesNoCorpo(t.body ?? '', decisoes)
-      await gh('PATCH', `/repos/${options.repository}/issues/${t.number}`, { body: novoCorpo })
-    } catch (err) {
-      onWarn(
-        `reavaliar-bloqueios: escrita recusada para a #${t.number} (autonomia do projeto) — decisão não aplicada, fica para a próxima rodada: ${String(err).slice(0, 150)}`
-      )
-      continue
-    }
-
-    for (const d of decisoes) {
-      if (d.decisao === 'remover') result.removidos += 1
-      else result.mantidos += 1
+    if (decisoes.length > 0) {
+      const aplicado = await aplicarDecisoesNaIssue(t, decisoes)
+      result.removidos += aplicado.removidos
+      result.mantidos += aplicado.mantidos
     }
   }
 
@@ -359,11 +499,19 @@ export interface RodarReavaliacaoDeProjetoOptions extends ReavaliarBloqueiosOpti
 }
 
 /**
- * O ciclo completo por projeto: só roda se a agenda mandar; marca a
- * execução; registra o resultado UMA VEZ na timeline do painel
- * (`registrarNoPainelUmaVez`) — nada vai ao dono (sem agent_question, sem
- * Telegram); acorda o SM se algum bloqueio foi removido (vaga liberada).
- * Devolve `null` quando a agenda decidiu não rodar agora.
+ * O ciclo completo por projeto: só roda se a agenda mandar; registra o
+ * resultado UMA VEZ na timeline do painel (`registrarNoPainelUmaVez`) —
+ * nada vai ao dono (sem agent_question, sem Telegram); acorda o SM se algum
+ * bloqueio foi removido (vaga liberada). Devolve `null` quando a agenda
+ * decidiu não rodar agora.
+ *
+ * A execução só é marcada como CONCLUÍDA (`marcarReavaliacaoExecutada`)
+ * quando `resultado.restamPendentes` vem `false` — com pendente sobrando
+ * (teto da rodada, motor sem cota, escrita recusada), a marca da última
+ * execução NÃO avança: `deveRodarReavaliacaoAgora` continua achando que já
+ * passou da hora, então a PRÓXIMA missão do PO roda de novo, sem esperar os
+ * 7 dias da cadência normal. Só quando zera o pendente é que o ciclo volta a
+ * ser semanal.
  */
 export async function rodarReavaliacaoDeProjetoSeForAHora(
   options: RodarReavaliacaoDeProjetoOptions
@@ -377,7 +525,9 @@ export async function rodarReavaliacaoDeProjetoSeForAHora(
   if (!deveRodar) return null
 
   const resultado = await runReavaliarBloqueios(options)
-  await marcarReavaliacaoExecutada({ prisma: options.prisma, projectId: options.projectId })
+  if (!resultado.restamPendentes) {
+    await marcarReavaliacaoExecutada({ prisma: options.prisma, projectId: options.projectId })
+  }
 
   const dataDeHoje = (options.agora ?? new Date()).toISOString().slice(0, 10)
   await registrarNoPainelUmaVez({

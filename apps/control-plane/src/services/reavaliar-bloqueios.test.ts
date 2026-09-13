@@ -4,10 +4,11 @@
 // real. TDD com fetch e executor falsos: nenhuma chamada real ao GitHub nem
 // a motor nenhum.
 
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   aplicarDecisoesNoCorpo,
   deveRodarReavaliacaoAgora,
+  ENV_POR_RODADA_DE_REAVALIACAO,
   lerBloqueiosComMotivo,
   rodarReavaliacaoDeProjetoSeForAHora,
   runReavaliarBloqueios,
@@ -189,7 +190,12 @@ describe('runReavaliarBloqueios', () => {
       fetchImpl: impl,
     })
 
-    expect(result).toEqual({ removidos: 1, mantidos: 0, interrompidoPorMotor: false })
+    expect(result).toEqual({
+      removidos: 1,
+      mantidos: 0,
+      interrompidoPorMotor: false,
+      restamPendentes: false,
+    })
     expect(patches).toHaveLength(1)
     expect(patches[0]!.body).not.toContain('#99')
     expect(comments).toHaveLength(1)
@@ -225,7 +231,12 @@ describe('runReavaliarBloqueios', () => {
       fetchImpl: impl,
     })
 
-    expect(result).toEqual({ removidos: 0, mantidos: 1, interrompidoPorMotor: false })
+    expect(result).toEqual({
+      removidos: 0,
+      mantidos: 1,
+      interrompidoPorMotor: false,
+      restamPendentes: false,
+    })
     expect(patches[0]!.body).toContain('Blocked by #99')
     expect(patches[0]!.body).toContain('- #99: usa o contrato de dados criado pela outra tarefa')
   })
@@ -259,7 +270,12 @@ describe('runReavaliarBloqueios', () => {
     })
 
     expect(execute).not.toHaveBeenCalled()
-    expect(result).toEqual({ removidos: 0, mantidos: 0, interrompidoPorMotor: false })
+    expect(result).toEqual({
+      removidos: 0,
+      mantidos: 0,
+      interrompidoPorMotor: false,
+      restamPendentes: false,
+    })
   })
 
   it('sem cota (motor lança) não decide nada e para nesse par — fica para a próxima rodada', async () => {
@@ -291,7 +307,12 @@ describe('runReavaliarBloqueios', () => {
       onWarn: () => undefined,
     })
 
-    expect(result).toEqual({ removidos: 0, mantidos: 0, interrompidoPorMotor: true })
+    expect(result).toEqual({
+      removidos: 0,
+      mantidos: 0,
+      interrompidoPorMotor: true,
+      restamPendentes: true,
+    })
     expect(patches).toHaveLength(0)
     expect(comments).toHaveLength(0)
   })
@@ -333,7 +354,12 @@ describe('runReavaliarBloqueios', () => {
       onWarn,
     })
 
-    expect(result).toEqual({ removidos: 0, mantidos: 0, interrompidoPorMotor: false })
+    expect(result).toEqual({
+      removidos: 0,
+      mantidos: 0,
+      interrompidoPorMotor: false,
+      restamPendentes: true,
+    })
     expect(onWarn).toHaveBeenCalled()
   })
 
@@ -381,6 +407,267 @@ describe('runReavaliarBloqueios', () => {
     expect(acordar).toHaveBeenCalledWith('proj-1', expect.any(String))
     expect(eventos.some((e) => e.type === TIPO_EVENTO_ULTIMA_EXECUCAO)).toBe(true)
     expect(eventos.some((e) => e.type === 'audit')).toBe(true)
+  })
+})
+
+describe('runReavaliarBloqueios — teto por rodada', () => {
+  afterEach(() => {
+    delete process.env[ENV_POR_RODADA_DE_REAVALIACAO]
+  })
+
+  it('20 pares independentes, teto 8: só os 8 mais antigos chamam o motor; sobra fica marcado', async () => {
+    process.env[ENV_POR_RODADA_DE_REAVALIACAO] = '8'
+
+    const issues: FakeIssue[] = []
+    for (let i = 0; i < 20; i++) {
+      issues.push({
+        number: 1000 + i,
+        title: `Task ${i}`,
+        body: `## Goal\n\nfazer ${i}\n\nBlocked by #${5000 + i}`,
+        labels: ['gitorch:task'],
+      })
+      issues.push({
+        number: 5000 + i,
+        title: `Blocker ${i}`,
+        body: '## Goal\n\ny',
+        labels: [],
+        state: 'open',
+      })
+    }
+    const { impl } = fakeFetch(issues)
+    const execute = vi.fn(async (prompt: string) => {
+      const m = prompt.match(/Task under review: #(\d+)/)
+      if (!m) throw new Error(`prompt inesperado: ${prompt.slice(0, 200)}`)
+      return JSON.stringify({ decisao: 'remover', motivo: `áreas diferentes, par ${m[1]}` })
+    })
+
+    const round1 = await runReavaliarBloqueios({
+      repository: 'dono/repo',
+      githubToken: 'tok',
+      execute,
+      fetchImpl: impl,
+    })
+
+    expect(execute).toHaveBeenCalledTimes(8)
+    expect(round1.removidos).toBe(8)
+    expect(round1.restamPendentes).toBe(true)
+    // os 8 mais antigos (menor número) são os primeiros a serem chamados
+    const numerosChamados1 = execute.mock.calls.map(([p]) =>
+      Number(String(p).match(/Task under review: #(\d+)/)![1])
+    )
+    expect(new Set(numerosChamados1)).toEqual(
+      new Set(Array.from({ length: 8 }, (_, i) => 1000 + i))
+    )
+
+    execute.mockClear()
+    const round2 = await runReavaliarBloqueios({
+      repository: 'dono/repo',
+      githubToken: 'tok',
+      execute,
+      fetchImpl: impl,
+    })
+    expect(execute).toHaveBeenCalledTimes(8)
+    expect(round2.restamPendentes).toBe(true)
+    const numerosChamados2 = execute.mock.calls.map(([p]) =>
+      Number(String(p).match(/Task under review: #(\d+)/)![1])
+    )
+    expect(new Set(numerosChamados2)).toEqual(
+      new Set(Array.from({ length: 8 }, (_, i) => 1008 + i))
+    )
+
+    execute.mockClear()
+    const round3 = await runReavaliarBloqueios({
+      repository: 'dono/repo',
+      githubToken: 'tok',
+      execute,
+      fetchImpl: impl,
+    })
+    expect(execute).toHaveBeenCalledTimes(4)
+    expect(round3.restamPendentes).toBe(false)
+  })
+})
+
+describe('runReavaliarBloqueios — releitura fresca antes de aplicar', () => {
+  it('corpo muda entre a leitura inicial e a aplicação: PATCH preserva o texto extra', async () => {
+    let corpoAtual = '## Goal\n\nx\n\nBlocked by #99'
+    let jaReleu = false
+    const patches: Array<{ body: string }> = []
+    const impl = (async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const u = String(url)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      const json = (d: unknown) => new Response(JSON.stringify(d), { status: 200 })
+      if (u.includes('/issues?') && u.includes('gitorch%3Atask')) {
+        return json([
+          { number: 700, title: 'Task M', body: corpoAtual, labels: [{ name: 'gitorch:task' }] },
+        ])
+      }
+      if (/\/issues\/99$/.test(u)) {
+        return json({ number: 99, state: 'open', title: 'Blocker', body: '## Goal\n\ny' })
+      }
+      if (/\/issues\/700\/comments$/.test(u)) {
+        return json({})
+      }
+      if (/\/issues\/700$/.test(u)) {
+        if (method === 'GET') {
+          if (!jaReleu) {
+            // Simula a edição concorrente que aconteceu ENTRE a listagem
+            // inicial (usada para montar o prompt) e esta releitura logo
+            // antes de aplicar a decisão do motor — o SM/PO editou o corpo
+            // (a seção "Blocked by" continua por último, como este próprio
+            // serviço sempre escreve).
+            corpoAtual = corpoAtual.replace(
+              '\n\nBlocked by #99',
+              '\n\n## Notas do SM\n\nEditado enquanto o motor decidia.\n\nBlocked by #99'
+            )
+            jaReleu = true
+          }
+          return json({ number: 700, state: 'open', body: corpoAtual })
+        }
+        if (method === 'PATCH') {
+          const body = (JSON.parse(String(init?.body)) as { body: string }).body
+          patches.push({ body })
+          corpoAtual = body
+          return json({})
+        }
+      }
+      return json({})
+    }) as typeof fetch
+    const execute = execExpr({
+      '#700': { decisao: 'remover', motivo: 'áreas diferentes' },
+    })
+
+    const result = await runReavaliarBloqueios({
+      repository: 'dono/repo',
+      githubToken: 'tok',
+      execute,
+      fetchImpl: impl,
+    })
+
+    expect(result.removidos).toBe(1)
+    expect(patches).toHaveLength(1)
+    expect(patches[0]!.body).toContain('## Notas do SM')
+    expect(patches[0]!.body).not.toContain('Blocked by')
+  })
+
+  it('bloqueador já removido por outro entre a leitura e a aplicação: par pulado, sem PATCH', async () => {
+    let corpoAtual = '## Goal\n\nx\n\nBlocked by #99'
+    let jaReleu = false
+    const patches: Array<{ body: string }> = []
+    const comments: Array<{ body: string }> = []
+    const impl = (async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const u = String(url)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      const json = (d: unknown) => new Response(JSON.stringify(d), { status: 200 })
+      if (u.includes('/issues?') && u.includes('gitorch%3Atask')) {
+        return json([
+          { number: 800, title: 'Task N', body: corpoAtual, labels: [{ name: 'gitorch:task' }] },
+        ])
+      }
+      if (/\/issues\/99$/.test(u)) {
+        return json({ number: 99, state: 'open', title: 'Blocker', body: '## Goal\n\ny' })
+      }
+      if (/\/issues\/800\/comments$/.test(u)) {
+        const body = (JSON.parse(String(init?.body)) as { body: string }).body
+        comments.push({ body })
+        return json({})
+      }
+      if (/\/issues\/800$/.test(u)) {
+        if (method === 'GET') {
+          if (!jaReleu) {
+            // Alguém (SM/PO, ou outra rodada) já resolveu #99 e tirou o
+            // "Blocked by" inteiro antes desta releitura acontecer.
+            corpoAtual = '## Goal\n\nx\n\n(já resolvido por outro caminho)'
+            jaReleu = true
+          }
+          return json({ number: 800, state: 'open', body: corpoAtual })
+        }
+        if (method === 'PATCH') {
+          const body = (JSON.parse(String(init?.body)) as { body: string }).body
+          patches.push({ body })
+          return json({})
+        }
+      }
+      return json({})
+    }) as typeof fetch
+    const execute = execExpr({
+      '#800': { decisao: 'remover', motivo: 'áreas diferentes' },
+    })
+
+    const result = await runReavaliarBloqueios({
+      repository: 'dono/repo',
+      githubToken: 'tok',
+      execute,
+      fetchImpl: impl,
+    })
+
+    expect(result).toEqual({
+      removidos: 0,
+      mantidos: 0,
+      interrompidoPorMotor: false,
+      restamPendentes: false,
+    })
+    expect(patches).toHaveLength(0)
+    expect(comments).toHaveLength(0)
+  })
+})
+
+describe('rodarReavaliacaoDeProjetoSeForAHora — agenda não espera com pendente sobrando', () => {
+  afterEach(() => {
+    delete process.env[ENV_POR_RODADA_DE_REAVALIACAO]
+  })
+
+  it('teto deixou pendente: NÃO marca a rodada como concluída (próxima missão do PO roda de novo)', async () => {
+    process.env[ENV_POR_RODADA_DE_REAVALIACAO] = '1'
+    const issues: FakeIssue[] = [
+      {
+        number: 900,
+        title: 'Task O',
+        body: '## Goal\n\nx\n\nBlocked by #99',
+        labels: ['gitorch:task'],
+      },
+      {
+        number: 901,
+        title: 'Task P',
+        body: '## Goal\n\nx\n\nBlocked by #98',
+        labels: ['gitorch:task'],
+      },
+      { number: 99, title: 'B1', body: '## Goal\n\ny', labels: [], state: 'open' },
+      { number: 98, title: 'B2', body: '## Goal\n\ny', labels: [], state: 'open' },
+    ]
+    const { impl } = fakeFetch(issues)
+    const execute = execExpr({
+      '#900': { decisao: 'remover', motivo: 'x' },
+      '#901': { decisao: 'remover', motivo: 'x' },
+    })
+    const eventos: Array<{ type: string }> = []
+    const prisma = {
+      event: {
+        findFirst: vi.fn(async () => null),
+        create: vi.fn(async ({ data }: { data: { type: string } }) => {
+          eventos.push({ type: data.type })
+          return {}
+        }),
+      },
+    }
+
+    const resultado = await rodarReavaliacaoDeProjetoSeForAHora({
+      repository: 'dono/repo',
+      githubToken: 'tok',
+      execute,
+      fetchImpl: impl,
+      prisma: prisma as never,
+      projectId: 'proj-2',
+    })
+
+    expect(resultado?.restamPendentes).toBe(true)
+    expect(eventos.some((e) => e.type === TIPO_EVENTO_ULTIMA_EXECUCAO)).toBe(false)
+
+    // a próxima missão do PO chama de novo (a agenda não espera os 7 dias)
+    const deveRodarDeNovo = await deveRodarReavaliacaoAgora({
+      prisma: prisma as never,
+      projectId: 'proj-2',
+    })
+    expect(deveRodarDeNovo).toBe(true)
   })
 })
 
