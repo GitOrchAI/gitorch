@@ -313,6 +313,7 @@ import {
 } from '../services/retomar-pr-reprovado.js'
 import { dedupKeyDeRetomada } from '../services/dedup-key-de-retomada.js'
 import { registrarNoPainelUmaVez } from '../services/registro-no-painel.js'
+import { rodarReavaliacaoDeProjetoSeForAHora } from '../services/reavaliar-bloqueios.js'
 import { varrerPrsDuplicadosDoDev } from '../services/varrer-prs-duplicados.js'
 import { ehPRDaAutomacao } from '../services/vigia-do-pr.js'
 import { varrerVagasVazadas } from '../services/reconciliar-vagas.js'
@@ -4247,6 +4248,40 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                     // espera a próxima janela do cron para o SM redescobrir.
                     if (poResult.noOp === false) {
                       acordarSmPorVagaLiberada(project.id, 'PO criou tarefas')
+                    }
+                    // DJ-T12: fila indiana — 26/32 e 22/23 tasks abertas
+                    // travadas por um "Blocked by" que ninguém mais relê.
+                    // O `execute: StepExecutor` REAL só existe AQUI, dentro
+                    // de uma missão do PO já passada pelo teto diário e pelo
+                    // orçamento do plano (mesmo motivo documentado em
+                    // `suporDuvidaPendente`, mais abaixo neste arquivo) — por
+                    // isso a reavaliação pega carona no ciclo do PO em vez de
+                    // ganhar um `setInterval` próprio sem motor gasto nenhum
+                    // como a retrospectiva. `deveRodarReavaliacaoAgora`
+                    // (dentro do serviço) já garante que o trabalho pesado só
+                    // roda uma vez por semana por projeto (ou na primeira vez
+                    // que o PO rodar depois do boot) — cada disparo do cron
+                    // do PO que cair fora da janela é um no-op determinístico
+                    // e barato. Nunca derruba a missão do PO: um problema na
+                    // reavaliação não pode impedir a issue nova de sair.
+                    try {
+                      await rodarReavaliacaoDeProjetoSeForAHora({
+                        repository: project.wingId,
+                        githubToken: railsToken as string,
+                        execute,
+                        fetchImpl: fetchDoQuadro(project),
+                        prisma: app.prisma as unknown as Parameters<
+                          typeof rodarReavaliacaoDeProjetoSeForAHora
+                        >[0]['prisma'],
+                        projectId: project.id,
+                        acordarSmPorVagaLiberada,
+                        onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+                      })
+                    } catch (err) {
+                      app.log.warn(
+                        err,
+                        `[Scheduler] reavaliação de bloqueios falhou em ${project.wingId}; tenta na próxima vez que o PO rodar`
+                      )
                     }
                     return poResult
                   })()
