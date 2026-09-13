@@ -223,6 +223,58 @@ describe('validateBacklogPlan', () => {
     expect(validateBacklogPlan(semDependencia)).toEqual([])
   })
 
+  // D74: medido no GitHub, 24/29 e 22/23 tasks presas numa fila indiana —
+  // cada task bloqueada só pela anterior, em corrente, por hábito de
+  // sequência. Além da reprovação por task (acima), o plano com uma corrente
+  // de 3+ elos e pelo menos um sem motivo ganha um diagnóstico PRÓPRIO,
+  // nomeando o padrão para o PO corrigir o hábito.
+  describe('corrente sequencial sem justificativa (D74: fila indiana)', () => {
+    /** Plano com N tasks em corrente linear (task i bloqueada só pela i-1),
+     * todas na mesma feature, sprints crescentes para não violar o roadmap. */
+    function planComCorrente(rationales: Array<string | undefined>): BacklogPlan {
+      const p = plan()
+      const base = p.tasks[0]!
+      p.tasks = [
+        base,
+        ...rationales.map((rationale, idx) => ({
+          featureIndex: 0,
+          fields: fields({ titulo: `[Task] elo ${idx}` }),
+          blockedByTaskIndexes: [idx],
+          ...(rationale !== undefined ? { blockedByRationale: rationale } : {}),
+          weight: 3 as const,
+          weightRationale: 'Mesmo padrão da task anterior, ajuste pontual.',
+        })),
+      ]
+      p.roadmap = {
+        sprintGoal: p.roadmap.sprintGoal,
+        assignments: p.tasks.map((_, i) => ({ taskIndex: i, sprint: i + 1 })),
+      }
+      return p
+    }
+
+    const motivo = 'Precisa do endpoint que a task anterior publica no schema.'
+
+    it('corrente de 3 elos com um sem motivo é rejeitada com diagnóstico próprio', () => {
+      const p = planComCorrente([motivo, undefined, motivo])
+      const problemas = validateBacklogPlan(p)
+      expect(problemas.join(' ')).toMatch(/corrente sequencial/i)
+    })
+
+    it('corrente de 3 elos com todos os motivos substanciais passa', () => {
+      const p = planComCorrente([motivo, motivo, motivo])
+      expect(validateBacklogPlan(p)).toEqual([])
+    })
+
+    it('corrente de só 2 elos sem motivo não aciona a régua da corrente (curta demais)', () => {
+      const p = planComCorrente([undefined, undefined])
+      const problemas = validateBacklogPlan(p)
+      // Ainda reprova pela régua de justificativa por task (item isolado),
+      // mas NÃO pelo diagnóstico de corrente — 2 elos é dependência em série
+      // legítima, não a fila indiana medida em D74.
+      expect(problemas.join(' ')).not.toMatch(/corrente sequencial/i)
+    })
+  })
+
   it('jornada do RA ignorada pelos épicos → rejeitado (o "plano raso")', () => {
     const p = plan()
     p.epics[0]!.journeyIndexes = [0] // jornada 1 fica descoberta
@@ -452,8 +504,20 @@ describe('applyBacklog', () => {
 
     const task2 = created[4]!
     expect(task2.body).toContain('Blocked by #204')
+    // D74: o MOTIVO da dependência vai para o corpo da issue, junto do
+    // "Blocked by #N" — não só no plano interno do PO. Quem lê a issue no
+    // GitHub (dono, SM, um repositório público) vê o PORQUÊ, não só o link.
+    expect(task2.body).toContain('Precisa da coluna material que a task 0 cria na migração.')
     // tasks nascem com a label de tipo p/ delegação contínua do SM
     expect(created[3]!.labels).toContain('gitorch:task')
+  })
+
+  it('o motivo do bloqueio no corpo NÃO quebra extractBlockers (sm-delegation.ts)', async () => {
+    const { gh, created } = fakeGitHub()
+    await applyBacklog({ github: gh, plan: plan() })
+    const task2 = created[4]!
+    const { extractBlockers } = await import('./sm-delegation.js')
+    expect(extractBlockers(task2.body)).toEqual([204])
   })
 
   it('toda issue nova nasce marcada como produção do PO (gitorch:agent:po)', async () => {
