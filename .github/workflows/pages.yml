@@ -28,11 +28,12 @@ jobs:
           node-version: 22
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
+      - uses: actions/configure-pages@v5
       - name: Build static site
         working-directory: apps/web
         run: pnpm build
         env:
-          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL || '' }}
           NEXT_PUBLIC_BASE_PATH: ${{ vars.GITORCH_PAGES_BASE_PATH }}
           NEXT_PUBLIC_GITHUB_REPO: ${{ github.repository }}
       - name: Assert basePath nas páginas (home + setup + painel)
