@@ -5,7 +5,7 @@ import {
   type PoViabilidadeDeLogicaAlternativaForm,
 } from '@gitorch/cadence'
 import { runFormStep } from './rails-runner.js'
-import { textoDaRespostaAoDev } from './duvida-do-dev.js'
+import { textoDaRespostaAoDev, type DestinoDaDuvida } from './duvida-do-dev.js'
 import {
   montarContextoExecutivoDaPergunta,
   type ContextoExecutivoDaPergunta,
@@ -14,6 +14,7 @@ import {
 } from './contexto-executivo-da-pergunta.js'
 import { buildFreeTextOption } from './telegram-bot.js'
 import type { StepExecutor } from './role-rails.js'
+import type { DuvidaRailsMissionResult } from './duvida-rails-mission.js'
 
 /**
  * DJ-T9 (D76, 14/09) — palavras do dono: "Jules tem dúvida? é o GitOrch que
@@ -190,6 +191,111 @@ export async function resolverLogicaAlternativaDoJules(
     tipo: 'pronta-para-o-dono',
     motivoDaViabilidade: avaliacao.motivo,
     resumoDaProposta: args.resumoDaProposta,
+  }
+}
+
+export interface DecidirDestinoAposLogicaAlternativaArgs {
+  /** O resultado bruto de `runDuvidaMissionViaRails` (duvida-rails-mission.ts). */
+  resultadoDaDuvida: DuvidaRailsMissionResult
+  /** A pergunta original do dev — repassada ao RA/PO para dar contexto. */
+  pergunta: string
+  repository: string
+  issueNumber: number
+  execute: StepExecutor
+  contextBlocks: string[]
+  /** Injetável para teste; produção nunca passa nada — cai no
+   *  `resolverLogicaAlternativaDoJules` real (mesmo padrão de
+   *  `buscarConversa` em `escalar-duvida-ao-dono.ts`). */
+  resolver?: typeof resolverLogicaAlternativaDoJules
+}
+
+export interface DestinoFinalDaDuvida {
+  destino: DestinoDaDuvida
+  mensagemParaODev: string | null
+}
+
+/**
+ * DJ-T9 (D76, 14/09) — o degrau que FECHA o gap encontrado nesta tarefa: até
+ * aqui, `resolverLogicaAlternativaDoJules`/`avaliarViabilidadeDaLogicaAlternativa`
+ * existiam prontos mas não eram chamados de lugar nenhum em produção — o
+ * critério de aceite ("nenhuma dúvida do dev muda o cenário de negócio sem
+ * passar por PO+RA com viabilidade registrada") ficava sem encanamento real.
+ *
+ * `scheduler.ts` (`responderDuvidaPendente`) chama esta função logo após
+ * `runDuvidaMissionViaRails`, ANTES de decidir o destino final da dúvida:
+ *
+ *  - `mudaCenarioDeNegocio=false` (o caso comum, e o único que existia antes
+ *    desta tarefa): devolve `destino`/`mensagemParaODev` de
+ *    `resultadoDaDuvida` SEM TOCAR em nada — zero chamada extra, zero custo
+ *    de motor a mais. É o mesmo comportamento de sempre.
+ *  - `mudaCenarioDeNegocio=true`: chama `resolverLogicaAlternativaDoJules`
+ *    (RA analisa, PO decide) e usa o desfecho dela para decidir o destino
+ *    FINAL, substituindo o que `resultadoDaDuvida` trazia:
+ *      - inviável: mantém a lógica original — a mensagem final é a que
+ *        `respostaMantendoLogicaOriginal` formou (mesmo texto de sempre,
+ *        via `textoDaRespostaAoDev`); o destino original é preservado
+ *        (nunca vira `perguntar-ao-dono`, nunca chega em
+ *        `escalarDuvidaAoDono`).
+ *      - viável: o destino final passa a ser `perguntar-ao-dono` — o MESMO
+ *        caminho que `scheduler.ts` já usa para chamar `escalarDuvidaAoDono`
+ *        (D75, já sujeito à autorização de side effect existente lá).
+ *        Nenhum envio novo é inventado aqui.
+ *
+ * NÃO duplica a checagem de cota: `resolverLogicaAlternativaDoJules` (e
+ * `avaliarViabilidadeDaLogicaAlternativa` por trás dela) NUNCA captura erro
+ * de `execute`/`runFormStep` — uma falha de motor sobe intacta através desta
+ * função também, para o MESMO `executeMissionWithFailover` (scheduler.ts)
+ * que já cuida de cota para qualquer papel (DJ-T4/D75) assumir.
+ *
+ * `respostaOriginal` (o que `resolverLogicaAlternativaDoJules` precisa para
+ * formar a resposta do caminho inviável) só existe de verdade quando o QA
+ * conseguiu responder tecnicamente (`destino.tipo === 'responder-o-dev'`) —
+ * é o cenário comum descrito pelo dono ("o Jules, respondendo a uma dúvida,
+ * propôs uma lógica alternativa"). Quando o destino original é outro (QA não
+ * soube responder, ou já era decisão de negócio), não existe resposta
+ * original para "manter" — passa string vazia, nunca inventa texto.
+ */
+export async function decidirDestinoAposLogicaAlternativa(
+  args: DecidirDestinoAposLogicaAlternativaArgs
+): Promise<DestinoFinalDaDuvida> {
+  const { resultadoDaDuvida } = args
+
+  if (!resultadoDaDuvida.mudaCenarioDeNegocio) {
+    return {
+      destino: resultadoDaDuvida.destino,
+      mensagemParaODev: resultadoDaDuvida.mensagemParaODev,
+    }
+  }
+
+  const resolver = args.resolver ?? resolverLogicaAlternativaDoJules
+  const respostaOriginal =
+    resultadoDaDuvida.destino.tipo === 'responder-o-dev' ? resultadoDaDuvida.destino.resposta : ''
+
+  const resultado = await resolver({
+    resumoDaProposta: resultadoDaDuvida.resumoDaProposta as string,
+    pergunta: args.pergunta,
+    repository: args.repository,
+    issueNumber: args.issueNumber,
+    execute: args.execute,
+    contextBlocks: args.contextBlocks,
+    respostaOriginal,
+  })
+
+  if (resultado.tipo === 'mantida-logica-original') {
+    return {
+      destino: resultadoDaDuvida.destino,
+      mensagemParaODev: resultado.mensagemParaODev,
+    }
+  }
+
+  return {
+    destino: {
+      tipo: 'perguntar-ao-dono',
+      motivo:
+        'o time encontrou uma lógica alternativa avaliada como viável pelo PO+RA: ' +
+        resultado.motivoDaViabilidade,
+    },
+    mensagemParaODev: null,
   }
 }
 

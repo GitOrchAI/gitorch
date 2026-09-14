@@ -7,11 +7,14 @@ import {
   montarPerguntaSobreLogicaAlternativa,
   perguntarAoDonoSobreLogicaAlternativa,
   textoDaPerguntaSobreLogicaAlternativa,
+  decidirDestinoAposLogicaAlternativa,
   OPCOES_DE_LOGICA_ALTERNATIVA,
+  type ResultadoDaLogicaAlternativa,
 } from './viabilidade-da-logica-alternativa.js'
 import { textoDaRespostaAoDev } from './duvida-do-dev.js'
 import { FREE_TEXT_OPTION_VALUE } from './telegram-bot.js'
 import type { ContextoExecutivoDaPergunta } from './contexto-executivo-da-pergunta.js'
+import type { DuvidaRailsMissionResult } from './duvida-rails-mission.js'
 
 const BASE = {
   resumoDaProposta:
@@ -298,5 +301,202 @@ describe('perguntarAoDonoSobreLogicaAlternativa — função/fluxo pronta, SEM d
       ...OPCOES_DE_LOGICA_ALTERNATIVA,
       expect.objectContaining({ value: FREE_TEXT_OPTION_VALUE }),
     ])
+  })
+})
+
+// DJ-T9 (continuação) — GAP fechado: o critério de aceite exige que "em
+// produção nenhuma dúvida do dev chega ao dono sem passar por PO+RA com
+// viabilidade registrada", mas `resolverLogicaAlternativaDoJules` não era
+// chamado de lugar nenhum. `decidirDestinoAposLogicaAlternativa` é o degrau
+// que `scheduler.ts` chama logo após `runDuvidaMissionViaRails`, ANTES de
+// decidir o destino final — este describe prova os dois ramos exigidos:
+// `mudaCenarioDeNegocio=false` idêntico a antes (zero chamada extra) e
+// `mudaCenarioDeNegocio=true` com o desfecho do PO+RA decidindo o caminho.
+describe('decidirDestinoAposLogicaAlternativa — liga mudaCenarioDeNegocio à viabilidade PO+RA (DJ-T9)', () => {
+  const ARGS_COMUNS = {
+    pergunta: BASE.pergunta,
+    repository: BASE.repository,
+    issueNumber: BASE.issueNumber,
+    contextBlocks: BASE.contextBlocks,
+  }
+
+  function resultadoBase(
+    overrides: Partial<DuvidaRailsMissionResult> = {}
+  ): DuvidaRailsMissionResult {
+    return {
+      destino: { tipo: 'responder-o-dev', resposta: 'Use argon2id, já está em src/lib/hash.ts.' },
+      mensagemParaODev: textoDaRespostaAoDev('Use argon2id, já está em src/lib/hash.ts.'),
+      mudaCenarioDeNegocio: false,
+      resumoDaProposta: null,
+      ...overrides,
+    }
+  }
+
+  it('mudaCenarioDeNegocio=false: fluxo IDÊNTICO ao de antes desta tarefa — nenhuma chamada extra ao resolver', async () => {
+    const resultadoDaDuvida = resultadoBase()
+    const resolver = vi.fn()
+    const execute = vi.fn()
+
+    const r = await decidirDestinoAposLogicaAlternativa({
+      ...ARGS_COMUNS,
+      resultadoDaDuvida,
+      execute,
+      resolver,
+    })
+
+    expect(r).toEqual({
+      destino: resultadoDaDuvida.destino,
+      mensagemParaODev: resultadoDaDuvida.mensagemParaODev,
+    })
+    expect(resolver).not.toHaveBeenCalled()
+    expect(execute).not.toHaveBeenCalled()
+  })
+
+  it('mudaCenarioDeNegocio=false (default, campo ausente): mesmo comportamento — idêntico ao caso explícito', async () => {
+    const resultadoDaDuvida = resultadoBase({
+      destino: { tipo: 'escalar-ao-ra', motivo: 'o QA não conseguiu responder' },
+      mensagemParaODev: null,
+    })
+    const resolver = vi.fn()
+
+    const r = await decidirDestinoAposLogicaAlternativa({
+      ...ARGS_COMUNS,
+      resultadoDaDuvida,
+      execute: vi.fn(),
+      resolver,
+    })
+
+    expect(r).toEqual({ destino: resultadoDaDuvida.destino, mensagemParaODev: null })
+    expect(resolver).not.toHaveBeenCalled()
+  })
+
+  it('mudaCenarioDeNegocio=true, INVIÁVEL: o resolver é chamado com a resposta original do destino, e o destino final NUNCA vira perguntar-ao-dono', async () => {
+    const resultadoDaDuvida = resultadoBase({
+      mudaCenarioDeNegocio: true,
+      resumoDaProposta: BASE.resumoDaProposta,
+    })
+    const desfechoInviavel: ResultadoDaLogicaAlternativa = {
+      tipo: 'mantida-logica-original',
+      mensagemParaODev: 'GitOrch: mantida a lógica original (inviável).',
+      comentario: 'GitOrch: lógica alternativa avaliada e considerada inviável.',
+    }
+    const resolver = vi.fn().mockResolvedValue(desfechoInviavel)
+    const execute = vi.fn()
+
+    const r = await decidirDestinoAposLogicaAlternativa({
+      ...ARGS_COMUNS,
+      resultadoDaDuvida,
+      execute,
+      resolver,
+    })
+
+    expect(resolver).toHaveBeenCalledOnce()
+    expect(resolver.mock.calls[0]![0]).toEqual({
+      resumoDaProposta: BASE.resumoDaProposta,
+      pergunta: BASE.pergunta,
+      repository: BASE.repository,
+      issueNumber: BASE.issueNumber,
+      execute,
+      contextBlocks: BASE.contextBlocks,
+      respostaOriginal: 'Use argon2id, já está em src/lib/hash.ts.',
+    })
+
+    // Nunca chega em perguntar-ao-dono — o destino segue 'responder-o-dev',
+    // e a mensagem final é a que o resolver decidiu (mantendo a lógica
+    // original), nunca a antiga sem passar pela viabilidade.
+    expect(r.destino).toEqual(resultadoDaDuvida.destino)
+    expect(r.mensagemParaODev).toBe('GitOrch: mantida a lógica original (inviável).')
+  })
+
+  it('mudaCenarioDeNegocio=true, VIÁVEL: o destino final vira perguntar-ao-dono (o MESMO caminho que já leva a escalarDuvidaAoDono) — mensagemParaODev nulo', async () => {
+    const resultadoDaDuvida = resultadoBase({
+      mudaCenarioDeNegocio: true,
+      resumoDaProposta: BASE.resumoDaProposta,
+    })
+    const desfechoViavel: ResultadoDaLogicaAlternativa = {
+      tipo: 'pronta-para-o-dono',
+      motivoDaViabilidade: 'Vale consultar: muda o cadastro inteiro.',
+      resumoDaProposta: BASE.resumoDaProposta,
+    }
+    const resolver = vi.fn().mockResolvedValue(desfechoViavel)
+
+    const r = await decidirDestinoAposLogicaAlternativa({
+      ...ARGS_COMUNS,
+      resultadoDaDuvida,
+      execute: vi.fn(),
+      resolver,
+    })
+
+    expect(r.destino.tipo).toBe('perguntar-ao-dono')
+    if (r.destino.tipo === 'perguntar-ao-dono') {
+      expect(r.destino.motivo).toContain('Vale consultar: muda o cadastro inteiro.')
+    }
+    expect(r.mensagemParaODev).toBeNull()
+  })
+
+  it('mudaCenarioDeNegocio=true mas destino original NÃO é responder-o-dev: respostaOriginal vai vazia (nunca inventa texto)', async () => {
+    const resultadoDaDuvida = resultadoBase({
+      destino: { tipo: 'perguntar-ao-dono', motivo: 'é decisão de negócio' },
+      mensagemParaODev: null,
+      mudaCenarioDeNegocio: true,
+      resumoDaProposta: BASE.resumoDaProposta,
+    })
+    const resolver = vi.fn().mockResolvedValue({
+      tipo: 'mantida-logica-original',
+      mensagemParaODev: 'irrelevante para este teste',
+      comentario: 'irrelevante',
+    } satisfies ResultadoDaLogicaAlternativa)
+
+    await decidirDestinoAposLogicaAlternativa({
+      ...ARGS_COMUNS,
+      resultadoDaDuvida,
+      execute: vi.fn(),
+      resolver,
+    })
+
+    expect(resolver.mock.calls[0]![0]).toMatchObject({ respostaOriginal: '' })
+  })
+
+  it('resolver não passado: usa o resolverLogicaAlternativaDoJules real por padrão (produção nunca precisa injetar)', async () => {
+    const resultadoDaDuvida = resultadoBase({
+      mudaCenarioDeNegocio: true,
+      resumoDaProposta: BASE.resumoDaProposta,
+    })
+    const execute = executeSequencial([
+      RESPOSTA_ORA_RA,
+      { decisao: 'inviavel', motivo: 'mantém como está' },
+    ])
+
+    const r = await decidirDestinoAposLogicaAlternativa({
+      ...ARGS_COMUNS,
+      resultadoDaDuvida,
+      execute,
+    })
+
+    // Sem resolver injetado, o caminho real rodou (RA + PO = 2 chamadas de
+    // execute) e chegou ao mesmo desfecho inviável.
+    expect(execute).toHaveBeenCalledTimes(2)
+    expect(r.destino).toEqual(resultadoDaDuvida.destino)
+  })
+
+  // DJ-T4/D75, mesmo raciocínio de avaliarViabilidadeDaLogicaAlternativa:
+  // sem cota disponível, a exceção sobe intacta — nunca vira um desfecho
+  // decidido, para o MESMO failover de scheduler.ts assumir.
+  it('sem cota disponível: a exceção do resolver sobe intacta, nunca vira destino decidido', async () => {
+    const resultadoDaDuvida = resultadoBase({
+      mudaCenarioDeNegocio: true,
+      resumoDaProposta: BASE.resumoDaProposta,
+    })
+    const erroDeCota = new Error('usage limit reached')
+    const resolver = vi.fn().mockRejectedValue(erroDeCota)
+
+    await expect(
+      decidirDestinoAposLogicaAlternativa({
+        ...ARGS_COMUNS,
+        resultadoDaDuvida,
+        execute: vi.fn(),
+        resolver,
+      })
+    ).rejects.toThrow(erroDeCota)
   })
 })

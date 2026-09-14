@@ -212,6 +212,7 @@ import {
   escalarDuvidaAoDono,
   type PrismaParaEscalarDuvida,
 } from '../services/escalar-duvida-ao-dono.js'
+import { decidirDestinoAposLogicaAlternativa } from '../services/viabilidade-da-logica-alternativa.js'
 import {
   // L4-T4 (D64), fix-up a13a42f8: renomeado no import — o wiring real
   // (prisma, BYOK, GitHub, agentQuestionService) mora em `scheduler.ts`
@@ -8556,7 +8557,26 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         `[Scheduler] motor ${args.runtime} respondeu à dúvida da tarefa #${esperando.issueNumber} ` +
           `de ${args.repository}`
       )
-      let { destino, mensagemParaODev } = resultadoDaDuvida
+      // DJ-T9 (D76, 14/09) — GAP fechado: o Jules pode ter sinalizado, ao
+      // responder, uma LÓGICA ALTERNATIVA que muda o cenário de negócio
+      // (`resultadoDaDuvida.mudaCenarioDeNegocio`). Antes de decidir o
+      // destino final, passa pela viabilidade PO+RA
+      // (`decidirDestinoAposLogicaAlternativa`,
+      // viabilidade-da-logica-alternativa.ts) — que, no caso comum
+      // (`mudaCenarioDeNegocio=false`), devolve `destino`/`mensagemParaODev`
+      // SEM TOCAR em nada (nenhuma chamada extra). SEM try/catch de
+      // propósito, mesmo padrão de `runDuvidaTecnicaViaRa` logo abaixo: uma
+      // falha de motor (cota) sobe intacta para a MESMA cascata de
+      // `executeMissionWithFailover` — nenhuma checagem de cota é duplicada
+      // aqui.
+      let { destino, mensagemParaODev } = await decidirDestinoAposLogicaAlternativa({
+        resultadoDaDuvida,
+        pergunta,
+        repository: args.repository,
+        issueNumber: esperando.issueNumber,
+        execute: args.execute,
+        contextBlocks: args.contextBlocks,
+      })
       // D72 (02/09) — ordem explícita do dono: "não é pra fazer isso para
       // dúvidas técnicas, seja executivo". O RA SEMPRE tenta antes do dono,
       // para TODA política — antes, só 'so-executivo' chamava o RA;
