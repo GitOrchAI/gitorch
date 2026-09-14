@@ -186,6 +186,32 @@ describe('isFailoverError', () => {
     }
   })
 
+  // Achado DJ-T9 (14/09): `429` sem `\b` (diferente de `\b401\b`/`\b403\b`,
+  // que JÁ tinham a guarda) casava qualquer string que contivesse os dígitos
+  // "429" em SEQUÊNCIA, não só o código HTTP isolado — inclusive um número de
+  // linha de stack trace (`scheduler.ts:4297:19`). Medido ao vivo: um bug
+  // completamente não relacionado a motor (`TypeError: maisAntigos is not
+  // iterable`, de `qa-rails-mission.ts`, por sua vez causado por um mock de
+  // teste incompleto) tinha o stack passando por uma linha do scheduler que,
+  // só por coincidência de contagem de linhas, terminava em "4297" — e isto
+  // bastava para `isFailoverError` classificar o erro como falha de motor e
+  // acionar failover para o próximo degrau da cadeia sobre um bug que não
+  // tinha NADA a ver com motor/cota. Nenhum teste cobria esta armadilha antes.
+  test('NÃO dispara por "429" apenas como substring de outra coisa (nº de linha, data, id)', () => {
+    for (const m of [
+      'TypeError: maisAntigos is not iterable\n    at scheduler.ts:4297:19',
+      'processed 14290 items without error',
+      'build finished on 2026-04-29 without failure',
+      'order id 5429001 confirmed',
+    ]) {
+      expect(isFailoverError(m)).toBe(false)
+    }
+    // O código HTTP 429 de verdade, isolado por fronteira de palavra,
+    // continua disparando — a guarda tem que ser cirúrgica, não silenciar o
+    // caso real.
+    expect(isFailoverError('HTTP/1.1 429 Too Many Requests')).toBe(true)
+  })
+
   // Achado importante: prompt como argumento de linha de comando estourava
   // E2BIG em repositório grande e NENHUM failover era tentado — o erro é do
   // processo local (limite do SO), não do motor, então o próximo motor da

@@ -220,8 +220,16 @@ export function resolvePrimaryRuntime(
 // o produto a constata ANTES de disparar (ver SemCredencialDoMotorError) — e
 // sem este padrão ela não seria reconhecida como motivo de trocar de motor,
 // e um motor desconectado mataria a missão em vez de passá-la para a reserva.
+// DJ-T9 (achado 14/09): `429` andava SEM fronteira de palavra — diferente de
+// `401`/`403`, que já tinham `\b...\b` — e por isso casava qualquer string
+// que contivesse os dígitos "429" em sequência, não só o código HTTP isolado:
+// um número de linha de stack trace (ex.: "scheduler.ts:4297:19"), uma data
+// ("2026-04-29"), um id, etc. Medido ao vivo: um bug sem NENHUMA relação com
+// motor/cota (TypeError não tratado em outro módulo) foi classificado como
+// falha de motor só porque o stack trace passava por uma linha do scheduler
+// que terminava em "4297" — ver runtime-resolver.test.ts.
 const FAILOVER_PATTERN =
-  /quota|rate.?limit|429|exhaust|insufficient|unauthor|forbidden|\b401\b|\b403\b|invalid.?api.?key|e2big|argument list too long|usage limit|sem credencial conectada/i
+  /quota|rate.?limit|\b429\b|exhaust|insufficient|unauthor|forbidden|\b401\b|\b403\b|invalid.?api.?key|e2big|argument list too long|usage limit|sem credencial conectada/i
 
 export function isFailoverError(message: string): boolean {
   return FAILOVER_PATTERN.test(message)
