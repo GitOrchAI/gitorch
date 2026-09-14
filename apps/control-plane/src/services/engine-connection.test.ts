@@ -5,6 +5,10 @@ import * as path from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { EngineConnectionService, isSupportedRuntime } from './engine-connection.js'
 import { MODEL_DISCOVERERS } from './model-catalog.js'
+import {
+  registrarContratoDeMotoresNoBoot,
+  _resetMotoresInutilizaveisParaTeste,
+} from './contrato-de-motor.js'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function fakePrisma() {
@@ -1014,5 +1018,102 @@ describe('EngineConnectionService', () => {
     const texto = avisos.join('\n')
     expect(texto).toContain('disco cheio: o UPDATE do carimbo não gravou')
     expect(texto).toContain('codex')
+  })
+})
+
+// Motor marcado inutilizável no boot (contrato-de-motor.ts: sem descobridor de
+// catálogo e/ou sem leitor de cota registrados) nunca pode ganhar coleta
+// nenhuma — refreshQuota/refreshModels pulam ANTES de materializar qualquer
+// credencial, com log dizendo o motivo real, em vez de voltar false/[] mudo.
+describe('motor inutilizável (contrato de motor quebrado no boot) é pulado sem tentar nada', () => {
+  afterEach(() => _resetMotoresInutilizaveisParaTeste())
+
+  const capturaAvisos = () => {
+    const avisos: string[] = []
+    const spy = vi.spyOn(console, 'warn').mockImplementation((...args) => {
+      avisos.push(args.map(String).join(' '))
+    })
+    return { avisos, restaura: () => spy.mockRestore() }
+  }
+
+  const conectaCodex = async (userId: string) => {
+    const prisma = fakePrisma()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const svc = new EngineConnectionService(prisma as any, aliveLiveness)
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-cat-'))
+    await fs.mkdir(path.join(home, '.codex'), { recursive: true })
+    await fs.writeFile(path.join(home, '.codex', 'auth.json'), '{"token":"x"}')
+    await svc.captureFromHome(userId, 'codex', home)
+    await fs.rm(home, { recursive: true, force: true })
+    return { prisma, svc }
+  }
+
+  test('refreshModels pula o motor inutilizável, loga o motivo e nunca materializa a credencial', async () => {
+    const { prisma, svc } = await conectaCodex('user_motor_inutil_models')
+    registrarContratoDeMotoresNoBoot({ error: () => undefined }, ['codex'], {}, {})
+    prisma.engineConnection.findUnique.mockClear()
+    prisma.engineConnection.updateMany.mockClear()
+
+    const { avisos, restaura } = capturaAvisos()
+    let resultado: string[]
+    try {
+      resultado = await svc.refreshModels('user_motor_inutil_models', 'codex')
+    } finally {
+      restaura()
+    }
+
+    expect(resultado).toEqual([])
+    const texto = avisos.join('\n')
+    expect(texto).toContain('codex')
+    expect(texto).toContain('inutilizável')
+    // Nunca tenta nada no banco: nem lê o catálogo anterior, nem grava tentativa.
+    expect(prisma.engineConnection.findUnique).not.toHaveBeenCalled()
+    expect(prisma.engineConnection.updateMany).not.toHaveBeenCalled()
+  })
+
+  test('refreshQuota pula o motor inutilizável, loga o motivo e nunca materializa a credencial', async () => {
+    const { prisma, svc } = await conectaCodex('user_motor_inutil_quota')
+    registrarContratoDeMotoresNoBoot({ error: () => undefined }, ['codex'], {}, {})
+    prisma.engineConnection.updateMany.mockClear()
+
+    const { avisos, restaura } = capturaAvisos()
+    let resultado: boolean
+    try {
+      resultado = await svc.refreshQuota('user_motor_inutil_quota', 'codex')
+    } finally {
+      restaura()
+    }
+
+    expect(resultado).toBe(false)
+    const texto = avisos.join('\n')
+    expect(texto).toContain('codex')
+    expect(texto).toContain('inutilizável')
+    expect(prisma.engineConnection.updateMany).not.toHaveBeenCalled()
+  })
+
+  test('motor íntegro não é afetado pela marca de outro motor inutilizável', async () => {
+    const { svc: svcClaude } = await (async () => {
+      const prisma = fakePrisma()
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const svc = new EngineConnectionService(prisma as any, aliveLiveness)
+      await svc.connectRawToken('user_motor_integro', 'claude', 'sk-ant-oat01-INTEGRO', {
+        envVarName: 'CLAUDE_CODE_OAUTH_TOKEN',
+      })
+      return { prisma, svc }
+    })()
+    registrarContratoDeMotoresNoBoot({ error: () => undefined }, ['codex'], {}, {})
+
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: (name: string) => (name.includes('utilization') ? '0.1' : null) },
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+    try {
+      const ok = await svcClaude.refreshQuota('user_motor_integro', 'claude')
+      expect(ok).toBe(true)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

@@ -14,6 +14,7 @@ import {
   atualizarModelosIndisponiveis,
   type ModeloIndisponivel,
 } from './catalogo-vivo-de-modelos.js'
+import { motorEstaInutilizavel } from './contrato-de-motor.js'
 
 // Runtimes suportados e os CAMINHOS de credencial de cada um, relativos ao HOME.
 // Apenas os arquivos de token/config — NÃO o diretório inteiro (históricos e
@@ -430,6 +431,18 @@ export class EngineConnectionService {
    * nada: devolve `false` e o motivo fica registrado, nunca vira nulo mudo.
    */
   async refreshQuota(userId: string, runtime: string): Promise<boolean> {
+    // Motor marcado inutilizável no boot (contrato-de-motor.ts): sem
+    // descobridor de catálogo e/ou sem leitor de cota registrados, tentar ler
+    // a cota dele SEMPRE devolveria false do mesmo jeito (o guard de baixo já
+    // cobre `!readQuota`) — mas em silêncio, sem dizer POR QUÊ. Pular aqui,
+    // com log, poupa o round-trip de HOME temporário à toa e dá o motivo
+    // certo em vez do genérico "sem leitor de cota".
+    if (motorEstaInutilizavel(runtime)) {
+      console.warn(
+        `[engine-connection] releitura de cota de "${runtime}" pulada: motor inutilizável (contrato quebrado no boot)`
+      )
+      return false
+    }
     const readQuota = Object.hasOwn(QUOTA_READERS, runtime) ? QUOTA_READERS[runtime] : undefined
     if (!readQuota) return false
 
@@ -522,6 +535,16 @@ export class EngineConnectionService {
   }
 
   async refreshModels(userId: string, runtime: string): Promise<string[]> {
+    // Mesma guarda de refreshQuota, mesmo motivo: um motor sem os dois lados
+    // do contrato (MODEL_DISCOVERERS/QUOTA_READERS, ver contrato-de-motor.ts)
+    // nunca ganha modelo nenhum de qualquer jeito — pular aqui evita gastar o
+    // HOME temporário à toa e loga o motivo certo em vez de voltar `[]` mudo.
+    if (motorEstaInutilizavel(runtime)) {
+      console.warn(
+        `[engine-connection] coleta de catálogo de "${runtime}" pulada: motor inutilizável (contrato quebrado no boot)`
+      )
+      return []
+    }
     const discover = Object.hasOwn(MODEL_DISCOVERERS, runtime)
       ? MODEL_DISCOVERERS[runtime]
       : undefined
