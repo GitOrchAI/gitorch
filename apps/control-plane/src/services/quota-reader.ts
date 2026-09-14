@@ -335,21 +335,38 @@ export async function writeCodexQuotaFile(
  * uniforme.
  *
  * Sem o arquivo (warmup nunca rodou ou falhou) ou JSON inválido/corrompido
- * -> `EMPTY_CODEX_QUOTA` (tudo null), nunca lança — mesmo contrato
- * best-effort do resto do arquivo.
+ * -> tudo null, nunca lança — mesmo contrato best-effort do resto do
+ * arquivo. Mas agora com o MOTIVO específico (arquivo ausente em <caminho>,
+ * JSON inválido, formato desconhecido) em vez do nulo mudo de antes: medido
+ * em produção que `lerCotaDoMotor` (leitura-de-cota.ts) só via o genérico
+ * "rodou e não devolveu número nenhum" para os três casos — indistinguível
+ * de investigar. Nenhum dos três indica credencial recusada: essa causa só
+ * apareceria como erro lançado por um leitor que faz rede/CLI (não é o caso
+ * deste leitor, que só lê um arquivo local).
  */
 export const readCodexQuota: QuotaReader = async (homeDir: string) => {
   const env = envReading('codex')
   if (env) return env
-  const raw = await fs.readFile(codexQuotaFilePath(homeDir), 'utf8').catch(() => null)
-  if (!raw) return EMPTY_CODEX_QUOTA
+  const arquivo = codexQuotaFilePath(homeDir)
+  const raw = await fs.readFile(arquivo, 'utf8').catch(() => null)
+  if (!raw) {
+    return { ...EMPTY_CODEX_QUOTA, motivo: `arquivo de cota do Codex ausente em ${arquivo}` }
+  }
   let parsed: unknown
   try {
     parsed = JSON.parse(raw)
-  } catch {
-    return EMPTY_CODEX_QUOTA
+  } catch (err) {
+    return {
+      ...EMPTY_CODEX_QUOTA,
+      motivo: `arquivo de cota do Codex com JSON inválido em ${arquivo}: ${err instanceof Error ? err.message : String(err)}`,
+    }
   }
-  if (!parsed || typeof parsed !== 'object') return EMPTY_CODEX_QUOTA
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return {
+      ...EMPTY_CODEX_QUOTA,
+      motivo: `arquivo de cota do Codex com formato desconhecido em ${arquivo} (esperado objeto JSON)`,
+    }
+  }
   const file = parsed as Partial<CodexQuotaFile>
   const secondary = file.secondary ?? null
   return {

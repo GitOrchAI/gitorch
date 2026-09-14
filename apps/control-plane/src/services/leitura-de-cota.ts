@@ -72,10 +72,15 @@ export async function lerCotaDoMotor(args: {
     }
   }
   if (!temNumeroDeCota(leitura)) {
+    // Motivo ESPECÍFICO do leitor (arquivo ausente em <caminho>, JSON
+    // inválido, formato desconhecido...) vence o genérico — é o que dá pra
+    // investigar de verdade. Sem ele, cai no genérico de sempre (leitor
+    // best-effort que não sabe dizer a causa exata).
     return {
       leitura,
       temNumero: false,
-      motivo: `o leitor de cota de ${args.runtime} rodou e não devolveu número nenhum`,
+      motivo:
+        leitura.motivo ?? `o leitor de cota de ${args.runtime} rodou e não devolveu número nenhum`,
     }
   }
   return { leitura, temNumero: true, motivo: null }

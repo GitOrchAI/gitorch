@@ -423,7 +423,7 @@ describe('writeCodexQuotaFile + readCodexQuota (arquivo real em disco)', () => {
     })
   })
 
-  it('sem o arquivo (warmup nunca rodou/falhou) -> tudo null, nunca lança', async () => {
+  it('sem o arquivo (warmup nunca rodou/falhou) -> tudo null, com motivo do caminho ausente', async () => {
     await withTempHome(async (home) => {
       const reading = await readCodexQuota(home)
       expect(reading).toEqual({
@@ -433,24 +433,35 @@ describe('writeCodexQuotaFile + readCodexQuota (arquivo real em disco)', () => {
         sessionResetsAt: null,
         weekPercentUsed: null,
         weekResetsAt: null,
+        motivo: `arquivo de cota do Codex ausente em ${codexQuotaFilePath(home)}`,
       })
     })
   })
 
-  it('arquivo com JSON inválido -> tudo null, nunca lança', async () => {
+  it('arquivo com JSON inválido -> tudo null, com motivo específico de JSON inválido', async () => {
     await withTempHome(async (home) => {
       await fs.mkdir(path.join(home, '.codex'), { recursive: true })
       await fs.writeFile(codexQuotaFilePath(home), '{ isso não é json válido', 'utf8')
 
       const reading = await readCodexQuota(home)
-      expect(reading).toEqual({
-        remaining: null,
-        total: null,
-        sessionPercentUsed: null,
-        sessionResetsAt: null,
-        weekPercentUsed: null,
-        weekResetsAt: null,
-      })
+      expect(reading.remaining).toBeNull()
+      expect(reading.total).toBeNull()
+      expect(reading.sessionPercentUsed).toBeNull()
+      expect(reading.weekPercentUsed).toBeNull()
+      expect(reading.motivo).toContain('JSON inválido')
+      expect(reading.motivo).toContain(codexQuotaFilePath(home))
+    })
+  })
+
+  it('arquivo com JSON válido mas formato desconhecido (ex.: array) -> motivo de formato desconhecido', async () => {
+    await withTempHome(async (home) => {
+      await fs.mkdir(path.join(home, '.codex'), { recursive: true })
+      await fs.writeFile(codexQuotaFilePath(home), '[1,2,3]', 'utf8')
+
+      const reading = await readCodexQuota(home)
+      expect(reading.remaining).toBeNull()
+      expect(reading.motivo).toContain('formato desconhecido')
+      expect(reading.motivo).toContain(codexQuotaFilePath(home))
     })
   })
 
