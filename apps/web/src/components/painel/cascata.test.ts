@@ -37,7 +37,12 @@ const MOTORES: MotorOpcoes[] = [
       { valor: 'claude-sonnet-5', rotulo: 'Claude Sonnet 5' },
     ],
     indisponiveis: [
-      { valor: 'claude-opus-4-1', rotulo: 'Claude Opus 4.1', sumiuEm: '2026-08-20T10:00:00.000Z' },
+      {
+        valor: 'claude-opus-4-1',
+        rotulo: 'Claude Opus 4.1',
+        sumiuEm: '2026-08-20T10:00:00.000Z',
+        sucessor: null,
+      },
     ],
   },
   {
@@ -60,6 +65,7 @@ const MOTORES: MotorOpcoes[] = [
         valor: 'Gemini 3.5 Flash (Medium)',
         rotulo: 'Gemini 3.5 Flash (Medium)',
         sumiuEm: '2026-08-31T23:00:00.000Z',
+        sucessor: { valor: 'Gemini 3.7 Flash (Medium)', rotulo: 'Gemini 3.7 Flash (Medium)' },
       },
     ],
   },
@@ -202,6 +208,20 @@ describe('avisos do que foi carregado', () => {
     expect(
       avisosDoCarregamento({ po: { runtime: 'codex', model: 'gpt-5.5', effort: 'high' } }, MOTORES)
     ).toEqual([])
+  })
+
+  // D77: quando a esteira já sabe trocar sozinha (mesma família/esforço ou
+  // mesmo modelo com data anexada), a tela diz PARA QUEM — não deixa o dono
+  // achar que o degrau caiu no padrão genérico do motor.
+  it('diz o sucessor quando existe, em vez de só dizer que saiu', () => {
+    const avisos = avisosDoCarregamento(
+      { qa: { runtime: 'antigravity', model: 'Gemini 3.5 Flash (Medium)' } },
+      MOTORES
+    )
+    expect(avisos).toHaveLength(1)
+    expect(avisos[0]).toMatch(/Gemini 3\.5 Flash \(Medium\)/)
+    expect(avisos[0]).toMatch(/usando/i)
+    expect(avisos[0]).toMatch(/Gemini 3\.7 Flash \(Medium\)/)
   })
 
   it('sem catálogo do motor NÃO acusa modelo nenhum — "não sei" não é "não existe"', () => {
@@ -355,6 +375,13 @@ describe('as opções do seletor de modelo', () => {
   it('cada opção tem valor único — chave de lista não pode repetir', () => {
     const o = opcoesDeModelo(MOTORES[0], 'claude-opus-4-1')
     expect(new Set(o.map((x) => x.valor)).size).toBe(o.length)
+  })
+
+  it('o modelo que saiu com sucessor mostra QUEM substitui no próprio rótulo', () => {
+    const o = opcoesDeModelo(MOTORES[2], '')
+    const saiu = o.find((x) => x.valor === 'Gemini 3.5 Flash (Medium)')
+    expect(saiu?.estado).toBe('saiu')
+    expect(saiu?.rotulo).toMatch(/usando Gemini 3\.7 Flash \(Medium\)/)
   })
 
   it('motor sem catálogo NÃO vira lista vazia silenciosa: a tela recebe o motivo', () => {

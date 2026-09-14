@@ -143,10 +143,35 @@ export interface EscolhaDeModelo {
   /** true só quando a guarda de fato substituiu o modelo pedido. */
   trocado: boolean
   /**
+   * O nome de exibição do sucessor (candidato do catálogo, ANTES da conversão
+   * para o valor que a CLI aceita) — só presente quando `veredito === 'trocado'`.
+   * A tela (TelaCascata, D77) usa isto para escrever "X saiu em DD/MM; usando
+   * Y" com o nome legível, em vez do identificador cru de `modelo`.
+   */
+  sucessorRotulo?: string
+  /**
    * O que dizer no log quando algo não bate. `undefined` quando está tudo certo
    * — a guarda não fala à toa.
    */
   aviso?: string
+}
+
+/** Escapa caracteres especiais de regex — `desejado` vem de fora (config do
+ * cliente), nunca é seguro interpolar cru num RegExp. */
+function escaparRegex(texto: string): string {
+  return texto.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * `candidato` é `desejado` com um sufixo `-YYYYMMDD` colado? Devolve a data
+ * (string, comparável lexicograficamente = comparável numericamente por ser
+ * largura fixa) ou `null`. Comparação exata do prefixo — não usa
+ * `pecasDoModelo` porque identificadores de CLI ("claude-haiku-4-5") não têm
+ * o parêntese de esforço que aquele parser exige.
+ */
+function sufixoDeData(desejado: string, candidato: string): string | null {
+  const m = new RegExp(`^${escaparRegex(desejado)}-(\\d{8})$`, 'i').exec(candidato.trim())
+  return m?.[1] ?? null
 }
 
 /**
@@ -201,6 +226,35 @@ export function escolherModeloVivo(args: {
         .sort((a, b) => b.pecas.geracao - a.pecas.geracao)[0]
     : undefined
 
+  // Sucessor DATADO: o pedido é um identificador de CLI ("claude-haiku-4-5"),
+  // sem parênteses de esforço — `pecasDoModelo` nunca casa este formato, então
+  // o ramo acima nunca encontra candidato para ele. Mas o provedor pode ter
+  // passado a exigir a data no identificador ("claude-haiku-4-5-20251001")
+  // sem trocar de fato o modelo: MEDIDO na task DJ-T8b — o QA pedia
+  // "claude-haiku-4-5" contra um catálogo que só lista a versão com data, e a
+  // guarda concluía "saiu sem substituto" quando o substituto exato estava
+  // bem ali. Mesma família/esforço por definição (é o MESMO modelo, só com o
+  // sufixo YYYYMMDD): quando há mais de uma data candidata, a mais recente
+  // vence, mesma lógica de geração mais nova do ramo por família/esforço.
+  const candidatoDatado = alvo
+    ? undefined
+    : vivos
+        .map((nome) => ({ nome, data: sufixoDeData(desejado, nome) }))
+        .filter((c): c is { nome: string; data: string } => c.data !== null)
+        .sort((a, b) => (a.data < b.data ? 1 : a.data > b.data ? -1 : 0))[0]
+
+  if (candidatoDatado) {
+    return {
+      modelo: valorDeModeloParaOMotor(runtime, candidatoDatado.nome),
+      veredito: 'trocado',
+      trocado: true,
+      sucessorRotulo: candidatoDatado.nome,
+      aviso:
+        `o modelo "${desejado}" agora exige data no identificador; usando ` +
+        `"${candidatoDatado.nome}" (mesmo modelo, sucessor datado)`,
+    }
+  }
+
   if (!candidato) {
     // A MARCA separa dois casos que pareciam um só e pedem coisas opostas.
     const marcaPedida = marcaDoModelo(desejado)
@@ -231,6 +285,7 @@ export function escolherModeloVivo(args: {
     modelo: valorDeModeloParaOMotor(runtime, candidato.nome),
     veredito: 'trocado',
     trocado: true,
+    sucessorRotulo: candidato.nome,
     aviso:
       `o modelo "${desejado}" saiu do catálogo do provedor; usando "${candidato.nome}" ` +
       `(mesma família e mesmo esforço, geração mais nova disponível)`,

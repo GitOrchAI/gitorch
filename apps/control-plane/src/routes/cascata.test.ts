@@ -142,6 +142,7 @@ describe('Rotas da cascata por agente', () => {
           valor: 'Gemini 3.5 Flash (Medium)',
           rotulo: 'Gemini 3.5 Flash (Medium)',
           sumiuEm: '2026-08-31T23:00:00.000Z',
+          sucessor: null,
         },
       ])
     })
@@ -174,8 +175,83 @@ describe('Rotas da cascata por agente', () => {
         }
       ).motores.find((m) => m.runtime === 'claude')
       expect(claude?.indisponiveis).toEqual([
-        { valor: 'claude-opus-4-1', rotulo: 'Claude Opus 4.1', sumiuEm: null },
+        { valor: 'claude-opus-4-1', rotulo: 'Claude Opus 4.1', sumiuEm: null, sucessor: null },
       ])
+    })
+
+    // D77: quando o modelo que saiu tem sucessor de mesma família e mesmo
+    // esforço no catálogo vivo, a tela precisa saber QUAL — para escrever
+    // "X saiu em DD/MM; usando Y" em vez de só "saiu do ar".
+    test('indisponível com sucessor de mesma família/esforço: a resposta traz quem substitui', async () => {
+      app.prisma.engineConnection.findMany = vi.fn().mockResolvedValue([
+        {
+          runtime: 'antigravity',
+          models: ['Gemini 3.7 Flash (Medium)'],
+          modelsUnavailable: [
+            { nome: 'Gemini 3.5 Flash (Medium)', sumiuEm: '2026-08-31T23:00:00.000Z' },
+          ],
+          status: 'connected',
+        },
+      ])
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/projects/proj_1/cascata/opcoes',
+        headers: authHeaders,
+      })
+      const agy = (
+        res.json() as {
+          motores: Array<{
+            runtime: string
+            indisponiveis: Array<{
+              valor: string
+              rotulo: string
+              sumiuEm: string | null
+              sucessor: { valor: string; rotulo: string } | null
+            }>
+          }>
+        }
+      ).motores.find((m) => m.runtime === 'antigravity')
+      expect(agy?.indisponiveis).toEqual([
+        {
+          valor: 'Gemini 3.5 Flash (Medium)',
+          rotulo: 'Gemini 3.5 Flash (Medium)',
+          sumiuEm: '2026-08-31T23:00:00.000Z',
+          sucessor: { valor: 'Gemini 3.7 Flash (Medium)', rotulo: 'Gemini 3.7 Flash (Medium)' },
+        },
+      ])
+    })
+
+    // D77 + o achado do QA: "claude-haiku-4-5" sem data, catálogo só tem a
+    // versão com data — é sucessor, não "saiu sem substituto".
+    test('indisponível datado: o identificador sem data casa com o sucessor datado', async () => {
+      app.prisma.engineConnection.findMany = vi.fn().mockResolvedValue([
+        {
+          runtime: 'claude',
+          models: ['claude-haiku-4-5-20251001'],
+          modelsUnavailable: [{ nome: 'claude-haiku-4-5', sumiuEm: '2026-09-10T00:00:00.000Z' }],
+          status: 'connected',
+        },
+      ])
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/projects/proj_1/cascata/opcoes',
+        headers: authHeaders,
+      })
+      const claude = (
+        res.json() as {
+          motores: Array<{
+            runtime: string
+            indisponiveis: Array<{
+              valor: string
+              sucessor: { valor: string; rotulo: string } | null
+            }>
+          }>
+        }
+      ).motores.find((m) => m.runtime === 'claude')
+      expect(claude?.indisponiveis[0]?.sucessor).toEqual({
+        valor: 'claude-haiku-4-5-20251001',
+        rotulo: 'claude-haiku-4-5-20251001',
+      })
     })
 
     test('motor sem nada marcado devolve lista vazia, nunca ausente', async () => {

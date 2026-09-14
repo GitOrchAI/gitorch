@@ -24,6 +24,12 @@ export interface QuotaReading {
   sessionResetsAt?: string | null
   weekPercentUsed?: number | null
   weekResetsAt?: string | null
+  // Por que este motor não devolveu número nenhum (arquivo ausente, JSON
+  // inválido, formato desconhecido, credencial recusada...). Opcional e só
+  // presente quando o PRÓPRIO leitor sabe a causa específica — quando ausente,
+  // `lerCotaDoMotor` (leitura-de-cota.ts) cai no motivo genérico "rodou e não
+  // devolveu número nenhum". Nunca presente junto de um número real.
+  motivo?: string | null
 }
 
 export type QuotaReader = (homeDir: string) => Promise<QuotaReading>

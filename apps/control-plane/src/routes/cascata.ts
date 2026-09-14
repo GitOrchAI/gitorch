@@ -15,7 +15,11 @@ import {
   mesmoModelo,
 } from '../services/esforco-por-motor.js'
 import { padraoDoDegrau } from '../services/padrao-do-degrau.js'
-import { nomeDeExibicaoDoModelo, ehLinhaDeModelo } from '../services/catalogo-vivo-de-modelos.js'
+import {
+  nomeDeExibicaoDoModelo,
+  ehLinhaDeModelo,
+  escolherModeloVivo,
+} from '../services/catalogo-vivo-de-modelos.js'
 
 /**
  * A CASCATA POR AGENTE — ler, gravar, e listar as opções reais.
@@ -295,11 +299,34 @@ export const cascataRoutes = async (app: FastifyInstance): Promise<void> => {
              * entre as `<option>` desenha a primeira, e o dono leria uma
              * escolha que nunca fez.
              */
-            indisponiveis: (doCatalogo?.indisponiveis ?? []).map((m) => ({
-              valor: valorDeModeloParaOMotor(runtime, m.nome),
-              rotulo: m.nome,
-              sumiuEm: m.sumiuEm,
-            })),
+            indisponiveis: (doCatalogo?.indisponiveis ?? []).map((m) => {
+              // D77: quando o modelo que saiu tem sucessor de mesma família e
+              // mesmo esforço no catálogo vivo (ou é o MESMO modelo que passou
+              // a exigir data no identificador, ver escolherModeloVivo), a
+              // tela mostra "X saiu em DD/MM; usando Y" em vez de só dizer que
+              // sumiu. Calculado na hora contra o catálogo atual — nada
+              // persistido além do que `models`/`models_unavailable` já
+              // gravam, então nenhuma migração nova é necessária.
+              const escolha = escolherModeloVivo({
+                runtime,
+                desejado: m.nome,
+                catalogo: doCatalogo?.modelos ?? [],
+              })
+              const sucessor =
+                escolha.veredito === 'trocado' && escolha.sucessorRotulo
+                  ? {
+                      valor:
+                        escolha.modelo ?? valorDeModeloParaOMotor(runtime, escolha.sucessorRotulo),
+                      rotulo: escolha.sucessorRotulo,
+                    }
+                  : null
+              return {
+                valor: valorDeModeloParaOMotor(runtime, m.nome),
+                rotulo: m.nome,
+                sumiuEm: m.sumiuEm,
+                sucessor,
+              }
+            }),
             /** ISO da última coleta que trouxe catálogo REAL. `null` = nunca. */
             lidoEm: doCatalogo?.lidoEm ?? null,
             /**

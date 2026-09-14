@@ -74,6 +74,13 @@ export interface ModeloOpcao {
 export interface ModeloQueSaiu extends ModeloOpcao {
   /** ISO do dia em que a coleta viu o modelo sumir. `null` = não carimbado. */
   sumiuEm: string | null
+  /**
+   * O modelo que substitui este (mesma família e mesmo esforço, ou a mesma
+   * escolha com data anexada no identificador — ver escolherModeloVivo,
+   * control-plane). `null` quando não há sucessor: o degrau cai no padrão do
+   * motor (D77).
+   */
+  sucessor: ModeloOpcao | null
 }
 
 export interface MotorOpcoes {
@@ -267,7 +274,13 @@ export function avisosDoCarregamento(
       const saiu = motor.indisponiveis.find((m) => m.valor === modelo || m.rotulo === modelo)
       avisos.push(
         saiu
-          ? `${onde}: o modelo "${saiu.rotulo}" saiu do catálogo do motor "${motor.runtime}"${saiu.sumiuEm ? ` em ${dataCurta(saiu.sumiuEm)}` : ''}. Enquanto estiver assim, este degrau roda no modelo padrão do motor.`
+          ? saiu.sucessor
+            ? // D77: existe sucessor de mesma família/esforço (ou a mesma
+              // escolha com data anexada) — a esteira já troca sozinha; a
+              // tela diz PARA QUAL, em vez de deixar o dono achar que o
+              // degrau ficou órfão no modelo padrão do motor.
+              `${onde}: "${saiu.rotulo}" saiu${saiu.sumiuEm ? ` em ${dataCurta(saiu.sumiuEm)}` : ''}; usando "${saiu.sucessor.rotulo}", mesmo esforço.`
+            : `${onde}: o modelo "${saiu.rotulo}" saiu do catálogo do motor "${motor.runtime}"${saiu.sumiuEm ? ` em ${dataCurta(saiu.sumiuEm)}` : ''}. Enquanto estiver assim, este degrau roda no modelo padrão do motor.`
           : `${onde}: o modelo "${modelo}" não está no catálogo vivo do motor "${motor.runtime}". Este degrau roda no modelo padrão do motor até você escolher um da lista.`
       )
     })
@@ -387,7 +400,9 @@ export function opcoesDeModelo(motor: MotorOpcoes | undefined, escolhido: string
     vistos.add(m.valor)
     saida.push({
       valor: m.valor,
-      rotulo: `${m.rotulo} — saiu do ar${m.sumiuEm ? ` em ${dataCurta(m.sumiuEm)}` : ''}`,
+      rotulo: m.sucessor
+        ? `${m.rotulo} — saiu${m.sumiuEm ? ` em ${dataCurta(m.sumiuEm)}` : ''}; usando ${m.sucessor.rotulo}`
+        : `${m.rotulo} — saiu do ar${m.sumiuEm ? ` em ${dataCurta(m.sumiuEm)}` : ''}`,
       estado: 'saiu',
       desabilitada: m.valor !== escolhido,
     })

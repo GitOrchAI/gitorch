@@ -223,6 +223,52 @@ describe('escolherModeloVivo — o veredito que decide se o degrau vale a tentat
   })
 })
 
+// ACHADO (medido no QA da task DJ-T8b): o QA ainda pede "claude-haiku-4-5" —
+// o identificador SEM data, formato que o CLI já aceitou no passado (ver
+// esforco-por-motor.ts, valorDeModeloParaOMotor). Só que o catálogo vivo do
+// claude só lista a versão COM data ("claude-haiku-4-5-20251001") — mesmo
+// modelo, o provedor só passou a exigir o sufixo. `pecasDoModelo` (formato
+// "Claude Haiku 4.5 (Medium)") não reconhece nenhum dos dois, porque nenhum
+// tem parênteses de esforço: são identificadores de CLI, não rótulos de
+// vitrine. Sem um candidato por família/esforço, a guarda caía no branch de
+// "a marca é deste motor mas o modelo saiu sem substituto" — 'saiu-do-catalogo'
+// — quando na verdade existe um sucessor exato, só com data anexada.
+describe('escolherModeloVivo — identificador sem data casa com a versão datada (sucessor)', () => {
+  it('"claude-haiku-4-5" sai, "claude-haiku-4-5-20251001" existe: troca para a versão datada', () => {
+    const r = escolherModeloVivo({
+      runtime: 'claude',
+      desejado: 'claude-haiku-4-5',
+      catalogo: ['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
+    })
+    expect(r.veredito).toBe('trocado')
+    expect(r.trocado).toBe(true)
+    expect(r.modelo).toBe('claude-haiku-4-5-20251001')
+    expect(r.sucessorRotulo).toBe('claude-haiku-4-5-20251001')
+    expect(r.aviso).toContain('claude-haiku-4-5')
+    expect(r.aviso).toContain('claude-haiku-4-5-20251001')
+  })
+
+  it('duas datas candidatas: escolhe a mais recente', () => {
+    const r = escolherModeloVivo({
+      runtime: 'claude',
+      desejado: 'claude-haiku-4-5',
+      catalogo: ['claude-haiku-4-5-20250601', 'claude-haiku-4-5-20251001'],
+    })
+    expect(r.veredito).toBe('trocado')
+    expect(r.modelo).toBe('claude-haiku-4-5-20251001')
+  })
+
+  it('pedido já com data e catálogo com a MESMA data: vale, sem troca', () => {
+    const r = escolherModeloVivo({
+      runtime: 'claude',
+      desejado: 'claude-haiku-4-5-20251001',
+      catalogo: ['claude-haiku-4-5-20251001'],
+    })
+    expect(r.veredito).toBe('vale')
+    expect(r.trocado).toBe(false)
+  })
+})
+
 // A esteira comparava o desejado CRU contra o catálogo CRU;
 // o painel (routes/cascata.ts) já comparava os dois lados convertidos por
 // `valorDeModeloParaOMotor`. Um modelo salvo pelo painel como
