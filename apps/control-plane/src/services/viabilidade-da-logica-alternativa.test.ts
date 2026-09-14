@@ -4,6 +4,7 @@ import {
   resolverLogicaAlternativaDoJules,
   respostaMantendoLogicaOriginal,
   dedupKeyDeLogicaAlternativa,
+  parseDedupKeyDeLogicaAlternativa,
   montarPerguntaSobreLogicaAlternativa,
   perguntarAoDonoSobreLogicaAlternativa,
   perguntarAoDonoSeLogicaAlternativaViavel,
@@ -13,6 +14,7 @@ import {
   type ResultadoDaLogicaAlternativa,
 } from './viabilidade-da-logica-alternativa.js'
 import { textoDaRespostaAoDev, type DestinoDaDuvida } from './duvida-do-dev.js'
+import { decidirSobreAPergunta } from './pergunta-sem-resposta.js'
 import { FREE_TEXT_OPTION_VALUE } from './telegram-bot.js'
 import type { ContextoExecutivoDaPergunta } from './contexto-executivo-da-pergunta.js'
 import type { DuvidaRailsMissionResult } from './duvida-rails-mission.js'
@@ -198,6 +200,40 @@ describe('respostaMantendoLogicaOriginal — caminho inviável isolado', () => {
 describe('dedupKeyDeLogicaAlternativa', () => {
   it('monta "logica-alternativa:<repo>:<issue>"', () => {
     expect(dedupKeyDeLogicaAlternativa('acme/api', 7)).toBe('logica-alternativa:acme/api:7')
+  })
+})
+
+// DJ-T9, rodada 3 (achado do QA, 2ª rejeição) — `plugins/telegram.ts` precisa
+// reconhecer este dedupKey de volta para retomar a sessão do dev quando o
+// dono responde (defeito 2 confirmado: sem isso, a sessão travava para
+// sempre em AWAITING_USER_FEEDBACK).
+describe('parseDedupKeyDeLogicaAlternativa', () => {
+  it('lê "logica-alternativa:<repo>:<issue>" de volta', () => {
+    expect(parseDedupKeyDeLogicaAlternativa('logica-alternativa:acme/api:7')).toEqual({
+      repository: 'acme/api',
+      issueNumber: 7,
+    })
+  })
+
+  it('ida e volta com dedupKeyDeLogicaAlternativa', () => {
+    const chave = dedupKeyDeLogicaAlternativa('loureng/patinhas-3d-crafts', 3866)
+    expect(parseDedupKeyDeLogicaAlternativa(chave)).toEqual({
+      repository: 'loureng/patinhas-3d-crafts',
+      issueNumber: 3866,
+    })
+  })
+
+  it('dedupKey de outro tipo (duvida-dev:/automacao:) devolve null — nunca é assunto deste parser', () => {
+    expect(parseDedupKeyDeLogicaAlternativa('duvida-dev:acme/api:7:hash123')).toBeNull()
+    expect(parseDedupKeyDeLogicaAlternativa('automacao:proj-1:algo')).toBeNull()
+  })
+
+  it('formato malformado (sem issue, issue não numérica, repo sem "/") devolve null, nunca lança', () => {
+    expect(parseDedupKeyDeLogicaAlternativa('logica-alternativa:acme/api')).toBeNull()
+    expect(parseDedupKeyDeLogicaAlternativa('logica-alternativa:acme/api:abc')).toBeNull()
+    expect(parseDedupKeyDeLogicaAlternativa('logica-alternativa:semrepo:7')).toBeNull()
+    expect(parseDedupKeyDeLogicaAlternativa('logica-alternativa:acme/api:0')).toBeNull()
+    expect(parseDedupKeyDeLogicaAlternativa('logica-alternativa:acme/api:-1')).toBeNull()
   })
 })
 
@@ -537,6 +573,10 @@ describe('perguntarAoDonoSeLogicaAlternativaViavel — o ÚNICO ponto que decide
     motivoDaViabilidade: 'vale a pena consultar',
   }
 
+  // O hash da pergunta ORIGINAL do dev que gerou a lógica alternativa —
+  // MESMO valor que `hashDaMensagem(pergunta)` produziria em scheduler.ts.
+  const HASH_DA_PERGUNTA = 'hash-original-abc'
+
   function depsBase() {
     return {
       agentQuestion: { ask: vi.fn().mockResolvedValue({ deduped: false, question: {} }) },
@@ -546,6 +586,15 @@ describe('perguntarAoDonoSeLogicaAlternativaViavel — o ÚNICO ponto que decide
         prisma: { agentQuestion: { findMany: async () => [] } },
       },
       onWarn: vi.fn(),
+      prisma: {
+        devSession: {
+          upsert: vi.fn(async (_args: unknown) => undefined),
+          update: vi.fn(async (_args: unknown) => undefined),
+          updateMany: vi.fn(async (_args: unknown) => undefined),
+          findMany: vi.fn(async (_args: unknown) => []),
+          findFirst: vi.fn(async (_args: unknown) => null),
+        },
+      },
     }
   }
 
@@ -569,6 +618,8 @@ describe('perguntarAoDonoSeLogicaAlternativaViavel — o ÚNICO ponto que decide
         repository: 'acme/api',
         issueNumber: 7,
         userId: 'user-1',
+        sessionName: 'sessions/1',
+        hashDaPergunta: HASH_DA_PERGUNTA,
       },
       deps
     )
@@ -577,6 +628,7 @@ describe('perguntarAoDonoSeLogicaAlternativaViavel — o ÚNICO ponto que decide
     expect(deps.agentQuestion.ask).not.toHaveBeenCalled()
     expect(deps.montarContextoExecutivo).not.toHaveBeenCalled()
     expect(deps.onWarn).not.toHaveBeenCalled()
+    expect(deps.prisma.devSession.update).not.toHaveBeenCalled()
   })
 
   it('destino escalar-ao-ra ou responder-o-dev: devolve false sem tocar em nada', async () => {
@@ -588,12 +640,21 @@ describe('perguntarAoDonoSeLogicaAlternativaViavel — o ÚNICO ponto que decide
 
     for (const destino of destinos) {
       const tratado = await perguntarAoDonoSeLogicaAlternativaViavel(
-        { destino, projectId: 'proj-1', repository: 'acme/api', issueNumber: 7, userId: 'user-1' },
+        {
+          destino,
+          projectId: 'proj-1',
+          repository: 'acme/api',
+          issueNumber: 7,
+          userId: 'user-1',
+          sessionName: 'sessions/1',
+          hashDaPergunta: HASH_DA_PERGUNTA,
+        },
         deps
       )
       expect(tratado).toBe(false)
     }
     expect(deps.agentQuestion.ask).not.toHaveBeenCalled()
+    expect(deps.prisma.devSession.update).not.toHaveBeenCalled()
   })
 
   it('destino VIÁVEL, com agentQuestionService e userId: chama perguntarAoDonoSobreLogicaAlternativa/agentQuestion.ask com o contexto certo (userId, projectId, dedupKey, texto) e devolve true', async () => {
@@ -606,6 +667,8 @@ describe('perguntarAoDonoSeLogicaAlternativaViavel — o ÚNICO ponto que decide
         repository: 'acme/api',
         issueNumber: 7,
         userId: 'user-1',
+        sessionName: 'sessions/1',
+        hashDaPergunta: HASH_DA_PERGUNTA,
       },
       deps
     )
@@ -629,7 +692,86 @@ describe('perguntarAoDonoSeLogicaAlternativaViavel — o ÚNICO ponto que decide
     expect(deps.onWarn).not.toHaveBeenCalled()
   })
 
-  it('destino VIÁVEL, SEM agentQuestionService (bot desligado/teste): não lança, avisa e devolve true — nunca cai em escalarDuvidaAoDono (contrato incompatível, D75)', async () => {
+  // DJ-T9, rodada 3 (achado do QA, 2ª rejeição) — O DEFEITO CONFIRMADO: sem
+  // `registrarEscalada`, a MESMA pergunta era reprocessada nos ticks
+  // seguintes (viabilidade rodava de novo, `agentQuestion.ask` era chamado
+  // de novo com o MESMO dedupKey) — como `AgentQuestionService.ask` só
+  // dedupa contra `status: 'answered'`, cada tentativa criava uma
+  // `agent_question` `open` NOVA, e depois de 3 tentativas o dono ouvia
+  // "tentei responder 3 vezes sem conseguir" — mentira, a pergunta tinha
+  // sido entregue.
+  it('destino VIÁVEL, ask() com sucesso: grava a marca de escalada (escalada:0:<hash>) na sessão certa, DEPOIS do ask (nunca antes)', async () => {
+    const deps = depsBase()
+    const ordem: string[] = []
+    deps.agentQuestion.ask = vi.fn(async () => {
+      ordem.push('perguntou')
+      return { deduped: false, question: {} }
+    })
+    deps.prisma.devSession.update = vi.fn(async (_args: unknown) => {
+      ordem.push('gravou-marca')
+      return undefined
+    })
+
+    const tratado = await perguntarAoDonoSeLogicaAlternativaViavel(
+      {
+        destino: DESTINO_VIAVEL,
+        projectId: 'proj-1',
+        repository: 'acme/api',
+        issueNumber: 7,
+        userId: 'user-1',
+        sessionName: 'sessions/1',
+        hashDaPergunta: HASH_DA_PERGUNTA,
+      },
+      deps
+    )
+
+    expect(tratado).toBe(true)
+    expect(ordem).toEqual(['perguntou', 'gravou-marca'])
+    expect(deps.prisma.devSession.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { sessionName: 'sessions/1' },
+        data: expect.objectContaining({ answeredHash: `escalada:0:${HASH_DA_PERGUNTA}` }),
+      })
+    )
+  })
+
+  // Regressão de verdade do achado do QA: a marca gravada é EXATAMENTE o que
+  // `decidirSobreAPergunta` (pergunta-sem-resposta.ts, o mecanismo real que
+  // `scheduler.ts` usa em `responderDuvidaPendente` a cada tick) lê para
+  // decidir se reprocessa — prova que, com o conserto, o reprocessamento
+  // para de fato, sem precisar simular o scheduler inteiro.
+  it('a marca gravada faz decidirSobreAPergunta devolver "nada" no próximo tick — nunca mais reprocessa nem duplica a agent_question', async () => {
+    const deps = depsBase()
+    let marcaGravada: string | null = null
+    deps.prisma.devSession.update = vi.fn(async (args: unknown) => {
+      marcaGravada = (args as { data: { answeredHash: string } }).data.answeredHash
+      return undefined
+    })
+
+    await perguntarAoDonoSeLogicaAlternativaViavel(
+      {
+        destino: DESTINO_VIAVEL,
+        projectId: 'proj-1',
+        repository: 'acme/api',
+        issueNumber: 7,
+        userId: 'user-1',
+        sessionName: 'sessions/1',
+        hashDaPergunta: HASH_DA_PERGUNTA,
+      },
+      deps
+    )
+
+    const decisao = decidirSobreAPergunta({
+      hashDaPergunta: HASH_DA_PERGUNTA,
+      marca: marcaGravada,
+    })
+    expect(decisao).toEqual({
+      acao: 'nada',
+      motivo: 'esta pergunta já foi escalada ao dono e aguarda a decisão dele',
+    })
+  })
+
+  it('destino VIÁVEL, SEM agentQuestionService (bot desligado/teste): não lança, avisa e devolve true — nunca cai em escalarDuvidaAoDono (contrato incompatível, D75) e NÃO grava marca (nada foi perguntado de verdade)', async () => {
     const deps = depsBase()
 
     const tratado = await perguntarAoDonoSeLogicaAlternativaViavel(
@@ -639,6 +781,8 @@ describe('perguntarAoDonoSeLogicaAlternativaViavel — o ÚNICO ponto que decide
         repository: 'acme/api',
         issueNumber: 7,
         userId: 'user-1',
+        sessionName: 'sessions/1',
+        hashDaPergunta: HASH_DA_PERGUNTA,
       },
       { ...deps, agentQuestion: undefined }
     )
@@ -646,9 +790,10 @@ describe('perguntarAoDonoSeLogicaAlternativaViavel — o ÚNICO ponto que decide
     expect(tratado).toBe(true)
     expect(deps.onWarn).toHaveBeenCalledOnce()
     expect(deps.montarContextoExecutivo).not.toHaveBeenCalled()
+    expect(deps.prisma.devSession.update).not.toHaveBeenCalled()
   })
 
-  it('destino VIÁVEL, SEM userId no projeto: não lança, avisa e devolve true', async () => {
+  it('destino VIÁVEL, SEM userId no projeto: não lança, avisa, devolve true e NÃO grava marca', async () => {
     const deps = depsBase()
 
     const tratado = await perguntarAoDonoSeLogicaAlternativaViavel(
@@ -658,6 +803,8 @@ describe('perguntarAoDonoSeLogicaAlternativaViavel — o ÚNICO ponto que decide
         repository: 'acme/api',
         issueNumber: 7,
         userId: null,
+        sessionName: 'sessions/1',
+        hashDaPergunta: HASH_DA_PERGUNTA,
       },
       deps
     )
@@ -665,5 +812,6 @@ describe('perguntarAoDonoSeLogicaAlternativaViavel — o ÚNICO ponto que decide
     expect(tratado).toBe(true)
     expect(deps.onWarn).toHaveBeenCalledOnce()
     expect(deps.agentQuestion.ask).not.toHaveBeenCalled()
+    expect(deps.prisma.devSession.update).not.toHaveBeenCalled()
   })
 })

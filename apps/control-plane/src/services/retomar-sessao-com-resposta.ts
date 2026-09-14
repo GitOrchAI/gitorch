@@ -10,6 +10,10 @@ import {
   PREFIXO_DUVIDA_DEV,
   type DuvidaDevDedupKey,
 } from './dedup-key-de-duvida.js'
+// DJ-T9, rodada 3 (achado do QA, 2ª rejeição, 14/09): `parseDedupKeyDeLogicaAlternativa`
+// é a fonte ÚNICA para reconhecer `logica-alternativa:<repo>:<issue>` de volta
+// — MESMO papel que `parseDedupKeyDeDuvidaDoDev` já tem para `duvida-dev:`.
+import { parseDedupKeyDeLogicaAlternativa } from './viabilidade-da-logica-alternativa.js'
 // Fix-up (revisão, defeito 5): só para o TIPO — `ResultadoDoManipuladorDeResposta`
 // é o que `manipuladorDeResultadoDeRetomada` (abaixo) devolve para o registro
 // de manipuladores de `agent-question.ts`. Import type-only: nenhum ciclo em
@@ -202,18 +206,31 @@ function limitarTamanhoDaResposta(resposta: string, onWarn?: (mensagem: string) 
 async function registrarRespostaSemSessaoViva(
   deps: DepsDeRetomada,
   args: {
-    parsed: DuvidaDevDedupKey
+    /**
+     * DJ-T9, rodada 3: `hash` widened para opcional — `logica-alternativa:`
+     * (`aoResponderLogicaAlternativa`, abaixo) não carrega hash no dedupKey
+     * (`logica-alternativa:<repo>:<issue>`, uma pergunta por ISSUE), então
+     * não tem o que passar aqui. Continua obrigatório na prática para o
+     * caminho comum (`aoResponderDuvidaDoDev`), só a checagem de TIPO relaxou.
+     */
+    parsed: { repository: string; issueNumber: number; hash?: string }
     projectId: string
     resposta: string
     opcoes: Array<{ label: string; value: string }>
     /** Só muda a moldura do comentário na issue — o resto é idêntico nos dois ramos. */
     abertura: string
+    /** DJ-T9, rodada 3: nome de quem chamou, só para o log dizer a origem
+     *  certa (`aoResponderDuvidaDoDev` vs `aoResponderLogicaAlternativa`) —
+     *  antes desta generalização o texto do warn era fixo. */
+    origem: string
   }
 ): Promise<ResultadoDeRetomada> {
   const textoDaResposta = sanitizarRespostaLivre(
     textoDaRespostaParaODev(args.resposta, args.opcoes)
   )
-  const contexto = `${args.parsed.repository}#${args.parsed.issueNumber} (projeto ${args.projectId}, hash ${args.parsed.hash})`
+  const contexto =
+    `${args.parsed.repository}#${args.parsed.issueNumber} (projeto ${args.projectId}` +
+    `${args.parsed.hash ? `, hash ${args.parsed.hash}` : ''})`
   // FIX-UP L4-T27 (revisão, item 2): antes desta task, os DOIS ramos abaixo
   // (comentário saiu / comentário falhou ou nem foi tentado) devolviam o
   // MESMO `motivo: 'sem-sessao-viva'` — e `manipuladorDeResultadoDeRetomada`
@@ -236,13 +253,13 @@ async function registrarRespostaSemSessaoViva(
       registradoDeFormaDuravel = true
     } catch (err) {
       deps.onWarn?.(
-        `aoResponderDuvidaDoDev: resposta do dono para ${contexto} NÃO ficou registrada de forma ` +
+        `${args.origem}: resposta do dono para ${contexto} NÃO ficou registrada de forma ` +
           `durável (só a agent_question guarda) — não consegui comentar na issue: ${err instanceof Error ? err.message : String(err)}`
       )
     }
   } else {
     deps.onWarn?.(
-      `aoResponderDuvidaDoDev: resposta do dono para ${contexto} sem sessão viva do dev e SEM ` +
+      `${args.origem}: resposta do dono para ${contexto} sem sessão viva do dev e SEM ` +
         'registro durável (comentarNaIssue ausente ou resposta vazia) — só a agent_question guarda'
     )
   }
@@ -367,6 +384,7 @@ export async function aoResponderDuvidaDoDev(
         resposta: args.resposta,
         opcoes: args.opcoes,
         abertura: 'GitOrch: o dono corrigiu a suposição anterior do RA para esta issue:',
+        origem: 'aoResponderDuvidaDoDev',
       })
     }
   } else {
@@ -416,6 +434,7 @@ export async function aoResponderDuvidaDoDev(
         resposta: args.resposta,
         opcoes: args.opcoes,
         abertura: 'GitOrch: o dono respondeu a uma dúvida escalada para esta issue:',
+        origem: 'aoResponderDuvidaDoDev',
       })
     }
   }
@@ -462,6 +481,145 @@ export async function aoResponderDuvidaDoDev(
     prisma: deps.prisma,
     sessionName: sessao.sessionName,
     hashDaPergunta: marcarRespondida(parsed.hash),
+    agora: new Date(),
+  })
+
+  return { entregue: true }
+}
+
+/**
+ * DJ-T9, rodada 3 (achado do QA, 2ª rejeição, 14/09) — DEFEITO CONFIRMADO:
+ * `manipuladoresDeResposta` (plugins/telegram.ts) não tinha entrada para o
+ * prefixo `logica-alternativa:` (`DEDUP_PREFIXO_LOGICA_ALTERNATIVA`,
+ * viabilidade-da-logica-alternativa.ts). Quando o dono respondia a uma
+ * pergunta de lógica alternativa — uma das 3 opções objetivas
+ * (`OPCOES_DE_LOGICA_ALTERNATIVA`) ou o texto livre de "Vou escrever" —
+ * `AgentQuestionService.answer()` marcava a `agent_question` `answered`, mas
+ * NADA retomava a sessão do Jules: ela ficava presa em
+ * AWAITING_USER_FEEDBACK para sempre, esperando uma mensagem que nunca
+ * chegava.
+ *
+ * MESMO padrão de `aoResponderDuvidaDoDev` (acima): acha a sessão do dev
+ * ainda esperando (marcada `escalada:`), entrega a decisão do dono como
+ * mensagem via `responderSessaoJules` e marca `respondida:0:<hash>`. A
+ * diferença: o dedupKey `logica-alternativa:<repo>:<issue>`
+ * (`dedupKeyDeLogicaAlternativa`) é uma pergunta por ISSUE, nunca por
+ * pergunta exata — sem hash embutido — então não dá para buscar pelo hash
+ * exato como o caminho comum tenta primeiro; só pela mais recente
+ * AWAITING_USER_FEEDBACK do mesmo projeto/issue marcada `escalada:` (MESMO
+ * fallback que `aoResponderDuvidaDoDev` já usa quando o hash exato não bate).
+ * O hash de verdade (para marcar `respondida:0:<hash>` de volta) sai da
+ * PRÓPRIA marca da sessão encontrada (`lerMarca`), nunca do dedupKey.
+ *
+ * Qualquer resposta do dono — aprovar a proposta, manter a lógica original,
+ * ver a proposta completa, ou o texto livre — é entregue como está ao Jules,
+ * igual ao caminho comum: este manipulador não interpreta a escolha, só a
+ * repassa como decisão do dono (a sessão do Jules é quem sabe agir sobre
+ * "aprovar"/"manter"/"ver a proposta").
+ */
+export async function aoResponderLogicaAlternativa(
+  args: {
+    dedupKey: string
+    resposta: string
+    projectId: string
+    userId: string
+    opcoes: Array<{ label: string; value: string }>
+  },
+  deps: DepsDeRetomada
+): Promise<ResultadoDeRetomada> {
+  const parsed = parseDedupKeyDeLogicaAlternativa(args.dedupKey)
+  if (!parsed) {
+    // dedupKey de outro tipo (`duvida-dev:*`, `automacao:*`, ...) — não é
+    // assunto deste manipulador. Mesmo contrato de `aoResponderDuvidaDoDev`
+    // para o formato desconhecido: silêncio, de propósito.
+    return { entregue: false, motivo: 'nao-aplicavel' }
+  }
+
+  // MESMA garantia cross-tenant de `aoResponderDuvidaDoDev` (S1): o projeto
+  // vem SEMPRE do `projectId` da própria `agent_question`, nunca resolvido
+  // por `wingId` (nome do repositório) — `wingId` só é único POR DONO.
+  const projeto = await deps.prisma.project.findUnique({ where: { id: args.projectId } })
+  if (!projeto) {
+    throw new Error(
+      `aoResponderLogicaAlternativa: projeto ${args.projectId} (userId ${args.userId}) não ` +
+        `encontrado (dedupKey ${args.dedupKey})`
+    )
+  }
+  if (projeto.wingId !== parsed.repository) {
+    throw new Error(
+      `aoResponderLogicaAlternativa: repo do dedupKey (${parsed.repository}) diverge do wingId ` +
+        `do projeto ${args.projectId} da pergunta (${projeto.wingId}) — pergunta continua open`
+    )
+  }
+
+  const sessao = await deps.prisma.devSession.findFirst({
+    where: {
+      projectId: args.projectId,
+      issueNumber: parsed.issueNumber,
+      state: 'AWAITING_USER_FEEDBACK',
+      answeredHash: { startsWith: 'escalada:' },
+    },
+    orderBy: { createdAt: 'desc' },
+  })
+  if (!sessao) {
+    // Sessão escalada já morreu antes do dono responder — MESMO tratamento
+    // do caminho comum (nunca lança, nunca perde a resposta do dono: melhor
+    // um registro best-effort do que uma exceção que derruba o ouvinte do
+    // Telegram, `handleTelegramCallback`, telegram-bot.ts).
+    return registrarRespostaSemSessaoViva(deps, {
+      parsed: { repository: parsed.repository, issueNumber: parsed.issueNumber },
+      projectId: args.projectId,
+      resposta: args.resposta,
+      opcoes: args.opcoes,
+      abertura: 'GitOrch: o dono decidiu sobre a lógica alternativa proposta para esta issue:',
+      origem: 'aoResponderLogicaAlternativa',
+    })
+  }
+
+  // O hash de verdade vem da MARCA da sessão (`escalada:0:<hash>`), nunca do
+  // dedupKey — que não carrega hash nenhum (uma pergunta por ISSUE). Sem
+  // isto não dá como gravar `respondida:0:<hash>` de volta apontando para a
+  // MESMA pergunta que foi escalada.
+  const marcaEscalada = lerMarca(sessao.answeredHash)
+  if (!marcaEscalada) {
+    throw new Error(
+      `aoResponderLogicaAlternativa: sessão ${sessao.sessionName} tinha marca 'escalada:' mas ` +
+        `malformada ('${sessao.answeredHash}') — não deu para extrair o hash da pergunta original`
+    )
+  }
+
+  const apiKey = await chaveDaSessaoDoDev(
+    {
+      prisma: deps.prisma,
+      decifrar: deps.decifrar,
+      chaveDaInstancia: deps.julesApiKeyDaInstancia,
+      ...(deps.onWarn ? { onWarn: deps.onWarn } : {}),
+    },
+    sessao.sessionName
+  )
+
+  const respostaLimitada = limitarTamanhoDaResposta(
+    textoDaRespostaParaODev(args.resposta, args.opcoes),
+    deps.onWarn
+  )
+  const texto = `${respostaLimitada}\n\nDecisão do dono sobre a lógica alternativa proposta.`
+  const responder = deps.responderSessaoJules ?? responderSessaoJulesReal
+  const saiu = await responder({
+    apiKey,
+    sessionName: sessao.sessionName,
+    texto,
+    ...(deps.onWarn ? { onWarn: deps.onWarn } : {}),
+  })
+  if (!saiu) {
+    throw new Error(
+      `aoResponderLogicaAlternativa: não deu para entregar a resposta do dono à sessão ${sessao.sessionName}`
+    )
+  }
+
+  await registrarResposta({
+    prisma: deps.prisma,
+    sessionName: sessao.sessionName,
+    hashDaPergunta: marcarRespondida(marcaEscalada.hash),
     agora: new Date(),
   })
 

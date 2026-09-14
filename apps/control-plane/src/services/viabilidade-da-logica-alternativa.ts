@@ -15,6 +15,11 @@ import {
 import { buildFreeTextOption } from './telegram-bot.js'
 import type { StepExecutor } from './role-rails.js'
 import type { DuvidaRailsMissionResult } from './duvida-rails-mission.js'
+// DJ-T9, rodada 3 (achado do QA, 2ª rejeição, 14/09): `registrarEscalada` é o
+// MESMO mecanismo que `escalar-duvida-ao-dono.ts` já usava no caminho antigo
+// (antes do D75) para marcar que uma pergunta subiu de VERDADE ao dono — ver
+// o raciocínio completo em `perguntarAoDonoSeLogicaAlternativaViavel` abaixo.
+import { registrarEscalada, type PrismaDevSession } from './dev-session-store.js'
 
 /**
  * DJ-T9 (D76, 14/09) — palavras do dono: "Jules tem dúvida? é o GitOrch que
@@ -321,6 +326,34 @@ export function dedupKeyDeLogicaAlternativa(repository: string, issueNumber: num
   return `${DEDUP_PREFIXO_LOGICA_ALTERNATIVA}${repository}:${issueNumber}`
 }
 
+export interface LogicaAlternativaDedupKey {
+  repository: string
+  issueNumber: number
+}
+
+/**
+ * DJ-T9, rodada 3 (achado do QA, 2ª rejeição, 14/09) — `plugins/telegram.ts`
+ * precisa de um jeito de reconhecer `logica-alternativa:<repo>:<issue>` de
+ * volta para retomar a sessão do dev quando o dono responde (o defeito
+ * confirmado: sem manipulador para este prefixo, a sessão ficava presa em
+ * AWAITING_USER_FEEDBACK para sempre). MESMO padrão de
+ * `parseDedupKeyDeCustoDaOrdem` (aviso-de-custo-da-ordem.ts) — formato
+ * desconhecido/quebrado devolve `null`, nunca lança.
+ */
+export function parseDedupKeyDeLogicaAlternativa(
+  dedupKey: string
+): LogicaAlternativaDedupKey | null {
+  if (!dedupKey.startsWith(DEDUP_PREFIXO_LOGICA_ALTERNATIVA)) return null
+  const resto = dedupKey.slice(DEDUP_PREFIXO_LOGICA_ALTERNATIVA.length)
+  const ultimoDoisPontos = resto.lastIndexOf(':')
+  if (ultimoDoisPontos <= 0 || ultimoDoisPontos === resto.length - 1) return null
+  const repository = resto.slice(0, ultimoDoisPontos)
+  const issueNumber = Number(resto.slice(ultimoDoisPontos + 1))
+  if (!repository.includes('/')) return null
+  if (!Number.isInteger(issueNumber) || issueNumber <= 0) return null
+  return { repository, issueNumber }
+}
+
 export interface OpcaoDeLogicaAlternativa {
   label: string
   value: string
@@ -457,6 +490,15 @@ export interface ArgsDePerguntarSeLogicaAlternativaViavel {
    *  para achar o chat certo (TelegramLink). `null`/`undefined` = projeto
    *  sem dono (registro legado) — NUNCA inventa um userId. */
   userId: string | null | undefined
+  /**
+   * DJ-T9, rodada 3 (achado do QA, 2ª rejeição, 14/09): a sessão do dev e o
+   * hash da pergunta ORIGINAL que gerou a lógica alternativa — precisos para
+   * `registrarEscalada` marcar `escalada:0:<hash>` na sessão certa, exatamente
+   * como `escalar-duvida-ao-dono.ts` já fazia no caminho antigo (antes do
+   * D75). Sem isto, nada aqui sabia QUAL sessão/pergunta marcar.
+   */
+  sessionName: string
+  hashDaPergunta: string
 }
 
 export interface DepsDePerguntarSeLogicaAlternativaViavel {
@@ -467,6 +509,11 @@ export interface DepsDePerguntarSeLogicaAlternativaViavel {
   montarContextoExecutivo: typeof montarContextoExecutivoDaPergunta
   depsDoContexto: DepsDoContextoExecutivo
   onWarn: (mensagem: string) => void
+  /** Só para `registrarEscalada` gravar a marca — nunca usado para mais nada
+   *  aqui. */
+  prisma: PrismaDevSession
+  /** Injetável para teste; produção nunca passa nada (cai no `new Date()` real). */
+  agora?: () => Date
 }
 
 /**
@@ -498,6 +545,25 @@ export interface DepsDePerguntarSeLogicaAlternativaViavel {
  *    pendentes; o mecanismo de retentativa/desistência que já existe em
  *    `scheduler.ts` (`decidirSobreAPergunta`) cuida do resto, mesma
  *    disciplina de todo caminho best-effort deste módulo.
+ *
+ * DJ-T9, rodada 3 (achado do QA, 2ª rejeição, 14/09) — DEFEITO CONFIRMADO
+ * consertado aqui: depois de `agentQuestion.ask` ter sucesso, NADA marcava a
+ * sessão como escalada. Sem essa marca, `decidirSobreAPergunta`
+ * (pergunta-sem-resposta.ts) via a mesma pergunta como "ainda não tentada" em
+ * cada tick seguinte (dentro da janela de 15min, `JANELA_DE_TENTATIVA_EM_VOO_MS`
+ * vencida) — a viabilidade rodava de novo e `agentQuestion.ask` era chamado
+ * de novo com o MESMO dedupKey. Como `AgentQuestionService.ask` só dedupa
+ * contra `status: 'answered'` (agent-question.ts), cada retentativa criava
+ * uma `agent_question` `open` NOVA — depois de `MAX_TENTATIVAS_DE_RESPOSTA`
+ * o fluxo dizia ao dono "tentei responder 3 vezes sem conseguir", uma MENTIRA
+ * (a pergunta tinha sido entregue de verdade, só não marcada). O conserto
+ * chama `registrarEscalada` (dev-session-store.ts) logo após o `ask` ter
+ * sucesso — MESMO mecanismo que `escalar-duvida-ao-dono.ts` já usava no
+ * caminho antigo, antes do D75 (grava `escalada:0:<hash>`, gravado só DEPOIS
+ * que a pergunta já nasceu de verdade, nunca antes). Só roda quando o `ask`
+ * de fato aconteceu — no ramo de aviso (sem agentQuestionService/userId),
+ * nada foi perguntado, então nada é marcado: a próxima passada tenta de novo
+ * quando o serviço/userId estiverem disponíveis.
  */
 export async function perguntarAoDonoSeLogicaAlternativaViavel(
   args: ArgsDePerguntarSeLogicaAlternativaViavel,
@@ -534,5 +600,16 @@ export async function perguntarAoDonoSeLogicaAlternativaViavel(
       depsDoContexto: deps.depsDoContexto,
     }
   )
+
+  // Pergunta de verdade entregue ao dono: marca ESCALADA (nunca "respondida"
+  // — ninguém respondeu ainda, é o dono quem vai decidir; a resposta dele
+  // RETOMA a sessão, ver `retomar-sessao-com-resposta.ts`). Gravada só AQUI,
+  // depois que `ask` já rodou sem lançar — nunca antes.
+  await registrarEscalada({
+    prisma: deps.prisma,
+    sessionName: args.sessionName,
+    hashDaPergunta: args.hashDaPergunta,
+    agora: (deps.agora ?? (() => new Date()))(),
+  })
   return true
 }

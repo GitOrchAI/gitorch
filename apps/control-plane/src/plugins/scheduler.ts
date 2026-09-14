@@ -8616,11 +8616,19 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           repository: args.repository,
           issueNumber: esperando.issueNumber,
           userId: args.userId,
+          // DJ-T9, rodada 3 (achado do QA): precisos para `registrarEscalada`
+          // marcar a sessão CERTA depois de um `ask` bem-sucedido — sem isto
+          // a mesma pergunta era reprocessada em ticks seguintes.
+          sessionName: esperando.sessionName,
+          hashDaPergunta,
         },
         {
           agentQuestion: (app as unknown as { agentQuestionService?: AgentQuestionService })
             .agentQuestionService,
           montarContextoExecutivo: montarContextoExecutivoDaPergunta,
+          // DJ-T9, rodada 3: mesma prisma usada em todo este arquivo para
+          // `registrarEscalada` marcar a sessão depois do `ask` bem-sucedido.
+          prisma: app.prisma as unknown as PrismaDevSession,
           depsDoContexto: {
             prisma: app.prisma as unknown as PrismaParaContextoExecutivo,
             buscarCorpoDaIssue: criarBuscadorDeCorpoDaIssue({

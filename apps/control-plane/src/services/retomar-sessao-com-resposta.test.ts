@@ -1,11 +1,20 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
   aoResponderDuvidaDoDev,
+  aoResponderLogicaAlternativa,
   manipuladorDeResultadoDeRetomada,
   AVISO_CORRECAO_SEM_SESSAO_VIVA,
   AVISO_CORRECAO_NAO_REGISTRADA,
   type PrismaParaRetomada,
 } from './retomar-sessao-com-resposta.js'
+import {
+  dedupKeyDeLogicaAlternativa,
+  OPCOES_DE_LOGICA_ALTERNATIVA,
+  VALOR_APROVAR_LOGICA_ALTERNATIVA,
+  VALOR_MANTER_LOGICA_ORIGINAL,
+  VALOR_VER_PROPOSTA_COMPLETA,
+} from './viabilidade-da-logica-alternativa.js'
+import { buildFreeTextOption } from './telegram-bot.js'
 
 /**
  * L4-T3 (item 3): a resposta do DONO a uma dúvida escalada (agent_question
@@ -660,6 +669,228 @@ describe('aoResponderDuvidaDoDev', () => {
       // suposição) — só usa os dois findFirst por marca escalada:.
       expect(findMany).not.toHaveBeenCalled()
     })
+  })
+})
+
+/**
+ * DJ-T9, rodada 3 (achado do QA, 2ª rejeição, 14/09) — DEFEITO CONFIRMADO:
+ * `manipuladoresDeResposta` (plugins/telegram.ts) não tinha entrada para o
+ * prefixo `logica-alternativa:` — quando o dono respondia a uma pergunta de
+ * lógica alternativa, `AgentQuestionService.answer()` marcava `answered`,
+ * mas NADA retomava a sessão do Jules; ela ficava presa em
+ * AWAITING_USER_FEEDBACK para sempre. `aoResponderLogicaAlternativa` fecha
+ * este gap, MESMO padrão de `aoResponderDuvidaDoDev` (acima).
+ */
+describe('aoResponderLogicaAlternativa', () => {
+  const SESSAO_ESCALADA_LOGICA_ALT = {
+    sessionName: 'sessions/2',
+    issueNumber: 46,
+    answeredHash: 'escalada:0:hash-original-abc',
+    devAccountId: null,
+  }
+
+  function prismaFalsoLogicaAlt(overrides: Partial<PrismaParaRetomada> = {}): PrismaParaRetomada {
+    return {
+      project: {
+        findUnique: vi.fn(async () => ({ id: 'proj1', wingId: 'acme/api' })),
+      },
+      devSession: {
+        findFirst: vi.fn(async () => SESSAO_ESCALADA_LOGICA_ALT),
+        findMany: vi.fn(async () => [SESSAO_ESCALADA_LOGICA_ALT]),
+        findUnique: vi.fn(async () => ({ devAccountId: null })),
+        update: vi.fn(async () => undefined),
+      },
+      ...overrides,
+    } as PrismaParaRetomada
+  }
+
+  function depsFalsoLogicaAlt(overrides: Record<string, unknown> = {}) {
+    return {
+      prisma: prismaFalsoLogicaAlt(),
+      decifrar: (envelope: string) => envelope.replace('cifrado:', ''),
+      julesApiKeyDaInstancia: 'chave-da-instancia',
+      responderSessaoJules: vi.fn(async () => true),
+      onWarn: vi.fn(),
+      ...overrides,
+    }
+  }
+
+  const OPCOES_MAIS_LIVRE = [...OPCOES_DE_LOGICA_ALTERNATIVA, buildFreeTextOption()]
+
+  const ARGS_BASE_LOGICA_ALT = {
+    dedupKey: dedupKeyDeLogicaAlternativa('acme/api', 46),
+    resposta: VALOR_APROVAR_LOGICA_ALTERNATIVA,
+    projectId: 'proj1',
+    userId: 'user1',
+    opcoes: OPCOES_MAIS_LIVRE,
+  }
+
+  it('dedupKey de outro tipo (duvida-dev:/automacao:) NUNCA aciona nada — motivo nao-aplicavel', async () => {
+    const deps = depsFalsoLogicaAlt()
+
+    const resultado = await aoResponderLogicaAlternativa(
+      { ...ARGS_BASE_LOGICA_ALT, dedupKey: 'duvida-dev:acme/api:46:hash123' },
+      deps as never
+    )
+
+    expect(resultado).toEqual({ entregue: false, motivo: 'nao-aplicavel' })
+    expect(deps.responderSessaoJules).not.toHaveBeenCalled()
+    expect((deps.prisma as PrismaParaRetomada).devSession.findFirst).not.toHaveBeenCalled()
+  })
+
+  // O CAMINHO FELIZ — exatamente o achado do QA: para CADA resposta possível
+  // (as 3 opções objetivas + o texto livre de "Vou escrever"), a sessão do
+  // Jules é retomada com a decisão do dono.
+  it.each([
+    [
+      'aprovar a proposta alternativa',
+      VALOR_APROVAR_LOGICA_ALTERNATIVA,
+      'Aprovar a proposta alternativa',
+    ],
+    ['manter a lógica original', VALOR_MANTER_LOGICA_ORIGINAL, 'Manter a lógica original'],
+    [
+      'ver a proposta completa antes de decidir',
+      VALOR_VER_PROPOSTA_COMPLETA,
+      'Ver a proposta completa antes de decidir',
+    ],
+  ] as const)(
+    'sucesso: dono responde "%s" — retoma a sessão do Jules com a LABEL da opção e marca respondida',
+    async (_descricao, valorDaResposta, labelEsperada) => {
+      const deps = depsFalsoLogicaAlt()
+
+      const resultado = await aoResponderLogicaAlternativa(
+        { ...ARGS_BASE_LOGICA_ALT, resposta: valorDaResposta },
+        deps as never
+      )
+
+      expect(resultado).toEqual({ entregue: true })
+      expect(deps.responderSessaoJules).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionName: 'sessions/2',
+          texto: expect.stringContaining(labelEsperada),
+        })
+      )
+      expect((deps.prisma as PrismaParaRetomada).devSession.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { sessionName: 'sessions/2' },
+          data: expect.objectContaining({ answeredHash: 'respondida:0:hash-original-abc' }),
+        })
+      )
+    }
+  )
+
+  it('sucesso: texto livre de "Vou escrever" — retoma a sessão do Jules com o texto cru do dono', async () => {
+    const deps = depsFalsoLogicaAlt()
+    const textoLivre = 'Prefiro uma terceira opção: manter o login atual mas simplificar a UI.'
+
+    const resultado = await aoResponderLogicaAlternativa(
+      { ...ARGS_BASE_LOGICA_ALT, resposta: textoLivre },
+      deps as never
+    )
+
+    expect(resultado).toEqual({ entregue: true })
+    expect(deps.responderSessaoJules).toHaveBeenCalledWith(
+      expect.objectContaining({ texto: expect.stringContaining(textoLivre) })
+    )
+  })
+
+  it('ORDEM: a entrega ao dev acontece ANTES de marcar respondida (nunca finge sucesso)', async () => {
+    const ordem: string[] = []
+    const deps = depsFalsoLogicaAlt({
+      responderSessaoJules: vi.fn(async () => {
+        ordem.push('entregou')
+        return true
+      }),
+    })
+    ;(deps.prisma as PrismaParaRetomada).devSession.update = vi.fn(async () => {
+      ordem.push('marcou-respondida')
+    })
+
+    await aoResponderLogicaAlternativa(ARGS_BASE_LOGICA_ALT, deps as never)
+
+    expect(ordem).toEqual(['entregou', 'marcou-respondida'])
+  })
+
+  it('falha ao entregar (responderSessaoJules devolve false): LANÇA — a pergunta continua open', async () => {
+    const deps = depsFalsoLogicaAlt({ responderSessaoJules: vi.fn(async () => false) })
+
+    await expect(
+      aoResponderLogicaAlternativa(ARGS_BASE_LOGICA_ALT, deps as never)
+    ).rejects.toThrow()
+    expect((deps.prisma as PrismaParaRetomada).devSession.update).not.toHaveBeenCalled()
+  })
+
+  it('projeto da pergunta (por projectId) não encontrado: LANÇA', async () => {
+    const prisma = prismaFalsoLogicaAlt({
+      project: { findUnique: vi.fn(async () => null) } as never,
+    })
+    const deps = depsFalsoLogicaAlt({ prisma })
+
+    await expect(
+      aoResponderLogicaAlternativa(ARGS_BASE_LOGICA_ALT, deps as never)
+    ).rejects.toThrow()
+  })
+
+  it('repo do dedupKey diverge do wingId do projeto da pergunta: LANÇA erro claro, nunca entrega', async () => {
+    const prisma = prismaFalsoLogicaAlt({
+      project: { findUnique: vi.fn(async () => ({ id: 'proj1', wingId: 'outro/repo' })) } as never,
+    })
+    const deps = depsFalsoLogicaAlt({ prisma })
+
+    await expect(aoResponderLogicaAlternativa(ARGS_BASE_LOGICA_ALT, deps as never)).rejects.toThrow(
+      /diverge do wingId/
+    )
+  })
+
+  // Sem hash no dedupKey (uma pergunta por ISSUE) — só dá para achar a
+  // sessão pela mais recente AWAITING_USER_FEEDBACK marcada `escalada:` do
+  // mesmo projeto/issue. Sem NENHUMA: nunca lança, best-effort.
+  it('nenhuma sessão ESCALADA viva para a issue: NUNCA lança — devolve entregue:false/motivo sem-sessao-viva-sem-registro sem comentarNaIssue configurado', async () => {
+    const prisma = prismaFalsoLogicaAlt({
+      devSession: {
+        findFirst: vi.fn(async () => null),
+        update: vi.fn(async () => undefined),
+      } as never,
+    })
+    const deps = depsFalsoLogicaAlt({ prisma })
+
+    const resultado = await aoResponderLogicaAlternativa(ARGS_BASE_LOGICA_ALT, deps as never)
+
+    expect(resultado).toEqual({ entregue: false, motivo: 'sem-sessao-viva-sem-registro' })
+    expect(deps.responderSessaoJules).not.toHaveBeenCalled()
+    expect(deps.onWarn).toHaveBeenCalledWith(expect.stringContaining('acme/api#46'))
+  })
+
+  it('sessão com marca escalada malformada (sem 3 partes): LANÇA — não dá para extrair o hash de volta', async () => {
+    const prisma = prismaFalsoLogicaAlt({
+      devSession: {
+        findFirst: vi.fn(async () => ({
+          ...SESSAO_ESCALADA_LOGICA_ALT,
+          answeredHash: 'escalada:',
+        })),
+        update: vi.fn(async () => undefined),
+      } as never,
+    })
+    const deps = depsFalsoLogicaAlt({ prisma })
+
+    await expect(aoResponderLogicaAlternativa(ARGS_BASE_LOGICA_ALT, deps as never)).rejects.toThrow(
+      /malformada/
+    )
+  })
+
+  it('só busca sessão marcada escalada: passa o filtro startsWith("escalada:") — nunca a mais recente AWAITING qualquer', async () => {
+    const findFirst = vi.fn(async (args: { where: { answeredHash?: unknown } }) => {
+      expect(args.where.answeredHash).toEqual({ startsWith: 'escalada:' })
+      return SESSAO_ESCALADA_LOGICA_ALT
+    })
+    const prisma = prismaFalsoLogicaAlt({
+      devSession: { findFirst, update: vi.fn(async () => undefined) } as never,
+    })
+    const deps = depsFalsoLogicaAlt({ prisma })
+
+    await aoResponderLogicaAlternativa(ARGS_BASE_LOGICA_ALT, deps as never)
+
+    expect(findFirst).toHaveBeenCalledOnce()
   })
 })
 
