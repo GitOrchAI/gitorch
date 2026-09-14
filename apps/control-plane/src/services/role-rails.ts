@@ -94,6 +94,7 @@ const TASK_WRITING_RULES = [
   '- REUSE FIRST: name the existing helper/module/pattern to extend. Only propose a new file when nothing existing fits, and justify that in Notes.',
   '- ONE focused change per task — never mix unrelated work. Prefer FEWER, denser tasks over many vague ones.',
   '- Verification Criteria: concrete checks a reviewer can execute (commands, URLs, expected behavior) — not restatements of the title.',
+  '- Tasks that touch different areas or files run IN PARALLEL and must NOT block one another — only chain blockedByTaskIndexes when this task consumes a concrete RESULT the other one produces.',
 ].join('\n')
 
 /**

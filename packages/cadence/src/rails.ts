@@ -232,6 +232,12 @@ export interface PoTriageForm {
   releaseNow: boolean
 }
 
+/** DJ-T12: veredito do PO sobre UM par (tarefa, bloqueador aberto). */
+export interface PoReavaliarBloqueioForm {
+  decisao: 'manter' | 'remover'
+  motivo: string
+}
+
 export interface PoStrategicQuestionForm {
   question: string
   rationale: string
@@ -678,6 +684,22 @@ export const RAILS_SCHEMAS = {
       priority: { type: 'string', enum: ['P0', 'P1', 'P2', 'P3'] },
       rationale: { type: 'string' },
       releaseNow: { type: 'boolean' },
+    },
+  } as MiniSchema,
+
+  // DJ-T12: reavaliação de um "Blocked by" já publicado — a fila indiana
+  // medida no GitHub (26/32 e 22/23 tasks abertas dependentes de outra) só
+  // se desfaz quando ALGUÉM relê cada bloqueio já criado. `manter` exige o
+  // MESMO padrão de dependência real que `dependenciaTemJustificativa` já
+  // cobra na criação (D74): a task USA um resultado da outra (arquivo
+  // criado, rota, coluna, contrato) — nunca ordem preferida ou mesma
+  // área/arquivo tocado, que é motivo de `remover`.
+  poReavaliarBloqueio: {
+    type: 'object',
+    required: ['decisao', 'motivo'],
+    properties: {
+      decisao: { type: 'string', enum: ['manter', 'remover'] },
+      motivo: { type: 'string', minLength: 10 },
     },
   } as MiniSchema,
 
