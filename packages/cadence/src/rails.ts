@@ -1240,6 +1240,49 @@ export function wrapClientRequest(texto: string): string {
  * curado pelo sistema e o schema do formulário. Deliberadamente NÃO menciona
  * ferramentas de ação — a LLM só decide; o executor do GitOrch aplica.
  */
+/**
+ * Calcula o tempo total gasto desde a criação do desejo até o merge da entrega.
+ * Retorna uma string formatada como "X dias e Y horas" ou null se alguma das datas for inválida/ausente.
+ */
+export function calcularTempoDeResolucao(
+  wishCreatedAt: Date | string | null | undefined,
+  mergedAt: Date | string | null | undefined
+): string | null {
+  if (!wishCreatedAt || !mergedAt) {
+    return null
+  }
+
+  const start = new Date(wishCreatedAt)
+  const end = new Date(mergedAt)
+
+  if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+    return null
+  }
+
+  const diffMs = end.getTime() - start.getTime()
+  if (diffMs < 0) {
+    return null
+  }
+
+  const diffHours = Math.floor(diffMs / (1000 * 60 * 60))
+  const days = Math.floor(diffHours / 24)
+  const hours = diffHours % 24
+
+  if (days === 0 && hours === 0) {
+    return 'menos de 1 hora'
+  }
+
+  const parts = []
+  if (days > 0) {
+    parts.push(`${days} dia${days === 1 ? '' : 's'}`)
+  }
+  if (hours > 0) {
+    parts.push(`${hours} hora${hours === 1 ? '' : 's'}`)
+  }
+
+  return parts.join(' e ')
+}
+
 export function buildStepPrompt(
   role: CadenceRole,
   stepId: string,

@@ -7,6 +7,7 @@ import {
   PESO_MAXIMO_DE_SPRINT,
   RAILS_SCHEMAS,
   buildStepPrompt,
+  calcularTempoDeResolucao,
   citaTooling,
   correnteSequencialSemJustificativa,
   criterioEhTestavel,
@@ -449,6 +450,51 @@ describe('buildStepPrompt', () => {
     // NUNCA instruir ação direta no GitHub
     expect(citaTooling(p)).toBe(false)
     expect(p.toLowerCase()).not.toContain('create the issue')
+  })
+})
+
+describe('calcularTempoDeResolucao', () => {
+  it('retorna null se as datas estiverem ausentes ou inválidas', () => {
+    expect(calcularTempoDeResolucao(null, new Date())).toBeNull()
+    expect(calcularTempoDeResolucao(new Date(), undefined)).toBeNull()
+    expect(calcularTempoDeResolucao('invalid date', new Date())).toBeNull()
+    expect(calcularTempoDeResolucao(new Date(), 'invalid date')).toBeNull()
+  })
+
+  it('retorna null se mergedAt for anterior a wishCreatedAt', () => {
+    const start = new Date('2024-01-02T12:00:00Z')
+    const end = new Date('2024-01-01T12:00:00Z')
+    expect(calcularTempoDeResolucao(start, end)).toBeNull()
+  })
+
+  it('calcula o tempo em dias e horas', () => {
+    const start = new Date('2024-01-01T10:00:00Z')
+    const end = new Date('2024-01-04T14:00:00Z')
+    expect(calcularTempoDeResolucao(start, end)).toBe('3 dias e 4 horas')
+  })
+
+  it('retorna apenas dias se as horas forem zero', () => {
+    const start = new Date('2024-01-01T10:00:00Z')
+    const end = new Date('2024-01-03T10:00:00Z')
+    expect(calcularTempoDeResolucao(start, end)).toBe('2 dias')
+  })
+
+  it('retorna apenas horas se os dias forem zero', () => {
+    const start = new Date('2024-01-01T10:00:00Z')
+    const end = new Date('2024-01-01T15:00:00Z')
+    expect(calcularTempoDeResolucao(start, end)).toBe('5 horas')
+  })
+
+  it('formata 1 dia e 1 hora no singular', () => {
+    const start = new Date('2024-01-01T10:00:00Z')
+    const end = new Date('2024-01-02T11:00:00Z')
+    expect(calcularTempoDeResolucao(start, end)).toBe('1 dia e 1 hora')
+  })
+
+  it('retorna menos de 1 hora para diferenças menores que 1 hora', () => {
+    const start = new Date('2024-01-01T10:00:00Z')
+    const end = new Date('2024-01-01T10:45:00Z')
+    expect(calcularTempoDeResolucao(start, end)).toBe('menos de 1 hora')
   })
 })
 
