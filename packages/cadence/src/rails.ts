@@ -98,6 +98,31 @@ export interface InfraIssueForm {
   fields: DoDFields
 }
 
+/**
+ * DJ-T9 (D76, 14/09) — quando o Jules (dev assíncrono), respondendo a uma
+ * dúvida, propõe uma LÓGICA ALTERNATIVA que muda o cenário de negócio (não é
+ * "não sei o que fazer", é "encontrei um jeito diferente que muda o que o
+ * produto entrega"), o RA avalia o impacto técnico ANTES do PO decidir —
+ * MESMO padrão de dois passos que `RaCausaDeInfraForm`/`InfraIssueForm`
+ * (acima) já usam (RA entende, PO decide), nunca inventado aqui.
+ */
+export interface RaAvaliacaoDeLogicaAlternativaForm {
+  impactoTecnico: string
+  riscoOuGanho: string
+}
+
+/**
+ * DJ-T9 (D76) — o veredito do PO: a lógica alternativa do Jules é viável (o
+ * dono precisa decidir) ou inviável (mantém a lógica original, sem
+ * incomodar o dono)? MESMO formato de `PoReavaliarBloqueioForm`
+ * (decisao + motivo, piso de 10 caracteres) — nunca um schema novo por
+ * capricho.
+ */
+export interface PoViabilidadeDeLogicaAlternativaForm {
+  decisao: 'viavel' | 'inviavel'
+  motivo: string
+}
+
 /** Entregável completo do RA (3 passos): o que o PO recebe como contexto. */
 export interface RaDeliverable {
   areas: RaAreasForm['areas']
@@ -376,6 +401,11 @@ const DOD_FIELDS_SCHEMA: MiniSchema = {
   ),
 }
 
+// DJ-T9 (D76): piso de tamanho de `resumoDaProposta` (devQuestion, abaixo) —
+// mesmo espirito de MIN_CARACTERES_JUSTIFICATIVA_DE_DEPENDENCIA, so que menor
+// (e um RESUMO, nao uma justificativa completa).
+export const MIN_CARACTERES_RESUMO_DA_PROPOSTA = 10
+
 export const RAILS_SCHEMAS = {
   // A DUVIDA DO DEV assincrono. O dev para e pergunta; alguem tem que
   // responder, senao a sessao congela uma vaga para sempre (medido: treze
@@ -400,6 +430,20 @@ export const RAILS_SCHEMAS = {
   // minItems/maxItems (o MiniSchema abaixo nao suporta validacao
   // condicional a outro campo); a garantia real vive no unico ponto por
   // onde toda pergunta ao dono passa.
+  //
+  // DJ-T9 (D76, 14/09): `mudaCenarioDeNegocio`/`resumoDaProposta` sao um
+  // SINAL DIFERENTE de `precisaDoDono` — o modelo ja tem uma resposta boa
+  // para a duvida original, mas percebeu que existe uma logica ALTERNATIVA
+  // que mudaria o que o produto entrega. Nunca decisao de negocio adivinhada:
+  // quem decide se a proposta e viavel e' o par PO+RA determinístico
+  // (services/viabilidade-da-logica-alternativa.ts), nunca o modelo sozinho.
+  // Default false (campo ausente) preserva 100% do comportamento anterior a
+  // esta tarefa. `resumoDaProposta` so faz sentido com mudaCenarioDeNegocio
+  // true — MESMA lacuna do MiniSchema documentada acima
+  // (blockedByRationale/dependenciaTemJustificativa): o piso de tamanho e'
+  // validado aqui pelo schema QUANDO o campo vem preenchido; a
+  // obrigatoriedade condicional vive em codigo (`propostaTemResumo`, perto de
+  // `dependenciaTemJustificativa`, mais abaixo).
   devQuestion: {
     type: 'object',
     required: ['precisaDoDono', 'resposta'],
@@ -418,6 +462,8 @@ export const RAILS_SCHEMAS = {
           },
         },
       },
+      mudaCenarioDeNegocio: { type: 'boolean' },
+      resumoDaProposta: { type: 'string', minLength: MIN_CARACTERES_RESUMO_DA_PROPOSTA },
     },
   } as MiniSchema,
 
@@ -699,6 +745,33 @@ export const RAILS_SCHEMAS = {
     required: ['decisao', 'motivo'],
     properties: {
       decisao: { type: 'string', enum: ['manter', 'remover'] },
+      motivo: { type: 'string', minLength: 10 },
+    },
+  } as MiniSchema,
+
+  // DJ-T9 (D76, 14/09): passo 1 do par RA+PO que avalia uma LOGICA
+  // ALTERNATIVA que o Jules propos ao responder uma duvida
+  // (mudaCenarioDeNegocio=true no formulario `devQuestion`, acima) — MESMO
+  // padrao de dois passos que `raCausaDeInfra`/`infraIssue` ja usam (RA
+  // entende, PO decide), reaproveitado aqui em vez de inventado.
+  raAvaliacaoDeLogicaAlternativa: {
+    type: 'object',
+    required: ['impactoTecnico', 'riscoOuGanho'],
+    properties: {
+      impactoTecnico: { type: 'string' },
+      riscoOuGanho: { type: 'string' },
+    },
+  } as MiniSchema,
+
+  // DJ-T9 (D76): passo 2 — o PO decide viavel/inviavel com a analise do RA e
+  // o resumo da proposta do Jules como contexto. MESMO formato de
+  // `poReavaliarBloqueio` acima (decisao + motivo, piso de 10 caracteres) —
+  // nunca um schema novo por capricho.
+  poViabilidadeDeLogicaAlternativa: {
+    type: 'object',
+    required: ['decisao', 'motivo'],
+    properties: {
+      decisao: { type: 'string', enum: ['viavel', 'inviavel'] },
       motivo: { type: 'string', minLength: 10 },
     },
   } as MiniSchema,
@@ -1059,6 +1132,25 @@ export function dependenciaTemJustificativa(
   return (
     typeof blockedByRationale === 'string' &&
     blockedByRationale.trim().length >= MIN_CARACTERES_JUSTIFICATIVA_DE_DEPENDENCIA
+  )
+}
+
+/**
+ * DJ-T9 (D76): MESMO padrao de `dependenciaTemJustificativa` acima —
+ * `resumoDaProposta` (RAILS_SCHEMAS.devQuestion) so e' obrigatorio quando
+ * `mudaCenarioDeNegocio` e' true; ausencia de proposta (ou proposta vazia)
+ * com `mudaCenarioDeNegocio=false` nunca e' erro. Vive em codigo, nao no
+ * MiniSchema declarativo, pela MESMA lacuna documentada no comentario de
+ * `devQuestion` (validacao condicional a outro campo).
+ */
+export function propostaTemResumo(
+  mudaCenarioDeNegocio: boolean | undefined,
+  resumoDaProposta: string | undefined
+): boolean {
+  if (!mudaCenarioDeNegocio) return true
+  return (
+    typeof resumoDaProposta === 'string' &&
+    resumoDaProposta.trim().length >= MIN_CARACTERES_RESUMO_DA_PROPOSTA
   )
 }
 

@@ -1,4 +1,4 @@
-import { RAILS_SCHEMAS, buildStepPrompt } from '@gitorch/cadence'
+import { RAILS_SCHEMAS, buildStepPrompt, propostaTemResumo } from '@gitorch/cadence'
 import { runFormStep } from './rails-runner.js'
 import {
   destinoDaDuvida,
@@ -40,6 +40,19 @@ export interface DuvidaRailsMissionResult {
   destino: DestinoDaDuvida
   /** Pronto para `responderSessaoJules` — só existe quando o destino é o dev. */
   mensagemParaODev: string | null
+  /**
+   * DJ-T9 (D76, 14/09) — true quando o Jules, respondendo a esta dúvida,
+   * sinalizou uma LÓGICA ALTERNATIVA que muda o cenário de negócio. É o
+   * sinal para quem chama rodar a viabilidade PO+RA
+   * (`viabilidade-da-logica-alternativa.ts`, `avaliarViabilidadeDaLogicaAlternativa`)
+   * antes de fechar a resposta ao dev. `false` (o caso comum, e o único que
+   * existia antes desta tarefa) nunca muda nada do que já acontecia:
+   * `destino`/`mensagemParaODev` acima são computados exatamente como
+   * sempre foram.
+   */
+  mudaCenarioDeNegocio: boolean
+  /** Só existe (não-nulo) quando `mudaCenarioDeNegocio` é true. */
+  resumoDaProposta: string | null
 }
 
 interface FormularioDaDuvida {
@@ -47,6 +60,13 @@ interface FormularioDaDuvida {
   resposta: string
   perguntaExecutivaPtBr?: string
   opcoesPtBr?: Array<{ label: string; value: string }>
+  /** DJ-T9 (D76): ver `DuvidaRailsMissionResult.mudaCenarioDeNegocio`. */
+  mudaCenarioDeNegocio?: boolean
+  /** DJ-T9 (D76): só faz sentido junto de `mudaCenarioDeNegocio=true` — o
+   *  piso de tamanho já é aplicado pelo schema (`RAILS_SCHEMAS.devQuestion`)
+   *  quando o campo vem preenchido; a obrigatoriedade condicional (só
+   *  quando true) é conferida abaixo por `propostaTemResumo`. */
+  resumoDaProposta?: string
 }
 
 export async function runDuvidaMissionViaRails(
@@ -85,6 +105,15 @@ export async function runDuvidaMissionViaRails(
         'discarded downstream in favor of a generic fallback question). If you cannot produce a ' +
         'confident Portuguese translation with exactly 3 options, leave both empty rather than ' +
         'forcing bad ones; never invent options that misrepresent the decision.',
+      '',
+      'DJ-T9/D76 — DIFFERENT from precisaDoDono: while answering, you may realize there is an ' +
+        'ALTERNATIVE APPROACH to the underlying need (not what was literally asked) that would ' +
+        'CHANGE THE BUSINESS SCENARIO — what the product delivers, not just how the code reads. ' +
+        'When that happens (it is RARE — most answers carry no such proposal), set ' +
+        '`mudaCenarioDeNegocio=true` and fill `resumoDaProposta` with a short, concrete summary ' +
+        '(a couple of sentences, grounded in the repository) of what the alternative is and why it ' +
+        "matters. You are NOT deciding whether it is worth pursuing — the product's PO and RA " +
+        'evaluate that next. Leave `mudaCenarioDeNegocio` unset/false in the common case.',
     ]),
     execute: options.execute,
   })) as FormularioDaDuvida
@@ -101,10 +130,23 @@ export async function runDuvidaMissionViaRails(
       : {}),
   })
 
+  // DJ-T9 (D76): o mesmo freio determinístico de `dependenciaTemJustificativa`
+  // (rails.ts) — o modelo pode marcar mudaCenarioDeNegocio=true e esquecer
+  // (ou escrever de menos) o resumo; sem substância nenhuma para o PO+RA
+  // avaliarem, trata como se não houvesse proposta nenhuma (comportamento de
+  // hoje), em vez de disparar uma viabilidade vazia.
+  const proposalIsValid = propostaTemResumo(
+    formulario.mudaCenarioDeNegocio,
+    formulario.resumoDaProposta
+  )
+  const mudaCenarioDeNegocio = Boolean(formulario.mudaCenarioDeNegocio) && proposalIsValid
+
   return {
     destino,
     mensagemParaODev:
       destino.tipo === 'responder-o-dev' ? textoDaRespostaAoDev(destino.resposta) : null,
+    mudaCenarioDeNegocio,
+    resumoDaProposta: mudaCenarioDeNegocio ? (formulario.resumoDaProposta as string) : null,
   }
 }
 

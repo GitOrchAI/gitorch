@@ -4,6 +4,7 @@ import {
   DOD_FIELD_MAP,
   ESCALA_DE_PESO,
   MIN_CARACTERES_JUSTIFICATIVA_DE_DEPENDENCIA,
+  MIN_CARACTERES_RESUMO_DA_PROPOSTA,
   PESO_MAXIMO_DE_SPRINT,
   RAILS_SCHEMAS,
   buildStepPrompt,
@@ -13,6 +14,7 @@ import {
   criterioEhTestavel,
   dependenciaTemJustificativa,
   formatRaJourneys,
+  propostaTemResumo,
   validateDoD,
   validateForm,
   wrapClientRequest,
@@ -162,6 +164,82 @@ describe('validateForm (validador minimal por schema)', () => {
       ).toBe(false)
       // espaço em branco não conta — mesmo espírito de minLength no MiniSchema
       expect(dependenciaTemJustificativa([0], ' '.repeat(40))).toBe(false)
+    })
+  })
+
+  // DJ-T9 (D76, 14/09) — o Jules pode responder a uma dúvida sinalizando uma
+  // lógica alternativa que muda o cenário de negócio. `mudaCenarioDeNegocio`/
+  // `resumoDaProposta` são aditivos ao schema `devQuestion`: ausentes, o
+  // formulário de sempre continua válido — comportamento anterior a esta
+  // tarefa intacto.
+  describe('devQuestion (DJ-T9: mudaCenarioDeNegocio/resumoDaProposta são aditivos)', () => {
+    it('formulário de sempre (sem os campos novos) continua válido', () => {
+      const r = validateForm(RAILS_SCHEMAS.devQuestion, {
+        precisaDoDono: false,
+        resposta: 'Use argon2id, já está em src/lib/hash.ts.',
+      })
+      expect(r.ok).toBe(true)
+    })
+
+    it('mudaCenarioDeNegocio precisa ser boolean quando presente', () => {
+      const r = validateForm(RAILS_SCHEMAS.devQuestion, {
+        precisaDoDono: false,
+        resposta: 'resposta qualquer',
+        mudaCenarioDeNegocio: 'sim',
+      })
+      expect(r.ok).toBe(false)
+    })
+
+    it('resumoDaProposta abaixo do piso é rejeitado PELO SCHEMA quando presente', () => {
+      const r = validateForm(RAILS_SCHEMAS.devQuestion, {
+        precisaDoDono: false,
+        resposta: 'resposta qualquer',
+        mudaCenarioDeNegocio: true,
+        resumoDaProposta: 'curto',
+      })
+      expect(r.ok).toBe(false)
+      expect(r.errors.join(' ')).toContain('resumoDaProposta')
+    })
+
+    it('resumoDaProposta no piso exato ou acima passa no schema', () => {
+      const r = validateForm(RAILS_SCHEMAS.devQuestion, {
+        precisaDoDono: false,
+        resposta: 'resposta qualquer',
+        mudaCenarioDeNegocio: true,
+        resumoDaProposta: 'x'.repeat(MIN_CARACTERES_RESUMO_DA_PROPOSTA),
+      })
+      expect(r.ok).toBe(true)
+    })
+  })
+
+  // DJ-T9: MESMA lacuna do MiniSchema documentada em devQuestion —
+  // "resumoDaProposta obrigatório só se mudaCenarioDeNegocio=true" vive em
+  // código (propostaTemResumo), não no schema declarativo.
+  describe('propostaTemResumo (D76: resumo só é obrigatório quando muda o cenário)', () => {
+    it('mudaCenarioDeNegocio false/undefined nunca exige resumo', () => {
+      expect(propostaTemResumo(false, undefined)).toBe(true)
+      expect(propostaTemResumo(undefined, undefined)).toBe(true)
+      expect(propostaTemResumo(false, '')).toBe(true)
+    })
+
+    it('mudaCenarioDeNegocio true SEM resumo é rejeitado', () => {
+      expect(propostaTemResumo(true, undefined)).toBe(false)
+      expect(propostaTemResumo(true, '')).toBe(false)
+    })
+
+    it('resumo curto demais (abaixo do piso) é rejeitado', () => {
+      expect(propostaTemResumo(true, 'curto')).toBe(false)
+    })
+
+    it('resumo no piso (ou acima), com substância, passa', () => {
+      expect(propostaTemResumo(true, 'x'.repeat(MIN_CARACTERES_RESUMO_DA_PROPOSTA))).toBe(true)
+      expect(
+        propostaTemResumo(true, 'Em vez de X, propomos Y porque o cliente já usa Z em produção.')
+      ).toBe(true)
+    })
+
+    it('espaço em branco não conta — mesmo espírito de minLength no MiniSchema', () => {
+      expect(propostaTemResumo(true, ' '.repeat(40))).toBe(false)
     })
   })
 

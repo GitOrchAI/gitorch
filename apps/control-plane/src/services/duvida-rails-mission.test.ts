@@ -157,6 +157,93 @@ describe('runDuvidaMissionViaRails', () => {
   })
 })
 
+// DJ-T9 (D76, 14/09) — palavras do dono: "Jules tem dúvida? é o GitOrch que
+// responde. Se o Jules pensou numa lógica alternativa que muda o cenário, PO
+// e RA analisam se é viável...". `mudaCenarioDeNegocio`/`resumoDaProposta`
+// são o sinal NOVO que `runDuvidaMissionViaRails` agora expõe — caso comum
+// (ausente/false) tem que ficar BYTE A BYTE igual ao que já existia.
+describe('runDuvidaMissionViaRails — DJ-T9 (D76): sinal de lógica alternativa', () => {
+  it('sem mudaCenarioDeNegocio no formulário: comportamento idêntico ao de antes desta tarefa', async () => {
+    const execute = vi.fn(async () =>
+      JSON.stringify({
+        precisaDoDono: false,
+        resposta:
+          'Use argon2id: já está em package.json e o helper vive em src/lib/hash.ts, usado no login.',
+      })
+    )
+
+    const r = await runDuvidaMissionViaRails({ ...BASE, execute })
+
+    expect(r.destino.tipo).toBe('responder-o-dev')
+    expect(r.mensagemParaODev).toContain('argon2id')
+    // O sinal novo existe, mas nunca dispara nada quando ausente.
+    expect(r.mudaCenarioDeNegocio).toBe(false)
+    expect(r.resumoDaProposta).toBeNull()
+  })
+
+  it('mudaCenarioDeNegocio=false explícito: idêntico ao caso ausente (default)', async () => {
+    const execute = vi.fn(async () =>
+      JSON.stringify({
+        precisaDoDono: false,
+        resposta: 'Use argon2id, o helper já existe em src/lib/hash.ts e é usado no login.',
+        mudaCenarioDeNegocio: false,
+      })
+    )
+
+    const r = await runDuvidaMissionViaRails({ ...BASE, execute })
+
+    expect(r.mudaCenarioDeNegocio).toBe(false)
+    expect(r.resumoDaProposta).toBeNull()
+    expect(r.destino.tipo).toBe('responder-o-dev')
+  })
+
+  it('mudaCenarioDeNegocio=true com resumo válido: o sinal chega ao chamador', async () => {
+    const execute = vi.fn(async () =>
+      JSON.stringify({
+        precisaDoDono: false,
+        resposta: 'Use argon2id por enquanto, o helper já existe em src/lib/hash.ts.',
+        mudaCenarioDeNegocio: true,
+        resumoDaProposta:
+          'Em vez de hash de senha local, dá para usar o login social que o cliente já tem no ' +
+          'Google Workspace — muda o fluxo de cadastro inteiro.',
+      })
+    )
+
+    const r = await runDuvidaMissionViaRails({ ...BASE, execute })
+
+    expect(r.mudaCenarioDeNegocio).toBe(true)
+    expect(r.resumoDaProposta).toContain('login social')
+    // A resposta ORIGINAL da dúvida continua computada normalmente — a
+    // lógica alternativa é um sinal A MAIS, nunca substitui o destino comum.
+    expect(r.destino.tipo).toBe('responder-o-dev')
+  })
+
+  it('mudaCenarioDeNegocio=true mas SEM resumoDaProposta: freio determinístico trata como false (mesmo padrão de dependenciaTemJustificativa)', async () => {
+    const execute = vi.fn(async () =>
+      JSON.stringify({
+        precisaDoDono: false,
+        resposta: 'Use argon2id, o helper já existe em src/lib/hash.ts.',
+        mudaCenarioDeNegocio: true,
+        // resumoDaProposta ausente de propósito
+      })
+    )
+
+    const r = await runDuvidaMissionViaRails({ ...BASE, execute })
+
+    expect(r.mudaCenarioDeNegocio).toBe(false)
+    expect(r.resumoDaProposta).toBeNull()
+  })
+
+  // O caso "resumoDaProposta curto demais" NÃO chega até o freio de código
+  // (propostaTemResumo) neste nível: o próprio schema (minLength, quando o
+  // campo vem preenchido) já reprova no runFormStep — o modelo esgota as
+  // tentativas de repair e RailsStepError sobe antes de haver `formulario`
+  // para examinar. Coberto diretamente em rails.test.ts
+  // (describe('propostaTemResumo')); aqui só o caso "campo ausente" é
+  // alcançável de verdade (a MESMA lacuna documentada no comentário de
+  // `devQuestion`, rails.ts).
+})
+
 // L4-T4 (D64): a dúvida ESCALADA ao dono venceu 24h sem resposta dele. Em
 // vez de matar a sessão do dev ou continuar acordando o QA para sempre num
 // no-op, o RA forma uma SUPOSIÇÃO com o contexto do repositório — o dono
