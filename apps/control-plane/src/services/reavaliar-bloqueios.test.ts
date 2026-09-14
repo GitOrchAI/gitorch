@@ -88,14 +88,21 @@ describe('lerBloqueiosComMotivo', () => {
     const corpo =
       'Goal\n\nBlocked by #12\n- #12: usa o contrato de dados\n<!-- gitorch:reavaliado:12 -->'
     expect(lerBloqueiosComMotivo(corpo)).toEqual([
-      { numero: 12, motivo: 'usa o contrato de dados', marcado: true },
+      { numero: 12, motivo: 'usa o contrato de dados', marcado: true, falhas: 0 },
     ])
   })
 
   it('formato legado (D74, um único bloqueio sem número no motivo)', () => {
     const corpo = 'Blocked by #7\n- precisa da migração criada em #7'
     expect(lerBloqueiosComMotivo(corpo)).toEqual([
-      { numero: 7, motivo: 'precisa da migração criada em #7', marcado: false },
+      { numero: 7, motivo: 'precisa da migração criada em #7', marcado: false, falhas: 0 },
+    ])
+  })
+
+  it('lê a contagem de falhas do motor persistida no marcador (DEFEITO 1)', () => {
+    const corpo = 'Blocked by #12\n<!-- gitorch:falha:12:2 -->'
+    expect(lerBloqueiosComMotivo(corpo)).toEqual([
+      { numero: 12, motivo: null, marcado: false, falhas: 2 },
     ])
   })
 
@@ -278,7 +285,7 @@ describe('runReavaliarBloqueios', () => {
     })
   })
 
-  it('sem cota (motor lança) não decide nada e para nesse par — fica para a próxima rodada', async () => {
+  it('sem cota (motor lança erro de teto de uso) não decide nada e PARA a rodada — fica para a próxima rodada', async () => {
     const issues: FakeIssue[] = [
       {
         number: 400,
@@ -295,8 +302,11 @@ describe('runReavaliarBloqueios', () => {
       },
     ]
     const { impl, patches, comments } = fakeFetch(issues)
+    // Frase real verificada em produção (teto-de-uso-da-conta.ts) — é isto
+    // que `ehTetoDeUsoDaConta` reconhece como "acabou a cota", diferente de
+    // um erro qualquer do motor.
     const execute = vi.fn(async () => {
-      throw new Error('sem cota em nenhum motor da cadeia')
+      throw new Error("You've hit your usage limit. Upgrade to Plus to continue using Codex")
     })
 
     const result = await runReavaliarBloqueios({
@@ -315,6 +325,127 @@ describe('runReavaliarBloqueios', () => {
     })
     expect(patches).toHaveLength(0)
     expect(comments).toHaveLength(0)
+  })
+
+  it('DEFEITO 1 (starvation, QA): erro do motor NUM PAR (que não é cota) não trava a rodada nos pares seguintes', async () => {
+    // Medido pelo QA: quando o motor sempre falha no par mais prioritário
+    // (#100/#199), a rodada antiga parava ali e NUNCA chegava em #101/#102 —
+    // 3 rodadas seguidas só tentaram o par 100. O conserto: erro de motor
+    // que não é falta de cota conta como tentativa falha NAQUELE par e a
+    // rodada segue para os próximos, dentro do teto.
+    const issues: FakeIssue[] = [
+      {
+        number: 100,
+        title: 'Task Q',
+        body: '## Goal\n\nx\n\nBlocked by #199',
+        labels: ['gitorch:task'],
+      },
+      { number: 199, title: 'Blocker Q', body: '## Goal\n\ny', labels: [], state: 'open' },
+      {
+        number: 101,
+        title: 'Task R',
+        body: '## Goal\n\nx\n\nBlocked by #299',
+        labels: ['gitorch:task'],
+      },
+      { number: 299, title: 'Blocker R', body: '## Goal\n\ny', labels: [], state: 'open' },
+      {
+        number: 102,
+        title: 'Task S',
+        body: '## Goal\n\nx\n\nBlocked by #399',
+        labels: ['gitorch:task'],
+      },
+      { number: 399, title: 'Blocker S', body: '## Goal\n\ny', labels: [], state: 'open' },
+    ]
+    const { impl, patches } = fakeFetch(issues)
+    const execute = vi.fn(async (prompt: string) => {
+      if (prompt.includes('Task under review: #100')) {
+        throw new Error('resposta inválida do motor (não é erro de cota)')
+      }
+      if (prompt.includes('Task under review: #101'))
+        return JSON.stringify({ decisao: 'remover', motivo: 'áreas diferentes' })
+      if (prompt.includes('Task under review: #102'))
+        return JSON.stringify({ decisao: 'remover', motivo: 'áreas diferentes' })
+      throw new Error(`prompt inesperado: ${prompt.slice(0, 200)}`)
+    })
+
+    const result = await runReavaliarBloqueios({
+      repository: 'dono/repo',
+      githubToken: 'tok',
+      execute,
+      fetchImpl: impl,
+      onWarn: () => undefined,
+    })
+
+    // #101 e #102 foram decididos MESMO com #100 falhando primeiro na ordem
+    // de prioridade — nada de starvation.
+    expect(execute).toHaveBeenCalledTimes(3)
+    expect(result.interrompidoPorMotor).toBe(false)
+    expect(result.removidos).toBe(2)
+    expect(result.restamPendentes).toBe(true) // #100 continua pendente
+    expect(patches.some((p) => p.number === 101)).toBe(true)
+    expect(patches.some((p) => p.number === 102)).toBe(true)
+    expect(patches.some((p) => p.number === 100)).toBe(true) // grava a contagem de falha
+  })
+
+  it('DEFEITO 1: após 3 falhas do motor no MESMO par, ele é pulado nas rodadas seguintes (registrado uma vez no painel)', async () => {
+    const issues: FakeIssue[] = [
+      {
+        number: 110,
+        title: 'Task T',
+        body: '## Goal\n\nx\n\nBlocked by #911',
+        labels: ['gitorch:task'],
+      },
+      { number: 911, title: 'Blocker T', body: '## Goal\n\ny', labels: [], state: 'open' },
+    ]
+    const { impl } = fakeFetch(issues)
+    const execute = vi.fn(async () => {
+      throw new Error('resposta inválida do motor (não é erro de cota)')
+    })
+    const onParEsgotado = vi.fn()
+
+    await runReavaliarBloqueios({
+      repository: 'dono/repo',
+      githubToken: 'tok',
+      execute,
+      fetchImpl: impl,
+      onWarn: () => undefined,
+      onParEsgotado,
+    })
+    await runReavaliarBloqueios({
+      repository: 'dono/repo',
+      githubToken: 'tok',
+      execute,
+      fetchImpl: impl,
+      onWarn: () => undefined,
+      onParEsgotado,
+    })
+    const resultado3 = await runReavaliarBloqueios({
+      repository: 'dono/repo',
+      githubToken: 'tok',
+      execute,
+      fetchImpl: impl,
+      onWarn: () => undefined,
+      onParEsgotado,
+    })
+
+    expect(execute).toHaveBeenCalledTimes(3)
+    expect(onParEsgotado).toHaveBeenCalledTimes(1)
+    expect(onParEsgotado).toHaveBeenCalledWith({ taskNumber: 110, blockerNumber: 911 })
+    expect(resultado3.restamPendentes).toBe(true)
+
+    execute.mockClear()
+    const resultado4 = await runReavaliarBloqueios({
+      repository: 'dono/repo',
+      githubToken: 'tok',
+      execute,
+      fetchImpl: impl,
+      onWarn: () => undefined,
+      onParEsgotado,
+    })
+    // par esgotado: não chama mais o motor, e não registra de novo no painel
+    expect(execute).not.toHaveBeenCalled()
+    expect(onParEsgotado).toHaveBeenCalledTimes(1)
+    expect(resultado4.restamPendentes).toBe(true)
   })
 
   it('autonomia "só olhar" recusa a escrita e não quebra a rodada', async () => {
@@ -608,6 +739,110 @@ describe('runReavaliarBloqueios — releitura fresca antes de aplicar', () => {
     })
     expect(patches).toHaveLength(0)
     expect(comments).toHaveLength(0)
+  })
+})
+
+describe('runReavaliarBloqueios — DEFEITO 2 (QA): texto acrescentado DEPOIS de "Blocked by"', () => {
+  it('remove o bloqueio mesmo com texto novo depois da seção "Blocked by" (ela deixou de ser a última)', async () => {
+    // Medido pelo QA: `corpoSemSecaoDeBloqueio` era ancorada em `$` (fim do
+    // corpo). Se alguém editou a issue e acrescentou texto DEPOIS da seção
+    // "Blocked by", a regex não casava mais, a decisão era descartada em
+    // silêncio e a rodada terminava com restamPendentes=false (concluída)
+    // sem nada ter mudado.
+    const issues: FakeIssue[] = [
+      {
+        number: 120,
+        title: 'Task U',
+        body: '## Goal\n\nx\n\nBlocked by #99\n\n## Notas do SM\n\ntexto acrescentado depois do bloqueio',
+        labels: ['gitorch:task'],
+      },
+      {
+        number: 99,
+        title: 'Task V',
+        body: '## Goal\n\ny',
+        labels: ['gitorch:task'],
+        state: 'open',
+      },
+    ]
+    const { impl, patches, comments } = fakeFetch(issues)
+    const execute = execExpr({ '#120': { decisao: 'remover', motivo: 'áreas diferentes' } })
+
+    const result = await runReavaliarBloqueios({
+      repository: 'dono/repo',
+      githubToken: 'tok',
+      execute,
+      fetchImpl: impl,
+    })
+
+    expect(result).toEqual({
+      removidos: 1,
+      mantidos: 0,
+      interrompidoPorMotor: false,
+      restamPendentes: false,
+    })
+    expect(patches).toHaveLength(1)
+    expect(patches[0]!.body).not.toContain('Blocked by')
+    expect(patches[0]!.body).toContain('## Notas do SM')
+    expect(patches[0]!.body).toContain('texto acrescentado depois do bloqueio')
+    expect(comments).toHaveLength(1)
+  })
+
+  it('mantém e reescreve a seção "Blocked by" NO MEIO do corpo, preservando texto antes e depois', () => {
+    const corpo =
+      '## Goal\n\nusa o arquivo criado em #99\n\nBlocked by #99\n\n## Notas do SM\n\ntexto depois'
+    const novo = aplicarDecisoesNoCorpo(corpo, [
+      { numero: 99, decisao: 'manter', motivo: 'usa o contrato de dados' },
+    ])
+    expect(novo).toContain('## Goal')
+    expect(novo).toContain('usa o arquivo criado em #99')
+    expect(novo).toContain('Blocked by #99')
+    expect(novo).toContain('- #99: usa o contrato de dados')
+    expect(novo).toContain('<!-- gitorch:reavaliado:99 -->')
+    expect(novo).toContain('## Notas do SM')
+    expect(novo).toContain('texto depois')
+    // a seção continua ONDE ESTAVA (entre o Goal e as Notas do SM), não
+    // movida para o fim do corpo.
+    expect(novo.indexOf('Blocked by')).toBeGreaterThan(novo.indexOf('## Goal'))
+    expect(novo.indexOf('Blocked by')).toBeLessThan(novo.indexOf('## Notas do SM'))
+  })
+
+  it('defesa: se a decisão não muda o corpo (bloco não localizável no formato exato), trata como pendente e avisa — nunca conclui em silêncio', async () => {
+    // Cinto de segurança para além do conserto direto: `extractBlockers` é
+    // case-insensitive e reconhece "blocked by" em minúsculas, mas a linha
+    // exata que este serviço sabe reescrever é "Blocked by" — um formato
+    // que `lerBloqueiosComMotivo` ainda lê (via extractBlockers) mas que o
+    // localizador de bloco não reconhece para reescrever no lugar. Sem a
+    // defesa, isso viraria perda silenciosa de novo, por outro caminho.
+    const issues: FakeIssue[] = [
+      {
+        number: 130,
+        title: 'Task W',
+        body: '## Goal\n\nx\n\nblocked by #99',
+        labels: ['gitorch:task'],
+      },
+      {
+        number: 99,
+        title: 'Task X',
+        body: '## Goal\n\ny',
+        labels: ['gitorch:task'],
+        state: 'open',
+      },
+    ]
+    const { impl, patches } = fakeFetch(issues)
+    const onWarn = vi.fn()
+    const execute = execExpr({ '#130': { decisao: 'remover', motivo: 'áreas diferentes' } })
+
+    const result = await runReavaliarBloqueios({
+      repository: 'dono/repo',
+      githubToken: 'tok',
+      execute,
+      fetchImpl: impl,
+      onWarn,
+    })
+
+    expect(result.restamPendentes).toBe(true)
+    expect(patches).toHaveLength(0)
+    expect(onWarn).toHaveBeenCalled()
   })
 })
 

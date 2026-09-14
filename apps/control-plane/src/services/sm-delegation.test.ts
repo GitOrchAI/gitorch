@@ -24,6 +24,14 @@ describe('extractBlockers', () => {
   it('sem bloqueio → []', () => {
     expect(extractBlockers('nada aqui')).toEqual([])
   })
+  it('lê "Blocked by" NO MEIO do corpo, mesmo com texto e seções depois (formato que reavaliar-bloqueios.ts agora produz)', () => {
+    const corpo =
+      '## Goal\n\nx\n\nBlocked by #12\n- #12: usa o contrato de dados\n<!-- gitorch:reavaliado:12 -->\n\n## Notas do SM\n\ntexto acrescentado depois'
+    expect(extractBlockers(corpo)).toEqual([12])
+  })
+  it('lê "Blocked by" no FIM do corpo (formato de sempre)', () => {
+    expect(extractBlockers('## Goal\n\nx\n\nBlocked by #12, #34')).toEqual([12, 34])
+  })
 })
 
 interface FakeIssue {
