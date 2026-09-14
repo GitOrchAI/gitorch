@@ -155,6 +155,22 @@ Para impact radius:
 pnpm exec tsx scripts/ci/impact-radius.ts "$(git diff --name-only origin/main...HEAD)"
 ```
 
+## Cache do turbo e o build do painel (apps/web)
+
+`apps/web` usa `output: 'export'` no Next (`apps/web/next.config.ts`), então o build de produção do painel sai em `apps/web/out/`, servido pelo control-plane via `GITORCH_WEB_DIST` (default `../web/out`, ver `apps/control-plane/src/plugins/web-static.ts`).
+
+O `turbo.json` da raiz declara `outputs` da task `build` — sem `out/**` ali, o turbo achava a task cacheável (via `dist/**`/`.next/**`) mas nunca guardava nem restaurava a pasta `out/`. Resultado: um cache hit do web deixava `apps/web/out/` desatualizado (ou ausente), e o control-plane servia um painel velho.
+
+`outputs` da task `build` inclui `["dist/**", ".next/**", "out/**"]`.
+
+Prova de que o cache guarda e restaura `out/` corretamente (reproduzir localmente quando mexer em `turbo.json` ou no build do web):
+
+1. `pnpm exec turbo run build --filter=web` duas vezes seguidas — a segunda deve sair `cache hit` (`>>> FULL TURBO`).
+2. `rm -rf apps/web/out && pnpm exec turbo run build --filter=web` — mesmo com `out/` apagado do disco, o turbo deve dar `cache hit` e recriar `apps/web/out/index.html` a partir do cache (sem rodar `next build` de novo).
+3. Alterar um trecho trivial de código em `apps/web/src/app/page.tsx`, rodar o build — deve sair `cache miss` (hash novo) e o texto/marcador da alteração aparece dentro de um dos arquivos gerados em `apps/web/out/_next/static/chunks/*.js`. Reverter a alteração depois de confirmar.
+
+Sem essa prova, uma mudança de dependência de cache do turbo pode voltar a quebrar o painel em produção de forma silenciosa (o build "passa", mas serve HTML/JS velho).
+
 ## Branch protection
 
 Esta seção descreve o que está **efetivamente configurado** na plataforma, não o que seria desejável. Ao mudar a configuração, mude este texto junto — as duas coisas divergiram no passado, e uma proteção que só existe no documento não protege nada.
