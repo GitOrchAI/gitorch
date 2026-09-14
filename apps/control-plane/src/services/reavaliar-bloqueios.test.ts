@@ -52,6 +52,10 @@ function fakeFetch(issues: FakeIssue[]) {
       comments.push({ number: n, body })
       return json({})
     }
+    if (cm && method === 'GET') {
+      const n = Number(cm[1])
+      return json(comments.filter((c) => c.number === n).map((c) => ({ body: c.body })))
+    }
     // Estado/corpo de uma issue individual (GET), ou edição do corpo (PATCH)
     const im = u.match(/\/issues\/(\d+)$/)
     if (im) {
@@ -445,7 +449,11 @@ describe('runReavaliarBloqueios', () => {
     // par esgotado: não chama mais o motor, e não registra de novo no painel
     expect(execute).not.toHaveBeenCalled()
     expect(onParEsgotado).toHaveBeenCalledTimes(1)
-    expect(resultado4.restamPendentes).toBe(true)
+    // CONSERTO (DJ-T12b, achado 1): um par esgotado já foi registrado no
+    // painel como decisão manual — não é mais "pendente" para efeito da
+    // cadência semanal. restamPendentes só é true quando falta algo que
+    // ainda pode ser reavaliado.
+    expect(resultado4.restamPendentes).toBe(false)
   })
 
   it('autonomia "só olhar" recusa a escrita e não quebra a rodada', async () => {
@@ -929,5 +937,197 @@ describe('deveRodarReavaliacaoAgora', () => {
     }
     const deve = await deveRodarReavaliacaoAgora({ prisma: prisma as never, projectId: 'p1' })
     expect(deve).toBe(true)
+  })
+})
+
+describe('runReavaliarBloqueios — DJ-T12b achado 1: par esgotado não prende a cadência', () => {
+  it('um par esgotado e nenhum outro pendente: restamPendentes=false, motor não é chamado', async () => {
+    const issues: FakeIssue[] = [
+      {
+        number: 950,
+        title: 'Task Esgotada',
+        body: '## Goal\n\nx\n\nBlocked by #199\n<!-- gitorch:falha:199:3 -->',
+        labels: ['gitorch:task'],
+      },
+      { number: 199, title: 'Blocker', body: '## Goal\n\ny', labels: [], state: 'open' },
+    ]
+    const { impl } = fakeFetch(issues)
+    const execute = vi.fn(async () => {
+      throw new Error('não deveria chamar o motor: o par já esgotou as tentativas')
+    })
+
+    const result = await runReavaliarBloqueios({
+      repository: 'dono/repo',
+      githubToken: 'tok',
+      execute,
+      fetchImpl: impl,
+    })
+
+    expect(execute).not.toHaveBeenCalled()
+    expect(result.restamPendentes).toBe(false)
+  })
+
+  it('a agenda semanal marca a rodada como concluída quando só resta par esgotado', async () => {
+    const issues: FakeIssue[] = [
+      {
+        number: 960,
+        title: 'Task Esgotada2',
+        body: '## Goal\n\nx\n\nBlocked by #299\n<!-- gitorch:falha:299:3 -->',
+        labels: ['gitorch:task'],
+      },
+      { number: 299, title: 'Blocker2', body: '## Goal\n\ny', labels: [], state: 'open' },
+    ]
+    const { impl } = fakeFetch(issues)
+    const execute = vi.fn(async () => {
+      throw new Error('não deveria chamar o motor: o par já esgotou as tentativas')
+    })
+    const eventos: Array<{ type: string }> = []
+    const prisma = {
+      event: {
+        findFirst: vi.fn(async () => null),
+        create: vi.fn(async ({ data }: { data: { type: string } }) => {
+          eventos.push({ type: data.type })
+          return {}
+        }),
+      },
+    }
+
+    const resultado = await rodarReavaliacaoDeProjetoSeForAHora({
+      repository: 'dono/repo',
+      githubToken: 'tok',
+      execute,
+      fetchImpl: impl,
+      prisma: prisma as never,
+      projectId: 'proj-esgotado',
+    })
+
+    expect(resultado?.restamPendentes).toBe(false)
+    expect(eventos.some((e) => e.type === TIPO_EVENTO_ULTIMA_EXECUCAO)).toBe(true)
+  })
+})
+
+describe('runReavaliarBloqueios — DJ-T12b achado 2: comentário só depois do PATCH', () => {
+  it('PATCH falha: nenhum comentário é publicado', async () => {
+    const issues: FakeIssue[] = [
+      {
+        number: 501,
+        title: 'Task PA',
+        body: '## Goal\n\nx\n\nBlocked by #99',
+        labels: ['gitorch:task'],
+      },
+      {
+        number: 99,
+        title: 'Task PB',
+        body: '## Goal\n\ny',
+        labels: ['gitorch:task'],
+        state: 'open',
+      },
+    ]
+    const { impl, comments } = fakeFetch(issues)
+    const fetchComPatchQuebrado = (async (
+      url: Parameters<typeof fetch>[0],
+      init?: Parameters<typeof fetch>[1]
+    ) => {
+      const u = String(url)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (method === 'PATCH' && /\/issues\/501$/.test(u)) {
+        return new Response('erro', { status: 500 })
+      }
+      return impl(url, init)
+    }) as typeof fetch
+    const execute = execExpr({ '#501': { decisao: 'remover', motivo: 'áreas diferentes' } })
+    const onWarn = vi.fn()
+
+    const result = await runReavaliarBloqueios({
+      repository: 'dono/repo',
+      githubToken: 'tok',
+      execute,
+      fetchImpl: fetchComPatchQuebrado,
+      onWarn,
+    })
+
+    expect(comments).toHaveLength(0)
+    expect(result.restamPendentes).toBe(true)
+    expect(onWarn).toHaveBeenCalled()
+  })
+
+  it('comentário com o marcador do par já existente: não publica de novo', async () => {
+    const issues: FakeIssue[] = [
+      {
+        number: 502,
+        title: 'Task PC',
+        body: '## Goal\n\nx\n\nBlocked by #99',
+        labels: ['gitorch:task'],
+      },
+      {
+        number: 99,
+        title: 'Task PD',
+        body: '## Goal\n\ny',
+        labels: ['gitorch:task'],
+        state: 'open',
+      },
+    ]
+    const { impl, comments } = fakeFetch(issues)
+    // já existe um comentário com o marcador do par — de uma rodada anterior
+    // que publicou o comentário mas cujo PATCH pode ter falhado depois, ou
+    // de qualquer outra origem; o serviço nunca deve duplicar.
+    comments.push({
+      number: 502,
+      body: '<!-- gitorch:reavaliado:99 -->\nO PO reavaliou: esta tarefa não depende de #99.',
+    })
+    const execute = execExpr({ '#502': { decisao: 'remover', motivo: 'áreas diferentes' } })
+
+    const result = await runReavaliarBloqueios({
+      repository: 'dono/repo',
+      githubToken: 'tok',
+      execute,
+      fetchImpl: impl,
+    })
+
+    expect(result.removidos).toBe(1)
+    expect(comments).toHaveLength(1)
+  })
+
+  it('regressão: remover com PATCH ok publica o PATCH antes do comentário, 1 comentário só', async () => {
+    const issues: FakeIssue[] = [
+      {
+        number: 503,
+        title: 'Task PE',
+        body: '## Goal\n\nx\n\nBlocked by #99',
+        labels: ['gitorch:task'],
+      },
+      {
+        number: 99,
+        title: 'Task PF',
+        body: '## Goal\n\ny',
+        labels: ['gitorch:task'],
+        state: 'open',
+      },
+    ]
+    const ordem: string[] = []
+    const { impl, comments, patches } = fakeFetch(issues)
+    const fetchComOrdem = (async (
+      url: Parameters<typeof fetch>[0],
+      init?: Parameters<typeof fetch>[1]
+    ) => {
+      const u = String(url)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (method === 'PATCH' && /\/issues\/503$/.test(u)) ordem.push('patch')
+      if (method === 'POST' && /\/issues\/503\/comments$/.test(u)) ordem.push('comment')
+      return impl(url, init)
+    }) as typeof fetch
+    const execute = execExpr({ '#503': { decisao: 'remover', motivo: 'áreas diferentes' } })
+
+    const result = await runReavaliarBloqueios({
+      repository: 'dono/repo',
+      githubToken: 'tok',
+      execute,
+      fetchImpl: fetchComOrdem,
+    })
+
+    expect(ordem).toEqual(['patch', 'comment'])
+    expect(patches).toHaveLength(1)
+    expect(comments).toHaveLength(1)
+    expect(result.removidos).toBe(1)
   })
 })

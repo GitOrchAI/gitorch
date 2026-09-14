@@ -425,14 +425,15 @@ export async function runReavaliarBloqueios(
     // nunca fetch cru. Uma autonomia "só olhar" recusa a escrita
     // (`EscritaNaoAutorizadaError`); aqui isso vira aviso e a decisão
     // continua sem marcador, reperguntada na próxima rodada.
+    //
+    // CONSERTO (DJ-T12b, achado 2): o PATCH do corpo vem PRIMEIRO. Antes, o
+    // comentário de "remover" saía ANTES do PATCH; se o PATCH falhasse
+    // depois, o comentário já tinha sido publicado e a rodada seguinte
+    // (relendo o corpo sem o marcador, porque o PATCH não aplicou) publicava
+    // outro comentário igual. Com o PATCH primeiro, uma falha aqui não deixa
+    // nenhum comentário órfão para trás — a decisão simplesmente não foi
+    // aplicada e fica pendente para a próxima rodada, como já era o caso.
     try {
-      for (const d of decisoesValidas) {
-        if (d.decisao === 'remover') {
-          await gh('POST', `/repos/${options.repository}/issues/${t.number}/comments`, {
-            body: `${marcador(d.numero)}\nO PO reavaliou: esta tarefa não depende de #${d.numero} (${d.motivo}). Pode andar em paralelo.`,
-          })
-        }
-      }
       await gh('PATCH', `/repos/${options.repository}/issues/${t.number}`, { body: novoCorpo })
     } catch (err) {
       onWarn(
@@ -440,6 +441,37 @@ export async function runReavaliarBloqueios(
       )
       result.restamPendentes = true
       return { removidos: 0, mantidos: 0 }
+    }
+
+    // PATCH já aplicado — a decisão vale mesmo que o comentário abaixo
+    // falhe ou não saia. Antes de comentar, lê os comentários já publicados
+    // na issue e não publica de novo se um deles já tem o marcador deste
+    // par (idempotência mesmo quando o PATCH de uma rodada anterior tinha
+    // falhado DEPOIS do comentário já ter saído, no comportamento antigo, ou
+    // por qualquer outra causa de duplicidade).
+    for (const d of decisoesValidas) {
+      if (d.decisao !== 'remover') continue
+      const marcadorDoPar = marcador(d.numero)
+      try {
+        const comentariosExistentes = (await gh(
+          'GET',
+          `/repos/${options.repository}/issues/${t.number}/comments`
+        )) as Array<{ body?: string }>
+        const jaComentado = Array.isArray(comentariosExistentes)
+          ? comentariosExistentes.some((c) => (c.body ?? '').includes(marcadorDoPar))
+          : false
+        if (jaComentado) continue
+        await gh('POST', `/repos/${options.repository}/issues/${t.number}/comments`, {
+          body: `${marcadorDoPar}\nO PO reavaliou: esta tarefa não depende de #${d.numero} (${d.motivo}). Pode andar em paralelo.`,
+        })
+      } catch (err) {
+        // A decisão JÁ foi aplicada no corpo (PATCH acima deu certo) — falha
+        // no comentário é só um aviso, nunca desfaz a decisão nem marca a
+        // rodada como pendente por causa disso.
+        onWarn(
+          `reavaliar-bloqueios: PATCH da #${t.number} aplicado, mas o comentário do par #${t.number}/#${d.numero} falhou (decisão já vale mesmo sem o comentário): ${String(err).slice(0, 150)}`
+        )
+      }
     }
 
     let removidos = 0
@@ -504,8 +536,18 @@ export async function runReavaliarBloqueios(
       // DEFEITO 1 (QA, starvation): par já esgotou as tentativas em rodadas
       // anteriores — pula sem chamar o motor de novo, sem consumir o teto
       // da rodada e sem travar os pares seguintes.
+      //
+      // CONSERTO (DJ-T12b, achado 1): um par esgotado NÃO conta como
+      // pendente para efeito da cadência semanal — ele já foi registrado no
+      // painel como decisão manual (`onParEsgotado`/`registrarNoPainelUmaVez`
+      // em `rodarReavaliacaoDeProjetoSeForAHora`) e não há mais nada que uma
+      // próxima chamada ao motor resolveria sozinha. Sem este ajuste, um
+      // único par esgotado fazia `restamPendentes` ficar `true` para sempre,
+      // e `rodarReavaliacaoDeProjetoSeForAHora` nunca gravava a marca
+      // semanal — a reavaliação inteira rodava de novo a cada missão do PO
+      // (relistando issues e bloqueadores no GitHub a cada ~3h), mesmo
+      // quando só sobrava esse par sem solução automática.
       if (pendente.falhas >= TETO_DE_FALHAS_POR_PAR) {
-        result.restamPendentes = true
         continue
       }
 
