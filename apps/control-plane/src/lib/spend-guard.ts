@@ -47,6 +47,23 @@ export function withinTokenBudget(spent: number, budget?: number | null): boolea
   return spent < budget
 }
 
+const revokedGuests = new Set<string>()
+
+export function revokeGuestAccess(guestId: string, reason?: string): void {
+  revokedGuests.add(guestId)
+  if (reason) {
+    console.log(`Guest ${guestId} revoked. Reason: ${reason}`)
+  }
+}
+
+export function isGuestRevoked(guestId: string): boolean {
+  return revokedGuests.has(guestId)
+}
+
+export function clearRevokedGuests(): void {
+  revokedGuests.clear()
+}
+
 export interface SpendCheck {
   quotaRemaining?: number | null
   quotaTotal?: number | null

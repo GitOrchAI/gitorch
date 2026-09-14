@@ -18,6 +18,20 @@ interface ArchiveV1 {
   entries: ArchivedEntry[]
 }
 
+const revokedGuestCredentials = new Set<string>()
+
+export function revokeGuestCredentials(guestId: string): void {
+  revokedGuestCredentials.add(guestId)
+}
+
+export function isGuestCredentialRevoked(guestId: string): boolean {
+  return revokedGuestCredentials.has(guestId)
+}
+
+export function clearRevokedGuestCredentials(): void {
+  revokedGuestCredentials.clear()
+}
+
 // Guarda contra pacotes gigantes (credencial é pequena; um dir enorme indica erro).
 const MAX_TOTAL_BYTES = 32 * 1024 * 1024
 

@@ -17,6 +17,14 @@ import jwt from 'jsonwebtoken'
 import bcryptjs from 'bcryptjs'
 import { getEnv } from '../config/env.js'
 import rateLimit from '@fastify/rate-limit'
+import {
+  revokeGuestAccess as revokeSpendGuardGuestAccess,
+} from '../lib/spend-guard.js'
+import {
+  revokeGuestAccess as revokeSecurityGuestAccess,
+  isGuestRevoked as isSecurityGuestRevoked,
+} from './security.js'
+import { revokeGuestCredentials } from '../lib/credential-archive.js'
 
 interface ApiKeyPayload {
   projectId: string
@@ -148,6 +156,10 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
             throw unauthorized('UNAUTHORIZED: SESSION_STALE — faça login novamente')
           }
 
+          if (isSecurityGuestRevoked(decoded.userId)) {
+            throw unauthorized('UNAUTHORIZED: Guest access revoked')
+          }
+
           request.user = {
             id: decoded.userId,
             wingId: decoded.wingId,
@@ -178,6 +190,10 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
           userId: string
           wingId: string
           email?: string
+        }
+
+        if (isSecurityGuestRevoked(decoded.userId)) {
+          throw unauthorized('UNAUTHORIZED: Guest access revoked')
         }
 
         request.user = {
@@ -370,6 +386,75 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
       }
       return reply.status(400).send({ error: 'Invalid invitation token' })
     }
+  })
+
+  app.post('/projects/:id/guests/:guestId/revoke', async (request, reply) => {
+    const userId = request.user?.id
+    if (!userId) {
+      throw unauthorized('UNAUTHORIZED: No user in context')
+    }
+
+    const { id: projectId, guestId } = request.params as { id: string, guestId: string }
+
+    // Verify that the caller is the owner of the project to prevent IDOR
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { userId: true }
+    })
+
+    if (!project || project.userId !== userId) {
+      throw unauthorized('UNAUTHORIZED: Not project owner')
+    }
+
+    const _schema = z.object({
+      reason: z.string().optional(),
+    })
+
+    let reason = 'Revoked'
+    if (request.body) {
+      const parsedBody = _schema.safeParse(request.body)
+      if (parsedBody.success && parsedBody.data.reason) {
+        reason = parsedBody.data.reason
+      }
+    }
+
+    revokeSpendGuardGuestAccess(guestId, reason)
+    revokeSecurityGuestAccess(guestId, reason)
+    revokeGuestCredentials(guestId)
+
+    return reply.send({ success: true })
+  })
+
+  app.put('/guests/profile', async (request, reply) => {
+    const userId = request.user?.id
+    if (!userId) {
+      throw unauthorized('UNAUTHORIZED: No user in context')
+    }
+
+    const _schema = z.object({
+      name: z.string().optional(),
+      email: z.string().email().optional(),
+      githubLogin: z.string().optional(),
+    })
+
+    const parsedBody = _schema.safeParse(request.body)
+    if (!parsedBody.success) {
+      const error = new Error('BAD REQUEST: Invalid payload') as Error & { statusCode: number }
+      error.statusCode = 400
+      throw error
+    }
+    const body = parsedBody.data
+
+    const updated = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        ...(body.name ? { name: body.name } : {}),
+        ...(body.email ? { email: body.email } : {}),
+        ...(body.githubLogin ? { githubLogin: body.githubLogin } : {}),
+      },
+    })
+
+    return reply.send({ success: true, user: updated })
   })
 }
 
