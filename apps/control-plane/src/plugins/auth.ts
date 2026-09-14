@@ -17,9 +17,7 @@ import jwt from 'jsonwebtoken'
 import bcryptjs from 'bcryptjs'
 import { getEnv } from '../config/env.js'
 import rateLimit from '@fastify/rate-limit'
-import {
-  revokeGuestAccess as revokeSpendGuardGuestAccess,
-} from '../lib/spend-guard.js'
+import { revokeGuestAccess as revokeSpendGuardGuestAccess } from '../lib/spend-guard.js'
 import {
   revokeGuestAccess as revokeSecurityGuestAccess,
   isGuestRevoked as isSecurityGuestRevoked,
@@ -394,12 +392,12 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
       throw unauthorized('UNAUTHORIZED: No user in context')
     }
 
-    const { id: projectId, guestId } = request.params as { id: string, guestId: string }
+    const { id: projectId, guestId } = request.params as { id: string; guestId: string }
 
     // Verify that the caller is the owner of the project to prevent IDOR
     const project = await prisma.project.findUnique({
       where: { id: projectId },
-      select: { userId: true }
+      select: { userId: true },
     })
 
     if (!project || project.userId !== userId) {

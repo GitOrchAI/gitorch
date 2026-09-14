@@ -1,7 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { isGuestRevoked, clearRevokedGuests } from './security.js'
-import { isGuestRevoked as isSpendGuardGuestRevoked, clearRevokedGuests as clearSpendGuardGuests } from '../lib/spend-guard.js'
-import { isGuestCredentialRevoked, clearRevokedGuestCredentials } from '../lib/credential-archive.js'
+import {
+  isGuestRevoked as isSpendGuardGuestRevoked,
+  clearRevokedGuests as clearSpendGuardGuests,
+} from '../lib/spend-guard.js'
+import {
+  isGuestCredentialRevoked,
+  clearRevokedGuestCredentials,
+} from '../lib/credential-archive.js'
 import Fastify from 'fastify'
 import { authPlugin } from './auth.js'
 import { prisma } from './prisma.js'
@@ -27,8 +33,8 @@ vi.mock('./prisma.js', async (importOriginal) => {
       apiKey: {
         findMany: vi.fn(),
         update: vi.fn(),
-      }
-    }
+      },
+    },
   }
 })
 
@@ -50,12 +56,13 @@ describe('Auth Guest Revocation and Profile Endpoints', () => {
 
     await app.register(authPlugin)
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     vi.mocked(prisma.project.findUnique).mockResolvedValueOnce({ userId: 'admin1' } as any)
 
     const response = await app.inject({
       method: 'POST',
       url: '/projects/proj1/guests/guest_user_123/revoke',
-      payload: { reason: 'No longer needed' }
+      payload: { reason: 'No longer needed' },
     })
 
     expect(response.statusCode).toBe(200)
@@ -76,12 +83,13 @@ describe('Auth Guest Revocation and Profile Endpoints', () => {
 
     await app.register(authPlugin)
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     vi.mocked(prisma.project.findUnique).mockResolvedValueOnce({ userId: 'anotherUser' } as any)
 
     const response = await app.inject({
       method: 'POST',
       url: '/projects/proj1/guests/guest_user_123/revoke',
-      payload: { reason: 'No longer needed' }
+      payload: { reason: 'No longer needed' },
     })
 
     expect(response.statusCode).toBe(401)
@@ -99,18 +107,19 @@ describe('Auth Guest Revocation and Profile Endpoints', () => {
 
     await app.register(authPlugin)
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     vi.mocked(prisma.user.update).mockResolvedValueOnce({ id: 'guest123', name: 'New Name' } as any)
 
     const response = await app.inject({
       method: 'PUT',
       url: '/guests/profile',
-      payload: { name: 'New Name', email: 'a@b.com' }
+      payload: { name: 'New Name', email: 'a@b.com' },
     })
 
     expect(response.statusCode).toBe(200)
     expect(prisma.user.update).toHaveBeenCalledWith({
       where: { id: 'guest123' },
-      data: { name: 'New Name', email: 'a@b.com' }
+      data: { name: 'New Name', email: 'a@b.com' },
     })
   })
 })

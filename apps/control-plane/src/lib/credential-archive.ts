@@ -134,7 +134,11 @@ export function readArchiveEntry(blob: string, relPath: string, guestId?: string
  * Restaura um blob em `destDir`. Recusa qualquer entrada cujo caminho escape da
  * raiz (defesa contra path traversal em blob adulterado).
  */
-export async function restoreDirectory(blob: string, destDir: string, guestId?: string): Promise<void> {
+export async function restoreDirectory(
+  blob: string,
+  destDir: string,
+  guestId?: string
+): Promise<void> {
   if (guestId && isGuestCredentialRevoked(guestId)) {
     throw new Error('Credential revoked')
   }
