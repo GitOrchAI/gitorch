@@ -288,12 +288,23 @@ export async function decidirDestinoAposLogicaAlternativa(
     }
   }
 
+  // DJ-T9, achado do QA (14/09): NUNCA 'perguntar-ao-dono' aqui —
+  // scheduler.ts roteia TODO 'perguntar-ao-dono' para `escalarDuvidaAoDono`,
+  // que por contrato do D75 NUNCA pergunta ao dono de verdade (só loga como
+  // falha do time). O tipo distinto ('logica-alternativa-viavel',
+  // duvida-do-dev.ts) é o ÚNICO que scheduler.ts roteia para
+  // `perguntarAoDonoSobreLogicaAlternativa` (agentQuestion.ask de verdade) —
+  // `resumoDaProposta`/`motivoDaViabilidade` viajam separados (não só dentro
+  // de `motivo`) porque `textoDaPerguntaSobreLogicaAlternativa` os usa em
+  // frases distintas do texto executivo (D73).
   return {
     destino: {
-      tipo: 'perguntar-ao-dono',
+      tipo: 'logica-alternativa-viavel',
       motivo:
         'o time encontrou uma lógica alternativa avaliada como viável pelo PO+RA: ' +
         resultado.motivoDaViabilidade,
+      resumoDaProposta: resultado.resumoDaProposta,
+      motivoDaViabilidade: resultado.motivoDaViabilidade,
     },
     mensagemParaODev: null,
   }
@@ -403,11 +414,13 @@ export interface PerguntarAoDonoSobreLogicaAlternativaArgs {
  *
  * PORTÃO 5B, item 7.6 (03/09/2026): side effect externo (mensagem real ao
  * dono) só com autorização explícita de quem despacha a tarefa. Este módulo
- * apenas CONSTRÓI o fluxo — nenhuma chamada de produção invoca esta função
- * ainda; ela existe pronta para a tarefa que ligar o disparo real ao
- * scheduler, com `deps.agentQuestion`/`deps.montarContextoExecutivo`
- * injetáveis (mesmo padrão de `perguntarSobreCustoDaOrdem`,
- * aviso-de-custo-da-ordem.ts).
+ * apenas CONSTRÓI o fluxo — quem de fato dispara em produção é
+ * `perguntarAoDonoSeLogicaAlternativaViavel`, logo abaixo (achado do QA,
+ * 14/09: até aqui nenhuma chamada de produção invocava esta função — o
+ * destino viável caía em 'perguntar-ao-dono', que `scheduler.ts` roteava
+ * para `escalarDuvidaAoDono`, código morto), com `deps.agentQuestion`/
+ * `deps.montarContextoExecutivo` injetáveis (mesmo padrão de
+ * `perguntarSobreCustoDaOrdem`, aviso-de-custo-da-ordem.ts).
  */
 export async function perguntarAoDonoSobreLogicaAlternativa(
   args: PerguntarAoDonoSobreLogicaAlternativaArgs,
@@ -430,4 +443,96 @@ export async function perguntarAoDonoSobreLogicaAlternativa(
     options: [...pergunta.options, buildFreeTextOption()],
     dedupKey: pergunta.dedupKey,
   })
+}
+
+// --- O roteamento real: caminho novo (agentQuestion.ask) x caminho antigo (escalarDuvidaAoDono) ---
+
+export interface ArgsDePerguntarSeLogicaAlternativaViavel {
+  /** O destino final que `decidirDestinoAposLogicaAlternativa` decidiu. */
+  destino: DestinoDaDuvida
+  projectId: string
+  repository: string
+  issueNumber: number
+  /** O dono do projeto no NOSSO banco — `agentQuestion.ask` exige um userId
+   *  para achar o chat certo (TelegramLink). `null`/`undefined` = projeto
+   *  sem dono (registro legado) — NUNCA inventa um userId. */
+  userId: string | null | undefined
+}
+
+export interface DepsDePerguntarSeLogicaAlternativaViavel {
+  /** `undefined` quando `agentQuestionService` não está registrado no app
+   *  (bot desligado/ambiente de teste) — MESMO contrato de `avisar` em
+   *  `custo-da-ordem-do-projeto.ts` (scheduler.ts). */
+  agentQuestion: AgentQuestionAskerDeLogicaAlternativa | undefined
+  montarContextoExecutivo: typeof montarContextoExecutivoDaPergunta
+  depsDoContexto: DepsDoContextoExecutivo
+  onWarn: (mensagem: string) => void
+}
+
+/**
+ * DJ-T9 (achado do QA, 14/09) — o degrau que faltava: `scheduler.ts` roteava
+ * TODO destino `'perguntar-ao-dono'`/"sem mensagem para o dev" para
+ * `escalarDuvidaAoDono`, mesmo quando o destino de verdade era
+ * `'logica-alternativa-viavel'` — e `escalarDuvidaAoDono`, por contrato do
+ * D75, NUNCA pergunta ao dono de verdade (só loga como falha do time). A
+ * pergunta em formato executivo que `perguntarAoDonoSobreLogicaAlternativa`
+ * monta nunca era chamada.
+ *
+ * Esta função é o ÚNICO ponto que decide entre os dois caminhos, e é
+ * DELIBERADAMENTE quem escolhe, não `scheduler.ts` inline — extraída (MESMO
+ * padrão de `escalar-duvida-ao-dono.ts`/`suporDuvidaPendenteService`) para
+ * ser testável sem a máquina de missão/motor.
+ *
+ * Devolve:
+ *  - `false`: o destino NÃO é `'logica-alternativa-viavel'` — nada foi
+ *    tocado (nenhuma chamada a `agentQuestion`/`montarContextoExecutivo`).
+ *    Quem chama segue, SEM MUDANÇA NENHUMA, para o caminho antigo
+ *    (`escalarDuvidaAoDono`) — é a regressão que a tarefa exige provar.
+ *  - `true`: o destino É `'logica-alternativa-viavel'` e este ponto já
+ *    tratou o caso — chamando `perguntarAoDonoSobreLogicaAlternativa` de
+ *    verdade (agentQuestion.ask), OU, quando falta `agentQuestionService`/
+ *    `userId` (ambiente sem bot, projeto legado sem dono), só avisando
+ *    (`onWarn`) em vez de enviar. NUNCA cai em `escalarDuvidaAoDono` nesse
+ *    caso — os dois contratos são incompatíveis (D75 x D76) — e NUNCA
+ *    lança: uma falha de wiring aqui não pode travar a fila de dúvidas
+ *    pendentes; o mecanismo de retentativa/desistência que já existe em
+ *    `scheduler.ts` (`decidirSobreAPergunta`) cuida do resto, mesma
+ *    disciplina de todo caminho best-effort deste módulo.
+ */
+export async function perguntarAoDonoSeLogicaAlternativaViavel(
+  args: ArgsDePerguntarSeLogicaAlternativaViavel,
+  deps: DepsDePerguntarSeLogicaAlternativaViavel
+): Promise<boolean> {
+  if (args.destino.tipo !== 'logica-alternativa-viavel') return false
+
+  if (!deps.agentQuestion || !args.userId) {
+    deps.onWarn(
+      `perguntarAoDonoSeLogicaAlternativaViavel: sem agentQuestionService/userId — a pergunta ` +
+        `sobre a lógica alternativa da tarefa #${args.issueNumber} de ${args.repository} não foi ` +
+        `enviada nesta passada`
+    )
+    return true
+  }
+
+  await perguntarAoDonoSobreLogicaAlternativa(
+    {
+      userId: args.userId,
+      projectId: args.projectId,
+      issueNumber: args.issueNumber,
+      repository: args.repository,
+      resumoDaProposta: args.destino.resumoDaProposta,
+      motivoDaViabilidade: args.destino.motivoDaViabilidade,
+      contextoArgs: {
+        projectId: args.projectId,
+        repository: args.repository,
+        issueNumber: args.issueNumber,
+      },
+    },
+    {
+      agentQuestion: deps.agentQuestion,
+      montarContextoExecutivo: deps.montarContextoExecutivo,
+      depsDoContexto: deps.depsDoContexto,
+    }
+  )
+  return true
 }

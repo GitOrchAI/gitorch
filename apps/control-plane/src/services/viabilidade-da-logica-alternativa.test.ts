@@ -6,12 +6,13 @@ import {
   dedupKeyDeLogicaAlternativa,
   montarPerguntaSobreLogicaAlternativa,
   perguntarAoDonoSobreLogicaAlternativa,
+  perguntarAoDonoSeLogicaAlternativaViavel,
   textoDaPerguntaSobreLogicaAlternativa,
   decidirDestinoAposLogicaAlternativa,
   OPCOES_DE_LOGICA_ALTERNATIVA,
   type ResultadoDaLogicaAlternativa,
 } from './viabilidade-da-logica-alternativa.js'
-import { textoDaRespostaAoDev } from './duvida-do-dev.js'
+import { textoDaRespostaAoDev, type DestinoDaDuvida } from './duvida-do-dev.js'
 import { FREE_TEXT_OPTION_VALUE } from './telegram-bot.js'
 import type { ContextoExecutivoDaPergunta } from './contexto-executivo-da-pergunta.js'
 import type { DuvidaRailsMissionResult } from './duvida-rails-mission.js'
@@ -408,7 +409,7 @@ describe('decidirDestinoAposLogicaAlternativa — liga mudaCenarioDeNegocio à v
     expect(r.mensagemParaODev).toBe('GitOrch: mantida a lógica original (inviável).')
   })
 
-  it('mudaCenarioDeNegocio=true, VIÁVEL: o destino final vira perguntar-ao-dono (o MESMO caminho que já leva a escalarDuvidaAoDono) — mensagemParaODev nulo', async () => {
+  it('mudaCenarioDeNegocio=true, VIÁVEL: o destino final vira logica-alternativa-viavel — NUNCA perguntar-ao-dono (D75 amarra aquele tipo a escalarDuvidaAoDono, que nunca pergunta de verdade) — mensagemParaODev nulo', async () => {
     const resultadoDaDuvida = resultadoBase({
       mudaCenarioDeNegocio: true,
       resumoDaProposta: BASE.resumoDaProposta,
@@ -427,9 +428,19 @@ describe('decidirDestinoAposLogicaAlternativa — liga mudaCenarioDeNegocio à v
       resolver,
     })
 
-    expect(r.destino.tipo).toBe('perguntar-ao-dono')
-    if (r.destino.tipo === 'perguntar-ao-dono') {
+    // DJ-T9, achado do QA: NUNCA 'perguntar-ao-dono' — esse tipo está
+    // amarrado, em scheduler.ts, a escalarDuvidaAoDono (D75, nunca pergunta
+    // de verdade). O tipo distinto é o único roteado para
+    // perguntarAoDonoSobreLogicaAlternativa (agentQuestion.ask real).
+    expect(r.destino.tipo).toBe('logica-alternativa-viavel')
+    expect(r.destino.tipo).not.toBe('perguntar-ao-dono')
+    if (r.destino.tipo === 'logica-alternativa-viavel') {
       expect(r.destino.motivo).toContain('Vale consultar: muda o cadastro inteiro.')
+      // resumoDaProposta e motivoDaViabilidade viajam SEPARADOS (não só
+      // dentro de `motivo`) — textoDaPerguntaSobreLogicaAlternativa precisa
+      // dos dois em frases distintas.
+      expect(r.destino.resumoDaProposta).toBe(BASE.resumoDaProposta)
+      expect(r.destino.motivoDaViabilidade).toBe('Vale consultar: muda o cadastro inteiro.')
     }
     expect(r.mensagemParaODev).toBeNull()
   })
@@ -498,5 +509,161 @@ describe('decidirDestinoAposLogicaAlternativa — liga mudaCenarioDeNegocio à v
         resolver,
       })
     ).rejects.toThrow(erroDeCota)
+  })
+})
+
+// DJ-T9, achado do QA (14/09): `decidirDestinoAposLogicaAlternativa` já
+// devolvia o destino certo, mas NADA em produção decidia, a partir dele,
+// entre o caminho NOVO (agentQuestion.ask real, via
+// perguntarAoDonoSobreLogicaAlternativa) e o caminho ANTIGO
+// (escalarDuvidaAoDono, D75 — nunca pergunta de verdade). Sem essa peça,
+// scheduler.ts continuava mandando TUDO para escalarDuvidaAoDono, e a
+// pergunta em formato executivo nunca era enviada — o próprio defeito
+// confirmado pelo QA.
+//
+// `perguntarAoDonoSeLogicaAlternativaViavel` é essa peça, extraída (MESMO
+// padrão de `escalar-duvida-ao-dono.ts`/`suporDuvidaPendenteService`) para
+// ser testável sem a máquina de missão/motor: `scheduler.ts` só faz o
+// wiring real (agentQuestionService, prisma, GitHub) e chama esta função
+// ANTES do roteamento antigo — devolve `true` quando ela tratou o destino
+// (chamou o caminho novo, ou avisou/registrou por não ter como enviar),
+// `false` quando o destino NÃO é 'logica-alternativa-viavel' — sinal para
+// quem chama seguir para o caminho antigo (escalarDuvidaAoDono), inalterado.
+describe('perguntarAoDonoSeLogicaAlternativaViavel — o ÚNICO ponto que decide entre agentQuestion.ask real e o caminho antigo (DJ-T9, achado do QA)', () => {
+  const DESTINO_VIAVEL: DestinoDaDuvida = {
+    tipo: 'logica-alternativa-viavel',
+    motivo: 'o time encontrou uma lógica alternativa avaliada como viável pelo PO+RA: vale a pena',
+    resumoDaProposta: BASE.resumoDaProposta,
+    motivoDaViabilidade: 'vale a pena consultar',
+  }
+
+  function depsBase() {
+    return {
+      agentQuestion: { ask: vi.fn().mockResolvedValue({ deduped: false, question: {} }) },
+      montarContextoExecutivo: vi.fn().mockResolvedValue(CONTEXTO_COMPLETO),
+      depsDoContexto: {
+        buscarCorpoDaIssue: async () => null,
+        prisma: { agentQuestion: { findMany: async () => [] } },
+      },
+      onWarn: vi.fn(),
+    }
+  }
+
+  // Regressão explícita, item 5 da tarefa: qualquer destino que NÃO seja
+  // 'logica-alternativa-viavel' — inclusive o antigo 'perguntar-ao-dono' de
+  // dúvida técnica comum (D75, sem lógica alternativa) — devolve `false` SEM
+  // tocar em agentQuestion.ask nenhuma vez. Quem chama (scheduler.ts) segue,
+  // sem mudança nenhuma, para escalarDuvidaAoDono — exatamente como antes
+  // desta tarefa.
+  it('destino é o antigo perguntar-ao-dono (dúvida técnica comum, sem lógica alternativa): devolve false, NUNCA chama agentQuestion.ask (regressão)', async () => {
+    const deps = depsBase()
+    const destinoAntigo: DestinoDaDuvida = {
+      tipo: 'perguntar-ao-dono',
+      motivo: 'é decisão de negócio, e decisão de negócio é do dono',
+    }
+
+    const tratado = await perguntarAoDonoSeLogicaAlternativaViavel(
+      {
+        destino: destinoAntigo,
+        projectId: 'proj-1',
+        repository: 'acme/api',
+        issueNumber: 7,
+        userId: 'user-1',
+      },
+      deps
+    )
+
+    expect(tratado).toBe(false)
+    expect(deps.agentQuestion.ask).not.toHaveBeenCalled()
+    expect(deps.montarContextoExecutivo).not.toHaveBeenCalled()
+    expect(deps.onWarn).not.toHaveBeenCalled()
+  })
+
+  it('destino escalar-ao-ra ou responder-o-dev: devolve false sem tocar em nada', async () => {
+    const deps = depsBase()
+    const destinos: DestinoDaDuvida[] = [
+      { tipo: 'escalar-ao-ra', motivo: 'o QA não conseguiu responder' },
+      { tipo: 'responder-o-dev', resposta: 'Use argon2id, já está em src/lib/hash.ts.' },
+    ]
+
+    for (const destino of destinos) {
+      const tratado = await perguntarAoDonoSeLogicaAlternativaViavel(
+        { destino, projectId: 'proj-1', repository: 'acme/api', issueNumber: 7, userId: 'user-1' },
+        deps
+      )
+      expect(tratado).toBe(false)
+    }
+    expect(deps.agentQuestion.ask).not.toHaveBeenCalled()
+  })
+
+  it('destino VIÁVEL, com agentQuestionService e userId: chama perguntarAoDonoSobreLogicaAlternativa/agentQuestion.ask com o contexto certo (userId, projectId, dedupKey, texto) e devolve true', async () => {
+    const deps = depsBase()
+
+    const tratado = await perguntarAoDonoSeLogicaAlternativaViavel(
+      {
+        destino: DESTINO_VIAVEL,
+        projectId: 'proj-1',
+        repository: 'acme/api',
+        issueNumber: 7,
+        userId: 'user-1',
+      },
+      deps
+    )
+
+    expect(tratado).toBe(true)
+    expect(deps.montarContextoExecutivo).toHaveBeenCalledWith(
+      { projectId: 'proj-1', repository: 'acme/api', issueNumber: 7 },
+      deps.depsDoContexto
+    )
+    expect(deps.agentQuestion.ask).toHaveBeenCalledOnce()
+    const [userId, projectId, input] = deps.agentQuestion.ask.mock.calls[0] as unknown as [
+      string,
+      string,
+      Record<string, unknown>,
+    ]
+    expect(userId).toBe('user-1')
+    expect(projectId).toBe('proj-1')
+    expect(input['dedupKey']).toBe('logica-alternativa:acme/api:7')
+    expect(input['text']).toContain(BASE.resumoDaProposta)
+    expect(input['text']).toContain('vale a pena consultar')
+    expect(deps.onWarn).not.toHaveBeenCalled()
+  })
+
+  it('destino VIÁVEL, SEM agentQuestionService (bot desligado/teste): não lança, avisa e devolve true — nunca cai em escalarDuvidaAoDono (contrato incompatível, D75)', async () => {
+    const deps = depsBase()
+
+    const tratado = await perguntarAoDonoSeLogicaAlternativaViavel(
+      {
+        destino: DESTINO_VIAVEL,
+        projectId: 'proj-1',
+        repository: 'acme/api',
+        issueNumber: 7,
+        userId: 'user-1',
+      },
+      { ...deps, agentQuestion: undefined }
+    )
+
+    expect(tratado).toBe(true)
+    expect(deps.onWarn).toHaveBeenCalledOnce()
+    expect(deps.montarContextoExecutivo).not.toHaveBeenCalled()
+  })
+
+  it('destino VIÁVEL, SEM userId no projeto: não lança, avisa e devolve true', async () => {
+    const deps = depsBase()
+
+    const tratado = await perguntarAoDonoSeLogicaAlternativaViavel(
+      {
+        destino: DESTINO_VIAVEL,
+        projectId: 'proj-1',
+        repository: 'acme/api',
+        issueNumber: 7,
+        userId: null,
+      },
+      deps
+    )
+
+    expect(tratado).toBe(true)
+    expect(deps.onWarn).toHaveBeenCalledOnce()
+    expect(deps.agentQuestion.ask).not.toHaveBeenCalled()
   })
 })

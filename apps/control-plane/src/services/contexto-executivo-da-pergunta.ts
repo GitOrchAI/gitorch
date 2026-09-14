@@ -186,6 +186,63 @@ export async function montarContextoExecutivoDaPergunta(
   }
 }
 
+export interface DepsDeBuscarCorpoDaIssue {
+  /** O `fetch` já guardado pela autonomia do projeto — nunca um `fetch` cru
+   *  (MESMO contrato de `DepsDeComentarNaIssue.fetchDoCliente`,
+   *  suposicao-imediata-de-duvida.ts). */
+  fetchDoCliente: typeof fetch
+  repository: string
+  issueNumber: number
+  /** `undefined` quando o produto não tem credencial do GitHub para este
+   *  projeto (nenhum token de instalação, nenhum `GITORCH_GITHUB_TOKEN`). */
+  githubToken: string | undefined
+  onWarn: (mensagem: string) => void
+}
+
+/**
+ * DJ-T9 (14/09) — o construtor REAL de `DepsDoContextoExecutivo.buscarCorpoDaIssue`
+ * (campo obrigatório da interface acima). MESMO padrão de DI de
+ * `criarComentarNaIssue` (suposicao-imediata-de-duvida.ts): sem token,
+ * NENHUMA chamada de rede acontece, só um aviso.
+ *
+ * Diferença deliberada de `criarComentarNaIssue`: aquele LANÇA quando o
+ * GitHub recusa (é escrita, e quem chama decide o que fazer com a falha);
+ * este NUNCA lança — é leitura best-effort para uma das 4 peças da história
+ * executiva (`lerEntrega`, acima), e o contrato de `buscarCorpoDaIssue` é
+ * `() => Promise<string | null>`: uma falha aqui vira só uma LACUNA no texto
+ * da pergunta ao dono, nunca uma exceção que derruba a pergunta inteira.
+ */
+export function criarBuscadorDeCorpoDaIssue(
+  deps: DepsDeBuscarCorpoDaIssue
+): () => Promise<string | null> {
+  return async () => {
+    if (!deps.githubToken) {
+      deps.onWarn(
+        `criarBuscadorDeCorpoDaIssue: sem token do GitHub para ler a issue #${deps.issueNumber} ` +
+          `de ${deps.repository} — a pergunta ao dono segue sem o objetivo da tarefa`
+      )
+      return null
+    }
+    try {
+      const resp = await deps.fetchDoCliente(
+        `https://api.github.com/repos/${deps.repository}/issues/${deps.issueNumber}`,
+        {
+          headers: {
+            authorization: `token ${deps.githubToken}`,
+            accept: 'application/vnd.github+json',
+            'user-agent': 'gitorch',
+          },
+        }
+      )
+      if (!resp.ok) return null
+      const issue = (await resp.json().catch(() => null)) as { body?: string } | null
+      return issue?.body ?? null
+    } catch {
+      return null
+    }
+  }
+}
+
 async function lerCicloCorrente(
   deps: DepsDoContextoExecutivo
 ): Promise<ResultadoDeLeitura<string | null>> {
