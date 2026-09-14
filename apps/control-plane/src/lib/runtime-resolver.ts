@@ -4,6 +4,10 @@ import {
   CANONICAL_RUNTIME_CHAIN,
   type F6AgentRole,
 } from '@gitorch/agents'
+// packages/agents NUNCA pode importar control-plane (fronteira do
+// workspace) — por isso o filtro de motor inutilizável mora AQUI, em
+// apps/control-plane/src/lib/, e não dentro de CANONICAL_RUNTIME_CHAIN.
+import { motorEstaInutilizavel } from '../services/contrato-de-motor.js'
 
 // Resolve, por projeto e por agente, qual motor+modelo usar e a cadeia de
 // fallback. A escolha vive em project.runtimeConfig.agents (dado do cliente);
@@ -86,6 +90,17 @@ export function resolveRuntimeChain(
   const push = (runtime?: string, model?: string, effort?: string) => {
     if (!runtime || !isF6AgentRuntime(runtime)) return
     if (chain.some((c) => c.runtime === runtime)) return // sem duplicar motor
+    // Motor marcado inutilizável no boot (contrato-de-motor.ts: sem
+    // descobridor de catálogo e/ou sem leitor de cota registrados) nunca
+    // ganha modelo/cota nenhum — colocá-lo na cadeia só para a missão morrer
+    // nele é o MESMO defeito medido em 26/08-30/08 (cota/catálogo nulos, sem
+    // pista de por quê), agora na escolha do degrau em vez de na leitura.
+    if (motorEstaInutilizavel(runtime)) {
+      console.warn(
+        `[runtime-resolver] motor "${runtime}" pulado na cadeia do papel "${role}": inutilizável (contrato quebrado no boot)`
+      )
+      return
+    }
     chain.push({
       runtime,
       ...(model ? { model } : {}),
@@ -126,6 +141,25 @@ export function resolveRuntimeChain(
   // canônica acima já cobre os três motores que existem), mas fica como
   // reserva para um motor futuro que ainda não entrou na cadeia canônica.
   for (const runtime of motoresConectados) push(runtime)
+
+  // ÚLTIMA RESERVA, catastrófica: os TRÊS motores da cadeia canônica saíram
+  // inutilizáveis (contrato quebrado nos três, algo que só acontece com o
+  // boot inteiro comprometido). `chain` vazia quebraria `resolvePrimaryRuntime`
+  // (acessa `[0]`) e o `chain[0]` cru em scheduler.ts — uma cadeia vazia é
+  // pior que uma cadeia com um motor que vai falhar de forma CLARA (o próprio
+  // `motorEstaInutilizavel` já loga o motivo em cada tentativa de
+  // refreshModels/refreshQuota). Bypassa o filtro de propósito, só aqui, e
+  // grita mais alto que o aviso de cada motor pulado.
+  if (chain.length === 0) {
+    const reserva = defaults.runtimeByRole[role]
+    if (reserva && isF6AgentRuntime(reserva)) {
+      console.warn(
+        `[runtime-resolver] TODOS os motores da cadeia do papel "${role}" estão inutilizáveis; ` +
+          `usando "${reserva}" mesmo assim para não deixar a cadeia vazia`
+      )
+      chain.push({ runtime: reserva })
+    }
+  }
 
   // O MODELO NÃO É MAIS CARIMBADO AQUI, e isso é o conserto de um defeito
   // medido ao vivo em 01/09/2026.

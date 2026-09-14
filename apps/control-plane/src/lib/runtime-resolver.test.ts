@@ -1,6 +1,10 @@
-import { describe, expect, test } from 'vitest'
+import { afterEach, describe, expect, test, vi } from 'vitest'
 import { resolveRuntimeChain, resolvePrimaryRuntime, isFailoverError } from './runtime-resolver.js'
 import type { ResolverDefaults } from './runtime-resolver.js'
+import {
+  registrarContratoDeMotoresNoBoot,
+  _resetMotoresInutilizaveisParaTeste,
+} from '../services/contrato-de-motor.js'
 
 const defaults: ResolverDefaults = {
   runtimeByRole: { po: 'antigravity', ra: 'antigravity', sm: 'antigravity', qa: 'antigravity' },
@@ -87,6 +91,75 @@ describe('resolveRuntimeChain', () => {
   test('resolvePrimaryRuntime devolve a primeira seleção', () => {
     const cfg = { agents: { po: { runtime: 'codex' } } }
     expect(resolvePrimaryRuntime('po', cfg, defaults)).toEqual({ runtime: 'codex' })
+  })
+})
+
+// Motor marcado inutilizável no boot (contrato-de-motor.ts: sem descobridor de
+// catálogo e/ou sem leitor de cota registrados) nunca pode ganhar um degrau na
+// cadeia — colocá-lo lá só para a missão morrer nele é o mesmo defeito medido
+// em 26/08-30/08 (cota/catálogo nulos, sem pista de por quê), agora na escolha
+// do degrau em vez de na leitura.
+describe('resolveRuntimeChain pula motor inutilizável (contrato quebrado no boot)', () => {
+  afterEach(() => _resetMotoresInutilizaveisParaTeste())
+
+  const capturaAvisos = () => {
+    const avisos: string[] = []
+    const spy = vi.spyOn(console, 'warn').mockImplementation((...args) => {
+      avisos.push(args.map(String).join(' '))
+    })
+    return { avisos, restaura: () => spy.mockRestore() }
+  }
+
+  test('motor preferido do cliente marcado inutilizável é pulado, com aviso, e a cadeia segue para o fallback declarado', () => {
+    registrarContratoDeMotoresNoBoot({ error: () => undefined }, ['claude'], {}, {})
+    const cfg = { agents: { ra: { runtime: 'claude', fallbacks: [{ runtime: 'codex' }] } } }
+
+    const { avisos, restaura } = capturaAvisos()
+    let chain: ReturnType<typeof resolveRuntimeChain>
+    try {
+      chain = resolveRuntimeChain('ra', cfg, defaults)
+    } finally {
+      restaura()
+    }
+
+    expect(chain.map((c) => c.runtime)).not.toContain('claude')
+    expect(chain[0]).toEqual({ runtime: 'codex' })
+    const texto = avisos.join('\n')
+    expect(texto).toContain('claude')
+    expect(texto).toContain('ra')
+    expect(texto).toContain('inutilizável')
+  })
+
+  test('motor inutilizável não aparece nem vindo da cadeia canônica nem dos conectados', () => {
+    registrarContratoDeMotoresNoBoot({ error: () => undefined }, ['codex'], {}, {})
+    const chain = resolveRuntimeChain('qa', undefined, defaults, ['codex'])
+    expect(chain.map((c) => c.runtime)).not.toContain('codex')
+    // antigravity (default do papel) e claude (cadeia canônica) seguem de pé.
+    expect(chain.map((c) => c.runtime)).toEqual(['antigravity', 'claude'])
+  })
+
+  test('TODOS os motores da cadeia canônica inutilizáveis: cai na última reserva catastrófica, com aviso mais alto, em vez de deixar a cadeia vazia', () => {
+    registrarContratoDeMotoresNoBoot(
+      { error: () => undefined },
+      ['codex', 'antigravity', 'claude'],
+      {},
+      {}
+    )
+
+    const { avisos, restaura } = capturaAvisos()
+    let chain: ReturnType<typeof resolveRuntimeChain>
+    try {
+      chain = resolveRuntimeChain('ra', undefined, defaults)
+    } finally {
+      restaura()
+    }
+
+    // Nunca vazia — vazia quebraria resolvePrimaryRuntime ([0]) e o chain[0]
+    // cru do scheduler. A reserva bypassa o filtro só aqui, de propósito.
+    expect(chain).toEqual([{ runtime: 'antigravity' }])
+    const texto = avisos.join('\n')
+    expect(texto).toContain('TODOS os motores')
+    expect(texto).toContain('ra')
   })
 })
 

@@ -310,6 +310,47 @@ describe('Rotas da cascata por agente', () => {
       }
     })
 
+    // Task e37b11d3 (catalogo-fixo-historico.ts): a linha reclassificada zera
+    // `models` e `modelsRefreshedAt` JUNTOS, deixando `lastError` com o
+    // motivo. É a mesma forma de "nunca lido de verdade" — `models: []` não
+    // pode virar "catálogo vivo mas vazio" na tela: sem motivo nem opção
+    // nenhuma, um seletor vazio silencioso confundiria "sem modelo nenhum"
+    // com "ainda não sei". A tela tem que mostrar `modelos: []` (sem opção),
+    // `lidoEm: null` (nunca foi leitura real) e o motivo explicando por quê.
+    test('linha reclassificada pelo catalogo-fixo-historico (models=[], modelsRefreshedAt=null, motivo em lastError) vira "não lido", nunca "vivo mas vazio"', async () => {
+      app.prisma.engineConnection.findMany = vi.fn().mockResolvedValue([
+        {
+          runtime: 'claude',
+          models: [],
+          modelsUnavailable: [],
+          modelsRefreshedAt: null,
+          lastError:
+            'catálogo antigo: era a lista fixa de reserva do produto (removida no conserto ' +
+            'da task 2098ea40), nunca uma leitura real do provedor — recoletando na próxima tentativa',
+          status: 'connected',
+        },
+      ])
+
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/projects/proj_1/cascata/opcoes',
+        headers: authHeaders,
+      })
+      const claude = (
+        res.json() as {
+          motores: Array<{
+            runtime: string
+            modelos: unknown[]
+            lidoEm: string | null
+            motivo: string | null
+          }>
+        }
+      ).motores.find((m) => m.runtime === 'claude')
+      expect(claude?.modelos).toEqual([])
+      expect(claude?.lidoEm).toBeNull()
+      expect(claude?.motivo).toContain('catálogo antigo')
+    })
+
     test('as opções são as do DONO do projeto, não uma lista global', async () => {
       await app.inject({
         method: 'GET',

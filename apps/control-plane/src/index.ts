@@ -11,6 +11,7 @@ import {
   type PrismaParaConferencia,
 } from './services/banco-atrasado.js'
 import { registrarContratoDeMotoresNoBoot } from './services/contrato-de-motor.js'
+import { reclassificarCatalogoFixoNoBoot } from './services/catalogo-fixo-historico.js'
 
 export async function buildApp(): Promise<FastifyInstance> {
   const env = loadEnv()
@@ -81,6 +82,15 @@ async function start(): Promise<void> {
       prisma: app.prisma as unknown as PrismaParaConferencia,
       avisar: notificadorDaInstancia(),
       log: { warn: (m) => app.log.warn(m), info: (m) => app.log.info(m) },
+    }).catch(() => undefined)
+    // Linhas de engine_connections (claude) gravadas ANTES do conserto da
+    // task 2098ea40 (PR #584) ficaram com o catálogo fixo de fallback e uma
+    // `models_refreshed_at` que nunca foi leitura real — ver
+    // catalogo-fixo-historico.ts. Best-effort e nunca derruba o arranque,
+    // mesma classe de checagem que conferirBancoNoArranque acima. Depois de
+    // registerPlugins (precisa de app.prisma real) e independente dela.
+    void reclassificarCatalogoFixoNoBoot(app.prisma, {
+      warn: (obj, msg) => app.log.warn(obj, msg),
     }).catch(() => undefined)
     app.log.info(`Documentation available at http://${env.HOST}:${env.PORT}/docs`)
   } catch (err) {
