@@ -28,6 +28,7 @@ function fakeFetch(issues: FakeIssue[]) {
   const byNumber = new Map(issues.map((i) => [i.number, i]))
   const comments: Array<{ number: number; body: string }> = []
   const patches: Array<{ number: number; body: string }> = []
+  const getComentariosUrls: string[] = []
   const impl = (async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     const u = String(url)
     const method = (init?.method ?? 'GET').toUpperCase()
@@ -44,8 +45,8 @@ function fakeFetch(issues: FakeIssue[]) {
         }))
       )
     }
-    // Comentário numa issue
-    const cm = u.match(/\/issues\/(\d+)\/comments$/)
+    // Comentário numa issue (aceita query string, ex.: ?per_page=100)
+    const cm = u.match(/\/issues\/(\d+)\/comments(?:\?.*)?$/)
     if (cm && method === 'POST') {
       const n = Number(cm[1])
       const body = init?.body ? (JSON.parse(String(init.body)) as { body: string }).body : ''
@@ -54,6 +55,7 @@ function fakeFetch(issues: FakeIssue[]) {
     }
     if (cm && method === 'GET') {
       const n = Number(cm[1])
+      getComentariosUrls.push(u)
       return json(comments.filter((c) => c.number === n).map((c) => ({ body: c.body })))
     }
     // Estado/corpo de uma issue individual (GET), ou edição do corpo (PATCH)
@@ -76,7 +78,7 @@ function fakeFetch(issues: FakeIssue[]) {
     }
     return json({})
   }) as typeof fetch
-  return { impl, comments, patches, byNumber }
+  return { impl, comments, patches, byNumber, getComentariosUrls }
 }
 
 function execExpr(mapa: Record<string, { decisao: 'manter' | 'remover'; motivo: string }>) {
@@ -189,7 +191,7 @@ describe('runReavaliarBloqueios', () => {
         state: 'open',
       },
     ]
-    const { impl, comments, patches } = fakeFetch(issues)
+    const { impl, comments, patches, getComentariosUrls } = fakeFetch(issues)
     const execute = execExpr({
       '#100': { decisao: 'remover', motivo: 'áreas e arquivos diferentes' },
     })
@@ -212,6 +214,13 @@ describe('runReavaliarBloqueios', () => {
     expect(comments).toHaveLength(1)
     expect(comments[0]!.body).toContain('não depende de #99')
     expect(comments[0]!.body).toContain('áreas e arquivos diferentes')
+    // DJ-T12b: GET de comentários precisa pedir per_page=100 — sem isso o
+    // GitHub devolve só 30 e o marcador do par pode ficar fora da página,
+    // levando o PO a duplicar o comentário numa issue com histórico longo.
+    expect(getComentariosUrls.length).toBeGreaterThan(0)
+    for (const u of getComentariosUrls) {
+      expect(u).toContain('per_page=100')
+    }
   })
 
   it('mantém e acrescenta o motivo quando há dependência real', async () => {

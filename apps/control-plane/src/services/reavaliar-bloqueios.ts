@@ -455,7 +455,7 @@ export async function runReavaliarBloqueios(
       try {
         const comentariosExistentes = (await gh(
           'GET',
-          `/repos/${options.repository}/issues/${t.number}/comments`
+          `/repos/${options.repository}/issues/${t.number}/comments?per_page=100`
         )) as Array<{ body?: string }>
         const jaComentado = Array.isArray(comentariosExistentes)
           ? comentariosExistentes.some((c) => (c.body ?? '').includes(marcadorDoPar))
