@@ -43,9 +43,9 @@ describe('Auth Guest Revocation and Profile Endpoints', () => {
   it('revoke endpoint sets all flags correctly for project owner', async () => {
     const app = Fastify()
 
-    app.decorateRequest('user', null)
+    app.decorateRequest('user', undefined)
     app.addHook('preHandler', async (request) => {
-      request.user = { id: 'admin1', wingId: 'wing1' }
+      request.user = { id: 'admin1', wingId: 'wing1', email: 'admin@b.com' }
     })
 
     await app.register(authPlugin)
@@ -69,9 +69,9 @@ describe('Auth Guest Revocation and Profile Endpoints', () => {
   it('revoke endpoint rejects if not project owner', async () => {
     const app = Fastify()
 
-    app.decorateRequest('user', null)
+    app.decorateRequest('user', undefined)
     app.addHook('preHandler', async (request) => {
-      request.user = { id: 'admin1', wingId: 'wing1' }
+      request.user = { id: 'admin1', wingId: 'wing1', email: 'admin@b.com' }
     })
 
     await app.register(authPlugin)
@@ -92,9 +92,9 @@ describe('Auth Guest Revocation and Profile Endpoints', () => {
   it('PUT /guests/profile updates the user', async () => {
     const app = Fastify()
 
-    app.decorateRequest('user', null)
+    app.decorateRequest('user', undefined)
     app.addHook('preHandler', async (request) => {
-      request.user = { id: 'guest123', wingId: 'wing1' }
+      request.user = { id: 'guest123', wingId: 'wing1', email: 'guest@b.com' }
     })
 
     await app.register(authPlugin)

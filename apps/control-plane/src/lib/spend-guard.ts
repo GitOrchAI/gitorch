@@ -69,6 +69,7 @@ export interface SpendCheck {
   quotaTotal?: number | null
   tokensSpent: number
   tokenBudget?: number | null
+  guestId?: string
 }
 
 /**
@@ -78,9 +79,13 @@ export interface SpendCheck {
  */
 export function canRunMission(check: SpendCheck): {
   ok: boolean
-  reason?: 'engine-quota-critical' | 'token-budget'
+  reason?: 'engine-quota-critical' | 'token-budget' | 'guest-revoked'
   health: QuotaHealth
 } {
+  if (check.guestId && isGuestRevoked(check.guestId)) {
+    return { ok: false, reason: 'guest-revoked', health: 'ok' }
+  }
+
   const health = quotaHealth(check.quotaRemaining, check.quotaTotal)
   if (shouldBlockForQuota(health)) {
     return { ok: false, reason: 'engine-quota-critical', health }
