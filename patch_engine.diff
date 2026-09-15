@@ -1,0 +1,29 @@
+--- packages/github-sync/src/sync-engine.ts
++++ packages/github-sync/src/sync-engine.ts
+@@ -29,18 +29,21 @@
+
+     const availability = this.workModel.availabilityFor(event.workItem, dependencyItems)
+     const status = availability.available ? 'Ready' : 'Blocked'
++
++    const operations = event.workItem.projectItemIds.map((projectItemId) => ({
++      operationKey: `project-status:${event.workItem?.nodeId}:${status}`,
++      kind: 'update-project-field' as const,
++      nodeId: event.workItem?.nodeId,
++      projectItemId,
++      fieldName: 'Status' as const,
++      value: status,
++    }))
+
+     return {
+-      operations: event.workItem.projectItemIds.map((projectItemId) => ({
+-        operationKey: `project-status:${event.workItem?.nodeId}:${status}`,
+-        kind: 'update-project-field',
+-        nodeId: event.workItem?.nodeId,
+-        projectItemId,
+-        fieldName: 'Status',
+-        value: status,
+-      })),
++      operations
+     }
+   }
+ }

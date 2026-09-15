@@ -55,6 +55,7 @@ const SCOPED_ACTIONS = [
   'updateMany',
   'delete',
   'deleteMany',
+  'upsert',
 ] as const
 
 /**
