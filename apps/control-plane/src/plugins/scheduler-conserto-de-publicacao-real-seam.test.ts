@@ -121,6 +121,12 @@ function buildFakePrisma(
     telegramLink: {
       findUnique: vi.fn(async () => ({ status: 'linked', chatId: 'chat-do-dono' })),
     },
+    // DJ-T15 (D76): "foi ao ar"/"a entrega foi mesclada" migraram do
+    // Telegram para a timeline do painel (`registrarNoPainelUmaVez`).
+    event: {
+      findFirst: vi.fn(async () => null),
+      create: vi.fn(async () => ({ id: 'evt_1' })),
+    },
   } as never
 }
 
@@ -440,13 +446,22 @@ describe('o ensaio do ambiente reprovado também vira tarefa de conserto (real s
     expect(issue.labels).toContain('gitorch:task')
     expect(prisma._linha['deployFixKey']).toBe(`gitorch:conserto:ambiente:${SHA}`)
 
-    // Aqui a publicação foi confirmada — a entrega FECHA, e o aviso ao dono
-    // diz as duas coisas: foi ao ar, e o ensaio reprovou com conserto aberto.
+    // Aqui a publicação foi confirmada — a entrega FECHA, e o registro no
+    // painel diz as duas coisas: foi ao ar, e o ensaio reprovou com conserto
+    // aberto. DJ-T15 (D76): status/andamento — painel, não mais Telegram.
     await vi.waitFor(() => expect(prisma._linha['closedAt']).not.toBeNull(), { timeout: 3000 })
-    const avisos = avisosDeTelegram(fetchMock)
-    expect(avisos).toHaveLength(1)
-    expect(avisos[0]).toContain('#654')
-    expect(avisos[0]).toContain('falhou')
+    const eventoDoPrisma = prisma as unknown as {
+      event: { create: { mock: { calls: unknown[][] } } }
+    }
+    await vi.waitFor(() => expect(eventoDoPrisma.event.create.mock.calls.length).toBe(1), {
+      timeout: 3000,
+    })
+    const registro = eventoDoPrisma.event.create.mock.calls[0]![0] as {
+      data: { payload: { texto: string } }
+    }
+    expect(registro.data.payload.texto).toContain('#654')
+    expect(registro.data.payload.texto).toContain('falhou')
+    expect(avisosDeTelegram(fetchMock)).toHaveLength(0)
   })
 
   test('ambiente inalcançável numa leitura só NÃO vira tarefa: guarda a leitura e adia o fecho da entrega', async () => {

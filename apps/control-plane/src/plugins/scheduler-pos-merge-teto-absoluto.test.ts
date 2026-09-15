@@ -72,6 +72,13 @@ function buildFakePrisma(sessaoInicial: Record<string, unknown>) {
     telegramLink: {
       findUnique: vi.fn(async () => ({ status: 'linked', chatId: 'chat-do-dono' })),
     },
+    // DJ-T15 (D76): o aviso de "entrega mesclada" migrou do Telegram para a
+    // timeline do painel (`registrarNoPainelUmaVez`) — status/andamento,
+    // não decisão do dono.
+    event: {
+      findFirst: vi.fn(async () => null),
+      create: vi.fn(async () => ({ id: 'evt_1' })),
+    },
     _updateCalls: updateCalls,
   }
 }
@@ -203,16 +210,20 @@ describe('teto absoluto (Item 1) — nenhum estado sobrevive a TETO_ABSOLUTO_DE_
     const chamadaDeEstado = prisma._updateCalls.find((c) => c.data['deployState'] !== undefined)
     expect(chamadaDeEstado?.data).toMatchObject({ deployState: 'sem-publicacao' })
 
-    // O dono é avisado, com a ÚLTIMA observação (o "falhou" que ficou
-    // preso) — não em silêncio.
+    // DJ-T15 (D76): o dono é avisado, com a ÚLTIMA observação (o "falhou"
+    // que ficou preso) — não em silêncio, mas agora na timeline do painel,
+    // não mais no Telegram.
+    expect(prisma.event.create).toHaveBeenCalled()
+    const corpoDoAviso = String(
+      (
+        prisma.event.create.mock.calls[0] as unknown as [{ data: { payload: { texto: string } } }]
+      )[0]?.data?.payload?.texto ?? ''
+    )
+    expect(corpoDoAviso).toMatch(/falhou/)
     const chamadasDeTelegram = fetchMock.mock.calls.filter((c) =>
       String(c[0]).startsWith('https://api.telegram.org/')
     )
-    expect(chamadasDeTelegram.length).toBeGreaterThanOrEqual(1)
-    const corpoDoAviso = String(
-      (chamadasDeTelegram[0]?.[1] as { body?: string } | undefined)?.body ?? ''
-    )
-    expect(corpoDoAviso).toMatch(/falhou/)
+    expect(chamadasDeTelegram).toHaveLength(0)
   })
 
   test('estado 2 — "publicando" represado esperando aprovação humana (deployment "waiting", NUNCA "zero evidência"): o teto absoluto fecha mesmo assim', async () => {
@@ -277,14 +288,18 @@ describe('teto absoluto (Item 1) — nenhum estado sobrevive a TETO_ABSOLUTO_DE_
     const chamadaDeEstado = prisma._updateCalls.find((c) => c.data['deployState'] !== undefined)
     expect(chamadaDeEstado?.data).toMatchObject({ deployState: 'sem-publicacao' })
 
+    // DJ-T15 (D76): mesmo marco, mesma migração — painel, não Telegram.
+    expect(prisma.event.create).toHaveBeenCalled()
+    const corpoDoAviso = String(
+      (
+        prisma.event.create.mock.calls[0] as unknown as [{ data: { payload: { texto: string } } }]
+      )[0]?.data?.payload?.texto ?? ''
+    )
+    expect(corpoDoAviso).toMatch(/publicando/)
     const chamadasDeTelegram = fetchMock.mock.calls.filter((c) =>
       String(c[0]).startsWith('https://api.telegram.org/')
     )
-    expect(chamadasDeTelegram.length).toBeGreaterThanOrEqual(1)
-    const corpoDoAviso = String(
-      (chamadasDeTelegram[0]?.[1] as { body?: string } | undefined)?.body ?? ''
-    )
-    expect(corpoDoAviso).toMatch(/publicando/)
+    expect(chamadasDeTelegram).toHaveLength(0)
   })
 
   test('estado 3 — leitura ao GitHub que falha PARA SEMPRE (403 persistente): o teto absoluto fecha mesmo sem NUNCA ter conseguido um veredito', async () => {
@@ -324,14 +339,18 @@ describe('teto absoluto (Item 1) — nenhum estado sobrevive a TETO_ABSOLUTO_DE_
     const chamadaDeEstado = prisma._updateCalls.find((c) => c.data['deployState'] !== undefined)
     expect(chamadaDeEstado?.data).toMatchObject({ deployState: 'sem-publicacao' })
 
+    // DJ-T15 (D76): mesma migração — painel, não Telegram.
+    expect(prisma.event.create).toHaveBeenCalled()
+    const corpoDoAviso = String(
+      (
+        prisma.event.create.mock.calls[0] as unknown as [{ data: { payload: { texto: string } } }]
+      )[0]?.data?.payload?.texto ?? ''
+    )
+    expect(corpoDoAviso).toMatch(/leitura do GitHub falhou/)
     const chamadasDeTelegram = fetchMock.mock.calls.filter((c) =>
       String(c[0]).startsWith('https://api.telegram.org/')
     )
-    expect(chamadasDeTelegram.length).toBeGreaterThanOrEqual(1)
-    const corpoDoAviso = String(
-      (chamadasDeTelegram[0]?.[1] as { body?: string } | undefined)?.body ?? ''
-    )
-    expect(corpoDoAviso).toMatch(/leitura do GitHub falhou/)
+    expect(chamadasDeTelegram).toHaveLength(0)
   })
 
   // Item 7 (leva B2): a invariante documentada em `scheduler.ts` diz que
@@ -416,14 +435,18 @@ describe('teto absoluto (Item 1) — nenhum estado sobrevive a TETO_ABSOLUTO_DE_
 
     // O aviso ao dono não trava numa divisão por dado ausente ("NaN horas")
     // — a mensagem continua legível mesmo sem saber há quanto tempo foi.
+    // DJ-T15 (D76): mesma migração — painel, não Telegram.
+    expect(prisma.event.create).toHaveBeenCalled()
+    const corpoDoAviso = String(
+      (
+        prisma.event.create.mock.calls[0] as unknown as [{ data: { payload: { texto: string } } }]
+      )[0]?.data?.payload?.texto ?? ''
+    )
+    expect(corpoDoAviso).not.toMatch(/NaN/)
     const chamadasDeTelegram = fetchMock.mock.calls.filter((c) =>
       String(c[0]).startsWith('https://api.telegram.org/')
     )
-    expect(chamadasDeTelegram.length).toBeGreaterThanOrEqual(1)
-    const corpoDoAviso = String(
-      (chamadasDeTelegram[0]?.[1] as { body?: string } | undefined)?.body ?? ''
-    )
-    expect(corpoDoAviso).not.toMatch(/NaN/)
+    expect(chamadasDeTelegram).toHaveLength(0)
   })
 
   test('ANTES do teto absoluto: os três estados NÃO fecham sozinhos (comportamento de sempre preservado)', async () => {

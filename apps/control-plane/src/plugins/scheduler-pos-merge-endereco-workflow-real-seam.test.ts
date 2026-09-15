@@ -95,6 +95,13 @@ function buildFakePrisma(projeto: Record<string, unknown>, sessaoInicial: Record
     telegramLink: {
       findUnique: vi.fn(async () => ({ status: 'linked', chatId: 'chat-do-dono' })),
     },
+    // DJ-T15 (D76): "a entrega foi ao ar" (com a nota do ensaio de ambiente
+    // embutida) migrou do Telegram para a timeline do painel
+    // (`registrarNoPainelUmaVez`).
+    event: {
+      findFirst: vi.fn(async () => null),
+      create: vi.fn(async () => ({ id: 'evt_1' })),
+    },
     _updateCalls: updateCalls,
   }
 }
@@ -159,12 +166,16 @@ function fetchMockWorkflowNoAr(opts: { enderecoConfigurado?: string; statusDoEnd
   return { impl: impl as unknown as typeof fetch, chamadas }
 }
 
-function corpoDoAvisoAoDono(
-  chamadas: Array<{ url: string; init?: RequestInit | undefined }>
-): string {
-  const chamada = chamadas.find((c) => c.url.startsWith('https://api.telegram.org/'))
-  const corpo = JSON.parse(String(chamada?.init?.body)) as { text: string }
-  return corpo.text
+/**
+ * DJ-T15 (D76): o veredito do ensaio de ambiente viaja na MESMA nota de
+ * sempre, só que agora gravada na timeline do painel
+ * (`registrarNoPainelUmaVez`) em vez de mandada pelo Telegram.
+ */
+function corpoDoRegistroNoPainel(prisma: ReturnType<typeof buildFakePrisma>): string {
+  const eventCreate = (prisma as unknown as { event: { create: { mock: { calls: unknown[][] } } } })
+    .event.create
+  const chamada = eventCreate.mock.calls[0]?.[0] as { data: { payload: { texto: string } } }
+  return chamada.data.payload.texto
 }
 
 describe('Item 1/Leva B2 — ensaio do endereço no caminho de publicação por WORKFLOW (real seam)', () => {
@@ -230,8 +241,11 @@ describe('Item 1/Leva B2 — ensaio do endereço no caminho de publicação por 
     expect(chamadas.some((c) => c.url === 'https://loja-do-cliente.exemplo.com/')).toBe(true)
 
     // E o veredito do ensaio ("passou") viaja até o dono na MESMA nota do
-    // veredito de publicação — não fica preso num log interno.
-    expect(corpoDoAvisoAoDono(chamadas)).toMatch(/Ensaio do ambiente: passou/)
+    // veredito de publicação — agora na timeline do painel, não mais preso
+    // num log interno nem mandado por Telegram.
+    await vi.waitFor(() => expect(prisma.event.create).toHaveBeenCalled(), { timeout: 2000 })
+    expect(corpoDoRegistroNoPainel(prisma)).toMatch(/Ensaio do ambiente: passou/)
+    expect(chamadas.some((c) => c.url.startsWith('https://api.telegram.org/'))).toBe(false)
   })
 
   test('endereço declarado mas de rede interna: a guarda RECUSA — "inalcançável" registrado, NUNCA "testado" em silêncio', async () => {
@@ -256,20 +270,17 @@ describe('Item 1/Leva B2 — ensaio do endereço no caminho de publicação por 
     app.decorate('prisma', prisma as never)
     await app.register(schedulerPlugin)
 
-    await vi.waitFor(
-      () => {
-        const chamouTelegram = chamadas.some((c) => c.url.startsWith('https://api.telegram.org/'))
-        expect(chamouTelegram).toBe(true)
-      },
-      { timeout: 3000, interval: 10 }
-    )
+    await vi.waitFor(() => expect(prisma.event.create).toHaveBeenCalled(), { timeout: 3000 })
 
     // Nunca uma chamada de rede real para o endereço interno — a guarda
     // recusa ANTES de qualquer tentativa (o endereço nem aparece na lista de
     // chamadas feitas, porque `enderecoPermitido` barra antes do `fetch`).
     expect(chamadas.some((c) => c.url.includes('127.0.0.1'))).toBe(false)
+    // DJ-T15 (D76): o gap "inalcançável" viaja para o painel, não mais para
+    // o Telegram.
+    expect(chamadas.some((c) => c.url.startsWith('https://api.telegram.org/'))).toBe(false)
 
-    const texto = corpoDoAvisoAoDono(chamadas)
+    const texto = corpoDoRegistroNoPainel(prisma)
     expect(texto).toMatch(/Ensaio do ambiente: inalcancavel/)
     expect(texto).toMatch(/127\.0\.0\.1/)
   })
@@ -306,6 +317,8 @@ describe('Item 1/Leva B2 — ensaio do endereço no caminho de publicação por 
     // para chamar, nem pela guarda nem por qualquer outra via.
     expect(chamadas.some((c) => c.url === 'https://loja-do-cliente.exemplo.com/')).toBe(false)
 
-    expect(corpoDoAvisoAoDono(chamadas)).toMatch(/Ensaio do ambiente: sem-endereco/)
+    await vi.waitFor(() => expect(prisma.event.create).toHaveBeenCalled(), { timeout: 2000 })
+    expect(corpoDoRegistroNoPainel(prisma)).toMatch(/Ensaio do ambiente: sem-endereco/)
+    expect(chamadas.some((c) => c.url.startsWith('https://api.telegram.org/'))).toBe(false)
   })
 })
