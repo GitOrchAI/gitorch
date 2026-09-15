@@ -50,6 +50,7 @@ function prismaFalso(overrides: Partial<PrismaParaRetomada> = {}): PrismaParaRet
       findMany: vi.fn(async () => [SESSAO]),
       findUnique: vi.fn(async () => ({ devAccountId: null })),
       update: vi.fn(async () => undefined),
+      updateMany: vi.fn(async () => ({ count: 1 })),
     },
     ...overrides,
   } as PrismaParaRetomada
@@ -221,6 +222,31 @@ describe('aoResponderDuvidaDoDev', () => {
     // Sem comentarNaIssue configurado (não passado em depsFalso por padrão):
     // best-effort avisa pelo onWarn, nunca lança.
     expect(deps.onWarn).toHaveBeenCalledWith(expect.stringContaining('acme/api#46'))
+  })
+
+  it('nenhuma dev_session viva encontrada: atualiza answeredHash obsoleta da issue/projeto via updateMany', async () => {
+    const updateMany = vi.fn(async () => ({ count: 1 }))
+    const prisma = prismaFalso({
+      devSession: {
+        findFirst: vi.fn(async () => null),
+        update: vi.fn(async () => undefined),
+        updateMany,
+      } as never,
+    })
+    const deps = depsFalso({ prisma })
+
+    await aoResponderDuvidaDoDev(ARGS_BASE, deps as never)
+
+    expect(updateMany).toHaveBeenCalledWith({
+      where: {
+        projectId: 'proj1',
+        issueNumber: 46,
+        answeredHash: 'escalada:0:hash123',
+      },
+      data: {
+        answeredHash: 'respondida:0:hash123',
+      },
+    })
   })
 
   it('projeto da pergunta (por projectId) não encontrado: LANÇA', async () => {

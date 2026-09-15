@@ -167,9 +167,7 @@ describe('decidirSessaoTerminal', () => {
   // dono, e o `estado` que chega aqui já não é mais AWAITING_USER_FEEDBACK.
   // `ehTerminal(state)` (fix-up 2) não segura nada nesse caso — o único jeito
   // de saber que o dono ainda não decidiu é a marca em `answeredHash`, que é
-  // INDEPENDENTE do `estado` remoto. A partir de agora a marca de escalada
-  // VETA o fechamento por este passo, seja qual for `estado`/`situacaoDoPr`.
-  it('marca de escalada em answeredHash → mantém MESMO com PR rejeitado passado das 12h (cenário exato de produção)', () => {
+  it('marca de escalada em answeredHash → mantém quando PR aberto rejeitado parado (mesmo passado das 12h)', () => {
     const d = decidirSessaoTerminal({
       ...base,
       situacaoDoPr: 'aberto-rejeitado-parado',
@@ -179,22 +177,42 @@ describe('decidirSessaoTerminal', () => {
     expect(d).toEqual({ acao: 'manter' })
   })
 
-  it('marca de escalada em answeredHash → mantém mesmo FAILED sem PR (nunca fecha por este passo)', () => {
-    const d = decidirSessaoTerminal({
-      ...base,
-      estado: 'FAILED',
-      answeredHash: 'escalada:0:abc123',
-    })
-    expect(d).toEqual({ acao: 'manter' })
-  })
-
-  it('marca de escalada em answeredHash → mantém mesmo com PR mesclado (a escalada é absoluta)', () => {
+  it('marca de escalada em answeredHash → mesclado fecha como concluído mesmo com marca de escalada', () => {
     const d = decidirSessaoTerminal({
       ...base,
       situacaoDoPr: 'mesclado',
       answeredHash: 'escalada:0:abc123',
     })
-    expect(d).toEqual({ acao: 'manter' })
+    expect(d).toEqual({ acao: 'fechar-concluido', motivo: 'merged' })
+  })
+
+  it('marca de escalada em answeredHash → fechado-sem-merge fecha e redelega mesmo com marca de escalada', () => {
+    const d = decidirSessaoTerminal({
+      ...base,
+      situacaoDoPr: 'fechado-sem-merge',
+      answeredHash: 'escalada:0:abc123',
+    })
+    expect(d).toEqual({ acao: 'fechar-e-redelegar', motivo: 'pr-descartado' })
+  })
+
+  it('marca de escalada em answeredHash → sem-pr (COMPLETED) fecha e redelega mesmo com marca de escalada', () => {
+    const d = decidirSessaoTerminal({
+      ...base,
+      situacaoDoPr: 'sem-pr',
+      estado: 'COMPLETED',
+      answeredHash: 'escalada:0:abc123',
+    })
+    expect(d).toEqual({ acao: 'fechar-e-redelegar', motivo: 'dev-concluiu-sem-entrega' })
+  })
+
+  it('marca de escalada em answeredHash → sem-pr (FAILED) fecha e redelega mesmo com marca de escalada', () => {
+    const d = decidirSessaoTerminal({
+      ...base,
+      situacaoDoPr: 'sem-pr',
+      estado: 'FAILED',
+      answeredHash: 'escalada:0:abc123',
+    })
+    expect(d).toEqual({ acao: 'fechar-e-redelegar', motivo: 'dev-falhou' })
   })
 
   it('marca "respondida" (não escalada) NÃO ativa o veto — segue a decisão normal', () => {

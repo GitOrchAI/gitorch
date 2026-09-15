@@ -77,47 +77,28 @@ export function decidirSessaoTerminal(args: {
   branchRetomavel?: string | null
   /**
    * A marca de `pergunta-sem-resposta.ts` guardada em `DevSession.answeredHash`.
-   *
-   * L4-T4, fix-up 5 (task a13a42f8-2953-4259-b41f-3f8cddb304cd) — PROVADO em
-   * produção 03/09: 2 sessões com dúvida ESCALADA ao dono (`escalada:0:<hash>`)
-   * foram fechadas por este passo (`pr-rejeitado-sem-retomada`) ANTES de o
-   * dono responder. `estado` (`args.estado` acima) É o `state` remoto do
-   * Jules, sincronizado por `varrerSessoesDoDev` ANTES deste passo rodar, no
-   * MESMO tique (scheduler.ts) — o Jules pode marcar a sessão como
-   * COMPLETED/FAILED/CANCELLED mesmo com a dúvida ainda sem decisão do dono,
-   * e quando isso acontece `estado` já não é mais AWAITING_USER_FEEDBACK: o
-   * filtro `ehTerminal(state)` (fix-up 2) não segura nada, porque o próprio
-   * `state` mudou. A ÚNICA fonte confiável de "o dono ainda não decidiu" é a
-   * marca — independente de qual `estado`/`situacaoDoPr` chegou. Por isso o
-   * veto abaixo é INCONDICIONAL: ignora `estado` de propósito (ao contrário
-   * de `sessao-abandonada.ts`, cuja exceção é restrita a
-   * AWAITING_USER_FEEDBACK por decisão deliberada do fix-up 3 — aqui o
-   * `estado` já não é confiável, então checar só a marca é o único jeito
-   * seguro).
    */
   answeredHash?: string | null
 }): DecisaoTerminal {
-  if (ehMarcaDeEscalada(args.answeredHash)) return { acao: 'manter' }
   if (!ehTerminal(args.estado)) return { acao: 'manter' }
 
   // Caminho feliz e caminho "ainda no QA": nada a fazer aqui.
   if (args.situacaoDoPr === 'mesclado') return { acao: 'fechar-concluido', motivo: 'merged' }
   if (args.situacaoDoPr === 'aberto-vivo') return { acao: 'manter' }
 
-  // PR aberto e reprovado: o dev pode retrabalhar. Só desiste depois de dar
-  // tempo — e o Jules estar terminal é a prova de que ele NÃO vai empurrar
-  // commit novo sozinho (COMPLETED/FAILED não retomam por mensagem).
-  if (
-    args.situacaoDoPr === 'aberto-rejeitado-parado' &&
-    args.horasNoTerminal < HORAS_ATE_DESISTIR_DO_PR_REJEITADO
-  ) {
-    return { acao: 'manter' }
-  }
-
-  // L4-T5: passou o tempo de espera e HÁ um ramo para retomar — a esteira
-  // tenta de novo NO MESMO PR em vez de fechar e devolver a issue à fila.
-  if (args.situacaoDoPr === 'aberto-rejeitado-parado' && args.branchRetomavel) {
-    return { acao: 'retomar-no-mesmo-pr', branchDoPr: args.branchRetomavel }
+  // PR aberto e reprovado: se a dúvida foi escalada ao dono, mantém a sessão
+  // aguardando a decisão do dono. Caso contrário, dá tempo do dev retrabalhar
+  // antes de tentar retomar no mesmo PR ou fechar.
+  if (args.situacaoDoPr === 'aberto-rejeitado-parado') {
+    if (ehMarcaDeEscalada(args.answeredHash)) return { acao: 'manter' }
+    if (args.horasNoTerminal < HORAS_ATE_DESISTIR_DO_PR_REJEITADO) {
+      return { acao: 'manter' }
+    }
+    // L4-T5: passou o tempo de espera e HÁ um ramo para retomar — a esteira
+    // tenta de novo NO MESMO PR em vez de fechar e devolver a issue à fila.
+    if (args.branchRetomavel) {
+      return { acao: 'retomar-no-mesmo-pr', branchDoPr: args.branchRetomavel }
+    }
   }
 
   const motivo: MotivoDeFechamento =
