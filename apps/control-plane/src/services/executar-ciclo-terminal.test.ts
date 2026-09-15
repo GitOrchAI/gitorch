@@ -121,14 +121,24 @@ describe('executarCicloTerminal', () => {
     expect(r.issuesRedelegadas).toEqual([])
   })
 
-  it('FAILED sem PR, mas com marca escalada → NÃO fecha nem pede análise', async () => {
+  // Reconciliação (task DJ-T17): o veto de escalada em `decidirSessaoTerminal`
+  // só se aplica dentro de `aberto-rejeitado-parado` (a única situação onde a
+  // sessão continua viva esperando algo) — sem-pr é desfecho TERMINAL, a
+  // escalada em si é rastreada por fora da sessão (pergunta+resposta do dono),
+  // então não há motivo para a sessão ficar presa. requeueCount:2 aqui prova
+  // que a marca de escalada também não bloqueia o caminho de análise (2ª
+  // falha na mesma issue): fecha e PEDE ANÁLISE normalmente, como se não
+  // houvesse escalada nenhuma.
+  it('FAILED sem PR, mas com marca escalada, 2ª falha → fecha e pede análise (dev-falhou), escalada não veta mais', async () => {
     const { d, fechadas, analises } = deps({
       linhas: [linha({ state: 'FAILED', answeredHash: 'escalada:0:abc123', requeueCount: 2 })],
     })
     const r = await executarCicloTerminal(d)
-    expect(fechadas).toEqual([])
-    expect(analises).toEqual([])
-    expect(r.mantidas).toBe(1)
+    expect(fechadas).toEqual([{ sessionName: 'sessions/x', motivo: 'dev-falhou' }])
+    expect(analises).toEqual([1])
+    expect(r.issuesEmAnalise).toEqual([1])
+    expect(r.issuesRedelegadas).toEqual([])
+    expect(r.mantidas).toBe(0)
   })
 
   it('marca "respondida" (legada, ainda não reconciliada) NÃO ativa o veto — segue fechando como antes', async () => {

@@ -152,7 +152,7 @@ describe('vigiarSessoes', () => {
   // COMPLETED mesmo com a dúvida ainda ESCALADA (`escalada:0:<hash>`) e sem
   // decisão do dono. `decidirSessaoTerminal` agora veta por `answeredHash`,
   // independente do `estado` remoto.
-  it('concluída SEM PR mas com marca escalada residual → NÃO fecha (a dúvida ainda espera o dono)', async () => {
+  it('concluída SEM PR com marca escalada residual → fecha e redelega (dev-concluiu-sem-entrega)', async () => {
     const deps = depsFalso({
       sessoes: [linha({ sessionName: 'sessions/escalada-sem-pr', answeredHash: 'escalada:0:abc' })],
       consultarSessao: vi.fn(async () => ({
@@ -164,7 +164,12 @@ describe('vigiarSessoes', () => {
 
     await vigiarSessoes(deps)
 
-    expect(deps.fecharSessao).not.toHaveBeenCalled()
+    expect(deps.fecharSessao).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionName: 'sessions/escalada-sem-pr',
+        motivo: 'dev-concluiu-sem-entrega',
+      })
+    )
   })
 
   it('FAILED sem PR → fecha a linha (dev-falhou); NÃO pede retomada nem aciona o SM em loop', async () => {

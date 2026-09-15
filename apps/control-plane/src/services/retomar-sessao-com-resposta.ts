@@ -225,6 +225,31 @@ async function registrarRespostaSemSessaoViva(
     origem: string
   }
 ): Promise<ResultadoDeRetomada> {
+  // DJ-T17: `args.parsed.hash` é opcional desde a generalização do DJ-T9
+  // (rodada 3) — `aoResponderLogicaAlternativa` chama esta função sem hash
+  // (dedupKey `logica-alternativa:<repo>:<issue>`, uma pergunta por ISSUE).
+  // Sem hash não há `escalada:0:<hash>` para procurar nem para marcar como
+  // respondida — este ajuste de `answeredHash` só faz sentido no caminho
+  // comum (`aoResponderDuvidaDoDev`), que sempre tem hash.
+  if (args.parsed.hash && typeof deps.prisma?.devSession?.updateMany === 'function') {
+    try {
+      await deps.prisma.devSession.updateMany({
+        where: {
+          projectId: args.projectId,
+          issueNumber: args.parsed.issueNumber,
+          answeredHash: `escalada:0:${args.parsed.hash}`,
+        },
+        data: {
+          answeredHash: marcarRespondida(args.parsed.hash),
+        },
+      })
+    } catch (err) {
+      deps.onWarn?.(
+        `${args.origem}: falha ao atualizar answeredHash das sessões da issue #${args.parsed.issueNumber} (projeto ${args.projectId}): ${err instanceof Error ? err.message : String(err)}`
+      )
+    }
+  }
+
   const textoDaResposta = sanitizarRespostaLivre(
     textoDaRespostaParaODev(args.resposta, args.opcoes)
   )
