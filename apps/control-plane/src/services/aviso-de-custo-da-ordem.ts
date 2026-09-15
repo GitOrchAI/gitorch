@@ -2,6 +2,10 @@ import { ordemQueMinimizaEspera, type CandidatoDeTroca, type PedidoNaFila } from
 import { buildFreeTextOption } from './telegram-bot.js'
 import type { ResultadoDoManipuladorDeResposta } from './agent-question.js'
 import type { PedidoNaOrdem } from './ordem-dos-pedidos.js'
+import {
+  montarMensagemDeStakeholder,
+  type DesejoParaMensagemDeStakeholder,
+} from './mensagem-de-stakeholder.js'
 
 /**
  * A frase do losango do desenho, com o número — "Y entregaria N antes. Quer
@@ -138,6 +142,59 @@ export interface PerguntarSobreCustoDaOrdemArgs {
   candidato: CandidatoDeTroca
   /** Ver `CustoDaOrdemDedupKey.rodada`. Ausente = 1 (a pergunta comum). */
   rodada?: number
+  /**
+   * D76b (T10) — nome do dono, para a mensagem de stakeholder abrir com ele
+   * ("Guilherme, a equipe..."). Ausente/vazio = abre sem saudação (nunca um
+   * nome inventado). Só tem efeito quando `coletarTamanhoDoDesejo` (deps)
+   * está presente — sem ele o texto continua o antigo, que nunca citou nome
+   * nenhum.
+   */
+  nomeDoDono?: string
+}
+
+export interface DepsDePerguntarSobreCustoDaOrdem {
+  agentQuestion: AgentQuestionAskerDeCustoDaOrdem
+  /**
+   * D76b (T10) — quando informado, a pergunta cita o TAMANHO REAL do desejo
+   * candidato (fases/épicos/features/tarefas contados na árvore de issues,
+   * formato de mensagem de stakeholder — `montarMensagemDeStakeholder`) em
+   * vez de "pontos de peso" (o dono, 04-14/09: "quando é P2, quando é P0?
+   * não vejo visualmente" — o mesmo problema de jargão que motivou esta
+   * decisão). Devolve `null` = não deu para coletar agora (GitHub fora do
+   * ar, credencial ausente, árvore ainda não montada) — cai para o texto
+   * antigo, NUNCA quebra a pergunta por causa disso. Ausente (`undefined`)
+   * = quem chama ainda não tem contexto de projeto/dono para buscar a
+   * árvore (todo chamador de hoje) — mesmo efeito de `null`, texto antigo.
+   *
+   * Reaproveita `coletarDesejoParaMensagemDeStakeholder`
+   * (coletor-de-desejo-para-stakeholder.ts) — quem monta este dep em
+   * produção só precisa fechar `ownerId`/`projeto`/`titulo` numa closure em
+   * cima dele; esta função não decide isso, só usa o que vier pronto.
+   */
+  coletarTamanhoDoDesejo?: (
+    candidato: CandidatoDeTroca
+  ) => Promise<DesejoParaMensagemDeStakeholder | null>
+}
+
+/** D76b (T10) — a mesma frase de fechamento que o texto antigo já usava
+ *  ("continua valendo até você decidir"): a garantia ao dono não muda só
+ *  porque a forma de citar o tamanho do desejo mudou. */
+function propostaDeCustoDaOrdem(): string {
+  return 'Quer trocar? Sua ordem no quadro continua valendo até você decidir.'
+}
+
+async function textoDaPerguntaDeCustoDaOrdem(
+  args: PerguntarSobreCustoDaOrdemArgs,
+  deps: DepsDePerguntarSobreCustoDaOrdem
+): Promise<string> {
+  if (!deps.coletarTamanhoDoDesejo) return formatarAvisoDeCustoDaOrdem(args.candidato)
+  const desejo = await deps.coletarTamanhoDoDesejo(args.candidato)
+  if (!desejo) return formatarAvisoDeCustoDaOrdem(args.candidato)
+  return montarMensagemDeStakeholder({
+    dono: args.nomeDoDono ?? '',
+    desejos: [desejo],
+    proposta: propostaDeCustoDaOrdem(),
+  })
 }
 
 /**
@@ -146,13 +203,20 @@ export interface PerguntarSobreCustoDaOrdemArgs {
  * (decisao-de-automacao.ts). NUNCA reordena nada sozinha — só pergunta; quem
  * decide o que fazer é `processarRespostaDeCustoDaOrdem`, abaixo, chamado
  * DEPOIS que o dono responder.
+ *
+ * D76b (T10): o TEXTO passa a citar o tamanho real do desejo (fases/épicos/
+ * features/tarefas) em vez de "pontos de peso" quando `deps.
+ * coletarTamanhoDoDesejo` está disponível — ver `DepsDePerguntarSobreCustoDaOrdem`.
+ * O TRANSPORTE (`agentQuestion.ask`, as mesmas 3 opções + dedupKey) não
+ * muda: só o texto/dados que ele carrega.
  */
 export async function perguntarSobreCustoDaOrdem(
   args: PerguntarSobreCustoDaOrdemArgs,
-  deps: { agentQuestion: AgentQuestionAskerDeCustoDaOrdem }
+  deps: DepsDePerguntarSobreCustoDaOrdem
 ): Promise<void> {
+  const texto = await textoDaPerguntaDeCustoDaOrdem(args, deps)
   await deps.agentQuestion.ask(args.userId, args.projectId, {
-    text: formatarAvisoDeCustoDaOrdem(args.candidato),
+    text: texto,
     options: [...OPCOES_DE_CUSTO_DA_ORDEM, buildFreeTextOption()],
     dedupKey: dedupKeyDeCustoDaOrdem(args.repo, args.candidato.pedido, args.rodada ?? 1),
   })

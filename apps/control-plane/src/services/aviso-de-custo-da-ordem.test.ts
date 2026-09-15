@@ -155,6 +155,92 @@ describe('perguntarSobreCustoDaOrdem — ask() com dedupKey + 3 opções + escre
   })
 })
 
+// D76b (T10) — o texto em "pontos de peso" vira mensagem de stakeholder
+// (tamanho real: fases/épicos/features/tarefas) QUANDO quem chama injeta
+// `coletarTamanhoDoDesejo`. Sem essa injeção (todo chamador de hoje, e os
+// dois testes acima), o texto continua EXATAMENTE `formatarAvisoDeCustoDaOrdem`
+// — a mudança é só no texto/dados que `ask()` carrega, nunca no transporte
+// (`agentQuestion.ask` continua a mesma chamada).
+describe('perguntarSobreCustoDaOrdem — texto de stakeholder (D76b) quando o tamanho real está disponível', () => {
+  const DESEJO_CONTADO = {
+    titulo: '#102',
+    prioridade: null,
+    fases: 1,
+    epicos: 2,
+    features: 3,
+    tarefas: 5,
+    sprintsEstimadas: null,
+  }
+
+  it('com coletarTamanhoDoDesejo: o texto vira mensagem de stakeholder, nunca "pontos de peso"', async () => {
+    const ask = vi.fn().mockResolvedValue({ deduped: false, question: {} })
+    const coletarTamanhoDoDesejo = vi.fn().mockResolvedValue(DESEJO_CONTADO)
+
+    await perguntarSobreCustoDaOrdem(
+      { userId: 'user-1', projectId: 'proj-1', repo: 'acme/api', candidato: CANDIDATO },
+      { agentQuestion: { ask }, coletarTamanhoDoDesejo }
+    )
+
+    expect(coletarTamanhoDoDesejo).toHaveBeenCalledWith(CANDIDATO)
+    const input = ask.mock.calls[0]![2] as Record<string, unknown>
+    const texto = input['text'] as string
+    expect(texto).not.toBe(formatarAvisoDeCustoDaOrdem(CANDIDATO))
+    expect(texto.toLowerCase()).not.toContain('ponto de peso')
+    expect(texto).toContain('#102')
+    expect(texto).toContain('1 fase')
+    expect(texto).toContain('2 épicos')
+    expect(texto).toContain('3 features')
+    expect(texto).toContain('5 tarefas')
+    expect(texto).toContain('continua valendo')
+  })
+
+  it('nomeDoDono informado: a mensagem de stakeholder abre com o nome', async () => {
+    const ask = vi.fn().mockResolvedValue({ deduped: false, question: {} })
+    const coletarTamanhoDoDesejo = vi.fn().mockResolvedValue(DESEJO_CONTADO)
+
+    await perguntarSobreCustoDaOrdem(
+      {
+        userId: 'user-1',
+        projectId: 'proj-1',
+        repo: 'acme/api',
+        candidato: CANDIDATO,
+        nomeDoDono: 'Guilherme',
+      },
+      { agentQuestion: { ask }, coletarTamanhoDoDesejo }
+    )
+
+    const input = ask.mock.calls[0]![2] as Record<string, unknown>
+    expect((input['text'] as string).startsWith('Guilherme,')).toBe(true)
+  })
+
+  it('coletarTamanhoDoDesejo devolve null (não deu para contar agora): cai para o texto antigo, nunca quebra a pergunta', async () => {
+    const ask = vi.fn().mockResolvedValue({ deduped: false, question: {} })
+    const coletarTamanhoDoDesejo = vi.fn().mockResolvedValue(null)
+
+    await perguntarSobreCustoDaOrdem(
+      { userId: 'user-1', projectId: 'proj-1', repo: 'acme/api', candidato: CANDIDATO },
+      { agentQuestion: { ask }, coletarTamanhoDoDesejo }
+    )
+
+    const input = ask.mock.calls[0]![2] as Record<string, unknown>
+    expect(input['text']).toBe(formatarAvisoDeCustoDaOrdem(CANDIDATO))
+  })
+
+  it('sem coletarTamanhoDoDesejo (nenhum chamador de hoje): texto e opções ficam EXATAMENTE como já eram', async () => {
+    const ask = vi.fn().mockResolvedValue({ deduped: false, question: {} })
+    await perguntarSobreCustoDaOrdem(
+      { userId: 'user-1', projectId: 'proj-1', repo: 'acme/api', candidato: CANDIDATO },
+      { agentQuestion: { ask } }
+    )
+    const input = ask.mock.calls[0]![2] as Record<string, unknown>
+    expect(input['text']).toBe(formatarAvisoDeCustoDaOrdem(CANDIDATO))
+    expect(input['options']).toEqual([
+      ...OPCOES_DE_CUSTO_DA_ORDEM,
+      expect.objectContaining({ value: FREE_TEXT_OPTION_VALUE }),
+    ])
+  })
+})
+
 // L4-T18, item 2 — a resposta faz alguma coisa DE VERDADE. Manipulador puro
 // (sem I/O de rede aqui — quem chama injeta os efeitos, mesmo padrão de
 // `processarRespostaDeAutomacao`, decisao-de-automacao.ts).
