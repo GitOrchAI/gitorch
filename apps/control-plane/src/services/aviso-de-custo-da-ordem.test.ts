@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   formatarAvisoDeCustoDaOrdem,
   dedupKeyDeCustoDaOrdem,
@@ -6,6 +6,8 @@ import {
   perguntarSobreCustoDaOrdem,
   processarRespostaDeCustoDaOrdem,
   textoDaFilaAtual,
+  construirAvisoDeCustoDaOrdemComContextoReal,
+  type DepsDoAvisoComContextoReal,
   OPCOES_DE_CUSTO_DA_ORDEM,
   VALOR_APLICAR_TROCA,
   VALOR_MANTER_ORDEM,
@@ -150,6 +152,274 @@ describe('perguntarSobreCustoDaOrdem — ask() com dedupKey + 3 opções + escre
       { userId: 'user-1', projectId: 'proj-1', repo: 'acme/api', candidato: CANDIDATO, rodada: 2 },
       { agentQuestion: { ask } }
     )
+    const input = ask.mock.calls[0]![2] as Record<string, unknown>
+    expect(input['dedupKey']).toBe('custo-da-ordem:acme/api:102:2')
+  })
+})
+
+// D76b (T10) — o texto em "pontos de peso" vira mensagem de stakeholder
+// (tamanho real: fases/épicos/features/tarefas) QUANDO quem chama injeta
+// `coletarTamanhoDoDesejo`. Sem essa injeção (todo chamador de hoje, e os
+// dois testes acima), o texto continua EXATAMENTE `formatarAvisoDeCustoDaOrdem`
+// — a mudança é só no texto/dados que `ask()` carrega, nunca no transporte
+// (`agentQuestion.ask` continua a mesma chamada).
+describe('perguntarSobreCustoDaOrdem — texto de stakeholder (D76b) quando o tamanho real está disponível', () => {
+  const DESEJO_CONTADO = {
+    titulo: '#102',
+    prioridade: null,
+    fases: 1,
+    epicos: 2,
+    features: 3,
+    tarefas: 5,
+    sprintsEstimadas: null,
+  }
+
+  it('com coletarTamanhoDoDesejo: o texto vira mensagem de stakeholder, nunca "pontos de peso"', async () => {
+    const ask = vi.fn().mockResolvedValue({ deduped: false, question: {} })
+    const coletarTamanhoDoDesejo = vi.fn().mockResolvedValue(DESEJO_CONTADO)
+
+    await perguntarSobreCustoDaOrdem(
+      { userId: 'user-1', projectId: 'proj-1', repo: 'acme/api', candidato: CANDIDATO },
+      { agentQuestion: { ask }, coletarTamanhoDoDesejo }
+    )
+
+    expect(coletarTamanhoDoDesejo).toHaveBeenCalledWith(CANDIDATO)
+    const input = ask.mock.calls[0]![2] as Record<string, unknown>
+    const texto = input['text'] as string
+    expect(texto).not.toBe(formatarAvisoDeCustoDaOrdem(CANDIDATO))
+    expect(texto.toLowerCase()).not.toContain('ponto de peso')
+    expect(texto).toContain('#102')
+    expect(texto).toContain('1 fase')
+    expect(texto).toContain('2 épicos')
+    expect(texto).toContain('3 features')
+    expect(texto).toContain('5 tarefas')
+    expect(texto).toContain('continua valendo')
+  })
+
+  // Achado de QA (2ª rejeição, T10) — `montarMensagemDeStakeholder` embutia
+  // um rodapé PRÓPRIO ("Sim, priorizar" / "Não, manter" / "Quero ver
+  // detalhes") desalinhado dos botões REAIS que esta função manda ao
+  // Telegram (`OPCOES_DE_CUSTO_DA_ORDEM`: "Aplicar a troca sugerida" /
+  // "Manter minha ordem" / "Ver a fila antes de decidir"). Este teste
+  // compara DIRETO o rodapé do texto com os botões que `ask()` de fato
+  // recebeu (`input['options']`, não uma cópia reimplementada aqui) — e
+  // confere que esses botões reais SÃO `OPCOES_DE_CUSTO_DA_ORDEM` (comparação
+  // direta com a constante, nunca uma lista paralela retypada no teste).
+  it('o rodapé do texto lista EXATAMENTE os mesmos rótulos dos botões reais enviados a ask()', async () => {
+    const ask = vi.fn().mockResolvedValue({ deduped: false, question: {} })
+    const coletarTamanhoDoDesejo = vi.fn().mockResolvedValue(DESEJO_CONTADO)
+
+    await perguntarSobreCustoDaOrdem(
+      { userId: 'user-1', projectId: 'proj-1', repo: 'acme/api', candidato: CANDIDATO },
+      { agentQuestion: { ask }, coletarTamanhoDoDesejo }
+    )
+
+    const input = ask.mock.calls[0]![2] as Record<string, unknown>
+    const texto = input['text'] as string
+    const botoesReais = input['options'] as { label: string; value: string }[]
+
+    // Os botões reais começam com as 3 opções objetivas de produção — a
+    // MESMA constante que o produto usa para reagir à resposta do dono
+    // (`processarRespostaDeCustoDaOrdem`), nunca uma cópia solta.
+    expect(botoesReais.slice(0, OPCOES_DE_CUSTO_DA_ORDEM.length)).toEqual(OPCOES_DE_CUSTO_DA_ORDEM)
+
+    const linhasDoRodape = texto.trim().split('\n').slice(-botoesReais.length)
+    const rodapeEsperado = botoesReais.map((botao, indice) => `${indice + 1}. ${botao.label}`)
+    expect(linhasDoRodape).toEqual(rodapeEsperado)
+  })
+
+  it('nomeDoDono informado: a mensagem de stakeholder abre com o nome', async () => {
+    const ask = vi.fn().mockResolvedValue({ deduped: false, question: {} })
+    const coletarTamanhoDoDesejo = vi.fn().mockResolvedValue(DESEJO_CONTADO)
+
+    await perguntarSobreCustoDaOrdem(
+      {
+        userId: 'user-1',
+        projectId: 'proj-1',
+        repo: 'acme/api',
+        candidato: CANDIDATO,
+        nomeDoDono: 'Guilherme',
+      },
+      { agentQuestion: { ask }, coletarTamanhoDoDesejo }
+    )
+
+    const input = ask.mock.calls[0]![2] as Record<string, unknown>
+    expect((input['text'] as string).startsWith('Guilherme,')).toBe(true)
+  })
+
+  it('coletarTamanhoDoDesejo devolve null (não deu para contar agora): cai para o texto antigo, nunca quebra a pergunta', async () => {
+    const ask = vi.fn().mockResolvedValue({ deduped: false, question: {} })
+    const coletarTamanhoDoDesejo = vi.fn().mockResolvedValue(null)
+
+    await perguntarSobreCustoDaOrdem(
+      { userId: 'user-1', projectId: 'proj-1', repo: 'acme/api', candidato: CANDIDATO },
+      { agentQuestion: { ask }, coletarTamanhoDoDesejo }
+    )
+
+    const input = ask.mock.calls[0]![2] as Record<string, unknown>
+    expect(input['text']).toBe(formatarAvisoDeCustoDaOrdem(CANDIDATO))
+  })
+
+  it('sem coletarTamanhoDoDesejo (nenhum chamador de hoje): texto e opções ficam EXATAMENTE como já eram', async () => {
+    const ask = vi.fn().mockResolvedValue({ deduped: false, question: {} })
+    await perguntarSobreCustoDaOrdem(
+      { userId: 'user-1', projectId: 'proj-1', repo: 'acme/api', candidato: CANDIDATO },
+      { agentQuestion: { ask } }
+    )
+    const input = ask.mock.calls[0]![2] as Record<string, unknown>
+    expect(input['text']).toBe(formatarAvisoDeCustoDaOrdem(CANDIDATO))
+    expect(input['options']).toEqual([
+      ...OPCOES_DE_CUSTO_DA_ORDEM,
+      expect.objectContaining({ value: FREE_TEXT_OPTION_VALUE }),
+    ])
+  })
+})
+
+// Achado de QA (T10) — o ÚNICO chamador de produção (`scheduler.ts`,
+// `avisar`) nunca passava `coletarTamanhoDoDesejo`/`nomeDoDono` para
+// `perguntarSobreCustoDaOrdem`: a pergunta caía SEMPRE no texto antigo de
+// "pontos de peso", mesmo com toda a leitura de árvore (T10) pronta e
+// testada (o describe acima prova). `construirAvisoDeCustoDaOrdemComContextoReal`
+// é o adaptador que fecha essas duas deps com fontes reais — estes testes
+// provam a costura INTEIRA (task candidata -> desejo pai -> árvore -> texto
+// de stakeholder), com só a borda de I/O (Prisma/credencial/GitHub) mockada.
+describe('construirAvisoDeCustoDaOrdemComContextoReal — o call site real fecha as deps de verdade (achado de QA, T10)', () => {
+  const PROJETO = { id: 'proj-1', wingId: 'acme/api' }
+  const CORPO_DA_TASK = '<!-- gitorch:node:30:task:2 -->'
+  const originalFetch = global.fetch
+
+  // `coletarTamanhoDoDesejoDaTask` (por dentro do adaptador) chama
+  // `lerArvoreDoPedido` de verdade, que usa `fetch` global (nenhuma dep de
+  // rede é exposta por `DepsDoAvisoComContextoReal` — só a leitura de issue
+  // e a credencial, como em produção). Mesmo padrão de
+  // `coletor-de-desejo-para-stakeholder.test.ts`: fake só na borda de rede,
+  // a árvore vazia (0 sub-issues) já basta para provar o formato do texto.
+  beforeEach(() => {
+    global.fetch = vi.fn(async (url: Parameters<typeof fetch>[0]) => {
+      if (String(url) === 'https://api.github.com/graphql') {
+        return new Response(
+          JSON.stringify({ data: { repository: { issue: { subIssues: { nodes: [] } } } } }),
+          { status: 200 }
+        )
+      }
+      return new Response('{}', { status: 200 })
+    }) as unknown as typeof fetch
+  })
+
+  afterEach(() => {
+    global.fetch = originalFetch
+  })
+
+  function depsReais(over: Partial<DepsDoAvisoComContextoReal> = {}): DepsDoAvisoComContextoReal {
+    return {
+      agentQuestion: { ask: vi.fn().mockResolvedValue({ deduped: false, question: {} }) },
+      contextoDoProjeto: vi.fn().mockResolvedValue({ userId: 'user-1', nomeDoProjeto: 'gitorch' }),
+      nomeDoDono: vi.fn().mockResolvedValue('Guilherme'),
+      token: vi.fn().mockResolvedValue('token-do-dono'),
+      buscarIssue: vi.fn(async (_token: string, numero: number) => {
+        if (numero === CANDIDATO.pedido) {
+          return { titulo: 'Task perdida na fila', corpo: CORPO_DA_TASK }
+        }
+        if (numero === 30) {
+          return { titulo: 'lembrete de pagamento por e-mail', corpo: null }
+        }
+        return null
+      }),
+      ...over,
+    }
+  }
+
+  it('fecha coletarTamanhoDoDesejo + nomeDoDono de verdade: o texto SAI no formato de stakeholder, nunca "pontos de peso"', async () => {
+    const deps = depsReais()
+    const avisar = construirAvisoDeCustoDaOrdemComContextoReal(deps)
+
+    await avisar(PROJETO, CANDIDATO, 1)
+
+    const ask = deps.agentQuestion.ask as ReturnType<typeof vi.fn>
+    expect(ask).toHaveBeenCalledOnce()
+    const [userId, projectId, input] = ask.mock.calls[0] as unknown as [
+      string,
+      string,
+      Record<string, unknown>,
+    ]
+    expect(userId).toBe('user-1')
+    expect(projectId).toBe('proj-1')
+    const texto = input['text'] as string
+    expect(texto).not.toBe(formatarAvisoDeCustoDaOrdem(CANDIDATO))
+    expect(texto.toLowerCase()).not.toContain('ponto de peso')
+    expect(texto.startsWith('Guilherme,')).toBe(true)
+    expect(texto).toContain('lembrete de pagamento por e-mail')
+  })
+
+  it('sem nome cadastrado (User.name nulo): a mensagem sai sem saudação, nunca um nome inventado', async () => {
+    const deps = depsReais({ nomeDoDono: vi.fn().mockResolvedValue(null) })
+    const avisar = construirAvisoDeCustoDaOrdemComContextoReal(deps)
+
+    await avisar(PROJETO, CANDIDATO, 1)
+
+    const ask = deps.agentQuestion.ask as ReturnType<typeof vi.fn>
+    const texto = ask.mock.calls[0]![2]['text'] as string
+    expect(texto.startsWith('A equipe')).toBe(true)
+  })
+
+  it('sem dono conhecido (contextoDoProjeto null): NUNCA pergunta — mesma recusa silenciosa de antes', async () => {
+    const deps = depsReais({ contextoDoProjeto: vi.fn().mockResolvedValue(null) })
+    const avisar = construirAvisoDeCustoDaOrdemComContextoReal(deps)
+
+    await avisar(PROJETO, CANDIDATO, 1)
+
+    expect(deps.agentQuestion.ask).not.toHaveBeenCalled()
+  })
+
+  it('regressão: coletor falha (rede caiu buscando a issue) — cai para o texto antigo, NUNCA quebra a pergunta', async () => {
+    const deps = depsReais({
+      buscarIssue: vi.fn().mockRejectedValue(new Error('GitHub fora do ar')),
+    })
+    const avisar = construirAvisoDeCustoDaOrdemComContextoReal(deps)
+
+    await avisar(PROJETO, CANDIDATO, 1)
+
+    const ask = deps.agentQuestion.ask as ReturnType<typeof vi.fn>
+    expect(ask).toHaveBeenCalledOnce()
+    const texto = ask.mock.calls[0]![2]['text'] as string
+    expect(texto).toBe(formatarAvisoDeCustoDaOrdem(CANDIDATO))
+  })
+
+  it('regressão: sem credencial (token null) — cai para o texto antigo, sem tentar buscar issue nenhuma', async () => {
+    const deps = depsReais({ token: vi.fn().mockResolvedValue(null) })
+    const avisar = construirAvisoDeCustoDaOrdemComContextoReal(deps)
+
+    await avisar(PROJETO, CANDIDATO, 1)
+
+    expect(deps.buscarIssue).not.toHaveBeenCalled()
+    const ask = deps.agentQuestion.ask as ReturnType<typeof vi.fn>
+    const texto = ask.mock.calls[0]![2]['text'] as string
+    expect(texto).toBe(formatarAvisoDeCustoDaOrdem(CANDIDATO))
+  })
+
+  it('task sem marker (não nasceu da árvore do PO): cai para o texto antigo, nunca lança', async () => {
+    const deps = depsReais({
+      buscarIssue: vi.fn(async (_token: string, numero: number) => {
+        if (numero === CANDIDATO.pedido) return { titulo: 'Task manual', corpo: 'sem marker' }
+        return null
+      }),
+    })
+    const avisar = construirAvisoDeCustoDaOrdemComContextoReal(deps)
+
+    await avisar(PROJETO, CANDIDATO, 1)
+
+    const ask = deps.agentQuestion.ask as ReturnType<typeof vi.fn>
+    const texto = ask.mock.calls[0]![2]['text'] as string
+    expect(texto).toBe(formatarAvisoDeCustoDaOrdem(CANDIDATO))
+  })
+
+  it('repassa repo/rodada para o transporte — dedupKey continua correto', async () => {
+    const deps = depsReais()
+    const avisar = construirAvisoDeCustoDaOrdemComContextoReal(deps)
+
+    await avisar(PROJETO, CANDIDATO, 2)
+
+    const ask = deps.agentQuestion.ask as ReturnType<typeof vi.fn>
     const input = ask.mock.calls[0]![2] as Record<string, unknown>
     expect(input['dedupKey']).toBe('custo-da-ordem:acme/api:102:2')
   })

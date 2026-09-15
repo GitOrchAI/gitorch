@@ -2,6 +2,14 @@ import { ordemQueMinimizaEspera, type CandidatoDeTroca, type PedidoNaFila } from
 import { buildFreeTextOption } from './telegram-bot.js'
 import type { ResultadoDoManipuladorDeResposta } from './agent-question.js'
 import type { PedidoNaOrdem } from './ordem-dos-pedidos.js'
+import {
+  montarMensagemDeStakeholder,
+  type DesejoParaMensagemDeStakeholder,
+} from './mensagem-de-stakeholder.js'
+import {
+  coletarTamanhoDoDesejoDaTask,
+  type DepsDoColetorPelaTask,
+} from './coletor-de-desejo-para-stakeholder.js'
 
 /**
  * A frase do losango do desenho, com o número — "Y entregaria N antes. Quer
@@ -118,6 +126,21 @@ export const OPCOES_DE_CUSTO_DA_ORDEM: OpcaoDeCustoDaOrdem[] = [
   { label: 'Ver a fila antes de decidir', value: VALOR_VER_FILA },
 ]
 
+/**
+ * Achado de QA (2ª rejeição, T10) — `montarMensagemDeStakeholder` embutia um
+ * rodapé de opções PRÓPRIO, desalinhado destas 3 opções reais: o dono via um
+ * texto listando "Sim, priorizar / Não, manter / Quero ver detalhes" quando
+ * os botões clicáveis de verdade eram estes (`OPCOES_DE_CUSTO_DA_ORDEM`) +
+ * "Vou escrever". Esta é a ÚNICA lista de opções desta pergunta — usada
+ * tanto para montar o rodapé do texto (`montarMensagemDeStakeholder`, quando
+ * o formato de stakeholder está disponível) quanto para os botões reais
+ * (`agentQuestion.ask`, abaixo) — nunca duas listas separadas para o mesmo
+ * menu.
+ */
+function opcoesDaPerguntaDeCustoDaOrdem(): OpcaoDeCustoDaOrdem[] {
+  return [...OPCOES_DE_CUSTO_DA_ORDEM, buildFreeTextOption()]
+}
+
 /** Só o que `perguntarSobreCustoDaOrdem` precisa de `AgentQuestionService.ask`. */
 export interface AgentQuestionAskerDeCustoDaOrdem {
   ask: (
@@ -138,6 +161,64 @@ export interface PerguntarSobreCustoDaOrdemArgs {
   candidato: CandidatoDeTroca
   /** Ver `CustoDaOrdemDedupKey.rodada`. Ausente = 1 (a pergunta comum). */
   rodada?: number
+  /**
+   * D76b (T10) — nome do dono, para a mensagem de stakeholder abrir com ele
+   * ("Guilherme, a equipe..."). Ausente/vazio = abre sem saudação (nunca um
+   * nome inventado). Só tem efeito quando `coletarTamanhoDoDesejo` (deps)
+   * está presente — sem ele o texto continua o antigo, que nunca citou nome
+   * nenhum.
+   */
+  nomeDoDono?: string
+}
+
+export interface DepsDePerguntarSobreCustoDaOrdem {
+  agentQuestion: AgentQuestionAskerDeCustoDaOrdem
+  /**
+   * D76b (T10) — quando informado, a pergunta cita o TAMANHO REAL do desejo
+   * candidato (fases/épicos/features/tarefas contados na árvore de issues,
+   * formato de mensagem de stakeholder — `montarMensagemDeStakeholder`) em
+   * vez de "pontos de peso" (o dono, 04-14/09: "quando é P2, quando é P0?
+   * não vejo visualmente" — o mesmo problema de jargão que motivou esta
+   * decisão). Devolve `null` = não deu para coletar agora (GitHub fora do
+   * ar, credencial ausente, árvore ainda não montada) — cai para o texto
+   * antigo, NUNCA quebra a pergunta por causa disso. Ausente (`undefined`)
+   * = quem chama ainda não tem contexto de projeto/dono para buscar a
+   * árvore (todo chamador de hoje) — mesmo efeito de `null`, texto antigo.
+   *
+   * Reaproveita `coletarDesejoParaMensagemDeStakeholder`
+   * (coletor-de-desejo-para-stakeholder.ts) — quem monta este dep em
+   * produção só precisa fechar `ownerId`/`projeto`/`titulo` numa closure em
+   * cima dele; esta função não decide isso, só usa o que vier pronto.
+   */
+  coletarTamanhoDoDesejo?: (
+    candidato: CandidatoDeTroca
+  ) => Promise<DesejoParaMensagemDeStakeholder | null>
+}
+
+/** D76b (T10) — a mesma frase de fechamento que o texto antigo já usava
+ *  ("continua valendo até você decidir"): a garantia ao dono não muda só
+ *  porque a forma de citar o tamanho do desejo mudou. */
+function propostaDeCustoDaOrdem(): string {
+  return 'Quer trocar? Sua ordem no quadro continua valendo até você decidir.'
+}
+
+async function textoDaPerguntaDeCustoDaOrdem(
+  args: PerguntarSobreCustoDaOrdemArgs,
+  deps: DepsDePerguntarSobreCustoDaOrdem,
+  opcoes: OpcaoDeCustoDaOrdem[]
+): Promise<string> {
+  if (!deps.coletarTamanhoDoDesejo) return formatarAvisoDeCustoDaOrdem(args.candidato)
+  const desejo = await deps.coletarTamanhoDoDesejo(args.candidato)
+  if (!desejo) return formatarAvisoDeCustoDaOrdem(args.candidato)
+  return montarMensagemDeStakeholder({
+    dono: args.nomeDoDono ?? '',
+    desejos: [desejo],
+    proposta: propostaDeCustoDaOrdem(),
+    // MESMA lista que vai para `agentQuestion.ask({ options })` logo abaixo
+    // — nunca um rodapé próprio (ver o comentário de
+    // `opcoesDaPerguntaDeCustoDaOrdem`).
+    opcoes,
+  })
 }
 
 /**
@@ -146,16 +227,159 @@ export interface PerguntarSobreCustoDaOrdemArgs {
  * (decisao-de-automacao.ts). NUNCA reordena nada sozinha — só pergunta; quem
  * decide o que fazer é `processarRespostaDeCustoDaOrdem`, abaixo, chamado
  * DEPOIS que o dono responder.
+ *
+ * D76b (T10): o TEXTO passa a citar o tamanho real do desejo (fases/épicos/
+ * features/tarefas) em vez de "pontos de peso" quando `deps.
+ * coletarTamanhoDoDesejo` está disponível — ver `DepsDePerguntarSobreCustoDaOrdem`.
+ * O TRANSPORTE (`agentQuestion.ask`, as mesmas 3 opções + dedupKey) não
+ * muda: só o texto/dados que ele carrega.
  */
 export async function perguntarSobreCustoDaOrdem(
   args: PerguntarSobreCustoDaOrdemArgs,
-  deps: { agentQuestion: AgentQuestionAskerDeCustoDaOrdem }
+  deps: DepsDePerguntarSobreCustoDaOrdem
 ): Promise<void> {
+  // UMA lista só, usada no texto (rodapé) e nos botões reais abaixo — ver
+  // `opcoesDaPerguntaDeCustoDaOrdem`.
+  const opcoes = opcoesDaPerguntaDeCustoDaOrdem()
+  const texto = await textoDaPerguntaDeCustoDaOrdem(args, deps, opcoes)
   await deps.agentQuestion.ask(args.userId, args.projectId, {
-    text: formatarAvisoDeCustoDaOrdem(args.candidato),
-    options: [...OPCOES_DE_CUSTO_DA_ORDEM, buildFreeTextOption()],
+    text: texto,
+    options: opcoes,
     dedupKey: dedupKeyDeCustoDaOrdem(args.repo, args.candidato.pedido, args.rodada ?? 1),
   })
+}
+
+/**
+ * Achado de QA (T10) — `perguntarSobreCustoDaOrdem` sabe montar o texto de
+ * stakeholder desde que ganhe `coletarTamanhoDoDesejo`/`nomeDoDono` (acima),
+ * mas o ÚNICO chamador de produção (`scheduler.ts`, `avisar`) nunca passava
+ * nenhum dos dois — a pergunta caía SEMPRE no texto antigo de "pontos de
+ * peso", mesmo com toda a leitura de árvore (T10) pronta e testada.
+ *
+ * Este é o adaptador que fecha as duas deps com fontes REAIS — extraído
+ * para fora de `scheduler.ts` para poder ser testado sem Fastify/Prisma
+ * (mesmo motivo de `lerEstadoBrutoDoAvisoDeCustoDaOrdem`,
+ * custo-da-ordem-do-projeto.ts): `scheduler.ts` só monta as portas de I/O
+ * (Prisma, credencial, o MESMO REST de `buscarIssueParaIncremento` que já
+ * enriquece o Incremento) e delega para cá.
+ */
+export interface DepsDoAvisoComContextoReal {
+  agentQuestion: AgentQuestionAskerDeCustoDaOrdem
+  /**
+   * `userId` do dono do projeto + o NOME do projeto (para achar o desejo na
+   * árvore certa — `ArgsDoColetorPelaTask.projeto`, coletor-de-desejo-
+   * para-stakeholder.ts). `null` = sem dono conhecido — a pergunta nem sai
+   * (MESMA recusa silenciosa que `scheduler.ts` já fazia antes desta
+   * correção; nunca pergunta sem saber a quem).
+   */
+  contextoDoProjeto: (
+    projectId: string
+  ) => Promise<{ userId: string; nomeDoProjeto: string } | null>
+  /**
+   * O NOME do dono, para a saudação — MESMA fonte que `buscarAutor`
+   * (routes/index.ts) já usa para assinar issue de desejo em nome dele
+   * (`User.name`). `null` = sem nome cadastrado — mensagem sem saudação,
+   * nunca um nome inventado (contrato já documentado em
+   * `PerguntarSobreCustoDaOrdemArgs.nomeDoDono`).
+   */
+  nomeDoDono: (userId: string) => Promise<string | null>
+  /**
+   * Credencial que alcança o repositório deste projeto — a do cliente
+   * primeiro, a do app depois: a MESMA ordem que `filaDoQuadro`
+   * (scheduler.ts) já usa para ler o quadro. Nunca um caminho de
+   * autenticação novo. `null` = sem credencial — o coletor cai no texto
+   * antigo.
+   */
+  token: (userId: string) => Promise<string | null>
+  /**
+   * Busca uma issue (a task candidata OU o desejo pai) pelo número, com o
+   * token acima — a MESMA leitura REST que `buscarIssueParaIncremento`
+   * (scheduler.ts) já faz para o registro do Incremento.
+   */
+  buscarIssue: (
+    token: string,
+    numero: number
+  ) => Promise<{ titulo: string; corpo: string | null } | null>
+}
+
+/**
+ * Constrói o `avisar` de `DepsDeCustoDaOrdem` (custo-da-ordem-do-projeto.ts)
+ * já com o contexto REAL fechado: quem chama (`scheduler.ts`) só precisa
+ * fornecer as portas de I/O de `DepsDoAvisoComContextoReal`; toda a costura
+ * task → desejo → árvore → texto roda por dentro, terminando no MESMO
+ * `perguntarSobreCustoDaOrdem` de sempre.
+ *
+ * NUNCA lança por causa da coleta do tamanho real: qualquer falha ao
+ * resolver token/issue/árvore vira `null` para `coletarTamanhoDoDesejo` —
+ * `perguntarSobreCustoDaOrdem` já sabe cair para o texto antigo quando isso
+ * acontece, então uma falha de rede/GitHub aqui NUNCA quebra a missão (a
+ * pergunta sai do mesmo jeito, só que no formato antigo).
+ */
+export function construirAvisoDeCustoDaOrdemComContextoReal(
+  deps: DepsDoAvisoComContextoReal
+): (
+  projeto: { id: string; wingId: string },
+  candidato: CandidatoDeTroca,
+  rodada: number
+) => Promise<void> {
+  return async (projeto, candidato, rodada) => {
+    const contexto = await deps.contextoDoProjeto(projeto.id)
+    if (!contexto) return
+
+    const nomeDoDono = (await deps.nomeDoDono(contexto.userId)) ?? undefined
+
+    const coletarTamanhoDoDesejo = async (
+      candidatoDaPergunta: CandidatoDeTroca
+    ): Promise<DesejoParaMensagemDeStakeholder | null> => {
+      try {
+        const token = await deps.token(contexto.userId)
+        if (!token) return null
+        const buscarIssueComToken: DepsDoColetorPelaTask['buscarIssue'] = (numero) =>
+          deps.buscarIssue(token, numero)
+        return await coletarTamanhoDoDesejoDaTask(
+          {
+            ownerId: contexto.userId,
+            projeto: contexto.nomeDoProjeto,
+            numeroDaTask: candidatoDaPergunta.pedido,
+            // Nenhum lugar do produto guarda prioridade/estimativa de
+            // sprints do desejo hoje (ver o comentário de
+            // `ArgsDoColetorDeDesejo`, coletor-de-desejo-para-stakeholder.ts)
+            // — `null` até essa fonte existir de verdade, nunca um número
+            // inventado.
+            prioridade: null,
+            sprintsEstimadas: null,
+          },
+          {
+            buscarIssue: buscarIssueComToken,
+            listarProjetos: async () => [
+              { nome: contexto.nomeDoProjeto, repo: projeto.wingId, id: projeto.id },
+            ],
+            lerToken: async () => token,
+          }
+        )
+      } catch {
+        // Qualquer falha de leitura (rede, GitHub fora do ar, árvore
+        // indisponível): nunca sobe — cai para o texto antigo, nunca quebra
+        // a pergunta (ver o comentário desta função).
+        return null
+      }
+    }
+
+    await perguntarSobreCustoDaOrdem(
+      {
+        userId: contexto.userId,
+        projectId: projeto.id,
+        repo: projeto.wingId,
+        candidato,
+        rodada,
+        // `exactOptionalPropertyTypes`: só entra a chave quando há nome de
+        // verdade — nunca `nomeDoDono: undefined` explícito (mesmo padrão
+        // de `projetoDaLinha`, arvore-de-pedidos.ts).
+        ...(nomeDoDono ? { nomeDoDono } : {}),
+      },
+      { agentQuestion: deps.agentQuestion, coletarTamanhoDoDesejo }
+    )
+  }
 }
 
 // --- Resposta vira ação (item 2) -------------------------------------------

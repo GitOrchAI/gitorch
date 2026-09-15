@@ -372,7 +372,7 @@ import {
   avaliarCustoDaOrdemDosProjetos,
   lerEstadoBrutoDoAvisoDeCustoDaOrdem,
 } from '../services/custo-da-ordem-do-projeto.js'
-import { perguntarSobreCustoDaOrdem } from '../services/aviso-de-custo-da-ordem.js'
+import { construirAvisoDeCustoDaOrdemComContextoReal } from '../services/aviso-de-custo-da-ordem.js'
 import { filtrarFilaDeTasks } from '../services/filtrar-fila-de-tasks.js'
 import { resolveQuadroDoProjeto } from '../routes/painel.js'
 import {
@@ -10957,21 +10957,46 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           )
           return
         }
-        const linhaCompleta = await app.prisma.project.findUnique({
-          where: { id: projeto.id },
-          select: { userId: true },
-        })
-        if (!linhaCompleta?.userId) return
-        await perguntarSobreCustoDaOrdem(
-          {
-            userId: linhaCompleta.userId,
-            projectId: projeto.id,
-            repo: projeto.wingId,
-            candidato,
-            rodada,
+        // Achado de QA (T10) — este era o ÚNICO chamador de produção de
+        // `perguntarSobreCustoDaOrdem`, e nunca passava
+        // `coletarTamanhoDoDesejo`/`nomeDoDono`: a pergunta caía SEMPRE no
+        // texto antigo de "pontos de peso", mesmo com toda a leitura de
+        // árvore (T10) pronta e testada — o critério de aceite da task
+        // nunca era alcançado em produção. `construirAvisoDeCustoDaOrdemComContextoReal`
+        // (aviso-de-custo-da-ordem.ts) fecha as duas com fontes reais; este
+        // bloco só monta as portas de I/O (Prisma, credencial, o MESMO REST
+        // de `buscarIssueParaIncremento` que já enriquece o Incremento —
+        // nunca um caminho de autenticação novo).
+        const avisarComContextoReal = construirAvisoDeCustoDaOrdemComContextoReal({
+          agentQuestion: perguntador,
+          contextoDoProjeto: async (projectId) => {
+            const linha = await app.prisma.project.findUnique({
+              where: { id: projectId },
+              select: { userId: true, name: true },
+            })
+            return linha?.userId ? { userId: linha.userId, nomeDoProjeto: linha.name } : null
           },
-          { agentQuestion: perguntador }
-        )
+          // User.name — a MESMA fonte que `buscarAutor` (routes/index.ts)
+          // já usa para assinar issue de desejo em nome do dono. Sem nome
+          // cadastrado = mensagem sem saudação, nunca um nome inventado.
+          nomeDoDono: async (userId) =>
+            (await app.prisma.user.findUnique({ where: { id: userId }, select: { name: true } }))
+              ?.name ?? null,
+          // MESMA ordem de credencial que `filaDoQuadro` (acima) já usa
+          // para ler o quadro deste projeto — cliente primeiro, a do app
+          // depois. Nunca um caminho de autenticação novo.
+          token: async (userId) => {
+            const doCliente = await lerCredencialDoProjeto({
+              prisma: app.prisma,
+              projectId: projeto.id,
+            })
+            return doCliente ?? (await app.engineConnections?.getRawGithubToken(userId)) ?? null
+          },
+          // MESMA leitura REST que `buscarIssueParaIncremento` já faz para
+          // o registro do Incremento — nunca uma segunda forma de ler issue.
+          buscarIssue: (token, numero) => buscarIssueParaIncremento(projeto.wingId, token)(numero),
+        })
+        await avisarComContextoReal(projeto, candidato, rodada)
       },
       onErro: (projeto, err) =>
         app.log.warn(
