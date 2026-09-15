@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto'
+import { createCipheriv, createDecipheriv, randomBytes, scryptSync, createHmac, timingSafeEqual } from 'node:crypto'
 
 // Cifragem de credenciais de motor em repouso (AES-256-GCM autenticado).
 // A chave vem de GITORCH_CREDENTIAL_KEY (32 bytes em hex[64] ou base64). Sem
@@ -180,4 +180,37 @@ export function etiquetaDeSegredo(dominio: string, segredo: string): string {
   // N=16384 é o padrão recomendado para uso interativo: caro o bastante para
   // matar força bruta, rápido o bastante (~50ms) para uma chamada de rota.
   return scryptSync(segredo, `gitorch:${dominio}`, 8, { N: 16384, r: 8, p: 1 }).toString('hex')
+}
+
+export function signInvitationToken(payload: string, expiresAt: Date): string {
+  const key = loadKey()
+  const exp = expiresAt.getTime()
+  const data = Buffer.from(JSON.stringify({ p: payload, exp })).toString('base64url')
+  const signature = createHmac('sha256', key).update(data).digest('base64url')
+  return `${data}.${signature}`
+}
+
+export function verifyInvitationToken(token: string): string {
+  const key = loadKey()
+  const parts = token.split('.')
+  if (parts.length !== 2) {
+    throw new Error('Invalid token format')
+  }
+  const [data, signature] = parts
+
+  const expectedSignature = createHmac('sha256', key).update(data!).digest('base64url')
+
+  const signatureBuf = Buffer.from(signature!, 'utf8')
+  const expectedBuf = Buffer.from(expectedSignature, 'utf8')
+
+  if (signatureBuf.length !== expectedBuf.length || !timingSafeEqual(signatureBuf, expectedBuf)) {
+    throw new Error('Invalid signature')
+  }
+
+  const parsed = JSON.parse(Buffer.from(data!, 'base64url').toString('utf8'))
+  if (Date.now() > parsed.exp) {
+    throw new Error('Project invitation expired')
+  }
+
+  return parsed.p
 }
