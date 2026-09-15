@@ -324,7 +324,20 @@ function fetchRoteado(pergunta: string) {
     // VAZIA de verdade (o formato real do GitHub para "sem PR aberta") fecha
     // o buraco na raiz: a mission de QA segue seu curso normal sem PR para
     // julgar, sem inventar um cenário que os testes não pediram.
-    if (u.includes('api.github.com') && u.includes('/pulls')) {
+    // CodeQL (incomplete-url-substring-sanitization): comparar por SUBSTRING
+    // (`u.includes('api.github.com')`) casaria qualquer URL que contivesse
+    // esse trecho em qualquer posição — inclusive um host hostil que o traz
+    // no PATH (`https://evil.com/api.github.com`) ou como PREFIXO de um
+    // domínio maior (`https://api.github.com.evil.com`). Comparar o HOSTNAME
+    // de verdade fecha os dois furos; `try/catch` porque `u` pode não ser uma
+    // URL parseável (nunca lança dentro do mock).
+    let hostReal = ''
+    try {
+      hostReal = new URL(u).hostname
+    } catch {
+      hostReal = ''
+    }
+    if (hostReal === 'api.github.com' && u.includes('/pulls')) {
       return new Response('[]', { status: 200 })
     }
     // Telegram sendMessage E qualquer outra chamada (ex.: Jules :sendMessage
@@ -884,5 +897,50 @@ describe('dúvida do dev + cota esgotada: liga à cascata de failover que já ex
     // comportamento (ver o log adicionado em scheduler.ts).
     const textoDoLog = logLinhas.join('\n')
     expect(textoDoLog).toContain('sem aviso ao dono')
+  })
+})
+
+// CodeQL (alta severidade, achado em main): `fetchRoteado` roteava a rota de
+// `/pulls` do GitHub com `u.includes('api.github.com')` — "Incomplete URL
+// substring sanitization". Uma checagem por SUBSTRING casa a string em
+// QUALQUER posição da URL, não só no host: `https://evil.com/api.github.com`
+// (a substring vira parte do PATH de um host hostil) e
+// `https://api.github.com.evil.com` (a substring vira PREFIXO de um host
+// hostil, `api.github.com` seguido de `.evil.com`) passavam pelo mesmo `if` e
+// eram tratadas como se fossem o `api.github.com` real. É mock de teste, sem
+// caminho de produção — mas é exatamente o padrão que o CodeQL existe para
+// pegar, e o mesmo `fetchRoteado` decide o comportamento de MUITOS testes
+// deste arquivo (real-seam). A correção compara o HOSTNAME de verdade
+// (`new URL(u).hostname === 'api.github.com'`) em vez da substring.
+describe('fetchRoteado: rota de /pulls só bate no host real api.github.com (CodeQL incomplete-url-substring-sanitization)', () => {
+  async function corpoDaResposta(fetchMock: ReturnType<typeof fetchRoteado>, url: string) {
+    const resposta = await fetchMock(url)
+    return resposta.text()
+  }
+
+  test('URL maliciosa com api.github.com no PATH de outro host (https://evil.com/api.github.com/pulls) NÃO é tratada como api.github.com', async () => {
+    const fetchMock = fetchRoteado('irrelevante')
+    const corpo = await corpoDaResposta(fetchMock, 'https://evil.com/api.github.com/pulls')
+    // Rota real devolveria '[]' (lista vazia de PRs); qualquer outra coisa
+    // (o fallback genérico) prova que o host hostil não foi confundido com
+    // api.github.com.
+    expect(corpo).not.toBe('[]')
+    expect(corpo).toBe('{"ok":true}')
+  })
+
+  test('URL maliciosa com api.github.com como PREFIXO de outro host (https://api.github.com.evil.com/pulls) NÃO é tratada como api.github.com', async () => {
+    const fetchMock = fetchRoteado('irrelevante')
+    const corpo = await corpoDaResposta(fetchMock, 'https://api.github.com.evil.com/pulls')
+    expect(corpo).not.toBe('[]')
+    expect(corpo).toBe('{"ok":true}')
+  })
+
+  test('URL real do host api.github.com continua tratada normalmente (lista vazia de PRs)', async () => {
+    const fetchMock = fetchRoteado('irrelevante')
+    const corpo = await corpoDaResposta(
+      fetchMock,
+      'https://api.github.com/repos/GitOrchAI/gitorch/pulls?state=open'
+    )
+    expect(corpo).toBe('[]')
   })
 })
