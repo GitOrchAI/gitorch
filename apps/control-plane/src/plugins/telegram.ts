@@ -1056,21 +1056,21 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
             continue
           }
 
-          // `/wishlist` continua com a resposta de orientação que já existia na
-          // linha principal. Fica DEPOIS do desejo porque são coisas diferentes:
-          // aqui só se explica a sintaxe, enquanto `/desejo` e `/quero` abrem o
-          // pedido de verdade.
-          if (update.message?.text?.trim().startsWith('/wishlist')) {
-            const chatId = update.message?.chat?.id
-            if (chatId !== undefined && chatId !== null) {
-              await sendTelegramMessage({
-                botToken,
-                chatId: String(chatId),
-                text: 'Use /wishlist add <item>',
-              })
-            }
-            continue
-          }
+          // `/wishlist` NÃO tem mais ramo próprio aqui: ele é tratado por
+          // `tratarPedidoDeDesejo` (acima), junto de `/desejo` e `/quero`.
+          //
+          // O ramo que morreu aqui respondia "Use /wishlist add <item>" — uma
+          // ajuda para um subcomando que não existia. Agora o `add` existe e
+          // abre o pedido de verdade; e quem digita `/wishlist` sozinho (ou com
+          // outro subcomando) recebe o MESMO texto de "como usar" que `/desejo`
+          // sozinho já dava, em vez de uma segunda redação da mesma ajuda solta
+          // nesta linha — que era, além de tudo, o único ramo desta função sem
+          // teste nenhum cobrindo.
+          //
+          // Também usava `startsWith('/wishlist')`, sem delimitador: capturava
+          // "/wishlists" e "/wishlist@OutroBot" para responder por cima de
+          // comando que não era nosso. O casamento de `casarComandoDeDesejo`
+          // (services/telegram-bot.ts) já resolve os dois.
 
           // L4-T27 (3º caminho de resposta — achado na revisão pós-fix dos
           // itens 1 e 3, handleTelegramQuestionReply/handleTelegramCallback,

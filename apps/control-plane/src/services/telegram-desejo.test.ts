@@ -102,6 +102,81 @@ describe('ehPedidoDeDesejoSemTexto', () => {
   })
 })
 
+// `/wishlist add <item>` — a sintaxe que o bot IMPRIMIA desde d175cb70 sem
+// cumprir: o comando existia, respondia "Use /wishlist add <item>", e o `add`
+// não existia em lugar nenhum.
+//
+// Ele é o único dos três que EXIGE subcomando. A razão é a mesma que faz
+// "/desejos" não virar o pedido "s": a esteira consome a wishlist ABERTA MAIS
+// RECENTE, então tudo que vira pedido entra na frente do pedido de verdade.
+// Por isso a maior parte destes casos é NEGATIVA — o que este bloco protege
+// não é o caminho feliz, é o portão.
+describe('/wishlist add', () => {
+  const BOT = 'GitOrchAI_bot'
+
+  it('com o subcomando e o texto, vira pedido', () => {
+    expect(interpretarPedidoDeDesejo('/wishlist add busca por cor', BOT)).toEqual({
+      ehDesejo: true,
+      texto: 'busca por cor',
+    })
+  })
+
+  it('aceita o nome do bot colado, como os outros comandos (grupo)', () => {
+    expect(interpretarPedidoDeDesejo('/wishlist@GitOrchAI_bot add filtro de preço', BOT)).toEqual({
+      ehDesejo: true,
+      texto: 'filtro de preço',
+    })
+  })
+
+  it('o subcomando não diferencia maiúscula de minúscula', () => {
+    expect(interpretarPedidoDeDesejo('/wishlist ADD relatório mensal', BOT).ehDesejo).toBe(true)
+  })
+
+  // Os casos abaixo são o portão: NENHUM deles pode virar issue.
+  it('sem o subcomando, não vira pedido — só ensina a sintaxe', () => {
+    expect(interpretarPedidoDeDesejo('/wishlist', BOT).ehDesejo).toBe(false)
+    expect(ehPedidoDeDesejoSemTexto('/wishlist', BOT)).toBe(true)
+  })
+
+  it('subcomando sem texto não vira pedido — só ensina a sintaxe', () => {
+    expect(interpretarPedidoDeDesejo('/wishlist add', BOT).ehDesejo).toBe(false)
+    expect(ehPedidoDeDesejoSemTexto('/wishlist add   ', BOT)).toBe(true)
+  })
+
+  // Antes deste PR, `startsWith('/wishlist')` respondia a estes dois por cima
+  // de comando que não era nosso.
+  it('comando parecido não é o comando (/wishlists não é /wishlist)', () => {
+    expect(interpretarPedidoDeDesejo('/wishlists add cafe', BOT).ehDesejo).toBe(false)
+    expect(ehPedidoDeDesejoSemTexto('/wishlists', BOT)).toBe(false)
+  })
+
+  it('comando endereçado a outro bot não é nosso', () => {
+    expect(interpretarPedidoDeDesejo('/wishlist@OutroBot add cafe', BOT).ehDesejo).toBe(false)
+    expect(ehPedidoDeDesejoSemTexto('/wishlist@OutroBot', BOT)).toBe(false)
+  })
+
+  // "add" tem que TERMINAR ali, pela mesma razão que o nome do comando termina.
+  it('palavra colada no subcomando não vira o texto do pedido', () => {
+    expect(interpretarPedidoDeDesejo('/wishlist addendo do contrato', BOT)).toEqual({
+      ehDesejo: false,
+      texto: '',
+    })
+  })
+
+  // Outro subcomando é NOSSO (o comando é nosso) mas não é pedido: quem digitou
+  // "remove" recebe a sintaxe, e nada é registrado no repositório do dono.
+  it('outro subcomando não vira pedido, e ainda assim é respondido', () => {
+    expect(interpretarPedidoDeDesejo('/wishlist remove item 3', BOT).ehDesejo).toBe(false)
+    expect(ehPedidoDeDesejoSemTexto('/wishlist remove item 3', BOT)).toBe(true)
+  })
+
+  // O caso mais perigoso deste PR: uma frase solta depois do comando NÃO pode
+  // virar issue só porque parece um desejo.
+  it('frase sem subcomando não vira pedido', () => {
+    expect(interpretarPedidoDeDesejo('/wishlist quero busca por cor', BOT).ehDesejo).toBe(false)
+  })
+})
+
 // A porta do desejo no mensageiro. O que está sob teste aqui é a DECISÃO —
 // de quem é este chat, para qual repositório vai o pedido, e o que o dono lê de
 // volta. A rede (Telegram e GitHub) entra por injeção: nada aqui abre socket.

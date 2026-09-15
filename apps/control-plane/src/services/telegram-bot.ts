@@ -107,6 +107,15 @@ function isStartCommand(text: string | undefined): boolean {
 }
 
 /**
+ * O subcomando que `/wishlist` exige, e o pedido que vem depois dele.
+ *
+ * `add` tem que TERMINAR ali (espaço ou fim), pela mesma razão que o nome do
+ * comando termina: sem isso "/wishlist addendo do contrato" viraria o pedido
+ * "endo do contrato".
+ */
+const SUBCOMANDO_DA_WISHLIST = /^add(?:\s+([\s\S]*))?$/i
+
+/**
  * Reconhece o pedido de desejo vindo do mensageiro.
  *
  * Em grupo, o Telegram entrega o comando com o nome do bot colado
@@ -125,12 +134,19 @@ function isStartCommand(text: string | undefined): boolean {
  * wizard (`telegramBotUsername`), para não existirem duas versões de "quem é
  * este bot"; o Telegram não diferencia maiúscula de minúscula em @username, e
  * aqui também não.
+ *
+ * `/wishlist` entra aqui porque o bot JÁ prometia essa sintaxe e não a cumpria:
+ * o comando existia desde d175cb70 e respondia "Use /wishlist add <item>" —
+ * uma ajuda para um `add` que não existia em lugar nenhum. Ele é o único dos
+ * três que EXIGE subcomando; ver `SUBCOMANDO_DA_WISHLIST`, abaixo.
  */
 function casarComandoDeDesejo(
   texto: string,
   nomeDoBot: string
 ): { nosso: false } | { nosso: true; pedido: string } {
-  const casado = /^\/(desejo|quero)(?:@([A-Za-z0-9_]+))?(?:\s+([\s\S]*))?$/i.exec(texto.trim())
+  const casado = /^\/(desejo|quero|wishlist)(?:@([A-Za-z0-9_]+))?(?:\s+([\s\S]*))?$/i.exec(
+    texto.trim()
+  )
   if (!casado) return { nosso: false }
 
   const enderecadoA = casado[2]
@@ -138,7 +154,20 @@ function casarComandoDeDesejo(
     return { nosso: false }
   }
 
-  return { nosso: true, pedido: (casado[3] ?? '').trim() }
+  const resto = (casado[3] ?? '').trim()
+  if (casado[1]?.toLowerCase() !== 'wishlist') return { nosso: true, pedido: resto }
+
+  // Sem o `add` — ou com outro subcomando — o comando é NOSSO mas não é pedido:
+  // cai na mesma resposta de "como usar" de quem digita `/desejo` sozinho.
+  //
+  // Exigir o subcomando é deliberado, e é o lado seguro. Aceitar
+  // "/wishlist comprar um carro" como desejo alargaria justamente o portão que
+  // o delimitador acima existe para fechar: a esteira consome a wishlist ABERTA
+  // MAIS RECENTE, então toda frase que vira pedido entra na frente do pedido de
+  // verdade. Melhor responder a sintaxe do que registrar o que ninguém mandou
+  // registrar.
+  const comSubcomando = SUBCOMANDO_DA_WISHLIST.exec(resto)
+  return { nosso: true, pedido: (comSubcomando?.[1] ?? '').trim() }
 }
 
 export function interpretarPedidoDeDesejo(
