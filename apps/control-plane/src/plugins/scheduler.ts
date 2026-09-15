@@ -8843,17 +8843,24 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       // respondido antes desta linha rodar. Defeito real: antes só 'tudo'
       // disparava o aviso — 'executivo-e-tecnico-bloqueante' (a política
       // que existe PARA ISTO) ficava idêntica a 'so-executivo'.
+      //
+      // DJ-T15 (D76, achado do QA na task a8e667c8): "já respondeu — nada
+      // bloqueado" é status/andamento puro (o dev já foi respondido, nada
+      // espera decisão do dono) e não bate nenhum padrão de
+      // `classificarAviso` — caía no default 'executivo' e vazava para o
+      // Telegram. Mesma conversão das outras 10 ocorrências desta task: vai
+      // direto para a timeline do painel via `registrarStatusNoPainel`,
+      // nunca mais por `avisarDonoDoProjeto`. Sem precisar mais recarregar o
+      // projeto (`app.prisma.project.findUnique`, removido): o dedupe é por
+      // `projectId`, que já está em `args`. Chave pela pergunta respondida
+      // (`hashDaPergunta`): a MESMA pergunta só registra uma vez.
       if (saiu && devoAvisarDonoDeBloqueioResolvido(politica)) {
-        const projetoParaAviso = await app.prisma.project.findUnique({
-          where: { id: args.projectId },
-        })
-        if (projetoParaAviso) {
-          await avisarDonoDoProjeto(
-            projetoParaAviso,
-            `GitOrch: o dev perguntou algo técnico na tarefa #${esperando.issueNumber} de ` +
-              `${args.repository} e ${respostaVeioDoRa ? 'o RA' : 'o QA'} já respondeu — nada bloqueado.`
-          ).catch(() => undefined)
-        }
+        await registrarStatusNoPainel(
+          args.projectId,
+          `duvida-resolvida:${args.repository}:${esperando.issueNumber}:${hashDaPergunta}`,
+          `GitOrch: o dev perguntou algo técnico na tarefa #${esperando.issueNumber} de ` +
+            `${args.repository} e ${respostaVeioDoRa ? 'o RA' : 'o QA'} já respondeu — nada bloqueado.`
+        )
       }
       if (saiu) {
         // A marca de RESPONDIDA só é gravada quando a mensagem de fato chegou —
