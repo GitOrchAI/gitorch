@@ -1,5 +1,3 @@
-import { buildFreeTextOption } from './telegram-bot.js'
-
 /**
  * D76b (T10) — a mensagem que o PO manda ao dono quando a equipe topa com um
  * desejo de prioridade baixa enquanto o(s) pedido(s) de prioridade mais alta
@@ -27,6 +25,20 @@ import { buildFreeTextOption } from './telegram-bot.js'
  *      1..N: o primeiro desejo sempre abre a frase ("a equipe está com o
  *      desejo X..."); cada desejo seguinte entra como "o seu pedido Y
  *      (...) tem ..." — a mesma forma do exemplo, repetida para cada um.
+ *
+ * Achado de QA (2ª rejeição, T10) — esta função chegou a ter um rodapé de
+ * opções FIXO embutido aqui dentro (3 opções objetivas + "Vou escrever",
+ * hardcoded, com valores como `sim-priorizar`/`manter-prioridade-atual` que
+ * nenhum chamador jamais usou como botão de verdade). O ÚNICO chamador real
+ * (`aviso-de-custo-da-ordem.ts`) manda ao Telegram os botões de
+ * `OPCOES_DE_CUSTO_DA_ORDEM` ("Aplicar a troca sugerida" / "Manter minha
+ * ordem" / "Ver a fila antes de decidir") — o texto listava um menu que não
+ * batia com os botões clicáveis de verdade. Correção: o rodapé NUNCA mais é
+ * fixo aqui — `opcoes` (abaixo) é parâmetro obrigatório, e quem chama passa
+ * a MESMA lista que usa para montar os botões reais (`agentQuestion.ask`).
+ * Uma função pura não tem como adivinhar as opções de um chamador que ainda
+ * nem existe; duas fontes de verdade para o mesmo menu é exatamente a
+ * classe de defeito que gerou esta nota.
  */
 
 /** Um desejo, do jeito que a mensagem de stakeholder precisa: nome +
@@ -68,29 +80,24 @@ export interface MontarMensagemDeStakeholderArgs {
    *  Texto livre — quem chama decide a proposta, esta função só a encaixa
    *  no lugar certo da frase. */
   proposta: string
+  /**
+   * As opções REAIS que o chamador vai mandar como botões ao Telegram —
+   * NUNCA um rodapé fixo desta função (ver o achado de QA no comentário do
+   * topo do arquivo). Formato "1. / 2. / 3. / ..." — mesmo padrão de
+   * `OPCOES_DE_CUSTO_DA_ORDEM` (aviso-de-custo-da-ordem.ts) e
+   * `OPCOES_DE_DECISAO_DE_AUTOMACAO` (decisao-de-automacao.ts). Precisa de
+   * ao menos 1 opção (lança, ver abaixo) — quem chama monta esta lista com
+   * as MESMAS opções (incluindo o botão de "Vou escrever", via
+   * `buildFreeTextOption`) que também manda em `agentQuestion.ask({ options })`,
+   * para o texto e os botões clicáveis nunca divergirem.
+   */
+  opcoes: OpcaoDeMensagemDeStakeholder[]
 }
 
 export interface OpcaoDeMensagemDeStakeholder {
   label: string
   value: string
 }
-
-export const VALOR_SIM_PRIORIZAR = 'sim-priorizar'
-export const VALOR_MANTER_PRIORIDADE_ATUAL = 'manter-prioridade-atual'
-export const VALOR_QUERO_MAIS_DETALHES = 'quero-mais-detalhes'
-
-/** D71/D72: 3 opções objetivas + "Vou escrever" — mesmo padrão de
- *  `OPCOES_DE_DECISAO_DE_AUTOMACAO` (decisao-de-automacao.ts) e
- *  `OPCOES_DE_CUSTO_DA_ORDEM` (aviso-de-custo-da-ordem.ts): o botão de
- *  escrever usa o SENTINEL de `buildFreeTextOption`, nunca um valor literal
- *  — é o que arma o "digite sua resposta" de verdade em vez de gravar a
- *  string "escrever" como se fosse a decisão do dono. */
-export const OPCOES_DE_MENSAGEM_DE_STAKEHOLDER: OpcaoDeMensagemDeStakeholder[] = [
-  { label: 'Sim, priorizar o desejo agora', value: VALOR_SIM_PRIORIZAR },
-  { label: 'Não, manter a prioridade atual', value: VALOR_MANTER_PRIORIDADE_ATUAL },
-  { label: 'Quero ver mais detalhes antes', value: VALOR_QUERO_MAIS_DETALHES },
-  buildFreeTextOption('Vou escrever'),
-]
 
 function pluralizar(n: number, singular: string, plural: string): string {
   return n === 1 ? `1 ${singular}` : `${n} ${plural}`
@@ -133,6 +140,12 @@ export function montarMensagemDeStakeholder(args: MontarMensagemDeStakeholderArg
       'montarMensagemDeStakeholder: precisa de ao menos 1 desejo para montar a mensagem'
     )
   }
+  if (args.opcoes.length === 0) {
+    throw new Error(
+      'montarMensagemDeStakeholder: precisa de ao menos 1 opção (as mesmas que o chamador ' +
+        'manda como botões) para montar o rodapé'
+    )
+  }
 
   const [primeiro, ...outros] = args.desejos as [
     DesejoParaMensagemDeStakeholder,
@@ -152,9 +165,7 @@ export function montarMensagemDeStakeholder(args: MontarMensagemDeStakeholderArg
   frases.push(args.proposta)
 
   const corpo = frases.join('; ')
-  const opcoes = OPCOES_DE_MENSAGEM_DE_STAKEHOLDER.map(
-    (opcao, indice) => `${indice + 1}. ${opcao.label}`
-  )
+  const rodape = args.opcoes.map((opcao, indice) => `${indice + 1}. ${opcao.label}`)
 
-  return [corpo, '', ...opcoes].join('\n')
+  return [corpo, '', ...rodape].join('\n')
 }

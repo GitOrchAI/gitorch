@@ -126,6 +126,21 @@ export const OPCOES_DE_CUSTO_DA_ORDEM: OpcaoDeCustoDaOrdem[] = [
   { label: 'Ver a fila antes de decidir', value: VALOR_VER_FILA },
 ]
 
+/**
+ * Achado de QA (2ª rejeição, T10) — `montarMensagemDeStakeholder` embutia um
+ * rodapé de opções PRÓPRIO, desalinhado destas 3 opções reais: o dono via um
+ * texto listando "Sim, priorizar / Não, manter / Quero ver detalhes" quando
+ * os botões clicáveis de verdade eram estes (`OPCOES_DE_CUSTO_DA_ORDEM`) +
+ * "Vou escrever". Esta é a ÚNICA lista de opções desta pergunta — usada
+ * tanto para montar o rodapé do texto (`montarMensagemDeStakeholder`, quando
+ * o formato de stakeholder está disponível) quanto para os botões reais
+ * (`agentQuestion.ask`, abaixo) — nunca duas listas separadas para o mesmo
+ * menu.
+ */
+function opcoesDaPerguntaDeCustoDaOrdem(): OpcaoDeCustoDaOrdem[] {
+  return [...OPCOES_DE_CUSTO_DA_ORDEM, buildFreeTextOption()]
+}
+
 /** Só o que `perguntarSobreCustoDaOrdem` precisa de `AgentQuestionService.ask`. */
 export interface AgentQuestionAskerDeCustoDaOrdem {
   ask: (
@@ -189,7 +204,8 @@ function propostaDeCustoDaOrdem(): string {
 
 async function textoDaPerguntaDeCustoDaOrdem(
   args: PerguntarSobreCustoDaOrdemArgs,
-  deps: DepsDePerguntarSobreCustoDaOrdem
+  deps: DepsDePerguntarSobreCustoDaOrdem,
+  opcoes: OpcaoDeCustoDaOrdem[]
 ): Promise<string> {
   if (!deps.coletarTamanhoDoDesejo) return formatarAvisoDeCustoDaOrdem(args.candidato)
   const desejo = await deps.coletarTamanhoDoDesejo(args.candidato)
@@ -198,6 +214,10 @@ async function textoDaPerguntaDeCustoDaOrdem(
     dono: args.nomeDoDono ?? '',
     desejos: [desejo],
     proposta: propostaDeCustoDaOrdem(),
+    // MESMA lista que vai para `agentQuestion.ask({ options })` logo abaixo
+    // — nunca um rodapé próprio (ver o comentário de
+    // `opcoesDaPerguntaDeCustoDaOrdem`).
+    opcoes,
   })
 }
 
@@ -218,10 +238,13 @@ export async function perguntarSobreCustoDaOrdem(
   args: PerguntarSobreCustoDaOrdemArgs,
   deps: DepsDePerguntarSobreCustoDaOrdem
 ): Promise<void> {
-  const texto = await textoDaPerguntaDeCustoDaOrdem(args, deps)
+  // UMA lista só, usada no texto (rodapé) e nos botões reais abaixo — ver
+  // `opcoesDaPerguntaDeCustoDaOrdem`.
+  const opcoes = opcoesDaPerguntaDeCustoDaOrdem()
+  const texto = await textoDaPerguntaDeCustoDaOrdem(args, deps, opcoes)
   await deps.agentQuestion.ask(args.userId, args.projectId, {
     text: texto,
-    options: [...OPCOES_DE_CUSTO_DA_ORDEM, buildFreeTextOption()],
+    options: opcoes,
     dedupKey: dedupKeyDeCustoDaOrdem(args.repo, args.candidato.pedido, args.rodada ?? 1),
   })
 }

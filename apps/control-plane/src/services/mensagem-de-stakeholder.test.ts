@@ -1,11 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
   montarMensagemDeStakeholder,
-  OPCOES_DE_MENSAGEM_DE_STAKEHOLDER,
-  VALOR_SIM_PRIORIZAR,
-  VALOR_MANTER_PRIORIDADE_ATUAL,
-  VALOR_QUERO_MAIS_DETALHES,
   type DesejoParaMensagemDeStakeholder,
+  type OpcaoDeMensagemDeStakeholder,
 } from './mensagem-de-stakeholder.js'
 import { FREE_TEXT_OPTION_VALUE } from './telegram-bot.js'
 
@@ -21,6 +18,21 @@ import { FREE_TEXT_OPTION_VALUE } from './telegram-bot.js'
 // "Regra da amostra": 1 exemplo dele é amostra de uma regra geral, não uma
 // lista completa — os testes abaixo cobrem a generalização (N desejos,
 // prioridade/sprints ausentes), não uma cópia literal da frase dele.
+//
+// Achado de QA (2ª rejeição, T10) — `opcoes` é parâmetro OBRIGATÓRIO desde a
+// correção: esta função não tem mais um rodapé fixo próprio (era a causa do
+// defeito — texto com opções que não batiam com os botões reais do
+// chamador). Os testes abaixo usam uma lista de exemplo (`OPCOES_DE_TESTE`)
+// só para provar o comportamento de MONTAGEM do rodapé a partir do que foi
+// passado — o teste de alinhamento com os botões REAIS de produção mora em
+// `aviso-de-custo-da-ordem.test.ts` (o único chamador real).
+
+const OPCOES_DE_TESTE: OpcaoDeMensagemDeStakeholder[] = [
+  { label: 'Sim, priorizar o desejo agora', value: 'sim-priorizar' },
+  { label: 'Não, manter a prioridade atual', value: 'manter-prioridade-atual' },
+  { label: 'Quero ver mais detalhes antes', value: 'quero-mais-detalhes' },
+  { label: 'Vou escrever', value: FREE_TEXT_OPTION_VALUE },
+]
 
 const X: DesejoParaMensagemDeStakeholder = {
   titulo: 'lembrete de pagamento por e-mail',
@@ -50,6 +62,7 @@ describe('montarMensagemDeStakeholder — o texto exato que o dono ditou (D76b)'
       dono: 'Guilherme',
       desejos: [X, Y],
       proposta: PROPOSTA,
+      opcoes: OPCOES_DE_TESTE,
     })
 
     expect(texto).toContain('Guilherme,')
@@ -71,16 +84,18 @@ describe('montarMensagemDeStakeholder — o texto exato que o dono ditou (D76b)'
       dono: 'Guilherme',
       desejos: [X, Y],
       proposta: PROPOSTA,
+      opcoes: OPCOES_DE_TESTE,
     })
     expect(texto.toLowerCase()).not.toContain('ponto de peso')
     expect(texto.toLowerCase()).not.toContain('pontos de peso')
   })
 
-  it('termina com as 3 opções objetivas + "Vou escrever", nesta ordem (mesmo padrão de D71/D72)', () => {
+  it('termina com as opções passadas por quem chama, numeradas nesta ordem — nunca um rodapé fixo próprio', () => {
     const texto = montarMensagemDeStakeholder({
       dono: 'Guilherme',
       desejos: [X],
       proposta: PROPOSTA,
+      opcoes: OPCOES_DE_TESTE,
     })
     const linhas = texto.trim().split('\n')
     expect(linhas.slice(-4)).toEqual([
@@ -89,6 +104,33 @@ describe('montarMensagemDeStakeholder — o texto exato que o dono ditou (D76b)'
       '3. Quero ver mais detalhes antes',
       '4. Vou escrever',
     ])
+  })
+
+  it('opções DIFERENTES do chamador viram um rodapé DIFERENTE — prova que não há valor fixo aqui dentro', () => {
+    const outrasOpcoes: OpcaoDeMensagemDeStakeholder[] = [
+      { label: 'Aplicar a troca sugerida', value: 'aplicar' },
+      { label: 'Manter minha ordem', value: 'manter' },
+    ]
+    const texto = montarMensagemDeStakeholder({
+      dono: 'Guilherme',
+      desejos: [X],
+      proposta: PROPOSTA,
+      opcoes: outrasOpcoes,
+    })
+    const linhas = texto.trim().split('\n')
+    expect(linhas.slice(-2)).toEqual(['1. Aplicar a troca sugerida', '2. Manter minha ordem'])
+    expect(texto).not.toContain('Sim, priorizar o desejo agora')
+  })
+
+  it('lista vazia de opções: lança, nunca monta um rodapé vazio', () => {
+    expect(() =>
+      montarMensagemDeStakeholder({
+        dono: 'Guilherme',
+        desejos: [X],
+        proposta: PROPOSTA,
+        opcoes: [],
+      })
+    ).toThrow(/opção/i)
   })
 })
 
@@ -99,6 +141,7 @@ describe('montarMensagemDeStakeholder — prioridade ausente: nunca inventa núm
       dono: 'Guilherme',
       desejos: [semPrioridade],
       proposta: PROPOSTA,
+      opcoes: OPCOES_DE_TESTE,
     })
     expect(texto).toContain('prioridade não registrada')
     expect(texto).not.toMatch(/prioridade \d/)
@@ -111,6 +154,7 @@ describe('montarMensagemDeStakeholder — sprints ausentes: nunca inventa númer
       dono: 'Guilherme',
       desejos: [X],
       proposta: PROPOSTA,
+      opcoes: OPCOES_DE_TESTE,
     })
     expect(texto).toContain('sprints não estimadas')
   })
@@ -121,6 +165,7 @@ describe('montarMensagemDeStakeholder — sprints ausentes: nunca inventa númer
       dono: 'Guilherme',
       desejos: [umaSprint],
       proposta: PROPOSTA,
+      opcoes: OPCOES_DE_TESTE,
     })
     expect(texto).toContain('1 sprint estimada')
     expect(texto).not.toContain('1 sprints')
@@ -142,6 +187,7 @@ describe('montarMensagemDeStakeholder — múltiplos desejos', () => {
       dono: 'Guilherme',
       desejos: [X, Y, Z],
       proposta: PROPOSTA,
+      opcoes: OPCOES_DE_TESTE,
     })
     expect(texto).toContain('lembrete de pagamento por e-mail')
     expect(texto).toContain('motor de recomendação')
@@ -156,31 +202,31 @@ describe('montarMensagemDeStakeholder — múltiplos desejos', () => {
       dono: 'Guilherme',
       desejos: [X],
       proposta: PROPOSTA,
+      opcoes: OPCOES_DE_TESTE,
     })
     expect(texto).not.toContain('o seu pedido')
   })
 
   it('lista vazia de desejos: lança, nunca monta uma mensagem vazia', () => {
     expect(() =>
-      montarMensagemDeStakeholder({ dono: 'Guilherme', desejos: [], proposta: PROPOSTA })
+      montarMensagemDeStakeholder({
+        dono: 'Guilherme',
+        desejos: [],
+        proposta: PROPOSTA,
+        opcoes: OPCOES_DE_TESTE,
+      })
     ).toThrow(/desejo/i)
   })
 })
 
 describe('montarMensagemDeStakeholder — sem nome do dono', () => {
   it('dono vazio: abre sem vírgula solta nem nome inventado', () => {
-    const texto = montarMensagemDeStakeholder({ dono: '', desejos: [X], proposta: PROPOSTA })
+    const texto = montarMensagemDeStakeholder({
+      dono: '',
+      desejos: [X],
+      proposta: PROPOSTA,
+      opcoes: OPCOES_DE_TESTE,
+    })
     expect(texto.startsWith('A equipe está com o desejo')).toBe(true)
-  })
-})
-
-describe('OPCOES_DE_MENSAGEM_DE_STAKEHOLDER — reaproveita o padrão de opções (D71/D72)', () => {
-  it('são exatamente as 3 opções objetivas + o botão de escrever (sentinel de buildFreeTextOption)', () => {
-    expect(OPCOES_DE_MENSAGEM_DE_STAKEHOLDER).toEqual([
-      { label: 'Sim, priorizar o desejo agora', value: VALOR_SIM_PRIORIZAR },
-      { label: 'Não, manter a prioridade atual', value: VALOR_MANTER_PRIORIDADE_ATUAL },
-      { label: 'Quero ver mais detalhes antes', value: VALOR_QUERO_MAIS_DETALHES },
-      { label: 'Vou escrever', value: FREE_TEXT_OPTION_VALUE },
-    ])
   })
 })

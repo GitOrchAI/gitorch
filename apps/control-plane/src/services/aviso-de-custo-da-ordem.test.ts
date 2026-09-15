@@ -196,6 +196,38 @@ describe('perguntarSobreCustoDaOrdem — texto de stakeholder (D76b) quando o ta
     expect(texto).toContain('continua valendo')
   })
 
+  // Achado de QA (2ª rejeição, T10) — `montarMensagemDeStakeholder` embutia
+  // um rodapé PRÓPRIO ("Sim, priorizar" / "Não, manter" / "Quero ver
+  // detalhes") desalinhado dos botões REAIS que esta função manda ao
+  // Telegram (`OPCOES_DE_CUSTO_DA_ORDEM`: "Aplicar a troca sugerida" /
+  // "Manter minha ordem" / "Ver a fila antes de decidir"). Este teste
+  // compara DIRETO o rodapé do texto com os botões que `ask()` de fato
+  // recebeu (`input['options']`, não uma cópia reimplementada aqui) — e
+  // confere que esses botões reais SÃO `OPCOES_DE_CUSTO_DA_ORDEM` (comparação
+  // direta com a constante, nunca uma lista paralela retypada no teste).
+  it('o rodapé do texto lista EXATAMENTE os mesmos rótulos dos botões reais enviados a ask()', async () => {
+    const ask = vi.fn().mockResolvedValue({ deduped: false, question: {} })
+    const coletarTamanhoDoDesejo = vi.fn().mockResolvedValue(DESEJO_CONTADO)
+
+    await perguntarSobreCustoDaOrdem(
+      { userId: 'user-1', projectId: 'proj-1', repo: 'acme/api', candidato: CANDIDATO },
+      { agentQuestion: { ask }, coletarTamanhoDoDesejo }
+    )
+
+    const input = ask.mock.calls[0]![2] as Record<string, unknown>
+    const texto = input['text'] as string
+    const botoesReais = input['options'] as { label: string; value: string }[]
+
+    // Os botões reais começam com as 3 opções objetivas de produção — a
+    // MESMA constante que o produto usa para reagir à resposta do dono
+    // (`processarRespostaDeCustoDaOrdem`), nunca uma cópia solta.
+    expect(botoesReais.slice(0, OPCOES_DE_CUSTO_DA_ORDEM.length)).toEqual(OPCOES_DE_CUSTO_DA_ORDEM)
+
+    const linhasDoRodape = texto.trim().split('\n').slice(-botoesReais.length)
+    const rodapeEsperado = botoesReais.map((botao, indice) => `${indice + 1}. ${botao.label}`)
+    expect(linhasDoRodape).toEqual(rodapeEsperado)
+  })
+
   it('nomeDoDono informado: a mensagem de stakeholder abre com o nome', async () => {
     const ask = vi.fn().mockResolvedValue({ deduped: false, question: {} })
     const coletarTamanhoDoDesejo = vi.fn().mockResolvedValue(DESEJO_CONTADO)
