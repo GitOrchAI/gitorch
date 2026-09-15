@@ -1,7 +1,7 @@
 import fp from 'fastify-plugin'
 import { FastifyInstance, FastifyBaseLogger } from 'fastify'
 import * as fs from 'node:fs/promises'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { CronExpressionParser } from 'cron-parser'
@@ -3943,24 +3943,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             // padrão já aplicado em `runQaMissionViaRails` (commit 5477a3e).
             onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
           })
-          // O aviso é do DONO do projeto — a task travada é a dele. Antes, o
-          // chat vinha direto do env (GITORCH_TELEGRAM_CHAT_ID): TODO cliente
-          // "notificado" caía no chat da gitorch e o cliente, que informara o
-          // Telegram dele no wizard, nunca recebia nada. Agora o chat sai do
-          // vínculo real (telegram_links, nascido do /start do próprio cliente);
-          // o nosso chat só entra quando o projeto é NOSSO — aí é notificação
-          // interna de verdade. Sem vínculo, ninguém é avisado: o repo/issue de
-          // um cliente não vira mensagem no chat de outro nem no nosso.
-          const notifyChatId = await resolveNotifyChatId(app.prisma, project, {
-            instanceOwnerEmail: process.env['GITORCH_OWNER_EMAIL'],
-            instanceChatId:
-              process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
-          })
-          const notify = buildTelegramNotifier({
-            botToken:
-              process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
-            ...(notifyChatId ? { chatId: notifyChatId } : {}),
-          })
+          // DJ-T15 (D76): "task travada" é status/andamento — vai para a
+          // timeline do painel (registrarStatusNoPainel), nunca mais para o
+          // Telegram cru. Antes, o chat vinha direto do env
+          // (GITORCH_TELEGRAM_CHAT_ID) e TODO cliente "notificado" caía no
+          // chat da gitorch (defeito já corrigido em levas anteriores);
+          // trocar de canal aqui resolve de vez o mesmo risco, sem precisar
+          // mais resolver chat nenhum.
           const watchdog = await runSmWatchdog({
             repository: project.wingId,
             githubToken: railsToken as string,
@@ -3968,7 +3957,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             // repositório do cliente, e sem o nível deste projeto cairia no
             // default fail-closed e se recusaria a trabalhar em silêncio.
             fetchImpl: fetchDoQuadro(project),
-            ...(notify ? { notify } : {}),
+            registrarNoPainel: ({ texto, chave }) =>
+              registrarStatusNoPainel(project.id, chave, texto),
           })
           // Sensor de infra (os "olhos"): varre Actions/Dependabot e levanta
           // ACHADOS TIPADOS — NÃO abre issue (D54, 29/08). Antes ele criava
@@ -4802,29 +4792,26 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           const chaveDoAviso = `${project.userId ?? project.id}:${err.runtime}`
           if (deveAvisarDeNovo(avisosDeCredencialExpirada, chaveDoAviso, Date.now())) {
             avisosDeCredencialExpirada.set(chaveDoAviso, Date.now())
-            const notifyChatId = await resolveNotifyChatId(app.prisma, project, {
-              instanceOwnerEmail: process.env['GITORCH_OWNER_EMAIL'],
-              instanceChatId:
-                process.env['GITORCH_TELEGRAM_CHAT_ID'] ?? process.env['TELEGRAM_CHAT_ID'],
-            })
-            const avisar = buildTelegramNotifier({
-              botToken:
-                process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
-              ...(notifyChatId ? { chatId: notifyChatId } : {}),
-            })
-            if (avisar) {
-              // Correção 2: mesmo corroborada, isto é uma INFERÊNCIA (texto +
-              // ausência de entregável), não um fato observado — o produto
-              // nunca viu a credencial em si, só concluiu a partir da saída.
-              // A mensagem não afirma "a credencial expirou" como certeza;
-              // descreve o que foi observado (terminou sem entregar, saída
-              // parece pedido de login) e pede para o dono CONFERIR.
-              await avisar(
-                `GitOrch: o motor ${err.runtime} terminou sem entregar nada no projeto ` +
-                  `${project.wingId}, e a saída lembra um pedido de login expirado — vale conferir ` +
-                  `a conexão desse motor. Até lá, a reserva da cadeia assume o trabalho.`
-              ).catch(() => undefined)
-            }
+            // DJ-T15 (D76): "motor caiu" é status/andamento, não decisão do
+            // dono — a reserva da cadeia já assume o trabalho sozinha
+            // (autocura, ver texto abaixo). Vai para a timeline do painel,
+            // nunca mais para o Telegram; reaproveita `chaveDoAviso` (mesma
+            // janela de 1x/dia que já existia para não repetir) como chave
+            // de `registrarNoPainelUmaVez`.
+            //
+            // Correção 2: mesmo corroborada, isto é uma INFERÊNCIA (texto +
+            // ausência de entregável), não um fato observado — o produto
+            // nunca viu a credencial em si, só concluiu a partir da saída.
+            // A mensagem não afirma "a credencial expirou" como certeza;
+            // descreve o que foi observado (terminou sem entregar, saída
+            // parece pedido de login) e pede para o dono CONFERIR.
+            await registrarStatusNoPainel(
+              project.id,
+              `credencial-expirada:${chaveDoAviso}`,
+              `GitOrch: o motor ${err.runtime} terminou sem entregar nada no projeto ` +
+                `${project.wingId}, e a saída lembra um pedido de login expirado — vale conferir ` +
+                `a conexão desse motor. Até lá, a reserva da cadeia assume o trabalho.`
+            )
           }
         }
         const engineFault = isEngineFault(err, lastError)
@@ -5632,14 +5619,18 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     })
 
     if (r.analisadas.length === 0) return ''
-    // UM aviso ao dono por passada, consolidado.
-    await avisarDonoDoProjeto(
-      project as NotifiableProject & { id: string; wingId: string },
+    // DJ-T15 (D76): entender por que 2 falhas e ajustar sozinho a 3ª
+    // tentativa é status/andamento (nada aqui pede decisão do dono — a
+    // esteira já corrige e segue) — UM registro por passada, consolidado,
+    // deduplicado pela lista exata de issues desta passada.
+    await registrarStatusNoPainel(
+      project.id,
+      `analise-falhas-ra:${project.wingId}:${r.analisadas.map((n) => n).join(',')}`,
       `GitOrch: ${r.analisadas.length === 1 ? 'a issue' : 'as issues'} ${r.analisadas
         .map((n) => `#${n}`)
         .join(', ')} falharam 2× — entendi o porquê e a 3ª tentativa vai com o pedido corrigido. ` +
         `Padrão aprendido: ${r.padroes[0]?.padrao ?? ''}`
-    ).catch(() => undefined)
+    )
     return `RA: analisei ${r.analisadas.length} falha(s) repetida(s): ${r.analisadas
       .map((n) => `#${n}`)
       .join(', ')}.`
@@ -5937,8 +5928,21 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           }
         )
       },
+      // DJ-T15 (D76): esta `avisarDono` só alimenta o "Encanamento do
+      // GitOrch..." (processar-achados-de-infra.ts) — já reconhecido como
+      // 'auditoria' por `classe-do-aviso.ts` (padrão `/Encanamento do
+      // GitOrch/i`) e roteado para o painel por `avisarOuAuditar`, então
+      // isto não muda canal: troca o `event.create` cru (sem dedupe) por
+      // `registrarNoPainelUmaVez` (chave estável, sem repetir o mesmo
+      // achado a cada passada). Só o texto chega aqui — sem
+      // `identidadeEstavel` estruturado nesta borda — daí o hash curto do
+      // próprio texto como chave.
       avisarDono: async (texto) => {
-        await avisarDonoDoProjeto(project, texto)
+        await registrarStatusNoPainel(
+          project.id,
+          `encanamento-gitorch:${chaveCurtaDoTexto(texto)}`,
+          texto
+        )
       },
       registrarIncidente: async ({ classe, identidadeEstavel, issueNumber, titulo }) => {
         await app.prisma.infraIncident.upsert({
@@ -6403,13 +6407,16 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           data: { prAttempts: { increment: 1 }, prNumber: null },
         })
       },
-      // 3º PR fracassado: para de insistir + avisa o dono UMA vez (só o marco).
+      // 3º PR fracassado: para de insistir + registra o marco (só o marco —
+      // DJ-T15/D76: nenhuma decisão do dono aqui, o RA já vai fazer o retro
+      // sozinho; status/andamento vai para o painel, não para o Telegram).
       escalar: async ({ id, issueNumber, motivo }) => {
         await app.prisma.infraIncident.update({ where: { id }, data: { escalatedAt: new Date() } })
-        await avisarDonoDoProjeto(
-          project as NotifiableProject & { id: string; wingId: string },
+        await registrarStatusNoPainel(
+          project.id,
+          `incidente-infra-desistiu:${id}`,
           `GitOrch: parei de insistir no incidente de infra${issueNumber ? ` (issue #${issueNumber})` : ''} de ${project.wingId} — ${motivo}. O RA vai fazer um retro para achar a raiz; volta a andar quando isso mudar.`
-        ).catch(() => undefined)
+        )
       },
       // Incidente RESOLVIDO → vira aprendizado (classe + como sarou) para o
       // RA/PO escreverem incidentes melhores da próxima.
@@ -6480,10 +6487,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     }
 
     if (decisao.deveAvisar) {
-      await avisarDonoDoProjeto(
-        project as NotifiableProject & { id: string; wingId: string },
+      // DJ-T15 (D76): "a esteira está parada" é status/andamento — a mensagem
+      // já diz "volta a andar sozinha quando uma sessão terminar" (autocura);
+      // a chave usa o início desta janela travada, então uma nova volta ao
+      // estado 'travada' (outra `desde`) vira registro novo.
+      await registrarStatusNoPainel(
+        project.id,
+        `esteira-parada-vaga:${project.wingId}:${decisao.novoEstado.desde?.toISOString() ?? 'sem-data'}`,
         `GitOrch: a esteira de ${project.wingId} está parada há ${decisao.minutosNoProblema} min — há tarefas prontas, mas a conta do dev assíncrono está com todas as vagas ocupadas. Volta a andar sozinha quando uma sessão terminar; se for urgente, dá para subir o teto ou encerrar uma sessão travada.`
-      ).catch(() => undefined)
+      )
     }
   }
 
@@ -6766,12 +6778,17 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       const proj = projetosPorId.get(projectId)
       if (!proj || issues.length === 0) continue
       const lista = issues.map((n) => `#${n}`).join(', ')
-      await avisarDonoDoProjeto(
-        proj as NotifiableProject & { id: string; wingId: string },
+      // DJ-T15 (D76): exatamente a frase que motivou a régua ("o dono já
+      // reclamou de spam") — status/andamento com autocura própria ("a
+      // esteira vai tentar de novo"), nunca mais para o Telegram. Chave pela
+      // lista exata de issues desta passada.
+      await registrarStatusNoPainel(
+        proj.id,
+        `entrega-voltou-fila:${projectId}:${[...issues].sort((a, b) => a - b).join(',')}`,
         issues.length === 1
           ? `GitOrch: a entrega da issue ${lista} voltou para a fila — o dev concluiu ou falhou sem uma entrega que mesclasse. A esteira vai tentar de novo.`
           : `GitOrch: ${issues.length} entregas voltaram para a fila (${lista}) — o dev concluiu ou falhou sem entrega que mesclasse. A esteira vai tentar de novo.`
-      ).catch(() => undefined)
+      )
     }
 
     const total =
@@ -7710,6 +7727,41 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   ): Promise<boolean> => avisarOuAuditar(app, projeto, texto)
 
   /**
+   * D76 (11/09): "se eu precisar ver como estão as coisas eu acesso o
+   * painel; o Telegram é como WhatsApp: chamar o cliente." `classe-do-aviso.ts`
+   * já filtra 4 frases de rotina conhecidas (rajada de 29/08) antes de decidir
+   * o canal em `avisarOuAuditar` — mas isso é reconhecimento de TEXTO, cego a
+   * qualquer aviso de status escrito diferente. DJ-T15 troca, ocorrência por
+   * ocorrência, cada chamada que é puro status/andamento (nunca uma decisão
+   * do dono) para gravar direto na timeline via `registrarNoPainelUmaVez`
+   * (registro-no-painel.ts) — o MESMO dedupe por chave que
+   * `dedupKeyDeRetomada`/`dedupKeyDeAutomacao` já usam — em vez de arriscar o
+   * Telegram. Best-effort: um registro de rotina que falha nunca pode
+   * derrubar a passada.
+   */
+  const registrarStatusNoPainel = async (
+    projectId: string,
+    chave: string,
+    texto: string
+  ): Promise<void> => {
+    await registrarNoPainelUmaVez({ prisma: app.prisma, projectId, chave, texto }).catch((err) =>
+      app.log.warn(err, `[Scheduler] status de rotina não registrado no painel (chave ${chave})`)
+    )
+  }
+
+  /**
+   * Chave estável para status/andamento cujo texto já chega PRONTO (ex.:
+   * formatado por outro serviço, repassado por um `avisarDono` genérico) —
+   * sem um identificador estruturado (issue, commit, PR) à mão no ponto de
+   * chamada. Mesmo hash curto que `session-watch.ts`/`auth.ts` já usam
+   * (`sha256` truncado a 16 chars): estável para o MESMO texto, o que basta
+   * para o dedupe de `registrarNoPainelUmaVez` — nunca precisa adivinhar
+   * identidade semântica que o texto não carrega.
+   */
+  const chaveCurtaDoTexto = (texto: string): string =>
+    createHash('sha256').update(texto).digest('hex').slice(0, 16)
+
+  /**
    * Leva B ("o quadro do cliente não pode dizer entregue antes da hora"): o
    * ÚNICO lugar do produto que fecha a tarefa e move o card para "done" por
    * uma entrega delegada — chamado uma vez por sessão, exatamente quando
@@ -7900,8 +7952,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       motivo: 'merged',
       agora: args.agora,
     })
-    await avisarDonoDoProjeto(
-      args.projeto,
+    // DJ-T15 (D76): "a entrega foi mesclada" é status/andamento — o dono
+    // confere no painel quando quiser, não precisa de decisão nenhuma aqui.
+    // Chave pelo commit: um merge só mescla uma vez.
+    await registrarStatusNoPainel(
+      args.projeto.id,
+      `entrega-mesclada:${args.projeto.wingId}:${args.sessao.mergeCommitSha}`,
       `GitOrch: a entrega de ${args.projeto.wingId} (commit ${args.sessao.mergeCommitSha}) foi ` +
         `mesclada. ${args.motivo}`
     )
@@ -8086,8 +8142,11 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       motivo: 'merged',
       agora,
     })
-    await avisarDonoDoProjeto(
-      projeto,
+    // DJ-T15 (D76): mesmo marco de status/andamento do irmão em
+    // `encerrarEntrega` — painel, não Telegram. Chave pelo commit.
+    await registrarStatusNoPainel(
+      projeto.id,
+      `entrega-mesclada:${projeto.wingId}:${sessao.mergeCommitSha}`,
       `GitOrch: a entrega de ${projeto.wingId} (commit ${sessao.mergeCommitSha}) foi mesclada. ${veredito.motivo}`
     )
     await resolverEntregaDoBoard({
@@ -9651,8 +9710,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             motivo: 'merged',
             agora,
           })
-          await avisarDonoDoProjeto(
-            projeto,
+          // DJ-T15 (D76): publicação confirmada é status/andamento — mesmo
+          // marco de "entrega mesclada", só que na etapa seguinte (foi ao
+          // ar). Chave pela sessão: uma sessão só confirma publicação uma
+          // vez (fecha logo depois, `fecharSessaoEArquivar` acima).
+          await registrarStatusNoPainel(
+            projeto.id,
+            `entrega-no-ar:${projeto.wingId}:${sessao.sessionName}`,
             `GitOrch: a entrega de ${projeto.wingId} foi ao ar. ${veredito.motivo}${notaDeAmbiente}${notaDoConserto}`
           )
           // Item 2/Leva B: só AGORA — com a publicação confirmada — a

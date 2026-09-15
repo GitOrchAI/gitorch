@@ -38,8 +38,21 @@ export interface SmWatchdogOptions {
   delegateLabel?: string
   /** Máximo de retentativas por issue antes de escalar (padrão 3). */
   maxRetries?: number
-  /** Aviso humano ao escalar (ex.: Telegram). Nunca deve derrubar o watchdog. */
+  /**
+   * DEPRECATED (DJ-T15/D76): "task travada" é status/andamento, não decisão
+   * do dono — o marco correto é `registrarNoPainel`, abaixo. `notify`
+   * (Telegram cru) fica só por compatibilidade de quem ainda não migrou;
+   * quando `registrarNoPainel` está presente, `notify` NUNCA é chamado para
+   * este marco. Nunca deve derrubar o watchdog.
+   */
   notify?: (message: string) => Promise<boolean>
+  /**
+   * DJ-T15 (D76): grava o marco "task travada" na timeline do painel
+   * (`registrarNoPainelUmaVez`, registro-no-painel.ts) em vez de mandar
+   * Telegram — status/andamento, o dono confere quando quiser. Nunca deve
+   * derrubar o watchdog.
+   */
+  registrarNoPainel?: (args: { texto: string; chave: string }) => Promise<void>
   fetchImpl?: typeof fetch
 }
 
@@ -141,12 +154,19 @@ export async function runSmWatchdog(options: SmWatchdogOptions): Promise<SmWatch
         body: `${STUCK_MARKER}\nGitOrch SM: o dev assíncrono falhou ${retryCount}x nesta task. Escalando para revisão humana.`,
       })
       stuck.push(issue.number)
-      if (options.notify) {
+      const textoDaTravada = `GitOrch SM: task #${issue.number} de ${options.repository} travada após ${retryCount} retentativas (label ${STUCK_LABEL} aplicada).`
+      // DJ-T15 (D76): quando `registrarNoPainel` está configurado, o marco
+      // vai SÓ para o painel — nunca mais para o Telegram (`notify` fica
+      // mudo aqui de propósito, mesmo se também estiver configurado).
+      if (options.registrarNoPainel) {
         await options
-          .notify(
-            `GitOrch SM: task #${issue.number} de ${options.repository} travada após ${retryCount} retentativas (label ${STUCK_LABEL} aplicada).`
-          )
+          .registrarNoPainel({
+            texto: textoDaTravada,
+            chave: `sm-watchdog-travada:${options.repository}:${issue.number}`,
+          })
           .catch(() => undefined)
+      } else if (options.notify) {
+        await options.notify(textoDaTravada).catch(() => undefined)
       }
       continue
     }

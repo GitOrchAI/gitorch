@@ -91,6 +91,12 @@ function buildFakePrisma(sessaoInicial: Record<string, unknown>) {
     telegramLink: {
       findUnique: vi.fn(async () => ({ status: 'linked', chatId: 'chat-do-dono' })),
     },
+    // DJ-T15 (D76): "a entrega foi mesclada" migrou do Telegram para a
+    // timeline do painel (`registrarNoPainelUmaVez`).
+    event: {
+      findFirst: vi.fn(async () => null),
+      create: vi.fn(async () => ({ id: 'evt_1' })),
+    },
     _updateCalls: updateCalls,
   }
 }
@@ -321,6 +327,20 @@ describe('resolverEntregaDoBoard (Item 2 — o board só diz "entregue" quando o
       expect(init?.signal).toBeInstanceOf(AbortSignal)
       expect(init?.signal?.aborted).toBe(false)
     }
+
+    // DJ-T15 (D76): "a entrega foi ao ar" é status/andamento — vai para a
+    // timeline do painel (`registrarNoPainelUmaVez`), nunca mais para o
+    // Telegram.
+    await vi.waitFor(() => expect(prisma.event.create).toHaveBeenCalled(), { timeout: 2000 })
+    const registro = (
+      prisma.event.create.mock.calls[0] as unknown as [
+        { data: { projectId: string; type: string; payload: { texto: string; chave: string } } },
+      ]
+    )[0]
+    expect(registro.data.projectId).toBe('proj_1')
+    expect(registro.data.type).toBe('audit')
+    expect(registro.data.payload.chave).toMatch(/^entrega-no-ar:acme\/api:/)
+    expect(registro.data.payload.texto).toContain('foi ao ar')
   })
 
   test('publicação SEM confirmação dentro do prazo (sem-publicacao por timeout): NÃO fecha a tarefa como entregue — comenta e volta o card para "review"', async () => {
@@ -404,5 +424,10 @@ describe('resolverEntregaDoBoard (Item 2 — o board só diz "entregue" quando o
     expect(comentarios).toHaveLength(1)
     const moveu = graphqlCalls.find((c) => c.query.includes('UpdateProjectV2SingleSelectField'))
     expect(moveu?.variables['optionId']).toBe('O_DONE')
+    // Nota (DJ-T15): este cenário ("mecanismo nenhum") é o aviso "não
+    // identificamos como este repositório publica" — classificado (c) e
+    // MANTIDO no Telegram (produção do cliente incerta); a prova de
+    // regressão para ele vive em scheduler-pos-merge-real-seam.test.ts, que
+    // já cobre exatamente este texto pelo canal Telegram.
   })
 })

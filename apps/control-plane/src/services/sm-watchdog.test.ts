@@ -149,6 +149,53 @@ describe('runSmWatchdog', () => {
     expect(notified).toHaveLength(1)
   })
 
+  // DJ-T15 (D76): "task travada" é status/andamento, não decisão do dono —
+  // migra do Telegram (`notify`) para a timeline do painel
+  // (`registrarNoPainel`). Quando `registrarNoPainel` está configurado, ele
+  // é o ÚNICO caminho: `notify` (mesmo presente) nunca é chamado para este
+  // marco — a prova de que o transporte Telegram saiu de cena de verdade,
+  // não só ficou como opção não usada por acaso.
+  it('limite de retentativas estourado com registrarNoPainel configurado → grava no painel, NUNCA chama notify (Telegram)', async () => {
+    const mk = (t: string, body: string) => ({ body, created_at: t })
+    const registrado: Array<{ texto: string; chave: string }> = []
+    const notified: string[] = []
+    const f = fakeFetch([
+      {
+        number: 20,
+        labels: ['gitorch:task', 'jules'],
+        comments: [
+          mk('2026-07-05T08:00:00Z', JULES_FAIL),
+          mk('2026-07-05T08:10:00Z', `${RETRY_MARKER}\n1/3`),
+          mk('2026-07-05T09:00:00Z', JULES_FAIL),
+          mk('2026-07-05T09:10:00Z', `${RETRY_MARKER}\n2/3`),
+          mk('2026-07-05T10:00:00Z', JULES_APOLOGY),
+          mk('2026-07-05T10:10:00Z', `${RETRY_MARKER}\n3/3`),
+          mk('2026-07-05T11:00:00Z', JULES_FAIL),
+        ],
+      },
+    ])
+    const r = await runSmWatchdog({
+      repository: 'o/r',
+      githubToken: 't',
+      fetchImpl: f,
+      notify: async (m) => {
+        notified.push(m)
+        return true
+      },
+      registrarNoPainel: async ({ texto, chave }) => {
+        registrado.push({ texto, chave })
+      },
+    })
+    expect(r.stuck).toEqual([20])
+    expect(registrado).toHaveLength(1)
+    expect(registrado[0]!.chave).toBe('sm-watchdog-travada:o/r:20')
+    expect(registrado[0]!.texto).toContain('task #20')
+    expect(registrado[0]!.texto).toContain('o/r')
+    expect(registrado[0]!.texto).toContain('travada após 3 retentativas')
+    // A prova negativa: mesmo com `notify` presente, ele nunca dispara.
+    expect(notified).toHaveLength(0)
+  })
+
   it('já marcada gitorch:stuck → não escala duas vezes', async () => {
     const f = fakeFetch([
       {

@@ -15,8 +15,15 @@ import type { BuildAgentMissionInput, RuntimeExecutionResult } from '@gitorch/ag
 // (app.triggerAgentMission, o mesmo que a rota admin/QA e o relógio usam) — daí
 // em diante é 100% o código de produção: runTrigger -> executeMissionWithFailover
 // -> caminho clássico -> ehCredencialExpirada -> catch -> deveAvisarDeNovo ->
-// resolveNotifyChatId -> buildTelegramNotifier -> fetch. Nada disso é
-// reimplementado aqui.
+// registrarStatusNoPainel -> registrarNoPainelUmaVez -> prisma.event. Nada
+// disso é reimplementado aqui.
+//
+// DJ-T15 (D76): "motor caiu" é status/andamento (a mensagem termina dizendo
+// que a reserva da cadeia assume o trabalho sozinha), não decisão do dono —
+// este arquivo foi migrado do Telegram (`buildTelegramNotifier`/`fetch`) para
+// a timeline do painel (`prisma.event`, `type: 'audit'`) na mesma migração.
+// `fetch` continua mockado e as asserções `not.toHaveBeenCalled()` nele agora
+// são a prova de que o transporte Telegram não é mais usado para este aviso.
 //
 // Só o AgentOrchestrator é substituído (para não depender de um binário de CLI
 // de verdade — codex/agy/claude — dentro do runner de CI); registry, adapters e
@@ -100,6 +107,15 @@ function buildFakePrisma(chatId: string | null) {
     engineConnection: {
       updateMany: vi.fn(async () => ({ count: 1 })),
     },
+    // DJ-T15: o aviso agora é `registrarNoPainelUmaVez` (registro-no-painel.ts)
+    // — `findFirst` nulo simula "nunca registrado antes desta chave" (nenhum
+    // teste aqui exercita o dedupe DENTRO do banco; o dedupe testado é o de
+    // `deveAvisarDeNovo`, em memória, que roda ANTES e já decide não chamar
+    // `registrarStatusNoPainel` de novo).
+    event: {
+      findFirst: vi.fn(async () => null),
+      create: vi.fn(async () => ({ id: 'evt_1' })),
+    },
   }
 }
 
@@ -140,7 +156,7 @@ describe('Tarefa 16 (achado 2 da revisão) — aviso de credencial expirada pelo
     vi.restoreAllMocks()
   })
 
-  test('motor mente sucesso (exitCode 0) pedindo login novo: o dono recebe o aviso de VERDADE no Telegram', async () => {
+  test('motor mente sucesso (exitCode 0) pedindo login novo: o aviso vai para a timeline do painel, NUNCA para o Telegram', async () => {
     resultadoDoMotor.atual = {
       missionId: 'irrelevante-aqui',
       // 'codex' é o primeiro da cadeia canônica (codex > antigravity > claude,
@@ -163,31 +179,39 @@ describe('Tarefa 16 (achado 2 da revisão) — aviso de credencial expirada pelo
     const resultado = await app.triggerAgentMission('qa', 'proj_1')
     expect(resultado.triggered).toBe(true)
 
-    // O envio é fire-and-forget (executeMissionWithFailover roda em background);
-    // vi.waitFor espera o catch/aviso terminarem sem depender de contar ticks de
-    // microtask (frágil e o motivo de trocarmos setImmediate por isto).
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled(), { timeout: 2000 })
+    // O registro é fire-and-forget (executeMissionWithFailover roda em
+    // background); vi.waitFor espera o catch/aviso terminarem sem depender de
+    // contar ticks de microtask (frágil e o motivo de trocarmos setImmediate
+    // por isto).
+    await vi.waitFor(() => expect(prismaDoAviso.event.create).toHaveBeenCalled(), {
+      timeout: 2000,
+    })
 
-    const chamada = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
-    const [url, init] = chamada
-    expect(url).toBe('https://api.telegram.org/botbot-token-de-teste/sendMessage')
-    const corpo = JSON.parse(String(init.body)) as { chat_id: string; text: string }
-    expect(corpo.chat_id).toBe('chat-do-dono')
-    expect(corpo.text).toContain('codex')
-    expect(corpo.text).toContain('acme/api')
+    const chamada = prismaDoAviso.event.create.mock.calls[0] as unknown as [
+      { data: { projectId: string; type: string; payload: { texto: string; chave: string } } },
+    ]
+    const { data } = chamada[0]
+    expect(data.projectId).toBe('proj_1')
+    expect(data.type).toBe('audit')
+    expect(data.payload.chave).toBe('credencial-expirada:user_1:codex')
+    expect(data.payload.texto).toContain('codex')
+    expect(data.payload.texto).toContain('acme/api')
     // Correção 2 (segunda revisão): a mensagem não afirma "a credencial
     // expirou" como fato — é uma inferência (sinal textual + ausência de
     // entregável), nunca uma observação direta da credencial em si. Descreve
     // o que foi observado (terminou sem entregar; a saída LEMBRA um login
     // expirado) e pede para o dono CONFERIR, não afirma com certeza.
-    expect(corpo.text).toContain('terminou sem entregar')
-    expect(corpo.text).toContain('login expirado')
-    expect(corpo.text).toContain('conferir')
-    expect(corpo.text).not.toContain('a credencial do motor')
+    expect(data.payload.texto).toContain('terminou sem entregar')
+    expect(data.payload.texto).toContain('login expirado')
+    expect(data.payload.texto).toContain('conferir')
+    expect(data.payload.texto).not.toContain('a credencial do motor')
     // Nunca vaza o texto cru do motor (que poderia um dia carregar mais que a
     // frase de recado) — o aviso ao DONO é sempre a mensagem sintetizada do
     // produto, nunca stderr/output relatado.
-    expect(corpo.text).not.toContain('access token could not be refreshed')
+    expect(data.payload.texto).not.toContain('access token could not be refreshed')
+    // DJ-T15 (D76): a prova negativa — este aviso de rotina NUNCA mais toca
+    // o transporte Telegram (`fetch`), nem para resolver o chat do dono.
+    expect(fetchMock).not.toHaveBeenCalled()
 
     // 26/08 — A TELA PARA DE MENTIR. Não basta avisar: a linha da conexão tem
     // de deixar de dizer 'connected' no mesmo instante. Enquanto isto não
@@ -211,7 +235,7 @@ describe('Tarefa 16 (achado 2 da revisão) — aviso de credencial expirada pelo
     await app.close()
   })
 
-  test('sem vínculo de Telegram (chatId nulo): a missão ainda falha honestamente, mas NADA é enviado (nunca lança por falta de canal)', async () => {
+  test('sem vínculo de Telegram (chatId nulo): a missão ainda falha honestamente, e o registro no painel acontece do mesmo jeito (nunca dependeu de canal de chat)', async () => {
     resultadoDoMotor.atual = {
       missionId: 'irrelevante-aqui',
       runtime: 'antigravity',
@@ -236,6 +260,11 @@ describe('Tarefa 16 (achado 2 da revisão) — aviso de credencial expirada pelo
     await vi.waitFor(() => expect(prisma.mission.updateMany).toHaveBeenCalled(), {
       timeout: 2000,
     })
+    // DJ-T15 (D76): ganho real da migração — o registro no painel é POR
+    // PROJETO, não por vínculo de chat. Antes, sem Telegram ligado, o dono
+    // NUNCA sabia (nada era enviado); agora a timeline do projeto grava o
+    // aviso mesmo sem chat nenhum configurado.
+    await vi.waitFor(() => expect(prisma.event.create).toHaveBeenCalled(), { timeout: 2000 })
     expect(fetchMock).not.toHaveBeenCalled()
 
     await app.close()
@@ -282,17 +311,24 @@ describe('Tarefa 16 (achado 2 da revisão) — aviso de credencial expirada pelo
     global.fetch = fetchMock as unknown as typeof fetch
 
     const app = Fastify({ logger: false })
-    app.decorate('prisma', buildFakePrisma('chat-do-dono') as never)
+    const prisma = buildFakePrisma('chat-do-dono')
+    app.decorate('prisma', prisma as never)
     await app.register(schedulerPlugin)
 
     await app.triggerAgentMission('qa', 'proj_1')
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1), { timeout: 2000 })
+    await vi.waitFor(() => expect(prisma.event.create).toHaveBeenCalledTimes(1), {
+      timeout: 2000,
+    })
 
     await app.triggerAgentMission('qa', 'proj_1')
     // Segunda missão: dá tempo equivalente de sobra e confirma que NÃO houve
-    // uma segunda chamada — SPAM apaga sinal tanto quanto silêncio.
+    // um segundo registro — SPAM apaga sinal tanto quanto silêncio. O dedupe
+    // é o mesmo de sempre (`deveAvisarDeNovo`, em memória, por
+    // `chaveDoAviso`), agora protegendo `registrarStatusNoPainel` em vez do
+    // Telegram.
     await new Promise((resolve) => setTimeout(resolve, 50))
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(prisma.event.create).toHaveBeenCalledTimes(1)
+    expect(fetchMock).not.toHaveBeenCalled()
 
     await app.close()
   })
@@ -354,6 +390,7 @@ describe('Tarefa 16 (achado 2 da revisão) — aviso de credencial expirada pelo
     // silenciosa qualquer (senão o teste passaria "por acidente" caso outra
     // parte do código também suprimisse o aviso) — já verificado acima pelo
     // wait na chamada 'completed'.
+    expect(prisma.event.create).not.toHaveBeenCalled()
     expect(fetchMock).not.toHaveBeenCalled()
 
     await app.close()

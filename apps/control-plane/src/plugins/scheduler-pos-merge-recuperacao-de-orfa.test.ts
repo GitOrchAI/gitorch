@@ -90,6 +90,12 @@ function buildFakePrisma(sessaoInicial: Record<string, unknown>) {
     telegramLink: {
       findUnique: vi.fn(async () => ({ status: 'linked', chatId: 'chat-do-dono' })),
     },
+    // DJ-T15 (D76): "a entrega foi ao ar" migrou do Telegram para a
+    // timeline do painel (`registrarNoPainelUmaVez`).
+    event: {
+      findFirst: vi.fn(async () => null),
+      create: vi.fn(async () => ({ id: 'evt_1' })),
+    },
     _updateCalls: updateCalls,
   }
 }
@@ -222,14 +228,16 @@ describe('Crítico 2 — sessão órfã (veredito final registrado, closedAt nul
     )
 
     // E o dono é avisado — não fica sabendo só quando reparar, meses depois,
-    // que a issue nunca fechou.
+    // que a issue nunca fechou. DJ-T15 (D76): o aviso agora é um registro na
+    // timeline do painel, não mais uma mensagem no Telegram.
+    await vi.waitFor(() => expect(prisma.event.create).toHaveBeenCalled(), { timeout: 2000 })
+    const registro = (
+      prisma.event.create.mock.calls[0] as unknown as [{ data: { payload: { texto: string } } }]
+    )[0]
+    expect(registro.data.payload.texto).toContain('acme/api')
     const chamadasDeTelegram = fetchMock.mock.calls.filter((c) =>
       String(c[0]).startsWith('https://api.telegram.org/')
     )
-    expect(chamadasDeTelegram.length).toBeGreaterThanOrEqual(1)
-    const corpoDoAviso = String(
-      (chamadasDeTelegram[0]?.[1] as { body?: string } | undefined)?.body ?? ''
-    )
-    expect(corpoDoAviso).toContain('acme/api')
+    expect(chamadasDeTelegram).toHaveLength(0)
   })
 })
