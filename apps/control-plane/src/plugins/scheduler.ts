@@ -70,10 +70,8 @@ import {
 import { runSmDelegation } from '../services/sm-delegation.js'
 import { criarFilaDeJulgamento } from '../services/fila-de-julgamento.js'
 import { criarFilaDeVagaLiberada } from '../services/acordar-sm.js'
-import {
-  deveAvisarSobreOMotor,
-  recadoDeMotorRevogado,
-} from '../services/recado-de-motor-revogado.js'
+import { deveAvisarSobreOMotor } from '../services/recado-de-motor-revogado.js'
+import { avisarMotorRevogado } from '../services/avisar-motor-revogado.js'
 import { livenessCommandFor } from '../services/engine-liveness.js'
 import {
   agruparPorProvedor,
@@ -10090,7 +10088,17 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                   process.env['GITORCH_TELEGRAM_BOT_TOKEN'] ?? process.env['TELEGRAM_BOT_TOKEN'],
                 ...(chatId ? { chatId } : {}),
               })
-              if (avisar) await avisar(recadoDeMotorRevogado(conexao.runtime))
+              // DJ-T18 (15/09), decisão do dono: motor revogado avisa nas
+              // DUAS pontas — Telegram (linha `avisar` acima, intacto,
+              // pedido do dono de 26/08) E o painel (D76 de 10/09). Nenhuma
+              // condiciona a outra (avisar-motor-revogado.ts).
+              await avisarMotorRevogado({
+                prisma: app.prisma,
+                userId: conexao.userId,
+                runtime: conexao.runtime,
+                avisarPorTelegram: avisar,
+                registrarNoPainel: registrarStatusNoPainel,
+              })
             }
             continue
           }
