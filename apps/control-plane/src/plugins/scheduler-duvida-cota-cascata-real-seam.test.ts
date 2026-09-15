@@ -306,6 +306,27 @@ function fetchRoteado(pergunta: string) {
         { status: 200 }
       )
     }
+    // Achado DJ-T9 (14/09): `responderDuvidaPendente` sempre roda DENTRO da
+    // mesma missão de QA que também julga PRs abertas — mesmo quando o
+    // cenário é só a dúvida do dev, `runQaMissionViaRails` (qa-rails-
+    // mission.ts) SEMPRE dispara `gh('GET', '/repos/.../pulls?...')` (duas
+    // vezes, mais-novos e mais-antigos) antes de olhar qualquer coisa. Sem
+    // esta rota, essas duas chamadas caíam no fallback genérico
+    // `{"ok":true}` — um OBJETO, não um array — e `[...maisAntigos,
+    // ...maisNovos]` (qa-rails-mission.ts) lançava `TypeError: maisAntigos
+    // is not iterable`. Um bug seu, escondido atrás de outro: esse TypeError
+    // acabava sendo classificado como falha de MOTOR por um segundo achado
+    // (`\b429\b` sem fronteira de palavra em `isFailoverError`, ver
+    // runtime-resolver.ts) só porque o número da linha do stack trace
+    // continha "429" por coincidência — e a cadeia insistia noutro motor por
+    // um cenário que os testes deste arquivo nunca quiseram exercitar (não
+    // há PR nenhuma aberta aqui, só uma dúvida pendente). Devolver a lista
+    // VAZIA de verdade (o formato real do GitHub para "sem PR aberta") fecha
+    // o buraco na raiz: a mission de QA segue seu curso normal sem PR para
+    // julgar, sem inventar um cenário que os testes não pediram.
+    if (u.includes('api.github.com') && u.includes('/pulls')) {
+      return new Response('[]', { status: 200 })
+    }
     // Telegram sendMessage E qualquer outra chamada (ex.: Jules :sendMessage
     // no cenário de sucesso) — 200 genérico basta para os dois.
     return new Response('{"ok":true}', { status: 200 })

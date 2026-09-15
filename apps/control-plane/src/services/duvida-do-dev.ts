@@ -130,6 +130,31 @@ export type DestinoDaDuvida =
       perguntaExecutiva?: string
       opcoes?: Array<{ label: string; value: string }>
     }
+  /**
+   * DJ-T9 (D76, 14/09) — achado do QA: `decidirDestinoAposLogicaAlternativa`
+   * (viabilidade-da-logica-alternativa.ts) devolvia 'perguntar-ao-dono' no
+   * ramo VIÁVEL, e `scheduler.ts` roteia TODO 'perguntar-ao-dono' para
+   * `escalarDuvidaAoDono` — que, por contrato do D75, NUNCA pergunta ao dono
+   * de verdade (só loga como falha do time). Resultado: a pergunta em
+   * formato executivo que `perguntarAoDonoSobreLogicaAlternativa` monta
+   * nunca era chamada — código morto.
+   *
+   * Este tipo é DELIBERADAMENTE DISTINTO de 'perguntar-ao-dono' — nunca o
+   * reusa — porque os dois contratos são incompatíveis: 'perguntar-ao-dono'
+   * está amarrado ao caminho de dúvida técnica comum (D75, sem lógica
+   * alternativa, sempre escalarDuvidaAoDono); este tipo é o ÚNICO roteado
+   * para `perguntarAoDonoSobreLogicaAlternativa` (agentQuestion.ask de
+   * verdade, D76: "se fizer sentido, tira dúvida comigo"). `resumoDaProposta`
+   * e `motivoDaViabilidade` viajam separados (não só dentro de `motivo`)
+   * porque `textoDaPerguntaSobreLogicaAlternativa` os usa em frases
+   * distintas do texto executivo (D73).
+   */
+  | {
+      tipo: 'logica-alternativa-viavel'
+      motivo: string
+      resumoDaProposta: string
+      motivoDaViabilidade: string
+    }
 
 /**
  * Sinal determinístico: a pergunta descreve um TRABALHO JÁ FEITO (o código já

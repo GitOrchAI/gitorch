@@ -213,6 +213,15 @@ import {
   type PrismaParaEscalarDuvida,
 } from '../services/escalar-duvida-ao-dono.js'
 import {
+  decidirDestinoAposLogicaAlternativa,
+  perguntarAoDonoSeLogicaAlternativaViavel,
+} from '../services/viabilidade-da-logica-alternativa.js'
+import {
+  montarContextoExecutivoDaPergunta,
+  criarBuscadorDeCorpoDaIssue,
+  type PrismaParaContextoExecutivo,
+} from '../services/contexto-executivo-da-pergunta.js'
+import {
   // L4-T4 (D64), fix-up a13a42f8: renomeado no import — o wiring real
   // (prisma, BYOK, GitHub, agentQuestionService) mora em `scheduler.ts`
   // (função de mesmo nome, mais abaixo); a DECISÃO (candidatas, limiar de
@@ -4316,6 +4325,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                       autonomia: project.autonomia,
                       githubToken: railsToken,
                       runtime: sel.runtime,
+                      userId: project.userId ?? undefined,
                     }).catch((err: unknown) => {
                       if (isEngineFault(err, err instanceof Error ? err.message : String(err))) {
                         throw err
@@ -8309,6 +8319,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
      *  contra ele; isto é só o nome, para a mensagem de log ser honesta sobre
      *  qual motor de fato tentou. */
     runtime: string
+    /** DJ-T9 (D76, 14/09): o dono do projeto — `agentQuestion.ask`
+     *  (`perguntarAoDonoSeLogicaAlternativaViavel`) exige um userId para
+     *  achar o chat certo. `undefined` = registro legado sem dono; nesse
+     *  caso a pergunta da lógica alternativa não é enviada nesta passada
+     *  (só um aviso no log) — NUNCA inventa um userId. */
+    userId: string | undefined
   }): Promise<void> => {
     // TODAS as que esperam, não só a mais antiga.
     //
@@ -8556,7 +8572,92 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         `[Scheduler] motor ${args.runtime} respondeu à dúvida da tarefa #${esperando.issueNumber} ` +
           `de ${args.repository}`
       )
-      let { destino, mensagemParaODev } = resultadoDaDuvida
+      // DJ-T9 (D76, 14/09) — GAP fechado: o Jules pode ter sinalizado, ao
+      // responder, uma LÓGICA ALTERNATIVA que muda o cenário de negócio
+      // (`resultadoDaDuvida.mudaCenarioDeNegocio`). Antes de decidir o
+      // destino final, passa pela viabilidade PO+RA
+      // (`decidirDestinoAposLogicaAlternativa`,
+      // viabilidade-da-logica-alternativa.ts) — que, no caso comum
+      // (`mudaCenarioDeNegocio=false`), devolve `destino`/`mensagemParaODev`
+      // SEM TOCAR em nada (nenhuma chamada extra). SEM try/catch de
+      // propósito, mesmo padrão de `runDuvidaTecnicaViaRa` logo abaixo: uma
+      // falha de motor (cota) sobe intacta para a MESMA cascata de
+      // `executeMissionWithFailover` — nenhuma checagem de cota é duplicada
+      // aqui.
+      let { destino, mensagemParaODev } = await decidirDestinoAposLogicaAlternativa({
+        resultadoDaDuvida,
+        pergunta,
+        repository: args.repository,
+        issueNumber: esperando.issueNumber,
+        execute: args.execute,
+        contextBlocks: args.contextBlocks,
+      })
+      // DJ-T9 (achado do QA, 14/09) — DEFEITO CONFIRMADO: `destino` pode vir
+      // como `'logica-alternativa-viavel'` (PO+RA decidiram acima), mas até
+      // este conserto o roteamento mais abaixo (`destino.tipo ===
+      // 'perguntar-ao-dono' || !mensagemParaODev`) mandava TUDO — inclusive
+      // este tipo — para `escalarDuvidaAoDono`, que por contrato do D75
+      // NUNCA pergunta ao dono de verdade (só loga como falha do time). A
+      // pergunta em formato executivo que `perguntarAoDonoSobreLogicaAlternativa`
+      // monta nunca era chamada — código morto.
+      //
+      // `perguntarAoDonoSeLogicaAlternativaViavel` (viabilidade-da-logica-
+      // alternativa.ts) é o ÚNICO ponto que decide: devolve `true` (e já
+      // tratou o caso — agentQuestion.ask real, ou só um aviso quando falta
+      // agentQuestionService/userId) quando `destino.tipo ===
+      // 'logica-alternativa-viavel'`; devolve `false` sem tocar em NADA para
+      // qualquer outro destino — o roteamento antigo abaixo (RA, depois
+      // escalarDuvidaAoDono) continua EXATAMENTE como antes desta tarefa
+      // (regressão coberta em viabilidade-da-logica-alternativa.test.ts).
+      const foiLogicaAlternativaViavel = await perguntarAoDonoSeLogicaAlternativaViavel(
+        {
+          destino,
+          projectId: args.projectId,
+          repository: args.repository,
+          issueNumber: esperando.issueNumber,
+          userId: args.userId,
+          // DJ-T9, rodada 3 (achado do QA): precisos para `registrarEscalada`
+          // marcar a sessão CERTA depois de um `ask` bem-sucedido — sem isto
+          // a mesma pergunta era reprocessada em ticks seguintes.
+          sessionName: esperando.sessionName,
+          hashDaPergunta,
+        },
+        {
+          agentQuestion: (app as unknown as { agentQuestionService?: AgentQuestionService })
+            .agentQuestionService,
+          montarContextoExecutivo: montarContextoExecutivoDaPergunta,
+          // DJ-T9, rodada 3: mesma prisma usada em todo este arquivo para
+          // `registrarEscalada` marcar a sessão depois do `ask` bem-sucedido.
+          prisma: app.prisma as unknown as PrismaDevSession,
+          depsDoContexto: {
+            prisma: app.prisma as unknown as PrismaParaContextoExecutivo,
+            buscarCorpoDaIssue: criarBuscadorDeCorpoDaIssue({
+              fetchDoCliente: fetchDoRepositorio({ nivel: () => args.autonomia }),
+              repository: args.repository,
+              issueNumber: esperando.issueNumber,
+              githubToken: args.githubToken,
+              onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+            }),
+            // Sem `clienteDeQuadro`/`quadroId` de propósito: resolver o
+            // quadro (GitHub Projects V2) de um projeto qualquer exige
+            // credencial + decisão de qual quadro é o certo
+            // (`varrerSprintDosProjetos`, mais abaixo neste arquivo) — fora
+            // do escopo deste conserto (o defeito do QA era o roteamento
+            // para `escalarDuvidaAoDono`, nunca a completude do contexto
+            // executivo). `montarContextoExecutivoDaPergunta` já trata a
+            // ausência como LACUNA no texto, nunca como erro — a pergunta
+            // nasce mesmo sem o ciclo corrente.
+          },
+          onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+        }
+      )
+      if (foiLogicaAlternativaViavel) {
+        app.log.info(
+          `[Scheduler] lógica alternativa viável (PO+RA) na tarefa #${esperando.issueNumber} de ` +
+            `${args.repository} — pergunta ao dono tratada via agentQuestion.ask`
+        )
+        return
+      }
       // D72 (02/09) — ordem explícita do dono: "não é pra fazer isso para
       // dúvidas técnicas, seja executivo". O RA SEMPRE tenta antes do dono,
       // para TODA política — antes, só 'so-executivo' chamava o RA;

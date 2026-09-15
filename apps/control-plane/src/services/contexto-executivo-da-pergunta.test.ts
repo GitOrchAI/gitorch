@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   montarContextoExecutivoDaPergunta,
   contextoExecutivoVazio,
+  criarBuscadorDeCorpoDaIssue,
   LACUNA_SEM_SPRINT_CONFIGURADA,
   LACUNA_SEM_CICLO_CORRENTE,
   LACUNA_FALHA_AO_LER_CICLO,
@@ -605,5 +606,96 @@ describe('montarContextoExecutivoDaPergunta — as 3 leituras rodam em paralelo'
     // sequencial custaria >= 3*ATRASO_MS (180ms); paralelo fica perto de 1x
     // (60ms) — folga generosa para não ficar frágil em CI mais lento.
     expect(duracao).toBeLessThan(ATRASO_MS * 2.5)
+  })
+})
+
+// DJ-T9 (14/09) — `buscarCorpoDaIssue` é campo OBRIGATÓRIO de
+// `DepsDoContextoExecutivo`, e até esta tarefa nenhum caminho de produção
+// tinha um construtor real para ele (só os testes acima, com fakes).
+// `criarBuscadorDeCorpoDaIssue` é o construtor real, MESMO padrão de DI de
+// `criarComentarNaIssue` (suposicao-imediata-de-duvida.ts): sem token,
+// NENHUMA chamada de rede acontece; e este módulo NUNCA lança (contrato de
+// `DepsDoContextoExecutivo.buscarCorpoDaIssue`: falha vira `null`, que
+// `lerEntrega` já sabe transformar numa lacuna, nunca uma exceção que
+// derruba a pergunta inteira).
+describe('criarBuscadorDeCorpoDaIssue — o construtor real de buscarCorpoDaIssue (DJ-T9)', () => {
+  it('sem token: NENHUMA chamada de rede é feita — devolve null e avisa', async () => {
+    const fetchDoCliente = vi.fn()
+    const onWarn = vi.fn()
+    const buscar = criarBuscadorDeCorpoDaIssue({
+      fetchDoCliente: fetchDoCliente as unknown as typeof fetch,
+      repository: 'acme/api',
+      issueNumber: 46,
+      githubToken: undefined,
+      onWarn,
+    })
+
+    const corpo = await buscar()
+
+    expect(corpo).toBeNull()
+    expect(fetchDoCliente).not.toHaveBeenCalled()
+    expect(onWarn).toHaveBeenCalledWith(expect.stringContaining('#46'))
+  })
+
+  it('com token: chama o fetch guardado no endpoint certo e devolve o body', async () => {
+    const fetchDoCliente = vi.fn(
+      async () => new Response(JSON.stringify({ body: '## Goal\n\nFazer X.' }), { status: 200 })
+    )
+    const buscar = criarBuscadorDeCorpoDaIssue({
+      fetchDoCliente: fetchDoCliente as unknown as typeof fetch,
+      repository: 'acme/api',
+      issueNumber: 46,
+      githubToken: 'ghs_abc123',
+      onWarn: vi.fn(),
+    })
+
+    const corpo = await buscar()
+
+    expect(corpo).toBe('## Goal\n\nFazer X.')
+    expect(fetchDoCliente).toHaveBeenCalledWith(
+      'https://api.github.com/repos/acme/api/issues/46',
+      expect.objectContaining({
+        headers: expect.objectContaining({ authorization: 'token ghs_abc123' }),
+      })
+    )
+  })
+
+  it('GitHub recusa (resp não ok): devolve null, NUNCA lança', async () => {
+    const buscar = criarBuscadorDeCorpoDaIssue({
+      fetchDoCliente: (async () => new Response('{}', { status: 401 })) as unknown as typeof fetch,
+      repository: 'acme/api',
+      issueNumber: 46,
+      githubToken: 'ghs_abc123',
+      onWarn: vi.fn(),
+    })
+
+    await expect(buscar()).resolves.toBeNull()
+  })
+
+  it('issue sem body (null): devolve null', async () => {
+    const buscar = criarBuscadorDeCorpoDaIssue({
+      fetchDoCliente: (async () =>
+        new Response(JSON.stringify({}), { status: 200 })) as unknown as typeof fetch,
+      repository: 'acme/api',
+      issueNumber: 46,
+      githubToken: 'ghs_abc123',
+      onWarn: vi.fn(),
+    })
+
+    await expect(buscar()).resolves.toBeNull()
+  })
+
+  it('fetch lança (rede fora do ar): devolve null, NUNCA lança', async () => {
+    const buscar = criarBuscadorDeCorpoDaIssue({
+      fetchDoCliente: (async () => {
+        throw new Error('ECONNRESET')
+      }) as unknown as typeof fetch,
+      repository: 'acme/api',
+      issueNumber: 46,
+      githubToken: 'ghs_abc123',
+      onWarn: vi.fn(),
+    })
+
+    await expect(buscar()).resolves.toBeNull()
   })
 })

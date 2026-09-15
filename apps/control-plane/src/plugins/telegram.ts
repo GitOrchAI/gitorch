@@ -34,6 +34,7 @@ import { fetchDoRepositorio } from '../services/guarda-de-autonomia.js'
 import { lerCredencialQueAlcancaOProjeto } from '../services/project-credential.js'
 import {
   aoResponderDuvidaDoDev as retomarSessaoComResposta,
+  aoResponderLogicaAlternativa,
   manipuladorDeResultadoDeRetomada,
   type PrismaParaRetomada,
 } from '../services/retomar-sessao-com-resposta.js'
@@ -332,6 +333,37 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
     // task volta disponível). Nos dois casos há trabalho novo para o SM
     // redescobrir; não espera a próxima janela do cron.
     acordarSmComSeguranca(app, args.projectId, 'dúvida do dev respondida')
+    return manipulado
+  }
+
+  // DJ-T9, rodada 3 (achado do QA, 2ª rejeição, 14/09) — DEFEITO CONFIRMADO:
+  // `manipuladoresDeResposta` não tinha entrada para o prefixo
+  // `logica-alternativa:` (viabilidade-da-logica-alternativa.ts): quando o
+  // dono respondia a uma pergunta de lógica alternativa (uma das 3 opções, ou
+  // "Vou escrever"), `AgentQuestionService.answer()` marcava `answered`, mas
+  // nada retomava a sessão do Jules — ela ficava presa em
+  // AWAITING_USER_FEEDBACK para sempre. MESMO wiring de `aoResponderDuvidaDoDev`
+  // acima: só a decisão de QUE FAZER (`aoResponderLogicaAlternativa`,
+  // retomar-sessao-com-resposta.ts) é pura/testável sem rede; aqui é injeção.
+  const aoResponderLogicaAlternativaHandler = async (args: {
+    dedupKey: string
+    resposta: string
+    projectId: string
+    userId: string
+    opcoes: Array<{ label: string; value: string }>
+  }): Promise<ResultadoDoManipuladorDeResposta | void> => {
+    const resultado = await aoResponderLogicaAlternativa(args, {
+      prisma: app.prisma as unknown as PrismaParaRetomada,
+      decifrar: decryptCredential,
+      julesApiKeyDaInstancia: process.env['JULES_API_KEY'],
+      onWarn: (m) => app.log.warn(`[Telegram] ${m}`),
+    })
+    const manipulado = manipuladorDeResultadoDeRetomada(resultado)
+    acordarSmComSeguranca(
+      app,
+      args.projectId,
+      'decisão do dono sobre a lógica alternativa entregue'
+    )
     return manipulado
   }
 
@@ -689,6 +721,9 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
       { prefixo: 'retomada-travada:', executar: aoResponderRetomadaTravadaHandler },
       { prefixo: 'custo-da-ordem:', executar: aoResponderCustoDaOrdem },
       { prefixo: 'como-publica:', executar: aoResponderComoPublica },
+      // DJ-T9, rodada 3 (achado do QA): sem esta entrada, a resposta do dono
+      // a uma pergunta de lógica alternativa nunca retomava a sessão do Jules.
+      { prefixo: 'logica-alternativa:', executar: aoResponderLogicaAlternativaHandler },
     ],
     // C4 (fix-up L4-T2): logger injetado para a falha de um manipulador de
     // resposta — nunca `console.warn`, que some do monitoramento.
