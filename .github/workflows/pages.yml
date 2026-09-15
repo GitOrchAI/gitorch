@@ -19,16 +19,23 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: 'pnpm'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # O composite da casa, o mesmo que ci.yml, e2e-wizard.yml e sla-tracker.yml
+      # usam. Aqui havia `pnpm/action-setup@v4` com `version: 9` mais um
+      # `setup-node` próprio, e era isso que derrubava o job no PASSO 2, em todo
+      # run desde 11/09:
+      #
+      #   Error: Multiple versions of pnpm specified:
+      #     - version 9 in the GitHub Action config with the key "version"
+      #     - version pnpm@9.4.0 in the package.json with the key "packageManager"
+      #
+      # `.github/actions/setup-pnpm/action.yml` já explica por que `version:` não
+      # entra: a versão do pnpm mora em UM lugar só (`packageManager`, na raiz).
+      # O composite também traz o Node 22.x com `cache: pnpm` na ordem certa, que
+      # é o que os dois passos removidos aqui faziam à mão.
+      - uses: ./.github/actions/setup-pnpm
       - run: pnpm install --frozen-lockfile
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
       - name: Build static site
         working-directory: apps/web
         run: pnpm build
@@ -57,7 +64,7 @@ jobs:
             echo "OK: $f com assets em $BP"
           done
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:
           path: apps/web/out
   deploy:
@@ -72,7 +79,7 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
   smoke:
     needs: deploy
     runs-on: ubuntu-latest
