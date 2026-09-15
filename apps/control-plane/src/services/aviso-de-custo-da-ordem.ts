@@ -6,6 +6,10 @@ import {
   montarMensagemDeStakeholder,
   type DesejoParaMensagemDeStakeholder,
 } from './mensagem-de-stakeholder.js'
+import {
+  coletarTamanhoDoDesejoDaTask,
+  type DepsDoColetorPelaTask,
+} from './coletor-de-desejo-para-stakeholder.js'
 
 /**
  * A frase do losango do desenho, com o número — "Y entregaria N antes. Quer
@@ -220,6 +224,139 @@ export async function perguntarSobreCustoDaOrdem(
     options: [...OPCOES_DE_CUSTO_DA_ORDEM, buildFreeTextOption()],
     dedupKey: dedupKeyDeCustoDaOrdem(args.repo, args.candidato.pedido, args.rodada ?? 1),
   })
+}
+
+/**
+ * Achado de QA (T10) — `perguntarSobreCustoDaOrdem` sabe montar o texto de
+ * stakeholder desde que ganhe `coletarTamanhoDoDesejo`/`nomeDoDono` (acima),
+ * mas o ÚNICO chamador de produção (`scheduler.ts`, `avisar`) nunca passava
+ * nenhum dos dois — a pergunta caía SEMPRE no texto antigo de "pontos de
+ * peso", mesmo com toda a leitura de árvore (T10) pronta e testada.
+ *
+ * Este é o adaptador que fecha as duas deps com fontes REAIS — extraído
+ * para fora de `scheduler.ts` para poder ser testado sem Fastify/Prisma
+ * (mesmo motivo de `lerEstadoBrutoDoAvisoDeCustoDaOrdem`,
+ * custo-da-ordem-do-projeto.ts): `scheduler.ts` só monta as portas de I/O
+ * (Prisma, credencial, o MESMO REST de `buscarIssueParaIncremento` que já
+ * enriquece o Incremento) e delega para cá.
+ */
+export interface DepsDoAvisoComContextoReal {
+  agentQuestion: AgentQuestionAskerDeCustoDaOrdem
+  /**
+   * `userId` do dono do projeto + o NOME do projeto (para achar o desejo na
+   * árvore certa — `ArgsDoColetorPelaTask.projeto`, coletor-de-desejo-
+   * para-stakeholder.ts). `null` = sem dono conhecido — a pergunta nem sai
+   * (MESMA recusa silenciosa que `scheduler.ts` já fazia antes desta
+   * correção; nunca pergunta sem saber a quem).
+   */
+  contextoDoProjeto: (
+    projectId: string
+  ) => Promise<{ userId: string; nomeDoProjeto: string } | null>
+  /**
+   * O NOME do dono, para a saudação — MESMA fonte que `buscarAutor`
+   * (routes/index.ts) já usa para assinar issue de desejo em nome dele
+   * (`User.name`). `null` = sem nome cadastrado — mensagem sem saudação,
+   * nunca um nome inventado (contrato já documentado em
+   * `PerguntarSobreCustoDaOrdemArgs.nomeDoDono`).
+   */
+  nomeDoDono: (userId: string) => Promise<string | null>
+  /**
+   * Credencial que alcança o repositório deste projeto — a do cliente
+   * primeiro, a do app depois: a MESMA ordem que `filaDoQuadro`
+   * (scheduler.ts) já usa para ler o quadro. Nunca um caminho de
+   * autenticação novo. `null` = sem credencial — o coletor cai no texto
+   * antigo.
+   */
+  token: (userId: string) => Promise<string | null>
+  /**
+   * Busca uma issue (a task candidata OU o desejo pai) pelo número, com o
+   * token acima — a MESMA leitura REST que `buscarIssueParaIncremento`
+   * (scheduler.ts) já faz para o registro do Incremento.
+   */
+  buscarIssue: (
+    token: string,
+    numero: number
+  ) => Promise<{ titulo: string; corpo: string | null } | null>
+}
+
+/**
+ * Constrói o `avisar` de `DepsDeCustoDaOrdem` (custo-da-ordem-do-projeto.ts)
+ * já com o contexto REAL fechado: quem chama (`scheduler.ts`) só precisa
+ * fornecer as portas de I/O de `DepsDoAvisoComContextoReal`; toda a costura
+ * task → desejo → árvore → texto roda por dentro, terminando no MESMO
+ * `perguntarSobreCustoDaOrdem` de sempre.
+ *
+ * NUNCA lança por causa da coleta do tamanho real: qualquer falha ao
+ * resolver token/issue/árvore vira `null` para `coletarTamanhoDoDesejo` —
+ * `perguntarSobreCustoDaOrdem` já sabe cair para o texto antigo quando isso
+ * acontece, então uma falha de rede/GitHub aqui NUNCA quebra a missão (a
+ * pergunta sai do mesmo jeito, só que no formato antigo).
+ */
+export function construirAvisoDeCustoDaOrdemComContextoReal(
+  deps: DepsDoAvisoComContextoReal
+): (
+  projeto: { id: string; wingId: string },
+  candidato: CandidatoDeTroca,
+  rodada: number
+) => Promise<void> {
+  return async (projeto, candidato, rodada) => {
+    const contexto = await deps.contextoDoProjeto(projeto.id)
+    if (!contexto) return
+
+    const nomeDoDono = (await deps.nomeDoDono(contexto.userId)) ?? undefined
+
+    const coletarTamanhoDoDesejo = async (
+      candidatoDaPergunta: CandidatoDeTroca
+    ): Promise<DesejoParaMensagemDeStakeholder | null> => {
+      try {
+        const token = await deps.token(contexto.userId)
+        if (!token) return null
+        const buscarIssueComToken: DepsDoColetorPelaTask['buscarIssue'] = (numero) =>
+          deps.buscarIssue(token, numero)
+        return await coletarTamanhoDoDesejoDaTask(
+          {
+            ownerId: contexto.userId,
+            projeto: contexto.nomeDoProjeto,
+            numeroDaTask: candidatoDaPergunta.pedido,
+            // Nenhum lugar do produto guarda prioridade/estimativa de
+            // sprints do desejo hoje (ver o comentário de
+            // `ArgsDoColetorDeDesejo`, coletor-de-desejo-para-stakeholder.ts)
+            // — `null` até essa fonte existir de verdade, nunca um número
+            // inventado.
+            prioridade: null,
+            sprintsEstimadas: null,
+          },
+          {
+            buscarIssue: buscarIssueComToken,
+            listarProjetos: async () => [
+              { nome: contexto.nomeDoProjeto, repo: projeto.wingId, id: projeto.id },
+            ],
+            lerToken: async () => token,
+          }
+        )
+      } catch {
+        // Qualquer falha de leitura (rede, GitHub fora do ar, árvore
+        // indisponível): nunca sobe — cai para o texto antigo, nunca quebra
+        // a pergunta (ver o comentário desta função).
+        return null
+      }
+    }
+
+    await perguntarSobreCustoDaOrdem(
+      {
+        userId: contexto.userId,
+        projectId: projeto.id,
+        repo: projeto.wingId,
+        candidato,
+        rodada,
+        // `exactOptionalPropertyTypes`: só entra a chave quando há nome de
+        // verdade — nunca `nomeDoDono: undefined` explícito (mesmo padrão
+        // de `projetoDaLinha`, arvore-de-pedidos.ts).
+        ...(nomeDoDono ? { nomeDoDono } : {}),
+      },
+      { agentQuestion: deps.agentQuestion, coletarTamanhoDoDesejo }
+    )
+  }
 }
 
 // --- Resposta vira ação (item 2) -------------------------------------------

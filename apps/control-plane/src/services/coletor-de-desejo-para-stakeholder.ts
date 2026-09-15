@@ -4,6 +4,7 @@ import {
   type NoDaArvore,
 } from './arvore-de-pedidos.js'
 import type { DesejoParaMensagemDeStakeholder } from './mensagem-de-stakeholder.js'
+import { extrairWishNumber } from './enriquecer-incremento.js'
 
 /**
  * D76b (T10) — conta fases/épicos/features/tarefas DE VERDADE a partir da
@@ -109,4 +110,85 @@ export async function coletarDesejoParaMensagemDeStakeholder(
     tarefas,
     sprintsEstimadas: args.sprintsEstimadas,
   }
+}
+
+/**
+ * Uma issue mínima — título + corpo — o bastante para achar o marker
+ * `gitorch:node:<wish>:...` e depois citar o título do desejo pelo nome.
+ * Mesmo shape que `IssueResumo` (enriquecer-incremento.ts) devolve; não
+ * importado direto daquele arquivo para não acoplar este coletor à leitura
+ * de Incremento — quem injeta `DepsDoColetorPelaTask.buscarIssue` decide a
+ * fonte real (produção: a MESMA leitura REST que `buscarIssueParaIncremento`,
+ * scheduler.ts, já usa para enriquecer o Incremento).
+ */
+export interface IssueMinimaParaAcharWish {
+  titulo: string
+  corpo: string | null
+}
+
+/**
+ * Achado de QA (T10) — o único chamador de produção
+ * (`avisar`/`perguntarSobreCustoDaOrdem`, scheduler.ts) pergunta sobre uma
+ * TASK candidata (`CandidatoDeTroca.pedido`, packages/cadence), nunca sobre
+ * o desejo (wish) direto: a fila de custo da ordem só enfileira TASKS (D9,
+ * filtrar-fila-de-tasks.ts). `coletarDesejoParaMensagemDeStakeholder` (acima)
+ * precisa do NÚMERO e do TÍTULO do desejo — este `args` é o que faltava para
+ * chegar lá a partir da task candidata.
+ */
+export interface ArgsDoColetorPelaTask {
+  ownerId: string
+  /** Nome do projeto — mesmo formato de `ArgsDoColetorDeDesejo.projeto`. */
+  projeto: string
+  /** O número da TASK candidata (issue no GitHub) — `CandidatoDeTroca.pedido`. */
+  numeroDaTask: number
+  /** Ver `ArgsDoColetorDeDesejo.prioridade` — mesma regra: `null` até existir
+   *  fonte real, nunca um número inventado. */
+  prioridade: number | null
+  /** Ver `ArgsDoColetorDeDesejo.sprintsEstimadas` — mesma regra. */
+  sprintsEstimadas: number | null
+}
+
+export interface DepsDoColetorPelaTask extends DepsDaArvoreDePedidos {
+  /** Busca uma issue (a task candidata OU o desejo pai) pelo número. `null` =
+   *  não encontrada/não deu para ler — o coletor por task devolve `null` em
+   *  vez de inventar um desejo. */
+  buscarIssue: (numero: number) => Promise<IssueMinimaParaAcharWish | null>
+}
+
+/**
+ * Acha o desejo (wish) PAI de uma TASK candidata e devolve o tamanho real
+ * dele, no formato que a mensagem de stakeholder precisa — subindo pelo
+ * marker `gitorch:node:<wish>:task:<i>` que `backlog-executor.ts` grava no
+ * corpo de toda task (`extrairWishNumber`, enriquecer-incremento.ts — o
+ * MESMO leitor que o registro de Incremento já usa, nunca uma segunda regra
+ * de parsing).
+ *
+ * `null` sempre que um passo não confirmar (task sem marker — nasceu fora da
+ * árvore do PO —, task ou desejo não encontrado) — nunca inventa. Erros de
+ * LEITURA (rede, credencial, árvore indisponível) SOBEM sem mascarar, mesma
+ * disciplina de `coletarDesejoParaMensagemDeStakeholder`: quem chama (o
+ * adaptador de `aviso-de-custo-da-ordem.ts`) decide cair para o texto antigo.
+ */
+export async function coletarTamanhoDoDesejoDaTask(
+  args: ArgsDoColetorPelaTask,
+  deps: DepsDoColetorPelaTask
+): Promise<DesejoParaMensagemDeStakeholder | null> {
+  const task = await deps.buscarIssue(args.numeroDaTask)
+  const numeroDoDesejo = extrairWishNumber(task?.corpo ?? null)
+  if (numeroDoDesejo === null) return null
+
+  const desejo = await deps.buscarIssue(numeroDoDesejo)
+  if (!desejo) return null
+
+  return coletarDesejoParaMensagemDeStakeholder(
+    {
+      ownerId: args.ownerId,
+      projeto: args.projeto,
+      numero: numeroDoDesejo,
+      titulo: desejo.titulo,
+      prioridade: args.prioridade,
+      sprintsEstimadas: args.sprintsEstimadas,
+    },
+    deps
+  )
 }
