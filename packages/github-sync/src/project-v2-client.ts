@@ -555,6 +555,41 @@ export class ProjectV2Client {
     return unwrap(response).repositoryOwner?.projectV2?.id ?? null
   }
 
+  // O vínculo FORMAL do GitHub: o que a UI mostra como "closes #N" na barra
+  // lateral do pull request, já resolvido e validado pelo próprio GitHub —
+  // mais forte que ler "closes #N" no texto (`pr-delegado.ts` já cobre esse
+  // recuo mais fraco). Cobre também vínculo feito pela UI sem citação nenhuma
+  // no corpo, e vínculo cross-repository.
+  async closingIssuesDoPr(input: {
+    owner: string
+    repo: string
+    prNumber: number
+  }): Promise<number[]> {
+    const response = await this.request<{
+      repository: {
+        pullRequest: { closingIssuesReferences: { nodes: Array<{ number: number }> } } | null
+      } | null
+    }>(
+      {
+        query: `
+          query ClosingIssuesDoPr($owner: String!, $repo: String!, $prNumber: Int!) {
+            repository(owner: $owner, name: $repo) {
+              pullRequest(number: $prNumber) {
+                closingIssuesReferences(first: 10) {
+                  nodes { number }
+                }
+              }
+            }
+          }
+        `,
+        variables: { owner: input.owner, repo: input.repo, prNumber: input.prNumber },
+      },
+      this.token
+    )
+    const nodes = unwrap(response).repository?.pullRequest?.closingIssuesReferences.nodes ?? []
+    return nodes.map((n) => n.number)
+  }
+
   // Igual ao findProjectId, mas LANÇA quando o board não existe: os fluxos do PO
   // e do SM operam um board que TEM que existir, então "não encontrado" ali é
   // um erro de verdade (não um sinal para criar). Contrato estrito de sempre —
