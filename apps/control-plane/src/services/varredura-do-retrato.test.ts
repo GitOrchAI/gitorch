@@ -38,7 +38,9 @@ describe('varrerRetratoDoProjeto', () => {
     await varrerRetratoDoProjeto({
       repo: 'dono/repo',
       ghGet,
-      atualizarFicha: async (args) => atualizados.push({ tipo: args.tipo, numero: args.numero }),
+      atualizarFicha: async (args) => {
+        atualizados.push({ tipo: args.tipo, numero: args.numero })
+      },
     })
     expect(atualizados).toEqual([])
   })

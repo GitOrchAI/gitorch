@@ -4,7 +4,10 @@
 // `vigiarPrsOrfaos` (vigia-do-pr.ts) já cumpre para pull requests órfãos,
 // mas aqui o alvo é a FICHA (Fase 0-1), não a decisão de agir.
 
-import { estadoDoPrAPartirDoPayload, estadoDaIssueAPartirDoPayload } from '../routes/github-webhook.js'
+import {
+  estadoDoPrAPartirDoPayload,
+  estadoDaIssueAPartirDoPayload,
+} from '../routes/github-webhook.js'
 import type { EstadoDoItem, TipoDoItem } from './ficha-do-item.js'
 
 /** Cadência da varredura de retrato — separada da de `vigiarPrsOrfaos` (6h): a
@@ -17,7 +20,11 @@ export const MAX_PAGINAS_DA_VARREDURA = 20
 export interface VarreduraDoRetratoDeps {
   repo: string
   ghGet: (caminho: string) => Promise<unknown>
-  atualizarFicha: (args: { tipo: TipoDoItem; numero: number; estado: EstadoDoItem }) => Promise<void>
+  atualizarFicha: (args: {
+    tipo: TipoDoItem
+    numero: number
+    estado: EstadoDoItem
+  }) => Promise<void>
   onWarn?: (m: string) => void
 }
 
@@ -56,7 +63,9 @@ export async function varrerRetratoDoProjeto(
     }
     if (lote.length < 100) break
     if (pagina === MAX_PAGINAS_DA_VARREDURA) {
-      deps.onWarn?.(`varredura-do-retrato: ${deps.repo} tem mais PRs do que a varredura cobre nesta passada`)
+      deps.onWarn?.(
+        `varredura-do-retrato: ${deps.repo} tem mais PRs do que a varredura cobre nesta passada`
+      )
     }
   }
 
@@ -78,7 +87,9 @@ export async function varrerRetratoDoProjeto(
     }
     if (lote.length < 100) break
     if (pagina === MAX_PAGINAS_DA_VARREDURA) {
-      deps.onWarn?.(`varredura-do-retrato: ${deps.repo} tem mais issues do que a varredura cobre nesta passada`)
+      deps.onWarn?.(
+        `varredura-do-retrato: ${deps.repo} tem mais issues do que a varredura cobre nesta passada`
+      )
     }
   }
 
