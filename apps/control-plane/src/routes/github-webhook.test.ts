@@ -298,3 +298,38 @@ describe('GitHub Webhook Routes — rate limit (allowlist vazia, como em produç
     expect(res.json().message).toContain('Rate limit exceeded')
   })
 })
+
+import { estadoDoPrAPartirDoPayload } from './github-webhook.js'
+
+describe('estadoDoPrAPartirDoPayload — Fase 1.1', () => {
+  it('lê status, rascunho e último commit de um payload de pull_request', () => {
+    const estado = estadoDoPrAPartirDoPayload({
+      pull_request: {
+        state: 'open',
+        draft: false,
+        mergeable: true,
+        head: { sha: 'abc123' },
+        changed_files: 3,
+      },
+    })
+    expect(estado).toEqual({
+      status: 'open',
+      rascunho: false,
+      conflito: false,
+      ultimoCommitEm: null,
+      arquivosMexidos: null,
+    })
+  })
+
+  it('mergeable false vira conflito true', () => {
+    const estado = estadoDoPrAPartirDoPayload({
+      pull_request: { state: 'open', draft: false, mergeable: false },
+    })
+    expect(estado.conflito).toBe(true)
+  })
+
+  it('mergeable ausente (GitHub ainda calculando) não afirma conflito nem ausência dele', () => {
+    const estado = estadoDoPrAPartirDoPayload({ pull_request: { state: 'open' } })
+    expect(estado.conflito).toBeNull()
+  })
+})
