@@ -9,6 +9,7 @@ import {
 } from '@gitorch/github-sync'
 
 import type { F6AgentRole } from '@gitorch/agents'
+import { atualizarFichaDoItem, type EstadoDoItem } from '../services/ficha-do-item.js'
 import { casarPrComSessao } from '../services/casar-pr-com-sessao.js'
 import { decidirSobreEntrega } from './entrega-repetida.js'
 import { mintInstallationToken } from '../services/github-app-token.js'
@@ -354,6 +355,35 @@ async function casarProjeto(
   }
 
   return null
+}
+
+/**
+ * O estado do pull request que a ficha guarda, lido do payload do webhook
+ * (`pull_request.*`) — MESMO FORMATO que a varredura de 30 min (Tarefa 1.3)
+ * produz a partir de uma leitura REST, porque as duas alimentam a MESMA
+ * ficha e `atualizarFichaDoItem` não sabe (nem precisa saber) qual das duas
+ * fontes escreveu por último.
+ */
+export function estadoDoPrAPartirDoPayload(payload: {
+  pull_request?: {
+    state?: string
+    draft?: boolean
+    mergeable?: boolean | null
+    head?: { sha?: string }
+    changed_files?: number
+  }
+}): EstadoDoItem {
+  const pr = payload.pull_request ?? {}
+  return {
+    status: pr.state ?? 'unknown',
+    rascunho: pr.draft ?? false,
+    // `mergeable` ausente/indefinido é "o GitHub ainda está calculando" — nunca
+    // vira `false`: a mesma distinção que `PrAberto.mergeable` já respeita em
+    // vigia-do-pr.ts (o portão 8 de `decidirAcaoNoPrOrfao`).
+    conflito: pr.mergeable == null ? null : pr.mergeable === false,
+    ultimoCommitEm: null,
+    arquivosMexidos: null,
+  }
 }
 
 export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
@@ -811,6 +841,25 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
             void app
               .triggerAgentMission(role, project.id, undefined, 'aviso-do-github')
               .catch((err) => app.log.error({ err, role }, 'Falha ao disparar missão via webhook'))
+          }
+
+          // Fase 1.1: a ficha do item é atualizada em TODO aviso reconhecido,
+          // independente de ele acordar uma missão ou não — é o que faz o
+          // "retrato" existir mesmo quando ninguém está julgando agora.
+          if (eventName === 'pull_request' && parsedPayload.pull_request?.number) {
+            try {
+              await atualizarFichaDoItem({
+                prisma: app.prisma as never,
+                projectId: project.id,
+                tipo: 'pr',
+                numero: parsedPayload.pull_request.number,
+                estado: estadoDoPrAPartirDoPayload(parsedPayload),
+              })
+            } catch (err) {
+              // Best-effort, mesmo padrão do resto do handler: a ficha nunca
+              // pode derrubar o 200 do webhook.
+              app.log.warn({ err, projectId: project.id }, 'Falha ao atualizar a ficha do pull request')
+            }
           }
 
           // Mark as processed
