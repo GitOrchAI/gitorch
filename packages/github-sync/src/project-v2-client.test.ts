@@ -1421,3 +1421,40 @@ test('a listagem traz itens e campos de cada quadro — o desempate depende dele
   expect(calls[0]?.query).toMatch(/items\(first: 1\)\s*\{\s*totalCount\s*\}/)
   expect(calls[0]?.query).toMatch(/fields\(first: 1\)\s*\{\s*totalCount\s*\}/)
 })
+
+describe('closingIssuesDoPr', () => {
+  it('devolve os números das issues que o PR fecha formalmente', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            data: {
+              repository: {
+                pullRequest: {
+                  closingIssuesReferences: { nodes: [{ number: 12 }, { number: 34 }] },
+                },
+              },
+            },
+          }),
+          { status: 200 }
+        )
+    )
+    const client = new ProjectV2Client({ token: 't', fetchImpl: fetchMock })
+    const numeros = await client.closingIssuesDoPr({ owner: 'dono', repo: 'repo', prNumber: 7 })
+    expect(numeros).toEqual([12, 34])
+  })
+
+  it('PR sem issue vinculada devolve lista vazia', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            data: { repository: { pullRequest: { closingIssuesReferences: { nodes: [] } } } },
+          }),
+          { status: 200 }
+        )
+    )
+    const client = new ProjectV2Client({ token: 't', fetchImpl: fetchMock })
+    expect(await client.closingIssuesDoPr({ owner: 'dono', repo: 'repo', prNumber: 7 })).toEqual([])
+  })
+})
