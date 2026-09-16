@@ -54,6 +54,7 @@ describe('MIGRATION_LEDGER', () => {
       'motores-esgotados-aviso-migration.sql',
       'catalogo-de-duvidas-migration.sql',
       'project-invitation-migration.sql',
+      'repo-item-migration.sql',
     ])
   })
 })
