@@ -1,9 +1,9 @@
-import { test, expect, describe, vi, beforeEach, afterEach } from 'vitest'
+import { test, expect, describe, it, vi, beforeEach, afterEach } from 'vitest'
 import Fastify, { FastifyRequest } from 'fastify'
 import crypto from 'node:crypto'
 import { loadEnv, resetEnvCache } from '../config/env.js'
 import { registerPlugins } from '../plugins/index.js'
-import { githubWebhookRoutes, missionRoleForEvent } from './github-webhook.js'
+import { githubWebhookRoutes, missionRoleForEvent, toGitHubEventName } from './github-webhook.js'
 
 describe('missionRoleForEvent', () => {
   // Estes dois testes afirmavam o comportamento que custava cota: acordar o QA
@@ -29,6 +29,23 @@ describe('missionRoleForEvent', () => {
 
   test('não acorda nada quando check_suite ainda não concluiu', () => {
     expect(missionRoleForEvent('check_suite', { action: 'requested' })).toBeNull()
+  })
+})
+
+describe('toGitHubEventName — Fase 0.3', () => {
+  it.each([
+    'pull_request_review',
+    'check_run',
+    'status',
+    'dependabot_alert',
+    'code_scanning_alert',
+    'secret_scanning_alert',
+  ])('reconhece %s em vez de cair em ping', (nome) => {
+    expect(toGitHubEventName(nome)).toBe(nome)
+  })
+
+  it('evento desconhecido continua caindo em ping (comportamento de hoje, preservado)', () => {
+    expect(toGitHubEventName('marketplace_purchase')).toBe('ping')
   })
 })
 

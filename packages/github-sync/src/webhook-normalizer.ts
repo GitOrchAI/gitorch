@@ -31,6 +31,12 @@ export class GitHubWebhookNormalizer {
         return normalizeProjectItem(envelope)
       case 'projects_v2':
       case 'projects_v2_status_update':
+      case 'pull_request_review':
+      case 'check_run':
+      case 'status':
+      case 'dependabot_alert':
+      case 'code_scanning_alert':
+      case 'secret_scanning_alert':
       case 'ping':
         return normalizeGeneric(envelope)
       default:

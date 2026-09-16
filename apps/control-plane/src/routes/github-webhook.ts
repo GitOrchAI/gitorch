@@ -243,11 +243,17 @@ export async function fecharPrsSubstituidosDaEntrega(deps: {
 }
 
 // Map GitHub event header to supported event names
-function toGitHubEventName(event: string | undefined): GitHubWebhookEventName {
+export function toGitHubEventName(event: string | undefined): GitHubWebhookEventName {
   const supported: GitHubWebhookEventName[] = [
     'ping',
     'issues',
     'pull_request',
+    'pull_request_review',
+    'check_run',
+    'status',
+    'dependabot_alert',
+    'code_scanning_alert',
+    'secret_scanning_alert',
     'sub_issues',
     'issue_dependencies',
     'projects_v2',

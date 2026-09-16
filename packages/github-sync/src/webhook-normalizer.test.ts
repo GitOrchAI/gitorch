@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest'
+import { describe, expect, it, test } from 'vitest'
 
 import type { GitHubDeliveryEnvelope } from './types'
 import { GitHubWebhookNormalizer } from './webhook-normalizer'
@@ -157,5 +157,27 @@ test('normalizes issues with issue type and project item ids', () => {
     subIssueNodeIds: ['I_43'],
     blockedByNodeIds: ['I_41'],
     projectItemIds: ['PVTI_42'],
+  })
+})
+
+describe('normalize — eventos de segurança e CI (Fase 0.3)', () => {
+  it.each([
+    'pull_request_review',
+    'check_run',
+    'status',
+    'dependabot_alert',
+    'code_scanning_alert',
+    'secret_scanning_alert',
+  ] as const)('aceita %s sem lançar', (eventName) => {
+    const normalizer = new GitHubWebhookNormalizer()
+    const envelope = {
+      headers: { deliveryId: 'd1', eventName, signature256: 'sig' },
+      payload: { action: 'created', repository: { full_name: 'dono/repo' } },
+      body: '{}',
+      receivedAt: '2026-09-15T00:00:00.000Z',
+    }
+    const evento = normalizer.normalize(envelope)
+    expect(evento.eventName).toBe(eventName)
+    expect(evento.repository).toBe('dono/repo')
   })
 })
