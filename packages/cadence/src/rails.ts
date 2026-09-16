@@ -123,6 +123,18 @@ export interface PoViabilidadeDeLogicaAlternativaForm {
   motivo: string
 }
 
+/**
+ * Fase 2.2 do plano do repositório inteiro: quando um pull request não traz
+ * NENHUMA pista de vínculo (vinculo-da-tarefa.ts devolveu null), o RA lê o
+ * diff e o código para achar a tarefa mais parecida — só ele tem acesso de
+ * leitura ao repositório real. `issueNumberEncontrado` nulo é uma resposta
+ * válida e honesta: nem toda mudança tem uma issue esperando por ela.
+ */
+export interface RaTarefaParecidaForm {
+  issueNumberEncontrado: number | null
+  justificativa: string
+}
+
 /** Entregável completo do RA (3 passos): o que o PO recebe como contexto. */
 export interface RaDeliverable {
   areas: RaAreasForm['areas']
@@ -776,6 +788,15 @@ export const RAILS_SCHEMAS = {
     },
   } as MiniSchema,
 
+  raTarefaParecida: {
+    type: 'object',
+    required: ['issueNumberEncontrado', 'justificativa'],
+    properties: {
+      issueNumberEncontrado: { type: 'number' },
+      justificativa: { type: 'string' },
+    },
+  } as MiniSchema,
+
   qaVerdict: {
     type: 'object',
     required: ['verdict', 'comment'],
@@ -935,7 +956,11 @@ function walk(schema: MiniSchema, value: unknown, path: string, errors: string[]
     }
     const obj = value as Record<string, unknown>
     for (const key of schema.required ?? []) {
-      if (!(key in obj) || obj[key] === undefined || obj[key] === null) {
+      if (
+        !(key in obj) ||
+        obj[key] === undefined ||
+        (obj[key] === null && key !== 'issueNumberEncontrado')
+      ) {
         errors.push(`${path}.${key}: required`)
       }
     }
