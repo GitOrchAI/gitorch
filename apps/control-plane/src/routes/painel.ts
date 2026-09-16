@@ -56,6 +56,13 @@ import {
   REGUA_PADRAO,
 } from '@gitorch/cadence'
 import type { PoliticaDePerguntasAoDono } from '../services/duvida-do-dev.js'
+import {
+  lerCuidaPorOrigem,
+  lerJanelaEmConstrucaoHoras,
+  PADRAO_DE_CUIDADO,
+  ORIGENS,
+  POLITICAS_DE_CUIDADO,
+} from '../services/cuidado-por-origem.js'
 
 // Rotas do painel do owner (ui_kits/painel-owner/API.md do handoff GitOrch
 // Design System). Nesta leva: pulso, agentes e responder-decisão ao vivo.
@@ -1714,6 +1721,82 @@ export const painelRoutes = async (
       })
 
       return reply.send({ regua, escolhida: true })
+    }
+  )
+
+  // GET /api/v1/painel/cuidado-por-origem — quem cuida de cada origem, e a
+  // janela de "em construção", deste projeto.
+  app.get<{ Querystring: { projeto?: string } }>(
+    '/api/v1/painel/cuidado-por-origem',
+    RATE_LIMIT_POLLING,
+    async (request, reply) => {
+      if (!request.user) return reply.code(401).send(NAO_LOGADO)
+      const ownerId = await resolveOwnerId(app.prisma, request.user)
+      const projeto = request.query.projeto?.trim()
+      if (!projeto) return reply.code(400).send({ error: 'Informe o projeto.' })
+
+      const row = await app.prisma.project.findFirst({
+        where: { name: projeto, userId: ownerId, isActive: true },
+        select: { runtimeConfig: true },
+      })
+      if (!row) return reply.code(404).send({ error: 'Projeto não encontrado.' })
+
+      return reply.send({
+        cuidaPorOrigem: lerCuidaPorOrigem(row.runtimeConfig, false),
+        janelaEmConstrucaoHoras: lerJanelaEmConstrucaoHoras(row.runtimeConfig),
+        origens: ORIGENS,
+        politicas: POLITICAS_DE_CUIDADO,
+        padrao: PADRAO_DE_CUIDADO,
+      })
+    }
+  )
+
+  // POST /api/v1/painel/cuidado-por-origem — o cliente muda quem cuida de cada origem.
+  app.post<{
+    Body: {
+      projeto?: string
+      cuidaPorOrigem?: Record<string, unknown>
+      janelaEmConstrucaoHoras?: unknown
+    }
+  }>(
+    '/api/v1/painel/cuidado-por-origem',
+    { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      if (!request.user) return reply.code(401).send(NAO_LOGADO)
+      const projeto = request.body?.projeto?.trim()
+      if (!projeto) return reply.code(400).send({ error: 'Informe o projeto.' })
+
+      const ownerId = await resolveOwnerId(app.prisma, request.user)
+      const row = await app.prisma.project.findFirst({
+        where: { name: projeto, userId: ownerId, isActive: true },
+        select: { id: true, runtimeConfig: true },
+      })
+      if (!row) return reply.code(404).send({ error: 'Projeto não encontrado.' })
+
+      // Normaliza na porta, mesma disciplina de normalizarRegua: chave
+      // desconhecida é descartada, valor fora do catálogo é ignorado.
+      const atual = (row.runtimeConfig ?? {}) as Record<string, unknown>
+      const cuidaAtual = lerCuidaPorOrigem(row.runtimeConfig, false)
+      const cuidaPedido = request.body?.cuidaPorOrigem ?? {}
+      const cuidaPorOrigem = { ...cuidaAtual }
+      for (const origem of ORIGENS) {
+        const valor = cuidaPedido[origem]
+        if (typeof valor === 'string' && POLITICAS_DE_CUIDADO.includes(valor as never)) {
+          cuidaPorOrigem[origem] = valor as never
+        }
+      }
+      const janela = request.body?.janelaEmConstrucaoHoras
+      const janelaEmConstrucaoHoras =
+        typeof janela === 'number' && Number.isFinite(janela) && janela > 0
+          ? janela
+          : lerJanelaEmConstrucaoHoras(row.runtimeConfig)
+
+      await app.prisma.project.update({
+        where: { id: row.id },
+        data: { runtimeConfig: { ...atual, cuidaPorOrigem, janelaEmConstrucaoHoras } },
+      })
+
+      return reply.send({ cuidaPorOrigem, janelaEmConstrucaoHoras })
     }
   )
 }

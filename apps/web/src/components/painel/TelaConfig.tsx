@@ -326,6 +326,120 @@ function DuracaoDaSprint() {
   )
 }
 
+interface CuidaPorOrigemPayload {
+  cuidaPorOrigem: Record<
+    'jules' | 'assistente' | 'pessoa' | 'dependabot',
+    'sim' | 'nao' | 'perguntar'
+  >
+  janelaEmConstrucaoHoras: number
+  origens: readonly string[]
+  politicas: readonly string[]
+}
+
+const RÓTULO_DA_ORIGEM: Record<string, string> = {
+  jules: 'Dev assíncrono (Jules) pelo GitOrch',
+  assistente: 'Você com Claude, Codex ou Antigravity',
+  pessoa: 'Outra pessoa',
+  dependabot: 'Dependabot',
+}
+
+/**
+ * Quem cuida de cada origem de pedido: o GitOrch julga e age sozinho ("Sim"),
+ * nunca mexe ("Não") ou pergunta antes ("Perguntar"). Mesmo contrato de
+ * `ReguaDePronto`/`DuracaoDaSprint`: salva de verdade, o estado vem da
+ * RESPOSTA do servidor.
+ */
+function CuidaPorOrigem() {
+  const projeto = useSyncExternalStore(assinarProjeto, projetoAtual, projetoNoServidor)
+  const [dados, setDados] = useState<CuidaPorOrigemPayload | null>(null)
+  const [erro, setErro] = useState<string | null>(null)
+  const [salvando, setSalvando] = useState(false)
+
+  const carregar = useCallback(async () => {
+    if (!projeto) {
+      setDados(null)
+      setErro(null)
+      return
+    }
+    try {
+      setDados(
+        await buscar<CuidaPorOrigemPayload>(
+          `${ROTAS.cuidaPorOrigem}?projeto=${encodeURIComponent(projeto)}`
+        )
+      )
+      setErro(null)
+    } catch {
+      setErro('Não consegui ler quem cuida de cada origem agora.')
+    }
+  }, [projeto])
+
+  useEffect(() => {
+    void carregar()
+  }, [carregar])
+
+  const escolher = async (origem: string, politica: string) => {
+    if (!dados || !projeto) return
+    setSalvando(true)
+    try {
+      const salvo = await pedir<CuidaPorOrigemPayload>(ROTAS.cuidaPorOrigem, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projeto,
+          cuidaPorOrigem: { ...dados.cuidaPorOrigem, [origem]: politica },
+        }),
+      })
+      setDados({ ...dados, cuidaPorOrigem: salvo.cuidaPorOrigem })
+      setErro(null)
+    } catch {
+      setErro('Não consegui salvar. Nada mudou.')
+    } finally {
+      setSalvando(false)
+    }
+  }
+
+  if (!projeto) {
+    return (
+      <Card titulo="Quem cuida de cada origem">
+        <p style={{ margin: 0, fontSize: 13.5, color: 'var(--gl-muted)', maxWidth: '62ch' }}>
+          Escolha um projeto no seletor do topo para ver e mudar isto.
+        </p>
+      </Card>
+    )
+  }
+
+  return (
+    <Card flush titulo="Quem cuida de cada origem">
+      <div style={{ padding: '0 18px 12px', fontSize: 13.5, color: 'var(--gl-muted)' }}>
+        Para cada origem de pedido, o GitOrch julga e age sozinho, nunca mexe, ou pergunta antes.
+      </div>
+      {erro && (
+        <div style={{ padding: '0 18px 12px', fontSize: 13.5, color: 'var(--gl-sev)' }}>{erro}</div>
+      )}
+      {dados &&
+        dados.origens.map((origem) => (
+          <Linha key={origem} titulo={RÓTULO_DA_ORIGEM[origem] ?? origem} desc="">
+            <div style={{ display: 'flex', gap: 6 }}>
+              {dados.politicas.map((politica) => (
+                <button
+                  key={politica}
+                  type="button"
+                  disabled={salvando}
+                  onClick={() => void escolher(origem, politica)}
+                  data-testid={`cuida-${origem}-${politica}`}
+                  aria-pressed={dados.cuidaPorOrigem[origem as never] === politica}
+                  className={`pn-btn sm${dados.cuidaPorOrigem[origem as never] === politica ? ' a' : ''}`}
+                >
+                  {politica === 'sim' ? 'Sim' : politica === 'nao' ? 'Não' : 'Perguntar'}
+                </button>
+              ))}
+            </div>
+          </Linha>
+        ))}
+    </Card>
+  )
+}
+
 export function TelaConfig({ tema, setTema }: { tema: Tema; setTema: (t: Tema) => void }) {
   // Identidade da conta: dado VIVO. /api/v1/auth/me já responde nesta leva.
   // Sem e-mail no payload (login que não expõe e-mail), cai num rótulo que
@@ -342,6 +456,7 @@ export function TelaConfig({ tema, setTema }: { tema: Tema; setTema: (t: Tema) =
 
       <ReguaDePronto />
       <DuracaoDaSprint />
+      <CuidaPorOrigem />
 
       <Card flush titulo="Conta">
         <Linha titulo={emailDaConta} desc="A conta com que você entrou no painel." />
