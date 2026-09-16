@@ -444,6 +444,7 @@ model Project {
   infraIncidents InfraIncident[]
   increments     Increment[]
   catalogoDeDuvidas CatalogoDeDuvidas[]
+  repoItems         RepoItem[]
 
   // Um repo, um projeto, POR DONO. É o banco garantindo o que a rota de setup
   // passou a exigir — mesmo repo em dois clientes = dois projetos distintos.
@@ -922,6 +923,44 @@ model InfraIncident {
   @@unique([projectId, identidadeEstavel], map: "infra_incidents_project_identidade_key")
   @@index([projectId, clearedAt])
   @@map("infra_incidents")
+}
+
+/// A FICHA de um item do repositório (pedido, tarefa ou alerta): o ESTADO
+/// ATUAL, para decisão rápida. O HISTÓRICO continua em `events` (mesmo padrão
+/// de `registrarNoPainelUmaVez`, services/registro-no-painel.ts) — nunca
+/// duplicado aqui. Ver docs/superpowers/plans/2026-09-15-gitorch-repositorio-inteiro.md
+/// (Fase 0-1) para o raciocínio de por que NÃO é "só a lista de eventos".
+model RepoItem {
+  id        String  @id @default(cuid())
+  projectId String  @map("project_id")
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  /// 'pr' | 'issue' | 'alerta'
+  tipo String
+  /// Número do PR/issue no GitHub, ou o `number` do alerta de segurança.
+  numero Int
+
+  /// Snapshot do estado atual: status, verificação, revisões, conflito,
+  /// rascunho, último commit, arquivos mexidos (Fase 1.1/1.2).
+  estado Json
+
+  /// 'jules_gitorch' | 'jules_fora' | 'assistente' | 'pessoa' | 'dependabot' |
+  /// 'outro_bot' — nulo até a Fase 1.4 classificar.
+  origem String?
+
+  /// A tarefa (issue) de origem, achada pela Fase 2. Nulo até o vínculo existir.
+  issueNumber Int? @map("issue_number")
+
+  /// {deOndeVeio, oQueMuda, queAjusteE, porQueExiste} — formulário da Fase 2.4.
+  entendimento Json?
+
+  criadoEm     DateTime @default(now()) @map("criado_em")
+  atualizadoEm DateTime @updatedAt @map("atualizado_em")
+
+  /// Uma ficha por (projeto, tipo, número) — upsert nunca duplica.
+  @@unique([projectId, tipo, numero])
+  @@index([projectId, tipo])
+  @@map("repo_items")
 }
 
 /// O pedido de desejo que ficou ESPERANDO o dono dizer a qual projeto ele
