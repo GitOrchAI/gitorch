@@ -386,6 +386,41 @@ export function estadoDoPrAPartirDoPayload(payload: {
   }
 }
 
+/** O estado da issue que a ficha guarda. */
+export function estadoDaIssueAPartirDoPayload(payload: {
+  issue?: { state?: string }
+}): EstadoDoItem {
+  return { status: payload.issue?.state ?? 'unknown' }
+}
+
+/**
+ * O estado do alerta de segurança que a ficha guarda. Os TRÊS eventos de
+ * alerta (`dependabot_alert`, `code_scanning_alert`, `secret_scanning_alert`)
+ * têm formatos de payload DIFERENTES entre si — a chave do objeto muda
+ * (`dependabot_alert` vs `alert`) e só os dois primeiros trazem severidade.
+ * `secret_scanning_alert` nunca traz severidade (a API do GitHub não expõe
+ * uma para segredo vazado — é sempre tratamento máximo, Fase 5.2).
+ */
+export function estadoDoAlertaAPartirDoPayload(
+  payload: Record<string, unknown>,
+  tipoDeAlerta: 'dependabot_alert' | 'code_scanning_alert' | 'secret_scanning_alert'
+): EstadoDoItem {
+  if (tipoDeAlerta === 'dependabot_alert') {
+    const alerta = payload['dependabot_alert'] as
+      { state?: string; security_advisory?: { severity?: string } } | undefined
+    return {
+      status: alerta?.state ?? 'unknown',
+      verificacao: alerta?.security_advisory?.severity ?? null,
+    }
+  }
+  if (tipoDeAlerta === 'code_scanning_alert') {
+    const alerta = payload['alert'] as { state?: string; rule?: { severity?: string } } | undefined
+    return { status: alerta?.state ?? 'unknown', verificacao: alerta?.rule?.severity ?? null }
+  }
+  const alerta = payload['alert'] as { state?: string } | undefined
+  return { status: alerta?.state ?? 'unknown', verificacao: null }
+}
+
 export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
   // L4-T5, item 3: a ÚNICA escrita real neste arquivo (fechar PR duplicado da
   // mesma tarefa) tem que passar pela MESMA porta que toda escrita no
@@ -862,6 +897,48 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
                 { err, projectId: project.id },
                 'Falha ao atualizar a ficha do pull request'
               )
+            }
+          }
+
+          if (eventName === 'issues' && parsedPayload.issue?.number) {
+            try {
+              await atualizarFichaDoItem({
+                prisma: app.prisma as never,
+                projectId: project.id,
+                tipo: 'issue',
+                numero: parsedPayload.issue.number,
+                estado: estadoDaIssueAPartirDoPayload(parsedPayload),
+              })
+            } catch (err) {
+              app.log.warn({ err, projectId: project.id }, 'Falha ao atualizar a ficha da tarefa')
+            }
+          }
+
+          const EVENTOS_DE_ALERTA = [
+            'dependabot_alert',
+            'code_scanning_alert',
+            'secret_scanning_alert',
+          ] as const
+          if ((EVENTOS_DE_ALERTA as readonly string[]).includes(eventName)) {
+            const numeroDoAlerta =
+              (parsedPayload.dependabot_alert?.number as number | undefined) ??
+              (parsedPayload.alert?.number as number | undefined)
+            if (typeof numeroDoAlerta === 'number') {
+              try {
+                await atualizarFichaDoItem({
+                  prisma: app.prisma as never,
+                  projectId: project.id,
+                  tipo: 'alerta',
+                  numero: numeroDoAlerta,
+                  estado: estadoDoAlertaAPartirDoPayload(
+                    parsedPayload,
+                    eventName as
+                      'dependabot_alert' | 'code_scanning_alert' | 'secret_scanning_alert'
+                  ),
+                })
+              } catch (err) {
+                app.log.warn({ err, projectId: project.id }, 'Falha ao atualizar a ficha do alerta')
+              }
             }
           }
 
