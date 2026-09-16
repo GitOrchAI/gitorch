@@ -4,7 +4,13 @@ import { classificarOrigem } from './origem-do-item.js'
 describe('classificarOrigem', () => {
   it('dependabot[bot] como autor → dependabot', () => {
     expect(
-      classificarOrigem({ autor: 'dependabot[bot]', labels: [], corpo: null, commits: [], temSessaoGitOrch: false })
+      classificarOrigem({
+        autor: 'dependabot[bot]',
+        labels: [],
+        corpo: null,
+        commits: [],
+        temSessaoGitOrch: false,
+      })
     ).toBe('dependabot')
   })
 
@@ -13,7 +19,8 @@ describe('classificarOrigem', () => {
       classificarOrigem({
         autor: 'gitorch-bot',
         labels: [],
-        corpo: 'PR created automatically by Jules for task [42](https://jules.google.com/task/42) started by @loureng',
+        corpo:
+          'PR created automatically by Jules for task [42](https://jules.google.com/task/42) started by @loureng',
         commits: [],
         temSessaoGitOrch: true,
       })
@@ -25,7 +32,8 @@ describe('classificarOrigem', () => {
       classificarOrigem({
         autor: 'algum-login',
         labels: [],
-        corpo: 'PR created automatically by Jules for task [1](https://jules.google.com/task/1) started by @outra-pessoa',
+        corpo:
+          'PR created automatically by Jules for task [1](https://jules.google.com/task/1) started by @outra-pessoa',
         commits: [],
         temSessaoGitOrch: false,
       })
@@ -38,7 +46,12 @@ describe('classificarOrigem', () => {
         autor: 'loureng',
         labels: [],
         corpo: null,
-        commits: [{ mensagem: 'fix: x\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>', autorLogin: 'loureng' }],
+        commits: [
+          {
+            mensagem: 'fix: x\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>',
+            autorLogin: 'loureng',
+          },
+        ],
         temSessaoGitOrch: false,
       })
     ).toBe('assistente')
@@ -58,7 +71,13 @@ describe('classificarOrigem', () => {
 
   it('bot desconhecido (nem dependabot, nem rodapé do dev) → outro_bot', () => {
     expect(
-      classificarOrigem({ autor: 'renovate[bot]', labels: [], corpo: null, commits: [], temSessaoGitOrch: false })
+      classificarOrigem({
+        autor: 'renovate[bot]',
+        labels: [],
+        corpo: null,
+        commits: [],
+        temSessaoGitOrch: false,
+      })
     ).toBe('outro_bot')
   })
 })
