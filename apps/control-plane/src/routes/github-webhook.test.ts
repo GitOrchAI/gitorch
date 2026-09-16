@@ -299,7 +299,45 @@ describe('GitHub Webhook Routes — rate limit (allowlist vazia, como em produç
   })
 })
 
-import { estadoDoPrAPartirDoPayload } from './github-webhook.js'
+import {
+  estadoDoPrAPartirDoPayload,
+  estadoDaIssueAPartirDoPayload,
+  estadoDoAlertaAPartirDoPayload,
+} from './github-webhook.js'
+
+describe('estadoDaIssueAPartirDoPayload — Fase 1.2', () => {
+  it('lê status da issue', () => {
+    expect(estadoDaIssueAPartirDoPayload({ issue: { state: 'open' } })).toEqual({
+      status: 'open',
+    })
+  })
+})
+
+describe('estadoDoAlertaAPartirDoPayload — Fase 1.2', () => {
+  it('dependabot_alert: lê state e severidade', () => {
+    const estado = estadoDoAlertaAPartirDoPayload(
+      { dependabot_alert: { state: 'open', security_advisory: { severity: 'high' } } },
+      'dependabot_alert'
+    )
+    expect(estado).toEqual({ status: 'open', verificacao: 'high' })
+  })
+
+  it('code_scanning_alert: lê state e severidade da rule', () => {
+    const estado = estadoDoAlertaAPartirDoPayload(
+      { alert: { state: 'open', rule: { severity: 'error' } } },
+      'code_scanning_alert'
+    )
+    expect(estado).toEqual({ status: 'open', verificacao: 'error' })
+  })
+
+  it('secret_scanning_alert: lê state, sem severidade (a API não devolve)', () => {
+    const estado = estadoDoAlertaAPartirDoPayload(
+      { alert: { state: 'open' } },
+      'secret_scanning_alert'
+    )
+    expect(estado).toEqual({ status: 'open', verificacao: null })
+  })
+})
 
 describe('estadoDoPrAPartirDoPayload — Fase 1.1', () => {
   it('lê status, rascunho e último commit de um payload de pull_request', () => {
