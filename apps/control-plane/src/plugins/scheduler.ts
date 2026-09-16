@@ -313,6 +313,8 @@ import {
   listarPrsAbertosParaOVigia,
   vigiarPrsOrfaos,
 } from '../services/vigia-do-pr.js'
+import { atualizarFichaDoItem } from '../services/ficha-do-item.js'
+import { varrerRetratoDoProjeto, CADENCIA_DO_RETRATO_MS } from '../services/varredura-do-retrato.js'
 import {
   retomarPrReprovado,
   TETO_DE_RETOMADAS_POR_PR,
@@ -6823,6 +6825,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // que separa o que é da vigia de sessões do que é do vigia do pull request.
   // Rodando antes, um pull request recém-órfão esperaria mais um ciclo.
   const ultimaVarreduraDePrOrfao = new Map<string, number>()
+  const ultimaVarreduraDoRetrato = new Map<string, number>()
 
   const varrerPrsOrfaos = async (): Promise<void> => {
     const agora = new Date()
@@ -6959,6 +6962,52 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         app.log.info(`[Scheduler] ${projeto.wingId}: ${resumo}`)
       } catch (err) {
         app.log.warn(err, `[Scheduler] vigia-do-pr falhou em ${projeto.wingId}; tenta na próxima`)
+      }
+    }
+  }
+
+  const varrerRetratos = async (): Promise<void> => {
+    const agora = new Date()
+    const projetos = await app.prisma.project.findMany({
+      where: { isActive: true },
+      select: { id: true, wingId: true },
+    })
+
+    for (const projeto of projetos) {
+      const ultima = ultimaVarreduraDoRetrato.get(projeto.id) ?? 0
+      if (agora.getTime() - ultima < CADENCIA_DO_RETRATO_MS) continue
+      ultimaVarreduraDoRetrato.set(projeto.id, agora.getTime())
+
+      try {
+        const token =
+          process.env['GITORCH_GITHUB_TOKEN'] ??
+          (await mintInstallationToken({
+            repository: projeto.wingId,
+            onError: (m) => app.log.error(m),
+            onWarn: (m) => app.log.warn(m),
+          })) ??
+          undefined
+        if (!token) continue
+
+        const resumo = await varrerRetratoDoProjeto({
+          repo: projeto.wingId,
+          ghGet: (caminho) => ghGet(caminho, token),
+          atualizarFicha: (args) =>
+            atualizarFichaDoItem({
+              prisma: app.prisma as never,
+              projectId: projeto.id,
+              tipo: args.tipo,
+              numero: args.numero,
+              estado: args.estado,
+            }).then(() => undefined),
+          onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+        })
+        app.log.info(
+          { projectId: projeto.id, ...resumo },
+          '[Scheduler] varredura-do-retrato: ficha atualizada'
+        )
+      } catch (err) {
+        app.log.error({ err, projectId: projeto.id }, '[Scheduler] varredura-do-retrato falhou')
       }
     }
   }
@@ -11300,6 +11349,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // das duas varreduras já está atualizado nesta mesma passada.
     await varrerPrsOrfaos().catch((err) =>
       app.log.warn(err, '[Scheduler] vigia do pull request órfão falhou; tenta no próximo ciclo')
+    )
+    await varrerRetratos().catch((err) =>
+      app.log.warn(err, '[Scheduler] varredura de retratos falhou; tenta no próximo ciclo')
     )
     // C10 (fix-up L4-T5, CSO): rede de segurança para PR duplicado LEGADO —
     // cadência própria de 6h (a função em si decide se roda ou não neste
