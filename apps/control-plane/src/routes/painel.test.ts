@@ -1534,6 +1534,137 @@ describe('Rotas do painel do owner', () => {
     })
   })
 
+  describe('quem cuida de cada origem (Fase 0.2 do plano do repositório inteiro)', () => {
+    const getCuidaPorOrigem = (qs = '') =>
+      app.inject({
+        method: 'GET',
+        url: `/api/v1/painel/cuidado-por-origem${qs}`,
+        headers: authHeaders,
+      })
+
+    test('sem sessão → 401', async () => {
+      const res = await app.inject({ method: 'GET', url: '/api/v1/painel/cuidado-por-origem' })
+      expect(res.statusCode).toBe(401)
+    })
+
+    test('GET sem configuração devolve o padrão: jules e dependabot "sim", resto "perguntar"', async () => {
+      await build(
+        fakePrisma({
+          project: { findFirst: vi.fn().mockResolvedValue({ runtimeConfig: null }) },
+        })
+      )
+      const corpo = (await getCuidaPorOrigem('?projeto=gitorch')).json()
+      expect(corpo.cuidaPorOrigem).toEqual({
+        jules: 'sim',
+        assistente: 'perguntar',
+        pessoa: 'perguntar',
+        dependabot: 'sim',
+      })
+      expect(corpo.janelaEmConstrucaoHoras).toBe(2)
+      expect(corpo.origens).toEqual(['jules', 'assistente', 'pessoa', 'dependabot'])
+      expect(corpo.politicas).toEqual(['sim', 'nao', 'perguntar'])
+    })
+
+    test('GET com configuração devolve o que o cliente escolheu', async () => {
+      await build(
+        fakePrisma({
+          project: {
+            findFirst: vi.fn().mockResolvedValue({
+              runtimeConfig: {
+                cuidaPorOrigem: { jules: 'nao', assistente: 'sim' },
+                janelaEmConstrucaoHoras: 6,
+              },
+            }),
+          },
+        })
+      )
+      const corpo = (await getCuidaPorOrigem('?projeto=gitorch')).json()
+      expect(corpo.cuidaPorOrigem).toEqual({
+        jules: 'nao',
+        assistente: 'sim',
+        pessoa: 'perguntar',
+        dependabot: 'sim',
+      })
+      expect(corpo.janelaEmConstrucaoHoras).toBe(6)
+    })
+
+    test('GET sem projeto → 400', async () => {
+      const res = await getCuidaPorOrigem()
+      expect(res.statusCode).toBe(400)
+    })
+
+    test('POST grava a escolha SEM apagar o resto do runtimeConfig', async () => {
+      const update = vi.fn().mockResolvedValue({})
+      await build(
+        fakePrisma({
+          project: {
+            findFirst: vi.fn().mockResolvedValue({
+              id: 'p1',
+              runtimeConfig: { publicacao: { como: 'publica-por-workflow' } },
+            }),
+            update,
+          },
+        })
+      )
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/painel/cuidado-por-origem',
+        headers: authHeaders,
+        payload: { projeto: 'gitorch', cuidaPorOrigem: { jules: 'nao' } },
+      })
+      expect(res.statusCode).toBe(200)
+      const dados = update.mock.calls[0]![0].data
+      expect(dados.runtimeConfig.publicacao).toEqual({ como: 'publica-por-workflow' })
+      expect(dados.runtimeConfig.cuidaPorOrigem.jules).toBe('nao')
+      // O resto continua no padrão — só a origem enviada muda.
+      expect(dados.runtimeConfig.cuidaPorOrigem.dependabot).toBe('sim')
+    })
+
+    test('POST com valor fora do catálogo é ignorado, sem derrubar as outras origens', async () => {
+      const update = vi.fn().mockResolvedValue({})
+      await build(
+        fakePrisma({
+          project: {
+            findFirst: vi.fn().mockResolvedValue({ id: 'p1', runtimeConfig: null }),
+            update,
+          },
+        })
+      )
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/painel/cuidado-por-origem',
+        headers: authHeaders,
+        payload: { projeto: 'gitorch', cuidaPorOrigem: { jules: 'talvez' } },
+      })
+      expect(res.statusCode).toBe(200)
+      const dados = update.mock.calls[0]![0].data
+      // Valor inválido cai no padrão daquela origem ('sim'), as outras seguem intactas.
+      expect(dados.runtimeConfig.cuidaPorOrigem.jules).toBe('sim')
+    })
+
+    test('POST sem projeto → 400', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/painel/cuidado-por-origem',
+        headers: authHeaders,
+        payload: { cuidaPorOrigem: { jules: 'nao' } },
+      })
+      expect(res.statusCode).toBe(400)
+    })
+
+    test('projeto de outro dono devolve a MESMA frase de inexistente', async () => {
+      await build(fakePrisma({ project: { findFirst: vi.fn().mockResolvedValue(null) } }))
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/painel/cuidado-por-origem',
+        headers: authHeaders,
+        payload: { projeto: 'de-outro', cuidaPorOrigem: { jules: 'nao' } },
+      })
+      expect(res.statusCode).toBe(404)
+      expect(res.json().error).toBe('Projeto não encontrado.')
+    })
+  })
+
   describe('a régua é do cliente', () => {
     test('GET devolve a régua, os critérios e se ele escolheu', async () => {
       await build(

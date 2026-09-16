@@ -382,6 +382,14 @@ model Project {
   autonomia            String    @default("so_olhar")
   autonomiaEscolhidaEm DateTime? @map("autonomia_escolhida_em")
 
+  // Fase 5 do plano do repositório inteiro: até onde o GitOrch vai em
+  // segurança sozinho — mesmos 3 nomes de `autonomia` (packages/cadence/src/
+  // autonomia.ts), campo PRÓPRIO porque segurança pode ser mais aberta que o
+  // resto do repositório sem violar a premissa de "pedir permissão a mais"
+  // (o dono pode querer "cuidar" em segurança e "sugerir" no resto).
+  autonomiaDeSeguranca            String    @default("so_olhar") @map("autonomia_de_seguranca")
+  autonomiaDeSegurancaEscolhidaEm DateTime? @map("autonomia_de_seguranca_escolhida_em")
+
   // A régua de pronto DESTE cliente (packages/cadence/src/incremento.ts diz o
   // que cada critério exige). NULO = ainda não configurou e vale o padrão do
   // produto — guardar uma cópia do padrão aqui apagaria a diferença entre "ele
