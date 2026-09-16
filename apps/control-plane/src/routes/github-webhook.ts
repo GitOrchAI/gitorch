@@ -858,7 +858,10 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
             } catch (err) {
               // Best-effort, mesmo padrão do resto do handler: a ficha nunca
               // pode derrubar o 200 do webhook.
-              app.log.warn({ err, projectId: project.id }, 'Falha ao atualizar a ficha do pull request')
+              app.log.warn(
+                { err, projectId: project.id },
+                'Falha ao atualizar a ficha do pull request'
+              )
             }
           }
 
