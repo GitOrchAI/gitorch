@@ -34,12 +34,12 @@ jobs:
         run: pnpm build
         env:
           NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL || '' }}
-          NEXT_PUBLIC_BASE_PATH: ${{ vars.GITORCH_PAGES_BASE_PATH }}
+          NEXT_PUBLIC_BASE_PATH: ${{ vars.GITORCH_PAGES_BASE_PATH || '' }}
           NEXT_PUBLIC_GITHUB_REPO: ${{ github.repository }}
       - name: Assert basePath nas páginas (home + setup + painel)
         working-directory: apps/web
         env:
-          NEXT_PUBLIC_BASE_PATH: ${{ vars.GITORCH_PAGES_BASE_PATH }}
+          NEXT_PUBLIC_BASE_PATH: ${{ vars.GITORCH_PAGES_BASE_PATH || '' }}
         run: |
           BP="${NEXT_PUBLIC_BASE_PATH:-}"
           if [ -z "$BP" ]; then echo "Sem basePath (domínio raiz) — nada a checar."; exit 0; fi
@@ -82,7 +82,7 @@ jobs:
       - name: Verifica páginas publicadas + assets (home + setup + painel)
         run: |
           HOST="https://${{ github.repository_owner }}.github.io"
-          PREFIX="${{ vars.GITORCH_PAGES_BASE_PATH }}"
+          PREFIX="${{ vars.GITORCH_PAGES_BASE_PATH || '' }}"
           fail=0
           for path in "/" "/setup" "/painel"; do
             URL="$HOST$PREFIX$path"
