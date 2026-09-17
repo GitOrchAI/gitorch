@@ -45,10 +45,12 @@ type PnpmWorkspacePackage = {
 const repoRoot = process.cwd()
 
 const pnpmCmd = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
+const shellOption = process.platform === 'win32'
 
 function listRealWorkspaces(): PnpmWorkspacePackage[] {
   const raw = execFileSync(pnpmCmd, ['-r', 'list', '--depth', '-1', '--json'], {
     encoding: 'utf8',
+    shell: shellOption,
   })
   const all = JSON.parse(raw) as PnpmWorkspacePackage[]
   // O próprio root do monorepo aparece nessa lista do pnpm, mas ele não é
@@ -60,6 +62,7 @@ function listRealWorkspaces(): PnpmWorkspacePackage[] {
 function turboReachablePackageNames(): Set<string> {
   const raw = execFileSync(pnpmCmd, ['exec', 'turbo', 'run', 'build', '--dry=json'], {
     encoding: 'utf8',
+    shell: shellOption,
   })
   // A CLI do turbo imprime uma linha de log ("• turbo x.y.z") antes do JSON.
   const jsonStart = raw.indexOf('{')
@@ -91,6 +94,7 @@ function ensurePrismaClientIsGenerated(): void {
   // rodando `pnpm run typecheck:strict` à mão).
   execFileSync(pnpmCmd, ['--filter', '@gitorch/control-plane', 'exec', 'prisma', 'generate'], {
     stdio: 'inherit',
+    shell: shellOption,
   })
 }
 
@@ -120,4 +124,4 @@ if (uncovered.length > 0) {
 
 ensurePrismaClientIsGenerated()
 
-execFileSync(pnpmCmd, ['exec', 'turbo', 'run', 'build'], { stdio: 'inherit' })
+execFileSync(pnpmCmd, ['exec', 'turbo', 'run', 'build'], { stdio: 'inherit', shell: shellOption })
