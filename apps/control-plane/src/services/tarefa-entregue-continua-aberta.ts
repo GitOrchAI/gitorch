@@ -27,6 +27,7 @@ export interface EntregaParaConferir {
   issueNumber: number
   pullRequestNumber: number | null
   mergeCommitSha: string | null
+  closedReason?: string | null | undefined
   /** Última escrita na linha da entrega — de onde sai a carência abaixo. */
   updatedAt: Date
 }
@@ -61,7 +62,7 @@ export function entregasQueMerecemConferencia<T extends EntregaParaConferir>(
   const vistas = new Set<number>()
   const escolhidas: T[] = []
   for (const linha of linhas) {
-    if (!linha.mergeCommitSha) continue
+    if (!linha.mergeCommitSha && linha.closedReason !== 'merged') continue
     if (!Number.isInteger(linha.issueNumber) || linha.issueNumber <= 0) continue
     // Recém-mesclada é do caminho normal, não desta varredura.
     if (agora.getTime() - linha.updatedAt.getTime() < CARENCIA_ANTES_DE_VARRER_MS) continue
@@ -85,13 +86,16 @@ export function entregasQueMerecemConferencia<T extends EntregaParaConferir>(
  */
 export function recadoDeTarefaJaEntregue(args: {
   pullRequestNumber: number | null
-  mergeCommitSha: string
+  mergeCommitSha: string | null
 }): string {
   const origem = args.pullRequestNumber
     ? `A entrega que resolve esta tarefa (PR #${args.pullRequestNumber}) foi mesclada`
     : 'A entrega que resolve esta tarefa foi mesclada'
+  const trechoCommit = args.mergeCommitSha
+    ? ` — commit ${args.mergeCommitSha.slice(0, 8)}.`
+    : ' (commit registrado via merge de PR).'
   return [
-    `Encerrada pelo GitOrch: ${origem} — commit ${args.mergeCommitSha.slice(0, 8)}.`,
+    `Encerrada pelo GitOrch: ${origem}${trechoCommit}`,
     '',
     'O merge não passou pelas mãos do produto (auto-merge do repositório ou',
     'alguém clicando), e por isso a tarefa tinha ficado aberta mesmo com o',

@@ -12,12 +12,19 @@ const linha = (
   issueNumber: number,
   mergeCommitSha: string | null,
   pullRequestNumber: number | null = null,
-  updatedAt: Date = VELHA
-) => ({ issueNumber, mergeCommitSha, pullRequestNumber, updatedAt })
+  updatedAt: Date = VELHA,
+  closedReason?: string | null
+) => ({ issueNumber, mergeCommitSha, pullRequestNumber, updatedAt, closedReason })
 
 describe('quais entregas merecem conferência', () => {
-  it('sem commit de merge não entra — não há o que fechar', () => {
+  it('sem commit de merge nem closedReason merged não entra — não há o que fechar', () => {
     expect(entregasQueMerecemConferencia([linha(10, null)], AGORA)).toEqual([])
+  })
+
+  it('com closedReason "merged" e mergeCommitSha nulo entra na conferência', () => {
+    expect(
+      entregasQueMerecemConferencia([linha(10, null, null, VELHA, 'merged')], AGORA)
+    ).toHaveLength(1)
   })
 
   it('a MESMA tarefa aparece uma vez só, por mais entregas que tenha', () => {
@@ -68,6 +75,15 @@ describe('o recado do fechamento', () => {
     expect(texto).not.toContain('#null')
     expect(texto).not.toContain('PR #')
     expect(texto).toContain('abcdef12')
+  })
+
+  it('com mergeCommitSha nulo exibe "(commit registrado via merge de PR)" sem quebrar', () => {
+    const texto = recadoDeTarefaJaEntregue({
+      pullRequestNumber: 42,
+      mergeCommitSha: null,
+    })
+    expect(texto).toContain('(commit registrado via merge de PR)')
+    expect(texto).toContain('#42')
   })
 
   it('convida a reabrir: entrega mesclada não é o mesmo que problema resolvido', () => {
