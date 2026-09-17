@@ -9167,10 +9167,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     try {
       linhas = await app.prisma.devSession.findMany({
         where: {
-          OR: [
-            { mergeCommitSha: { not: null } },
-            { closedReason: 'merged' },
-          ],
+          OR: [{ mergeCommitSha: { not: null } }, { closedReason: 'merged' }],
         },
         orderBy: { createdAt: 'asc' },
         select: {

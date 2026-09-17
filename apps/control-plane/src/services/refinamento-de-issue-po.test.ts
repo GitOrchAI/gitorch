@@ -7,7 +7,8 @@ import {
 
 describe('montarCorpoRefinado', () => {
   it('preserva o corpo atual e adiciona a seção de refinamento do PO', () => {
-    const corpoAtual = '## Goal\n\nFazer feature X.\n\n## Verification Criteria\n\nPassar nos testes.'
+    const corpoAtual =
+      '## Goal\n\nFazer feature X.\n\n## Verification Criteria\n\nPassar nos testes.'
     const resultado = montarCorpoRefinado({
       corpoAtual,
       pedidoRevisado: 'Novo pedido com instruções claras.',
