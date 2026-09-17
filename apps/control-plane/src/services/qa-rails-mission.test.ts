@@ -34,6 +34,12 @@ const APPROVE = JSON.stringify({
     relatedFiles: 'src/reviews.ts',
     notes: 'CI verde.',
   },
+  entendimento: {
+    deOndeVeio: 'Jules',
+    oQueMuda: 'Adiciona endpoints de review',
+    queAjusteE: 'feature',
+    porQueExiste: 'Para permitir que usuários façam reviews',
+  },
 })
 
 const REQUEST_CHANGES = JSON.stringify({
@@ -48,6 +54,12 @@ const REQUEST_CHANGES = JSON.stringify({
     dependencies: 'nenhuma',
     relatedFiles: 'src/reviews.ts',
     notes: 'CI vermelho no unit-test.',
+  },
+  entendimento: {
+    deOndeVeio: 'Jules',
+    oQueMuda: 'Validação no controller',
+    queAjusteE: 'correção',
+    porQueExiste: 'Evitar erro 500 sem validação de material',
   },
 })
 
