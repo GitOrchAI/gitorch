@@ -3,6 +3,7 @@ import { buildAgentMission, type BuildAgentMissionInput, workspaceManager } from
 import type { RuntimeExecutionResult, RuntimeRegistry } from './runtime-adapter'
 import type { F6AgentRole, MissionState, NodeTransition, StateNode } from './types'
 import { primeWorkspace } from './workspace-priming'
+import { evaluateNodeTransition, type QaVerdictForm } from '@gitorch/cadence'
 
 /**
  * Enriquece o CONTEXTO da missão com CONHECIMENTO do projeto, depois que o
@@ -72,10 +73,64 @@ export class RequirementsAnalystNode extends BaseAgentNode {
 
 export class QualityAnalystNode extends BaseAgentNode {
   role = 'qa' as const
+
+  override async execute(state: MissionState): Promise<NodeTransition> {
+    const transition = await super.execute(state)
+    const result = transition.state.result as RuntimeExecutionResult
+
+    if (result.exitCode === 0 && result.output) {
+      try {
+        const parsedVerdict = JSON.parse(result.output) as QaVerdictForm
+        if (parsedVerdict && parsedVerdict.verdict) {
+          const evalResult = evaluateNodeTransition({
+            role: 'qa',
+            exitCriteriaMet: true,
+            guardrailPassed: true,
+            nextNode: 'done',
+            qaVerdict: parsedVerdict.verdict,
+            retries: state.qaRetries,
+          })
+
+          if ('error' in evalResult && evalResult.error === 'qa_failed_max_retries') {
+            return {
+              nextRole: 'failed',
+              state: {
+                ...transition.state,
+                status: 'qa_failed_max_retries',
+                error: 'QA retry limit exceeded',
+              },
+            }
+          }
+
+          if ('nextNode' in evalResult && evalResult.nextNode === 'dev') {
+            return {
+              nextRole: 'dev',
+              state: {
+                ...transition.state,
+                qaRetries: evalResult.retries,
+                qaFeedback: JSON.stringify(parsedVerdict.comment),
+              },
+            }
+          }
+        }
+      } catch (err) {
+        // Fallback to default transition if parsing fails
+      }
+    }
+
+    return transition
+  }
 }
 
 export class DeveloperNode extends BaseAgentNode {
   role = 'dev' as const
+
+  override async execute(state: MissionState): Promise<NodeTransition> {
+    if (state.qaFeedback) {
+      state.mission.prompt += `\n\nQA Feedback for Rework:\n${state.qaFeedback}`
+    }
+    return super.execute(state)
+  }
 }
 
 export class AgentOrchestrator {
