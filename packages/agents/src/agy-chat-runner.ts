@@ -26,6 +26,9 @@ export type AgyChatHandle = WiredPtyHandle
 export const AGY_CHAT_PTY_COLS = 200
 export const AGY_CHAT_PTY_ROWS = 50
 
+import { randomUUID } from 'node:crypto'
+import type { AgentExecutionSpan } from './types.js'
+
 export interface RunAgyChatCommandOptions {
   /** HOME já materializado com a credencial do Antigravity (ver
    * `antigravity-quota-reader.ts`, control-plane) — vira o HOME do processo
@@ -39,6 +42,16 @@ export interface RunAgyChatCommandOptions {
   rows?: number
   /** Injetável para teste — NUNCA sobe o `agy` real numa suite de testes. */
   ptySpawnImpl?: PtySpawn
+  /** Nome do step executado, útil para telemetria (ex: 'agy-chat') */
+  stepName?: string
+  /** ModelId utilizado (se houver), útil para telemetria */
+  modelId?: string
+  /** SessionId, se houver contexto de missão */
+  sessionId?: string
+}
+
+export interface AgyChatHandleWithSpan extends AgyChatHandle {
+  span: Partial<AgentExecutionSpan>
 }
 
 /**
@@ -51,7 +64,7 @@ export interface RunAgyChatCommandOptions {
  * device-login-runner.ts) é a MESMA fiação de PTY que o login usa — reusada
  * aqui de propósito, pra nunca reinventar node-pty duas vezes no repo.
  */
-export function runAgyChatCommand(options: RunAgyChatCommandOptions): AgyChatHandle {
+export function runAgyChatCommand(options: RunAgyChatCommandOptions): AgyChatHandleWithSpan {
   const bin = options.agyBin ?? 'agy'
   const spawnPty = options.ptySpawnImpl ?? ptySpawnDefault
 
@@ -71,5 +84,17 @@ export function runAgyChatCommand(options: RunAgyChatCommandOptions): AgyChatHan
     env,
   })
 
-  return wirePtyHandle(ptyProcess)
+  const span: Partial<AgentExecutionSpan> = {
+    traceId: options.sessionId ?? randomUUID(),
+    spanId: randomUUID(),
+    name: options.stepName ?? 'agy-chat',
+    startTime: Date.now(),
+    status: 'success', // default, can be updated by caller
+  }
+
+  const handle = wirePtyHandle(ptyProcess)
+  return {
+    ...handle,
+    span,
+  }
 }
