@@ -241,6 +241,7 @@ describe('DJ-T4 — cadeia inteira sem cota: a missão dorme, não falha, e não
     await vi.waitFor(
       () => {
         const m = prisma._missions.find((x) => x.id === missionId)
+        if (m?.status === 'failed') throw new Error('Caiu em failed')
         expect(m?.status).toBe('waiting')
       },
       { timeout: 2000 }
@@ -422,11 +423,15 @@ describe('DJ-T4 — cadeia inteira sem cota: a missão dorme, não falha, e não
     app.decorate('prisma', prisma as never)
     await app.register(schedulerPlugin)
 
+    const fetchMock = vi.fn(async () => new Response('{"ok":true}', { status: 200 }))
+    global.fetch = fetchMock as unknown as typeof fetch
+
     const resultado = await app.triggerAgentMission('qa', 'proj_1')
     const missionId = resultado.missionId as string
     await vi.waitFor(
       () => {
         const m = prisma._missions.find((x) => x.id === missionId)
+        if (m?.status === 'failed') throw new Error('Caiu em failed')
         expect(m?.status).toBe('waiting')
       },
       { timeout: 2000 }
@@ -492,6 +497,7 @@ describe('DJ-T4 — cadeia inteira sem cota: a missão dorme, não falha, e não
     await vi.waitFor(
       () => {
         const m = prisma._missions.find((x) => x.id === missionId)
+        if (m?.status === 'failed') throw new Error('Caiu em failed')
         expect(m?.status).toBe('waiting')
       },
       { timeout: 2000 }
