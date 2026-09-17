@@ -127,19 +127,37 @@ function buildFakePrisma() {
         async ({
           where,
         }: {
-          where: { status?: string; waitingReason?: string; waitingStatus?: { lte: string } }
+          where: {
+            status?: string
+            waitingReason?: string
+            waitingStatus?: { lte?: string; gt?: string } | string
+          }
         }) => {
           return missions
             .filter((m) => {
               if (where.status !== undefined && m.status !== where.status) return false
               if (where.waitingReason !== undefined && m.waitingReason !== where.waitingReason)
                 return false
-              if (where.waitingStatus?.lte !== undefined) {
-                if (!m.waitingStatus || m.waitingStatus > where.waitingStatus.lte) return false
+              if (where.waitingStatus !== undefined) {
+                if (
+                  typeof where.waitingStatus === 'object' &&
+                  'lte' in where.waitingStatus &&
+                  where.waitingStatus.lte !== undefined
+                ) {
+                  if (!m.waitingStatus || m.waitingStatus > where.waitingStatus.lte) return false
+                } else if (typeof where.waitingStatus === 'string') {
+                  if (!m.waitingStatus || m.waitingStatus !== where.waitingStatus) return false
+                }
               }
               return true
             })
-            .map((m) => ({ id: m.id, projectId: m.projectId, type: m.type, payload: m.payload }))
+            .map((m) => ({
+              id: m.id,
+              projectId: m.projectId,
+              type: m.type,
+              payload: m.payload,
+              waitingStatus: m.waitingStatus,
+            }))
         }
       ),
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
@@ -476,6 +494,8 @@ describe('DJ-T4 — cadeia inteira sem cota: a missão dorme, não falha, e não
   test('retomada com cota voltando antes da hora: cota ausente -> segue dormindo', async () => {
     resultadoDoMotor.erroPorRuntime = {
       codex: CODEX_SEM_COTA_8H,
+      antigravity: ANTIGRAVITY_SEM_COTA_2H,
+      claude: CLAUDE_SEM_COTA_5H,
     }
     const app = Fastify({ logger: false })
     const prisma = buildFakePrisma()
@@ -514,6 +534,8 @@ describe('DJ-T4 — cadeia inteira sem cota: a missão dorme, não falha, e não
   test('retomada com cota voltando antes da hora: cota presente -> acorda e tenta', async () => {
     resultadoDoMotor.erroPorRuntime = {
       codex: CODEX_SEM_COTA_8H,
+      antigravity: ANTIGRAVITY_SEM_COTA_2H,
+      claude: CLAUDE_SEM_COTA_5H,
     }
     const app = Fastify({ logger: false })
     const prisma = buildFakePrisma()
@@ -569,6 +591,8 @@ describe('DJ-T4 — cadeia inteira sem cota: a missão dorme, não falha, e não
   test('retomada com cota voltando antes da hora: leitura falha/erro -> fail-safe, segue dormindo', async () => {
     resultadoDoMotor.erroPorRuntime = {
       codex: CODEX_SEM_COTA_8H,
+      antigravity: ANTIGRAVITY_SEM_COTA_2H,
+      claude: CLAUDE_SEM_COTA_5H,
     }
     const app = Fastify({ logger: false })
     const prisma = buildFakePrisma()
