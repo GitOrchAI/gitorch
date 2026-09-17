@@ -111,6 +111,7 @@ import {
   type PrismaEventoDoJules,
 } from '../services/memoria-do-jules.js'
 import { analisarFalhasPendentes } from '../services/analisar-falhas-pendentes.js'
+import { executarRefinamentoDoPo } from '../services/refinamento-de-issue-po.js'
 import { runAnaliseDeFalha, type SessaoMorta } from '../services/analise-de-falha-do-dev.js'
 import { processarAchadosDeInfra } from '../services/processar-achados-de-infra.js'
 import {
@@ -5607,6 +5608,18 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           },
           onWarn: (m) => app.log.warn(m),
         }),
+      refinarIssue: async ({ issueNumber, analise, entrada }) => {
+        await executarRefinamentoDoPo({
+          repository: project.wingId,
+          issueNumber,
+          corpoAtual: entrada.corpoDaIssue,
+          pedidoRevisado: analise.pedidoRevisado,
+          causaComum: analise.causaComum,
+          token: railsToken,
+          onInfo: (m) => app.log.info(`[Scheduler] ${m}`),
+          onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
+        })
+      },
       marcarFeita: (issueNumber) =>
         marcarAnaliseFeitaDaIssue({
           prisma: app.prisma as unknown as PrismaDevSession,
@@ -9147,17 +9160,24 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       issueNumber: number
       pullRequestNumber: number | null
       mergeCommitSha: string | null
+      closedReason: string | null
       projectId: string
       updatedAt: Date
     }>
     try {
       linhas = await app.prisma.devSession.findMany({
-        where: { mergeCommitSha: { not: null } },
+        where: {
+          OR: [
+            { mergeCommitSha: { not: null } },
+            { closedReason: 'merged' },
+          ],
+        },
         orderBy: { createdAt: 'asc' },
         select: {
           issueNumber: true,
           pullRequestNumber: true,
           mergeCommitSha: true,
+          closedReason: true,
           projectId: true,
           updatedAt: true,
         },
@@ -9214,7 +9234,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
 
           const recado = recadoDeTarefaJaEntregue({
             pullRequestNumber: entrega.pullRequestNumber,
-            mergeCommitSha: entrega.mergeCommitSha as string,
+            mergeCommitSha: entrega.mergeCommitSha,
           })
           await rest('POST', `/repos/${projeto.wingId}/issues/${entrega.issueNumber}/comments`, {
             body: recado,
