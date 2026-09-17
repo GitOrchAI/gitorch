@@ -1,7 +1,7 @@
 import { SynapseClient, type SynapseActor, type SynapseScope } from '@gitorch/synapse'
 import { buildAgentMission, type BuildAgentMissionInput, workspaceManager } from './agent-mission'
 import type { RuntimeExecutionResult, RuntimeRegistry } from './runtime-adapter'
-import type { F6AgentRole } from './types'
+import type { F6AgentRole, MissionState, NodeTransition, StateNode } from './types'
 import { primeWorkspace } from './workspace-priming'
 
 /**
@@ -41,17 +41,107 @@ export interface AgentOrchestratorOptions {
   enrichContext?: MissionContextEnricher
 }
 
+export abstract class BaseAgentNode implements StateNode {
+  abstract role: F6AgentRole | 'dev'
+  constructor(protected orchestrator: AgentOrchestrator) {}
+
+  async execute(state: MissionState): Promise<NodeTransition> {
+    const result = await this.orchestrator.runMissionCore(
+      state.mission,
+      state.workspacePath,
+      state.timeoutMs
+    )
+    return {
+      nextRole: result.exitCode === 0 ? 'done' : 'failed',
+      state: { ...state, result },
+    }
+  }
+}
+
+export class ProductOwnerNode extends BaseAgentNode {
+  role = 'po' as const
+}
+
+export class ScrumMasterNode extends BaseAgentNode {
+  role = 'sm' as const
+}
+
+export class RequirementsAnalystNode extends BaseAgentNode {
+  role = 'ra' as const
+}
+
+export class QualityAnalystNode extends BaseAgentNode {
+  role = 'qa' as const
+}
+
+export class DeveloperNode extends BaseAgentNode {
+  role = 'dev' as const
+}
+
 export class AgentOrchestrator {
   private readonly registry: RuntimeRegistry
   private readonly synapse: SynapseClient
   private readonly workspace: WorkspaceProvider
   private readonly enrichContext?: MissionContextEnricher
+  private readonly nodeRegistry: Map<string, StateNode>
 
   constructor(options: AgentOrchestratorOptions) {
     this.registry = options.registry
     this.synapse = options.synapse ?? new SynapseClient()
     this.workspace = options.workspace ?? workspaceManager
     this.enrichContext = options.enrichContext
+
+    this.nodeRegistry = new Map<string, StateNode>([
+      ['po', new ProductOwnerNode(this)],
+      ['sm', new ScrumMasterNode(this)],
+      ['ra', new RequirementsAnalystNode(this)],
+      ['qa', new QualityAnalystNode(this)],
+      ['dev', new DeveloperNode(this)],
+    ])
+  }
+
+  async runMissionCore(
+    mission: ReturnType<typeof buildAgentMission>,
+    workspacePath?: string,
+    timeoutMs?: number
+  ): Promise<RuntimeExecutionResult> {
+    let result: RuntimeExecutionResult
+    try {
+      const adapter = this.registry.resolve(mission.runtime.runtime)
+      result = await adapter.run({
+        missionId: mission.id,
+        prompt: mission.prompt,
+        runtime: mission.runtime,
+        credentialRef: mission.credentialRef,
+        role: mission.role,
+        cwd: workspacePath,
+        timeoutMs,
+      })
+
+      if (result.waitingStatus) {
+        mission.waitingStatus = result.waitingStatus
+        mission.waitingReason = result.waitingReason
+      } else {
+        mission.waitingStatus = null
+        mission.waitingReason = null
+      }
+
+      if (result.exitCode !== 0 || result.failedStep) {
+        if (this.workspace.handleRuntimeFailure) {
+          this.workspace.handleRuntimeFailure(
+            result.errorDetails || result.stderr || 'Unknown runtime error',
+            result.failedStep || 'run-mission',
+            false
+          )
+        }
+      }
+    } catch (err: unknown) {
+      if (this.workspace.handleRuntimeFailure) {
+        this.workspace.handleRuntimeFailure(String(err), 'run-mission', false)
+      }
+      throw err
+    }
+    return result
   }
 
   async runMission(input: BuildAgentMissionInput): Promise<RuntimeExecutionResult> {
@@ -100,36 +190,19 @@ export class AgentOrchestrator {
       }
     }
 
+    const node = this.nodeRegistry.get(mission.role)
+    if (!node) {
+      throw new Error(`No state node registered for role: ${mission.role}`)
+    }
+
     let result: RuntimeExecutionResult
     try {
-      const adapter = this.registry.resolve(mission.runtime.runtime)
-      result = await adapter.run({
-        missionId: mission.id,
-        prompt: mission.prompt,
-        runtime: mission.runtime,
-        credentialRef: mission.credentialRef,
-        role: mission.role,
-        cwd: allocation?.path,
+      const transition = await node.execute({
+        mission,
+        workspacePath: allocation?.path,
         timeoutMs: input.timeoutMs,
       })
-
-      if (result.waitingStatus) {
-        mission.waitingStatus = result.waitingStatus
-        mission.waitingReason = result.waitingReason
-      } else {
-        mission.waitingStatus = null
-        mission.waitingReason = null
-      }
-
-      if (result.exitCode !== 0 || result.failedStep) {
-        if (this.workspace.handleRuntimeFailure) {
-          this.workspace.handleRuntimeFailure(
-            result.errorDetails || result.stderr || 'Unknown runtime error',
-            result.failedStep || 'run-mission',
-            false
-          )
-        }
-      }
+      result = transition.state.result as RuntimeExecutionResult
     } catch (err: unknown) {
       if (this.workspace.handleRuntimeFailure) {
         this.workspace.handleRuntimeFailure(String(err), 'run-mission', false)
