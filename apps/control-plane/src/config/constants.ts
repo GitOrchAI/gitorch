@@ -41,3 +41,6 @@ export type NodeEnv = (typeof NODE_ENVS)[number]
 
 export const HEALTH_CHECK_INTERVAL_MS = 30_000
 export const GRACEFUL_SHUTDOWN_TIMEOUT_MS = 30_000
+
+export const LANGFUSE_DEFAULT_HOST = 'https://cloud.langfuse.com'
+export const TELEMETRY_EXPORT_TIMEOUT_MS = 10_000

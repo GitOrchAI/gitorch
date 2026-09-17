@@ -53,3 +53,23 @@ export function normalizeRuntimeAssignments(
     return assignments
   }, {} as AgentRuntimeAssignments)
 }
+
+export interface TracingEnvironment {
+  LANGFUSE_PUBLIC_KEY?: string
+  LANGFUSE_SECRET_KEY?: string
+  LANGFUSE_HOST?: string
+  TELEMETRY_ENABLED?: string
+}
+
+export function getTracingEnvironment(): TracingEnvironment {
+  return {
+    ...(process.env['LANGFUSE_PUBLIC_KEY']
+      ? { LANGFUSE_PUBLIC_KEY: process.env['LANGFUSE_PUBLIC_KEY'] }
+      : {}),
+    ...(process.env['LANGFUSE_SECRET_KEY']
+      ? { LANGFUSE_SECRET_KEY: process.env['LANGFUSE_SECRET_KEY'] }
+      : {}),
+    ...(process.env['LANGFUSE_HOST'] ? { LANGFUSE_HOST: process.env['LANGFUSE_HOST'] } : {}),
+    ...(process.env['TELEMETRY_ENABLED'] === '1' ? { TELEMETRY_ENABLED: '1' } : {}),
+  }
+}
