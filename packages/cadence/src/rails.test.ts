@@ -416,6 +416,12 @@ describe('validateForm (validador minimal por schema)', () => {
         relatedFiles: 'x',
         notes: 'x',
       },
+      entendimento: {
+        deOndeVeio: 'x',
+        oQueMuda: 'x',
+        queAjusteE: 'x',
+        porQueExiste: 'x',
+      },
     })
     expect(r.ok).toBe(false)
     expect(r.errors.join(' ')).toContain('verdict')

@@ -323,9 +323,31 @@ export interface SmRetroForm {
   concreteImprovement: DoDFields
 }
 
+/**
+ * Fase 2.4 do plano do repositório inteiro: o QA não julga mais só o CÓDIGO
+ * — ele confirma que ENTENDEU o pedido antes de opinar. `entendimento` é
+ * obrigatório (não opcional) de propósito: um julgamento sem os 4 campos
+ * preenchidos não é um julgamento, é uma review em cima de um diff sem
+ * contexto — exatamente o que gerava pareceres tecnicamente corretos mas
+ * fora do que a tarefa pedia.
+ */
+export interface EntendimentoDoPedidoForm {
+  /** De onde este pedido veio — Jules pelo GitOrch, Jules por fora, você
+   *  com um assistente, outra pessoa, Dependabot, outro robô. */
+  deOndeVeio: string
+  /** O que muda no código, em termos concretos (arquivos, comportamento). */
+  oQueMuda: string
+  /** Que tipo de ajuste é: funcionalidade nova, correção, refactor, dívida
+   *  técnica, segurança. */
+  queAjusteE: string
+  /** Por que este pedido existe — a motivação de negócio ou técnica. */
+  porQueExiste: string
+}
+
 export interface QaVerdictForm {
   verdict: 'approve' | 'request_changes'
   comment: DoDFields
+  entendimento: EntendimentoDoPedidoForm
 }
 
 /**
@@ -799,10 +821,20 @@ export const RAILS_SCHEMAS = {
 
   qaVerdict: {
     type: 'object',
-    required: ['verdict', 'comment'],
+    required: ['verdict', 'comment', 'entendimento'],
     properties: {
       verdict: { type: 'string', enum: ['approve', 'request_changes'] },
       comment: DOD_FIELDS_SCHEMA,
+      entendimento: {
+        type: 'object',
+        required: ['deOndeVeio', 'oQueMuda', 'queAjusteE', 'porQueExiste'],
+        properties: {
+          deOndeVeio: { type: 'string' },
+          oQueMuda: { type: 'string' },
+          queAjusteE: { type: 'string' },
+          porQueExiste: { type: 'string' },
+        },
+      },
     },
   } as MiniSchema,
 
