@@ -43,7 +43,7 @@ jobs:
         run: |
           BP="${NEXT_PUBLIC_BASE_PATH:-}"
           if [ -z "$BP" ]; then echo "Sem basePath (domínio raiz) — nada a checar."; exit 0; fi
-          for f in index.html setup.html painel.html; do
+          for f in index.html setup/index.html painel/index.html; do
             [ -f "out/$f" ] || { echo "::error::out/$f não existe (página faltando no build)."; exit 1; }
             if grep -qE '(src|href)="/_next/' "out/$f"; then
               echo "::error::$f: assets na RAIZ (/_next) apesar de basePath=$BP — quebraria no Pages."
