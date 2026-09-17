@@ -1,12 +1,14 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { hydrateStateFromCheckpoint } from './workspace-priming.js'
+import { randomUUID } from 'node:crypto'
 import type {
   AgentRuntimeSelection,
   F6AgentRole,
   F6AgentRuntime,
   RuntimeCredentialRef,
-} from './types'
+  AgentExecutionSpan,
+} from './types.js'
 import { wrapWithLimits, type ExecutionLimits } from './execution-limits'
 import { getTracingEnvironment } from './runtime-config'
 
@@ -52,6 +54,7 @@ export interface RuntimeExecutionResult {
   failedStep?: string
   errorDetails?: string
   recoveryAction?: 'auto-rollback' | 'none'
+  span?: AgentExecutionSpan
 }
 
 /**
@@ -412,6 +415,7 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
           ? []
           : [...(options.promptSeparator ? [options.promptSeparator] : []), effectivePrompt]
 
+      const start = Date.now()
       const { result, error, failedStep } = await wrapExecutionStep('execute-runner', () =>
         runner({
           binary: options.binary,
@@ -423,6 +427,23 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
         })
       )
 
+      const durationMs = result ? result.durationMs : Date.now() - start
+      // Tokens estocásticos: a métrica real exigiria API do Langfuse/Token count
+      // do provider, mas mantemos interface de TokenUsage para telemetria estruturada.
+      const usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 }
+
+      const span: AgentExecutionSpan = {
+        traceId: request.missionId,
+        spanId: randomUUID(),
+        name: `execute-runner-${options.runtime}`,
+        input: effectivePrompt,
+        output: result?.stdout ?? String(error?.message ?? ''),
+        usage,
+        startTime: start,
+        endTime: start + durationMs,
+        status: error || (result && result.exitCode !== 0) ? 'error' : 'success',
+      }
+
       if (error) {
         return {
           missionId: request.missionId,
@@ -430,10 +451,11 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
           output: '',
           stderr: String(error.message),
           exitCode: 1,
-          durationMs: 0,
+          durationMs,
           failedStep: failedStep ?? 'execute-runner',
           errorDetails: String(error.message),
           recoveryAction: 'none',
+          span,
         }
       }
 
@@ -446,6 +468,7 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
           stderr: result.stderr,
           exitCode: result.exitCode,
           durationMs: result.durationMs,
+          span,
           ...(failed
             ? {
                 failedStep: 'execute-runner',
@@ -508,6 +531,13 @@ export function createPythonSdkRuntimeAdapter(
         }
       }
       const start = Date.now()
+      let stdout = ''
+      let stderr = ''
+      let exitCode = 0
+      let errorDetails: string | undefined
+      let failedStep: string | undefined
+      let durationMs = 0
+
       try {
         const pending = execFileAsync(pythonBinary, args, {
           env: buildChildProcessEnv(geminiEnv),
@@ -518,15 +548,10 @@ export function createPythonSdkRuntimeAdapter(
         })
         // Mesmo motivo do runner CLI: stdin aberto = processo esperando EOF.
         pending.child.stdin?.end()
-        const { stdout, stderr } = await pending
-        return {
-          missionId: request.missionId,
-          runtime: options.runtime,
-          output: stdout,
-          stderr: stderr,
-          exitCode: 0,
-          durationMs: Date.now() - start,
-        }
+        const res = await pending
+        stdout = res.stdout
+        stderr = res.stderr
+        durationMs = Date.now() - start
       } catch (error: unknown) {
         const err = error as {
           code?: number | string
@@ -536,18 +561,43 @@ export function createPythonSdkRuntimeAdapter(
           stderr?: string
           message?: string
         }
+        stdout = err.stdout || ''
+        stderr = err.stderr || err.message || String(error)
         const timedOut = err.killed === true || err.signal === 'SIGKILL'
-        return {
-          missionId: request.missionId,
-          runtime: options.runtime,
-          output: err.stdout || '',
-          stderr: err.stderr || err.message || String(error),
-          exitCode: timedOut ? 124 : normalizeExitCode(err.code),
-          durationMs: Date.now() - start,
-          failedStep: 'execute-python-script',
-          errorDetails: err.message || String(error),
-          recoveryAction: 'none',
-        }
+        exitCode = timedOut ? 124 : normalizeExitCode(err.code)
+        durationMs = Date.now() - start
+        failedStep = 'execute-python-script'
+        errorDetails = err.message || String(error)
+      }
+
+      const usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 }
+      const span: AgentExecutionSpan = {
+        traceId: request.missionId,
+        spanId: randomUUID(),
+        name: `execute-python-script-${options.runtime}`,
+        input: request.prompt,
+        output: stdout,
+        usage,
+        startTime: start,
+        endTime: start + durationMs,
+        status: exitCode !== 0 ? 'error' : 'success',
+      }
+
+      return {
+        missionId: request.missionId,
+        runtime: options.runtime,
+        output: stdout,
+        stderr: stderr,
+        exitCode,
+        durationMs,
+        span,
+        ...(failedStep
+          ? {
+              failedStep,
+              errorDetails,
+              recoveryAction: 'none',
+            }
+          : {}),
       }
     },
   }

@@ -93,13 +93,24 @@ test('creates cli runtime adapter that passes prompt and runtime environment to 
       },
     },
   ])
-  expect(result).toEqual({
+  expect(result).toMatchObject({
     missionId: 'mission-agy-1',
     runtime: 'antigravity',
     output: 'mission complete',
     stderr: '',
     exitCode: 0,
     durationMs: 42,
+    span: {
+      name: 'execute-runner-antigravity',
+      input: 'Map project docs',
+      output: 'mission complete',
+      status: 'success',
+      usage: {
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+      }
+    }
   })
 })
 

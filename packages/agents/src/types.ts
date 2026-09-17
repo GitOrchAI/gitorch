@@ -86,6 +86,24 @@ export interface ProjectOnboardingPlan {
   ownerQuestions: OwnerQuestion[]
 }
 
+export interface TokenUsage {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+}
+
+export interface AgentExecutionSpan {
+  traceId: string
+  spanId: string
+  name: string
+  input: string
+  output: string
+  usage?: TokenUsage
+  startTime: number
+  endTime: number
+  status: 'success' | 'error'
+}
+
 export type CiConclusion = 'success' | 'failure' | 'pending' | 'missing'
 export type GateCheckResult = 'passed' | 'failed' | 'not-run'
 export type DeliveredScopeResult = 'complete' | 'incomplete' | 'unknown'
