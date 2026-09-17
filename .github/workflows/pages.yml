@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
     paths: ['apps/web/**', '.github/workflows/pages.yml']
+  pull_request:
+    paths: ['apps/web/**', '.github/workflows/pages.yml']
   workflow_dispatch:
 
 permissions:
@@ -21,8 +23,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -43,7 +43,7 @@ jobs:
         run: |
           BP="${NEXT_PUBLIC_BASE_PATH:-}"
           if [ -z "$BP" ]; then echo "Sem basePath (domínio raiz) — nada a checar."; exit 0; fi
-          for f in index.html setup.html painel.html; do
+          for f in index.html setup/index.html painel/index.html; do
             [ -f "out/$f" ] || { echo "::error::out/$f não existe (página faltando no build)."; exit 1; }
             if grep -qE '(src|href)="/_next/' "out/$f"; then
               echo "::error::$f: assets na RAIZ (/_next) apesar de basePath=$BP — quebraria no Pages."
@@ -61,6 +61,7 @@ jobs:
         with:
           path: apps/web/out
   deploy:
+    if: github.event_name != 'pull_request'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -74,6 +75,7 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v4
   smoke:
+    if: github.event_name != 'pull_request'
     needs: deploy
     runs-on: ubuntu-latest
     steps:
