@@ -127,19 +127,37 @@ function buildFakePrisma() {
         async ({
           where,
         }: {
-          where: { status?: string; waitingReason?: string; waitingStatus?: { lte: string } }
+          where: {
+            status?: string
+            waitingReason?: string
+            waitingStatus?: { lte?: string; gt?: string } | string
+          }
         }) => {
           return missions
             .filter((m) => {
               if (where.status !== undefined && m.status !== where.status) return false
               if (where.waitingReason !== undefined && m.waitingReason !== where.waitingReason)
                 return false
-              if (where.waitingStatus?.lte !== undefined) {
-                if (!m.waitingStatus || m.waitingStatus > where.waitingStatus.lte) return false
+              if (where.waitingStatus !== undefined) {
+                if (
+                  typeof where.waitingStatus === 'object' &&
+                  'lte' in where.waitingStatus &&
+                  where.waitingStatus.lte !== undefined
+                ) {
+                  if (!m.waitingStatus || m.waitingStatus > where.waitingStatus.lte) return false
+                } else if (typeof where.waitingStatus === 'string') {
+                  if (!m.waitingStatus || m.waitingStatus !== where.waitingStatus) return false
+                }
               }
               return true
             })
-            .map((m) => ({ id: m.id, projectId: m.projectId, type: m.type, payload: m.payload }))
+            .map((m) => ({
+              id: m.id,
+              projectId: m.projectId,
+              type: m.type,
+              payload: m.payload,
+              waitingStatus: m.waitingStatus,
+            }))
         }
       ),
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
@@ -241,6 +259,7 @@ describe('DJ-T4 — cadeia inteira sem cota: a missão dorme, não falha, e não
     await vi.waitFor(
       () => {
         const m = prisma._missions.find((x) => x.id === missionId)
+        if (m?.status === 'failed') throw new Error('Caiu em failed')
         expect(m?.status).toBe('waiting')
       },
       { timeout: 2000 }
@@ -422,11 +441,15 @@ describe('DJ-T4 — cadeia inteira sem cota: a missão dorme, não falha, e não
     app.decorate('prisma', prisma as never)
     await app.register(schedulerPlugin)
 
+    const fetchMock = vi.fn(async () => new Response('{"ok":true}', { status: 200 }))
+    global.fetch = fetchMock as unknown as typeof fetch
+
     const resultado = await app.triggerAgentMission('qa', 'proj_1')
     const missionId = resultado.missionId as string
     await vi.waitFor(
       () => {
         const m = prisma._missions.find((x) => x.id === missionId)
+        if (m?.status === 'failed') throw new Error('Caiu em failed')
         expect(m?.status).toBe('waiting')
       },
       { timeout: 2000 }
@@ -464,6 +487,142 @@ describe('DJ-T4 — cadeia inteira sem cota: a missão dorme, não falha, e não
     )
     // MESMA missão, nunca uma segunda linha — "redisparada pelo mesmo caminho".
     expect(prisma._missions).toHaveLength(1)
+
+    await app.close()
+  })
+
+  test('retomada com cota voltando antes da hora: cota ausente -> segue dormindo', async () => {
+    resultadoDoMotor.erroPorRuntime = {
+      codex: CODEX_SEM_COTA_8H,
+      antigravity: ANTIGRAVITY_SEM_COTA_2H,
+      claude: CLAUDE_SEM_COTA_5H,
+    }
+    const app = Fastify({ logger: false })
+    const prisma = buildFakePrisma()
+    app.decorate('prisma', prisma as never)
+
+    let leituraChamada = 0
+    app.decorate('engineConnections', {
+      refreshQuota: async () => {
+        leituraChamada++
+        return false // Cota ainda ausente
+      },
+      getRawGithubToken: async () => 'token',
+    } as never)
+
+    await app.register(schedulerPlugin)
+
+    const resultado = await app.triggerAgentMission('qa', 'proj_1')
+    const missionId = resultado.missionId as string
+    await vi.waitFor(
+      () => {
+        const m = prisma._missions.find((x) => x.id === missionId)
+        if (m?.status === 'failed') throw new Error('Caiu em failed')
+        expect(m?.status).toBe('waiting')
+      },
+      { timeout: 2000 }
+    )
+
+    await app.retomarMissoesEsperandoCota()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(prisma._missions.find((x) => x.id === missionId)?.status).toBe('waiting')
+    expect(leituraChamada).toBe(1)
+
+    await app.close()
+  })
+
+  test('retomada com cota voltando antes da hora: cota presente -> acorda e tenta', async () => {
+    resultadoDoMotor.erroPorRuntime = {
+      codex: CODEX_SEM_COTA_8H,
+      antigravity: ANTIGRAVITY_SEM_COTA_2H,
+      claude: CLAUDE_SEM_COTA_5H,
+    }
+    const app = Fastify({ logger: false })
+    const prisma = buildFakePrisma()
+    app.decorate('prisma', prisma as never)
+
+    let leituraChamada = 0
+    app.decorate('engineConnections', {
+      refreshQuota: async () => {
+        leituraChamada++
+        // Cota voltou na releitura antes do prazo
+        return true
+      },
+      getRawGithubToken: async () => 'token',
+    } as never)
+
+    await app.register(schedulerPlugin)
+
+    const resultado = await app.triggerAgentMission('qa', 'proj_1')
+    const missionId = resultado.missionId as string
+    await vi.waitFor(
+      () => {
+        const m = prisma._missions.find((x) => x.id === missionId)
+        expect(m?.status).toBe('waiting')
+      },
+      { timeout: 2000 }
+    )
+
+    resultadoDoMotor.erroPorRuntime = null
+    resultadoDoMotor.sucessoPorRuntime = {
+      codex: {
+        missionId: 'irrelevante-aqui',
+        runtime: 'codex',
+        exitCode: 0,
+        durationMs: 1,
+        output: RELATORIO_REAL,
+        stderr: '',
+      },
+    }
+
+    await app.retomarMissoesEsperandoCota()
+    await vi.waitFor(
+      () => {
+        const m = prisma._missions.find((x) => x.id === missionId)
+        expect(m?.status).toBe('completed')
+      },
+      { timeout: 2000 }
+    )
+    expect(leituraChamada).toBe(1)
+
+    await app.close()
+  })
+
+  test('retomada com cota voltando antes da hora: leitura falha/erro -> fail-safe, segue dormindo', async () => {
+    resultadoDoMotor.erroPorRuntime = {
+      codex: CODEX_SEM_COTA_8H,
+      antigravity: ANTIGRAVITY_SEM_COTA_2H,
+      claude: CLAUDE_SEM_COTA_5H,
+    }
+    const app = Fastify({ logger: false })
+    const prisma = buildFakePrisma()
+    app.decorate('prisma', prisma as never)
+
+    let leituraChamada = 0
+    app.decorate('engineConnections', {
+      refreshQuota: async () => {
+        leituraChamada++
+        throw new Error('Falha na releitura')
+      },
+      getRawGithubToken: async () => 'token',
+    } as never)
+
+    await app.register(schedulerPlugin)
+
+    const resultado = await app.triggerAgentMission('qa', 'proj_1')
+    const missionId = resultado.missionId as string
+    await vi.waitFor(
+      () => {
+        const m = prisma._missions.find((x) => x.id === missionId)
+        expect(m?.status).toBe('waiting')
+      },
+      { timeout: 2000 }
+    )
+
+    await app.retomarMissoesEsperandoCota()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(prisma._missions.find((x) => x.id === missionId)?.status).toBe('waiting')
+    expect(leituraChamada).toBe(1)
 
     await app.close()
   })

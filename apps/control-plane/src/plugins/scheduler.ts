@@ -10230,15 +10230,20 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
    */
   const retomarMissoesEsperandoCota = async (): Promise<void> => {
     const agoraIso = new Date().toISOString()
-    let vencidas: Array<{ id: string; projectId: string; type: string; payload: unknown }> = []
+    let adormecidas: Array<{
+      id: string
+      projectId: string
+      type: string
+      payload: unknown
+      waitingStatus: string | null
+    }> = []
     try {
-      vencidas = await app.prisma.mission.findMany({
+      adormecidas = await app.prisma.mission.findMany({
         where: {
           status: 'waiting',
           waitingReason: 'cota-dos-motores',
-          waitingStatus: { lte: agoraIso },
         },
-        select: { id: true, projectId: true, type: true, payload: true },
+        select: { id: true, projectId: true, type: true, payload: true, waitingStatus: true },
       })
     } catch (err) {
       app.log.error(
@@ -10248,7 +10253,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       return
     }
 
-    for (const missao of vencidas) {
+    for (const missao of adormecidas) {
       const m = /^agent-run-([a-z]+)$/.exec(missao.type)
       const role = m?.[1]
       if (!role || !isF6AgentRole(role)) {
@@ -10302,6 +10307,28 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           `[Scheduler] missão ${missao.id} esperando cota: projeto ${missao.projectId} não existe mais/inativo`
         )
         continue
+      }
+
+      if (missao.waitingStatus && missao.waitingStatus > agoraIso) {
+        const primeiroMotor = cotaEspera.chainOriginal[0]?.runtime
+        if (!primeiroMotor) continue
+
+        let leuCota = false
+        try {
+          leuCota = await app.engineConnections.refreshQuota(
+            project.userId as string,
+            primeiroMotor
+          )
+        } catch (err) {
+          app.log.warn(
+            err,
+            `[Scheduler] falhou ao reler a cota do ${primeiroMotor} para a missão ${missao.id}; continua dormindo`
+          )
+        }
+
+        if (!leuCota) {
+          continue
+        }
       }
 
       // Write condicional: se outro processo/tick já retomou esta missão
