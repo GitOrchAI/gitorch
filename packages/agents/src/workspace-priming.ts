@@ -61,6 +61,32 @@ async function git(cwd: string, args: string[]): Promise<void> {
   }).catch(() => undefined)
 }
 
+export async function hydrateStateFromCheckpoint(workspacePath: string): Promise<string | null> {
+  const checkpointPath = path.join(workspacePath, '.gitorch-checkpoint.json')
+
+  const hasCheckpoint = await fileExists(checkpointPath)
+  if (!hasCheckpoint) {
+    return null
+  }
+
+  try {
+    const raw = await fs.readFile(checkpointPath, 'utf8')
+    const state = JSON.parse(raw)
+
+    if (state && Array.isArray(state.artifacts)) {
+      for (const artifact of state.artifacts) {
+        if (!(await fileExists(path.join(workspacePath, artifact)))) {
+          return null
+        }
+      }
+    }
+
+    return JSON.stringify(state)
+  } catch {
+    return null
+  }
+}
+
 /**
  * Prepara o workspace da missão de forma idempotente e resistente a resets do
  * motor. Best-effort: um erro aqui não derruba a missão.

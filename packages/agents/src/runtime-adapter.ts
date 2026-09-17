@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { hydrateStateFromCheckpoint } from './workspace-priming.js'
 import type {
   AgentRuntimeSelection,
   F6AgentRole,
@@ -337,6 +338,13 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
     runtime: options.runtime,
     async run(request: RuntimeExecutionRequest) {
       const env = buildRuntimeEnvironment(request.credentialRef)
+
+      if (request.cwd) {
+        const state = await hydrateStateFromCheckpoint(request.cwd)
+        if (state) {
+          env['GITORCH_RUNTIME_CHECKPOINT'] = state
+        }
+      }
 
       if (request.role) {
         env['GITORCH_AGENT_ROLE'] = request.role
