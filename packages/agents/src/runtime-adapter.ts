@@ -7,6 +7,7 @@ import type {
   RuntimeCredentialRef,
 } from './types'
 import { wrapWithLimits, type ExecutionLimits } from './execution-limits'
+import { getTracingEnvironment } from './runtime-config'
 
 const execFileAsync = promisify(execFile)
 
@@ -271,6 +272,21 @@ export function buildRuntimeEnvironment(ref: RuntimeCredentialRef): Record<strin
   if (ref.ownerUserId) {
     env['GITORCH_OWNER_USER_ID'] = ref.ownerUserId
   }
+
+  const tracingEnv = getTracingEnvironment()
+  if (tracingEnv.LANGFUSE_PUBLIC_KEY) {
+    env['LANGFUSE_PUBLIC_KEY'] = tracingEnv.LANGFUSE_PUBLIC_KEY
+  }
+  if (tracingEnv.LANGFUSE_SECRET_KEY) {
+    env['LANGFUSE_SECRET_KEY'] = tracingEnv.LANGFUSE_SECRET_KEY
+  }
+  if (tracingEnv.LANGFUSE_HOST) {
+    env['LANGFUSE_HOST'] = tracingEnv.LANGFUSE_HOST
+  }
+  if (tracingEnv.TELEMETRY_ENABLED) {
+    env['TELEMETRY_ENABLED'] = tracingEnv.TELEMETRY_ENABLED
+  }
+
   return env
 }
 

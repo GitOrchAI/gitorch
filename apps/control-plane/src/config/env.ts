@@ -52,6 +52,11 @@ export const envSchema = z.object({
   OTEL_EXPORTER_OTLP_ENDPOINT: z.string().url().optional(),
   PROMETHEUS_PORT: z.coerce.number().default(9464),
 
+  LANGFUSE_PUBLIC_KEY: z.string().optional(),
+  LANGFUSE_SECRET_KEY: z.string().optional(),
+  LANGFUSE_HOST: z.string().url().optional(),
+  TELEMETRY_ENABLED: z.preprocess((v) => v === '1', z.boolean()),
+
   GITHUB_APP_ID: z.string().optional(),
   GITHUB_APP_PRIVATE_KEY: z.string().optional(),
   GITHUB_WEBHOOK_SECRET: z.string().optional(),
