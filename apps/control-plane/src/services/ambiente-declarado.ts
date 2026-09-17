@@ -107,6 +107,7 @@ export function projetoDeclarouOndePublica(runtimeConfig: unknown): boolean {
 export interface LinhaComMescla {
   issueNumber: number
   mergeCommitSha?: string | null | undefined
+  closedReason?: string | null | undefined
   /** Quando a linha mexeu pela última vez — o relógio da janela. */
   updatedAt?: Date | null | undefined
 }
@@ -147,9 +148,10 @@ export function tarefasComEntregaMesclada(
 ): Set<number> {
   const entregues = new Set<number>()
   for (const linha of linhas) {
-    // String vazia é "não mesclado" tanto quanto nulo — o campo só ganha
-    // conteúdo quando o merge de fato aconteceu.
-    if (typeof linha.mergeCommitSha !== 'string' || linha.mergeCommitSha.trim() === '') continue
+    const temMerge =
+      (typeof linha.mergeCommitSha === 'string' && linha.mergeCommitSha.trim() !== '') ||
+      linha.closedReason === 'merged'
+    if (!temMerge) continue
 
     // Sem data não dá para saber se é recente. Barrar sem saber prenderia a
     // issue para sempre, que é justamente o defeito a evitar.

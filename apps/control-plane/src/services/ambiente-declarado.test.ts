@@ -198,6 +198,21 @@ describe('tarefasComEntregaMesclada', () => {
     ).toBe(0)
   })
 
+  it('closedReason: "merged" com mergeCommitSha nulo conta como entregue', () => {
+    const entregues = tarefasComEntregaMesclada(
+      [
+        {
+          issueNumber: 200,
+          mergeCommitSha: null,
+          closedReason: 'merged',
+          updatedAt: new Date(AGORA.getTime() - HORA),
+        },
+      ],
+      AGORA
+    )
+    expect(entregues.has(200)).toBe(true)
+  })
+
   it('lista vazia não quebra', () => {
     expect(tarefasComEntregaMesclada([], AGORA).size).toBe(0)
   })

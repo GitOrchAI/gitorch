@@ -18,6 +18,12 @@ export interface AnalisarFalhasDeps {
   gravarAprendizado: (args: { issueNumber: number; analise: AnaliseDeFalha }) => Promise<void>
   /** Marca a análise como feita para a issue (`marcarAnaliseFeitaDaIssue`). */
   marcarFeita: (issueNumber: number) => Promise<void>
+  /** Aciona o refinamento da issue no GitHub pelo PO após análise do RA. */
+  refinarIssue?: (args: {
+    issueNumber: number
+    analise: AnaliseDeFalha
+    entrada: EntradaDaAnalise
+  }) => Promise<void>
   teto?: number
   onInfo?: (m: string) => void
   onWarn?: (m: string) => void
@@ -49,6 +55,15 @@ export async function analisarFalhasPendentes(
       }
       const analise = await deps.analisar(entrada)
       await deps.gravarAprendizado({ issueNumber, analise })
+      if (deps.refinarIssue) {
+        try {
+          await deps.refinarIssue({ issueNumber, analise, entrada })
+        } catch (err) {
+          warn(
+            `[analise-falhas] #${issueNumber}: falha ao refinar issue no GitHub: ${(err as Error).message}`
+          )
+        }
+      }
       await deps.marcarFeita(issueNumber)
       r.analisadas.push(issueNumber)
       r.padroes.push({ issueNumber, padrao: analise.padraoDoJules })

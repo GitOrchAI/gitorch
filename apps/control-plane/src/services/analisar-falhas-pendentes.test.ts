@@ -88,4 +88,16 @@ describe('analisarFalhasPendentes', () => {
     expect(r.analisadas).toEqual([2])
     expect(marcados).toEqual([2]) // a #1 NÃO foi marcada → volta na próxima passada
   })
+
+  it('aciona refinarIssue quando fornecido nas dependências', async () => {
+    const { d } = deps({ pendentes: [10] })
+    const refinadas: number[] = []
+    d.refinarIssue = async ({ issueNumber }) => {
+      refinadas.push(issueNumber)
+    }
+
+    const r = await analisarFalhasPendentes(d)
+    expect(r.analisadas).toEqual([10])
+    expect(refinadas).toEqual([10])
+  })
 })
