@@ -104,3 +104,26 @@ export interface JulesPrGateResult {
   comment?: string
   requiredActions: string[]
 }
+
+export interface MissionState {
+  mission: AgentMission
+  workspacePath?: string
+  result?: unknown
+  timeoutMs?: number
+}
+
+export interface NodeTransition {
+  nextRole?: F6AgentRole | 'done' | 'failed'
+  state: MissionState
+}
+
+export interface StateNode {
+  role: F6AgentRole | 'dev'
+  execute(state: MissionState): Promise<NodeTransition>
+}
+
+export interface StateGraph {
+  nodes: Map<string, StateNode>
+  addEdge(from: string, to: string): void
+  run(initialState: MissionState): Promise<MissionState>
+}
