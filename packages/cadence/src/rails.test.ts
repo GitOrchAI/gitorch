@@ -1,3 +1,4 @@
+import { evaluateNodeTransition } from "./rails"
 import { describe, it, expect } from 'vitest'
 import { loadEventPlaybook, loadPlaybook } from './index'
 import {
@@ -877,5 +878,37 @@ describe('criterioEhTestavel: a quarta pergunta da régua ("tem como testar?")',
         '[Task] Filtro por material'
       )
     ).toBe(true)
+  })
+})
+
+describe('evaluateNodeTransition', () => {
+  it('permite a transicao quando criterios de saida e guardrails sao atendidos', () => {
+    const result = evaluateNodeTransition({
+      role: 'po',
+      exitCriteriaMet: true,
+      guardrailPassed: true,
+      nextNode: 'proximo_passo',
+    })
+    expect(result).toEqual({ nextNode: 'proximo_passo' })
+  })
+
+  it('bloqueia a transicao se criterios de saida nao foram atendidos', () => {
+    const result = evaluateNodeTransition({
+      role: 'dev',
+      exitCriteriaMet: false,
+      guardrailPassed: true,
+      nextNode: 'proximo_passo',
+    })
+    expect(result).toEqual({ error: 'Critérios de saída não foram atendidos.' })
+  })
+
+  it('bloqueia a transicao se guardrail falhou', () => {
+    const result = evaluateNodeTransition({
+      role: 'ra',
+      exitCriteriaMet: true,
+      guardrailPassed: false,
+      nextNode: 'proximo_passo',
+    })
+    expect(result).toEqual({ error: 'Guardrail do papel RA não foi satisfeito.' })
   })
 })

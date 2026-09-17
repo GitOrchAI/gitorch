@@ -1426,3 +1426,33 @@ export function buildStepPrompt(
     'You do not have (and must not attempt to use) any GitHub tools.',
   ].join('\n')
 }
+
+// ---------------------------------------------------------------------------
+// Arestas condicionais (Graph Transition Evaluators)
+// ---------------------------------------------------------------------------
+
+export interface NodeStateContext {
+  role: CadenceRole | 'dev'
+  exitCriteriaMet: boolean
+  guardrailPassed: boolean
+  nextNode: string
+}
+
+export type NodeTransitionResult = { nextNode: string } | { error: string }
+
+/**
+ * Avaliador de transição para o grafo de estados. Verifica se o nó atual
+ * (PO, RA, Dev) satisfez seus critérios de saída e guardrails antes
+ * de permitir a progressão para a próxima etapa.
+ */
+export function evaluateNodeTransition(context: NodeStateContext): NodeTransitionResult {
+  if (!context.exitCriteriaMet) {
+    return { error: 'Critérios de saída não foram atendidos.' }
+  }
+
+  if (!context.guardrailPassed) {
+    return { error: `Guardrail do papel ${context.role.toUpperCase()} não foi satisfeito.` }
+  }
+
+  return { nextNode: context.nextNode }
+}

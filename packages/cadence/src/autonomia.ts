@@ -176,3 +176,29 @@ export function exigirPermissao(
     decisao.motivo
   )
 }
+
+// ---------------------------------------------------------------------------
+// Arestas condicionais (Graph Transition Evaluators)
+// ---------------------------------------------------------------------------
+
+export interface AutonomyTransitionContext {
+  nivel: NivelDeAutonomia | null | undefined | string
+  acao: AcaoNoRepositorio
+  nextNode: string
+  humanApprovalNode: string
+}
+
+/**
+ * Avaliador de transição condicional para autonomia.
+ * Direciona o fluxo para o próximo nó se o nível de permissão da ordem
+ * for suficiente, caso contrário direciona para a etapa de aprovação humana.
+ */
+export function evaluateAutonomyTransition(context: AutonomyTransitionContext): string {
+  const decisao = podeEscrever(context.nivel, context.acao)
+
+  if (decisao.pode) {
+    return context.nextNode
+  }
+
+  return context.humanApprovalNode
+}

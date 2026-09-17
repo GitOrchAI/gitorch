@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  evaluateAutonomyTransition,
   podeEscrever,
   exigirPermissao,
   normalizarNivel,
@@ -143,5 +144,27 @@ describe('exigirPermissao — a forma usada na porta', () => {
     } catch (erro) {
       expect((erro as Error).name).not.toBe('Error')
     }
+  })
+})
+
+describe('evaluateAutonomyTransition', () => {
+  it('vai para o proximo no se a permissao permite a acao', () => {
+    const result = evaluateAutonomyTransition({
+      nivel: 'cuidar',
+      acao: 'mesclar',
+      nextNode: 'execucao',
+      humanApprovalNode: 'esperando_aprovacao',
+    })
+    expect(result).toBe('execucao')
+  })
+
+  it('redireciona para o no de aprovacao se a acao nao for permitida', () => {
+    const result = evaluateAutonomyTransition({
+      nivel: 'so_olhar',
+      acao: 'propor',
+      nextNode: 'execucao',
+      humanApprovalNode: 'esperando_aprovacao',
+    })
+    expect(result).toBe('esperando_aprovacao')
   })
 })
