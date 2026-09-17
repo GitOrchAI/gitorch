@@ -1,4 +1,4 @@
-import { evaluateNodeTransition } from "./rails"
+import { evaluateNodeTransition } from './rails'
 import { describe, it, expect } from 'vitest'
 import { loadEventPlaybook, loadPlaybook } from './index'
 import {
