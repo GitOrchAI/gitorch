@@ -9,8 +9,11 @@ import type {
 } from './types'
 import { AGENT_SYSTEM_PROMPTS } from './prompts/index.js'
 import { buildPrimingPreamble } from './prompts/priming.js'
+import { orchestratorRegistry } from './orchestrator.js'
+import { hydrateStateFromCheckpoint } from './workspace-priming.js'
 
 export const workspaceManager = new WorkspaceManager()
+export const missionRegistry = new Map<string, BuildAgentMissionInput>()
 
 export interface BuildAgentMissionInput {
   id: string
@@ -36,6 +39,8 @@ export function buildAgentMission(input: BuildAgentMissionInput): AgentMission {
     )
   }
 
+  missionRegistry.set(input.id, input)
+
   return {
     id: input.id,
     projectId: input.projectId,
@@ -51,6 +56,63 @@ export function buildAgentMission(input: BuildAgentMissionInput): AgentMission {
     evidenceRefs: [...(input.evidenceRefs ?? [])],
     userId: input.userId,
   }
+}
+
+export async function resumeMissionFromCheckpoint(
+  missionId: string,
+  options?: Partial<BuildAgentMissionInput>
+) {
+  let input = missionRegistry.get(missionId)
+
+  if (!input) {
+    if (
+      !options ||
+      !options.id ||
+      !options.projectId ||
+      !options.repository ||
+      !options.role ||
+      !options.goal ||
+      !options.context ||
+      !options.credentialRef
+    ) {
+      throw new Error(
+        `Mission ${missionId} not found in registry and no sufficient fallback options provided.`
+      )
+    }
+    input = options as BuildAgentMissionInput
+  }
+
+  let orchestrator = orchestratorRegistry.get(missionId)
+  if (!orchestrator) {
+    // Reconstruct the orchestrator
+    const { AgentOrchestrator } = await import('./orchestrator.js')
+    const { RuntimeRegistry } = await import('./runtime-adapter.js')
+    const registry = new RuntimeRegistry()
+    // For fallback reconstruction, we might need a default setup.
+    // Usually, caller provides the full orchestrator environment in the real world.
+    orchestrator = new AgentOrchestrator({ registry })
+  }
+
+  const userId = input.userId ?? 'user-default'
+  const allocation = (await workspaceManager.allocateWorkspace(userId, input.projectId, {
+    repository: input.repository,
+  })) as { path?: string } | undefined
+
+  if (allocation?.path) {
+    const state = await hydrateStateFromCheckpoint(allocation.path)
+    if (state) {
+      const mission = buildAgentMission(input)
+      mission.waitingStatus = 'resuming'
+      try {
+        return await orchestrator.runMissionCore(mission, allocation.path, input.timeoutMs)
+      } finally {
+        missionRegistry.delete(missionId)
+      }
+    }
+  }
+
+  missionRegistry.delete(missionId)
+  throw new Error(`Failed to resume mission ${missionId}: No valid checkpoint found.`)
 }
 
 function buildPrompt(

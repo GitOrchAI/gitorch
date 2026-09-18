@@ -56,6 +56,10 @@ export function resolveExecutionLimitsMode(
   return env['GITORCH_EXEC_LIMITS'] === 'systemd' ? 'systemd' : 'none'
 }
 
+export function isRecoverableFailure(exitCode: number): boolean {
+  return exitCode === 124
+}
+
 /**
  * Busca burra do binário nos diretórios do PATH — a mesma técnica que um
  * shell usaria para resolver um comando, sem depender de spawnar `which`
