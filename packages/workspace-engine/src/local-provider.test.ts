@@ -77,23 +77,6 @@ test('clona repo privado autenticando via header HTTP (nunca grava o token em di
   await fs.rm(base, { recursive: true, force: true })
 })
 
-test('teardownWorkspace exclui o diretório temporário integralmente', async () => {
-  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-local-ws-'))
-  const provider = new LocalWorkspaceProvider(base)
-
-  await provider.allocateWorkspace('scheduler-user', 'project-1')
-
-  const expectedPath = path.join(base, 'scheduler-user', 'project-1')
-  const statAntes = await fs.stat(expectedPath)
-  expect(statAntes.isDirectory()).toBe(true)
-
-  await provider.teardownWorkspace('scheduler-user', 'project-1')
-
-  await expect(fs.stat(expectedPath)).rejects.toThrow(/ENOENT/)
-
-  await fs.rm(base, { recursive: true, force: true })
-})
-
 test('falha de clone NUNCA vaza o token: erro do git (que embute o comando inteiro) é redigido antes de propagar', async () => {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), 'gitorch-local-ws-'))
   const token = 'gh_secret_token_abc123'

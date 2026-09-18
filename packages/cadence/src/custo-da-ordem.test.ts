@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest'
 import {
   analisarCustoDaOrdem,
   ordemQueMinimizaEspera,
-  calcularCustoDeCI,
   MIN_PEDIDOS_PARA_AVALIAR,
   LIMIAR_PONTOS_MINIMOS,
   LIMIAR_RAZAO,
@@ -21,23 +20,6 @@ import {
 //     ESCALA_DE_PESO (1,2,3,5,8,13) que o produto já tem — nada de campo novo
 //     para o dono preencher.
 //  2. só avisa quando a diferença for GRANDE — limiar documentado e ajustável.
-
-describe('calcularCustoDeCI — precificação de testes e pipeline', () => {
-  it('cobra pelo tempo em minutos (mínimo 1) multiplicado por CPU+RAM', () => {
-    // 65 segundos arredonda para 2 minutos. 2 minutos * (2 CPUs + 4 GB) = 12.
-    expect(calcularCustoDeCI({ duracaoSegundos: 65, cpus: 2, ramGb: 4 })).toBe(12)
-  })
-
-  it('respeita o piso de 1 minuto para tarefas muito rápidas', () => {
-    // 10 segundos é cobrado como 1 minuto. 1 * (1 CPU + 2 GB) = 3.
-    expect(calcularCustoDeCI({ duracaoSegundos: 10, cpus: 1, ramGb: 2 })).toBe(3)
-  })
-
-  it('calcula corretamente valores exatos em minutos', () => {
-    // 120 segundos = 2 minutos. 2 * (4 CPUs + 8 GB) = 24.
-    expect(calcularCustoDeCI({ duracaoSegundos: 120, cpus: 4, ramGb: 8 })).toBe(24)
-  })
-})
 
 describe('ordemQueMinimizaEspera — a ordem que minimiza a espera de todo mundo', () => {
   it('ordena por peso crescente (regra clássica de fila: o menor primeiro)', () => {

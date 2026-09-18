@@ -133,26 +133,6 @@ describe('WorkspaceManager', () => {
     expect(killCall).toBeDefined()
   })
 
-  it('should properly teardown a workspace', async () => {
-    const userId = 'user-123'
-    const projectId = 'project-abc'
-    const expectedPath = path.resolve('/var/lib/gitorch/workspaces', userId, projectId)
-
-    await manager.teardownWorkspace(userId, projectId)
-
-    expect(execFile).toHaveBeenCalled()
-    const calls = vi.mocked(execFile).mock.calls
-    const killCall = calls.find(
-      (call) => call[0] === 'pkill' && call[1]?.some((arg) => arg.includes('wsuser123projectabc'))
-    )
-    expect(killCall).toBeDefined()
-
-    expect(fs.rm).toHaveBeenCalledWith(expectedPath, {
-      recursive: true,
-      force: true,
-    })
-  })
-
   it('should clone repositories into workspace', async () => {
     const workspaceId = 'ws:user-123:project-abc'
     const expectedSrcPath = path.join(

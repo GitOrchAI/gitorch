@@ -45,6 +45,7 @@ model User {
   environments      ClientEnvironment[]
   telegramLink      TelegramLink?
   projectInvitations ProjectInvitation[]
+  wishlistItems      WishlistItem[]
 
   @@map("users")
 }
@@ -1003,4 +1004,19 @@ model PedidoDeDesejoPendente {
   @@index([userId, chatId])
   @@index([createdAt])
   @@map("pedidos_de_desejo_pendentes")
+}
+
+/// Item de wishlist do usuário
+model WishlistItem {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  payload   String
+  source    String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("wishlist_items")
 }

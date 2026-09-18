@@ -258,19 +258,4 @@ export class LocalWorkspaceProvider {
     this.validateInput(projectId)
     // Sem MicroVM não há snapshot a tirar nem processo a matar.
   }
-
-  async teardownWorkspace(userId: string, projectId: string): Promise<void> {
-    this.validateInput(userId)
-    this.validateInput(projectId)
-
-    const sanitizedUserId = userId.replace(/[^a-zA-Z0-9_-]/g, '_')
-    const sanitizedProjectId = projectId.replace(/[^a-zA-Z0-9_-]/g, '_')
-
-    const workspacePath = path.resolve(this.baseDir, sanitizedUserId, sanitizedProjectId)
-    if (!workspacePath.startsWith(path.resolve(this.baseDir))) {
-      throw new Error('Caminho fora da raiz permitida')
-    }
-
-    await fs.rm(workspacePath, { recursive: true, force: true })
-  }
 }

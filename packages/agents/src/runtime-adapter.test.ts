@@ -49,31 +49,6 @@ test('registers and resolves runtime adapters by runtime', () => {
   expect(() => registry.resolve('codex')).toThrow('No runtime adapter registered for codex')
 })
 
-test('returns waiting_quota when cli runner outputs 429 quota error', async () => {
-  const adapter = createCliRuntimeAdapter({
-    runtime: 'antigravity',
-    binary: 'agy',
-    runner: async () => {
-      return { exitCode: 1, stdout: '', stderr: 'HTTP 429 Too Many Requests', durationMs: 10 }
-    },
-  })
-
-  const result = await adapter.run({
-    missionId: 'mission-429',
-    prompt: 'test',
-    runtime: { runtime: 'antigravity' },
-    credentialRef: {
-      connectionId: 'c1',
-      ownerScope: 'project',
-      runtime: 'antigravity',
-      providedSecrets: [],
-    },
-  })
-
-  expect(result.waitingStatus).toBe('waiting_quota')
-  expect(result.exitCode).toBe(0)
-})
-
 test('creates cli runtime adapter that passes prompt and runtime environment to runner', async () => {
   const calls: RuntimeCommandRequest[] = []
   const args = ['--print']

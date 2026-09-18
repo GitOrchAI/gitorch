@@ -36,11 +36,6 @@ export interface GraphExportResult {
   edges: GraphExportEdge[]
   truncated: boolean
   aggregatedBy?: 'directory'
-  metrics: {
-    symbolCount: number
-    orphanNodes: number
-    structuralComplexity: number
-  }
 }
 
 export interface ExportGraphOptions extends SummarizeOptions {
@@ -213,23 +208,12 @@ export async function exportGraph(
       }
     }
 
-    const orphanNodes = nodes.filter((n) => (fanIn.get(n.id) ?? 0) === 0).length
-    const symbolCount = nodes.length
-    const structuralComplexity = symbolCount > 0 ? edges.length / symbolCount : 0
-    const metrics = { symbolCount, orphanNodes, structuralComplexity }
-
     if (nodes.length > maxNodes) {
       const agg = aggregateByDirectory(nodes, edges, maxNodes)
-      return {
-        nodes: agg.nodes,
-        edges: agg.edges,
-        truncated: true,
-        aggregatedBy: 'directory',
-        metrics,
-      }
+      return { nodes: agg.nodes, edges: agg.edges, truncated: true, aggregatedBy: 'directory' }
     }
 
-    return { nodes, edges, truncated: false, metrics }
+    return { nodes, edges, truncated: false }
   } catch (err) {
     if (err instanceof PoisonedFileError) throw err
     return null

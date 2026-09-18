@@ -56,19 +56,12 @@ describe('exportGraph', () => {
     // quando também é chamado (fan-in >= 1); ao menos marca 'warn' por não-testado.
     expect(somar!.health).not.toBe('good')
     expect(somar!.file).toBe('src/math.ts')
-
-    // Verifica as métricas do grafo bruto
-    expect(g!.metrics).toBeDefined()
-    expect(g!.metrics.symbolCount).toBeGreaterThan(0)
-    expect(typeof g!.metrics.orphanNodes).toBe('number')
-    expect(typeof g!.metrics.structuralComplexity).toBe('number')
   })
 
   it('agrega por diretório quando o grafo bruto excede maxNodes', async () => {
     const g = await exportGraph(dir, { maxNodes: 1 })
     expect(g).not.toBeNull()
     expect(g!.truncated).toBe(true)
-    expect(g!.metrics).toBeDefined()
     expect(g!.aggregatedBy).toBe('directory')
     expect(g!.nodes.every((n) => n.type === 'directory')).toBe(true)
     expect(g!.nodes.every((n) => n.file === 'src')).toBe(true)

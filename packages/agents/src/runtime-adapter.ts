@@ -137,10 +137,6 @@ function normalizeExitCode(code: unknown): number {
 // não existe motivo de produção pra subir isto perto do limite real do SO.
 const MAX_PROMPT_ARG_BYTES = Number(process.env['GITORCH_MAX_PROMPT_ARG_BYTES'] ?? 96 * 1024)
 
-function isQuotaError(text: string): boolean {
-  return /\b429\b|resource.?exhausted|quota|rate.?limit/i.test(text)
-}
-
 export interface CapPromptResult {
   prompt: string
   truncated: boolean
@@ -428,46 +424,21 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
       )
 
       if (error) {
-        const errorMessage = String(error.message)
-        if (isQuotaError(errorMessage)) {
-          return {
-            missionId: request.missionId,
-            runtime: options.runtime,
-            output: '',
-            stderr: errorMessage,
-            exitCode: 0,
-            durationMs: 0,
-            waitingStatus: 'waiting_quota',
-            waitingReason: 'Quota or rate limit exceeded',
-          }
-        }
         return {
           missionId: request.missionId,
           runtime: options.runtime,
           output: '',
-          stderr: errorMessage,
+          stderr: String(error.message),
           exitCode: 1,
           durationMs: 0,
           failedStep: failedStep ?? 'execute-runner',
-          errorDetails: errorMessage,
+          errorDetails: String(error.message),
           recoveryAction: 'none',
         }
       }
 
       if (result) {
         const failed = result.exitCode !== 0
-        if (failed && isQuotaError(result.stderr)) {
-          return {
-            missionId: request.missionId,
-            runtime: options.runtime,
-            output: result.stdout,
-            stderr: result.stderr,
-            exitCode: 0,
-            durationMs: result.durationMs,
-            waitingStatus: 'waiting_quota',
-            waitingReason: 'Quota or rate limit exceeded',
-          }
-        }
         return {
           missionId: request.missionId,
           runtime: options.runtime,
@@ -566,30 +537,15 @@ export function createPythonSdkRuntimeAdapter(
           message?: string
         }
         const timedOut = err.killed === true || err.signal === 'SIGKILL'
-        const errorMessage = err.stderr || err.message || String(error)
-
-        if (!timedOut && isQuotaError(errorMessage)) {
-          return {
-            missionId: request.missionId,
-            runtime: options.runtime,
-            output: err.stdout || '',
-            stderr: errorMessage,
-            exitCode: 0,
-            durationMs: Date.now() - start,
-            waitingStatus: 'waiting_quota',
-            waitingReason: 'Quota or rate limit exceeded',
-          }
-        }
-
         return {
           missionId: request.missionId,
           runtime: options.runtime,
           output: err.stdout || '',
-          stderr: errorMessage,
+          stderr: err.stderr || err.message || String(error),
           exitCode: timedOut ? 124 : normalizeExitCode(err.code),
           durationMs: Date.now() - start,
           failedStep: 'execute-python-script',
-          errorDetails: errorMessage,
+          errorDetails: err.message || String(error),
           recoveryAction: 'none',
         }
       }
