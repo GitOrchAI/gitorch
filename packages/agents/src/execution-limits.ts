@@ -36,6 +36,13 @@ export interface ExecutionLimits {
   memorySwapMax: string
   /** Ex.: '150%'. Vira `-p CPUQuota=<cpuQuota>` do systemd-run. */
   cpuQuota: string
+
+  /** Teto de CPU exclusivo para validações de diagnóstico e CI */
+  diagnosticCpuQuota?: string
+  /** Teto de memória exclusivo para validações de diagnóstico e CI */
+  diagnosticMemoryMax?: string
+  /** Timeout (em ms) para interrupção de missões de diagnóstico/CI presas */
+  diagnosticTimeoutMs?: number
 }
 
 export interface WrappedCommand {

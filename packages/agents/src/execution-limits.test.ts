@@ -83,6 +83,31 @@ describe('wrapWithLimits', () => {
       })
     })
 
+    test('opcional: parâmetros exclusivos de CI/diagnóstico não afetam a execução normal se ausentes', () => {
+      dir = mkdtempSync(join(tmpdir(), 'gitorch-systemd-run-'))
+      writeFileSync(join(dir, 'systemd-run'), '#!/bin/sh\nexit 0\n')
+      chmodSync(join(dir, 'systemd-run'), 0o755)
+
+      const limitsWithDiagnostic = {
+        ...limits,
+        diagnosticCpuQuota: '200%',
+        diagnosticMemoryMax: '4G',
+        diagnosticTimeoutMs: 300000,
+      }
+
+      const result = wrapWithLimits('claude', ['-p', 'oi'], limitsWithDiagnostic, {
+        env: { GITORCH_EXEC_LIMITS: 'systemd', PATH: dir },
+      })
+
+      // O comando original wrapWithLimits *não* usa os campos diagnostic diretamente no argv,
+      // ele usa memoryMax, memorySwapMax, cpuQuota (os valores de base),
+      // as missões de CI que precisarão usar esses campos para sobrepor os normais
+      // (a serem lidos antes do wrapWithLimits na missão).
+      // Este teste assegura que o tipo interface os aceita e o wrap não quebra.
+      expect(result.args).toContain('MemoryMax=2G')
+      expect(result.args).not.toContain('MemoryMax=4G')
+    })
+
     // Regressão: esta é a alma da task W5.3 — provado ao vivo que SEM
     // MemorySwapMax, MemoryMax sozinho não mata o processo (ele escorre pra
     // swap). Este teste garante que o argv sempre carrega o -p MemorySwapMax,
