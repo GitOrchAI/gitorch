@@ -62,6 +62,19 @@ describe('exportGraph', () => {
     expect(g!.metrics.symbolCount).toBeGreaterThan(0)
     expect(typeof g!.metrics.orphanNodes).toBe('number')
     expect(typeof g!.metrics.structuralComplexity).toBe('number')
+
+    expect(g!.moduleGraph).toBeDefined()
+    expect(g!.moduleGraph!.nodes.some((n) => n.file === 'src/math.ts' && n.type === 'file')).toBe(
+      true
+    )
+    expect(
+      g!.moduleGraph!.edges.some(
+        (e) =>
+          e.source === 'file://src/user.ts' &&
+          e.target === 'file://src/math.ts' &&
+          e.rel === 'IMPORTS'
+      )
+    ).toBe(true)
   })
 
   it('agrega por diretório quando o grafo bruto excede maxNodes', async () => {

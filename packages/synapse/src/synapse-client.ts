@@ -15,6 +15,8 @@ import {
 } from './executions/execution-ledger'
 import { InMemoryPheromoneStore } from './pheromones/pheromone-store'
 import type {
+  CortexClientLike,
+  CortexSearchResultLike,
   DecisionBrief,
   ExecutionRecord,
   NextActionDecision,
@@ -25,6 +27,7 @@ import type {
 } from './types'
 
 export interface SynapseClientOptions {
+  cortexClient?: CortexClientLike
   eventBus?: SynapseEventBus
   executionLedger?: ExecutionLedger
   pheromoneStore?: InMemoryPheromoneStore
@@ -54,6 +57,7 @@ export class SynapseClient {
   private readonly pheromoneStore: InMemoryPheromoneStore
   private readonly claimManager: ClaimManager
   private readonly decisionBriefService: DecisionBriefService
+  private readonly cortexClient?: CortexClientLike
   private nextEventId = 1
 
   constructor(options: SynapseClientOptions = {}) {
@@ -62,6 +66,7 @@ export class SynapseClient {
     this.pheromoneStore = options.pheromoneStore ?? new InMemoryPheromoneStore()
     this.claimManager = new ClaimManager(this.pheromoneStore)
     this.decisionBriefService = options.decisionBriefService ?? new DecisionBriefService()
+    this.cortexClient = options.cortexClient
   }
 
   observeIssue(input: ObserveIssueInput): SynapseEvent<{ title: string }> {
@@ -164,6 +169,17 @@ export class SynapseClient {
 
   events(): SynapseEvent[] {
     return this.eventBus.allEvents()
+  }
+
+  async queryContextualSimilarity(
+    wingId: string,
+    query: string,
+    limit: number
+  ): Promise<CortexSearchResultLike[]> {
+    if (!this.cortexClient) {
+      throw new Error('CortexClient is not provided to SynapseClientOptions')
+    }
+    return this.cortexClient.search(wingId, query, limit)
   }
 
   private publishEvent<TPayload extends Record<string, unknown>>(

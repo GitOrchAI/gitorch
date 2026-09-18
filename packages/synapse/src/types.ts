@@ -116,3 +116,14 @@ export interface NextActionDecision {
   reason: string
   repeated: boolean
 }
+
+export interface CortexSearchResultLike {
+  drawerId: string
+  layer: string
+  score: number
+  content: string
+  metadata: Record<string, unknown>
+}
+export interface CortexClientLike {
+  search(wingId: string, query: string, limit: number): Promise<CortexSearchResultLike[]>
+}
