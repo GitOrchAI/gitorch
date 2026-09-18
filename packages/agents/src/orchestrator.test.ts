@@ -159,6 +159,55 @@ test('bubbles up step-level failure and recovery status to the workspace provide
   expect(handleRuntimeFailure).toHaveBeenCalledWith('Adapter explosion', 'execute-runner', false)
 })
 
+test('retries runMissionCore when adapter returns waiting_quota and scales backoff exponentially', async () => {
+  mockAllocateWorkspace.mockClear()
+  mockHibernateWorkspace.mockClear()
+  vi.useFakeTimers()
+
+  let attempts = 0
+  const runner: RuntimeCommandRunner = async () => {
+    attempts++
+    if (attempts === 1) {
+      return { exitCode: 1, stdout: '', stderr: 'HTTP 429 Too Many Requests', durationMs: 5 }
+    }
+    return { exitCode: 0, stdout: 'success after quota recovered', stderr: '', durationMs: 5 }
+  }
+
+  const registry = new RuntimeRegistry()
+  registry.register(
+    createCliRuntimeAdapter({ runtime: 'codex', binary: 'codex', args: ['exec'], runner })
+  )
+  const synapse = new SynapseClient()
+  const orchestrator = new AgentOrchestrator({ registry, synapse })
+
+  const runPromise = orchestrator.runMission({
+    id: 'mission-quota-retry',
+    projectId: 'project-1',
+    repository: 'owner/repo',
+    role: 'po',
+    goal: 'Retry logic test',
+    context: [],
+    runtime: { runtime: 'codex' },
+    credentialRef: {
+      connectionId: 'conn-codex',
+      ownerScope: 'organization',
+      runtime: 'codex',
+      providedSecrets: [],
+    },
+  })
+
+  // Advance timers enough to trigger the backoff setTimeout
+  await vi.advanceTimersByTimeAsync(5000)
+  const result = await runPromise
+
+  vi.useRealTimers()
+
+  expect(attempts).toBe(2)
+  expect(result.output).toBe('success after quota recovered')
+  expect(result.exitCode).toBe(0)
+  expect(result.waitingStatus).toBeUndefined()
+})
+
 test('uses an injected workspace provider instead of the default Firecracker manager', async () => {
   mockAllocateWorkspace.mockClear()
   mockHibernateWorkspace.mockClear()

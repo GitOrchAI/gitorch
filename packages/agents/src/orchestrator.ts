@@ -1,4 +1,5 @@
 import { SynapseClient, type SynapseActor, type SynapseScope } from '@gitorch/synapse'
+import { setTimeout } from 'node:timers/promises'
 import {
   buildAgentMission,
   missionStateReducer,
@@ -6,6 +7,11 @@ import {
   workspaceManager,
 } from './agent-mission'
 import type { RuntimeExecutionResult, RuntimeRegistry } from './runtime-adapter'
+import {
+  QUOTA_BACKOFF_FACTOR,
+  QUOTA_BACKOFF_INITIAL_MS,
+  QUOTA_BACKOFF_MAX_MS,
+} from './runtime-config'
 import type { F6AgentRole, MissionState, NodeTransition, StateNode } from './types'
 import { primeWorkspace } from './workspace-priming'
 
@@ -110,25 +116,38 @@ export class AgentOrchestrator {
     workspacePath?: string,
     timeoutMs?: number
   ): Promise<RuntimeExecutionResult> {
-    let result: RuntimeExecutionResult
+    let result: RuntimeExecutionResult | undefined
+    let backoffMs = QUOTA_BACKOFF_INITIAL_MS
+
     try {
       const adapter = this.registry.resolve(mission.runtime.runtime)
-      result = await adapter.run({
-        missionId: mission.id,
-        prompt: mission.prompt,
-        runtime: mission.runtime,
-        credentialRef: mission.credentialRef,
-        role: mission.role,
-        cwd: workspacePath,
-        timeoutMs,
-      })
 
-      if (result.waitingStatus) {
-        mission.waitingStatus = result.waitingStatus
-        mission.waitingReason = result.waitingReason
-      } else {
-        mission.waitingStatus = null
-        mission.waitingReason = null
+      while (true) {
+        result = await adapter.run({
+          missionId: mission.id,
+          prompt: mission.prompt,
+          runtime: mission.runtime,
+          credentialRef: mission.credentialRef,
+          role: mission.role,
+          cwd: workspacePath,
+          timeoutMs,
+        })
+
+        if (result.waitingStatus) {
+          mission.waitingStatus = result.waitingStatus
+          mission.waitingReason = result.waitingReason
+        } else {
+          mission.waitingStatus = null
+          mission.waitingReason = null
+        }
+
+        if (result.waitingStatus === 'waiting_quota') {
+          await setTimeout(backoffMs)
+          backoffMs = Math.min(backoffMs * QUOTA_BACKOFF_FACTOR, QUOTA_BACKOFF_MAX_MS)
+          continue
+        }
+
+        break
       }
 
       if (result.exitCode !== 0 || result.failedStep) {
@@ -146,7 +165,7 @@ export class AgentOrchestrator {
       }
       throw err
     }
-    return result
+    return result!
   }
 
   async runMission(input: BuildAgentMissionInput): Promise<RuntimeExecutionResult> {
