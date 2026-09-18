@@ -61,6 +61,10 @@ export interface TracingEnvironment {
   TELEMETRY_ENABLED?: string
 }
 
+export const QUOTA_BACKOFF_INITIAL_MS = 5000
+export const QUOTA_BACKOFF_MAX_MS = 60000
+export const QUOTA_BACKOFF_FACTOR = 2
+
 export function getTracingEnvironment(): TracingEnvironment {
   return {
     ...(process.env['LANGFUSE_PUBLIC_KEY']
