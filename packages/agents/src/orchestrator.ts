@@ -140,7 +140,8 @@ export class AgentOrchestrator {
         }
 
         if (result.waitingStatus === 'waiting_quota' && attempts <= BACKOFF_CONFIG.maxRetries) {
-          await setTimeout(backoffMs)
+          const jitterMs = Math.floor(Math.random() * 1000)
+          await setTimeout(backoffMs + jitterMs)
           backoffMs = Math.min(backoffMs * BACKOFF_CONFIG.factor, BACKOFF_CONFIG.maxMs)
           continue
         }

@@ -197,7 +197,7 @@ test('retries runMissionCore when adapter returns waiting_quota and scales backo
   })
 
   // Advance timers enough to trigger the backoff setTimeout
-  await vi.advanceTimersByTimeAsync(5000)
+  await vi.advanceTimersByTimeAsync(6000)
   const result = await runPromise
 
   vi.useRealTimers()
