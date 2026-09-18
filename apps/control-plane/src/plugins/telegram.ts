@@ -32,6 +32,7 @@ import { traduzirErroParaUsuario, type SetupErrorCode } from '../lib/setup-error
 import { processarRespostaDeAutomacao } from '../services/decisao-de-automacao.js'
 import { fetchDoRepositorio } from '../services/guarda-de-autonomia.js'
 import { lerCredencialQueAlcancaOProjeto } from '../services/project-credential.js'
+import { calcularTempoDeResolucao } from '@gitorch/cadence'
 import {
   aoResponderDuvidaDoDev as retomarSessaoComResposta,
   aoResponderLogicaAlternativa,
@@ -1045,6 +1046,36 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
                   }
                 )
                 text = `${waitingMissions.length} entregas aguardando: ${parts.join(', ')}`
+              }
+
+              await sendTelegramMessage({
+                botToken,
+                chatId: String(chatId),
+                text,
+              })
+            }
+            continue
+          }
+
+          if (update.message?.text?.trim().startsWith('/entregas')) {
+            const chatId = update.message?.chat?.id
+            if (chatId !== undefined && chatId !== null) {
+              const mergedDeliveries = await app.prisma.increment.findMany({
+                where: { mergedAt: { not: null } },
+                orderBy: { mergedAt: 'desc' },
+                take: 10,
+                select: { titulo: true, wishCreatedAt: true, mergedAt: true },
+              })
+
+              let text = ''
+              if (mergedDeliveries.length === 0) {
+                text = '0 entregas concluídas.'
+              } else {
+                const lines = mergedDeliveries.map((item) => {
+                  const leadTime = calcularTempoDeResolucao(item.wishCreatedAt, item.mergedAt)
+                  return `[Feito] ${item.titulo || 'Sem título'} - Lead time: ${leadTime || 'não disponível'}`
+                })
+                text = lines.join('\n')
               }
 
               await sendTelegramMessage({
