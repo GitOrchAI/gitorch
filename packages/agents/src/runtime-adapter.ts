@@ -7,7 +7,7 @@ import type {
   F6AgentRuntime,
   RuntimeCredentialRef,
 } from './types'
-import { wrapWithLimits, type ExecutionLimits } from './execution-limits'
+import { wrapWithLimits, type ExecutionLimits, isRecoverableFailure } from './execution-limits'
 import { getTracingEnvironment } from './runtime-config'
 
 const execFileAsync = promisify(execFile)
@@ -51,7 +51,7 @@ export interface RuntimeExecutionResult {
   durationMs: number
   failedStep?: string
   errorDetails?: string
-  recoveryAction?: 'auto-rollback' | 'none'
+  recoveryAction?: 'auto-rollback' | 'none' | 'resume'
 }
 
 /**
@@ -450,7 +450,7 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
             ? {
                 failedStep: 'execute-runner',
                 errorDetails: result.stderr,
-                recoveryAction: 'none',
+                recoveryAction: isRecoverableFailure(result.exitCode) ? 'resume' : 'none',
               }
             : {}),
         }
@@ -537,16 +537,17 @@ export function createPythonSdkRuntimeAdapter(
           message?: string
         }
         const timedOut = err.killed === true || err.signal === 'SIGKILL'
+        const exitCode = timedOut ? 124 : normalizeExitCode(err.code)
         return {
           missionId: request.missionId,
           runtime: options.runtime,
           output: err.stdout || '',
           stderr: err.stderr || err.message || String(error),
-          exitCode: timedOut ? 124 : normalizeExitCode(err.code),
+          exitCode,
           durationMs: Date.now() - start,
           failedStep: 'execute-python-script',
           errorDetails: err.message || String(error),
-          recoveryAction: 'none',
+          recoveryAction: isRecoverableFailure(exitCode) ? 'resume' : 'none',
         }
       }
     },

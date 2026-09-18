@@ -78,6 +78,8 @@ export class DeveloperNode extends BaseAgentNode {
   role = 'dev' as const
 }
 
+export const orchestratorRegistry = new Map<string, AgentOrchestrator>()
+
 export class AgentOrchestrator {
   private readonly registry: RuntimeRegistry
   private readonly synapse: SynapseClient
@@ -195,6 +197,8 @@ export class AgentOrchestrator {
       throw new Error(`No state node registered for role: ${mission.role}`)
     }
 
+    orchestratorRegistry.set(mission.id, this)
+
     let result: RuntimeExecutionResult
     try {
       const transition = await node.execute({
@@ -209,6 +213,7 @@ export class AgentOrchestrator {
       }
       throw err
     } finally {
+      orchestratorRegistry.delete(mission.id)
       await this.workspace.hibernateWorkspace(userId, mission.projectId)
     }
 
