@@ -77,6 +77,24 @@ export type AnaliseDeCustoDaOrdem =
   | { custaCaro: true; candidato: CandidatoDeTroca }
   | { custaCaro: false; candidato: null; motivo: string }
 
+export interface MetricasDeExecucaoCI {
+  duracaoSegundos: number
+  cpus: number
+  ramGb: number
+}
+
+/**
+ * Cálculo de precificação para tarefas de validação de pipeline e testes automatizados.
+ *
+ * A regra de negócio cobra pelo consumo computacional real alocado:
+ * multiplicamos a duração (arredondada para cima em minutos, mínimo 1) pela soma
+ * dos núcleos de CPU e a RAM em GB.
+ */
+export function calcularCustoDeCI(metricas: MetricasDeExecucaoCI): number {
+  const minutos = Math.max(1, Math.ceil(metricas.duracaoSegundos / 60))
+  return minutos * (metricas.cpus + metricas.ramGb)
+}
+
 /**
  * Abaixo disto, não há fila para otimizar: com 1 ou 2 pedidos o dono já vê a
  * ordem inteira de relance, e qualquer troca é óbvia sem ajuda nenhuma. O
