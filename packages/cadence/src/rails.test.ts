@@ -19,6 +19,7 @@ import {
   validateDoD,
   validateForm,
   wrapClientRequest,
+  validateDiagnosticIsolation,
   type PoTasksForm,
 } from './rails'
 
@@ -916,5 +917,21 @@ describe('evaluateNodeTransition', () => {
       nextNode: 'proximo_passo',
     })
     expect(result).toEqual({ error: 'Guardrail do papel RA não foi satisfeito.' })
+  })
+})
+
+describe('validateDiagnosticIsolation', () => {
+  it('permite operação quando a branch operada é a mesma designada', () => {
+    const result = validateDiagnosticIsolation('task/123-fix', 'task/123-fix')
+    expect(result.ok).toBe(true)
+    expect(result.errors).toHaveLength(0)
+  })
+
+  it('rejeita operação quando a branch operada difere da designada', () => {
+    const result = validateDiagnosticIsolation('main', 'task/123-fix')
+    expect(result.ok).toBe(false)
+    expect(result.errors).toContain(
+      "Diagnostic operation branch 'main' does not match the designated branch 'task/123-fix'."
+    )
   })
 })

@@ -87,18 +87,34 @@ export async function hydrateStateFromCheckpoint(workspacePath: string): Promise
   }
 }
 
+export interface PrimeWorkspaceOptions {
+  /**
+   * Se true, aplica reset rigoroso (reset --hard e clean -xfd) para garantir
+   * que nenhum estado residual ou ignorado (ex: node_modules) persista.
+   */
+  diagnosticMode?: boolean
+}
+
 /**
  * Prepara o workspace da missão de forma idempotente e resistente a resets do
  * motor. Best-effort: um erro aqui não derruba a missão.
  */
-export async function primeWorkspace(workspacePath: string): Promise<void> {
+export async function primeWorkspace(
+  workspacePath: string,
+  options?: PrimeWorkspaceOptions
+): Promise<void> {
   const isGit = await fileExists(path.join(workspacePath, '.git'))
 
   // Descarta o que a missão anterior possa ter deixado no working tree e volta
   // ao HEAD conhecido, para a preparação ser determinística.
   if (isGit) {
-    await git(workspacePath, ['checkout', '--', '.'])
-    await git(workspacePath, ['clean', '-fd'])
+    if (options?.diagnosticMode) {
+      await git(workspacePath, ['reset', '--hard'])
+      await git(workspacePath, ['clean', '-xfd'])
+    } else {
+      await git(workspacePath, ['checkout', '--', '.'])
+      await git(workspacePath, ['clean', '-fd'])
+    }
   }
 
   for (const name of AGENT_INSTRUCTION_FILES) {
