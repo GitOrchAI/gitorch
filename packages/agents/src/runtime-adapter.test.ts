@@ -214,20 +214,37 @@ test('creates cli runtime adapter using realRuntimeCommandRunner by default', as
     args: ['-e', "console.log('hello from adapter')"],
   })
 
+  const onSpan = vi.fn()
   const result = await adapter.run({
     missionId: 'mission-codex-1',
     prompt: '',
-    runtime: { runtime: 'codex' },
+    runtime: { runtime: 'codex', model: 'codex-model' },
     credentialRef: {
       connectionId: 'conn-codex-1',
       ownerScope: 'organization',
       runtime: 'codex',
       providedSecrets: [],
     },
+    onSpan,
   })
 
   expect(result.exitCode).toBe(0)
   expect(result.output.trim()).toBe('hello from adapter')
+
+  expect(onSpan).toHaveBeenCalledTimes(1)
+  const span = onSpan.mock.calls[0]![0]
+  expect(span).toMatchObject({
+    name: 'execute-runner',
+    input: '',
+    output: expect.stringContaining('hello from adapter'),
+    usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    status: 'success',
+    modelId: 'codex-model',
+  })
+  expect(typeof span.traceId).toBe('string')
+  expect(typeof span.spanId).toBe('string')
+  expect(typeof span.startTime).toBe('number')
+  expect(typeof span.endTime).toBe('number')
 })
 
 test('buildChildProcessEnv nunca vaza segredos do control plane para o agente', async () => {
