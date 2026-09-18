@@ -72,6 +72,7 @@ export interface GitHubWorkItem {
   wishCreatedAt?: string
   mergedAt?: string | undefined
   leadTime?: number
+  milestone?: string
 }
 
 export interface GitHubDependencyEdge {
