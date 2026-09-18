@@ -168,6 +168,24 @@ export class WorkspaceManager extends EventEmitter {
     }
   }
 
+  async teardownWorkspace(userId: string, projectId: string): Promise<void> {
+    const workspaceId = `ws:${userId}:${projectId}`
+    const workspacePath = this.getWorkspacePath(userId, projectId)
+    const jailerId = workspaceId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 64)
+
+    try {
+      try {
+        await execFileAsync('pkill', ['-f', `firecracker.*${jailerId}`])
+      } catch (err) {
+        if ((err as { code?: unknown }).code !== 1) {
+          throw err
+        }
+      }
+    } finally {
+      await fs.rm(workspacePath, { recursive: true, force: true }).catch(() => {})
+    }
+  }
+
   async cloneRepositories(workspaceId: string, repos: string[]): Promise<void> {
     const parts = workspaceId.split(':')
     if (parts.length < 3 || parts[0] !== 'ws') {

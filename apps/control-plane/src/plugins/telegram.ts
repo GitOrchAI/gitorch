@@ -17,7 +17,6 @@ import { nascerDesejo } from '../services/nascer-desejo.js'
 import { PRAZO_DO_PENDENTE_MS } from '../services/desejo-pendente.js'
 import { projetosParaDesejo } from '../services/projetos-do-desejo.js'
 import { provaDeEscritaNoUso } from '../services/acesso-ao-repositorio.js'
-import { addWishlistItem } from '../lib/wishlist-service.js'
 import {
   resolveNotifyChatId,
   resolveDonoDoChat,
@@ -1099,12 +1098,6 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
                       text: 'Use /wishlist add <item>',
                     })
                   } else {
-                    await addWishlistItem(
-                      app,
-                      dono.userId,
-                      { payload: payload.trim() },
-                      'telegram'
-                    )
                     await sendTelegramMessage({
                       botToken,
                       chatId: strChatId,
