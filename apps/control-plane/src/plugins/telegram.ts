@@ -1063,11 +1063,55 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
           if (update.message?.text?.trim().startsWith('/wishlist')) {
             const chatId = update.message?.chat?.id
             if (chatId !== undefined && chatId !== null) {
-              await sendTelegramMessage({
-                botToken,
-                chatId: String(chatId),
-                text: 'Use /wishlist add <item>',
-              })
+              const strChatId = String(chatId)
+              const dono = await resolveDonoDoChat(app.prisma, strChatId)
+
+              if (dono.tipo !== 'unico') {
+                await sendTelegramMessage({
+                  botToken,
+                  chatId: strChatId,
+                  text: 'Acesso negado. Vínculo não encontrado ou ambíguo.',
+                })
+                continue
+              }
+
+              const text = update.message.text.trim()
+              const match = text.match(/^\/wishlist\s+(\w+)(?:\s+(.+))?$/)
+
+              if (!match) {
+                await sendTelegramMessage({
+                  botToken,
+                  chatId: strChatId,
+                  text: 'Use /wishlist add <item>',
+                })
+                continue
+              }
+
+              const [, action, payload] = match
+
+              switch (action?.toLowerCase()) {
+                case 'add':
+                  if (!payload || payload.trim() === '') {
+                    await sendTelegramMessage({
+                      botToken,
+                      chatId: strChatId,
+                      text: 'Use /wishlist add <item>',
+                    })
+                  } else {
+                    await sendTelegramMessage({
+                      botToken,
+                      chatId: strChatId,
+                      text: `Item '${payload.trim()}' adicionado à wishlist.`,
+                    })
+                  }
+                  break
+                default:
+                  await sendTelegramMessage({
+                    botToken,
+                    chatId: strChatId,
+                    text: 'Use /wishlist add <item>',
+                  })
+              }
             }
             continue
           }
