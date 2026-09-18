@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { summarizeResourcesLock } from './environment-resources.js'
+import {
+  summarizeResourcesLock,
+  validateAvailableQuota,
+  QuotaExhaustedError,
+} from './environment-resources.js'
 
 // Formato REAL gravado pelo bootstrap-env.sh privado (mesmo LOCK_CONTENT que
 // services/environment.test.ts usa para o bootstrap em si) — este arquivo
@@ -109,5 +113,32 @@ describe('summarizeResourcesLock', () => {
         resources: { commit: '   ' },
       })
     ).toBeNull()
+  })
+})
+
+describe('validateAvailableQuota', () => {
+  it('alocação bem-sucedida: dentro do teto, consome a cota corretamente', () => {
+    const available = { cpuAvailable: 4, memoryAvailable: 8192 }
+    const requested = { cpu: 1.5, memory: 2048 }
+    const result = validateAvailableQuota(available, requested)
+    expect(result).toEqual({ ok: true, remainingCpu: 2.5, remainingMemory: 6144 })
+  })
+
+  it('rejeição controlada: esgotamento de CPU lança QuotaExhaustedError', () => {
+    const available = { cpuAvailable: 1, memoryAvailable: 8192 }
+    const requested = { cpu: 1.5, memory: 2048 }
+    expect(() => validateAvailableQuota(available, requested)).toThrow(QuotaExhaustedError)
+    expect(() => validateAvailableQuota(available, requested)).toThrow(
+      /Cota esgotada.*1\.5 CPU.*teto disponível.*1 CPU/
+    )
+  })
+
+  it('rejeição controlada: esgotamento de memória lança QuotaExhaustedError', () => {
+    const available = { cpuAvailable: 4, memoryAvailable: 1024 }
+    const requested = { cpu: 1.5, memory: 2048 }
+    expect(() => validateAvailableQuota(available, requested)).toThrow(QuotaExhaustedError)
+    expect(() => validateAvailableQuota(available, requested)).toThrow(
+      /Cota esgotada.*2048 memória.*teto disponível.*1024 memória/
+    )
   })
 })

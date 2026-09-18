@@ -37,6 +37,46 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+export class QuotaExhaustedError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'QuotaExhaustedError'
+  }
+}
+
+export interface EnvironmentQuota {
+  cpuAvailable: number
+  memoryAvailable: number
+}
+
+export interface QuotaRequest {
+  cpu: number
+  memory: number
+}
+
+export interface QuotaAllocationResult {
+  ok: boolean
+  remainingCpu: number
+  remainingMemory: number
+}
+
+export function validateAvailableQuota(
+  available: EnvironmentQuota,
+  requested: QuotaRequest
+): QuotaAllocationResult {
+  if (requested.cpu > available.cpuAvailable || requested.memory > available.memoryAvailable) {
+    throw new QuotaExhaustedError(
+      `Cota esgotada: requisição de ${requested.cpu} CPU, ${requested.memory} memória excedeu o teto disponível (${available.cpuAvailable} CPU, ${available.memoryAvailable} memória).`
+    )
+  }
+
+  return {
+    ok: true,
+    remainingCpu: available.cpuAvailable - requested.cpu,
+    remainingMemory: available.memoryAvailable - requested.memory,
+  }
+}
+
 export function summarizeResourcesLock(raw: unknown): EnvironmentResourcesSummary | null {
   if (!isPlainObject(raw)) return null
 
