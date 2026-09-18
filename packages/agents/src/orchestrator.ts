@@ -1,5 +1,10 @@
 import { SynapseClient, type SynapseActor, type SynapseScope } from '@gitorch/synapse'
-import { buildAgentMission, type BuildAgentMissionInput, workspaceManager } from './agent-mission'
+import {
+  buildAgentMission,
+  missionStateReducer,
+  type BuildAgentMissionInput,
+  workspaceManager,
+} from './agent-mission'
 import type { RuntimeExecutionResult, RuntimeRegistry } from './runtime-adapter'
 import type { F6AgentRole, MissionState, NodeTransition, StateNode } from './types'
 import { primeWorkspace } from './workspace-priming'
@@ -190,19 +195,26 @@ export class AgentOrchestrator {
       }
     }
 
-    const node = this.nodeRegistry.get(mission.role)
-    if (!node) {
-      throw new Error(`No state node registered for role: ${mission.role}`)
+    let result: RuntimeExecutionResult | undefined
+    let currentState: MissionState = {
+      mission,
+      workspacePath: allocation?.path,
+      timeoutMs: input.timeoutMs,
     }
+    let currentRole: string | 'done' | 'failed' = mission.role
 
-    let result: RuntimeExecutionResult
     try {
-      const transition = await node.execute({
-        mission,
-        workspacePath: allocation?.path,
-        timeoutMs: input.timeoutMs,
-      })
-      result = transition.state.result as RuntimeExecutionResult
+      while (currentRole !== 'done' && currentRole !== 'failed') {
+        const node = this.nodeRegistry.get(currentRole)
+        if (!node) {
+          throw new Error(`No state node registered for role: ${currentRole}`)
+        }
+
+        const transition = await node.execute(currentState)
+        currentState = missionStateReducer(currentState, transition.state)
+        currentRole = transition.nextRole ?? 'done'
+      }
+      result = currentState.result as RuntimeExecutionResult
     } catch (err: unknown) {
       if (this.workspace.handleRuntimeFailure) {
         this.workspace.handleRuntimeFailure(String(err), 'run-mission', false)
@@ -210,6 +222,18 @@ export class AgentOrchestrator {
       throw err
     } finally {
       await this.workspace.hibernateWorkspace(userId, mission.projectId)
+    }
+
+    // fallback in case loop throws or somehow bypasses setting result
+    if (!result) {
+      result = {
+        exitCode: 1,
+        output: '',
+        stderr: 'Execution loop failed to yield a result',
+        durationMs: 0,
+        missionId: mission.id,
+        runtime: mission.runtime.runtime,
+      }
     }
 
     this.synapse.completeExecution(record.id, {
@@ -220,7 +244,7 @@ export class AgentOrchestrator {
       status: result.exitCode === 0 ? 'completed' : 'blocked',
     })
 
-    return result
+    return result as RuntimeExecutionResult
   }
 
   events() {

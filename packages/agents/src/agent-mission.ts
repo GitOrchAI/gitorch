@@ -6,6 +6,7 @@ import type {
   F6AgentRole,
   F6AgentRuntime,
   RuntimeCredentialRef,
+  MissionState,
 } from './types'
 import { AGENT_SYSTEM_PROMPTS } from './prompts/index.js'
 import { buildPrimingPreamble } from './prompts/priming.js'
@@ -50,6 +51,37 @@ export function buildAgentMission(input: BuildAgentMissionInput): AgentMission {
     },
     evidenceRefs: [...(input.evidenceRefs ?? [])],
     userId: input.userId,
+  }
+}
+
+export function missionStateReducer(
+  state: MissionState,
+  update: Partial<MissionState>
+): MissionState {
+  const missionUpdate = update.mission
+  let nextMission = state.mission
+
+  if (missionUpdate) {
+    nextMission = {
+      ...state.mission,
+      ...missionUpdate,
+      // Restore core integrity fields if missing or falsy in the update
+      id: missionUpdate.id || state.mission.id,
+      projectId: missionUpdate.projectId || state.mission.projectId,
+      repository: missionUpdate.repository || state.mission.repository,
+      role: missionUpdate.role || state.mission.role,
+      goal: missionUpdate.goal || state.mission.goal,
+      prompt: missionUpdate.prompt || state.mission.prompt,
+      runtime: missionUpdate.runtime || state.mission.runtime,
+      credentialRef: missionUpdate.credentialRef || state.mission.credentialRef,
+      evidenceRefs: missionUpdate.evidenceRefs || state.mission.evidenceRefs,
+    }
+  }
+
+  return {
+    ...state,
+    ...update,
+    mission: nextMission,
   }
 }
 
