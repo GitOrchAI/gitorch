@@ -228,9 +228,11 @@ export class AgentOrchestrator {
     if (!result) {
       result = {
         exitCode: 1,
-        stdout: '',
+        output: '',
         stderr: 'Execution loop failed to yield a result',
         durationMs: 0,
+        missionId: mission.id,
+        runtime: mission.runtime.runtime,
       }
     }
 
@@ -242,7 +244,7 @@ export class AgentOrchestrator {
       status: result.exitCode === 0 ? 'completed' : 'blocked',
     })
 
-    return result
+    return result as RuntimeExecutionResult
   }
 
   events() {
