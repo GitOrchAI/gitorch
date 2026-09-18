@@ -125,7 +125,14 @@ describe('runAgyChatCommand', () => {
       args: string[],
       options: Record<string, unknown>
     ) => typeof pty
-    const handle = runAgyChatCommand({ homeDir: '/home/x', ptySpawnImpl })
+    const onSpan = vi.fn()
+    const handle = runAgyChatCommand({
+      homeDir: '/home/x',
+      ptySpawnImpl,
+      stepName: 'test-step',
+      sessionId: 'session-123',
+      onSpan,
+    })
     const seen: string[] = []
     handle.onStdout((c) => seen.push(c))
     handle.writeStdin('/usage')
@@ -136,5 +143,20 @@ describe('runAgyChatCommand', () => {
     expect(pty.write).toHaveBeenCalledWith('/usage')
     expect(pty.kill).toHaveBeenCalledWith('SIGTERM')
     expect(res.code).toBe(0)
+
+    expect(onSpan).toHaveBeenCalledTimes(1)
+    const span = onSpan.mock.calls[0]![0]
+    expect(span).toMatchObject({
+      name: 'test-step',
+      input: '',
+      output: expect.stringContaining('bem-vindo ao agy'),
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      status: 'success',
+      sessionId: 'session-123',
+    })
+    expect(typeof span.traceId).toBe('string')
+    expect(typeof span.spanId).toBe('string')
+    expect(typeof span.startTime).toBe('number')
+    expect(typeof span.endTime).toBe('number')
   })
 })

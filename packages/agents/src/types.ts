@@ -78,6 +78,24 @@ export interface OwnerQuestion {
   options: ['A', 'B', 'C', 'Free form']
 }
 
+export interface AgentExecutionSpan {
+  traceId: string
+  spanId: string
+  name: string
+  input: string
+  output: string
+  usage: {
+    promptTokens: number
+    completionTokens: number
+    totalTokens: number
+  }
+  startTime: number
+  endTime: number
+  status: 'success' | 'error'
+  modelId?: string
+  sessionId?: string
+}
+
 export interface ProjectOnboardingPlan {
   projectId: string
   repository: string

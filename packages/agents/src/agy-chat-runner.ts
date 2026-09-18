@@ -26,6 +26,9 @@ export type AgyChatHandle = WiredPtyHandle
 export const AGY_CHAT_PTY_COLS = 200
 export const AGY_CHAT_PTY_ROWS = 50
 
+import * as crypto from 'node:crypto'
+import type { AgentExecutionSpan } from './types.js'
+
 export interface RunAgyChatCommandOptions {
   /** HOME já materializado com a credencial do Antigravity (ver
    * `antigravity-quota-reader.ts`, control-plane) — vira o HOME do processo
@@ -37,6 +40,9 @@ export interface RunAgyChatCommandOptions {
   agyBin?: string
   cols?: number
   rows?: number
+  stepName?: string
+  sessionId?: string
+  onSpan?: (span: AgentExecutionSpan) => void
   /** Injetável para teste — NUNCA sobe o `agy` real numa suite de testes. */
   ptySpawnImpl?: PtySpawn
 }
@@ -55,6 +61,9 @@ export function runAgyChatCommand(options: RunAgyChatCommandOptions): AgyChatHan
   const bin = options.agyBin ?? 'agy'
   const spawnPty = options.ptySpawnImpl ?? ptySpawnDefault
 
+  const startTime = Date.now()
+  let outputBuffer = ''
+
   const env: Record<string, string> = {
     PATH: process.env['PATH'] ?? '',
     HOME: options.homeDir,
@@ -71,5 +80,30 @@ export function runAgyChatCommand(options: RunAgyChatCommandOptions): AgyChatHan
     env,
   })
 
-  return wirePtyHandle(ptyProcess)
+  const handle = wirePtyHandle(ptyProcess)
+
+  handle.onStdout((chunk) => {
+    outputBuffer += chunk
+  })
+
+  const originalExited = handle.exited
+  handle.exited = originalExited.then((result) => {
+    if (options.onSpan) {
+      options.onSpan({
+        traceId: crypto.randomUUID(),
+        spanId: crypto.randomUUID(),
+        name: options.stepName ?? 'agy-chat',
+        input: '',
+        output: outputBuffer,
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        startTime,
+        endTime: Date.now(),
+        status: result.code === 0 ? 'success' : 'error',
+        sessionId: options.sessionId,
+      })
+    }
+    return result
+  })
+
+  return handle
 }

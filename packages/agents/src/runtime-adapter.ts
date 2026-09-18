@@ -1,14 +1,16 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import * as crypto from 'node:crypto'
 import { hydrateStateFromCheckpoint } from './workspace-priming.js'
 import type {
+  AgentExecutionSpan,
   AgentRuntimeSelection,
   F6AgentRole,
   F6AgentRuntime,
   RuntimeCredentialRef,
-} from './types'
-import { wrapWithLimits, type ExecutionLimits } from './execution-limits'
-import { getTracingEnvironment } from './runtime-config'
+} from './types.js'
+import { wrapWithLimits, type ExecutionLimits } from './execution-limits.js'
+import { getTracingEnvironment } from './runtime-config.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -38,6 +40,7 @@ export interface RuntimeExecutionRequest {
   cwd?: string
   /** Mata o processo do agente após N ms (guarda contra missão pendurada). */
   timeoutMs?: number
+  onSpan?: (span: AgentExecutionSpan) => void
 }
 
 export interface RuntimeExecutionResult {
@@ -412,6 +415,7 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
           ? []
           : [...(options.promptSeparator ? [options.promptSeparator] : []), effectivePrompt]
 
+      const startTime = Date.now()
       const { result, error, failedStep } = await wrapExecutionStep('execute-runner', () =>
         runner({
           binary: options.binary,
@@ -422,8 +426,23 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
           ...(options.promptViaStdin && !options.promptArgName ? { stdin: request.prompt } : {}),
         })
       )
+      const endTime = Date.now()
 
       if (error) {
+        if (request.onSpan) {
+          request.onSpan({
+            traceId: crypto.randomUUID(),
+            spanId: crypto.randomUUID(),
+            name: 'execute-runner',
+            input: request.prompt,
+            output: String(error.message),
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+            startTime,
+            endTime,
+            status: 'error',
+            modelId: request.runtime.model,
+          })
+        }
         return {
           missionId: request.missionId,
           runtime: options.runtime,
@@ -439,6 +458,20 @@ export function createCliRuntimeAdapter(options: CreateCliRuntimeAdapterOptions)
 
       if (result) {
         const failed = result.exitCode !== 0
+        if (request.onSpan) {
+          request.onSpan({
+            traceId: crypto.randomUUID(),
+            spanId: crypto.randomUUID(),
+            name: 'execute-runner',
+            input: request.prompt,
+            output: result.stdout + (result.stderr ? '\n' + result.stderr : ''),
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+            startTime,
+            endTime,
+            status: failed ? 'error' : 'success',
+            modelId: request.runtime.model,
+          })
+        }
         return {
           missionId: request.missionId,
           runtime: options.runtime,
@@ -519,13 +552,28 @@ export function createPythonSdkRuntimeAdapter(
         // Mesmo motivo do runner CLI: stdin aberto = processo esperando EOF.
         pending.child.stdin?.end()
         const { stdout, stderr } = await pending
+        const endTime = Date.now()
+        if (request.onSpan) {
+          request.onSpan({
+            traceId: crypto.randomUUID(),
+            spanId: crypto.randomUUID(),
+            name: 'execute-python-script',
+            input: request.prompt,
+            output: stdout + (stderr ? '\n' + stderr : ''),
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+            startTime: start,
+            endTime,
+            status: 'success',
+            modelId: request.runtime.model,
+          })
+        }
         return {
           missionId: request.missionId,
           runtime: options.runtime,
           output: stdout,
           stderr: stderr,
           exitCode: 0,
-          durationMs: Date.now() - start,
+          durationMs: endTime - start,
         }
       } catch (error: unknown) {
         const err = error as {
@@ -537,15 +585,32 @@ export function createPythonSdkRuntimeAdapter(
           message?: string
         }
         const timedOut = err.killed === true || err.signal === 'SIGKILL'
+        const endTime = Date.now()
+        const outMsg = err.stdout || ''
+        const errMsg = err.stderr || err.message || String(error)
+        if (request.onSpan) {
+          request.onSpan({
+            traceId: crypto.randomUUID(),
+            spanId: crypto.randomUUID(),
+            name: 'execute-python-script',
+            input: request.prompt,
+            output: outMsg + (errMsg ? '\n' + errMsg : ''),
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+            startTime: start,
+            endTime,
+            status: 'error',
+            modelId: request.runtime.model,
+          })
+        }
         return {
           missionId: request.missionId,
           runtime: options.runtime,
-          output: err.stdout || '',
-          stderr: err.stderr || err.message || String(error),
+          output: outMsg,
+          stderr: errMsg,
           exitCode: timedOut ? 124 : normalizeExitCode(err.code),
-          durationMs: Date.now() - start,
+          durationMs: endTime - start,
           failedStep: 'execute-python-script',
-          errorDetails: err.message || String(error),
+          errorDetails: errMsg,
           recoveryAction: 'none',
         }
       }
