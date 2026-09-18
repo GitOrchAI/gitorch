@@ -7,11 +7,7 @@ import {
   workspaceManager,
 } from './agent-mission'
 import type { RuntimeExecutionResult, RuntimeRegistry } from './runtime-adapter'
-import {
-  QUOTA_BACKOFF_FACTOR,
-  QUOTA_BACKOFF_INITIAL_MS,
-  QUOTA_BACKOFF_MAX_MS,
-} from './runtime-config'
+import { BACKOFF_CONFIG } from './runtime-config'
 import type { F6AgentRole, MissionState, NodeTransition, StateNode } from './types'
 import { primeWorkspace } from './workspace-priming'
 
@@ -117,12 +113,14 @@ export class AgentOrchestrator {
     timeoutMs?: number
   ): Promise<RuntimeExecutionResult> {
     let result: RuntimeExecutionResult | undefined
-    let backoffMs = QUOTA_BACKOFF_INITIAL_MS
+    let backoffMs = BACKOFF_CONFIG.initialMs
+    let attempts = 0
 
     try {
       const adapter = this.registry.resolve(mission.runtime.runtime)
 
       while (true) {
+        attempts++
         result = await adapter.run({
           missionId: mission.id,
           prompt: mission.prompt,
@@ -141,9 +139,9 @@ export class AgentOrchestrator {
           mission.waitingReason = null
         }
 
-        if (result.waitingStatus === 'waiting_quota') {
+        if (result.waitingStatus === 'waiting_quota' && attempts <= BACKOFF_CONFIG.maxRetries) {
           await setTimeout(backoffMs)
-          backoffMs = Math.min(backoffMs * QUOTA_BACKOFF_FACTOR, QUOTA_BACKOFF_MAX_MS)
+          backoffMs = Math.min(backoffMs * BACKOFF_CONFIG.factor, BACKOFF_CONFIG.maxMs)
           continue
         }
 
