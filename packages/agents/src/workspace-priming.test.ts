@@ -61,4 +61,42 @@ describe('primeWorkspace', () => {
     expect(await fs.readFile(path.join(ws, 'GEMINI.md'), 'utf8')).toContain('GitOrch agent')
     await fs.rm(ws, { recursive: true, force: true })
   })
+
+  test('diagnosticMode limpa arquivos transitórios e ignorados', async () => {
+    const ws = await initGitRepo()
+
+    // Adiciona arquivo ignorado e untracked
+    const ignoredDir = path.join(ws, 'node_modules')
+    await fs.mkdir(ignoredDir)
+    await fs.writeFile(path.join(ignoredDir, 'cache.txt'), 'cache')
+    await fs.writeFile(path.join(ws, '.gitignore'), 'node_modules/\n')
+
+    const env = {
+      PATH: process.env['PATH'] ?? '',
+      HOME: ws,
+      GIT_AUTHOR_NAME: 'T',
+      GIT_AUTHOR_EMAIL: 't@t',
+      GIT_COMMITTER_NAME: 'T',
+      GIT_COMMITTER_EMAIL: 't@t',
+    }
+    await execFileAsync('git', ['-C', ws, 'add', '.gitignore'], { env })
+    await execFileAsync('git', ['-C', ws, 'commit', '-q', '-m', 'add gitignore'], { env })
+
+    // Cria modificações no arquivo trackeado e novo arquivo untracked
+    await fs.writeFile(path.join(ws, 'README.md'), 'modified')
+    await fs.writeFile(path.join(ws, 'untracked.txt'), 'untracked')
+
+    await primeWorkspace(ws, { diagnosticMode: true })
+
+    // reset --hard deve voltar arquivo ao estado commitado
+    expect(await fs.readFile(path.join(ws, 'README.md'), 'utf8')).toEqual('hello')
+
+    // clean -xfd deve apagar untracked
+    await expect(fs.stat(path.join(ws, 'untracked.txt'))).rejects.toThrow()
+
+    // clean -xfd deve apagar node_modules (ignorado)
+    await expect(fs.stat(ignoredDir)).rejects.toThrow()
+
+    await fs.rm(ws, { recursive: true, force: true })
+  })
 })

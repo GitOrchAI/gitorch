@@ -1477,6 +1477,24 @@ export type NodeTransitionResult = { nextNode: string } | { error: string }
  * (PO, RA, Dev) satisfez seus critérios de saída e guardrails antes
  * de permitir a progressão para a próxima etapa.
  */
+/**
+ * Garante que uma operação de diagnóstico (ex: investigação de CI) opere
+ * estritamente dentro da branch designada, prevenindo que ela contamine ou
+ * modifique outras branches (como main ou branches de outras tasks).
+ */
+export function validateDiagnosticIsolation(
+  operationTargetBranch: string,
+  designatedBranch: string
+): ValidationResult {
+  const errors: string[] = []
+  if (operationTargetBranch !== designatedBranch) {
+    errors.push(
+      `Diagnostic operation branch '${operationTargetBranch}' does not match the designated branch '${designatedBranch}'.`
+    )
+  }
+  return { ok: errors.length === 0, errors }
+}
+
 export function evaluateNodeTransition(context: NodeStateContext): NodeTransitionResult {
   if (!context.exitCriteriaMet) {
     return { error: 'Critérios de saída não foram atendidos.' }
