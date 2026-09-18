@@ -1099,12 +1099,7 @@ export const telegramPlugin = fp(async (app: FastifyInstance) => {
                       text: 'Use /wishlist add <item>',
                     })
                   } else {
-                    await addWishlistItem(
-                      app,
-                      dono.userId,
-                      { payload: payload.trim() },
-                      'telegram'
-                    )
+                    await addWishlistItem(app, dono.userId, { payload: payload.trim() }, 'telegram')
                     await sendTelegramMessage({
                       botToken,
                       chatId: strChatId,
