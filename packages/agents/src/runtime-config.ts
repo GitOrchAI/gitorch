@@ -61,9 +61,12 @@ export interface TracingEnvironment {
   TELEMETRY_ENABLED?: string
 }
 
-export const QUOTA_BACKOFF_INITIAL_MS = 5000
-export const QUOTA_BACKOFF_MAX_MS = 60000
-export const QUOTA_BACKOFF_FACTOR = 2
+export const BACKOFF_CONFIG = {
+  initialMs: 5000,
+  maxMs: 60000,
+  factor: 2,
+  maxRetries: 5,
+}
 
 export function getTracingEnvironment(): TracingEnvironment {
   return {
