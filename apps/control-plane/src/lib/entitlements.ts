@@ -2,7 +2,7 @@
 // Evita `if (plan === 'pro')` espalhado pelo código (dívida). As flags vivem no
 // Plan.features (JSON) — ver prisma/seed.ts. Ver docs/business/pricing-strategy.md.
 import { prisma } from '../plugins/prisma.js'
-import { encryptCredential, decryptCredential } from './credential-crypto.js'
+import { signInvitationToken, verifyInvitationToken } from './credential-crypto.js'
 
 export type Capability =
   | 'autoAutonomy' // agente decide sozinho (vs. dono aprova cada missão)
@@ -71,14 +71,14 @@ export async function generateProjectInvitation(
     invitationId: invitation.id,
   }
 
-  const token = encryptCredential(JSON.stringify(tokenPayload))
+  const token = signInvitationToken(JSON.stringify(tokenPayload), payload.expiresAt)
   return token
 }
 
 export function validateProjectInvitation(
   token: string
 ): ProjectInvitationPayload & { invitationId: string } {
-  const decrypted = decryptCredential(token)
+  const decrypted = verifyInvitationToken(token)
   const parsed = JSON.parse(decrypted)
   const expiresAt = new Date(parsed.expiresAt)
 
