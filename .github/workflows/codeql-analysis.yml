@@ -24,7 +24,7 @@ jobs:
       # nao existe major acima do v4. Fixada por SHA so' para seguir a convencao, e o
       # comentario ao lado traz a versao EXATA — nao o major `v4`, que e' flutuante e
       # amanha aponta para outro commit que este pin nao segue.
-      - uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938  # v4.37.9
+      - uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63  # v4.38.0
         with:
           languages: javascript
       - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938  # v4.37.9
