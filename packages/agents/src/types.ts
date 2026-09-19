@@ -110,10 +110,14 @@ export interface MissionState {
   workspacePath?: string
   result?: unknown
   timeoutMs?: number
+  qaRetries?: number
+  qaFeedback?: string
+  status?: string
+  error?: string
 }
 
 export interface NodeTransition {
-  nextRole?: F6AgentRole | 'done' | 'failed'
+  nextRole?: F6AgentRole | 'dev' | 'done' | 'failed'
   state: MissionState
 }
 

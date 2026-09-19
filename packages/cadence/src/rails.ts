@@ -1468,9 +1468,12 @@ export interface NodeStateContext {
   exitCriteriaMet: boolean
   guardrailPassed: boolean
   nextNode: string
+  qaVerdict?: 'approve' | 'request_changes'
+  retries?: number
+  maxRetries?: number
 }
 
-export type NodeTransitionResult = { nextNode: string } | { error: string }
+export type NodeTransitionResult = { nextNode: string; retries?: number } | { error: string }
 
 /**
  * Avaliador de transição para o grafo de estados. Verifica se o nó atual
@@ -1502,6 +1505,15 @@ export function evaluateNodeTransition(context: NodeStateContext): NodeTransitio
 
   if (!context.guardrailPassed) {
     return { error: `Guardrail do papel ${context.role.toUpperCase()} não foi satisfeito.` }
+  }
+
+  if (context.qaVerdict === 'request_changes') {
+    const currentRetries = context.retries ?? 0
+    const maxRetries = context.maxRetries ?? 3
+    if (currentRetries >= maxRetries) {
+      return { error: 'qa_failed_max_retries' }
+    }
+    return { nextNode: 'dev', retries: currentRetries + 1 }
   }
 
   return { nextNode: context.nextNode }
