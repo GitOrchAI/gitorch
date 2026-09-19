@@ -118,3 +118,15 @@ test('records GitHub sync events through the public facade', () => {
   expect(event.correlationId).toBe('delivery-1')
   expect(synapse.events()).toEqual([event])
 })
+
+test('queries contextual similarity when cortexClient is provided', async () => {
+  const fakeCortex = {
+    search: async (_wingId: string, _query: string, _limit: number) => {
+      return [{ drawerId: 'd1', layer: 'L1', score: 0.9, content: 'test', metadata: {} }]
+    },
+  }
+  const synapse = new SynapseClient({ cortexClient: fakeCortex })
+  const results = await synapse.queryContextualSimilarity('wing1', 'query', 10)
+  expect(results).toHaveLength(1)
+  expect(results[0].drawerId).toBe('d1')
+})

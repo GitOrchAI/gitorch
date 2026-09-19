@@ -17,6 +17,8 @@ function structural(overrides: Partial<StructuralDiagnosis> = {}): StructuralDia
     mostCalledFunctions: [{ name: 'core', file: 'src/core.ts', callCount: 12 }],
     untestedModules: [],
     directoryInventory: { src: ['a.ts', 'b.ts'] },
+    orphanModules: [],
+    crossPackageDependencies: [],
     ...overrides,
   }
 }

@@ -15,6 +15,8 @@ export interface StructuralDiagnosis {
   mostCalledFunctions: Array<{ name: string; file: string; callCount: number }>
   untestedModules: string[]
   directoryInventory: Record<string, string[]>
+  orphanModules: string[]
+  crossPackageDependencies: Array<{ source: string; target: string }>
 }
 
 function buildDirectoryInventory(sources: Array<{ relPath: string }>): Record<string, string[]> {
@@ -44,5 +46,7 @@ export async function diagnoseWorkspaceStructural(
     mostCalledFunctions: analysis.mostCalled,
     untestedModules: computeUntestedModules(analysis.sources),
     directoryInventory: buildDirectoryInventory(analysis.sources),
+    orphanModules: analysis.orphanModules,
+    crossPackageDependencies: analysis.crossPackageDependencies,
   }
 }

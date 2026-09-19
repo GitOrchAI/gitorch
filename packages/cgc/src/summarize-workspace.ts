@@ -153,6 +153,8 @@ export interface WorkspaceIndexAnalysis {
   byType: Array<{ type: string; count: number }>
   topFiles: Array<{ file: string; symbolCount: number }>
   mostCalled: Array<{ name: string; file: string; callCount: number }>
+  orphanModules: string[]
+  crossPackageDependencies: Array<{ source: string; target: string }>
 }
 
 /**
@@ -210,6 +212,24 @@ export async function analyzeWorkspace(
       'MATCH (:Symbol)-[:CALLS]->(s:Symbol) RETURN s.name AS name, s.filePath AS file, count(*) AS n ORDER BY n DESC LIMIT 10'
     )) as Array<{ name: string; file: string; n: unknown }>
 
+    const crossPackageRows = (await client.query(
+      'MATCH (caller:Symbol)-[:CALLS]->(callee:Symbol) WHERE caller.filePath <> callee.filePath RETURN DISTINCT caller.filePath AS source, callee.filePath AS target'
+    )) as Array<{ source: string; target: string }>
+
+    const incomingCalls = (await client.query(
+      'MATCH (caller:Symbol)-[:CALLS]->(callee:Symbol) RETURN callee.filePath AS file, count(*) AS n'
+    )) as Array<{ file: string; n: unknown }>
+    const calledFiles = new Set(incomingCalls.map((c) => c.file))
+    const orphanModules = sources
+      .filter(
+        (s) =>
+          !calledFiles.has(s.relPath) &&
+          !isTestLike(s.relPath) &&
+          !s.relPath.endsWith('index.ts') &&
+          !s.relPath.endsWith('main.ts')
+      )
+      .map((s) => s.relPath)
+
     return {
       sources,
       fileCount: num(fileCountRows[0]?.n),
@@ -222,6 +242,8 @@ export async function analyzeWorkspace(
         file: c.file,
         callCount: num(c.n),
       })),
+      orphanModules,
+      crossPackageDependencies: crossPackageRows,
     }
   } catch (err) {
     // Veneno NÃO pode ser engolido: o chamador precisa saber o culpado para
