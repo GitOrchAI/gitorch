@@ -618,7 +618,7 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
             headers: {
               deliveryId: deliveryId || crypto.randomUUID(),
               eventName,
-              signature256: signature,
+              signature256: signature || '',
             },
             payload: parsedPayload,
             body: payloadStr,
