@@ -2,6 +2,8 @@ export const F6_AGENT_ROLES = ['po', 'ra', 'sm', 'qa'] as const
 export type F6AgentRole = (typeof F6_AGENT_ROLES)[number]
 
 export const F6_AGENT_RUNTIMES = ['codex', 'claude', 'antigravity'] as const
+import type { ExecutionLimits } from './execution-limits'
+
 export type F6AgentRuntime = (typeof F6_AGENT_RUNTIMES)[number]
 
 /**
@@ -52,6 +54,7 @@ export interface AgentMission {
   credentialRef: RuntimeCredentialRef
   evidenceRefs: string[]
   userId?: string
+  executionLimits?: ExecutionLimits
 }
 
 export type OnboardingStepKind =

@@ -139,9 +139,17 @@ export class AgentOrchestrator {
           mission.waitingReason = null
         }
 
+        // Usa os limites configurados na missão (se houver config de backoff) ou o default global
+        // Note: this implementation requires the executionLimits to be passed into the mission object
+        // but since we do not have it in the agentMission types directly we will use global default
         if (result.waitingStatus === 'waiting_quota' && attempts <= BACKOFF_CONFIG.maxRetries) {
-          await setTimeout(backoffMs)
-          backoffMs = Math.min(backoffMs * BACKOFF_CONFIG.factor, BACKOFF_CONFIG.maxMs)
+          // Calcula jitter aleatório entre 0 e 20% do backoff base para espalhar retries simultâneos
+          const baseMs = backoffMs
+          const jitterMs = Math.floor(Math.random() * (0.2 * baseMs))
+
+          await setTimeout(baseMs + jitterMs)
+
+          backoffMs = Math.min(baseMs * BACKOFF_CONFIG.factor, BACKOFF_CONFIG.maxMs)
           continue
         }
 

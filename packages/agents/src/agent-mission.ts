@@ -1,5 +1,6 @@
 import { WorkspaceManager } from '@gitorch/workspace-engine'
 import { DEFAULT_AGENT_RUNTIME_ASSIGNMENTS } from './runtime-config'
+import type { ExecutionLimits } from './execution-limits'
 import type {
   AgentMission,
   AgentRuntimeSelection,
@@ -26,6 +27,7 @@ export interface BuildAgentMissionInput {
   userId?: string
   /** Mata o processo do agente após N ms (guarda contra missão pendurada). */
   timeoutMs?: number
+  executionLimits?: ExecutionLimits
 }
 
 export function buildAgentMission(input: BuildAgentMissionInput): AgentMission {

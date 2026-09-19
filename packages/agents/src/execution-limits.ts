@@ -43,6 +43,15 @@ export interface ExecutionLimits {
   diagnosticMemoryMax?: string
   /** Timeout (em ms) para interrupção de missões de diagnóstico/CI presas */
   diagnosticTimeoutMs?: number
+
+  /** Configuração para retry com backoff exponencial quando cota é excedida */
+  backoff?: {
+    initialMs: number
+    maxMs: number
+    factor: number
+    maxRetries: number
+    jitter: boolean
+  }
 }
 
 export interface WrappedCommand {
