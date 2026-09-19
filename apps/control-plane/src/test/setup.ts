@@ -1,5 +1,5 @@
 import { vi } from 'vitest'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, createHmac } from 'node:crypto'
 
 // Mock pino
 vi.mock('pino', () => ({
@@ -165,6 +165,12 @@ class MockGitHubWebhookVerifier {
     const expected =
       'sha256=' + crypto.createHmac('sha256', 'test-secret').update(payload).digest('hex')
     return signature === expected
+  })
+  validateWebhookDelivery = vi.fn((payload: string, signature: string | undefined) => {
+    if (!signature) return { valid: false, status: 401, error: 'Missing signature' }
+    const expected = 'sha256=' + createHmac('sha256', 'test-secret').update(payload).digest('hex')
+    if (signature !== expected) return { valid: false, status: 401, error: 'Invalid signature' }
+    return { valid: true, status: 200 }
   })
 }
 

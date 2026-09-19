@@ -12,6 +12,10 @@ test('accepts a valid X-Hub-Signature-256 webhook delivery', () => {
   const verifier = new GitHubWebhookVerifier('webhook-secret')
 
   expect(verifier.verify(body, signature('webhook-secret', body))).toBe(true)
+  expect(verifier.validateWebhookDelivery(body, signature('webhook-secret', body))).toEqual({
+    valid: true,
+    status: 200,
+  })
 })
 
 test('rejects a tampered webhook delivery', () => {
@@ -21,6 +25,23 @@ test('rejects a tampered webhook delivery', () => {
   expect(
     verifier.verify(JSON.stringify({ action: 'closed' }), signature('webhook-secret', body))
   ).toBe(false)
+  expect(
+    verifier.validateWebhookDelivery(
+      JSON.stringify({ action: 'closed' }),
+      signature('webhook-secret', body)
+    )
+  ).toEqual({ valid: false, status: 401, error: 'Invalid signature' })
+})
+
+test('rejects a missing webhook delivery signature', () => {
+  const body = JSON.stringify({ action: 'opened' })
+  const verifier = new GitHubWebhookVerifier('webhook-secret')
+
+  expect(verifier.validateWebhookDelivery(body, undefined)).toEqual({
+    valid: false,
+    status: 401,
+    error: 'Missing signature',
+  })
 })
 
 test('parses required GitHub delivery headers', () => {

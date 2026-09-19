@@ -24,6 +24,22 @@ export class GitHubWebhookVerifier {
       expectedBuffer.length === actualBuffer.length && timingSafeEqual(expectedBuffer, actualBuffer)
     )
   }
+
+  validateWebhookDelivery(
+    body: string,
+    signature256: string | undefined
+  ): { valid: boolean; status: number; error?: string } {
+    if (!signature256) {
+      return { valid: false, status: 401, error: 'Missing signature' }
+    }
+
+    const isValid = this.verify(body, signature256)
+    if (!isValid) {
+      return { valid: false, status: 401, error: 'Invalid signature' }
+    }
+
+    return { valid: true, status: 200 }
+  }
 }
 
 export function parseGitHubDeliveryHeaders(
