@@ -166,6 +166,14 @@ class MockGitHubWebhookVerifier {
       'sha256=' + crypto.createHmac('sha256', 'test-secret').update(payload).digest('hex')
     return signature === expected
   })
+  validateWebhookDelivery = vi.fn((payload: string, signature: string | undefined) => {
+    if (!signature) return { valid: false, status: 401, error: 'Missing signature' }
+    const crypto = require('crypto')
+    const expected =
+      'sha256=' + crypto.createHmac('sha256', 'test-secret').update(payload).digest('hex')
+    if (signature !== expected) return { valid: false, status: 401, error: 'Invalid signature' }
+    return { valid: true, status: 200 }
+  })
 }
 
 class MockGitHubWebhookNormalizer {

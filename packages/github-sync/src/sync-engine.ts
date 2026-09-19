@@ -3,6 +3,7 @@ import { GitHubWorkModel } from './work-model'
 
 export interface IngestResult {
   accepted: boolean
+  status: number
   reason: string
 }
 
@@ -18,6 +19,7 @@ export class GitHubSyncEngine {
     if (this.processedDeliveryIds.has(event.deliveryId)) {
       return {
         accepted: false,
+        status: 200, // Returning 200 to acknowledge idempotency gracefully without error
         reason: `Delivery already processed: ${event.deliveryId}`,
       }
     }
@@ -25,6 +27,7 @@ export class GitHubSyncEngine {
     this.processedDeliveryIds.add(event.deliveryId)
     return {
       accepted: true,
+      status: 200,
       reason: 'Delivery accepted.',
     }
   }

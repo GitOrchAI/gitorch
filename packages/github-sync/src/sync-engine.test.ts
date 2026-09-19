@@ -30,8 +30,16 @@ const event: GitHubSyncEvent = {
 test('processes each GitHub delivery once', () => {
   const engine = new GitHubSyncEngine()
 
-  expect(engine.ingest(event).accepted).toBe(true)
-  expect(engine.ingest(event).accepted).toBe(false)
+  expect(engine.ingest(event)).toEqual({
+    accepted: true,
+    status: 200,
+    reason: 'Delivery accepted.',
+  })
+  expect(engine.ingest(event)).toEqual({
+    accepted: false,
+    status: 200,
+    reason: 'Delivery already processed: delivery-1',
+  })
 })
 
 test('plans blocked project status when dependencies are open', () => {

@@ -11,8 +11,8 @@ export const webhookVerifyPlugin: FastifyPluginAsync = async (app) => {
   }
   const verifier = new GitHubWebhookVerifier(secret)
 
-  app.decorate('verifyGitHubWebhook', (payload: string, signature: string) => {
-    return verifier.verify(payload, signature)
+  app.decorate('verifyGitHubWebhook', (payload: string, signature: string | undefined) => {
+    return verifier.validateWebhookDelivery(payload, signature)
   })
 }
 Object.assign(webhookVerifyPlugin, { [Symbol.for('skip-override')]: true })

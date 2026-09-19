@@ -24,7 +24,10 @@ import { fetchComTeto } from '../services/fetch-com-teto.js'
 declare module 'fastify' {
   interface FastifyInstance {
     prisma: PrismaClient
-    verifyGitHubWebhook: (payload: string, signature: string) => boolean
+    verifyGitHubWebhook: (
+      payload: string,
+      signature?: string
+    ) => { valid: boolean; status: number; error?: string }
     // triggerAgentMission é declarado (globalmente) pelo scheduler; usamos aqui.
   }
   interface FastifyRequest {
@@ -462,15 +465,11 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
         return reply.code(400).send({ error: 'Missing payload' })
       }
 
-      if (!signature) {
-        return reply.code(401).send({ error: 'Missing signature' })
-      }
-
       // Verify HMAC signature using decorated verifier
       const verified = app.verifyGitHubWebhook(payload.toString(), signature)
-      if (!verified) {
-        app.log.warn({ deliveryId, event }, 'Invalid GitHub webhook signature')
-        return reply.code(401).send({ error: 'Invalid signature' })
+      if (!verified.valid) {
+        app.log.warn({ deliveryId, event }, verified.error || 'Invalid GitHub webhook signature')
+        return reply.code(verified.status).send({ error: verified.error || 'Invalid signature' })
       }
 
       // Parse payload to get GitHub identifiers
@@ -639,6 +638,9 @@ export async function githubWebhookRoutes(app: FastifyInstance): Promise<void> {
               { eventId: syncEvent.id, reason: ingestResult.reason },
               'GitHub event deduplicated'
             )
+            return reply
+              .code(ingestResult.status)
+              .send({ ok: true, repetida: true, message: ingestResult.reason })
           }
 
           // A ligação PR↔tarefa nasce ANTES de qualquer missão acordar. Se o
