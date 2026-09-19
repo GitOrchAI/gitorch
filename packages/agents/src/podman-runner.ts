@@ -4,7 +4,7 @@ import type {
   RuntimeCommandResult,
   RuntimeCommandRunner,
 } from './runtime-adapter.js'
-import { realRuntimeCommandRunner } from './runtime-adapter.js'
+import { realRuntimeCommandRunner, isQuotaError } from './runtime-adapter.js'
 
 export interface PodmanMount {
   /** Caminho no host. */
@@ -334,9 +334,11 @@ export function createPodmanCommandRunner(
         })
       }
 
-      // Timeout (exit 124) mata só o cliente podman no host; o container pode
-      // seguir vivo sob o conmon. Removê-lo à força libera RAM e o workspace.
-      if (result.exitCode === 124) {
+      // O container precisa ser removido à força em caso de timeout (exit 124)
+      // ou esgotamento de quota (para liberar RAM e limpar recursos durante o backoff),
+      // já que o backoff ocorre e recria o container na próxima tentativa.
+      const isQuota = result.exitCode !== 0 && isQuotaError(result.stderr)
+      if (result.exitCode === 124 || isQuota) {
         try {
           await hostRunner({ binary: podmanBinary, args: ['rm', '-f', containerName], env: {} })
         } catch {

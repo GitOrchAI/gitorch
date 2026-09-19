@@ -137,7 +137,7 @@ function normalizeExitCode(code: unknown): number {
 // não existe motivo de produção pra subir isto perto do limite real do SO.
 const MAX_PROMPT_ARG_BYTES = Number(process.env['GITORCH_MAX_PROMPT_ARG_BYTES'] ?? 96 * 1024)
 
-function isQuotaError(text: string): boolean {
+export function isQuotaError(text: string): boolean {
   return /\b429\b|resource.?exhausted|quota|rate.?limit/i.test(text)
 }
 

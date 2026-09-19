@@ -135,6 +135,27 @@ describe('createPodmanCommandRunner', () => {
     expect(args).toContain('/tmp/cache:/home/agent/cache:rw')
   })
 
+  test('remove o container à força quando o erro é de rate limit ou quota excedida', async () => {
+    const hostRunner = vi
+      .fn()
+      .mockResolvedValueOnce({
+        exitCode: 1,
+        stdout: '',
+        stderr: 'HTTP 429 Too Many Requests',
+        durationMs: 5,
+      })
+      .mockResolvedValueOnce(ok())
+    const runner = createPodmanCommandRunner({ image: 'img', hostRunner })
+
+    const result = await runner(buildRequest())
+
+    expect(result.exitCode).toBe(1)
+    const cleanup = hostRunner.mock.calls[1][0]
+    expect(cleanup.args[0]).toBe('rm')
+    expect(cleanup.args[1]).toBe('-f')
+    expect(String(cleanup.args[2])).toContain('gitorch-mission-')
+  })
+
   test('remove o container à força quando o timeout mata o cliente podman', async () => {
     const hostRunner = vi
       .fn()
