@@ -7,7 +7,8 @@ import {
   workspaceManager,
 } from './agent-mission'
 import type { RuntimeExecutionResult, RuntimeRegistry } from './runtime-adapter'
-import { BACKOFF_CONFIG } from './runtime-config'
+
+import { EXECUTION_RETRY_STRATEGY, calculateBackoffWithJitter } from './execution-limits'
 import type { F6AgentRole, MissionState, NodeTransition, StateNode } from './types'
 import { primeWorkspace } from './workspace-priming'
 
@@ -113,7 +114,6 @@ export class AgentOrchestrator {
     timeoutMs?: number
   ): Promise<RuntimeExecutionResult> {
     let result: RuntimeExecutionResult | undefined
-    let backoffMs = BACKOFF_CONFIG.initialMs
     let attempts = 0
 
     try {
@@ -139,10 +139,18 @@ export class AgentOrchestrator {
           mission.waitingReason = null
         }
 
-        if (result.waitingStatus === 'waiting_quota' && attempts <= BACKOFF_CONFIG.maxRetries) {
-          await setTimeout(backoffMs)
-          backoffMs = Math.min(backoffMs * BACKOFF_CONFIG.factor, BACKOFF_CONFIG.maxMs)
-          continue
+        if (result.waitingStatus === 'waiting_quota') {
+          if (attempts <= EXECUTION_RETRY_STRATEGY.maxRetries) {
+            const backoffMs = calculateBackoffWithJitter(attempts, EXECUTION_RETRY_STRATEGY)
+            await setTimeout(backoffMs)
+            continue
+          } else {
+            // Restore non-zero exit code on exhaustion to avoid false positives
+            result.exitCode = 1
+            result.errorDetails = `Quota/rate limit exhausted after ${attempts} attempts.`
+            result.failedStep = 'run-mission'
+            console.error(`[AgentOrchestrator] ${result.errorDetails}`)
+          }
         }
 
         break

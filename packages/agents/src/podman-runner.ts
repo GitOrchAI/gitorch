@@ -334,6 +334,18 @@ export function createPodmanCommandRunner(
         })
       }
 
+      const stdout = result.stdout || ''
+      const stderr = result.stderr || ''
+      const isQuota = /\b429\b|resource.?exhausted|quota|rate.?limit/i.test(stdout + stderr)
+
+      // Só intercepta quota se o container falhou (não engole "quota" na saída de um exit 0 de sucesso).
+      if (isQuota && result.exitCode !== 0) {
+        // Intercepta e converte erro de container pra rate limit explícito
+        result.waitingStatus = 'waiting_quota'
+        result.waitingReason = 'Quota or rate limit exceeded'
+        result.exitCode = 0 // Mascarar para que a engine superior lide com o backoff em vez de tratar como fatal crash
+      }
+
       // Timeout (exit 124) mata só o cliente podman no host; o container pode
       // seguir vivo sob o conmon. Removê-lo à força libera RAM e o workspace.
       if (result.exitCode === 124) {

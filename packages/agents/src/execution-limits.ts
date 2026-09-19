@@ -45,6 +45,29 @@ export interface ExecutionLimits {
   diagnosticTimeoutMs?: number
 }
 
+export interface RetryStrategy {
+  maxRetries: number
+  initialBackoffMs: number
+  maxBackoffMs: number
+  jitterFactor: number
+}
+
+export const EXECUTION_RETRY_STRATEGY: RetryStrategy = {
+  maxRetries: Number(process.env['GITORCH_EXEC_MAX_RETRIES'] ?? 5),
+  initialBackoffMs: Number(process.env['GITORCH_EXEC_INITIAL_BACKOFF'] ?? 5000),
+  maxBackoffMs: Number(process.env['GITORCH_EXEC_MAX_BACKOFF'] ?? 60000),
+  jitterFactor: 0.2,
+}
+
+export function calculateBackoffWithJitter(
+  attempt: number,
+  strategy: RetryStrategy = EXECUTION_RETRY_STRATEGY
+): number {
+  const base = Math.min(strategy.initialBackoffMs * Math.pow(2, attempt - 1), strategy.maxBackoffMs)
+  const jitter = base * strategy.jitterFactor * (Math.random() * 2 - 1)
+  return Math.max(0, base + jitter)
+}
+
 export interface WrappedCommand {
   binary: string
   args: string[]

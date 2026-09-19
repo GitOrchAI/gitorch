@@ -183,6 +183,8 @@ export function capPromptForArgv(
 }
 
 export interface RuntimeCommandResult {
+  waitingStatus?: string | null
+  waitingReason?: string | null
   exitCode: number
   stdout: string
   stderr: string
