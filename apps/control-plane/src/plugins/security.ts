@@ -39,4 +39,21 @@ const securityPlugin: FastifyPluginAsync = async (app) => {
   })
 }
 
+const revokedGuests = new Set<string>()
+
+export function revokeGuestAccess(guestId: string, reason?: string): void {
+  revokedGuests.add(guestId)
+  if (reason) {
+    console.log(`Guest security revoked: ${guestId}. Reason: ${reason}`)
+  }
+}
+
+export function isGuestRevoked(guestId: string): boolean {
+  return revokedGuests.has(guestId)
+}
+
+export function clearRevokedGuests(): void {
+  revokedGuests.clear()
+}
+
 export const securityHookPlugin = fp(securityPlugin)

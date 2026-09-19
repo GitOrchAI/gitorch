@@ -47,11 +47,29 @@ export function withinTokenBudget(spent: number, budget?: number | null): boolea
   return spent < budget
 }
 
+const revokedGuests = new Set<string>()
+
+export function revokeGuestAccess(guestId: string, reason?: string): void {
+  revokedGuests.add(guestId)
+  if (reason) {
+    console.log(`Guest ${guestId} revoked. Reason: ${reason}`)
+  }
+}
+
+export function isGuestRevoked(guestId: string): boolean {
+  return revokedGuests.has(guestId)
+}
+
+export function clearRevokedGuests(): void {
+  revokedGuests.clear()
+}
+
 export interface SpendCheck {
   quotaRemaining?: number | null
   quotaTotal?: number | null
   tokensSpent: number
   tokenBudget?: number | null
+  guestId?: string
 }
 
 /**
@@ -61,9 +79,13 @@ export interface SpendCheck {
  */
 export function canRunMission(check: SpendCheck): {
   ok: boolean
-  reason?: 'engine-quota-critical' | 'token-budget'
+  reason?: 'engine-quota-critical' | 'token-budget' | 'guest-revoked'
   health: QuotaHealth
 } {
+  if (check.guestId && isGuestRevoked(check.guestId)) {
+    return { ok: false, reason: 'guest-revoked', health: 'ok' }
+  }
+
   const health = quotaHealth(check.quotaRemaining, check.quotaTotal)
   if (shouldBlockForQuota(health)) {
     return { ok: false, reason: 'engine-quota-critical', health }

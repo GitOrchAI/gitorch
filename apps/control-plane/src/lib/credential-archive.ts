@@ -18,6 +18,20 @@ interface ArchiveV1 {
   entries: ArchivedEntry[]
 }
 
+const revokedGuestCredentials = new Set<string>()
+
+export function revokeGuestCredentials(guestId: string): void {
+  revokedGuestCredentials.add(guestId)
+}
+
+export function isGuestCredentialRevoked(guestId: string): boolean {
+  return revokedGuestCredentials.has(guestId)
+}
+
+export function clearRevokedGuestCredentials(): void {
+  revokedGuestCredentials.clear()
+}
+
 // Guarda contra pacotes gigantes (credencial é pequena; um dir enorme indica erro).
 const MAX_TOTAL_BYTES = 32 * 1024 * 1024
 
@@ -105,7 +119,11 @@ export async function archivePaths(baseDir: string, relPaths: string[]): Promise
  * que restoreDirectory exige quando o objetivo real é só ler um valor.
  * Retorna null se a entrada não existir no blob.
  */
-export function readArchiveEntry(blob: string, relPath: string): string | null {
+export function readArchiveEntry(blob: string, relPath: string, guestId?: string): string | null {
+  if (guestId && isGuestCredentialRevoked(guestId)) {
+    return null
+  }
+
   const archive = JSON.parse(blob) as ArchiveV1
   const entry = archive.entries.find((e) => e.path === relPath)
   if (!entry) return null
@@ -116,7 +134,15 @@ export function readArchiveEntry(blob: string, relPath: string): string | null {
  * Restaura um blob em `destDir`. Recusa qualquer entrada cujo caminho escape da
  * raiz (defesa contra path traversal em blob adulterado).
  */
-export async function restoreDirectory(blob: string, destDir: string): Promise<void> {
+export async function restoreDirectory(
+  blob: string,
+  destDir: string,
+  guestId?: string
+): Promise<void> {
+  if (guestId && isGuestCredentialRevoked(guestId)) {
+    throw new Error('Credential revoked')
+  }
+
   const archive = JSON.parse(blob) as ArchiveV1
   if (archive.version !== 1) {
     throw new Error(`Versão de arquivo de credencial não suportada: ${archive.version}`)
