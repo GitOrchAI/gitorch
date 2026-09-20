@@ -9,9 +9,14 @@ import { HORAS_ATE_TIMEOUT_PERGUNTA_MS } from './session-watch.js'
  */
 export interface PrismaParaReconciliacao {
   devSession: {
-    findMany: (
-      args: unknown
-    ) => Promise<Array<{ sessionName: string; issueNumber: number; answeredHash: string | null; updatedAt: Date }>>
+    findMany: (args: unknown) => Promise<
+      Array<{
+        sessionName: string
+        issueNumber: number
+        answeredHash: string | null
+        updatedAt: Date
+      }>
+    >
   }
 }
 
