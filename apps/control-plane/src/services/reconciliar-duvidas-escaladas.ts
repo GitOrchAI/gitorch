@@ -1,4 +1,5 @@
 import { lerMarca } from './pergunta-sem-resposta.js'
+import { HORAS_ATE_TIMEOUT_PERGUNTA_MS } from './session-watch.js'
 
 /**
  * O mínimo do Prisma que esta reconciliação usa — SÓ `devSession.findMany`.
@@ -8,9 +9,14 @@ import { lerMarca } from './pergunta-sem-resposta.js'
  */
 export interface PrismaParaReconciliacao {
   devSession: {
-    findMany: (
-      args: unknown
-    ) => Promise<Array<{ sessionName: string; issueNumber: number; answeredHash: string | null }>>
+    findMany: (args: unknown) => Promise<
+      Array<{
+        sessionName: string
+        issueNumber: number
+        answeredHash: string | null
+        updatedAt: Date
+      }>
+    >
   }
 }
 
@@ -78,7 +84,7 @@ export async function reconciliarDuvidasEscaladasDoProjeto(
       closedAt: null,
       answeredHash: { not: null },
     },
-    select: { sessionName: true, issueNumber: true, answeredHash: true },
+    select: { sessionName: true, issueNumber: true, answeredHash: true, updatedAt: true },
   })
 
   const resumo: ResumoDaReconciliacao = { encontradas: 0, encerradas: 0, falhas: 0 }
@@ -92,6 +98,17 @@ export async function reconciliarDuvidasEscaladasDoProjeto(
     // `desisti:` / formato desconhecido não são o padrão medido — ignora,
     // para não interferir no fluxo normal dessas sessões.
     if (!lida || lida.situacao !== 'respondida') continue
+
+    // Verifica a idade da sessão para não fechar as respostas reais recentes.
+    // O defeito legado é a marca sem a resposta real registrada. Se a sessão
+    // tem uma marca de resposta recente (dentro da janela de timeout em que
+    // o fluxo vivo vai retomá-la), ignoramos para dar tempo de ser processada.
+    // Usa updatedAt porque é a garantia incondicional do Prisma de quando a
+    // marca (answeredHash) de fato mudou.
+    const idadeMs = agora.getTime() - sessao.updatedAt.getTime()
+    if (idadeMs < HORAS_ATE_TIMEOUT_PERGUNTA_MS) {
+      continue
+    }
 
     resumo.encontradas += 1
 
