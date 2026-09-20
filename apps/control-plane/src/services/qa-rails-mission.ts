@@ -312,8 +312,25 @@ export interface QaRailsMissionResult {
   podeMesclar?: boolean
 }
 
+/** As 4 respostas do entendimento (Fase 2.4/3.1), formatadas para o corpo da
+ *  review — tanto na aprovação quanto na reprovação: o revisor mostra que
+ *  entendeu o pedido ANTES de opinar sobre o código, sempre. */
+export function buildEntendimentoSection(entendimento: QaVerdictForm['entendimento']): string {
+  return [
+    '## Entendimento do pedido',
+    '',
+    `De onde veio: ${entendimento.deOndeVeio}`,
+    `O que muda: ${entendimento.oQueMuda}`,
+    `Que ajuste é: ${entendimento.queAjusteE}`,
+    `Por que existe: ${entendimento.porQueExiste}`,
+  ].join('\n')
+}
+
 /** Comentário de rework estruturado (8 campos) mencionando @jules. */
-export function buildJulesReworkComment(comment: QaVerdictForm['comment']): string {
+export function buildJulesReworkComment(
+  comment: QaVerdictForm['comment'],
+  entendimento: QaVerdictForm['entendimento']
+): string {
   // Mesmo contrato da issue (padrão Shrimp): o rework que o QA devolve tem de
   // ser lido com a mesma régua com que a task foi escrita.
   const map: Record<string, string> = {
@@ -330,6 +347,8 @@ export function buildJulesReworkComment(comment: QaVerdictForm['comment']): stri
   return [
     `${JULES_MARKER}`,
     '@jules the PR needs changes before it can be approved:',
+    '',
+    buildEntendimentoSection(entendimento),
     '',
     ...sections,
   ].join('\n\n')
@@ -1418,7 +1437,7 @@ export async function runQaMissionViaRails(
       // de "já tem parecer" procura depois para distinguir aprovação de
       // reprovação. Enquanto eram duas cadeias iguais por coincidência,
       // mexer no texto aqui deixaria a leitura cega sem quebrar teste nenhum.
-      `${JULES_MARKER}${marcaDoLegado}\nGitOrch QA ${MARCA_DE_APROVACAO} — criteria met, CI green.\n\n${verdict.comment.goal}${avisoDeNaoMesclar}`
+      `${JULES_MARKER}${marcaDoLegado}\nGitOrch QA ${MARCA_DE_APROVACAO} — criteria met, CI green.\n\n${buildEntendimentoSection(verdict.entendimento)}\n\n${verdict.comment.goal}${avisoDeNaoMesclar}`
     )
 
     // Task 8 ("julga todos, mescla só o que delegou"): o QUARTO porteiro,
@@ -1704,7 +1723,7 @@ export async function runQaMissionViaRails(
     // pelo conteúdo.
     if (delegado && !projetoTravado) {
       await gh('POST', `/repos/${options.repository}/issues/${target.number}/comments`, {
-        body: buildJulesReworkComment(verdict.comment),
+        body: buildJulesReworkComment(verdict.comment, verdict.entendimento),
       })
 
       // Task 10 (decisão do dono 14/08/2026): "tem que ter lógica entre jules e

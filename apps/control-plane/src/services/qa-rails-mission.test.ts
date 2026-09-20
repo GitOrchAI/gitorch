@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   runQaMissionViaRails,
   buildJulesReworkComment,
+  buildEntendimentoSection,
   MAX_TENTATIVAS_DE_MERGE,
 } from './qa-rails-mission.js'
 import { assertMissionDelivered } from './mission-outcome.js'
@@ -35,10 +36,10 @@ const APPROVE = JSON.stringify({
     notes: 'CI verde.',
   },
   entendimento: {
-    deOndeVeio: 'Jules',
-    oQueMuda: 'Adiciona endpoints de review',
-    queAjusteE: 'feature',
-    porQueExiste: 'Para permitir que usuários façam reviews',
+    deOndeVeio: 'Jules solicitou via PR',
+    oQueMuda: 'Adiciona endpoints de review com regras',
+    queAjusteE: 'feature importante',
+    porQueExiste: 'para o app ler as reviews reais',
   },
 })
 
@@ -56,9 +57,9 @@ const REQUEST_CHANGES = JSON.stringify({
     notes: 'CI vermelho no unit-test.',
   },
   entendimento: {
-    deOndeVeio: 'Jules',
+    deOndeVeio: 'Jules reportou bug',
     oQueMuda: 'Validação no controller',
-    queAjusteE: 'correção',
+    queAjusteE: 'correção importante',
     porQueExiste: 'Evitar erro 500 sem validação de material',
   },
 })
@@ -315,7 +316,8 @@ function fakeFetch(
 
 describe('buildJulesReworkComment', () => {
   it('menciona @jules e traz os 8 campos', () => {
-    const c = buildJulesReworkComment(JSON.parse(REQUEST_CHANGES).comment)
+    const payload = JSON.parse(REQUEST_CHANGES)
+    const c = buildJulesReworkComment(payload.comment, payload.entendimento)
     expect(c).toContain('@jules')
     expect(c).toContain('## Verification Criteria')
     expect(c).toContain('material')
@@ -3686,5 +3688,20 @@ describe('runQaMissionViaRails — entrega sem conteúdo (L5-T1)', () => {
     expect(motorChamado).toBe(true)
     expect(posted.reviews[0]!.event).toBe('REQUEST_CHANGES')
     expect(r.podeMesclar).toBe(true) // delegado — só o VEREDITO é reprovação
+  })
+})
+
+describe('buildEntendimentoSection — Fase 3.1', () => {
+  it('formata os 4 campos como seções markdown', () => {
+    const texto = buildEntendimentoSection({
+      deOndeVeio: 'Jules pelo GitOrch',
+      oQueMuda: 'ajusta o cache de sessão',
+      queAjusteE: 'correção',
+      porQueExiste: 'sessão expirava cedo demais',
+    })
+    expect(texto).toContain('De onde veio: Jules pelo GitOrch')
+    expect(texto).toContain('O que muda: ajusta o cache de sessão')
+    expect(texto).toContain('Que ajuste é: correção')
+    expect(texto).toContain('Por que existe: sessão expirava cedo demais')
   })
 })

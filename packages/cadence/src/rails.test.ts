@@ -935,3 +935,54 @@ describe('validateDiagnosticIsolation', () => {
     )
   })
 })
+
+describe('qaVerdict — entendimento obrigatório (Fase 3.1)', () => {
+  it('recusa quando um campo do entendimento está vazio', () => {
+    const valor = {
+      verdict: 'approve',
+      comment: {
+        titulo: 't',
+        goal: 'g',
+        taskDetails: 'd',
+        taskDescription: 'd',
+        implementationGuide: 'i',
+        verificationCriteria: 'v',
+        dependencies: 'x',
+        relatedFiles: 'x',
+        notes: 'x',
+      },
+      entendimento: {
+        deOndeVeio: 'Jules',
+        oQueMuda: '',
+        queAjusteE: 'correção',
+        porQueExiste: 'motivo',
+      },
+    }
+    const resultado = validateForm(RAILS_SCHEMAS.qaVerdict, valor)
+    expect(resultado.ok).toBe(false)
+  })
+
+  it('aceita quando os 4 campos do entendimento estão preenchidos', () => {
+    const valor = {
+      verdict: 'approve',
+      comment: {
+        titulo: 't',
+        goal: 'g',
+        taskDetails: 'd',
+        taskDescription: 'd',
+        implementationGuide: 'i',
+        verificationCriteria: 'v',
+        dependencies: 'x',
+        relatedFiles: 'x',
+        notes: 'x',
+      },
+      entendimento: {
+        deOndeVeio: 'Jules pelo GitOrch',
+        oQueMuda: 'ajusta o cache de sessão',
+        queAjusteE: 'correção de bug',
+        porQueExiste: 'sessão expirava cedo',
+      },
+    }
+    expect(validateForm(RAILS_SCHEMAS.qaVerdict, valor).ok).toBe(true)
+  })
+})
