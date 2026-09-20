@@ -42,6 +42,7 @@ const SESSAO_PRESA = {
   state: 'AWAITING_USER_FEEDBACK',
   answeredHash: 'respondida:0:hashSessao',
   devAccountId: null,
+  updatedAt: new Date(Date.now() - 25 * 60 * 60 * 1000), // older than HORAS_ATE_TIMEOUT_PERGUNTA_MS
 }
 
 const PERGUNTA_ABERTA_3866 = {

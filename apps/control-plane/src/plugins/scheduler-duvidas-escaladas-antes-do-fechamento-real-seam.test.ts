@@ -52,6 +52,7 @@ const SESSAO_PRESA = {
   // 25h sem avançar: além do teto de 12h de `devolverVagasDeSessaoAbandonada`
   // (`HORAS_SEM_PROGRESSO_ATE_ABANDONAR`, sessao-abandonada.ts).
   lastProgressAt: new Date(Date.now() - 25 * 60 * 60 * 1000),
+  updatedAt: new Date(Date.now() - 25 * 60 * 60 * 1000), // older than HORAS_ATE_TIMEOUT_PERGUNTA_MS
 }
 
 /** Proxy "catch-all": qualquer model/método não roteado explicitamente

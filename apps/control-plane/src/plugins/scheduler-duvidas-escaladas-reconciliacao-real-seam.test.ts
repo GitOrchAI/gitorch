@@ -30,6 +30,7 @@ const SESSAO_PRESA = {
   issueNumber: 46,
   answeredHash: 'respondida:0:hash123',
   devAccountId: null,
+  updatedAt: new Date(Date.now() - 25 * 60 * 60 * 1000), // older than HORAS_ATE_TIMEOUT_PERGUNTA_MS
 }
 
 /** Proxy "catch-all": qualquer model/método não roteado explicitamente

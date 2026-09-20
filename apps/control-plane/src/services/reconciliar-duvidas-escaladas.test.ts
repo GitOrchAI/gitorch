@@ -32,6 +32,7 @@ const SESSAO_LEGADA = {
   sessionName: 'sessions/legada',
   issueNumber: 46,
   answeredHash: marcarRespondida('hash123'),
+  updatedAt: new Date(Date.now() - 25 * 60 * 60 * 1000), // older than HORAS_ATE_TIMEOUT_PERGUNTA_MS (24h)
 }
 
 function prismaFalso(overrides: Partial<PrismaParaReconciliacao> = {}): PrismaParaReconciliacao {
@@ -125,6 +126,7 @@ describe('reconciliarDuvidasEscaladasDoProjeto', () => {
             sessionName: 'sessions/legada-2',
             issueNumber: 47,
             answeredHash: marcarRespondida('hash456'),
+            updatedAt: new Date(Date.now() - 25 * 60 * 60 * 1000), // older than HORAS_ATE_TIMEOUT_PERGUNTA_MS (24h)
           },
         ]),
       },
@@ -142,6 +144,22 @@ describe('reconciliarDuvidasEscaladasDoProjeto', () => {
 
   it('nenhuma sessão presa: zero em tudo, fecharSessao nunca chamado', async () => {
     const prisma = prismaFalso({ devSession: { findMany: vi.fn(async () => []) } })
+    const deps = depsFalso({ prisma })
+
+    const resumo = await reconciliarDuvidasEscaladasDoProjeto(ARGS, deps)
+
+    expect(resumo).toEqual({ encontradas: 0, encerradas: 0, falhas: 0 })
+    expect(deps.fecharSessao).not.toHaveBeenCalled()
+  })
+
+  it('sessão com marca respondida mas updatedAt recente (< 24h): não fecha (TDD 1)', async () => {
+    const prisma = prismaFalso({
+      devSession: {
+        findMany: vi.fn(async () => [
+          { ...SESSAO_LEGADA, updatedAt: new Date(Date.now() - 1000) }, // just 1 second ago
+        ]),
+      },
+    })
     const deps = depsFalso({ prisma })
 
     const resumo = await reconciliarDuvidasEscaladasDoProjeto(ARGS, deps)
