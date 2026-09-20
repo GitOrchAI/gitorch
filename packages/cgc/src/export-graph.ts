@@ -36,6 +36,10 @@ export interface GraphExportResult {
   edges: GraphExportEdge[]
   truncated: boolean
   aggregatedBy?: 'directory'
+  moduleGraph?: {
+    nodes: Array<{ id: string; file: string; type: 'file' }>
+    edges: Array<{ source: string; target: string; rel: 'IMPORTS' }>
+  }
   metrics: {
     symbolCount: number
     orphanNodes: number
@@ -218,6 +222,32 @@ export async function exportGraph(
     const structuralComplexity = symbolCount > 0 ? edges.length / symbolCount : 0
     const metrics = { symbolCount, orphanNodes, structuralComplexity }
 
+    const moduleGraphNodes = sources.map((s) => ({
+      id: `file://${s.relPath}`,
+      file: s.relPath,
+      type: 'file' as const,
+    }))
+    const moduleGraphEdges: Array<{ source: string; target: string; rel: 'IMPORTS' }> = []
+
+    // A file imports another file if any of its symbols imports a symbol from the other file.
+    const fileImports = new Set<string>()
+    for (const r of importResolveRows) {
+      const impSym = symbolById.get(r.impId)
+      const srcSym = symbolById.get(r.srcId)
+      if (impSym && srcSym && impSym.filePath !== srcSym.filePath) {
+        const key = `${impSym.filePath}->${srcSym.filePath}`
+        if (!fileImports.has(key)) {
+          fileImports.add(key)
+          moduleGraphEdges.push({
+            source: `file://${impSym.filePath}`,
+            target: `file://${srcSym.filePath}`,
+            rel: 'IMPORTS',
+          })
+        }
+      }
+    }
+    const moduleGraph = { nodes: moduleGraphNodes, edges: moduleGraphEdges }
+
     if (nodes.length > maxNodes) {
       const agg = aggregateByDirectory(nodes, edges, maxNodes)
       return {
@@ -226,10 +256,11 @@ export async function exportGraph(
         truncated: true,
         aggregatedBy: 'directory',
         metrics,
+        moduleGraph,
       }
     }
 
-    return { nodes, edges, truncated: false, metrics }
+    return { nodes, edges, truncated: false, metrics, moduleGraph }
   } catch (err) {
     if (err instanceof PoisonedFileError) throw err
     return null

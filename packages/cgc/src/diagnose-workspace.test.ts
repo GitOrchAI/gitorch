@@ -41,6 +41,8 @@ describe('diagnoseWorkspaceStructural', () => {
     expect(d!.directoryInventory['src']).toEqual(
       expect.arrayContaining(['math.ts', 'main.ts', 'main.test.ts'])
     )
+    expect(d!.orphanModules).toBeDefined()
+    expect(d!.crossPackageDependencies).toBeDefined()
   })
 
   it('devolve null para diretório sem código-fonte (nunca lança)', async () => {
