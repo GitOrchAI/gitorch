@@ -16,7 +16,9 @@ describe('registrarDirecaoDoProjeto', () => {
       deps: { cortex, now: () => '2026-09-15T00:00:00.000Z' },
     })
     expect(cortex.writeDrawer).toHaveBeenCalledTimes(2)
-    const salas = (cortex.writeDrawer as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0].roomId)
+    const salas = (cortex.writeDrawer as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c) => c[0].roomId
+    )
     expect(salas.sort()).toEqual(['po', 'ra'])
   })
 
