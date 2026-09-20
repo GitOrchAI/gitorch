@@ -440,6 +440,11 @@ const DOD_FIELDS_SCHEMA: MiniSchema = {
 // (e um RESUMO, nao uma justificativa completa).
 export const MIN_CARACTERES_RESUMO_DA_PROPOSTA = 10
 
+/** Fase 3.1: nenhum dos 4 campos do entendimento pode ser vazio ou genérico
+ *  demais — um campo com 2 caracteres não é resposta, é preenchimento
+ *  automático para passar na validação. */
+export const MIN_CARACTERES_ENTENDIMENTO = 10
+
 export const RAILS_SCHEMAS = {
   // A DUVIDA DO DEV assincrono. O dev para e pergunta; alguem tem que
   // responder, senao a sessao congela uma vaga para sempre (medido: treze
@@ -829,10 +834,10 @@ export const RAILS_SCHEMAS = {
         type: 'object',
         required: ['deOndeVeio', 'oQueMuda', 'queAjusteE', 'porQueExiste'],
         properties: {
-          deOndeVeio: { type: 'string' },
-          oQueMuda: { type: 'string' },
-          queAjusteE: { type: 'string' },
-          porQueExiste: { type: 'string' },
+          deOndeVeio: { type: 'string', minLength: MIN_CARACTERES_ENTENDIMENTO },
+          oQueMuda: { type: 'string', minLength: MIN_CARACTERES_ENTENDIMENTO },
+          queAjusteE: { type: 'string', minLength: MIN_CARACTERES_ENTENDIMENTO },
+          porQueExiste: { type: 'string', minLength: MIN_CARACTERES_ENTENDIMENTO },
         },
       },
     },
