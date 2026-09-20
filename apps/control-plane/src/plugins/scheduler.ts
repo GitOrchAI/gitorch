@@ -6768,6 +6768,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             'falhou 2x — análise pendente (T4)'
         )
       },
+      registrarDesistencia: async ({ linha }) => {
+        await registrarStatusNoPainel(
+          linha.projectId,
+          `desistencia:${linha.projectId}:${linha.issueNumber}`,
+          `GitOrch: a entrega da issue #${linha.issueNumber} falhou ${linha.requeueCount} vezes e bateu o teto de retentativas. A esteira não vai mais tentar sozinha.`
+        )
+      },
       agora,
       onInfo: (m) => app.log.info(`[Scheduler] ${m}`),
       onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
@@ -6808,12 +6815,14 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
       resultado.fechadasConcluidas +
       resultado.issuesRedelegadas.length +
       resultado.issuesEmAnalise.length +
+      resultado.issuesDesistidas.length +
       resultado.issuesRetomadasNoPr.length
     if (total > 0) {
       app.log.info(
         `[Scheduler] ciclo-terminal: ${resultado.fechadasConcluidas} mescladas, ` +
           `${resultado.issuesRedelegadas.length} de volta à fila, ` +
           `${resultado.issuesEmAnalise.length} para análise, ` +
+          `${resultado.issuesDesistidas.length} desistidas por teto, ` +
           `${resultado.issuesRetomadasNoPr.length} retomadas no mesmo PR (L4-T5), ` +
           `${resultado.mantidas} mantidas, ${resultado.ilegiveis} ilegíveis`
       )

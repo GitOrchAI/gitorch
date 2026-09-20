@@ -67,6 +67,10 @@ export interface CicloTerminalDeps {
     numeroDoPr: number
     branchDoPr: string
   }) => Promise<void>
+  registrarDesistencia?: (args: {
+    linha: LinhaParaCicloTerminal
+    motivo: MotivoDeFechamento
+  }) => Promise<void>
   agora: Date
   teto?: number
   onInfo?: (m: string) => void
@@ -79,6 +83,8 @@ export interface CicloTerminalResultado {
   issuesRedelegadas: number[]
   /** Issues cuja 2ª falha pediu análise antes da 3ª tentativa. */
   issuesEmAnalise: number[]
+  /** Issues que atingiram o teto de retentativas e foram abandonadas de vez. */
+  issuesDesistidas: number[]
   /**
    * L4-T5: issues cujo PR reprovado foi retomado no MESMO pull request — a
    * issue NÃO volta para a fila (`issuesRedelegadas`): ela continua sendo
@@ -114,6 +120,7 @@ export async function executarCicloTerminal(
     fechadasConcluidas: 0,
     issuesRedelegadas: [],
     issuesEmAnalise: [],
+    issuesDesistidas: [],
     issuesRetomadasNoPr: [],
     mantidas: 0,
     ilegiveis: 0,
@@ -264,6 +271,25 @@ export async function executarCicloTerminal(
       marcarVagaLiberada(linha.projectId)
       info(
         `[ciclo-terminal] ${linha.sessionName} (issue #${linha.issueNumber}) mesclada — linha fechada`
+      )
+      continue
+    }
+
+    if (decisao.acao === 'fechar-e-desistir') {
+      r.issuesDesistidas.push(linha.issueNumber)
+      marcarVagaLiberada(linha.projectId)
+      if (deps.registrarDesistencia) {
+        await deps
+          .registrarDesistencia({ linha, motivo: decisao.motivo })
+          .catch((err) =>
+            warn(
+              `[ciclo-terminal] registro de desistência falhou para #${linha.issueNumber}: ${(err as Error).message}`
+            )
+          )
+      }
+      info(
+        `[ciclo-terminal] ${linha.sessionName} (issue #${linha.issueNumber}) fechada (${decisao.motivo}); ` +
+          'bateu o teto de retentativas — desistiu'
       )
       continue
     }

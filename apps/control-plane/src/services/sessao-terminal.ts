@@ -28,6 +28,9 @@ export const HORAS_ATE_DESISTIR_DO_PR_REJEITADO = 12
  *  novo. `requeueCount` conta quantas vezes a issue já foi redelegada. */
 export const REQUEUE_ATE_ANALISAR = 2
 
+/** O teto absoluto de retentativas. Quando batido, a esteira desiste de vez. */
+export const MAX_REQUEUE = 3
+
 /**
  * Situação do pull request da sessão, lida pelo chamador (via GitHub) e passada
  * para cá — a regra não toca rede.
@@ -46,6 +49,7 @@ export type DecisaoTerminal =
   | { acao: 'fechar-concluido'; motivo: 'merged' }
   | { acao: 'fechar-e-redelegar'; motivo: MotivoDeFechamento }
   | { acao: 'fechar-e-analisar'; motivo: MotivoDeFechamento }
+  | { acao: 'fechar-e-desistir'; motivo: MotivoDeFechamento }
   /**
    * L4-T5: PR aberto, reprovado, o dev não vai retomar sozinho (terminal) —
    * mas HÁ um ramo para retomar nele. Em vez de fechar às cegas e devolver a
@@ -96,6 +100,10 @@ export function decidirSessaoTerminal(args: {
     }
     // L4-T5: passou o tempo de espera e HÁ um ramo para retomar — a esteira
     // tenta de novo NO MESMO PR em vez de fechar e devolver a issue à fila.
+    // MAS, se bateu o teto absoluto, desiste de vez, mesmo havendo branch para retomar.
+    if (args.requeueCount >= MAX_REQUEUE) {
+      return { acao: 'fechar-e-desistir', motivo: 'pr-rejeitado-sem-retomada' }
+    }
     if (args.branchRetomavel) {
       return { acao: 'retomar-no-mesmo-pr', branchDoPr: args.branchRetomavel }
     }
@@ -110,6 +118,9 @@ export function decidirSessaoTerminal(args: {
           ? 'dev-falhou'
           : 'dev-concluiu-sem-entrega'
 
+  if (args.requeueCount >= MAX_REQUEUE) {
+    return { acao: 'fechar-e-desistir', motivo }
+  }
   if (args.requeueCount >= REQUEUE_ATE_ANALISAR && !args.analiseJaFeita) {
     return { acao: 'fechar-e-analisar', motivo }
   }

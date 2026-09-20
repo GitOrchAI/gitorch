@@ -37,6 +37,13 @@ describe('decidirSessaoTerminal', () => {
     })
   })
 
+  it('requeueCount >= MAX_REQUEUE -> fecha e desiste', () => {
+    expect(decidirSessaoTerminal({ ...base, requeueCount: 3, analiseJaFeita: true })).toEqual({
+      acao: 'fechar-e-desistir',
+      motivo: 'dev-concluiu-sem-entrega',
+    })
+  })
+
   it('FAILED sem PR, 1ª vez → fecha e redelega (motivo dev-falhou)', () => {
     expect(decidirSessaoTerminal({ ...base, estado: 'FAILED' })).toEqual({
       acao: 'fechar-e-redelegar',
@@ -60,9 +67,9 @@ describe('decidirSessaoTerminal', () => {
     )
   })
 
-  it('requeueCount 3 (já passou da análise) → só redelega, não re-analisa', () => {
+  it('requeueCount 3 (já passou da análise e bateu o teto) → desiste', () => {
     expect(decidirSessaoTerminal({ ...base, requeueCount: 3, analiseJaFeita: true }).acao).toBe(
-      'fechar-e-redelegar'
+      'fechar-e-desistir'
     )
   })
 

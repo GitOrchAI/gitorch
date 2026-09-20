@@ -24,6 +24,7 @@ function deps(
 ) {
   const fechadas: Array<{ sessionName: string; motivo: string }> = []
   const analises: number[] = []
+  const desistencias: number[] = []
   const d: CicloTerminalDeps = {
     listarLinhas: async () => over.linhas,
     situacaoDoPr: async () => over.pr ?? 'sem-pr',
@@ -33,12 +34,15 @@ function deps(
     pedirAnalise: async ({ linha }) => {
       analises.push(linha.issueNumber)
     },
+    registrarDesistencia: async ({ linha }) => {
+      desistencias.push(linha.issueNumber)
+    },
     agora: new Date('2026-08-29T12:00:00Z'),
     onInfo: () => undefined,
     onWarn: () => undefined,
     ...over,
   }
-  return { d, fechadas, analises }
+  return { d, fechadas, analises, desistencias }
 }
 
 describe('executarCicloTerminal', () => {
@@ -119,6 +123,26 @@ describe('executarCicloTerminal', () => {
     expect(fechadas).toEqual([])
     expect(r.mantidas).toBe(1)
     expect(r.issuesRedelegadas).toEqual([])
+  })
+
+  it('bateu o teto de retentativas (MAX_REQUEUE) → fecha, registra desistência e NÃO redelega', async () => {
+    const { d, fechadas, desistencias } = deps({
+      linhas: [
+        linha({ issueNumber: 5, state: 'FAILED', requeueCount: 3, analysisDoneAt: new Date() }),
+      ],
+    })
+    const r = await executarCicloTerminal(d)
+
+    // A sessão é fechada para devolver a vaga.
+    expect(fechadas).toEqual([{ sessionName: 'sessions/x', motivo: 'dev-falhou' }])
+
+    // A desistência é registrada.
+    expect(desistencias).toEqual([5])
+    expect(r.issuesDesistidas).toEqual([5])
+
+    // NÃO volta para a fila nem pede análise de novo.
+    expect(r.issuesRedelegadas).toHaveLength(0)
+    expect(r.issuesEmAnalise).toHaveLength(0)
   })
 
   // Reconciliação (task DJ-T17): o veto de escalada em `decidirSessaoTerminal`
