@@ -5543,6 +5543,15 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 'dev-falhou',
                 'pr-descartado',
                 'pr-rejeitado-sem-retomada',
+                // Optamos por INCLUIR 'pergunta-sem-resposta' e 'abandoned' na análise do RA.
+                // Justificativa: uma pergunta que ficou sem resposta ou uma sessão que foi
+                // abandonada por inatividade contínua podem ser um sintoma de uma issue confusa,
+                // inatingível ou mal formulada. Permitir que o RA analise o contexto quando
+                // a issue bate no teto de tentativas ajuda a descobrir esse tipo de problema de
+                // upstream (na especificação feita pelo PO ou RA) em vez de simplesmente redelegá-la
+                // sem entender por que o dev assíncrono não consegue seguir adiante ou ficou travado.
+                'pergunta-sem-resposta',
+                'abandoned',
               ],
             },
           },

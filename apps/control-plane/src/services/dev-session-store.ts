@@ -147,6 +147,7 @@ export const MOTIVOS_QUE_REDELEGAM: ReadonlySet<MotivoDeFechamento> = new Set([
   'pr-descartado',
   'pr-rejeitado-sem-retomada',
   'pergunta-sem-resposta',
+  'abandoned',
 ])
 
 /**
