@@ -24,8 +24,8 @@
     "node-pty-prebuilt-multiarch": "0.10.1-pre.5"
   },
   "devDependencies": {
-    "@types/node": "22.20.1",
-    "brace-expansion": "5.0.9",
+    "@types/node": "22.20.3",
+    "brace-expansion": "5.0.12",
     "typescript": "^5.4.0",
     "vitest": "^4.1.11"
   }
