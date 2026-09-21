@@ -1533,6 +1533,12 @@ export async function runQaMissionViaRails(
         delegado,
         shaRevisado: pr.head?.sha ?? '',
         shaAtual: entregaAgora.head?.sha ?? '',
+        entendimentoPresente: Boolean(
+          verdict.entendimento?.deOndeVeio &&
+          verdict.entendimento?.oQueMuda &&
+          verdict.entendimento?.queAjusteE &&
+          verdict.entendimento?.porQueExiste
+        ),
         merge: async () => {
           // Nunca seguir URL devolvida pelo GitHub: a rota é montada aqui, a
           // partir do NÚMERO do PR e do repositório que já temos — nunca de um

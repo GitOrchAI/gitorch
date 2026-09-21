@@ -108,6 +108,7 @@ describe('rememberRepoContext (ponte GitHub → Cortex)', () => {
           ecossistema: 'npm',
           manifesto: 'pnpm-lock.yaml',
           resumo: 'resumo do problema',
+          escopo: 'runtime',
           versaoCorrigida: '2.0.0',
           url: 'https://exemplo.invalido/alerta/42',
           criadoEm: '2026-01-01T00:00:00Z',

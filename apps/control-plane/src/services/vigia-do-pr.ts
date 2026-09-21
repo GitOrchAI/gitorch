@@ -459,6 +459,7 @@ export interface VigiaDoPrDeps {
   acoesAnteriores: (numeroDoPr: number) => Promise<number>
   /** Vagas de sessão simultânea que sobram na conta do dev nesta passada. */
   vagasLivres: number
+  decidirAcaoNoPrOrfao?: (pr: PrOrfaoObservado, rawPr: PrAberto) => Promise<AcaoDoVigia>
   abrirSessaoDeConserto: (args: {
     numeroDoPr: number
     issueNumber: number
@@ -546,7 +547,7 @@ export async function vigiarPrsOrfaos(deps: VigiaDoPrDeps): Promise<string> {
       }
 
       const issueNumber = deps.issueDoPr(pr.numero)
-      const decisao = decidirAcaoNoPrOrfao({
+      const prObservado: PrOrfaoObservado = {
         numero: pr.numero,
         sinais: pr,
         temSessaoViva: false,
@@ -561,7 +562,11 @@ export async function vigiarPrsOrfaos(deps: VigiaDoPrDeps): Promise<string> {
         paradoHaMs: pr.paradoHaMs,
         acoesAnteriores: await deps.acoesAnteriores(pr.numero),
         podeAbrirSessao: vagas > 0,
-      })
+      }
+
+      const decisao = deps.decidirAcaoNoPrOrfao
+        ? await deps.decidirAcaoNoPrOrfao(prObservado, pr)
+        : decidirAcaoNoPrOrfao(prObservado)
 
       // O TETO DESTA PASSADA (ACHADO 2 do QA). Fica DEPOIS da decisão e ANTES
       // da execução de propósito: o que ele corta não é "o que olhar", é "o

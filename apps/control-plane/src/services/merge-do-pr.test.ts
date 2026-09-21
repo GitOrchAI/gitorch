@@ -9,6 +9,7 @@ const base = {
   delegado: true,
   shaRevisado: 'abc123',
   shaAtual: 'abc123',
+  entendimentoPresente: true,
 }
 
 describe('mesclarPr', () => {
@@ -123,5 +124,26 @@ describe('mesclarPr', () => {
     })
     expect(chamado).toBe(true)
     expect(r.mesclado).toBe(true)
+  })
+
+  it('recusa mesclar quando o veredito aprovou mas não veio com entendimento (Fase 3.8)', async () => {
+    const resultado = await mesclarPr({
+      ...base,
+      entendimentoPresente: false,
+      merge: async () => true,
+    })
+    expect(resultado).toEqual({
+      mesclado: false,
+      motivo: 'o QA aprovou sem registrar o entendimento do pedido',
+    })
+  })
+
+  it('mescla quando os 3 critérios batem, entendimento incluído', async () => {
+    const resultado = await mesclarPr({
+      ...base,
+      entendimentoPresente: true,
+      merge: async () => true,
+    })
+    expect(resultado.mesclado).toBe(true)
   })
 })

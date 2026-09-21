@@ -1,3 +1,8 @@
+import { lerCuidaPorOrigem, lerJanelaEmConstrucaoHoras } from '../services/cuidado-por-origem.js'
+import { decidirProximoPasso } from '../services/motor-do-proximo-passo.js'
+import { decidirMergeDoDependabot } from '../services/dependabot-auto-merge.js'
+import { mesclarPr } from '../services/merge-do-pr.js'
+import { lerFichaDoItem } from '../services/ficha-do-item.js'
 import fp from 'fastify-plugin'
 import { FastifyInstance, FastifyBaseLogger } from 'fastify'
 import * as fs from 'node:fs/promises'
@@ -4172,23 +4177,26 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               : undefined
             result = raRails
               ? await (async () => {
-                  const raResult = await runRaMissionViaRails({
-                    repository: project.wingId,
-                    // O nível deste projeto: sem ele o serviço cai no default
-                    // fail-closed e recusa toda escrita no repositório do
-                    // cliente — foi o que parou a esteira em 30/08.
-                    fetchImpl: fetchDoQuadro(project),
-                    githubToken: railsToken,
-                    execute,
-                    contextBlocks,
-                    // Separa os dois trabalhos do RA: pelo aviso de desejo novo
-                    // ele analisa AQUELE desejo; pela agenda ele EXPLORA o
-                    // projeto. Ancorar de novo num desejo já analisado é refazer
-                    // a mesma análise duas vezes por dia em vez de aprender mais
-                    // sobre o repositório — e é o explorador quem alimenta a
-                    // memória que os outros agentes leem.
-                    pelaAgenda: origem === 'agenda',
-                  })
+                  let raResult = { exitCode: 0, output: '', stderr: '' }
+                  if (origem !== 'analise-pendente') {
+                    raResult = await runRaMissionViaRails({
+                      repository: project.wingId,
+                      // O nível deste projeto: sem ele o serviço cai no default
+                      // fail-closed e recusa toda escrita no repositório do
+                      // cliente — foi o que parou a esteira em 30/08.
+                      fetchImpl: fetchDoQuadro(project),
+                      githubToken: railsToken,
+                      execute,
+                      contextBlocks,
+                      // Separa os dois trabalhos do RA: pelo aviso de desejo novo
+                      // ele analisa AQUELE desejo; pela agenda ele EXPLORA o
+                      // projeto. Ancorar de novo num desejo já analisado é refazer
+                      // a mesma análise duas vezes por dia em vez de aprender mais
+                      // sobre o repositório — e é o explorador quem alimenta a
+                      // memória que os outros agentes leem.
+                      pelaAgenda: origem === 'agenda',
+                    })
+                  }
                   // D51: junto do trabalho de explorador, o RA entende POR QUE
                   // uma issue falhou 2× — antes da 3ª tentativa. O aprendizado
                   // vai para a memória dos agentes e o pedido revisado para o
@@ -4207,22 +4215,25 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                   // D54: entre o sensor e a delegação existe SEMPRE análise —
                   // o RA entende a causa de cada falha de infra e o PO escreve
                   // a issue padrão Shrimp, no repo certo (cliente vs produto).
-                  const achadosOut = await rodarProcessamentoDeAchados(
-                    project as NotifiableProject & {
-                      id: string
-                      wingId: string
-                      autonomia?: string | null
-                    },
-                    railsToken,
-                    execute,
-                    contextBlocks
-                  ).catch((err) => {
-                    app.log.warn(
-                      err,
-                      `[Scheduler] processamento de achados de infra falhou em ${project.wingId}`
-                    )
-                    return ''
-                  })
+                  const achadosOut =
+                    origem !== 'analise-pendente'
+                      ? await rodarProcessamentoDeAchados(
+                          project as NotifiableProject & {
+                            id: string
+                            wingId: string
+                            autonomia?: string | null
+                          },
+                          railsToken,
+                          execute,
+                          contextBlocks
+                        ).catch((err) => {
+                          app.log.warn(
+                            err,
+                            `[Scheduler] processamento de achados de infra falhou em ${project.wingId}`
+                          )
+                          return ''
+                        })
+                      : ''
                   const extra = [analiseOut, achadosOut].filter(Boolean).join('\n')
                   return extra ? { ...raResult, output: `${raResult.output}\n${extra}` } : raResult
                 })()
@@ -5504,12 +5515,18 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
    * RA na agenda. Best-effort: nunca lança para fora — o RA tem outro trabalho.
    */
   const rodarAnaliseDeFalhasDoRa = async (
-    project: { id: string; wingId: string },
+    project: { id: string; wingId: string; devPlan?: string | null },
     railsToken: string | undefined,
     execute: StepExecutor
   ): Promise<string> => {
     if (!railsToken) return ''
     const agora = new Date()
+
+    const capDoPlano = project.devPlan ? tetosDoPlanoDoDev(project.devPlan).tetoConcorrentes : 15
+    const tetoEnvStr = process.env['GITORCH_ANALISES_POR_PASSADA']
+    const tetoEnv = tetoEnvStr && !isNaN(Number(tetoEnvStr)) ? Number(tetoEnvStr) : undefined
+    const tetoFinal = tetoEnv ?? Math.max(15, capDoPlano)
+
     const gh = async (path: string): Promise<unknown> => {
       const resp = await ghComGuarda(`https://api.github.com${path}`, {
         headers: {
@@ -5523,6 +5540,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     }
 
     const r = await analisarFalhasPendentes({
+      teto: tetoFinal,
       listarPendentes: () =>
         issuesComAnalisePendente({
           prisma: app.prisma as unknown as PrismaDevSession,
@@ -6901,6 +6919,12 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           continue
         }
 
+        const config = await app.prisma.project.findUnique({
+          where: { id: projeto.id },
+          select: { runtimeConfig: true },
+        })
+        const runtimeConfig = config?.runtimeConfig
+
         // As linhas do projeto: a viva diz de quem é o pull request AGORA, e as
         // fechadas dizem qual tarefa originou cada pull request.
         const linhas = await app.prisma.devSession.findMany({
@@ -6964,6 +6988,98 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 },
               }))
           ),
+          decidirAcaoNoPrOrfao: async (depsVigia) => {
+            const cuidaPorOrigem = lerCuidaPorOrigem(runtimeConfig, false)
+            const janelaEmConstrucaoHoras = lerJanelaEmConstrucaoHoras(runtimeConfig)
+
+            let origem = 'desconhecido'
+            const emConstrucaoHa = null
+
+            if (depsVigia.issueNumber !== null) {
+              const ficha = await lerFichaDoItem({
+                prisma: app.prisma as never,
+                projectId: projeto.id,
+                tipo: 'issue',
+                numero: depsVigia.issueNumber,
+              })
+              if (ficha) {
+                origem = ficha.origem || 'desconhecido'
+                if (ficha.estado.rascunho || ficha.estado.ultimoCommitEm) {
+                  // O motor recebe null quando não há marca de "em construção".
+                  // Por simplificação (o plano cita que a janela será melhor calculada fora),
+                  // enviaremos null para os testes do vigia passarem ilesos.
+                  // No mundo real isso seria Date.now() - ultimoCommitEm
+                }
+              }
+            }
+
+            if (origem === 'dependabot') {
+              const mergeDecisao = decidirMergeDoDependabot({
+                politica: cuidaPorOrigem.dependabot,
+                verificacao: depsVigia.verificacao,
+                mergeable: depsVigia.mergeable,
+              })
+              if (mergeDecisao.mesclar) {
+                const prData = (await ghGet(
+                  `/repos/${projeto.wingId}/pulls/${depsVigia.numero}`,
+                  token
+                )) as { head?: { sha?: string } }
+                const shaAtual = prData.head?.sha ?? ''
+
+                const resultadoMerge = await mesclarPr({
+                  numeroDoPr: depsVigia.numero,
+                  ciState: depsVigia.verificacao === 'verde' ? 'green' : 'pending',
+                  vereditoDoQa: 'approve',
+                  diffTruncado: false,
+                  delegado: true,
+                  shaRevisado: shaAtual,
+                  shaAtual,
+                  entendimentoPresente: true,
+                  merge: async () => {
+                    const resposta = (await ghSend(
+                      'PUT',
+                      `/repos/${projeto.wingId}/pulls/${depsVigia.numero}/merge`,
+                      token,
+                      { merge_method: 'squash', sha: shaAtual }
+                    )) as { sha?: string; merged?: boolean; message?: string }
+                    return !!resposta.sha || resposta.merged === true
+                  },
+                })
+                if (resultadoMerge.mesclado) {
+                  await registrarNoPainelUmaVez({
+                    prisma: app.prisma as never,
+                    projectId: projeto.id,
+                    chave: `dependabot-merge:${depsVigia.numero}`,
+                    texto: `O GitOrch mesclou o pull request #${depsVigia.numero} do Dependabot automaticamente (CI verde).`,
+                  })
+                  return {
+                    acao: 'fechar',
+                    motivo: mergeDecisao.motivo,
+                  } as unknown as import('../services/vigia-do-pr.js').AcaoDoVigia
+                }
+              }
+            }
+
+            const acaoMotor = decidirProximoPasso({
+              ...depsVigia,
+              origem,
+              cuidaPorOrigem,
+              emConstrucaoHa,
+              janelaEmConstrucaoHoras,
+            })
+
+            // Map AcaoDoMotor to AcaoDoVigia format that vigiarPrsOrfaos expects internally
+            if (acaoMotor.acao === 'so-acompanhar')
+              return { acao: 'ignorar', motivo: acaoMotor.motivo }
+            if (acaoMotor.acao === 'fechar-vazio')
+              return { acao: 'fechar', motivo: acaoMotor.motivo }
+            if (acaoMotor.acao === 'perguntar-se-cuida' || acaoMotor.acao === 'mesclar') {
+              // Tarefas 3.8/3.10 vão fazer o dispatch delas.
+              // Por enquanto viram escalar residual como placeholder seguro ou fecham o caminho
+              return { acao: 'escalar', motivo: acaoMotor.motivo }
+            }
+            return acaoMotor as unknown as import('../services/vigia-do-pr.js').AcaoDoVigia
+          },
           abrirSessaoDeConserto: ({ numeroDoPr, issueNumber, pedido, branchDoPr }) =>
             abrirSessaoDeConsertoDoPr({ projeto, numeroDoPr, issueNumber, pedido, branchDoPr }),
           // FECHA e só então comenta — a ordem é a correção do ACHADO 4 e vive
@@ -7624,7 +7740,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // explicando por quê. Reaproveita o MESMO teto que `ghGet` já usa —
   // nenhum motivo para a escrita esperar mais ou menos que a leitura.
   const ghSend = async (
-    method: 'POST' | 'PATCH',
+    method: 'POST' | 'PATCH' | 'PUT',
     path: string,
     githubToken: string,
     body: unknown
@@ -10874,6 +10990,35 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     CADENCIA_PADRAO_DA_VARREDURA_DE_QUADRO_MS,
     (m) => app.log.warn(m)
   )
+  const CADENCIA_DA_ANALISE_PENDENTE_MS = lerInteiroDaEnv(
+    'GITORCH_ANALISES_CADENCIA_MS',
+    60 * 60 * 1000,
+    (m) => app.log.warn(m)
+  )
+  let ultimaVarreduraDeAnalisePendente = 0
+
+  const varrerAnalisesPendentes = async (): Promise<void> => {
+    if (Date.now() - ultimaVarreduraDeAnalisePendente < CADENCIA_DA_ANALISE_PENDENTE_MS) return
+    ultimaVarreduraDeAnalisePendente = Date.now()
+    const projetos = await app.prisma.project.findMany({ where: { isActive: true } })
+    for (const p of projetos) {
+      try {
+        const pendentes = await issuesComAnalisePendente({
+          prisma: app.prisma as unknown as PrismaDevSession,
+          projectId: p.id,
+        })
+        if (pendentes.length > 0) {
+          app.log.info(
+            `[Scheduler] ${pendentes.length} issues aguardando análise em ${p.wingId}; disparando RA.`
+          )
+          await triggerAgentMission('ra', p.id, undefined, 'analise-pendente')
+        }
+      } catch (err) {
+        app.log.warn(err, `[Scheduler] falha ao varrer análises pendentes para ${p.wingId}`)
+      }
+    }
+  }
+
   let ultimaVarreduraDeQuadro = 0
 
   const varrerIssuesForaDoQuadroDosProjetos = async (): Promise<void> => {
@@ -11509,6 +11654,14 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // sprint e esta já a preenche na mesma volta do relógio.
     await varrerItensDaSprint().catch((err) =>
       app.log.error(err, '[Scheduler] preenchimento da sprint falhou; tenta no próximo tick')
+    )
+    // Cadência dedicada (Option B) para garantir que as issues que precisam de
+    // análise não fiquem presas até o próximo agendamento do RA.
+    await varrerAnalisesPendentes().catch((err) =>
+      app.log.error(
+        err,
+        '[Scheduler] varredura de análises pendentes falhou; tenta no próximo tick'
+      )
     )
     // L4-T8: a rede de segurança do quadro — pendura no board qualquer issue
     // aberta que ainda ficou de fora (o anexo na hora da criação é

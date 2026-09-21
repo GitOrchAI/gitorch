@@ -113,6 +113,8 @@ export interface AlertaDeSeguranca {
   versaoCorrigida: string | null
   url: string
   criadoEm: string
+  /** 'runtime' | 'development' | 'desconhecido' — Fase 5.2. */
+  escopo: 'runtime' | 'development' | 'desconhecido'
 }
 
 export interface DividaDeSeguranca {
@@ -138,7 +140,13 @@ interface AlertaBruto {
   number: number
   html_url?: string
   created_at?: string
-  dependency?: { package?: { name?: string; ecosystem?: string }; manifest_path?: string }
+  dependency?: {
+    package?: { name?: string; ecosystem?: string }
+    manifest_path?: string
+    /** Fase 5.2: 'runtime' | 'development', direto da API — decide se a
+     *  vulnerabilidade afeta o produto publicado ou só ferramentas de dev. */
+    scope?: string | null
+  }
   security_advisory?: { severity?: string; summary?: string }
   security_vulnerability?: { first_patched_version?: { identifier?: string } }
 }
@@ -246,6 +254,10 @@ export async function coletarDividaDeSeguranca(deps: {
         versaoCorrigida: a.security_vulnerability?.first_patched_version?.identifier ?? null,
         url: a.html_url ?? '',
         criadoEm: a.created_at ?? '',
+        escopo:
+          a.dependency?.scope === 'runtime' || a.dependency?.scope === 'development'
+            ? a.dependency.scope
+            : 'desconhecido',
       })
     }
 
