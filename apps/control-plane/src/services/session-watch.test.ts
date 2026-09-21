@@ -60,6 +60,7 @@ function depsFalso(overrides: Partial<VigiaDeps> = {}): VigiaDeps {
     pedirAnalise: vi.fn(async (_args: unknown) => undefined),
     registrarInvestigacao: vi.fn(async (_args: unknown) => undefined),
     avisarDono: vi.fn(async (_mensagem: string) => true),
+    registrarNoPainel: vi.fn(async (_chave: string, _texto: string) => undefined),
     agora,
     onWarn: vi.fn(),
     ...overrides,
@@ -287,7 +288,11 @@ describe('vigiarSessoes', () => {
     expect(deps.fecharSessao).toHaveBeenCalledWith(
       expect.objectContaining({ sessionName: 'sessions/timeout', motivo: 'pergunta-sem-resposta' })
     )
-    expect(deps.avisarDono).toHaveBeenCalledWith(expect.stringContaining('#88'))
+    expect(deps.registrarNoPainel).toHaveBeenCalledWith(
+      expect.stringContaining('sessao-fechada-duvida-respondida:sessions/timeout'),
+      expect.stringContaining('#88')
+    )
+    expect(deps.avisarDono).not.toHaveBeenCalled()
     // NÃO disparou QA de novo — a resposta já foi dada e não adiantou.
     expect(deps.dispararMissao).not.toHaveBeenCalledWith('qa', 'proj1')
   })

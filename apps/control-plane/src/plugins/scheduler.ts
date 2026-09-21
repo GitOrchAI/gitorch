@@ -7688,6 +7688,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           registrarInvestigacao: (args) =>
             registrarInvestigacao({ prisma: app.prisma as unknown as PrismaDevSession, ...args }),
           ...(notify ? { avisarDono: notify } : {}),
+          registrarNoPainel: async (chave, texto) => {
+            await registrarStatusNoPainel(projectId, chave, texto)
+          },
           agora: new Date(),
           onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
         })
