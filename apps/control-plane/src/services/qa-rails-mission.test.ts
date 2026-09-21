@@ -2941,6 +2941,77 @@ describe('rejulgar quando a tarefa mudou (Fase 3.2)', () => {
   })
 })
 
+describe('marca da tarefa não causa laço de re-julgamento (Fase 3.2, análise de risco)', () => {
+  // A marca gravada usa `issueDaEntrega ?? target.number`: quando o PR é
+  // delegado só pelo login do autor (sem sessão, `issueNumber` nulo), a marca
+  // recebe o número do PR. Na leitura seguinte `veredito.issueNumber` continua
+  // nulo e `tarefaFoiRevinculada` exige não-nulo — logo não pode re-julgar.
+  it('PR delegado sem tarefa vinculada: o parecer marcado NÃO é re-julgado no ciclo seguinte', async () => {
+    const f1 = fakeFetch([{ number: 7, user: 'jules[bot]' }])
+    const r1 = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      fetchImpl: f1,
+      sessoes: [],
+    })
+    expect(r1.noOp).toBeFalsy()
+    const postados = (f1 as unknown as { posted: { reviews: Array<{ body?: string }> } }).posted
+      .reviews
+    expect(postados).toHaveLength(1)
+    const corpo = postados[0]!.body ?? ''
+    // A marca existe e carrega o número do PR (não há tarefa vinculada).
+    expect(corpo).toContain('<!-- gitorch:qa:tarefa:7 -->')
+
+    const f2 = fakeFetch([
+      {
+        number: 7,
+        user: 'jules[bot]',
+        existingReviews: [{ body: corpo, commit_id: 'abc123' }],
+      },
+    ])
+    const r2 = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      fetchImpl: f2,
+      sessoes: [],
+    })
+    expect(r2.noOp).toBe(true)
+    expect((f2 as unknown as { posted: { reviews: unknown[] } }).posted.reviews).toHaveLength(0)
+  })
+
+  it('PR com tarefa vinculada: parecer publicado leva a marca da ISSUE e o ciclo seguinte não re-julga', async () => {
+    const sessoes = [linha({ issueNumber: 50, pullRequestNumber: 7 })]
+    const f1 = fakeFetch([{ number: 7, user: 'jules[bot]' }], ['jules', 'gitorch:task'], 50)
+    await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      fetchImpl: f1,
+      sessoes,
+    })
+    const corpo =
+      (f1 as unknown as { posted: { reviews: Array<{ body?: string }> } }).posted.reviews[0]!
+        .body ?? ''
+    expect(corpo).toContain('<!-- gitorch:qa:tarefa:50 -->')
+
+    const f2 = fakeFetch(
+      [{ number: 7, user: 'jules[bot]', existingReviews: [{ body: corpo, commit_id: 'abc123' }] }],
+      ['jules', 'gitorch:task'],
+      50
+    )
+    const r2 = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => REQUEST_CHANGES,
+      fetchImpl: f2,
+      sessoes,
+    })
+    expect(r2.noOp).toBe(true)
+  })
+})
+
 describe('reprovação pelo PORTÃO volta a ser julgada quando o CI fica verde', () => {
   const reprovadoPeloPortao =
     '<!-- gitorch:qa -->\n<!-- gitorch:qa:reprovado-pelo-portao -->\n' +
