@@ -44,6 +44,10 @@ export async function mesclarPr(deps: {
   shaRevisado: string
   /** Commit da entrega agora, no instante do merge — lido fresco, nunca herdado. */
   shaAtual: string
+  /** Fase 3.8: o veredito veio acompanhado do formulário de entendimento
+   *  (Tarefa 2.4/3.1)? Fecha a lacuna de um `approve` sem os 4 campos —
+   *  "revisor aprovou entendendo o porquê" só é verdade com os dois juntos. */
+  entendimentoPresente: boolean
   /** Faz o merge de verdade. Deve lançar em falha do GitHub. */
   merge: () => Promise<boolean>
 }): Promise<ResultadoDoMerge> {
@@ -62,6 +66,9 @@ export async function mesclarPr(deps: {
   }
   if (deps.vereditoDoQa !== 'approve') {
     return { mesclado: false, motivo: `o QA não aprovou (${deps.vereditoDoQa})` }
+  }
+  if (!deps.entendimentoPresente) {
+    return { mesclado: false, motivo: 'o QA aprovou sem registrar o entendimento do pedido' }
   }
   if (deps.ciState !== 'green') {
     // 'no checks' entra aqui de propósito: ausência de teste não é aprovação.
