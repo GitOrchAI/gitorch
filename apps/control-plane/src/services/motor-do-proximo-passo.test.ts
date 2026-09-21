@@ -76,6 +76,19 @@ describe('decidirProximoPasso — o que muda: nunca "alguém precisa olhar" sem 
     expect(d.acao).toBe('mesclar')
   })
 
+  it('nada para consertar + cuidaPorOrigem="sim" MAS exigeRevisaoDeSeguranca: degrada para perguntar-se-cuida', () => {
+    const d = decidirProximoPasso({
+      ...base(),
+      mergeable: true,
+      verificacao: 'verde',
+      entendimentoCompleto: true,
+      vereditoDoQa: 'approve',
+      exigeRevisaoDeSeguranca: true,
+    })
+    expect(d.acao).toBe('perguntar-se-cuida')
+    expect(d.motivo).toContain('exige revisão humana de segurança')
+  })
+
   it('nada para consertar + cuidaPorOrigem="perguntar": pergunta se cuida, nunca escala direto', () => {
     const d = decidirProximoPasso({
       ...base(),

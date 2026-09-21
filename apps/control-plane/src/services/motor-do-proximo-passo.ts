@@ -56,6 +56,11 @@ export interface MotorDoProximoPassoDeps extends RamoDoPr {
    *  julgado) — ausentes, o motor nunca decide "mesclar". */
   entendimentoCompleto?: boolean
   vereditoDoQa?: 'approve' | 'request_changes'
+  /** Fase 5.5: true quando o plano do GitHub não permite a melhoria paga E
+   *  a alternativa gratuita ainda não está instalada no repositório. O motor
+   *  degrada a decisão de 'mesclar' para 'perguntar-se-cuida' para exigir
+   *  revisão humana, pois não confia que o código está livre de segredos. */
+  exigeRevisaoDeSeguranca?: boolean
 }
 
 /** 'jules_gitorch'/'jules_fora' caem no balde `jules` de cuidaPorOrigem;
@@ -126,6 +131,12 @@ export function decidirProximoPasso(deps: MotorDoProximoPassoDeps): AcaoDoMotor 
     // Nada para consertar. Pronto para julgar/mesclar — ou perguntar, ou
     // acompanhar, conforme a configuração. NUNCA "escalar" primeiro.
     if (deps.vereditoDoQa === 'approve' && deps.entendimentoCompleto) {
+      if (deps.exigeRevisaoDeSeguranca) {
+        return {
+          acao: 'perguntar-se-cuida',
+          motivo: `#${deps.numero}: pronto, mas o plano gratuito sem scanner exige revisão humana de segurança`,
+        }
+      }
       return {
         acao: 'mesclar',
         motivo: `#${deps.numero}: critérios batidos, mesclando conforme "${politica}"`,
