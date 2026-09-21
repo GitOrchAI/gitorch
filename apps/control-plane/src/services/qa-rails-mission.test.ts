@@ -4,6 +4,7 @@ import {
   buildJulesReworkComment,
   buildEntendimentoSection,
   MAX_TENTATIVAS_DE_MERGE,
+  dispensarParecerAntigo,
 } from './qa-rails-mission.js'
 import { assertMissionDelivered } from './mission-outcome.js'
 import { renderIssueBody } from './backlog-executor.js'
@@ -101,7 +102,7 @@ function fakeFetch(
   prs: Array<{
     number: number
     user: string
-    existingReviews?: Array<{ body: string; commit_id: string }>
+    existingReviews?: Array<{ id?: number; body: string; commit_id: string }>
     /** Corpo do PR. Default preserva o `Closes #50` que os 15 testes antigos assumem. */
     body?: string
     /**
@@ -2886,31 +2887,61 @@ describe('rejulgar quando a tarefa mudou (Fase 3.2)', () => {
     '<!-- gitorch:qa -->\nGitOrch QA verdict: REQUEST CHANGES (see comment).\n' +
     '<!-- gitorch:qa:tarefa:50 -->'
 
-  it('PR com parecer marcado para a tarefa A e vinculado agora à B é re-julgado', async () => {
+  it('PR com parecer marcado para a tarefa A e vinculado agora à B é re-julgado, e o parecer antigo é dispensado', async () => {
     const f = fakeFetch(
       [
         {
           number: 7,
           user: 'jules[bot]',
-          existingReviews: [{ body: reprovadoPeloCodigo, commit_id: 'abc123' }],
+          existingReviews: [{ id: 444, body: reprovadoPeloCodigo, commit_id: 'abc123' }],
         },
       ],
       ['jules', 'gitorch:task'],
       99 // <- Vinculado AGORA à tarefa 99, mas o parecer diz tarefa 50
     )
-    const posted = (f as unknown as { posted: { merges: unknown[]; reviews: unknown[] } }).posted
+    const posted = (
+      f as unknown as { posted: { merges: unknown[]; reviews: unknown[]; dismissals: unknown[] } }
+    ).posted
+    // Inicializa o array de dismissals que não existe no fakeFetch padrão
+    posted.dismissals = []
+
+    // Adicionamos um interceptador no fetch para capturar o PUT .../dismissals
+    const originalFetch = f
+    const fetchSpy: typeof fetch = async (
+      url: Parameters<typeof fetch>[0],
+      init?: Parameters<typeof fetch>[1]
+    ) => {
+      if (init?.method === 'PUT' && String(url).includes('/dismissals')) {
+        posted.dismissals.push({
+          url: String(url),
+          body: JSON.parse(init.body as string),
+        })
+        return new Response(JSON.stringify({}), { status: 200 })
+      }
+      return originalFetch(url, init)
+    }
 
     const r = await runQaMissionViaRails({
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
-      fetchImpl: f,
+      fetchImpl: fetchSpy,
       sessoes: [linha({ issueNumber: 99, pullRequestNumber: 7 })],
     })
 
     // O parecer antigo não vale: re-julga.
     expect(r.noOp).toBeFalsy()
     expect(posted.reviews).toHaveLength(1)
+
+    // O parecer antigo FOI dispensado, antes do julgamento
+    expect(posted.dismissals).toHaveLength(1)
+    expect(posted.dismissals[0]).toMatchObject({
+      url: 'https://api.github.com/repos/o/r/pulls/7/reviews/444/dismissals',
+      body: {
+        message: 'GitOrch: rejulgando esta entrega — este parecer não reflete mais o estado atual',
+        event: 'DISMISS',
+      },
+    })
   })
 
   it('PR com parecer marcado para a tarefa A e vinculado ainda à A NÃO é re-julgado', async () => {
@@ -3819,6 +3850,33 @@ describe('runQaMissionViaRails — entrega sem conteúdo (L5-T1)', () => {
     expect(motorChamado).toBe(true)
     expect(posted.reviews[0]!.event).toBe('REQUEST_CHANGES')
     expect(r.podeMesclar).toBe(true) // delegado — só o VEREDITO é reprovação
+  })
+})
+
+describe('dispensarParecerAntigo — Fase 3.3', () => {
+  it('chama PUT .../dismissals com message e event DISMISS', async () => {
+    const chamadas: Array<{ method: string; path: string; body?: unknown }> = []
+    const gh = async (method: string, path: string, body?: unknown) => {
+      chamadas.push({ method, path, body })
+      return {}
+    }
+    await dispensarParecerAntigo(gh, 'dono/repo', 42, 999, 'a tarefa vinculada mudou')
+    expect(chamadas).toEqual([
+      {
+        method: 'PUT',
+        path: '/repos/dono/repo/pulls/42/reviews/999/dismissals',
+        body: { message: 'a tarefa vinculada mudou', event: 'DISMISS' },
+      },
+    ])
+  })
+
+  it('falha ao dispensar não lança — best-effort', async () => {
+    const gh = async () => {
+      throw new Error('403: not authorized to dismiss')
+    }
+    await expect(
+      dispensarParecerAntigo(gh, 'dono/repo', 42, 999, 'motivo')
+    ).resolves.toBeUndefined()
   })
 })
 
