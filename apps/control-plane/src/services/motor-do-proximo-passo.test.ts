@@ -51,19 +51,6 @@ describe('decidirProximoPasso — portões herdados de decidirAcaoNoPrOrfao', ()
   })
 })
 
-describe('Integração da ação fechar-vazio pelo scheduler.ts', () => {
-  it('O scheduler delega ao motor e decide com base em changed_files', () => {
-    // Comprovação de que changed_files === 0 devolve fechar (o teste principal já roda
-    // em nível de integração se houvesse, mas a prova de contrato pede um snapshot/comportamento
-    // que as três situações da Tarefa 3.7 foram cobertas no engine e scheduler).
-    // Conforme especificado, a ação do motor puramente é fechar-vazio quando issueAberta === false
-    // A checagem de "PR vazio confirmado fecha, issue fechada mas PR com alterações não fecha,
-    // e changed_files desconhecido não fecha" foi adicionada no scheduler.ts usando ghGet.
-    // Como motor-do-proximo-passo.ts é puro, confirmamos a ação pura dele aqui.
-    expect(true).toBe(true)
-  })
-})
-
 describe('decidirProximoPasso — o que muda: nunca "alguém precisa olhar" sem checar a configuração', () => {
   it('nada para consertar + cuidaPorOrigem="sim": mescla (quando os 3 critérios da Tarefa 3.8 batem)', () => {
     const d = decidirProximoPasso({
