@@ -39,6 +39,8 @@ import {
   MARCA_DO_PARECER,
   MARCA_DE_COBRANCA_DE_ENTREGA_VAZIA,
   temMarcaDeCobrancaDeEntregaVazia,
+  marcaDaTarefaVinculada,
+  tarefaMudouDesdeOParecer,
 } from './parecer-do-qa.js'
 import {
   decidirSobreOProjeto,
@@ -329,7 +331,8 @@ export function buildEntendimentoSection(entendimento: QaVerdictForm['entendimen
 /** Comentário de rework estruturado (8 campos) mencionando @jules. */
 export function buildJulesReworkComment(
   comment: QaVerdictForm['comment'],
-  entendimento: QaVerdictForm['entendimento']
+  entendimento: QaVerdictForm['entendimento'],
+  marcaDaTarefa: string = ''
 ): string {
   // Mesmo contrato da issue (padrão Shrimp): o rework que o QA devolve tem de
   // ser lido com a mesma régua com que a task foi escrita.
@@ -345,7 +348,7 @@ export function buildJulesReworkComment(
   }
   const sections = ISSUE_DOD_FIELDS.map((h) => `## ${h}\n\n${map[h] ?? ''}`)
   return [
-    `${JULES_MARKER}`,
+    `${JULES_MARKER}${marcaDaTarefa}`,
     '@jules the PR needs changes before it can be approved:',
     '',
     buildEntendimentoSection(entendimento),
@@ -759,14 +762,27 @@ export async function runQaMissionViaRails(
       }
     }
 
+    // Fase 3.2: a QUINTA exceção ao skip — a tarefa vinculada mudou desde o
+    // último parecer (revínculo via Tarefa 2.2/2.3 depois de já ter julgado
+    // sob a tarefa errada). Não exige `aindaPodeTentarMesclar`: revincular a
+    // tarefa é um FATO novo, não uma tentativa de mesclar de novo — o mesmo
+    // raciocínio de `entregaVaziaAindaNaoCobrada`, que também é fato
+    // estrutural, não opinião repetida.
+    const tarefaFoiRevinculada =
+      veredito.delegado &&
+      reviewMarcadaNesteHead !== undefined &&
+      veredito.issueNumber !== null &&
+      tarefaMudouDesdeOParecer(reviewMarcadaNesteHead, veredito.issueNumber)
+
     const deveRejulgar =
       veredito.delegado &&
-      aindaPodeTentarMesclar &&
-      (foiAprovacao ||
-        parecerSobPremissaErrada ||
-        reprovadoPeloPortaoComCiVerdeAgora ||
-        legadoMereceUmaChance ||
-        entregaVaziaAindaNaoCobrada)
+      (tarefaFoiRevinculada ||
+        (aindaPodeTentarMesclar &&
+          (foiAprovacao ||
+            parecerSobPremissaErrada ||
+            reprovadoPeloPortaoComCiVerdeAgora ||
+            legadoMereceUmaChance ||
+            entregaVaziaAindaNaoCobrada)))
 
     // A entrega que TRAVOU no teto de tentativas de mescla.
     //
@@ -1342,6 +1358,7 @@ export async function runQaMissionViaRails(
   // Carimba que o legado já teve a chance dele, para não voltar a cada
   // varredura. Vai no parecer NOVO, que é onde a próxima leitura procura.
   const marcaDoLegado = retomouLegado ? `\n${MARCA_DE_LEGADO_REJULGADO}` : ''
+  const marcaDaTarefa = `\n${marcaDaTarefaVinculada(issueDaEntrega ?? verdict.issueNumber ?? target?.number ?? -1)}`
   const barradoPorTamanho = effectiveVerdict === 'request_changes' && truncado
   const marcaDoPortao = barradoPorTamanho
     ? `\n${MARCA_DE_ENTREGA_GRANDE_DEMAIS}`
@@ -1437,7 +1454,7 @@ export async function runQaMissionViaRails(
       // de "já tem parecer" procura depois para distinguir aprovação de
       // reprovação. Enquanto eram duas cadeias iguais por coincidência,
       // mexer no texto aqui deixaria a leitura cega sem quebrar teste nenhum.
-      `${JULES_MARKER}${marcaDoLegado}\nGitOrch QA ${MARCA_DE_APROVACAO} — criteria met, CI green.\n\n${buildEntendimentoSection(verdict.entendimento)}\n\n${verdict.comment.goal}${avisoDeNaoMesclar}`
+      `${JULES_MARKER}${marcaDoLegado}${marcaDaTarefa}\nGitOrch QA ${MARCA_DE_APROVACAO} — criteria met, CI green.\n\n${buildEntendimentoSection(verdict.entendimento)}\n\n${verdict.comment.goal}${avisoDeNaoMesclar}`
     )
 
     // Task 8 ("julga todos, mescla só o que delegou"): o QUARTO porteiro,
@@ -1611,7 +1628,7 @@ export async function runQaMissionViaRails(
   } else {
     await postarReview(
       reviewEvent,
-      `${JULES_MARKER}${marcaDoPortao}${marcaDoLegado}\nGitOrch QA verdict: REQUEST CHANGES (see comment).${explicacaoDoTamanho}${explicacaoDoCancelamento}${avisoDeNaoMesclar}`
+      `${JULES_MARKER}${marcaDoPortao}${marcaDoLegado}${marcaDaTarefa}\nGitOrch QA verdict: REQUEST CHANGES (see comment).${explicacaoDoTamanho}${explicacaoDoCancelamento}${avisoDeNaoMesclar}`
     )
 
     // Este julgamento entra na conta do repositório ANTES de decidir se pede
@@ -1723,7 +1740,7 @@ export async function runQaMissionViaRails(
     // pelo conteúdo.
     if (delegado && !projetoTravado) {
       await gh('POST', `/repos/${options.repository}/issues/${target.number}/comments`, {
-        body: buildJulesReworkComment(verdict.comment, verdict.entendimento),
+        body: buildJulesReworkComment(verdict.comment, verdict.entendimento, marcaDaTarefa),
       })
 
       // Task 10 (decisão do dono 14/08/2026): "tem que ter lógica entre jules e

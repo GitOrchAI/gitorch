@@ -2881,6 +2881,66 @@ describe('rejulgar não pode virar licença para mesclar PR de humano', () => {
 // gitorch, com as missões rodando igual nos dois. O PR #3768 estava CLEAN, com
 // a verificação inteira verde, e a única review nossa no head atual era um
 // "pedir mudanças" emitido quando o CI ainda estava vermelho.
+describe('rejulgar quando a tarefa mudou (Fase 3.2)', () => {
+  const reprovadoPeloCodigo =
+    '<!-- gitorch:qa -->\nGitOrch QA verdict: REQUEST CHANGES (see comment).\n' +
+    '<!-- gitorch:qa:tarefa:50 -->'
+
+  it('PR com parecer marcado para a tarefa A e vinculado agora à B é re-julgado', async () => {
+    const f = fakeFetch(
+      [
+        {
+          number: 7,
+          user: 'jules[bot]',
+          existingReviews: [{ body: reprovadoPeloCodigo, commit_id: 'abc123' }],
+        },
+      ],
+      ['jules', 'gitorch:task'],
+      99 // <- Vinculado AGORA à tarefa 99, mas o parecer diz tarefa 50
+    )
+    const posted = (f as unknown as { posted: { merges: unknown[]; reviews: unknown[] } }).posted
+
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+      sessoes: [linha({ issueNumber: 99, pullRequestNumber: 7 })],
+    })
+
+    // O parecer antigo não vale: re-julga.
+    expect(r.noOp).toBeFalsy()
+    expect(posted.reviews).toHaveLength(1)
+  })
+
+  it('PR com parecer marcado para a tarefa A e vinculado ainda à A NÃO é re-julgado', async () => {
+    const f = fakeFetch(
+      [
+        {
+          number: 7,
+          user: 'jules[bot]',
+          existingReviews: [{ body: reprovadoPeloCodigo, commit_id: 'abc123' }],
+        },
+      ],
+      ['jules', 'gitorch:task'],
+      50 // <- Vinculado AGORA à tarefa 50, que é o que o parecer diz
+    )
+    const posted = (f as unknown as { posted: { merges: unknown[]; reviews: unknown[] } }).posted
+
+    const r = await runQaMissionViaRails({
+      repository: 'o/r',
+      githubToken: 't',
+      execute: async () => APPROVE,
+      fetchImpl: f,
+      sessoes: [linha({ issueNumber: 50, pullRequestNumber: 7 })],
+    })
+
+    // O parecer antigo vale e não mudou nada de novo: skip.
+    expect(r.noOp).toBe(true)
+    expect(posted.reviews).toHaveLength(0)
+  })
+})
+
 describe('reprovação pelo PORTÃO volta a ser julgada quando o CI fica verde', () => {
   const reprovadoPeloPortao =
     '<!-- gitorch:qa -->\n<!-- gitorch:qa:reprovado-pelo-portao -->\n' +
