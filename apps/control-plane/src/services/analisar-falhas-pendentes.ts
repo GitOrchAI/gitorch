@@ -5,7 +5,7 @@
 import type { AnaliseDeFalha, EntradaDaAnalise } from './analise-de-falha-do-dev.js'
 
 /** Quantas issues analisar por passada — a análise gasta motor. */
-export const TETO_DE_ANALISES_POR_PASSADA = 2
+export const TETO_DE_ANALISES_POR_PASSADA = 15
 
 export interface AnalisarFalhasDeps {
   /** Issues do projeto com análise pendente (`issuesComAnalisePendente`). */

@@ -4172,23 +4172,26 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               : undefined
             result = raRails
               ? await (async () => {
-                  const raResult = await runRaMissionViaRails({
-                    repository: project.wingId,
-                    // O nível deste projeto: sem ele o serviço cai no default
-                    // fail-closed e recusa toda escrita no repositório do
-                    // cliente — foi o que parou a esteira em 30/08.
-                    fetchImpl: fetchDoQuadro(project),
-                    githubToken: railsToken,
-                    execute,
-                    contextBlocks,
-                    // Separa os dois trabalhos do RA: pelo aviso de desejo novo
-                    // ele analisa AQUELE desejo; pela agenda ele EXPLORA o
-                    // projeto. Ancorar de novo num desejo já analisado é refazer
-                    // a mesma análise duas vezes por dia em vez de aprender mais
-                    // sobre o repositório — e é o explorador quem alimenta a
-                    // memória que os outros agentes leem.
-                    pelaAgenda: origem === 'agenda',
-                  })
+                  let raResult = { exitCode: 0, output: '', stderr: '' }
+                  if (origem !== 'analise-pendente') {
+                    raResult = await runRaMissionViaRails({
+                      repository: project.wingId,
+                      // O nível deste projeto: sem ele o serviço cai no default
+                      // fail-closed e recusa toda escrita no repositório do
+                      // cliente — foi o que parou a esteira em 30/08.
+                      fetchImpl: fetchDoQuadro(project),
+                      githubToken: railsToken,
+                      execute,
+                      contextBlocks,
+                      // Separa os dois trabalhos do RA: pelo aviso de desejo novo
+                      // ele analisa AQUELE desejo; pela agenda ele EXPLORA o
+                      // projeto. Ancorar de novo num desejo já analisado é refazer
+                      // a mesma análise duas vezes por dia em vez de aprender mais
+                      // sobre o repositório — e é o explorador quem alimenta a
+                      // memória que os outros agentes leem.
+                      pelaAgenda: origem === 'agenda',
+                    })
+                  }
                   // D51: junto do trabalho de explorador, o RA entende POR QUE
                   // uma issue falhou 2× — antes da 3ª tentativa. O aprendizado
                   // vai para a memória dos agentes e o pedido revisado para o
@@ -4207,22 +4210,25 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                   // D54: entre o sensor e a delegação existe SEMPRE análise —
                   // o RA entende a causa de cada falha de infra e o PO escreve
                   // a issue padrão Shrimp, no repo certo (cliente vs produto).
-                  const achadosOut = await rodarProcessamentoDeAchados(
-                    project as NotifiableProject & {
-                      id: string
-                      wingId: string
-                      autonomia?: string | null
-                    },
-                    railsToken,
-                    execute,
-                    contextBlocks
-                  ).catch((err) => {
-                    app.log.warn(
-                      err,
-                      `[Scheduler] processamento de achados de infra falhou em ${project.wingId}`
-                    )
-                    return ''
-                  })
+                  const achadosOut =
+                    origem !== 'analise-pendente'
+                      ? await rodarProcessamentoDeAchados(
+                          project as NotifiableProject & {
+                            id: string
+                            wingId: string
+                            autonomia?: string | null
+                          },
+                          railsToken,
+                          execute,
+                          contextBlocks
+                        ).catch((err) => {
+                          app.log.warn(
+                            err,
+                            `[Scheduler] processamento de achados de infra falhou em ${project.wingId}`
+                          )
+                          return ''
+                        })
+                      : ''
                   const extra = [analiseOut, achadosOut].filter(Boolean).join('\n')
                   return extra ? { ...raResult, output: `${raResult.output}\n${extra}` } : raResult
                 })()
@@ -5504,12 +5510,18 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
    * RA na agenda. Best-effort: nunca lança para fora — o RA tem outro trabalho.
    */
   const rodarAnaliseDeFalhasDoRa = async (
-    project: { id: string; wingId: string },
+    project: { id: string; wingId: string; devPlan?: string | null },
     railsToken: string | undefined,
     execute: StepExecutor
   ): Promise<string> => {
     if (!railsToken) return ''
     const agora = new Date()
+
+    const capDoPlano = project.devPlan ? tetosDoPlanoDoDev(project.devPlan).tetoConcorrentes : 15
+    const tetoEnvStr = process.env['GITORCH_ANALISES_POR_PASSADA']
+    const tetoEnv = tetoEnvStr && !isNaN(Number(tetoEnvStr)) ? Number(tetoEnvStr) : undefined
+    const tetoFinal = tetoEnv ?? Math.max(15, capDoPlano)
+
     const gh = async (path: string): Promise<unknown> => {
       const resp = await ghComGuarda(`https://api.github.com${path}`, {
         headers: {
@@ -5523,6 +5535,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     }
 
     const r = await analisarFalhasPendentes({
+      teto: tetoFinal,
       listarPendentes: () =>
         issuesComAnalisePendente({
           prisma: app.prisma as unknown as PrismaDevSession,
@@ -10874,6 +10887,35 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     CADENCIA_PADRAO_DA_VARREDURA_DE_QUADRO_MS,
     (m) => app.log.warn(m)
   )
+  const CADENCIA_DA_ANALISE_PENDENTE_MS = lerInteiroDaEnv(
+    'GITORCH_ANALISES_CADENCIA_MS',
+    60 * 60 * 1000,
+    (m) => app.log.warn(m)
+  )
+  let ultimaVarreduraDeAnalisePendente = 0
+
+  const varrerAnalisesPendentes = async (): Promise<void> => {
+    if (Date.now() - ultimaVarreduraDeAnalisePendente < CADENCIA_DA_ANALISE_PENDENTE_MS) return
+    ultimaVarreduraDeAnalisePendente = Date.now()
+    const projetos = await app.prisma.project.findMany({ where: { isActive: true } })
+    for (const p of projetos) {
+      try {
+        const pendentes = await issuesComAnalisePendente({
+          prisma: app.prisma as unknown as PrismaDevSession,
+          projectId: p.id,
+        })
+        if (pendentes.length > 0) {
+          app.log.info(
+            `[Scheduler] ${pendentes.length} issues aguardando análise em ${p.wingId}; disparando RA.`
+          )
+          await triggerAgentMission('ra', p.id, undefined, 'analise-pendente')
+        }
+      } catch (err) {
+        app.log.warn(err, `[Scheduler] falha ao varrer análises pendentes para ${p.wingId}`)
+      }
+    }
+  }
+
   let ultimaVarreduraDeQuadro = 0
 
   const varrerIssuesForaDoQuadroDosProjetos = async (): Promise<void> => {
@@ -11509,6 +11551,14 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
     // sprint e esta já a preenche na mesma volta do relógio.
     await varrerItensDaSprint().catch((err) =>
       app.log.error(err, '[Scheduler] preenchimento da sprint falhou; tenta no próximo tick')
+    )
+    // Cadência dedicada (Option B) para garantir que as issues que precisam de
+    // análise não fiquem presas até o próximo agendamento do RA.
+    await varrerAnalisesPendentes().catch((err) =>
+      app.log.error(
+        err,
+        '[Scheduler] varredura de análises pendentes falhou; tenta no próximo tick'
+      )
     )
     // L4-T8: a rede de segurança do quadro — pendura no board qualquer issue
     // aberta que ainda ficou de fora (o anexo na hora da criação é
