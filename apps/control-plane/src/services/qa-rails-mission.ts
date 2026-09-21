@@ -365,6 +365,29 @@ function dataDaReview(review?: { submitted_at?: string } | null): Date | null {
   return Number.isFinite(d.getTime()) ? d : null
 }
 
+export type GhClient = (method: string, path: string, body?: unknown) => Promise<unknown>
+
+/**
+ * Dispensa (nunca deleta) um parecer antigo antes de publicar o novo. Best-effort:
+ * falhar aqui NUNCA impede o novo parecer de sair.
+ */
+export async function dispensarParecerAntigo(
+  gh: GhClient,
+  repository: string,
+  prNumber: number,
+  reviewId: number,
+  motivo: string
+): Promise<void> {
+  try {
+    await gh('PUT', `/repos/${repository}/pulls/${prNumber}/reviews/${reviewId}/dismissals`, {
+      message: motivo,
+      event: 'DISMISS',
+    })
+  } catch {
+    // Best-effort
+  }
+}
+
 export async function runQaMissionViaRails(
   options: QaRailsMissionOptions
 ): Promise<QaRailsMissionResult> {
@@ -537,7 +560,7 @@ export async function runQaMissionViaRails(
     const reviews = (await gh(
       'GET',
       `/repos/${options.repository}/pulls/${p.number}/reviews?per_page=100`
-    )) as Array<{ body?: string; commit_id?: string }>
+    )) as Array<{ id?: number; body?: string; commit_id?: string }>
     // Item 2 (leva B2): a API devolve as reviews da MAIS ANTIGA para a MAIS
     // NOVA — por isso a busca varre de trás para frente, para achar a ÚLTIMA
     // review nossa marcada neste head, nunca a primeira. Mais de uma review
@@ -801,6 +824,16 @@ export async function runQaMissionViaRails(
     }
 
     if (reviewMarcadaNesteHead && !deveRejulgar) continue
+
+    if (deveRejulgar && reviewMarcadaNesteHead?.id !== undefined) {
+      await dispensarParecerAntigo(
+        gh,
+        options.repository,
+        p.number,
+        reviewMarcadaNesteHead.id,
+        'GitOrch: rejulgando esta entrega — este parecer não reflete mais o estado atual'
+      )
+    }
 
     target = p
     issueDaEntrega = veredito.issueNumber

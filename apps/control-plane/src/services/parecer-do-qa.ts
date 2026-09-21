@@ -176,6 +176,7 @@ export function temMarcaDeCobrancaDeEntregaVazia(review?: ReviewDoGithub | null)
 }
 
 export interface ReviewDoGithub {
+  id?: number
   body?: string
   commit_id?: string
   /** Quando o parecer foi publicado — usado para separar o legado do novo. */
