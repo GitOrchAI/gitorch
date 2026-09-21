@@ -1,5 +1,7 @@
 import { lerCuidaPorOrigem, lerJanelaEmConstrucaoHoras } from '../services/cuidado-por-origem.js'
 import { decidirProximoPasso } from '../services/motor-do-proximo-passo.js'
+import { decidirMergeDoDependabot } from '../services/dependabot-auto-merge.js'
+import { mesclarPr } from '../services/merge-do-pr.js'
 import { lerFichaDoItem } from '../services/ficha-do-item.js'
 import fp from 'fastify-plugin'
 import { FastifyInstance, FastifyBaseLogger } from 'fastify'
@@ -7026,6 +7028,65 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                   } catch (err) {
                     // Se a API falhar, emConstrucaoHa fica null para rebaixar
                     // a inação segura em decidirProximoPasso.
+                  }
+                }
+              }
+            }
+
+            if (origem === 'dependabot') {
+              const depsDependabot = {
+                politica: cuidaPorOrigem.dependabot,
+                verificacao: depsVigia.verificacao,
+                mergeable: depsVigia.mergeable,
+              }
+              const decisaoDependabot = decidirMergeDoDependabot(depsDependabot)
+              if (decisaoDependabot.mesclar) {
+                try {
+                  const currentPr = (await ghGet(
+                    `/repos/${projeto.wingId}/pulls/${depsVigia.numero}`,
+                    token
+                  )) as { head: { sha: string } }
+                  await mesclarPr({
+                    numeroDoPr: depsVigia.numero,
+                    ciState: 'green',
+                    vereditoDoQa: 'approve',
+                    diffTruncado: false,
+                    delegado: true,
+                    shaRevisado: currentPr.head.sha,
+                    shaAtual: currentPr.head.sha,
+                    entendimentoPresente: true,
+                    merge: async () => {
+                      try {
+                        await ghSend(
+                          'PUT',
+                          `/repos/${projeto.wingId}/pulls/${depsVigia.numero}/merge`,
+                          token,
+                          {
+                            sha: currentPr.head.sha,
+                            commit_title: `Merge pull request #${depsVigia.numero} from Dependabot`,
+                            commit_message: 'Auto-merged by GitOrch (Dependabot policy)',
+                          }
+                        )
+                        return true
+                      } catch (err) {
+                        app.log.warn(
+                          err,
+                          `[Scheduler] falha ao mesclar PR ${depsVigia.numero} do Dependabot`
+                        )
+                        return false
+                      }
+                    },
+                  })
+                  await registrarStatusNoPainel(
+                    projeto.id,
+                    `dependabot-merge:${projeto.wingId}:${depsVigia.numero}`,
+                    `GitOrch: o PR #${depsVigia.numero} do Dependabot estava verde e a política manda mesclar sozinho. Merge feito e issue associada pode ser fechada caso exista.`
+                  )
+                  return { acao: 'ignorar', motivo: 'Mesclado pelo caminho expresso do Dependabot' }
+                } catch (err) {
+                  return {
+                    acao: 'ignorar',
+                    motivo: `Erro ao tentar mesclar o Dependabot expresso: ${(err as Error).message}`,
                   }
                 }
               }
