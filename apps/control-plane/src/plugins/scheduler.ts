@@ -7814,7 +7814,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
   // explicando por quê. Reaproveita o MESMO teto que `ghGet` já usa —
   // nenhum motivo para a escrita esperar mais ou menos que a leitura.
   const ghSend = async (
-    method: 'POST' | 'PATCH',
+    method: 'POST' | 'PATCH' | 'PUT',
     path: string,
     githubToken: string,
     body: unknown
