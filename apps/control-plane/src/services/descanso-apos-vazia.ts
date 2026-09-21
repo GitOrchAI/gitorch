@@ -72,6 +72,8 @@ export type OrigemDoDisparo =
    * por isso fura o descanso pelo mesmo motivo.
    */
   | 'vaga-liberada'
+  /** Análise pendente para rodar (RA). */
+  | 'analise-pendente'
 
 /**
  * Origens que trazem INFORMAÇÃO NOVA e por isso furam o descanso.
@@ -96,6 +98,7 @@ const ORIGENS_QUE_FURAM: ReadonlySet<OrigemDoDisparo> = new Set<OrigemDoDisparo>
   'boot',
   // DJ-T3: mesmíssimo motivo de 'fila-do-sm' — ver o comentário do tipo.
   'vaga-liberada',
+  'analise-pendente',
 ])
 
 export function origemFuraODescanso(origem: OrigemDoDisparo): boolean {
