@@ -6,6 +6,8 @@ import {
   MARCA_DE_APROVACAO,
   ehReprovacaoCondicional,
   MARCA_DE_REPROVACAO_CONDICIONAL,
+  marcaDaTarefaVinculada,
+  tarefaMudouDesdeOParecer,
 } from './parecer-do-qa.js'
 
 const marcada = (extra = '', commit = 'sha1') => ({
@@ -64,5 +66,28 @@ describe('ehReprovacaoCondicional', () => {
   it('review ausente ou sem corpo não é reprovação de nada', () => {
     expect(ehReprovacaoCondicional(undefined)).toBe(false)
     expect(ehReprovacaoCondicional({})).toBe(false)
+  })
+})
+
+describe('tarefaMudouDesdeOParecer — Fase 3.2', () => {
+  it('a marca da tarefa tem o formato estável no comentário invisível', () => {
+    expect(marcaDaTarefaVinculada(42)).toBe('<!-- gitorch:qa:tarefa:42 -->')
+  })
+
+  it('parecer sem marca de tarefa (legado) nunca afirma mudança', () => {
+    expect(tarefaMudouDesdeOParecer(marcada(), 42)).toBe(false)
+  })
+
+  it('marca aponta para a MESMA tarefa → não mudou', () => {
+    expect(tarefaMudouDesdeOParecer(marcada(marcaDaTarefaVinculada(42)), 42)).toBe(false)
+  })
+
+  it('marca aponta para tarefa DIFERENTE → mudou', () => {
+    expect(tarefaMudouDesdeOParecer(marcada(marcaDaTarefaVinculada(41)), 42)).toBe(true)
+  })
+
+  it('review null/undefined → não mudou', () => {
+    expect(tarefaMudouDesdeOParecer(null, 42)).toBe(false)
+    expect(tarefaMudouDesdeOParecer(undefined, 42)).toBe(false)
   })
 })
