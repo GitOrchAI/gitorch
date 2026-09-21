@@ -43,6 +43,9 @@ describe('diagnoseWorkspaceStructural', () => {
     )
     expect(d!.orphanModules).toBeDefined()
     expect(d!.crossPackageDependencies).toBeDefined()
+    expect(d!.summary).toBeDefined()
+    expect(typeof d!.summary).toBe('string')
+    expect(d!.summary.length).toBeGreaterThan(0)
   })
 
   it('devolve null para diretório sem código-fonte (nunca lança)', async () => {

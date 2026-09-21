@@ -2,26 +2,22 @@ import { isTestLike } from './summarize-workspace.js'
 
 /**
  * Heurística estrutural (zero-LLM): um módulo-fonte "tem teste" se existir
- * QUALQUER arquivo de teste no repo cujo nome-base bate com o dele — não
- * importa a pasta (cobre tanto `foo.test.ts` ao lado quanto `__tests__/foo.test.ts`).
+ * arquivo de teste no repo mapeável para o mesmo caminho relativo (sem extensões
+ * de teste ou diretórios de teste como `__tests__`).
  */
-function testSubjectName(relPath: string): string | null {
-  const base = relPath.slice(relPath.lastIndexOf('/') + 1)
-  const m = /^(.+?)\.(test|spec)\.[a-z]+$/.exec(base)
-  return m?.[1] ?? null
-}
-
-function sourceBaseName(relPath: string): string {
-  const base = relPath.slice(relPath.lastIndexOf('/') + 1)
-  return base.replace(/\.[a-z]+$/, '')
+function getSourcePath(relPath: string): string {
+  return relPath
+    .replace(/\.(test|spec)\.[a-z]+$/, '') // remove sufixos de teste
+    .replace(/\.[a-z]+$/, '') // remove extensão base
+    .replace(/(^|\/)(__tests__|tests?)\//g, '$1') // remove pastas de teste
 }
 
 export function computeUntestedModules(files: Array<{ relPath: string }>): string[] {
-  const testedSubjects = new Set(
-    files.map((f) => testSubjectName(f.relPath)).filter((s): s is string => s !== null)
+  const testedPaths = new Set(
+    files.filter((f) => isTestLike(f.relPath)).map((f) => getSourcePath(f.relPath))
   )
   return files
     .filter((f) => !isTestLike(f.relPath))
     .map((f) => f.relPath)
-    .filter((relPath) => !testedSubjects.has(sourceBaseName(relPath)))
+    .filter((relPath) => !testedPaths.has(getSourcePath(relPath)))
 }
