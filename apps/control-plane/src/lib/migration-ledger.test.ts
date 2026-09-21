@@ -56,6 +56,7 @@ describe('MIGRATION_LEDGER', () => {
       'project-invitation-migration.sql',
       'repo-item-migration.sql',
       'autonomia-de-seguranca-migration.sql',
+      'parecer-trava-migration.sql',
     ])
   })
 })
