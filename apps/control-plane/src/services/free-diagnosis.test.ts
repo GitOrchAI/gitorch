@@ -26,6 +26,7 @@ const STRUCTURAL: StructuralDiagnosis = {
   directoryInventory: { src: ['a.ts'] },
   orphanModules: [],
   crossPackageDependencies: [],
+  summary: 'resumo estrutural de teste',
 }
 const SIGNALS: GithubSignals = {
   openIssues: 1,

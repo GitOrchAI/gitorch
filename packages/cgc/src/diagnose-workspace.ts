@@ -1,4 +1,8 @@
-import { analyzeWorkspace, type SummarizeOptions } from './summarize-workspace.js'
+import {
+  analyzeWorkspace,
+  summarizeWorkspace,
+  type SummarizeOptions,
+} from './summarize-workspace.js'
 import { computeUntestedModules } from './untested-modules.js'
 
 /**
@@ -17,6 +21,7 @@ export interface StructuralDiagnosis {
   directoryInventory: Record<string, string[]>
   orphanModules: string[]
   crossPackageDependencies: Array<{ source: string; target: string }>
+  summary: string
 }
 
 function buildDirectoryInventory(sources: Array<{ relPath: string }>): Record<string, string[]> {
@@ -38,6 +43,8 @@ export async function diagnoseWorkspaceStructural(
   const analysis = await analyzeWorkspace(workspacePath, options)
   if (!analysis) return null
 
+  const summary = await summarizeWorkspace(workspacePath, options)
+
   return {
     fileCount: analysis.fileCount,
     indexedFiles: analysis.sources.length,
@@ -48,5 +55,6 @@ export async function diagnoseWorkspaceStructural(
     directoryInventory: buildDirectoryInventory(analysis.sources),
     orphanModules: analysis.orphanModules,
     crossPackageDependencies: analysis.crossPackageDependencies,
+    summary,
   }
 }

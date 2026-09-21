@@ -45,6 +45,54 @@ export interface GraphExportResult {
     orphanNodes: number
     structuralComplexity: number
   }
+  promptFormatted: string
+}
+
+function formatGraphForPrompt(nodes: GraphExportNode[], edges: GraphExportEdge[]): string {
+  const lines: string[] = []
+  lines.push('--- Code Graph ---')
+  if (nodes.length === 0) {
+    lines.push('Empty graph.')
+    return lines.join('\n')
+  }
+
+  const nodesById = new Map<string, GraphExportNode>()
+  const outgoing = new Map<string, Array<{ target: string; rel: string }>>()
+  for (const n of nodes) {
+    nodesById.set(n.id, n)
+    outgoing.set(n.id, [])
+  }
+  for (const e of edges) {
+    if (outgoing.has(e.source)) {
+      outgoing.get(e.source)!.push({ target: e.target, rel: e.rel })
+    }
+  }
+
+  // Agrupa os nós por arquivo ou diretório
+  const byContainer = new Map<string, GraphExportNode[]>()
+  for (const n of nodes) {
+    const list = byContainer.get(n.file) ?? []
+    list.push(n)
+    byContainer.set(n.file, list)
+  }
+
+  for (const [container, containerNodes] of [...byContainer.entries()].sort()) {
+    lines.push(`\n[${container}]`)
+    for (const n of containerNodes.sort((a, b) => a.label.localeCompare(b.label))) {
+      lines.push(`  - ${n.label} (${n.type}) [health: ${n.health}]`)
+      const out = outgoing.get(n.id) ?? []
+      if (out.length > 0) {
+        // Formata chamadas de forma concisa (ex: CALLS alvo1, alvo2)
+        const calls = out
+          .filter((e) => e.rel === 'CALLS')
+          .map((e) => nodesById.get(e.target)?.label ?? e.target)
+        if (calls.length > 0) {
+          lines.push(`    -> CALLS: ${calls.join(', ')}`)
+        }
+      }
+    }
+  }
+  return lines.join('\n')
 }
 
 export interface ExportGraphOptions extends SummarizeOptions {
@@ -257,10 +305,18 @@ export async function exportGraph(
         aggregatedBy: 'directory',
         metrics,
         moduleGraph,
+        promptFormatted: formatGraphForPrompt(agg.nodes, agg.edges),
       }
     }
 
-    return { nodes, edges, truncated: false, metrics, moduleGraph }
+    return {
+      nodes,
+      edges,
+      truncated: false,
+      metrics,
+      moduleGraph,
+      promptFormatted: formatGraphForPrompt(nodes, edges),
+    }
   } catch (err) {
     if (err instanceof PoisonedFileError) throw err
     return null

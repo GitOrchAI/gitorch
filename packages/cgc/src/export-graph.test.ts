@@ -75,6 +75,14 @@ describe('exportGraph', () => {
           e.rel === 'IMPORTS'
       )
     ).toBe(true)
+
+    // Verifica a formatação textual
+    expect(g!.promptFormatted).toBeDefined()
+    expect(typeof g!.promptFormatted).toBe('string')
+    expect(g!.promptFormatted.length).toBeGreaterThan(0)
+    expect(g!.promptFormatted).toContain('--- Code Graph ---')
+    expect(g!.promptFormatted).toContain('somar')
+    expect(g!.promptFormatted).toContain('CALLS: somar')
   })
 
   it('agrega por diretório quando o grafo bruto excede maxNodes', async () => {
@@ -87,6 +95,9 @@ describe('exportGraph', () => {
     expect(g!.nodes.every((n) => n.file === 'src')).toBe(true)
     // Mesmo diretório -> arestas internas descartadas (sem self-loop sintético).
     expect(g!.edges.every((e) => e.source !== e.target)).toBe(true)
+
+    expect(g!.promptFormatted).toBeDefined()
+    expect(g!.promptFormatted).toContain('src (2)') // '2' pois no agregação 'src' terá 2 símbolos (usar, somar)
   })
 
   it('devolve null para diretório sem código-fonte (nunca lança)', async () => {
