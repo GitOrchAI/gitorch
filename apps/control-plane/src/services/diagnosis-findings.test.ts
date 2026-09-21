@@ -19,6 +19,7 @@ function structural(overrides: Partial<StructuralDiagnosis> = {}): StructuralDia
     directoryInventory: { src: ['a.ts', 'b.ts'] },
     orphanModules: [],
     crossPackageDependencies: [],
+    summary: 'resumo estrutural de teste',
     ...overrides,
   }
 }
