@@ -1,3 +1,4 @@
+import * as TravaModule from './trava-de-parecer.js'
 import { describe, it, expect, vi } from 'vitest'
 import {
   runQaMissionViaRails,
@@ -4153,5 +4154,55 @@ describe('buildEntendimentoSection — Fase 3.1', () => {
     expect(texto).toContain('O que muda: ajusta o cache de sessão')
     expect(texto).toContain('Que ajuste é: correção')
     expect(texto).toContain('Por que existe: sessão expirava cedo demais')
+  })
+
+  describe('Trava de Parecer no QA', () => {
+    it('deve publicar o parecer se adquirir a trava com sucesso', async () => {
+      vi.spyOn(TravaModule, 'adquirirTravaDeParecer').mockResolvedValue(true as never)
+      const f = fakeFetch([{ number: 42, user: 'jules' }])
+      const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
+
+      const prismaMock = { repoItem: { upsert: vi.fn(), updateMany: vi.fn() } }
+      await runQaMissionViaRails({
+        repository: 'o/r',
+        githubToken: 't',
+        execute: async () => APPROVE,
+        fetchImpl: f,
+        prisma: prismaMock,
+        projectId: 'proj_123',
+      })
+
+      expect(TravaModule.adquirirTravaDeParecer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: 'proj_123',
+          numeroDoPr: 42,
+        })
+      )
+      expect(posted.reviews).toHaveLength(1)
+    })
+
+    it('NÃO deve publicar o parecer se NÃO adquirir a trava (já ocupada)', async () => {
+      vi.spyOn(TravaModule, 'adquirirTravaDeParecer').mockResolvedValue(false as never)
+      const f = fakeFetch([{ number: 42, user: 'jules' }])
+      const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
+      const onWarnMock = vi.fn()
+
+      const prismaMock = { repoItem: { upsert: vi.fn(), updateMany: vi.fn() } }
+      await runQaMissionViaRails({
+        repository: 'o/r',
+        githubToken: 't',
+        execute: async () => APPROVE,
+        fetchImpl: f,
+        prisma: prismaMock,
+        projectId: 'proj_123',
+        onWarn: onWarnMock,
+      })
+
+      expect(TravaModule.adquirirTravaDeParecer).toHaveBeenCalled()
+      expect(posted.reviews).toHaveLength(0)
+      expect(onWarnMock).toHaveBeenCalledWith(
+        expect.stringContaining('already publishing a review for head')
+      )
+    })
   })
 })

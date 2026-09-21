@@ -1,4 +1,5 @@
 import { fetchSemPermissao } from './guarda-de-autonomia.js'
+import { adquirirTravaDeParecer, type PrismaDaTravaDeParecer } from './trava-de-parecer.js'
 import {
   RAILS_SCHEMAS,
   buildStepPrompt,
@@ -1029,6 +1030,24 @@ export async function runQaMissionViaRails(
   // do GitOrch) mais abaixo, junto de `reviewEvent` — a MESMA lógica vale
   // aqui, só que chamada mais cedo.
   const postarReview = async (evento: string, corpo: string): Promise<boolean> => {
+    // Acquire the lock for publishing the review
+    if (options.prisma && 'repoItem' in (options.prisma as object)) {
+      const headShaStr = pr?.head?.sha ?? target.head?.sha ?? 'unknown'
+      const lockAcquired = await adquirirTravaDeParecer({
+        prisma: options.prisma as PrismaDaTravaDeParecer,
+        projectId: options.projectId!,
+        numeroDoPr: target.number,
+        headSha: headShaStr,
+        agora: new Date(),
+      })
+      if (!lockAcquired) {
+        options.onWarn?.(
+          `[qa] ${options.repository} #${target.number}: already publishing a review for head ${headShaStr} — skipping duplicate`
+        )
+        return true
+      }
+    }
+
     try {
       await gh('POST', `/repos/${options.repository}/pulls/${target.number}/reviews`, {
         event: evento,
