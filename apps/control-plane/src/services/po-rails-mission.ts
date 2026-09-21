@@ -293,9 +293,7 @@ export async function runPoMissionViaRails(
   // o PO não replaneja. O plano converge: tarefas recebem gitorch:task nas folhas, e
   // rascunhos duplicados (mesmo marcador) são fechados, mantendo um único plano.
   const wishMarkerPrefix = `gitorch:node:${wish.number}:`
-  const searchQ = encodeURIComponent(
-    `repo:${options.repository} in:body "${wishMarkerPrefix}"`
-  )
+  const searchQ = encodeURIComponent(`repo:${options.repository} in:body "${wishMarkerPrefix}"`)
 
   // A busca usa o MESMO f (fetch) restrito que propaga os erros (fail-closed).
   const searchResp = await f(`https://api.github.com/search/issues?q=${searchQ}&per_page=100`, {
