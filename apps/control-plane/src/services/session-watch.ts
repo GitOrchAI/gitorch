@@ -135,6 +135,12 @@ export interface VigiaDeps {
    * retorno é o único jeito, já que `buildTelegramNotifier` nunca rejeita.
    */
   avisarDono?: (mensagem: string) => Promise<boolean>
+  /**
+   * Grava status e andamento puro na timeline do painel do cliente,
+   * sem disparar Telegram. Usado quando a esteira autocura ou só
+   * informa, sem pedir decisão.
+   */
+  registrarNoPainel?: (chave: string, texto: string) => Promise<void>
   agora: Date
   onWarn?: (m: string) => void
 }
@@ -421,9 +427,10 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
               agora: deps.agora,
             })
             fechadasTerminal += 1
-            if (deps.avisarDono) {
+            if (deps.registrarNoPainel) {
               await deps
-                .avisarDono(
+                .registrarNoPainel(
+                  `sessao-fechada-duvida-respondida:${linha.sessionName}`,
                   `GitOrch: a issue #${linha.issueNumber} ficou 24h parada esperando o dev depois ` +
                     'de a dúvida já ter sido respondida. Fechei a sessão — a esteira vai tentar de novo.'
                 )
@@ -542,9 +549,10 @@ export async function vigiarSessoes(deps: VigiaDeps): Promise<string> {
               hash: hashDoEstado,
               agora: deps.agora,
             })
-            if (deps.avisarDono) {
+            if (deps.registrarNoPainel) {
               await deps
-                .avisarDono(
+                .registrarNoPainel(
+                  `sessao-investigando-falha:${linha.sessionName}:${estadoBruto}`,
                   `GitOrch: a sessão da issue #${linha.issueNumber} (${linha.sessionName}) chegou ` +
                     `ao estado ${estadoBruto} sem entregar PR. O SM foi acionado para investigar ` +
                     `o impedimento.`

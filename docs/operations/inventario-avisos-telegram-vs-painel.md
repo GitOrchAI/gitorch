@@ -56,7 +56,11 @@ encontrou vazando e que este mesmo commit corrige.
 | `scheduler.ts:9807` | Entrega mesclada mas sem publicação identificável (`sem-publicacao`) | a | Veredito final, e D47 manda sempre perguntar em vez de assumir quando falta contexto | Mantido — Telegram correto (e sempre seguido de uma pergunta via `agentQuestion`) |
 | `scheduler.ts:10088` | Motor de execução (Codex/Antigravity/Claude) revogado, credencial precisa renovar | a | Ação real do dono (reconectar o motor). Nível de USUÁRIO, mesma razão do item 2408 | Mantido — Telegram direto |
 | `scheduler.ts:10612` | Quadro do GitHub Projects V2 indefinido — sprint não anda | a | Ação real do dono (criar/ligar um quadro). Já grava no painel (`event.create` tipo `audit`) ANTES de mandar o Telegram — canal duplo intencional para bloqueio persistente | Mantido — Telegram + painel |
-| `banco-atrasado.ts:80` (`notificadorDaInstancia`, usado em `conferirBancoNoArranque`) | Banco de dados atrasado em relação ao ledger de migrações, no arranque do processo | a | Crítico de infraestrutura com ação concreta (`bash scripts/db-migrate.sh`) — sem isto a esteira pode morrer em silêncio (incidente real de 26/08) | Mantido — Telegram direto, nível de instância (nem sempre há projeto em mãos no arranque) |
+| `banco-atrasado.ts:80` (`notificadorDaInstancia`, usado em `conferirBancoNoArranque`) | Banco de dados atrasado em relação ao ledger de migrações, no arranque do processo | a/c (incidente) | Crítico de infraestrutura com ação concreta (`bash scripts/db-migrate.sh`) — sem isto a esteira pode morrer em silêncio (incidente real de 26/08) | Mantido — Telegram direto, nível de instância (nem sempre há projeto em mãos no arranque) |
+| `session-watch.ts` (ramo `'investigar'`) via `scheduler.ts` | Sessão chegou a um estado de falha sem entregar PR, "o SM foi acionado para investigar" | c | Status/andamento puro (autocura em andamento, o SM já está investigando) | Convertido para `registrarStatusNoPainel`, chave `sessao-investigando-falha:{sessionName}:{estadoBruto}` |
+| `session-watch.ts` (ramo `pergunta-sem-resposta`) via `scheduler.ts` | Issue fechada após 24h parada esperando o dev, dúvida já respondida | c | Status/andamento puro ("a esteira vai tentar de novo" — pipeline retries) | Convertido para `registrarStatusNoPainel`, chave `sessao-fechada-duvida-respondida:{sessionName}` |
+| `session-watch.ts` (ramo `reentrega retrabalho`) via `scheduler.ts` | Reentrega de pedido de retrabalho esgotou tentativas sem chegar ao dev | a | Exige ação manual (avisar o dev à mão) | Mantido — Telegram direto |
+| `session-watch.ts` (ramo `'abandonar'`) via `scheduler.ts` | Sessão abandonada após N tentativas de retomada sem sucesso | a | Fechamento definitivo que encerra a sessão por estagnação | Mantido — Telegram direto |
 
 \* A linha `credencial-expirada` está listada como "a→c" porque o texto tem
 tom de alerta (parece pedir ação imediata), mas a decisão do dono já foi
@@ -82,24 +86,3 @@ a classificar:
   notificador HTTP puro (`fetch` contra a API do Telegram); usado pelo
   chokepoint acima e pelos avisos de nível de usuário (itens 2408, 10088) e
   de instância (`banco-atrasado.ts`).
-
-## Fora do escopo desta task (nota para uma rodada futura)
-
-`scheduler.ts:7340` constrói um `buildTelegramNotifier` cru e passa como
-`avisarDono` direto para `vigiarSessoes` (`session-watch.ts`) — este caminho
-**nunca** passa por `avisarDonoDoProjeto`/`classificarAviso`, então não é
-capturado pelo grep desta task (que mirou só `avisarDonoDoProjeto`) nem pela
-régua de texto. Os 4 gatilhos que ele alimenta:
-
-1. Reentrega de pedido de retrabalho esgotou tentativas sem chegar ao dev —
-   classe a (exige ação manual).
-2. Issue fechada após 24h parada esperando o dev, dúvida já respondida —
-   classe a (fechamento definitivo).
-3. Sessão chegou a um estado de falha sem entregar PR, "o SM foi acionado
-   para investigar" — **candidato a classe c** (autocura em andamento, texto
-   parecido com os vazamentos já corrigidos), mas convertê-lo está fora do
-   escopo dos dois achados desta rodada de QA.
-4. Sessão abandonada após N tentativas de retomada sem sucesso — classe a
-   (fechamento definitivo).
-
-Registrado aqui para não se perder, não corrigido nesta task.
