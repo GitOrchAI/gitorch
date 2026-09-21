@@ -39,6 +39,7 @@ describe('coletarDividaDeSeguranca', () => {
         ecossistema: 'npm',
         manifesto: 'pnpm-lock.yaml',
         resumo: 'resumo do problema',
+        escopo: 'desconhecido',
         versaoCorrigida: '4.12.34',
         url: 'https://exemplo.invalido/alerta/182',
         criadoEm: '2026-01-02T03:04:05Z',
@@ -506,5 +507,42 @@ describe('coletarDividaDeSeguranca', () => {
         expect(d.temConfiguracao).toBe(false)
       })
     }
+  })
+
+  it('lê o scope (runtime/development) que a API já devolve em dependency.scope', async () => {
+    const fetchImpl = githubDeMentira({
+      '/repos/dono/repo/contents/.github/dependabot.yml': { status: 404 },
+      '/repos/dono/repo/dependabot/alerts?state=open&per_page=100': {
+        status: 200,
+        corpo: [
+          {
+            ...ALERTA_BRUTO,
+            dependency: { package: { name: 'lodash', ecosystem: 'npm' }, scope: 'runtime' },
+          },
+        ],
+      },
+    })
+    const divida = await coletarDividaDeSeguranca({
+      repository: 'dono/repo',
+      token: 't',
+      fetchImpl,
+    })
+    expect(divida.alertas[0]?.escopo).toBe('runtime')
+  })
+
+  it('scope ausente vira "desconhecido", nunca inventa runtime nem development', async () => {
+    const fetchImpl = githubDeMentira({
+      '/repos/dono/repo/contents/.github/dependabot.yml': { status: 404 },
+      '/repos/dono/repo/dependabot/alerts?state=open&per_page=100': {
+        status: 200,
+        corpo: [{ ...ALERTA_BRUTO, dependency: { package: { name: 'lodash', ecosystem: 'npm' } } }],
+      },
+    })
+    const divida = await coletarDividaDeSeguranca({
+      repository: 'dono/repo',
+      token: 't',
+      fetchImpl,
+    })
+    expect(divida.alertas[0]?.escopo).toBe('desconhecido')
   })
 })
