@@ -289,6 +289,78 @@ export async function runPoMissionViaRails(
     }
   }
 
+  // 1.5) Se a wish já tem plano (existe qualquer nó gitorch:node:wish no repositório),
+  // o PO não replaneja. O plano converge: tarefas recebem gitorch:task nas folhas, e
+  // rascunhos duplicados (mesmo marcador) são fechados, mantendo um único plano.
+  const wishMarkerPrefix = `gitorch:node:${wish.number}:`
+  const searchQ = encodeURIComponent(
+    `repo:${options.repository} in:body "${wishMarkerPrefix}" state:open`
+  )
+
+  // A busca usa o MESMO f (fetch) restrito que propaga os erros (fail-closed).
+  const searchResp = await f(`https://api.github.com/search/issues?q=${searchQ}&per_page=100`, {
+    headers: { authorization: `token ${options.githubToken}`, 'user-agent': 'gitorch' },
+  })
+  if (!searchResp.ok) {
+    const detail = await searchResp.text().catch(() => '')
+    // Erro de rede ou credencial NÃO é "plano ausente". Falha a missão, nunca duplica.
+    throw new GithubExecutionError(
+      `GitHub search for existing plan failed (${searchResp.status}): ${detail.slice(0, 150)}`
+    )
+  }
+  const searchData = (await searchResp.json()) as {
+    items?: Array<{ number: number; body?: string; labels?: Array<{ name: string }> }>
+  }
+  const existingNodes = searchData.items ?? []
+
+  if (existingNodes.length > 0) {
+    let closedCount = 0
+    let convergedTasks = 0
+
+    // Agrupa por marcador EXATO para limpar rascunhos duplicados (mantendo 1).
+    const byMarker = new Map<string, typeof existingNodes>()
+    for (const item of existingNodes) {
+      const match = item.body?.match(/(gitorch:node:\d+:(?:phase|epic|feature|task):\d+)/)
+      if (match) {
+        const m = match[1]!
+        if (!byMarker.has(m)) byMarker.set(m, [])
+        byMarker.get(m)!.push(item)
+      }
+    }
+
+    for (const [marker, nodes] of Array.from(byMarker.entries())) {
+      // O mais recente (maior ID de issue) vence e mantém o plano.
+      nodes.sort((a, b) => b.number - a.number)
+      const kept = nodes[0]!
+      const dups = nodes.slice(1)
+
+      for (const dup of dups) {
+        await gh('PATCH', `/repos/${options.repository}/issues/${dup.number}`, { state: 'closed' })
+        await gh('POST', `/repos/${options.repository}/issues/${dup.number}/comments`, {
+          body: `Fechado como duplicata. O plano atual está mantido na issue #${kept.number}.`,
+        })
+        closedCount++
+      }
+
+      // Fases/épicos/features/tarefas finais recebem gitorch:task nas folhas.
+      if (marker.includes(':task:')) {
+        const labels = kept.labels?.map((l) => l.name) ?? []
+        if (!labels.includes('gitorch:task')) {
+          await gh('POST', `/repos/${options.repository}/issues/${kept.number}/labels`, {
+            labels: ['gitorch:task'],
+          })
+          convergedTasks++
+        }
+      }
+    }
+
+    return {
+      exitCode: 0,
+      output: `PO: wish #${wish.number} already has a plan. Skipped replanning.\nCleaned up ${closedCount} duplicate nodes. Converged ${convergedTasks} tasks.`,
+      stderr: '',
+    }
+  }
+
   // 2) Roteiro do PO (5 formulários; a LLM nunca toca no GitHub) + a régua
   // (Bloco 1, D5): plano reprovado DEVOLVE ao PO com o motivo e ele refaz,
   // até um teto de tentativas — nunca lança direto na primeira reprovação.
