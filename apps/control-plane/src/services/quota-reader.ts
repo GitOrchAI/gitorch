@@ -136,6 +136,7 @@ export interface CodexQuotaFile {
     window_minutes: number | null
     reset_at: number | null
   } | null
+  error_reason?: string
 }
 
 const CODEX_QUOTA_FILE_NAME = 'gitorch-quota.json'
@@ -316,6 +317,13 @@ export async function writeCodexQuotaFile(
   await fs.writeFile(file, JSON.stringify(toCodexQuotaFile(event)), 'utf8')
 }
 
+export async function writeCodexQuotaErrorFile(homeDir: string, reason: string): Promise<void> {
+  const file = codexQuotaFilePath(homeDir)
+  await fs.mkdir(path.dirname(file), { recursive: true })
+  const payload: Partial<CodexQuotaFile> = { error_reason: reason }
+  await fs.writeFile(file, JSON.stringify(payload), 'utf8')
+}
+
 /**
  * Codex: lê `~/.codex/gitorch-quota.json`, gravado pelo warmup
  * (`defaultCodexWarmUp` em model-catalog.ts) a partir do evento
@@ -368,6 +376,13 @@ export const readCodexQuota: QuotaReader = async (homeDir: string) => {
     }
   }
   const file = parsed as Partial<CodexQuotaFile>
+  if (file.error_reason) {
+    return {
+      ...EMPTY_CODEX_QUOTA,
+      motivo: file.error_reason,
+    }
+  }
+
   const secondary = file.secondary ?? null
   return {
     remaining: null,

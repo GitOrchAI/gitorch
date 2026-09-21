@@ -9,6 +9,7 @@ import {
   parseClaudeRateLimitHeaders,
   parseCodexRateLimitsFromJsonl,
   writeCodexQuotaFile,
+  writeCodexQuotaErrorFile,
   readCodexQuota,
   codexQuotaFilePath,
   rateLimitsDaRecusa,
@@ -462,6 +463,17 @@ describe('writeCodexQuotaFile + readCodexQuota (arquivo real em disco)', () => {
       expect(reading.remaining).toBeNull()
       expect(reading.motivo).toContain('formato desconhecido')
       expect(reading.motivo).toContain(codexQuotaFilePath(home))
+    })
+  })
+
+  it('se o arquivo tiver error_reason, retorna como motivo e o resto null', async () => {
+    await withTempHome(async (home) => {
+      await writeCodexQuotaErrorFile(home, 'CLI não instalado')
+      const reading = await readCodexQuota(home)
+      expect(reading.remaining).toBeNull()
+      expect(reading.sessionPercentUsed).toBeNull()
+      expect(reading.weekPercentUsed).toBeNull()
+      expect(reading.motivo).toBe('CLI não instalado')
     })
   })
 
