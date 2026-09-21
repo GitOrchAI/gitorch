@@ -86,6 +86,7 @@ export interface RaBriefForm {
  * issue crua → Jules → loop sem análise").
  */
 export interface RaCausaDeInfraForm {
+  acao: 'resolver' | 'descartar'
   causaRaiz: string
   arquivosAfetados: string
   criterioDeVerificacao: string
@@ -620,6 +621,7 @@ export const RAILS_SCHEMAS = {
   raCausaDeInfra: {
     type: 'object',
     required: [
+      'acao',
       'causaRaiz',
       'arquivosAfetados',
       'criterioDeVerificacao',
@@ -627,6 +629,7 @@ export const RAILS_SCHEMAS = {
       'riscoDeRegressao',
     ],
     properties: {
+      acao: { type: 'string', enum: ['resolver', 'descartar'] },
       causaRaiz: { type: 'string' },
       arquivosAfetados: { type: 'string' },
       criterioDeVerificacao: { type: 'string' },

@@ -49,11 +49,12 @@ export async function runAnaliseCausaDeInfra(
     blocoDoAchado(achado),
     [
       'Entenda a CAUSA RAIZ desta falha — não repita a mensagem de erro, explique POR QUE ela acontece.',
-      '- causaRaiz: a explicação técnica da raiz (config errada, comando obsoleto, credencial, dependência...).',
-      '- arquivosAfetados: os caminhos REAIS a mexer (copie da evidência/lista acima, nunca invente).',
-      '- criterioDeVerificacao: como um revisor confirma que sarou (comando, run verde, comportamento observável).',
-      '- escopo: o que ESTÁ e o que NÃO está incluído — uma correção focada, nunca "de passagem arrumei X".',
-      '- riscoDeRegressao: o que pode quebrar junto e como o PR se protege disso.',
+      '- acao: "resolver" se a falha exige um conserto (ou remoção); "descartar" se o erro for benigno, intencional ou impossível de arrumar pelo Gitorch (ex: workflow morto do cliente).',
+      '- causaRaiz: a explicação técnica da raiz (ou o motivo do descarte).',
+      '- arquivosAfetados: os caminhos REAIS a mexer (copie da evidência/lista acima, nunca invente). Preencha "N/A" se for descartar.',
+      '- criterioDeVerificacao: como um revisor confirma que sarou (comando, run verde, comportamento observável). Preencha "N/A" se for descartar.',
+      '- escopo: o que ESTÁ e o que NÃO está incluído — uma correção focada, nunca "de passagem arrumei X". Preencha "N/A" se for descartar.',
+      '- riscoDeRegressao: o que pode quebrar junto e como o PR se protege disso. Preencha "N/A" se for descartar.',
     ].join('\n'),
   ])
   return (await runFormStep({

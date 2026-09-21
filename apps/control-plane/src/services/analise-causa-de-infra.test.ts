@@ -15,7 +15,10 @@ const achado: AchadoDeInfra = {
   paths: ['.github/workflows/ci.yml'],
 }
 
-const CAUSA = {
+import type { RaCausaDeInfraForm } from '@gitorch/cadence'
+
+const CAUSA: RaCausaDeInfraForm = {
+  acao: 'resolver',
   causaRaiz: 'o step chama `npm run build` mas o package.json não tem esse script',
   arquivosAfetados: 'package.json, .github/workflows/ci.yml',
   criterioDeVerificacao: 'o workflow CI roda verde na main',
@@ -52,8 +55,9 @@ describe('blocoDoAchado', () => {
 })
 
 describe('runAnaliseCausaDeInfra', () => {
-  it('devolve os 5 campos da causa', async () => {
+  it('devolve a acao e os campos da causa', async () => {
     const r = await runAnaliseCausaDeInfra(fakeExecutor([CAUSA]), achado)
+    expect(r.acao).toBe('resolver')
     expect(r.causaRaiz).toContain('npm run build')
     expect(r.arquivosAfetados).toContain('package.json')
     expect(r.criterioDeVerificacao).toBeTruthy()

@@ -30,11 +30,10 @@ export function alvoDaClasse(classe: ClasseDeFalha): AlvoDaIssue {
     case 'ci-do-cliente':
     case 'config-de-actions':
     case 'alerta-de-seguranca':
+    case 'workflow-morto':
       return 'repo-do-cliente'
     case 'scaffolding-do-gitorch':
       return 'repo-do-produto'
-    case 'workflow-morto':
-      return 'nenhum'
     // D63 (medido: 97/193 sessões do dev assíncrono foram para incidente de
     // automação — 14 delas o próprio Dependabot travado em
     // `.github/scripts`): "o dono não quer o Jules consertando o robô do
@@ -76,7 +75,7 @@ export interface RegistrarIncidenteArgs {
   projectId: string
   classe: ClasseDeFalha
   identidadeEstavel: string
-  issueNumber: number
+  issueNumber: number | null
   titulo: string
 }
 
@@ -113,6 +112,8 @@ export interface ProcessarAchadosDeps {
   registrarAchadoNoPainel: (achado: AchadoDeInfra, numeroDaProposta: number) => Promise<void>
   /** Telegram ao DONO (só para achados de encanamento do produto). */
   avisarDono: (texto: string) => Promise<void>
+  /** Registra no painel a decisão de descartar um achado e seu motivo (via timeline). */
+  registrarDescarte?: (achado: AchadoDeInfra, motivo: string) => Promise<void>
   /** upsert em `infra_incidents` por (projectId, identidadeEstavel). */
   registrarIncidente: (args: RegistrarIncidenteArgs) => Promise<void>
   /** Teto de achados analisados por passada — proteção de cota de motor. */
@@ -152,7 +153,7 @@ export async function processarAchadosDeInfra(
   let abertos: Set<string>
   try {
     const lista = await deps.incidentesAbertos()
-    abertos = new Set(lista.filter((i) => i.issueNumber !== null).map((i) => i.identidadeEstavel))
+    abertos = new Set(lista.map((i) => i.identidadeEstavel))
   } catch (err) {
     // Sem a lista, o pior caso é reanalisar um achado já rastreado. O upsert
     // por identidade evita duplicar a LINHA; a issue duplicada é o risco —
@@ -212,6 +213,25 @@ export async function processarAchadosDeInfra(
     processados += 1
     try {
       const analise: RaCausaDeInfraForm = await runAnaliseCausaDeInfra(deps.execute, achado, ctx)
+
+      if (analise.acao === 'descartar') {
+        info(
+          `processar-achados: ${achado.identidadeEstavel} (${achado.classe}) — RA descartou: ${analise.causaRaiz}`
+        )
+        if (deps.registrarDescarte) {
+          await deps.registrarDescarte(achado, analise.causaRaiz)
+        }
+        await deps.registrarIncidente({
+          projectId: deps.projectId,
+          classe: achado.classe,
+          identidadeEstavel: achado.identidadeEstavel,
+          issueNumber: null,
+          titulo: achado.titulo,
+        })
+        res.ignorados.push(achado.identidadeEstavel)
+        continue
+      }
+
       const obsoleto = alvo === 'repo-do-produto' && scaffoldingObsoleto(achado.paths)
       const fields = await runIssuePadraoDeInfra(
         deps.execute,
