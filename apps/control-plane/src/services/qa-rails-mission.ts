@@ -293,6 +293,8 @@ export interface QaRailsMissionOptions extends VigiliaDoJulgamentoOptions {
    * linha de configuração, e não uma arqueologia de código apagado.
    */
   julgarEntregaDeTerceiro?: boolean | undefined
+  prisma?: unknown
+  projectId?: string
   onWarn?: (message: string) => void
 }
 
