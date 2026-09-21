@@ -107,6 +107,113 @@ function fakeFetch(pesoNoQuadro?: Map<string, number>): typeof fetch {
   }) as typeof fetch
 }
 
+describe('não replaneja quando o desejo já tem plano (e resolve rascunhos duplicados)', () => {
+  it('TDD: busca do plano falha -> adia sem duplicar (erro propagado)', async () => {
+    const f = (async (url: Parameters<typeof fetch>[0]) => {
+      const u = String(url)
+      const json = (d: unknown, s = 200) => new Response(JSON.stringify(d), { status: s })
+
+      if (u.includes('/issues?labels=wishlist')) {
+        return json([{ number: 3958, node_id: 'I_wish', title: 'Wish', body: 'b' }])
+      }
+      if (u.includes('/search/issues') && u.includes('gitorch%3Anode%3A3958%3A')) {
+        return json({ message: 'Bad credentials' }, 401)
+      }
+      return json({})
+    }) as typeof fetch
+
+    await expect(
+      runPoMissionViaRails({
+        repository: 'o/r',
+        board: 'o/9',
+        githubToken: 't',
+        contextBlocks: [],
+        fetchImpl: f,
+        execute: async () => '{}',
+      })
+    ).rejects.toThrow('GitHub search for existing plan failed (401)')
+  })
+
+  it('TDD: desejo com plano existente -> não replaneja, fecha repetidos, adiciona gitorch:task nas folhas', async () => {
+    const actions: Array<{ method: string; url: string; body?: unknown }> = []
+    const f = (async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const u = String(url)
+      const method = init?.method ?? 'GET'
+      const body = init?.body ? JSON.parse(String(init.body)) : {}
+      const json = (d: unknown) => new Response(JSON.stringify(d), { status: 200 })
+
+      if (method !== 'GET') {
+        actions.push({ method, url: u, body })
+      }
+
+      if (u.includes('/issues?labels=wishlist')) {
+        return json([{ number: 3958, node_id: 'I_wish', title: 'Wish', body: 'b' }])
+      }
+      if (u.includes('/search/issues') && u.includes('gitorch%3Anode%3A3958%3A')) {
+        return json({
+          items: [
+            { number: 10, body: '<!-- gitorch:node:3958:phase:0 -->', labels: [] },
+            { number: 11, body: '<!-- gitorch:node:3958:phase:0 -->', labels: [] }, // duplicata da fase 0
+            { number: 15, body: '<!-- gitorch:node:3958:task:0 -->', labels: [] },
+            { number: 16, body: '<!-- gitorch:node:3958:task:0 -->', labels: [{ name: 'outra' }] }, // duplicata da task
+          ],
+        })
+      }
+      return json({})
+    }) as typeof fetch
+
+    let executeCalled = false
+    const r = await runPoMissionViaRails({
+      repository: 'o/r',
+      board: 'o/9',
+      githubToken: 't',
+      contextBlocks: [],
+      fetchImpl: f,
+      execute: async () => {
+        executeCalled = true
+        return '{}'
+      },
+    })
+
+    // 1) Não replanejou (nenhuma chamada LLM).
+    expect(executeCalled).toBe(false)
+    expect(r.output).toContain('already has a plan')
+    expect(r.output).toContain('Cleaned up 2 duplicate nodes')
+    expect(r.output).toContain('Converged 1 tasks')
+
+    // 2) Fechou as duplicatas (as de número MENOR, pois o sort mantém o maior no índice 0)
+    // Para phase:0 -> {11, 10}. Mantém 11, fecha 10.
+    const close10 = actions.find(
+      (a) =>
+        a.method === 'PATCH' &&
+        a.url.includes('/issues/10') &&
+        (a.body as { state?: string })?.state === 'closed'
+    )
+    expect(close10).toBeDefined()
+
+    // Para task:0 -> {16, 15}. Mantém 16, fecha 15.
+    const close15 = actions.find(
+      (a) =>
+        a.method === 'PATCH' &&
+        a.url.includes('/issues/15') &&
+        (a.body as { state?: string })?.state === 'closed'
+    )
+    expect(close15).toBeDefined()
+
+    // 3) A task retida (16) não tinha 'gitorch:task', então a label deve ter sido adicionada.
+    const labelTask16 = actions.find(
+      (a) => a.method === 'POST' && a.url.includes('/issues/16/labels')
+    )
+    expect(labelTask16?.body).toEqual({ labels: ['gitorch:task'] })
+
+    // A fase retida (11) não leva 'gitorch:task'.
+    const labelPhase11 = actions.find(
+      (a) => a.method === 'POST' && a.url.includes('/issues/11/labels')
+    )
+    expect(labelPhase11).toBeUndefined()
+  })
+})
+
 describe('runPoMissionViaRails', () => {
   it('sem wish aberta: encerra limpo sem planejar', async () => {
     const f = (async () => new Response(JSON.stringify([]), { status: 200 })) as typeof fetch
