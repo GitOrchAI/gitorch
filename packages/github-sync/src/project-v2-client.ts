@@ -660,16 +660,22 @@ export class ProjectV2Client {
   // App responde assim para quadro de conta pessoal — sucesso, dono nulo, ainda
   // que existam quadros. Distinguir "não tem" de "não enxergo" é papel de quem
   // chama, com o aviso na mão; aqui só não se inventa que a lista tem algo.
+  // D10 estendido (Fase 4.1): mesma base de findProjectId — repositoryOwner
+  // resolve User/Organization numa raiz só, nunca erra entre pessoal e
+  // organização. `ownerType` no input fica só para MENSAGEM DE ERRO (não
+  // decide mais a query) — mesmo contrato que getProjectId já adotou.
   async listarQuadrosDaConta(input: ListarQuadrosDaContaInput): Promise<QuadroListado[]> {
-    const campo = input.ownerType === 'organization' ? 'organization' : 'user'
-    const response = await this.request<
-      Record<string, { projectsV2: { nodes: QuadroListado[] | null } | null } | null>
-    >(
+    const response = await this.request<{
+      repositoryOwner: { __typename: string; projectsV2: { nodes: QuadroListado[] | null } } | null
+    }>(
       {
         query: `
           query ListarQuadrosDaConta($login: String!) {
-            ${campo}(login: $login) {
-              projectsV2(first: 50) { nodes { id number title closed } }
+            repositoryOwner(login: $login) {
+              __typename
+              ... on ProjectV2Owner {
+                projectsV2(first: 50) { nodes { id number title closed } }
+              }
             }
           }
         `,
@@ -678,7 +684,7 @@ export class ProjectV2Client {
       this.token
     )
 
-    return unwrap(response)[campo]?.projectsV2?.nodes ?? []
+    return unwrap(response).repositoryOwner?.projectsV2?.nodes ?? []
   }
 
   // Descobre o quadro deste repositório pela EVIDÊNCIA de que ele já é usado:

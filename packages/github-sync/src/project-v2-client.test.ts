@@ -439,57 +439,66 @@ test('repositório sem quadro ligado devolve lista vazia, não erro', async () =
   )
 })
 
-test('lista os quadros da conta, distinguindo pessoa de organização', async () => {
-  const calls: GraphQLRequest[] = []
-  const client = new ProjectV2Client({
-    token: 'test-token',
-    request: async (request) => {
-      calls.push(request)
-      return {
-        data: { organization: { projectsV2: { nodes: [{ id: 'PVT_c', number: 1, title: 'x' }] } } },
-      }
-    },
+describe('listarQuadrosDaConta — Fase 4.1 (repositoryOwner dinâmico)', () => {
+  it('resolve quadros de conta PESSOAL sem precisar saber o ownerType de antemão', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            data: {
+              repositoryOwner: {
+                __typename: 'User',
+                projectsV2: {
+                  nodes: [
+                    { id: 'PVT_1', number: 3, title: 'loureng/patinhas-3d-crafts', closed: false },
+                  ],
+                },
+              },
+            },
+          }),
+          { status: 200 }
+        )
+    )
+    const client = new ProjectV2Client({ token: 't', fetchImpl: fetchMock })
+    const quadros = await client.listarQuadrosDaConta({ login: 'loureng', ownerType: 'user' })
+    expect(quadros).toHaveLength(1)
+    expect(quadros[0]?.number).toBe(3)
+    // UMA chamada — nunca duas (a antiga tentativa user→organization some).
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  const quadros = await client.listarQuadrosDaConta({
-    login: 'umaOrg',
-    ownerType: 'organization',
+  it('resolve quadros de ORGANIZAÇÃO com a mesma chamada, sem branch por ownerType', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            data: {
+              repositoryOwner: { __typename: 'Organization', projectsV2: { nodes: [] } },
+            },
+          }),
+          { status: 200 }
+        )
+    )
+    const client = new ProjectV2Client({ token: 't', fetchImpl: fetchMock })
+    expect(
+      await client.listarQuadrosDaConta({ login: 'GitOrchAI', ownerType: 'organization' })
+    ).toEqual([])
   })
 
-  expect(quadros).toEqual([{ id: 'PVT_c', number: 1, title: 'x' }])
-  expect(calls[0]?.query).toContain('organization(login:')
-  expect(calls[0]?.query).not.toContain('user(login:')
-})
+  // O App do produto é CEGO para quadro de conta pessoal: a consulta responde
+  // com sucesso e a conta vem nula, mesmo havendo quadros. Tratar isso como
+  // "não existe nenhum" faria a esteira tentar criar um por cima; o certo é
+  // devolver lista vazia e deixar quem chama decidir com o aviso na mão.
+  it('conta invisível para a credencial atual devolve lista vazia', async () => {
+    const client = new ProjectV2Client({
+      token: 'test-token',
+      request: async () => ({ data: { repositoryOwner: null } }),
+    })
 
-test('conta de pessoa consulta o campo de usuário', async () => {
-  const calls: GraphQLRequest[] = []
-  const client = new ProjectV2Client({
-    token: 'test-token',
-    request: async (request) => {
-      calls.push(request)
-      return { data: { user: { projectsV2: { nodes: [] } } } }
-    },
+    await expect(
+      client.listarQuadrosDaConta({ login: 'umaPessoa', ownerType: 'user' })
+    ).resolves.toEqual([])
   })
-
-  await client.listarQuadrosDaConta({ login: 'umaPessoa', ownerType: 'user' })
-
-  expect(calls[0]?.query).toContain('user(login:')
-  expect(calls[0]?.query).not.toContain('organization(login:')
-})
-
-// O App do produto é CEGO para quadro de conta pessoal: a consulta responde
-// com sucesso e a conta vem nula, mesmo havendo quadros. Tratar isso como
-// "não existe nenhum" faria a esteira tentar criar um por cima; o certo é
-// devolver lista vazia e deixar quem chama decidir com o aviso na mão.
-test('conta invisível para a credencial atual devolve lista vazia', async () => {
-  const client = new ProjectV2Client({
-    token: 'test-token',
-    request: async () => ({ data: { user: null } }),
-  })
-
-  await expect(
-    client.listarQuadrosDaConta({ login: 'umaPessoa', ownerType: 'user' })
-  ).resolves.toEqual([])
 })
 
 // Descoberta por EVIDÊNCIA: o quadro deste repositório é aquele onde as issues
