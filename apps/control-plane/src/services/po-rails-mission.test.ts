@@ -212,6 +212,51 @@ describe('não replaneja quando o desejo já tem plano (e resolve rascunhos dupl
     )
     expect(labelPhase11).toBeUndefined()
   })
+
+  it('TDD: plano com todos os nos fechados -> nao replaneja e conclui o desejo', async () => {
+    const actions: Array<{ method: string; url: string; body?: unknown }> = []
+    const f = (async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const u = String(url)
+      const method = init?.method ?? 'GET'
+      const body = init?.body ? JSON.parse(String(init.body)) : {}
+      const json = (d: unknown) => new Response(JSON.stringify(d), { status: 200 })
+
+      if (method !== 'GET') {
+        actions.push({ method, url: u, body })
+      }
+
+      if (u.includes('/issues?labels=wishlist')) {
+        return json([{ number: 3958, node_id: 'I_wish', title: 'Wish', body: 'b' }])
+      }
+      if (u.includes('/search/issues') && u.includes('gitorch%3Anode%3A3958%3A')) {
+        return json({
+          items: [
+            { number: 10, state: 'closed', body: '<!-- gitorch:node:3958:phase:0 -->', labels: [] },
+            { number: 15, state: 'closed', body: '<!-- gitorch:node:3958:task:0 -->', labels: [] },
+          ],
+        })
+      }
+      return json({})
+    }) as typeof fetch
+
+    const r = await runPoMissionViaRails({
+      repository: 'o/r',
+      board: 'o/9',
+      githubToken: 't',
+      contextBlocks: [],
+      fetchImpl: f,
+      execute: async () => '{}',
+    })
+
+    expect(r.output).toContain('all plan nodes are delivered')
+    expect(actions).toContainEqual(
+      expect.objectContaining({
+        method: 'PATCH',
+        url: expect.stringContaining('/issues/3958'),
+        body: { state: 'closed' },
+      })
+    )
+  })
 })
 
 describe('runPoMissionViaRails', () => {
