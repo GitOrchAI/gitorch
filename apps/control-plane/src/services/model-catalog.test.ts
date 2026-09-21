@@ -318,22 +318,36 @@ describe('defaultCodexWarmUp (grava gitorch-quota.json a partir do stdout)', () 
     })
   })
 
-  test('stdout sem o evento rate_limits -> não grava arquivo, não lança', async () => {
+  test('stdout sem o evento rate_limits -> grava arquivo com erro, não lança', async () => {
     await withTempHome(async (home) => {
       const runner = vi.fn().mockResolvedValue('{"type":"item.completed"}\n')
       await expect(defaultCodexWarmUp('codex-fake-bin', home, runner)).resolves.toBeUndefined()
 
-      await expect(fs.readFile(codexQuotaFilePath(home), 'utf8')).rejects.toThrow()
+      const raw = await fs.readFile(codexQuotaFilePath(home), 'utf8')
+      expect(JSON.parse(raw).error_reason).toBe('CLI não expôs métricas de cota no output JSON')
     })
   })
 
-  test('runner (o exec) falha -> warmUp propaga o erro, não grava arquivo', async () => {
+  test('runner (o exec) falha -> warmUp propaga o erro, grava arquivo com erro', async () => {
     await withTempHome(async (home) => {
       const runner = vi.fn().mockRejectedValue(new Error('timeout: provider não respondeu'))
       await expect(defaultCodexWarmUp('codex-fake-bin', home, runner)).rejects.toThrow(
         'timeout: provider não respondeu'
       )
-      await expect(fs.readFile(codexQuotaFilePath(home), 'utf8')).rejects.toThrow()
+      const raw = await fs.readFile(codexQuotaFilePath(home), 'utf8')
+      expect(JSON.parse(raw).error_reason).toBe('Erro de execução: timeout: provider não respondeu')
+    })
+  })
+
+  test('runner falha com ENOENT -> grava CLI não instalado', async () => {
+    await withTempHome(async (home) => {
+      const error = new Error('spawn ENOENT')
+      Object.assign(error, { code: 'ENOENT' })
+      const runner = vi.fn().mockRejectedValue(error)
+      await expect(defaultCodexWarmUp('codex-fake-bin', home, runner)).rejects.toThrow()
+
+      const raw = await fs.readFile(codexQuotaFilePath(home), 'utf8')
+      expect(JSON.parse(raw).error_reason).toBe('CLI não instalado')
     })
   })
 })

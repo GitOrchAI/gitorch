@@ -293,9 +293,7 @@ export async function runPoMissionViaRails(
   // o PO não replaneja. O plano converge: tarefas recebem gitorch:task nas folhas, e
   // rascunhos duplicados (mesmo marcador) são fechados, mantendo um único plano.
   const wishMarkerPrefix = `gitorch:node:${wish.number}:`
-  const searchQ = encodeURIComponent(
-    `repo:${options.repository} in:body "${wishMarkerPrefix}" state:open`
-  )
+  const searchQ = encodeURIComponent(`repo:${options.repository} in:body "${wishMarkerPrefix}"`)
 
   // A busca usa o MESMO f (fetch) restrito que propaga os erros (fail-closed).
   const searchResp = await f(`https://api.github.com/search/issues?q=${searchQ}&per_page=100`, {
@@ -309,11 +307,29 @@ export async function runPoMissionViaRails(
     )
   }
   const searchData = (await searchResp.json()) as {
-    items?: Array<{ number: number; body?: string; labels?: Array<{ name: string }> }>
+    items?: Array<{
+      number: number
+      state: string
+      body?: string
+      labels?: Array<{ name: string }>
+    }>
   }
   const existingNodes = searchData.items ?? []
 
   if (existingNodes.length > 0) {
+    const allNodesClosed = existingNodes.every((item) => item.state === 'closed')
+    if (allNodesClosed) {
+      await gh('PATCH', `/repos/${options.repository}/issues/${wish.number}`, { state: 'closed' })
+      await gh('POST', `/repos/${options.repository}/issues/${wish.number}/comments`, {
+        body: 'Plano 100% concluído. Desejo entregue!',
+      })
+      return {
+        exitCode: 0,
+        output: `PO: wish #${wish.number} was already fully planned and all plan nodes are delivered. Wish closed.`,
+        stderr: '',
+      }
+    }
+
     let closedCount = 0
     let convergedTasks = 0
 

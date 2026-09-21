@@ -13,6 +13,7 @@ import {
   codexQuotaFilePath,
   parseCodexRateLimitsFromJsonl,
   writeCodexQuotaFile,
+  writeCodexQuotaErrorFile,
 } from './quota-reader.js'
 import { estaNaHoraDeColetarCota } from './quando-coletar-cota.js'
 import { ehLinhaDeModelo, nomeDeExibicaoDoModelo } from './catalogo-vivo-de-modelos.js'
@@ -179,20 +180,33 @@ export async function defaultCodexWarmUp(
       HOME: home,
       RUST_LOG: 'trace',
     }
-    const output = await runner(
-      bin,
-      [
-        'exec',
-        '--json',
-        'Reply with only the word ok. Do not run any shell commands or tools.',
-        '-s',
-        'read-only',
-        '--skip-git-repo-check',
-        '-C',
-        cwd,
-      ],
-      env
-    )
+    let output: string
+    try {
+      output = await runner(
+        bin,
+        [
+          'exec',
+          '--json',
+          'Reply with only the word ok. Do not run any shell commands or tools.',
+          '-s',
+          'read-only',
+          '--skip-git-repo-check',
+          '-C',
+          cwd,
+        ],
+        env
+      )
+    } catch (err) {
+      const isEnoent =
+        (err instanceof Error && 'code' in err && err.code === 'ENOENT') ||
+        (err instanceof Error && err.message.includes('ENOENT'))
+      const reason = isEnoent
+        ? 'CLI não instalado'
+        : `Erro de execução: ${err instanceof Error ? err.message : String(err)}`
+      await writeCodexQuotaErrorFile(home, reason).catch(() => undefined)
+      throw err
+    }
+
     const event = parseCodexRateLimitsFromJsonl(output)
     if (event) {
       await writeCodexQuotaFile(home, event).catch((err) => {
@@ -200,6 +214,10 @@ export async function defaultCodexWarmUp(
           error: err instanceof Error ? err.message : String(err),
         })
       })
+    } else {
+      await writeCodexQuotaErrorFile(home, 'CLI não expôs métricas de cota no output JSON').catch(
+        () => undefined
+      )
     }
   } finally {
     await fs.rm(cwd, { recursive: true, force: true }).catch(() => undefined)

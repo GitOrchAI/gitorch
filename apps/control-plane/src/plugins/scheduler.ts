@@ -6993,7 +6993,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             const janelaEmConstrucaoHoras = lerJanelaEmConstrucaoHoras(runtimeConfig)
 
             let origem = 'desconhecido'
-            const emConstrucaoHa = null
+            let emConstrucaoHa: number | null = null
 
             if (depsVigia.issueNumber !== null) {
               const ficha = await lerFichaDoItem({
@@ -7005,10 +7005,30 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
               if (ficha) {
                 origem = ficha.origem || 'desconhecido'
                 if (ficha.estado.rascunho || ficha.estado.ultimoCommitEm) {
-                  // O motor recebe null quando não há marca de "em construção".
-                  // Por simplificação (o plano cita que a janela será melhor calculada fora),
-                  // enviaremos null para os testes do vigia passarem ilesos.
-                  // No mundo real isso seria Date.now() - ultimoCommitEm
+                  try {
+                    const prCommits = (await ghGet(
+                      `/repos/${projeto.wingId}/pulls/${depsVigia.numero}/commits`,
+                      token
+                    )) as Array<{
+                      commit?: { author?: { date?: string }; committer?: { date?: string } }
+                    }>
+                    if (prCommits && prCommits.length > 0) {
+                      const lastCommit = prCommits[prCommits.length - 1]
+                      if (lastCommit) {
+                        const dateStr =
+                          lastCommit.commit?.committer?.date || lastCommit.commit?.author?.date
+                        if (dateStr) {
+                          const date = Date.parse(dateStr)
+                          if (!Number.isNaN(date)) {
+                            emConstrucaoHa = (agora.getTime() - date) / (1000 * 60 * 60)
+                          }
+                        }
+                      }
+                    }
+                  } catch (err) {
+                    // Se a API falhar, emConstrucaoHa fica null para rebaixar
+                    // a inação segura em decidirProximoPasso.
+                  }
                 }
               }
             }
@@ -7069,16 +7089,55 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
             })
 
             // Map AcaoDoMotor to AcaoDoVigia format that vigiarPrsOrfaos expects internally
-            if (acaoMotor.acao === 'so-acompanhar')
+            if (acaoMotor.acao === 'so-acompanhar') {
               return { acao: 'ignorar', motivo: acaoMotor.motivo }
-            if (acaoMotor.acao === 'fechar-vazio')
-              return { acao: 'fechar', motivo: acaoMotor.motivo }
-            if (acaoMotor.acao === 'perguntar-se-cuida' || acaoMotor.acao === 'mesclar') {
-              // Tarefas 3.8/3.10 vão fazer o dispatch delas.
-              // Por enquanto viram escalar residual como placeholder seguro ou fecham o caminho
-              return { acao: 'escalar', motivo: acaoMotor.motivo }
             }
-            return acaoMotor as unknown as import('../services/vigia-do-pr.js').AcaoDoVigia
+            if (acaoMotor.acao === 'fechar-vazio') {
+              try {
+                const prIndividual = (await ghGet(
+                  `/repos/${projeto.wingId}/pulls/${depsVigia.numero}`,
+                  token
+                )) as { changed_files?: number }
+                if (prIndividual.changed_files === 0) {
+                  return { acao: 'fechar', motivo: acaoMotor.motivo }
+                }
+              } catch (err) {
+                // Se a API falhar ou não trouxer changed_files, não age destrutivamente
+              }
+              return {
+                acao: 'ignorar',
+                motivo: `#${depsVigia.numero}: issue fechada mas PR com alterações reais (changed_files > 0 ou desconhecido), mantendo aberto`,
+              }
+            }
+            if (acaoMotor.acao === 'perguntar-se-cuida') {
+              // mapear 'perguntar-se-cuida' para o fluxo existente
+              // (PO/perguntar-vinculo/cuidado-por-origem) no futuro.
+              // Por enquanto mantemos ignorar com o que falta sem escalar
+              return {
+                acao: 'ignorar',
+                motivo: 'tarefa 3.10: fluxo de perguntar se cuida não implementado no scheduler',
+              }
+            }
+            if (acaoMotor.acao === 'mesclar') {
+              // mapear 'mesclar' para o caminho de merge seguro existente
+              // (merge-do-pr.ts, exige tarefa aceita + CI verde + QA com entendimento).
+              // Por enquanto mantemos ignorar sem usar escalar
+              return {
+                acao: 'ignorar',
+                motivo: 'tarefa 3.10: mesclagem automática segura não implementada no scheduler',
+              }
+            }
+            if (acaoMotor.acao === 'retomar') {
+              return {
+                acao: 'retomar',
+                issueNumber: acaoMotor.issueNumber,
+                causa: acaoMotor.causa,
+                pedido: acaoMotor.pedido,
+                branchDoPr: acaoMotor.branchDoPr,
+                motivo: acaoMotor.motivo,
+              }
+            }
+            return { acao: 'ignorar', motivo: 'ação do motor desconhecida' }
           },
           abrirSessaoDeConserto: ({ numeroDoPr, issueNumber, pedido, branchDoPr }) =>
             abrirSessaoDeConsertoDoPr({ projeto, numeroDoPr, issueNumber, pedido, branchDoPr }),
@@ -7678,6 +7737,9 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           registrarInvestigacao: (args) =>
             registrarInvestigacao({ prisma: app.prisma as unknown as PrismaDevSession, ...args }),
           ...(notify ? { avisarDono: notify } : {}),
+          registrarNoPainel: async (chave, texto) => {
+            await registrarStatusNoPainel(projectId, chave, texto)
+          },
           agora: new Date(),
           onWarn: (m) => app.log.warn(`[Scheduler] ${m}`),
         })
