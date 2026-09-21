@@ -366,6 +366,8 @@ describe('runQaMissionViaRails', () => {
     )
     const prompts: string[] = []
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async (prompt) => {
@@ -390,6 +392,8 @@ describe('runQaMissionViaRails', () => {
   it('sem PR do Jules pendente: no-op', async () => {
     const f = fakeFetch([])
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -406,6 +410,8 @@ describe('runQaMissionViaRails', () => {
       }
     ).posted
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -428,6 +434,8 @@ describe('runQaMissionViaRails', () => {
       f as unknown as { posted: { reviews: Array<{ event?: string; body?: string }> } }
     ).posted
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -447,6 +455,8 @@ describe('runQaMissionViaRails', () => {
     const f = fakeFetch([{ number: 9, user: 'google-labs-jules[bot]' }])
     const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
     await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -467,6 +477,8 @@ describe('runQaMissionViaRails', () => {
     const f = fakeFetch([{ number: 9, user: 'loureng' }], ['gitorch:task'])
     const posted = (f as unknown as { posted: { reviews: unknown[]; merges: unknown[] } }).posted
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -483,6 +495,8 @@ describe('runQaMissionViaRails', () => {
     const f = fakeFetch([{ number: 9, user: 'loureng' }], ['gitorch:task'])
     const posted = (f as unknown as { posted: { reviews: unknown[]; merges: unknown[] } }).posted
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -507,6 +521,8 @@ describe('runQaMissionViaRails', () => {
     ])
     const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -526,6 +542,8 @@ describe('runQaMissionViaRails', () => {
     ])
     const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
     await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -548,6 +566,8 @@ describe('runQaMissionViaRails', () => {
       return `card #${issue} -> ${column} (set)`
     }
     await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -555,6 +575,8 @@ describe('runQaMissionViaRails', () => {
       fetchImpl: fakeFetch([{ number: 7, user: 'jules[bot]' }]),
     })
     await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => REQUEST_CHANGES,
@@ -568,6 +590,8 @@ describe('runQaMissionViaRails', () => {
   it('sem PR aberta e mode "recon": produz o baseline de reconhecimento, não noOp', async () => {
     const f = fakeFetch([])
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       mode: 'recon',
@@ -592,6 +616,8 @@ describe('runQaMissionViaRails', () => {
   it('sem PR aberta e SEM mode "recon": continua no-op (comportamento clássico preservado)', async () => {
     const f = fakeFetch([])
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => RECON,
@@ -613,6 +639,8 @@ describe('runQaMissionViaRails', () => {
       }
     ).posted
     await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -635,6 +663,8 @@ describe('runQaMissionViaRails', () => {
       }
     ).posted
     await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => REQUEST_CHANGES,
@@ -663,6 +693,8 @@ describe('runQaMissionViaRails', () => {
       }
     ).posted
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE, // o motor manda aprovar — a trava tem que sobrepor
@@ -689,6 +721,8 @@ describe('runQaMissionViaRails', () => {
       checkRuns: [],
     })
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE, // o motor manda aprovar — a lacuna tem que sobrepor
@@ -701,6 +735,8 @@ describe('runQaMissionViaRails', () => {
   it('com verificação verde, não registra lacuna', async () => {
     const f = fakeFetch([{ number: 7, user: 'jules[bot]' }]) // default: checkRuns 'success'
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -726,6 +762,8 @@ describe('runQaMissionViaRails', () => {
       f as unknown as { posted: { reviews: unknown[]; comments: unknown[]; merges: unknown[] } }
     ).posted
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       // Se a missão chegar a chamar o motor aqui, o pulo não aconteceu antes
@@ -751,6 +789,8 @@ describe('runQaMissionViaRails', () => {
     })
     const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -768,6 +808,8 @@ describe('runQaMissionViaRails', () => {
       f as unknown as { posted: { reviews: Array<{ event?: string }>; comments: unknown[] } }
     ).posted
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE, // o motor manda aprovar — a trava tem que sobrepor (CI vermelho)
@@ -849,6 +891,8 @@ describe('runQaMissionViaRails', () => {
         f as unknown as { posted: { reviews: Array<{ event?: string; body?: string }> } }
       ).posted
       const r = await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
         repository: 'loureng/patinhas-3d-crafts',
         githubToken: 't',
         // O motor nem precisa saber — a trava determinística já reprova
@@ -886,6 +930,8 @@ describe('runQaMissionViaRails', () => {
       )
       const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
       const r = await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
         repository: 'loureng/patinhas-3d-crafts',
         githubToken: 't',
         execute: async () => APPROVE,
@@ -923,6 +969,8 @@ describe('runQaMissionViaRails', () => {
       const posted = (f as unknown as { posted: { reviews: unknown[]; comments: unknown[] } })
         .posted
       const r = await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
         repository: 'loureng/patinhas-3d-crafts',
         githubToken: 't',
         execute: async () => {
@@ -975,6 +1023,8 @@ describe('runQaMissionViaRails', () => {
         }
       ).posted
       const r = await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
         repository: 'loureng/patinhas-3d-crafts',
         githubToken: 't',
         execute: async () => APPROVE, // trava determinística tem que sobrepor (CI não-verde)
@@ -1004,6 +1054,8 @@ describe('runQaMissionViaRails', () => {
     })
     const posted = (f as unknown as { posted: { reviews: unknown[]; comments: unknown[] } }).posted
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => {
@@ -1031,6 +1083,8 @@ describe('runQaMissionViaRails', () => {
     ).posted
     const prompts: string[] = []
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async (prompt) => {
@@ -1071,6 +1125,8 @@ describe('runQaMissionViaRails', () => {
     ).posted
     const prompts: string[] = []
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async (prompt) => {
@@ -1103,6 +1159,8 @@ describe('runQaMissionViaRails', () => {
     const f = fakeFetch([{ number: 79, user: 'jules[bot]' }])
     const enviadas: Array<{ sessionName: string; texto: string }> = []
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => REQUEST_CHANGES,
@@ -1129,6 +1187,8 @@ describe('runQaMissionViaRails', () => {
     const f = fakeFetch([{ number: 79, user: 'jules[bot]' }])
     const enviadas: unknown[] = []
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -1149,6 +1209,8 @@ describe('runQaMissionViaRails', () => {
     const f = fakeFetch([{ number: 79, user: 'jules[bot]' }])
     const enviadas: unknown[] = []
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => REQUEST_CHANGES,
@@ -1174,6 +1236,8 @@ describe('runQaMissionViaRails', () => {
     const enviadas: Array<{ sessionName: string; texto: string }> = []
 
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => REQUEST_CHANGES,
@@ -1205,6 +1269,8 @@ describe('runQaMissionViaRails', () => {
     const f = fakeFetch([{ number: 79, user: 'jules[bot]' }])
     const guardadas: unknown[] = []
     await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => REQUEST_CHANGES,
@@ -1222,6 +1288,8 @@ describe('runQaMissionViaRails', () => {
   it('sem avisarSessao (opção ausente): comportamento clássico preservado, sem quebrar', async () => {
     const f = fakeFetch([{ number: 79, user: 'jules[bot]' }])
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => REQUEST_CHANGES,
@@ -1235,6 +1303,8 @@ describe('runQaMissionViaRails', () => {
     const f = fakeFetch([{ number: 79, user: 'jules[bot]' }])
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => REQUEST_CHANGES,
@@ -1257,6 +1327,8 @@ describe('runQaMissionViaRails', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const avisos: string[] = []
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => REQUEST_CHANGES,
@@ -1277,6 +1349,8 @@ describe('runQaMissionViaRails', () => {
     const f = fakeFetch([{ number: 79, user: 'jules[bot]' }])
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => REQUEST_CHANGES,
@@ -1304,6 +1378,8 @@ describe('runQaMissionViaRails', () => {
     )
     const enviadas: Array<{ sessionName: string; texto: string }> = []
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => REQUEST_CHANGES,
@@ -1335,6 +1411,8 @@ describe('runQaMissionViaRails', () => {
     )
     const enviadas: Array<{ sessionName: string; texto: string }> = []
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => REQUEST_CHANGES,
@@ -1369,6 +1447,8 @@ describe('runQaMissionViaRails', () => {
     ).posted
     const prompts: string[] = []
     await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async (prompt) => {
@@ -1403,6 +1483,8 @@ describe('runQaMissionViaRails', () => {
       f as unknown as { posted: { merges: Array<{ number: number; body: unknown }> } }
     ).posted
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -1428,6 +1510,8 @@ describe('runQaMissionViaRails', () => {
       f as unknown as { posted: { merges: Array<{ number: number; body: unknown }> } }
     ).posted
     await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -1447,6 +1531,8 @@ describe('runQaMissionViaRails', () => {
       issueNumber: number | null
     }> = []
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -1483,6 +1569,8 @@ describe('runQaMissionViaRails', () => {
       issueNumber: number | null
     }> = []
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -1505,6 +1593,8 @@ describe('runQaMissionViaRails', () => {
     ).posted
     const mesclados: Array<{ numeroDoPr: number; mergeCommitSha: string }> = []
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -1552,6 +1642,8 @@ describe('runQaMissionViaRails', () => {
       }
     ).posted
     const r1 = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -1579,6 +1671,8 @@ describe('runQaMissionViaRails', () => {
       f2 as unknown as { posted: { merges: Array<{ number: number; body: unknown }> } }
     ).posted
     const r2 = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -1607,6 +1701,8 @@ describe('runQaMissionViaRails', () => {
     ])
     const posted = (f as unknown as { posted: { reviews: unknown[]; merges: unknown[] } }).posted
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -1661,7 +1757,12 @@ describe('runQaMissionViaRails', () => {
       const posted1 = (
         f1 as unknown as { posted: { reviews: Array<{ body?: string }>; merges: unknown[] } }
       ).posted
-      const r1 = await runQaMissionViaRails({ ...opcoesComuns, fetchImpl: f1 })
+      const r1 = await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
+        ...opcoesComuns,
+        fetchImpl: f1,
+      })
       expect(r1.output).toContain('Merge: blocked')
       expect(posted1.merges).toHaveLength(1)
       expect(sessao.mergeFailures).toBe(1)
@@ -1685,7 +1786,12 @@ describe('runQaMissionViaRails', () => {
         { mergeFalha: true }
       )
       const posted2 = (f2 as unknown as { posted: { merges: unknown[] } }).posted
-      const r2 = await runQaMissionViaRails({ ...opcoesComuns, fetchImpl: f2 })
+      const r2 = await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
+        ...opcoesComuns,
+        fetchImpl: f2,
+      })
       expect(r2.noOp).toBeFalsy() // NÃO pode ser pulado — é o defeito que esta tarefa fecha
       expect(posted2.merges).toHaveLength(1)
       expect(sessao.mergeFailures).toBe(2)
@@ -1706,7 +1812,12 @@ describe('runQaMissionViaRails', () => {
         { mergeFalha: true }
       )
       const posted3 = (f3 as unknown as { posted: { merges: unknown[] } }).posted
-      const r3 = await runQaMissionViaRails({ ...opcoesComuns, fetchImpl: f3 })
+      const r3 = await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
+        ...opcoesComuns,
+        fetchImpl: f3,
+      })
       expect(r3.noOp).toBeFalsy()
       expect(posted3.merges).toHaveLength(1)
       expect(sessao.mergeFailures).toBe(MAX_TENTATIVAS_DE_MERGE)
@@ -1741,7 +1852,12 @@ describe('runQaMissionViaRails', () => {
       )
       const posted4 = (f4 as unknown as { posted: { reviews: unknown[]; merges: unknown[] } })
         .posted
-      const r4 = await runQaMissionViaRails({ ...opcoesComuns, fetchImpl: f4 })
+      const r4 = await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
+        ...opcoesComuns,
+        fetchImpl: f4,
+      })
       expect(r4.noOp).toBe(true)
       expect(posted4.reviews).toHaveLength(0)
       expect(posted4.merges).toHaveLength(0)
@@ -1765,7 +1881,12 @@ describe('runQaMissionViaRails', () => {
         undefined,
         { mergeFalha: true }
       )
-      await runQaMissionViaRails({ ...opcoesComuns, fetchImpl: f5 })
+      await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
+        ...opcoesComuns,
+        fetchImpl: f5,
+      })
       expect(avisos).toHaveLength(2) // não repetiu o resgate
     })
 
@@ -1824,7 +1945,12 @@ describe('runQaMissionViaRails', () => {
       ])
       const posted1 = (f1 as unknown as { posted: { reviews: unknown[]; merges: unknown[] } })
         .posted
-      const r1 = await runQaMissionViaRails({ ...opcoesComFalha, fetchImpl: f1 })
+      const r1 = await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
+        ...opcoesComFalha,
+        fetchImpl: f1,
+      })
       expect(r1.noOp).toBe(true) // só o resgate rodou — nada de julgamento novo
       expect(posted1.reviews).toHaveLength(0)
       expect(posted1.merges).toHaveLength(0)
@@ -1838,7 +1964,12 @@ describe('runQaMissionViaRails', () => {
       const f2 = fakeFetch([
         { number: 8, user: 'jules[bot]', existingReviews: parecerAnteriorNoHead },
       ])
-      await runQaMissionViaRails({ ...opcoesComFalha, fetchImpl: f2 })
+      await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
+        ...opcoesComFalha,
+        fetchImpl: f2,
+      })
       expect(avisos).toHaveLength(2)
       expect(registros).toHaveLength(0)
     })
@@ -1872,7 +2003,12 @@ describe('runQaMissionViaRails', () => {
       ])
       const posted1 = (f1 as unknown as { posted: { reviews: unknown[]; merges: unknown[] } })
         .posted
-      const r1 = await runQaMissionViaRails({ ...opcoesComSucesso, fetchImpl: f1 })
+      const r1 = await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
+        ...opcoesComSucesso,
+        fetchImpl: f1,
+      })
       expect(r1.noOp).toBe(true)
       expect(posted1.reviews).toHaveLength(0)
       expect(posted1.merges).toHaveLength(0)
@@ -1885,7 +2021,12 @@ describe('runQaMissionViaRails', () => {
       const f2 = fakeFetch([
         { number: 9, user: 'jules[bot]', existingReviews: parecerAnteriorNoHead },
       ])
-      await runQaMissionViaRails({ ...opcoesComSucesso, fetchImpl: f2 })
+      await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
+        ...opcoesComSucesso,
+        fetchImpl: f2,
+      })
       expect(avisos).toHaveLength(1)
       expect(registros).toHaveLength(1)
     })
@@ -1923,7 +2064,12 @@ describe('runQaMissionViaRails', () => {
       ])
       const posted1 = (f1 as unknown as { posted: { reviews: unknown[]; merges: unknown[] } })
         .posted
-      const r1 = await runQaMissionViaRails({ ...opcoesSemNotificador, fetchImpl: f1 })
+      const r1 = await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
+        ...opcoesSemNotificador,
+        fetchImpl: f1,
+      })
       expect(r1.noOp).toBe(true)
       expect(posted1.reviews).toHaveLength(0)
       expect(posted1.merges).toHaveLength(0)
@@ -1934,7 +2080,12 @@ describe('runQaMissionViaRails', () => {
       const f2 = fakeFetch([
         { number: 10, user: 'jules[bot]', existingReviews: parecerAnteriorNoHead },
       ])
-      await runQaMissionViaRails({ ...opcoesSemNotificador, fetchImpl: f2 })
+      await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
+        ...opcoesSemNotificador,
+        fetchImpl: f2,
+      })
       expect(registros).toHaveLength(1)
     })
 
@@ -1974,6 +2125,8 @@ describe('runQaMissionViaRails', () => {
       const posted = (f as unknown as { posted: { reviews: unknown[]; merges: unknown[] } }).posted
 
       const r = await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
         repository: 'o/r',
         githubToken: 't',
         execute: async () => APPROVE,
@@ -2022,6 +2175,8 @@ describe('runQaMissionViaRails', () => {
       })
       const posted1 = (f1 as unknown as { posted: { reviews: Array<{ body?: string }> } }).posted
       const r1 = await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
         ...opcoesComuns,
         execute: async () => APPROVE,
         fetchImpl: f1,
@@ -2052,6 +2207,8 @@ describe('runQaMissionViaRails', () => {
         f2 as unknown as { posted: { reviews: Array<{ body?: string }>; merges: unknown[] } }
       ).posted
       const r2 = await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
         ...opcoesComuns,
         execute: async () => APPROVE,
         fetchImpl: f2,
@@ -2092,6 +2249,8 @@ describe('runQaMissionViaRails', () => {
         f3 as unknown as { posted: { reviews: unknown[]; comments: unknown[]; merges: unknown[] } }
       ).posted
       const r3 = await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
         ...opcoesComuns,
         execute: async () => {
           throw new Error('não deveria julgar de novo: a review mais recente já é reprovação')
@@ -2120,6 +2279,8 @@ describe('runQaMissionViaRails', () => {
         .posted
       const registradas: Array<{ sessionName: string; agora: Date }> = []
       const r = await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
         repository: 'o/r',
         githubToken: 't',
         execute: async () => {
@@ -2150,6 +2311,8 @@ describe('runQaMissionViaRails', () => {
       const avisos: string[] = []
       const registradas: unknown[] = []
       const r = await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
         repository: 'o/r',
         githubToken: 't',
         execute: async () => {
@@ -2207,6 +2370,8 @@ describe('runQaMissionViaRails', () => {
       const avisos1: string[] = []
       const marcas: Array<{ sessionName: string; hash: string }> = []
       await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
         repository: 'o/r',
         githubToken: 't',
         execute: async () => {
@@ -2243,6 +2408,8 @@ describe('runQaMissionViaRails', () => {
       })
       const avisos2: string[] = []
       await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
         repository: 'o/r',
         githubToken: 't',
         execute: async () => {
@@ -2276,6 +2443,8 @@ describe('runQaMissionViaRails', () => {
       const avisos1: string[] = []
       const marcas: Array<{ sessionName: string; hash: string }> = []
       await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
         repository: 'o/r',
         githubToken: 't',
         execute: async () => {
@@ -2309,6 +2478,8 @@ describe('runQaMissionViaRails', () => {
       })
       const avisos2: string[] = []
       await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
         repository: 'o/r',
         githubToken: 't',
         execute: async () => {
@@ -2337,6 +2508,8 @@ describe('runQaMissionViaRails', () => {
       const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
       const limpezas: Array<{ sessionName: string }> = []
       const r = await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
         repository: 'o/r',
         githubToken: 't',
         execute: async () => APPROVE,
@@ -2371,6 +2544,8 @@ describe('runQaMissionViaRails', () => {
       const f = fakeFetch([{ number: 10, user: 'jules[bot]' }])
       const limpezas: unknown[] = []
       const r = await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
         repository: 'o/r',
         githubToken: 't',
         execute: async () => APPROVE,
@@ -2405,6 +2580,8 @@ describe('runQaMissionViaRails', () => {
       const f = fakeFetch([{ number: 9, user: 'loureng' }])
       const posted = (f as unknown as { posted: { reviews: unknown[]; merges: unknown[] } }).posted
       const r = await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
         repository: 'o/r',
         githubToken: 't',
         execute: async () => APPROVE,
@@ -2421,6 +2598,8 @@ describe('runQaMissionViaRails', () => {
       const f = fakeFetch([{ number: 9, user: 'loureng' }])
       const chamadas = (f as unknown as { calls?: string[] }).calls
       await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
         repository: 'o/r',
         githubToken: 't',
         execute: async () => APPROVE,
@@ -2435,6 +2614,8 @@ describe('runQaMissionViaRails', () => {
       const f = fakeFetch([{ number: 9, user: 'jules[bot]' }])
       const posted = (f as unknown as { posted: { reviews: unknown[]; merges: unknown[] } }).posted
       const r = await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
         repository: 'o/r',
         githubToken: 't',
         execute: async () => APPROVE,
@@ -2454,6 +2635,8 @@ describe('runQaMissionViaRails', () => {
       ])
       const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
       const r = await runQaMissionViaRails({
+        prisma: {} as never,
+        projectId: 'proj',
         repository: 'o/r',
         githubToken: 't',
         execute: async () => APPROVE,
@@ -2539,6 +2722,8 @@ describe('QA: veredito sem depender de "quem sou eu"', () => {
     const { impl, chamadas } = githubFake({ recusaReview: false })
 
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'dono/repo',
       githubToken: 'ghs_app',
       execute: async () => APPROVE,
@@ -2553,6 +2738,8 @@ describe('QA: veredito sem depender de "quem sou eu"', () => {
     const { impl, chamadas } = githubFake({ recusaReview: true })
 
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'dono/repo',
       githubToken: 'ghs_app',
       execute: async () => APPROVE,
@@ -2585,6 +2772,8 @@ describe('teto de tempo (leva D)', () => {
     const base = fakeFetch([{ number: 7, user: 'google-labs-jules[bot]' }])
     const spy = vi.fn(base)
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -2653,6 +2842,8 @@ describe('reprovação emitida sob premissa errada é REFEITA quando a ligação
     const avisosAoDev: Array<{ sessionName: string; texto: string }> = []
 
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => REQUEST_CHANGES,
@@ -2682,6 +2873,8 @@ describe('reprovação emitida sob premissa errada é REFEITA quando a ligação
     const posted = (f as unknown as { posted: { reviews: Array<{ body?: string }> } }).posted
 
     await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => REQUEST_CHANGES,
@@ -2707,6 +2900,8 @@ describe('reprovação emitida sob premissa errada é REFEITA quando a ligação
     const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
 
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => REQUEST_CHANGES,
@@ -2727,6 +2922,8 @@ describe('reprovação emitida sob premissa errada é REFEITA quando a ligação
     const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
 
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => REQUEST_CHANGES,
@@ -2743,6 +2940,8 @@ describe('reprovação emitida sob premissa errada é REFEITA quando a ligação
     const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
 
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => REQUEST_CHANGES,
@@ -2769,6 +2968,8 @@ describe('reprovação emitida sob premissa errada é REFEITA quando a ligação
     const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
 
     await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => REQUEST_CHANGES,
@@ -2819,6 +3020,8 @@ describe('rejulgar não pode virar licença para mesclar PR de humano', () => {
     const posted = (f as unknown as { posted: { reviews: unknown[]; merges: unknown[] } }).posted
 
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -2853,6 +3056,8 @@ describe('rejulgar não pode virar licença para mesclar PR de humano', () => {
     const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
 
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -2922,6 +3127,8 @@ describe('rejulgar quando a tarefa mudou (Fase 3.2)', () => {
     }
 
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -2959,6 +3166,8 @@ describe('rejulgar quando a tarefa mudou (Fase 3.2)', () => {
     const posted = (f as unknown as { posted: { merges: unknown[]; reviews: unknown[] } }).posted
 
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -2980,6 +3189,8 @@ describe('marca da tarefa não causa laço de re-julgamento (Fase 3.2, análise 
   it('PR delegado sem tarefa vinculada: o parecer marcado NÃO é re-julgado no ciclo seguinte', async () => {
     const f1 = fakeFetch([{ number: 7, user: 'jules[bot]' }])
     const r1 = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => REQUEST_CHANGES,
@@ -3002,6 +3213,8 @@ describe('marca da tarefa não causa laço de re-julgamento (Fase 3.2, análise 
       },
     ])
     const r2 = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => REQUEST_CHANGES,
@@ -3016,6 +3229,8 @@ describe('marca da tarefa não causa laço de re-julgamento (Fase 3.2, análise 
     const sessoes = [linha({ issueNumber: 50, pullRequestNumber: 7 })]
     const f1 = fakeFetch([{ number: 7, user: 'jules[bot]' }], ['jules', 'gitorch:task'], 50)
     await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => REQUEST_CHANGES,
@@ -3033,6 +3248,8 @@ describe('marca da tarefa não causa laço de re-julgamento (Fase 3.2, análise 
       50
     )
     const r2 = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => REQUEST_CHANGES,
@@ -3066,6 +3283,8 @@ describe('reprovação pelo PORTÃO volta a ser julgada quando o CI fica verde',
     const posted = (f as unknown as { posted: { merges: unknown[]; reviews: unknown[] } }).posted
 
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -3096,6 +3315,8 @@ describe('reprovação pelo PORTÃO volta a ser julgada quando o CI fica verde',
     const posted = (f as unknown as { posted: { reviews: unknown[]; merges: unknown[] } }).posted
 
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -3126,6 +3347,8 @@ describe('reprovação pelo PORTÃO volta a ser julgada quando o CI fica verde',
     const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
 
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -3152,6 +3375,8 @@ describe('reprovação pelo PORTÃO volta a ser julgada quando o CI fica verde',
     const posted = (f as unknown as { posted: { merges: unknown[] } }).posted
 
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -3188,6 +3413,8 @@ describe('diff grande demais continua sendo reprovação FINAL', () => {
     const posted = (f as unknown as { posted: { reviews: Array<{ body?: string }> } }).posted
 
     await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -3217,6 +3444,8 @@ describe('diff grande demais continua sendo reprovação FINAL', () => {
     const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
 
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -3251,6 +3480,8 @@ describe('o motor reprovando sozinho com CI vermelho também volta atrás', () =
     const posted = (f as unknown as { posted: { reviews: Array<{ body?: string }> } }).posted
 
     await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       // O MOTOR reprova por conta própria — sem rebaixamento nenhum.
@@ -3281,6 +3512,8 @@ describe('o motor reprovando sozinho com CI vermelho também volta atrás', () =
     const posted = (f as unknown as { posted: { merges: unknown[] } }).posted
 
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -3310,6 +3543,8 @@ describe('o motor reprovando sozinho com CI vermelho também volta atrás', () =
     const posted = (f as unknown as { posted: { merges: unknown[] } }).posted
 
     await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -3327,6 +3562,8 @@ describe('o motor reprovando sozinho com CI vermelho também volta atrás', () =
     const posted = (f as unknown as { posted: { reviews: Array<{ body?: string }> } }).posted
 
     await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => REQUEST_CHANGES,
@@ -3438,6 +3675,8 @@ describe('ESTEIRA-T15: dedupe do aviso de entregas barradas', () => {
     // Próximo wake: como a janela nunca foi marcada, tenta avisar de novo —
     // "aviso que falha volta ao ciclo de sempre", não emudece a entrega.
     await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       ...opcoes,
       avisarDono: async (msg: string) => {
         avisos1.push(msg)
@@ -3482,6 +3721,8 @@ describe('ESTEIRA-T15: dedupe do aviso de entregas barradas', () => {
     // histórico só roda no caminho de reprovação (é aqui, não numa aprovação
     // isolada, que o produto de fato relê o histórico); a marca limpa.
     await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       ...opcoesBarrado,
       lerHistoricoDoProjeto: async () => [{ peloPortao: false, quando: new Date() }],
     })
@@ -3533,6 +3774,8 @@ describe('runQaMissionViaRails — entrega sem conteúdo (L5-T1)', () => {
     const enviadas: Array<{ sessionName: string; texto: string }> = []
     let motorChamado = false
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => {
@@ -3571,6 +3814,8 @@ describe('runQaMissionViaRails — entrega sem conteúdo (L5-T1)', () => {
     const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
     let motorChamado = false
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => {
@@ -3589,6 +3834,8 @@ describe('runQaMissionViaRails — entrega sem conteúdo (L5-T1)', () => {
     const f = fakeFetch([{ number: 468, user: 'jules[bot]', changedFiles: 0 }])
     const posted = (f as unknown as { posted: { merges: unknown[] } }).posted
     await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -3627,6 +3874,8 @@ describe('runQaMissionViaRails — entrega sem conteúdo (L5-T1)', () => {
     )
     const enviadas: unknown[] = []
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -3685,6 +3934,8 @@ describe('runQaMissionViaRails — entrega sem conteúdo (L5-T1)', () => {
     const enviadas: Array<{ sessionName: string; texto: string }> = []
     let motorChamado = false
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => {
@@ -3747,6 +3998,8 @@ describe('runQaMissionViaRails — entrega sem conteúdo (L5-T1)', () => {
     const posted = (f as unknown as { posted: { reviews: unknown[] } }).posted
     const enviadas: unknown[] = []
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -3768,6 +4021,8 @@ describe('runQaMissionViaRails — entrega sem conteúdo (L5-T1)', () => {
     const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
     const enviadas: unknown[] = []
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -3788,6 +4043,8 @@ describe('runQaMissionViaRails — entrega sem conteúdo (L5-T1)', () => {
     const guardados: Array<{ sessionName: string; texto: string }> = []
     const avisos: string[] = []
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => APPROVE,
@@ -3814,6 +4071,8 @@ describe('runQaMissionViaRails — entrega sem conteúdo (L5-T1)', () => {
     const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
     let motorChamado = false
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => {
@@ -3839,6 +4098,8 @@ describe('runQaMissionViaRails — entrega sem conteúdo (L5-T1)', () => {
     const posted = (f as unknown as { posted: { reviews: Array<{ event?: string }> } }).posted
     let motorChamado = false
     const r = await runQaMissionViaRails({
+      prisma: {} as never,
+      projectId: 'proj',
       repository: 'o/r',
       githubToken: 't',
       execute: async () => {
