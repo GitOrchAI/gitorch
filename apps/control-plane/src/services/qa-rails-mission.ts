@@ -1358,7 +1358,7 @@ export async function runQaMissionViaRails(
   // Carimba que o legado já teve a chance dele, para não voltar a cada
   // varredura. Vai no parecer NOVO, que é onde a próxima leitura procura.
   const marcaDoLegado = retomouLegado ? `\n${MARCA_DE_LEGADO_REJULGADO}` : ''
-  const marcaDaTarefa = `\n${marcaDaTarefaVinculada(issueDaEntrega ?? verdict.issueNumber ?? target?.number ?? -1)}`
+  const marcaDaTarefa = `\n${marcaDaTarefaVinculada(issueDaEntrega ?? target.number)}`
   const barradoPorTamanho = effectiveVerdict === 'request_changes' && truncado
   const marcaDoPortao = barradoPorTamanho
     ? `\n${MARCA_DE_ENTREGA_GRANDE_DEMAIS}`
