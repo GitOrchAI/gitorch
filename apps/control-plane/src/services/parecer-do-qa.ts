@@ -112,6 +112,38 @@ export const MARCA_JULGADO_COM_CI_VERMELHO = '<!-- gitorch:qa:ci-vermelho-no-jul
  */
 export const MARCA_DE_LEGADO_REJULGADO = '<!-- gitorch:qa:legado-rejulgado -->'
 
+/**
+ * Marca invisível que registra A QUAL TAREFA este parecer se referia, no
+ * instante em que foi publicado. Fase 3.2 do plano do repositório inteiro:
+ * um pull request pode ser REVINCULADO a outra tarefa depois do parecer (o
+ * dono responde a pergunta de vínculo, Tarefa 2.3, ou o RA acha a tarefa
+ * certa pelo código, Tarefa 2.2, depois de um julgamento já ter acontecido
+ * sob a tarefa errada) — o parecer antigo julgou os critérios da tarefa
+ * ERRADA e precisa ser revisto, mesmo sem nenhum commit novo.
+ */
+export function marcaDaTarefaVinculada(issueNumber: number): string {
+  return `<!-- gitorch:qa:tarefa:${issueNumber} -->`
+}
+
+const REGEX_MARCA_DA_TAREFA = /<!-- gitorch:qa:tarefa:(\d+) -->/
+
+/** A qual tarefa este parecer se referia, ou `null` quando a marca não existe
+ *  (parecer publicado antes desta tarefa — nunca afirma mudança sem prova). */
+function tarefaDoParecer(review: ReviewDoGithub | null | undefined): number | null {
+  const m = REGEX_MARCA_DA_TAREFA.exec(review?.body ?? '')
+  return m?.[1] ? Number(m[1]) : null
+}
+
+/** A tarefa vinculada a este item MUDOU desde que este parecer foi publicado? */
+export function tarefaMudouDesdeOParecer(
+  review: ReviewDoGithub | null | undefined,
+  issueNumberAtual: number
+): boolean {
+  const tarefaNoParecer = tarefaDoParecer(review)
+  if (tarefaNoParecer === null) return false
+  return tarefaNoParecer !== issueNumberAtual
+}
+
 /** Este parecer já é o rejulgamento do legado? */
 export function temMarcaDeRejulgamentoDeLegado(review?: ReviewDoGithub | null): boolean {
   return Boolean(review?.body?.includes(MARCA_DE_LEGADO_REJULGADO))
