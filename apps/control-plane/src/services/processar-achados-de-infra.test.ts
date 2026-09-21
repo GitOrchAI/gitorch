@@ -19,6 +19,7 @@ const DOD: DoDFields = {
 // analise-causa-de-infra; aqui focamos no ROTEAMENTO e nos efeitos do driver.
 vi.mock('./analise-causa-de-infra.js', () => ({
   runAnaliseCausaDeInfra: vi.fn(async () => ({
+    acao: 'resolver',
     causaRaiz: 'script build ausente',
     arquivosAfetados: 'package.json',
     criterioDeVerificacao: 'CI verde',
@@ -56,6 +57,7 @@ function deps(over: Partial<ProcessarAchadosDeps> = {}): ProcessarAchadosDeps {
     criarProposta: vi.fn(async () => 901),
     registrarAchadoNoPainel: vi.fn(async () => undefined),
     avisarDono: vi.fn(async () => undefined),
+    registrarDescarte: vi.fn(async () => undefined),
     registrarIncidente: vi.fn(async () => undefined),
     ...over,
   }
@@ -67,9 +69,9 @@ describe('alvoDaClasse', () => {
       expect(alvoDaClasse(c)).toBe('repo-do-cliente')
     }
   })
-  it('scaffolding-do-gitorch → repo-do-produto; workflow-morto → nenhum', () => {
+  it('scaffolding-do-gitorch → repo-do-produto; workflow-morto → repo-do-cliente', () => {
     expect(alvoDaClasse('scaffolding-do-gitorch')).toBe('repo-do-produto')
-    expect(alvoDaClasse('workflow-morto')).toBe('nenhum')
+    expect(alvoDaClasse('workflow-morto')).toBe('repo-do-cliente')
   })
   // L4-T2 (D63): automação do cliente E o job do Dependabot (as 14 sessões
   // medidas de "npm_and_yarn in /.github/scripts" eram exatamente isto) NÃO
@@ -121,11 +123,27 @@ describe('processarAchadosDeInfra', () => {
     expect(texto).toContain('REMOÇÃO')
   })
 
-  it('workflow-morto → só log, nenhuma issue', async () => {
+  it('workflow-morto → o RA decide descartar, sem issue, com registro no painel e no banco', async () => {
+    vi.mocked(runAnaliseCausaDeInfra).mockResolvedValueOnce({
+      acao: 'descartar',
+      causaRaiz: 'workflow obsoleto apagado do disco',
+      arquivosAfetados: 'N/A',
+      criterioDeVerificacao: 'N/A',
+      escopo: 'N/A',
+      riscoDeRegressao: 'N/A',
+    })
     const d = deps({ achados: [achado({ classe: 'workflow-morto', identidadeEstavel: 'wf:9' })] })
     const r = await processarAchadosDeInfra(d)
+
     expect(r.ignorados).toEqual(['wf:9'])
     expect(d.criarIssueNoCliente).not.toHaveBeenCalled()
+    expect(d.registrarDescarte).toHaveBeenCalledWith(
+      expect.objectContaining({ identidadeEstavel: 'wf:9' }),
+      'workflow obsoleto apagado do disco'
+    )
+    expect(d.registrarIncidente).toHaveBeenCalledWith(
+      expect.objectContaining({ identidadeEstavel: 'wf:9', issueNumber: null })
+    )
   })
 
   it('incidente já com issue aberta → não reanalisa (jaRastreados)', async () => {
@@ -135,6 +153,18 @@ describe('processarAchadosDeInfra', () => {
     const r = await processarAchadosDeInfra(d)
     expect(r.jaRastreados).toEqual(['wf:11'])
     expect(d.criarIssueNoCliente).not.toHaveBeenCalled()
+  })
+
+  it('incidente já com descarte registrado (issueNumber null) → não reanalisa (jaRastreados)', async () => {
+    vi.mocked(runAnaliseCausaDeInfra).mockClear()
+    const d = deps({
+      achados: [achado({ classe: 'workflow-morto', identidadeEstavel: 'wf:99' })],
+      incidentesAbertos: async () => [{ identidadeEstavel: 'wf:99', issueNumber: null }],
+    })
+    const r = await processarAchadosDeInfra(d)
+    expect(r.jaRastreados).toEqual(['wf:99'])
+    expect(d.criarIssueNoCliente).not.toHaveBeenCalled()
+    expect(runAnaliseCausaDeInfra).not.toHaveBeenCalled()
   })
 
   it('teto de achados processados por passada', async () => {

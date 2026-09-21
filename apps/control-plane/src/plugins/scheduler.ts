@@ -5966,6 +5966,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           texto
         )
       },
+      registrarDescarte: async (achado, motivo) => {
+        await registrarStatusNoPainel(
+          project.id,
+          `descarte-infra:${achado.identidadeEstavel}`,
+          `Achado ${achado.identidadeEstavel} descartado: ${motivo}`
+        )
+      },
       registrarIncidente: async ({ classe, identidadeEstavel, issueNumber, titulo }) => {
         await app.prisma.infraIncident.upsert({
           where: {
