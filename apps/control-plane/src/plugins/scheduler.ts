@@ -6979,10 +6979,6 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
 
             let origem = 'desconhecido'
             const emConstrucaoHa = null
-            // eslint-disable-next-line @typescript-eslint/no-unused-vars
-            const vereditoDoQa = undefined
-            // eslint-disable-next-line @typescript-eslint/no-unused-vars
-            const entendimentoCompleto = undefined
 
             if (depsVigia.issueNumber !== null) {
               const ficha = await lerFichaDoItem({
