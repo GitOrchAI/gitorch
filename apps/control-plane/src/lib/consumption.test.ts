@@ -73,8 +73,6 @@ describe('recordGuestConsumption', () => {
 
 describe('fetchGuestConsumption', () => {
   beforeEach(() => {
-    mockIncrbyfloat.mockClear()
-    mockIncrby.mockClear()
     mockGet.mockClear()
   })
 
@@ -86,13 +84,47 @@ describe('fetchGuestConsumption', () => {
     })
 
     const res = await fetchGuestConsumption('guest-123', 'proj-456')
-    expect(res).toEqual({ consumedCost: 15.5, consumedTokens: 1000 })
+    expect(res.consumedCost).toBe(15.5)
+    expect(res.consumedTokens).toBe(1000)
+    expect(res.proportionCost).toBeUndefined()
+    expect(res.proportionTokens).toBeUndefined()
   })
 
   it('returns 0 when redis returns null', async () => {
     mockGet.mockResolvedValue(null)
 
     const res = await fetchGuestConsumption('guest-123', 'proj-456')
-    expect(res).toEqual({ consumedCost: 0, consumedTokens: 0 })
+    expect(res.consumedCost).toBe(0)
+    expect(res.consumedTokens).toBe(0)
+  })
+
+  it('returns proportion correctly when quota is provided', async () => {
+    mockGet.mockImplementation(async (key: string) => {
+      if (key === 'guest_consumption:cost:guest-123:project:proj-456') return '50'
+      if (key === 'guest_consumption:tokens:guest-123:project:proj-456') return '500'
+      return null
+    })
+
+    const quota = { maxTokens: 1000, maxCost: 200 }
+    const res = await fetchGuestConsumption('guest-123', 'proj-456', quota)
+
+    expect(res.consumedCost).toBe(50)
+    expect(res.consumedTokens).toBe(500)
+    expect(res.proportionTokens).toBe(0.5) // 500 / 1000
+    expect(res.proportionCost).toBe(0.25) // 50 / 200
+  })
+
+  it('handles proportion securely when quota limits are zero', async () => {
+    mockGet.mockImplementation(async (key: string) => {
+      if (key === 'guest_consumption:cost:guest-123:project:proj-456') return '50'
+      if (key === 'guest_consumption:tokens:guest-123:project:proj-456') return '500'
+      return null
+    })
+
+    const quota = { maxTokens: 0, maxCost: 0 }
+    const res = await fetchGuestConsumption('guest-123', 'proj-456', quota)
+
+    expect(res.proportionTokens).toBe(0)
+    expect(res.proportionCost).toBe(0)
   })
 })

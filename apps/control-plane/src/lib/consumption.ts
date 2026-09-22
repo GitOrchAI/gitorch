@@ -36,19 +36,41 @@ import { createRedisClient } from '../plugins/redis.js'
 const redis = createRedisClient()
 import { calcularCustoDeCI, MetricasDeExecucaoCI } from '@gitorch/cadence'
 
+import { GuestQuota } from '@gitorch/cadence'
+
 export async function fetchGuestConsumption(
   guestId: string,
-  projectId: string
-): Promise<{ consumedTokens: number; consumedCost: number }> {
+  projectId: string,
+  quota?: GuestQuota
+): Promise<{
+  consumedTokens: number
+  consumedCost: number
+  proportionTokens?: number
+  proportionCost?: number
+}> {
   const costKey = getGuestConsumptionCostKey(guestId, projectId)
   const tokensKey = getGuestConsumptionTokensKey(guestId, projectId)
   try {
-    const cost = await redis.get(costKey)
-    const tokens = await redis.get(tokensKey)
-    return {
-      consumedCost: cost ? parseFloat(cost) : 0,
-      consumedTokens: tokens ? parseInt(tokens, 10) : 0,
+    const costStr = await redis.get(costKey)
+    const tokensStr = await redis.get(tokensKey)
+    const consumedCost = costStr ? parseFloat(costStr) : 0
+    const consumedTokens = tokensStr ? parseInt(tokensStr, 10) : 0
+
+    const result: {
+      consumedTokens: number
+      consumedCost: number
+      proportionTokens?: number
+      proportionCost?: number
+    } = { consumedCost, consumedTokens }
+
+    if (quota) {
+      result.proportionTokens = quota.maxTokens > 0 ? consumedTokens / quota.maxTokens : 0
+      if (quota.maxCost !== undefined) {
+        result.proportionCost = quota.maxCost > 0 ? consumedCost / quota.maxCost : 0
+      }
     }
+
+    return result
   } catch (e) {
     console.warn(`Failed to fetch guest consumption for ${guestId} in redis:`, e)
     return { consumedCost: 0, consumedTokens: 0 }

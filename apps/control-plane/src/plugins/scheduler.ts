@@ -3134,8 +3134,6 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
 
       const guestId = project.userId
       if (guestId) {
-        const budget = await fetchGuestConsumption(guestId, project.id)
-
         const defaultQuota = { maxTokens: 1000000, maxCost: 50000 }
         let overrides: { maxTokens?: number; maxCost?: number } | undefined
 
@@ -3165,6 +3163,8 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
           maxTokens: overrides?.maxTokens ?? defaultQuota.maxTokens,
           maxCost: overrides?.maxCost ?? defaultQuota.maxCost,
         }
+
+        const budget = await fetchGuestConsumption(guestId, project.id, guestQuota)
 
         guestBudget = budget
         guestTokens = 0
