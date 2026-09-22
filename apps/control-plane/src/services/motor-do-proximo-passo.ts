@@ -69,6 +69,7 @@ export interface MotorDoProximoPassoDeps extends RamoDoPr {
 function baldeDeCuidado(origem: string): keyof CuidaPorOrigem | null {
   if (origem === 'jules_gitorch' || origem === 'jules_fora' || origem === 'jules') return 'jules'
   if (origem === 'assistente' || origem === 'pessoa' || origem === 'dependabot') return origem
+  if (origem === 'desconhecido') return 'jules'
   return null
 }
 
