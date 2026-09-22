@@ -13,6 +13,7 @@ import { AGENT_SYSTEM_PROMPTS } from './prompts/index.js'
 import { buildPrimingPreamble } from './prompts/priming.js'
 import { hydrateStateFromCheckpoint } from './workspace-priming.js'
 import type { StateNode } from './types'
+import { SynapseClient } from '@gitorch/synapse'
 
 export const workspaceManager = new WorkspaceManager()
 
@@ -117,6 +118,8 @@ export async function resumeMissionFromCheckpoint(
   }
 
   let finalState = nextState
+  const synapseClient = new SynapseClient()
+
   while (currentRole !== 'done' && currentRole !== 'failed') {
     const node = nodeRegistry.get(currentRole)
     if (!node) {
@@ -125,7 +128,13 @@ export async function resumeMissionFromCheckpoint(
 
     const transition = await node.execute(finalState)
     finalState = missionStateReducer(finalState, transition.state)
+    const prevRole = currentRole
     currentRole = transition.nextRole ?? 'done'
+
+    // Gravacao do checkpoint ocorre de forma assincrona sem interromper runtime
+    synapseClient
+      .recordStateCheckpoint(missionId, prevRole, finalState as unknown as Record<string, unknown>)
+      .catch(() => {})
   }
 
   return finalState
