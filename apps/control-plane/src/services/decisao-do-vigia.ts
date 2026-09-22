@@ -3,6 +3,7 @@ import { horasEmConstrucao } from './em-construcao.js'
 import { decidirProximoPasso } from './motor-do-proximo-passo.js'
 import { decidirMergeDoDependabot } from './dependabot-auto-merge.js'
 import { mesclarPr } from './merge-do-pr.js'
+import { chaveDoRegistroDoMotor } from './registro-do-motor.js'
 import { lerFichaDoItem } from './ficha-do-item.js'
 import { calcularExigeRevisaoDeSeguranca } from './exigir-revisao-de-seguranca.js'
 import { planoPermiteMelhoria, type PlanoDoGithub } from './aplicar-melhoria-de-seguranca.js'
@@ -181,9 +182,19 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
 
   // Map AcaoDoMotor to AcaoDoVigia format that vigiarPrsOrfaos expects internally
   if (acaoMotor.acao === 'so-acompanhar') {
+    await registrarNoPainel(
+      projeto.id,
+      chaveDoRegistroDoMotor(projeto.wingId, depsVigia.numero, acaoMotor.acao),
+      `Pull request #${depsVigia.numero}: ${acaoMotor.motivo}`
+    )
     return { acao: 'ignorar', motivo: acaoMotor.motivo }
   }
   if (acaoMotor.acao === 'fechar-vazio') {
+    await registrarNoPainel(
+      projeto.id,
+      chaveDoRegistroDoMotor(projeto.wingId, depsVigia.numero, acaoMotor.acao),
+      `Pull request #${depsVigia.numero}: ${acaoMotor.motivo}`
+    )
     try {
       const prIndividual = (await ghGet(
         `/repos/${projeto.wingId}/pulls/${depsVigia.numero}`,
@@ -201,6 +212,12 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
     }
   }
   if (acaoMotor.acao === 'perguntar-se-cuida') {
+    await registrarNoPainel(
+      projeto.id,
+      chaveDoRegistroDoMotor(projeto.wingId, depsVigia.numero, acaoMotor.acao),
+      `Pull request #${depsVigia.numero}: ${acaoMotor.motivo}`
+    )
+
     if (!onWarn || !depsVigia || depsVigia.numero === undefined || depsVigia.issueNumber === null) {
       return { acao: 'ignorar', motivo: 'tarefa 3.10: dados insuficientes para perguntar' }
     }
@@ -247,6 +264,11 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
     }
   }
   if (acaoMotor.acao === 'mesclar') {
+    await registrarNoPainel(
+      projeto.id,
+      chaveDoRegistroDoMotor(projeto.wingId, depsVigia.numero, acaoMotor.acao),
+      `Pull request #${depsVigia.numero}: ${acaoMotor.motivo}`
+    )
     // mapear 'mesclar' para o caminho de merge seguro existente
     // (merge-do-pr.ts, exige tarefa aceita + CI verde + QA com entendimento).
     // Por enquanto mantemos ignorar sem usar escalar
@@ -256,6 +278,11 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
     }
   }
   if (acaoMotor.acao === 'retomar') {
+    await registrarNoPainel(
+      projeto.id,
+      chaveDoRegistroDoMotor(projeto.wingId, depsVigia.numero, acaoMotor.acao),
+      `Pull request #${depsVigia.numero}: ${acaoMotor.motivo}`
+    )
     return {
       acao: 'retomar',
       issueNumber: acaoMotor.issueNumber,
@@ -264,6 +291,19 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
       branchDoPr: acaoMotor.branchDoPr,
       motivo: acaoMotor.motivo,
     }
+  }
+  if (acaoMotor.acao === 'escalar') {
+    await registrarNoPainel(
+      projeto.id,
+      chaveDoRegistroDoMotor(projeto.wingId, depsVigia.numero, acaoMotor.acao),
+      `Pull request #${depsVigia.numero}: ${acaoMotor.motivo}`
+    )
+    // "escalar" isn't explicitly handled yet by vigiarPrsOrfaos' mapping below
+    // (though 'escalar' is not currently in the plan's list, if it was in the motor it will log here).
+    // The previous mapping had no branch for 'escalar', we just let it fall through or map to ignorar
+    // (or if it exists, it can just be added above).
+    // Actually, 'escalar' wasn't mapped previously, but the technical plan mentioned it as one of the actions:
+    // "(retomar, fechar-vazio, mesclar, perguntar-se-cuida, escalar, so-acompanhar)".
   }
   return { acao: 'ignorar', motivo: 'ação do motor desconhecida' }
 }
