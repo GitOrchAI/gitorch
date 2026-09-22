@@ -32,6 +32,8 @@ declare module 'fastify' {
   }
 }
 
+import { getMissionExecutionHistory } from '../lib/migration-ledger.js'
+
 export const ssePlugin: FastifyPluginAsync = async (app) => {
   await app.register(fastifySse as FastifyPluginAsync)
 
@@ -65,6 +67,62 @@ export const ssePlugin: FastifyPluginAsync = async (app) => {
       }
     }
   }, heartbeatInterval)
+
+  // Mission session history stream endpoint
+  app.get<{ Params: { missionId: string } }>(
+    '/missions/:missionId/stream',
+    async (request, reply) => {
+      const { missionId } = request.params
+
+      const mission = await app.prisma.mission.findUnique({
+        where: { id: missionId },
+      })
+
+      if (!mission) {
+        return reply.code(404).send({ error: 'Mission not found' })
+      }
+
+      // Registrar cliente de SSE
+      const clientId = `${missionId}:${Date.now()}:${Math.random().toString(36).slice(2)}`
+      const client: SseClient = {
+        id: clientId,
+        wingId: missionId,
+        reply,
+        lastHeartbeat: Date.now(),
+      }
+      app.sseClients.set(clientId, client)
+
+      request.raw.on('close', () => app.sseClients.delete(clientId))
+      request.raw.on('end', () => app.sseClients.delete(clientId))
+
+      // Recupera a trilha histórica já consolidada e envia o playback inicial imediatamente
+      const history = await getMissionExecutionHistory(missionId)
+
+      reply.sse(
+        (async function* () {
+          yield { event: 'connected', data: JSON.stringify({ missionId }) }
+
+          for (const checkpoint of history) {
+            yield { event: 'history', data: JSON.stringify(checkpoint) }
+          }
+
+          let cleanupDone = false
+          const cleanup = () => {
+            cleanupDone = true
+          }
+          request.raw.on('close', cleanup)
+          request.raw.on('end', cleanup)
+
+          while (!cleanupDone) {
+            await new Promise((resolve) => setTimeout(resolve, heartbeatInterval))
+            if (cleanupDone) break
+            client.lastHeartbeat = Date.now()
+            yield { event: 'heartbeat', data: '' }
+          }
+        })()
+      )
+    }
+  )
 
   // Waiting room stream endpoint
   app.get<{ Params: { token: string } }>('/wait/:token', async (request, reply) => {

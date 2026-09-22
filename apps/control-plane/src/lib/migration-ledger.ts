@@ -16,6 +16,8 @@
  * aditivos/idempotentes (ver auditoria no commit desta task), mas a ordem
  * fixa torna o replay determinístico mesmo assim.
  */
+import { prisma } from '../plugins/prisma.js'
+
 export const MIGRATION_LEDGER = [
   'billing-migration.sql',
   'setup-wizard-migration.sql',
@@ -80,4 +82,51 @@ export function computePending(applied: string[]): string[] {
   }
   const done = new Set(meaningful)
   return MIGRATION_LEDGER.filter((m) => !done.has(m))
+}
+
+export interface CheckpointRecord {
+  nodeId: string
+  status: string
+  timestamp: string
+  durationMs: number
+  cost: number
+  stateSnapshot?: Record<string, unknown>
+}
+
+/**
+ * Retorna a lista ordenada de checkpoints para uma dada missão.
+ * A missão é identificada pelo missionId (buscado na payload).
+ */
+export async function getMissionExecutionHistory(missionId: string): Promise<CheckpointRecord[]> {
+  const events = await prisma.event.findMany({
+    where: {
+      type: 'execution.completed',
+      payload: {
+        path: ['wingId'],
+        equals: missionId,
+      },
+    },
+    orderBy: { createdAt: 'asc' },
+  })
+
+  return events.map((e, index) => {
+    const nextEvent = events[index + 1]
+    const duration = nextEvent ? nextEvent.createdAt.getTime() - e.createdAt.getTime() : 0
+
+    const payload = (e.payload as Record<string, unknown> | null) ?? {}
+
+    const record: CheckpointRecord = {
+      nodeId: (payload['targetId'] as string) || (payload['nodeId'] as string) || 'unknown',
+      status: e.type,
+      timestamp: e.createdAt.toISOString(),
+      durationMs: duration,
+      cost: (payload['cost'] as number) || 0,
+    }
+
+    if (payload['stateSnapshot'] !== undefined) {
+      record.stateSnapshot = payload['stateSnapshot'] as Record<string, unknown>
+    }
+
+    return record
+  })
 }
