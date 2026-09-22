@@ -298,12 +298,10 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
       chaveDoRegistroDoMotor(projeto.wingId, depsVigia.numero, acaoMotor.acao),
       `Pull request #${depsVigia.numero}: ${acaoMotor.motivo}`
     )
-    // "escalar" isn't explicitly handled yet by vigiarPrsOrfaos' mapping below
-    // (though 'escalar' is not currently in the plan's list, if it was in the motor it will log here).
-    // The previous mapping had no branch for 'escalar', we just let it fall through or map to ignorar
-    // (or if it exists, it can just be added above).
-    // Actually, 'escalar' wasn't mapped previously, but the technical plan mentioned it as one of the actions:
-    // "(retomar, fechar-vazio, mesclar, perguntar-se-cuida, escalar, so-acompanhar)".
+    return {
+      acao: 'ignorar',
+      motivo: 'tarefa 3.10: escalonamento ao dono não implementado no scheduler',
+    }
   }
   return { acao: 'ignorar', motivo: 'ação do motor desconhecida' }
 }
