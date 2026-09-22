@@ -3125,6 +3125,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         tokensSpent = agg._sum.tokensUsed ?? 0
       }
       const decision = canRunMission({
+        orgId: project.userId || '',
         quotaRemaining: conn?.quotaRemaining ?? null,
         quotaTotal: conn?.quotaTotal ?? null,
         tokensSpent,

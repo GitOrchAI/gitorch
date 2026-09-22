@@ -60,6 +60,94 @@ export async function buildApp(): Promise<FastifyInstance> {
   await registerRoutes(app)
   // Depois das rotas de API: serve o wizard estático na MESMA origem (rotas
   // exatas de /api já registradas têm precedência sobre o wildcard do estático).
+
+  // Proteção preventiva e síncrona contra o estouro de orçamento
+  // NENHUMA liberação ou `settleMissionTokens` pode ocorrer em `onResponse` aqui,
+  // dado que a execução real do agent runner é assíncrona (a resposta HTTP volta
+  // antes da missão terminar). A liberação fica sob responsabilidade do finalizador
+  // da missão (worker/runner).
+  app.addHook('preHandler', async (request, reply) => {
+    try {
+      if (
+        !['/api/missions/trigger', '/api/missions/agent-run'].includes(
+          request.routeOptions?.url || request.url || ''
+        )
+      ) {
+        return
+      }
+
+      const user = request.user
+      if (!user) return
+
+      const userId = user.id
+
+      if (typeof app.prisma?.user?.findUnique !== 'function') return
+      if (typeof app.prisma?.mission?.count !== 'function') return
+
+      const dbUser = await app.prisma.user.findUnique({
+        where: { id: userId },
+        include: { plan: true },
+      })
+      if (!dbUser || !dbUser.plan) return
+
+      const { canExecuteMissionToday } = await import('./lib/entitlements.js')
+      const { canExecuteMission, reserveMissionTokens } = await import('./lib/spend-guard.js')
+
+      const plan = dbUser.plan
+
+      const startOfDay = new Date()
+      startOfDay.setHours(0, 0, 0, 0)
+
+      const totalHoje = await app.prisma.mission.count({
+        where: {
+          createdAt: { gte: startOfDay },
+          project: { userId },
+        },
+      })
+
+      if (!canExecuteMissionToday(plan, totalHoje)) {
+        reply.code(402).send({
+          error: 'spend_limit_exceeded',
+          details: 'Daily mission limit exceeded for your plan',
+        })
+        return reply
+      }
+
+      const features = (plan.features ?? {}) as Record<string, unknown>
+      const tokenBudget =
+        typeof features['maxTokensPerMonth'] === 'number'
+          ? (features['maxTokensPerMonth'] as number)
+          : null
+
+      if (tokenBudget) {
+        if (typeof app.prisma?.mission?.aggregate !== 'function') return
+
+        const startOfMonth = new Date()
+        startOfMonth.setDate(1)
+        startOfMonth.setHours(0, 0, 0, 0)
+
+        const agg = await app.prisma.mission.aggregate({
+          where: { createdAt: { gte: startOfMonth }, project: { userId } },
+          _sum: { tokensUsed: true },
+        })
+        const tokensSpent = agg._sum.tokensUsed ?? 0
+
+        const TOKENS_RESERVE_ESTIMATE = 10000
+        if (!canExecuteMission(userId, TOKENS_RESERVE_ESTIMATE, tokenBudget, tokensSpent)) {
+          reply
+            .code(402)
+            .send({ error: 'spend_limit_exceeded', details: 'Monthly token budget exceeded' })
+          return reply
+        }
+
+        reserveMissionTokens(userId, TOKENS_RESERVE_ESTIMATE)
+      }
+    } catch (e) {
+      request.log.error(e)
+      throw e
+    }
+  })
+
   await app.register(webStaticPlugin)
 
   return app

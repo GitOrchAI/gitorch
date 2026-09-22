@@ -48,6 +48,7 @@ export function withinTokenBudget(spent: number, budget?: number | null): boolea
 }
 
 export interface SpendCheck {
+  orgId: string
   quotaRemaining?: number | null
   quotaTotal?: number | null
   tokensSpent: number
@@ -68,7 +69,9 @@ export function canRunMission(check: SpendCheck): {
   if (shouldBlockForQuota(health)) {
     return { ok: false, reason: 'engine-quota-critical', health }
   }
-  if (!withinTokenBudget(check.tokensSpent, check.tokenBudget)) {
+  const currentlyReserved = reservedTokensByOrg.get(check.orgId) || 0
+  const totalSpent = check.tokensSpent + currentlyReserved
+  if (!withinTokenBudget(totalSpent, check.tokenBudget)) {
     return { ok: false, reason: 'token-budget', health }
   }
   return { ok: true, health }
