@@ -73,3 +73,41 @@ export function canRunMission(check: SpendCheck): {
   }
   return { ok: true, health }
 }
+
+/** Mock memory store to store reserved tokens during execution since actual token expenditure is settled asynchronously */
+const reservedTokensByOrg = new Map<string, number>()
+
+export function canExecuteMission(
+  orgId: string,
+  tokensNeeded: number,
+  tokenBudget: number,
+  tokensSpent: number
+): boolean {
+  if (tokenBudget == null || tokenBudget <= 0) return true
+  const currentlyReserved = reservedTokensByOrg.get(orgId) || 0
+  return tokensSpent + currentlyReserved + tokensNeeded <= tokenBudget
+}
+
+export function reserveMissionTokens(orgId: string, tokensNeeded: number): void {
+  const currentlyReserved = reservedTokensByOrg.get(orgId) || 0
+  reservedTokensByOrg.set(orgId, currentlyReserved + tokensNeeded)
+}
+
+export function settleMissionTokens(orgId: string, reservedAmount: number): void {
+  // Reduces the reserved amount upon actual settling. Actual ledger addition should be done in DB logic.
+  const currentlyReserved = reservedTokensByOrg.get(orgId) || 0
+  const newReserved = Math.max(0, currentlyReserved - reservedAmount)
+  if (newReserved === 0) {
+    reservedTokensByOrg.delete(orgId)
+  } else {
+    reservedTokensByOrg.set(orgId, newReserved)
+  }
+}
+
+export function releaseMissionTokens(orgId: string, tokens: number): void {
+  settleMissionTokens(orgId, tokens)
+}
+
+export function _resetSpendGuardReservationsForTesting(): void {
+  reservedTokensByOrg.clear()
+}
