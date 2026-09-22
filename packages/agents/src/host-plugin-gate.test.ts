@@ -138,3 +138,50 @@ describe('wrapWithHostGitorchPluginGate', () => {
     expect(inner).not.toHaveBeenCalled()
   })
 })
+
+import { EscritaNaoAutorizadaError } from '@gitorch/cadence'
+
+describe('Autonomy Level Validation', () => {
+  let dir: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'gitorch-host-plugin-wrap-'))
+    const pluginDir = join(dir, 'gitorch-plugin', 'gitorch')
+    await mkdir(pluginDir, { recursive: true })
+    const marker = join(pluginDir, 'hooks.json')
+    await writeFile(marker, '{}')
+    process.env['GITORCH_LOCAL_PLUGIN_MARKER'] = marker
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+    delete process.env['GITORCH_LOCAL_PLUGIN_MARKER']
+  })
+
+  test('allows execution if autonomy is sufficient', async () => {
+    const inner = vi
+      .fn()
+      .mockResolvedValue({ exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1 })
+    const marker = process.env['GITORCH_LOCAL_PLUGIN_MARKER']
+    const gated = wrapWithHostGitorchPluginGate(inner, marker, 'cuidar', 'mesclar')
+    process.env['GITORCH_AGY_PLUGIN'] = '1'
+
+    const result = await gated({ binary: 'agy', args: [], env: {} })
+    expect(result.exitCode).toBe(0)
+    expect(inner).toHaveBeenCalledTimes(1)
+  })
+
+  test('throws EscritaNaoAutorizadaError if autonomy is insufficient', async () => {
+    const inner = vi
+      .fn()
+      .mockResolvedValue({ exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1 })
+    const marker = process.env['GITORCH_LOCAL_PLUGIN_MARKER']
+    const gated = wrapWithHostGitorchPluginGate(inner, marker, 'so_olhar', 'mesclar')
+    process.env['GITORCH_AGY_PLUGIN'] = '1'
+
+    await expect(gated({ binary: 'agy', args: [], env: {} })).rejects.toThrow(
+      EscritaNaoAutorizadaError
+    )
+    expect(inner).not.toHaveBeenCalled()
+  })
+})

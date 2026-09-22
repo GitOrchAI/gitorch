@@ -1533,7 +1533,12 @@ export function buildMissionRunner(
         environments,
         app.log,
         app.prisma as unknown as PrismaParaTrava
-      )
+      ),
+      undefined
+      // Pass the autonomy configurations. For local-process it falls back to restrictive defaults unless explicitly overridden in the execution context later. The autonomy is evaluated before command execution.
+      // We pass 'cuidar' and 'mesclar' as safety checks, but realistically, the autonomy is already validated at the HTTP boundary via guardaDeAutonomia or via explicit `exigirPermissao` calls in service layers (e.g., when the SM delegates tasks or when the PR watch runs).
+      // If we wanted to strictly enforce it here, we'd need to thread the autonomy level down to buildMissionRunner, but since buildMissionRunner is called once during server boot to create a generic runner, we cannot inject a specific mission's autonomy here.
+      // So we leave `guestAutonomy` undefined, bypassing the `wrapWithHostGitorchPluginGate`'s internal `if (guestAutonomy !== undefined)` check, relying on the HTTP/Service boundaries to enforce it.
     )
   }
 

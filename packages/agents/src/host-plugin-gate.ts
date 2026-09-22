@@ -1,4 +1,5 @@
 import { access } from 'node:fs/promises'
+import { exigirPermissao, type AcaoNoRepositorio, type NivelDeAutonomia } from '@gitorch/cadence'
 import type {
   RuntimeCommandRequest,
   RuntimeCommandResult,
@@ -71,9 +72,15 @@ export async function isGitorchPluginPresentOnHost(markerPath?: string): Promise
  */
 export function wrapWithHostGitorchPluginGate(
   runner: RuntimeCommandRunner,
-  markerPath?: string
+  markerPath?: string,
+  guestAutonomy?: NivelDeAutonomia | null | string,
+  action?: AcaoNoRepositorio
 ): RuntimeCommandRunner {
   return async (request: RuntimeCommandRequest): Promise<RuntimeCommandResult> => {
+    if (guestAutonomy !== undefined && action !== undefined) {
+      exigirPermissao(guestAutonomy, action)
+    }
+
     if ((process.env['GITORCH_AGY_PLUGIN'] ?? '1') === '0') {
       return {
         exitCode: 1,
