@@ -1,4 +1,5 @@
 import { lerCuidaPorOrigem, lerJanelaEmConstrucaoHoras } from './cuidado-por-origem.js'
+import { horasEmConstrucao } from './em-construcao.js'
 import { decidirProximoPasso } from './motor-do-proximo-passo.js'
 import { decidirMergeDoDependabot } from './dependabot-auto-merge.js'
 import { mesclarPr } from './merge-do-pr.js'
@@ -62,31 +63,11 @@ export async function decidirAcaoNoPrOrfaoIntegrado({
     })
     if (ficha) {
       origem = ficha.origem || 'desconhecido'
-      if (ficha.estado.rascunho || ficha.estado.ultimoCommitEm) {
-        try {
-          const prCommits = (await ghGet(
-            `/repos/${projeto.wingId}/pulls/${depsVigia.numero}/commits`,
-            token
-          )) as Array<{
-            commit?: { author?: { date?: string }; committer?: { date?: string } }
-          }>
-          if (prCommits && prCommits.length > 0) {
-            const lastCommit = prCommits[prCommits.length - 1]
-            if (lastCommit) {
-              const dateStr = lastCommit.commit?.committer?.date || lastCommit.commit?.author?.date
-              if (dateStr) {
-                const date = Date.parse(dateStr)
-                if (!Number.isNaN(date)) {
-                  emConstrucaoHa = (agora.getTime() - date) / (1000 * 60 * 60)
-                }
-              }
-            }
-          }
-        } catch (err) {
-          // Se a API falhar, emConstrucaoHa fica null para rebaixar
-          // a inação segura em decidirProximoPasso.
-        }
-      }
+      emConstrucaoHa = horasEmConstrucao({
+        rascunho: depsVigia.rascunho,
+        ultimoCommitEm: ficha.estado.ultimoCommitEm ?? null,
+        agora,
+      })
     }
   }
 

@@ -219,6 +219,8 @@ export interface PrAberto extends RamoDoPr {
   autor?: string | null
   labels?: string[] | null
   corpo?: string | null
+  /** Fase 3.9: PR marcado como rascunho. */
+  rascunho: boolean
   /** `mergeable` do GitHub. `null` = ele ainda está calculando. */
   mergeable: boolean | null
   verificacao: EstadoDaVerificacao
@@ -234,6 +236,8 @@ export interface PrOrfaoObservado extends RamoDoPr {
   temSessaoViva: boolean
   /** A tarefa de origem, pela linha que guardou este pull request. */
   issueNumber: number | null
+  /** Fase 3.9: PR marcado como rascunho. */
+  rascunho: boolean
   issueAberta: boolean
   mergeable: boolean | null
   verificacao: EstadoDaVerificacao
@@ -552,6 +556,7 @@ export async function vigiarPrsOrfaos(deps: VigiaDoPrDeps): Promise<string> {
         sinais: pr,
         temSessaoViva: false,
         issueNumber,
+        rascunho: pr.rascunho,
         // Quando não há tarefa de origem, a decisão nem chega a olhar para
         // isto (o portão 5 vem antes) — e assim não se gasta a leitura.
         issueAberta: issueNumber === null ? true : await deps.issueAberta(issueNumber),
@@ -800,6 +805,7 @@ export async function listarPrsAbertosParaOVigia(args: {
     labels?: Array<{ name?: string }> | null
     body?: string | null
     head?: { sha?: string; ref?: string; repo?: { full_name?: string } | null } | null
+    draft?: boolean | null
   }
   const crus: PrCru[] = []
   for (let pagina = 1; pagina <= MAX_PAGINAS_DE_PR; pagina += 1) {
@@ -831,6 +837,7 @@ export async function listarPrsAbertosParaOVigia(args: {
       // agir — mesma disciplina conservadora dos três campos abaixo.
       branchDoPr: cru.head?.ref ?? null,
       branchNoRepoDoProjeto: (cru.head?.repo?.full_name ?? null) === args.repo,
+      rascunho: cru.draft ?? false,
       mergeable: null,
       verificacao: 'pendente',
       paradoHaMs: 0,
