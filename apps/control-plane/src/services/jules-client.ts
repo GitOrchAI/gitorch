@@ -622,7 +622,6 @@ export async function atividadesDeConversaJules(deps: {
     .map((a) => ({ originator: a.originator, quando: new Date(a.quando), texto: a.texto }))
 }
 
-
 /**
  * Valida a credencial (token) fornecida pelo convidado verificando acesso à API do Jules.
  * Se houver rate limit ou falha (ex.: token inválido), mapeia o erro usando `classifyGithubApiError`
