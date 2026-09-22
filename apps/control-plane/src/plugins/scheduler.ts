@@ -6905,6 +6905,7 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         userId: true,
         devPlan: true,
         devAccountId: true,
+        autonomia: true,
       },
     })
 
@@ -7016,12 +7017,13 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 app as unknown as {
                   agentQuestionService?: import('../services/agent-question.js').AgentQuestionService
                 }
-              ).agentQuestionService,
+              ).agentQuestionService as
+                import('../services/perguntar-se-cuida.js').AgentQuestionAskerDeCuidado | undefined,
               montarContextoExecutivo: montarContextoExecutivoDaPergunta,
               depsDoContexto: {
                 prisma: app.prisma as unknown as PrismaParaContextoExecutivo,
                 buscarCorpoDaIssue: criarBuscadorDeCorpoDaIssue({
-                  fetchDoCliente: ghGet as unknown as (caminho: string) => Promise<unknown>,
+                  fetchDoCliente: fetchDoRepositorio({ nivel: () => projeto.autonomia }),
                   repository: projeto.wingId,
                   issueNumber: depsVigia.issueNumber ?? 0,
                   githubToken: token,

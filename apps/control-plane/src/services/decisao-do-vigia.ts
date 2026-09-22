@@ -29,10 +29,10 @@ export interface DecisaoDoVigiaDeps {
   depsVigia: Parameters<NonNullable<VigiaDoPrDeps['decidirAcaoNoPrOrfao']>>[0]
   prisma: PrismaClient
   ghGet: (caminho: string, token: string) => Promise<unknown>
-  userId?: string | null
-  agentQuestion?: AgentQuestionAskerDeCuidado
-  montarContextoExecutivo?: typeof montarContextoExecutivoDaPergunta
-  depsDoContexto?: DepsDoContextoExecutivo
+  userId?: string | null | undefined
+  agentQuestion?: AgentQuestionAskerDeCuidado | undefined
+  montarContextoExecutivo?: typeof montarContextoExecutivoDaPergunta | undefined
+  depsDoContexto?: DepsDoContextoExecutivo | undefined
   /** Fase 5.3/#802: escrita de merge do caminho expresso do Dependabot. */
   ghSend: (
     method: 'POST' | 'PATCH' | 'PUT',
