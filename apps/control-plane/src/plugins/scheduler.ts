@@ -444,7 +444,11 @@ import { relogioDaAgenda } from '../services/espalhar-agendas.js'
 import { cotasAReler } from '../services/cotas-a-reler.js'
 import { modelosARecoletar } from '../services/modelos-a-recoletar.js'
 import { canRunMission, shouldAlertForQuota } from '../lib/spend-guard.js'
-import { computeConsumption } from '../lib/consumption.js'
+import {
+  computeConsumption,
+  fetchGuestConsumption,
+  recordGuestConsumption,
+} from '../lib/consumption.js'
 import { pipelineCheckEnabled } from '../config/pipeline-check.js'
 import { resolveMissionCpus } from '../config/mission-cpus.js'
 import { reapOrphanContainers, failOrphanRunningMissions, type ReapResult } from './boot-reaper.js'
@@ -3123,12 +3127,71 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
         })
         tokensSpent = agg._sum.tokensUsed ?? 0
       }
-      const decision = canRunMission({
+      let guestCost: number | undefined
+      let guestTokens: number | undefined
+      let guestQuota: { maxTokens: number; maxCost?: number } | undefined
+      let guestBudget: { consumedTokens: number; consumedCost?: number } | undefined
+
+      const guestId = project.userId
+      if (guestId) {
+        const budget = await fetchGuestConsumption(guestId, project.id)
+
+        const defaultQuota = { maxTokens: 1000000, maxCost: 50000 }
+        let overrides: { maxTokens?: number; maxCost?: number } | undefined
+
+        // Tenta buscar as overrides da Invitation
+        try {
+          const inv = await app.prisma.projectInvitation.findFirst({
+            where: { userId: guestId },
+            orderBy: { createdAt: 'desc' },
+          })
+          if (inv && inv.targetProjects) {
+            const projectsConf = inv.targetProjects as Record<
+              string,
+              { maxTokens?: number; maxCost?: number }
+            >
+            if (projectsConf[project.id]) {
+              overrides = projectsConf[project.id]
+            }
+          }
+        } catch (e) {
+          app.log.warn(
+            { e },
+            `[Scheduler] erro ao buscar invitation overrides para guestId=${guestId}`
+          )
+        }
+
+        guestQuota = {
+          maxTokens: overrides?.maxTokens ?? defaultQuota.maxTokens,
+          maxCost: overrides?.maxCost ?? defaultQuota.maxCost,
+        }
+
+        guestBudget = budget
+        guestTokens = 0
+        guestCost = 0
+      }
+
+      const payload = {
         quotaRemaining: conn?.quotaRemaining ?? null,
         quotaTotal: conn?.quotaTotal ?? null,
         tokensSpent,
         tokenBudget,
-      })
+      } as Parameters<typeof canRunMission>[0]
+
+      if (
+        guestId &&
+        guestCost !== undefined &&
+        guestTokens !== undefined &&
+        guestQuota &&
+        guestBudget
+      ) {
+        payload.guestCost = guestCost
+        payload.guestTokens = guestTokens
+        payload.guestQuota = guestQuota
+        payload.guestBudget = guestBudget
+      }
+
+      const decision = canRunMission(payload)
       if (shouldAlertForQuota(decision.health)) {
         app.log.warn(
           `[Scheduler] Quota ${decision.health} no motor ${primary.runtime} do usuário ${project.userId}`
@@ -4669,6 +4732,28 @@ const schedulerPlugin = fp<SchedulerOptions>(async (app: FastifyInstance) => {
                 app.log.info(
                   `[Scheduler] Consumo ${missionId}: antes=${before} depois=${c.quotaAfter} usou=${c.tokensUsed}`
                 )
+
+                if (c.tokensUsed && c.tokensUsed > 0 && project.userId) {
+                  const cpusStr = resolveMissionCpus()
+                  const cpus = Number(cpusStr)
+                  const m = await app.prisma.mission.findUnique({
+                    where: { id: missionId },
+                    select: { startedAt: true },
+                  })
+
+                  if (m?.startedAt) {
+                    await recordGuestConsumption(
+                      project.userId,
+                      project.id,
+                      {
+                        duracaoSegundos: (Date.now() - m.startedAt.getTime()) / 1000,
+                        cpus,
+                        ramGb: cpus * 2,
+                      },
+                      c.tokensUsed
+                    )
+                  }
+                }
               }
             } catch (e) {
               app.log.warn({ e }, `[Scheduler] medição de consumo falhou para ${missionId}`)

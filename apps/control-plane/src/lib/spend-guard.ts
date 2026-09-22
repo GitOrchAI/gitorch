@@ -47,11 +47,18 @@ export function withinTokenBudget(spent: number, budget?: number | null): boolea
   return spent < budget
 }
 
+import { GuestQuota, OrcamentoOrdem, verificarLimiteQuotaConvidado } from '@gitorch/cadence'
+
 export interface SpendCheck {
   quotaRemaining?: number | null
   quotaTotal?: number | null
   tokensSpent: number
   tokenBudget?: number | null
+
+  guestCost?: number
+  guestTokens?: number
+  guestQuota?: GuestQuota
+  guestBudget?: OrcamentoOrdem
 }
 
 /**
@@ -61,10 +68,29 @@ export interface SpendCheck {
  */
 export function canRunMission(check: SpendCheck): {
   ok: boolean
-  reason?: 'engine-quota-critical' | 'token-budget'
+  reason?: 'engine-quota-critical' | 'token-budget' | 'guest-quota-critical'
   health: QuotaHealth
 } {
   const health = quotaHealth(check.quotaRemaining, check.quotaTotal)
+
+  if (
+    check.guestCost !== undefined &&
+    check.guestTokens !== undefined &&
+    check.guestQuota &&
+    check.guestBudget
+  ) {
+    if (
+      !verificarLimiteQuotaConvidado(
+        check.guestCost,
+        check.guestTokens,
+        check.guestQuota,
+        check.guestBudget
+      )
+    ) {
+      return { ok: false, reason: 'guest-quota-critical', health }
+    }
+  }
+
   if (shouldBlockForQuota(health)) {
     return { ok: false, reason: 'engine-quota-critical', health }
   }

@@ -90,6 +90,29 @@ export interface MetricasDeExecucaoCI {
  * multiplicamos a duração (arredondada para cima em minutos, mínimo 1) pela soma
  * dos núcleos de CPU e a RAM em GB.
  */
+export interface GuestQuota {
+  maxTokens: number
+  maxCost?: number
+}
+
+export interface OrcamentoOrdem {
+  consumedTokens: number
+  consumedCost?: number
+}
+
+export function verificarLimiteQuotaConvidado(
+  cost: number,
+  tokens: number,
+  quota: GuestQuota,
+  budget: OrcamentoOrdem
+): boolean {
+  if (budget.consumedTokens + tokens > quota.maxTokens) return false
+  if (quota.maxCost !== undefined) {
+    if ((budget.consumedCost ?? 0) + cost > quota.maxCost) return false
+  }
+  return true
+}
+
 export function calcularCustoDeCI(metricas: MetricasDeExecucaoCI): number {
   const minutos = Math.max(1, Math.ceil(metricas.duracaoSegundos / 60))
   return minutos * (metricas.cpus + metricas.ramGb)

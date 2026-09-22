@@ -27,3 +27,47 @@ export function computeConsumption(
   }
   return { quotaBefore: before, quotaAfter: after, tokensUsed }
 }
+
+import {
+  getGuestConsumptionCostKey,
+  getGuestConsumptionTokensKey,
+} from '../plugins/rate-limit-keys.js'
+import { createRedisClient } from '../plugins/redis.js'
+const redis = createRedisClient()
+import { calcularCustoDeCI, MetricasDeExecucaoCI } from '@gitorch/cadence'
+
+export async function fetchGuestConsumption(
+  guestId: string,
+  projectId: string
+): Promise<{ consumedTokens: number; consumedCost: number }> {
+  const costKey = getGuestConsumptionCostKey(guestId, projectId)
+  const tokensKey = getGuestConsumptionTokensKey(guestId, projectId)
+  try {
+    const cost = await redis.get(costKey)
+    const tokens = await redis.get(tokensKey)
+    return {
+      consumedCost: cost ? parseFloat(cost) : 0,
+      consumedTokens: tokens ? parseInt(tokens, 10) : 0,
+    }
+  } catch (e) {
+    console.warn(`Failed to fetch guest consumption for ${guestId} in redis:`, e)
+    return { consumedCost: 0, consumedTokens: 0 }
+  }
+}
+
+export async function recordGuestConsumption(
+  guestId: string,
+  projectId: string,
+  metrics: MetricasDeExecucaoCI,
+  tokensUsed: number
+): Promise<void> {
+  const costKey = getGuestConsumptionCostKey(guestId, projectId)
+  const tokensKey = getGuestConsumptionTokensKey(guestId, projectId)
+  const cost = calcularCustoDeCI(metrics)
+  try {
+    await redis.incrbyfloat(costKey, cost)
+    await redis.incrby(tokensKey, tokensUsed)
+  } catch (e) {
+    console.warn(`Failed to update guest consumption for ${guestId} in redis:`, e)
+  }
+}

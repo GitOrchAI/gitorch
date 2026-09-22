@@ -14,3 +14,11 @@ export function getInvitationRateLimitMax(env: {
 }): number {
   return Number(env.GITORCH_AUTH_RATE_LIMIT_MAX ?? 20)
 }
+
+export function getGuestConsumptionCostKey(guestId: string, projectId: string): string {
+  return `guest_consumption:cost:${guestId}:project:${projectId}`
+}
+
+export function getGuestConsumptionTokensKey(guestId: string, projectId: string): string {
+  return `guest_consumption:tokens:${guestId}:project:${projectId}`
+}
